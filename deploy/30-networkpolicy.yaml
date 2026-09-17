@@ -1,0 +1,62 @@
+# What may reach the deployment's ports. The host API creates, deletes, drains
+# and migrates VMs, and the page server hands out the memory of every VM a host
+# has given away; both listen on the pod network, which in a cluster with no
+# policy is everything. These two policies make the control plane reachable only
+# from inside the deployment, so the bearer token the APIs require is the second
+# lock rather than the only one.
+#
+# k3s enforces these: it ships a network-policy controller of its own alongside
+# flannel and applies NetworkPolicy objects by default, so the demo cluster is
+# one where they hold. Everything else the pods do — the Kubernetes API, the
+# object store, DNS — is egress, which nothing here restricts.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sproutfs-host
+  namespace: sproutfs
+  labels:
+    app.kubernetes.io/name: sproutfs-host
+    app.kubernetes.io/part-of: sproutfs
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: sproutfs-host
+  policyTypes: [Ingress]
+  ingress:
+    # The API is the orchestrator's, and the page server is the other hosts':
+    # a destination fetches the pages of the VM it took over out of the source.
+    # Both are named by the same part-of label, which is what the deployment is.
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: sproutfs
+      ports:
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 8081
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sproutfs-orchestrator
+  namespace: sproutfs
+  labels:
+    app.kubernetes.io/name: sproutfs-orchestrator
+    app.kubernetes.io/part-of: sproutfs
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: sproutfs-orchestrator
+  policyTypes: [Ingress]
+  ingress:
+    # A draining host reports to it, and the CLI runs inside its own pod. An
+    # operator reaches it through kubectl port-forward, which is the kubelet's
+    # connection to the pod and not one this selector has to admit.
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: sproutfs
+      ports:
+        - protocol: TCP
+          port: 8080

@@ -1,0 +1,16 @@
+version: v2
+
+modules:
+  - path: internal/checkpoint/proto
+  - path: internal/control/proto
+  - path: internal/platform/proto
+  - path: internal/vmmigrate/proto
+  - path: internal/vmmigrate/internal/wire/proto
+
+lint:
+  use:
+    - STANDARD
+
+breaking:
+  use:
+    - FILE

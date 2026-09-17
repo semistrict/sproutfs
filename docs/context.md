@@ -1,0 +1,111 @@
+# Terminology
+
+These terms are shared across the [architecture](architecture.md) and its
+supporting documents.
+
+## Storage
+
+**VM**: One virtual machine. It is the unit of identity, of write ownership and
+of durability: one identity, one control record, one checkpoint lineage.
+
+**Volume**: One named byte-addressed image of a VM: its memory, `ram0`, or one
+of its PMEM disks. A volume's size is fixed for the VM's lifetime.
+
+**Page**: The 2 MiB unit of publication, of a fault and of resident ownership.
+It is the same size in the store, in the pager and on the wire, and is not
+configurable.
+
+**Overlay**: What a VM has written through the volume package since its last
+checkpoint — image building and tests, never a pager — held in memory on the
+host that owns it. It is durable nowhere: losing that host loses it.
+
+**Control record**: The one mutable object a VM owns in the store. It selects
+the writer epoch and the checkpoint, lists the checkpoints of this VM that have
+been forked — the pins, which reclamation spares and nothing gives back — and
+changes only by conditional write. See [Metadata authority](metadata.md).
+
+**Checkpoint**: Both the operation that makes a running VM durable and what it
+leaves in the store. The vCPUs pause while the VMM state is saved and every
+region's dirty pages are sealed; the guest resumes; the sealed pages stream out
+as parts, and the index object carrying the segments they changed and the
+checkpoint's root is written last; a conditional
+write then selects that checkpoint in the control record, which is when the VM
+survives the loss of this host. Every VM a
+host runs is checkpointed on an interval — sixty seconds by default, each wait
+jittered by up to an eighth either side, the next measured from the last upload —
+and on request. Capture returns without waiting for the upload; the upload can
+fail, and its pages then go back to the guest. A VM's whole durable state is
+the one checkpoint its record selects; an initial sparse checkpoint writes no
+part at all.
+
+**Index object**: The metadata plane of one checkpoint, at
+`vm/<id>/ckpt/<seq>/index`: a fixed header, the page-table segments the
+checkpoint changed, and the **root**, which says for every volume where each 512
+MiB segment of its page table is fetched from and which checkpoints this one
+reads. The root carries its parent's segment addresses forward and replaces only
+the segments its own checkpoint changed, so it is complete on its own and names
+no parent. The index object's create-if-absent PUT is the publication's commit.
+
+**Part**: One object of a checkpoint's data plane, at
+`vm/<id>/ckpt/<seq>/part/<n>`: filled to 64 MiB and uploaded as it fills, a run
+of encoded members — the VMM state and pages — followed by a table naming them
+and a fixed trailer naming the table, so a part describes itself.
+
+**Seal**: Taking the guest's write access to a region's dirty pages away in
+place, so those frames become the checkpoint's while the guest keeps running.
+Nothing is copied and no byte moves — a store into a sealed page copies that
+one page — so the pause is page-table work.
+
+**Flush**: A guest's virtio-pmem flush. It makes nothing durable: the device
+completes it itself and the host is not asked. Ordering is the checkpoint's,
+which is one instant of the whole machine.
+
+**Reclamation**: Deleting, after a checkpoint is selected, the checkpoints its
+root no longer names and no pin protects, whole. Compaction bounds what that
+leaves behind: a checkpoint rewrites the live pages of checkpoints that are less
+than half live into its own parts, up to 64 MiB of live bytes, after the guest
+has resumed.
+
+**Fork point**: One instant of a running parent: the checkpoint it has
+published, the pages sealed since, and the VMM state saved with them. Nothing
+is published to take one and the parent keeps running, so a fork costs the
+pause and the child's boot, and one pause serves any number of children. The
+parent's frames stay sealed until every child has published or pulled the pages
+it inherited.
+
+**Fork**: A VM created from a parent's fork point without changing a byte. It
+has its own control record and its writes are isolated; the parent's published
+sequence is pinned in the parent's record, which keeps reclamation off the
+lineage the child inherits and off every checkpoint that lineage reads. The pin is
+permanent: only a collector, which can see every lineage, may release one. A
+child runs on the parent's host, sharing the
+sealed frames, or on another host, pulling them from the parent's page server.
+
+**Handoff**: The plain data that starts a VM on another host: the VMM state,
+the checkpoint it inherits, the runs of unpublished pages and the page-server
+address they are served from. A migration hands off a VM the source released; a
+fork hands off a child from a parent that keeps running.
+
+**Lineage identity**: The page whose bytes a range reads, reported as
+(checkpoint reference, volume, page); sparse zeroes have a special identity.
+Inherited pages retain the same identity — compaction moving their bytes into
+another checkpoint's parts does not change it — and may share a resident frame within the
+same pager, without content deduplication.
+
+**Resident frame**: The physical backing of one page in a host's pager,
+possibly shared by several regions with the same lineage identity.
+
+## Cluster
+
+**Host**: A machine that runs VMs and serves their pages to migration
+destinations and to forks on other hosts.
+
+**Writer**: The single process allowed to publish a VM's checkpoints,
+established by the epoch in the control record. Every open advances that epoch,
+which fences the writer before it.
+
+**Epoch**: The writer token in the control record, and the high half of every
+checkpoint sequence that writer allocates.
+
+**Drain**: Migrating every VM a host runs to other hosts, so the process can
+exit without rewinding any of them.

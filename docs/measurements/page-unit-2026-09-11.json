@@ -1,0 +1,195 @@
+{
+  "subject": "Managed-memory pager page of 4, 16 and 64 KiB: one run per page size",
+  "date": "2026-09-11",
+  "host": "Lima aarch64 instance, 4 KiB host pages, host kernel 7.0.0-29-generic, 8 vCPUs, 16 GiB",
+  "revision": "8adcbecf20bf70ffe55478fd15636f9241bb71ce-dirty",
+  "guest_image_manifest": "guest-image-2026-09-11.json",
+  "command": "SPROUTFS_PAGE_BYTES=<page_bytes> SPROUTFS_BENCH_SCENARIOS=boot,pnpm-install,capture,fork-fanout SPROUTFS_BENCH_FORKS=4 SPROUTFS_BENCH_TEST='cd /opt/repo && git grep -c fn | wc -l' SPROUTFS_BENCH_TIMEOUT=4m20s scripts/bench-guest-lima.sh (4096 is the default, run without SPROUTFS_PAGE_BYTES)",
+  "notes": [
+    "Each figure is a single run of TestGuestWorkloadBenchmark on a shared laptop VM, with no baseline.",
+    "The machine is the benchmark's: 2 GiB RAM, 8 GiB PMEM root, 4 vCPUs, a 3 GiB resident budget, 1 MiB flush batches and a 1 MiB read-ahead window in every run; flush_pages and read_ahead_pages are those sizes in the run's pages.",
+    "The fork fan-out ran git grep rather than the default cargo test, which alone would take far longer than the five-minute budget of one run. Its only output is its result, so its first output is its completion, which is why every run failed the harness's two-second first-output bound; nothing else failed.",
+    "pnpm-install is guest wall time from the guest's own accounting. Log bytes are the bytes region flushes wrote to the volumes during pnpm-install (Stats.FlushWriteBytes), and log bytes per flush divides them by the region flushes the volumes acknowledged (Stats.Flushes).",
+    "Fork memory is what each fork's regions hold once its command finished (Region.Stats), summed over ram0 and root: resident is pages holding a frame, private is pages whose bytes are the fork's own. Means are over the four forks, in bytes.",
+    "Boot phases: vmm_start is vmmachine.Start, kernel and init are the guest's monotonic clock, pre_kernel is the remainder of the wall time to readiness."
+  ],
+  "runs": [
+    {
+      "page_bytes": 4096,
+      "configuration_date": "2026-09-11T02:26:54Z",
+      "flush_pages": 256,
+      "read_ahead_pages": 256,
+      "resident_pages": 786432,
+      "boot": {
+        "wall_ns": 29552888578,
+        "vmm_start_ns": 990615826,
+        "pre_kernel_ns": 5623308405,
+        "kernel_ns": 23669542510,
+        "init_ns": 259999375,
+        "faults": 56703,
+        "fault_mean_ns": 151793,
+        "fault_total_ns": 8607165409,
+        "mapping_mean_ns": 131596,
+        "copy_on_writes": 56694
+      },
+      "pnpm_install": {
+        "guest_wall_ns": 110946776720,
+        "faults": 46900,
+        "fault_mean_ns": 364928,
+        "copy_on_writes": 40666,
+        "flushes": 20,
+        "flush_writes": 54,
+        "log_bytes": 36429824,
+        "log_bytes_per_flush": 1821491,
+        "spill_write_bytes": 0
+      },
+      "capture": {
+        "pause_ns": 1369442437,
+        "seal_ns": 1359329785,
+        "protect_ns": 1283990716,
+        "protect_commands": 160,
+        "sealed_pages": 88407,
+        "sealed_bytes": 362115072,
+        "ingest_ns": 2561006393,
+        "cut_writes": 347,
+        "cut_write_bytes": 362115072
+      },
+      "fork_fanout": {
+        "forks": 4,
+        "restore_all_ns": 1430820241,
+        "max_restore_ns": 381365968,
+        "max_first_output_ns": 9413199148,
+        "faults": 11938,
+        "fault_mean_ns": 1820736,
+        "private_pages": [2231, 2229, 2214, 2236],
+        "resident_pages": [23400, 23576, 23734, 23246],
+        "mean_private_bytes": 9123840,
+        "mean_resident_bytes": 96210944,
+        "region_pages": [
+          {"ram0": {"private_pages": 2221, "resident_pages": 17260}, "root": {"private_pages": 10, "resident_pages": 6140}},
+          {"ram0": {"private_pages": 2219, "resident_pages": 16997}, "root": {"private_pages": 10, "resident_pages": 6579}},
+          {"ram0": {"private_pages": 2204, "resident_pages": 17131}, "root": {"private_pages": 10, "resident_pages": 6603}},
+          {"ram0": {"private_pages": 2226, "resident_pages": 16786}, "root": {"private_pages": 10, "resident_pages": 6460}}
+        ]
+      }
+    },
+    {
+      "page_bytes": 16384,
+      "configuration_date": "2026-09-11T02:30:12Z",
+      "flush_pages": 64,
+      "read_ahead_pages": 64,
+      "resident_pages": 196608,
+      "boot": {
+        "wall_ns": 25317452961,
+        "vmm_start_ns": 357104780,
+        "pre_kernel_ns": 4443159753,
+        "kernel_ns": 20516264591,
+        "init_ns": 358004500,
+        "faults": 14230,
+        "fault_mean_ns": 201367,
+        "fault_total_ns": 2865455179,
+        "mapping_mean_ns": 162847,
+        "copy_on_writes": 14221
+      },
+      "pnpm_install": {
+        "guest_wall_ns": 82981224373,
+        "faults": 14213,
+        "fault_mean_ns": 635826,
+        "copy_on_writes": 11380,
+        "flushes": 16,
+        "flush_writes": 63,
+        "log_bytes": 60112896,
+        "log_bytes_per_flush": 3757056,
+        "spill_write_bytes": 0
+      },
+      "capture": {
+        "pause_ns": 823932418,
+        "seal_ns": 815723831,
+        "protect_ns": 804448646,
+        "protect_commands": 69,
+        "sealed_pages": 21881,
+        "sealed_bytes": 358498304,
+        "ingest_ns": 2054153750,
+        "cut_writes": 343,
+        "cut_write_bytes": 358498304
+      },
+      "fork_fanout": {
+        "forks": 4,
+        "restore_all_ns": 1251394676,
+        "max_restore_ns": 333618531,
+        "max_first_output_ns": 9004183201,
+        "faults": 5458,
+        "fault_mean_ns": 2398824,
+        "private_pages": [960, 945, 979, 954],
+        "resident_pages": [5875, 5946, 5983, 5959],
+        "mean_private_bytes": 15720448,
+        "mean_resident_bytes": 97333248,
+        "region_pages": [
+          {"ram0": {"private_pages": 951, "resident_pages": 4244}, "root": {"private_pages": 9, "resident_pages": 1631}},
+          {"ram0": {"private_pages": 936, "resident_pages": 4259}, "root": {"private_pages": 9, "resident_pages": 1687}},
+          {"ram0": {"private_pages": 970, "resident_pages": 4305}, "root": {"private_pages": 9, "resident_pages": 1678}},
+          {"ram0": {"private_pages": 945, "resident_pages": 4346}, "root": {"private_pages": 9, "resident_pages": 1613}}
+        ]
+      }
+    },
+    {
+      "page_bytes": 65536,
+      "configuration_date": "2026-09-11T02:32:38Z",
+      "flush_pages": 16,
+      "read_ahead_pages": 16,
+      "resident_pages": 49152,
+      "boot": {
+        "wall_ns": 26642807280,
+        "vmm_start_ns": 142311022,
+        "pre_kernel_ns": 3276411357,
+        "kernel_ns": 22966080425,
+        "init_ns": 400294209,
+        "faults": 3581,
+        "fault_mean_ns": 426933,
+        "fault_total_ns": 1528849697,
+        "mapping_mean_ns": 279755,
+        "copy_on_writes": 3572
+      },
+      "pnpm_install": {
+        "guest_wall_ns": 72192657576,
+        "faults": 4696,
+        "fault_mean_ns": 1613081,
+        "copy_on_writes": 3569,
+        "flushes": 16,
+        "flush_writes": 89,
+        "log_bytes": 89587712,
+        "log_bytes_per_flush": 5599232,
+        "spill_write_bytes": 0
+      },
+      "capture": {
+        "pause_ns": 2610139874,
+        "seal_ns": 2578514937,
+        "protect_ns": 2567177515,
+        "protect_commands": 40,
+        "sealed_pages": 5728,
+        "sealed_bytes": 375390208,
+        "ingest_ns": 6651618721,
+        "cut_writes": 359,
+        "cut_write_bytes": 375390208
+      },
+      "fork_fanout": {
+        "forks": 4,
+        "restore_all_ns": 1776014893,
+        "max_restore_ns": 481619066,
+        "max_first_output_ns": 15760273259,
+        "faults": 3145,
+        "fault_mean_ns": 4631735,
+        "private_pages": [556, 487, 498, 529],
+        "resident_pages": [1731, 1664, 1693, 1719],
+        "mean_private_bytes": 33914880,
+        "mean_resident_bytes": 111525888,
+        "region_pages": [
+          {"ram0": {"private_pages": 549, "resident_pages": 1312}, "root": {"private_pages": 7, "resident_pages": 419}},
+          {"ram0": {"private_pages": 480, "resident_pages": 1234}, "root": {"private_pages": 7, "resident_pages": 430}},
+          {"ram0": {"private_pages": 491, "resident_pages": 1261}, "root": {"private_pages": 7, "resident_pages": 432}},
+          {"ram0": {"private_pages": 522, "resident_pages": 1287}, "root": {"private_pages": 7, "resident_pages": 432}}
+        ]
+      }
+    }
+  ]
+}

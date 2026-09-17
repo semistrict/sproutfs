@@ -1,0 +1,23 @@
+[package]
+name = "sproutfs-vm-memory"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+license = "Apache-2.0"
+description = "Per-process memory mappings controlled by an external pager"
+
+[dependencies]
+libc = "0.2.189"
+linux-raw-sys = { version = "0.12.1", features = ["general"] }
+
+# KVM is how the client example gives a managed region a real guest to fault
+# on, and it exists on Linux alone. Keeping these here rather than in
+# [dev-dependencies] is what lets `cargo test` and `cargo clippy --all-targets`
+# run on a developer's macOS checkout: the library is already
+# #![cfg(target_os = "linux")], so off Linux there is nothing to link them to.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+kvm-bindings = "0.14.1"
+kvm-ioctls = "0.25.0"
+
+[workspace]

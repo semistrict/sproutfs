@@ -1,0 +1,56 @@
+# Not part of the demo. `kubectl apply -f deploy/` does not recurse, so this
+# never applies with the manifests beside it. scripts/demo-gce.sh runs it once
+# on a fresh node, before deploy/ exists, to prove that a privileged pod can
+# open /dev/kvm and that the node's 2 MiB HugeTLB pool reaches a container.
+# It stays in the default namespace so it depends on nothing in deploy/.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: sproutfs-demo-probe
+  labels:
+    app.kubernetes.io/part-of: sproutfs
+spec:
+  restartPolicy: Never
+  containers:
+    - name: probe
+      image: busybox:1.37
+      imagePullPolicy: IfNotPresent
+      securityContext:
+        privileged: true
+      command:
+        - /bin/sh
+        - -c
+        - |
+          set -e
+          echo "--- /dev/kvm ---"
+          ls -l /dev/kvm
+          exec 3< /dev/kvm
+          echo "opened /dev/kvm read-only"
+          exec 3<&-
+          echo "--- hugetlbfs ---"
+          mount | grep hugetlbfs
+          df -h /hugepages-2Mi
+          echo "--- probe ok ---"
+          sleep 600
+      resources:
+        requests:
+          cpu: 100m
+          memory: 64Mi
+          hugepages-2Mi: 2Mi
+        limits:
+          cpu: 100m
+          memory: 64Mi
+          hugepages-2Mi: 2Mi
+      volumeMounts:
+        - name: kvm
+          mountPath: /dev/kvm
+        - name: hugepages
+          mountPath: /hugepages-2Mi
+  volumes:
+    - name: kvm
+      hostPath:
+        path: /dev/kvm
+        type: CharDevice
+    - name: hugepages
+      emptyDir:
+        medium: HugePages-2Mi

@@ -1,0 +1,21 @@
+{
+  "allocated_bytes": 1054216192,
+  "alpine_branch": "v3.24",
+  "alpine_sha256": "f55a90f69052c5bd6f92cb09a8f47065970830b194c917a006fb94028e721259",
+  "alpine_url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/aarch64/alpine-minirootfs-3.24.1-aarch64.tar.gz",
+  "alpine_version": "3.24.1",
+  "block_size": 4096,
+  "image_bytes": 8589934592,
+  "npm": {
+    "@vitejs/plugin-react": "6.1.1",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "vite": "8.2.2"
+  },
+  "packages": "bash coreutils findutils git python3 build-base nodejs npm pnpm rust cargo",
+  "populated_kib": 976020,
+  "prebuilt": "cargo build --offline --all-targets -p grep-matcher, then cargo clean -p grep-matcher",
+  "ripgrep_commit": "e89fff89ac9af12e8d4ce9d5fd07beb408ca730f",
+  "ripgrep_tag": "15.2.0",
+  "ripgrep_url": "https://github.com/BurntSushi/ripgrep.git"
+}

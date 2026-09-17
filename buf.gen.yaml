@@ -1,0 +1,18 @@
+version: v2
+
+inputs:
+  - directory: internal/checkpoint/proto
+  - directory: internal/control/proto
+  - directory: internal/platform/proto
+  - directory: internal/vmmigrate/proto
+  - directory: internal/vmmigrate/internal/wire/proto
+
+plugins:
+  - local:
+      - go
+      - run
+      - google.golang.org/protobuf/cmd/protoc-gen-go
+    out: .
+    opt:
+      - module=github.com/semistrict/sproutfs
+      - default_api_level=API_OPAQUE

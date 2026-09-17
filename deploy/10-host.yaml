@@ -1,0 +1,294 @@
+# The hosts that run VMs. Two pods on the demo's single node; the node's 12 GiB
+# HugeTLB pool is split evenly between them, so both are resident at once and a
+# migration has somewhere to go. deploy/README.md documents every name below.
+apiVersion: v1
+kind: Service
+metadata:
+  name: sproutfs-host
+  namespace: sproutfs
+  labels:
+    app.kubernetes.io/name: sproutfs-host
+    app.kubernetes.io/part-of: sproutfs
+spec:
+  # Headless: the orchestrator and the hosts address one another per pod, not
+  # through a virtual address that would pick a host at random.
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: sproutfs-host
+  ports:
+    - name: api
+      port: 8080
+      targetPort: api
+    - name: page
+      port: 8081
+      targetPort: page
+---
+# A Deployment: nothing here needs a pod to come back as itself. A host imports
+# each guest image into a template — an ordinary VM whose checkpoint holds the
+# image, so that creating a VM is a fork of it — under an identity that is the
+# sha256 of the image file, so the two pods name one template between them,
+# import it once and only if it is not there, and a replacement pod finds it
+# published and imports nothing at all. Pod names carry a suffix of the
+# Deployment's own choosing and nothing depends on them.
+#
+# The rollout is one pod at a time, the old one gone before its replacement
+# starts: the two pods together request the whole HugeTLB pool, so there is no
+# room on the node for a third, and the other pod has to stay up while one is
+# replaced — which is what the preStop drain needs, a destination to migrate its
+# VMs to.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sproutfs-host
+  namespace: sproutfs
+  labels:
+    app.kubernetes.io/name: sproutfs-host
+    app.kubernetes.io/part-of: sproutfs
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # No surge and one unavailable: the replacement starts only once the pod
+      # it replaces has given its HugeTLB allotment back, and the other pod is
+      # up throughout, which is where the drained VMs go.
+      maxSurge: 0
+      maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: sproutfs-host
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sproutfs-host
+        app.kubernetes.io/part-of: sproutfs
+    spec:
+      # The grace period is the preStop hook plus the shutdown behind it. The
+      # hook migrates every VM away — the drain bounds itself at 80 s, including
+      # the wait for each destination to report that it holds the pages, and the
+      # command waiting on it gives up at 90 s. Then SIGTERM: the API stops
+      # within 30 s and the supervisor's close within another 30 s, publishing a
+      # final checkpoint of every VM that did not move. Ninety and sixty is this
+      # hundred and fifty; a grace period shorter than drain plus shutdown kills
+      # the pod with frames no checkpoint has.
+      terminationGracePeriodSeconds: 150
+      containers:
+        - name: host
+          image: sproutfs:demo
+          # The image is imported into the node's containerd, never pulled.
+          imagePullPolicy: Never
+          command: ["/usr/local/bin/sproutfs-host"]
+          securityContext:
+            privileged: true
+          ports:
+            - name: api
+              containerPort: 8080
+            - name: page
+              containerPort: 8081
+          env:
+            - name: SPROUTFS_BUCKET
+              valueFrom:
+                configMapKeyRef:
+                  name: sproutfs-demo
+                  key: bucket
+            - name: SPROUTFS_PREFIX
+              valueFrom:
+                configMapKeyRef:
+                  name: sproutfs-demo
+                  key: prefix
+            - name: SPROUTFS_API_PORT
+              value: "8080"
+            - name: SPROUTFS_PAGE_SERVER_PORT
+              value: "8081"
+            - name: SPROUTFS_HUGEPAGE_DIR
+              value: /hugepages-2Mi
+            - name: SPROUTFS_SCRATCH_DIR
+              value: /var/lib/sproutfs
+            # The pager's frame store, taken from the pod's 6Gi HugeTLB
+            # allotment, and the RAM allotment it takes its frames from. A
+            # workload guest is 2 GiB and its forks share what they have not
+            # diverged from, so an arena of 5 GiB is what keeps a handful of
+            # them resident rather than reading one another out of the spill
+            # file.
+            - name: SPROUTFS_ARENA_BYTES
+              value: "5368709120"
+            - name: SPROUTFS_MEMORY_BYTES
+              value: "8589934592"
+            # Disk is capped per concern, out of the 20 GiB emptyDir: the page
+            # cache's own allotment, and the pager's spill file.
+            - name: SPROUTFS_CACHE_BYTES
+              value: "1073741824"
+            - name: SPROUTFS_SPILL_BYTES
+              value: "17179869184"
+            # The volatile private state the pager may hold on RAM and spill
+            # together, in 2 MiB pages. It defaults to the arena, which is what
+            # a guest whose dirty set never outruns the frames needs; a workload
+            # guest writing hundreds of megabytes between checkpoints, with
+            # forks doing the same beside it, outruns that long before the spill
+            # file is full.
+            - name: SPROUTFS_DIRTY_PAGES
+              value: "6144"
+            # The guest images a VM can be created from, on the node's own
+            # disk, and the shape of every VM booted from one. A template may
+            # name the RAM its VMs get after a colon; workload carries repos
+            # and a Node toolchain and needs more than the 512 MiB default.
+            - name: SPROUTFS_TEMPLATES
+              value: alpine=/usr/share/sproutfs/guest/guest.ext4,workload=/usr/share/sproutfs/guest/workload.ext4:2147483648
+            - name: SPROUTFS_VM_MEMORY_BYTES
+              value: "536870912"
+            - name: SPROUTFS_VM_VCPUS
+              value: "1"
+            # How often every VM this host runs is checkpointed, which bounds
+            # what killing this pod rewinds a guest by.
+            - name: SPROUTFS_CHECKPOINT_INTERVAL
+              value: 60s
+            - name: SPROUTFS_POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            # The pod's own name, which is what this host reports itself to the
+            # orchestrator as and what an operator addresses it by. Nothing
+            # durable is named after it: a template is named by its guest
+            # image's bytes, which is why these pods need no stable names.
+            - name: SPROUTFS_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: SPROUTFS_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            # Where a drain asks for somewhere to put its VMs and reports what
+            # it is doing with each of them, which is the orchestrator's own
+            # Service.
+            - name: SPROUTFS_ORCHESTRATOR_URL
+              value: http://sproutfs-orchestrator.sproutfs.svc:8080
+            # The deployment's shared bearer token. One token admits the whole
+            # control plane — the orchestrator to the hosts, a draining host to
+            # the orchestrator, and sproutfsctl to either — and nothing else
+            # reaches these APIs. It is generated per deployment by
+            # scripts/demo-gce.sh, so a pod without the Secret does not start
+            # rather than serving an API that admits anyone.
+            - name: SPROUTFS_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: sproutfs-api-token
+                  key: token
+            # Go's own ceiling, under the container's. Without it the collector
+            # has no reason to run before the cgroup kills the process, and a
+            # checkpoint that plans a large dirty set is exactly the burst that
+            # outruns it.
+            - name: GOMEMLIMIT
+              value: "6GiB"
+          resources:
+            # The HugeTLB allotment is the pager's arena. The ordinary memory
+            # beside it holds the Go heap, the page cache, one Firecracker
+            # process per VM and the page cache of the spill file. A checkpoint
+            # plans every page it is about to upload in memory at once, so the
+            # peak scales with the dirty set, which is what a guest that
+            # installs a few hundred megabytes between checkpoints makes
+            # large: two pods of 8 GiB fit inside the node's 32 GiB with its
+            # 12 GiB HugeTLB pool taken out.
+            requests:
+              cpu: "2"
+              memory: 8Gi
+              hugepages-2Mi: 6Gi
+            limits:
+              cpu: "3"
+              memory: 8Gi
+              hugepages-2Mi: 6Gi
+          lifecycle:
+            # Drain before the process is signalled: migrate every VM to the
+            # other host and return only when none are left to hand over. It is
+            # an exec rather than an httpGet because the drain is a POST
+            # carrying the deployment's token, and an httpGet hook can be
+            # neither; the command reaches this container's own API over the
+            # loopback with the environment the server was started with.
+            preStop:
+              exec:
+                command: ["/usr/local/bin/sproutfs-host", "drain"]
+          # A starting host is not ready until every guest image it is
+          # configured with has a published template: a create that landed on a
+          # host still importing would wait that out inside the request. An
+          # image nothing has imported yet costs a read of the whole file and a
+          # checkpoint of it; one another pod has already imported costs a read
+          # of one control record. The startup probe gives the first of those
+          # its time. Nothing else runs until it passes, so the two probes below
+          # are about a host that is running rather than one that is still
+          # reading images, and neither has to be generous.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: api
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: api
+            periodSeconds: 5
+            failureThreshold: 3
+          # Liveness is the other question: the process can still do the work it
+          # exists for. It is a separate endpoint so that a host doing an honest
+          # import is not restarted for failing readiness, which is what one
+          # probe on one path would do, and it answers 503 once the supervisor
+          # has closed — a pod that has released its pager and its VMM processes
+          # can serve nothing, and one that went on answering would be left
+          # running for ever.
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: api
+            periodSeconds: 10
+            failureThreshold: 3
+          volumeMounts:
+            - name: kvm
+              mountPath: /dev/kvm
+            - name: hugepages
+              mountPath: /hugepages-2Mi
+            - name: scratch
+              mountPath: /var/lib/sproutfs
+            - name: guest
+              mountPath: /usr/share/sproutfs/guest
+              readOnly: true
+      volumes:
+        - name: kvm
+          hostPath:
+            path: /dev/kvm
+            type: CharDevice
+        # The pod's share of the node's 2 MiB pool, as a hugetlbfs mount the
+        # pager can open its arena in.
+        - name: hugepages
+          emptyDir:
+            medium: HugePages-2Mi
+        # Spill and scratch on the node's own disk, discarded with the pod.
+        - name: scratch
+          emptyDir:
+            sizeLimit: 20Gi
+        # The guest image is built on the node by scripts/lib/demo-image.sh, not
+        # baked into the container image, so the pods read it from the node.
+        # DirectoryOrCreate so that a pod still starts before the build has run.
+        - name: guest
+          hostPath:
+            path: /opt/sproutfs-demo/guest
+            type: DirectoryOrCreate
+---
+# What a voluntary disruption may take at once. Draining a host migrates its VMs
+# to the other one, so an eviction that took both pods together — a node drain, a
+# cluster upgrade — would leave every drain with nowhere to go and turn a planned
+# operation into a host loss for every VM in the deployment. One at a time is
+# also all the node has room for: the two pods request the whole HugeTLB pool
+# between them, so a replacement cannot start until its predecessor is gone.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: sproutfs-host
+  namespace: sproutfs
+  labels:
+    app.kubernetes.io/name: sproutfs-host
+    app.kubernetes.io/part-of: sproutfs
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: sproutfs-host

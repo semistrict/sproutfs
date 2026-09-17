@@ -1,0 +1,80 @@
+[
+  {
+    "id": "volume-ignore-discard",
+    "package": "internal/simtest",
+    "run": "^TestScheduledWorldReproduces$",
+    "purpose": "Acknowledge a discard without changing bytes."
+  },
+  {
+    "id": "volume-shift-write",
+    "package": "internal/simtest",
+    "run": "^TestScheduledWorldReproduces$",
+    "purpose": "Write one byte beyond the requested offset."
+  },
+  {
+    "id": "volume-unbounded-write",
+    "package": "internal/volume",
+    "run": "^TestWriteBatchIsOneGenerationAppliedInOrder$",
+    "purpose": "Accept a write exceeding the configured payload budget."
+  },
+  {
+    "id": "volume-drop-captured-state",
+    "package": "internal/simtest",
+    "run": "^TestScheduledWorldReproduces$",
+    "purpose": "Lose the captured VMM state while retaining volume data."
+  },
+  {
+    "id": "migration-accept-wrong-size",
+    "package": "internal/simtest",
+    "run": "^TestScheduledWorldReproduces$",
+    "purpose": "Accept a handoff layout with the wrong volume size."
+  },
+  {
+    "id": "migration-accept-missing-region",
+    "package": "internal/vmmigrate",
+    "run": "^TestReceiveRefusesAMachineMissingARegion$",
+    "purpose": "Accept a started VMM that omits a handed-off memory region."
+  },
+  {
+    "id": "migration-corrupt-peer-page",
+    "package": "internal/simtest",
+    "run": "^TestScheduledWorldReproduces$",
+    "purpose": "Replace a successfully served source page with zeros."
+  },
+  {
+    "id": "migration-corrupt-fallback",
+    "package": "internal/simtest",
+    "run": "^TestSeededTopologyCampaign$",
+    "purpose": "Return zeros instead of volume bytes when the page source fails. Only a campaign whose faults take a source away mid-stream falls back at all, which is why this is the generated schedule's entry rather than the recorded scenario's."
+  },
+  {
+    "id": "migration-skip-resume",
+    "package": "internal/simtest",
+    "run": "^TestSeededTopologyCampaign$",
+    "purpose": "Leave the source sealed or paused after an abandoned migration."
+  },
+  {
+    "id": "pager-forget-spill",
+    "package": "internal/simtest",
+    "run": "^TestSeededTopologyUnderBuggify$",
+    "purpose": "Forget that evicted private bytes exist in scratch storage. Only the buggified campaign evicts enough to spill, so this is the entry the per-site injection made detectable."
+  },
+  {
+    "id": "pager-zero-new-frame",
+    "package": "internal/simtest",
+    "run": "^TestScheduledWorldReproduces$",
+    "purpose": "Lose loaded or copied data when creating a resident frame."
+  },
+  {
+    "id": "checkpoint-part-member-offset",
+    "package": "internal/simtest",
+    "run": "^TestScheduledWorldReproduces$",
+    "purpose": "Locate every member at the start of its part."
+  },
+  {
+    "id": "checkpoint-reclaim-live-checkpoint",
+    "package": "internal/simtest",
+    "run": "^TestScheduledWorldReproduces$",
+    "purpose": "Reclaim the checkpoints the selected one still reads from."
+  }
+]

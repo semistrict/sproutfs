@@ -1,0 +1,17 @@
+docs/todo.md
+/TODO.md
+
+# Keep measurement reports; retain raw evidence and generated data locally.
+/docs/measurements/*
+!/docs/measurements/*.md
+# What scripts/demo-gce.sh workload copies back off the demo node: one directory
+# per run of raw per-checkpoint lines and counters, which the write-up cites.
+/.workload-runs/
+
+# Python bytecode caches.
+__pycache__/
+*.py[cod]
+
+# Agent worktrees and session state, which are not this repository's source and
+# must not reach the demo node through scripts/demo-gce.sh's source staging.
+/.claude/

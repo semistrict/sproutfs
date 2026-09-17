@@ -1,0 +1,168 @@
+# The demo orchestrator: stateless, one replica. It finds hosts through the
+# Kubernetes API and VMs by listing control records in the bucket, so its only
+# cluster privilege is over the pods in this namespace.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sproutfs-orchestrator
+  namespace: sproutfs
+  labels:
+    app.kubernetes.io/name: sproutfs-orchestrator
+    app.kubernetes.io/part-of: sproutfs
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: sproutfs-orchestrator
+  namespace: sproutfs
+  labels:
+    app.kubernetes.io/name: sproutfs-orchestrator
+    app.kubernetes.io/part-of: sproutfs
+rules:
+  # list and get to place VMs on hosts; delete for the kill-host flow.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: sproutfs-orchestrator
+  namespace: sproutfs
+  labels:
+    app.kubernetes.io/name: sproutfs-orchestrator
+    app.kubernetes.io/part-of: sproutfs
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: sproutfs-orchestrator
+subjects:
+  - kind: ServiceAccount
+    name: sproutfs-orchestrator
+    namespace: sproutfs
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sproutfs-orchestrator
+  namespace: sproutfs
+  labels:
+    app.kubernetes.io/name: sproutfs-orchestrator
+    app.kubernetes.io/part-of: sproutfs
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: sproutfs-orchestrator
+  ports:
+    - name: api
+      port: 8080
+      targetPort: api
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sproutfs-orchestrator
+  namespace: sproutfs
+  labels:
+    app.kubernetes.io/name: sproutfs-orchestrator
+    app.kubernetes.io/part-of: sproutfs
+spec:
+  replicas: 1
+  # One writer of the table file. A rolling update would start the replacement
+  # while the old pod still holds the same hostPath SQLite file, and two
+  # processes writing one file is what WAL mode does not make safe across
+  # containers. Nothing in the table is authority, so the seconds of downtime a
+  # replacement costs are cheaper than that.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: sproutfs-orchestrator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sproutfs-orchestrator
+        app.kubernetes.io/part-of: sproutfs
+    spec:
+      serviceAccountName: sproutfs-orchestrator
+      containers:
+        - name: orchestrator
+          image: sproutfs:demo
+          imagePullPolicy: Never
+          command: ["/usr/local/bin/sproutfs-orchestrator"]
+          ports:
+            - name: api
+              containerPort: 8080
+          env:
+            - name: SPROUTFS_BUCKET
+              valueFrom:
+                configMapKeyRef:
+                  name: sproutfs-demo
+                  key: bucket
+            - name: SPROUTFS_PREFIX
+              valueFrom:
+                configMapKeyRef:
+                  name: sproutfs-demo
+                  key: prefix
+            - name: SPROUTFS_API_PORT
+              value: "8080"
+            - name: SPROUTFS_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: SPROUTFS_HOST_SELECTOR
+              value: app.kubernetes.io/name=sproutfs-host
+            - name: SPROUTFS_HOST_API_PORT
+              value: "8080"
+            - name: SPROUTFS_HOST_PAGE_SERVER_PORT
+              value: "8081"
+            # The deployment's shared bearer token. One token admits the whole
+            # control plane — the orchestrator to the hosts, a draining host to
+            # the orchestrator, and sproutfsctl to either — and nothing else
+            # reaches these APIs. It is generated per deployment by
+            # scripts/demo-gce.sh, so a pod without the Secret does not start
+            # rather than serving an API that admits anyone.
+            - name: SPROUTFS_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: sproutfs-api-token
+                  key: token
+            # The VM and host table. It is not authority for anything — the
+            # bucket holds every VM and the hosts hold every guest — and the
+            # orchestrator rebuilds it from a survey at startup, so it lives on
+            # the node only so that a restarted pod does not forget a migration
+            # that was in flight while it was down.
+            - name: SPROUTFS_TABLE_PATH
+              value: /var/lib/sproutfs/orchestrator.db
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: api
+            periodSeconds: 5
+            failureThreshold: 3
+          # The orchestrator holds nothing of its own, so liveness and readiness
+          # are the same answer; the probe is here so that a process that has
+          # stopped answering is restarted rather than left serving nothing.
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: api
+            periodSeconds: 10
+            failureThreshold: 3
+          volumeMounts:
+            - name: table
+              mountPath: /var/lib/sproutfs
+      volumes:
+        # The node's own disk, outliving the pod and nothing else. Deleting the
+        # demo VM deletes it, which is the whole of its lifetime.
+        - name: table
+          hostPath:
+            path: /opt/sproutfs-demo/orchestrator
+            type: DirectoryOrCreate

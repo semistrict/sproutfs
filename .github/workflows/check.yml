@@ -1,0 +1,100 @@
+# `just check`, on every push and pull request.
+#
+# The jobs below are the recipes `just check` runs locally, split so they run
+# side by side; nothing here is a command a developer cannot run themselves.
+#
+# Out of scope, deliberately: the Lima suites in docs/vm-memory.md and anything
+# else that needs real KVM, a HugeTLB pool, a Firecracker guest or a GCE
+# instance. GitHub's hosted runners are virtual machines without nested
+# virtualization, so those suites cannot run on them at all; they are qualified
+# on Lima or GCE and recorded under docs/measurements. The Linux-only Go tests
+# that need none of that — the platform adapters, the pager wire protocol, the
+# VMM plumbing — do run here, in the `go (linux)` job, because they skip
+# themselves when their opt-in SPROUTFS_* variables are unset.
+name: check
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GOTOOLCHAIN: local
+
+jobs:
+  # Linux is the only host that compiles the linux-only production code, so its
+  # Go suite covers strictly more than a macOS run does.
+  go-linux:
+    name: go (linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: extractions/setup-just@v4
+      - run: just check-go
+
+  # A developer's checkout is macOS, and the simulation suites are what has to
+  # keep passing on it.
+  go-macos:
+    name: go (darwin)
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: extractions/setup-just@v4
+      - run: just check-go
+
+  proto:
+    name: buf lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: bufbuild/buf-action@v1
+        with:
+          setup_only: true
+      - uses: extractions/setup-just@v4
+      - run: just check-proto
+
+  shell:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: extractions/setup-just@v4
+      # shellcheck is preinstalled on ubuntu-latest.
+      - run: just check-shell
+
+  # The managed-memory crate is #![cfg(target_os = "linux")], so Linux is the
+  # only host its unit tests run on. They need no KVM, no HugeTLB pool and no
+  # elevated privileges; the #[ignore]d UFFD and protocol tests need permission
+  # to create kernel-mode userfaultfd descriptors and stay out of CI.
+  rust:
+    name: rust
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust/sproutfs-vm-memory
+      - uses: extractions/setup-just@v4
+      - run: just check-rust

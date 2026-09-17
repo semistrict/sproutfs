@@ -1,0 +1,574 @@
+package simtest
+
+import (
+	"bytes"
+	"context"
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"slices"
+	"sync"
+
+	"github.com/semistrict/sproutfs/internal/platform"
+	"github.com/semistrict/sproutfs/internal/platform/sim"
+	"github.com/semistrict/sproutfs/internal/testbacking"
+	"github.com/semistrict/sproutfs/internal/vmmemory"
+	"github.com/semistrict/sproutfs/internal/volume"
+)
+
+// stateBytes is the simulated VMM state a migration carries: the guest's
+// current value and how many stores it has made. A destination that restored it
+// continues exactly where the source stopped, and one that lost it says so.
+const stateBytes = 9
+
+// arena is one host's shared frame store: one byte slice per resident slot,
+// which is what a real pager's shared memory is.
+type arena struct {
+	mu    sync.Mutex
+	slots [][]byte
+}
+
+func (a *arena) Read(_ context.Context, slot int, dst []byte) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	copy(dst, a.slots[slot])
+	return nil
+}
+
+func (a *arena) Write(_ context.Context, slot int, src []byte) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.slots[slot] != nil {
+		return fmt.Errorf("write into allocated slot %d", slot)
+	}
+	a.slots[slot] = bytes.Clone(src)
+	return nil
+}
+
+func (a *arena) Release(_ context.Context, slot int) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.slots[slot] = nil
+	return nil
+}
+
+type mapped struct {
+	slot     int
+	writable bool
+}
+
+// mapping is one simulated process region's page table. Every lookup takes the
+// arena lock, because a guest storing into a page races the seal that
+// write-protects it: the store and the writability check must be one step,
+// exactly as the hardware makes them.
+type mapping struct {
+	arena *arena
+	mu    sync.Mutex
+	pages map[uint64]mapped
+}
+
+func newMapping(a *arena) *mapping { return &mapping{arena: a, pages: make(map[uint64]mapped)} }
+
+func (m *mapping) Map(_ context.Context, page uint64, slot, count int, writable bool) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range count {
+		m.pages[page+uint64(i)] = mapped{slot + i, writable}
+	}
+	return nil
+}
+
+func (m *mapping) MapZero(_ context.Context, page uint64, count int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range count {
+		m.pages[page+uint64(i)] = mapped{-1, false}
+	}
+	return nil
+}
+
+func (m *mapping) Protect(_ context.Context, page uint64, count int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range count {
+		p, ok := m.pages[page+uint64(i)]
+		if !ok {
+			return fmt.Errorf("protect of unmapped page %d", page+uint64(i))
+		}
+		p.writable = false
+		m.pages[page+uint64(i)] = p
+	}
+	return nil
+}
+
+func (m *mapping) Revoke(_ context.Context, page uint64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.pages, page)
+	return nil
+}
+
+func (m *mapping) Resolve(_ context.Context, page uint64, count int, writable bool) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range count {
+		p, ok := m.pages[page+uint64(i)]
+		if !ok || p.writable != writable {
+			return errors.New("invalid resolution")
+		}
+	}
+	return nil
+}
+
+// store writes one page's bytes the way a guest does: only a mapping that is
+// writable right now accepts the store. A page a seal has write-protected
+// reports false, which is the trap the caller answers with a write fault.
+func (m *mapping) store(page uint64, value byte) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	p, ok := m.pages[page]
+	if !ok || !p.writable || p.slot < 0 {
+		return false
+	}
+	m.arena.mu.Lock()
+	defer m.arena.mu.Unlock()
+	slot := m.arena.slots[p.slot]
+	for i := range slot {
+		slot[i] = value
+	}
+	return true
+}
+
+// guest is the simulated VMM process of one VM: one region per volume, a guest
+// that stores into them through their mappings, and the migration Runtime the
+// coordinator drives.
+//
+// It has no life of its own: a store happens when the driver asks for one, so
+// what the model holds is exact at every instant the driver looks at it. A
+// guest that stored in a loop of its own would make every assertion a race
+// against that loop rather than against the fault under test.
+type guest struct {
+	instance string
+	// id names this VMM process apart from every other one of the same VM: the
+	// host it runs on and that host's incarnation, which is what makes a
+	// restarted host's guest a different logical caller from the dead one's.
+	id  string
+	ctx context.Context
+	// admit is what every concurrent region seal passes through, and reverse
+	// the order they are created in. Both are the recorded scenario's; a
+	// campaign that chooses no completion order has neither.
+	admit   func(ctx context.Context, id string) error
+	reverse bool
+	// captures counts the pauses this process has taken, which names one
+	// capture's seals apart from the next one's.
+	captures int
+
+	names    []string
+	pages    map[string]int
+	regions  map[string]*vmmemory.Region
+	mappings map[string]*mapping
+
+	mu sync.Mutex
+	// model is the byte the guest last stored into every page of every volume,
+	// which is what any later read of that page must return.
+	model  map[string][]byte
+	writes int64
+	value  byte
+	// refuseStop is the fault that fails a migration's pause after the guest
+	// has already stopped: the release must unseal the regions and leave the
+	// guest running again.
+	refuseStop error
+	// stopped reports vCPUs that are not running. A guest stores nothing while
+	// it is stopped, which is what makes a capture or an abandoned migration
+	// that never resumed it visible: the next store fails rather than quietly
+	// succeeding against frames nothing is driving.
+	stopped bool
+	closed  bool
+}
+
+// newGuest attaches one region per volume of vm through backing, which is the
+// volume itself on a source and a peer-backed volume on a destination. Every
+// region enters the simulator through a stable identity of its own — the VM,
+// the host running it and that host's incarnation — so two concurrent
+// identical reads are ordered by their logical caller rather than by
+// completion.
+func (w *World) newGuest(h *hostState, p *pager, vm *volume.VM, backings map[string]vmmemory.Backing, state []byte) (*guest, error) {
+	ctx := w.ctx
+	g := &guest{instance: vm.ID(), ctx: ctx, pages: map[string]int{},
+		regions: map[string]*vmmemory.Region{}, mappings: map[string]*mapping{},
+		model: map[string][]byte{}, admit: w.config.Admit, reverse: w.config.ReverseRegions,
+		id: fmt.Sprintf("%s/%s/%d/%d", vm.ID(), h.name, h.incarnation, w.nextGuest())}
+	for _, v := range vm.Volumes() {
+		name := v.Name()
+		var backing vmmemory.Backing = v
+		if supplied, ok := backings[name]; ok {
+			backing = supplied
+		}
+		mp := newMapping(p.arena)
+		region, err := p.host.Attach(ctx, testbacking.New(backing, p.runtime, g.id+"/"+name), mp)
+		if err != nil {
+			return nil, err
+		}
+		g.names = append(g.names, name)
+		g.regions[name] = region
+		g.mappings[name] = mp
+		g.pages[name] = int(v.Size() / PageSize)
+		g.model[name] = make([]byte, v.Size())
+	}
+	switch len(state) {
+	case 0:
+	case stateBytes:
+		// The VMM state carries the guest's own counters, so a destination that
+		// restored it continues exactly where the source stopped.
+		g.value = state[0]
+		g.writes = int64(binary.LittleEndian.Uint64(state[1:]))
+	default:
+		return nil, fmt.Errorf("simtest: restored %d state bytes, want %d", len(state), stateBytes)
+	}
+	return g, nil
+}
+
+// Regions reports this process's memory by volume name, which is what a
+// migration hands over and a capture seals.
+func (g *guest) Regions() map[string]*vmmemory.Region {
+	result := make(map[string]*vmmemory.Region, len(g.regions))
+	for name, region := range g.regions {
+		result[name] = region
+	}
+	return result
+}
+
+// Prepare is a capture's pause: the guest stops storing, its state is captured,
+// and every region seals the pages the checkpoint will publish.
+func (g *guest) Prepare(ctx context.Context) ([]byte, map[string]volume.DirtySource, error) {
+	state, err := g.Stop(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	g.captures++
+	names := slices.Clone(g.names)
+	if g.reverse {
+		slices.Reverse(names)
+	}
+	if g.admit == nil {
+		sources := make(map[string]volume.DirtySource, len(g.regions))
+		for _, name := range names {
+			if err := g.regions[name].Seal(ctx); err != nil {
+				return nil, nil, err
+			}
+			sources[name] = g.regions[name].Checkpoint()
+		}
+		return state, sources, nil
+	}
+	// Every region seals concurrently, each admitted as a caller of its own, so
+	// the order they seal in is the scheduler's rather than the order the
+	// goroutines happened to be created in.
+	sources := map[string]volume.DirtySource{}
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	var result error
+	for _, name := range names {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			err := g.admit(ctx, fmt.Sprintf("capture/%s/%d/%s", g.id, g.captures, name))
+			if err == nil {
+				err = g.regions[name].Seal(ctx)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if err == nil {
+				sources[name] = g.regions[name].Checkpoint()
+			}
+			result = errors.Join(result, err)
+		}()
+	}
+	wg.Wait()
+	if result != nil {
+		return nil, nil, result
+	}
+	return state, sources, nil
+}
+
+// Stop is a migration's pause: the guest stops storing and its state is
+// captured. Nothing is sealed and nothing is uploaded — the frames this process
+// keeps are what the destination fetches.
+func (g *guest) Stop(ctx context.Context) ([]byte, error) {
+	g.mu.Lock()
+	refused := g.refuseStop
+	state := make([]byte, stateBytes)
+	state[0] = g.value
+	binary.LittleEndian.PutUint64(state[1:], uint64(g.writes))
+	g.stopped = true
+	g.mu.Unlock()
+	if refused != nil {
+		// A stop that fails after the pause began seals one region on its way
+		// out, so the release has to unseal this process and leave both the
+		// memory and the disk writable before a migration can be retried.
+		if err := g.regions[g.names[0]].Seal(ctx); err != nil {
+			return nil, err
+		}
+		return nil, refused
+	}
+	return state, nil
+}
+
+// setRefuseStop makes this guest's next migration pause fail after it has
+// already stopped, or stops it doing so.
+func (g *guest) setRefuseStop(err error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.refuseStop = err
+}
+
+// Resume restarts the vCPUs. This guest only stores when the driver asks it to,
+// so what a resume means here is that stores are accepted again — which is
+// exactly what an abandoned capture or migration owes the guest it stopped, and
+// exactly what a run that never checked would not notice was missing.
+func (g *guest) Resume(context.Context) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.stopped = false
+	return nil
+}
+
+// Release unseals every region and resumes a still-paused process, which is
+// what an abandoned capture or migration owes the guest it stopped.
+func (g *guest) Release(ctx context.Context) error {
+	for _, name := range g.names {
+		if err := g.regions[name].Unseal(ctx); err != nil {
+			return err
+		}
+	}
+	return g.Resume(ctx)
+}
+
+// Wait reports the end of the VMM process. This one has no life of its own:
+// only its caller ends it.
+func (g *guest) Wait(ctx context.Context) error { <-ctx.Done(); return context.Cause(ctx) }
+
+func (g *guest) Close() error { return g.detach(context.Background()) }
+
+// isClosed reports a VMM process that has been ended, by its host or by
+// whatever gave the VM up.
+func (g *guest) isClosed() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.closed
+}
+
+// detach gives this process's frames back. It is what closing a VMM does, and
+// what the loss of a host does to every VMM it was running.
+func (g *guest) detach(ctx context.Context) error {
+	g.mu.Lock()
+	if g.closed {
+		g.mu.Unlock()
+		return nil
+	}
+	g.closed = true
+	g.mu.Unlock()
+	var errs []error
+	for _, name := range g.names {
+		// The region goes first: the pager maps and protects through this
+		// mapping, so emptying it before the detach leaves a capture in flight
+		// driving a map that is being cleared underneath it.
+		errs = append(errs, g.regions[name].Detach(ctx))
+		mp := g.mappings[name]
+		mp.mu.Lock()
+		clear(mp.pages)
+		mp.mu.Unlock()
+	}
+	return errors.Join(errs...)
+}
+
+// store writes one page the way a guest does: it stores through the mapping
+// when the mapping is writable, and takes a write fault when a seal took that
+// access away. The model is updated under the mapping lock the store took, so a
+// checkpoint can never contain bytes the model does not.
+func (g *guest) store(name string, page uint64) error {
+	g.mu.Lock()
+	g.value++
+	if g.value == 0 {
+		g.value = 1
+	}
+	value := g.value
+	g.mu.Unlock()
+	return g.storeValue(name, page, value)
+}
+
+// storeValue stores one named byte, which is what a campaign reading a VM back
+// as one whole generation writes into every page of it.
+func (g *guest) storeValue(name string, page uint64, value byte) error {
+	g.mu.Lock()
+	stopped := g.stopped
+	g.mu.Unlock()
+	if stopped {
+		return fmt.Errorf("%s: the guest's vCPUs are stopped, so it stores nothing", g.instance)
+	}
+	mp := g.mappings[name]
+	for range 8 {
+		if g.storeModel(name, mp, page, value) {
+			return nil
+		}
+		if err := g.regions[name].Fault(g.ctx, page, true); err != nil {
+			return fmt.Errorf("%s store fault on %s page %d: %w", g.instance, name, page, err)
+		}
+	}
+	return fmt.Errorf("%s store on %s page %d never resolved", g.instance, name, page)
+}
+
+func (g *guest) storeModel(name string, mp *mapping, page uint64, value byte) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if !mp.store(page, value) {
+		return false
+	}
+	for i := range PageSize {
+		g.model[name][int(page)*PageSize+i] = value
+	}
+	g.writes++
+	return true
+}
+
+// stored is how many stores this guest has made, which is the counter its VMM
+// state carries: a destination or a takeover that restored it continues exactly
+// where the guest before it stopped, and one that lost it says so.
+func (g *guest) stored() int64 {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.writes
+}
+
+// storeAll writes one whole generation into every page of every volume, which
+// is what a campaign that reads a recovered VM back as one generation needs in
+// it.
+func (g *guest) storeAll(value byte) error {
+	for _, name := range g.names {
+		for page := range uint64(g.pages[name]) {
+			if err := g.storeValue(name, page, value); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// read faults one page in for reading and returns its bytes, which is what this
+// guest sees.
+func (g *guest) read(ctx context.Context, name string, page uint64) ([]byte, error) {
+	mp := g.mappings[name]
+	mp.mu.Lock()
+	p, ok := mp.pages[page]
+	mp.mu.Unlock()
+	if !ok {
+		if err := g.regions[name].Fault(ctx, page, false); err != nil {
+			return nil, err
+		}
+		mp.mu.Lock()
+		p, ok = mp.pages[page]
+		mp.mu.Unlock()
+		if !ok {
+			return nil, fmt.Errorf("%s page %d unmapped after a fault", name, page)
+		}
+	}
+	if p.slot < 0 {
+		return make([]byte, PageSize), nil
+	}
+	mp.arena.mu.Lock()
+	defer mp.arena.mu.Unlock()
+	return bytes.Clone(mp.arena.slots[p.slot]), nil
+}
+
+// readAll reads every page of every region through this guest's own fault path
+// and reports what it read, which pages could not be read at all, and the
+// failures that made them unreadable. It is what a VM that came back somewhere
+// else is compared against: the pager reconstructing a page and the volume
+// holding it are the same claim from here.
+func (g *guest) readAll(ctx context.Context) (map[string][]byte, map[string][]bool, error) {
+	read := map[string][]byte{}
+	missing := map[string][]bool{}
+	var errs []error
+	for _, name := range g.names {
+		read[name] = make([]byte, g.pages[name]*PageSize)
+		missing[name] = make([]bool, g.pages[name])
+		for page := range uint64(g.pages[name]) {
+			got, err := g.read(ctx, name, page)
+			if err != nil {
+				missing[name][page] = true
+				errs = append(errs, fmt.Errorf("%s %s page %d: %w: %w",
+					g.instance, name, page, errUnreadable, err))
+				continue
+			}
+			copy(read[name][int(page)*PageSize:], got)
+		}
+	}
+	return read, missing, errors.Join(errs...)
+}
+
+// snapshot is the bytes this guest believes it has, which is what a destination
+// or a restart must read back.
+func (g *guest) snapshot() map[string][]byte {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	result := make(map[string][]byte, len(g.model))
+	for name, data := range g.model {
+		result[name] = bytes.Clone(data)
+	}
+	return result
+}
+
+// adopt takes bytes a migration, a fork or a restart handed this guest as its
+// own model: memory it did not write itself.
+func (g *guest) adopt(model map[string][]byte) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for name, data := range model {
+		g.model[name] = bytes.Clone(data)
+	}
+}
+
+// errUnreadable is a page whose bytes could not be fetched at all: the only
+// copy of them is on a peer a fault has taken away, so there is nothing to
+// compare. It is not a byte read wrong, which is why it is told apart from one.
+var errUnreadable = errors.New("the page could not be read")
+
+// verify reads every page of every region and requires it to equal model. It is
+// the campaign's first invariant: a guest never reads bytes it did not write.
+//
+// A page that reads the wrong bytes ends the verification, because there is
+// nothing further to learn from a guest whose memory is already wrong. A page
+// that cannot be read at all does not: every other page is still checked, and
+// the caller decides whether a fault was on that excuses it.
+func (g *guest) verify(ctx context.Context, model map[string][]byte) error {
+	var unreadable error
+	for _, name := range g.names {
+		want, found := model[name]
+		if !found {
+			return fmt.Errorf("%s: the model has no volume %s", g.instance, name)
+		}
+		for page := range uint64(g.pages[name]) {
+			got, err := g.read(ctx, name, page)
+			if err != nil {
+				unreadable = fmt.Errorf("%s %s page %d: %w: %w", g.instance, name, page, errUnreadable, err)
+				continue
+			}
+			if !bytes.Equal(got, want[int(page)*PageSize:(int(page)+1)*PageSize]) {
+				return fmt.Errorf("%s %s page %d reads %d, want %d",
+					g.instance, name, page, got[0], want[int(page)*PageSize])
+			}
+		}
+	}
+	return unreadable
+}
+
+// pager is one host's shared frame store and its pager Host.
+type pager struct {
+	host    *vmmemory.Host
+	arena   *arena
+	spill   platform.File
+	runtime *sim.Runtime
+}
+
+func (p *pager) close(ctx context.Context) error {
+	return errors.Join(p.host.Close(ctx), p.spill.Close())
+}

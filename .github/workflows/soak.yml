@@ -1,0 +1,95 @@
+# Nightly seed sweep over the simulation campaigns.
+#
+# A campaign is a seed range, not a fixed list. The matrix below splits the
+# range into eight blocks and gives each job its own base through
+# SPROUTFS_SOAK_SEED_BASE, so widening the sweep is an edit to `count` here
+# rather than to a test. A failing seed is reproduced anywhere with
+# `just soak <seed> 1`, which is one block of one.
+#
+# Out of scope, deliberately: the Lima suites in docs/vm-memory.md and anything
+# else that needs real KVM, a HugeTLB pool, a Firecracker guest or a GCE
+# instance. GitHub's hosted runners have no nested virtualization, so no amount
+# of scheduling gets those campaigns onto them; they are qualified on Lima or
+# GCE and recorded under docs/measurements. What runs here is simulation only.
+name: soak
+
+on:
+  schedule:
+    # 03:17 UTC nightly. An odd minute, because the top of an hour is when
+    # GitHub's scheduler is most oversubscribed and most likely to skip a run.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      base:
+        description: First seed of the sweep.
+        required: false
+        default: "1"
+      count:
+        description: Seeds per block; the sweep runs eight blocks of this many.
+        required: false
+        default: "100"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: soak-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GOTOOLCHAIN: local
+
+jobs:
+  seeds:
+    name: seeds block ${{ matrix.block }}
+    runs-on: ubuntu-latest
+    # A block of 100 seeds costs roughly twenty minutes of wall time across
+    # internal/simtest's campaigns — the generated topology, the kill campaign,
+    # the two-writer swizzle, the buggified topology and the recorded scenario;
+    # the budget is generous enough that a slow runner does not turn into a red
+    # night, and tight enough that a seed which stops making progress is killed
+    # rather than billed for six hours.
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        block: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: extractions/setup-just@v4
+      # The inputs reach the shell as environment variables and are checked to
+      # be decimal before any arithmetic sees them, so a dispatch cannot put
+      # anything but digits into the command below.
+      - name: Seed block
+        id: block
+        env:
+          BASE: ${{ inputs.base || '1' }}
+          COUNT: ${{ inputs.count || '100' }}
+          BLOCK: ${{ matrix.block }}
+        run: |
+          case "$BASE$COUNT" in ''|*[!0-9]*) echo "base and count must be decimal" >&2; exit 1;; esac
+          echo "base=$((BASE + BLOCK * COUNT))" >> "$GITHUB_OUTPUT"
+          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+      # Each seed logs one line with the simulated time it explored, the wall
+      # time it cost and their ratio, and appends the same record plus a
+      # fingerprint of its trace to the summary directory below.
+      - name: Sweep
+        env:
+          SPROUTFS_SOAK_SUMMARY_DIR: ${{ github.workspace }}/soak-summaries
+          BASE: ${{ steps.block.outputs.base }}
+          COUNT: ${{ steps.block.outputs.count }}
+        run: just soak "$BASE" "$COUNT"
+      # Kept whether the block passed or failed: on a failure these say which
+      # seed stopped and what the seeds before it cost.
+      - name: Summaries
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: soak-summaries-block-${{ matrix.block }}
+          path: soak-summaries/
+          if-no-files-found: warn
+          retention-days: 30
