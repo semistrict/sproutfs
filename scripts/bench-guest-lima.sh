@@ -28,7 +28,7 @@ test -n "$image"
 mkdir -p "$HOME/.cache"
 host_work=$(mktemp -d "$HOME/.cache/sproutfs-bench.XXXXXX")
 guest_work=''
-# shellcheck disable=SC2329  # invoked by the EXIT trap below.
+# shellcheck disable=SC2317,SC2329  # invoked by the EXIT trap below; older shellcheck reports it as SC2317.
 cleanup() {
     if [[ -n "$guest_work" ]]; then
         limactl shell "$instance" sudo -n rm -rf -- "$guest_work"

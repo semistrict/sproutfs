@@ -336,8 +336,8 @@ HOOK
 wait_for_pods() {
     remote "set -eu
         $kube
-        if ! kubectl rollout status -n sproutfs deployment/sproutfs-host --timeout=${1:-300}s ||
-           ! kubectl rollout status -n sproutfs deployment/sproutfs-orchestrator --timeout=${1:-300}s; then
+        if ! kubectl rollout status -n sproutfs deployment/sproutfs-host --timeout=300s ||
+           ! kubectl rollout status -n sproutfs deployment/sproutfs-orchestrator --timeout=300s; then
             kubectl get -n sproutfs pods -o wide
             kubectl describe -n sproutfs pods | tail -60
             kubectl logs -n sproutfs -l app.kubernetes.io/part-of=sproutfs --tail=80 --prefix || true
