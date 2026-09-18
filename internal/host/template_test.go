@@ -299,7 +299,7 @@ func TestTwoHostsRacingToImportOneImageImportItOnce(t *testing.T) {
 		t.Fatalf("the race left %s selecting %d unpinned", want, record.Selected)
 	}
 	if got := len(record.Pinned); got != 1 {
-		t.Fatalf("the race left %d pins on %s, want the one instant its VMs fork", got, want)
+		t.Fatalf("the race left %d pins on %s, want the one pause its VMs fork", got, want)
 	}
 	for index, template := range templates {
 		if got := forkReads(t, h, index, fmt.Sprintf("vm-%d", index), template); !bytes.Equal(got, image) {
@@ -394,7 +394,7 @@ func TestAnImportInFlightIsWaitedForRatherThanTakenOver(t *testing.T) {
 	}()
 
 	// Nothing fences host zero while it finishes: it checkpoints the image and
-	// pins the instant its VMs are forked at, under the epoch it drew.
+	// pins the point its VMs are forked at, under the epoch it drew.
 	if err := started.Checkpoint(t.Context()); err != nil {
 		t.Fatalf("the import in flight was fenced: %v", err)
 	}

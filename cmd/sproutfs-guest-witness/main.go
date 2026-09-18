@@ -6,7 +6,7 @@
 // the guest's bytes exactly or is a defect. Nothing outside the guest can say
 // which: the host sees pages and the control plane sees checkpoints, and both
 // of them would report a successful migration of a guest whose memory came back
-// holding another instant's bytes. So the guest is asked.
+// holding the bytes of another moment. So the guest is asked.
 //
 //	witness fill --memory 256M --disk /var/witness --seed 7
 //	    fill a buffer of that size and a file of the same size with the pattern

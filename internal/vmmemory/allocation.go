@@ -9,7 +9,7 @@ import (
 )
 
 // takeFree takes count consecutive free slots starting at slot, against the
-// host budget: the frames they will hold are what that budget bounds, so a
+// host budget: the pages they will hold are what that budget bounds, so a
 // refused reservation is a refused allocation. Caller holds h.mu.
 func (h *Host) takeFree(slot, count int) bool {
 	lease, err := h.resources.TryAcquire(context.Background(), int64(count)*int64(PageSize))
@@ -18,7 +18,7 @@ func (h *Host) takeFree(slot, count int) bool {
 	}
 	h.slots.Take(slot, count)
 	for s := slot; s < slot+count; s++ {
-		h.frameLeases[s] = lease
+		h.residentLeases[s] = lease
 	}
 	h.stats.PeakResidentPages = max(h.stats.PeakResidentPages, h.slots.Total()-h.slots.Free())
 	return true
@@ -31,7 +31,7 @@ func (h *Host) takeFree(slot, count int) bool {
 // in. The slot is not returned either, because nothing knows what it holds.
 // Caller holds h.mu.
 func (h *Host) putFree(slot int) {
-	lease := h.frameLeases[slot]
+	lease := h.residentLeases[slot]
 	if lease == nil {
 		h.err = errors.Join(h.err, fmt.Errorf("managed arena terminal: slot %d freed without a resource reservation", slot))
 		return
@@ -43,7 +43,7 @@ func (h *Host) putFree(slot int) {
 	if lease.Bytes() == 0 {
 		lease.Close()
 	}
-	h.frameLeases[slot] = nil
+	h.residentLeases[slot] = nil
 	h.slots.Put(slot)
 }
 
@@ -183,8 +183,8 @@ func (h *Host) allocate(ctx context.Context, preferEviction bool) (int, error) {
 			h.unlockAll(candidates)
 			// A victim another region will not give up is not this allocation's
 			// failure: the next pass skips it, because that region is terminal
-			// from here, and takes another frame. The arena is finite, so every
-			// such pass removes one frame from what this loop will consider,
+			// from here, and takes another page. The arena is finite, so every
+			// such pass removes one page from what this loop will consider,
 			// and an arena made entirely of them reports ErrCapacity rather
 			// than spinning.
 			if err != nil && !errors.Is(err, errVictimHeld) {

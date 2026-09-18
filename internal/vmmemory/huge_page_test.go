@@ -8,7 +8,7 @@ import (
 	"github.com/semistrict/sproutfs/internal/vmmemory"
 )
 
-func TestHugePageIsSharedWholeAndCopiesWholeFrame(t *testing.T) {
+func TestHugePageIsSharedWholeAndCopiesWholePage(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		const huge = 2 << 20
 		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 3, LogicalPages: 4, DirtyPages: 4})
@@ -31,13 +31,13 @@ func TestHugePageIsSharedWholeAndCopiesWholeFrame(t *testing.T) {
 		}
 		copy := access(t, sibling, sm, 0, true)
 		if copy[0] != firstByte || copy[huge-1] != lastByte || !bytes.Equal(copy, want) {
-			t.Fatal("copy lost part of huge frame")
+			t.Fatal("copy lost part of huge page")
 		}
 		copy[huge-1] = 79
 		if got := access(t, r, m, 0, false)[huge-1]; got != lastByte {
 			t.Fatalf("sibling write escaped: %d", got)
 		}
-		// A checkpoint publishes whole pager pages, so one 2 MiB frame is one page of
+		// A checkpoint publishes whole pager pages, so one 2 MiB page is one page of
 		// the checkpoint however many storage pages it becomes.
 		if err := f.checkpoint(sibling, siblingBacking); err != nil {
 			t.Fatal(err)
@@ -59,7 +59,7 @@ func TestHugePageSpillAndWritebackPreserveEverySubpage(t *testing.T) {
 		for page := range uint64(3) {
 			data := access(t, r, m, page, true)
 			// Every old 4 KiB page gets its own markers, including both halves
-			// and the boundary between adjacent 2 MiB frames.
+			// and the boundary between adjacent 2 MiB pages.
 			for offset := 0; offset < len(data); offset += 4096 {
 				data[offset] = byte(offset/4096 + int(page)*17)
 				data[offset+1] = byte((offset/4096 + int(page)*512) >> 8)
@@ -69,13 +69,13 @@ func TestHugePageSpillAndWritebackPreserveEverySubpage(t *testing.T) {
 		}
 		for page := range uint64(3) {
 			if !bytes.Equal(access(t, r, m, page, false), want[page]) {
-				t.Fatalf("spill/refault lost subpage bytes in frame %d", page)
+				t.Fatalf("spill/refault lost subpage bytes in page %d", page)
 			}
 		}
 		f.mustCheckpoint(r, b)
 		for page := range uint64(3) {
 			if !bytes.Equal(b.data[page*(2<<20):(page+1)*(2<<20)], want[page]) {
-				t.Fatalf("the checkpoint lost subpage bytes in frame %d", page)
+				t.Fatalf("the checkpoint lost subpage bytes in page %d", page)
 			}
 		}
 		stats, err := f.h.Stats(t.Context())

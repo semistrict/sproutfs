@@ -23,7 +23,7 @@ them.
 
 `scripts/demo-gce.sh workload` on one `n2-standard-8`, one node, two host pods,
 with the hosts restarted immediately before the run so that their object-store
-counters and frame counts start from zero and their logs hold this run only.
+counters and page counts start from zero and their logs hold this run only.
 Each pod: a 5 GiB pager arena out of a 6 GiB HugeTLB allotment, 8 GiB of
 ordinary memory, a 60 s checkpoint interval, a 2 MiB pager page and a 4 KiB
 storage page.
@@ -119,7 +119,7 @@ root checkpoint, which is about 53 s and a few hundred megabytes, once per host
 per image — and every VM's root checkpoint, which a create and a fork now take
 before they return.
 
-### The fork's shared frames over time
+### The fork's shared pages over time
 
 Frames are 2 MiB. `resident` is what the host's arena holds; `shared` is pages
 mapped to an already-resident identity without a read, which is what a fork of a
@@ -148,7 +148,7 @@ so the whole run piles onto the host the base was created on while the other
 sits idle with its entire arena unused — which is what the
 `FORKS_BASE=2 FORKS_PER_REPO=1` tables above show, with host B at zero
 throughout. `scripts/lib/demo-workload.sh` now spreads the workers over the
-ready hosts with a migration after the one fork instant that starts them, so a
+ready hosts with a migration after the one fork point that starts them, so a
 larger setting has both arenas to work with.
 
 **Four concurrent installs still do not fit.** With the workers spread two and
@@ -163,7 +163,7 @@ gigabytes between checkpoints saturate it.
 
 **Three concurrent installs do fit.** `FORKS_BASE=3 FORKS_PER_REPO=2` got
 through the install phase in 56.5 s — the same wall time as two — with the
-hosts at 3 and 1 VMs and 1602 and 806 resident frames. It then failed at the
+hosts at 3 and 1 VMs and 1602 and 806 resident pages. It then failed at the
 late fork, on something unrelated to capacity: restoring a child's VMM state
 returned
 
@@ -236,7 +236,7 @@ re-take these numbers.
 
 **On 2 MiB granularity.** 2 MiB is the unit all the way down. `checkpoint.PageSize`
 is *"the unit of publication: a page is packed whole or not at all, and it is the
-unit a reader faults in"*, and it is the pager's frame and the seal's unit as
+unit a reader faults in"*, and it is the pager's page and the seal's unit as
 well. There is nothing below it to publish into: a guest that stores one byte
 makes the checkpoint pack two million of them, and the only reason that is not
 the full cost is that the unchanged bytes beside it compress.
@@ -281,7 +281,7 @@ FORKS_BASE=2 FORKS_PER_REPO=1 scripts/demo-gce.sh workload    # the run above
 scripts/demo-gce.sh delete                                   # verifies VM, disk and bucket are gone
 ```
 
-Restart the hosts before each run: their object-store counters and frame counts
+Restart the hosts before each run: their object-store counters and page counts
 are since the process started, and the run reads their logs, so a host that has
 already carried a run reports that one's work beside this one's.
 
@@ -289,7 +289,7 @@ Each run prints the three tables and copies everything it recorded to
 `.workload-runs/base<N>-repo<M>/`: `summary.txt` is the tables,
 `checkpoints.jsonl` every per-checkpoint line the hosts logged, `phases.tsv` the
 window each phase occupied, `store.tsv` the object-store counters at every phase
-boundary, and `shared.tsv` the frame counts.
+boundary, and `shared.tsv` the page counts.
 
 A larger setting needs room. Five 2 GiB VMs fit the 5 GiB arena here because
 forks share what they have not diverged from; ten would not, and the run would
@@ -329,7 +329,7 @@ earlier, pre-pack run and still hold; the rest are this one's.
 - **A fork's parent stays sealed until its children publish.** That is the
   design, and `host.Host.Fork` says so, but the run forked each worker and
   then captured that worker in the same phase, which failed on `volume: a fork
-  point holds this VM's sealed frames`. The run now takes each new child's root
+  point holds this VM's sealed pages`. The run now takes each new child's root
   as soon as its agent answers, which is what gives the parent back — and is
   real work the numbers should carry, since a child's root republishes the
   pages of the parent that no checkpoint held.
@@ -340,4 +340,4 @@ earlier, pre-pack run and still hold; the rest are this one's.
   hosts' logs from the moment it began.
 - **The run used one host of the two.** Every fork lands on its parent's host,
   so the whole run piled onto one arena while the other went unused. The workers
-  are now spread with a migration after the one fork instant that starts them.
+  are now spread with a migration after the one fork point that starts them.

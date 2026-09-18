@@ -52,7 +52,7 @@ type VMs interface {
 	// Abandoned gives one handover up rather than handing it over: a fork's
 	// child that will never be received, one whose destination refused it, one
 	// whose fan-out failed. Whatever this host still holds for that VM goes, and
-	// a fork's parent takes its sealed frames back and is checkpointed again.
+	// a fork's parent takes its sealed pages back and is checkpointed again.
 	//
 	// It refuses nothing, which is what parts it from Released: those pages are
 	// going either way — the VM they belong to is one nothing will ever ask for
@@ -60,12 +60,12 @@ type VMs interface {
 	Abandoned(ctx context.Context, id string) error
 	Drain(ctx context.Context) (hostapi.DrainResult, error)
 	// Stop ends a VM this host runs and leaves it behind: a last checkpoint of
-	// everything its guest still holds, and then the VMM process, the frames
+	// everything its guest still holds, and then the VMM process, the pages
 	// and the handle go. Its control record and its objects stay, so any host
 	// can open it again at the bytes the stop published — which is what makes
 	// a stop different from losing the host, where the writes since the last
-	// checkpoint go with it. Refused for a VM a fork instant holds sealed, as
-	// a delete is. It reports the checkpoint it published, which is the instant
+	// checkpoint go with it. Refused for a VM a fork point holds sealed, as
+	// a delete is. It reports the checkpoint it published, which is the pause
 	// the VM comes back at.
 	Stop(ctx context.Context, id string) (hostapi.StopResult, error)
 	Delete(ctx context.Context, id string) error
@@ -130,8 +130,8 @@ type SupervisorConfig struct {
 	// the VMM scratch. A starting host wipes it: a restart is a host loss, so
 	// nothing under it is authority for anything.
 	ScratchDir string
-	// ArenaBytes is the pager's resident frame store, taken from the pod's
-	// HugeTLB allotment, and MemoryBytes the RAM allotment it takes its frames
+	// ArenaBytes is the pager's resident page store, taken from the pod's
+	// HugeTLB allotment, and MemoryBytes the RAM allotment it takes its pages
 	// from.
 	ArenaBytes, MemoryBytes int64
 	// CacheBytes caps the page cache and SpillBytes the pager's spill file.

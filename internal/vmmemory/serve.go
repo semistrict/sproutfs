@@ -8,7 +8,7 @@ import (
 )
 
 // ErrHandedOff reports a region whose volume belongs to another host now. Its
-// frames are still served; nothing that would read or write the volume is.
+// pages are still served; nothing that would read or write the volume is.
 var ErrHandedOff = errors.New("managed-memory region handed its volume off")
 
 // ReadResident copies one page's current bytes for a peer, reports false for a
@@ -24,18 +24,19 @@ var ErrHandedOff = errors.New("managed-memory region handed its volume off")
 // checkpoint's own bytes, which the destination could equally have read from
 // storage.
 //
-// Held means a frame or private state of this host's own: a resident clean
-// frame, a private frame the guest wrote, or the spill copy of either. A page
-// that was never faulted and a page the volume reports as a hole are not held.
+// Held means host memory or private state of this host's own: a shared
+// resident page, a private page the guest wrote, or the spill copy of either.
+// A page that was never faulted and a page the volume reports as a hole are
+// not held.
 //
 // A page the guest still shares with a checkpoint is served from that
-// checkpoint's frame, which is the same frame the guest reads through: a store
-// since the seal would have copied the guest away from the checkpoint and would
-// be served from its own frame instead. After the final seal of a stopped guest
+// checkpoint's copy, which is the same resident page the guest reads through:
+// a store since the seal would have copied the guest away from the checkpoint and would
+// be served from its own page instead. After the final seal of a stopped guest
 // the two are therefore the same bytes, and that is what the destination must
 // be given.
 //
-// While the guest runs, the answer is only as current as the instant it is
+// While the guest runs, the answer is only as current as the moment it is
 // taken, exactly like the pages a bulk stream already sent.
 func (r *Region) ReadResident(ctx context.Context, page uint64, dst []byte) (held, unpublished bool, err error) {
 	h := r.host
@@ -50,9 +51,9 @@ func (r *Region) ReadResident(ctx context.Context, page uint64, dst []byte) (hel
 		return false, false, ErrRange
 	}
 	// The fault stripe orders this against the faults that change who owns a
-	// page's bytes, and the I/O permit is taken before any frame lock, as a
-	// fault takes it: a reader holding a frame and waiting for a permit would
-	// deadlock against a fault holding a permit and waiting for that frame. The
+	// page's bytes, and the I/O permit is taken before any resident page's lock,
+	// as a fault takes it: a reader holding a page and waiting for a permit would
+	// deadlock against a fault holding a permit and waiting for that page. The
 	// stripe comes before the region here for the same reason it does in a
 	// fault: the two orders must be one order.
 	if err := r.stripe(page).Lock(ctx); err != nil {
@@ -112,14 +113,14 @@ func (r *Region) Resident() ([]uint64, error) {
 	return r.residentPages(), nil
 }
 
-// Handoff gives up this region's volume while keeping its frames. It belongs to
+// Handoff gives up this region's volume while keeping its pages. It belongs to
 // a live migration: the guest is stopped, the final checkpoint is in the log,
 // and the volume handle is about to be released so another host can acquire the
 // log at once. Nothing here may touch that volume again, so verification stops
 // checking authority this host no longer has, and a flush, a seal, a population
 // or any fault reports ErrHandedOff instead: the guest is stopped, and a fault
 // would mean it is not. ReadResident and Resident keep serving this host's
-// frames to the destination until Detach releases them.
+// pages to the destination until Detach releases them.
 //
 // A sealed region is not something to hand off: a checkpoint is reading its
 // checkpoint under a volume handle that is about to be another host's, so the
@@ -128,7 +129,7 @@ func (r *Region) Resident() ([]uint64, error) {
 // It reports how long this region has held its oldest unpublished write, which
 // the handoff carries so the destination goes on measuring the same loss window
 // instead of starting a new one. It is read here, under the lock that makes the
-// volume another host's, because that is the instant the set stops changing.
+// volume another host's, because that is the moment the set stops changing.
 func (r *Region) Handoff(ctx context.Context) (time.Duration, error) {
 	if err := r.mu.Lock(ctx); err != nil {
 		return 0, err
@@ -170,7 +171,7 @@ func (r *Region) Unpublished() ([]uint64, error) {
 	return result, nil
 }
 
-// residentPages collects the pages holding a frame or private state.
+// residentPages collects the pages holding host memory or private state.
 func (r *Region) residentPages() []uint64 {
 	var result []uint64
 	r.eachBinding(func(b *binding) {
@@ -184,7 +185,7 @@ func (r *Region) residentPages() []uint64 {
 // RegionStats is one region's share of the host's pages. Like Stats it is
 // read-only instrumentation: nothing consults it.
 type RegionStats struct {
-	// ResidentPages counts pages holding a frame, shared or private.
+	// ResidentPages counts pages holding host memory, shared or private.
 	// PrivatePages counts pages whose bytes are this region's own and not yet
 	// its volume's, whether they are resident, spilled or held by a checkpoint.
 	ResidentPages, PrivatePages int

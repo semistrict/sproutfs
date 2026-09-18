@@ -116,7 +116,7 @@ No host deletes a template: another host may be forking from it, and an image
 that changed under its name is a template of its own rather than the same one
 holding other bytes. The templates of images nothing creates from any more are a
 collector's, like every other pinned lineage — the checkpoint a template pins is
-the instant every VM created from it was forked at.
+the fork point every VM created from it was taken at.
 
 One thing comes with that and is worth saying plainly: the RAM a VM gets is the
 size the image's template was imported at, and the template was imported once.
@@ -139,7 +139,7 @@ loop is the only thing that makes a running guest durable, so the interval
 bounds what losing this host rewinds a VM by. A failure is logged and retried at
 the next interval, and the loop stops when the VM is removed, migrated away or
 the host closes. An interval whose VM is sealed by a fork point is skipped: the
-child takes those frames first. A negative interval disables the loop, which is
+child takes those pages first. A negative interval disables the loop, which is
 what a caller driving its own checkpoints wants.
 
 The interval bounds that rewind only while publications land. `Config.LossWindow`
@@ -181,7 +181,7 @@ writes cannot be made durable at all. That
 stop is the same give-up every other loss of a VM goes through, with one last
 checkpoint inside it: the registration is dropped and the close claimed, so a
 stall, a takeover and the watcher finding the same process dead close the VM
-once between them; the fork instants taken on it are retired first, both because
+once between them; the fork points taken on it are retired first, both because
 a child reads them out of the process this is about to close and because a VM
 one of them holds sealed cannot be captured at all; then the last checkpoint
 takes whatever the VMM can still be paused for, before the process is closed,
@@ -202,7 +202,7 @@ their number, which on a store having a bad minute is longer than the interval
 itself — the check would fall behind exactly when a takeover is most likely.
 
 That interval is what bounds how long a host fenced
-between checkpoints — or fenced while a fork point holds a VM's frames sealed,
+between checkpoints — or fenced while a fork point holds a VM's pages sealed,
 which is never checkpointed at all — goes on running a guest whose writes have
 nowhere to go. A record that cannot be read changes nothing: only the record
 itself, naming an epoch this host does not hold, is evidence of a takeover, and
@@ -216,13 +216,13 @@ state — its every control-record write is refused — and from here nothing it
 holds is served as that VM's state either.
 
 A timer is not enough for a handoff. Handing a VM over is the one thing a host
-does that gives another host frames no checkpoint holds, and the store cannot
+does that gives another host pages no checkpoint holds, and the store cannot
 refuse those the way it refuses a fenced writer's publication: the destination
 post-copies whatever it is served over the checkpoint the real writer published,
 so a source that was taken over between epoch ticks — or one whose reads of the
 store are failing while its pod network is fine, which never reaches a tick that
 tells it anything — would build one VM's memory out of two writers' pages. So
-`Migrate` and the fork instant both re-read the control record themselves before
+`Migrate` and the fork point both re-read the control record themselves before
 the pause, one GET, and refuse on an epoch that has moved. A read that fails
 refuses the handoff too, which is the one place a record that cannot be read is
 not treated as no evidence: everything else a stale handle does is caught by the
@@ -232,9 +232,9 @@ it.
 
 One handover of a VM runs at a time, claimed under the same lock the
 registration lives behind. Two callers that found one registration each stopped
-the guest, gave every region's volume up and registered the frames with the page
+the guest, gave every region's volume up and registered the pages with the page
 server; the loser, whose regions had already given their volumes up, then gave
-the VM up and closed the process whose frames the winner's destination was about
+the VM up and closed the process whose pages the winner's destination was about
 to fault out of. The second caller is told instead, and the VM it asked about is
 left exactly as the first left it. A VM a fork point holds sealed is refused the
 same way, and so is a fork that has not published a checkpoint of its own: that
@@ -265,7 +265,7 @@ it.
 A host configured with a migration address serves a second protocol there: the
 page server that holds the memory of every VM it has handed to another host, and
 of every child it has forked onto one. A child it forked onto itself is not
-there: that child maps the frames rather than fetching them, so nothing of it is
+there: that child maps the pages rather than fetching them, so nothing of it is
 ever served. It serves any peer that reaches it,
 bounded per remote address by eight connections and 8 MiB of pages in flight.
 Restricting that port to this deployment's hosts is the cluster's network
@@ -287,11 +287,11 @@ the VMM from the captured state and streams the pages in. That stream reports
 completion only once every page the source holds that no checkpoint has is on
 the destination: a migration publishes nothing, so those pages exist nowhere
 else. When it does, the source's `Host.ReleaseMigrated` stops serving that VM
-and closes the process that held its frames.
+and closes the process that held its pages.
 
 That word is the orchestrator's, so a migration carries the same deadline a
 fork's hold does: four checkpoint intervals after the handoff, a source
-nothing has released gives those frames up itself, closing the stopped VMM
+nothing has released gives those pages up itself, closing the stopped VMM
 process that maps them. Otherwise an orchestrator that restarted between the
 handoff and the release pins the source's arena for as long as the host runs.
 The destination loses nothing it already fetched and reads the rest from the
@@ -345,12 +345,12 @@ one process must not close a pager still serving other VMs.
 
 `Host.Stop` is the deliberate end of a VM this host runs that leaves the VM
 behind. It captures a checkpoint of everything the guest still holds and waits
-for it, and only then closes the VMM process, gives the frames back and releases
+for it, and only then closes the VMM process, gives the pages back and releases
 the handle. The control record and the objects stay where they are, so any host
 can open the VM again at exactly the bytes the stop published — which is the
 whole difference between a stop and losing the host, where the writes since each
 VM's last checkpoint go with it. It reports the checkpoint it published, because
-that is the instant the VM comes back at and nothing else records it: the handle
+that is the pause the VM comes back at and nothing else records it: the handle
 that knew is released by the time the stop answers.
 
 The checkpoint comes first and nothing is given up until it has landed. A
@@ -359,9 +359,9 @@ registered, checkpointed on the interval — because the alternative is a stop t
 reported a failure and lost the guest's last writes anyway.
 
 A VM something still holds sealed is refused, as a delete of one is: a fork
-instant is the frames of the process a stop would close, and a child elsewhere
+point holds the pages of the process a stop would close, and a child elsewhere
 reads the pages no checkpoint holds out of them, so closing it would take the
-instant away mid-fault. Nothing is retired to get past that, which is where a
+point away mid-fault. Nothing is retired to get past that, which is where a
 stop parts company with a delete — a delete ends the VM for good and stops the
 children reading it on the way out, and a stop is a VM that is coming back.
 
@@ -421,7 +421,7 @@ what the control plane's own record of it tracks — see
 ## Budgets
 
 The host takes one `Resources` owner, and it accounts RAM alone: the pager's
-frames. `Status().Resources` reports its reservations and configured total.
+pages. `Status().Resources` reports its reservations and configured total.
 
 Disk is not shared and not accounted. Each concern that writes to the node's
 disk has a fixed cap of its own — the page cache's allotment, and the pager's
@@ -447,7 +447,7 @@ code.
   audit log.
 - **The page cache** retains decoded pages inside a cap of its own,
   `SPROUTFS_CACHE_BYTES`, and yields unused entries before a retention fails. It
-  is not taken from the allotment a guest's frames come out of, so nothing has
+  is not taken from the allotment a guest's pages come out of, so nothing has
   to be reclaimed between them, and a miss that does not fit is served without
   being retained. Concurrent misses remain bounded.
 - **Checkpoint uploads** are bounded by the checkpoint store, not by one

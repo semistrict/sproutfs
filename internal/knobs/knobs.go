@@ -88,7 +88,7 @@ type Knobs struct {
 	// state it admits across RAM and spill.
 	ResidentPages, LogicalPages, DirtyPages int
 	// ReadAheadPages is the aligned run one fault loads and maps, and
-	// WriteAheadPages the run one store into fresh zeros gives private frames.
+	// WriteAheadPages the run one store into fresh zeros gives private pages.
 	// ReadAheadPages must be a power of two.
 	ReadAheadPages, WriteAheadPages int
 	// ConcurrentIO bounds the pager's ordinary page operations. Each permit can
@@ -205,7 +205,7 @@ func (k Knobs) Validate() error {
 	// One VM's handover cannot be given longer than the drain that contains it:
 	// a per-VM bound above the whole drain's is a bound that never applies, and
 	// a drain that looks bounded per VM and is not is exactly the pod killed
-	// with its frames still on it.
+	// with its pages still on it.
 	if k.DrainPerVM > k.DrainTimeout {
 		errs = append(errs, fmt.Errorf("%w: DrainPerVM %s exceeds DrainTimeout %s",
 			ErrInvalid, k.DrainPerVM, k.DrainTimeout))

@@ -86,7 +86,7 @@ type fakeHostClient struct {
 	// and shared what its pager reports it has shared.
 	checkpoint uint64
 	shared     uint64
-	// arenaPages is how many frames this host's arena holds and residentPages
+	// arenaPages is how many pages this host's arena holds and residentPages
 	// how many are taken; committed is the guest RAM the VMs it runs have
 	// between them, which is what a placement measures a host by. templates are
 	// the guest images it can create VMs from.
@@ -94,7 +94,7 @@ type fakeHostClient struct {
 	committed                 uint64
 	templates                 []host.Template
 	// refuse is what this host answers a stop, a delete or a fork with, which
-	// is how a test stages a host's own refusal — a fork instant that holds the
+	// is how a test stages a host's own refusal — a fork point that holds the
 	// VM sealed — with the status line that host would have sent.
 	refuse error
 	// receives, when positive, is how many handoffs this host takes before it
@@ -109,7 +109,7 @@ type fakeHostClient struct {
 	// what a host that is full, fenced or being deleted looks like to a fan-out.
 	refusesEveryReceive bool
 	// outstanding names the VMs this host still holds pages for that no
-	// destination has fetched — every child of a fork instant it took, until
+	// destination has fetched — every child of a fork point it took, until
 	// that child is received somewhere — and fetched, shared by every host of
 	// the fake deployment, the ones a destination has taken in. A release of a
 	// handover that is outstanding and unfetched is refused, exactly as the page
@@ -130,7 +130,7 @@ type fakeHostClient struct {
 // after all.
 func (f *fakeHostClient) release() { f.heldOnce.Do(func() { close(f.held) }) }
 
-// arena sets how full this host's frame store is, and promises the same amount
+// arena sets how full this host's page store is, and promises the same amount
 // of guest RAM, which is the ordinary case: a host whose arena is taken by the
 // guests it is running.
 func (f *fakeHostClient) arena(pages, resident int) {
@@ -510,7 +510,7 @@ func TestForkRunsOnTheVMsOwnHost(t *testing.T) {
 	}
 	// One request and one pause of the parent, however many children it starts,
 	// and the same handshake a fork onto another host has: the parent's host
-	// hands each child over, takes it in itself — over the frames, so with no
+	// hands each child over, takes it in itself — over the pages, so with no
 	// address to fetch from — and is told to release it.
 	want := []string{
 		"host-0 fork vm-a vm-new-1,vm-new-2,vm-new-3",
@@ -525,7 +525,7 @@ func TestForkRunsOnTheVMsOwnHost(t *testing.T) {
 
 // A fork placed on another host is the migration handshake: the parent's host
 // builds the handoffs and serves the pages, the destination starts each child,
-// and the parent takes its frames back only once every child has them.
+// and the parent takes its pages back only once every child has them.
 func TestForkOnAnotherHostCarriesTheHandoff(t *testing.T) {
 	d := newDeployment(t, map[string][]string{"host-0": {"vm-a"}, "host-1": {}})
 	result, err := d.orchestrator.Fork(t.Context(), "vm-a", 2, "host-1")
@@ -601,8 +601,8 @@ func TestMigrateToTheHostAlreadyRunningItIsRefused(t *testing.T) {
 // and two hosts reporting it is the deployment saying otherwise — a recovery
 // raced a host that was not really gone, or a handoff left both ends claiming
 // it. Picking one of them is the worst answer available: a migration off the
-// wrong one hands a third host a stale writer's frames, and a fork of it takes
-// its instant from a lineage nothing selects. Every request that must name the
+// wrong one hands a third host a stale writer's pages, and a fork of it takes
+// its fork point from a lineage nothing selects. Every request that must name the
 // host a VM runs on refuses instead, and the operator is told which hosts
 // disagree.
 func TestTwoHostsClaimingOneVMStopsTheDeploymentActingOnIt(t *testing.T) {
@@ -786,7 +786,7 @@ func TestVMsReportsWhatTheRunningHostSaysOfEachVM(t *testing.T) {
 	}
 }
 
-// TestHostsReportsThePagersSharing: forking is visible in the shared frame
+// TestHostsReportsThePagersSharing: forking is visible in the shared page
 // count, so a host report carries it.
 func TestHostsReportsThePagersSharing(t *testing.T) {
 	d := newDeployment(t, map[string][]string{"host-0": {"vm-a"}})

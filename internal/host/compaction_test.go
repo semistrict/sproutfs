@@ -13,13 +13,13 @@ import (
 
 // Compaction moves a cold page's bytes out of a checkpoint that has become
 // mostly dead and into the one being published. The guest running on that
-// page never notices: the page keeps its lineage identity, so the frame the
-// pager holds for it stays the page's frame, and reading it after the move
+// page never notices: the page keeps its lineage identity, so the resident page
+// the pager holds for it stays the page's, and reading it after the move
 // costs no fault and no load. Here the checkpoint that first published four
 // pages is left a quarter live by the next one, which compacts its one cold
 // page away; the checkpoint after that reclaims the emptied one, and the
-// guest's read of the cold page is served from the frame it already had.
-func TestCompactionLeavesTheGuestsResidentFramesAlone(t *testing.T) {
+// guest's read of the cold page is served from the memory it already had.
+func TestCompactionLeavesTheGuestsResidentPagesAlone(t *testing.T) {
 	h := newSizedHostHarness(t, 1)
 	h.configs[0].CheckpointInterval = time.Hour
 	h.start(t)
@@ -68,7 +68,7 @@ func TestCompactionLeavesTheGuestsResidentFramesAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 	if after.Faults != before.Faults || after.Loads != before.Loads {
-		t.Fatalf("reading the compacted page cost %d faults and %d loads; its frame should have stayed the page's",
+		t.Fatalf("reading the compacted page cost %d faults and %d loads; its resident page should have stayed the page's",
 			after.Faults-before.Faults, after.Loads-before.Loads)
 	}
 	if after.ResidentPages != before.ResidentPages {

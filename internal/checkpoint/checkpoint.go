@@ -1,5 +1,5 @@
-// Package checkpoint stores VM checkpoints in shared object storage as two
-// planes: one index object of metadata, and the parts holding the guest bytes.
+// Package checkpoint stores VM checkpoints in shared object storage as one
+// index object of metadata and the parts holding the guest bytes.
 //
 // A checkpoint is named by a [control.Ref], the (VM, sequence) pair the caller
 // allocated for it. Its parts hold the VMM state and the pages it changed. Its

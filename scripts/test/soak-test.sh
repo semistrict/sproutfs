@@ -175,7 +175,7 @@ else
 fi
 
 # --- a child is checked against its parent before it is anything else ---------
-# What a fork inherited is what its parent held at the instant of the seal, and
+# What a fork inherited is what its parent held at the seal, and
 # that is the one thing a fork has to be asked before it is given a seed of its
 # own. The model records every request a guest was made, so the order is there
 # to read.

@@ -20,12 +20,12 @@ func (r Ref) String() string { return r.VM + "/" + strconv.FormatUint(r.Sequence
 // Identity names the page whose bytes a range reads: the checkpoint whose parts
 // holds them, the volume they belong to and the page's number within it. Two
 // indexes report equal identities for a page they inherited from a common
-// ancestor, so a host can share a resident frame between VMs without comparing
+// ancestor, so a host can share a resident page between VMs without comparing
 // contents, and compaction moving those bytes into another checkpoint's parts does not change
 // it. Zero means the range reads as zeroes and has no page.
 type Identity struct {
 	// Ref, Volume and Page name the page, which is the whole identity a pager
-	// keys a frame by and the whole key the page cache uses.
+	// keys a resident page by and the whole key the page cache uses.
 	Ref    Ref
 	Volume string
 	Page   uint64

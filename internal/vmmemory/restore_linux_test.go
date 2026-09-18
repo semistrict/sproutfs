@@ -27,7 +27,7 @@ func (v *countedVolume) Load(ctx context.Context, offset uint64, dst []byte) err
 	return v.Volume.Load(ctx, offset, dst)
 }
 
-// Two machines restored from one checkpoint share every frame the first brought
+// Two machines restored from one checkpoint share every page the first brought
 // in. The second reads nothing from its volumes, takes no fault on those pages,
 // and installs them with a number of mapping commands far below the page count.
 func TestRestoreFromSharedSnapshotLoadsNothingOnTheSecondMachine(t *testing.T) {
@@ -140,7 +140,7 @@ func TestRestoreFromSharedSnapshotLoadsNothingOnTheSecondMachine(t *testing.T) {
 	}
 	t.Logf("SHARED_RESTORE_MEASUREMENT %s", raw)
 	// The identities the two machines report for an untouched page are equal,
-	// which is the only reason their frames are shared.
+	// which is the only reason their pages are shared.
 	for _, page := range []uint64{0, uint64(pages) / 2, uint64(pages) - 1} {
 		var identities [2]control.Identity
 		for side, v := range [][]*countedVolume{firstCounted, secondCounted} {
@@ -157,7 +157,7 @@ func TestRestoreFromSharedSnapshotLoadsNothingOnTheSecondMachine(t *testing.T) {
 }
 
 // A machine restored from a checkpoint, which then writes and checkpoints
-// again, hands its own descendants the frames it inherited and the ones it
+// again, hands its own descendants the pages it inherited and the ones it
 // changed.
 func TestKVMNestedForkMapsResidentPagesBeforeItRuns(t *testing.T) {
 	const pages = 32
@@ -236,7 +236,7 @@ func TestKVMNestedForkMapsResidentPagesBeforeItRuns(t *testing.T) {
 	bv, bb := fork("b", point)
 	b := check(bb, false)
 	// What the guest stored reaches the nested fork through the seal: it freezes
-	// each region's dirty set and the child reads those frames straight out of
+	// each region's dirty set and the child reads those pages straight out of
 	// the pager. The fork's own root index has to exist before it can be forked
 	// again, so it publishes first.
 	if err := bv.Checkpoint(t.Context()); err != nil {
@@ -252,7 +252,7 @@ func TestKVMNestedForkMapsResidentPagesBeforeItRuns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Offering the frames the seal froze is what the host taking this child in
+	// Offering the pages the seal froze is what the host taking this child in
 	// does before its regions attach: the child maps them rather than reading
 	// the pages back.
 	if err := nested.Share(t.Context()); err != nil {

@@ -116,7 +116,7 @@ func TestHandoffPublishesNothing(t *testing.T) {
 		}
 		selected := vm.Status().Checkpoint
 		// Written after the last checkpoint, so the handoff leaves them behind:
-		// on a real host they are the pager's frames, which the destination
+		// on a real host they are the pager's pages, which the destination
 		// fetches and publishes in its own next checkpoint.
 		if err := root.Write(t.Context(), 4096, []byte("tail")); err != nil {
 			t.Fatal(err)

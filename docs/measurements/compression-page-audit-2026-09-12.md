@@ -11,9 +11,9 @@ legacy readers are deliberately absent.
 | --- | --- | --- |
 | Fault read-ahead | The old maximum of 4,096 pages allowed an 8 GiB scratch range at 2 MiB per page. | Cap the byte range at 16 MiB, including region overrides: eight production pages. |
 | Initial population | A 65,536-page window grew from 256 MiB to 128 GiB and could enumerate millions of storage extents. | Derive the page count from a 256 MiB byte window. |
-| Immutable resident identity | A production frame previously combined two 1 MiB chunk identities. | One 2 MiB chunk identifies a production frame. Mixed delta lineage cannot share a whole frame. |
+| Immutable resident identity | A production page previously combined two 1 MiB chunk identities. | One 2 MiB chunk identifies a production page. Mixed delta lineage cannot share a whole page. |
 | Storage deltas | Doubling a chunk doubles its 4 KiB page count. | 512 pages, a 64-byte bitmap, and updated format version and generated schema. Exercise the final bitmap bit. |
-| Flush defaults | A full chunk now needs 512 pages in the 4 KiB model, beyond the old 256-page validator. | Allow 512 pages while retaining the 2 MiB byte bound. Production flushes one frame. |
+| Flush defaults | A full chunk now needs 512 pages in the 4 KiB model, beyond the old 256-page validator. | Allow 512 pages while retaining the 2 MiB byte bound. Production flushes one page. |
 | Native test policies | Fixed 32/64-page read-ahead policies exceeded the restored byte bound. | Use eight production pages; retain fault-count and byte-content assertions. |
 | Real-guest pressure | After chunk alignment, the old boot workload stayed below the 96 MiB arena and stopped exercising spill. | Source and fork each dirty 48 MiB, then verify markers in every 4 KiB subpage; require actual eviction, spill and refault. |
 | Subpage test markers | A one-byte ordinal repeats after 1 MiB, allowing swapped halves to evade comparison. | Add the high ordinal byte to distinguish every subpage in both simulated spill and real-guest pressure checks. |
@@ -31,14 +31,14 @@ The following small units remain intentional:
   partial volume reads remain valid; a cold object read fetches and decodes
   the whole object before returning the requested bytes.
 - Guest filesystem blocks, guest workload touches, ordinary host pages,
-  `mincore` results and KVM dirty bitmap bits are not pager frame counts.
+  `mincore` results and KVM dirty bitmap bits are not pager page counts.
   Managed capture seals pager regions; it does not reinterpret KVM bitmap
-  bits as 2 MiB frames.
+  bits as 2 MiB pages.
 - Scaled 4/16/64 KiB simulation geometries are retained. The Rust/native
   adapter requires 2 MiB alignment, including rejection of 4 KiB and 1 MiB
   offsets, lengths and backing offsets.
 - Mapping command and queue limits count metadata entries. They do not
-  allocate a payload buffer of that many full frames. Pre-copy already
+  allocate a payload buffer of that many full pages. Pre-copy already
   derives its batch count from 16 MiB, yielding eight production pages.
 
 ## Compression contract

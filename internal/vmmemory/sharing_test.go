@@ -294,9 +294,9 @@ func (c *pagerCluster) create(t *testing.T, id string, pages int) *volume.VM {
 	return vm
 }
 
-// Two VMs forked at one instant inherit the same lineage identities, so the
-// second maps the first's resident frames without reading its backing at all.
-func TestForksShareTheirPointsResidentFrames(t *testing.T) {
+// Two VMs forked at one pause inherit the same lineage identities, so the
+// second maps the first's resident pages without reading its backing at all.
+func TestForksShareTheirPointsResidentPages(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		c := newPagerCluster(t)
 		source := c.create(t, "source", 4)
@@ -334,7 +334,7 @@ func TestForksShareTheirPointsResidentFrames(t *testing.T) {
 		before, _ := f.h.Stats(t.Context())
 		for _, page := range []uint64{1, 2} {
 			if access(t, b, bm, page, false)[0] != 37 || am.pages[page].slot != bm.pages[page].slot {
-				t.Errorf("checkpoint page %d did not share its resident frame", page)
+				t.Errorf("checkpoint page %d did not share its resident page", page)
 			}
 		}
 		after, _ := f.h.Stats(t.Context())
@@ -371,7 +371,7 @@ func TestForksShareTheirPointsResidentFrames(t *testing.T) {
 		if access(t, b, bm, 2, false)[0] != 37 || am.pages[2].slot != bm.pages[2].slot {
 			t.Error("recovered inherited page lost its stable identity")
 		}
-		// A nested fork eagerly inherits its parent's and grandparent's frames.
+		// A nested fork eagerly inherits its parent's and grandparent's pages.
 		nested, err := bv.ForkPoint(t.Context(), volume.Prepared(nil, nil))
 		if err != nil {
 			t.Fatal(err)
@@ -383,32 +383,32 @@ func TestForksShareTheirPointsResidentFrames(t *testing.T) {
 			t.Fatalf("nested attach: loads=%d hits=%d; want 0 and 2", after.Loads-before.Loads, after.IdentityHits-before.IdentityHits)
 		}
 		if cm.pages[1].slot != bm.pages[1].slot || cm.pages[2].slot != am.pages[2].slot {
-			t.Fatal("nested fork did not eagerly inherit parent and grandparent frames")
+			t.Fatal("nested fork did not eagerly inherit parent and grandparent pages")
 		}
 		if access(t, cr, cm, 1, false)[0] != 81 || access(t, cr, cm, 2, false)[0] != 37 {
 			t.Fatal("nested fork lost inherited bytes")
 		}
-		// A later fork of the same instant inherits the same frames.
+		// A later fork of the same point inherits the same pages.
 		before, _ = f.h.Stats(t.Context())
 		_, d, dm := fork("materialized", point)
 		after, _ = f.h.Stats(t.Context())
 		if after.Loads != before.Loads || after.IdentityHits-before.IdentityHits != 2 ||
 			dm.pages[1].slot != am.pages[1].slot || dm.pages[2].slot != am.pages[2].slot {
-			t.Fatalf("the fork instant lost resident lineage: before=%+v after=%+v", before, after)
+			t.Fatalf("the fork point lost resident lineage: before=%+v after=%+v", before, after)
 		}
 		if access(t, d, dm, 1, false)[0] != 37 {
-			t.Fatal("a later fork of the instant lost captured bytes")
+			t.Fatal("a later fork of the point lost captured bytes")
 		}
 	})
 }
 
 // A fork point carries the pages the parent holds that no checkpoint has, and
-// on the parent's host the child maps those frames instead of reading them: the
-// instant names every one of them with an identity nothing else ever claims, so
+// on the parent's host the child maps those pages instead of reading them: the
+// point names every one of them with an identity nothing else ever claims, so
 // the pager shares them for as long as the seal lasts. When the seal ends the
-// frames are the guest's own dirty state again, so nothing may still be reading
+// pages are the guest's own dirty state again, so nothing may still be reading
 // them: a child that has published the pages as its own reads them from there.
-func TestForkPointSharesTheFramesItSealed(t *testing.T) {
+func TestForkPointSharesThePagesItSealed(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		c := newPagerCluster(t)
 		parent := c.create(t, "parent", 4)
@@ -421,7 +421,7 @@ func TestForkPointSharesTheFramesItSealed(t *testing.T) {
 		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 8, LogicalPages: 32, DirtyPages: 8, ReadAheadPages: 1})
 		pr, pm := f.attach(parent.Volume("ram0"))
 		// The guest stores after that checkpoint, so page 1 is the parent's own
-		// dirty state: no volume holds those bytes, only the frame does.
+		// dirty state: no volume holds those bytes, only the page does.
 		access(t, pr, pm, 1, true)[0] = 91
 		if err := pr.Seal(t.Context()); err != nil {
 			t.Fatal(err)
@@ -436,7 +436,7 @@ func TestForkPointSharesTheFramesItSealed(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = child.Close(context.Background()) })
-		// Offering the frames is what a host taking the child in does before the
+		// Offering the pages is what a host taking the child in does before the
 		// child's regions attach: it is the whole of the local backing's attach.
 		if err := point.Share(t.Context()); err != nil {
 			t.Fatal(err)
@@ -447,7 +447,7 @@ func TestForkPointSharesTheFramesItSealed(t *testing.T) {
 		}
 		cr, cm := f.attach(child.Volume("ram0"))
 		if got := access(t, cr, cm, 1, false)[0]; got != 91 {
-			t.Fatalf("the child read %d from the page the instant sealed, want 91", got)
+			t.Fatalf("the child read %d from the page the point sealed, want 91", got)
 		}
 		after, err := f.h.Stats(t.Context())
 		if err != nil {
@@ -455,10 +455,10 @@ func TestForkPointSharesTheFramesItSealed(t *testing.T) {
 		}
 		if after.Loads != before.Loads || after.IdentityHits-before.IdentityHits != 1 ||
 			cm.pages[1].slot != pm.pages[1].slot {
-			t.Fatalf("the child read the sealed page instead of mapping the parent's frame: before=%+v after=%+v", before, after)
+			t.Fatalf("the child read the sealed page instead of mapping the parent's copy: before=%+v after=%+v", before, after)
 		}
 		// The child's first checkpoint publishes the inherited page as its own
-		// and retires the point, which hands the frame back to the parent's
+		// and retires the point, which hands the page back to the parent's
 		// guest as dirty state.
 		if err := child.Checkpoint(t.Context()); err != nil {
 			t.Fatal(err)
@@ -470,11 +470,11 @@ func TestForkPointSharesTheFramesItSealed(t *testing.T) {
 	})
 }
 
-// A frame a fork point shared is still the parent's private dirty state, so
+// A page a fork point shared is still the parent's private dirty state, so
 // evicting it spills through the reservation the seal holds, however many
 // machines were mapping it. Each of them reads the page through its own backing
 // afterwards, which reaches those same bytes through the seal.
-func TestSharingASealedFrameLeavesItSpilledByItsSeal(t *testing.T) {
+func TestSharingASealedPageLeavesItSpilledByItsSeal(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		c := newPagerCluster(t)
 		parent := c.create(t, "parent", 4)
@@ -487,7 +487,7 @@ func TestSharingASealedFrameLeavesItSpilledByItsSeal(t *testing.T) {
 		if err := parent.Checkpoint(t.Context()); err != nil {
 			t.Fatal(err)
 		}
-		// Three frames: the parent's sealed page and two of the child's leave
+		// Three pages: the parent's sealed page and two of the child's leave
 		// the next fault of the child nothing free.
 		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 3, LogicalPages: 32, DirtyPages: 8, ReadAheadPages: 1})
 		pr, pm := f.attach(parent.Volume("ram0"))
@@ -516,7 +516,7 @@ func TestSharingASealedFrameLeavesItSpilledByItsSeal(t *testing.T) {
 		}
 		stats, err := f.h.Stats(t.Context())
 		if err != nil || stats.Spills != 1 || stats.Evictions == 0 {
-			t.Fatalf("the shared sealed frame was not spilled by its seal: %+v %v", stats, err)
+			t.Fatalf("the shared sealed page was not spilled by its seal: %+v %v", stats, err)
 		}
 		// Both sides read the page out of that spill: the child through the
 		// point it forked at, the parent as the dirty state it never gave up.
@@ -557,14 +557,14 @@ func TestWritesDuringPublicationNeverAliasTheCheckpoint(t *testing.T) {
 			t.Fatal(err)
 		}
 		access(t, r, m, 0, true)[0] = 22
-		// The instant took the identity this page had; a write through the
+		// The fork point took the identity this page had; a write through the
 		// volume itself, which is what image building does, belongs to the
 		// checkpoint after it.
 		if err := source.Volume("ram0").Write(t.Context(), 0, bytes.Repeat([]byte{22}, pageSize)); err != nil {
 			t.Fatal(err)
 		}
 		if written := locate(source.Volume("ram0")); written == frozen {
-			t.Fatalf("a write after the fork reported the instant's identity %v", written)
+			t.Fatalf("a write after the fork reported the point's identity %v", written)
 		}
 		fork, err := c.manager.Fork(t.Context(), "fork", point)
 		if err != nil {
@@ -579,7 +579,7 @@ func TestWritesDuringPublicationNeverAliasTheCheckpoint(t *testing.T) {
 			t.Fatalf("source lost its own write: %d", got)
 		}
 		if fm.pages[0].slot == m.pages[0].slot {
-			t.Fatal("two different contents shared one frame")
+			t.Fatal("two different contents shared one page")
 		}
 	})
 }

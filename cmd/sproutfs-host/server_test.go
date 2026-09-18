@@ -334,19 +334,19 @@ func TestReceiveRefusesAHandoffThatNamesNoSource(t *testing.T) {
 	}
 }
 
-// TestReceiveTakesAForkOfThisHostsOwnInstant: a fork is a handoff wherever the
+// TestReceiveTakesAForkOfThisHostsOwnForkPoint: a fork is a handoff wherever the
 // child lands, and a child taken in on its parent's own host is served nothing
-// — it maps the frames the seal froze, so no page of it ever reaches the wire
+// — it maps the pages the seal froze, so no page of it ever reaches the wire
 // and the handoff names no address to fetch from. Refusing that handoff for
 // having no source is refusing every same-host fork: the one path the cluster
 // takes by default never worked through this API, though Host.Receive has
 // always taken it.
-func TestReceiveTakesAForkOfThisHostsOwnInstant(t *testing.T) {
+func TestReceiveTakesAForkOfThisHostsOwnForkPoint(t *testing.T) {
 	fake := &fakeHost{received: hostapi.ReceiveResult{VM: hostapi.VM{ID: "child"}}}
 	status, body := call(t, fake, http.MethodPost, "/vms/receive",
 		`{"VMID":"child","Parent":"vm-1","ParentCheckpoint":7}`)
 	if status != http.StatusOK {
-		t.Fatalf("a fork of this host's own instant answered %d: %s", status, body)
+		t.Fatalf("a fork of this host's own fork point answered %d: %s", status, body)
 	}
 	if len(fake.calls) != 1 || fake.calls[0] != "receive child " {
 		t.Fatalf("the host was asked for %v", fake.calls)
@@ -444,10 +444,10 @@ func TestStopClosesTheVMOnItsHost(t *testing.T) {
 	}
 }
 
-// TestStoppingAVMAForkInstantHoldsIsAConflict: the frames a stop would release
+// TestStoppingAVMAForkPointHoldsIsAConflict: the pages a stop would release
 // are the ones a child is still reading, so the request is refused rather than
 // acted on, and the caller is told it may ask again.
-func TestStoppingAVMAForkInstantHoldsIsAConflict(t *testing.T) {
+func TestStoppingAVMAForkPointHoldsIsAConflict(t *testing.T) {
 	fake := &fakeHost{err: fmt.Errorf("%w: vm-1", volume.ErrSealed)}
 	status, body := call(t, fake, http.MethodPost, "/vms/vm-1/stop", "")
 	if status != http.StatusConflict {

@@ -107,7 +107,7 @@ func (h *Host) claimFence(vmID string) bool {
 }
 
 // fencedMessage is what a VM another writer has taken the control record of is
-// given up as. Its guest may still be running and its VMM still hold frames, but
+// given up as. Its guest may still be running and its VMM still hold pages, but
 // nothing either of them produces can ever be published, so holding on would
 // burn this host's memory on writes with nowhere to go — and serving any of it
 // would hand another VM state this one's writer never had.

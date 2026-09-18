@@ -20,9 +20,9 @@ func TestASealWhoseDeadlinePassesLeavesTheGuestRunning(t *testing.T) {
 	f := newFixture(t, 8, 8, 8)
 	r, m, b := f.region(4)
 	for page := range uint64(3) {
-		frame := access(t, r, m, page, true)
-		for i := range frame {
-			frame[i] = byte(page) + 0x40
+		bytes := access(t, r, m, page, true)
+		for i := range bytes {
+			bytes[i] = byte(page) + 0x40
 		}
 	}
 	ctx, cancel := context.WithCancel(t.Context())

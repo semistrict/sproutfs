@@ -42,7 +42,7 @@ While a VM's loss window exceeds `LossWindow`:
 
 A store into a page the guest already dirtied and that no seal covers does not
 fault and is not blocked. The checkpoint the pager asks for seals every dirty
-page at its instant, so from that instant every store of the VM waits; the gap
+page in its pause, so from that pause every store of the VM waits; the gap
 is between the window expiring and that seal, and it is one pause away.
 
 So what a host loss can cost a VM is bounded: **the lost writes of one VM span

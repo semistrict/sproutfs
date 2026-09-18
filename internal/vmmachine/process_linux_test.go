@@ -157,7 +157,7 @@ func TestFirecrackerDAXCaptureRestoreForkAndFence(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A guest flush makes nothing durable: the device completes it and the host
-	// is never asked. The DAX store is this host's frames alone until a checkpoint
+	// is never asked. The DAX store is this host's pages alone until a checkpoint
 	// publishes them.
 	var durable [8]byte
 	if err := pmem.Read(ctx, fileOffset, durable[:]); err != nil {
@@ -168,7 +168,7 @@ func TestFirecrackerDAXCaptureRestoreForkAndFence(t *testing.T) {
 	}
 	command(t, ctx, p, "ram 73\n", "SPROUTFS_RAM ram=73")
 	// Capture: the VMM pauses and seals every region as it writes its state, the
-	// vCPUs resume, and the checkpoint uploads the sealed frames behind them.
+	// vCPUs resume, and the checkpoint uploads the sealed pages behind them.
 	// The pause must contain the page-table work of the seal and none of that
 	// traffic.
 	beforeCapture, err := host.Stats(ctx)
@@ -217,7 +217,7 @@ func TestFirecrackerDAXCaptureRestoreForkAndFence(t *testing.T) {
 	}
 	command(t, ctx, p, "write 99\n", "SPROUTFS_FLUSH disk=99")
 	command(t, ctx, p, "ram 101\n", "SPROUTFS_RAM ram=101")
-	// A host that never held the capture rebuilds the instant from the published
+	// A host that never held the capture rebuilds the point from the published
 	// checkpoint alone, which is what a fork of a template is.
 	point, err := manager.Inherit(ctx, ckpt.Ref())
 	if err != nil {
@@ -264,7 +264,7 @@ func TestFirecrackerDAXCaptureRestoreForkAndFence(t *testing.T) {
 	if mapped < 64 || commands >= mapped/8 {
 		t.Fatalf("restore did not batch resident pages before resume: mapped=%d commands=%d", mapped, commands)
 	}
-	// Inherited frames are mapped without any read. The VMM still touches a few
+	// Inherited pages are mapped without any read. The VMM still touches a few
 	// pages of its own while it rebuilds devices, and the source never made
 	// every page resident, so a small remainder is loaded on demand.
 	loaded := attached.LoadedPages - beforeAttach.LoadedPages
@@ -282,16 +282,16 @@ func TestFirecrackerDAXCaptureRestoreForkAndFence(t *testing.T) {
 	command(t, ctx, fp, "read\n", "SPROUTFS_VALUE ram=73 disk=41")
 	command(t, ctx, fp, "write 57\n", "SPROUTFS_FLUSH disk=57")
 	command(t, ctx, p, "read\n", "SPROUTFS_VALUE ram=101 disk=99")
-	left, leftVMAs := frames(t, p.PID())
-	right, rightVMAs := frames(t, fp.PID())
+	left, leftVMAs := residentPFNs(t, p.PID())
+	right, rightVMAs := residentPFNs(t, fp.PID())
 	shared := 0
-	for frame := range left {
-		if right[frame] {
+	for page := range left {
+		if right[page] {
 			shared++
 		}
 	}
 	if shared == 0 {
-		t.Fatal("running fork shares no physical backing frames with its source")
+		t.Fatal("running fork shares no physical backing pages with its source")
 	}
 	if slots*pageBytes <= pressureBytes {
 		// Boot's resident set changes as sharing improves. Deliberately dirty
@@ -315,9 +315,9 @@ func TestFirecrackerDAXCaptureRestoreForkAndFence(t *testing.T) {
 	if slots*pageBytes <= pressureBytes && (stats.Evictions == 0 || stats.Spills == 0 || stats.SpillRefaults == 0) {
 		t.Fatalf("pressure run did not exercise live spill/refault: %+v", stats)
 	}
-	t.Logf("memory pages=%+v arena_bytes=%d shared_frames=%d source_vmas=%d fork_vmas=%d", stats, allocated, shared, leftVMAs, rightVMAs)
+	t.Logf("memory pages=%+v arena_bytes=%d shared_pages=%d source_vmas=%d fork_vmas=%d", stats, allocated, shared, leftVMAs, rightVMAs)
 	// The source half of a live migration: stop the guest and capture its state,
-	// uploading nothing. The frames this host holds keep serving the
+	// uploading nothing. The pages this host holds keep serving the
 	// destination afterwards, which is the whole of what moves.
 	regions := p.Regions()
 	if len(regions) != 2 || regions[vmmachine.RAMVolume] == nil || regions["root"] == nil {
@@ -344,7 +344,7 @@ func TestFirecrackerDAXCaptureRestoreForkAndFence(t *testing.T) {
 	if sealed := afterStop.CheckpointPages - beforeStop.CheckpointPages; sealed != 0 {
 		t.Fatalf("the migration's stop sealed %d pages, want none", sealed)
 	}
-	// A stopped source still holds its frames, which is what the destination
+	// A stopped source still holds its pages, which is what the destination
 	// fetches from before it ever reads an object.
 	ram := regions[vmmachine.RAMVolume]
 	resident, err := ram.Resident()
@@ -352,7 +352,7 @@ func TestFirecrackerDAXCaptureRestoreForkAndFence(t *testing.T) {
 		t.Fatalf("listing what the stopped source holds: %v", err)
 	}
 	if len(resident) == 0 {
-		t.Fatal("the stopped source holds no frame to serve its destination")
+		t.Fatal("the stopped source holds no page to serve its destination")
 	}
 	sample := make([]byte, pageBytes)
 	middle := resident[len(resident)/2]
@@ -442,7 +442,7 @@ func residentPages(t testing.TB, pageBytes, budget int) int {
 	return slots
 }
 
-func frames(t *testing.T, pid int) (map[uint64]bool, int) {
+func residentPFNs(t *testing.T, pid int) (map[uint64]bool, int) {
 	t.Helper()
 	smaps, err := os.ReadFile(fmt.Sprintf("/proc/%d/smaps", pid))
 	if err != nil {
@@ -490,11 +490,11 @@ func frames(t *testing.T, pid int) (map[uint64]bool, int) {
 			}
 			entry := binary.LittleEndian.Uint64(raw[:])
 			if entry>>63 != 0 {
-				frame := entry & ((1 << 55) - 1)
-				if frame == 0 {
-					t.Fatal("physical frame evidence requires privileged pagemap access")
+				page := entry & ((1 << 55) - 1)
+				if page == 0 {
+					t.Fatal("physical page evidence requires privileged pagemap access")
 				}
-				result[frame] = true
+				result[page] = true
 			}
 		}
 	}

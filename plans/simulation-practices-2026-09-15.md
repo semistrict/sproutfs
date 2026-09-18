@@ -37,8 +37,8 @@ catalogue. Do not spend effort there.
    rather than which ended. `crash_test.go` runs one script under all three
    endings and requires the restart to come back on its own disk;
    `crash_campaign_test.go` is the seeded campaign, killing a host
-   mid-checkpoint, while it holds a fork instant, while it serves a migration
-   and while it takes one in, at an instant and in a mode the seed draws, with
+   mid-checkpoint, while it holds a fork point, while it serves a migration
+   and while it takes one in, at a moment and in a mode the seed draws, with
    the source's four-checkpoint-interval hold reached on the injected
    `sim.Clock`. `TestHostCrashSoak` runs it over a seed block. See
    [docs/testing.md](../docs/testing.md#losing-a-host).
@@ -69,7 +69,7 @@ catalogue. Do not spend effort there.
    buggified site and in-tree bug guard is a no-op — which is how the first
    version of this campaign killed none of the thirteen guards; with the
    runtime threaded through it is killed by `migration-corrupt-peer-page`,
-   `pager-zero-new-frame` and `checkpoint-pack-member-offset`, and it runs with
+   `pager-zero-new-page` and `checkpoint-pack-member-offset`, and it runs with
    `Buggify` on.
 2. **Seed-generated topology and failure schedule.** FDB generates the
    cluster and its concurrent failures from the seed
@@ -95,7 +95,7 @@ catalogue. Do not spend effort there.
    `TestASourcePartitionedWhileTheStoreIsAwayAndASecondHostTakesOver` names the
    combination this item calls unreachable, in both its halves: a destination
    that cannot reach the store at all, and one that does take the VM over and
-   only then finds it cannot fetch the frames the source still holds. The
+   only then finds it cannot fetch the pages the source still holds. The
    invariants are the three: no guest reads bytes it never wrote, every VM's
    selected checkpoint is one a writer of it published, and `CheckDeployment`
    passes at the end with only the allowances this campaign's own faults earn:
@@ -131,7 +131,7 @@ catalogue. Do not spend effort there.
    empty therefore lost that pack at the next sweep, and the pinned index went
    on naming an object nothing could fetch — a lineage with a hole in it, which
    is what `CheckDeployment` reports as a pack part that does not read. It needs
-   a fork's instant, a compaction and a later sweep to line up, which no
+   a fork's point, a compaction and a later sweep to line up, which no
    campaign over a fixed topology with one lineage had put together.
    `TestReclamationSparesThePacksAPinnedIndexOnlyNames` is the case, and the
    sweep now spares what the pinned index names.
@@ -153,7 +153,7 @@ catalogue. Do not spend effort there.
    ask it to; what a lost reply really costs is the connection, which is what
    the lost-page-replies fault takes. A third finding is the harness's own: a
    checkpoint's sweep runs behind its publication, so a world closed the
-   instant after a checkpoint lands cancels it and leaves the checkpoint it
+   moment after a checkpoint lands cancels it and leaves the checkpoint it
    replaced behind. The campaign gives its sweeps a moment before it closes, as
    a host draining itself would, rather than spending an allowance on it.
    `Network.ClearFaults` is new beside them: a drop or a delay still armed when
@@ -208,7 +208,7 @@ catalogue. Do not spend effort there.
    away by naming it as an endpoint.
    `internal/simtest/swizzle_test.go` is the campaign, and it drives
    `DropNext`, `DuplicateNext`, `DelayNext` and `SetLink` on the page-server
-   links a handoff runs over, through the `simtest.DroppedPageFrames` fault.
+   links a handoff runs over, through the `simtest.DroppedPageServerFrames` fault.
    That fault is the one the generated schedule does not draw: a dropped frame
    on an open connection leaves a guest's demand fault waiting for ever, which
    is the right answer for a page whose only copy is on that peer, so the drop
@@ -259,7 +259,7 @@ catalogue. Do not spend effort there.
    the run. Nothing else about the campaign varies. So the strict fingerprint
    is asserted where the harness chooses completion order
    (`TestScheduledHostFingerprintIsStable`) and `Runtime.WorkFingerprint` —
-   the same digest without order, instant or adapter numbering — where it does
+   the same digest without order, moment or adapter numbering — where it does
    not (`TestMigrationChaosFingerprintIsStable`, which excludes connection
    attempts and bounds how many it excludes). A trace event carries no offset,
    so neither digest can tell two equal-sized writes to one file apart; the
@@ -342,9 +342,9 @@ cancel a stream that was never going to fetch anything. In the default seeds 1,
 exist is what exercises the fault, and doing so makes seeds 1 and 7 fail at the
 destination's first read with `the source has not served a page no checkpoint
 holds: disk page 0`. **Settled, and it was both.** The campaign listed
-`stream-canceled` among the faults that take the source's frames away, so that
+`stream-canceled` among the faults that take the source's pages away, so that
 hop checkpointed before its migration and handed off nothing to fetch; a
-cancelled stream takes nothing away — the source keeps every frame and goes on
+cancelled stream takes nothing away — the source keeps every page and goes on
 serving — so the fault now runs over a handoff that carries pages. With one, it
 found a real post-copy defect: `PeerBacking.Resident` gave the source up for
 good on any listing error, and the caller of that listing is the stream the

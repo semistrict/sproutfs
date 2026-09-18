@@ -54,7 +54,7 @@ func readSector(t *testing.T, vm *volume.VM, name string, offset uint64) []byte 
 // stops an identity from being handed out again — the orchestrator allocates
 // them and a deleted one is gone from the deployment — so the two VMs must not
 // share a checkpoint sequence: the lineage identity a page cache keys a
-// resident frame by is (VM, sequence, volume, page), and two VMs that agree on
+// resident page by is (VM, sequence, volume, page), and two VMs that agree on
 // all four are one VM as far as every reader is concerned.
 func TestARecreatedIdentityReadsItsOwnBytesRatherThanTheDeadVMs(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {

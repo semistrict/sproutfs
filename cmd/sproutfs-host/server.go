@@ -170,15 +170,15 @@ func newServer(h host.VMs, token string) http.Handler {
 			jsonhttp.Fail(r.Context(), w, http.StatusBadRequest, "receive", err)
 			return
 		}
-		// A fork of this host's own instant is the one handoff with nothing to
-		// fetch from: the child maps the frames the seal froze, so no page of it
+		// A fork of this host's own fork point is the one handoff with nothing to
+		// fetch from: the child maps the pages the seal froze, so no page of it
 		// ever reaches the wire and the source names no address. Every other
 		// handoff — a migration, or a child whose parent runs elsewhere — has to
 		// say where the pages no checkpoint holds are still served.
 		if handoff.VMID == "" || (handoff.Source == "" && handoff.Parent == "") {
 			jsonhttp.Fail(r.Context(), w, http.StatusBadRequest, "receive",
 				fmt.Errorf("%w: a handoff names a VM, and the host still serving its pages "+
-					"unless it is a fork this host holds the instant of", host.ErrRequest))
+					"unless it is a fork this host holds the point of", host.ErrRequest))
 			return
 		}
 		received, err := h.Receive(r.Context(), handoff)
@@ -189,7 +189,7 @@ func newServer(h host.VMs, token string) http.Handler {
 	})
 	// Giving a handover up is the other end of releasing it: the control plane
 	// says this VM will never be received, so whatever is still held for it goes
-	// and a fork's parent takes its sealed frames back. It refuses nothing,
+	// and a fork's parent takes its sealed pages back. It refuses nothing,
 	// because a refusal would only leave that parent sealed for good.
 	mux.HandleFunc("POST /vms/{id}/abandoned", func(w http.ResponseWriter, r *http.Request) {
 		act(w, r, "abandoned", h.Abandoned(r.Context(), r.PathValue("id")))
@@ -245,8 +245,8 @@ func statusOf(err error) int {
 	case errors.Is(err, platform.ErrNotFound), errors.Is(err, host.ErrNotRunning):
 		return http.StatusNotFound
 	case errors.Is(err, volume.ErrExists), errors.Is(err, control.ErrExists), errors.Is(err, host.ErrRunning),
-		// A VM a fork instant holds sealed is one this host will not stop or
-		// delete until the child reading those frames has them.
+		// A VM a fork point holds sealed is one this host will not stop or
+		// delete until the child reading those pages has them.
 		errors.Is(err, volume.ErrSealed):
 		return http.StatusConflict
 	case errors.Is(err, host.ErrNotMigratable), errors.Is(err, volume.ErrHandedOff),

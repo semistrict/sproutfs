@@ -20,7 +20,7 @@ import (
 //
 // A failure is logged and retried. Where the VM is still inside its loss window
 // that retry is the next interval, and there is nothing else to do with one: the
-// guest is running, its writes are in this host's frames, and the only cost of a
+// guest is running, its writes are in this host's memory, and the only cost of a
 // checkpoint that did not land is that a host loss would rewind the VM further.
 // Where the window is already exceeded the guest is paying that cost now — the
 // pager is holding its stores back until a checkpoint of it lands — so the next
@@ -42,7 +42,7 @@ func (h *Host) checkpointing(ctx context.Context, vmID string, entry *registrati
 			continue
 		}
 		if vm.Status().Sealed {
-			// A fork point holds this VM's frames, and one checkpoint of a region is
+			// A fork point holds this VM's pages, and one checkpoint of a region is
 			// outstanding at a time. The next interval takes the checkpoint, once the
 			// child that was forked from here has the pages it inherited.
 			continue
@@ -189,7 +189,7 @@ func (h *Host) checkpointNow(region *vmmemory.Region) bool {
 // stopStalled stops a VM whose stores the pager's dirty budget can no longer
 // admit and no checkpoint can relieve. It is the deliberate end of a guest that
 // would otherwise die of a failed fault with nothing recorded: the loop stops,
-// the instants taken on the VM are retired, a last checkpoint takes whatever the
+// the fork points taken on the VM are retired, a last checkpoint takes whatever the
 // VMM can still be paused for, and then the VM is given up exactly as a fenced
 // or a dead one is.
 //

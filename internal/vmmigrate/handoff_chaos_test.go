@@ -12,7 +12,7 @@ import (
 	"github.com/semistrict/sproutfs/internal/vmmigrate"
 )
 
-// A migration publishes nothing, so the source's frames are the only copy of
+// A migration publishes nothing, so the source's pages are the only copy of
 // everything the guest wrote since its last checkpoint. Losing that host before
 // the destination fetched them rewinds the VM to the checkpoint, and no
 // further: the control record still selects it and an ordinary open brings it
@@ -38,7 +38,7 @@ func TestSourceLostAfterHandoffRewindsToTheLastCheckpoint(t *testing.T) {
 				}
 				guest.start(1)
 				// Everything the guest stores from here lives only in this host's
-				// frames until the destination fetches it or the next checkpoint lands.
+				// pages until the destination fetches it or the next checkpoint lands.
 				durable, selected := guest.snapshot(), vm.Status().Checkpoint
 				stores(random, guest)
 				source, err := vmmigrate.NewPageSource(t.Context(), vmmigrate.SourceConfig{PageSize: pageSize,
@@ -59,7 +59,7 @@ func TestSourceLostAfterHandoffRewindsToTheLastCheckpoint(t *testing.T) {
 						t.Fatalf("%s remained writable after the handoff: %v", name, err)
 					}
 				}
-				// Drop every source frame before anything fetched them, which is
+				// Drop every source page before anything fetched them, which is
 				// the source host dying mid post-copy.
 				source.Release(vm.ID())
 				guest.close()

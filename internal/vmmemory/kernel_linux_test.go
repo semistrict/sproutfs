@@ -41,7 +41,7 @@ type kernelBacking struct {
 	private map[uint64]bool
 	fenced  atomic.Bool
 	// onPublish runs before a checkpoint's page lands, which lets a test hold a
-	// publication open and observe the frames the checkpoint still owns.
+	// publication open and observe the pages the checkpoint still owns.
 	onPublish func()
 }
 
@@ -86,7 +86,7 @@ func (b *kernelBacking) Verify(context.Context) error {
 }
 
 // checkpoint is what a checkpoint does to a region: it seals, reads every
-// sealed page out of the frames the guest is running on, installs them and
+// sealed page out of the pages the guest is running on, installs them and
 // retires the checkpoint.
 func (b *kernelBacking) checkpoint(ctx context.Context, r *vmmemory.Region) error {
 	if err := r.Seal(ctx); err != nil {
@@ -171,7 +171,7 @@ func (p *nativeProcess) seal(region int) {
 }
 
 // checkpoint is one region's whole checkpoint: the wire seal, the publication
-// of the sealed frames into its backing, and the retirement that makes them
+// of the sealed pages into its backing, and the retirement that makes them
 // clean.
 func (p *nativeProcess) checkpoint(region int) {
 	p.t.Helper()
@@ -255,7 +255,7 @@ func requireKernelBytes(t *testing.T, b *kernelBacking, want []byte) {
 	}
 }
 
-// A store into a zero page owns no frame and fences nothing, so through real
+// A store into a zero page owns no page and fences nothing, so through real
 // UFFD it is one mapping command, one remap and no revoke, whether a read had
 // zero-mapped the page or it is a hole never touched, and it reads nothing from
 // the volume. Four threads reading the bytes around the store, in the faulting
@@ -311,7 +311,7 @@ func TestManagedPagerStoreIntoZeroPageIsOneMappingCommand(t *testing.T) {
 
 // A guest filling fresh memory in order takes one fault per write-ahead run
 // through real UFFD: each fault maps its whole run writable in one command, its
-// frames allocated without a byte written and zeroed by the kernel as they are
+// pages allocated without a byte written and zeroed by the kernel as they are
 // installed, and the stores into the rest of the run never fault. A pager page
 // spans the underlying host pages while retaining one managed fault unit.
 func TestManagedPagerSequentialStoresIntoFreshMemoryFaultOncePerRun(t *testing.T) {
@@ -460,7 +460,7 @@ func TestKVMVolumeCheckpointWithSpillRequiresAuthority(t *testing.T) {
 		}
 	}
 	// One checkpoint of the whole VM: every region seals over the control protocol
-	// and the checkpoint publishes their frames together.
+	// and the checkpoint publishes their pages together.
 	sources := make(map[string]volume.DirtySource, len(volumes))
 	for region, v := range volumes {
 		p.seal(region)
@@ -547,7 +547,7 @@ func (p *nativeProcess) pfn(region int) uint64 {
 	entry := binary.LittleEndian.Uint64(b[:])
 	pfn := entry & ((1 << 55) - 1)
 	if entry>>63 == 0 || pfn == 0 {
-		p.t.Fatal("physical frame evidence inaccessible")
+		p.t.Fatal("physical page evidence inaccessible")
 	}
 	return pfn
 }
@@ -709,10 +709,10 @@ func TestManagedPagerReadAheadKeepsZerosAndDataSeparate(t *testing.T) {
 }
 
 // A seal protects whole runs of consecutive pages in place, one range command
-// each, whatever frames those pages hold and however many of the client's
-// mappings they span. The guest here dirties a run backwards, so its frames
+// each, whatever pages those pages hold and however many of the client's
+// mappings they span. The guest here dirties a run backwards, so its pages
 // descend and every page of the run is a separate mapping: one protection must
-// still cover all of it, the guest must keep reading those very frames without
+// still cover all of it, the guest must keep reading those very pages without
 // refaulting, and its next store must trap and come back on a copy.
 func TestManagedPagerSealProtectsARunSpanningSeveralMappings(t *testing.T) {
 	const pages = 4
@@ -742,7 +742,7 @@ func TestManagedPagerSealProtectsARunSpanningSeveralMappings(t *testing.T) {
 	if after.Mappings != before.Mappings {
 		t.Fatalf("the seal issued %d mapping commands, want none", after.Mappings-before.Mappings)
 	}
-	// Every page of the run still reads its own sealed bytes through the frame
+	// Every page of the run still reads its own sealed bytes through the memory
 	// it already had, and no fault was needed to get them.
 	for page := range pages {
 		p.request(fmt.Sprintf("read 1 %d 1", page*size), fmt.Sprintf("data %02x", 70+page))
@@ -751,12 +751,12 @@ func TestManagedPagerSealProtectsARunSpanningSeveralMappings(t *testing.T) {
 		t.Fatalf("reading the protected run took %d faults: %v", got.Faults-after.Faults, err)
 	}
 	if got := p.pfn(1); got != sealed {
-		t.Fatalf("the seal moved the guest to frame %d, want the frame %d it already had", got, sealed)
+		t.Fatalf("the seal moved the guest to physical page %d, want the %d it already had", got, sealed)
 	}
 	p.request("fill 1 0 1 91", "filled")
 	p.request("read 1 0 1", "data 5b")
 	if got := p.pfn(1); got == sealed {
-		t.Fatal("a store into a protected page kept the frame the checkpoint holds")
+		t.Fatal("a store into a protected page kept the physical page the checkpoint holds")
 	}
 	published, err := p.backing[1].publish(t.Context(), region.Checkpoint())
 	if err != nil {
@@ -778,7 +778,7 @@ func TestManagedPagerSealProtectsARunSpanningSeveralMappings(t *testing.T) {
 }
 
 // A 2 MiB pager page is one unit end to end through real UFFD: a fault on
-// any host page maps the whole frame, a store copies it, a seal ingests it,
+// any host page maps the whole pager page, a store copies it, a seal ingests it,
 // and a spilled page comes back with every host subpage intact.
 func TestManagedPagerHugePagesFaultCopySealAndSpill(t *testing.T) {
 	const pageSize, pages = vmmemory.PageSize, 4
@@ -896,7 +896,7 @@ func TestManagedPagerHugePagesFaultCopySealAndSpill(t *testing.T) {
 
 // Sealing takes write access away from a private page in place, which is the
 // only part of a capture the guest's pause pays for. On a real UFFD the guest
-// must keep reading that frame, trap on its next store, come back on a frame of
+// must keep reading that page, trap on its next store, come back on a page of
 // its own, and leave the checkpoint's bytes as they were; releasing the capture
 // must make the page writable again.
 func TestManagedPagerSealProtectsAndCopiesOnWriteOnUFFD(t *testing.T) {
@@ -909,16 +909,16 @@ func TestManagedPagerSealProtectsAndCopiesOnWriteOnUFFD(t *testing.T) {
 	if err := region.Seal(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	// The write-protected mapping still serves reads from the checkpoint's frame.
+	// The write-protected mapping still serves reads from the checkpoint's page.
 	p.request("read 1 0 1", "data 46")
 	if got := p.pfn(1); got != sealed {
-		t.Fatalf("the seal moved the guest to frame %d, want the frame %d it already had", got, sealed)
+		t.Fatalf("the seal moved the guest to physical page %d, want the %d it already had", got, sealed)
 	}
 	// A store traps on that protection and comes back on a private copy.
 	p.request("fill 1 0 1 71", "filled")
 	p.request("read 1 0 1", "data 47")
 	if got := p.pfn(1); got == sealed {
-		t.Fatal("a store into a sealed page kept the frame the checkpoint holds")
+		t.Fatal("a store into a sealed page kept the physical page the checkpoint holds")
 	}
 	published, err := p.backing[1].publish(t.Context(), region.Checkpoint())
 	if err != nil {

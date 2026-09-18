@@ -11,7 +11,7 @@ import (
 	"github.com/semistrict/sproutfs/internal/vmmemory"
 )
 
-func frameBudget(t *testing.T, pages int) *resource.Budget {
+func pageBudget(t *testing.T, pages int) *resource.Budget {
 	t.Helper()
 	b, err := resource.New(int64(pages * pageSize))
 	if err != nil {
@@ -22,7 +22,7 @@ func frameBudget(t *testing.T, pages int) *resource.Budget {
 
 func TestPagerEvictsWithinSharedRAMAllowance(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		b := frameBudget(t, 2)
+		b := pageBudget(t, 2)
 		other, err := b.TryAcquire(t.Context(), pageSize)
 		if err != nil {
 			t.Fatal(err)
@@ -31,7 +31,7 @@ func TestPagerEvictsWithinSharedRAMAllowance(t *testing.T) {
 		r, m, _ := f.region(2)
 		for _, page := range []uint64{0, 1, 0} {
 			if got := access(t, r, m, page, false)[0]; got != byte(page+1) {
-				t.Fatalf("frame %d lost data: %d", page, got)
+				t.Fatalf("page %d lost data: %d", page, got)
 			}
 			if got := b.Stats().Used; got != 2*pageSize {
 				t.Fatalf("shared RAM accounting = %d", got)
@@ -52,14 +52,14 @@ func TestPagerEvictsWithinSharedRAMAllowance(t *testing.T) {
 			t.Fatal(err)
 		}
 		if got := b.Stats().Used; got != 0 {
-			t.Fatalf("detached frames retain %d bytes", got)
+			t.Fatalf("detached pages retain %d bytes", got)
 		}
 	})
 }
 
-func TestSharedFrameIsChargedOnceUntilLastAliasDetaches(t *testing.T) {
+func TestSharedPageIsChargedOnceUntilLastAliasDetaches(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		b := frameBudget(t, 1)
+		b := pageBudget(t, 1)
 		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 2, LogicalPages: 2, DirtyPages: 2, ReadAheadPages: 1}, b)
 		first, fm, _ := f.region(1)
 		access(t, first, fm, 0, false)
@@ -68,28 +68,28 @@ func TestSharedFrameIsChargedOnceUntilLastAliasDetaches(t *testing.T) {
 			t.Fatal(got)
 		}
 		if fm.pages[0].slot != sm.pages[0].slot || b.Stats().Used != pageSize {
-			t.Fatal("shared frame was duplicated or charged twice")
+			t.Fatal("shared page was duplicated or charged twice")
 		}
 		clear(fm.pages)
 		if err := first.Detach(t.Context()); err != nil {
 			t.Fatal(err)
 		}
 		if b.Stats().Used != pageSize {
-			t.Fatal("first detach released a frame still held by a sibling")
+			t.Fatal("first detach released a page still held by a sibling")
 		}
 		clear(sm.pages)
 		if err := second.Detach(t.Context()); err != nil {
 			t.Fatal(err)
 		}
 		if b.Stats().Used != 0 {
-			t.Fatal("last detach retained a punched frame")
+			t.Fatal("last detach retained a punched page")
 		}
 	})
 }
 
 func TestFaultWaitsForOtherConsumerAndCancellationReleasesReservations(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		b := frameBudget(t, 1)
+		b := pageBudget(t, 1)
 		other, err := b.TryAcquire(t.Context(), pageSize)
 		if err != nil {
 			t.Fatal(err)
@@ -148,7 +148,7 @@ func (a *failedResourceArena) Release(ctx context.Context, slot int) error {
 
 func TestFailedPhysicalCleanupRetainsRAMUntilRetry(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		b := frameBudget(t, 1)
+		b := pageBudget(t, 1)
 		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 1, LogicalPages: 1, DirtyPages: 1}, b)
 		spill, err := f.disk.Open(t.Context(), "failed-spill", platform.OpenOptions{Create: true})
 		if err != nil {
@@ -184,7 +184,7 @@ func TestFailedPhysicalCleanupRetainsRAMUntilRetry(t *testing.T) {
 	})
 }
 
-func TestHugePageFaultReclaimsCacheBeforeEvictingGuestFrames(t *testing.T) {
+func TestHugePageFaultReclaimsCacheBeforeEvictingGuestPages(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		const huge = 2 << 20
 		b, err := resource.New(2 * huge)

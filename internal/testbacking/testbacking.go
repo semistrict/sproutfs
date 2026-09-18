@@ -69,7 +69,7 @@ func (b *Admitting) Verify(ctx context.Context) error {
 }
 
 // LoadUnpublished forwards the wrapped backing's report of which pages a
-// migration source served out of its own dirty frames, so a destination's
+// migration source served out of its own dirty pages, so a destination's
 // pager keeps them. A backing that does not track them is loaded plainly.
 func (b *Admitting) LoadUnpublished(ctx context.Context, offset uint64, dst []byte) ([]bool, error) {
 	tracked, ok := b.Backing.(vmmemory.UnpublishedLoader)

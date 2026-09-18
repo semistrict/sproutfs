@@ -15,7 +15,7 @@ import (
 
 // Allowance names one class of leftover object or dangling reference a check
 // tolerates. Every one of them is something a host lost at a particular
-// instant leaves behind and no writer ever comes back for: they are a
+// moment leaves behind and no writer ever comes back for: they are a
 // collector's to reconcile, not a writer's, so a test that kills hosts says so
 // by naming the class rather than by ignoring the check.
 //
@@ -115,7 +115,7 @@ func (e *InconsistentError) Error() string {
 // names — is whole, which is exactly what a grandchild reading through it
 // needs.
 //
-// Each allow names a class of leftover a host lost at a particular instant
+// Each allow names a class of leftover a host lost at a particular moment
 // leaves and no writer returns for; violations of that class are reported
 // nowhere. Everything else is returned as an *InconsistentError.
 //

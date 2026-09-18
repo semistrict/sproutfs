@@ -14,7 +14,7 @@ import (
 )
 
 // TestAFanOutWhoseReceiveFailsPartWayLeavesTheParentDurable: a fan-out is one
-// pause of the parent and one hold on the instant per child, taken before any
+// pause of the parent and one hold on the point per child, taken before any
 // child exists anywhere. A destination that takes the first child and refuses
 // the next leaves the rest of those holds on a parent nothing can checkpoint,
 // fence, migrate or stop, and nothing will ever fetch what they keep — the
@@ -54,7 +54,7 @@ func TestAFanOutWhoseReceiveFailsPartWayLeavesTheParentDurable(t *testing.T) {
 			Knobs: k, Prefix: prefix, Log: t.Logf})
 		choose := func(int) int { return 0 }
 		// A checkpoint to inherit, and then stores that live only in the
-		// parent's frames: those are exactly the pages the instant holds and
+		// parent's pages: those are exactly the pages the point holds and
 		// exactly what a release of a hold nobody fetched from cannot give up.
 		if err := world.Store(ctx, "vm-1", 4, choose); err != nil {
 			t.Fatal(err)
@@ -103,7 +103,7 @@ func TestAFanOutWhoseReceiveFailsPartWayLeavesTheParentDurable(t *testing.T) {
 				serving)
 		}
 		// This is what the whole of it is for: a parent that can be checkpointed
-		// again, at the writes it has made since the fork instant.
+		// again, at the writes it has made since the fork point.
 		if err := world.Store(ctx, "vm-1", 2, choose); err != nil {
 			t.Fatal(err)
 		}

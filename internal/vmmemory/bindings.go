@@ -23,18 +23,18 @@ type binding struct {
 	spillSlot int
 	// checkpoint names the detached copy holding this page's sealed bytes while a
 	// checkpoint ingests. Such a binding is dirty but owns neither the spill
-	// reservation nor the right to store: it shares the checkpoint's frame until a
+	// reservation nor the right to store: it shares the checkpoint's page until a
 	// store copies away from it. The detached copy itself is not reachable from
 	// the region's bindings and always has checkpoint == nil.
 	checkpoint *binding
-	// ahead marks a private page that write-ahead gave a frame before any
+	// ahead marks a private page that write-ahead made resident before any
 	// store into it. A store into a writable page never faults, so it stays
 	// set until the page's dirty epoch ends, and only the bytes written back
 	// can tell whether the guest used it.
 	ahead bool
 }
 
-// writable reports whether the guest may store into this page's current frame
+// writable reports whether the guest may store into this page where it is,
 // without faulting: private state no checkpoint still depends on.
 func (b *binding) writable() bool { return b.dirty && b.checkpoint == nil }
 
@@ -71,7 +71,7 @@ func (r *Region) binding(index uint64) *binding {
 // whether a page that names none has them held elsewhere: by the checkpoint's
 // copy of it, or because the page is not this region's own state at all. Both
 // are read together under the map lock, because a seal moves the reservation to
-// the checkpoint's copy while a reclaim of the frame is reading it.
+// the checkpoint's copy while a reclaim of the resident page is reading it.
 func (b *binding) spillTarget() (slot int, elsewhere bool) {
 	b.region.bindingsMu.Lock()
 	defer b.region.bindingsMu.Unlock()
@@ -80,7 +80,7 @@ func (b *binding) spillTarget() (slot int, elsewhere bool) {
 
 // setMapped and isMapped carry a page's mapping state across the one pair of
 // holders that do not exclude each other: a reclaim revokes a victim's pages
-// under that frame's lock alone, and a seal reads them under the region.
+// under that page's lock alone, and a seal reads them under the region.
 func (r *Region) setMapped(b *binding, mapped bool) {
 	r.bindingsMu.Lock()
 	b.mapped = mapped
@@ -91,7 +91,7 @@ func (r *Region) setMapped(b *binding, mapped bool) {
 // command the client refused may do: it changed nothing, so the pages are not
 // mapped and a page recorded as mapped that is not would be resolved with
 // nothing behind it. A page the client did map must never lose the record — a
-// revocation skips an unmapped binding, and the frame the guest still reads
+// revocation skips an unmapped binding, and the memory the guest still reads
 // through would be released under it.
 func (r *Region) unmapPages(page uint64, count int) {
 	r.bindingsMu.Lock()
@@ -187,11 +187,11 @@ func (r *Region) mapZeros(start, end uint64) {
 	r.zeroRanges.Set(start, end, pageranges.State{Zero: true})
 }
 
-// fresh reports what a store may assume about a page it holds no frame lock
-// for: zero when the page is zero-mapped, untouched when it holds nothing of
+// fresh reports what a store may assume about a page whose lock it does not
+// hold: zero when the page is zero-mapped, untouched when it holds nothing of
 // its own at all, no mapping included, so that its bytes are whatever the
-// volume holds. Either way it owns no frame, no private state and no
-// checkpoint, and nothing needs fencing before a private frame takes its place.
+// volume holds. Either way it owns no memory, no private state and no
+// checkpoint, and nothing needs fencing before a private page takes its place.
 // Caller holds the page's fault stripe.
 func (r *Region) fresh(index uint64) (zero, untouched bool) {
 	r.bindingsMu.Lock()
@@ -207,8 +207,8 @@ func (r *Region) fresh(index uint64) (zero, untouched bool) {
 	if b == nil {
 		return false, true
 	}
-	// The frame is checked first: an eviction changes a resident page's
-	// mapping state under that page's lock alone, and publishes that the frame
+	// The resident page is checked first: an eviction changes a resident page's
+	// mapping state under that page's lock alone, and publishes that the page
 	// is gone under the host lock.
 	r.host.mu.Lock()
 	resident := b.resident != nil
@@ -224,10 +224,10 @@ func (r *Region) fresh(index uint64) (zero, untouched bool) {
 	return b.zero, !b.zero && !b.mapped
 }
 
-// needsPrivateFrame reports whether a store to index would have to allocate a
-// private frame, and with it a dirty reservation. It takes no region lock: a
+// needsPrivatePage reports whether a store to index would have to allocate a
+// private page, and with it a dirty reservation. It takes no region lock: a
 // store decides this before it competes for one, and rechecks it afterwards.
-func (r *Region) needsPrivateFrame(index uint64) bool {
+func (r *Region) needsPrivatePage(index uint64) bool {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
 	block := r.blocks[index/bindingBlockPages]
@@ -238,7 +238,7 @@ func (r *Region) needsPrivateFrame(index uint64) bool {
 	return !b.dirty || b.checkpoint != nil
 }
 
-// holdInCheckpoint hands b's private frame and spill reservation to the
+// holdInCheckpoint hands b's private page and spill reservation to the
 // detached copy the checkpoint keeps. The page stays dirty: the volume does not
 // hold its bytes yet, and a store must copy away from the checkpoint before it
 // can change them.
@@ -251,7 +251,7 @@ func (r *Region) holdInCheckpoint(b, held *binding) {
 }
 
 // checkpointCopy reports the checkpoint's copy of this page while the two
-// share a frame, nil when the page holds its own state.
+// share a resident page, nil when the page holds its own state.
 func (r *Region) checkpointCopy(b *binding) *binding {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
@@ -278,8 +278,8 @@ func (r *Region) takeFromCheckpoint(b *binding, slot int) {
 // it was taken from: the reservation returns and the page is dirty again,
 // exactly as it was before the seal. retireFromCheckpoint instead ends the
 // page's dirty epoch, because the volume now holds its bytes. Both leave the
-// frame with an alias that owns what it needs at every instant, so they run
-// under that frame's lock.
+// resident page with an alias that owns what it needs at every moment, so they
+// run under that page's lock.
 func (r *Region) restoreFromCheckpoint(b, held *binding) {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()

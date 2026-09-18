@@ -23,12 +23,12 @@ them. No source changes are included.
 A VM's durable state is one checkpoint: an index, the 2 MiB chunks it
 references, and VMM state. Every interval, and on request, the host pauses the
 vCPUs, saves device state, seals the dirty set of every region by write
-protection, and resumes. The sealed frames upload straight from the arena as
+protection, and resumes. The sealed pages upload straight from the arena as
 chunk objects; a store into a sealed page during its upload copies that page.
 The index and VMM state follow, and the control record selects the new
 checkpoint. RAM and PMEM go through the same path; nothing distinguishes them.
 
-A cut taken under the pause is one instant of the whole machine, so no
+A cut taken under the pause is one moment of the whole machine, so no
 persisted state can hold a later write without an earlier one. That is the
 ordering guarantee a flush would otherwise provide. A running guest is never
 sealed.

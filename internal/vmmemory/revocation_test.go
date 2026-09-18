@@ -35,7 +35,7 @@ func (m *revokeBatchMapping) RevokeBatch(ctx context.Context, runs []vmmemory.Pa
 }
 
 // Abandoning a checkpoint takes the read-only mappings the seal installed away,
-// so the guest's next store faults and maps the frame writable again. Those
+// so the guest's next store faults and maps the page writable again. Those
 // revocations are batched: a large dirty set costs runs, not pages.
 func TestAbandonedCheckpointRevokesItsMappingsInBoundedBatches(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {

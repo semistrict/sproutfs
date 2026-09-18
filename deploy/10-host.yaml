@@ -70,7 +70,7 @@ spec:
       # within 30 s and the supervisor's close within another 30 s, publishing a
       # final checkpoint of every VM that did not move. Ninety and sixty is this
       # hundred and fifty; a grace period shorter than drain plus shutdown kills
-      # the pod with frames no checkpoint has.
+      # the pod with pages no checkpoint has.
       terminationGracePeriodSeconds: 150
       containers:
         - name: host
@@ -104,8 +104,8 @@ spec:
               value: /hugepages-2Mi
             - name: SPROUTFS_SCRATCH_DIR
               value: /var/lib/sproutfs
-            # The pager's frame store, taken from the pod's 6Gi HugeTLB
-            # allotment, and the RAM allotment it takes its frames from. A
+            # The pager's page store, taken from the pod's 6Gi HugeTLB
+            # allotment, and the RAM allotment it takes its pages from. A
             # workload guest is 2 GiB and its forks share what they have not
             # diverged from, so an arena of 5 GiB is what keeps a handful of
             # them resident rather than reading one another out of the spill
@@ -122,7 +122,7 @@ spec:
               value: "17179869184"
             # The volatile private state the pager may hold on RAM and spill
             # together, in 2 MiB pages. It defaults to the arena, which is what
-            # a guest whose dirty set never outruns the frames needs; a workload
+            # a guest whose dirty set never outruns the arena needs; a workload
             # guest writing hundreds of megabytes between checkpoints, with
             # forks doing the same beside it, outruns that long before the spill
             # file is full.

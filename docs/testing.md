@@ -44,7 +44,7 @@ back at: the last one that landed, plus every later one whose publication was
 interrupted and may or may not have landed. Which one is not guessed from the
 bytes — the control record names the sequence, and every checkpoint the world
 took carries the sequence it was published under, so the record's selection
-picks the instant and the bytes are then required to be that instant's, page for
+picks the pause and the bytes are then required to be that pause's, page for
 page. An interrupted publication is answered for exactly rather than tolerated,
 and two checkpoints mixed into one VM is a failure either way. The VMM state the
 checkpoint carries is restored with it, so a takeover that recovered a volume's
@@ -79,7 +79,7 @@ They are threaded through `host.Config`, `SupervisorConfig`, `control.Config`,
 value; what is tunable about them is in `internal/knobs` instead.
 
 `sim.Clock` is a virtual clock nothing elapses on its own. `Advance` releases
-the deadlines it passes, in deadline order and, within one instant, in an order
+the deadlines it passes, in deadline order and, within one moment, in an order
 the seed chooses, so two holds that expire together do not always retire in the
 order they were armed. One advance runs the callbacks it released in that
 order, on a goroutine of its own; `Settle` waits for them, and inside a
@@ -90,7 +90,7 @@ seed, and still distinct draw to draw.
 This is what makes a deadline written in checkpoint intervals reachable.
 `TestForkHoldExpiresOnTheSimulatedClock` retires a fork hold at the
 deployment's own four-interval bound with no wall-clock wait and no polling,
-and requires the parent to take its sealed frames back and be checkpointable
+and requires the parent to take its sealed pages back and be checkpointable
 again; `TestReleasingAForkHoldDisarmsItsDeadline` requires the ordinary release
 to leave nothing armed. Before this the only test of an expiring handover set a
 fifty-millisecond bound of its own and polled the wall clock for it, so the
@@ -127,7 +127,7 @@ The opt-in is off by default because the recorded scenario compares its
 recordings byte for byte across processes, and a seed that also chose its
 tunables would be comparing a different run. A campaign holds the few knobs its
 own world is sized around: the pager arena has to hold every VM of the topology
-twice over, because a fork or a migration has the parent's frames and the
+twice over, because a fork or a migration has the parent's pages and the
 child's on one host at once, and the dirty budget goes with it, because there is
 no interval loop in these campaigns to answer the pager's pressure — they drive
 their own checkpoints, so a budget smaller than what the guests on one host can
@@ -163,7 +163,7 @@ neither is a run whose seed reports nothing.
 The allowlist is keyed by file and by what is read, and it carries a count: a
 second reading added to an already-listed file is a new decision and has to be
 argued for. It currently holds one entry — the two socket deadlines in the
-pager's client, which are instants the kernel compares against its own clock
+pager's client, which are moments the kernel compares against its own clock
 and which no clock this process is given can be handed. The rule is itself
 tested against sources containing each thing it forbids, so it cannot pass by
 finding nothing.
@@ -209,10 +209,10 @@ leaving the handle usable, and a corrupt record being refused.
 
 A `World` host ends one of two ways. `Shutdown` is the orderly close: it
 publishes a final checkpoint of everything its handles hold, its guests give
-their frames back and its process then ends, leaving its disk alone. `Kill` is
+their pages back and its process then ends, leaving its disk alone. `Kill` is
 the machine dying: the store goes first, so nothing the host had in flight can
 still land and its shutdown publishes nothing; its guests' VMM processes go with
-it, because a frame is durable nowhere; and the process is then crashed, with
+it, because memory is durable nowhere; and the process is then crashed, with
 `PowerLoss` resolving every modification the disk had not synced into bytes that
 were applied, dropped, torn or garbled. A killed host is started again in the
 same test process, on the disk it left behind. A host keeps no durable local
@@ -223,16 +223,16 @@ restart recovers is what the deployment's object store holds.
 `internal/simtest` runs one script under all three endings and is where the
 difference is asserted: a handle write is durable exactly when the close
 published it, and a guest's stores survive only as far as its last checkpoint,
-because nothing but a capture ever publishes a frame.
+because nothing but a capture ever publishes a page.
 `TestAKilledHostIsTakenOverByAnotherHostAtItsLastCheckpoint` is the other way a
 VM comes back: a surviving host takes the record over while the dead one is
 still dead, and the dead host's handle stays fenced.
 
 `TestAHostLostAtAnyOfItsHandoversLosesOnlyWhatNoCheckpointHeld` is the seeded
 campaign, a schedule over one `World`. Every seed takes a host away at each of
-the four places one can be lost: in the middle of a checkpoint, while it holds a fork instant another
+the four places one can be lost: in the middle of a checkpoint, while it holds a fork point another
 host's child is still reading out of, while it serves the pages of a VM it
-handed over, and while it is the host taking one in. The instant inside the
+handed over, and while it is the host taking one in. The moment inside the
 operation and the kill mode are drawn from the seed, the victim comes back on
 its own disk, and the VM is then recovered by a bystander host or by that
 restart, as the seed chooses. Whatever the kill interrupted, the requirements do
@@ -250,7 +250,7 @@ not move:
   ([the deployment check](#the-deployment-check) runs at the end of every
   scenario).
 
-The kill lands inside the operation on the seeds whose drawn instant falls
+The kill lands inside the operation on the seeds whose drawn moment falls
 inside it and after it on the rest, and `World.KillDuring` reports which. The
 source's hold on a handover whose destination died is the deployment's own four
 checkpoint intervals, reached by advancing the `sim.Clock` that host keeps it
@@ -273,7 +273,7 @@ off the child opened as `volume: fork's root checkpoint is not published`; the
 destination's own checkpoint is what publishes it, and the campaign takes it where a
 deployment's interval loop would. And without `sim.WithRuntime` on the context
 the whole fault-injection apparatus is a no-op: with it the campaign is killed
-by the `migration-corrupt-peer-page`, `pager-zero-new-frame` and
+by the `migration-corrupt-peer-page`, `pager-zero-new-page` and
 `checkpoint-part-member-offset` guards, which is what says it is not vacuous.
 
 ```sh
@@ -281,7 +281,7 @@ SPROUTFS_CRASH_SEEDS=500 go test ./internal/simtest \
   -run '^TestAHostLostAtAnyOfItsHandoversLosesOnlyWhatNoCheckpointHeld$' -count=1
 ```
 
-### Two planes and reclamation
+### Parts, index objects and reclamation
 
 A checkpoint's dirty pages upload as parts, and the segments they changed and
 the root go into its index object. The checkpoint suite requires a part's member
@@ -330,15 +330,15 @@ control record and no other key, and a fork closed before its first checkpoint
 adds nothing more. Forks are tested for divergence from their parent, use
 before their own first checkpoint is published, refusal on an existing identity,
 forks of forks, and two forks of one parent diverging independently. A parent
-whose frames a fork point holds refuses a second seal and refuses a capture
+whose pages a fork point holds refuses a second seal and refuses a capture
 before anything pauses its guest, and takes them back when the point is retired.
 
-On the parent's own host the children read the sealed frames by lineage
-identity, so a second child maps the first's frame without a load. Across hosts
+On the parent's own host the children read the sealed pages by lineage
+identity, so a second child maps the first's resident page without a load. Across hosts
 the child pulls exactly the pages no checkpoint of the parent holds, publishes
 them in its own first checkpoint, and survives the loss of the parent's host
-once it has. The host suite shows one instant starting several children at
-once: every one of them reads the parent's memory at that instant, the interval
+once it has. The host suite shows one pause starting several children at
+once: every one of them reads the parent's memory at that pause, the interval
 loop leaves the sealed parent alone rather than failing on it, and the parent is
 checkpointed again only once the last child has published.
 
@@ -384,7 +384,7 @@ its table or a member envelope, never decoding to bytes that were not written.
 ### Clogging and swizzling
 
 `Network.Clog(from, to, until)` blocks one directional link until a simulated
-instant and then carries traffic again with nothing called to heal it; a dial or
+moment and then carries traffic again with nothing called to heal it; a dial or
 a send over it is refused with `ErrUnavailable`, as a partition refuses them.
 `Network.Swizzle(addrs, window, random)` gives every link among a set its own
 seeded interval — blocked inside the first half of the window, healed inside the
@@ -410,7 +410,7 @@ pages. Sixteen seeds run normally; `SPROUTFS_SWIZZLE_SEEDS` selects any other
 count and `TestSwizzleSoak` runs a block of the seed range.
 
 `DropNext`, `DuplicateNext`, `DelayNext` and `SetLink` are the
-`simtest.DroppedPageFrames` fault, which is the one fault the generated schedule
+`simtest.DroppedPageServerFrames` fault, which is the one fault the generated schedule
 does not draw. A frame dropped on an open connection has exactly one outcome for
 a guest's demand fault against the peer holding the only copy of an unpublished
 page, which is to wait for a reply that never comes; waiting is the right answer
@@ -453,7 +453,7 @@ What it requires:
   hold the pages some root still reads.
 
 Each caller names the classes of leftover it expects, and only those are not
-reported. Every class is something a host lost at a particular instant leaves
+reported. Every class is something a host lost at a particular moment leaves
 and no writer ever comes back for — a collector's, not a writer's — so a
 scenario that kills hosts says which debt it is rather than skipping the check:
 
@@ -474,7 +474,7 @@ good.
 
 A handover is the one operation a VM's memory can be lost by, so it is what the
 campaigns spend most of their steps on. A migration publishes nothing: the
-source stops its guest, gives its volumes up and keeps serving the frames no
+source stops its guest, gives its volumes up and keeps serving the pages no
 checkpoint holds until the destination reports having them. What a fault that
 takes the source away therefore costs the VM is exactly the pages written since
 its last checkpoint, which is the post-copy exposure rather than a defect —
@@ -484,7 +484,7 @@ Every hop the campaigns run makes the same checks: the source's handle is
 refused a store the moment the handoff is taken, the destination's guest
 restored the VMM state the source's pause captured and continues at the same
 store counter, the destination's first read is the source's last checkpoint plus
-the frames it serves — read through its own mappings before it writes anything
+the pages it serves — read through its own mappings before it writes anything
 of its own — and a refused migration leaves the guest running where it was, with
 every region unsealed, every page writable and its vCPUs running. The recorded
 scenario adds the layout refusal: a handoff that would truncate a region or map
@@ -497,7 +497,7 @@ destination's own next checkpoint publishes them, that the source's page server
 is then removable entirely, failure to resume, cancellation before a handoff, a
 handoff that waits for a publication another call already had in flight, and
 `TestSourceLostAfterHandoffRewindsToTheLastCheckpoint`, which drops the source's
-frames right after the handoff and requires the VM to come back at the
+pages right after the handoff and requires the VM to come back at the
 checkpoint its control record still selects, rewound by exactly the writes since
 it. The simulator's listener-close regressions require queued clients to
 disconnect and in-flight dials to reject a closed listener, while accepted
@@ -517,7 +517,7 @@ over" is unreachable however many seeds a one-fault-at-a-time campaign runs.
 four VMs, one or two volumes of one to three pages each, which of the VMs are
 forks of which, and the host each one starts on — a fork's host may be its
 parent's, which is the difference between a child that shares its parent's
-frames and one that pulls them out of the parent's page server. A failing seed
+pages and one that pulls them out of the parent's page server. A failing seed
 prints its topology, and a topology printed is a topology reproduced.
 
 `simtest.Fault` is one thing that goes wrong: `Begin`, `End`, and `Holds` — what
@@ -544,15 +544,15 @@ ones only a generated topology can express:
 | `store-unavailable` | Object storage answers nobody. |
 | `host-loses-store` | One host cannot reach object storage while every other host can. |
 | `partitioned-pages` | Two hosts cannot reach each other's page servers. |
-| `swizzled-links` | Every link among the hosts, their page servers and the store is blocked at its own seeded instant and healed at another. |
+| `swizzled-links` | Every link among the hosts, their page servers and the store is blocked at its own seeded moment and healed at another. |
 | `lost-page-replies` | One host's page reply is dropped after the source has already answered it. |
 | `stalled-stream` | The first frame one host receives is held until whatever asked for it gives up. |
-| `lost-host` | A whole host is taken away at an instant and started again when the fault ends. |
+| `lost-host` | A whole host is taken away at a moment and started again when the fault ends. |
 | `refused-stop` | One VM's migration pause fails after its guest has stopped and a region is sealed. |
 | `refused-start` | One host's half of a receive fails before the guest is started. |
 | `degraded-links` | The page-server links duplicate, delay and slow what they carry. |
 
-`dropped-page-frames` is the same kit plus `DropNext`, and the schedule does not
+`dropped-page-server-frames` is the same kit plus `DropNext`, and the schedule does not
 draw it; see [Clogging and swizzling](#clogging-and-swizzling) for why, and for
 the campaign that does.
 
@@ -570,7 +570,7 @@ is any of these three:
   the sequence the new writer inherits against the sequences this campaign's
   writers published, and the end of the run checks every record.
 - **`CheckDeployment` passes at the end**, with the allowances this campaign's
-  own faults earn: what a host lost at an instant leaves, what a VM deleted
+  own faults earn: what a host lost at a moment leaves, what a VM deleted
   after it was forked leaves, and the checkpoint a sweep the store refused
   could not take.
 
@@ -584,7 +584,7 @@ of tolerating it.
 `TestASourcePartitionedWhileTheStoreIsAwayAndASecondHostTakesOver` names the
 combination rather than waiting for a seed to draw it, in both its halves: a
 destination that cannot reach object storage at all, and then one that does take
-the VM over and only then finds it cannot fetch the frames the source still
+the VM over and only then finds it cannot fetch the pages the source still
 holds.
 
 ```sh
@@ -628,20 +628,20 @@ them:
   that one at the next sweep, and the pinned root went on naming an object
   nothing could fetch: `CheckDeployment` reports it as a part that does not read,
   which is what a lineage with a hole in it looks like from outside. It is
-  reachable only where a fork's instant, a compaction and a later sweep line up
+  reachable only where a fork's point, a compaction and a later sweep line up
   — ten of the first two hundred seeds. Fixed by sparing what the pinned root
   names, with `TestReclamationSparesThePacksAPinnedIndexOnlyNames` in
   `internal/checkpoint` for the case.
 - A frame held by the stalled-stream fault deadlocked the whole bubble. The
   fault was written for a migration's post-copy, which gives up on a deadline of
   its own, but the first frame a host receives may be a guest's own demand page
-  fault, and that has no deadline: the guest waited for a frame the fault was
+  fault, and that has no deadline: the guest waited for a page the fault was
   holding, and the step that would have ended the fault was the step the guest
   was blocking. The hold now ends on the caller's cancellation, on the end of
   the fault, or on a bounded simulated wait, which is a connection that died
   rather than a harness that stopped.
 - A checkpoint's sweep runs behind its publication with the publication lock
-  released, so a host that exits the instant after a checkpoint lands cancels
+  released, so a host that exits the moment after a checkpoint lands cancels
   the sweep and leaves the checkpoint it replaced behind. `CheckDeployment`
   reports it as an unreferenced checkpoint of the record's own epoch. The
   campaign gives its sweeps a moment before it closes, as a host draining itself
@@ -690,7 +690,7 @@ included — and
 [the demo notes](demo.md#the-soak) describe the run itself.
 
 What the two cannot share is the faults. A campaign injects a partitioned link
-or an unavailable store at an instant it drew; the cluster gets one host killed
+or an unavailable store at a moment it drew; the cluster gets one host killed
 without grace, because that is the only fault a k3s node can be asked for
 reliably. The campaigns are where the combinations live, and the soak is where
 the real VMM, the real pager and the real object store are.
@@ -887,10 +887,10 @@ a publication, and a volume fallback.
 
 `Runtime.Fingerprint` digests everything the simulated dependencies did — which
 resource, which operation, to what outcome, over how many bytes, in what order
-on each resource, at what simulated instant — and is FoundationDB's unseed. It
+on each resource, at what simulated moment — and is FoundationDB's unseed. It
 sees exactly what a trace event carries, so two writes of one size to different
 offsets of one file digest alike; bytes are compared against the models, not
-here. `Runtime.WorkFingerprint` drops the order, the instant and the adapter's
+here. `Runtime.WorkFingerprint` drops the order, the moment and the adapter's
 own operation numbering, which is what a campaign that does not control
 completion order can promise.
 
@@ -924,7 +924,7 @@ campaigns are registered to cover to have fired. Two of the five registered
 probes are covered by no campaign in this repository, and `unreachedProbes` in
 `internal/simtest/probe_test.go` names them: the store either answers or fails
 outright here, so no conditional write ever loses its reply and is reconciled by
-its writer's nonce, and the pagers evict but never while the region a frame is
+its writer's nonce, and the pagers evict but never while the region a page is
 taken from is sealed. A fenced publication came off the list when the two-writer
 campaign moved onto the one harness: its takeover happens while the superseded
 host is still running, which is what a schedule whose takeovers all follow a
@@ -966,7 +966,7 @@ SPROUTFS_SIM_BUG=migration-corrupt-fallback \
   go test ./internal/simtest -run '^TestSeededTopologyCampaign$' -count=1
 SPROUTFS_SIM_BUG=migration-skip-resume \
   go test ./internal/simtest -run '^TestSeededTopologyCampaign$' -count=1
-SPROUTFS_SIM_BUG=pager-zero-new-frame \
+SPROUTFS_SIM_BUG=pager-zero-new-page \
   go test ./internal/simtest -run '^TestScheduledWorldReproduces$' -count=1
 SPROUTFS_SIM_BUG=pager-forget-spill \
   go test ./internal/simtest -run '^TestSeededTopologyUnderBuggify$' -count=1
@@ -1306,7 +1306,7 @@ migrated. Committed fixtures are what hold that contract:
 
 | Fixture | What it holds |
 | --- | --- |
-| `internal/volume/testdata/deployment-record-4-index-7-part-4`, `deployment-record-4-part-3`, `deployment-record-4-index-6-part-2`, `deployment-record-4-index-5-part-1`, `deployment-record-3-index-5-part-1` | The whole object namespace of a small deployment: a VM with a history of checkpoints and VMM state whose record pins the instant it was forked at, and a fork of it whose root names that instant's checkpoints. The four older dumps are what the builds before the two planes, before the root moved into the last part, before the segmented index and before the pin bump wrote, and their test requires that opening each is refused with the version that moved named — the part layout's for the first, the index object's for the next two, the record's for the last. |
+| `internal/volume/testdata/deployment-record-4-index-7-part-4`, `deployment-record-4-part-3`, `deployment-record-4-index-6-part-2`, `deployment-record-4-index-5-part-1`, `deployment-record-3-index-5-part-1` | The whole object namespace of a small deployment: a VM with a history of checkpoints and VMM state whose record pins the point it was forked at, and a fork of it whose root names that point's checkpoints. The four older dumps are what the builds before the parts and the index object were split, before the root moved into the last part, before the segmented index and before the pin bump wrote, and their test requires that opening each is refused with the version that moved named — the part layout's for the first, the index object's for the next two, the record's for the last. |
 | `internal/control/testdata/record-4`, `record-3`, `record-2` | Two records with pins, at this build's version and at each version committed before it. |
 | `internal/checkpoint/testdata/index-7-part-4`, `part-3`, `index-6-part-2`, `index-5-part-1`, `index-4` | The objects of a published checkpoint at this build's formats — its index object and its parts — the objects of the three format sets before it, each refused by the version that moved, and one index table restamped with a version older still. |
 | `internal/checkpoint/internal/part/testdata/part-4`, `part-3`, `part-2`, `part-1`, `part-0` | One sealed part holding the VMM state and pages of two volumes, which is everything a part holds; the layout-3 part before it, which also held a segment and the root; the layout-2 part before that, which has a tombstone and no root; the layout-1 part before that, which has no segment member; and a part and table restamped with a version older still. |

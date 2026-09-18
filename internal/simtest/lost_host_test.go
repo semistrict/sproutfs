@@ -24,7 +24,7 @@ var rootVolume = []volume.VolumeSpec{{Name: "root", Size: 8192}}
 // disk it left behind, and what it recovers is what the deployment's object
 // store holds: a handle write survives exactly when the close published it, and
 // a guest's stores survive only as far as the guest's last checkpoint, because
-// nothing but a capture ever publishes a frame.
+// nothing but a capture ever publishes a page.
 func TestAKilledHostRestartsOnItsOwnDiskAndRewindsToItsLastCheckpoint(t *testing.T) {
 	endings := []struct {
 		name string
@@ -55,7 +55,7 @@ func TestAKilledHostRestartsOnItsOwnDiskAndRewindsToItsLastCheckpoint(t *testing
 				world := simtest.MustStart(t, ctx, simtest.Config{Runtime: runtime, Topology: topology,
 					Knobs: campaignKnobs(t, runtime, topology), Prefix: prefix, Log: t.Logf})
 				// One VM written through its handle, which a close publishes,
-				// and one run by a guest whose stores live in frames, which only
+				// and one run by a guest whose stores live in pages, which only
 				// a capture ever publishes.
 				written, err := world.Host(0).Volumes().Create(ctx, "vm-written", rootVolume)
 				if err != nil {

@@ -29,7 +29,7 @@ import (
 )
 
 // The measured sandbox: a 2 GiB guest with an 8 GiB PMEM root on a pager whose
-// resident frames are a third of the guest's RAM plus root.
+// resident pages are a third of the guest's RAM plus root.
 const (
 	benchRAMBytes      = 2 << 30
 	benchPmemBytes     = 8 << 30
@@ -40,7 +40,7 @@ const (
 	// sizes, so the pager's page changes neither.
 	benchMaxWriteBytes  = vmmemory.PageSize
 	benchReadAheadBytes = vmmemory.PageSize
-	// benchMemoryBytes is shared by resident guest frames and decoded objects.
+	// benchMemoryBytes is shared by resident guest pages and decoded objects.
 	benchMemoryBytes = 4 << 30
 	// Both guests run with transparent huge pages off. Guest RAM here is host
 	// pages served on demand, and khugepaged collapsing a 2 MiB range copies 512
@@ -298,7 +298,7 @@ type benchmark struct {
 	output    string
 }
 
-// sample is everything a scenario is measured against, taken at one instant.
+// sample is everything a scenario is measured against, taken at one moment.
 type sample struct {
 	at      time.Time
 	memory  vmmemory.Stats
@@ -418,7 +418,7 @@ func newBenchmark(ctx context.Context, t *testing.T) *benchmark {
 		}
 		memoryBytes = int64(parsed) << 20
 	}
-	// One local RAM budget is shared by decoded objects and guest frames.
+	// One local RAM budget is shared by decoded objects and guest pages.
 	resources, err := resource.New(memoryBytes)
 	if err != nil {
 		t.Fatal(err)
@@ -443,7 +443,7 @@ func newBenchmark(ctx context.Context, t *testing.T) *benchmark {
 	// The dirty budget is not the resident budget. A private RAM page becomes
 	// clean only through a coordinated capture, so what a running guest has
 	// dirtied stays dirty for as long as it runs; the resident budget bounds
-	// physical frames and the spill file absorbs the rest. A host therefore has
+	// physical pages and the spill file absorbs the rest. A host therefore has
 	// to provision dirty capacity for the RAM of every guest it runs at once,
 	// which is what this derives.
 	b.dirtyPages = benchMaxGuests * (benchRAMBytes / b.pageSize)
@@ -727,7 +727,7 @@ func (b *benchmark) capture(ctx context.Context, p *vmmachine.Process, vm *volum
 	// How many mappings the VMM's address space holds when the seal runs. A
 	// range write-protect is applied to every registered mapping the range
 	// covers, so the kernel walks them; the seal microbenchmark's guest has a
-	// handful and a guest that has run a build has one per private frame.
+	// handful and a guest that has run a build has one per private page.
 	vmas := countMappings(p.PID())
 	paused := time.Now()
 	var state []byte
@@ -865,7 +865,7 @@ func TestGuestWorkloadBenchmark(t *testing.T) {
 	}
 
 	// The capture whose checkpoint every restore and fork below starts from,
-	// rebuilt as the instant a fork inherits: a published checkpoint with
+	// rebuilt as the pause a fork inherits: a published checkpoint with
 	// nothing held back, which is what a template is.
 	var ckpt *volume.Checkpoint
 	var origin *forkOrigin
@@ -889,13 +889,13 @@ func TestGuestWorkloadBenchmark(t *testing.T) {
 		}
 	}
 
-	// Scenario 2, cold: a restore with no sibling holding the checkpoint's frames.
+	// Scenario 2, cold: a restore with no sibling holding the checkpoint's pages.
 	if b.scenarios["restore-cold"] {
 		b.restoreScenario(ctx, origin, "restore-cold", "no-sibling")
 	}
 
 	// Scenario 2, warm: a sibling that has already run the warm repository
-	// search keeps the frames resident, so the restore inherits them.
+	// search keeps the pages resident, so the restore inherits them.
 	if b.scenarios["restore-warm"] {
 		sibling, siblingVM, siblingConsole := b.fork(ctx, origin, "sibling")
 		b.run(ctx, siblingConsole, workloadGrep)
@@ -1183,7 +1183,7 @@ func (b *benchmark) sync(ctx context.Context, c *console) {
 	}
 }
 
-// forkOrigin is what every fork in this benchmark starts from: the instant a
+// forkOrigin is what every fork in this benchmark starts from: the pause a
 // child inherits, and the VMM state it restores.
 type forkOrigin struct {
 	point *volume.ForkPoint
@@ -1313,7 +1313,7 @@ func (b *benchmark) forkFanOut(ctx context.Context, origin *forkOrigin) {
 		}
 	}
 	// What each fork holds once its command has finished, per volume: the
-	// frames it maps and the pages whose bytes are its own. A larger page
+	// pages it maps and the pages whose bytes are its own. A larger page
 	// copies more of what a fork writes into pages of its own.
 	privatePages := make([]int, count)
 	residentPages := make([]int, count)

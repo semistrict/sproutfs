@@ -22,7 +22,7 @@ var coldShape = host.ColdShape{Memory: "ram0", Root: "root"}
 
 // stoppedVM leaves one VM behind exactly as a stop does: its guest wrote into
 // memory and onto its disk, a checkpoint published both with the VMM state that
-// was running over them, and then the process, the frames and the handle went.
+// was running over them, and then the process, the pages and the handle went.
 func stoppedVM(t *testing.T, h *hostHarness, id string) {
 	t.Helper()
 	pager, arena := newPager(t, h.configs[0].Resources)

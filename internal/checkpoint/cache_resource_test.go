@@ -129,11 +129,11 @@ func TestCacheUsesMemoryReturnedByOtherHostConsumers(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer cache.Close()
-		frames, err := budget.TryAcquire(t.Context(), 2*charge)
+		pages, err := budget.TryAcquire(t.Context(), 2*charge)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer frames.Close()
+		defer pages.Close()
 		for _, key := range []cacheKey{cacheKeyOf("a"), cacheKeyOf("b")} {
 			_, release := cacheRead(t, cache, key)
 			release()
@@ -141,7 +141,7 @@ func TestCacheUsesMemoryReturnedByOtherHostConsumers(t *testing.T) {
 		if cache.Stats().Entries != 2 {
 			t.Fatalf("unused host memory was not retained: %+v", cache.Stats())
 		}
-		frames.Close()
+		pages.Close()
 		for _, key := range []cacheKey{cacheKeyOf("c"), cacheKeyOf("d")} {
 			_, release := cacheRead(t, cache, key)
 			release()
@@ -149,38 +149,38 @@ func TestCacheUsesMemoryReturnedByOtherHostConsumers(t *testing.T) {
 		if cache.Stats().Entries != 4 || budget.Stats().Used != 4*charge {
 			t.Fatalf("cache did not use returned host memory: %+v %+v", cache.Stats(), budget.Stats())
 		}
-		frames, err = budget.TryAcquire(t.Context(), 3*charge)
+		pages, err = budget.TryAcquire(t.Context(), 3*charge)
 		if err != nil {
-			t.Fatalf("cache refused to yield to guest frames: %v", err)
+			t.Fatalf("cache refused to yield to guest pages: %v", err)
 		}
-		defer frames.Close()
+		defer pages.Close()
 		if cache.Stats().Entries != 1 || cache.entries[cacheKeyOf("d")] == nil || budget.Stats().Used != 4*charge {
 			t.Fatalf("wrong reclamation: %+v %+v", cache.Stats(), budget.Stats())
 		}
 	})
 }
 
-func TestCacheMissStillReadsWhenGuestFramesUseTheMemoryAllotment(t *testing.T) {
+func TestCacheMissStillReadsWhenGuestPagesUseTheMemoryAllotment(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		cache, budget := sharedCache(t, 640)
-		frames, err := budget.TryAcquire(t.Context(), 640)
+		pages, err := budget.TryAcquire(t.Context(), 640)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer frames.Close()
+		defer pages.Close()
 		data, release := cacheRead(t, cache, cacheKeyOf("page"))
 		if string(data) != string(bytes.Repeat([]byte("r"), 128)) {
 			t.Fatal("transient read changed bytes")
 		}
 		release()
 		if budget.Stats().Used != 640 || cache.Stats().Entries != 0 {
-			t.Fatalf("transient read retained cache or changed frame ownership: %+v %+v", cache.Stats(), budget.Stats())
+			t.Fatalf("transient read retained cache or changed page ownership: %+v %+v", cache.Stats(), budget.Stats())
 		}
-		frames.Close()
+		pages.Close()
 		_, release = cacheRead(t, cache, cacheKeyOf("page"))
 		release()
 		if cache.Stats().Entries != 1 || budget.Stats().Used != 640 {
-			t.Fatal("cache did not resume when frame memory was returned")
+			t.Fatal("cache did not resume when page memory was returned")
 		}
 	})
 }

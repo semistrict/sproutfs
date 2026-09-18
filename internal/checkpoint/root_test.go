@@ -66,7 +66,7 @@ func slicesEqual(got, want []string) bool {
 
 // A page a checkpoint zeroed is simply absent from the segment that checkpoint
 // rewrote. Nothing in the parts says it left: the segment is the whole answer,
-// so the parts hold no member naming the page and the metadata plane holds the
+// so the parts hold no member naming the page and the index object holds the
 // rewritten segment.
 func TestAZeroedPageLeavesItsSegmentAndNothingElse(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {

@@ -6,7 +6,7 @@ A fork is a handoff from a running parent, but there are two of them.
 `Host.Fork` creates the children beside the parent: it seals, records a
 hold per child, creates each child on the fork point, publishes the child's
 root before the child's guest exists (the child's pages are the parent's
-sealed frames, shared through the pager by lineage identity, and publishing
+sealed pages, shared through the pager by lineage identity, and publishing
 is what lets the parent's seal end), and gives the hold back. `Host.ForkOut`
 hands each child to another host as a migration: the destination boots the
 child first and pulls the pages no checkpoint holds from the parent's page
@@ -23,7 +23,7 @@ without admission.
 One path. A fork is always a handoff; where the child lands only changes
 how its inherited pages reach it.
 
-- **Take the instant once.** Seal the parent, pin the checkpoint, and produce
+- **Take the pause once.** Seal the parent, pin the checkpoint, and produce
   one handoff per child, whatever the destination. This is `ForkOut`'s
   first half, and `Fork` is gone.
 - **Receive the child the same way everywhere.** The destination — this host
@@ -31,7 +31,7 @@ how its inherited pages reach it.
   budget, boots it, and binds its unpublished pages to a backing. On another
   host that backing is the peer backing over the page server, as today. On
   the parent's host it is a local backing over the fork point: the pager
-  shares the parent's sealed frames with the child by identity, so every
+  shares the parent's sealed pages with the child by identity, so every
   inherited page is present the moment the region attaches and no byte is
   copied. Both satisfy the same interface; `Received.Done` means the same
   thing for both: the child holds every page only the parent had.
@@ -48,7 +48,7 @@ how its inherited pages reach it.
   children exist. `Abandon` is the one give-up path for a child that will
   never release.
 - **One cleanup.** A fan-out that fails part way discards every child it
-  started, on whichever host, and retires the instant; the orchestrator's
+  started, on whichever host, and retires the point; the orchestrator's
   `discardChildren` and the host's own rollback are the same operation.
 - **One admission.** Every child is admitted against the host taking it
   before the parent is paused, locally as remotely.
@@ -72,7 +72,7 @@ Red first:
    not at its first interval checkpoint: with the interval loop off, the
    child opens on another host once `Done` has reported.
 3. The parent deleted, lost or stopped while a local child still reads the
-   instant is handled exactly as for a remote child: refused while sealed by
+   point is handled exactly as for a remote child: refused while sealed by
    a hold this host has none for, given up by deadline otherwise.
 4. A partial fan-out, local and remote, leaves no child running, no child
    record, and the parent checkpointable.

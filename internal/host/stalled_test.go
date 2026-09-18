@@ -9,14 +9,14 @@ import (
 	"github.com/semistrict/sproutfs/internal/vmmemory"
 )
 
-// TestStoppingAStalledVMGivesUpTheInstantsTakenOnIt: a VM the dirty budget can
+// TestStoppingAStalledVMGivesUpTheForkPointsTakenOnIt: a VM the dirty budget can
 // no longer admit stores for is stopped deliberately, and a deliberate stop is
 // the host giving that VM up like any other. It skipped the give-up order
-// entirely: the fork instants taken on it were left registered, so the page
+// entirely: the fork points taken on it were left registered, so the page
 // server went on offering a child pages out of a VMM process this stop had
 // closed, and nothing claimed the close, so the watcher that found the same
 // process dead closed it a second time and told the supervisor twice.
-func TestStoppingAStalledVMGivesUpTheInstantsTakenOnIt(t *testing.T) {
+func TestStoppingAStalledVMGivesUpTheForkPointsTakenOnIt(t *testing.T) {
 	h := newSizedHostHarness(t, 2)
 	closed := make(chan string, 4)
 	h.configs[0].MachineClosed = func(vmID string) { closed <- vmID }
@@ -47,7 +47,7 @@ func TestStoppingAStalledVMGivesUpTheInstantsTakenOnIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	if serving := h.hosts[0].Status().Serving; len(serving) != 1 || serving[0] != "child" {
-		t.Fatalf("the fork instant is served for %v, want the child", serving)
+		t.Fatalf("the fork point is served for %v, want the child", serving)
 	}
 
 	// The seal holds the whole dirty budget and a sealed VM is not checkpointed,
@@ -64,7 +64,7 @@ func TestStoppingAStalledVMGivesUpTheInstantsTakenOnIt(t *testing.T) {
 		t.Fatal("the host left the stalled VM running")
 	}
 	if serving := h.hosts[0].Status().Serving; len(serving) != 0 {
-		t.Fatalf("a stopped parent still offers %v an instant whose frames are gone", serving)
+		t.Fatalf("a stopped parent still offers %v a point whose pages are gone", serving)
 	}
 	if running := h.hosts[0].Machines(); len(running) != 0 {
 		t.Fatalf("the host still runs %v after stopping the stalled VM", running)

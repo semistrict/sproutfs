@@ -327,7 +327,7 @@ witness_mutate() {
 # itself. The agent kills a command that runs past the timeout and reports 124,
 # which is a check that wanted longer than $exec_timeout — a witness of this
 # size reading its file back over pages a remote fork is still pulling is the
-# slow case — and not a guest whose memory came back holding another instant's
+# slow case — and not a guest whose memory came back holding the bytes of another
 # bytes. Both end the run. Calling the first the second would have an operator
 # looking for a defect in the pager over a check that needed more time.
 # A fifth argument of "disk" asks the disk alone, with no witness resident and
@@ -391,7 +391,7 @@ create_vm() {
 # inheritance was whole — and then gives each child a seed of its own.
 #
 # A child's root checkpoint is taken as soon as it answers: a fork's parent keeps
-# its frames sealed until the last child has published one, and a sealed parent
+# its pages sealed until the last child has published one, and a sealed parent
 # cannot be checkpointed, forked again, migrated or stopped.
 fork_onto() {
     local parent=$1 count=$2 to=$3 where=$4 table began ended pause start
@@ -422,7 +422,7 @@ fork_onto() {
         agent_ready "$child" || fail "the agent in the fork $child never answered"
         ctl capture "$child" > /dev/null || fail "publishing the root checkpoint of $child failed"
         # What the child inherited is exactly what its parent held at the
-        # instant of the seal, which is the parent's own expectation.
+        # seal, which is the parent's own expectation.
         witness_seed[$child]=${witness_seed[$parent]}
         witness_step[$child]=${witness_step[$parent]}
         check_at "$child" "inherited-$where"

@@ -305,7 +305,7 @@ func TestNativeFragmentedWritebackMeasurements(t *testing.T) {
 		dirtyVMAs := nativeVMAs(t, a)
 		start = time.Now()
 		// The checkpoint is what moves the dirty set: it seals every region, reads
-		// the sealed frames and retires them.
+		// the sealed pages and retires them.
 		backings := []*patternBacking{first, second}
 		for region := range 2 {
 			if err := backings[region].checkpoint(t.Context(), a.region(region)); err != nil {

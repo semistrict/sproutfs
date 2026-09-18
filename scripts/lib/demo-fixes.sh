@@ -69,8 +69,8 @@ agent_ready() {
 
 host_of() { ctl list | awk -v vm="$1" '$1 == vm && $2 != "-" { print $2 }'; }
 other_host() { ctl hosts | awk -v host="$1" 'NR > 1 && $1 != host && $2 == "true" { print $1; exit }'; }
-# serving_of is how many handovers one host still holds frames for: the VMs it
-# migrated away and the children of every fork instant it took, wherever those
+# serving_of is how many handovers one host still holds pages for: the VMs it
+# migrated away and the children of every fork point it took, wherever those
 # children landed. A parent whose fork hold was never released never leaves 1.
 serving_of() { ctl hosts | awk -v host="$1" '$1 == host { print $4 }'; }
 # checkpoint_of is the sequence the VM's latest checkpoint carries. A sealed

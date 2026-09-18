@@ -19,7 +19,7 @@ every two seconds, with a sim invariant that two writers never mix; a dead
 VMM is logged with its cause and forgotten; `Status` has a two-second
 deadline and surveys are cached for a second; control records live under
 `control/`. Blocker 5 (the collector) is deliberately open. A fork's
-children also now share the parent's sealed frames, which the fork-by-handoff
+children also now share the parent's sealed pages, which the fork-by-handoff
 change had left unimplemented.
 
 ## Blockers
@@ -88,7 +88,7 @@ change had left unimplemented.
 
 - **Compaction changes lineage identity** *(proven)*:
   `internal/checkpoint/index.go:100` keys identity by the pack a page currently
-  lives in, so a compacted page stops sharing frames with forks and is cached
+  lives in, so a compacted page stops sharing memory with forks and is cached
   twice. Carry an origin ref.
 - **`Rebuild` truncates silently at a gap in the parts** *(proven)*; parts
   upload concurrently so gaps are the normal interrupted state. No CLI
@@ -96,20 +96,20 @@ change had left unimplemented.
 - **A state-less checkpoint destroys the VMM state** *(proven)*:
   `publication.go:134` clears the state location instead of inheriting it;
   latent today, one caller away from turning a shutdown into a cold boot.
-- **Sealed frames are held across the reclamation sweep**: `retire` runs
+- **Sealed pages are held across the reclamation sweep**: `retire` runs
   after serial deletes under the publication lock, so copy-on-write and the
-  doubled frames last longer than durability needs.
+  doubled pages last longer than durability needs.
 - **Retry conflict-compare downloads whole parts** (up to 322 MiB each).
 - **Two host-wide chokepoints on the fault path**: a global pool of four
   zstd workers shared by publication and faults; sixteen concurrent cache
   misses per host.
 - **VM id reuse after `Delete` is poisoned** by the old objects.
 - **Pack parts carry no format version.**
-- **The seal can block on frame locks held across eviction I/O and
+- **The seal can block on page locks held across eviction I/O and
   population windows**, so the pause is unbounded under memory pressure.
 - **A 30 s seal timeout on both sides with no margin kills the VM.**
 - **`Received.Done` waits for the whole resident stream**, serially, holding
-  the source's frames and the parent's seal for the full transfer.
+  the source's pages and the parent's seal for the full transfer.
 - **The VMA budget is never set in production**; a fragmented arena around
   128 GiB hits `max_map_count` and the VMM exits.
 - **`ConcurrentIO` of 16 host-wide** caps cold faults at 32 MiB in flight.
@@ -148,7 +148,7 @@ Write ordering (parts, index, control, then deletes); epoch-major
 sequences; lost-reply reconciliation; index validation; the `packs` set
 difference; pinned lineages spared; bounded publication memory; cache
 coalescing and accounting; the blob envelope; the seal mechanism and
-copy-on-write out of a sealed page; frame lifetime; identity across
+copy-on-write out of a sealed page; page lifetime; identity across
 takeovers; the x86 gap mapping; seal/population lock ordering (undocumented,
 load-bearing); the fork's seccomp filter; snapshot ordering; the
 fork/migrate interlock; the fencing primitive; same-host fork lifecycle;

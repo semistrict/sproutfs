@@ -1,5 +1,5 @@
 // Package slots is the pager's arena free set: which of a fixed number of
-// arena slots hold no frame, and the consecutive runs of them that let
+// arena slots hold no page, and the consecutive runs of them that let
 // consecutive pages become one mapping command. It accounts for nothing else —
 // the resource reservation a slot costs and the statistics it moves belong to
 // the host, which serializes every call here under its own lock.
@@ -34,10 +34,10 @@ func New(total int) *Set {
 // Total is how many slots the set covers, free or not.
 func (s *Set) Total() int { return s.total }
 
-// Free is how many slots hold no frame.
+// Free is how many slots hold no page.
 func (s *Set) Free() int { return s.free }
 
-// IsFree reports whether one slot holds no frame.
+// IsFree reports whether one slot holds no page.
 func (s *Set) IsFree(slot int) bool { return s.words[slot/64]&(1<<(slot%64)) != 0 }
 
 // Take removes count consecutive free slots starting at slot.

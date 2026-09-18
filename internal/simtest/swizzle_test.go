@@ -35,7 +35,7 @@ const (
 
 // TestTwoWritersOfOneVMNeverMixAcrossASwizzle: two hosts hold one VM across a
 // takeover while every link among them and the object store is separated at its
-// own seeded instant and healed in a different order, and the page-server links
+// own seeded moment and healed in a different order, and the page-server links
 // drop, duplicate, delay and slow what they carry. That is exactly the shape of
 // the failure the whole design exists to refuse: the writer that lost the epoch
 // cannot tell it has, and the one that took it cannot always reach the store.
@@ -65,7 +65,7 @@ func TestTwoWritersOfOneVMNeverMixAcrossASwizzle(t *testing.T) {
 
 // newSwizzleRuntime is the world this campaign swizzles: a network whose
 // latency is a millisecond, so a link that is blocked and healed at seeded
-// instants inside a twenty-second window carries something in between, over a
+// moments inside a twenty-second window carries something in between, over a
 // store that answers in microseconds.
 func newSwizzleRuntime(seed uint64) *sim.Runtime {
 	return sim.New(sim.Config{Seed: seed,
@@ -98,7 +98,7 @@ func runSwizzleCampaign(t *testing.T, seed uint64) *sim.Runtime {
 		}
 	}
 	// The second VM's guest writes pages that are durable nowhere: only the
-	// frames this host holds have them, so only a handoff that pulled every one
+	// pages this host holds have them, so only a handoff that pulled every one
 	// of them preserves the guest.
 	if err := world.Checkpoint(ctx, swizzleGuestID); err != nil {
 		t.Fatal(err)
@@ -116,20 +116,20 @@ func runSwizzleCampaign(t *testing.T, seed uint64) *sim.Runtime {
 
 	// Everything now goes dark and comes back in a different order: each of the
 	// links among the two hosts, their page servers and the store is blocked at
-	// its own instant inside the first half of the window and healed at its own
-	// instant inside the second. The page-server links get the rest of the kit
+	// its own moment inside the first half of the window and healed at its own
+	// moment inside the second. The page-server links get the rest of the kit
 	// as well, so a handoff that does run during the window runs over a link
 	// that drops, duplicates, delays and slows what it carries.
 	addrs := []platform.Address{world.Address(0), world.Address(1), simtest.StoreAddress}
 	runtime.Network().Swizzle(addrs, swizzleWindow, runtime.Random("simtest/swizzle"))
-	dropped := simtest.DroppedPageFrames(1)
+	dropped := simtest.DroppedPageServerFrames(1)
 	if err := dropped.Begin(ctx, world); err != nil {
 		t.Fatal(err)
 	}
 
 	// The handoff runs inside the window, over links that are separated,
 	// healed, dropping, duplicating and delaying. The receive is retried for
-	// twice the window — the source keeps the frames the destination has not
+	// twice the window — the source keeps the pages the destination has not
 	// pulled until it is told the destination has them all, so every retry is
 	// of the same handoff — and it has to succeed before those retries run
 	// out, because a link the swizzle separated is a link that heals inside

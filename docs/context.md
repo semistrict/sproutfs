@@ -50,7 +50,7 @@ destination inherits the window rather than restarting it, and where a VM can
 never be checkpointed the wait ends as a full dirty budget does — the host stops
 that VM deliberately, with a last checkpoint of what it can still capture.
 
-**Index object**: The metadata plane of one checkpoint, at
+**Index object**: One checkpoint's metadata, at
 `vm/<id>/ckpt/<seq>/index`: a fixed header, the page-table segments the
 checkpoint changed, and the **root**, which says for every volume where each 512
 MiB segment of its page table is fetched from and which checkpoints this one
@@ -58,19 +58,19 @@ reads. The root carries its parent's segment addresses forward and replaces only
 the segments its own checkpoint changed, so it is complete on its own and names
 no parent. The index object's create-if-absent PUT is the publication's commit.
 
-**Part**: One object of a checkpoint's data plane, at
+**Part**: One object of a checkpoint's data, at
 `vm/<id>/ckpt/<seq>/part/<n>`: filled to 64 MiB and uploaded as it fills, a run
 of encoded members — the VMM state and pages — followed by a table naming them
 and a fixed trailer naming the table, so a part describes itself.
 
 **Seal**: Taking the guest's write access to a region's dirty pages away in
-place, so those frames become the checkpoint's while the guest keeps running.
+place, so those pages become the checkpoint's while the guest keeps running.
 Nothing is copied and no byte moves — a store into a sealed page copies that
 one page — so the pause is page-table work.
 
 **Flush**: A guest's virtio-pmem flush. It makes nothing durable: the device
 completes it itself and the host is not asked. Ordering is the checkpoint's,
-which is one instant of the whole machine.
+which is one pause of the whole machine.
 
 **Reclamation**: Deleting, after a checkpoint is selected, the checkpoints its
 root no longer names and no pin protects, whole. Compaction bounds what that
@@ -78,11 +78,11 @@ leaves behind: a checkpoint rewrites the live pages of checkpoints that are less
 than half live into its own parts, up to 64 MiB of live bytes, after the guest
 has resumed.
 
-**Fork point**: One instant of a running parent: the checkpoint it has
+**Fork point**: One pause of a running parent: the checkpoint it has
 published, the pages sealed since, and the VMM state saved with them. Nothing
 is published to take one and the parent keeps running, so a fork costs the
 pause and the child's boot, and one pause serves any number of children. The
-parent's frames stay sealed until every child has published or pulled the pages
+parent's pages stay sealed until every child has published or pulled the pages
 it inherited.
 
 **Fork**: A VM created from a parent's fork point without changing a byte. It
@@ -91,20 +91,23 @@ sequence is pinned in the parent's record, which keeps reclamation off the
 lineage the child inherits and off every checkpoint that lineage reads. The pin is
 permanent: only a collector, which can see every lineage, may release one. A
 child runs on the parent's host, sharing the
-sealed frames, or on another host, pulling them from the parent's page server.
+sealed pages, or on another host, pulling them from the parent's page server.
 
 **Handoff**: The plain data that starts a VM on another host: the VMM state,
 the checkpoint it inherits, the runs of unpublished pages and the page-server
 address they are served from. A migration hands off a VM the source released; a
 fork hands off a child from a parent that keeps running.
 
-**Lineage identity**: The page whose bytes a range reads, reported as
-(checkpoint reference, volume, page); sparse zeroes have a special identity.
-Inherited pages retain the same identity — compaction moving their bytes into
-another checkpoint's parts does not change it — and may share a resident frame within the
-same pager, without content deduplication.
+**Lineage identity**: The name of the page whose bytes a range reads, reported
+as (checkpoint reference, volume, page); sparse zeroes have a special identity.
+Every page has one name — the checkpoint that published it — and a fork
+inherits its parent's names. Inherited pages retain the same identity —
+compaction moving their bytes into another checkpoint's parts does not change
+it — and a page with a name is referenced, never copied: in the store, on the
+wire, and in host memory, where pages of the same identity share one resident
+page within a pager.
 
-**Resident frame**: The physical backing of one page in a host's pager,
+**Resident page**: The physical backing of one page in a host's pager,
 possibly shared by several regions with the same lineage identity.
 
 ## Cluster

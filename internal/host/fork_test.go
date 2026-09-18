@@ -15,15 +15,15 @@ import (
 )
 
 // One pause of the parent hands every child of one fork over. The parent goes
-// on running and publishes nothing to be forked; it takes its frames back as
+// on running and publishes nothing to be forked; it takes its pages back as
 // each child is released, which is once that child holds every page it
 // inherited and has published a root of its own, and is checkpointed again from
 // there.
-func TestHostForksEveryChildFromOneInstant(t *testing.T) {
+func TestHostForksEveryChildFromOnePause(t *testing.T) {
 	h := newSizedHostHarness(t, 1)
 	// The interval loop runs, so the test also shows the parent checkpointed
-	// again once its frames are its own. The holds' deadline is four intervals,
-	// which at this one would retire the instant while the children are still
+	// again once its pages are its own. The holds' deadline is four intervals,
+	// which at this one would retire the point while the children are still
 	// being taken in, so it is given a bound of its own.
 	h.configs[0].CheckpointInterval = 10 * time.Millisecond
 	h.configs[0].Migration.HoldTimeout = time.Minute
@@ -74,7 +74,7 @@ func TestHostForksEveryChildFromOneInstant(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(handoffs) != len(children) {
-		t.Fatalf("one instant handed over %d children, want %d", len(handoffs), len(children))
+		t.Fatalf("one pause handed over %d children, want %d", len(handoffs), len(children))
 	}
 	forks := make([]*volume.VM, 0, len(handoffs))
 	for _, handoff := range handoffs {
@@ -95,7 +95,7 @@ func TestHostForksEveryChildFromOneInstant(t *testing.T) {
 			t.Fatalf("%s has no root index of its own after the fork: %+v", fork.ID(), status)
 		}
 	}
-	// The parent's frames stay its children's until each of them is released.
+	// The parent's pages stay its children's until each of them is released.
 	if status := vm.Status(); !status.Sealed {
 		t.Fatalf("the parent's seal ended before its children were released: %+v", status)
 	}
@@ -107,7 +107,7 @@ func TestHostForksEveryChildFromOneInstant(t *testing.T) {
 	if status := vm.Status(); status.Sealed {
 		t.Fatalf("the parent is still sealed after every child was released: %+v", status)
 	}
-	// Every child reads the parent's memory at the instant, including the pages
+	// Every child reads the parent's memory at the fork point, including the pages
 	// no checkpoint holds.
 	for _, fork := range forks {
 		for page := range uint64(3) {
@@ -120,7 +120,7 @@ func TestHostForksEveryChildFromOneInstant(t *testing.T) {
 			}
 		}
 	}
-	// An instant nothing has retired holds the parent, and one checkpoint of a
+	// A point nothing has retired holds the parent, and one checkpoint of a
 	// region is outstanding at a time, so a fork taken while one is held is
 	// refused.
 	point, err := host.Seal(t.Context(), vm, guest)
@@ -129,11 +129,11 @@ func TestHostForksEveryChildFromOneInstant(t *testing.T) {
 	}
 	before := vm.Status().Checkpoint
 	if _, err := h.hosts[0].Fork(t.Context(), "vm-1", []string{"fork-d"}, ""); !errors.Is(err, volume.ErrSealed) {
-		t.Fatalf("a second instant while one is held = %v, want ErrSealed", err)
+		t.Fatalf("a second pause while one is held = %v, want ErrSealed", err)
 	}
 	// The interval loop leaves a sealed parent alone rather than failing on it.
 	// Three turns of the metronome are three intervals the parent's own loop
-	// has woken for and found the fork point holding its frames.
+	// has woken for and found the fork point holding its pages.
 	metronome.awaitTurns(t, 3)
 	if status := vm.Status(); status.Checkpoint != before || status.CheckpointError != nil {
 		t.Fatalf("the interval loop ran against a sealed parent: %+v", status)
@@ -164,7 +164,7 @@ func TestHostForksEveryChildFromOneInstant(t *testing.T) {
 // restarts, or a destination that dies, between the handoff and the release
 // leaves the parent sealed for good — never checkpointed, never fenced, never
 // migratable, and with a dirty set that only grows. The hold has a deadline of
-// its own, after which the parent takes its frames back and is checkpointed
+// its own, after which the parent takes its pages back and is checkpointed
 // again, and the child falls back to the checkpoint it was forked from.
 func TestForkHoldExpiresWhenNothingReleasesIt(t *testing.T) {
 	h, pagers, arenas := startMigrationHosts(t)
@@ -197,7 +197,7 @@ func TestForkHoldExpiresWhenNothingReleasesIt(t *testing.T) {
 		t.Fatalf("the fork handed over %+v", handoffs)
 	}
 	if status := vm.Status(); !status.Sealed {
-		t.Fatalf("the parent is not sealed while its child holds the instant: %+v", status)
+		t.Fatalf("the parent is not sealed while its child holds the point: %+v", status)
 	}
 	before := vm.Status().Checkpoint
 
@@ -216,7 +216,7 @@ func TestForkHoldExpiresWhenNothingReleasesIt(t *testing.T) {
 	if serving := h.hosts[0].Status().Serving; len(serving) != 0 {
 		t.Fatalf("the expired hold still serves %v", serving)
 	}
-	// A parent that has its frames back is migratable like any other.
+	// A parent that has its pages back is migratable like any other.
 	handoff, err := h.hosts[0].Migrate(t.Context(), "vm-1", h.pages[1])
 	if err != nil {
 		t.Fatalf("migrating a parent whose fork hold expired: %v", err)
@@ -235,10 +235,10 @@ func TestForkHoldExpiresWhenNothingReleasesIt(t *testing.T) {
 }
 
 // TestDeletingAForkParentRetiresItsForkPoints: a child forked onto another host
-// reads the instant's pages out of this host's frames, and the process that
+// reads the fork point's pages out of this host's memory, and the process that
 // maps them is exactly what deleting the parent closes. Nothing retired the
-// points taken on the parent, so the page server went on offering that child an
-// instant whose frames were gone: every page it had not fetched came back
+// points taken on the parent, so the page server went on offering that child a
+// point whose pages were gone: every page it had not fetched came back
 // absent and it read the checkpoint's older bytes instead, silently. Retiring
 // the point first stops this host offering them at all, so the child's next
 // fault for one fails and says so.
@@ -264,14 +264,14 @@ func TestDeletingAForkParentRetiresItsForkPoints(t *testing.T) {
 		t.Fatal(err)
 	}
 	if serving := h.hosts[0].Status().Serving; len(serving) != 1 || serving[0] != "child" {
-		t.Fatalf("the fork instant is served for %v, want the child", serving)
+		t.Fatalf("the fork point is served for %v, want the child", serving)
 	}
 
 	if err := h.hosts[0].Delete(t.Context(), "parent"); err != nil {
 		t.Fatal(err)
 	}
 	if serving := h.hosts[0].Status().Serving; len(serving) != 0 {
-		t.Fatalf("a deleted parent still offers %v an instant whose frames are gone", serving)
+		t.Fatalf("a deleted parent still offers %v a point whose pages are gone", serving)
 	}
 	if machines := h.hosts[0].Machines(); len(machines) != 0 {
 		t.Fatalf("a deleted parent is still registered: %v", machines)
@@ -288,9 +288,9 @@ func TestDeletingAForkParentRetiresItsForkPoints(t *testing.T) {
 	}
 }
 
-// TestDeletingASealedVMIsRefused: the frames a fork point reads through are
+// TestDeletingASealedVMIsRefused: the pages a fork point reads through are
 // exactly the ones closing the VMM process detaches, so a delete that went ahead
-// would take the instant out from under whoever holds it — a child created here
+// would take the point out from under whoever holds it — a child created here
 // whose root has not published yet holds the point through its own handle, which
 // this host has no hold of its own for. A delete is refused while anything still
 // holds the VM sealed, the way a migration is, and the VM is left exactly as it
@@ -327,7 +327,7 @@ func TestDeletingASealedVMIsRefused(t *testing.T) {
 	if machines := h.hosts[0].Machines(); len(machines) != 1 || machines[0] != "sealed" {
 		t.Fatalf("a refused delete left the host running %v", machines)
 	}
-	// Retiring the point gives the frames back, and the delete goes through.
+	// Retiring the point gives the pages back, and the delete goes through.
 	if err := point.Retire(t.Context()); err != nil {
 		t.Fatal(err)
 	}
@@ -338,7 +338,7 @@ func TestDeletingASealedVMIsRefused(t *testing.T) {
 
 // countingNetwork reports how many connections a host has dialed, which is what
 // says whether a child took its inherited pages off the wire or out of the
-// frames its parent already holds.
+// pages its parent already holds.
 type countingNetwork struct {
 	platform.Network
 	dials atomic.Int64
@@ -349,18 +349,18 @@ func (n *countingNetwork) Dial(ctx context.Context, from, to platform.Address) (
 	return n.Network.Dial(ctx, from, to)
 }
 
-// TestLocalForkReceivesTheInstantOverTheFrames: a fork is always a handoff, and
+// TestLocalForkReceivesTheForkPointOverThePages: a fork is always a handoff, and
 // a child that lands on its parent's own host receives one over a local backing
-// rather than over the page server: the pager shares the parent's sealed frames
+// rather than over the page server: the pager shares the parent's sealed pages
 // with the child by identity, so every inherited page is present the moment the
 // region attaches. No byte is copied, no page is loaded back out of the store
 // and nothing is dialed. The child's root is published by the host that took it
 // in, as soon as it holds every page, which is before the parent's seal ends.
-func TestLocalForkReceivesTheInstantOverTheFrames(t *testing.T) {
+func TestLocalForkReceivesTheForkPointOverThePages(t *testing.T) {
 	h, pagers, arenas := startMigrationHosts(t)
 	var child *machine
 	// The destination of this fork is the parent's own host, so the child's
-	// regions attach to the pager the parent's frames are in.
+	// regions attach to the pager the parent's pages are in.
 	h.configs[0].Migration.StartVM = starter(t, pagers[0], arenas[0], &child)
 	network := &countingNetwork{Network: h.configs[0].Network}
 	h.configs[0].Network = network
@@ -390,10 +390,10 @@ func TestLocalForkReceivesTheInstantOverTheFrames(t *testing.T) {
 		t.Fatalf("the fork handed over %+v", handoffs)
 	}
 	if status := vm.Status(); !status.Sealed {
-		t.Fatalf("the parent is not sealed while its child holds the instant: %+v", status)
+		t.Fatalf("the parent is not sealed while its child holds the point: %+v", status)
 	}
 	// Nothing is served to a child on the parent's own host: its pages never
-	// leave the frames they are in, so the handoff names no address to fetch
+	// leave the pages they are in, so the handoff names no address to fetch
 	// from. The hold is reported all the same — it is what holds the parent
 	// sealed, and a host that reported it as holding nothing would be telling
 	// the deployment that a parent nothing can checkpoint is a parent nothing
@@ -402,7 +402,7 @@ func TestLocalForkReceivesTheInstantOverTheFrames(t *testing.T) {
 		t.Fatalf("a child on the parent's own host is given %q to fetch from", handoffs[0].Source)
 	}
 	if serving := h.hosts[0].Status().Serving; len(serving) != 1 || serving[0] != "child" {
-		t.Fatalf("the host reports holding %v, want the instant it holds for its own child", serving)
+		t.Fatalf("the host reports holding %v, want the point it holds for its own child", serving)
 	}
 
 	before, err := pagers[0].Stats(t.Context())
@@ -422,7 +422,7 @@ func TestLocalForkReceivesTheInstantOverTheFrames(t *testing.T) {
 	if status := vm.Status(); !status.Sealed {
 		t.Fatalf("the parent's seal ended before the child was released: %+v", status)
 	}
-	// Every inherited page is the parent's, read out of the frame the parent
+	// Every inherited page is the parent's, read out of the memory the parent
 	// sealed rather than loaded back through a backing.
 	for page := range uint64(3) {
 		if got := child.load("ram0", page); got[0] != byte(page+1) {
@@ -438,7 +438,7 @@ func TestLocalForkReceivesTheInstantOverTheFrames(t *testing.T) {
 			after.LoadedPages-before.LoadedPages)
 	}
 	if after.IdentityHits-before.IdentityHits < 3 {
-		t.Fatalf("the child mapped %d of the parent's frames by identity, want the 3 it inherited",
+		t.Fatalf("the child mapped %d of the parent's pages by identity, want the 3 it inherited",
 			after.IdentityHits-before.IdentityHits)
 	}
 	if dials := network.dials.Load(); dials != 0 {
@@ -515,10 +515,10 @@ func TestForkPublishesTheChildRootWhenItsPostCopyIsDone(t *testing.T) {
 }
 
 // TestDeletingAParentUnderALocalChildIsTheSameAsUnderARemoteOne: a child on the
-// parent's own host reads the instant out of the frames the parent's VMM
+// parent's own host reads the point out of the pages the parent's VMM
 // process maps, which is exactly what deleting the parent closes. The hold this
 // host records for it is the same hold a child on another host has, so the
-// delete retires the point first and the instant is given up with it.
+// delete retires the point first and the point is given up with it.
 func TestDeletingAParentUnderALocalChildIsTheSameAsUnderARemoteOne(t *testing.T) {
 	h, pagers, arenas := startMigrationHosts(t)
 	var child *machine
@@ -586,7 +586,7 @@ func TestALocalForkHoldExpiresWhenNothingReleasesIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !vm.Status().Sealed {
-		t.Fatal("a fork point does not hold the parent's frames")
+		t.Fatal("a fork point does not hold the parent's pages")
 	}
 	if released := clock.Advance(3 * time.Minute); released != 0 {
 		t.Fatalf("released %d deadlines three minutes into a four-minute hold", released)

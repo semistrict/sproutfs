@@ -62,7 +62,7 @@ func TestSnapshotIsConsistentWhileWritesContinue(t *testing.T) {
 	})
 }
 
-// A fork starts as its parent's fork instant and then goes its own way. Neither
+// A fork starts as its parent's fork point and then goes its own way. Neither
 // VM can see the other's writes, before or after the fork publishes its root.
 func TestForkAndSourceDiverge(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
@@ -91,7 +91,7 @@ func TestForkAndSourceDiverge(t *testing.T) {
 		defer fork.Close(t.Context())
 		forked.check(t, fork, "the fresh fork")
 		if status := vm.Status(); !status.Sealed {
-			t.Fatalf("the parent is not sealed while a fork point holds its frames: %+v", status)
+			t.Fatalf("the parent is not sealed while a fork point holds its pages: %+v", status)
 		}
 		if status := fork.Status(); !status.Root {
 			t.Fatalf("a fork that has not published its root reports %+v", status)
@@ -262,7 +262,7 @@ func TestForkBeforeItPublishesItsRoot(t *testing.T) {
 	})
 }
 
-// One checkpoint of a VM's frames is outstanding at a time, so a VM a fork
+// One checkpoint of a VM's pages is outstanding at a time, so a VM a fork
 // point holds refuses another fork and refuses a capture, and says so before
 // anything pauses its guest.
 func TestForkPointRefusesASecondSeal(t *testing.T) {
@@ -284,7 +284,7 @@ func TestForkPointRefusesASecondSeal(t *testing.T) {
 			t.Fatalf("a second fork point = %v, want ErrSealed", err)
 		}
 		sealed := func(context.Context) ([]byte, map[string]volume.DirtySource, error) {
-			t.Fatal("a capture paused a guest whose frames a fork point holds")
+			t.Fatal("a capture paused a guest whose pages a fork point holds")
 			return nil, nil, nil
 		}
 		if _, err := vm.Snapshot(t.Context(), sealed); !errors.Is(err, volume.ErrSealed) {

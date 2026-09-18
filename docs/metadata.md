@@ -41,7 +41,7 @@ lineage nobody had asked. Releasing a pin is therefore a collector's, which can
 survey every record and every root in the deployment; see
 [open work](open-work.md).
 
-Because one pin covers every child of one instant and a repeated pin writes
+Because one pin covers every child of one fork point and a repeated pin writes
 nothing, a fan-out of any size costs one — but a VM forked at many distinct
 checkpoints accumulates one pin each, for good, and `MaximumPins` (4096) is
 what that may reach before a collector has released some.
@@ -59,7 +59,7 @@ the migration wire name pages by those without depending on the store that holds
 them.
 
 Checkpoint objects are immutable and written create-if-absent. A checkpoint is
-two planes: one index object at `vm/<id>/ckpt/<seq>/index`, holding a fixed
+one index object at `vm/<id>/ckpt/<seq>/index`, holding a fixed
 header, the page-table segments the checkpoint changed and the root over every
 volume's segments; and its parts at `vm/<id>/ckpt/<seq>/part/<n>`, holding the
 VMM state and the pages. The index format is 7 and the part layout is 4.
@@ -109,7 +109,7 @@ swept what it found would destroy it. Repeating a delete is therefore harmless
 and finishes nothing; what an interrupted sweep left is a collector's.
 
 What the sweep leaves is the checkpoints that record pinned, and every
-checkpoint their roots name. Those are the instants the VM was forked at, and a
+checkpoint their roots name. Those are the fork points the VM was taken at, and a
 descendant of it — a child, or a grandchild whose own root names those —
 may still read through them; nothing this delete can read says whether one does.
 So a VM that was ever forked frees its identity and leaves those objects behind
@@ -173,8 +173,8 @@ is no longer the handle's. A host calls it on a timer for every VM it holds,
 which is how a takeover reaches a writer that is publishing nothing. A record
 that cannot be read fails nothing: only an epoch that has moved is evidence. A
 handoff asks too, and it asks on its own account rather than trusting that timer
-— the frames it hands another host are the one thing the store cannot refuse
-afterwards — so `Migrate` and the fork instant confirm the record before the
+— the pages it hands another host are the one thing the store cannot refuse
+afterwards — so `Migrate` and the fork point confirm the record before the
 pause, and a read that fails refuses the handoff.
 
 Because taking a VM over fences a writer that may still be running a guest, an

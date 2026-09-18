@@ -28,7 +28,7 @@ func objectPresent(t *testing.T, store *Store, key platform.ObjectKey) bool {
 	return false
 }
 
-// indexObjectKey names the metadata plane of one checkpoint.
+// indexObjectKey names the index object of one checkpoint.
 func indexObjectKey(t *testing.T, store *Store, ref control.Ref) platform.ObjectKey {
 	t.Helper()
 	key, err := platform.NewObjectKey(store.checkpointPrefix(ref) + "index")
@@ -53,14 +53,14 @@ func memberCount(t *testing.T, store *Store, index *Index, ref control.Ref) int 
 	return count
 }
 
-// A checkpoint is two planes: one index object holding the segments it changed
+// A checkpoint is one index object holding the segments it changed
 // and its root, and the parts holding the guest bytes. Nothing else is written
 // under its prefix, and opening it is one GET of the index object.
 func TestAPublishedCheckpointIsAnIndexObjectAndItsParts(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		store, runtime := tailStore(t)
-		ref := control.Ref{VM: "planes", Sequence: 2}
-		root, err := store.Root(t.Context(), control.Ref{VM: "planes", Sequence: 1},
+		ref := control.Ref{VM: "layout", Sequence: 2}
+		root, err := store.Root(t.Context(), control.Ref{VM: "layout", Sequence: 1},
 			map[string]uint64{"disk": 2 * PageSize})
 		if err != nil {
 			t.Fatal(err)
@@ -91,12 +91,12 @@ func TestACheckpointWritesOnlyTheSegmentsItChangedIntoItsIndexObject(t *testing.
 	synctest.Test(t, func(t *testing.T) {
 		store := fixtureStore(t)
 		pages := uint64(segmentVolumeSize / PageSize)
-		root, err := store.Root(t.Context(), control.Ref{VM: "planes", Sequence: 1},
+		root, err := store.Root(t.Context(), control.Ref{VM: "layout", Sequence: 1},
 			map[string]uint64{"disk": segmentVolumeSize})
 		if err != nil {
 			t.Fatal(err)
 		}
-		firstRef := control.Ref{VM: "planes", Sequence: 2}
+		firstRef := control.Ref{VM: "layout", Sequence: 2}
 		first := store.Begin(root, firstRef)
 		for page := range pages {
 			first.Dirty("disk", page)
@@ -105,7 +105,7 @@ func TestACheckpointWritesOnlyTheSegmentsItChangedIntoItsIndexObject(t *testing.
 		if err != nil {
 			t.Fatal(err)
 		}
-		secondRef := control.Ref{VM: "planes", Sequence: 3}
+		secondRef := control.Ref{VM: "layout", Sequence: 3}
 		second := store.Begin(firstIndex, secondRef)
 		second.Dirty("disk", 1000)
 		secondIndex, err := second.Commit(t.Context(), fillSource{value: 0xa5})
@@ -134,7 +134,7 @@ func TestACheckpointWritesOnlyTheSegmentsItChangedIntoItsIndexObject(t *testing.
 			t.Fatalf("the root addresses %d segments of its own and %d of its parent's, want 1 and %d",
 				own, inherited, int(pages/segmentPages)-1)
 		}
-		// The data plane holds the dirty page and nothing else: no segment and
+		// The parts hold the dirty page and nothing else: no segment and
 		// no root is a member of a part any more.
 		if got := memberCount(t, store, secondIndex, secondRef); got != 1 {
 			t.Fatalf("the second checkpoint's parts hold %d members, want the dirty page alone", got)
@@ -249,7 +249,7 @@ func TestAPublicationInterruptedBeforeTheIndexObjectLeavesNoCheckpoint(t *testin
 	})
 }
 
-// Compaction works over the data plane alone: it rewrites live page members out
+// Compaction works over the parts alone: it rewrites live page members out
 // of checkpoints whose parts have become mostly dead, and moves no segment. A
 // segment whose entries it did not change stays where it was written, in the
 // index object of the checkpoint being emptied, which therefore stays too.
@@ -316,7 +316,7 @@ func TestCompactionMovesNoSegment(t *testing.T) {
 			t.Fatal("the index object holding an addressed segment is gone")
 		}
 		// Three pages written and one rescued: a segment is never a member of a
-		// part, so nothing else is in the data plane.
+		// part, so nothing else is in the parts.
 		if got := memberCount(t, store, last, lastRef); got != 4 {
 			t.Fatalf("the compacting checkpoint's parts hold %d members, want three written pages and one rescued", got)
 		}

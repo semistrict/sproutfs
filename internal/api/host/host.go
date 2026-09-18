@@ -50,13 +50,13 @@ type Handoff struct {
 	// VMID is the VM the source released, and State the captured VMM state the
 	// destination restores. The checkpoint the destination opens is whatever the
 	// VM's control record selects, which is the source's last interval checkpoint;
-	// the writes since it come from the source's frames.
+	// the writes since it come from the source's pages.
 	VMID  string
 	State []byte
 	// Checkpoint is the sequence the source's control record selected when it
 	// gave the VM up. A destination that opens a record selecting anything else
 	// refuses the handoff: another writer got in, and streaming the source's
-	// frames over that writer's checkpoint would make one VM's memory out of two
+	// pages over that writer's checkpoint would make one VM's memory out of two
 	// writers' pages. It is zero for a fork, whose child has no record yet.
 	Checkpoint uint64 `json:",omitempty"`
 	// Parent and ParentCheckpoint make this handoff a fork: the VM the child
@@ -83,7 +83,7 @@ type HandoffRegion struct {
 	Size uint64
 	// Unpublished names the pages of this region that no checkpoint of the VM
 	// has: the guest's writes since the source's last checkpoint. They exist
-	// only in the source's frames, so the destination must fetch every one of
+	// only in the source's pages, so the destination must fetch every one of
 	// them before the source may stop serving. The guest was stopped when this
 	// was taken, so it is final, and the source's dirty budget bounds it, which
 	// is what makes it data the control plane can carry.
@@ -143,11 +143,11 @@ type VM struct {
 // which is what a fork of a running guest inherits.
 type Pager struct {
 	PageBytes int `json:"page_bytes"`
-	// ArenaPages is how many frames the arena holds and ResidentPages how many
+	// ArenaPages is how many pages the arena holds and ResidentPages how many
 	// of them are taken. The arena is the whole of a guest's resident memory, so
 	// it is the capacity a VM placed here has to fit into; ResidentPages is not
 	// what it has to fit into, because the arena is a cache — a page of a VM
-	// that has gone stays resident until something else needs the frame.
+	// that has gone stays resident until something else needs the page.
 	ArenaPages    int `json:"arena_pages"`
 	ResidentPages int `json:"resident_pages"`
 	// CommittedBytes is the guest RAM the VMs this host runs have between them,
@@ -175,7 +175,7 @@ type Pages struct {
 	Refused  int64 `json:"refused"`
 }
 
-// Resources is what a host has: the RAM allotment its pager takes frames from,
+// Resources is what a host has: the RAM allotment its pager takes pages from,
 // and the page cache's own separate cap. Disk is not shared or accounted —
 // each concern that writes to the node's disk has a fixed cap of its own.
 type Resources struct {
@@ -234,7 +234,7 @@ type Status struct {
 	// over, which is what another host's handoff names as its source.
 	PageAddress string `json:"page_address"`
 	// Running is what this host runs and Serving what it has migrated away and
-	// still holds frames for. A drain is finished when Serving is empty.
+	// still holds pages for. A drain is finished when Serving is empty.
 	Running []string `json:"running"`
 	Serving []string `json:"serving"`
 	// Outstanding is, per VM in Serving, how many pages this host still holds
@@ -315,18 +315,18 @@ type OpenResult struct {
 // ForkRequest names the children one fork creates and, when they run elsewhere,
 // the page-server address of the host that will run them. A fork is a migration
 // handoff from a parent that keeps running, wherever the children land: with no
-// destination this host takes them in itself, over the frames the seal froze,
-// and with one it serves those frames to that host until it reports it has
+// destination this host takes them in itself, over the pages the seal froze,
+// and with one it serves those pages to that host until it reports it has
 // them.
 //
-// Every child named here starts from one instant of the parent, so a fan-out
+// Every child named here starts from one pause of the parent, so a fan-out
 // costs the parent one pause however many are asked for.
 type ForkRequest struct {
 	IDs         []string `json:"ids"`
 	Destination string   `json:"destination,omitempty"`
 }
 
-// ForkResult reports one fork instant and the handoff of every child taken from
+// ForkResult reports one fork point and the handoff of every child taken from
 // it. Capture is the pause the parent paid, once: it is running again before
 // any child starts, and nothing was published to take it.
 //
@@ -341,7 +341,7 @@ type ForkResult struct {
 }
 
 // CaptureResult reports one explicit checkpoint: the guest's pause, and how
-// long the sealed frames took to become durable behind it.
+// long the sealed pages took to become durable behind it.
 type CaptureResult struct {
 	VM         string  `json:"vm"`
 	Checkpoint uint64  `json:"checkpoint"`
@@ -350,7 +350,7 @@ type CaptureResult struct {
 }
 
 // StopResult reports one VM stopped: the checkpoint its last writes were
-// published under, which is the instant it comes back at, and what the whole
+// published under, which is the pause it comes back at, and what the whole
 // stop cost. The VM's control record and its objects stay where they are, so
 // any host can open it again at exactly that checkpoint.
 type StopResult struct {

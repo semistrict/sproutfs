@@ -3,17 +3,17 @@
 //
 // A capture is the checkpoint: the VMM process is paused, its memory regions
 // are sealed, the process resumes, and the checkpoint publishes the sealed
-// frames straight out of the arena with the VMM state attached. Sealing moves
+// pages straight out of the arena with the VMM state attached. Sealing moves
 // no bytes, so the guest's pause is the state capture and page-table work,
 // never the bytes the checkpoint uploads. The checkpoint is returned before the
 // publication that makes it durable completes.
 //
-// A fork is the same instant without the publication. Seal pauses the parent,
+// A fork is the same pause without the publication. Seal pauses the parent,
 // saves its state, seals its dirty set and resumes it — the parent keeps its
-// handle, its volumes and its frames — and returns the point a child starts
+// handle, its volumes and its pages — and returns the point a child starts
 // from. Nothing is published on the parent's side: the child inherits the
 // checkpoint the parent's control record already selects, and the pages written
-// since it come out of the parent's sealed frames, over the instant itself on
+// since it come out of the parent's sealed pages, over the fork point itself on
 // this host and over the parent's page server on another. The destination
 // publishes the child's root as soon as it holds them all, and that root is
 // what publishes them as the child's own.
@@ -37,7 +37,7 @@ import (
 var ErrInvalidCapture = errors.New("host: invalid capture argument")
 
 // Capture pauses the VM through machine, resumes it as soon as its memory is
-// sealed, and publishes a checkpoint of the sealed frames with the captured VMM
+// sealed, and publishes a checkpoint of the sealed pages with the captured VMM
 // state. It returns as soon as the checkpoint exists, before its publication
 // completes; volume.Checkpoint.Wait reports when it became durable.
 //
@@ -54,7 +54,7 @@ var ErrInvalidCapture = errors.New("host: invalid capture argument")
 // rather than racing to seal the same regions. A phase that fails after the
 // pause began releases the VM: every region is unsealed and the guest resumes.
 // A VM that refused the capture before its guest was touched is left exactly as
-// it was, which is what a VM whose frames a fork point holds does. Once the
+// it was, which is what a VM whose pages a fork point holds does. Once the
 // publication has the checkpoints it owns them, so nothing here unseals
 // anything: it retires each of them when it lands, and hands their pages back
 // to the guest when it does not.
@@ -72,7 +72,7 @@ func Capture(ctx context.Context, vm *volume.VM, machine Machine, clock platform
 		if err != nil {
 			return nil, nil, err
 		}
-		// The guest runs again from here: the checkpoint reads the frames it
+		// The guest runs again from here: the checkpoint reads the pages it
 		// sealed while the guest stores into copies of them.
 		if err := machine.Resume(ctx); err != nil {
 			return nil, nil, err
@@ -112,10 +112,10 @@ func report(ctx context.Context, vmID string, ckpt *volume.Checkpoint, pause tim
 		"error", err)
 }
 
-// Seal takes the fork instant on a running parent: it pauses the VM through the
+// Seal takes the fork point on a running parent: it pauses the VM through the
 // machine, saves its state, seals its dirty set, resumes it, and pins the
 // checkpoint its control record selects. It publishes nothing and gives nothing
-// up — the parent goes on running with its own volumes and frames.
+// up — the parent goes on running with its own volumes and pages.
 //
 // The parent stays sealed until the returned point is retired, which is when
 // the child has published or pulled every page it inherited. Nothing may
@@ -131,7 +131,7 @@ func Seal(ctx context.Context, vm *volume.VM, machine Machine) (*volume.ForkPoin
 		if err != nil {
 			return nil, nil, err
 		}
-		// The parent runs again from here, storing into copies of the frames
+		// The parent runs again from here, storing into copies of the pages
 		// the fork keeps.
 		if err := machine.Resume(ctx); err != nil {
 			return nil, nil, err

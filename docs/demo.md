@@ -81,10 +81,10 @@ What it does, and what you should see:
    VM's bytes are still the template's, so it seals no pages and uploads none —
    and it is the `root` time the create prints.
 2. **Fork.** `sproutfsctl fork <vm> --count 5` forks the running VM five times
-   on its own host. All five come from one instant of the parent, so it pauses
+   on its own host. All five come from one pause of the parent, so it pauses
    once: a fork is a migration handoff from a VM that keeps running, and nothing
    is published to take it. Every child is asked a question on its own console
-   and has to answer it, and the host's shared frame count has to have risen:
+   and has to answer it, and the host's shared page count has to have risen:
    the children inherited the parent's memory rather than copying it.
 
    The run then does it again with `--to <the other host>`. The child starts
@@ -150,7 +150,7 @@ the template checkpoint already existed on that host, so the 1.25 s is reading
 it, and the root is the new VM's own first checkpoint, which costs almost
 nothing because nothing has run yet.
 
-Five forks cost the parent one pause, because they are one instant of it and
+Five forks cost the parent one pause, because they are one fork point of it and
 none of them publishes anything: the pause is the VMM state capture and the
 seal, and the total is that plus the children's boots. It is the whole fan-out's
 pause, so it is the one number here that grows with the number of children —
@@ -162,7 +162,7 @@ The migration moved the same 62 pages and the guest kept the shell variable set
 in it beforehand; the recovery reopened it from checkpoint `8589934593` on the
 surviving host, and the guest still held that variable. The cross-host fork
 raised the parent host's `SERVED` count from 0 to 62, and the five same-host
-forks raised its `SHARED` frame count from 0 to 310, which is what says the
+forks raised its `SHARED` page count from 0 to 310, which is what says the
 children inherited the parent's memory rather than copying it.
 
 ## Workload
@@ -192,14 +192,14 @@ FORKS_BASE=3 FORKS_PER_REPO=2 scripts/demo-gce.sh workload
 
 Every fork lands on its parent's host, so left alone a run piles onto the host
 its base was created on while the other sits idle; the workers are spread over
-the ready hosts with a migration after the one fork instant that starts them.
+the ready hosts with a migration after the one fork point that starts them.
 Even so this node tops out at three guests installing at once — the two host
 pods' spill files are on the one boot disk — and four is where it stops
 answering. [The larger setting](measurements-2026-09-14-workload.md#the-larger-setting)
 has the detail.
 
 Restart the hosts before a run whose numbers you mean to keep: their
-object-store counters and frame counts are since the process started, and the
+object-store counters and page counts are since the process started, and the
 run reads their logs, so a host that has already carried a run reports that
 one's work beside this one's.
 
@@ -304,7 +304,7 @@ scripts/demo-gce.sh kubectl exec -n sproutfs deploy/sproutfs-orchestrator -- \
 
 A stop is the deliberate end of a running VM that leaves the VM behind: the host
 running it publishes everything its guest holds, closes the VMM process, gives
-the frames back and releases the handle. The VM is then exactly its control
+the pages back and releases the handle. The VM is then exactly its control
 record and its objects — still listed, on no host — and a start opens it again at
 exactly the bytes the stop published, on the host named or on the ready one whose
 guests have promised the least of its arena.
@@ -318,8 +318,8 @@ the VM is between hosts rather than stopped still refuses a start — a host tha
 runs it, two hosts that claim it, a host still serving the pages no checkpoint
 has, and an operation the orchestrator started that is still in flight.
 
-A stop is refused for a VM a fork instant holds sealed, exactly as a delete is:
-a child elsewhere is reading the pages no checkpoint holds out of the frames the
+A stop is refused for a VM a fork point holds sealed, exactly as a delete is:
+a child elsewhere is reading the pages no checkpoint holds out of the memory the
 stop would release. Take the children's root checkpoints first.
 
 ## Starting a VM cold, and resizing it
@@ -393,7 +393,7 @@ not the one running the fewest VMs: a guest's cost to a host is its RAM, so one
 2 GiB workload guest takes more of a host than three 512 MiB ones. What is
 counted is the RAM the running guests were promised, not how much of the arena
 is resident — the arena is a cache, so a page of a VM that has been migrated
-away or deleted stays in it until a frame is needed, and a host measured by
+away or deleted stays in it until the memory is needed, and a host measured by
 residency looks full the moment it has done any work, which is a drain with
 nowhere to go. A create or a fork whose children do not fit anywhere is refused
 with 503 rather than started on the emptiest host and lost when its memory will

@@ -8,10 +8,10 @@ import (
 	"github.com/semistrict/sproutfs/internal/platform/sim"
 )
 
-// TestAFanOutNothingReceivesExpiresEveryHold: a fan-out is one instant and one
+// TestAFanOutNothingReceivesExpiresEveryHold: a fan-out is one pause and one
 // hold per child, and a request that fails part way through taking its children
 // in leaves every one of those holds behind. Each of them carries the deadline
-// a handover gets, so the parent takes its frames back within it and is
+// a handover gets, so the parent takes its pages back within it and is
 // checkpointed again — which is the whole reason the deadline exists.
 //
 // The releases the orchestrator carries are refused first, exactly as they are
@@ -45,7 +45,7 @@ func TestAFanOutNothingReceivesExpiresEveryHold(t *testing.T) {
 	if serving := h.hosts[0].Status().Serving; !slices.Equal(serving, children) {
 		t.Fatalf("the fan-out serves %v, want every child", serving)
 	}
-	// Nothing fetched what the instant holds, so the release the orchestrator
+	// Nothing fetched what the point holds, so the release the orchestrator
 	// carries is refused for every one of them: the pages exist nowhere else.
 	for _, child := range children {
 		if err := h.hosts[0].ReleaseMigrated(child); err == nil {
@@ -68,7 +68,7 @@ func TestAFanOutNothingReceivesExpiresEveryHold(t *testing.T) {
 }
 
 // TestAHostReportsTheHoldsOfAFanOutOntoItself: a child taken in on its parent's
-// own host is served nothing — it maps the frames the seal froze — so the page
+// own host is served nothing — it maps the pages the seal froze — so the page
 // server knows nothing about it. That does not make the hold any less a
 // handover: it holds the parent sealed, so the parent cannot be checkpointed,
 // fenced, migrated or stopped while it stands, and a host that exits with one
@@ -99,7 +99,7 @@ func TestAHostReportsTheHoldsOfAFanOutOntoItself(t *testing.T) {
 		t.Fatal(err)
 	}
 	children := []string{"child-a", "child-b"}
-	// No destination: the children are taken in here, over the instant itself.
+	// No destination: the children are taken in here, over the point itself.
 	if _, err := h.hosts[0].Fork(t.Context(), "parent", children, ""); err != nil {
 		t.Fatal(err)
 	}

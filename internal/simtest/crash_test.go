@@ -33,7 +33,7 @@ const (
 // it came from and two checkpoints mixed into one VM are visible at a glance.
 const crashPages = 4
 
-// crashWindow is the span a seed draws the kill's instant from. It is virtual
+// crashWindow is the span a seed draws the kill's moment from. It is virtual
 // time, and it is wider than any of these operations takes, so some seeds kill
 // before the operation began, some in the middle of it and some after it
 // finished. The requirements do not move between those.
@@ -46,7 +46,7 @@ const handoffIntervals = 4
 
 // crashScenarios is where a host can be lost. Each stages the deployment,
 // starts the thing its victim is in the middle of, and kills that host at an
-// instant the seed chooses. What has to hold afterwards is the same for all of
+// moment the seed chooses. What has to hold afterwards is the same for all of
 // them.
 var crashScenarios = []struct {
 	name string
@@ -63,9 +63,9 @@ var crashScenarios = []struct {
 // TestAHostLostAtAnyOfItsHandoversLosesOnlyWhatNoCheckpointHeld is the kill
 // campaign, as a schedule over one world. Every seed runs every scenario: a
 // host is taken away in the middle of a checkpoint, while it holds a fork
-// instant another host's child is still reading, while it is serving the pages
+// point another host's child is still reading, while it is serving the pages
 // of a VM it handed over, and while it is the host taking one in. The kill
-// lands at an instant the seed draws and in a mode the seed draws, the host
+// lands at a moment the seed draws and in a mode the seed draws, the host
 // comes back in this process on the disk it left behind, and then the VM is
 // recovered — by a bystander or by that restart, as the seed chooses.
 //
@@ -179,7 +179,7 @@ func runCrashScenario(t *testing.T, runtime *sim.Runtime, seed uint64, name stri
 		random: runtime.Random("campaign/crash/" + name)}
 	// One generation the guest stored and published, so it is durable wherever
 	// this VM is recovered, and one it stored afterwards, which lives only in
-	// the frames of the host that is about to die.
+	// the pages of the host that is about to die.
 	c.generation(1)
 	if err := world.Checkpoint(ctx, crashVMID); err != nil {
 		t.Fatal(err)
@@ -233,7 +233,7 @@ func runCrashScenario(t *testing.T, runtime *sim.Runtime, seed uint64, name stri
 		t.Errorf("%s: closing the world: %v", name, err)
 	}
 	// Every class the allowances name is a collector's debt a host lost at a
-	// particular instant leaves and no writer ever comes back for: the
+	// particular moment leaves and no writer ever comes back for: the
 	// checkpoint a takeover opened on, the parts of a publication whose index
 	// never landed, a checkpoint no sweep came back for, and the objects of a
 	// child whose record the destination never wrote.
@@ -274,7 +274,7 @@ func (c *crashRun) requireRecovered(name string) {
 	}
 }
 
-// kill is the mode and instant this seed takes a host away at.
+// kill is the mode and moment this seed takes a host away at.
 func (c *crashRun) kill(victim int, operation func(context.Context) error) (int, bool) {
 	c.t.Helper()
 	mode := sim.CrashProcess
@@ -294,7 +294,7 @@ func (c *crashRun) killDuringACheckpoint() (int, bool) {
 	return c.kill(0, func(ctx context.Context) error { return c.world.Checkpoint(ctx, crashVMID) })
 }
 
-// killHoldingAForkPoint loses the host while it holds a fork instant another
+// killHoldingAForkPoint loses the host while it holds a fork point another
 // host's child is still reading out of. The parent is sealed and the child has
 // no root index of its own until it publishes one, so this is the moment a host
 // loss costs the most.
@@ -311,8 +311,8 @@ func (c *crashRun) killTheMigrationSource() (int, bool) {
 }
 
 // killTheMigrationDestination loses the host that is taking a VM in. The source
-// has already given the VM up and is only holding frames now, for a destination
-// that will never report having them; the deadline that gives those frames back
+// has already given the VM up and is only holding pages now, for a destination
+// that will never report having them; the deadline that gives those pages back
 // is four checkpoint intervals, and it is reached here by advancing the clock
 // the source keeps it against rather than by waiting four minutes for it.
 func (c *crashRun) killTheMigrationDestination() (int, bool) {
@@ -334,7 +334,7 @@ func (c *crashRun) killTheMigrationDestination() (int, bool) {
 
 // kills is every host loss the run traced, in order. A host cannot be taken
 // away without the trace saying which one and how, which is what lets a
-// campaign that kills hosts at seeded instants say afterwards what it did.
+// campaign that kills hosts at seeded moments say afterwards what it did.
 func kills(runtime *sim.Runtime) []sim.Event {
 	var found []sim.Event
 	for _, event := range runtime.Trace().Events() {

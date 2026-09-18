@@ -152,7 +152,7 @@ func (s *countingStore) Get(ctx context.Context, request platform.GetRequest) (p
 	return s.ObjectStore.Get(ctx, request)
 }
 
-// arena is the simulated shared frame store: one byte slice per resident slot.
+// arena is the simulated shared page store: one byte slice per resident slot.
 type arena struct {
 	mu    sync.Mutex
 	slots [][]byte
@@ -270,7 +270,7 @@ func (m *mapping) store(page uint64, value byte) bool {
 	return true
 }
 
-// pager is one host's shared frame store and its pager Host.
+// pager is one host's shared page store and its pager Host.
 type pager struct {
 	host    *vmmemory.Host
 	arena   *arena
@@ -438,7 +438,7 @@ func (m *machine) Regions() map[string]*vmmemory.Region {
 
 // checkpoint is this machine's interval checkpoint: the guest pauses, every
 // region seals, the guest resumes, and the checkpoint publishes the sealed
-// frames. It is the only thing that makes a running VM's memory durable.
+// pages. It is the only thing that makes a running VM's memory durable.
 func (m *machine) checkpoint(ctx context.Context, vm *volume.VM) error {
 	ckpt, err := host.Capture(ctx, vm, m, nil)
 	if err != nil {
@@ -465,7 +465,7 @@ func (m *machine) Prepare(ctx context.Context) ([]byte, map[string]volume.DirtyS
 }
 
 // Stop is the migration's pause: the guest stops storing and its state is
-// captured. Nothing is sealed and nothing is uploaded — the frames this machine
+// captured. Nothing is sealed and nothing is uploaded — the pages this machine
 // keeps are what the destination fetches.
 func (m *machine) Stop(ctx context.Context) ([]byte, error) {
 	m.pause()

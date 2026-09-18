@@ -59,7 +59,7 @@ message Volume {
 message SegmentEntry {
   uint64 number = 1;
   uint32 checkpoint = 2;
-  reserved 3;  // The part, before a segment left the data plane.
+  reserved 3;  // The part, before a segment left the parts.
   uint64 offset = 4;
   uint64 length = 5;
   // Reads names every checkpoint this segment's page entries locate a member in
@@ -152,6 +152,6 @@ message Member {
   reserved 8;   // The tombstone of a page published as zeroes, before a page a
                 // checkpoint zeroed was simply absent from the segment that
                 // checkpoint rewrote.
-  reserved 9;   // The segment member, before segments left the data plane.
-  reserved 10;  // The root member, before the root left the data plane.
+  reserved 9;   // The segment member, before segments left the parts.
+  reserved 10;  // The root member, before the root left the parts.
 }

@@ -116,7 +116,7 @@ func TestASilentSourceLeavesTheFaultWaiting(t *testing.T) {
 }
 
 // TestASourceThatSaysItIsGoneFailsItsOwnPagesAtOnce is the one answer that ends
-// the asking. A source that no longer serves this VM has released its frames,
+// the asking. A source that no longer serves this VM has released its pages,
 // which it does only after a release it agreed to: a page only it held is lost
 // for good and says so at once, and every page a checkpoint holds comes from
 // this host's own volume from there on.

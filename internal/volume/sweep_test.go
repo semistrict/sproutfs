@@ -100,7 +100,7 @@ func (s *sweepStore) Delete(ctx context.Context, request platform.DeleteRequest)
 }
 
 // retiringPages is a pager seal that records when it ends. A guest whose seal
-// is still standing copies every store it makes into a private frame, so the
+// is still standing copies every store it makes into a private page, so the
 // interval between the checkpoint becoming durable and this is what the seal
 // costs the guest.
 type retiringPages struct {
@@ -130,11 +130,11 @@ func seal(log *eventLog, fill byte) map[string]volume.DirtySource {
 		sealedPages: sealedPages{size: checkpoint.PageSize, pages: []uint64{0, 1}, fill: fill}, log: log}}
 }
 
-// A checkpoint's sealed frames go back to the guest as soon as the checkpoint
+// A checkpoint's sealed pages go back to the guest as soon as the checkpoint
 // is durable. The reclamation sweep that follows is a run of object-store
 // deletes, and holding the seal across it makes the guest copy every store it
 // makes for as long as the deletes take.
-func TestSealedFramesAreRetiredBeforeTheReclamationSweep(t *testing.T) {
+func TestSealedPagesAreRetiredBeforeTheReclamationSweep(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		h := newHarness(t)
 		defer h.close(t.Context())

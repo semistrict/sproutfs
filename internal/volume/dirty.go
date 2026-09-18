@@ -15,7 +15,7 @@ import (
 //
 // A checkpoint given sources publishes their pages alongside its own overlay.
 // Nothing copies those bytes into this package on the way: the upload reads the
-// frames the guest was running on, which is why a checkpoint costs the pause of
+// pages the guest was running on, which is why a checkpoint costs the pause of
 // a seal rather than the pause of a copy.
 type DirtySource interface {
 	// DirtyPages reports the pages this seal holds, in ascending order. A pager
@@ -30,21 +30,21 @@ type DirtySource interface {
 	// another host, so that child inherits the parent's loss window with the
 	// pages it is measured over rather than starting one of its own.
 	UnpublishedAge() time.Duration
-	// Hold marks this seal as a fork instant's, which a fork point does when it
-	// takes the instant. Such a seal lasts as long as the children of that
-	// instant rather than as long as an upload, which is no bound a waiting
+	// Hold marks this seal as a fork point's, which a fork point does when it
+	// takes the point. Such a seal lasts as long as the children of that
+	// point rather than as long as an upload, which is no bound a waiting
 	// store may wait under.
 	Hold()
-	// Share offers the frames this seal holds to whatever else runs on this
+	// Share offers the pages this seal holds to whatever else runs on this
 	// host, under the identity ref gives each of this volume's pages: a machine
-	// that inherits that identity maps the frame rather than reading the page.
+	// that inherits that identity maps that page rather than reading it.
 	// Nothing is copied and nothing becomes durable — the offer lasts exactly as
 	// long as the seal, whose bytes cannot change while it does.
 	//
-	// It is a fork point that calls it, when a child of that instant is taken
+	// It is a fork point that calls it, when a child of that point is taken
 	// in on this host, because a fork point's reference is published under by
 	// nothing, ever, so the names it gives these pages are every child of that
-	// instant's and no one else's.
+	// point's and no one else's.
 	Share(ctx context.Context, ref control.Ref, volume string) error
 	// Retire ends the seal. published reports that the checkpoint which read
 	// these pages was selected, so their bytes are this volume's now; otherwise
@@ -52,7 +52,7 @@ type DirtySource interface {
 	// them.
 	//
 	// It is the whole seal's, never one page's or one part's. Retiring a
-	// page publishes its frame under the identity this volume reports for it,
+	// page publishes it under the identity this volume reports for it,
 	// which is the checkpoint's only once that checkpoint's index has been
 	// selected in the control record — a page retired when the part holding it was
 	// uploaded would be published under the checkpoint it is replacing. A
@@ -95,7 +95,7 @@ func newSealedSource(parent source, ref control.Ref, sources map[string]DirtySou
 	return s
 }
 
-// read fills dst from the sealed frames where they hold the bytes and from the
+// read fills dst from the sealed pages where they hold the bytes and from the
 // inherited checkpoint everywhere else. A page is read whole, because that is
 // the unit the pager can serve.
 func (s sealedSource) read(ctx context.Context, volume string, offset uint64, dst []byte) error {
@@ -142,7 +142,7 @@ func (s sealedSource) read(ctx context.Context, volume string, offset uint64, ds
 // locate reports the sealed pages under the reference of the checkpoint that
 // publishes them, and everything else under the identity the inherited
 // checkpoint gives it. Every reported extent lies inside one page, which is
-// what the pager's frame identity needs.
+// what the pager's page identity needs.
 func (s sealedSource) locate(ctx context.Context, volume string, offset, length uint64) ([]control.Extent, error) {
 	src := s.sources[volume]
 	if src == nil {

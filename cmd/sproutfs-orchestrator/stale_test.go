@@ -9,7 +9,7 @@ import (
 
 // TestAnInFlightRowAgesOff: a row says what the orchestrator last did with a VM,
 // and while it says an operation is in flight nothing touches that VM — the
-// source's frames are left served, the reconcile leaves the row alone, and a
+// source's pages are left served, the reconcile leaves the row alone, and a
 // recovery is refused. An operation that died with the process driving it
 // therefore held all three open for as long as the deployment ran: the source
 // pinned its arena for ever, and the VM could be neither recovered nor released.
@@ -56,7 +56,7 @@ func TestAnInFlightRowAgesOff(t *testing.T) {
 func TestAHandoverNothingWillEverReceiveIsGivenUp(t *testing.T) {
 	d := newDeployment(t, map[string][]string{"host-0": {"vm-a"}, "host-1": {}})
 	d.records.ids = []string{"vm-a"}
-	// The child of a fan-out that failed: host-0 holds the instant for it, no
+	// The child of a fan-out that failed: host-0 holds the point for it, no
 	// host runs it, and the request that named it is gone with its row.
 	d.hosts["host-0"].serving = []string{"vm-child"}
 	d.hosts["host-0"].outstanding["vm-child"] = true

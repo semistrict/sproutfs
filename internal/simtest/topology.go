@@ -62,11 +62,11 @@ type VMSpec struct {
 	// ID is the VM's identity, vm-0 upwards.
 	ID string
 	// Parent is the VM this one is forked from, or empty for a VM created from
-	// nothing. A fork starts the instant its parent was sealed at.
+	// nothing. A fork starts the point its parent was sealed at.
 	Parent string
 	// Host is the index into Topology.Hosts of the host this VM starts on. For
 	// a fork it may be its parent's host or another one, which are the two
-	// halves of the fork path: sharing the parent's frames, and pulling them
+	// halves of the fork path: sharing the parent's pages, and pulling them
 	// out of the parent's page server.
 	Host int
 	// Volumes is the VM's memory and its PMEM disks, in the order a create

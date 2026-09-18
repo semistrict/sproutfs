@@ -51,7 +51,7 @@ func newCampaignRuntime(seed uint64, buggify bool) *sim.Runtime {
 }
 
 // newCrashRuntime is the simulated world a campaign that kills a host at a
-// drawn instant runs on. Its latencies are the hundreds of microseconds a real
+// drawn moment runs on. Its latencies are the hundreds of microseconds a real
 // deployment's are rather than the ones a campaign driving whole operations can
 // afford, because what a kill has to land inside is one of those operations:
 // with nothing taking any time, every kill would arrive after the thing it was
@@ -116,7 +116,7 @@ func runTopologyCampaign(t *testing.T, seed uint64, buggify bool) *sim.Runtime {
 	// Whatever these faults did, what the store holds at the end must still be
 	// a deployment. Every allowance is a debt this campaign's faults create and
 	// no writer ever comes back for — a collector's, not a writer's: a host
-	// lost at an instant leaves a superseded epoch's checkpoints and a
+	// lost at a moment leaves a superseded epoch's checkpoints and a
 	// publication interrupted between its parts and its index, a VM deleted
 	// after it was forked leaves the lineage its pin protects, and a sweep the
 	// store refused leaves the checkpoint it replaced behind.
@@ -153,7 +153,7 @@ func campaignLossWindow(runtime *sim.Runtime) time.Duration {
 
 // campaignKnobs is the set of tunables one seed runs with. The pager's arena
 // has to hold every VM of the topology twice over — a fork or a migration has
-// the parent's frames and the child's on one host at once — so the arena and
+// the parent's pages and the child's on one host at once — so the arena and
 // the budgets within it are the topology's rather than the seed's. Everything
 // else is drawn under the opt-in: the part size, the index bound, the
 // upload and builder budgets, the write bound, the page cache and the I/O

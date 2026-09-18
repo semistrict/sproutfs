@@ -398,7 +398,7 @@ func TestLostSelectionReplyIsReconciled(t *testing.T) {
 }
 
 // A fork that ends before it ever published a root leaves the parent's pin
-// standing: the instant was forked, and nothing here can establish that the
+// standing: the point was forked, and nothing here can establish that the
 // lineage started from it went nowhere — the child could have been handed to
 // another host, which is exactly how a fork onto another host looks from here.
 // The parent's next checkpoint spares that checkpoint, and a collector is what

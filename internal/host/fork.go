@@ -12,27 +12,27 @@ import (
 	"github.com/semistrict/sproutfs/internal/volume"
 )
 
-// forkHold is one child this host holds a fork instant for: the parent that
-// instant was taken on, the point itself, whether the child is being taken in
+// forkHold is one child this host holds a fork point for: the parent that
+// point was taken on, the point itself, whether the child is being taken in
 // here, and the deadline that retires it when nothing releases it. The parent is
 // what says which holds a host fenced out of that parent must give up.
 //
 // The release is the destination's word that it has every page it inherited,
 // carried by the orchestrator, and the deadline is what keeps a parent from
 // being sealed for good when that word never comes — an orchestrator that
-// restarted, a destination that died. The parent then takes its frames back and
+// restarted, a destination that died. The parent then takes its pages back and
 // is checkpointed again; the child falls back to the checkpoint it was forked
 // from, which its record already selects.
 //
 // It is one table for both destinations. A child on another host is served the
-// instant's pages out of this host's page server; a child taken in here maps
-// the frames themselves. What the hold means, when it ends and what ending it
+// point's pages out of this host's page server; a child taken in here maps
+// the pages themselves. What the hold means, when it ends and what ending it
 // costs are the same either way.
 type forkHold struct {
 	parent string
 	point  *volume.ForkPoint
 	// local reports a child this host takes in itself, which receives the
-	// handoff over the instant rather than over the page server. It is what
+	// handoff over the fork point rather than over the page server. It is what
 	// says the point is the one that Receive binds the child's regions to.
 	local bool
 	// timer retires the hold when nothing releases it. It is armed on the
@@ -41,7 +41,7 @@ type forkHold struct {
 	timer platform.Stopper
 }
 
-// forkedFrom reports the children this host serves a fork instant of one parent
+// forkedFrom reports the children this host serves a fork point of one parent
 // to, in ascending identity order.
 func (h *Host) forkedFrom(parent string) []string {
 	h.machines.mu.Lock()
@@ -56,7 +56,7 @@ func (h *Host) forkedFrom(parent string) []string {
 	return children
 }
 
-// inherited reports the instant one child of a fork this host took is to be
+// inherited reports the fork point one child of a fork this host took is to be
 // received over, which exists only for a child this host takes in itself. Every
 // other receive — a migration, or a child whose parent runs elsewhere — has
 // none, and rebuilds what it inherits from the checkpoint the parent pinned.
@@ -69,21 +69,21 @@ func (h *Host) inherited(child string) *volume.ForkPoint {
 	return nil
 }
 
-// Fork takes one fork instant on a VM this host runs and hands every child of
+// Fork takes one fork point on a VM this host runs and hands every child of
 // it over, exactly as a migration hands a VM over — except that nothing is
 // given up: the parent pauses for its VMM state capture and the seal, is
 // running again before this returns, and keeps its handle, its volumes and its
-// frames. Each child inherits the checkpoint the parent's control record
+// pages. Each child inherits the checkpoint the parent's control record
 // already selects and the pages written since it.
 //
-// One pause starts them all: a fan-out of forks is one instant.
+// One pause starts them all: a fan-out of forks is one fork point.
 //
 // The returned handoffs are what the deployment gives each child's destination,
 // whichever host that is. A child destined for another host is served its
 // inherited pages out of this host's page server until ReleaseMigrated releases
 // it; a child taken in here — destination empty, or this host's own page
-// address — is served nothing at all, because the instant it attaches over is
-// the frames themselves. Either way the parent's seal ends when the last hold
+// address — is served nothing at all, because the fork point it attaches over is
+// the pages themselves. Either way the parent's seal ends when the last hold
 // is released, and only then is the parent checkpointed again.
 func (h *Host) Fork(ctx context.Context, parent string, children []string,
 	destination platform.Address) ([]vmmigrate.Handoff, error) {
@@ -99,9 +99,9 @@ func (h *Host) Fork(ctx context.Context, parent string, children []string,
 	if err != nil {
 		return nil, err
 	}
-	// The fan-out itself holds the instant until every child of it has a hold of
+	// The fan-out itself holds the point until every child of it has a hold of
 	// its own. A child released while a later one had not been recorded yet
-	// would otherwise retire the point and hand the parent frames the next child
+	// would otherwise retire the point and hand the parent pages the next child
 	// still has to inherit.
 	point.Hold()
 	handoffs := make([]vmmigrate.Handoff, 0, len(children))
@@ -113,7 +113,7 @@ func (h *Host) Fork(ctx context.Context, parent string, children []string,
 		h.hold(parent, child, point, local)
 		// The pin on the parent's lineage is written here, by the parent's own
 		// writer, because a destination has no handle on the parent to write one
-		// with. It is the one pin the instant took, shared by every child of it,
+		// with. It is the one pin the point took, shared by every child of it,
 		// and nothing ever gives it back.
 		var handoff vmmigrate.Handoff
 		err := point.Pin(ctx)
@@ -139,9 +139,9 @@ func (h *Host) Fork(ctx context.Context, parent string, children []string,
 	// Every child has a hold of its own from here, so the fan-out's own hold is
 	// given back. It happens on a context of its own: a caller that hung up
 	// between the last child and this would otherwise leave the parent holding
-	// an instant nobody counts.
+	// a point nobody counts.
 	if err := retiring(ctx, point); err != nil {
-		return nil, fmt.Errorf("retiring the instant %s was forked at: %w", parent, err)
+		return nil, fmt.Errorf("retiring the point %s was forked at: %w", parent, err)
 	}
 	return handoffs, nil
 }
@@ -156,7 +156,7 @@ func (h *Host) served(local bool) *vmmigrate.PageSource {
 	return h.pages
 }
 
-// hold records one child this host holds a fork instant for, under the deadline
+// hold records one child this host holds a fork point for, under the deadline
 // that retires the point when nothing releases it. It is taken before the child
 // exists, so a takeover of the parent found in between still finds it.
 func (h *Host) hold(parent, child string, point *volume.ForkPoint, local bool) {
@@ -168,7 +168,7 @@ func (h *Host) hold(parent, child string, point *volume.ForkPoint, local bool) {
 	h.machines.mu.Unlock()
 }
 
-// seal is the fork instant itself: the pause, the state capture and the seal of
+// seal is the fork point itself: the pause, the state capture and the seal of
 // one VM this host runs, with the checkpoint the child inherits pinned.
 func (h *Host) seal(ctx context.Context, vmID string) (*volume.ForkPoint, error) {
 	h.machines.mu.Lock()

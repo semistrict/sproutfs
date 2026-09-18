@@ -85,11 +85,11 @@ func TestReadResidentReportsAPublishedPageAsTheCheckpointsOwn(t *testing.T) {
 	})
 }
 
-// A page of a checkpoint is served from the frame the checkpoint and the guest
-// share, which is what a peer must get after the final seal of a stopped guest.
-// A guest that did store since the seal owns its own frame, and that is what it
-// gets served.
-func TestReadResidentServesTheCheckpointsFrameAndTheGuestsCopy(t *testing.T) {
+// A page of a checkpoint is served from the resident page the checkpoint and
+// the guest share, which is what a peer must get after the final seal of a
+// stopped guest. A guest that did store since the seal owns its own copy, and
+// that is what it gets served.
+func TestReadResidentServesTheCheckpointsPageAndTheGuestsCopy(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := servingFixture(t, 8, 16, 8)
 		r, m, b := f.region(4)
@@ -97,7 +97,7 @@ func TestReadResidentServesTheCheckpointsFrameAndTheGuestsCopy(t *testing.T) {
 		access(t, r, m, 1, true)[0] = 61
 		seal(t, r)
 		// Page 1 is stored into after the seal, so the guest copies away from
-		// the checkpoint; page 0 still shares the checkpoint's frame.
+		// the checkpoint; page 0 still shares the checkpoint's copy.
 		value := byte(91)
 		if _, err := memoryByte(t.Context(), r, m, 1, &value); err != nil {
 			t.Fatal(err)
@@ -119,8 +119,8 @@ func TestReadResidentServesTheCheckpointsFrameAndTheGuestsCopy(t *testing.T) {
 		if err := r.Checkpoint().Retire(t.Context(), true); err != nil {
 			t.Fatal(err)
 		}
-		// After the checkpoint lands, the page it retired is served from the frame it
-		// left the guest, which is the same bytes the volume now holds.
+		// After the checkpoint lands, the page it retired is served from the memory
+		// it left the guest, which is the same bytes the volume now holds.
 		ok, unpublished, err := r.ReadResident(t.Context(), 0, dst)
 		if err != nil || !ok || dst[0] != 60 || unpublished {
 			t.Fatalf("ReadResident(0) after the checkpoint = %t, %t, %d, %v; want true, false and 60", ok, unpublished, dst[0], err)
@@ -165,7 +165,7 @@ func TestReadResidentReportsAPageEvictedSinceItWasListed(t *testing.T) {
 		f := servingFixture(t, 1, 8, 4)
 		r, m, b := f.region(2)
 		// An unrelated lineage, so this volume's fault takes the only slot
-		// rather than sharing the frame it already holds.
+		// rather than sharing the resident page it already holds.
 		other, om := f.attach(f.newUnrelatedBacking(2))
 		access(t, r, m, 0, false)
 		if got, err := r.Resident(); err != nil || !slices.Equal(got, []uint64{0}) {
@@ -174,7 +174,7 @@ func TestReadResidentReportsAPageEvictedSinceItWasListed(t *testing.T) {
 		// The only slot goes to another volume, which evicts that page.
 		access(t, other, om, 0, false)
 		if got, err := r.Resident(); err != nil || len(got) != 0 {
-			t.Fatalf("Resident still lists %v, %v after the frame was reclaimed", got, err)
+			t.Fatalf("Resident still lists %v, %v after the page was reclaimed", got, err)
 		}
 		loads := b.loads
 		dst := make([]byte, pageSize)
@@ -189,10 +189,10 @@ func TestReadResidentReportsAPageEvictedSinceItWasListed(t *testing.T) {
 }
 
 // A migration's stop seals nothing: the volume is handed to another host while
-// this region still holds the guest's own dirty frames, and it keeps serving
+// this region still holds the guest's own dirty pages, and it keeps serving
 // them without touching that volume again. Detaching then releases everything it
 // kept.
-func TestHandedOffRegionKeepsServingItsFramesWithoutItsVolume(t *testing.T) {
+func TestHandedOffRegionKeepsServingItsPagesWithoutItsVolume(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := servingFixture(t, 8, 16, 8)
 		r, m, b := f.region(4)
@@ -209,7 +209,7 @@ func TestHandedOffRegionKeepsServingItsFramesWithoutItsVolume(t *testing.T) {
 			t.Fatalf("verification used a volume this host handed off: %v", err)
 		}
 		if got, err := r.Resident(); err != nil || !slices.Equal(got, []uint64{0, 1}) {
-			t.Fatalf("a handed-off region lists %v, %v; want the frames it still holds", got, err)
+			t.Fatalf("a handed-off region lists %v, %v; want the pages it still holds", got, err)
 		}
 		dst := make([]byte, pageSize)
 		for page := range uint64(2) {
@@ -238,7 +238,7 @@ func TestHandedOffRegionKeepsServingItsFramesWithoutItsVolume(t *testing.T) {
 }
 
 // A region a checkpoint still has sealed is not something to hand off: that
-// publication is reading its frames under a volume handle the handoff would give
+// publication is reading its pages under a volume handle the handoff would give
 // away. The region keeps its volume and says why.
 func TestHandoffRefusesASealedRegion(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {

@@ -9,9 +9,10 @@ Three decisions determine everything else.
 1. A VM's durable state is exactly one published checkpoint, selected by its
    control record. Nothing is durable between checkpoints, so losing a host
    loses every write since its VMs' last checkpoints.
-2. Stored data and resident frames share through lineage, without content
-   hashes or byte-equality deduplication. Two VMs share a frame because they
-   inherited the same checkpoint's bytes, never because the bytes match. A page
+2. Every page has one name — the checkpoint that published it — and a fork
+   inherits its parent's names. A page with a name is referenced, never copied:
+   in the store, in host memory and on the wire. Two VMs share a resident page
+   because they inherited the same checkpoint's bytes. A page
    no checkpoint holds reads as zeroes. The one exception is the name of a
    [template](hosting.md), `template-<sha256 of the guest image file>`: a
    template is not a VM that lives on a host but an imported image, and an
@@ -19,9 +20,9 @@ Three decisions determine everything else.
    template for one image and import it once between them. It names the
    template and nothing below it — the checkpoints under that identity are its
    own like any VM's, and what forks of it share they share by lineage.
-3. A checkpoint's instant — pause, save VMM state, seal the dirty pages,
-   resume — is separable from its upload, and only the instant is on anyone's
-   latency path. A fork and a migration take the instant and publish nothing:
+3. A checkpoint is a pause — stop the vCPUs, save the VMM state, seal the dirty
+   pages, resume — and an upload, and only the pause is on anyone's
+   latency path. A fork and a migration take the pause and publish nothing:
    the unpublished pages reach the other side through the pager, on the same
    host or over the network.
 
@@ -30,9 +31,9 @@ Three decisions determine everything else.
 | Component | Role |
 | --- | --- |
 | Control record | One object per VM, at `control/<id>`, a namespace holding nothing else so that listing it is how the deployment's VMs are found. Writer epoch, writer nonce, the selected checkpoint sequence and whether it is published, and the checkpoints of this VM that have been forked, which reclamation must spare and nothing unpins. A record exists exactly while its VM does. Every change is a conditional write, and the epoch holder is the only writer. |
-| [Checkpoint](volumes.md) | Two planes under `vm/<id>/ckpt/<seq>/`, and nothing else. The data plane is `part/<n>`: a run of members — the VMM state, when one was saved, then the dirty pages, then compaction's rescues — filled to 64 MiB and closed by a table and a fixed 32-byte trailer, so a part describes itself. The metadata plane is `index`: a fixed header, the 512 MiB page-table segments this checkpoint changed, and last the **root**, whose create-if-absent PUT is the publication's commit. The root addresses each segment of every volume's page table inside the index object of the checkpoint that wrote it, keeping an earlier checkpoint's address for every segment this one did not change, and lists every checkpoint it reads a page from or addresses a segment in, plus the ones its own compaction emptied and spares for a checkpoint. It names no parent: a root is complete on its own, one GET of the index object yields it, and a reader fetches the segments a range falls in. |
+| [Checkpoint](volumes.md) | Its data and one index object under `vm/<id>/ckpt/<seq>/`, and nothing else. The data is `part/<n>`: a run of members — the VMM state, when one was saved, then the dirty pages, then compaction's rescues — filled to 64 MiB and closed by a table and a fixed 32-byte trailer, so a part describes itself. Written last is `index`: a fixed header, the 512 MiB page-table segments this checkpoint changed, and last the **root**, whose create-if-absent PUT is the publication's commit. The root addresses each segment of every volume's page table inside the index object of the checkpoint that wrote it, keeping an earlier checkpoint's address for every segment this one did not change, and lists every checkpoint it reads a page from or addresses a segment in, plus the ones its own compaction emptied and spares for a checkpoint. It names no parent: a root is complete on its own, one GET of the index object yields it, and a reader fetches the segments a range falls in. |
 | Overlay | The in-memory writes of one open VM since its selected checkpoint, published by the next one. It survives nothing. |
-| [Pager](vm-memory.md) | The host's own page cache for guest memory: a shared memfd arena serving the host's attached RAM and PMEM regions, keyed by lineage identity, in place of the kernel's page cache and swap — [why](vm-memory.md#why-a-pager-of-its-own). The production frame and the unit of publication are both 2 MiB. |
+| [Pager](vm-memory.md) | The host's own page cache for guest memory: a shared memfd arena serving the host's attached RAM and PMEM regions, keyed by lineage identity, in place of the kernel's page cache and swap — [why](vm-memory.md#why-a-pager-of-its-own). The production page and the unit of publication are both 2 MiB. |
 | [Host](hosting.md) | `internal/host`: everything one host does. Its `Host` opens VMs over object storage and the cluster network, checkpoints them on an interval, fences a VM a later writer took, and serves migration and fork pages; the supervisor around it owns the pager and the VMM processes behind the host API, imports guest images into the templates VMs are forked from, and reaches the agent in a guest. `cmd/sproutfs-host` is its configuration, its HTTP handlers and the adapters it chooses. |
 | Orchestrator | `cmd/sproutfs-orchestrator`: allocates VM identities, places VMs on host pods, and drives migrations and forks between hosts. Its SQLite table — states `creating`, `running`, `migrating`, `stopped`, `recovering` — is a view; the control records are the authority. |
 
@@ -71,7 +72,7 @@ the window on.
 
 A store into a page the guest has already dirtied and that no seal covers does
 not fault and is not blocked. The checkpoint the pager asks for seals every dirty
-page at its instant, so from that instant every store of that VM waits; the gap
+page in its pause, so from that pause every store of that VM waits; the gap
 is between the window expiring and that seal, and it is one pause away.
 
 A migration or a fork moves unpublished pages to another host, and their age
@@ -118,13 +119,13 @@ captured state and compatible runtime configuration.
    the guest, saves VMM state, seals every dirty page by write protection and
    resumes; the sealed pages stream out as parts behind the running guest,
    the last part carries the root, and the control record selects it.
-5. A fork takes that same instant and publishes nothing. It is a handoff,
+5. A fork takes that same pause and publishes nothing. It is a handoff,
    whatever host the child lands on. One `ForkPoint` serves any number of
    children: the parent pins its last published sequence, once and for good, and
    keeps its handle, and each child gets a control record selecting a root over
    that sequence. Where the child lands changes only how the pages the parent
    holds that no checkpoint has reach it: on the parent's own host it maps the
-   sealed frames through the pager, and with `--to <host>` its pager pulls them
+   sealed pages through the pager, and with `--to <host>` its pager pulls them
    out of the parent's page server, as a migration destination does. The
    destination publishes the child's root as soon as it holds them all, and that
    is what makes it a VM any host can open. A fork that ends before it leaves no
@@ -183,7 +184,7 @@ written it must protect in-flight publications and forks.
 
 ## Current state
 
-Control records, two-plane checkpoint storage with reclamation and compaction,
+Control records, checkpoint storage with reclamation and compaction,
 volumes, the pager, capture, fork by handoff, post-copy migration, the host and
 the orchestrator are implemented and covered by simulation tests. Recorded
 Firecracker integration qualification covers Linux aarch64 with real KVM in the

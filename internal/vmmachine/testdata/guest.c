@@ -182,7 +182,7 @@ int main(void) {
                             MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
             if (pressure == MAP_FAILED) fail("pressure mmap");
             // Distinct markers in every guest 4 KiB subpage exercise the
-            // complete managed frame, including its last byte.
+            // complete managed page, including its last byte.
             for (size_t offset = 0; offset < pressure_bytes; offset += 4096) {
                 pressure[offset] = (unsigned char)(offset / 4096);
                 pressure[offset + 1] = (unsigned char)((offset / 4096) >> 8);

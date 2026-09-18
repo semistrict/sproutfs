@@ -56,7 +56,7 @@ func TestDirtyBudgetRequestsACheckpointOfTheLargestDirtyRegion(t *testing.T) {
 		access(t, a, am, 0, true)[0] = 11
 		access(t, a, am, 1, true)[0] = 12
 		access(t, b, bm, 0, true)[0] = 21
-		// Every reservation is a live private frame and no checkpoint is in
+		// Every reservation is a live private page and no checkpoint is in
 		// flight, so only a new one can admit this store.
 		requested := make(chan *vmmemory.Region, 4)
 		f.h.SetPressure(vmmemory.Pressure{Checkpoint: func(r *vmmemory.Region) bool {
@@ -102,7 +102,7 @@ func TestForkHoldDoesNotAnswerAnotherRegionsPressure(t *testing.T) {
 		if err := a.Seal(t.Context()); err != nil {
 			t.Fatal(err)
 		}
-		// Naming the sealed frames is what a fork instant does; from here the
+		// Naming the sealed pages is what a fork point does; from here the
 		// seal lasts as long as the children, not as long as an upload.
 		if err := a.Checkpoint().Share(t.Context(), control.Ref{VM: "child", Sequence: 1}, "ram0"); err != nil {
 			t.Fatal(err)
@@ -154,7 +154,7 @@ func TestWriteAheadPastTheHighWaterMarkAsksForACheckpoint(t *testing.T) {
 			}
 			return true
 		}})
-		// One store into fresh memory, which gives its whole run private frames
+		// One store into fresh memory, which gives its whole run private pages
 		// and takes a reservation for each: three quarters of this budget is six
 		// pages and the run is eight.
 		access(t, r, m, 0, true)[0] = 42
@@ -205,7 +205,7 @@ func TestDirtyBudgetStallIsADeliberateStopNotACapacityFailure(t *testing.T) {
 }
 
 // A store waiting for the dirty budget wakes on any change to the host — a
-// frame freed, a page adopted — and asks again what will relieve it. A seal
+// page freed, a page adopted — and asks again what will relieve it. A seal
 // takes the dirty set into the checkpoint page by page before it records the
 // checkpoint on the region, and a waiter that asks in between finds a region
 // with neither a draining checkpoint nor a dirty page: told that nothing will

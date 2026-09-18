@@ -13,7 +13,7 @@ import (
 // A publication may drop the state it would otherwise inherit, which is what a
 // cold boot's does: the memory that state was captured over is being discarded
 // in the same publication, and a checkpoint holding one without the other is an
-// instant that never existed.
+// moment that never existed.
 func TestDroppingTheInheritedState(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		objects := sim.New(sim.Config{}).ObjectStore()

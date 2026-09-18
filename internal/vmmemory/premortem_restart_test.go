@@ -11,20 +11,20 @@ import (
 
 // The pre-mortem of the GCE soak's stops and starts. A round stops a VM and
 // starts it on the other host; a later round stops it there and starts it back
-// on the first, whose pager still holds the frames of its earlier incarnation
+// on the first, whose pager still holds the pages of its earlier incarnation
 // under the identities that incarnation's checkpoints gave them. A start on
-// such a host must map a frame only where the identity the volume now reports
-// is the one the frame holds, and load everything a writer elsewhere has
+// such a host must map a page only where the identity the volume now reports
+// is the one the page holds, and load everything a writer elsewhere has
 // republished since.
 
 // TestPremortemAStartOnAHostThatStillHoldsTheLineageMapsOnlyWhatIsStillItsOwn
 // walks one VM through a stop and a start on one pager, with a fork of it still
-// running there: the child holds the frames of the pages both inherited, so
+// running there: the child holds the pages of the pages both inherited, so
 // what the host still has of the stopped VM is exactly that lineage. A writer
 // elsewhere republishes half of them while the VM is away, so half the
 // identities the volume reports have changed and half have not. The start back
-// on this host must map the child's frames for the unchanged half without
-// loading anything, and read the changed half rather than the bytes the frames
+// on this host must map the child's pages for the unchanged half without
+// loading anything, and read the changed half rather than the bytes the pages
 // it can still reach hold.
 func TestPremortemAStartOnAHostThatStillHoldsTheLineageMapsOnlyWhatIsStillItsOwn(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
@@ -32,7 +32,7 @@ func TestPremortemAStartOnAHostThatStillHoldsTheLineageMapsOnlyWhatIsStillItsOwn
 		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 2 * pages,
 			LogicalPages: 8 * pages, DirtyPages: pages, ReadAheadPages: 1})
 		// The lineage of each page, which is the whole of what a pager shares
-		// frames by: what this host's incarnation published, and what a writer
+		// pages by: what this host's incarnation published, and what a writer
 		// on the other host published for the half it rewrote.
 		kept := control.Identity{Ref: f.source, Volume: "v"}
 		moved := control.Identity{Ref: control.Ref{VM: "other-host-writer", Sequence: 7}, Volume: "v"}
@@ -52,7 +52,7 @@ func TestPremortemAStartOnAHostThatStillHoldsTheLineageMapsOnlyWhatIsStillItsOwn
 				before.loads, pages)
 		}
 		// A fork of this VM, taken on this host in an earlier round and still
-		// running: it inherited every page, so it shares the frames by lineage
+		// running: it inherited every page, so it shares the pages by lineage
 		// and they are what the host still holds once the parent stops.
 		child := &populationLineage{f.newBacking(pages), held}
 		childRegion, childMap := f.attach(child)
@@ -64,7 +64,7 @@ func TestPremortemAStartOnAHostThatStillHoldsTheLineageMapsOnlyWhatIsStillItsOwn
 		}
 
 		// The stop: the process closes and the region detaches, which gives its
-		// logical pages and its own frames back. What this host still holds of
+		// logical pages and its own pages back. What this host still holds of
 		// the VM is the lineage the child shares.
 		clear(firstMap.pages)
 		if err := first.Detach(context.Background()); err != nil {
@@ -98,7 +98,7 @@ func TestPremortemAStartOnAHostThatStillHoldsTheLineageMapsOnlyWhatIsStillItsOwn
 				t.Fatalf("page %d of the restarted VM reads %d, want %d", page, got, want)
 			}
 		}
-		// The half nothing rewrote keeps the identity the frames here hold, so
+		// The half nothing rewrote keeps the identity the pages here hold, so
 		// it is mapped rather than read; the half a writer elsewhere published
 		// has an identity this host has never seen and must be read.
 		if after.loads != pages/2 {
@@ -108,11 +108,11 @@ func TestPremortemAStartOnAHostThatStillHoldsTheLineageMapsOnlyWhatIsStillItsOwn
 	})
 }
 
-// TestPremortemAFrameOfAnEarlierIncarnationIsNeverServedForANewIdentity is the
+// TestPremortemAPageOfAnEarlierIncarnationIsNeverServedForANewIdentity is the
 // same host and the same VM, where every page was republished while it ran
-// elsewhere: not one of the frames this host still holds is that VM's any more,
+// elsewhere: not one of the pages this host still holds is that VM's any more,
 // so not one of them may be mapped for it and every page must be read.
-func TestPremortemAFrameOfAnEarlierIncarnationIsNeverServedForANewIdentity(t *testing.T) {
+func TestPremortemAPageOfAnEarlierIncarnationIsNeverServedForANewIdentity(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		const pages = 3
 		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 2 * pages,
@@ -123,7 +123,7 @@ func TestPremortemAFrameOfAnEarlierIncarnationIsNeverServedForANewIdentity(t *te
 			access(t, first, firstMap, page, false)
 		}
 		// A fork of it taken on this host and still running, which is what keeps
-		// the frames of the earlier incarnation's lineage here after the stop.
+		// the pages of the earlier incarnation's lineage here after the stop.
 		sibling := f.newBacking(pages)
 		siblingRegion, siblingMap := f.attach(sibling)
 		for page := range uint64(pages) {
@@ -152,12 +152,12 @@ func TestPremortemAFrameOfAnEarlierIncarnationIsNeverServedForANewIdentity(t *te
 		second, secondMap := f.attach(after)
 		for page := range uint64(pages) {
 			if got := access(t, second, secondMap, page, false)[0]; got != byte(200+page) {
-				t.Fatalf("page %d was served a frame of an earlier incarnation: it reads %d, want %d",
+				t.Fatalf("page %d was served a page of an earlier incarnation: it reads %d, want %d",
 					page, got, byte(200+page))
 			}
 		}
 		if after.loads != pages {
-			t.Fatalf("the restarted VM loaded %d of its %d pages: a frame of an earlier incarnation was mapped for it",
+			t.Fatalf("the restarted VM loaded %d of its %d pages: a page of an earlier incarnation was mapped for it",
 				after.loads, pages)
 		}
 	})

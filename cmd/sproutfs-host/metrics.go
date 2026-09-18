@@ -39,9 +39,9 @@ func metrics(status hostapi.Status) string {
 	write("sproutfs_pager_page_bytes", "gauge",
 		"The pager's page, which every page count here is in.", status.Pager.PageBytes)
 	write("sproutfs_pager_arena_pages", "gauge",
-		"Frames the pager's arena holds.", status.Pager.ArenaPages)
+		"Pages the pager's arena holds.", status.Pager.ArenaPages)
 	write("sproutfs_pager_resident_pages", "gauge",
-		"Frames of the arena that are taken.", status.Pager.ResidentPages)
+		"Pages of the arena that are taken.", status.Pager.ResidentPages)
 	write("sproutfs_guest_committed_bytes", "gauge",
 		"Guest RAM the VMs this host runs have between them, resident or not, which is what a placement measures this host by.",
 		status.Pager.CommittedBytes)
@@ -53,7 +53,7 @@ func metrics(status hostapi.Status) string {
 		"Pages mapped to an already resident identity without a read, which is what a fork inherits.",
 		status.Pager.SharedPages)
 	write("sproutfs_pager_faults_total", "counter", "Faults the pager has resolved.", status.Pager.Faults)
-	write("sproutfs_pager_evictions_total", "counter", "Frames the pager has evicted.", status.Pager.Evictions)
+	write("sproutfs_pager_evictions_total", "counter", "Pages the pager has evicted.", status.Pager.Evictions)
 	write("sproutfs_pager_spills_total", "counter", "Pages the pager has written to its spill file.", status.Pager.Spills)
 
 	write("sproutfs_pages_requests_total", "counter",
@@ -62,7 +62,7 @@ func metrics(status hostapi.Status) string {
 	write("sproutfs_pages_absent_total", "counter", "Page requests for a page this host does not hold.", status.Pages.Absent)
 	write("sproutfs_pages_refused_total", "counter", "Page requests refused, which is a peer at its budget.", status.Pages.Refused)
 
-	write("sproutfs_memory_limit_bytes", "gauge", "The RAM allotment the pager takes its frames from.",
+	write("sproutfs_memory_limit_bytes", "gauge", "The RAM allotment the pager takes its pages from.",
 		status.Resources.MemoryLimit)
 	write("sproutfs_memory_used_bytes", "gauge", "How much of that allotment is taken.", status.Resources.MemoryUsed)
 	write("sproutfs_cache_limit_bytes", "gauge", "The page cache's own cap, which nothing else draws on.",

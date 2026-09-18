@@ -148,21 +148,21 @@ host actually runs, at its own boundary.
 | Method | Path | What it does |
 | ------ | ---- | ------------ |
 | GET | `/healthz` | readiness |
-| GET | `/status` | the VMs this host runs, the handovers it still holds frames for — the VMs it migrated away and the children of every fork instant it took, wherever they landed, the pager's residency and sharing, what the page server has answered, its RAM allotment and page-cache cap, and the object-store counters — calls, failures and bytes per operation — since the process started |
+| GET | `/status` | the VMs this host runs, the handovers it still holds pages for — the VMs it migrated away and the children of every fork point it took, wherever they landed, the pager's residency and sharing, what the page server has answered, its RAM allotment and page-cache cap, and the object-store counters — calls, failures and bytes per operation — since the process started |
 | POST | `/vms` | `{"id","template"}`: fork the template's root checkpoint, boot the VM, and publish its own first checkpoint between the two. The template is the guest image in a published checkpoint, named by the image's own bytes and imported once by whichever pod of the deployment wanted it first; every create inherits it. The VM's own root is what makes it something the rest of the deployment can act on: until it is published the VM is a fork that runs here and nowhere else, so nothing could recover it and nothing could fork it. Nothing has run when it is taken, so it seals no pages and uploads none |
 | POST | `/vms/{id}/open` | open a VM from the checkpoint its control record selects and resume it, which is what a host loss is recovered by. `{"cold":true}` instead discards every page of its memory and the VMM state with it, in one checkpoint, and boots the kernel from the root volume — which is exactly what the last checkpoint published, so the guest's filesystem sees a power cut after it and its journal recovers what a journal recovers. `{"memory","disk"}` give the VM its shape from there: any memory the host admits, up or down, and a root volume that may only grow, whose new pages read as zeroes for the guest's own `witness grow` to take. Both are refused without `cold`, which is the one moment nothing in memory describes the VM's shape, and a cold start is refused outright by a host with no kernel configured — before anything is discarded |
-| POST | `/vms/{id}/fork` | `{"ids": [child...], "destination"?}`: seal the running VM once and hand every child of that one instant over. The reply is a handoff per child for the control plane to give its destination's `/vms/receive`, and this host holds the instant for each of them until told to release it. With a destination it serves that child's unpublished pages; without one the child comes back here, over the sealed frames themselves, and nothing of it is served. Nothing is published either way; the parent keeps running |
-| POST | `/vms/{id}/capture` | take a checkpoint now; returns the pause and how long its frames took to become durable |
+| POST | `/vms/{id}/fork` | `{"ids": [child...], "destination"?}`: seal the running VM once and hand every child of that one pause over. The reply is a handoff per child for the control plane to give its destination's `/vms/receive`, and this host holds the point for each of them until told to release it. With a destination it serves that child's unpublished pages; without one the child comes back here, over the sealed pages themselves, and nothing of it is served. Nothing is published either way; the parent keeps running |
+| POST | `/vms/{id}/capture` | take a checkpoint now; returns the pause and how long its pages took to become durable |
 | GET | `/vms/{id}/console?since=N` | the serial console from byte N, out of the newest 1 MiB the host retains in memory. A read from before that starts at the oldest byte retained, which `offset` reports and `dropped` says |
 | POST | `/vms/{id}/console` | `{"data":"..."}`: type into the serial console |
 | POST | `/vms/{id}/exec` | `{"cmd","timeout"}`: run a shell command in the guest over the VM's vsock and return `{"exit","stdout","stderr","seconds"}`. 503 while the guest's agent is not answering, which is a VM that is still booting |
 | POST | `/vms/{id}/migrate` | `{"destination":"host:port"}`: stop the guest and hand the VM over; returns the handoff the control plane carries to the destination |
 | POST | `/vms/receive` | a handoff: open the VM, resume it from the captured state and stream the source's pages in. Returns once the source may release them |
 | POST | `/vms/{id}/released` | stop serving a migrated VM's pages and close the process that held them. 409 while the destination has not fetched every page this host holds that no checkpoint has: those bytes exist nowhere else, and the host keeps serving them until it has answered for each one |
-| POST | `/vms/{id}/abandoned` | give one handover up rather than handing it over: the control plane says this VM will never be received — a fork's child whose destination refused it, one a fan-out never offered anywhere — so whatever is still held for it goes and a fork's parent takes its sealed frames back. It refuses nothing, which is the whole difference from `released`: those pages are going either way, and a refusal would only leave the parent sealed until this host's own deadline retired the hold |
+| POST | `/vms/{id}/abandoned` | give one handover up rather than handing it over: the control plane says this VM will never be received — a fork's child whose destination refused it, one a fan-out never offered anywhere — so whatever is still held for it goes and a fork's parent takes its sealed pages back. It refuses nothing, which is the whole difference from `released`: those pages are going either way, and a refusal would only leave the parent sealed until this host's own deadline retired the hold |
 | POST | `/drain` | migrate every VM away and return when none are left to hand over. A POST rather than a GET: a GET is what a proxy or a link checker does to every URL it is given, and this one moves every VM off the host |
-| POST | `/vms/{id}/stop` | publish everything the guest still holds, then close the VMM process, give the frames back and release the handle. The control record and the objects stay, so any host can open the VM again at exactly the bytes this published — which is the whole difference between a stop and losing the host, where the writes since the last checkpoint go with it. Returns the checkpoint it published, which is the instant the VM comes back at and which nothing else records. The checkpoint comes first and nothing is given up until it lands, so a publication the store refused leaves the VM running and checkpointing. 409 for a VM a fork instant holds sealed, exactly as a delete of one is refused: a child elsewhere is reading the pages no checkpoint holds out of the frames this would release |
-| DELETE | `/vms/{id}` | close the VM and delete its control record. A VM this host does not run is only a record and its objects here, and those are in the bucket, so it is deleted all the same; one anything still holds sealed is refused, because a fork instant reads the frames a close would detach |
+| POST | `/vms/{id}/stop` | publish everything the guest still holds, then close the VMM process, give the pages back and release the handle. The control record and the objects stay, so any host can open the VM again at exactly the bytes this published — which is the whole difference between a stop and losing the host, where the writes since the last checkpoint go with it. Returns the checkpoint it published, which is the pause the VM comes back at and which nothing else records. The checkpoint comes first and nothing is given up until it lands, so a publication the store refused leaves the VM running and checkpointing. 409 for a VM a fork point holds sealed, exactly as a delete of one is refused: a child elsewhere is reading the pages no checkpoint holds out of the memory this would release |
+| DELETE | `/vms/{id}` | close the VM and delete its control record. A VM this host does not run is only a record and its objects here, and those are in the bucket, so it is deleted all the same; one anything still holds sealed is refused, because a fork point reads the pages a close would detach |
 
 ## The orchestrator API
 
@@ -192,11 +192,11 @@ put this process's only SQLite writer behind every console poll.
 
 A row that says an operation is in flight is taken at its word for two minutes
 and no longer. Everything that reads the table defers to such a row — the
-source's frames are left served, the reconciler leaves it where it is, and a
+source's pages are left served, the reconciler leaves it where it is, and a
 recovery is refused — so an operation that died with the process driving it
 would otherwise hold all three open for as long as the deployment ran. Two
 minutes is inside the four checkpoint intervals a host gives one handover of its
-own, so a stale row stops pinning a source before that host gives the frames up
+own, so a stale row stops pinning a source before that host gives the pages up
 by itself.
 
 | Method | Path | What it does |
@@ -205,7 +205,7 @@ by itself.
 | GET | `/hosts` | every host pod, what it runs, what it still serves, its pager's residency and sharing, and why it did not answer if it did not |
 | GET | `/vms` | every VM, with the host running it or none when its host is gone. A VM exists exactly while its control record does, so a deleted VM is simply absent |
 | POST | `/vms` | `{"template"}`: allocate a ULID and create the VM on the host whose guests have promised the least of its arena, refusing with 503 when the template's RAM fits on none |
-| POST | `/vms/{id}/fork` | `{"count", "to"?}`: fork the running VM. Every child comes from one instant, so the parent pauses once however many are asked for, and every child is handed over and received like a migration. The default is its own host, which takes its children in over the frames the seal froze; `to` places them on another host, which pulls the pages no checkpoint holds out of the parent. Either way the fan-out is admitted against the host taking it — each child is a guest with RAM of its own — before the parent is paused, and each child is released once it holds every page it inherited. Returns the children and what the fork cost |
+| POST | `/vms/{id}/fork` | `{"count", "to"?}`: fork the running VM. Every child comes from one pause, so the parent pauses once however many are asked for, and every child is handed over and received like a migration. The default is its own host, which takes its children in over the pages the seal froze; `to` places them on another host, which pulls the pages no checkpoint holds out of the parent. Either way the fan-out is admitted against the host taking it — each child is a guest with RAM of its own — before the parent is paused, and each child is released once it holds every page it inherited. Returns the children and what the fork cost |
 | POST | `/vms/{id}/capture` | take a checkpoint on the host running it |
 | POST | `/vms/{id}/migrate` | `{"to"}`: migrate out, receive, and only then release. An empty `to` picks the other host with the most memory free, which is what a draining host asks for; a named destination without room for the guest is refused |
 | POST | `/vms/{id}/recover` | `{"force"?}`: reopen a VM on a live host that does not run it. Reopening takes the control record's epoch, which fences whatever held it, so it needs evidence the loss is real: every pod the API lists answered, and none runs the VM. Refused while a live host reports running it, while any host still serves its unpublished pages, and while the table says an operation on it is in flight — the last two are a VM between hosts rather than a lost one, and `force` does not get past them either — and refused, without `force`, while any listed pod is quiet, because a host that missed one request is not a host that is gone |
@@ -254,7 +254,7 @@ question and reads the answer:
 echo 'uname -a' | sproutfsctl console vm-01j... --for 8s
 ```
 
-`sproutfsctl hosts` reports each host's resident and shared frame counts and the
+`sproutfsctl hosts` reports each host's resident and shared page counts and the
 pages its page server has handed to another host, beside what it runs, so a fork
 on the parent's own host and a fork placed elsewhere are both visible without
 reading `/status`. `sproutfsctl store` reports each host's object-store
@@ -277,8 +277,8 @@ durations.
 | `SPROUTFS_PAGE_SERVER_PORT` | literal | `8081` | port for the page server |
 | `SPROUTFS_HUGEPAGE_DIR` | literal | `/hugepages-2Mi` | the pod's hugetlbfs mount. The arena is a `MFD_HUGETLB` memfd rather than a file in it, but the mount is what the kubelet grants the pod its HugeTLB allotment through, so the host refuses to start without it |
 | `SPROUTFS_SCRATCH_DIR` | literal | `/var/lib/sproutfs` | node-disk `emptyDir` for the spill file and the VMM scratch. A starting host wipes it: a restart is a host loss |
-| `SPROUTFS_ARENA_BYTES` | literal | `5368709120` | the pager's resident frame store, a whole number of 2 MiB pages out of the pod's 6 GiB HugeTLB allotment |
-| `SPROUTFS_MEMORY_BYTES` | literal | `8589934592` | the RAM allotment the pager takes its frames from. Defaults to the arena plus 1 GiB |
+| `SPROUTFS_ARENA_BYTES` | literal | `5368709120` | the pager's resident page store, a whole number of 2 MiB pages out of the pod's 6 GiB HugeTLB allotment |
+| `SPROUTFS_MEMORY_BYTES` | literal | `8589934592` | the RAM allotment the pager takes its pages from. Defaults to the arena plus 1 GiB |
 | `SPROUTFS_CACHE_BYTES` | literal | `1073741824` | the page cache's own cap, which nothing else draws on |
 | `SPROUTFS_SPILL_BYTES` | literal | `17179869184` | the pager's spill file, out of the 20 GiB `emptyDir`. It is what bounds the dirty pages |
 | `SPROUTFS_LOGICAL_PAGES` | unset | arena pages × 32 | bounds the pager's per-region metadata, including never-faulted pages, and so bounds the VMs a host will start at all — see the arithmetic below |

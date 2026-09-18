@@ -274,7 +274,7 @@ func (c *Cache) run(ctx context.Context, key cacheKey, flight *cacheFlight, load
 	var entry *cacheEntry
 	if err == nil {
 		// Try to reserve the owned copy, reclaiming unused cache first. If guest
-		// frames or pinned readers occupy the allotment, serve this read through
+		// pages or pinned readers occupy the allotment, serve this read through
 		// transient I/O headroom and do not retain it. Cache capacity must not
 		// prevent a required read.
 		var lease *resource.Lease

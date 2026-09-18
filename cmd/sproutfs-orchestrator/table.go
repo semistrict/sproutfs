@@ -269,13 +269,13 @@ var inFlight = map[string]bool{stateCreating: true, stateRecovering: true, state
 // inFlightFor is how long a row is taken at its word. An operation that died
 // with the process driving it — an orchestrator killed mid-migration — leaves a
 // row saying it is still going, and everything that reads the table defers to
-// that: the source's frames are left served, the reconcile leaves the row where
+// that: the source's pages are left served, the reconcile leaves the row where
 // it is, and a recovery is refused. Without a bound all three stay open for as
 // long as the deployment runs.
 //
 // It is under the bound a host puts on one handover of its own, four checkpoint
 // intervals, so a row stops holding a handover open before the host holding
-// those frames gives them up by itself. An operation that is genuinely slower
+// those pages gives them up by itself. An operation that is genuinely slower
 // than this is one nothing was going to finish.
 const inFlightFor = 2 * time.Minute
 

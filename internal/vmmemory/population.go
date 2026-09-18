@@ -66,7 +66,7 @@ func (r *Region) Populate(ctx context.Context) error {
 }
 
 // residentIndex is a bounded checkpoint of the shared identities present after
-// a metadata lookup: a located extent then selects matching frames without
+// a metadata lookup: a located extent then selects matching resident pages without
 // probing the host index once per logical page. Binding rechecks each identity
 // under its resident lock, so eviction cannot turn a candidate into stale data.
 type residentIndex struct {
@@ -108,7 +108,7 @@ func identityLess(a, b control.Identity) bool {
 func (p *windowPlan) bindResidents(ctx context.Context, index *residentIndex) error {
 	type candidate struct {
 		page uint64
-		key  frame
+		key  pageKey
 	}
 	var candidates []candidate
 	ps := uint64(PageSize)
@@ -130,7 +130,7 @@ func (p *windowPlan) bindResidents(ctx context.Context, index *residentIndex) er
 		if extent.Identity.Page != page || page < p.start || page >= p.end || !p.eligible(page) {
 			continue
 		}
-		candidates = append(candidates, candidate{page: page, key: frame{id: extent.Identity}})
+		candidates = append(candidates, candidate{page: page, key: pageKey{id: extent.Identity}})
 	}
 	// Every population takes resident locks in the same immutable identity
 	// order. Logical page order may differ between related images; using it

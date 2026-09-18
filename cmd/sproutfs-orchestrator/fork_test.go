@@ -39,7 +39,7 @@ func TestAPartialForkTakesBackTheChildrenItStarted(t *testing.T) {
 // TestAPartialForkOnTheParentsOwnHostTakesItsChildrenBack: a fork is always a
 // handoff, so a fan-out onto the parent's own host is rolled back by exactly
 // what rolls one onto another host back — the children that were taken in are
-// deleted, every child is released so the parent takes its frames back, and
+// deleted, every child is released so the parent takes its pages back, and
 // nothing of the request is left running.
 func TestAPartialForkOnTheParentsOwnHostTakesItsChildrenBack(t *testing.T) {
 	d := newDeployment(t, map[string][]string{"host-0": {"vm-a"}})
@@ -92,8 +92,8 @@ func TestAPartialForkOnTheParentsOwnHostTakesItsChildrenBack(t *testing.T) {
 }
 
 // TestAForkWhoseFirstChildIsRefusedGivesUpTheRestOnTheSource: a fan-out is one
-// instant, and the children after the one that failed are never even offered to
-// a destination. Their holds are on the parent all the same — the instant was
+// fork point, and the children after the one that failed are never even offered
+// to a destination. Their holds are on the parent all the same — the point was
 // taken for all of them at once — and nothing will ever fetch what those holds
 // keep, so the only word that ends them is the source's own give-up. Asking it
 // to release them instead is asking for something it must refuse: the pages it

@@ -132,7 +132,7 @@ func TestMigrationMovesARunningGuestWithoutObjectStorage(t *testing.T) {
 	if pages != 0 || indexes != 1 || control == 0 {
 		t.Fatalf("the pause read %d control records, %d indexes and %d pages: %v", control, indexes, pages, keys)
 	}
-	// The pause uploads nothing and reads nothing of the volumes: the frames the
+	// The pause uploads nothing and reads nothing of the volumes: the pages the
 	// source keeps are the whole of what moves.
 	loads, verifies := m.machine.volumeWork()
 	if loads != m.machine.stopLoads || verifies != m.machine.stopVerifies {
@@ -282,7 +282,7 @@ func TestAbandonedMigrationStillReopens(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The source gives its frames up as well, which is the abandonment.
+	// The source gives its pages up as well, which is the abandonment.
 	if err := m.pages.Release(handoff.VMID); err != nil {
 		t.Fatalf("releasing a VM the destination reported done: %v", err)
 	}

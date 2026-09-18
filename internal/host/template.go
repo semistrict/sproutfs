@@ -61,9 +61,9 @@ type TemplateImport struct {
 }
 
 // ImportedTemplate is one guest image in a published checkpoint: the identity
-// it was imported under and the pinned instant every VM created from it is
+// it was imported under and the pinned fork point every VM created from it is
 // forked at. The VM has no guest and nothing holds it open — a template is
-// written once and read for ever after — so the instant seals nothing and any
+// written once and read for ever after — so the point seals nothing and any
 // number of VMs on any number of hosts start from it.
 type ImportedTemplate struct {
 	id string
@@ -78,7 +78,7 @@ type ImportedTemplate struct {
 // sha256.
 func (t *ImportedTemplate) ID() string { return t.id }
 
-// TemplateOf returns the instant every VM of one guest image is forked at,
+// TemplateOf returns the fork point every VM of one guest image is forked at,
 // importing the image if the deployment has no template of it yet. Forking it
 // copies nothing — the fork inherits the checkpoint — so every VM created here
 // reads the image's pages through this host's shared cache.
@@ -174,7 +174,7 @@ func imageDigest(source io.ReadSeeker) ([sha256.Size]byte, error) {
 	return [sha256.Size]byte(sum.Sum(nil)), nil
 }
 
-// templatePoint rebuilds the instant a create forks from one published
+// templatePoint rebuilds the fork point a create forks from one published
 // checkpoint of a template. Nothing is opened: the pin on that checkpoint is
 // the template's own and permanent — nothing in this deployment gives a pin
 // back — so a fork of it inherits a lineage nothing reclaims whether or not the

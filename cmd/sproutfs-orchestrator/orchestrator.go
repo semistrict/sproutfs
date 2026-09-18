@@ -192,7 +192,7 @@ type liveHost struct {
 //
 // Arena residency is not the measure. The arena is a cache: a page of a VM that
 // has been migrated away or deleted stays resident until something else needs
-// the frame, so occupancy only goes up and a host that has done work looks full
+// the page, so occupancy only goes up and a host that has done work looks full
 // whatever it is running. Measuring that way refuses every destination on a warm
 // host, which is a drain with nowhere to go.
 //
@@ -364,7 +364,7 @@ func (o *orchestrator) fanOut(ctx context.Context, remember bool) ([]liveHost, e
 	return slices.Clone(hosts), nil
 }
 
-// release gives a host back the frames it still serves for a VM nothing is
+// release gives a host back the pages it still serves for a VM nothing is
 // doing anything with. A host serves a VM's pages from the moment it hands it
 // over until the orchestrator tells it the destination has them, and that word
 // is the only release there is: an orchestrator that restarted, or whose call
@@ -453,7 +453,7 @@ func (o *orchestrator) Reconciling(ctx context.Context, every time.Duration) {
 // bucket's own list of VMs, which is the only thing that tells a VM that was
 // deleted from one whose host is gone. It is also what releases a handover
 // nothing is waiting on, so an orchestrator that restarted mid-migration frees
-// the source's frames here.
+// the source's pages here.
 func (o *orchestrator) Reconcile(ctx context.Context) error {
 	identities, err := o.identities(ctx)
 	if err != nil {
@@ -652,7 +652,7 @@ func admits(target liveHost, need uint64) error {
 // ends both kept the VM — and either claimant may be the one whose writes can
 // never be published. Acting on the first of them is the worst answer
 // available: a migration off a superseded host hands a third host a stale
-// writer's frames. The operator is told which hosts disagree instead, and a
+// writer's pages. The operator is told which hosts disagree instead, and a
 // recovery, once one of them is really gone, is what settles it.
 func runner(hosts []liveHost, id string) (liveHost, error) {
 	var found liveHost
@@ -737,14 +737,14 @@ func (o *orchestrator) Create(ctx context.Context, template string) (orch.Create
 // parent is paused, so a child that never finishes starting is still an
 // identity someone knows about rather than an anonymous control record.
 //
-// Every child of one request starts from one instant of the parent, so a
+// Every child of one request starts from one pause of the parent, so a
 // fan-out costs the parent one pause. A fork is a migration handoff from a
 // parent that keeps running, so the children may be placed anywhere and the
 // handshake is the same wherever they land: the default is the parent's own
-// host, which takes its children in over the frames the seal froze so that
+// host, which takes its children in over the pages the seal froze so that
 // nothing crosses the network, and naming another host makes each child pull
 // the pages no checkpoint holds out of the parent's page server, exactly as a
-// migration's destination does. The parent holds the instant until every child
+// migration's destination does. The parent holds the point until every child
 // has them all.
 func (o *orchestrator) Fork(ctx context.Context, id string, count int, to string) (orch.ForkResult, error) {
 	began := time.Now()
@@ -815,11 +815,11 @@ func (o *orchestrator) Fork(ctx context.Context, id string, count int, to string
 }
 
 // fork carries one fork through: the migration handshake, wherever the children
-// land. The parent's host builds a handoff per child and holds the instant for
+// land. The parent's host builds a handoff per child and holds the point for
 // each of them, every destination creates its child and binds the pages no
 // checkpoint holds — off the parent's page server on another host, off the
-// frames themselves on the parent's own — and only when the last child has them
-// does the parent take its frames back.
+// pages themselves on the parent's own — and only when the last child has them
+// does the parent take its pages back.
 func (o *orchestrator) fork(ctx context.Context, source, target liveHost, parent string,
 	children []string) (host.ForkResult, error) {
 	// A child of the parent's own host is handed over without an address: its
@@ -864,7 +864,7 @@ func (o *orchestrator) fork(ctx context.Context, source, target liveHost, parent
 		}
 		running = append(running, handoff.VMID)
 		// Released is the child's word that it holds every page it inherited,
-		// which is what gives the parent its frames back; the parent itself
+		// which is what gives the parent its pages back; the parent itself
 		// never stopped.
 		if err := source.client.Released(ctx, handoff.VMID); err != nil {
 			slog.ErrorContext(ctx, "sproutfs-orchestrator: releasing a fork's parent failed",
@@ -885,7 +885,7 @@ func (o *orchestrator) fork(ctx context.Context, source, target liveHost, parent
 
 // giveUp tells a host that one handover it holds will never be received, so
 // that it stops holding what it kept for it — for a fork that is the parent's
-// sealed frames, which is what lets the parent be checkpointed again.
+// sealed pages, which is what lets the parent be checkpointed again.
 //
 // It is the give-up rather than the release because nothing fetched those pages
 // and nothing ever will: a release of them is a request the host can only
@@ -939,7 +939,7 @@ func (o *orchestrator) Capture(ctx context.Context, id string) (orch.CaptureResu
 // Migrate carries one VM between hosts: the source stops the guest and hands
 // the VM over, the destination opens it and resumes it from the captured state,
 // and only once the destination has every page no checkpoint holds may the
-// source release the frames it is still serving.
+// source release the pages it is still serving.
 //
 // An empty destination picks the least loaded host other than the source, which
 // is what a draining host asks for.
@@ -1000,7 +1000,7 @@ func (o *orchestrator) Migrate(ctx context.Context, id, to string) (orch.Migrate
 	o.note(ctx, vmRecord{ID: id, Host: target.report.Name, State: stateRunning})
 	if err := source.client.Released(ctx, id); err != nil {
 		// The destination has every page, so this costs the source only the
-		// frames it goes on holding until it exits.
+		// pages it goes on holding until it exits.
 		slog.ErrorContext(ctx, "sproutfs-orchestrator: releasing a migrated VM failed",
 			"vm", id, "host", source.report.Name, "error", err)
 	}
@@ -1051,7 +1051,7 @@ func (o *orchestrator) receive(ctx context.Context, source, target liveHost, id 
 // loss, because the destination's guest is torn down by it: a pod the
 // Kubernetes API no longer lists, or a host that answers and neither runs the
 // VM nor serves its pages any more, which is a host that came back without the
-// frames it was holding. A host that is merely quiet is a host whose guest may
+// pages it was holding. A host that is merely quiet is a host whose guest may
 // be perfectly well.
 func (o *orchestrator) watchSource(ctx context.Context, from, id string,
 	until <-chan struct{}, lose context.CancelCauseFunc) {
@@ -1333,7 +1333,7 @@ func (o *orchestrator) Check(ctx context.Context) (orch.CheckResult, error) {
 }
 
 // holding reports the host that still serves one VM's pages, empty for a VM no
-// host holds frames of. A host serves a VM from the moment it hands it over
+// host holds pages of. A host serves a VM from the moment it hands it over
 // until the orchestrator says the destination has its pages, so a VM that is
 // served is one a migration or a fork is still carrying.
 func holding(hosts []liveHost, id string) string {

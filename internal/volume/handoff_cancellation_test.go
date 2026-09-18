@@ -77,7 +77,7 @@ func TestHandoffWaitsForAPublicationInFlight(t *testing.T) {
 		go func() { published <- vm.Checkpoint(t.Context()) }()
 		synctest.Wait()
 		// This write is newer than the held checkpoint, so the handoff leaves it
-		// behind: on a real host it is a frame the destination fetches.
+		// behind: on a real host it is a page the destination fetches.
 		tail := []byte("tail after the held checkpoint")
 		if err := vm.Volume("state").Write(t.Context(), 0, tail); err != nil {
 			t.Fatal(err)

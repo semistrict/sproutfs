@@ -127,7 +127,7 @@ var ErrInjected = errors.New("simtest: injected failure")
 // storeUnavailable takes object storage away from the whole deployment, which
 // is what the migration campaign's metadata-unavailable fault did to one
 // destination's open. Nothing can publish, open, take over or delete while it
-// is on; every VM that is running goes on running out of its own frames.
+// is on; every VM that is running goes on running out of its own pages.
 type storeUnavailable struct{}
 
 func (f *storeUnavailable) Name() string { return "store-unavailable" }
@@ -206,7 +206,7 @@ func (f *partitionedPages) Holds(_ context.Context, w *World) error {
 }
 
 // swizzledLinks blocks every link among the hosts, their page servers and the
-// store at its own seeded instant and heals each of them at another, so the
+// store at its own seeded moment and heals each of them at another, so the
 // order they come back in is not the order they went away in. It is
 // FoundationDB's champion bug finder, and the one fault here that separates
 // every pair of a generated topology at once.
@@ -254,7 +254,7 @@ func (f *swizzledLinks) Holds(_ context.Context, w *World) error {
 }
 
 // lostPageReplies drops the reply to one host's page request after the source
-// has already read the pages out of its frames. It is the migration campaign's
+// has already read the pages out of its memory. It is the migration campaign's
 // lost-page-reply: a connection that dies with the request answered, which the
 // destination must survive by asking again.
 type lostPageReplies struct {
@@ -301,8 +301,8 @@ func (f *stalledStream) Holds(_ context.Context, w *World) error {
 	return w.hosts[f.host].faults.quiet()
 }
 
-// lostHost takes a whole host away at an instant and starts it again when the
-// fault ends: its guests stop existing, the frames they held are gone, its page
+// lostHost takes a whole host away at a moment and starts it again when the
+// fault ends: its guests stop existing, the pages they held are gone, its page
 // server stops answering and its handles publish nothing ever again. It is the
 // migration campaign's source-gone raised to the whole machine, and it is the
 // only fault here that costs a VM anything it may legitimately lose: every VM
@@ -561,7 +561,7 @@ func (c *faultyConn) Receive(ctx context.Context) (platform.ReceivedFrame, error
 	action, released := c.faults.classify(frame.PayloadSize > 0)
 	switch action {
 	case dropFrame:
-		// The source read the pages out of its frames and this host never sees
+		// The source read the pages out of its memory and this host never sees
 		// them: the connection died with the request answered.
 		if frame.Payload != nil {
 			_ = frame.Payload.Close()
@@ -593,8 +593,8 @@ func (c *faultyConn) Receive(ctx context.Context) (platform.ReceivedFrame, error
 	return frame, nil
 }
 
-// DroppedPageFrames drops the next few frames each page-server link carries, on
-// top of duplicating, delaying and slowing them. It is the last of the
+// DroppedPageServerFrames drops the next few frames each page-server link
+// carries, on top of duplicating, delaying and slowing them. It is the last of the
 // simulated network's kit, and the one fault here the generated campaign does
 // not draw: a frame dropped on an open connection has exactly one outcome for a
 // guest's demand fault against the peer holding the only copy of an unpublished
@@ -602,16 +602,16 @@ func (c *faultyConn) Receive(ctx context.Context) (platform.ReceivedFrame, error
 // answer for that page — giving up on it loses the guest's memory — so this is
 // for a campaign whose every fetch is a bounded attempt that is retried, which
 // is what a drain of a host that is going away does.
-func DroppedPageFrames(after int) Fault { return &droppedPageFrames{after: after} }
+func DroppedPageServerFrames(after int) Fault { return &droppedPageServerFrames{after: after} }
 
-type droppedPageFrames struct {
+type droppedPageServerFrames struct {
 	after int
 	links [][2]platform.Address
 }
 
-func (f *droppedPageFrames) Name() string { return "dropped-page-frames" }
+func (f *droppedPageServerFrames) Name() string { return "dropped-page-server-frames" }
 
-func (f *droppedPageFrames) Begin(_ context.Context, w *World) error {
+func (f *droppedPageServerFrames) Begin(_ context.Context, w *World) error {
 	network := w.runtime.Network()
 	r := w.runtime.Random("simtest/dropped")
 	f.links = nil
@@ -632,7 +632,7 @@ func (f *droppedPageFrames) Begin(_ context.Context, w *World) error {
 	return nil
 }
 
-func (f *droppedPageFrames) End(_ context.Context, w *World) error {
+func (f *droppedPageServerFrames) End(_ context.Context, w *World) error {
 	for _, link := range f.links {
 		w.runtime.Network().ClearLink(link[0], link[1])
 		// A drop, a duplicate or a delay still armed when the fault ends would
@@ -642,7 +642,7 @@ func (f *droppedPageFrames) End(_ context.Context, w *World) error {
 	return nil
 }
 
-func (f *droppedPageFrames) Holds(_ context.Context, w *World) error {
+func (f *droppedPageServerFrames) Holds(_ context.Context, w *World) error {
 	for _, link := range f.links {
 		if w.runtime.Network().Clogged(link[0], link[1]) {
 			return fmt.Errorf("%s still cannot reach %s", link[0], link[1])

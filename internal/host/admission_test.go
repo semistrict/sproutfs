@@ -50,7 +50,7 @@ func TestReceiveRefusesAVMThePagerCannotMap(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Fill the destination's logical cap with a region of its own, so the
-	// received VM's eight pages are exactly what does not fit. Its frames are
+	// received VM's eight pages are exactly what does not fit. Its pages are
 	// untouched: this is the per-region metadata cap, not the arena.
 	filler, err := h.hosts[1].Volumes().Create(t.Context(), "vm-filler", fillerVolumes)
 	if err != nil {

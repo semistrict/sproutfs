@@ -147,8 +147,8 @@ func readState(t *testing.T, h *harness, vm *volume.VM) []byte {
 
 // writeDeploymentFixture builds the deployment the fixture holds and writes it
 // out: a VM with a history of checkpoints and VMM state, whose record pins the
-// instant it was forked at, and a fork of it whose first checkpoint names that
-// instant's checkpoints. Between them they exercise every object the formats
+// point it was forked at, and a fork of it whose first checkpoint names that
+// point's checkpoints. Between them they exercise every object the formats
 // describe. It writes only the current set: a superseded dump is worth keeping
 // only as the bytes the build of that version wrote.
 func writeDeploymentFixture(t *testing.T) {
@@ -200,7 +200,7 @@ func writeDeploymentFixture(t *testing.T) {
 			t.Fatal(err)
 		}
 		// The parent moves on after the fork, so its later checkpoints and the
-		// pin on the instant the fork was taken at are both in the fixture.
+		// pin on the point the fork was taken at are both in the fixture.
 		fill(alpha, want, "disk", 2*checkpoint.SectorSize, 0x55)
 		if err := alpha.Checkpoint(t.Context()); err != nil {
 			t.Fatal(err)

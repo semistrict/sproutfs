@@ -55,7 +55,7 @@ func TestASourcePartitionedWhileTheStoreIsAwayAndASecondHostTakesOver(t *testing
 		choose := func(int) int { return 0 }
 		// The guest writes and publishes, so there is a checkpoint to come back
 		// to, and then writes again, so what it holds past that checkpoint is
-		// only in the frames the source is about to be cut off from.
+		// only in the pages the source is about to be cut off from.
 		if err := world.Store(ctx, "vm-1", 4, choose); err != nil {
 			t.Fatal(err)
 		}
@@ -99,7 +99,7 @@ func TestASourcePartitionedWhileTheStoreIsAwayAndASecondHostTakesOver(t *testing
 		}
 		// A migration that succeeded under all three would say the faults
 		// reached nothing: with the destination cut off from both the source's
-		// frames and the store, the VM has to have been taken over instead.
+		// pages and the store, the VM has to have been taken over instead.
 		if world.Takeovers() == 0 {
 			t.Fatal("the migration completed as if nothing were wrong with the world")
 		}
@@ -112,7 +112,7 @@ func TestASourcePartitionedWhileTheStoreIsAwayAndASecondHostTakesOver(t *testing
 
 		// The deeper half of the same combination: with the store reachable the
 		// destination does take the VM over, and only then finds that it cannot
-		// fetch the frames the source is still holding. What it owes the VM
+		// fetch the pages the source is still holding. What it owes the VM
 		// then is the checkpoint the record selects, page for page.
 		took := world.Takeovers()
 		if err := world.Store(ctx, "vm-1", 2, choose); err != nil {

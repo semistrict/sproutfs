@@ -6,14 +6,14 @@
 // destination opens it, which advances the epoch and reads the index of the
 // checkpoint the control record already selects, and resumes from the captured
 // VMM state. Everything the guest wrote since the source's last checkpoint
-// exists only in the source's frames, and the destination faults it out of them
+// exists only in the source's pages, and the destination faults it out of them
 // over the same network the hosts already share. PageSource serves those pages,
 // PeerBacking fetches them, and both give up as soon as the source says it no
 // longer serves that VM. A page the source served out of its own dirty state is
 // dirty on the destination too, so the destination's next interval checkpoint
 // is what makes it durable.
 //
-// Migrate runs the source's half — stop, hand the VM over, serve the frames —
+// Migrate runs the source's half — stop, hand the VM over, serve the pages —
 // and Receive runs the destination's — open the VM, start the VMM from the
 // captured state, and stream the source's resident set in behind the running
 // guest.
@@ -53,7 +53,7 @@ var (
 	// checkpoint the source handed over. A migration publishes nothing, so the
 	// record is openable by anybody between the source's release and this open,
 	// and a writer that got in has published over it. Post-copying the source's
-	// frames on top would make one VM's memory out of two writers' pages, so the
+	// pages on top would make one VM's memory out of two writers' pages, so the
 	// handoff is refused instead.
 	ErrStale = errors.New("vmmigrate: the VM's record has moved past this handoff")
 )
@@ -66,7 +66,7 @@ type Runtime interface {
 	Regions() map[string]*vmmemory.Region
 	// Stop pauses the vCPUs, drains device completions and returns the VMM
 	// state with the process left paused. It seals nothing and waits for
-	// nothing: the frames it leaves behind are what the destination fetches.
+	// nothing: the pages it leaves behind are what the destination fetches.
 	Stop(context.Context) ([]byte, error)
 	// Resume restarts the vCPUs.
 	Resume(context.Context) error
@@ -84,7 +84,7 @@ type RegionInfo struct {
 	Size uint64
 	// Unpublished names the pages of this region that no checkpoint of the VM has:
 	// the guest's writes since the source's last checkpoint. They exist only in
-	// the source's frames, so the destination must not read them from its own
+	// the source's pages, so the destination must not read them from its own
 	// volume — which reports them as the checkpoint's bytes or as holes — and must
 	// fetch every one of them before the source may stop serving. The guest was
 	// stopped when this was taken, so it is final.
@@ -112,7 +112,7 @@ type Handoff struct {
 	// VMID is the VM the source released, and State the captured VMM state the
 	// destination restores. The checkpoint the destination opens is whatever the
 	// VM's control record selects, which is the source's last interval checkpoint;
-	// the writes since it come from the source's frames.
+	// the writes since it come from the source's pages.
 	VMID  string
 	State []byte
 	// Checkpoint is the sequence the source's control record selected when it
@@ -120,7 +120,7 @@ type Handoff struct {
 	// VM the source released. Nothing is published by a migration, so that record
 	// is openable by anybody in between; a destination that opens a record
 	// selecting anything else refuses the handoff rather than post-copying the
-	// source's frames over another writer's checkpoint. It is zero for a fork,
+	// source's pages over another writer's checkpoint. It is zero for a fork,
 	// whose child has no record until the destination creates it.
 	Checkpoint uint64 `json:",omitempty"`
 	// Parent and ParentCheckpoint make this handoff a fork: the VM the child
@@ -155,7 +155,7 @@ type Options struct {
 	// on. Nil is the wall clock.
 	Clock platform.Clock
 	// Point is what a Receive of a fork's child binds to when that child's
-	// parent runs on this host: the instant the parent was sealed at. The child
+	// parent runs on this host: the point the parent was sealed at. The child
 	// is created from it and its regions attach over a local backing of it, so
 	// every page it inherited is present the moment the region attaches and
 	// nothing is fetched. It is nil for every other receive — a migration, or a
@@ -166,14 +166,14 @@ type Options struct {
 
 // Migrate runs the source's half of a live migration.
 //
-// It stops the guest, gives the regions' volumes up while keeping their frames,
+// It stops the guest, gives the regions' volumes up while keeping their pages,
 // releases the VM without publishing, and registers the regions with the page
 // source so the destination can fault from them. The returned handoff is what
 // the destination needs and nothing more.
 //
 // Nothing is uploaded here. The pages the guest wrote since this host's last
-// interval checkpoint are in the frames the regions keep, and the destination
-// pulls them out of those frames and publishes them in its own next checkpoint.
+// interval checkpoint are in the pages the regions keep, and the destination
+// pulls them out of those pages and publishes them in its own next checkpoint.
 // The exposure is the source dying during the post-copy, which loses those
 // writes exactly as any host loss does.
 //
@@ -218,7 +218,7 @@ func Migrate(ctx context.Context, vm *volume.VM, process Runtime, source *PageSo
 		return Handoff{}, resume(ctx, process, err)
 	}
 	// Giving the volumes up is local and comes first: from here the regions
-	// serve their frames without touching a VM that is about to be another
+	// serve their pages without touching a VM that is about to be another
 	// host's. A region a checkpoint still has sealed keeps its volume and
 	// reports that here, which is a migration that has not happened.
 	for index, name := range names {
@@ -235,7 +235,7 @@ func Migrate(ctx context.Context, vm *volume.VM, process Runtime, source *PageSo
 		layout[index].UnpublishedAge = age
 		// The guest is stopped and this region's volume is given up, so its
 		// unpublished set can no longer change: it is exactly what the
-		// destination must fetch out of these frames. A region that cannot
+		// destination must fetch out of these pages. A region that cannot
 		// list it stops the migration here rather than handing over a layout
 		// that names no pages to fetch, which the destination would honour by
 		// rewinding the guest to the last checkpoint.
@@ -256,10 +256,10 @@ func Migrate(ctx context.Context, vm *volume.VM, process Runtime, source *PageSo
 
 // Fork runs the parent's half of a fork whose child runs on another host.
 //
-// The pause already happened: point is the instant host.Seal took, and the
+// The pause already happened: point is the fork point host.Seal took, and the
 // parent has been running again since. Nothing is stopped, nothing gives its
 // volume up and nothing is published — the parent keeps its handle, its regions
-// and its frames. This only registers the pages the child must fetch and
+// and its pages. This only registers the pages the child must fetch and
 // describes them, which is the whole difference between a fork and a migration
 // on the wire.
 //
@@ -273,7 +273,7 @@ func Migrate(ctx context.Context, vm *volume.VM, process Runtime, source *PageSo
 // a refusal would only leave the parent sealed and the child half-released.
 //
 // A child taken in on this same host is served nothing: it attaches over the
-// instant itself, so no page of it ever reaches the wire. Such a fork passes no
+// point itself, so no page of it ever reaches the wire. Such a fork passes no
 // page source, and the handoff it returns names no address to fetch from.
 func Fork(ctx context.Context, child string, point *volume.ForkPoint, source *PageSource, opts Options) (Handoff, error) {
 	if child == "" || point == nil {
@@ -324,7 +324,7 @@ func runsOf(pages []uint64) []PageRun {
 func resume(ctx context.Context, process Runtime, cause error) error {
 	if sim.Bug(ctx, "migration-skip-resume") {
 		// The source is left sealed or paused by an abandoned migration, so
-		// its guest never runs again and its frames answer nothing.
+		// its guest never runs again and its pages answer nothing.
 		return cause
 	}
 	if err := process.Release(context.WithoutCancel(ctx)); err != nil {

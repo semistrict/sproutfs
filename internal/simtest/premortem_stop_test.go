@@ -36,7 +36,7 @@ func startForkedWorld(t *testing.T, runtime *sim.Runtime, prefix string) *simtes
 // round this loop many times over the same pair of hosts. Every turn has to
 // publish exactly what the guest held and come back at it: a turn that lost the
 // writes since the last checkpoint would look like a host loss, and a turn that
-// kept a handle, a registration or a frame would be a host that cannot take the
+// kept a handle, a registration or a page would be a host that cannot take the
 // next one.
 func TestStoppingAndStartingOneVMOverAndOverKeepsWhatItsGuestWrote(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
@@ -45,7 +45,7 @@ func TestStoppingAndStartingOneVMOverAndOverKeepsWhatItsGuestWrote(t *testing.T)
 		world, _ := startStopWorld(t, runtime, "over-and-over/")
 
 		for turn := range 8 {
-			// Written after the last checkpoint, so only the host's frames hold
+			// Written after the last checkpoint, so only the host's pages hold
 			// it: a stop that published nothing would lose it as a kill does.
 			if err := world.StoreAll("vm-0", byte(turn+1)); err != nil {
 				t.Fatal(err)
@@ -81,7 +81,7 @@ func TestStoppingAndStartingOneVMOverAndOverKeepsWhatItsGuestWrote(t *testing.T)
 // every page it has not written. A stop publishes what its guest holds and
 // closes it; a start elsewhere opens it from the record, which is where the
 // inherited half has to come back from the objects the pin kept rather than
-// from the frames the stop gave away.
+// from the pages the stop gave away.
 func TestAForksChildIsStoppedAndStartedLikeAnyOtherVM(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		runtime := newCampaignRuntime(12, false)
@@ -129,9 +129,9 @@ func TestAForksChildIsStoppedAndStartedLikeAnyOtherVM(t *testing.T) {
 
 // TestStoppingAParentAndStartingItAgainLeavesItsChildrenAlone: the soak stops a
 // share of every round's population, and a parent is as likely to be drawn as
-// anything else. A parent's stop closes the VMM process whose frames its
-// children read the instant out of — which is why it is refused while an
-// instant holds it — so once every child has what it inherited the stop must
+// anything else. A parent's stop closes the VMM process whose pages its
+// children read the point out of — which is why it is refused while a
+// point holds it — so once every child has what it inherited the stop must
 // cost them nothing at all.
 func TestStoppingAParentAndStartingItAgainLeavesItsChildrenAlone(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {

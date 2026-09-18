@@ -37,10 +37,10 @@ func (g *gatedMachine) Stop(ctx context.Context) ([]byte, error) {
 }
 
 // TestOneHandoverOfAVMAtATime: a migration stops the guest, gives every region's
-// volume up and registers the frames with the page server. Two callers that
+// volume up and registers the pages with the page server. Two callers that
 // found the same registration each did all of that to one VMM process: the
 // second stopped a guest the first had already handed over, failed, and gave the
-// VM up — closing the process whose frames the winner's destination was about to
+// VM up — closing the process whose pages the winner's destination was about to
 // fault out of. A host admits one handover of a VM at a time and tells the
 // second caller so, leaving the first alone.
 func TestOneHandoverOfAVMAtATime(t *testing.T) {
@@ -107,8 +107,8 @@ func TestOneHandoverOfAVMAtATime(t *testing.T) {
 }
 
 // TestMigratingAForkBeforeItsRootIsPublishedIsRefused: a fork reads its parent's
-// sealed frames until it publishes a root index of its own, and only that
-// publication retires the instant. Handing such a child to another host releases
+// sealed pages until it publishes a root index of its own, and only that
+// publication retires the point. Handing such a child to another host releases
 // the one handle that could ever publish it, and does not retire the point: the
 // parent stays sealed for good — never checkpointed, never fenced, never
 // migratable — and the child is an identity nothing can open anywhere. The
@@ -147,7 +147,7 @@ func TestMigratingAForkBeforeItsRootIsPublishedIsRefused(t *testing.T) {
 	if _, err := h.hosts[0].Migrate(t.Context(), "child", h.pages[1]); !errors.Is(err, volume.ErrForkPending) {
 		t.Fatalf("migrating a fork with no root of its own = %v, want ErrForkPending", err)
 	}
-	// The child is untouched: it still runs here and still reads the instant.
+	// The child is untouched: it still runs here and still reads the point.
 	if childGuest.closed.Load() {
 		t.Fatal("the refused handover stopped the child's guest")
 	}

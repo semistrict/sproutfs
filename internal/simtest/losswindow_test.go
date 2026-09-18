@@ -216,7 +216,7 @@ func TestALostHostRewindsAtMostTheLossWindow(t *testing.T) {
 		giveUp()
 		synctest.Wait()
 		<-held
-		// The host goes, taking every frame it held with it. What comes back is
+		// The host goes, taking every page it held with it. What comes back is
 		// the checkpoint the VM's record selects, and the writes since it are
 		// the ones the window bounds.
 		if err := world.LoseHost(ctx, 0); err != nil {

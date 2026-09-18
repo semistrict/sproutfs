@@ -61,7 +61,7 @@ type Config struct {
 	// adapter: plain TCP on a trusted cluster network, and a simulation its
 	// own.
 	Network platform.Network
-	// Resources is the RAM allotment this host's pager takes its frames from.
+	// Resources is the RAM allotment this host's pager takes its pages from.
 	Resources *resource.Budget
 	// Clock is the passage of time this host's deadlines are measured against:
 	// the checkpoint interval, the epoch watch, and the holds that retire a
@@ -91,7 +91,7 @@ type Config struct {
 	Volumes    VolumeConfig
 	// CheckpointInterval is how often every VM this host runs is checkpointed: the
 	// vCPUs pause for the VMM state capture and the seal, the guest resumes, and
-	// the sealed frames upload behind it. It is the only thing that makes a
+	// the sealed pages upload behind it. It is the only thing that makes a
 	// running VM durable, so it bounds what a host loss rewinds the VM by. Each
 	// wait is jittered by up to an eighth either side so VMs do not checkpoint
 	// in lockstep. Zero selects DefaultCheckpointInterval; a negative value disables
@@ -116,7 +116,7 @@ type Config struct {
 	// over. The other place that is learned is a checkpoint, and not every VM
 	// reaches one: a running VM is up to CheckpointInterval from its next, and a
 	// VM a fork point has sealed is never checkpointed at all. Until the host
-	// knows, its guest goes on writing into frames nothing can ever publish and
+	// knows, its guest goes on writing into pages nothing can ever publish and
 	// its page server goes on serving them. Zero selects DefaultEpochInterval; a
 	// negative value disables the timer, which only a test that drives the check
 	// itself wants.
@@ -178,7 +178,7 @@ type Host struct {
 }
 
 // cleanupTimeout bounds the control-plane writes a failed operation makes on its
-// way out: releasing a handle, removing a record it created, retiring an instant
+// way out: releasing a handle, removing a record it created, retiring a point
 // it took. They have to outlive the request's own cancellation — a client that
 // hung up must not leave a record half written — and a context with neither a
 // cancellation nor a deadline is one the object store can hold a goroutine on
@@ -200,7 +200,7 @@ func closing(ctx context.Context, vm *volume.VM) error {
 	return vm.Close(undo)
 }
 
-// retiring gives up a fork instant on the way out of an operation that failed,
+// retiring gives up a fork point on the way out of an operation that failed,
 // which may write the parent's control record, on a cleanup context of its own.
 func retiring(ctx context.Context, point *volume.ForkPoint) error {
 	undo, cancel := cleanup(ctx)
@@ -326,7 +326,7 @@ func StartHost(ctx context.Context, config Config) (*Host, error) {
 		}
 	}()
 	// The cache has a cap of its own: disposable pages must never be able to
-	// take the frames a guest needs, and the pager must never have to reclaim
+	// take the pages a guest needs, and the pager must never have to reclaim
 	// across a concern to get them back.
 	cacheBudget, err := resource.New(config.CacheBytes)
 	if err != nil {
@@ -415,15 +415,15 @@ type Status struct {
 	CacheLimit int64
 	Volumes    volume.Stats
 	// Pages is what this host's migration page server has answered, and Serving
-	// every handover this host still holds frames for: the VMs it migrated away
-	// and the children of every fork instant it took, wherever those children
-	// landed. A drain is not finished while Serving is not empty: those frames
+	// every handover this host still holds pages for: the VMs it migrated away
+	// and the children of every fork point it took, wherever those children
+	// landed. A drain is not finished while Serving is not empty: those pages
 	// include pages no checkpoint has, so a host that exits with them loses the
 	// guest's writes since its last checkpoint — a migrated VM's, or a sealed
 	// parent's.
 	//
 	// A child taken in on its parent's own host is served nothing, because it
-	// maps the frames the seal froze rather than fetching them, so the page
+	// maps the pages the seal froze rather than fetching them, so the page
 	// server knows nothing about it. Its hold is a handover all the same: it
 	// holds the parent sealed, and a host reporting only what its page server
 	// holds would say a parent nothing can checkpoint is a parent nothing is
@@ -436,7 +436,7 @@ type Status struct {
 	// orchestrator's word is keeping open; anything else is what a drain is
 	// actually waiting for. A VM whose volumes could not be listed reports -1,
 	// because what it still holds is unknown. A child taken in on this host maps
-	// the frames rather than fetching them, so it has nothing outstanding and
+	// the pages rather than fetching them, so it has nothing outstanding and
 	// reports zero.
 	Outstanding map[string]int
 	// LogicalPagesFree is what the pager's per-region metadata cap still has
@@ -483,9 +483,9 @@ func (h *Host) outstanding(serving []string) map[string]int {
 	return left
 }
 
-// serving is every handover this host still holds frames for, in ascending
+// serving is every handover this host still holds pages for, in ascending
 // identity order: what its page server answers for, and the children of every
-// fork instant it took — a child on this host's own frames among them, which no
+// fork point it took — a child on this host's own pages among them, which no
 // page server ever hears of.
 func (h *Host) serving() []string {
 	var held []string
@@ -562,7 +562,7 @@ func (h *Host) shutdown() {
 	}
 	if h.pages != nil {
 		// Serving stops before the VM handles do: nothing is left to serve once
-		// the processes that own those frames are gone.
+		// the processes that own those pages are gone.
 		errs = append(errs, h.pages.Close())
 	}
 	if h.volumes != nil {

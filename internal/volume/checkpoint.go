@@ -13,7 +13,7 @@ import (
 
 // Checkpoint is a local, immutable view of one VM at one write generation,
 // together with the publication that will make it durable. Its Ref is known
-// immediately, so a fork can inherit it and a pager can key frames by it before
+// immediately, so a fork can inherit it and a pager can key pages by it before
 // any object is uploaded; Wait reports when the index is selected in the VM's
 // control record, which is when the checkpoint survives the loss of this host.
 //
@@ -34,8 +34,8 @@ type Checkpoint struct {
 	overlays    map[string]*extentIndex
 	sources     map[string]DirtySource
 	// inherited names, per volume, the pages a fork's root index publishes
-	// beyond its own: the parent's unpublished pages at the instant it was
-	// forked, which it reads through that instant and makes its own.
+	// beyond its own: the parent's unpublished pages at the point it was
+	// forked, which it reads through that point and makes its own.
 	inherited map[string][]uint64
 	sizes     map[string]uint64
 	position  generation

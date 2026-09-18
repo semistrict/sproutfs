@@ -82,7 +82,7 @@ func TestAColdStartedVMComesBackWithoutItsMemory(t *testing.T) {
 
 // TestAHostComingBackLeavesAStoppedVMStopped: a host that is lost and started
 // again gives back everything it was running, and a VM the deployment stopped is
-// not that — its handle was released and its frames given back before the host
+// not that — its handle was released and its pages given back before the host
 // died, so there is nothing for the host to give back and nothing to repair.
 // Only a start brings it back, which is the whole difference between a stop and
 // every other way a VM stops running here.

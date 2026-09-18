@@ -24,7 +24,7 @@ const (
 	// is the largest buffer one fault may hold.
 	readAheadPages = 4
 	// writeAheadPages is the run one store into fresh zeros — a hole, or a page
-	// the guest has never touched — gives private frames in a single mapping
+	// the guest has never touched — gives private pages in a single mapping
 	// command. Every page of it is charged a dirty reservation and written back
 	// whether the guest uses it or not, so it is kept to the read-ahead run
 	// rather than larger, and a host whose dirty budget cannot afford runs of
@@ -87,7 +87,7 @@ func pagerConfig(config SupervisorConfig) vmmemory.Config {
 // concurrentIO bounds page reads and spill writes in flight. It is the node's
 // processors scaled up, held between a floor worth having and a ceiling, and
 // never more read-ahead runs than the arena has room for: a permit that cannot
-// put its run anywhere only queues for a frame.
+// put its run anywhere only queues for a page.
 func concurrentIO(resident int) int {
 	permits := min(max(concurrentIOPerCPU*runtime.NumCPU(), minimumConcurrentIO), maximumConcurrentIO)
 	return max(1, min(permits, resident/readAheadPages))

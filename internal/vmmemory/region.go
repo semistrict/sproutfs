@@ -19,7 +19,7 @@ type failure struct{ err error }
 
 type Region struct {
 	// live is held shared for the whole of a fault and exclusively by detach
-	// alone. It is what keeps this region's bindings and frames in existence
+	// alone. It is what keeps this region's bindings and pages in existence
 	// across the part of a fault that holds no region lock — its backing read —
 	// so that giving mu up there cannot race a teardown.
 	live *ctxsync.RWMutex
@@ -50,8 +50,8 @@ type Region struct {
 	// that start and end it.
 	dirtySince time.Time
 	terminal   atomic.Pointer[failure]
-	// heldReported marks the one line this region's unreclaimable frames are
-	// worth; see heldFrames.
+	// heldReported marks the one line this region's unreclaimable pages are
+	// worth; see heldPages.
 	heldReported atomic.Bool
 	closed       bool
 	// handed marks a region whose volume belongs to another host now. It is
@@ -69,14 +69,14 @@ type Region struct {
 	checkpoint   *RegionCheckpoint
 	// sealing is set while a seal is taking the dirty set into a checkpoint
 	// the region does not name yet, so a store asking what will relieve the
-	// dirty budget in that instant is told a checkpoint is coming rather than
+	// dirty budget at that moment is told a checkpoint is coming rather than
 	// that nothing is.
 	sealing bool
 }
 
 // Attach admits metadata and verifies writer authority before exposing a region.
 // The mapping must initially consist entirely of armed missing-fault traps.
-// Equal lineage identities share resident frames in this pager. A caller must
+// Equal lineage identities share resident pages in this pager. A caller must
 // not attach the same writable volume to two regions. Once the mapping can
 // accept commands, Populate maps everything already resident.
 func (h *Host) Attach(ctx context.Context, backing Backing, mapping Mapping) (*Region, error) {
@@ -137,7 +137,7 @@ func (h *Host) admit(ctx context.Context, backing Backing, mapping Mapping) (*Re
 
 // ready reports whether this region may still use its volume. serving is the
 // weaker question a page server asks: a handed-off region answers for its own
-// frames long after its volume became another host's.
+// pages long after its volume became another host's.
 // Resources identifies the host allotment backing this region. Supervisors use
 // it to verify that every mapped region shares the storage host's budget.
 func (r *Region) Resources() *resource.Budget {
@@ -171,24 +171,24 @@ func (r *Region) serving() error {
 
 // fail makes this region terminal, which is the end of the machine that maps
 // it: nothing may take a mapping away from it again, so nothing may reuse the
-// frames it still holds. The session that ends with it is what says so — see
-// heldFrames for the part of it nothing else reports.
+// pages it still holds. The session that ends with it is what says so — see
+// heldPages for the part of it nothing else reports.
 func (r *Region) fail(err error) error {
 	r.terminal.CompareAndSwap(nil, &failure{fmt.Errorf("managed mapping terminal: %w", err)})
 	return r.terminal.Load().err
 }
 
-// heldFrames says once that this region's frames cannot be taken back. It is
+// heldPages says once that this region's pages cannot be taken back. It is
 // the one part of a region's end that nothing else reports: the eviction that
 // discovers it goes on to another victim without a word, and by then the
-// session that failed may have ended minutes ago, so a host short of frames has
+// session that failed may have ended minutes ago, so a host short of memory has
 // no other way to learn that some of its arena belongs to a machine that is
 // finished and is not coming back until the region is closed.
-func (r *Region) heldFrames(ctx context.Context, err error) {
+func (r *Region) heldPages(ctx context.Context, err error) {
 	if r.heldReported.Swap(true) {
 		return
 	}
-	slog.WarnContext(ctx, "vmmemory: a region's frames cannot be taken back until it is closed",
+	slog.WarnContext(ctx, "vmmemory: a region's pages cannot be taken back until it is closed",
 		"pages", r.pageCount, "error", err)
 }
 
@@ -232,7 +232,7 @@ func (r *Region) mapBatch(ctx context.Context, batch BatchMapping, runs []MapRun
 // admits a command against its mapping budget before it touches anything, so
 // the pages are not mapped, the record the pager made of them is taken back by
 // undo, and the fault fails rather than the region. Every other failure may
-// have been applied, so that record stands — a frame the guest can still read
+// have been applied, so that record stands — memory the guest can still read
 // through must never be reachable from a binding that says it is unmapped,
 // which a revocation would skip — and the region is terminal.
 func (r *Region) mappingFailed(err error, undo func()) error {
@@ -321,7 +321,7 @@ var errRegionDropped = errors.New("managed-memory fault gave the region up")
 
 // withoutRegion runs one read of bytes with the region lock given up, so that a
 // seal, an unseal or a retire runs in full while it is in flight. The fault's
-// stripe still owns this window and the plan still holds the frames it has
+// stripe still owns this window and the plan still holds the pages it has
 // taken, so nothing about the window changes meanwhile; a detach cannot run at
 // all, because a fault holds the region live from end to end. The caller's
 // invariant is that it holds the region shared, so the lock is retaken whatever
@@ -384,8 +384,8 @@ func (r *Region) loadWindow(ctx context.Context, offset uint64, dst []byte) ([]b
 
 // readForCopy fills a store's private copy with the page's current bytes, and
 // reports whether those bytes are ones no checkpoint of this VM has. Bytes that
-// come from the backing are read outside the region lock; a frame, a spill slot
-// or a checkpoint's copy is this host's own and is read in place.
+// come from the backing are read outside the region lock; a resident page, a
+// spill slot or a checkpoint's copy is this host's own and is read in place.
 //
 // Only the backing read can answer unpublished, and only a backing that fetches
 // from another host ever says yes: the store is then this region taking a page
@@ -419,7 +419,7 @@ func (r *Region) Verify(ctx context.Context) error {
 	}
 	if r.handed {
 		// There is no authority left to observe: the volume is another host's,
-		// and this region only serves the frames it still holds.
+		// and this region only serves the pages it still holds.
 		return nil
 	}
 	if err := r.backing.Verify(ctx); err != nil {

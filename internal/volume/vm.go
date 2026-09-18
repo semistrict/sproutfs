@@ -53,7 +53,7 @@ type Status struct {
 	// set for the life of the handle, whose every operation reports
 	// ErrHandedOff.
 	HandedOff bool
-	// Sealed reports that a fork point holds this VM's frames. Nothing may seal
+	// Sealed reports that a fork point holds this VM's pages. Nothing may seal
 	// them again — no capture, no fork — until that point is retired, which is
 	// when the child it was taken for has published or pulled every page it
 	// inherited.
@@ -122,11 +122,11 @@ type VM struct {
 	// without publishing anything.
 	handedOff bool
 	published error
-	// sealed reports that a fork point holds this VM's sealed frames. Nothing
+	// sealed reports that a fork point holds this VM's sealed pages. Nothing
 	// may seal them again until it is retired.
 	sealed bool
 	// root reports a fork that has not published its own root index yet, point
-	// the instant it reads through, and inherited the parent's unpublished
+	// the point it reads through, and inherited the parent's unpublished
 	// pages, which that root republishes as the fork's own. A fork on another
 	// host has no point to read through: its pager pulled those pages, so they
 	// are its own dirty state and inherited is empty.
@@ -250,7 +250,7 @@ func (vm *VM) Close(ctx context.Context) error {
 	vm.publishLocked()
 	vm.mu.Unlock()
 	err := vm.stop(ctx)
-	// The parent of a fork that never published gets its sealed frames back
+	// The parent of a fork that never published gets its sealed pages back
 	// here: nothing inherited them in the end, so its next checkpoint takes
 	// them again. It does not get its pin back — nothing ever does — so a fork
 	// abandoned before its root costs the parent the checkpoint it was taken
@@ -353,7 +353,7 @@ func (vm *VM) applyLocked(ordinal int, changes []change) {
 }
 
 // takePoint gives up the fork point this handle read through, which it does
-// once its root index is published: nothing reads the parent's sealed frames
+// once its root index is published: nothing reads the parent's sealed pages
 // any more. It returns nil for a handle that was not a fork, or whose point has
 // already been given up.
 func (vm *VM) takePoint() *ForkPoint {
@@ -382,7 +382,7 @@ func (vm *VM) fail(cause error) error {
 
 // Confirm re-reads this VM's control record and reports whether this handle
 // still holds its epoch. It is how a writer that is publishing nothing learns
-// it has been taken over: a running guest writes into frames, so a VM between
+// it has been taken over: a running guest writes into pages, so a VM between
 // checkpoints — or one a fork point has sealed, which is not checkpointed at
 // all — would otherwise find out only when it next tried to publish, if it ever
 // did.

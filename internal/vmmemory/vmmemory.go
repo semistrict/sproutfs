@@ -2,9 +2,9 @@
 // The Linux adapter implements mapping changes; the same ownership machine is
 // exercised with simulated mappings and storage in ordinary Go tests.
 //
-// Resident frames are keyed by the lineage identity the volume reports for a
-// page, never by its contents: two VMs share a frame because they inherited the
-// same checkpoint object, and nothing in this package hashes or compares bytes.
+// Resident pages are keyed by the lineage identity the volume reports for a
+// page: every page has one name, the checkpoint that published it, and two VMs
+// share a resident page because they inherited the same checkpoint object.
 package vmmemory
 
 import (
@@ -95,11 +95,11 @@ type Backing interface {
 
 // UnpublishedLoader is a Backing whose loads can return bytes its volume does
 // not hold. A migration destination's peer backing is one: the pages the source
-// host serves out of its own dirty frames are the guest's state since the
+// host serves out of its own dirty pages are the guest's state since the
 // source's last checkpoint, and no checkpoint has them.
 //
 // A page reported unpublished is loaded as this region's private dirty state —
-// a private frame under a spill reservation — rather than as clean state of the
+// a private page under a spill reservation — rather than as clean state of the
 // checkpoint the volume reports for it, because the checkpoint's identity names
 // different bytes. The next checkpoint is what publishes it, which on a
 // destination is the interval checkpoint that follows the migration.
@@ -158,9 +158,9 @@ type Mapping interface {
 	Revoke(ctx context.Context, page uint64) error
 	Resolve(ctx context.Context, page uint64, count int, writable bool) error
 	// Protect takes write access away from count consecutive mapped pages
-	// without moving them: their frames, contents and page tables stay exactly
+	// without moving them: their memory, contents and page tables stay exactly
 	// as they are, and the next store to one of them traps like a store to a
-	// shared mapping. It costs one command per range whatever frames those
+	// shared mapping. It costs one command per range whatever memory those
 	// pages hold, which is what makes a seal proportional to the runs of a
 	// dirty set rather than to its pages. Pages already protected are allowed.
 	Protect(ctx context.Context, page uint64, count int) error
@@ -202,7 +202,7 @@ type Config struct {
 	// the range cannot exceed 16 MiB.
 	ReadAheadPages int
 	// WriteAheadPages bounds the run of pages one store into fresh zeros, a
-	// zero-mapped page or a hole the guest never touched, gives private frames
+	// zero-mapped page or a hole the guest never touched, makes private
 	// at once: the faulting page, the fresh zero pages after it and, where its
 	// read-ahead run ends first, before it. Like read-ahead it uses only free
 	// arena slots and free dirty reservations and never evicts or waits for
@@ -231,7 +231,7 @@ type Config struct {
 	Clock platform.Clock
 }
 
-// ProbeEvictionDuringPublication marks an eviction that punched a frame of a
+// ProbeEvictionDuringPublication marks an eviction that punched a page of a
 // region a publication was reading at that moment. The two hold different
 // locks over the same bytes, so it is the overlap a pager that only ever had
 // room for its guest never reaches.

@@ -192,7 +192,7 @@ func statusOf(err error) int {
 		return http.StatusServiceUnavailable
 	}
 	// Nothing here refused it, so a host did, and that host is the only thing
-	// that knows why: a VM a fork instant holds sealed, a VM it does not run,
+	// that knows why: a VM a fork point holds sealed, a VM it does not run,
 	// an identity it already runs. Its own status line is relayed rather than
 	// reported as an internal failure of this process, which would send an
 	// operator to read the wrong logs for a refusal they can wait out. A host

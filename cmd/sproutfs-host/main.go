@@ -47,7 +47,7 @@ var version = "dev"
 // be a shorter backstop than the grace period has room for, not a longer one: a
 // client that waited two minutes for a drain the server gives up on in eighty
 // seconds spends the shutdown's own share of the grace waiting for nothing, and
-// the pod is killed with the VMs that did not move still holding frames no
+// the pod is killed with the VMs that did not move still holding pages no
 // checkpoint has.
 const drainTimeout = 90 * time.Second
 

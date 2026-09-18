@@ -102,7 +102,7 @@ func (s *served) unpublishedAt(t *testing.T, address platform.Address, name stri
 // it — a full dirty budget on a read-ahead page is the ordinary way — and the
 // bytes are then nowhere. Only the pager saying it installed the page may
 // strike it off, because striking it off is what lets the source release its
-// frames and lets a later read answer from a volume whose bytes predate the
+// pages and lets a later read answer from a volume whose bytes predate the
 // guest's write.
 func TestALoadIsNotAnInstall(t *testing.T) {
 	s := newServed(t, nil, 4)

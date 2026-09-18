@@ -162,10 +162,10 @@ func TestDoneReturnsBeforeTheBulkStreamCompletes(t *testing.T) {
 	})
 }
 
-// The destination's guest runs from the instant its machine starts, which is
+// The destination's guest runs from the moment its machine starts, which is
 // before the stream behind it has fetched a page, and its first touch of a page
 // only the source holds can be a store. The source serves that store exactly as
-// it serves the stream — those are its own frames either way — so the page is
+// it serves the stream — those are its own pages either way — so the page is
 // here and the source no longer holds the only copy of it. A destination that
 // counts only what its stream fetched declares the guest's memory part missing
 // and throws away a VM every page of which is present.

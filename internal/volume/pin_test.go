@@ -199,7 +199,7 @@ func TestAPinChainsThroughAForkOfAFork(t *testing.T) {
 	})
 }
 
-// One instant forked into several children is one pin, so the end of one child
+// One point forked into several children is one pin, so the end of one child
 // leaves what the others read exactly where it is.
 func TestOneChildsDeletionLeavesItsSiblingsLineage(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
@@ -238,7 +238,7 @@ func TestOneChildsDeletionLeavesItsSiblingsLineage(t *testing.T) {
 			t.Fatalf("deleting one of two children released %d, which the other reads", pinned.Sequence)
 		}
 		if got := pins(t, h, "vm").Pinned; len(got) != 1 {
-			t.Fatalf("the fan-out left the parent pinning %v, want one pin for the instant", got)
+			t.Fatalf("the fan-out left the parent pinning %v, want one pin for the point", got)
 		}
 
 		// The parent rewrites every page it published, so only the surviving

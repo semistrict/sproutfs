@@ -224,7 +224,7 @@ func (vm *VM) isRoot() bool {
 	return vm.root
 }
 
-// sealable reports whether this VM's frames may be sealed now. A fork point
+// sealable reports whether this VM's pages may be sealed now. A fork point
 // holds them until the child it was taken for has them, and one seal of a
 // region is outstanding at a time.
 func (vm *VM) sealable() error {
@@ -301,7 +301,7 @@ func (vm *VM) captureLocked(state []byte, sources map[string]DirtySource, force 
 }
 
 // complete publishes a captured checkpoint, installs it, gives the guest its
-// frames back, releases everything waiting on it, and only then reclaims what
+// pages back, releases everything waiting on it, and only then reclaims what
 // it replaced. The caller holds the publication lock, which complete releases:
 // the sweep is a run of object-store deletes over objects nothing reads any
 // more, and neither the guest nor the next capture of it waits for those.
@@ -332,7 +332,7 @@ func (vm *VM) complete(ctx context.Context, ckpt *Checkpoint) error {
 	}
 	if err == nil {
 		// A fork that has published its root owns every page it inherited, so
-		// the parent's sealed frames go back to its guest. The pin on the
+		// the parent's sealed pages go back to its guest. The pin on the
 		// parent's lineage is not given back with them: this index may still
 		// name the parent's checkpoints, and an index of a VM forked from this one
 		// may name them even when this one does not.
@@ -355,7 +355,7 @@ func (vm *VM) complete(ctx context.Context, ckpt *Checkpoint) error {
 // publish names every page the checkpoint changed and then selects the index
 // the publication produced. Page contents come from the checkpoint's own
 // immutable view — the overlay for what was written through this package, and
-// the sealed frames for what a pager holds — never from the VM's live state, so
+// the sealed pages for what a pager holds — never from the VM's live state, so
 // writes accepted after the checkpoint cannot reach it. It returns the control
 // record the selection produced, whose pins are what reclamation must spare.
 func (vm *VM) publish(ctx context.Context, ckpt *Checkpoint) (*checkpoint.Index, control.Record, error) {
@@ -394,8 +394,8 @@ func (vm *VM) publish(ctx context.Context, ckpt *Checkpoint) (*checkpoint.Index,
 
 // publishedPages reports every page one volume of a checkpoint publishes: what
 // its own overlay and pager seal hold, and, for a fork's root index, the
-// pages it inherited from the instant it was forked at, which it reads through
-// that instant and publishes as its own.
+// pages it inherited from the point it was forked at, which it reads through
+// that point and publishes as its own.
 func publishedPages(ckpt *Checkpoint, name string) []uint64 {
 	return mergePages(changedPages(ckpt.overlays[name], ckpt.sources[name]), ckpt.inherited[name])
 }
@@ -465,7 +465,7 @@ func (vm *VM) install(ckpt *Checkpoint, index *checkpoint.Index) *checkpoint.Ind
 	}
 	if vm.root {
 		// The root index exists now, and with it every page this fork
-		// inherited: it reads its own objects from here and the instant it was
+		// inherited: it reads its own objects from here and the point it was
 		// forked at is nothing to it. Which sequence it landed under does not
 		// enter it — a root publication that failed burnt its own, and the
 		// selection this one made is what the record now says the fork is.

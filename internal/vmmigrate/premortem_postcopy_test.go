@@ -88,16 +88,16 @@ func TestPremortemAPostCopyFinishesUnderAPerPeerConnectionBudget(t *testing.T) {
 		}
 		child.adopt(at)
 		if err := child.verify(child.ctx(), at); err != nil {
-			t.Fatalf("the child does not hold the instant it inherited: %v", err)
+			t.Fatalf("the child does not hold the point it inherited: %v", err)
 		}
 	})
 }
 
 // TestPremortemFanOutChecksEveryPageWhileTheSourceIsStillStreaming forks one
-// instant onto another host twice, as a round of the soak does, and has both
+// point onto another host twice, as a round of the soak does, and has both
 // children read every page of every volume back while the stream behind them is
 // still running and the source is at its per-peer budget. Every byte has to be
-// the instant's, whether it came off the wire, out of the child's own frames or
+// the point's, whether it came off the wire, out of the child's own pages or
 // out of object storage.
 func TestPremortemFanOutChecksEveryPageWhileTheSourceIsStillStreaming(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
@@ -148,7 +148,7 @@ func TestPremortemFanOutChecksEveryPageWhileTheSourceIsStillStreaming(t *testing
 		wg.Wait()
 		for index, err := range failures {
 			if err != nil {
-				t.Fatalf("child %d does not hold the instant it inherited: %v", index, err)
+				t.Fatalf("child %d does not hold the point it inherited: %v", index, err)
 			}
 		}
 		for index, received := range receiveds {
@@ -158,17 +158,17 @@ func TestPremortemFanOutChecksEveryPageWhileTheSourceIsStillStreaming(t *testing
 			if err := received.VM().Checkpoint(t.Context()); err != nil {
 				t.Fatalf("child %d: publishing its root: %v", index, err)
 			}
-			// The check read every page, so nothing of the instant is left on
+			// The check read every page, so nothing of the point is left on
 			// the source: the release the orchestrator drives has to be taken.
 			if err := pages.Release(fmt.Sprintf("vm-child-%d", index)); err != nil {
 				t.Fatalf("child %d: the source would not release it: %v", index, err)
 			}
 		}
-		// And every child still reads the instant once the source serves it
+		// And every child still reads the point once the source serves it
 		// nothing at all, which is what the soak's next check does.
 		for index := range children {
 			if err := guests[index].verify(guests[index].ctx(), at); err != nil {
-				t.Fatalf("child %d stopped holding the instant once the source released it: %v", index, err)
+				t.Fatalf("child %d stopped holding the point once the source released it: %v", index, err)
 			}
 		}
 		for range children {
@@ -177,7 +177,7 @@ func TestPremortemFanOutChecksEveryPageWhileTheSourceIsStillStreaming(t *testing
 			}
 		}
 		if status := m.vm.Status(); status.Sealed {
-			t.Fatalf("the parent kept its seal after every child of the instant published: %+v", status)
+			t.Fatalf("the parent kept its seal after every child of the point published: %+v", status)
 		}
 		if err := m.machine.checkpoint(t.Context(), m.vm); err != nil {
 			t.Fatalf("the parent could not checkpoint after the fan-out: %v", err)

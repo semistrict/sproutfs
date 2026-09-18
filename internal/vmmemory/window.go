@@ -27,7 +27,7 @@ type windowPlan struct {
 	observedZeros bool
 	locked        map[*resident]bool
 	// spill names the dirty reservation the fault brought with it, or -1. A
-	// page the backing serves out of another host's frames is this region's own
+	// page the backing serves out of another host's memory is this region's own
 	// dirty state, so loading it takes a reservation, and the faulting page's
 	// is taken by the waiting path before the fault holds any lock. It is
 	// consumed by setting it to -1.
@@ -87,22 +87,22 @@ func (p *windowPlan) eligible(page uint64) bool {
 
 // identity reports the store page whose bytes this page reads, which is the
 // whole of its lineage: a page is published whole or not at all.
-func (p *windowPlan) identity(page uint64) (frame, bool) {
+func (p *windowPlan) identity(page uint64) (pageKey, bool) {
 	offset := page * uint64(PageSize)
 	first := sort.Search(len(p.extents), func(i int) bool { return p.extents[i].Offset+p.extents[i].Length > offset })
 	if first >= len(p.extents) {
-		return frame{}, false
+		return pageKey{}, false
 	}
 	e := p.extents[first]
 	if e.Identity.Zero {
-		return frame{id: control.Identity{Zero: true}}, true
+		return pageKey{id: control.Identity{Zero: true}}, true
 	}
 	// A page with no object is private to this region and never shared, and so
 	// is one whose backing named a page other than this one.
 	if e.Identity.Ref.IsZero() || e.Identity.Page != page {
-		return frame{}, false
+		return pageKey{}, false
 	}
-	return frame{id: e.Identity}, true
+	return pageKey{id: e.Identity}, true
 }
 
 // unpublished reports whether the window's extents say this page's bytes belong
@@ -374,7 +374,7 @@ func (p *windowPlan) publish(ctx context.Context, page uint64, data []byte, priv
 	slot := p.reserved[i]
 	if private {
 		// The bytes are the guest's own and no checkpoint has them, so this page
-		// enters the region as dirty state: a private frame under a dirty
+		// enters the region as dirty state: a private page under a dirty
 		// reservation, which the next checkpoint publishes. The faulting page
 		// brings the reservation the waiting path admitted it under, so a full
 		// budget stalls the fault before it holds anything rather than failing
@@ -399,7 +399,7 @@ func (p *windowPlan) publish(ctx context.Context, page uint64, data []byte, priv
 			}
 		}
 		p.reserved[i] = -1
-		pg, err := h.create(ctx, slot, data, frame{}, true)
+		pg, err := h.create(ctx, slot, data, pageKey{}, true)
 		if err != nil {
 			h.releaseSpill(spill)
 			return err
@@ -416,7 +416,7 @@ func (p *windowPlan) publish(ctx context.Context, page uint64, data []byte, priv
 	}
 	p.reserved[i] = -1
 	id, shared := p.identity(page)
-	key := frame{}
+	key := pageKey{}
 	if shared {
 		key = id
 	}

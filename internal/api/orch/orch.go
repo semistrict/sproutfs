@@ -33,13 +33,13 @@ type Host struct {
 	Running []string `json:"running"`
 	Serving []string `json:"serving"`
 	Error   string   `json:"error,omitempty"`
-	// Pager is what the host's shared frame store holds, as it reported it. Its
+	// Pager is what the host's shared page store holds, as it reported it. Its
 	// SharedPages is the demo's sharing measure, which is what forking a running
 	// guest is visible in.
 	Pager host.Pager `json:"pager"`
 	// Pages is what this host's page server has answered: the pages a
 	// destination of a migration, or a fork placed on another host, pulled out
-	// of its frames.
+	// of its pages.
 	Pages host.Pages `json:"pages"`
 	// Store is what that host's object store has served since it started, per
 	// operation. It is what a checkpoint model costs in object traffic.
@@ -123,7 +123,7 @@ type CreateResult struct {
 
 // ForkRequest asks for Count forks of one running VM. Zero means one. To is the
 // host the children run on, by pod name; empty is the parent's own host, where
-// a child shares its parent's frames rather than pulling them over the network.
+// a child shares its parent's pages rather than pulling them over the network.
 type ForkRequest struct {
 	Count int    `json:"count,omitempty"`
 	To    string `json:"to,omitempty"`
@@ -134,7 +134,7 @@ type ForkRequest struct {
 // children run on, which is the same host unless the fork was placed elsewhere.
 //
 // Capture is the pause the parent paid, once: every child of one fork starts
-// from one instant of it. Start is how long the children took to be running.
+// from one pause of it. Start is how long the children took to be running.
 type ForkResult struct {
 	Host     string   `json:"host"`
 	To       string   `json:"to"`
@@ -195,7 +195,7 @@ type RecoverResult struct {
 type StopResult struct {
 	VM   string `json:"vm"`
 	Host string `json:"host"`
-	// Checkpoint is the sequence the stop published, which is the instant a
+	// Checkpoint is the sequence the stop published, which is the pause a
 	// start brings the VM back at.
 	Checkpoint uint64  `json:"checkpoint"`
 	Total      Seconds `json:"total_seconds"`

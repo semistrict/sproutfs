@@ -19,7 +19,7 @@ import (
 // nothing behind it, which is why the record has to be taken back — while the
 // opposite, a page recorded as mapped that the client did map, is what every
 // ambiguous failure must leave behind, because a revocation skips an unmapped
-// binding and would release the frame the guest still reads through.
+// binding and would release the page the guest still reads through.
 func TestARefusedMappingFailsTheFaultAndNotTheRegion(t *testing.T) {
 	for _, mode := range []struct {
 		name  string
@@ -70,7 +70,7 @@ func TestARefusedMappingFailsTheFaultAndNotTheRegion(t *testing.T) {
 // A revocation the client refused is not the refusal a fault is served again
 // for: what such a fault waits for is a revocation, and this is one that could
 // not happen. It is terminal like every other failed revocation — the pages
-// stay recorded as mapped, which is what keeps the frame the guest may still
+// stay recorded as mapped, which is what keeps the page the guest may still
 // read through reachable — and it must not reach the fault worker as a command
 // to try again, which would leave the guest waiting on a region that is over.
 func TestARefusedRevocationIsTerminalRatherThanServedAgain(t *testing.T) {
@@ -79,7 +79,7 @@ func TestARefusedRevocationIsTerminalRatherThanServedAgain(t *testing.T) {
 		r, m, _ := f.region(4)
 		access(t, r, m, 0, true)[0] = 41
 		m.refuseRevoke = true
-		// The only frame is page 0's, so this fault reclaims it, which revokes
+		// The only page is page 0's, so this fault reclaims it, which revokes
 		// the guest's mapping of it first.
 		err := r.Fault(t.Context(), 1, false)
 		if err == nil {
@@ -96,7 +96,7 @@ func TestARefusedRevocationIsTerminalRatherThanServedAgain(t *testing.T) {
 
 // Write-ahead maps a whole run of fresh zero pages with one command, so a
 // refusal leaves a run of pages to take the record back for. They keep their
-// frames and their reservations — a store that has a private frame and no
+// pages and their reservations — a store that has a private page and no
 // mapping is a page waiting to be mapped, not a page that lost anything — and
 // the store that faults again maps the run and completes.
 func TestARefusedWriteAheadRunKeepsItsPagesUnmapped(t *testing.T) {

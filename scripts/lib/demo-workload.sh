@@ -19,7 +19,7 @@
 #   phases.tsv       each phase's name and the wall-clock window it occupied
 #   checkpoints.jsonl  every "host: checkpoint" line the hosts logged
 #   store.tsv        each host's object-store counters at every phase boundary
-#   shared.tsv       each host's resident and shared frame counts, likewise
+#   shared.tsv       each host's resident and shared page counts, likewise
 #   summary.txt      the tables this prints
 #
 # Overridable: SPROUTFS_DEMO_NAMESPACE, FORKS_BASE, FORKS_PER_REPO,
@@ -83,8 +83,8 @@ agent_ready() {
 }
 
 # root_each checkpoints every VM named, which for a VM that has just been forked
-# is its own root index. A fork's parent keeps its frames sealed until the last
-# child has published one — the child reads the parent's sealed frames until it
+# is its own root index. A fork's parent keeps its pages sealed until the last
+# child has published one — the child reads the parent's sealed pages until it
 # owns those pages itself — so a parent cannot be checkpointed, forked again or
 # migrated in the meantime. Taking the children's roots here is what gives the
 # parent back to the phases below, and it is real work the numbers should carry:
@@ -116,7 +116,7 @@ balance() {
     done
 }
 
-# sample records what every host's store and pager hold at one instant, marked
+# sample records what every host's store and pager hold at one moment, marked
 # with the boundary it belongs to. Two samples subtracted are one phase's cost.
 sample() {
     local mark=$1 stamp
@@ -406,7 +406,7 @@ lines = []
 for line in (run / "shared.tsv").read_text().splitlines():
     mark, _at, host, running, resident, shared = line.split("\t")
     lines.append([mark, host, running, resident, shared])
-table("frames at each boundary", ["mark", "host", "running", "resident", "shared"], lines)
+table("pages at each boundary", ["mark", "host", "running", "resident", "shared"], lines)
 SUMMARY
 cat "$run_dir/summary.txt"
 

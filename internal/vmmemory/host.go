@@ -20,9 +20,9 @@ import (
 // Storage and mapping I/O never hold the host lock. Recency tracks faults and
 // read-ahead, not accesses through already present PTEs.
 type Host struct {
-	resources    *resource.Budget
-	frameLeases  []*resource.Lease
-	spillWritten []bool
+	resources      *resource.Budget
+	residentLeases []*resource.Lease
+	spillWritten   []bool
 	// spillSum is the checksum each written reservation's bytes must have when
 	// they come back. It is this process's own authority over a scratch file.
 	spillSum []uint32
@@ -34,7 +34,7 @@ type Host struct {
 	spill        platform.File
 	slots        *slots.Set
 	freeSpill    []int
-	clean        map[frame]*resident
+	clean        map[pageKey]*resident
 	cleanVersion uint64
 	// regions is every attached region, which is what the dirty budget's
 	// pressure is measured and acted on across: the budget is the host's, so
@@ -112,10 +112,10 @@ func New(ctx context.Context, resources *resource.Budget, cfg Config, arena Aren
 	if err := spill.Truncate(ctx, int64(cfg.DirtyPages)*int64(PageSize)); err != nil {
 		return nil, err
 	}
-	h := &Host{cfg: cfg, clock: platform.ClockOr(cfg.Clock), arena: arena, spill: spill, resources: resources, frameLeases: make([]*resource.Lease, cfg.ResidentPages), spillWritten: make([]bool, cfg.DirtyPages),
+	h := &Host{cfg: cfg, clock: platform.ClockOr(cfg.Clock), arena: arena, spill: spill, resources: resources, residentLeases: make([]*resource.Lease, cfg.ResidentPages), spillWritten: make([]bool, cfg.DirtyPages),
 		spillSum: make([]uint32, cfg.DirtyPages),
 		slots:    slots.New(cfg.ResidentPages),
-		clean:    make(map[frame]*resident), changed: make(chan struct{}),
+		clean:    make(map[pageKey]*resident), changed: make(chan struct{}),
 		regions: make(map[*Region]struct{}), highWater: highWater(cfg.DirtyPages),
 		io: make(chan struct{}, cfg.ConcurrentIO), writeback: make(chan struct{}, 1)}
 	for i := cfg.DirtyPages - 1; i >= 0; i-- {
@@ -124,7 +124,7 @@ func New(ctx context.Context, resources *resource.Budget, cfg Config, arena Aren
 	return h, nil
 }
 
-// Resources returns the same host-wide budget used for physical frames.
+// Resources returns the same host-wide budget used for resident pages.
 func (h *Host) Resources() *resource.Budget { return h.resources }
 
 // LogicalHeadroom is how many more logical pages this pager would still admit.
@@ -152,7 +152,7 @@ func (h *Host) Close(ctx context.Context) error {
 	}
 	h.signal()
 	var result error
-	for slot, lease := range h.frameLeases {
+	for slot, lease := range h.residentLeases {
 		if lease == nil {
 			continue
 		}
@@ -174,7 +174,7 @@ func (h *Host) Close(ctx context.Context) error {
 // wake after progress, rather than treating temporary lock contention as OOM.
 func (h *Host) signal() { close(h.changed); h.changed = make(chan struct{}) }
 
-// changes reports the signal the host's next progress closes: a frame taken or
+// changes reports the signal the host's next progress closes: a page taken or
 // released, a reservation moved, a mapping revoked. It is what waits for work
 // only some other transition can make possible.
 func (h *Host) changes() <-chan struct{} {
@@ -190,8 +190,8 @@ func (h *Host) unlock(pg *resident) {
 	h.mu.Unlock()
 }
 
-// unlockAll releases a batch of frames and wakes waiters once rather than once
-// per frame. A seal, a revoke and a plan each release many at a time, and a
+// unlockAll releases a batch of pages and wakes waiters once rather than once
+// per page. A seal, a revoke and a plan each release many at a time, and a
 // waiter rechecks everything the batch changed whichever wake reaches it.
 func (h *Host) unlockAll(pages []*resident) {
 	if len(pages) == 0 {
@@ -243,10 +243,10 @@ func (h *Host) beginCheckpointIO(ctx context.Context) (func(), error) {
 	}
 }
 
-// tryCurrent acquires the binding's frame without waiting for it. It reports
-// the locked frame, or nil with reclaiming set when something else holds it. A
-// seal is what uses it: it owns the region exclusively, so a reclaim is the only
-// thing that can hold one of its frames, and a reclaim ends with the page
+// tryCurrent acquires the binding's resident page without waiting for it. It
+// reports the locked page, or nil with reclaiming set when something else holds
+// it. A seal is what uses it: it owns the region exclusively, so a reclaim is the
+// only thing that can hold one of its pages, and a reclaim ends with the page
 // nonresident and its bytes in the page's own reservation.
 func (h *Host) tryCurrent(b *binding) (pg *resident, reclaiming bool) {
 	for {

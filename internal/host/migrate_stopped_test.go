@@ -17,7 +17,7 @@ var twoRegionVolumes = []volume.VolumeSpec{
 
 // TestAMigrationStoppedPartWayDiscardsTheVM. A migration gives each region's
 // volume up in turn, and a failure after the first has succeeded cannot put the
-// guest back: it is stopped, and the regions that went are serving frames for a
+// guest back: it is stopped, and the regions that went are serving pages for a
 // volume this host no longer owns. `vmmigrate` says so with ErrStopped. Running
 // the checkpoint loop over it again leaves a zombie — a stopped guest whose
 // interval tries to seal regions that no longer own what they map, whose VMM

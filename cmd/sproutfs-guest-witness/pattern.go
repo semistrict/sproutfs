@@ -8,7 +8,7 @@ import "encoding/binary"
 // anywhere — not in the guest, not on its disk, not in the control plane — so a
 // script that knows one VM's (seed, step) can demand every byte of its memory
 // and its disk after a fork, a migration, a stop, a start or a host loss, and a
-// guest that came back holding another instant's bytes is caught by arithmetic
+// guest that came back holding the bytes of another moment is caught by arithmetic
 // the guest had no part in.
 //
 // It is built out of one 64-bit avalanche and nothing else: no allocation, no

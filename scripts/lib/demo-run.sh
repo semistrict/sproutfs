@@ -118,7 +118,7 @@ await_other_host() {
 host_of() { ctl list | awk -v vm="$1" '$1 == vm && $2 != "-" { print $2 }'; }
 shared_of() { ctl hosts | awk -v host="$1" '$1 == host { print $6 }'; }
 # served_of is how many pages one host has handed to another out of its own
-# frames, which is what a fork placed on another host pulls: it is the page
+# pages, which is what a fork placed on another host pulls: it is the page
 # server's own counter, from the host's /status.
 served_of() { ctl hosts | awk -v host="$1" '$1 == host { print $7 }'; }
 # other_host is a ready host that is not the named one, which is where a
@@ -153,7 +153,7 @@ printf 'witness set in the guest shell\n'
 # --- 2. fork ----------------------------------------------------------------
 # A fork is a migration handoff from a parent that keeps running: the parent
 # pauses for its VMM state capture and the seal and publishes nothing. On its
-# own host the child shares the sealed frames through the pager; on another the
+# own host the child shares the sealed pages through the pager; on another the
 # child pulls the pages no checkpoint holds out of the parent's page server.
 step "fork $vm $forks times on its own host"
 parent_host=$(host_of "$vm")
@@ -164,7 +164,7 @@ printf '%s\n' "$table"
 children=$(printf '%s\n' "$table" | awk 'NR > 1 { print $1 }')
 count=$(wc -w <<< "$children")
 ((count == forks)) || fail "asked for $forks forks and got $count"
-# Every child of one request comes from one instant of the parent, so the pause
+# Every child of one request comes from one pause of the parent, so the pause
 # and the total are the fork's, not each child's.
 fork_pause=$(printf '%s\n' "$table" | awk 'NR == 2 { print $3 }')
 fork_total=$(printf '%s\n' "$table" | awk 'NR == 2 { print $5 }')
@@ -174,8 +174,8 @@ for child in $children; do
 done
 printf 'every fork answered on its own console\n'
 after=$(shared_of "$parent_host")
-printf 'shared frames on %s: %s before the forks, %s after\n' "$parent_host" "$before" "$after"
-((after > before)) || fail "forking shared no frames on $parent_host: $before then $after"
+printf 'shared pages on %s: %s before the forks, %s after\n' "$parent_host" "$before" "$after"
+((after > before)) || fail "forking shared no pages on $parent_host: $before then $after"
 
 for child in $children; do
     ctl delete "$child" > /dev/null
@@ -199,7 +199,7 @@ away_total=$(printf '%s\n' "$away_table" | awk 'NR == 2 { print $5 }')
 answered "$away_child" "echo AWAY'-'FORK'-'OK" 'AWAY-FORK-OK' ||
     fail "the fork $away_child on $away_host did not answer"
 served_after=$(served_of "$parent_host")
-printf 'pages %s served out of its own frames: %s before the fork, %s after\n' \
+printf 'pages %s served out of its own pages: %s before the fork, %s after\n' \
     "$parent_host" "$served_before" "$served_after"
 ((served_after > served_before)) ||
     fail "the cross-host fork pulled nothing from $parent_host: $served_before then $served_after"

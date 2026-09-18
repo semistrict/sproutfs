@@ -132,7 +132,7 @@ func TestForkPrintsEveryForksTimings(t *testing.T) {
 	if err := execute(t.Context(), client, invocation{Command: "fork", Target: "vm-1", Count: 2}, nil, &out, &out); err != nil {
 		t.Fatal(err)
 	}
-	// One instant of the parent starts both children, so both report the one
+	// One pause of the parent starts both children, so both report the one
 	// pause it cost.
 	want := "FORK  HOST             PAUSE  START  TOTAL\n" +
 		"vm-2  sproutfs-host-a  0.012  0.300  0.316\n" +
@@ -268,7 +268,7 @@ func TestConsoleForKeepsReadingAfterTheInputEnds(t *testing.T) {
 	}
 }
 
-func TestHostsPrintsTheSharedFrameCount(t *testing.T) {
+func TestHostsPrintsTheSharedPageCount(t *testing.T) {
 	client, _ := serve(t, func(*http.Request) (int, any) {
 		return http.StatusOK, []orch.Host{{Name: "sproutfs-host-a", Ready: true,
 			Running: []string{"vm-1", "vm-2"}, Serving: []string{},

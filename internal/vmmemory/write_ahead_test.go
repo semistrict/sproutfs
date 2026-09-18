@@ -48,9 +48,9 @@ func requireBytes(t *testing.T, r *vmmemory.Region, m *mapping, want []byte, pag
 	}
 }
 
-// A zero page owns no frame and has nothing to fence, so a store into it is one
-// mapping command that puts a fresh frame where the zeros were, whether a read
-// had zero-mapped it or it was never mapped at all. The fresh frame already
+// A zero page owns no memory and has nothing to fence, so a store into it is
+// one mapping command that puts a fresh page where the zeros were, whether a
+// read had zero-mapped it or it was never mapped at all. The fresh page already
 // reads as zeros, so no byte is copied into it and the volume is not read.
 func TestStoreIntoFreshZeroPageIsOneMappingCommand(t *testing.T) {
 	for _, zeroMapped := range []bool{false, true} {
@@ -87,7 +87,7 @@ func TestStoreIntoFreshZeroPageIsOneMappingCommand(t *testing.T) {
 					t.Fatalf("the store read the volume %d times for a hole", b.loads)
 				}
 				if faults, copies := after.Faults-before.Faults, after.CopyOnWrites-before.CopyOnWrites; faults != 1 || copies != 1 {
-					t.Fatalf("the store took %d faults and %d private frames, want 1 and 1", faults, copies)
+					t.Fatalf("the store took %d faults and %d private pages, want 1 and 1", faults, copies)
 				}
 				if after.WriteAheadPages != 0 || after.DirtyPages != 1 || !m.pages[3].writable {
 					t.Fatalf("write-ahead %d, dirty %d, writable %t; want 0, 1, true", after.WriteAheadPages, after.DirtyPages, m.pages[3].writable)
@@ -107,8 +107,8 @@ func TestStoreIntoFreshZeroPageIsOneMappingCommand(t *testing.T) {
 // While a store's mapping command is in flight, the page it stores into and
 // every page of its run are still zero-mapped: nothing was revoked, so the
 // guest reads zeros through them without faulting and without waiting for the
-// store. Its store lands on the new frame once the command completes.
-func TestZeroMappedPageStaysReadableWhileAStoreMapsItsFrame(t *testing.T) {
+// store. Its store lands on the new page once the command completes.
+func TestZeroMappedPageStaysReadableWhileAStoreMapsItsOwnCopy(t *testing.T) {
 	for _, ahead := range []int{1, 4} {
 		t.Run(fmt.Sprintf("writeAhead=%d", ahead), func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -207,7 +207,7 @@ func TestSequentialStoresIntoFreshMemoryTakeOneFaultPerRun(t *testing.T) {
 					t.Fatalf("the stores issued %d revokes, want none", m.revokes-revokes)
 				}
 				if copies := after.CopyOnWrites - before.CopyOnWrites; copies != runs || after.WriteAheadPages != pages-runs || after.DirtyPages != pages {
-					t.Fatalf("private frames %d, write-ahead %d, dirty %d; want %d, %d, %d",
+					t.Fatalf("private pages %d, write-ahead %d, dirty %d; want %d, %d, %d",
 						copies, after.WriteAheadPages, after.DirtyPages, runs, pages-runs, pages)
 				}
 				if b.loads != 0 {

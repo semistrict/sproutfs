@@ -7,7 +7,7 @@ import (
 	"github.com/semistrict/sproutfs/internal/jsonhttp"
 )
 
-// sealed is what a host answers a stop or a delete of a VM a fork instant still
+// sealed is what a host answers a stop or a delete of a VM a fork point still
 // holds: a conflict, with the reason in the body. It is the error the host
 // client hands back, status line and all.
 func sealed() error {
@@ -16,7 +16,7 @@ func sealed() error {
 }
 
 // TestAHostsRefusalIsReportedAsARefusalAndNotAsAFailure: a stop of a parent a
-// fork instant holds is refused by the host that runs it, and that host is the
+// fork point holds is refused by the host that runs it, and that host is the
 // only thing that knows why. The orchestrator is a client of it, so what it
 // relays has to be the host's own account: a conflict an operator can wait out
 // or release, rather than this process reporting an internal failure of its own
