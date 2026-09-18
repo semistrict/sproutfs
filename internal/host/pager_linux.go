@@ -78,6 +78,9 @@ func pagerConfig(config SupervisorConfig) vmmemory.Config {
 		ConcurrentIO:    concurrentIO(resident),
 		ReadAheadPages:  readAheadPages,
 		WriteAheadPages: writeAhead,
+		// The pager is what holds a guest back past the window, so it carries
+		// the same bound the host reports and schedules its retries by.
+		LossWindow: lossWindowOf(config.LossWindow),
 	}
 }
 

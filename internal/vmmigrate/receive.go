@@ -357,6 +357,15 @@ func attach(ctx context.Context, vm *volume.VM, handoff Handoff, dial Dialer, st
 			drop()
 			return nil, fmt.Errorf("%w: the started machine has no region %s", ErrInvalid, region.Name)
 		}
+		// The loss window came over with the pages. Dating them from the
+		// source's own measurement rather than from this arrival is what keeps a
+		// VM that is handed on inside one bound: a destination that started a
+		// fresh window would give every migration a whole window more of
+		// unpublished writes, and a VM migrated often enough would never reach
+		// one at all.
+		if mapped := regions[region.Name]; mapped != nil {
+			mapped.SetUnpublishedAge(region.UnpublishedAge)
+		}
 	}
 	streamCtx, cancel := context.WithCancelCause(context.WithoutCancel(ctx))
 	r := &Received{vm: vm, runtime: runtime, backings: backings, handoff: handoff,

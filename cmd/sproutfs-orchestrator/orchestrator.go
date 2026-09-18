@@ -545,6 +545,9 @@ func (o *orchestrator) VMs(ctx context.Context) ([]orch.VM, error) {
 			vm := orch.VM{ID: id, Host: h.report.Name, State: stateRunning}
 			if record, found := held[id]; found {
 				vm.Checkpoint, vm.Epoch, vm.Template = record.Checkpoint, record.Epoch, record.Template
+				// Only the host running a VM knows what it holds unpublished, so
+				// the window comes from that report and nowhere else.
+				vm.LossWindow, vm.Waiting = record.LossWindow, record.Waiting
 			}
 			running[id] = vm
 		}

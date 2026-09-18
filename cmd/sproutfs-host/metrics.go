@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	hostapi "github.com/semistrict/sproutfs/internal/api/host"
 )
@@ -25,6 +26,15 @@ func metrics(status hostapi.Status) string {
 		"VMs this host runs.", len(status.Running))
 	write("sproutfs_vms_serving", "gauge",
 		"VMs this host has handed over and still serves the pages of.", len(status.Serving))
+	// The widest window rather than one series per VM: what an operator alerts
+	// on is the worst exposure this host carries, and a gauge per VM would put
+	// the deployment's VM identities into the scraper's label space.
+	widest, waiting := lossWindow(status.VMs)
+	write("sproutfs_loss_window_seconds", "gauge",
+		"How long the worst-off VM this host runs has held a write no checkpoint covers, which is what losing this host would cost it in time.",
+		widest.Seconds())
+	write("sproutfs_vms_waiting", "gauge",
+		"VMs past their loss window, whose stores the pager is holding back until a checkpoint of them lands.", waiting)
 
 	write("sproutfs_pager_page_bytes", "gauge",
 		"The pager's page, which every page count here is in.", status.Pager.PageBytes)
@@ -82,4 +92,16 @@ func metrics(status hostapi.Status) string {
 	labelled("sproutfs_store_bytes_total", "Object bytes moved, which only get and put move.",
 		func(c hostapi.StoreCount) int64 { return c.Bytes })
 	return out.String()
+}
+
+// lossWindow reduces the per-VM report to the two numbers a scrape carries: the
+// widest window on this host, and how many VMs are past theirs.
+func lossWindow(vms []hostapi.VM) (widest time.Duration, waiting int) {
+	for _, vm := range vms {
+		widest = max(widest, vm.LossWindow)
+		if vm.Waiting {
+			waiting++
+		}
+	}
+	return widest, waiting
 }

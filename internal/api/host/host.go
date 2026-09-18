@@ -88,6 +88,12 @@ type HandoffRegion struct {
 	// was taken, so it is final, and the source's dirty budget bounds it, which
 	// is what makes it data the control plane can carry.
 	Unpublished []HandoffPageRun
+	// UnpublishedAge is how long the source had held the oldest of those pages
+	// when it gave the VM up, zero where it held none. The destination dates the
+	// pages it receives from it, so the VM's loss window carries across the
+	// handoff instead of restarting: a VM handed from host to host would
+	// otherwise never reach a bound at all.
+	UnpublishedAge time.Duration `json:",omitempty"`
 }
 
 // HandoffPageRun is a run of consecutive pages the source holds.
@@ -122,6 +128,14 @@ type VM struct {
 	Host string `json:"host"`
 	// DirtyBytes is an upper bound on what losing this host would cost this VM.
 	DirtyBytes uint64 `json:"dirty_bytes"`
+	// LossWindow is how long this VM has held a write no checkpoint covers,
+	// which is what losing this host would cost it in time rather than in
+	// bytes. It is zero for a VM holding nothing unpublished. Waiting reports
+	// that the window has been exceeded and the pager is admitting no further
+	// dirty page for this VM, so its guest is stopped at its next store until a
+	// checkpoint of it lands.
+	LossWindow time.Duration `json:"loss_window"`
+	Waiting    bool          `json:"waiting"`
 }
 
 // Pager is what the host's shared pager holds. SharedPages is the demo's

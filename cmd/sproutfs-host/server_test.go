@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/semistrict/sproutfs/internal/api/guest"
 	hostapi "github.com/semistrict/sproutfs/internal/api/host"
@@ -580,6 +581,32 @@ func TestMetricsExposeThePagerAndTheStore(t *testing.T) {
 		`sproutfs_store_calls_total{operation="put"} 12`,
 		`sproutfs_store_bytes_total{operation="put"} 4096`,
 		`sproutfs_store_failures_total{operation="get"} 0`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("the exposition has no %q in it:\n%s", want, body)
+		}
+	}
+}
+
+// What losing this host would cost its guests in time is a number an operator
+// has to be able to alert on: the widest loss window on the host, and how many
+// of its VMs are already past theirs and have their stores held back.
+func TestMetricsExposeTheLossWindow(t *testing.T) {
+	fake := &fakeHost{status: hostapi.Status{
+		Running: []string{"vm-1", "vm-2"},
+		VMs: []hostapi.VM{
+			{ID: "vm-1", LossWindow: 30 * time.Second},
+			{ID: "vm-2", LossWindow: 7 * time.Minute, Waiting: true},
+		},
+	}}
+	status, body := call(t, fake, http.MethodGet, "/metrics", "")
+	if status != http.StatusOK {
+		t.Fatalf("status %d: %s", status, body)
+	}
+	for _, want := range []string{
+		"# TYPE sproutfs_loss_window_seconds gauge",
+		"sproutfs_loss_window_seconds 420",
+		"sproutfs_vms_waiting 1",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("the exposition has no %q in it:\n%s", want, body)

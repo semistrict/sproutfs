@@ -7,6 +7,8 @@
 package orch
 
 import (
+	"time"
+
 	"github.com/semistrict/sproutfs/internal/api/host"
 	"github.com/semistrict/sproutfs/internal/jsonhttp"
 )
@@ -65,6 +67,13 @@ type VM struct {
 	State string `json:"state,omitempty"`
 	From  string `json:"from,omitempty"`
 	To    string `json:"to,omitempty"`
+	// LossWindow is how long the host running this VM has held a write no
+	// checkpoint of it covers, which is what losing that host would cost it in
+	// time. Waiting reports a VM past its host's window, whose stores the pager
+	// is holding back until a checkpoint of it lands. Both are zero for a VM no
+	// live host reports, which has nothing unpublished anywhere.
+	LossWindow time.Duration `json:"loss_window,omitempty"`
+	Waiting    bool          `json:"waiting,omitempty"`
 }
 
 // ExecRequest and ExecResult are the guest agent's own shapes, carried down to

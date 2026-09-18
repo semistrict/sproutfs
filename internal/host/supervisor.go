@@ -156,6 +156,13 @@ type SupervisorConfig struct {
 	// CheckpointInterval is how often every VM this host runs is checkpointed,
 	// which bounds what losing this host rewinds a guest by.
 	CheckpointInterval time.Duration
+	// LossWindow is how long a VM may hold a write no checkpoint covers before
+	// the pager stops admitting dirty pages for it, which bounds that rewind in
+	// time rather than only in bytes. Zero selects host.DefaultLossWindow and a
+	// negative value disables it. It reaches both the pager, which holds the
+	// guest back, and the host, which reports the window and hurries its retries
+	// while one is exceeded.
+	LossWindow time.Duration
 }
 
 // Template is one guest image a VM can be created from: the image on this

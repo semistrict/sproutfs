@@ -18,16 +18,21 @@ import (
 // its completion, so a VM whose checkpoint takes longer than the interval is
 // checkpointed back to back rather than piling captures up.
 //
-// A failure is logged and retried at the next interval. There is nothing else to
-// do with one: the guest is running, its writes are in this host's frames, and
-// the only cost of a checkpoint that did not land is that a host loss would
-// rewind the VM further. The exception is a handle a later writer has fenced:
-// the checkpoint is where a fenced host finds out, because a running VM writes
-// nothing else, and the loop closes the machine rather than leaving a guest
-// running whose writes can never be published.
+// A failure is logged and retried. Where the VM is still inside its loss window
+// that retry is the next interval, and there is nothing else to do with one: the
+// guest is running, its writes are in this host's frames, and the only cost of a
+// checkpoint that did not land is that a host loss would rewind the VM further.
+// Where the window is already exceeded the guest is paying that cost now — the
+// pager is holding its stores back until a checkpoint of it lands — so the next
+// attempt comes at an eighth of the interval, doubling to the interval, rather
+// than a whole interval later. The exception to both is a handle a later writer
+// has fenced: the checkpoint is where a fenced host finds out, because a running
+// VM writes nothing else, and the loop closes the machine rather than leaving a
+// guest running whose writes can never be published.
 func (h *Host) checkpointing(ctx context.Context, vmID string, entry *registration) {
+	failures := 0
 	for {
-		if !waitForCheckpoint(ctx, entry, h.clock, jittered(h.entropy, h.checkpointInterval)) {
+		if !waitForCheckpoint(ctx, entry, h.clock, h.nextAttempt(entry, failures)) {
 			return
 		}
 		vm := h.vm(vmID)
@@ -48,6 +53,7 @@ func (h *Host) checkpointing(ctx context.Context, vmID string, entry *registrati
 			if ctx.Err() != nil {
 				return
 			}
+			failures++
 			slog.ErrorContext(ctx, "host: the interval checkpoint failed", "vm", vmID, "error", err)
 			if errors.Is(err, volume.ErrNeedsRecovery) {
 				h.fenced(ctx, vmID, entry, err)
@@ -66,6 +72,7 @@ func (h *Host) checkpointing(ctx context.Context, vmID string, entry *registrati
 			if h.ctx.Err() != nil {
 				return
 			}
+			failures++
 			slog.ErrorContext(ctx, "host: publishing the interval checkpoint failed",
 				"vm", vmID, "checkpoint", checkpoint.Ref().String(), "error", err)
 			// A later writer holds the control record: nothing this handle
@@ -75,11 +82,25 @@ func (h *Host) checkpointing(ctx context.Context, vmID string, entry *registrati
 				h.fenced(ctx, vmID, entry, err)
 				return
 			}
+		} else {
+			failures = 0
 		}
 		if ctx.Err() != nil {
 			return
 		}
 	}
+}
+
+// nextAttempt is how long the loop waits for its next turn at one VM: the
+// jittered interval, or the backoff of a VM whose last attempt failed and whose
+// stores the loss window is already holding back. The window is read where the
+// wait is chosen, because that is where the choice matters — a VM that crossed
+// it while the last publication was in flight is one to come back to at once.
+func (h *Host) nextAttempt(entry *registration, failures int) time.Duration {
+	if failures == 0 || !h.overLossWindow(entry) {
+		return jittered(h.entropy, h.checkpointInterval)
+	}
+	return backoff(h.checkpointInterval, failures)
 }
 
 // waitForCheckpoint waits for this VM's next checkpoint and reports whether one

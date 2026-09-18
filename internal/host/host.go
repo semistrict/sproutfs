@@ -97,6 +97,20 @@ type Config struct {
 	// in lockstep. Zero selects DefaultCheckpointInterval; a negative value disables
 	// the loop, which is what a test that drives its own captures wants.
 	CheckpointInterval time.Duration
+	// LossWindow is how long a VM this host runs may hold a write no checkpoint
+	// covers. It is the interval's companion: the interval says how often a VM is
+	// made durable when everything works, and this says what happens when it does
+	// not — past the window the pager admits no further dirty page for that VM,
+	// so what a host loss can cost one guest spans at most this window plus one
+	// checkpoint attempt's pause. The host's own part of it is the loop: a
+	// publication that failed while the window is exceeded is retried at an eighth
+	// of the interval, doubling to the interval, rather than an interval later.
+	// Zero selects DefaultLossWindow; a negative value disables the bound, which
+	// is what a deployment that would rather lose writes than ever stall a guest
+	// asks for. The same value belongs in the pager's own Config: this host
+	// reports the window and hurries its retries, and the pager is what holds the
+	// guest back.
+	LossWindow time.Duration
 	// EpochInterval is how often this host re-reads the control record of every
 	// VM it holds, which is how it learns that a later writer has taken one
 	// over. The other place that is learned is a checkpoint, and not every VM
@@ -153,10 +167,14 @@ type Host struct {
 	holdTimeout        time.Duration
 	checkpointInterval time.Duration
 	epochInterval      time.Duration
-	machines           machines
-	closeOnce          sync.Once
-	done               chan struct{}
-	closeErr           error
+	// lossWindow is how old a VM's oldest unpublished write may get before this
+	// host reports its stores as waiting and stops spacing its retries out by
+	// the interval. Zero or less is the bound turned off.
+	lossWindow time.Duration
+	machines   machines
+	closeOnce  sync.Once
+	done       chan struct{}
+	closeErr   error
 }
 
 // cleanupTimeout bounds the control-plane writes a failed operation makes on its
@@ -199,6 +217,13 @@ const DefaultCacheBytes = int64(1) << 30
 // guest time, which the requirements accept in exchange for never blocking a
 // guest write on the object store.
 const DefaultCheckpointInterval = 60 * time.Second
+
+// DefaultLossWindow is how long a host with no window configured lets a VM hold
+// a write no checkpoint covers. It is five checkpoint intervals: long enough
+// that a deployment whose store is merely slow never notices it, short enough
+// that a guest is stopped from building for minutes on writes a host loss would
+// take with it.
+const DefaultLossWindow = 5 * time.Minute
 
 // DefaultEpochInterval is how often a host with no interval configured re-reads
 // the control record of every VM it holds. It bounds how long a host that has
@@ -282,6 +307,7 @@ func StartHost(ctx context.Context, config Config) (*Host, error) {
 	if epochs == 0 {
 		epochs = DefaultEpochInterval
 	}
+	window := lossWindowOf(config.LossWindow)
 	var err error
 	hostCtx, cancel := context.WithCancelCause(ctx)
 	h := &Host{resources: config.Resources, ctx: hostCtx, cancel: cancel, network: config.Network,
@@ -289,7 +315,8 @@ func StartHost(ctx context.Context, config Config) (*Host, error) {
 		holdTimeout: config.Migration.HoldTimeout,
 		clock:       platform.ClockOr(config.Clock), entropy: platform.EntropyOr(config.Entropy),
 		cacheBytes: config.CacheBytes, checkpointInterval: interval, epochInterval: epochs,
-		done: make(chan struct{}),
+		lossWindow: window,
+		done:       make(chan struct{}),
 		machines: machines{running: make(map[string]*registration), migrated: make(map[string]*migratedHold),
 			forked: make(map[string]*forkHold), fenced: make(map[string]bool)}}
 	started := false
@@ -350,7 +377,8 @@ func StartHost(ctx context.Context, config Config) (*Host, error) {
 	if h.pager != nil {
 		// The pager can neither checkpoint a VM nor stop one; this host is what
 		// it asks to do either when its dirty budget fills.
-		h.pager.SetPressure(vmmemory.Pressure{Checkpoint: h.checkpointNow, Stop: h.stopStalled})
+		h.pager.SetPressure(vmmemory.Pressure{Checkpoint: h.checkpointNow, Stop: h.stopStalled,
+			Oldest: h.oldestUnpublished})
 	}
 	started = true
 	go func() {
