@@ -22,7 +22,7 @@ const phase = computed(() => {
   if (step.value === 3) return 'seal: the dirty pages are write-protected where they are — nothing is copied'
   if (step.value === 4) return 'resume: the guest runs again; its store into a sealed page copies that one page'
   if (step.value === 5) return 'the sealed pages stream out as parts, behind the running guest'
-  if (step.value === 6) return 'the index object is written with a create-if-absent PUT: the commit'
+  if (step.value === 6) return 'the index object is written last: the checkpoint is published, complete and readable by anyone'
   return 'the control record selects the checkpoint: the VM survives losing this host'
 })
 const paused = computed(() => step.value >= 1 && step.value < 4)

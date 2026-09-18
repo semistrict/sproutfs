@@ -11,7 +11,7 @@ const step = useStep()
 const caption = computed(() => [
   'a checkpoint is its data — the pages and the VMM state, in as many parts as they fill — and one index object, written last. A VM has one record outside that namespace.',
   'a part is a run of members — the VMM state, then pages; later, pages compaction moves out of dying checkpoints — filled to 64 MiB, closed by a table (≤ 256 KiB) and a 32-byte trailer that names it. One suffix range GET reads the table.',
-  'the index object is what makes the parts a checkpoint: the page-table segments this checkpoint changed, and last the root. It is written after every part, with a create-if-absent PUT — that is the commit — and one GET of it yields the root.',
+  'the index object is what makes the parts a checkpoint: the page-table segments this checkpoint changed, and last the root. It is written after every part; once it exists the checkpoint is published, and one GET of it yields the root.',
   'the control record is the only mutable object: writer epoch and nonce, the selected sequence, and the pinned sequences. Every change is a conditional write from the epoch holder.',
 ][step.value])
 </script>

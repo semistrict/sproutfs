@@ -314,8 +314,8 @@ The root also carries **per-segment, per-checkpoint byte sums**: how many live b
 <v-clicks>
 
 1. **Parts** upload as they fill, 64 MiB each, behind the guest. A part that never completes is garbage under a key nothing names.
-2. **The index object** is written last, with a **create-if-absent PUT**. That is the commit: the object either exists whole or not at all.
-3. **The control record** selects the sequence with a conditional write from the writer's own epoch.
+2. **The index object** is written last, with a create-if-absent PUT. The checkpoint is now *published*: complete and readable by anyone. Nobody else can be writing that key — the sequence is epoch-major and one writer holds the epoch — so the precondition costs nothing and only makes the object immutable.
+3. **The control record** selects the sequence with a conditional write from the writer's own epoch. This is the one contended step, and the one where a fenced writer is refused: the checkpoint is now the VM's state.
 4. **Retire the seal**: the sealed pages become clean under the new lineage. First thing after the selection, last thing under the publication lock.
 5. **Reclaim**: delete the checkpoints the old root named that the new one does not, less every pin. Whole checkpoints, index object first.
 
