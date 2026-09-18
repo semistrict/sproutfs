@@ -13,13 +13,13 @@ import { useStep } from './Steps'
 // 7 destination's next checkpoint publishes them under (8,1)
 const step = useStep()
 const caption = computed(() => [
-  'the source runs the guest at selected checkpoint (7,2). Pages 1 and 3 were written since: they exist only in the source\'s frames.',
+  'the source runs the guest at selected checkpoint (7,2). Pages 1 and 3 were written since: they exist only in the source\'s memory.',
   'stop: the interval checkpoint loop is quiesced first, then the vCPUs pause and the VMM state is captured. Nothing is sealed and nothing is uploaded — that is the whole pause.',
-  'hand off: every region gives its volume up but keeps its frames, and reports which pages no checkpoint has — the guest is stopped, so the set is final. The handoff is plain data.',
+  'hand off: every region gives its volume up but keeps its pages, and reports which pages no checkpoint has — the guest is stopped, so the set is final. The handoff is plain data.',
   'the destination opens the VM: reads the record, advances the epoch (the source is fenced for good), reads the root of (7,2). Two objects, no page. A record selecting any other sequence is refused as stale.',
   'resume: the guest runs on the destination. Each fault asks the source\'s page server first, over plain TCP; a page the checkpoint holds comes from the destination\'s own volume.',
   'a background stream fetches the unpublished pages first, to completion, then the rest of the resident set as an optimization. A page only the source holds is asked for until it arrives.',
-  'once every unpublished page is here the source is released: it frees its frames and may exit. Up to now it could not, because those pages had one copy.',
+  'once every unpublished page is here the source is released: it frees its pages and may exit. Up to now it could not, because those pages had one copy.',
   'the destination\'s next interval checkpoint publishes them under (8,1). The migration itself uploaded nothing.',
 ][step.value])
 </script>
@@ -33,13 +33,13 @@ const caption = computed(() => [
       <rect x="40" y="65" width="340" height="60" rx="8" class="vm" :class="{ stopped: step >= 1 }" />
       <text x="210" y="90" class="label">guest</text>
       <text x="210" y="112" class="small">{{ step === 0 ? 'running' : step < 3 ? 'stopped; VMM state captured' : step < 6 ? 'gone: fenced by epoch 8' : 'released' }}</text>
-      <text x="40" y="160" class="tiny left">frames</text>
+      <text x="40" y="160" class="tiny left">pages</text>
       <g v-for="p in 4" :key="'s' + p">
         <rect :x="40 + (p - 1) * 50" y="170" width="42" height="42" rx="5" class="page"
           :class="{ unpub: (p === 1 || p === 3) && step < 6, held: step >= 2 && step < 6 && (p === 1 || p === 3), freed: step >= 6 }" />
         <text :x="61 + (p - 1) * 50" y="196" class="tiny">{{ p }}</text>
       </g>
-      <text x="40" y="240" class="tiny left">{{ step >= 6 ? 'frames freed' : 'pages 1, 3: no checkpoint has them' }}</text>
+      <text x="40" y="240" class="tiny left">{{ step >= 6 ? 'pages freed' : 'pages 1, 3: no checkpoint has them' }}</text>
       <g :class="{ hidden: step < 2 || step >= 6 }" class="fade">
         <rect x="40" y="255" width="340" height="40" rx="6" class="srv" />
         <text x="210" y="280" class="small">page server: serves 1, 3 and the rest</text>
@@ -62,7 +62,7 @@ const caption = computed(() => [
         <rect x="520" y="65" width="340" height="60" rx="8" class="vm dst" :class="{ running: step >= 4 }" />
         <text x="690" y="90" class="label">guest</text>
         <text x="690" y="112" class="small">{{ step === 3 ? 'restored from the captured state; not yet running' : 'running' }}</text>
-        <text x="520" y="160" class="tiny left">frames</text>
+        <text x="520" y="160" class="tiny left">pages</text>
         <g v-for="p in 4" :key="'d' + p">
           <rect :x="520 + (p - 1) * 50" y="170" width="42" height="42" rx="5" class="page"
             :class="{

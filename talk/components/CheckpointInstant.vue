@@ -44,7 +44,7 @@ const paused = computed(() => step.value >= 1 && step.value < 4)
       </g>
 
       <!-- pager frames -->
-      <text x="40" y="135" class="small left">resident frames in the pager (2 MiB each)</text>
+      <text x="40" y="135" class="small left">resident pages in the pager (2 MiB each)</text>
       <g v-for="p in pages" :key="p">
         <rect :x="40 + p * 56" y="150" width="48" height="48" rx="6" class="page"
           :class="{

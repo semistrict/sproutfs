@@ -96,9 +96,9 @@ Which means three things have to be true at once:
 
 **Page.** 2 MiB of a volume. The unit of everything: what is stored, what faults in, what is owned.
 
-**Frame.** The physical 2 MiB of host memory a page sits in while it is *resident*. A page dirtied by the guest is in a frame; a page nothing touched may be in none.
+**Resident.** A page whose bytes are in host memory right now. A page the guest dirtied is resident; a page nothing touched may not be, and comes in on a fault.
 
-**Pager.** The one service per host that owns every frame, resolves the VMM's page faults, and is what a guest's memory is mapped through.
+**Pager.** The one service per host that owns every resident page, resolves the VMM's page faults, and is what a guest's memory is mapped through.
 
 </div>
 <div>
@@ -160,7 +160,7 @@ class: text-sm
 
 **Lineage identity.** Every page a checkpoint publishes gets the name `(checkpoint, volume, page)`. It never changes — not even when the bytes are later moved into another checkpoint's objects. A fork's checkpoints name its parent's checkpoints, so the fork copies nothing.
 
-**Resident.** A page whose bytes are in a frame on this host. The pager keeps a bounded number of frames.
+**Resident copy.** One resident page may be the same 2 MiB of host memory for several VMs: a parent's page 3 and its children's page 3, until one of them writes it. The pager keeps a bounded number of resident copies.
 
 </div>
 </div>
@@ -173,40 +173,45 @@ docs/context.md is the vocabulary; every doc uses one word for each thing.
 
 # The loss model
 
-<div class="grid grid-cols-2 gap-8">
-<div>
+<div class="text-lg mt-2">
 
-A guest store lands in a **resident frame**. It contacts nothing. It cannot fail for a network or storage reason.
-
-It is not durable.
-
-What makes it durable is the **next checkpoint**: the dirty pages upload in **parts** — the checkpoint's data objects — then its **index object** is written, whose last piece is the **root**: the checkpoint's map of where every page of every volume is. A conditional write then selects the checkpoint in the control record.
-
-Losing the host before that loses every write since the last selected checkpoint.
+A guest store lands in a **resident page**. It contacts nothing, so it cannot fail for a network or storage reason.
 
 </div>
-<div>
 
 <v-click>
 
-**Why accept it?** A guest write must never wait on object-store latency. The alternative — a write-ahead log per VM — puts a network round trip on the fault path of every first store.
+<div class="text-lg mt-6">
+
+It is **not durable**. The next checkpoint makes it so: the dirty pages upload in **parts** (the data objects), then the **index object** (whose last piece is the **root**, the map of every page), then a conditional write selects the checkpoint in the control record.
+
+</div>
 
 </v-click>
 
 <v-click>
 
-**How much?** The interval is 60 s by default, jittered by an eighth so VMs do not checkpoint in lockstep, measured from the end of the last upload. It is a target, not a bound: a failed upload is retried at the next interval, and a parent held sealed by a fork is skipped until the hold ends. What is bounded is bytes — the pager's dirty budget forces a checkpoint out of turn, and stops the VM if none can be taken. The host reports each VM's dirty bytes: what it would lose right now.
+<div class="text-lg mt-6">
+
+Losing the host before that loses every write since the last selected checkpoint. That is the design: **a guest write never waits on the object store.**
+
+</div>
 
 </v-click>
 
-<v-click>
+---
 
-**What a flush means.** Nothing. `virtio-pmem` flush completes in the device; the host is not asked. Only a checkpoint is a durability acknowledgement.
+# How much can be lost
 
-</v-click>
+<v-clicks>
 
-</div>
-</div>
+- **The interval.** Every VM is checkpointed every 60 s, jittered by an eighth so VMs do not checkpoint in lockstep, the next wait measured from the end of the last upload.
+- **The interval is a target.** A failed upload is retried; a parent held sealed by a fork is skipped until the hold ends.
+- **The loss window.** Once a VM has held an unpublished write for longer than the window — five minutes by default, zero to disable — its stores wait until a checkpoint lands, and the checkpoint is asked for out of turn.
+- **Bytes are bounded too.** The pager's dirty budget forces a checkpoint before it fills, and stops the VM if none can be taken.
+- **A flush means nothing.** `virtio-pmem` flush completes in the device; only a checkpoint is a durability acknowledgement.
+
+</v-clicks>
 
 ---
 clicks: 7
@@ -225,9 +230,9 @@ clicks: 7
 
 The pause is three things: stop the vCPUs, save the VMM state, **write-protect** every dirty page of every **region** — one volume as mapped into one VMM process — in place.
 
-No byte moves. The frames become the checkpoint's while the guest keeps running on them.
+No byte moves. The pages become the checkpoint's while the guest keeps running on them.
 
-A store into a sealed page copies **that one page** into a private 2 MiB frame, which counts against the pager's **dirty budget**: the bound on how much unpublished state a host holds. The checkpoint goes on reading the sealed original.
+A store into a sealed page copies **that one page** into a private 2 MiB copy, which counts against the pager's **dirty budget**: the bound on how much unpublished state a host holds. The checkpoint goes on reading the sealed original.
 
 </div>
 <div>
@@ -345,7 +350,7 @@ sequence = (epoch << 32) | counter          counter starts at 1 per epoch
 - Every sequence a writer allocates is above everything an earlier epoch could allocate.
 - A fenced writer still uploading cannot collide: every checkpoint object is create-if-absent under a key its successor never uses.
 - The first epoch is **drawn at random** in `[1, 2³¹)`. Two VMs created under one identity — which the orchestrator never does but nothing can enforce — allocate different sequences, different lineage identities, different keys.
-- A fenced host finds out at its next publication, or sooner: `VM.Confirm` re-reads the record on a timer, and a migration or a fork confirms before it pauses — the frames it hands another host are the one thing the store cannot refuse afterwards.
+- A fenced host finds out at its next publication, or sooner: `VM.Confirm` re-reads the record on a timer, and a migration or a fork confirms before it pauses — the pages it hands another host are the one thing the store cannot refuse afterwards.
 
 </v-clicks>
 
@@ -437,10 +442,10 @@ clicks: 3
 
 <v-clicks>
 
-- **Population before vCPUs run.** A restored or forked machine maps every page whose identity is already resident in the pager, without a load. A fork's eager population maps the parent's resident set.
+- **Population before vCPUs run.** A restored or forked machine maps every page whose name is already resident in the pager, without a load. A fork maps its parent's whole resident set before its vCPUs run.
 - **Sharing costs a map lookup.** The pager's sharing index is keyed by `(checkpoint, volume, page)`, which the volume already knows for every page it serves.
-- **Sealed frames get a name.** A **fork point** — the pause a fork is taken at, which seals the parent's dirty pages exactly as a checkpoint's pause does — names the frames it sealed under a reference that publishes nothing; every child of that fork point maps them. The name lasts exactly as long as the seal.
-- **Sparse zeroes cost nothing.** A page no checkpoint holds maps the shared zero page. The first store replaces the whole 2 MiB range with a private frame.
+- **Sealed pages get a name.** A **fork point** — the pause a fork is taken at, which seals the parent's dirty pages exactly as a checkpoint's pause does — names the pages it sealed under a reference that publishes nothing; every child of that fork point maps them. The name lasts exactly as long as the seal.
+- **Sparse zeroes cost nothing.** A page no checkpoint holds maps the shared zero page. The first store replaces the whole 2 MiB range with a private copy.
 - **A one-byte store costs a page.** 2 MiB copied, 2 MiB charged, 2 MiB published. This is the trade the workload measurement examines.
 
 </v-clicks>
@@ -477,13 +482,13 @@ clicks: 4
 
 <v-click>
 
-**Templates are forks too.** A guest image is imported once per deployment into `template-<sha256 of the image>`; a create is a fork of that template. Every VM of one image shares its frames by lineage.
+**Templates are forks too.** A guest image is imported once per deployment into `template-<sha256 of the image>`; a create is a fork of that template. Every VM of one image shares its resident pages by name.
 
 </v-click>
 
 <v-click>
 
-**Holds.** The parent's frames stay sealed while any child holds the fork point. A hold ends when the child publishes or pulls its pages, when the orchestrator gives the handoff up, or at the host's deadline of four checkpoint intervals.
+**Holds.** The parent's pages stay sealed while any child holds the fork point. A hold ends when the child publishes or pulls its pages, when the orchestrator gives the handoff up, or at the host's deadline of four checkpoint intervals.
 
 </v-click>
 
@@ -531,7 +536,7 @@ Handoff {
 <v-clicks>
 
 - A migration hands off a VM the source **released**. A fork hands off a child from a parent that **keeps running**. Same data, one receive path on the destination.
-- The destination refuses a record selecting any other sequence with `ErrStale`: a migration publishes nothing, so that record was openable by anyone in between, and streaming frames over another writer's open would make one VM's memory out of two writers' pages with no error anywhere.
+- The destination refuses a record selecting any other sequence with `ErrStale`: a migration publishes nothing, so that record was openable by anyone in between, and streaming pages over another writer's open would make one VM's memory out of two writers' pages with no error anywhere.
 - Local child or remote child changes only how the unpublished pages arrive: through the shared pager, or pulled over TCP.
 
 </v-clicks>
@@ -603,7 +608,7 @@ Kubernetes: hosts are a Deployment with maxSurge 0 / maxUnavailable 1, a 2 MiB H
 
 A fork of Firecracker, branch `sproutfs`, Apache-2.0:
 
-- guest memory is a mapping the Rust library controls: missing-fault and write-protect traps over userfaultfd, 2 MiB frames, a control protocol (version 6) between the VMM and the pager
+- guest memory is a mapping the Rust library controls: missing-fault and write-protect traps over userfaultfd, 2 MiB pages, a control protocol (version 6) between the VMM and the pager
 - checkpoint = snapshot + resume; the pause is the VMM's own
 - the vsock transport is reset only on restore — a snapshot leaves a guest's connections alone (found on GCE: every checkpoint was killing every command in the guest)
 - a `handoff` flag drops connections when the guest leaves the host
@@ -776,7 +781,7 @@ layout: section
 
 - **The collector.** Pins are permanent and the store grows without bound until one exists. Deferred by decision; the first thing the README says.
 - **A migration whose source is unreachable but still listed waits for it.** The orchestrator ends a migration on evidence, never on a timeout, and for a pod it cannot reach it has none beyond the Kubernetes API's own.
-- **A drain tries its receive once.** A destination briefly unreachable costs the guest its writes since its last checkpoint; the source keeps the frames until its deadline, and nothing asks again.
+- **A drain tries its receive once.** A destination briefly unreachable costs the guest its writes since its last checkpoint; the source keeps the pages until its deadline, and nothing asks again.
 - **A child forked onto its parent's own host holds the fork point invisibly** to the orchestrator's survey; only the host's own deadline ends a hold whose child never publishes.
 - **Recovery after a real host loss is proven in simulation and over fakes,** not yet on a cluster: the one soak's kill landed on a host running nothing. A seed whose kill lands on a loaded host is the next run to take.
 

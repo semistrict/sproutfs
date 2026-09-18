@@ -12,8 +12,8 @@ const step = useStep()
 const caption = computed(() => [
   'the parent runs on host 1. Its last published checkpoint is (7,2); four pages are dirty since.',
   'the fork point: pause, save VMM state, seal the dirty pages, resume — the same pause as a checkpoint\'s, but nothing is uploaded. The parent\'s record pins (7,2), once and for good.',
-  'two children on the parent\'s host: each gets a record selecting a root over (7,2), and maps the sealed frames through the shared pager. A fan-out costs one pause, whatever its size.',
-  'a child on another host pulls those frames out of the parent\'s page server, exactly as a migration destination does; its own volume answers everything a checkpoint holds.',
+  'two children on the parent\'s host: each gets a record selecting a root over (7,2), and maps the sealed pages through the shared pager. A fan-out costs one pause, whatever its size.',
+  'a child on another host pulls those pages out of the parent\'s page server, exactly as a migration destination does; its own volume answers everything a checkpoint holds.',
   'each child publishes its root once it holds every inherited page — that is what makes it a VM any host can open. The seal ends when the last hold retires, or at the host\'s deadline of four checkpoint intervals.',
 ][step.value])
 </script>
@@ -32,7 +32,7 @@ const caption = computed(() => [
       <text x="140" y="140" class="small">{{ step >= 1 ? 'running; dirty pages sealed' : 'running; 4 dirty pages' }}</text>
 
       <!-- sealed frames in pager -->
-      <text x="40" y="200" class="tiny left">pager frames (shared)</text>
+      <text x="40" y="200" class="tiny left">resident pages (shared)</text>
       <g v-for="p in 4" :key="p">
         <rect :x="40 + (p - 1) * 50" y="210" width="42" height="42" rx="5" class="page" :class="{ sealed: step >= 1 && step < 4, clean: step >= 4 }" />
         <text v-if="step >= 1 && step < 4" :x="61 + (p - 1) * 50" y="205" class="lock">🔒</text>
@@ -49,7 +49,7 @@ const caption = computed(() => [
         <text x="430" y="197" class="small">record → root over (7,2){{ step >= 4 ? ' · root published' : '' }}</text>
         <path d="M 250 232 C 290 232, 290 100, 315 100" class="map" />
         <path d="M 250 232 C 290 232, 290 180, 315 180" class="map" />
-        <text x="290" y="262" class="tiny">maps the sealed frames</text>
+        <text x="290" y="262" class="tiny">maps the sealed pages</text>
       </g>
 
       <!-- host 2 -->
@@ -59,7 +59,7 @@ const caption = computed(() => [
         <rect x="620" y="70" width="240" height="60" rx="8" class="vm child" />
         <text x="740" y="95" class="label">child c</text>
         <text x="740" y="117" class="small">record → root over (7,2){{ step >= 4 ? ' · root published' : '' }}</text>
-        <text x="740" y="200" class="tiny">pager pulls sealed frames</text>
+        <text x="740" y="200" class="tiny">pager pulls sealed pages</text>
         <path d="M 560 232 H 640 L 640 140" class="map remote" marker-end="url(#fo)" />
         <text x="740" y="220" class="tiny">from host 1's page server</text>
         <text x="740" y="250" class="tiny">everything else: its own volume</text>
