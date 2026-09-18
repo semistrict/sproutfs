@@ -33,24 +33,55 @@ layout: section
 
 ---
 
-# A VM's memory is the expensive part of it
+# The problem
 
-<v-clicks>
+<div class="text-lg">
 
-- A sandbox that boots is slow. A sandbox that **restores** is fast — until you have to copy its memory to the host it restores on.
-- A fleet of similar sandboxes — one per agent, one per test shard, one per pull request — is the same gigabytes of RAM and disk **written again and again**.
-- Moving a running VM to drain a host means **copying its memory while it changes**, and a pre-copy that never converges.
-- Every snapshot format that stores memory as a file makes *sharing* a deduplication problem, and dedup by content is a hash table you have to keep somewhere.
+You have a fleet of hosts and an object store. You want to run **many VMs that are mostly the same**: every one started from one image, many of them forked from a running parent at some instant, any of them able to move to another host — and all of them durable somewhere other than the host they run on.
 
-</v-clicks>
+</div>
 
 <v-click>
 
-<div class="mt-8 p-4 border border-gray-600 rounded text-lg">
-Sproutfs treats a VM's memory and disks as the <b>same kind of thing</b> — a byte-addressed image with one writer — and never copies what a VM inherited.
+<div class="mt-6 text-lg">
+
+What a VM has of its own is its **differences**. Everything else it **inherited**: from the image, from the parent it was forked from, from its own past checkpoints.
+
 </div>
 
 </v-click>
+
+<v-click>
+
+<div class="mt-6 text-lg">
+
+Today every one of those operations is a **copy of the whole VM**: a snapshot writes all of its memory out and a restore reads it all back; a live migration streams memory while it changes; a fork is a snapshot and a restore. The cost is the VM's **size**, and almost all of what is copied is inherited bytes that nobody wrote.
+
+</div>
+
+</v-click>
+
+---
+
+# The requirement
+
+<div class="text-xl mt-6 p-5 border border-yellow-600 rounded">
+A checkpoint, a fork or a move of a VM must cost what that VM <b>changed</b> — never what it inherited, and never its size.
+</div>
+
+<v-clicks>
+
+<div class="mt-8 text-lg">
+
+Which means three things have to be true at once:
+
+- inherited data is **shared, not copied**: in the object store, in host memory, and on the way between hosts;
+- making a VM durable **pauses it for an instant**, not for the length of an upload;
+- a VM's durable state is somewhere every host can reach, so a host can be **lost or drained** without losing more than a bounded window of writes.
+
+</div>
+
+</v-clicks>
 
 ---
 
