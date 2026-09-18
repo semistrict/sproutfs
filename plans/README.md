@@ -10,6 +10,10 @@ across all of them is collected in [open-work.md](../docs/open-work.md).
   disables) has its stores wait in the pager until a checkpoint lands, and the
   checkpoint is asked for out of turn and retried promptly. The age travels with
   a handoff. **In progress.**
+- [2026-09-18 four words](words-2026-09-18.md) — *frame* (of memory) is
+  *resident page* or *private page*; *instant* is *pause* or *fork point*; *two
+  planes* is said plainly; the second decision is stated rather than contrasted
+  with content addressing. **Planned**, after the loss window merges.
 - [2026-09-14 repository layout](layout-2026-09-14.md) — nothing in the module is
   a library, so every package but `cmd` moves under `internal/`, the large
   packages gain nested `internal` bodies, `image` becomes `checkpoint`, and
