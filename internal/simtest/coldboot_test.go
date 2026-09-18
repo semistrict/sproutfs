@@ -22,12 +22,9 @@ func coldTopology() simtest.Topology {
 func coldWorld(t *testing.T, runtime *sim.Runtime, prefix string) *simtest.World {
 	t.Helper()
 	topology := coldTopology()
-	world, err := simtest.Start(sim.WithRuntime(t.Context(), runtime), simtest.Config{
+	world := simtest.MustStart(t, sim.WithRuntime(t.Context(), runtime), simtest.Config{
 		Runtime: runtime, Topology: topology, Knobs: campaignKnobs(t, runtime, topology),
 		Prefix: newPrefix(t, prefix), Log: t.Logf})
-	if err != nil {
-		t.Fatal(err)
-	}
 	return world
 }
 

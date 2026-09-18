@@ -50,11 +50,8 @@ func TestAFanOutWhoseReceiveFailsPartWayLeavesTheParentDurable(t *testing.T) {
 			t.Fatal(err)
 		}
 		ctx := sim.WithRuntime(t.Context(), runtime)
-		world, err := simtest.Start(ctx, simtest.Config{Runtime: runtime, Topology: topology,
+		world := simtest.MustStart(t, ctx, simtest.Config{Runtime: runtime, Topology: topology,
 			Knobs: k, Prefix: prefix, Log: t.Logf})
-		if err != nil {
-			t.Fatal(err)
-		}
 		choose := func(int) int { return 0 }
 		// A checkpoint to inherit, and then stores that live only in the
 		// parent's frames: those are exactly the pages the instant holds and

@@ -60,11 +60,8 @@ func TestAHostKilledMidImportImportsItAgainWhenItComesBack(t *testing.T) {
 		ctx := sim.WithRuntime(t.Context(), runtime)
 		prefix := newPrefix(t, "template-by-digest/")
 		topology := simtest.Topology{Hosts: []string{"host-0"}}
-		world, err := simtest.Start(ctx, simtest.Config{Runtime: runtime, Topology: topology,
+		world := simtest.MustStart(t, ctx, simtest.Config{Runtime: runtime, Topology: topology,
 			Knobs: campaignKnobs(t, runtime, topology), Prefix: prefix, Log: t.Logf})
-		if err != nil {
-			t.Fatal(err)
-		}
 
 		// The first image is imported whole.
 		alpine, err := world.Host(0).TemplateOf(ctx, templateImport("alpine", 0xa5))

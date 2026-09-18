@@ -50,11 +50,8 @@ func TestASourcePartitionedWhileTheStoreIsAwayAndASecondHostTakesOver(t *testing
 			t.Fatal(err)
 		}
 		ctx := sim.WithRuntime(t.Context(), runtime)
-		world, err := simtest.Start(ctx, simtest.Config{Runtime: runtime, Topology: topology,
+		world := simtest.MustStart(t, ctx, simtest.Config{Runtime: runtime, Topology: topology,
 			Knobs: k, Prefix: prefix, Log: t.Logf})
-		if err != nil {
-			t.Fatal(err)
-		}
 		choose := func(int) int { return 0 }
 		// The guest writes and publishes, so there is a checkpoint to come back
 		// to, and then writes again, so what it holds past that checkpoint is

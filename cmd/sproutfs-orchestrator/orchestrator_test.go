@@ -1005,6 +1005,44 @@ func TestDrainReportsMakeTheHandoverVisibleWhileItHappens(t *testing.T) {
 	}
 }
 
+// TestADrainReportDoesNotResurrectAVMWhoseReceiveFailed: a drain's handover is
+// the orchestrator's own migration, and when the destination could not take
+// the VM in, the source has already stopped the guest and given its volumes up.
+// The orchestrator recorded that as it happened. The host's report that the
+// drain could not hand the VM over comes after, and a report that overwrote the
+// row with "running" would describe a guest that is stopped and offer nothing
+// that recovers it.
+func TestADrainReportDoesNotResurrectAVMWhoseReceiveFailed(t *testing.T) {
+	d := newDeployment(t, map[string][]string{"host-0": {"vm-a"}, "host-1": {}})
+	d.hosts["host-1"].refusesEveryReceive = true
+	started := orch.DrainReport{Host: "host-0", VM: "vm-a", Phase: orch.DrainStarted}
+	if err := d.orchestrator.Drained(t.Context(), started); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.orchestrator.Migrate(t.Context(), "vm-a", "host-1"); err == nil {
+		t.Fatal("the migration to a destination that refuses every receive succeeded")
+	}
+	row, _, err := d.orchestrator.table.VM(t.Context(), "vm-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.State != stateStopped {
+		t.Fatalf("row %+v after the receive failed, want vm-a stopped", row)
+	}
+	failed := orch.DrainReport{Host: "host-0", VM: "vm-a", Phase: orch.DrainFinished,
+		Error: "receiving vm-a on host-1: the destination could not start it"}
+	if err := d.orchestrator.Drained(t.Context(), failed); err != nil {
+		t.Fatal(err)
+	}
+	row, _, err = d.orchestrator.table.VM(t.Context(), "vm-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.State != stateStopped {
+		t.Fatalf("row %+v after the drain reported its failure, want vm-a still stopped", row)
+	}
+}
+
 // TestDrainReportRefusesAPhaseItDoesNotKnow.
 func TestDrainReportRefusesAPhaseItDoesNotKnow(t *testing.T) {
 	d := newDeployment(t, map[string][]string{"host-0": {"vm-a"}})

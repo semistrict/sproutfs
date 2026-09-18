@@ -327,7 +327,7 @@ func (d *Driver) pending(choose func(int) int) (VMSpec, bool) {
 		if !spec.IsFork() {
 			continue
 		}
-		if d.world.HostOf(spec.ID) >= 0 || d.world.HostOf(spec.Parent) < 0 {
+		if d.world.Exists(spec.ID) || d.world.HostOf(spec.Parent) < 0 {
 			continue
 		}
 		ready = append(ready, spec)

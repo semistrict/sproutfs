@@ -206,11 +206,8 @@ func runPremortemSoak(t *testing.T, seed uint64) {
 	ctx := sim.WithRuntime(t.Context(), runtime)
 	topology := premortemTopology()
 	prefix := newPrefix(t, "premortem/")
-	world, err := simtest.Start(ctx, simtest.Config{Runtime: runtime, Topology: topology,
+	world := simtest.MustStart(t, ctx, simtest.Config{Runtime: runtime, Topology: topology,
 		Knobs: premortemKnobs(t), Prefix: prefix, Log: t.Logf})
-	if err != nil {
-		t.Fatal(err)
-	}
 	s := &soak{t: t, world: world, random: runtime.Random("premortem/soak")}
 	generation := byte(0)
 

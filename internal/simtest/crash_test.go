@@ -172,12 +172,9 @@ func runCrashScenario(t *testing.T, runtime *sim.Runtime, seed uint64, name stri
 	topology := simtest.Topology{Hosts: hosts,
 		VMs: []simtest.VMSpec{{ID: crashVMID, Host: 0,
 			Volumes: []volume.VolumeSpec{{Name: "ram0", Size: crashPages * simtest.PageSize}}}}}
-	world, err := simtest.Start(ctx, simtest.Config{Runtime: runtime, Topology: topology,
+	world := simtest.MustStart(t, ctx, simtest.Config{Runtime: runtime, Topology: topology,
 		Knobs: campaignKnobs(t, runtime, topology), Prefix: prefix, Namespace: name + "/",
 		Log: t.Logf})
-	if err != nil {
-		t.Fatal(err)
-	}
 	c := &crashRun{t: t, ctx: ctx, world: world,
 		random: runtime.Random("campaign/crash/" + name)}
 	// One generation the guest stored and published, so it is durable wherever

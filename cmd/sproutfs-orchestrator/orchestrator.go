@@ -1460,11 +1460,19 @@ func (o *orchestrator) Drained(ctx context.Context, report orch.DrainReport) err
 			"vm", report.VM, "host", report.Host)
 	case orch.DrainFinished:
 		if report.Error != "" {
-			// A VM the drain could not hand over is still running on the host
-			// that was draining, still checkpointed on its interval. Recording
-			// it as stopped would offer a recovery of a guest that is fine, and
-			// a recovery takes the epoch from the host still running it.
-			o.note(ctx, vmRecord{ID: report.VM, Host: report.Host, State: stateRunning})
+			// The handover was this orchestrator's own migration, and what it
+			// recorded is what happened: running where it was when the source
+			// refused to stop the guest, stopped when the destination could
+			// not take it in — the guest is stopped by then and its volumes
+			// given up, and a row saying running would describe a guest that
+			// is not. Only a row this drain left at "migrating" is one the
+			// migration never got to write, which is a request that never
+			// reached here: that guest was never stopped, and a row saying
+			// stopped would offer a recovery that fences the host still
+			// running it.
+			if row := o.rowOf(ctx, report.VM); row.State == stateMigrating && row.From == report.Host {
+				o.note(ctx, vmRecord{ID: report.VM, Host: report.Host, State: stateRunning})
+			}
 			slog.ErrorContext(ctx, "sproutfs-orchestrator: a drain could not hand a VM over",
 				"vm", report.VM, "host", report.Host, "error", report.Error)
 			return nil

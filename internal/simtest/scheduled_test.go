@@ -117,12 +117,9 @@ func driveScheduledWorld(t *testing.T, runtime *sim.Runtime, scheduler *sim.Sche
 	if err := k.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	world, err := simtest.Start(ctx, simtest.Config{Runtime: runtime, Topology: topology,
+	world := simtest.MustStart(t, ctx, simtest.Config{Runtime: runtime, Topology: topology,
 		Knobs: k, Prefix: prefix, Log: t.Logf, ReverseRegions: reverse,
 		Admit: func(ctx context.Context, id string) error { return scheduler.Wait(ctx, id, 0, 0) }})
-	if err != nil {
-		t.Fatal(err)
-	}
 	closed := false
 	defer func() {
 		if !closed {

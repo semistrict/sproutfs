@@ -84,11 +84,8 @@ func runSwizzleCampaign(t *testing.T, seed uint64) *sim.Runtime {
 		VMs: []simtest.VMSpec{
 			{ID: swizzleVMID, Host: 0, Volumes: []volume.VolumeSpec{{Name: "ram0", Size: 4 * simtest.PageSize}}},
 			{ID: swizzleGuestID, Host: 0, Volumes: []volume.VolumeSpec{{Name: "ram0", Size: 4 * simtest.PageSize}}}}}
-	world, err := simtest.Start(ctx, simtest.Config{Runtime: runtime, Topology: topology,
+	world := simtest.MustStart(t, ctx, simtest.Config{Runtime: runtime, Topology: topology,
 		Knobs: campaignKnobs(t, runtime, topology), Prefix: prefix, Log: t.Logf})
-	if err != nil {
-		t.Fatal(err)
-	}
 	pages := func(limit int) int { return limit - 1 }
 	// Four rounds of the healthy writer, each published, so the VM has a
 	// history the surviving writer's state has to be built out of.
@@ -131,39 +128,33 @@ func runSwizzleCampaign(t *testing.T, seed uint64) *sim.Runtime {
 	}
 
 	// The handoff runs inside the window, over links that are separated,
-	// healed, dropping, duplicating and delaying. It is retried the way a drain
-	// of a host that is going away is retried, and it has to succeed before the
-	// window is over: the source keeps the frames the destination has not
-	// pulled until it is told the destination has them all.
+	// healed, dropping, duplicating and delaying. The receive is retried for
+	// twice the window — the source keeps the frames the destination has not
+	// pulled until it is told the destination has them all, so every retry is
+	// of the same handoff — and it has to succeed before those retries run
+	// out, because a link the swizzle separated is a link that heals inside
+	// the window. The retrying is this campaign's: a deployment's drain tries
+	// the receive once, which docs/open-work.md records.
 	took := world.Takeovers()
-	deadline := time.Now().Add(2 * swizzleWindow)
-	attempts := 0
-	for world.HostOf(swizzleGuestID) != 1 && time.Now().Before(deadline) {
-		attempts++
-		if err := world.MigrateWith(ctx, swizzleGuestID, 1,
-			simtest.Handover{Attempts: 8, Pause: swizzleWindow / 32}); err != nil {
-			t.Fatalf("the handoff reported %v", err)
-		}
-		if world.HostOf(swizzleGuestID) != 1 {
-			time.Sleep(swizzleWindow / 32)
-		}
+	if err := world.MigrateWith(ctx, swizzleGuestID, 1,
+		simtest.Handover{Attempts: 64, Pause: swizzleWindow / 32}); err != nil {
+		t.Fatalf("the handoff reported %v", err)
 	}
-	if world.HostOf(swizzleGuestID) != 1 {
-		t.Fatalf("the drain never handed the guest over after %d attempts", attempts)
+	if at := world.HostOf(swizzleGuestID); at != 1 {
+		t.Fatalf("the guest is on host %d after the handoff, not host-1", at)
 	}
 	// A handoff that gave up and let the VM be opened again lost the pages no
-	// checkpoint held, which is not what a retried drain owes its guest.
+	// checkpoint held, which is not what a retried handoff owes its guest.
 	if world.Takeovers() != took {
-		t.Fatalf("the guest was taken over rather than handed over after %d attempts", attempts)
+		t.Fatal("the guest was taken over rather than handed over")
 	}
-	t.Logf("the handoff completed in %d attempts", attempts)
 	if err := dropped.End(ctx, world); err != nil {
 		t.Fatal(err)
 	}
 
 	// The takeover itself happens inside the window, so the host that takes the
 	// epoch may have to wait for its own link to the store to come back.
-	deadline = time.Now().Add(swizzleWindow)
+	deadline := time.Now().Add(swizzleWindow)
 	for world.HostOf(swizzleVMID) != 1 && time.Now().Before(deadline) {
 		if err := world.Takeover(ctx, swizzleVMID, 1); err != nil {
 			t.Fatal(err)

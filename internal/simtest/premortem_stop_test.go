@@ -25,12 +25,9 @@ func forkedStopTopology() simtest.Topology {
 func startForkedWorld(t *testing.T, runtime *sim.Runtime, prefix string) *simtest.World {
 	t.Helper()
 	topology := forkedStopTopology()
-	world, err := simtest.Start(sim.WithRuntime(t.Context(), runtime), simtest.Config{
+	world := simtest.MustStart(t, sim.WithRuntime(t.Context(), runtime), simtest.Config{
 		Runtime: runtime, Topology: topology, Knobs: campaignKnobs(t, runtime, topology),
 		Prefix: newPrefix(t, prefix), Log: t.Logf})
-	if err != nil {
-		t.Fatal(err)
-	}
 	return world
 }
 

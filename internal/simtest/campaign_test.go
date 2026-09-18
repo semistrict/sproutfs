@@ -98,11 +98,8 @@ func runTopologyCampaign(t *testing.T, seed uint64, buggify bool) *sim.Runtime {
 	// the probes and the buggified sites inside the real host, volume,
 	// checkpoint, control, pager and migration code consult.
 	ctx := sim.WithRuntime(t.Context(), runtime)
-	world, err := simtest.Start(ctx, simtest.Config{Runtime: runtime, Topology: topology,
+	world := simtest.MustStart(t, ctx, simtest.Config{Runtime: runtime, Topology: topology,
 		Knobs: campaignKnobs(t, runtime, topology), Prefix: prefix, Log: t.Logf})
-	if err != nil {
-		t.Fatal(err)
-	}
 	driver := simtest.NewDriver(world, runtime.Random("simtest/schedule"),
 		simtest.Faults(runtime.Random("simtest/faults"), topology), t.Logf)
 	runErr := driver.Run(ctx)

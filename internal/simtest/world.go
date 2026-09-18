@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"testing"
 	"time"
 
 	"github.com/semistrict/sproutfs/internal/checkpoint"
@@ -215,6 +216,32 @@ type durableState struct {
 // here — a fork is an instant of a running parent, so it happens when the
 // schedule reaches it.
 func Start(ctx context.Context, config Config) (*World, error) {
+	return start(ctx, config)
+}
+
+// MustStart is Start for a test: it fails the test when the world cannot be
+// built, and closes the world when the test ends, whether the test reached its
+// own close or failed before it. A campaign that fails in the middle otherwise
+// leaves its hosts running, and a synctest bubble whose test has exited while
+// those hosts still wait on simulated time reports a deadlock in place of the
+// failure — and takes every seed after it in the process down with it.
+func MustStart(t testing.TB, ctx context.Context, config Config) *World {
+	t.Helper()
+	w, err := start(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		// The test's own context is cancelled before its cleanups run; the
+		// close still has to reach its hosts and let their disks finish.
+		if err := w.Close(context.WithoutCancel(ctx)); err != nil {
+			t.Errorf("closing the world at the end: %v", err)
+		}
+	})
+	return w
+}
+
+func start(ctx context.Context, config Config) (*World, error) {
 	if config.Runtime == nil || len(config.Topology.Hosts) == 0 {
 		return nil, errors.New("simtest: a world needs a runtime and a topology")
 	}
@@ -310,14 +337,27 @@ func (w *World) Stopped() []string {
 	return stopped
 }
 
-// HostOf reports the host the named VM is running on, or -1.
+// HostOf reports the host the named VM is running on, or -1. A VM that exists
+// without anything running it — stopped, lost with its host, or between two
+// hosts after a takeover that could not open it — is running nowhere, whatever
+// host it was last at or was last tried on: a campaign that waits for a VM to
+// reach a host must not be told it did by an attempt that failed.
 func (w *World) HostOf(id string) int {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if in, ok := w.instances[id]; ok {
+	if in, ok := w.instances[id]; ok && in.present {
 		return in.host
 	}
 	return -1
+}
+
+// Exists reports whether the named VM is one this world knows: created and not
+// deleted, whether or not anything is running it.
+func (w *World) Exists(id string) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	_, ok := w.instances[id]
+	return ok
 }
 
 // Address is one host's own endpoint on the simulated network, which is what a
@@ -968,8 +1008,10 @@ type Handover struct {
 	// is given up. The source has already stopped its guest and given its
 	// volumes up by then, so a retry is of the receive alone — the source keeps
 	// the frames the destination has not pulled until it is told it has them
-	// all, which is exactly what a drain of a host that is going away retries.
-	// Zero is one attempt.
+	// all, or until the handoff is given up. Zero is one attempt, which is what
+	// a deployment's orchestrator makes; more is a campaign's own retrying, and
+	// once they run out the source is told to give the handoff up and the VM is
+	// opened again from its checkpoint, which loses what those frames held.
 	Attempts int
 	// Pause is how long the world waits between those attempts. It is
 	// simulated time.
@@ -1285,7 +1327,7 @@ func (w *World) FanOut(ctx context.Context, parent string, children []VMSpec) er
 			return fmt.Errorf("%s: a fan-out is one instant onto one host, and %s is neither",
 				parent, spec.ID)
 		}
-		if w.HostOf(spec.ID) >= 0 {
+		if w.Exists(spec.ID) {
 			return nil
 		}
 		ids = append(ids, spec.ID)

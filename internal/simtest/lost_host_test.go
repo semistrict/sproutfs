@@ -52,11 +52,8 @@ func TestAKilledHostRestartsOnItsOwnDiskAndRewindsToItsLastCheckpoint(t *testing
 				topology := simtest.Topology{Hosts: []string{"host-0", "host-1"},
 					VMs: []simtest.VMSpec{{ID: "vm-running", Host: 0,
 						Volumes: []volume.VolumeSpec{{Name: "ram0", Size: 4 * simtest.PageSize}}}}}
-				world, err := simtest.Start(ctx, simtest.Config{Runtime: runtime, Topology: topology,
+				world := simtest.MustStart(t, ctx, simtest.Config{Runtime: runtime, Topology: topology,
 					Knobs: campaignKnobs(t, runtime, topology), Prefix: prefix, Log: t.Logf})
-				if err != nil {
-					t.Fatal(err)
-				}
 				// One VM written through its handle, which a close publishes,
 				// and one run by a guest whose stores live in frames, which only
 				// a capture ever publishes.
@@ -167,11 +164,8 @@ func TestAKilledHostIsTakenOverByAnotherHostAtItsLastCheckpoint(t *testing.T) {
 		topology := simtest.Topology{Hosts: []string{"host-0", "host-1"},
 			VMs: []simtest.VMSpec{{ID: "vm-running", Host: 0,
 				Volumes: []volume.VolumeSpec{{Name: "ram0", Size: 2 * simtest.PageSize}}}}}
-		world, err := simtest.Start(ctx, simtest.Config{Runtime: runtime, Topology: topology,
+		world := simtest.MustStart(t, ctx, simtest.Config{Runtime: runtime, Topology: topology,
 			Knobs: campaignKnobs(t, runtime, topology), Prefix: prefix, Log: t.Logf})
-		if err != nil {
-			t.Fatal(err)
-		}
 		vm, err := world.Host(0).Volumes().Create(ctx, "vm-1", rootVolume)
 		if err != nil {
 			t.Fatal(err)

@@ -20,12 +20,9 @@ func stopTopology() simtest.Topology {
 func startStopWorld(t *testing.T, runtime *sim.Runtime, prefix string) (*simtest.World, simtest.Topology) {
 	t.Helper()
 	topology := stopTopology()
-	world, err := simtest.Start(sim.WithRuntime(t.Context(), runtime), simtest.Config{
+	world := simtest.MustStart(t, sim.WithRuntime(t.Context(), runtime), simtest.Config{
 		Runtime: runtime, Topology: topology, Knobs: campaignKnobs(t, runtime, topology),
 		Prefix: newPrefix(t, prefix), Log: t.Logf})
-	if err != nil {
-		t.Fatal(err)
-	}
 	return world, topology
 }
 
@@ -51,7 +48,10 @@ func TestAStoppedVMKeepsWhatItsGuestWroteAndComesBackAtIt(t *testing.T) {
 		if err := world.Stop(ctx, "vm-0"); err != nil {
 			t.Fatal(err)
 		}
-		if at := world.HostOf("vm-0"); at < 0 {
+		if at := world.HostOf("vm-0"); at >= 0 {
+			t.Fatalf("a stopped VM is still running, on host-%d", at)
+		}
+		if !world.Exists("vm-0") {
 			t.Fatal("a stopped VM stopped existing: it is still a control record and its objects")
 		}
 		if running := world.Host(0).Machines(); len(running) != 0 {
