@@ -271,6 +271,7 @@ func (r *Region) takeFromCheckpoint(b *binding, slot int) {
 		r.dirtyBindings = make(map[uint64]*binding)
 	}
 	r.dirtyBindings[b.index] = b
+	r.noteDirtyLocked()
 }
 
 // restoreFromCheckpoint hands an abandoned checkpoint's copy back to the page
@@ -320,6 +321,7 @@ func (r *Region) setDirty(b *binding, dirty bool) {
 			r.dirtyBindings = make(map[uint64]*binding)
 		}
 		r.dirtyBindings[b.index] = b
+		r.noteDirtyLocked()
 	} else {
 		delete(r.dirtyBindings, b.index)
 	}

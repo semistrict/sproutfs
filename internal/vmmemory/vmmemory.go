@@ -10,6 +10,7 @@ package vmmemory
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/semistrict/sproutfs/internal/control"
 	"github.com/semistrict/sproutfs/internal/platform"
@@ -41,6 +42,13 @@ var (
 	// region's owner is told about through Pressure.Stop so that it stops the VM
 	// itself rather than letting a failed fault kill the VMM.
 	ErrDirtyStalled = errors.New("managed-memory dirty budget stalled")
+	// ErrWindowStalled reports a store held back by the loss window whose VM can
+	// never be checkpointed: its loop is off, or its region belongs to no VM this
+	// host runs. It is told apart from a budget stall because the two say
+	// different things about a deployment — one that its guests dirty faster than
+	// their checkpoints drain, this one that a guest's writes cannot be made
+	// durable at all — and it ends the same way, with a deliberate stop.
+	ErrWindowStalled = errors.New("managed-memory loss window stalled")
 )
 
 // Pressure is how the pager pushes a full dirty budget back to whoever owns its
@@ -62,6 +70,14 @@ type Pressure struct {
 	// it can still capture, and a reason on the record, where the killed VMM
 	// the fault path produces leaves neither.
 	Stop func(*Region, error)
+	// Oldest reports the oldest unpublished write of the whole VM one region
+	// belongs to, zero where that VM holds none. The loss window is a VM's,
+	// because the checkpoint that ends it is: one region's pages are published
+	// by the same pause as its siblings'. The pager holds no idea of a VM, so
+	// the owner that already answers Checkpoint per region answers this too;
+	// a host that installs none leaves each region answering for itself, which
+	// bounds every region and therefore the VM, only less sharply.
+	Oldest func(*Region) time.Time
 }
 
 // Backing is satisfied by *volume.Volume. The pager never writes to it: a
@@ -200,6 +216,14 @@ type Config struct {
 	LogicalPages int
 	// DirtyPages bounds volatile private state on RAM and spill combined.
 	DirtyPages int
+	// LossWindow bounds a VM's unpublished writes in time as DirtyPages bounds
+	// them in bytes. While the oldest unpublished write of a region's VM is
+	// older than this, the pager admits no further dirty page for it: every
+	// store that needs a reservation waits, and a checkpoint of that VM is asked
+	// for out of the interval's turn. What a host loss can then cost one VM
+	// spans at most this window plus one checkpoint attempt's pause. Zero
+	// disables it, which leaves the dirty budget as the only bound.
+	LossWindow time.Duration
 	// Clock is what this pager's latency histograms and its client's command
 	// deadlines are measured on. Nil is the wall clock. Nothing here decides
 	// anything: the histograms are instrumentation, and injecting the clock is

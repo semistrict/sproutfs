@@ -2,6 +2,7 @@ package vmmemory
 
 import (
 	"context"
+	"errors"
 	"maps"
 	"slices"
 )
@@ -32,15 +33,22 @@ func (h *Host) SetPressure(p Pressure) {
 // them. With none in flight the host asks for one, which is what a dirty set
 // that grows between intervals needs. Only a budget no checkpoint can relieve
 // fails the store, as ErrDirtyStalled.
+//
+// The loss window is the other reason to wait, and it comes first: a VM that has
+// held a write no checkpoint covers for longer than the window admits no further
+// dirty page however much room the budget has. The wait is the same wait — ask
+// for the checkpoint, sleep on the host's own signal, stall where none is coming
+// — because what ends it is the same thing, a checkpoint of this VM landing.
 func (h *Host) takeSpill(ctx context.Context, r *Region) (int, error) {
 	for {
+		over := h.overWindow(r)
 		h.mu.Lock()
 		if h.err != nil {
 			err := h.err
 			h.mu.Unlock()
 			return 0, err
 		}
-		if n := len(h.freeSpill); n > 0 {
+		if n := len(h.freeSpill); n > 0 && !over {
 			slot := h.freeSpill[n-1]
 			h.freeSpill = h.freeSpill[:n-1]
 			h.dirty++
@@ -50,12 +58,21 @@ func (h *Host) takeSpill(ctx context.Context, r *Region) (int, error) {
 		}
 		changed := h.changed
 		h.mu.Unlock()
-		if !h.relief() {
-			h.stall(r)
+		if over {
+			if !h.windowRelief(r) {
+				h.stall(r, ErrWindowStalled)
+				return 0, ErrWindowStalled
+			}
+		} else if !h.relief() {
+			h.stall(r, ErrDirtyStalled)
 			return 0, ErrDirtyStalled
 		}
 		h.mu.Lock()
-		h.stats.DirtyWaits++
+		if over {
+			h.stats.WindowWaits++
+		} else {
+			h.stats.DirtyWaits++
+		}
 		h.mu.Unlock()
 		select {
 		case <-ctx.Done():
@@ -133,17 +150,23 @@ func (h *Host) relief() bool {
 	return false
 }
 
-// stall reports a store the budget cannot admit to the region's owner, which
-// stops that VM deliberately. The store still fails, because the guest cannot
-// be left waiting on a checkpoint nothing will take; what the report buys is a
-// logged reason and a stop that publishes, in place of a fault failure that
-// only kills the VMM.
-func (h *Host) stall(r *Region) {
+// stall reports a store nothing can admit to the region's owner, which stops
+// that VM deliberately. The store still fails, because the guest cannot be left
+// waiting on a checkpoint nothing will take; what the report buys is a logged
+// reason and a stop that publishes, in place of a fault failure that only kills
+// the VMM. cause says which bound the store ran into, since a deployment answers
+// the two differently: a budget too small for its guests, or a VM whose writes
+// cannot be published at all.
+func (h *Host) stall(r *Region, cause error) {
 	h.mu.Lock()
 	stop := h.pressure.Stop
-	h.stats.DirtyStalls++
+	if errors.Is(cause, ErrWindowStalled) {
+		h.stats.WindowStalls++
+	} else {
+		h.stats.DirtyStalls++
+	}
 	h.mu.Unlock()
 	if stop != nil {
-		stop(r, ErrDirtyStalled)
+		stop(r, cause)
 	}
 }

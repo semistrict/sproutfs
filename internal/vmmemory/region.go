@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/semistrict/sproutfs/internal/ctxsync"
 	"github.com/semistrict/sproutfs/internal/platform/sim"
@@ -42,7 +43,13 @@ type Region struct {
 	blocks        map[uint64]*bindingBlock
 	zeroRanges    pageranges.Map
 	dirtyBindings map[uint64]*binding
-	terminal      atomic.Pointer[failure]
+	// dirtySince is when the oldest write this region holds that no checkpoint
+	// covers landed, zero while it holds none. It is the loss window's own
+	// bookkeeping and is guarded by bindingsMu, because the transitions that
+	// put a page into the dirty set and take it out again are the transitions
+	// that start and end it.
+	dirtySince time.Time
+	terminal   atomic.Pointer[failure]
 	// heldReported marks the one line this region's unreclaimable frames are
 	// worth; see heldFrames.
 	heldReported atomic.Bool
