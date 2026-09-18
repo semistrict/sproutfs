@@ -77,7 +77,7 @@ Which means three things have to be true at once:
 
 - inherited data is **shared, not copied**: in the object store, in host memory, and on the way between hosts;
 - making a VM durable **pauses it for an instant**, not for the length of an upload;
-- a VM's durable state is somewhere every host can reach, so a host can be **lost or drained** without losing more than a bounded window of writes.
+- a VM's durable state is somewhere every host can reach, so a host can be **lost or drained**, and what its loss costs is only what has not been published yet.
 
 </div>
 
@@ -195,7 +195,7 @@ Losing the host before that loses every write since the last selected checkpoint
 
 <v-click>
 
-**How much?** The interval is 60 s by default, jittered by an eighth so VMs do not checkpoint in lockstep, measured from the end of the last upload. The host reports each VM's dirty bytes: the bound on what it would lose right now.
+**How much?** The interval is 60 s by default, jittered by an eighth so VMs do not checkpoint in lockstep, measured from the end of the last upload. It is a target, not a bound: a failed upload is retried at the next interval, and a parent held sealed by a fork is skipped until the hold ends. What is bounded is bytes — the pager's dirty budget forces a checkpoint out of turn, and stops the VM if none can be taken. The host reports each VM's dirty bytes: what it would lose right now.
 
 </v-click>
 
@@ -511,7 +511,7 @@ A page only the source holds is asked for <b>until it arrives</b>, or until some
 - An unpublished page is never satisfiable from the destination's own volume: the checkpoint there predates the guest's write. Reading it would **rewind the guest** silently.
 - Nothing in a destination can tell a source that stumbled from one that died. A `BUSY`, a reset connection, a timeout, a restarting listener: all are asked again, with backoff. **No attempt count, no failure threshold.**
 - Two things end the asking: the source itself answering that it no longer serves the VM — which it does only after a release it agreed to — or the orchestrator ending the migration because it has **positive evidence** the source host is gone.
-- Then the VM is recovered from its checkpoint, rewound by the writes since. The same window any host loss costs.
+- Then the VM is recovered from its checkpoint, rewound by the writes since. The same cost as any host loss.
 
 </v-clicks>
 
