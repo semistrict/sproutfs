@@ -109,17 +109,21 @@ func (h *Host) overWindow(r *Region) bool {
 	if h.cfg.LossWindow <= 0 {
 		return false
 	}
+	since := r.OldestUnpublished()
+	if !since.IsZero() && h.clock.Since(since) > h.cfg.LossWindow {
+		// This region alone is past it, so what its siblings hold cannot make
+		// the answer anything else. It is the case a store held back asks in,
+		// over and over, and it costs nothing to answer.
+		return true
+	}
 	h.mu.Lock()
 	oldest := h.pressure.Oldest
 	h.mu.Unlock()
-	since := r.OldestUnpublished()
-	if oldest != nil {
-		since = older(since, oldest(r))
-	}
-	if since.IsZero() {
+	if oldest == nil {
 		return false
 	}
-	return h.clock.Since(since) > h.cfg.LossWindow
+	since = older(since, oldest(r))
+	return !since.IsZero() && h.clock.Since(since) > h.cfg.LossWindow
 }
 
 // windowRelief reports whether a checkpoint that ends this region's window is

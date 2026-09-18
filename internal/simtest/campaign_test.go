@@ -179,7 +179,13 @@ func campaignKnobs(t *testing.T, runtime *sim.Runtime, topology simtest.Topology
 	// guest wrote, which read-ahead and write-ahead would round up to their
 	// runs.
 	k.ReadAheadPages, k.WriteAheadPages = 1, 1
-	k.LossWindow = campaignLossWindow(runtime)
+	if window := campaignLossWindow(runtime); window > 0 {
+		// A window is never shorter than the interval a VM is checkpointed on,
+		// and a seed may have drawn an interval of an hour.
+		k.LossWindow = max(window, k.CheckpointInterval)
+	} else {
+		k.LossWindow = 0
+	}
 	// Two VMs are open on one host at once, and a takeover holds the superseded
 	// handle beside the one that fenced it.
 	k.MaxOpenVMs = max(k.MaxOpenVMs, 8)
