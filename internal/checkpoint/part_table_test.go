@@ -84,7 +84,7 @@ func TestMembersPastTheTableBoundSealTheirPart(t *testing.T) {
 			}
 		}
 		// One page per volume, and nothing else: the segments locating them are
-		// the metadata plane's.
+		// the index object's.
 		if members != spreadVolumes {
 			t.Fatalf("the checkpoint's parts hold %d members, want %d", members, spreadVolumes)
 		}

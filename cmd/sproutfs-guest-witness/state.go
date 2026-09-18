@@ -14,7 +14,7 @@ import (
 //
 // Both halves matter and for different reasons. The memory is what a fork
 // shares, what a migration streams and what a stop publishes out of the host's
-// frames; the file is what goes through the guest's own filesystem into the
+// pages; the file is what goes through the guest's own filesystem into the
 // PMEM volume behind it. A guest that came back with its memory whole and its
 // disk rewound, or the other way round, passes half of this and fails the
 // other.

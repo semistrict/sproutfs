@@ -45,7 +45,7 @@ the three control-plane changes only a cluster can prove.
 2. **Deleting or losing the parent of a same-host fork destroys the child.**
    *(proven)* Only cross-host forks registered a hold; `Delete` and
    `discard` closed the parent's process while a local child still read the
-   instant. Fix: register local children with the same deadline; refuse
+   point. Fix: register local children with the same deadline; refuse
    `Delete` on a sealed VM.
 3. **A handoff carries no checkpoint identity.** A writer that publishes
    between the source's handoff and the destination's open is post-copied
@@ -54,11 +54,11 @@ the three control-plane changes only a cluster can prove.
    refuses a mismatch; `Recover` refuses while any host serves the VM.
 4. **A seal racing a reclaim loses a dirty page's only copy.** *(proven)*
    `evictBatch` snapshots the alias set before reading reservations; a seal
-   in the gap moves the reservation, the walk writes nothing, and the frame
+   in the gap moves the reservation, the walk writes nothing, and the page
    is punched.
-5. **One failed frame allocation while copying away from a checkpoint
+5. **One failed page allocation while copying away from a checkpoint
    orphans the page for good.** *(proven)* `b.checkpoint` is cleared before
-   the replacement frame is bound and the region is not made terminal.
+   the replacement page is bound and the region is not made terminal.
 6. **A caller's cancelled context reaches the VMM's control requests and
    kills the guest**, from an HTTP disconnect on capture, fork, migrate or
    drain; the recovery path uses the same dead context, leaving the guest
@@ -114,7 +114,7 @@ is consistent; `Handle.replace`'s reconciliation and the writer-state split;
 orderings; the NetworkPolicy port rules; the destination refusing to
 substitute checkpoint bytes for a page only the source holds; batched retire
 and unseal; the post-copy reservation retry; the host-wide dirty wait;
-logical-page admission; write-ahead arithmetic; fork-point frame sharing;
+logical-page admission; write-ahead arithmetic; fork-point page sharing;
 the production pager config; the wire, opcodes and seccomp filter across all
 three implementations; the x86 gap arithmetic; `PageSource.Release` refusing
 with pages outstanding; `Done` gating on the unpublished set; contested

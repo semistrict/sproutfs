@@ -65,11 +65,11 @@ var (
 	// first checkpoint is what makes it a VM any host can open, and a host lost
 	// before then loses it.
 	ErrForkPending = errors.New("volume: fork's root checkpoint is not published")
-	// ErrSealed reports a VM whose frames a fork point holds. Nothing may seal
+	// ErrSealed reports a VM whose pages a fork point holds. Nothing may seal
 	// them again — no capture, no further fork — until that point is retired,
 	// which is when the child it was taken for has published or pulled every
 	// page it inherited.
-	ErrSealed = errors.New("volume: a fork point holds this VM's sealed frames")
+	ErrSealed = errors.New("volume: a fork point holds this VM's sealed pages")
 )
 
 // Config supplies the control records and the object storage a manager serves

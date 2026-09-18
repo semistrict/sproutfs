@@ -753,7 +753,7 @@ func limitStateFiles(pid int) error {
 // takes the checkpoint of every region and leaves the guest's vsock connections
 // alone, because the same guest resumes and whatever was running over one of
 // them goes on running. A handoff seals nothing — the pages it would seal are
-// the ones the destination is about to fault out of this host's frames — and
+// the ones the destination is about to fault out of this host's pages — and
 // drops those connections, because this guest is not coming back and a host
 // waiting on a command in it would otherwise wait out its own timeout.
 func (p *Process) prepare(ctx context.Context, kind captureKind) ([]byte, error) {
@@ -845,7 +845,7 @@ func (p *Process) Release(ctx context.Context) error {
 // migration starts from. It is the migration's stop phase: the vCPUs pause,
 // device completions drain and the state is captured. It seals nothing and
 // waits for nothing — the pages written since the last checkpoint stay in this
-// host's frames and the destination faults them out of it, which is what bounds
+// host's pages and the destination faults them out of it, which is what bounds
 // the pause. The process stays paused; unlike Prepare, which is a capture the
 // same VM resumes from, nothing here brings it back. A caller that abandons the
 // migration can still Release it, which resumes the guest.

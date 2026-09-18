@@ -31,7 +31,7 @@ func TestCompressedCheckpointObjectsAndPartialReads(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// One part holds the whole checkpoint's data plane: a 2 MiB page and
+		// One part holds the whole checkpoint's data: a 2 MiB page and
 		// 100 KB of state, both repetitive, and the table naming them.
 		metadata, err := objects.Head(t.Context(), partKey(t, "compressed", 2, 0))
 		if err != nil {

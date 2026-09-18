@@ -236,7 +236,7 @@ func (d *Driver) step(ctx context.Context, step int) error {
 		d.log("step %d: checkpoint %s", step, id)
 		if err := d.world.Checkpoint(ctx, id); err != nil {
 			// A checkpoint the store would not take is a checkpoint that did
-			// not happen: the VM goes on running out of its own frames, and
+			// not happen: the VM goes on running out of its own pages, and
 			// what it is worth is still its last one.
 			d.log("step %d: %s could not publish: %v", step, id, err)
 		}

@@ -131,7 +131,7 @@ func (w *World) Takeovers() int {
 type hostState struct {
 	name    string
 	address platform.Address
-	// pages is where this host serves the frames a destination or a child
+	// pages is where this host serves the pages a destination or a child
 	// fetches.
 	pages platform.Address
 
@@ -175,7 +175,7 @@ type hostState struct {
 	// started records the guest a receive built, so the world can adopt the
 	// model of a VM this host took in, and guests every VMM process this
 	// incarnation runs, which is what a kill ends: a machine whose host died is
-	// a process whose frames are gone.
+	// a process whose pages are gone.
 	started map[string]*guest
 	guests  []*guest
 	mu      sync.Mutex
@@ -218,7 +218,7 @@ type instance struct {
 
 // durableState is the whole of one VM at one checkpoint: the sequence that
 // checkpoint was published under, the bytes it published, and the guest's own
-// store counter at that instant, which is what the VMM state it carries has to
+// store counter at that moment, which is what the VMM state it carries has to
 // restore. The sequence is what says which of them a VM came back at — the
 // control record names it — so the bytes are an assertion rather than a search.
 type durableState struct {
@@ -229,7 +229,7 @@ type durableState struct {
 
 // Start builds the world one topology describes: every host, then every VM that
 // is not a fork, on the host the topology puts it on. The forks are not created
-// here — a fork is an instant of a running parent, so it happens when the
+// here — a fork is a pause of a running parent, so it happens when the
 // schedule reaches it.
 func Start(ctx context.Context, config Config) (*World, error) {
 	return start(ctx, config)
@@ -310,7 +310,7 @@ func (w *World) Hosts() int { return len(w.hosts) }
 // something this world has no operation for reaches through.
 func (w *World) Host(index int) *host.Host { return w.hosts[index].host }
 
-// Pages is where a host serves the frames a destination or a child fetches.
+// Pages is where a host serves the pages a destination or a child fetches.
 func (w *World) Pages(index int) platform.Address { return w.hosts[index].pages }
 
 // Clock is the passage of time one host keeps its deadlines against, which is
@@ -470,7 +470,7 @@ func (w *World) starter(h *hostState) host.StartFunc {
 // launch starts one host inside its own simulated process. The process's
 // context is the host's, so a kill cancels every goroutine that host owns;
 // whatever else the incarnation owns — its pager, its arena, the spill file on
-// its own disk — is built and closed in there too, so a killed host's frames go
+// its own disk — is built and closed in there too, so a killed host's pages go
 // with it.
 func (w *World) launch(h *hostState) error {
 	ready := make(chan error, 1)
@@ -537,7 +537,7 @@ func (w *World) newPager(ctx context.Context, h *hostState) (*pager, func(), err
 		return nil, nil, err
 	}
 	a := &arena{slots: make([][]byte, k.ResidentPages)}
-	frames, err := vmmemory.New(ctx, h.config.Resources, vmmemory.Config{
+	memory, err := vmmemory.New(ctx, h.config.Resources, vmmemory.Config{
 		ResidentPages: k.ResidentPages, LogicalPages: k.LogicalPages, DirtyPages: k.DirtyPages,
 		ReadAheadPages: k.ReadAheadPages, WriteAheadPages: k.WriteAheadPages,
 		ConcurrentIO: k.ConcurrentIO, LossWindow: k.LossWindow,
@@ -548,9 +548,9 @@ func (w *World) newPager(ctx context.Context, h *hostState) (*pager, func(), err
 	if err != nil {
 		return nil, nil, errors.Join(err, spill.Close())
 	}
-	p := &pager{host: frames, arena: a, spill: spill, runtime: w.runtime}
+	p := &pager{host: memory, arena: a, spill: spill, runtime: w.runtime}
 	return p, func() {
-		_ = frames.Close(context.Background())
+		_ = memory.Close(context.Background())
 		_ = spill.Close()
 	}, nil
 }
@@ -681,7 +681,7 @@ func (w *World) create(ctx context.Context, spec VMSpec) error {
 		}
 	}
 	// The first checkpoint makes those pages durable, so the VM has something
-	// to rewind to from its very first instant.
+	// to rewind to from its very first moment.
 	return w.Checkpoint(ctx, spec.ID)
 }
 
@@ -822,7 +822,7 @@ func (w *World) Store(ctx context.Context, id string, writes int, choose func(li
 	defer func() { w.noteWrites(in, g, before) }()
 	for range writes {
 		// Both volumes are written, so a migration has to move more than one
-		// region's worth of frames on the seeds that have two.
+		// region's worth of pages on the seeds that have two.
 		name := g.names[choose(len(g.names))]
 		err := g.store(name, uint64(choose(g.pages[name])))
 		switch {
@@ -865,7 +865,7 @@ func (w *World) StoreAll(id string, value byte) error {
 // Checkpoint publishes everything the named VM's guest has written and waits
 // for it to become durable. Under a fault that has taken the store away it
 // fails, which is a checkpoint that did not happen rather than an error: the
-// VM goes on running and the bytes it could not publish stay in its frames.
+// VM goes on running and the bytes it could not publish stay in its pages.
 func (w *World) Checkpoint(ctx context.Context, id string) error {
 	in, g := w.runningVM(id)
 	if in == nil {
@@ -877,8 +877,8 @@ func (w *World) Checkpoint(ctx context.Context, id string) error {
 	}
 	// The model at the pause is what this checkpoint makes durable. Nothing
 	// stores into this guest while the publication runs — the driver is the
-	// only thing that stores at all — so the snapshot taken here is exactly the
-	// instant the seal froze.
+	// only thing that stores at all — so the snapshot taken here is exactly
+	// what the seal froze.
 	at := durableState{model: g.snapshot(), writes: g.stored()}
 	ckpt, err := host.Capture(ctx, vm, g, w.hosts[in.host].clock)
 	if err != nil {
@@ -892,7 +892,7 @@ func (w *World) Checkpoint(ctx context.Context, id string) error {
 	if err := ckpt.Wait(ctx); err != nil {
 		// A publication that did not report landing may have landed anyway: the
 		// store may have taken every object and lost the reply, and the host may
-		// have died between the parts and the index. The instant it sealed is
+		// have died between the parts and the index. The pause it sealed is
 		// therefore one this VM may come back at, and stays one until a later
 		// checkpoint of it lands.
 		w.offer(in, at)
@@ -911,7 +911,7 @@ func (w *World) Checkpoint(ctx context.Context, id string) error {
 }
 
 // landed is a checkpoint that reported durable: it supersedes every earlier
-// instant, so it is the only one this VM can come back at from here.
+// pause, so it is the only one this VM can come back at from here.
 func (w *World) landed(in *instance, g *guest, at durableState) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -925,7 +925,7 @@ func (w *World) landed(in *instance, g *guest, at durableState) {
 	in.durables = []durableState{at}
 }
 
-// offer records an instant this VM may have come back at, without taking away
+// offer records a pause this VM may have come back at, without taking away
 // the ones before it: a publication whose outcome nobody knows.
 func (w *World) offer(in *instance, at durableState) {
 	w.mu.Lock()
@@ -934,10 +934,10 @@ func (w *World) offer(in *instance, at durableState) {
 }
 
 // KillDuring runs one operation of the deployment on a goroutine of its own,
-// takes a host away in the middle of it at an instant the caller drew, and
+// takes a host away in the middle of it at a moment the caller drew, and
 // reports how that operation ended. It is what a campaign that kills a host
 // mid-checkpoint, mid-fork or mid-handover is made of: the kill lands inside
-// the operation on the seeds whose instant falls inside it and after it on the
+// the operation on the seeds whose moment falls inside it and after it on the
 // rest, and what has to hold afterwards does not move between them.
 func (w *World) KillDuring(ctx context.Context, index int, mode sim.FailureMode,
 	at time.Duration, operation func(context.Context) error) (bool, error) {
@@ -954,7 +954,7 @@ func (w *World) KillDuring(ctx context.Context, index int, mode sim.FailureMode,
 	// Whether this kill landed inside the operation or after it had finished is
 	// what says a campaign is testing anything an orderly close does not: the
 	// requirements are the same either way, but a campaign whose kills always
-	// arrive late has reached none of the instants it exists for.
+	// arrive late has reached none of the moments it exists for.
 	cut := !finished.Load()
 	if err := w.Kill(ctx, index, mode); err != nil {
 		return cut, err
@@ -1045,13 +1045,13 @@ func (w *World) VerifyDurable(ctx context.Context, id string) error {
 }
 
 // Migrate moves one VM to another host: the source stops its guest and keeps
-// its frames, the destination opens the VM, starts a guest from the captured
+// its pages, the destination opens the VM, starts a guest from the captured
 // state and pulls the pages no checkpoint holds out of the source.
 //
 // A migration under a fault may fail at any phase, and the phase decides who
 // owns the VM afterwards. A source that never released it goes on running it. A
 // source that released it to a destination that could not take it, or a
-// destination that took it and could not fetch the frames the source held,
+// destination that took it and could not fetch the pages the source held,
 // leaves a VM nobody runs: somebody opens it, and what it comes back as is the
 // checkpoint its control record selects. That rewind is the post-copy exposure
 // and not a defect, which is why the model follows it exactly rather than
@@ -1067,11 +1067,11 @@ type Handover struct {
 	// Attempts is how many times the destination's half is tried before the VM
 	// is given up. The source has already stopped its guest and given its
 	// volumes up by then, so a retry is of the receive alone — the source keeps
-	// the frames the destination has not pulled until it is told it has them
+	// the pages the destination has not pulled until it is told it has them
 	// all, or until the handoff is given up. Zero is one attempt, which is what
 	// a deployment's orchestrator makes; more is a campaign's own retrying, and
 	// once they run out the source is told to give the handoff up and the VM is
-	// opened again from its checkpoint, which loses what those frames held.
+	// opened again from its checkpoint, which loses what those pages held.
 	Attempts int
 	// Pause is how long the world waits between those attempts. It is
 	// simulated time.
@@ -1139,7 +1139,7 @@ func (w *World) MigrateWith(ctx context.Context, id string, to int, terms Handov
 	}
 	received, err := w.receive(ctx, source, destination, handoff)
 	for attempt := 1; err != nil && attempt < terms.Attempts; attempt++ {
-		// The source still holds every frame the destination did not pull, so
+		// The source still holds every page the destination did not pull, so
 		// the handoff is still good: what failed was this attempt at it.
 		w.logf("%s: attempt %d at %s: %v", id, attempt, destination.name, err)
 		if sleepErr := ctxsync.Sleep(ctx, terms.Pause); sleepErr != nil {
@@ -1196,7 +1196,7 @@ func (w *World) MigrateWith(ctx context.Context, id string, to int, terms Handov
 	next.adopt(at)
 	w.place(in, to, next)
 	// Nothing was published at the handoff, so what the destination must read
-	// back is the source's last checkpoint plus the frames it served. This is
+	// back is the source's last checkpoint plus the pages it served. This is
 	// checked through the destination's own mappings before it writes anything
 	// of its own.
 	if err := w.check(ctx, next, at, ReadsMayFail); err != nil {
@@ -1296,7 +1296,7 @@ func (h *hostState) stillRunning(id string) bool {
 // read of object storage and nothing else. A bulk stream that ended early is
 // therefore logged rather than returned.
 //
-// Every wait is bounded, because a fault that holds a frame holds it until
+// Every wait is bounded, because a fault that holds a page holds it until
 // somebody gives up. Giving up is what a real destination does too.
 func (w *World) streamed(ctx context.Context, received *vmmigrate.Received) error {
 	stream, cancel := context.WithTimeout(ctx, Deadline)
@@ -1326,7 +1326,7 @@ func (w *World) discardChild(ctx context.Context, destination *hostState, id str
 	w.orphans[id] = true
 }
 
-// abandonSource gives a source's frames back once nothing can need them from
+// abandonSource gives a source's pages back once nothing can need them from
 // there any more, and ends the guest that was holding them. The pages are going
 // either way, so a release the source would refuse is a discard.
 func (w *World) abandonSource(_ context.Context, source *hostState, id string) {
@@ -1351,7 +1351,7 @@ func (w *World) indexOf(h *hostState) int {
 // The fork is a handoff wherever the child lands, and the destination is what
 // decides how the pages no checkpoint holds reach it: on another host it pulls
 // them out of the parent's page server, and on the parent's own host it maps
-// the frames the seal froze. The destination publishes the child's root as soon
+// the pages the seal froze. The destination publishes the child's root as soon
 // as it has them all, and until that lands the child is an identity nobody can
 // open. A root that cannot be published under a fault is therefore not left
 // behind: the child is closed, which deletes its record, and the topology's
@@ -1360,9 +1360,9 @@ func (w *World) Fork(ctx context.Context, spec VMSpec) error {
 	return w.FanOut(ctx, spec.Parent, []VMSpec{spec})
 }
 
-// FanOut forks one parent into every child of one instant, which is what the
+// FanOut forks one parent into every child of one fork point, which is what the
 // deployment's own fork is: one pause of the parent, one handoff per child, and
-// one hold on the instant for each of them, onto one destination.
+// one hold on the point for each of them, onto one destination.
 //
 // A fan-out that fails part way is the whole of what makes it more than a fork
 // repeated. The children after the failure are never offered to a destination,
@@ -1384,7 +1384,7 @@ func (w *World) FanOut(ctx context.Context, parent string, children []VMSpec) er
 	ids := make([]string, 0, len(children))
 	for _, spec := range children {
 		if spec.Parent != parent || spec.Host != landing {
-			return fmt.Errorf("%s: a fan-out is one instant onto one host, and %s is neither",
+			return fmt.Errorf("%s: a fan-out is one fork point onto one host, and %s is neither",
 				parent, spec.ID)
 		}
 		if w.Exists(spec.ID) {
@@ -1444,9 +1444,9 @@ func (w *World) FanOut(ctx context.Context, parent string, children []VMSpec) er
 	return nil
 }
 
-// forked takes one child of an instant in on its destination and reports
+// forked takes one child of a fork point in on its destination and reports
 // whether it started. A child that did not is one the destination gave up: its
-// identity goes with it and the hold the instant took for it is given up on the
+// identity goes with it and the hold the point took for it is given up on the
 // source, because nothing will ever fetch what that hold keeps.
 func (w *World) forked(ctx context.Context, source, destination *hostState, spec VMSpec,
 	handoff vmmigrate.Handoff, at map[string][]byte) (bool, error) {
@@ -1454,7 +1454,7 @@ func (w *World) forked(ctx context.Context, source, destination *hostState, spec
 	if err != nil {
 		// The child could not get the pages only its parent had, or its root
 		// would not publish: either way the destination gave the guest up. The
-		// identity goes with it, and the parent takes its frames back here.
+		// identity goes with it, and the parent takes its pages back here.
 		w.logf("%s: %s could not receive the child: %v", spec.ID, destination.name, err)
 		w.discardChild(ctx, destination, spec.ID)
 		w.abandonSource(ctx, source, spec.ID)
@@ -1474,16 +1474,16 @@ func (w *World) forked(ctx context.Context, source, destination *hostState, spec
 	w.adopt(in)
 	w.place(in, spec.Host, child)
 	// The receive published the child's root, so the child is durable at the
-	// instant it inherited: that is the state it comes back at.
+	// point it inherited: that is the state it comes back at.
 	w.notePublished(spec.ID, root.Sequence)
 	w.landed(in, child, durableState{model: at, writes: child.stored(), sequence: root.Sequence})
-	// The child starts at the instant its parent was sealed at: the checkpoint
+	// The child starts at the point its parent was sealed at: the checkpoint
 	// the parent published, plus the pages it has held since.
 	if err := w.check(ctx, child, at, ReadsMayFail); err != nil {
 		return false, fmt.Errorf("the child's first read: %w", err)
 	}
 	// The child has every page it inherited and a root of its own, so the parent
-	// takes its sealed frames back here. A release the store refuses leaves the
+	// takes its sealed pages back here. A release the store refuses leaves the
 	// point where it is, and the next step tries again: a parent that stays
 	// sealed can never checkpoint again.
 	if released := w.up(w.indexOf(source)); released != nil {
@@ -1618,15 +1618,15 @@ func (w *World) Delete(ctx context.Context, id string) error {
 }
 
 // Stop ends one VM deliberately and leaves the VM behind: the host publishes
-// everything its guest still holds, closes the VMM process, gives the frames
+// everything its guest still holds, closes the VMM process, gives the pages
 // back and releases the handle. Nothing runs it afterwards and nothing starts it
 // again on its own — that is the whole difference between a stop and every other
 // way a VM stops running here, all of which are repairs waiting to happen.
 //
-// The instant the stop publishes is the only one the VM can come back at, so it
+// The pause the stop publishes is the only one the VM can come back at, so it
 // supersedes every earlier one exactly as a checkpoint that landed does. A stop
 // the store refused is a stop that did not happen: the guest goes on running out
-// of its own frames and the VM is worth what its last checkpoint was.
+// of its own pages and the VM is worth what its last checkpoint was.
 func (w *World) Stop(ctx context.Context, id string) error {
 	in, g := w.runningVM(id)
 	if in == nil {
@@ -1638,7 +1638,7 @@ func (w *World) Stop(ctx context.Context, id string) error {
 	}
 	// The model at the pause is what this publishes. Nothing stores into this
 	// guest while the stop runs — the driver is the only thing that stores at
-	// all — so the snapshot taken here is exactly the instant the seal froze.
+	// all — so the snapshot taken here is exactly what the seal froze.
 	at := durableState{model: g.snapshot(), writes: g.stored()}
 	stopped, err := running.Stop(ctx, id)
 	if err != nil {
@@ -1730,7 +1730,7 @@ func (w *World) StartCold(ctx context.Context, id string, index int) error {
 }
 
 // Shutdown ends one host the orderly way: it closes, publishing a final
-// checkpoint of everything its handles still hold, its guests give their frames
+// checkpoint of everything its handles still hold, its guests give their pages
 // back, and only then does its process end, leaving its disk exactly as it is.
 // It is what a drained host does, and the thing a kill is defined against.
 func (w *World) Shutdown(ctx context.Context, index int) error {
@@ -1782,8 +1782,8 @@ func (w *World) Takeover(ctx context.Context, id string, index int) error {
 	return w.recover(ctx, in, index, "a takeover")
 }
 
-// LoseHost takes one host away at an instant: its guests stop existing, the
-// frames they held are gone, its page server stops answering and its handles
+// LoseHost takes one host away at a moment: its guests stop existing, the
+// pages they held are gone, its page server stops answering and its handles
 // publish nothing ever again. Everything it was running is now only what its
 // last checkpoint published.
 func (w *World) LoseHost(ctx context.Context, index int) error {
@@ -1793,9 +1793,9 @@ func (w *World) LoseHost(ctx context.Context, index int) error {
 // Kill takes one host away in the middle of whatever it was doing, in the mode
 // the caller names. The store goes first, so nothing it had in flight can still
 // land and its shutdown publishes nothing; its guests go next, because a
-// machine whose host died is a VMM process whose frames are gone; then the
+// machine whose host died is a VMM process whose pages are gone; then the
 // process is crashed — every goroutine cancelled, every listener closed, every
-// frame released — and under PowerLoss the modifications its disk had not
+// page released — and under PowerLoss the modifications its disk had not
 // synced come back applied, dropped, torn or garbled rather than restored.
 func (w *World) Kill(ctx context.Context, index int, mode sim.FailureMode) error {
 	h := w.hosts[index]
@@ -1814,7 +1814,7 @@ func (w *World) Kill(ctx context.Context, index int, mode sim.FailureMode) error
 		in.guest, in.present = nil, false
 	}
 	w.mu.Unlock()
-	// The VMM processes go before the machine does: a frame is durable nowhere,
+	// The VMM processes go before the machine does: a page is durable nowhere,
 	// so a guest whose host died is a process whose memory is gone. They are
 	// this host's own list rather than the world's, which is what lets a kill
 	// land in the middle of an operation without the two of them sharing a map.
@@ -1851,7 +1851,7 @@ func (w *World) RestartHost(ctx context.Context, index int) error {
 		w.mu.Lock()
 		in := w.instances[id]
 		// A VM the deployment stopped is not one this host was running when it
-		// died: its handle was released and its frames given back before that,
+		// died: its handle was released and its pages given back before that,
 		// so a host coming back has nothing of it to give back. Only a start
 		// brings it back, exactly as it is the only thing a settle leaves alone.
 		mine := in != nil && in.host == index && !in.stopped
@@ -1911,7 +1911,7 @@ func (w *World) reopen(ctx context.Context, in *instance, index int, why string)
 
 // reopenWith is reopen, warm or cold. A cold open discards the VM's memory and
 // its VMM state in a checkpoint of its own before the guest starts, so what the
-// VM comes back as is not the instant it went away at: it is that instant with
+// VM comes back as is not the pause it went away at: it is that pause with
 // its memory replaced by zeroes, under a checkpoint this writer published.
 func (w *World) reopenWith(ctx context.Context, in *instance, index int, why string, cold bool) (bool, error) {
 	h := w.hosts[index]
@@ -1932,7 +1932,7 @@ func (w *World) reopenWith(ctx context.Context, in *instance, index int, why str
 	// Anything else is state nobody wrote. A cold start publishes its own as it
 	// opens — that checkpoint is what discarded the memory — so the sequence it
 	// comes back at is this writer's rather than one that already existed, and
-	// the instant it stands for is the one the world works out below.
+	// the pause it stands for is the one the world works out below.
 	selected := vm.Status().Checkpoint
 	if cold {
 		w.notePublished(in.spec.ID, selected.Sequence)
@@ -2014,13 +2014,13 @@ func (w *World) openFor(ctx context.Context, running *host.Host, id string, cold
 	return running.Volumes().Open(ctx, id)
 }
 
-// coldState is the instant a cold start brings a VM back at: the one it was
+// coldState is the pause a cold start brings a VM back at: the one it was
 // stopped at with its memory replaced by zeroes, under the sequence the cold
 // start published. The guest that comes back has written nothing — it booted
-// rather than being restored — so the stores that instant is worth are none.
+// rather than being restored — so the stores that pause is worth are none.
 //
-// It supersedes every instant before it exactly as a checkpoint that landed
-// does: the memory those instants held is gone from the store.
+// It supersedes every pause before it exactly as a checkpoint that landed
+// does: the memory those pauses held is gone from the store.
 func (w *World) coldState(in *instance, sequence uint64) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -2041,8 +2041,8 @@ func (w *World) coldState(in *instance, sequence uint64) {
 
 // at is the checkpoint a VM came back at, found by the sequence its control
 // record selects rather than by the bytes it reads: the record is what decides
-// which instant this VM is, so the bytes are then required to be that instant's
-// rather than searched for among the instants it might be.
+// which pause this VM is at, so the bytes are then required to be that pause's
+// rather than searched for among the pauses it might be.
 func (w *World) at(in *instance, sequence uint64) (durableState, bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -2106,7 +2106,7 @@ func (w *World) Close(ctx context.Context) error {
 	}
 	w.closed = true
 	// A checkpoint's sweep runs behind its publication, and closing a VM
-	// finishes it rather than cancelling it, so a world closed the instant
+	// finishes it rather than cancelling it, so a world closed the moment
 	// after a checkpoint landed leaves nothing behind that a running host
 	// would have deleted.
 	var errs []error

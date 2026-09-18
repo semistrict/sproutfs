@@ -167,7 +167,7 @@ func TestNoTwoWritersOfOneVMEverMix(t *testing.T) {
 // been taken over within seconds of the takeover, whatever its checkpoint
 // interval is. The checkpoint is not the only place a host may learn this: a
 // recovery that fences a host whose guest is still running leaves that guest
-// writing into frames nothing can ever publish until the host notices.
+// writing into pages nothing can ever publish until the host notices.
 func TestAFencedHostLearnsItsEpochMovedWithoutACheckpoint(t *testing.T) {
 	h := newHostHarness(t)
 	// No interval checkpoint at all: the loop is what a host learns through
@@ -224,7 +224,7 @@ func TestAFencedHostLearnsItsEpochMovedWithoutACheckpoint(t *testing.T) {
 	}
 }
 
-// TestAFencedHostSealedByAForkPointStopsServing: a VM whose frames a fork point
+// TestAFencedHostSealedByAForkPointStopsServing: a VM whose pages a fork point
 // holds is never checkpointed, so the checkpoint loop is no place for it to
 // learn anything. It must still learn, and everything it serves of that VM must
 // stop: the child's pages it holds, another fork of it, and its handoff.
@@ -250,7 +250,7 @@ func TestAFencedHostSealedByAForkPointStopsServing(t *testing.T) {
 	if err := h.hosts[0].AddMachine("vm-1", guest); err != nil {
 		t.Fatal(err)
 	}
-	// The parent is sealed from here: a child of this instant runs on another
+	// The parent is sealed from here: a child of this point runs on another
 	// host and pulls the parent's unpublished pages out of its page server.
 	guest.store("ram0", 1, 6)
 	if _, err := h.hosts[0].Fork(t.Context(), "vm-1", []string{"child-1"}, h.pages[1]); err != nil {
@@ -289,7 +289,7 @@ func TestAFencedHostSealedByAForkPointStopsServing(t *testing.T) {
 }
 
 // TestAHandoffConfirmsTheControlRecordFirst: a handoff is the one thing a host
-// does that hands another host frames no checkpoint holds, and so the one thing
+// does that hands another host pages no checkpoint holds, and so the one thing
 // that must never run on evidence this stale. The epoch timer is where a
 // running VM learns it has been taken over, and it is a timer: a host between
 // ticks, or one whose reads of the store fail while its pod network is fine,
@@ -351,7 +351,7 @@ func TestAHandoffConfirmsTheControlRecordFirst(t *testing.T) {
 
 // TestAHandoffRefusesWhenTheControlRecordCannotBeRead: a record that cannot be
 // read is not evidence of a takeover, and everywhere else that is a reason to
-// change nothing. The handoff is the exception: it gives another host frames
+// change nothing. The handoff is the exception: it gives another host pages
 // nothing afterwards can check, so it proceeds on a confirmed record or not at
 // all. The VM goes on running here, which is what the next attempt finds.
 func TestAHandoffRefusesWhenTheControlRecordCannotBeRead(t *testing.T) {

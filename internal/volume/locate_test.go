@@ -22,7 +22,7 @@ func locate(t *testing.T, vm *volume.VM, name string, offset, length uint64) []c
 
 // Bytes an overlay holds are private to the checkpoint that will publish them,
 // bytes no one has written report no object at all, and each extent stays
-// inside one page, which is what identifies a frame.
+// inside one page, which is what identifies a resident page.
 func TestLocateReportsPrivateOverlayIdentities(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		h := newHarness(t)
@@ -84,7 +84,7 @@ func TestLocateReportsPrivateOverlayIdentities(t *testing.T) {
 }
 
 // A fork inherits its source's identities unchanged, so a host shares the
-// frames it already has, and the two diverge only where the fork wrote.
+// pages it already has, and the two diverge only where the fork wrote.
 func TestLocateIdentitiesAreInheritedAcrossAFork(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		h := newHarness(t)

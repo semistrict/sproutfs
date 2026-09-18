@@ -21,7 +21,7 @@ import (
 // continues exactly where the source stopped, and one that lost it says so.
 const stateBytes = 9
 
-// arena is one host's shared frame store: one byte slice per resident slot,
+// arena is one host's shared page store: one byte slice per resident slot,
 // which is what a real pager's shared memory is.
 type arena struct {
 	mu    sync.Mutex
@@ -144,7 +144,7 @@ func (m *mapping) store(page uint64, value byte) bool {
 // coordinator drives.
 //
 // It has no life of its own: a store happens when the driver asks for one, so
-// what the model holds is exact at every instant the driver looks at it. A
+// what the model holds is exact at every moment the driver looks at it. A
 // guest that stored in a loop of its own would make every assertion a race
 // against that loop rather than against the fault under test.
 type guest struct {
@@ -181,7 +181,7 @@ type guest struct {
 	// stopped reports vCPUs that are not running. A guest stores nothing while
 	// it is stopped, which is what makes a capture or an abandoned migration
 	// that never resumed it visible: the next store fails rather than quietly
-	// succeeding against frames nothing is driving.
+	// succeeding against pages nothing is driving.
 	stopped bool
 	closed  bool
 }
@@ -291,7 +291,7 @@ func (g *guest) Prepare(ctx context.Context) ([]byte, map[string]volume.DirtySou
 }
 
 // Stop is a migration's pause: the guest stops storing and its state is
-// captured. Nothing is sealed and nothing is uploaded — the frames this process
+// captured. Nothing is sealed and nothing is uploaded — the pages this process
 // keeps are what the destination fetches.
 func (g *guest) Stop(ctx context.Context) ([]byte, error) {
 	g.mu.Lock()
@@ -357,7 +357,7 @@ func (g *guest) isClosed() bool {
 	return g.closed
 }
 
-// detach gives this process's frames back. It is what closing a VMM does, and
+// detach gives this process's pages back. It is what closing a VMM does, and
 // what the loss of a host does to every VMM it was running.
 func (g *guest) detach(ctx context.Context) error {
 	g.mu.Lock()
@@ -571,7 +571,7 @@ func (g *guest) verify(ctx context.Context, model map[string][]byte) error {
 	return unreadable
 }
 
-// pager is one host's shared frame store and its pager Host.
+// pager is one host's shared page store and its pager Host.
 type pager struct {
 	host    *vmmemory.Host
 	arena   *arena

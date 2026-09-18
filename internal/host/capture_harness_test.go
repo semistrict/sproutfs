@@ -198,8 +198,8 @@ func (s *fakeSource) ReadDirty(_ context.Context, page uint64, dst []byte) error
 	return nil
 }
 
-// Hold records that a fork instant took this seal, which on a real host is what
-// says it lasts as long as the children of that instant.
+// Hold records that a fork point took this seal, which on a real host is what
+// says it lasts as long as the children of that point.
 func (s *fakeSource) Hold() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -207,7 +207,7 @@ func (s *fakeSource) Hold() {
 }
 
 // Share records the identity a fork point gave these pages, which on a real
-// host is what lets a child map the frames instead of reading them.
+// host is what lets a child map the pages instead of reading them.
 func (s *fakeSource) Share(_ context.Context, ref control.Ref, volume string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

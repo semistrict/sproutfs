@@ -26,7 +26,7 @@ func (s *supervisor) Migrate(ctx context.Context, id string, destination platfor
 		return hostapi.MigrateResult{}, fmt.Errorf("migrating %s to %s: %w", id, destination, err)
 	}
 	// The VM runs on the destination from here. This host holds only its
-	// frames, which its page server serves until the destination has them all.
+	// pages, which its page server serves until the destination has them all.
 	s.forget(id)
 	return hostapi.MigrateResult{Handoff: apiHandoff(handoff), Stop: s.since(stopped)}, nil
 }
@@ -43,7 +43,7 @@ func (s *supervisor) Receive(ctx context.Context, wire hostapi.Handoff) (hostapi
 		return hostapi.ReceiveResult{}, fmt.Errorf("receiving %s from %s: %w", handoff.VMID, handoff.Source, err)
 	}
 	stats := received.Stats()
-	// The source may release its frames now. The rest of its resident set keeps
+	// The source may release its pages now. The rest of its resident set keeps
 	// arriving behind the running guest as long as it is still serving; closing
 	// here would send every page of it to object storage instead.
 	go func() {

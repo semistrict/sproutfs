@@ -32,7 +32,7 @@ type overlapPrototypeEvent struct {
 
 // Everyone registers before any release, making eligibility independent of Go
 // scheduling. Each round chooses the earliest deadline and groups all windows
-// containing it. A stable keyed priority orders actions at that instant.
+// containing it. A stable keyed priority orders actions at that moment.
 func runOverlapPrototype(t *testing.T, random sim.Random, actions []overlapPrototypeAction, trace *overlapPrototypeTrace) []overlapPrototypeEvent {
 	t.Helper()
 	start := time.Now()
@@ -214,6 +214,6 @@ func TestOverlapPrototypeKeepsDisjointWindowsApart(t *testing.T) {
 			events[2] != (overlapPrototypeEvent{"late", 10 * time.Millisecond}) {
 			t.Fatalf("scheduler forced incompatible windows together: %v", events)
 		}
-		t.Logf("separate windows produce two release instants: %v", events)
+		t.Logf("separate windows produce two release moments: %v", events)
 	})
 }

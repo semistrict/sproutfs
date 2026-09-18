@@ -42,11 +42,11 @@ func TestEmptyResidencyAttachesWithoutReadingColdMetadata(t *testing.T) {
 	})
 }
 
-// Two attachments inherit the same frames while both are held by in-flight
+// Two attachments inherit the same pages while both are held by in-flight
 // faults. Population acquires resident locks in one global identity order and
 // never waits for a lock from inside a plan that already holds another, so the
 // release order of the faults cannot leave either attachment stuck.
-func TestConcurrentPopulationsOfHeldFramesDoNotDeadlock(t *testing.T) {
+func TestConcurrentPopulationsOfHeldPagesDoNotDeadlock(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 2, LogicalPages: 6, DirtyPages: 2, ReadAheadPages: 1})
 		source, sm, _ := f.region(2)
@@ -101,7 +101,7 @@ func TestConcurrentPopulationsOfHeldFramesDoNotDeadlock(t *testing.T) {
 		second, secondDone := attach(f.newBacking(2))
 		synctest.Wait()
 		// Release the second page first. An attachment that waited on a held
-		// frame while holding another would never see either fault complete.
+		// page while holding another would never see either fault complete.
 		close(release[1])
 		released[1] = true
 		synctest.Wait()
@@ -115,7 +115,7 @@ func TestConcurrentPopulationsOfHeldFramesDoNotDeadlock(t *testing.T) {
 					t.Fatal(err)
 				}
 			default:
-				t.Fatal("concurrent populations of held frames deadlocked")
+				t.Fatal("concurrent populations of held pages deadlocked")
 			}
 		}
 		for range 2 {
@@ -127,7 +127,7 @@ func TestConcurrentPopulationsOfHeldFramesDoNotDeadlock(t *testing.T) {
 			firstPage, firstOK := first.pages[page]
 			secondPage, secondOK := second.pages[page]
 			if !firstOK || !secondOK || firstPage.slot != sm.pages[page].slot || secondPage.slot != sm.pages[page].slot {
-				t.Fatalf("page %d did not inherit the source frame", page)
+				t.Fatalf("page %d did not inherit the source page", page)
 			}
 		}
 	})
@@ -195,7 +195,7 @@ func TestStalledMetadataDoesNotDelayUnrelatedWarmAttachment(t *testing.T) {
 	})
 }
 
-func TestAttachmentIncludesFramesLoadedDuringMetadataLookup(t *testing.T) {
+func TestAttachmentIncludesPagesLoadedDuringMetadataLookup(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newFixture(t, 6, 9, 4)
 		source, sm, _ := f.region(4)

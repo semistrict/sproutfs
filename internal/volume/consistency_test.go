@@ -67,7 +67,7 @@ func TestCheckDeploymentAcceptsAQuiescedDeployment(t *testing.T) {
 		if err := fork.Checkpoint(t.Context()); err != nil {
 			t.Fatal(err)
 		}
-		// The instant the child was forked at is pinned in the parent's record,
+		// The point the child was forked at is pinned in the parent's record,
 		// which is what keeps every checkpoint the child reads through.
 		checkStore(t, h, volume.AllowUnreferencedCheckpoint)
 		if err := fork.Close(t.Context()); err != nil {
@@ -305,7 +305,7 @@ func TestAnAbandonedForkTakesItsRecordWithIt(t *testing.T) {
 		if err := manager.Close(t.Context()); err != nil {
 			t.Fatal(err)
 		}
-		// The parent still pins the instant it was forked at, and still selects
+		// The parent still pins the point it was forked at, and still selects
 		// it, so nothing is left over at all.
 		checkStore(t, h)
 		if !pins(t, h, "parent").IsPinned(vm.Status().Checkpoint.Sequence) {

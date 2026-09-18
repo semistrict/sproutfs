@@ -42,7 +42,7 @@ const (
 	defaultBytesInFlight = 8 << 20
 	// requestTimeout bounds one page request. Everything it reads is local, so
 	// this is generous by an order of magnitude and only bounds a source whose
-	// frames have stopped answering: a destination told its request failed
+	// pages have stopped answering: a destination told its request failed
 	// retries or reads its own volume, where one left waiting holds a guest's
 	// fault open behind it.
 	requestTimeout = 30 * time.Second
@@ -81,9 +81,9 @@ type SourceStats struct {
 	Listings int64
 }
 
-// Pages is one volume's worth of frames a host still holds for another: a
-// migrated VM's region, whose volume has been given up but whose frames have
-// not, or the sealed instant a fork was taken at, which the parent goes on
+// Pages is one volume's worth of pages a host still holds for another: a
+// migrated VM's region, whose volume has been given up but whose pages have
+// not, or the sealed fork point a fork was taken at, which the parent goes on
 // running behind. The protocol above does not know which it is answering from.
 type Pages interface {
 	// ReadResident copies one page's current bytes, reports false for a page
@@ -104,7 +104,7 @@ type Pages interface {
 }
 
 // RegionPages presents the regions of a migrated VM as what its page source
-// serves, by volume name. The regions keep their frames after their volumes
+// serves, by volume name. The regions keep their pages after their volumes
 // were handed off, which is exactly what this serves.
 func RegionPages(regions map[string]*vmmemory.Region) map[string]Pages {
 	pages := make(map[string]Pages, len(regions))
@@ -158,7 +158,7 @@ func (f forkPages) ReadResident(ctx context.Context, page uint64, dst []byte) (b
 	return true, true, nil
 }
 
-// PageSource serves the pages of the VMs this host holds frames for on another
+// PageSource serves the pages of the VMs this host holds memory for on another
 // host's behalf: the ones it has migrated away, and the children it has forked
 // onto another host. A VM registers its pages when it is handed over and gives
 // them up when the destination reports that it has them all.
@@ -376,7 +376,7 @@ func (s *PageSource) Stats() SourceStats {
 }
 
 // Close stops accepting and drops every connection. It does not release the
-// regions: their frames belong to the VMM process that owns them.
+// regions: their pages belong to the VMM process that owns them.
 func (s *PageSource) Close() error {
 	s.closeOnce.Do(func() {
 		s.cancel(ErrClosed)
@@ -581,7 +581,7 @@ func (s *PageSource) pages(peer string, request *migratev1.PageRequest) (*migrat
 	defer s.release(peer, reserved)
 
 	// One request gets a deadline of its own. Everything it touches is local —
-	// frames this host already holds — so a read that does not finish inside it
+	// pages this host already holds — so a read that does not finish inside it
 	// is a page this connection is never going to get, and the destination is
 	// better told than left holding a request while its guest waits on the
 	// fault behind it.

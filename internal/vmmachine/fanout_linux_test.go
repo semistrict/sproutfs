@@ -22,13 +22,13 @@ import (
 const (
 	// forkFanOutRAM and forkFanOutRoot are the child's shape, and
 	// forkFanOutTouched the working set in MiB the parent leaves in its RAM
-	// before the instant is taken: every page of it is one no checkpoint holds,
+	// before the point is taken: every page of it is one no checkpoint holds,
 	// so every child has to fetch it from the parent's page server before it
 	// may be released, and every page of it is one both children read back.
 	forkFanOutRAM     = 256 << 20
 	forkFanOutRoot    = 64 << 20
 	forkFanOutTouched = 64
-	// forkFanOutArena and forkFanOutDirty are the destination pager's frames and
+	// forkFanOutArena and forkFanOutDirty are the destination pager's pages and
 	// its budget for private state no checkpoint has. Two children of this shape
 	// map four times the arena between them, so every read of theirs evicts,
 	// spills and refaults, and the dirty budget is the arena's size as a
@@ -37,14 +37,14 @@ const (
 	forkFanOutDirty = 128 << 20
 	// forkFanOutInterval is how often each child is checkpointed while it reads,
 	// which is what a deployment does to a VM that is answering: the guest pauses
-	// for the state capture and the seal, and the frames upload behind it.
+	// for the state capture and the seal, and the pages upload behind it.
 	forkFanOutInterval = 250 * time.Millisecond
 	// forkFanOutRounds is how many times each child reads everything it has.
 	forkFanOutRounds = 2
 )
 
 // forkFanOutRead bounds the phase this test exists for: two children of one
-// instant reading all of their memory and all of their root volume at the same
+// point reading all of their memory and all of their root volume at the same
 // time. Both of them do it in seconds when nothing is wrong, so a bound this
 // generous only separates slow from stopped.
 const forkFanOutRead = 2 * time.Minute
@@ -92,7 +92,7 @@ func TestFirecrackerForkFanOutServesBothChildrenAtOnce(t *testing.T) {
 	// The parent's guest takes a working set of its own and stores into its DAX
 	// root, and the parent then publishes it. That checkpoint is the lineage
 	// both children inherit: pages neither of them writes, which they must read
-	// as one frame between them rather than one each.
+	// as one page between them rather than one each.
 	command(t, ctx, p, fmt.Sprintf("pressure %d\n", forkFanOutTouched),
 		fmt.Sprintf("SPROUTFS_PRESSURE bytes=%d", forkFanOutTouched<<20))
 	command(t, ctx, p, "ram 73\n", "SPROUTFS_RAM ram=73")
@@ -108,7 +108,7 @@ func TestFirecrackerForkFanOutServesBothChildrenAtOnce(t *testing.T) {
 	if inheritedLineage == 0 {
 		t.Fatal("the parent published no page for its children to share")
 	}
-	// And stores into half of that working set again, so the instant below also
+	// And stores into half of that working set again, so the point below also
 	// holds pages of both volumes that no checkpoint has: those are the ones
 	// each child fetches over the wire and publishes as its own. Half is
 	// deliberate — a fan-out has both kinds of page at once, and a child reading
@@ -129,12 +129,12 @@ func TestFirecrackerForkFanOutServesBothChildrenAtOnce(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = pages.Close() })
 
-	// One pause starts them both: a fan-out of forks is one instant.
+	// One pause starts them both: a fan-out of forks is one fork point.
 	point, err := parent.ForkPoint(ctx, prepareAndResume(p))
 	if err != nil {
-		t.Fatalf("sealing the instant %s is forked at: %v\n%s", parent.ID(), err, consoleText(p))
+		t.Fatalf("sealing the point %s is forked at: %v\n%s", parent.ID(), err, consoleText(p))
 	}
-	// The fan-out's own hold keeps the instant while the children are described,
+	// The fan-out's own hold keeps the point while the children are described,
 	// exactly as the host's does.
 	point.Hold()
 	if err := point.Pin(ctx); err != nil {
@@ -160,12 +160,12 @@ func TestFirecrackerForkFanOutServesBothChildrenAtOnce(t *testing.T) {
 		}
 	}
 	if inherited == 0 {
-		t.Fatal("the instant holds no page a child would have to fetch")
+		t.Fatal("the point holds no page a child would have to fetch")
 	}
-	t.Logf("fan-out instant: children=%d inherited_pages=%d", len(children), inherited)
+	t.Logf("fan-out point: children=%d inherited_pages=%d", len(children), inherited)
 
 	// Both children land on one destination pager, which is what makes them
-	// share its frames, its budgets and the lineage they inherited.
+	// share its pages, its budgets and the lineage they inherited.
 	destinationPager, _ := newSizedMigrationPager(t, ctx, forkFanOutArena/pagerPageBytes(t),
 		len(children)*(forkFanOutRAM+forkFanOutRoot)+(64<<20), forkFanOutDirty)
 	taken := make([]*forkedChild, 0, len(children))
@@ -218,10 +218,10 @@ func TestFirecrackerForkFanOutServesBothChildrenAtOnce(t *testing.T) {
 	if left := pages.Outstanding(); len(left) != 0 {
 		t.Fatalf("the parent's page server still owes %v after both children were released", left)
 	}
-	// What the two of them inherited and never wrote is one frame between them,
+	// What the two of them inherited and never wrote is one page between them,
 	// which is the reason a fan-out puts children on one host: every page of the
-	// parent's lineage that both read must cost one load and one frame, not one
-	// each. The arena is a quarter of what they map, so not every frame outlives
+	// parent's lineage that both read must cost one load and one page, not one
+	// each. The arena is a quarter of what they map, so not every page outlives
 	// the sibling that would have shared it — but a host that shared none of
 	// them would be paying twice for a lineage the two agree on completely.
 	shared := 0
@@ -244,7 +244,7 @@ func TestFirecrackerForkFanOutServesBothChildrenAtOnce(t *testing.T) {
 	// clears this by several times over, and only one sharing almost none of it
 	// does not.
 	if want := uint64(shared / 2); pager.IdentityHits < want {
-		t.Errorf("two children of one instant holding %d pages of their parent's lineage shared %d frames, want at least %d: %+v",
+		t.Errorf("two children of one fork point holding %d pages of their parent's lineage shared %d pages, want at least %d: %+v",
 			shared, pager.IdentityHits, want, pager)
 	}
 	t.Logf("fan-out destination pager: faults=%d loads=%d evictions=%d spills=%d refaults=%d dirty_stalls=%d dirty_waits=%d identity_hits=%d",
@@ -280,7 +280,7 @@ type forkedChild struct {
 	received *vmmigrate.Received
 }
 
-// prepareAndResume is the pause every capture and every fork instant takes: the
+// prepareAndResume is the pause every capture and every fork point takes: the
 // VMM state is saved, the memory is sealed with it, and the guest runs again
 // before any byte is uploaded.
 func prepareAndResume(p *vmmachine.Process) volume.PrepareFunc {
@@ -388,7 +388,7 @@ func receiveChild(t *testing.T, ctx context.Context, c *migrationCluster, pager 
 	}
 	// The rest of what the source holds arrives behind the running guest, and
 	// the child's word that it holds every inherited page is what gives the
-	// parent the frames those pages are in back.
+	// parent the memory those pages are in back.
 	if err := received.Streamed(ctx); err != nil {
 		t.Fatalf("the bulk stream of %s stopped early: %v", handoff.VMID, err)
 	}
@@ -408,7 +408,7 @@ func stacks() []byte {
 
 // lineage is what one volume's pages name, counted: a hole, an object of a VM
 // this one descends from, or one of its own. It is what says how much lineage
-// two children of an instant have to share a frame of, and how much of it each
+// two children of a point have to share a page of, and how much of it each
 // of them has already diverged from.
 type lineage struct {
 	pages, holes, inherited, own int

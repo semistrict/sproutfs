@@ -144,14 +144,14 @@ func (s *supervisor) opening(ctx context.Context, id string,
 // pauses only for its VMM state capture and the seal, and publishes nothing to
 // be forked: the child inherits the checkpoint the parent's control record
 // already selects, and the pages written since it come out of the parent's
-// sealed frames.
+// sealed pages.
 //
 // It is one path wherever the children land. This host builds one handoff per
-// child and holds the instant for each of them; the control plane gives every
+// child and holds the point for each of them; the control plane gives every
 // handoff to its destination's Receive — this host included, for a child with
 // no destination named — and tells this one to release when the child has every
 // page it inherited. A child taken in here is served nothing: it attaches over
-// the instant itself, so its inherited pages never reach the wire.
+// the fork point itself, so its inherited pages never reach the wire.
 func (s *supervisor) Fork(ctx context.Context, parent string, request hostapi.ForkRequest) (hostapi.ForkResult, error) {
 	began := s.clock.Now()
 	if _, err := s.running(parent); err != nil {
@@ -261,8 +261,8 @@ func (s *supervisor) machineConfig(vm *volume.VM, state []byte, backings map[str
 // bucket rather than here, so it is deleted all the same: a VM whose host is
 // gone would otherwise be undeletable, because there is no host left to ask.
 //
-// The host owns the order this comes apart in: the fork instants taken on this
-// VM are retired before the process that holds their frames is closed, a VM
+// The host owns the order this comes apart in: the fork points taken on this
+// VM are retired before the process that holds their pages is closed, a VM
 // anything still holds sealed is refused, and the handle outlives the pager
 // attachments that map it.
 func (s *supervisor) Delete(ctx context.Context, id string) error {

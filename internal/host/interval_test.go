@@ -160,7 +160,7 @@ func TestIntervalCheckpointSerializesWithAnExplicitCapture(t *testing.T) {
 		}
 		point, err := host.Seal(t.Context(), vm, counting)
 		if err != nil {
-			t.Fatalf("sealing the fork instant during the interval loop: %v", err)
+			t.Fatalf("sealing the fork point during the interval loop: %v", err)
 		}
 		fork, state, err := host.CreateFork(t.Context(), h.hosts[0].Volumes(), "fork-"+checkpoint.Ref().String()[len(checkpoint.Ref().VM)+1:], point)
 		if err != nil {
@@ -211,7 +211,7 @@ func (m *closingMachine) closed() bool {
 // guest writes nothing else. Everything that guest goes on producing is
 // unpublishable, so the host closes the machine — stopping the VMM and
 // releasing the volumes — and tells its supervisor, rather than leaving a stale
-// guest burning this host's frames until something else stops it.
+// guest burning this host's pages until something else stops it.
 func TestAFencedHostClosesTheVMItCanNoLongerPublish(t *testing.T) {
 	h := newHostHarness(t)
 	h.configs[0].CheckpointInterval = 5 * time.Millisecond
@@ -332,7 +332,7 @@ func TestAHostGivesUpAVMWhoseVMMProcessDied(t *testing.T) {
 		t.Fatal("the host never gave up the VM whose VMM process had died")
 	}
 	if !dying.closed() {
-		t.Fatal("the host gave the VM up without closing the process that held its frames")
+		t.Fatal("the host gave the VM up without closing the process that held its pages")
 	}
 	if machines := h.hosts[0].Machines(); len(machines) != 0 {
 		t.Fatalf("the host still runs %v", machines)

@@ -155,7 +155,7 @@ func (s *Store) checkpointPrefix(ref control.Ref) string {
 	return s.prefix + "vm/" + ref.VM + "/ckpt/" + strconv.FormatUint(ref.Sequence, 10) + "/"
 }
 
-// indexKey names one checkpoint's metadata plane: the object holding the
+// indexKey names one checkpoint's index object: the object holding the
 // segments it changed and the root that ends it. Its create-if-absent PUT is
 // the publication's commit, so while it is there the checkpoint is published,
 // and until it is there the checkpoint is absent.
@@ -166,7 +166,7 @@ func (s *Store) indexKey(ref control.Ref) (platform.ObjectKey, error) {
 	return platform.NewObjectKey(s.checkpointPrefix(ref) + "index")
 }
 
-// partKey names one part of a checkpoint's data plane, numbered from zero. How
+// partKey names one part of a checkpoint's data, numbered from zero. How
 // many there are is what the root says.
 func (s *Store) partKey(ref control.Ref, number uint32) (platform.ObjectKey, error) {
 	if !validName(ref.VM) {

@@ -111,7 +111,7 @@ func (h *Host) takeFreeSpill(want int) []int {
 }
 
 // evictionSeam runs in a reclaim between reading one victim's aliases and
-// reading the reservations those aliases name, which is the one instant a seal
+// reading the reservations those aliases name, which is the one moment a seal
 // can move a page's reservation to the checkpoint's copy of it without the
 // reclaim seeing either state. Production leaves it nil; a test installs it to
 // take a seal exactly there.
@@ -122,9 +122,9 @@ var evictionSeam func(slot int)
 // because only the volume quorum acknowledges durability. No arena slot is
 // released until the entire bounded scratch batch has succeeded.
 func (h *Host) evictBatch(ctx context.Context, victims []*resident) error {
-	// The reservation each frame's bytes go to is read once, here: a seal taken
+	// The reservation each page's bytes go to is read once, here: a seal taken
 	// while this runs hands a page's reservation to the checkpoint's copy of it
-	// and joins that copy to the frame, so a reservation can be named by the
+	// and joins that copy to the page, so a reservation can be named by the
 	// page before this walk and by the copy after it, and is written once
 	// either way.
 	type spillPage struct {
@@ -135,9 +135,9 @@ func (h *Host) evictBatch(ctx context.Context, victims []*resident) error {
 	taken := make(map[int]bool)
 	byRegion := make(map[*Region][]*binding)
 	for _, pg := range victims {
-		// The seal joins the checkpoint's copy to the frame before it hands
+		// The seal joins the checkpoint's copy to the page before it hands
 		// that copy the page's reservation, so an alias set that has not grown
-		// since its reservations were read names every reservation the frame's
+		// since its reservations were read names every reservation the page's
 		// bytes can be in. One that has grown is walked again: the alias the
 		// reservation moved to is in it, and a page whose reservation this walk
 		// already read is not read again, because the bytes are the same bytes
@@ -156,7 +156,7 @@ func (h *Host) evictBatch(ctx context.Context, victims []*resident) error {
 				walked[b], grown = true, true
 				byRegion[b.region] = append(byRegion[b.region], b)
 				if b.region.Checkpoint() != nil {
-					// The region is sealed: a publication is reading its frames
+					// The region is sealed: a publication is reading its pages
 					// while this eviction punches one of them. Nothing may lose
 					// bytes here, and nothing reaches it without arena pressure
 					// at exactly the wrong moment.
@@ -167,9 +167,9 @@ func (h *Host) evictBatch(ctx context.Context, victims []*resident) error {
 				}
 				slot, elsewhere := b.spillTarget()
 				if slot < 0 {
-					// A page sharing a checkpoint's frame owns no reservation of its own:
+					// A page sharing a checkpoint's copy owns no reservation of its own:
 					// the checkpoint's copy is the alias that spills those bytes, and so
-					// does a machine that inherited the name a seal gave the frame, whose
+					// does a machine that inherited the name a seal gave the page, whose
 					// page is not its own state at all. Any other private page without one
 					// would lose them here.
 					if !elsewhere {
@@ -187,18 +187,18 @@ func (h *Host) evictBatch(ctx context.Context, victims []*resident) error {
 	}
 	for r, bindings := range byRegion {
 		if err := r.revokeBindings(ctx, bindings); err != nil {
-			// A region this frame is also reachable from cannot take the mapping
+			// A region this page is also reachable from cannot take the mapping
 			// away, which is what a machine whose memory session has stopped
-			// answering looks like from here. The frame therefore stays mapped
+			// answering looks like from here. The page therefore stays mapped
 			// there and is not this host's to reuse — but that is a fact about
 			// that region, which the failed revocation has just made terminal,
 			// and not about whoever is evicting. A fan-out's children share
-			// every frame they inherited, so returning this to the caller ends
+			// every page they inherited, so returning this to the caller ends
 			// one machine for another machine's death and then the next for
-			// that one's. The caller takes another victim instead; this frame
+			// that one's. The caller takes another victim instead; this page
 			// is excluded from every later pass by the region it could not be
 			// taken from.
-			r.heldFrames(ctx, err)
+			r.heldPages(ctx, err)
 			return errors.Join(errVictimHeld, err)
 		}
 	}

@@ -70,7 +70,7 @@ const (
 	// MaximumPins bounds the sequences one record may pin. Because a pin is
 	// permanent, that is how many distinct checkpoints of one VM may be forked
 	// before a collector releases some — not how many children one checkpoint
-	// may have, which is unbounded: a fan-out of any size from one instant is
+	// may have, which is unbounded: a fan-out of any size from one fork point is
 	// one pin.
 	MaximumPins = 4096
 	// MinimumEpoch is the lowest epoch a record may carry. Epoch zero is not

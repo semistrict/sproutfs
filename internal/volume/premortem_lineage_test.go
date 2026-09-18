@@ -48,7 +48,7 @@ func writePage(t *testing.T, vm *volume.VM, page uint64, value byte) {
 // pages between them, and every child forked again. Each fork pins a checkpoint
 // of the parent that nothing ever gives back, each publication of the parent
 // sweeps what it replaced and compacts what has gone mostly dead, and every
-// descendant goes on reading the instant it was taken at.
+// descendant goes on reading the point it was taken at.
 //
 // The pins accumulate, so what the parent's own sweep may take shrinks every
 // round; what must never shrink is what any descendant reads.
@@ -76,11 +76,11 @@ func TestPremortemRoundsOfForksOffOneParentLeaveEveryLineageWhole(t *testing.T) 
 		const rounds = 4
 		for round := 1; round <= rounds; round++ {
 			// 2. the parent fans out. Both children of one round come from one
-			// instant, which is one pin: the same shape as the soak's two
-			// fan-outs, taken as two instants so the record gains a pin a round.
+			// point, which is one pin: the same shape as the soak's two
+			// fan-outs, taken as two points so the record gains a pin a round.
 			point, err := parent.ForkPoint(t.Context(), volume.Prepared(nil, nil))
 			if err != nil {
-				t.Fatalf("round %d: taking the fork instant: %v", round, err)
+				t.Fatalf("round %d: taking the fork point: %v", round, err)
 			}
 			inherited := expected["vm"]
 			var children []*volume.VM
@@ -111,7 +111,7 @@ func TestPremortemRoundsOfForksOffOneParentLeaveEveryLineageWhole(t *testing.T) 
 					// page it reads through them.
 					grandPoint, err := child.ForkPoint(t.Context(), volume.Prepared(nil, nil))
 					if err != nil {
-						t.Fatalf("round %d: taking the grandchild's instant: %v", round, err)
+						t.Fatalf("round %d: taking the grandchild's point: %v", round, err)
 					}
 					id := fmt.Sprintf("grandchild-%d", round)
 					grandchild, err := manager.Fork(t.Context(), id, grandPoint)
@@ -184,7 +184,7 @@ func TestPremortemDeletingAParentThenAChildLeavesACheckableDeployment(t *testing
 		if err := parent.Checkpoint(t.Context()); err != nil {
 			t.Fatal(err)
 		}
-		// Two children of one instant, as a round's fan-out onto both hosts is,
+		// Two children of one fork point, as a round's fan-out onto both hosts is,
 		// and a grandchild of one of them.
 		point, err := parent.ForkPoint(t.Context(), volume.Prepared(nil, nil))
 		if err != nil {

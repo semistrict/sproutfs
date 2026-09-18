@@ -10,7 +10,7 @@ import (
 // reports ErrHandedOff.
 //
 // It is the migration handoff. Nothing is published because nothing needs to
-// be: the source's pager still holds the frames of everything written since the
+// be: the source's pager still holds the pages of everything written since the
 // last checkpoint, and the destination faults those pages out of it rather than
 // out of storage. Uploading them inside the pause is exactly the cost a
 // post-copy migration exists to avoid; the destination's next interval

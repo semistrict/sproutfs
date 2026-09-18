@@ -39,7 +39,7 @@ func (b *measureBacking) Verify(context.Context) error { return nil }
 
 // Seal time is what a migration's pause pays for its dirty set, so it is
 // measured over the dirty page counts a migration actually meets, and with the
-// frames both contiguous and scattered: a run of consecutive pages whose frames
+// pages both contiguous and scattered: a run of consecutive pages whose pages
 // are not consecutive is what a real guest's dirty set looks like. Timings are
 // observations, never correctness thresholds. Run through the Linux
 // qualification script with SPROUTFS_PAGER_MEASURE=1.

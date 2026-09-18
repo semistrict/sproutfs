@@ -85,7 +85,7 @@ func TestOnlyStartIsCold(t *testing.T) {
 // TestColdStartPrintsThatTheVMCameBackWithoutItsMemory, and carries the shape
 // it asked for. The checkpoint it names is the one that discarded the memory
 // rather than the one the stop published, so a flow reading the number after
-// "checkpoint" gets the instant the VM is at now.
+// "checkpoint" gets the checkpoint the VM is at now.
 func TestColdStartPrintsThatTheVMCameBackWithoutItsMemory(t *testing.T) {
 	client, stub := serve(t, func(*http.Request) (int, any) {
 		return http.StatusOK, orch.StartResult{Host: "sproutfs-host-b",

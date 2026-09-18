@@ -60,10 +60,10 @@
     "purpose": "Forget that evicted private bytes exist in scratch storage. Only the buggified campaign evicts enough to spill, so this is the entry the per-site injection made detectable."
   },
   {
-    "id": "pager-zero-new-frame",
+    "id": "pager-zero-new-page",
     "package": "internal/simtest",
     "run": "^TestScheduledWorldReproduces$",
-    "purpose": "Lose loaded or copied data when creating a resident frame."
+    "purpose": "Lose loaded or copied data when creating a resident page."
   },
   {
     "id": "checkpoint-part-member-offset",

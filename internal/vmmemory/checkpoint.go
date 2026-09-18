@@ -27,14 +27,14 @@ var (
 // RegionCheckpoint is one checkpoint of a volume's dirty pages, taken by Seal
 // and published by the checkpoint that uploads it. Its pages are detached
 // bindings: they are not reachable from the region's bindings, they alias the
-// frames the guest had at the seal, and they own the dirty reservations those
-// frames were admitted under. The set is fixed when Seal returns, which is what
-// lets the guest keep running against the same frames: a store copies away from
-// the checkpoint instead of into it.
+// resident pages the guest had at the seal, and they own the dirty reservations
+// those pages were admitted under. The set is fixed when Seal returns, which is
+// what lets the guest keep running against the same pages: a store copies away
+// from the checkpoint instead of into it.
 //
 // It is what a checkpoint reads its pages from, so it satisfies the publication
 // interface volume.Checkpoint takes per volume. Nothing copies those bytes on
-// the way: the upload reads the guest's own frames, and the seal is held until
+// the way: the upload reads the guest's own pages, and the seal is held until
 // it lands.
 //
 // A checkpoint is immutable once Seal returns and safe for concurrent use.
@@ -48,8 +48,8 @@ type RegionCheckpoint struct {
 	// checkpoint hands it back, and a published one drops it, because the store
 	// holds those bytes then.
 	dirtySince time.Time
-	// held marks a checkpoint a fork instant has taken. Such a seal lasts until
-	// the children of that instant have the pages they inherited, which is no
+	// held marks a checkpoint a fork point has taken. Such a seal lasts until
+	// the children of that fork point have the pages they inherited, which is no
 	// bound a waiting store may wait under, so it counts as no relief at all.
 	held atomic.Bool
 	done chan struct{}
@@ -108,15 +108,15 @@ func (r *Region) sealState() (sealing bool, draining *RegionCheckpoint) {
 // relieves reports whether ending this checkpoint will relieve the dirty
 // budget under a bound a waiting store may wait for. A publication's does: it
 // gives its reservations back, and where it holds none it gives the region back
-// the right to take the checkpoint that will. A fork instant's hold does
+// the right to take the checkpoint that will. A fork point's hold does
 // neither for as long as the children it named are still reading it, and no
 // store can be left waiting on that.
 func (c *RegionCheckpoint) relieves() bool { return !c.held.Load() }
 
-// Hold marks this seal as a fork instant's, which a fork point does when it
-// takes the instant. It is what says the seal lasts as long as the children of
-// that instant rather than as long as an upload, so no store waiting for the
-// dirty budget is left waiting on it. Sharing the frames is separate: a child
+// Hold marks this seal as a fork point's, which a fork point does when it
+// takes the pause. It is what says the seal lasts as long as the children of
+// that fork point rather than as long as an upload, so no store waiting for the
+// dirty budget is left waiting on it. Sharing the pages is separate: a child
 // on another host never maps them, so only a child taken in here names them.
 func (c *RegionCheckpoint) Hold() { c.held.Store(true) }
 
@@ -125,11 +125,11 @@ func (c *RegionCheckpoint) Hold() { c.held.Store(true) }
 // checkpoint, so the pause it belongs to costs page-table work rather than any
 // bytes. The guest may store into a sealed page as soon as this returns: it
 // takes the write-protect fault and gets a private copy, while the checkpoint
-// keeps the frame.
+// keeps the page.
 //
 // The region stays sealed, publishing nothing newer, until the checkpoint is
 // retired. Retiring it belongs to the publication: it reads the sealed
-// frames, and when it lands the pages become clean under the checkpoint that
+// pages, and when it lands they become clean under the checkpoint that
 // holds them. Unseal abandons a checkpoint no publication will take, which
 // hands every page back to the guest as ordinary dirty state. A seal that fails
 // partway captures nothing: it hands the pages it took back, so sealing again
@@ -177,13 +177,13 @@ func (r *Region) Seal(ctx context.Context) error {
 
 // sealSeam runs in a seal between taking the dirty set into the checkpoint and
 // recording the checkpoint on the region. It is nil in production; a test
-// installs one to wake a store waiting for the dirty budget in that instant.
+// installs one to wake a store waiting for the dirty budget in that pause.
 var sealSeam func()
 
 // sealPages write-protects every dirty page and detaches the checkpoint's copy
 // of it. Caller holds the exclusive region lock. Page locks are taken in
 // bounded batches; each batch is protected as whole runs of consecutive pages,
-// so the cost is one range command per run whatever frames those pages hold,
+// so the cost is one range command per run whatever memory those pages hold,
 // and no page's bytes and no page's mapping move.
 //
 // A batch that fails leaves the pages it write-protected and the pages it did
@@ -218,11 +218,11 @@ func (r *Region) sealPages(ctx context.Context) ([]*binding, error) {
 				case pg != nil:
 					h.bind(held, pg)
 				case busy:
-					// A reclaim is the only thing that can hold a frame of the
-					// region being sealed, and it is writing that frame's bytes
-					// to this page's reservation, which the checkpoint's copy is
-					// taking over. Joining the copy to the frame without waiting
-					// for the reclaim is what keeps the pause off its I/O.
+					// A reclaim is the only thing that can hold a resident page
+					// of the region being sealed, and it is writing that page's
+					// bytes to this page's reservation, which the checkpoint's
+					// copy is taking over. Joining the copy to that page without
+					// waiting for the reclaim keeps the pause off its I/O.
 					h.joinReclaiming(held, b)
 				}
 				if busy {
@@ -233,7 +233,7 @@ func (r *Region) sealPages(ctx context.Context) ([]*binding, error) {
 					reclaiming = append(reclaiming, b)
 				} else if r.isMapped(b) {
 					// Runs need only be consecutive pages: a range protection
-					// does not care which frames they hold.
+					// does not care which memory they hold.
 					if n := len(runs); n > 0 && runs[n-1].Page+uint64(runs[n-1].Count) == b.index {
 						runs[n-1].Count++
 					} else {
@@ -266,11 +266,11 @@ func (r *Region) sealPages(ctx context.Context) ([]*binding, error) {
 }
 
 // protect takes write access away from every run of pages the seal took,
-// leaving their mappings, frames and page tables exactly as they are: the guest
-// keeps reading the frames the checkpoint holds and traps on its next store to
+// leaving their mappings, memory and page tables exactly as they are: the guest
+// keeps reading the pages the checkpoint holds and traps on its next store to
 // one. Nothing is copied, nothing is mapped, and no page is left without a
 // mapping for the guest to fault on. One range command covers a run of
-// consecutive pages whatever frames they hold, so the pause pays for runs, not
+// consecutive pages whatever memory they hold, so the pause pays for runs, not
 // pages.
 func (r *Region) protect(ctx context.Context, runs []PageRun) error {
 	h := r.host
@@ -315,7 +315,7 @@ func (c *RegionCheckpoint) DirtyPages() []uint64 {
 
 // UnpublishedAge is how long the oldest write this checkpoint holds has gone
 // unpublished, zero where it holds none. It is the region's loss window as the
-// seal took it, still running: a fork instant's hold can outlast several
+// seal took it, still running: a fork point's hold can outlast several
 // intervals, and the child that inherits these pages inherits their age with
 // them rather than starting a window of its own.
 func (c *RegionCheckpoint) UnpublishedAge() time.Duration {
@@ -325,25 +325,25 @@ func (c *RegionCheckpoint) UnpublishedAge() time.Duration {
 	return max(c.region.host.clock.Since(c.dirtySince), 0)
 }
 
-// Share names every frame this checkpoint holds by the identity the checkpoint
+// Share names every page this checkpoint holds by the identity the checkpoint
 // publishing it gives that page, so a region that inherits the identity maps
-// the frame instead of reading the page. A fork point is what calls it, when a
-// child of that instant is taken in on this host: the instant takes a reference
-// of its own and publishes nothing under it, so the name it gives the parent's
-// unpublished pages is shared by every child of that instant and claimed by
-// nothing else, ever.
+// the resident page instead of reading the page. A fork point is what calls it,
+// when a child of that fork point is taken in on this host: the fork point takes
+// a reference of its own and publishes nothing under it, so the name it gives
+// the parent's unpublished pages is shared by every child of that fork point and
+// claimed by nothing else, ever.
 //
-// The frames stay the guest's private dirty state under it. Nothing is copied
+// The pages stay the guest's private dirty state under it. Nothing is copied
 // and nothing becomes durable: the name lasts exactly as long as the seal,
 // because until the seal ends the bytes cannot change, and it is taken back
-// when the seal ends. A frame already evicted is simply not named — whoever
+// when the seal ends. A page already evicted is simply not named — whoever
 // inherits it reads the page through its own backing, which reaches these same
 // pages through the seal.
 func (c *RegionCheckpoint) Share(ctx context.Context, ref control.Ref, volume string) error {
 	h := c.region.host
 	c.held.Store(true)
 	for _, held := range c.pages {
-		key := frame{id: control.Identity{Ref: ref, Volume: volume, Page: held.index}}
+		key := pageKey{id: control.Identity{Ref: ref, Volume: volume, Page: held.index}}
 		if err := h.locked(ctx, held, func(pg *resident) error {
 			h.share(pg, key)
 			return nil
@@ -356,7 +356,7 @@ func (c *RegionCheckpoint) Share(ctx context.Context, ref control.Ref, volume st
 
 // ReadDirty fills dst, exactly one pager page, with the bytes the seal froze. A
 // store the guest made since then copied that page away from the checkpoint, so
-// it is not in them. It takes an I/O permit and the frame's lock, never the
+// it is not in them. It takes an I/O permit and the page's lock, never the
 // region's: the guest goes on faulting and storing while a checkpoint reads its
 // checkpoint.
 func (c *RegionCheckpoint) ReadDirty(ctx context.Context, page uint64, dst []byte) error {
@@ -367,7 +367,7 @@ func (c *RegionCheckpoint) ReadDirty(ctx context.Context, page uint64, dst []byt
 	select {
 	case <-c.done:
 		// Retired, abandoned or discarded: these pages are the guest's own
-		// state again or the volume's, and the frames behind them hold whatever
+		// state again or the volume's, and the memory behind them holds whatever
 		// has happened since, which is not what this checkpoint holds. A region
 		// that discarded it reports why it ended.
 		if c.err != nil {
@@ -437,7 +437,7 @@ func (r *Region) Unseal(ctx context.Context) error {
 // The set is as large as a capture's, so it is walked in the same bounded
 // batches a seal takes, and the region is given back between them: a fault
 // waits for one batch, not for the walk. Each batch's volume metadata is looked
-// up first, with neither the region nor any frame held. A page already retired
+// up first, with neither the region nor any page held. A page already retired
 // is skipped, so a repeated call finishes what a failed one left.
 func (r *Region) endSeal(ctx context.Context, checkpoint *RegionCheckpoint, published bool) error {
 	// The walk gives the region up between batches, so what keeps the
@@ -504,16 +504,16 @@ func (r *Region) endSeal(ctx context.Context, checkpoint *RegionCheckpoint, publ
 
 // finalizeCheckpoint retires every page of a published checkpoint. A page the
 // guest has not stored into since the seal becomes ordinary clean state, its
-// frame joining the sharing index under the identity the volume now reports and
-// staying mapped to the guest. A page the guest copied away from keeps only the
-// checkpoint's own copy, which is released here. Either way the dirty
-// reservation goes back.
+// resident page joining the sharing index under the identity the volume now
+// reports and staying mapped to the guest. A page the guest copied away from
+// keeps only the checkpoint's own copy, which is released here. Either way the
+// dirty reservation goes back.
 //
-// The page and the checkpoint's copy of it share one frame, so retiring both
-// and publishing the result happen under one hold of that frame's lock: a
-// private frame must never be reachable from a binding that owns neither a
+// The page and the checkpoint's copy of it share one resident page, so retiring
+// both and publishing the result happen under one hold of that page's lock: a
+// private page must never be reachable from a binding that owns neither a
 // spill reservation nor a checkpoint, which is what a concurrent eviction
-// between those steps would find, and it would punch the frame with nowhere to
+// between those steps would find, and it would punch the page with nowhere to
 // put its bytes.
 func (r *Region) finalizeCheckpoint(ctx context.Context, held []*binding, identities map[uint64]storedPage) error {
 	h := r.host
@@ -530,7 +530,7 @@ func (r *Region) finalizeCheckpoint(ctx context.Context, held []*binding, identi
 			return err
 		}
 		if pg != nil {
-			// The name the seal gave the frame goes with the seal; the identity
+			// The name the seal gave the page goes with the seal; the identity
 			// the volume reports now takes its place below.
 			h.unshare(pg)
 		}
@@ -559,10 +559,10 @@ func (r *Region) finalizeCheckpoint(ctx context.Context, held []*binding, identi
 // from needs only its own newer state, so the checkpoint's copy is released.
 // Caller holds the exclusive region lock.
 //
-// The reservation moves under the frame's lock, together with the unlink that
-// takes the checkpoint's alias away: an eviction that saw the two apart would
-// find a private page with neither a reservation of its own nor a checkpoint
-// still holding one, skip spilling it, and punch the frame.
+// The reservation moves under the resident page's lock, together with the
+// unlink that takes the checkpoint's alias away: an eviction that saw the two
+// apart would find a private page with neither a reservation of its own nor a
+// checkpoint still holding one, skip spilling it, and punch the page.
 func (r *Region) abandonPages(ctx context.Context, pages []*binding) error {
 	h := r.host
 	var restored []*binding
@@ -582,7 +582,7 @@ func (r *Region) abandonPages(ctx context.Context, pages []*binding) error {
 		}
 		if shared {
 			if pg != nil {
-				// The guest takes this frame back as dirty state it may store
+				// The guest takes this page back as dirty state it may store
 				// into in place, so nothing else may still be reading it.
 				if err := h.dropSharers(ctx, pg, b, held); err != nil {
 					h.unlock(pg)
@@ -596,7 +596,7 @@ func (r *Region) abandonPages(ctx context.Context, pages []*binding) error {
 		} else {
 			held.spillSlot, held.dirty = -1, false
 		}
-		// The live page keeps the frame when it still shares one; unlink
+		// The live page keeps its memory when it still shares one; unlink
 		// releases it only where the checkpoint's copy is its last alias.
 		if pg != nil {
 			err = h.unlink(ctx, held, pg)
@@ -610,7 +610,7 @@ func (r *Region) abandonPages(ctx context.Context, pages []*binding) error {
 		}
 	}
 	// The seal left these pages mapped in the read-only form the guest traps
-	// on. Take those mappings away, so the next store faults and maps the frame
+	// on. Take those mappings away, so the next store faults and maps the page
 	// writable again instead of resolving a store against a read-only mapping.
 	return r.revokeLocked(ctx, restored)
 }
@@ -622,8 +622,8 @@ func (r *Region) discardCheckpoint(ctx context.Context, checkpoint *RegionCheckp
 	h := r.host
 	for _, held := range checkpoint.pages {
 		if err := h.locked(ctx, held, func(pg *resident) error {
-			// The seal ends with the region, so its name for the frame does
-			// too. Whatever still shares the frame keeps it: nothing can store
+			// The seal ends with the region, so its name for the page does
+			// too. Whatever still shares the page keeps it: nothing can store
 			// into it any more, and its bytes stay what the seal froze.
 			h.unshare(pg)
 			return h.unlink(ctx, held, pg)

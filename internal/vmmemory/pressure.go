@@ -27,8 +27,8 @@ func (h *Host) SetPressure(p Pressure) {
 // its checkpoints drain is a guest to stall, and failing its fault instead
 // closes the session and kills its VMM.
 //
-// The budget counts the frames a checkpoint still holds as well as live private
-// frames, and it is the host's, not the region's: whichever checkpoint lands
+// The budget counts the pages a checkpoint still holds as well as live private
+// pages, and it is the host's, not the region's: whichever checkpoint lands
 // next releases reservations this store can have, so the wait is for all of
 // them. With none in flight the host asks for one, which is what a dirty set
 // that grows between intervals needs. Only a budget no checkpoint can relieve

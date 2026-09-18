@@ -63,7 +63,7 @@ func TestForkAcrossHostsPullsExactlyTheUnpublishedPages(t *testing.T) {
 		if unpublished != 6 {
 			t.Fatalf("the handoff named %d unpublished pages, want the 6 written since the parent's checkpoint", unpublished)
 		}
-		// The parent keeps its VM and its frames: nothing was published to take
+		// The parent keeps its VM and its pages: nothing was published to take
 		// the fork, and nothing may seal it again until the child has the pages.
 		if status := m.vm.Status(); !status.Sealed || status.HandedOff {
 			t.Fatalf("the parent gave something up to be forked: %+v", status)
@@ -79,7 +79,7 @@ func TestForkAcrossHostsPullsExactlyTheUnpublishedPages(t *testing.T) {
 		}
 		child.adopt(at)
 		if err := child.verify(t.Context(), at); err != nil {
-			t.Fatalf("the child did not start as its parent's instant: %v", err)
+			t.Fatalf("the child did not start as its parent's point: %v", err)
 		}
 
 		// The child's first checkpoint is its own root index, and it publishes
@@ -92,7 +92,7 @@ func TestForkAcrossHostsPullsExactlyTheUnpublishedPages(t *testing.T) {
 			t.Fatalf("the child's first checkpoint is %v, want its root %v", got, root)
 		}
 
-		// The parent takes its frames back, which is what the release means, and
+		// The parent takes its pages back, which is what the release means, and
 		// is checkpointed again from there.
 		if err := m.pages.Release("vm-2"); err != nil {
 			t.Fatalf("releasing a child that published its own root: %v", err)
@@ -110,7 +110,7 @@ func TestForkAcrossHostsPullsExactlyTheUnpublishedPages(t *testing.T) {
 }
 
 // Neither side of a fork can see the other's writes. The parent goes on storing
-// into copies of the frames the child inherited, and the child stores into its
+// into copies of the pages the child inherited, and the child stores into its
 // own.
 func TestForkAcrossHostsDivergesFromItsParent(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
@@ -131,7 +131,7 @@ func TestForkAcrossHostsDivergesFromItsParent(t *testing.T) {
 		}
 		child.adopt(at)
 
-		// The parent moves on. The child keeps the bytes of the instant.
+		// The parent moves on. The child keeps the bytes of the point.
 		m.machine.write("ram0", 0)
 		inherited := bytes.Clone(at["ram0"][:pageSize])
 		got, err := child.read(t.Context(), "ram0", 0)
@@ -209,7 +209,7 @@ func TestForkSurvivesTheParentHostOnceItHasPublished(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		// The parent's host is lost: its page server, its frames and its VM
+		// The parent's host is lost: its page server, its pages and its VM
 		// handle all go with it, and the fork point is never retired.
 		if err := m.pages.Release("vm-2"); err != nil {
 			t.Fatalf("releasing a child that published its own root: %v", err)
@@ -233,7 +233,7 @@ func TestForkSurvivesTheParentHostOnceItHasPublished(t *testing.T) {
 			t.Fatal(err)
 		}
 		if err := recovered.verify(t.Context(), at); err != nil {
-			t.Fatalf("the recovered child lost the instant it was forked at: %v", err)
+			t.Fatalf("the recovered child lost the point it was forked at: %v", err)
 		}
 	})
 }

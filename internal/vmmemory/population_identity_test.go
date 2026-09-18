@@ -50,7 +50,7 @@ func TestPopulationOrdersRelatedIdentitiesWithoutBlockingOtherPagers(t *testing.
 		{"page", pages, [2]uint64{0, uint64(perPage)}},
 		// Thirteen residents cross the sorter's small-input boundary. These
 		// inherited volumes and generations expose an inconsistent ordering
-		// that a two-frame population alone cannot distinguish.
+		// that a two-page population alone cannot distinguish.
 		{"volume", []control.Identity{
 			identity("0", 2, "0"), identity("0", 1, "2"), identity("1", 2, "1"),
 			identity("1", 2, "0"), identity("1", 3, "0"), identity("1", 1, "0"),
@@ -79,7 +79,7 @@ func populationOrder(t *testing.T, identities []control.Identity, held [2]uint64
 		otherBacking := &populationLineage{otherFixture.newBacking(count), identities}
 		other, otherMap := otherFixture.attach(otherBacking)
 		if len(otherMap.pages) != 0 {
-			t.Fatal("population reused frames from a different pager")
+			t.Fatal("population reused pages from a different pager")
 		}
 
 		ctx, cancel := context.WithCancel(t.Context())
@@ -162,7 +162,7 @@ func populationOrder(t *testing.T, identities []control.Identity, held [2]uint64
 				t.Fatal(err)
 			}
 		default:
-			t.Fatal("another pager waited behind held resident frames")
+			t.Fatal("another pager waited behind held resident pages")
 		}
 		if got := access(t, other, otherMap, 0, false)[0]; got != 1 {
 			t.Fatalf("independent pager bytes = %d", got)

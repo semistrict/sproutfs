@@ -186,7 +186,7 @@ func TestCapturePublishesSealedPagesAndRetiresThem(t *testing.T) {
 		if retires, _ := source.outcome(); retires != 0 {
 			t.Fatalf("the checkpoint was retired %d times before its publication landed", retires)
 		}
-		// The checkpoint reads the sealed frames, so a fork of it sees them before
+		// The checkpoint reads the sealed pages, so a fork of it sees them before
 		// any object exists.
 		want.checkCheckpoint(t, ckpt, "the sealed pages through the unpublished checkpoint")
 
@@ -256,7 +256,7 @@ func TestFailedPublicationReturnsTheSealedPagesToTheGuest(t *testing.T) {
 
 // A fork of a running parent starts on the parent's own host: the parent pauses
 // for its state capture and the seal, publishes nothing, and goes on running
-// while the child reads the sealed frames and diverges at once.
+// while the child reads the sealed pages and diverges at once.
 func TestForkOfARunningParentOnTheSameHost(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		h := newSeededHarness(t, 11)
@@ -294,7 +294,7 @@ func TestForkOfARunningParentOnTheSameHost(t *testing.T) {
 			t.Fatalf("restored state is %d bytes, want the %d captured", len(restored), len(state))
 		}
 		forked := at.clone()
-		forked.check(t, fork, "the fork of the parent's instant")
+		forked.check(t, fork, "the fork of the parent's point")
 		if got := vm.Status().Checkpoint; got != selected {
 			t.Fatalf("the parent published %v to be forked, want the selected %v", got, selected)
 		}
@@ -353,7 +353,7 @@ func TestForkAfterPublicationOnASecondHost(t *testing.T) {
 			t.Fatalf("state read on the second host is %d bytes, want the %d captured", len(published), len(state))
 		}
 
-		// A host that never held the parent rebuilds the instant from the
+		// A host that never held the parent rebuilds the point from the
 		// published checkpoint alone.
 		point, err := elsewhere.Inherit(t.Context(), ckpt.Ref())
 		if err != nil {
@@ -433,7 +433,7 @@ func TestForkIsPendingElsewhereUntilItsRoot(t *testing.T) {
 }
 
 // A parent can be forked again and again. One fork point holds the parent's
-// frames until its child has them, so the second fork is a second instant, and
+// pages until its child has them, so the second fork is a second pause, and
 // each child gets its own VMM state and goes its own way.
 func TestTwoForksOfOneParentDivergeIndependently(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
@@ -460,7 +460,7 @@ func TestTwoForksOfOneParentDivergeIndependently(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer closeVM(t, first)
-		// The parent's frames are the first child's until it publishes them.
+		// The parent's pages are the first child's until it publishes them.
 		if _, err := host.Seal(t.Context(), vm, &fakeRuntime{state: state}); !errors.Is(err, volume.ErrSealed) {
 			t.Fatalf("a second seal while a fork point holds the parent = %v, want ErrSealed", err)
 		}

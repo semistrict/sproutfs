@@ -35,7 +35,7 @@ type RegionBacking struct {
 type ConnectionConfig struct {
 	// Name identifies this session's region in what it logs: the volume the
 	// backing stands in front of. It is a diagnostic only — nothing selects a
-	// volume, a frame or an authority by it — and empty is allowed.
+	// volume, a page or an authority by it — and empty is allowed.
 	Name string
 	// MaxVMAs bounds the client process's mapping count for the replacements
 	// this pager drives. Zero disables the budget entirely, which is what a

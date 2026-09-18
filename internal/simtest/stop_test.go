@@ -40,7 +40,7 @@ func TestAStoppedVMKeepsWhatItsGuestWroteAndComesBackAtIt(t *testing.T) {
 		if err := world.Checkpoint(ctx, "vm-0"); err != nil {
 			t.Fatal(err)
 		}
-		// Written after that checkpoint, so only the host's frames hold it: a
+		// Written after that checkpoint, so only the host's pages hold it: a
 		// stop that published nothing would lose it the way a kill does.
 		if err := world.StoreAll("vm-0", 7); err != nil {
 			t.Fatal(err)
@@ -116,7 +116,7 @@ func TestStoppingAVMTwiceDoesNothingTheSecondTime(t *testing.T) {
 
 // TestAStoppedVMIsStartedByASettleWhenItsHostIsLost: a stopped VM is not
 // running anywhere, so losing the host it last ran on takes nothing from it —
-// there were no frames left to lose. What it comes back as is the checkpoint
+// there were no pages left to lose. What it comes back as is the checkpoint
 // its stop published, on whichever host starts it.
 func TestAStoppedVMSurvivesLosingTheHostItRanOn(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {

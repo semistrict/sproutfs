@@ -189,7 +189,7 @@ func (m *Manager) Open(ctx context.Context, id string) (*VM, error) {
 // removed.
 //
 // What the sweep spares is the checkpoints this VM's record pinned, and every
-// checkpoint their indexes name. Those are the instants this VM was forked at,
+// checkpoint their indexes name. Those are the points this VM was forked at,
 // and a descendant of it — a child, or a grandchild whose own index names these
 // directly — may still read through them. This VM has no way to find out
 // whether one does, so the objects stay: a collector reclaims them, once it has
@@ -229,7 +229,7 @@ func (m *Manager) Delete(ctx context.Context, id string) error {
 // attach builds and starts a handle over the control record it holds. selected is
 // the index of the checkpoint the record selects — the parent's, for a fork —
 // owned that same index when this handle is the one that published it, and
-// point the instant a fork reads through until it publishes its own root.
+// point the fork point a fork reads through until it publishes its own root.
 func (m *Manager) attach(ctx context.Context, id string, handle *control.Handle,
 	selected, owned *checkpoint.Index, point *ForkPoint) (*VM, error) {
 	base, specs, err := resolve(m.config.Store, selected, point)
@@ -246,7 +246,7 @@ func (m *Manager) attach(ctx context.Context, id string, handle *control.Handle,
 }
 
 // resolve reports what a handle sits on: the checkpoint index its control
-// record selects, or, for a fork, the parent's checkpoint with the instant the
+// record selects, or, for a fork, the parent's checkpoint with the point the
 // fork was taken at over it. A fork's volumes are its parent's.
 func resolve(store *checkpoint.Store, selected *checkpoint.Index, point *ForkPoint) (source, []VolumeSpec, error) {
 	if selected == nil {

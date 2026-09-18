@@ -155,7 +155,7 @@ func (m *mapping) MapZero(_ context.Context, page uint64, count int) error {
 	return nil
 }
 
-// Protect models the range write-protect a seal issues: the frame and its
+// Protect models the range write-protect a seal issues: the page and its
 // contents stay, the guest keeps reading, and its next store traps.
 func (m *mapping) Protect(ctx context.Context, page uint64, count int) error {
 	if m.onProtect != nil {
@@ -296,7 +296,7 @@ func extentsOf(off, length, grain uint64, identity func(offset uint64) control.I
 // a fresh checkpoint reference of this backing's own. It is what selecting a
 // checkpoint does to a volume: every page it carried belongs to that checkpoint
 // from now on, and a pager retiring its checkpoint against it shares those
-// frames by that lineage.
+// pages by that lineage.
 func (b *backing) publish() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -335,7 +335,7 @@ type fixture struct {
 }
 
 // checkpoint is what a checkpoint does to one region: it seals the dirty set,
-// reads every sealed page out of the frames the guest is still running on,
+// reads every sealed page out of the pages the guest is still running on,
 // writes those bytes into the volume, selects the checkpoint, and retires the
 // checkpoint. It is the only way a region's pages reach its volume.
 func (f *fixture) checkpoint(r *vmmemory.Region, b *backing) error {
@@ -618,7 +618,7 @@ func TestAmbiguousMappingFailurePinsUntilProcessExit(t *testing.T) {
 					access(t, a, am, 0, false)
 					am.failRevoke = true
 					// The revocation that failed is the other region's, and so
-					// is the failure: this fault only wanted a frame, and the
+					// is the failure: this fault only wanted a page, and the
 					// one it tried for turned out not to be this host's to take
 					// back. It is told the arena has nothing, which is true,
 					// rather than told the other region's error, which would end
@@ -654,7 +654,7 @@ func TestSharedLineageStillChecksWriterAuthority(t *testing.T) {
 		access(t, a, am, 0, false)
 		access(t, b, bm, 0, false)
 		if am.pages[0].slot != bm.pages[0].slot {
-			t.Fatal("matching lineage did not share a resident frame")
+			t.Fatal("matching lineage did not share a resident page")
 		}
 		ab.failVerify = true
 		if err := a.Verify(t.Context()); !errors.Is(err, errInjected) {
@@ -716,7 +716,7 @@ func TestRandomizedEvictionAgainstIndependentByteModel(t *testing.T) {
 
 // A checkpoint of one volume must not stop another volume's guest, and must not
 // stop its own: a sealed region keeps faulting and storing for the whole of the
-// publication that is reading its frames.
+// publication that is reading its pages.
 func TestACheckpointInFlightStopsNeitherVolume(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newFixture(t, 4, 8, 8)

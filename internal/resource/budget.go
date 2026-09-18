@@ -1,5 +1,5 @@
 // Package resource accounts reservations against one host allotment of RAM,
-// which is what the pager's frames and the page cache's retained objects are
+// which is what the pager's resident pages and the page cache's retained objects are
 // taken from. Owners reserve before allocating and release only after the bytes
 // are no longer retained. Accounting complements, but does not measure, runtime
 // overhead or physical usage. Ordinary heap and runtime overhead use the

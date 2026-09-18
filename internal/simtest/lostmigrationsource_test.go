@@ -49,7 +49,7 @@ func TestLosingTheSourceOfAMigrationEndsIt(t *testing.T) {
 			Knobs: k, Prefix: prefix, Log: t.Logf})
 		choose := func(int) int { return 0 }
 		// A checkpoint to come back to, and then stores that live only in the
-		// source's frames, which are exactly the pages the destination has to
+		// source's pages, which are exactly the pages the destination has to
 		// fetch and exactly what the loss costs.
 		if err := world.Store(ctx, "vm-1", 4, choose); err != nil {
 			t.Fatal(err)
@@ -91,7 +91,7 @@ func TestLosingTheSourceOfAMigrationEndsIt(t *testing.T) {
 			t.Fatalf("the migration ended %s after its source was lost, which is a timeout rather than the rule", waited)
 		}
 		// The VM is running again on the host that is left, at the checkpoint
-		// its record selects: the stores since it were only in the frames of
+		// its record selects: the stores since it were only in the pages of
 		// the host that is gone.
 		if host := world.HostOf("vm-1"); host != 1 {
 			t.Fatalf("the VM whose source was lost is on host %d", host)
@@ -116,7 +116,7 @@ func TestLosingTheSourceOfAMigrationEndsIt(t *testing.T) {
 
 // waitFor runs the world on until what is waited for is true, in simulated
 // time: a poll costs the deployment nothing and the clock everything, which is
-// what lets a test stand at an instant inside an operation rather than guess at
+// what lets a test stand at a moment inside an operation rather than guess at
 // one.
 func waitFor(t *testing.T, done func() bool, what string) {
 	t.Helper()

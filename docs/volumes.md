@@ -23,7 +23,7 @@ Nothing else bounds an overlay. There is no pending-byte budget and no
 back-pressure, because there is nothing to push back against: what an overlay
 holds is not owed to any store, it is simply what losing this host would cost.
 `Status.DirtyBytes` reports the overlay's share of that, and the manager sums it
-over every VM it runs. A running guest's dirty frames are the pager's, and the
+over every VM it runs. A running guest's dirty pages are the pager's, and the
 checkpoint that seals them reports those.
 
 `Verify` makes nothing durable and orders nothing. It confirms that this handle
@@ -64,26 +64,26 @@ A checkpoint is the published state of one VM at one write generation, and it is
 the whole of that VM's durable state. Publishing one writes every dirty page of
 every volume into parts, uploads them, writes the index object holding the
 segments those pages changed and the root, and then selects that checkpoint in
-the VM's [control record](metadata.md) — which is the instant those bytes
+the VM's [control record](metadata.md) — which is the moment those bytes
 survive the loss of this host.
 
 A VM's dirty pages come from two places. The overlay holds what was written
-through this package. A pager holds the rest as sealed frames, supplied per
+through this package. A pager holds the rest as sealed pages, supplied per
 volume as a `DirtySource`: a pager page is a store page, so each sealed page is
-one member of a part, read straight out of the frame the guest was running on
+one member of a part, read straight out of the page the guest was running on
 rather than copied into this package first. When the checkpoint is selected the
 publication retires every source it read, which is what makes those pages clean
 under the new lineage; a publication that never lands hands them back to the
 guest instead. The retire is the first thing that follows the selection and the
 last thing the publication lock covers: a guest whose seal still stands copies
-every store it makes into a private frame, so nothing else the publication has
+every store it makes into a private page, so nothing else the publication has
 left to do — the reclamation sweep above all — may come between the two.
 
 This layer has no automatic trigger. `Checkpoint` publishes the overlay on
 demand and does nothing when nothing is dirty, except on a fork that has not
 published its root, where there is always something to publish; `Snapshot` takes
 the publication lock, has its caller seal the guest, and publishes in the
-background with VMM state and sealed frames attached, even when nothing is
+background with VMM state and sealed pages attached, even when nothing is
 dirty; `Close` publishes a final checkpoint, and neither `Handoff` nor
 `ForkPoint` publishes anything. The interval belongs to the host that runs the
 guest and knows when the vCPUs may be paused: every VM it runs is checkpointed
@@ -115,7 +115,7 @@ opens at.
 
 Publishing there would be the one cost a post-copy
 [migration](migration.md) exists to avoid: everything the guest wrote since the
-last checkpoint is in the source pager's frames, and the destination faults it
+last checkpoint is in the source pager's memory, and the destination faults it
 out of them rather than out of storage. The source may not stop serving until
 the destination has fetched every one of those pages. `Snapshot` is neither
 Close nor Handoff: it keeps the VM and publishes in the background.
@@ -179,7 +179,7 @@ leaves at least 2³¹ takeovers. Identities are never reused — the orchestrato
 allocates them and does not hand one out twice — but nothing in a deployment can
 enforce that, and two VMs that started at the same epoch under one name would
 allocate the same sequences: the same lineage identities, which a page cache
-keys resident frames by, so the second VM would be served the first's bytes out
+keys resident pages by, so the second VM would be served the first's bytes out
 of memory; and the same object keys, which are written create-if-absent, so its
 publications would collide with whatever the first left behind. A drawn epoch
 makes both impossible whatever the name.
@@ -197,7 +197,7 @@ single `Commit`, which rewrites byte-identical bytes; a later checkpoint seals
 whatever the guest has dirtied since, so handing an abandoned sequence back
 would have one reference name two contents and conflict on every interval from
 then on. That is not a corner case for a pager-backed VM: a guest's stores go
-into frames rather than the overlay, so nothing this package can see moves
+into pages rather than the overlay, so nothing this package can see moves
 between attempts. Burning a sequence costs nothing — the counter is 32 bits
 within a writer epoch, thousands of years at a checkpoint a minute — and a
 fork's root is no exception: a failed root publication burns the sequence its
@@ -256,7 +256,7 @@ budget of their own, two by default, rather than the upload one: a sweep is
 never urgent and must not hold the slots a checkpoint needs to become durable.
 
 The sweep runs with the publication lock released, after the checkpoint is
-durable and its frames are back with the guest. It deletes objects nothing
+durable and its pages are back with the guest. It deletes objects nothing
 reads, so nothing waits for it: not the guest, not the next capture of it, and
 not a caller waiting on the checkpoint. Two sweeps of one VM never contend
 either, because each one's candidates come from the root it replaced and the
@@ -293,7 +293,7 @@ to 64 MiB of live bytes — its pages are read, through the page cache where the
 are already there, and written into N's parts. One with no live bytes left is
 not compacted at all: nothing reads it, so it simply leaves the root.
 
-Compaction works over the data plane alone. Measuring opens no segment: each
+Compaction works over the parts alone. Measuring opens no segment: each
 segment entry of the root records what that segment's pages read from each
 checkpoint, so live bytes are a sum over entries the checkpoint already holds —
 and the segments the checkpoint itself changed it has in hand, with their new
@@ -339,13 +339,13 @@ exactly like any other VM's.
 
 ```
 control/<id>                            control record
-vm/<id>/ckpt/<seq>/index                the metadata plane: header, segments, root
-vm/<id>/ckpt/<seq>/part/<n>             the data plane: part n, from zero
+vm/<id>/ckpt/<seq>/index                the index object: header, segments, root
+vm/<id>/ckpt/<seq>/part/<n>             the data: part n, from zero
 ```
 
-A checkpoint is two planes. The **metadata plane** is one index object: the page
-table is small, rewritten in pieces every checkpoint, and read on every open.
-The **data plane** is the parts: guest bytes, large, immutable, left behind
+A checkpoint is its data and one **index object**. The index object holds the
+page table: small, rewritten in pieces every checkpoint, and read on every open.
+The **parts** hold the guest bytes: large, immutable, left behind
 until compaction. The index object's create-if-absent PUT is the commit — while
 it is there the checkpoint is published, and until it is there the checkpoint is
 absent — and it is written only once every part it names is durable.
@@ -436,7 +436,7 @@ encoded whenever its entries change, so they cannot go stale. It names no parent
 and carries no reference and no format version of its own: the key it lives
 under names the VM and the sequence, and the index object's header carries the
 version. The bytes a root records for a checkpoint are what its parts hold —
-nothing of the metadata plane is ever counted there.
+nothing of the index object is ever counted there.
 
 An absent page reads as zeroes and so does every page of an absent segment; a
 page whose bytes are all zero is dropped rather than written, and the segment
@@ -456,12 +456,12 @@ for scattered small writes at the cost of chained reads, a larger index and
 either KVM dirty logging or a compare at upload, and the owner judged the
 saving not worth that. A sealed
 pager page is exactly one member: the pager's page and the store's page are the
-same 2 MiB unit, and the upload reads the frame the guest was running on.
+same 2 MiB unit, and the upload reads the page the guest was running on.
 
 Each member, the root among them, uses an independent raw-or-Zstandard envelope
 with decoded length and SHA-256 integrity verification. Raw fallback avoids
-expansion beyond the 48-byte envelope. Checksums do not change lineage identity
-or introduce content deduplication. A root is limited to 2 MiB decoded, VMM
+expansion beyond the 48-byte envelope. Checksums verify what was read; a page's
+name stays the checkpoint that published it. A root is limited to 2 MiB decoded, VMM
 state to 64 MiB, and pages to 2 MiB. One part is bounded by what it can hold:
 the size it is sealed at, plus the member that filled it, its table and its
 trailer. The codec uses fast Zstandard, a 1 MiB
@@ -477,7 +477,7 @@ or a reference reused for other contents — it does not read back what it wrote
 A part's bytes are raw and a retry's are identical, which is what makes the
 comparison exact; a member's envelope is inside those bytes and is never
 compared on its own. An object written without the attribute falls back to being
-read and compared. Index format 7 and part layout 4 are the two planes; the
+read and compared. Index format 7 and part layout 4 are the layout above; the
 layouts before them, the deployments whose roots were the whole of an index
 object, and the ones whose roots were part members, are all rejected. There is
 no data migration.
@@ -486,7 +486,7 @@ no data migration.
 
 One host supplies one page cache to every store and checkpoint it serves. It
 fills a cap of its own — 1 GiB by default — rather than competing with the pager
-for one allotment, so disposable pages can never take the frames a guest needs
+for one allotment, so disposable pages can never take the memory a guest needs
 and the pager never has to reclaim across a concern to get them back. Entries
 are decoded pages, each charged a small bookkeeping amount on top of its bytes,
 and pressure evicts the least recently used. Because a fork inherits its
@@ -520,10 +520,10 @@ checkpoint exists. See [managed VM memory](vm-memory.md). Its reference is known
 before its objects are uploaded, so lineage can be established locally, and
 waiting on it reports when publication became durable.
 
-### The fork instant
+### The fork point
 
-A checkpoint has two halves: the instant — pause, save VMM state, seal the dirty
-set, resume — and the upload. A fork needs only the instant, exactly as a
+A checkpoint is a pause — stop the vCPUs, save the VMM state, seal the dirty
+set, resume — and an upload. A fork needs only the pause, exactly as a
 [migration](migration.md) does, and takes it from a parent that keeps running.
 
 `VM.ForkPoint` runs the caller's pause under the publication lock and returns a
@@ -531,13 +531,13 @@ set, resume — and the upload. A fork needs only the instant, exactly as a
 in that record before the point is returned, and the pages no checkpoint of the
 parent holds — everything dirty since that checkpoint, now sealed. Nothing is
 published. The parent gives nothing up: it keeps its handle, its volumes and its
-frames, and the sealed frames stay its own. A point whose pause seals nothing —
+pages, and the sealed pages stay its own. A point whose pause seals nothing —
 an imported template, which has no guest — is the published checkpoint and the
 pin alone.
 
 The pin is a conditional write from the parent's own epoch, so a fork whose
 parent has been fenced is refused rather than created, and reclamation can never
-delete the lineage the child inherits. It is a mark on the instant rather than a
+delete the lineage the child inherits. It is a mark on the point rather than a
 count of who reads it: one pin, taken when the point is made and again,
 idempotently, by every `Fork` from it, so a fan-out of any size costs one and a
 fork repeated after a failure costs nothing more.
@@ -558,7 +558,7 @@ lost — leaves the pin standing. That costs only eagerness: the pin says a
 lineage may read through that checkpoint, and one that never started reads
 nothing.
 
-A parent whose frames a fork point holds is `Status.Sealed`: one seal of a
+A parent whose pages a fork point holds is `Status.Sealed`: one seal of a
 region is outstanding at a time, so nothing may capture or fork it again, and a
 capture that asks is refused before its guest is touched. The seal ends when the
 last child of that point has retired it, which is when every page it inherited
@@ -576,7 +576,7 @@ children start from one point — each is one hold on it, and the seal ends when
 is retired — so a fan-out of forks costs the parent one pause. On the parent's
 host the child reads the pages written since that checkpoint through the point
 itself, so they cost no copy and, once a sibling has faulted one, no second
-frame: every child of one instant gives those pages the same lineage identity.
+page: every child of one fork point gives those pages the same lineage identity.
 On another host `Manager.Inherit` rebuilds the point from the pinned checkpoint
 alone and the child's pager pulls those pages out of the parent's page server,
 post-copy.
@@ -590,7 +590,7 @@ was given.
 
 Creating or starting a fork never loads a full disk or memory image, and a
 fork's reads share its parent's objects and, within the same pager, its parent's
-resident frames.
+resident pages.
 
 ## Deletion
 
@@ -611,12 +611,12 @@ pinned objects a lineage still reads: a repeat that swept what it found would
 take them. What an interrupted sweep left is a collector's.
 
 A checkpoint the record pinned is spared, with every checkpoint its root names. Those
-are the instants the VM was forked at, and a descendant may still be reading
+are the fork points the VM was taken at, and a descendant may still be reading
 through them: a child whose root names those checkpoints, or a grandchild whose own
 root does. Nothing the delete can read says whether one does, so the objects
 stay. They are a collector's, which is the only thing that can establish that
 no root in the deployment reads them. A VM that was never forked therefore
-takes everything with it, and one that was leaves its forked instants behind
+takes everything with it, and one that was leaves its fork points behind
 while freeing its identity.
 
 A record that cannot be parsed is not deleted at all. Its pins are exactly what
@@ -637,4 +637,4 @@ The [Firecracker integration](vm-memory.md) maps the single `ram0` volume and
 each PMEM volume through the host pager. A guest PMEM flush makes nothing
 durable and completes at the device; guest PMEM and RAM stores alike remain
 private pager state, resident or in scratch spill, until a checkpoint publishes
-those frames. A local scratch spill is not a durability mechanism at all.
+those pages. A local scratch spill is not a durability mechanism at all.

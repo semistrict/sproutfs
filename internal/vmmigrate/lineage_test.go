@@ -9,7 +9,7 @@ import (
 	"github.com/semistrict/sproutfs/internal/volume"
 )
 
-// fanOut seals one instant on the running parent and hands every child of it to
+// fanOut seals one pause on the running parent and hands every child of it to
 // the same destination, which is what an orchestrator's cross-host fork does
 // with a count above one: one pause, one pin, one hold per child.
 func (m *migration) fanOut(t *testing.T, children ...string) []vmmigrate.Handoff {
@@ -18,7 +18,7 @@ func (m *migration) fanOut(t *testing.T, children ...string) []vmmigrate.Handoff
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The fan-out's own hold keeps the instant while its children are described.
+	// The fan-out's own hold keeps the point while its children are described.
 	point.Hold()
 	if err := point.Pin(t.Context()); err != nil {
 		t.Fatal(err)
@@ -38,31 +38,31 @@ func (m *migration) fanOut(t *testing.T, children ...string) []vmmigrate.Handoff
 	return handoffs
 }
 
-// TestForkFanOutChildrenShareTheLineageTheyInherit. Two children of one instant
+// TestForkFanOutChildrenShareTheLineageTheyInherit. Two children of one fork point
 // on one host read the same parent checkpoint, so every page of it that neither
-// has diverged from is one frame between them. That sharing is the reason a
-// fan-out puts children on one host at all: without it the host pays a frame
+// has diverged from is one page between them. That sharing is the reason a
+// fan-out puts children on one host at all: without it the host pays a page
 // and a load per child per page of a lineage they agree on completely.
 //
 // What has to hold for it is that the page keeps the parent's name. The child's
 // root index is published over that lineage rather than in place of it — it
 // carries the pages the child actually pulled and nothing else — so a page
 // neither child has written still names the object the parent put it in, and
-// the pager keys one frame by it for both of them.
+// the pager keys one page by it for both of them.
 //
 // It is the pages the parent published that this is about. A page no checkpoint
 // of the parent holds is fetched per child over the wire and is that child's
 // own dirty state from the moment it lands, which two guests that may diverge
-// from it the next instant have no business sharing.
+// from it the next moment have no business sharing.
 func TestForkFanOutChildrenShareTheLineageTheyInherit(t *testing.T) {
 	m := newMigration(t)
 	// The parent publishes what its pager holds, so the lineage the children
-	// inherit is in object storage rather than in this host's frames.
+	// inherit is in object storage rather than in this host's pages.
 	if err := m.machine.checkpoint(t.Context(), m.vm); err != nil {
 		t.Fatal(err)
 	}
 	inherited := pageIdentity(t, m.vm, sharedPage)
-	// One page written since that checkpoint, so the instant carries an
+	// One page written since that checkpoint, so the point carries an
 	// unpublished set as well as the published lineage under it.
 	m.machine.write("ram0", 0)
 	handoffs := m.fanOut(t, "vm-a", "vm-b")
@@ -91,7 +91,7 @@ func TestForkFanOutChildrenShareTheLineageTheyInherit(t *testing.T) {
 	}
 
 	// And what the pager makes of that: the second child to read the page maps
-	// the frame the first one loaded, without a load of its own.
+	// the page the first one loaded, without a load of its own.
 	before, err := m.destPager.host.Stats(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -117,7 +117,7 @@ func TestForkFanOutChildrenShareTheLineageTheyInherit(t *testing.T) {
 const sharedPage = uint64(5)
 
 // pageIdentity is the lineage one VM's own volume gives one page of its RAM,
-// which is what the pager keys a shared frame by.
+// which is what the pager keys a shared page by.
 func pageIdentity(t *testing.T, vm *volume.VM, page uint64) control.Identity {
 	t.Helper()
 	extents, err := vm.Volume("ram0").Locate(t.Context(), page*pageSize, pageSize)

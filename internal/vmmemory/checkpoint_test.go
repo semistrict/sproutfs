@@ -61,7 +61,7 @@ func (g *gate) reached(t *testing.T) {
 	<-g.entered
 }
 
-// A checkpoint publishes the sealed frames themselves: what reaches the volume
+// A checkpoint publishes the sealed pages themselves: what reaches the volume
 // is the region exactly as it stood at the seal, and afterwards those pages are
 // clean under the checkpoint that now holds them.
 func TestCheckpointPublishesTheSealedPagesAndRetiresThemClean(t *testing.T) {
@@ -98,7 +98,7 @@ func TestCheckpointPublishesTheSealedPagesAndRetiresThemClean(t *testing.T) {
 			t.Fatalf("the seal counted %d checkpoint pages, want 4", s.CheckpointPages)
 		}
 		// The pages are the checkpoint's now, so the guest reads them through the
-		// clean frames the retirement published rather than through private state.
+		// clean pages the retirement published rather than through private state.
 		for page := range uint64(4) {
 			if got, err := memoryByte(t.Context(), r, m, page, nil); err != nil || got != byte(50+page) {
 				t.Fatalf("page %d reads %d after the publication: %v", page, got, err)
@@ -217,7 +217,7 @@ func TestUnsealAbandonsTheCheckpointAndAllowsAnotherSeal(t *testing.T) {
 // A retire walks a whole dirty set, which is as large as a capture's. It takes
 // the region in batches, so a fault on the region waits for one batch and not
 // for the walk, and its volume metadata is one lookup per read-ahead window,
-// taken before it holds the region or any frame.
+// taken before it holds the region or any page.
 func TestRetireLocatesPerWindowAndFreesTheRegionBetweenBatches(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		vmmemory.SetCheckpointBatchPages(t, 2)
@@ -281,11 +281,11 @@ func TestRetireLocatesPerWindowAndFreesTheRegionBetweenBatches(t *testing.T) {
 	})
 }
 
-// Retiring a page of a published checkpoint must never leave its private frame
+// Retiring a page of a published checkpoint must never leave its private page
 // reachable from a binding that owns neither a spill reservation nor a
-// checkpoint: an eviction in that window would punch the frame with nowhere to
+// checkpoint: an eviction in that window would punch the page with nowhere to
 // put its bytes.
-func TestCheckpointRetirementNeverStrandsItsPrivateFrame(t *testing.T) {
+func TestCheckpointRetirementNeverStrandsItsPrivatePage(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newFixture(t, 1, 8, 4)
 		r, m, b := f.region(1)
@@ -364,9 +364,9 @@ func TestSealRetriedAfterAPartialSealCapturesEveryDirtyPage(t *testing.T) {
 }
 
 // Abandoning a checkpoint moves its spill reservation back to the guest's page
-// under the frame's lock. An eviction that observed the two apart would find a
+// under the page's lock. An eviction that observed the two apart would find a
 // private page with neither a reservation nor a checkpoint to spill it, and
-// would punch the frame with nowhere to put its bytes.
+// would punch the page with nowhere to put its bytes.
 func TestAbandonedCheckpointKeepsItsPagesAcrossConcurrentEviction(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newFixture(t, 2, 16, 8)
@@ -406,10 +406,10 @@ func TestAbandonedCheckpointKeepsItsPagesAcrossConcurrentEviction(t *testing.T) 
 	})
 }
 
-// The checkpoint's frames count against the dirty budget until they are
+// The checkpoint's pages count against the dirty budget until they are
 // retired, so a guest that dirties faster than its checkpoint uploads waits for
 // it instead of failing or overrunning the budget.
-func TestCheckpointFramesHoldTheDirtyBudgetUntilRetired(t *testing.T) {
+func TestCheckpointPagesHoldTheDirtyBudgetUntilRetired(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newFixture(t, 4, 8, 2)
 		r, m, b := f.region(4)
@@ -491,10 +491,10 @@ func TestSealedCheckpointSurvivesReclaimAndRefault(t *testing.T) {
 	})
 }
 
-// A page of the checkpoint whose frame was reclaimed comes back on a fresh
-// frame when the guest reads it, and that frame must still be the checkpoint's:
-// once the checkpoint is published it is the page's clean frame, reclaimable
-// like any other. A frame the guest alone held would be private state with no
+// A page of the checkpoint whose memory was reclaimed comes back on a fresh
+// resident page when the guest reads it, and that page must still be the
+// checkpoint's: once the checkpoint is published it is the page's clean state,
+// reclaimable like any other. One the guest alone held would be private with no
 // reservation left to spill it once the retirement released the checkpoint's.
 func TestAPageOfTheCheckpointRefaultedFromSpillRetiresWithIt(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
@@ -509,7 +509,7 @@ func TestAPageOfTheCheckpointRefaultedFromSpillRetiresWithIt(t *testing.T) {
 			t.Fatalf("a spilled page of the checkpoint reads %d: %v", got, err)
 		}
 		f.finishCheckpoint(r, b)
-		// Reclaim every frame, the refaulted one among them, and read back.
+		// Reclaim every page, the refaulted one among them, and read back.
 		for _, page := range []uint64{1, 2, 3, 0} {
 			if got, err := memoryByte(t.Context(), r, m, page, nil); err != nil || got != byte(80+page) {
 				t.Fatalf("page %d reads %d after the checkpoint was published: %v", page, got, err)
@@ -616,7 +616,7 @@ func TestSealedCaptureKeepsTheVolumeStableWhileTheGuestRuns(t *testing.T) {
 }
 
 // A checkpoint that has ended holds nothing: its pages are the guest's own
-// dirty state again or the volume's clean state, and the frames behind them
+// dirty state again or the volume's clean state, and the pages behind them
 // hold whatever the guest has done since. A publication still reading it would
 // be reading bytes no checkpoint stands behind and publishing them as that
 // checkpoint's, so the read fails instead. A region that discarded its
@@ -651,14 +651,14 @@ func TestReadingACheckpointThatHasEndedFails(t *testing.T) {
 }
 
 // A store into a sealed page copies it away from the checkpoint: it reads the
-// sealed bytes, takes an arena slot and fills it. Until that private frame is
+// sealed bytes, takes an arena slot and fills it. Until that private page is
 // bound the page's only bytes are the checkpoint's, so a store that fails on
 // the way — the arena refusing the slot it was filling — has to leave the page
 // exactly where the seal left it. A page released from the checkpoint before
-// its replacement exists is dirty state with no frame, no reservation and no
+// its replacement exists is dirty state with no memory, no reservation and no
 // checkpoint holding either: its bytes are unreachable for good, and the region
 // carries on as though nothing had happened.
-func TestAStoreThatCannotTakeItsPrivateFrameLeavesThePageInTheCheckpoint(t *testing.T) {
+func TestAStoreThatCannotTakeItsPrivatePageLeavesThePageInTheCheckpoint(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newFixture(t, 4, 8, 4)
 		r, m, b := f.region(4)
@@ -667,7 +667,7 @@ func TestAStoreThatCannotTakeItsPrivateFrameLeavesThePageInTheCheckpoint(t *test
 		f.a.failWrite = true
 		value := byte(99)
 		if _, err := memoryByte(t.Context(), r, m, 0, &value); !errors.Is(err, errInjected) {
-			t.Fatalf("a store whose private frame could not be filled = %v, want the injected failure", err)
+			t.Fatalf("a store whose private page could not be filled = %v, want the injected failure", err)
 		}
 		f.a.failWrite = false
 		// The page is still the checkpoint's, so the guest reads the bytes the

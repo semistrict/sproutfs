@@ -31,7 +31,7 @@ func take(t *testing.T, b *resource.Budget, amount int64) *resource.Lease {
 func TestReservationsShareOneTotal(t *testing.T) {
 	b := budget(t, 100)
 	cache := take(t, b, 30)
-	frames := take(t, b, 70)
+	pages := take(t, b, 70)
 	if _, err := b.TryAcquire(t.Context(), 1); !errors.Is(err, resource.ErrCapacity) {
 		t.Fatalf("allocation exceeded the total: %v", err)
 	}
@@ -39,8 +39,8 @@ func TestReservationsShareOneTotal(t *testing.T) {
 		t.Fatal(got)
 	}
 	cache.Close()
-	frames.Close()
-	frames.Close()
+	pages.Close()
+	pages.Close()
 	if got := b.Stats().Used; got != 0 {
 		t.Fatal(got)
 	}

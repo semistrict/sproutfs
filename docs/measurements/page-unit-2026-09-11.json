@@ -10,7 +10,7 @@
     "The machine is the benchmark's: 2 GiB RAM, 8 GiB PMEM root, 4 vCPUs, a 3 GiB resident budget, 1 MiB flush batches and a 1 MiB read-ahead window in every run; flush_pages and read_ahead_pages are those sizes in the run's pages.",
     "The fork fan-out ran git grep rather than the default cargo test, which alone would take far longer than the five-minute budget of one run. Its only output is its result, so its first output is its completion, which is why every run failed the harness's two-second first-output bound; nothing else failed.",
     "pnpm-install is guest wall time from the guest's own accounting. Log bytes are the bytes region flushes wrote to the volumes during pnpm-install (Stats.FlushWriteBytes), and log bytes per flush divides them by the region flushes the volumes acknowledged (Stats.Flushes).",
-    "Fork memory is what each fork's regions hold once its command finished (Region.Stats), summed over ram0 and root: resident is pages holding a frame, private is pages whose bytes are the fork's own. Means are over the four forks, in bytes.",
+    "Fork memory is what each fork's regions hold once its command finished (Region.Stats), summed over ram0 and root: resident is pages holding host memory, private is pages whose bytes are the fork's own. Means are over the four forks, in bytes.",
     "Boot phases: vmm_start is vmmachine.Start, kernel and init are the guest's monotonic clock, pre_kernel is the remainder of the wall time to readiness."
   ],
   "runs": [

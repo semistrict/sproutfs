@@ -26,9 +26,9 @@ func TestSeededTopologySoak(t *testing.T) {
 }
 
 // TestHostCrashSoak is the kill campaign. Each seed takes a host away in the
-// middle of a checkpoint, of a fork instant another host's child is reading,
+// middle of a checkpoint, of a fork point another host's child is reading,
 // and of a migration from both ends, and requires the same four things of every
-// one of them; a block is where the rarer landing instants are, since what a
+// one of them; a block is where the rarer landing moments are, since what a
 // seed chooses is where inside the operation the kill falls.
 func TestHostCrashSoak(t *testing.T) {
 	interrupted, fired := map[string]int{}, map[string]uint64{}

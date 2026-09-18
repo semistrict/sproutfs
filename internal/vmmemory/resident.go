@@ -14,21 +14,21 @@ import (
 	"github.com/semistrict/sproutfs/internal/platform/sim"
 )
 
-// frame identifies immutable bytes by the store page object that holds them.
-// A pager page is exactly one store page, so one identity covers a whole frame.
-type frame struct {
+// pageKey identifies immutable bytes by the store page object that holds them.
+// A pager page is exactly one store page, so one identity covers a whole pageKey.
+type pageKey struct {
 	id control.Identity
 }
 
-func (f frame) zero() bool { return f.id.Zero }
+func (f pageKey) zero() bool { return f.id.Zero }
 
 type resident struct {
 	mu      *ctxsync.Mutex
 	slot    int
-	key     frame
+	key     pageKey
 	private bool
-	// aliases is protected by Host.mu, not by this frame's lock: a seal joins
-	// the checkpoint's copy to a frame a reclaim is already holding, and the
+	// aliases is protected by Host.mu, not by this page's lock: a seal joins
+	// the checkpoint's copy to a page a reclaim is already holding, and the
 	// reclaim finds it there.
 	aliases map[*binding]struct{}
 	recent  *list.Element
@@ -47,7 +47,7 @@ func (h *Host) read(ctx context.Context, b *binding, pg *resident, dst []byte) e
 	if b.dirty {
 		if b.checkpoint != nil {
 			// The checkpoint's detached copy owns this page's only current bytes; the
-			// two share a frame, so a nonresident binding means both are.
+			// two share a resident page, so a nonresident binding means both are.
 			return h.read(ctx, b.checkpoint, nil, dst)
 		}
 		sum, held := h.spillDigest(b.spillSlot)
@@ -73,8 +73,8 @@ func (h *Host) read(ctx context.Context, b *binding, pg *resident, dst []byte) e
 	return err
 }
 
-// aliases reports the bindings one frame is reachable from. The set can grow
-// while the frame's lock is held, which is what joinReclaiming does, so a
+// aliases reports the bindings one resident page is reachable from. The set can
+// grow while that page's lock is held, which is what joinReclaiming does, so a
 // reclaim reads it again rather than once.
 func (h *Host) aliases(pg *resident) []*binding {
 	h.mu.Lock()
@@ -93,10 +93,10 @@ func (h *Host) bind(b *binding, pg *resident) {
 	h.mu.Unlock()
 }
 
-// joinReclaiming makes a binding an alias of the frame another binding holds,
-// without that frame's lock. It is what a seal uses for a page a reclaim is
-// holding: the reclaim writes the frame's bytes to the reservation the seal has
-// just handed to the checkpoint's copy, so the copy has to be in the alias set
+// joinReclaiming makes a binding an alias of the resident page another binding
+// holds, without that page's lock. It is what a seal uses for a page a reclaim
+// is holding: the reclaim writes that page's bytes to the reservation the seal
+// has just handed to the checkpoint's copy, so the copy has to be in the alias set
 // the reclaim reads, or already have been when it read it.
 func (h *Host) joinReclaiming(held, b *binding) {
 	h.mu.Lock()
@@ -115,9 +115,9 @@ func (h *Host) touch(pg *resident) {
 
 // create fills an already reserved slot and returns its locked page, not yet
 // visible in the sharing index.
-func (h *Host) create(ctx context.Context, slot int, data []byte, key frame, private bool) (*resident, error) {
-	if sim.Bug(ctx, "pager-zero-new-frame") {
-		// The frame is created without the bytes that were loaded or copied
+func (h *Host) create(ctx context.Context, slot int, data []byte, key pageKey, private bool) (*resident, error) {
+	if sim.Bug(ctx, "pager-zero-new-page") {
+		// The page is created without the bytes that were loaded or copied
 		// into it, which every later read of that page then sees as zeroes.
 		clear(data)
 	}
@@ -146,7 +146,7 @@ func (h *Host) createZeros(ctx context.Context, slot, count int) ([]*resident, e
 	}
 	pages := make([]*resident, count)
 	for i := range pages {
-		pages[i] = h.adopt(slot+i, frame{}, true)
+		pages[i] = h.adopt(slot+i, pageKey{}, true)
 	}
 	return pages, nil
 }
@@ -174,7 +174,7 @@ func (h *Host) abandonSlots(ctx context.Context, slot, count int, err error) err
 }
 
 // adopt makes a filled slot a locked resident page, most recently used.
-func (h *Host) adopt(slot int, key frame, private bool) *resident {
+func (h *Host) adopt(slot int, key pageKey, private bool) *resident {
 	pg := &resident{mu: ctxsync.NewMutex(), slot: slot, key: key, private: private, aliases: make(map[*binding]struct{})}
 	_ = pg.mu.Lock(context.Background())
 	h.mu.Lock()
@@ -197,7 +197,7 @@ func (h *Host) release(ctx context.Context, pg *resident) error {
 	h.putFree(pg.slot)
 	pg.slot = -1
 	h.lru.Remove(pg.recent)
-	if pg.key != (frame{}) && h.clean[pg.key] == pg {
+	if pg.key != (pageKey{}) && h.clean[pg.key] == pg {
 		delete(h.clean, pg.key)
 		h.cleanVersion++
 	}
@@ -223,16 +223,16 @@ func (h *Host) unlink(ctx context.Context, b *binding, pg *resident) error {
 }
 
 // storedPage is the lineage the volume now gives one page, which is what
-// decides whether its frame can be shared.
+// decides whether its resident page can be shared.
 type storedPage struct {
-	id     frame
+	id     pageKey
 	stored bool
 }
 
 // storedIdentities reports that lineage for every page of one retire batch,
 // located once per read-ahead window rather than once per page. It is volume
 // metadata, not a page transition, so it runs with neither the region nor any
-// frame held; the batch's pages are in ascending order, so one window's extents
+// page held; the batch's pages are in ascending order, so one window's extents
 // answer for the run of pages that falls in it.
 func (r *Region) storedIdentities(ctx context.Context, held []*binding) (map[uint64]storedPage, error) {
 	result := make(map[uint64]storedPage, len(held))
@@ -255,10 +255,10 @@ func (r *Region) storedIdentities(ctx context.Context, held []*binding) (map[uin
 	return result, nil
 }
 
-// publishLocked is publishClean with the page's frame already held, which is
-// what retiring a page of a checkpoint needs: the frame must not be reachable
-// from an unreserved binding for even an instant.
-func (r *Region) publishLocked(ctx context.Context, b *binding, pg *resident, id frame, stored bool) error {
+// publishLocked is publishClean with the page already locked, which is
+// what retiring a page of a checkpoint needs: it must not be reachable
+// from an unreserved binding for even a moment.
+func (r *Region) publishLocked(ctx context.Context, b *binding, pg *resident, id pageKey, stored bool) error {
 	h := r.host
 	drop := !stored || id.zero()
 	if !drop {
@@ -282,15 +282,15 @@ func (r *Region) publishLocked(ctx context.Context, b *binding, pg *resident, id
 	return h.unlink(ctx, b, pg)
 }
 
-// share names a private frame in the sharing index without ending its privacy:
+// share names a private page in the sharing index without ending its privacy:
 // the bytes are a seal's, immutable from the seal until it ends, and the guest
 // they belong to keeps the reservation that spills them. It is what lets a
-// machine that inherits the identity a fork point gives the page map the frame
-// instead of reading the page. Caller holds the frame's lock.
-func (h *Host) share(pg *resident, key frame) {
+// machine that inherits the identity a fork point gives the page map that page
+// instead of reading it. Caller holds the page's lock.
+func (h *Host) share(pg *resident, key pageKey) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if !pg.private || pg.key != (frame{}) || h.clean[key] != nil {
+	if !pg.private || pg.key != (pageKey{}) || h.clean[key] != nil {
 		return
 	}
 	pg.key = key
@@ -298,29 +298,30 @@ func (h *Host) share(pg *resident, key frame) {
 	h.cleanVersion++
 }
 
-// unshare takes a seal's name back off a frame, which ending that seal does.
-// A frame the guest stores into again must be reachable by no identity: the
-// bytes under that name stop being what the frame holds. Caller holds the
-// frame's lock.
+// unshare takes a seal's name back off a page, which ending that seal does.
+// A page the guest stores into again must be reachable by no identity: the
+// bytes under that name stop being what the page holds. Caller holds the
+// page's lock.
 func (h *Host) unshare(pg *resident) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if !pg.private || pg.key == (frame{}) {
+	if !pg.private || pg.key == (pageKey{}) {
 		return
 	}
 	if h.clean[pg.key] == pg {
 		delete(h.clean, pg.key)
 		h.cleanVersion++
 	}
-	pg.key = frame{}
+	pg.key = pageKey{}
 }
 
-// dropSharers takes a frame away from every binding but the ones named. Ending
-// a seal that shared its frames does it for the pages the guest takes back:
+// dropSharers takes a resident page away from every binding but the ones named.
+// Ending a seal that shared its pages does it for the pages the guest takes
+// back:
 // what the guest may store into in place must be its own, and a machine that
 // gives one up reads the page through its own backing again — which by then
 // holds those bytes, because a seal ends only once everything that inherited it
-// has copied, published or pulled the pages. Caller holds the frame's lock.
+// has copied, published or pulled the pages. Caller holds the page's lock.
 func (h *Host) dropSharers(ctx context.Context, pg *resident, keep ...*binding) error {
 	var sharers []*binding
 	h.mu.Lock()

@@ -223,7 +223,7 @@ func (b *PeerBacking) Verify(ctx context.Context) error { return b.config.Volume
 
 // Locate reports the volume's own lineage everywhere except the pages the source
 // holds unpublished. Those it reports as bytes of this region alone — no
-// reference, so no frame of them is ever shared and none of them is taken for a
+// reference, so no page of them is ever shared and none of them is taken for a
 // hole — which is what makes the pager load them through Load, where the source
 // answers, rather than resolve them against a checkpoint that does not have them.
 func (b *PeerBacking) Locate(ctx context.Context, offset, length uint64) ([]control.Extent, error) {
@@ -300,7 +300,7 @@ func (b *PeerBacking) onlyOnSource(first uint64, count int) (uint64, bool) {
 //
 // A load is not an install. The pager fills a buffer and may still drop the
 // page — a read-ahead page on a full dirty budget is the ordinary way — and
-// those bytes are then nowhere: not in a frame here, not in the volume, whose
+// those bytes are then nowhere: not in a page here, not in the volume, whose
 // bytes predate the guest's write. Such a page stays the source's alone, so it
 // is asked for again and a read that cannot get it fails loudly.
 func (b *PeerBacking) InstalledUnpublished(offset uint64, installed []bool) {
@@ -352,7 +352,7 @@ func (b *PeerBacking) Load(ctx context.Context, offset uint64, dst []byte) error
 }
 
 // LoadUnpublished is Load, reporting which of the pages it filled the source
-// host served out of its own dirty frames. Those bytes are the guest's state
+// host served out of its own dirty pages. Those bytes are the guest's state
 // since the source's last checkpoint and no checkpoint has them, so the pager
 // holds each of them privately until this host's next checkpoint publishes it.
 // Everything read from this host's own volume, and every page the source served
@@ -380,7 +380,7 @@ func (b *PeerBacking) LoadUnpublished(ctx context.Context, offset uint64, dst []
 			if errors.Is(err, peer.ErrNotServed) || stopped(err) {
 				// The source is gone, or this host has stopped asking it, which
 				// is the same thing from this side and is what a receive does
-				// the instant its post-copy is over.
+				// the moment its post-copy is over.
 				b.fallBack(ctx, err)
 			}
 			if _, only := b.onlyOnSource(first+done, int(pages-done)); only && stopped(err) {

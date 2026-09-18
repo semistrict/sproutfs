@@ -210,7 +210,7 @@ func (h *hostHarness) start(t *testing.T) {
 // launch starts host n inside its own simulated process. The process's context
 // is the host's, so a kill cancels every goroutine that host owns; whatever
 // else the incarnation owns is built and closed in there too, so a killed
-// host's frames go with it.
+// host's pages go with it.
 func (h *hostHarness) launch(t *testing.T, n int) {
 	t.Helper()
 	parent := t.Context()

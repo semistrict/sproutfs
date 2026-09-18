@@ -10,11 +10,11 @@ import (
 // TestPlacementMeasuresCommittedGuestRAMRatherThanArenaResidency: the arena is
 // a cache, not an allocation. Its occupancy only goes up — a page of a VM that
 // has been migrated away or deleted stays resident until something else needs
-// the frame — so a host that has done work looks full whatever it is actually
+// the page — so a host that has done work looks full whatever it is actually
 // running, and a host that has done none looks empty however much guest RAM it
 // has promised. Placement measured that way refuses every destination on a warm
 // host, which is a drain with nowhere to go and a rollout that kills pods with
-// frames on them. What a VM costs a host is the RAM its guest was promised, so
+// pages on them. What a VM costs a host is the RAM its guest was promised, so
 // that is what a placement counts.
 func TestPlacementMeasuresCommittedGuestRAMRatherThanArenaResidency(t *testing.T) {
 	d := newDeployment(t, map[string][]string{"host-0": {}, "host-1": {"vm-a"}})

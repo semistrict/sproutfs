@@ -22,10 +22,10 @@ kept forever. Deleting a VM reclaims only what nothing forked from. See
 - Serves VM volume reads and writes from memory, and makes them durable with a
   periodic whole-VM checkpoint: pause the vCPUs, save VMM state, seal the dirty
   pages by write protection, resume, then upload the sealed pages and an index.
-- Forks a running VM as a handoff from the parent: one pause yields one instant
-  of it for any number of children, here or on another host, and nothing is
+- Forks a running VM as a handoff from the parent: one pause yields one fork
+  point of it for any number of children, here or on another host, and nothing is
   published to take it.
-- Shares resident memory frames of matching lineage within a pager.
+- Shares resident memory pages of matching lineage within a pager.
 - Moves a running VM between hosts post-copy: the destination resumes first and
   pulls the pages no checkpoint holds from the source's page server.
 

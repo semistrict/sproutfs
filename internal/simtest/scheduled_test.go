@@ -371,7 +371,7 @@ func scheduledVolumeWorkload(t *testing.T, ctx context.Context, world *simtest.W
 //
 // What the destination reads back is checked by the world itself at every hop:
 // nothing was published at the handoff, so its first read is the source's last
-// checkpoint plus the frames it serves, and the VMM state it restored carries
+// checkpoint plus the pages it serves, and the VMM state it restored carries
 // the guest's own counters.
 func scheduledHandoverWorkload(t *testing.T, ctx context.Context, world *simtest.World,
 	runtime *sim.Runtime, scheduler *sim.Scheduler) {
@@ -396,7 +396,7 @@ func scheduledHandoverWorkload(t *testing.T, ctx context.Context, world *simtest
 		case "interval-checkpoint":
 			// A checkpoint of the running guest right before the migration:
 			// what it published is the destination's to read from storage, and
-			// the stores that follow are the source's frames to serve.
+			// the stores that follow are the source's pages to serve.
 			if err := world.Checkpoint(ctx, scheduledVMID); err != nil {
 				t.Fatalf("the interval checkpoint: %v", err)
 			}
@@ -504,7 +504,7 @@ func scheduledHostWorkload(t *testing.T, ctx context.Context, world *simtest.Wor
 	}
 	scheduler.Record("host/canceled-drain", "no-work", nil)
 
-	// The host running the guest is taken away at an instant and comes back on
+	// The host running the guest is taken away at a moment and comes back on
 	// the disk it left behind. What the VM is worth afterwards is the
 	// checkpoint its record selects, which is what the world's own model
 	// requires of the takeover.
@@ -581,7 +581,7 @@ func TestScheduledWorldReproduces(t *testing.T) {
 // TestScheduledWorldFingerprintIsStable: this scenario chooses every completion
 // order itself, so unlike a campaign that does not it can promise the strict
 // fingerprint — the same operations on the same resources, in the same order on
-// each of them, at the same simulated instants, with the same adapter
+// each of them, at the same simulated moments, with the same adapter
 // numbering. The recording comparison proves this across processes for reversed
 // creation order; this proves it for two ordinary runs of one seed, which is
 // the check a soak can afford to make on every seed it visits.

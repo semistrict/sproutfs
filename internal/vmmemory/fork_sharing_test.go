@@ -12,18 +12,18 @@ import (
 	"github.com/semistrict/sproutfs/internal/volume"
 )
 
-// A fork on the parent's own host inherits the frames the seal froze without
+// A fork on the parent's own host inherits the pages the seal froze without
 // publishing anything: the children read the parent's sealed pages by lineage
-// identity, so the second maps the first's frame without a load, and the whole
+// identity, so the second maps the first's page without a load, and the whole
 // fork writes one object per child — its control record.
-func TestSameHostForkSharesSealedFramesAndPublishesNothing(t *testing.T) {
+func TestSameHostForkSharesSealedPagesAndPublishesNothing(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		c := newPagerCluster(t)
 		source := c.create(t, "source", 4)
 		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 8, LogicalPages: 32, DirtyPages: 8, ReadAheadPages: 1})
 		r, m := f.attach(source.Volume("ram0"))
 		// The guest stores into two pages and nothing publishes them, so they
-		// exist only in this host's frames.
+		// exist only in this host's pages.
 		for _, page := range []uint64{1, 2} {
 			access(t, r, m, page, true)[0] = 44
 		}
@@ -37,9 +37,9 @@ func TestSameHostForkSharesSealedFramesAndPublishesNothing(t *testing.T) {
 			t.Fatal(err)
 		}
 		if pages := point.Pages("ram0"); len(pages) != 2 || pages[0] != 1 || pages[1] != 2 {
-			t.Fatalf("the instant holds %v unpublished, want pages 1 and 2", pages)
+			t.Fatalf("the fork point holds %v unpublished, want pages 1 and 2", pages)
 		}
-		// Offering the frames is what the host taking these children in does
+		// Offering the pages is what the host taking these children in does
 		// before their regions attach: it is the whole of the local backing's
 		// attach, and it is what the first child below maps rather than reads.
 		if err := point.Share(t.Context()); err != nil {
@@ -61,20 +61,20 @@ func TestSameHostForkSharesSealedFramesAndPublishesNothing(t *testing.T) {
 				t.Fatalf("the first fork lost the sealed bytes of page %d", page)
 			}
 		}
-		// The first child maps the parent's own frames: no byte of the instant
+		// The first child maps the parent's own pages: no byte of the fork point
 		// is read back out of the seal it was offered from.
 		first, _ := f.h.Stats(t.Context())
 		if first.Loads != atFirst.Loads || first.IdentityHits-atFirst.IdentityHits != 2 {
 			t.Errorf("first fork: identity hits=%d loads=%d; want 2 hits and 0 loads",
 				first.IdentityHits-atFirst.IdentityHits, first.Loads-atFirst.Loads)
 		}
-		// Attaching the sibling's region inherits the frames eagerly, by the
-		// identity the instant gives them: no byte is read for either page.
+		// Attaching the sibling's region inherits the pages eagerly, by the
+		// identity the fork point gives them: no byte is read for either page.
 		atSibling, _ := f.h.Stats(t.Context())
 		_, b, bm := fork("b")
 		for _, page := range []uint64{1, 2} {
 			if access(t, b, bm, page, false)[0] != 44 || am.pages[page].slot != bm.pages[page].slot {
-				t.Errorf("sealed page %d did not share its resident frame between siblings", page)
+				t.Errorf("sealed page %d did not share its resident page between siblings", page)
 			}
 		}
 		after, _ := f.h.Stats(t.Context())
@@ -89,7 +89,7 @@ func TestSameHostForkSharesSealedFramesAndPublishesNothing(t *testing.T) {
 			t.Fatalf("forking wrote %v, want only the children's control records", extra)
 		}
 		if status := source.Status(); !status.Sealed {
-			t.Fatalf("the parent is not sealed while its children read the instant: %+v", status)
+			t.Fatalf("the parent is not sealed while its children read the point: %+v", status)
 		}
 	})
 }

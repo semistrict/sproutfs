@@ -15,7 +15,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// location is one encoded member of the data plane: the checkpoint whose parts
+// location is one encoded member of a part: the checkpoint whose parts
 // hold it, the part, and the member's extent within it. A zero length locates
 // nothing. The reference names a VM as well as a sequence, because a fork's
 // entries go on naming its parent's checkpoints.
@@ -45,7 +45,7 @@ type segmentAddress struct {
 	length uint64
 }
 
-// checkpointCost is what one checkpoint's data plane costs: how many parts it
+// checkpointCost is what one checkpoint's parts cost: how many parts it
 // has and how many encoded member bytes they hold. Compaction measures a
 // checkpoint's live bytes against that total. A checkpoint of no parts — a new
 // VM's root, or one a root names only because a segment lives in its index
@@ -248,7 +248,7 @@ func compareRefs(a, b control.Ref) int {
 }
 
 // identity names the page an entry locates, which is what a pager keys a
-// resident frame by and what the page cache keys its bytes by. It is the
+// resident page by and what the page cache keys its bytes by. It is the
 // member's origin rather than the checkpoint that currently holds it, so
 // compaction moving those bytes leaves it alone.
 func identityOf(volume string, number uint64, at location) control.Identity {
@@ -314,7 +314,7 @@ func (i *Index) pageAt(ctx context.Context, volume string, number uint64) (locat
 // Locate reports where the current bytes of a range live. The extents are
 // sorted, adjacent and cover the range exactly, and each of them lies within
 // one page. Consecutive pages are not merged: a page is the unit a member holds
-// and the unit a pager keys a frame by. A hole is one extent however large it
+// and the unit a pager keys a resident page by. A hole is one extent however large it
 // is.
 //
 // It may fetch the segments the range falls in, which is why it takes a
@@ -604,7 +604,7 @@ const supersededFormat = 1
 
 // supersededRootVersion reports the checkpoint index format version a message
 // carries in the field a root no longer has, and whether it carries one at all.
-// It is what tells an index object written before the two planes from one this
+// It is what tells an index object written before this layout from one this
 // build wrote.
 func supersededRootVersion(data []byte) (uint32, bool) {
 	for len(data) > 0 {
@@ -741,7 +741,7 @@ func decodeRoot(store *Store, ref control.Ref, data []byte) (*Index, error) {
 	return index, nil
 }
 
-// checkLocation rejects a data-plane member the index cannot read: one with no
+// checkLocation rejects a member the index cannot read: one with no
 // bytes, one in a part the checkpoint it names does not have, or one past a
 // part's bound.
 func (i *Index) checkLocation(at location) error {

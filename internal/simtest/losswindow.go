@@ -29,7 +29,7 @@ func (w *World) Advance(d time.Duration) {
 
 // LoseStore takes object storage away from one host, or gives it back. Every
 // other host still has it, which is what makes it a host in the dark rather
-// than an outage: its guests go on running out of its frames and nothing it
+// than an outage: its guests go on running out of its pages and nothing it
 // holds can be published. It is what a scenario about the loss window needs,
 // because the window is about a VM whose checkpoints are not landing.
 func (w *World) LoseStore(index int, lost bool) {
@@ -61,9 +61,9 @@ func (w *World) StoreInBackground(ctx context.Context, id string, page uint64) <
 	return done
 }
 
-// noteWrites dates the stores one call made, at the instant it ended on the
+// noteWrites dates the stores one call made, at the moment it ended on the
 // clock of the host that took them. The host clocks are the simulation's own
-// and stand still between advances, so that instant is exact rather than
+// and stand still between advances, so that moment is exact rather than
 // approximate.
 func (w *World) noteWrites(in *instance, g *guest, before int64) {
 	if in == nil || g == nil {

@@ -95,7 +95,7 @@ type Summary struct {
 }
 
 // Bubble measures one seed whose runner owns its virtual-time bubble. Start it
-// before the bubble, hand it the bubble's own start instant from inside, and
+// before the bubble, hand it the bubble's own start time from inside, and
 // Report once the bubble has ended:
 //
 //	bubble := testsoak.Start("scheduled-host", seed)

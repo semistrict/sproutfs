@@ -50,7 +50,7 @@ const (
 	// orchestrator drives both halves of every migration, so an orchestrator
 	// that is wedged answers none of these calls. Bounding each one is what
 	// turns that into a drain that moved some of its VMs rather than a pod
-	// killed with all of their frames still on it.
+	// killed with all of their pages still on it.
 	drainTimeout     = 80 * time.Second
 	drainVMTimeout   = 60 * time.Second
 	drainConcurrency = 4
@@ -139,14 +139,14 @@ func Start(ctx context.Context, config SupervisorConfig) (Service, error) {
 		}
 	}()
 
-	// Huge pages are the pager's frames. The pod's mount is what the kubelet
+	// Huge pages are what the pager's arena is made of. The pod's mount is what the kubelet
 	// grants its HugeTLB allotment through, so its absence means the arena
 	// cannot be allocated at all.
 	if _, err := os.Stat(config.HugepageDir); err != nil {
 		return nil, fmt.Errorf("hugepage mount %s: %w", config.HugepageDir, err)
 	}
 	var err error
-	// The allotment is RAM: the pager's frames. Disk is capped per concern, so
+	// The allotment is RAM: the pager's resident pages. Disk is capped per concern, so
 	// the spill file and the VMM scratch answer to their own bounds instead.
 	s.resources, err = resource.New(config.MemoryBytes)
 	if err != nil {
@@ -309,7 +309,7 @@ func (s *supervisor) Status(ctx context.Context) (hostapi.Status, error) {
 // what a placement measures this host by. It is each VM's RAM volume, which is
 // the size its template fixed and which a fork inherits, whether or not a byte
 // of it is resident: the arena is a cache, and a page of a VM that has gone
-// stays in it until a frame is needed, so residency says what this host has
+// stays in it until the memory is needed, so residency says what this host has
 // touched rather than what it has promised.
 func (s *supervisor) committed() uint64 {
 	s.mu.Lock()
@@ -389,7 +389,7 @@ func (s *supervisor) Close(ctx context.Context) error {
 	}
 	if s.host != nil {
 		// A VM this host handed over and is still serving pages for holds
-		// frames no checkpoint has. Exiting loses them either way — that is
+		// pages no checkpoint has. Exiting loses them either way — that is
 		// what a drain exists to prevent — so they are released here rather
 		// than left attached to a pager that is about to close.
 		if serving := s.host.Status().Serving; len(serving) > 0 {

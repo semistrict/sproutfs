@@ -159,11 +159,11 @@ func pfn(t *testing.T, p *process, region, offset int) uint64 {
 		t.Fatal(err)
 	}
 	entry := binary.LittleEndian.Uint64(b[:])
-	frame := entry & ((1 << 55) - 1)
-	if entry>>63 != 1 || frame == 0 {
+	number := entry & ((1 << 55) - 1)
+	if entry>>63 != 1 || number == 0 {
 		t.Fatalf("cannot establish physical residency/sharing: pagemap=%#x (run the dedicated test as root)", entry)
 	}
-	return frame
+	return number
 }
 
 func allocated(t *testing.T, p *pager) int64 {
@@ -198,7 +198,7 @@ func TestSharedCOWSpillRefault(t *testing.T) {
 		a.read("read", region, 0, p.pageSize, changed)
 		b.read("read", region, 0, p.pageSize, original)
 		if pfn(t, a, region, 0) == pfn(t, b, region, 0) {
-			t.Fatal("private write still shares its physical frame")
+			t.Fatal("private write still shares its physical page")
 		}
 		p.mu.Lock()
 		oldSlot := a.clients[region].aliases[0].page.slot
@@ -415,7 +415,7 @@ func TestKVMSharingCOWAndRefault(t *testing.T) {
 		b.send(fmt.Sprintf("kvmread %d 0", r))
 		b.expect(fmt.Sprintf("kvm %d", original))
 		if pfn(t, a, r, 0) == pfn(t, b, r, 0) {
-			t.Fatal("KVM store did not make a private frame")
+			t.Fatal("KVM store did not make a private page")
 		}
 		if err := p.evict(a.clients[r], 0); err != nil {
 			t.Fatal(err)
@@ -519,9 +519,9 @@ func TestControlLossTerminatesAdapter(t *testing.T) {
 
 // A range write-protect is what a seal costs. One ioctl covers a run of pages
 // that are several separate mappings in the client, and it must take write
-// access away without moving a frame or dropping a page table: reads go on
-// through the same frames with no fault at all, and only the next store to each
-// page traps, on the frame it already had.
+// access away without moving a page or dropping a page table: reads go on
+// through the same physical pages with no fault at all, and only the next store
+// to each page traps, on the page it already had.
 func TestRangeWriteProtectSpansSeveralMappings(t *testing.T) {
 	const pages = 4
 	p := newPager(t, pages*2)
@@ -531,11 +531,11 @@ func TestRangeWriteProtectSpansSeveralMappings(t *testing.T) {
 	for page := pages - 1; page >= 0; page-- {
 		a.fill(0, page*p.pageSize, p.pageSize, byte(100+page))
 	}
-	var frames [pages]uint64
+	var pfns [pages]uint64
 	for page := range pages {
-		frames[page] = pfn(t, a, 0, page*p.pageSize)
-		if page > 0 && frames[page] == frames[page-1] {
-			t.Fatalf("pages %d and %d share a frame", page-1, page)
+		pfns[page] = pfn(t, a, 0, page*p.pageSize)
+		if page > 0 && pfns[page] == pfns[page-1] {
+			t.Fatalf("pages %d and %d share a physical page", page-1, page)
 		}
 	}
 	before := p.faults.Load()
@@ -544,8 +544,8 @@ func TestRangeWriteProtectSpansSeveralMappings(t *testing.T) {
 	}
 	for page := range pages {
 		a.read("read", 0, page*p.pageSize, 16, byte(100+page))
-		if got := pfn(t, a, 0, page*p.pageSize); got != frames[page] {
-			t.Fatalf("page %d moved from frame %d to %d", page, frames[page], got)
+		if got := pfn(t, a, 0, page*p.pageSize); got != pfns[page] {
+			t.Fatalf("page %d moved from physical page %d to %d", page, pfns[page], got)
 		}
 	}
 	if got := p.faults.Load(); got != before {
@@ -554,8 +554,8 @@ func TestRangeWriteProtectSpansSeveralMappings(t *testing.T) {
 	for page := range pages {
 		a.fill(0, page*p.pageSize, p.pageSize, byte(200+page))
 		a.read("read", 0, page*p.pageSize, 16, byte(200+page))
-		if got := pfn(t, a, 0, page*p.pageSize); got != frames[page] {
-			t.Fatalf("the store into page %d moved it from frame %d to %d", page, frames[page], got)
+		if got := pfn(t, a, 0, page*p.pageSize); got != pfns[page] {
+			t.Fatalf("the store into page %d moved it from physical page %d to %d", page, pfns[page], got)
 		}
 	}
 	if got := p.faults.Load(); got != before+pages {

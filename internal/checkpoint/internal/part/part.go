@@ -1,4 +1,4 @@
-// Package part lays out one checkpoint's parts, which are its data plane: the
+// Package part lays out one checkpoint's parts, which are its data: the
 // VMM state and the guest pages it published.
 //
 // A part is a concatenation of encoded members followed by a table naming them

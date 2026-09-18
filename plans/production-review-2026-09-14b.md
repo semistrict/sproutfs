@@ -24,10 +24,10 @@ compaction grace) and the pack format 1 (versioned trailer and table).
    `Host.seal` check only local handle state; `Confirm` is called from the
    epoch watcher alone, and a read error there is treated as no evidence. A
    host that has lost the object store but not the pod network keeps running
-   and can hand its stale frames to a third host, which then post-copies them
+   and can hand its stale pages to a third host, which then post-copies them
    over the checkpoint the new writer published: one VM's memory made of two
    writers' pages. The store itself never mixes (epoch-major sequences plus
-   the compare-and-set); the frame path is the hole, and `runner` picks the
+   the compare-and-set); the page path is the hole, and `runner` picks the
    first of two hosts claiming a VM. Fix: `Confirm` at the top of `Migrate`
    and `seal`; `runner` refuses when two hosts claim one VM.
 2. **A fork's pin is kept forever once the child publishes.** `publishedBy`
@@ -73,7 +73,7 @@ Storage:
 - `Create` maps a precondition failure to `ErrExists` without the nonce
   read-back; an SDK retry of a landed PUT leaves a fork's child record
   unopenable.
-- Unchanged from the first pass: sealed frames held across the serial
+- Unchanged from the first pass: sealed pages held across the serial
   reclamation sweep; retry conflict-compare downloads whole parts; the four
   zstd workers and sixteen cache loads host-wide with production passing zero
   configs; VM id reuse after delete.
@@ -81,7 +81,7 @@ Storage:
 Memory and migration:
 - The vCPU pause waits for every in-flight fault's backing I/O, including a
   BUSY-retry loop against a migration source with no bound.
-- Seal blocks on frame locks held across eviction I/O (unchanged).
+- Seal blocks on page locks held across eviction I/O (unchanged).
 - The 30 s seal timeout on both sides, the VMM's timer starting first, kills
   the guest instead of failing the checkpoint (unchanged).
 - One sealed region disables pressure-driven checkpoints host-wide: `relief`
@@ -93,7 +93,7 @@ Memory and migration:
 
 Control plane:
 - In-flight table rows are never aged; an orchestrator restart mid-migration
-  pins the source's frames forever (`migrated` has no deadline).
+  pins the source's pages forever (`migrated` has no deadline).
 - A failed post-copy leaves the guest running on a torn image and the next
   checkpoint publishes it.
 - The drain is serial and unbounded, the orchestrator client has no timeout,
@@ -105,7 +105,7 @@ Control plane:
   stale bytes.
 - No authentication; no NetworkPolicy shipped; `GET /drain` drains on a GET.
 - Serving release rests on the non-authoritative table; a swallowed `note`
-  failure plus a survey releases frames mid-fetch. The source should refuse
+  failure plus a survey releases pages mid-fetch. The source should refuse
   release while unpublished pages are outstanding.
 - Guest agent buffers unbounded output and kills only the shell.
 - Placement counts VMs; nothing admits a create against memory.

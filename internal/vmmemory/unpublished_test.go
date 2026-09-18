@@ -11,7 +11,7 @@ import (
 )
 
 // peerBacking stands in for a migration destination's peer backing: some pages
-// are served by the source out of frames no checkpoint has, and the volume's own
+// are served by the source out of pages no checkpoint has, and the volume's own
 // bytes are wrong for exactly those pages.
 type peerBacking struct {
 	*backing

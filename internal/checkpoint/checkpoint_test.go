@@ -59,7 +59,7 @@ func objectKey(t testing.TB, parts ...string) platform.ObjectKey {
 	return key
 }
 
-// partKey names one part of a checkpoint's data plane by number the way the
+// partKey names one part of a checkpoint's data by number the way the
 // store does.
 func partKey(t testing.TB, vm string, sequence uint64, number uint32) platform.ObjectKey {
 	t.Helper()

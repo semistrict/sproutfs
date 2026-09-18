@@ -7,7 +7,7 @@
 # after the word "checkpoint" — so a model it is run against is only worth
 # anything if it prints what the real one prints. The formats are
 # cmd/sproutfsctl/main.go's, and cmd/sproutfsctl's own output tests are what
-# pins them: TestListPrintsEveryVMAndItsHost, TestHostsPrintsTheSharedFrameCount,
+# pins them: TestListPrintsEveryVMAndItsHost, TestHostsPrintsTheSharedPageCount,
 # TestForkPrintsEveryForksTimings, TestCreatePrintsWhereTheVMWentAndWhatItCost,
 # TestMigratePrintsThePauseAndTheStream, TestStopPrintsWhichHostClosedTheVM,
 # TestStartPrintsWhereTheVMCameBackAndAtWhichCheckpoint and
@@ -87,7 +87,7 @@ sproutfs-host-1  true   1        0        900       512     64      ok' \
     ctl hosts
 
 # fork prints one row per child, all of them carrying the one pause that one
-# instant of the parent cost.
+# fork point of the parent cost.
 want_printed 'fork prints every fork and the timings it cost' \
     'FORK  HOST             PAUSE  START  TOTAL
 vm-3  sproutfs-host-0  0.012  0.300  0.316
@@ -149,7 +149,7 @@ want_file_has "$work/err" '503 Service Unavailable' 'a refusal says what the dep
 unset SPROUTFS_FAKE_REFUSE
 
 # A cold start says so, and the checkpoint it names is the one that discarded
-# the memory rather than the one the stop published: that is the instant the VM
+# the memory rather than the one the stop published: that is the checkpoint the VM
 # is at now, and it is what a flow reading the number after "checkpoint" gets.
 # The real format is cmd/sproutfsctl's
 # TestColdStartPrintsThatTheVMCameBackWithoutItsMemory.

@@ -11,10 +11,10 @@ import (
 )
 
 // TestStoppingAParentWhoseFanOutLandedOnItsOwnHostIsRefused: a child taken in
-// here attaches over the instant itself rather than over the page server, so no
-// page of it ever reaches the wire. What the frames the child reads are is the
+// here attaches over the point itself rather than over the page server, so no
+// page of it ever reaches the wire. What the pages the child reads are is the
 // same either way — the parent's VMM process's — so a stop that closed it would
-// take the instant out from under a child that is faulting for it, and the
+// take the point out from under a child that is faulting for it, and the
 // refusal has to come from the parent's own seal rather than from what the page
 // server happens to be serving. The hold is reported as the handover it is,
 // because it is what holds the parent sealed.
@@ -52,11 +52,11 @@ func TestStoppingAParentWhoseFanOutLandedOnItsOwnHostIsRefused(t *testing.T) {
 		t.Fatalf("a child of this host's own is given %q to fetch from", handoffs[0].Source)
 	}
 	if serving := h.hosts[0].Status().Serving; len(serving) != 1 || serving[0] != "child" {
-		t.Fatalf("the host reports holding %v, want the instant it holds for its own child", serving)
+		t.Fatalf("the host reports holding %v, want the point it holds for its own child", serving)
 	}
 
 	if _, err := h.hosts[0].Stop(t.Context(), "parent"); !errors.Is(err, volume.ErrSealed) {
-		t.Fatalf("stopping a parent a local fork instant holds = %v, want ErrSealed", err)
+		t.Fatalf("stopping a parent a local fork point holds = %v, want ErrSealed", err)
 	}
 	if running := h.hosts[0].Machines(); len(running) != 2 {
 		t.Fatalf("the refusal left the host running %v, want the parent and its child", running)
@@ -99,7 +99,7 @@ func TestStoppingAParentWhoseFanOutLandedOnItsOwnHostIsRefused(t *testing.T) {
 	if child := started["child"]; child == nil {
 		t.Fatal("the fork started no child on this host")
 	} else if got := child.load("ram0", 0); !bytes.Equal(got, bytes.Repeat([]byte{21}, migrationPageSize)) {
-		t.Fatalf("the child holds %d... after its parent was stopped, want the instant it inherited", got[0])
+		t.Fatalf("the child holds %d... after its parent was stopped, want the point it inherited", got[0])
 	}
 }
 
@@ -107,8 +107,8 @@ func TestStoppingAParentWhoseFanOutLandedOnItsOwnHostIsRefused(t *testing.T) {
 // releases retires on its own, four checkpoint intervals on, so that a parent
 // whose child is gone is durable again rather than sealed for as long as this
 // host runs. What the parent must be after that is an ordinary running VM: the
-// deadline gives the frames back, so the stop that was refused while the
-// instant held them publishes everything the guest has.
+// deadline gives the pages back, so the stop that was refused while the
+// point held them publishes everything the guest has.
 func TestAParentIsStoppableOnceItsForkHoldOutlivesItsDeadline(t *testing.T) {
 	const holdTimeout = 50 * time.Millisecond
 	h, pagers, arenas := startMigrationHosts(t)
@@ -141,7 +141,7 @@ func TestAParentIsStoppableOnceItsForkHoldOutlivesItsDeadline(t *testing.T) {
 	guest.store("ram0", 1, 32)
 	stopped, err := h.hosts[0].Stop(t.Context(), "parent")
 	if err != nil {
-		t.Fatalf("stopping a parent whose instant outlived its deadline: %v", err)
+		t.Fatalf("stopping a parent whose point outlived its deadline: %v", err)
 	}
 	if stopped.Sequence == 0 {
 		t.Fatalf("the stop published %s, want a checkpoint of the parent", stopped)
@@ -171,7 +171,7 @@ func TestAParentIsStoppableOnceItsForkHoldOutlivesItsDeadline(t *testing.T) {
 // and starts its share of the population every round, so the same identity goes
 // round this loop many times over one pair of hosts. Every turn has to publish
 // what the guest held and give everything else back — the registration, the
-// frames, the handle — or a host that has done a few rounds is a host that
+// pages, the handle — or a host that has done a few rounds is a host that
 // cannot take another VM.
 func TestStoppingAndStartingOneVMOverAndOverLeavesNothingBehind(t *testing.T) {
 	h, pagers, arenas := startMigrationHosts(t)
@@ -251,7 +251,7 @@ func TestStoppingAndStartingOneVMOverAndOverLeavesNothingBehind(t *testing.T) {
 // the whole of what it tells the deployment — the handle that knew is released
 // by the time it answers, and a start reports what it found rather than what it
 // was promised. A stop that published and then let the interval loop publish
-// again behind it would name an instant the VM does not come back at.
+// again behind it would name a pause the VM does not come back at.
 //
 // The store publishes slowly and the interval is short, so the loop always has
 // a turn inside the stop's own publication.

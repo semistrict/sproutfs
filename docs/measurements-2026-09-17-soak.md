@@ -54,7 +54,7 @@ campaigns and the Lima suites had not reached. In the order found:
    served: a guest's first store into an unpublished page fetched it through
    copy-on-write without reporting it installed.
 7. A finished post-copy closed its receive under a guest fault still on the
-   wire, which killed the guest, and the dead child's shared frame then
+   wire, which killed the guest, and the dead child's shared page then
    failed its sibling's eviction.
 8. Every checkpoint killed every command running in the guest: the VMM
    published a vsock transport reset on snapshot creation, and the host side

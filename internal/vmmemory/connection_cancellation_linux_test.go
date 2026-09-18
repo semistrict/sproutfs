@@ -25,7 +25,7 @@ type stalledAttachmentBacking struct {
 	entered chan struct{}
 }
 
-// seedMapping retains a resident frame without any kernel memory users.
+// seedMapping retains a resident page without any kernel memory users.
 type seedMapping struct{}
 
 func (seedMapping) Map(context.Context, uint64, int, int, bool) error { return nil }

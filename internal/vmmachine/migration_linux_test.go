@@ -29,7 +29,7 @@ import (
 // pagers and two volume managers in one process, over loopback TCP. The guest
 // keeps storing into its RAM and its DAX disk
 // until the vCPUs stop, and comes back on the destination with its counters
-// intact. Those stores are the source's frames alone — a migration publishes
+// intact. Those stores are the source's pages alone — a migration publishes
 // nothing — so what the destination fetches from the source's page server is
 // what makes it whole.
 func TestFirecrackerLiveMigration(t *testing.T) {
@@ -75,7 +75,7 @@ func TestFirecrackerLiveMigration(t *testing.T) {
 	// The guest stores into its RAM and its DAX disk until the vCPUs stop. A
 	// migration has no phase that runs while the guest does, so the test waits
 	// for rounds of its own: the point of the migration is that these stores are
-	// nowhere but this host's frames when it is stopped.
+	// nowhere but this host's pages when it is stopped.
 	work := driveGuest(ctx, p)
 	if err := work.rounds(ctx, 3); err != nil {
 		raw := consoleText(p)
@@ -132,7 +132,7 @@ func TestFirecrackerLiveMigration(t *testing.T) {
 	t.Cleanup(func() { _ = fp.Close() })
 	ready := time.Now()
 
-	// The source still holds every frame it stopped with, and serves them over
+	// The source still holds every page it stopped with, and serves them over
 	// the same loopback network the hosts use. The pages it never published
 	// are the ones only it has, and what it serves for every other page is
 	// exactly what the destination's own log holds.
@@ -316,7 +316,7 @@ func newMigrationPager(t *testing.T, ctx context.Context) (*vmmemory.Host, *vmme
 	return newSizedMigrationPager(t, ctx, residentPages(t, pagerPageBytes(t), 128<<20), 384<<20, 384<<20)
 }
 
-// newSizedMigrationPager builds one host's pager with slots arena frames, room
+// newSizedMigrationPager builds one host's pager with slots arena pages, room
 // for logicalBytes of mapped region and dirtyBytes of private state no
 // checkpoint has published. A host taking in more than one VM needs a larger
 // logical budget than the single-VM default; an arena smaller than what it maps
@@ -535,7 +535,7 @@ func peerBacking(t *testing.T, c *migrationCluster, handoff vmmigrate.Handoff, v
 }
 
 // unpublishedOf reports the pages of one region that the handoff says exist
-// nowhere but the source's frames. A destination that does not carry them treats
+// nowhere but the source's pages. A destination that does not carry them treats
 // its own checkpoint's bytes as current, which is the whole hazard a post-copy
 // has.
 func unpublishedOf(t *testing.T, handoff vmmigrate.Handoff, name string) []vmmigrate.PageRun {
@@ -577,7 +577,7 @@ func unheldUnpublished(t *testing.T, runs []vmmigrate.PageRun, region *vmmemory.
 // publishedPage is a page of one volume the handoff did not name as the
 // source's own. Those are the only pages a source that has stopped serving may
 // be answered for from this host's own log: everything the handoff named exists
-// nowhere but that source's frames, and the volume holds the bytes from before
+// nowhere but that source's pages, and the volume holds the bytes from before
 // the guest wrote them.
 func publishedPage(t *testing.T, handoff vmmigrate.Handoff, v *volume.Volume) uint64 {
 	t.Helper()

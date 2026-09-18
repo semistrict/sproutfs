@@ -8,7 +8,7 @@ import (
 )
 
 // TestForkHoldExpiresOnTheSimulatedClock: a fork's child is served the parent's
-// sealed frames until the orchestrator says it has them all, and the deadline
+// sealed pages until the orchestrator says it has them all, and the deadline
 // that retires the hold when that word never comes is four checkpoint intervals
 // — four minutes of a deployment's time. Nothing could reach it: the only test
 // of an expiring handover set a fifty-millisecond timeout of its own and then
@@ -44,10 +44,10 @@ func TestForkHoldExpiresOnTheSimulatedClock(t *testing.T) {
 		t.Fatal(err)
 	}
 	if serving := h.hosts[0].Status().Serving; len(serving) != 1 || serving[0] != "child" {
-		t.Fatalf("the fork instant is served for %v, want the child", serving)
+		t.Fatalf("the fork point is served for %v, want the child", serving)
 	}
 	if !vm.Status().Sealed {
-		t.Fatal("a fork point does not hold the parent's frames")
+		t.Fatal("a fork point does not hold the parent's pages")
 	}
 
 	// A minute short of the deadline changes nothing: a healthy destination is
@@ -73,7 +73,7 @@ func TestForkHoldExpiresOnTheSimulatedClock(t *testing.T) {
 		t.Fatalf("an expired fork hold still serves %v", serving)
 	}
 	// This is what the deadline exists for: a parent nothing can checkpoint,
-	// fence or migrate takes its frames back and is durable again.
+	// fence or migrate takes its pages back and is durable again.
 	if vm.Status().Sealed {
 		t.Fatal("an expired fork hold left the parent sealed")
 	}
@@ -84,7 +84,7 @@ func TestForkHoldExpiresOnTheSimulatedClock(t *testing.T) {
 
 // TestReleasingAForkHoldDisarmsItsDeadline: the release is the ordinary end of
 // a hold, and a deadline left armed behind it would later fire into a host that
-// had already given those frames up. Advancing past it must find nothing to do.
+// had already given those pages up. Advancing past it must find nothing to do.
 func TestReleasingAForkHoldDisarmsItsDeadline(t *testing.T) {
 	h, pagers, arenas := startMigrationHosts(t)
 	clock := sim.New(sim.Config{Seed: 1}).NewClock("source")
@@ -107,7 +107,7 @@ func TestReleasingAForkHoldDisarmsItsDeadline(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The parent wrote nothing since the checkpoint its record selects, so the
-	// instant holds no page the child has to fetch and the release is the
+	// point holds no page the child has to fetch and the release is the
 	// ordinary word the orchestrator carries.
 	if err := h.hosts[0].ReleaseMigrated("child"); err != nil {
 		t.Fatal(err)
@@ -120,6 +120,6 @@ func TestReleasingAForkHoldDisarmsItsDeadline(t *testing.T) {
 	}
 	clock.Settle()
 	if vm.Status().Sealed {
-		t.Fatal("the released point still holds the parent's frames")
+		t.Fatal("the released point still holds the parent's pages")
 	}
 }

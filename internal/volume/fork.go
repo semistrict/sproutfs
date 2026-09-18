@@ -12,13 +12,13 @@ import (
 	"github.com/semistrict/sproutfs/internal/control"
 )
 
-// ForkPoint is one instant of a VM and what a child of it starts from: the
+// ForkPoint is one pause of a VM and what a child of it starts from: the
 // checkpoint the parent has published — pinned in the parent's control record,
 // so nothing reclaims the lineage the child inherits — the pages the parent
 // holds that no checkpoint has, and the VMM state captured with them.
 //
 // Making one publishes nothing. The parent keeps its handle, its volumes and
-// its frames: the sealed frames stay the parent's and the child reads them by
+// its pages: the sealed pages stay the parent's and the child reads them by
 // lineage identity — on this host through the point itself, on another host out
 // of the parent's page server. The child's first checkpoint publishes those
 // pages as its own, and so does the parent's next, which is why one interval's
@@ -33,7 +33,7 @@ import (
 // A ForkPoint is immutable once it is returned and safe for concurrent use.
 type ForkPoint struct {
 	// ref is the checkpoint the child inherits and index its table. checkpoint
-	// is the parent's sealed instant over that checkpoint, nil for a point rebuilt
+	// is the parent's seal over that checkpoint, nil for a point rebuilt
 	// on another host, where the pages the parent holds unpublished reach the
 	// child through its pager rather than through this.
 	checkpoint *Checkpoint
@@ -44,7 +44,7 @@ type ForkPoint struct {
 	unpublished map[string][]uint64
 	// control is the parent's own handle, which took the pin on ref for this
 	// point. A point rebuilt on another host has none: the pin was written on
-	// the host that took the instant, by the parent's own writer.
+	// the host that took the point, by the parent's own writer.
 	control *control.Handle
 
 	// mu guards the holders of this point: one per child, taken by Hold. The
@@ -60,7 +60,7 @@ type ForkPoint struct {
 // parent's control record.
 func (f *ForkPoint) Parent() control.Ref { return f.ref }
 
-// State is the VMM state captured at the fork instant, nil for a point over a
+// State is the VMM state captured at the fork point, nil for a point over a
 // published checkpoint of a VM that was not running. The bytes belong to the
 // point and must not be modified.
 func (f *ForkPoint) State() []byte {
@@ -78,7 +78,7 @@ func (f *ForkPoint) Volumes() []string { return slices.Clone(f.index.Volumes()) 
 func (f *ForkPoint) Size(volume string) uint64 { return f.index.Size(volume) }
 
 // Pages reports the pages of one volume that no checkpoint of the parent holds,
-// in ascending order. They exist only in the parent's frames and overlay, so a
+// in ascending order. They exist only in the parent's pages and overlay, so a
 // child on another host must fetch every one of them before this point may be
 // retired; a child on this host reads them through the point itself.
 func (f *ForkPoint) Pages(volume string) []uint64 { return slices.Clone(f.unpublished[volume]) }
@@ -103,7 +103,7 @@ func (f *ForkPoint) UnpublishedAge(volume string) time.Duration {
 	return source.UnpublishedAge()
 }
 
-// ReadPage fills dst, exactly one page, with the bytes the fork instant froze.
+// ReadPage fills dst, exactly one page, with the bytes the fork point froze.
 // It is what the parent's page server serves a child on another host from, and
 // it neither contacts the network nor touches the parent's live state.
 func (f *ForkPoint) ReadPage(ctx context.Context, volume string, page uint64, dst []byte) error {
@@ -118,7 +118,7 @@ func (f *ForkPoint) ReadPage(ctx context.Context, volume string, page uint64, ds
 
 // Hold takes one hold on this point, for a holder that will Retire it: a child
 // created from it here, or one this host serves the pages of while it starts on
-// another host. Every child of one instant is one hold, which is what lets one
+// another host. Every child of one fork point is one hold, which is what lets one
 // pause of the parent start any number of them.
 func (f *ForkPoint) Hold() {
 	f.mu.Lock()
@@ -134,7 +134,7 @@ func (f *ForkPoint) Hold() {
 // under it.
 //
 // The point itself takes it when it is made, so this is the same pin again:
-// pinning twice is one pin, and every child of one instant shares it. Nothing
+// pinning twice is one pin, and every child of one fork point shares it. Nothing
 // gives it back — the pin outlives this point, the child and the host that took
 // it, and only a collector releases one. A point rebuilt on another host pins
 // nothing: the parent's host wrote the pin before handing the child over, where
@@ -184,14 +184,14 @@ func (f *ForkPoint) Retire(ctx context.Context) error {
 }
 
 // ForkPoint pauses this VM through prepare, resumes it as soon as its memory is
-// sealed, and returns the instant a child starts from. It publishes nothing:
+// sealed, and returns the point a child starts from. It publishes nothing:
 // the checkpoint the child inherits is the one this VM's control record already
-// selects, and everything written since it is in the frames prepare sealed.
+// selects, and everything written since it is in the pages prepare sealed.
 //
 // The pin comes before the point is returned and is this handle's own
 // conditional write, because a child that exists while the lineage it inherits
 // is unpinned could have that lineage reclaimed under it. It is one pin for the
-// instant, shared by every child of it and never given back.
+// point, shared by every child of it and never given back.
 //
 // It runs under the publication lock, so a fork and an interval checkpoint of
 // one guest serialize there rather than racing to seal the same regions. The
@@ -227,17 +227,17 @@ func (vm *VM) ForkPoint(ctx context.Context, prepare PrepareFunc) (*ForkPoint, e
 	return point, nil
 }
 
-// Share offers the parent's sealed frames to this host under the identity this
-// instant gives them, so a child started here maps them instead of reading
+// Share offers the parent's sealed pages to this host under the identity this
+// point gives them, so a child started here maps them instead of reading
 // them. It is what a child taken in on the parent's own host attaches over:
 // every page it inherited is present the moment its region attaches, and no
 // byte is copied and nothing is fetched.
 //
 // A point over a published checkpoint alone — one rebuilt on a host that never
-// held the parent — has no frames to offer, and a child of it reads what it
+// held the parent — has no pages to offer, and a child of it reads what it
 // inherited out of object storage and its parent's page server instead.
 //
-// It is idempotent: every child of one instant offers the same frames under
+// It is idempotent: every child of one fork point offers the same pages under
 // the same names.
 func (f *ForkPoint) Share(ctx context.Context) error {
 	if f.checkpoint == nil {
@@ -278,7 +278,7 @@ func (vm *VM) unseal() {
 	vm.mu.Unlock()
 }
 
-// forkPoint takes the instant itself: one consistent view of every volume at the
+// forkPoint takes the pause itself: one consistent view of every volume at the
 // generation the seal froze, over the checkpoint this handle sits on.
 func (vm *VM) forkPoint(state []byte, sources map[string]DirtySource) (*ForkPoint, error) {
 	vm.mu.Lock()
@@ -296,7 +296,7 @@ func (vm *VM) forkPoint(state []byte, sources map[string]DirtySource) (*ForkPoin
 	}
 	// The point takes a sequence of its own and never publishes under it, so the
 	// identity it gives the parent's unpublished pages is shared by every child
-	// of this instant and taken by nothing else, ever.
+	// of this point and taken by nothing else, ever.
 	if !control.ValidSequence(vm.control.Epoch(), vm.next) {
 		return nil, ErrCapacity
 	}
@@ -314,7 +314,7 @@ func (vm *VM) forkPoint(state []byte, sources map[string]DirtySource) (*ForkPoin
 		done:        make(chan struct{}),
 		swept:       make(chan struct{}),
 	}
-	// The seal is this instant's from here: it lasts as long as the children
+	// The seal is this point's from here: it lasts as long as the children
 	// taken from the point rather than as long as an upload, wherever those
 	// children run, so nothing waiting for the pager's dirty budget waits on it.
 	for _, source := range sources {

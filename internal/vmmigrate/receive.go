@@ -57,14 +57,14 @@ type inheritedBacking interface {
 }
 
 // localBacking is what a fork's child attaches over when its parent runs on
-// this host: the child's own volume, with the parent's sealed frames offered to
-// the pager under the identity the instant gives them. Every page the child
-// inherited is therefore present as a shared frame the moment the region
+// this host: the child's own volume, with the parent's sealed pages offered to
+// the pager under the identity the point gives them. Every page the child
+// inherited is therefore present as a shared page the moment the region
 // attaches — no byte is copied, nothing is fetched, and the pages the parent
 // holds that no checkpoint has are exactly as reachable as the published ones.
 //
 // The volume answers every read, as it does for any VM: the child's handle
-// reads through the instant until it publishes its own root.
+// reads through the point until it publishes its own root.
 type localBacking struct {
 	*volume.Volume
 	// inherited is what the handoff named, kept for the account of it: these
@@ -72,7 +72,7 @@ type localBacking struct {
 	inherited []PageRun
 }
 
-// Unpublished names nothing to fetch: these pages are in this host's frames.
+// Unpublished names nothing to fetch: these pages are in this host's memory.
 func (localBacking) Unpublished() []PageRun { return nil }
 
 func (localBacking) Unfetched() int { return 0 }
@@ -152,7 +152,7 @@ func (r *Received) VM() *volume.VM { return r.vm }
 func (r *Received) Runtime() Runtime { return r.runtime }
 
 // Done reports when the source's pages have been streamed in, which is when the
-// source may release its frames and the host that held them may shut down. It
+// source may release its pages and the host that held them may shut down. It
 // does not return until every page the source held that no checkpoint has is on
 // this host or has failed to arrive: those pages exist nowhere else, so the
 // source cannot stop serving while one of them is only there.
@@ -268,8 +268,8 @@ func Receive(ctx context.Context, manager *volume.Manager, handoff Handoff, dial
 // the pages written since it from the parent, and its own first checkpoint is
 // the root index that makes it a VM anyone can open.
 //
-// point is the instant itself, for a child whose parent runs on this host: it
-// carries the parent's sealed frames, which is what makes the pages written
+// point is the parent's own fork point, for a child whose parent runs here: it
+// carries the parent's sealed pages, which is what makes the pages written
 // since that checkpoint reachable without the network. A child whose parent is
 // elsewhere rebuilds the point from the published checkpoint alone.
 func open(ctx context.Context, manager *volume.Manager, handoff Handoff, point *volume.ForkPoint) (*volume.VM, error) {
@@ -280,7 +280,7 @@ func open(ctx context.Context, manager *volume.Manager, handoff Handoff, point *
 		}
 		// A migration publishes nothing, so the record was openable by anybody
 		// between the source's release and this open. One that selects a
-		// different checkpoint has had another writer in it, and the frames this
+		// different checkpoint has had another writer in it, and the pages this
 		// handoff offers are the wrong writer's: post-copying them over that
 		// checkpoint would make one VM's memory out of two writers' pages, and
 		// neither side would ever say so. The handle opened here is released
@@ -305,12 +305,12 @@ func open(ctx context.Context, manager *volume.Manager, handoff Handoff, point *
 
 func attach(ctx context.Context, vm *volume.VM, handoff Handoff, dial Dialer, start StartFunc,
 	point *volume.ForkPoint, clock platform.Clock) (*Received, error) {
-	// The instant's frames are offered to this host's pager before any region
+	// The point's pages are offered to this host's pager before any region
 	// attaches, which is what makes every page the child inherited present
 	// rather than fetched. It is the local backing's whole attach.
 	if point != nil {
 		if err := point.Share(ctx); err != nil {
-			return nil, fmt.Errorf("offering the instant %s inherits: %w", handoff.VMID, err)
+			return nil, fmt.Errorf("offering the point %s inherits: %w", handoff.VMID, err)
 		}
 	}
 	backings := make(map[string]inheritedBacking, len(handoff.Regions))
@@ -385,7 +385,7 @@ func attach(ctx context.Context, vm *volume.VM, handoff Handoff, dial Dialer, st
 
 // stream faults the source's pages in behind the running guest. It goes through
 // the pager's own load path rather than writing pages into the region: that is
-// what keeps a frame shared by lineage with every other VM on this host that
+// what keeps a page shared by lineage with every other VM on this host that
 // inherited the same checkpoint, what makes a page the guest faults on first
 // arrive exactly once, and what puts the pages no checkpoint has into this
 // host's own dirty set, so its next interval checkpoint publishes them.

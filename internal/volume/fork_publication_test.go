@@ -13,7 +13,7 @@ import (
 
 // A fork's root publication is the fork's own, and a failure of it costs the
 // fork nothing it held: it keeps reading and writing here, its parent keeps
-// its sealed frames, and a retry publishes the root the first attempt could
+// its sealed pages, and a retry publishes the root the first attempt could
 // not.
 func TestForkSurvivesAFailedRootPublication(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
@@ -63,7 +63,7 @@ func TestForkSurvivesAFailedRootPublication(t *testing.T) {
 			t.Fatalf("a fork whose root did not land reports %+v", status)
 		}
 		if status := parent.Status(); !status.Sealed {
-			t.Fatalf("the parent gave its frames back to a fork that never published: %+v", status)
+			t.Fatalf("the parent gave its pages back to a fork that never published: %+v", status)
 		}
 		if _, err := manager.Open(t.Context(), "fork"); !errors.Is(err, volume.ErrForkPending) {
 			t.Fatalf("opened a fork whose root never published: %v", err)

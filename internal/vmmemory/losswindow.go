@@ -6,7 +6,7 @@ import "time"
 // budget bounds them in bytes. Every page this region holds that no checkpoint
 // covers is dated by one timestamp — the oldest of them — because that is all
 // the bound needs: the checkpoint that ends the window covers the whole region
-// at one instant, so nothing is learnt by dating each page apart from the rest,
+// in one pause, so nothing is learnt by dating each page apart from the rest,
 // and one timestamp costs a region nothing.
 
 // noteDirty starts the window at the first store this region holds that no
@@ -62,7 +62,7 @@ func (r *Region) SetUnpublishedAge(age time.Duration) {
 // checkpoint covers was made, zero where it holds none. It is the region's own
 // dirty set and the checkpoint still draining out of it together: a publication
 // in flight has not landed, so what it carries is still unpublished, and a fork
-// instant's hold is the same thing for longer.
+// point's hold is the same thing for longer.
 //
 // It is what a host sums across the regions of one VM to answer Pressure.Oldest,
 // and what it reports that VM's loss window from.
@@ -132,7 +132,7 @@ func (h *Host) overWindow(r *Region) bool {
 // checkpoint can relieve and which therefore offers the largest dirty set first.
 //
 // A seal already under way is that checkpoint. So is one already draining,
-// including a fork instant's hold: the hold ends at its deadline and the parent
+// including a fork point's hold: the hold ends at its deadline and the parent
 // is checkpointed then, which is a bound a store may wait under, where the dirty
 // budget gets nothing back from it at all. What is left is a VM this host cannot
 // checkpoint — its loop is off, or the region belongs to no VM it runs — and

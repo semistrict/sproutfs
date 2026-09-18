@@ -26,7 +26,7 @@ import (
 // memory region, returning each region's sealed checkpoint by the name of the
 // volume it maps; sealing records the checkpoint without moving a byte, so
 // Resume can restart the guest immediately while the checkpoint uploads those
-// frames behind it. Release unseals and resumes a VM still paused because an
+// pages behind it. Release unseals and resumes a VM still paused because an
 // earlier phase failed; a capture that got as far as its publication does not
 // use it, because the publication owns the checkpoints and retires them itself.
 // A migration uses the same Resume and Release, which are the same call either
@@ -39,7 +39,7 @@ type Machine interface {
 	Prepare(ctx context.Context) ([]byte, map[string]volume.DirtySource, error)
 	// Stop pauses the vCPUs, drains device completions and returns the VMM
 	// state with the process left paused. It seals nothing and waits for
-	// nothing: the frames it leaves behind are what a destination fetches.
+	// nothing: the pages it leaves behind are what a destination fetches.
 	Stop(ctx context.Context) ([]byte, error)
 	// Resume restarts the vCPUs, with every memory region still sealed if a
 	// capture sealed them.
@@ -201,7 +201,7 @@ func (m *registration) end() {
 // the only account of it anything gets.
 //
 // The fork points taken on this VM go first: retiring them stops the children
-// this host serves that instant's pages to and gives the regions back before the
+// this host serves that point's pages to and gives the regions back before the
 // process that maps them is closed. Then the page server drops the VM, the VMM
 // process is stopped, the VM handle is released — a fenced handle publishes
 // nothing on close — and the supervisor that owns them both is told.
@@ -230,12 +230,12 @@ func (h *Host) discard(ctx context.Context, vmID string, entry *registration, me
 	}
 }
 
-// retireForks retires every fork instant taken on one VM. It comes before
-// anything closes the process whose frames those instants are: a child reads
-// that instant out of them, and retiring the point stops this host offering
+// retireForks retires every fork point taken on one VM. It comes before
+// anything closes the process whose memory those points are: a child reads
+// that point out of it, and retiring the point stops this host offering
 // them, so the child's next fault for one fails and says so rather than reading
-// the checkpoint's older bytes as though they were the instant's. It also gives
-// the VM's own frames back, which is what lets a last capture of it happen at
+// the checkpoint's older bytes as though they were the point's. It also gives
+// the VM's own pages back, which is what lets a last capture of it happen at
 // all.
 func (h *Host) retireForks(vmID string) []error {
 	children := h.forkedFrom(vmID)
@@ -260,7 +260,7 @@ func (h *Host) retireForks(vmID string) []error {
 func (h *Host) stopped(vmID string, entry *registration, cause error) {
 	entry.end()
 	ctx := context.WithoutCancel(h.ctx)
-	// The instants taken on this VM go first: a VM one of them still holds
+	// The fork points taken on this VM go first: a VM one of them still holds
 	// sealed cannot be captured at all, so a stop that left them would publish
 	// nothing of what it could still have kept.
 	errs := h.retireForks(vmID)
@@ -338,25 +338,25 @@ func (h *Host) RemoveMachine(vmID string) {
 // Delete gives up a VM this host runs for good: its checkpoint loop stops, its
 // VMM process is closed, its handle is released and its control record is
 // removed, after which nothing can open it. The checkpoint objects go with the
-// record, except the ones the record pinned — the instants this VM was forked
+// record, except the ones the record pinned — the fork points this VM was forked
 // at, whose checkpoints a descendant may still read — and those are a collector's.
 //
 // A VM this host does not run is only its control record here, which is removed
 // all the same: a delete is the deployment saying the VM is over.
 //
 // The fork points taken on this VM go first, for the reason a discard retires
-// them first: a child running elsewhere reads that instant's pages out of the
-// frames the process about to be closed maps. Retiring the point stops this
+// them first: a child running elsewhere reads that point's pages out of the
+// memory the process about to be closed maps. Retiring the point stops this
 // host offering them, so the child's next fault for one fails and says so
 // rather than reading the checkpoint's older bytes as though they were the
-// instant's.
+// point's.
 //
 // A VM something still holds sealed after that is refused, exactly as a
-// migration of one is, and left running: the holder is reading the frames this
+// migration of one is, and left running: the holder is reading the pages this
 // would detach, and it is not one of this host's own holds — a child created
 // here whose root index has not published yet holds the point through its own
 // handle, and a capture in flight holds it through the publication. Deleting it
-// anyway would take the instant out from under whoever has it.
+// anyway would take the point out from under whoever has it.
 func (h *Host) Delete(ctx context.Context, vmID string) error {
 	errs := h.retireForks(vmID)
 	if vm := h.vm(vmID); vm != nil && vm.Status().Sealed {
@@ -383,15 +383,15 @@ func (h *Host) Delete(ctx context.Context, vmID string) error {
 
 // Stop ends a VM this host runs and leaves the VM behind: a last checkpoint of
 // everything the guest still holds, and then the VMM process is closed, the
-// frames go back to the pager and the handle is released. Its control record
+// pages go back to the pager and the handle is released. Its control record
 // and its objects stay where they are, so any host can open it again at exactly
 // the bytes this published — which is the whole difference between a stop and
 // losing the host, where the writes since the last checkpoint go with it.
 //
 // It is refused for a VM something still holds sealed, as a delete is. A fork
-// instant is the frames of the VMM process this would close, and a child
+// point holds the pages of the VMM process this would close, and a child
 // elsewhere reads the pages no checkpoint holds out of them; closing the
-// process under it would take the instant away mid-fault. Nothing is retired
+// process under it would take the point away mid-fault. Nothing is retired
 // here to get past that, which is where this parts company with a delete: a
 // delete ends the VM for good and stops the children reading it on the way out,
 // and a stop is a VM that is coming back.
@@ -400,7 +400,7 @@ func (h *Host) Delete(ctx context.Context, vmID string) error {
 // publication the store refused leaves the VM exactly as it was — running,
 // registered, checkpointing on its interval — because the alternative is a stop
 // that reported a failure and lost the guest's last writes anyway.
-// The checkpoint it published is what it reports, because that is the instant
+// The checkpoint it published is what it reports, because that is the pause
 // the VM comes back at and nothing else records it: the handle that knew is
 // released by the time this answers.
 func (h *Host) Stop(ctx context.Context, vmID string) (control.Ref, error) {
@@ -415,15 +415,15 @@ func (h *Host) Stop(ctx context.Context, vmID string) (control.Ref, error) {
 		return control.Ref{}, fmt.Errorf("%w: %s", volume.ErrSealed, vmID)
 	}
 	// The checkpoint loop stops first, as a migration's does, and the checkpoint
-	// it had in flight lands with it. The instant this publishes is the one the
+	// it had in flight lands with it. The pause this publishes is the one the
 	// VM comes back at and this is the only account of it — the handle that knew
 	// is released by the time this answers — so a loop left running through the
 	// publication takes one more checkpoint behind it and makes the answer name
-	// an instant that is already superseded.
+	// a pause that is already superseded.
 	//
 	// A stop that does not happen leaves the VM exactly as it was, which
 	// includes the loop: the guest is running, its writes are in this host's
-	// frames, and what a checkpoint that did not land costs is only how far a
+	// pages, and what a checkpoint that did not land costs is only how far a
 	// host loss would rewind it.
 	entry.end()
 	checkpoint, err := Capture(ctx, vm, entry.runtime, h.clock)

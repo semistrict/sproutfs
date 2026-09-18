@@ -61,8 +61,8 @@ func (l lineage) ref(at generation) control.Ref {
 // belongs to the later checkpoint, which is the one that will publish the
 // bytes this view reads.
 //
-// Every reported extent lies inside one page, which is the frame identity a
-// pager keys by.
+// Every reported extent lies inside one page, which is the identity a pager
+// keys a resident page by.
 func locateOverlay(ctx context.Context, parent source, overlay *extentIndex, owner lineage, volume string, offset, length uint64) ([]control.Extent, error) {
 	end := offset + length
 	if length == 0 {

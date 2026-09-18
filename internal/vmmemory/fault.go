@@ -21,7 +21,7 @@ func (r *Region) Fault(ctx context.Context, index uint64, write bool) error {
 	defer r.host.askAtHighWater()
 	reserve := false
 	for range faultAttempts {
-		// A store that needs a private frame takes its dirty reservation before
+		// A store that needs a private page takes its dirty reservation before
 		// any region, page or I/O resource. While a checkpoint publishes, that
 		// reservation waits for it to release one, and the publication needs
 		// exactly those resources to get there. A read of a page another host
@@ -29,7 +29,7 @@ func (r *Region) Fault(ctx context.Context, index uint64, write bool) error {
 		// region's dirty state — so the attempt that discovers it comes back
 		// here to take one the same way.
 		spill := -1
-		if reserve || (write && r.needsPrivateFrame(index)) {
+		if reserve || (write && r.needsPrivatePage(index)) {
 			slot, err := r.host.takeSpill(ctx, r)
 			if err != nil {
 				return err
@@ -57,7 +57,7 @@ func (r *Region) Fault(ctx context.Context, index uint64, write bool) error {
 var errUnpublishedReservation = errors.New("managed-memory fault needs a dirty reservation")
 
 // faultAttempts bounds how often a fault re-decides whether it needs a private
-// frame. Only a seal taken between that decision and the region lock can force
+// page. Only a seal taken between that decision and the region lock can force
 // another attempt, so one repetition is enough in every observed case.
 const faultAttempts = 8
 
@@ -134,9 +134,9 @@ func (r *Region) fault(ctx context.Context, index uint64, write bool, spill *int
 	if pg != nil {
 		// The old shared page is unlocked before allocation, allowing a host
 		// with a single slot to reclaim it and install this private copy. It
-		// keeps the frame and the checkpoint keeps it until that copy is bound:
+		// keeps the page and the checkpoint keeps it until that copy is bound:
 		// a page released from the checkpoint before its replacement exists is
-		// dirty state with no frame, no reservation and no checkpoint holding
+		// dirty state with no memory, no reservation and no checkpoint holding
 		// either, which is what any failure in between would leave behind.
 		h.unlock(pg)
 		pg = nil
@@ -156,12 +156,12 @@ func (r *Region) fault(ctx context.Context, index uint64, write bool, spill *int
 		}
 		return true, nil
 	}
-	pg, err = h.create(ctx, slot, data, frame{}, true)
+	pg, err = h.create(ctx, slot, data, pageKey{}, true)
 	if err != nil {
 		return false, err
 	}
-	// The page leaves the checkpoint's frame for its own under that frame's
-	// lock, so that no instant has it dirty with neither a reservation of its
+	// The page leaves the checkpoint's memory for its own under that page's
+	// lock, so that at no moment is it dirty with neither a reservation of its
 	// own nor a checkpoint holding one.
 	old, err := h.current(ctx, b)
 	if err != nil {
@@ -196,13 +196,13 @@ func (r *Region) fault(ctx context.Context, index uint64, write bool, spill *int
 	return false, nil
 }
 
-// takePrivate makes a freshly filled frame this page's own. The mapping it had
-// is revoked and the alias of the frame it is leaving taken away under that
-// frame's lock, and the dirty reservation the store was admitted under is
+// takePrivate makes a freshly filled resident page this page's own. The mapping
+// it had is revoked and the alias of the page it is leaving taken away under
+// that page's lock, and the dirty reservation the store was admitted under is
 // installed in the same step: a private page reachable from a binding owning
 // neither a reservation nor a checkpoint is one a reclaim would punch. The
-// caller holds the new frame; old is the frame the page is leaving, if any, and
-// is released here.
+// caller holds the new resident page; old is the one the page is leaving, if
+// any, and is released here.
 func (r *Region) takePrivate(ctx context.Context, b *binding, old, pg *resident, slot int) error {
 	h := r.host
 	if old != nil {
@@ -212,7 +212,7 @@ func (r *Region) takePrivate(ctx context.Context, b *binding, old, pg *resident,
 		return err
 	}
 	if old != nil {
-		// A page still held by a checkpoint keeps its frame: the checkpoint's
+		// A page still held by a checkpoint keeps its memory: the checkpoint's
 		// own alias survives this unlink, and the guest gets its own copy.
 		if err := h.unlink(ctx, b, old); err != nil {
 			return err
@@ -226,10 +226,10 @@ func (r *Region) takePrivate(ctx context.Context, b *binding, old, pg *resident,
 // storeFresh serves a store into a page whose bytes are known zeros and that
 // owns nothing: a zero-mapped page, or a hole in the volume the guest has never
 // touched. For any other page it reports false having done nothing. There is no
-// frame to copy and nothing to fence, so nothing is revoked: one mapping
-// command puts fresh frames where the zeros or the trap were, and a zero
-// mapping keeps serving reads until it lands. Write-ahead gives the fresh zero
-// pages around it private frames in that same command.
+// memory to copy and nothing to fence, so nothing is revoked: one mapping
+// command puts fresh pages where the zeros or the trap were, and a zero
+// mapping keeps serving reads until it lands. Write-ahead makes the fresh zero
+// pages around it private in that same command.
 func (r *Region) storeFresh(ctx context.Context, index uint64, spill *int) (bool, error) {
 	zero, untouched := r.fresh(index)
 	if !zero && !untouched {
@@ -252,7 +252,7 @@ func (r *Region) storeFresh(ctx context.Context, index uint64, spill *int) (bool
 	return true, r.storeZeros(ctx, index, first, last, spill)
 }
 
-// zeroRun bounds the run a store into index gives private frames: index, the
+// zeroRun bounds the run a store into index makes private: index, the
 // fresh zero pages after it up to the end of its read-ahead window, then those
 // before it, at most WriteAheadPages together. A page is fresh zeros when it is
 // zero-mapped or, by the window's extents when the store has them, an untouched
@@ -289,7 +289,7 @@ func around(index, first, last uint64, n int) (uint64, uint64) {
 }
 
 // storeZeros gives the fresh zero pages [first, last), which hold index, fresh
-// private frames and maps them writable with one command. The faulting page
+// private pages and maps them writable with one command. The faulting page
 // brings its own dirty reservation and may evict for its slot; the rest of the
 // run takes only free reservations and free slots, never waiting for either,
 // and shrinks to what it finds.
@@ -345,7 +345,7 @@ func (r *Region) storeZeros(ctx context.Context, index, first, last uint64, spil
 
 // allocateRun takes arena slots for the run [first, last), which holds index.
 // A run of several pages takes only free slots, consecutive so that one
-// command maps them, preferably those after the frame of the page before it so
+// command maps them, preferably those after the slot of the page before it so
 // that the mapping continues its neighbour's; it shrinks to the free slots it
 // finds. A lone page, or a run finding no free slot, allocates for index
 // alone, which may evict.
@@ -431,9 +431,9 @@ func (r *Region) loadOnce(ctx context.Context, index uint64, spill *int) (bool, 
 	if b.dirty {
 		// Spilled private state is reloaded alone; it has no shared source. A page a
 		// checkpoint still holds reloads read-only, so the next store copies, and
-		// onto a frame it shares with the checkpoint again: the checkpoint's copy is
+		// onto a page it shares with the checkpoint again: the checkpoint's copy is
 		// the alias that owns the reservation spilling those bytes, and retiring the
-		// checkpoint retires this frame with it rather than stranding a private frame
+		// checkpoint retires this page with it rather than stranding a private one
 		// no reservation covers.
 		data := make([]byte, PageSize)
 		if err := h.read(ctx, b, nil, data); err != nil {
@@ -446,7 +446,7 @@ func (r *Region) loadOnce(ctx context.Context, index uint64, spill *int) (bool, 
 		if err != nil {
 			return false, err
 		}
-		pg, err := h.create(ctx, slot, data, frame{}, true)
+		pg, err := h.create(ctx, slot, data, pageKey{}, true)
 		if err != nil {
 			return false, err
 		}

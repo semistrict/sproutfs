@@ -12,7 +12,7 @@ Guest RAM stores and PMEM writes are private pager state — resident or in
 scratch spill — until a [checkpoint](vm-memory.md) publishes them. A migration
 publishes nothing at all: the source hands the VM over at the checkpoint its
 control record already selects, and everything the guest wrote since that
-checkpoint stays in the source's frames, where the destination fetches it from.
+checkpoint stays in the source's pages, where the destination fetches it from.
 Uploading that residue inside the pause is the one cost this design exists to
 avoid.
 
@@ -30,7 +30,7 @@ has fetched every one of those pages, the source may not stop serving.
    the guest.
 1. **Stop.** The VMM pauses the vCPUs, drains device completions and captures
    the VMM state. Nothing is sealed and nothing is uploaded.
-2. **Hand off.** Every region gives its volume up while keeping its frames, and
+2. **Hand off.** Every region gives its volume up while keeping its pages, and
    reports which of its pages no checkpoint has — the guest is stopped, so that
    set is final. The source then releases the VM handle without publishing. The
    handoff carries the VMM state, the region layout, those unpublished page runs,
@@ -42,17 +42,17 @@ has fetched every one of those pages, the source may not stop serving.
    any sequence but the one the handoff names is refused with `ErrStale` and
    released again without publishing: a migration publishes nothing, so that
    record was openable by anybody in between — a recovery that took the source
-   for gone, an operator — and streaming the source's frames over a writer that
+   for gone, an operator — and streaming the source's pages over a writer that
    got in would make one VM's memory out of two writers' pages, with no error
    anywhere. Otherwise it attaches the regions, binding each to the source host
    as well as to its own volume, and starts the VMM with the captured state.
 4. **Post-copy.** Pages the guest touches fault in from the source host's pager
    first, over plain TCP to the handoff's page-server address, and from the
    destination's own checkpoint where the source cannot supply them. A page the
-   source served out of its own dirty frames is dirty on the destination too:
+   source served out of its own dirty pages is dirty on the destination too:
    its volume reports those pages as the checkpoint's bytes or as holes, which
    would silently rewind the guest, so the peer backing reports them as bytes of
-   its own and the pager holds each as a private frame under a spill
+   its own and the pager holds each as a private page under a spill
    reservation. The destination's next interval checkpoint publishes them.
 
    A background stream fetches the unpublished pages first and to completion,
@@ -129,7 +129,7 @@ has fetched every one of those pages, the source may not stop serving.
    `ErrClosed` is a stream this host stopped, which says the source may not
    release yet rather than that this guest is torn. Each region's pages are
    fetched over as many of its connections as it has, rather than one page per
-   round trip. The held set includes private zero-filled frames allocated by
+   round trip. The held set includes private zero-filled pages allocated by
    [write-ahead](vm-memory.md), even if the guest has not stored into them, so
    peer-page counts measure transferred held pages and can exceed the pages the
    guest explicitly wrote.
@@ -154,7 +154,7 @@ func (r *Region) ReadResident(ctx context.Context, page uint64, dst []byte) (hel
 // what they hold keeps serving them — only Discard gives such a VM up.
 func (r *Region) Resident() ([]uint64, error)
 func (r *Region) Unpublished() ([]uint64, error)
-// Handoff gives up the volume while keeping the frames, after the guest is
+// Handoff gives up the volume while keeping the pages, after the guest is
 // stopped. Verification stops touching the volume; a flush, a seal, a
 // population or any fault reports ErrHandedOff; serving continues until Detach.
 // A region a checkpoint still has sealed reports ErrSealed and keeps its volume.
@@ -173,7 +173,7 @@ type Config struct { ...; Backings map[string]vmmemory.Backing }
 // device id.
 func (p *Process) Regions() map[string]*vmmemory.Region
 // Stop pauses the vCPUs, drains device completions and returns the VMM state,
-// leaving the process paused. It seals nothing and uploads nothing: the frames
+// leaving the process paused. It seals nothing and uploads nothing: the pages
 // it leaves behind are what the destination fetches. Prepare is the capture
 // that seals and resumes.
 func (p *Process) Stop(ctx context.Context) ([]byte, error)
@@ -188,7 +188,7 @@ func (vm *VM) Handoff(ctx context.Context) error
 
 // vmmigrate
 // PageSource serves the pages one host holds for another to peers over the host
-// network: a migrated VM's regions, or the instant a fork was taken at. One per
+// network: a migrated VM's regions, or the fork point a fork was taken at. One per
 // host, registered under the identity of the VM that runs elsewhere. It opens a
 // listener on Network at Address, or takes one the caller already opened. Hosts
 // share a trusted network, so every peer that reaches it is served, bounded per
@@ -204,7 +204,7 @@ func (s *PageSource) Release(vmID string) error
 func (s *PageSource) Discard(vmID string)
 // PeerBacking wraps a volume as a pager Backing whose Load asks the source
 // host first and reads the volume for every page a checkpoint holds, and which
-// reports the pages the source served out of its own dirty frames so the pager
+// reports the pages the source served out of its own dirty memory so the pager
 // holds them privately. Locate is the volume's except for those pages, which it
 // reports as bytes of this region alone so nothing resolves them against a
 // checkpoint lacking them. A page only the source holds is asked for until it
@@ -219,7 +219,7 @@ func NewPeerBacking(config PeerConfig) (*PeerBacking, error)
 func (b *PeerBacking) Close() error
 // Migrate runs phases 1 and 2 on the source: stop the process, give the
 // regions' volumes up, record which of their pages no checkpoint has, release
-// the VM without publishing, and serve the frames from there on. It returns the
+// the VM without publishing, and serve the pages from there on. It returns the
 // VMM state the destination restores.
 func Migrate(ctx context.Context, vm *volume.VM, process Runtime, source *PageSource, opts Options) (Handoff, error)
 // Receive runs phases 3 and 4 on the destination: open the VM, attach
@@ -247,7 +247,7 @@ reads it from its own volume. A resident request lists what a region holds, in
 runs, bounded per reply, which is what a destination's bulk stream walks before
 it faults those pages in through the pager's ordinary load path — streamed bytes
 are never written into a region directly, because the load path is what keeps a
-frame shared by lineage with the other VMs on that host. Both are bounded per
+page shared by lineage with the other VMs on that host. Both are bounded per
 peer, and a peer is the destination host rather than one of its connections: a
 destination opens a connection per region and dials again whenever one breaks,
 each with an ephemeral port of its own, so counting those separately would bind
@@ -302,16 +302,16 @@ discards the destination's half-received VM, and the VM is then recovered from
 the checkpoint its control record still selects, with the in-flight row going
 with it. The evidence has to be positive, because a guest is torn down by it: a
 pod the Kubernetes API no longer lists, or a host that answers and neither runs
-the VM nor serves its pages, which is a host that came back without the frames
+the VM nor serves its pages, which is a host that came back without the pages
 it was holding. A host that is merely quiet is a host whose guest may be
 perfectly well, so the destination goes on waiting for it — and a source that
 is alive but unreachable ends the wait itself, because its own handover
-deadline of four checkpoint intervals gives those frames up, after which its
+deadline of four checkpoint intervals gives those pages up, after which its
 next answer is the one that says it no longer serves the VM.
 
 ## A fork is a handoff from a parent that keeps running
 
-A [fork](volumes.md#the-fork-instant) is this same mechanism with the source
+A [fork](volumes.md#the-fork-point) is this same mechanism with the source
 left running. There is one fork path and it is a handoff, whatever host the
 child lands on: where it lands changes only how the pages it inherits reach it.
 
@@ -323,24 +323,24 @@ the source registers with its page source is the fork point, under the child's
 identity, and what it serves out of it is exactly the pages no checkpoint of the
 parent holds; everything else is in object storage, where the child reads it
 from. For a child the parent's own host takes in, nothing is registered at all:
-that host has the frames.
+that host has the pages.
 
 Phase 3 creates the child instead of opening the VM: the handoff carries
-`Parent` and `ParentCheckpoint`, the destination rebuilds the instant from that
+`Parent` and `ParentCheckpoint`, the destination rebuilds the point from that
 pinned checkpoint, and the child's control record selects a checkpoint that its
 own first publication writes. The pin was written on the parent's host before
 the handoff was built, by the only writer that holds the parent's epoch, and
 nothing gives it back: the destination has no way to know what else reads that
 lineage, and neither has the parent. A destination that is the parent's own host
-skips the rebuild: it holds the instant itself, so the child is created from it
+skips the rebuild: it holds the point itself, so the child is created from it
 and reads the pages written since the pinned checkpoint through it.
 
 Phase 4 is the backing, and it is the whole of the difference between the two
 destinations. On another host it is `PeerBacking`: it marks the pages the parent
 served as this host's own, the background stream fetches them first and to
 completion, and `Done` reports when the parent may stop serving. On the parent's
-own host it is the local backing: attaching it offers the parent's sealed frames
-to the pager under the identity the instant gives them, so every inherited page
+own host it is the local backing: attaching it offers the parent's sealed pages
+to the pager under the identity the point gives them, so every inherited page
 is present the moment the region attaches, `Done` reports immediately, no byte
 is copied and nothing is dialed.
 
@@ -348,18 +348,18 @@ The destination publishes the child's root index as soon as `Done` reports.
 Until it lands nothing outside that host can open the child — a host lost in the
 meantime loses it, and nothing can seal it, so it can be neither forked nor
 migrated — so a fork is not finished until it has one. Publishing it is also
-what gives back the hold the child's own handle has on the instant.
+what gives back the hold the child's own handle has on the point.
 
 Releasing the parent is `ReleaseMigrated` under the child's identity, and unlike
 a migration it closes no process: it stops serving those pages and retires the
-fork point, which hands the sealed frames back to the parent's guest. The parent
-is not checkpointed while a fork point holds its frames, so the release is also
+fork point, which hands the sealed pages back to the parent's guest. The parent
+is not checkpointed while a fork point holds its pages, so the release is also
 what lets its interval checkpoint run again.
 
 That release is not the only thing that ends the hold, because a parent sealed
 for good is a VM nothing can checkpoint, fence or migrate and whose dirty set
 only grows. Every hold carries a deadline of four checkpoint intervals, wherever
-its child went: when it passes, the host stops holding the instant for that
+its child went: when it passes, the host stops holding the point for that
 child and retires the point itself, and the child falls back to the checkpoint
 its record already selects. The
 orchestrator reconciles from the other side — every survey reads each host's
@@ -368,7 +368,7 @@ flight, so an orchestrator that restarted between the handoff and the release
 makes it on its first survey, while a migration or fork that is still running is
 left alone. That set is every handover the host holds, a child taken in on its
 parent's own host included: such a child is served nothing over the wire, but
-the hold on the instant is what keeps the parent sealed, and a host that
+the hold on the point is what keeps the parent sealed, and a host that
 reported it as holding nothing would be telling the deployment that a parent
 nothing can checkpoint is a parent nothing is waiting on.
 
@@ -379,30 +379,30 @@ the one request the source must refuse, because they are the only copy of the
 parent's writes since its last checkpoint. `POST /vms/{id}/abandoned` is the
 word for that, and it refuses nothing.
 
-One instant serves any number of children: each is one hold on the point, and
+One pause serves any number of children: each is one hold on the point, and
 the seal ends when the last is retired, so a fan-out of forks costs the parent
-one pause and one request. A second instant is refused while one is outstanding,
+one pause and one request. A second pause is refused while one is outstanding,
 because only one seal of a region is.
 
 Deleting the parent ends every hold on it the same way. `Host.Delete` retires
-the points taken on that VM before it closes the process whose frames they are:
-what a child holds is an instant in this host's memory, not an object, so a
-parent deleted under one would leave the page server offering an instant whose
-frames are gone, and every page the child had not yet fetched would come back
+the points taken on that VM before it closes the process whose pages they are:
+what a child holds is a point in this host's memory, not an object, so a
+parent deleted under one would leave the page server offering a point whose
+pages are gone, and every page the child had not yet fetched would come back
 absent and be read from the checkpoint instead. Retired first, the child's next
 fault for one of those pages fails and says so. A VM still sealed after that is
 refused, exactly as a migration of one is, and left running: the holder is not
 one of this host's own holds — a child created here whose first checkpoint has not
 published yet holds the point through its own handle, and a capture in flight
-holds it through the publication — and deleting it would take the instant out
+holds it through the publication — and deleting it would take the point out
 from under whoever has it. The parent's checkpoint objects are untouched by a
 delete where a pin covers them — a child still inherits them — and reclaiming a deleted lineage is the
 collector's.
 
 A fork on the parent's own host skips the network entirely, and it is the same
-call: `Host.Fork` builds a handoff for every child and holds the instant for
+call: `Host.Fork` builds a handoff for every child and holds the point for
 each of them, and a child with no destination named is served nothing, because
-the host that takes it in is the one holding the frames. The orchestrator drives
+the host that takes it in is the one holding the pages. The orchestrator drives
 both halves for every child — `sproutfsctl fork VM [--count N] [--to HOST]`,
 defaulting to the parent's host — giving each handoff to its destination's
 `Receive` and then telling the parent's host to release that child. Every fork
@@ -425,17 +425,17 @@ names only that request ever knew.
 
 ```go
 // volume
-// ForkPoint seals the guest and returns the instant a child starts from,
+// ForkPoint seals the guest and returns the point a child starts from,
 // publishing nothing and giving nothing up. The parent stays sealed until the
 // last child has retired the point.
 func (vm *VM) ForkPoint(ctx context.Context, prepare PrepareFunc) (*ForkPoint, error)
-// Inherit rebuilds that instant on a host that never held the parent, from the
+// Inherit rebuilds that point on a host that never held the parent, from the
 // checkpoint the parent pinned.
 func (m *Manager) Inherit(ctx context.Context, parent control.Ref) (*ForkPoint, error)
 func (m *Manager) Fork(ctx context.Context, id string, point *ForkPoint) (*VM, error)
 
-// Share offers the parent's sealed frames to this host under the identity the
-// instant gives them, which is the local backing's attach.
+// Share offers the parent's sealed pages to this host under the identity the
+// point gives them, which is the local backing's attach.
 func (f *ForkPoint) Share(ctx context.Context) error
 
 // vmmigrate
@@ -446,11 +446,11 @@ type Pages interface { ... }
 // pause already happened; nothing is stopped and nothing is released. A nil
 // source is a child the parent's own host takes in: it is served nothing.
 func Fork(ctx context.Context, child string, point *volume.ForkPoint, source *PageSource, opts Options) (Handoff, error)
-// Options.Point is the instant a child whose parent runs here is received over.
+// Options.Point is the fork point a child whose parent runs here is received over.
 // Receive creates the child from it and binds its regions to a local backing.
 
 // host
-// Fork hands every child of one instant over, to another host or to this one.
+// Fork hands every child of one fork point over, to another host or to this one.
 func (h *Host) Fork(ctx context.Context, parent string, children []string, destination platform.Address) ([]vmmigrate.Handoff, error)
 // Receive takes a handoff: a migrated VM, or a fork's child. It publishes a
 // child's root index as soon as that child holds every page its parent had.
@@ -501,16 +501,16 @@ The host suite runs the same migration between two hosts over loopback TCP,
 including a drain that moves every VM one host runs.
 
 Forks are qualified on the same model. A fork on the parent's own host has to
-receive its child over the frames the seal froze — every inherited page mapped
+receive its child over the pages the seal froze — every inherited page mapped
 by identity, no page loaded back and no connection dialed — and the children of
-one instant have to map each other's frames rather than their own copies. A fork
+one fork point have to map each other's pages rather than their own copies. A fork
 onto another host has to name and pull exactly the pages no checkpoint of the
 parent holds and nothing else, and leave neither side able to see the other's
 later stores. Either way the child's root is published when it holds those pages
 and not at whatever interval checkpoint comes first: with the interval loop off
 on every host, a third host opens the child as soon as its handoff is done.
 Losing the parent's host after that leaves the child openable anywhere, reading
-back the instant it was forked at; before the child has published, opening it
+back the point it was forked at; before the child has published, opening it
 anywhere reports `ErrForkPending`. A parent deleted or left unreleased under a
 child is handled the same way wherever that child is: the delete retires the
 holds this host has, a parent something else holds sealed is refused, and a hold

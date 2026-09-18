@@ -11,26 +11,26 @@ import (
 	"github.com/semistrict/sproutfs/internal/vmmemory"
 )
 
-// A seal write-protects the frames the guest already has, in place: one range
-// command per run of consecutive dirty pages, whatever frames those pages hold.
+// A seal write-protects the pages the guest already has, in place: one range
+// command per run of consecutive dirty pages, whatever pages those pages hold.
 // The mappings are not replaced, so a dirty set scattered across the arena costs
 // the pause a few commands rather than one per page.
 func TestSealProtectsRunsOfDirtyPagesWithoutReplacingTheirMappings(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newFixture(t, 8, 16, 8)
 		r, m, b := f.region(8)
-		// Dirtying backwards gives consecutive pages descending frames, which is
+		// Dirtying backwards gives consecutive pages descending slots, which is
 		// exactly the run a mapping command cannot cover but a range protection
 		// can. A real guest's dirty set is at least this fragmented.
 		for page := 3; page >= 0; page-- {
 			access(t, r, m, uint64(page), true)[0] = byte(60 + page)
 		}
-		frames := map[uint64]int{}
+		slots := map[uint64]int{}
 		for page := range uint64(4) {
-			frames[page] = m.pages[page].slot
+			slots[page] = m.pages[page].slot
 		}
-		if frames[0] != frames[1]+1 || frames[1] != frames[2]+1 || frames[2] != frames[3]+1 {
-			t.Fatalf("the fixture did not fragment the run: %v", frames)
+		if slots[0] != slots[1]+1 || slots[1] != slots[2]+1 || slots[2] != slots[3]+1 {
+			t.Fatalf("the fixture did not fragment the run: %v", slots)
 		}
 		maps := m.maps
 		before, err := f.h.Stats(t.Context())
@@ -43,15 +43,15 @@ func TestSealProtectsRunsOfDirtyPagesWithoutReplacingTheirMappings(t *testing.T)
 			t.Fatal(err)
 		}
 		if m.maps != maps {
-			t.Fatalf("the seal issued %d mapping commands, want none: it must protect the frames in place", m.maps-maps)
+			t.Fatalf("the seal issued %d mapping commands, want none: it must protect the pages in place", m.maps-maps)
 		}
 		if after.Protections-before.Protections != 1 || after.ProtectedPages-before.ProtectedPages != 4 {
 			t.Fatalf("the seal issued %d protections over %d pages, want 1 over 4",
 				after.Protections-before.Protections, after.ProtectedPages-before.ProtectedPages)
 		}
 		for page := range uint64(4) {
-			if m.pages[page].slot != frames[page] {
-				t.Fatalf("page %d moved from frame %d to %d", page, frames[page], m.pages[page].slot)
+			if m.pages[page].slot != slots[page] {
+				t.Fatalf("page %d moved from slot %d to %d", page, slots[page], m.pages[page].slot)
 			}
 			if m.pages[page].writable {
 				t.Fatalf("page %d stayed writable through the seal", page)
@@ -154,8 +154,8 @@ func sealThroughAReclaim(t *testing.T, write bool) {
 	r, m, b := f.region(4)
 	access(t, r, m, 0, true)[0] = 41
 	access(t, r, m, 1, false)
-	// Page 0 is the least recently used frame and the whole dirty set, so the
-	// next fault reclaims exactly the frame a seal has to take.
+	// Page 0 is the least recently used page and the whole dirty set, so the
+	// next fault reclaims exactly the page a seal has to take.
 	victim := m.pages[0].slot
 	release := make(chan struct{})
 	f.a.onRead = func(slot int) {
@@ -236,11 +236,11 @@ func TestAFaultWaitingForTheRegionAfterItsLoadHonoursCancellation(t *testing.T) 
 	})
 }
 
-// A reclaim decides which reservation a frame's bytes belong in by reading the
-// frame's aliases and then the reservations those aliases name. A seal of the
-// same page in between joins the checkpoint's copy to the frame and hands it
+// A reclaim decides which reservation a page's bytes belong in by reading the
+// page's aliases and then the reservations those aliases name. A seal of the
+// same page in between joins the checkpoint's copy to the page and hands it
 // the page's reservation, so the reclaim sees an alias set without that copy in
-// it and a page that no longer names a reservation. The frame is punched
+// it and a page that no longer names a reservation. The page is punched
 // either way, so what it writes is the page's only copy: it has to write the
 // reservation the seal moved, not skip the page.
 func TestSealInsideAReclaimsAliasWalkKeepsThePagesOnlyCopy(t *testing.T) {
@@ -249,8 +249,8 @@ func TestSealInsideAReclaimsAliasWalkKeepsThePagesOnlyCopy(t *testing.T) {
 		r, m, b := f.region(4)
 		access(t, r, m, 0, true)[0] = 41
 		access(t, r, m, 1, false)
-		// Page 0 is the least recently used frame and the whole dirty set, so
-		// the next fault reclaims exactly the frame the seal has to take.
+		// Page 0 is the least recently used page and the whole dirty set, so
+		// the next fault reclaims exactly the page the seal has to take.
 		victim := m.pages[0].slot
 		var once sync.Once
 		reached, release := make(chan struct{}), make(chan struct{})
@@ -284,14 +284,14 @@ func TestSealInsideAReclaimsAliasWalkKeepsThePagesOnlyCopy(t *testing.T) {
 }
 
 // A seal and a reclaim meet on one page whenever a checkpoint is taken of a
-// guest whose frames are under pressure: the reclaim is deciding which
-// reservation the frame's bytes belong in exactly while the seal hands that
-// reservation to the checkpoint's copy of the page. The frame is punched
+// guest whose pages are under pressure: the reclaim is deciding which
+// reservation the page's bytes belong in exactly while the seal hands that
+// reservation to the checkpoint's copy of the page. The page is punched
 // either way, so what the reclaim wrote is the page's only copy, and both the
 // checkpoint reading it and the guest refaulting it have to find those bytes.
 //
 // Real parallelism is what makes the two meet, so this runs outside a synctest
-// bubble: four guests store into a two-frame arena while a checkpoint of their
+// bubble: four guests store into a two-page arena while a checkpoint of their
 // region is sealed, published and retired in a loop.
 func TestSealTakingAReclaimingPagesReservationKeepsItsBytes(t *testing.T) {
 	const pages, steps = 8, 400

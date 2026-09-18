@@ -121,7 +121,7 @@ classified as timeouts rather than assertion detections.
 
 Both original Linux process/resource mutations were reproduced with individual
 test PIDs and memory samples under a 3 GiB address-space limit and 512 MiB RSS
-watchdog. They grow the frame vector without advancing through its requested
+watchdog. They grow the page vector without advancing through its requested
 range. The unmutated probe passes; both mutations reach a resource limit.
 The probe uses the public connection, attachment and population APIs, an
 acknowledging Unix peer and a pipe deliberately rejected by the final UFFD wake

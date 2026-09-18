@@ -56,7 +56,7 @@ func TestDoneMeansTheSourceMayStopServing(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		// The source host exits: its page server is gone and its frames with it.
+		// The source host exits: its page server is gone and its pages with it.
 		if err := m.pages.Release(handoff.VMID); err != nil {
 			t.Fatalf("releasing a VM the destination reported done: %v", err)
 		}

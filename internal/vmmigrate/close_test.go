@@ -98,7 +98,7 @@ func TestClosingAPostCopyReadsTheVolumeForTheRequestInFlight(t *testing.T) {
 	go func() { loaded <- backing.Load(t.Context(), 0, data) }()
 	<-held.sending
 	// The request is on the wire and the source is about to answer it. This is
-	// the instant a receive that has finished streaming closes its backings.
+	// the moment a receive that has finished streaming closes its backings.
 	if err := backing.Close(); err != nil {
 		t.Fatal(err)
 	}

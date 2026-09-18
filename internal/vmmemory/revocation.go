@@ -8,17 +8,17 @@ import (
 
 const revokeBatchPages = 1024
 
-// errVictimHeld reports an eviction that could not take one frame away from
-// every binding it is reachable from, because one of those bindings belongs to
-// a region that can no longer take mapping commands. The frame stays mapped
+// errVictimHeld reports an eviction that could not take one resident page away
+// from every binding it is reachable from, because one of those bindings belongs
+// to a region that can no longer take mapping commands. The page stays mapped
 // there, so it is not this host's to reuse, and the region it could not be
 // taken from is terminal from here — which is what keeps the reclaim from
-// choosing that frame again. It never reaches a caller: an allocation that
+// choosing that page again. It never reaches a caller: an allocation that
 // meets it takes another victim.
-var errVictimHeld = errors.New("vmmemory: a frame's other holder cannot give it up")
+var errVictimHeld = errors.New("vmmemory: a resident page's other holder cannot give it up")
 
 // revocationFailed makes a failed revocation terminal, as every one of them is:
-// the pages stay recorded as mapped, which is what keeps the frame the guest
+// the pages stay recorded as mapped, which is what keeps the page the guest
 // may still read through reachable, and the region can no longer take mappings
 // away. A revocation the client refused is terminal too, and deliberately not
 // the refusal a fault is served again for: what a fault waits for is a
@@ -31,7 +31,7 @@ func (r *Region) revocationFailed(err error) error {
 }
 
 // revokeLocked revokes a bounded set of this region's own bindings, holding
-// each one's current frame across its revoke so no reclaim can change the
+// each one's current resident page across its revoke so no reclaim can change the
 // mapping underneath it. Caller owns the region exclusively.
 func (r *Region) revokeLocked(ctx context.Context, bindings []*binding) error {
 	for len(bindings) > 0 {
@@ -103,7 +103,7 @@ func (r *Region) revokeBindings(ctx context.Context, bindings []*binding) error 
 }
 
 func (h *Host) revoke(ctx context.Context, b *binding) error {
-	// A reclaim revokes its victim's pages under that frame's lock alone and a
+	// A reclaim revokes its victim's pages under that page's lock alone and a
 	// seal reads them under the region, so the two do not exclude each other:
 	// the mapping state is read through the binding map, like every other
 	// holder of it.

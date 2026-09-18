@@ -112,7 +112,7 @@ func (c *Client) put(ctx context.Context, record Record, conditions platform.Put
 // again — the orchestrator allocates them and a deleted VM's name is free — and
 // two VMs that started at the same epoch would allocate the same checkpoint
 // sequences: the same lineage identities, which a page cache keys resident
-// frames by, and the same object keys, which are written create-if-absent.
+// pages by, and the same object keys, which are written create-if-absent.
 //
 // The caller draws it before it publishes anything, because the first
 // checkpoint is published under this epoch and before the record that selects
@@ -304,7 +304,7 @@ func (h *Handle) Select(ctx context.Context, sequence uint64) (Record, error) {
 // which keeps that checkpoint's objects from being reclaimed. It is written
 // before the child that reads it exists, because a child that existed while the
 // lineage it inherits was unpinned could have that lineage reclaimed under it.
-// Pinning twice is one pin, so a fan-out of any size from one instant, and a
+// Pinning twice is one pin, so a fan-out of any size from one fork point, and a
 // fork repeated after a failure, cost one.
 //
 // Nothing here gives a pin back. A pin is what a collector releases, once it

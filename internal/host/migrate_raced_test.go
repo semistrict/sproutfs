@@ -13,7 +13,7 @@ import (
 // record is openable by anybody — a recovery that took the source for gone, or
 // an operator. That writer takes the epoch, writes and publishes a checkpoint of
 // its own. The destination then opened a record selecting that writer's
-// checkpoint and post-copied the source's frames over it, so one VM's memory
+// checkpoint and post-copied the source's pages over it, so one VM's memory
 // ended up made of two writers' pages, with no error anywhere. The handoff
 // carries the checkpoint the source's record selected, and a destination that
 // opens a different one refuses the handoff rather than streaming over it.
@@ -57,7 +57,7 @@ func TestReceiveRefusesAHandoffWhoseRecordHasMovedOn(t *testing.T) {
 	taken, err := h.hosts[1].Receive(t.Context(), handoff)
 	if err == nil {
 		taken.Close()
-		t.Fatal("the destination post-copied the source's frames over another writer's checkpoint")
+		t.Fatal("the destination post-copied the source's pages over another writer's checkpoint")
 	}
 	if !errors.Is(err, vmmigrate.ErrStale) {
 		t.Fatalf("receiving a handoff the record has moved past = %v, want ErrStale", err)

@@ -27,7 +27,7 @@ const migrationPageSize = vmmemory.PageSize
 // all the host wiring needs to move.
 var migrationVolumes = []volume.VolumeSpec{{Name: "ram0", Size: 8 * migrationPageSize}}
 
-// pageArena is the simulated frame store of one host's pager.
+// pageArena is the simulated page store of one host's pager.
 type pageArena struct {
 	mu    sync.Mutex
 	slots [][]byte
@@ -225,12 +225,12 @@ func (m *machine) Prepare(ctx context.Context) ([]byte, map[string]volume.DirtyS
 	return []byte("vmm-state"), sources, nil
 }
 
-// Stop is a migration's pause: it seals nothing, because the frames it leaves
+// Stop is a migration's pause: it seals nothing, because the pages it leaves
 // behind are what the destination fetches.
 func (m *machine) Stop(context.Context) ([]byte, error) { return []byte("vmm-state"), nil }
 
 // checkpoint is this machine's interval checkpoint: the pause, the seal and the
-// publication of the sealed frames, which is the only thing that makes its
+// publication of the sealed pages, which is the only thing that makes its
 // guest's memory durable.
 func (m *machine) checkpoint(ctx context.Context, vm *volume.VM) error {
 	checkpoint, err := host.Capture(ctx, vm, m, nil)
@@ -491,7 +491,7 @@ func TestHostMigratesAVMToAnotherHost(t *testing.T) {
 			for page := range uint64(4) {
 				source.store("ram0", page, byte(page+1))
 			}
-			// Write-ahead frames are held even when the guest has not stored into
+			// Write-ahead pages are held even when the guest has not stored into
 			// them. Assert the independently expected set before migration starts.
 			wantResident := make([]uint64, tc.heldPages)
 			for page := range wantResident {
@@ -684,7 +684,7 @@ func TestHostRejectsMachineUsingAnotherResourceBudget(t *testing.T) {
 	before := h.hosts[0].Status().Resources.Used
 	correct.store("ram0", 0, 17)
 	if h.hosts[0].Resources() != pagers[0].Resources() || h.hosts[0].Status().Resources.Used <= before {
-		t.Fatal("guest frames did not enter the storage host's resource accounting")
+		t.Fatal("guest pages did not enter the storage host's resource accounting")
 	}
 	if err := correct.Close(); err != nil {
 		t.Fatal(err)
@@ -733,13 +733,13 @@ func TestReceiveClosesMachineWithMismatchedResourceBudget(t *testing.T) {
 	}
 }
 
-// TestMigratedFramesAreReleasedAfterTheirDeadline: a handover is in flight
+// TestMigratedPagesAreReleasedAfterTheirDeadline: a handover is in flight
 // until something reports the destination has every page no checkpoint holds,
 // and that word comes from the orchestrator. An orchestrator that restarted
 // mid-migration never says it, and before the deadline below the source served
-// those frames — and held the VMM process that owns them — for as long as it
+// those pages — and held the VMM process that owns them — for as long as it
 // ran. A fork hold has had a deadline all along; a migration's did not.
-func TestMigratedFramesAreReleasedAfterTheirDeadline(t *testing.T) {
+func TestMigratedPagesAreReleasedAfterTheirDeadline(t *testing.T) {
 	const holdTimeout = 50 * time.Millisecond
 	h, pagers, arenas := startMigrationHosts(t)
 	h.configs[0].Migration.HoldTimeout = holdTimeout
@@ -837,7 +837,7 @@ func TestReceivedGuestIsDiscardedWhenItsPostCopyFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The source gives the frames up before the destination has them, which is
+	// The source gives the pages up before the destination has them, which is
 	// every way a post-copy loses its pages at once.
 	if err := h.hosts[0].Abandon("torn"); err != nil {
 		t.Fatal(err)
@@ -896,7 +896,7 @@ func TestReceivedGuestIsDiscardedWhenItsPostCopyFails(t *testing.T) {
 // that is wedged — restarting, or waiting on a host that no longer answers —
 // answers none of those calls, and the drain has no bound of its own: it is a
 // preStop hook, so what is waiting on the other end is a termination grace
-// period after which the pod is killed with every frame it still holds. The
+// period after which the pod is killed with every page it still holds. The
 // bound has to be the drain's, because the caller's context carries none.
 func TestDrainReturnsWithinItsOwnDeadline(t *testing.T) {
 	const (

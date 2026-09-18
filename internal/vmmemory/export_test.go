@@ -13,7 +13,7 @@ func SetCheckpointBatchPages(t *testing.T, pages int) {
 
 // SetEvictionSeam installs what a reclaim runs between reading a victim's
 // aliases and reading their reservations, so a test can take a seal in the one
-// instant the two transitions can be interleaved. It is restored when the test
+// moment the two transitions can be interleaved. It is restored when the test
 // ends.
 func SetEvictionSeam(t *testing.T, seam func(slot int)) {
 	previous := evictionSeam
@@ -30,7 +30,7 @@ func SetSealSeam(t *testing.T, seam func()) {
 	t.Cleanup(func() { sealSeam = previous })
 }
 
-// Signal wakes every store waiting on the host, as any change to a frame does.
+// Signal wakes every store waiting on the host, as any change to a page does.
 func Signal(h *Host) {
 	h.mu.Lock()
 	h.signal()

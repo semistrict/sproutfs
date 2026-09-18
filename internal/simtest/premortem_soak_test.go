@@ -58,7 +58,7 @@ func premortemTopology() simtest.Topology {
 
 // premortemKnobs sizes the pagers for the population this run reaches rather
 // than for the topology it starts from: every fork is a VM of its own, and a
-// fork or a migration holds the parent's frames and the child's on one host at
+// fork or a migration holds the parent's pages and the child's on one host at
 // once. A budget below that stalls a store on a checkpoint nobody is going to
 // take, which is the harness running out of room rather than anything deciding.
 func premortemKnobs(t *testing.T) knobs.Knobs {

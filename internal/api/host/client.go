@@ -97,7 +97,7 @@ func (c *Client) Released(ctx context.Context, id string) error {
 
 // Abandoned gives one handover up rather than handing it over: a fork's child
 // that will never be received, or one whose destination refused it. The host
-// stops serving whatever it still holds for that VM and takes its frames back,
+// stops serving whatever it still holds for that VM and takes its pages back,
 // which for a fork's parent is the end of its seal.
 //
 // It is refused by nothing, which is the whole difference from Released: those
@@ -114,7 +114,7 @@ func (c *Client) Drain(ctx context.Context) (DrainResult, error) {
 }
 
 // Stop ends a VM this host runs and leaves it behind: its last writes are
-// published and its guest, frames and handle go, so any host can open it again.
+// published and its guest, pages and handle go, so any host can open it again.
 func (c *Client) Stop(ctx context.Context, id string) (StopResult, error) {
 	return jsonhttp.Call[StopResult](ctx, c.http, http.MethodPost,
 		c.path("/vms/%s/stop", url.PathEscape(id)), nil)

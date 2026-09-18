@@ -11,7 +11,7 @@ import (
 )
 
 // checkpointVolume is what a checkpoint does to a region attached to a real
-// volume: it seals, publishes the sealed frames through VM.Snapshot, and lets
+// volume: it seals, publishes the sealed pages through VM.Snapshot, and lets
 // that publication retire the checkpoint.
 func checkpointVolume(t *testing.T, vm *volume.VM, name string, r *vmmemory.Region) error {
 	t.Helper()
@@ -56,7 +56,7 @@ func TestMappedVolumeCheckpointAndWriterReplacement(t *testing.T) {
 		if err := replacement.Volume("ram0").Read(t.Context(), 0, data[:]); err != nil || data[0] != 61 {
 			t.Fatalf("the takeover lost the published checkpoint: %v %d", err, data[0])
 		}
-		// The old mapping can still store into its own doomed frames, but those
+		// The old mapping can still store into its own doomed pages, but those
 		// bytes have nowhere to go: the checkpoint that would publish them is
 		// fenced, and the region stops being eligible to run.
 		access(t, r, m, 0, true)[0] = 99

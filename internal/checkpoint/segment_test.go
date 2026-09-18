@@ -85,8 +85,8 @@ func TestACheckpointWritesOnlyTheSegmentsItChanged(t *testing.T) {
 				pages, len(encoded))
 		}
 		// The first checkpoint's parts hold every page; the second's hold the
-		// one page it dirtied. The segments locating them are the metadata
-		// plane's and are never members of a part.
+		// one page it dirtied. The segments locating them are the index
+		// object's and are never members of a part.
 		if got := partMembers(t, store, firstIndex, firstRef); got != int(pages) {
 			t.Fatalf("the first checkpoint's parts hold %d members, want %d", got, pages)
 		}

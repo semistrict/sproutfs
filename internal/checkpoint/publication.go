@@ -52,7 +52,7 @@ type Publication struct {
 	// dropState publishes a checkpoint that names no VMM state at all, rather
 	// than going on naming the parent's. It is what a cold boot needs: the
 	// memory the state describes is being discarded in the same publication,
-	// and state without the memory it was captured with is an instant that
+	// and state without the memory it was captured with is a moment that
 	// never existed.
 	dropState bool
 	err       error
@@ -130,7 +130,7 @@ func (p *Publication) SetState(data []byte) {
 // on naming the parent's. A checkpoint with no state of its own keeps the
 // parent's, because the VM stays restorable from the last capture between
 // captures; the one case where that is wrong is a checkpoint that discards the
-// guest's memory, because state and memory describe one instant and half of it
+// guest's memory, because state and memory describe one moment and half of it
 // is a VM nothing can resume.
 func (p *Publication) DropState() {
 	p.state, p.hasState, p.dropState = nil, false, true
@@ -193,8 +193,8 @@ func (p *Publication) Commit(ctx context.Context, source Source) (*Index, error)
 	if err := p.compact(ctx, writer, index); err != nil {
 		return nil, writer.abandon(err)
 	}
-	// The data plane is finished and durable before anything of the metadata
-	// plane is written: what the parts cost is settled here, and a segment says
+	// The parts are finished and durable before anything of the index object
+	// is written: what the parts cost is settled here, and a segment says
 	// where the pages of its range are, so it cannot be encoded before they are.
 	if err := writer.finish(ctx); err != nil {
 		return nil, writer.abandon(err)
@@ -391,7 +391,7 @@ func isZero(data []byte) bool {
 	return true
 }
 
-// indexObject accumulates one checkpoint's metadata plane: a fixed header, the
+// indexObject accumulates one checkpoint's index object: a fixed header, the
 // segments the checkpoint changed, and the root that ends it. It is built whole
 // in memory, which is what maximumIndexSize bounds, and written in one PUT.
 type indexObject struct {
@@ -599,7 +599,7 @@ func (w *partWriter) put(ctx context.Context, key platform.ObjectKey, data []byt
 
 // finish seals and uploads the part in hand, which is the one carrying the
 // checkpoint's part count, and waits for every earlier upload. When it returns
-// the whole data plane is durable, which is what the index object may then
+// every part is durable, which is what the index object may then
 // name. An upload that failed is what the caller is told about, not the
 // cancellation it caused in whatever was still running.
 func (w *partWriter) finish(ctx context.Context) error {
@@ -671,7 +671,7 @@ func (p *Publication) protectedCheckpoints(ctx context.Context) (map[control.Ref
 
 // liveBytes reports, per checkpoint, the encoded member bytes this index reads
 // from its parts: every page the segments' tables name, and the state. It opens
-// nothing, and it counts nothing of the metadata plane — a segment is never a
+// nothing, and it counts nothing of the index object — a segment is never a
 // member of a part. A segment this checkpoint has not changed answers for
 // itself out of the root, which records what its pages read from each
 // checkpoint, and one it has changed is in hand already.
@@ -702,7 +702,7 @@ func (p *Publication) liveBytes(index *Index) map[control.Ref]uint64 {
 // stops at compactionBudget live bytes; the checkpoints it empties leave the
 // index and reclamation deletes them.
 //
-// It works over the data plane alone. A segment is never moved and never
+// It works over the parts alone. A segment is never moved and never
 // counted as part liveness: it lives in the index object of the checkpoint that
 // wrote it, for as long as any root addresses it, and a compaction that moved
 // the pages of a segment writes that segment again anyway, because its entries

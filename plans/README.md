@@ -5,10 +5,6 @@ across all of them is collected in [open-work.md](../docs/open-work.md).
 
 ## Designs under way
 
-- [2026-09-18 four words](words-2026-09-18.md) — *frame* (of memory) is
-  *resident page* or *private page*; *instant* is *pause* or *fork point*; *two
-  planes* is said plainly; the second decision is stated rather than contrasted
-  with content addressing. **Planned.**
 - [2026-09-14 repository layout](layout-2026-09-14.md) — nothing in the module is
   a library, so every package but `cmd` moves under `internal/`, the large
   packages gain nested `internal` bodies, `image` becomes `checkpoint`, and
@@ -21,6 +17,10 @@ across all of them is collected in [open-work.md](../docs/open-work.md).
 
 ## Designs carried out
 
+- [2026-09-18 four words](words-2026-09-18.md) — *frame* (of memory) is
+  *resident page* or *private page*; *instant* is *pause* or *fork point*; *two
+  planes* is said plainly; the second decision is stated rather than contrasted
+  with content addressing. **Done.**
 - [2026-09-18 loss window](loss-window-2026-09-18.md) — a VM whose oldest
   unpublished write is older than `SPROUTFS_LOSS_WINDOW` (five minutes; zero
   disables) has its stores wait in the pager until a checkpoint lands, and the
@@ -125,7 +125,7 @@ across all of them is collected in [open-work.md](../docs/open-work.md).
   `f967d59`, `ab55012`, `6687fa3`); **run on GCE on 2026-09-17**, passing on
   the ninth attempt after eight real defects, recorded in
   [docs/measurements-2026-09-17-soak.md](../docs/measurements-2026-09-17-soak.md). `Host.Stop` publishes what a guest holds and then
-  gives up the process, the frames and the handle, refusing a VM a fork instant
+  gives up the process, the pages and the handle, refusing a VM a fork point
   holds sealed as a delete is; `Start` is `Recover` without the evidence of a
   loss, so the two are one path with the terms that differ passed in; `GET
   /check` reports every violation as a body rather than a status line. The
@@ -151,7 +151,7 @@ across all of them is collected in [open-work.md](../docs/open-work.md).
   would need a lineage of them in the pattern. One parent fans out per round
   rather than every running VM, because four children per VM per round is fifty
   VMs by the second one. And `stop` reports the checkpoint it published, which
-  the plan did not ask for: it is the instant a start brings the VM back at,
+  the plan did not ask for: it is the pause a start brings the VM back at,
   and nothing else records it — the handle that knew is released by the time
   the stop answers.
 
@@ -164,11 +164,11 @@ across all of them is collected in [open-work.md](../docs/open-work.md).
   and against another seed.
 - [2026-09-16 one fork path](one-fork-path-2026-09-16.md) — a fork is always a
   handoff; a child on the parent's host receives it over a local backing that
-  shares the parent's sealed frames, every child's root is published when it
+  shares the parent's sealed pages, every child's root is published when it
   holds its pages, and one hold table, one cleanup and one admission replace
   the local and remote paths. **Done** (`2350921`, `0f5738b`, `3e82df0`,
   `1e5b90b`, `9766c99`). `Host.Fork` takes
-  the instant once and returns one handoff per child whatever the destination;
+  the point once and returns one handoff per child whatever the destination;
   `Host.ForkOut`, the local branch, its hold registration, its rollback and its
   eager root are gone, and so is the orchestrator's second fork branch.
   `ForkPoint.Share` is the local backing's attach. Five departures, each in the
@@ -179,8 +179,8 @@ across all of them is collected in [open-work.md](../docs/open-work.md).
   publishes is a capture rather than the overlay-only publication the local
   path used, because a child on another host holds what it inherited as its
   pager's dirty state and only a seal publishes that; `DirtySource.Hold` is new,
-  because `Share` used to mark the seal as a fork instant's as well as name its
-  frames and a child on another host never names them; a local child's hold is
+  because `Share` used to mark the seal as a fork point's as well as name its
+  pages and a child on another host never names them; a local child's hold is
   not in `Status().Serving`, which is what a drain waits on and what the
   orchestrator's stale-handover survey reads, so a local hold an orchestrator
   never releases is bounded by its deadline alone; and a forked child no longer
@@ -308,7 +308,7 @@ across all of them is collected in [open-work.md](../docs/open-work.md).
 - [2026-09-14 fork by handoff](fork-by-handoff-2026-09-14.md) — a fork is a
   migration handoff from a parent that keeps running, so no checkpoint is
   published per fork and a fork can be placed on any host. **Done**
-  (`6ad0e05`, `9aed0a6`, `861a60b`). `volume.ForkPoint` is one instant for N
+  (`6ad0e05`, `9aed0a6`, `861a60b`). `volume.ForkPoint` is one pause for N
   children and `sproutfsctl fork --to` places them. A pin is released when
   no child inherited the lineage durably; bounding pins further needs the
   collector.

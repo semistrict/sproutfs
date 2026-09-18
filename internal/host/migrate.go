@@ -44,7 +44,7 @@ type MigrationConfig struct {
 	DrainConcurrency int
 	// HoldTimeout is how long this host goes on serving the pages of one VM it
 	// has handed over — a migration's destination or a fork's child — before it
-	// gives those frames up on its own. Zero selects handoffIntervals
+	// gives those pages up on its own. Zero selects handoffIntervals
 	// checkpoint intervals, which is the bound a deployment wants; a test that
 	// stages an abandoned handover sets its own.
 	HoldTimeout time.Duration
@@ -55,17 +55,17 @@ type MigrationConfig struct {
 var ErrNotMigratable = errors.New("host: this host cannot migrate that VM")
 
 // migratedHold is one VM this host has handed to another host and still serves
-// the pages of: the VMM process whose frames those are, and the deadline that
+// the pages of: the VMM process whose pages those are, and the deadline that
 // releases them when nothing ever reports the destination has them.
 //
 // It is the same word from the same orchestrator that ends a fork hold, and the
 // same silence that leaves it open, so it has the same bound. What is left
-// behind here is the source's own stopped process and its frames rather than a
+// behind here is the source's own stopped process and its pages rather than a
 // sealed parent, and releasing them costs the destination only the pages it had
 // not fetched yet, which it reads from the checkpoint its record selects.
 type migratedHold struct {
 	runtime Machine
-	// timer releases the frames when nothing reports the destination has
+	// timer releases the pages when nothing reports the destination has
 	// them, armed on the host's clock exactly as a fork hold's is.
 	timer platform.Stopper
 }
@@ -122,7 +122,7 @@ func (h *Host) Migrate(ctx context.Context, vmID string, destination platform.Ad
 		return vmmigrate.Handoff{}, fmt.Errorf("%w: %s", volume.ErrSealed, vmID)
 	}
 	if status.Root {
-		// A fork reads its parent's sealed frames until it publishes a root index
+		// A fork reads its parent's sealed pages until it publishes a root index
 		// of its own, and this handle is the only thing that ever could. Handing
 		// it over releases it without publishing and retires nothing, so the
 		// parent stays sealed for good and the child stays an identity no host can
@@ -157,7 +157,7 @@ func (h *Host) Migrate(ctx context.Context, vmID string, destination platform.Ad
 		h.run(vmID, entry)
 		return vmmigrate.Handoff{}, err
 	}
-	// The VM runs on the destination from here; this host only holds its frames,
+	// The VM runs on the destination from here; this host only holds its pages,
 	// under the deadline that gives them up when nothing reports the destination
 	// has them.
 	h.machines.mu.Lock()
@@ -173,10 +173,10 @@ func (h *Host) Migrate(ctx context.Context, vmID string, destination platform.Ad
 
 // beginMigration admits one handover of a VM at a time and reports the
 // registration it claimed. A migration stops the guest, gives every region's
-// volume up and hands the frames to a page server: two callers that found one
+// volume up and hands the pages to a page server: two callers that found one
 // registration each did all of that to one VMM process, and the loser — whose
 // regions had already given their volumes up — gave the VM up, closing the
-// process whose frames the winner's destination was about to fault out of.
+// process whose pages the winner's destination was about to fault out of.
 //
 // The claim is under the machines lock, so the second caller is told rather than
 // let into the pause. It is released by endMigration on every path that leaves
@@ -205,12 +205,12 @@ func (h *Host) endMigration(entry *registration) {
 }
 
 // confirmHandoff re-reads a VM's control record and reports whether this host
-// may still hand that VM's frames to another one. It is one GET, taken before
+// may still hand that VM's pages to another one. It is one GET, taken before
 // the pause, and it is what separates a handoff from every other thing a host
 // does with a stale handle.
 //
 // A handoff serves pages no checkpoint holds, so the store cannot refuse a
-// handed-off frame the way it refuses a fenced writer's publication: whatever
+// handed-off page the way it refuses a fenced writer's publication: whatever
 // this host hands over, the destination post-copies over the checkpoint the new
 // writer published, and one VM's memory ends up made of two writers' pages.
 // Local handle state is no evidence — a running VM learns of a takeover on a
@@ -233,15 +233,15 @@ func confirmHandoff(ctx context.Context, vm *volume.VM) error {
 //
 // Where the child of a fork lands changes only that backing. A child whose
 // parent runs elsewhere streams the pages out of that host's page server. A
-// child whose parent runs here attaches over the instant itself: the pager
-// shares the parent's sealed frames with it by identity, so every inherited
+// child whose parent runs here attaches over the fork point itself: the pager
+// shares the parent's sealed pages with it by identity, so every inherited
 // page is present the moment the region attaches and nothing is fetched.
 //
 // A fork's child publishes its root index here, as soon as it holds every page
 // its parent had — locally that is right after it attaches, and remotely it is
 // the end of the post-copy. Until then nothing outside this host can open it,
 // so a host lost in the meantime loses it and nothing can seal it; the
-// publication is also what gives the child's own hold on the instant back.
+// publication is also what gives the child's own hold on the point back.
 //
 // A post-copy that cannot fetch those pages leaves a guest whose memory is part
 // this host's and part missing, and nothing can publish it: the source has
@@ -250,20 +250,20 @@ func confirmHandoff(ctx context.Context, vm *volume.VM) error {
 // released without publishing, and the supervisor told to forget it — so what a
 // recovery opens is the checkpoint the control record already selects.
 func (h *Host) Receive(ctx context.Context, handoff vmmigrate.Handoff) (*vmmigrate.Received, error) {
-	// The instant is this host's own for a child of a fork it took: such a child
-	// is bound to the frames rather than to a peer, so it needs no page server
+	// The fork point is this host's own for a child of a fork it took: such a child
+	// is bound to the pages rather than to a peer, so it needs no page server
 	// of its own and dials none.
 	point := h.inherited(handoff.VMID)
 	if h.migration.StartVM == nil || (h.pages == nil && point == nil) {
 		return nil, fmt.Errorf("%w: this host cannot start a received VM", ErrNotMigratable)
 	}
 	if handoff.IsFork() && point == nil && handoff.Source == "" {
-		// A child of an instant this host was to take in over its own frames,
-		// and the hold on that instant is gone: it outlived its deadline, or the
+		// A child of a fork point this host was to take in over its own memory,
+		// and the hold on that point is gone: it outlived its deadline, or the
 		// parent was deleted or lost under it. There is nowhere left to read the
 		// pages the parent held, so the child is refused rather than started over
 		// a checkpoint that does not have them.
-		return nil, fmt.Errorf("%w: the instant %s inherits from %s is no longer held here",
+		return nil, fmt.Errorf("%w: the fork point %s inherits from %s is no longer held here",
 			ErrNotMigratable, handoff.VMID, handoff.Parent)
 	}
 	// The handoff names every region and its size, so whether this host's pager
@@ -362,7 +362,7 @@ func (h *Host) rooted(ctx context.Context, vm *volume.VM, runtime Machine) error
 // capture already in flight would otherwise publish the torn image this is
 // discarding.
 //
-// Nothing is done to this host's own page server: the frames of a VM being
+// Nothing is done to this host's own page server: the pages of a VM being
 // received are the source's, and this host serves none of them.
 //
 // The handle is then handed off rather than closed, because a close publishes
@@ -432,7 +432,7 @@ func (h *Host) release(vmID string, abandoning bool) error {
 	}
 	if hold != nil {
 		// The deadline this release beat has nothing left to do. A fork's child
-		// has every page it inherited, so the parent takes its sealed frames
+		// has every page it inherited, so the parent takes its sealed pages
 		// back and is checkpointed again; its VMM process is untouched, because
 		// the parent never stopped.
 		hold.timer.Stop()
@@ -451,11 +451,11 @@ func (h *Host) release(vmID string, abandoning bool) error {
 // had them. This host stops offering those pages and gives up what it held for
 // them.
 //
-// For a fork that is the parent's frames: a parent that stays sealed is one
+// For a fork that is the parent's pages: a parent that stays sealed is one
 // nothing can checkpoint, fence or migrate, and whose dirty set only grows,
 // which costs far more than a child that has to fall back to the checkpoint it
 // was forked from. For a migration it is the source's own stopped VMM process,
-// which nothing will ever run again, and the frames it maps.
+// which nothing will ever run again, and the pages it maps.
 func (h *Host) expire(vmID string) {
 	h.machines.mu.Lock()
 	held := h.machines.forked[vmID] != nil || h.machines.migrated[vmID] != nil
