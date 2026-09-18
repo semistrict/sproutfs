@@ -160,7 +160,7 @@ class: text-sm
 
 **Lineage identity.** Every page a checkpoint publishes gets the name `(checkpoint, volume, page)`. It never changes — not even when the bytes are later moved into another checkpoint's objects. A fork's checkpoints name its parent's checkpoints, so the fork copies nothing.
 
-**Shared.** One resident page may be the same 2 MiB of host memory for several VMs: a parent's page 3 and its children's page 3, until one of them writes it. The pager keeps a bounded number of resident pages.
+**Shared.** One resident page may be the same 2 MiB of host memory for several VMs: a parent's page 3 and its child's page 3, until one of them writes it. The pager keeps a bounded number of resident pages.
 
 </div>
 </div>
@@ -458,7 +458,7 @@ layout: section
 clicks: 4
 ---
 
-# A fork is one pause, any number of children
+# A fork is one pause
 
 <ForkFanOut />
 
@@ -469,7 +469,7 @@ clicks: 4
 <div class="grid grid-cols-2 gap-8">
 <div>
 
-**Costs.** One pause on the parent — the same pause as a checkpoint's — and the child's boot. Nothing uploaded. On GCE, forking two children took 0.1 s of pause; the children ran 1.6–10 s later.
+**Costs.** One pause on the parent — the same pause as a checkpoint's — and the child's boot. Nothing uploaded. On GCE the pause was 0.1 s; the child ran 1.6–10 s later.
 
 **Leaves.** A pin on the parent's published sequence, and one control record per child selecting a root over it. A fork that ends before it leaves no object behind.
 
@@ -697,8 +697,8 @@ Two hosts on GCE, 512 MiB Alpine guests each carrying a 256 MiB memory witness a
 
 | operation | pause or checkpoint | behind it | wall, slowest |
 | --- | --- | --- | --- |
-| fork, two local children | 0.1 s | 1.6–10 s to run the children | 10 s |
-| fork, two remote children | 0.1 s | 5–20 s of post-copy | 20 s |
+| fork, same host | 0.1 s | 1.6–10 s to run the child | 10 s |
+| fork, other host | 0.1 s | 5–20 s of post-copy | 20 s |
 | migrate | 0.6–0.75 s | 0.3–4.9 s of stream | 5.7 s |
 | stop | the checkpoint it published | — | 6.3 s |
 | start, warm | the checkpoint it came back at | — | 1.0 s |
@@ -789,7 +789,7 @@ A checkpoint, a fork or a move of a VM costs what that VM <b>changed</b> — nev
 | | the pause | what moves |
 | --- | --- | --- |
 | checkpoint | 7–9 ms | the pages the guest dirtied since the last one, uploaded behind it |
-| fork | 0.1 s, however many children | nothing: the children map the parent's pages by name |
+| fork | 0.1 s | nothing: the child maps the parent's pages by name |
 | migration | 0.6–0.75 s | the pages no checkpoint has, pulled behind the running guest |
 | losing a host | — | the writes since the last checkpoint, and no more than the loss window |
 

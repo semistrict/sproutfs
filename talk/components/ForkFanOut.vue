@@ -5,16 +5,16 @@ import { useStep } from './Steps'
 // A fork is one pause of a running parent.
 // 0 parent runs on host 1 with pages dirty since its last checkpoint (7,2)
 // 1 the fork point: pause, save state, seal, resume — the parent keeps running; sequence (7,2) is pinned
-// 2 two local children: control records selecting (7,2); they map the sealed frames through the pager
+// 2 a child on the same host: a control record selecting (7,2); it maps the sealed pages through the pager
 // 3 one remote child: its pager pulls the sealed frames from the parent's page server
 // 4 each child publishes its root once it holds its inherited pages; the last hold retires the seal
 const step = useStep()
 const caption = computed(() => [
   'the parent runs on host 1. Its last published checkpoint is (7,2); four pages are dirty since.',
   'the fork point: pause, save VMM state, seal the dirty pages, resume — the same pause as a checkpoint\'s, but nothing is uploaded. The parent\'s record pins (7,2), once and for good.',
-  'two children on the parent\'s host: each gets a record selecting a root over (7,2), and maps the sealed pages through the shared pager. A fan-out costs one pause, whatever its size.',
+  'a child on the parent\'s host gets a record selecting a root over (7,2), and maps the sealed pages through the shared pager: nothing is copied.',
   'a child on another host pulls those pages out of the parent\'s page server, exactly as a migration destination does; its own volume answers everything a checkpoint holds.',
-  'each child publishes its root once it holds every inherited page — that is what makes it a VM any host can open. The seal ends when the last hold retires, or at the host\'s deadline of four checkpoint intervals.',
+  'the child publishes its root once it holds every inherited page — that is what makes it a VM any host can open. The seal ends when the child\'s hold retires, or at the host\'s deadline of four checkpoint intervals.',
 ][step.value])
 </script>
 
@@ -37,18 +37,14 @@ const caption = computed(() => [
         <rect :x="40 + (p - 1) * 50" y="210" width="42" height="42" rx="5" class="page" :class="{ sealed: step >= 1 && step < 4, clean: step >= 4 }" />
         <text v-if="step >= 1 && step < 4" :x="61 + (p - 1) * 50" y="205" class="lock">🔒</text>
       </g>
-      <text x="40" y="285" class="tiny left">{{ step >= 4 ? 'published under the children\'s own sequences' : step >= 1 ? 'named by the fork point; shared by every child of it' : 'the parent\'s private dirty state' }}</text>
+      <text x="40" y="285" class="tiny left">{{ step >= 4 ? 'published under the child\'s own sequence' : step >= 1 ? 'named by the fork point; shared with the child' : 'the parent\'s private dirty state' }}</text>
 
-      <!-- local children -->
+      <!-- child on the same host -->
       <g :class="{ hidden: step < 2 }" class="fade">
         <rect x="320" y="70" width="220" height="60" rx="8" class="vm child" />
-        <text x="430" y="95" class="label">child a</text>
+        <text x="430" y="95" class="label">child, same host</text>
         <text x="430" y="117" class="small">{{ step >= 4 ? 'root published: open anywhere' : 'record → root over (7,2)' }}</text>
-        <rect x="320" y="150" width="220" height="60" rx="8" class="vm child" />
-        <text x="430" y="175" class="label">child b</text>
-        <text x="430" y="197" class="small">{{ step >= 4 ? 'root published: open anywhere' : 'record → root over (7,2)' }}</text>
         <path d="M 250 232 C 290 232, 290 100, 315 100" class="map" />
-        <path d="M 250 232 C 290 232, 290 180, 315 180" class="map" />
         <text x="290" y="262" class="tiny">maps the sealed pages</text>
       </g>
 
@@ -57,7 +53,7 @@ const caption = computed(() => [
         <rect x="600" y="20" width="280" height="290" rx="10" class="hostbox" />
         <text x="740" y="45" class="label">host 2</text>
         <rect x="620" y="70" width="240" height="60" rx="8" class="vm child" />
-        <text x="740" y="95" class="label">child c</text>
+        <text x="740" y="95" class="label">child, other host</text>
         <text x="740" y="117" class="small">{{ step >= 4 ? 'root published: open anywhere' : 'record → root over (7,2)' }}</text>
         <text x="740" y="200" class="tiny">pager pulls sealed pages</text>
         <path d="M 560 232 H 640 L 640 140" class="map remote" marker-end="url(#fo)" />
