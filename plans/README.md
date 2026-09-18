@@ -5,11 +5,6 @@ across all of them is collected in [open-work.md](../docs/open-work.md).
 
 ## Designs under way
 
-- [2026-09-18 loss window](loss-window-2026-09-18.md) — a VM whose oldest
-  unpublished write is older than `SPROUTFS_LOSS_WINDOW` (five minutes; zero
-  disables) has its stores wait in the pager until a checkpoint lands, and the
-  checkpoint is asked for out of turn and retried promptly. The age travels with
-  a handoff. **In progress.**
 - [2026-09-14 repository layout](layout-2026-09-14.md) — nothing in the module is
   a library, so every package but `cmd` moves under `internal/`, the large
   packages gain nested `internal` bodies, `image` becomes `checkpoint`, and
@@ -22,6 +17,12 @@ across all of them is collected in [open-work.md](../docs/open-work.md).
 
 ## Designs carried out
 
+- [2026-09-18 loss window](loss-window-2026-09-18.md) — a VM whose oldest
+  unpublished write is older than `SPROUTFS_LOSS_WINDOW` (five minutes; zero
+  disables) has its stores wait in the pager until a checkpoint lands, and the
+  checkpoint is asked for out of turn and retried at an eighth of the interval.
+  The age travels with a migration and a fork, so a destination inherits the
+  window rather than restarting it. **Done.**
 - [2026-09-16 a template named by its image](template-by-digest-2026-09-16.md) —
   a template is `template-<sha256 of the image file>`: hosts import an image
   once between them and only if absent, a restart imports nothing, a changed

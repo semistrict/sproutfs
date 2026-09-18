@@ -142,6 +142,29 @@ the host closes. An interval whose VM is sealed by a fork point is skipped: the
 child takes those frames first. A negative interval disables the loop, which is
 what a caller driving its own checkpoints wants.
 
+The interval bounds that rewind only while publications land. `Config.LossWindow`
+bounds it when they do not: five minutes by default, zero to disable, and never
+shorter than the interval — a window below it is one every VM is past before its
+first checkpoint is even due. While a VM's oldest unpublished write is older than
+the window, the pager admits no further dirty page for it, and the host's own
+part is the loop. A publication that failed while the window is exceeded is
+retried at an eighth of the interval, doubling to the interval, rather than an
+interval later: the guest is held back for the whole of that wait, so an
+interval's patience is exactly what it must not spend. Inside the window nothing
+changes, because retrying eight times as often would only multiply what a store
+outage costs the deployment in requests. That backoff is the one wait a request
+out of turn does not cut short — the store the window holds back asks again
+every time this loop signals, and a capture that cannot be published gives it
+nothing, so answering each ask would spin a host that cannot reach the store.
+
+The window is a VM's, not a region's, because the checkpoint that ends it is: one
+pause seals every region a VM maps. The pager holds no idea of a VM, so the host
+answers for the age as it answers for the checkpoint — `Pressure.Oldest` reports
+the oldest unpublished write across every region of the VM that maps the region
+it is asked about. `Host.LossWindow` reports that age per VM together with
+whether its stores are waiting, which `/status`, `/metrics` and `sproutfsctl
+list` carry.
+
 A guest can fill the host's dirty budget long before its interval comes round,
 and it is then waiting for a checkpoint nothing has scheduled. `Config.Pager`
 is how the host hears about that: the pager asks it for an immediate checkpoint
@@ -149,7 +172,12 @@ of the region holding the largest dirty set, the loop takes it out of the
 interval's turn, and the stalled stores land when it retires. The host answers
 for a VM it runs whose volume no fork point has sealed, and otherwise declines
 so the pager can offer another region. Where no region can be checkpointed, the
-pager reports the stall instead, and the host stops that VM deliberately. That
+pager reports the stall instead, and the host stops that VM deliberately. A store
+the loss window holds back ends the same way where no checkpoint of that VM can
+ever be taken, and the pager reports that apart — a window stall rather than a
+budget stall, because the two say different things about a deployment: one that
+its guests dirty faster than their checkpoints drain, the other that a guest's
+writes cannot be made durable at all. That
 stop is the same give-up every other loss of a VM goes through, with one last
 checkpoint inside it: the registration is dropped and the close claimed, so a
 stall, a takeover and the watcher finding the same process dead close the VM

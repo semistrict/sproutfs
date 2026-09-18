@@ -31,6 +31,21 @@ each permit covering one read-ahead or spill buffer, with one additional permit
 reserved so a checkpoint's read of a sealed set progresses while cold faults
 saturate the rest.
 
+`LossWindow` bounds the same private state in time. The pager dates the oldest
+page each region holds that no landed checkpoint covers, and while that age
+across the regions of one VM exceeds the window it admits no further dirty page
+for that VM: the store waits exactly as a store past the dirty budget waits, and
+a checkpoint of that VM is asked for through the same `Pressure.Checkpoint`.
+Zero disables it. The window is a VM's rather than a region's, because the
+checkpoint that ends it is, and the pager knows nothing about VMs: it asks
+whoever owns the region, through `Pressure.Oldest`. The stamp moves with the
+pages it is measured over — to a checkpoint at the seal, back to the region when
+that checkpoint is abandoned, and across a handoff as the age
+`Region.Handoff` reports and `Region.SetUnpublishedAge` applies — so neither a
+failed publication nor a migration restarts the bound. Where no checkpoint of
+that VM will ever be taken the wait ends as a budget stall does, as
+`ErrWindowStalled`, which the region's owner answers by stopping that VM.
+
 The pager page is **2 MiB**, backed by an explicit HugeTLB memfd. Allocation,
 sharing, copy-on-write, write protection, spill, eviction, mapping commands and
 wire generations all use that unit. Region addresses and lengths must be 2 MiB
@@ -229,6 +244,14 @@ until the process exits.
 A checkpoint is how a region's dirty pages become durable, and the only way.
 There is no flush: the pager never writes to a volume, and a guest's
 virtio-pmem flush makes nothing durable and returns success at the device.
+
+A seal also takes the region's loss window: the age of the oldest page it is
+freezing becomes the sealed set's, and the region's own starts again at its next
+store. Retiring that set published drops it, because the store holds those bytes
+then; abandoning it — a publication that did not land, or an unseal — hands it
+back, and the region keeps the older of that and whatever it has written since.
+A window that restarted at every failed publication would bound nothing, since
+the host that cannot publish is exactly the host whose publications keep failing.
 
 Sealing a region revokes write access to its dirty pages, write-protecting the
 frames the guest already has, records those frames as the sealed set, and
