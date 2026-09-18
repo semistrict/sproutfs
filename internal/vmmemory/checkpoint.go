@@ -42,6 +42,12 @@ type RegionCheckpoint struct {
 	region *Region
 	pages  []*binding
 	byPage map[uint64]*binding
+	// dirtySince is the region's loss window at the seal: when the oldest of
+	// these pages was written. The seal takes it off the region, so that what
+	// the region reports from here is its own new writes; an abandoned
+	// checkpoint hands it back, and a published one drops it, because the store
+	// holds those bytes then.
+	dirtySince time.Time
 	// held marks a checkpoint a fork instant has taken. Such a seal lasts until
 	// the children of that instant have the pages they inherited, which is no
 	// bound a waiting store may wait under, so it counts as no relief at all.
@@ -152,7 +158,11 @@ func (r *Region) Seal(ctx context.Context) error {
 	if sealSeam != nil {
 		sealSeam()
 	}
-	checkpoint := &RegionCheckpoint{region: r, pages: pages, byPage: make(map[uint64]*binding, len(pages)), done: make(chan struct{})}
+	// The window moves to the checkpoint with the pages it is measured over.
+	// It is taken after the seal succeeded: a seal that failed partway hands
+	// every page back, so it must hand nothing else back either.
+	checkpoint := &RegionCheckpoint{region: r, pages: pages, dirtySince: r.takeDirtySince(),
+		byPage: make(map[uint64]*binding, len(pages)), done: make(chan struct{})}
 	for _, held := range pages {
 		checkpoint.byPage[held.index] = held
 	}
@@ -301,6 +311,18 @@ func (c *RegionCheckpoint) DirtyPages() []uint64 {
 	}
 	sort.Slice(pages, func(i, j int) bool { return pages[i] < pages[j] })
 	return pages
+}
+
+// UnpublishedAge is how long the oldest write this checkpoint holds has gone
+// unpublished, zero where it holds none. It is the region's loss window as the
+// seal took it, still running: a fork instant's hold can outlast several
+// intervals, and the child that inherits these pages inherits their age with
+// them rather than starting a window of its own.
+func (c *RegionCheckpoint) UnpublishedAge() time.Duration {
+	if c.dirtySince.IsZero() {
+		return 0
+	}
+	return max(c.region.host.clock.Since(c.dirtySince), 0)
 }
 
 // Share names every frame this checkpoint holds by the identity the checkpoint
@@ -462,6 +484,13 @@ func (r *Region) endSeal(ctx context.Context, checkpoint *RegionCheckpoint, publ
 		return err
 	}
 	defer r.mu.Unlock()
+	if !published {
+		// These pages are the guest's dirty state again, so the window they were
+		// written in is the region's again. A window that restarted here would
+		// bound nothing: the host that cannot publish is exactly the host whose
+		// publications keep failing.
+		r.restoreDirtySince(current.dirtySince)
+	}
 	r.setCheckpoint(nil)
 	current.finish(nil)
 	// A store waiting for the dirty budget waits for whichever checkpoint ends

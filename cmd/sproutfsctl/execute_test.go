@@ -87,10 +87,37 @@ func TestListPrintsEveryVMAndItsHost(t *testing.T) {
 	if err := execute(t.Context(), client, invocation{Command: "list"}, nil, &out, &out); err != nil {
 		t.Fatal(err)
 	}
-	want := "VM    HOST             STATE                                       CHECKPOINT\n" +
-		"vm-1  sproutfs-host-a  running                                     12\n" +
-		"vm-2  -                stopped                                     3\n" +
-		"vm-3  sproutfs-host-a  migrating sproutfs-host-a->sproutfs-host-b  5\n"
+	want := "VM    HOST             STATE                                       CHECKPOINT  LOSS\n" +
+		"vm-1  sproutfs-host-a  running                                     12          -\n" +
+		"vm-2  -                stopped                                     3           -\n" +
+		"vm-3  sproutfs-host-a  migrating sproutfs-host-a->sproutfs-host-b  5           -\n"
+	if out.String() != want {
+		t.Fatalf("printed\n%s\nwant\n%s", out.String(), want)
+	}
+}
+
+// The listing is where an operator sees what losing a host would cost each VM
+// in time, and which VMs are already past their window with their guests held
+// back. A VM holding nothing unpublished shows a dash: a zero would read as a
+// VM that is somehow always durable.
+func TestListPrintsEachVMsLossWindow(t *testing.T) {
+	client, _ := serve(t, func(*http.Request) (int, any) {
+		return http.StatusOK, []orch.VM{
+			{ID: "vm-1", Host: "sproutfs-host-a", State: "running", Checkpoint: 12,
+				LossWindow: 90 * time.Second},
+			{ID: "vm-2", Host: "sproutfs-host-a", State: "running", Checkpoint: 8,
+				LossWindow: 7 * time.Minute, Waiting: true},
+			{ID: "vm-3", State: "stopped", Checkpoint: 3},
+		}
+	})
+	var out bytes.Buffer
+	if err := execute(t.Context(), client, invocation{Command: "list"}, nil, &out, &out); err != nil {
+		t.Fatal(err)
+	}
+	want := "VM    HOST             STATE    CHECKPOINT  LOSS\n" +
+		"vm-1  sproutfs-host-a  running  12          1m30s\n" +
+		"vm-2  sproutfs-host-a  running  8           7m0s waiting\n" +
+		"vm-3  -                stopped  3           -\n"
 	if out.String() != want {
 		t.Fatalf("printed\n%s\nwant\n%s", out.String(), want)
 	}

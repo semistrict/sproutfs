@@ -40,6 +40,9 @@ func TestConfigTakesTheDocumentedDefaults(t *testing.T) {
 	if config.CheckpointInterval != 60*time.Second {
 		t.Fatalf("checkpoint interval %s", config.CheckpointInterval)
 	}
+	if config.LossWindow != 5*time.Minute {
+		t.Fatalf("loss window %s", config.LossWindow)
+	}
 	if config.ArenaBytes != 2<<30 || config.MemoryBytes != (2<<30)+(1<<30) ||
 		config.CacheBytes != 1<<30 || config.SpillBytes != 16<<30 {
 		t.Fatalf("budgets %d %d %d %d", config.ArenaBytes, config.MemoryBytes, config.CacheBytes, config.SpillBytes)
@@ -98,6 +101,38 @@ func TestConfigRefusesADirtyBoundAboveTheLogicalOne(t *testing.T) {
 		t.Fatal("a dirty bound above the logical one was accepted")
 	}
 	if !strings.Contains(err.Error(), "SPROUTFS_DIRTY_PAGES is 4096") {
+		t.Fatalf("error %q", err)
+	}
+}
+
+// A window of zero is how a deployment turns the bound off, which the host
+// spells as a negative value: zero there is the default rather than nothing at
+// all, and a pod that asked for no window must not be given five minutes of one.
+func TestConfigDisablesTheLossWindowOnZero(t *testing.T) {
+	values := minimal()
+	values["SPROUTFS_LOSS_WINDOW"] = "0"
+	config, err := loadConfig(environ(values))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.LossWindow >= 0 {
+		t.Fatalf("a window of zero configured %s, want the bound disabled", config.LossWindow)
+	}
+}
+
+// A window shorter than the checkpoint interval is a window every VM is past
+// before its first checkpoint is even due, so every guest waits at every
+// interval. It is a misconfiguration rather than a tight bound, and a pod says
+// so at startup instead of discovering it as stalled guests.
+func TestConfigRefusesALossWindowBelowTheCheckpointInterval(t *testing.T) {
+	values := minimal()
+	values["SPROUTFS_CHECKPOINT_INTERVAL"] = "60s"
+	values["SPROUTFS_LOSS_WINDOW"] = "10s"
+	_, err := loadConfig(environ(values))
+	if err == nil {
+		t.Fatal("a loss window below the checkpoint interval was accepted")
+	}
+	if !strings.Contains(err.Error(), "SPROUTFS_LOSS_WINDOW is 10s") {
 		t.Fatalf("error %q", err)
 	}
 }

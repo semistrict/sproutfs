@@ -77,7 +77,7 @@ func execute(ctx context.Context, client *orch.Client, command invocation,
 			return err
 		}
 		table := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(table, "VM\tHOST\tSTATE\tCHECKPOINT")
+		fmt.Fprintln(table, "VM\tHOST\tSTATE\tCHECKPOINT\tLOSS")
 		for _, vm := range vms {
 			h, state := vm.Host, vm.State
 			if h == "" {
@@ -91,7 +91,7 @@ func execute(ctx context.Context, client *orch.Client, command invocation,
 			if vm.From != "" || vm.To != "" {
 				state = fmt.Sprintf("%s %s->%s", state, dash(vm.From), dash(vm.To))
 			}
-			fmt.Fprintf(table, "%s\t%s\t%s\t%d\n", vm.ID, h, state, vm.Checkpoint)
+			fmt.Fprintf(table, "%s\t%s\t%s\t%d\t%s\n", vm.ID, h, state, vm.Checkpoint, loss(vm))
 		}
 		return table.Flush()
 	case "hosts":
@@ -260,6 +260,23 @@ func dash(value string) string {
 		return "-"
 	}
 	return value
+}
+
+// loss writes one VM's loss window as a column: how long its host has held a
+// write no checkpoint of it covers, and a mark on a VM already past the window,
+// whose stores that host is holding back until a checkpoint lands. A VM with
+// nothing unpublished — and one no host reports, which holds nothing anywhere —
+// shows a dash rather than a zero, because zero would read as a VM that is
+// somehow always durable.
+func loss(vm orch.VM) string {
+	if vm.LossWindow <= 0 {
+		return "-"
+	}
+	age := vm.LossWindow.Round(time.Second).String()
+	if vm.Waiting {
+		return age + " waiting"
+	}
+	return age
 }
 
 // console attaches to one VM's serial console: everything the guest prints is

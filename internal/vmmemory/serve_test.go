@@ -199,7 +199,7 @@ func TestHandedOffRegionKeepsServingItsFramesWithoutItsVolume(t *testing.T) {
 		for page := range uint64(2) {
 			access(t, r, m, page, true)[0] = byte(60 + page)
 		}
-		if err := r.Handoff(t.Context()); err != nil {
+		if _, err := r.Handoff(t.Context()); err != nil {
 			t.Fatal(err)
 		}
 		// The volume handle is gone: every use of it now fails, and nothing the
@@ -246,7 +246,7 @@ func TestHandoffRefusesASealedRegion(t *testing.T) {
 		r, m, b := f.region(4)
 		access(t, r, m, 0, true)[0] = 60
 		seal(t, r)
-		if err := r.Handoff(t.Context()); !errors.Is(err, vmmemory.ErrSealed) {
+		if _, err := r.Handoff(t.Context()); !errors.Is(err, vmmemory.ErrSealed) {
 			t.Fatalf("Handoff of a sealed region = %v, want ErrSealed", err)
 		}
 		if err := r.Unseal(t.Context()); err != nil {
@@ -256,7 +256,7 @@ func TestHandoffRefusesASealedRegion(t *testing.T) {
 		if b.data[0] != 60 {
 			t.Fatalf("the region that kept its volume published %d, want 60", b.data[0])
 		}
-		if err := r.Handoff(t.Context()); err != nil {
+		if _, err := r.Handoff(t.Context()); err != nil {
 			t.Fatal(err)
 		}
 	})

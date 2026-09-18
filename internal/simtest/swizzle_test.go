@@ -251,6 +251,9 @@ func runSwizzleCampaign(t *testing.T, seed uint64) *sim.Runtime {
 		if err := world.VerifyDurable(ctx, id); err != nil {
 			t.Error(err)
 		}
+		if err := world.VerifyLossWindow(ctx, id); err != nil {
+			t.Error(err)
+		}
 	}
 	if err := world.CheckSelected(ctx); err != nil {
 		t.Error(err)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 	"testing/synctest"
+	"time"
 
 	"github.com/semistrict/sproutfs/internal/checkpoint"
 	"github.com/semistrict/sproutfs/internal/control"
@@ -18,6 +19,7 @@ type sealedPages struct {
 	size  int
 	pages []uint64
 	fill  byte
+	age   time.Duration
 }
 
 func (s sealedPages) PageSize() int        { return s.size }
@@ -29,6 +31,10 @@ func (s sealedPages) ReadDirty(_ context.Context, _ uint64, dst []byte) error {
 	}
 	return nil
 }
+
+// age is how long these pages have been unpublished, which only a fork's
+// handoff reads. A seal built by hand holds none of that history.
+func (s sealedPages) UnpublishedAge() time.Duration { return s.age }
 
 func (sealedPages) Hold() {}
 

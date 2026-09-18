@@ -38,6 +38,18 @@ fail, and its pages then go back to the guest. A VM's whole durable state is
 the one checkpoint its record selects; an initial sparse checkpoint writes no
 part at all.
 
+**Loss window**: How long a VM may hold a write no landed checkpoint covers —
+`SPROUTFS_LOSS_WINDOW`, five minutes by default, zero to disable — and, as a
+measurement, the age of its oldest such write. Past the window the pager admits
+no further dirty page for that VM: every store that needs a dirty reservation
+waits, and a checkpoint of that VM is asked for out of the interval's turn. So
+what losing a host can cost one VM is bounded in time as the dirty budget bounds
+it in bytes: the lost writes span at most the window plus one checkpoint
+attempt's pause. The age travels with the pages a handoff moves, so a
+destination inherits the window rather than restarting it, and where a VM can
+never be checkpointed the wait ends as a full dirty budget does — the host stops
+that VM deliberately, with a last checkpoint of what it can still capture.
+
 **Index object**: The metadata plane of one checkpoint, at
 `vm/<id>/ckpt/<seq>/index`: a fixed header, the page-table segments the
 checkpoint changed, and the **root**, which says for every volume where each 512

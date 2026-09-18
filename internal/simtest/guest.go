@@ -385,7 +385,13 @@ func (g *guest) detach(ctx context.Context) error {
 // when the mapping is writable, and takes a write fault when a seal took that
 // access away. The model is updated under the mapping lock the store took, so a
 // checkpoint can never contain bytes the model does not.
-func (g *guest) store(name string, page uint64) error {
+func (g *guest) store(name string, page uint64) error { return g.storeIn(g.ctx, name, page) }
+
+// storeIn is store under a caller's own context, which is what a scenario about
+// a store the pager holds back needs: the guest's context outlives the fault,
+// so a test with nothing else to cancel would wait for a checkpoint that is
+// never coming.
+func (g *guest) storeIn(ctx context.Context, name string, page uint64) error {
 	g.mu.Lock()
 	g.value++
 	if g.value == 0 {
@@ -393,12 +399,16 @@ func (g *guest) store(name string, page uint64) error {
 	}
 	value := g.value
 	g.mu.Unlock()
-	return g.storeValue(name, page, value)
+	return g.storeValueIn(ctx, name, page, value)
 }
 
 // storeValue stores one named byte, which is what a campaign reading a VM back
 // as one whole generation writes into every page of it.
 func (g *guest) storeValue(name string, page uint64, value byte) error {
+	return g.storeValueIn(g.ctx, name, page, value)
+}
+
+func (g *guest) storeValueIn(ctx context.Context, name string, page uint64, value byte) error {
 	g.mu.Lock()
 	stopped := g.stopped
 	g.mu.Unlock()
@@ -410,7 +420,7 @@ func (g *guest) storeValue(name string, page uint64, value byte) error {
 		if g.storeModel(name, mp, page, value) {
 			return nil
 		}
-		if err := g.regions[name].Fault(g.ctx, page, true); err != nil {
+		if err := g.regions[name].Fault(ctx, page, true); err != nil {
 			return fmt.Errorf("%s store fault on %s page %d: %w", g.instance, name, page, err)
 		}
 	}

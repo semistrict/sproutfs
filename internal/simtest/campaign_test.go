@@ -136,6 +136,21 @@ func runTopologyCampaign(t *testing.T, seed uint64, buggify bool) *sim.Runtime {
 // tunables rather than the deployment's.
 func knobsEnabled() bool { return os.Getenv("SPROUTFS_TEST_KNOBS") != "" }
 
+// campaignLossWindow is the seed's choice between turning the bound off and
+// leaving it wider than anything a campaign's clocks reach. These worlds run no
+// checkpoint loop — they drive every checkpoint themselves — so a window that
+// actually fired here would hold a guest back waiting for a checkpoint nobody
+// takes, which ends in the deliberate stop the loss-window scenarios are about
+// and which this model does not follow. What a campaign requires of the window
+// is that every host, pager, migration and handoff carries it through every
+// kill and every swizzle, and that no recovery ever rewinds more than it allows.
+func campaignLossWindow(runtime *sim.Runtime) time.Duration {
+	// A campaign advances a host's clock by four checkpoint intervals to reach a
+	// handover's deadline, so every window it may draw is wider than that.
+	choices := []time.Duration{0, 5 * time.Minute, time.Hour, 24 * time.Hour}
+	return choices[runtime.Random("simtest/loss-window").Intn("window", len(choices))]
+}
+
 // campaignKnobs is the set of tunables one seed runs with. The pager's arena
 // has to hold every VM of the topology twice over — a fork or a migration has
 // the parent's frames and the child's on one host at once — so the arena and
@@ -164,6 +179,13 @@ func campaignKnobs(t *testing.T, runtime *sim.Runtime, topology simtest.Topology
 	// guest wrote, which read-ahead and write-ahead would round up to their
 	// runs.
 	k.ReadAheadPages, k.WriteAheadPages = 1, 1
+	if window := campaignLossWindow(runtime); window > 0 {
+		// A window is never shorter than the interval a VM is checkpointed on,
+		// and a seed may have drawn an interval of an hour.
+		k.LossWindow = max(window, k.CheckpointInterval)
+	} else {
+		k.LossWindow = 0
+	}
 	// Two VMs are open on one host at once, and a takeover holds the superseded
 	// handle beside the one that fenced it.
 	k.MaxOpenVMs = max(k.MaxOpenVMs, 8)

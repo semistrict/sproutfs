@@ -138,6 +138,9 @@ func TestAKilledHostRestartsOnItsOwnDiskAndRewindsToItsLastCheckpoint(t *testing
 				if err := world.VerifyDurable(ctx, "vm-running"); err != nil {
 					t.Fatal(err)
 				}
+				if err := world.VerifyLossWindow(ctx, "vm-running"); err != nil {
+					t.Fatal(err)
+				}
 				if err := world.Close(ctx); err != nil {
 					t.Error(err)
 				}

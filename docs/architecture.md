@@ -56,10 +56,40 @@ when the vCPUs may be paused: every 60 s by default
 jittered by up to an eighth either side so VMs do not checkpoint in lockstep,
 and the next wait measured from the end of the last upload.
 
+The interval is what a host loss costs a VM when everything works. What it costs
+when nothing works is the **loss window**: how long a VM may hold a write no
+landed checkpoint covers — `host.Config.LossWindow`, `SPROUTFS_LOSS_WINDOW`,
+five minutes by default, zero to disable. While a VM's oldest unpublished write
+is older than that, the pager admits no further dirty page for it: every store
+that needs a dirty reservation waits, exactly as a store past the dirty budget
+waits, and a checkpoint of that VM is asked for out of the interval's turn. So
+the lost writes of one VM span at most the window plus one checkpoint attempt's
+pause, from the first of them to the last. Losing the host after an outage
+longer than the window still loses writes older than the window — nothing can
+publish through an outage — but the guest was stopped from building on them from
+the window on.
+
+A store into a page the guest has already dirtied and that no seal covers does
+not fault and is not blocked. The checkpoint the pager asks for seals every dirty
+page at its instant, so from that instant every store of that VM waits; the gap
+is between the window expiring and that seal, and it is one pause away.
+
+A migration or a fork moves unpublished pages to another host, and their age
+moves with them: the handoff carries, per region, how old that region's oldest
+unpublished write is, and the destination dates the pages it receives from that
+on its own clock. A destination therefore inherits the window rather than
+restarting it. Where a VM's checkpoint can never be taken — its loop is off, or
+its region belongs to no VM the host runs — a store waiting on the window is
+waiting for something that will not happen, and it ends the way a full dirty
+budget ends: the host stops that VM deliberately, with a last checkpoint of what
+it can still capture. A fork hold is not that, because the hold ends at its
+deadline and the parent is checkpointed then, so a parent's stores wait.
+
 A failed publication changes nothing durable: the previous checkpoint stays
 selected, the overlay keeps its bytes, and the failure is reported through the
-VM's status and retried at the next interval. The exception is a handle a later
-writer has fenced. The interval checkpoint is where a fenced host finds out,
+VM's status and retried — at the next interval while the VM is inside its
+window, and at an eighth of the interval, doubling to the interval, while it is
+past it. The exception is a handle a later writer has fenced. The interval checkpoint is where a fenced host finds out,
 because a running VM writes nothing else; it then closes the VMM and releases
 the VM rather than leave a guest running whose writes can never be published.
 

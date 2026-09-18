@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"time"
 )
 
 // ErrHandedOff reports a region whose volume belongs to another host now. Its
@@ -123,19 +124,24 @@ func (r *Region) Resident() ([]uint64, error) {
 // A sealed region is not something to hand off: a checkpoint is reading its
 // checkpoint under a volume handle that is about to be another host's, so the
 // seal is reported and the region keeps its volume.
-func (r *Region) Handoff(ctx context.Context) error {
+//
+// It reports how long this region has held its oldest unpublished write, which
+// the handoff carries so the destination goes on measuring the same loss window
+// instead of starting a new one. It is read here, under the lock that makes the
+// volume another host's, because that is the instant the set stops changing.
+func (r *Region) Handoff(ctx context.Context) (time.Duration, error) {
 	if err := r.mu.Lock(ctx); err != nil {
-		return err
+		return 0, err
 	}
 	defer r.mu.Unlock()
 	if err := r.ready(); err != nil {
-		return err
+		return 0, err
 	}
 	if r.currentCheckpoint() != nil {
-		return ErrSealed
+		return 0, ErrSealed
 	}
 	r.handed = true
-	return nil
+	return r.unpublishedAge(), nil
 }
 
 // Unpublished lists the pages this region holds that no checkpoint of its VM
@@ -182,6 +188,12 @@ type RegionStats struct {
 	// PrivatePages counts pages whose bytes are this region's own and not yet
 	// its volume's, whether they are resident, spilled or held by a checkpoint.
 	ResidentPages, PrivatePages int
+	// DirtySince is when the oldest of those private pages was written, zero
+	// where there are none. It is the one field here a host acts on rather than
+	// reports: the loss window of the VM this region belongs to is the oldest of
+	// its regions' DirtySince, and while that is older than the window the
+	// pager holds the guest's stores back.
+	DirtySince time.Time
 }
 
 // Stats reports this region's pages. It is a snapshot taken without stopping
@@ -200,6 +212,7 @@ func (r *Region) Stats(ctx context.Context) (RegionStats, error) {
 			stats.PrivatePages++
 		}
 	})
+	stats.DirtySince = r.OldestUnpublished()
 	return stats, nil
 }
 

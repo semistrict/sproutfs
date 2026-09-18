@@ -193,6 +193,7 @@ func Start(ctx context.Context, config SupervisorConfig) (Service, error) {
 		Entropy:            config.Entropy,
 		CacheBytes:         config.CacheBytes,
 		CheckpointInterval: config.CheckpointInterval,
+		LossWindow:         config.LossWindow,
 		Migration: MigrationConfig{Address: s.pageAddress(), PageSize: vmmemory.PageSize,
 			StartVM: s.startReceived},
 		MachineClosed: s.forgetClosed,
@@ -211,6 +212,7 @@ func Start(ctx context.Context, config SupervisorConfig) (Service, error) {
 	slog.InfoContext(ctx, "host: assembled", "host", config.PodName,
 		"pages", s.pageAddress(), "resident_pages", pager.ResidentPages,
 		"logical_pages", pager.LogicalPages, "dirty_pages", pager.DirtyPages,
+		"loss_window", pager.LossWindow.String(),
 		"concurrent_io", pager.ConcurrentIO, "read_ahead_pages", pager.ReadAheadPages,
 		"write_ahead_pages", pager.WriteAheadPages,
 		"fault_workers", s.connection.FaultWorkers, "max_vmas", s.connection.MaxVMAs)
@@ -345,8 +347,13 @@ func (s *supervisor) records() []hostapi.VM {
 	for _, id := range slices.Sorted(maps.Keys(s.machines)) {
 		m := s.machines[id]
 		status := m.vm.Status()
+		// What this host would cost the VM in time, beside what it would cost it
+		// in bytes: the host is the only thing that has both halves, since the
+		// window is measured across every region the VM maps.
+		window, waiting := s.host.LossWindow(id)
 		records = append(records, hostapi.VM{ID: id, Template: m.template, Host: s.config.PodName,
-			Checkpoint: status.Checkpoint.Sequence, Epoch: status.Epoch, DirtyBytes: status.DirtyBytes})
+			Checkpoint: status.Checkpoint.Sequence, Epoch: status.Epoch, DirtyBytes: status.DirtyBytes,
+			LossWindow: window, Waiting: waiting})
 	}
 	return records
 }

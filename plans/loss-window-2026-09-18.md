@@ -1,6 +1,11 @@
 # The loss window — 2026-09-18
 
-**Status: in progress.**
+**Status: done.** The bound is proved where it acts: the pager holds a guest's
+stores back past the window and lets them through when a checkpoint of its VM
+lands, the window survives an abandoned checkpoint and travels with a migration
+and a fork, and a simulated host lost after an outage rewinds its VM by at most
+the window plus one checkpoint attempt — asserted at every recovery the
+campaigns make and in four scenarios of their own.
 
 ## The decision
 

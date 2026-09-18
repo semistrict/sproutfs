@@ -2,6 +2,7 @@ package volume
 
 import (
 	"context"
+	"time"
 
 	"github.com/semistrict/sproutfs/internal/checkpoint"
 	"github.com/semistrict/sproutfs/internal/control"
@@ -24,6 +25,11 @@ type DirtySource interface {
 	// ReadDirty fills dst, exactly one page of checkpoint.PageSize bytes, with the
 	// bytes the seal froze. A store the guest made since then is not in them.
 	ReadDirty(ctx context.Context, page uint64, dst []byte) error
+	// UnpublishedAge is how long the oldest of these pages has gone unpublished,
+	// zero where the seal holds none. It is what a fork point hands a child on
+	// another host, so that child inherits the parent's loss window with the
+	// pages it is measured over rather than starting one of its own.
+	UnpublishedAge() time.Duration
 	// Hold marks this seal as a fork instant's, which a fork point does when it
 	// takes the instant. Such a seal lasts as long as the children of that
 	// instant rather than as long as an upload, which is no bound a waiting

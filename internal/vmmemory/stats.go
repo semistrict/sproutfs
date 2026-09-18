@@ -55,6 +55,13 @@ type Stats struct {
 	// each of which stops a VM. A host that stalls is a host whose budget or
 	// interval is too small for its guests.
 	DirtyWaits, CheckpointRequests, DirtyStalls uint64
+	// WindowWaits counts the times a store waited because its VM had held a
+	// write no checkpoint covers for longer than the loss window, and
+	// WindowStalls those where no checkpoint of that VM was ever going to be
+	// taken, each of which stops a VM. A host that waits on the window is a host
+	// whose publications are not keeping up with its guests; one that stalls on
+	// it is running a VM it cannot make durable at all.
+	WindowWaits, WindowStalls uint64
 	// RefusedMappings counts the faults a client refused a mapping command for,
 	// each of which is served again once the pager has revoked something. A
 	// host that refuses is a host whose client's mapping budget is too small

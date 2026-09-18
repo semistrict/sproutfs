@@ -100,7 +100,8 @@ deadline a deployment actually runs was never the one under test.
 
 `internal/knobs` is the deployment's tunables in one place: the part size
 and root bound, the upload, builder and cache budgets, the write and open-VM
-bounds, the checkpoint interval and its jitter share, the epoch interval, the
+bounds, the checkpoint interval with its jitter share and the loss window it
+bounds a host loss in time with, the epoch interval, the
 hold measured in checkpoint intervals, the pager's resident, logical and dirty
 budgets with its read-ahead, write-ahead and I/O bounds, and a drain's
 concurrency and its two timeouts. `Defaults` is what a deployment runs, so a
@@ -134,6 +135,19 @@ dirty would stall a store on a checkpoint nobody is going to take. Read-ahead
 and write-ahead stay at one page, because the model counts what a source holds
 against what its guest wrote, and the open-VM bound is floored at what a
 takeover holds beside the handle it fenced. Everything else is the seed's.
+
+The loss window is held the same way and for the same reason. Every seed draws
+one, between turning the bound off and leaving it wider than anything a
+campaign's clocks reach: these worlds advance a host's clock only to reach a
+handover's deadline, and a window that actually fired in one of them would hold
+a guest back waiting for a checkpoint nobody takes, which ends in the deliberate
+stop these models do not follow. What a campaign requires of the window is that
+every host, pager, migration and handoff carries it through every kill and every
+swizzle, and that no recovery ever rewinds more than it allows —
+`VerifyLossWindow`, beside `VerifyDurable`, at every recovery. What the window
+actually does to a guest is the four scenarios in `losswindow_test.go`, which
+run the checkpoint loop precisely so a store held back by the window has a loop
+to ask.
 
 ## The no-cheating rule
 

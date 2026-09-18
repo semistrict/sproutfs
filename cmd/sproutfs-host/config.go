@@ -165,6 +165,25 @@ func loadConfig(lookup func(string) string) (config, error) {
 	}
 	c.CheckpointInterval = parsed
 
+	// The window is what bounds a host loss in time, where the interval bounds
+	// it when everything works. Zero here is the deployment turning it off,
+	// which the host spells as a negative value — zero there is the default.
+	window := text("SPROUTFS_LOSS_WINDOW", "5m")
+	held, windowErr := time.ParseDuration(window)
+	switch {
+	case windowErr != nil || held < 0:
+		fail("SPROUTFS_LOSS_WINDOW is %q, want a duration such as 5m, or 0 to disable it", window)
+	case held == 0:
+		c.LossWindow = -1
+	case parsed > 0 && held < parsed:
+		// Every VM would be past the window before its first checkpoint was
+		// due, so every guest would wait at every interval. That is not a tight
+		// bound, it is a host that cannot keep the one it was given.
+		fail("SPROUTFS_LOSS_WINDOW is %s, want at least SPROUTFS_CHECKPOINT_INTERVAL, %s", held, parsed)
+	default:
+		c.LossWindow = held
+	}
+
 	c.Templates, err = parseTemplates(text("SPROUTFS_TEMPLATES", defaultTemplates), c.VMMemoryBytes)
 	if err != nil {
 		fail("SPROUTFS_TEMPLATES: %v", err)

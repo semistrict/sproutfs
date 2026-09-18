@@ -92,6 +92,12 @@ type RegionInfo struct {
 	// The set is bounded by the source's dirty budget, which is what makes it
 	// plain data the control plane can carry.
 	Unpublished []PageRun
+	// UnpublishedAge is how long the source had held the oldest of those pages
+	// when it gave the VM up, zero where it held none. The destination dates the
+	// pages it receives from it, on its own clock, so the VM's loss window
+	// carries across the handoff instead of restarting: a VM handed from host to
+	// host would otherwise never reach a bound at all.
+	UnpublishedAge time.Duration `json:",omitempty"`
 }
 
 // Handoff is what the source gives the deployment to start the VM elsewhere. It
@@ -216,12 +222,17 @@ func Migrate(ctx context.Context, vm *volume.VM, process Runtime, source *PageSo
 	// host's. A region a checkpoint still has sealed keeps its volume and
 	// reports that here, which is a migration that has not happened.
 	for index, name := range names {
-		if err := regions[name].Handoff(ctx); err != nil {
+		age, err := regions[name].Handoff(ctx)
+		if err != nil {
 			if index == 0 {
 				return Handoff{}, resume(ctx, process, err)
 			}
 			return Handoff{}, errors.Join(ErrStopped, err)
 		}
+		// The loss window travels with the pages: the destination dates what it
+		// receives from this age rather than from its own arrival, so a VM
+		// cannot outrun the bound by being handed on.
+		layout[index].UnpublishedAge = age
 		// The guest is stopped and this region's volume is given up, so its
 		// unpublished set can no longer change: it is exactly what the
 		// destination must fetch out of these frames. A region that cannot
@@ -276,7 +287,7 @@ func Fork(ctx context.Context, child string, point *volume.ForkPoint, source *Pa
 	layout := make([]RegionInfo, 0, len(names))
 	for _, name := range names {
 		layout = append(layout, RegionInfo{Name: name, Size: point.Size(name),
-			Unpublished: runsOf(point.Pages(name))})
+			Unpublished: runsOf(point.Pages(name)), UnpublishedAge: point.UnpublishedAge(name)})
 	}
 	handoff := Handoff{VMID: child, State: point.State(),
 		Parent: parent.VM, ParentCheckpoint: parent.Sequence, Regions: layout,

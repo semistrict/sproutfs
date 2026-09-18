@@ -24,7 +24,8 @@ func apiHandoff(handoff vmmigrate.Handoff) hostapi.Handoff {
 		for _, run := range region.Unpublished {
 			runs = append(runs, hostapi.HandoffPageRun{First: run.First, Count: run.Count})
 		}
-		regions = append(regions, hostapi.HandoffRegion{Name: region.Name, Size: region.Size, Unpublished: runs})
+		regions = append(regions, hostapi.HandoffRegion{Name: region.Name, Size: region.Size,
+			Unpublished: runs, UnpublishedAge: region.UnpublishedAge})
 	}
 	return hostapi.Handoff{VMID: handoff.VMID, State: handoff.State, Checkpoint: handoff.Checkpoint,
 		Parent: handoff.Parent, ParentCheckpoint: handoff.ParentCheckpoint,
@@ -41,7 +42,8 @@ func handoffOf(handoff hostapi.Handoff) vmmigrate.Handoff {
 		for _, run := range region.Unpublished {
 			runs = append(runs, vmmigrate.PageRun{First: run.First, Count: run.Count})
 		}
-		regions = append(regions, vmmigrate.RegionInfo{Name: region.Name, Size: region.Size, Unpublished: runs})
+		regions = append(regions, vmmigrate.RegionInfo{Name: region.Name, Size: region.Size,
+			Unpublished: runs, UnpublishedAge: region.UnpublishedAge})
 	}
 	return vmmigrate.Handoff{VMID: handoff.VMID, State: handoff.State, Checkpoint: handoff.Checkpoint,
 		Parent: handoff.Parent, ParentCheckpoint: handoff.ParentCheckpoint,
