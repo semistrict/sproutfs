@@ -11,9 +11,9 @@ const step = useStep()
 const pages = [0, 1, 2, 3]
 const caption = computed(() => [
   'resident pages are keyed by lineage identity: (checkpoint, volume, page) — the name the volume gives every page it serves.',
-  'a fork inherits its parent\'s identities, so it maps the same resident copies before its vCPUs run — nothing is copied.',
-  'the child\'s first store into a page allocates a private 2 MiB copy; the parent\'s is untouched.',
-  'the child\'s next checkpoint publishes that page under its own sequence, which becomes that copy\'s identity.',
+  'a fork inherits its parent\'s identities, so it maps the same resident pages before its vCPUs run — nothing is copied.',
+  'the child\'s first store into a page gets a private page of its own; the parent\'s is untouched.',
+  'the child\'s next checkpoint publishes that page under its own sequence, which becomes that page\'s identity.',
 ][step.value])
 </script>
 
@@ -25,11 +25,11 @@ const caption = computed(() => [
       <text x="450" y="45" class="label">pager arena (HugeTLB memfd)</text>
       <g v-for="p in pages" :key="'f' + p">
         <rect x="330" :y="60 + p * 55" width="240" height="44" rx="6" class="frame" />
-        <text x="450" :y="87 + p * 55" class="small">copy · id (ckpt 7, ram0, {{ p }})</text>
+        <text x="450" :y="87 + p * 55" class="small">resident page (ckpt 7, ram0, {{ p }})</text>
       </g>
       <g :class="{ hidden: step < 2 }" class="fade">
         <rect x="330" y="280" width="240" height="34" rx="6" class="frame private" :class="{ named: step >= 3 }" />
-        <text x="450" y="302" class="small">{{ step >= 3 ? 'copy · id (ckpt 8, ram0, 2)' : 'private copy · no identity yet' }}</text>
+        <text x="450" y="302" class="small">{{ step >= 3 ? 'resident page (ckpt 8, ram0, 2)' : 'private page · no identity yet' }}</text>
       </g>
 
       <!-- parent -->

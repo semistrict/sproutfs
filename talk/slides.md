@@ -160,7 +160,7 @@ class: text-sm
 
 **Lineage identity.** Every page a checkpoint publishes gets the name `(checkpoint, volume, page)`. It never changes — not even when the bytes are later moved into another checkpoint's objects. A fork's checkpoints name its parent's checkpoints, so the fork copies nothing.
 
-**Resident copy.** One resident page may be the same 2 MiB of host memory for several VMs: a parent's page 3 and its children's page 3, until one of them writes it. The pager keeps a bounded number of resident copies.
+**Shared.** One resident page may be the same 2 MiB of host memory for several VMs: a parent's page 3 and its children's page 3, until one of them writes it. The pager keeps a bounded number of resident pages.
 
 </div>
 </div>
@@ -232,7 +232,7 @@ The pause is three things: stop the vCPUs, save the VMM state, **write-protect**
 
 No byte moves. The pages become the checkpoint's while the guest keeps running on them.
 
-A store into a sealed page copies **that one page** into a private 2 MiB copy, which counts against the pager's **dirty budget**: the bound on how much unpublished state a host holds. The checkpoint goes on reading the sealed original.
+A store into a sealed page copies **that one page** into a private page of its own, which counts against the pager's **dirty budget**: the bound on how much unpublished state a host holds. The checkpoint goes on reading the sealed original.
 
 </div>
 <div>
@@ -262,7 +262,7 @@ The upload runs behind the guest. A checkpoint that fails to publish hands its p
 clicks: 3
 ---
 
-# The store: two planes
+# What a checkpoint is in the store
 
 <TwoPlanes />
 
@@ -445,7 +445,7 @@ clicks: 3
 - **Population before vCPUs run.** A restored or forked machine maps every page whose name is already resident in the pager, without a load. A fork maps its parent's whole resident set before its vCPUs run.
 - **Sharing costs a map lookup.** The pager's sharing index is keyed by `(checkpoint, volume, page)`, which the volume already knows for every page it serves.
 - **Sealed pages get a name.** A **fork point** — the pause a fork is taken at, which seals the parent's dirty pages exactly as a checkpoint's pause does — names the pages it sealed under a reference that publishes nothing; every child of that fork point maps them. The name lasts exactly as long as the seal.
-- **Sparse zeroes cost nothing.** A page no checkpoint holds maps the shared zero page. The first store replaces the whole 2 MiB range with a private copy.
+- **Sparse zeroes cost nothing.** A page no checkpoint holds maps the shared zero page. The first store replaces the whole 2 MiB range with a private page.
 - **A one-byte store costs a page.** 2 MiB copied, 2 MiB charged, 2 MiB published. This is the trade the workload measurement examines.
 
 </v-clicks>
@@ -795,7 +795,7 @@ layout: section
 cmd/sproutfs-host            the host process: HTTP handlers, adapters, configuration
 cmd/sproutfs-orchestrator    identities, placement, migrations, forks, the table
 cmd/sproutfs-guest-witness   fill / mutate / check / grow, inside the guest
-internal/checkpoint          the two-plane store: index objects, parts, roots, reclamation
+internal/checkpoint          the store: parts, index objects, roots, reclamation
 internal/control             control records: conditional writes, epochs, pins
 internal/volume              volumes, overlays, publication, forks, handoffs
 internal/vmmemory            the pager: arena, faults, seal, spill, eviction
