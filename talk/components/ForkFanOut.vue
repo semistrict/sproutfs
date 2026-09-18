@@ -29,7 +29,7 @@ const caption = computed(() => [
       <rect x="40" y="70" width="200" height="90" rx="8" class="vm" :class="{ sealed: step >= 1 }" />
       <text x="140" y="95" class="label">parent</text>
       <text x="140" y="118" class="small">selected (7,2)<tspan v-if="step >= 1"> · pinned (7,2)</tspan></text>
-      <text x="140" y="140" class="small">{{ step >= 1 ? 'running; dirty pages sealed' : 'running; 4 dirty pages' }}</text>
+      <text x="140" y="140" class="small">{{ step >= 4 ? 'running; pages published' : step >= 1 ? 'running; dirty pages sealed' : 'running; 4 dirty pages' }}</text>
 
       <!-- sealed frames in pager -->
       <text x="40" y="200" class="tiny left">resident pages (shared)</text>
@@ -43,10 +43,10 @@ const caption = computed(() => [
       <g :class="{ hidden: step < 2 }" class="fade">
         <rect x="320" y="70" width="220" height="60" rx="8" class="vm child" />
         <text x="430" y="95" class="label">child a</text>
-        <text x="430" y="117" class="small">record → root over (7,2){{ step >= 4 ? ' · root published' : '' }}</text>
+        <text x="430" y="117" class="small">{{ step >= 4 ? 'root published: open anywhere' : 'record → root over (7,2)' }}</text>
         <rect x="320" y="150" width="220" height="60" rx="8" class="vm child" />
         <text x="430" y="175" class="label">child b</text>
-        <text x="430" y="197" class="small">record → root over (7,2){{ step >= 4 ? ' · root published' : '' }}</text>
+        <text x="430" y="197" class="small">{{ step >= 4 ? 'root published: open anywhere' : 'record → root over (7,2)' }}</text>
         <path d="M 250 232 C 290 232, 290 100, 315 100" class="map" />
         <path d="M 250 232 C 290 232, 290 180, 315 180" class="map" />
         <text x="290" y="262" class="tiny">maps the sealed pages</text>
@@ -58,7 +58,7 @@ const caption = computed(() => [
         <text x="740" y="45" class="label">host 2</text>
         <rect x="620" y="70" width="240" height="60" rx="8" class="vm child" />
         <text x="740" y="95" class="label">child c</text>
-        <text x="740" y="117" class="small">record → root over (7,2){{ step >= 4 ? ' · root published' : '' }}</text>
+        <text x="740" y="117" class="small">{{ step >= 4 ? 'root published: open anywhere' : 'record → root over (7,2)' }}</text>
         <text x="740" y="200" class="tiny">pager pulls sealed pages</text>
         <path d="M 560 232 H 640 L 640 140" class="map remote" marker-end="url(#fo)" />
         <text x="740" y="220" class="tiny">from host 1's page server</text>

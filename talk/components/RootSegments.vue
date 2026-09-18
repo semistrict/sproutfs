@@ -26,33 +26,32 @@ const caption = computed(() => [
 
 <template>
   <div>
-    <svg viewBox="0 0 900 340" class="w-full">
+    <svg viewBox="0 0 900 370" class="w-full">
       <g v-for="(r, i) in roots" :key="i" :class="{ hidden: i > shown }" class="fade">
         <!-- index object of checkpoint i+1 -->
-        <rect :x="40 + i * 290" y="40" width="250" height="260" rx="10" class="index" />
-        <text :x="165 + i * 290" y="65" class="label">ckpt {{ i + 1 }} · index</text>
+        <rect :x="40 + i * 290" y="30" width="250" height="250" rx="10" class="index" />
+        <text :x="165 + i * 290" y="55" class="label">ckpt {{ i + 1 }} · index</text>
         <!-- segments carried in this index -->
         <g v-for="(s, j) in segs" :key="s">
-          <rect v-if="r[j] === i + 1" :x="60 + i * 290 + j * 55" y="85" width="48" height="40" rx="5" class="seg" />
-          <text v-if="r[j] === i + 1" :x="84 + i * 290 + j * 55" y="110" class="small">{{ s }}</text>
+          <rect v-if="r[j] === i + 1" :x="60 + i * 290 + j * 55" y="75" width="48" height="40" rx="5" class="seg" />
+          <text v-if="r[j] === i + 1" :x="84 + i * 290 + j * 55" y="100" class="small">{{ s }}</text>
         </g>
         <!-- root -->
-        <rect :x="60 + i * 290" y="145" width="210" height="135" rx="6" class="root" />
-        <text :x="165 + i * 290" y="168" class="small">root</text>
+        <rect :x="60 + i * 290" y="135" width="210" height="130" rx="6" class="root" />
+        <text :x="165 + i * 290" y="256" class="small">root</text>
         <g v-for="(s, j) in segs" :key="'r' + s">
-          <text :x="75 + i * 290" :y="195 + j * 24" class="entry">{{ s }} → ckpt {{ r[j] }}</text>
-          <!-- arrow to an earlier index -->
+          <text :x="80 + i * 290" :y="165 + j * 24" class="entry">{{ s }} → ckpt {{ r[j] }}</text>
+          <!-- a segment an earlier checkpoint's index holds -->
           <path v-if="r[j] !== i + 1"
-            :d="`M ${75 + i * 290} ${190 + j * 24} C ${20 + i * 290} ${190 + j * 24}, ${100 + (r[j] - 1) * 290 + j * 55} 135, ${84 + (r[j] - 1) * 290 + j * 55} 128`"
+            :d="`M ${72 + i * 290} ${160 + j * 24} C ${30 + i * 290} ${160 + j * 24}, ${84 + (r[j] - 1) * 290 + j * 55} ${150 + j * 8}, ${84 + (r[j] - 1) * 290 + j * 55} 118`"
             class="back" />
         </g>
       </g>
       <!-- read path -->
       <g :class="{ hidden: step < 3 }" class="fade">
-        <path d="M 640 320 C 700 330, 780 330, 795 285" class="read" marker-end="url(#rh)" />
-        <text x="640" y="332" class="tiny left">read page 700 (segment C)</text>
-        <path d="M 780 240 C 900 200, 880 120, 810 120" class="read" marker-end="url(#rh)" />
-        <text x="860" y="150" class="tiny">entry → (ckpt 3, part 1, offset)</text>
+        <text x="870" y="335" class="tiny right">read page 700: root → segment C → its entry → (ckpt 3, part 1, offset)</text>
+        <path d="M 760 322 V 268" class="read" marker-end="url(#rh)" />
+        <path d="M 790 207 C 830 190, 810 150, 748 120" class="read" marker-end="url(#rh)" />
       </g>
       <defs>
         <marker id="rh" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
@@ -72,6 +71,7 @@ const caption = computed(() => [
 .small { fill: #d1d5db; font-size: 13.5px; text-anchor: middle; }
 .tiny { fill: #fbbf24; font-size: 12.5px; text-anchor: middle; }
 .tiny.left { text-anchor: start; }
+.tiny.right { text-anchor: end; }
 .entry { fill: #d1d5db; font-size: 14px; font-family: ui-monospace, Menlo, monospace; }
 .back { fill: none; stroke: #a78bfa; stroke-width: 1.2; stroke-dasharray: 4 3; opacity: .8; }
 .read { fill: none; stroke: #fbbf24; stroke-width: 2; }

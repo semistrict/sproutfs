@@ -21,7 +21,7 @@ const caption = computed(() => [
   <div>
     <svg viewBox="0 0 900 340" class="w-full">
       <!-- arena -->
-      <rect x="300" y="20" width="300" height="300" rx="10" class="arena" />
+      <rect x="300" y="20" width="300" height="312" rx="10" class="arena" />
       <text x="450" y="45" class="label">pager arena (HugeTLB memfd)</text>
       <g v-for="p in pages" :key="'f' + p">
         <rect x="330" :y="60 + p * 55" width="240" height="44" rx="6" class="frame" />

@@ -9,7 +9,7 @@ and draws that step).
 pnpm install
 pnpm dev        # serves it with hot reload and opens a browser
 pnpm build      # static site under dist/
-pnpm export     # PDF; needs playwright-chromium once: pnpm add -D playwright-chromium
+pnpm export     # PDF; `pnpm export --format png` gives one image per slide
 ```
 
 In the deck, `→` advances a click, `space` the slide; `o` is the overview and

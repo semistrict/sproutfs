@@ -437,6 +437,8 @@ clicks: 3
 <LineageShare />
 
 ---
+class: text-sm
+---
 
 # What identity buys
 
@@ -521,6 +523,8 @@ A page only the source holds is asked for <b>until it arrives</b>, or until some
 </v-clicks>
 
 ---
+class: text-sm
+---
 
 # The handoff is plain data
 
@@ -600,6 +604,8 @@ Kubernetes: hosts are a Deployment with maxSurge 0 / maxUnavailable 1, a 2 MiB H
 </v-clicks>
 
 ---
+class: text-sm
+---
 
 # The Firecracker integration
 
@@ -638,6 +644,8 @@ layout: section
 # Evidence
 
 ---
+class: text-sm
+---
 
 # One simulation harness
 
@@ -673,6 +681,8 @@ A VM that lost its host comes back at the checkpoint its record names, and the b
 </div>
 </div>
 
+---
+class: text-sm
 ---
 
 # What the campaigns do to it
