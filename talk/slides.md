@@ -77,7 +77,7 @@ Which means three things have to be true at once:
 
 - inherited data is **shared, not copied**: in the object store, in host memory, and on the way between hosts;
 - making a VM durable **pauses it for milliseconds**, not for the length of an upload;
-- a VM's durable state is somewhere every host can reach, so a host can be **lost or drained**, and what its loss costs is only what has not been published yet.
+- a VM's durable state is somewhere every host can reach, so a host can be **lost or drained**, and what its loss costs is bounded: the writes of one **loss window**, no more.
 
 </div>
 
@@ -203,7 +203,7 @@ Losing the host before that loses every write since the last selected checkpoint
 
 - **The interval.** Every VM is checkpointed every 60 s, jittered by an eighth so VMs do not checkpoint in lockstep, the next wait measured from the end of the last upload.
 - **The interval is a target.** A failed upload is retried; a parent held sealed by a fork is skipped until the hold ends.
-- **The loss window.** Once a VM has held an unpublished write for longer than the window — five minutes by default, zero to disable — its stores wait until a checkpoint lands, and the checkpoint is asked for out of turn.
+- **The loss window.** Once a VM has held an unpublished write for longer than the window — five minutes by default, zero to disable — its stores wait until a checkpoint lands; the checkpoint is asked for out of turn and retried with backoff. The age travels with a migration or a fork. So the writes a host loss costs one VM span at most the window.
 - **Bytes are bounded too.** The pager's dirty budget forces a checkpoint before it fills, and stops the VM if none can be taken.
 - **A flush means nothing.** `virtio-pmem` flush completes in the device; only a checkpoint is a durability acknowledgement.
 
