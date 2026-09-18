@@ -10,11 +10,11 @@ import { useStep } from './Steps'
 // 4 host B's sequences are (8,1)…: above every sequence epoch 7 could allocate
 const step = useStep()
 const caption = computed(() => [
-  'host A holds epoch 7. Its checkpoints are numbered epoch-major: (7,1), (7,2), …',
-  'host A stops answering. The orchestrator takes an epoch only on positive evidence the holder is gone: its pod is no longer listed, or it answers and neither runs the VM nor serves its pages.',
-  'host B opens the VM: a conditional write against the record\'s version advances the epoch to 8. That is the fence.',
-  'host A comes back and tries to select (7,3). The write is refused: a stale epoch. A returns nothing to the guest but closes the VMM and releases the VM.',
-  'B\'s sequences (8,1), (8,2) are above anything epoch 7 could allocate, and every checkpoint object is create-if-absent, so A\'s late uploads can collide with nothing.',
+  'host A holds epoch 7; its checkpoints are (7,1), (7,2), …',
+  'host A stops answering. The orchestrator acts only on evidence: pod gone, or a host that answers and holds nothing.',
+  'host B opens the VM: a conditional write takes the epoch to 8. That is the fence.',
+  'host A returns and tries to select (7,3): refused, stale epoch. It closes the VMM and releases the VM.',
+  'B\'s (8,1), (8,2) are above anything epoch 7 could allocate, and every object is create-if-absent: A\'s late uploads collide with nothing.',
 ][step.value])
 </script>
 

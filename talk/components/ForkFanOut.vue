@@ -10,11 +10,11 @@ import { useStep } from './Steps'
 // 4 each child publishes its root once it holds its inherited pages; the last hold retires the seal
 const step = useStep()
 const caption = computed(() => [
-  'the parent runs on host 1. Its last published checkpoint is (7,2); four pages are dirty since.',
-  'the fork point: pause, save VMM state, seal the dirty pages, resume — the same pause as a checkpoint\'s, but nothing is uploaded. The parent\'s record pins (7,2), once and for good.',
-  'a child on the parent\'s host gets a record selecting a root over (7,2), and maps the sealed pages through the shared pager: nothing is copied.',
-  'a child on another host pulls those pages out of the parent\'s page server, exactly as a migration destination does; its own volume answers everything a checkpoint holds.',
-  'the child publishes its root once it holds every inherited page — that is what makes it a VM any host can open. The seal ends when the child\'s hold retires, or at the host\'s deadline of four checkpoint intervals.',
+  'the parent runs on host 1 at (7,2); four pages dirty since',
+  'the fork point: pause, save, seal, resume — nothing uploaded. The parent\'s record pins (7,2).',
+  'a child on the same host: a record selecting a root over (7,2); it maps the sealed pages through the shared pager',
+  'a child on another host pulls them from the parent\'s page server, as a migration destination does',
+  'the child publishes its root once it holds every inherited page. The seal ends when the hold retires, or at the deadline.',
 ][step.value])
 </script>
 

@@ -15,16 +15,16 @@ const step = useStep()
 const pages = [0, 1, 2, 3, 4, 5, 6, 7]
 const dirty = [1, 2, 5, 6]
 const stored = 5 // the page the guest stores into after the seal
-const phase = computed(() => {
-  if (step.value === 0) return 'the guest runs; four pages are dirty since the last checkpoint'
-  if (step.value === 1) return 'pause: the vCPUs stop'
-  if (step.value === 2) return 'the VMM state is saved'
-  if (step.value === 3) return 'seal: the dirty pages are write-protected where they are — nothing is copied'
-  if (step.value === 4) return 'resume: the guest runs again; its store into a sealed page copies that one page'
-  if (step.value === 5) return 'the sealed pages stream out as parts, behind the running guest'
-  if (step.value === 6) return 'the index object is written last: the checkpoint is published, complete and readable by anyone'
-  return 'the control record selects the checkpoint: the VM survives losing this host'
-})
+const phase = computed(() => [
+  'guest running; four dirty pages',
+  'pause: vCPUs stop',
+  'save the VMM state',
+  'seal: write-protect the dirty pages in place — nothing copied',
+  'resume; a store into a sealed page copies that one page',
+  'parts upload behind the running guest',
+  'index object last: the checkpoint is published',
+  'the record selects it: the VM survives losing this host',
+][step.value])
 const paused = computed(() => step.value >= 1 && step.value < 4)
 </script>
 

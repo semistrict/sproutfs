@@ -13,14 +13,14 @@ import { useStep } from './Steps'
 // 7 destination's next checkpoint publishes them under (8,1)
 const step = useStep()
 const caption = computed(() => [
-  'the source runs the guest at selected checkpoint (7,2). Pages 1 and 3 were written since: they exist only in the source\'s memory.',
-  'stop: the interval checkpoint loop is quiesced first, then the vCPUs pause and the VMM state is captured. Nothing is sealed and nothing is uploaded — that is the whole pause.',
-  'hand off: every region gives its volume up but keeps its pages, and reports which pages no checkpoint has — the guest is stopped, so the set is final. The handoff is plain data.',
-  'the destination opens the VM: reads the record, advances the epoch (the source is fenced for good), reads the root of (7,2). Two objects, no page. A record selecting any other sequence is refused as stale.',
-  'resume: the guest runs on the destination. Each fault asks the source\'s page server first, over plain TCP; a page the checkpoint holds comes from the destination\'s own volume.',
-  'a background stream fetches the unpublished pages first, to completion, then the rest of the resident set as an optimization. A page only the source holds is asked for until it arrives.',
-  'once every unpublished page is here the source is released: it frees its pages and may exit. Up to now it could not, because those pages had one copy.',
-  'the destination\'s next interval checkpoint publishes them under (8,1). The migration itself uploaded nothing.',
+  'the source runs the guest at (7,2); pages 1 and 3 written since exist only here',
+  'stop: quiesce the loop, pause the vCPUs, capture the VMM state. Nothing sealed, nothing uploaded.',
+  'hand off: regions give their volumes up, keep their pages, report which pages no checkpoint has',
+  'the destination opens the VM: record, epoch 7→8, root. Two objects, no page. Any other sequence: stale, refused.',
+  'resume: faults ask the source\'s page server first, the destination\'s own volume otherwise',
+  'a stream fetches the unpublished pages first, to completion, then the rest of the resident set',
+  'every unpublished page here: the source is released and may exit',
+  'the destination\'s next checkpoint publishes them under (8,1). The migration uploaded nothing.',
 ][step.value])
 </script>
 

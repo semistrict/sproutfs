@@ -17,10 +17,10 @@ const roots = [
 ]
 const shown = computed(() => Math.min(step.value, 2))
 const caption = computed(() => [
-  'a volume\'s page table is cut into 512 MiB segments. The first checkpoint writes all of them into its index object.',
-  'checkpoint 2 changed pages in segment B only, so its index carries segment B and its root points at checkpoint 1\'s index for A, C and D.',
-  'checkpoint 3 changed C and D. Every root is complete on its own: one GET of the index yields it, and it names no parent.',
-  'a read: root → the segment its page falls in → the page\'s entry → (checkpoint, part, offset). Segments are cached by identity — (writing checkpoint, volume, number) — so a segment nothing changed costs no fetch.',
+  'the page table is cut into 512 MiB segments; the first checkpoint writes them all',
+  'checkpoint 2 changed segment B only: its index carries B; its root points at checkpoint 1 for A, C, D',
+  'checkpoint 3 changed C and D. Every root is complete on its own: one GET, no parent',
+  'a read: root → segment → entry → (checkpoint, part, offset). Segments cache by identity. The root is ≤ 2 MiB (70 TiB of volume) and carries live-byte sums per checkpoint: liveness without a scan.',
 ][step.value])
 </script>
 

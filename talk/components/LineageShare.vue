@@ -10,10 +10,10 @@ import { useStep } from './Steps'
 const step = useStep()
 const pages = [0, 1, 2, 3]
 const caption = computed(() => [
-  'resident pages are keyed by lineage identity: (checkpoint, volume, page) — the name the volume gives every page it serves.',
-  'a fork inherits its parent\'s identities, so it maps the same resident pages before its vCPUs run — nothing is copied.',
-  'the child\'s first store into a page gets a private page of its own; the parent\'s is untouched.',
-  'the child\'s next checkpoint publishes that page under its own sequence, which becomes that page\'s identity.',
+  'resident pages are keyed by lineage identity: (checkpoint, volume, page)',
+  'a fork inherits its parent\'s identities: same resident pages before its vCPUs run; nothing copied',
+  'the child\'s first store into a page gets a private page; the parent\'s is untouched',
+  'the child\'s next checkpoint publishes it under its own sequence: that becomes the page\'s identity',
 ][step.value])
 </script>
 
