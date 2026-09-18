@@ -313,6 +313,18 @@ func (c *RegionCheckpoint) DirtyPages() []uint64 {
 	return pages
 }
 
+// UnpublishedAge is how long the oldest write this checkpoint holds has gone
+// unpublished, zero where it holds none. It is the region's loss window as the
+// seal took it, still running: a fork instant's hold can outlast several
+// intervals, and the child that inherits these pages inherits their age with
+// them rather than starting a window of its own.
+func (c *RegionCheckpoint) UnpublishedAge() time.Duration {
+	if c.dirtySince.IsZero() {
+		return 0
+	}
+	return max(c.region.host.clock.Since(c.dirtySince), 0)
+}
+
 // Share names every frame this checkpoint holds by the identity the checkpoint
 // publishing it gives that page, so a region that inherits the identity maps
 // the frame instead of reading the page. A fork point is what calls it, when a

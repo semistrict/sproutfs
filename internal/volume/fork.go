@@ -6,6 +6,7 @@ import (
 	"maps"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/semistrict/sproutfs/internal/checkpoint"
 	"github.com/semistrict/sproutfs/internal/control"
@@ -81,6 +82,26 @@ func (f *ForkPoint) Size(volume string) uint64 { return f.index.Size(volume) }
 // child on another host must fetch every one of them before this point may be
 // retired; a child on this host reads them through the point itself.
 func (f *ForkPoint) Pages(volume string) []uint64 { return slices.Clone(f.unpublished[volume]) }
+
+// UnpublishedAge is how long the parent has held the oldest of those pages,
+// zero where it holds none of that volume's. A child on another host is dated
+// from it, so it inherits the parent's loss window along with the pages it is
+// measured over rather than starting a window of its own — a fork every few
+// minutes would otherwise carry writes forward for ever without any of them
+// ever becoming durable.
+//
+// A point rebuilt on another host reports nothing: it holds no seal of its own,
+// and the age of what the parent still has is the parent's to know.
+func (f *ForkPoint) UnpublishedAge(volume string) time.Duration {
+	if f.checkpoint == nil {
+		return 0
+	}
+	source := f.checkpoint.sources[volume]
+	if source == nil {
+		return 0
+	}
+	return source.UnpublishedAge()
+}
 
 // ReadPage fills dst, exactly one page, with the bytes the fork instant froze.
 // It is what the parent's page server serves a child on another host from, and

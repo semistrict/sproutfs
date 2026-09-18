@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/semistrict/sproutfs/internal/checkpoint"
 	"github.com/semistrict/sproutfs/internal/control"
@@ -143,6 +144,7 @@ type fakeSource struct {
 	pageSize int
 	pages    map[uint64][]byte
 	readErr  error
+	age      time.Duration
 
 	mu        sync.Mutex
 	reads     int
@@ -164,6 +166,10 @@ func (s *fakeSource) set(page uint64, data []byte) {
 }
 
 func (s *fakeSource) PageSize() int { return s.pageSize }
+
+// age is what a fork's handoff carries so its child inherits the parent's loss
+// window. A seal built by hand has none unless a test gives it one.
+func (s *fakeSource) UnpublishedAge() time.Duration { return s.age }
 
 func (s *fakeSource) DirtyPages() []uint64 {
 	pages := make([]uint64, 0, len(s.pages))

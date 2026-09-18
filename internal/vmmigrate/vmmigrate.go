@@ -287,7 +287,7 @@ func Fork(ctx context.Context, child string, point *volume.ForkPoint, source *Pa
 	layout := make([]RegionInfo, 0, len(names))
 	for _, name := range names {
 		layout = append(layout, RegionInfo{Name: name, Size: point.Size(name),
-			Unpublished: runsOf(point.Pages(name))})
+			Unpublished: runsOf(point.Pages(name)), UnpublishedAge: point.UnpublishedAge(name)})
 	}
 	handoff := Handoff{VMID: child, State: point.State(),
 		Parent: parent.VM, ParentCheckpoint: parent.Sequence, Regions: layout,
