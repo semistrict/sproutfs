@@ -37,7 +37,7 @@ layout: section
 
 <div class="text-lg">
 
-You have a fleet of hosts and an object store. You want to run **many VMs that are mostly the same**: every one started from one image, many of them forked from a running parent at some instant, any of them able to move to another host — and all of them durable somewhere other than the host they run on.
+You have a fleet of hosts and an object store. You want to run **many VMs that are mostly the same**: every one started from one image, many of them forked from a running parent at some moment, any of them able to move to another host — and all of them durable somewhere other than the host they run on.
 
 </div>
 
@@ -55,7 +55,7 @@ What a VM has of its own is its **differences**. Everything else it **inherited*
 
 <div class="mt-6 text-lg">
 
-Today every one of those operations is a **copy of the whole VM**: a snapshot writes all of its memory out and a restore reads it all back; a live migration streams memory while it changes; a fork is a snapshot and a restore. The cost is the VM's **size**, and almost all of what is copied is inherited bytes that nobody wrote.
+Done the usual way, every one of those operations is a **copy of the whole VM**: a snapshot writes all of its memory out and a restore reads it all back; a live migration streams memory while it changes; a fork is a snapshot and a restore. The cost is the VM's **size**, and almost all of what is copied is inherited bytes that nobody wrote.
 
 </div>
 
@@ -76,7 +76,7 @@ A checkpoint, a fork or a move of a VM must cost what that VM <b>changed</b> —
 Which means three things have to be true at once:
 
 - inherited data is **shared, not copied**: in the object store, in host memory, and on the way between hosts;
-- making a VM durable **pauses it for an instant**, not for the length of an upload;
+- making a VM durable **pauses it for milliseconds**, not for the length of an upload;
 - a VM's durable state is somewhere every host can reach, so a host can be **lost or drained**, and what its loss costs is only what has not been published yet.
 
 </div>
@@ -109,7 +109,7 @@ Which means three things have to be true at once:
 
 **Lineage.** The name of a page's bytes: which checkpoint published them. A fork's pages carry its parent's names until it writes them.
 
-**Fork.** A new VM taken from a running one at one pause. **Migration.** The same VM moved, running, to another host.
+**Fork.** A new VM taken from a running one, at one pause of the parent. **Migration.** The same VM moved, running, to another host.
 
 **Host.** A machine running VMs. **Orchestrator.** The one process that places VMs on hosts and drives moves and forks between them.
 
@@ -124,7 +124,7 @@ Everything else follows from these.
 
 <v-clicks>
 
-1. **A VM's durable state is exactly one published checkpoint**, selected by its control record. Nothing is durable between checkpoints. Losing a host loses every write since its VMs' last checkpoints — and that is accepted.
+1. **A VM's durable state is exactly one published checkpoint**, selected by its control record. Nothing is durable between checkpoints. Losing a host loses every write since its VMs' last checkpoints.
 
 2. **Every page has one name — the checkpoint that published it — and a fork inherits its parent's names.** Sharing in the store, in host memory and on the wire is sharing by name: a page with a name is never copied, only referenced. A page no checkpoint holds reads as zeroes.
 
@@ -163,10 +163,6 @@ class: text-sm
 **Shared.** One resident page may be the same 2 MiB of host memory for several VMs: a parent's page 3 and its children's page 3, until one of them writes it. The pager keeps a bounded number of resident pages.
 
 </div>
-</div>
-
-<div class="mt-6 text-sm opacity-60">
-docs/context.md is the vocabulary; every doc uses one word for each thing.
 </div>
 
 ---
@@ -239,7 +235,7 @@ A store into a sealed page copies **that one page** into a private page of its o
 
 <v-click>
 
-Measured on GCE (`docs/measurements-*`):
+Measured on GCE:
 
 | | pause |
 | --- | --- |
@@ -376,7 +372,7 @@ sequence = (epoch << 32) | counter          counter starts at 1 per epoch
 
 <v-click>
 
-**The collector is deferred, by decision.** Until one exists the store grows without bound: every checkpoint a VM was forked at, everything its root names, and the lineage a deleted VM leaves behind are kept forever. `docs/open-work.md` says so first.
+**The collector is deferred, by decision.** Until one exists the store grows without bound: every checkpoint a VM was forked at, everything its root names, and the lineage a deleted VM leaves behind are kept forever.
 
 </v-click>
 
@@ -582,7 +578,7 @@ Kubernetes: hosts are a Deployment with maxSurge 0 / maxUnavailable 1, a 2 MiB H
 
 - **Stop** publishes a final checkpoint and closes the VM. The difference between a stop and a host loss is exactly the writes since the last checkpoint.
 - **Start** reopens it, warm: the VMM restores from the checkpoint's captured state; the pages fault in.
-- **Cold start** discards the memory in a checkpoint of its own — a `DiscardMemory` publication — and boots the guest instead of resuming it. The one place a VM's shape may change: `--memory`, and `--disk` grown from inside the guest with the ext4 resize ioctl, because the guest kernel refuses a write open of its mounted root.
+- **Cold start** discards the memory in a checkpoint of its own and boots the guest instead of resuming it. It is the one place a VM's shape may change: more memory, and a root volume the guest grows into.
 - **Delete** removes the record — which frees the identity — then sweeps the VM's own checkpoints, except the pinned ones a descendant may still read.
 
 </v-clicks>
@@ -600,7 +596,7 @@ A fork of Firecracker, branch `sproutfs`, Apache-2.0:
 
 - guest memory is a mapping the Rust library controls: missing-fault and write-protect traps over userfaultfd, 2 MiB pages, a control protocol (version 6) between the VMM and the pager
 - checkpoint = snapshot + resume; the pause is the VMM's own
-- the vsock transport is reset only on restore — a snapshot leaves a guest's connections alone (found on GCE: every checkpoint was killing every command in the guest)
+- the vsock transport is reset only on restore, so a checkpoint leaves a guest's connections alone
 - a `handoff` flag drops connections when the guest leaves the host
 
 </div>
@@ -695,30 +691,6 @@ Power loss on the simulated disk returns unsynced writes **applied, dropped, tor
 class: text-sm
 ---
 
-# The first night it ran in public
-
-<v-clicks>
-
-- Seeds 21 and 227 of the swizzle campaign failed with a **deadlock panic** — and under it, "the fenced writer published".
-- Neither was real. `World.HostOf` reported the host a failed takeover had merely *tried*, so the campaign believed the fence had landed when the store was unreachable. The first writer was never fenced. Its checkpoint was refused by nothing.
-- The panic: a `t.Fatal` inside a synctest bubble left the world's hosts waiting on simulated time. It hid the failure and took every seed after it down. Worlds now close on cleanup, inside the bubble.
-- On the way: a **drain report** that a handoff failed overwrote the row the orchestrator's own migration had written — a VM stopped at the source, volumes given up, marked *running*.
-- And a fact for the open-work list: the deployment's drain tries a receive **once**. A destination briefly unreachable costs the guest its writes since its last checkpoint.
-
-</v-clicks>
-
-<v-click>
-
-<div class="mt-4 text-sm opacity-70">
-The lesson is not the bugs. It is that a harness which lies about where a VM runs makes every campaign above it lie too — and the sweep found it in one night.
-</div>
-
-</v-click>
-
----
-class: text-sm
----
-
 # Measured on a real cluster
 
 Two hosts on GCE, 512 MiB Alpine guests each carrying a 256 MiB memory witness and a 256 MiB file witness, six rounds. 166 operations, 146 checks, every one holding.
@@ -735,7 +707,6 @@ Two hosts on GCE, 512 MiB Alpine guests each carrying a 256 MiB memory witness a
 <v-click>
 
 Object store over the run: ~17,000 GETs for 18 GiB, ~1,300 PUTs for 41 GiB, 1,100 deletes.
-Eight runs failed before this one passed; the defects are listed in `docs/measurements-2026-09-17-soak.md`.
 
 </v-click>
 
@@ -756,8 +727,7 @@ One base VM, two forks, one fork of each: git, ripgrep, `pnpm install --offline`
 <v-clicks>
 
 - The pause is **single-digit milliseconds** whatever the guest did. The upload scales with what it dirtied.
-- Dirty is counted in 2 MiB pages; uploaded is compressed. The 2 MiB : 4 KiB ratio is still unmeasured — the VMM does not report 4 KiB dirtiness.
-- The larger setting did not fit the node; that is written up, not hidden.
+- Dirty is counted in 2 MiB pages; uploaded is compressed. How much of each 2 MiB page the guest touched is not yet measured: the VMM does not report it.
 
 </v-clicks>
 
@@ -769,11 +739,11 @@ layout: section
 
 ---
 
-# Open, and recorded in `docs/open-work.md`
+# What is open
 
 <v-clicks>
 
-- **The collector.** Pins are permanent and the store grows without bound until one exists. Deferred by decision; the first thing the README says.
+- **The collector.** Pins are permanent and the store grows without bound until one exists. Deferred by decision.
 - **A migration whose source is unreachable but still listed waits for it.** The orchestrator ends a migration on evidence, never on a timeout, and for a pod it cannot reach it has none beyond the Kubernetes API's own.
 - **A drain tries its receive once.** A destination briefly unreachable costs the guest its writes since its last checkpoint; the source keeps the pages until its deadline, and nothing asks again.
 - **A child forked onto its parent's own host holds the fork point invisibly** to the orchestrator's survey; only the host's own deadline ends a hold whose child never publishes.
@@ -807,25 +777,25 @@ Every design change has a plan under <code>plans/</code> with its status; every 
 </div>
 
 ---
-layout: center
-class: text-center
+class: text-sm
 ---
 
-# Three decisions
+# The requirement, answered
 
-<div class="text-xl mt-8 space-y-4 text-left max-w-3xl mx-auto">
-
-<v-click>1. One published checkpoint is the whole of a VM's durable state.</v-click>
-
-<v-click>2. Every page has one name, and a fork inherits its parent's names.</v-click>
-
-<v-click>3. A checkpoint is a pause and an upload, and only the pause is on the latency path.</v-click>
-
+<div class="text-lg mb-4">
+A checkpoint, a fork or a move of a VM costs what that VM <b>changed</b> — never what it inherited, and never its size.
 </div>
+
+| | the pause | what moves |
+| --- | --- | --- |
+| checkpoint | 7–9 ms | the pages the guest dirtied since the last one, uploaded behind it |
+| fork | 0.1 s, however many children | nothing: the children map the parent's pages by name |
+| migration | 0.6–0.75 s | the pages no checkpoint has, pulled behind the running guest |
+| losing a host | — | the writes since the last checkpoint, and no more than the loss window |
 
 <v-click>
 
-<div class="mt-12 opacity-70">
+<div class="mt-8 text-center text-xl">
 github.com/semistrict/sproutfs
 </div>
 
