@@ -10,7 +10,7 @@ import { useStep } from './Steps'
 const step = useStep()
 const caption = computed(() => [
   'a checkpoint is exactly two kinds of object under vm/<id>/ckpt/<seq>/, and a VM has one record outside that namespace.',
-  'a part is a run of members — the VMM state, then pages, then compaction\'s rescues — filled to 64 MiB, closed by a table (≤ 256 KiB) and a 32-byte trailer that names it. One suffix range GET reads the table.',
+  'a part is a run of members — the VMM state, then pages; later, pages compaction moves out of dying checkpoints — filled to 64 MiB, closed by a table (≤ 256 KiB) and a 32-byte trailer that names it. One suffix range GET reads the table.',
   'the index object is the metadata plane: a header, the 512 MiB page-table segments this checkpoint changed, and last the root. Its create-if-absent PUT is the commit; one GET yields the root.',
   'the control record is the only mutable object: writer epoch and nonce, the selected sequence, and the pinned sequences. Every change is a conditional write from the epoch holder.',
 ][step.value])

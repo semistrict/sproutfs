@@ -77,7 +77,7 @@ const paused = computed(() => step.value >= 1 && step.value < 4)
       </g>
       <g :class="{ hidden: step < 6 }" class="fade">
         <rect x="580" y="215" width="250" height="34" rx="6" class="obj index" />
-        <text x="705" y="237" class="small">index: segments + root</text>
+        <text x="705" y="237" class="small">index: page tables + root</text>
       </g>
       <g :class="{ hidden: step < 7 }" class="fade">
         <rect x="580" y="265" width="250" height="34" rx="6" class="obj record" />
