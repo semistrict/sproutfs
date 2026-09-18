@@ -17,6 +17,44 @@ frame. Everything else stays in `vmmemory`, because the arena, the spill file,
 the UFFD session and the binding blocks all read and write the pager's state
 under its metadata lock: they are files of one package, not packages.
 
+## Why a pager of its own
+
+The pager does for a guest's memory what the kernel's page cache and swap do
+for a file: it decides which pages are resident, faults the rest in on demand,
+shares one resident page among every mapping that names it, tracks what the
+guest dirtied, writes it back, evicts, and spills. The kernel already has all
+of that, and the integration does not use it, for five reasons that each rule
+it out on their own.
+
+1. **The backing is not a file.** A page's bytes are in an object store under
+   the name of the checkpoint that published them, or, after a fork or a
+   migration, still on another host that holds them. The page cache faults from
+   a filesystem. Putting one in front of the store — a FUSE — would route every
+   fault through the kernel and back out, at 4 KiB, with no way to fault a page
+   from a peer host's memory.
+2. **Sharing is by name, across VMs and across checkpoints.** The page cache
+   shares a file's pages among the processes that map that file. A child's
+   memory is its parent's checkpoints plus its own writes, at 2 MiB granularity,
+   across tens of thousands of pages; as file mappings that is one VMA per run,
+   against the kernel's mapping limit, and rearranged at every checkpoint.
+3. **Durability is one pause of the whole machine, not writeback.** The kernel
+   writes dirty pages back when it chooses. A checkpoint needs every dirty page
+   frozen at one moment while the guest keeps running on them — write
+   protection and copy-on-write the pager controls through userfaultfd — and
+   the pages take a new name once the upload lands.
+4. **The budgets are the host's.** Resident, logical and dirty pages are
+   admitted explicitly, so a guest that dirties faster than it publishes is
+   checkpointed out of turn or stalled, rather than growing until the kernel
+   swaps or kills something. The pages are HugeTLB, which the kernel does not
+   swap at all, so the pager owns eviction and spill in any case.
+5. **It has to run inside the simulation.** The same pager, on a simulated
+   arena, disk and clock, is what the deployment's campaigns exercise. The
+   kernel's page cache cannot be put inside a deterministic harness.
+
+Upstream Firecracker's own userfaultfd restore copies pages into each VM's
+anonymous memory and cannot share a page between VMs; the integration replaces
+that path with this one.
+
 ## Bounded host pager
 
 The pager takes an arena, a dedicated scratch spill file, and explicit

@@ -386,6 +386,26 @@ layout: section
 # The pager
 
 ---
+class: text-sm
+---
+
+# The pager is the page cache
+
+<div class="text-base mb-3">
+For a guest's memory it does what the kernel's page cache and swap do for a file: decides what is resident, faults the rest in, shares one resident page among every mapping that names it, tracks what was dirtied, writes it back, evicts, spills. The kernel has all of that. It is not used, for five reasons that each rule it out alone.
+</div>
+
+<v-clicks>
+
+1. **The backing is not a file.** A page's bytes are in an object store under a checkpoint's name, or on another host that still holds them. The page cache faults from a filesystem; a FUSE in front of the store routes every fault through the kernel and back, at 4 KiB, and cannot fault from a peer.
+2. **Sharing is by name, across VMs and checkpoints.** The page cache shares a file's pages among the processes mapping that file. A child's memory is its parent's checkpoints plus its own writes, at 2 MiB granularity over tens of thousands of pages: one VMA per run, against the kernel's mapping limit, rearranged at every checkpoint.
+3. **Durability is one pause of the whole machine, not writeback.** The kernel writes back when it chooses. A checkpoint freezes every dirty page at one moment while the guest runs on: write protection and copy-on-write under the pager's control.
+4. **The budgets are the host's.** Resident, logical and dirty pages are admitted explicitly, so a guest that dirties faster than it publishes is checkpointed out of turn or stalled, not swapped or killed. HugeTLB pages are unswappable anyway.
+5. **It runs inside the simulation.** The same pager, on a simulated arena, disk and clock, is what the campaigns exercise. The kernel's page cache cannot be.
+
+</v-clicks>
+
+---
 
 # One host-wide pager
 
