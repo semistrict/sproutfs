@@ -32,7 +32,8 @@ import (
 func (h *Host) checkpointing(ctx context.Context, vmID string, entry *registration) {
 	failures := 0
 	for {
-		if !waitForCheckpoint(ctx, entry, h.clock, h.nextAttempt(entry, failures)) {
+		wait, onRequest := h.nextAttempt(entry, failures)
+		if !waitForCheckpoint(ctx, entry, h.clock, wait, onRequest) {
 			return
 		}
 		vm := h.vm(vmID)
@@ -91,30 +92,45 @@ func (h *Host) checkpointing(ctx context.Context, vmID string, entry *registrati
 	}
 }
 
-// nextAttempt is how long the loop waits for its next turn at one VM: the
-// jittered interval, or the backoff of a VM whose last attempt failed and whose
-// stores the loss window is already holding back. The window is read where the
-// wait is chosen, because that is where the choice matters — a VM that crossed
-// it while the last publication was in flight is one to come back to at once.
-func (h *Host) nextAttempt(entry *registration, failures int) time.Duration {
+// nextAttempt is how long the loop waits for its next turn at one VM, and
+// whether a request out of turn may cut that wait short: the jittered interval,
+// which one may, or the backoff of a VM whose last attempt failed and whose
+// stores the loss window is already holding back, which one may not. The window
+// is read where the wait is chosen, because that is where the choice matters —
+// a VM that crossed it while the last publication was in flight is one to come
+// back to at once.
+func (h *Host) nextAttempt(entry *registration, failures int) (time.Duration, bool) {
 	if failures == 0 || !h.overLossWindow(entry) {
-		return jittered(h.entropy, h.checkpointInterval)
+		return jittered(h.entropy, h.checkpointInterval), true
 	}
-	return backoff(h.checkpointInterval, failures)
+	return backoff(h.checkpointInterval, failures), false
 }
 
 // waitForCheckpoint waits for this VM's next checkpoint and reports whether one
-// is due. That is the jittered interval, or the pager asking for one before it:
-// a guest that fills the host's dirty budget between intervals is stalled until
-// a checkpoint releases the reservations its pages hold, so the checkpoint it
-// waits for is taken out of turn rather than on the clock.
-func waitForCheckpoint(ctx context.Context, entry *registration, clock platform.Clock, interval time.Duration) bool {
+// is due. That is the jittered interval, or — while onRequest — the pager asking
+// for one before it: a guest that fills the host's dirty budget between
+// intervals is stalled until a checkpoint releases the reservations its pages
+// hold, so the checkpoint it waits for is taken out of turn rather than on the
+// clock.
+//
+// A backoff is the one wait a request may not cut short. It is the wait after a
+// publication that failed while the VM was already past its loss window, and the
+// store held back by that window asks again every time this loop signals —
+// while a capture that cannot be published gives it nothing. Answering each of
+// those asks would spin a host that cannot reach the store. The request stays in
+// the channel and is answered by the attempt the backoff schedules.
+func waitForCheckpoint(ctx context.Context, entry *registration, clock platform.Clock,
+	interval time.Duration, onRequest bool) bool {
 	timer := clock.NewTimer(interval)
 	defer timer.Stop()
+	requested := entry.now
+	if !onRequest {
+		requested = nil
+	}
 	select {
 	case <-ctx.Done():
 		return false
-	case <-entry.now:
+	case <-requested:
 		return true
 	case <-timer.C():
 		return true

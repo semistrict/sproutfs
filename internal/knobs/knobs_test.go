@@ -3,6 +3,7 @@ package knobs_test
 import (
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/semistrict/sproutfs/internal/knobs"
 	"github.com/semistrict/sproutfs/internal/platform/sim"
@@ -59,12 +60,21 @@ func TestRandomizedKnobsAreReproducibleAndVary(t *testing.T) {
 // deployment's defaults never take.
 func TestRandomizedKnobsReachTheBoundaries(t *testing.T) {
 	var smallestPart, smallestDirty, shortestHold, singleBuilder bool
+	var noWindow, tightWindow bool
 	for seed := range uint64(128) {
 		k := knobs.Randomize(sim.New(sim.Config{Seed: seed + 1}).Random("knobs"))
 		smallestPart = smallestPart || k.PartBytes == 1
 		smallestDirty = smallestDirty || k.DirtyPages == 1
 		shortestHold = shortestHold || k.HoldIntervals == 1
 		singleBuilder = singleBuilder || k.MaxBuilders == 1
+		noWindow = noWindow || k.LossWindow == 0
+		tightWindow = tightWindow || k.LossWindow == k.CheckpointInterval
+	}
+	if !noWindow {
+		t.Error("128 seeds never turned the loss window off")
+	}
+	if !tightWindow {
+		t.Error("128 seeds never drew the tightest loss window, one checkpoint interval")
 	}
 	if !smallestPart {
 		t.Error("128 seeds never drew one member per part")
@@ -113,6 +123,10 @@ func TestValidateRefusesContradictoryKnobs(t *testing.T) {
 		},
 		"a checkpoint interval of zero": func(k *knobs.Knobs) { k.CheckpointInterval = 0 },
 		"a hold of no intervals":        func(k *knobs.Knobs) { k.HoldIntervals = 0 },
+		"a negative loss window":        func(k *knobs.Knobs) { k.LossWindow = -time.Second },
+		"a loss window shorter than the interval a VM is checkpointed on": func(k *knobs.Knobs) {
+			k.CheckpointInterval, k.LossWindow = time.Minute, time.Second
+		},
 	}
 	for name, break_ := range cases {
 		k := knobs.Defaults()

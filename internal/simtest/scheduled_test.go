@@ -452,6 +452,9 @@ func scheduledHandoverWorkload(t *testing.T, ctx context.Context, world *simtest
 		if err := world.VerifyDurable(ctx, scheduledVMID); err != nil {
 			t.Fatalf("%s: %v", fault, err)
 		}
+		if err := world.VerifyLossWindow(ctx, scheduledVMID); err != nil {
+			t.Fatalf("%s: %v", fault, err)
+		}
 		digest := sha256.Sum256([]byte(fmt.Sprint(world.HostOf(scheduledVMID))))
 		scheduler.Record(fmt.Sprintf("hop/%d/settled", hop), "bytes-match/sha256", digest[:])
 	}
@@ -532,6 +535,9 @@ func scheduledHostWorkload(t *testing.T, ctx context.Context, world *simtest.Wor
 		t.Fatal(err)
 	}
 	if err := world.VerifyDurable(ctx, scheduledVMID); err != nil {
+		t.Fatal(err)
+	}
+	if err := world.VerifyLossWindow(ctx, scheduledVMID); err != nil {
 		t.Fatal(err)
 	}
 	scheduler.Record("host/end", "checked", nil)

@@ -268,6 +268,9 @@ func (c *crashRun) requireRecovered(name string) {
 		if err := c.world.VerifyDurable(c.ctx, id); err != nil {
 			c.t.Fatalf("%s: %v", name, err)
 		}
+		if err := c.world.VerifyLossWindow(c.ctx, id); err != nil {
+			c.t.Fatalf("%s: %v", name, err)
+		}
 	}
 }
 

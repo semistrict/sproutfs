@@ -70,6 +70,11 @@ type Knobs struct {
 	// host runs do not checkpoint in lockstep; a share of eight is an eighth.
 	CheckpointInterval    time.Duration
 	CheckpointJitterShare int
+	// LossWindow is how long a VM may hold a write no checkpoint covers before
+	// the pager stops admitting dirty pages for it, which is what bounds a host
+	// loss in time where the interval bounds it when everything works. Zero
+	// disables the bound.
+	LossWindow time.Duration
 	// EpochInterval is how often a host re-reads the control record of every VM
 	// it holds, which is how it learns a later writer has taken one over.
 	EpochInterval time.Duration
@@ -117,6 +122,7 @@ func Defaults() Knobs {
 
 		CheckpointInterval:    60 * time.Second,
 		CheckpointJitterShare: 8,
+		LossWindow:            5 * time.Minute,
 		EpochInterval:         2 * time.Second,
 		HoldIntervals:         4,
 
@@ -177,6 +183,16 @@ func (k Knobs) Validate() error {
 	if k.CheckpointInterval <= 0 {
 		errs = append(errs, fmt.Errorf("%w: CheckpointInterval is %s, want a positive interval",
 			ErrInvalid, k.CheckpointInterval))
+	}
+	if k.LossWindow < 0 {
+		errs = append(errs, fmt.Errorf("%w: LossWindow is %s, want a window or zero to disable it",
+			ErrInvalid, k.LossWindow))
+	}
+	// A window shorter than the interval is one every VM is past before its
+	// first checkpoint is even due, so every guest waits at every interval.
+	if k.LossWindow > 0 && k.CheckpointInterval > 0 && k.LossWindow < k.CheckpointInterval {
+		errs = append(errs, fmt.Errorf("%w: LossWindow %s is shorter than CheckpointInterval %s",
+			ErrInvalid, k.LossWindow, k.CheckpointInterval))
 	}
 	if k.EpochInterval <= 0 {
 		errs = append(errs, fmt.Errorf("%w: EpochInterval is %s, want a positive interval",
@@ -274,6 +290,15 @@ func Randomize(r Random) Knobs {
 	// is only made durable by a shutdown.
 	interval("checkpoint-interval", &k.CheckpointInterval,
 		time.Millisecond, 10*time.Millisecond, time.Second, 60*time.Second, time.Hour)
+	// The window is drawn as a multiple of the interval it has to be at least
+	// as long as: zero turns the bound off, one interval is the tightest bound
+	// that means anything at all, and sixty is a deployment that wants nothing
+	// but a backstop.
+	if !keep("loss-window") {
+		k.LossWindow = []time.Duration{0, 1, 5, 60}[r.Intn("knobs/loss-window", 4)] * k.CheckpointInterval
+	} else if k.LossWindow > 0 && k.LossWindow < k.CheckpointInterval {
+		k.LossWindow = k.CheckpointInterval
+	}
 	interval("epoch-interval", &k.EpochInterval,
 		time.Millisecond, 100*time.Millisecond, 2*time.Second, time.Hour)
 	interval("drain-timeout", &k.DrainTimeout,
@@ -315,6 +340,7 @@ func (k Knobs) Changed() []string {
 	add("max-open-vms", k.MaxOpenVMs, base.MaxOpenVMs)
 	add("checkpoint-interval", k.CheckpointInterval, base.CheckpointInterval)
 	add("checkpoint-jitter-share", k.CheckpointJitterShare, base.CheckpointJitterShare)
+	add("loss-window", k.LossWindow, base.LossWindow)
 	add("epoch-interval", k.EpochInterval, base.EpochInterval)
 	add("hold-intervals", k.HoldIntervals, base.HoldIntervals)
 	add("resident-pages", k.ResidentPages, base.ResidentPages)

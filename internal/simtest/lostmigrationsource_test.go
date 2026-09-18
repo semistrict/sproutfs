@@ -102,6 +102,9 @@ func TestLosingTheSourceOfAMigrationEndsIt(t *testing.T) {
 		if err := world.VerifyDurable(ctx, "vm-1"); err != nil {
 			t.Error(err)
 		}
+		if err := world.VerifyLossWindow(ctx, "vm-1"); err != nil {
+			t.Error(err)
+		}
 		if err := world.CheckSelected(ctx); err != nil {
 			t.Error(err)
 		}

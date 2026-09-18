@@ -51,6 +51,13 @@ type Config struct {
 	// before it happens, which is how a scheduled scenario orders two seals of
 	// one pause against each other. Nil seals them in the world's own order.
 	Admit func(ctx context.Context, id string) error
+	// CheckpointInterval is what every host's checkpoint loop runs on. Zero
+	// leaves the loop off, which is what a campaign that drives its own
+	// checkpoints needs: a checkpoint arriving on its own would race its
+	// assertions about exactly what is durable and when. A scenario about the
+	// pager's pressure turns it on, because a pager that asks for a checkpoint
+	// out of turn needs a loop to ask.
+	CheckpointInterval time.Duration
 	// ReverseRegions seals a capture's regions in the opposite order. It is the
 	// creation order a recorded scenario reverses: the execution it produces
 	// must not change, because the order those goroutines are created in is not
@@ -192,6 +199,15 @@ type instance struct {
 	// it is what keeps Settle from starting it again: a stop whose VM came back
 	// by itself at the next step would be no stop at all.
 	stopped bool
+	// writes is when each store this VM's lineage has made happened, on the
+	// clock of the host that took it, oldest first. It is what the loss window
+	// is measured over: a recovery rewinds every write past the checkpoint it
+	// came back at, and the window bounds how far apart the first and the last
+	// of those may be.
+	writes []time.Time
+	// rewound is the writes the last recovery of this VM took back, which
+	// VerifyLossWindow requires to span no more than the window allows.
+	rewound []time.Time
 	// durables are the checkpoints this VM may come back at, oldest first: the
 	// last one that landed, plus every later one whose publication was
 	// interrupted and may or may not have landed. A VM whose host is lost reads
@@ -391,10 +407,35 @@ func (w *World) hostConfig(h *hostState) host.Config {
 			DrainConcurrency: k.DrainConcurrency, StartVM: w.starter(h)},
 		// A campaign drives every checkpoint itself and reaches every hold
 		// deadline by advancing the clock, so neither loop arms anything of its
-		// own: what fires on one of these clocks is a hold.
-		CheckpointInterval: -1,
+		// own: what fires on one of these clocks is a hold. A scenario about the
+		// pager's pressure turns the checkpoint loop on, because the checkpoint
+		// a waiting store asks for is one only a loop takes.
+		CheckpointInterval: checkpointInterval(w.config.CheckpointInterval),
 		EpochInterval:      -1,
+		// The bound the pager keeps is the bound this host reports and schedules
+		// its retries by, so both come from the one knob. Zero disables it there
+		// and is the default here, which is why it crosses as a negative value.
+		LossWindow: hostLossWindow(k.LossWindow),
 	}
+}
+
+// checkpointInterval is what a world's hosts checkpoint on: the interval a
+// scenario asked for, or the disabled loop a campaign needs.
+func checkpointInterval(configured time.Duration) time.Duration {
+	if configured <= 0 {
+		return -1
+	}
+	return configured
+}
+
+// hostLossWindow spells a knob's window the way a host reads one: zero is the
+// knob turning the bound off, and zero is the host's own default, so the two
+// meet through the negative value that disables it.
+func hostLossWindow(window time.Duration) time.Duration {
+	if window <= 0 {
+		return -1
+	}
+	return window
 }
 
 // starter is one host's StartVM: the guest a destination builds for a VM it
@@ -450,6 +491,12 @@ func (w *World) launch(h *hostState) error {
 		h.mu.Lock()
 		h.pager, h.started, h.guests = pager, map[string]*guest{}, nil
 		h.mu.Unlock()
+		// The pager is this incarnation's, so the host learns about it here
+		// rather than in the configuration the machine keeps across restarts. A
+		// host that was never given one answers none of its pager's pressure:
+		// every store past the dirty budget or past the loss window would be
+		// stalled for want of anything to ask.
+		h.config.Pager = pager.host
 		started, err := host.StartHost(ctx, h.config)
 		h.host, h.down = started, err != nil
 		ready <- err
@@ -493,7 +540,11 @@ func (w *World) newPager(ctx context.Context, h *hostState) (*pager, func(), err
 	frames, err := vmmemory.New(ctx, h.config.Resources, vmmemory.Config{
 		ResidentPages: k.ResidentPages, LogicalPages: k.LogicalPages, DirtyPages: k.DirtyPages,
 		ReadAheadPages: k.ReadAheadPages, WriteAheadPages: k.WriteAheadPages,
-		ConcurrentIO: k.ConcurrentIO}, a, spill)
+		ConcurrentIO: k.ConcurrentIO, LossWindow: k.LossWindow,
+		// The window is measured on this host's own clock, which the simulation
+		// moves itself: a pager reading the wall clock would measure a bound
+		// written in checkpoint intervals against a machine's idle time.
+		Clock: h.clock}, a, spill)
 	if err != nil {
 		return nil, nil, errors.Join(err, spill.Close())
 	}
@@ -622,9 +673,11 @@ func (w *World) create(ctx context.Context, spec VMSpec) error {
 	w.offer(in, durableState{sequence: root, model: zeros})
 	for _, name := range g.names {
 		for page := range uint64(g.pages[name]) {
+			before := g.stored()
 			if err := g.store(name, page); err != nil {
 				return err
 			}
+			w.noteWrites(in, g, before)
 		}
 	}
 	// The first checkpoint makes those pages durable, so the VM has something
@@ -758,10 +811,15 @@ func (h *hostState) running(g *guest) {
 // operation of the schedule happens around. The pages are the caller's, drawn
 // from the seed.
 func (w *World) Store(ctx context.Context, id string, writes int, choose func(limit int) int) error {
-	_, g := w.runningVM(id)
+	in, g := w.runningVM(id)
 	if g == nil {
 		return nil
 	}
+	// Every store is dated, because what a recovery rewinds is the writes past
+	// the checkpoint it came back at and the loss window bounds how far apart
+	// the first and the last of them may be.
+	before := g.stored()
+	defer func() { w.noteWrites(in, g, before) }()
 	for range writes {
 		// Both volumes are written, so a migration has to move more than one
 		// region's worth of frames on the seeds that have two.
@@ -795,10 +853,12 @@ func excused(err error) bool {
 // which is what a campaign that reads a recovered VM back as one generation
 // needs in it.
 func (w *World) StoreAll(id string, value byte) error {
-	_, g := w.runningVM(id)
+	in, g := w.runningVM(id)
 	if g == nil {
 		return nil
 	}
+	before := g.stored()
+	defer func() { w.noteWrites(in, g, before) }()
 	return g.storeAll(value)
 }
 
@@ -1924,7 +1984,15 @@ func (w *World) reopenWith(ctx context.Context, in *instance, index int, why str
 	g.adopt(came.model)
 	w.mu.Lock()
 	in.durables = []durableState{came}
+	// What this recovery cost the guest in time is the other half of what it
+	// cost it: the writes past this checkpoint are gone, and the loss window is
+	// what says how many of them there may be.
+	w.rewind(in, came)
+	windowErr := w.spanHolds(in)
 	w.mu.Unlock()
+	if windowErr != nil {
+		return false, windowErr
+	}
 	w.place(in, index, g)
 	if err := running.AddMachine(in.spec.ID, g); err != nil {
 		return true, err
