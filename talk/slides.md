@@ -506,23 +506,6 @@ clicks: 7
 <PostCopy />
 
 ---
-
-# The one post-copy rule
-
-<div class="text-xl mt-4 mb-6 p-4 border border-yellow-600 rounded">
-A page only the source holds is asked for <b>until it arrives</b>, or until something that <b>knows</b> says the source is gone.
-</div>
-
-<v-clicks>
-
-- An unpublished page is never satisfiable from the destination's own volume: the checkpoint there predates the guest's write. Reading it would **rewind the guest** silently.
-- Nothing in a destination can tell a source that stumbled from one that died. A `BUSY`, a reset connection, a timeout, a restarting listener: all are asked again, with backoff. **No attempt count, no failure threshold.**
-- Two things end the asking: the source itself answering that it no longer serves the VM — which it does only after a release it agreed to — or the orchestrator ending the migration because it has **positive evidence** the source host is gone.
-- Then the VM is recovered from its checkpoint, rewound by the writes since. The same cost as any host loss.
-
-</v-clicks>
-
----
 class: text-sm
 ---
 
@@ -542,6 +525,7 @@ Handoff {
 - A migration hands off a VM the source **released**. A fork hands off a child from a parent that **keeps running**. Same data, one receive path on the destination.
 - The destination refuses a record selecting any other sequence with `ErrStale`: a migration publishes nothing, so that record was openable by anyone in between, and streaming pages over another writer's open would make one VM's memory out of two writers' pages with no error anywhere.
 - Local child or remote child changes only how the unpublished pages arrive: through the shared pager, or pulled over TCP.
+- A page only the source holds is fetched until it arrives, with backoff and no attempt limit: the destination cannot tell a slow source from a dead one, and its own volume would answer with bytes from before the guest's write. The orchestrator ends a migration only on evidence the source host is gone; the VM then reopens from its checkpoint.
 
 </v-clicks>
 

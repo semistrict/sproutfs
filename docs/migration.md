@@ -62,7 +62,7 @@ has fetched every one of those pages, the source may not stop serving.
    on behind it, and `Streamed` is what reports that the whole resident set has
    arrived.
 
-   **The one post-copy rule.** A page only the source holds is asked for until
+   **Failure during post-copy.** A page only the source holds is asked for until
    it arrives, or until something that knows says the source is gone. An
    unpublished page is never satisfiable from the destination's own volume,
    because the checkpoint there predates the guest's write, and nothing in a
@@ -478,7 +478,7 @@ unreachable source costing each load its round trip and no more for the pages a
 checkpoint holds, a connection over the per-peer budget refused, and a busy
 source not mistaken for a gone one.
 
-The one post-copy rule is four requirements, under the simulated clock and
+Failure during post-copy is four requirements, under the simulated clock and
 network. A source that resets twenty connections in a row still serves the page
 afterwards and the fault completes. A source silent for ten simulated minutes
 leaves the fault waiting rather than failed, and completes it with the right
