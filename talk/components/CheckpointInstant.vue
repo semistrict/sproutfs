@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import { useStep } from './Steps'
 
-// The checkpoint's instant, then what runs behind the guest.
+// The checkpoint's pause, then what runs behind the guest.
 // 0 guest running, dirty pages accumulating
 // 1 pause: vCPUs stop
 // 2 VMM state saved

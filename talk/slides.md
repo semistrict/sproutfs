@@ -107,9 +107,9 @@ Which means three things have to be true at once:
 
 **Control record.** The one mutable object a VM has: who may write it, which checkpoint is current.
 
-**Lineage.** Which checkpoint a page's bytes came from. Two VMs that inherited the same checkpoint share its lineage.
+**Lineage.** The name of a page's bytes: which checkpoint published them. A fork's pages carry its parent's names until it writes them.
 
-**Fork.** A new VM taken from a running one at an instant. **Migration.** The same VM moved, running, to another host.
+**Fork.** A new VM taken from a running one at one pause. **Migration.** The same VM moved, running, to another host.
 
 **Host.** A machine running VMs. **Orchestrator.** The one process that places VMs on hosts and drives moves and forks between them.
 
@@ -126,9 +126,9 @@ Everything else follows from these.
 
 1. **A VM's durable state is exactly one published checkpoint**, selected by its control record. Nothing is durable between checkpoints. Losing a host loses every write since its VMs' last checkpoints — and that is accepted.
 
-2. **Stored data and resident frames share through lineage, never through content.** Two VMs share a frame because they inherited the same checkpoint's bytes. No hashes, no byte comparison. A page no checkpoint holds reads as zeroes.
+2. **Every page has one name — the checkpoint that published it — and a fork inherits its parent's names.** Sharing in the store, in host memory and on the wire is sharing by name: a page with a name is never copied, only referenced. A page no checkpoint holds reads as zeroes.
 
-3. **A checkpoint's instant is separable from its upload**, and only the instant is on anyone's latency path. A fork and a migration take the instant and publish nothing: the unpublished pages reach the other side through the pager.
+3. **A checkpoint is a pause and an upload, and only the pause is on anyone's latency path.** The pause stops the vCPUs, saves the VMM state and write-protects the dirty pages: milliseconds. The upload runs behind the running guest. A fork and a migration take only the pause and upload nothing: the unpublished pages reach the other side through the pager.
 
 </v-clicks>
 
@@ -151,7 +151,7 @@ class: text-sm
 
 **Checkpoint objects.** Everything a checkpoint stores lives under `vm/<id>/ckpt/<seq>/`, where `seq` is its sequence number.
 
-**Control record.** `control/<id>`, outside that namespace. It holds the **epoch**, a counter saying which process may write this VM, advanced by every open; the **nonce**, a random mark of the process that took that epoch; the **selected** sequence, the checkpoint that *is* the VM right now; and the **pins**, sequences this VM was forked at, which must never be deleted.
+**Control record.** `control/<id>`, outside that namespace so that listing `control/` lists the deployment's VMs without walking a checkpoint. It holds the **epoch**, a counter saying which process may write this VM, advanced by every open; the **nonce**, a random mark of the process that took that epoch; the **selected** sequence, the checkpoint that *is* the VM right now; and the **pins**, sequences this VM was forked at, which must never be deleted.
 
 </div>
 <div>
@@ -239,7 +239,7 @@ Measured on GCE (`docs/measurements-*`):
 | | pause |
 | --- | --- |
 | checkpoint, 2 GiB guest under `pnpm install` | 7–9 ms |
-| fork instant, 512 MiB guest | 0.1 s |
+| fork pause, 512 MiB guest | 0.1 s |
 | migration stop, 512 MiB guest | 0.6–0.75 s |
 
 </v-click>
@@ -424,7 +424,7 @@ Production bounds are chosen by the host process from the node it is on — read
 </div>
 
 ---
-clicks: 4
+clicks: 3
 ---
 
 # Sharing by lineage
@@ -438,8 +438,8 @@ clicks: 4
 <v-clicks>
 
 - **Population before vCPUs run.** A restored or forked machine maps every page whose identity is already resident in the pager, without a load. A fork's eager population maps the parent's resident set.
-- **No dedup table.** The sharing index is keyed by `(checkpoint, volume, page)`, which the volume already knows. Nothing hashes 2 MiB.
-- **Sealed frames get a name.** A **fork point** — the instant a fork is taken at, which seals the parent's dirty pages exactly as a checkpoint does — names the frames it sealed under a reference that publishes nothing; every child of that instant maps them. The name lasts exactly as long as the seal.
+- **Sharing costs a map lookup.** The pager's sharing index is keyed by `(checkpoint, volume, page)`, which the volume already knows for every page it serves.
+- **Sealed frames get a name.** A **fork point** — the pause a fork is taken at, which seals the parent's dirty pages exactly as a checkpoint's pause does — names the frames it sealed under a reference that publishes nothing; every child of that fork point maps them. The name lasts exactly as long as the seal.
 - **Sparse zeroes cost nothing.** A page no checkpoint holds maps the shared zero page. The first store replaces the whole 2 MiB range with a private frame.
 - **A one-byte store costs a page.** 2 MiB copied, 2 MiB charged, 2 MiB published. This is the trade the workload measurement examines.
 
@@ -455,7 +455,7 @@ layout: section
 clicks: 4
 ---
 
-# A fork is one instant, any number of children
+# A fork is one pause, any number of children
 
 <ForkFanOut />
 
@@ -466,7 +466,7 @@ clicks: 4
 <div class="grid grid-cols-2 gap-8">
 <div>
 
-**Costs.** One pause on the parent — the same instant as a checkpoint — and the child's boot. Nothing uploaded. On GCE, forking two children took 0.1 s of pause; the children ran 1.6–10 s later.
+**Costs.** One pause on the parent — the same pause as a checkpoint's — and the child's boot. Nothing uploaded. On GCE, forking two children took 0.1 s of pause; the children ran 1.6–10 s later.
 
 **Leaves.** A pin on the parent's published sequence, and one control record per child selecting a root over it. A fork that ends before it leaves no object behind.
 
@@ -483,7 +483,7 @@ clicks: 4
 
 <v-click>
 
-**Holds.** The parent's frames stay sealed while any child holds the instant. A hold ends when the child publishes or pulls its pages, when the orchestrator gives the handoff up, or at the host's deadline of four checkpoint intervals.
+**Holds.** The parent's frames stay sealed while any child holds the fork point. A hold ends when the child publishes or pulls its pages, when the orchestrator gives the handoff up, or at the host's deadline of four checkpoint intervals.
 
 </v-click>
 
@@ -661,7 +661,7 @@ Campaigns drive it with one short list — `Store Checkpoint Migrate Fork Delete
 
 <v-click>
 
-A VM that lost its host comes back at the checkpoint its record names, and the bytes must be **that instant's**, page for page. An interrupted publication is answered for exactly.
+A VM that lost its host comes back at the checkpoint its record names, and the bytes must be **that checkpoint's**, page for page. An interrupted publication is answered for exactly.
 
 </v-click>
 
@@ -677,7 +677,7 @@ A VM that lost its host comes back at the checkpoint its record names, and the b
 | seeded topology | hosts, VMs, forks and a fault schedule all drawn from the seed |
 | the same, under buggify | plus fault injection at named sites in the code, with probes and a fingerprint of what fired |
 | the kill campaign | a host lost at any of its handoffs loses only what no checkpoint held |
-| the two-writer swizzle | every link blocked and healed at its own instant; two writers never mix |
+| the two-writer swizzle | every link blocked and healed at its own moment; two writers never mix |
 | the recorded scenario | one schedule that must reproduce, event for event |
 
 <v-click>
@@ -777,7 +777,7 @@ layout: section
 - **The collector.** Pins are permanent and the store grows without bound until one exists. Deferred by decision; the first thing the README says.
 - **A migration whose source is unreachable but still listed waits for it.** The orchestrator ends a migration on evidence, never on a timeout, and for a pod it cannot reach it has none beyond the Kubernetes API's own.
 - **A drain tries its receive once.** A destination briefly unreachable costs the guest its writes since its last checkpoint; the source keeps the frames until its deadline, and nothing asks again.
-- **A child forked onto its parent's own host holds the instant invisibly** to the orchestrator's survey; only the host's own deadline ends a hold whose child never publishes.
+- **A child forked onto its parent's own host holds the fork point invisibly** to the orchestrator's survey; only the host's own deadline ends a hold whose child never publishes.
 - **Recovery after a real host loss is proven in simulation and over fakes,** not yet on a cluster: the one soak's kill landed on a host running nothing. A seed whose kill lands on a loaded host is the next run to take.
 
 </v-clicks>
@@ -818,9 +818,9 @@ class: text-center
 
 <v-click>1. One published checkpoint is the whole of a VM's durable state.</v-click>
 
-<v-click>2. Sharing is lineage, never content.</v-click>
+<v-click>2. Every page has one name, and a fork inherits its parent's names.</v-click>
 
-<v-click>3. The instant is separable from the upload, and only the instant is on the latency path.</v-click>
+<v-click>3. A checkpoint is a pause and an upload, and only the pause is on the latency path.</v-click>
 
 </div>
 
