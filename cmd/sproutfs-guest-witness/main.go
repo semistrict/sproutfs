@@ -358,12 +358,62 @@ func serve(parsed options) error {
 	}
 	held, err := open(parsed.disk, parsed.memory)
 	if err != nil {
-		return err
+		// This half is not going to exist, and the caller that bound this socket
+		// is already asking over it. The reason goes back as the answer to that
+		// request, which is the protocol's own way of saying no.
+		return errors.Join(err, refuse(listener, err))
 	}
 	defer held.close()
 	fmt.Fprintf(os.Stderr, "sproutfs-guest-witness: resident on %s, %d bytes of memory and %s\n",
 		parsed.socket, parsed.memory, parsed.disk)
 	return serveOn(listener, held)
+}
+
+// refuse answers, with the reason this half cannot start, the one request it
+// was started to answer.
+//
+// fill binds the socket, hands it over and then asks on it, so by the time this
+// half finds it cannot hold what it was told to hold — a witness file it cannot
+// open, a size the guest cannot allocate — its caller is already blocked
+// reading a reply. That reply is the only way the reason reaches it. The log
+// this half writes on its way out is a file inside the guest that nothing
+// outside ever reads, and it is written after the listener has closed, so a
+// caller woken by that close reads the log before the reason is in it.
+//
+// Closing the listener under the request says even less than nothing. On Linux
+// a socket closed while a request it never read is still in its receive queue
+// resets its peer, so the caller loses the clean end of stream a close would
+// otherwise be and reports the reset instead; the request is therefore read
+// here before the reply is written and the connection closed.
+//
+// One request, which is the fill's; this half then exits and takes the socket
+// with it, so a caller that asks again is refused at connect.
+func refuse(listener net.Listener, reason error) error {
+	unix, ok := listener.(*net.UnixListener)
+	if !ok {
+		return fmt.Errorf("%s is not a unix socket", listener.Addr())
+	}
+	// The caller may not have dialled yet, and may have died before it could.
+	// This is one request from the outside like any other, so it waits as long
+	// as one may take and no longer.
+	if err := unix.SetDeadline(time.Now().Add(requestTimeout)); err != nil {
+		return err
+	}
+	connection, err := unix.Accept()
+	if err != nil {
+		return fmt.Errorf("accepting the request this witness cannot answer: %w", err)
+	}
+	defer connection.Close()
+	if err := connection.SetDeadline(time.Now().Add(requestTimeout)); err != nil {
+		return err
+	}
+	if _, err := bufio.NewReader(connection).ReadString('\n'); err != nil {
+		return fmt.Errorf("reading the request this witness cannot answer: %w", err)
+	}
+	if _, err := fmt.Fprintf(connection, "error %s\n", reason); err != nil {
+		return fmt.Errorf("saying why this witness cannot start: %w", err)
+	}
+	return nil
 }
 
 // serveOn answers on one listener until it is closed. One request at a time: a
