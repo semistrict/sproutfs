@@ -46,7 +46,7 @@
 #
 # At the end every VM is deleted and `sproutfsctl check` runs over the bucket,
 # when nothing but the deployment's templates — one per guest image, named by
-# its bytes — and the lineages the deleted VMs pinned may remain.
+# its bytes — and the checkpoints the deleted VMs pinned may remain.
 #
 # What it records, under $SPROUTFS_DEMO_RUN_DIR:
 #   operations.tsv  every operation, the VMs it touched and what it cost
@@ -753,8 +753,8 @@ delete_every_vm
 sample_store end
 
 step 'checking the deployment'
-# Nothing but the templates, one per guest image, and the lineages the deleted
-# VMs pinned may remain.
+# Nothing but the templates, one per guest image, and the checkpoints the
+# deleted VMs pinned may remain.
 # A deployment that disagrees with itself is the answer rather than a failed
 # request, so the violations are printed and the exit status is what fails.
 if ! checked=$(ctl check 2>&1); then

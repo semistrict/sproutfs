@@ -13,7 +13,7 @@ as a library. No production deployment is recorded yet.
 There is no garbage collector, by decision, and its absence is not a gap to
 close before the next release: it is deferred indefinitely. Until one exists the
 object store grows without bound — every checkpoint a VM was ever forked at, the
-checkpoints its index names, and the pinned lineage a deleted VM leaves behind are
+checkpoints its index names, and the pinned checkpoints a deleted VM leaves behind are
 kept forever. Deleting a VM reclaims only what nothing forked from. See
 [open work](docs/open-work.md#correctness-and-unbounded-growth).
 
@@ -25,7 +25,7 @@ kept forever. Deleting a VM reclaims only what nothing forked from. See
 - Forks a running VM as a handoff from the parent: one pause yields one fork
   point of it for any number of children, here or on another host, and nothing is
   published to take it.
-- Shares resident memory pages of matching lineage within a pager.
+- Shares resident memory pages of the same identity within a pager.
 - Moves a running VM between hosts post-copy: the destination resumes first and
   pulls the pages no checkpoint holds from the source's page server.
 

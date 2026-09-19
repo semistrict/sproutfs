@@ -115,7 +115,7 @@ restarted for failing readiness.
 No host deletes a template: another host may be forking from it, and an image
 that changed under its name is a template of its own rather than the same one
 holding other bytes. The templates of images nothing creates from any more are a
-collector's, like every other pinned lineage — the checkpoint a template pins is
+collector's, like every other pinned checkpoint — the checkpoint a template pins is
 the fork point every VM created from it was taken at.
 
 One thing comes with that and is worth saying plainly: the RAM a VM gets is the

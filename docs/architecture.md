@@ -19,7 +19,7 @@ Three decisions determine everything else.
    image's identity is its bytes, which is what lets every host name one
    template for one image and import it once between them. It names the
    template and nothing below it — the checkpoints under that identity are its
-   own like any VM's, and what forks of it share they share by lineage.
+   own like any VM's, and what forks of it share they share by page identity.
 3. A checkpoint is a pause — stop the vCPUs, save the VMM state, seal the dirty
    pages, resume — and an upload, and only the pause is on anyone's
    latency path. A fork and a migration take the pause and publish nothing:
@@ -33,7 +33,7 @@ Three decisions determine everything else.
 | Control record | One object per VM, at `control/<id>`, a namespace holding nothing else so that listing it is how the deployment's VMs are found. Writer epoch, writer nonce, the selected checkpoint sequence and whether it is published, and the checkpoints of this VM that have been forked, which reclamation must spare and nothing unpins. A record exists exactly while its VM does. Every change is a conditional write, and the epoch holder is the only writer. |
 | [Checkpoint](volumes.md) | Its data and one index object under `vm/<id>/ckpt/<seq>/`, and nothing else. The data is `part/<n>`: a run of members — the VMM state, when one was saved, then the dirty pages, then compaction's rescues — filled to 64 MiB and closed by a table and a fixed 32-byte trailer, so a part describes itself. Written last is `index`: a fixed header, the 512 MiB page-table segments this checkpoint changed, and last the **root**, whose create-if-absent PUT is the publication's commit. The root addresses each segment of every volume's page table inside the index object of the checkpoint that wrote it, keeping an earlier checkpoint's address for every segment this one did not change, and lists every checkpoint it reads a page from or addresses a segment in, plus the ones its own compaction emptied and spares for a checkpoint. It names no parent: a root is complete on its own, one GET of the index object yields it, and a reader fetches the segments a range falls in. |
 | Overlay | The in-memory writes of one open VM since its selected checkpoint, published by the next one. It survives nothing. |
-| [Pager](vm-memory.md) | The host's own page cache for guest memory: a shared memfd arena serving the host's attached RAM and PMEM regions, keyed by lineage identity, in place of the kernel's page cache and swap — [why](vm-memory.md#why-a-pager-of-its-own). The production page and the unit of publication are both 2 MiB. |
+| [Pager](vm-memory.md) | The host's own page cache for guest memory: a shared memfd arena serving the host's attached RAM and PMEM regions, keyed by page identity, in place of the kernel's page cache and swap — [why](vm-memory.md#why-a-pager-of-its-own). The production page and the unit of publication are both 2 MiB. |
 | [Host](hosting.md) | `internal/host`: everything one host does. Its `Host` opens VMs over object storage and the cluster network, checkpoints them on an interval, fences a VM a later writer took, and serves migration and fork pages; the supervisor around it owns the pager and the VMM processes behind the host API, imports guest images into the templates VMs are forked from, and reaches the agent in a guest. `cmd/sproutfs-host` is its configuration, its HTTP handlers and the adapters it chooses. |
 | Orchestrator | `cmd/sproutfs-orchestrator`: allocates VM identities, places VMs on host pods, and drives migrations and forks between hosts. Its SQLite table — states `creating`, `running`, `migrating`, `stopped`, `recovering` — is a view; the control records are the authority. |
 
@@ -113,7 +113,7 @@ captured state and compatible runtime configuration.
    epoch — which fences the previous writer — and reads the selected
    checkpoint's root. The overlays start empty; there is nothing to replay.
 3. The pager attaches the VM's `ram0` and PMEM volumes and populates the pages
-   whose lineage identity is already resident in the same pager before vCPUs
+   whose identity is already resident in the same pager before vCPUs
    run. Missing pages load on demand.
 4. Volume writes apply to the overlay and return. The interval checkpoint pauses
    the guest, saves VMM state, seals every dirty page by write protection and
@@ -155,7 +155,7 @@ parent's checkpoints, which is why a fork copies nothing. A VM's control record 
 outside that namespace, at `control/<id>`, because the two namespaces hold
 different sets. `control/` holds exactly the VMs that exist: a record is there
 while its VM is and no longer. `vm/` holds every identity that ever left objects
-behind — a deleted VM that was ever forked leaves its pinned lineage there, with
+behind — a deleted VM that was ever forked leaves its pinned checkpoints there, with
 no record, for a collector that does not exist — so it only grows, and a listing
 of it, by delimiter or otherwise, would return the dead with the living and have
 to probe each for a record. Listing `control/` is the deployment's VMs and
@@ -167,10 +167,10 @@ Selecting a checkpoint reclaims a set difference: the checkpoints the replaced
 root named, and the replaced checkpoint itself, less everything the new root
 names and everything a pin protects. A dead checkpoint goes whole, its last part
 first, and only ever this VM's own — another VM's checkpoints are never touched. A
-pinned sequence is spared along with every checkpoint its root names, so a
-fork's whole lineage survives, the part of it a grandchild reads
+pinned sequence is spared along with every checkpoint its root names, so
+everything a fork inherits survives, the part of it a grandchild reads
 directly included. A pin is written before the child that holds it exists and is
-permanent: nothing in a deployment can establish that no lineage reads through a
+permanent: nothing in a deployment can establish that no descendant reads through a
 checkpoint, because a descendant sees neither its siblings nor the forks taken
 below it, so releasing a pin belongs to a collector.
 
@@ -201,7 +201,7 @@ HugeTLB qualification is recorded on x86_64. Other environments and production
 workload/scale acceptance remain unqualified. Larger-guest measurements exist,
 but the recorded workload run is partial and is not performance acceptance. No
 production deployment is recorded in this repository. Collection — which is what
-releases pins and sweeps the lineages of deleted VMs — and legacy-data
+releases pins and sweeps what deleted VMs left pinned — and legacy-data
 compatibility/migration paths, are not
 implemented; compatibility requirements for any deployment's stored data must be
 assessed before changing its formats.

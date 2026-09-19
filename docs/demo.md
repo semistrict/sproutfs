@@ -273,7 +273,7 @@ script cannot name, and a guest checked against a state it was never in is a
 failure that says nothing.
 
 At the end every VM is deleted and `sproutfsctl check` runs over the bucket,
-when nothing but the templates and the lineages the deleted VMs pinned may
+when nothing but the templates and the checkpoints the deleted VMs pinned may
 remain. The run prints what each round did and what it cost — the fork pauses,
 the migration pauses and streams, the stops and the starts — with every check
 and each host's object-store counters, and copies everything it recorded back to

@@ -6,7 +6,7 @@ supporting documents.
 ## Storage
 
 **VM**: One virtual machine. It is the unit of identity, of write ownership and
-of durability: one identity, one control record, one checkpoint lineage.
+of durability: one identity, one control record, one series of checkpoints.
 
 **Volume**: One named byte-addressed image of a VM: its memory, `ram0`, or one
 of its PMEM disks. A volume's size is fixed for the VM's lifetime.
@@ -88,17 +88,17 @@ it inherited.
 **Fork**: A VM created from a parent's fork point without changing a byte. It
 has its own control record and its writes are isolated; the parent's published
 sequence is pinned in the parent's record, which keeps reclamation off the
-lineage the child inherits and off every checkpoint that lineage reads. The pin is
-permanent: only a collector, which can see every lineage, may release one. A
-child runs on the parent's host, sharing the
-sealed pages, or on another host, pulling them from the parent's page server.
+checkpoint the child inherits and off every checkpoint its root names. The pin
+is permanent: only a collector, which can see every fork, may release one. A
+child runs on the parent's host, sharing the sealed pages, or on another host,
+pulling them from the parent's page server.
 
 **Handoff**: The plain data that starts a VM on another host: the VMM state,
 the checkpoint it inherits, the runs of unpublished pages and the page-server
 address they are served from. A migration hands off a VM the source released; a
 fork hands off a child from a parent that keeps running.
 
-**Lineage identity**: The name of the page whose bytes a range reads, reported
+**Page identity**: The name of the page whose bytes a range reads, reported
 as (checkpoint reference, volume, page); sparse zeroes have a special identity.
 Every page has one name — the checkpoint that published it — and a fork
 inherits its parent's names. Inherited pages retain the same identity —
@@ -108,7 +108,7 @@ wire, and in host memory, where pages of the same identity share one resident
 page within a pager.
 
 **Resident page**: The physical backing of one page in a host's pager,
-possibly shared by several regions with the same lineage identity.
+possibly shared by several regions with the same page identity.
 
 ## Cluster
 
