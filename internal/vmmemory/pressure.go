@@ -41,6 +41,12 @@ func (h *Host) SetPressure(p Pressure) {
 // — because what ends it is the same thing, a checkpoint of this VM landing.
 func (h *Host) takeSpill(ctx context.Context, r *Region) (int, error) {
 	for {
+		// The signal this attempt will wait on is taken before anything is
+		// decided, because deciding takes locks of its own: a checkpoint that
+		// lands between reading the window and reading the budget would
+		// otherwise close a signal this store is not listening to yet, and the
+		// store would wait on the next one with nothing left to give it.
+		changed := h.changes()
 		over := h.overWindow(r)
 		h.mu.Lock()
 		if h.err != nil {
@@ -56,7 +62,6 @@ func (h *Host) takeSpill(ctx context.Context, r *Region) (int, error) {
 			h.mu.Unlock()
 			return slot, nil
 		}
-		changed := h.changed
 		h.mu.Unlock()
 		if over {
 			if !h.windowRelief(r) {
