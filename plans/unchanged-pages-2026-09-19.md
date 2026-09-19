@@ -1,7 +1,6 @@
 # A private page that did not change — 2026-09-19
 
-**Status: done, except the GCE and Lima measurement in the last proof bullet,
-which is whoever dispatched the work's to take.**
+**Status: done**, the measurement on real hosts included.
 
 Three things the code showed the plan was wrong about, all of them recorded in
 the text below:
@@ -150,12 +149,25 @@ Red tests first, exact numbers, beside the code.
   through faults that all claim to be writes, publish checkpoints with no pages
   and end sharing everything they touched.
 - `just check` green; `just soak 1 20` green.
-- On GCE and in Lima, by whoever dispatches the work: the 2026-09-19 fan-out
-  repeated with a checkpoint taken in each fork. Before: each fork owns every
-  root page it touched and uploads it. After: `fork_own_pages` for the root is
-  empty after the checkpoint, the checkpoint's put bytes carry no root page,
-  and `fork_changed_counts` still reports every RAM page that was really
-  written as the fork's own.
+- On GCE and in Lima: the 2026-09-19 fan-out repeated with a checkpoint taken in
+  each fork, which the fan-out now records as `fork_checkpoints`. Taken on
+  2026-09-19, four forks each time
+  (`docs/measurements/gce-fanout-settled-2026-09-19/`,
+  `fanout-git-lima-settled-2026-09-19.json`):
+
+  | | x86-64, `busybox uname` | x86-64, `memprobe 16` | aarch64, `git --version` |
+  | --- | --- | --- | --- |
+  | Root pages a fork owned before its checkpoint, none of them written | 2 | 2 to 6 | 2 |
+  | Pages its settle dropped, root and RAM | 2 to 5 | 2 to 7 | 2 to 3 |
+  | Root pages it owned afterwards | 0 | 0 | 0 |
+  | Pages its checkpoint published, all RAM | 27 to 29 | 37 to 38 | 27 to 29 |
+
+  Every page a settle dropped was one the comparison before the checkpoint had
+  found unwritten — a fork's root pages, and the one to three RAM pages in the
+  same state — and every page a fork had really written was published. The
+  first fork to checkpoint reports none of its root pages as shared, because
+  its siblings still held their own copies at that moment; every later one
+  shares all of them.
 
 ## Order
 

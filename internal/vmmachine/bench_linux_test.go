@@ -1396,7 +1396,31 @@ func (b *benchmark) forkFanOut(ctx context.Context, origin *forkOrigin) {
 	if err := pristine.Close(ctx); err != nil {
 		b.t.Fatal(err)
 	}
+	// A checkpoint of each fork, which is where a page the fork never stored
+	// into stops being its own: what the settle dropped, what the checkpoint
+	// published, and what each region holds and shares once it landed.
+	forkCheckpoints := make([]map[string]any, count)
+	for index, item := range children {
+		ckpt, _ := b.capture(ctx, item.process, item.vm)
+		published, publishedBytes := ckpt.Sealed()
+		after := map[string]map[string]int{}
+		for name, region := range item.process.Regions() {
+			stats, err := region.Stats(ctx)
+			if err != nil {
+				b.t.Fatal(err)
+			}
+			after[name] = map[string]int{"resident_pages": stats.ResidentPages,
+				"private_pages": stats.PrivatePages, "shared_pages": stats.SharedPages}
+		}
+		forkCheckpoints[index] = map[string]any{
+			"unchanged_pages": ckpt.Unchanged(),
+			"published_pages": published,
+			"published_bytes": publishedBytes,
+			"region_pages":    after,
+		}
+	}
 	b.record(ctx, "fork-fanout", "sproutfs", start, nil, map[string]any{
+		"fork_checkpoints":    forkCheckpoints,
 		"fork_changed_blocks": changedBlocks,
 		"fork_changed_counts": changedCounts,
 		"forks":               count,
