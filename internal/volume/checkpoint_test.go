@@ -20,7 +20,7 @@ import (
 func dirtyEveryPage(t *testing.T, vm *volume.VM, want model, fill byte) {
 	t.Helper()
 	sector := bytes.Repeat([]byte{fill}, checkpoint.SectorSize)
-	for _, offset := range []uint64{0, checkpoint.PageSize, 2 * checkpoint.PageSize} {
+	for _, offset := range []uint64{0, checkpoint.PageSize2MiB, 2 * checkpoint.PageSize2MiB} {
 		if err := vm.Volume("root").Write(t.Context(), offset, sector); err != nil {
 			t.Fatal(err)
 		}
@@ -143,20 +143,20 @@ func TestPublishingRewritesAndDropsWholePages(t *testing.T) {
 		defer manager.Close(t.Context())
 		vm, want := createVM(t, manager, "vm")
 		state := vm.Volume("state")
-		tail := bytes.Repeat([]byte{5}, int(state.Size()-checkpoint.PageSize))
-		if err := state.Write(t.Context(), checkpoint.PageSize, tail); err != nil {
+		tail := bytes.Repeat([]byte{5}, int(state.Size()-checkpoint.PageSize2MiB))
+		if err := state.Write(t.Context(), checkpoint.PageSize2MiB, tail); err != nil {
 			t.Fatal(err)
 		}
-		copy(want["state"][checkpoint.PageSize:], tail)
+		copy(want["state"][checkpoint.PageSize2MiB:], tail)
 		if err := vm.Checkpoint(t.Context()); err != nil {
 			t.Fatal(err)
 		}
 		want.check(t, vm, "after rewriting the tail page")
 
-		if err := state.Discard(t.Context(), checkpoint.PageSize, state.Size()-checkpoint.PageSize); err != nil {
+		if err := state.Discard(t.Context(), checkpoint.PageSize2MiB, state.Size()-checkpoint.PageSize2MiB); err != nil {
 			t.Fatal(err)
 		}
-		clear(want["state"][checkpoint.PageSize:])
+		clear(want["state"][checkpoint.PageSize2MiB:])
 		if err := vm.Checkpoint(t.Context()); err != nil {
 			t.Fatal(err)
 		}
@@ -169,7 +169,7 @@ func TestPublishingRewritesAndDropsWholePages(t *testing.T) {
 		}
 		defer reopened.Close(t.Context())
 		want.check(t, reopened, "after the discarded page left the index")
-		dropped, err := reopened.Volume("state").Locate(t.Context(), checkpoint.PageSize, state.Size()-checkpoint.PageSize)
+		dropped, err := reopened.Volume("state").Locate(t.Context(), checkpoint.PageSize2MiB, state.Size()-checkpoint.PageSize2MiB)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -249,7 +249,7 @@ func TestFailedPublicationBurnsItsSequence(t *testing.T) {
 		})
 
 		ckpt, err := vm.Snapshot(t.Context(), volume.Prepared(nil,
-			map[string]volume.DirtySource{"root": sealedPages{size: checkpoint.PageSize, pages: []uint64{0}, fill: 0xa1}}))
+			map[string]volume.DirtySource{"root": sealedPages{size: checkpoint.PageSize2MiB, pages: []uint64{0}, fill: 0xa1}}))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -266,9 +266,9 @@ func TestFailedPublicationBurnsItsSequence(t *testing.T) {
 		// Three more checkpoints of the running guest, each sealing a different
 		// dirty set, exactly as the interval loop takes them.
 		for offset, sealed := range []sealedPages{
-			{size: checkpoint.PageSize, pages: []uint64{1}, fill: 0xa2},
-			{size: checkpoint.PageSize, pages: []uint64{2}, fill: 0xa3},
-			{size: checkpoint.PageSize, pages: []uint64{0, 1}, fill: 0xa4},
+			{size: checkpoint.PageSize2MiB, pages: []uint64{1}, fill: 0xa2},
+			{size: checkpoint.PageSize2MiB, pages: []uint64{2}, fill: 0xa3},
+			{size: checkpoint.PageSize2MiB, pages: []uint64{0, 1}, fill: 0xa4},
 		} {
 			want := control.Ref{VM: "vm", Sequence: counted(vm, uint64(3+offset))}
 			next, err := vm.Snapshot(t.Context(), volume.Prepared(nil, map[string]volume.DirtySource{"root": sealed}))
@@ -288,11 +288,11 @@ func TestFailedPublicationBurnsItsSequence(t *testing.T) {
 
 		// The bytes the later checkpoints published are what the VM reads, and
 		// the page the failed one held is still unwritten.
-		got := make([]byte, 3*checkpoint.PageSize)
+		got := make([]byte, 3*checkpoint.PageSize2MiB)
 		if err := vm.Volume("root").Read(t.Context(), 0, got); err != nil {
 			t.Fatal(err)
 		}
-		want := append(bytes.Repeat([]byte{0xa4}, 2*checkpoint.PageSize), bytes.Repeat([]byte{0xa3}, checkpoint.PageSize)...)
+		want := append(bytes.Repeat([]byte{0xa4}, 2*checkpoint.PageSize2MiB), bytes.Repeat([]byte{0xa3}, checkpoint.PageSize2MiB)...)
 		if !bytes.Equal(got, want) {
 			t.Fatalf("root after the checkpoints that followed the failure differs from what they published")
 		}

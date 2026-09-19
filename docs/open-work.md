@@ -23,11 +23,14 @@ everything open is listed here.
 
 ## Measurement
 
-- **RAM and PMEM still share a fixed 2 MiB page size.** The
+- **RAM and PMEM still share a fixed 2 MiB page in the pager and on the wire.**
+  The store no longer does: a volume carries its own page size, 4 KiB or 2 MiB,
+  recorded in its checkpoints. The
   [page-geometry plan](../plans/ram-pmem-page-geometry-2026-09-19.md) separates
-  their arenas and stored volume geometry, uses 4 KiB RAM ownership and COW,
-  and retains large read-only mapping batches. Implementation and realistic
-  workload measurements of retained sharing and runtime are open.
+  their arenas, uses 4 KiB RAM ownership and COW, and retains large read-only
+  mapping batches; its steps 3 to 7 — the pager, the wire, migration, packing
+  small pages into parts — and realistic workload measurements of retained
+  sharing and runtime are open.
 - **A page a guest only reads can become its own.** A cold read that has to wait for the pager reaches it as a write fault — on x86-64 because KVM's asynchronous page fault worker always asks for the page writable, on aarch64 when the guest first executes a page — and the pager answers a write fault with a private page, which is then no longer shared and is uploaded at the next checkpoint with not a byte changed. Measured on GCE and in Lima on 2026-09-19: every root page a read-only fork touched became its own ([the plan](../plans/ram-pmem-page-geometry-2026-09-19.md) has the evidence). Pages mapped ahead of a fault are spared. What would recover the rest on any kernel is comparing a private page with the page it was copied from when it is sealed, and sharing it again if it did not change; what would prevent it is a host kernel that passes the access through, or KVM userfault once it exists. The first is [planned](../plans/unchanged-pages-2026-09-19.md); the second is not ours to start.
 - **The workload measurement predates the multi-page parts and wants re-taking.** It was measured against one object per dirty page, before `39bfe37`, so its object counts describe a store layout that no longer exists, and only one fork setting (`FORKS_BASE=2 FORKS_PER_REPO=1`) was run; the commands to re-take it on current `main` are in the document (`docs/measurements-2026-09-14-workload.md`).
 

@@ -29,30 +29,30 @@ import (
 	"github.com/semistrict/sproutfs/internal/checkpoint/internal/part"
 )
 
-const (
-	// PageSize is the unit of publication: a page is written whole or not at
-	// all, and it is the unit a reader faults in.
-	PageSize = 2 << 20
-	// SectorSize is the granularity a volume's size is stated in.
-	SectorSize = 4096
-	// segmentPages is how many of a volume's pages one segment of its page
-	// table covers: segment n holds pages [n*segmentPages, (n+1)*segmentPages),
-	// which is 512 MiB of volume. It is a constant of the format rather than a
-	// knob, because every reader of an index must divide page numbers by the
-	// same thing the writer did.
-	segmentPages = 256
-)
+// SectorSize is the granularity a volume's size is stated in, whatever page
+// size the volume was created with.
+const SectorSize = 4096
+
+// VolumeSpec is one volume as a checkpoint records it: how large it is, and the
+// page size its pages and its page-table segments follow. The page size must be
+// one [GeometryFor] accepts, and it is fixed for the volume's life.
+type VolumeSpec struct {
+	Size     uint64
+	PageSize uint64
+}
 
 const (
 	maximumName = 255
 	// maximumRootSize bounds one checkpoint's root, which ends its index object.
-	// A root is fifteen bytes per 512 MiB of volume, so this is about 140,000
-	// segments: 70 TiB of volume per VM, and the limit this design states rather
-	// than a number nothing could reach. MaxIndexBytes bounds what one
-	// publication may write, never what a reader accepts.
+	// A root is fifteen bytes per segment, so this is about 140,000 segments:
+	// 70 TiB of a 2 MiB-page volume per VM, 8.5 TiB of a 4 KiB-page one, and the
+	// limit this design states rather than a number nothing could reach.
+	// MaxIndexBytes bounds what one publication may write, never what a reader
+	// accepts.
 	maximumRootSize = 2 << 20
-	// maximumSegmentSize bounds one segment, which holds at most segmentPages
-	// entries of about a dozen bytes each.
+	// maximumSegmentSize bounds one segment, which holds at most the geometry's
+	// SegmentPages entries of about twenty bytes each — a few kilobytes at
+	// 2 MiB per page, and a few hundred kilobytes at 4 KiB.
 	maximumSegmentSize = 1 << 20
 	// maximumRootExtent and maximumSegmentExtent bound what a root addresses
 	// inside an index object, which is an envelope rather than the bytes inside
@@ -60,8 +60,11 @@ const (
 	maximumRootExtent    = maximumRootSize + blob.HeaderSize
 	maximumSegmentExtent = maximumSegmentSize + blob.HeaderSize
 	// maximumIndexSize bounds one checkpoint's whole index object: its header,
-	// the segments it changed and its root. A fully dirty 4 TiB volume writes
-	// 8192 segments of a few kilobytes each and does not reach this.
+	// the segments it changed and its root. A fully dirty 4 TiB volume of 2 MiB
+	// pages writes 8192 segments of a few kilobytes each and does not reach
+	// this; a checkpoint that changed every page of a 4 KiB-page volume writes
+	// about 5 MiB of segments per GiB of it, so one that dirtied more than about
+	// 12 GiB of such a volume at once is refused here.
 	maximumIndexSize = 64 << 20
 	// maximumTableSize bounds one part's table, which names the part's members.
 	// It bounds what a writer produces as well as what a reader accepts: a part
@@ -78,8 +81,9 @@ const (
 	// maximumPartSize bounds one part: its members, its table and its trailer. A
 	// part is sealed once it holds partTargetBytes of members and the member
 	// that filled it is admitted whole, so the slack over the target is one
-	// page's envelope, the table and the trailer.
-	maximumPartSize = partTargetBytes + PageSize + blob.HeaderSize +
+	// page's envelope — the largest page any volume may have — the table and the
+	// trailer.
+	maximumPartSize = partTargetBytes + PageSize2MiB + blob.HeaderSize +
 		maximumTableSize + part.TrailerSize
 	// compactionBudget is the live bytes one checkpoint rewrites out of the
 	// parts of checkpoints that have become mostly dead.
@@ -88,8 +92,8 @@ const (
 
 var (
 	// ErrInvalidConfig reports a configuration or argument that cannot name a
-	// checkpoint: an empty VM identity, an unusable volume name, or a size that
-	// is not a whole number of sectors.
+	// checkpoint: an empty VM identity, an unusable volume name, a size that is
+	// not a whole number of sectors, or a page size no volume may have.
 	ErrInvalidConfig = errors.New("checkpoint: invalid configuration")
 	// ErrInvalidRange reports a read or locate outside a volume's size.
 	ErrInvalidRange = errors.New("checkpoint: invalid range")
@@ -118,16 +122,6 @@ func validName(name string) bool {
 		}
 	}
 	return true
-}
-
-// pageSpan reports the byte offset and length of a page within a volume of
-// the given size. The length is zero for a page beyond the end.
-func pageSpan(size, page uint64) (uint64, uint64) {
-	start := page * PageSize
-	if start >= size {
-		return start, 0
-	}
-	return start, min(uint64(PageSize), size-start)
 }
 
 // ProbeCompactionRewrite marks a publication that rewrote the live pages out of

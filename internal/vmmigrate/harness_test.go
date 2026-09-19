@@ -734,7 +734,7 @@ func (m *machine) residentPages() int {
 
 // vmSpec is the VM every migration test runs: one RAM volume and one PMEM
 // volume, so a migration has to name and move more than one region.
-var vmSpec = []volume.VolumeSpec{{Name: "ram0", Size: 8 * pageSize}, {Name: "disk", Size: 4 * pageSize}}
+var vmSpec = []volume.VolumeSpec{{Name: "ram0", Size: 8 * pageSize, PageSize: vmmemory.PageSize}, {Name: "disk", Size: 4 * pageSize, PageSize: vmmemory.PageSize}}
 
 // vmSpecPages is every page of that VM. One hop can dirty all of them, so it is
 // the floor under any budget a campaign draws.

@@ -84,7 +84,7 @@ func (m *Manager) create(ctx context.Context, id string, volumes []VolumeSpec, t
 	}
 	specs := slices.Clone(volumes)
 	slices.SortFunc(specs, func(a, b VolumeSpec) int { return strings.Compare(a.Name, b.Name) })
-	sizes := make(map[string]uint64, len(specs))
+	shape := make(map[string]checkpoint.VolumeSpec, len(specs))
 	for index, spec := range specs {
 		if !validID(spec.Name) || spec.Size == 0 || spec.Size%checkpoint.SectorSize != 0 {
 			return nil, ErrInvalidConfig
@@ -92,7 +92,12 @@ func (m *Manager) create(ctx context.Context, id string, volumes []VolumeSpec, t
 		if index > 0 && specs[index-1].Name == spec.Name {
 			return nil, ErrInvalidConfig
 		}
-		sizes[spec.Name] = spec.Size
+		// The page size is chosen here and nowhere else, so an unsupported one
+		// is refused before the identity's first object is written.
+		if _, err := checkpoint.GeometryFor(spec.PageSize); err != nil {
+			return nil, fmt.Errorf("%w: %s of %s: %w", ErrInvalidConfig, spec.Name, id, err)
+		}
+		shape[spec.Name] = checkpoint.VolumeSpec{Size: spec.Size, PageSize: spec.PageSize}
 	}
 	// A record is what says an identity is a VM's, so it is read before
 	// anything is written: one that is there is opened, and one that is not
@@ -103,7 +108,7 @@ func (m *Manager) create(ctx context.Context, id string, volumes []VolumeSpec, t
 		if !takeOver {
 			return nil, fmt.Errorf("%w: %s", ErrExists, id)
 		}
-		return m.Open(ctx, id)
+		return m.openAs(ctx, id, specs)
 	case !errors.Is(err, platform.ErrNotFound):
 		return nil, err
 	}
@@ -117,7 +122,7 @@ func (m *Manager) create(ctx context.Context, id string, volumes []VolumeSpec, t
 		}
 	}
 	first := rootSequence(m.config.Control.NewEpoch())
-	root, err := m.config.Store.Root(ctx, control.Ref{VM: id, Sequence: first}, sizes)
+	root, err := m.config.Store.Root(ctx, control.Ref{VM: id, Sequence: first}, shape)
 	if err != nil {
 		return nil, err
 	}
@@ -126,7 +131,7 @@ func (m *Manager) create(ctx context.Context, id string, volumes []VolumeSpec, t
 		if !takeOver {
 			return nil, fmt.Errorf("%w: %s", ErrExists, id)
 		}
-		return m.Open(ctx, id)
+		return m.openAs(ctx, id, specs)
 	}
 	if err != nil {
 		return nil, err
@@ -177,6 +182,37 @@ func (m *Manager) Open(ctx context.Context, id string) (*VM, error) {
 		return nil, err
 	}
 	return m.attach(ctx, id, handle, index, nil, nil)
+}
+
+// openAs opens a VM whose identity the deployment already records — which is
+// what a create of an existing identity does — and requires that its volumes
+// have the page sizes this create asked for. A geometry is durable and every
+// page number is in it, so a handle opened at a page size other than the one
+// the checkpoint records would number every page of that volume differently;
+// that is a caller that has changed its mind about what the VM is, not a state
+// to go on from. Sizes are not compared: a cold boot may have reshaped the VM
+// since, and that is the one thing that legitimately differs.
+func (m *Manager) openAs(ctx context.Context, id string, specs []VolumeSpec) (*VM, error) {
+	vm, err := m.Open(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	for _, spec := range specs {
+		held := vm.byName[spec.Name]
+		if held == nil {
+			err = errors.Join(err, fmt.Errorf("%w: %s has no volume named %s",
+				ErrInvalidConfig, id, spec.Name))
+			continue
+		}
+		if held.geometry.PageSize != spec.PageSize {
+			err = errors.Join(err, fmt.Errorf("%w: %s of %s is published in %d-byte pages, not %d",
+				ErrInvalidConfig, spec.Name, id, held.geometry.PageSize, spec.PageSize))
+		}
+	}
+	if err != nil {
+		return nil, errors.Join(err, vm.Close(ctx))
+	}
+	return vm, nil
 }
 
 // Delete removes a VM's control record, after which nothing can open it, and
@@ -234,12 +270,14 @@ func (m *Manager) attach(ctx context.Context, id string, handle *control.Handle,
 	selected, owned *checkpoint.Index, point *ForkPoint) (*VM, error) {
 	base, specs, err := resolve(m.config.Store, selected, point)
 	if err == nil {
-		vm := newVM(m, id, handle, base, selected, owned, specs, point)
-		if err = vm.start(ctx); err == nil {
-			return vm, nil
+		var vm *VM
+		if vm, err = newVM(m, id, handle, base, selected, owned, specs, point); err == nil {
+			if err = vm.start(ctx); err == nil {
+				return vm, nil
+			}
+			m.release(vm)
+			return nil, err
 		}
-		m.release(vm)
-		return nil, err
 	}
 	handle.Close()
 	return nil, err
@@ -247,14 +285,17 @@ func (m *Manager) attach(ctx context.Context, id string, handle *control.Handle,
 
 // resolve reports what a handle sits on: the checkpoint index its control
 // record selects, or, for a fork, the parent's checkpoint with the point the
-// fork was taken at over it. A fork's volumes are its parent's.
+// fork was taken at over it. A fork's volumes are its parent's, geometry
+// included: a page size is the volume's for its life, so a handle takes it from
+// the checkpoint rather than being told it.
 func resolve(store *checkpoint.Store, selected *checkpoint.Index, point *ForkPoint) (source, []VolumeSpec, error) {
 	if selected == nil {
 		return nil, nil, ErrCorrupt
 	}
 	specs := make([]VolumeSpec, 0, len(selected.Volumes()))
 	for _, name := range selected.Volumes() {
-		specs = append(specs, VolumeSpec{Name: name, Size: selected.Size(name)})
+		specs = append(specs, VolumeSpec{Name: name, Size: selected.Size(name),
+			PageSize: selected.Geometry(name).PageSize})
 	}
 	if point != nil && point.checkpoint != nil {
 		return point.checkpoint, specs, nil

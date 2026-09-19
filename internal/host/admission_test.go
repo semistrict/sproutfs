@@ -12,7 +12,7 @@ import (
 
 // fillerVolumes takes all but one page of a test pager's 64-page logical cap,
 // which is how a receive is put in front of a cap it cannot fit under.
-var fillerVolumes = []volume.VolumeSpec{{Name: "ram0", Size: 63 * migrationPageSize}}
+var fillerVolumes = []volume.VolumeSpec{{Name: "ram0", Size: 63 * migrationPageSize, PageSize: migrationPageSize}}
 
 // TestReceiveRefusesAVMThePagerCannotMap. The pager's logical-page cap is
 // checked one region at a time, at attachment, which is long after the VMM

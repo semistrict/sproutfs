@@ -12,18 +12,18 @@ import (
 
 func TestLocateCrossPageRangesAgainstPageIdentities(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		const size = 3*checkpoint.PageSize + 2*checkpoint.SectorSize
+		const size = 3*checkpoint.PageSize2MiB + 2*checkpoint.SectorSize
 		store := mustStore(t, checkpoint.Config{ObjectStore: sim.New(sim.Config{}).ObjectStore()})
 		sizes := map[string]uint64{"root": size}
-		root, err := store.Root(t.Context(), control.Ref{VM: "located", Sequence: 1}, sizes)
+		root, err := store.Root(t.Context(), control.Ref{VM: "located", Sequence: 1}, volumes2MiB(sizes))
 		if err != nil {
 			t.Fatal(err)
 		}
-		model := newModel(sizes)
+		model := newModel(volumes2MiB(sizes))
 		baseRef := control.Ref{VM: "located", Sequence: 2}
 		base := store.Begin(root, baseRef)
 		// One identity per 2 MiB page, including the volume's partial last one.
-		identities := make([]control.Identity, (size+checkpoint.PageSize-1)/checkpoint.PageSize)
+		identities := make([]control.Identity, (size+checkpoint.PageSize2MiB-1)/checkpoint.PageSize2MiB)
 		for index := range identities {
 			identities[index] = control.Identity{Zero: true}
 		}
@@ -52,10 +52,10 @@ func TestLocateCrossPageRangesAgainstPageIdentities(t *testing.T) {
 
 		// Exercise byte offsets on either side of page boundaries, including
 		// zero-length queries at EOF and the partial final page.
-		points := []uint64{0, checkpoint.PageSize - 1, checkpoint.PageSize,
-			checkpoint.PageSize + 5*checkpoint.SectorSize - 1, checkpoint.PageSize + 5*checkpoint.SectorSize,
-			checkpoint.PageSize + 6*checkpoint.SectorSize, 2*checkpoint.PageSize - 1, 2 * checkpoint.PageSize,
-			3 * checkpoint.PageSize, size - 1, size}
+		points := []uint64{0, checkpoint.PageSize2MiB - 1, checkpoint.PageSize2MiB,
+			checkpoint.PageSize2MiB + 5*checkpoint.SectorSize - 1, checkpoint.PageSize2MiB + 5*checkpoint.SectorSize,
+			checkpoint.PageSize2MiB + 6*checkpoint.SectorSize, 2*checkpoint.PageSize2MiB - 1, 2 * checkpoint.PageSize2MiB,
+			3 * checkpoint.PageSize2MiB, size - 1, size}
 		for _, fixture := range []struct {
 			index      *checkpoint.Index
 			identities []control.Identity
@@ -67,8 +67,8 @@ func TestLocateCrossPageRangesAgainstPageIdentities(t *testing.T) {
 					// table or page-relative arithmetic. Only holes merge: two
 					// published pages never share an identity.
 					for page, identity := range fixture.identities {
-						start := max(offset, uint64(page)*checkpoint.PageSize)
-						stop := min(end, min(size, uint64(page+1)*checkpoint.PageSize))
+						start := max(offset, uint64(page)*checkpoint.PageSize2MiB)
+						stop := min(end, min(size, uint64(page+1)*checkpoint.PageSize2MiB))
 						if start >= stop {
 							continue
 						}

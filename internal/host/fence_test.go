@@ -20,7 +20,7 @@ import (
 // fenceVolumes is the VM the fencing invariant runs on: four pages, so each
 // round writes one page and every page of the state names the writer that wrote
 // it.
-var fenceVolumes = []volume.VolumeSpec{{Name: "root", Size: 4 * checkpoint.PageSize}}
+var fenceVolumes = []volume.VolumeSpec{{Name: "root", Size: 4 * checkpoint.PageSize2MiB, PageSize: checkpoint.PageSize2MiB}}
 
 // fenceMarkerSize is the marker each round writes at the head of one page. A
 // page is published whole, so the marker is what the whole page is identified
@@ -40,7 +40,7 @@ func marker(writer string, round int) []byte {
 func writeMarker(t *testing.T, ctx context.Context, vm *volume.VM, writer string, round int) {
 	t.Helper()
 	page := uint64(round % 4)
-	err := vm.Volume("root").Write(ctx, page*checkpoint.PageSize, marker(writer, round))
+	err := vm.Volume("root").Write(ctx, page*checkpoint.PageSize2MiB, marker(writer, round))
 	if err != nil && !errors.Is(err, volume.ErrNeedsRecovery) {
 		t.Fatalf("%s writing round %d: %v", writer, round, err)
 	}
@@ -51,7 +51,7 @@ func writeMarker(t *testing.T, ctx context.Context, vm *volume.VM, writer string
 func markerAt(t *testing.T, ctx context.Context, vm *volume.VM, page uint64) string {
 	t.Helper()
 	buffer := make([]byte, fenceMarkerSize)
-	if err := vm.Volume("root").Read(ctx, page*checkpoint.PageSize, buffer); err != nil {
+	if err := vm.Volume("root").Read(ctx, page*checkpoint.PageSize2MiB, buffer); err != nil {
 		t.Fatal(err)
 	}
 	return string(bytes.TrimRight(buffer, "\x00"))

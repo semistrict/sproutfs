@@ -11,8 +11,8 @@ import (
 // twoRegionVolumes is a VM with more than one region, which is what makes a
 // migration something that can fail part way through giving them up.
 var twoRegionVolumes = []volume.VolumeSpec{
-	{Name: "ram0", Size: 4 * migrationPageSize},
-	{Name: "root", Size: 4 * migrationPageSize},
+	{Name: "ram0", Size: 4 * migrationPageSize, PageSize: migrationPageSize},
+	{Name: "root", Size: 4 * migrationPageSize, PageSize: migrationPageSize},
 }
 
 // TestAMigrationStoppedPartWayDiscardsTheVM. A migration gives each region's

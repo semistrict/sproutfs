@@ -62,8 +62,10 @@ Checkpoint objects are immutable and written create-if-absent. A checkpoint is
 one index object at `vm/<id>/ckpt/<seq>/index`, holding a fixed
 header, the page-table segments the checkpoint changed and the root over every
 volume's segments; and its parts at `vm/<id>/ckpt/<seq>/part/<n>`, holding the
-VMM state and the pages. The index format is 7 and the part layout is 4.
-Formats 5 and 6 of the index object held the root alone — 5 held the whole page
+VMM state and the pages. The index format is 8 and the part layout is 4.
+Format 7 stated no volume's page size, so its page numbers are 2 MiB pages and
+nothing else; formats 5 and 6 of the index object held the root alone — 5 held
+the whole page
 table in it — and part layouts 1 to 3 kept the root as the last member of the
 last part; none of them reads here, and a store written under any of them is
 refused with the version it carries named rather than migrated, exactly as an

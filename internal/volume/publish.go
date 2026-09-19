@@ -280,13 +280,14 @@ func (vm *VM) captureLocked(state []byte, sources map[string]DirtySource, force 
 		sources:     sources,
 		inherited:   vm.inherited,
 		sizes:       make(map[string]uint64, len(vm.names)),
+		geometry:    vm.geometries(),
 		position:    vm.applied,
 		state:       state,
 		hasState:    state != nil,
 		done:        make(chan struct{}),
 		swept:       make(chan struct{}),
 	}
-	ckpt.base = newSealedSource(vm.base, ckpt.ref, sources)
+	ckpt.base = newSealedSource(vm.base, ckpt.ref, sources, ckpt.geometry)
 	for ordinal, name := range vm.names {
 		ckpt.overlays[name] = vm.overlays[ordinal]
 		ckpt.sizes[name] = vm.volumes[ordinal].size
@@ -397,7 +398,8 @@ func (vm *VM) publish(ctx context.Context, ckpt *Checkpoint) (*checkpoint.Index,
 // pages it inherited from the point it was forked at, which it reads through
 // that point and publishes as its own.
 func publishedPages(ckpt *Checkpoint, name string) []uint64 {
-	return mergePages(changedPages(ckpt.overlays[name], ckpt.sources[name]), ckpt.inherited[name])
+	return mergePages(changedPages(ckpt.overlays[name], ckpt.sources[name], ckpt.geometry[name]),
+		ckpt.inherited[name])
 }
 
 // mergePages unions two ascending page lists.
@@ -420,9 +422,10 @@ func mergePages(a, b []uint64) []uint64 {
 
 // changedPages reports every page one volume of a checkpoint republishes, in
 // ascending order: the pages its overlay covers and the pages the pager sealed.
-// A pager page is a store page, so a sealed page number is a page number.
-func changedPages(overlay *extentIndex, source DirtySource) []uint64 {
-	written := dirtyPages(overlay)
+// A pager page is a store page, so a sealed page number is a page number of
+// this volume, in this volume's own page size.
+func changedPages(overlay *extentIndex, source DirtySource, geometry checkpoint.Geometry) []uint64 {
+	written := dirtyPages(overlay, geometry)
 	if source == nil {
 		return written
 	}

@@ -16,9 +16,10 @@ import (
 
 // Source supplies the whole contents of a page a publication is republishing.
 // ReadPage must fill dst with the page's contents as of the checkpoint; dst is
-// the page's length, which is shorter than PageSize for a volume's tail page.
-// It must fill all of it: the publication writes one page at a time into one
-// buffer it reuses, so bytes a source leaves untouched are the previous page's.
+// the page's length, which is the volume's own page size except for a tail page
+// shorter than one. It must fill all of it: the publication writes one page at
+// a time into one buffer it reuses, so bytes a source leaves untouched are the
+// previous page's.
 type Source interface {
 	ReadPage(ctx context.Context, volume string, page uint64, dst []byte) error
 }
@@ -33,10 +34,14 @@ type Source interface {
 // only unreferenced objects, and retrying with the same Ref is idempotent. A
 // Publication is not safe for concurrent use.
 type Publication struct {
-	store     *Store
-	parent    *Index
-	ref       control.Ref
+	store  *Store
+	parent *Index
+	ref    control.Ref
+	// sizes is each volume's size as this checkpoint publishes it, and geometry
+	// the page geometry each was created with, inherited from the parent and
+	// never changed by a publication: a volume's page size is fixed for its life.
 	sizes     map[string]uint64
+	geometry  map[string]Geometry
 	edits     map[string]map[uint64]bool
 	protected map[control.Ref]bool
 	// dirty is the segments of each volume whose page table this publication
@@ -63,11 +68,13 @@ type Publication struct {
 // as parent and its own ref.
 func (s *Store) Begin(parent *Index, ref control.Ref) *Publication {
 	p := &Publication{store: s, parent: parent, ref: ref,
-		sizes: make(map[string]uint64), edits: make(map[string]map[uint64]bool),
+		sizes: make(map[string]uint64), geometry: make(map[string]Geometry),
+		edits:     make(map[string]map[uint64]bool),
 		protected: make(map[control.Ref]bool), dirty: make(map[string]map[uint64]*segment)}
 	if parent != nil {
 		for _, name := range parent.names {
 			p.sizes[name] = parent.volumes[name].size
+			p.geometry[name] = parent.volumes[name].geometry
 		}
 	}
 	if !validName(ref.VM) || ref.Sequence == 0 {
@@ -87,14 +94,21 @@ func (p *Publication) Protect(sequences []uint64) {
 	}
 }
 
-// SetSize declares a volume's size, creating it when the parent had none and
-// truncating or extending it otherwise. Sizes must be whole numbers of pages.
-// Extending a volume exposes zeroes; truncating one only hides bytes, so a
-// caller that must not expose them again after a later extension zeroes the
-// pages itself.
+// SetSize truncates or extends a volume the parent already has. Sizes must be
+// whole numbers of sectors. Extending a volume exposes zeroes; truncating one
+// only hides bytes, so a caller that must not expose them again after a later
+// extension zeroes the pages itself.
+//
+// It cannot create a volume: a volume's geometry is chosen when it is created
+// and a resize inherits it, so a name the parent does not have is one this
+// publication could not say the page size of.
 func (p *Publication) SetSize(volume string, size uint64) {
 	if !validName(volume) || size%SectorSize != 0 {
 		p.fail(ErrInvalidConfig)
+		return
+	}
+	if _, known := p.geometry[volume]; !known {
+		p.fail(ErrUnknownVolume)
 		return
 	}
 	p.sizes[volume] = size
@@ -157,7 +171,12 @@ func (p *Publication) Commit(ctx context.Context, source Source) (*Index, error)
 	defer cancel()
 	index := newIndex(p.store, p.ref)
 	for name, size := range p.sizes {
-		index.volumes[name] = &volumeTable{size: size, segments: p.inherit(name, size)}
+		geometry := p.geometry[name]
+		if !geometry.supported() {
+			return nil, ErrInvalidConfig
+		}
+		index.volumes[name] = &volumeTable{size: size, geometry: geometry,
+			segments: p.inherit(name, size)}
 		index.names = append(index.names, name)
 	}
 	slices.Sort(index.names)
@@ -259,8 +278,9 @@ func (p *Publication) trim(ctx context.Context, index *Index) error {
 		if was == nil || was.size <= table.size || table.size == 0 {
 			continue
 		}
-		pages := (table.size + PageSize - 1) / PageSize
-		number := segmentOf(pages - 1)
+		geometry := table.geometry
+		pages := geometry.PageCount(table.size)
+		number := geometry.SegmentOf(pages - 1)
 		if _, addressed := table.segments[number]; !addressed {
 			continue
 		}
@@ -270,7 +290,7 @@ func (p *Publication) trim(ctx context.Context, index *Index) error {
 		}
 		cut := false
 		for relative := range held.pages {
-			if segmentBase(number)+uint64(relative) >= pages {
+			if geometry.SegmentBase(number)+uint64(relative) >= pages {
 				delete(held.pages, relative)
 				cut = true
 			}
@@ -311,15 +331,17 @@ func (p *Publication) writeSegments(ctx context.Context, object *indexObject, in
 // identical parts. A page that reads as all zeroes leaves the index instead: a
 // hole costs no member and reads back as the zeroes it holds.
 //
-// One page is read at a time, into one buffer the whole publication reuses: a
-// page is encoded into the part it belongs to before the next is read, so the
-// dirty set's size costs nothing here.
+// One page is read at a time, into one buffer a volume's pages share: a page is
+// encoded into the part it belongs to before the next is read, so the dirty
+// set's size costs nothing here. The buffer is one page of the volume being
+// written, because two volumes of one VM may have different page sizes.
 func (p *Publication) writeEdits(ctx context.Context, writer *partWriter, index *Index, source Source) error {
-	var buffer []byte
 	for _, name := range index.names {
 		table := index.volumes[name]
+		geometry := table.geometry
+		var buffer []byte
 		for _, number := range slices.Sorted(maps.Keys(p.edits[name])) {
-			_, span := pageSpan(table.size, number)
+			_, span := geometry.PageSpan(table.size, number)
 			if span == 0 {
 				return ErrInvalidRange
 			}
@@ -327,17 +349,17 @@ func (p *Publication) writeEdits(ctx context.Context, writer *partWriter, index 
 				return ErrInvalidConfig
 			}
 			if buffer == nil {
-				buffer = make([]byte, PageSize)
+				buffer = make([]byte, geometry.PageSize)
 			}
 			data := buffer[:span]
 			if err := source.ReadPage(ctx, name, number, data); err != nil {
 				return err
 			}
-			held, err := p.segmentFor(ctx, index, name, segmentOf(number))
+			held, err := p.segmentFor(ctx, index, name, geometry.SegmentOf(number))
 			if err != nil {
 				return err
 			}
-			relative := offsetIn(number)
+			relative := geometry.OffsetIn(number)
 			if isZero(data) {
 				if _, found := held.pages[relative]; !found {
 					continue
@@ -346,7 +368,7 @@ func (p *Publication) writeEdits(ctx context.Context, writer *partWriter, index 
 				// which is the whole record that it is gone: an absent page reads
 				// as the zeroes the guest wrote.
 				delete(held.pages, relative)
-				p.markDirty(name, segmentOf(number), held)
+				p.markDirty(name, geometry.SegmentOf(number), held)
 				continue
 			}
 			at, err := writer.add(ctx, name, number, memberPage, p.ref, data)
@@ -354,7 +376,7 @@ func (p *Publication) writeEdits(ctx context.Context, writer *partWriter, index 
 				return err
 			}
 			held.pages[relative] = at
-			p.markDirty(name, segmentOf(number), held)
+			p.markDirty(name, geometry.SegmentOf(number), held)
 		}
 	}
 	return nil
@@ -372,7 +394,7 @@ func (p *Publication) inherit(volume string, size uint64) map[uint64]segmentEntr
 	if table == nil {
 		return segments
 	}
-	count := segmentCount(size)
+	count := table.geometry.SegmentCount(size)
 	for number, entry := range table.segments {
 		if number < count {
 			segments[number] = entry
@@ -809,8 +831,8 @@ func (p *Publication) compact(ctx context.Context, writer *partWriter, index *In
 				if !rewriting[at.ref] {
 					continue
 				}
-				page := segmentBase(number) + uint64(relative)
-				data, release, err := p.store.loadPage(ctx, name, page, at)
+				page := table.geometry.SegmentBase(number) + uint64(relative)
+				data, release, err := p.store.loadPage(ctx, table.geometry, name, page, at)
 				if err != nil {
 					return err
 				}

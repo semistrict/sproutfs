@@ -136,7 +136,7 @@ func TestPlanRefusesAMachineItCannotBind(t *testing.T) {
 // configuration causes.
 func TestPlanRefusesAVMWithoutRAM(t *testing.T) {
 	manager := planManager(t)
-	vm, err := manager.Create(t.Context(), "diskless", []volume.VolumeSpec{{Name: "root", Size: 4 << 20}})
+	vm, err := manager.Create(t.Context(), "diskless", []volume.VolumeSpec{{Name: "root", Size: 4 << 20, PageSize: vmmemory.PageSize}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,10 +161,10 @@ func planConfig(vm *volume.VM) Config {
 func planVM(t *testing.T) *volume.VM {
 	t.Helper()
 	vm, err := planManager(t).Create(t.Context(), "planned", []volume.VolumeSpec{
-		{Name: RAMVolume, Size: 4 << 20},
-		{Name: "ram1", Size: 4 << 20},
-		{Name: "root", Size: 4 << 20},
-		{Name: "scratch", Size: 4 << 20},
+		{Name: RAMVolume, Size: 4 << 20, PageSize: vmmemory.PageSize},
+		{Name: "ram1", Size: 4 << 20, PageSize: vmmemory.PageSize},
+		{Name: "root", Size: 4 << 20, PageSize: vmmemory.PageSize},
+		{Name: "scratch", Size: 4 << 20, PageSize: vmmemory.PageSize},
 	})
 	if err != nil {
 		t.Fatal(err)

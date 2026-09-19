@@ -278,7 +278,7 @@ func cacheSizing(config Config) checkpoint.CacheConfig {
 		return cache
 	}
 	loads := clampToCPUs(1, minimumCacheLoads, maximumCacheLoads)
-	if arena := int(config.CacheBytes / checkpoint.PageSize); arena > 0 {
+	if arena := int(config.CacheBytes / checkpoint.PageSize2MiB); arena > 0 {
 		loads = min(loads, arena)
 	}
 	cache.MaxConcurrentLoads = max(loads, 1)

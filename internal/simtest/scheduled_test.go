@@ -107,8 +107,8 @@ func driveScheduledWorld(t *testing.T, runtime *sim.Runtime, scheduler *sim.Sche
 		func(ctx context.Context, region string) error {
 			return runtime.Admit(sim.WithTask(ctx, "post-copy/"+region), "peer/request")
 		})
-	specs := []volume.VolumeSpec{{Name: "disk", Size: 2 * simtest.PageSize},
-		{Name: "ram0", Size: 3 * simtest.PageSize}}
+	specs := []volume.VolumeSpec{{Name: "disk", Size: 2 * simtest.PageSize, PageSize: simtest.PageSize},
+		{Name: "ram0", Size: 3 * simtest.PageSize, PageSize: simtest.PageSize}}
 	topology := simtest.Topology{Hosts: []string{"host-0", "host-1", "host-2"},
 		VMs: []simtest.VMSpec{{ID: scheduledVMID, Host: 0, Volumes: specs}}}
 	k := knobs.Defaults()
@@ -179,8 +179,8 @@ func (m model) clone() model {
 func scheduledVolumeWorkload(t *testing.T, ctx context.Context, world *simtest.World,
 	scheduler *sim.Scheduler, seed uint64, reverse bool) {
 	t.Helper()
-	specs := []volume.VolumeSpec{{Name: "disk", Size: 2 * checkpoint.PageSize},
-		{Name: "ram", Size: 2 * checkpoint.PageSize}}
+	specs := []volume.VolumeSpec{{Name: "disk", Size: 2 * checkpoint.PageSize2MiB, PageSize: simtest.PageSize},
+		{Name: "ram", Size: 2 * checkpoint.PageSize2MiB, PageSize: simtest.PageSize}}
 	manager := world.Host(0).Volumes()
 	vm, err := manager.Create(ctx, scheduledVolumeID, specs)
 	if err != nil {
@@ -224,7 +224,7 @@ func scheduledVolumeWorkload(t *testing.T, ctx context.Context, world *simtest.W
 				t.Error(err)
 				return
 			}
-			write(vm, want, specs[i/2].Name, uint64(i%2)*checkpoint.PageSize, byte(seed%200)+byte(i)+1)
+			write(vm, want, specs[i/2].Name, uint64(i%2)*checkpoint.PageSize2MiB, byte(seed%200)+byte(i)+1)
 			if err := scheduler.Wait(ctx, fmt.Sprintf("volume/ack/%d", i), 0, 0); err != nil {
 				t.Error(err)
 				return
@@ -253,7 +253,7 @@ func scheduledVolumeWorkload(t *testing.T, ctx context.Context, world *simtest.W
 	}
 	forkModel := checkpointModel.clone()
 	write(vm, want, "disk", 0, 211)
-	write(fork, forkModel, "ram", checkpoint.PageSize, 212)
+	write(fork, forkModel, "ram", checkpoint.PageSize2MiB, 212)
 	if err := fork.Volume("disk").Discard(ctx, 0, checkpoint.SectorSize); err != nil {
 		t.Fatal(err)
 	}

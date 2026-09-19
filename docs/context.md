@@ -11,9 +11,16 @@ of durability: one identity, one control record, one series of checkpoints.
 **Volume**: One named byte-addressed image of a VM: its memory, `ram0`, or one
 of its PMEM disks. A volume's size is fixed for the VM's lifetime.
 
-**Page**: The 2 MiB unit of publication, of a fault and of resident ownership.
-It is the same size in the store, in the pager and on the wire, and is not
-configurable.
+**Page**: The unit of publication, of a fault and of resident ownership.
+
+**Geometry**: A volume's page size and how many of its pages one segment of its
+page table covers. The host chooses the page size when it creates the volume —
+4 KiB or 2 MiB, and nothing else — and it is recorded in every checkpoint of
+that volume and fixed for its life: a page number means nothing without it, so
+every reader divides by what the root recorded rather than by a constant of its
+own. The pager, the wire and the VMM still have one page, 2 MiB, so a volume of
+any other page size is refused when it is attached; RAM at 4 KiB is
+[planned](../plans/ram-pmem-page-geometry-2026-09-19.md) and not yet built.
 
 **Overlay**: What a VM has written through the volume package since its last
 checkpoint — image building and tests, never a pager — held in memory on the

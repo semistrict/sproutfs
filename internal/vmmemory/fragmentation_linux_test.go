@@ -204,10 +204,10 @@ func (b *patternBacking) Locate(ctx context.Context, offset, length uint64) ([]c
 	size := uint64(vmmemory.PageSize)
 	for pos := offset; pos < offset+length; {
 		_, written := b.values[pos/size]
-		stop := min(offset+length, (pos/checkpoint.PageSize+1)*checkpoint.PageSize)
+		stop := min(offset+length, (pos/checkpoint.PageSize2MiB+1)*checkpoint.PageSize2MiB)
 		id := control.Identity{Zero: true}
 		if written {
-			id = control.Identity{Ref: control.Ref{VM: b.vm, Sequence: 2}, Volume: "v", Page: pos / checkpoint.PageSize}
+			id = control.Identity{Ref: control.Ref{VM: b.vm, Sequence: 2}, Volume: "v", Page: pos / checkpoint.PageSize2MiB}
 		}
 		if n := len(result); n > 0 && result[n-1].Identity == id {
 			result[n-1].Length += stop - pos

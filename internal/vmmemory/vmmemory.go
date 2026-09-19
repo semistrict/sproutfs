@@ -112,6 +112,17 @@ type Backing interface {
 	Locate(context.Context, uint64, uint64) ([]control.Extent, error)
 }
 
+// PagedBacking is a Backing that states the page its volume is published in,
+// which *volume.Volume does. This pager has one page — PageSize — and every
+// number it faults, keys and serves is in it, so a backing whose volume is
+// published in another page size is refused when it is attached rather than
+// read in the wrong unit. A backing that states nothing is taken to be this
+// pager's page, which is what a test mapping and a peer backing over a volume
+// of this page are.
+type PagedBacking interface {
+	PageSize() uint64
+}
+
 // UnpublishedLoader is a Backing whose loads can return bytes its volume does
 // not hold. A migration destination's peer backing is one: the pages the source
 // host serves out of its own dirty pages are the guest's state since the

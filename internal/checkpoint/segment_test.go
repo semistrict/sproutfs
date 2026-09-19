@@ -39,8 +39,8 @@ func TestACheckpointWritesOnlyTheSegmentsItChanged(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		store := fixtureStore(t)
 		sizes := map[string]uint64{"disk": segmentVolumeSize}
-		pages := uint64(segmentVolumeSize / PageSize)
-		root, err := store.Root(t.Context(), control.Ref{VM: "seg", Sequence: 1}, sizes)
+		pages := uint64(segmentVolumeSize / PageSize2MiB)
+		root, err := store.Root(t.Context(), control.Ref{VM: "seg", Sequence: 1}, volumesAt(at2MiB, sizes))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -64,7 +64,7 @@ func TestACheckpointWritesOnlyTheSegmentsItChanged(t *testing.T) {
 		// root addresses them where they already are rather than writing them
 		// again.
 		table := secondIndex.volumes["disk"]
-		if got, want := len(table.segments), int(pages/segmentPages); got != want {
+		if got, want := len(table.segments), int(pages/at2MiB.SegmentPages); got != want {
 			t.Fatalf("the root addresses %d segments, want %d", got, want)
 		}
 		inOwnIndex := 0
@@ -130,14 +130,14 @@ func TestCompactionMeasuresLivenessFromTheRootAlone(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		store := fixtureStore(t)
 		sizes := map[string]uint64{"disk": segmentVolumeSize}
-		segments := uint64(segmentVolumeSize / PageSize / segmentPages)
-		root, err := store.Root(t.Context(), control.Ref{VM: "live", Sequence: 1}, sizes)
+		segments := uint64(segmentVolumeSize / PageSize2MiB / at2MiB.SegmentPages)
+		root, err := store.Root(t.Context(), control.Ref{VM: "live", Sequence: 1}, volumesAt(at2MiB, sizes))
 		if err != nil {
 			t.Fatal(err)
 		}
 		spread := store.Begin(root, control.Ref{VM: "live", Sequence: 2})
 		for number := range segments {
-			spread.Dirty("disk", segmentBase(number))
+			spread.Dirty("disk", at2MiB.SegmentBase(number))
 		}
 		first, err := spread.Commit(t.Context(), fillSource{value: 0x11})
 		if err != nil {
@@ -176,11 +176,11 @@ func TestCompactionMeasuresLivenessFromTheRootAlone(t *testing.T) {
 		}
 		// The page compaction rescued is still the one the middle checkpoint
 		// published, read through the part the last one moved it into.
-		page := make([]byte, PageSize)
-		if err := store.Read(t.Context(), third, "disk", 2*PageSize, page); err != nil {
+		page := make([]byte, PageSize2MiB)
+		if err := store.Read(t.Context(), third, "disk", 2*PageSize2MiB, page); err != nil {
 			t.Fatal(err)
 		}
-		if !bytes.Equal(page, bytes.Repeat([]byte{0x22}, PageSize)) {
+		if !bytes.Equal(page, bytes.Repeat([]byte{0x22}, PageSize2MiB)) {
 			t.Fatalf("the rescued page reads back as %#x...", page[:8])
 		}
 	})

@@ -123,14 +123,14 @@ func TestACheckpointReportsTheDirtySetItSealed(t *testing.T) {
 		vm, _ := createVM(t, manager, "vm")
 		defer vm.Close(t.Context())
 
-		sealed := sealedPages{size: checkpoint.PageSize, pages: []uint64{0, 2}, fill: 0x5a}
+		sealed := sealedPages{size: checkpoint.PageSize2MiB, pages: []uint64{0, 2}, fill: 0x5a}
 		ckpt, err := vm.Snapshot(t.Context(), volume.Prepared(nil,
 			map[string]volume.DirtySource{"root": sealed}))
 		if err != nil {
 			t.Fatal(err)
 		}
 		pages, bytes := ckpt.Sealed()
-		if pages != 2 || bytes != 2*checkpoint.PageSize {
+		if pages != 2 || bytes != 2*checkpoint.PageSize2MiB {
 			t.Fatalf("Sealed = %d pages, %d bytes", pages, bytes)
 		}
 		if err := ckpt.Wait(t.Context()); err != nil {

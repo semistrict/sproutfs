@@ -61,7 +61,7 @@ func TestAPublishedCheckpointIsAnIndexObjectAndItsParts(t *testing.T) {
 		store, runtime := tailStore(t)
 		ref := control.Ref{VM: "layout", Sequence: 2}
 		root, err := store.Root(t.Context(), control.Ref{VM: "layout", Sequence: 1},
-			map[string]uint64{"disk": 2 * PageSize})
+			volumesAt(at2MiB, map[string]uint64{"disk": 2 * PageSize2MiB}))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -90,9 +90,9 @@ func TestAPublishedCheckpointIsAnIndexObjectAndItsParts(t *testing.T) {
 func TestACheckpointWritesOnlyTheSegmentsItChangedIntoItsIndexObject(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		store := fixtureStore(t)
-		pages := uint64(segmentVolumeSize / PageSize)
+		pages := uint64(segmentVolumeSize / PageSize2MiB)
 		root, err := store.Root(t.Context(), control.Ref{VM: "layout", Sequence: 1},
-			map[string]uint64{"disk": segmentVolumeSize})
+			volumesAt(at2MiB, map[string]uint64{"disk": segmentVolumeSize}))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -116,7 +116,7 @@ func TestACheckpointWritesOnlyTheSegmentsItChangedIntoItsIndexObject(t *testing.
 			t.Fatalf("the second checkpoint holds %v, want its index object and one part", keys)
 		}
 		table := secondIndex.volumes["disk"]
-		if got, want := len(table.segments), int(pages/segmentPages); got != want {
+		if got, want := len(table.segments), int(pages/at2MiB.SegmentPages); got != want {
 			t.Fatalf("the root addresses %d segments, want %d", got, want)
 		}
 		own, inherited := 0, 0
@@ -130,9 +130,9 @@ func TestACheckpointWritesOnlyTheSegmentsItChangedIntoItsIndexObject(t *testing.
 				t.Fatalf("a segment is addressed in %v, which is neither checkpoint", entry.at.ref)
 			}
 		}
-		if own != 1 || inherited != int(pages/segmentPages)-1 {
+		if own != 1 || inherited != int(pages/at2MiB.SegmentPages)-1 {
 			t.Fatalf("the root addresses %d segments of its own and %d of its parent's, want 1 and %d",
-				own, inherited, int(pages/segmentPages)-1)
+				own, inherited, int(pages/at2MiB.SegmentPages)-1)
 		}
 		// The parts hold the dirty page and nothing else: no segment and
 		// no root is a member of a part any more.
@@ -149,7 +149,7 @@ func TestAnIndexObjectStaysUntilNoRootAddressesASegmentInIt(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		store := fixtureStore(t)
 		root, err := store.Root(t.Context(), control.Ref{VM: "held", Sequence: 1},
-			map[string]uint64{"disk": segmentVolumeSize})
+			volumesAt(at2MiB, map[string]uint64{"disk": segmentVolumeSize}))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -167,8 +167,8 @@ func TestAnIndexObjectStaysUntilNoRootAddressesASegmentInIt(t *testing.T) {
 		}
 		// One page in each of two segments, then one checkpoint per segment
 		// rewriting the page in it.
-		first := publish(root, 2, 0x11, segmentBase(0), segmentBase(1))
-		second := publish(first, 3, 0x22, segmentBase(0))
+		first := publish(root, 2, 0x11, at2MiB.SegmentBase(0), at2MiB.SegmentBase(1))
+		second := publish(first, 3, 0x22, at2MiB.SegmentBase(0))
 		firstKey := indexObjectKey(t, store, first.ref)
 		if entry := second.volumes["disk"].segments[1]; entry.at.ref != first.ref {
 			t.Fatalf("the second root addresses segment 1 in %v, want the first checkpoint", entry.at.ref)
@@ -179,7 +179,7 @@ func TestAnIndexObjectStaysUntilNoRootAddressesASegmentInIt(t *testing.T) {
 		if !objectPresent(t, store, firstKey) {
 			t.Fatal("a sweep deleted an index object the current root still addresses a segment in")
 		}
-		third := publish(second, 4, 0x33, segmentBase(1))
+		third := publish(second, 4, 0x33, at2MiB.SegmentBase(1))
 		if entry := third.volumes["disk"].segments[1]; entry.at.ref != third.ref {
 			t.Fatalf("the third root addresses segment 1 in %v, want its own index object", entry.at.ref)
 		}
@@ -223,7 +223,7 @@ func TestAPublicationInterruptedBeforeTheIndexObjectLeavesNoCheckpoint(t *testin
 		}
 		ref := control.Ref{VM: "torn", Sequence: 2}
 		root, err := store.Root(t.Context(), control.Ref{VM: "torn", Sequence: 1},
-			map[string]uint64{"disk": 3 * PageSize})
+			volumesAt(at2MiB, map[string]uint64{"disk": 3 * PageSize2MiB}))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -264,7 +264,7 @@ func TestCompactionMovesNoSegment(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		store := fixtureStore(t)
 		root, err := store.Root(t.Context(), control.Ref{VM: "compacting", Sequence: 1},
-			map[string]uint64{"disk": segmentVolumeSize})
+			volumesAt(at2MiB, map[string]uint64{"disk": segmentVolumeSize}))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -282,20 +282,20 @@ func TestCompactionMovesNoSegment(t *testing.T) {
 		}
 		var cold, wide []uint64
 		for page := range uint64(8) {
-			cold = append(cold, segmentBase(0)+page)
+			cold = append(cold, at2MiB.SegmentBase(0)+page)
 		}
 		for page := range uint64(4) {
-			wide = append(wide, segmentBase(1)+page)
+			wide = append(wide, at2MiB.SegmentBase(1)+page)
 		}
 		first := publish(root, 2, 0x11, append(append([]uint64{}, cold...), wide...)...)
 		// The middle checkpoint erases one page of segment 0, so its index object
 		// holds that segment while its parts hold only pages of segment 1.
 		middle := store.Begin(first, control.Ref{VM: "compacting", Sequence: 3})
-		middle.Dirty("disk", segmentBase(0))
+		middle.Dirty("disk", at2MiB.SegmentBase(0))
 		for _, page := range wide {
 			middle.Dirty("disk", page)
 		}
-		second, err := middle.Commit(t.Context(), erasingSource{erased: segmentBase(0), value: 0x22})
+		second, err := middle.Commit(t.Context(), erasingSource{erased: at2MiB.SegmentBase(0), value: 0x22})
 		if err != nil {
 			t.Fatal(err)
 		}

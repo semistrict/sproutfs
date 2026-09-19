@@ -109,6 +109,13 @@ func (h *Host) admit(ctx context.Context, region RegionBacking, mapping Mapping)
 	if size == 0 || size%uint64(PageSize) != 0 {
 		return nil, ErrConfig
 	}
+	// A volume published in another page size cannot be served here at all: a
+	// page number of it means something else, so it is refused before a mapping
+	// is armed rather than faulted in the wrong unit.
+	if paged, states := backing.(PagedBacking); states && paged.PageSize() != PageSize {
+		return nil, fmt.Errorf("%w: the volume is published in %d-byte pages, this pager's page is %d",
+			ErrConfig, paged.PageSize(), PageSize)
+	}
 	count := size / uint64(PageSize)
 	h.mu.Lock()
 	if h.err != nil {

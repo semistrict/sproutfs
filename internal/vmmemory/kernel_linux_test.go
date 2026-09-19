@@ -59,10 +59,10 @@ func (b *kernelBacking) Load(_ context.Context, off uint64, dst []byte) error {
 func (b *kernelBacking) Locate(_ context.Context, off, length uint64) ([]control.Extent, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	size := uint64(checkpoint.PageSize)
+	size := uint64(checkpoint.PageSize2MiB)
 	var extents []control.Extent
 	for cursor := off; cursor < off+length; cursor += size {
-		id := control.Identity{Ref: b.source, Volume: "v", Page: cursor / checkpoint.PageSize}
+		id := control.Identity{Ref: b.source, Volume: "v", Page: cursor / checkpoint.PageSize2MiB}
 		switch {
 		case b.private[cursor/vmmemory.PageSize]:
 			id.Ref = control.Ref{VM: b.owner, Sequence: 2}
@@ -444,8 +444,8 @@ func TestKVMVolumeCheckpointWithSpillRequiresAuthority(t *testing.T) {
 	h := kernelHost(t, 3, 16)
 	c := newPagerCluster(t)
 	vm, err := c.manager.Create(t.Context(), "vm", []volume.VolumeSpec{
-		{Name: "pmem0", Size: uint64(8 * vmmemory.PageSize)},
-		{Name: "ram0", Size: uint64(8 * vmmemory.PageSize)},
+		{Name: "pmem0", Size: uint64(8 * vmmemory.PageSize), PageSize: vmmemory.PageSize},
+		{Name: "ram0", Size: uint64(8 * vmmemory.PageSize), PageSize: vmmemory.PageSize},
 	})
 	if err != nil {
 		t.Fatal(err)

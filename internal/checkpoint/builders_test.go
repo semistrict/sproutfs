@@ -54,13 +54,13 @@ func TestLivePartBuildersAreBoundedHostWide(t *testing.T) {
 		names := make([]string, publications)
 		for index := range publications {
 			names[index] = "volume" + string(rune('a'+index))
-			sizes[names[index]] = 2 * checkpoint.PageSize
+			sizes[names[index]] = 2 * checkpoint.PageSize2MiB
 		}
-		root, err := store.Root(t.Context(), control.Ref{VM: "budget", Sequence: 1}, sizes)
+		root, err := store.Root(t.Context(), control.Ref{VM: "budget", Sequence: 1}, volumes2MiB(sizes))
 		if err != nil {
 			t.Fatal(err)
 		}
-		m := newModel(sizes)
+		m := newModel(volumes2MiB(sizes))
 		source := &heldSource{m: m, release: make(chan struct{}), seen: make(map[string]int)}
 
 		var wait sync.WaitGroup

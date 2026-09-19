@@ -38,7 +38,21 @@ func TestDirtySectorCountReportsEachSectorOnce(t *testing.T) {
 	if got := dirtySectorCount(overlay); got != 5 {
 		t.Fatalf("dirty sectors = %d, want 5", got)
 	}
-	if got := dirtyPages(overlay); len(got) != 1 || got[0] != 0 {
-		t.Fatalf("dirty pages = %v, want [0]", got)
+	// The same overlay covers one 2 MiB page and ten 4 KiB ones: what a
+	// checkpoint republishes is counted in the volume's own page.
+	large, err := checkpoint.GeometryFor(checkpoint.PageSize2MiB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := dirtyPages(overlay, large); len(got) != 1 || got[0] != 0 {
+		t.Fatalf("dirty 2 MiB pages = %v, want [0]", got)
+	}
+	small, err := checkpoint.GeometryFor(checkpoint.PageSize4KiB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := dirtyPages(overlay, small); len(got) != 5 ||
+		got[0] != 0 || got[3] != 3 || got[4] != 9 {
+		t.Fatalf("dirty 4 KiB pages = %v, want [0 1 2 3 9]", got)
 	}
 }

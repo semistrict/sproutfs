@@ -256,7 +256,7 @@ func (b *backing) Load(_ context.Context, off uint64, dst []byte) error {
 // identity is what names one page: a hole, this backing's own unpublished
 // overlay, or the checkpoint it inherited the page from.
 func (b *backing) identity(page uint64) control.Identity {
-	number := page * uint64(b.pageSize) / checkpoint.PageSize
+	number := page * uint64(b.pageSize) / checkpoint.PageSize2MiB
 	switch {
 	case b.zero[page]:
 		return control.Identity{Zero: true}

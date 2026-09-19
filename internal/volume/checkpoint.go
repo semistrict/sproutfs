@@ -38,9 +38,12 @@ type Checkpoint struct {
 	// forked, which it reads through that point and makes its own.
 	inherited map[string][]uint64
 	sizes     map[string]uint64
-	position  generation
-	state     []byte
-	hasState  bool
+	// geometry is each volume's page size and segment geometry, which is the
+	// unit every page number of that volume in this checkpoint is in.
+	geometry map[string]checkpoint.Geometry
+	position generation
+	state    []byte
+	hasState bool
 	// dropState publishes a checkpoint naming no VMM state rather than one that
 	// goes on naming its parent's, and resized the sizes this checkpoint gives
 	// the volumes it names. Both belong to a cold boot and to nothing else: the
@@ -73,17 +76,18 @@ func (c *Checkpoint) Ref() control.Ref { return c.ref }
 func (c *Checkpoint) State() []byte { return c.state }
 
 // Sealed reports what this checkpoint froze in the pager: the pages of every
-// volume that has one behind it, and their bytes. A page is checkpoint.PageSize,
-// so the byte count is the page count times that. It is the dirty set this
-// checkpoint publishes, known as soon as it is captured.
+// volume that has one behind it, and their bytes. Each volume's pages are its
+// own size, so the byte count sums them per volume rather than multiplying one
+// count by one page size. It is the dirty set this checkpoint publishes, known
+// as soon as it is captured.
 //
 // A volume written through this package rather than through a pager contributes
 // nothing here; its bytes are in the overlay.
 func (c *Checkpoint) Sealed() (pages int, bytes uint64) {
-	for _, source := range c.sources {
+	for name, source := range c.sources {
 		held := len(source.DirtyPages())
 		pages += held
-		bytes += uint64(held) * checkpoint.PageSize
+		bytes += uint64(held) * c.geometry[name].PageSize
 	}
 	return pages, bytes
 }
@@ -132,7 +136,8 @@ func (c *Checkpoint) locate(ctx context.Context, volume string, offset, length u
 		return nil, ErrUnknownVolume
 	}
 	// Every entry a checkpoint holds is published by that checkpoint.
-	return locateOverlay(ctx, c.base, c.overlays[volume], publisher{next: c.ref}, volume, offset, length)
+	return locateOverlay(ctx, c.base, c.overlays[volume], publisher{next: c.ref},
+		c.geometry[volume], volume, offset, length)
 }
 
 // retire ends every pager seal this checkpoint read from. A published
@@ -172,7 +177,8 @@ func (c *Checkpoint) finish(err error) {
 // bytes are the checkpoint's, never the VM's live state.
 type checkpointSource struct{ checkpoint *Checkpoint }
 
-// ReadPage implements checkpoint.Source.
+// ReadPage implements checkpoint.Source. The page number is in the volume's own
+// page size, which is the unit the publication asked for it in.
 func (s checkpointSource) ReadPage(ctx context.Context, volume string, page uint64, dst []byte) error {
-	return s.checkpoint.read(ctx, volume, page*checkpoint.PageSize, dst)
+	return s.checkpoint.read(ctx, volume, page*s.checkpoint.geometry[volume].PageSize, dst)
 }

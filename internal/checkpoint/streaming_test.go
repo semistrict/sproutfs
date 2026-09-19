@@ -19,7 +19,7 @@ import (
 // seals at, plus the part's table and trailer. Nothing in it scales with the
 // number of pages published.
 func partsBound(concurrency, partBytes int) int64 {
-	return int64(concurrency) * int64(partBytes+checkpoint.PageSize+64<<10)
+	return int64(concurrency) * int64(partBytes+checkpoint.PageSize2MiB+64<<10)
 }
 
 // A publication uploads its parts as they fill rather than at the end, so the
@@ -34,8 +34,8 @@ func TestPublicationHoldsAtMostItsSlotsWorthOfPackBytes(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		objects := &concurrencyStore{ObjectStore: sim.New(sim.Config{}).ObjectStore()}
 		store := mustStore(t, checkpoint.Config{ObjectStore: objects, Concurrency: concurrency, PartBytes: partBytes})
-		sizes := map[string]uint64{"root": pages * checkpoint.PageSize}
-		root, err := store.Root(t.Context(), control.Ref{VM: "streamed", Sequence: 1}, sizes)
+		sizes := map[string]uint64{"root": pages * checkpoint.PageSize2MiB}
+		root, err := store.Root(t.Context(), control.Ref{VM: "streamed", Sequence: 1}, volumes2MiB(sizes))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -66,9 +66,9 @@ func TestPublicationHoldsAtMostItsSlotsWorthOfPackBytes(t *testing.T) {
 			t.Fatalf("held %d bytes of part bodies at once, want at most %d", got, bound)
 		}
 		// The streamed parts are the parts a reader expects.
-		page, want := make([]byte, checkpoint.PageSize), make([]byte, checkpoint.PageSize)
+		page, want := make([]byte, checkpoint.PageSize2MiB), make([]byte, checkpoint.PageSize2MiB)
 		for _, number := range []uint64{0, pages - 1} {
-			if err := store.Read(t.Context(), index, "root", number*checkpoint.PageSize, page); err != nil {
+			if err := store.Read(t.Context(), index, "root", number*checkpoint.PageSize2MiB, page); err != nil {
 				t.Fatal(err)
 			}
 			if err := source.ReadPage(t.Context(), "root", number, want); err != nil {
@@ -93,8 +93,8 @@ func TestCompactionStreamsItsRewrites(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		objects := &concurrencyStore{ObjectStore: sim.New(sim.Config{}).ObjectStore()}
 		store := mustStore(t, checkpoint.Config{ObjectStore: objects, Concurrency: concurrency, PartBytes: partBytes})
-		sizes := map[string]uint64{"root": pages * checkpoint.PageSize}
-		root, err := store.Root(t.Context(), control.Ref{VM: "compacted", Sequence: 1}, sizes)
+		sizes := map[string]uint64{"root": pages * checkpoint.PageSize2MiB}
+		root, err := store.Root(t.Context(), control.Ref{VM: "compacted", Sequence: 1}, volumes2MiB(sizes))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -132,9 +132,9 @@ func TestCompactionStreamsItsRewrites(t *testing.T) {
 		if got, bound := objects.peakBytes.Load(), partsBound(concurrency, partBytes); got > bound {
 			t.Fatalf("held %d bytes of part bodies at once, want at most %d", got, bound)
 		}
-		page, want := make([]byte, checkpoint.PageSize), make([]byte, checkpoint.PageSize)
+		page, want := make([]byte, checkpoint.PageSize2MiB), make([]byte, checkpoint.PageSize2MiB)
 		for number, source := range map[uint64]checkpoint.Source{0: rewritten, pages - 1: original} {
-			if err := store.Read(t.Context(), index, "root", number*checkpoint.PageSize, page); err != nil {
+			if err := store.Read(t.Context(), index, "root", number*checkpoint.PageSize2MiB, page); err != nil {
 				t.Fatal(err)
 			}
 			if err := source.ReadPage(t.Context(), "root", number, want); err != nil {
@@ -206,8 +206,8 @@ func TestPublicationHeapIsBoundedByPartSizeNotDirtySet(t *testing.T) {
 	)
 	store := mustStore(t, checkpoint.Config{ObjectStore: sinkStore{}, Concurrency: concurrency, PartBytes: partBytes})
 	for _, pages := range []uint64{32, 128} {
-		sizes := map[string]uint64{"root": pages * checkpoint.PageSize}
-		root, err := store.Root(t.Context(), control.Ref{VM: "bounded", Sequence: pages}, sizes)
+		sizes := map[string]uint64{"root": pages * checkpoint.PageSize2MiB}
+		root, err := store.Root(t.Context(), control.Ref{VM: "bounded", Sequence: pages}, volumes2MiB(sizes))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -227,7 +227,7 @@ func TestPublicationHeapIsBoundedByPartSizeNotDirtySet(t *testing.T) {
 		}
 		growth := int64(source.peak) - int64(before.HeapAlloc)
 		t.Logf("%d pages (%d MiB) grew the heap by %d MiB at its peak",
-			pages, pages*checkpoint.PageSize>>20, growth>>20)
+			pages, pages*checkpoint.PageSize2MiB>>20, growth>>20)
 		if growth > bound {
 			t.Fatalf("publishing %d pages grew the heap by %d bytes, want at most %d", pages, growth, bound)
 		}

@@ -103,17 +103,22 @@ func (f *ForkPoint) UnpublishedAge(volume string) time.Duration {
 	return source.UnpublishedAge()
 }
 
-// ReadPage fills dst, exactly one page, with the bytes the fork point froze.
-// It is what the parent's page server serves a child on another host from, and
-// it neither contacts the network nor touches the parent's live state.
+// ReadPage fills dst, exactly one page of that volume, with the bytes the fork
+// point froze. It is what the parent's page server serves a child on another
+// host from, and it neither contacts the network nor touches the parent's live
+// state.
 func (f *ForkPoint) ReadPage(ctx context.Context, volume string, page uint64, dst []byte) error {
 	if f.checkpoint == nil {
 		return ErrUnknownVolume
 	}
-	if uint64(len(dst)) != checkpoint.PageSize {
+	geometry := f.checkpoint.geometry[volume]
+	if geometry.PageSize == 0 {
+		return ErrUnknownVolume
+	}
+	if uint64(len(dst)) != geometry.PageSize {
 		return ErrInvalidRange
 	}
-	return f.checkpoint.read(ctx, volume, page*checkpoint.PageSize, dst)
+	return f.checkpoint.read(ctx, volume, page*geometry.PageSize, dst)
 }
 
 // Hold takes one hold on this point, for a holder that will Retire it: a child
@@ -307,6 +312,7 @@ func (vm *VM) forkPoint(state []byte, sources map[string]DirtySource) (*ForkPoin
 		overlays:    make(map[string]*extentIndex, len(vm.names)),
 		sources:     sources,
 		sizes:       make(map[string]uint64, len(vm.names)),
+		geometry:    vm.geometries(),
 		position:    vm.applied,
 		state:       state,
 		hasState:    state != nil,
@@ -319,13 +325,13 @@ func (vm *VM) forkPoint(state []byte, sources map[string]DirtySource) (*ForkPoin
 	for _, source := range sources {
 		source.Hold()
 	}
-	ckpt.base = newSealedSource(vm.base, ckpt.ref, sources)
+	ckpt.base = newSealedSource(vm.base, ckpt.ref, sources, ckpt.geometry)
 	point := &ForkPoint{checkpoint: ckpt, ref: vm.baseIndex.Ref(), index: vm.baseIndex,
 		unpublished: make(map[string][]uint64, len(vm.names)), control: vm.control}
 	for ordinal, name := range vm.names {
 		ckpt.overlays[name] = vm.overlays[ordinal]
 		ckpt.sizes[name] = vm.volumes[ordinal].size
-		if pages := changedPages(ckpt.overlays[name], sources[name]); len(pages) > 0 {
+		if pages := changedPages(ckpt.overlays[name], sources[name], ckpt.geometry[name]); len(pages) > 0 {
 			point.unpublished[name] = pages
 		}
 	}

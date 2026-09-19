@@ -61,17 +61,18 @@ func (p publisher) ref(at generation) control.Ref {
 // belongs to the later checkpoint, which is the one that will publish the
 // bytes this view reads.
 //
-// Every reported extent lies inside one page, which is the identity a pager
-// keys a resident page by.
-func locateOverlay(ctx context.Context, parent source, overlay *extentIndex, owner publisher, volume string, offset, length uint64) ([]control.Extent, error) {
+// Every reported extent lies inside one page of this volume's own geometry,
+// which is the identity a pager keys a resident page by.
+func locateOverlay(ctx context.Context, parent source, overlay *extentIndex, owner publisher,
+	geometry checkpoint.Geometry, volume string, offset, length uint64) ([]control.Extent, error) {
 	end := offset + length
 	if length == 0 {
 		return nil, nil
 	}
 	written := make(map[uint64]generation)
 	for item := range overlay.between(offset, end) {
-		first := max(item.start, offset) / checkpoint.PageSize
-		last := (min(item.end, end) - 1) / checkpoint.PageSize
+		first := geometry.PageOf(max(item.start, offset))
+		last := geometry.PageOf(min(item.end, end) - 1)
 		for page := first; page <= last; page++ {
 			if at, seen := written[page]; !seen || item.generation > at {
 				written[page] = item.generation
@@ -86,8 +87,8 @@ func locateOverlay(ctx context.Context, parent source, overlay *extentIndex, own
 		}
 		result = append(result, next)
 	}
-	for page, last := offset/checkpoint.PageSize, (end-1)/checkpoint.PageSize; page <= last; page++ {
-		start, stop := max(offset, page*checkpoint.PageSize), min(end, (page+1)*checkpoint.PageSize)
+	for page, last := geometry.PageOf(offset), geometry.PageOf(end-1); page <= last; page++ {
+		start, stop := max(offset, page*geometry.PageSize), min(end, (page+1)*geometry.PageSize)
 		at, touched := written[page]
 		if touched {
 			add(control.Extent{Offset: start, Length: stop - start,
@@ -100,7 +101,7 @@ func locateOverlay(ctx context.Context, parent source, overlay *extentIndex, own
 				break
 			}
 			page++
-			stop = min(end, (page+1)*checkpoint.PageSize)
+			stop = min(end, (page+1)*geometry.PageSize)
 		}
 		extents, err := parent.locate(ctx, volume, start, stop-start)
 		if err != nil {

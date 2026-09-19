@@ -5,6 +5,37 @@ the root disk among them. All of them are published together in one
 [checkpoint](#checkpoints), which is the VM's entire durable state. A filesystem
 is not part of the storage abstraction.
 
+## Geometry
+
+Each volume is published in pages of its own size. Whoever creates the VM says
+which — 4 KiB or 2 MiB, and no other size is accepted — and that choice is
+recorded in every checkpoint of the volume and fixed for its life: a page number
+means nothing without a page size, so a checkpoint that changed one would rename
+every page of that volume. A volume's size is a whole number of 4 KiB sectors
+whatever its page size, so a 2 MiB-page volume may end in a short page and a
+4 KiB-page one never does.
+
+Nothing infers a volume's geometry from its name, and nothing divides a page
+number by a constant of the package doing the dividing: the root records the
+geometry of every volume, and a reader — locating a range, reading a page,
+summing what a checkpoint still holds, compacting it — divides by what it read
+there. A page identity is `(checkpoint, volume, page)` with the page number in
+that volume's own unit, so a store into one 4 KiB page renames that page and
+leaves its 511 neighbours in the same 2 MiB to the checkpoints that published
+them.
+
+A volume's geometry also says how many pages one segment of its page table
+covers: 256 at 2 MiB per page, 16,384 at 4 KiB. Both cover enough volume that
+the root stays about fifteen bytes per segment, and little enough that a segment
+encodes to a few hundred kilobytes at most — see
+[the layout](#objects) for what that costs per GiB.
+
+The pager, the wire protocols and the VMM still have one page, 2 MiB, so every
+volume a host creates today is a 2 MiB-page volume and a pager refuses one of
+any other page size when it is attached. Giving RAM a 4 KiB page end to end is
+[planned](../plans/ram-pmem-page-geometry-2026-09-19.md) and not yet built; the
+storage layer above is what that plan's second step left in place.
+
 ## Writes
 
 A write replaces one range in the VM's in-memory overlay and returns. A batched
@@ -45,14 +76,16 @@ round trip but a cold page fetch. `Load` is the same call under another name,
 for a pager whose fault path must not do anything else.
 
 `Locate` reports the page identity of every byte of a range as sorted
-adjacent extents covering it exactly, each inside one page. A page the overlay
+adjacent extents covering it exactly, each inside one page of that volume's own
+geometry. A page the overlay
 touched anywhere reports this VM's next checkpoint reference for all of it,
 because that is the checkpoint that will publish the whole page; it is private
 and unshared until then. Every other page reports the identity the checkpoint
 gives it, which a fork inherits unchanged.
 
 It takes a context and may fetch, because the page table is segmented: locating
-a page the overlay does not hold reads the 512 MiB segment it falls in, which is
+a page the overlay does not hold reads the segment it falls in — 512 MiB of a
+2 MiB-page volume, 64 MiB of a 4 KiB-page one — which is
 one member however many pages it names, and every later range inside that
 segment is answered from what the handle already holds. A range inside a segment
 no checkpoint has written costs nothing at all: an absent segment reads as
@@ -356,7 +389,7 @@ orchestrator can list the deployment's VMs without walking every checkpoint
 object they have written.
 
 A checkpoint writes what it changed into a few parts rather than one object per
-page, because a PUT per dirty 2 MiB page would cost a PUT per page per VM per
+page, because a PUT per dirty page would cost a PUT per page per VM per
 interval. A part is a concatenation of members — the VMM state, when the
 checkpoint saved one, then the changed pages in ascending volume-name and
 page-number order, then compaction's rescues — followed by a table naming every
@@ -383,7 +416,7 @@ Part layout version 4 is the current one; another version is refused from the
 trailer, before the table is parsed. The version sits sixteen bytes from the end
 of a part and the magic in the last eight, where every earlier layout put them,
 so a part whose trailer was a different size is still refused by the version it
-names rather than as a tail that is not a trailer. Index format 7 is the current
+names rather than as a tail that is not a trailer. Index format 8 is the current
 one, and its header carries it: an object at the index key that is not one of
 these is refused by the version it does carry, and a deployment written when the
 root was the last member of a part — a checkpoint with no index object at
@@ -398,35 +431,50 @@ it become mostly dead.
 
 A page is published whole or not at all, so the page table holds one entry per
 page that has bytes: the checkpoint that holds them, the part, and the member's
-extent within it. That table is split into **segments** of 256 pages — 512 MiB
-of volume — and a checkpoint writes the segments it changed into its own index
-object. The **root** ends that object, and it is what the checkpoint says about
-itself: per volume, one entry per segment giving the checkpoint that wrote the
+extent within it. That table is split into **segments** of as many pages as the
+volume's geometry says — 256 pages, 512 MiB, at 2 MiB per page, and 16,384
+pages, 64 MiB, at 4 KiB — and a checkpoint writes the segments it changed into
+its own index object. The **root** ends that object, and it is what the
+checkpoint says about itself: per volume, its size and its geometry, then one
+entry per segment giving the checkpoint that wrote the
 segment, where in that checkpoint's index object it is, and the checkpoints that
 segment's pages name. A checkpoint writes the segments whose page table it
 changed and keeps the parent's entry for every other, so it writes O(changed
-segments) of table rather than O(volume), and the root is fifteen bytes per 512
-MiB — about 120 KiB for a 4 TiB volume — whether one page changed or all of
+segments) of table rather than O(volume), whether one page changed or all of
 them.
+
+A root entry is fifteen bytes, so what a volume costs there follows from what
+one of its segments covers: two entries — thirty bytes — per GiB of a
+2 MiB-page volume, about 120 KiB for a 4 TiB one; sixteen entries, about 240
+bytes, per GiB of a 4 KiB-page volume. `maximumRootSize` of 2 MiB is therefore
+about 140,000 segments either way, which is 70 TiB of a 2 MiB-page volume and
+8.5 TiB of a 4 KiB-page one.
+
+A segment is about twenty bytes an entry, so one of a 4 KiB-page volume is about
+330 KiB — 560 KiB with every entry at its widest — against a few kilobytes at
+2 MiB per page. Both are inside the `maximumSegmentSize` of 1 MiB below, and
+both keep a segment one range read.
 
 An index object is a fixed 32-byte header naming the index format version and
 the root's offset and length, then the segments this checkpoint changed in
 volume-name and segment-number order, then the root. Opening a checkpoint is one
-GET of it. It is bounded at 64 MiB, which a fully dirty 4 TiB volume does not
-reach.
+GET of it. It is bounded at 64 MiB, which a fully dirty 4 TiB volume of 2 MiB
+pages does not reach; a checkpoint of a 4 KiB-page volume writes about 5 MiB of
+segments per GiB of it that it dirtied, so one that changed every page of more
+than about 12 GiB at once is refused. That is a bound on one checkpoint's dirty
+set and not on the volume: an interval checkpoint publishes what a guest wrote
+since the last one.
 
 A segment is complete on its own too: its own checkpoint list and origin list,
 with each page naming both by position and carrying its number relative to the
-segment's first page, about a dozen bytes an entry and at most a few kilobytes a
-segment. It is read as one range get on the index object of the checkpoint that
+segment's first page, about twenty bytes an entry. It is read as one range get on the index object of the checkpoint that
 wrote it, through the same page cache the pages use. A segment is *identified*
 by that checkpoint, its volume and its number — the way a page is identified by
 its origin, its volume and its number — and the cache keys it by that identity,
 so two roots addressing the same segment share one copy however each of them
 found it; the offset and length are only where to fetch it.
 `maximumSegmentSize` of 1 MiB bounds a segment, and `maximumRootSize` of 2 MiB
-bounds a root — about 140,000 segments, or 70 TiB of volume per VM, above which
-a publication is refused.
+bounds a root — about 140,000 segments, above which a publication is refused.
 
 The root is complete on its own: it lists every checkpoint it reads, including
 its parent's and, for a fork, its parent VM's, and each segment entry names the
@@ -443,7 +491,7 @@ An absent page reads as zeroes and so does every page of an absent segment; a
 page whose bytes are all zero is dropped rather than written, and the segment
 that named it is written again without it. That segment is the whole record that
 the page is gone, and a segment whose last page goes loses its entry altogether.
-Volume sizes are whole 4 KiB units, and every object is written with a
+Volume sizes are whole 4 KiB sectors whatever the page size, and every object is written with a
 create-if-absent condition, so a retried publication must produce byte-identical
 objects: members go into the parts as the VMM state, then each volume's changed
 pages in number order, then compaction's rescues; then the index object takes
@@ -456,14 +504,15 @@ was considered and decided against on 2026-09-16: it would cut upload volume
 for scattered small writes at the cost of chained reads, a larger index and
 either KVM dirty logging or a compare at upload, and the owner judged the
 saving not worth that. A sealed
-pager page is exactly one member: the pager's page and the store's page are the
-same 2 MiB unit, and the upload reads the page the guest was running on.
+pager page is exactly one member: a pager serves only volumes whose page is its
+own, so its page and the store's page are one unit, and the upload reads the
+page the guest was running on.
 
 Each member, the root among them, uses an independent raw-or-Zstandard envelope
 with decoded length and SHA-256 integrity verification. Raw fallback avoids
 expansion beyond the 48-byte envelope. Checksums verify what was read; a page's
 name stays the checkpoint that published it. A root is limited to 2 MiB decoded, VMM
-state to 64 MiB, and pages to 2 MiB. One part is bounded by what it can hold:
+state to 64 MiB, and a page to the page size of the volume it belongs to. One part is bounded by what it can hold:
 the size it is sealed at, plus the member that filled it, its table and its
 trailer. The codec uses fast Zstandard, a 1 MiB
 compression window, no external dictionary, and two pools of shared synchronous
@@ -478,8 +527,10 @@ or a reference reused for other contents — it does not read back what it wrote
 A part's bytes are raw and a retry's are identical, which is what makes the
 comparison exact; a member's envelope is inside those bytes and is never
 compared on its own. An object written without the attribute falls back to being
-read and compared. Index format 7 and part layout 4 are the layout above; the
-layouts before them, the deployments whose roots were the whole of an index
+read and compared. Index format 8 and part layout 4 are the layout above; the
+layouts before them — version 7 among them, whose roots state no volume's page
+size and whose page numbers are therefore 2 MiB pages and nothing else — the
+deployments whose roots were the whole of an index
 object, and the ones whose roots were part members, are all rejected. There is
 no data migration.
 
@@ -495,7 +546,7 @@ parent's object keys, its reads hit the entries the parent already loaded; there
 is no cache per VM.
 
 A miss issues one range read of the member the root located, decodes it, and
-copies the requested bytes out. A 2 MiB RAM or PMEM fault is exactly one page,
+copies the requested bytes out. A RAM or PMEM fault is exactly one page,
 so it is one range read whatever else its part holds. Concurrent misses for one
 object share a fetch, bounded by `MaxConcurrentLoads` — which a host sizes from
 its core count and its cache arena, 16 to 256 and never more pages than the

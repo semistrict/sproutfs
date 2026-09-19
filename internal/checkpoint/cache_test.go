@@ -74,12 +74,12 @@ func cachedFixture(t *testing.T, capacity int64, concurrency int) (*checkpoint.S
 	objects := &cacheStore{ObjectStore: sim.New(sim.Config{}).ObjectStore(), suspended: "/part/",
 		entered: make(chan struct{}, 64), release: make(chan struct{})}
 	store := mustStore(t, checkpoint.Config{ObjectStore: objects, Cache: cache})
-	sizes := map[string]uint64{"root": cachedPages * checkpoint.PageSize}
-	root, err := store.Root(t.Context(), control.Ref{VM: "cached", Sequence: 1}, sizes)
+	sizes := map[string]uint64{"root": cachedPages * checkpoint.PageSize2MiB}
+	root, err := store.Root(t.Context(), control.Ref{VM: "cached", Sequence: 1}, volumes2MiB(sizes))
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := newModel(sizes)
+	m := newModel(volumes2MiB(sizes))
 	p := store.Begin(root, control.Ref{VM: "cached", Sequence: 2})
 	for page := range uint64(cachedPages) {
 		for sector := range uint32(sectorsPerPage) {
@@ -96,11 +96,11 @@ func cachedFixture(t *testing.T, capacity int64, concurrency int) (*checkpoint.S
 
 func readCachedPage(t *testing.T, store *checkpoint.Store, index *checkpoint.Index, m *model, page uint64) {
 	t.Helper()
-	got := make([]byte, checkpoint.PageSize)
-	if err := store.Read(t.Context(), index, "root", page*checkpoint.PageSize, got); err != nil {
+	got := make([]byte, checkpoint.PageSize2MiB)
+	if err := store.Read(t.Context(), index, "root", page*checkpoint.PageSize2MiB, got); err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(got, m.contents["root"][page*checkpoint.PageSize:(page+1)*checkpoint.PageSize]) {
+	if !bytes.Equal(got, m.contents["root"][page*checkpoint.PageSize2MiB:(page+1)*checkpoint.PageSize2MiB]) {
 		t.Fatalf("page %d differs from the model", page)
 	}
 }
@@ -164,7 +164,7 @@ func TestCacheLRUEvictionUnderSharedPressureAndClear(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		// Three pages of budget hold exactly two entries once the per-entry
 		// bookkeeping charge is counted.
-		store, index, m, cache, objects := cachedFixture(t, 3*checkpoint.PageSize, 2)
+		store, index, m, cache, objects := cachedFixture(t, 3*checkpoint.PageSize2MiB, 2)
 		readCachedPage(t, store, index, m, 0)
 		readCachedPage(t, store, index, m, 1)
 		readCachedPage(t, store, index, m, 0)
@@ -202,9 +202,9 @@ func TestCacheCoalescesMissesAndSurvivesOneCallerLeaving(t *testing.T) {
 		cause := errors.New("reader left")
 		first := make(chan error, 1)
 		second := make(chan error, 1)
-		go func() { first <- store.Read(ctx, index, "root", checkpoint.PageSize, make([]byte, 1)) }()
+		go func() { first <- store.Read(ctx, index, "root", checkpoint.PageSize2MiB, make([]byte, 1)) }()
 		<-objects.entered
-		go func() { second <- store.Read(t.Context(), index, "root", checkpoint.PageSize, make([]byte, 1)) }()
+		go func() { second <- store.Read(t.Context(), index, "root", checkpoint.PageSize2MiB, make([]byte, 1)) }()
 		synctest.Wait()
 		cancel(cause)
 		if err := <-first; !errors.Is(err, cause) {
@@ -236,7 +236,7 @@ func TestCacheBoundsLoadsAndCancelsAbandonedWork(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
 		done := make(chan error, cachedPages-1)
 		for page := uint64(1); page < cachedPages; page++ {
-			go func() { done <- store.Read(ctx, index, "root", page*checkpoint.PageSize, make([]byte, 1)) }()
+			go func() { done <- store.Read(ctx, index, "root", page*checkpoint.PageSize2MiB, make([]byte, 1)) }()
 		}
 		synctest.Wait()
 		if stats := cache.Stats(); stats.ActiveLoads != 2 || stats.PeakLoads != 2 || objects.gets.Load() != 3 {
@@ -263,7 +263,7 @@ func TestCacheClearDoesNotRepopulateFromOldLoads(t *testing.T) {
 		readCachedPage(t, store, index, m, 0)
 		objects.block.Store(true)
 		done := make(chan error, 1)
-		go func() { done <- store.Read(t.Context(), index, "root", checkpoint.PageSize, make([]byte, 1)) }()
+		go func() { done <- store.Read(t.Context(), index, "root", checkpoint.PageSize2MiB, make([]byte, 1)) }()
 		<-objects.entered
 		cache.Clear()
 		close(objects.release)

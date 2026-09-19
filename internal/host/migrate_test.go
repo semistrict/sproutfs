@@ -25,7 +25,7 @@ const migrationPageSize = vmmemory.PageSize
 
 // migrationVolumes is the VM every migration test runs: one RAM volume, which is
 // all the host wiring needs to move.
-var migrationVolumes = []volume.VolumeSpec{{Name: "ram0", Size: 8 * migrationPageSize}}
+var migrationVolumes = []volume.VolumeSpec{{Name: "ram0", Size: 8 * migrationPageSize, PageSize: migrationPageSize}}
 
 // pageArena is the simulated page store of one host's pager.
 type pageArena struct {

@@ -35,7 +35,7 @@ func TestPopulationOrdersRelatedIdentitiesWithoutBlockingOtherPagers(t *testing.
 	}
 	// Related populations can also cross storage pages while sharing the
 	// same volume and generation. The lock order must stay consistent there.
-	perPage := checkpoint.PageSize / pageSize
+	perPage := checkpoint.PageSize2MiB / pageSize
 	pages := make([]control.Identity, perPage+1)
 	for page := range pages {
 		pages[page] = identity("ancestor", 1, "a")

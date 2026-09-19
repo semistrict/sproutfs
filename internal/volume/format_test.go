@@ -34,7 +34,7 @@ var update = flag.Bool("update", false, "rewrite the format fixtures under testd
 // it, and supersededDeployments are the dumps committed before this one, each
 // with the version it was written under — the bytes an older build actually
 // wrote, which is the only thing that makes them worth keeping.
-const fixtureDeployment = "testdata/deployment-record-4-index-7-part-4"
+const fixtureDeployment = "testdata/deployment-record-4-index-8-part-4"
 
 var supersededDeployments = []struct {
 	dir string
@@ -52,6 +52,10 @@ var supersededDeployments = []struct {
 		want: "checkpoint index format version 6"},
 	{dir: "testdata/deployment-record-4-part-3", sentinel: checkpoint.ErrCorrupt,
 		want: "checkpoint part format version 3"},
+	// The set before this one: its roots state no volume's page size, so every
+	// page number in them is a 2 MiB page and nothing else may read them.
+	{dir: "testdata/deployment-record-4-index-7-part-4", sentinel: checkpoint.ErrCorrupt,
+		want: "checkpoint index format version 7"},
 }
 
 // objectsDir and manifestFile are the two halves of a fixture: the store's
@@ -66,8 +70,8 @@ const (
 // page and a tail — so the fixture is a few kilobytes and every page of it can
 // be read back and compared byte for byte.
 var fixtureSpecs = []volume.VolumeSpec{
-	{Name: "disk", Size: 3 * checkpoint.SectorSize},
-	{Name: "ram", Size: checkpoint.SectorSize},
+	{Name: "disk", Size: 3 * checkpoint.SectorSize, PageSize: checkpoint.PageSize2MiB},
+	{Name: "ram", Size: checkpoint.SectorSize, PageSize: checkpoint.PageSize2MiB},
 }
 
 const (

@@ -95,9 +95,12 @@ func (s *supervisor) templateOf(ctx context.Context, name string, chosen Templat
 	}
 	prepared, err := s.host.TemplateOf(ctx, TemplateImport{
 		Image: name,
+		// Both volumes are published in the pager's own page: a template is
+		// forked into VMs this host runs, and a region it could not serve is a
+		// VM it could not start.
 		Volumes: []volume.VolumeSpec{
-			{Name: vmmachine.RAMVolume, Size: chosen.MemoryBytes},
-			{Name: rootVolume, Size: size},
+			{Name: vmmachine.RAMVolume, Size: chosen.MemoryBytes, PageSize: vmmemory.PageSize},
+			{Name: rootVolume, Size: size, PageSize: vmmemory.PageSize},
 		},
 		Root: rootVolume, Source: file,
 	})

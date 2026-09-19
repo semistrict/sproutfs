@@ -38,7 +38,7 @@ func premortemCheck(t *testing.T, h *harness, what string) {
 // writePage puts one value over the first sector of one page of a VM.
 func writePage(t *testing.T, vm *volume.VM, page uint64, value byte) {
 	t.Helper()
-	if err := vm.Volume("root").Write(t.Context(), page*checkpoint.PageSize,
+	if err := vm.Volume("root").Write(t.Context(), page*checkpoint.PageSize2MiB,
 		bytes.Repeat([]byte{value}, checkpoint.SectorSize)); err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,7 @@ func TestPremortemRoundsOfForksOffOneParentLeaveEveryDescendantWhole(t *testing.
 		defer manager.Close(t.Context())
 		parent, write := forkedParent(t, h, manager, "vm")
 		write(0, 1)
-		write(checkpoint.PageSize, 2)
+		write(checkpoint.PageSize2MiB, 2)
 		if err := parent.Checkpoint(t.Context()); err != nil {
 			t.Fatal(err)
 		}
@@ -181,7 +181,7 @@ func TestPremortemDeletingAParentThenAChildLeavesACheckableDeployment(t *testing
 		defer manager.Close(t.Context())
 		parent, write := forkedParent(t, h, manager, "vm")
 		write(0, 1)
-		write(checkpoint.PageSize, 2)
+		write(checkpoint.PageSize2MiB, 2)
 		if err := parent.Checkpoint(t.Context()); err != nil {
 			t.Fatal(err)
 		}
@@ -263,7 +263,7 @@ func checkPages(t *testing.T, vm *volume.VM, what string, want [2]byte) {
 	t.Helper()
 	for page, value := range want {
 		got := make([]byte, checkpoint.SectorSize)
-		if err := vm.Volume("root").Read(t.Context(), uint64(page)*checkpoint.PageSize, got); err != nil {
+		if err := vm.Volume("root").Read(t.Context(), uint64(page)*checkpoint.PageSize2MiB, got); err != nil {
 			t.Fatalf("%s: reading page %d: %v", what, page, err)
 		}
 		if !bytes.Equal(got, bytes.Repeat([]byte{value}, checkpoint.SectorSize)) {
@@ -277,5 +277,5 @@ func checkPages(t *testing.T, vm *volume.VM, what string, want [2]byte) {
 func readsPages(t *testing.T, h *harness, id string, want [2]byte) {
 	t.Helper()
 	readsPage(t, h, id, 0, want[0])
-	readsPage(t, h, id, checkpoint.PageSize, want[1])
+	readsPage(t, h, id, checkpoint.PageSize2MiB, want[1])
 }

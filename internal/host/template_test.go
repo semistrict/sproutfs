@@ -22,7 +22,7 @@ import (
 // templateVolumes are a template's two volumes: the RAM a VM forked from it
 // gets, which reads as the zeroes a cold boot starts from, and the root the
 // guest image is written into.
-var templateVolumes = []volume.VolumeSpec{{Name: "ram0", Size: 8192}, {Name: "root", Size: 8192}}
+var templateVolumes = []volume.VolumeSpec{{Name: "ram0", Size: 8192, PageSize: migrationPageSize}, {Name: "root", Size: 8192, PageSize: migrationPageSize}}
 
 // guestImage is a guest image's bytes: enough of them to be a page nobody could
 // mistake for the zeroes an untouched volume reads as, so a checkpoint of it
