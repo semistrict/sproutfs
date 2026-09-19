@@ -218,7 +218,13 @@ func NewPeerBacking(config PeerConfig) (*PeerBacking, error) {
 	return b, nil
 }
 
-func (b *PeerBacking) Size() uint64                     { return b.config.Volume.Size() }
+func (b *PeerBacking) Size() uint64 { return b.config.Volume.Size() }
+
+// PageSize is the volume's own, which is what this backing's page numbers are
+// in: it stands in front of the volume rather than changing its geometry, so a
+// pager whose page is a different size refuses it exactly as it refuses the
+// volume.
+func (b *PeerBacking) PageSize() uint64                 { return b.config.Volume.PageSize() }
 func (b *PeerBacking) Verify(ctx context.Context) error { return b.config.Volume.Verify(ctx) }
 
 // Locate reports the volume's own identities everywhere except the pages the source
