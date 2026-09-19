@@ -142,7 +142,7 @@ group was subsequently verified to have no remaining members.
 Three of the four newly passing programs now fail focused regressions:
 `84cc54443a6b` and `bdd64961b568` are detected by collection-cadence assertions
 through `StartNetwork`; `5fecb781eb9b` is detected by checking that a checkpoint
-preserves an untouched page's lineage between two disjoint writes. Byte equality
+preserves an untouched page's identity between two disjoint writes. Byte equality
 alone had allowed the latter mutation to rewrite unchanged data under a new
 identity. The remaining program changes the drain-result comparator and needs
 further review. The 14 original Linux timeouts also remain under investigation.

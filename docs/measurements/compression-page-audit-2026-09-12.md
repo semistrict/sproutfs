@@ -11,7 +11,7 @@ legacy readers are deliberately absent.
 | --- | --- | --- |
 | Fault read-ahead | The old maximum of 4,096 pages allowed an 8 GiB scratch range at 2 MiB per page. | Cap the byte range at 16 MiB, including region overrides: eight production pages. |
 | Initial population | A 65,536-page window grew from 256 MiB to 128 GiB and could enumerate millions of storage extents. | Derive the page count from a 256 MiB byte window. |
-| Immutable resident identity | A production page previously combined two 1 MiB chunk identities. | One 2 MiB chunk identifies a production page. Mixed delta lineage cannot share a whole page. |
+| Immutable resident identity | A production page previously combined two 1 MiB chunk identities. | One 2 MiB chunk identifies a production page. A page of mixed identities cannot share a whole page. |
 | Storage deltas | Doubling a chunk doubles its 4 KiB page count. | 512 pages, a 64-byte bitmap, and updated format version and generated schema. Exercise the final bitmap bit. |
 | Flush defaults | A full chunk now needs 512 pages in the 4 KiB model, beyond the old 256-page validator. | Allow 512 pages while retaining the 2 MiB byte bound. Production flushes one page. |
 | Native test policies | Fixed 32/64-page read-ahead policies exceeded the restored byte bound. | Use eight production pages; retain fault-count and byte-content assertions. |
@@ -19,7 +19,7 @@ legacy readers are deliberately absent.
 | Subpage test markers | A one-byte ordinal repeats after 1 MiB, allowing swapped halves to evade comparison. | Add the high ordinal byte to distinguish every subpage in both simulated spill and real-guest pressure checks. |
 | Fixture geometry | Some tests' old 1 MiB offsets and sizes no longer crossed a storage boundary. | Express boundary fixtures using `image.ChunkSize`; explicitly retain old-half-boundary and final-subpage reads. |
 
-The scan covered Go pager geometry, lineage, copy-on-write, spill, flush,
+The scan covered Go pager geometry, page identity, copy-on-write, spill, flush,
 capture, migration, storage indexes and caches; Rust mapping alignment and
 protocol ranges; Firecracker RAM/PMEM mapping and capture; and scripts and
 native fixtures. Integer counts were checked against their consumers rather
