@@ -5,6 +5,11 @@ across all of them is collected in [open-work.md](../docs/open-work.md).
 
 ## Designs under way
 
+- [2026-09-19 RAM and PMEM page geometry](ram-pmem-page-geometry-2026-09-19.md)
+  — separate arenas and volume geometry; 4 KiB RAM ownership and writes with
+  2 MiB read-only mapping batches; PMEM stays 2 MiB on HugeTLB, unchanged. No
+  stored data is converted: the formats' versions are bumped.
+  **Planned; not implemented.**
 - [2026-09-14 repository layout](layout-2026-09-14.md) — nothing in the module is
   a library, so every package but `cmd` moves under `internal/`, the large
   packages gain nested `internal` bodies, `image` becomes `checkpoint`, and
