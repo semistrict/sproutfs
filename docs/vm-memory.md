@@ -122,7 +122,9 @@ must budget their combined resident capacity.
 
 Read-ahead and write-ahead select one page when a configuration leaves them
 zero, which is no read-ahead and no write-ahead. A store page is the same 2 MiB
-unit, so a sealed pager page is exactly one member of a checkpoint's part.
+unit — a volume is published in a page size of its own, and one whose page is
+not this pager's is refused when it is attached — so a sealed pager page is
+exactly one member of a checkpoint's part.
 Read-ahead is one host policy, a power of two capped at 16 MiB (eight pages);
 no region overrides it. Population walks metadata in at most 256 MiB windows,
 independent of pager size. The Linux transport also bounds pending faults,

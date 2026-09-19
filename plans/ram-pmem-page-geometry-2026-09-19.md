@@ -1,6 +1,6 @@
 # RAM and PMEM page geometry — 2026-09-19
 
-**Status: planned; no implementation changes.**
+**Status: step 2 is implemented; steps 1 and 3 to 7 are planned.**
 
 ## Decision
 
@@ -127,7 +127,7 @@ memory savings and workload time together.
    Record an unchanged baseline using the existing workload flow. Keep
    cumulative identity hits and COW events as separate counters.
 
-2. **Make volume geometry durable.** Extend volume specifications and
+2. **Make volume geometry durable. Done.** Extend volume specifications and
    checkpoint volume metadata with a validated page size. Carry it through
    create, open, fork, cold boot/resize and compaction. Update overlay dirty
    enumeration, `Locate`, page identity offsets, publication and reads to use
@@ -140,6 +140,36 @@ memory savings and workload time together.
    keeping 512 MiB coverage instead requires 131,072 entries. Audit root and
    segment size limits, metadata budgets and supported VM sizes before fixing
    the layout. Do not silently reduce supported capacity by a factor of 512.
+
+   **What was built.** `checkpoint.Geometry` is a volume's page size and the
+   pages one segment of its page table covers; `checkpoint.GeometryFor` accepts
+   4 KiB and 2 MiB and refuses everything else with `ErrInvalidConfig`. A
+   volume's page size is stated in its `VolumeSpec` when the VM is created,
+   recorded in the root beside the volume's size, read back from there by every
+   reader, and inherited by open, fork, cold boot and compaction; nothing infers
+   it from a volume's name. Index format 8 carries it, and a version 7 root is
+   refused with the version it names before anything is mapped or served. The
+   part layout did not change.
+
+   **Segment geometry chosen:** 256 pages at 2 MiB per page, unchanged at
+   512 MiB of volume per segment, and 16,384 pages at 4 KiB, which is 64 MiB
+   per segment. That is sixteen root entries — about 240 bytes — per GiB of a
+   4 KiB-page volume, an encoded segment of about 330 KiB and at most 560 KiB
+   against a `maximumSegmentSize` of 1 MiB, and a `maximumRootSize` of 2 MiB
+   that admits about 8.5 TiB of such a volume. `maximumIndexSize` is the one
+   bound a small page brings within reach: a checkpoint writes about 5 MiB of
+   segments per GiB of a 4 KiB-page volume it dirtied, so one that changed
+   every page of more than about 12 GiB at once is refused. That bounds one
+   checkpoint's dirty set rather than the volume, and step 6 is where the
+   packing that would relieve it belongs.
+
+   The pager, the wire protocols and the VMM are untouched, so every volume a
+   host creates is still a 2 MiB-page volume and the pager refuses one of any
+   other page size when it is attached. The simulation campaigns run through
+   that pager, so they stay at 2 MiB; a 4 KiB-page volume goes through
+   checkpoints, forks, compaction and reclamation in `internal/volume` and
+   `internal/checkpoint` instead, and reaches the campaigns when step 3 gives
+   the pager its own geometry.
 
 3. **Separate pager instances and arenas.** Parameterize `internal/vmmemory`
    by a fixed page size per instance, including its arena, spill slots,
@@ -186,7 +216,8 @@ There is no stored data to keep, so nothing is converted. Bump the version of
 the checkpoint index and of the mapping and handoff formats, so an old 2 MiB
 RAM page number cannot be read as a 4 KiB page number; a reader given an
 earlier version fails clearly, before a guest starts, and that is the whole of
-its support for one. Regenerate protocol code from its source
+its support for one. The checkpoint index is at version 8, which is the store's
+half of this and is done; the mapping and handoff formats are steps 4 and 5. Regenerate protocol code from its source
 schemas with the repository's generator; do not edit generated files.
 
 ## Acceptance

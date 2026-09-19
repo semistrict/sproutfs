@@ -9,7 +9,8 @@ across all of them is collected in [open-work.md](../docs/open-work.md).
   — separate arenas and volume geometry; 4 KiB RAM ownership and writes with
   2 MiB read-only mapping batches; PMEM stays 2 MiB on HugeTLB, unchanged. No
   stored data is converted: the formats' versions are bumped.
-  **Planned; not implemented.**
+  **Step 2 is done — a volume carries its own page size, 4 KiB or 2 MiB,
+  recorded in its checkpoints at index format 8 — and the rest is planned.**
 - [2026-09-14 repository layout](layout-2026-09-14.md) — nothing in the module is
   a library, so every package but `cmd` moves under `internal/`, the large
   packages gain nested `internal` bodies, `image` becomes `checkpoint`, and
