@@ -212,10 +212,10 @@ func (m *mapping) Resolve(_ context.Context, page uint64, count int, writable bo
 
 // backing models one volume of a VM. Its untouched pages are inherited from one
 // checkpoint reference shared by every region of a fixture, so equal page
-// numbers of two backings report equal lineage identities exactly as two forks
+// numbers of two backings report equal page identities exactly as two forks
 // of one checkpoint do. A write makes a page private to this backing's own next
-// checkpoint until the test publishes it, which is when those bytes acquire a
-// lineage of their own.
+// checkpoint until the test publishes it, which is when those bytes acquire an
+// identity of their own.
 type backing struct {
 	mu                   sync.Mutex
 	pageSize             int // the pager page; the unit of private, zero and every extent
@@ -227,7 +227,7 @@ type backing struct {
 	loads, loadedBytes   int
 	onLoad               func(uint64, int)
 	failVerify, failRead bool
-	// onLocate runs before a page's stored lineage is reported, which is what
+	// onLocate runs before a page's stored identity is reported, which is what
 	// retiring a page of a checkpoint consults. A test uses it to stop a
 	// publication exactly where the page belongs to neither the guest nor the
 	// checkpoint.
@@ -253,7 +253,7 @@ func (b *backing) Load(_ context.Context, off uint64, dst []byte) error {
 	return nil
 }
 
-// identity is the lineage of one page: a hole, this backing's own unpublished
+// identity is what names one page: a hole, this backing's own unpublished
 // overlay, or the checkpoint it inherited the page from.
 func (b *backing) identity(page uint64) control.Identity {
 	number := page * uint64(b.pageSize) / checkpoint.PageSize
@@ -296,7 +296,7 @@ func extentsOf(off, length, grain uint64, identity func(offset uint64) control.I
 // a fresh checkpoint reference of this backing's own. It is what selecting a
 // checkpoint does to a volume: every page it carried belongs to that checkpoint
 // from now on, and a pager retiring its checkpoint against it shares those
-// pages by that lineage.
+// pages by that identity.
 func (b *backing) publish() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -439,7 +439,7 @@ func (f *fixture) newBacking(pages int) *backing {
 }
 
 // newUnrelatedBacking returns a backing whose bytes are identical but whose
-// lineage is not: nothing about it may be shared with the fixture's regions.
+// page identities are not: nothing about it may be shared with the fixture's regions.
 func (f *fixture) newUnrelatedBacking(pages int) *backing {
 	b := f.newBacking(pages)
 	b.source = control.Ref{VM: b.owner + "-unrelated", Sequence: 1}
@@ -646,7 +646,7 @@ func TestAmbiguousMappingFailurePinsUntilProcessExit(t *testing.T) {
 	}
 }
 
-func TestSharedLineageStillChecksWriterAuthority(t *testing.T) {
+func TestASharedPageStillChecksWriterAuthority(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newFixture(t, 2, 2, 2)
 		a, am, ab := f.region(1)
@@ -654,7 +654,7 @@ func TestSharedLineageStillChecksWriterAuthority(t *testing.T) {
 		access(t, a, am, 0, false)
 		access(t, b, bm, 0, false)
 		if am.pages[0].slot != bm.pages[0].slot {
-			t.Fatal("matching lineage did not share a resident page")
+			t.Fatal("matching identities did not share a resident page")
 		}
 		ab.failVerify = true
 		if err := a.Verify(t.Context()); !errors.Is(err, errInjected) {

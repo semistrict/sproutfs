@@ -13,7 +13,7 @@ import (
 )
 
 // A fork on the parent's own host inherits the pages the seal froze without
-// publishing anything: the children read the parent's sealed pages by lineage
+// publishing anything: the children read the parent's sealed pages by page
 // identity, so the second maps the first's page without a load, and the whole
 // fork writes one object per child — its control record.
 func TestSameHostForkSharesSealedPagesAndPublishesNothing(t *testing.T) {

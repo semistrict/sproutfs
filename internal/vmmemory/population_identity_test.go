@@ -11,16 +11,16 @@ import (
 )
 
 // A related image can inherit adjacent pages from different volumes and
-// checkpoint generations. Bytes remain indexed by logical page; lineage is
+// checkpoint generations. Bytes remain indexed by logical page; identities are
 // supplied through the same Locate boundary as a real volume.
-type populationLineage struct {
+type identifiedBacking struct {
 	*backing
 	identities []control.Identity
 }
 
 // Locate gives each page the identity the test chose, under that page's own
 // number: a page is published whole, so its number is its object's.
-func (b *populationLineage) Locate(_ context.Context, offset, length uint64) ([]control.Extent, error) {
+func (b *identifiedBacking) Locate(_ context.Context, offset, length uint64) ([]control.Extent, error) {
 	return extentsOf(offset, length, uint64(b.pageSize), func(cursor uint64) control.Identity {
 		page := cursor / uint64(b.pageSize)
 		id := b.identities[page]
@@ -69,14 +69,14 @@ func populationOrder(t *testing.T, identities []control.Identity, held [2]uint64
 		count := len(identities)
 		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: count + 4, LogicalPages: count * 4, DirtyPages: 4, ReadAheadPages: 1})
 		cold := control.Identity{Ref: control.Ref{VM: "unrelated", Sequence: 1}, Volume: "a"}
-		full := func() *populationLineage { return &populationLineage{f.newBacking(count), identities} }
+		full := func() *identifiedBacking { return &identifiedBacking{f.newBacking(count), identities} }
 		seedBacking := full()
 		seed, seedMap := f.attach(seedBacking)
 		for page := range uint64(count) {
 			access(t, seed, seedMap, page, false)
 		}
 		otherFixture := newConfiguredFixture(t, vmmemory.Config{ResidentPages: count + 4, LogicalPages: count + 4, DirtyPages: 4, ReadAheadPages: 1})
-		otherBacking := &populationLineage{otherFixture.newBacking(count), identities}
+		otherBacking := &identifiedBacking{otherFixture.newBacking(count), identities}
 		other, otherMap := otherFixture.attach(otherBacking)
 		if len(otherMap.pages) != 0 {
 			t.Fatal("population reused pages from a different pager")
@@ -145,14 +145,14 @@ func populationOrder(t *testing.T, identities []control.Identity, held [2]uint64
 		for _, page := range held {
 			partialIdentities[page] = identities[page]
 		}
-		partialBacking := &populationLineage{f.newBacking(count), partialIdentities}
+		partialBacking := &identifiedBacking{f.newBacking(count), partialIdentities}
 		partial, partialDone := attach(partialBacking)
 		synctest.Wait()
 		completeBacking := full()
 		complete, completeDone := attach(completeBacking)
 		synctest.Wait()
 
-		// An identical lineage in another pager owns different resident locks.
+		// The same identities in another pager own different resident locks.
 		foreignDone := make(chan error, 1)
 		go func() { foreignDone <- other.Fault(ctx, 0, false) }()
 		synctest.Wait()

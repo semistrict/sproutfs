@@ -21,7 +21,7 @@ func TestAPageASiblingWillNotGiveUpDoesNotFailTheVMEvictingIt(t *testing.T) {
 			DirtyPages: 2, ReadAheadPages: 1})
 		a, am, _ := f.region(8)
 		b, bm, _ := f.region(8)
-		// One resident page, two children of one lineage reachable from it.
+		// One resident page, two children of one parent reachable from it.
 		access(t, a, am, 0, false)
 		access(t, b, bm, 0, false)
 		if am.pages[0].slot != bm.pages[0].slot {

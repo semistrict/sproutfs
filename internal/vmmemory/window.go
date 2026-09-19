@@ -86,7 +86,7 @@ func (p *windowPlan) eligible(page uint64) bool {
 }
 
 // identity reports the store page whose bytes this page reads, which is the
-// whole of its lineage: a page is published whole or not at all.
+// whole of what names it: a page is published whole or not at all.
 func (p *windowPlan) identity(page uint64) (pageKey, bool) {
 	offset := page * uint64(PageSize)
 	first := sort.Search(len(p.extents), func(i int) bool { return p.extents[i].Offset+p.extents[i].Length > offset })

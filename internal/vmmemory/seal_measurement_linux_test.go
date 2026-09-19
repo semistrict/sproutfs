@@ -29,7 +29,7 @@ func (b *measureBacking) Load(_ context.Context, _ uint64, dst []byte) error {
 	return nil
 }
 
-// Every page reports the same non-sparse lineage, so a store copies on write
+// Every page reports a published identity rather than a hole, so a store copies on write
 // exactly as it does for a loaded page and nothing is mapped as a hole.
 func (b *measureBacking) Locate(_ context.Context, off, length uint64) ([]control.Extent, error) {
 	return []control.Extent{{Offset: off, Length: length,

@@ -523,8 +523,8 @@ func (r *Region) finalizeCheckpoint(ctx context.Context, held []*binding, identi
 		}
 		b := r.lookupBinding(checkpoint.index)
 		shared := b != nil && r.heldBy(checkpoint.index, checkpoint)
-		lineage := identities[checkpoint.index]
-		id, stored := lineage.id, lineage.stored
+		now := identities[checkpoint.index]
+		id, stored := now.id, now.stored
 		pg, err := h.current(ctx, checkpoint)
 		if err != nil {
 			return err

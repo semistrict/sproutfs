@@ -294,7 +294,7 @@ func (c *pagerCluster) create(t *testing.T, id string, pages int) *volume.VM {
 	return vm
 }
 
-// Two VMs forked at one pause inherit the same lineage identities, so the
+// Two VMs forked at one pause inherit the same page identities, so the
 // second maps the first's resident pages without reading its backing at all.
 func TestForksShareTheirPointsResidentPages(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
@@ -394,7 +394,7 @@ func TestForksShareTheirPointsResidentPages(t *testing.T) {
 		after, _ = f.h.Stats(t.Context())
 		if after.Loads != before.Loads || after.IdentityHits-before.IdentityHits != 2 ||
 			dm.pages[1].slot != am.pages[1].slot || dm.pages[2].slot != am.pages[2].slot {
-			t.Fatalf("the fork point lost resident lineage: before=%+v after=%+v", before, after)
+			t.Fatalf("the fork point lost its resident pages: before=%+v after=%+v", before, after)
 		}
 		if access(t, d, dm, 1, false)[0] != 37 {
 			t.Fatal("a later fork of the point lost captured bytes")

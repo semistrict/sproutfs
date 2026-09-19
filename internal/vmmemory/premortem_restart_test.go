@@ -17,21 +17,21 @@ import (
 // is the one the page holds, and load everything a writer elsewhere has
 // republished since.
 
-// TestPremortemAStartOnAHostThatStillHoldsTheLineageMapsOnlyWhatIsStillItsOwn
+// TestPremortemAStartOnAHostThatStillHoldsItsPagesMapsOnlyWhatIsStillItsOwn
 // walks one VM through a stop and a start on one pager, with a fork of it still
-// running there: the child holds the pages of the pages both inherited, so
-// what the host still has of the stopped VM is exactly that lineage. A writer
+// running there: the child holds the pages both inherited, so what the host
+// still has of the stopped VM is exactly those pages. A writer
 // elsewhere republishes half of them while the VM is away, so half the
 // identities the volume reports have changed and half have not. The start back
 // on this host must map the child's pages for the unchanged half without
 // loading anything, and read the changed half rather than the bytes the pages
 // it can still reach hold.
-func TestPremortemAStartOnAHostThatStillHoldsTheLineageMapsOnlyWhatIsStillItsOwn(t *testing.T) {
+func TestPremortemAStartOnAHostThatStillHoldsItsPagesMapsOnlyWhatIsStillItsOwn(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		const pages = 4
 		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 2 * pages,
 			LogicalPages: 8 * pages, DirtyPages: pages, ReadAheadPages: 1})
-		// The lineage of each page, which is the whole of what a pager shares
+		// The identity of each page, which is the whole of what a pager shares
 		// pages by: what this host's incarnation published, and what a writer
 		// on the other host published for the half it rewrote.
 		kept := control.Identity{Ref: f.source, Volume: "v"}
@@ -40,7 +40,7 @@ func TestPremortemAStartOnAHostThatStillHoldsTheLineageMapsOnlyWhatIsStillItsOwn
 		for page := range held {
 			held[page] = kept
 		}
-		before := &populationLineage{f.newBacking(pages), held}
+		before := &identifiedBacking{f.newBacking(pages), held}
 		first, firstMap := f.attach(before)
 		for page := range uint64(pages) {
 			if got := access(t, first, firstMap, page, false)[0]; got != byte(page+1) {
@@ -52,20 +52,20 @@ func TestPremortemAStartOnAHostThatStillHoldsTheLineageMapsOnlyWhatIsStillItsOwn
 				before.loads, pages)
 		}
 		// A fork of this VM, taken on this host in an earlier round and still
-		// running: it inherited every page, so it shares the pages by lineage
+		// running: it inherited every page, so it shares the pages by identity
 		// and they are what the host still holds once the parent stops.
-		child := &populationLineage{f.newBacking(pages), held}
+		child := &identifiedBacking{f.newBacking(pages), held}
 		childRegion, childMap := f.attach(child)
 		for page := range uint64(pages) {
 			access(t, childRegion, childMap, page, false)
 		}
 		if child.loads != 0 {
-			t.Fatalf("the child loaded %d pages of a lineage its parent already held", child.loads)
+			t.Fatalf("the child loaded %d pages its parent already held", child.loads)
 		}
 
 		// The stop: the process closes and the region detaches, which gives its
 		// logical pages and its own pages back. What this host still holds of
-		// the VM is the lineage the child shares.
+		// the VM is the pages the child shares.
 		clear(firstMap.pages)
 		if err := first.Detach(context.Background()); err != nil {
 			t.Fatal(err)
@@ -85,7 +85,7 @@ func TestPremortemAStartOnAHostThatStillHoldsTheLineageMapsOnlyWhatIsStillItsOwn
 			}
 			restarted.write(page*uint64(f.pageSize), data)
 		}
-		after := &populationLineage{restarted, next}
+		after := &identifiedBacking{restarted, next}
 
 		// The start back on this host.
 		second, secondMap := f.attach(after)
@@ -123,14 +123,14 @@ func TestPremortemAPageOfAnEarlierIncarnationIsNeverServedForANewIdentity(t *tes
 			access(t, first, firstMap, page, false)
 		}
 		// A fork of it taken on this host and still running, which is what keeps
-		// the pages of the earlier incarnation's lineage here after the stop.
+		// the earlier incarnation's pages here after the stop.
 		sibling := f.newBacking(pages)
 		siblingRegion, siblingMap := f.attach(sibling)
 		for page := range uint64(pages) {
 			access(t, siblingRegion, siblingMap, page, false)
 		}
 		if sibling.loads != 0 {
-			t.Fatalf("the sibling loaded %d pages of a lineage this host already held", sibling.loads)
+			t.Fatalf("the sibling loaded %d pages this host already held", sibling.loads)
 		}
 		clear(firstMap.pages)
 		if err := first.Detach(context.Background()); err != nil {

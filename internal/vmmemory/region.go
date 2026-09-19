@@ -76,7 +76,7 @@ type Region struct {
 
 // Attach admits metadata and verifies writer authority before exposing a region.
 // The mapping must initially consist entirely of armed missing-fault traps.
-// Equal lineage identities share resident pages in this pager. A caller must
+// Equal page identities share resident pages in this pager. A caller must
 // not attach the same writable volume to two regions. Once the mapping can
 // accept commands, Populate maps everything already resident.
 func (h *Host) Attach(ctx context.Context, backing Backing, mapping Mapping) (*Region, error) {

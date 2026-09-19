@@ -222,14 +222,14 @@ func (h *Host) unlink(ctx context.Context, b *binding, pg *resident) error {
 	return nil
 }
 
-// storedPage is the lineage the volume now gives one page, which is what
+// storedPage is the identity the volume now gives one page, which is what
 // decides whether its resident page can be shared.
 type storedPage struct {
 	id     pageKey
 	stored bool
 }
 
-// storedIdentities reports that lineage for every page of one retire batch,
+// storedIdentities reports that identity for every page of one retire batch,
 // located once per read-ahead window rather than once per page. It is volume
 // metadata, not a page transition, so it runs with neither the region nor any
 // page held; the batch's pages are in ascending order, so one window's extents

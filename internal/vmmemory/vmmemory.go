@@ -2,7 +2,7 @@
 // The Linux adapter implements mapping changes; the same ownership machine is
 // exercised with simulated mappings and storage in ordinary Go tests.
 //
-// Resident pages are keyed by the lineage identity the volume reports for a
+// Resident pages are keyed by the page identity the volume reports for a
 // page: every page has one name, the checkpoint that published it, and two VMs
 // share a resident page because they inherited the same checkpoint object.
 package vmmemory

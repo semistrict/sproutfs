@@ -25,7 +25,7 @@ func TestReadResidentServesHeldPagesAndNeverLoads(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := servingFixture(t, 8, 16, 8)
 		r, m, b := f.region(8)
-		access(t, r, m, 0, false)        // clean, shared with the volume's lineage
+		access(t, r, m, 0, false)        // clean, shared under the volume's identity
 		access(t, r, m, 1, true)[0] = 71 // private, written by the guest
 		if got, err := r.Resident(); err != nil || !slices.Equal(got, []uint64{0, 1}) {
 			t.Fatalf("Resident lists %v, %v; want the two pages the guest touched", got, err)
@@ -164,7 +164,7 @@ func TestReadResidentReportsAPageEvictedSinceItWasListed(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := servingFixture(t, 1, 8, 4)
 		r, m, b := f.region(2)
-		// An unrelated lineage, so this volume's fault takes the only slot
+		// Unrelated identities, so this volume's fault takes the only slot
 		// rather than sharing the resident page it already holds.
 		other, om := f.attach(f.newUnrelatedBacking(2))
 		access(t, r, m, 0, false)
