@@ -44,7 +44,7 @@ the selected checkpoint, and the part members its root names. A read takes no
 round trip but a cold page fetch. `Load` is the same call under another name,
 for a pager whose fault path must not do anything else.
 
-`Locate` reports the lineage identity of every byte of a range as sorted
+`Locate` reports the page identity of every byte of a range as sorted
 adjacent extents covering it exactly, each inside one page. A page the overlay
 touched anywhere reports this VM's next checkpoint reference for all of it,
 because that is the checkpoint that will publish the whole page; it is private
@@ -73,7 +73,7 @@ volume as a `DirtySource`: a pager page is a store page, so each sealed page is
 one member of a part, read straight out of the page the guest was running on
 rather than copied into this package first. When the checkpoint is selected the
 publication retires every source it read, which is what makes those pages clean
-under the new lineage; a publication that never lands hands them back to the
+under their new identity; a publication that never lands hands them back to the
 guest instead. The retire is the first thing that follows the selection and the
 last thing the publication lock covers: a guest whose seal still stands copies
 every store it makes into a private page, so nothing else the publication has
@@ -131,8 +131,9 @@ root: releasing it without publishing leaves an identity no host can open, and
 the fork point it reads through is then retired by nobody, so its parent stays
 sealed for good — never checkpointed, never fenced, never migratable. `Close` is
 what gives such a fork up, and it publishes nothing either: a fork that ends
-before its root was taken leaves no object behind, and closing it gives back the
-pin it holds on its parent's lineage.
+before its root was taken leaves no object behind, and closing it retires its
+hold on the parent's fork point, which gives the parent its sealed pages back.
+The pin stays.
 
 Handing a VM off does not decide where it runs. Its control record is simply
 free, so the next open takes it — the destination, or the source again when the
@@ -178,7 +179,7 @@ starting every VM at the same one; every later open counts up from there, which
 leaves at least 2³¹ takeovers. Identities are never reused — the orchestrator
 allocates them and does not hand one out twice — but nothing in a deployment can
 enforce that, and two VMs that started at the same epoch under one name would
-allocate the same sequences: the same lineage identities, which a page cache
+allocate the same sequences: the same page identities, which a page cache
 keys resident pages by, so the second VM would be served the first's bytes out
 of memory; and the same object keys, which are written create-if-absent, so its
 publications would collide with whatever the first left behind. A drawn epoch
@@ -186,7 +187,7 @@ makes both impossible whatever the name.
 
 Creating a VM is refused outright when anything is already stored under its
 identity and no control record accounts for it (`ErrIdentityUsed`). What is
-there is either the lineage a deleted VM left pinned — which a fork still reads
+there is either the checkpoints a deleted VM left pinned — which a fork still reads
 through — or a create interrupted before its record, and neither is this VM's to
 publish into. A create interrupted *after* its record is finished by repeating
 it, which opens the VM instead.
@@ -269,12 +270,12 @@ record and left whole, and so is every checkpoint that one's own root names —
 the ones it reads and the ones its own compaction emptied alike: that expansion
 is the whole point, because a grandchild's root names those checkpoints directly
 and no record here says so, and because a root naming a checkpoint nothing can
-fetch is a lineage with a hole in it. The record the selection returned is
+fetch is a hole in what a fork inherits. The record the selection returned is
 what says which sequences are pinned, and each pinned root is read once and
 remembered for the life of the store — a pin is permanent, so the answer never
 goes stale. That rule covers the checkpoint just replaced like any other: a
-selection over a pinned checkpoint sweeps as usual and finds nothing of that
-lineage to delete, so the checkpoints it replaced that no pin and no new root
+selection over a pinned checkpoint sweeps as usual and finds nothing the pin
+protects to delete, so the checkpoints it replaced that no pin and no new root
 names still go. Another VM's checkpoints are never touched, which is what a
 fork's inherited entries name. And a handle reclaims only the checkpoints it published itself, so
 the one it opened on is left behind: a handle cannot account for what the writer
@@ -315,7 +316,7 @@ VM still reads stay under twice its live bytes.
 Rewriting a page moves its bytes, not the page. The segment that locates it
 records the entry's *origin* — the checkpoint the page was first published
 under — beside the checkpoint whose part now holds it, and compaction carries
-the origin forward, so the lineage identity a fork of the older view reports and
+the origin forward, so the page identity a fork of the older view reports and
 the one the compacted root reports stay equal. A page compaction has never moved
 carries no origin of its own: the checkpoint holding it is the one that
 published it. A segment is identified by the checkpoint that wrote it, its
@@ -504,7 +505,7 @@ copying, so eviction cannot return bytes still in use; an object the cap leaves
 no room for is still read and copied out, just not retained. Lack of cache
 capacity never fails a read.
 
-The cache is keyed by the page's lineage identity rather than by where its
+The cache is keyed by the page's identity rather than by where its
 member sits, so compaction moving those bytes into another checkpoint's parts
 costs no refetch. A segment is keyed by its own identity — the checkpoint that
 wrote it, its volume and its number — for the same reason. Clearing it prevents in-flight loads from repopulating it. A cached
@@ -517,7 +518,7 @@ A capture pauses the guest to save VMM state and seal memory, resumes it, then
 takes a checkpoint of every volume at one write generation with the VMM state
 attached. It starts publication in the background and returns once the local
 checkpoint exists. See [managed VM memory](vm-memory.md). Its reference is known
-before its objects are uploaded, so lineage can be established locally, and
+before its objects are uploaded, so the pages it will publish have their identity at once, and
 waiting on it reports when publication became durable.
 
 ### The fork point
@@ -537,7 +538,7 @@ pin alone.
 
 The pin is a conditional write from the parent's own epoch, so a fork whose
 parent has been fenced is refused rather than created, and reclamation can never
-delete the lineage the child inherits. It is a mark on the point rather than a
+delete the checkpoints the child inherits. It is a mark on the point rather than a
 count of who reads it: one pin, taken when the point is made and again,
 idempotently, by every `Fork` from it, so a fan-out of any size costs one and a
 fork repeated after a failure costs nothing more.
@@ -546,8 +547,8 @@ Nothing gives a pin back. Retiring the point does not, deleting the child does
 not, and a child that has rewritten every page it inherited does not — because
 none of them can tell. A grandchild forked from that child reads the
 grandparent's checkpoints through its own root, and neither the child nor the
-grandparent has any way to see it; the release that reasoned from one lineage
-was the bug this rule removes. Releasing a pin belongs to a collector, which can
+grandparent has any way to see it, so a release reasoned from one descendant's
+view cannot be right. Releasing a pin belongs to a collector, which can
 survey every record and root in the deployment; see
 [open work](open-work.md). Until there is one, a fork costs its parent the
 checkpoint it was taken at for good, and a parent forked at many distinct
@@ -555,7 +556,7 @@ checkpoints spends one of `MaximumPins` (4096) on each.
 
 A fork that fails after the pin — its record could not be written, its host was
 lost — leaves the pin standing. That costs only eagerness: the pin says a
-lineage may read through that checkpoint, and one that never started reads
+fork may read through that checkpoint, and one that never started reads
 nothing.
 
 A parent whose pages a fork point holds is `Status.Sealed`: one seal of a
@@ -576,7 +577,7 @@ children start from one point — each is one hold on it, and the seal ends when
 is retired — so a fan-out of forks costs the parent one pause. On the parent's
 host the child reads the pages written since that checkpoint through the point
 itself, so they cost no copy and, once a sibling has faulted one, no second
-page: every child of one fork point gives those pages the same lineage identity.
+page: every child of one fork point gives those pages the same identity.
 On another host `Manager.Inherit` rebuilds the point from the pinned checkpoint
 alone and the child's pager pulls those pages out of the parent's page server,
 post-copy.
@@ -601,13 +602,13 @@ that no pin of it covers, each checkpoint's index object first. Removing the
 identity's one mutable object is what makes the identity usable again, and
 deleting the objects is what leaves it usable: a create is refused while
 anything is stored under an identity no record accounts for, so a VM that left
-a pinned lineage behind leaves its name refused as well as its objects, for a
+pinned checkpoints behind leaves its name refused as well as its objects, for a
 collector to free.
 
 A VM with no record is not swept at all, and repeating a delete finishes
 nothing. The record is the only thing that says which objects the sweep may
 take, and a VM whose delete has finished is itself a record-less identity whose
-pinned objects a lineage still reads: a repeat that swept what it found would
+pinned objects a fork still reads: a repeat that swept what it found would
 take them. What an interrupted sweep left is a collector's.
 
 A checkpoint the record pinned is spared, with every checkpoint its root names. Those
@@ -620,12 +621,12 @@ takes everything with it, and one that was leaves its fork points behind
 while freeing its identity.
 
 A record that cannot be parsed is not deleted at all. Its pins are exactly what
-the sweep would have to spare, and running the sweep without them would take a
-lineage out from under whoever reads it; an identity nobody can delete is the
+the sweep would have to spare, and running the sweep without them would take
+checkpoints out from under whoever reads them; an identity nobody can delete is the
 lesser loss, and the record can be repaired.
 
-What is left for a collector is therefore the pinned lineages of deleted VMs,
-every pin whose lineage has ended or never started, and what a crash leaves: the
+What is left for a collector is therefore the pinned checkpoints of deleted VMs,
+every pin nothing reads through any more or ever did, and what a crash leaves: the
 objects of a writer that died mid-checkpoint or published after being fenced,
 and the objects of a delete interrupted between the record's removal and the
 sweep. See [the architecture](architecture.md#identities-and-reclamation) for
