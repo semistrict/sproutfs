@@ -214,7 +214,7 @@ func Start(ctx context.Context, config SupervisorConfig) (Service, error) {
 		"logical_pages", pager.LogicalPages, "dirty_pages", pager.DirtyPages,
 		"loss_window", pager.LossWindow.String(),
 		"concurrent_io", pager.ConcurrentIO, "read_ahead_pages", pager.ReadAheadPages,
-		"write_ahead_pages", pager.WriteAheadPages,
+		"write_ahead_pages", pager.WriteAheadPages, "settle_workers", pager.SettleWorkers,
 		"fault_workers", s.connection.FaultWorkers, "max_vmas", s.connection.MaxVMAs)
 	return s, nil
 }

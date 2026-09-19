@@ -148,6 +148,7 @@ type fakeSource struct {
 
 	mu        sync.Mutex
 	reads     int
+	settles   int
 	retires   int
 	published bool
 	held      bool
@@ -170,6 +171,15 @@ func (s *fakeSource) PageSize() int { return s.pageSize }
 // age is what a fork's handoff carries so its child inherits the parent's loss
 // window. A seal built by hand has none unless a test gives it one.
 func (s *fakeSource) UnpublishedAge() time.Duration { return s.age }
+
+// Settle drops nothing: every page a test puts in this seal is one the guest
+// really stored into.
+func (s *fakeSource) Settle(context.Context) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.settles++
+	return 0, nil
+}
 
 func (s *fakeSource) DirtyPages() []uint64 {
 	pages := make([]uint64, 0, len(s.pages))

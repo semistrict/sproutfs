@@ -40,6 +40,11 @@ const (
 	concurrentIOPerCPU  = 4
 	minimumConcurrentIO = 16
 	maximumConcurrentIO = 256
+	// maximumSettleWorkers bounds the workers one settle divides a sealed set
+	// between. A settle is a comparison of resident pages and no I/O at all, so
+	// the node's processors are what it can use; past a few dozen it is memory
+	// bandwidth that bounds it and more workers buy nothing.
+	maximumSettleWorkers = 64
 	// faultWorkersPerCPU bounds faults served concurrently, and the bounds the
 	// result is held between. A fault spends most of its life in a store read,
 	// so a node serves more of them than it has processors; the I/O budget is
@@ -78,6 +83,7 @@ func pagerConfig(config SupervisorConfig) vmmemory.Config {
 		ConcurrentIO:    concurrentIO(resident),
 		ReadAheadPages:  readAheadPages,
 		WriteAheadPages: writeAhead,
+		SettleWorkers:   min(max(runtime.NumCPU(), 1), maximumSettleWorkers),
 		// The pager is what holds a guest back past the window, so it carries
 		// the same bound the host reports and schedules its retries by.
 		LossWindow: lossWindowOf(config.LossWindow),

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"sync"
 
 	"github.com/semistrict/sproutfs/internal/checkpoint"
 	"github.com/semistrict/sproutfs/internal/control"
@@ -204,17 +205,51 @@ func (vm *VM) Snapshot(ctx context.Context, prepare PrepareFunc) (*Checkpoint, e
 		// took is not: the checkpoint reads back as a guest that never ran.
 		state = nil
 	}
+	// The guest is running again, and the pages the seal froze cannot change,
+	// so this is where every source drops the pages the guest never really
+	// stored into — before anything enumerates them.
+	unchanged, err := settle(ctx, sources)
+	if err != nil {
+		vm.pubMu.Unlock()
+		return nil, err
+	}
 	ckpt, err := vm.capture(state, sources, true)
 	if ckpt == nil || err != nil {
 		vm.pubMu.Unlock()
 		return nil, err
 	}
+	ckpt.unchanged = unchanged
 	go func() {
 		if err := vm.complete(vm.ctx, ckpt); err != nil {
 			report(vm.ctx, "volume: snapshot publication failed", vm.id, err)
 		}
 	}()
 	return ckpt, nil
+}
+
+// settle has every volume's seal drop the pages whose bytes the guest never
+// changed, and reports how many pages went. The volumes settle at the same time
+// as each other, because each one's pages are compared independently of every
+// other's and the upload is what waits for all of them; the count is summed in
+// name order, so it does not depend on which of them finishes first.
+func settle(ctx context.Context, sources map[string]DirtySource) (int, error) {
+	names := slices.Sorted(maps.Keys(sources))
+	counts := make([]int, len(names))
+	failures := make([]error, len(names))
+	var wait sync.WaitGroup
+	for i, name := range names {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			counts[i], failures[i] = sources[name].Settle(ctx)
+		}()
+	}
+	wait.Wait()
+	unchanged := 0
+	for _, count := range counts {
+		unchanged += count
+	}
+	return unchanged, errors.Join(failures...)
 }
 
 // isRoot reports a fork that has not published its own root index yet.

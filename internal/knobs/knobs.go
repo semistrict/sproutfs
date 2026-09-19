@@ -94,6 +94,9 @@ type Knobs struct {
 	// ConcurrentIO bounds the pager's ordinary page operations. Each permit can
 	// hold one read-ahead run, so it is both the parallelism and the buffers.
 	ConcurrentIO int
+	// SettleWorkers is how many workers one settle divides a sealed set
+	// between, comparing each page it holds with the page it was copied from.
+	SettleWorkers int
 
 	// DrainConcurrency is how many VMs one drain hands over at once,
 	// DrainTimeout bounds the whole drain and DrainPerVM one VM's handover
@@ -132,6 +135,7 @@ func Defaults() Knobs {
 		ReadAheadPages:  4,
 		WriteAheadPages: 4,
 		ConcurrentIO:    16,
+		SettleWorkers:   4,
 
 		DrainConcurrency: 4,
 		DrainTimeout:     90 * time.Second,
@@ -166,6 +170,7 @@ func (k Knobs) Validate() error {
 	bound("ReadAheadPages", k.ReadAheadPages, 1, (16<<20)/PageSize)
 	bound("WriteAheadPages", k.WriteAheadPages, 1, 4096)
 	bound("ConcurrentIO", k.ConcurrentIO, 1, 1024)
+	bound("SettleWorkers", k.SettleWorkers, 1, 1024)
 	bound("DrainConcurrency", k.DrainConcurrency, 1, 1024)
 	if k.ReadAheadPages&(k.ReadAheadPages-1) != 0 {
 		errs = append(errs, fmt.Errorf("%w: ReadAheadPages is %d, want a power of two", ErrInvalid, k.ReadAheadPages))
@@ -277,6 +282,7 @@ func Randomize(r Random) Knobs {
 	set("read-ahead-pages", &k.ReadAheadPages, 1, 2, 4, 8)
 	set("write-ahead-pages", &k.WriteAheadPages, 1, 2, 4, 64)
 	set("concurrent-io", &k.ConcurrentIO, 1, 2, 16, 256)
+	set("settle-workers", &k.SettleWorkers, 1, 2, 16)
 	set("drain-concurrency", &k.DrainConcurrency, 1, 2, 4, 64)
 
 	interval := func(id string, current *time.Duration, choices ...time.Duration) {
@@ -349,6 +355,7 @@ func (k Knobs) Changed() []string {
 	add("read-ahead-pages", k.ReadAheadPages, base.ReadAheadPages)
 	add("write-ahead-pages", k.WriteAheadPages, base.WriteAheadPages)
 	add("concurrent-io", k.ConcurrentIO, base.ConcurrentIO)
+	add("settle-workers", k.SettleWorkers, base.SettleWorkers)
 	add("drain-concurrency", k.DrainConcurrency, base.DrainConcurrency)
 	add("drain-timeout", k.DrainTimeout, base.DrainTimeout)
 	add("drain-per-vm", k.DrainPerVM, base.DrainPerVM)

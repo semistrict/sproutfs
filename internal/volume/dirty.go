@@ -25,6 +25,18 @@ type DirtySource interface {
 	// ReadDirty fills dst, exactly one page of the volume, with the bytes the
 	// seal froze. A store the guest made since then is not in them.
 	ReadDirty(ctx context.Context, page uint64, dst []byte) error
+	// Settle drops the pages this seal holds whose bytes the guest never
+	// changed: a write fault is not always a store, and a page whose sealed
+	// bytes are the ones the page it was copied from still holds is not dirty.
+	// It reports how many pages it dropped, which is how many this checkpoint
+	// no longer publishes.
+	//
+	// The publication calls it once, behind the pause and before it enumerates
+	// the pages, so the seal costs the guest exactly what it always did. A fork
+	// point does not call it: it publishes nothing, and its children inherit an
+	// unchanged page as an unpublished one, which the next checkpoint of each
+	// settles.
+	Settle(ctx context.Context) (int, error)
 	// UnpublishedAge is how long the oldest of these pages has gone unpublished,
 	// zero where the seal holds none. It is what a fork point hands a child on
 	// another host, so that child inherits the parent's loss window with the

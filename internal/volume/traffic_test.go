@@ -36,6 +36,10 @@ func (s sealedPages) ReadDirty(_ context.Context, _ uint64, dst []byte) error {
 // handoff reads. A seal built by hand holds none of that history.
 func (s sealedPages) UnpublishedAge() time.Duration { return s.age }
 
+// settled counts the pages this seal dropped, which a hand-built one never
+// does: every page of it was really stored into.
+func (s sealedPages) Settle(context.Context) (int, error) { return 0, nil }
+
 func (sealedPages) Hold() {}
 
 func (sealedPages) Share(context.Context, control.Ref, string) error { return nil }

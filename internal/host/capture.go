@@ -95,10 +95,10 @@ func Capture(ctx context.Context, vm *volume.VM, machine Machine, clock platform
 }
 
 // report logs what one checkpoint cost, once it is durable or has failed: the
-// dirty set the pause sealed, the object-store traffic publishing it took, and
-// the two durations — the pause the guest paid and the upload that ran behind
-// it. The checkpoint always finishes, so this returns whatever the publication
-// did.
+// dirty set the pause sealed, the pages of it the settle found the guest had
+// never stored into, the object-store traffic publishing it took, and the two
+// durations — the pause the guest paid and the upload that ran behind it. The
+// checkpoint always finishes, so this returns whatever the publication did.
 func report(ctx context.Context, vmID string, ckpt *volume.Checkpoint, pause time.Duration, clock platform.Clock, uploaded time.Time) {
 	err := ckpt.Wait(ctx)
 	pages, bytes := ckpt.Sealed()
@@ -106,6 +106,7 @@ func report(ctx context.Context, vmID string, ckpt *volume.Checkpoint, pause tim
 	slog.InfoContext(ctx, "host: checkpoint",
 		"vm", vmID, "checkpoint", ckpt.Ref().Sequence,
 		"dirty_pages", pages, "dirty_bytes", bytes,
+		"unchanged_pages", ckpt.Unchanged(),
 		"uploaded_bytes", traffic.Put.Bytes, "objects", traffic.Put.Calls,
 		"deleted", traffic.Delete.Calls, "read_bytes", traffic.Get.Bytes,
 		"pause_seconds", pause.Seconds(), "upload_seconds", clock.Since(uploaded).Seconds(),

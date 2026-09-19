@@ -42,8 +42,12 @@ type Checkpoint struct {
 	// unit every page number of that volume in this checkpoint is in.
 	geometry map[string]checkpoint.Geometry
 	position generation
-	state    []byte
-	hasState bool
+	// unchanged is how many pages the settle behind the pause dropped from the
+	// seals this checkpoint reads: pages a write fault took writable and the
+	// guest never stored into, which are not dirty and are published nowhere.
+	unchanged int
+	state     []byte
+	hasState  bool
 	// dropState publishes a checkpoint naming no VMM state rather than one that
 	// goes on naming its parent's, and resized the sizes this checkpoint gives
 	// the volumes it names. Both belong to a cold boot and to nothing else: the
@@ -91,6 +95,11 @@ func (c *Checkpoint) Sealed() (pages int, bytes uint64) {
 	}
 	return pages, bytes
 }
+
+// Unchanged reports how many pages the settle behind this checkpoint's pause
+// found the guest had never stored into, so that this checkpoint publishes none
+// of them and the guest went back to sharing the pages they were copied from.
+func (c *Checkpoint) Unchanged() int { return c.unchanged }
 
 // Traffic reports the object-store calls this checkpoint's publication made. It
 // is complete once Wait has returned; read before that it reports the calls
