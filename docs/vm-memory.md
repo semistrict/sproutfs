@@ -35,7 +35,11 @@ its own; the rest would each rule it out too.
    same inherited bytes are resident once more per VM, invisible to the host.
    The pager keeps one resident page per lineage name, however many VMs map
    it, and the guest reaches it through PMEM over DAX, mapping the host's page
-   directly, so the host's one copy is the only copy.
+   directly, so the host's one copy is the only copy. That is held to at three
+   places: a VM has no block device at all, only PMEM; the host refuses a guest
+   command line without `rootflags=dax=always`, under which ext4 fails the
+   mount, and so the boot, where DAX is not to be had; and the guest's witness
+   refuses a file on a PMEM device that the kernel does not report as DAX.
 2. **Sharing is by name, across VMs and across checkpoints.** A child's memory
    is its parent's checkpoints plus its own writes, at 2 MiB granularity over
    tens of thousands of pages. As file mappings that is one VMA per run,

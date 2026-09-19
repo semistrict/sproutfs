@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -61,6 +62,9 @@ func open(path string, size int64) (*state, error) {
 	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("the witness file %s: %w", path, err)
+	}
+	if err := requireDAX(file, path); err != nil {
+		return nil, errors.Join(err, file.Close())
 	}
 	return &state{memory: make([]byte, size), file: file, size: size}, nil
 }
@@ -160,6 +164,9 @@ func checkFile(path string, seed, step uint64) error {
 		return fmt.Errorf("the witness file %s: %w", path, err)
 	}
 	defer file.Close()
+	if err := requireDAX(file, path); err != nil {
+		return err
+	}
 	info, err := file.Stat()
 	if err != nil {
 		return fmt.Errorf("the witness file %s: %w", path, err)

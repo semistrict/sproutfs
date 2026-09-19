@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -29,6 +30,25 @@ type config struct {
 // drives the guest over. The root device is the PMEM device declared root, so
 // the command line names only the filesystem and DAX.
 const defaultBootArgs = "console=ttyS0 reboot=k panic=1 init=/init rootfstype=ext4 rootflags=dax=always"
+
+// mountsRootWithDAX reports whether a guest command line mounts the root with
+// dax=always. The root is a PMEM device so that the guest maps the host's
+// resident pages directly and keeps no page cache of its own; mounted any other
+// way the guest boots and runs, and holds a second copy of everything the host
+// already shares, which nothing else would report. With the flag, ext4 refuses
+// the mount where DAX is not to be had and the guest does not boot at all.
+func mountsRootWithDAX(args string) bool {
+	for _, field := range strings.Fields(args) {
+		flags, found := strings.CutPrefix(field, "rootflags=")
+		if !found {
+			continue
+		}
+		if slices.Contains(strings.Split(flags, ","), "dax=always") {
+			return true
+		}
+	}
+	return false
+}
 
 // minimumCheckpointInterval is the shortest interval a deployment may configure.
 // A checkpoint pauses every VM this host runs for its state capture and seal and
@@ -122,6 +142,9 @@ func loadConfig(lookup func(string) string) (config, error) {
 	if c.VMMemoryBytes%vmmemory.PageSize != 0 {
 		fail("SPROUTFS_VM_MEMORY_BYTES is %d, want a multiple of the pager's %d-byte page",
 			c.VMMemoryBytes, vmmemory.PageSize)
+	}
+	if !mountsRootWithDAX(c.BootArgs) {
+		fail("SPROUTFS_BOOT_ARGS mounts the root without rootflags=dax=always: %q", c.BootArgs)
 	}
 	if c.VCPUs < 1 || c.VCPUs > 32 {
 		fail("SPROUTFS_VM_VCPUS is %d, want 1 to 32", c.VCPUs)

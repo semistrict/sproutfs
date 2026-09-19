@@ -4,6 +4,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"runtime"
 )
 
@@ -21,3 +22,7 @@ func resizeFilesystem(point string, blocks uint64) error {
 	return fmt.Errorf("growing %s to %d blocks is a Linux ioctl, and this is %s",
 		point, blocks, runtime.GOOS)
 }
+
+// deviceAndAttributes has nothing to report off Linux: there is no PMEM under a
+// developer's machine, and so nothing for a witness there to require.
+func deviceAndAttributes(*os.File) (string, uint64, error) { return "", 0, nil }

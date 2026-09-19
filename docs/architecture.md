@@ -152,8 +152,16 @@ no global VM identity registry or limit on the number of VM identities used over
 time; syntax and local resource limits still apply. Every checkpoint object is
 written under its publisher's VM identity, and a fork's root goes on naming its
 parent's checkpoints, which is why a fork copies nothing. A VM's control record lives
-outside that namespace, at `control/<id>`, so that listing the deployment's VMs
-reads a page of keys rather than walking every checkpoint object.
+outside that namespace, at `control/<id>`, because the two namespaces hold
+different sets. `control/` holds exactly the VMs that exist: a record is there
+while its VM is and no longer. `vm/` holds every identity that ever left objects
+behind — a deleted VM that was ever forked leaves its pinned lineage there, with
+no record, for a collector that does not exist — so it only grows, and a listing
+of it, by delimiter or otherwise, would return the dead with the living and have
+to probe each for a record. Listing `control/` is the deployment's VMs and
+nothing else. It also keeps two rules to one line each: a create is refused
+where `vm/<id>/` holds anything no record accounts for, and a delete removes the
+record first and then sweeps the prefix the record governed.
 
 Selecting a checkpoint reclaims a set difference: the checkpoints the replaced
 root named, and the replaced checkpoint itself, less everything the new root

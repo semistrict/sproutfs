@@ -137,6 +137,36 @@ func TestConfigRefusesALossWindowBelowTheCheckpointInterval(t *testing.T) {
 	}
 }
 
+// TestConfigRefusesBootArgsThatMountTheRootWithoutDAX: the root is a PMEM
+// device so that the guest maps the host's resident pages directly and keeps no
+// page cache of its own. A command line that mounts it any other way gives
+// every guest a second copy of what the host already shares, and nothing else
+// would say so — the guest boots and runs.
+func TestConfigRefusesBootArgsThatMountTheRootWithoutDAX(t *testing.T) {
+	values := minimal()
+	values["SPROUTFS_BOOT_ARGS"] = "console=ttyS0 reboot=k panic=1 init=/init rootfstype=ext4"
+	_, err := loadConfig(environ(values))
+	if err == nil {
+		t.Fatal("a command line that mounts the root without DAX was accepted")
+	}
+	if !strings.Contains(err.Error(), "SPROUTFS_BOOT_ARGS mounts the root without rootflags=dax=always") {
+		t.Fatalf("error %q", err)
+	}
+}
+
+// TestConfigAcceptsBootArgsThatKeepDAXAmongOtherRootFlags.
+func TestConfigAcceptsBootArgsThatKeepDAXAmongOtherRootFlags(t *testing.T) {
+	values := minimal()
+	values["SPROUTFS_BOOT_ARGS"] = "console=ttyS0 quiet init=/init rootfstype=ext4 rootflags=noatime,dax=always"
+	config, err := loadConfig(environ(values))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.BootArgs != values["SPROUTFS_BOOT_ARGS"] {
+		t.Fatalf("boot args %q", config.BootArgs)
+	}
+}
+
 func TestConfigReadsEveryTemplate(t *testing.T) {
 	values := minimal()
 	values["SPROUTFS_TEMPLATES"] = "alpine=/images/alpine.ext4, debian=/images/debian.ext4"

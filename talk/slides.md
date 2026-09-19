@@ -110,11 +110,11 @@ Checkpoint: the operation that makes a running VM durable, and what it leaves in
 
 <div class="text-2xl mt-8 space-y-8">
 
-<v-click>1. <b>One published checkpoint</b> is a VM's whole durable state.</v-click>
+<div v-click>1. <b>One published checkpoint</b> is a VM's whole durable state.</div>
 
-<v-click>2. <b>Every page has one name</b>: the checkpoint that published it. A fork inherits its parent's names.</v-click>
+<div v-click>2. <b>Every page has one name</b>: the checkpoint that published it. A fork inherits its parent's names.</div>
 
-<v-click>3. A checkpoint is a <b>pause</b> and an <b>upload</b>. Only the pause is on the latency path.</v-click>
+<div v-click>3. A checkpoint is a <b>pause</b> and an <b>upload</b>. Only the pause is on the latency path.</div>
 
 </div>
 
@@ -166,7 +166,7 @@ layout: section
 <!--
 Identity: one id, never reused. The orchestrator hands them out; the store refuses to create a VM under an id that has objects left behind.
 
-Everything a checkpoint stores lives under vm/<id>/ckpt/<seq>/. The control record lives at control/<id>, outside that namespace, so that listing control/ lists the deployment's VMs without walking a checkpoint. It holds the epoch, a counter saying which process may write this VM, advanced by every open; the nonce, a random mark of the process that took that epoch; the selected sequence, the checkpoint that is the VM right now; and the pins, sequences this VM was forked at, which must never be deleted.
+Everything a checkpoint stores lives under vm/<id>/ckpt/<seq>/. The control record lives at control/<id>, outside that namespace, because the two hold different sets: control/ is exactly the VMs that exist, while vm/ keeps every identity that ever left objects behind — a deleted VM that was forked leaves its pinned lineage there for ever — so listing vm/ would return the dead with the living. It holds the epoch, a counter saying which process may write this VM, advanced by every open; the nonce, a random mark of the process that took that epoch; the selected sequence, the checkpoint that is the VM right now; and the pins, sequences this VM was forked at, which must never be deleted.
 
 The writer is the process holding the current epoch. Every open advances the epoch, which fences the writer before it: its next write to the record is refused.
 
@@ -208,11 +208,11 @@ clicks: 7
 <div class="grid grid-cols-2 gap-10 mt-4">
 <div class="text-xl space-y-5">
 
-<v-click>pause: stop vCPUs · save VMM state · <b>write-protect</b> dirty pages</v-click>
+<div v-click>pause: stop vCPUs · save VMM state · <b>write-protect</b> dirty pages</div>
 
-<v-click><b>no byte moves</b></v-click>
+<div v-click><b>no byte moves</b></div>
 
-<v-click>a store into a sealed page → <b>one private copy</b>, charged to the dirty budget</v-click>
+<div v-click>a store into a sealed page → <b>one private copy</b>, charged to the dirty budget</div>
 
 </div>
 <div>
@@ -406,11 +406,11 @@ One, duplication, as on the last slide. Two: sharing is by name, across VMs and 
 </div>
 <div class="space-y-5">
 
-<v-click>Rust `sproutfs-vm-memory` — the mappings inside the VMM; no Firecracker dependency</v-click>
+<div v-click>Rust <code>sproutfs-vm-memory</code> — the mappings inside the VMM; no Firecracker dependency</div>
 
-<v-click>a private page takes its spill slot **before** the write resumes</v-click>
+<div v-click>a private page takes its spill slot <b>before</b> the write resumes</div>
 
-<v-click>bounds chosen from the node; logged at start</v-click>
+<div v-click>bounds chosen from the node; logged at start</div>
 
 </div>
 </div>
@@ -495,9 +495,9 @@ clicks: 4
 </div>
 <div class="space-y-5">
 
-<v-click>**templates are forks** — named by the image's digest, imported once</v-click>
+<div v-click><b>templates are forks</b> — named by the image's digest, imported once</div>
 
-<v-click>**holds** — the parent stays sealed until the child publishes or pulls; deadline 4 intervals</v-click>
+<div v-click><b>holds</b> — the parent stays sealed until the child publishes or pulls; deadline 4 intervals</div>
 
 </div>
 </div>
@@ -621,9 +621,9 @@ Delete removes the record, which frees the identity, then sweeps the VM's own ch
 </div>
 <div class="space-y-5">
 
-<v-click>**guest** — init, exec agent, console, and a **witness** that fills and checks memory and disk</v-click>
+<div v-click><b>guest</b> — init, exec agent, console, and a <b>witness</b> that fills and checks memory and disk</div>
 
-<v-click>**qualified** — Lima on aarch64; GCE x86_64</v-click>
+<div v-click><b>qualified</b> — Lima on aarch64; GCE x86_64</div>
 
 </div>
 </div>
@@ -658,11 +658,11 @@ simulated: process · disk · clock · network · object store
 </div>
 <div class="space-y-5">
 
-<v-click>drive: `Store Checkpoint Migrate Fork Delete Takeover Kill Restart …`</v-click>
+<div v-click>drive: <code>Store Checkpoint Migrate Fork Delete Takeover Kill Restart …</code></div>
 
-<v-click>require: **Verify · VerifyDurable · CheckSelected · CheckDeployment · VerifyLossWindow**</v-click>
+<div v-click>require: <b>Verify · VerifyDurable · CheckSelected · CheckDeployment · VerifyLossWindow</b></div>
 
-<v-click>a lost VM comes back at the record's checkpoint, **page for page**</v-click>
+<div v-click>a lost VM comes back at the record's checkpoint, <b>page for page</b></div>
 
 </div>
 </div>
