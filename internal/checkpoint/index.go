@@ -21,9 +21,9 @@ import (
 // entries go on naming its parent's checkpoints.
 //
 // origin is the checkpoint the member was first published under, which is the
-// page's lineage identity. It equals ref until compaction rewrites the member
-// into a later checkpoint's parts and carries the origin forward: where the
-// bytes sit is storage bookkeeping, what they are is lineage.
+// page's identity. It equals ref until compaction rewrites the member into a
+// later checkpoint's parts and carries the origin forward: where the bytes sit
+// is storage bookkeeping, and which bytes they are is the identity.
 type location struct {
 	ref    control.Ref
 	origin control.Ref
@@ -413,14 +413,14 @@ func (i *Index) encode() ([]byte, error) {
 			Name: proto.String(name), Size: proto.Uint64(table.size), Segments: segments,
 		}.Build())
 	}
-	lineage := make([]*checkpointv1.Ref, 0, len(origins))
+	originRefs := make([]*checkpointv1.Ref, 0, len(origins))
 	for _, ref := range origins {
-		lineage = append(lineage, refMessage(ref))
+		originRefs = append(originRefs, refMessage(ref))
 	}
 	message := checkpointv1.Root_builder{
 		Volumes:         volumes,
 		Checkpoints:     entries,
-		Origins:         lineage,
+		Origins:         originRefs,
 		StateCheckpoint: proto.Uint32(position[i.state.ref]),
 		StatePart:       proto.Uint32(i.state.part),
 		StateOffset:     proto.Uint64(i.state.offset),
@@ -464,10 +464,10 @@ func encodeSegment(held *segment) ([]byte, error) {
 	}
 	origins := sortedRefs(moved)
 	slot := make(map[control.Ref]uint32, len(origins))
-	lineage := make([]*checkpointv1.Ref, 0, len(origins))
+	originRefs := make([]*checkpointv1.Ref, 0, len(origins))
 	for at, ref := range origins {
 		slot[ref] = uint32(at) + 1
-		lineage = append(lineage, refMessage(ref))
+		originRefs = append(originRefs, refMessage(ref))
 	}
 	numbers := slices.Sorted(maps.Keys(held.pages))
 	pages := make([]*checkpointv1.Page, 0, len(numbers))
@@ -479,7 +479,7 @@ func encodeSegment(held *segment) ([]byte, error) {
 			Length: proto.Uint64(at.length), Origin: proto.Uint32(slot[at.origin]),
 		}.Build())
 	}
-	message := checkpointv1.Segment_builder{Pages: pages, Checkpoints: refs, Origins: lineage}.Build()
+	message := checkpointv1.Segment_builder{Pages: pages, Checkpoints: refs, Origins: originRefs}.Build()
 	return proto.MarshalOptions{Deterministic: true}.Marshal(message)
 }
 

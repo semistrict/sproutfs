@@ -258,8 +258,8 @@ func TestReclamationDeletesEveryCheckpointNothingReads(t *testing.T) {
 }
 
 // A pinned checkpoint and every checkpoint its index reads are spared, because
-// a fork's lineage runs through them.
-func TestReclamationSparesAPinnedLineage(t *testing.T) {
+// a fork reads through them.
+func TestReclamationSparesWhatAPinProtects(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		objects := sim.New(sim.Config{}).ObjectStore()
 		store, root, m := checkpointFixture(t, checkpoint.Config{ObjectStore: objects}, "pinned")
@@ -296,10 +296,10 @@ func TestReclamationSparesAPinnedLineage(t *testing.T) {
 		}
 		for _, sequence := range []uint64{2, 3} {
 			if !openable(t, objects, "pinned", sequence) {
-				t.Fatalf("the pinned lineage lost checkpoint %d", sequence)
+				t.Fatalf("what the pin protects lost checkpoint %d", sequence)
 			}
 		}
-		// The fork reads its whole view through the spared lineage.
+		// The fork reads its whole view through the spared checkpoints.
 		pinnedIndex, err := store.Open(t.Context(), third.Ref())
 		if err != nil {
 			t.Fatal(err)
@@ -311,7 +311,7 @@ func TestReclamationSparesAPinnedLineage(t *testing.T) {
 			t.Fatal(err)
 		}
 		if objectsUnder(t, objects, "pinned", 2) != 0 || objectsUnder(t, objects, "pinned", 3) != 0 {
-			t.Fatal("an unpinned dead lineage survived")
+			t.Fatal("unpinned dead checkpoints survived")
 		}
 		checkRead(t, store, fourth, later)
 	})
@@ -447,11 +447,11 @@ func TestReclamationLeavesACheckpointWhoseIndexObjectWillNotDelete(t *testing.T)
 
 // A pinned index names the checkpoints its own compaction emptied as well as
 // the ones it reads. A sweep must leave those alone too: what a pin promises is
-// that the lineage it protects is whole — the checkpoint, and every checkpoint
-// its index names — because the only thing that can tell whether an object under
-// it is still read is a collector that can see every lineage, and the VM running
-// the sweep is not one. An index that names a checkpoint nothing can fetch is a
-// lineage with a hole in it, which is what volume.CheckDeployment reports.
+// that what it protects is whole — the checkpoint, and every checkpoint its
+// index names — because the only thing that can tell whether an object under it
+// is still read is a collector that can see every fork, and the VM running the
+// sweep is not one. An index that names a checkpoint nothing can fetch is a hole
+// in what a fork inherits, which is what volume.CheckDeployment reports.
 func TestReclamationSparesTheCheckpointsAPinnedIndexOnlyNames(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		objects := sim.New(sim.Config{}).ObjectStore()

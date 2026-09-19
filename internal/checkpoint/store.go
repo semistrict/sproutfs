@@ -461,7 +461,7 @@ func (s *Store) readPage(ctx context.Context, index *Index, volume string, numbe
 }
 
 // loadPage fetches one page's decoded bytes, through the shared cache when one
-// is configured. The cache is keyed by the page's lineage identity — the
+// is configured. The cache is keyed by the page's identity — the
 // checkpoint the page was first published under, which the index carries as the
 // member's origin — rather than by the checkpoint whose part currently holds it,
 // so a fork hits its parent's entries and compaction moving the bytes costs

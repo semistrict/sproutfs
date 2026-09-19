@@ -77,8 +77,8 @@ func (s *Store) Begin(parent *Index, ref control.Ref) *Publication {
 }
 
 // Protect names the sequences of this VM a fork pinned, which compaction must
-// leave alone: their objects belong to the fork's lineage as much as to this
-// VM's. A pinned checkpoint protects every checkpoint its index names, not only
+// leave alone: their objects are the fork's as much as this VM's. A pinned
+// checkpoint protects every checkpoint its index names, not only
 // itself: the fork reads its whole view through them, so rewriting one copies
 // bytes reclamation can never free.
 func (p *Publication) Protect(sequences []uint64) {
@@ -773,7 +773,7 @@ func (p *Publication) compact(ctx context.Context, writer *partWriter, index *In
 		return nil
 	}
 	// The pages of the checkpoints being rewritten move into this one's parts
-	// while keeping the lineage identity they were first published under, and
+	// while keeping the page identity they were first published under, and
 	// the emptied checkpoints become reclaimable one checkpoint later. A
 	// campaign that never compacts never tests either.
 	sim.Probe(ctx, ProbeCompactionRewrite)

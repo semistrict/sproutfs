@@ -1,6 +1,6 @@
 // Package blob encodes independently readable, bounded raw or Zstandard blobs.
 // The envelope identifies its format explicitly and checks the decoded bytes.
-// It does not change the lineage identity of the data it contains.
+// It does not change the page identity of the data it contains.
 package blob
 
 import (

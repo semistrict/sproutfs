@@ -113,7 +113,7 @@ func TestCreateOpenAndDelete(t *testing.T) {
 
 // A creating handle draws its epoch, so two VMs created under one identity — a
 // name a deleted VM held before — allocate different sequences and therefore
-// different lineage identities and different object keys. Every draw leaves
+// different page identities and different object keys. Every draw leaves
 // the upper half of the epoch space for the takeovers that follow it.
 func TestACreatingEpochIsDrawnAndLeavesRoomToCountUp(t *testing.T) {
 	client, _ := newClient(t)

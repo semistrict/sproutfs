@@ -111,7 +111,7 @@ func (c *Client) put(ctx context.Context, record Record, conditions platform.Put
 // rather than starting at a fixed one because a VM identity can be handed out
 // again — the orchestrator allocates them and a deleted VM's name is free — and
 // two VMs that started at the same epoch would allocate the same checkpoint
-// sequences: the same lineage identities, which a page cache keys resident
+// sequences: the same page identities, which a page cache keys resident
 // pages by, and the same object keys, which are written create-if-absent.
 //
 // The caller draws it before it publishes anything, because the first
@@ -300,16 +300,16 @@ func (h *Handle) Select(ctx context.Context, sequence uint64) (Record, error) {
 	})
 }
 
-// Pin records that a lineage has been started from a checkpoint of this VM,
-// which keeps that checkpoint's objects from being reclaimed. It is written
-// before the child that reads it exists, because a child that existed while the
-// lineage it inherits was unpinned could have that lineage reclaimed under it.
+// Pin records that a fork has been taken at a checkpoint of this VM, which
+// keeps that checkpoint's objects from being reclaimed. It is written before
+// the child that reads it exists, because a child that existed while the
+// checkpoints it inherits were unpinned could have them reclaimed under it.
 // Pinning twice is one pin, so a fan-out of any size from one fork point, and a
 // fork repeated after a failure, cost one.
 //
 // Nothing here gives a pin back. A pin is what a collector releases, once it
 // has surveyed the deployment and established that no index anywhere reads
-// through that checkpoint. A descendant cannot establish that: the lineages
+// through that checkpoint. A descendant cannot establish that: the forks
 // below it are ones it cannot see.
 func (h *Handle) Pin(ctx context.Context, sequence uint64) (Record, error) {
 	return h.update(ctx, func(current Record) (Record, error) {

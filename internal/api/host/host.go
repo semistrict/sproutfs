@@ -206,9 +206,8 @@ const TemplatePrefix = "template-"
 // Deployment with names nothing depends on.
 //
 // It is the one identity in the deployment named by content. It names the
-// template and nothing below it: pages are still shared through lineage and
-// never through byte equality, and the checkpoints under this identity are its
-// own like any other VM's.
+// template and nothing below it: pages are still shared by their identity, and
+// the checkpoints under this identity are its own like any other VM's.
 func TemplateID(digest [sha256.Size]byte) string {
 	return TemplatePrefix + hex.EncodeToString(digest[:])
 }

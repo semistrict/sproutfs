@@ -44,8 +44,8 @@ type Cache struct {
 }
 
 // cacheKey names what a cached copy holds. A page's bytes are immutable under
-// its lineage identity and are never named by content, so that alone identifies
-// them wherever the part holding them moves. A segment's identity is the
+// its identity, so that alone identifies them wherever the part holding them
+// moves. A segment's identity is the
 // checkpoint that wrote it, its volume and its number, so that is what it is
 // keyed by: where in that checkpoint's index object it sits is only how it is
 // fetched, and two roots addressing the same segment share the one copy.

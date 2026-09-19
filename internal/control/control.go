@@ -15,7 +15,7 @@
 //
 // Because the record is what allocates and selects checkpoints, the names of a
 // checkpoint and of the page a range reads live here too: a [Ref] is the (VM,
-// sequence) pair, an [Identity] is a page's lineage identity and an [Extent] is
+// sequence) pair, an [Identity] is a page's identity and an [Extent] is
 // a run of volume bytes that reads from one page. A pager and a migration name
 // pages by those without depending on the store that holds them.
 package control
@@ -80,7 +80,7 @@ const (
 	// handle takes a random epoch in [MinimumEpoch, MaximumCreateEpoch] rather
 	// than a fixed first one, so that two VMs created under one identity — a
 	// name handed out again after a delete — never allocate the same checkpoint
-	// sequences, and therefore never the same lineage identities or object
+	// sequences, and therefore never the same page identities or object
 	// keys. Half the epoch space is left above it, which is how many times such
 	// a VM may still be taken over.
 	MaximumCreateEpoch = uint64(1)<<31 - 1

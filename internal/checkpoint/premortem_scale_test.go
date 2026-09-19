@@ -223,7 +223,7 @@ func scatterPart(p *checkpoint.Publication, m *model, tag string, round int, ran
 // soak's fan-out: forked at some rounds and not others, so its record
 // accumulates pins while its own guest keeps rewriting a share of its pages
 // between them. Compaction is what bounds the dead bytes those rewrites leave,
-// and a pinned lineage is what it may not touch: every checkpoint a pinned root
+// and what a pin protects is what it may not touch: every checkpoint a pinned root
 // names has to read back exactly as the child that inherited it sees it,
 // however many rounds of compaction and reclamation have run over the parent
 // since.
@@ -262,8 +262,8 @@ func TestPremortemCompactionSparesEveryPinnedRoundAfterRound(t *testing.T) {
 				t.Fatalf("round %d: the sweep behind the checkpoint: %v", round, err)
 			}
 			previous, index = next, next
-			// Every lineage a fork of an earlier round reads through has to be
-			// whole and hold exactly what that fork inherited.
+			// Everything a fork of an earlier round reads through has to be whole
+			// and hold exactly what that fork inherited.
 			for _, at := range pinned {
 				held, err := store.Open(ctx, control.Ref{VM: "parent", Sequence: at})
 				if err != nil {

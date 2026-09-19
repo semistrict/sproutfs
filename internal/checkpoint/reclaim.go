@@ -65,7 +65,7 @@ func (s *Store) Reclaim(ctx context.Context, previous, current *Index, pinned []
 // sparePinned takes every checkpoint a pin protects out of a sweep's dead set:
 // the pinned checkpoint itself and every checkpoint its index names. A pin
 // whose index cannot be read protects everything, because nothing a sweep could
-// free is worth a lineage.
+// free is worth what a fork still reads.
 func (s *Store) sparePinned(ctx context.Context, vm string, pinned []uint64, dead map[control.Ref]bool) error {
 	for _, sequence := range pinned {
 		protected, err := s.protectedBy(ctx, control.Ref{VM: vm, Sequence: sequence})
@@ -87,9 +87,9 @@ func (s *Store) sparePinned(ctx context.Context, vm string, pinned []uint64, dea
 // Named rather than read, as for the index a sweep is publishing: a checkpoint
 // a pinned index no longer reads is one its own compaction emptied, and the pin
 // says nothing under that checkpoint may be taken until a collector that can
-// see every lineage says so. A sweep that spared only what the pinned index
-// reads leaves it naming a checkpoint nothing can fetch, which is a lineage with
-// a hole in it however few pages it holds.
+// see every fork says so. A sweep that spared only what the pinned index reads
+// leaves it naming a checkpoint nothing can fetch, which is a hole in what a
+// fork inherits however few pages it holds.
 func (s *Store) protectedBy(ctx context.Context, ref control.Ref) ([]control.Ref, error) {
 	s.protectedMu.Lock()
 	cached, found := s.protected[ref]
@@ -159,8 +159,8 @@ func (s *Store) deleteCheckpoint(ctx context.Context, ref control.Ref) error {
 // gone is not an error, and a VM that published nothing deletes nothing.
 //
 // pinned is what that VM's record pinned: the checkpoints of it a fork was
-// taken at. Each is left whole, with every checkpoint its index names, because a
-// lineage this deployment cannot enumerate from here reads through them —
+// taken at. Each is left whole, with every checkpoint its index names, because
+// forks this deployment cannot enumerate from here read through them —
 // which does mean a deleted VM that was ever forked leaves objects behind, and
 // the identity is free while they stand. They are a collector's to reclaim.
 func (s *Store) DeleteVM(ctx context.Context, vm string, pinned []uint64) error {
@@ -262,7 +262,7 @@ func (s *Store) deleteObject(ctx context.Context, key platform.ObjectKey) error 
 // Used reports whether one VM's checkpoint namespace holds any object at all.
 // It is what a create asks before it publishes anything: an identity with
 // objects under it and no control record is one a VM published under before —
-// the lineage a deleted VM left pinned, or a create that was interrupted — and
+// the checkpoints a deleted VM left pinned, or a create that was interrupted — and
 // a new VM there would write into keys that are not its own.
 //
 // It costs one listing of at most a page, because the answer is whether there

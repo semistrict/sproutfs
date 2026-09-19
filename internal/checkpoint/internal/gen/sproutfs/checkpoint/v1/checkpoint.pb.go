@@ -1676,7 +1676,7 @@ type Member_builder struct {
 	Length *uint64
 	State  *bool
 	// Origin is the checkpoint this member's page was first published under,
-	// which is its lineage identity. It is written only when compaction moved the
+	// which is its page identity. It is written only when compaction moved the
 	// page out of the checkpoint that published it; empty names the checkpoint
 	// holding it.
 	OriginVm       *string

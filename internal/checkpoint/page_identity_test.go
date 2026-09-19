@@ -52,17 +52,17 @@ func compactionFixture(t *testing.T, cache *checkpoint.Cache, vm string) (*check
 }
 
 // Compaction moves a page's bytes into another checkpoint's parts. It must not change the
-// page's lineage identity: the identity names the checkpoint the page was first
+// page's identity: the identity names the checkpoint the page was first
 // published under, which is what a fork of the older view goes on reporting and
 // what the page cache keys those bytes by.
-func TestCompactionKeepsLineageIdentity(t *testing.T) {
+func TestCompactionKeepsPageIdentity(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		store, third, m := compactionFixture(t, nil, "lineage")
+		store, third, m := compactionFixture(t, nil, "identity")
 		before := identityOfPage(t, third, "root", 3)
 
 		// Three of four pages rewritten leaves a quarter of sequence 2 live, so
 		// compaction rewrites the cold page 3.
-		q := store.Begin(third, control.Ref{VM: "lineage", Sequence: 4})
+		q := store.Begin(third, control.Ref{VM: "identity", Sequence: 4})
 		write(q, m, "fourth", 1)
 		write(q, m, "fourth", 2)
 		fourth, err := q.Commit(t.Context(), m)

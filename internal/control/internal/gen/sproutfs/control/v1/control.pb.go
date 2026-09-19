@@ -244,7 +244,7 @@ type Record_builder struct {
 	// pinned lists the checkpoints of this VM that have been forked, in ascending
 	// order of sequence. A pinned checkpoint's objects are never reclaimed, and
 	// nothing here unpins one: a pin is what a collector releases once it has
-	// established that no lineage reads through it.
+	// established that no descendant reads through it.
 	Pinned []uint64
 }
 

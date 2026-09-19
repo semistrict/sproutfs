@@ -31,11 +31,11 @@ type Record struct {
 	// reclaimed.
 	//
 	// A pin is permanent: nothing in this deployment ever gives one back. It
-	// records that a lineage was started from that checkpoint, and only a
+	// records that a fork was taken at that checkpoint, and only a
 	// collector — which can survey every record in the deployment and so can
 	// establish that no index anywhere still reads through it — may release
 	// one. Every unpin that ran from a single descendant's point of view was a
-	// guess about a lineage it could not see: a grandchild's index names its
+	// guess about forks it could not see: a grandchild's index names its
 	// grandparent's checkpoints directly, and the child releasing what it had itself
 	// stopped reading took them out from under it.
 	Pinned []uint64
