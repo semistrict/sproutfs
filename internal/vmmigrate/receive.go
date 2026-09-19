@@ -385,7 +385,7 @@ func attach(ctx context.Context, vm *volume.VM, handoff Handoff, dial Dialer, st
 
 // stream faults the source's pages in behind the running guest. It goes through
 // the pager's own load path rather than writing pages into the region: that is
-// what keeps a page shared by lineage with every other VM on this host that
+// what keeps a page shared by identity with every other VM on this host that
 // inherited the same checkpoint, what makes a page the guest faults on first
 // arrive exactly once, and what puts the pages no checkpoint has into this
 // host's own dirty set, so its next interval checkpoint publishes them.

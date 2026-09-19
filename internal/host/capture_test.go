@@ -158,8 +158,8 @@ func TestResumeFailureCapturesNothingAndReleases(t *testing.T) {
 
 // A checkpoint publishes the sealed pager pages of every region, and the
 // publication retires them once its checkpoint is selected: the pager is told
-// its pages are the volume's now, which is what makes them clean under the new
-// lineage.
+// its pages are the volume's now, which is what makes them clean under their
+// new identity.
 func TestCapturePublishesSealedPagesAndRetiresThem(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		h := newSeededHarness(t, 23)

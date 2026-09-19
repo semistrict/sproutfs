@@ -111,7 +111,7 @@ func (h *Host) Fork(ctx context.Context, parent string, children []string,
 		// found in between still finds the hold to give up, and a child nothing
 		// ever releases does not seal the parent for good.
 		h.hold(parent, child, point, local)
-		// The pin on the parent's lineage is written here, by the parent's own
+		// The pin on the parent's checkpoint is written here, by the parent's own
 		// writer, because a destination has no handle on the parent to write one
 		// with. It is the one pin the point took, shared by every child of it,
 		// and nothing ever gives it back.

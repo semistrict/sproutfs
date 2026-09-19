@@ -46,7 +46,7 @@ const MemoryVolume = "ram0"
 // It is data and nothing else, drawn before anything starts. A campaign that
 // fails prints it, and a topology printed is a topology reproduced: the same
 // seed generates the same hosts, the same VMs, the same volumes and the same
-// lineage.
+// forks.
 type Topology struct {
 	// Hosts are the hosts of the deployment, named host-0 upwards. There are
 	// always at least two, because a migration needs somewhere to go.
@@ -115,7 +115,7 @@ const (
 	minVolumePages = 1
 	maxVolumePages = 3
 	// forkChance is how often a VM after the first is a fork of one before it
-	// rather than a VM created from nothing. Half, so a seed's lineage is
+	// rather than a VM created from nothing. Half, so a seed's forks are
 	// neither always flat nor always a chain.
 	forkChance = 0.5
 )

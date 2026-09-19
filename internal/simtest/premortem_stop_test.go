@@ -76,8 +76,8 @@ func TestStoppingAndStartingOneVMOverAndOverKeepsWhatItsGuestWrote(t *testing.T)
 	})
 }
 
-// TestAForksChildIsStoppedAndStartedLikeAnyOtherVM: a child holds a pin on the
-// lineage it was forked from and reads the checkpoint that pin protects for
+// TestAForksChildIsStoppedAndStartedLikeAnyOtherVM: a child's parent holds a pin
+// on the checkpoint it was forked at, and the child reads what that pin protects for
 // every page it has not written. A stop publishes what its guest holds and
 // closes it; a start elsewhere opens it from the record, which is where the
 // inherited half has to come back from the objects the pin kept rather than
@@ -161,7 +161,7 @@ func TestStoppingAParentAndStartingItAgainLeavesItsChildrenAlone(t *testing.T) {
 			t.Fatal(err)
 		}
 		// Deleting them both is what the end of a soak does, and what it leaves
-		// is the lineage the fork pinned.
+		// is the checkpoints the fork pinned.
 		for _, id := range []string{"vm-0", "vm-1"} {
 			if err := world.Delete(ctx, id); err != nil {
 				t.Fatal(err)

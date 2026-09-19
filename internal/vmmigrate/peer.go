@@ -221,7 +221,7 @@ func NewPeerBacking(config PeerConfig) (*PeerBacking, error) {
 func (b *PeerBacking) Size() uint64                     { return b.config.Volume.Size() }
 func (b *PeerBacking) Verify(ctx context.Context) error { return b.config.Volume.Verify(ctx) }
 
-// Locate reports the volume's own lineage everywhere except the pages the source
+// Locate reports the volume's own identities everywhere except the pages the source
 // holds unpublished. Those it reports as bytes of this region alone — no
 // reference, so no page of them is ever shared and none of them is taken for a
 // hole — which is what makes the pager load them through Load, where the source

@@ -81,8 +81,8 @@ func (w *World) noteWrites(in *instance, g *guest, before int64) {
 	}
 }
 
-// rewind records the writes a recovery took back: everything this VM's lineage
-// stored past the checkpoint it came back at. Caller holds the world lock.
+// rewind records the writes a recovery took back: everything this VM and its
+// ancestors stored past the checkpoint it came back at. Caller holds the world lock.
 func (w *World) rewind(in *instance, at durableState) {
 	in.rewound = nil
 	if at.writes < 0 || int(at.writes) >= len(in.writes) {

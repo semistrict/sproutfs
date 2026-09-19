@@ -20,7 +20,7 @@ import (
 const campaignName = "seeded-topology"
 
 // TestSeededTopologyCampaign runs a deployment the seed generated — its hosts,
-// its VMs, their sizes and its lineage — through a schedule of checkpoints,
+// its VMs, their sizes and which are forks of which — through a schedule of checkpoints,
 // forks, migrations, deletes and host restarts, with one to three faults on at
 // a time over it.
 //
@@ -118,7 +118,7 @@ func runTopologyCampaign(t *testing.T, seed uint64, buggify bool) *sim.Runtime {
 	// no writer ever comes back for — a collector's, not a writer's: a host
 	// lost at a moment leaves a superseded epoch's checkpoints and a
 	// publication interrupted between its parts and its index, a VM deleted
-	// after it was forked leaves the lineage its pin protects, and a sweep the
+	// after it was forked leaves the checkpoints its pin protects, and a sweep the
 	// store refused leaves the checkpoint it replaced behind.
 	if err := volume.CheckDeployment(context.WithoutCancel(ctx), runtime.ObjectStore(), prefix,
 		volume.AllowSupersededEpoch, volume.AllowUnpublishedIndex, volume.AllowUnrecordedVM,

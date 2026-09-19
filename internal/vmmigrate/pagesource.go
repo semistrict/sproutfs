@@ -117,7 +117,7 @@ func RegionPages(regions map[string]*vmmemory.Region) map[string]Pages {
 // forkPages presents one volume of a fork point as what its parent's page
 // source serves. Only the pages no checkpoint of the parent holds are served:
 // everything else is in object storage, where the child reads it from, and
-// serving it would only copy what both sides already share by lineage.
+// serving it would only copy what both sides already share by identity.
 type forkPages struct {
 	point  *volume.ForkPoint
 	volume string

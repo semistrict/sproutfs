@@ -67,9 +67,9 @@ func TestAHostReportsEachVMsLossWindow(t *testing.T) {
 
 // A fork hands a child the pages its parent has written since the parent's last
 // checkpoint, and their age goes with them: the child inherits the parent's loss
-// window rather than starting one of its own. Without it a lineage forked every
-// few minutes would carry the same writes forward for ever with none of them
-// ever becoming durable.
+// window rather than starting one of its own. Without it a VM forked again every
+// few minutes, child after child, would carry the same writes forward for ever
+// with none of them ever becoming durable.
 func TestAForkHandsTheChildTheParentsLossWindow(t *testing.T) {
 	h, pagers, arenas := startMigrationHosts(t)
 	h.configs[0].CheckpointInterval = -1

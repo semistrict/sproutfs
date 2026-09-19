@@ -370,8 +370,8 @@ func (h *Host) rooted(ctx context.Context, vm *volume.VM, runtime Machine) error
 // A fork's child is the exception both ways: a handoff of one is refused,
 // because this handle is the only thing that could publish its root index, and
 // a close of one publishes nothing either — a fork that ends before its root was
-// ever taken leaves no object behind — while also giving back the pin it holds
-// on its parent's lineage, which nothing else would.
+// ever taken leaves no object behind — while also retiring its hold on the
+// parent's fork point, which is what gives the parent its sealed pages back.
 func (h *Host) discardReceived(ctx context.Context, vmID string, runtime Machine, vm *volume.VM, cause error) {
 	ctx, cancel := cleanup(ctx)
 	defer cancel()

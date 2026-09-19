@@ -199,7 +199,7 @@ type instance struct {
 	// it is what keeps Settle from starting it again: a stop whose VM came back
 	// by itself at the next step would be no stop at all.
 	stopped bool
-	// writes is when each store this VM's lineage has made happened, on the
+	// writes is when each store this VM and its ancestors have made happened, on the
 	// clock of the host that took it, oldest first. It is what the loss window
 	// is measured over: a recovery rewinds every write past the checkpoint it
 	// came back at, and the window bounds how far apart the first and the last
@@ -1566,8 +1566,8 @@ func (w *World) abandon(ctx context.Context, in *instance) {
 }
 
 // Delete removes one VM: its guest stops, its handle closes and its record and
-// objects go. What it leaves behind is the lineage a fork of it pinned, which
-// no writer can reclaim.
+// objects go. What it leaves behind is the checkpoints a fork of it pinned,
+// which no writer can reclaim.
 func (w *World) Delete(ctx context.Context, id string) error {
 	in := w.live(id)
 	if in == nil {

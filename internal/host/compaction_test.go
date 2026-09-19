@@ -13,7 +13,7 @@ import (
 
 // Compaction moves a cold page's bytes out of a checkpoint that has become
 // mostly dead and into the one being published. The guest running on that
-// page never notices: the page keeps its lineage identity, so the resident page
+// page never notices: the page keeps its identity, so the resident page
 // the pager holds for it stays the page's, and reading it after the move
 // costs no fault and no load. Here the checkpoint that first published four
 // pages is left a quarter live by the next one, which compacts its one cold

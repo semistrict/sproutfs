@@ -38,14 +38,14 @@ func (m *migration) fanOut(t *testing.T, children ...string) []vmmigrate.Handoff
 	return handoffs
 }
 
-// TestForkFanOutChildrenShareTheLineageTheyInherit. Two children of one fork point
+// TestForkFanOutChildrenShareThePagesTheyInherit. Two children of one fork point
 // on one host read the same parent checkpoint, so every page of it that neither
 // has diverged from is one page between them. That sharing is the reason a
 // fan-out puts children on one host at all: without it the host pays a page
-// and a load per child per page of a lineage they agree on completely.
+// and a load per child per page of checkpoints they agree on completely.
 //
 // What has to hold for it is that the page keeps the parent's name. The child's
-// root index is published over that lineage rather than in place of it — it
+// root index is published over the parent's checkpoints rather than in place of them — it
 // carries the pages the child actually pulled and nothing else — so a page
 // neither child has written still names the object the parent put it in, and
 // the pager keys one page by it for both of them.
@@ -54,16 +54,16 @@ func (m *migration) fanOut(t *testing.T, children ...string) []vmmigrate.Handoff
 // of the parent holds is fetched per child over the wire and is that child's
 // own dirty state from the moment it lands, which two guests that may diverge
 // from it the next moment have no business sharing.
-func TestForkFanOutChildrenShareTheLineageTheyInherit(t *testing.T) {
+func TestForkFanOutChildrenShareThePagesTheyInherit(t *testing.T) {
 	m := newMigration(t)
-	// The parent publishes what its pager holds, so the lineage the children
-	// inherit is in object storage rather than in this host's pages.
+	// The parent publishes what its pager holds, so what the children inherit
+	// is in object storage rather than in this host's pages.
 	if err := m.machine.checkpoint(t.Context(), m.vm); err != nil {
 		t.Fatal(err)
 	}
 	inherited := pageIdentity(t, m.vm, sharedPage)
 	// One page written since that checkpoint, so the point carries an
-	// unpublished set as well as the published lineage under it.
+	// unpublished set as well as the published checkpoint under it.
 	m.machine.write("ram0", 0)
 	handoffs := m.fanOut(t, "vm-a", "vm-b")
 
@@ -75,7 +75,7 @@ func TestForkFanOutChildrenShareTheLineageTheyInherit(t *testing.T) {
 		}
 		// The root index is what the destination publishes once the child holds
 		// every page it inherited, and it is the one thing that could rename the
-		// lineage under it.
+		// pages under it.
 		if err := child.checkpoint(t.Context(), received.VM()); err != nil {
 			t.Fatal(err)
 		}
@@ -107,7 +107,7 @@ func TestForkFanOutChildrenShareTheLineageTheyInherit(t *testing.T) {
 	}
 	hits, loads := after.IdentityHits-before.IdentityHits, after.Loads-before.Loads
 	if hits != 1 || loads != 1 {
-		t.Errorf("two children reading one page of the lineage they share: identity_hits=%d loads=%d, want 1 and 1",
+		t.Errorf("two children reading one page they both inherited: identity_hits=%d loads=%d, want 1 and 1",
 			hits, loads)
 	}
 }
@@ -116,7 +116,7 @@ func TestForkFanOutChildrenShareTheLineageTheyInherit(t *testing.T) {
 // that neither child writes, which is what they must agree on the name of.
 const sharedPage = uint64(5)
 
-// pageIdentity is the lineage one VM's own volume gives one page of its RAM,
+// pageIdentity is the identity one VM's own volume gives one page of its RAM,
 // which is what the pager keys a shared page by.
 func pageIdentity(t *testing.T, vm *volume.VM, page uint64) control.Identity {
 	t.Helper()

@@ -177,8 +177,8 @@ func imageDigest(source io.ReadSeeker) ([sha256.Size]byte, error) {
 // templatePoint rebuilds the fork point a create forks from one published
 // checkpoint of a template. Nothing is opened: the pin on that checkpoint is
 // the template's own and permanent — nothing in this deployment gives a pin
-// back — so a fork of it inherits a lineage nothing reclaims whether or not the
-// host that imported it still exists.
+// back — so a fork of it inherits checkpoints nothing reclaims whether or not
+// the host that imported it still exists.
 func (h *Host) templatePoint(ctx context.Context, id string, sequence uint64) (*ImportedTemplate, error) {
 	point, err := h.volumes.Inherit(ctx, control.Ref{VM: id, Sequence: sequence})
 	if err != nil {
