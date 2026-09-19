@@ -264,18 +264,25 @@ func isIndexObject(data []byte) bool {
 }
 
 // Root publishes the first checkpoint of a new VM: every named volume exists at
-// its given size and reads as zeroes. Sizes must be whole numbers of pages. It
+// its given size and page size, and reads as zeroes. Sizes must be whole
+// numbers of sectors and page sizes must be ones [GeometryFor] accepts, because
+// this is where a volume's geometry is chosen and it is fixed from here on. It
 // is an index object holding a root and no segments, and no parts at all.
-func (s *Store) Root(ctx context.Context, ref control.Ref, sizes map[string]uint64) (*Index, error) {
+func (s *Store) Root(ctx context.Context, ref control.Ref, volumes map[string]VolumeSpec) (*Index, error) {
 	if !validName(ref.VM) || ref.Sequence == 0 {
 		return nil, ErrInvalidConfig
 	}
 	index := newIndex(s, ref)
-	for name, size := range sizes {
-		if !validName(name) || size%SectorSize != 0 {
+	for name, spec := range volumes {
+		if !validName(name) || spec.Size%SectorSize != 0 {
 			return nil, ErrInvalidConfig
 		}
-		index.volumes[name] = &volumeTable{size: size, segments: make(map[uint64]segmentEntry)}
+		geometry, err := GeometryFor(spec.PageSize)
+		if err != nil {
+			return nil, err
+		}
+		index.volumes[name] = &volumeTable{size: spec.Size, geometry: geometry,
+			segments: make(map[uint64]segmentEntry)}
 		index.names = append(index.names, name)
 	}
 	slices.Sort(index.names)
@@ -425,8 +432,8 @@ func (s *Store) Read(ctx context.Context, index *Index, volume string, offset ui
 		return err
 	}
 	for cursor := offset; cursor < offset+length; {
-		number := cursor / PageSize
-		start, span := pageSpan(table.size, number)
+		number := table.geometry.PageOf(cursor)
+		start, span := table.geometry.PageSpan(table.size, number)
 		limit := min(offset+length, start+span)
 		if err := s.readPage(ctx, index, volume, number, cursor-start, dst[cursor-offset:limit-offset]); err != nil {
 			return err
@@ -448,7 +455,7 @@ func (s *Store) readPage(ctx context.Context, index *Index, volume string, numbe
 		clear(dst)
 		return nil
 	}
-	data, release, err := s.loadPage(ctx, volume, number, at)
+	data, release, err := s.loadPage(ctx, index.volumes[volume].geometry, volume, number, at)
 	if err != nil {
 		return err
 	}
@@ -466,9 +473,9 @@ func (s *Store) readPage(ctx context.Context, index *Index, volume string, numbe
 // member's origin — rather than by the checkpoint whose part currently holds it,
 // so a fork hits its parent's entries and compaction moving the bytes costs
 // neither a refetch nor a second entry.
-func (s *Store) loadPage(ctx context.Context, volume string, number uint64, at location) ([]byte, func(), error) {
+func (s *Store) loadPage(ctx context.Context, geometry Geometry, volume string, number uint64, at location) ([]byte, func(), error) {
 	fetch := func(ctx context.Context) ([]byte, error) {
-		data, err := s.readMember(ctx, at, PageSize)
+		data, err := s.readMember(ctx, at, int64(geometry.PageSize))
 		if err != nil {
 			return nil, err
 		}

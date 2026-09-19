@@ -14,6 +14,7 @@ import (
 	"github.com/semistrict/sproutfs/internal/api/guest"
 	"github.com/semistrict/sproutfs/internal/jsonhttp"
 	"github.com/semistrict/sproutfs/internal/vmmachine"
+	"github.com/semistrict/sproutfs/internal/vmmemory"
 	"github.com/semistrict/sproutfs/internal/volume"
 )
 
@@ -176,8 +177,8 @@ func newGuestVM(t *testing.T, ctx context.Context, name string) *volume.VM {
 	t.Helper()
 	c := newMigrationCluster(t, ctx)
 	vm, err := c.source.Create(ctx, name, []volume.VolumeSpec{
-		{Name: vmmachine.RAMVolume, Size: 128 << 20},
-		{Name: "root", Size: guestRootBytes},
+		{Name: vmmachine.RAMVolume, Size: 128 << 20, PageSize: vmmemory.PageSize},
+		{Name: "root", Size: guestRootBytes, PageSize: vmmemory.PageSize},
 	})
 	if err != nil {
 		t.Fatal(err)

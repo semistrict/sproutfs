@@ -70,8 +70,8 @@ func TestFirecrackerForkFanOutServesBothChildrenAtOnce(t *testing.T) {
 	c := newMigrationCluster(t, ctx)
 
 	parent, err := c.source.Create(ctx, "parent", []volume.VolumeSpec{
-		{Name: vmmachine.RAMVolume, Size: forkFanOutRAM},
-		{Name: "root", Size: forkFanOutRoot},
+		{Name: vmmachine.RAMVolume, Size: forkFanOutRAM, PageSize: vmmemory.PageSize},
+		{Name: "root", Size: forkFanOutRoot, PageSize: vmmemory.PageSize},
 	})
 	if err != nil {
 		t.Fatal(err)

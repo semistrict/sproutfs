@@ -205,12 +205,13 @@ func dirtySectorCount(overlay *extentIndex) uint64 {
 	return count
 }
 
-// dirtyPages reports every 2 MiB page an overlay covers, in ascending order.
-// These are exactly the pages a checkpoint of that overlay republishes whole,
-// and the publication names them one at a time, so here the list is the answer.
-func dirtyPages(overlay *extentIndex) []uint64 {
+// dirtyPages reports every page of the volume's own geometry an overlay covers,
+// in ascending order. These are exactly the pages a checkpoint of that overlay
+// republishes whole, and the publication names them one at a time, so here the
+// list is the answer.
+func dirtyPages(overlay *extentIndex, geometry checkpoint.Geometry) []uint64 {
 	var pages []uint64
-	for first, limit := range coveredUnits(overlay, checkpoint.PageSize) {
+	for first, limit := range coveredUnits(overlay, geometry.PageSize) {
 		for page := first; page < limit; page++ {
 			pages = append(pages, page)
 		}

@@ -48,6 +48,13 @@ message Volume {
   uint64 size = 2;
   reserved 3;  // The whole page table, before it was split into segments.
   repeated SegmentEntry segments = 4;
+  // The volume's page geometry: how large one of its pages is, which is the
+  // unit of publication and what its page numbers count, and how many of those
+  // pages one segment of its page table covers. It is chosen when the volume is
+  // created and never changes, and it is recorded rather than derived: a reader
+  // divides page numbers by what is here, never by a constant of its own.
+  uint64 page_size = 5;
+  uint64 segment_pages = 6;
 }
 
 // SegmentEntry addresses one segment of a volume's page table. A segment is

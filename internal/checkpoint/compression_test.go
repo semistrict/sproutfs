@@ -16,11 +16,11 @@ func TestCompressedCheckpointObjectsAndPartialReads(t *testing.T) {
 		objects := sim.New(sim.Config{}).ObjectStore()
 		store := mustStore(t, checkpoint.Config{ObjectStore: objects})
 		sizes := map[string]uint64{"ram0": 2 << 20}
-		root, err := store.Root(t.Context(), control.Ref{VM: "compressed", Sequence: 1}, sizes)
+		root, err := store.Root(t.Context(), control.Ref{VM: "compressed", Sequence: 1}, volumes2MiB(sizes))
 		if err != nil {
 			t.Fatal(err)
 		}
-		m := newModel(sizes)
+		m := newModel(volumes2MiB(sizes))
 		p := store.Begin(root, control.Ref{VM: "compressed", Sequence: 2})
 		for sector := range uint32(512) {
 			m.dirty(p, "ram0", 0, sector, bytes.Repeat([]byte{byte(sector/256 + 1)}, 4096))

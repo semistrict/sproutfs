@@ -60,10 +60,10 @@ type checkpointCost struct {
 	emptied uint64
 }
 
-// segment is one range of a volume's page table: the pages of
-// [number*segmentPages, (number+1)*segmentPages) that hold bytes, keyed by
-// their number relative to the segment's first page. A page with no entry reads
-// as zeroes, and a segment with no entry at all is an empty one.
+// segment is one range of a volume's page table: the pages one segment of that
+// volume's geometry covers that hold bytes, keyed by their number relative to
+// the segment's first page. A page with no entry reads as zeroes, and a segment
+// with no entry at all is an empty one.
 type segment struct {
 	pages map[uint32]location
 }
@@ -110,23 +110,14 @@ type segmentKey struct {
 	number uint64
 }
 
-// segmentOf reports the segment a page number belongs to, and offsetIn its
-// number relative to that segment's first page.
-func segmentOf(page uint64) uint64     { return page / segmentPages }
-func offsetIn(page uint64) uint32      { return uint32(page % segmentPages) }
-func segmentBase(number uint64) uint64 { return number * segmentPages }
-
-// volumeTable is one volume's size and the segments of its page table.
+// volumeTable is one volume's size, its geometry and the segments of its page
+// table. The geometry is what every page number of this volume is divided by,
+// here and in every reader: it is the volume's own and never a constant of this
+// package.
 type volumeTable struct {
 	size     uint64
+	geometry Geometry
 	segments map[uint64]segmentEntry
-}
-
-// segmentCount reports how many segments a volume of this size can have, which
-// is what bounds a segment number the root names.
-func segmentCount(size uint64) uint64 {
-	pages := (size + PageSize - 1) / PageSize
-	return (pages + segmentPages - 1) / segmentPages
 }
 
 // Index is the decoded root of one published checkpoint: where every volume's
@@ -173,6 +164,17 @@ func (i *Index) Size(volume string) uint64 {
 		return 0
 	}
 	return table.size
+}
+
+// Geometry reports the page geometry a volume was created with, which this
+// checkpoint records and every reader of it divides page numbers by. It is the
+// zero Geometry for a volume this index does not describe.
+func (i *Index) Geometry(volume string) Geometry {
+	table := i.volumes[volume]
+	if table == nil {
+		return Geometry{}
+	}
+	return table.geometry
 }
 
 // HasState reports whether VMM state was published with this checkpoint.
@@ -303,11 +305,15 @@ func (i *Index) segmentAt(ctx context.Context, volume string, number uint64) (*s
 // pageAt reports where one page's current bytes live, fetching the segment that
 // locates it if this index has not already.
 func (i *Index) pageAt(ctx context.Context, volume string, number uint64) (location, bool, error) {
-	held, err := i.segmentAt(ctx, volume, segmentOf(number))
+	table := i.volumes[volume]
+	if table == nil {
+		return location{}, false, ErrUnknownVolume
+	}
+	held, err := i.segmentAt(ctx, volume, table.geometry.SegmentOf(number))
 	if err != nil {
 		return location{}, false, err
 	}
-	at, found := held.pages[offsetIn(number)]
+	at, found := held.pages[table.geometry.OffsetIn(number)]
 	return at, found, nil
 }
 
@@ -337,20 +343,21 @@ func (i *Index) Locate(ctx context.Context, volume string, offset, length uint64
 		extents = append(extents, control.Extent{Offset: offset, Length: length, Identity: identity})
 	}
 	end := offset + length
+	geometry := table.geometry
 	var held *segment
 	var current uint64
 	for cursor := offset; cursor < end; {
-		number := cursor / PageSize
-		start, span := pageSpan(table.size, number)
+		number := geometry.PageOf(cursor)
+		start, span := geometry.PageSpan(table.size, number)
 		limit := min(end, start+span)
-		if held == nil || current != segmentOf(number) {
-			loaded, err := i.segmentAt(ctx, volume, segmentOf(number))
+		if held == nil || current != geometry.SegmentOf(number) {
+			loaded, err := i.segmentAt(ctx, volume, geometry.SegmentOf(number))
 			if err != nil {
 				return nil, err
 			}
-			held, current = loaded, segmentOf(number)
+			held, current = loaded, geometry.SegmentOf(number)
 		}
-		if at, found := held.pages[offsetIn(number)]; found {
+		if at, found := held.pages[geometry.OffsetIn(number)]; found {
 			add(cursor, limit-cursor, identityOf(volume, number, at))
 		} else {
 			add(cursor, limit-cursor, control.ZeroIdentity)
@@ -410,7 +417,13 @@ func (i *Index) encode() ([]byte, error) {
 			}.Build())
 		}
 		volumes = append(volumes, checkpointv1.Volume_builder{
-			Name: proto.String(name), Size: proto.Uint64(table.size), Segments: segments,
+			Name: proto.String(name), Size: proto.Uint64(table.size),
+			PageSize: proto.Uint64(table.geometry.PageSize),
+			// The pages one segment covers is recorded rather than derived: a
+			// reader divides page numbers by what the root says, not by a
+			// constant of the build that happens to be reading.
+			SegmentPages: proto.Uint64(table.geometry.SegmentPages),
+			Segments:     segments,
 		}.Build())
 	}
 	originRefs := make([]*checkpointv1.Ref, 0, len(origins))
@@ -493,7 +506,8 @@ func encodeSegment(held *segment) ([]byte, error) {
 // to; what a published root owes is checked by CheckIndex, and nothing reads
 // past a volume's size in between.
 func (i *Index) decodeSegment(volume string, data []byte) (*segment, error) {
-	if i.volumes[volume] == nil {
+	table := i.volumes[volume]
+	if table == nil {
 		return nil, ErrUnknownVolume
 	}
 	message := new(checkpointv1.Segment)
@@ -514,7 +528,7 @@ func (i *Index) decodeSegment(volume string, data []byte) (*segment, error) {
 	held := newSegment()
 	for _, entry := range message.GetPages() {
 		relative := entry.GetNumber()
-		if relative >= segmentPages {
+		if uint64(relative) >= table.geometry.SegmentPages {
 			return nil, ErrCorrupt
 		}
 		if _, held := held.pages[relative]; held {
@@ -561,8 +575,10 @@ const (
 	// indexMagic is "SPROUTIX".
 	indexMagic = 0x5350524f55544958
 	// indexFormatVersion is the index layout this build writes and the only one
-	// it reads.
-	indexFormatVersion = 7
+	// it reads. Version 8 records every volume's page geometry in the root; a
+	// version 7 root states no page size, and its page numbers are 2 MiB pages
+	// that must not be read as anything else.
+	indexFormatVersion = 8
 )
 
 // putIndexHeader writes the fixed head of an index object over the first
@@ -690,9 +706,18 @@ func decodeRoot(store *Store, ref control.Ref, data []byte) (*Index, error) {
 		if !validName(name) || index.volumes[name] != nil || volume.GetSize()%SectorSize != 0 {
 			return nil, ErrCorrupt
 		}
-		table := &volumeTable{size: volume.GetSize(),
+		// The geometry is read back as the pair the root recorded rather than
+		// rebuilt from the page size, because it is what every page number of
+		// this volume is divided by: a root carrying a pair this build does not
+		// write is one it cannot divide by, and is refused whole.
+		geometry := Geometry{PageSize: volume.GetPageSize(), SegmentPages: volume.GetSegmentPages()}
+		if !geometry.supported() {
+			return nil, fmt.Errorf("%w: %s has %d-byte pages, %d to a segment, which this build does not read",
+				ErrCorrupt, name, geometry.PageSize, geometry.SegmentPages)
+		}
+		table := &volumeTable{size: volume.GetSize(), geometry: geometry,
 			segments: make(map[uint64]segmentEntry, len(volume.GetSegments()))}
-		count := segmentCount(table.size)
+		count := geometry.SegmentCount(table.size)
 		for _, entry := range volume.GetSegments() {
 			number := entry.GetNumber()
 			if number >= count {

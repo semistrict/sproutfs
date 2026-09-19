@@ -23,12 +23,12 @@ const checkpointPages = 4
 func checkpointFixture(t *testing.T, config checkpoint.Config, vm string) (*checkpoint.Store, *checkpoint.Index, *model) {
 	t.Helper()
 	store := mustStore(t, config)
-	sizes := map[string]uint64{"root": checkpointPages * checkpoint.PageSize}
-	root, err := store.Root(t.Context(), control.Ref{VM: vm, Sequence: 1}, sizes)
+	sizes := map[string]uint64{"root": checkpointPages * checkpoint.PageSize2MiB}
+	root, err := store.Root(t.Context(), control.Ref{VM: vm, Sequence: 1}, volumes2MiB(sizes))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return store, root, newModel(sizes)
+	return store, root, newModel(volumes2MiB(sizes))
 }
 
 // write marks one page changed with contents nothing else repeats, so a read

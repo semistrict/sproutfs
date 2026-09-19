@@ -17,7 +17,7 @@ import (
 
 // reclaimSpecs is one volume of two whole pages, so a test can leave one page
 // untouched while it rewrites the other.
-var reclaimSpecs = []volume.VolumeSpec{{Name: "root", Size: 2 * checkpoint.PageSize}}
+var reclaimSpecs = []volume.VolumeSpec{{Name: "root", Size: 2 * checkpoint.PageSize2MiB, PageSize: checkpoint.PageSize2MiB}}
 
 // objectsUnder lists the objects one checkpoint still has in the store, by the
 // suffix that follows its own prefix, in ascending order.
@@ -85,7 +85,7 @@ func TestPublishingReclaimsWhatItReplaced(t *testing.T) {
 
 		// The first checkpoint writes both pages.
 		write(0, 1)
-		write(checkpoint.PageSize, 2)
+		write(checkpoint.PageSize2MiB, 2)
 		if err := vm.Checkpoint(t.Context()); err != nil {
 			t.Fatal(err)
 		}
@@ -112,7 +112,7 @@ func TestPublishingReclaimsWhatItReplaced(t *testing.T) {
 		// Repacking both pages leaves nothing reading either earlier
 		// checkpoint, and the selection deletes them whole.
 		write(0, 4)
-		write(checkpoint.PageSize, 4)
+		write(checkpoint.PageSize2MiB, 4)
 		if err := vm.Checkpoint(t.Context()); err != nil {
 			t.Fatal(err)
 		}
@@ -416,7 +416,7 @@ func TestAnAbandonedForkLeavesThePinStanding(t *testing.T) {
 		defer vm.Close(t.Context())
 		write := func(value byte) {
 			t.Helper()
-			for _, offset := range []uint64{0, checkpoint.PageSize} {
+			for _, offset := range []uint64{0, checkpoint.PageSize2MiB} {
 				if err := vm.Volume("root").Write(t.Context(), offset,
 					bytes.Repeat([]byte{value}, checkpoint.SectorSize)); err != nil {
 					t.Fatal(err)
@@ -485,7 +485,7 @@ func TestPublishedForkKeepsThePinItsIndexNames(t *testing.T) {
 			}
 		}
 		write(0, 1)
-		write(checkpoint.PageSize, 2)
+		write(checkpoint.PageSize2MiB, 2)
 		if err := vm.Checkpoint(t.Context()); err != nil {
 			t.Fatal(err)
 		}
@@ -523,7 +523,7 @@ func TestPublishedForkKeepsThePinItsIndexNames(t *testing.T) {
 		// The parent rewrites every page it published, so nothing of its own
 		// reads that checkpoint: only the pin keeps the child readable.
 		write(0, 3)
-		write(checkpoint.PageSize, 3)
+		write(checkpoint.PageSize2MiB, 3)
 		if err := vm.Checkpoint(t.Context()); err != nil {
 			t.Fatal(err)
 		}
@@ -538,7 +538,7 @@ func TestPublishedForkKeepsThePinItsIndexNames(t *testing.T) {
 		}
 		defer opened.Close(t.Context())
 		got := make([]byte, checkpoint.SectorSize)
-		if err := opened.Volume("root").Read(t.Context(), checkpoint.PageSize, got); err != nil {
+		if err := opened.Volume("root").Read(t.Context(), checkpoint.PageSize2MiB, got); err != nil {
 			t.Fatal(err)
 		}
 		if !bytes.Equal(got, bytes.Repeat([]byte{2}, checkpoint.SectorSize)) {
@@ -572,7 +572,7 @@ func TestReclamationRunsAroundAPinnedCheckpoint(t *testing.T) {
 			}
 		}
 		write(0, 1)
-		write(checkpoint.PageSize, 2)
+		write(checkpoint.PageSize2MiB, 2)
 		if err := vm.Checkpoint(t.Context()); err != nil {
 			t.Fatal(err)
 		}
@@ -599,7 +599,7 @@ func TestReclamationRunsAroundAPinnedCheckpoint(t *testing.T) {
 		}
 		replaced := vm.Status().Checkpoint
 		write(0, 4)
-		write(checkpoint.PageSize, 5)
+		write(checkpoint.PageSize2MiB, 5)
 		if err := vm.Checkpoint(t.Context()); err != nil {
 			t.Fatal(err)
 		}
@@ -634,7 +634,7 @@ func TestClosingAHandleFinishesTheSweepBehindItsLastCheckpoint(t *testing.T) {
 			}
 		}
 		write(0, 1)
-		write(checkpoint.PageSize, 2)
+		write(checkpoint.PageSize2MiB, 2)
 		if err := vm.Checkpoint(t.Context()); err != nil {
 			t.Fatal(err)
 		}
@@ -642,7 +642,7 @@ func TestClosingAHandleFinishesTheSweepBehindItsLastCheckpoint(t *testing.T) {
 		// Both pages repacked leaves nothing reading the first checkpoint, so
 		// the publication behind this snapshot sweeps it.
 		write(0, 3)
-		write(checkpoint.PageSize, 4)
+		write(checkpoint.PageSize2MiB, 4)
 		ckpt, err := vm.Snapshot(t.Context(), volume.Prepared(nil, nil))
 		if err != nil {
 			t.Fatal(err)

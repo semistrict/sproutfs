@@ -331,8 +331,8 @@ func workload(t *testing.T, vm *volume.VM, m model, random *rand.Rand, count int
 // The test VM has one volume of whole pages and one whose last page is a
 // three-page tail, so every publication exercises both.
 var testSpecs = []volume.VolumeSpec{
-	{Name: "root", Size: 3 * checkpoint.PageSize},
-	{Name: "state", Size: checkpoint.PageSize + 3*checkpoint.SectorSize},
+	{Name: "root", Size: 3 * checkpoint.PageSize2MiB, PageSize: checkpoint.PageSize2MiB},
+	{Name: "state", Size: checkpoint.PageSize2MiB + 3*checkpoint.SectorSize, PageSize: checkpoint.PageSize2MiB},
 }
 
 func createVM(t *testing.T, m *volume.Manager, id string) (*volume.VM, model) {

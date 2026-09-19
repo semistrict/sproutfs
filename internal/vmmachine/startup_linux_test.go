@@ -251,7 +251,7 @@ func startupFixture(t *testing.T) (vmmachine.Config, *admissionBacking, *vmmemor
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = m.Close(context.Background()) })
-	vm, err := m.Create(t.Context(), "vm", []volume.VolumeSpec{{Name: vmmachine.RAMVolume, Size: vmmemory.PageSize}})
+	vm, err := m.Create(t.Context(), "vm", []volume.VolumeSpec{{Name: vmmachine.RAMVolume, Size: vmmemory.PageSize, PageSize: vmmemory.PageSize}})
 	if err != nil {
 		t.Fatal(err)
 	}

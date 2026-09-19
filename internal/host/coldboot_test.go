@@ -13,8 +13,8 @@ import (
 // coldVolumes is a VM shaped the way a guest is: memory, and a root volume its
 // filesystem lives on. A cold boot discards the first and keeps the second.
 var coldVolumes = []volume.VolumeSpec{
-	{Name: "ram0", Size: 4 * migrationPageSize},
-	{Name: "root", Size: 2 * migrationPageSize},
+	{Name: "ram0", Size: 4 * migrationPageSize, PageSize: migrationPageSize},
+	{Name: "root", Size: 2 * migrationPageSize, PageSize: migrationPageSize},
 }
 
 // coldShape names the two volumes a cold boot acts on, with no resize.

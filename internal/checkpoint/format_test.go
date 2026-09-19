@@ -30,8 +30,8 @@ var update = flag.Bool("update", false, "rewrite the index fixtures under testda
 const (
 	// currentCheckpoint holds the objects of a small published checkpoint as
 	// this build writes them, named for the two formats they are written in: an
-	// index object of format 7, and parts of layout 4.
-	currentCheckpoint = "testdata/index-7-part-4"
+	// index object of format 8, and parts of layout 4.
+	currentCheckpoint = "testdata/index-8-part-4"
 	fixturePrefix     = "fixture/"
 )
 
@@ -60,6 +60,11 @@ var supersededCheckpoints = []struct {
 	{dir: "testdata/index-5-part-1", refusal: "checkpoint index format version 5"},
 	{dir: "testdata/index-6-part-2", refusal: "checkpoint index format version 6"},
 	{dir: "testdata/part-3", refusal: "checkpoint part format version 3"},
+	// Version 7 is the layout immediately before this one: its roots state no
+	// volume's page size, so its page numbers are 2 MiB pages and nothing else
+	// may read them. Nothing is converted — it is refused by the version it
+	// carries, before a segment is decoded or a page is served.
+	{dir: "testdata/index-7-part-4", refusal: "checkpoint index format version 7"},
 }
 
 // fixtureVM is the checkpoint the fixture publishes: a first checkpoint of the
@@ -69,7 +74,7 @@ var (
 	fixtureRoot   = control.Ref{VM: "alpha", Sequence: control.Sequence(1, 1)}
 	fixtureFirst  = control.Ref{VM: "alpha", Sequence: control.Sequence(1, 2)}
 	fixtureSecond = control.Ref{VM: "alpha", Sequence: control.Sequence(1, 3)}
-	fixtureSizes  = map[string]uint64{"disk": PageSize + SectorSize, "ram": 2 * PageSize}
+	fixtureSizes  = map[string]uint64{"disk": PageSize2MiB + SectorSize, "ram": 2 * PageSize2MiB}
 )
 
 // fixtureSource fills every page with a byte derived from its name, so what the
@@ -130,8 +135,8 @@ func TestTheCommittedCheckpointFixtureOpens(t *testing.T) {
 				t.Fatalf("reading %s: %v", name, err)
 			}
 			want := make([]byte, size)
-			for page := range (size + PageSize - 1) / PageSize {
-				start, span := pageSpan(size, page)
+			for page := range (size + PageSize2MiB - 1) / PageSize2MiB {
+				start, span := at2MiB.PageSpan(size, page)
 				for at := start; at < start+span; at++ {
 					want[at] = source.fill(name, page)
 				}
@@ -190,7 +195,7 @@ func writeCheckpointFixtures(t *testing.T) {
 	var objects []fixtureObject
 	synctest.Test(t, func(t *testing.T) {
 		store := fixtureStore(t)
-		root, err := store.Root(t.Context(), fixtureRoot, fixtureSizes)
+		root, err := store.Root(t.Context(), fixtureRoot, volumesAt(at2MiB, fixtureSizes))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -198,7 +203,7 @@ func writeCheckpointFixtures(t *testing.T) {
 		first := store.Begin(root, fixtureFirst)
 		first.SetState([]byte("the fixture's VMM state"))
 		for name, size := range fixtureSizes {
-			for page := range (size + PageSize - 1) / PageSize {
+			for page := range (size + PageSize2MiB - 1) / PageSize2MiB {
 				first.Dirty(name, page)
 			}
 		}

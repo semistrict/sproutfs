@@ -53,7 +53,7 @@ func TestMembersPastTheTableBoundSealTheirPart(t *testing.T) {
 		for number := range spreadVolumes {
 			sizes[spreadVolumeName(number)] = SectorSize
 		}
-		root, err := store.Root(t.Context(), control.Ref{VM: "spread", Sequence: 1}, sizes)
+		root, err := store.Root(t.Context(), control.Ref{VM: "spread", Sequence: 1}, volumesAt(at2MiB, sizes))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -117,7 +117,7 @@ func TestReadingAPartTableIsOneRequest(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		store, runtime := tailStore(t)
 		ref := control.Ref{VM: "tail", Sequence: 1}
-		root, err := store.Root(t.Context(), ref, map[string]uint64{"disk": 2 * PageSize})
+		root, err := store.Root(t.Context(), ref, volumesAt(at2MiB, map[string]uint64{"disk": 2 * PageSize2MiB}))
 		if err != nil {
 			t.Fatal(err)
 		}

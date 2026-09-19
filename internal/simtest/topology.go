@@ -31,9 +31,11 @@ import (
 	"github.com/semistrict/sproutfs/internal/volume"
 )
 
-// PageSize is the page every volume of a generated topology is measured in. It
-// is the publication unit, the fault unit and the wire unit all at once, so a
-// campaign that used any other number would be testing arithmetic.
+// PageSize is the page every volume of a generated topology is created with and
+// measured in. It is the publication unit, the fault unit and the wire unit all
+// at once, so a campaign that used any other number would be testing
+// arithmetic — and the pager serves this one alone, so a volume of any other
+// page size could not be attached to the VMs a campaign runs.
 const PageSize = 2 << 20
 
 // MemoryVolume is the volume every VM's memory is in, which is the name
@@ -141,10 +143,10 @@ func NewTopology(r sim.Random) Topology {
 		// ram0 is every VM's memory. A PMEM disk is there half the time, so a
 		// migration has to name and move more than one region on some seeds and
 		// exactly one on others.
-		spec.Volumes = append(spec.Volumes, volume.VolumeSpec{Name: MemoryVolume,
+		spec.Volumes = append(spec.Volumes, volume.VolumeSpec{Name: MemoryVolume, PageSize: PageSize,
 			Size: uint64(minVolumePages+r.Intn(id+"/ram0", maxVolumePages-minVolumePages+1)) * PageSize})
 		if r.Chance(id+"/disk", 0.5) {
-			spec.Volumes = append(spec.Volumes, volume.VolumeSpec{Name: "disk",
+			spec.Volumes = append(spec.Volumes, volume.VolumeSpec{Name: "disk", PageSize: PageSize,
 				Size: uint64(minVolumePages+r.Intn(id+"/disk-pages", maxVolumePages-minVolumePages+1)) * PageSize})
 		}
 		t.VMs = append(t.VMs, spec)

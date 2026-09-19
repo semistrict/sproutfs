@@ -14,7 +14,7 @@ import (
 // identityOfPage reports the identity one whole page of a volume reads under.
 func identityOfPage(t *testing.T, index *checkpoint.Index, volume string, page uint64) control.Identity {
 	t.Helper()
-	extents, err := index.Locate(t.Context(), volume, page*checkpoint.PageSize, checkpoint.PageSize)
+	extents, err := index.Locate(t.Context(), volume, page*checkpoint.PageSize2MiB, checkpoint.PageSize2MiB)
 	if err != nil {
 		t.Fatal(err)
 	}

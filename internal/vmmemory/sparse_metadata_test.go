@@ -77,7 +77,7 @@ func (b *sparseMemoryBacking) Locate(ctx context.Context, offset, length uint64)
 		if b.pages[page] != nil {
 			stop := min(end, (page+1)*pageSize)
 			result = append(result, control.Extent{Offset: offset, Length: stop - offset,
-				Identity: control.Identity{Ref: control.Ref{VM: b.vm, Sequence: 2}, Volume: "v", Page: offset / checkpoint.PageSize}})
+				Identity: control.Identity{Ref: control.Ref{VM: b.vm, Sequence: 2}, Volume: "v", Page: offset / checkpoint.PageSize2MiB}})
 			offset = stop
 			continue
 		}

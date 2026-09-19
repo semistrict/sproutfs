@@ -54,7 +54,7 @@ func TestAGrandchildKeepsReadingThePageItsGrandparentPublished(t *testing.T) {
 		defer manager.Close(t.Context())
 		vm, write := forkedParent(t, h, manager, "vm")
 		write(0, 1)
-		write(checkpoint.PageSize, 2)
+		write(checkpoint.PageSize2MiB, 2)
 		if err := vm.Checkpoint(t.Context()); err != nil {
 			t.Fatal(err)
 		}
@@ -99,7 +99,7 @@ func TestAGrandchildKeepsReadingThePageItsGrandparentPublished(t *testing.T) {
 
 		// The child rewrites the last page it inherited, so its own index names
 		// none of the grandparent's checkpoints — and the grandchild's still does.
-		rewrite(child, checkpoint.PageSize, 5)
+		rewrite(child, checkpoint.PageSize2MiB, 5)
 		if record := pins(t, h, "vm"); !record.IsPinned(grandparent.Sequence) {
 			t.Fatalf("the grandparent stopped pinning %d, which its grandchild reads", grandparent.Sequence)
 		}
@@ -107,7 +107,7 @@ func TestAGrandchildKeepsReadingThePageItsGrandparentPublished(t *testing.T) {
 		// forked at is one a sweep would otherwise have reclaimed.
 		for _, value := range []byte{6, 7} {
 			write(0, value)
-			write(checkpoint.PageSize, value)
+			write(checkpoint.PageSize2MiB, value)
 			if err := vm.Checkpoint(t.Context()); err != nil {
 				t.Fatal(err)
 			}
@@ -118,7 +118,7 @@ func TestAGrandchildKeepsReadingThePageItsGrandparentPublished(t *testing.T) {
 			}
 		}
 		readsPage(t, h, "grandchild", 0, 4)
-		readsPage(t, h, "grandchild", checkpoint.PageSize, 2)
+		readsPage(t, h, "grandchild", checkpoint.PageSize2MiB, 2)
 	})
 }
 
@@ -135,7 +135,7 @@ func TestAPinChainsThroughAForkOfAFork(t *testing.T) {
 		vm, write := forkedParent(t, h, manager, "vm")
 		defer vm.Close(t.Context())
 		write(0, 1)
-		write(checkpoint.PageSize, 2)
+		write(checkpoint.PageSize2MiB, 2)
 		if err := vm.Checkpoint(t.Context()); err != nil {
 			t.Fatal(err)
 		}
@@ -210,7 +210,7 @@ func TestOneChildsDeletionLeavesWhatItsSiblingsRead(t *testing.T) {
 		vm, write := forkedParent(t, h, manager, "vm")
 		defer vm.Close(t.Context())
 		write(0, 1)
-		write(checkpoint.PageSize, 2)
+		write(checkpoint.PageSize2MiB, 2)
 		if err := vm.Checkpoint(t.Context()); err != nil {
 			t.Fatal(err)
 		}
@@ -245,7 +245,7 @@ func TestOneChildsDeletionLeavesWhatItsSiblingsRead(t *testing.T) {
 		// child's pin keeps that checkpoint whole — and it must, because the
 		// child's index names it.
 		write(0, 3)
-		write(checkpoint.PageSize, 4)
+		write(checkpoint.PageSize2MiB, 4)
 		if err := vm.Checkpoint(t.Context()); err != nil {
 			t.Fatal(err)
 		}

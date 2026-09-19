@@ -286,7 +286,7 @@ func newConfiguredCluster(t *testing.T, adjust func(*volume.Config)) *pagerClust
 
 func (c *pagerCluster) create(t *testing.T, id string, pages int) *volume.VM {
 	t.Helper()
-	vm, err := c.manager.Create(t.Context(), id, []volume.VolumeSpec{{Name: "ram0", Size: uint64(pages) * pageSize}})
+	vm, err := c.manager.Create(t.Context(), id, []volume.VolumeSpec{{Name: "ram0", Size: uint64(pages) * pageSize, PageSize: vmmemory.PageSize}})
 	if err != nil {
 		t.Fatal(err)
 	}

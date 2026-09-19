@@ -133,8 +133,8 @@ func (s *Store) CheckIndex(ctx context.Context, index *Index) ([]platform.Object
 						number, name, reads, table.segments[number].reads, ErrCorrupt)})
 			}
 			for _, relative := range slices.Sorted(maps.Keys(held.pages)) {
-				page := segmentBase(number) + uint64(relative)
-				if _, span := pageSpan(table.size, page); span == 0 {
+				page := table.geometry.SegmentBase(number) + uint64(relative)
+				if _, span := table.geometry.PageSpan(table.size, page); span == 0 {
 					violations = append(violations, IndexViolation{Key: key,
 						Err: fmt.Errorf("segment %d of %s locates page %d, past the volume's %d bytes: %w",
 							number, name, page, table.size, ErrCorrupt)})

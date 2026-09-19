@@ -127,7 +127,7 @@ func sweepingManager(t *testing.T, h *harness) (*volume.Manager, *sweepStore) {
 // replaced holding nothing anyone reads.
 func seal(log *eventLog, fill byte) map[string]volume.DirtySource {
 	return map[string]volume.DirtySource{"root": &retiringPages{
-		sealedPages: sealedPages{size: checkpoint.PageSize, pages: []uint64{0, 1}, fill: fill}, log: log}}
+		sealedPages: sealedPages{size: checkpoint.PageSize2MiB, pages: []uint64{0, 1}, fill: fill}, log: log}}
 }
 
 // A checkpoint's sealed pages go back to the guest as soon as the checkpoint

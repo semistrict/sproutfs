@@ -394,14 +394,16 @@ func (b0 Ref_builder) Build() *Ref {
 // segments of a fixed number of pages each, ordered by number and sparse: a
 // segment with no entry holds no pages, and every page of it reads as zeroes.
 type Volume struct {
-	state                  protoimpl.MessageState `protogen:"opaque.v1"`
-	xxx_hidden_Name        *string                `protobuf:"bytes,1,opt,name=name"`
-	xxx_hidden_Size        uint64                 `protobuf:"varint,2,opt,name=size"`
-	xxx_hidden_Segments    *[]*SegmentEntry       `protobuf:"bytes,4,rep,name=segments"`
-	XXX_raceDetectHookData protoimpl.RaceDetectHookData
-	XXX_presence           [1]uint32
-	unknownFields          protoimpl.UnknownFields
-	sizeCache              protoimpl.SizeCache
+	state                   protoimpl.MessageState `protogen:"opaque.v1"`
+	xxx_hidden_Name         *string                `protobuf:"bytes,1,opt,name=name"`
+	xxx_hidden_Size         uint64                 `protobuf:"varint,2,opt,name=size"`
+	xxx_hidden_Segments     *[]*SegmentEntry       `protobuf:"bytes,4,rep,name=segments"`
+	xxx_hidden_PageSize     uint64                 `protobuf:"varint,5,opt,name=page_size,json=pageSize"`
+	xxx_hidden_SegmentPages uint64                 `protobuf:"varint,6,opt,name=segment_pages,json=segmentPages"`
+	XXX_raceDetectHookData  protoimpl.RaceDetectHookData
+	XXX_presence            [1]uint32
+	unknownFields           protoimpl.UnknownFields
+	sizeCache               protoimpl.SizeCache
 }
 
 func (x *Volume) Reset() {
@@ -455,18 +457,42 @@ func (x *Volume) GetSegments() []*SegmentEntry {
 	return nil
 }
 
+func (x *Volume) GetPageSize() uint64 {
+	if x != nil {
+		return x.xxx_hidden_PageSize
+	}
+	return 0
+}
+
+func (x *Volume) GetSegmentPages() uint64 {
+	if x != nil {
+		return x.xxx_hidden_SegmentPages
+	}
+	return 0
+}
+
 func (x *Volume) SetName(v string) {
 	x.xxx_hidden_Name = &v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 3)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 5)
 }
 
 func (x *Volume) SetSize(v uint64) {
 	x.xxx_hidden_Size = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 1, 3)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 1, 5)
 }
 
 func (x *Volume) SetSegments(v []*SegmentEntry) {
 	x.xxx_hidden_Segments = &v
+}
+
+func (x *Volume) SetPageSize(v uint64) {
+	x.xxx_hidden_PageSize = v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 3, 5)
+}
+
+func (x *Volume) SetSegmentPages(v uint64) {
+	x.xxx_hidden_SegmentPages = v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 4, 5)
 }
 
 func (x *Volume) HasName() bool {
@@ -483,6 +509,20 @@ func (x *Volume) HasSize() bool {
 	return protoimpl.X.Present(&(x.XXX_presence[0]), 1)
 }
 
+func (x *Volume) HasPageSize() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 3)
+}
+
+func (x *Volume) HasSegmentPages() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 4)
+}
+
 func (x *Volume) ClearName() {
 	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 0)
 	x.xxx_hidden_Name = nil
@@ -493,12 +533,29 @@ func (x *Volume) ClearSize() {
 	x.xxx_hidden_Size = 0
 }
 
+func (x *Volume) ClearPageSize() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 3)
+	x.xxx_hidden_PageSize = 0
+}
+
+func (x *Volume) ClearSegmentPages() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 4)
+	x.xxx_hidden_SegmentPages = 0
+}
+
 type Volume_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
 	Name     *string
 	Size     *uint64
 	Segments []*SegmentEntry
+	// The volume's page geometry: how large one of its pages is, which is the
+	// unit of publication and what its page numbers count, and how many of those
+	// pages one segment of its page table covers. It is chosen when the volume is
+	// created and never changes, and it is recorded rather than derived: a reader
+	// divides page numbers by what is here, never by a constant of its own.
+	PageSize     *uint64
+	SegmentPages *uint64
 }
 
 func (b0 Volume_builder) Build() *Volume {
@@ -506,14 +563,22 @@ func (b0 Volume_builder) Build() *Volume {
 	b, x := &b0, m0
 	_, _ = b, x
 	if b.Name != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 3)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 5)
 		x.xxx_hidden_Name = b.Name
 	}
 	if b.Size != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 1, 3)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 1, 5)
 		x.xxx_hidden_Size = *b.Size
 	}
 	x.xxx_hidden_Segments = &b.Segments
+	if b.PageSize != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 3, 5)
+		x.xxx_hidden_PageSize = *b.PageSize
+	}
+	if b.SegmentPages != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 4, 5)
+		x.xxx_hidden_SegmentPages = *b.SegmentPages
+	}
 	return m0
 }
 
@@ -1735,11 +1800,13 @@ const file_sproutfs_checkpoint_v1_checkpoint_proto_rawDesc = "" +
 	"\fstate_origin\x18\t \x01(\rR\vstateOriginJ\x04\b\x01\x10\x02\"1\n" +
 	"\x03Ref\x12\x0e\n" +
 	"\x02vm\x18\x01 \x01(\tR\x02vm\x12\x1a\n" +
-	"\bsequence\x18\x02 \x01(\x04R\bsequence\"x\n" +
+	"\bsequence\x18\x02 \x01(\x04R\bsequence\"\xba\x01\n" +
 	"\x06Volume\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04size\x18\x02 \x01(\x04R\x04size\x12@\n" +
-	"\bsegments\x18\x04 \x03(\v2$.sproutfs.checkpoint.v1.SegmentEntryR\bsegmentsJ\x04\b\x03\x10\x04\"\xb9\x01\n" +
+	"\bsegments\x18\x04 \x03(\v2$.sproutfs.checkpoint.v1.SegmentEntryR\bsegments\x12\x1b\n" +
+	"\tpage_size\x18\x05 \x01(\x04R\bpageSize\x12#\n" +
+	"\rsegment_pages\x18\x06 \x01(\x04R\fsegmentPagesJ\x04\b\x03\x10\x04\"\xb9\x01\n" +
 	"\fSegmentEntry\x12\x16\n" +
 	"\x06number\x18\x01 \x01(\x04R\x06number\x12\x1e\n" +
 	"\n" +

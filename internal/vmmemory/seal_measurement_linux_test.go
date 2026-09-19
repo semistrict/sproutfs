@@ -33,7 +33,7 @@ func (b *measureBacking) Load(_ context.Context, _ uint64, dst []byte) error {
 // exactly as it does for a loaded page and nothing is mapped as a hole.
 func (b *measureBacking) Locate(_ context.Context, off, length uint64) ([]control.Extent, error) {
 	return []control.Extent{{Offset: off, Length: length,
-		Identity: control.Identity{Ref: control.Ref{VM: b.owner, Sequence: 1}, Volume: "v", Page: off / checkpoint.PageSize}}}, nil
+		Identity: control.Identity{Ref: control.Ref{VM: b.owner, Sequence: 1}, Volume: "v", Page: off / checkpoint.PageSize2MiB}}}, nil
 }
 func (b *measureBacking) Verify(context.Context) error { return nil }
 

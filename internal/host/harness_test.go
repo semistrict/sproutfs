@@ -110,7 +110,7 @@ func (s *gatedStore) List(ctx context.Context, request platform.ListRequest) (pl
 }
 
 // rootVolume is the single volume every host test's VM owns.
-var rootVolume = []volume.VolumeSpec{{Name: "root", Size: 8192}}
+var rootVolume = []volume.VolumeSpec{{Name: "root", Size: 8192, PageSize: checkpoint.PageSize2MiB}}
 
 func newHostHarness(t *testing.T) *hostHarness { return newSizedHostHarness(t, 2) }
 

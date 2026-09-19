@@ -34,8 +34,8 @@ const premortemPages = 64
 // segments' worth of table entries and many parts' worth of members.
 func premortemVolume() map[string]uint64 {
 	return map[string]uint64{
-		"ram0": premortemPages * checkpoint.PageSize,
-		"disk": premortemPages * checkpoint.PageSize,
+		"ram0": premortemPages * checkpoint.PageSize2MiB,
+		"disk": premortemPages * checkpoint.PageSize2MiB,
 	}
 }
 
@@ -44,7 +44,7 @@ func premortemVolume() map[string]uint64 {
 // nothing about it is contiguous in what it changed.
 func scatter(p *checkpoint.Publication, m *model, tag string, round int) {
 	for _, name := range []string{"disk", "ram0"} {
-		pages := m.sizes[name] / checkpoint.PageSize
+		pages := m.sizes[name] / checkpoint.PageSize2MiB
 		for page := range pages {
 			sector := uint32((page + uint64(round)) % sectorsPerPage)
 			m.dirty(p, name, page, sector, sectorData(tag+strconv.Itoa(round), page, sector))
@@ -65,7 +65,7 @@ func premortemStore(t *testing.T, objects platform.ObjectStore, cache *checkpoin
 // reads, so every round walks far more than it retains.
 func premortemCache(t *testing.T) *checkpoint.Cache {
 	t.Helper()
-	budget, err := resource.New(8 * checkpoint.PageSize)
+	budget, err := resource.New(8 * checkpoint.PageSize2MiB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,11 +90,11 @@ func TestPremortemWholeVolumeCheckpointsReadBackThroughASmallCache(t *testing.T)
 		cache := premortemCache(t)
 		store := premortemStore(t, objects, cache)
 		sizes := premortemVolume()
-		index, err := store.Root(t.Context(), control.Ref{VM: "vm-soak", Sequence: 1}, sizes)
+		index, err := store.Root(t.Context(), control.Ref{VM: "vm-soak", Sequence: 1}, volumes2MiB(sizes))
 		if err != nil {
 			t.Fatal(err)
 		}
-		m := newModel(sizes)
+		m := newModel(volumes2MiB(sizes))
 		for round := 1; round <= 3; round++ {
 			p := store.Begin(index, control.Ref{VM: "vm-soak", Sequence: uint64(round) + 1})
 			scatter(p, m, "soak", round)
@@ -163,17 +163,17 @@ func TestPremortemConcurrentPublicationsShareOneBuilderSlot(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		objects := sim.New(sim.Config{Seed: 5}).ObjectStore()
 		store := premortemStore(t, objects, premortemCache(t))
-		sizes := map[string]uint64{"ram0": 8 * checkpoint.PageSize}
+		sizes := map[string]uint64{"ram0": 8 * checkpoint.PageSize2MiB}
 		const vms = 4
 		roots := make([]*checkpoint.Index, vms)
 		models := make([]*model, vms)
 		for vm := range vms {
 			id := fmt.Sprintf("vm-%d", vm)
-			root, err := store.Root(t.Context(), control.Ref{VM: id, Sequence: 1}, sizes)
+			root, err := store.Root(t.Context(), control.Ref{VM: id, Sequence: 1}, volumes2MiB(sizes))
 			if err != nil {
 				t.Fatal(err)
 			}
-			roots[vm], models[vm] = root, newModel(sizes)
+			roots[vm], models[vm] = root, newModel(volumes2MiB(sizes))
 		}
 		published := make([]*checkpoint.Index, vms)
 		failures := make([]error, vms)
@@ -208,7 +208,7 @@ func TestPremortemConcurrentPublicationsShareOneBuilderSlot(t *testing.T) {
 // all and so never leaves one half dead.
 func scatterPart(p *checkpoint.Publication, m *model, tag string, round int, random *rand.Rand) {
 	for _, name := range []string{"disk", "ram0"} {
-		pages := m.sizes[name] / checkpoint.PageSize
+		pages := m.sizes[name] / checkpoint.PageSize2MiB
 		for page := range pages {
 			if random.IntN(5) < 3 {
 				continue
@@ -232,12 +232,12 @@ func TestPremortemCompactionSparesEveryPinnedRoundAfterRound(t *testing.T) {
 		runtime := sim.New(sim.Config{Seed: 9})
 		ctx := sim.WithRuntime(t.Context(), runtime)
 		store := premortemStore(t, runtime.ObjectStore(), premortemCache(t))
-		sizes := map[string]uint64{"ram0": 16 * checkpoint.PageSize, "disk": 16 * checkpoint.PageSize}
-		index, err := store.Root(ctx, control.Ref{VM: "parent", Sequence: 1}, sizes)
+		sizes := map[string]uint64{"ram0": 16 * checkpoint.PageSize2MiB, "disk": 16 * checkpoint.PageSize2MiB}
+		index, err := store.Root(ctx, control.Ref{VM: "parent", Sequence: 1}, volumes2MiB(sizes))
 		if err != nil {
 			t.Fatal(err)
 		}
-		m := newModel(sizes)
+		m := newModel(volumes2MiB(sizes))
 		random := rand.New(rand.NewPCG(0x50a4, 0x9))
 		// The rounds a fork was taken at, whose checkpoints the record pins and
 		// whose bytes are what that fork inherited.

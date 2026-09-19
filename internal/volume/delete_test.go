@@ -41,7 +41,7 @@ func chain(t *testing.T, h *harness, manager *volume.Manager) {
 	t.Helper()
 	vm, write := forkedParent(t, h, manager, "vm")
 	write(0, 1)
-	write(checkpoint.PageSize, 2)
+	write(checkpoint.PageSize2MiB, 2)
 	if err := vm.Checkpoint(t.Context()); err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func TestDeletingAParentLeavesItsChildReadable(t *testing.T) {
 		defer manager.Close(t.Context())
 		vm, write := forkedParent(t, h, manager, "vm")
 		write(0, 1)
-		write(checkpoint.PageSize, 2)
+		write(checkpoint.PageSize2MiB, 2)
 		if err := vm.Checkpoint(t.Context()); err != nil {
 			t.Fatal(err)
 		}
@@ -121,7 +121,7 @@ func TestDeletingAParentLeavesItsChildReadable(t *testing.T) {
 			t.Fatalf("reading the deleted parent's record = %v, want ErrNotFound", err)
 		}
 		readsPage(t, h, "child", 0, 1)
-		readsPage(t, h, "child", checkpoint.PageSize, 2)
+		readsPage(t, h, "child", checkpoint.PageSize2MiB, 2)
 
 		// Deleting again is how a caller finishes a delete it never saw
 		// finish, and a deleted VM that was forked is exactly a VM with no
@@ -130,7 +130,7 @@ func TestDeletingAParentLeavesItsChildReadable(t *testing.T) {
 			t.Fatalf("repeating the delete: %v", err)
 		}
 		readsPage(t, h, "child", 0, 1)
-		readsPage(t, h, "child", checkpoint.PageSize, 2)
+		readsPage(t, h, "child", checkpoint.PageSize2MiB, 2)
 	})
 }
 
@@ -166,7 +166,7 @@ func TestDeletingAForkChainInAnyOrderLeavesTheSurvivorsReadable(t *testing.T) {
 					for survivor := range alive {
 						want := pages[survivor]
 						readsPage(t, h, survivor, 0, want[0])
-						readsPage(t, h, survivor, checkpoint.PageSize, want[1])
+						readsPage(t, h, survivor, checkpoint.PageSize2MiB, want[1])
 					}
 				}
 			})
@@ -185,7 +185,7 @@ func TestDeletingANeverForkedVMSweepsItsObjects(t *testing.T) {
 		defer manager.Close(t.Context())
 		vm, write := forkedParent(t, h, manager, "vm")
 		write(0, 1)
-		write(checkpoint.PageSize, 2)
+		write(checkpoint.PageSize2MiB, 2)
 		if err := vm.Checkpoint(t.Context()); err != nil {
 			t.Fatal(err)
 		}
@@ -214,7 +214,7 @@ func TestDeletingAVMWithACorruptRecordIsRefused(t *testing.T) {
 		defer manager.Close(t.Context())
 		vm, write := forkedParent(t, h, manager, "vm")
 		write(0, 1)
-		write(checkpoint.PageSize, 2)
+		write(checkpoint.PageSize2MiB, 2)
 		if err := vm.Checkpoint(t.Context()); err != nil {
 			t.Fatal(err)
 		}
@@ -253,6 +253,6 @@ func TestDeletingAVMWithACorruptRecordIsRefused(t *testing.T) {
 				t.Fatalf("the refused delete removed %s", key)
 			}
 		}
-		readsPage(t, h, "child", checkpoint.PageSize, 2)
+		readsPage(t, h, "child", checkpoint.PageSize2MiB, 2)
 	})
 }

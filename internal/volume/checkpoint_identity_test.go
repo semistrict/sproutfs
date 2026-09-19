@@ -31,7 +31,7 @@ func TestCheckpointPreservesPageIdentityBetweenDisjointWrites(t *testing.T) {
 		}
 		// A write in the next page leaves this one's object, and so its
 		// identity, exactly where it was.
-		if err := root.Write(t.Context(), checkpoint.PageSize, bytes.Repeat([]byte{9}, checkpoint.SectorSize)); err != nil {
+		if err := root.Write(t.Context(), checkpoint.PageSize2MiB, bytes.Repeat([]byte{9}, checkpoint.SectorSize)); err != nil {
 			t.Fatal(err)
 		}
 		if err := vm.Checkpoint(t.Context()); err != nil {

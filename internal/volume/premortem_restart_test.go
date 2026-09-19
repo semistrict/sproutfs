@@ -30,7 +30,7 @@ type premortemHost struct {
 
 func newPremortemHost(t *testing.T, h *harness) *premortemHost {
 	t.Helper()
-	budget, err := resource.New(64 * checkpoint.PageSize)
+	budget, err := resource.New(64 * checkpoint.PageSize2MiB)
 	if err != nil {
 		t.Fatal(err)
 	}

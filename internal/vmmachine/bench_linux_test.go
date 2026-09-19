@@ -565,8 +565,8 @@ func (b *benchmark) machineConfig(vm *volume.VM, restore []byte) vmmachine.Confi
 func (b *benchmark) createVM(ctx context.Context, id string) *volume.VM {
 	b.t.Helper()
 	vm, err := b.manager.Create(ctx, id, []volume.VolumeSpec{
-		{Name: vmmachine.RAMVolume, Size: benchRAMBytes},
-		{Name: "root", Size: benchPmemBytes},
+		{Name: vmmachine.RAMVolume, Size: benchRAMBytes, PageSize: vmmemory.PageSize},
+		{Name: "root", Size: benchPmemBytes, PageSize: vmmemory.PageSize},
 	})
 	if err != nil {
 		b.t.Fatal(err)
@@ -593,7 +593,7 @@ func (b *benchmark) ingest(ctx context.Context, vm *volume.VM) (time.Duration, u
 	if uint64(info.Size()) != root.Size() {
 		b.t.Fatalf("guest image is %d bytes, root volume is %d", info.Size(), root.Size())
 	}
-	pages := int(root.Size() / checkpoint.PageSize)
+	pages := int(root.Size() / checkpoint.PageSize2MiB)
 	data := make([]bool, pages)
 	for offset := int64(0); offset < info.Size(); {
 		start, err := file.Seek(offset, seekData)
@@ -607,13 +607,13 @@ func (b *benchmark) ingest(ctx context.Context, vm *volume.VM) (time.Duration, u
 		if err != nil {
 			b.t.Fatal(err)
 		}
-		for page := start / checkpoint.PageSize; page <= (end-1)/checkpoint.PageSize && int(page) < pages; page++ {
+		for page := start / checkpoint.PageSize2MiB; page <= (end-1)/checkpoint.PageSize2MiB && int(page) < pages; page++ {
 			data[page] = true
 		}
 		offset = end
 	}
 	started := time.Now()
-	buffer := make([]byte, checkpoint.PageSize)
+	buffer := make([]byte, checkpoint.PageSize2MiB)
 	var written uint64
 	for page := 0; page < pages; page++ {
 		if !data[page] {
@@ -621,19 +621,19 @@ func (b *benchmark) ingest(ctx context.Context, vm *volume.VM) (time.Duration, u
 			for hole < pages && !data[hole] {
 				hole++
 			}
-			if err := root.Discard(ctx, uint64(page)*checkpoint.PageSize, uint64(hole-page)*checkpoint.PageSize); err != nil {
+			if err := root.Discard(ctx, uint64(page)*checkpoint.PageSize2MiB, uint64(hole-page)*checkpoint.PageSize2MiB); err != nil {
 				b.t.Fatal(err)
 			}
 			page = hole - 1
 			continue
 		}
-		if _, err := file.ReadAt(buffer, int64(page)*checkpoint.PageSize); err != nil {
+		if _, err := file.ReadAt(buffer, int64(page)*checkpoint.PageSize2MiB); err != nil {
 			b.t.Fatal(err)
 		}
-		if err := root.WriteBatch(ctx, []volume.WriteExtent{{Offset: uint64(page) * checkpoint.PageSize, Data: buffer}}); err != nil {
+		if err := root.WriteBatch(ctx, []volume.WriteExtent{{Offset: uint64(page) * checkpoint.PageSize2MiB, Data: buffer}}); err != nil {
 			b.t.Fatal(err)
 		}
-		written += checkpoint.PageSize
+		written += checkpoint.PageSize2MiB
 	}
 	if err := vm.Checkpoint(ctx); err != nil {
 		b.t.Fatal(err)

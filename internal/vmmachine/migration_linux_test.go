@@ -42,8 +42,8 @@ func TestFirecrackerLiveMigration(t *testing.T) {
 	c := newMigrationCluster(t, ctx)
 
 	source, err := c.source.Create(ctx, "migrant", []volume.VolumeSpec{
-		{Name: vmmachine.RAMVolume, Size: 128 << 20},
-		{Name: "root", Size: 64 << 20},
+		{Name: vmmachine.RAMVolume, Size: 128 << 20, PageSize: vmmemory.PageSize},
+		{Name: "root", Size: 64 << 20, PageSize: vmmemory.PageSize},
 	})
 	if err != nil {
 		t.Fatal(err)

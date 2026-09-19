@@ -41,8 +41,8 @@ func TestAFanOutWhoseReceiveFailsPartWayLeavesTheParentDurable(t *testing.T) {
 		}
 		topology := simtest.Topology{Hosts: []string{"host-0", "host-1"},
 			VMs: []simtest.VMSpec{{ID: "vm-1", Host: 0, Volumes: []volume.VolumeSpec{
-				{Name: simtest.MemoryVolume, Size: 4 * simtest.PageSize},
-				{Name: "disk", Size: 2 * simtest.PageSize}}}}}
+				{Name: simtest.MemoryVolume, Size: 4 * simtest.PageSize, PageSize: simtest.PageSize},
+				{Name: "disk", Size: 2 * simtest.PageSize, PageSize: simtest.PageSize}}}}}
 		k := knobs.Defaults()
 		k.ResidentPages, k.DirtyPages, k.LogicalPages = 32, 32, 128
 		k.ReadAheadPages, k.WriteAheadPages = 1, 1

@@ -19,11 +19,11 @@ import (
 // a seal rather than the pause of a copy.
 type DirtySource interface {
 	// DirtyPages reports the pages this seal holds, in ascending order. A pager
-	// page is a store page, so these are page numbers of the volume. The set is
-	// fixed for the life of the seal.
+	// page is a store page, so these are page numbers of the volume, in that
+	// volume's own page size. The set is fixed for the life of the seal.
 	DirtyPages() []uint64
-	// ReadDirty fills dst, exactly one page of checkpoint.PageSize bytes, with the
-	// bytes the seal froze. A store the guest made since then is not in them.
+	// ReadDirty fills dst, exactly one page of the volume, with the bytes the
+	// seal froze. A store the guest made since then is not in them.
 	ReadDirty(ctx context.Context, page uint64, dst []byte) error
 	// UnpublishedAge is how long the oldest of these pages has gone unpublished,
 	// zero where the seal holds none. It is what a fork point hands a child on
@@ -73,17 +73,21 @@ type sealedSource struct {
 	ref    control.Ref
 	// sources is the pager state per volume, and pages the set of pager pages
 	// each one publishes, for the lookups a read and a locate do per page.
-	sources map[string]DirtySource
-	pages   map[string]map[uint64]bool
+	// geometry is each volume's page size, which is the unit those page numbers
+	// are in.
+	sources  map[string]DirtySource
+	geometry map[string]checkpoint.Geometry
+	pages    map[string]map[uint64]bool
 }
 
 // newSealedSource wraps parent, or returns parent unchanged when no volume of
 // this checkpoint has a pager behind it.
-func newSealedSource(parent source, ref control.Ref, sources map[string]DirtySource) source {
+func newSealedSource(parent source, ref control.Ref, sources map[string]DirtySource,
+	geometry map[string]checkpoint.Geometry) source {
 	if len(sources) == 0 {
 		return parent
 	}
-	s := sealedSource{parent: parent, ref: ref, sources: sources,
+	s := sealedSource{parent: parent, ref: ref, sources: sources, geometry: geometry,
 		pages: make(map[string]map[uint64]bool, len(sources))}
 	for name, src := range sources {
 		set := make(map[uint64]bool)
@@ -103,7 +107,7 @@ func (s sealedSource) read(ctx context.Context, volume string, offset uint64, ds
 	if src == nil {
 		return s.parent.read(ctx, volume, offset, dst)
 	}
-	size := uint64(checkpoint.PageSize)
+	size := s.geometry[volume].PageSize
 	held := s.pages[volume]
 	var page []byte
 	for cursor := offset; cursor < offset+uint64(len(dst)); {
@@ -148,7 +152,7 @@ func (s sealedSource) locate(ctx context.Context, volume string, offset, length 
 	if src == nil {
 		return s.parent.locate(ctx, volume, offset, length)
 	}
-	size := uint64(checkpoint.PageSize)
+	size := s.geometry[volume].PageSize
 	held := s.pages[volume]
 	var result []control.Extent
 	add := func(next control.Extent) {
@@ -179,8 +183,8 @@ func (s sealedSource) locate(ctx context.Context, volume string, offset, length 
 			continue
 		}
 		for position := cursor; position < stop; {
-			page := position / checkpoint.PageSize
-			next := min(stop, (page+1)*checkpoint.PageSize)
+			page := position / size
+			next := min(stop, (page+1)*size)
 			add(control.Extent{Offset: position, Length: next - position,
 				Identity: control.Identity{Ref: s.ref, Volume: volume, Page: page}})
 			position = next

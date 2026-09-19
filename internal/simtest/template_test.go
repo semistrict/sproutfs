@@ -19,8 +19,8 @@ import (
 // gets, which reads as the zeroes a cold boot starts from, and the root volume
 // the guest image is written into.
 var templateVolumes = []volume.VolumeSpec{
-	{Name: simtest.MemoryVolume, Size: simtest.PageSize},
-	{Name: "root", Size: simtest.PageSize},
+	{Name: simtest.MemoryVolume, Size: simtest.PageSize, PageSize: simtest.PageSize},
+	{Name: "root", Size: simtest.PageSize, PageSize: simtest.PageSize},
 }
 
 // guestImage is a guest image's bytes: a page no untouched volume could read as.

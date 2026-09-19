@@ -14,11 +14,16 @@ import (
 	"github.com/semistrict/sproutfs/internal/ctxsync"
 )
 
-// VolumeSpec is one volume of a VM being created: its name and its size, which
-// must be a whole number of pages.
+// VolumeSpec is one volume of a VM being created: its name, its size, which
+// must be a whole number of sectors, and its page size, which is the unit that
+// volume is published and faulted in. The page size must be one
+// [checkpoint.GeometryFor] accepts, whoever creates the VM chooses it, and it
+// is fixed for the volume's life: a volume opened later takes the page size its
+// checkpoint records rather than stating one.
 type VolumeSpec struct {
-	Name string
-	Size uint64
+	Name     string
+	Size     uint64
+	PageSize uint64
 }
 
 // generation orders the writes one handle has applied. It is local and starts
@@ -138,13 +143,17 @@ type VM struct {
 	cancel context.CancelFunc
 }
 
-// Volume is one named byte-addressed volume of a VM. Its size is fixed for the
-// VM's lifetime.
+// Volume is one named byte-addressed volume of a VM. Its size and its geometry
+// are both fixed for the VM's lifetime.
 type Volume struct {
-	vm      *VM
-	name    string
-	size    uint64
-	ordinal int
+	vm   *VM
+	name string
+	size uint64
+	// geometry is this volume's page size and the pages one segment of its page
+	// table covers. Every page number of this volume — what a checkpoint
+	// publishes, what Locate reports, what a pager faults — is in that unit.
+	geometry checkpoint.Geometry
+	ordinal  int
 }
 
 // Name reports the volume's name, which is its identity within its VM.
@@ -152,6 +161,11 @@ func (v *Volume) Name() string { return v.name }
 
 // Size reports the volume's size in bytes.
 func (v *Volume) Size() uint64 { return v.size }
+
+// PageSize reports the unit this volume is published and faulted in, which is
+// what its page numbers count. A pager whose own page is a different size
+// cannot serve this volume at all.
+func (v *Volume) PageSize() uint64 { return v.geometry.PageSize }
 
 // MaxWriteBytes reports the largest payload one Write or WriteBatch may carry,
 // which is Config.MaxWriteBytes. A caller that batches its own writes, such as
@@ -163,8 +177,12 @@ func (v *Volume) MaxWriteBytes() int { return v.vm.manager.config.MaxWriteBytes 
 // parent's: a fork's first checkpoint is its own root index, published over
 // that parent. owned is that same index when this handle published it — a
 // create's root — and nil when the writer before it did.
+//
+// A spec whose page size is not one a volume may have is refused here rather
+// than carried into a handle: every page number this VM ever reports is in that
+// unit, so a handle that could not divide by it could serve nothing.
 func newVM(m *Manager, id string, handle *control.Handle, base source, index, owned *checkpoint.Index,
-	specs []VolumeSpec, point *ForkPoint) *VM {
+	specs []VolumeSpec, point *ForkPoint) (*VM, error) {
 	record := handle.Record()
 	vm := &VM{
 		manager: m, id: id, control: handle,
@@ -181,14 +199,38 @@ func newVM(m *Manager, id string, handle *control.Handle, base source, index, ow
 		vm.next = record.Selected
 	}
 	for ordinal, spec := range specs {
-		volume := &Volume{vm: vm, name: spec.Name, size: spec.Size, ordinal: ordinal}
+		geometry, err := checkpoint.GeometryFor(spec.PageSize)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %s of %s: %w", ErrInvalidConfig, spec.Name, id, err)
+		}
+		volume := &Volume{vm: vm, name: spec.Name, size: spec.Size, geometry: geometry, ordinal: ordinal}
 		vm.names = append(vm.names, spec.Name)
 		vm.volumes = append(vm.volumes, volume)
 		vm.byName[spec.Name] = volume
 	}
 	vm.overlays = make([]*extentIndex, len(specs))
 	vm.publishLocked()
-	return vm
+	return vm, nil
+}
+
+// geometry reports one volume's page geometry, the zero Geometry for a name
+// this VM does not have.
+func (vm *VM) geometry(name string) checkpoint.Geometry {
+	if held := vm.byName[name]; held != nil {
+		return held.geometry
+	}
+	return checkpoint.Geometry{}
+}
+
+// geometries reports every volume's geometry by name, which is what a
+// checkpoint of this VM carries so that each volume's pages are counted in its
+// own unit.
+func (vm *VM) geometries() map[string]checkpoint.Geometry {
+	held := make(map[string]checkpoint.Geometry, len(vm.volumes))
+	for _, volume := range vm.volumes {
+		held[volume.name] = volume.geometry
+	}
+	return held
 }
 
 // ID reports the identity the orchestrator allocated for this VM.

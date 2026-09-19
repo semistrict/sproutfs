@@ -75,7 +75,7 @@ func TestAZeroedPageLeavesItsSegmentAndNothingElse(t *testing.T) {
 		// checkpoint's parts is two thirds live, so nothing here is compacted
 		// and the erasing checkpoint's parts hold only what it wrote itself.
 		root, err := store.Root(t.Context(), control.Ref{VM: "erase", Sequence: 1},
-			map[string]uint64{"disk": 3 * PageSize})
+			volumesAt(at2MiB, map[string]uint64{"disk": 3 * PageSize2MiB}))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -108,11 +108,11 @@ func TestAZeroedPageLeavesItsSegmentAndNothingElse(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		page := make([]byte, PageSize)
-		if err := store.Read(t.Context(), reopened, "disk", PageSize, page); err != nil {
+		page := make([]byte, PageSize2MiB)
+		if err := store.Read(t.Context(), reopened, "disk", PageSize2MiB, page); err != nil {
 			t.Fatal(err)
 		}
-		if !bytes.Equal(page, make([]byte, PageSize)) {
+		if !bytes.Equal(page, make([]byte, PageSize2MiB)) {
 			t.Fatalf("the zeroed page reads back as %#x...", page[:8])
 		}
 	})

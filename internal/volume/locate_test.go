@@ -47,23 +47,23 @@ func TestLocateReportsPrivateOverlayIdentities(t *testing.T) {
 		// because that is what the checkpoint republishes.
 		written := locate(t, vm, "root", 0, 3<<20)
 		if !reflect.DeepEqual(written, []control.Extent{
-			{Offset: 0, Length: checkpoint.PageSize, Identity: private},
-			{Offset: checkpoint.PageSize, Length: 3<<20 - checkpoint.PageSize, Identity: control.Identity{Zero: true}},
+			{Offset: 0, Length: checkpoint.PageSize2MiB, Identity: private},
+			{Offset: checkpoint.PageSize2MiB, Length: 3<<20 - checkpoint.PageSize2MiB, Identity: control.Identity{Zero: true}},
 		}) {
 			t.Fatalf("Locate over an overlay = %+v", written)
 		}
 
 		// An overlay run crossing a page boundary is reported as one extent
 		// per page.
-		if err := vm.Volume("root").Write(t.Context(), checkpoint.PageSize-checkpoint.SectorSize, bytes.Repeat([]byte{2}, 2*checkpoint.SectorSize)); err != nil {
+		if err := vm.Volume("root").Write(t.Context(), checkpoint.PageSize2MiB-checkpoint.SectorSize, bytes.Repeat([]byte{2}, 2*checkpoint.SectorSize)); err != nil {
 			t.Fatal(err)
 		}
-		copy(want["root"][checkpoint.PageSize-checkpoint.SectorSize:], bytes.Repeat([]byte{2}, 2*checkpoint.SectorSize))
-		crossing := locate(t, vm, "root", checkpoint.PageSize-checkpoint.SectorSize, 2*checkpoint.SectorSize)
+		copy(want["root"][checkpoint.PageSize2MiB-checkpoint.SectorSize:], bytes.Repeat([]byte{2}, 2*checkpoint.SectorSize))
+		crossing := locate(t, vm, "root", checkpoint.PageSize2MiB-checkpoint.SectorSize, 2*checkpoint.SectorSize)
 		if !reflect.DeepEqual(crossing, []control.Extent{
-			{Offset: checkpoint.PageSize - checkpoint.SectorSize, Length: checkpoint.SectorSize,
+			{Offset: checkpoint.PageSize2MiB - checkpoint.SectorSize, Length: checkpoint.SectorSize,
 				Identity: control.Identity{Ref: control.Ref{VM: "vm", Sequence: counted(vm, 2)}, Volume: "root", Page: 0}},
-			{Offset: checkpoint.PageSize, Length: checkpoint.SectorSize,
+			{Offset: checkpoint.PageSize2MiB, Length: checkpoint.SectorSize,
 				Identity: control.Identity{Ref: control.Ref{VM: "vm", Sequence: counted(vm, 2)}, Volume: "root", Page: 1}},
 		}) {
 			t.Fatalf("Locate across a page boundary = %+v", crossing)
@@ -132,8 +132,8 @@ func TestLocateIdentitiesAreInheritedAcrossAFork(t *testing.T) {
 		forkOwned := control.Identity{Ref: control.Ref{VM: "fork", Sequence: counted(fork, 1)}, Volume: "root", Page: 0}
 		diverged := locate(t, fork, "root", 0, 3<<20)
 		if !reflect.DeepEqual(diverged, []control.Extent{
-			{Offset: 0, Length: checkpoint.PageSize, Identity: forkOwned},
-			{Offset: checkpoint.PageSize, Length: 3<<20 - checkpoint.PageSize, Identity: control.Identity{Zero: true}},
+			{Offset: 0, Length: checkpoint.PageSize2MiB, Identity: forkOwned},
+			{Offset: checkpoint.PageSize2MiB, Length: 3<<20 - checkpoint.PageSize2MiB, Identity: control.Identity{Zero: true}},
 		}) {
 			t.Fatalf("the fork's identities after writing = %+v", diverged)
 		}

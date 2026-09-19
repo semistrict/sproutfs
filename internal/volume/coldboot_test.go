@@ -16,8 +16,8 @@ import (
 // volume, both of whole pages, so a cold boot has a memory to discard and a
 // disk to keep.
 var coldSpecs = []volume.VolumeSpec{
-	{Name: "ram0", Size: 2 * checkpoint.PageSize},
-	{Name: "root", Size: 2 * checkpoint.PageSize},
+	{Name: "ram0", Size: 2 * checkpoint.PageSize2MiB, PageSize: checkpoint.PageSize2MiB},
+	{Name: "root", Size: 2 * checkpoint.PageSize2MiB, PageSize: checkpoint.PageSize2MiB},
 }
 
 // coldVM creates a VM of coldSpecs with a page of each volume written and a
@@ -79,11 +79,11 @@ func TestDiscardMemoryPublishesNoMemoryPagesAndNoState(t *testing.T) {
 		if _, err := store.ReadState(t.Context(), index); !errors.Is(err, checkpoint.ErrNoState) {
 			t.Fatalf("reading the state of %s = %v, want %v", selected, err, checkpoint.ErrNoState)
 		}
-		extents, err := index.Locate(t.Context(), "ram0", 0, 2*checkpoint.PageSize)
+		extents, err := index.Locate(t.Context(), "ram0", 0, 2*checkpoint.PageSize2MiB)
 		if err != nil {
 			t.Fatal(err)
 		}
-		zeroes := []control.Extent{{Offset: 0, Length: 2 * checkpoint.PageSize, Identity: control.ZeroIdentity}}
+		zeroes := []control.Extent{{Offset: 0, Length: 2 * checkpoint.PageSize2MiB, Identity: control.ZeroIdentity}}
 		if !slices.Equal(extents, zeroes) {
 			t.Fatalf("the memory volume of %s locates as %+v, want one hole over the whole volume", selected, extents)
 		}
@@ -145,12 +145,12 @@ func TestDiscardMemoryResizesInTheSamePublication(t *testing.T) {
 		defer manager.Close(t.Context())
 		vm, want := coldVM(t, manager, "vm")
 
-		sizes := map[string]uint64{"ram0": 4 * checkpoint.PageSize, "root": 3 * checkpoint.PageSize}
+		sizes := map[string]uint64{"ram0": 4 * checkpoint.PageSize2MiB, "root": 3 * checkpoint.PageSize2MiB}
 		if err := vm.DiscardMemory(t.Context(), "ram0", sizes); err != nil {
 			t.Fatalf("DiscardMemory: %v", err)
 		}
-		want["ram0"] = make([]byte, 4*checkpoint.PageSize)
-		want["root"] = append(want["root"], make([]byte, checkpoint.PageSize)...)
+		want["ram0"] = make([]byte, 4*checkpoint.PageSize2MiB)
+		want["root"] = append(want["root"], make([]byte, checkpoint.PageSize2MiB)...)
 		for _, v := range vm.Volumes() {
 			if v.Size() != sizes[v.Name()] {
 				t.Fatalf("%s is %d bytes after the cold boot, want %d", v.Name(), v.Size(), sizes[v.Name()])
@@ -177,20 +177,20 @@ func TestDiscardMemoryShrinksMemoryAndRefusesToShrinkTheRest(t *testing.T) {
 		defer manager.Close(t.Context())
 		vm, want := coldVM(t, manager, "vm")
 
-		refused := map[string]uint64{"root": checkpoint.PageSize}
+		refused := map[string]uint64{"root": checkpoint.PageSize2MiB}
 		if err := vm.DiscardMemory(t.Context(), "ram0", refused); !errors.Is(err, volume.ErrInvalidRange) {
 			t.Fatalf("shrinking the root volume = %v, want %v", err, volume.ErrInvalidRange)
 		}
-		if got := vm.Volume("root").Size(); got != 2*checkpoint.PageSize {
+		if got := vm.Volume("root").Size(); got != 2*checkpoint.PageSize2MiB {
 			t.Fatalf("the refused shrink left the root volume at %d bytes", got)
 		}
 		want.check(t, vm, "after a refused shrink")
 
-		if err := vm.DiscardMemory(t.Context(), "ram0", map[string]uint64{"ram0": checkpoint.PageSize}); err != nil {
+		if err := vm.DiscardMemory(t.Context(), "ram0", map[string]uint64{"ram0": checkpoint.PageSize2MiB}); err != nil {
 			t.Fatalf("shrinking the memory: %v", err)
 		}
-		want["ram0"] = make([]byte, checkpoint.PageSize)
-		if got := vm.Volume("ram0").Size(); got != checkpoint.PageSize {
+		want["ram0"] = make([]byte, checkpoint.PageSize2MiB)
+		if got := vm.Volume("ram0").Size(); got != checkpoint.PageSize2MiB {
 			t.Fatalf("the memory volume is %d bytes after shrinking it", got)
 		}
 		want.check(t, vm, "after shrinking the memory")
@@ -212,7 +212,7 @@ func TestDiscardMemoryRefusesAnUnknownVolume(t *testing.T) {
 			t.Fatalf("discarding a volume that does not exist = %v, want %v", err, volume.ErrUnknownVolume)
 		}
 		if err := vm.DiscardMemory(t.Context(), "ram0",
-			map[string]uint64{"scratch": checkpoint.PageSize}); !errors.Is(err, volume.ErrUnknownVolume) {
+			map[string]uint64{"scratch": checkpoint.PageSize2MiB}); !errors.Is(err, volume.ErrUnknownVolume) {
 			t.Fatalf("resizing a volume that does not exist = %v, want %v", err, volume.ErrUnknownVolume)
 		}
 		if got := vm.Status().Checkpoint; got != before {

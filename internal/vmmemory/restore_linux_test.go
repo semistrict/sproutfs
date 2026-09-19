@@ -36,8 +36,8 @@ func TestRestoreFromSharedSnapshotLoadsNothingOnTheSecondMachine(t *testing.T) {
 	h := kernelHost(t, 4*pages, 12*pages)
 	c := newPagerCluster(t)
 	source, err := c.manager.Create(t.Context(), "source", []volume.VolumeSpec{
-		{Name: "pmem0", Size: uint64(pages * size)},
-		{Name: "ram0", Size: uint64(pages * size)},
+		{Name: "pmem0", Size: uint64(pages * size), PageSize: vmmemory.PageSize},
+		{Name: "ram0", Size: uint64(pages * size), PageSize: vmmemory.PageSize},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -165,8 +165,8 @@ func TestKVMNestedForkMapsResidentPagesBeforeItRuns(t *testing.T) {
 	h := kernelHost(t, 6*pages, 12*pages)
 	c := newPagerCluster(t)
 	specs := []volume.VolumeSpec{
-		{Name: "pmem0", Size: uint64(pages * size)},
-		{Name: "ram0", Size: uint64(pages * size)},
+		{Name: "pmem0", Size: uint64(pages * size), PageSize: vmmemory.PageSize},
+		{Name: "ram0", Size: uint64(pages * size), PageSize: vmmemory.PageSize},
 	}
 	names := []string{"pmem0", "ram0"}
 	source, err := c.manager.Create(t.Context(), "source", specs)

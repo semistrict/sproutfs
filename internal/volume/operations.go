@@ -134,5 +134,6 @@ func (v *Volume) Locate(ctx context.Context, offset, length uint64) ([]control.E
 	if current.err != nil {
 		return nil, current.err
 	}
-	return locateOverlay(ctx, current.base, current.overlays[v.ordinal], current.owner, v.name, offset, length)
+	return locateOverlay(ctx, current.base, current.overlays[v.ordinal], current.owner,
+		v.geometry, v.name, offset, length)
 }
