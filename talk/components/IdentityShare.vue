@@ -2,15 +2,15 @@
 import { computed } from 'vue'
 import { useStep } from './Steps'
 
-// Sharing by lineage in one pager.
+// Sharing by page identity in one pager.
 // 0 parent VM has pages resident, keyed by (checkpoint, volume, page)
-// 1 a child forked from the parent attaches: same identities → same frames
-// 2 the child stores into page 2: a private frame, the parent's untouched
-// 3 the child's checkpoint publishes it: the private frame gets an identity of its own
+// 1 a child forked from the parent attaches: same identities → same resident pages
+// 2 the child stores into page 2: a private page, the parent's untouched
+// 3 the child's checkpoint publishes it: the private page gets an identity of its own
 const step = useStep()
 const pages = [0, 1, 2, 3]
 const caption = computed(() => [
-  'resident pages are keyed by lineage identity: (checkpoint, volume, page)',
+  'resident pages are keyed by page identity: (checkpoint, volume, page)',
   'a fork inherits its parent\'s identities: same resident pages before its vCPUs run; nothing copied',
   'the child\'s first store into a page gets a private page; the parent\'s is untouched',
   'the child\'s next checkpoint publishes it under its own sequence: that becomes the page\'s identity',

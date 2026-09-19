@@ -72,7 +72,7 @@ Three things have to be true at once. Inherited data is shared rather than copie
 <div class="grid grid-cols-2 gap-x-12 gap-y-3 text-lg mt-4">
 <div>
 
-**VM** — one identity, one lineage
+**VM** — one identity, one series of checkpoints
 
 **Volume** — `ram0` or a PMEM disk; fixed size; one writer
 
@@ -89,7 +89,7 @@ Three things have to be true at once. Inherited data is shared rather than copie
 
 **Control record** — who may write, which checkpoint is current
 
-**Lineage** — a page's name: the checkpoint that published it
+**Page identity** — a page's name: the checkpoint that published it
 
 **Fork** / **migration** — new VM at a pause / same VM, moved
 
@@ -99,9 +99,9 @@ Three things have to be true at once. Inherited data is shared rather than copie
 </div>
 
 <!--
-VM: one machine, one identity, one lineage of durable state. Volume: one byte-addressed image of a VM, its RAM or one of its PMEM disks, fixed size, one writer at a time. Page: 2 MiB of a volume, the unit of what is stored, what faults in, what is owned. Resident: a page whose bytes are in host memory right now; a page nothing touched may not be, and comes in on a fault. Pager: the one service per host that owns every resident page, resolves the VMM's page faults, and is what a guest's memory is mapped through.
+VM: one machine, one identity, one series of checkpoints. Volume: one byte-addressed image of a VM, its RAM or one of its PMEM disks, fixed size, one writer at a time. Page: 2 MiB of a volume, the unit of what is stored, what faults in, what is owned. Resident: a page whose bytes are in host memory right now; a page nothing touched may not be, and comes in on a fault. Pager: the one service per host that owns every resident page, resolves the VMM's page faults, and is what a guest's memory is mapped through.
 
-Checkpoint: the operation that makes a running VM durable, and what it leaves in the object store, numbered by a sequence. Control record: the one mutable object a VM has: who may write it, which checkpoint is current. Lineage: the name of a page's bytes, which checkpoint published them; a fork's pages carry its parent's names until it writes them. Fork: a new VM taken from a running one at one pause of the parent. Migration: the same VM moved, running, to another host. Host: a machine running VMs. Orchestrator: the one process that places VMs on hosts and drives moves and forks between them.
+Checkpoint: the operation that makes a running VM durable, and what it leaves in the object store, numbered by a sequence. Control record: the one mutable object a VM has: who may write it, which checkpoint is current. Page identity: the name of a page's bytes, which checkpoint published them; a fork's pages carry its parent's names until it writes them. Fork: a new VM taken from a running one at one pause of the parent. Migration: the same VM moved, running, to another host. Host: a machine running VMs. Orchestrator: the one process that places VMs on hosts and drives moves and forks between them.
 -->
 
 ---
@@ -156,7 +156,7 @@ layout: section
 
 **Writer** — holds the epoch; an open **fences** the last one
 
-**Lineage identity** — `(checkpoint, volume, page)`; never changes
+**Page identity** — `(checkpoint, volume, page)`; never changes
 
 **Shared** — one resident page, many VMs, until one writes it
 
@@ -166,7 +166,7 @@ layout: section
 <!--
 Identity: one id, never reused. The orchestrator hands them out; the store refuses to create a VM under an id that has objects left behind.
 
-Everything a checkpoint stores lives under vm/<id>/ckpt/<seq>/. The control record lives at control/<id>, outside that namespace, because the two hold different sets: control/ is exactly the VMs that exist, while vm/ keeps every identity that ever left objects behind — a deleted VM that was forked leaves its pinned lineage there for ever — so listing vm/ would return the dead with the living. It holds the epoch, a counter saying which process may write this VM, advanced by every open; the nonce, a random mark of the process that took that epoch; the selected sequence, the checkpoint that is the VM right now; and the pins, sequences this VM was forked at, which must never be deleted.
+Everything a checkpoint stores lives under vm/<id>/ckpt/<seq>/. The control record lives at control/<id>, outside that namespace, because the two hold different sets: control/ is exactly the VMs that exist, while vm/ keeps every identity that ever left objects behind — a deleted VM that was forked leaves its pinned checkpoints there for ever — so listing vm/ would return the dead with the living. It holds the epoch, a counter saying which process may write this VM, advanced by every open; the nonce, a random mark of the process that took that epoch; the selected sequence, the checkpoint that is the VM right now; and the pins, sequences this VM was forked at, which must never be deleted.
 
 The writer is the process holding the current epoch. Every open advances the epoch, which fences the writer before it: its next write to the record is refused.
 
@@ -320,7 +320,7 @@ sequence = (epoch << 32) | counter
 <!--
 Every sequence a writer allocates is above everything an earlier epoch could allocate. A fenced writer still uploading cannot collide: every checkpoint object is create-if-absent under a key its successor never uses.
 
-The first epoch is drawn at random. Two VMs created under one identity, which the orchestrator never does but nothing can enforce, allocate different sequences, different lineage identities, different keys.
+The first epoch is drawn at random. Two VMs created under one identity, which the orchestrator never does but nothing can enforce, allocate different sequences, different page identities, different keys.
 
 A fenced host finds out at its next publication, or sooner: it re-reads the record on a timer, and a migration or a fork confirms before it pauses, because the pages it hands another host are the one thing the store cannot refuse afterwards.
 -->
@@ -338,9 +338,9 @@ Reclamation is a set difference. After selecting a root: delete the checkpoints 
 
 Compaction bounds the residue. A checkpoint less than half live is rewritten into the one being published, up to 64 MiB of live bytes, after the guest resumed. It falls out of the root and reclamation deletes it.
 
-Pins are permanent. A fork pins the parent's published sequence. Nothing in a deployment can tell that a lineage has ended: a descendant sees neither its siblings nor the forks below it.
+Pins are permanent. A fork pins the parent's published sequence. Nothing in a deployment can tell that nothing reads through it any more: a descendant sees neither its siblings nor the forks below it.
 
-The collector is deferred, by decision. Until one exists the store grows without bound: every checkpoint a VM was forked at, everything its root names, and the lineage a deleted VM leaves behind are kept forever.
+The collector is deferred, by decision. Until one exists the store grows without bound: every checkpoint a VM was forked at, everything its root names, and what a deleted VM leaves pinned are kept forever.
 -->
 
 ---
@@ -431,9 +431,9 @@ Production bounds are chosen by the host process from the node it is on, read-ah
 clicks: 3
 ---
 
-# Sharing by lineage
+# Sharing by identity
 
-<LineageShare />
+<IdentityShare />
 
 ---
 

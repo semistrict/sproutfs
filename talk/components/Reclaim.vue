@@ -22,7 +22,7 @@ const caption = computed(() => [
   'the VM\'s selected root names checkpoints 3, 5, 6 and 7. Checkpoint 5 is pinned: a fork was taken there.',
   'checkpoint 8 lands. Compaction rewrote the live pages of 3 into it, so its root names 6, 7 and 8.',
   'reclaim = (old root) − (new root) − (pins) = {3}. Deleted whole, index object first. 5 stays: pinned.',
-  'a pin is permanent — no one can see a lineage end — so 5 and what its root names are kept for ever. A collector is deferred by decision.',
+  'a pin is permanent — no one can see that nothing reads through it any more — so 5 and what its root names are kept for ever. A collector is deferred by decision.',
 ][step.value])
 </script>
 
