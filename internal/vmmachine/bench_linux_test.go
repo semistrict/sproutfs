@@ -1315,8 +1315,12 @@ func (b *benchmark) forkFanOut(ctx context.Context, origin *forkOrigin) {
 		}
 	}
 	// What each fork holds once its command has finished, per volume: the
-	// pages it maps and the pages whose bytes are its own. A larger page
-	// copies more of what a fork writes into pages of its own.
+	// pages it maps, the pages whose bytes are its own, and the resident pages
+	// another region still maps, which is the sharing this fork has kept. A
+	// larger page copies more of what a fork writes into pages of its own, and
+	// the shared count is what that costs on the other side. The same three in
+	// bytes, because page counts of different geometries cannot be compared and
+	// the whole point of the record is to compare them.
 	privatePages := make([]int, count)
 	residentPages := make([]int, count)
 	regionPages := make([]map[string]map[string]int, count)
@@ -1337,7 +1341,11 @@ func (b *benchmark) forkFanOut(ctx context.Context, origin *forkOrigin) {
 			}
 			slices.Sort(unpublished)
 			ownPages[index][name] = unpublished
-			regionPages[index][name] = map[string]int{"resident_pages": stats.ResidentPages, "private_pages": stats.PrivatePages}
+			regionPages[index][name] = map[string]int{
+				"resident_pages": stats.ResidentPages, "private_pages": stats.PrivatePages,
+				"shared_pages":   stats.SharedPages,
+				"resident_bytes": int(stats.ResidentBytes()), "private_bytes": int(stats.PrivateBytes()),
+				"shared_bytes": int(stats.SharedBytes())}
 			privatePages[index] += stats.PrivatePages
 			residentPages[index] += stats.ResidentPages
 		}

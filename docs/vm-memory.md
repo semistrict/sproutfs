@@ -279,6 +279,44 @@ and `Stats.WriteAheadZeroPages` those whose written-back bytes were still all
 zero, which is as near as the bytes can tell to never stored into, since a store
 of zeros looks the same.
 
+## What the sharing is worth
+
+`Stats` counts what the pager has done: `IdentityHits` is every page ever mapped
+to an already resident identity and `CopyOnWrites` every page a store took a
+private copy of. Neither ever falls, so a host whose guests have all diverged
+reads the same as one whose guests share everything.
+
+`Host.Sharing` is the gauge beside them, per region kind. `UniqueBytes` is the
+host memory the arena holds, one resident page counted once however many regions
+map it; `MappedBytes` is the sum over regions of the resident pages each maps,
+so a page three regions map counts three times; `SavedBytes` is the difference,
+which is the memory this host did not have to find. Every alias counts in
+`MappedBytes`, including two regions of one VM and a checkpoint's copy of a page
+the guest still shares with it. It measures resident sharing only: a fork
+inherits every one of its parent's page identities, and the ones neither has
+faulted in are shared in the store and on the wire without costing this host a
+byte, so none of them are here.
+
+`RegionStats` says the same for one region: `ResidentPages`, the pages holding
+host memory; `PrivatePages`, the pages whose bytes are this region's own and not
+yet its volume's, resident, spilled or held by a checkpoint; and `SharedPages`,
+the resident ones at least one other region of this pager also maps. The three
+are also reported in bytes, because page counts of different geometries cannot
+be added and bytes can.
+
+A region carries its kind, RAM or PMEM, which `Attach` is given. Nothing about a
+fault, a seal or a page depends on it — the two are one arena and one page today
+— and it exists so a host can say which of its guests' memory and its guests'
+disks the sharing is in. It is stated by whoever attaches the region, never
+inferred from a volume's name.
+
+The host adds those per-region numbers up per VM, because the pager has regions
+and no idea of a VM: `Host.PrivateBytes` in `internal/host` is one VM's private
+bytes across every region it maps, which `/status`, `/metrics` and the VM
+listing report. The Prometheus gauges are `sproutfs_pager_unique_resident_bytes`,
+`sproutfs_pager_mapped_resident_bytes` and `sproutfs_pager_shared_saved_bytes`,
+each carrying `kind="ram"` or `kind="pmem"`.
+
 Faults serialize only within one read-ahead run; different runs and different
 volumes proceed concurrently. A short host lock accounts for capacity, binding
 pointers and the shared index, and no backing read, spill or mapping

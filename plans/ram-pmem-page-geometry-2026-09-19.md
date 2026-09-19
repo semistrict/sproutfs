@@ -1,6 +1,7 @@
 # RAM and PMEM page geometry — 2026-09-19
 
-**Status: planned; no implementation changes.**
+**Status: step 1 implemented but for its baseline measurement; steps 2 to 7
+planned, with no implementation changes.**
 
 ## Decision
 
@@ -120,12 +121,17 @@ memory savings and workload time together.
 
 ## Implementation sequence
 
-1. **Establish the comparison.** Add current gauges for unique resident bytes
-   and bytes saved by sharing, split by RAM and PMEM, plus per-VM private
-   resident bytes. State whether savings count all aliases or only distinct
-   VMs, and separate resident savings from inheritance of nonresident data.
-   Record an unchanged baseline using the existing workload flow. Keep
-   cumulative identity hits and COW events as separate counters.
+1. **Establish the comparison.** *Done, except the baseline.* `Host.Sharing`
+   reports unique resident bytes, mapped resident bytes and the difference,
+   split by RAM and PMEM; a region carries its kind, stated by whoever attaches
+   it. `RegionStats` adds the resident pages another region maps, and the host
+   adds a VM's private bytes up across its regions for `/status`, `/metrics` and
+   the VM listing. The gauges count every alias, including two regions of one VM,
+   and resident sharing only: inheritance of pages neither VM has faulted in is
+   not in them. `Stats.IdentityHits` and `Stats.CopyOnWrites` stay as they were.
+   The fork fan-out records the per-region gauges beside `fork_region_pages`.
+   What is left is recording an unchanged baseline with the existing workload
+   flow, which needs a KVM host.
 
 2. **Make volume geometry durable.** Extend volume specifications and
    checkpoint volume metadata with a validated page size. Carry it through
