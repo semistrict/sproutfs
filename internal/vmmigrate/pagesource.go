@@ -176,6 +176,14 @@ type PageSource struct {
 	// a release safe or not: those pages exist nowhere else, and this source is
 	// the only thing that knows which of them it has actually answered for.
 	outstanding map[string]map[string]map[uint64]struct{}
+	// sending counts, per VM, the replies carrying pages no checkpoint holds
+	// that this host has begun to send and not yet answered for. A release of
+	// that VM waits for the count to reach zero, because the outcome of a reply
+	// in flight is what decides whether those pages may be given up at all.
+	sending map[string]int
+	// settled is closed and replaced whenever this source's bookkeeping moves,
+	// which is how a release waiting on a reply in flight is woken.
+	settled chan struct{}
 	// unlisted is why a VM's volumes could not report what they still hold,
 	// which is as good a reason to refuse a release as pages known to be
 	// outstanding: an unlistable region may hold anything.
@@ -227,6 +235,8 @@ func NewPageSource(ctx context.Context, config SourceConfig) (*PageSource, error
 	s := &PageSource{config: config, listener: listener, ctx: sourceCtx, cancel: cancel,
 		served:      make(map[string]map[string]Pages),
 		outstanding: make(map[string]map[string]map[uint64]struct{}),
+		sending:     make(map[string]int),
+		settled:     make(chan struct{}),
 		unlisted:    make(map[string]error),
 		peers:       make(map[string]*peerBudget)}
 	s.wg.Go(s.accept)
@@ -286,9 +296,41 @@ func (s *PageSource) Serve(vmID string, pages map[string]Pages) {
 // control plane's table says about the migration is not evidence — this source
 // answered the fetches, so it is the one thing that knows. A caller giving the
 // VM up altogether uses Discard.
+//
+// A reply of that VM's pages that is still being sent is waited for rather than
+// read past. This host's record of a reply is written once the reply has left,
+// because a reply that failed to send carried nothing; the destination, though,
+// acts on one the moment it arrives, so the release that its Done permits can
+// arrive here while the send that earned it has not returned. Reading the book
+// then refuses a release for pages the destination is already running on —
+// which is what a drain sees as a VM it can never let go of — and no ordering
+// of the record against the send can fix it, because the two events are
+// concurrent. So the release waits for the reply's outcome and then reads a
+// book that answers for it: struck off if it left, still outstanding if it did
+// not. A source that closes while one is still in flight refuses, because a
+// send that never returned is a send this host can say nothing about.
 func (s *PageSource) Release(vmID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	for s.sending[vmID] > 0 {
+		if _, serving := s.outstanding[vmID]; !serving {
+			// The VM was given up while the reply was in flight — its hold
+			// deadline passed, or this host lost it — so there is nothing left
+			// for a release to decide about, and the deadline is what bounds
+			// this wait.
+			return nil
+		}
+		settled := s.settled
+		s.mu.Unlock()
+		select {
+		case <-settled:
+		case <-s.ctx.Done():
+			s.mu.Lock()
+			return fmt.Errorf("%w: a reply of %s's pages was still being sent when this page source closed",
+				ErrOutstanding, vmID)
+		}
+		s.mu.Lock()
+	}
 	if left := outstandingPages(s.outstanding[vmID]); left > 0 {
 		return fmt.Errorf("%w: %s has %d the destination has not fetched", ErrOutstanding, vmID, left)
 	}
@@ -309,6 +351,9 @@ func (s *PageSource) Release(vmID string) error {
 func (s *PageSource) Discard(vmID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// A release waiting on a reply of this VM's pages has nothing left to
+	// decide about, which is what bounds that wait by the hold's own deadline.
+	defer s.wake()
 	delete(s.served, vmID)
 	delete(s.outstanding, vmID)
 	delete(s.unlisted, vmID)
@@ -323,11 +368,31 @@ func outstandingPages(volumes map[string]map[uint64]struct{}) int {
 	return total
 }
 
+// sendingPages counts a reply carrying pages no checkpoint holds in or out of
+// flight for one VM, and wakes whatever is waiting on the count.
+func (s *PageSource) sendingPages(vmID string, delta int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sending[vmID] += delta
+	if s.sending[vmID] <= 0 {
+		delete(s.sending, vmID)
+	}
+	s.wake()
+}
+
+// wake releases everything waiting on this source's bookkeeping. Caller holds
+// the lock.
+func (s *PageSource) wake() {
+	close(s.settled)
+	s.settled = make(chan struct{})
+}
+
 // fetched records the unpublished pages one reply carried, which is the only
 // evidence this host has that the destination holds them.
 func (s *PageSource) fetched(vmID, name string, pages []uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	defer s.wake()
 	set := s.outstanding[vmID][name]
 	if set == nil {
 		return
@@ -516,6 +581,17 @@ func (s *PageSource) dispatch(conn platform.Conn, peer string, incoming wire.Inc
 			return err
 		}
 		response, payload, served := s.pages(peer, pageRequest)
+		// A reply carrying pages no checkpoint holds is in flight from here
+		// until its outcome is recorded, and a release of this VM waits for
+		// that rather than reading a book the reply has not been written into
+		// yet. The destination acts on a reply the moment it arrives — it
+		// installs the pages, its Done returns, and the release of this source
+		// follows from that — and none of that is ordered after this
+		// goroutine's next statement.
+		if len(served) > 0 {
+			s.sendingPages(pageRequest.GetVm(), 1)
+			defer s.sendingPages(pageRequest.GetVm(), -1)
+		}
 		if err := s.reply(conn, incoming.RequestID, response, payload); err != nil {
 			return err
 		}

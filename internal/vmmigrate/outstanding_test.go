@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"testing/synctest"
 
 	"github.com/semistrict/sproutfs/internal/platform"
 	"github.com/semistrict/sproutfs/internal/vmmigrate"
@@ -32,6 +33,108 @@ type droppingConn struct {
 }
 
 func (c droppingConn) Send(context.Context, platform.Frame) error { return c.err }
+
+// TestAReleaseWaitsForAReplyItsDestinationHasAlreadyActedOn is the order the two
+// halves of a handover actually run in. A destination acts on a reply the
+// moment it arrives — it installs the pages, its Done returns, and the release
+// of the source follows from that — while the source's own record of the reply
+// is written once the send returns, because a reply that failed to send carried
+// nothing. The two are concurrent, so a release that read the source's book on
+// arrival would refuse a VM whose pages the destination is already running on,
+// and a drain would then have a VM it could never let go of. The release waits
+// for the reply's outcome instead.
+func TestAReleaseWaitsForAReplyItsDestinationHasAlreadyActedOn(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := newServed(t, nil, 4)
+		held := s.heldSourceHolding(t, "source-pages-delivered", true, nil)
+		source := s.source
+
+		backing := s.unpublishedBacking(t, source, "ram0", []vmmigrate.PageRun{{First: 0, Count: 4}})
+		data := make([]byte, 4*pageSize)
+		loaded := make(chan error, 1)
+		go func() {
+			unpublished, err := backing.LoadUnpublished(t.Context(), 0, data)
+			if err == nil {
+				backing.InstalledUnpublished(0, unpublished)
+			}
+			loaded <- err
+		}()
+		// The load returns because the reply reached it, and the send that
+		// carried that reply has not returned: it is inside the hold.
+		if err := <-loaded; err != nil {
+			t.Fatal(err)
+		}
+		if left := backing.Unfetched(); left != 0 {
+			t.Fatalf("the destination installed the reply and still owes %d pages", left)
+		}
+
+		// This is where the destination's Done returns and the release follows.
+		released := make(chan error, 1)
+		go func() { released <- source.Release("vm-2") }()
+		synctest.Wait()
+		select {
+		case err := <-released:
+			t.Fatalf("a release answered for a reply that was still being sent: %v", err)
+		default:
+		}
+
+		held.let()
+		synctest.Wait()
+		if err := <-released; err != nil {
+			t.Fatalf("releasing a source whose destination holds every page: %v", err)
+		}
+		if serving := source.Serving(); len(serving) != 0 {
+			t.Fatalf("a released source still serves %v", serving)
+		}
+	})
+}
+
+// TestAReleaseWaitingOnAReplyThatNeverLeavesStillRefuses is the other outcome of
+// that same wait, and the one the waiting is there to keep. A release made
+// while a reply is in flight is answered by what the send did: this one fails,
+// so the pages it named were never anywhere but here, and the release that
+// would drop them must refuse exactly as it did before anything waited.
+func TestAReleaseWaitingOnAReplyThatNeverLeavesStillRefuses(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := newServed(t, nil, 4)
+		held := s.heldSourceHolding(t, "source-pages-held-dropping", false,
+			errors.New("the reply never left the source"))
+		source := s.source
+
+		backing := s.backing(t, source, "ram0")
+		data := make([]byte, 4*pageSize)
+		loaded := make(chan error, 1)
+		go func() { loaded <- backing.Load(t.Context(), 0, data) }()
+		// The request is with the source and its reply is inside the send.
+		<-held.sending
+
+		released := make(chan error, 1)
+		go func() { released <- source.Release("vm-2") }()
+		synctest.Wait()
+		select {
+		case err := <-released:
+			t.Fatalf("a release answered for a reply that was still being sent: %v", err)
+		default:
+		}
+
+		held.let()
+		synctest.Wait()
+		if err := <-released; !errors.Is(err, vmmigrate.ErrOutstanding) {
+			t.Fatalf("releasing pages no reply ever carried: %v", err)
+		}
+		if serving := source.Serving(); len(serving) != 1 || serving[0] != "vm-2" {
+			t.Fatalf("a refused release stopped serving: %v", serving)
+		}
+		// The destination read its own volume for the pages the reply never
+		// brought, which is a load that succeeded and a page it does not hold.
+		if err := <-loaded; err != nil {
+			t.Fatal(err)
+		}
+		if stats := backing.Stats(); stats.PeerPages != 0 {
+			t.Fatalf("a destination that received no reply holds %d of the source's pages", stats.PeerPages)
+		}
+	})
+}
 
 // TestAReplyThatNeverLeavesKeepsItsPagesOutstanding is the only evidence a
 // source has that a destination holds a page: the reply that carried it. A
