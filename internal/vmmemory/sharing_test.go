@@ -131,24 +131,31 @@ func TestPopulateMapsEverythingResidentBeforeTheMachineRuns(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 16, LogicalPages: 64, DirtyPages: 16, ReadAheadPages: 4})
 		a, am, _ := f.region(12)
-		access(t, a, am, 0, false)       // window 0-3
-		access(t, a, am, 9, false)       // window 8-11
-		access(t, a, am, 5, true)[0] = 7 // private, must not be shared
+		access(t, a, am, 0, false) // window 0-3
+		access(t, a, am, 9, false) // window 8-11
+		// The store takes a private page of its own, which nothing may share;
+		// the page it copied away from stays in the sharing index under the
+		// identity the volume gives it, and that is what the sibling maps.
+		access(t, a, am, 5, true)[0] = 7
 		bb := f.newBacking(12)
 		bb.private[10] = true // the sibling changed this page itself
 		b, bm := f.attach(bb)
-		want := map[uint64]bool{0: true, 1: true, 2: true, 3: true, 8: true, 9: true, 11: true}
+		want := map[uint64]bool{0: true, 1: true, 2: true, 3: true, 5: true, 8: true, 9: true, 11: true}
 		for page := range uint64(12) {
 			_, mapped := bm.pages[page]
 			if mapped != want[page] {
 				t.Fatalf("page %d mapped=%t after populate", page, mapped)
 			}
-			if mapped && bm.pages[page].slot != am.pages[page].slot {
-				t.Fatalf("page %d populated from a different slot", page)
+			if !mapped {
+				continue
+			}
+			if shared := bm.pages[page].slot == am.pages[page].slot; shared == (page == 5) {
+				t.Fatalf("page %d populated from slot %d against the writer's %d",
+					page, bm.pages[page].slot, am.pages[page].slot)
 			}
 		}
-		if bb.loads != 0 || bm.maps != 3 {
-			t.Fatalf("populate loaded %d times and issued %d commands; want 0 loads, 3 range commands", bb.loads, bm.maps)
+		if bb.loads != 0 || bm.maps != 4 {
+			t.Fatalf("populate loaded %d times and issued %d commands; want 0 loads, 4 range commands", bb.loads, bm.maps)
 		}
 		for page := range uint64(12) {
 			if got := access(t, b, bm, page, false)[0]; got != byte(page+1) {
@@ -156,7 +163,7 @@ func TestPopulateMapsEverythingResidentBeforeTheMachineRuns(t *testing.T) {
 			}
 		}
 		stats, err := f.h.Stats(t.Context())
-		if err != nil || stats.IdentityHits != 7 {
+		if err != nil || stats.IdentityHits != 8 {
 			t.Fatalf("stats: %+v %v", stats, err)
 		}
 	})

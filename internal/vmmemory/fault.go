@@ -120,12 +120,37 @@ func (r *Region) fault(ctx context.Context, index uint64, write bool, spill *int
 	if err != nil {
 		return false, err
 	}
+	if pg == nil && !b.zero && !b.dirty {
+		// This region holds no memory for the page, so the copy has nothing
+		// here to be made from. Reading the page in first is the read fault
+		// this write fault often really is: it lands in the sharing index under
+		// the identity its volume gives it, so the copy has an origin and every
+		// region that inherits that identity maps the page rather than reading
+		// it again.
+		if pg, err = r.readIn(ctx, index); err != nil {
+			return false, err
+		}
+		if pg != nil && !r.needsPrivatePage(index) {
+			// The region was given up to read, and this page is the guest's own
+			// state now. What the store needs is decided again from the top.
+			h.unlock(pg)
+			return true, nil
+		}
+	}
 	defer func() {
 		if pg != nil {
 			h.unlock(pg)
 		}
 	}()
 	held := r.checkpointCopy(b)
+	// A copy of a page holding a published identity remembers where it came
+	// from: those bytes are immutable while that page holds that name, so a
+	// settle can tell a page the guest really stored into from one a write
+	// fault merely took writable.
+	var origin *resident
+	if pg.published() {
+		origin = pg
+	}
 	data := make([]byte, PageSize)
 	unpublished, err := r.readForCopy(ctx, b, pg, data)
 	if err != nil {
@@ -156,7 +181,7 @@ func (r *Region) fault(ctx context.Context, index uint64, write bool, spill *int
 		}
 		return true, nil
 	}
-	pg, err = h.create(ctx, slot, data, pageKey{}, true)
+	pg, err = h.create(ctx, slot, data, pageKey{}, true, r.kind)
 	if err != nil {
 		return false, err
 	}
@@ -167,7 +192,7 @@ func (r *Region) fault(ctx context.Context, index uint64, write bool, spill *int
 	if err != nil {
 		return false, err
 	}
-	if err := r.takePrivate(ctx, b, old, pg, *spill); err != nil {
+	if err := r.takePrivate(ctx, b, old, pg, *spill, origin); err != nil {
 		return false, err
 	}
 	*spill = -1
@@ -196,14 +221,100 @@ func (r *Region) fault(ctx context.Context, index uint64, write bool, spill *int
 	return false, nil
 }
 
+// readIn gives a store into a page this region holds no memory for something to
+// copy away from: the resident page that holds the identity this page's volume
+// gives it, locked and bound to nothing. One is there already where another
+// region of this pager inherited the same identity; otherwise the bytes are
+// read once into a page of their own, which enters the sharing index under that
+// identity — so the copy has an origin the settle can compare it with, and the
+// next region to inherit the identity maps that page rather than reading it
+// again.
+//
+// A page whose bytes no checkpoint published has none: a hole, a page whose
+// backing names another page, and a page only another host still holds, whose
+// bytes are not the volume's at all. The store reads its own copy from the
+// backing then, exactly as it always did, and remembers no origin.
+func (r *Region) readIn(ctx context.Context, index uint64) (*resident, error) {
+	h := r.host
+	window, err := r.plan(ctx, index, index+1, index)
+	if err != nil {
+		return nil, err
+	}
+	id, named := window.identity(index)
+	if !named || id.zero() || window.unpublished(index) {
+		return nil, nil
+	}
+	for range loadAttempts {
+		h.mu.Lock()
+		pg := h.clean[id]
+		h.mu.Unlock()
+		if pg != nil {
+			// Waiting for it is safe: this fault holds no other page.
+			if err := pg.mu.Lock(ctx); err != nil {
+				return nil, err
+			}
+			h.mu.Lock()
+			current := h.clean[id] == pg
+			if current {
+				h.stats.IdentityHits++
+			}
+			h.mu.Unlock()
+			if !current {
+				h.unlock(pg)
+				continue
+			}
+			h.touch(pg)
+			return pg, nil
+		}
+		slot, err := r.reclaimNear(ctx, index)
+		if err != nil {
+			return nil, err
+		}
+		data := make([]byte, PageSize)
+		if _, err := r.loadWindow(ctx, index*uint64(PageSize), data); err != nil {
+			return nil, h.abandonSlots(ctx, slot, 1, err)
+		}
+		h.mu.Lock()
+		h.stats.Loads++
+		h.stats.LoadedPages++
+		h.mu.Unlock()
+		pg, err = h.create(ctx, slot, data, id, false, r.kind)
+		if err != nil {
+			return nil, err
+		}
+		h.mu.Lock()
+		published := h.clean[id]
+		if published == nil {
+			h.clean[id] = pg
+			h.cleanVersion++
+		}
+		h.mu.Unlock()
+		if published == nil {
+			return pg, nil
+		}
+		// Another fault published this identity while the read ran; that page
+		// is the one every region maps, so this one goes back to the arena.
+		err = h.release(ctx, pg)
+		h.unlock(pg)
+		if err != nil {
+			return nil, err
+		}
+	}
+	// Nothing but a publication race gets here, and a store that could not win
+	// one still has a volume to read its copy from.
+	return nil, nil
+}
+
 // takePrivate makes a freshly filled resident page this page's own. The mapping
 // it had is revoked and the alias of the page it is leaving taken away under
 // that page's lock, and the dirty reservation the store was admitted under is
 // installed in the same step: a private page reachable from a binding owning
 // neither a reservation nor a checkpoint is one a reclaim would punch. The
 // caller holds the new resident page; old is the one the page is leaving, if
-// any, and is released here.
-func (r *Region) takePrivate(ctx context.Context, b *binding, old, pg *resident, slot int) error {
+// any, and is released here. origin is that page where the copy was made from a
+// published identity, and it is left in the arena rather than released, because
+// it is what the settle compares this copy against.
+func (r *Region) takePrivate(ctx context.Context, b *binding, old, pg *resident, slot int, origin *resident) error {
 	h := r.host
 	if old != nil {
 		defer h.unlock(old)
@@ -211,7 +322,11 @@ func (r *Region) takePrivate(ctx context.Context, b *binding, old, pg *resident,
 	if err := h.revoke(ctx, b); err != nil {
 		return err
 	}
-	if old != nil {
+	switch {
+	case old == nil:
+	case old == origin:
+		h.leave(b, old)
+	default:
 		// A page still held by a checkpoint keeps its memory: the checkpoint's
 		// own alias survives this unlink, and the guest gets its own copy.
 		if err := h.unlink(ctx, b, old); err != nil {
@@ -219,7 +334,7 @@ func (r *Region) takePrivate(ctx context.Context, b *binding, old, pg *resident,
 		}
 	}
 	h.bind(b, pg)
-	r.takeFromCheckpoint(b, slot)
+	r.takeFromCheckpoint(b, slot, origin)
 	return nil
 }
 
@@ -307,7 +422,7 @@ func (r *Region) storeZeros(ctx context.Context, index, first, last uint64, spil
 	if err != nil {
 		return err
 	}
-	pages, err := h.createZeros(ctx, slot, count)
+	pages, err := h.createZeros(ctx, slot, count, r.kind)
 	if err != nil {
 		return err
 	}
@@ -446,7 +561,7 @@ func (r *Region) loadOnce(ctx context.Context, index uint64, spill *int) (bool, 
 		if err != nil {
 			return false, err
 		}
-		pg, err := h.create(ctx, slot, data, pageKey{}, true)
+		pg, err := h.create(ctx, slot, data, pageKey{}, true, r.kind)
 		if err != nil {
 			return false, err
 		}

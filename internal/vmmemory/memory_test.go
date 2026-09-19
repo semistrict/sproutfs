@@ -371,6 +371,18 @@ func (f *fixture) publishCheckpoint(ctx context.Context, r *vmmemory.Region, b *
 	return true, nil
 }
 
+// settle is what a publication does behind the pause before it enumerates a
+// checkpoint's pages: every page whose sealed bytes are the ones its origin
+// still holds leaves the set. It reports how many did.
+func (f *fixture) settle(r *vmmemory.Region) int {
+	f.t.Helper()
+	unchanged, err := r.Checkpoint().Settle(f.t.Context())
+	if err != nil {
+		f.t.Fatalf("settling the checkpoint: %v", err)
+	}
+	return unchanged
+}
+
 // mustCheckpoint fails the test when a checkpoint does not complete.
 func (f *fixture) mustCheckpoint(r *vmmemory.Region, b *backing) {
 	f.t.Helper()

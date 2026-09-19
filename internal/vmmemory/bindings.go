@@ -32,6 +32,15 @@ type binding struct {
 	// set until the page's dirty epoch ends, and only the bytes written back
 	// can tell whether the guest used it.
 	ahead bool
+	// origin is the resident page this private copy was made from, when that
+	// page held a published page identity: eight bytes, and not the identity
+	// itself. A write fault is not always a store, so the settle compares the
+	// sealed bytes with what that page still holds and re-shares the copy onto
+	// it where the two are equal. Nothing is pinned by the pointer — an origin
+	// that has been evicted is simply no longer an origin — and a page copied
+	// from a checkpoint's held copy, from the name a fork point lent a private
+	// page, from another host's unpublished page or from zeros has none.
+	origin *resident
 }
 
 // writable reports whether the guest may store into this page where it is,
@@ -247,7 +256,18 @@ func (r *Region) holdInCheckpoint(b, held *binding) {
 	defer r.bindingsMu.Unlock()
 	b.checkpoint, b.spillSlot = held, -1
 	held.ahead, b.ahead = b.ahead, false
+	// The bytes the seal froze are the ones that were copied, so the page they
+	// came from is the checkpoint's to compare them with.
+	held.origin, b.origin = b.origin, nil
 	delete(r.dirtyBindings, b.index)
+}
+
+// originOf reports the page a checkpoint's copy was made from, nil where it was
+// made from nothing a settle may compare it with.
+func (r *Region) originOf(b *binding) *resident {
+	r.bindingsMu.Lock()
+	defer r.bindingsMu.Unlock()
+	return b.origin
 }
 
 // checkpointCopy reports the checkpoint's copy of this page while the two
@@ -263,10 +283,11 @@ func (r *Region) checkpointCopy(b *binding) *binding {
 // because a page that is dirty with neither of them is a page a reclaim would
 // punch. It is also what a store into a clean page does, which depends on no
 // checkpoint and takes the same reservation.
-func (r *Region) takeFromCheckpoint(b *binding, slot int) {
+func (r *Region) takeFromCheckpoint(b *binding, slot int, origin *resident) {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
 	b.checkpoint, b.spillSlot, b.dirty, b.zero = nil, slot, true, false
+	b.origin = origin
 	if r.dirtyBindings == nil {
 		r.dirtyBindings = make(map[uint64]*binding)
 	}
@@ -284,6 +305,7 @@ func (r *Region) restoreFromCheckpoint(b, held *binding) {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
 	b.checkpoint, b.spillSlot, b.dirty, b.ahead = nil, held.spillSlot, true, held.ahead
+	b.origin, held.origin = held.origin, nil
 	held.spillSlot, held.dirty, held.ahead = -1, false, false
 	if r.dirtyBindings == nil {
 		r.dirtyBindings = make(map[uint64]*binding)
@@ -293,7 +315,9 @@ func (r *Region) restoreFromCheckpoint(b, held *binding) {
 func (r *Region) retireFromCheckpoint(b *binding) {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
-	b.checkpoint, b.dirty = nil, false
+	// The page is the volume's again, so where it was copied from says nothing
+	// about it any more.
+	b.checkpoint, b.dirty, b.origin = nil, false, nil
 	delete(r.dirtyBindings, b.index)
 }
 
@@ -313,8 +337,9 @@ func (r *Region) setDirty(b *binding, dirty bool) {
 	defer r.bindingsMu.Unlock()
 	b.dirty = dirty
 	if !dirty {
-		// The dirty epoch that write-ahead began has ended.
-		b.ahead = false
+		// The dirty epoch that write-ahead began has ended, and with it
+		// whatever this page's bytes were once copied from.
+		b.ahead, b.origin = false, nil
 	}
 	if dirty {
 		if r.dirtyBindings == nil {

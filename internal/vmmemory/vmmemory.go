@@ -173,6 +173,15 @@ type ZeroArena interface {
 	Zero(ctx context.Context, slot, count int) error
 }
 
+// EqualArena is an Arena that compares two of its own slots without copying
+// their bytes out. A settle's whole cost is that comparison, and an arena whose
+// slots are in this process's address space answers it with one bytes.Equal
+// over the two of them. An Arena without it is read into two buffers instead,
+// which is the same answer for twice the memory traffic.
+type EqualArena interface {
+	Equal(ctx context.Context, first, second int) (bool, error)
+}
+
 // Mapping controls one process region. Map installs already armed mappings for
 // count consecutive pages backed by count consecutive arena slots; Revoke
 // installs a missing-fault trap. Both wait for acknowledgement and drain
@@ -241,7 +250,16 @@ type Config struct {
 	// reservation and written back like a stored page. Zero selects one page;
 	// one disables it.
 	WriteAheadPages int
-	ResidentPages   int
+	// SettleWorkers is how many workers one settle divides a sealed set
+	// between. Settling a page is a comparison of two resident pages and the
+	// page-table work of re-sharing one, so it reads no disk and no store and
+	// takes none of the pager's I/O permits: what bounds it is memory
+	// bandwidth, and it is time the upload waits for, so it is divided rather
+	// than queued. The workers share nothing but the count and the set the
+	// checkpoint will list, so what a settle leaves does not depend on how many
+	// there are. Zero selects one, which settles on the caller's own goroutine.
+	SettleWorkers int
+	ResidentPages int
 	// LogicalPages bounds all per-region metadata, including never-faulted pages.
 	LogicalPages int
 	// DirtyPages bounds volatile private state on RAM and spill combined.

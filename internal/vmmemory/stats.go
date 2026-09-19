@@ -47,8 +47,12 @@ type Stats struct {
 	Loads, LoadedPages, IdentityHits, Mappings, MappedPages uint64
 	MappingRuns                                             uint64
 	// CheckpointPages counts pages as a capture checkpoint takes them, including
-	// those of a seal that failed partway and gave them back.
-	CheckpointPages uint64
+	// those of a seal that failed partway and gave them back. UnchangedPages
+	// counts the pages a settle found to hold exactly the bytes of the page they
+	// were copied from: a write fault the guest never stored through, which the
+	// checkpoint therefore publishes nothing for and which goes back to sharing
+	// the page it came from.
+	CheckpointPages, UnchangedPages uint64
 	// DirtyWaits counts the times a store waited for the dirty budget,
 	// CheckpointRequests the checkpoints that wait asked for out of the
 	// interval's turn, and DirtyStalls the stores no checkpoint could admit,
@@ -124,10 +128,11 @@ type SharingStats struct {
 // consistent reading of the alias sets rather than a sum of readings taken at
 // different moments.
 //
-// A page is counted under the kind of the regions that map it: a page identity
-// names a volume, so every alias of one resident page is a page of that one
-// volume and they agree. A page created for a fault that has not bound it to
-// anything yet belongs to no region and is counted under neither.
+// A page is counted under the kind of the region that created it: a page
+// identity names a volume, so every region that maps it is a region of that one
+// volume and they agree. A page no region maps is still the memory the arena
+// holds — a page a store copied away from and left behind, or one a fault has
+// created and not yet bound — so it counts in UniqueBytes and in no mapping.
 func (h *Host) Sharing(ctx context.Context) (SharingStats, error) {
 	if err := context.Cause(ctx); err != nil {
 		return SharingStats{}, err
@@ -137,16 +142,8 @@ func (h *Host) Sharing(ctx context.Context) (SharingStats, error) {
 	var stats SharingStats
 	for element := h.lru.Front(); element != nil; element = element.Next() {
 		pg := element.Value.(*resident)
-		if len(pg.aliases) == 0 {
-			continue
-		}
-		var kind RegionKind
-		for alias := range pg.aliases {
-			kind = alias.region.kind
-			break
-		}
 		gauge := &stats.Pmem
-		if kind == Ram {
+		if pg.kind == Ram {
 			gauge = &stats.Ram
 		}
 		gauge.UniqueBytes += PageSize

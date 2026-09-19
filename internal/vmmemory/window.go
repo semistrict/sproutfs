@@ -399,7 +399,7 @@ func (p *windowPlan) publish(ctx context.Context, page uint64, data []byte, priv
 			}
 		}
 		p.reserved[i] = -1
-		pg, err := h.create(ctx, slot, data, pageKey{}, true)
+		pg, err := h.create(ctx, slot, data, pageKey{}, true, p.region.kind)
 		if err != nil {
 			h.releaseSpill(spill)
 			return err
@@ -420,7 +420,7 @@ func (p *windowPlan) publish(ctx context.Context, page uint64, data []byte, priv
 	if shared {
 		key = id
 	}
-	pg, err := h.create(ctx, slot, data, key, false)
+	pg, err := h.create(ctx, slot, data, key, false, p.region.kind)
 	if err != nil {
 		return err
 	}

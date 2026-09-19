@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -37,16 +38,22 @@ var (
 // the way: the upload reads the guest's own pages, and the seal is held until
 // it lands.
 //
-// A checkpoint is immutable once Seal returns and safe for concurrent use.
+// The set is fixed once Settle has run and safe for concurrent use; Settle
+// itself is the one thing that changes it, and the publication calls it before
+// it reads anything.
 type RegionCheckpoint struct {
 	region *Region
+	// mu guards the set and the window below, which a settle takes pages out
+	// of. Everything else here is fixed when Seal returns.
+	mu     sync.Mutex
 	pages  []*binding
 	byPage map[uint64]*binding
 	// dirtySince is the region's loss window at the seal: when the oldest of
 	// these pages was written. The seal takes it off the region, so that what
 	// the region reports from here is its own new writes; an abandoned
 	// checkpoint hands it back, and a published one drops it, because the store
-	// holds those bytes then.
+	// holds those bytes then. A settle that leaves the set empty ends it there:
+	// a checkpoint holding nothing holds no unpublished write.
 	dirtySince time.Time
 	// held marks a checkpoint a fork point has taken. Such a seal lasts until
 	// the children of that fork point have the pages they inherited, which is no
@@ -305,8 +312,9 @@ func (r *Region) protect(ctx context.Context, runs []PageRun) error {
 // pager page is a store page, so these are the store pages a checkpoint
 // republishes.
 func (c *RegionCheckpoint) DirtyPages() []uint64 {
-	pages := make([]uint64, 0, len(c.pages))
-	for _, held := range c.pages {
+	held := c.sealedPages()
+	pages := make([]uint64, 0, len(held))
+	for _, held := range held {
 		pages = append(pages, held.index)
 	}
 	sort.Slice(pages, func(i, j int) bool { return pages[i] < pages[j] })
@@ -319,10 +327,11 @@ func (c *RegionCheckpoint) DirtyPages() []uint64 {
 // intervals, and the child that inherits these pages inherits their age with
 // them rather than starting a window of its own.
 func (c *RegionCheckpoint) UnpublishedAge() time.Duration {
-	if c.dirtySince.IsZero() {
+	since := c.since()
+	if since.IsZero() {
 		return 0
 	}
-	return max(c.region.host.clock.Since(c.dirtySince), 0)
+	return max(c.region.host.clock.Since(since), 0)
 }
 
 // Share names every page this checkpoint holds by the identity the checkpoint
@@ -342,7 +351,7 @@ func (c *RegionCheckpoint) UnpublishedAge() time.Duration {
 func (c *RegionCheckpoint) Share(ctx context.Context, ref control.Ref, volume string) error {
 	h := c.region.host
 	c.held.Store(true)
-	for _, held := range c.pages {
+	for _, held := range c.sealedPages() {
 		key := pageKey{id: control.Identity{Ref: ref, Volume: volume, Page: held.index}}
 		if err := h.locked(ctx, held, func(pg *resident) error {
 			h.share(pg, key)
@@ -376,7 +385,9 @@ func (c *RegionCheckpoint) ReadDirty(ctx context.Context, page uint64, dst []byt
 		return ErrNotSealed
 	default:
 	}
+	c.mu.Lock()
 	held := c.byPage[page]
+	c.mu.Unlock()
 	if held == nil {
 		return ErrRange
 	}
@@ -456,7 +467,7 @@ func (r *Region) endSeal(ctx context.Context, checkpoint *RegionCheckpoint, publ
 		// Detach discarded it, or it has already been retired.
 		return nil
 	}
-	for pages := current.pages; len(pages) > 0; {
+	for pages := current.sealedPages(); len(pages) > 0; {
 		batch := pages[:min(len(pages), checkpointBatchPages)]
 		var identities map[uint64]storedPage
 		if published {
@@ -489,7 +500,7 @@ func (r *Region) endSeal(ctx context.Context, checkpoint *RegionCheckpoint, publ
 		// written in is the region's again. A window that restarted here would
 		// bound nothing: the host that cannot publish is exactly the host whose
 		// publications keep failing.
-		r.restoreDirtySince(current.dirtySince)
+		r.restoreDirtySince(current.since())
 	}
 	r.setCheckpoint(nil)
 	current.finish(nil)
@@ -620,7 +631,7 @@ func (r *Region) abandonPages(ctx context.Context, pages []*binding) error {
 // with them.
 func (r *Region) discardCheckpoint(ctx context.Context, checkpoint *RegionCheckpoint) error {
 	h := r.host
-	for _, held := range checkpoint.pages {
+	for _, held := range checkpoint.sealedPages() {
 		if err := h.locked(ctx, held, func(pg *resident) error {
 			// The seal ends with the region, so its name for the page does
 			// too. Whatever still shares the page keeps it: nothing can store
@@ -629,6 +640,12 @@ func (r *Region) discardCheckpoint(ctx context.Context, checkpoint *RegionCheckp
 			return h.unlink(ctx, held, pg)
 		}); err != nil {
 			return err
+		}
+		if origin := held.origin; origin != nil {
+			held.origin = nil
+			if err := h.releaseOrigin(ctx, origin); err != nil {
+				return err
+			}
 		}
 		if held.spillSlot >= 0 {
 			h.releaseSpill(held.spillSlot)

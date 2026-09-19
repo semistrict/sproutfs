@@ -21,7 +21,9 @@ func TestSealProtectsRunsOfDirtyPagesWithoutReplacingTheirMappings(t *testing.T)
 		r, m, b := f.region(8)
 		// Dirtying backwards gives consecutive pages descending slots, which is
 		// exactly the run a mapping command cannot cover but a range protection
-		// can. A real guest's dirty set is at least this fragmented.
+		// can. A real guest's dirty set is at least this fragmented. Each store
+		// takes two slots — the page it read in to copy from and its own copy —
+		// so the pages descend in steps rather than one at a time.
 		for page := 3; page >= 0; page-- {
 			access(t, r, m, uint64(page), true)[0] = byte(60 + page)
 		}
@@ -29,7 +31,7 @@ func TestSealProtectsRunsOfDirtyPagesWithoutReplacingTheirMappings(t *testing.T)
 		for page := range uint64(4) {
 			slots[page] = m.pages[page].slot
 		}
-		if slots[0] != slots[1]+1 || slots[1] != slots[2]+1 || slots[2] != slots[3]+1 {
+		if slots[0] <= slots[1] || slots[1] <= slots[2] || slots[2] <= slots[3] {
 			t.Fatalf("the fixture did not fragment the run: %v", slots)
 		}
 		maps := m.maps

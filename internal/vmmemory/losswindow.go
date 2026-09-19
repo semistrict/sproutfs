@@ -71,7 +71,7 @@ func (r *Region) OldestUnpublished() time.Time {
 	since := r.dirtySince
 	r.bindingsMu.Unlock()
 	if _, draining := r.sealState(); draining != nil {
-		since = older(since, draining.dirtySince)
+		since = older(since, draining.since())
 	}
 	return since
 }

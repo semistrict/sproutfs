@@ -27,11 +27,26 @@ type resident struct {
 	slot    int
 	key     pageKey
 	private bool
+	// kind is what the region that created this page maps it as, RAM or PMEM.
+	// A page identity names a volume, so every region that ever maps this page
+	// agrees; it is kept on the page rather than read off an alias because a
+	// page can outlive every mapping of it — the page a store copied away from
+	// is host memory whether anything maps it or not.
+	kind RegionKind
 	// aliases is protected by Host.mu, not by this page's lock: a seal joins
 	// the checkpoint's copy to a page a reclaim is already holding, and the
 	// reclaim finds it there.
 	aliases map[*binding]struct{}
 	recent  *list.Element
+}
+
+// published reports a resident page holding a page identity some checkpoint
+// gave it, whose bytes therefore cannot change while it holds that name. It is
+// what a copy may remember as its origin: a private page is not one, whatever
+// name a fork point lent it, and neither is a page with no identity at all.
+// Caller holds the page's lock, or creates it.
+func (pg *resident) published() bool {
+	return pg != nil && !pg.private && pg.key != (pageKey{}) && !pg.key.zero()
 }
 
 // Caller holds the resident lock, or owns a currently nonresident binding
@@ -115,7 +130,7 @@ func (h *Host) touch(pg *resident) {
 
 // create fills an already reserved slot and returns its locked page, not yet
 // visible in the sharing index.
-func (h *Host) create(ctx context.Context, slot int, data []byte, key pageKey, private bool) (*resident, error) {
+func (h *Host) create(ctx context.Context, slot int, data []byte, key pageKey, private bool, kind RegionKind) (*resident, error) {
 	if sim.Bug(ctx, "pager-zero-new-page") {
 		// The page is created without the bytes that were loaded or copied
 		// into it, which every later read of that page then sees as zeroes.
@@ -124,14 +139,14 @@ func (h *Host) create(ctx context.Context, slot int, data []byte, key pageKey, p
 	if err := h.arena.Write(ctx, slot, data); err != nil {
 		return nil, h.abandonSlots(ctx, slot, 1, err)
 	}
-	return h.adopt(slot, key, private), nil
+	return h.adopt(slot, key, private, kind), nil
 }
 
 // createZeros fills count consecutive reserved slots with zeros and returns
 // their locked private pages. Every free slot is punched, so it already reads
 // as zeros: an arena that can make such a slot mappable without writing it
 // does so for the whole run at once, and only another arena is written.
-func (h *Host) createZeros(ctx context.Context, slot, count int) ([]*resident, error) {
+func (h *Host) createZeros(ctx context.Context, slot, count int, kind RegionKind) ([]*resident, error) {
 	var err error
 	if zeroing, ok := h.arena.(ZeroArena); ok {
 		err = zeroing.Zero(ctx, slot, count)
@@ -146,7 +161,7 @@ func (h *Host) createZeros(ctx context.Context, slot, count int) ([]*resident, e
 	}
 	pages := make([]*resident, count)
 	for i := range pages {
-		pages[i] = h.adopt(slot+i, pageKey{}, true)
+		pages[i] = h.adopt(slot+i, pageKey{}, true, kind)
 	}
 	return pages, nil
 }
@@ -174,8 +189,8 @@ func (h *Host) abandonSlots(ctx context.Context, slot, count int, err error) err
 }
 
 // adopt makes a filled slot a locked resident page, most recently used.
-func (h *Host) adopt(slot int, key pageKey, private bool) *resident {
-	pg := &resident{mu: ctxsync.NewMutex(), slot: slot, key: key, private: private, aliases: make(map[*binding]struct{})}
+func (h *Host) adopt(slot int, key pageKey, private bool, kind RegionKind) *resident {
+	pg := &resident{mu: ctxsync.NewMutex(), slot: slot, key: key, private: private, kind: kind, aliases: make(map[*binding]struct{})}
 	_ = pg.mu.Lock(context.Background())
 	h.mu.Lock()
 	pg.recent = h.lru.PushBack(pg)
@@ -204,6 +219,40 @@ func (h *Host) release(ctx context.Context, pg *resident) error {
 	h.signal()
 	h.mu.Unlock()
 	return nil
+}
+
+// leave takes a binding's alias off the page it copied away from and leaves
+// that page in the arena, where unlink would release it once its last alias
+// went. The bytes stay under the identity they are published by, so the settle
+// has something to compare this copy against and something to re-share it onto,
+// and any other region that inherits that identity maps it instead of reading
+// it. Nothing is pinned by this: the page is clean, so the next reclaim short of
+// a slot takes it like any other. Caller holds the page's lock.
+func (h *Host) leave(b *binding, pg *resident) {
+	h.mu.Lock()
+	delete(pg.aliases, b)
+	b.resident = nil
+	h.signal()
+	h.mu.Unlock()
+}
+
+// releaseOrigin gives up a page a copy was made from once nothing maps it and
+// nothing names it any more, which is what detaching a region does with the
+// pages its stores left behind: a page no binding reaches is one nothing else
+// would ever release. A page something still maps, or one already evicted, is
+// left alone.
+func (h *Host) releaseOrigin(ctx context.Context, pg *resident) error {
+	if err := pg.mu.Lock(ctx); err != nil {
+		return err
+	}
+	defer h.unlock(pg)
+	h.mu.Lock()
+	keep := pg.slot < 0 || len(pg.aliases) > 0
+	h.mu.Unlock()
+	if keep {
+		return nil
+	}
+	return h.release(ctx, pg)
 }
 
 func (h *Host) unlink(ctx context.Context, b *binding, pg *resident) error {

@@ -101,6 +101,12 @@ func New(ctx context.Context, resources *resource.Budget, cfg Config, arena Aren
 	if cfg.WriteAheadPages == 0 {
 		cfg.WriteAheadPages = 1
 	}
+	if cfg.SettleWorkers == 0 {
+		cfg.SettleWorkers = 1
+	}
+	if cfg.SettleWorkers < 1 || cfg.SettleWorkers > 1024 {
+		return nil, ErrConfig
+	}
 	if cfg.ConcurrentIO < 1 || cfg.ConcurrentIO > 1024 ||
 		cfg.ReadAheadPages < 1 || cfg.ReadAheadPages > maximumReadAheadBytes/PageSize || cfg.ReadAheadPages&(cfg.ReadAheadPages-1) != 0 ||
 		cfg.WriteAheadPages < 1 || cfg.WriteAheadPages > 4096 {

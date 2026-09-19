@@ -401,7 +401,9 @@ func (r *Region) loadWindow(ctx context.Context, offset uint64, dst []byte) ([]b
 // readForCopy fills a store's private copy with the page's current bytes, and
 // reports whether those bytes are ones no checkpoint of this VM has. Bytes that
 // come from the backing are read outside the region lock; a resident page, a
-// spill slot or a checkpoint's copy is this host's own and is read in place.
+// spill slot or a checkpoint's copy is this host's own and is read in place, and
+// so is the page a store read in to copy away from, which the caller supplies
+// as pg without binding it to anything.
 //
 // Only the backing read can answer unpublished, and only a backing that fetches
 // from another host ever says yes: the store is then this region taking a page
@@ -470,6 +472,15 @@ func (r *Region) Detach(ctx context.Context) error {
 			return h.unlink(ctx, b, pg)
 		}); err != nil {
 			return err
+		}
+		// A page this region's stores copied away from is reachable from no
+		// binding but this one, so this is where it goes: nothing else would
+		// ever release it, and detaching leaves no resident page behind.
+		if origin := b.origin; origin != nil {
+			b.origin = nil
+			if err := h.releaseOrigin(ctx, origin); err != nil {
+				return err
+			}
 		}
 		b.dirty, b.checkpoint, b.ahead = false, nil, false
 		if b.spillSlot >= 0 {

@@ -3,6 +3,7 @@
 package vmmemory
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -84,6 +85,21 @@ func (a *LinuxArena) Zero(ctx context.Context, slot, count int) error {
 	}
 	const keepSize = 1 // FALLOC_FL_KEEP_SIZE
 	return a.fallocate(ctx, keepSize, int64(slot)*int64(PageSize), int64(count)*int64(PageSize))
+}
+
+// Equal compares two slots where they are, without copying either out. The
+// arena is mapped into this process, so a settle's comparison is one
+// bytes.Equal over the pair and the memory traffic is the pages themselves.
+func (a *LinuxArena) Equal(ctx context.Context, first, second int) (bool, error) {
+	x, err := a.offset(ctx, first, PageSize)
+	if err != nil {
+		return false, err
+	}
+	y, err := a.offset(ctx, second, PageSize)
+	if err != nil {
+		return false, err
+	}
+	return bytes.Equal(a.mapping[x:x+PageSize], a.mapping[y:y+PageSize]), nil
 }
 
 func (a *LinuxArena) Release(ctx context.Context, slot int) error {
