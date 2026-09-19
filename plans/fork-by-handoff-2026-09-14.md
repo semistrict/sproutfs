@@ -27,10 +27,10 @@ pause. The parent is treated as a migration source that keeps running:
    the VMM state, the parent's last published checkpoint (index sequence),
    and the runs of unpublished pages — everything dirty since that
    checkpoint, now sealed. The parent's handle is not given up; the sealed
-   pages stay the parent's and the child reads them by lineage identity.
+   pages stay the parent's and the child reads them by page identity.
 3. Pin the parent's last published sequence in its control record, as now,
    and release that pin when the point retires with nothing having
-   inherited the lineage. Create the child's control record selecting a
+   inherited the checkpoint. Create the child's control record selecting a
    root over that sequence.
 4. Start the child. On the parent's host the child shares the sealed pages
    through the pager, as now. On another host the child's pager pulls the
@@ -51,7 +51,7 @@ retire path.
 
 - No checkpoint per fork: no index and no upload on the parent's side. The
   one control write left is the pin of step 3, which the point gives back
-  when it retires without a child having inherited the lineage. Fork
+  when it retires without a child having inherited the checkpoint. Fork
   latency is the pause plus the child's boot.
 - Forks may be placed on any host; the orchestrator chooses as it does for a
   migration destination.

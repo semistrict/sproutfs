@@ -82,7 +82,7 @@ control record and are written before the fork handle is returned.
   `forEachPageSize` and the page-size tests; tests use few 2 MiB slots.
 - **Deltas.** Publish whole compressed 2 MiB chunks only. Remove the delta
   object, base-plus-delta index lookup, 4 KiB publication diffing and the
-  partial-lineage private-load rule. A sealed pager page is a chunk.
+  partial-identity private-load rule. A sealed pager page is a chunk.
 - **Recovery.** Opening a VM reads the control record and the selected index.
   Remove `Manager.Recover`, `ErrQuorumLost` and the group-replacing recovery
   path.
@@ -103,7 +103,7 @@ control record and are written before the fork handle is returned.
   Exposure: source death during post-copy loses the cuts since the last
   upload, the same as any host loss.
 - **Per-cut reclamation.** The first deletion of checkpoint objects in the
-  system, described under the model. Lineages shared with forks stay pinned
+  system, described under the model. Checkpoints shared with forks stay pinned
   and still need a collector later.
 - **Disk is capped per concern.** The chunk cache and pager spill each get a
   fixed cap in their own directory or partition. Remove the shared byte

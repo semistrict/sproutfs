@@ -17,7 +17,7 @@ image's identity is its bytes.
 
 - **Identity.** `template-<sha256 of the image file>`, hex, computed by the
   host over the file it was configured with. `IsTemplate` is unchanged; the
-  per-pod lineage, `TemplateGeneration`, `PrepareTemplate`'s predecessor
+  per-pod series of generations, `TemplateGeneration`, `PrepareTemplate`'s predecessor
   cleanup and the `Identities` listings that served it go.
 - **Import if absent.** A starting host reads the template's control record.
   Present and published: it opens nothing and remembers the identity for
@@ -36,7 +36,7 @@ image's identity is its bytes.
   image's. The orchestrator's `memoryFor` and the table's memory column are
   unchanged.
 - **Old templates.** The pinned checkpoints of superseded templates are the
-  collector's, as any pinned lineage is. No host deletes a template: another
+  collector's, as any pinned checkpoint is. No host deletes a template: another
   host may be forking from it.
 - **Deployment.** The host workload goes back to a Deployment with random
   pod names: `deploy/10-host.yaml`, the PodDisruptionBudget, the demo and

@@ -113,7 +113,7 @@ catalogue. Do not spend effort there.
    once, and a fault added to the kit is a fault every campaign can draw.
 
    Running real hosts is what found the next defect, fixed in `8ccfb15`: a host
-   owns a page cache, `checkpoint.Cache` names a cached page by its lineage
+   owns a page cache, `checkpoint.Cache` names a cached page by its page
    identity, and a delete freed that identity — so a VM created again under a
    deleted VM's name read the deleted VM's pages out of the cache. Seventeen of
    the first two hundred seeds reached it; the smallest is seed 45. No host-local
@@ -129,10 +129,10 @@ catalogue. Do not spend effort there.
    which leaves out the ones its compaction emptied and it
    still names. A fork taken on a checkpoint that had just compacted a pack
    empty therefore lost that pack at the next sweep, and the pinned index went
-   on naming an object nothing could fetch — a lineage with a hole in it, which
+   on naming an object nothing could fetch — a hole in what a fork inherits, which
    is what `CheckDeployment` reports as a pack part that does not read. It needs
    a fork's point, a compaction and a later sweep to line up, which no
-   campaign over a fixed topology with one lineage had put together.
+   campaign over a fixed topology with one parent and its forks had put together.
    `TestReclamationSparesThePacksAPinnedIndexOnlyNames` is the case, and the
    sweep now spares what the pinned index names.
 

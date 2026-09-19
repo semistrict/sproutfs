@@ -9,7 +9,7 @@ across all of them is collected in [open-work.md](../docs/open-work.md).
   a library, so every package but `cmd` moves under `internal/`, the large
   packages gain nested `internal` bodies, `image` becomes `checkpoint`, and
   nothing outside `platform` can name a platform adapter. **Step 1 done**:
-  lineage identity moved to `control`, `image` renamed to `checkpoint`, and every
+  page identity moved to `control`, `image` renamed to `checkpoint`, and every
   non-`cmd` package moved under `internal/`, with the real adapters behind
   `internal/platform/adapters` and the API packages at `internal/api/{host,orch,guest}`.
   Open: the nested splits, the `internal/host` consolidation, and decoupling the
@@ -37,8 +37,8 @@ across all of them is collected in [open-work.md](../docs/open-work.md).
   with `Manager.Inherit`, which is what the importing host uses too, so no
   host's epoch sits on an identity every host names; an absent one is imported
   as before; a record with no pin is waited for and then recovered by taking the
-  epoch. `PrepareTemplate`, `TemplateLineage`, `TemplateGeneration` and the three
-  `Identities` listings that served the generations are gone, and
+  epoch. `PrepareTemplate`, `TemplateGeneration`, the lookup of a template's
+  earlier generations and the three `Identities` listings that served them are gone, and
   `deploy/10-host.yaml` is a Deployment at `maxSurge: 0`, `maxUnavailable: 1`.
 
   Three departures, each in the plan's own terms. `Manager.CreateIfAbsent` is
@@ -148,7 +148,7 @@ across all of them is collected in [open-work.md](../docs/open-work.md).
   own by refilling rather than by mutating under a new one, because `mutate`
   rewrites under the resident witness's own seed and a check's expectation is a
   pure function of one `(seed, step)`; a child that mutated under a second seed
-  would need a lineage of them in the pattern. One parent fans out per round
+  would need a chain of seeds in the pattern. One parent fans out per round
   rather than every running VM, because four children per VM per round is fifty
   VMs by the second one. And `stop` reports the checkpoint it published, which
   the plan did not ask for: it is the pause a start brings the VM back at,
@@ -244,8 +244,8 @@ across all of them is collected in [open-work.md](../docs/open-work.md).
   running real hosts found — a deleted VM's identity is handed out again, and a
   host's page cache still holds the pages that name it, so the VM created under
   that name reads the dead one's bytes. Seventeen of the first two hundred
-  seeds of the generated schedule reach it and stay red until a lineage carries
-  which creation it belongs to.
+  seeds of the generated schedule reach it and stay red until a page identity
+  carries which creation it belongs to.
 - [2026-09-15 the root in the pack](root-in-the-pack-2026-09-15.md) — the root
   is the last member of a checkpoint's last part, so a checkpoint is its parts
   only, one suffix read of `pack/last` opens it, and `Rebuild`, `Recover` and
@@ -310,7 +310,7 @@ across all of them is collected in [open-work.md](../docs/open-work.md).
   published per fork and a fork can be placed on any host. **Done**
   (`6ad0e05`, `9aed0a6`, `861a60b`). `volume.ForkPoint` is one pause for N
   children and `sproutfsctl fork --to` places them. A pin is released when
-  no child inherited the lineage durably; bounding pins further needs the
+  no child inherited the checkpoint durably; bounding pins further needs the
   collector.
 - [2026-09-13 GCE demo](demo-gce-2026-09-13.md) — a single-node k3s cluster on
   one disposable GCE VM, two host pods, a GCS backend, and the boot, fork,

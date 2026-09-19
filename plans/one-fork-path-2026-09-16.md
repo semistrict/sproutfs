@@ -6,7 +6,7 @@ A fork is a handoff from a running parent, but there are two of them.
 `Host.Fork` creates the children beside the parent: it seals, records a
 hold per child, creates each child on the fork point, publishes the child's
 root before the child's guest exists (the child's pages are the parent's
-sealed pages, shared through the pager by lineage identity, and publishing
+sealed pages, shared through the pager by page identity, and publishing
 is what lets the parent's seal end), and gives the hold back. `Host.ForkOut`
 hands each child to another host as a migration: the destination boots the
 child first and pulls the pages no checkpoint holds from the parent's page

@@ -79,7 +79,7 @@ Storage: `Handoff` of a fork with an unpublished root seals the parent for
 good; a tombstoned VM's writer uploads forever (moot); `Fork` leaks pins on
 four error paths (harmless once pins are permanent, but the record it
 orphans is not); the emptied-pack grace is dropped by `encode`; a corrupt
-record lets `Delete` wipe a lineage; reclamation removes the index when part
+record lets `Delete` wipe what its pins protect; reclamation removes the index when part
 deletes failed; GCS 416 unnormalised; publication memory is twice the
 documented bound; `dirtySectors` materialises a slice.
 

@@ -12,7 +12,7 @@ test that failed before the fix: sequences are never reused; the dirty
 budget waits host-wide, asks for an immediate checkpoint at three quarters
 and stops a VM deliberately only when no checkpoint can help; an
 unpublished page is never read from the volume and `Done` counts only what
-the source served; pins are released when no child inherited the lineage
+the source served; pins are released when no child inherited the checkpoint
 durably; fork holds expire after four intervals and a survey releases stale
 handovers; `Recover` needs positive evidence and hosts re-read their epoch
 every two seconds, with a sim invariant that two writers never mix; a dead
@@ -49,7 +49,7 @@ change had left unimplemented.
    page is never satisfiable from the volume; retry BUSY; `Done` counts only
    pages the source served.
 4. **Fork pins are never released.** `internal/control/client.go:271`: no unpin
-   exists. Every fork keeps its parent's whole lineage forever, and
+   exists. Every fork keeps its parent's pinned checkpoints forever, and
    `MaximumPins` of 4096 is a lifetime cap after which a parent cannot be
    forked. Fix: release on the child's root publication or on
    `ForkPoint.Retire`.
@@ -86,7 +86,7 @@ change had left unimplemented.
 
 ## Serious
 
-- **Compaction changes lineage identity** *(proven)*:
+- **Compaction changes page identity** *(proven)*:
   `internal/checkpoint/index.go:100` keys identity by the pack a page currently
   lives in, so a compacted page stops sharing memory with forks and is cached
   twice. Carry an origin ref.
@@ -146,7 +146,7 @@ templates; no version or metrics endpoint; `imagePullPolicy: Never` with
 
 Write ordering (parts, index, control, then deletes); epoch-major
 sequences; lost-reply reconciliation; index validation; the `packs` set
-difference; pinned lineages spared; bounded publication memory; cache
+difference; pinned checkpoints spared; bounded publication memory; cache
 coalescing and accounting; the blob envelope; the seal mechanism and
 copy-on-write out of a sealed page; page lifetime; identity across
 takeovers; the x86 gap mapping; seal/population lock ordering (undocumented,

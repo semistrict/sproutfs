@@ -67,7 +67,7 @@ index, as today.
 `length` bytes at `offset` in `ckpt/<sequence>/pack/<part>`, decodes the
 envelope, and caches the decoded page. The cache key is the page's
 `control.Identity{Ref, Volume, Page}`, which is unchanged, so the pager's
-lineage sharing is untouched. `ReadState` is a range read of the state
+sharing by identity is untouched. `ReadState` is a range read of the state
 fields. Adjacent members of one part are contiguous, so a later read-ahead
 may fetch several in one range; not required now.
 
@@ -83,7 +83,7 @@ dead = (sequences(P) ∪ {P.seq}) − sequences(C) − protected
 sequence, list and delete everything under `ckpt/<seq>/`, the index last.
 `protected` is every pinned sequence and every sequence the pinned
 checkpoint's index names, read once per pinned sequence and memoised
-(indexes are immutable). A fork's lineage runs through those packs.
+(indexes are immutable). A fork reads through those packs.
 
 This replaces `Store.Reclaim(previous, current)` and `Index.Objects`. It also
 closes a leak in the current rule: a page published at sequence 3, still
@@ -122,7 +122,7 @@ Unit: pack encoding is deterministic and members decode from their recorded
 locations; a part's table and trailer describe every member and an index rebuilt
 from a checkpoint's parts equals the published one; a multi-part checkpoint;
 reads of untouched, rewritten and grown pages; reclamation deletes exactly the
-dead sequences and spares a fork's whole lineage, including the leak case above;
+dead sequences and spares everything a fork inherits, including the leak case above;
 compaction rewrites the right packs and stays under its byte bound; a retried
 publication is byte-identical. Simulation and mutation configs updated. Linux
 suites in Lima. The GCE demo's five flows, with the per-checkpoint object count

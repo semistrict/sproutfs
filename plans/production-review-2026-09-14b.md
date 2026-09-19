@@ -59,7 +59,7 @@ Storage:
 - A lost control write whose read-back also fails fences the handle against
   its own work *(proven)*; adopt the observed record when epoch and nonce are
   ours.
-- Compaction still changes lineage identity *(proven)*, and the comments now
+- Compaction still changes page identity *(proven)*, and the comments now
   assert the opposite; `Protect` covers pinned sequences, not their packs.
 - `Rebuild` truncates at a part gap and resurrects zeroed pages *(proven)*,
   and has no caller.
