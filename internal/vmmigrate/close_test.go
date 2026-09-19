@@ -19,6 +19,14 @@ type heldListener struct {
 	sending chan struct{}
 	release chan struct{}
 	once    sync.Once
+	// deliver hands the frame to the destination before the hold rather than
+	// after it, so a test can have a reply the destination has already acted on
+	// and a send that has not returned — which is the order a real socket puts
+	// the two in.
+	deliver bool
+	// err is what the held send finally reports. A send that fails delivers
+	// nothing, whatever deliver says.
+	err error
 }
 
 func newHeldListener(listener platform.Listener) *heldListener {
@@ -41,10 +49,22 @@ type heldConn struct {
 
 func (c heldConn) Send(ctx context.Context, frame platform.Frame) error {
 	c.listener.once.Do(func() { close(c.listener.sending) })
+	deliver := c.listener.deliver && c.listener.err == nil
+	if deliver {
+		if err := c.Conn.Send(ctx, frame); err != nil {
+			return err
+		}
+	}
 	select {
 	case <-c.listener.release:
 	case <-ctx.Done():
 		return context.Cause(ctx)
+	}
+	if c.listener.err != nil {
+		return c.listener.err
+	}
+	if deliver {
+		return nil
 	}
 	return c.Conn.Send(ctx, frame)
 }
@@ -53,11 +73,21 @@ func (c heldConn) Send(ctx context.Context, frame platform.Frame) error {
 // listener to be released.
 func (s *served) heldSource(t *testing.T, address platform.Address) *heldListener {
 	t.Helper()
+	return s.heldSourceHolding(t, address, false, nil)
+}
+
+// heldSourceHolding is heldSource with what the hold does to the reply it is
+// holding: deliver says the reply reaches the destination before the send that
+// carried it returns, and sendErr is what that send finally reports.
+func (s *served) heldSourceHolding(t *testing.T, address platform.Address,
+	deliver bool, sendErr error) *heldListener {
+	t.Helper()
 	listener, err := s.migration.cluster.runtime.Network().Listen(address)
 	if err != nil {
 		t.Fatal(err)
 	}
 	held := newHeldListener(listener)
+	held.deliver, held.err = deliver, sendErr
 	source, err := vmmigrate.NewPageSource(t.Context(), vmmigrate.SourceConfig{PageSize: pageSize,
 		MaxPagesPerRequest: 8, MaxBytesInFlightPerPeer: 32 << 20, Address: address, Listener: held})
 	if err != nil {
