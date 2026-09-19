@@ -182,7 +182,13 @@ func newMachine(t *testing.T, pager *vmmemory.Host, arena *pageArena, vm *volume
 			backing = supplied
 		}
 		mapping := newPageMapping(arena)
-		region, err := pager.Attach(t.Context(), backing, mapping)
+		// One RAM volume and PMEM for the rest, which is the shape a real
+		// machine binds; the kind is the attacher's to state.
+		kind := vmmemory.Pmem
+		if v.Name() == "ram0" {
+			kind = vmmemory.Ram
+		}
+		region, err := pager.Attach(t.Context(), vmmemory.RegionBacking{Kind: kind, Backing: backing}, mapping)
 		if err != nil {
 			return nil, err
 		}

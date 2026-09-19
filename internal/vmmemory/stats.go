@@ -86,6 +86,77 @@ type Stats struct {
 	FaultQueue, Fault, Mapping, Revoke, Protect, Resolve, Load, Seal Latency
 }
 
+// Sharing is how much memory sharing this pager is retaining for one kind of
+// region, read at the moment it is asked for. It is a gauge and not a total:
+// Stats.IdentityHits counts every page ever mapped to an already resident
+// identity and never falls, which says how often sharing happened rather than
+// how much of it is still there.
+//
+// What it counts is resident sharing alone. A fork inherits every page identity
+// of its parent, and the ones neither of them has faulted in are shared in the
+// store and on the wire without costing this host a byte; none of that is here,
+// because none of it is host memory. What is here is the arena.
+type Sharing struct {
+	// UniqueBytes is the host memory the arena actually holds for this kind:
+	// one resident page counted once, however many regions map it.
+	UniqueBytes uint64
+	// MappedBytes is the sum over regions of the resident pages each maps, so a
+	// page three regions map counts three times. Every alias counts, including
+	// two regions of one VM and a checkpoint's copy of a page the guest still
+	// shares with it: what it answers is how much memory this host would be
+	// holding if nothing shared anything.
+	MappedBytes uint64
+	// SavedBytes is MappedBytes less UniqueBytes: the memory this host did not
+	// have to find because its guests are reading the same pages.
+	SavedBytes uint64
+}
+
+// SharingStats is that gauge for each kind of region a pager holds. The two are
+// reported apart because they are separate things to plan for — a host cannot
+// read one number and tell which of its guests' RAM and its guests' disks is
+// sharing anything — and because they are about to be separate arenas.
+type SharingStats struct {
+	Ram, Pmem Sharing
+}
+
+// Sharing reports both gauges. It walks every resident page the arena holds,
+// under the metadata lock and without touching a page's own lock, so it is a
+// consistent reading of the alias sets rather than a sum of readings taken at
+// different moments.
+//
+// A page is counted under the kind of the regions that map it: a page identity
+// names a volume, so every alias of one resident page is a page of that one
+// volume and they agree. A page created for a fault that has not bound it to
+// anything yet belongs to no region and is counted under neither.
+func (h *Host) Sharing(ctx context.Context) (SharingStats, error) {
+	if err := context.Cause(ctx); err != nil {
+		return SharingStats{}, err
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var stats SharingStats
+	for element := h.lru.Front(); element != nil; element = element.Next() {
+		pg := element.Value.(*resident)
+		if len(pg.aliases) == 0 {
+			continue
+		}
+		var kind RegionKind
+		for alias := range pg.aliases {
+			kind = alias.region.kind
+			break
+		}
+		gauge := &stats.Pmem
+		if kind == Ram {
+			gauge = &stats.Ram
+		}
+		gauge.UniqueBytes += PageSize
+		gauge.MappedBytes += uint64(len(pg.aliases)) * PageSize
+	}
+	stats.Ram.SavedBytes = stats.Ram.MappedBytes - stats.Ram.UniqueBytes
+	stats.Pmem.SavedBytes = stats.Pmem.MappedBytes - stats.Pmem.UniqueBytes
+	return stats, h.err
+}
+
 func (h *Host) Stats(ctx context.Context) (Stats, error) {
 	if err := context.Cause(ctx); err != nil {
 		return Stats{}, err

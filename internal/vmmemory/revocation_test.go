@@ -44,7 +44,7 @@ func TestAbandonedCheckpointRevokesItsMappingsInBoundedBatches(t *testing.T) {
 		base := &mapping{arena: f.a, pages: make(map[uint64]mapped)}
 		m := &revokeBatchMapping{mapping: base}
 		f.a.mappings = append(f.a.mappings, base)
-		r, err := f.h.Attach(t.Context(), b, m)
+		r, err := f.h.Attach(t.Context(), ram(b), m)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -74,7 +74,7 @@ func TestAmbiguousRevokeBatchPinsAllVictimsUntilDetach(t *testing.T) {
 		base := &mapping{arena: f.a, pages: make(map[uint64]mapped)}
 		m := &revokeBatchMapping{mapping: base}
 		f.a.mappings = append(f.a.mappings, base)
-		r, err := f.h.Attach(t.Context(), f.newBacking(4), m)
+		r, err := f.h.Attach(t.Context(), ram(f.newBacking(4)), m)
 		if err != nil {
 			t.Fatal(err)
 		}

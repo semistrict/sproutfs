@@ -19,6 +19,25 @@ import (
 // PageSize is the production pager unit, backed by explicit 2 MiB HugeTLB pages.
 const PageSize = 2 << 20
 
+// RegionKind is what one region is to the guest that maps it. The pager treats
+// the two alike — same arena, same page, same ownership — and reports them
+// apart, because what a deployment plans for is RAM and disk separately. It is
+// set by whoever attaches the region, which is the only party that knows: a
+// volume's name says nothing, and the pager must not read one.
+type RegionKind uint64
+
+const (
+	Pmem RegionKind = 1
+	Ram  RegionKind = 2
+)
+
+// RegionBacking is the one region a session maps: what it is to the guest and
+// the bytes it stands in front of.
+type RegionBacking struct {
+	Kind    RegionKind
+	Backing Backing
+}
+
 var (
 	ErrConfig   = errors.New("invalid managed-memory configuration")
 	ErrCapacity = errors.New("managed-memory capacity exhausted")

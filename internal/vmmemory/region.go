@@ -33,6 +33,10 @@ type Region struct {
 	readAheadPages int
 	host           *Host
 	backing        Backing
+	// kind is what this region is to its guest, RAM or PMEM. Nothing about a
+	// fault, a seal or a page depends on it: it is what the host's sharing
+	// gauges are split by, and it is immutable for the region's life.
+	kind RegionKind
 	// peer marks a backing whose loads can return bytes no checkpoint holds, so
 	// a page it serves enters this region as private dirty state. It decides
 	// whether a fault has to reserve against the dirty budget before it loads.
@@ -79,7 +83,11 @@ type Region struct {
 // Equal page identities share resident pages in this pager. A caller must
 // not attach the same writable volume to two regions. Once the mapping can
 // accept commands, Populate maps everything already resident.
-func (h *Host) Attach(ctx context.Context, backing Backing, mapping Mapping) (*Region, error) {
+//
+// The backing carries the region's kind, which the caller states: a pager that
+// guessed it from a volume's name would report memory as disk the first time a
+// deployment named a volume something else.
+func (h *Host) Attach(ctx context.Context, backing RegionBacking, mapping Mapping) (*Region, error) {
 	r, err := h.admit(ctx, backing, mapping)
 	if err != nil {
 		return nil, err
@@ -92,8 +100,9 @@ func (h *Host) Attach(ctx context.Context, backing Backing, mapping Mapping) (*R
 	return r, nil
 }
 
-func (h *Host) admit(ctx context.Context, backing Backing, mapping Mapping) (*Region, error) {
-	if backing == nil || mapping == nil {
+func (h *Host) admit(ctx context.Context, region RegionBacking, mapping Mapping) (*Region, error) {
+	backing := region.Backing
+	if backing == nil || mapping == nil || (region.Kind != Pmem && region.Kind != Ram) {
 		return nil, ErrConfig
 	}
 	size := backing.Size()
@@ -120,7 +129,7 @@ func (h *Host) admit(ctx context.Context, backing Backing, mapping Mapping) (*Re
 		return nil, err
 	}
 	_, peer := backing.(UnpublishedLoader)
-	r := &Region{live: ctxsync.NewRWMutex(), mu: ctxsync.NewRWMutex(), endMu: ctxsync.NewMutex(), host: h, backing: backing, peer: peer, mapping: mapping, pageCount: int(count), blocks: make(map[uint64]*bindingBlock), readAheadPages: h.cfg.ReadAheadPages}
+	r := &Region{live: ctxsync.NewRWMutex(), mu: ctxsync.NewRWMutex(), endMu: ctxsync.NewMutex(), host: h, backing: backing, kind: region.Kind, peer: peer, mapping: mapping, pageCount: int(count), blocks: make(map[uint64]*bindingBlock), readAheadPages: h.cfg.ReadAheadPages}
 
 	windows := (r.pageCount + r.readAheadPages - 1) / r.readAheadPages
 	r.stripes = make([]*ctxsync.Mutex, min(windows, 1024))

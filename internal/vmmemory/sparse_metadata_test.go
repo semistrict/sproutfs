@@ -161,7 +161,7 @@ func TestEagerZeroPopulationKeepsLargeLogicalMetadataSparse(t *testing.T) {
 		runtime.GC()
 		var before, after runtime.MemStats
 		runtime.ReadMemStats(&before)
-		r, err := f.h.Attach(t.Context(), b, m)
+		r, err := f.h.Attach(t.Context(), ram(b), m)
 		if err != nil {
 			t.Fatal(err)
 		}

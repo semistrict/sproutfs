@@ -452,11 +452,24 @@ func (f *fixture) region(pages int) (*vmmemory.Region, *mapping, *backing) {
 	r, m := f.attach(b)
 	return r, m, b
 }
+
+// ram is one backing attached as guest RAM, which is what every test that does
+// not care about the kind maps.
+func ram(b vmmemory.Backing) vmmemory.RegionBacking {
+	return vmmemory.RegionBacking{Kind: vmmemory.Ram, Backing: b}
+}
+
+// attach maps one backing as guest RAM, which is what all but the tests of the
+// kinds themselves care about; attachKind states the kind.
 func (f *fixture) attach(b vmmemory.Backing) (*vmmemory.Region, *mapping) {
+	f.t.Helper()
+	return f.attachKind(vmmemory.Ram, b)
+}
+func (f *fixture) attachKind(kind vmmemory.RegionKind, b vmmemory.Backing) (*vmmemory.Region, *mapping) {
 	f.t.Helper()
 	m := &mapping{arena: f.a, pages: make(map[uint64]mapped)}
 	f.a.mappings = append(f.a.mappings, m)
-	r, err := f.h.Attach(f.t.Context(), b, m)
+	r, err := f.h.Attach(f.t.Context(), vmmemory.RegionBacking{Kind: kind, Backing: b}, m)
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -546,7 +559,7 @@ func TestBudgetOneSlotCOWAndDirtyAdmission(t *testing.T) {
 		if err != nil || s.ResidentPages != 1 || s.DirtyPages != 1 || s.LogicalPages != 4 {
 			t.Fatalf("accounting: %+v %v", s, err)
 		}
-		if _, err := f.h.Attach(t.Context(), f.newBacking(1), am); !errors.Is(err, vmmemory.ErrCapacity) {
+		if _, err := f.h.Attach(t.Context(), ram(f.newBacking(1)), am); !errors.Is(err, vmmemory.ErrCapacity) {
 			t.Fatalf("logical admission: %v", err)
 		}
 	})

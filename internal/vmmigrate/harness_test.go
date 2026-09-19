@@ -372,6 +372,16 @@ func (m *machine) volumeWork() (loads, verifies int64) {
 	return loads, verifies
 }
 
+// regionKind is what a volume of this harness's machines is to its guest: the
+// one volume named ram0 is its RAM and everything else is a PMEM disk, which is
+// the shape a real machine binds.
+func regionKind(volume string) vmmemory.RegionKind {
+	if volume == "ram0" {
+		return vmmemory.Ram
+	}
+	return vmmemory.Pmem
+}
+
 // newMachine attaches one region per volume of vm through backing, which is the
 // volume itself on a source and a peer-backed volume on a destination.
 func newMachine(t *testing.T, p *pager, vm *volume.VM, backings map[string]vmmemory.Backing, state []byte) (*machine, error) {
@@ -385,7 +395,8 @@ func newMachine(t *testing.T, p *pager, vm *volume.VM, backings map[string]vmmem
 		}
 		counted := newCountingBacking(backing, p.runtime, vm.ID()+"/"+name)
 		mp := newMapping(p.arena)
-		region, err := p.host.Attach(sim.WithRuntime(t.Context(), p.runtime), counted, mp)
+		region, err := p.host.Attach(sim.WithRuntime(t.Context(), p.runtime),
+			vmmemory.RegionBacking{Kind: regionKind(name), Backing: counted}, mp)
 		if err != nil {
 			return nil, err
 		}

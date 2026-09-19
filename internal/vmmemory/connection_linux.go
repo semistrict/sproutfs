@@ -19,19 +19,6 @@ import (
 	"github.com/semistrict/sproutfs/internal/vmwire"
 )
 
-type RegionKind uint64
-
-const (
-	Pmem RegionKind = 1
-	Ram  RegionKind = 2
-)
-
-// RegionBacking is the one region a session maps: what it is to the guest and
-// the bytes it stands in front of.
-type RegionBacking struct {
-	Kind    RegionKind
-	Backing Backing
-}
 type ConnectionConfig struct {
 	// Name identifies this session's region in what it logs: the volume the
 	// backing stands in front of. It is a diagnostic only — nothing selects a
@@ -184,7 +171,7 @@ func Connect(ctx context.Context, h *Host, socket *net.UnixConn, backing RegionB
 	}
 	// Admission bounds logical capacity; untouched generations are implicit.
 	m := &remoteMapping{connection: c, address: f.Offset, pageCount: f.Length / uint64(PageSize), mu: ctxsync.NewRWMutex()}
-	r, err := h.admit(ctx, backing.Backing, m)
+	r, err := h.admit(ctx, backing, m)
 	if err != nil {
 		return fail(err)
 	}

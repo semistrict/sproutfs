@@ -78,7 +78,7 @@ func TestConnectionCancellationDuringAttachment(t *testing.T) {
 			}
 			var seed *vmmemory.Region
 			if stage == "metadata" {
-				seed, err = h.Attach(t.Context(), newKernelBacking(1, vmmemory.PageSize), seedMapping{})
+				seed, err = h.Attach(t.Context(), ram(newKernelBacking(1, vmmemory.PageSize)), seedMapping{})
 				if err != nil {
 					t.Fatal(err)
 				}

@@ -81,7 +81,7 @@ func TestConcurrentPopulationsOfHeldPagesDoNotDeadlock(t *testing.T) {
 			var r *vmmemory.Region
 			go func() {
 				var err error
-				r, err = f.h.Attach(ctx, backing, m)
+				r, err = f.h.Attach(ctx, ram(backing), m)
 				result <- err
 				close(done)
 			}()
@@ -160,7 +160,7 @@ func TestStalledMetadataDoesNotDelayUnrelatedWarmAttachment(t *testing.T) {
 			done := make(chan struct{})
 			var r *vmmemory.Region
 			var err error
-			go func() { r, err = f.h.Attach(t.Context(), backing, m); close(done) }()
+			go func() { r, err = f.h.Attach(t.Context(), ram(backing), m); close(done) }()
 			t.Cleanup(func() {
 				<-done
 				f.a.mu.Lock()
@@ -212,7 +212,7 @@ func TestAttachmentIncludesPagesLoadedDuringMetadataLookup(t *testing.T) {
 		done := make(chan struct{})
 		var r *vmmemory.Region
 		var err error
-		go func() { r, err = f.h.Attach(ctx, slow, m); close(done) }()
+		go func() { r, err = f.h.Attach(ctx, ram(slow), m); close(done) }()
 		t.Cleanup(func() {
 			<-done
 			clear(m.pages)

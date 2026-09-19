@@ -205,7 +205,14 @@ func (w *World) newGuest(h *hostState, p *pager, vm *volume.VM, backings map[str
 			backing = supplied
 		}
 		mp := newMapping(p.arena)
-		region, err := p.host.Attach(ctx, testbacking.New(backing, p.runtime, g.id+"/"+name), mp)
+		// The simulated machine binds the same shapes the real one does: one
+		// RAM volume, and every other volume a PMEM disk.
+		kind := vmmemory.Pmem
+		if name == MemoryVolume {
+			kind = vmmemory.Ram
+		}
+		region, err := p.host.Attach(ctx, vmmemory.RegionBacking{Kind: kind,
+			Backing: testbacking.New(backing, p.runtime, g.id+"/"+name)}, mp)
 		if err != nil {
 			return nil, err
 		}

@@ -188,7 +188,10 @@ type RegionStats struct {
 	// ResidentPages counts pages holding host memory, shared or private.
 	// PrivatePages counts pages whose bytes are this region's own and not yet
 	// its volume's, whether they are resident, spilled or held by a checkpoint.
-	ResidentPages, PrivatePages int
+	// SharedPages counts the resident ones at least one other region of this
+	// pager also maps, which is the part of this region's memory the host is
+	// holding once rather than once per guest.
+	ResidentPages, PrivatePages, SharedPages int
 	// DirtySince is when the oldest of those private pages was written, zero
 	// where there are none. It is the one field here a host acts on rather than
 	// reports: the loss window of the VM this region belongs to is the oldest of
@@ -196,6 +199,13 @@ type RegionStats struct {
 	// pager holds the guest's stores back.
 	DirtySince time.Time
 }
+
+// The three counts in the unit the host accounts memory in. Page counts belong
+// to the pager that holds them and cannot be added across pagers of different
+// geometry; bytes can, which is what a host-wide report needs.
+func (s RegionStats) ResidentBytes() uint64 { return uint64(s.ResidentPages) * PageSize }
+func (s RegionStats) PrivateBytes() uint64  { return uint64(s.PrivatePages) * PageSize }
+func (s RegionStats) SharedBytes() uint64   { return uint64(s.SharedPages) * PageSize }
 
 // Stats reports this region's pages. It is a snapshot taken without stopping
 // the guest, exactly like Resident.
@@ -208,6 +218,9 @@ func (r *Region) Stats(ctx context.Context) (RegionStats, error) {
 	r.eachBinding(func(b *binding) {
 		if b.resident != nil {
 			stats.ResidentPages++
+			if r.host.sharedElsewhere(b.resident, r) {
+				stats.SharedPages++
+			}
 		}
 		if b.dirty {
 			stats.PrivatePages++
@@ -215,6 +228,20 @@ func (r *Region) Stats(ctx context.Context) (RegionStats, error) {
 	})
 	stats.DirtySince = r.OldestUnpublished()
 	return stats, nil
+}
+
+// sharedElsewhere reports a resident page some region other than r also reaches.
+// A page two of one region's own pages both map is not shared in this sense:
+// what the count is for is memory this host holds once and more than one guest
+// region reads. Caller holds the host lock, which is what the alias set is
+// protected by; eachBinding holds it for the whole of a binding block.
+func (h *Host) sharedElsewhere(pg *resident, r *Region) bool {
+	for alias := range pg.aliases {
+		if alias.region != r {
+			return true
+		}
+	}
+	return false
 }
 
 // eachBinding visits every page that has per-page state, in ascending order,

@@ -121,7 +121,7 @@ func populationOrder(t *testing.T, identities []control.Identity, held [2]uint64
 			var region *vmmemory.Region
 			go func() {
 				var err error
-				region, err = f.h.Attach(ctx, b, m)
+				region, err = f.h.Attach(ctx, ram(b), m)
 				result <- err
 				close(done)
 			}()
