@@ -10,7 +10,8 @@ import (
 	"github.com/semistrict/sproutfs/internal/volume"
 )
 
-// The pre-mortem of what the GCE soak's rounds do to one lineage. The soak
+// The pre-mortem of what the GCE soak's rounds do to one parent and its
+// descendants. The soak
 // forks one parent twice a round for six rounds, forks the children again, and
 // deletes a seeded share between rounds — so a parent's record accumulates a
 // pin a round while its guest rewrites every page between them, and the
@@ -43,7 +44,7 @@ func writePage(t *testing.T, vm *volume.VM, page uint64, value byte) {
 	}
 }
 
-// TestPremortemRoundsOfForksOffOneParentLeaveEveryLineageWhole is the soak's
+// TestPremortemRoundsOfForksOffOneParentLeaveEveryDescendantWhole is the soak's
 // parent: forked twice a round for several rounds, with its guest rewriting its
 // pages between them, and every child forked again. Each fork pins a checkpoint
 // of the parent that nothing ever gives back, each publication of the parent
@@ -52,7 +53,7 @@ func writePage(t *testing.T, vm *volume.VM, page uint64, value byte) {
 //
 // The pins accumulate, so what the parent's own sweep may take shrinks every
 // round; what must never shrink is what any descendant reads.
-func TestPremortemRoundsOfForksOffOneParentLeaveEveryLineageWhole(t *testing.T) {
+func TestPremortemRoundsOfForksOffOneParentLeaveEveryDescendantWhole(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		h := newHarness(t)
 		defer h.close(t.Context())
@@ -67,7 +68,7 @@ func TestPremortemRoundsOfForksOffOneParentLeaveEveryLineageWhole(t *testing.T) 
 
 		// Every VM that exists, in the order it came into existence, and the
 		// page values it must read back: page zero and page one of its root
-		// volume, as the lineage above it left them. The handles stay open and
+		// volume, as its ancestors left them. The handles stay open and
 		// are read through, because opening one elsewhere advances its epoch
 		// and fences the writer that holds it.
 		expected := map[string][2]byte{"vm": {1, 2}}
@@ -140,7 +141,7 @@ func TestPremortemRoundsOfForksOffOneParentLeaveEveryLineageWhole(t *testing.T) 
 			if err := parent.Checkpoint(t.Context()); err != nil {
 				t.Fatalf("round %d: the parent's checkpoint: %v", round, err)
 			}
-			// Every VM that exists still reads what its own lineage published.
+			// Every VM that exists still reads what it and its ancestors published.
 			for _, held := range open {
 				checkPages(t, held, fmt.Sprintf("round %d: %s", round, held.ID()), expected[held.ID()])
 			}
@@ -158,7 +159,7 @@ func TestPremortemRoundsOfForksOffOneParentLeaveEveryLineageWhole(t *testing.T) 
 			}
 		}
 		premortemCheck(t, h, "every writer closed")
-		// And every one of them still reads its own lineage from a host that
+		// And every one of them still reads the same pages from a host that
 		// never held it, which is what a start on the other host is.
 		for id, want := range expected {
 			readsPages(t, h, id, want)
@@ -168,7 +169,7 @@ func TestPremortemRoundsOfForksOffOneParentLeaveEveryLineageWhole(t *testing.T) 
 
 // TestPremortemDeletingAParentThenAChildLeavesACheckableDeployment is the end
 // of the soak: a parent with children on two hosts is deleted, then one of the
-// children, and then every VM. What is left under each prefix is the lineage
+// children, and then every VM. What is left under each prefix is the checkpoints
 // the deleted VMs pinned, which is what a collector owns — and the deployment
 // check has to say so rather than report it as a deployment that disagrees with
 // itself.
@@ -247,17 +248,17 @@ func TestPremortemDeletingAParentThenAChildLeavesACheckableDeployment(t *testing
 			}
 		}
 		premortemCheck(t, h, "every VM deleted")
-		// What is left is the pinned lineages of deleted VMs and nothing else:
+		// What is left is the pinned checkpoints of deleted VMs and nothing else:
 		// no control record, and no object of a VM nothing was forked from.
 		for _, key := range h.objectKeys(t) {
 			if !bytes.HasPrefix([]byte(key), []byte("vm/")) {
-				t.Fatalf("the deployment kept %s, which is not a checkpoint object of a pinned lineage", key)
+				t.Fatalf("the deployment kept %s, which is not an object of a pinned checkpoint", key)
 			}
 		}
 	})
 }
 
-// checkPages requires one open VM to read the two page values a lineage left it.
+// checkPages requires one open VM to read the two page values its ancestors left it.
 func checkPages(t *testing.T, vm *volume.VM, what string, want [2]byte) {
 	t.Helper()
 	for page, value := range want {
@@ -271,7 +272,7 @@ func checkPages(t *testing.T, vm *volume.VM, what string, want [2]byte) {
 	}
 }
 
-// readsPages requires one VM to read the two page values a lineage left it,
+// readsPages requires one VM to read the two page values its ancestors left it,
 // opening it as a host that never held it would.
 func readsPages(t *testing.T, h *harness, id string, want [2]byte) {
 	t.Helper()

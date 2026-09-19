@@ -602,7 +602,7 @@ func TestMigrateToTheHostAlreadyRunningItIsRefused(t *testing.T) {
 // raced a host that was not really gone, or a handoff left both ends claiming
 // it. Picking one of them is the worst answer available: a migration off the
 // wrong one hands a third host a stale writer's pages, and a fork of it takes
-// its fork point from a lineage nothing selects. Every request that must name the
+// its fork point from a writer nothing selects. Every request that must name the
 // host a VM runs on refuses instead, and the operator is told which hosts
 // disagree.
 func TestTwoHostsClaimingOneVMStopsTheDeploymentActingOnIt(t *testing.T) {

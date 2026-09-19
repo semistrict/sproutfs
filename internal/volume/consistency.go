@@ -42,7 +42,7 @@ const (
 	// AllowUnrecordedVM admits objects under a VM with no control record at
 	// all: a create interrupted between its first checkpoint and the record, a
 	// delete interrupted between the record and the objects, and — with no host
-	// lost at all — the pinned lineage a finished delete leaves, which is what a
+	// lost at all — the pinned checkpoints a finished delete leaves, which is what a
 	// deleted VM that was ever forked always leaves behind.
 	AllowUnrecordedVM
 )
@@ -111,9 +111,8 @@ func (e *InconsistentError) Error() string {
 //
 // A pin has nothing else to agree with. It names no holder and no descendant's
 // record names it, because nothing releases one: what the check can say is that
-// the lineage it protects — the pinned checkpoint and every checkpoint its root
-// names — is whole, which is exactly what a grandchild reading through it
-// needs.
+// what it protects — the pinned checkpoint and every checkpoint its root names
+// — is whole, which is exactly what a grandchild reading through it needs.
 //
 // Each allow names a class of leftover a host lost at a particular moment
 // leaves and no writer returns for; violations of that class are reported
@@ -305,8 +304,8 @@ func parseCheckpointKey(rest string) (object, bool) {
 const indexObject = "index"
 
 // checkRecord opens every checkpoint one record keeps alive, which is what
-// fills the reached set. A pin is what keeps a lineage this deployment cannot
-// enumerate readable, so a pinned checkpoint that does not open is durable state
+// fills the reached set. A pin is what keeps readable what forks this deployment
+// cannot enumerate inherit, so a pinned checkpoint that does not open is durable state
 // disagreeing with itself: the pin was written on a checkpoint that was already
 // published, and nothing after that deletes a pinned one.
 func (a *audit) checkRecord(ctx context.Context, record control.Record) {

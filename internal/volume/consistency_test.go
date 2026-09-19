@@ -98,7 +98,7 @@ func TestCheckDeploymentAcceptsAQuiescedDeployment(t *testing.T) {
 			}
 		}
 		if len(found) == 0 {
-			t.Fatal("the deleted parent's pinned lineage went with it")
+			t.Fatal("the deleted parent's pinned checkpoints went with it")
 		}
 	})
 }

@@ -124,7 +124,7 @@ func TestAGrandchildKeepsReadingThePageItsGrandparentPublished(t *testing.T) {
 
 // A pin is one link of a chain: a grandchild pins its own parent's checkpoint,
 // and what the grandparent keeps is the child's pin. Deleting the grandchild
-// takes neither away: the objects of both lineages are still there for it to
+// takes neither away: the objects both pins protect are still there for it to
 // have been read from, and only a collector can say otherwise.
 func TestAPinChainsThroughAForkOfAFork(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
@@ -201,7 +201,7 @@ func TestAPinChainsThroughAForkOfAFork(t *testing.T) {
 
 // One point forked into several children is one pin, so the end of one child
 // leaves what the others read exactly where it is.
-func TestOneChildsDeletionLeavesItsSiblingsLineage(t *testing.T) {
+func TestOneChildsDeletionLeavesWhatItsSiblingsRead(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		h := newHarness(t)
 		defer h.close(t.Context())

@@ -14,12 +14,12 @@ import (
 
 // ForkPoint is one pause of a VM and what a child of it starts from: the
 // checkpoint the parent has published — pinned in the parent's control record,
-// so nothing reclaims the lineage the child inherits — the pages the parent
+// so nothing reclaims the checkpoints the child inherits — the pages the parent
 // holds that no checkpoint has, and the VMM state captured with them.
 //
 // Making one publishes nothing. The parent keeps its handle, its volumes and
 // its pages: the sealed pages stay the parent's and the child reads them by
-// lineage identity — on this host through the point itself, on another host out
+// page identity — on this host through the point itself, on another host out
 // of the parent's page server. The child's first checkpoint publishes those
 // pages as its own, and so does the parent's next, which is why one interval's
 // dirty set is uploaded twice when both sides live that long.
@@ -126,12 +126,11 @@ func (f *ForkPoint) Hold() {
 	f.mu.Unlock()
 }
 
-// Pin writes the pin on the lineage this point inherits, which is what keeps
-// the parent's checkpoint whole for every child started from it. It is the
-// parent's conditional write, so a pin on a parent that has been fenced is
-// refused rather than taken, and it comes before any child exists: a child that
-// existed while its lineage was unpinned could have that lineage reclaimed
-// under it.
+// Pin writes the pin on the checkpoint this point inherits, which is what keeps
+// it whole for every child started from it. It is the parent's conditional
+// write, so a pin on a parent that has been fenced is refused rather than
+// taken, and it comes before any child exists: a child that existed while what
+// it inherits was unpinned could have it reclaimed under it.
 //
 // The point itself takes it when it is made, so this is the same pin again:
 // pinning twice is one pin, and every child of one fork point shares it. Nothing
@@ -154,8 +153,8 @@ func (f *ForkPoint) Pin(ctx context.Context) error {
 //
 // The pin stays. A point no child was ever taken from leaves the parent pinning
 // a checkpoint nothing inherited, which costs that checkpoint's objects until a
-// collector establishes that nothing reads them — the price of never taking a
-// lineage's objects out from under it.
+// collector establishes that nothing reads them — the price of never taking
+// objects out from under a fork that reads them.
 //
 // It is idempotent past the last hold, and a no-op for a point that sealed
 // nothing.
@@ -189,9 +188,9 @@ func (f *ForkPoint) Retire(ctx context.Context) error {
 // selects, and everything written since it is in the pages prepare sealed.
 //
 // The pin comes before the point is returned and is this handle's own
-// conditional write, because a child that exists while the lineage it inherits
-// is unpinned could have that lineage reclaimed under it. It is one pin for the
-// point, shared by every child of it and never given back.
+// conditional write, because a child that exists while what it inherits is
+// unpinned could have it reclaimed under it. It is one pin for the point,
+// shared by every child of it and never given back.
 //
 // It runs under the publication lock, so a fork and an interval checkpoint of
 // one guest serialize there rather than racing to seal the same regions. The
@@ -354,13 +353,12 @@ func (m *Manager) Inherit(ctx context.Context, parent control.Ref) (*ForkPoint, 
 // index over the parent's pinned checkpoint, and a handle that reads through
 // the point until it publishes that root itself.
 //
-// The pin on the parent comes first, because a child that exists while the
-// lineage it inherits is unpinned could have that lineage reclaimed under it.
-// It is the same pin the point already took, so this costs a read of the
-// parent's record and no write; a fork that fails after it leaves it behind,
-// which costs the parent's checkpoint nothing but eagerness — the pin says a
-// lineage may read through that checkpoint, and one that never started reads
-// nothing.
+// The pin on the parent comes first, because a child that exists while what it
+// inherits is unpinned could have it reclaimed under it. It is the same pin the
+// point already took, so this costs a read of the parent's record and no write;
+// a fork that fails after it leaves it behind, which costs the parent's
+// checkpoint nothing but eagerness — the pin says a fork may read through that
+// checkpoint, and one that never started reads nothing.
 //
 // Nothing is uploaded here. The child's first checkpoint is its root index: it
 // publishes the pages it inherited as its own, and only then is the child a VM
@@ -377,7 +375,7 @@ func (m *Manager) Fork(ctx context.Context, id string, point *ForkPoint) (*VM, e
 	}
 	// The child's first checkpoint is published under an epoch of its own, so a
 	// child named after a VM that lived before it inherits none of its
-	// sequences, its lineage identities or its object keys.
+	// sequences, its page identities or its object keys.
 	handle, err := m.config.Control.Create(ctx, id, rootSequence(m.config.Control.NewEpoch()), false)
 	if errors.Is(err, control.ErrExists) {
 		return nil, ErrExists

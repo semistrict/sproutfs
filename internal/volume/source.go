@@ -33,25 +33,25 @@ func (s indexSource) locate(ctx context.Context, volume string, offset, length u
 	return s.index.Locate(ctx, volume, offset, length)
 }
 
-// lineage names the checkpoint the bytes an overlay holds will be published
+// publisher names the checkpoint the bytes an overlay holds will be published
 // under. A publication in flight already owns the sequence it froze, so the
 // entries at or below its position report that sequence and the writes that
 // continued after it report the next one. One reference therefore never names
 // two different contents.
-type lineage struct {
+type publisher struct {
 	frozen    generation
 	frozenRef control.Ref
 	next      control.Ref
 }
 
-func (l lineage) ref(at generation) control.Ref {
-	if !l.frozenRef.IsZero() && at <= l.frozen {
-		return l.frozenRef
+func (p publisher) ref(at generation) control.Ref {
+	if !p.frozenRef.IsZero() && at <= p.frozen {
+		return p.frozenRef
 	}
-	return l.next
+	return p.next
 }
 
-// locateOverlay reports the lineage identity of every byte of a range. A page
+// locateOverlay reports the page identity of every byte of a range. A page
 // the overlay touched anywhere is republished whole by the checkpoint that will
 // publish it, so all of it belongs to that checkpoint: private to it until it is
 // published and shared by everything that inherits it afterwards. Pages the
@@ -63,7 +63,7 @@ func (l lineage) ref(at generation) control.Ref {
 //
 // Every reported extent lies inside one page, which is the identity a pager
 // keys a resident page by.
-func locateOverlay(ctx context.Context, parent source, overlay *extentIndex, owner lineage, volume string, offset, length uint64) ([]control.Extent, error) {
+func locateOverlay(ctx context.Context, parent source, overlay *extentIndex, owner publisher, volume string, offset, length uint64) ([]control.Extent, error) {
 	end := offset + length
 	if length == 0 {
 		return nil, nil

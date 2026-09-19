@@ -64,8 +64,8 @@ type Checkpoint struct {
 	swept chan struct{}
 }
 
-// Ref names this checkpoint. It is known before any object is uploaded, so
-// lineage can be established immediately.
+// Ref names this checkpoint. It is known before any object is uploaded, so the
+// pages it will publish have their identity immediately.
 func (c *Checkpoint) Ref() control.Ref { return c.ref }
 
 // State returns the VMM state captured with this checkpoint, nil when it has
@@ -132,7 +132,7 @@ func (c *Checkpoint) locate(ctx context.Context, volume string, offset, length u
 		return nil, ErrUnknownVolume
 	}
 	// Every entry a checkpoint holds is published by that checkpoint.
-	return locateOverlay(ctx, c.base, c.overlays[volume], lineage{next: c.ref}, volume, offset, length)
+	return locateOverlay(ctx, c.base, c.overlays[volume], publisher{next: c.ref}, volume, offset, length)
 }
 
 // retire ends every pager seal this checkpoint read from. A published

@@ -614,7 +614,7 @@ func TestDeleteRemovesTheVM(t *testing.T) {
 // record accounts for. Deleting a VM therefore deletes what it published, which
 // is also the only thing that ever frees the space a deleted VM occupies. The
 // VM created afterwards shares nothing with the dead one — it draws its own
-// creating epoch, so not one sequence, lineage identity or object key of the
+// creating epoch, so not one sequence, page identity or object key of the
 // two is the same.
 func TestARecreatedIdentityIsNotPoisonedByTheDeletedVM(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {

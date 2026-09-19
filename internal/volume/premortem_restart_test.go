@@ -16,7 +16,7 @@ import (
 // The pre-mortem of the GCE soak's stops and starts. A round stops a VM and
 // starts it on the other host; a later round stops it there and starts it back
 // on the first, which still holds everything of it that was warm before the
-// stop. The page cache is one host's, keyed by lineage identity and never
+// stop. The page cache is one host's, keyed by page identity and never
 // cleared between the incarnations of a VM, so a start on a host that ran that
 // VM before reads through entries an earlier writer's epoch put there.
 

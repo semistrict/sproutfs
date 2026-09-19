@@ -37,7 +37,7 @@ func nextSequence(epoch, selected uint64) uint64 {
 //
 // The identity must be unused: a create is refused with ErrIdentityUsed when
 // anything is already stored under it and no record accounts for it. What is
-// there is either the lineage a deleted VM left pinned, which a fork still
+// there is either the checkpoints a deleted VM left pinned, which a fork still
 // reads through, or a create interrupted before its record — and in both cases
 // a VM published here would write into keys that are not its own. Identities
 // are never reused, so this is a mistake rather than a state to recover from:
@@ -199,14 +199,14 @@ func (m *Manager) Open(ctx context.Context, id string) (*VM, error) {
 // The record is therefore the only thing that says what a sweep may take, and a
 // VM that has none is not swept at all. That is not only an interrupted delete:
 // a finished delete of a VM that was ever forked is exactly a record-less VM
-// whose objects a lineage still reads, so a repeat that swept what it found
-// would destroy it. Repeating a delete is harmless and finishes nothing; what
+// whose objects a fork still reads, so a repeat that swept what it found
+// would destroy them. Repeating a delete is harmless and finishes nothing; what
 // an interrupted sweep left is a collector's, like everything else no record
 // accounts for.
 //
 // A record that cannot be read is not deleted at all. Its pins are exactly what
-// the sweep would have to spare, and a sweep that cannot read them would take a
-// lineage out from under whoever reads it; an identity nobody can delete is the
+// the sweep would have to spare, and a sweep that cannot read them would take
+// checkpoints out from under whoever reads them; an identity nobody can delete is the
 // lesser loss, and the record can be repaired.
 func (m *Manager) Delete(ctx context.Context, id string) error {
 	if !validID(id) {

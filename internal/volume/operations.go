@@ -118,7 +118,7 @@ func (v *Volume) Verify(ctx context.Context) error {
 	return v.vm.readyLocked()
 }
 
-// Locate reports the lineage identity of every byte of a range as sorted,
+// Locate reports the page identity of every byte of a range as sorted,
 // adjacent extents covering it exactly. Bytes the overlay holds
 // report this VM's next checkpoint reference, so they are private and unshared
 // until that checkpoint publishes them; everything else reports the identity the

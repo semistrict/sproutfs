@@ -34,7 +34,7 @@ func readsPage(t *testing.T, h *harness, id string, offset uint64, want byte) {
 }
 
 // chain publishes a grandparent, a child forked from it and a grandchild forked
-// from that, each reading one page through the lineage above it: the grandparent
+// from that, each reading one page through its ancestors: the grandparent
 // published both pages, the child rewrote page zero, and the grandchild rewrote
 // page zero again. Every writer is closed when it reports.
 func chain(t *testing.T, h *harness, manager *volume.Manager) {
@@ -82,9 +82,9 @@ func chain(t *testing.T, h *harness, manager *volume.Manager) {
 	}
 }
 
-// Deleting a VM leaves every descendant of it readable: the objects a pinned
-// lineage holds are not the deleted VM's to take away, whatever the record
-// says about them afterwards.
+// Deleting a VM leaves every descendant of it readable: the objects a pin
+// protects are not the deleted VM's to take away, whatever the record says
+// about them afterwards.
 func TestDeletingAParentLeavesItsChildReadable(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		h := newHarness(t)
@@ -151,8 +151,8 @@ func TestDeletingAForkChainInAnyOrderLeavesTheSurvivorsReadable(t *testing.T) {
 				defer manager.Close(t.Context())
 				chain(t, h, manager)
 				alive := map[string]bool{"vm": true, "child": true, "grandchild": true}
-				// Every page each survivor reads, by the value the lineage
-				// above it published there.
+				// Every page each survivor reads, by the value it or an ancestor
+				// published there.
 				pages := map[string][2]byte{
 					"vm":         {1, 2},
 					"child":      {3, 2},
@@ -204,8 +204,8 @@ func TestDeletingANeverForkedVMSweepsItsObjects(t *testing.T) {
 
 // A record that cannot be read says nothing about what its VM's objects are:
 // its pins are exactly what a sweep would have to spare, so a delete that
-// cannot read them is refused rather than run over a lineage a descendant may
-// still be reading.
+// cannot read them is refused rather than run over checkpoints a descendant
+// may still be reading.
 func TestDeletingAVMWithACorruptRecordIsRefused(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		h := newHarness(t)

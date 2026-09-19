@@ -9,13 +9,13 @@ import (
 	"github.com/semistrict/sproutfs/internal/checkpoint"
 )
 
-func TestCheckpointPreservesLineageBetweenDisjointWrites(t *testing.T) {
+func TestCheckpointPreservesPageIdentityBetweenDisjointWrites(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		h := newHarness(t)
 		defer h.close(t.Context())
 		manager := h.manager(t, h.config())
 		defer manager.Close(t.Context())
-		vm, _ := createVM(t, manager, "checkpoint-lineage")
+		vm, _ := createVM(t, manager, "checkpoint-identity")
 		defer vm.Close(t.Context())
 		root := vm.Volume("root")
 		inherited := bytes.Repeat([]byte{7}, checkpoint.SectorSize)
@@ -27,7 +27,7 @@ func TestCheckpointPreservesLineageBetweenDisjointWrites(t *testing.T) {
 		}
 		before, err := root.Locate(t.Context(), 2*checkpoint.SectorSize, checkpoint.SectorSize)
 		if err != nil || len(before) != 1 || before[0].Identity.Zero {
-			t.Fatalf("initial stored lineage = %+v, error %v", before, err)
+			t.Fatalf("initial stored identity = %+v, error %v", before, err)
 		}
 		// A write in the next page leaves this one's object, and so its
 		// identity, exactly where it was.
@@ -39,7 +39,7 @@ func TestCheckpointPreservesLineageBetweenDisjointWrites(t *testing.T) {
 		}
 		after, err := root.Locate(t.Context(), 2*checkpoint.SectorSize, checkpoint.SectorSize)
 		if err != nil || !reflect.DeepEqual(after, before) {
-			t.Fatalf("checkpoint rewrote an untouched page's lineage: before %+v, after %+v, error %v", before, after, err)
+			t.Fatalf("checkpoint rewrote an untouched page's identity: before %+v, after %+v, error %v", before, after, err)
 		}
 		got := make([]byte, checkpoint.SectorSize)
 		if err := root.Read(t.Context(), 2*checkpoint.SectorSize, got); err != nil || !bytes.Equal(got, inherited) {

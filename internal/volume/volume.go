@@ -40,7 +40,7 @@ var (
 	// ErrIdentityUsed reports a create of an identity that has checkpoint
 	// objects under it and no control record: a VM deleted while a fork read
 	// through it, or a create interrupted before its record. Those objects are
-	// a lineage's or a collector's, and a VM created here would publish into
+	// a fork's or a collector's, and a VM created here would publish into
 	// their keys, so the identity is refused rather than handed out again.
 	ErrIdentityUsed = errors.New("volume: the identity was used before")
 	// ErrCorrupt reports durable state that disagrees with itself: a control

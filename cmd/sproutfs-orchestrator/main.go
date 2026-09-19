@@ -203,9 +203,9 @@ func run() error {
 //
 //   - a publication that has not reached its index is one in flight while the
 //     check read the bucket, which is every checkpoint being taken right now;
-//   - objects under a VM with no control record are the lineage a deleted VM's
-//     descendants still pin, which is what every deleted VM that was ever
-//     forked leaves;
+//   - objects under a VM with no control record are the checkpoints a deleted
+//     VM pinned for its descendants, which is what every deleted VM that was
+//     ever forked leaves;
 //   - a checkpoint that is neither selected nor pinned is a VM's own root, and
 //     the intermediate checkpoints a guest image's import publishes on its way
 //     into a template;

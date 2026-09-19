@@ -13,7 +13,7 @@ import (
 )
 
 // cachedStore is a checkpoint store with a page cache, which is what a host
-// runs: the pages a VM reads stay resident, keyed by the lineage identity
+// runs: the pages a VM reads stay resident, keyed by the page identity
 // (VM, sequence, volume, page) the checkpoint gave them. A test that reuses a
 // VM identity needs one, because two VMs whose checkpoints share a sequence
 // share those keys.
@@ -53,7 +53,7 @@ func readSector(t *testing.T, vm *volume.VM, name string, offset uint64) []byte 
 // A VM created under a deleted VM's identity must read its own bytes. Nothing
 // stops an identity from being handed out again — the orchestrator allocates
 // them and a deleted one is gone from the deployment — so the two VMs must not
-// share a checkpoint sequence: the lineage identity a page cache keys a
+// share a checkpoint sequence: the page identity a page cache keys a
 // resident page by is (VM, sequence, volume, page), and two VMs that agree on
 // all four are one VM as far as every reader is concerned.
 func TestARecreatedIdentityReadsItsOwnBytesRatherThanTheDeadVMs(t *testing.T) {
@@ -73,7 +73,7 @@ func TestARecreatedIdentityReadsItsOwnBytesRatherThanTheDeadVMs(t *testing.T) {
 			t.Fatal(err)
 		}
 		// Reading it back through the cache is what leaves the dead VM's page
-		// resident under its lineage identity.
+		// resident under its page identity.
 		if got := readSector(t, dead, "root", 0); !bytes.Equal(got, sector(0xdd)) {
 			t.Fatalf("the first VM reads back as %#x...", got[:8])
 		}
@@ -115,7 +115,7 @@ func TestARecreatedIdentityReadsItsOwnBytesRatherThanTheDeadVMs(t *testing.T) {
 }
 
 // A deleted VM that was ever forked leaves the checkpoints its record pinned:
-// a lineage this deployment cannot enumerate reads through them, so the delete
+// forks this deployment cannot enumerate read through them, so the delete
 // frees the identity and leaves the objects. Creating a VM under that identity
 // would publish into the leftovers — the very keys they hold, create-if-absent
 // — so it is refused, and the refusal says the identity was used before.
@@ -157,7 +157,7 @@ func TestCreatingAVMUnderAnIdentityWithLeftoversIsRefused(t *testing.T) {
 		if err := manager.Delete(t.Context(), "vm"); err != nil {
 			t.Fatal(err)
 		}
-		// The pinned lineage is still there, which is what the child reads
+		// The pinned checkpoint is still there, which is what the child reads
 		// through.
 		if got := objectsUnder(t, h, h.objects, control.Ref{VM: "vm", Sequence: pinned[0]}); len(got) == 0 {
 			t.Fatal("the delete took the pinned checkpoint the child reads through")

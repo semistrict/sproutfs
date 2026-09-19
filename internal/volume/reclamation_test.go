@@ -157,8 +157,8 @@ func TestPublishingReclaimsWhatItReplaced(t *testing.T) {
 }
 
 // A checkpoint a fork inherited is pinned in the parent's control record, and
-// reclamation leaves it whole — objects and index alike — because the fork's
-// own lineage runs through it.
+// reclamation leaves it whole — objects and index alike — because the fork
+// reads through it.
 func TestReclamationSparesAPinnedCheckpoint(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		h := newHarness(t)
@@ -215,7 +215,7 @@ func TestReclamationSparesAPinnedCheckpoint(t *testing.T) {
 		if got := objectsUnder(t, h, store, pinned); !slices.Equal(got, before) {
 			t.Fatalf("the pinned checkpoint lost %v", got)
 		}
-		// The fork reads through the pinned lineage on a host that never held it.
+		// The fork reads through the pinned checkpoint on a host that never held it.
 		if err := fork.Checkpoint(t.Context()); err != nil {
 			t.Fatal(err)
 		}
@@ -240,8 +240,8 @@ func TestReclamationSparesAPinnedCheckpoint(t *testing.T) {
 }
 
 // The pin comes before the fork exists: a fork whose own control record cannot
-// be written still leaves its lineage pinned, because a fork that existed while
-// its lineage was unpinned could have that lineage reclaimed under it.
+// be written still leaves what it would inherit pinned, because a fork that
+// existed while that was unpinned could have it reclaimed under it.
 func TestForkPinsBeforeTheChildExists(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		h := newHarness(t)
@@ -399,7 +399,7 @@ func TestLostSelectionReplyIsReconciled(t *testing.T) {
 
 // A fork that ends before it ever published a root leaves the parent's pin
 // standing: the point was forked, and nothing here can establish that the
-// lineage started from it went nowhere — the child could have been handed to
+// fork taken at it went nowhere — the child could have been handed to
 // another host, which is exactly how a fork onto another host looks from here.
 // The parent's next checkpoint spares that checkpoint, and a collector is what
 // eventually gives it back.
@@ -463,7 +463,7 @@ func TestAnAbandonedForkLeavesThePinStanding(t *testing.T) {
 	})
 }
 
-// A fork that published a root over its parent's lineage keeps that lineage
+// A fork that published a root over its parent's checkpoints keeps them
 // pinned: its own index names the parent's checkpoints, so releasing the pin would
 // let the parent's next checkpoint delete the objects the child reads.
 func TestPublishedForkKeepsThePinItsIndexNames(t *testing.T) {
@@ -548,7 +548,7 @@ func TestPublishedForkKeepsThePinItsIndexNames(t *testing.T) {
 }
 
 // A same-host fork pins the checkpoint its child inherits, and the parent's
-// reclamation goes on running around it: the pinned lineage is spared whole,
+// reclamation goes on running around it: what the pin protects is spared whole,
 // and every checkpoint of the parent's own that neither the new index nor a
 // child reads is deleted. A sweep skipped because the checkpoint it replaced
 // happened to be pinned would leave those behind for good, because a handle

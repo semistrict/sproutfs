@@ -34,7 +34,7 @@ type generation uint64
 type view struct {
 	base     source
 	overlays []*extentIndex
-	owner    lineage
+	owner    publisher
 	err      error
 }
 
@@ -104,7 +104,7 @@ type VM struct {
 	// next is the sequence the bytes now in the overlays will be published under.
 	// It advances when a checkpoint takes ownership of a sequence, not when that
 	// checkpoint is installed, so the writes that continue during a publication
-	// report a different lineage identity from the ones the checkpoint froze.
+	// report a different page identity from the ones the checkpoint froze.
 	next uint64
 	// frozen is the generation of the publication in flight and frozenRef the
 	// checkpoint it will publish, so the entries that publication captured go
@@ -254,7 +254,7 @@ func (vm *VM) Close(ctx context.Context) error {
 	// here: nothing inherited them in the end, so its next checkpoint takes
 	// them again. It does not get its pin back — nothing ever does — so a fork
 	// abandoned before its root costs the parent the checkpoint it was taken
-	// at until a collector finds that no lineage reads it.
+	// at until a collector finds that no descendant reads it.
 	if point != nil {
 		err = errors.Join(err, point.Retire(context.WithoutCancel(ctx)))
 	}
@@ -321,7 +321,7 @@ func (vm *VM) publishLocked() {
 	vm.current.Store(&view{
 		base:     vm.base,
 		overlays: slices.Clone(vm.overlays),
-		owner:    lineage{frozen: vm.frozen, frozenRef: vm.frozenRef, next: control.Ref{VM: vm.id, Sequence: vm.next}},
+		owner:    publisher{frozen: vm.frozen, frozenRef: vm.frozenRef, next: control.Ref{VM: vm.id, Sequence: vm.next}},
 		err:      vm.readyLocked(),
 	})
 }

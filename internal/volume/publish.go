@@ -333,7 +333,7 @@ func (vm *VM) complete(ctx context.Context, ckpt *Checkpoint) error {
 	if err == nil {
 		// A fork that has published its root owns every page it inherited, so
 		// the parent's sealed pages go back to its guest. The pin on the
-		// parent's lineage is not given back with them: this index may still
+		// parent's checkpoint is not given back with them: this index may still
 		// name the parent's checkpoints, and an index of a VM forked from this one
 		// may name them even when this one does not.
 		if point := vm.takePoint(); point != nil {
@@ -484,7 +484,7 @@ func (vm *VM) install(ckpt *Checkpoint, index *checkpoint.Index) *checkpoint.Ind
 // this handle published before it, and every checkpoint that one named which this one
 // does not. A sequence a fork was taken at is pinned in the control record the
 // selection returned and is left whole — its index object, its parts, and every checkpoint
-// that index names — because a lineage this VM cannot see reads through it.
+// that index names — because forks this VM cannot see read through it.
 //
 // Only the checkpoints this handle published are reclaimed. The one it opened
 // on was published by a writer whose publications this handle cannot account
