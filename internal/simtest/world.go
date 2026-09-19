@@ -214,6 +214,11 @@ type instance struct {
 	// back as exactly one of them — never a mixture, never bytes no guest wrote
 	// — and the one it read as is the only one left afterwards.
 	durables []durableState
+	// sealed and unchanged are what the last checkpoint of this VM sealed and
+	// what the settle behind its pause dropped: pages a write fault took
+	// writable and the guest never stored into, which that checkpoint therefore
+	// publishes none of.
+	sealed, unchanged int
 }
 
 // durableState is the whole of one VM at one checkpoint: the sequence that
@@ -824,7 +829,17 @@ func (w *World) Store(ctx context.Context, id string, writes int, choose func(li
 		// Both volumes are written, so a migration has to move more than one
 		// region's worth of pages on the seeds that have two.
 		name := g.names[choose(len(g.names))]
-		err := g.store(name, uint64(choose(g.pages[name])))
+		page := uint64(choose(g.pages[name]))
+		// One access in four is a write fault the guest stores nothing
+		// through, which is what a cold read and a cache maintenance reach the
+		// pager as. The page is copied all the same, and the settle behind the
+		// next checkpoint's pause is what decides it was never dirty.
+		var err error
+		if choose(4) == 0 {
+			err = g.takeWritable(ctx, name, page)
+		} else {
+			err = g.store(name, page)
+		}
 		switch {
 		case err == nil:
 		case excused(err):
@@ -885,6 +900,8 @@ func (w *World) Checkpoint(ctx context.Context, id string) error {
 		return fmt.Errorf("%s: capture: %w", id, err)
 	}
 	at.sequence = ckpt.Ref().Sequence
+	sealed, _ := ckpt.Sealed()
+	w.noteSealed(in, sealed, ckpt.Unchanged())
 	// The sequence is a writer's whatever the publication does with it: a VM
 	// that comes back at it came back at state this writer sealed, and one that
 	// comes back at a sequence nobody sealed came back at state nobody wrote.
@@ -907,6 +924,46 @@ func (w *World) Checkpoint(ctx context.Context, id string) error {
 	}
 	w.landed(in, g, at)
 	w.notePublished(id, vm.Status().Checkpoint.Sequence)
+	return nil
+}
+
+// noteSealed records what one capture's pause took and what the settle behind
+// it gave back, which is what a scenario about write faults that store nothing
+// asserts on.
+func (w *World) noteSealed(in *instance, sealed, unchanged int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	in.sealed, in.unchanged = sealed, unchanged
+}
+
+// Sealed reports what the last checkpoint of the named VM sealed and how many
+// of those pages the settle found the guest had never stored into, so that the
+// checkpoint published neither them nor anything under them.
+func (w *World) Sealed(id string) (sealed, unchanged int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if in := w.instances[id]; in != nil {
+		return in.sealed, in.unchanged
+	}
+	return 0, 0
+}
+
+// TakeWritable has the named VM's guest take every page of every volume
+// writable and store nothing into any of them, which is what a guest that only
+// reads looks like where every fault claims to be a write: KVM finishes a cold
+// read from a worker that always asks for the page writable.
+func (w *World) TakeWritable(ctx context.Context, id string) error {
+	_, g := w.runningVM(id)
+	if g == nil {
+		return nil
+	}
+	for _, name := range g.names {
+		for page := range uint64(g.pages[name]) {
+			if err := g.takeWritable(ctx, name, page); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 

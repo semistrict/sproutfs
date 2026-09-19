@@ -45,6 +45,14 @@ func (a *arena) Write(_ context.Context, slot int, src []byte) error {
 	return nil
 }
 
+// Equal compares two slots where they are, as a real arena mapped into this
+// process does, so a settle costs the comparison and no copy.
+func (a *arena) Equal(_ context.Context, first, second int) (bool, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return bytes.Equal(a.slots[first], a.slots[second]), nil
+}
+
 func (a *arena) Release(_ context.Context, slot int) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -432,6 +440,26 @@ func (g *guest) storeValueIn(ctx context.Context, name string, page uint64, valu
 		}
 	}
 	return fmt.Errorf("%s store on %s page %d never resolved", g.instance, name, page)
+}
+
+// takeWritable takes one page writable and stores nothing into it, which is the
+// fault a guest cannot avoid making: KVM finishes a cold read from a worker
+// that always asks for the page writable, and an architecture can report a
+// guest kernel's cache maintenance as a write. The model records nothing,
+// because nothing was written, so whatever the page reads afterwards — the
+// copy, or the page it was copied from once the settle gives it back — must
+// still be the bytes the guest last wrote.
+func (g *guest) takeWritable(ctx context.Context, name string, page uint64) error {
+	g.mu.Lock()
+	stopped := g.stopped
+	g.mu.Unlock()
+	if stopped {
+		return fmt.Errorf("%s: the guest's vCPUs are stopped, so it faults on nothing", g.instance)
+	}
+	if err := g.regions[name].Fault(ctx, page, true); err != nil {
+		return fmt.Errorf("%s write fault on %s page %d: %w", g.instance, name, page, err)
+	}
+	return nil
 }
 
 func (g *guest) storeModel(name string, mp *mapping, page uint64, value byte) bool {
