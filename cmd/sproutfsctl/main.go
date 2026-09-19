@@ -77,7 +77,7 @@ func execute(ctx context.Context, client *orch.Client, command invocation,
 			return err
 		}
 		table := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(table, "VM\tHOST\tSTATE\tCHECKPOINT\tLOSS")
+		fmt.Fprintln(table, "VM\tHOST\tSTATE\tCHECKPOINT\tLOSS\tPRIVATE")
 		for _, vm := range vms {
 			h, state := vm.Host, vm.State
 			if h == "" {
@@ -91,7 +91,8 @@ func execute(ctx context.Context, client *orch.Client, command invocation,
 			if vm.From != "" || vm.To != "" {
 				state = fmt.Sprintf("%s %s->%s", state, dash(vm.From), dash(vm.To))
 			}
-			fmt.Fprintf(table, "%s\t%s\t%s\t%d\t%s\n", vm.ID, h, state, vm.Checkpoint, loss(vm))
+			fmt.Fprintf(table, "%s\t%s\t%s\t%d\t%s\t%s\n", vm.ID, h, state, vm.Checkpoint,
+				loss(vm), mib(vm.PrivateBytes))
 		}
 		return table.Flush()
 	case "hosts":
@@ -277,6 +278,18 @@ func loss(vm orch.VM) string {
 		return age + " waiting"
 	}
 	return age
+}
+
+// mib writes a byte count as whole mebibytes, which is the unit a guest's
+// memory is talked about in and near enough the pager's own page that a column
+// of them reads as pages. Nothing held shows a dash rather than 0 MiB, so a VM
+// that has written nothing since its last checkpoint is told apart at a glance
+// from one whose host does not report it.
+func mib(bytes uint64) string {
+	if bytes == 0 {
+		return "-"
+	}
+	return fmt.Sprintf("%d MiB", bytes/(1<<20))
 }
 
 // console attaches to one VM's serial console: everything the guest prints is

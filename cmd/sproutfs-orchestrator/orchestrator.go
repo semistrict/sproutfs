@@ -548,6 +548,9 @@ func (o *orchestrator) VMs(ctx context.Context) ([]orch.VM, error) {
 				// Only the host running a VM knows what it holds unpublished, so
 				// the window comes from that report and nowhere else.
 				vm.LossWindow, vm.Waiting = record.LossWindow, record.Waiting
+				// What a VM holds privately is its host's too: the pages are in
+				// that host's pager and nowhere else.
+				vm.PrivateBytes = record.PrivateBytes
 			}
 			running[id] = vm
 		}

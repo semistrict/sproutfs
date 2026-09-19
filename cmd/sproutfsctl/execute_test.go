@@ -87,10 +87,10 @@ func TestListPrintsEveryVMAndItsHost(t *testing.T) {
 	if err := execute(t.Context(), client, invocation{Command: "list"}, nil, &out, &out); err != nil {
 		t.Fatal(err)
 	}
-	want := "VM    HOST             STATE                                       CHECKPOINT  LOSS\n" +
-		"vm-1  sproutfs-host-a  running                                     12          -\n" +
-		"vm-2  -                stopped                                     3           -\n" +
-		"vm-3  sproutfs-host-a  migrating sproutfs-host-a->sproutfs-host-b  5           -\n"
+	want := "VM    HOST             STATE                                       CHECKPOINT  LOSS  PRIVATE\n" +
+		"vm-1  sproutfs-host-a  running                                     12          -     -\n" +
+		"vm-2  -                stopped                                     3           -     -\n" +
+		"vm-3  sproutfs-host-a  migrating sproutfs-host-a->sproutfs-host-b  5           -     -\n"
 	if out.String() != want {
 		t.Fatalf("printed\n%s\nwant\n%s", out.String(), want)
 	}
@@ -114,10 +114,35 @@ func TestListPrintsEachVMsLossWindow(t *testing.T) {
 	if err := execute(t.Context(), client, invocation{Command: "list"}, nil, &out, &out); err != nil {
 		t.Fatal(err)
 	}
-	want := "VM    HOST             STATE    CHECKPOINT  LOSS\n" +
-		"vm-1  sproutfs-host-a  running  12          1m30s\n" +
-		"vm-2  sproutfs-host-a  running  8           7m0s waiting\n" +
-		"vm-3  -                stopped  3           -\n"
+	want := "VM    HOST             STATE    CHECKPOINT  LOSS          PRIVATE\n" +
+		"vm-1  sproutfs-host-a  running  12          1m30s         -\n" +
+		"vm-2  sproutfs-host-a  running  8           7m0s waiting  -\n" +
+		"vm-3  -                stopped  3           -             -\n"
+	if out.String() != want {
+		t.Fatalf("printed\n%s\nwant\n%s", out.String(), want)
+	}
+}
+
+// The listing is also where an operator sees what each VM's memory costs its
+// host that nothing shares: the pages its guest has written since its last
+// checkpoint. A VM holding none, and one no live host reports, show a dash.
+func TestListPrintsEachVMsPrivateBytes(t *testing.T) {
+	client, _ := serve(t, func(*http.Request) (int, any) {
+		return http.StatusOK, []orch.VM{
+			{ID: "vm-1", Host: "sproutfs-host-a", State: "running", Checkpoint: 12,
+				PrivateBytes: 114 << 20},
+			{ID: "vm-2", Host: "sproutfs-host-a", State: "running", Checkpoint: 8},
+			{ID: "vm-3", State: "stopped", Checkpoint: 3},
+		}
+	})
+	var out bytes.Buffer
+	if err := execute(t.Context(), client, invocation{Command: "list"}, nil, &out, &out); err != nil {
+		t.Fatal(err)
+	}
+	want := "VM    HOST             STATE    CHECKPOINT  LOSS  PRIVATE\n" +
+		"vm-1  sproutfs-host-a  running  12          -     114 MiB\n" +
+		"vm-2  sproutfs-host-a  running  8           -     -\n" +
+		"vm-3  -                stopped  3           -     -\n"
 	if out.String() != want {
 		t.Fatalf("printed\n%s\nwant\n%s", out.String(), want)
 	}

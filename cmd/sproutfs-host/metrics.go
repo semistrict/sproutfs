@@ -52,6 +52,29 @@ func metrics(status hostapi.Status) string {
 	write("sproutfs_pager_shared_pages_total", "counter",
 		"Pages mapped to an already resident identity without a read, which is what a fork inherits.",
 		status.Pager.SharedPages)
+	// The sharing gauges carry the kind of region as a label: two kinds, one
+	// series each, so comparing RAM against PMEM is a query rather than six
+	// metrics. They are what the counter above is not — how much sharing is
+	// still there, rather than how often it happened.
+	kinds := []struct {
+		name    string
+		sharing hostapi.Sharing
+	}{{"ram", status.Pager.RAM}, {"pmem", status.Pager.PMEM}}
+	byKind := func(name, help string, value func(hostapi.Sharing) uint64) {
+		fmt.Fprintf(&out, "# HELP %s %s\n# TYPE %s gauge\n", name, help, name)
+		for _, kind := range kinds {
+			fmt.Fprintf(&out, "%s{kind=%q} %d\n", name, kind.name, value(kind.sharing))
+		}
+	}
+	byKind("sproutfs_pager_unique_resident_bytes",
+		"Host memory the pager's arena holds, one resident page counted once however many regions map it.",
+		func(s hostapi.Sharing) uint64 { return s.UniqueBytes })
+	byKind("sproutfs_pager_mapped_resident_bytes",
+		"Resident pages summed over the regions that map them, counting every alias, which is what this host would hold if nothing shared anything.",
+		func(s hostapi.Sharing) uint64 { return s.MappedBytes })
+	byKind("sproutfs_pager_shared_saved_bytes",
+		"Mapped less unique: the memory this host did not have to find because its guests are reading the same pages.",
+		func(s hostapi.Sharing) uint64 { return s.SavedBytes })
 	write("sproutfs_pager_faults_total", "counter", "Faults the pager has resolved.", status.Pager.Faults)
 	write("sproutfs_pager_evictions_total", "counter", "Pages the pager has evicted.", status.Pager.Evictions)
 	write("sproutfs_pager_spills_total", "counter", "Pages the pager has written to its spill file.", status.Pager.Spills)

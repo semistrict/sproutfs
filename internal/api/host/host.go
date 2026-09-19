@@ -136,6 +136,31 @@ type VM struct {
 	// checkpoint of it lands.
 	LossWindow time.Duration `json:"loss_window"`
 	Waiting    bool          `json:"waiting"`
+	// PrivateBytes is the host memory this VM holds that its volumes do not:
+	// the pages its guest has written since its last checkpoint, resident,
+	// spilled or held by a checkpoint that has not landed. It is the part of
+	// this VM's memory its host could share with nothing.
+	PrivateBytes uint64 `json:"private_bytes"`
+}
+
+// Sharing is how much memory sharing a host's pager is retaining for one kind
+// of region, at the moment its status was taken. It is a gauge rather than a
+// total: Pager.SharedPages counts every page ever mapped to an already resident
+// identity and never falls, which says how often sharing happened rather than
+// how much of it is still there.
+//
+// It measures resident sharing alone. Pages a fork inherited and neither VM has
+// faulted in are shared in the store and on the wire and cost this host nothing,
+// so none of them are here.
+type Sharing struct {
+	// UniqueBytes is the host memory the arena actually holds: one resident
+	// page counted once, however many regions map it. MappedBytes is the sum
+	// over regions of the resident pages each maps, counting every alias, so a
+	// page three regions map counts three times. SavedBytes is the difference,
+	// which is the memory this host did not have to find.
+	UniqueBytes uint64 `json:"unique_bytes"`
+	MappedBytes uint64 `json:"mapped_bytes"`
+	SavedBytes  uint64 `json:"saved_bytes"`
 }
 
 // Pager is what the host's shared pager holds. SharedPages is the demo's
@@ -165,6 +190,11 @@ type Pager struct {
 	Faults           uint64 `json:"faults"`
 	Evictions        uint64 `json:"evictions"`
 	Spills           uint64 `json:"spills"`
+	// RAM and PMEM are how much of the sharing this pager holds is still there,
+	// reported apart because the two are separate things for a deployment to
+	// plan for.
+	RAM  Sharing `json:"ram"`
+	PMEM Sharing `json:"pmem"`
 }
 
 // Pages is what this host's migration page server has answered.

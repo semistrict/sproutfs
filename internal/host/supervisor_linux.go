@@ -273,11 +273,19 @@ func (s *supervisor) Status(ctx context.Context) (hostapi.Status, error) {
 	if err != nil {
 		return hostapi.Status{}, err
 	}
+	sharing, err := s.pager.Sharing(ctx)
+	if err != nil {
+		return hostapi.Status{}, err
+	}
+	records, err := s.records(ctx)
+	if err != nil {
+		return hostapi.Status{}, err
+	}
 	resources := status.Resources
 	report := hostapi.Status{
 		Host: s.config.PodName, PageAddress: string(s.pageAddress()),
 		Running: s.host.Machines(), Serving: status.Serving,
-		Outstanding: status.Outstanding, VMs: s.records(),
+		Outstanding: status.Outstanding, VMs: records,
 		Templates: s.templateReport(),
 		Pager: hostapi.Pager{PageBytes: vmmemory.PageSize,
 			ArenaPages:     int(s.config.ArenaBytes / vmmemory.PageSize),
@@ -286,7 +294,8 @@ func (s *supervisor) Status(ctx context.Context) (hostapi.Status, error) {
 			DirtyPages:     stats.DirtyPages, LogicalPages: stats.LogicalPages,
 			LogicalPagesFree: status.LogicalPagesFree,
 			SharedPages:      stats.IdentityHits, Faults: stats.Faults,
-			Evictions: stats.Evictions, Spills: stats.Spills},
+			Evictions: stats.Evictions, Spills: stats.Spills,
+			RAM: apiSharing(sharing.Ram), PMEM: apiSharing(sharing.Pmem)},
 		Pages: hostapi.Pages{Requests: status.Pages.Requests, Served: status.Pages.Served,
 			Absent: status.Pages.Absent, Refused: status.Pages.Refused},
 		Resources: hostapi.Resources{MemoryLimit: resources.Limit, MemoryUsed: resources.Used,
@@ -339,8 +348,14 @@ func (s *supervisor) templateReport() []hostapi.Template {
 	return report
 }
 
+// apiSharing carries one kind's sharing gauge onto the wire.
+func apiSharing(s vmmemory.Sharing) hostapi.Sharing {
+	return hostapi.Sharing{UniqueBytes: s.UniqueBytes, MappedBytes: s.MappedBytes,
+		SavedBytes: s.SavedBytes}
+}
+
 // records describes every VM this host holds a handle on.
-func (s *supervisor) records() []hostapi.VM {
+func (s *supervisor) records(ctx context.Context) ([]hostapi.VM, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	records := make([]hostapi.VM, 0, len(s.machines))
@@ -351,11 +366,17 @@ func (s *supervisor) records() []hostapi.VM {
 		// in bytes: the host is the only thing that has both halves, since the
 		// window is measured across every region the VM maps.
 		window, waiting := s.host.LossWindow(id)
+		// The same is true of what the VM holds that nothing shares: its regions
+		// are the pager's and this host is what knows they are one VM's.
+		private, err := s.host.PrivateBytes(ctx, id)
+		if err != nil {
+			return nil, err
+		}
 		records = append(records, hostapi.VM{ID: id, Template: m.template, Host: s.config.PodName,
 			Checkpoint: status.Checkpoint.Sequence, Epoch: status.Epoch, DirtyBytes: status.DirtyBytes,
-			LossWindow: window, Waiting: waiting})
+			LossWindow: window, Waiting: waiting, PrivateBytes: private})
 	}
-	return records
+	return records, nil
 }
 
 // ---------------------------------------------------------------------------

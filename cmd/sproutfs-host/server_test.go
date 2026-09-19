@@ -588,6 +588,36 @@ func TestMetricsExposeThePagerAndTheStore(t *testing.T) {
 	}
 }
 
+// How much sharing the pager is retaining is a gauge and the counter beside it
+// is not: the counter only ever rises, so a host whose guests have all diverged
+// reads the same as one whose guests share everything. The two kinds of region
+// are separate series, because they are separate things to plan for.
+func TestMetricsExposeTheSharingGauges(t *testing.T) {
+	fake := &fakeHost{status: hostapi.Status{
+		Pager: hostapi.Pager{
+			RAM:  hostapi.Sharing{UniqueBytes: 64 << 20, MappedBytes: 192 << 20, SavedBytes: 128 << 20},
+			PMEM: hostapi.Sharing{UniqueBytes: 32 << 20, MappedBytes: 40 << 20, SavedBytes: 8 << 20},
+		},
+	}}
+	status, body := call(t, fake, http.MethodGet, "/metrics", "")
+	if status != http.StatusOK {
+		t.Fatalf("status %d: %s", status, body)
+	}
+	for _, want := range []string{
+		"# TYPE sproutfs_pager_unique_resident_bytes gauge",
+		`sproutfs_pager_unique_resident_bytes{kind="ram"} 67108864`,
+		`sproutfs_pager_unique_resident_bytes{kind="pmem"} 33554432`,
+		`sproutfs_pager_mapped_resident_bytes{kind="ram"} 201326592`,
+		`sproutfs_pager_mapped_resident_bytes{kind="pmem"} 41943040`,
+		`sproutfs_pager_shared_saved_bytes{kind="ram"} 134217728`,
+		`sproutfs_pager_shared_saved_bytes{kind="pmem"} 8388608`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("the exposition has no %q in it:\n%s", want, body)
+		}
+	}
+}
+
 // What losing this host would cost its guests in time is a number an operator
 // has to be able to alert on: the widest loss window on the host, and how many
 // of its VMs are already past theirs and have their stores held back.

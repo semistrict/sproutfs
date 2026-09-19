@@ -74,6 +74,11 @@ type VM struct {
 	// live host reports, which has nothing unpublished anywhere.
 	LossWindow time.Duration `json:"loss_window,omitempty"`
 	Waiting    bool          `json:"waiting,omitempty"`
+	// PrivateBytes is the host memory this VM holds that its volumes do not:
+	// what its guest has written since its last checkpoint, which is the part
+	// of its memory its host could share with nothing. It is zero for a VM no
+	// live host reports, which holds nothing anywhere.
+	PrivateBytes uint64 `json:"private_bytes,omitempty"`
 }
 
 // ExecRequest and ExecResult are the guest agent's own shapes, carried down to
