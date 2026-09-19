@@ -93,6 +93,36 @@ CGO_ENABLED=0 go test -c ./internal/vmmachine -o "$work/build/vmmachine.test"
 
 if [[ ${SPROUTFS_GCE_BUILD_ONLY:-0} == 1 ]]; then exit 0; fi
 
+# Only the fork fan-out: forks of one published checkpoint each run one binary
+# off the DAX root and write nothing, and the record lists the pages each fork
+# came to own, by region. busybox is the init's shell, so the parent has run it
+# before the checkpoint; memprobe is a binary no parent ever ran, so a fork is
+# the first to execute its pages. It is the x86-64 half of a comparison with
+# scripts/bench-guest-lima.sh on aarch64.
+if [[ ${SPROUTFS_GCE_FANOUT:-0} == 1 ]]; then
+    fanout() {
+        local name=$1 command=$2 run
+        run=$(mktemp -d "$work/run-fanout.XXXXXX")
+        env SPROUTFS_FIRECRACKER_BENCH=1 \
+            SPROUTFS_FIRECRACKER="$work/build/firecracker" \
+            SPROUTFS_FIRECRACKER_SECCOMP="$work/build/seccomp.bpf" \
+            SPROUTFS_FIRECRACKER_KERNEL="$work/build/kernel" \
+            SPROUTFS_BENCH_IMAGE="$work/build/root.ext4" \
+            SPROUTFS_BENCH_WORK="$run/state" SPROUTFS_BENCH_OBJECT_DIR="$run/objects" \
+            SPROUTFS_BENCH_OUTPUT="$results/fanout-$name.json" \
+            SPROUTFS_BENCH_REVISION="$(cat "$repo/source-revision.txt")" \
+            SPROUTFS_BENCH_SCENARIOS=boot,capture,fork-fanout SPROUTFS_BENCH_FORKS=4 \
+            SPROUTFS_BENCH_TEST="$command" \
+            "$work/build/vmmachine.test" -test.v -test.run '^TestGuestWorkloadBenchmark$' -test.timeout=10m \
+            > "$results/fanout-$name.log" 2>&1
+        rm -rf -- "$run"
+    }
+    fanout ran-before '/bin/busybox uname -a'
+    fanout first-run '/usr/local/bin/memprobe 16'
+    debugfs -R 'stat /usr/local/bin/memprobe' "$work/build/root.ext4" > "$results/memprobe-extents.txt" 2>&1
+    exit 0
+fi
+
 # Exercise the real syscall and mapping protocol before trusting guest timings.
 export SPROUTFS_VM_MEMORY_CLIENT="$CARGO_TARGET_DIR/debug/examples/client"
 "$work/build/vmtest.test" -test.v -test.timeout=3m > "$results/vmtest.log" 2>&1

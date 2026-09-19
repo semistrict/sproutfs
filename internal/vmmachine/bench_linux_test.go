@@ -3,6 +3,7 @@
 package vmmachine_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/pprof"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1318,19 +1320,77 @@ func (b *benchmark) forkFanOut(ctx context.Context, origin *forkOrigin) {
 	privatePages := make([]int, count)
 	residentPages := make([]int, count)
 	regionPages := make([]map[string]map[string]int, count)
+	// Which pages those are, so that what a fork wrote can be looked up in the
+	// image: a root page number times the page size is an offset into it.
+	ownPages := make([]map[string][]uint64, count)
 	for index, item := range children {
 		regionPages[index] = map[string]map[string]int{}
+		ownPages[index] = map[string][]uint64{}
 		for name, region := range item.process.Regions() {
 			stats, err := region.Stats(ctx)
 			if err != nil {
 				b.t.Fatal(err)
 			}
+			unpublished, err := region.Unpublished()
+			if err != nil {
+				b.t.Fatal(err)
+			}
+			slices.Sort(unpublished)
+			ownPages[index][name] = unpublished
 			regionPages[index][name] = map[string]int{"resident_pages": stats.ResidentPages, "private_pages": stats.PrivatePages}
 			privatePages[index] += stats.PrivatePages
 			residentPages[index] += stats.ResidentPages
 		}
 	}
+	// Which 4 KiB blocks of those root pages a fork changed, against a fork of
+	// the same point that never ran. A page a fork owns with no block changed
+	// took a write fault and no write.
+	pristine, err := b.manager.Fork(ctx, "fanout-pristine", origin.point)
+	if err != nil {
+		b.t.Fatal(err)
+	}
+	const block = 4096
+	changedBlocks := make([]map[string][]uint64, count)
+	// How many blocks of each page a fork owns it changed, in every region: a
+	// RAM page's blocks are too many to list, and the count is what says
+	// whether the page was written at all.
+	changedCounts := make([]map[string]map[string]int, count)
+	before, after := make([]byte, b.pageSize), make([]byte, b.pageSize)
+	for index, item := range children {
+		changedBlocks[index] = map[string][]uint64{}
+		changedCounts[index] = map[string]map[string]int{}
+		for name, region := range item.process.Regions() {
+			changedCounts[index][name] = map[string]int{}
+			for _, page := range ownPages[index][name] {
+				held, _, err := region.ReadResident(ctx, page, after)
+				if err != nil {
+					b.t.Fatal(err)
+				}
+				if !held {
+					b.t.Fatalf("fork %d no longer holds its own %s page %d", index, name, page)
+				}
+				if err := pristine.Volume(name).Read(ctx, page*uint64(b.pageSize), before); err != nil {
+					b.t.Fatal(err)
+				}
+				changed := []uint64{}
+				for offset := 0; offset < len(after); offset += block {
+					if !bytes.Equal(before[offset:offset+block], after[offset:offset+block]) {
+						changed = append(changed, (page*uint64(b.pageSize)+uint64(offset))/block)
+					}
+				}
+				changedCounts[index][name][strconv.FormatUint(page, 10)] = len(changed)
+				if name == "root" {
+					changedBlocks[index][strconv.FormatUint(page, 10)] = changed
+				}
+			}
+		}
+	}
+	if err := pristine.Close(ctx); err != nil {
+		b.t.Fatal(err)
+	}
 	b.record(ctx, "fork-fanout", "sproutfs", start, nil, map[string]any{
+		"fork_changed_blocks": changedBlocks,
+		"fork_changed_counts": changedCounts,
 		"forks":               count,
 		"command":             workloadTest(),
 		"restore_all_ns":      restored.Sub(start.at).Nanoseconds(),
@@ -1343,6 +1403,7 @@ func (b *benchmark) forkFanOut(ctx context.Context, origin *forkOrigin) {
 		"fork_private_pages":  privatePages,
 		"fork_resident_pages": residentPages,
 		"fork_region_pages":   regionPages,
+		"fork_own_pages":      ownPages,
 	})
 	for _, item := range children {
 		item.console.close()
