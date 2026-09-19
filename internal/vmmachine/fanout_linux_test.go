@@ -56,7 +56,7 @@ const forkFanOutRead = 2 * time.Minute
 // both are being checkpointed on an interval.
 //
 // It is the shape a fan-out actually takes in a deployment and the one thing no
-// other suite has: two guests of one lineage, on one pager, reaching every page
+// other suite has: two guests forked from one parent, on one pager, reaching every page
 // they inherited at once, over a real vCPU, a real UFFD and a real page server.
 // Each of them alone is the migration suite. Both children must answer — a
 // child whose read never returns is a guest nothing can tell from a dead one.
@@ -90,8 +90,8 @@ func TestFirecrackerForkFanOutServesBothChildrenAtOnce(t *testing.T) {
 	waitLine(t, ctx, p, "SPROUTFS_READY ram=7 disk=0 dax=1 root=pmem", 0)
 
 	// The parent's guest takes a working set of its own and stores into its DAX
-	// root, and the parent then publishes it. That checkpoint is the lineage
-	// both children inherit: pages neither of them writes, which they must read
+	// root, and the parent then publishes it. That checkpoint is what both
+	// children inherit: pages neither of them writes, which they must read
 	// as one page between them rather than one each.
 	command(t, ctx, p, fmt.Sprintf("pressure %d\n", forkFanOutTouched),
 		fmt.Sprintf("SPROUTFS_PRESSURE bytes=%d", forkFanOutTouched<<20))
@@ -99,13 +99,13 @@ func TestFirecrackerForkFanOutServesBothChildrenAtOnce(t *testing.T) {
 	command(t, ctx, p, "write 41\n", "SPROUTFS_FLUSH disk=41")
 	published, err := parent.Snapshot(ctx, prepareAndResume(p))
 	if err != nil {
-		t.Fatalf("publishing the lineage %s's children inherit: %v\n%s", parent.ID(), err, consoleText(p))
+		t.Fatalf("publishing the checkpoint %s's children inherit: %v\n%s", parent.ID(), err, consoleText(p))
 	}
 	if err := published.Wait(ctx); err != nil {
 		t.Fatal(err)
 	}
-	inheritedLineage, _ := published.Sealed()
-	if inheritedLineage == 0 {
+	inheritedPages, _ := published.Sealed()
+	if inheritedPages == 0 {
 		t.Fatal("the parent published no page for its children to share")
 	}
 	// And stores into half of that working set again, so the point below also
@@ -165,7 +165,7 @@ func TestFirecrackerForkFanOutServesBothChildrenAtOnce(t *testing.T) {
 	t.Logf("fan-out point: children=%d inherited_pages=%d", len(children), inherited)
 
 	// Both children land on one destination pager, which is what makes them
-	// share its pages, its budgets and the lineage they inherited.
+	// share its pages, its budgets and what they inherited.
 	destinationPager, _ := newSizedMigrationPager(t, ctx, forkFanOutArena/pagerPageBytes(t),
 		len(children)*(forkFanOutRAM+forkFanOutRoot)+(64<<20), forkFanOutDirty)
 	taken := make([]*forkedChild, 0, len(children))
@@ -220,31 +220,31 @@ func TestFirecrackerForkFanOutServesBothChildrenAtOnce(t *testing.T) {
 	}
 	// What the two of them inherited and never wrote is one page between them,
 	// which is the reason a fan-out puts children on one host: every page of the
-	// parent's lineage that both read must cost one load and one page, not one
-	// each. The arena is a quarter of what they map, so not every page outlives
-	// the sibling that would have shared it — but a host that shared none of
-	// them would be paying twice for a lineage the two agree on completely.
+	// parent's that both read must cost one load and one page, not one each. The
+	// arena is a quarter of what they map, so not every page outlives the
+	// sibling that would have shared it — but a host that shared none of them
+	// would be paying twice for pages the two agree on completely.
 	shared := 0
 	for _, child := range taken {
 		for _, name := range []string{vmmachine.RAMVolume, "root"} {
-			census := lineageOf(t, ctx, child.vm, name)
-			t.Logf("fan-out lineage %s/%s: %s", child.id, name, census)
-			shared += census.inherited
+			counted := censusOf(t, ctx, child.vm, name)
+			t.Logf("fan-out census %s/%s: %s", child.id, name, counted)
+			shared += counted.inherited
 		}
 	}
 	if shared == 0 {
-		t.Fatal("the children hold no page of their parent's lineage, so nothing here measures sharing")
+		t.Fatal("the children hold no page inherited from their parent, so nothing here measures sharing")
 	}
 	pager, err := destinationPager.Stats(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	// Half of what they hold in common is a floor with room in it: each child
-	// reads every page of that lineage twice, so a pager sharing it at all
+	// reads every one of those pages twice, so a pager sharing them at all
 	// clears this by several times over, and only one sharing almost none of it
 	// does not.
 	if want := uint64(shared / 2); pager.IdentityHits < want {
-		t.Errorf("two children of one fork point holding %d pages of their parent's lineage shared %d pages, want at least %d: %+v",
+		t.Errorf("two children of one fork point holding %d pages inherited from their parent shared %d pages, want at least %d: %+v",
 			shared, pager.IdentityHits, want, pager)
 	}
 	t.Logf("fan-out destination pager: faults=%d loads=%d evictions=%d spills=%d refaults=%d dirty_stalls=%d dirty_waits=%d identity_hits=%d",
@@ -406,22 +406,22 @@ func stacks() []byte {
 	return buffer[:runtime.Stack(buffer, true)]
 }
 
-// lineage is what one volume's pages name, counted: a hole, an object of a VM
-// this one descends from, or one of its own. It is what says how much lineage
-// two children of a point have to share a page of, and how much of it each
-// of them has already diverged from.
-type lineage struct {
+// census is what one volume's pages name, counted: a hole, an object of a VM
+// this one descends from, or one of its own. It is what says how many inherited
+// pages two children of a point have to share, and how many each of them has
+// already diverged from.
+type census struct {
 	pages, holes, inherited, own int
 }
 
-func (l lineage) String() string {
-	return fmt.Sprintf("pages=%d holes=%d inherited=%d own=%d", l.pages, l.holes, l.inherited, l.own)
+func (c census) String() string {
+	return fmt.Sprintf("pages=%d holes=%d inherited=%d own=%d", c.pages, c.holes, c.inherited, c.own)
 }
 
-func lineageOf(t *testing.T, ctx context.Context, vm *volume.VM, name string) lineage {
+func censusOf(t *testing.T, ctx context.Context, vm *volume.VM, name string) census {
 	t.Helper()
 	v := vm.Volume(name)
-	census := lineage{pages: int(v.Size() / vmmemory.PageSize)}
+	counted := census{pages: int(v.Size() / vmmemory.PageSize)}
 	for page := range v.Size() / vmmemory.PageSize {
 		extents, err := v.Locate(ctx, page*vmmemory.PageSize, vmmemory.PageSize)
 		if err != nil {
@@ -430,13 +430,13 @@ func lineageOf(t *testing.T, ctx context.Context, vm *volume.VM, name string) li
 		for _, extent := range extents {
 			switch {
 			case extent.Identity.Zero || extent.Identity.Ref.IsZero():
-				census.holes++
+				counted.holes++
 			case extent.Identity.Ref.VM == vm.ID():
-				census.own++
+				counted.own++
 			default:
-				census.inherited++
+				counted.inherited++
 			}
 		}
 	}
-	return census
+	return counted
 }
