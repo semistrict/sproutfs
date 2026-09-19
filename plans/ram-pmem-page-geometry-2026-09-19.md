@@ -162,12 +162,13 @@ memory savings and workload time together.
    per segment. That is sixteen root entries — about 240 bytes — per GiB of a
    4 KiB-page volume, an encoded segment of about 330 KiB and at most 560 KiB
    against a `maximumSegmentSize` of 1 MiB, and a `maximumRootSize` of 2 MiB
-   that admits about 8.5 TiB of such a volume. `maximumIndexSize` is the one
-   bound a small page brings within reach: a checkpoint writes about 5 MiB of
-   segments per GiB of a 4 KiB-page volume it dirtied, so one that changed
-   every page of more than about 12 GiB at once is refused. That bounds one
-   checkpoint's dirty set rather than the volume, and step 6 is where the
-   packing that would relieve it belongs.
+   that admits about 8.5 TiB of such a volume. A small page also brought
+   `maximumIndexSize` within reach — a checkpoint writes about 5 MiB of segments
+   per GiB of a 4 KiB-page volume it dirtied, and at 64 MiB one that dirtied
+   more than about 12 GiB at once was refused, which would have stopped the VM.
+   So the bound is 1 GiB, which no dirty budget reaches, and an open no longer
+   reads the index object whole: the object ends with the record it begins
+   with, and an open is one read of its last 256 KiB, as a part's table is.
 
    The pager, the wire protocols and the VMM are untouched, so every volume a
    host creates is still a 2 MiB-page volume and the pager refuses one of any

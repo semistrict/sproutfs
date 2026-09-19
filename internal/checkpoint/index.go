@@ -567,53 +567,63 @@ func decodeRefs(entries []*checkpointv1.Ref) ([]control.Ref, error) {
 }
 
 const (
-	// indexHeaderSize is the fixed head of every index object: the magic that
-	// says the object is one, the format version, and the extent of the root
-	// that ends the object. The segments the checkpoint changed lie between the
-	// header and the root.
-	indexHeaderSize = 32
+	// indexRecordSize is the fixed record an index object begins and ends with:
+	// the magic that says the object is one, the format version, and the extent
+	// of the root. The segments the checkpoint changed lie after the first
+	// record, the root after them, and the same record again after the root, so
+	// that a reader of the object's end alone has what locates the root — which
+	// is how a part is read too — and a reader of its head alone can still name
+	// the version it was written under.
+	indexRecordSize = 32
 	// indexMagic is "SPROUTIX".
 	indexMagic = 0x5350524f55544958
 	// indexFormatVersion is the index layout this build writes and the only one
-	// it reads. Version 8 records every volume's page geometry in the root; a
-	// version 7 root states no page size, and its page numbers are 2 MiB pages
-	// that must not be read as anything else.
+	// it reads. Version 8 records every volume's page geometry in the root, and
+	// ends the object with the record it begins with; a version 7 root states no
+	// page size, and its page numbers are 2 MiB pages that must not be read as
+	// anything else.
 	indexFormatVersion = 8
 )
 
-// putIndexHeader writes the fixed head of an index object over the first
-// indexHeaderSize bytes of data.
-func putIndexHeader(data []byte, rootOffset, rootLength uint64) {
-	binary.LittleEndian.PutUint64(data[0:], indexMagic)
-	binary.LittleEndian.PutUint32(data[8:], indexFormatVersion)
-	binary.LittleEndian.PutUint32(data[12:], 0)
-	binary.LittleEndian.PutUint64(data[16:], rootOffset)
-	binary.LittleEndian.PutUint64(data[24:], rootLength)
+// putIndexRecord writes the fixed record of an index object into dst, which is
+// indexRecordSize bytes.
+func putIndexRecord(dst []byte, rootOffset, rootLength uint64) {
+	binary.LittleEndian.PutUint64(dst[0:], indexMagic)
+	binary.LittleEndian.PutUint32(dst[8:], indexFormatVersion)
+	binary.LittleEndian.PutUint32(dst[12:], 0)
+	binary.LittleEndian.PutUint64(dst[16:], rootOffset)
+	binary.LittleEndian.PutUint64(dst[24:], rootLength)
 }
 
-// decodeIndexHeader reads an index object's head and reports where the root is.
-// An object whose head is not one refuses with the version it was written
-// under, because nothing this build reads looks like that.
-func decodeIndexHeader(data []byte) (offset, length uint64, err error) {
-	if len(data) < indexHeaderSize || binary.LittleEndian.Uint64(data[0:]) != indexMagic {
+// isIndexRecord reports whether a record carries the magic this build stamps.
+func isIndexRecord(record []byte) bool {
+	return len(record) >= indexRecordSize && binary.LittleEndian.Uint64(record[0:]) == indexMagic
+}
+
+// decodeIndexRecord reads the record of an index object of size bytes and
+// reports where the root is: after the first record and whatever segments
+// follow it, and ending exactly where the last record begins. A record of
+// another version refuses with the version it carries, because nothing this
+// build reads looks like that.
+func decodeIndexRecord(record []byte, size uint64) (offset, length uint64, err error) {
+	if !isIndexRecord(record) {
 		return 0, 0, ErrCorrupt
 	}
-	if version := binary.LittleEndian.Uint32(data[8:]); version != indexFormatVersion {
+	if version := binary.LittleEndian.Uint32(record[8:]); version != indexFormatVersion {
 		return 0, 0, fmt.Errorf("%w: checkpoint index format version %d, want %d",
 			ErrCorrupt, version, indexFormatVersion)
 	}
-	offset = binary.LittleEndian.Uint64(data[16:])
-	length = binary.LittleEndian.Uint64(data[24:])
-	size := uint64(len(data))
-	if length == 0 || length > maximumRootExtent || offset < indexHeaderSize ||
-		offset > size || length > size-offset {
+	offset = binary.LittleEndian.Uint64(record[16:])
+	length = binary.LittleEndian.Uint64(record[24:])
+	if length == 0 || length > maximumRootExtent || offset < indexRecordSize ||
+		size < 2*indexRecordSize || offset > size-indexRecordSize || length != size-indexRecordSize-offset {
 		return 0, 0, ErrCorrupt
 	}
 	return offset, length, nil
 }
 
 // supersededFormat is the field a root carried its own format version in while
-// it was the whole of an index object. The header carries it now, so an object
+// it was the whole of an index object. The record carries it now, so an object
 // carrying this field was written by a build this one does not read, and is
 // refused with the version it names.
 const supersededFormat = 1
@@ -788,7 +798,7 @@ func (i *Index) checkSegmentAddress(at segmentAddress) error {
 	if _, named := i.checkpoints[at.ref]; !named {
 		return ErrCorrupt
 	}
-	if at.length == 0 || at.length > maximumSegmentExtent || at.offset < indexHeaderSize ||
+	if at.length == 0 || at.length > maximumSegmentExtent || at.offset < indexRecordSize ||
 		at.offset > maximumIndexSize || at.length > maximumIndexSize-at.offset {
 		return ErrCorrupt
 	}

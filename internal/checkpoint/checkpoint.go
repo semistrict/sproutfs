@@ -59,13 +59,24 @@ const (
 	// it: an envelope that falls back to raw is its contents plus the header.
 	maximumRootExtent    = maximumRootSize + blob.HeaderSize
 	maximumSegmentExtent = maximumSegmentSize + blob.HeaderSize
-	// maximumIndexSize bounds one checkpoint's whole index object: its header,
-	// the segments it changed and its root. A fully dirty 4 TiB volume of 2 MiB
-	// pages writes 8192 segments of a few kilobytes each and does not reach
-	// this; a checkpoint that changed every page of a 4 KiB-page volume writes
-	// about 5 MiB of segments per GiB of it, so one that dirtied more than about
-	// 12 GiB of such a volume at once is refused here.
-	maximumIndexSize = 64 << 20
+	// maximumIndexSize bounds one checkpoint's whole index object: its records,
+	// the segments it changed and its root. It is a bound on what a writer holds
+	// in memory and sends in one PUT, and no reader fetches an index object
+	// whole: an open reads its end, and a segment is a range of it. A segment is
+	// about half a percent of the pages it locates — about 5 MiB for every GiB of
+	// a 4 KiB-page volume a checkpoint dirtied — so this admits a checkpoint that
+	// dirtied some 200 GiB of one at once, which is more than a host's dirty
+	// budget lets any one VM hold unpublished.
+	maximumIndexSize = 1 << 30
+	// supersededIndexSize bounds an index object an older build wrote, which is
+	// read whole only to name the version it was written under.
+	supersededIndexSize = 64 << 20
+	// defaultIndexTail is how much of the end of an index object an open reads
+	// first. The root ends the object, and a root is about fifteen bytes for each
+	// segment a volume has — some 120 KiB for a 4 TiB volume of 2 MiB pages, and
+	// 16 KiB for 64 GiB of 4 KiB ones — so this is the whole root of any VM but
+	// the very largest, and one read opens a checkpoint.
+	defaultIndexTail = 256 << 10
 	// maximumTableSize bounds one part's table, which names the part's members.
 	// It bounds what a writer produces as well as what a reader accepts: a part
 	// is sealed when the next member's entry would carry its table past this, so

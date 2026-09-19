@@ -413,16 +413,17 @@ func isZero(data []byte) bool {
 	return true
 }
 
-// indexObject accumulates one checkpoint's index object: a fixed header, the
-// segments the checkpoint changed, and the root that ends it. It is built whole
-// in memory, which is what maximumIndexSize bounds, and written in one PUT.
+// indexObject accumulates one checkpoint's index object: a fixed record, the
+// segments the checkpoint changed, the root, and the record again. It is built
+// whole in memory, which is what maximumIndexSize bounds, and written in one
+// PUT.
 type indexObject struct {
 	store *Store
 	data  []byte
 }
 
 func newIndexObject(store *Store) *indexObject {
-	return &indexObject{store: store, data: make([]byte, indexHeaderSize)}
+	return &indexObject{store: store, data: make([]byte, indexRecordSize)}
 }
 
 // add encodes one segment into the object and reports where it landed, which is
@@ -444,7 +445,7 @@ func (o *indexObject) add(ctx context.Context, ref control.Ref, held *segment) (
 	return segmentAddress{ref: ref, offset: offset, length: uint64(len(o.data)) - offset}, nil
 }
 
-// seal appends the root, stamps the header with where it landed, and returns
+// seal appends the root, stamps both records with where it landed, and returns
 // the object's bytes. The root is encoded after every segment address is
 // settled, because the root is what carries them.
 func (o *indexObject) seal(ctx context.Context, index *Index) ([]byte, error) {
@@ -460,11 +461,13 @@ func (o *indexObject) seal(ctx context.Context, index *Index) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	o.data = grown
+	length := uint64(len(grown)) - offset
+	o.data = append(grown, make([]byte, indexRecordSize)...)
 	if len(o.data) > maximumIndexSize {
 		return nil, ErrInvalidRange
 	}
-	putIndexHeader(o.data, offset, uint64(len(o.data))-offset)
+	putIndexRecord(o.data, offset, length)
+	putIndexRecord(o.data[len(o.data)-indexRecordSize:], offset, length)
 	return o.data, nil
 }
 

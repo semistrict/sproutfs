@@ -455,15 +455,18 @@ A segment is about twenty bytes an entry, so one of a 4 KiB-page volume is about
 2 MiB per page. Both are inside the `maximumSegmentSize` of 1 MiB below, and
 both keep a segment one range read.
 
-An index object is a fixed 32-byte header naming the index format version and
+An index object is a fixed 32-byte record naming the index format version and
 the root's offset and length, then the segments this checkpoint changed in
-volume-name and segment-number order, then the root. Opening a checkpoint is one
-GET of it. It is bounded at 64 MiB, which a fully dirty 4 TiB volume of 2 MiB
-pages does not reach; a checkpoint of a 4 KiB-page volume writes about 5 MiB of
-segments per GiB of it that it dirtied, so one that changed every page of more
-than about 12 GiB at once is refused. That is a bound on one checkpoint's dirty
-set and not on the volume: an interval checkpoint publishes what a guest wrote
-since the last one.
+volume-name and segment-number order, then the root, then the same record again.
+Opening a checkpoint is one GET of its end — the last 256 KiB, which holds the
+closing record and, for any VM but the very largest, the whole root; a longer
+root costs one more GET of the rest of it — so what an open costs does not grow
+with what the checkpoint changed, and a part is read from its end in the same
+way. No reader fetches an index object whole. It is bounded at 1 GiB, which is
+what a writer holds in memory and sends in one PUT: a checkpoint of a 4 KiB-page
+volume writes about 5 MiB of segments per GiB of it that it dirtied, so the
+bound admits one that dirtied some 200 GiB at once, which is more than a host's
+dirty budget lets a VM hold unpublished.
 
 A segment is complete on its own too: its own checkpoint list and origin list,
 with each page naming both by position and carrying its number relative to the

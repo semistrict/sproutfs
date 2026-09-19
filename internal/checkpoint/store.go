@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -82,6 +81,10 @@ type Store struct {
 	partBytes int
 	// maxRootBytes is Config.MaxIndexBytes, or the package maximum.
 	maxRootBytes int
+	// indexTail is how much of the end of an index object an open reads first:
+	// defaultIndexTail, and less only where a test wants a root that does not
+	// fit it.
+	indexTail int64
 	// slots is the upload budget every publication this store begins shares.
 	// Its capacity is Config.Concurrency.
 	slots chan struct{}
@@ -139,6 +142,7 @@ func NewStore(config Config) (*Store, error) {
 	}
 	store := &Store{objects: config.ObjectStore, prefix: prefix, cache: config.Cache,
 		partBytes: config.PartBytes, maxRootBytes: config.MaxIndexBytes,
+		indexTail: defaultIndexTail,
 		slots:     make(chan struct{}, config.Concurrency),
 		builders:  make(chan struct{}, config.MaxBuilders),
 		deletes:   make(chan struct{}, config.MaxDeletes),
@@ -187,8 +191,11 @@ func (s *Store) supersededPartKey(ref control.Ref) (platform.ObjectKey, error) {
 }
 
 // Open reads and validates the root of a published checkpoint. It is one GET of
-// the checkpoint's index object: the header at its front says where the root
-// that ends it is, and the segments in between are fetched as they are needed.
+// the end of the checkpoint's index object: the record that closes it says
+// where the root before it is, the tail read holds the whole of any root but
+// the very largest — one more GET fetches the rest of one that long — and the
+// segments ahead of the root are fetched as they are needed. So what an open
+// costs does not grow with what the checkpoint changed.
 //
 // A checkpoint with no index object never committed, and is absent. A
 // deployment written when the root was a member of a part is refused with the
@@ -198,23 +205,36 @@ func (s *Store) Open(ctx context.Context, ref control.Ref) (*Index, error) {
 	if err != nil {
 		return nil, err
 	}
-	data, _, err := platform.ReadObject(ctx, s.objects, key, 1, maximumIndexSize, ErrCorrupt)
+	tail, size, err := s.readSuffix(ctx, key, s.indexTail)
 	if err != nil {
 		if errors.Is(err, platform.ErrNotFound) {
 			return nil, s.refuseSupersededParts(ctx, ref, err)
 		}
 		return nil, err
 	}
-	if !isIndexObject(data) {
-		// An object at this key that is not one of these is one an older build
-		// wrote, and what this read owes is the version to name.
-		return nil, s.refuseSupersededIndex(ctx, data)
+	if len(tail) < indexRecordSize || !isIndexRecord(tail[len(tail)-indexRecordSize:]) {
+		// An object at this key that does not end as one of these does is one
+		// an older build wrote, and what this read owes is the version to name.
+		return nil, s.refuseSupersededIndex(ctx, key)
 	}
-	offset, length, err := decodeIndexHeader(data)
+	offset, length, err := decodeIndexRecord(tail[len(tail)-indexRecordSize:], size)
 	if err != nil {
 		return nil, err
 	}
-	root, err := s.codecs.Decode(ctx, data[offset:offset+length], maximumRootSize)
+	// The root ends where the closing record begins, so the tail holds the end
+	// of it and, for all but the largest, the whole of it.
+	held := tail[:len(tail)-indexRecordSize]
+	var encoded []byte
+	if length <= uint64(len(held)) {
+		encoded = held[uint64(len(held))-length:]
+	} else {
+		head, err := s.readRange(ctx, key, offset, length-uint64(len(held)), maximumRootExtent)
+		if err != nil {
+			return nil, err
+		}
+		encoded = append(head, held...)
+	}
+	root, err := s.codecs.Decode(ctx, encoded, maximumRootSize)
 	if err != nil {
 		return nil, errors.Join(ErrCorrupt, err)
 	}
@@ -244,11 +264,22 @@ func (s *Store) refuseSupersededParts(ctx context.Context, ref control.Ref, abse
 }
 
 // refuseSupersededIndex names the version an index object this build did not
-// write was written under. While the root was the whole of the index object it
-// was one envelope holding a message that carried its own format version, and
-// that field is what says so.
-func (s *Store) refuseSupersededIndex(ctx context.Context, data []byte) error {
-	root, err := s.codecs.Decode(ctx, data, maximumIndexSize)
+// write was written under. One that begins with a record says so there. While
+// the root was the whole of the index object it was one envelope holding a
+// message that carried its own format version, and that field is what says so.
+// Nothing an older build wrote is larger than supersededIndexSize.
+func (s *Store) refuseSupersededIndex(ctx context.Context, key platform.ObjectKey) error {
+	data, _, err := platform.ReadObject(ctx, s.objects, key, 1, supersededIndexSize, ErrCorrupt)
+	if err != nil {
+		return err
+	}
+	if isIndexRecord(data) {
+		if _, _, err := decodeIndexRecord(data, uint64(len(data))); err != nil {
+			return err
+		}
+		return ErrCorrupt
+	}
+	root, err := s.codecs.Decode(ctx, data, supersededIndexSize)
 	if err != nil {
 		return ErrCorrupt
 	}
@@ -256,11 +287,6 @@ func (s *Store) refuseSupersededIndex(ctx context.Context, data []byte) error {
 		return err
 	}
 	return ErrCorrupt
-}
-
-// isIndexObject reports whether an object's head is the one this build stamps.
-func isIndexObject(data []byte) bool {
-	return len(data) >= indexHeaderSize && binary.LittleEndian.Uint64(data[0:]) == indexMagic
 }
 
 // Root publishes the first checkpoint of a new VM: every named volume exists at

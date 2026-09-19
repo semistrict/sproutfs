@@ -58,10 +58,10 @@ never be checkpointed the wait ends as a full dirty budget does — the host sto
 that VM deliberately, with a last checkpoint of what it can still capture.
 
 **Index object**: One checkpoint's metadata, at
-`vm/<id>/ckpt/<seq>/index`: a fixed header, the page-table segments the
-checkpoint changed, and the **root**, which says for every volume where each 512
-MiB segment of its page table is fetched from and which checkpoints this one
-reads. The root carries its parent's segment addresses forward and replaces only
+`vm/<id>/ckpt/<seq>/index`: a fixed record, the page-table segments the
+checkpoint changed, the **root**, and the record again, so that the object's end
+alone locates the root. The root says for every volume where each segment of its
+page table is fetched from and which checkpoints this one reads. The root carries its parent's segment addresses forward and replaces only
 the segments its own checkpoint changed, so it is complete on its own and names
 no parent. The index object's create-if-absent PUT is the publication's commit.
 
