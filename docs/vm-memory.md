@@ -40,6 +40,13 @@ its own; the rest would each rule it out too.
    command line without `rootflags=dax=always`, under which ext4 fails the
    mount, and so the boot, where DAX is not to be had; and the guest's witness
    refuses a file on a PMEM device that the kernel does not report as DAX.
+   The guest's init also remounts the root `noatime`: an image's files all
+   have an access time no newer than their modification time, so under the
+   kernel's `relatime` a fork that only reads writes the inode of every file it
+   reads, and dirties pages it shares — guest memory for the inode, root pages
+   when the journal commits. It is a flag of the mount rather than of ext4, so
+   `rootflags=` cannot carry it: ext4 refuses the option and the root does not
+   mount.
 2. **Sharing is by name, across VMs and across checkpoints.** A child's memory
    is its parent's checkpoints plus its own writes, at 2 MiB granularity over
    tens of thousands of pages. As file mappings that is one VMA per run,

@@ -157,7 +157,7 @@ func TestConfigRefusesBootArgsThatMountTheRootWithoutDAX(t *testing.T) {
 // TestConfigAcceptsBootArgsThatKeepDAXAmongOtherRootFlags.
 func TestConfigAcceptsBootArgsThatKeepDAXAmongOtherRootFlags(t *testing.T) {
 	values := minimal()
-	values["SPROUTFS_BOOT_ARGS"] = "console=ttyS0 quiet init=/init rootfstype=ext4 rootflags=noatime,dax=always"
+	values["SPROUTFS_BOOT_ARGS"] = "console=ttyS0 quiet init=/init rootfstype=ext4 rootflags=commit=30,dax=always"
 	config, err := loadConfig(environ(values))
 	if err != nil {
 		t.Fatal(err)

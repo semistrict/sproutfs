@@ -14,6 +14,7 @@
 #include <sys/mount.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <sys/sysmacros.h>
 #include <sys/time.h>
 #include <sys/vfs.h>
@@ -129,13 +130,20 @@ int main(void) {
     if (!tcgetattr(0, &term)) { term.c_lflag &= ~ECHO; tcsetattr(0, TCSANOW, &term); }
     mount("proc", "/proc", "proc", 0, ""); mount("sysfs", "/sys", "sysfs", 0, "");
     name_root_device();
+    // The kernel mounted the root relatime, and an image's files all have an
+    // access time no newer than their modification time, so a fork that only
+    // reads would write the inode of every file it reads and dirty pages it
+    // shares. noatime is a flag of the mount rather than of ext4, which
+    // rootflags= cannot carry: ext4 refuses it and the root does not mount.
+    if (mount(NULL, "/", NULL, MS_REMOUNT | MS_BIND | MS_NOATIME, NULL)) fail("remount root noatime");
     struct statfs rootfs;
     if (statfs("/", &rootfs)) fail("root filesystem");
+    if (!(rootfs.f_flags & ST_NOATIME)) { errno = EINVAL; fail("root keeps access times"); }
     // The plain-Firecracker baseline boots the same image over virtio-block,
     // where there is no PMEM device and therefore no DAX to require.
     int have_pmem = access("/dev/pmem0", F_OK) == 0;
     int pmem_root = have_pmem && rootfs.f_type == EXT4_SUPER_MAGIC;
-    if (have_pmem && !pmem_root && mount("/dev/pmem0", "/mnt", "ext4", 0, "dax=always")) fail("mount PMEM/DAX");
+    if (have_pmem && !pmem_root && mount("/dev/pmem0", "/mnt", "ext4", MS_NOATIME, "dax=always")) fail("mount PMEM/DAX");
     int fd = open(have_pmem && !pmem_root ? "/mnt/value" : "/value", O_CREAT | O_RDWR, 0600);
     if (fd < 0 || ftruncate(fd, 4096)) fail("open value");
     struct statx st;

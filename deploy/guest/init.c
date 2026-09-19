@@ -125,7 +125,21 @@ static void name_root_device(void) {
     }
 }
 
+// stop_access_times remounts the root noatime. The kernel mounted it relatime,
+// and an image's files all have an access time no newer than their modification
+// time, so a fork that only reads would write the inode of every file it reads
+// and dirty pages it shares with its parent — guest memory for the inode, root
+// pages when the journal commits. It is a flag of the mount rather than of
+// ext4, which rootflags= cannot carry: ext4 refuses it and the root does not
+// mount.
+static void stop_access_times(void) {
+    if (mount(NULL, "/", NULL, MS_REMOUNT | MS_BIND | MS_NOATIME, NULL)) {
+        fprintf(stderr, "sproutfs-init: remount / noatime: %s\n", strerror(errno));
+    }
+}
+
 int main(void) {
+    stop_access_times();
     mount_at("devtmpfs", "/dev", "devtmpfs");
     mount_at("proc", "/proc", "proc");
     mount_at("sysfs", "/sys", "sysfs");
