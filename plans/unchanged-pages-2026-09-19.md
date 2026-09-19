@@ -52,6 +52,18 @@ back to sharing the page it was copied from.
   running — and `RegionCheckpoint.Settle` compares every held page that has an
   origin. An unchanged page leaves the checkpoint's set, so `DirtyPages` does
   not list it and it costs the store nothing.
+- **The settle is parallel.** Each page is settled alone — its comparison and
+  its re-sharing take that page's lock and its origin's and nothing wider — so
+  a settle hands its pages to `Config.SettleWorkers` workers, the host's
+  processors by default, and the regions of one VM settle at the same time as
+  each other. What bounds it is memory bandwidth and not the pager's I/O
+  permits, which it does not take: it reads no disk and no store. A thousand
+  2 MiB pages are about a tenth of a second of comparing on one processor, and
+  that is time the upload waits for, so it is divided rather than queued. The
+  workers share nothing but the counter of unchanged pages and the set the
+  checkpoint will list, both under the checkpoint's own mutex, so the result
+  does not depend on the order they finish in — which is what lets the
+  simulation run the same code.
 - **An unchanged page is re-shared at once, not left to fault again.** Under
   the origin's lock and the private page's: if the guest still shares the
   checkpoint's copy, its mapping is replaced by a read-only mapping of the
@@ -92,7 +104,8 @@ Red tests first, exact numbers, beside the code.
   page is listed and published exactly as today. A store that lands between the
   seal and the settle. An origin evicted before the settle: published as today.
   A page copied from a checkpoint's held copy, from zeros, and from an
-  unpublished page: never compared.
+  unpublished page: never compared. A settle of many pages gives the same
+  result with one worker and with sixteen, and under the race detector.
 - The loss window: a region whose only private pages were unchanged has no
   unpublished write after the settle, and a store waiting on the window is let
   through.
