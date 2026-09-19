@@ -16,8 +16,8 @@ across all of them is collected in [open-work.md](../docs/open-work.md).
   — a write fault is not always a store (KVM's asynchronous page fault worker on
   x86-64, cache maintenance on aarch64), so a sealed page whose bytes equal the
   page it was copied from is not dirty: the checkpoint does not publish it and
-  the guest's page goes back to sharing its origin. **Planned; not
-  implemented.**
+  the guest's page goes back to sharing its origin. **Done, except the GCE and
+  Lima fan-out measurement the plan's last proof bullet asks for.**
 - [2026-09-14 repository layout](layout-2026-09-14.md) — nothing in the module is
   a library, so every package but `cmd` moves under `internal/`, the large
   packages gain nested `internal` bodies, `image` becomes `checkpoint`, and

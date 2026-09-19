@@ -1,6 +1,33 @@
 # A private page that did not change — 2026-09-19
 
-**Status: planned; not implemented.**
+**Status: done, except the GCE and Lima measurement in the last proof bullet,
+which is whoever dispatched the work's to take.**
+
+Three things the code showed the plan was wrong about, all of them recorded in
+the text below:
+
+- **A copy needs a page to be made from, and a cold write fault had none.** The
+  plan says the copy remembers "the resident page it was copied from", but a
+  store into a page its region holds no memory for read the volume straight
+  into its private page and had nothing to remember — which is exactly the
+  x86-64 case the defect is about. Such a store now reads the page in first,
+  under the identity its volume gives it, and copies away from that: one extra
+  resident page for the fault, and an identity every other region inheriting it
+  maps rather than reads.
+- **The page a store copies from is left in the arena rather than released.**
+  Unlinking the binding from it released it whenever the binding was its last
+  alias, which is the ordinary case, so the origin would have been gone before
+  the seal. Nothing pins it — it is clean, and the next reclaim short of a slot
+  takes it like any other page — but a store no longer releases it, and the
+  region that left it there gives it up when it detaches. `Host.Sharing` counts
+  such a page in `UniqueBytes` under the kind of the region that made it,
+  because it is memory the arena holds.
+- **The settle takes the region live, not the region lock.** "Nothing wider"
+  than the two page locks is what the plan asks for and what the code does; the
+  region is held only in the sense a fault holds it against a detach, so a
+  seal, a retire or a detach waits for a settle and never for a page of one.
+  A sealed page the pager has spilled is not compared either, for the same
+  reason the store is not read: the settle takes no I/O permit.
 
 ## The defect
 
@@ -38,14 +65,20 @@ back to sharing the page it was copied from.
   a pointer to that resident page — `origin`. Not its identity: eight bytes per
   binding, and an origin that has been evicted is simply no longer an origin. A
   page copied from a checkpoint's held copy, from another host's unpublished
-  page, or made from zeros has no origin.
+  page, or made from zeros has no origin. A store into a page its region holds
+  no memory for reads that page in first, so that there is a resident page
+  under the volume's identity to copy away from and to remember; the page is
+  left in the arena when the binding takes its private copy instead, and is an
+  ordinary reclaim candidate from then on.
 - **The comparison is exact and in memory.** A published identity's bytes are
   immutable, so comparing the sealed page with its origin under both pages'
   locks is a `bytes.Equal` and nothing else: no hash, which would make a wrong
   answer possible and would put work on the fault path, and no read of the
   store, which would double a checkpoint's I/O for the pages that did change.
-  An origin that is no longer resident is not compared; the page is published
-  as it is today. Nothing is pinned to keep an origin resident.
+  An origin that is no longer resident is not compared, and neither is a sealed
+  page the pager has spilled, which would be a read the settle does not take an
+  I/O permit for; either way the page is published as it is today. Nothing is
+  pinned to keep an origin resident.
 - **It happens behind the pause.** The seal is unchanged. The publication asks
   each dirty source to settle before it enumerates its pages —
   `DirtySource.Settle(ctx)`, called once, off the pause path, with the guest
@@ -54,9 +87,10 @@ back to sharing the page it was copied from.
   not list it and it costs the store nothing.
 - **The settle is parallel.** Each page is settled alone — its comparison and
   its re-sharing take that page's lock and its origin's and nothing wider — so
-  a settle hands its pages to `Config.SettleWorkers` workers, the host's
-  processors by default, and the regions of one VM settle at the same time as
-  each other. What bounds it is memory bandwidth and not the pager's I/O
+  a settle hands its pages to `Config.SettleWorkers` workers — the host's
+  processors, which `internal/host` chooses; a configuration that leaves it
+  zero settles on the caller's own goroutine — and the regions of one VM settle
+  at the same time as each other. What bounds it is memory bandwidth and not the pager's I/O
   permits, which it does not take: it reads no disk and no store. A thousand
   2 MiB pages are about a tenth of a second of comparing on one processor, and
   that is time the upload waits for, so it is divided rather than queued. The
@@ -127,4 +161,5 @@ Red tests first, exact numbers, beside the code.
 
 After step 2 of the [page-geometry plan](ram-pmem-page-geometry-2026-09-19.md)
 and before its step 3: step 3 parameterises the whole of `internal/vmmemory` by
-page size, and this change is in the same files.
+page size, and this change is in the same files. It was taken there, against
+`vmmemory.PageSize`.

@@ -33,7 +33,13 @@ coordinator are the real ones.
 What a campaign drives it with is the same short list whatever the campaign is:
 `Store`, `Checkpoint`, `Migrate`, `Fork`, `Delete`, `Takeover`, `Kill`,
 `Restart`, `Shutdown` and `Settle`, plus `KillDuring`, which runs one operation
-on a goroutine of its own and takes a host away in the middle of it. What it
+on a goroutine of its own and takes a host away in the middle of it. One access
+in four that `Store` draws is a write fault the guest stores nothing through,
+because a write fault is not always a store — a cold read reaches the pager as
+one on x86-64, and so does a guest kernel's first execution of a page on
+aarch64. The model records nothing for it, so the page has to read what the
+guest last wrote whether the pager publishes the copy it made or settles it
+back onto the page it was copied from. What it
 requires of them is also the same list: `Verify` (no guest reads bytes it never
 wrote, read through that guest's own mappings), `VerifyDurable` (the same bytes
 read back through the volume), `CheckSelected` (every record selects a
@@ -148,6 +154,12 @@ swizzle, and that no recovery ever rewinds more than it allows —
 actually does to a guest is the four scenarios in `losswindow_test.go`, which
 run the checkpoint loop precisely so a store held back by the window has a loop
 to ask.
+
+What the settle behind a checkpoint's pause does to a guest has a scenario of
+its own, `unchanged_test.go`: two children of one fork point read every page of
+their memory and their disk through faults that all claim to be writes, store
+nothing, and are checkpointed. Each must publish no page at all and hold no
+private byte afterwards — every page it touched is the parent's page again.
 
 ## The no-cheating rule
 

@@ -139,6 +139,7 @@ the node it is on rather than from an environment variable each:
 | `ReadAheadPages` | 4 (8 MiB) | a boot, a restore and a working set all walk memory forwards, so one fault serves what would otherwise be four |
 | `WriteAheadPages` | 4, or 1 where the dirty budget holds fewer than 64 such runs | the same run, charged to the dirty budget whether the guest uses it or not, so a small budget keeps one page |
 | `ConcurrentIO` | four per processor, held between 16 and 256, and never more read-ahead runs than the arena has room for | each permit can hold one read-ahead or spill buffer, so it is both the parallelism a node can use and a bound on the buffers it costs |
+| `SettleWorkers` | the node's processors, capped at 64 | a settle compares resident pages and takes no I/O permit, so processors are what it can use, and it is time the upload waits for |
 | `ConnectionConfig.FaultWorkers` | two per processor, held between 8 and 64 | a fault spends most of its life in a store read; the I/O budget is what bounds the reads |
 | `ConnectionConfig.MaxVMAs` | half of `/proc/sys/vm/max_map_count`, disabled below 128 and capped at 2²⁰ | the pager's mappings are not the VMM's only ones, so half the kernel's limit is the budget and the rest is headroom; an unreadable limit disables the budget, exactly as a client without `/proc` does |
 
@@ -284,9 +285,13 @@ of zeros looks the same.
 ## What the sharing is worth
 
 `Stats` counts what the pager has done: `IdentityHits` is every page ever mapped
-to an already resident identity and `CopyOnWrites` every page a store took a
-private copy of. Neither ever falls, so a host whose guests have all diverged
-reads the same as one whose guests share everything.
+to an already resident identity, `CopyOnWrites` every page a store took a
+private copy of, and `UnchangedPages` every page a settle found to hold exactly
+the bytes of the page it was copied from — a write fault the guest never stored
+through, which no checkpoint publishes. None of them ever falls, so a host whose
+guests have all diverged reads the same as one whose guests share everything.
+The checkpoint's log line carries the settle's count beside its dirty set, as
+`unchanged_pages`.
 
 `Host.Sharing` is the gauge beside them, per region kind. `UniqueBytes` is the
 host memory the arena holds, one resident page counted once however many regions
@@ -294,7 +299,11 @@ map it; `MappedBytes` is the sum over regions of the resident pages each maps,
 so a page three regions map counts three times; `SavedBytes` is the difference,
 which is the memory this host did not have to find. Every alias counts in
 `MappedBytes`, including two regions of one VM and a checkpoint's copy of a page
-the guest still shares with it. It measures resident sharing only: a fork
+the guest still shares with it. A page no region maps at all is still memory the
+arena holds — the page a store copied away from and left behind, waiting to be
+compared with that copy or to be inherited by the next region that names its
+identity — so it counts in `UniqueBytes` and in no mapping, under the kind of
+the region that created it. It measures resident sharing only: a fork
 inherits every one of its parent's page identities, and the ones neither has
 faulted in are shared in the store and on the wire without costing this host a
 byte, so none of them are here.
@@ -453,6 +462,70 @@ index records. Nothing copies those bytes into the volume package on the way;
 the guest runs throughout. A read of a set that has already ended fails —
 `ErrNotSealed`, or why a detached region discarded it — rather than answering
 out of pages that are the guest's own again.
+
+A write fault is not always a store, so a sealed page is not always dirty. On
+x86-64 KVM finishes a guest fault that has to wait for the pager from a worker
+thread which always asks for the page writable, so a cold **read** reaches the
+pager as a write fault; on aarch64 the guest kernel's cache maintenance on a
+page it executes for the first time is reported by the architecture as a write.
+The pager cannot tell those faults from real ones while they wait — the worker
+will not finish until the page is writable — so it copies, and tells afterwards.
+
+**A sealed page whose bytes equal the page it was copied from is not dirty.**
+The copy remembers its origin: when a store is served by copying away from a
+resident page that holds a published page identity, the binding keeps a pointer
+to that resident page. Not its identity — eight bytes per binding, and an origin
+that has been evicted is simply no longer an origin. A page copied from a
+checkpoint's held copy, from the name a fork point lent a private page, from
+another host's unpublished page or made from zeros has none, and a store into a
+page this region holds no memory for reads that page in first, under the
+identity its volume gives it, so that what it copies away from is a page the
+settle can compare it with and every region inheriting that identity maps rather
+than reads. The page a store copied from stays in the arena when the binding
+leaves it: nothing pins it, and the next reclaim short of a slot takes it like
+any other clean page.
+
+`RegionCheckpoint.Settle` is the comparison, and `volume.DirtySource.Settle` is
+what the publication calls once, behind the pause and before it enumerates the
+pages, with the guest already running. A published identity's bytes are
+immutable, so comparing the sealed page with its origin under both pages' locks
+is a `bytes.Equal` and nothing else: no hash, which would make a wrong answer
+possible and would put work on the fault path, and no read of the store, which
+would double a checkpoint's I/O for the pages that did change. A sealed page the
+pager has spilled is left alone for the same reason. An unchanged page leaves
+the checkpoint's set, so `DirtyPages` does not list it and it costs the store
+nothing; if the guest still shares the checkpoint's copy, its mapping is
+replaced by a read-only mapping of the origin's slot, the binding takes the
+origin as its resident page and becomes clean, the private page is released and
+the dirty reservation returned. The bytes are identical and the sealed page is
+write-protected, so the swap is invisible to a running guest; a store that lands
+first copies away from the checkpoint as it does today, and then only the
+checkpoint's copy is released. The page is mapped rather than left missing on
+purpose: a missing page's next read would wait, go through the same worker, and
+be copied again. A checkpoint a settle leaves holding nothing holds no
+unpublished write either, so the loss window it took at the seal ends there.
+
+The settle is parallel. Each page is settled alone — its comparison and its
+re-sharing take that page's lock and its origin's and nothing wider — so a
+settle hands its pages to `Config.SettleWorkers` workers, the host's processors
+by default, and the regions of one VM settle at the same time as each other.
+What bounds it is memory bandwidth and not the pager's I/O permits, which it
+does not take: it reads no disk and no store. The workers share nothing but the
+counter of unchanged pages and the set the checkpoint will list, both under the
+checkpoint's own mutex, so the result does not depend on the order they finish
+in — which is what lets the simulation run the same code. An arena that can
+compare two of its own slots does so in place; every other arena is read into
+two buffers per worker.
+
+A fork point is not settled. It publishes nothing and its pause is what a child
+waits for; its children inherit an unchanged page as an unpublished one, which
+is correct and no worse than not settling at all. The next checkpoint of each
+settles it. It is the pager's rule, so it holds for RAM and PMEM alike.
+
+What it does not do is stop the copy. Between the fault and the next checkpoint
+the host holds the page twice. Preventing that needs a host kernel that passes
+the guest's access through, or KVM userfault; both are recorded in
+[open-work.md](open-work.md).
 
 Retiring the seal is the publication's. A sealed set whose checkpoint was
 selected retires as published: a page the guest has not stored into since the
@@ -997,6 +1070,18 @@ page reachable from a binding owning neither a reservation nor a seal, which a
 concurrent eviction is run against. A store into a page an abandoned seal handed
 back, a seal cancelled partway, and an abandon racing another volume's faults
 are all covered, the concurrent ones under the race detector.
+
+They require of the settle that a region sharing pages with a sibling, which
+takes one writable and stores nothing, publish no page and end with that page
+shared again, its private bytes zero, its reservation back and a read of it
+taking no fault; that a page the guest really stored into be published exactly
+as before; that a store landing between the seal and the settle leave the guest
+its own copy for the next checkpoint while this one publishes nothing; that a
+copy whose origin was evicted, one made from zeros, one made from the
+checkpoint's own held copy, one made from the name a fork point lent a page and
+one made from a page only another host holds all be published untouched; that a
+region whose only private pages were unchanged let a store waiting on the loss
+window through; and that one worker and sixteen leave exactly the same set.
 
 For migration the simulated tests require that a seal issue one range protection
 per run and no mapping command at all, keeping every page where it was. They
