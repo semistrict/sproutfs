@@ -162,8 +162,8 @@ func (r *Region) Handoff(ctx context.Context) error
 
 // vmmachine
 // Backings replaces, by volume name, the backing a region attaches with. The
-// volume stays the region's identity — name, size, writer, lineage, every
-// write — and only what the pager loads through changes, which is how a
+// volume stays the region's identity — name, size, writer, page identities,
+// every write — and only what the pager loads through changes, which is how a
 // destination's regions fault from the host that still holds their pages.
 // Every name must be a region the machine maps, and the backing must be the
 // size of the volume it stands in front of; a start refuses anything else
@@ -247,7 +247,7 @@ reads it from its own volume. A resident request lists what a region holds, in
 runs, bounded per reply, which is what a destination's bulk stream walks before
 it faults those pages in through the pager's ordinary load path — streamed bytes
 are never written into a region directly, because the load path is what keeps a
-page shared by lineage with the other VMs on that host. Both are bounded per
+page shared by identity with the other VMs on that host. Both are bounded per
 peer, and a peer is the destination host rather than one of its connections: a
 destination opens a connection per region and dials again whenever one breaks,
 each with an ephemeral port of its own, so counting those separately would bind
@@ -331,7 +331,7 @@ pinned checkpoint, and the child's control record selects a checkpoint that its
 own first publication writes. The pin was written on the parent's host before
 the handoff was built, by the only writer that holds the parent's epoch, and
 nothing gives it back: the destination has no way to know what else reads that
-lineage, and neither has the parent. A destination that is the parent's own host
+checkpoint, and neither has the parent. A destination that is the parent's own host
 skips the rebuild: it holds the point itself, so the child is created from it
 and reads the pages written since the pinned checkpoint through it.
 
@@ -396,8 +396,8 @@ one of this host's own holds — a child created here whose first checkpoint has
 published yet holds the point through its own handle, and a capture in flight
 holds it through the publication — and deleting it would take the point out
 from under whoever has it. The parent's checkpoint objects are untouched by a
-delete where a pin covers them — a child still inherits them — and reclaiming a deleted lineage is the
-collector's.
+delete where a pin covers them — a child still inherits them — and reclaiming
+what a deleted VM left pinned is the collector's.
 
 A fork on the parent's own host skips the network entirely, and it is the same
 call: `Host.Fork` builds a handoff for every child and holds the point for

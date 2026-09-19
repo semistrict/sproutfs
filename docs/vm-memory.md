@@ -33,7 +33,7 @@ its own; the rest would each rule it out too.
    no way to know they are the same. The guest does it again: a guest with a
    virtio-blk disk keeps its own page cache of that disk in its RAM, so the
    same inherited bytes are resident once more per VM, invisible to the host.
-   The pager keeps one resident page per lineage name, however many VMs map
+   The pager keeps one resident page per page identity, however many VMs map
    it, and the guest reaches it through PMEM over DAX, mapping the host's page
    directly, so the host's one copy is the only copy. That is held to at three
    places: a VM has no block device at all, only PMEM; the host refuses a guest
@@ -150,12 +150,12 @@ A region may also attach through a backing put in front of its volume, which is
 what `vmmachine.Config.Backings` names per volume and what a
 [migration](migration.md) destination binds: loads ask the host that still holds
 those pages first, and the volume answers everything else. The volume remains
-the region's identity — its name, its size, its writer, its lineage and every
-write — so a seal, a checkpoint and a fence are unchanged by the substitution.
+the region's identity — its name, its size, its writer, its page identities and
+every write — so a seal, a checkpoint and a fence are unchanged by the substitution.
 
-## Sharing by lineage
+## Sharing by identity
 
-Resident pages are keyed by the [lineage identity](volumes.md#reads) the
+Resident pages are keyed by the [page identity](volumes.md#reads) the
 volume reports for a page. Any region in the same pager whose current identity
 matches a resident page maps that page, whatever region loaded it. A fork
 inherits its parent's identities until it writes a page, exactly as a forked
@@ -184,14 +184,14 @@ the retire takes the page away from anything still sharing it. By then whatever
 inherited it has copied, published or pulled the page and reads it from there.
 
 A resident 2 MiB page is exactly one store page, so one identity covers the
-whole page and there is no partial lineage to rule out: a page is published
+whole page and there is no partial identity to rule out: a page is published
 whole or not at all. A page with no published bytes of its own — what a
 migration destination holds for the source's unpublished pages — has no identity
 and loads privately until a checkpoint gives it one. A one-byte store still
 copies and charges the whole 2 MiB page. Storage compression does not compress
 mapped pages or change this accounting.
 
-An explicit sparse zero has no arena slot and no lineage identity. Contiguous zero
+An explicit sparse zero has no arena slot and no page identity. Contiguous zero
 ranges use Linux's shared zero page, so a large hole does not consume resident
 slots. These sparse zero mappings and untouched missing-fault traps have no
 resident page of their own; their anonymous page tables are the exception to physical
@@ -206,7 +206,7 @@ loads may read object storage. Ownership is confirmed by the supervisor's
 periodic verification.
 
 A read fault serves its whole aligned read-ahead run, one 2 MiB pager page by
-default, when it can: pages already resident under the same lineage identity
+default, when it can: pages already resident under the same page identity
 are mapped without any read, and the rest are loaded with one backing read per
 contiguous run into consecutive arena slots and installed as one mapping
 command, with their page tables pre-installed to avoid missing-page faults
@@ -343,7 +343,7 @@ two take.
 Retiring a checkpoint walks a set as large as the capture's, so it walks it the
 way the seal takes it: in bounded batches, with the region given back between
 them, so a fault waits for one batch rather than for the walk. Each batch's
-volume metadata — the lineage the volume now gives each page, which decides
+volume metadata — the identity the volume now gives each page, which decides
 whether its page joins the sharing index — is one lookup per read-ahead window,
 taken before the region and before any page. One retire or unseal runs at a
 time, and a page already retired is skipped, so repeating a failed one finishes

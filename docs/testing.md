@@ -184,7 +184,7 @@ conditional write whose reply was lost has an ambiguous outcome; the tests
 require it to be reconciled to the one it actually had, never to be guessed. A
 known incorrect outcome is never made the expectation of a passing test.
 
-Lineage is asserted directly: locate reports equal identities across a fork for
+Page identity is asserted directly: locate reports equal identities across a fork for
 pages neither side has written, distinct identities once one writes, and
 private identities for bytes still in an overlay. The pager asserts that an
 eligible resident page with a matching identity in the same pager is mapped
@@ -310,13 +310,13 @@ Reclamation is tested directly: selecting a checkpoint deletes whole every
 earlier checkpoint the new root no longer names, keeps one it
 still reads a single page from, spares a sequence a fork pinned, and never
 touches the checkpoint the handle opened on. The pin is shown to precede the
-fork: a fork whose own control record cannot be written still leaves its
-lineage pinned, and so does one abandoned before it published a root. A
+fork: a fork whose own control record cannot be written still leaves what it
+would inherit pinned, and so does one abandoned before it published a root. A
 grandchild is shown to go on reading the page its grandparent published after
 its own parent has rewritten the last page it inherited, which is what a
 permanent pin buys; a fork chain deleted in any order leaves every survivor
 readable; and a delete over a record that cannot be parsed is refused rather
-than sweeping the lineages its pins would have spared. Compaction is required to
+than sweeping the checkpoints its pins would have spared. Compaction is required to
 rewrite the parts of checkpoints that are less than half live, to stream those
 rewrites rather than hold them, and to move no segment: a segment the compaction
 did not otherwise change stays in the index object of the checkpoint being
@@ -333,7 +333,7 @@ forks of forks, and two forks of one parent diverging independently. A parent
 whose pages a fork point holds refuses a second seal and refuses a capture
 before anything pauses its guest, and takes them back when the point is retired.
 
-On the parent's own host the children read the sealed pages by lineage
+On the parent's own host the children read the sealed pages by page
 identity, so a second child maps the first's resident page without a load. Across hosts
 the child pulls exactly the pages no checkpoint of the parent holds, publishes
 them in its own first checkpoint, and survives the loss of the parent's host
@@ -443,7 +443,7 @@ What it requires:
 - every pinned sequence is a published checkpoint of the VM whose record pins
   it. That is all a pin has to agree with: it names no holder and no
   descendant's record names it, because nothing releases one, so what the check
-  can say is that the lineage a pin protects — the checkpoint and every
+  can say is that what a pin protects — the checkpoint and every
   checkpoint its root names — is whole, which is what a grandchild reading
   through it needs;
 - every object under `vm/<id>/ckpt/` is reached by some record's selected
@@ -462,7 +462,7 @@ scenario that kills hosts says which debt it is rather than skipping the check:
 | `AllowSupersededEpoch` | The checkpoints of a writer epoch below the record's. A new handle reclaims only what it published itself, so every takeover leaves the checkpoint it opened on and whatever its fenced predecessor abandoned. |
 | `AllowUnpublishedIndex` | A checkpoint whose parts are there and whose index object never landed: a publication interrupted before its commit. |
 | `AllowUnreferencedCheckpoint` | A published checkpoint of the record's own epoch that nothing selects or pins: a sweep the store refused. |
-| `AllowUnrecordedVM` | Objects under a VM with no control record: a create interrupted before its record, a delete interrupted after it, and — with no host lost at all — the pinned lineage a finished delete leaves, which is what deleting a VM that was ever forked always leaves behind. |
+| `AllowUnrecordedVM` | Objects under a VM with no control record: a create interrupted before its record, a delete interrupted after it, and — with no host lost at all — the pinned checkpoints a finished delete leaves, which is what deleting a VM that was ever forked always leaves behind. |
 
 Two leaks it found on its first run are fixed rather than allowed: a create
 never reclaimed the first checkpoint it published, because the handle counted
@@ -598,8 +598,8 @@ them:
 
 - **A deleted VM's identity was reused, and a host's page cache still held the
   pages that name it** (fixed in `8ccfb15`). `checkpoint.Cache` keys a page by
-  its lineage identity — the VM, the checkpoint sequence, the volume and the
-  page — because "a page's bytes are immutable under its lineage identity". A
+  its identity — the VM, the checkpoint sequence, the volume and the
+  page — because a page's bytes are immutable under its identity. A
   delete freed the identity, and a VM created again under that name started at
   the same epoch and the same first sequence, so every page of its first
   checkpoint was named exactly as the deleted VM's was. A host that still
@@ -627,7 +627,7 @@ them:
   taken on a checkpoint that had just compacted another empty therefore lost
   that one at the next sweep, and the pinned root went on naming an object
   nothing could fetch: `CheckDeployment` reports it as a part that does not read,
-  which is what a lineage with a hole in it looks like from outside. It is
+  which is what a hole in what a fork inherits looks like from outside. It is
   reachable only where a fork's point, a compaction and a later sweep line up
   — ten of the first two hundred seeds. Fixed by sparing what the pinned root
   names, with `TestReclamationSparesThePacksAPinnedIndexOnlyNames` in
@@ -681,9 +681,9 @@ wrong thing.
 The soak ends the way a campaign does, with `volume.CheckDeployment` over the
 whole object namespace: `sproutfsctl check` runs it through the orchestrator
 once every VM has been deleted, when nothing but the templates — one per guest
-image, named by the image's bytes — and the lineages the deleted VMs pinned may
+image, named by the image's bytes — and the checkpoints the deleted VMs pinned may
 remain. The allowances there are the live deployment's rather than a campaign's
-— a publication in flight, a deleted VM's pinned lineage, a VM's own root and a
+— a publication in flight, a deleted VM's pinned checkpoints, a VM's own root and a
 template import's intermediate checkpoints, and the superseded epoch every
 takeover leaves, a template whose unfinished import a later one recovered
 included — and
@@ -1350,8 +1350,8 @@ in-memory model would miss.
 Counters printed by the Lima suites are observations, not machine-independent
 assertions, and no measurement here is performance acceptance. Deployment and
 guest workloads still have to validate residency budgets, launch latency and
-object-storage cost. The collector that releases pins and sweeps the lineages
-of deleted VMs has no tests because it has no implementation: what would be its
+object-storage cost. The collector that releases pins and sweeps what deleted
+VMs left pinned has no tests because it has no implementation: what would be its
 work is exactly what the deployment check's allowances name, and the scenarios
 that pass those allowances are the measure of how much of it a real deployment
 would accumulate.

@@ -31,13 +31,13 @@ This is format 4. Format 3 marked a tombstone, format 2 named each pin's
 holders and the parent checkpoint a record held a pin on, and format 1's pins
 were bare sequences; none of them parses.
 
-A pin is permanent. It says a lineage was started from that checkpoint, not
-that one is still reading it, and nothing in a deployment gives one back. The
-reason is that no participant can tell: a grandchild's root names its
-grandparent's checkpoints directly, and neither the grandparent's record nor the
-child's says that it does. Every release that ran from one descendant's point
-of view was a guess, and the one that was wrong took a checkpoint out from under a
-lineage nobody had asked. Releasing a pin is therefore a collector's, which can
+A pin is permanent. It says a fork was taken at that checkpoint, not that one
+is still reading it, and nothing in a deployment gives one back. The reason is
+that no participant can tell: a grandchild's root names its grandparent's
+checkpoints directly, and neither the grandparent's record nor the child's says
+that it does. A release reasoned from one descendant's point of view is a guess,
+and a wrong one takes a checkpoint out from under a descendant nobody asked.
+Releasing a pin is therefore a collector's, which can
 survey every record and every root in the deployment; see
 [open work](open-work.md).
 
@@ -53,7 +53,7 @@ taking the VM over, which is a fence.
 
 Because the record is what allocates and selects sequences, the names built on
 them live with it: a checkpoint reference is the (VM, sequence) pair, a
-[lineage identity](context.md) names a page as (reference, volume, page) and an
+[page identity](context.md) names a page as (reference, volume, page) and an
 extent is the run of volume bytes that reads from one such page. The pager and
 the migration wire name pages by those without depending on the store that holds
 them.
@@ -97,15 +97,15 @@ first. Removing the control record prevents subsequent opens, and the VM's
 checkpoint objects are then deleted too, each checkpoint's index object first. That
 is what frees the identity: checkpoint objects are named by the VM and a
 sequence, and a VM created under a deleted VM's identity that found objects
-under it would be refused — which is what a create does when the sweep left a
-pinned lineage behind. The record goes first, so nothing can open the VM while
+under it would be refused — which is what a create does when the sweep left
+pinned checkpoints behind. The record goes first, so nothing can open the VM while
 its objects are going.
 
 The record is also the only thing that says which of that VM's objects a sweep
 may take, so a VM that has no record is not swept at all. That is not only an
 interrupted delete: a finished delete of a VM that was ever forked leaves
-exactly that — no record, and objects a lineage still reads — so a repeat that
-swept what it found would destroy it. Repeating a delete is therefore harmless
+exactly that — no record, and objects a fork still reads — so a repeat that
+swept what it found would destroy them. Repeating a delete is therefore harmless
 and finishes nothing; what an interrupted sweep left is a collector's.
 
 What the sweep leaves is the checkpoints that record pinned, and every
@@ -149,12 +149,12 @@ the opens that follow count up from it, which leaves at least 2³¹ takeovers
 before `ErrEpochExhausted`. What that buys is that two VMs created under one
 identity — a name reused after a delete, which the orchestrator does not do but
 nothing here can enforce — allocate different sequences, and therefore different
-lineage identities and different object keys. A VM must never be served the
+page identities and different object keys. A VM must never be served the
 bytes or the keys of a VM that held its name before.
 
 A create is refused altogether when the identity's `vm/<id>/` prefix holds any
 object and no control record accounts for it: those objects are the pinned
-lineage a deleted VM left, or a create interrupted before its record, and a VM
+checkpoints a deleted VM left, or a create interrupted before its record, and a VM
 published there would write into keys that are not its own. Repeating a create
 whose record did land opens the VM instead, which is how an interrupted create
 is finished.
