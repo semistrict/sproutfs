@@ -76,6 +76,13 @@ type forkLifeShape struct {
 	// torn down, which is what the fan-out's own receive does and what a fast
 	// trial leaves out.
 	waitStreamed bool
+	// pauseOnly makes the interval a bare VMM pause, state capture and resume:
+	// the guest stops and starts exactly as a checkpoint makes it, and the
+	// pager seals nothing, settles nothing and publishes nothing. It is what
+	// separates a defect in the memory from a defect in stopping and starting a
+	// guest that was itself restored from a snapshot — and the deaths are all
+	// in the kernel's timer and clock code, which is what that would look like.
+	pauseOnly bool
 }
 
 func (s forkLifeShape) String() string {
@@ -90,6 +97,9 @@ func (s forkLifeShape) String() string {
 	}
 	if s.waitStreamed {
 		parts = append(parts, "streamed before teardown")
+	}
+	if s.pauseOnly {
+		parts = append(parts, "pause only, no seal")
 	}
 	return strings.Join(parts, ", ")
 }
@@ -109,6 +119,9 @@ func forkLifeArm(t *testing.T) (string, forkLifeShape) {
 		"solo-nowait":   {siblings: 1},
 		"solo-interval": {siblings: 1, interval: forkFanOutInterval, waitStreamed: true},
 		"solo-pair":     {siblings: 2, waitStreamed: true},
+		// The interval itself, bisected: the same pause without any of the
+		// pager's work behind it.
+		"solo-pause": {siblings: 1, interval: forkFanOutInterval, waitStreamed: true, pauseOnly: true},
 	}
 	name := os.Getenv("SPROUTFS_FORK_ARM")
 	if name == "" {
@@ -201,7 +214,12 @@ func forkLifeTrial(t *testing.T, ctx context.Context, c *migrationCluster, pager
 		}
 	}()
 	for _, child := range children {
-		if shape.interval > 0 {
+		switch {
+		case shape.interval == 0:
+		case shape.pauseOnly:
+			stop := pauseEvery(t, ctx, child, shape.interval)
+			defer stop()
+		default:
 			stop := checkpointEvery(t, ctx, child, shape.interval)
 			defer stop()
 		}
@@ -230,6 +248,42 @@ func forkLifeTrial(t *testing.T, ctx context.Context, c *migrationCluster, pager
 		t.Logf("%s died: %s (%v)", child.id, panicSignature(console), err)
 	}
 	return died
+}
+
+// pauseEvery stops and starts one child on an interval, capturing its VMM state
+// each time and sealing nothing: the guest's own experience of a checkpoint,
+// with none of the pager's work behind it. What it leaves out is the seal, the
+// settle and the publication; what it keeps is the pause itself.
+func pauseEvery(t *testing.T, ctx context.Context, child *forkedChild, interval time.Duration) func() {
+	t.Helper()
+	ticking, stop := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-ticking.Done():
+				return
+			case <-time.After(interval):
+			}
+			if _, err := child.process.Stop(ticking); err != nil {
+				if ticking.Err() == nil {
+					t.Errorf("pausing %s: %v", child.id, err)
+				}
+				return
+			}
+			if err := child.process.Resume(ticking); err != nil {
+				if ticking.Err() == nil {
+					t.Errorf("resuming %s: %v", child.id, err)
+				}
+				return
+			}
+		}
+	}()
+	return func() {
+		stop()
+		<-done
+	}
 }
 
 // panicSignature is the line of a guest's console that says where its kernel
