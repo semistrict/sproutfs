@@ -58,6 +58,71 @@ replacement. Explicit HugeTLB backing stays in the PMEM arena. Transparent
 huge-page promotion or a strategy for splitting true huge mappings is separate
 performance work and must preserve the 4 KiB ownership contract.
 
+## Keeping RAM's mappings whole
+
+Every separately mapped run of a guest's RAM is a mapping in its VMM process,
+and a private 4 KiB page written into the middle of an inherited run makes three
+of one. The kernel caps a process at 65,530 mappings by default, which a guest
+scattering small writes over gigabytes can pass, but the cap is the last of what
+fragmentation costs: each separate dirty run is one write-protect command in the
+checkpoint's pause, the kernel's own mapping operations slow as their number
+grows, and a fragmented range can never be given a huge mapping. So the design
+is not a budget that merges when it is exceeded — that does nothing until the
+limit and then puts a copy of up to 2 MiB on the fault path of every store, at
+the moment the guest is busiest, and has to search every range for the one to
+merge. It is three rules that hold all the time, and a budget behind them.
+
+- **A private page lives at its own offset.** Each 2 MiB-aligned range of a
+  region that holds a private page has one private extent in the RAM arena, 2 MiB
+  of arena offsets of which only the pages stored into hold memory, and a
+  private page of that range is put at the offset within the extent that it has
+  within the range. Private pages that are adjacent in the guest are then
+  adjacent in the arena and are one mapping, whatever order they were written
+  in: what a range costs in mappings is how often it alternates between shared
+  and private, not how many pages of it are private. The arena accounts pages,
+  not extents; an extent is offsets.
+- **A store closes a small gap.** When a store lands within `gap` pages of a
+  private run of the same range, the shared pages between them are made private
+  in the same fault, in one copy and one mapping command. Writes cluster, so the
+  unit a store copies grows where the guest is writing and stays 4 KiB where a
+  write is alone. A store never closes a gap across a range's boundary. The
+  worst case is a guest writing one page in every `gap + 1`, which costs
+  `gap + 1` times what it wrote, against 512 times at a 2 MiB page.
+- **A range that is half private becomes private.** When a range's private
+  pages reach 256, the rest are copied into the holes of its extent and the
+  range is one mapping, one write-protect command at a seal, and eligible for a
+  huge mapping. Nothing that was already private is copied, because it is
+  already where it belongs. It costs at most twice what the guest wrote there.
+  The 2026-09-19 and 2026-09-21 fan-outs say this is nearly free, because writes
+  are bimodal: of the 97 ranges a fork running `git grep` in a 16 GiB guest wrote
+  into, 17 were at least half written and held 57 % of every changed page, and
+  making those whole would have added 5 MiB to 49; of the 38 a fork running
+  `memprobe 16` wrote into, 8 held 75 %, and the cost would have been 1 MiB. The
+  other ranges are barely touched — a median of 8 to 52 pages of 512 — and they
+  are what a 4 KiB page is for.
+- **The budget is a backstop.** A region still counts its mappings against a
+  budget below the kernel's cap, and a store that would pass it makes the range
+  with the most mappings private first. It is expected never to act, and a
+  counter says when it has.
+
+`gap` is measured rather than chosen: the fan-out records how many changed pages
+each range holds but not where they are, so it gains the lengths of the private
+runs and of the gaps between them, and `gap` is set from the codex workload —
+the smallest value past which the mappings a fork holds stop falling. The
+unchanged-pages settle undoes what these rules copied and the guest never wrote:
+a page made private to close a gap or to fill a range has its origin like any
+other copy, and a settle that finds it unchanged hands it back — unless its
+range has been made whole, which a settle leaves whole.
+
+It is a step of its own, after step 4: the pager's placement and the three rules
+first, in the simulation and on Linux; then the same accounting in the simulated
+mapping model, so the campaigns exercise them under scattered stores. It is
+proved by exact counts — the mappings a range holds after each pattern of
+stores, what a store copied, what a seal protected in how many commands — by the
+sharing gauges before and after, by the byte model in every campaign, and on GCE
+by the mappings, the protect commands and the pause of the codex workload with
+the rules on and off.
+
 ## Why this change needs measurement
 
 The concern is retained sharing during ordinary work: search, git commands,
