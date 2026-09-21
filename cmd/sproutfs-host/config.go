@@ -171,6 +171,17 @@ func loadConfig(lookup func(string) string) (config, error) {
 	// quarters of the spill and the budgets that fill it too, and because the
 	// two halves must add up to exactly what was given however the division
 	// falls: PMEM takes the remainder rather than a second rounding.
+	// The names one pager's budgets had. A host that started with them set and
+	// read neither would run on its defaults while its manifest said otherwise.
+	for _, retired := range []struct{ name, ram, pmem string }{
+		{"SPROUTFS_DIRTY_PAGES", "SPROUTFS_RAM_DIRTY_PAGES", "SPROUTFS_PMEM_DIRTY_PAGES"},
+		{"SPROUTFS_LOGICAL_PAGES", "SPROUTFS_RAM_LOGICAL_PAGES", "SPROUTFS_PMEM_LOGICAL_PAGES"},
+	} {
+		if text(retired.name, "") != "" {
+			fail("%s is no longer read: set %s and %s, each in its own pager's pages",
+				retired.name, retired.ram, retired.pmem)
+		}
+	}
 	ramShare := number("SPROUTFS_RAM_SHARE_PERCENT", defaultRAMSharePercent)
 	if ramShare < 1 || ramShare > 99 {
 		fail("SPROUTFS_RAM_SHARE_PERCENT is %d, want 1 to 99", ramShare)

@@ -117,6 +117,28 @@ func TestConfigRefusesADirtyBoundAboveTheLogicalOne(t *testing.T) {
 	}
 }
 
+// A deployment written for one pager set SPROUTFS_DIRTY_PAGES and
+// SPROUTFS_LOGICAL_PAGES. A host that went on starting with those set and read
+// neither would run on its defaults while its manifest said otherwise, so each
+// is refused with the two names that replaced it.
+func TestConfigRefusesTheBudgetNamesOfASinglePager(t *testing.T) {
+	for _, retired := range []struct{ name, ram, pmem string }{
+		{"SPROUTFS_DIRTY_PAGES", "SPROUTFS_RAM_DIRTY_PAGES", "SPROUTFS_PMEM_DIRTY_PAGES"},
+		{"SPROUTFS_LOGICAL_PAGES", "SPROUTFS_RAM_LOGICAL_PAGES", "SPROUTFS_PMEM_LOGICAL_PAGES"},
+	} {
+		values := minimal()
+		values[retired.name] = "6144"
+		_, err := loadConfig(environ(values))
+		if err == nil {
+			t.Fatalf("%s was accepted and ignored", retired.name)
+		}
+		want := retired.name + " is no longer read: set " + retired.ram + " and " + retired.pmem
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q, want it to say %q", err, want)
+		}
+	}
+}
+
 // The share a deployment sets divides the arena and the spill file between the
 // two pagers, and whatever it is the two come to exactly what this host was
 // given: an arena the share cannot divide into whole pages of both is refused

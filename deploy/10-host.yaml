@@ -120,14 +120,18 @@ spec:
               value: "1073741824"
             - name: SPROUTFS_SPILL_BYTES
               value: "17179869184"
-            # The volatile private state the pager may hold on RAM and spill
-            # together, in 2 MiB pages. It defaults to the arena, which is what
-            # a guest whose dirty set never outruns the arena needs; a workload
+            # The volatile private state each pager may hold in its arena and
+            # its spill file together, in that pager's own pages, both 2 MiB
+            # today. Each defaults to its share of the arena, which is what a
+            # guest whose dirty set never outruns the arena needs; a workload
             # guest writing hundreds of megabytes between checkpoints, with
             # forks doing the same beside it, outruns that long before the spill
-            # file is full.
-            - name: SPROUTFS_DIRTY_PAGES
-              value: "6144"
+            # file is full. The two are 12 GiB divided as the arena is, three
+            # quarters to RAM.
+            - name: SPROUTFS_RAM_DIRTY_PAGES
+              value: "4608"
+            - name: SPROUTFS_PMEM_DIRTY_PAGES
+              value: "1536"
             # The guest images a VM can be created from, on the node's own
             # disk, and the shape of every VM booted from one. A template may
             # name the RAM its VMs get after a colon; workload carries repos
