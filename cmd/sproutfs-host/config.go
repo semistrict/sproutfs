@@ -28,8 +28,12 @@ type config struct {
 
 // defaultBootArgs boots from the PMEM root with the serial console the demo
 // drives the guest over. The root device is the PMEM device declared root, so
-// the command line names only the filesystem and DAX.
-const defaultBootArgs = "console=ttyS0 reboot=k panic=1 init=/init rootfstype=ext4 rootflags=dax=always"
+// the command line names only the filesystem and DAX. The i8042 flags are
+// Firecracker's own: the guest has that controller only so that reboot=k can
+// reset through it, and a kernel left to probe it for a keyboard and a mouse
+// stalls for half a second before it mounts the root.
+const defaultBootArgs = "console=ttyS0 reboot=k panic=1 i8042.noaux i8042.nomux i8042.nopnp i8042.dumbkbd " +
+	"init=/init rootfstype=ext4 rootflags=dax=always"
 
 // mountsRootWithDAX reports whether a guest command line mounts the root with
 // dax=always. The root is a PMEM device so that the guest maps the host's

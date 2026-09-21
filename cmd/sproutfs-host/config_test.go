@@ -1,6 +1,7 @@
 package main
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -114,6 +115,22 @@ func TestConfigRefusesADirtyBoundAboveTheLogicalOne(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "SPROUTFS_RAM_DIRTY_PAGES is 4096") {
 		t.Fatalf("error %q", err)
+	}
+}
+
+// A Firecracker guest has an i8042 controller only so that reboot=k can reset
+// through it. Left to probe it for a keyboard and a mouse, the kernel stalls
+// for half a second before it mounts the root — 0.215 s to 0.702 s in a guest's
+// own log, measured on 2026-09-21 — and every cold boot pays it.
+func TestTheDefaultBootArgsDoNotProbeTheKeyboardController(t *testing.T) {
+	config, err := loadConfig(environ(minimal()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, flag := range []string{"i8042.noaux", "i8042.nomux", "i8042.nopnp", "i8042.dumbkbd"} {
+		if !slices.Contains(strings.Fields(config.BootArgs), flag) {
+			t.Fatalf("boot args %q do not carry %s", config.BootArgs, flag)
+		}
 	}
 }
 

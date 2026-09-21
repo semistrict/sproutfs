@@ -42,7 +42,10 @@ const (
 	// console is an emulated UART that every kernel line crosses
 	// synchronously; at the default log level those lines are half of a cold
 	// boot's time to init. Level 1 still prints panics and soft lockups.
-	guestConsoleArgs = "console=ttyS0 quiet loglevel=1"
+	// The i8042 flags are Firecracker's own: left to probe that controller for
+	// a keyboard and a mouse, the kernel stalls for half a second before it
+	// mounts the root, on the managed side and the plain one alike.
+	guestConsoleArgs = "console=ttyS0 quiet loglevel=1 i8042.noaux i8042.nomux i8042.nopnp i8042.dumbkbd"
 	// guestPmemBootArgs boots from a PMEM root mounted with DAX.
 	guestPmemBootArgs = guestConsoleArgs + " reboot=k panic=1 init=/init rootfstype=ext4 rootflags=dax=always"
 )
