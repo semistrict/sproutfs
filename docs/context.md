@@ -68,9 +68,18 @@ the segments its own checkpoint changed, so it is complete on its own and names
 no parent. The index object's create-if-absent PUT is the publication's commit.
 
 **Part**: One object of a checkpoint's data, at
-`vm/<id>/ckpt/<seq>/part/<n>`: filled to 64 MiB and uploaded as it fills, a run
-of encoded members — the VMM state and pages — followed by a table naming them
-and a fixed trailer naming the table, so a part describes itself.
+`vm/<id>/ckpt/<seq>/part/<n>`: filled to 64 MiB and uploaded as it fills, a
+sequence of encoded members — the VMM state, then each volume's changed pages in
+page order, then compaction's rescues — followed by a table of at most 1 MiB
+naming them and a fixed trailer naming the table, so a part describes itself.
+
+**Extent**: A member's place in the part that holds it, and the bytes one ranged
+read fetches. A read of a range of a volume is a **run** of pages: its members
+are grouped by the part they are in and by where in that part they sit, and each
+group is fetched as one extent and decoded out of that one buffer. Publishing in
+page order is what makes the members of consecutive pages adjacent, so a pager's
+cold 2 MiB read-ahead run of 512 4 KiB pages is two requests — the segment that
+locates them and the extent they lie in — and not one per page.
 
 **Seal**: Taking the guest's write access to a region's dirty pages away in
 place, so those pages become the checkpoint's while the guest keeps running.
