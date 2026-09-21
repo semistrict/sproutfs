@@ -266,13 +266,13 @@ func (h *Host) Receive(ctx context.Context, handoff vmmigrate.Handoff) (*vmmigra
 		return nil, fmt.Errorf("%w: the fork point %s inherits from %s is no longer held here",
 			ErrNotMigratable, handoff.VMID, handoff.Parent)
 	}
-	// The handoff names every region and its size, so whether this host's pager
+	// The handoff names every region and its size, so whether this host's pagers
 	// could map them is known before the VM is opened and its VMM started.
-	sizes := make([]uint64, 0, len(handoff.Regions))
+	regions := make([]Region, 0, len(handoff.Regions))
 	for _, region := range handoff.Regions {
-		sizes = append(sizes, region.Size)
+		regions = append(regions, regionOf(region.Name, region.Size))
 	}
-	if err := h.AdmitRegions(sizes); err != nil {
+	if err := h.AdmitRegions(regions); err != nil {
 		return nil, fmt.Errorf("receiving %s: %w", handoff.VMID, err)
 	}
 	var started Machine

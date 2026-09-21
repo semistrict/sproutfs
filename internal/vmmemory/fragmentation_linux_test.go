@@ -92,7 +92,7 @@ func TestNativeRefusedMappingLeavesTheSessionServing(t *testing.T) {
 	// queues that fault again rather than ending the session: the guest waits
 	// for the budget, as it waits for the dirty budget, and the VM stays alive
 	// to be checkpointed or migrated off this host.
-	if _, err := fmt.Fprintf(a.input, "fill 0 %d 1 42\n", vmmemory.PageSize); err != nil {
+	if _, err := fmt.Fprintf(a.input, "fill 0 %d 1 42\n", pageSize); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(10 * time.Second)
@@ -123,7 +123,7 @@ func TestNativeRefusedMappingLeavesTheSessionServing(t *testing.T) {
 	if got := a.line(); got != "filled" {
 		t.Fatalf("the deferred access answered %q, want it served once the revocations freed the budget", got)
 	}
-	a.request(fmt.Sprintf("read 0 %d 1", vmmemory.PageSize), "data 2a")
+	a.request(fmt.Sprintf("read 0 %d 1", pageSize), "data 2a")
 	if err := region.Fault(t.Context(), refused, true); err != nil {
 		t.Fatalf("the page whose mapping was refused, faulted again after the revocations: %v", err)
 	}
@@ -162,7 +162,7 @@ func TestNativeAbandonedCheckpointCoalescesRevokesAcrossGenerationBoundaries(t *
 	// Read the actual native address after the checkpoint; mapping generations
 	// still distinguish the former clean and initially missing pages.
 	a.request("read 0 0 1", "data 01")
-	a.request("read 0 "+fmt.Sprint(vmmemory.PageSize)+" 1", "data 02")
+	a.request("read 0 "+fmt.Sprint(pageSize)+" 1", "data 02")
 }
 
 // Stores the exact workload sparsely: each write changes only the first byte
@@ -185,7 +185,7 @@ func (b *patternBacking) Load(ctx context.Context, offset uint64, data []byte) e
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	clear(data)
-	size := uint64(vmmemory.PageSize)
+	size := uint64(pageSize)
 	for pos := (offset + size - 1) / size * size; pos < offset+uint64(len(data)); pos += size {
 		data[pos-offset] = b.values[pos/size]
 	}
@@ -201,7 +201,7 @@ func (b *patternBacking) Locate(ctx context.Context, offset, length uint64) ([]c
 		return []control.Extent{{Offset: offset, Length: length, Identity: control.Identity{Zero: true}}}, nil
 	}
 	var result []control.Extent
-	size := uint64(vmmemory.PageSize)
+	size := uint64(pageSize)
 	for pos := offset; pos < offset+length; {
 		_, written := b.values[pos/size]
 		stop := min(offset+length, (pos/checkpoint.PageSize2MiB+1)*checkpoint.PageSize2MiB)
@@ -227,7 +227,7 @@ func (b *patternBacking) checkpoint(ctx context.Context, r *vmmemory.Region) err
 		return err
 	}
 	ckpt := r.Checkpoint()
-	page := make([]byte, vmmemory.PageSize)
+	page := make([]byte, pageSize)
 	var failure error
 	for _, number := range ckpt.DirtyPages() {
 		if err := ckpt.ReadDirty(ctx, number, page); err != nil {
@@ -274,7 +274,7 @@ func TestNativeFragmentedWritebackMeasurements(t *testing.T) {
 	if err != nil || mib < 2 || mib > 2048 {
 		t.Fatal("SPROUTFS_FRAGMENT_MIB must be 2..2048")
 	}
-	size := vmmemory.PageSize
+	size := pageSize
 	length := mib << 20
 	pages := length / size
 	h := kernelHostBudget(t, 2, 2*pages, pages)
@@ -351,7 +351,7 @@ func TestNativeFragmentedWritebackMeasurements(t *testing.T) {
 
 func TestNativeRepeatedPrivateEvictionKeepsVMAsBounded(t *testing.T) {
 	const pages, arenaPages = 128, 32
-	size := vmmemory.PageSize
+	size := pageSize
 	h := kernelHostBudget(t, arenaPages, 2*pages, pages)
 	first := &patternBacking{size: uint64(pages * size), vm: "evict-a", values: make(map[uint64]byte)}
 	second := &patternBacking{size: uint64(pages * size), vm: "evict-b", values: make(map[uint64]byte)}

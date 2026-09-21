@@ -101,6 +101,8 @@ func execute(ctx context.Context, client *orch.Client, command invocation,
 			return err
 		}
 		table := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+		// Resident is bytes rather than pages: a host runs two pagers of their
+		// own pages, and one column of pages would be adding the two.
 		fmt.Fprintln(table, "HOST\tREADY\tRUNNING\tSERVING\tRESIDENT\tSHARED\tSERVED\tSTATE")
 		for _, h := range hosts {
 			state := "ok"
@@ -109,7 +111,7 @@ func execute(ctx context.Context, client *orch.Client, command invocation,
 			}
 			fmt.Fprintf(table, "%s\t%t\t%d\t%d\t%d\t%d\t%d\t%s\n", h.Name, h.Ready,
 				len(h.Running), len(h.Serving),
-				h.Pager.ResidentPages, h.Pager.SharedPages, h.Pages.Served, state)
+				h.Pager.ResidentBytes(), h.Pager.SharedPages(), h.Pages.Served, state)
 		}
 		return table.Flush()
 	case "store":

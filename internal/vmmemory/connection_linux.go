@@ -14,10 +14,17 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/semistrict/sproutfs/internal/checkpoint"
 	"github.com/semistrict/sproutfs/internal/ctxsync"
 	"github.com/semistrict/sproutfs/internal/vmmemory/internal/pageranges"
 	"github.com/semistrict/sproutfs/internal/vmwire"
 )
+
+// transportPageSize is the page this transport — vmwire, the Rust session and
+// the Firecracker integration together — maps. It is not the pager's: a pager
+// instance carries its own, and one whose page is not this is refused when a
+// session is set up.
+const transportPageSize = checkpoint.PageSize2MiB
 
 type ConnectionConfig struct {
 	// Name identifies this session's region in what it logs: the volume the
@@ -84,7 +91,11 @@ type remoteMapping struct {
 	connection *Connection
 	address    uint64
 	pageCount  uint64
-	states     pageranges.Map
+	// pageSize is the page every offset and length on this session's wire is
+	// counted in. It is the pager's, which Connect has already refused unless
+	// it is the one the transport maps.
+	pageSize uint64
+	states   pageranges.Map
 	// mu is exclusive for the commands that advance generations and shared for
 	// the state reads a resolution needs. No UFFD ioctl runs under it: a long
 	// population must never block a mapping command.
@@ -100,6 +111,18 @@ type remoteMapping struct {
 func Connect(ctx context.Context, h *Host, socket *net.UnixConn, backing RegionBacking, cfg ConnectionConfig) (*Connection, error) {
 	if h == nil || socket == nil {
 		return nil, ErrConfig
+	}
+	// The transport fixes the page at 2 MiB: version 6 of the control protocol
+	// carries no page size because both ends know it, the Rust session checks
+	// that the arena it is given is an explicit 2 MiB HugeTLB file, and every
+	// range and backing offset on the wire is 2 MiB aligned. A pager of another
+	// page is therefore refused here, at session setup, rather than serving
+	// faults the client would read in the wrong unit. Removing this refusal is
+	// what step 4 of the page-geometry plan does, together with the wire.
+	if h != nil && h.pageSize != transportPageSize {
+		_ = socket.Close()
+		return nil, fmt.Errorf("%w: this transport maps %d-byte pages, the pager's page is %d",
+			ErrConfig, transportPageSize, h.pageSize)
 	}
 	a, ok := h.arena.(*LinuxArena)
 	if cfg.FaultWorkers == 0 {
@@ -166,18 +189,18 @@ func Connect(ctx context.Context, h *Host, socket *net.UnixConn, backing RegionB
 	if err != nil {
 		return fail(err)
 	}
-	if f.Kind != vmwire.Region || f.Flags != uint64(backing.Kind) || f.Length != backing.Backing.Size() || f.Length == 0 || f.Length%uint64(PageSize) != 0 || f.Offset%uint64(PageSize) != 0 || f.Offset > ^uint64(0)-f.Length || f.ID != 0 || f.Backing != 0 || f.Generation != 0 {
+	if f.Kind != vmwire.Region || f.Flags != uint64(backing.Kind) || f.Length != backing.Backing.Size() || f.Length == 0 || f.Length%h.pageSize != 0 || f.Offset%h.pageSize != 0 || f.Offset > ^uint64(0)-f.Length || f.ID != 0 || f.Backing != 0 || f.Generation != 0 {
 		return fail(errors.New("invalid managed-memory region"))
 	}
 	// Admission bounds logical capacity; untouched generations are implicit.
-	m := &remoteMapping{connection: c, address: f.Offset, pageCount: f.Length / uint64(PageSize), mu: ctxsync.NewRWMutex()}
+	m := &remoteMapping{connection: c, address: f.Offset, pageCount: f.Length / h.pageSize, pageSize: h.pageSize, mu: ctxsync.NewRWMutex()}
 	r, err := h.admit(ctx, backing, m)
 	if err != nil {
 		return fail(err)
 	}
 	c.region = ConnectedRegion{backing.Kind, f.Offset, f.Length, r}
 	c.mapping = m
-	if err := vmwire.SendFD(socket, vmwire.Frame{Kind: vmwire.Attach, ID: vmwire.Version, Length: uint64(a.pages) * uint64(PageSize), Flags: uint64(cfg.MaxVMAs)}, a.file); err != nil {
+	if err := vmwire.SendFD(socket, vmwire.Frame{Kind: vmwire.Attach, ID: vmwire.Version, Length: uint64(a.pages) * uint64(a.pageSize), Flags: uint64(cfg.MaxVMAs)}, a.file); err != nil {
 		return fail(err)
 	}
 	attached = true
@@ -301,7 +324,7 @@ func (m *remoteMapping) frames(frames []vmwire.Frame, kind uint64, run MapRun, w
 	if run.Count < 1 || run.Page >= m.pageCount || uint64(run.Count) > m.pageCount-run.Page {
 		return nil, ErrRange
 	}
-	size := uint64(PageSize)
+	size := m.pageSize
 	for done := 0; done < run.Count; {
 		page := run.Page + uint64(done)
 		state, end := m.states.Run(page, run.Page+uint64(run.Count))
@@ -338,7 +361,7 @@ func (m *remoteMapping) frames(frames []vmwire.Frame, kind uint64, run MapRun, w
 // ambiguous as an acknowledgement that never arrived, and terminal like one.
 // Every other failure is terminal whatever it has applied.
 func (m *remoteMapping) commit(ctx context.Context, frames []vmwire.Frame) (commands, runs int, err error) {
-	size := uint64(PageSize)
+	size := m.pageSize
 	for len(frames) > 0 {
 		count := min(len(frames), vmwire.MaxBatchRuns)
 		batch := frames[:count]
@@ -440,7 +463,7 @@ func (m *remoteMapping) Protect(ctx context.Context, page uint64, count int) err
 	if count < 1 || page >= m.pageCount || uint64(count) > m.pageCount-page {
 		return ErrRange
 	}
-	size := uint64(PageSize)
+	size := m.pageSize
 	if err := vmwire.ProtectRange(m.connection.uffd.Fd(), m.address+page*size, uint64(count)*size); err != nil {
 		m.connection.fail(err)
 		return err
@@ -454,7 +477,7 @@ func (m *remoteMapping) Resolve(ctx context.Context, page uint64, count int, wri
 	if count < 1 || page >= m.pageCount || uint64(count) > m.pageCount-page {
 		return ErrRange
 	}
-	size := uint64(PageSize)
+	size := m.pageSize
 	// Read the mapping states under the shared lock and release it before any
 	// ioctl, so a long population cannot block a mapping command.
 	zero := false
@@ -482,7 +505,7 @@ func (m *remoteMapping) Resolve(ctx context.Context, page uint64, count int, wri
 	}
 	// One CONTINUE covers every HugeTLB page of the run; transient mapping races
 	// retry EAGAIN.
-	if err := vmwire.Resolve(m.connection.uffd.Fd(), m.address+page*size, uint64(count)*size, uint64(PageSize), writable); err != nil {
+	if err := vmwire.Resolve(m.connection.uffd.Fd(), m.address+page*size, uint64(count)*size, m.pageSize, writable); err != nil {
 		m.connection.fail(err)
 		return err
 	}
@@ -548,7 +571,7 @@ func (c *Connection) readFaults() {
 			c.fail(errors.New("invalid UFFD page fault"))
 			return
 		}
-		page := (address - c.region.Address) / uint64(PageSize)
+		page := (address - c.region.Address) / c.mapping.pageSize
 		c.queueMu.Lock()
 		entry, exists := c.queue[page]
 		if !exists {

@@ -39,5 +39,5 @@ func TestAttachRefusesAVolumeOfAnotherPageSize(t *testing.T) {
 	}
 	// The pager's own page attaches, so what was refused is the geometry and
 	// not the backing.
-	f.attach(publishedIn{Backing: f.newBacking(2), pageSize: vmmemory.PageSize})
+	f.attach(publishedIn{Backing: f.newBacking(2), pageSize: f.h.PageSize()})
 }

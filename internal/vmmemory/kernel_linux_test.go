@@ -64,7 +64,7 @@ func (b *kernelBacking) Locate(_ context.Context, off, length uint64) ([]control
 	for cursor := off; cursor < off+length; cursor += size {
 		id := control.Identity{Ref: b.source, Volume: "v", Page: cursor / checkpoint.PageSize2MiB}
 		switch {
-		case b.private[cursor/vmmemory.PageSize]:
+		case b.private[cursor/pageSize]:
 			id.Ref = control.Ref{VM: b.owner, Sequence: 2}
 		case b.zero:
 			id = control.Identity{Zero: true}
@@ -99,7 +99,7 @@ func (b *kernelBacking) checkpoint(ctx context.Context, r *vmmemory.Region) erro
 // publish installs one sealed checkpoint's pages, reporting whether the
 // checkpoint that would hold them was selected.
 func (b *kernelBacking) publish(ctx context.Context, ckpt *vmmemory.RegionCheckpoint) (bool, error) {
-	page := make([]byte, vmmemory.PageSize)
+	page := make([]byte, pageSize)
 	for _, number := range ckpt.DirtyPages() {
 		if b.onPublish != nil {
 			b.onPublish()
@@ -112,7 +112,7 @@ func (b *kernelBacking) publish(ctx context.Context, ckpt *vmmemory.RegionCheckp
 			b.mu.Unlock()
 			return false, errInjected
 		}
-		copy(b.data[number*vmmemory.PageSize:], page)
+		copy(b.data[number*pageSize:], page)
 		b.private[number] = true
 		b.mu.Unlock()
 	}
@@ -194,22 +194,28 @@ func kernelHost(t *testing.T, slots, pages int) *vmmemory.Host {
 }
 
 func kernelHostBudget(t *testing.T, slots, pages, dirty int) *vmmemory.Host {
-	return kernelHostPaged(t, vmmemory.PageSize, slots, pages, dirty)
+	return kernelHostPaged(t, pageSize, slots, pages, dirty)
 }
 
 // kernelHostPaged is a host whose pager page is pageSize, a whole number of
 // host pages; the others run at the host page.
 func kernelHostPaged(t *testing.T, pageSize, slots, pages, dirty int) *vmmemory.Host {
-	return kernelHostConfigured(t, vmmemory.Config{ResidentPages: slots, LogicalPages: pages, DirtyPages: dirty})
+	return kernelHostConfigured(t, vmmemory.Config{PageSize: uint64(pageSize),
+		ResidentPages: slots, LogicalPages: pages, DirtyPages: dirty})
 }
 
-// kernelHostConfigured is a host exactly as configured over a Linux arena.
+// kernelHostConfigured is a host exactly as configured over a Linux arena. The
+// arena is HugeTLB, so a configuration that names no page takes the one it can
+// be made of.
 func kernelHostConfigured(t *testing.T, cfg vmmemory.Config) *vmmemory.Host {
 	t.Helper()
+	if cfg.PageSize == 0 {
+		cfg.PageSize = pageSize
+	}
 	if os.Getenv("SPROUTFS_VM_MEMORY_CLIENT") == "" {
 		t.Skip("run scripts/test-vm-memory-lima.sh for Linux/KVM qualification")
 	}
-	a, err := vmmemory.NewLinuxArena(cfg.ResidentPages)
+	a, err := vmmemory.NewLinuxArena(cfg.ResidentPages, cfg.PageSize)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -263,7 +269,7 @@ func requireKernelBytes(t *testing.T, b *kernelBacking, want []byte) {
 // replaces their zero mapping.
 func TestManagedPagerStoreIntoZeroPageIsOneMappingCommand(t *testing.T) {
 	const pages = 32
-	size := vmmemory.PageSize
+	size := pageSize
 	for _, ahead := range []int{1, 8} {
 		t.Run(fmt.Sprintf("writeAhead=%d", ahead), func(t *testing.T) {
 			h := kernelHostConfigured(t, vmmemory.Config{ResidentPages: 4 * pages, LogicalPages: 4 * pages,
@@ -315,7 +321,7 @@ func TestManagedPagerStoreIntoZeroPageIsOneMappingCommand(t *testing.T) {
 // installed, and the stores into the rest of the run never fault. A pager page
 // spans the underlying host pages while retaining one managed fault unit.
 func TestManagedPagerSequentialStoresIntoFreshMemoryFaultOncePerRun(t *testing.T) {
-	host := vmmemory.PageSize
+	host := pageSize
 	for _, pageSize := range []int{host} {
 		t.Run(fmt.Sprintf("%dKiB", pageSize>>10), func(t *testing.T) {
 			const pages, ahead = 64, 8
@@ -415,9 +421,9 @@ func startNativeWithConfig(t *testing.T, h *vmmemory.Host, pages int, config vmm
 				p.backing = append(p.backing, kernel)
 			}
 		} else {
-			kernel := newKernelBacking(byte(i+1), pages*vmmemory.PageSize)
+			kernel := newKernelBacking(byte(i+1), pages*pageSize)
 			for j := range kernel.data {
-				kernel.data[j] = byte(1 + i*32 + j/vmmemory.PageSize)
+				kernel.data[j] = byte(1 + i*32 + j/pageSize)
 			}
 			p.backing = append(p.backing, kernel)
 			b = kernel
@@ -444,8 +450,8 @@ func TestKVMVolumeCheckpointWithSpillRequiresAuthority(t *testing.T) {
 	h := kernelHost(t, 3, 16)
 	c := newPagerCluster(t)
 	vm, err := c.manager.Create(t.Context(), "vm", []volume.VolumeSpec{
-		{Name: "pmem0", Size: uint64(8 * vmmemory.PageSize), PageSize: vmmemory.PageSize},
-		{Name: "ram0", Size: uint64(8 * vmmemory.PageSize), PageSize: vmmemory.PageSize},
+		{Name: "pmem0", Size: uint64(8 * pageSize), PageSize: pageSize},
+		{Name: "ram0", Size: uint64(8 * pageSize), PageSize: pageSize},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -456,7 +462,7 @@ func TestKVMVolumeCheckpointWithSpillRequiresAuthority(t *testing.T) {
 	for region := range 2 {
 		for page := range 8 {
 			value := 91 + region + page
-			p.request(fmt.Sprintf("kvmwrite %d %d %d", region, page*vmmemory.PageSize, value), fmt.Sprintf("kvm %d", value))
+			p.request(fmt.Sprintf("kvmwrite %d %d %d", region, page*pageSize, value), fmt.Sprintf("kvm %d", value))
 		}
 	}
 	// One checkpoint of the whole VM: every region seals over the control protocol
@@ -476,7 +482,7 @@ func TestKVMVolumeCheckpointWithSpillRequiresAuthority(t *testing.T) {
 	for region, v := range volumes {
 		for page := range 8 {
 			var data [1]byte
-			if err := v.Read(t.Context(), uint64(page*vmmemory.PageSize), data[:]); err != nil || data[0] != byte(91+region+page) {
+			if err := v.Read(t.Context(), uint64(page*pageSize), data[:]); err != nil || data[0] != byte(91+region+page) {
 				t.Fatalf("the checkpoint lost a KVM store: %v %d", err, data[0])
 			}
 		}
@@ -565,7 +571,7 @@ func TestManagedPagerKVMSharingBoundedReclaimCheckpoint(t *testing.T) {
 		a.request(fmt.Sprintf("kvmwrite %d 0 91", region), "kvm 91")
 		b.request(fmt.Sprintf("kvmread %d 0", region), fmt.Sprintf("kvm %d", value))
 		for page := 1; page < 8; page++ {
-			b.request(fmt.Sprintf("kvmread %d %d", region, page*vmmemory.PageSize), fmt.Sprintf("kvm %d", value+page))
+			b.request(fmt.Sprintf("kvmread %d %d", region, page*pageSize), fmt.Sprintf("kvm %d", value+page))
 		}
 		a.request(fmt.Sprintf("kvmread %d 0", region), "kvm 91")
 		a.checkpoint(region)
@@ -608,7 +614,7 @@ func TestManagedPagerPopulateAvoidsKVMFirstTouchFaults(t *testing.T) {
 	touch := func(p *nativeProcess) {
 		for region := range 2 {
 			for page := range pages {
-				p.request(fmt.Sprintf("kvmread %d %d", region, page*vmmemory.PageSize), fmt.Sprintf("kvm %d", 1+region*32+page))
+				p.request(fmt.Sprintf("kvmread %d %d", region, page*pageSize), fmt.Sprintf("kvm %d", 1+region*32+page))
 			}
 		}
 	}
@@ -643,7 +649,7 @@ func TestManagedPagerEagerZeroMappingsRemainCopyOnWrite(t *testing.T) {
 	backings := func() []vmmemory.Backing {
 		result := make([]vmmemory.Backing, 2)
 		for i := range result {
-			b := newKernelBacking(0, pages*vmmemory.PageSize)
+			b := newKernelBacking(0, pages*pageSize)
 			b.zero = true
 			result[i] = b
 		}
@@ -662,7 +668,7 @@ func TestManagedPagerEagerZeroMappingsRemainCopyOnWrite(t *testing.T) {
 	}
 	for region := range 2 {
 		for page := range pages {
-			b.request(fmt.Sprintf("kvmread %d %d", region, page*vmmemory.PageSize), "kvm 0")
+			b.request(fmt.Sprintf("kvmread %d %d", region, page*pageSize), "kvm 0")
 		}
 	}
 	after, _ := h.Stats(t.Context())
@@ -674,10 +680,10 @@ func TestManagedPagerEagerZeroMappingsRemainCopyOnWrite(t *testing.T) {
 	b.request("kvmread 0 0", "kvm 91")
 	// Two private pages compete for the only slot. The other process's
 	// anonymous zero mappings must remain intact across spill and refault.
-	a.request(fmt.Sprintf("kvmwrite 0 %d 92", vmmemory.PageSize), "kvm 92")
+	a.request(fmt.Sprintf("kvmwrite 0 %d 92", pageSize), "kvm 92")
 	b.request("kvmread 0 0", "kvm 91")
-	b.request(fmt.Sprintf("kvmread 0 %d", vmmemory.PageSize), "kvm 0")
-	a.request(fmt.Sprintf("kvmread 0 %d", vmmemory.PageSize), "kvm 92")
+	b.request(fmt.Sprintf("kvmread 0 %d", pageSize), "kvm 0")
+	a.request(fmt.Sprintf("kvmread 0 %d", pageSize), "kvm 92")
 	a.request("kvmread 0 0", "kvm 0")
 }
 
@@ -685,23 +691,23 @@ func TestManagedPagerReadAheadKeepsZerosAndDataSeparate(t *testing.T) {
 	h := kernelHostConfigured(t, vmmemory.Config{ResidentPages: 4, LogicalPages: 8, DirtyPages: 8, ReadAheadPages: 4})
 	var backing []vmmemory.Backing
 	for range 2 {
-		b := newKernelBacking(0, 4*vmmemory.PageSize)
+		b := newKernelBacking(0, 4*pageSize)
 		b.zero = true
 		b.private[1] = true
 		b.private[2] = true
-		b.data[vmmemory.PageSize] = 9
-		b.data[2*vmmemory.PageSize] = 10
+		b.data[pageSize] = 9
+		b.data[2*pageSize] = 10
 		backing = append(backing, b)
 	}
 	p := startNative(t, h, 4, backing...)
-	p.request(fmt.Sprintf("kvmread 0 %d", vmmemory.PageSize), "kvm 9")
+	p.request(fmt.Sprintf("kvmread 0 %d", pageSize), "kvm 9")
 	before, _ := h.Stats(t.Context())
 	if before.Loads != 1 || before.LoadedPages != 2 {
 		t.Fatalf("read-ahead did not load just the data run: %+v", before)
 	}
 	p.request("kvmread 0 0", "kvm 0")
-	p.request(fmt.Sprintf("kvmread 0 %d", 2*vmmemory.PageSize), "kvm 10")
-	p.request(fmt.Sprintf("kvmread 0 %d", 3*vmmemory.PageSize), "kvm 0")
+	p.request(fmt.Sprintf("kvmread 0 %d", 2*pageSize), "kvm 10")
+	p.request(fmt.Sprintf("kvmread 0 %d", 3*pageSize), "kvm 0")
 	after, _ := h.Stats(t.Context())
 	if after.Faults != before.Faults || after.Loads != before.Loads {
 		t.Fatalf("read-ahead left a page fault: before=%+v after=%+v", before, after)
@@ -718,7 +724,7 @@ func TestManagedPagerSealProtectsARunSpanningSeveralMappings(t *testing.T) {
 	const pages = 4
 	h := kernelHost(t, 8, 16)
 	p := startNative(t, h, pages)
-	size := vmmemory.PageSize
+	size := pageSize
 	for page := pages - 1; page >= 0; page-- {
 		p.request(fmt.Sprintf("fill 1 %d 1 %d", page*size, 70+page), "filled")
 	}
@@ -781,7 +787,7 @@ func TestManagedPagerSealProtectsARunSpanningSeveralMappings(t *testing.T) {
 // any host page maps the whole pager page, a store copies it, a seal ingests it,
 // and a spilled page comes back with every host subpage intact.
 func TestManagedPagerHugePagesFaultCopySealAndSpill(t *testing.T) {
-	const pageSize, pages = vmmemory.PageSize, 4
+	const pages = 4
 	host := os.Getpagesize()
 	per := pageSize / host
 	// Two slots: a third resident page evicts.

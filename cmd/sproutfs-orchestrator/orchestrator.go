@@ -199,12 +199,12 @@ type liveHost struct {
 // A host that reports no arena at all is measured as empty, which is what an
 // older host or a test that says nothing about memory is.
 func (h liveHost) free() uint64 {
+	// What a VM costs a host's memory is its RAM, so what is left for another is
+	// the RAM arena rather than both: the PMEM arena holds the roots, which are
+	// one image the whole fleet shares.
 	pager := h.report.Pager
-	if pager.ArenaPages <= 0 || pager.PageBytes <= 0 {
-		return 0
-	}
-	arena := uint64(pager.ArenaPages) * uint64(pager.PageBytes)
-	if pager.CommittedBytes >= arena {
+	arena := pager.RAM.ArenaBytes()
+	if arena == 0 || pager.CommittedBytes >= arena {
 		return 0
 	}
 	return arena - pager.CommittedBytes

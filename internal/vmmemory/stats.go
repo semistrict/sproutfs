@@ -146,8 +146,8 @@ func (h *Host) Sharing(ctx context.Context) (SharingStats, error) {
 		if pg.kind == Ram {
 			gauge = &stats.Ram
 		}
-		gauge.UniqueBytes += PageSize
-		gauge.MappedBytes += uint64(len(pg.aliases)) * PageSize
+		gauge.UniqueBytes += h.pageSize
+		gauge.MappedBytes += uint64(len(pg.aliases)) * h.pageSize
 	}
 	stats.Ram.SavedBytes = stats.Ram.MappedBytes - stats.Ram.UniqueBytes
 	stats.Pmem.SavedBytes = stats.Pmem.MappedBytes - stats.Pmem.UniqueBytes

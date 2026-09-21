@@ -56,7 +56,7 @@ func (h *Host) releaseSpill(slot int) {
 		// not accounting: the spill file's whole extent is already this pager's
 		// fixed cap, so a failed or unsupported punch costs nothing.
 		if file, ok := h.spill.(platform.SparseFile); ok {
-			_ = file.PunchHole(context.Background(), int64(slot)*int64(PageSize), int64(PageSize))
+			_ = file.PunchHole(context.Background(), int64(slot)*int64(h.pageSize), int64(h.pageSize))
 		}
 	}
 	h.mu.Lock()
@@ -204,9 +204,10 @@ func (h *Host) evictBatch(ctx context.Context, victims []*resident) error {
 	}
 	sort.Slice(pages, func(i, j int) bool { return pages[i].slot < pages[j].slot })
 	if len(pages) > 0 {
-		data := make([]byte, len(pages)*PageSize)
+		ps := int(h.pageSize)
+		data := make([]byte, len(pages)*ps)
 		for i, page := range pages {
-			if err := h.arena.Read(ctx, page.resident.slot, data[i*PageSize:(i+1)*PageSize]); err != nil {
+			if err := h.arena.Read(ctx, page.resident.slot, data[i*ps:(i+1)*ps]); err != nil {
 				return err
 			}
 		}
@@ -215,17 +216,17 @@ func (h *Host) evictBatch(ctx context.Context, victims []*resident) error {
 			for end < len(pages) && pages[end].slot == pages[end-1].slot+1 {
 				end++
 			}
-			bytes := data[start*PageSize : end*PageSize]
+			bytes := data[start*ps : end*ps]
 			h.mu.Lock()
 			for i, page := range pages[start:end] {
 				// The bytes are written to scratch and the slot is not recorded
 				// as holding them, so a refault reads whatever the slot held
 				// before instead of the guest's private page.
 				h.spillWritten[page.slot] = !sim.Bug(ctx, "pager-forget-spill")
-				h.spillSum[page.slot] = crc32.Checksum(bytes[i*PageSize:(i+1)*PageSize], spillChecksums)
+				h.spillSum[page.slot] = crc32.Checksum(bytes[i*ps:(i+1)*ps], spillChecksums)
 			}
 			h.mu.Unlock()
-			n, err := h.spill.WriteAt(ctx, bytes, int64(pages[start].slot)*int64(PageSize))
+			n, err := h.spill.WriteAt(ctx, bytes, int64(pages[start].slot)*int64(h.pageSize))
 			if err == nil && n != len(bytes) {
 				err = io.ErrShortWrite
 			}

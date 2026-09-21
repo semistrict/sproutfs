@@ -130,18 +130,25 @@ type SupervisorConfig struct {
 	// the VMM scratch. A starting host wipes it: a restart is a host loss, so
 	// nothing under it is authority for anything.
 	ScratchDir string
-	// ArenaBytes is the pager's resident page store, taken from the pod's
-	// HugeTLB allotment, and MemoryBytes the RAM allotment it takes its pages
-	// from.
-	ArenaBytes, MemoryBytes int64
-	// CacheBytes caps the page cache and SpillBytes the pager's spill file.
+	// ArenaBytes is the resident page store of each pager, taken from the pod's
+	// HugeTLB allotment. The two arenas are separate memfds and their capacities
+	// sum to what the deployment gave this host; whoever fills this in has
+	// already divided it, so nothing below has a share to decide.
+	ArenaBytes KindBytes
+	// MemoryBytes is the host-wide RAM allotment both pagers take their pages
+	// from. It is one budget because it is one machine's memory, and because
+	// bytes are the only unit the two pagers' pages can be added in.
+	MemoryBytes int64
+	// CacheBytes caps the page cache and SpillBytes each pager's own spill file.
 	// Disk is capped per concern rather than shared: neither can take what the
 	// other needs, so there is no ledger between them.
-	CacheBytes, SpillBytes int64
+	CacheBytes int64
+	SpillBytes KindBytes
 	// LogicalPages bounds per-region metadata and DirtyPages the volatile
-	// private state on RAM and spill together. DirtyPages is what fills the
-	// spill file, so SpillBytes is its bound.
-	LogicalPages, DirtyPages int
+	// private state on RAM and spill together, each in the pages of the pager it
+	// belongs to. DirtyPages is what fills a spill file, so SpillBytes is its
+	// bound, per pager.
+	LogicalPages, DirtyPages KindPages
 	// Firecracker, Seccomp and Kernel are the VMM, its compiled policy and the
 	// guest kernel; Templates are the guest images a VM can be created from, by
 	// the name a request selects.

@@ -163,39 +163,73 @@ type Sharing struct {
 	SavedBytes  uint64 `json:"saved_bytes"`
 }
 
-// Pager is what the host's shared pager holds. SharedPages is the demo's
-// sharing measure: pages mapped to an already resident identity without a read,
-// which is what a fork of a running guest inherits.
-type Pager struct {
+// PagerKind is what one of a host's two pagers holds, in its own page. Nothing
+// here may be added to the other pager's: the two run different pages, so a
+// count of one says nothing about the other. What a host-wide reading needs is
+// bytes, which Pager carries.
+type PagerKind struct {
 	PageBytes int `json:"page_bytes"`
-	// ArenaPages is how many pages the arena holds and ResidentPages how many
-	// of them are taken. The arena is the whole of a guest's resident memory, so
-	// it is the capacity a VM placed here has to fit into; ResidentPages is not
-	// what it has to fit into, because the arena is a cache — a page of a VM
-	// that has gone stays resident until something else needs the page.
+	// ArenaPages is how many pages this pager's arena holds and ResidentPages
+	// how many of them are taken. The arena is the whole of a guest's resident
+	// memory of this kind, so it is the capacity a VM placed here has to fit
+	// into; ResidentPages is not what it has to fit into, because the arena is a
+	// cache — a page of a VM that has gone stays resident until something else
+	// needs the page.
 	ArenaPages    int `json:"arena_pages"`
 	ResidentPages int `json:"resident_pages"`
+	DirtyPages    int `json:"dirty_pages"`
+	LogicalPages  int `json:"logical_pages"`
+	// LogicalPagesFree is what this pager's per-region metadata cap still has
+	// left, which is what admits a VM: a create, fork or receive whose regions
+	// of this kind need more than this is refused before anything starts its
+	// VMM.
+	LogicalPagesFree int `json:"logical_pages_free"`
+	// Sharing is how much of the sharing this pager holds is still there.
+	Sharing Sharing `json:"sharing"`
+	// Faults, Evictions, Spills and SharedPages are this pager's own counts of
+	// what it has done. They are events rather than memory, so they may be read
+	// together with the other pager's.
+	SharedPages uint64 `json:"shared_pages"`
+	Faults      uint64 `json:"faults"`
+	Evictions   uint64 `json:"evictions"`
+	Spills      uint64 `json:"spills"`
+}
+
+// ArenaBytes is what this pager's arena holds and ResidentBytes what is taken of
+// it. Bytes are what a host-wide reading adds up, because pages of the two
+// pagers are different sizes.
+func (p PagerKind) ArenaBytes() uint64    { return uint64(p.ArenaPages) * uint64(p.PageBytes) }
+func (p PagerKind) ResidentBytes() uint64 { return uint64(p.ResidentPages) * uint64(p.PageBytes) }
+func (p PagerKind) DirtyBytes() uint64    { return uint64(p.DirtyPages) * uint64(p.PageBytes) }
+
+// Pager is what the host's pagers hold: one report per kind of region, and the
+// byte totals across the two. SharedPages is the demo's sharing measure: pages
+// mapped to an already resident identity without a read, which is what a fork of
+// a running guest inherits.
+type Pager struct {
+	// RAM and PMEM are the two pagers, each with its own arena, spill file and
+	// page. They are reported apart because they are separate things for a
+	// deployment to plan for and because their page counts cannot be added.
+	RAM  PagerKind `json:"ram"`
+	PMEM PagerKind `json:"pmem"`
 	// CommittedBytes is the guest RAM the VMs this host runs have between them,
 	// resident or not: the size of each running VM's RAM volume. It is what a VM
-	// costs this host and what a placement measures it by, and the arena minus
-	// it is what another VM has to fit into.
+	// costs this host and what a placement measures it by, and the RAM arena
+	// minus it is what another VM has to fit into.
 	CommittedBytes uint64 `json:"committed_bytes"`
-	DirtyPages     int    `json:"dirty_pages"`
-	LogicalPages   int    `json:"logical_pages"`
-	// LogicalPagesFree is what the per-region metadata cap still has left,
-	// which is what admits a VM: a create, fork or receive whose regions need
-	// more than this is refused before anything starts its VMM.
-	LogicalPagesFree int    `json:"logical_pages_free"`
-	SharedPages      uint64 `json:"shared_pages"`
-	Faults           uint64 `json:"faults"`
-	Evictions        uint64 `json:"evictions"`
-	Spills           uint64 `json:"spills"`
-	// RAM and PMEM are how much of the sharing this pager holds is still there,
-	// reported apart because the two are separate things for a deployment to
-	// plan for.
-	RAM  Sharing `json:"ram"`
-	PMEM Sharing `json:"pmem"`
 }
+
+// The byte totals across both pagers, which is the only unit the two can be
+// added in.
+func (p Pager) ArenaBytes() uint64    { return p.RAM.ArenaBytes() + p.PMEM.ArenaBytes() }
+func (p Pager) ResidentBytes() uint64 { return p.RAM.ResidentBytes() + p.PMEM.ResidentBytes() }
+
+// SharedPages, Faults, Evictions and Spills are counts of what the two pagers
+// have done rather than memory they hold, so they read together.
+func (p Pager) SharedPages() uint64 { return p.RAM.SharedPages + p.PMEM.SharedPages }
+func (p Pager) Faults() uint64      { return p.RAM.Faults + p.PMEM.Faults }
+func (p Pager) Evictions() uint64   { return p.RAM.Evictions + p.PMEM.Evictions }
+func (p Pager) Spills() uint64      { return p.RAM.Spills + p.PMEM.Spills }
 
 // Pages is what this host's migration page server has answered.
 type Pages struct {

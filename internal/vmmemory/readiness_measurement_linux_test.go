@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/semistrict/sproutfs/internal/vmmemory"
 )
 
 // Timings are observations, never correctness thresholds. Run through the
@@ -38,7 +37,7 @@ func TestManagedPagerReadinessMeasurements(t *testing.T) {
 	latencies := make([]int64, 0, pages/2)
 	for page := 0; page < pages; page += 2 {
 		start := time.Now()
-		a.request(fmt.Sprintf("kvmread 0 %d", page*vmmemory.PageSize), fmt.Sprintf("kvm %d", byte(page+1)))
+		a.request(fmt.Sprintf("kvmread 0 %d", page*pageSize), fmt.Sprintf("kvm %d", byte(page+1)))
 		latencies = append(latencies, time.Since(start).Nanoseconds())
 	}
 	slices.Sort(latencies)
@@ -48,7 +47,7 @@ func TestManagedPagerReadinessMeasurements(t *testing.T) {
 	attachNS := time.Since(start).Nanoseconds()
 	afterAttach, _ := h.Stats(t.Context())
 	for page := 0; page < pages; page += 2 {
-		b.request(fmt.Sprintf("kvmread 0 %d", page*vmmemory.PageSize), fmt.Sprintf("kvm %d", byte(page+1)))
+		b.request(fmt.Sprintf("kvmread 0 %d", page*pageSize), fmt.Sprintf("kvm %d", byte(page+1)))
 	}
 	checked, _ := h.Stats(t.Context())
 	if checked.Faults != afterAttach.Faults || afterAttach.Loads != beforeAttach.Loads {
@@ -61,7 +60,7 @@ func TestManagedPagerReadinessMeasurements(t *testing.T) {
 		"cold_fault_p95_ns": latencies[len(latencies)*95/100], "cold_fault_p99_ns": latencies[len(latencies)*99/100],
 		"fragmented_attach_ns": attachNS, "fragmented_mapping_runs": afterAttach.MappingRuns - beforeAttach.MappingRuns,
 		"fragmented_remap_events": afterAttach.RemapEvents - beforeAttach.RemapEvents,
-		"guest_page_size":         vmmemory.PageSize,
+		"guest_page_size":         pageSize,
 	}
 	raw, err := json.Marshal(result)
 	if err != nil {

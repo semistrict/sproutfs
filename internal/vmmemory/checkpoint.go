@@ -370,7 +370,7 @@ func (c *RegionCheckpoint) Share(ctx context.Context, ref control.Ref, volume st
 // checkpoint.
 func (c *RegionCheckpoint) ReadDirty(ctx context.Context, page uint64, dst []byte) error {
 	h := c.region.host
-	if len(dst) != PageSize {
+	if uint64(len(dst)) != h.pageSize {
 		return ErrRange
 	}
 	select {

@@ -115,7 +115,7 @@ func (s *settler) equal(ctx context.Context, h *Host, first, second int) (bool, 
 		return comparing.Equal(ctx, first, second)
 	}
 	if s.first == nil {
-		s.first, s.second = make([]byte, PageSize), make([]byte, PageSize)
+		s.first, s.second = make([]byte, h.pageSize), make([]byte, h.pageSize)
 	}
 	if err := h.arena.Read(ctx, first, s.first); err != nil {
 		return false, err

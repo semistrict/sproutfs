@@ -156,7 +156,7 @@ func TestFailedPhysicalCleanupRetainsRAMUntilRetry(t *testing.T) {
 		}
 		defer spill.Close()
 		a := &failedResourceArena{arena: f.a, failPunch: true}
-		f.h, err = vmmemory.New(t.Context(), b, vmmemory.Config{ResidentPages: 1, LogicalPages: 1, DirtyPages: 1}, a, spill)
+		f.h, err = vmmemory.New(t.Context(), b, vmmemory.Config{PageSize: pageSize, ResidentPages: 1, LogicalPages: 1, DirtyPages: 1}, a, spill)
 		if err != nil {
 			t.Fatal(err)
 		}

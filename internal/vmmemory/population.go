@@ -32,7 +32,7 @@ func (r *Region) Populate(ctx context.Context) error {
 		return nil
 	}
 	for start := uint64(0); start < uint64(r.pageCount); {
-		end := min(start+uint64(populationWindowBytes/PageSize), uint64(r.pageCount))
+		end := min(start+max(populationWindowBytes/h.pageSize, 1), uint64(r.pageCount))
 		err := func() error {
 			if err := r.mu.Lock(ctx); err != nil {
 				return err
@@ -111,7 +111,7 @@ func (p *windowPlan) bindResidents(ctx context.Context, index *residentIndex) er
 		key  pageKey
 	}
 	var candidates []candidate
-	ps := uint64(PageSize)
+	ps := p.region.host.pageSize
 	for _, extent := range p.extents {
 		if err := context.Cause(ctx); err != nil {
 			return err

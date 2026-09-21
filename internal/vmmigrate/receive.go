@@ -325,8 +325,11 @@ func attach(ctx context.Context, vm *volume.VM, handoff Handoff, dial Dialer, st
 		if point != nil {
 			backing = localBacking{Volume: v, inherited: region.Unpublished}
 		} else {
+			// The page these numbers are in is this volume's own, which both
+			// hosts read out of the same durable geometry: the handoff's page
+			// is the source's budget unit and says nothing about one volume.
 			peer, err := NewPeerBacking(PeerConfig{Volume: v, Peer: handoff.Source, VM: handoff.VMID,
-				PageSize: handoff.PageSize, Unpublished: region.Unpublished, Dial: dial, Clock: clock})
+				Unpublished: region.Unpublished, Dial: dial, Clock: clock})
 			if err != nil {
 				return nil, err
 			}

@@ -12,7 +12,7 @@ import (
 // host budget: the pages they will hold are what that budget bounds, so a
 // refused reservation is a refused allocation. Caller holds h.mu.
 func (h *Host) takeFree(slot, count int) bool {
-	lease, err := h.resources.TryAcquire(context.Background(), int64(count)*int64(PageSize))
+	lease, err := h.resources.TryAcquire(context.Background(), int64(count)*int64(h.pageSize))
 	if err != nil {
 		return false
 	}
@@ -36,7 +36,7 @@ func (h *Host) putFree(slot int) {
 		h.err = errors.Join(h.err, fmt.Errorf("managed arena terminal: slot %d freed without a resource reservation", slot))
 		return
 	}
-	if err := lease.Release(int64(PageSize)); err != nil {
+	if err := lease.Release(int64(h.pageSize)); err != nil {
 		h.err = errors.Join(h.err, fmt.Errorf("managed arena terminal: releasing slot %d: %w", slot, err))
 		return
 	}
@@ -164,8 +164,8 @@ func (h *Host) allocate(ctx context.Context, preferEviction bool) (int, error) {
 				}
 			}
 			if usable {
-				// One victim per reclaim: a page is 2 MiB, which is the whole
-				// scratch budget one eviction may read out of the arena.
+				// One victim per reclaim: a page is the whole scratch budget one
+				// eviction may read out of the arena.
 				candidates = append(candidates, pg)
 				break
 			}

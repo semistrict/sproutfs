@@ -16,20 +16,59 @@ import (
 	"github.com/semistrict/sproutfs/internal/platform"
 )
 
-// PageSize is the production pager unit, backed by explicit 2 MiB HugeTLB pages.
-const PageSize = 2 << 20
-
-// RegionKind is what one region is to the guest that maps it. The pager treats
-// the two alike — same arena, same page, same ownership — and reports them
-// apart, because what a deployment plans for is RAM and disk separately. It is
-// set by whoever attaches the region, which is the only party that knows: a
-// volume's name says nothing, and the pager must not read one.
+// RegionKind is what one region is to the guest that maps it. A host runs one
+// pager per kind, each with its own arena, its own spill file and its own page
+// size, because what a deployment plans for is RAM and disk separately and the
+// two no longer share a unit. It is set by whoever attaches the region, which
+// is the only party that knows: a volume's name says nothing, and the pager
+// must not read one.
 type RegionKind uint64
 
 const (
 	Pmem RegionKind = 1
 	Ram  RegionKind = 2
 )
+
+func (k RegionKind) String() string {
+	switch k {
+	case Ram:
+		return "ram"
+	case Pmem:
+		return "pmem"
+	}
+	return "unknown"
+}
+
+// Pagers is one host's pager per kind of region. Nothing adds their page counts
+// together — a RAM page and a PMEM page are different numbers of bytes — so
+// everything a host reports across the two is in bytes.
+type Pagers struct {
+	Ram, Pmem *Host
+}
+
+// For reports the pager a region of this kind attaches to, nil where this host
+// runs none of that kind.
+func (p Pagers) For(kind RegionKind) *Host {
+	switch kind {
+	case Ram:
+		return p.Ram
+	case Pmem:
+		return p.Pmem
+	}
+	return nil
+}
+
+// All reports both pagers, skipping either that is absent, so a caller that
+// must reach every pager of a host cannot forget one.
+func (p Pagers) All() []*Host {
+	var all []*Host
+	for _, h := range []*Host{p.Ram, p.Pmem} {
+		if h != nil {
+			all = append(all, h)
+		}
+	}
+	return all
+}
 
 // RegionBacking is the one region a session maps: what it is to the guest and
 // the bytes it stands in front of.
@@ -113,12 +152,12 @@ type Backing interface {
 }
 
 // PagedBacking is a Backing that states the page its volume is published in,
-// which *volume.Volume does. This pager has one page — PageSize — and every
-// number it faults, keys and serves is in it, so a backing whose volume is
-// published in another page size is refused when it is attached rather than
-// read in the wrong unit. A backing that states nothing is taken to be this
-// pager's page, which is what a test mapping and a peer backing over a volume
-// of this page are.
+// which *volume.Volume does. A pager instance has one page — Config.PageSize —
+// and every number it faults, keys and serves is in it, so a backing whose
+// volume is published in another page size is refused when it is attached
+// rather than read in the wrong unit. A backing that states nothing is taken to
+// be this pager's page, which is what a test mapping and a peer backing over a
+// volume of this page are.
 type PagedBacking interface {
 	PageSize() uint64
 }
@@ -229,16 +268,26 @@ type BatchRevocation interface {
 }
 
 type Config struct {
+	// PageSize is this pager's unit: its arena slots, its spill slots, the
+	// numbers it faults, keys and serves, and the alignment it requires of every
+	// region. It is fixed for the pager's life, because a page number means
+	// nothing without it, and it must be one of the page sizes a volume can be
+	// published in — checkpoint.GeometryFor is the one place that says which
+	// those are, so a pager and the volumes it maps cannot disagree about it.
+	PageSize uint64
 	// ConcurrentIO bounds ordinary page operations. Each can hold one read-ahead
 	// or spill buffer. One additional permit reserves a checkpoint's reads of a
 	// sealed checkpoint when cold faults saturate this budget, which is what keeps
 	// a guest dirtying faster than its checkpoint uploads from deadlocking against
 	// it. Zero selects 16.
 	ConcurrentIO int
-	// ReadAheadPages bounds the aligned run a fault loads and maps at once. It
-	// is the host's one read-ahead policy: no region overrides it. Read-ahead
-	// only uses free arena slots; it never evicts. Zero selects one page, and
-	// the range cannot exceed 16 MiB.
+	// ReadAheadPages bounds the aligned run a fault loads and maps at once, in
+	// pages of this pager. It is the host's one read-ahead policy for this kind
+	// of region: no region overrides it. A deployment states the run in bytes
+	// and each pager converts it into its own pages, because the run is a buffer
+	// and a number of pages means different amounts of memory in the two.
+	// Read-ahead only uses free arena slots; it never evicts. Zero selects one
+	// page, and the range cannot exceed 16 MiB.
 	ReadAheadPages int
 	// WriteAheadPages bounds the run of pages one store into fresh zeros, a
 	// zero-mapped page or a hole the guest never touched, makes private

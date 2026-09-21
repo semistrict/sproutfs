@@ -69,7 +69,7 @@ func (h *Host) read(ctx context.Context, b *binding, pg *resident, dst []byte) e
 		if !held {
 			return errors.New("private page has no current backing")
 		}
-		n, err := h.spill.ReadAt(ctx, dst, int64(b.spillSlot)*int64(PageSize))
+		n, err := h.spill.ReadAt(ctx, dst, int64(b.spillSlot)*int64(h.pageSize))
 		if err == nil && n != len(dst) {
 			err = io.ErrUnexpectedEOF
 		}
@@ -84,7 +84,7 @@ func (h *Host) read(ctx context.Context, b *binding, pg *resident, dst []byte) e
 		}
 		return nil
 	}
-	_, err := b.region.loadBacking(ctx, b.index*uint64(PageSize), dst)
+	_, err := b.region.loadBacking(ctx, b.index*h.pageSize, dst)
 	return err
 }
 
@@ -151,7 +151,7 @@ func (h *Host) createZeros(ctx context.Context, slot, count int, kind RegionKind
 	if zeroing, ok := h.arena.(ZeroArena); ok {
 		err = zeroing.Zero(ctx, slot, count)
 	} else {
-		zeros := make([]byte, PageSize)
+		zeros := make([]byte, h.pageSize)
 		for s := slot; s < slot+count && err == nil; s++ {
 			err = h.arena.Write(ctx, s, zeros)
 		}

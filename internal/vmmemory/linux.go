@@ -6,10 +6,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"syscall"
 
+	"github.com/semistrict/sproutfs/internal/checkpoint"
 	"github.com/semistrict/sproutfs/internal/vmwire"
 )
 
@@ -19,34 +21,46 @@ type LinuxArena struct {
 	file    *os.File
 	mapping []byte
 	pages   int
+	// pageSize is the slot size this arena was made with, which must be the
+	// page of the pager it is given to. A host runs one arena per pager, so the
+	// two arenas of one host need not agree about it.
+	pageSize int
 }
 
-// NewLinuxArena creates pages slots of PageSize bytes each. The host must
-// provision a HugeTLB pool; allocation never falls back to ordinary pages.
-func NewLinuxArena(pages int) (*LinuxArena, error) {
-	if pages < 1 || uint64(pages) > uint64(^uint64(0)>>1)/uint64(PageSize) {
+// NewLinuxArena creates pages slots of pageSize bytes each. The backing is an
+// explicit 2 MiB HugeTLB memfd, so a slot size other than that is refused here:
+// the pool's page is what the arena is made of, and a 4 KiB arena is ordinary
+// memory this build does not yet allocate. The host must provision the pool;
+// allocation never falls back to ordinary pages.
+func NewLinuxArena(pages int, pageSize uint64) (*LinuxArena, error) {
+	if pageSize != checkpoint.PageSize2MiB {
+		return nil, fmt.Errorf("%w: a HugeTLB arena's slot is %d bytes, not %d",
+			ErrConfig, checkpoint.PageSize2MiB, pageSize)
+	}
+	size := int(pageSize)
+	if pages < 1 || uint64(pages) > uint64(^uint64(0)>>1)/pageSize {
 		return nil, ErrConfig
 	}
-	f, err := vmwire.HugeMemfd("sproutfs-memory", int64(pages)*int64(PageSize))
+	f, err := vmwire.HugeMemfd("sproutfs-memory", int64(pages)*int64(size))
 	if err != nil {
 		return nil, err
 	}
-	mapping, err := syscall.Mmap(int(f.Fd()), 0, pages*PageSize, syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED|syscall.MAP_NORESERVE)
+	mapping, err := syscall.Mmap(int(f.Fd()), 0, pages*size, syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED|syscall.MAP_NORESERVE)
 	if err != nil {
 		_ = f.Close()
 		return nil, err
 	}
-	return &LinuxArena{file: f, mapping: mapping, pages: pages}, nil
+	return &LinuxArena{file: f, mapping: mapping, pages: pages, pageSize: size}, nil
 }
 
 func (a *LinuxArena) offset(ctx context.Context, slot int, length int) (int64, error) {
 	if err := context.Cause(ctx); err != nil {
 		return 0, err
 	}
-	if slot < 0 || slot >= a.pages || length != PageSize {
+	if slot < 0 || slot >= a.pages || length != a.pageSize {
 		return 0, ErrRange
 	}
-	return int64(slot) * int64(PageSize), nil
+	return int64(slot) * int64(a.pageSize), nil
 }
 func (a *LinuxArena) Read(ctx context.Context, slot int, dst []byte) error {
 	off, err := a.offset(ctx, slot, len(dst))
@@ -84,30 +98,31 @@ func (a *LinuxArena) Zero(ctx context.Context, slot, count int) error {
 		return ErrRange
 	}
 	const keepSize = 1 // FALLOC_FL_KEEP_SIZE
-	return a.fallocate(ctx, keepSize, int64(slot)*int64(PageSize), int64(count)*int64(PageSize))
+	return a.fallocate(ctx, keepSize, int64(slot)*int64(a.pageSize), int64(count)*int64(a.pageSize))
 }
 
 // Equal compares two slots where they are, without copying either out. The
 // arena is mapped into this process, so a settle's comparison is one
 // bytes.Equal over the pair and the memory traffic is the pages themselves.
 func (a *LinuxArena) Equal(ctx context.Context, first, second int) (bool, error) {
-	x, err := a.offset(ctx, first, PageSize)
+	x, err := a.offset(ctx, first, a.pageSize)
 	if err != nil {
 		return false, err
 	}
-	y, err := a.offset(ctx, second, PageSize)
+	y, err := a.offset(ctx, second, a.pageSize)
 	if err != nil {
 		return false, err
 	}
-	return bytes.Equal(a.mapping[x:x+PageSize], a.mapping[y:y+PageSize]), nil
+	size := int64(a.pageSize)
+	return bytes.Equal(a.mapping[x:x+size], a.mapping[y:y+size]), nil
 }
 
 func (a *LinuxArena) Release(ctx context.Context, slot int) error {
-	off, err := a.offset(ctx, slot, PageSize)
+	off, err := a.offset(ctx, slot, a.pageSize)
 	if err != nil {
 		return err
 	}
-	return a.fallocate(ctx, 3, off, int64(PageSize))
+	return a.fallocate(ctx, 3, off, int64(a.pageSize))
 }
 
 // HugeTLB allocation can observe a runtime signal after dropping its locks.

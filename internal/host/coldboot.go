@@ -87,14 +87,14 @@ func (h *Host) OpenCold(ctx context.Context, vmID string, shape ColdShape) (*vol
 
 // coldRegions is the size of every region this VM would have at the shape it is
 // being given: the new size where one is named and the size it has otherwise.
-func coldRegions(vm *volume.VM, sizes map[string]uint64) []uint64 {
-	regions := make([]uint64, 0, len(vm.Volumes()))
+func coldRegions(vm *volume.VM, sizes map[string]uint64) []Region {
+	regions := make([]Region, 0, len(vm.Volumes()))
 	for _, v := range vm.Volumes() {
 		size := v.Size()
 		if next, found := sizes[v.Name()]; found {
 			size = next
 		}
-		regions = append(regions, size)
+		regions = append(regions, regionOf(v.Name(), size))
 	}
 	return regions
 }

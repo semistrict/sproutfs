@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/semistrict/sproutfs/internal/blob"
+	"github.com/semistrict/sproutfs/internal/checkpoint"
 	"github.com/semistrict/sproutfs/internal/platform"
 	"github.com/semistrict/sproutfs/internal/platform/sim"
 	"github.com/semistrict/sproutfs/internal/vmmemory"
@@ -28,6 +29,10 @@ import (
 var pageCRCTable = crc32.MakeTable(crc32.Castagnoli)
 
 const (
+	// requestBytes is what one request of pages is sized against, whatever page
+	// those are: a request of 4 KiB RAM pages carries as many of them as fit in
+	// it, and one of 2 MiB PMEM pages carries a single page.
+	requestBytes = 2 << 20
 	// defaultMaxPages caps scaled-model requests. Production requests default
 	// to one 2 MiB page, within the same bounded byte budget.
 	defaultMaxPages = 256
@@ -58,11 +63,17 @@ type SourceConfig struct {
 	Network  platform.Network
 	Listener platform.Listener
 	Address  platform.Address
-	// PageSize is the pager's page, which is what the destination's requests are
-	// counted in. Zero selects the production pager page.
+	// PageSize is the largest page this source serves, which is what its
+	// per-peer byte budgets are sized against. What a reply is actually counted
+	// in is the page of the volume it answers for — a host's two kinds of region
+	// need not agree — so this bounds the budgets and names nothing else. Zero
+	// selects the largest page a volume may be published in.
 	PageSize int
-	// MaxPagesPerRequest, MaxConnectionsPerPeer and MaxBytesInFlightPerPeer take
-	// the documented defaults when zero.
+	// MaxPagesPerRequest caps one reply whatever volume it answers for. Zero
+	// takes the cap from the volume's own page instead, so that a reply of small
+	// pages carries as many of them as one of a large page carries bytes.
+	// MaxConnectionsPerPeer and MaxBytesInFlightPerPeer take the documented
+	// defaults when zero.
 	MaxPagesPerRequest      int
 	MaxConnectionsPerPeer   int
 	MaxBytesInFlightPerPeer int64
@@ -101,6 +112,10 @@ type Pages interface {
 	// source that cannot answer reports why, because the empty set is one the
 	// destination acts on by fetching nothing.
 	Unpublished() ([]uint64, error)
+	// PageSize is the page this volume's numbers are counted in. It is the
+	// volume's own, which both hosts read out of the same durable geometry, so
+	// the two kinds of region a VM maps may answer differently.
+	PageSize() uint64
 }
 
 // RegionPages presents the regions of a migrated VM as what its page source
@@ -140,6 +155,8 @@ func ForkPages(point *volume.ForkPoint) map[string]Pages {
 }
 
 func (f forkPages) Resident() ([]uint64, error) { return f.point.Pages(f.volume), nil }
+
+func (f forkPages) PageSize() uint64 { return f.point.PageSize(f.volume) }
 
 // Unpublished is everything a fork point serves: the pages it names are exactly
 // the ones no checkpoint of the parent holds, which is why the child has to
@@ -208,10 +225,7 @@ func NewPageSource(ctx context.Context, config SourceConfig) (*PageSource, error
 		return nil, fmt.Errorf("%w: a page source needs a listener or a network, and an address", ErrInvalid)
 	}
 	if config.PageSize == 0 {
-		config.PageSize = vmmemory.PageSize
-	}
-	if config.MaxPagesPerRequest == 0 {
-		config.MaxPagesPerRequest = max(1, min(defaultMaxPages, vmmemory.PageSize/config.PageSize))
+		config.PageSize = checkpoint.PageSize2MiB
 	}
 	if config.MaxConnectionsPerPeer == 0 {
 		config.MaxConnectionsPerPeer = defaultConnectionsPerPeer
@@ -219,7 +233,7 @@ func NewPageSource(ctx context.Context, config SourceConfig) (*PageSource, error
 	if config.MaxBytesInFlightPerPeer == 0 {
 		config.MaxBytesInFlightPerPeer = defaultBytesInFlight
 	}
-	if config.PageSize < 512 || config.PageSize > blob.MaxSize || config.MaxPagesPerRequest < 1 || config.MaxPagesPerRequest > blob.MaxSize/config.PageSize || config.MaxConnectionsPerPeer < 1 ||
+	if config.PageSize < 512 || config.PageSize > blob.MaxSize || config.MaxPagesPerRequest < 0 || config.MaxPagesPerRequest > blob.MaxSize/config.PageSize || config.MaxConnectionsPerPeer < 1 ||
 		config.MaxBytesInFlightPerPeer < int64(config.PageSize) {
 		return nil, fmt.Errorf("%w: invalid page source budgets", ErrInvalid)
 	}
@@ -246,8 +260,20 @@ func NewPageSource(ctx context.Context, config SourceConfig) (*PageSource, error
 // Address is where peers reach this page source.
 func (s *PageSource) Address() platform.Address { return s.config.Address }
 
-// PageSize is the page a destination's requests are counted in.
+// PageSize is the largest page this source serves, which is what its budgets
+// are sized against. A reply is counted in the page of the volume it answers
+// for, which both hosts read out of that volume's durable geometry.
 func (s *PageSource) PageSize() int { return s.config.PageSize }
+
+// pagesPerRequest caps one reply of a volume whose page is pageSize. The bound
+// is bytes, so a volume of small pages gets more of them in a reply rather than
+// one page per round trip; a source told a cap of its own keeps it.
+func (s *PageSource) pagesPerRequest(pageSize int) int {
+	if s.config.MaxPagesPerRequest > 0 {
+		return s.config.MaxPagesPerRequest
+	}
+	return max(1, min(defaultMaxPages, requestBytes/pageSize))
+}
 
 // Serve registers what this host holds for one VM, by volume name. The VM is
 // the one that runs elsewhere: a migrated VM, or a fork's child.
@@ -631,6 +657,9 @@ func drain(incoming wire.Incoming) error {
 // reply has left, which is the only evidence this host ever gets.
 func (s *PageSource) pages(peer string, request *migratev1.PageRequest) (*migratev1.PageResponse, []byte, []uint64) {
 	s.requests.Add(1)
+	// The reply is counted in the page of the volume it answers for, which is
+	// only known once the request has named one; until then the budget's own
+	// page is what an answer can carry.
 	pageSize := s.config.PageSize
 	answer := func(status migratev1.Status) *migratev1.PageResponse {
 		return migratev1.PageResponse_builder{Status: &status,
@@ -640,11 +669,14 @@ func (s *PageSource) pages(peer string, request *migratev1.PageRequest) (*migrat
 	if count <= 0 || request.GetPayloadFormat() != 1 {
 		return answer(migratev1.Status_STATUS_INVALID_REQUEST), nil, nil
 	}
-	count = min(count, s.config.MaxPagesPerRequest)
 	pages, status := s.pagesOf(request.GetVm(), request.GetVolume())
 	if status != migratev1.Status_STATUS_OK {
 		return answer(status), nil, nil
 	}
+	if volumePage := int(pages.PageSize()); volumePage > 0 {
+		pageSize = volumePage
+	}
+	count = min(count, s.pagesPerRequest(pageSize))
 	reserved := int64(count) * int64(pageSize)
 	// A source at its per-peer budget answers BUSY, which a host draining many
 	// VMs at once makes the normal state. A destination must queue behind it
@@ -708,13 +740,17 @@ func (s *PageSource) pages(peer string, request *migratev1.PageRequest) (*migrat
 // resident lists what one region holds, from the requested page on, in runs.
 func (s *PageSource) resident(request *migratev1.ResidentRequest) *migratev1.ResidentResponse {
 	s.listings.Add(1)
+	pageSize := s.config.PageSize
 	answer := func(status migratev1.Status) *migratev1.ResidentResponse {
 		return migratev1.ResidentResponse_builder{Status: &status,
-			PageSize: proto.Uint32(uint32(s.config.PageSize))}.Build()
+			PageSize: proto.Uint32(uint32(pageSize))}.Build()
 	}
 	pages, status := s.pagesOf(request.GetVm(), request.GetVolume())
 	if status != migratev1.Status_STATUS_OK {
 		return answer(status)
+	}
+	if volumePage := int(pages.PageSize()); volumePage > 0 {
+		pageSize = volumePage
 	}
 	maxRuns := int(request.GetMaxRuns())
 	if maxRuns <= 0 || maxRuns > defaultMaxRuns {
@@ -732,7 +768,7 @@ func (s *PageSource) resident(request *migratev1.ResidentRequest) *migratev1.Res
 	runs, more := pageRuns(resident, request.GetFirstPage(), maxRuns)
 	status = migratev1.Status_STATUS_OK
 	return migratev1.ResidentResponse_builder{Status: &status, Runs: runs,
-		PageSize: proto.Uint32(uint32(s.config.PageSize)), More: proto.Bool(more)}.Build()
+		PageSize: proto.Uint32(uint32(pageSize)), More: proto.Bool(more)}.Build()
 }
 
 // pageRuns groups ascending page numbers at or above first into at most maxRuns

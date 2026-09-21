@@ -408,7 +408,7 @@ func (w *World) hostConfig(h *hostState) host.Config {
 		Clock:        h.clock,
 		Entropy:      w.runtime.NewEntropy(h.name),
 		Volumes:      host.VolumeConfig{MaxWriteBytes: k.MaxWriteBytes, MaxOpenVMs: k.MaxOpenVMs},
-		Migration: host.MigrationConfig{Address: h.pages, PageSize: PageSize,
+		Migration: host.MigrationConfig{Address: h.pages, PageSize: PMEMPage,
 			DrainConcurrency: k.DrainConcurrency, StartVM: w.starter(h)},
 		// A campaign drives every checkpoint itself and reaches every hold
 		// deadline by advancing the clock, so neither loop arms anything of its
@@ -501,7 +501,7 @@ func (w *World) launch(h *hostState) error {
 		// host that was never given one answers none of its pager's pressure:
 		// every store past the dirty budget or past the loss window would be
 		// stalled for want of anything to ask.
-		h.config.Pager = pager.host
+		h.config.Pagers = pager.pagers
 		started, err := host.StartHost(ctx, h.config)
 		h.host, h.down = started, err != nil
 		ready <- err
@@ -531,33 +531,62 @@ func (w *World) launch(h *hostState) error {
 	return <-ready
 }
 
-// newPager builds one incarnation's pager over that host's own disk. The spill
-// file is the only local state a host keeps, and it is scratch by construction:
-// the pager truncates it at every start, so a restart reads none of what its
-// own crash left in it.
+// newPager builds one incarnation's two pagers over that host's own disk, one
+// per kind of region: RAM at its page and PMEM at its own, each with an arena
+// and a spill file of its own. The knobs describe one pager, so each is given
+// what they say — a campaign that wants a tight arena gets a tight arena of
+// each kind. The spill files are the only local state a host keeps, and they
+// are scratch by construction: a pager truncates its own at every start, so a
+// restart reads none of what its crash left in it.
 func (w *World) newPager(ctx context.Context, h *hostState) (*pager, func(), error) {
 	k := w.config.Knobs
-	spill, err := h.disk.Open(ctx, "spill", platform.OpenOptions{Create: true})
-	if err != nil {
-		return nil, nil, err
+	p := &pager{arenas: map[vmmemory.RegionKind]*arena{},
+		spills: map[vmmemory.RegionKind]platform.File{}, runtime: w.runtime}
+	release := func() {
+		for kind, memory := range map[vmmemory.RegionKind]*vmmemory.Host{
+			vmmemory.Ram: p.pagers.Ram, vmmemory.Pmem: p.pagers.Pmem} {
+			if memory != nil {
+				_ = memory.Close(context.Background())
+			}
+			if spill := p.spills[kind]; spill != nil {
+				_ = spill.Close()
+			}
+		}
 	}
-	a := &arena{slots: make([][]byte, k.ResidentPages)}
-	memory, err := vmmemory.New(ctx, h.config.Resources, vmmemory.Config{
-		ResidentPages: k.ResidentPages, LogicalPages: k.LogicalPages, DirtyPages: k.DirtyPages,
-		ReadAheadPages: k.ReadAheadPages, WriteAheadPages: k.WriteAheadPages,
-		ConcurrentIO: k.ConcurrentIO, LossWindow: k.LossWindow,
-		// The window is measured on this host's own clock, which the simulation
-		// moves itself: a pager reading the wall clock would measure a bound
-		// written in checkpoint intervals against a machine's idle time.
-		Clock: h.clock}, a, spill)
-	if err != nil {
-		return nil, nil, errors.Join(err, spill.Close())
+	for _, kind := range []vmmemory.RegionKind{vmmemory.Ram, vmmemory.Pmem} {
+		pageSize := uint64(PMEMPage)
+		if kind == vmmemory.Ram {
+			pageSize = RAMPage
+		}
+		spill, err := h.disk.Open(ctx, "spill-"+kind.String(), platform.OpenOptions{Create: true})
+		if err != nil {
+			release()
+			return nil, nil, err
+		}
+		p.spills[kind] = spill
+		a := &arena{slots: make([][]byte, k.ResidentPages)}
+		p.arenas[kind] = a
+		memory, err := vmmemory.New(ctx, h.config.Resources, vmmemory.Config{
+			PageSize:      pageSize,
+			ResidentPages: k.ResidentPages, LogicalPages: k.LogicalPages, DirtyPages: k.DirtyPages,
+			ReadAheadPages: k.ReadAheadPages, WriteAheadPages: k.WriteAheadPages,
+			ConcurrentIO: k.ConcurrentIO, LossWindow: k.LossWindow,
+			// The window is measured on this host's own clock, which the
+			// simulation moves itself: a pager reading the wall clock would
+			// measure a bound written in checkpoint intervals against a
+			// machine's idle time.
+			Clock: h.clock}, a, spill)
+		if err != nil {
+			release()
+			return nil, nil, err
+		}
+		if kind == vmmemory.Ram {
+			p.pagers.Ram = memory
+		} else {
+			p.pagers.Pmem = memory
+		}
 	}
-	p := &pager{host: memory, arena: a, spill: spill, runtime: w.runtime}
-	return p, func() {
-		_ = memory.Close(context.Background())
-		_ = spill.Close()
-	}, nil
+	return p, release, nil
 }
 
 // hostNetwork names the host a dial comes from. Real TCP takes an ephemeral
@@ -673,7 +702,7 @@ func (w *World) create(ctx context.Context, spec VMSpec) error {
 	w.notePublished(spec.ID, root)
 	zeros := map[string][]byte{}
 	for _, name := range g.names {
-		zeros[name] = make([]byte, g.pages[name]*PageSize)
+		zeros[name] = make([]byte, g.pages[name]*g.pageBytes[name])
 	}
 	w.offer(in, durableState{sequence: root, model: zeros})
 	for _, name := range g.names {
@@ -1086,7 +1115,7 @@ func (w *World) VerifyDurable(ctx context.Context, id string) error {
 	}
 	read := map[string][]byte{}
 	for _, name := range g.names {
-		data := make([]byte, g.pages[name]*PageSize)
+		data := make([]byte, g.pages[name]*g.pageBytes[name])
 		if err := vm.Volume(name).Read(ctx, 0, data); err != nil {
 			return fmt.Errorf("%s: reading %s through its volume: %w", id, name, err)
 		}
@@ -2119,12 +2148,13 @@ func agrees(read map[string][]byte, missing map[string][]bool, model map[string]
 		if !found || len(got) != len(want) {
 			return false
 		}
-		for page := 0; page*PageSize < len(got); page++ {
+		size := int(PageSizeOf(name))
+		for page := 0; page*size < len(got); page++ {
 			if page < len(missing[name]) && missing[name][page] {
 				continue
 			}
-			at := page * PageSize
-			if !bytes.Equal(got[at:at+PageSize], want[at:at+PageSize]) {
+			at := page * size
+			if !bytes.Equal(got[at:at+size], want[at:at+size]) {
 				return false
 			}
 		}
@@ -2147,8 +2177,9 @@ func heads(model map[string][]byte) string {
 	line := ""
 	for _, name := range slices.Sorted(maps.Keys(model)) {
 		line += " " + name + "="
-		for page := 0; page*PageSize < len(model[name]); page++ {
-			line += fmt.Sprintf("%d,", model[name][page*PageSize])
+		size := int(PageSizeOf(name))
+		for page := 0; page*size < len(model[name]); page++ {
+			line += fmt.Sprintf("%d,", model[name][page*size])
 		}
 	}
 	return line

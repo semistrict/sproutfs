@@ -77,6 +77,12 @@ func (f *ForkPoint) Volumes() []string { return slices.Clone(f.index.Volumes()) 
 // Size reports one volume's size, zero for a volume this point has no volume of.
 func (f *ForkPoint) Size(volume string) uint64 { return f.index.Size(volume) }
 
+// PageSize reports the page one volume of this point is published in, which is
+// the unit its page numbers and ReadPage are counted in. Zero is a volume this
+// point does not describe. A VM's volumes need not agree about it, so anything
+// serving these pages reads it per volume rather than per point.
+func (f *ForkPoint) PageSize(volume string) uint64 { return f.index.Geometry(volume).PageSize }
+
 // Pages reports the pages of one volume that no checkpoint of the parent holds,
 // in ascending order. They exist only in the parent's pages and overlay, so a
 // child on another host must fetch every one of them before this point may be

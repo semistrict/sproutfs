@@ -56,7 +56,10 @@ type PeerConfig struct {
 	// them from it would silently rewind the guest, so this backing reports them
 	// as bytes of its own that the pager must load and hold privately.
 	Unpublished []PageRun
-	// PageSize must be the source's, which the handoff reports.
+	// PageSize is the page this region's numbers are counted in, which is the
+	// volume's own and therefore the source's too: both hosts read it out of the
+	// same durable geometry. Zero takes it from Volume, which is what every
+	// caller but a scaled-model test wants.
 	PageSize int
 	Dial     Dialer
 	// MaxConnections bounds this region's requests in flight, four by default.
@@ -189,13 +192,13 @@ func NewPeerBacking(config PeerConfig) (*PeerBacking, error) {
 		return nil, fmt.Errorf("%w: a peer backing needs a volume, a peer, a VM and a dialer", ErrInvalid)
 	}
 	if config.PageSize == 0 {
-		config.PageSize = vmmemory.PageSize
+		config.PageSize = int(config.Volume.PageSize())
 	}
 	if config.MaxConnections == 0 {
 		config.MaxConnections = 4
 	}
 	if config.MaxPagesPerRequest == 0 {
-		config.MaxPagesPerRequest = max(1, min(defaultMaxPages, vmmemory.PageSize/config.PageSize))
+		config.MaxPagesPerRequest = max(1, min(defaultMaxPages, requestBytes/config.PageSize))
 	}
 	config.Clock = platform.ClockOr(config.Clock)
 	if config.PageSize < 512 || config.PageSize > blob.MaxSize || config.MaxConnections < 1 || config.MaxPagesPerRequest < 1 || config.MaxPagesPerRequest > blob.MaxSize/config.PageSize {

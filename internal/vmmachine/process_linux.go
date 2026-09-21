@@ -42,14 +42,17 @@ const RAMVolume = "ram0"
 // Config supervises one VM over the volumes of one *volume.VM. RAM binds to the
 // volume named "ram0" and each PMEM device binds to the volume named by its
 // device id. Source data must already have been ingested before Start. The
-// shared Host outlives all its Process instances. SeccompFilter must include the
-// VMM's explicit memory-worker policy. Cold boot uses
+// shared pagers outlive all their Process instances. SeccompFilter must include
+// the VMM's explicit memory-worker policy. Cold boot uses
 // KernelPath/InitrdPath/BootArgs; restore replays the VMM state bytes the caller
 // read from the checkpoint.
 type Config struct {
 	Binary, SeccompFilter, KernelPath, InitrdPath, BootArgs string
 	Scratch                                                 *Scratch
-	Host                                                    *vmmemory.Host
+	// Pagers is the host's pager per kind of region: RAM attaches to one and
+	// every PMEM device to the other, each with its own arena and its own page.
+	// A machine takes both, because one VM maps both kinds.
+	Pagers vmmemory.Pagers
 	// VM owns every volume this machine maps. The pager is its only mutator
 	// while the machine runs.
 	VM           *volume.VM
@@ -105,7 +108,7 @@ type plan struct {
 }
 
 func (c Config) plan() (plan, error) {
-	if c.Host == nil || c.Binary == "" || c.SeccompFilter == "" || c.VM == nil ||
+	if c.Pagers.Ram == nil || c.Pagers.Pmem == nil || c.Binary == "" || c.SeccompFilter == "" || c.VM == nil ||
 		len(c.Pmem) > 63 || c.VCPUs < 1 || c.VCPUs > 32 || len(c.RestoreState) > MaxStateBytes {
 		return plan{}, errors.New("vmmachine: invalid configuration")
 	}
@@ -125,8 +128,9 @@ func (c Config) plan() (plan, error) {
 	if ram == nil {
 		return plan{}, fmt.Errorf("vmmachine: %s has no volume named %s", c.VM.ID(), RAMVolume)
 	}
-	if ram.Size() == 0 || ram.Size()%vmmemory.PageSize != 0 || ram.Size() > 1<<40 {
-		return plan{}, errors.New("vmmachine: RAM must be whole 2 MiB pages of at most 1 TiB")
+	ramPage := c.Pagers.Ram.PageSize()
+	if ram.Size() == 0 || ram.Size()%ramPage != 0 || ram.Size() > 1<<40 {
+		return plan{}, fmt.Errorf("vmmachine: RAM must be whole %d-byte pages of at most 1 TiB", ramPage)
 	}
 	ramBacking, err := c.backingOf(RAMVolume, ram)
 	if err != nil {
@@ -139,7 +143,10 @@ func (c Config) plan() (plan, error) {
 	roots := 0
 	for _, d := range c.Pmem {
 		v := c.VM.Volume(d.ID)
-		if d.ID == "" || len(d.ID) > 64 || mapped[d.ID] || v == nil || v.Size()%(2<<20) != 0 {
+		// Firecracker requires 2 MiB PMEM alignment whatever the pager's page
+		// is, so a device is checked against both.
+		if d.ID == "" || len(d.ID) > 64 || mapped[d.ID] || v == nil || v.Size()%(2<<20) != 0 ||
+			v.Size()%c.Pagers.Pmem.PageSize() != 0 {
 			return plan{}, fmt.Errorf("vmmachine: invalid PMEM device %q", d.ID)
 		}
 		mapped[d.ID] = true
@@ -331,7 +338,7 @@ func (c *Config) startable() (plan, error) {
 		c.Connection.VerifyInterval = time.Second
 	}
 	if c.Connection.QueuePages == 0 {
-		c.Connection.QueuePages = int(min(1024, layout.ramBytes/vmmemory.PageSize))
+		c.Connection.QueuePages = int(min(1024, layout.ramBytes/c.Pagers.Ram.PageSize()))
 	}
 	if c.Scratch == nil {
 		return plan{}, errors.New("vmmachine: shared scratch owner is required")
@@ -480,7 +487,10 @@ func (p *Process) attach(ctx, lifetime context.Context, c Config) chan error {
 				// this machine it was.
 				cfg := c.Connection
 				cfg.Name = e.name
-				e.connection, err = vmmemory.Connect(lifetime, c.Host, socket, e.backing, cfg)
+				// A region attaches to the pager of its own kind: the two have
+				// separate arenas, and a page number of one means nothing in
+				// the other.
+				e.connection, err = vmmemory.Connect(lifetime, c.Pagers.For(e.backing.Kind), socket, e.backing, cfg)
 			} else if socket != nil {
 				_ = socket.Close()
 			}

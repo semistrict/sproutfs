@@ -151,7 +151,7 @@ func (r *Region) fault(ctx context.Context, index uint64, write bool, spill *int
 	if pg.published() {
 		origin = pg
 	}
-	data := make([]byte, PageSize)
+	data := make([]byte, h.pageSize)
 	unpublished, err := r.readForCopy(ctx, b, pg, data)
 	if err != nil {
 		return false, err
@@ -203,7 +203,7 @@ func (r *Region) fault(ctx context.Context, index uint64, write bool, spill *int
 		// learns: the load path is not the only way a page only another host had
 		// arrives, and a page nothing reports stays one the source may not stop
 		// serving and the destination believes it is missing.
-		r.installedUnpublished(index*uint64(PageSize), []bool{true})
+		r.installedUnpublished(index*h.pageSize, []bool{true})
 	}
 	h.mu.Lock()
 	h.stats.CopyOnWrites++
@@ -270,8 +270,8 @@ func (r *Region) readIn(ctx context.Context, index uint64) (*resident, error) {
 		if err != nil {
 			return nil, err
 		}
-		data := make([]byte, PageSize)
-		if _, err := r.loadWindow(ctx, index*uint64(PageSize), data); err != nil {
+		data := make([]byte, h.pageSize)
+		if _, err := r.loadWindow(ctx, index*h.pageSize, data); err != nil {
 			return nil, h.abandonSlots(ctx, slot, 1, err)
 		}
 		h.mu.Lock()
@@ -550,7 +550,7 @@ func (r *Region) loadOnce(ctx context.Context, index uint64, spill *int) (bool, 
 		// the alias that owns the reservation spilling those bytes, and retiring the
 		// checkpoint retires this page with it rather than stranding a private one
 		// no reservation covers.
-		data := make([]byte, PageSize)
+		data := make([]byte, h.pageSize)
 		if err := h.read(ctx, b, nil, data); err != nil {
 			return false, err
 		}

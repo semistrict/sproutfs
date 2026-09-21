@@ -23,7 +23,7 @@ type countedVolume struct {
 
 func (v *countedVolume) Load(ctx context.Context, offset uint64, dst []byte) error {
 	v.loads.Add(1)
-	v.loadedPages.Add(uint64(len(dst)) / uint64(vmmemory.PageSize))
+	v.loadedPages.Add(uint64(len(dst)) / uint64(pageSize))
 	return v.Volume.Load(ctx, offset, dst)
 }
 
@@ -32,12 +32,12 @@ func (v *countedVolume) Load(ctx context.Context, offset uint64, dst []byte) err
 // and installs them with a number of mapping commands far below the page count.
 func TestRestoreFromSharedSnapshotLoadsNothingOnTheSecondMachine(t *testing.T) {
 	const pages = 32
-	size := vmmemory.PageSize
+	size := pageSize
 	h := kernelHost(t, 4*pages, 12*pages)
 	c := newPagerCluster(t)
 	source, err := c.manager.Create(t.Context(), "source", []volume.VolumeSpec{
-		{Name: "pmem0", Size: uint64(pages * size), PageSize: vmmemory.PageSize},
-		{Name: "ram0", Size: uint64(pages * size), PageSize: vmmemory.PageSize},
+		{Name: "pmem0", Size: uint64(pages * size), PageSize: pageSize},
+		{Name: "ram0", Size: uint64(pages * size), PageSize: pageSize},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -161,12 +161,12 @@ func TestRestoreFromSharedSnapshotLoadsNothingOnTheSecondMachine(t *testing.T) {
 // changed.
 func TestKVMNestedForkMapsResidentPagesBeforeItRuns(t *testing.T) {
 	const pages = 32
-	size := vmmemory.PageSize
+	size := pageSize
 	h := kernelHost(t, 6*pages, 12*pages)
 	c := newPagerCluster(t)
 	specs := []volume.VolumeSpec{
-		{Name: "pmem0", Size: uint64(pages * size), PageSize: vmmemory.PageSize},
-		{Name: "ram0", Size: uint64(pages * size), PageSize: vmmemory.PageSize},
+		{Name: "pmem0", Size: uint64(pages * size), PageSize: pageSize},
+		{Name: "ram0", Size: uint64(pages * size), PageSize: pageSize},
 	}
 	names := []string{"pmem0", "ram0"}
 	source, err := c.manager.Create(t.Context(), "source", specs)

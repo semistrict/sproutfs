@@ -197,11 +197,11 @@ func (s *supervisor) boot(ctx context.Context, vm *volume.VM, state []byte, temp
 	// whether it can map them all. Asking here is what makes a create, an open
 	// or a fork that could never run a refusal rather than a VMM that is
 	// started and then killed part way through attaching.
-	sizes := make([]uint64, 0, len(vm.Volumes()))
+	regions := make([]Region, 0, len(vm.Volumes()))
 	for _, v := range vm.Volumes() {
-		sizes = append(sizes, v.Size())
+		regions = append(regions, regionOf(v.Name(), v.Size()))
 	}
-	if err := s.host.AdmitRegions(sizes); err != nil {
+	if err := s.host.AdmitRegions(regions); err != nil {
 		return nil, errors.Join(fmt.Errorf("starting the VMM of %s", vm.ID()), err,
 			closing(ctx, vm))
 	}
@@ -238,7 +238,7 @@ func (s *supervisor) machineConfig(vm *volume.VM, state []byte, backings map[str
 	return vmmachine.Config{
 		Binary: s.config.Firecracker, SeccompFilter: s.config.Seccomp,
 		KernelPath: s.config.Kernel, BootArgs: s.config.BootArgs,
-		Scratch: s.scratch, Host: s.pager, VM: vm,
+		Scratch: s.scratch, Pagers: s.pagers, VM: vm,
 		Pmem:         []vmmachine.Pmem{{ID: rootVolume, Root: true}},
 		VCPUs:        s.config.VCPUs,
 		Connection:   s.connection,

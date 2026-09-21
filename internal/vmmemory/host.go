@@ -4,10 +4,12 @@ import (
 	"container/list"
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"sync"
 	"sync/atomic"
 
+	"github.com/semistrict/sproutfs/internal/checkpoint"
 	"github.com/semistrict/sproutfs/internal/platform"
 	"github.com/semistrict/sproutfs/internal/resource"
 	"github.com/semistrict/sproutfs/internal/vmmemory/internal/latency"
@@ -20,6 +22,11 @@ import (
 // Storage and mapping I/O never hold the host lock. Recency tracks faults and
 // read-ahead, not accesses through already present PTEs.
 type Host struct {
+	// pageSize is this pager's unit, fixed by its configuration: its arena
+	// slots, its spill slots, the numbers it faults and serves, and the
+	// alignment every region it maps must have. Nothing here is ever the other
+	// pager's page, and no count of these pages may be added to one of those.
+	pageSize       uint64
 	resources      *resource.Budget
 	residentLeases []*resource.Lease
 	spillWritten   []bool
@@ -77,22 +84,31 @@ const (
 )
 
 // New uses a dedicated scratch spill file. It is not crash recovery metadata
-// and must not be shared with another Host. Its maximum size is DirtyPages times
-// PageSize; acknowledged durability always goes through Backing, never spill.
-// The caller retains ownership of Arena and spill until every Region detaches.
+// and must not be shared with another Host, which includes the other pager of
+// the same host: each owns its arena and its spill file alone. The file's
+// maximum size is DirtyPages times this pager's page; acknowledged durability
+// always goes through Backing, never spill. The caller retains ownership of
+// Arena and spill until every Region detaches.
 func New(ctx context.Context, resources *resource.Budget, cfg Config, arena Arena, spill platform.File) (*Host, error) {
 	if resources == nil {
 		return nil, ErrConfig
 	}
+	// A pager's page is a volume's page: the geometry the store writes is the
+	// one source of truth for which sizes exist, so a pager cannot be built on
+	// a size no volume could be published in.
+	if _, err := checkpoint.GeometryFor(cfg.PageSize); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrConfig, err)
+	}
+	pageSize := cfg.PageSize
 	if cfg.ResidentPages < 1 || cfg.LogicalPages < 1 || cfg.DirtyPages < 1 ||
 		cfg.DirtyPages > cfg.LogicalPages || cfg.ResidentPages > cfg.LogicalPages ||
-		uint64(cfg.LogicalPages) > math.MaxInt64/uint64(PageSize) || arena == nil || spill == nil {
+		uint64(cfg.LogicalPages) > math.MaxInt64/pageSize || arena == nil || spill == nil {
 		return nil, ErrConfig
 	}
 	if cfg.ConcurrentIO == 0 {
 		cfg.ConcurrentIO = 16
 	}
-	if resources.Stats().Limit < int64(PageSize) {
+	if resources.Stats().Limit < int64(pageSize) {
 		return nil, ErrConfig
 	}
 	if cfg.ReadAheadPages == 0 {
@@ -107,18 +123,20 @@ func New(ctx context.Context, resources *resource.Budget, cfg Config, arena Aren
 	if cfg.SettleWorkers < 1 || cfg.SettleWorkers > 1024 {
 		return nil, ErrConfig
 	}
+	// The read-ahead bound is a buffer one fault may hold, so it is a number of
+	// bytes; what this pager admits is that many of its own pages.
 	if cfg.ConcurrentIO < 1 || cfg.ConcurrentIO > 1024 ||
-		cfg.ReadAheadPages < 1 || cfg.ReadAheadPages > maximumReadAheadBytes/PageSize || cfg.ReadAheadPages&(cfg.ReadAheadPages-1) != 0 ||
+		cfg.ReadAheadPages < 1 || uint64(cfg.ReadAheadPages) > maximumReadAheadBytes/pageSize || cfg.ReadAheadPages&(cfg.ReadAheadPages-1) != 0 ||
 		cfg.WriteAheadPages < 1 || cfg.WriteAheadPages > 4096 {
 		return nil, ErrConfig
 	}
 	if err := spill.Truncate(ctx, 0); err != nil {
 		return nil, err
 	}
-	if err := spill.Truncate(ctx, int64(cfg.DirtyPages)*int64(PageSize)); err != nil {
+	if err := spill.Truncate(ctx, int64(cfg.DirtyPages)*int64(pageSize)); err != nil {
 		return nil, err
 	}
-	h := &Host{cfg: cfg, clock: platform.ClockOr(cfg.Clock), arena: arena, spill: spill, resources: resources, residentLeases: make([]*resource.Lease, cfg.ResidentPages), spillWritten: make([]bool, cfg.DirtyPages),
+	h := &Host{pageSize: pageSize, cfg: cfg, clock: platform.ClockOr(cfg.Clock), arena: arena, spill: spill, resources: resources, residentLeases: make([]*resource.Lease, cfg.ResidentPages), spillWritten: make([]bool, cfg.DirtyPages),
 		spillSum: make([]uint32, cfg.DirtyPages),
 		slots:    slots.New(cfg.ResidentPages),
 		clean:    make(map[pageKey]*resident), changed: make(chan struct{}),
@@ -132,6 +150,12 @@ func New(ctx context.Context, resources *resource.Budget, cfg Config, arena Aren
 
 // Resources returns the same host-wide budget used for resident pages.
 func (h *Host) Resources() *resource.Budget { return h.resources }
+
+// PageSize is this pager's unit. A region's size and a volume's page must be a
+// multiple of it and equal to it respectively, and every page count this pager
+// reports is counted in it — which is why a caller adding two pagers' numbers
+// must convert to bytes first.
+func (h *Host) PageSize() uint64 { return h.pageSize }
 
 // LogicalHeadroom is how many more logical pages this pager would still admit.
 // A region larger than this is refused at attachment, which is a VMM that has

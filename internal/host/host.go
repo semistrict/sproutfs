@@ -74,13 +74,16 @@ type Config struct {
 	// in lockstep is drawn from. Nil is the operating system's. A simulation
 	// passes one keyed to its seed, so a run's interval spread is reproducible.
 	Entropy platform.Entropy
-	// Pager is the shared pager the VMs this host runs map their memory
-	// through. A host given one answers its dirty-budget pressure: a checkpoint
-	// of the VM holding the largest dirty set, taken out of the interval's
-	// turn, and a deliberate stop of a VM whose stores no checkpoint can admit.
-	// A host without one leaves its guests to stall, so a supervisor that runs
-	// VMs passes its pager here.
-	Pager        *vmmemory.Host
+	// Pagers are the shared pagers the VMs this host runs map their memory
+	// through, one per kind of region: each has its own arena, its own spill
+	// file and its own page. A host given them answers the dirty-budget
+	// pressure of both: a checkpoint of the VM holding the largest dirty set,
+	// taken out of the interval's turn, and a deliberate stop of a VM whose
+	// stores no checkpoint can admit. Either pager's pressure seals the whole
+	// VM, once, because one pause seals every region it maps. A host without
+	// them leaves its guests to stall, so a supervisor that runs VMs passes its
+	// pagers here.
+	Pagers       vmmemory.Pagers
 	ObjectStore  platform.ObjectStore
 	ObjectPrefix platform.ObjectPrefix
 	// CacheBytes caps the page cache, which owns that many bytes of its own
@@ -154,8 +157,10 @@ type Host struct {
 	// closeMachine tells the supervisor about a VM this host closed on its own,
 	// which is what a fencing checkpoint leads to.
 	closeMachine func(vmID string)
-	// pager is the shared pager whose dirty-budget pressure this host answers.
-	pager *vmmemory.Host
+	// pagers are the shared pagers whose dirty-budget pressure this host
+	// answers, one per kind of region. Nothing adds their page counts together:
+	// what this host reports across the two is always bytes.
+	pagers vmmemory.Pagers
 	// clock is every deadline this host keeps and entropy the jitter that
 	// spreads the intervals, both filled in from Config.
 	clock      platform.Clock
@@ -311,7 +316,7 @@ func StartHost(ctx context.Context, config Config) (*Host, error) {
 	var err error
 	hostCtx, cancel := context.WithCancelCause(ctx)
 	h := &Host{resources: config.Resources, ctx: hostCtx, cancel: cancel, network: config.Network,
-		migration: config.Migration, closeMachine: config.MachineClosed, pager: config.Pager,
+		migration: config.Migration, closeMachine: config.MachineClosed, pagers: config.Pagers,
 		holdTimeout: config.Migration.HoldTimeout,
 		clock:       platform.ClockOr(config.Clock), entropy: platform.EntropyOr(config.Entropy),
 		cacheBytes: config.CacheBytes, checkpointInterval: interval, epochInterval: epochs,
@@ -374,10 +379,13 @@ func StartHost(ctx context.Context, config Config) (*Host, error) {
 	if err := context.Cause(hostCtx); err != nil {
 		return nil, err
 	}
-	if h.pager != nil {
-		// The pager can neither checkpoint a VM nor stop one; this host is what
-		// it asks to do either when its dirty budget fills.
-		h.pager.SetPressure(vmmemory.Pressure{Checkpoint: h.checkpointNow, Stop: h.stopStalled,
+	for _, pager := range h.pagers.All() {
+		// A pager can neither checkpoint a VM nor stop one; this host is what
+		// each asks to do either when its dirty budget fills. Both answer into
+		// the same three callbacks, which act on the VM a region belongs to
+		// rather than on the pager the pressure came from: one pause seals every
+		// region of that VM, in both pagers, exactly once.
+		pager.SetPressure(vmmemory.Pressure{Checkpoint: h.checkpointNow, Stop: h.stopStalled,
 			Oldest: h.oldestUnpublished})
 	}
 	started = true
@@ -439,20 +447,41 @@ type Status struct {
 	// the pages rather than fetching them, so it has nothing outstanding and
 	// reports zero.
 	Outstanding map[string]int
-	// LogicalPagesFree is what the pager's per-region metadata cap still has
-	// left. It is what admits a VM: the regions of one that needs more than
-	// this cannot all be mapped, and a host that started it anyway would find
-	// out at the attachment of whichever region ran into the cap, with the VMM
-	// already running and the guest already lost. A host with no pager of its
-	// own reports nothing here.
-	LogicalPagesFree int
+	// LogicalPagesFree is what each pager's per-region metadata cap still has
+	// left, in that pager's own pages. It is what admits a VM: the regions of
+	// one that needs more than this cannot all be mapped, and a host that
+	// started it anyway would find out at the attachment of whichever region ran
+	// into the cap, with the VMM already running and the guest already lost. The
+	// two are reported apart because they are counted in different pages and
+	// cannot be added. A host with no pagers of its own reports nothing here.
+	LogicalPagesFree KindPages
 }
+
+// KindPages is a page count per kind of region. The two are never summed: a RAM
+// page and a PMEM page are different numbers of bytes, so anything host-wide
+// converts to bytes first.
+type KindPages struct {
+	RAM, PMEM int
+}
+
+// KindBytes is a byte budget divided between the two pagers. Bytes do add up,
+// which is the whole reason a host's memory accounting is in them: Total is what
+// the deployment gave this host, and the two shares are what it holds.
+type KindBytes struct {
+	RAM, PMEM int64
+}
+
+// Total is what the two shares cost this host together.
+func (b KindBytes) Total() int64 { return b.RAM + b.PMEM }
 
 func (h *Host) Status() Status {
 	status := Status{Resources: h.resources.Stats(), CacheLimit: h.cacheBytes,
 		Closed: context.Cause(h.ctx) != nil}
-	if h.pager != nil {
-		status.LogicalPagesFree = h.pager.LogicalHeadroom()
+	if h.pagers.Ram != nil {
+		status.LogicalPagesFree.RAM = h.pagers.Ram.LogicalHeadroom()
+	}
+	if h.pagers.Pmem != nil {
+		status.LogicalPagesFree.PMEM = h.pagers.Pmem.LogicalHeadroom()
 	}
 	if h.cache != nil {
 		status.Cache = h.cache.Stats()
@@ -503,26 +532,55 @@ func (h *Host) serving() []string {
 	return held
 }
 
-// AdmitRegions refuses a VM whose memory regions this host's pager could not
-// all map, before anything starts its VMM. The cap is per-region metadata and
-// the pager checks it one attachment at a time, so a VM that overruns it dies
-// with its process already started and some of its regions already admitted —
-// which is a guest killed for a decision that could have been made before it
-// existed. sizes is every region's volume size in bytes. A host with no pager
-// of its own admits everything; so does the race between this and the
-// attachments, which is why this is a refusal and not a reservation.
-func (h *Host) AdmitRegions(sizes []uint64) error {
-	if h.pager == nil {
-		return nil
+// RAMVolume is the volume a VM's guest RAM is; every other volume it maps is a
+// PMEM device. It is the deployment's naming convention and not something the
+// pager reads — a region's kind is stated by whoever attaches it — but a host
+// deciding which pager a VM's regions would be admitted against has no machine
+// to ask yet, so it is stated here instead. It must be the name
+// vmmachine.RAMVolume binds RAM to.
+const RAMVolume = "ram0"
+
+// Region is one memory region a VM would map: what it is to the guest, and the
+// size of the volume behind it. Which pager it is charged against is the kind,
+// because the two hold their own metadata caps in their own pages.
+type Region struct {
+	Kind vmmemory.RegionKind
+	Size uint64
+}
+
+// regionOf is one volume as a region this host would admit.
+func regionOf(name string, size uint64) Region {
+	kind := vmmemory.Pmem
+	if name == RAMVolume {
+		kind = vmmemory.Ram
 	}
-	var pages uint64
-	for _, size := range sizes {
-		pages += (size + uint64(vmmemory.PageSize) - 1) / uint64(vmmemory.PageSize)
+	return Region{Kind: kind, Size: size}
+}
+
+// AdmitRegions refuses a VM whose memory regions this host's pagers could not
+// all map, before anything starts its VMM. The cap is per-region metadata and a
+// pager checks it one attachment at a time, so a VM that overruns it dies with
+// its process already started and some of its regions already admitted — which
+// is a guest killed for a decision that could have been made before it existed.
+// Each region is charged to the pager of its kind, in that pager's pages. A host
+// with no pagers of its own admits everything; so does the race between this and
+// the attachments, which is why this is a refusal and not a reservation.
+func (h *Host) AdmitRegions(regions []Region) error {
+	needed := map[vmmemory.RegionKind]uint64{}
+	for _, region := range regions {
+		pager := h.pagers.For(region.Kind)
+		if pager == nil {
+			continue
+		}
+		page := pager.PageSize()
+		needed[region.Kind] += (region.Size + page - 1) / page
 	}
-	free := h.pager.LogicalHeadroom()
-	if free < 0 || pages > uint64(free) {
-		return fmt.Errorf("%w: these regions need %d logical pages and the pager has %d left",
-			vmmemory.ErrCapacity, pages, free)
+	for kind, pages := range needed {
+		free := h.pagers.For(kind).LogicalHeadroom()
+		if free < 0 || pages > uint64(free) {
+			return fmt.Errorf("%w: these %s regions need %d logical pages and that pager has %d left",
+				vmmemory.ErrCapacity, kind, pages, free)
+		}
 	}
 	return nil
 }
@@ -547,10 +605,10 @@ func (h *Host) Close(ctx context.Context) error {
 func (h *Host) shutdown() {
 	var errs []error
 	h.stopHolds()
-	if h.pager != nil {
-		// Nothing here answers for the budget any more: the loops are stopping
-		// and the VMs are being released.
-		h.pager.SetPressure(vmmemory.Pressure{})
+	for _, pager := range h.pagers.All() {
+		// Nothing here answers for either budget any more: the loops are
+		// stopping and the VMs are being released.
+		pager.SetPressure(vmmemory.Pressure{})
 	}
 	// The checkpoint loops stop before the VM handles do: a checkpoint of a VM
 	// whose handle is closing has nothing to select its index in.

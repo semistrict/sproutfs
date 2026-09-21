@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/semistrict/sproutfs/internal/vmmachine"
-	"github.com/semistrict/sproutfs/internal/vmmemory"
 	"github.com/semistrict/sproutfs/internal/volume"
 )
 
@@ -87,20 +86,21 @@ func (s *supervisor) templateOf(ctx context.Context, name string, chosen Templat
 	if err != nil {
 		return nil, fmt.Errorf("guest image %s: %w", path, err)
 	}
-	// A PMEM device is whole 2 MiB pages, and the image is written into the
-	// front of one.
-	size := (uint64(info.Size()) + vmmemory.PageSize - 1) / vmmemory.PageSize * vmmemory.PageSize
+	// A PMEM device is whole pages of the pager that maps it, and the image is
+	// written into the front of one.
+	ramPage, pmemPage := s.pagers.Ram.PageSize(), s.pagers.Pmem.PageSize()
+	size := (uint64(info.Size()) + pmemPage - 1) / pmemPage * pmemPage
 	if size == 0 {
 		return nil, fmt.Errorf("guest image %s is empty", path)
 	}
 	prepared, err := s.host.TemplateOf(ctx, TemplateImport{
 		Image: name,
-		// Both volumes are published in the pager's own page: a template is
-		// forked into VMs this host runs, and a region it could not serve is a
-		// VM it could not start.
+		// Each volume is published in the page of the pager that will map it: a
+		// template is forked into VMs this host runs, and a region a pager could
+		// not serve is a VM it could not start.
 		Volumes: []volume.VolumeSpec{
-			{Name: vmmachine.RAMVolume, Size: chosen.MemoryBytes, PageSize: vmmemory.PageSize},
-			{Name: rootVolume, Size: size, PageSize: vmmemory.PageSize},
+			{Name: vmmachine.RAMVolume, Size: chosen.MemoryBytes, PageSize: ramPage},
+			{Name: rootVolume, Size: size, PageSize: pmemPage},
 		},
 		Root: rootVolume, Source: file,
 	})

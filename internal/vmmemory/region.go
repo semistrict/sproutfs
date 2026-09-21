@@ -106,17 +106,19 @@ func (h *Host) admit(ctx context.Context, region RegionBacking, mapping Mapping)
 		return nil, ErrConfig
 	}
 	size := backing.Size()
-	if size == 0 || size%uint64(PageSize) != 0 {
+	if size == 0 || size%h.pageSize != 0 {
 		return nil, ErrConfig
 	}
 	// A volume published in another page size cannot be served here at all: a
 	// page number of it means something else, so it is refused before a mapping
-	// is armed rather than faulted in the wrong unit.
-	if paged, states := backing.(PagedBacking); states && paged.PageSize() != PageSize {
+	// is armed rather than faulted in the wrong unit. It is also how a region
+	// reaches the wrong one of a host's two pagers — RAM's volume attached to
+	// the PMEM pager is exactly this mismatch.
+	if paged, states := backing.(PagedBacking); states && paged.PageSize() != h.pageSize {
 		return nil, fmt.Errorf("%w: the volume is published in %d-byte pages, this pager's page is %d",
-			ErrConfig, paged.PageSize(), PageSize)
+			ErrConfig, paged.PageSize(), h.pageSize)
 	}
-	count := size / uint64(PageSize)
+	count := size / h.pageSize
 	h.mu.Lock()
 	if h.err != nil {
 		err := h.err
@@ -162,6 +164,16 @@ func (r *Region) Resources() *resource.Budget {
 	}
 	return r.host.Resources()
 }
+
+// PageSize is the page of the pager holding this region, which is the unit of
+// every page number it takes and reports. A caller serving this region's pages
+// to another host reads it here rather than from a host-wide constant: the two
+// kinds of region are two pagers and need not agree.
+func (r *Region) PageSize() uint64 { return r.host.pageSize }
+
+// Kind is what this region is to its guest, RAM or PMEM, as whoever attached it
+// stated.
+func (r *Region) Kind() RegionKind { return r.kind }
 
 func (r *Region) ready() error {
 	if err := r.serving(); err != nil {
@@ -414,7 +426,7 @@ func (r *Region) readForCopy(ctx context.Context, b *binding, pg *resident, dst 
 		return false, r.host.read(ctx, b, pg, dst)
 	}
 	err = r.withoutRegion(ctx, func() error {
-		fetched, err := r.loadBacking(ctx, b.index*uint64(PageSize), dst)
+		fetched, err := r.loadBacking(ctx, b.index*r.host.pageSize, dst)
 		unpublished = len(fetched) > 0 && fetched[0]
 		return err
 	})

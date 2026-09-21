@@ -88,12 +88,14 @@ type supervisor struct {
 
 	resources *resource.Budget
 	objects   *platform.MeteredObjectStore
-	arena     *vmmemory.LinuxArena
+	// arenas and spills are one per pager: a pager's arena and spill file are
+	// its own, and the two pagers of a host share neither.
+	arenas map[vmmemory.RegionKind]*vmmemory.LinuxArena
+	spills map[vmmemory.RegionKind]platform.File
 	// connection is what every session this host opens is configured with: the
 	// node's fault-worker and mapping-count bounds, which no VM varies.
 	connection vmmemory.ConnectionConfig
-	spill      platform.File
-	pager      *vmmemory.Host
+	pagers     vmmemory.Pagers
 	scratch    *vmmachine.Scratch
 	host       *Host
 	// clock is what every duration this supervisor reports is measured on. It
@@ -122,6 +124,8 @@ var _ Service = (*supervisor)(nil)
 func Start(ctx context.Context, config SupervisorConfig) (Service, error) {
 	s := &supervisor{config: config, clock: platform.ClockOr(config.Clock), templateMu: ctxsync.NewMutex(),
 		machines: map[string]*machine{}, templates: map[string]*ImportedTemplate{},
+		arenas:   map[vmmemory.RegionKind]*vmmemory.LinuxArena{},
+		spills:   map[vmmemory.RegionKind]platform.File{},
 		// The orchestrator's default client has no timeout of its own, and a
 		// drain's requests are the only ones this host makes: a connection that
 		// is never answered and never closed would hold one open past every
@@ -160,21 +164,18 @@ func Start(ctx context.Context, config SupervisorConfig) (Service, error) {
 	if err != nil {
 		return nil, fmt.Errorf("metered object store: %w", err)
 	}
-	s.arena, err = vmmemory.NewLinuxArena(int(config.ArenaBytes / vmmemory.PageSize))
+	// One pager per kind of region, each over an arena and a spill file of its
+	// own. The two capacities sum to what the deployment gave this host, so
+	// nothing is counted twice and the arenas never compete for a slot.
+	ram, err := s.startPager(ctx, vmmemory.Ram, pagerConfig(config, vmmemory.Ram))
 	if err != nil {
-		return nil, fmt.Errorf("hugetlb arena of %d bytes: %w", config.ArenaBytes, err)
+		return nil, err
 	}
-	// A restart is a host loss, so the spill file starts empty; the pager sizes
-	// it to the dirty pages its cap allows.
-	s.spill, err = config.Disk.Open(ctx, "spill", platform.OpenOptions{Create: true, Truncate: true, Permissions: 0o600})
+	pmem, err := s.startPager(ctx, vmmemory.Pmem, pagerConfig(config, vmmemory.Pmem))
 	if err != nil {
-		return nil, fmt.Errorf("spill file: %w", err)
+		return nil, err
 	}
-	pager := pagerConfig(config)
-	s.pager, err = vmmemory.New(ctx, s.resources, pager, s.arena, s.spill)
-	if err != nil {
-		return nil, fmt.Errorf("pager: %w", err)
-	}
+	s.pagers = vmmemory.Pagers{Ram: ram, Pmem: pmem}
 	// One session's bounds are the node's too: how many faults it serves at a
 	// time, and the mapping-count budget its replacements are admitted against.
 	s.connection = vmmemory.ConnectionConfig{MaxVMAs: vmaBudget(), FaultWorkers: faultWorkers()}
@@ -188,14 +189,18 @@ func Start(ctx context.Context, config SupervisorConfig) (Service, error) {
 		// The pager pushes a full dirty budget back through the host: a
 		// checkpoint out of the interval's turn, and a deliberate stop where
 		// even that cannot admit the guest's stores.
-		Resources: s.resources, ObjectStore: s.objects, Network: config.Network, Pager: s.pager,
+		Resources: s.resources, ObjectStore: s.objects, Network: config.Network, Pagers: s.pagers,
 		Clock:              s.clock,
 		Entropy:            config.Entropy,
 		CacheBytes:         config.CacheBytes,
 		CheckpointInterval: config.CheckpointInterval,
 		LossWindow:         config.LossWindow,
-		Migration: MigrationConfig{Address: s.pageAddress(), PageSize: vmmemory.PageSize,
-			StartVM: s.startReceived},
+		// The page server's budgets are sized against the largest page either
+		// pager serves; what a reply is counted in is the page of the volume it
+		// answers for.
+		Migration: MigrationConfig{Address: s.pageAddress(),
+			PageSize: int(max(ram.PageSize(), pmem.PageSize())),
+			StartVM:  s.startReceived},
 		MachineClosed: s.forgetClosed,
 	})
 	if err != nil {
@@ -210,13 +215,39 @@ func Start(ctx context.Context, config SupervisorConfig) (Service, error) {
 	go s.importing(ctx)
 	started = true
 	slog.InfoContext(ctx, "host: assembled", "host", config.PodName,
-		"pages", s.pageAddress(), "resident_pages", pager.ResidentPages,
-		"logical_pages", pager.LogicalPages, "dirty_pages", pager.DirtyPages,
-		"loss_window", pager.LossWindow.String(),
-		"concurrent_io", pager.ConcurrentIO, "read_ahead_pages", pager.ReadAheadPages,
-		"write_ahead_pages", pager.WriteAheadPages, "settle_workers", pager.SettleWorkers,
+		"pages", s.pageAddress(),
 		"fault_workers", s.connection.FaultWorkers, "max_vmas", s.connection.MaxVMAs)
 	return s, nil
+}
+
+// startPager builds one of this host's two pagers: its own HugeTLB arena, its
+// own spill file and the configuration of its kind. A restart is a host loss, so
+// the spill file starts empty; the pager sizes it to the dirty pages its cap
+// allows. Each is logged with the bounds the node chose for it, so what a host
+// gave each kind is on the record.
+func (s *supervisor) startPager(ctx context.Context, kind vmmemory.RegionKind, cfg vmmemory.Config) (*vmmemory.Host, error) {
+	arena, err := vmmemory.NewLinuxArena(cfg.ResidentPages, cfg.PageSize)
+	if err != nil {
+		return nil, fmt.Errorf("%s hugetlb arena of %d pages: %w", kind, cfg.ResidentPages, err)
+	}
+	s.arenas[kind] = arena
+	spill, err := s.config.Disk.Open(ctx, "spill-"+kind.String(),
+		platform.OpenOptions{Create: true, Truncate: true, Permissions: 0o600})
+	if err != nil {
+		return nil, fmt.Errorf("%s spill file: %w", kind, err)
+	}
+	s.spills[kind] = spill
+	pager, err := vmmemory.New(ctx, s.resources, cfg, arena, spill)
+	if err != nil {
+		return nil, fmt.Errorf("%s pager: %w", kind, err)
+	}
+	slog.InfoContext(ctx, "host: a pager was assembled", "kind", kind.String(),
+		"page_bytes", cfg.PageSize, "resident_pages", cfg.ResidentPages,
+		"logical_pages", cfg.LogicalPages, "dirty_pages", cfg.DirtyPages,
+		"loss_window", cfg.LossWindow.String(), "concurrent_io", cfg.ConcurrentIO,
+		"read_ahead_pages", cfg.ReadAheadPages, "write_ahead_pages", cfg.WriteAheadPages,
+		"settle_workers", cfg.SettleWorkers)
+	return pager, nil
 }
 
 // notReady records why this host cannot take work yet.
@@ -269,11 +300,11 @@ func (s *supervisor) pageAddress() platform.Address {
 
 func (s *supervisor) Status(ctx context.Context) (hostapi.Status, error) {
 	status := s.host.Status()
-	stats, err := s.pager.Stats(ctx)
+	ram, err := s.pagerReport(ctx, vmmemory.Ram, status.LogicalPagesFree.RAM)
 	if err != nil {
 		return hostapi.Status{}, err
 	}
-	sharing, err := s.pager.Sharing(ctx)
+	pmem, err := s.pagerReport(ctx, vmmemory.Pmem, status.LogicalPagesFree.PMEM)
 	if err != nil {
 		return hostapi.Status{}, err
 	}
@@ -287,15 +318,7 @@ func (s *supervisor) Status(ctx context.Context) (hostapi.Status, error) {
 		Running: s.host.Machines(), Serving: status.Serving,
 		Outstanding: status.Outstanding, VMs: records,
 		Templates: s.templateReport(),
-		Pager: hostapi.Pager{PageBytes: vmmemory.PageSize,
-			ArenaPages:     int(s.config.ArenaBytes / vmmemory.PageSize),
-			ResidentPages:  stats.ResidentPages,
-			CommittedBytes: s.committed(),
-			DirtyPages:     stats.DirtyPages, LogicalPages: stats.LogicalPages,
-			LogicalPagesFree: status.LogicalPagesFree,
-			SharedPages:      stats.IdentityHits, Faults: stats.Faults,
-			Evictions: stats.Evictions, Spills: stats.Spills,
-			RAM: apiSharing(sharing.Ram), PMEM: apiSharing(sharing.Pmem)},
+		Pager: hostapi.Pager{RAM: ram, PMEM: pmem, CommittedBytes: s.committed()},
 		Pages: hostapi.Pages{Requests: status.Pages.Requests, Served: status.Pages.Served,
 			Absent: status.Pages.Absent, Refused: status.Pages.Refused},
 		Resources: hostapi.Resources{MemoryLimit: resources.Limit, MemoryUsed: resources.Used,
@@ -348,10 +371,39 @@ func (s *supervisor) templateReport() []hostapi.Template {
 	return report
 }
 
-// apiSharing carries one kind's sharing gauge onto the wire.
-func apiSharing(s vmmemory.Sharing) hostapi.Sharing {
-	return hostapi.Sharing{UniqueBytes: s.UniqueBytes, MappedBytes: s.MappedBytes,
-		SavedBytes: s.SavedBytes}
+// pagerReport is one pager's half of the status: its own page, its own arena
+// and budgets, and the sharing it holds. The gauges come from that pager alone,
+// so the two halves are never a sum of readings taken at different moments of
+// one pager.
+func (s *supervisor) pagerReport(ctx context.Context, kind vmmemory.RegionKind, free int) (hostapi.PagerKind, error) {
+	pager := s.pagers.For(kind)
+	if pager == nil {
+		return hostapi.PagerKind{}, nil
+	}
+	stats, err := pager.Stats(ctx)
+	if err != nil {
+		return hostapi.PagerKind{}, err
+	}
+	sharing, err := pager.Sharing(ctx)
+	if err != nil {
+		return hostapi.PagerKind{}, err
+	}
+	gauge := sharing.Pmem
+	arena := s.config.ArenaBytes.PMEM
+	if kind == vmmemory.Ram {
+		gauge, arena = sharing.Ram, s.config.ArenaBytes.RAM
+	}
+	return hostapi.PagerKind{
+		PageBytes:     int(pager.PageSize()),
+		ArenaPages:    int(uint64(arena) / pager.PageSize()),
+		ResidentPages: stats.ResidentPages,
+		DirtyPages:    stats.DirtyPages, LogicalPages: stats.LogicalPages,
+		LogicalPagesFree: free,
+		Sharing: hostapi.Sharing{UniqueBytes: gauge.UniqueBytes, MappedBytes: gauge.MappedBytes,
+			SavedBytes: gauge.SavedBytes},
+		SharedPages: stats.IdentityHits, Faults: stats.Faults,
+		Evictions: stats.Evictions, Spills: stats.Spills,
+	}, nil
 }
 
 // records describes every VM this host holds a handle on.
@@ -433,22 +485,28 @@ func (s *supervisor) Close(ctx context.Context) error {
 			errs = append(errs, fmt.Errorf("closing the VMM scratch: %w", err))
 		}
 	}
-	if s.pager != nil {
-		if err := s.pager.Close(ctx); err != nil {
-			// Unproven allocations stay charged; the arena is not closed under
-			// a pager that may still hold it.
-			errs = append(errs, fmt.Errorf("closing the pager: %w", err))
-			return errors.Join(errs...)
+	// Both pagers close, each before its own arena and spill file. A pager that
+	// would not close keeps its arena: unproven allocations stay charged, and an
+	// arena must never be closed under a pager that may still hold it. The other
+	// pager is still released, because leaving it attached to a process that is
+	// exiting helps nothing.
+	for _, kind := range []vmmemory.RegionKind{vmmemory.Ram, vmmemory.Pmem} {
+		pager := s.pagers.For(kind)
+		if pager != nil {
+			if err := pager.Close(ctx); err != nil {
+				errs = append(errs, fmt.Errorf("closing the %s pager: %w", kind, err))
+				continue
+			}
 		}
-	}
-	if s.arena != nil {
-		if err := s.arena.Close(); err != nil {
-			errs = append(errs, fmt.Errorf("closing the arena: %w", err))
+		if arena := s.arenas[kind]; arena != nil {
+			if err := arena.Close(); err != nil {
+				errs = append(errs, fmt.Errorf("closing the %s arena: %w", kind, err))
+			}
 		}
-	}
-	if s.spill != nil {
-		if err := s.spill.Close(); err != nil {
-			errs = append(errs, fmt.Errorf("closing the spill file: %w", err))
+		if spill := s.spills[kind]; spill != nil {
+			if err := spill.Close(); err != nil {
+				errs = append(errs, fmt.Errorf("closing the %s spill file: %w", kind, err))
+			}
 		}
 	}
 	return errors.Join(errs...)

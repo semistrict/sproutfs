@@ -21,8 +21,9 @@ import (
 // continues exactly where the source stopped, and one that lost it says so.
 const stateBytes = 9
 
-// arena is one host's shared page store: one byte slice per resident slot,
-// which is what a real pager's shared memory is.
+// arena is one pager's shared page store: one byte slice per resident slot,
+// which is what a real pager's shared memory is. A host has one per pager, each
+// of that pager's own page.
 type arena struct {
 	mu    sync.Mutex
 	slots [][]byte
@@ -175,6 +176,10 @@ type guest struct {
 	pages    map[string]int
 	regions  map[string]*vmmemory.Region
 	mappings map[string]*mapping
+	// pageBytes is the page each of this guest's volumes is mapped in, which is
+	// the page of the pager holding that region. A VM's memory and its disks are
+	// two pagers of two pages, so every byte offset here is per volume.
+	pageBytes map[string]int
 
 	mu sync.Mutex
 	// model is the byte the guest last stored into every page of every volume,
@@ -204,7 +209,8 @@ func (w *World) newGuest(h *hostState, p *pager, vm *volume.VM, backings map[str
 	ctx := w.ctx
 	g := &guest{instance: vm.ID(), ctx: ctx, pages: map[string]int{},
 		regions: map[string]*vmmemory.Region{}, mappings: map[string]*mapping{},
-		model: map[string][]byte{}, admit: w.config.Admit, reverse: w.config.ReverseRegions,
+		pageBytes: map[string]int{},
+		model:     map[string][]byte{}, admit: w.config.Admit, reverse: w.config.ReverseRegions,
 		id: fmt.Sprintf("%s/%s/%d/%d", vm.ID(), h.name, h.incarnation, w.nextGuest())}
 	for _, v := range vm.Volumes() {
 		name := v.Name()
@@ -212,14 +218,16 @@ func (w *World) newGuest(h *hostState, p *pager, vm *volume.VM, backings map[str
 		if supplied, ok := backings[name]; ok {
 			backing = supplied
 		}
-		mp := newMapping(p.arena)
 		// The simulated machine binds the same shapes the real one does: one
-		// RAM volume, and every other volume a PMEM disk.
+		// RAM volume, and every other volume a PMEM disk. Each attaches to the
+		// pager of its own kind, over that pager's own arena.
 		kind := vmmemory.Pmem
 		if name == MemoryVolume {
 			kind = vmmemory.Ram
 		}
-		region, err := p.host.Attach(ctx, vmmemory.RegionBacking{Kind: kind,
+		pager := p.pagers.For(kind)
+		mp := newMapping(p.arenaOf(kind))
+		region, err := pager.Attach(ctx, vmmemory.RegionBacking{Kind: kind,
 			Backing: testbacking.New(backing, p.runtime, g.id+"/"+name)}, mp)
 		if err != nil {
 			return nil, err
@@ -227,7 +235,8 @@ func (w *World) newGuest(h *hostState, p *pager, vm *volume.VM, backings map[str
 		g.names = append(g.names, name)
 		g.regions[name] = region
 		g.mappings[name] = mp
-		g.pages[name] = int(v.Size() / PageSize)
+		g.pageBytes[name] = int(pager.PageSize())
+		g.pages[name] = int(v.Size() / pager.PageSize())
 		g.model[name] = make([]byte, v.Size())
 	}
 	switch len(state) {
@@ -468,8 +477,9 @@ func (g *guest) storeModel(name string, mp *mapping, page uint64, value byte) bo
 	if !mp.store(page, value) {
 		return false
 	}
-	for i := range PageSize {
-		g.model[name][int(page)*PageSize+i] = value
+	size := g.pageBytes[name]
+	for i := range size {
+		g.model[name][int(page)*size+i] = value
 	}
 	g.writes++
 	return true
@@ -517,7 +527,7 @@ func (g *guest) read(ctx context.Context, name string, page uint64) ([]byte, err
 		}
 	}
 	if p.slot < 0 {
-		return make([]byte, PageSize), nil
+		return make([]byte, g.pageBytes[name]), nil
 	}
 	mp.arena.mu.Lock()
 	defer mp.arena.mu.Unlock()
@@ -534,7 +544,8 @@ func (g *guest) readAll(ctx context.Context) (map[string][]byte, map[string][]bo
 	missing := map[string][]bool{}
 	var errs []error
 	for _, name := range g.names {
-		read[name] = make([]byte, g.pages[name]*PageSize)
+		size := g.pageBytes[name]
+		read[name] = make([]byte, g.pages[name]*size)
 		missing[name] = make([]bool, g.pages[name])
 		for page := range uint64(g.pages[name]) {
 			got, err := g.read(ctx, name, page)
@@ -544,7 +555,7 @@ func (g *guest) readAll(ctx context.Context) (map[string][]byte, map[string][]bo
 					g.instance, name, page, errUnreadable, err))
 				continue
 			}
-			copy(read[name][int(page)*PageSize:], got)
+			copy(read[name][int(page)*size:], got)
 		}
 	}
 	return read, missing, errors.Join(errs...)
@@ -597,23 +608,33 @@ func (g *guest) verify(ctx context.Context, model map[string][]byte) error {
 				unreadable = fmt.Errorf("%s %s page %d: %w: %w", g.instance, name, page, errUnreadable, err)
 				continue
 			}
-			if !bytes.Equal(got, want[int(page)*PageSize:(int(page)+1)*PageSize]) {
+			size := g.pageBytes[name]
+			if !bytes.Equal(got, want[int(page)*size:(int(page)+1)*size]) {
 				return fmt.Errorf("%s %s page %d reads %d, want %d",
-					g.instance, name, page, got[0], want[int(page)*PageSize])
+					g.instance, name, page, got[0], want[int(page)*size])
 			}
 		}
 	}
 	return unreadable
 }
 
-// pager is one host's shared page store and its pager Host.
+// pager is one host's pagers and the arena and spill file each of them owns.
+// The two share nothing: a RAM page and a PMEM page are different numbers of
+// bytes, so a slot of one arena could not hold a page of the other.
 type pager struct {
-	host    *vmmemory.Host
-	arena   *arena
-	spill   platform.File
+	pagers  vmmemory.Pagers
+	arenas  map[vmmemory.RegionKind]*arena
+	spills  map[vmmemory.RegionKind]platform.File
 	runtime *sim.Runtime
 }
 
+// arenaOf is the shared page store the regions of one kind map through.
+func (p *pager) arenaOf(kind vmmemory.RegionKind) *arena { return p.arenas[kind] }
+
 func (p *pager) close(ctx context.Context) error {
-	return errors.Join(p.host.Close(ctx), p.spill.Close())
+	var errs []error
+	for _, kind := range []vmmemory.RegionKind{vmmemory.Ram, vmmemory.Pmem} {
+		errs = append(errs, p.pagers.For(kind).Close(ctx), p.spills[kind].Close())
+	}
+	return errors.Join(errs...)
 }

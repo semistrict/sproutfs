@@ -32,7 +32,7 @@ func TestPartialReadAheadPublicationReturnsOnlyUnusedCapacity(t *testing.T) {
 		}
 		defer spill.Close()
 		shared := testresource.New()
-		f.h, err = vmmemory.New(t.Context(), shared, vmmemory.Config{ResidentPages: 4, LogicalPages: 4, DirtyPages: 4, ReadAheadPages: 4}, partialPublicationArena{f.a}, spill)
+		f.h, err = vmmemory.New(t.Context(), shared, vmmemory.Config{PageSize: pageSize, ResidentPages: 4, LogicalPages: 4, DirtyPages: 4, ReadAheadPages: 4}, partialPublicationArena{f.a}, spill)
 		if err != nil {
 			t.Fatal(err)
 		}

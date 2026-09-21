@@ -25,7 +25,7 @@ import (
 // messages. No memory is actually mapped, and fault backing remains stalled.
 func pipeConnection(t testing.TB, backing vmmemory.Backing) (*vmmemory.Connection, *vmmemory.Host, *os.File, context.CancelCauseFunc) {
 	t.Helper()
-	a, err := vmmemory.NewLinuxArena(1)
+	a, err := vmmemory.NewLinuxArena(1, pageSize)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +39,7 @@ func pipeConnection(t testing.TB, backing vmmemory.Backing) (*vmmemory.Connectio
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = spill.Close() })
-	h, err := vmmemory.New(t.Context(), testresource.New(), vmmemory.Config{ResidentPages: 1, LogicalPages: int(backing.Size() / uint64(vmmemory.PageSize)), DirtyPages: 1}, a, spill)
+	h, err := vmmemory.New(t.Context(), testresource.New(), vmmemory.Config{PageSize: pageSize, ResidentPages: 1, LogicalPages: int(backing.Size() / uint64(pageSize)), DirtyPages: 1}, a, spill)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +113,7 @@ func pipeConnection(t testing.TB, backing vmmemory.Backing) (*vmmemory.Connectio
 }
 
 func TestIdleConnectionWaitsForDescriptorReadiness(t *testing.T) {
-	c, h, events, cancel := pipeConnection(t, newKernelBacking(1, vmmemory.PageSize))
+	c, h, events, cancel := pipeConnection(t, newKernelBacking(1, pageSize))
 	before, err := h.Stats(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -157,7 +157,7 @@ func (b *stalledFaultBacking) Load(ctx context.Context, _ uint64, _ []byte) erro
 }
 
 func TestRemapsDrainWhileFaultWorkerWaitsForBacking(t *testing.T) {
-	b := &stalledFaultBacking{kernelBacking: newKernelBacking(1, vmmemory.PageSize), entered: make(chan struct{})}
+	b := &stalledFaultBacking{kernelBacking: newKernelBacking(1, pageSize), entered: make(chan struct{})}
 	c, h, events, _ := pipeConnection(t, b)
 	var fault [32]byte
 	fault[0] = 0x12

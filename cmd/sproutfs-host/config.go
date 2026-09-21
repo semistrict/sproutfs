@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/semistrict/sproutfs/internal/checkpoint"
 	"github.com/semistrict/sproutfs/internal/host"
 	"github.com/semistrict/sproutfs/internal/jsonhttp"
-	"github.com/semistrict/sproutfs/internal/vmmemory"
 )
 
 // config is this process's environment: the host it assembles, and the names of
@@ -59,6 +59,35 @@ const minimumCheckpointInterval = time.Second
 
 // defaultTemplates is the one guest image the demo image carries.
 const defaultTemplates = "alpine=/usr/share/sproutfs/guest.ext4"
+
+// ramPageSize and pmemPageSize are the pages this build's two pagers run, which
+// a deployment does not choose: they are what vmwire, the Rust adapter and the
+// Firecracker integration map, and what a HugeTLB arena is made of. They are
+// here so that the byte budgets this command divides are checked against the
+// pages they will actually be counted in.
+const (
+	ramPageSize  = checkpoint.PageSize2MiB
+	pmemPageSize = checkpoint.PageSize2MiB
+)
+
+// defaultRAMSharePercent is how much of this host's arena, spill file and page
+// budgets goes to the RAM pager when a deployment names no share. Three
+// quarters, because RAM is where a guest's memory diverges and the root is
+// mostly read: the 2026-09-19 fan-out measured a fork holding about 114 MB of
+// RAM privately against 10 MB of root, and the deployment's workload VM keeps
+// one shared root behind every fork's own RAM. A deployment whose guests write
+// their disks instead sets the share.
+const defaultRAMSharePercent = 75
+
+// splitBytes divides one byte budget between the two pagers at the given
+// percentage, rounding each share down to a whole page of the pager that will
+// hold it. The two shares therefore need not come to the whole, which the caller
+// refuses rather than quietly running a host on less than it was given.
+func splitBytes(total, ramPercent int64, ramPage, pmemPage uint64) host.KindBytes {
+	ram := total * ramPercent / 100 / int64(ramPage) * int64(ramPage)
+	pmem := (total - ram) / int64(pmemPage) * int64(pmemPage)
+	return host.KindBytes{RAM: ram, PMEM: pmem}
+}
 
 // loadConfig reads the whole environment, reporting every problem it found
 // rather than the first: a pod that is misconfigured in three places should say
@@ -118,9 +147,9 @@ func loadConfig(lookup func(string) string) (config, error) {
 			Kernel:      text("SPROUTFS_KERNEL", "/usr/share/sproutfs/vmlinux"),
 			BootArgs:    text("SPROUTFS_BOOT_ARGS", defaultBootArgs),
 			VCPUs:       int(number("SPROUTFS_VM_VCPUS", 1)),
-			ArenaBytes:  number("SPROUTFS_ARENA_BYTES", 2<<30),
 		},
 	}
+	arenaBytes := number("SPROUTFS_ARENA_BYTES", 2<<30)
 	// SPROUTFS_ORCHESTRATOR_URL is what the manifests set, from the
 	// orchestrator's Service; the shorter name is kept for a host started by
 	// hand. Without either, the Service's own DNS name in this namespace.
@@ -130,18 +159,36 @@ func loadConfig(lookup func(string) string) (config, error) {
 	// the orchestrator and the CLI do. It is not required: a host run by hand
 	// outside a cluster serves an API that admits anyone, and says so.
 	c.APIToken = jsonhttp.Token(text(jsonhttp.TokenEnv, ""))
-	c.MemoryBytes = number("SPROUTFS_MEMORY_BYTES", c.ArenaBytes+(1<<30))
+	c.MemoryBytes = number("SPROUTFS_MEMORY_BYTES", arenaBytes+(1<<30))
 	c.CacheBytes = number("SPROUTFS_CACHE_BYTES", 1<<30)
-	c.SpillBytes = number("SPROUTFS_SPILL_BYTES", 16<<30)
+	spillBytes := number("SPROUTFS_SPILL_BYTES", 16<<30)
 	c.VMMemoryBytes = uint64(number("SPROUTFS_VM_MEMORY_BYTES", 512<<20))
 
-	if c.ArenaBytes%vmmemory.PageSize != 0 {
-		fail("SPROUTFS_ARENA_BYTES is %d, want a multiple of the pager's %d-byte page",
-			c.ArenaBytes, vmmemory.PageSize)
+	// A host runs one pager per kind of region, each with an arena and a spill
+	// file of its own, so the byte budgets the deployment gives this host are
+	// divided between them. One share decides all of them, because a deployment
+	// that gives RAM three quarters of the arena wants RAM to have three
+	// quarters of the spill and the budgets that fill it too, and because the
+	// two halves must add up to exactly what was given however the division
+	// falls: PMEM takes the remainder rather than a second rounding.
+	ramShare := number("SPROUTFS_RAM_SHARE_PERCENT", defaultRAMSharePercent)
+	if ramShare < 1 || ramShare > 99 {
+		fail("SPROUTFS_RAM_SHARE_PERCENT is %d, want 1 to 99", ramShare)
+	} else {
+		c.ArenaBytes = splitBytes(arenaBytes, ramShare, ramPageSize, pmemPageSize)
+		c.SpillBytes = splitBytes(spillBytes, ramShare, ramPageSize, pmemPageSize)
 	}
-	if c.VMMemoryBytes%vmmemory.PageSize != 0 {
-		fail("SPROUTFS_VM_MEMORY_BYTES is %d, want a multiple of the pager's %d-byte page",
-			c.VMMemoryBytes, vmmemory.PageSize)
+	if c.ArenaBytes.Total() != arenaBytes {
+		fail("SPROUTFS_ARENA_BYTES is %d, which %d%% cannot divide into whole %d-byte RAM pages and whole %d-byte PMEM pages",
+			arenaBytes, ramShare, ramPageSize, pmemPageSize)
+	}
+	if c.SpillBytes.Total() != spillBytes {
+		fail("SPROUTFS_SPILL_BYTES is %d, which %d%% cannot divide into whole %d-byte RAM pages and whole %d-byte PMEM pages",
+			spillBytes, ramShare, ramPageSize, pmemPageSize)
+	}
+	if c.VMMemoryBytes%ramPageSize != 0 {
+		fail("SPROUTFS_VM_MEMORY_BYTES is %d, want a multiple of the RAM pager's %d-byte page",
+			c.VMMemoryBytes, ramPageSize)
 	}
 	if !mountsRootWithDAX(c.BootArgs) {
 		fail("SPROUTFS_BOOT_ARGS mounts the root without rootflags=dax=always: %q", c.BootArgs)
@@ -149,29 +196,49 @@ func loadConfig(lookup func(string) string) (config, error) {
 	if c.VCPUs < 1 || c.VCPUs > 32 {
 		fail("SPROUTFS_VM_VCPUS is %d, want 1 to 32", c.VCPUs)
 	}
-	resident := c.ArenaBytes / vmmemory.PageSize
-	spillable := c.SpillBytes / vmmemory.PageSize
+	resident := host.KindPages{RAM: int(c.ArenaBytes.RAM / ramPageSize), PMEM: int(c.ArenaBytes.PMEM / pmemPageSize)}
+	spillable := host.KindPages{RAM: int(c.SpillBytes.RAM / ramPageSize), PMEM: int(c.SpillBytes.PMEM / pmemPageSize)}
 	// The logical cap bounds per-region metadata, which is the only thing it
 	// costs: it reserves nothing, and a page that is never touched has no
 	// metadata to bound. What it does decide is which VMs a host will run at
-	// all, because every region of every VM is charged against it, so it has to
-	// be sized by the VMs a host holds rather than by the arena they share.
-	// Thirty-two arenas is twenty-two of the deployment's workload VMs, whose
-	// regions are 2 GiB of RAM over a 5 GiB root; the arena and the placement
-	// are what actually bound a host, and this is the backstop that catches a
-	// region absurd next to them.
-	c.LogicalPages = int(number("SPROUTFS_LOGICAL_PAGES", resident*32))
-	c.DirtyPages = int(number("SPROUTFS_DIRTY_PAGES", min(resident, spillable)))
-	if int64(c.LogicalPages) < resident {
-		fail("SPROUTFS_LOGICAL_PAGES is %d, want at least the arena's %d pages", c.LogicalPages, resident)
+	// all, because every region of every VM is charged against the pager of its
+	// kind, so it has to be sized by the VMs a host holds rather than by the
+	// arena they share. Thirty-two arenas is twenty-two of the deployment's
+	// workload VMs, whose regions are 2 GiB of RAM over a 5 GiB root; the arenas
+	// and the placement are what actually bound a host, and this is the backstop
+	// that catches a region absurd next to them. Each pager is capped in its own
+	// pages, which is why the two numbers are set apart.
+	c.LogicalPages = host.KindPages{
+		RAM:  int(number("SPROUTFS_RAM_LOGICAL_PAGES", int64(resident.RAM)*32)),
+		PMEM: int(number("SPROUTFS_PMEM_LOGICAL_PAGES", int64(resident.PMEM)*32)),
 	}
-	if c.DirtyPages > c.LogicalPages {
-		fail("SPROUTFS_DIRTY_PAGES is %d, want at most SPROUTFS_LOGICAL_PAGES, %d", c.DirtyPages, c.LogicalPages)
+	c.DirtyPages = host.KindPages{
+		RAM:  int(number("SPROUTFS_RAM_DIRTY_PAGES", int64(min(resident.RAM, spillable.RAM)))),
+		PMEM: int(number("SPROUTFS_PMEM_DIRTY_PAGES", int64(min(resident.PMEM, spillable.PMEM)))),
 	}
-	// Every dirty page must have somewhere to spill, so the spill cap is what
-	// bounds the dirty budget rather than something checked as it fills.
-	if int64(c.DirtyPages) > spillable {
-		fail("SPROUTFS_DIRTY_PAGES is %d, and SPROUTFS_SPILL_BYTES holds %d pages", c.DirtyPages, spillable)
+	for _, budget := range []struct {
+		kind                                    string
+		logical, dirty, resident, spillable     int
+		logicalName, dirtyName, spillName, page string
+	}{
+		{"RAM", c.LogicalPages.RAM, c.DirtyPages.RAM, resident.RAM, spillable.RAM,
+			"SPROUTFS_RAM_LOGICAL_PAGES", "SPROUTFS_RAM_DIRTY_PAGES", "SPROUTFS_SPILL_BYTES", "RAM"},
+		{"PMEM", c.LogicalPages.PMEM, c.DirtyPages.PMEM, resident.PMEM, spillable.PMEM,
+			"SPROUTFS_PMEM_LOGICAL_PAGES", "SPROUTFS_PMEM_DIRTY_PAGES", "SPROUTFS_SPILL_BYTES", "PMEM"},
+	} {
+		if budget.logical < budget.resident {
+			fail("%s is %d, want at least the %s arena's %d pages", budget.logicalName, budget.logical, budget.kind, budget.resident)
+		}
+		if budget.dirty > budget.logical {
+			fail("%s is %d, want at most %s, %d", budget.dirtyName, budget.dirty, budget.logicalName, budget.logical)
+		}
+		// Every dirty page must have somewhere to spill, so the spill cap is
+		// what bounds the dirty budget rather than something checked as it
+		// fills.
+		if budget.dirty > budget.spillable {
+			fail("%s is %d, and the %s share of %s holds %d pages", budget.dirtyName, budget.dirty,
+				budget.kind, budget.spillName, budget.spillable)
+		}
 	}
 
 	interval := text("SPROUTFS_CHECKPOINT_INTERVAL", "60s")
@@ -212,9 +279,9 @@ func loadConfig(lookup func(string) string) (config, error) {
 		fail("SPROUTFS_TEMPLATES: %v", err)
 	}
 	for name, entry := range c.Templates {
-		if entry.MemoryBytes%vmmemory.PageSize != 0 {
-			fail("template %s asks for %d bytes of RAM, want a multiple of the pager's %d-byte page",
-				name, entry.MemoryBytes, vmmemory.PageSize)
+		if entry.MemoryBytes%ramPageSize != 0 {
+			fail("template %s asks for %d bytes of RAM, want a multiple of the RAM pager's %d-byte page",
+				name, entry.MemoryBytes, ramPageSize)
 		}
 	}
 	if len(errs) > 0 {

@@ -40,7 +40,7 @@ var ErrHandedOff = errors.New("managed-memory region handed its volume off")
 // taken, exactly like the pages a bulk stream already sent.
 func (r *Region) ReadResident(ctx context.Context, page uint64, dst []byte) (held, unpublished bool, err error) {
 	h := r.host
-	if len(dst) != PageSize {
+	if uint64(len(dst)) != h.pageSize {
 		return false, false, ErrRange
 	}
 	if err := r.live.RLock(ctx); err != nil {
@@ -198,14 +198,19 @@ type RegionStats struct {
 	// its regions' DirtySince, and while that is older than the window the
 	// pager holds the guest's stores back.
 	DirtySince time.Time
+	// PageSize is the page of the pager holding this region, carried with the
+	// counts so the byte conversions below need nothing else. A host adds a VM's
+	// regions up across two pagers of different geometry, and page counts of
+	// different pages cannot be added at all.
+	PageSize uint64
 }
 
 // The three counts in the unit the host accounts memory in. Page counts belong
 // to the pager that holds them and cannot be added across pagers of different
 // geometry; bytes can, which is what a host-wide report needs.
-func (s RegionStats) ResidentBytes() uint64 { return uint64(s.ResidentPages) * PageSize }
-func (s RegionStats) PrivateBytes() uint64  { return uint64(s.PrivatePages) * PageSize }
-func (s RegionStats) SharedBytes() uint64   { return uint64(s.SharedPages) * PageSize }
+func (s RegionStats) ResidentBytes() uint64 { return uint64(s.ResidentPages) * s.PageSize }
+func (s RegionStats) PrivateBytes() uint64  { return uint64(s.PrivatePages) * s.PageSize }
+func (s RegionStats) SharedBytes() uint64   { return uint64(s.SharedPages) * s.PageSize }
 
 // Stats reports this region's pages. It is a snapshot taken without stopping
 // the guest, exactly like Resident.
@@ -214,7 +219,7 @@ func (r *Region) Stats(ctx context.Context) (RegionStats, error) {
 		return RegionStats{}, err
 	}
 	defer r.mu.RUnlock()
-	var stats RegionStats
+	stats := RegionStats{PageSize: r.host.pageSize}
 	r.eachBinding(func(b *binding) {
 		if b.resident != nil {
 			stats.ResidentPages++

@@ -20,8 +20,9 @@ import (
 	"github.com/semistrict/sproutfs/internal/vmmemory"
 )
 
-// pageSize is the pager page, fixed at 2 MiB everywhere.
-const pageSize = vmmemory.PageSize
+// pageSize is the page the fixtures build their pager with until the suite is
+// parameterised by it.
+const pageSize = checkpoint.PageSize2MiB
 
 // errInjected is the failure a test makes a backing or an arena report.
 var errInjected = errors.New("injected failure")
@@ -417,7 +418,10 @@ func newConfiguredFixture(t *testing.T, cfg vmmemory.Config, shared ...*resource
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = spill.Close() })
-	a := &arena{pageSize: pageSize, slots: make([][]byte, cfg.ResidentPages)}
+	if cfg.PageSize == 0 {
+		cfg.PageSize = pageSize
+	}
+	a := &arena{pageSize: int(cfg.PageSize), slots: make([][]byte, cfg.ResidentPages)}
 	resources := testresource.New()
 	if len(shared) != 0 {
 		resources = shared[0]
@@ -431,7 +435,7 @@ func newConfiguredFixture(t *testing.T, cfg vmmemory.Config, shared ...*resource
 			t.Error(err)
 		}
 	})
-	return &fixture{t: t, h: h, a: a, disk: disk, pageSize: pageSize, source: control.Ref{VM: t.Name(), Sequence: 1}}
+	return &fixture{t: t, h: h, a: a, disk: disk, pageSize: int(cfg.PageSize), source: control.Ref{VM: t.Name(), Sequence: 1}}
 }
 
 // newBacking returns a backing whose pages are inherited from the fixture's

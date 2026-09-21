@@ -35,7 +35,7 @@ type windowPlan struct {
 }
 
 func (r *Region) plan(ctx context.Context, start, end, fault uint64) (*windowPlan, error) {
-	ps := uint64(PageSize)
+	ps := r.host.pageSize
 	extents, err := r.backing.Locate(ctx, start*ps, (end-start)*ps)
 	if err != nil {
 		return nil, err
@@ -88,7 +88,7 @@ func (p *windowPlan) eligible(page uint64) bool {
 // identity reports the store page whose bytes this page reads, which is the
 // whole of what names it: a page is published whole or not at all.
 func (p *windowPlan) identity(page uint64) (pageKey, bool) {
-	offset := page * uint64(PageSize)
+	offset := page * p.region.host.pageSize
 	first := sort.Search(len(p.extents), func(i int) bool { return p.extents[i].Offset+p.extents[i].Length > offset })
 	if first >= len(p.extents) {
 		return pageKey{}, false
@@ -115,7 +115,7 @@ func (p *windowPlan) unpublished(page uint64) bool {
 	if !p.region.peer {
 		return false
 	}
-	offset := page * uint64(PageSize)
+	offset := page * p.region.host.pageSize
 	first := sort.Search(len(p.extents), func(i int) bool { return p.extents[i].Offset+p.extents[i].Length > offset })
 	if first >= len(p.extents) {
 		return false
@@ -311,7 +311,7 @@ func (p *windowPlan) reserveRuns(from uint64) {
 // publishes the resulting residents under their stored identities.
 func (p *windowPlan) loadReserved(ctx context.Context) error {
 	h := p.region.host
-	ps := PageSize
+	ps := int(h.pageSize)
 	var buffer []byte
 	for page := p.start; page < p.end; {
 		i := page - p.start

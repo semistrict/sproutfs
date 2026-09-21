@@ -9,7 +9,7 @@ import (
 
 // pageBytes is a page count in the unit the gauges report, which is what every
 // expectation below is written in.
-func pageBytes(pages int) uint64 { return uint64(pages) * vmmemory.PageSize }
+func pageBytes(pages int) uint64 { return uint64(pages) * pageSize }
 
 func sharing(t *testing.T, f *fixture) vmmemory.SharingStats {
 	t.Helper()
