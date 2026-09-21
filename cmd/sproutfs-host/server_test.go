@@ -458,7 +458,7 @@ func TestStoppingAVMAForkPointHoldsIsAConflict(t *testing.T) {
 func TestStatusIsTheWholeHostReport(t *testing.T) {
 	fake := &fakeHost{status: hostapi.Status{Host: "host-0", PageAddress: "10.0.0.1:8081",
 		Running: []string{"vm-1"}, Serving: []string{"vm-2"},
-		Pager: hostapi.Pager{PageBytes: 2 << 20, ResidentPages: 8, SharedPages: 5}}}
+		Pager: hostapi.Pager{RAM: hostapi.PagerKind{PageBytes: 2 << 20, ResidentPages: 8, SharedPages: 5}}}}
 	status, body := call(t, fake, http.MethodGet, "/status", "")
 	if status != http.StatusOK {
 		t.Fatalf("status %d: %s", status, body)
@@ -470,7 +470,7 @@ func TestStatusIsTheWholeHostReport(t *testing.T) {
 	if report.Host != "host-0" || report.PageAddress != "10.0.0.1:8081" ||
 		len(report.Running) != 1 || report.Running[0] != "vm-1" ||
 		len(report.Serving) != 1 || report.Serving[0] != "vm-2" ||
-		report.Pager.SharedPages != 5 {
+		report.Pager.SharedPages() != 5 {
 		t.Fatalf("report %+v", report)
 	}
 }
@@ -564,8 +564,10 @@ func TestVersionSaysWhichBuildThisIs(t *testing.T) {
 func TestMetricsExposeThePagerAndTheStore(t *testing.T) {
 	fake := &fakeHost{status: hostapi.Status{
 		Running: []string{"vm-1", "vm-2"},
-		Pager: hostapi.Pager{PageBytes: 2 << 20, ArenaPages: 1024, ResidentPages: 96,
-			Faults: 7, Spills: 3},
+		Pager: hostapi.Pager{
+			RAM:  hostapi.PagerKind{PageBytes: 4 << 10, ArenaPages: 1024, ResidentPages: 96, Faults: 7, Spills: 3},
+			PMEM: hostapi.PagerKind{PageBytes: 2 << 20, ArenaPages: 512, ResidentPages: 8, Faults: 2, Spills: 1},
+		},
 		Store: hostapi.Store{Put: hostapi.StoreCount{Calls: 12, Failures: 1, Bytes: 4096}},
 	}}
 	status, body := call(t, fake, http.MethodGet, "/metrics", "")
@@ -574,9 +576,17 @@ func TestMetricsExposeThePagerAndTheStore(t *testing.T) {
 	}
 	for _, want := range []string{
 		"# TYPE sproutfs_pager_resident_pages gauge",
-		"sproutfs_pager_resident_pages 96",
-		"sproutfs_pager_arena_pages 1024",
-		"sproutfs_pager_faults_total 7",
+		`sproutfs_pager_resident_pages{kind="ram"} 96`,
+		`sproutfs_pager_resident_pages{kind="pmem"} 8`,
+		`sproutfs_pager_arena_pages{kind="ram"} 1024`,
+		`sproutfs_pager_arena_pages{kind="pmem"} 512`,
+		`sproutfs_pager_page_bytes{kind="ram"} 4096`,
+		`sproutfs_pager_page_bytes{kind="pmem"} 2097152`,
+		`sproutfs_pager_faults_total{kind="ram"} 7`,
+		`sproutfs_pager_faults_total{kind="pmem"} 2`,
+		// The two arenas are added in bytes and never in pages: 1024 pages of
+		// 4 KiB beside 512 of 2 MiB is 1 GiB and 4 MiB.
+		"sproutfs_pager_arena_bytes 1077936128",
 		"sproutfs_vms_running 2",
 		`sproutfs_store_calls_total{operation="put"} 12`,
 		`sproutfs_store_bytes_total{operation="put"} 4096`,
@@ -595,8 +605,8 @@ func TestMetricsExposeThePagerAndTheStore(t *testing.T) {
 func TestMetricsExposeTheSharingGauges(t *testing.T) {
 	fake := &fakeHost{status: hostapi.Status{
 		Pager: hostapi.Pager{
-			RAM:  hostapi.Sharing{UniqueBytes: 64 << 20, MappedBytes: 192 << 20, SavedBytes: 128 << 20},
-			PMEM: hostapi.Sharing{UniqueBytes: 32 << 20, MappedBytes: 40 << 20, SavedBytes: 8 << 20},
+			RAM:  hostapi.PagerKind{Sharing: hostapi.Sharing{UniqueBytes: 64 << 20, MappedBytes: 192 << 20, SavedBytes: 128 << 20}},
+			PMEM: hostapi.PagerKind{Sharing: hostapi.Sharing{UniqueBytes: 32 << 20, MappedBytes: 40 << 20, SavedBytes: 8 << 20}},
 		},
 	}}
 	status, body := call(t, fake, http.MethodGet, "/metrics", "")

@@ -41,8 +41,8 @@ const (
 // so every fork, every migration and every stop carries more than one region.
 func premortemVolumes() []volume.VolumeSpec {
 	return []volume.VolumeSpec{
-		{Name: "ram0", Size: soakVMPages * simtest.PageSize, PageSize: simtest.PageSize},
-		{Name: "disk", Size: soakVMPages * simtest.PageSize, PageSize: simtest.PageSize},
+		{Name: "ram0", Size: soakVMPages * simtest.RAMPage, PageSize: simtest.RAMPage},
+		{Name: "disk", Size: soakVMPages * simtest.PMEMPage, PageSize: simtest.PMEMPage},
 	}
 }
 

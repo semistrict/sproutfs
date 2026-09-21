@@ -297,7 +297,12 @@ func TestHostsPrintsTheSharedPageCount(t *testing.T) {
 	client, _ := serve(t, func(*http.Request) (int, any) {
 		return http.StatusOK, []orch.Host{{Name: "sproutfs-host-a", Ready: true,
 			Running: []string{"vm-1", "vm-2"}, Serving: []string{},
-			Pager: host.Pager{ResidentPages: 900, SharedPages: 512},
+			// Two pagers of two pages: what the column prints is the bytes they
+			// hold together, because their page counts cannot be added.
+			Pager: host.Pager{
+				RAM:  host.PagerKind{PageBytes: 4 << 10, ResidentPages: 900, SharedPages: 512},
+				PMEM: host.PagerKind{PageBytes: 2 << 20, ResidentPages: 2, SharedPages: 8},
+			},
 			Pages: host.Pages{Served: 64}}}
 	})
 	var out bytes.Buffer
@@ -305,7 +310,7 @@ func TestHostsPrintsTheSharedPageCount(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := "HOST             READY  RUNNING  SERVING  RESIDENT  SHARED  SERVED  STATE\n" +
-		"sproutfs-host-a  true   2        0        900       512     64      ok\n"
+		"sproutfs-host-a  true   2        0        7880704   520     64      ok\n"
 	if out.String() != want {
 		t.Fatalf("printed\n%s\nwant\n%s", out.String(), want)
 	}

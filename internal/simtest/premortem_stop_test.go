@@ -14,7 +14,7 @@ import (
 // children, and the round's stops and starts fall on them as readily as on the
 // VMs something created.
 func forkedStopTopology() simtest.Topology {
-	ram := []volume.VolumeSpec{{Name: "ram0", Size: 4 * simtest.PageSize, PageSize: simtest.PageSize}}
+	ram := []volume.VolumeSpec{{Name: "ram0", Size: 4 * simtest.RAMPage, PageSize: simtest.RAMPage}}
 	return simtest.Topology{Hosts: []string{"host-0", "host-1"},
 		VMs: []simtest.VMSpec{
 			{ID: "vm-0", Host: 0, Volumes: ram},

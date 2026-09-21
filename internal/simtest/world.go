@@ -542,10 +542,12 @@ func (w *World) newPager(ctx context.Context, h *hostState) (*pager, func(), err
 	k := w.config.Knobs
 	p := &pager{arenas: map[vmmemory.RegionKind]*arena{},
 		spills: map[vmmemory.RegionKind]platform.File{}, runtime: w.runtime}
+	// The two are released in a fixed order, because what they do on the way out
+	// reaches this host's simulated disk: a release that walked a map would give
+	// one seed two runs.
 	release := func() {
-		for kind, memory := range map[vmmemory.RegionKind]*vmmemory.Host{
-			vmmemory.Ram: p.pagers.Ram, vmmemory.Pmem: p.pagers.Pmem} {
-			if memory != nil {
+		for _, kind := range []vmmemory.RegionKind{vmmemory.Ram, vmmemory.Pmem} {
+			if memory := p.pagers.For(kind); memory != nil {
 				_ = memory.Close(context.Background())
 			}
 			if spill := p.spills[kind]; spill != nil {

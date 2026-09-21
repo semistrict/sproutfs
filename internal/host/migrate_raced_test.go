@@ -18,16 +18,16 @@ import (
 // carries the checkpoint the source's record selected, and a destination that
 // opens a different one refuses the handoff rather than streaming over it.
 func TestReceiveRefusesAHandoffWhoseRecordHasMovedOn(t *testing.T) {
-	h, pagers, arenas := startMigrationHosts(t)
+	h, pagers := startMigrationHosts(t)
 	var received *machine
-	h.configs[1].Migration.StartVM = starter(t, pagers[1], arenas[1], &received)
+	h.configs[1].Migration.StartVM = starter(t, pagers[1], &received)
 	h.start(t)
 
 	vm, err := h.hosts[0].Volumes().Create(t.Context(), "raced", migrationVolumes)
 	if err != nil {
 		t.Fatal(err)
 	}
-	source, err := newMachine(t, pagers[0], arenas[0], vm, nil)
+	source, err := newMachine(t, pagers[0], vm, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

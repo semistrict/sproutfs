@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/semistrict/sproutfs/internal/checkpoint"
 	"github.com/semistrict/sproutfs/internal/host"
 	"github.com/semistrict/sproutfs/internal/platform"
 	"github.com/semistrict/sproutfs/internal/platform/adapters"
@@ -21,7 +22,7 @@ import (
 	"github.com/semistrict/sproutfs/internal/volume"
 )
 
-const migrationPageSize = vmmemory.PageSize
+const migrationPageSize = checkpoint.PageSize2MiB
 
 // migrationVolumes is the VM every migration test runs: one RAM volume, which is
 // all the host wiring needs to move.
@@ -135,44 +136,77 @@ type machine struct {
 	exitErr error
 }
 
-func newPager(t *testing.T, resources *resource.Budget) (*vmmemory.Host, *pageArena) {
+// hostPagers is one host's two pagers and the arena each of them owns, which is
+// what a test builds because it is what a host builds: the two run their own
+// pages over their own arenas and share nothing, so a region attaches to the
+// pager of its kind or to none.
+type hostPagers struct {
+	pagers vmmemory.Pagers
+	arenas map[vmmemory.RegionKind]*pageArena
+}
+
+func (p *hostPagers) ram() *vmmemory.Host  { return p.pagers.Ram }
+func (p *hostPagers) pmem() *vmmemory.Host { return p.pagers.Pmem }
+
+// close releases both pagers, which is what a test that has taken a host's
+// memory away does before it looks at what is left.
+func (p *hostPagers) close(ctx context.Context) error {
+	return errors.Join(p.pagers.Ram.Close(ctx), p.pagers.Pmem.Close(ctx))
+}
+
+func newPager(t *testing.T, resources *resource.Budget) *hostPagers {
 	t.Helper()
 	return newPagerWithWriteAhead(t, resources, 0)
 }
 
-func newPagerWithWriteAhead(t *testing.T, resources *resource.Budget, writeAheadPages int) (*vmmemory.Host, *pageArena) {
+func newPagerWithWriteAhead(t *testing.T, resources *resource.Budget, writeAheadPages int) *hostPagers {
 	t.Helper()
 	return newPagerWithConfig(t, resources, vmmemory.Config{
 		ResidentPages: 32, LogicalPages: 64, DirtyPages: 32, ReadAheadPages: 8, WriteAheadPages: writeAheadPages})
 }
 
-// newPagerWithConfig builds a host pager exactly as configured, which is how a
-// test gives a guest a budget small enough to run into.
-func newPagerWithConfig(t *testing.T, resources *resource.Budget, cfg vmmemory.Config) (*vmmemory.Host, *pageArena) {
+// newPagerWithConfig builds a host's pagers exactly as configured, which is how
+// a test gives a guest a budget small enough to run into. Both run the
+// production page, as a real host's two do, and each is given the whole of the
+// configured budget: a test that wants a tight arena wants a tight arena of
+// each kind.
+func newPagerWithConfig(t *testing.T, resources *resource.Budget, cfg vmmemory.Config) *hostPagers {
 	t.Helper()
 	disk, err := adapters.NewDisk(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	spill, err := disk.Open(t.Context(), "spill", platform.OpenOptions{Create: true})
-	if err != nil {
-		t.Fatal(err)
+	if cfg.PageSize == 0 {
+		cfg.PageSize = migrationPageSize
 	}
-	t.Cleanup(func() { _ = spill.Close() })
-	arena := &pageArena{slots: make([][]byte, cfg.ResidentPages)}
-	pager, err := vmmemory.New(t.Context(), resources, cfg, arena, spill)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := pager.Close(context.Background()); err != nil {
-			t.Errorf("close pager: %v", err)
+	built := &hostPagers{arenas: map[vmmemory.RegionKind]*pageArena{}}
+	for _, kind := range []vmmemory.RegionKind{vmmemory.Ram, vmmemory.Pmem} {
+		spill, err := disk.Open(t.Context(), "spill-"+kind.String(), platform.OpenOptions{Create: true})
+		if err != nil {
+			t.Fatal(err)
 		}
-	})
-	return pager, arena
+		t.Cleanup(func() { _ = spill.Close() })
+		arena := &pageArena{slots: make([][]byte, cfg.ResidentPages)}
+		built.arenas[kind] = arena
+		pager, err := vmmemory.New(t.Context(), resources, cfg, arena, spill)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := pager.Close(context.Background()); err != nil {
+				t.Errorf("close %s pager: %v", kind, err)
+			}
+		})
+		if kind == vmmemory.Ram {
+			built.pagers.Ram = pager
+		} else {
+			built.pagers.Pmem = pager
+		}
+	}
+	return built
 }
 
-func newMachine(t *testing.T, pager *vmmemory.Host, arena *pageArena, vm *volume.VM,
+func newMachine(t *testing.T, p *hostPagers, vm *volume.VM,
 	backings map[string]vmmemory.Backing) (*machine, error) {
 	m := &machine{t: t, regions: map[string]*vmmemory.Region{}, maps: map[string]*pageMapping{},
 		exit: make(chan struct{})}
@@ -181,14 +215,16 @@ func newMachine(t *testing.T, pager *vmmemory.Host, arena *pageArena, vm *volume
 		if supplied, ok := backings[v.Name()]; ok {
 			backing = supplied
 		}
-		mapping := newPageMapping(arena)
 		// One RAM volume and PMEM for the rest, which is the shape a real
-		// machine binds; the kind is the attacher's to state.
+		// machine binds; the kind is the attacher's to state, and it decides
+		// which pager and which arena the region belongs to.
 		kind := vmmemory.Pmem
 		if v.Name() == "ram0" {
 			kind = vmmemory.Ram
 		}
-		region, err := pager.Attach(t.Context(), vmmemory.RegionBacking{Kind: kind, Backing: backing}, mapping)
+		mapping := newPageMapping(p.arenas[kind])
+		region, err := p.pagers.For(kind).Attach(t.Context(),
+			vmmemory.RegionBacking{Kind: kind, Backing: backing}, mapping)
 		if err != nil {
 			return nil, err
 		}
@@ -334,38 +370,37 @@ func (m *machine) load(name string, page uint64) []byte {
 }
 
 // startMigrationHosts starts two hosts that can migrate to one another, each
-// with its own pager.
-func startMigrationHosts(t *testing.T) (*hostHarness, []*vmmemory.Host, []*pageArena) {
+// with pagers of its own.
+func startMigrationHosts(t *testing.T) (*hostHarness, []*hostPagers) {
 	t.Helper()
 	return startMigrationHostsWithWriteAhead(t, 0)
 }
 
-func startMigrationHostsWithWriteAhead(t *testing.T, sourceWriteAheadPages int) (*hostHarness, []*vmmemory.Host, []*pageArena) {
+func startMigrationHostsWithWriteAhead(t *testing.T, sourceWriteAheadPages int) (*hostHarness, []*hostPagers) {
 	t.Helper()
 	// A VM's log is placed on three hosts other than the one that writes it, so
 	// a migration test needs four.
 	h := newSizedHostHarness(t, 4)
-	pagers := make([]*vmmemory.Host, len(h.configs))
-	arenas := make([]*pageArena, len(h.configs))
+	pagers := make([]*hostPagers, len(h.configs))
 	for i := range h.configs {
 		writeAheadPages := 0
 		if i == 0 {
 			writeAheadPages = sourceWriteAheadPages
 		}
-		pagers[i], arenas[i] = newPagerWithWriteAhead(t, h.configs[i].Resources, writeAheadPages)
+		pagers[i] = newPagerWithWriteAhead(t, h.configs[i].Resources, writeAheadPages)
 		h.configs[i].Migration = host.MigrationConfig{Address: h.pages[i], PageSize: migrationPageSize}
 	}
-	return h, pagers, arenas
+	return h, pagers
 }
 
 // starter is the destination's StartVM: it attaches every region of the received
 // VM through the backings the migration supplies and returns the running machine.
-func starter(t *testing.T, pager *vmmemory.Host, arena *pageArena, out **machine) host.StartFunc {
+func starter(t *testing.T, pagers *hostPagers, out **machine) host.StartFunc {
 	return func(ctx context.Context, vm *volume.VM, backings map[string]vmmemory.Backing, state []byte) (host.Machine, error) {
 		if string(state) != "vmm-state" {
 			return nil, fmt.Errorf("the destination restored %q", state)
 		}
-		built, err := newMachine(t, pager, arena, vm, backings)
+		built, err := newMachine(t, pagers, vm, backings)
 		if err != nil {
 			return nil, err
 		}
@@ -377,12 +412,12 @@ func starter(t *testing.T, pager *vmmemory.Host, arena *pageArena, out **machine
 // starters is starter for a host that takes more than one VM in — a fan-out of
 // forks it is the destination of — recording every machine it starts by the VM
 // it started it for.
-func starters(t *testing.T, pager *vmmemory.Host, arena *pageArena, out map[string]*machine) host.StartFunc {
+func starters(t *testing.T, pagers *hostPagers, out map[string]*machine) host.StartFunc {
 	return func(ctx context.Context, vm *volume.VM, backings map[string]vmmemory.Backing, state []byte) (host.Machine, error) {
 		if string(state) != "vmm-state" {
 			return nil, fmt.Errorf("the destination restored %q", state)
 		}
-		built, err := newMachine(t, pager, arena, vm, backings)
+		built, err := newMachine(t, pagers, vm, backings)
 		if err != nil {
 			return nil, err
 		}
@@ -406,22 +441,21 @@ func TestMigrationWaitsForTheIntervalCheckpointItInterrupts(t *testing.T) {
 		PutLatency: publish, ListLatency: time.Nanosecond, BytesPerSecond: 1 << 60})
 	publishing := &putWatcher{ObjectStore: h.configs[0].ObjectStore}
 	h.configs[0].ObjectStore = publishing
-	pagers := make([]*vmmemory.Host, len(h.configs))
-	arenas := make([]*pageArena, len(h.configs))
+	pagers := make([]*hostPagers, len(h.configs))
 	for i := range h.configs {
-		pagers[i], arenas[i] = newPagerWithWriteAhead(t, h.configs[i].Resources, 0)
+		pagers[i] = newPagerWithWriteAhead(t, h.configs[i].Resources, 0)
 		h.configs[i].Migration = host.MigrationConfig{Address: h.pages[i], PageSize: migrationPageSize}
 		h.configs[i].CheckpointInterval = 5 * time.Millisecond
 	}
 	var received *machine
-	h.configs[1].Migration.StartVM = starter(t, pagers[1], arenas[1], &received)
+	h.configs[1].Migration.StartVM = starter(t, pagers[1], &received)
 	h.start(t)
 
 	vm, err := h.hosts[0].Volumes().Create(t.Context(), "vm-1", migrationVolumes)
 	if err != nil {
 		t.Fatal(err)
 	}
-	source, err := newMachine(t, pagers[0], arenas[0], vm, nil)
+	source, err := newMachine(t, pagers[0], vm, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -481,16 +515,16 @@ func TestHostMigratesAVMToAnotherHost(t *testing.T) {
 		{name: "default", heldPages: 4},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			h, pagers, arenas := startMigrationHostsWithWriteAhead(t, tc.writeAheadPages)
+			h, pagers := startMigrationHostsWithWriteAhead(t, tc.writeAheadPages)
 			var received *machine
-			h.configs[1].Migration.StartVM = starter(t, pagers[1], arenas[1], &received)
+			h.configs[1].Migration.StartVM = starter(t, pagers[1], &received)
 			h.start(t)
 
 			vm, err := h.hosts[0].Volumes().Create(t.Context(), "vm-1", migrationVolumes)
 			if err != nil {
 				t.Fatal(err)
 			}
-			source, err := newMachine(t, pagers[0], arenas[0], vm, nil)
+			source, err := newMachine(t, pagers[0], vm, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -612,10 +646,10 @@ func TestHostMigratesAVMToAnotherHost(t *testing.T) {
 // TestHostDrainMovesEveryVM is what the preStop hook calls: every VM this host
 // runs moves, and the host is left running none.
 func TestHostDrainMovesEveryVM(t *testing.T) {
-	h, pagers, arenas := startMigrationHosts(t)
+	h, pagers := startMigrationHosts(t)
 	h.configs[0].Migration.DrainConcurrency = 1
 	var received *machine
-	h.configs[1].Migration.StartVM = starter(t, pagers[1], arenas[1], &received)
+	h.configs[1].Migration.StartVM = starter(t, pagers[1], &received)
 	h.start(t)
 
 	for _, id := range []string{"vm-a", "vm-b"} {
@@ -623,7 +657,7 @@ func TestHostDrainMovesEveryVM(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		source, err := newMachine(t, pagers[0], arenas[0], vm, nil)
+		source, err := newMachine(t, pagers[0], vm, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -661,13 +695,13 @@ func TestHostDrainMovesEveryVM(t *testing.T) {
 }
 
 func TestHostRejectsMachineUsingAnotherResourceBudget(t *testing.T) {
-	h, pagers, arenas := startMigrationHosts(t)
+	h, pagers := startMigrationHosts(t)
 	h.start(t)
 	vm, err := h.hosts[0].Volumes().Create(t.Context(), "resource-owner", migrationVolumes)
 	if err != nil {
 		t.Fatal(err)
 	}
-	wrong, err := newMachine(t, pagers[1], arenas[1], vm, nil)
+	wrong, err := newMachine(t, pagers[1], vm, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -680,7 +714,7 @@ func TestHostRejectsMachineUsingAnotherResourceBudget(t *testing.T) {
 	if err := wrong.Close(); err != nil {
 		t.Fatal(err)
 	}
-	correct, err := newMachine(t, pagers[0], arenas[0], vm, nil)
+	correct, err := newMachine(t, pagers[0], vm, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -689,7 +723,7 @@ func TestHostRejectsMachineUsingAnotherResourceBudget(t *testing.T) {
 	}
 	before := h.hosts[0].Status().Resources.Used
 	correct.store("ram0", 0, 17)
-	if h.hosts[0].Resources() != pagers[0].Resources() || h.hosts[0].Status().Resources.Used <= before {
+	if h.hosts[0].Resources() != pagers[0].ram().Resources() || h.hosts[0].Status().Resources.Used <= before {
 		t.Fatal("guest pages did not enter the storage host's resource accounting")
 	}
 	if err := correct.Close(); err != nil {
@@ -702,16 +736,16 @@ func TestHostRejectsMachineUsingAnotherResourceBudget(t *testing.T) {
 }
 
 func TestReceiveClosesMachineWithMismatchedResourceBudget(t *testing.T) {
-	h, pagers, arenas := startMigrationHosts(t)
+	h, pagers := startMigrationHosts(t)
 	var rejected *machine
 	// The callback accidentally selects a third host's pager.
-	h.configs[1].Migration.StartVM = starter(t, pagers[2], arenas[2], &rejected)
+	h.configs[1].Migration.StartVM = starter(t, pagers[2], &rejected)
 	h.start(t)
 	vm, err := h.hosts[0].Volumes().Create(t.Context(), "wrong-destination-budget", migrationVolumes)
 	if err != nil {
 		t.Fatal(err)
 	}
-	source, err := newMachine(t, pagers[0], arenas[0], vm, nil)
+	source, err := newMachine(t, pagers[0], vm, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -734,7 +768,7 @@ func TestReceiveClosesMachineWithMismatchedResourceBudget(t *testing.T) {
 	if got := h.hosts[0].Status().Pages.Served; got != before {
 		t.Fatalf("rejected receive streamed source pages: %d -> %d", before, got)
 	}
-	if err := pagers[2].Close(t.Context()); err != nil {
+	if err := pagers[2].close(t.Context()); err != nil {
 		t.Fatalf("rejected runtime kept regions attached: %v", err)
 	}
 }
@@ -747,17 +781,17 @@ func TestReceiveClosesMachineWithMismatchedResourceBudget(t *testing.T) {
 // ran. A fork hold has had a deadline all along; a migration's did not.
 func TestMigratedPagesAreReleasedAfterTheirDeadline(t *testing.T) {
 	const holdTimeout = 50 * time.Millisecond
-	h, pagers, arenas := startMigrationHosts(t)
+	h, pagers := startMigrationHosts(t)
 	h.configs[0].Migration.HoldTimeout = holdTimeout
 	var received *machine
-	h.configs[1].Migration.StartVM = starter(t, pagers[1], arenas[1], &received)
+	h.configs[1].Migration.StartVM = starter(t, pagers[1], &received)
 	h.start(t)
 
 	vm, err := h.hosts[0].Volumes().Create(t.Context(), "abandoned", migrationVolumes)
 	if err != nil {
 		t.Fatal(err)
 	}
-	source, err := newMachine(t, pagers[0], arenas[0], vm, nil)
+	source, err := newMachine(t, pagers[0], vm, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -814,9 +848,9 @@ func awaitReleased(t *testing.T, host *host.Host, closed ...*machine) {
 // reader of the VM read it. Nothing here is publishable: the VM is given up
 // without publishing, and its last checkpoint is what a recovery opens.
 func TestReceivedGuestIsDiscardedWhenItsPostCopyFails(t *testing.T) {
-	h, pagers, arenas := startMigrationHosts(t)
+	h, pagers := startMigrationHosts(t)
 	var received *machine
-	h.configs[1].Migration.StartVM = starter(t, pagers[1], arenas[1], &received)
+	h.configs[1].Migration.StartVM = starter(t, pagers[1], &received)
 	forgotten := make(chan string, 1)
 	h.configs[1].MachineClosed = func(id string) { forgotten <- id }
 	h.start(t)
@@ -825,7 +859,7 @@ func TestReceivedGuestIsDiscardedWhenItsPostCopyFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	source, err := newMachine(t, pagers[0], arenas[0], vm, nil)
+	source, err := newMachine(t, pagers[0], vm, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -909,14 +943,14 @@ func TestDrainReturnsWithinItsOwnDeadline(t *testing.T) {
 		whole = 200 * time.Millisecond
 		perVM = 50 * time.Millisecond
 	)
-	h, pagers, arenas := startMigrationHosts(t)
+	h, pagers := startMigrationHosts(t)
 	h.start(t)
 	for _, id := range []string{"vm-a", "vm-b", "vm-c"} {
 		vm, err := h.hosts[0].Volumes().Create(t.Context(), id, migrationVolumes)
 		if err != nil {
 			t.Fatal(err)
 		}
-		guest, err := newMachine(t, pagers[0], arenas[0], vm, nil)
+		guest, err := newMachine(t, pagers[0], vm, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

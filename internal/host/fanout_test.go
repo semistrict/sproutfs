@@ -18,7 +18,7 @@ import (
 // for a child nothing ever fetched the pages of: what is under test is that the
 // deadline is what ends a hold no release can.
 func TestAFanOutNothingReceivesExpiresEveryHold(t *testing.T) {
-	h, pagers, arenas := startMigrationHosts(t)
+	h, pagers := startMigrationHosts(t)
 	clock := sim.New(sim.Config{Seed: 1}).NewClock("source")
 	h.configs[0].Clock = clock
 	// The epoch watch sleeps on the same clock. Disabling it leaves the holds'
@@ -30,7 +30,7 @@ func TestAFanOutNothingReceivesExpiresEveryHold(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	guest, err := newMachine(t, pagers[0], arenas[0], vm, nil)
+	guest, err := newMachine(t, pagers[0], vm, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestAFanOutNothingReceivesExpiresEveryHold(t *testing.T) {
 // itself finished with one standing, and the deadline was the only thing left
 // that could ever end it.
 func TestAHostReportsTheHoldsOfAFanOutOntoItself(t *testing.T) {
-	h, pagers, arenas := startMigrationHosts(t)
+	h, pagers := startMigrationHosts(t)
 	clock := sim.New(sim.Config{Seed: 1}).NewClock("source")
 	h.configs[0].Clock = clock
 	h.configs[0].EpochInterval = -1
@@ -90,7 +90,7 @@ func TestAHostReportsTheHoldsOfAFanOutOntoItself(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	guest, err := newMachine(t, pagers[0], arenas[0], vm, nil)
+	guest, err := newMachine(t, pagers[0], vm, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

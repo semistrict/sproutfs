@@ -107,8 +107,8 @@ func driveScheduledWorld(t *testing.T, runtime *sim.Runtime, scheduler *sim.Sche
 		func(ctx context.Context, region string) error {
 			return runtime.Admit(sim.WithTask(ctx, "post-copy/"+region), "peer/request")
 		})
-	specs := []volume.VolumeSpec{{Name: "disk", Size: 2 * simtest.PageSize, PageSize: simtest.PageSize},
-		{Name: "ram0", Size: 3 * simtest.PageSize, PageSize: simtest.PageSize}}
+	specs := []volume.VolumeSpec{{Name: "disk", Size: 2 * simtest.PMEMPage, PageSize: simtest.PMEMPage},
+		{Name: "ram0", Size: 3 * simtest.RAMPage, PageSize: simtest.RAMPage}}
 	topology := simtest.Topology{Hosts: []string{"host-0", "host-1", "host-2"},
 		VMs: []simtest.VMSpec{{ID: scheduledVMID, Host: 0, Volumes: specs}}}
 	k := knobs.Defaults()
@@ -179,8 +179,8 @@ func (m model) clone() model {
 func scheduledVolumeWorkload(t *testing.T, ctx context.Context, world *simtest.World,
 	scheduler *sim.Scheduler, seed uint64, reverse bool) {
 	t.Helper()
-	specs := []volume.VolumeSpec{{Name: "disk", Size: 2 * checkpoint.PageSize2MiB, PageSize: simtest.PageSize},
-		{Name: "ram", Size: 2 * checkpoint.PageSize2MiB, PageSize: simtest.PageSize}}
+	specs := []volume.VolumeSpec{{Name: "disk", Size: 2 * checkpoint.PageSize2MiB, PageSize: simtest.PMEMPage},
+		{Name: "ram", Size: 2 * checkpoint.PageSize2MiB, PageSize: simtest.PMEMPage}}
 	manager := world.Host(0).Volumes()
 	vm, err := manager.Create(ctx, scheduledVolumeID, specs)
 	if err != nil {
@@ -467,7 +467,7 @@ func scheduledHandoverWorkload(t *testing.T, ctx context.Context, world *simtest
 func refuseLayouts(t *testing.T, ctx context.Context, world *simtest.World,
 	scheduler *sim.Scheduler, hop, to int, handoff vmmigrate.Handoff) error {
 	t.Helper()
-	for _, delta := range []int{-simtest.PageSize, simtest.PageSize} {
+	for _, delta := range []int{-simtest.PMEMPage, simtest.PMEMPage} {
 		invalid := handoff
 		invalid.Regions = slices.Clone(handoff.Regions)
 		invalid.Regions[0].Size = uint64(int64(invalid.Regions[0].Size) + int64(delta))

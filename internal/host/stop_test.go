@@ -17,15 +17,15 @@ import (
 // open the VM at exactly the bytes the stop published.
 func TestStoppingAVMPublishesWhatItHeldAndGivesThePagesBack(t *testing.T) {
 	h := newHostHarness(t)
-	pager, arena := newPager(t, h.configs[0].Resources)
-	h.configs[0].Pager = pager
+	pagers := newPager(t, h.configs[0].Resources)
+	h.configs[0].Pagers = pagers.pagers
 	h.start(t)
 
 	vm, err := h.hosts[0].Volumes().Create(t.Context(), "vm-1", migrationVolumes)
 	if err != nil {
 		t.Fatal(err)
 	}
-	guest, err := newMachine(t, pager, arena, vm, nil)
+	guest, err := newMachine(t, pagers, vm, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func TestStoppingAVMPublishesWhatItHeldAndGivesThePagesBack(t *testing.T) {
 // pulling them takes the point out from under it, so a stop of a sealed VM is
 // refused exactly as a delete of one is — and the parent goes on running.
 func TestStoppingAVMAForkPointHoldsIsRefused(t *testing.T) {
-	h, pagers, arenas := startMigrationHosts(t)
+	h, pagers := startMigrationHosts(t)
 	for i := range h.configs {
 		h.configs[i].Migration = host.MigrationConfig{Address: h.pages[i], PageSize: migrationPageSize}
 	}
@@ -92,7 +92,7 @@ func TestStoppingAVMAForkPointHoldsIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	guest, err := newMachine(t, pagers[0], arenas[0], vm, nil)
+	guest, err := newMachine(t, pagers[0], vm, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

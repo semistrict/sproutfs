@@ -19,9 +19,9 @@ import (
 // server happens to be serving. The hold is reported as the handover it is,
 // because it is what holds the parent sealed.
 func TestStoppingAParentWhoseFanOutLandedOnItsOwnHostIsRefused(t *testing.T) {
-	h, pagers, arenas := startMigrationHosts(t)
+	h, pagers := startMigrationHosts(t)
 	started := map[string]*machine{}
-	h.configs[0].Migration.StartVM = starters(t, pagers[0], arenas[0], started)
+	h.configs[0].Migration.StartVM = starters(t, pagers[0], started)
 	h.configs[0].Migration.HoldTimeout = time.Minute
 	h.start(t)
 
@@ -29,7 +29,7 @@ func TestStoppingAParentWhoseFanOutLandedOnItsOwnHostIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	guest, err := newMachine(t, pagers[0], arenas[0], vm, nil)
+	guest, err := newMachine(t, pagers[0], vm, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +111,7 @@ func TestStoppingAParentWhoseFanOutLandedOnItsOwnHostIsRefused(t *testing.T) {
 // point held them publishes everything the guest has.
 func TestAParentIsStoppableOnceItsForkHoldOutlivesItsDeadline(t *testing.T) {
 	const holdTimeout = 50 * time.Millisecond
-	h, pagers, arenas := startMigrationHosts(t)
+	h, pagers := startMigrationHosts(t)
 	h.configs[0].Migration.HoldTimeout = holdTimeout
 	h.start(t)
 
@@ -119,7 +119,7 @@ func TestAParentIsStoppableOnceItsForkHoldOutlivesItsDeadline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	guest, err := newMachine(t, pagers[0], arenas[0], vm, nil)
+	guest, err := newMachine(t, pagers[0], vm, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,14 +174,14 @@ func TestAParentIsStoppableOnceItsForkHoldOutlivesItsDeadline(t *testing.T) {
 // pages, the handle — or a host that has done a few rounds is a host that
 // cannot take another VM.
 func TestStoppingAndStartingOneVMOverAndOverLeavesNothingBehind(t *testing.T) {
-	h, pagers, arenas := startMigrationHosts(t)
+	h, pagers := startMigrationHosts(t)
 	h.start(t)
 
 	vm, err := h.hosts[0].Volumes().Create(t.Context(), "vm-1", migrationVolumes)
 	if err != nil {
 		t.Fatal(err)
 	}
-	guest, err := newMachine(t, pagers[0], arenas[0], vm, nil)
+	guest, err := newMachine(t, pagers[0], vm, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,7 +222,7 @@ func TestStoppingAndStartingOneVMOverAndOverLeavesNothingBehind(t *testing.T) {
 			t.Fatalf("turn %d: the started VM holds %d..., want the byte the stop published",
 				turn, page[0])
 		}
-		guest, err = newMachine(t, pagers[at], arenas[at], opened, nil)
+		guest, err = newMachine(t, pagers[at], opened, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -260,15 +260,15 @@ func TestAStopReportsTheCheckpointTheVMComesBackAt(t *testing.T) {
 	for i := range h.configs {
 		h.configs[i].CheckpointInterval = 5 * time.Millisecond
 	}
-	pager, arena := newPager(t, h.configs[0].Resources)
-	h.configs[0].Pager = pager
+	pagers := newPager(t, h.configs[0].Resources)
+	h.configs[0].Pagers = pagers.pagers
 	h.start(t)
 
 	vm, err := h.hosts[0].Volumes().Create(t.Context(), "vm-1", migrationVolumes)
 	if err != nil {
 		t.Fatal(err)
 	}
-	guest, err := newMachine(t, pager, arena, vm, nil)
+	guest, err := newMachine(t, pagers, vm, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -22,9 +22,9 @@ func TestStoppingAStalledVMGivesUpTheForkPointsTakenOnIt(t *testing.T) {
 	h.configs[0].MachineClosed = func(vmID string) { closed <- vmID }
 	// No loop: nothing this host can do will take a checkpoint of this VM.
 	h.configs[0].CheckpointInterval = -1
-	pager, arena := newPagerWithConfig(t, h.configs[0].Resources, vmmemory.Config{
+	pagers := newPagerWithConfig(t, h.configs[0].Resources, vmmemory.Config{
 		ResidentPages: 16, LogicalPages: 32, DirtyPages: 2, ReadAheadPages: 1})
-	h.configs[0].Pager = pager
+	h.configs[0].Pagers = pagers.pagers
 	for i := range h.configs {
 		h.configs[i].Migration = host.MigrationConfig{Address: h.pages[i], PageSize: migrationPageSize}
 	}
@@ -34,7 +34,7 @@ func TestStoppingAStalledVMGivesUpTheForkPointsTakenOnIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	guest, err := newMachine(t, pager, arena, vm, nil)
+	guest, err := newMachine(t, pagers, vm, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

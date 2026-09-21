@@ -82,8 +82,8 @@ func runSwizzleCampaign(t *testing.T, seed uint64) *sim.Runtime {
 	ctx := sim.WithRuntime(t.Context(), runtime)
 	topology := simtest.Topology{Hosts: []string{"host-0", "host-1"},
 		VMs: []simtest.VMSpec{
-			{ID: swizzleVMID, Host: 0, Volumes: []volume.VolumeSpec{{Name: "ram0", Size: 4 * simtest.PageSize, PageSize: simtest.PageSize}}},
-			{ID: swizzleGuestID, Host: 0, Volumes: []volume.VolumeSpec{{Name: "ram0", Size: 4 * simtest.PageSize, PageSize: simtest.PageSize}}}}}
+			{ID: swizzleVMID, Host: 0, Volumes: []volume.VolumeSpec{{Name: "ram0", Size: 4 * simtest.RAMPage, PageSize: simtest.RAMPage}}},
+			{ID: swizzleGuestID, Host: 0, Volumes: []volume.VolumeSpec{{Name: "ram0", Size: 4 * simtest.RAMPage, PageSize: simtest.RAMPage}}}}}
 	world := simtest.MustStart(t, ctx, simtest.Config{Runtime: runtime, Topology: topology,
 		Knobs: campaignKnobs(t, runtime, topology), Prefix: prefix, Log: t.Logf})
 	pages := func(limit int) int { return limit - 1 }

@@ -171,7 +171,7 @@ func runCrashScenario(t *testing.T, runtime *sim.Runtime, seed uint64, name stri
 	}
 	topology := simtest.Topology{Hosts: hosts,
 		VMs: []simtest.VMSpec{{ID: crashVMID, Host: 0,
-			Volumes: []volume.VolumeSpec{{Name: "ram0", Size: crashPages * simtest.PageSize, PageSize: simtest.PageSize}}}}}
+			Volumes: []volume.VolumeSpec{{Name: "ram0", Size: crashPages * simtest.RAMPage, PageSize: simtest.RAMPage}}}}}
 	world := simtest.MustStart(t, ctx, simtest.Config{Runtime: runtime, Topology: topology,
 		Knobs: campaignKnobs(t, runtime, topology), Prefix: prefix, Namespace: name + "/",
 		Log: t.Logf})

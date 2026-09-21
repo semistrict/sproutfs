@@ -177,13 +177,13 @@ func TestAFencedHostLearnsItsEpochMovedWithoutACheckpoint(t *testing.T) {
 	closed := make(chan string, 1)
 	h.configs[0].MachineClosed = func(vmID string) { closed <- vmID }
 	h.start(t)
-	pager, arena := newPager(t, h.configs[0].Resources)
+	pagers := newPager(t, h.configs[0].Resources)
 
 	vm, err := h.hosts[0].Volumes().Create(t.Context(), "vm-1", migrationVolumes)
 	if err != nil {
 		t.Fatal(err)
 	}
-	guest, err := newMachine(t, pager, arena, vm, nil)
+	guest, err := newMachine(t, pagers, vm, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +229,7 @@ func TestAFencedHostLearnsItsEpochMovedWithoutACheckpoint(t *testing.T) {
 // learn anything. It must still learn, and everything it serves of that VM must
 // stop: the child's pages it holds, another fork of it, and its handoff.
 func TestAFencedHostSealedByAForkPointStopsServing(t *testing.T) {
-	h, pagers, arenas := startMigrationHosts(t)
+	h, pagers := startMigrationHosts(t)
 	h.configs[0].CheckpointInterval = -1
 	closed := make(chan string, 1)
 	h.configs[0].MachineClosed = func(vmID string) { closed <- vmID }
@@ -239,7 +239,7 @@ func TestAFencedHostSealedByAForkPointStopsServing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	guest, err := newMachine(t, pagers[0], arenas[0], vm, nil)
+	guest, err := newMachine(t, pagers[0], vm, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -299,18 +299,18 @@ func TestAFencedHostSealedByAForkPointStopsServing(t *testing.T) {
 // So the handoff re-reads the record itself. The source below is never told —
 // both its loops are off — and every way it can hand a VM over must refuse.
 func TestAHandoffConfirmsTheControlRecordFirst(t *testing.T) {
-	h, pagers, arenas := startMigrationHosts(t)
+	h, pagers := startMigrationHosts(t)
 	h.configs[0].CheckpointInterval = -1
 	h.configs[0].EpochInterval = -1
 	var received *machine
-	h.configs[2].Migration.StartVM = starter(t, pagers[2], arenas[2], &received)
+	h.configs[2].Migration.StartVM = starter(t, pagers[2], &received)
 	h.start(t)
 
 	vm, err := h.hosts[0].Volumes().Create(t.Context(), "vm-1", migrationVolumes)
 	if err != nil {
 		t.Fatal(err)
 	}
-	guest, err := newMachine(t, pagers[0], arenas[0], vm, nil)
+	guest, err := newMachine(t, pagers[0], vm, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -355,7 +355,7 @@ func TestAHandoffConfirmsTheControlRecordFirst(t *testing.T) {
 // nothing afterwards can check, so it proceeds on a confirmed record or not at
 // all. The VM goes on running here, which is what the next attempt finds.
 func TestAHandoffRefusesWhenTheControlRecordCannotBeRead(t *testing.T) {
-	h, pagers, arenas := startMigrationHosts(t)
+	h, pagers := startMigrationHosts(t)
 	h.configs[0].CheckpointInterval = -1
 	h.configs[0].EpochInterval = -1
 	h.start(t)
@@ -364,7 +364,7 @@ func TestAHandoffRefusesWhenTheControlRecordCannotBeRead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	guest, err := newMachine(t, pagers[0], arenas[0], vm, nil)
+	guest, err := newMachine(t, pagers[0], vm, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -25,14 +25,14 @@ var coldShape = host.ColdShape{Memory: "ram0", Root: "root"}
 // was running over them, and then the process, the pages and the handle went.
 func stoppedVM(t *testing.T, h *hostHarness, id string) {
 	t.Helper()
-	pager, arena := newPager(t, h.configs[0].Resources)
-	h.configs[0].Pager = pager
+	pagers := newPager(t, h.configs[0].Resources)
+	h.configs[0].Pagers = pagers.pagers
 	h.start(t)
 	vm, err := h.hosts[0].Volumes().Create(t.Context(), id, coldVolumes)
 	if err != nil {
 		t.Fatal(err)
 	}
-	guest, err := newMachine(t, pager, arena, vm, nil)
+	guest, err := newMachine(t, pagers, vm, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -23,13 +23,13 @@ func TestCompactionLeavesTheGuestsResidentPagesAlone(t *testing.T) {
 	h := newSizedHostHarness(t, 1)
 	h.configs[0].CheckpointInterval = time.Hour
 	h.start(t)
-	pager, arena := newPager(t, h.configs[0].Resources)
+	pagers := newPager(t, h.configs[0].Resources)
 
 	vm, err := h.hosts[0].Volumes().Create(t.Context(), "vm-1", migrationVolumes)
 	if err != nil {
 		t.Fatal(err)
 	}
-	guest, err := newMachine(t, pager, arena, vm, nil)
+	guest, err := newMachine(t, pagers, vm, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,14 +56,14 @@ func TestCompactionLeavesTheGuestsResidentPagesAlone(t *testing.T) {
 		t.Fatalf("the compacted checkpoint %d still has objects %v; compaction did not empty it", first, remaining)
 	}
 
-	before, err := pager.Stats(t.Context())
+	before, err := pagers.ram().Stats(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := guest.load("ram0", 3)[0]; got != 4 {
 		t.Fatalf("page 3 reads %d after compaction moved it, want the 4 the guest stored", got)
 	}
-	after, err := pager.Stats(t.Context())
+	after, err := pagers.ram().Stats(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}

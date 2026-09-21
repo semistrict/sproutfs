@@ -26,7 +26,7 @@ func lossWindowWorld(t *testing.T, runtime *sim.Runtime, prefix string, window t
 	t.Helper()
 	topology := simtest.Topology{Hosts: []string{"host-0", "host-1"},
 		VMs: []simtest.VMSpec{{ID: "vm-0", Host: 0,
-			Volumes: []volume.VolumeSpec{{Name: simtest.MemoryVolume, Size: 8 * simtest.PageSize, PageSize: simtest.PageSize}}}}}
+			Volumes: []volume.VolumeSpec{{Name: simtest.MemoryVolume, Size: 8 * simtest.RAMPage, PageSize: simtest.RAMPage}}}}}
 	k := campaignKnobs(t, runtime, topology)
 	k.LossWindow, k.CheckpointInterval = window, scenarioWindow
 	if err := k.Validate(); err != nil {

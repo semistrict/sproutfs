@@ -27,7 +27,7 @@ import (
 )
 
 const (
-	pageSize = vmmemory.PageSize
+	pageSize = checkpoint.PageSize2MiB
 	// stateBytes is the simulated VMM state: the guest's current value and how
 	// many stores it has made.
 	stateBytes = 9
@@ -288,6 +288,7 @@ func newPager(t *testing.T, c *cluster, name string) *pager {
 	c.cleanup(func() { _ = spill.Close() })
 	a := &arena{slots: make([][]byte, c.knobs.ResidentPages)}
 	host, err := vmmemory.New(t.Context(), testresource.New(), vmmemory.Config{
+		PageSize:      pageSize,
 		ResidentPages: c.knobs.ResidentPages, LogicalPages: c.knobs.LogicalPages,
 		DirtyPages: c.knobs.DirtyPages, ReadAheadPages: c.knobs.ReadAheadPages,
 		WriteAheadPages: c.knobs.WriteAheadPages, ConcurrentIO: c.knobs.ConcurrentIO}, a, spill)
@@ -734,7 +735,7 @@ func (m *machine) residentPages() int {
 
 // vmSpec is the VM every migration test runs: one RAM volume and one PMEM
 // volume, so a migration has to name and move more than one region.
-var vmSpec = []volume.VolumeSpec{{Name: "ram0", Size: 8 * pageSize, PageSize: vmmemory.PageSize}, {Name: "disk", Size: 4 * pageSize, PageSize: vmmemory.PageSize}}
+var vmSpec = []volume.VolumeSpec{{Name: "ram0", Size: 8 * pageSize, PageSize: checkpoint.PageSize2MiB}, {Name: "disk", Size: 4 * pageSize, PageSize: checkpoint.PageSize2MiB}}
 
 // vmSpecPages is every page of that VM. One hop can dirty all of them, so it is
 // the floor under any budget a campaign draws.

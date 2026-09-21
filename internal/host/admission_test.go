@@ -22,22 +22,22 @@ var fillerVolumes = []volume.VolumeSpec{{Name: "ram0", Size: 63 * migrationPageS
 // starts anything, so a VM that cannot fit is refused there and nothing is
 // started to be killed.
 func TestReceiveRefusesAVMThePagerCannotMap(t *testing.T) {
-	h, pagers, arenas := startMigrationHosts(t)
+	h, pagers := startMigrationHosts(t)
 	var received *machine
 	started := false
 	h.configs[1].Migration.StartVM = func(ctx context.Context, vm *volume.VM,
 		backings map[string]vmmemory.Backing, state []byte) (host.Machine, error) {
 		started = true
-		return starter(t, pagers[1], arenas[1], &received)(ctx, vm, backings, state)
+		return starter(t, pagers[1], &received)(ctx, vm, backings, state)
 	}
-	h.configs[1].Pager = pagers[1]
+	h.configs[1].Pagers = pagers[1].pagers
 	h.start(t)
 
 	vm, err := h.hosts[0].Volumes().Create(t.Context(), "vm-1", migrationVolumes)
 	if err != nil {
 		t.Fatal(err)
 	}
-	source, err := newMachine(t, pagers[0], arenas[0], vm, nil)
+	source, err := newMachine(t, pagers[0], vm, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,14 +56,16 @@ func TestReceiveRefusesAVMThePagerCannotMap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := newMachine(t, pagers[1], arenas[1], filler, nil); err != nil {
+	if _, err := newMachine(t, pagers[1], filler, nil); err != nil {
 		t.Fatal(err)
 	}
-	if free := pagers[1].LogicalHeadroom(); free >= 8 {
+	if free := pagers[1].ram().LogicalHeadroom(); free >= 8 {
 		t.Fatalf("the destination's pager still has room for the VM: %d pages left", free)
 	}
-	if free := h.hosts[1].Status().LogicalPagesFree; free != 1 {
-		t.Fatalf("host status reports %d logical pages left, want 1", free)
+	// The filler is a RAM region, so it is the RAM pager's cap it fills; the
+	// PMEM pager has its own and is untouched.
+	if free := h.hosts[1].Status().LogicalPagesFree; free.RAM != 1 || free.PMEM != 64 {
+		t.Fatalf("host status reports %d RAM and %d PMEM logical pages left, want 1 and 64", free.RAM, free.PMEM)
 	}
 
 	if _, err := h.hosts[1].Receive(t.Context(), handoff); !errors.Is(err, vmmemory.ErrCapacity) {

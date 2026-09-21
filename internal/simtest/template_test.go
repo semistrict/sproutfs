@@ -19,12 +19,12 @@ import (
 // gets, which reads as the zeroes a cold boot starts from, and the root volume
 // the guest image is written into.
 var templateVolumes = []volume.VolumeSpec{
-	{Name: simtest.MemoryVolume, Size: simtest.PageSize, PageSize: simtest.PageSize},
-	{Name: "root", Size: simtest.PageSize, PageSize: simtest.PageSize},
+	{Name: simtest.MemoryVolume, Size: simtest.RAMPage, PageSize: simtest.RAMPage},
+	{Name: "root", Size: simtest.PMEMPage, PageSize: simtest.PMEMPage},
 }
 
 // guestImage is a guest image's bytes: a page no untouched volume could read as.
-func guestImage(value byte) []byte { return bytes.Repeat([]byte{value}, simtest.PageSize) }
+func guestImage(value byte) []byte { return bytes.Repeat([]byte{value}, simtest.PMEMPage) }
 
 // templateImport is one host's import of one guest image. Nothing of the host
 // is in it: the image's bytes are the whole of what names the template.
@@ -143,7 +143,7 @@ func TestAHostKilledMidImportImportsItAgainWhenItComesBack(t *testing.T) {
 		if err := child.Checkpoint(ctx); err != nil {
 			t.Fatal(err)
 		}
-		page := make([]byte, simtest.PageSize)
+		page := make([]byte, simtest.PMEMPage)
 		if err := child.Volume("root").Read(ctx, 0, page); err != nil {
 			t.Fatal(err)
 		}

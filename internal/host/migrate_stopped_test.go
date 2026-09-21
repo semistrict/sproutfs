@@ -23,7 +23,7 @@ var twoRegionVolumes = []volume.VolumeSpec{
 // interval tries to seal regions that no longer own what they map, whose VMM
 // process is still alive, and whose handle nothing ever closes.
 func TestAMigrationStoppedPartWayDiscardsTheVM(t *testing.T) {
-	h, pagers, arenas := startMigrationHosts(t)
+	h, pagers := startMigrationHosts(t)
 	closed := make(chan string, 1)
 	h.configs[0].MachineClosed = func(vmID string) { closed <- vmID }
 	h.start(t)
@@ -32,7 +32,7 @@ func TestAMigrationStoppedPartWayDiscardsTheVM(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	source, err := newMachine(t, pagers[0], arenas[0], vm, nil)
+	source, err := newMachine(t, pagers[0], vm, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

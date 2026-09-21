@@ -27,18 +27,18 @@ func TestHostForksEveryChildFromOnePause(t *testing.T) {
 	// being taken in, so it is given a bound of its own.
 	h.configs[0].CheckpointInterval = 10 * time.Millisecond
 	h.configs[0].Migration.HoldTimeout = time.Minute
-	pager, arena := newPager(t, h.configs[0].Resources)
+	pagers := newPager(t, h.configs[0].Resources)
 	// The children land on the parent's own host, which is what takes them in.
 	children := []string{"fork-a", "fork-b", "fork-c"}
 	started := make(map[string]*machine, len(children))
-	h.configs[0].Migration.StartVM = starters(t, pager, arena, started)
+	h.configs[0].Migration.StartVM = starters(t, pagers, started)
 	h.start(t)
 
 	vm, err := h.hosts[0].Volumes().Create(t.Context(), "vm-1", migrationVolumes)
 	if err != nil {
 		t.Fatal(err)
 	}
-	guest, err := newMachine(t, pager, arena, vm, nil)
+	guest, err := newMachine(t, pagers, vm, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestHostForksEveryChildFromOnePause(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	metronomeGuest, err := newMachine(t, pager, arena, metronomeVM, nil)
+	metronomeGuest, err := newMachine(t, pagers, metronomeVM, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,9 +167,9 @@ func TestHostForksEveryChildFromOnePause(t *testing.T) {
 // its own, after which the parent takes its pages back and is checkpointed
 // again, and the child falls back to the checkpoint it was forked from.
 func TestForkHoldExpiresWhenNothingReleasesIt(t *testing.T) {
-	h, pagers, arenas := startMigrationHosts(t)
+	h, pagers := startMigrationHosts(t)
 	var received *machine
-	h.configs[1].Migration.StartVM = starter(t, pagers[1], arenas[1], &received)
+	h.configs[1].Migration.StartVM = starter(t, pagers[1], &received)
 	h.configs[0].CheckpointInterval = 10 * time.Millisecond
 	h.start(t)
 
@@ -177,7 +177,7 @@ func TestForkHoldExpiresWhenNothingReleasesIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	guest, err := newMachine(t, pagers[0], arenas[0], vm, nil)
+	guest, err := newMachine(t, pagers[0], vm, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,14 +243,14 @@ func TestForkHoldExpiresWhenNothingReleasesIt(t *testing.T) {
 // the point first stops this host offering them at all, so the child's next
 // fault for one fails and says so.
 func TestDeletingAForkParentRetiresItsForkPoints(t *testing.T) {
-	h, pagers, arenas := startMigrationHosts(t)
+	h, pagers := startMigrationHosts(t)
 	h.start(t)
 
 	vm, err := h.hosts[0].Volumes().Create(t.Context(), "parent", migrationVolumes)
 	if err != nil {
 		t.Fatal(err)
 	}
-	guest, err := newMachine(t, pagers[0], arenas[0], vm, nil)
+	guest, err := newMachine(t, pagers[0], vm, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -298,13 +298,13 @@ func TestDeletingAForkParentRetiresItsForkPoints(t *testing.T) {
 func TestDeletingASealedVMIsRefused(t *testing.T) {
 	h := newSizedHostHarness(t, 1)
 	h.start(t)
-	pager, arena := newPager(t, h.configs[0].Resources)
+	pagers := newPager(t, h.configs[0].Resources)
 
 	vm, err := h.hosts[0].Volumes().Create(t.Context(), "sealed", migrationVolumes)
 	if err != nil {
 		t.Fatal(err)
 	}
-	guest, err := newMachine(t, pager, arena, vm, nil)
+	guest, err := newMachine(t, pagers, vm, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -357,11 +357,11 @@ func (n *countingNetwork) Dial(ctx context.Context, from, to platform.Address) (
 // and nothing is dialed. The child's root is published by the host that took it
 // in, as soon as it holds every page, which is before the parent's seal ends.
 func TestLocalForkReceivesTheForkPointOverThePages(t *testing.T) {
-	h, pagers, arenas := startMigrationHosts(t)
+	h, pagers := startMigrationHosts(t)
 	var child *machine
 	// The destination of this fork is the parent's own host, so the child's
 	// regions attach to the pager the parent's pages are in.
-	h.configs[0].Migration.StartVM = starter(t, pagers[0], arenas[0], &child)
+	h.configs[0].Migration.StartVM = starter(t, pagers[0], &child)
 	network := &countingNetwork{Network: h.configs[0].Network}
 	h.configs[0].Network = network
 	h.start(t)
@@ -370,7 +370,7 @@ func TestLocalForkReceivesTheForkPointOverThePages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	guest, err := newMachine(t, pagers[0], arenas[0], vm, nil)
+	guest, err := newMachine(t, pagers[0], vm, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -405,7 +405,7 @@ func TestLocalForkReceivesTheForkPointOverThePages(t *testing.T) {
 		t.Fatalf("the host reports holding %v, want the point it holds for its own child", serving)
 	}
 
-	before, err := pagers[0].Stats(t.Context())
+	before, err := pagers[0].ram().Stats(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -429,7 +429,7 @@ func TestLocalForkReceivesTheForkPointOverThePages(t *testing.T) {
 			t.Fatalf("the child reads page %d as %d, want the parent's %d", page, got[0], page+1)
 		}
 	}
-	after, err := pagers[0].Stats(t.Context())
+	after, err := pagers[0].ram().Stats(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -463,16 +463,16 @@ func TestLocalForkReceivesTheForkPointOverThePages(t *testing.T) {
 // reports rather than at whatever interval checkpoint comes first, so a child
 // whose host has no interval loop at all is still openable elsewhere.
 func TestForkPublishesTheChildRootWhenItsPostCopyIsDone(t *testing.T) {
-	h, pagers, arenas := startMigrationHosts(t)
+	h, pagers := startMigrationHosts(t)
 	var child *machine
-	h.configs[1].Migration.StartVM = starter(t, pagers[1], arenas[1], &child)
+	h.configs[1].Migration.StartVM = starter(t, pagers[1], &child)
 	h.start(t)
 
 	vm, err := h.hosts[0].Volumes().Create(t.Context(), "parent", migrationVolumes)
 	if err != nil {
 		t.Fatal(err)
 	}
-	guest, err := newMachine(t, pagers[0], arenas[0], vm, nil)
+	guest, err := newMachine(t, pagers[0], vm, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -520,16 +520,16 @@ func TestForkPublishesTheChildRootWhenItsPostCopyIsDone(t *testing.T) {
 // host records for it is the same hold a child on another host has, so the
 // delete retires the point first and the point is given up with it.
 func TestDeletingAParentUnderALocalChildIsTheSameAsUnderARemoteOne(t *testing.T) {
-	h, pagers, arenas := startMigrationHosts(t)
+	h, pagers := startMigrationHosts(t)
 	var child *machine
-	h.configs[0].Migration.StartVM = starter(t, pagers[0], arenas[0], &child)
+	h.configs[0].Migration.StartVM = starter(t, pagers[0], &child)
 	h.start(t)
 
 	vm, err := h.hosts[0].Volumes().Create(t.Context(), "parent", migrationVolumes)
 	if err != nil {
 		t.Fatal(err)
 	}
-	guest, err := newMachine(t, pagers[0], arenas[0], vm, nil)
+	guest, err := newMachine(t, pagers[0], vm, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -562,7 +562,7 @@ func TestDeletingAParentUnderALocalChildIsTheSameAsUnderARemoteOne(t *testing.T)
 // restarted, or a destination that never took the child in, leaves the parent
 // sealed until the deadline retires the point on its own.
 func TestALocalForkHoldExpiresWhenNothingReleasesIt(t *testing.T) {
-	h, pagers, arenas := startMigrationHosts(t)
+	h, pagers := startMigrationHosts(t)
 	clock := sim.New(sim.Config{Seed: 1}).NewClock("source")
 	h.configs[0].Clock = clock
 	h.configs[0].EpochInterval = -1
@@ -572,7 +572,7 @@ func TestALocalForkHoldExpiresWhenNothingReleasesIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	guest, err := newMachine(t, pagers[0], arenas[0], vm, nil)
+	guest, err := newMachine(t, pagers[0], vm, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

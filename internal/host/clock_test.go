@@ -19,7 +19,7 @@ import (
 // With the host's clock injected the deployment's own bound is reached by
 // advancing to it. No wall-clock time passes and nothing is polled.
 func TestForkHoldExpiresOnTheSimulatedClock(t *testing.T) {
-	h, pagers, arenas := startMigrationHosts(t)
+	h, pagers := startMigrationHosts(t)
 	clock := sim.New(sim.Config{Seed: 1}).NewClock("source")
 	h.configs[0].Clock = clock
 	// The epoch watch sleeps on the same clock. Disabling it leaves the hold's
@@ -32,7 +32,7 @@ func TestForkHoldExpiresOnTheSimulatedClock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	guest, err := newMachine(t, pagers[0], arenas[0], vm, nil)
+	guest, err := newMachine(t, pagers[0], vm, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +86,7 @@ func TestForkHoldExpiresOnTheSimulatedClock(t *testing.T) {
 // a hold, and a deadline left armed behind it would later fire into a host that
 // had already given those pages up. Advancing past it must find nothing to do.
 func TestReleasingAForkHoldDisarmsItsDeadline(t *testing.T) {
-	h, pagers, arenas := startMigrationHosts(t)
+	h, pagers := startMigrationHosts(t)
 	clock := sim.New(sim.Config{Seed: 1}).NewClock("source")
 	h.configs[0].Clock = clock
 	h.configs[0].EpochInterval = -1
@@ -96,7 +96,7 @@ func TestReleasingAForkHoldDisarmsItsDeadline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	guest, err := newMachine(t, pagers[0], arenas[0], vm, nil)
+	guest, err := newMachine(t, pagers[0], vm, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

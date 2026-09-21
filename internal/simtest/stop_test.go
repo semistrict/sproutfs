@@ -14,7 +14,7 @@ import (
 func stopTopology() simtest.Topology {
 	return simtest.Topology{Hosts: []string{"host-0", "host-1"},
 		VMs: []simtest.VMSpec{{ID: "vm-0", Host: 0,
-			Volumes: []volume.VolumeSpec{{Name: "ram0", Size: 4 * simtest.PageSize, PageSize: simtest.PageSize}}}}}
+			Volumes: []volume.VolumeSpec{{Name: "ram0", Size: 4 * simtest.RAMPage, PageSize: simtest.RAMPage}}}}}
 }
 
 func startStopWorld(t *testing.T, runtime *sim.Runtime, prefix string) (*simtest.World, simtest.Topology) {

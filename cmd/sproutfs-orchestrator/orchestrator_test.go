@@ -182,8 +182,11 @@ func (f *fakeHostClient) Status(ctx context.Context) (host.Status, error) {
 	return host.Status{Host: f.name, PageAddress: f.page,
 		Running: slices.Clone(f.running), Serving: slices.Clone(f.serving),
 		VMs: records, Templates: slices.Clone(f.templates),
-		Pager: host.Pager{SharedPages: f.shared, PageBytes: 2 << 20,
-			ArenaPages: f.arenaPages, ResidentPages: f.residentPages,
+		// A placement measures a host by the RAM arena against the guest RAM it
+		// has committed, so that is the pager this fake fills in.
+		Pager: host.Pager{
+			RAM: host.PagerKind{SharedPages: f.shared, PageBytes: 2 << 20,
+				ArenaPages: f.arenaPages, ResidentPages: f.residentPages},
 			CommittedBytes: f.committed}}, nil
 }
 
@@ -795,7 +798,7 @@ func TestHostsReportsThePagersSharing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(hosts) != 1 || hosts[0].Pager.SharedPages != 1234 {
+	if len(hosts) != 1 || hosts[0].Pager.SharedPages() != 1234 {
 		t.Fatalf("hosts %+v", hosts)
 	}
 }

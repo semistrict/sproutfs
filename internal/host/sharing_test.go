@@ -14,16 +14,16 @@ import (
 func TestAHostReportsEachVMsPrivateBytes(t *testing.T) {
 	h := newSizedHostHarness(t, 1)
 	h.configs[0].CheckpointInterval = -1
-	pager, arena := newPagerWithConfig(t, h.configs[0].Resources, vmmemory.Config{
+	pagers := newPagerWithConfig(t, h.configs[0].Resources, vmmemory.Config{
 		ResidentPages: 16, LogicalPages: 32, DirtyPages: 8, ReadAheadPages: 1})
-	h.configs[0].Pager = pager
+	h.configs[0].Pagers = pagers.pagers
 	h.start(t)
 
 	vm, err := h.hosts[0].Volumes().Create(t.Context(), "vm-1", migrationVolumes)
 	if err != nil {
 		t.Fatal(err)
 	}
-	guest, err := newMachine(t, pager, arena, vm, nil)
+	guest, err := newMachine(t, pagers, vm, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,9 +43,9 @@ func TestAHostReportsEachVMsPrivateBytes(t *testing.T) {
 	}
 	guest.store("ram0", 0, 7)
 	guest.store("ram0", 3, 9)
-	if bytes := private("vm-1"); bytes != 2*vmmemory.PageSize {
+	if bytes := private("vm-1"); bytes != 2*migrationPageSize {
 		t.Fatalf("a VM that stored into two pages holds %d private bytes, want %d",
-			bytes, 2*vmmemory.PageSize)
+			bytes, 2*migrationPageSize)
 	}
 	// The checkpoint is what ends it: the pages are the store's now, so the VM
 	// holds nothing its volumes do not.

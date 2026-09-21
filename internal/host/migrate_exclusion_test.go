@@ -44,16 +44,16 @@ func (g *gatedMachine) Stop(ctx context.Context) ([]byte, error) {
 // fault out of. A host admits one handover of a VM at a time and tells the
 // second caller so, leaving the first alone.
 func TestOneHandoverOfAVMAtATime(t *testing.T) {
-	h, pagers, arenas := startMigrationHosts(t)
+	h, pagers := startMigrationHosts(t)
 	var received *machine
-	h.configs[1].Migration.StartVM = starter(t, pagers[1], arenas[1], &received)
+	h.configs[1].Migration.StartVM = starter(t, pagers[1], &received)
 	h.start(t)
 
 	vm, err := h.hosts[0].Volumes().Create(t.Context(), "contended", migrationVolumes)
 	if err != nil {
 		t.Fatal(err)
 	}
-	source, err := newMachine(t, pagers[0], arenas[0], vm, nil)
+	source, err := newMachine(t, pagers[0], vm, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,14 +114,14 @@ func TestOneHandoverOfAVMAtATime(t *testing.T) {
 // migratable — and the child is an identity nothing can open anywhere. The
 // handover is refused before the guest is stopped for it.
 func TestMigratingAForkBeforeItsRootIsPublishedIsRefused(t *testing.T) {
-	h, pagers, arenas := startMigrationHosts(t)
+	h, pagers := startMigrationHosts(t)
 	h.start(t)
 
 	parent, err := h.hosts[0].Volumes().Create(t.Context(), "parent", migrationVolumes)
 	if err != nil {
 		t.Fatal(err)
 	}
-	guest, err := newMachine(t, pagers[0], arenas[0], parent, nil)
+	guest, err := newMachine(t, pagers[0], parent, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +137,7 @@ func TestMigratingAForkBeforeItsRootIsPublishedIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	childGuest, err := newMachine(t, pagers[0], arenas[0], child, nil)
+	childGuest, err := newMachine(t, pagers[0], child, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

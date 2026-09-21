@@ -14,8 +14,8 @@ import (
 func coldTopology() simtest.Topology {
 	return simtest.Topology{Hosts: []string{"host-0", "host-1"},
 		VMs: []simtest.VMSpec{{ID: "vm-0", Host: 0, Volumes: []volume.VolumeSpec{
-			{Name: simtest.MemoryVolume, Size: 2 * simtest.PageSize, PageSize: simtest.PageSize},
-			{Name: "disk", Size: 2 * simtest.PageSize, PageSize: simtest.PageSize},
+			{Name: simtest.MemoryVolume, Size: 2 * simtest.RAMPage, PageSize: simtest.RAMPage},
+			{Name: "disk", Size: 2 * simtest.PMEMPage, PageSize: simtest.PMEMPage},
 		}}}}
 }
 

@@ -36,8 +36,8 @@ func TestForksThatOnlyReadPublishNothingAndGoOnSharing(t *testing.T) {
 		}
 		const memoryPages, diskPages = 4, 2
 		volumes := []volume.VolumeSpec{
-			{Name: simtest.MemoryVolume, Size: memoryPages * simtest.PageSize, PageSize: simtest.PageSize},
-			{Name: "disk", Size: diskPages * simtest.PageSize, PageSize: simtest.PageSize}}
+			{Name: simtest.MemoryVolume, Size: memoryPages * simtest.RAMPage, PageSize: simtest.RAMPage},
+			{Name: "disk", Size: diskPages * simtest.PMEMPage, PageSize: simtest.PMEMPage}}
 		topology := simtest.Topology{Hosts: []string{"host-0"},
 			VMs: []simtest.VMSpec{{ID: "vm-1", Host: 0, Volumes: volumes}}}
 		k := knobs.Defaults()
@@ -68,8 +68,12 @@ func TestForksThatOnlyReadPublishNothingAndGoOnSharing(t *testing.T) {
 			t.Fatal(err)
 		}
 
+		// The two regions are two pagers of two pages, so what a child holds
+		// privately is bytes and not a page count: memory in one unit, disk in
+		// the other. The pages themselves still add up, because a settle counts
+		// pages of whichever pager settled them.
 		const touched = memoryPages + diskPages
-		private := uint64(touched) * simtest.PageSize
+		private := uint64(memoryPages)*simtest.RAMPage + uint64(diskPages)*simtest.PMEMPage
 		for _, child := range children {
 			if err := world.TakeWritable(ctx, child.ID); err != nil {
 				t.Fatalf("%s: taking every page writable: %v", child.ID, err)

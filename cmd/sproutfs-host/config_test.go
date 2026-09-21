@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/semistrict/sproutfs/internal/host"
 )
 
 // environ is one pod's environment.
@@ -43,14 +45,23 @@ func TestConfigTakesTheDocumentedDefaults(t *testing.T) {
 	if config.LossWindow != 5*time.Minute {
 		t.Fatalf("loss window %s", config.LossWindow)
 	}
-	if config.ArenaBytes != 2<<30 || config.MemoryBytes != (2<<30)+(1<<30) ||
-		config.CacheBytes != 1<<30 || config.SpillBytes != 16<<30 {
-		t.Fatalf("budgets %d %d %d %d", config.ArenaBytes, config.MemoryBytes, config.CacheBytes, config.SpillBytes)
+	// The arena and the spill file are divided between the two pagers, three
+	// quarters to RAM, and the two shares come to exactly what the deployment
+	// gave this host.
+	if config.ArenaBytes != (host.KindBytes{RAM: 3 << 29, PMEM: 1 << 29}) ||
+		config.MemoryBytes != (2<<30)+(1<<30) || config.CacheBytes != 1<<30 ||
+		config.SpillBytes != (host.KindBytes{RAM: 12 << 30, PMEM: 4 << 30}) {
+		t.Fatalf("budgets %v %d %d %v", config.ArenaBytes, config.MemoryBytes, config.CacheBytes, config.SpillBytes)
 	}
-	// The pager's resident pages are the arena, and the other two bounds are
-	// derived from it.
-	if config.LogicalPages != 32*1024 || config.DirtyPages != 1024 {
-		t.Fatalf("pager bounds %d %d", config.LogicalPages, config.DirtyPages)
+	if config.ArenaBytes.Total() != 2<<30 || config.SpillBytes.Total() != 16<<30 {
+		t.Fatalf("the shares come to %d of arena and %d of spill", config.ArenaBytes.Total(), config.SpillBytes.Total())
+	}
+	// Each pager's resident pages are its own arena, and its other two bounds
+	// are derived from that. Counted in pages, the two still come to what one
+	// pager held, because both run the same page in this build.
+	if config.LogicalPages != (host.KindPages{RAM: 24 * 1024, PMEM: 8 * 1024}) ||
+		config.DirtyPages != (host.KindPages{RAM: 768, PMEM: 256}) {
+		t.Fatalf("pager bounds %v %v", config.LogicalPages, config.DirtyPages)
 	}
 	if config.VMMemoryBytes != 512<<20 || config.VCPUs != 1 {
 		t.Fatalf("VM shape %d %d", config.VMMemoryBytes, config.VCPUs)
@@ -92,16 +103,64 @@ func TestConfigRefusesAnArenaThatIsNotWholePages(t *testing.T) {
 	}
 }
 
+// Each pager is bounded in its own pages, so each is refused on its own.
 func TestConfigRefusesADirtyBoundAboveTheLogicalOne(t *testing.T) {
 	values := minimal()
-	values["SPROUTFS_LOGICAL_PAGES"] = "2048"
-	values["SPROUTFS_DIRTY_PAGES"] = "4096"
+	values["SPROUTFS_RAM_LOGICAL_PAGES"] = "2048"
+	values["SPROUTFS_RAM_DIRTY_PAGES"] = "4096"
 	_, err := loadConfig(environ(values))
 	if err == nil {
 		t.Fatal("a dirty bound above the logical one was accepted")
 	}
-	if !strings.Contains(err.Error(), "SPROUTFS_DIRTY_PAGES is 4096") {
+	if !strings.Contains(err.Error(), "SPROUTFS_RAM_DIRTY_PAGES is 4096") {
 		t.Fatalf("error %q", err)
+	}
+}
+
+// The share a deployment sets divides the arena and the spill file between the
+// two pagers, and whatever it is the two come to exactly what this host was
+// given: an arena the share cannot divide into whole pages of both is refused
+// rather than quietly run on less, and the shares themselves are whole pages.
+func TestConfigDividesTheBudgetsByTheShare(t *testing.T) {
+	for _, share := range []struct {
+		percent    string
+		ram, pmem  int64
+		spillRAM   int64
+		spillPMEM  int64
+		ramDirty   int
+		pmemDirty  int
+		ramLogical int
+	}{
+		{"50", 1 << 30, 1 << 30, 8 << 30, 8 << 30, 512, 512, 512 * 32},
+		{"25", 1 << 29, 3 << 29, 4 << 30, 12 << 30, 256, 768, 256 * 32},
+	} {
+		values := minimal()
+		values["SPROUTFS_RAM_SHARE_PERCENT"] = share.percent
+		config, err := loadConfig(environ(values))
+		if err != nil {
+			t.Fatalf("share %s%%: %v", share.percent, err)
+		}
+		if config.ArenaBytes != (host.KindBytes{RAM: share.ram, PMEM: share.pmem}) ||
+			config.ArenaBytes.Total() != 2<<30 {
+			t.Fatalf("share %s%% gave the arena %v", share.percent, config.ArenaBytes)
+		}
+		if config.SpillBytes != (host.KindBytes{RAM: share.spillRAM, PMEM: share.spillPMEM}) ||
+			config.SpillBytes.Total() != 16<<30 {
+			t.Fatalf("share %s%% gave the spill file %v", share.percent, config.SpillBytes)
+		}
+		if config.DirtyPages != (host.KindPages{RAM: share.ramDirty, PMEM: share.pmemDirty}) {
+			t.Fatalf("share %s%% gave the dirty budgets %v", share.percent, config.DirtyPages)
+		}
+		if config.LogicalPages.RAM != share.ramLogical {
+			t.Fatalf("share %s%% gave the RAM logical cap %d", share.percent, config.LogicalPages.RAM)
+		}
+	}
+	// A share outside the range is a host with a pager of nothing.
+	values := minimal()
+	values["SPROUTFS_RAM_SHARE_PERCENT"] = "100"
+	if _, err := loadConfig(environ(values)); err == nil ||
+		!strings.Contains(err.Error(), "SPROUTFS_RAM_SHARE_PERCENT is 100") {
+		t.Fatalf("a whole-arena share was accepted: %v", err)
 	}
 }
 
@@ -271,10 +330,18 @@ func TestTheDefaultLogicalCapAdmitsTheDeployment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const pagesPerVM = ((2 << 30) + (5 << 30)) / (2 << 20)
+	// Each pager holds one kind of region, so each cap is asked about the
+	// regions it would hold: six VMs' RAM against the RAM pager's, six roots
+	// against the PMEM pager's.
+	const ramPagesPerVM = (2 << 30) / (2 << 20)
+	const rootPagesPerVM = (5 << 30) / (2 << 20)
 	const vms = 6
-	if config.LogicalPages < pagesPerVM*vms {
-		t.Fatalf("the default logical cap is %d pages, and the deployment's %d VMs need %d",
-			config.LogicalPages, vms, pagesPerVM*vms)
+	if config.LogicalPages.RAM < ramPagesPerVM*vms {
+		t.Fatalf("the default RAM logical cap is %d pages, and the deployment's %d VMs need %d",
+			config.LogicalPages.RAM, vms, ramPagesPerVM*vms)
+	}
+	if config.LogicalPages.PMEM < rootPagesPerVM*vms {
+		t.Fatalf("the default PMEM logical cap is %d pages, and the deployment's %d VMs need %d",
+			config.LogicalPages.PMEM, vms, rootPagesPerVM*vms)
 	}
 }

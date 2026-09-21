@@ -18,16 +18,16 @@ func TestHostCheckpointsOutOfTurnWhenTheDirtyBudgetFills(t *testing.T) {
 	// Far longer than this test: every checkpoint it sees is one the pager's
 	// pressure asked for.
 	h.configs[0].CheckpointInterval = time.Hour
-	pager, arena := newPagerWithConfig(t, h.configs[0].Resources, vmmemory.Config{
+	pagers := newPagerWithConfig(t, h.configs[0].Resources, vmmemory.Config{
 		ResidentPages: 16, LogicalPages: 32, DirtyPages: 4, ReadAheadPages: 1})
-	h.configs[0].Pager = pager
+	h.configs[0].Pagers = pagers.pagers
 	h.start(t)
 
 	vm, err := h.hosts[0].Volumes().Create(t.Context(), "vm-1", migrationVolumes)
 	if err != nil {
 		t.Fatal(err)
 	}
-	guest, err := newMachine(t, pager, arena, vm, nil)
+	guest, err := newMachine(t, pagers, vm, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,16 +60,16 @@ func TestHostStopsAVMNoCheckpointCanAdmitStoresFor(t *testing.T) {
 	h.configs[0].MachineClosed = func(vmID string) { closed <- vmID }
 	// No loop: nothing this host can do will take a checkpoint of this VM.
 	h.configs[0].CheckpointInterval = -1
-	pager, arena := newPagerWithConfig(t, h.configs[0].Resources, vmmemory.Config{
+	pagers := newPagerWithConfig(t, h.configs[0].Resources, vmmemory.Config{
 		ResidentPages: 16, LogicalPages: 32, DirtyPages: 2, ReadAheadPages: 1})
-	h.configs[0].Pager = pager
+	h.configs[0].Pagers = pagers.pagers
 	h.start(t)
 
 	vm, err := h.hosts[0].Volumes().Create(t.Context(), "vm-1", migrationVolumes)
 	if err != nil {
 		t.Fatal(err)
 	}
-	guest, err := newMachine(t, pager, arena, vm, nil)
+	guest, err := newMachine(t, pagers, vm, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

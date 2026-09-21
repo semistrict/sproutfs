@@ -17,17 +17,17 @@ func TestAHostReportsEachVMsLossWindow(t *testing.T) {
 	h := newSizedHostHarness(t, 1)
 	h.configs[0].CheckpointInterval = -1
 	h.configs[0].LossWindow = 50 * time.Millisecond
-	pager, arena := newPagerWithConfig(t, h.configs[0].Resources, vmmemory.Config{
+	pagers := newPagerWithConfig(t, h.configs[0].Resources, vmmemory.Config{
 		ResidentPages: 16, LogicalPages: 32, DirtyPages: 8, ReadAheadPages: 1,
 		LossWindow: 50 * time.Millisecond})
-	h.configs[0].Pager = pager
+	h.configs[0].Pagers = pagers.pagers
 	h.start(t)
 
 	vm, err := h.hosts[0].Volumes().Create(t.Context(), "vm-1", migrationVolumes)
 	if err != nil {
 		t.Fatal(err)
 	}
-	guest, err := newMachine(t, pager, arena, vm, nil)
+	guest, err := newMachine(t, pagers, vm, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +71,7 @@ func TestAHostReportsEachVMsLossWindow(t *testing.T) {
 // few minutes, child after child, would carry the same writes forward for ever
 // with none of them ever becoming durable.
 func TestAForkHandsTheChildTheParentsLossWindow(t *testing.T) {
-	h, pagers, arenas := startMigrationHosts(t)
+	h, pagers := startMigrationHosts(t)
 	h.configs[0].CheckpointInterval = -1
 	h.start(t)
 
@@ -79,7 +79,7 @@ func TestAForkHandsTheChildTheParentsLossWindow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	guest, err := newMachine(t, pagers[0], arenas[0], vm, nil)
+	guest, err := newMachine(t, pagers[0], vm, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,16 +121,16 @@ func TestTheLoopRetriesPromptlyWhileTheLossWindowIsExceeded(t *testing.T) {
 		}}
 	h.configs[0].CheckpointInterval = interval
 	h.configs[0].LossWindow = time.Millisecond
-	pager, arena := newPagerWithConfig(t, h.configs[0].Resources, vmmemory.Config{
+	pagers := newPagerWithConfig(t, h.configs[0].Resources, vmmemory.Config{
 		ResidentPages: 16, LogicalPages: 32, DirtyPages: 8, ReadAheadPages: 1})
-	h.configs[0].Pager = pager
+	h.configs[0].Pagers = pagers.pagers
 	h.start(t)
 
 	vm, err := h.hosts[0].Volumes().Create(t.Context(), "vm-1", migrationVolumes)
 	if err != nil {
 		t.Fatal(err)
 	}
-	guest, err := newMachine(t, pager, arena, vm, nil)
+	guest, err := newMachine(t, pagers, vm, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,16 +173,16 @@ func TestTheLoopKeepsItsIntervalWhileTheLossWindowIsNotExceeded(t *testing.T) {
 	h.configs[0].CheckpointInterval = interval
 	// Longer than this test: nothing it runs is ever past the window.
 	h.configs[0].LossWindow = time.Hour
-	pager, arena := newPagerWithConfig(t, h.configs[0].Resources, vmmemory.Config{
+	pagers := newPagerWithConfig(t, h.configs[0].Resources, vmmemory.Config{
 		ResidentPages: 16, LogicalPages: 32, DirtyPages: 8, ReadAheadPages: 1})
-	h.configs[0].Pager = pager
+	h.configs[0].Pagers = pagers.pagers
 	h.start(t)
 
 	vm, err := h.hosts[0].Volumes().Create(t.Context(), "vm-1", migrationVolumes)
 	if err != nil {
 		t.Fatal(err)
 	}
-	guest, err := newMachine(t, pager, arena, vm, nil)
+	guest, err := newMachine(t, pagers, vm, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

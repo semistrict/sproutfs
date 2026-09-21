@@ -11,7 +11,7 @@ import (
 )
 
 // rootVolume is the single volume a handle-only VM owns here.
-var rootVolume = []volume.VolumeSpec{{Name: "root", Size: 8192, PageSize: simtest.PageSize}}
+var rootVolume = []volume.VolumeSpec{{Name: "root", Size: 8192, PageSize: simtest.PMEMPage}}
 
 // TestAKilledHostRestartsOnItsOwnDiskAndRewindsToItsLastCheckpoint: a host that
 // closes gives everything it holds one last checkpoint, so an orderly shutdown
@@ -51,7 +51,7 @@ func TestAKilledHostRestartsOnItsOwnDiskAndRewindsToItsLastCheckpoint(t *testing
 				ctx := sim.WithRuntime(t.Context(), runtime)
 				topology := simtest.Topology{Hosts: []string{"host-0", "host-1"},
 					VMs: []simtest.VMSpec{{ID: "vm-running", Host: 0,
-						Volumes: []volume.VolumeSpec{{Name: "ram0", Size: 4 * simtest.PageSize, PageSize: simtest.PageSize}}}}}
+						Volumes: []volume.VolumeSpec{{Name: "ram0", Size: 4 * simtest.RAMPage, PageSize: simtest.RAMPage}}}}}
 				world := simtest.MustStart(t, ctx, simtest.Config{Runtime: runtime, Topology: topology,
 					Knobs: campaignKnobs(t, runtime, topology), Prefix: prefix, Log: t.Logf})
 				// One VM written through its handle, which a close publishes,
@@ -166,7 +166,7 @@ func TestAKilledHostIsTakenOverByAnotherHostAtItsLastCheckpoint(t *testing.T) {
 		ctx := sim.WithRuntime(t.Context(), runtime)
 		topology := simtest.Topology{Hosts: []string{"host-0", "host-1"},
 			VMs: []simtest.VMSpec{{ID: "vm-running", Host: 0,
-				Volumes: []volume.VolumeSpec{{Name: "ram0", Size: 2 * simtest.PageSize, PageSize: simtest.PageSize}}}}}
+				Volumes: []volume.VolumeSpec{{Name: "ram0", Size: 2 * simtest.RAMPage, PageSize: simtest.RAMPage}}}}}
 		world := simtest.MustStart(t, ctx, simtest.Config{Runtime: runtime, Topology: topology,
 			Knobs: campaignKnobs(t, runtime, topology), Prefix: prefix, Log: t.Logf})
 		vm, err := world.Host(0).Volumes().Create(ctx, "vm-1", rootVolume)
