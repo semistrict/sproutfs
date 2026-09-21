@@ -20,10 +20,11 @@ type MigrationConfig struct {
 	// Address is where this host serves migration pages: the address its page
 	// server listens on, and the one a handoff tells the destination to dial.
 	Address platform.Address
-	// PageSize is the pager's page, which is what page requests are counted in
-	// and what a handoff tells the destination to ask for. Zero selects the
-	// pager's own page, vmmemory.PageSize; only a scaled-model test names a
-	// smaller one.
+	// PageSize is the largest page this host serves, which is what the page
+	// server's per-peer byte budgets are sized against. What a reply is counted
+	// in is the page of the volume it answers for — a host's two pagers need
+	// not agree — so this bounds the budgets and names nothing else. Zero
+	// selects the largest page a volume may be published in.
 	PageSize int
 	// StartVM builds and starts the VMM of a VM this host receives. A host
 	// without one can migrate its VMs away but cannot take any in. Every region
