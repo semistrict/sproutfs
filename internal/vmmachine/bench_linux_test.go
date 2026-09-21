@@ -79,10 +79,13 @@ const (
 	// a project, not a resolution the guest has no network for.
 	workloadInstall      = "cd /opt/app && pnpm install --offline --frozen-lockfile --reporter=append-only"
 	defaultWorkloadBuild = "cd /opt/codex/codex-rs && cargo build --offline -p codex-cli --bin codex"
-	defaultWorkloadTest  = "cd /opt/codex/codex-rs && cargo test --offline -p codex-apply-patch"
-	workloadGrep         = "cd /opt/codex && git grep -c fn | wc -l"
-	workloadCat          = "cd /opt/codex && find . -path ./codex-rs/target -prune -o -type f -print | xargs cat > /dev/null"
-	workloadTrue         = "true"
+	// The two tests left out expect a write to be refused, and a guest runs as
+	// root, which is refused nothing.
+	defaultWorkloadTest = "cd /opt/codex/codex-rs && cargo test --offline -p codex-apply-patch -- " +
+		"--skip test_apply_patch_fails_on_write_error --skip test_failed_move_returns_committed_destination_delta"
+	workloadGrep = "cd /opt/codex && git grep -c fn | wc -l"
+	workloadCat  = "cd /opt/codex && find . -path ./codex-rs/target -prune -o -type f -print0 | xargs -0 cat > /dev/null"
+	workloadTrue = "true"
 	// The recorded shape of the two concurrent scenarios. Both have environment
 	// overrides for a quick run, and both record what they actually used.
 	defaultForks        = 4

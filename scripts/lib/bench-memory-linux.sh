@@ -101,7 +101,9 @@ if [[ ${SPROUTFS_GCE_BUILD_ONLY:-0} == 1 ]]; then exit 0; fi
 # tests, that checkout as a git repository — run through
 # every scenario of the guest workload benchmark, managed and on plain
 # Firecracker, on this host. SPROUTFS_BENCH_SCENARIOS and SPROUTFS_BENCH_FORKS
-# narrow it as they do under scripts/bench-guest-lima.sh.
+# narrow it as they do under scripts/bench-guest-lima.sh. A guest has sixteen of
+# this host's thirty-two processors, on both sides: with four, the build alone
+# is a quarter of an hour a side.
 if [[ ${SPROUTFS_GCE_WORKLOAD:-0} == 1 ]]; then
     key=$(cat "$repo/scripts/lib/bench-image.sh" "$repo/internal/vmmachine/testdata/guest.c" | sha256sum | cut -c1-32)
     image=$(HOME=$work bash "$repo/scripts/lib/bench-image.sh" "$repo" "$key" 2> "$results/image-build.log")
@@ -127,6 +129,7 @@ if [[ ${SPROUTFS_GCE_WORKLOAD:-0} == 1 ]]; then
         SPROUTFS_BENCH_REVISION="$(cat "$repo/source-revision.txt")" \
         SPROUTFS_BENCH_SCENARIOS="$scenarios" \
         SPROUTFS_BENCH_FORKS="$forks" \
+        SPROUTFS_BENCH_VCPUS="${SPROUTFS_BENCH_VCPUS:-16}" \
         "$work/build/vmmachine.test" -test.v -test.run '^TestGuestWorkloadBenchmark$' -test.timeout=10h \
         > "$results/$output.log" 2>&1 || status=$?
     rm -rf -- "$run"

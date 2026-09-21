@@ -83,7 +83,7 @@ sudo -n mount --bind /sys "$root/sys"
 echo "installing Alpine packages" >&2
 sudo -n chroot "$root" /sbin/apk add --no-cache \
     bash coreutils findutils git python3 build-base cmake perl linux-headers \
-    nodejs npm pnpm rustup >&2
+    pkgconf openssl-dev openssl-libs-static nodejs npm pnpm rustup >&2
 
 sudo -n tee "$root/sproutfs-workloads.sh" >/dev/null <<'INNER'
 #!/bin/sh
@@ -202,6 +202,13 @@ rm -rf /opt/app/node_modules
 # does not stop the script, and an image whose build failed must not be sealed.
 cd /opt/codex/codex-rs
 cargo build --offline -p codex-cli --bin codex
+# What the fan-out's forks run, which builds test targets the binary does not:
+# their dev-dependencies reach for OpenSSL through pkg-config. The two tests
+# left out expect a write to be refused, and a guest runs as root, which is
+# refused nothing.
+cargo test --offline -p codex-apply-patch -- \
+    --skip test_apply_patch_fails_on_write_error \
+    --skip test_failed_move_returns_committed_destination_delta
 cargo clean --offline
 cd /opt/codex
 git grep -c fn > /dev/null
@@ -251,7 +258,7 @@ json.dump({
     "codex_commit": "$codex_commit",
     "codex_url": "$codex_url",
     "rust_toolchain": "$rust_toolchain",
-    "packages": "bash coreutils findutils git python3 build-base cmake perl linux-headers nodejs npm pnpm rustup",
+    "packages": "bash coreutils findutils git python3 build-base cmake perl linux-headers pkgconf openssl-dev openssl-libs-static nodejs npm pnpm rustup",
     "prebuilt": "nothing: cargo build --offline -p codex-cli --bin codex is proved with no network and then cleaned",
     "npm": {"react": "19.3.0", "react-dom": "19.3.0", "vite": "8.2.2", "@vitejs/plugin-react": "6.1.1"},
     "image_bytes": 32 << 30,
