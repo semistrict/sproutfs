@@ -568,11 +568,16 @@ the guest was going to take for that page's next write in any case — and on a
 host whose kernel answers a cold read as a write fault, that fault copies the
 page again and the next settle undoes it again.
 
-The settle is parallel. Each page is settled alone — its comparison, its
-revocation and its re-binding take that page's lock and its origin's and nothing
-wider — so a
+The settle is parallel, and then it applies what it decided. Each page is
+compared alone, under that page's lock and its origin's and nothing wider — so a
 settle hands its pages to `Config.SettleWorkers` workers, the host's processors
-by default, and the regions of one VM settle at the same time as each other.
+by default, and the regions of one VM settle at the same time as each other. The
+comparison mutates nothing; what it decided is applied afterwards, in page order
+and in bounded batches under the region, as a retire is. That is what lets the
+revocations go as **one command per run of consecutive pages**: a settle at
+4 KiB re-shares thousands of pages at every checkpoint, and a round trip each,
+serialized on the mapping lock, is a stall the guest feels. The region is given
+back between batches, so a fault waits for one batch rather than for the walk.
 What bounds it is memory bandwidth and not the pager's I/O permits, which it
 does not take: it reads no disk and no store. The workers share nothing but the
 counter of unchanged pages and the set the checkpoint will list, both under the
