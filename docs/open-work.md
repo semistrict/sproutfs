@@ -7,6 +7,8 @@ everything open is listed here.
 
 ## Correctness and unbounded growth
 
+- **The simulation cannot yet produce a source that dirties a page after its handoff set was taken.** A post-copy destination has two answers about where a page's bytes are — the extents report the set the handoff fixed, and a load reports what the source said when it answered — and they disagree exactly when the source holds a page unpublished that its handoff did not list. That is what `readIn` got wrong (fixed; `TestASourceServedPageTheExtentsCallPublishedIsNotSharedUnderItsIdentity`), and with the fix disabled a hundred soak seeds still pass: in the campaigns the source's unpublished set only ever shrinks. A scenario whose source keeps storing and checkpointing while a destination post-copies from it would reach this whole class, and nothing does now.
+
 - **A fan-out of two children panics a child's guest kernel at a 4 KiB RAM page, and `main` carries it.** The guest dies in `__run_timers`, dereferencing a list node whose `pprev` is `dead000000000122` — `LIST_POISON2`, the value `hlist_del` leaves behind — about twelve seconds into the child's life. It is a guest reading an *older* version of a page it wrote itself, not random bytes: the timer the kernel had removed is still on the list it is walking. The shape is `TestFirecrackerForkFanOutServesBothChildrenAtOnce`: two children of one fork point, received onto one destination pager, reading everything they inherited while each is checkpointed every 250 ms, with an arena a quarter of the memory the two of them map.
 
   Rates, on the qualification instance with the fixture unchanged:
