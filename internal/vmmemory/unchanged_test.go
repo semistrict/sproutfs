@@ -31,8 +31,21 @@ func TestASealedPageThatNeverChangedIsNotPublished(t *testing.T) {
 		if err := a.Seal(t.Context()); err != nil {
 			t.Fatal(err)
 		}
+		// A settle runs with the guest running and holds neither the region nor
+		// the window that serializes a page's mappings against one another, so
+		// the only replacement it may issue is the one that installs no page
+		// table and wakes nothing. Installing the origin over the page the guest
+		// still maps is what corrupted the fan-out's children.
+		maps, revokes := am.maps, am.revokes
 		if unchanged := f.settle(a); unchanged != 1 {
 			t.Fatalf("the settle found %d unchanged pages, want exactly one", unchanged)
+		}
+		if am.maps != maps {
+			t.Fatalf("the settle issued %d mapping commands, want none: it may only revoke",
+				am.maps-maps)
+		}
+		if am.revokes != revokes+1 {
+			t.Fatalf("the settle issued %d revocations, want exactly one", am.revokes-revokes)
 		}
 		if pages := a.Checkpoint().DirtyPages(); len(pages) != 0 {
 			t.Fatalf("the checkpoint publishes %v, want no page at all", pages)
@@ -47,16 +60,22 @@ func TestASealedPageThatNeverChangedIsNotPublished(t *testing.T) {
 		wantSharing(t, sharing(t, f).Ram, 4, 8, "after the settle")
 		wantRegion(t, a, 4, 0, 4, "the region that faulted and stored nothing")
 		wantRegion(t, b, 4, 0, 4, "the region that never faulted for writing")
-		if am.pages[0].slot != bm.pages[0].slot {
-			t.Fatal("the re-shared page does not share its sibling's resident page again")
+		// The guest's mapping of the copy is taken away rather than swapped for
+		// the origin underneath a running guest: replacing it in place is what
+		// corrupted the fan-out's children. So the page is missing here, and the
+		// guest's next access is one fault that maps the origin.
+		if _, mapped := am.pages[0]; mapped {
+			t.Fatal("the settle left the guest mapping the copy it released")
 		}
-		// The page is mapped, not missing: a read of it takes no fault at all.
 		before := hostStats(t, f).Faults
 		if got := access(t, a, am, 0, false)[0]; got != 1 {
 			t.Fatalf("the re-shared page reads %d, want the byte the volume holds", got)
 		}
-		if after := hostStats(t, f).Faults; after != before {
-			t.Fatalf("reading the re-shared page took %d faults, want none", after-before)
+		if after := hostStats(t, f).Faults; after != before+1 {
+			t.Fatalf("reading the re-shared page took %d faults, want exactly one", after-before)
+		}
+		if am.pages[0].slot != bm.pages[0].slot {
+			t.Fatal("the re-shared page does not share its sibling's resident page again")
 		}
 		if err := a.Checkpoint().Retire(t.Context(), true); err != nil {
 			t.Fatal(err)

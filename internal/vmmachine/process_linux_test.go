@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -27,13 +28,139 @@ import (
 	"github.com/semistrict/sproutfs/internal/volume"
 )
 
-// bothKinds gives a machine the same pager for both kinds of region. A host
-// assembles one per kind, each over its own arena; these suites qualify the
-// VMM, the wire and the kernel rather than that assembly, and a second HugeTLB
-// arena would only take pool away from the guest under test. Both kinds run the
-// same page in this build, so one instance serves them as one arena always did.
+// bothKinds gives a machine the same pager for both kinds of region, which a
+// test whose subject is neither the geometry nor the memory a guest holds uses
+// to avoid a second arena. A host assembles one pager per kind; hostPagers
+// below is that assembly, and it is what the full-guest suites run on.
 func bothKinds(pager *vmmemory.Host) vmmemory.Pagers {
 	return vmmemory.Pagers{Ram: pager, Pmem: pager}
+}
+
+// hostPagers is a host's two pagers as a deployment assembles them: RAM's
+// 4 KiB page over an arena of ordinary memory, PMEM's 2 MiB page over one of
+// the node's HugeTLB pool. The pages are internal/host's choice; this package
+// cannot import it, since a host is built on a machine.
+type hostPagers struct {
+	pagers   vmmemory.Pagers
+	arenas   []*vmmemory.LinuxArena
+	capacity uint64
+}
+
+// newHostPagers gives each pager an arena of its own size and a logical cap and
+// dirty budget of the given bytes, each converted into that pager's own page.
+// Everything is stated in bytes because a number of pages would mean different
+// amounts of memory in the two, and the arenas are stated apart because what a
+// guest's memory needs of one says nothing about what its disks need of the
+// other: a test that pressed both with one number would be pressing whichever
+// of them happened to be smaller in its own pages.
+func newHostPagers(t testing.TB, ctx context.Context, ramArenaBytes, pmemArenaBytes, logicalBytes, dirtyBytes int) *hostPagers {
+	t.Helper()
+	p := &hostPagers{}
+	for _, kind := range []vmmemory.RegionKind{vmmemory.Ram, vmmemory.Pmem} {
+		page, arenaBytes := uint64(checkpoint.PageSize4KiB), ramArenaBytes
+		if kind == vmmemory.Pmem {
+			page, arenaBytes = checkpoint.PageSize2MiB, pmemArenaBytes
+		}
+		arena, err := vmmemory.NewLinuxArena(int(uint64(arenaBytes)/page), page)
+		if err != nil {
+			t.Fatalf("%s arena: %v", kind, err)
+		}
+		t.Cleanup(func() { _ = arena.Close() })
+		disk, err := adapters.NewDisk(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		spill, err := disk.Open(ctx, "spill", platform.OpenOptions{Create: true, Exclusive: true, Permissions: 0o600})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = spill.Close() })
+		pager, err := vmmemory.New(ctx, testresource.New(), vmmemory.Config{PageSize: page,
+			ResidentPages: int(uint64(arenaBytes) / page),
+			LogicalPages:  int(uint64(logicalBytes) / page),
+			DirtyPages:    int(uint64(dirtyBytes) / page),
+			// A read-ahead run is stated in bytes, as a deployment states it,
+			// because it is a buffer: 2 MiB is the run the page-geometry plan
+			// targets, which is one PMEM page and 512 RAM pages loaded into
+			// consecutive slots and installed as one mapping. Write-ahead is
+			// one page — the plan's decision for RAM, and what these suites
+			// have always given PMEM.
+			ReadAheadPages:  int(checkpoint.PageSize2MiB / page),
+			WriteAheadPages: 1}, arena, spill)
+		if err != nil {
+			t.Fatalf("%s pager: %v", kind, err)
+		}
+		if kind == vmmemory.Ram {
+			p.pagers.Ram = pager
+		} else {
+			p.pagers.Pmem = pager
+		}
+		p.arenas = append(p.arenas, arena)
+		p.capacity += uint64(arenaBytes) / page * page
+	}
+	return p
+}
+
+// Stats is both pagers' counters added. The event counters add because they
+// count events; the page counts are added only to ask whether both pagers are
+// empty, which is a question with no unit. A test asserting a number of pages
+// asks the pager of the kind it means.
+func (p *hostPagers) Stats(ctx context.Context) (vmmemory.Stats, error) {
+	var total vmmemory.Stats
+	for _, pager := range []*vmmemory.Host{p.pagers.Ram, p.pagers.Pmem} {
+		s, err := pager.Stats(ctx)
+		if err != nil {
+			return vmmemory.Stats{}, err
+		}
+		addStats(&total, s)
+	}
+	return total, nil
+}
+
+// addStats adds every counted field of one pager's statistics into another's,
+// leaving the latency histograms alone: a histogram of two pagers' spans put
+// together says nothing either of them said. It is reflective so that a field
+// added to Stats is included here without this test being edited into
+// agreement with it.
+func addStats(total *vmmemory.Stats, one vmmemory.Stats) {
+	destination, source := reflect.ValueOf(total).Elem(), reflect.ValueOf(one)
+	for i := range destination.NumField() {
+		switch destination.Field(i).Kind() {
+		case reflect.Uint64:
+			destination.Field(i).SetUint(destination.Field(i).Uint() + source.Field(i).Uint())
+		case reflect.Int:
+			destination.Field(i).SetInt(destination.Field(i).Int() + source.Field(i).Int())
+		}
+	}
+}
+
+// SharedBytes is what both pagers' arenas hold and what their regions map,
+// which are bytes and so add across pagers of different pages.
+func (p *hostPagers) SharedBytes(ctx context.Context) (unique, mapped uint64, err error) {
+	for _, pager := range []*vmmemory.Host{p.pagers.Ram, p.pagers.Pmem} {
+		sharing, err := pager.Sharing(ctx)
+		if err != nil {
+			return 0, 0, err
+		}
+		for _, gauge := range []vmmemory.Sharing{sharing.Ram, sharing.Pmem} {
+			unique += gauge.UniqueBytes
+			mapped += gauge.MappedBytes
+		}
+	}
+	return unique, mapped, nil
+}
+
+// AllocatedBytes is what both arenas physically hold.
+func (p *hostPagers) AllocatedBytes() (uint64, error) {
+	var total uint64
+	for _, arena := range p.arenas {
+		bytes, err := arena.AllocatedBytes()
+		if err != nil {
+			return 0, err
+		}
+		total += bytes
+	}
+	return total, nil
 }
 
 const (
@@ -72,7 +199,9 @@ func TestFirecrackerDAXCaptureRestoreForkAndFence(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = manager.Close(context.Background()) })
 	source, err := manager.Create(ctx, "source", []volume.VolumeSpec{
-		{Name: vmmachine.RAMVolume, Size: 128 << 20, PageSize: checkpoint.PageSize2MiB},
+		// Each volume is published in the page of the pager that maps it, which
+		// is what a host creates them with.
+		{Name: vmmachine.RAMVolume, Size: 128 << 20, PageSize: checkpoint.PageSize4KiB},
 		{Name: "root", Size: 64 << 20, PageSize: checkpoint.PageSize2MiB},
 	})
 	if err != nil {
@@ -113,32 +242,13 @@ func TestFirecrackerDAXCaptureRestoreForkAndFence(t *testing.T) {
 		t.Fatal(err)
 	}
 	pageBytes := pagerPageBytes(t)
-	slots := residentPages(t, pageBytes, 192<<20)
-	pages := (384 << 20) / pageBytes
-	// One HugeTLB arena for both kinds of region. A host assembles a pager per
-	// kind and this package's suites do not: what they qualify is the VMM, the
-	// wire and the kernel, and a second arena would only take a second share of
-	// the node's HugeTLB pool away from the guest under test. The assembly of
-	// two pagers is exercised in internal/host and internal/simtest.
-	a, err := vmmemory.NewLinuxArena(slots, checkpoint.PageSize2MiB)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = a.Close() })
-	disk, err := adapters.NewDisk(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	spill, err := disk.Open(ctx, "spill", platform.OpenOptions{Create: true, Exclusive: true, Permissions: 0o600})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = spill.Close() })
-	host, err := vmmemory.New(ctx, testresource.New(), vmmemory.Config{PageSize: checkpoint.PageSize2MiB, ResidentPages: slots, LogicalPages: pages, DirtyPages: pages}, a, spill)
-	if err != nil {
-		t.Fatal(err)
-	}
-	vmConfig := vmmachine.Config{Binary: binaryPath, SeccompFilter: os.Getenv("SPROUTFS_FIRECRACKER_SECCOMP"), KernelPath: os.Getenv("SPROUTFS_FIRECRACKER_KERNEL"), InitrdPath: os.Getenv("SPROUTFS_FIRECRACKER_INITRD"), BootArgs: guestPmemBootArgs, Pagers: bothKinds(host), VM: source, Pmem: []vmmachine.Pmem{{ID: "root", Root: true}}, VCPUs: 1, Connection: vmmemory.ConnectionConfig{QueuePages: 128, CommandTimeout: 2 * time.Minute, VerifyInterval: time.Second}}
+	arenaBytes := residentPages(t, pageBytes, 192<<20) * pageBytes
+	// The production assembly: a 4 KiB RAM pager over ordinary memory beside a
+	// 2 MiB PMEM pager over the node's HugeTLB pool, each with an arena of the
+	// same number of bytes. The guest's RAM is what this suite puts under
+	// pressure, and at 4 KiB its arena is no longer a share of the pool.
+	host := newHostPagers(t, ctx, arenaBytes, arenaBytes, 384<<20, 384<<20)
+	vmConfig := vmmachine.Config{Binary: binaryPath, SeccompFilter: os.Getenv("SPROUTFS_FIRECRACKER_SECCOMP"), KernelPath: os.Getenv("SPROUTFS_FIRECRACKER_KERNEL"), InitrdPath: os.Getenv("SPROUTFS_FIRECRACKER_INITRD"), BootArgs: guestPmemBootArgs, Pagers: host.pagers, VM: source, Pmem: []vmmachine.Pmem{{ID: "root", Root: true}}, VCPUs: 1, Connection: vmmemory.ConnectionConfig{QueuePages: 4096, CommandTimeout: 2 * time.Minute, VerifyInterval: time.Second}}
 	vmConfig.Scratch = mustScratch(t)
 	bad := vmConfig
 	bad.KernelPath = "/missing-sproutfs-qualification-kernel"
@@ -310,7 +420,7 @@ func TestFirecrackerDAXCaptureRestoreForkAndFence(t *testing.T) {
 	if shared == 0 {
 		t.Fatal("running fork shares no physical backing pages with its source")
 	}
-	if slots*pageBytes <= pressureBytes {
+	if arenaBytes <= pressureBytes {
 		// Boot's resident set changes as sharing improves. Deliberately dirty
 		// both guests beyond the shared arena budget, then verify every 4 KiB
 		// subpage marker after the other guest has forced eviction/refault.
@@ -321,15 +431,15 @@ func TestFirecrackerDAXCaptureRestoreForkAndFence(t *testing.T) {
 			command(t, ctx, process, "checkpressure\n", "SPROUTFS_PRESSURE_OK bytes=50331648")
 		}
 	}
-	allocated, err := a.AllocatedBytes()
-	if err != nil || allocated > uint64(slots*pageBytes) {
+	allocated, err := host.AllocatedBytes()
+	if err != nil || allocated > host.capacity {
 		t.Fatalf("arena exceeded physical budget: %d %v", allocated, err)
 	}
 	stats, err = host.Stats(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if slots*pageBytes <= pressureBytes && (stats.Evictions == 0 || stats.Spills == 0 || stats.SpillRefaults == 0) {
+	if arenaBytes <= pressureBytes && (stats.Evictions == 0 || stats.Spills == 0 || stats.SpillRefaults == 0) {
 		t.Fatalf("pressure run did not exercise live spill/refault: %+v", stats)
 	}
 	t.Logf("memory pages=%+v arena_bytes=%d shared_pages=%d source_vmas=%d fork_vmas=%d", stats, allocated, shared, leftVMAs, rightVMAs)
@@ -371,7 +481,9 @@ func TestFirecrackerDAXCaptureRestoreForkAndFence(t *testing.T) {
 	if len(resident) == 0 {
 		t.Fatal("the stopped source holds no page to serve its destination")
 	}
-	sample := make([]byte, pageBytes)
+	// A page of this region is a page of the pager that holds it, which for RAM
+	// is not the PMEM page the arena budgets above are stated in.
+	sample := make([]byte, ram.PageSize())
 	middle := resident[len(resident)/2]
 	held, unpublished, err := ram.ReadResident(ctx, middle, sample)
 	if err != nil || !held {
@@ -421,12 +533,26 @@ func TestFirecrackerDAXCaptureRestoreForkAndFence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats.LogicalPages != 0 || stats.DirtyPages != 0 || stats.ResidentPages != 0 {
+	if stats.LogicalPages != 0 || stats.DirtyPages != 0 {
 		t.Fatalf("stopped VMM mappings retained: %+v", stats)
 	}
-	allocated, err = a.AllocatedBytes()
-	if err != nil || allocated != 0 {
-		t.Fatalf("stopped VMM backing remains allocated: %d %v", allocated, err)
+	// Nothing maps anything any more, which is what a stopped VMM must leave.
+	// What the arena may still hold is clean pages nothing maps — the pages
+	// stores copied away from, which stay under the identity they are published
+	// by so the next region naming one maps it instead of reading it, and which
+	// the next reclaim short of a slot takes like any other clean page. Those
+	// are memory, so the arena's blocks are exactly them and no more.
+	unique, mappedBytes, err := host.SharedBytes(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mappedBytes != 0 {
+		t.Fatalf("stopped VMM mappings retained %d bytes of arena: %+v", mappedBytes, stats)
+	}
+	allocated, err = host.AllocatedBytes()
+	if err != nil || allocated != unique {
+		t.Fatalf("the arena holds %d bytes for %d bytes of unmapped clean pages: %v",
+			allocated, unique, err)
 	}
 	entries, err = os.ReadDir(vmConfig.Scratch.Directory())
 	if err != nil || len(entries) != 0 {
@@ -438,7 +564,9 @@ func TestFirecrackerDAXCaptureRestoreForkAndFence(t *testing.T) {
 // must see eviction, spill and refault: the guest touches far more than this.
 const pressureBytes = 96 << 20
 
-// pagerPageBytes is the fixed 2 MiB production page.
+// pagerPageBytes is the PMEM pager's 2 MiB page, which is the larger of the
+// two a host runs and so the unit the suites' arena and page-server budgets are
+// stated in. A RAM page is 4 KiB; a test that means one asks its region.
 func pagerPageBytes(t testing.TB) int {
 	t.Helper()
 	return checkpoint.PageSize2MiB
@@ -465,14 +593,26 @@ func residentPFNs(t *testing.T, pid int) (map[uint64]bool, int) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	managed := false
+	// An arena's memfd is named for the page it is made of, and this is where
+	// the kernel is asked whether it agrees: a guest's RAM is on ordinary 4 KiB
+	// memory and its disk on 2 MiB HugeTLB pages, and a mapping that is not
+	// what its arena says it is would share nothing the way this test means.
+	want := ""
 	for _, line := range strings.Split(string(smaps), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) > 1 && strings.Contains(fields[0], "-") {
-			managed = strings.Contains(line, "memfd:sproutfs-memory")
+			want = ""
+			for _, arena := range []struct{ name, kernelPage string }{
+				{"memfd:sproutfs-memory-4k", "4"},
+				{"memfd:sproutfs-memory-2048k", "2048"},
+			} {
+				if strings.Contains(line, arena.name) {
+					want = arena.kernelPage
+				}
+			}
 		}
-		if managed && strings.HasPrefix(line, "KernelPageSize:") && (len(fields) != 3 || fields[1] != "2048") {
-			t.Fatalf("managed mapping is not backed by 2 MiB HugeTLB pages: %s", line)
+		if want != "" && strings.HasPrefix(line, "KernelPageSize:") && (len(fields) != 3 || fields[1] != want) {
+			t.Fatalf("a managed mapping is not on the memory its arena is made of, want %s kB: %s", want, line)
 		}
 	}
 	raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/maps", pid))

@@ -143,9 +143,10 @@ func Start(ctx context.Context, config SupervisorConfig) (Service, error) {
 		}
 	}()
 
-	// Huge pages are what the pager's arena is made of. The pod's mount is what the kubelet
-	// grants its HugeTLB allotment through, so its absence means the arena
-	// cannot be allocated at all.
+	// Huge pages are what the PMEM arena is made of; the RAM arena is ordinary
+	// memory charged to the pod. The pod's mount is what the kubelet grants its
+	// HugeTLB allotment through, so its absence means that arena cannot be
+	// allocated at all.
 	if _, err := os.Stat(config.HugepageDir); err != nil {
 		return nil, fmt.Errorf("hugepage mount %s: %w", config.HugepageDir, err)
 	}
@@ -220,15 +221,17 @@ func Start(ctx context.Context, config SupervisorConfig) (Service, error) {
 	return s, nil
 }
 
-// startPager builds one of this host's two pagers: its own HugeTLB arena, its
-// own spill file and the configuration of its kind. A restart is a host loss, so
-// the spill file starts empty; the pager sizes it to the dirty pages its cap
-// allows. Each is logged with the bounds the node chose for it, so what a host
-// gave each kind is on the record.
+// startPager builds one of this host's two pagers: its own arena — the HugeTLB
+// pool's memory for PMEM's 2 MiB page, ordinary memory for RAM's 4 KiB one —
+// its own spill file and the configuration of its kind. A restart is a host
+// loss, so the spill file starts empty; the pager sizes it to the dirty pages
+// its cap allows. Each is logged with the bounds the node chose for it, so what
+// a host gave each kind is on the record.
 func (s *supervisor) startPager(ctx context.Context, kind vmmemory.RegionKind, cfg vmmemory.Config) (*vmmemory.Host, error) {
 	arena, err := vmmemory.NewLinuxArena(cfg.ResidentPages, cfg.PageSize)
 	if err != nil {
-		return nil, fmt.Errorf("%s hugetlb arena of %d pages: %w", kind, cfg.ResidentPages, err)
+		return nil, fmt.Errorf("%s arena of %d pages of %d bytes: %w",
+			kind, cfg.ResidentPages, cfg.PageSize, err)
 	}
 	s.arenas[kind] = arena
 	spill, err := s.config.Disk.Open(ctx, "spill-"+kind.String(),

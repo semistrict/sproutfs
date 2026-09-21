@@ -27,19 +27,31 @@ fn load(address: usize) -> u8 {
 
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().collect();
-    let page_size = sproutfs_vm_memory::PAGE_SIZE;
+    // The page is the pager's, so the harness that started this process says
+    // which one it runs; the session states it too, and a disagreement is a
+    // harness that would be measuring the wrong unit.
+    let page_size: usize = args
+        .get(4)
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(sproutfs_vm_memory::MAX_PAGE_SIZE);
     let pages: usize = args.get(3).map(|s| s.parse().unwrap()).unwrap_or(1);
     // The sessions connect in region order, which is the order the pager accepts
     // them in.
     let mut sessions = Vec::new();
     for (index, kind) in [RegionKind::Pmem, RegionKind::Ram].into_iter().enumerate() {
-        sessions.push(Session::connect(
+        let session = Session::connect(
             &args[1 + index],
             RegionSpec {
                 kind,
                 len: pages * page_size,
             },
-        )?);
+        )?;
+        assert_eq!(
+            session.page_size(),
+            page_size,
+            "the session runs a page this harness did not ask for"
+        );
+        sessions.push(session);
     }
     let regions: Vec<Region> = sessions.iter().map(Session::region).collect();
     let controls: Vec<_> = sessions.iter().map(Session::control).collect();

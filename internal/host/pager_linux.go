@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/semistrict/sproutfs/internal/checkpoint"
 	"github.com/semistrict/sproutfs/internal/vmmemory"
 )
 
@@ -18,19 +17,14 @@ import (
 // a deployment does choose — the arenas, the logical and dirty budgets — is in
 // SupervisorConfig.
 const (
-	// ramPageSize and pmemPageSize are the pages this build's two pagers run.
-	// Both are 2 MiB: vmwire, the Rust adapter and the Firecracker integration
-	// map that page and nothing else, and the arenas are HugeTLB, which is the
-	// same statement made of the memory behind them. Step 4 of the page-geometry
-	// plan changes the RAM half of that, together with the wire.
-	ramPageSize  = checkpoint.PageSize2MiB
-	pmemPageSize = checkpoint.PageSize2MiB
 	// readAheadBytes is the aligned run one fault loads and maps, stated in
 	// bytes because it is a buffer: each pager admits that many of its own
-	// pages, four at 2 MiB. A boot, a restore and a guest's own working set all
-	// walk memory forwards, so the run is served by the fault that would
-	// otherwise be the first of four. It must come to a power of two pages and
-	// at most 16 MiB, which is the largest buffer one fault may hold.
+	// pages, four at 2 MiB and two thousand and forty-eight at 4 KiB. A boot, a
+	// restore and a guest's own working set all walk memory forwards, so the run
+	// is served by the fault that would otherwise be the first of them, and the
+	// pages of it land in consecutive arena slots so that one mapping command
+	// installs the whole run. It must come to a power of two pages and at most
+	// 16 MiB, which is the largest buffer one fault may hold.
 	readAheadBytes = 8 << 20
 	// writeAheadBytes is the run one store into fresh zeros — a hole, or a page
 	// the guest has never touched — gives private pages in a single mapping
@@ -38,6 +32,12 @@ const (
 	// reservation and written back whether the guest uses it or not, so it is
 	// kept to the read-ahead run rather than larger, and a pager whose dirty
 	// budget cannot afford runs of that size keeps one page.
+	//
+	// The RAM pager keeps one page whatever its budget: at 4 KiB the unit of
+	// ownership is the whole point, and a run that made a store's neighbours
+	// writable and privately dirty before the guest had used them would give
+	// back exactly the sharing the small page buys. That is the page-geometry
+	// plan's decision, not a tuning choice.
 	writeAheadBytes = 8 << 20
 	// writeAheadDirtyShare is the fraction of the dirty budget one write-ahead
 	// run may take before the run is not worth its reservations.
@@ -81,16 +81,17 @@ const (
 // pager of small pages gets a run of the same size rather than the same number
 // of pages.
 func pagerConfig(config SupervisorConfig, kind vmmemory.RegionKind) vmmemory.Config {
-	pageSize, arenaBytes, logical, dirty := uint64(pmemPageSize), config.ArenaBytes.PMEM, config.LogicalPages.PMEM, config.DirtyPages.PMEM
+	pageSize, arenaBytes, logical, dirty := uint64(PMEMPageSize), config.ArenaBytes.PMEM, config.LogicalPages.PMEM, config.DirtyPages.PMEM
 	if kind == vmmemory.Ram {
-		pageSize, arenaBytes, logical, dirty = ramPageSize, config.ArenaBytes.RAM, config.LogicalPages.RAM, config.DirtyPages.RAM
+		pageSize, arenaBytes, logical, dirty = RAMPageSize, config.ArenaBytes.RAM, config.LogicalPages.RAM, config.DirtyPages.RAM
 	}
 	resident := int(uint64(arenaBytes) / pageSize)
 	readAhead := int(max(readAheadBytes/pageSize, 1))
 	writeAhead := int(max(writeAheadBytes/pageSize, 1))
-	if dirty < writeAhead*writeAheadDirtyShare {
-		// A pager this small would spend a whole store's turn of the dirty
-		// budget on pages the guest may never touch.
+	if kind == vmmemory.Ram || dirty < writeAhead*writeAheadDirtyShare {
+		// RAM writes no pages ahead at all: see writeAheadBytes. For PMEM, a
+		// pager this small would spend a whole store's turn of the dirty budget
+		// on pages the guest may never touch.
 		writeAhead = 1
 	}
 	return vmmemory.Config{

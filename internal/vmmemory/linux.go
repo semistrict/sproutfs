@@ -11,7 +11,6 @@ import (
 	"os"
 	"syscall"
 
-	"github.com/semistrict/sproutfs/internal/checkpoint"
 	"github.com/semistrict/sproutfs/internal/vmwire"
 )
 
@@ -25,23 +24,30 @@ type LinuxArena struct {
 	// page of the pager it is given to. A host runs one arena per pager, so the
 	// two arenas of one host need not agree about it.
 	pageSize int
+	// backing is what the memory behind those slots is, which the session
+	// states so the client can check the descriptor it is given against it.
+	backing uint64
 }
 
-// NewLinuxArena creates pages slots of pageSize bytes each. The backing is an
-// explicit 2 MiB HugeTLB memfd, so a slot size other than that is refused here:
-// the pool's page is what the arena is made of, and a 4 KiB arena is ordinary
-// memory this build does not yet allocate. The host must provision the pool;
-// allocation never falls back to ordinary pages.
+// NewLinuxArena creates pages slots of pageSize bytes each, over the memory
+// that page is: the host's provisioned 2 MiB HugeTLB pool for a 2 MiB slot,
+// which never falls back to ordinary pages and reports pool exhaustion as an
+// allocation error, and an ordinary shared memfd for a 4 KiB one, which is the
+// pod's own memory and which a host with swap may swap. Every other slot size
+// is refused, because it is not a page a volume can be published in.
 func NewLinuxArena(pages int, pageSize uint64) (*LinuxArena, error) {
-	if pageSize != checkpoint.PageSize2MiB {
-		return nil, fmt.Errorf("%w: a HugeTLB arena's slot is %d bytes, not %d",
-			ErrConfig, checkpoint.PageSize2MiB, pageSize)
+	backing, err := vmwire.BackingFor(pageSize)
+	if err != nil {
+		return nil, fmt.Errorf("%w: an arena's slot is a pager's page: %w", ErrConfig, err)
 	}
 	size := int(pageSize)
 	if pages < 1 || uint64(pages) > uint64(^uint64(0)>>1)/pageSize {
 		return nil, ErrConfig
 	}
-	f, err := vmwire.HugeMemfd("sproutfs-memory", int64(pages)*int64(size))
+	// The name carries the page, because a host has two of these and /proc is
+	// where a qualification reads which memory a guest's mapping is really on.
+	f, err := vmwire.ArenaMemfd(fmt.Sprintf("sproutfs-memory-%dk", pageSize>>10),
+		pageSize, int64(pages)*int64(size))
 	if err != nil {
 		return nil, err
 	}
@@ -50,8 +56,15 @@ func NewLinuxArena(pages int, pageSize uint64) (*LinuxArena, error) {
 		_ = f.Close()
 		return nil, err
 	}
-	return &LinuxArena{file: f, mapping: mapping, pages: pages, pageSize: size}, nil
+	return &LinuxArena{file: f, mapping: mapping, pages: pages, pageSize: size, backing: backing}, nil
 }
+
+// PageSize is the slot this arena was made with, which must be the page of the
+// pager it is given to.
+func (a *LinuxArena) PageSize() uint64 { return uint64(a.pageSize) }
+
+// Backing is what the memory behind the slots is, as a session states it.
+func (a *LinuxArena) Backing() uint64 { return a.backing }
 
 func (a *LinuxArena) offset(ctx context.Context, slot int, length int) (int64, error) {
 	if err := context.Cause(ctx); err != nil {
@@ -78,8 +91,9 @@ func (a *LinuxArena) Write(ctx context.Context, slot int, src []byte) error {
 	if err != nil {
 		return err
 	}
-	// HugeTLB files do not implement write(2). Allocate before touching the
-	// mmap so pool exhaustion is an error rather than a process-killing SIGBUS.
+	// HugeTLB files do not implement write(2), so both arenas go through the
+	// mmap. Allocate before touching it so exhaustion — of the pool, or of the
+	// pod's memory — is an error rather than a process-killing SIGBUS.
 	if err := a.Zero(ctx, slot, 1); err != nil {
 		return err
 	}

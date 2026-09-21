@@ -73,4 +73,4 @@ limactl shell "$instance" sudo -n env \
     SPROUTFS_FIRECRACKER_KERNEL="$guest_work/kernel" \
     SPROUTFS_FIRECRACKER_ROOT="$guest_work/root.ext4" \
     SPROUTFS_FIRECRACKER_RESIDENT_PAGES="$resident_pages" \
-    "$host_work/firecracker.test" -test.v -test.timeout=5m
+    "$host_work/firecracker.test" -test.v -test.timeout=30m

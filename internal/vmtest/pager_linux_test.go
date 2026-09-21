@@ -87,7 +87,7 @@ func newPager(t *testing.T, slots int) *pager {
 		t.Skip("run scripts/test-vm-memory-lima.sh for real Linux memory tests")
 	}
 	size := 2 << 20
-	arena, err := vmwire.HugeMemfd("sproutfs-page-arena", int64(slots*size))
+	arena, err := vmwire.ArenaMemfd("sproutfs-page-arena", uint64(size), int64(slots*size))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +162,14 @@ func (p *pager) accept(listener *net.UnixListener, region int) (*pagerClient, er
 	if err != nil {
 		return fail(err)
 	}
-	if err = vmwire.SendFD(conn, vmwire.Frame{Kind: vmwire.Attach, ID: vmwire.Version, Length: uint64(stat.Size())}, p.arena); err != nil {
+	// The attachment states this fixture's geometry: the page its regions run,
+	// and the memory its arena is made of.
+	backing, err := vmwire.BackingFor(uint64(p.pageSize))
+	if err != nil {
+		return fail(err)
+	}
+	attach := vmwire.AttachFrame(uint64(p.pageSize), uint64(stat.Size()), backing, 0)
+	if err = vmwire.SendFD(conn, attach, p.arena); err != nil {
 		return fail(err)
 	}
 	p.sequence++

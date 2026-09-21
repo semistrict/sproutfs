@@ -10,10 +10,11 @@ use std::os::unix::net::UnixStream;
 #[path = "tests/wire.rs"]
 mod tests;
 
-/// Version 6 dropped two fields at once: the region, because a session carries
-/// exactly one, and the page size, because the page is 2 MiB on both ends and
-/// the version is what says so.
-pub(crate) const VERSION: u64 = 6;
+/// Version 7 gave the attachment the geometry: the page this session's region
+/// runs and the kind of memory its arena is made of. The page is no longer one
+/// number both ends know, so a version 6 peer is refused by version — its page
+/// numbers name other pages.
+pub(crate) const VERSION: u64 = 7;
 /// The encoded size of one frame.
 pub(crate) const FRAME_BYTES: usize = 56;
 pub(crate) const HELLO: u64 = 1;

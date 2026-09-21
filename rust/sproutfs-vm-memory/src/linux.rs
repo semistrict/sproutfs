@@ -5,7 +5,64 @@ use std::ptr;
 
 use linux_raw_sys::general as u;
 
-pub const PAGE_SIZE: usize = 2 << 20;
+/// The pages this transport maps. A session states which of them its region
+/// runs, and the arena it attaches is the memory that page is made of: the
+/// host's 2 MiB HugeTLB pool, or an ordinary shared memfd over the host's own
+/// 4 KiB pages.
+pub const MIN_PAGE_SIZE: usize = 4 << 10;
+pub const MAX_PAGE_SIZE: usize = 2 << 20;
+
+/// The kinds of memory an arena is made of, as the attachment states them.
+pub const BACKING_HUGETLB: u64 = 1;
+pub const BACKING_MEMFD: u64 = 2;
+
+const HUGETLBFS_MAGIC: u64 = 0x958458f6;
+const TMPFS_MAGIC: u64 = 0x01021994;
+
+/// The arena a region of this page must be attached over, or `None` for a page
+/// this transport does not map. The two are one statement: a 2 MiB page is a
+/// page of the pool and a 4 KiB page is ordinary memory, so a session that
+/// stated one and attached the other is refused before anything is mapped.
+pub(crate) fn backing_for(page_size: usize) -> Option<u64> {
+    match page_size {
+        MAX_PAGE_SIZE => Some(BACKING_HUGETLB),
+        MIN_PAGE_SIZE => Some(BACKING_MEMFD),
+        _ => None,
+    }
+}
+
+/// Checks a received arena descriptor against the backing kind the attachment
+/// claimed and the size it reported, before the descriptor is mapped.
+pub(crate) fn check_backing(fd: &OwnedFd, kind: u64, len: u64) -> io::Result<()> {
+    let refuse = |what: String| io::Error::new(io::ErrorKind::InvalidData, what);
+    let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+    if unsafe { libc::fstat(fd.as_raw_fd(), &mut stat) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if len > i64::MAX as u64 || stat.st_size as u64 != len {
+        return Err(refuse(format!(
+            "the attached arena is {} bytes, the attachment said {len}",
+            stat.st_size
+        )));
+    }
+    let mut fs: libc::statfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::fstatfs(fd.as_raw_fd(), &mut fs) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let (magic, block) = match kind {
+        BACKING_HUGETLB => (HUGETLBFS_MAGIC, MAX_PAGE_SIZE),
+        BACKING_MEMFD => (TMPFS_MAGIC, MIN_PAGE_SIZE),
+        other => return Err(refuse(format!("unknown arena kind {other}"))),
+    };
+    if fs.f_type as u64 != magic || fs.f_bsize as usize != block {
+        return Err(refuse(format!(
+            "arena kind {kind} is a filesystem of type {magic:#x} with {block}-byte blocks, \
+             the descriptor is type {:#x} with {}-byte blocks",
+            fs.f_type as u64, fs.f_bsize as i64
+        )));
+    }
+    Ok(())
+}
 
 pub(crate) fn ioctl<T>(fd: &OwnedFd, number: u32, value: &mut T) -> io::Result<()> {
     // asm-generic ioctl encoding, shared by the supported x86_64/aarch64 targets.
@@ -20,38 +77,103 @@ pub(crate) fn ioctl<T>(fd: &OwnedFd, number: u32, value: &mut T) -> io::Result<(
 
 pub(crate) struct Uffd(pub OwnedFd);
 
+/// Every feature a session can need, whichever geometry its region turns out to
+/// run. The page is the attachment's to state and the UFFD is created before
+/// it, so the set is negotiated once here: a host runs a pager of each kind, so
+/// a kernel that serves only one of the two geometries cannot run this build at
+/// all, and saying so at session setup is what a guest gets instead of faults
+/// the kernel will not deliver.
+const REQUIRED_FEATURES: [(&str, u32); 7] = [
+    ("UFFD_FEATURE_EVENT_REMAP", u::UFFD_FEATURE_EVENT_REMAP),
+    (
+        "UFFD_FEATURE_PAGEFAULT_FLAG_WP",
+        u::UFFD_FEATURE_PAGEFAULT_FLAG_WP,
+    ),
+    (
+        "UFFD_FEATURE_MISSING_HUGETLBFS",
+        u::UFFD_FEATURE_MISSING_HUGETLBFS,
+    ),
+    (
+        "UFFD_FEATURE_MINOR_HUGETLBFS",
+        u::UFFD_FEATURE_MINOR_HUGETLBFS,
+    ),
+    ("UFFD_FEATURE_MISSING_SHMEM", u::UFFD_FEATURE_MISSING_SHMEM),
+    ("UFFD_FEATURE_MINOR_SHMEM", u::UFFD_FEATURE_MINOR_SHMEM),
+    (
+        "UFFD_FEATURE_WP_HUGETLBFS_SHMEM",
+        u::UFFD_FEATURE_WP_HUGETLBFS_SHMEM,
+    ),
+];
+
+fn required_features() -> u64 {
+    REQUIRED_FEATURES
+        .iter()
+        .fold(0u64, |set, (_, bit)| set | u64::from(*bit))
+}
+
+/// Opens a userfaultfd, through the syscall where the deployment permits it and
+/// through /dev/userfaultfd otherwise.
+fn open_uffd() -> io::Result<OwnedFd> {
+    let flags = libc::O_CLOEXEC | libc::O_NONBLOCK;
+    // Do not set UFFD_USER_MODE_ONLY: KVM/host kernel access must fault too.
+    let mut raw = unsafe { libc::syscall(u::__NR_userfaultfd as libc::c_long, flags) } as i32;
+    if raw < 0 {
+        let device = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("/dev/userfaultfd")?;
+        // USERFAULTFD_IOC_NEW is _IO(0xaa, 0).
+        raw = unsafe { libc::ioctl(device.as_raw_fd(), 0xaa00, flags) };
+    }
+    if raw < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(unsafe { OwnedFd::from_raw_fd(raw) })
+}
+
+/// Names the required features this kernel does not have. UFFD_API may be
+/// called once per descriptor, and asking for a feature the kernel lacks fails
+/// the whole call, so the enquiry is a second descriptor asking for nothing —
+/// which is only ever on the failure path, where the point is to say which
+/// feature is missing rather than that some feature is.
+fn missing_features() -> io::Result<Vec<&'static str>> {
+    let fd = open_uffd()?;
+    let mut api = u::uffdio_api {
+        api: u::UFFD_API as u64,
+        features: 0,
+        ioctls: 0,
+    };
+    ioctl(&fd, u::_UFFDIO_API, &mut api)?;
+    Ok(REQUIRED_FEATURES
+        .iter()
+        .filter(|(_, bit)| api.features & u64::from(*bit) == 0)
+        .map(|(name, _)| *name)
+        .collect())
+}
+
 impl Uffd {
     pub fn new() -> io::Result<Self> {
-        let flags = libc::O_CLOEXEC | libc::O_NONBLOCK;
-        // Do not set UFFD_USER_MODE_ONLY: KVM/host kernel access must fault too.
-        let mut raw = unsafe { libc::syscall(u::__NR_userfaultfd as libc::c_long, flags) } as i32;
-        if raw < 0 {
-            let device = std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open("/dev/userfaultfd")?;
-            // USERFAULTFD_IOC_NEW is _IO(0xaa, 0).
-            raw = unsafe { libc::ioctl(device.as_raw_fd(), 0xaa00, flags) };
-        }
-        if raw < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        let fd = unsafe { OwnedFd::from_raw_fd(raw) };
-        let required = u::UFFD_FEATURE_EVENT_REMAP
-            | u::UFFD_FEATURE_PAGEFAULT_FLAG_WP
-            | u::UFFD_FEATURE_MISSING_HUGETLBFS
-            | u::UFFD_FEATURE_MINOR_HUGETLBFS
-            | u::UFFD_FEATURE_WP_HUGETLBFS_SHMEM;
+        let fd = open_uffd()?;
+        let required = required_features();
         let mut api = u::uffdio_api {
             api: u::UFFD_API as u64,
-            features: required as u64,
+            features: required,
             ioctls: 0,
         };
-        ioctl(&fd, u::_UFFDIO_API, &mut api)?;
-        if api.features & required as u64 != required as u64 {
+        let enabled = ioctl(&fd, u::_UFFDIO_API, &mut api)
+            .is_ok_and(|()| api.features & required == required);
+        if !enabled {
+            let missing = missing_features()?;
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "kernel lacks required HugeTLB/UFFD features",
+                format!(
+                    "this kernel lacks the userfaultfd features managed memory needs: {}",
+                    if missing.is_empty() {
+                        "the API negotiation itself failed".to_owned()
+                    } else {
+                        missing.join(", ")
+                    }
+                ),
             ));
         }
         Ok(Self(fd))
@@ -115,12 +237,19 @@ impl TrapSource {
     // The source is never exposed, registered, populated, or written. Moving
     // its empty page tables leaves it empty and mapped for future preparations.
     // DONTUNMAP keeps the address reservation owned throughout the operation.
+    //
+    // The destination is reserved at the source's own phase within the largest
+    // page this transport maps, so that a range prepared from the middle of the
+    // source keeps the anonymous offset origin the region was attached with and
+    // the trap a revocation installs still merges with the traps around it. At
+    // a 2 MiB page every offset is a whole page and the phase is zero; at 4 KiB
+    // it is what keeps a revoked page from costing a mapping of its own.
     pub fn prepare(&self, offset: usize, len: usize) -> io::Result<Mapping> {
         if offset.checked_add(len).is_none_or(|end| end > self.0.len) {
             return Err(io::ErrorKind::InvalidInput.into());
         }
         let source = unsafe { self.0.addr.cast::<u8>().add(offset) }.cast();
-        let destination = Mapping::new(len, None)?;
+        let destination = Mapping::anonymous(len, offset % MAX_PAGE_SIZE)?;
         let addr = unsafe {
             libc::mremap(
                 source,
@@ -147,50 +276,60 @@ pub(crate) struct Mapping {
 unsafe impl Send for Mapping {}
 
 impl Mapping {
-    pub fn new(len: usize, backing: Option<(&OwnedFd, u64)>) -> io::Result<Self> {
-        if len == 0 || len % PAGE_SIZE != 0 {
+    /// Reserves an anonymous range of len bytes whose address sits at `phase`
+    /// within the largest page this transport maps. The whole region and the
+    /// trap source take phase zero; a range prepared out of the middle of the
+    /// source takes its own, so its anonymous offset origin is preserved.
+    pub fn anonymous(len: usize, phase: usize) -> io::Result<Self> {
+        if len == 0 || len % MIN_PAGE_SIZE != 0 || phase % MIN_PAGE_SIZE != 0 {
             return Err(io::ErrorKind::InvalidInput.into());
         }
-        if backing.is_none() {
-            let reserved_len = len
-                .checked_add(PAGE_SIZE)
-                .ok_or(io::ErrorKind::InvalidInput)?;
-            let reservation = unsafe {
-                libc::mmap(
-                    ptr::null_mut(),
-                    reserved_len,
-                    libc::PROT_READ | libc::PROT_WRITE,
-                    libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_NORESERVE,
-                    -1,
-                    0,
-                )
-            };
-            if reservation == libc::MAP_FAILED {
-                return Err(io::Error::last_os_error());
-            }
-            let base = reservation as usize;
-            let aligned = (base + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
-            let prefix = aligned - base;
-            unsafe {
-                if prefix != 0 {
-                    libc::munmap(reservation, prefix);
-                }
-                libc::munmap((aligned + len) as *mut _, PAGE_SIZE - prefix);
-            }
-            let mapping = Self {
-                addr: aligned as *mut _,
-                len,
-            };
-            mapping.advise(true)?;
-            return Ok(mapping);
-        }
-        let (fd, offset, flags) = match backing {
-            Some((fd, offset)) => (fd.as_raw_fd(), offset as libc::off_t, libc::MAP_SHARED),
-            None => (
+        let reserved_len = len
+            .checked_add(MAX_PAGE_SIZE)
+            .ok_or(io::ErrorKind::InvalidInput)?;
+        let reservation = unsafe {
+            libc::mmap(
+                ptr::null_mut(),
+                reserved_len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_NORESERVE,
                 -1,
                 0,
-                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_NORESERVE,
-            ),
+            )
+        };
+        if reservation == libc::MAP_FAILED {
+            return Err(io::Error::last_os_error());
+        }
+        let base = reservation as usize;
+        let aligned = ((base + MAX_PAGE_SIZE - 1) & !(MAX_PAGE_SIZE - 1)) + phase;
+        let aligned = if aligned - base > MAX_PAGE_SIZE {
+            aligned - MAX_PAGE_SIZE
+        } else {
+            aligned
+        };
+        let prefix = aligned - base;
+        unsafe {
+            if prefix != 0 {
+                libc::munmap(reservation, prefix);
+            }
+            if prefix != MAX_PAGE_SIZE {
+                libc::munmap((aligned + len) as *mut _, MAX_PAGE_SIZE - prefix);
+            }
+        }
+        let mapping = Self {
+            addr: aligned as *mut _,
+            len,
+        };
+        mapping.advise(true)?;
+        Ok(mapping)
+    }
+
+    pub fn new(len: usize, backing: Option<(&OwnedFd, u64)>) -> io::Result<Self> {
+        if len == 0 || len % MIN_PAGE_SIZE != 0 {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        let Some((fd, offset)) = backing else {
+            return Self::anonymous(len, 0);
         };
         // Build away from the live address. No client can access this mapping
         // before registration and protection have completed.
@@ -199,9 +338,9 @@ impl Mapping {
                 ptr::null_mut(),
                 len,
                 libc::PROT_READ | libc::PROT_WRITE,
-                flags,
-                fd,
-                offset,
+                libc::MAP_SHARED,
+                fd.as_raw_fd(),
+                offset as libc::off_t,
             )
         };
         if addr == libc::MAP_FAILED {

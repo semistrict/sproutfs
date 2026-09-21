@@ -7,8 +7,9 @@ set -euo pipefail
 
 state=/var/lib/sproutfs-demo
 work=/opt/sproutfs-demo
-# 12 GiB of 2 MiB pages, shared by the two host pods.
-hugepages=6144
+# 4 GiB of 2 MiB pages, shared by the two host pods. Only the PMEM arena is
+# HugeTLB now: a host's RAM arena is ordinary memory charged to the pod.
+hugepages=2048
 k3s_version=v1.36.4+k3s1
 
 log() { printf 'sproutfs-demo: %s\n' "$*"; logger -t sproutfs-demo -- "$*"; }

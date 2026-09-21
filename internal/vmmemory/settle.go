@@ -174,12 +174,11 @@ func (s *settler) settle(ctx context.Context, c *RegionCheckpoint, held *binding
 
 // drop takes one unchanged page out of the checkpoint under the lock of the
 // page it is held in. A guest that still shares the checkpoint's copy is put
-// back on the origin: the bytes are identical and the sealed page is
-// write-protected, so the swap is invisible to it, and the page is mapped
-// rather than left missing on purpose — a missing page's next read would wait,
-// go through the same worker and be copied again. A guest that stored into it
-// between the seal and here copied away from the checkpoint already and keeps
-// its own page, which the next checkpoint publishes.
+// back on the origin: the binding takes the origin as its resident page and
+// becomes clean, and the guest's mapping of the copy is revoked, so its next
+// access faults and maps the origin like any other inherited page. A guest that
+// stored into it between the seal and here copied away from the checkpoint
+// already and keeps its own page, which the next checkpoint publishes.
 //
 // Either way the checkpoint's copy goes, and with it the dirty reservation it
 // held. Caller holds both the sealed page and the origin.
@@ -187,16 +186,19 @@ func (c *RegionCheckpoint) drop(ctx context.Context, held *binding, pg, origin *
 	r := c.region
 	h := r.host
 	if b := r.lookupBinding(held.index); b != nil && r.heldBy(held.index, held) {
-		if r.isMapped(b) {
-			// One command replaces the mapping, and nothing is revoked first:
-			// both slots hold the same bytes and the guest's access to them is
-			// write-protected either way, so there is nothing to fence.
-			if err := r.mapPages(ctx, held.index, origin.slot, 1, false); err != nil {
-				return r.mappingFailed(err, func() { r.unmapPages(held.index, 1) })
-			}
-			if err := r.resolvePages(ctx, held.index, 1, false); err != nil {
-				return r.fail(err)
-			}
+		// The page the guest maps is taken away, not swapped underneath it. A
+		// revocation is the one replacement that installs no page table and
+		// wakes nothing: it leaves the trap the region was attached as, and the
+		// guest's next access reaches the origin through the fault path, under
+		// the window that serializes every mapping of that page against every
+		// other. Installing the origin here instead — one command, no fence,
+		// the bytes identical and the page write-protected either way — is what
+		// the settle used to do, and it corrupted a guest: see the settle's
+		// entry in docs/vm-memory.md. What it costs is one fault per page a
+		// settle re-shares, which is the fault the guest was going to take for
+		// the page's next write in any case.
+		if err := h.revoke(ctx, b); err != nil {
+			return err
 		}
 		if err := h.unlink(ctx, b, pg); err != nil {
 			return err

@@ -50,8 +50,8 @@ its own; the rest would each rule it out too.
    `rootflags=` cannot carry it: ext4 refuses the option and the root does not
    mount.
 2. **Sharing is by name, across VMs and across checkpoints.** A child's memory
-   is its parent's checkpoints plus its own writes, at 2 MiB granularity over
-   tens of thousands of pages. As file mappings that is one VMA per run,
+   is its parent's checkpoints plus its own writes, over tens of thousands of
+   pages. As file mappings that is one VMA per run,
    against the kernel's mapping limit, and rearranged at every checkpoint.
 3. **Durability is one pause of the whole machine, not writeback.** The kernel
    writes dirty pages back when it chooses. A checkpoint needs every dirty page
@@ -101,15 +101,13 @@ either pager's pressure seals the whole VM, once, because one pause seals every
 region it maps; a VM's loss window is the oldest unpublished write across its
 regions in both; and a store neither pager can admit stops that VM alone.
 
-Both pagers run **2 MiB** on a real host today. The Linux transport, the Rust
-adapter and Firecracker map that page and nothing else, and the arena is
-HugeTLB, which is the same statement made of the memory behind it; the Linux
-connection refuses a pager of any other page when a session is set up, and that
-refusal is the seam step 4 of the
-[page-geometry plan](../plans/ram-pmem-page-geometry-2026-09-19.md) removes
-together with the wire. The simulation has neither a HugeTLB pool nor a wire
-that fixes a page, so it already runs the geometry the deployment is moving to:
-a 4 KiB RAM pager beside a 2 MiB PMEM one, with RAM volumes created at 4 KiB.
+**RAM's page is 4 KiB and PMEM's is 2 MiB**, on a real host and in the
+simulation alike. The page and the memory behind it are one statement: a 2 MiB
+page is a page of the host's provisioned HugeTLB pool, and a 4 KiB page is an
+ordinary shared memfd out of the pod's own memory, which a host with swap may
+swap. A session states its region's page and its arena's kind when it attaches,
+and both ends check the pair before a byte of guest memory exists; the two
+arenas of one host are separate memfds and never draw on the same allotment.
 
 ## Bounded host pager
 
@@ -140,23 +138,23 @@ failed publication nor a migration restarts the bound. Where no checkpoint of
 that VM will ever be taken the wait ends as a budget stall does, as
 `ErrWindowStalled`, which the region's owner answers by stopping that VM.
 
-A pager page on a real host is **2 MiB**, backed by an explicit HugeTLB memfd.
 Allocation, sharing, copy-on-write, write protection, spill, eviction, mapping
-commands and wire generations all use that instance's unit, and region addresses
-and lengths must be aligned to it. What fixes it at 2 MiB on Linux is not the
-pager — that is configuration now — but the arena, the Rust adapter and the
-control protocol, each of which knows only that page.
+commands and wire generations all use that instance's page, and region addresses
+and lengths must be aligned to it. What an instance may run is what a volume can
+be published in and what the transport maps, which are the same two sizes.
 
-The host must provision a 2 MiB HugeTLB pool before starting VMs, and its two
-arenas draw on the same pool: the deployment divides its allotment between them
-rather than giving each the whole. The arena
-reserves virtual address space without reserving its entire logical capacity,
-then allocates each resident slot with `fallocate` before touching its mapping.
-Pool exhaustion returns an allocation error, with no fallback to small pages.
-Eviction punches a whole slot only after revoking every alias. HugeTLB pages
-are unswappable; the pager's own spill path remains responsible for reclaim.
-The kernel must support HugeTLB missing/minor faults and write protection on
-userfaultfd. A pool is shared by all arenas on the host, so deployment admission
+The host must provision a 2 MiB HugeTLB pool before starting VMs for the **PMEM**
+arena; the **RAM** arena is an ordinary memfd charged to the pod's memory, so a
+node provisions the two separately and the pool is no longer divided between
+them. Either arena reserves virtual address space without reserving its entire
+logical capacity, then allocates each resident slot with `fallocate` before
+touching its mapping. Exhaustion — of the pool, or of the pod's memory — returns
+an allocation error, with no fallback to another page. Eviction punches a whole
+slot only after revoking every alias. HugeTLB pages are unswappable and shmem
+pages are swappable, so the pager's own spill path remains responsible for
+reclaim in both. The kernel must support missing, minor and write-protect faults
+on userfaultfd for HugeTLB **and** for shmem, because a host runs a pager of each
+kind. A pool is shared by all HugeTLB arenas on the host, so deployment admission
 must budget their combined resident capacity.
 
 Read-ahead and write-ahead select one page when a configuration leaves them
@@ -178,8 +176,8 @@ different amounts of memory in the two:
 
 | bound | production value | why |
 | --- | --- | --- |
-| `ReadAheadPages` | 8 MiB of this pager's pages — four at 2 MiB | a boot, a restore and a working set all walk memory forwards, so one fault serves what would otherwise be four |
-| `WriteAheadPages` | the same 8 MiB, or one page where that pager's dirty budget holds fewer than 64 such runs | the same run, charged to the dirty budget whether the guest uses it or not, so a small budget keeps one page |
+| `ReadAheadPages` | 8 MiB of this pager's pages — four at 2 MiB, 2,048 at 4 KiB | a boot, a restore and a working set all walk memory forwards, so one fault serves what would otherwise be four, and the run lands in consecutive arena slots so one command installs it |
+| `WriteAheadPages` | one page for RAM always; for PMEM the same 8 MiB, or one page where its dirty budget holds fewer than 64 such runs | RAM's unit of ownership is the whole point of its page, and a run that made a store's neighbours writable and privately dirty before the guest had used them would give back the sharing the small page buys. For PMEM it is the same run, charged to the dirty budget whether the guest uses it or not, so a small budget keeps one page |
 | `ConcurrentIO` | four per processor, held between 16 and 256, and never more read-ahead runs than that pager's arena has room for | each permit can hold one read-ahead or spill buffer, so it is both the parallelism a node can use and a bound on the buffers it costs |
 | `SettleWorkers` | the node's processors, capped at 64 | a settle compares resident pages and takes no I/O permit, so processors are what it can use, and it is time the upload waits for |
 | `ConnectionConfig.FaultWorkers` | two per processor, held between 8 and 64 | a fault spends most of its life in a store read; the I/O budget is what bounds the reads |
@@ -247,9 +245,11 @@ Storage compression does not compress mapped pages or change this accounting.
 An explicit sparse zero has no arena slot and no page identity. Contiguous zero
 ranges use Linux's shared zero page, so a large hole does not consume resident
 slots. These sparse zero mappings and untouched missing-fault traps have no
-resident page of their own; their anonymous page tables are the exception to physical
-HugeTLB backing. The first write replaces a whole 2 MiB range with a private
-HugeTLB page. The zero mapping is not an identity: nothing is shared under it.
+resident page of their own; their anonymous page tables are the exception to the
+arena's own backing. A zero range is one mapping command however many pages it
+covers, so a sparse hole costs neither a command nor a mapping per page at
+4 KiB. The first write replaces one page of it with a private page of the arena.
+The zero mapping is not an identity: nothing is shared under it.
 
 ## Faults and read-ahead
 
@@ -258,7 +258,7 @@ Migration backings may request pages from the source peer, and cold volume
 loads may read object storage. Ownership is confirmed by the supervisor's
 periodic verification.
 
-A read fault serves its whole aligned read-ahead run, one 2 MiB pager page by
+A read fault serves its whole aligned read-ahead run, one pager page by
 default, when it can: pages already resident under the same page identity
 are mapped without any read, and the rest are loaded with one backing read per
 contiguous run into consecutive arena slots and installed as one mapping
@@ -543,19 +543,34 @@ possible and would put work on the fault path, and no read of the store, which
 would double a checkpoint's I/O for the pages that did change. A sealed page the
 pager has spilled is left alone for the same reason. An unchanged page leaves
 the checkpoint's set, so `DirtyPages` does not list it and it costs the store
-nothing; if the guest still shares the checkpoint's copy, its mapping is
-replaced by a read-only mapping of the origin's slot, the binding takes the
-origin as its resident page and becomes clean, the private page is released and
-the dirty reservation returned. The bytes are identical and the sealed page is
-write-protected, so the swap is invisible to a running guest; a store that lands
-first copies away from the checkpoint as it does today, and then only the
-checkpoint's copy is released. The page is mapped rather than left missing on
-purpose: a missing page's next read would wait, go through the same worker, and
-be copied again. A checkpoint a settle leaves holding nothing holds no
-unpublished write either, so the loss window it took at the seal ends there.
+nothing; if the guest still shares the checkpoint's copy, the binding takes the
+origin as its resident page and becomes clean, **the guest's mapping of the copy
+is revoked**, the private page is released and the dirty reservation returned. A
+store that lands first copies away from the checkpoint as it does today, and
+then only the checkpoint's copy is released. A checkpoint a settle leaves
+holding nothing holds no unpublished write either, so the loss window it took at
+the seal ends there.
 
-The settle is parallel. Each page is settled alone — its comparison and its
-re-sharing take that page's lock and its origin's and nothing wider — so a
+The mapping is taken away rather than swapped underneath the guest, and that is
+not an optimization left on the table. A settle runs with the guest running and
+holds neither the region nor the window that serializes a page's mappings
+against one another, so the one replacement it may issue is the one that
+installs no page table and wakes nothing. Installing the origin in its place —
+one command, no fence, the bytes identical and the page write-protected either
+way — is what it used to do, and it corrupted a guest: two children of one fork
+point, reading everything they inherited on one destination pager while each was
+checkpointed every 250 ms, panicked in the guest kernel's timer wheel on a list
+entry that had already been removed, which is a guest reading bytes that are not
+its page's. Revoking instead removed it; revoking and then installing the origin
+did not, which is what says the replacement rather than the fence is the unsafe
+part. What it costs is one fault per page a settle re-shares, which is the fault
+the guest was going to take for that page's next write in any case — and on a
+host whose kernel answers a cold read as a write fault, that fault copies the
+page again and the next settle undoes it again.
+
+The settle is parallel. Each page is settled alone — its comparison, its
+revocation and its re-binding take that page's lock and its origin's and nothing
+wider — so a
 settle hands its pages to `Config.SettleWorkers` workers, the host's processors
 by default, and the regions of one VM settle at the same time as each other.
 What bounds it is memory bandwidth and not the pager's I/O permits, which it
@@ -640,9 +655,14 @@ volume's bytes in the guest's address space is the VMM's work, described under
 [the Firecracker build](#firecracker-build-and-process-lifecycle).
 
 `Session::connect` reserves the region's range, creates the UFFD and exchanges
-descriptors, checking that the arena it is given is an explicit 2 MiB HugeTLB
-file. The region's length must be a nonzero multiple of the 2 MiB pager page
-size. `Session::region` returns an address descriptor, not a Rust borrow; the
+descriptors. The range is reserved before the page is known, so it is reserved
+at the largest page this transport maps, which is aligned for both; the
+attachment then states this region's page and what its arena is made of, and the
+client checks that it maps that page, that the descriptor really is that memory
+— an explicit 2 MiB HugeTLB file, or an ordinary shared memfd of 4 KiB pages —
+and that the region's length is a nonzero multiple of it. A mismatch ends the
+session before an address is exposed to the embedder. `Session::page_size`
+reports what was agreed. `Session::region` returns an address descriptor, not a Rust borrow; the
 session owns its lifetime. `Session::run` services commands on a dedicated
 thread, and the Go pager reads the UFFD itself rather than having Rust relay
 fault messages.
@@ -714,12 +734,20 @@ the live address, nothing is remapped, and no page table is rebuilt.
 The library requires `UFFD_FEATURE_EVENT_REMAP`, since Linux drops the UFFD
 context on remap without it; with it, remap completion waits for the event to
 be consumed. **The Go UFFD reader must keep draining remap events while another
-goroutine waits for a mapping acknowledgement.** Also required: shmem missing
-and minor faults, synchronous write-protect notification, and shmem
-write-protect support. Both global feature negotiation and the per-range ioctl
-mask are checked. Anonymous write protection appeared in Linux 5.7, shmem minor
-faults in 5.14 and shmem write protection in 5.19; those are introduction
-versions, not a qualification.
+goroutine waits for a mapping acknowledgement.** Also required, and required
+together: `UFFD_FEATURE_PAGEFAULT_FLAG_WP`, missing and minor faults on HugeTLB
+(`UFFD_FEATURE_MISSING_HUGETLBFS`, `UFFD_FEATURE_MINOR_HUGETLBFS`) and on shmem
+(`UFFD_FEATURE_MISSING_SHMEM`, `UFFD_FEATURE_MINOR_SHMEM`), and
+`UFFD_FEATURE_WP_HUGETLBFS_SHMEM`, which is write protection for both. The set
+is negotiated once, when the UFFD is created and before the attachment states
+which of the two geometries this session runs, because a host runs a pager of
+each kind and a kernel that serves only one cannot run this build at all. The
+negotiation fails clearly: a second descriptor asks the kernel what it does
+support, and the error names the features that are missing rather than saying
+that some feature is. Both that negotiation and the per-range ioctl mask are
+checked. Anonymous write protection appeared in Linux 5.7, shmem minor faults in
+5.14 and shmem write protection in 5.19; those are introduction versions, not a
+qualification.
 
 A seal additionally requires `UFFDIO_WRITEPROTECT` to apply across every
 registered mapping its range covers, since the pages of a run of dirty pages
@@ -750,9 +778,11 @@ the host backing. Firecracker requires 2 MiB PMEM alignment. Its save order is
 fixed: pause vCPUs, save devices before KVM state because device completion can
 inject interrupts, then capture memory, which is why a seal must survive device
 accesses after the vCPUs pause: those accesses copy on write like any other
-store, and the sealed bytes stay. The adapter requires `huge_pages: "2M"` for
-managed RAM and rejects ballooning, memory hotplug, vhost-user and asynchronous
-block I/O with managed RAM, and a coordinated capture requires managed PMEM for
+store, and the sealed bytes stay. The adapter refuses any `huge_pages` setting
+for managed RAM — the pager owns that memory and states its page when the
+session attaches, so a setting there would be the VM claiming something about
+backing it does not choose — and rejects ballooning, memory hotplug, vhost-user
+and asynchronous block I/O with managed RAM, and a coordinated capture requires managed PMEM for
 every disk and refuses ordinary block devices. A managed virtio-pmem flush
 completes with success at the device and asks the host for nothing. KVM slots
 are unregistered before mappings drop. Ordinary CPU and the tested KVM accesses
@@ -760,14 +790,16 @@ are covered by Linux mapping invalidation, not by a Rust lock around each load.
 Upstream's own UFFD restore copies pages into each VM's anonymous memory and
 cannot share a page between VMs; this integration replaces it.
 
-## Control protocol, version 6
+## Control protocol, version 7
 
-Version 5 clients are rejected, for two removals at once. A session carries one
-region, so the `region` field is gone from the frame and the frame is 56 bytes;
-and HELLO no longer carries a page size, because the page is 2 MiB on both ends
-and the version is what says so. Version 4 was rejected before them for the
-removal of the FLUSH request, whose frame kind SEAL took. The supervisor, Rust
-adapter and Firecracker integration must be deployed together.
+Version 6 clients are rejected because the page is no longer one number both
+ends know: ATTACH carries the page this session's region runs and the kind of
+memory its arena is made of, and a 2 MiB page number read as a 4 KiB one names
+another page. Version 6 had itself rejected version 5 for two removals at once —
+a session carries one region, so the `region` field is gone from the frame and
+the frame is 56 bytes, and HELLO carries no page size — and version 4 before it
+for the removal of the FLUSH request, whose frame kind SEAL took. The
+supervisor, Rust adapter and Firecracker integration must be deployed together.
 
 A Unix stream carries fixed 56-byte frames of seven little-endian `u64` fields:
 
@@ -788,7 +820,7 @@ of why it could not start has to name the end the answer never came from.
 | --- | --- | --- |
 | HELLO | 1 | `id` protocol version, every other field zero; carries UFFD |
 | REGION | 2 | `offset=host address`, `length=bytes`, `flags=kind` (1 PMEM, 2 RAM) |
-| ATTACH | 3 | `id` protocol version, `length=arena size`, `flags=mapping-count budget`; carries the arena memfd |
+| ATTACH | 3 | `id` protocol version, `offset=this region's page size`, `length=arena size`, `backing=arena kind` (1 explicit 2 MiB HugeTLB, 2 ordinary shared memfd), `flags=mapping-count budget`; carries the arena memfd |
 | MAP | 4 | Command ID, region-relative offset and length, arena offset in `backing`, next generation; `flags=1` immutable and shared or `0` private and writable |
 | REVOKE | 5 | Command ID, region-relative offset and length, next generation; installs nonresident fault traps |
 | ACK | 6 | Echoes command ID and generation; `flags=0` success or a positive Linux errno |
@@ -811,8 +843,8 @@ The control reader dispatches requests without waiting for their work, because
 a seal can itself need revoke acknowledgements. Writes serialize complete
 commands, including every frame of a batch.
 
-All ranges and backing offsets must be 2 MiB aligned and bounded, and every
-command covers whole pages. Generations start at zero and advance by exactly one
+All ranges and backing offsets must be aligned to the page the attachment stated
+and bounded, and every command covers whole pages of it. Generations start at zero and advance by exactly one
 for every affected page; a command spanning several pages requires all of them
 at the previous generation. Command IDs increase across accepted commands. An
 exact retry of the immediately preceding successful single-range command repeats
@@ -1007,14 +1039,15 @@ snapshot and restore paths, and the seccomp policy source. Snapshot format
 version 13 records managed backing, so an ordinary memory-file snapshot cannot
 silently capture a managed VM, and a build without the feature rejects managed
 configuration. A managed capture is always a full snapshot with no memory file,
-and a managed restore requires 2 MiB HugeTLB RAM in this architecture's own
-layout.
+and a managed restore requires fixed RAM with no huge-page setting, in this
+architecture's own layout.
 
 Starting a machine takes the shared pager, the VM whose volumes it maps, a
 feature-enabled binary and an explicit compiled seccomp
 policy, including the VMM's memory-worker filter. RAM binds to the one volume
-named `ram0` and each PMEM device binds to the volume named by its device ID,
-whose size must be a multiple of 2 MiB. Cold boot additionally supplies a
+named `ram0`, whose size must be a multiple of the RAM pager's page, and each
+PMEM device binds to the volume named by its device ID, whose size must be a
+multiple of 2 MiB — Firecracker's own alignment, and the PMEM pager's page. Cold boot additionally supplies a
 kernel, an optional initrd and boot arguments. A root PMEM device boots
 directly with an appropriate Linux kernel; the qualification guest uses ext4
 with `dax=always`.
@@ -1079,17 +1112,29 @@ built Rust adapter; there, a missing capability or inaccessible physical-page
 information is an error rather than a silent pass. `SPROUTFS_PAGER_MEASURE` and
 `SPROUTFS_FRAGMENT_MIB` enable the opt-in measurement runs.
 `SPROUTFS_FIRECRACKER_RESIDENT_PAGES` sets the full-guest resident budget in
-2 MiB pages; it defaults to 48 pages (96 MiB). At that budget, source and fork
+pages of the larger of the two, 2 MiB; it defaults to 48 pages (96 MiB), and
+each pager's arena is that many bytes. At that budget, source and fork
 each dirty 48 MiB of guest RAM, then verify markers in every 4 KiB subpage
 after both allocations, forcing eviction, spill and refault. The earlier 32 MiB
 budget is below this fixture's working set with 2 MiB pages; even 64 MiB
 thrashes when both forks run. The 96 MiB qualification requires observed
 eviction, spill and refault.
 
-Every suite uses the 2 MiB page. One fault installs the whole page, a store
-copies it, a seal write-protects it and a checkpoint publishes it as one part
-member, and a spilled page comes back whole. Migration requests default to one
-2 MiB page with an 8 MiB per-peer in-flight byte budget.
+The memory suite runs a PMEM pager's 2 MiB page throughout, with one 4 KiB RAM
+pager beside it in `small_page_linux_test.go`; the full-guest suites run the
+production pair, a 4 KiB RAM pager over an ordinary memfd and a 2 MiB PMEM one
+over the pool. One fault installs a whole pager page, a store copies it, a seal
+write-protects it and a checkpoint publishes it as one part member, and a
+spilled page comes back whole. Migration requests default to one 2 MiB page with
+an 8 MiB per-peer in-flight byte budget; what a reply is counted in is the page
+of the volume it answers for.
+
+`small_page_linux_test.go` is the 4 KiB contract against the real kernel: a
+parent reads one byte of a 512-page run, read-ahead loads the whole 2 MiB into
+consecutive arena slots, a child of the same fork point maps that run with one
+mapping command rather than 512 and reads nothing, and a store of one byte into
+one of its pages makes exactly one page private — 4 KiB of arena, 511 of the run
+still shared, the parent's own memory untouched.
 
 The pager suite covers two processes physically sharing pages, verified
 through pagemap; private writes including a first access that is a write;
@@ -1122,8 +1167,8 @@ are all covered, the concurrent ones under the race detector.
 
 They require of the settle that a region sharing pages with a sibling, which
 takes one writable and stores nothing, publish no page and end with that page
-shared again, its private bytes zero, its reservation back and a read of it
-taking no fault; that a page the guest really stored into be published exactly
+shared again, its private bytes zero, its reservation back, its mapping of the
+copy gone and a read of it taking exactly one fault onto the sibling's page; that a page the guest really stored into be published exactly
 as before; that a store landing between the seal and the settle leave the guest
 its own copy for the next checkpoint while this one publishes nothing; that a
 copy whose origin was evicted, one made from zeros, one made from the
@@ -1169,10 +1214,14 @@ parent released before the next — and then both guests reading every page of
 their memory and their whole root volume at the same time while both are
 checkpointed on an interval. The page server runs at the budgets a deployment
 runs, because one peer is one destination host and both children are that host,
-so their regions share every budget counted per peer; the destination's arena is
-a quarter of what the two of them map, so eviction, spill and refault are on
-every one of those reads. Both children must answer: a child whose read never
-returns is a guest nothing can tell from a dead one.
+so their regions share every budget counted per peer; the destination's RAM
+arena is a quarter of the memory the two of them map, so eviction, spill and
+refault are on every one of those reads, while its PMEM arena holds both roots,
+because pressing the disk as well would measure that instead. Both children must
+answer: a child whose read never returns is a guest nothing can tell from a dead
+one. At 4 KiB that phase takes minutes rather than seconds — read-ahead takes
+only free arena slots, so under a quarter-sized arena every page of a scan is
+its own fault — and the bound on it is sized for that.
 
 Both suites report residency, sharing, load, mapping and fault counters; those
 are small-workload observations, not throughput or latency targets. Recorded on

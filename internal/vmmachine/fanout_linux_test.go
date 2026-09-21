@@ -29,13 +29,19 @@ const (
 	forkFanOutRAM     = 256 << 20
 	forkFanOutRoot    = 64 << 20
 	forkFanOutTouched = 64
-	// forkFanOutArena and forkFanOutDirty are the destination pager's pages and
-	// its budget for private state no checkpoint has. Two children of this shape
-	// map four times the arena between them, so every read of theirs evicts,
+	// forkFanOutArena and forkFanOutDirty are each destination pager's arena
+	// and its budget for private state no checkpoint has, in bytes, because the
+	// two pagers count them in their own pages. Two children of this shape map
+	// four times the RAM arena between them, so every read of theirs evicts,
 	// spills and refaults, and the dirty budget is the arena's size as a
 	// deployment's is rather than the whole logical space.
+	//
 	forkFanOutArena = 128 << 20
 	forkFanOutDirty = 128 << 20
+	// forkFanOutRootArena is the destination's PMEM arena. It is stated apart
+	// because the two pagers hold different things: the ratio above is about the
+	// memory two children map, and the roots are what a host keeps resident.
+	forkFanOutRootArena = 128 << 20
 	// forkFanOutInterval is how often each child is checkpointed while it reads,
 	// which is what a deployment does to a VM that is answering: the guest pauses
 	// for the state capture and the seal, and the pages upload behind it.
@@ -46,9 +52,20 @@ const (
 
 // forkFanOutRead bounds the phase this test exists for: two children of one
 // point reading all of their memory and all of their root volume at the same
-// time. Both of them do it in seconds when nothing is wrong, so a bound this
-// generous only separates slow from stopped.
-const forkFanOutRead = 2 * time.Minute
+// time. It separates slow from stopped and asserts nothing about speed, which
+// is why it is generous rather than tight.
+//
+// It was two minutes while RAM's page was 2 MiB. At 4 KiB the same shape is
+// 512 times the page operations: read-ahead takes free arena slots and never
+// evicts, so under an arena a quarter of what the two children map every page
+// of a scan is its own fault, and two children scanning 512 MiB twice is on the
+// order of half a million of them. On the qualification instance the phase
+// takes about a minute and a half on its own and four and a half behind the
+// rest of the suite, so the bound is ten minutes. It is deliberately far above
+// either: it is here to tell a child that is merely slow from one that has
+// stopped, and a child that has stopped never finishes however long it is
+// given.
+const forkFanOutRead = 10 * time.Minute
 
 // TestFirecrackerForkFanOutServesBothChildrenAtOnce forks one running guest
 // into two children on a second pager and page server, receives them one after
@@ -66,12 +83,12 @@ func TestFirecrackerForkFanOutServesBothChildrenAtOnce(t *testing.T) {
 	if binaryPath == "" {
 		t.Skip("run the Firecracker Lima qualification script")
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Minute)
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Minute)
 	defer cancel()
 	c := newMigrationCluster(t, ctx)
 
 	parent, err := c.source.Create(ctx, "parent", []volume.VolumeSpec{
-		{Name: vmmachine.RAMVolume, Size: forkFanOutRAM, PageSize: checkpoint.PageSize2MiB},
+		{Name: vmmachine.RAMVolume, Size: forkFanOutRAM, PageSize: checkpoint.PageSize4KiB},
 		{Name: "root", Size: forkFanOutRoot, PageSize: checkpoint.PageSize2MiB},
 	})
 	if err != nil {
@@ -82,7 +99,7 @@ func TestFirecrackerForkFanOutServesBothChildrenAtOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	sourcePager, _ := newMigrationPager(t, ctx)
+	sourcePager := newMigrationPager(t, ctx)
 	p, err := vmmachine.Start(ctx, migrationConfig(t, binaryPath, sourcePager, parent))
 	if err != nil {
 		t.Fatal(err)
@@ -167,7 +184,7 @@ func TestFirecrackerForkFanOutServesBothChildrenAtOnce(t *testing.T) {
 
 	// Both children land on one destination pager, which is what makes them
 	// share its pages, its budgets and what they inherited.
-	destinationPager, _ := newSizedMigrationPager(t, ctx, forkFanOutArena/pagerPageBytes(t),
+	destinationPager := newSizedMigrationPager(t, ctx, forkFanOutArena, forkFanOutRootArena,
 		len(children)*(forkFanOutRAM+forkFanOutRoot)+(64<<20), forkFanOutDirty)
 	taken := make([]*forkedChild, 0, len(children))
 	for _, handoff := range handoffs {
@@ -336,7 +353,7 @@ func checkpointEvery(t *testing.T, ctx context.Context, child *forkedChild, inte
 // destination creates it and streams the pages no checkpoint holds out of the
 // parent's page server, publishes the child's root index once it has them all,
 // and only then does the parent's host release the hold that child kept.
-func receiveChild(t *testing.T, ctx context.Context, c *migrationCluster, pager *vmmemory.Host,
+func receiveChild(t *testing.T, ctx context.Context, c *migrationCluster, pager *hostPagers,
 	binaryPath string, handoff vmmigrate.Handoff, source *vmmigrate.PageSource) *forkedChild {
 	t.Helper()
 	var process *vmmachine.Process

@@ -30,11 +30,12 @@ the root stays about fifteen bytes per segment, and little enough that a segment
 encodes to a few hundred kilobytes at most — see
 [the layout](#objects) for what that costs per GiB.
 
-The pager, the wire protocols and the VMM still have one page, 2 MiB, so every
-volume a host creates today is a 2 MiB-page volume and a pager refuses one of
-any other page size when it is attached. Giving RAM a 4 KiB page end to end is
-[planned](../plans/ram-pmem-page-geometry-2026-09-19.md) and not yet built; the
-storage layer above is what that plan's second step left in place.
+A host creates each volume in the page of the pager that will map it: a VM's
+`ram0` at 4 KiB and each of its PMEM devices at 2 MiB. The pager, the mapping
+protocol and the VMM carry that page end to end — a session states it when it
+attaches — and a pager refuses a volume published in any other page size when it
+is attached, which is also how a region that reached the wrong one of a host's
+two pagers is caught.
 
 ## Writes
 

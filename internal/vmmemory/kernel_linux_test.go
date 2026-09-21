@@ -29,11 +29,10 @@ import (
 	"github.com/semistrict/sproutfs/internal/volume"
 )
 
-// hugePageSize is the page every test in this file's build runs at. It is not
-// the suite's varying page: these tests go through a HugeTLB arena, the real
-// UFFD and the real transport, and all three map 2 MiB and nothing else. A
-// pager of another page is refused when a session is set up, which is the seam
-// step 4 of the page-geometry plan removes together with the wire.
+// hugePageSize is the page the tests in this file run at: the PMEM pager's,
+// over a HugeTLB arena, which is the geometry a guest's disk has. RAM's 4 KiB
+// page over an ordinary arena is exercised in small_page_linux_test.go, through
+// the same UFFD and the same transport.
 const hugePageSize = checkpoint.PageSize2MiB
 
 // kernelBacking models one region's volume: its pages are inherited from one
@@ -382,7 +381,8 @@ func startNativeWithConfig(t *testing.T, h *vmmemory.Host, pages int, config vmm
 		listeners[i] = l
 	}
 	p := &nativeProcess{t: t, lines: make(chan string, 16), done: make(chan error, 1)}
-	p.cmd = exec.Command(os.Getenv("SPROUTFS_VM_MEMORY_CLIENT"), paths[0], paths[1], strconv.Itoa(pages))
+	p.cmd = exec.Command(os.Getenv("SPROUTFS_VM_MEMORY_CLIENT"), paths[0], paths[1],
+		strconv.Itoa(pages), strconv.FormatUint(h.PageSize(), 10))
 	p.cmd.Stderr = os.Stderr
 	input, err := p.cmd.StdinPipe()
 	if err != nil {

@@ -177,7 +177,7 @@ func newGuestVM(t *testing.T, ctx context.Context, name string) *volume.VM {
 	t.Helper()
 	c := newMigrationCluster(t, ctx)
 	vm, err := c.source.Create(ctx, name, []volume.VolumeSpec{
-		{Name: vmmachine.RAMVolume, Size: 128 << 20, PageSize: checkpoint.PageSize2MiB},
+		{Name: vmmachine.RAMVolume, Size: 128 << 20, PageSize: checkpoint.PageSize4KiB},
 		{Name: "root", Size: guestRootBytes, PageSize: checkpoint.PageSize2MiB},
 	})
 	if err != nil {
@@ -194,7 +194,7 @@ func newGuestVM(t *testing.T, ctx context.Context, name string) *volume.VM {
 // inside it is serving on its vsock.
 func bootGuestWithAgent(t *testing.T, ctx context.Context, binaryPath string, vm *volume.VM) *vmmachine.Process {
 	t.Helper()
-	pager, _ := newMigrationPager(t, ctx)
+	pager := newMigrationPager(t, ctx)
 	config := migrationConfig(t, binaryPath, pager, vm)
 	config.VsockCID = guestVsockCID
 	p, err := vmmachine.Start(ctx, config)

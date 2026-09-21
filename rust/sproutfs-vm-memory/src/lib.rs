@@ -11,7 +11,7 @@ compile_error!("sproutfs-vm-memory currently supports Linux x86_64 and aarch64")
 mod control;
 mod generations;
 mod linux;
-pub use linux::PAGE_SIZE;
+pub use linux::{BACKING_HUGETLB, BACKING_MEMFD, MAX_PAGE_SIZE, MIN_PAGE_SIZE};
 mod vma_budget;
 mod wire;
 
@@ -22,7 +22,7 @@ mod tests;
 pub use control::{Control, PendingSeal};
 
 use std::io;
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::fd::OwnedFd;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 
@@ -67,6 +67,11 @@ pub struct Session {
     uffd: Uffd,
     backing: OwnedFd,
     backing_len: u64,
+    /// The page this session's region runs, which the attachment states and
+    /// which every offset, length and backing offset on this wire is counted
+    /// in. It is not a constant of the library: a host's RAM and its PMEM are
+    /// two pagers and need not agree.
+    page_size: usize,
     region: OwnedRegion,
     last_command: Option<Frame>,
     terminal: bool,
@@ -81,10 +86,14 @@ impl Drop for Session {
 
 impl Session {
     pub fn connect(path: impl AsRef<Path>, spec: RegionSpec) -> io::Result<Self> {
-        if spec.len == 0 || spec.len % linux::PAGE_SIZE != 0 {
+        // The region is reserved before the page is known, so it is reserved at
+        // the largest page this transport maps and checked against the page the
+        // attachment states below. Both geometries are then aligned: nothing is
+        // exposed to the embedder until that check has passed.
+        if spec.len == 0 || spec.len % linux::MIN_PAGE_SIZE != 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "expected a nonempty page-aligned region",
+                "expected a nonempty host-page-aligned region",
             ));
         }
         let uffd = Uffd::new()?;
@@ -118,35 +127,7 @@ impl Session {
         }
         .write(&mut socket)?;
         let (attach, backing) = Frame::receive_fd(&mut socket)?;
-        let mut stat: libc::stat = unsafe { std::mem::zeroed() };
-        if unsafe { libc::fstat(backing.as_raw_fd(), &mut stat) } != 0 {
-            return Err(io::Error::last_os_error());
-        }
-        if attach.kind != wire::ATTACH
-            || attach.id != wire::VERSION
-            || attach.len == 0
-            || attach.len != stat.st_size as u64
-            || attach.len > i64::MAX as u64
-            || attach.len % linux::PAGE_SIZE as u64 != 0
-            || attach.offset != 0
-            || attach.backing != 0
-            || attach.generation != 0
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "invalid backing attachment",
-            ));
-        }
-        let mut fs: libc::statfs = unsafe { std::mem::zeroed() };
-        if unsafe { libc::fstatfs(backing.as_raw_fd(), &mut fs) } != 0 {
-            return Err(io::Error::last_os_error());
-        }
-        if fs.f_type as u64 != 0x958458f6 || fs.f_bsize as usize != linux::PAGE_SIZE {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "backing must use explicit 2 MiB HugeTLB pages",
-            ));
-        }
+        let page_size = Self::geometry(attach, &backing, spec.len)?;
         let vmas = vma_budget::VmaBudget::new(attach.flags)?;
         let mut session = Self {
             vmas,
@@ -155,6 +136,7 @@ impl Session {
             uffd,
             backing,
             backing_len: attach.len,
+            page_size,
             region,
             last_command: None,
             terminal: false,
@@ -163,6 +145,58 @@ impl Session {
         // side also installs page tables before sending READY.
         session.run_inner(true)?;
         Ok(session)
+    }
+
+    /// Checks the geometry an attachment states, and reports the page this
+    /// session runs. Nothing here has mapped the arena or exposed an address:
+    /// a page this transport does not map, an arena that is not the memory that
+    /// page is made of, or a region of this length that is not whole pages of
+    /// it all end the session before the embedder sees a byte.
+    fn geometry(attach: Frame, backing: &OwnedFd, region_len: usize) -> io::Result<usize> {
+        let refuse = |what: String| io::Error::new(io::ErrorKind::InvalidData, what);
+        if attach.kind != wire::ATTACH || attach.id != wire::VERSION || attach.generation != 0 {
+            return Err(refuse(format!(
+                "invalid backing attachment: kind {} version {} (this client speaks version {})",
+                attach.kind,
+                attach.id,
+                wire::VERSION
+            )));
+        }
+        let page_size = usize::try_from(attach.offset).ok().unwrap_or(0);
+        let Some(kind) = linux::backing_for(page_size) else {
+            return Err(refuse(format!(
+                "this client maps {}-byte and {}-byte pages, the session states {}",
+                linux::MIN_PAGE_SIZE,
+                linux::MAX_PAGE_SIZE,
+                attach.offset
+            )));
+        };
+        if attach.backing != kind {
+            return Err(refuse(format!(
+                "a {page_size}-byte page is arena kind {kind}, the session states {}",
+                attach.backing
+            )));
+        }
+        if attach.len == 0 || attach.len % page_size as u64 != 0 {
+            return Err(refuse(format!(
+                "an arena of {} bytes is not whole {page_size}-byte pages",
+                attach.len
+            )));
+        }
+        if region_len % page_size != 0 {
+            return Err(refuse(format!(
+                "a region of {region_len} bytes is not whole {page_size}-byte pages"
+            )));
+        }
+        linux::check_backing(backing, kind, attach.len)?;
+        Ok(page_size)
+    }
+
+    /// The page this session's region runs, which the attachment stated. Every
+    /// offset and length on this wire is counted in it, and an embedder placing
+    /// the region in a guest's address space must respect it.
+    pub fn page_size(&self) -> usize {
+        self.page_size
     }
 
     /// Returns the stable address for the embedding process to register/use.
@@ -329,7 +363,7 @@ impl Session {
             return Err(libc::ESTALE);
         }
         let r = &self.region;
-        let size = linux::PAGE_SIZE as u64;
+        let size = self.page_size as u64;
         if c.len == 0
             || c.offset % size != 0
             || c.len % size != 0
@@ -388,7 +422,7 @@ impl Session {
     }
 
     fn record_generation(&mut self, c: Frame) {
-        let size = linux::PAGE_SIZE as u64;
+        let size = self.page_size as u64;
         self.region.generations.set(
             (c.offset / size) as usize,
             ((c.offset + c.len) / size) as usize,

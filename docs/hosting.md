@@ -13,7 +13,9 @@ Everything a host does is `internal/host`. `Host` is what the deployment runs on
 this machine: the object namespace, the shared page cache, the volume manager,
 the migration page server, and the loops that keep what it runs durable and
 fenced. The supervisor around it — `host.Start`, which returns the `host.Service`
-the command serves — owns the pager over its HugeTLB arena and spill file, the
+the command serves — owns the two pagers, each over an arena and a spill file of
+its own: RAM's 4 KiB pages on an ordinary memfd, PMEM's 2 MiB pages on the
+node's HugeTLB pool. It also owns the
 Firecracker processes, the templates guest images are imported into, and the
 channel to the agent in a guest. `cmd/sproutfs-host` keeps its configuration, its
 HTTP handlers and the wiring between them, and nothing else.
