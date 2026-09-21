@@ -442,11 +442,12 @@ func (s *Store) ReadState(ctx context.Context, index *Index) ([]byte, error) {
 	return s.readMember(ctx, index.state, maximumStateSize)
 }
 
-// Read fills dst from a volume of a published checkpoint. The range is one run
-// of pages: the segments locating them are read once each however many pages
-// they locate, the members are fetched in as few ranged reads as the layout
-// allows, and a page with no member reads as zeroes and costs no request at
-// all. On error dst may be partially filled.
+// Read fills dst from a volume of a published checkpoint. The range is served
+// as runs of pages, one per maximumRunBytes of it: the segments locating a
+// run's pages are read once each however many pages they locate, its members
+// are fetched in as few ranged reads as the layout allows, and a page with no
+// member reads as zeroes and costs no request at all. On error dst may be
+// partially filled.
 func (s *Store) Read(ctx context.Context, index *Index, volume string, offset uint64, dst []byte) error {
 	table := index.volumes[volume]
 	if table == nil {
