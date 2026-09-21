@@ -265,7 +265,6 @@ func TestFirecrackerForkFanOutServesBothChildrenAtOnce(t *testing.T) {
 	// restore's pages and no others; any more is a child being handed a page
 	// that is not its own.
 	beside, releaseBeside := receiveStill(t, ctx, c, destinationPager, binaryPath, besideHandoff, pages, point)
-	defer releaseBeside()
 	sweeping, stopSweeping := context.WithCancel(ctx)
 	defer stopSweeping()
 	swept := make(chan int, 1)
@@ -320,6 +319,10 @@ func TestFirecrackerForkFanOutServesBothChildrenAtOnce(t *testing.T) {
 	t.Logf("fan-out read: children=%d rounds=%d elapsed=%s", len(taken), forkFanOutRounds, time.Since(began))
 	stopSweeping()
 	t.Logf("image check beside the running children: %d sweeps of every page", <-swept)
+	// The still child gives its pages up here rather than at the end: what the
+	// parent's page server still owes is asserted below, and a child that has
+	// not been released is one it rightly still owes.
+	releaseBeside()
 	if t.Failed() {
 		t.Fatalf("a child was handed a page that is not its own\n%s", consoleText(p))
 	}
