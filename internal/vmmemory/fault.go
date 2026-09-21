@@ -234,6 +234,11 @@ func (r *Region) fault(ctx context.Context, index uint64, write bool, spill *int
 // backing names another page, and a page only another host still holds, whose
 // bytes are not the volume's at all. The store reads its own copy from the
 // backing then, exactly as it always did, and remembers no origin.
+//
+// Which of those a page is has two answers on a post-copy destination, and they
+// come from different places: the extents report the set its handoff fixed, and
+// a load reports what the source said when it answered. The load's is the one
+// that saw the bytes, so it decides — the extents only save the read.
 func (r *Region) readIn(ctx context.Context, index uint64) (*resident, error) {
 	h := r.host
 	window, err := r.plan(ctx, index, index+1, index)
@@ -271,8 +276,20 @@ func (r *Region) readIn(ctx context.Context, index uint64) (*resident, error) {
 			return nil, err
 		}
 		data := make([]byte, h.pageSize)
-		if _, err := r.loadWindow(ctx, index*h.pageSize, data); err != nil {
+		unpublished, err := r.loadWindow(ctx, index*h.pageSize, data)
+		if err != nil {
 			return nil, h.abandonSlots(ctx, slot, 1, err)
+		}
+		if len(unpublished) > 0 && unpublished[0] {
+			// The extents named this page the volume's and the load found the
+			// source still holding it. The two answers come from different
+			// places — the set the handoff fixed, and what the source said when
+			// it answered — and the one that saw the bytes is the load's. They
+			// are not this identity's bytes, so nothing may be shared under it:
+			// the store reads its own copy from the backing and tells the
+			// backing it took the page, exactly as for a page the extents
+			// themselves call unpublished.
+			return nil, h.abandonSlots(ctx, slot, 1, nil)
 		}
 		h.mu.Lock()
 		h.stats.Loads++

@@ -18,7 +18,14 @@ type peerBacking struct {
 	// unpublished names the pages the source holds, and served their bytes.
 	unpublished map[uint64]bool
 	served      map[uint64]byte
-	loads       int
+	// hidden names pages the source serves out of its own dirty pages that the
+	// handoff's set did not list, and the bytes it serves for them. The two
+	// answers a real peer backing gives come from different places — Locate
+	// reports the set the handoff fixed, while a load reports what the source
+	// says at the moment it answers — so a page can be located as the volume's
+	// and loaded as the source's own, which is what these pages are.
+	hidden map[uint64]byte
+	loads  int
 	// installedMu guards installed, which is every page this backing was told
 	// the region went on to hold. A real peer backing stops asking its source
 	// for those and lets it stop serving, so a page missing from here is a page
@@ -60,12 +67,16 @@ func (b *peerBacking) LoadUnpublished(ctx context.Context, offset uint64, dst []
 	result := make([]bool, pages)
 	for index := range pages {
 		page := offset/size + index
-		if !b.unpublished[page] {
+		served, own := b.served[page], b.unpublished[page]
+		if hidden, only := b.hidden[page]; only {
+			served, own = hidden, true
+		}
+		if !own {
 			continue
 		}
 		result[index] = true
 		clear(dst[index*size : (index+1)*size])
-		dst[index*size] = b.served[page]
+		dst[index*size] = served
 	}
 	return result, nil
 }
@@ -251,3 +262,44 @@ func TestAStoreTakesAPageNoCheckpointHoldsAndReportsItInstalled(t *testing.T) {
 }
 
 func ptr[T any](value T) *T { return &value }
+
+// A store into a page this region holds no memory for reads that page in first,
+// and puts what it read into the sharing index under the identity the volume
+// gives it, so that the copy has an origin and every sibling that inherits the
+// identity maps the page instead of reading it again. That is only sound while
+// the bytes it read are that identity's bytes.
+//
+// A post-copy destination gets two answers about where a page's bytes are, and
+// they come from different places: the extents report the set the handoff
+// fixed, while the load reports what the source said when it answered. A page
+// the source serves out of its own dirty pages that the handoff did not list is
+// located as the volume's and loaded as the source's own — and the load's
+// answer is the one that saw the bytes. Publishing them under the volume's
+// identity gives every sibling that inherits it the other machine's private
+// memory in place of its own page.
+func TestASourceServedPageTheExtentsCallPublishedIsNotSharedUnderItsIdentity(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newFixture(t, 8, 16, 8)
+		base := f.newBacking(4)
+		// Page 1 is the volume's as far as the handoff said; the source serves
+		// it out of its own dirty pages anyway.
+		peer := &peerBacking{backing: base, hidden: map[uint64]byte{1: 71}}
+		r, m := f.attach(peer)
+		sibling, siblingMapping, _ := f.region(4)
+
+		// The store reads the page in, copies away from it and stores.
+		access(t, r, m, 1, true)[0] = 99
+
+		// The sibling inherits the same identity for page 1. Its bytes are the
+		// volume's — 2 — and never the source's private 71.
+		if got := access(t, sibling, siblingMapping, 1, false)[0]; got != 2 {
+			t.Fatalf("the sibling reads %d for page 1, want the volume's 2: "+
+				"the source's own page was published under the volume's identity", got)
+		}
+		// And the source is told the destination has the page, or it goes on
+		// holding bytes this host has already taken.
+		if !peer.holds(1) {
+			t.Fatal("the backing was never told this region took the page the source served")
+		}
+	})
+}
