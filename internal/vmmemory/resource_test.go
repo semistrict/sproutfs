@@ -23,7 +23,7 @@ func pageBudget(t *testing.T, pages int) *resource.Budget {
 func TestPagerEvictsWithinSharedRAMAllowance(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		b := pageBudget(t, 2)
-		other, err := b.TryAcquire(t.Context(), pageSize)
+		other, err := b.TryAcquire(t.Context(), int64(pageSize))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -33,7 +33,7 @@ func TestPagerEvictsWithinSharedRAMAllowance(t *testing.T) {
 			if got := access(t, r, m, page, false)[0]; got != byte(page+1) {
 				t.Fatalf("page %d lost data: %d", page, got)
 			}
-			if got := b.Stats().Used; got != 2*pageSize {
+			if got := b.Stats().Used; got != int64(2*pageSize) {
 				t.Fatalf("shared RAM accounting = %d", got)
 			}
 		}
@@ -67,14 +67,14 @@ func TestSharedPageIsChargedOnceUntilLastAliasDetaches(t *testing.T) {
 		if got := access(t, second, sm, 0, false)[0]; got != 1 {
 			t.Fatal(got)
 		}
-		if fm.pages[0].slot != sm.pages[0].slot || b.Stats().Used != pageSize {
+		if fm.pages[0].slot != sm.pages[0].slot || b.Stats().Used != int64(pageSize) {
 			t.Fatal("shared page was duplicated or charged twice")
 		}
 		clear(fm.pages)
 		if err := first.Detach(t.Context()); err != nil {
 			t.Fatal(err)
 		}
-		if b.Stats().Used != pageSize {
+		if b.Stats().Used != int64(pageSize) {
 			t.Fatal("first detach released a page still held by a sibling")
 		}
 		clear(sm.pages)
@@ -90,7 +90,7 @@ func TestSharedPageIsChargedOnceUntilLastAliasDetaches(t *testing.T) {
 func TestFaultWaitsForOtherConsumerAndCancellationReleasesReservations(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		b := pageBudget(t, 1)
-		other, err := b.TryAcquire(t.Context(), pageSize)
+		other, err := b.TryAcquire(t.Context(), int64(pageSize))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -109,7 +109,7 @@ func TestFaultWaitsForOtherConsumerAndCancellationReleasesReservations(t *testin
 		if err := <-done; !errors.Is(err, context.Canceled) {
 			t.Fatal(err)
 		}
-		if b.Stats().Used != pageSize {
+		if b.Stats().Used != int64(pageSize) {
 			t.Fatal("canceled fault changed another consumer's ownership")
 		}
 		other.Close()
@@ -156,7 +156,7 @@ func TestFailedPhysicalCleanupRetainsRAMUntilRetry(t *testing.T) {
 		}
 		defer spill.Close()
 		a := &failedResourceArena{arena: f.a, failPunch: true}
-		f.h, err = vmmemory.New(t.Context(), b, vmmemory.Config{PageSize: pageSize, ResidentPages: 1, LogicalPages: 1, DirtyPages: 1}, a, spill)
+		f.h, err = vmmemory.New(t.Context(), b, vmmemory.Config{PageSize: uint64(pageSize), ResidentPages: 1, LogicalPages: 1, DirtyPages: 1}, a, spill)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -171,7 +171,7 @@ func TestFailedPhysicalCleanupRetainsRAMUntilRetry(t *testing.T) {
 		if err := f.h.Close(t.Context()); !errors.Is(err, errInjected) {
 			t.Fatalf("failed punch was accepted: %v", err)
 		}
-		if b.Stats().Used != pageSize {
+		if b.Stats().Used != int64(pageSize) {
 			t.Fatal("unreleased physical memory became available to another owner")
 		}
 		a.failPunch = false
@@ -205,7 +205,10 @@ func TestHugePageFaultReclaimsCacheBeforeEvictingGuestPages(t *testing.T) {
 			cached.Close()
 			return true, nil
 		})()
-		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 2, LogicalPages: 2,
+		// The budget here is two of the large page, so this pager runs that page
+		// whichever one the suite is exercising: what is being asked is how a
+		// 2 MiB admission behaves against a cache holding the other half.
+		f := newConfiguredFixture(t, vmmemory.Config{PageSize: huge, ResidentPages: 2, LogicalPages: 2,
 			DirtyPages: 2, ReadAheadPages: 1}, b)
 		r, m, _ := f.region(2)
 		access(t, r, m, 0, false)

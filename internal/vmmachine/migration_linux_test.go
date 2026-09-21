@@ -42,8 +42,8 @@ func TestFirecrackerLiveMigration(t *testing.T) {
 	c := newMigrationCluster(t, ctx)
 
 	source, err := c.source.Create(ctx, "migrant", []volume.VolumeSpec{
-		{Name: vmmachine.RAMVolume, Size: 128 << 20, PageSize: vmmemory.PageSize},
-		{Name: "root", Size: 64 << 20, PageSize: vmmemory.PageSize},
+		{Name: vmmachine.RAMVolume, Size: 128 << 20, PageSize: checkpoint.PageSize2MiB},
+		{Name: "root", Size: 64 << 20, PageSize: checkpoint.PageSize2MiB},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -326,7 +326,7 @@ func newSizedMigrationPager(t *testing.T, ctx context.Context,
 	slots, logicalBytes, dirtyBytes int) (*vmmemory.Host, *vmmemory.LinuxArena) {
 	t.Helper()
 	pageBytes := pagerPageBytes(t)
-	arena, err := vmmemory.NewLinuxArena(slots)
+	arena, err := vmmemory.NewLinuxArena(slots, checkpoint.PageSize2MiB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -341,7 +341,7 @@ func newSizedMigrationPager(t *testing.T, ctx context.Context,
 	}
 	t.Cleanup(func() { _ = spill.Close() })
 	pages := logicalBytes / pageBytes
-	host, err := vmmemory.New(ctx, testresource.New(), vmmemory.Config{ResidentPages: slots,
+	host, err := vmmemory.New(ctx, testresource.New(), vmmemory.Config{PageSize: checkpoint.PageSize2MiB, ResidentPages: slots,
 		LogicalPages: pages, DirtyPages: dirtyBytes / pageBytes}, arena, spill)
 	if err != nil {
 		t.Fatal(err)
@@ -354,7 +354,7 @@ func migrationConfig(t *testing.T, binary string, pager *vmmemory.Host, vm *volu
 	return vmmachine.Config{Binary: binary, SeccompFilter: os.Getenv("SPROUTFS_FIRECRACKER_SECCOMP"),
 		KernelPath: os.Getenv("SPROUTFS_FIRECRACKER_KERNEL"), InitrdPath: os.Getenv("SPROUTFS_FIRECRACKER_INITRD"),
 		BootArgs: guestPmemBootArgs,
-		Host:     pager, VM: vm, Pmem: []vmmachine.Pmem{{ID: "root", Root: true}},
+		Pagers: bothKinds(pager), VM: vm, Pmem: []vmmachine.Pmem{{ID: "root", Root: true}},
 		VCPUs:   1,
 		Scratch: mustScratch(t),
 		Connection: vmmemory.ConnectionConfig{QueuePages: 128, CommandTimeout: 2 * time.Minute,
@@ -614,7 +614,7 @@ func absentPage(t *testing.T, ctx context.Context, runs []vmmigrate.PageRun, reg
 	for _, run := range runs {
 		for page := run.First; page < run.First+uint64(run.Count); page++ {
 			if !held[page] {
-				extents, err := backing.Locate(ctx, page*vmmemory.PageSize, vmmemory.PageSize)
+				extents, err := backing.Locate(ctx, page*checkpoint.PageSize2MiB, checkpoint.PageSize2MiB)
 				if err != nil {
 					t.Fatal(err)
 				}

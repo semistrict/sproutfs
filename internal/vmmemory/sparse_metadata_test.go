@@ -7,7 +7,6 @@ import (
 	"testing"
 	"testing/synctest"
 
-	"github.com/semistrict/sproutfs/internal/checkpoint"
 	"github.com/semistrict/sproutfs/internal/control"
 	"github.com/semistrict/sproutfs/internal/vmmemory"
 )
@@ -31,7 +30,7 @@ func (b *sparseMemoryBacking) Load(ctx context.Context, offset uint64, dst []byt
 	defer b.mu.Unlock()
 	clear(dst)
 	for i := 0; i < len(dst); {
-		page, inPage := (offset+uint64(i))/pageSize, (offset+uint64(i))%pageSize
+		page, inPage := (offset+uint64(i))/uint64(pageSize), (offset+uint64(i))%uint64(pageSize)
 		count := min(len(dst)-i, pageSize-int(inPage))
 		if data := b.pages[page]; data != nil {
 			copy(dst[i:i+count], data[inPage:inPage+uint64(count)])
@@ -73,17 +72,17 @@ func (b *sparseMemoryBacking) Locate(ctx context.Context, offset, length uint64)
 	end := offset + length
 	var result []control.Extent
 	for offset < end {
-		page := offset / pageSize
+		page := offset / uint64(pageSize)
 		if b.pages[page] != nil {
-			stop := min(end, (page+1)*pageSize)
+			stop := min(end, (page+1)*uint64(pageSize))
 			result = append(result, control.Extent{Offset: offset, Length: stop - offset,
-				Identity: control.Identity{Ref: control.Ref{VM: b.vm, Sequence: 2}, Volume: "v", Page: offset / checkpoint.PageSize2MiB}})
+				Identity: control.Identity{Ref: control.Ref{VM: b.vm, Sequence: 2}, Volume: "v", Page: offset / uint64(pageSize)}})
 			offset = stop
 			continue
 		}
 		stop := end
 		for page := range b.pages {
-			if pos := page * pageSize; pos > offset {
+			if pos := page*uint64(pageSize); pos > offset {
 				stop = min(stop, pos)
 			}
 		}
@@ -95,9 +94,9 @@ func (b *sparseMemoryBacking) Locate(ctx context.Context, offset, length uint64)
 
 func TestLargeLogicalRegionAllocatesMetadataOnlyWhenUsed(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		const pages = 32 << 30 / pageSize
-		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 2, LogicalPages: pages, DirtyPages: 4, ReadAheadPages: 1})
-		b := &sparseMemoryBacking{size: pages * pageSize, vm: "sparse", pages: make(map[uint64][]byte)}
+		pages := uint64(32 << 30 / pageSize)
+		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 2, LogicalPages: int(pages), DirtyPages: 4, ReadAheadPages: 1})
+		b := &sparseMemoryBacking{size: pages * uint64(pageSize), vm: "sparse", pages: make(map[uint64][]byte)}
 		var before, after runtime.MemStats
 		runtime.ReadMemStats(&before)
 		r, m := f.attach(b)
@@ -119,7 +118,7 @@ func TestLargeLogicalRegionAllocatesMetadataOnlyWhenUsed(t *testing.T) {
 		}
 		for i, page := range selected {
 			data := make([]byte, pageSize)
-			if err := b.Load(t.Context(), page*pageSize, data); err != nil || data[0] != byte(i+41) {
+			if err := b.Load(t.Context(), page*uint64(pageSize), data); err != nil || data[0] != byte(i+41) {
 				t.Fatalf("far dirty page %d was not published: %d %v", page, data[0], err)
 			}
 		}
@@ -152,11 +151,11 @@ func (m *sparseZeroMapping) Protect(context.Context, uint64, int) error       { 
 
 func TestEagerZeroPopulationKeepsLargeLogicalMetadataSparse(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		const pages = 32 << 30 / pageSize
-		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 1, LogicalPages: pages + 1, DirtyPages: 2, ReadAheadPages: 1})
-		seed, mapping := f.attach(&sparseMemoryBacking{size: pageSize, vm: "seed", pages: make(map[uint64][]byte)})
+		pages := uint64(32 << 30 / pageSize)
+		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 1, LogicalPages: int(pages) + 1, DirtyPages: 2, ReadAheadPages: 1})
+		seed, mapping := f.attach(&sparseMemoryBacking{size: uint64(pageSize), vm: "seed", pages: make(map[uint64][]byte)})
 		access(t, seed, mapping, 0, false) // establishes known sparse backing in the pager
-		b := &sparseMemoryBacking{size: pages * pageSize, vm: "big", pages: make(map[uint64][]byte)}
+		b := &sparseMemoryBacking{size: pages * uint64(pageSize), vm: "big", pages: make(map[uint64][]byte)}
 		m := &sparseZeroMapping{data: make(map[uint64]int)}
 		runtime.GC()
 		var before, after runtime.MemStats
@@ -248,7 +247,7 @@ func TestFragmentedPrivatePagesSplitCompressedZeroMappings(t *testing.T) {
 			if page%2 == 0 {
 				want = byte(page%251 + 1)
 			}
-			if got := backing.data[page*pageSize]; got != want {
+			if got := backing.data[page*uint64(pageSize)]; got != want {
 				t.Fatalf("published fragmented page %d=%d want=%d", page, got, want)
 			}
 		}

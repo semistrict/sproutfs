@@ -187,7 +187,7 @@ func TestSequentialStoresIntoFreshMemoryTakeOneFaultPerRun(t *testing.T) {
 				}
 				maps, revokes := m.maps, m.revokes
 				before := hostStats(t, f)
-				want := make([]byte, pages*pageSize)
+				want := make([]byte, pages*uint64(pageSize))
 				for page := range uint64(pages) {
 					value := byte(page + 1)
 					if _, err := memoryByte(t.Context(), r, m, page, &value); err != nil {
@@ -266,7 +266,7 @@ func TestWriteAheadTakesOnlyFreeArenaSlots(t *testing.T) {
 		const pages = 16
 		f, r, m, b := holeRegion(t, vmmemory.Config{ResidentPages: 4, LogicalPages: pages,
 			DirtyPages: pages, ReadAheadPages: 8, WriteAheadPages: 8}, pages)
-		want := make([]byte, pages*pageSize)
+		want := make([]byte, pages*uint64(pageSize))
 		access(t, r, m, 0, true)[0] = 10
 		want[0] = 10
 		if s := hostStats(t, f); s.WriteAheadPages != 3 || s.ResidentPages != 4 || s.DirtyPages != 4 || s.Evictions != 0 {
@@ -297,7 +297,7 @@ func TestWriteAheadTakesOnlySpareDirtyReservations(t *testing.T) {
 		const pages = 16
 		f, r, m, b := holeRegion(t, vmmemory.Config{ResidentPages: pages, LogicalPages: pages,
 			DirtyPages: 3, ReadAheadPages: 8, WriteAheadPages: 8}, pages)
-		want := make([]byte, pages*pageSize)
+		want := make([]byte, pages*uint64(pageSize))
 		access(t, r, m, 0, true)[0] = 10
 		want[0] = 10
 		if s := hostStats(t, f); len(m.pages) != 3 || s.WriteAheadPages != 2 || s.DirtyPages != 3 || s.PeakDirtyPages != 3 {
@@ -367,7 +367,7 @@ func TestACheckpointPublishesEveryWriteAheadPage(t *testing.T) {
 			t.Fatalf("checkpoint %d pages, write-ahead %d, zero write-ahead %d; want 8, 6, 5",
 				s.CheckpointPages, s.WriteAheadPages, s.WriteAheadZeroPages)
 		}
-		want := make([]byte, pages*pageSize)
+		want := make([]byte, pages*uint64(pageSize))
 		want[0], want[4*pageSize], want[5*pageSize] = 5, 6, 7
 		if !bytes.Equal(b.data, want) {
 			t.Fatal("the volume does not hold exactly the stores")

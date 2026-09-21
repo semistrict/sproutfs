@@ -5,13 +5,17 @@ import (
 	"testing"
 	"testing/synctest"
 
+	"github.com/semistrict/sproutfs/internal/checkpoint"
 	"github.com/semistrict/sproutfs/internal/vmmemory"
 )
 
+// The two tests here are about the large page itself — what one 2 MiB unit of
+// ownership costs a store and carries through a spill — so they name that page
+// rather than running at whichever one the suite is exercising.
 func TestHugePageIsSharedWholeAndCopiesWholePage(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		const huge = 2 << 20
-		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 3, LogicalPages: 4, DirtyPages: 4})
+		const huge = checkpoint.PageSize2MiB
+		f := newConfiguredFixture(t, vmmemory.Config{PageSize: huge, ResidentPages: 3, LogicalPages: 4, DirtyPages: 4})
 		a := f.newBacking(1)
 		for i, offset := range []int{0, 4096, 1 << 20, (2 << 20) - 4096, (2 << 20) - 1} {
 			a.data[offset] = byte(31 + i)
@@ -53,7 +57,8 @@ func TestHugePageIsSharedWholeAndCopiesWholePage(t *testing.T) {
 
 func TestHugePageSpillAndWritebackPreserveEverySubpage(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 1, LogicalPages: 3, DirtyPages: 3})
+		f := newConfiguredFixture(t, vmmemory.Config{PageSize: checkpoint.PageSize2MiB,
+			ResidentPages: 1, LogicalPages: 3, DirtyPages: 3})
 		r, m, b := f.region(3)
 		want := make([][]byte, 3)
 		for page := range uint64(3) {

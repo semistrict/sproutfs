@@ -58,7 +58,7 @@ func TestConnectionCancellationDuringAttachment(t *testing.T) {
 	}
 	for _, stage := range []string{"descriptor", "admission", "metadata"} {
 		t.Run(stage, func(t *testing.T) {
-			a, err := vmmemory.NewLinuxArena(1, pageSize)
+			a, err := vmmemory.NewLinuxArena(1, hugePageSize)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -72,13 +72,13 @@ func TestConnectionCancellationDuringAttachment(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer spill.Close()
-			h, err := vmmemory.New(t.Context(), testresource.New(), vmmemory.Config{PageSize: pageSize, ResidentPages: 1, LogicalPages: 2, DirtyPages: 1}, a, spill)
+			h, err := vmmemory.New(t.Context(), testresource.New(), vmmemory.Config{PageSize: hugePageSize, ResidentPages: 1, LogicalPages: 2, DirtyPages: 1}, a, spill)
 			if err != nil {
 				t.Fatal(err)
 			}
 			var seed *vmmemory.Region
 			if stage == "metadata" {
-				seed, err = h.Attach(t.Context(), ram(newKernelBacking(1, pageSize)), seedMapping{})
+				seed, err = h.Attach(t.Context(), ram(newKernelBacking(1, hugePageSize)), seedMapping{})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -87,7 +87,7 @@ func TestConnectionCancellationDuringAttachment(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			b := &stalledAttachmentBacking{kernelBacking: newKernelBacking(1, pageSize), stage: stage, entered: make(chan struct{})}
+			b := &stalledAttachmentBacking{kernelBacking: newKernelBacking(1, hugePageSize), stage: stage, entered: make(chan struct{})}
 			listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: filepath.Join(t.TempDir(), "pager.sock"), Net: "unix"})
 			if err != nil {
 				t.Fatal(err)

@@ -10,7 +10,9 @@ import (
 
 	"github.com/semistrict/sproutfs/internal/checkpoint"
 	"github.com/semistrict/sproutfs/internal/control"
+	"github.com/semistrict/sproutfs/internal/platform"
 	"github.com/semistrict/sproutfs/internal/platform/sim"
+	"github.com/semistrict/sproutfs/internal/testresource"
 	"github.com/semistrict/sproutfs/internal/vmmemory"
 	"github.com/semistrict/sproutfs/internal/volume"
 )
@@ -20,7 +22,7 @@ import (
 // volume it maps. A VM's other volumes, ram1 among them, are not regions.
 func TestPlanBindsRegionsToTheirVolumes(t *testing.T) {
 	vm := planVM(t)
-	layout, err := planConfig(vm).plan()
+	layout, err := planConfig(t, vm).plan()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +50,7 @@ func TestPlanBindsRegionsToTheirVolumes(t *testing.T) {
 // every region the configuration did not name keeps reading its own volume.
 func TestPlanAttachesTheSuppliedBackings(t *testing.T) {
 	vm := planVM(t)
-	c := planConfig(vm)
+	c := planConfig(t, vm)
 	ram := &fakeBacking{size: 4 << 20}
 	root := &fakeBacking{size: 4 << 20}
 	c.Backings = map[string]vmmemory.Backing{RAMVolume: ram, "root": root}
@@ -89,7 +91,7 @@ func TestPlanRefusesABackingItWouldNotUse(t *testing.T) {
 			`vmmachine: the backing of "ram0" is 2097152 bytes, its volume is 4194304`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			c := planConfig(vm)
+			c := planConfig(t, vm)
 			c.Backings = test.backings
 			_, err := c.plan()
 			if err == nil || err.Error() != test.want {
@@ -111,7 +113,8 @@ func TestPlanRefusesAMachineItCannotBind(t *testing.T) {
 		modify func(*Config)
 		want   string
 	}{
-		{"no pager", func(c *Config) { c.Host = nil }, "vmmachine: invalid configuration"},
+		{"no pagers", func(c *Config) { c.Pagers = vmmemory.Pagers{} }, "vmmachine: invalid configuration"},
+		{"only one pager", func(c *Config) { c.Pagers.Pmem = nil }, "vmmachine: invalid configuration"},
 		{"no kernel to boot", func(c *Config) { c.KernelPath = "" }, "vmmachine: cold boot needs a kernel"},
 		{"a PMEM device with no volume", func(c *Config) { c.Pmem = []Pmem{{ID: "missing"}} },
 			`vmmachine: invalid PMEM device "missing"`},
@@ -122,7 +125,7 @@ func TestPlanRefusesAMachineItCannotBind(t *testing.T) {
 		{"a reserved vsock CID", func(c *Config) { c.VsockCID = 2 }, "vmmachine: vsock CID 2 is reserved"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			c := planConfig(vm)
+			c := planConfig(t, vm)
 			test.modify(&c)
 			_, err := c.plan()
 			if err == nil || err.Error() != test.want {
@@ -136,12 +139,12 @@ func TestPlanRefusesAMachineItCannotBind(t *testing.T) {
 // configuration causes.
 func TestPlanRefusesAVMWithoutRAM(t *testing.T) {
 	manager := planManager(t)
-	vm, err := manager.Create(t.Context(), "diskless", []volume.VolumeSpec{{Name: "root", Size: 4 << 20, PageSize: vmmemory.PageSize}})
+	vm, err := manager.Create(t.Context(), "diskless", []volume.VolumeSpec{{Name: "root", Size: 4 << 20, PageSize: checkpoint.PageSize2MiB}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = vm.Close(context.WithoutCancel(t.Context())) })
-	c := planConfig(vm)
+	c := planConfig(t, vm)
 	if _, err := c.plan(); err == nil || err.Error() != "vmmachine: diskless has no volume named ram0" {
 		t.Fatalf("plan reported %v, want a VM with no ram0", err)
 	}
@@ -149,10 +152,42 @@ func TestPlanRefusesAVMWithoutRAM(t *testing.T) {
 
 // planConfig is a configuration that would start planVM's machine, with a
 // binary that does not exist: nothing here reaches an exec.
-func planConfig(vm *volume.VM) Config {
+func planConfig(t *testing.T, vm *volume.VM) Config {
 	return Config{Binary: "/nonexistent-sproutfs-vmm", SeccompFilter: "/nonexistent-sproutfs-seccomp",
-		KernelPath: "/nonexistent-sproutfs-kernel", Host: &vmmemory.Host{}, VM: vm,
+		KernelPath: "/nonexistent-sproutfs-kernel", Pagers: planPagers(t), VM: vm,
 		Pmem: []Pmem{{ID: "root", Root: true}}, VCPUs: 1}
+}
+
+// planArena is the shared page store a planning test's pagers are built over.
+// Nothing here is ever read or written: a layout is decided before any memory
+// is touched.
+type planArena struct{}
+
+func (planArena) Read(context.Context, int, []byte) error  { return nil }
+func (planArena) Write(context.Context, int, []byte) error { return nil }
+func (planArena) Release(context.Context, int) error       { return nil }
+
+// planPagers is the pair of pagers a machine takes, each with the page this
+// build's transport maps. A layout reads nothing from them but their pages,
+// which is what a region's size has to be a whole number of.
+func planPagers(t *testing.T) vmmemory.Pagers {
+	t.Helper()
+	disk := sim.New(sim.Config{}).NewDisk("pager", sim.DiskConfig{})
+	build := func(name string) *vmmemory.Host {
+		spill, err := disk.Open(t.Context(), name, platform.OpenOptions{Create: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = spill.Close() })
+		h, err := vmmemory.New(t.Context(), testresource.New(), vmmemory.Config{
+			PageSize: checkpoint.PageSize2MiB, ResidentPages: 1, LogicalPages: 64, DirtyPages: 1},
+			planArena{}, spill)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return h
+	}
+	return vmmemory.Pagers{Ram: build("spill-ram"), Pmem: build("spill-pmem")}
 }
 
 // planVM is a VM with its RAM volume, a PMEM volume and two volumes no machine
@@ -161,10 +196,10 @@ func planConfig(vm *volume.VM) Config {
 func planVM(t *testing.T) *volume.VM {
 	t.Helper()
 	vm, err := planManager(t).Create(t.Context(), "planned", []volume.VolumeSpec{
-		{Name: RAMVolume, Size: 4 << 20, PageSize: vmmemory.PageSize},
-		{Name: "ram1", Size: 4 << 20, PageSize: vmmemory.PageSize},
-		{Name: "root", Size: 4 << 20, PageSize: vmmemory.PageSize},
-		{Name: "scratch", Size: 4 << 20, PageSize: vmmemory.PageSize},
+		{Name: RAMVolume, Size: 4 << 20, PageSize: checkpoint.PageSize2MiB},
+		{Name: "ram1", Size: 4 << 20, PageSize: checkpoint.PageSize2MiB},
+		{Name: "root", Size: 4 << 20, PageSize: checkpoint.PageSize2MiB},
+		{Name: "scratch", Size: 4 << 20, PageSize: checkpoint.PageSize2MiB},
 	})
 	if err != nil {
 		t.Fatal(err)

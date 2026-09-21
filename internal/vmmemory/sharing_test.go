@@ -293,7 +293,7 @@ func newConfiguredCluster(t *testing.T, adjust func(*volume.Config)) *pagerClust
 
 func (c *pagerCluster) create(t *testing.T, id string, pages int) *volume.VM {
 	t.Helper()
-	vm, err := c.manager.Create(t.Context(), id, []volume.VolumeSpec{{Name: "ram0", Size: uint64(pages) * pageSize, PageSize: pageSize}})
+	vm, err := c.manager.Create(t.Context(), id, []volume.VolumeSpec{{Name: "ram0", Size: uint64(pages * pageSize), PageSize: uint64(pageSize)}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -310,7 +310,7 @@ func TestForksShareTheirPointsResidentPages(t *testing.T) {
 		// One marker per page: a page is published whole, so a byte of it is
 		// enough to make the whole page the checkpoint's.
 		for _, page := range []uint64{1, 2} {
-			if err := source.Volume("ram0").Write(t.Context(), page*pageSize, []byte{37}); err != nil {
+			if err := source.Volume("ram0").Write(t.Context(), page*uint64(pageSize), []byte{37}); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -419,7 +419,7 @@ func TestForkPointSharesThePagesItSealed(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		c := newPagerCluster(t)
 		parent := c.create(t, "parent", 4)
-		if err := parent.Volume("ram0").Write(t.Context(), pageSize, bytes.Repeat([]byte{37}, pageSize)); err != nil {
+		if err := parent.Volume("ram0").Write(t.Context(), uint64(pageSize), bytes.Repeat([]byte{37}, pageSize)); err != nil {
 			t.Fatal(err)
 		}
 		if err := parent.Checkpoint(t.Context()); err != nil {
@@ -486,7 +486,7 @@ func TestSharingASealedPageLeavesItSpilledByItsSeal(t *testing.T) {
 		c := newPagerCluster(t)
 		parent := c.create(t, "parent", 4)
 		for page := range uint64(4) {
-			if err := parent.Volume("ram0").Write(t.Context(), page*pageSize,
+			if err := parent.Volume("ram0").Write(t.Context(), page*uint64(pageSize),
 				bytes.Repeat([]byte{byte(page + 1)}, pageSize)); err != nil {
 				t.Fatal(err)
 			}
@@ -552,7 +552,7 @@ func TestWritesDuringPublicationNeverAliasTheCheckpoint(t *testing.T) {
 			t.Fatalf("page 0 = %d", got)
 		}
 		locate := func(v *volume.Volume) control.Identity {
-			extents, err := v.Locate(t.Context(), 0, pageSize)
+			extents, err := v.Locate(t.Context(), 0, uint64(pageSize))
 			if err != nil || len(extents) != 1 {
 				t.Fatalf("locate: %v %v", extents, err)
 			}

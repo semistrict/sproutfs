@@ -40,8 +40,8 @@ const (
 	// benchMaxWriteBytes is the volumes' write limit and so the pager's flush
 	// batch, and benchReadAheadBytes the window one read fault loads. Both are
 	// sizes, so the pager's page changes neither.
-	benchMaxWriteBytes  = vmmemory.PageSize
-	benchReadAheadBytes = vmmemory.PageSize
+	benchMaxWriteBytes  = checkpoint.PageSize2MiB
+	benchReadAheadBytes = checkpoint.PageSize2MiB
 	// benchMemoryBytes is shared by resident guest pages and decoded objects.
 	benchMemoryBytes = 4 << 30
 	// Both guests run with transparent huge pages off. Guest RAM here is host
@@ -451,7 +451,7 @@ func newBenchmark(ctx context.Context, t *testing.T) *benchmark {
 	b.dirtyPages = benchMaxGuests * (benchRAMBytes / b.pageSize)
 	b.logicalPages = benchMaxGuests * ((benchRAMBytes + benchPmemBytes) / b.pageSize)
 	b.readAheadPages = benchReadAheadBytes / b.pageSize
-	b.arena, err = vmmemory.NewLinuxArena(b.residentPages)
+	b.arena, err = vmmemory.NewLinuxArena(b.residentPages, checkpoint.PageSize2MiB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -465,7 +465,7 @@ func newBenchmark(ctx context.Context, t *testing.T) *benchmark {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = spill.Close() })
-	b.host, err = vmmemory.New(ctx, resources, vmmemory.Config{ResidentPages: b.residentPages,
+	b.host, err = vmmemory.New(ctx, resources, vmmemory.Config{PageSize: checkpoint.PageSize2MiB, ResidentPages: b.residentPages,
 		LogicalPages: b.logicalPages, DirtyPages: b.dirtyPages,
 		ReadAheadPages: b.readAheadPages, WriteAheadPages: benchWriteAheadPages()}, b.arena, spill)
 	if err != nil {
@@ -555,7 +555,7 @@ func bootArgs(base string) string {
 func (b *benchmark) machineConfig(vm *volume.VM, restore []byte) vmmachine.Config {
 	return vmmachine.Config{
 		Binary: b.binary, SeccompFilter: b.seccomp, KernelPath: b.kernel, BootArgs: bootArgs(benchBootArgs),
-		Scratch: b.managedScratch, Host: b.host, VM: vm,
+		Scratch: b.managedScratch, Pagers: bothKinds(b.host), VM: vm,
 		Pmem: []vmmachine.Pmem{{ID: "root", Root: true}}, VCPUs: benchGuestVCPUs(), RestoreState: restore,
 		Connection: vmmemory.ConnectionConfig{QueuePages: min(16384, b.logicalPages), FaultWorkers: 16,
 			CommandTimeout: 5 * time.Minute, VerifyInterval: 5 * time.Second},
@@ -565,8 +565,8 @@ func (b *benchmark) machineConfig(vm *volume.VM, restore []byte) vmmachine.Confi
 func (b *benchmark) createVM(ctx context.Context, id string) *volume.VM {
 	b.t.Helper()
 	vm, err := b.manager.Create(ctx, id, []volume.VolumeSpec{
-		{Name: vmmachine.RAMVolume, Size: benchRAMBytes, PageSize: vmmemory.PageSize},
-		{Name: "root", Size: benchPmemBytes, PageSize: vmmemory.PageSize},
+		{Name: vmmachine.RAMVolume, Size: benchRAMBytes, PageSize: checkpoint.PageSize2MiB},
+		{Name: "root", Size: benchPmemBytes, PageSize: checkpoint.PageSize2MiB},
 	})
 	if err != nil {
 		b.t.Fatal(err)

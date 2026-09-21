@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -20,9 +21,32 @@ import (
 	"github.com/semistrict/sproutfs/internal/vmmemory"
 )
 
-// pageSize is the page the fixtures build their pager with until the suite is
-// parameterised by it.
-const pageSize = checkpoint.PageSize2MiB
+// pageSize is the page the fixtures build their pager with. It is a variable
+// because the whole of this suite runs once at each page a pager may be built
+// with: a pager's page is an instance's now, and a suite that exercised one of
+// them would be a suite that let the other rot. TestMain below is what sets it,
+// so a test written later is covered at both pages without saying so, which a
+// subtest per test would not give.
+//
+// Nothing in this package runs in parallel, so one reading of it is one page.
+var pageSize = checkpoint.PageSize2MiB
+
+// pageSizes is every page a pager may run, which is checkpoint.GeometryFor's
+// list and not a second one.
+var pageSizes = []int{checkpoint.PageSize4KiB, checkpoint.PageSize2MiB}
+
+// TestMain runs the whole suite once per page. A failure names the page it
+// happened at, because the test names cannot.
+func TestMain(m *testing.M) {
+	for _, size := range pageSizes {
+		pageSize = size
+		if code := m.Run(); code != 0 {
+			fmt.Fprintf(os.Stderr, "vmmemory: the suite failed with the pager's page at %d bytes\n", size)
+			os.Exit(code)
+		}
+	}
+	os.Exit(0)
+}
 
 // errInjected is the failure a test makes a backing or an arena report.
 var errInjected = errors.New("injected failure")
@@ -257,7 +281,10 @@ func (b *backing) Load(_ context.Context, off uint64, dst []byte) error {
 // identity is what names one page: a hole, this backing's own unpublished
 // overlay, or the checkpoint it inherited the page from.
 func (b *backing) identity(page uint64) control.Identity {
-	number := page * uint64(b.pageSize) / checkpoint.PageSize2MiB
+	// A page identity is numbered in the volume's own page, which is this
+	// pager's: a number in anything else would name a different page and two
+	// regions inheriting the same checkpoint would stop sharing.
+	number := page
 	switch {
 	case b.zero[page]:
 		return control.Identity{Zero: true}
@@ -330,9 +357,21 @@ type fixture struct {
 	h        *vmmemory.Host
 	a        *arena
 	disk     *sim.Disk
+	spill    platform.File
 	pageSize int
 	source   control.Ref // the checkpoint every region of the fixture inherits
 	owners   int
+}
+
+// spillBytes is the whole extent of this pager's spill file, which is its fixed
+// disk cap: the dirty budget in pages of this pager, and no other pager's.
+func (f *fixture) spillBytes() int64 {
+	f.t.Helper()
+	size, err := f.spill.Size(f.t.Context())
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return size
 }
 
 // checkpoint is what a checkpoint does to one region: it seals the dirty set,
@@ -409,8 +448,24 @@ func newFixture(t *testing.T, resident, logical, dirty int) *fixture {
 	return newConfiguredFixture(t, vmmemory.Config{ResidentPages: resident, LogicalPages: logical, DirtyPages: dirty})
 }
 
-// newConfiguredFixture builds a host exactly as configured.
+// newConfiguredFixture builds a host exactly as configured. A configuration
+// that names no page takes the one the suite is running at, so a test that does
+// not care about the geometry is exercised at both.
 func newConfiguredFixture(t *testing.T, cfg vmmemory.Config, shared ...*resource.Budget) *fixture {
+	t.Helper()
+	if cfg.PageSize == 0 {
+		cfg.PageSize = uint64(pageSize)
+	}
+	f, err := newBrokenFixture(t, cfg, shared...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
+// newBrokenFixture is newConfiguredFixture reporting rather than failing, which
+// is what a test of a configuration the pager refuses needs.
+func newBrokenFixture(t *testing.T, cfg vmmemory.Config, shared ...*resource.Budget) (*fixture, error) {
 	t.Helper()
 	disk := sim.New(sim.Config{}).NewDisk("pager", sim.DiskConfig{})
 	spill, err := disk.Open(t.Context(), "spill", platform.OpenOptions{Create: true})
@@ -418,9 +473,6 @@ func newConfiguredFixture(t *testing.T, cfg vmmemory.Config, shared ...*resource
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = spill.Close() })
-	if cfg.PageSize == 0 {
-		cfg.PageSize = pageSize
-	}
 	a := &arena{pageSize: int(cfg.PageSize), slots: make([][]byte, cfg.ResidentPages)}
 	resources := testresource.New()
 	if len(shared) != 0 {
@@ -428,14 +480,15 @@ func newConfiguredFixture(t *testing.T, cfg vmmemory.Config, shared ...*resource
 	}
 	h, err := vmmemory.New(t.Context(), resources, cfg, a, spill)
 	if err != nil {
-		t.Fatal(err)
+		return nil, err
 	}
 	t.Cleanup(func() {
 		if err := h.Close(context.Background()); err != nil {
 			t.Error(err)
 		}
 	})
-	return &fixture{t: t, h: h, a: a, disk: disk, pageSize: int(cfg.PageSize), source: control.Ref{VM: t.Name(), Sequence: 1}}
+	return &fixture{t: t, h: h, a: a, disk: disk, spill: spill, pageSize: int(cfg.PageSize),
+		source: control.Ref{VM: t.Name(), Sequence: 1}}, nil
 }
 
 // newBacking returns a backing whose pages are inherited from the fixture's

@@ -179,8 +179,8 @@ func TestAbandonedCheckpointHandsBackWritablePages(t *testing.T) {
 		f.mustCheckpoint(r, b)
 		want := []byte{60, 77, 62, 63}
 		for page := range uint64(4) {
-			if b.data[page*pageSize] != want[page] {
-				t.Fatalf("page %d published %d, want %d", page, b.data[page*pageSize], want[page])
+			if b.data[page*uint64(pageSize)] != want[page] {
+				t.Fatalf("page %d published %d, want %d", page, b.data[page*uint64(pageSize)], want[page])
 			}
 		}
 	})
@@ -268,8 +268,8 @@ func TestRetireLocatesPerWindowAndFreesTheRegionBetweenBatches(t *testing.T) {
 			t.Fatalf("the retire located %d times, want one per batch", locates)
 		}
 		for page := range uint64(4) {
-			if b.data[page*pageSize] != byte(40+page) {
-				t.Fatalf("the checkpoint published %d for page %d", b.data[page*pageSize], page)
+			if b.data[page*uint64(pageSize)] != byte(40+page) {
+				t.Fatalf("the checkpoint published %d for page %d", b.data[page*uint64(pageSize)], page)
 			}
 			if got, err := memoryByte(t.Context(), r, m, page, nil); err != nil || got != byte(40+page) {
 				t.Fatalf("the retired page %d reads %d: %v", page, got, err)
@@ -399,8 +399,8 @@ func TestAbandonedCheckpointKeepsItsPagesAcrossConcurrentEviction(t *testing.T) 
 		}
 		f.mustCheckpoint(r, b)
 		for page := range uint64(2) {
-			if b.data[page*pageSize] != byte(60+page) {
-				t.Fatalf("page %d published %d, want %d", page, b.data[page*pageSize], 60+page)
+			if b.data[page*uint64(pageSize)] != byte(60+page) {
+				t.Fatalf("page %d published %d, want %d", page, b.data[page*uint64(pageSize)], 60+page)
 			}
 		}
 	})

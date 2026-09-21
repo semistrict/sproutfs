@@ -27,6 +27,15 @@ import (
 	"github.com/semistrict/sproutfs/internal/volume"
 )
 
+// bothKinds gives a machine the same pager for both kinds of region. A host
+// assembles one per kind, each over its own arena; these suites qualify the
+// VMM, the wire and the kernel rather than that assembly, and a second HugeTLB
+// arena would only take pool away from the guest under test. Both kinds run the
+// same page in this build, so one instance serves them as one arena always did.
+func bothKinds(pager *vmmemory.Host) vmmemory.Pagers {
+	return vmmemory.Pagers{Ram: pager, Pmem: pager}
+}
+
 const (
 	// guestConsoleArgs keeps the serial console, which carries the guest
 	// init's protocol lines, and silences the kernel's own messages. The
@@ -60,8 +69,8 @@ func TestFirecrackerDAXCaptureRestoreForkAndFence(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = manager.Close(context.Background()) })
 	source, err := manager.Create(ctx, "source", []volume.VolumeSpec{
-		{Name: vmmachine.RAMVolume, Size: 128 << 20, PageSize: vmmemory.PageSize},
-		{Name: "root", Size: 64 << 20, PageSize: vmmemory.PageSize},
+		{Name: vmmachine.RAMVolume, Size: 128 << 20, PageSize: checkpoint.PageSize2MiB},
+		{Name: "root", Size: 64 << 20, PageSize: checkpoint.PageSize2MiB},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -103,7 +112,12 @@ func TestFirecrackerDAXCaptureRestoreForkAndFence(t *testing.T) {
 	pageBytes := pagerPageBytes(t)
 	slots := residentPages(t, pageBytes, 192<<20)
 	pages := (384 << 20) / pageBytes
-	a, err := vmmemory.NewLinuxArena(slots)
+	// One HugeTLB arena for both kinds of region. A host assembles a pager per
+	// kind and this package's suites do not: what they qualify is the VMM, the
+	// wire and the kernel, and a second arena would only take a second share of
+	// the node's HugeTLB pool away from the guest under test. The assembly of
+	// two pagers is exercised in internal/host and internal/simtest.
+	a, err := vmmemory.NewLinuxArena(slots, checkpoint.PageSize2MiB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,11 +131,11 @@ func TestFirecrackerDAXCaptureRestoreForkAndFence(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = spill.Close() })
-	host, err := vmmemory.New(ctx, testresource.New(), vmmemory.Config{ResidentPages: slots, LogicalPages: pages, DirtyPages: pages}, a, spill)
+	host, err := vmmemory.New(ctx, testresource.New(), vmmemory.Config{PageSize: checkpoint.PageSize2MiB, ResidentPages: slots, LogicalPages: pages, DirtyPages: pages}, a, spill)
 	if err != nil {
 		t.Fatal(err)
 	}
-	vmConfig := vmmachine.Config{Binary: binaryPath, SeccompFilter: os.Getenv("SPROUTFS_FIRECRACKER_SECCOMP"), KernelPath: os.Getenv("SPROUTFS_FIRECRACKER_KERNEL"), InitrdPath: os.Getenv("SPROUTFS_FIRECRACKER_INITRD"), BootArgs: guestPmemBootArgs, Host: host, VM: source, Pmem: []vmmachine.Pmem{{ID: "root", Root: true}}, VCPUs: 1, Connection: vmmemory.ConnectionConfig{QueuePages: 128, CommandTimeout: 2 * time.Minute, VerifyInterval: time.Second}}
+	vmConfig := vmmachine.Config{Binary: binaryPath, SeccompFilter: os.Getenv("SPROUTFS_FIRECRACKER_SECCOMP"), KernelPath: os.Getenv("SPROUTFS_FIRECRACKER_KERNEL"), InitrdPath: os.Getenv("SPROUTFS_FIRECRACKER_INITRD"), BootArgs: guestPmemBootArgs, Pagers: bothKinds(host), VM: source, Pmem: []vmmachine.Pmem{{ID: "root", Root: true}}, VCPUs: 1, Connection: vmmemory.ConnectionConfig{QueuePages: 128, CommandTimeout: 2 * time.Minute, VerifyInterval: time.Second}}
 	vmConfig.Scratch = mustScratch(t)
 	bad := vmConfig
 	bad.KernelPath = "/missing-sproutfs-qualification-kernel"
@@ -424,7 +438,7 @@ const pressureBytes = 96 << 20
 // pagerPageBytes is the fixed 2 MiB production page.
 func pagerPageBytes(t testing.TB) int {
 	t.Helper()
-	return vmmemory.PageSize
+	return checkpoint.PageSize2MiB
 }
 
 // residentPages is the arena's slot count: SPROUTFS_FIRECRACKER_RESIDENT_PAGES

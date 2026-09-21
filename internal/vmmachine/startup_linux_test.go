@@ -182,7 +182,7 @@ func attachChild(socket string) error {
 	if err := vmwire.SendFD(c, vmwire.Frame{Kind: vmwire.Hello, ID: vmwire.Version}, r); err != nil {
 		return err
 	}
-	if err := vmwire.Write(c, vmwire.Frame{Kind: vmwire.Region, Flags: uint64(vmmemory.Ram), Length: vmmemory.PageSize, Offset: 2 << 20}); err != nil {
+	if err := vmwire.Write(c, vmwire.Frame{Kind: vmwire.Region, Flags: uint64(vmmemory.Ram), Length: checkpoint.PageSize2MiB, Offset: 2 << 20}); err != nil {
 		return err
 	}
 	_, arena, err := vmwire.ReceiveFD(c)
@@ -251,17 +251,17 @@ func startupFixture(t *testing.T) (vmmachine.Config, *admissionBacking, *vmmemor
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = m.Close(context.Background()) })
-	vm, err := m.Create(t.Context(), "vm", []volume.VolumeSpec{{Name: vmmachine.RAMVolume, Size: vmmemory.PageSize, PageSize: vmmemory.PageSize}})
+	vm, err := m.Create(t.Context(), "vm", []volume.VolumeSpec{{Name: vmmachine.RAMVolume, Size: checkpoint.PageSize2MiB, PageSize: checkpoint.PageSize2MiB}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = vm.Close(context.Background()) })
 	// Nonresident data needs no kernel mapping during this descriptor-only
 	// fixture. Explicit zeros are exercised with real UFFD in the pager suite.
-	if err := vm.Volume(vmmachine.RAMVolume).Write(t.Context(), 0, bytes.Repeat([]byte{1}, vmmemory.PageSize)); err != nil {
+	if err := vm.Volume(vmmachine.RAMVolume).Write(t.Context(), 0, bytes.Repeat([]byte{1}, checkpoint.PageSize2MiB)); err != nil {
 		t.Fatal(err)
 	}
-	a, err := vmmemory.NewLinuxArena(4)
+	a, err := vmmemory.NewLinuxArena(4, checkpoint.PageSize2MiB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -276,7 +276,7 @@ func startupFixture(t *testing.T) (vmmachine.Config, *admissionBacking, *vmmemor
 	}
 	t.Cleanup(func() { _ = spill.Close() })
 	resources := testresource.New()
-	h, err := vmmemory.New(t.Context(), resources, vmmemory.Config{ResidentPages: 4, LogicalPages: 256, DirtyPages: 4}, a, spill)
+	h, err := vmmemory.New(t.Context(), resources, vmmemory.Config{PageSize: checkpoint.PageSize2MiB, ResidentPages: 4, LogicalPages: 256, DirtyPages: 4}, a, spill)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,7 +291,7 @@ func startupFixture(t *testing.T) (vmmachine.Config, *admissionBacking, *vmmemor
 	scratch := mustScratch(t)
 	stall := &admissionBacking{Backing: vm.Volume(vmmachine.RAMVolume),
 		entered: make(chan struct{}), release: make(chan struct{})}
-	return vmmachine.Config{Binary: launcher, SeccompFilter: "unused", KernelPath: "unused", Host: h, VM: vm,
+	return vmmachine.Config{Binary: launcher, SeccompFilter: "unused", KernelPath: "unused", Pagers: bothKinds(h), VM: vm,
 		VCPUs: 1, Scratch: scratch, Connection: vmmemory.ConnectionConfig{QueuePages: 256},
 		Backings: map[string]vmmemory.Backing{vmmachine.RAMVolume: stall}}, stall, h
 }

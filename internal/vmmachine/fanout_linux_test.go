@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/semistrict/sproutfs/internal/checkpoint"
 	"github.com/semistrict/sproutfs/internal/platform"
 	"github.com/semistrict/sproutfs/internal/vmmachine"
 	"github.com/semistrict/sproutfs/internal/vmmemory"
@@ -70,8 +71,8 @@ func TestFirecrackerForkFanOutServesBothChildrenAtOnce(t *testing.T) {
 	c := newMigrationCluster(t, ctx)
 
 	parent, err := c.source.Create(ctx, "parent", []volume.VolumeSpec{
-		{Name: vmmachine.RAMVolume, Size: forkFanOutRAM, PageSize: vmmemory.PageSize},
-		{Name: "root", Size: forkFanOutRoot, PageSize: vmmemory.PageSize},
+		{Name: vmmachine.RAMVolume, Size: forkFanOutRAM, PageSize: checkpoint.PageSize2MiB},
+		{Name: "root", Size: forkFanOutRoot, PageSize: checkpoint.PageSize2MiB},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -421,9 +422,9 @@ func (c census) String() string {
 func censusOf(t *testing.T, ctx context.Context, vm *volume.VM, name string) census {
 	t.Helper()
 	v := vm.Volume(name)
-	counted := census{pages: int(v.Size() / vmmemory.PageSize)}
-	for page := range v.Size() / vmmemory.PageSize {
-		extents, err := v.Locate(ctx, page*vmmemory.PageSize, vmmemory.PageSize)
+	counted := census{pages: int(v.Size() / checkpoint.PageSize2MiB)}
+	for page := range v.Size() / checkpoint.PageSize2MiB {
+		extents, err := v.Locate(ctx, page*checkpoint.PageSize2MiB, checkpoint.PageSize2MiB)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -23,23 +23,23 @@ func TestLinuxArenaUsesWholeHugePages(t *testing.T) {
 	if os.Getenv("SPROUTFS_VM_MEMORY_CLIENT") == "" {
 		t.Skip("requires a provisioned HugeTLB pool")
 	}
-	if _, err := vmmemory.NewLinuxArena(0, pageSize); !errors.Is(err, vmmemory.ErrConfig) {
+	if _, err := vmmemory.NewLinuxArena(0, hugePageSize); !errors.Is(err, vmmemory.ErrConfig) {
 		t.Fatalf("empty arena = %v", err)
 	}
-	a, err := vmmemory.NewLinuxArena(2, pageSize)
+	a, err := vmmemory.NewLinuxArena(2, hugePageSize)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer a.Close()
-	data := bytes.Repeat([]byte{73}, pageSize)
+	data := bytes.Repeat([]byte{73}, hugePageSize)
 	if err := a.Write(t.Context(), 0, data); err != nil {
 		t.Fatal(err)
 	}
-	got := make([]byte, pageSize)
+	got := make([]byte, hugePageSize)
 	if err := a.Read(t.Context(), 0, got); err != nil || !bytes.Equal(got, data) {
 		t.Fatalf("whole-page read: %v", err)
 	}
-	if n, err := a.AllocatedBytes(); err != nil || n != pageSize {
+	if n, err := a.AllocatedBytes(); err != nil || n != hugePageSize {
 		t.Fatalf("allocated %d bytes: %v", n, err)
 	}
 	if err := a.Release(t.Context(), 0); err != nil {
@@ -48,7 +48,7 @@ func TestLinuxArenaUsesWholeHugePages(t *testing.T) {
 	if n, err := a.AllocatedBytes(); err != nil || n != 0 {
 		t.Fatalf("released page still holds %d bytes: %v", n, err)
 	}
-	if err := a.Read(t.Context(), 0, got); err != nil || !bytes.Equal(got, make([]byte, pageSize)) {
+	if err := a.Read(t.Context(), 0, got); err != nil || !bytes.Equal(got, make([]byte, hugePageSize)) {
 		t.Fatalf("punched slot read: %v", err)
 	}
 	if n, err := a.AllocatedBytes(); err != nil || n != 0 {
@@ -57,7 +57,7 @@ func TestLinuxArenaUsesWholeHugePages(t *testing.T) {
 	if err := a.Zero(t.Context(), 0, 1); err != nil {
 		t.Fatal(err)
 	}
-	if err := a.Read(t.Context(), 0, got); err != nil || !bytes.Equal(got, make([]byte, pageSize)) {
+	if err := a.Read(t.Context(), 0, got); err != nil || !bytes.Equal(got, make([]byte, hugePageSize)) {
 		t.Fatalf("reused page exposed old data: %v", err)
 	}
 }
@@ -76,13 +76,13 @@ func TestLinuxArenaPoolExhaustionReturnsError(t *testing.T) {
 	if err != nil || pages < 1 {
 		t.Fatalf("HugeTLB pool: %q, %v", raw, err)
 	}
-	holder, err := vmwire.HugeMemfd("sproutfs-pool-exhaustion", int64(pages)*pageSize)
+	holder, err := vmwire.HugeMemfd("sproutfs-pool-exhaustion", int64(pages)*hugePageSize)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer holder.Close()
 	for slot := range pages {
-		err := syscall.Fallocate(int(holder.Fd()), 1, int64(slot)*pageSize, pageSize)
+		err := syscall.Fallocate(int(holder.Fd()), 1, int64(slot)*hugePageSize, hugePageSize)
 		if errors.Is(err, syscall.ENOSPC) || errors.Is(err, syscall.ENOMEM) {
 			break
 		}
@@ -90,12 +90,12 @@ func TestLinuxArenaPoolExhaustionReturnsError(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	a, err := vmmemory.NewLinuxArena(1, pageSize)
+	a, err := vmmemory.NewLinuxArena(1, hugePageSize)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer a.Close()
-	data := make([]byte, pageSize)
+	data := make([]byte, hugePageSize)
 	data[0] = 41
 	if err := a.Write(t.Context(), 0, data); !errors.Is(err, syscall.ENOSPC) && !errors.Is(err, syscall.ENOMEM) {
 		t.Fatalf("exhausted pool write = %v", err)
@@ -114,7 +114,7 @@ func TestLinuxArenaAllocationSurvivesSignals(t *testing.T) {
 	if os.Getenv("SPROUTFS_VM_MEMORY_CLIENT") == "" {
 		t.Skip("requires a provisioned HugeTLB pool")
 	}
-	a, err := vmmemory.NewLinuxArena(1, pageSize)
+	a, err := vmmemory.NewLinuxArena(1, hugePageSize)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +139,7 @@ func TestLinuxArenaAllocationSurvivesSignals(t *testing.T) {
 		}
 	}()
 	defer func() { close(stop); <-done }()
-	data := make([]byte, pageSize)
+	data := make([]byte, hugePageSize)
 	for range 3000 {
 		if err := a.Write(t.Context(), 0, data); err != nil {
 			t.Fatalf("allocation interrupted: %v", err)
