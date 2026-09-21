@@ -76,24 +76,15 @@ const (
 // given.
 const forkFanOutRead = 10 * time.Minute
 
-// TestFirecrackerForkFanOutServesBothChildrenAtOnce forks one running guest
-// into two children on a second pager and page server, receives them one after
-// the other exactly as the orchestrator does, and then asks both guests to read
-// every page of their memory and their whole root volume at the same time while
-// both are being checkpointed on an interval.
-//
-// It is the shape a fan-out actually takes in a deployment and the one thing no
-// other suite has: two guests forked from one parent, on one pager, reaching every page
-// they inherited at once, over a real vCPU, a real UFFD and a real page server.
-// Each of them alone is the migration suite. Both children must answer — a
-// child whose read never returns is a guest nothing can tell from a dead one.
-func TestFirecrackerForkFanOutServesBothChildrenAtOnce(t *testing.T) {
-	binaryPath := os.Getenv("SPROUTFS_FIRECRACKER")
-	if binaryPath == "" {
-		t.Skip("run the Firecracker Lima qualification script")
-	}
-	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Minute)
-	defer cancel()
+// forkPointFixture is everything both fork suites need before a child exists: a
+// parent whose guest has a working set of its own, one published checkpoint its
+// children inherit, half that set stored into again so the point also holds
+// pages no checkpoint has, a page server at a deployment's budgets, and the
+// pause itself. The caller owns one hold on the point and closes nothing: every
+// piece registers its own cleanup.
+func forkPointFixture(t *testing.T, ctx context.Context, binaryPath string) (
+	*migrationCluster, *vmmachine.Process, *vmmigrate.PageSource, *volume.ForkPoint) {
+	t.Helper()
 	c := newMigrationCluster(t, ctx)
 
 	parent, err := c.source.Create(ctx, "parent", []volume.VolumeSpec{
@@ -167,6 +158,29 @@ func TestFirecrackerForkFanOutServesBothChildrenAtOnce(t *testing.T) {
 	if err := point.Pin(ctx); err != nil {
 		t.Fatal(err)
 	}
+	return c, p, pages, point
+}
+
+// TestFirecrackerForkFanOutServesBothChildrenAtOnce forks one running guest
+// into two children on a second pager and page server, receives them one after
+// the other exactly as the orchestrator does, and then asks both guests to read
+// every page of their memory and their whole root volume at the same time while
+// both are being checkpointed on an interval.
+//
+// It is the shape a fan-out actually takes in a deployment and the one thing no
+// other suite has: two guests forked from one parent, on one pager, reaching every page
+// they inherited at once, over a real vCPU, a real UFFD and a real page server.
+// Each of them alone is the migration suite. Both children must answer — a
+// child whose read never returns is a guest nothing can tell from a dead one.
+func TestFirecrackerForkFanOutServesBothChildrenAtOnce(t *testing.T) {
+	binaryPath := os.Getenv("SPROUTFS_FIRECRACKER")
+	if binaryPath == "" {
+		t.Skip("run the Firecracker Lima qualification script")
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Minute)
+	defer cancel()
+	c, p, pages, point := forkPointFixture(t, ctx, binaryPath)
+
 	children := []string{"child-a", "child-b"}
 	handoffs := make([]vmmigrate.Handoff, 0, len(children))
 	for _, child := range children {
