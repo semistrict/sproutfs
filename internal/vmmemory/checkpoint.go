@@ -547,6 +547,7 @@ func (r *Region) finalizeCheckpoint(ctx context.Context, held []*binding, identi
 		}
 		if shared {
 			r.retireFromCheckpoint(b)
+			h.probe.retired(b)
 		}
 		if pg != nil {
 			err = h.unlink(ctx, checkpoint, pg)
@@ -601,6 +602,9 @@ func (r *Region) abandonPages(ctx context.Context, pages []*binding) error {
 				}
 			}
 			r.restoreFromCheckpoint(b, held)
+			// An abandoned checkpoint gives the page straight back: the guest
+			// may store into it again, and into these very bytes.
+			h.probe.granted(b, pg, nil)
 			if r.isMapped(b) {
 				restored = append(restored, b)
 			}

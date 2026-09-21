@@ -335,6 +335,7 @@ func (r *Region) takePrivate(ctx context.Context, b *binding, old, pg *resident,
 	}
 	h.bind(b, pg)
 	r.takeFromCheckpoint(b, slot, origin)
+	h.probe.granted(b, pg, origin)
 	return nil
 }
 
@@ -436,6 +437,7 @@ func (r *Region) storeZeros(ctx context.Context, index, first, last uint64, spil
 		b := r.binding(page)
 		h.bind(b, pg)
 		r.setDirty(b, true)
+		h.probe.granted(b, pg, nil)
 		b.zero = false
 		r.setMapped(b, true) // a failed ACK may still have installed the mapping
 		if page == index {
@@ -570,6 +572,9 @@ func (r *Region) loadOnce(ctx context.Context, index uint64, spill *int) (bool, 
 		if b.checkpoint != nil {
 			h.bind(b.checkpoint, pg)
 		}
+		// The refaulted page holds the guest's own current bytes, so it is the
+		// newest generation of them and not a step back.
+		h.probe.granted(b, pg, nil)
 		h.touch(pg)
 		r.setMapped(b, true)
 		if err := r.mapPages(ctx, index, pg.slot, 1, b.writable()); err != nil {

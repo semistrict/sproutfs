@@ -89,9 +89,13 @@ GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go test -c ${tags:+-tags "$tags"} \
     -o "$binary" "$repo/internal/vmmachine"
 
 load=$(limactl shell "$instance" cat /proc/loadavg)
+# An arm is a change to the tree, so the change itself is written down beside
+# the result: a count of modified files says nothing a later reader can rerun.
+patch=$HOME/.cache/sproutfs-reduce/$label.patch
+(cd "$repo" && git diff HEAD) > "$patch"
 {
     echo "# $label: $runs runs, tags=${tags:-none}, ram page=${SPROUTFS_RAM_PAGE_BYTES:-4096}, load before=$load"
-    echo "# $(cd "$repo" && git rev-parse --short HEAD) $(cd "$repo" && git status --porcelain | wc -l | tr -d ' ') modified files"
+    echo "# $(cd "$repo" && git rev-parse --short HEAD) plus $(wc -l < "$patch" | tr -d ' ') lines of $patch"
 } > "$results"
 echo "results: $results" >&2
 

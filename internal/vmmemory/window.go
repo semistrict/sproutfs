@@ -207,7 +207,9 @@ func (p *windowPlan) bindShared(ctx context.Context, page uint64, wait bool) err
 			h.unlock(pg)
 			continue
 		}
-		h.probe.stable(ctx, h, pg, "bindShared")
+		if found := h.probe.stable(ctx, h, pg, "bindShared"); found != "" {
+			panic(found)
+		}
 		h.bind(p.region.binding(page), pg)
 		h.mu.Lock()
 		h.stats.IdentityHits++
@@ -410,6 +412,7 @@ func (p *windowPlan) publish(ctx context.Context, page uint64, data []byte, priv
 		b.spillSlot = spill
 		p.region.setDirty(b, true)
 		h.bind(b, pg)
+		h.probe.granted(b, pg, nil)
 		p.pages[i] = pg
 		p.private[i] = true
 		p.locked[pg] = true

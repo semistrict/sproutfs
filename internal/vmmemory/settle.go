@@ -319,8 +319,16 @@ func (c *RegionCheckpoint) drop(ctx context.Context, held *binding, pg, origin *
 		if err := h.unlink(ctx, guest, pg); err != nil {
 			return err
 		}
+		// The one place the pager hands a guest back an older page on purpose:
+		// the audit checks the bytes here rather than trusting the comparison
+		// that chose this page, and dates the origin by the copy once they
+		// agree. See probe_on.go.
+		if found := h.probe.reshared(ctx, h, pg, origin); found != "" {
+			panic(found)
+		}
 		h.bind(guest, origin)
 		r.retireFromCheckpoint(guest)
+		h.probe.retired(guest)
 		h.touch(origin)
 	}
 	// The name a seal lent the page goes with the page.

@@ -217,11 +217,14 @@ func (h *Host) changes() <-chan struct{} {
 }
 
 func (h *Host) unlock(pg *resident) {
-	h.probe.stable(context.Background(), h, pg, "unlock")
+	found := h.probe.stable(context.Background(), h, pg, "unlock")
 	pg.mu.Unlock()
 	h.mu.Lock()
 	h.signal()
 	h.mu.Unlock()
+	if found != "" {
+		panic(found)
+	}
 }
 
 // unlockAll releases a batch of pages and wakes waiters once rather than once
