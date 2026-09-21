@@ -5,8 +5,12 @@
 # (or reuses) the Alpine workload image, runs the benchmark inside the Lima
 # instance and copies the JSON records the documentation cites into
 # docs/measurements/guest-workload-<date>.json, or SPROUTFS_BENCH_RECORDS.
-# SPROUTFS_BENCH_SCENARIOS selects scenarios. The pager uses explicit 2 MiB
-# pages; see TestGuestWorkloadBenchmark. The instance needs a HugeTLB pool.
+# SPROUTFS_BENCH_SCENARIOS selects scenarios, and SPROUTFS_BENCH_RAM_BYTES,
+# SPROUTFS_BENCH_ROOT_BYTES, SPROUTFS_BENCH_RAM_RESIDENT_BYTES and
+# SPROUTFS_BENCH_PMEM_RESIDENT_BYTES the guest's shape and each pager's arena;
+# see TestGuestWorkloadBenchmark. The run uses a host's two pagers, so the
+# instance needs a HugeTLB pool holding the PMEM resident budget — the RAM
+# pager's 4 KiB pages are ordinary memory.
 set -euo pipefail
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 instance=${SPROUTFS_LIMA_INSTANCE:-default}
@@ -63,6 +67,10 @@ limactl shell "$instance" sudo -n env \
     SPROUTFS_BENCH_PROFILE_SCENARIO="${SPROUTFS_BENCH_PROFILE_SCENARIO:-}" \
     SPROUTFS_BENCH_SCENARIOS="${SPROUTFS_BENCH_SCENARIOS:-}" \
     SPROUTFS_BENCH_FORKS="${SPROUTFS_BENCH_FORKS:-}" \
+    SPROUTFS_BENCH_RAM_BYTES="${SPROUTFS_BENCH_RAM_BYTES:-}" \
+    SPROUTFS_BENCH_ROOT_BYTES="${SPROUTFS_BENCH_ROOT_BYTES:-}" \
+    SPROUTFS_BENCH_RAM_RESIDENT_BYTES="${SPROUTFS_BENCH_RAM_RESIDENT_BYTES:-}" \
+    SPROUTFS_BENCH_PMEM_RESIDENT_BYTES="${SPROUTFS_BENCH_PMEM_RESIDENT_BYTES:-}" \
     SPROUTFS_BENCH_BUILD="${SPROUTFS_BENCH_BUILD:-}" \
     SPROUTFS_BENCH_TEST="${SPROUTFS_BENCH_TEST:-}" \
     SPROUTFS_BENCH_STEADY="${SPROUTFS_BENCH_STEADY:-}" \

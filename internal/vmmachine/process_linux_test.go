@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"strconv"
@@ -22,6 +23,7 @@ import (
 	"github.com/semistrict/sproutfs/internal/platform"
 	"github.com/semistrict/sproutfs/internal/platform/adapters"
 	"github.com/semistrict/sproutfs/internal/platform/sim"
+	"github.com/semistrict/sproutfs/internal/resource"
 	"github.com/semistrict/sproutfs/internal/testresource"
 	"github.com/semistrict/sproutfs/internal/vmmachine"
 	"github.com/semistrict/sproutfs/internal/vmmemory"
@@ -44,29 +46,82 @@ type hostPagers struct {
 	pagers   vmmemory.Pagers
 	arenas   []*vmmemory.LinuxArena
 	capacity uint64
+	// configs is what each pager was built with, kept so a run that records its
+	// own configuration reports the budgets that were actually applied rather
+	// than recomputing them beside the code that converted them.
+	configs map[vmmemory.RegionKind]vmmemory.Config
+}
+
+// hostPagerBudgets is one kind's share of a host's memory: the arena that
+// kind's pages live in, the region it may map at once, and the private state no
+// checkpoint has published that it may hold. All three are bytes, because a
+// number of pages would mean different amounts of memory in the two pagers.
+// WriteAhead is the one field in pages, since a run of them is a count and not
+// a size; zero is one page.
+type hostPagerBudgets struct {
+	Arena, Logical, Dirty uint64
+	WriteAhead            int
+}
+
+// hostPagersConfig is everything one host's pair of pagers differ in between
+// suites. The arenas are stated apart because what a guest's memory needs of
+// one says nothing about what its disks need of the other: a test that pressed
+// both with one number would be pressing whichever of them happened to be
+// smaller in its own pages.
+type hostPagersConfig struct {
+	RAM, PMEM hostPagerBudgets
+	// Resources is the budget both pagers charge their resident pages against,
+	// and which a caller that also decodes objects shares with them. Nil is a
+	// roomy budget of its own, which is what a suite whose subject is neither
+	// eviction nor the cache wants.
+	Resources *resource.Budget
+	// SpillDir is where each pager's spill file is created, one subdirectory per
+	// kind. Empty is a directory of the test's own; a run whose guests write
+	// gigabytes names the disk it was given instead.
+	SpillDir string
 }
 
 // newHostPagers gives each pager an arena of its own size and a logical cap and
 // dirty budget of the given bytes, each converted into that pager's own page.
-// Everything is stated in bytes because a number of pages would mean different
-// amounts of memory in the two, and the arenas are stated apart because what a
-// guest's memory needs of one says nothing about what its disks need of the
-// other: a test that pressed both with one number would be pressing whichever
-// of them happened to be smaller in its own pages.
 func newHostPagers(t testing.TB, ctx context.Context, ramArenaBytes, pmemArenaBytes, logicalBytes, dirtyBytes int) *hostPagers {
 	t.Helper()
-	p := &hostPagers{}
+	even := hostPagerBudgets{Logical: uint64(logicalBytes), Dirty: uint64(dirtyBytes)}
+	ram, pmem := even, even
+	ram.Arena, pmem.Arena = uint64(ramArenaBytes), uint64(pmemArenaBytes)
+	return newConfiguredHostPagers(t, ctx, hostPagersConfig{RAM: ram, PMEM: pmem})
+}
+
+// newConfiguredHostPagers is newHostPagers with every budget stated per kind,
+// for the runs whose subject is the difference between the two geometries.
+func newConfiguredHostPagers(t testing.TB, ctx context.Context, cfg hostPagersConfig) *hostPagers {
+	t.Helper()
+	resources := cfg.Resources
+	if resources == nil {
+		resources = testresource.New()
+	}
+	p := &hostPagers{configs: map[vmmemory.RegionKind]vmmemory.Config{}}
 	for _, kind := range []vmmemory.RegionKind{vmmemory.Ram, vmmemory.Pmem} {
-		page, arenaBytes := uint64(checkpoint.PageSize4KiB), ramArenaBytes
+		page, budgets := uint64(checkpoint.PageSize4KiB), cfg.RAM
 		if kind == vmmemory.Pmem {
-			page, arenaBytes = checkpoint.PageSize2MiB, pmemArenaBytes
+			page, budgets = checkpoint.PageSize2MiB, cfg.PMEM
 		}
-		arena, err := vmmemory.NewLinuxArena(int(uint64(arenaBytes)/page), page)
+		arena, err := vmmemory.NewLinuxArena(int(budgets.Arena/page), page)
 		if err != nil {
 			t.Fatalf("%s arena: %v", kind, err)
 		}
 		t.Cleanup(func() { _ = arena.Close() })
-		disk, err := adapters.NewDisk(t.TempDir())
+		// Each pager spills into a file of its own, so a directory the caller
+		// named holds one per kind rather than two openers of one name.
+		spillDir := cfg.SpillDir
+		if spillDir == "" {
+			spillDir = t.TempDir()
+		} else {
+			spillDir = filepath.Join(spillDir, "spill-"+kind.String())
+			if err := os.MkdirAll(spillDir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}
+		disk, err := adapters.NewDisk(spillDir)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -75,18 +130,19 @@ func newHostPagers(t testing.TB, ctx context.Context, ramArenaBytes, pmemArenaBy
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = spill.Close() })
-		pager, err := vmmemory.New(ctx, testresource.New(), vmmemory.Config{PageSize: page,
-			ResidentPages: int(uint64(arenaBytes) / page),
-			LogicalPages:  int(uint64(logicalBytes) / page),
-			DirtyPages:    int(uint64(dirtyBytes) / page),
+		pagerConfig := vmmemory.Config{PageSize: page,
+			ResidentPages: int(budgets.Arena / page),
+			LogicalPages:  int(budgets.Logical / page),
+			DirtyPages:    int(budgets.Dirty / page),
 			// A read-ahead run is stated in bytes, as a deployment states it,
 			// because it is a buffer: 2 MiB is the run the page-geometry plan
 			// targets, which is one PMEM page and 512 RAM pages loaded into
 			// consecutive slots and installed as one mapping. Write-ahead is
-			// one page — the plan's decision for RAM, and what these suites
-			// have always given PMEM.
+			// one page by default — the plan's decision for RAM, and what these
+			// suites have always given PMEM.
 			ReadAheadPages:  int(checkpoint.PageSize2MiB / page),
-			WriteAheadPages: 1}, arena, spill)
+			WriteAheadPages: max(budgets.WriteAhead, 1)}
+		pager, err := vmmemory.New(ctx, resources, pagerConfig, arena, spill)
 		if err != nil {
 			t.Fatalf("%s pager: %v", kind, err)
 		}
@@ -96,9 +152,22 @@ func newHostPagers(t testing.TB, ctx context.Context, ramArenaBytes, pmemArenaBy
 			p.pagers.Pmem = pager
 		}
 		p.arenas = append(p.arenas, arena)
-		p.capacity += uint64(arenaBytes) / page * page
+		p.configs[kind] = pagerConfig
+		p.capacity += budgets.Arena / page * page
 	}
 	return p
+}
+
+// Close shuts both pagers down, which a run that measures teardown does rather
+// than leaving them to the arenas' cleanup.
+func (p *hostPagers) Close(ctx context.Context) error {
+	var err error
+	for _, pager := range p.pagers.All() {
+		if closeErr := pager.Close(ctx); closeErr != nil && err == nil {
+			err = closeErr
+		}
+	}
+	return err
 }
 
 // Stats is both pagers' counters added. The event counters add because they
