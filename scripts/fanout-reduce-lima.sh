@@ -18,6 +18,10 @@
 #                           (the accelerator; see internal/vmmemory/probe_on.go)
 #   SPROUTFS_LIMA_INSTANCE  the instance, default `default`
 #   SPROUTFS_FANOUT_WORK    the persistent build directory in the instance
+#   SPROUTFS_RAM_PAGE_BYTES the RAM pager's page, 4096 by default; 2097152 runs
+#                           the geometry this suite had before the page-geometry
+#                           plan's fourth step, which is the arm that says
+#                           whether a defect found at 4 KiB predates it
 #
 # One line per run goes to the results file, classified as:
 #   panic    the guest kernel died — the defect, whatever else the run did
@@ -86,7 +90,7 @@ GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go test -c ${tags:+-tags "$tags"} \
 
 load=$(limactl shell "$instance" cat /proc/loadavg)
 {
-    echo "# $label: $runs runs, tags=${tags:-none}, load before=$load"
+    echo "# $label: $runs runs, tags=${tags:-none}, ram page=${SPROUTFS_RAM_PAGE_BYTES:-4096}, load before=$load"
     echo "# $(cd "$repo" && git rev-parse --short HEAD) $(cd "$repo" && git status --porcelain | wc -l | tr -d ' ') modified files"
 } > "$results"
 echo "results: $results" >&2
@@ -102,6 +106,7 @@ for ((run = 1; run <= runs; run++)); do
         SPROUTFS_FIRECRACKER_KERNEL="$work/kernel" \
         SPROUTFS_FIRECRACKER_ROOT="$work/root.ext4" \
         SPROUTFS_FIRECRACKER_RESIDENT_PAGES="${SPROUTFS_FIRECRACKER_RESIDENT_PAGES:-48}" \
+        SPROUTFS_RAM_PAGE_BYTES="${SPROUTFS_RAM_PAGE_BYTES:-}" \
         "$binary" -test.v -test.run TestFirecrackerForkFanOutServesBothChildrenAtOnce \
         -test.count=1 -test.timeout=30m > "$one" 2>&1
     set -e
