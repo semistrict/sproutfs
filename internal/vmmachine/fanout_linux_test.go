@@ -51,6 +51,12 @@ const (
 	forkFanOutInterval = 250 * time.Millisecond
 	// forkFanOutRounds is how many times each child reads everything it has.
 	forkFanOutRounds = 2
+	// forkFanOutSweeps is how many times the image check reads every page of a
+	// child that never runs while the other two do. Each sweep is a fault per
+	// page on the arena those two are already evicting each other out of, so
+	// this is deliberately small: more of them starves the children into the
+	// liveness bound and measures the check instead of the pager.
+	forkFanOutSweeps = 2
 )
 
 // forkFanOutRead bounds the phase this test exists for: two children of one
@@ -218,11 +224,14 @@ func TestFirecrackerForkFanOutServesBothChildrenAtOnce(t *testing.T) {
 	// The image check, first with nothing else in flight. Whatever differs here
 	// is what taking a child costs on its own — the VMM writes a little of the
 	// guest's memory as it restores it, and that is not the fan-out's doing.
-	restored := receiveStill(t, ctx, c, destinationPager, binaryPath, stillHandoff, pages, point, truth)
+	alone, releaseAlone := receiveStill(t, ctx, c, destinationPager, binaryPath, stillHandoff, pages, point)
+	restored := alone.sweep(t, ctx, truth)
+	releaseAlone()
 	if len(restored) > 8 {
-		t.Fatalf("taking one child alone left %d of its inherited pages unlike what the point froze (%v): "+
+		t.Fatalf("taking one child alone left %d of its pages unlike what the point froze (%v): "+
 			"that is too much to be the restore\n%s", len(restored), first(restored, 16), consoleText(p))
 	}
+	t.Logf("image check alone: %d pages differ from the point (%v)", len(restored), first(restored, 16))
 
 	taken := make([]*forkedChild, 0, len(children))
 	// The watch is a holder like any other, so the point is still there to be
@@ -249,15 +258,41 @@ func TestFirecrackerForkFanOutServesBothChildrenAtOnce(t *testing.T) {
 	}
 
 	// And the image check again, now with both siblings running, checkpointed
-	// every interval and settling on the same pager. A child taken here must
-	// differ from the point by the restore's pages and no others: any more is a
-	// child that started from a mixture of two images rather than one.
-	beside := receiveStill(t, ctx, c, destinationPager, binaryPath, besideHandoff, pages, point, truth)
-	if !slices.Equal(beside, restored) {
-		t.Fatalf("a child taken beside its running siblings differs from the point at %v, "+
-			"and one taken alone at %v: it did not inherit one image\n%s",
-			first(beside, 16), first(restored, 16), consoleText(p))
-	}
+	// every interval and settling on the same pager. Every page of this child
+	// is read through its region for as long as the siblings read, so what it
+	// sees goes through the sharing index they are reaching too, a read-ahead
+	// window and the post-copy. Every sweep must differ from the point by the
+	// restore's pages and no others; any more is a child being handed a page
+	// that is not its own.
+	beside, releaseBeside := receiveStill(t, ctx, c, destinationPager, binaryPath, besideHandoff, pages, point)
+	defer releaseBeside()
+	sweeping, stopSweeping := context.WithCancel(ctx)
+	defer stopSweeping()
+	swept := make(chan int, 1)
+	go func() {
+		sweeps := 0
+		defer func() { swept <- sweeps }()
+		// A sweep is a fault per page on the arena the running children are
+		// evicting each other out of, so more than a few would starve them into
+		// the liveness bound and measure this check rather than the pager. Two
+		// is every page twice while they read.
+		for sweeps < forkFanOutSweeps && sweeping.Err() == nil {
+			began := time.Now()
+			got := beside.sweep(t, sweeping, truth)
+			if sweeping.Err() != nil {
+				return
+			}
+			sweeps++
+			t.Logf("image sweep %d beside the running children: %d pages differ (%v) in %s",
+				sweeps, len(got), first(got, 16), time.Since(began))
+			if !slices.Equal(got, restored) {
+				t.Errorf("sweep %d of a child beside its running siblings differs from the point at %v, "+
+					"and one taken alone differed at %v: it was handed a page that is not its own",
+					sweeps, first(got, 16), first(restored, 16))
+				return
+			}
+		}
+	}()
 
 	// Every child's read runs at once and every one of them has to answer. A
 	// checkpressure walks the whole working set the parent left in RAM and a
@@ -283,6 +318,11 @@ func TestFirecrackerForkFanOutServesBothChildrenAtOnce(t *testing.T) {
 		t.Fatalf("a child of the fan-out never finished reading what it inherited\n%s", stacks())
 	}
 	t.Logf("fan-out read: children=%d rounds=%d elapsed=%s", len(taken), forkFanOutRounds, time.Since(began))
+	stopSweeping()
+	t.Logf("image check beside the running children: %d sweeps of every page", <-swept)
+	if t.Failed() {
+		t.Fatalf("a child was handed a page that is not its own\n%s", consoleText(p))
+	}
 
 	for _, child := range taken {
 		stats := child.received.Stats()
@@ -493,7 +533,11 @@ func freeze(ctx context.Context, point *volume.ForkPoint) (frozen, error) {
 		}
 		page := make([]byte, size)
 		hashes := make(map[uint64]uint64)
-		for _, number := range point.Pages(name) {
+		// Every page of the volume, not only the ones the point serves: the
+		// rest a child reads for itself, by identity, through the sharing index
+		// its siblings are reaching too, and that is the half a served-set
+		// check cannot see.
+		for number := range point.Size(name) / size {
 			if err := point.ReadPage(ctx, name, number, page); err != nil {
 				return nil, fmt.Errorf("reading page %d of %s from the point: %w", number, name, err)
 			}
@@ -570,7 +614,7 @@ func watchPoint(t *testing.T, ctx context.Context, point *volume.ForkPoint, trut
 // two images.
 func receiveStill(t *testing.T, ctx context.Context, c *migrationCluster, pager *hostPagers,
 	binaryPath string, handoff vmmigrate.Handoff, source *vmmigrate.PageSource,
-	point *volume.ForkPoint, truth frozen) []uint64 {
+	point *volume.ForkPoint) (*stillChild, func()) {
 	t.Helper()
 	var process *vmmachine.Process
 	start := func(ctx context.Context, vm *volume.VM, backings map[string]vmmemory.Backing,
@@ -593,7 +637,7 @@ func receiveStill(t *testing.T, ctx context.Context, c *migrationCluster, pager 
 	if err != nil {
 		t.Fatalf("receiving the still child %s: %v", handoff.VMID, err)
 	}
-	defer func() {
+	release := func() {
 		received.Close()
 		if process != nil {
 			_ = process.Close()
@@ -601,54 +645,73 @@ func receiveStill(t *testing.T, ctx context.Context, c *migrationCluster, pager 
 		if err := source.Release(handoff.VMID); err != nil {
 			t.Errorf("releasing the still child %s: %v", handoff.VMID, err)
 		}
-	}()
+	}
 	if err := received.Done(ctx); err != nil {
+		release()
 		t.Fatalf("streaming the still child %s: %v", handoff.VMID, err)
 	}
-	regions := received.Runtime().Regions()
-	checked := 0
+	return &stillChild{id: handoff.VMID, regions: received.Runtime().Regions(), point: point}, release
+}
+
+// stillChild is a child of the fork point whose guest never runs, and the whole
+// instrument of the image check.
+type stillChild struct {
+	id      string
+	regions map[string]*vmmemory.Region
+	point   *volume.ForkPoint
+}
+
+// sweep reads every page of every volume through this child's region — a read
+// fault for each, so the answer arrives through Locate, the sharing index its
+// siblings are reaching too, a read-ahead window and the post-copy — and
+// reports the pages whose bytes are not the ones the point froze.
+func (s *stillChild) sweep(t *testing.T, ctx context.Context, truth frozen) []uint64 {
+	t.Helper()
 	var differing []uint64
+	reported := 0
 	for name, hashes := range truth {
-		region := regions[name]
+		region := s.regions[name]
 		if region == nil {
 			t.Fatalf("the still child has no region for %s", name)
 		}
 		page := make([]byte, region.PageSize())
 		again := make([]byte, region.PageSize())
 		for _, number := range slices.Sorted(maps.Keys(hashes)) {
+			if ctx.Err() != nil {
+				return differing
+			}
+			if err := region.Fault(ctx, number, false); err != nil {
+				t.Errorf("faulting page %d of %s in %s: %v", number, name, s.id, err)
+				return differing
+			}
 			held, _, err := region.ReadResident(ctx, number, page)
 			if err != nil {
-				t.Fatalf("reading page %d of %s from the still child: %v", number, name, err)
+				t.Errorf("reading page %d of %s from %s: %v", number, name, s.id, err)
+				return differing
 			}
 			if !held {
-				// The page is in the arena no longer; what it holds is its
-				// volume's, which is not this check's business.
+				// Reclaimed between the fault and the read; the next sweep
+				// takes it again.
 				continue
 			}
-			checked++
 			got := pageHash(page)
 			if got == hashes[number] {
 				continue
 			}
-			// How many pages have moved, and whether the point still serves
-			// what it froze for them, is what says where they moved: one page
-			// the VMM's own restore wrote looks nothing like a pager handing
-			// out a mixture of two images.
 			differing = append(differing, number)
-			if len(differing) <= 4 {
+			if reported < 4 {
+				reported++
 				at := "the point still serves what it froze"
-				if err := point.ReadPage(ctx, name, number, again); err != nil {
+				if err := s.point.ReadPage(ctx, name, number, again); err != nil {
 					at = fmt.Sprintf("the point cannot be read: %v", err)
 				} else if pageHash(again) != hashes[number] {
 					at = "and the point has moved too"
 				}
-				t.Logf("the still child holds page %d of %s as %#x, and the point froze it as %#x — %s",
-					number, name, got, hashes[number], at)
+				t.Logf("%s holds page %d of %s as %#x, and the point froze it as %#x — %s",
+					s.id, number, name, got, hashes[number], at)
 			}
 		}
 	}
-	t.Logf("still child %s: %d of %d inherited pages it holds differ from what the point froze (%v)",
-		handoff.VMID, len(differing), checked, first(differing, 16))
 	return differing
 }
 
