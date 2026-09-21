@@ -48,6 +48,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"sync"
+	"time"
 )
 
 // probeState is the audit's own memory: what each published page held when it
@@ -223,4 +224,91 @@ func (p *probeState) reshared(ctx context.Context, h *Host, copied, origin *resi
 		p.generation[origin] = p.generation[copied]
 	}
 	return ""
+}
+
+// The ring is what the pager did to one page, in order. A guest that dies on a
+// page it wrote leaves a kernel address in its oops, which is a page number of
+// its RAM region; this answers what happened to that page and the pages beside
+// it, which is the whole question a reduction ends at.
+//
+// It is bounded and lossy on purpose: the interesting window is the last
+// fraction of a second of a child's life, and keeping every event of a
+// half-million-fault run would cost more than the pager.
+const ringEvents = 1 << 16
+
+// ringEvent is one thing the pager did, in the order it did it.
+type ringEvent struct {
+	at     time.Time
+	region *Region
+	page   uint64
+	what   string
+	slot   int
+	// other is a second slot the event is about: the origin a page is dropped
+	// onto, or the page a copy was made from.
+	other int
+}
+
+type probeRing struct {
+	mu     sync.Mutex
+	events [ringEvents]ringEvent
+	next   uint64
+}
+
+var ring probeRing
+
+// note records one event. It takes no page lock and no host lock, so it may be
+// called from anywhere the pager is already holding something.
+func note(r *Region, page uint64, what string, slot, other int) {
+	ring.mu.Lock()
+	ring.events[ring.next%ringEvents] = ringEvent{
+		at: time.Now(), region: r, page: page, what: what, slot: slot, other: other}
+	ring.next++
+	ring.mu.Unlock()
+}
+
+// Ring reports, oldest first, everything the pager did to the pages within
+// radius of page in this region, and everything it did to every arena slot
+// those pages ever occupied — a slot handed to another page is how a guest
+// reaches bytes that are not its own, so the slot's own history is part of the
+// page's. It is for a test that has just watched a guest die.
+func Ring(r *Region, page uint64, radius uint64) []string {
+	ring.mu.Lock()
+	defer ring.mu.Unlock()
+	first := uint64(0)
+	if ring.next > ringEvents {
+		first = ring.next - ringEvents
+	}
+	slots := make(map[int]bool)
+	for i := first; i < ring.next; i++ {
+		e := ring.events[i%ringEvents]
+		if e.region != r || e.page+radius < page || e.page > page+radius {
+			continue
+		}
+		if e.slot >= 0 {
+			slots[e.slot] = true
+		}
+		if e.other >= 0 {
+			slots[e.other] = true
+		}
+	}
+	var lines []string
+	for i := first; i < ring.next; i++ {
+		e := ring.events[i%ringEvents]
+		if e.region != r {
+			continue
+		}
+		near := e.page+radius >= page && e.page <= page+radius
+		if !near && !slots[e.slot] && !slots[e.other] {
+			continue
+		}
+		line := fmt.Sprintf("%s page %d %s slot %d", e.at.Format("15:04:05.000000"), e.page, e.what, e.slot)
+		if e.other >= 0 {
+			line += fmt.Sprintf(" other %d", e.other)
+		}
+		if !near {
+			line += " (a page that shared one of these slots)"
+		}
+		lines = append(lines, line)
+	}
+	return lines
 }

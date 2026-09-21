@@ -107,6 +107,11 @@ func (h *Host) bind(b *binding, pg *resident) {
 	pg.aliases[b] = struct{}{}
 	b.resident = pg
 	h.mu.Unlock()
+	what := "bind-shared"
+	if pg.private {
+		what = "bind-private"
+	}
+	note(b.region, b.index, what, pg.slot, -1)
 	if found != "" {
 		panic(found)
 	}
@@ -213,6 +218,7 @@ func (h *Host) release(ctx context.Context, pg *resident) error {
 		return result
 	}
 	h.mu.Lock()
+	note(nil, 0, "release", pg.slot, -1)
 	h.putFree(pg.slot)
 	pg.slot = -1
 	h.lru.Remove(pg.recent)
@@ -260,6 +266,7 @@ func (h *Host) releaseOrigin(ctx context.Context, pg *resident) error {
 }
 
 func (h *Host) unlink(ctx context.Context, b *binding, pg *resident) error {
+	note(b.region, b.index, "unlink", pg.slot, -1)
 	h.mu.Lock()
 	last := len(pg.aliases) == 1
 	h.mu.Unlock()

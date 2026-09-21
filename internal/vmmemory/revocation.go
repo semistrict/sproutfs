@@ -108,11 +108,13 @@ func (h *Host) revoke(ctx context.Context, b *binding) error {
 	// the mapping state is read through the binding map, like every other
 	// holder of it.
 	if !b.region.isMapped(b) {
+		note(b.region, b.index, "revoke-skipped-unmapped", -1, -1)
 		return nil
 	}
 	if err := b.region.revokePage(ctx, b.index); err != nil {
 		return b.region.revocationFailed(err)
 	}
+	note(b.region, b.index, "revoke", -1, -1)
 	b.region.setMapped(b, false)
 	h.mu.Lock()
 	h.stats.Revocations++

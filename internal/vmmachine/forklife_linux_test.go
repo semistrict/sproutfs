@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -273,6 +274,7 @@ func forkLifeTrial(t *testing.T, ctx context.Context, c *migrationCluster, pager
 		console := string(consoleText(child.process))
 		died++
 		t.Logf("%s died: %s (%v)", child.id, panicSignature(console), err)
+		reportRing(t, child, console)
 	}
 	return died
 }
@@ -320,6 +322,48 @@ func interruptEvery(t *testing.T, ctx context.Context, child *forkedChild,
 		<-done
 	}
 }
+
+// ringRadius is how many pages either side of the one that died are dumped. A
+// list head and the node it points at need not share a page, so the pages
+// beside it are part of the same question.
+const ringRadius = 2
+
+// reportRing turns every kernel address in a dead guest's oops into a page of
+// its RAM and prints what the pager did to that page and its neighbours. It is
+// the end of the reduction: the guest says which page it read wrongly and this
+// says what the pager did to it.
+func reportRing(t *testing.T, child *forkedChild, console string) {
+	t.Helper()
+	region := child.process.Regions()[vmmachine.RAMVolume]
+	if region == nil {
+		return
+	}
+	size := region.PageSize()
+	seen := make(map[uint64]bool)
+	for _, match := range kernelAddresses.FindAllString(console, -1) {
+		address, err := strconv.ParseUint(strings.TrimPrefix(match, "ffff"), 16, 64)
+		if err != nil {
+			continue
+		}
+		// Stripping the linear map's own prefix is the subtraction: what is
+		// left is the guest physical address.
+		page := address / size
+		if page >= uint64(forkFanOutRAM)/size || seen[page] {
+			continue
+		}
+		seen[page] = true
+		lines := vmmemory.Ring(region, page, ringRadius)
+		if len(lines) == 0 {
+			continue
+		}
+		t.Logf("%s page %d (from %s), what the pager did:\n\t%s",
+			child.id, page, match, strings.Join(lines, "\n\t"))
+	}
+}
+
+// kernelAddresses matches the linear-map addresses an arm64 oops prints in its
+// registers and its pc.
+var kernelAddresses = regexp.MustCompile(`ffff0000[0-9a-f]{8}`)
 
 // panicSignature is the line of a guest's console that says where its kernel
 // died, which is what tells one death from another.

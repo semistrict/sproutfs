@@ -315,6 +315,7 @@ func (c *RegionCheckpoint) reshareBatch(ctx context.Context, held []*binding, eq
 func (c *RegionCheckpoint) drop(ctx context.Context, held *binding, pg, origin *resident, guest *binding) error {
 	r := c.region
 	h := r.host
+	note(r, held.index, "settle-drop", pg.slot, origin.slot)
 	if guest != nil {
 		if err := h.unlink(ctx, guest, pg); err != nil {
 			return err
