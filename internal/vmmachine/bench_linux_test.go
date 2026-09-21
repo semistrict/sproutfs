@@ -30,24 +30,34 @@ import (
 	"github.com/semistrict/sproutfs/internal/volume"
 )
 
-// The measured sandbox: a 16 GiB guest with a 32 GiB PMEM root on a pager whose
-// resident pages are 32 GiB. The shape is the workload's: a cold build of the
-// codex workspace writes 12 GiB under target/ and ends in a link of a debug
-// binary that the kernel killed for memory in a 16 GiB host running two of
-// them, and the arena holds that guest and the forks taken from it without the
-// spill file becoming the measurement.
+// The measured sandbox: a 16 GiB guest with a 32 GiB PMEM root, on the pair of
+// pagers a deployment runs — RAM's 4 KiB page over ordinary memory, PMEM's
+// 2 MiB page over the node's HugeTLB pool — whose resident budgets are 40 GiB
+// and 24 GiB. The shape is the workload's: a cold build of the codex workspace
+// writes 12 GiB under target/ and ends in a link of a debug binary that the
+// kernel killed for memory in a 16 GiB host running two of them, and the arenas
+// hold that guest and the forks taken from it without the spill files becoming
+// the measurement. Every one of the four is an environment override, because a
+// qualification host and a laptop cannot run the same shape.
 const (
-	benchRAMBytes      = 16 << 30
-	benchPmemBytes     = 32 << 30
-	benchVCPUs         = 4
-	benchResidentBytes = 32 << 30
+	defaultBenchRAMBytes  = 16 << 30
+	defaultBenchRootBytes = 32 << 30
+	benchVCPUs            = 4
+	// The resident budgets are stated per kind and apart: a guest's memory is
+	// what the small page is for and takes the larger arena, while its root is
+	// read far more than it is written and shares its pages across every fork.
+	defaultBenchRAMResidentBytes  = 40 << 30
+	defaultBenchPmemResidentBytes = 24 << 30
 	// benchMaxWriteBytes is the volumes' write limit and so the pager's flush
-	// batch, and benchReadAheadBytes the window one read fault loads. Both are
-	// sizes, so the pager's page changes neither.
-	benchMaxWriteBytes  = checkpoint.PageSize2MiB
-	benchReadAheadBytes = checkpoint.PageSize2MiB
-	// benchMemoryBytes is shared by resident guest pages and decoded objects.
-	benchMemoryBytes = 36 << 30
+	// batch. It is a size, so the pager's page does not change it; the read-ahead
+	// run each pager loads is likewise a size, stated once in newHostPagers.
+	benchMaxWriteBytes = checkpoint.PageSize2MiB
+	// benchCacheBytes is what the shared budget holds above the two arenas, for
+	// decoded objects. The budget itself is the sum: resident guest pages of
+	// both pagers and the page cache are charged against one number, as they are
+	// on a host, and a budget smaller than the arenas would evict pages the
+	// arenas were sized to hold.
+	benchCacheBytes = 4 << 30
 	// Both guests run with transparent huge pages off. Guest RAM here is host
 	// pages served on demand, and khugepaged collapsing a 2 MiB range copies 512
 	// of them through the fault path with preemption disabled, which soft-locks
@@ -60,6 +70,16 @@ const (
 	// any scenario holds open at once, which is the twenty forks plus the
 	// template and the siblings around them.
 	benchMaxGuests = 26
+	// benchQueuePages bounds the faults one region has pending. A machine clamps
+	// it to the region's own size in its own pager's page, so this is a ceiling
+	// over both geometries rather than a budget stated in either.
+	benchQueuePages = 16384
+	// benchRangeBytes is the 2 MiB-aligned range the page-geometry plan makes a
+	// RAM region's unit of mapping: a private page lives at its own offset
+	// within its range's extent, so what a range costs in mappings is how often
+	// it alternates between shared and private. The fan-out reports the private
+	// runs and the gaps between them within one of these.
+	benchRangeBytes = checkpoint.PageSize2MiB
 )
 
 // The workloads, shared verbatim by the managed run and the baseline so the
@@ -113,16 +133,24 @@ const (
 // benchRecord is one measured scenario. Every number the documentation cites
 // comes from one of these, and the bounds this test asserts are checked against
 // the same fields, so the table and the regression test cannot drift apart.
+//
+// A host runs one pager per kind of region, so what a scenario cost the pagers
+// is two records and never their sum: MemoryRAM is the 4 KiB pager that holds
+// guest memory and MemoryPMEM the 2 MiB pager that holds the disks. They
+// replace the single `memory` field of records taken before the two geometries
+// existed; each carries the page it counts in, so a reader that needs one
+// number converts them to bytes rather than adding pages.
 type benchRecord struct {
-	Scenario string          `json:"scenario"`
-	Kind     string          `json:"kind"` // "sproutfs" or "baseline"
-	WallNS   int64           `json:"wall_ns"`
-	Guest    *guestTiming    `json:"guest,omitempty"`
-	Memory   *memoryDelta    `json:"memory,omitempty"`
-	Volumes  *volumeDelta    `json:"volumes,omitempty"`
-	Objects  *objectCounters `json:"objects,omitempty"`
-	Cache    *cacheDelta     `json:"cache,omitempty"`
-	Extra    map[string]any  `json:"extra,omitempty"`
+	Scenario   string          `json:"scenario"`
+	Kind       string          `json:"kind"` // "sproutfs" or "baseline"
+	WallNS     int64           `json:"wall_ns"`
+	Guest      *guestTiming    `json:"guest,omitempty"`
+	MemoryRAM  *memoryDelta    `json:"memory_ram,omitempty"`
+	MemoryPMEM *memoryDelta    `json:"memory_pmem,omitempty"`
+	Volumes    *volumeDelta    `json:"volumes,omitempty"`
+	Objects    *objectCounters `json:"objects,omitempty"`
+	Cache      *cacheDelta     `json:"cache,omitempty"`
+	Extra      map[string]any  `json:"extra,omitempty"`
 }
 
 // cacheDelta is what one scenario asked of the host's shared page cache. A
@@ -137,9 +165,12 @@ type cacheDelta struct {
 	PeakLoads      int    `json:"peak_loads"`
 }
 
-// memoryDelta is what one scenario cost the pager. The counters are deltas; the
-// page totals are the state left behind.
+// memoryDelta is what one scenario cost one of the two pagers. The counters are
+// deltas; the page totals are the state left behind. Every page count here is
+// in PageSize, which is the only page it means: the other pager's record counts
+// its own, and the two are never added.
 type memoryDelta struct {
+	PageSize          uint64 `json:"page_size"`
 	Faults            uint64 `json:"faults"`
 	CopyOnWrites      uint64 `json:"copy_on_writes"`
 	Evictions         uint64 `json:"evictions"`
@@ -227,9 +258,10 @@ func (d *latencyDelta) quantileUpperNS(q float64) uint64 {
 	return vmmemory.LatencyBucketUpperNS(vmmemory.LatencyBuckets - 1)
 }
 
-func memoryBetween(before, after vmmemory.Stats) *memoryDelta {
+func memoryBetween(pageSize uint64, before, after vmmemory.Stats) *memoryDelta {
 	return &memoryDelta{
-		Faults: after.Faults - before.Faults, CopyOnWrites: after.CopyOnWrites - before.CopyOnWrites,
+		PageSize: pageSize,
+		Faults:   after.Faults - before.Faults, CopyOnWrites: after.CopyOnWrites - before.CopyOnWrites,
 		Evictions: after.Evictions - before.Evictions, Spills: after.Spills - before.Spills,
 		SpillRefaults: after.SpillRefaults - before.SpillRefaults, SpillWrites: after.SpillWrites - before.SpillWrites,
 		Loads: after.Loads - before.Loads, LoadedPages: after.LoadedPages - before.LoadedPages,
@@ -275,22 +307,26 @@ type benchmark struct {
 	cache          *checkpoint.Cache
 	store          *checkpoint.Store
 	manager        *volume.Manager
-	host           *vmmemory.Host
-	arena          *vmmemory.LinuxArena
-	// pageSize is the pager's page, and readAheadPages the fixed byte budget
-	// above in those pages.
-	pageSize, readAheadPages int
-	scenarios                scenarioSet
+	// pagers is the production pair — RAM at 4 KiB over ordinary memory, PMEM
+	// at 2 MiB over the HugeTLB pool — and resources the budget their resident
+	// pages and the decoded objects of the cache are charged against together.
+	pagers    *hostPagers
+	resources *resource.Budget
+	scenarios scenarioSet
 
 	// vmm is the machine whose address space the sequential scenarios run in,
 	// so every one of them can report how many mappings it holds.
 	vmm *vmmachine.Process
 
 	binary, seccomp, kernel, imagePath string
-	residentPages, logicalPages        int
-	dirtyPages                         int
-	objectStoreKind                    string
-	objectLatency                      objectLatency
+	// The guest's shape and the budget behind each kind of its memory, in bytes
+	// because the two pagers count them in different pages.
+	ramBytes, rootBytes                 uint64
+	ramResidentBytes, pmemResidentBytes uint64
+	ramDirtyBytes, pmemDirtyBytes       uint64
+	ramLogicalBytes, pmemLogicalBytes   uint64
+	objectStoreKind                     string
+	objectLatency                       objectLatency
 
 	mu      sync.Mutex
 	records []benchRecord
@@ -301,23 +337,49 @@ type benchmark struct {
 }
 
 // sample is everything a scenario is measured against, taken at one moment.
+// The two pagers are read apart and stay apart: their event counters would add,
+// but their page counts are in different pages and their histograms describe
+// different work.
 type sample struct {
-	at      time.Time
-	memory  vmmemory.Stats
-	objects objectCounters
-	cache   checkpoint.CacheStats
-	volumes volume.Stats
+	at        time.Time
+	ram, pmem vmmemory.Stats
+	objects   objectCounters
+	cache     checkpoint.CacheStats
+	volumes   volume.Stats
 }
 
 func (b *benchmark) sample(ctx context.Context) sample {
 	b.t.Helper()
-	stats, err := b.host.Stats(ctx)
+	ram, err := b.pagers.pagers.Ram.Stats(ctx)
 	if err != nil {
 		b.t.Fatal(err)
 	}
-	return sample{at: time.Now(), memory: stats, objects: b.objects.counters(),
+	pmem, err := b.pagers.pagers.Pmem.Stats(ctx)
+	if err != nil {
+		b.t.Fatal(err)
+	}
+	return sample{at: time.Now(), ram: ram, pmem: pmem, objects: b.objects.counters(),
 		cache: b.cache.Stats(), volumes: b.manager.Stats()}
 }
+
+// pagerStats reads both pagers at one moment, for the spans inside a scenario
+// that a full sample would be too much for.
+func (b *benchmark) pagerStats(ctx context.Context) (ram, pmem vmmemory.Stats) {
+	b.t.Helper()
+	ram, err := b.pagers.pagers.Ram.Stats(ctx)
+	if err != nil {
+		b.t.Fatal(err)
+	}
+	pmem, err = b.pagers.pagers.Pmem.Stats(ctx)
+	if err != nil {
+		b.t.Fatal(err)
+	}
+	return ram, pmem
+}
+
+// ramPageSize and pmemPageSize are the pages the records' counts are in.
+func (b *benchmark) ramPageSize() uint64  { return b.pagers.pagers.Ram.PageSize() }
+func (b *benchmark) pmemPageSize() uint64 { return b.pagers.pagers.Pmem.PageSize() }
 
 // record folds one scenario's measurements into a record and appends it, and
 // rewrites the output file so an interrupted run still leaves what it proved.
@@ -332,7 +394,8 @@ func (b *benchmark) record(ctx context.Context, name, kind string, start sample,
 		rec.Extra["vmm_mappings"] = countMappings(b.vmm.PID())
 	}
 	if kind == "sproutfs" {
-		rec.Memory = memoryBetween(start.memory, end.memory)
+		rec.MemoryRAM = memoryBetween(b.ramPageSize(), start.ram, end.ram)
+		rec.MemoryPMEM = memoryBetween(b.pmemPageSize(), start.pmem, end.pmem)
 		objects := end.objects.sub(start.objects)
 		rec.Objects = &objects
 		rec.Cache = &cacheDelta{Hits: end.cache.Hits - start.cache.Hits,
@@ -392,12 +455,13 @@ func newBenchmark(ctx context.Context, t *testing.T) *benchmark {
 	} else if err := os.MkdirAll(work, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	b := &benchmark{t: t, work: work, pageSize: pagerPageBytes(t), scenarios: selectedScenarios(t),
+	b := &benchmark{t: t, work: work, scenarios: selectedScenarios(t),
 		binary:    requireEnv(t, "SPROUTFS_FIRECRACKER"),
 		seccomp:   requireEnv(t, "SPROUTFS_FIRECRACKER_SECCOMP"),
 		kernel:    requireEnv(t, "SPROUTFS_FIRECRACKER_KERNEL"),
 		imagePath: requireEnv(t, "SPROUTFS_BENCH_IMAGE"),
 		output:    os.Getenv("SPROUTFS_BENCH_OUTPUT")}
+	b.shape()
 	b.scratch = filepath.Join(work, "scratch")
 	if err := os.MkdirAll(b.scratch, 0o700); err != nil {
 		t.Fatal(err)
@@ -412,7 +476,7 @@ func newBenchmark(ctx context.Context, t *testing.T) *benchmark {
 	}
 	// A host shares one page cache across every VM and fork it serves; without
 	// it every read of any part of a page fetches that whole object again.
-	memoryBytes := int64(benchMemoryBytes)
+	memoryBytes := int64(b.ramResidentBytes + b.pmemResidentBytes + benchCacheBytes)
 	if value := os.Getenv("SPROUTFS_BENCH_MEMORY_MIB"); value != "" {
 		parsed, parseErr := strconv.Atoi(value)
 		if parseErr != nil || parsed <= 0 || int64(parsed) > (1<<63-1)>>20 {
@@ -420,11 +484,13 @@ func newBenchmark(ctx context.Context, t *testing.T) *benchmark {
 		}
 		memoryBytes = int64(parsed) << 20
 	}
-	// One local RAM budget is shared by decoded objects and guest pages.
+	// One local RAM budget is shared by decoded objects and the resident pages
+	// of both pagers.
 	resources, err := resource.New(memoryBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
+	b.resources = resources
 	b.cache, err = checkpoint.NewCache(resources, checkpoint.CacheConfig{MaxConcurrentLoads: 32})
 	if err != nil {
 		t.Fatal(err)
@@ -441,36 +507,17 @@ func newBenchmark(ctx context.Context, t *testing.T) *benchmark {
 	}
 	t.Cleanup(func() { _ = b.manager.Close(context.Background()) })
 
-	b.residentPages = benchResidentBytes / b.pageSize
-	// The dirty budget is not the resident budget. A private RAM page becomes
-	// clean only through a coordinated capture, so what a running guest has
-	// dirtied stays dirty for as long as it runs; the resident budget bounds
-	// physical pages and the spill file absorbs the rest. A host therefore has
-	// to provision dirty capacity for the RAM of every guest it runs at once,
-	// which is what this derives.
-	b.dirtyPages = benchMaxGuests * (benchRAMBytes / b.pageSize)
-	b.logicalPages = benchMaxGuests * ((benchRAMBytes + benchPmemBytes) / b.pageSize)
-	b.readAheadPages = benchReadAheadBytes / b.pageSize
-	b.arena, err = vmmemory.NewLinuxArena(b.residentPages, checkpoint.PageSize2MiB)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = b.arena.Close() })
-	disk, err := adapters.NewDisk(work)
-	if err != nil {
-		t.Fatal(err)
-	}
-	spill, err := disk.Open(ctx, "spill", platform.OpenOptions{Create: true, Exclusive: true, Permissions: 0o600})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = spill.Close() })
-	b.host, err = vmmemory.New(ctx, resources, vmmemory.Config{PageSize: checkpoint.PageSize2MiB, ResidentPages: b.residentPages,
-		LogicalPages: b.logicalPages, DirtyPages: b.dirtyPages,
-		ReadAheadPages: b.readAheadPages, WriteAheadPages: benchWriteAheadPages()}, b.arena, spill)
-	if err != nil {
-		t.Fatal(err)
-	}
+	// The two pagers, as a host assembles them. Every budget is in bytes and
+	// converted by the pager it belongs to, because the same number of pages is
+	// a different amount of memory in each.
+	b.pagers = newConfiguredHostPagers(t, ctx, hostPagersConfig{
+		RAM: hostPagerBudgets{Arena: b.ramResidentBytes, Logical: b.ramLogicalBytes,
+			Dirty: b.ramDirtyBytes, WriteAhead: 1},
+		PMEM: hostPagerBudgets{Arena: b.pmemResidentBytes, Logical: b.pmemLogicalBytes,
+			Dirty: b.pmemDirtyBytes, WriteAhead: benchWriteAheadPages()},
+		Resources: resources,
+		SpillDir:  work,
+	})
 	b.managedScratch, err = vmmachine.NewScratch(t.Context(), filepath.Join(b.scratch, "managed"), adapters.NewDisk)
 	if err != nil {
 		t.Fatal(err)
@@ -481,11 +528,62 @@ func newBenchmark(ctx context.Context, t *testing.T) *benchmark {
 		}
 	})
 	t.Cleanup(func() {
-		if err := b.host.Close(context.Background()); err != nil {
+		if err := b.pagers.Close(context.Background()); err != nil {
 			t.Error(err)
 		}
 	})
 	return b
+}
+
+// shape reads the guest's geometry and the budget behind each kind of its
+// memory from the environment, with the recorded defaults above where a
+// variable is unset, and checks each against the pager it belongs to. A budget
+// that is not a whole number of that pager's pages would be silently rounded
+// down, and a root smaller than the image it is ingested from cannot hold it,
+// so both fail the run rather than measuring something other than what was
+// asked for.
+func (b *benchmark) shape() {
+	b.t.Helper()
+	b.ramBytes = benchBytesEnv(b.t, "SPROUTFS_BENCH_RAM_BYTES", defaultBenchRAMBytes, checkpoint.PageSize4KiB)
+	b.rootBytes = benchBytesEnv(b.t, "SPROUTFS_BENCH_ROOT_BYTES", defaultBenchRootBytes, checkpoint.PageSize2MiB)
+	b.ramResidentBytes = benchBytesEnv(b.t, "SPROUTFS_BENCH_RAM_RESIDENT_BYTES",
+		defaultBenchRAMResidentBytes, checkpoint.PageSize4KiB)
+	b.pmemResidentBytes = benchBytesEnv(b.t, "SPROUTFS_BENCH_PMEM_RESIDENT_BYTES",
+		defaultBenchPmemResidentBytes, checkpoint.PageSize2MiB)
+	info, err := os.Stat(b.imagePath)
+	if err != nil {
+		b.t.Fatal(err)
+	}
+	if uint64(info.Size()) > b.rootBytes {
+		b.t.Fatalf("the guest image is %d bytes and the root volume %d: SPROUTFS_BENCH_ROOT_BYTES cannot be smaller than the image",
+			info.Size(), b.rootBytes)
+	}
+	// The dirty budget is not the resident budget. A private page becomes clean
+	// only through a coordinated capture, so what a running guest has dirtied
+	// stays dirty for as long as it runs; the resident budget bounds physical
+	// pages and the spill file absorbs the rest. A host therefore has to
+	// provision dirty capacity for everything every guest it runs at once could
+	// have written, which for either kind is the whole of what that kind maps —
+	// so each pager's dirty budget is its logical one, and both are the guests'
+	// own bytes rather than a share of an arena.
+	b.ramLogicalBytes = benchMaxGuests * b.ramBytes
+	b.pmemLogicalBytes = benchMaxGuests * b.rootBytes
+	b.ramDirtyBytes, b.pmemDirtyBytes = b.ramLogicalBytes, b.pmemLogicalBytes
+}
+
+// benchBytesEnv reads one byte-valued variable, defaulting where it is unset
+// and requiring a whole, positive number of the given page.
+func benchBytesEnv(t *testing.T, name string, fallback, page uint64) uint64 {
+	t.Helper()
+	value := os.Getenv(name)
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseUint(value, 10, 64)
+	if err != nil || parsed == 0 || parsed%page != 0 {
+		t.Fatalf("%s is %q; want a positive whole multiple of the %d-byte page it is stated in", name, value, page)
+	}
+	return parsed
 }
 
 // newBenchObjectStore selects the object storage this run measures against: a
@@ -555,18 +653,22 @@ func bootArgs(base string) string {
 func (b *benchmark) machineConfig(vm *volume.VM, restore []byte) vmmachine.Config {
 	return vmmachine.Config{
 		Binary: b.binary, SeccompFilter: b.seccomp, KernelPath: b.kernel, BootArgs: bootArgs(benchBootArgs),
-		Scratch: b.managedScratch, Pagers: bothKinds(b.host), VM: vm,
+		Scratch: b.managedScratch, Pagers: b.pagers.pagers, VM: vm,
 		Pmem: []vmmachine.Pmem{{ID: "root", Root: true}}, VCPUs: benchGuestVCPUs(), RestoreState: restore,
-		Connection: vmmemory.ConnectionConfig{QueuePages: min(16384, b.logicalPages), FaultWorkers: 16,
+		// The queue is a ceiling: a machine clamps it to each region's own size
+		// in that region's pager's page, so nothing here is stated in a page.
+		Connection: vmmemory.ConnectionConfig{QueuePages: benchQueuePages, FaultWorkers: 16,
 			CommandTimeout: 5 * time.Minute, VerifyInterval: 5 * time.Second},
 	}
 }
 
 func (b *benchmark) createVM(ctx context.Context, id string) *volume.VM {
 	b.t.Helper()
+	// Each volume is created in the page of the pager that will map it, which is
+	// what a host does: the guest's memory at 4 KiB and its root at 2 MiB.
 	vm, err := b.manager.Create(ctx, id, []volume.VolumeSpec{
-		{Name: vmmachine.RAMVolume, Size: benchRAMBytes, PageSize: checkpoint.PageSize2MiB},
-		{Name: "root", Size: benchPmemBytes, PageSize: checkpoint.PageSize2MiB},
+		{Name: vmmachine.RAMVolume, Size: b.ramBytes, PageSize: checkpoint.PageSize4KiB},
+		{Name: "root", Size: b.rootBytes, PageSize: checkpoint.PageSize2MiB},
 	})
 	if err != nil {
 		b.t.Fatal(err)
@@ -577,8 +679,9 @@ func (b *benchmark) createVM(ctx context.Context, id string) *volume.VM {
 // ingest writes the guest image into the template's root volume. Only the
 // allocated extents of the sparse image are written, in whole page-sized
 // batches; every hole is discarded, which costs one bounded record however
-// large it is.
-func (b *benchmark) ingest(ctx context.Context, vm *volume.VM) (time.Duration, uint64) {
+// large it is. A root larger than the image is the rest of it discarded, so a
+// run can give the guest more disk than the image was built with.
+func (b *benchmark) ingest(ctx context.Context, vm *volume.VM) (elapsed time.Duration, written, imageBytes uint64) {
 	b.t.Helper()
 	root := vm.Volume("root")
 	file, err := os.Open(b.imagePath)
@@ -590,8 +693,9 @@ func (b *benchmark) ingest(ctx context.Context, vm *volume.VM) (time.Duration, u
 	if err != nil {
 		b.t.Fatal(err)
 	}
-	if uint64(info.Size()) != root.Size() {
-		b.t.Fatalf("guest image is %d bytes, root volume is %d", info.Size(), root.Size())
+	if uint64(info.Size()) > root.Size() || uint64(info.Size())%checkpoint.PageSize2MiB != 0 {
+		b.t.Fatalf("guest image is %d bytes, root volume is %d: the image must be a whole number of 2 MiB pages and fit",
+			info.Size(), root.Size())
 	}
 	pages := int(root.Size() / checkpoint.PageSize2MiB)
 	data := make([]bool, pages)
@@ -614,7 +718,6 @@ func (b *benchmark) ingest(ctx context.Context, vm *volume.VM) (time.Duration, u
 	}
 	started := time.Now()
 	buffer := make([]byte, checkpoint.PageSize2MiB)
-	var written uint64
 	for page := 0; page < pages; page++ {
 		if !data[page] {
 			hole := page
@@ -638,7 +741,7 @@ func (b *benchmark) ingest(ctx context.Context, vm *volume.VM) (time.Duration, u
 	if err := vm.Checkpoint(ctx); err != nil {
 		b.t.Fatal(err)
 	}
-	return time.Since(started), written
+	return time.Since(started), written, uint64(info.Size())
 }
 
 // Linux sparse-file seeks. A file with no data past offset reports ENXIO.
@@ -720,12 +823,13 @@ func (b *benchmark) splitBoot(timing *startTiming, ready string) {
 }
 
 // capture runs a coordinated capture and reports what the guest's pause bought.
+// A capture seals both of the machine's regions, so it reads both pagers: what
+// the two spent and how many commands they issued adds, because nanoseconds and
+// commands are the same unit in either; what they sealed and protected does
+// not, so those are reported per kind and in bytes.
 func (b *benchmark) capture(ctx context.Context, p *vmmachine.Process, vm *volume.VM) (*volume.Checkpoint, map[string]any) {
 	b.t.Helper()
-	before, err := b.host.Stats(ctx)
-	if err != nil {
-		b.t.Fatal(err)
-	}
+	beforeRAM, beforePMEM := b.pagerStats(ctx)
 	// How many mappings the VMM's address space holds when the seal runs. A
 	// range write-protect is applied to every registered mapping the range
 	// covers, so the kernel walks them; the seal microbenchmark's guest has a
@@ -734,7 +838,7 @@ func (b *benchmark) capture(ctx context.Context, p *vmmachine.Process, vm *volum
 	paused := time.Now()
 	var state []byte
 	var prepared, resumed time.Time
-	var atResume vmmemory.Stats
+	var atResumeRAM, atResumePMEM vmmemory.Stats
 	ckpt, err := vm.Snapshot(ctx, func(ctx context.Context) ([]byte, map[string]volume.DirtySource, error) {
 		captured, sources, err := p.Prepare(ctx)
 		if err != nil {
@@ -745,15 +849,17 @@ func (b *benchmark) capture(ctx context.Context, p *vmmachine.Process, vm *volum
 			return nil, nil, err
 		}
 		resumed = time.Now()
-		if atResume, err = b.host.Stats(ctx); err != nil {
-			return nil, nil, err
-		}
+		atResumeRAM, atResumePMEM = b.pagerStats(ctx)
 		return captured, sources, nil
 	})
 	if err != nil {
 		b.t.Fatalf("capture: %v", err)
 	}
-	sealed := atResume.CheckpointPages - before.CheckpointPages
+	sealedRAM := atResumeRAM.CheckpointPages - beforeRAM.CheckpointPages
+	sealedPMEM := atResumePMEM.CheckpointPages - beforePMEM.CheckpointPages
+	sealedBytes := sealedRAM*b.ramPageSize() + sealedPMEM*b.pmemPageSize()
+	protectedRAM := atResumeRAM.ProtectedPages - beforeRAM.ProtectedPages
+	protectedPMEM := atResumePMEM.ProtectedPages - beforePMEM.ProtectedPages
 	published := time.Now()
 	if err := ckpt.Wait(ctx); err != nil {
 		b.t.Fatal(err)
@@ -764,31 +870,39 @@ func (b *benchmark) capture(ctx context.Context, p *vmmachine.Process, vm *volum
 	// pager times its own half, so what is left of Prepare is Firecracker's pause
 	// and state save together, which is the number a fix would have to target if
 	// the seal turns out not to be the cost.
-	seals := int64(atResume.Seal.TotalNS - before.Seal.TotalNS)
-	protects := int64(atResume.Protect.TotalNS - before.Protect.TotalNS)
+	seals := int64(atResumeRAM.Seal.TotalNS-beforeRAM.Seal.TotalNS) +
+		int64(atResumePMEM.Seal.TotalNS-beforePMEM.Seal.TotalNS)
+	protects := int64(atResumeRAM.Protect.TotalNS-beforeRAM.Protect.TotalNS) +
+		int64(atResumePMEM.Protect.TotalNS-beforePMEM.Protect.TotalNS)
 	prepare := prepared.Sub(paused).Nanoseconds()
 	extra := map[string]any{
-		"sealed_pages":        sealed,
-		"pause_ns":            pause.Nanoseconds(),
-		"prepare_ns":          prepare,
-		"seal_ns":             seals,
-		"seal_calls":          atResume.Seal.Count - before.Seal.Count,
-		"longest_seal_ns":     atResume.Seal.MaxNS,
-		"protect_ns":          protects,
-		"protect_commands":    atResume.Protect.Count - before.Protect.Count,
-		"protected_pages":     atResume.ProtectedPages - before.ProtectedPages,
-		"seal_bookkeeping_ns": seals - protects,
-		"vmm_pause_save_ns":   prepare - seals,
-		"resume_ns":           resumed.Sub(prepared).Nanoseconds(),
-		"publish_ns":          time.Since(published).Nanoseconds(),
-		"state_bytes":         len(state),
-		"vmm_mappings":        vmas,
-		"pause_ns_per_page":   0,
-		"seal_ns_per_page":    0,
+		"sealed_pages_ram":     sealedRAM,
+		"sealed_pages_pmem":    sealedPMEM,
+		"sealed_bytes":         sealedBytes,
+		"pause_ns":             pause.Nanoseconds(),
+		"prepare_ns":           prepare,
+		"seal_ns":              seals,
+		"seal_calls":           atResumeRAM.Seal.Count - beforeRAM.Seal.Count + atResumePMEM.Seal.Count - beforePMEM.Seal.Count,
+		"longest_seal_ns":      max(atResumeRAM.Seal.MaxNS, atResumePMEM.Seal.MaxNS),
+		"protect_ns":           protects,
+		"protect_commands":     atResumeRAM.Protect.Count - beforeRAM.Protect.Count + atResumePMEM.Protect.Count - beforePMEM.Protect.Count,
+		"protected_pages_ram":  protectedRAM,
+		"protected_pages_pmem": protectedPMEM,
+		"protected_bytes":      protectedRAM*b.ramPageSize() + protectedPMEM*b.pmemPageSize(),
+		"seal_bookkeeping_ns":  seals - protects,
+		"vmm_pause_save_ns":    prepare - seals,
+		"resume_ns":            resumed.Sub(prepared).Nanoseconds(),
+		"publish_ns":           time.Since(published).Nanoseconds(),
+		"state_bytes":          len(state),
+		"vmm_mappings":         vmas,
+		// Per MiB rather than per page: a pause covers pages of both geometries
+		// and there is no page the two of them share.
+		"pause_ns_per_mib": 0,
+		"seal_ns_per_mib":  0,
 	}
-	if sealed > 0 {
-		extra["pause_ns_per_page"] = pause.Nanoseconds() / int64(sealed)
-		extra["seal_ns_per_page"] = seals / int64(sealed)
+	if mib := int64(sealedBytes >> 20); mib > 0 {
+		extra["pause_ns_per_mib"] = pause.Nanoseconds() / mib
+		extra["seal_ns_per_mib"] = seals / mib
 	}
 	return ckpt, extra
 }
@@ -803,19 +917,23 @@ func TestGuestWorkloadBenchmark(t *testing.T) {
 	}
 	ctx := t.Context()
 	b := newBenchmark(ctx, t)
-	t.Logf("pager: resident=%d pages (%d MiB) dirty=%d logical=%d read-ahead=%d page=%d scenarios=%v",
-		b.residentPages, benchResidentBytes>>20, b.dirtyPages, b.logicalPages, b.readAheadPages,
-		b.pageSize, b.scenarios.names())
+	for _, kind := range []vmmemory.RegionKind{vmmemory.Ram, vmmemory.Pmem} {
+		cfg := b.pagers.configs[kind]
+		t.Logf("%s pager: page=%d resident=%d pages (%d MiB) dirty=%d logical=%d read-ahead=%d write-ahead=%d",
+			kind, cfg.PageSize, cfg.ResidentPages, uint64(cfg.ResidentPages)*cfg.PageSize>>20,
+			cfg.DirtyPages, cfg.LogicalPages, cfg.ReadAheadPages, cfg.WriteAheadPages)
+	}
+	t.Logf("guest: ram=%d MiB root=%d MiB scenarios=%v", b.ramBytes>>20, b.rootBytes>>20, b.scenarios.names())
 
 	b.appendRecord(benchRecord{Scenario: "configuration", Kind: "config", Extra: b.configuration()})
 
 	template := b.createVM(ctx, "template")
 	t.Cleanup(func() { _ = template.Close(context.Background()) })
 	start := b.sample(ctx)
-	elapsed, written := b.ingest(ctx, template)
+	elapsed, written, imageBytes := b.ingest(ctx, template)
 	b.record(ctx, "ingest-template", "sproutfs", start, nil,
 		map[string]any{"ingest_ns": elapsed.Nanoseconds(), "written_bytes": written,
-			"image_bytes": benchPmemBytes, "image_path": b.imagePath})
+			"image_bytes": imageBytes, "root_bytes": b.rootBytes, "image_path": b.imagePath})
 
 	// Scenario 1: cold boot from the template. Every guest workload up to the
 	// capture runs in this machine.
@@ -996,22 +1114,16 @@ func (s scenarioSet) names() []string {
 // the documentation can cite it from the same file as the numbers.
 func (b *benchmark) configuration() map[string]any {
 	release, _ := os.ReadFile("/proc/sys/kernel/osrelease")
-	return map[string]any{
+	config := map[string]any{
 		"date":                    time.Now().UTC().Format(time.RFC3339),
 		"host_kernel":             strings.TrimSpace(string(release)),
 		"revision":                os.Getenv("SPROUTFS_BENCH_REVISION"),
-		"guest_ram_bytes":         benchRAMBytes,
-		"guest_pmem_bytes":        benchPmemBytes,
+		"guest_ram_bytes":         b.ramBytes,
+		"guest_pmem_bytes":        b.rootBytes,
 		"vcpus":                   benchGuestVCPUs(),
-		"page_size":               b.pageSize,
 		"host_page_size":          os.Getpagesize(),
 		"scenarios":               b.scenarios.names(),
-		"resident_pages":          b.residentPages,
-		"dirty_pages":             b.dirtyPages,
-		"logical_pages":           b.logicalPages,
-		"read_ahead_pages":        b.readAheadPages,
-		"write_ahead_pages":       benchWriteAheadPages(), // zero is the pager's default
-		"shared_memory_limit":     b.host.Resources().Stats().Limit,
+		"shared_memory_limit":     b.resources.Stats().Limit,
 		"max_write_bytes":         benchMaxWriteBytes,
 		"object_store":            b.objectStoreKind,
 		"object_get_latency_ns":   b.objectLatency.Get.Nanoseconds(),
@@ -1030,10 +1142,23 @@ func (b *benchmark) configuration() map[string]any {
 		"steady_guests":           steadyGuests,
 		"steady_period_ns":        b.steadyPeriod().Nanoseconds(),
 		"fault_workers":           16,
-		"queue_pages":             16384,
+		"queue_pages":             benchQueuePages,
 		"boot_args":               bootArgs(benchBootArgs),
 		"baseline_boot_args":      bootArgs(benchPlainBootArgs),
 	}
+	// Each pager's own budgets, named for its kind and given in its own pages
+	// and in bytes: the pages say what the pager admits against, the bytes are
+	// what a reader may compare between the two or against another run's.
+	for _, kind := range []vmmemory.RegionKind{vmmemory.Ram, vmmemory.Pmem} {
+		cfg := b.pagers.configs[kind]
+		for name, pages := range map[string]int{"resident": cfg.ResidentPages, "dirty": cfg.DirtyPages,
+			"logical": cfg.LogicalPages, "read_ahead": cfg.ReadAheadPages, "write_ahead": cfg.WriteAheadPages} {
+			config[kind.String()+"_"+name+"_pages"] = pages
+			config[kind.String()+"_"+name+"_bytes"] = uint64(pages) * cfg.PageSize
+		}
+		config[kind.String()+"_page_size"] = cfg.PageSize
+	}
+	return config
 }
 
 // forks and steadyPeriod are the recorded shape of the two concurrent
@@ -1296,16 +1421,26 @@ func (b *benchmark) forkFanOut(ctx context.Context, origin *forkOrigin) {
 	// larger page copies more of what a fork writes into pages of its own, and
 	// the shared count is what that costs on the other side. The same three in
 	// bytes, because page counts of different geometries cannot be compared and
-	// the whole point of the record is to compare them.
-	privatePages := make([]int, count)
-	residentPages := make([]int, count)
-	regionPages := make([]map[string]map[string]int, count)
+	// the whole point of the record is to compare them — which is also why the
+	// fork's own totals across its two regions are bytes and nothing else.
+	privateBytes := make([]uint64, count)
+	residentBytes := make([]uint64, count)
+	regionPages := make([]map[string]map[string]uint64, count)
 	// Which pages those are, so that what a fork wrote can be looked up in the
-	// image: a root page number times the page size is an offset into it.
+	// image: a page number times that region's page size is an offset into it.
 	ownPages := make([]map[string][]uint64, count)
+	// How the private pages of the fork's RAM lie: the runs they form, the gaps
+	// between them and the 2 MiB ranges they fall in. The page-geometry plan
+	// sets the gap a store closes from these, so they are measured here rather
+	// than chosen.
+	ramGeometry := make([]*privateGeometry, count)
+	// How many mappings each fork's VMM holds, which is what a region's runs
+	// and gaps cost in the address space.
+	forkMappings := make([]int, count)
 	for index, item := range children {
-		regionPages[index] = map[string]map[string]int{}
+		regionPages[index] = map[string]map[string]uint64{}
 		ownPages[index] = map[string][]uint64{}
+		forkMappings[index] = countMappings(item.process.PID())
 		for name, region := range item.process.Regions() {
 			stats, err := region.Stats(ctx)
 			if err != nil {
@@ -1317,18 +1452,23 @@ func (b *benchmark) forkFanOut(ctx context.Context, origin *forkOrigin) {
 			}
 			slices.Sort(unpublished)
 			ownPages[index][name] = unpublished
-			regionPages[index][name] = map[string]int{
-				"resident_pages": stats.ResidentPages, "private_pages": stats.PrivatePages,
-				"shared_pages":   stats.SharedPages,
-				"resident_bytes": int(stats.ResidentBytes()), "private_bytes": int(stats.PrivateBytes()),
-				"shared_bytes": int(stats.SharedBytes())}
-			privatePages[index] += stats.PrivatePages
-			residentPages[index] += stats.ResidentPages
+			regionPages[index][name] = map[string]uint64{
+				"page_size":      region.PageSize(),
+				"resident_pages": uint64(stats.ResidentPages), "private_pages": uint64(stats.PrivatePages),
+				"shared_pages":   uint64(stats.SharedPages),
+				"resident_bytes": stats.ResidentBytes(), "private_bytes": stats.PrivateBytes(),
+				"shared_bytes": stats.SharedBytes()}
+			privateBytes[index] += stats.PrivateBytes()
+			residentBytes[index] += stats.ResidentBytes()
+			if region.Kind() == vmmemory.Ram {
+				ramGeometry[index] = newPrivateGeometry(unpublished, region.PageSize())
+			}
 		}
 	}
-	// Which 4 KiB blocks of those root pages a fork changed, against a fork of
-	// the same point that never ran. A page a fork owns with no block changed
-	// took a write fault and no write.
+	// Which 4 KiB blocks of those pages a fork changed, against a fork of the
+	// same point that never ran. A page a fork owns with no block changed took a
+	// write fault and no write; at a 4 KiB RAM page a page is one block, and at
+	// the root's 2 MiB page it is 512 of them.
 	pristine, err := b.manager.Fork(ctx, "fanout-pristine", origin.point)
 	if err != nil {
 		b.t.Fatal(err)
@@ -1336,15 +1476,16 @@ func (b *benchmark) forkFanOut(ctx context.Context, origin *forkOrigin) {
 	const block = 4096
 	changedBlocks := make([]map[string][]uint64, count)
 	// How many blocks of each page a fork owns it changed, in every region: a
-	// RAM page's blocks are too many to list, and the count is what says
+	// root page's blocks are too many to list, and the count is what says
 	// whether the page was written at all.
 	changedCounts := make([]map[string]map[string]int, count)
-	before, after := make([]byte, b.pageSize), make([]byte, b.pageSize)
 	for index, item := range children {
 		changedBlocks[index] = map[string][]uint64{}
 		changedCounts[index] = map[string]map[string]int{}
 		for name, region := range item.process.Regions() {
 			changedCounts[index][name] = map[string]int{}
+			pageSize := region.PageSize()
+			before, after := make([]byte, pageSize), make([]byte, pageSize)
 			for _, page := range ownPages[index][name] {
 				held, _, err := region.ReadResident(ctx, page, after)
 				if err != nil {
@@ -1353,13 +1494,13 @@ func (b *benchmark) forkFanOut(ctx context.Context, origin *forkOrigin) {
 				if !held {
 					b.t.Fatalf("fork %d no longer holds its own %s page %d", index, name, page)
 				}
-				if err := pristine.Volume(name).Read(ctx, page*uint64(b.pageSize), before); err != nil {
+				if err := pristine.Volume(name).Read(ctx, page*pageSize, before); err != nil {
 					b.t.Fatal(err)
 				}
 				changed := []uint64{}
 				for offset := 0; offset < len(after); offset += block {
 					if !bytes.Equal(before[offset:offset+block], after[offset:offset+block]) {
-						changed = append(changed, (page*uint64(b.pageSize)+uint64(offset))/block)
+						changed = append(changed, (page*pageSize+uint64(offset))/block)
 					}
 				}
 				changedCounts[index][name][strconv.FormatUint(page, 10)] = len(changed)
@@ -1379,14 +1520,17 @@ func (b *benchmark) forkFanOut(ctx context.Context, origin *forkOrigin) {
 	for index, item := range children {
 		ckpt, _ := b.capture(ctx, item.process, item.vm)
 		published, publishedBytes := ckpt.Sealed()
-		after := map[string]map[string]int{}
+		after := map[string]map[string]uint64{}
 		for name, region := range item.process.Regions() {
 			stats, err := region.Stats(ctx)
 			if err != nil {
 				b.t.Fatal(err)
 			}
-			after[name] = map[string]int{"resident_pages": stats.ResidentPages,
-				"private_pages": stats.PrivatePages, "shared_pages": stats.SharedPages}
+			after[name] = map[string]uint64{"page_size": region.PageSize(),
+				"resident_pages": uint64(stats.ResidentPages), "private_pages": uint64(stats.PrivatePages),
+				"shared_pages":   uint64(stats.SharedPages),
+				"resident_bytes": stats.ResidentBytes(), "private_bytes": stats.PrivateBytes(),
+				"shared_bytes": stats.SharedBytes()}
 		}
 		forkCheckpoints[index] = map[string]any{
 			"unchanged_pages": ckpt.Unchanged(),
@@ -1408,10 +1552,12 @@ func (b *benchmark) forkFanOut(ctx context.Context, origin *forkOrigin) {
 		"total_ns":            total,
 		"max_first_output":    maxOf(firstOutput),
 		"max_total_ns":        maxOf(total),
-		"fork_private_pages":  privatePages,
-		"fork_resident_pages": residentPages,
+		"fork_private_bytes":  privateBytes,
+		"fork_resident_bytes": residentBytes,
 		"fork_region_pages":   regionPages,
 		"fork_own_pages":      ownPages,
+		"fork_ram_geometry":   ramGeometry,
+		"fork_vmm_mappings":   forkMappings,
 	})
 	for _, item := range children {
 		item.console.close()
@@ -1422,6 +1568,89 @@ func (b *benchmark) forkFanOut(ctx context.Context, origin *forkOrigin) {
 			b.t.Fatal(err)
 		}
 	}
+}
+
+// runBuckets and runBucketUpper are the fixed buckets a private run's length
+// and a gap between two of them are counted in: a page alone, a handful, and so
+// on up to a whole 2 MiB range of 4 KiB pages. The last bucket holds anything
+// longer, which a range of 512 pages cannot produce but a coarser page could.
+const runBuckets = 6
+
+var runBucketUpper = [runBuckets]int{1, 4, 16, 64, 256, 512}
+
+// runHistogram counts runs or gaps by length in those buckets, so the records
+// of two runs are directly comparable; the boundaries travel with the histogram
+// rather than being named once in whatever reads it.
+type runHistogram struct {
+	Buckets [runBuckets]int `json:"buckets"`
+	Upper   []int           `json:"bucket_upper"`
+}
+
+func newRunHistogram() runHistogram { return runHistogram{Upper: runBucketUpper[:]} }
+
+func (h *runHistogram) add(length int) {
+	for i, upper := range runBucketUpper {
+		if length <= upper || i == runBuckets-1 {
+			h.Buckets[i]++
+			return
+		}
+	}
+}
+
+// privateGeometry is how one region's private pages lie in it: the runs of
+// consecutive pages they form, the gaps between consecutive runs of one
+// 2 MiB-aligned range, and how many ranges hold any private page at all. A run
+// is what one mapping covers under the page-geometry plan — a private page
+// lives at its own offset within its range's extent, so private pages adjacent
+// in the guest are adjacent in the arena and are one mapping, and a run never
+// crosses a range boundary — and the gaps are what the plan sets the distance a
+// store closes from. A range that is at least half private is one the plan
+// would make whole, so it is counted as well as the ranges touched at all.
+type privateGeometry struct {
+	PageSize   uint64       `json:"page_size"`
+	RangeBytes uint64       `json:"range_bytes"`
+	Pages      int          `json:"private_pages"`
+	Runs       int          `json:"runs"`
+	RunLengths runHistogram `json:"run_lengths"`
+	Gaps       runHistogram `json:"gaps"`
+	Ranges     int          `json:"ranges"`
+	HalfRanges int          `json:"half_private_ranges"`
+}
+
+// newPrivateGeometry reads that geometry off one region's own page numbers,
+// which must be sorted. The pages are the region's own, not the volume's: a
+// page a checkpoint has published is shared again and is no longer a mapping of
+// this fork's alone.
+func newPrivateGeometry(pages []uint64, pageSize uint64) *privateGeometry {
+	perRange := max(benchRangeBytes/pageSize, 1)
+	g := &privateGeometry{PageSize: pageSize, RangeBytes: benchRangeBytes, Pages: len(pages),
+		RunLengths: newRunHistogram(), Gaps: newRunHistogram()}
+	for start := 0; start < len(pages); {
+		// The private pages of one range, which a sorted list holds together.
+		which := pages[start] / perRange
+		end := start
+		for end < len(pages) && pages[end]/perRange == which {
+			end++
+		}
+		g.Ranges++
+		if uint64(end-start)*2 >= perRange {
+			g.HalfRanges++
+		}
+		runStart := start
+		for i := start + 1; i <= end; i++ {
+			if i < end && pages[i] == pages[i-1]+1 {
+				continue
+			}
+			g.Runs++
+			g.RunLengths.add(i - runStart)
+			if i < end {
+				g.Gaps.add(int(pages[i] - pages[i-1] - 1))
+			}
+			runStart = i
+		}
+		start = end
+	}
+	return g
 }
 
 // steadyState runs eight guests through the repository workload for a fixed
@@ -1522,7 +1751,7 @@ func (b *benchmark) baseline(ctx context.Context) {
 	defer os.Remove(root)
 	config := plainConfig{Binary: b.binary, Kernel: b.kernel,
 		BootArgs: bootArgs(benchPlainBootArgs), RootPath: root, Directory: b.scratch,
-		MemoryMiB: benchRAMBytes >> 20, VCPUs: benchGuestVCPUs()}
+		MemoryMiB: int(b.ramBytes >> 20), VCPUs: benchGuestVCPUs()}
 
 	copied := time.Now()
 	p, err := startPlainVM(ctx, config)
@@ -1771,8 +2000,8 @@ func (b *benchmark) appendRecord(rec benchRecord) {
 			rec.Kind, rec.Scenario, rec.Kind, previous)
 	}
 	b.writeOutput(snapshot)
-	b.t.Logf("%s/%s wall=%s guest=%+v memory=%+v objects=%+v extra=%v", rec.Kind, rec.Scenario,
-		time.Duration(rec.WallNS), rec.Guest, rec.Memory, rec.Objects, rec.Extra)
+	b.t.Logf("%s/%s wall=%s guest=%+v ram=%+v pmem=%+v objects=%+v extra=%v", rec.Kind, rec.Scenario,
+		time.Duration(rec.WallNS), rec.Guest, rec.MemoryRAM, rec.MemoryPMEM, rec.Objects, rec.Extra)
 }
 
 // copySparse copies the guest image without materializing its holes; the

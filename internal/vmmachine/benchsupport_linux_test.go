@@ -548,9 +548,13 @@ func benchGuestVCPUs() int {
 	return benchVCPUs
 }
 
-// benchWriteAheadPages is SPROUTFS_BENCH_WRITE_AHEAD_PAGES when it names a
-// positive run, which is how a run measures another write-ahead bound, and
-// zero, the pager's own default, otherwise.
+// benchWriteAheadPages is the PMEM pager's write-ahead run:
+// SPROUTFS_BENCH_WRITE_AHEAD_PAGES when it names a positive number of that
+// pager's pages, which is how a run measures another write-ahead bound, and
+// zero, one page, otherwise. The RAM pager keeps one page whatever this says —
+// at 4 KiB the unit of ownership is the whole point, and a run that made a
+// store's neighbours privately dirty before the guest had used them would give
+// back exactly the sharing the small page buys.
 func benchWriteAheadPages() int {
 	if value, err := strconv.Atoi(os.Getenv("SPROUTFS_BENCH_WRITE_AHEAD_PAGES")); err == nil && value > 0 {
 		return value
