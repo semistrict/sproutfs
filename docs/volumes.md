@@ -76,6 +76,20 @@ the selected checkpoint, and the part members its root names. A read takes no
 round trip but a cold page fetch. `Load` is the same call under another name,
 for a pager whose fault path must not do anything else.
 
+A read of a range is one **run** of pages, and what a cold one costs in requests
+is what the layout allows rather than how many pages the run holds. The pages
+are grouped by the part their members are in and by where in that part they sit:
+a publication writes a volume's changed pages in page order, so the members of
+consecutive pages are adjacent, and a run of them is fetched as one **extent** —
+one ranged read — and decoded out of that one buffer. Two members of the same
+part separated by up to 64 KiB of bytes nothing wants are read through rather
+than split at, because a request costs its latency and not its length; a larger
+gap splits, and so does an extent that has grown past 4 MiB. Independent parts
+are fetched at once. A page no checkpoint ever wrote has no member, reads as
+zeroes and costs nothing. So a pager's cold 2 MiB read-ahead run of 512 4 KiB
+pages is two requests — the segment that locates them, and the extent their
+members lie in — where it was 513 before the pages of a run were grouped.
+
 `Locate` reports the page identity of every byte of a range as sorted
 adjacent extents covering it exactly, each inside one page of that volume's own
 geometry. A page the overlay
@@ -402,16 +416,33 @@ describes itself; normal reads never touch the table, because the root's
 segments carry the same offsets.
 
 A part's tail is bounded, so a reader fetches its table in one request. The
-table is at most 256 KiB: a part is sealed when the next member's entry would
+table is at most 1 MiB: a part is sealed when the next member's entry would
 carry its table past that, exactly as it is sealed at the 64 MiB of members it
 fills to. A checkpoint of very many small members is therefore bounded by its
 table rather than by its body, and writes several small parts instead of one
-part with an unbounded table. A reader asks for the part's last 256 KiB plus 32
+part with an unbounded table. A reader asks for the part's last 1 MiB plus 32
 bytes as one suffix range — an object shorter than that comes back whole —
 decodes the trailer from the end of what arrives and takes the table out of the
 same bytes, which the trailer must locate inside them. Reading a part's table is
 therefore one round trip rather than three: a HEAD for the part's size, a read
-of the trailer and a read of what it named.
+of the trailer and a read of what it named. It stays one round trip at a
+megabyte, because a request costs its latency rather than its length, and it is
+a request nothing on the page path makes: the root's segments carry the same
+offsets, so only consistency checking and the refusal of a superseded layout
+read a table at all.
+
+The bound is a megabyte because a part must fill to its target on the bytes it
+holds and not stop short on the entries naming them. A 64 MiB part of 4 KiB
+pages holds 16,384 members, and one entry of a volume named as briefly as `ram0`
+costs about 29 bytes — the repeated field's tag and length prefix, the name, and
+the page, offset, length, state and two origin fields, which are written whether
+or not they are zero. A megabyte is therefore about 36,000 of those, or about
+3,700 of the widest kind a 255-byte volume name makes, and a full part of 4 KiB
+pages spends about 470 KiB of it. At 256 KiB such a part was sealed after about
+8,700 members, some 34 MiB, so a checkpoint of small pages cost about twice the
+PUTs its bytes needed. The bound is the store's and not the part layout's — the
+layout does not know how large a part may be — so raising it moved no format
+version.
 
 Part layout version 4 is the current one; another version is refused from the
 trailer, before the table is parsed. The version sits sixteen bytes from the end
@@ -549,20 +580,28 @@ and pressure evicts the least recently used. Because a fork inherits its
 parent's object keys, its reads hit the entries the parent already loaded; there
 is no cache per VM.
 
-A miss issues one range read of the member the root located, decodes it, and
-copies the requested bytes out. A RAM or PMEM fault is exactly one page,
-so it is one range read whatever else its part holds. Concurrent misses for one
-object share a fetch, bounded by `MaxConcurrentLoads` — which a host sizes from
-its core count and its cache arena, 16 to 256 and never more pages than the
-arena holds, and which is 16 for a caller that sizes none — and each
-waiter can cancel independently. Readers pin their borrowed bytes through
-copying, so eviction cannot return bytes still in use; an object the cap leaves
-no room for is still read and copied out, just not retained. Lack of cache
-capacity never fails a read.
+A run of pages is one cache operation: the pages it already holds are served
+from it, and the ones it does not are fetched together, as one load, in the
+extents above. The load holds one slot of `MaxConcurrentLoads` — which a host
+sizes from its core count and its cache arena, 16 to 256 and never more pages
+than the arena holds, and which is 16 for a caller that sizes none — however
+many pages it is missing, because what it issues is one request per extent and
+not one per page. Concurrent readers of one page share its fetch whichever run
+carried it, and each waiter can cancel independently: a load's context ends when
+the last caller waiting on any of its pages has left. Readers pin their borrowed
+bytes through copying, so eviction cannot return bytes still in use; an object
+the cap leaves no room for is still read and copied out, just not retained. Lack
+of cache capacity never fails a read.
 
-The cache is keyed by the page's identity rather than by where its
+The cached unit is the member, not the extent that fetched it. The cache is
+keyed by the page's identity rather than by where its
 member sits, so compaction moving those bytes into another checkpoint's parts
-costs no refetch. A segment is keyed by its own identity — the checkpoint that
+costs no refetch, and two readers of one page share the one copy however each of
+them reached it. An extent has no identity of its own — which members it carries
+depends on which run asked for it and on what else its part holds — so caching
+extents would give two readers of overlapping runs two copies of the pages they
+share and make a run that is half cached fetch again the half it has. A segment
+is keyed by its own identity — the checkpoint that
 wrote it, its volume and its number — for the same reason. Clearing it prevents in-flight loads from repopulating it. A cached
 object is never evidence that a publication landed; ambiguous publication is
 reconciled against object storage.

@@ -26,11 +26,23 @@ everything open is listed here.
 - **RAM runs 4 KiB and PMEM 2 MiB, and what that costs is unmeasured.** The
   store, the pager, the wire and the VMM all carry each region's own page now.
   What the [page-geometry plan](../plans/ram-pmem-page-geometry-2026-09-19.md)
-  has left is its steps 5 to 7 — handoff and migration geometry, packing small
-  dirty pages into bounded parts and coalescing cold reads, and the
+  has left is its steps 5 and 7 — handoff and migration geometry, and the
   qualification — and the realistic workload measurements of retained sharing
   and runtime that the whole change exists to justify. Nothing here has been run
-  against the recorded workload at 4 KiB.
+  against the recorded workload at 4 KiB. Step 6's request counts are measured,
+  but in the simulation: a cold 2 MiB read-ahead run of 512 RAM pages is two
+  object-store requests where it was 513, and what that is worth against the
+  169 s a GCE restore of a 16 GiB guest took on 2026-09-21 is unmeasured on a
+  real store.
+- **Compaction reads the pages it rescues one at a time.** A read of a range of
+  a volume now fetches a run of members as one ranged read per extent, but
+  compaction walks a segment's pages and calls `Store.loadPage` for each one it
+  is moving, so rewriting a mostly dead checkpoint of 4 KiB pages costs a
+  request per page — up to `compactionBudget`, 64 MiB, which is 16,384 of them
+  (`internal/checkpoint/publication.go`, `compact`). The pages it moves are
+  consecutive within a segment and their members are adjacent in the part they
+  came from, so the same grouping applies; it runs after the guest has resumed
+  and off the fault path, which is why it was left.
 - **A 4 KiB read-ahead run is one page under pressure.** Read-ahead takes only
   free arena slots and never evicts, so a guest scanning more memory than the
   arena holds takes one fault per page rather than one per run: at 2 MiB that

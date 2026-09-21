@@ -1,7 +1,7 @@
 # RAM and PMEM page geometry — 2026-09-19
 
-**Status: steps 1 to 4 are implemented, but for step 1's baseline measurement
-and step 4's mapping budget; steps 5 to 7 are planned.**
+**Status: steps 1 to 4 and 6 are implemented, but for step 1's baseline
+measurement and step 4's mapping budget; steps 5 and 7 are planned.**
 
 ## Decision
 
@@ -373,12 +373,81 @@ memory savings and workload time together.
    Bound requests and in-flight data in bytes, allowing batches of 4 KiB RAM
    pages. Reject a mismatch before mapping or accepting guest data.
 
-6. **Keep storage and network I/O batched.** Pack small dirty pages into
+6. **Keep storage and network I/O batched. Done.** Pack small dirty pages into
    bounded parts. Preserve 4 KiB identities without a PUT per page. Coalesce
    adjacent cold reads within a part so a 2 MiB RAM read-ahead does not
    automatically produce 512 object-store GETs. Measure member/table overhead,
    compression work, metadata growth and requests per workload. Shared parts
    and one checkpoint root can still hold both kinds of volume.
+
+   **What a run costs, before and after.** A read of a range of a volume is one
+   run of pages, and it is now grouped by the part its members are in and by
+   where in that part they sit. The three cases, counted through the object
+   store, each over the 2 MiB run of 512 4 KiB pages a RAM pager loads at once
+   and each including the one read of the segment that locates them:
+
+   | A 2 MiB run of 512 4 KiB pages | Before | After |
+   | --- | --- | --- |
+   | All 512 published by one checkpoint in page order | 513 reads, 2,123,845 B | **2** |
+   | Interleaved over three checkpoints | 513 reads, 2,123,949 B | **4** |
+   | Sparse — half the pages never written | 257 reads, 1,062,050 B | **2** |
+
+   End to end through the pager, a cold read-ahead run of 512 RAM pages — one
+   `Region.Fault` on a VM a second host has just opened — went from **513
+   requests to 2**. A run of one checkpoint's pages crossing a page-table
+   segment boundary is 3: the segment boundary is a boundary of the page table,
+   not of the part. A run spread over N parts is one request per part, fetched
+   at once rather than one after another.
+
+   **What was built.** A publication already wrote a volume's changed pages in
+   ascending page order, so the members of consecutive pages are adjacent in its
+   part by construction; that is now asserted of the part itself rather than
+   assumed. `Store.Read` resolves a range to a run of pages, holding one segment
+   across the pages it locates, and groups the members it needs by `(checkpoint,
+   part)` and by offset into extents: one ranged read each, decoded out of that
+   one buffer. Two members of one part separated by up to 64 KiB of bytes
+   nothing wants are read through rather than split at — a request costs its
+   latency and not its length, and 64 KiB is sixteen 4 KiB members, enough to
+   hold a run together across the few pages a later checkpoint rewrote in the
+   middle of it — and an extent is capped at 4 MiB, which admits a whole 2 MiB
+   run with room for its envelopes. Independent parts are fetched at once,
+   within the cache's own `MaxConcurrentLoads`.
+
+   **The cached unit stays the member**, and the cache's batched path is what
+   keeps it there: a run is one cache operation, holding one load slot however
+   many pages it is missing, so the pages it fetched are retained under their own
+   identities, two readers of one page share the one copy whichever run carried
+   it, and concurrent readers still coalesce per page. An extent has no identity
+   — which members it carries depends on which run asked for it — so caching
+   extents would give two readers of overlapping runs two copies of the pages
+   they share and make a half-cached run fetch the half it has.
+
+   **Parts fill to their target at 4 KiB.** `maximumTableSize` is 1 MiB. A
+   64 MiB part of 4 KiB pages holds 16,384 members, and one entry of a volume
+   named as briefly as `ram0` costs about 29 bytes — the repeated field's tag
+   and length prefix, the name, and the page, offset, length, state and two
+   origin fields, which are written whether or not they are zero. A megabyte is
+   therefore about 36,000 such entries, or about 3,700 of the widest kind a
+   255-byte volume name makes, and a full part of small pages spends about
+   470 KiB of it. At 256 KiB such a part was sealed after about 8,700 members,
+   some 34 MiB, so a checkpoint of small pages cost about twice the PUTs its
+   bytes needed. A reader still takes a part's whole table in one suffix read,
+   now of 1 MiB plus the 32-byte trailer: still one round trip, and one nothing
+   on the page path makes, because the root's segments carry the same offsets.
+
+   **Compression stays per member.** Nothing was changed there: a member is its
+   own raw-or-Zstandard envelope, which is what makes one page one decode out of
+   an extent that holds many. The overhead a small page pays is the 48-byte
+   envelope header plus the 29-byte table entry — 77 bytes on 4,096, about
+   1.9 % of a checkpoint of whole 4 KiB pages — and grouping members into one
+   compressed block would have to beat that while making every read of one page
+   decode its neighbours too. It was not changed speculatively.
+
+   **No format version moved.** No encoding changed: the part layout is version
+   4 and the index format 8, and the committed fixtures are byte-identical. The
+   table bound is the store's rather than the part layout's — the layout
+   package does not know how large a part may be — so raising it is not a change
+   to the format.
 
 7. **Qualify and document.** Extend the simulation harness to run both page
    geometries in one VM and one host. Run the Linux pager and Firecracker

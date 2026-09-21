@@ -19,8 +19,13 @@ across all of them is collected in [open-work.md](../docs/open-work.md).
   HugeTLB pool, and Firecracker takes no huge-page setting for managed RAM. A
   settle re-shares an unchanged page by revoking it rather than by installing
   the origin under a running guest, which is what corrupted a fan-out's
-  children. Step 4's own outstanding piece is the VMA-budget merge; steps 5 to 7
-  are planned.**
+  children. Step 6 is done too: a read of a range of a volume is one run of
+  pages, grouped by the part its members are in and fetched as one ranged read
+  per extent, so a pager's cold 2 MiB read-ahead run of 512 4 KiB pages is two
+  requests where it was 513; a part's table bound is 1 MiB, so a 64 MiB part of
+  4 KiB pages fills on its bytes rather than stopping at about 8,700 members;
+  compression stays per member and no format version moved. Step 4's own
+  outstanding piece is the VMA-budget merge; steps 5 and 7 are planned.**
 - [2026-09-19 a private page that did not change](unchanged-pages-2026-09-19.md)
   — a write fault is not always a store (KVM's asynchronous page fault worker on
   x86-64, cache maintenance on aarch64), so a sealed page whose bytes equal the

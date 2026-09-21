@@ -13,6 +13,9 @@ import (
 	"github.com/semistrict/sproutfs/internal/blob"
 	"github.com/semistrict/sproutfs/internal/checkpoint/internal/part"
 	"github.com/semistrict/sproutfs/internal/control"
+	"github.com/semistrict/sproutfs/internal/platform"
+	"github.com/semistrict/sproutfs/internal/platform/sim"
+	"github.com/semistrict/sproutfs/internal/testresource"
 )
 
 // errReaderDisagreed is what one of several concurrent readers reports when the
@@ -109,7 +112,25 @@ type runFixture struct {
 
 func newRunFixture(t *testing.T) *runFixture {
 	t.Helper()
-	store, counter := countedStore(t, defaultIndexTail)
+	return newConfiguredRunFixture(t, Config{})
+}
+
+// newConfiguredRunFixture is newRunFixture over a store the test has configured
+// — a part size small enough to spread one run over several parts, or a cache
+// to read it through.
+func newConfiguredRunFixture(t *testing.T, config Config) *runFixture {
+	t.Helper()
+	runtime := sim.New(sim.Config{Seed: 104})
+	prefix, err := platform.NewObjectPrefix(fixturePrefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	counter := &readCounter{ObjectStore: runtime.ObjectStore()}
+	config.ObjectStore, config.ObjectPrefix = counter, prefix
+	store, err := NewStore(config)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ref := control.Ref{VM: "run", Sequence: 1}
 	root, err := store.Root(t.Context(), ref,
 		volumesAt(at4KiB, map[string]uint64{"ram": runVolumeSize}))
@@ -119,6 +140,9 @@ func newRunFixture(t *testing.T) *runFixture {
 	return &runFixture{store: store, counter: counter, model: newRunModel(runVolumeSize),
 		index: root, ref: ref}
 }
+
+// parts reports how many parts the last checkpoint this fixture published has.
+func (f *runFixture) parts() uint32 { return f.index.checkpoints[f.ref].parts }
 
 // publish writes the given pages under the next checkpoint of this VM.
 func (f *runFixture) publish(t *testing.T, tag uint64, pages []uint64) {
@@ -302,6 +326,79 @@ func TestAPublicationWritesConsecutivePagesAdjacently(t *testing.T) {
 				t.Fatalf("page %d sits at %d, want the %d its predecessor ends at",
 					members[at].Page, members[at].Offset, members[at-1].Offset+members[at-1].Length)
 			}
+		}
+	})
+}
+
+// A run spread over several parts is one request per part: a ranged read
+// reaches inside one object, so a part is as far as one of them goes, and the
+// parts are read at once rather than one after another.
+func TestARunAcrossPartsIsOneRequestPerPart(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newConfiguredRunFixture(t, Config{PartBytes: 512 << 10})
+		f.publish(t, 0xbb, pagesOf(0, runPages, nil))
+		parts := int(f.parts())
+		if parts < 4 {
+			t.Fatalf("a run of %d pages went into %d parts, want it spread over several", runPages, parts)
+		}
+		reads, read := f.read(t, 0, PageSize2MiB)
+		if want := segmentReads + parts; reads != want {
+			t.Fatalf("a run across %d parts cost %d reads of %d bytes, want %d",
+				parts, reads, read, want)
+		}
+	})
+}
+
+// A run that starts and ends inside a page reads the pages it touches whole and
+// copies out the bytes that were asked for, which is one request all the same.
+func TestARunThatStartsAndEndsInsideAPageIsOneRequest(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newRunFixture(t)
+		f.publish(t, 0xcc, pagesOf(0, runPages, nil))
+		reads, read := f.read(t, PageSize4KiB/2, PageSize2MiB-PageSize4KiB)
+		if want := segmentReads + 1; reads != want {
+			t.Fatalf("a run between two page boundaries cost %d reads of %d bytes, want %d",
+				reads, read, want)
+		}
+	})
+}
+
+// The second read of a run through a cache costs nothing: every page the first
+// read fetched was retained under its own identity, whichever request carried
+// it, so a second reader of any of them finds it there.
+func TestASecondReadOfARunThroughTheCacheCostsNoRequests(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		cache, err := NewCache(testresource.New(), CacheConfig{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(cache.Close)
+		f := newConfiguredRunFixture(t, Config{Cache: cache})
+		f.publish(t, 0xdd, pagesOf(0, runPages, nil))
+		if reads, read := f.read(t, 0, PageSize2MiB); reads != segmentReads+1 {
+			t.Fatalf("the first read of the run cost %d reads of %d bytes, want %d",
+				reads, read, segmentReads+1)
+		}
+		index, err := f.store.Open(t.Context(), f.ref)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.counter.reset()
+		got := make([]byte, PageSize2MiB)
+		if err := f.store.Read(t.Context(), index, "ram", 0, got); err != nil {
+			t.Fatal(err)
+		}
+		if want := f.model.want(0, PageSize2MiB); !bytes.Equal(got, want) {
+			t.Fatalf("the cached run reads back as %#x..., want %#x...", got[:8], want[:8])
+		}
+		// The segment is keyed by its own identity too, so the reopened index
+		// shares the copy the first read left.
+		if reads := f.counter.reads(); len(reads) != 0 {
+			t.Fatalf("a second read of the run cost %v, want nothing at all", reads)
+		}
+		if stats := cache.Stats(); stats.Hits != runPages+segmentReads {
+			t.Fatalf("the cache reports %+v, want a hit for each of the %d pages and the segment",
+				stats, runPages)
 		}
 	})
 }
