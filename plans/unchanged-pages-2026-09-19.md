@@ -97,16 +97,20 @@ back to sharing the page it was copied from.
   checkpoint will list, both under the checkpoint's own mutex, so the result
   does not depend on the order they finish in — which is what lets the
   simulation run the same code.
-- **An unchanged page is re-shared at once, not left to fault again.** Under
-  the origin's lock and the private page's: if the guest still shares the
-  checkpoint's copy, its mapping is replaced by a read-only mapping of the
-  origin's slot, the binding takes the origin as its resident page and becomes
-  clean, the private page is released and the dirty reservation returned. The
-  bytes are identical and the sealed page is write-protected, so the swap is
-  invisible to a running guest; a store that lands first copies away from the
-  checkpoint as it does today, and then only the checkpoint's copy is released.
-  The page is mapped rather than left missing on purpose: a missing page's next
-  read would wait, go through the same worker, and be copied again.
+- **An unchanged page is re-shared at once.** Under the origin's lock and the
+  private page's: if the guest still shares the checkpoint's copy, the binding
+  takes the origin as its resident page and becomes clean, the guest's mapping
+  of the copy is revoked, the private page is released and the dirty reservation
+  returned. A store that lands first copies away from the checkpoint as it does
+  today, and then only the checkpoint's copy is released. **The mapping is
+  revoked rather than replaced**, which this plan originally had the other way
+  round: a settle runs with the guest running and holds neither the region nor
+  the window that serializes a page's mappings, so the only replacement it may
+  issue is the one that installs no page table and wakes nothing. Installing the
+  origin in its place corrupted a guest once the RAM page was 4 KiB and a
+  fan-out settled thousands of pages an interval; see the settle's entry in
+  [vm-memory.md](../docs/vm-memory.md). The guest's next access maps the origin
+  through the fault path instead, which is one fault per page re-shared.
 - **A fork point is not settled.** A fork point publishes nothing and its pause
   is what a child waits for; its children inherit an unchanged page as an
   unpublished one, which is correct and no worse than today. The next
