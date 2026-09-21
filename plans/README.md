@@ -295,7 +295,9 @@ across all of them is collected in [open-work.md](../docs/open-work.md).
   a part's tail is bounded at 256 KiB of table plus the trailer and read as
   one suffix range, so rebuild, recovery and the consistency check cost one
   round trip per part instead of three. *Still how a part's table is read; the
-  checkpoint layout around it is the two planes above.* **Done** (`399797c`, `c05d1d3`,
+  bound is 1 MiB since the page-geometry plan's step 6, so that a 64 MiB part of
+  4 KiB pages fills on its bytes, and the checkpoint layout around it is the two
+  planes above.* **Done** (`399797c`, `c05d1d3`,
   `f90ccd9`). `platform.ByteRange` carries the suffix form, the writer seals a
   part whose table is at the bound, and the pack layout is untouched: the format
   stays 2 and the fixtures are byte-identical. One departure: the size the

@@ -70,7 +70,7 @@ table in it — and part layouts 1 to 3 kept the root as the last member of the
 last part; none of them reads here, and a store written under any of them is
 refused with the version it carries named rather than migrated, exactly as an
 older control record is. A part's tail — the table naming its members and the
-32-byte trailer naming it — is bounded at 256 KiB by the writer, so reading any
+32-byte trailer naming it — is bounded at 1 MiB by the writer, so reading any
 part's table is one suffix range of the object rather than a HEAD and two reads,
 and opening a checkpoint is one GET of its index object. A publication uploads
 the parts, waits for them, and writes the index object, which is its commit; the

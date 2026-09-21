@@ -317,11 +317,26 @@ multi-part checkpoint, a republication under one reference producing
 byte-identical objects, and a publication whose heap stays bounded by the part
 size rather than by the dirty set.
 
-A part's table is bounded at 256 KiB by the writer as well as by the reader: a
-checkpoint of 1400 volumes with the longest names a volume may have, which is
-more table than one part may hold, is required to spread its members over parts
-whose tables each fit in what one read holds, and reading a part's table is
-counted through the simulated store's trace and required to be one request.
+A part's table is bounded at 1 MiB by the writer as well as by the reader: a
+checkpoint of 4,000 pages of a volume with the longest name one may have, whose
+entries are the widest a table holds and together more table than one part may
+hold, is required to spread its members over parts whose tables each fit in what
+one read holds, and reading a part's table is counted through the simulated
+store's trace and required to be one request. The bound admits what a part of
+4 KiB pages fills to: 3,000 of those widest members are one part, where the
+256 KiB before them would have been four, and the entry cost a full 64 MiB part
+of 4 KiB pages pays is measured through the encoder rather than estimated.
+
+What a read of a range costs in requests is counted the same way. A 2 MiB run of
+512 4 KiB pages is required to be two reads — the segment that locates them and
+the one extent their members lie in — when one checkpoint published them, four
+when three checkpoints did, and two when half of them were never written; a gap
+of five members inside a part is read through and one of a hundred splits the
+request; a run across a part boundary is one read per part and one across a
+page-table segment boundary is one read of each segment; a second read through
+the cache costs nothing; and the same count is required end to end through a
+pager, where one cold read-ahead run of 512 RAM pages on a host that has just
+opened the VM is two object-store requests.
 
 Reclamation is tested directly: selecting a checkpoint deletes whole every
 earlier checkpoint the new root no longer names, keeps one it
