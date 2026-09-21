@@ -312,21 +312,22 @@ func newMigrationPager(t *testing.T, ctx context.Context) *hostPagers {
 	t.Helper()
 	// The single-guest resident budget is the suite's own knob, so these pagers
 	// take it; a host sized for several guests states its own.
-	return newSizedMigrationPager(t, ctx,
-		residentPages(t, pagerPageBytes(t), 128<<20)*pagerPageBytes(t), 384<<20, 384<<20)
+	budget := residentPages(t, pagerPageBytes(t), 128<<20) * pagerPageBytes(t)
+	return newSizedMigrationPager(t, ctx, budget, budget, 384<<20, 384<<20)
 }
 
-// newSizedMigrationPager builds one host's pagers with an arena of arenaBytes
-// each, room for logicalBytes of mapped region and dirtyBytes of private state
-// no checkpoint has published. A host taking in more than one VM needs a larger
-// logical budget than the single-VM default; an arena smaller than what it maps
-// puts eviction, spill and refault on every path, and a dirty budget no larger
-// than the arena is what a deployment actually gives one. Every budget is in
-// bytes because the two pagers count them in their own pages.
+// newSizedMigrationPager builds one host's pagers with a RAM arena and a PMEM
+// arena of their own sizes, room for logicalBytes of mapped region and
+// dirtyBytes of private state no checkpoint has published. A host taking in
+// more than one VM needs a larger logical budget than the single-VM default; an
+// arena smaller than what its kind of region maps puts eviction, spill and
+// refault on every path of that kind, and a dirty budget no larger than the
+// arenas is what a deployment actually gives one. Every budget is in bytes
+// because the two pagers count them in their own pages.
 func newSizedMigrationPager(t *testing.T, ctx context.Context,
-	arenaBytes, logicalBytes, dirtyBytes int) *hostPagers {
+	ramArenaBytes, pmemArenaBytes, logicalBytes, dirtyBytes int) *hostPagers {
 	t.Helper()
-	return newHostPagers(t, ctx, arenaBytes, logicalBytes, dirtyBytes)
+	return newHostPagers(t, ctx, ramArenaBytes, pmemArenaBytes, logicalBytes, dirtyBytes)
 }
 
 func migrationConfig(t *testing.T, binary string, pagers *hostPagers, vm *volume.VM) vmmachine.Config {

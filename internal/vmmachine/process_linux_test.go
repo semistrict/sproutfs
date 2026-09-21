@@ -46,17 +46,20 @@ type hostPagers struct {
 	capacity uint64
 }
 
-// newHostPagers gives each pager an arena, a logical cap and a dirty budget of
-// the given bytes, converted into that pager's own page. The budgets are stated
-// in bytes because a number of pages would mean different amounts of memory in
-// the two.
-func newHostPagers(t testing.TB, ctx context.Context, arenaBytes, logicalBytes, dirtyBytes int) *hostPagers {
+// newHostPagers gives each pager an arena of its own size and a logical cap and
+// dirty budget of the given bytes, each converted into that pager's own page.
+// Everything is stated in bytes because a number of pages would mean different
+// amounts of memory in the two, and the arenas are stated apart because what a
+// guest's memory needs of one says nothing about what its disks need of the
+// other: a test that pressed both with one number would be pressing whichever
+// of them happened to be smaller in its own pages.
+func newHostPagers(t testing.TB, ctx context.Context, ramArenaBytes, pmemArenaBytes, logicalBytes, dirtyBytes int) *hostPagers {
 	t.Helper()
 	p := &hostPagers{}
 	for _, kind := range []vmmemory.RegionKind{vmmemory.Ram, vmmemory.Pmem} {
-		page := uint64(checkpoint.PageSize4KiB)
+		page, arenaBytes := uint64(checkpoint.PageSize4KiB), ramArenaBytes
 		if kind == vmmemory.Pmem {
-			page = checkpoint.PageSize2MiB
+			page, arenaBytes = checkpoint.PageSize2MiB, pmemArenaBytes
 		}
 		arena, err := vmmemory.NewLinuxArena(int(uint64(arenaBytes)/page), page)
 		if err != nil {
@@ -244,7 +247,7 @@ func TestFirecrackerDAXCaptureRestoreForkAndFence(t *testing.T) {
 	// 2 MiB PMEM pager over the node's HugeTLB pool, each with an arena of the
 	// same number of bytes. The guest's RAM is what this suite puts under
 	// pressure, and at 4 KiB its arena is no longer a share of the pool.
-	host := newHostPagers(t, ctx, arenaBytes, 384<<20, 384<<20)
+	host := newHostPagers(t, ctx, arenaBytes, arenaBytes, 384<<20, 384<<20)
 	vmConfig := vmmachine.Config{Binary: binaryPath, SeccompFilter: os.Getenv("SPROUTFS_FIRECRACKER_SECCOMP"), KernelPath: os.Getenv("SPROUTFS_FIRECRACKER_KERNEL"), InitrdPath: os.Getenv("SPROUTFS_FIRECRACKER_INITRD"), BootArgs: guestPmemBootArgs, Pagers: host.pagers, VM: source, Pmem: []vmmachine.Pmem{{ID: "root", Root: true}}, VCPUs: 1, Connection: vmmemory.ConnectionConfig{QueuePages: 4096, CommandTimeout: 2 * time.Minute, VerifyInterval: time.Second}}
 	vmConfig.Scratch = mustScratch(t)
 	bad := vmConfig
