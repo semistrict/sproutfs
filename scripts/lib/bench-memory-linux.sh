@@ -9,9 +9,16 @@ test "$(uname -m)" = x86_64
 test -c /dev/kvm
 # The host is disposable and dedicated to qualification. Reserve the pool before
 # workloads fragment physical RAM; all of it disappears with the instance.
-# The workload comparison's pager holds 32 GiB resident, so its pool is 36 GiB.
+#
+# Only the PMEM pager is on the pool: the workload comparison runs a host's two
+# pagers, and the RAM one is 4 KiB pages of ordinary memory. So the pool is that
+# pager's resident budget and a tenth again for the arena's own rounding and for
+# anything else on the node that wants a huge page.
 hugepages=4096
-if [[ ${SPROUTFS_GCE_WORKLOAD:-0} == 1 ]]; then hugepages=18432; fi
+if [[ ${SPROUTFS_GCE_WORKLOAD:-0} == 1 ]]; then
+    pmem_resident=${SPROUTFS_BENCH_PMEM_RESIDENT_BYTES:-$((24 << 30))}
+    hugepages=$((pmem_resident * 11 / 10 / (2 << 20)))
+fi
 sysctl -w vm.nr_hugepages="$hugepages"
 [[ $(cat /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages) -ge $hugepages ]]
 touch /var/lib/sproutfs-bench/lease
@@ -130,6 +137,10 @@ if [[ ${SPROUTFS_GCE_WORKLOAD:-0} == 1 ]]; then
         SPROUTFS_BENCH_SCENARIOS="$scenarios" \
         SPROUTFS_BENCH_FORKS="$forks" \
         SPROUTFS_BENCH_VCPUS="${SPROUTFS_BENCH_VCPUS:-16}" \
+        SPROUTFS_BENCH_RAM_BYTES="${SPROUTFS_BENCH_RAM_BYTES:-}" \
+        SPROUTFS_BENCH_ROOT_BYTES="${SPROUTFS_BENCH_ROOT_BYTES:-}" \
+        SPROUTFS_BENCH_RAM_RESIDENT_BYTES="${SPROUTFS_BENCH_RAM_RESIDENT_BYTES:-}" \
+        SPROUTFS_BENCH_PMEM_RESIDENT_BYTES="${SPROUTFS_BENCH_PMEM_RESIDENT_BYTES:-}" \
         "$work/build/vmmachine.test" -test.v -test.run '^TestGuestWorkloadBenchmark$' -test.timeout=10h \
         > "$results/$output.log" 2>&1 || status=$?
     rm -rf -- "$run"
