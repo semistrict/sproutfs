@@ -543,19 +543,34 @@ possible and would put work on the fault path, and no read of the store, which
 would double a checkpoint's I/O for the pages that did change. A sealed page the
 pager has spilled is left alone for the same reason. An unchanged page leaves
 the checkpoint's set, so `DirtyPages` does not list it and it costs the store
-nothing; if the guest still shares the checkpoint's copy, its mapping is
-replaced by a read-only mapping of the origin's slot, the binding takes the
-origin as its resident page and becomes clean, the private page is released and
-the dirty reservation returned. The bytes are identical and the sealed page is
-write-protected, so the swap is invisible to a running guest; a store that lands
-first copies away from the checkpoint as it does today, and then only the
-checkpoint's copy is released. The page is mapped rather than left missing on
-purpose: a missing page's next read would wait, go through the same worker, and
-be copied again. A checkpoint a settle leaves holding nothing holds no
-unpublished write either, so the loss window it took at the seal ends there.
+nothing; if the guest still shares the checkpoint's copy, the binding takes the
+origin as its resident page and becomes clean, **the guest's mapping of the copy
+is revoked**, the private page is released and the dirty reservation returned. A
+store that lands first copies away from the checkpoint as it does today, and
+then only the checkpoint's copy is released. A checkpoint a settle leaves
+holding nothing holds no unpublished write either, so the loss window it took at
+the seal ends there.
 
-The settle is parallel. Each page is settled alone — its comparison and its
-re-sharing take that page's lock and its origin's and nothing wider — so a
+The mapping is taken away rather than swapped underneath the guest, and that is
+not an optimization left on the table. A settle runs with the guest running and
+holds neither the region nor the window that serializes a page's mappings
+against one another, so the one replacement it may issue is the one that
+installs no page table and wakes nothing. Installing the origin in its place —
+one command, no fence, the bytes identical and the page write-protected either
+way — is what it used to do, and it corrupted a guest: two children of one fork
+point, reading everything they inherited on one destination pager while each was
+checkpointed every 250 ms, panicked in the guest kernel's timer wheel on a list
+entry that had already been removed, which is a guest reading bytes that are not
+its page's. Revoking instead removed it; revoking and then installing the origin
+did not, which is what says the replacement rather than the fence is the unsafe
+part. What it costs is one fault per page a settle re-shares, which is the fault
+the guest was going to take for that page's next write in any case — and on a
+host whose kernel answers a cold read as a write fault, that fault copies the
+page again and the next settle undoes it again.
+
+The settle is parallel. Each page is settled alone — its comparison, its
+revocation and its re-binding take that page's lock and its origin's and nothing
+wider — so a
 settle hands its pages to `Config.SettleWorkers` workers, the host's processors
 by default, and the regions of one VM settle at the same time as each other.
 What bounds it is memory bandwidth and not the pager's I/O permits, which it
@@ -1152,8 +1167,8 @@ are all covered, the concurrent ones under the race detector.
 
 They require of the settle that a region sharing pages with a sibling, which
 takes one writable and stores nothing, publish no page and end with that page
-shared again, its private bytes zero, its reservation back and a read of it
-taking no fault; that a page the guest really stored into be published exactly
+shared again, its private bytes zero, its reservation back, its mapping of the
+copy gone and a read of it taking exactly one fault onto the sibling's page; that a page the guest really stored into be published exactly
 as before; that a store landing between the seal and the settle leave the guest
 its own copy for the next checkpoint while this one publishes nothing; that a
 copy whose origin was evicted, one made from zeros, one made from the

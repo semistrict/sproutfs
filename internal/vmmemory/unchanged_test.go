@@ -31,8 +31,21 @@ func TestASealedPageThatNeverChangedIsNotPublished(t *testing.T) {
 		if err := a.Seal(t.Context()); err != nil {
 			t.Fatal(err)
 		}
+		// A settle runs with the guest running and holds neither the region nor
+		// the window that serializes a page's mappings against one another, so
+		// the only replacement it may issue is the one that installs no page
+		// table and wakes nothing. Installing the origin over the page the guest
+		// still maps is what corrupted the fan-out's children.
+		maps, revokes := am.maps, am.revokes
 		if unchanged := f.settle(a); unchanged != 1 {
 			t.Fatalf("the settle found %d unchanged pages, want exactly one", unchanged)
+		}
+		if am.maps != maps {
+			t.Fatalf("the settle issued %d mapping commands, want none: it may only revoke",
+				am.maps-maps)
+		}
+		if am.revokes != revokes+1 {
+			t.Fatalf("the settle issued %d revocations, want exactly one", am.revokes-revokes)
 		}
 		if pages := a.Checkpoint().DirtyPages(); len(pages) != 0 {
 			t.Fatalf("the checkpoint publishes %v, want no page at all", pages)
