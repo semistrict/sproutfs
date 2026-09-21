@@ -1653,6 +1653,52 @@ func newPrivateGeometry(pages []uint64, pageSize uint64) *privateGeometry {
 	return g
 }
 
+// TestPrivateGeometryCountsRunsWithinRanges. A run is what one mapping covers,
+// so it stops at a 2 MiB range's boundary however consecutive the page numbers
+// are, and a gap is only ever between two runs of one range.
+func TestPrivateGeometryCountsRunsWithinRanges(t *testing.T) {
+	// Range 0 holds 0-2 and 10-11, which is two runs seven pages apart; range 1
+	// holds two pages alone, 422 apart; range 2 holds one.
+	g := newPrivateGeometry([]uint64{0, 1, 2, 10, 11, 600, 1023, 1024}, checkpoint.PageSize4KiB)
+	if g.Pages != 8 || g.Runs != 5 || g.Ranges != 3 || g.HalfRanges != 0 {
+		t.Fatalf("pages=%d runs=%d ranges=%d half=%d; want 8, 5, 3 and 0",
+			g.Pages, g.Runs, g.Ranges, g.HalfRanges)
+	}
+	if g.RunLengths.Buckets != [runBuckets]int{3, 2, 0, 0, 0, 0} {
+		t.Fatalf("run lengths %v; want three runs of one page and two of two to four", g.RunLengths.Buckets)
+	}
+	if g.Gaps.Buckets != [runBuckets]int{0, 0, 1, 0, 0, 1} {
+		t.Fatalf("gaps %v; want one of five to sixteen pages and one of 257 to 512", g.Gaps.Buckets)
+	}
+
+	// Page 511 and page 512 are consecutive and in different ranges, so they are
+	// two runs and the distance between them is not a gap.
+	across := newPrivateGeometry([]uint64{511, 512}, checkpoint.PageSize4KiB)
+	if across.Runs != 2 || across.Ranges != 2 || across.Gaps.Buckets != [runBuckets]int{} {
+		t.Fatalf("a run crossed a range boundary: %+v", across)
+	}
+
+	// Half of a range's 512 pages is where the plan would make the range whole.
+	half := make([]uint64, 256)
+	for i := range half {
+		half[i] = uint64(2 * i)
+	}
+	whole := newPrivateGeometry(half, checkpoint.PageSize4KiB)
+	if whole.Ranges != 1 || whole.HalfRanges != 1 || whole.Runs != 256 {
+		t.Fatalf("ranges=%d half=%d runs=%d; want one range, half private, in 256 runs",
+			whole.Ranges, whole.HalfRanges, whole.Runs)
+	}
+	if whole.Gaps.Buckets != [runBuckets]int{255, 0, 0, 0, 0, 0} {
+		t.Fatalf("gaps %v; want 255 gaps of a single page", whole.Gaps.Buckets)
+	}
+
+	// A 2 MiB page is one page to a range, so nothing it holds has a gap.
+	coarse := newPrivateGeometry([]uint64{3, 4, 9}, checkpoint.PageSize2MiB)
+	if coarse.Ranges != 3 || coarse.Runs != 3 || coarse.HalfRanges != 3 {
+		t.Fatalf("at a 2 MiB page every private page is its own whole range: %+v", coarse)
+	}
+}
+
 // steadyState runs eight guests through the repository workload for a fixed
 // period and reports what the log and the checkpoint worker did under it.
 func (b *benchmark) steadyState(ctx context.Context, origin *forkOrigin) {
