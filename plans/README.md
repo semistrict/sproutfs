@@ -16,9 +16,11 @@ across all of them is collected in [open-work.md](../docs/open-work.md).
   divided between them; and, at step 4, RAM at 4 KiB on a real host. Mapping
   protocol version 7 carries each session's page and the kind of memory its
   arena is made of, the RAM arena is an ordinary memfd and PMEM's stays on the
-  HugeTLB pool, and Firecracker takes no huge-page setting for managed RAM. Step
-  4's own outstanding piece is the VMA-budget merge, and the fan-out suite does
-  not yet pass at 4 KiB; steps 5 to 7 are planned.**
+  HugeTLB pool, and Firecracker takes no huge-page setting for managed RAM. A
+  settle re-shares an unchanged page by revoking it rather than by installing
+  the origin under a running guest, which is what corrupted a fan-out's
+  children. Step 4's own outstanding piece is the VMA-budget merge; steps 5 to 7
+  are planned.**
 - [2026-09-19 a private page that did not change](unchanged-pages-2026-09-19.md)
   — a write fault is not always a store (KVM's asynchronous page fault worker on
   x86-64, cache maintenance on aarch64), so a sealed page whose bytes equal the

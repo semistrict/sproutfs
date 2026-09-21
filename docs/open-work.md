@@ -31,16 +31,14 @@ everything open is listed here.
   qualification — and the realistic workload measurements of retained sharing
   and runtime that the whole change exists to justify. Nothing here has been run
   against the recorded workload at 4 KiB.
-- **A fan-out of two children onto one destination pager corrupts a guest at
-  4 KiB.** `TestFirecrackerForkFanOutServesBothChildrenAtOnce` panics a child's
-  guest kernel in `__run_timers` on a poisoned list entry, which is the guest
-  reading bytes that are not its page's. It is the one shape that combines a
-  post-copy receive, a background stream of the source's resident pages faulting
-  beside the running guest, an interval checkpoint of each child and an arena a
-  quarter of what the two map — the same suite's capture/restore/fork/fence and
-  live-migration tests pass at 4 KiB, and the whole memory suite does. It must be
-  found before this geometry ships (`internal/vmmachine/fanout_linux_test.go`,
-  `internal/vmmigrate/receive.go`).
+- **A 4 KiB read-ahead run is one page under pressure.** Read-ahead takes only
+  free arena slots and never evicts, so a guest scanning more memory than the
+  arena holds takes one fault per page rather than one per run: at 2 MiB that
+  was one fault per 2 MiB, and at 4 KiB it is 512 times as many. It is why the
+  fan-out suite's read phase went from seconds to minutes and why its bound had
+  to be re-scaled. Letting read-ahead evict, or reserving a run's worth of slots
+  before a scan, is performance work this plan did not do
+  (`internal/vmmemory/window.go`, `reserveRuns`).
 - **The mapping budget is not enforced at 4 KiB.** `ConnectionConfig.MaxVMAs` is
   still only the client's admission limit, answered with `ENOSPC` and a deferred
   fault. The plan's step 4 also asks the pager to count the mappings a region
