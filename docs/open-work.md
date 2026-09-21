@@ -7,6 +7,23 @@ everything open is listed here.
 
 ## Correctness and unbounded growth
 
+- **A fan-out of two children panics a child's guest kernel at a 4 KiB RAM page, and `main` carries it.** The guest dies in `__run_timers`, dereferencing a list node whose `pprev` is `dead000000000122` — `LIST_POISON2`, the value `hlist_del` leaves behind — about twelve seconds into the child's life. It is a guest reading an *older* version of a page it wrote itself, not random bytes: the timer the kernel had removed is still on the list it is walking. The shape is `TestFirecrackerForkFanOutServesBothChildrenAtOnce`: two children of one fork point, received onto one destination pager, reading everything they inherited while each is checkpointed every 250 ms, with an arena a quarter of the memory the two of them map.
+
+  Rates, on the qualification instance with the fixture unchanged:
+
+  | build | runs | panics |
+  | --- | --- | --- |
+  | before the settle changed | 5 | 1 |
+  | before the settle changed, accelerated | 16 | 8 |
+  | settle revoking and then installing, accelerated | 8 | 2 |
+  | **settle revoking only — what `main` has** | **31** | **1** |
+
+  The settle's in-place re-share of an unchanged page — installing the origin over the page the guest still mapped — was a large part of it, which is why `main` revokes instead. **That change is not a fix and must not be described as one:** the defect survives it at about one run in thirty.
+
+  What has been ruled out, and with what power. Eviction, spill and refault: the panic reproduces with an arena large enough that `evictions=0`. Slot reuse: it reproduces with the settle's private page never released. A shared page being written, and a private page reachable from two regions: the pager's own audit (`-tags sproutfsprobe`) checked both at every release of a page's lock across sixteen runs that panicked eight times, and neither ever fired. Arms that saw no panic in ten runs — interval checkpoints off, the settle disabled — prove **nothing** and are not ruled out: at a three-percent rate ten clean runs happen three times in four by chance, which is the mistake that produced the retracted claim above.
+
+  `scripts/fanout-reduce-lima.sh` runs an arm and classifies every run; `internal/vmmemory/probe_on.go` is the accelerator, which roughly doubles the rate by slowing the pager and is not itself a cause. What is not yet known is whether this predates the 4 KiB page.
+
 - **Nothing releases a pin: the collector is deferred indefinitely, and until it exists the store grows without bound.** The owner's decision on 2026-09-15 was to keep pins correct and permanent and to write no collector, background or otherwise, for now; accumulating data is accepted. What accumulates is every object a pin covers, and it is never given back. A pin says a checkpoint of a VM was forked, and it is permanent — no participant can tell that nothing reads through it any more, because a descendant sees neither its siblings nor the forks taken below it, and a grandchild's root names its grandparent's checkpoints directly. So the objects a pin covers accumulate: every checkpoint any VM was ever forked at, with every checkpoint its root names, and everything a deleted VM leaves pinned (`internal/control/record.go`, `internal/volume/fork.go`, `internal/volume/manager.go`, `internal/checkpoint/reclaim.go`). A collector is the only thing that can give one back, and it must handle:
   - **Pins nothing reads through any more**, which is the common case: every child forked from that point has been deleted, or every one of them has published a root naming none of the checkpoints that one protects. Establishing it means reading every live record's selected root — including the roots of VMs on other hosts — so the answer holds only against a survey that also accounts for what is in flight.
   - **Pins nothing ever read through**: a fork that failed after the pin, a fork point retired with no child taken from it, a child abandoned before it published its root, and a host lost between the pin and the child's record.

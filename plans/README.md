@@ -18,9 +18,10 @@ across all of them is collected in [open-work.md](../docs/open-work.md).
   arena is made of, the RAM arena is an ordinary memfd and PMEM's stays on the
   HugeTLB pool, and Firecracker takes no huge-page setting for managed RAM. A
   settle re-shares an unchanged page by revoking it rather than by installing
-  the origin under a running guest, which is what corrupted a fan-out's
-  children. Step 4's own outstanding piece is the VMA-budget merge; steps 5 to 7
-  are planned.**
+  the origin under a running guest. **One open defect stands against step 4: a
+  fan-out of two children panics a child's guest kernel at 4 KiB, about one run
+  in thirty, and revoking is not a fix for it** — see docs/open-work.md. Step
+  4's own outstanding piece is the VMA-budget merge; steps 5 to 7 are planned.**
 - [2026-09-19 a private page that did not change](unchanged-pages-2026-09-19.md)
   — a write fault is not always a store (KVM's asynchronous page fault worker on
   x86-64, cache maintenance on aarch64), so a sealed page whose bytes equal the

@@ -207,6 +207,7 @@ func (p *windowPlan) bindShared(ctx context.Context, page uint64, wait bool) err
 			h.unlock(pg)
 			continue
 		}
+		h.probe.stable(ctx, h, pg, "bindShared")
 		h.bind(p.region.binding(page), pg)
 		h.mu.Lock()
 		h.stats.IdentityHits++

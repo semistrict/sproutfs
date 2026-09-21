@@ -306,8 +306,9 @@ func (c *RegionCheckpoint) reshareBatch(ctx context.Context, held []*binding, eq
 // path, under the window that serializes every mapping of that page against
 // every other. Installing the origin in its place — one command, no fence, the
 // bytes identical and the page write-protected either way — is what the settle
-// used to do, and it corrupted a guest: see the settle's entry in
-// docs/vm-memory.md.
+// used to do, and it is a large part of an open defect rather than all of it:
+// see docs/open-work.md, which carries the rates. Revoking is not a fix for
+// that defect.
 //
 // Either way the checkpoint's copy goes, and with it the dirty reservation it
 // held. Caller holds the region exclusively and both resident pages.
