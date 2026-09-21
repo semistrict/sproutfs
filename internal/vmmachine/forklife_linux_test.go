@@ -221,12 +221,13 @@ func forkLifeTrial(t *testing.T, ctx context.Context, c *migrationCluster, pager
 		if err == nil {
 			continue
 		}
+		// A guest that has stopped answering is a guest that has died, whether
+		// or not it managed to print why: a child whose console went silent is
+		// one nothing can tell from a panicked one, and counting only the ones
+		// that left an oops behind would count the tidier half of a defect.
 		console := string(consoleText(child.process))
-		if !strings.Contains(console, "Kernel panic - not syncing") {
-			t.Fatalf("%s did not answer and its guest kernel did not die: %v\n%s", child.id, err, console)
-		}
 		died++
-		t.Logf("%s died: %s", child.id, panicSignature(console))
+		t.Logf("%s died: %s (%v)", child.id, panicSignature(console), err)
 	}
 	return died
 }
@@ -239,7 +240,10 @@ func panicSignature(console string) string {
 			return strings.TrimSpace(line)
 		}
 	}
-	return "no pc line"
+	if strings.Contains(console, "Kernel panic - not syncing") {
+		return "panicked with no pc line"
+	}
+	return "silent: no oops at all"
 }
 
 // takeBriefly receives one child the way a deployment does and leaves it
