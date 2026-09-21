@@ -383,3 +383,58 @@ func TestTheSettleDoesNotDependOnItsWorkers(t *testing.T) {
 		}
 	})
 }
+
+// A settle of many unchanged pages takes their mappings away in runs. At 4 KiB
+// a guest's working set is thousands of pages and a settle re-shares most of
+// them at every checkpoint, so a round trip per page is a stall the guest
+// feels: the pages are revoked as one command per run of consecutive pages, as
+// an abandoned checkpoint's are.
+func TestASettleRevokesUnchangedPagesInRuns(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const pages = 64
+		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 4 * pages,
+			LogicalPages: 8 * pages, DirtyPages: 2 * pages, ReadAheadPages: 1,
+			SettleWorkers: 4})
+		// A sibling holds the same identities, so every page this region takes
+		// writable has an origin to be compared with and re-shared onto.
+		sibling, siblingMap, _ := f.region(pages)
+		for page := uint64(0); page < pages; page++ {
+			access(t, sibling, siblingMap, page, false)
+		}
+		b := f.newBacking(pages)
+		base := &mapping{arena: f.a, pages: make(map[uint64]mapped)}
+		m := &revokeBatchMapping{mapping: base}
+		f.a.mappings = append(f.a.mappings, base)
+		r, err := f.h.Attach(t.Context(), ram(b), m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { clear(base.pages); _ = r.Detach(t.Context()) }()
+		// The whole of what the guest does: it takes every page writable and
+		// stores not one byte into any of them.
+		for page := uint64(0); page < pages; page++ {
+			access(t, r, base, page, true)
+		}
+		if err := r.Seal(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		m.singles, m.batches = 0, 0
+		if unchanged := f.settle(r); unchanged != pages {
+			t.Fatalf("the settle found %d unchanged pages, want all %d", unchanged, pages)
+		}
+		// One command for the run, whatever order the workers compared it in.
+		if m.batches != 1 || m.singles != 0 {
+			t.Fatalf("the settle revoked %d contiguous pages with %d batched commands and %d single ones, want 1 and 0",
+				pages, m.batches, m.singles)
+		}
+		if len(base.pages) != 0 {
+			t.Fatalf("%d of the settled pages are still mapped to the guest", len(base.pages))
+		}
+		if got := r.Checkpoint().DirtyPages(); len(got) != 0 {
+			t.Fatalf("the checkpoint publishes %d pages, want none", len(got))
+		}
+		if err := r.Checkpoint().Retire(t.Context(), true); err != nil {
+			t.Fatal(err)
+		}
+	})
+}

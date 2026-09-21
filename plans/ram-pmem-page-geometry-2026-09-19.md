@@ -1,7 +1,10 @@
 # RAM and PMEM page geometry — 2026-09-19
 
 **Status: steps 1 to 4 and 6 are implemented, but for step 1's baseline
-measurement and step 4's mapping budget; steps 5 and 7 are planned.**
+measurement and step 4's mapping budget; steps 5 and 7 are planned. Step 4 has
+one open defect against it — a fan-out panics a child's guest kernel at 4 KiB —
+which [open-work.md](../docs/open-work.md) carries and which must be understood
+before this geometry ships.**
 
 ## Decision
 
@@ -347,18 +350,18 @@ memory savings and workload time together.
    regions against the page the session states rather than a constant. PMEM is
    unchanged. Snapshot save and restore of a managed VM are unchanged and pass.
 
-   **The settle.** Qualifying this at 4 KiB found a defect the 2 MiB page had
-   hidden. A settle re-shared an unchanged page by installing the origin over
-   the page the guest still mapped — one command, no fence — and that corrupted
-   a guest: two children of one fork point, reading everything they inherited on
-   one destination pager while each was checkpointed every 250 ms, panicked in
-   the guest kernel's timer wheel on an already-removed list entry. Reducing it
-   ruled out eviction, slot reuse, a shared page being written and a private
-   page reaching two regions; revoking the page instead of replacing it removed
-   it, and revoking *and then* replacing it did not, which is what says the
-   replacement rather than the fence is the unsafe part. A settle now only
-   revokes, and the guest's next access maps the origin through the fault path.
-   The cost is one fault per page a settle re-shares.
+   **The settle, and an open defect.** Qualifying this at 4 KiB found a defect
+   the 2 MiB page had hidden: two children of one fork point, reading everything
+   they inherited on one destination pager while each was checkpointed every
+   250 ms, panic a child's guest kernel on a list entry the guest itself had
+   removed. Reducing it ruled out eviction, slot reuse, a shared page being
+   written and a private page reaching two regions. A settle re-sharing an
+   unchanged page by installing the origin over the page the guest still mapped
+   was a large part of it, so a settle now only revokes and the guest's next
+   access maps the origin through the fault path — but **that is not a fix**:
+   the defect survives it at about one run in thirty. It is in
+   [open-work.md](../docs/open-work.md) with its rates and what is ruled out,
+   and it is what the geometry has to answer for before it ships.
 
    **What is left.** `ConnectionConfig.MaxVMAs` is still only the client's
    admission limit: the pager does not count the mappings a region holds and does

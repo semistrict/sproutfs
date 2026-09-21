@@ -177,7 +177,7 @@ func newGuestVM(t *testing.T, ctx context.Context, name string) *volume.VM {
 	t.Helper()
 	c := newMigrationCluster(t, ctx)
 	vm, err := c.source.Create(ctx, name, []volume.VolumeSpec{
-		{Name: vmmachine.RAMVolume, Size: 128 << 20, PageSize: checkpoint.PageSize4KiB},
+		{Name: vmmachine.RAMVolume, Size: 128 << 20, PageSize: ramPageBytes(t)},
 		{Name: "root", Size: guestRootBytes, PageSize: checkpoint.PageSize2MiB},
 	})
 	if err != nil {

@@ -552,27 +552,31 @@ holding nothing holds no unpublished write either, so the loss window it took at
 the seal ends there.
 
 The mapping is taken away rather than swapped underneath the guest, and that is
-not an optimization left on the table. A settle runs with the guest running and
-holds neither the region nor the window that serializes a page's mappings
-against one another, so the one replacement it may issue is the one that
-installs no page table and wakes nothing. Installing the origin in its place —
-one command, no fence, the bytes identical and the page write-protected either
-way — is what it used to do, and it corrupted a guest: two children of one fork
-point, reading everything they inherited on one destination pager while each was
-checkpointed every 250 ms, panicked in the guest kernel's timer wheel on a list
-entry that had already been removed, which is a guest reading bytes that are not
-its page's. Revoking instead removed it; revoking and then installing the origin
-did not, which is what says the replacement rather than the fence is the unsafe
-part. What it costs is one fault per page a settle re-shares, which is the fault
-the guest was going to take for that page's next write in any case — and on a
-host whose kernel answers a cold read as a write fault, that fault copies the
-page again and the next settle undoes it again.
+deliberate. A settle runs with the guest running and holds neither the region
+nor the window that serializes a page's mappings against one another, so the one
+replacement it may issue is the one that installs no page table and wakes
+nothing. Installing the origin in its place — one command, no fence, the bytes
+identical and the page write-protected either way — is what it used to do, and
+it is a large part of an open defect: a fan-out of two children at a 4 KiB RAM
+page panics a child's guest kernel on a list entry the guest itself had removed.
+Revoking instead took that from about one run in five to about one in thirty.
+**It did not remove it, and this is not a fix for it** — see the entry in
+[open-work.md](open-work.md), which carries the rates and what has been ruled
+out. What revoking costs is one fault per page a settle re-shares, which is the
+fault the guest was going to take for that page's next write in any case — and
+on a host whose kernel answers a cold read as a write fault, that fault copies
+the page again and the next settle undoes it again.
 
-The settle is parallel. Each page is settled alone — its comparison, its
-revocation and its re-binding take that page's lock and its origin's and nothing
-wider — so a
+The settle is parallel, and then it applies what it decided. Each page is
+compared alone, under that page's lock and its origin's and nothing wider — so a
 settle hands its pages to `Config.SettleWorkers` workers, the host's processors
-by default, and the regions of one VM settle at the same time as each other.
+by default, and the regions of one VM settle at the same time as each other. The
+comparison mutates nothing; what it decided is applied afterwards, in page order
+and in bounded batches under the region, as a retire is. That is what lets the
+revocations go as **one command per run of consecutive pages**: a settle at
+4 KiB re-shares thousands of pages at every checkpoint, and a round trip each,
+serialized on the mapping lock, is a stall the guest feels. The region is given
+back between batches, so a fault waits for one batch rather than for the walk.
 What bounds it is memory bandwidth and not the pager's I/O permits, which it
 does not take: it reads no disk and no store. The workers share nothing but the
 counter of unchanged pages and the set the checkpoint will list, both under the

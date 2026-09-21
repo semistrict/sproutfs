@@ -73,6 +73,9 @@ type Host struct {
 	mappingLatency, resolveLatency  latency.Histogram
 	loadLatency, revokeLatency      latency.Histogram
 	protectLatency, sealLatency     latency.Histogram
+	// probe is the pager's audit of what it hands a guest, and is nothing at
+	// all unless this build has the sproutfsprobe tag; see probe_on.go.
+	probe probeState
 }
 
 // The byte bounds a page count is checked against, independently of the pager
@@ -214,6 +217,7 @@ func (h *Host) changes() <-chan struct{} {
 }
 
 func (h *Host) unlock(pg *resident) {
+	h.probe.stable(context.Background(), h, pg, "unlock")
 	pg.mu.Unlock()
 	h.mu.Lock()
 	h.signal()
