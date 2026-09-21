@@ -266,7 +266,7 @@ func (h *Host) releaseOrigin(ctx context.Context, pg *resident) error {
 }
 
 func (h *Host) unlink(ctx context.Context, b *binding, pg *resident) error {
-	note(b.region, b.index, "unlink", pg.slot, -1)
+	note(b.region, b.index, "unlink from "+caller(), pg.slot, -1)
 	h.mu.Lock()
 	last := len(pg.aliases) == 1
 	h.mu.Unlock()
@@ -335,6 +335,13 @@ func (r *Region) publishLocked(ctx context.Context, b *binding, pg *resident, id
 	}
 	if !drop {
 		return nil
+	}
+	note(r, b.index, "publish-dropped "+publishReason(stored, id, h, pg), pg.slot, -1)
+	// A page the volume holds no object for is a page whose bytes the volume
+	// reproduces without one, which is to say zeros. Dropping any other page
+	// here takes bytes away from a guest that wrote them.
+	if found := h.probe.droppable(ctx, h, pg, stored, id); found != "" {
+		panic(found)
 	}
 	if err := h.revoke(ctx, b); err != nil {
 		return err

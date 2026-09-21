@@ -47,6 +47,8 @@ import (
 	"context"
 	"fmt"
 	"hash/crc32"
+	"runtime"
+	"strings"
 	"sync"
 	"time"
 )
@@ -311,4 +313,68 @@ func Ring(r *Region, page uint64, radius uint64) []string {
 		lines = append(lines, line)
 	}
 	return lines
+}
+
+// caller names the pager's own function that reached a recorded event, which is
+// what tells one unlink from another in a ring dump.
+func caller() string {
+	var pcs [1]uintptr
+	if runtime.Callers(3, pcs[:]) == 0 {
+		return "?"
+	}
+	frame, _ := runtime.CallersFrames(pcs[:]).Next()
+	name := frame.Function
+	if at := strings.LastIndex(name, "."); at >= 0 {
+		name = name[at+1:]
+	}
+	return fmt.Sprintf("%s:%d", name, frame.Line)
+}
+
+// publishReason says why a retiring page was dropped rather than published
+// under the identity its volume now gives it. A page dropped because another
+// resident page already holds that identity is a guest being sent to somebody
+// else's memory for its own page, which is the one reason that is not routine.
+func publishReason(stored bool, id pageKey, h *Host, pg *resident) string {
+	if !stored {
+		return "the volume holds no object for it"
+	}
+	if id.zero() {
+		return "the volume calls it a hole"
+	}
+	h.mu.Lock()
+	existing := h.clean[id]
+	h.mu.Unlock()
+	if existing == nil {
+		return "the identity went between the lookup and here"
+	}
+	if existing == pg {
+		return "it is already the identity's page"
+	}
+	return fmt.Sprintf("identity %+v is already held by slot %d, and this page is slot %d",
+		id.id, existing.slot, pg.slot)
+}
+
+// droppable checks the one thing a retire may not get wrong: a page it gives up
+// because the volume holds no object for it must be a page the volume can
+// reproduce without one, and the only such page is zeros. A page with bytes in
+// it dropped here is a write the guest made and will not get back.
+func (p *probeState) droppable(ctx context.Context, h *Host, pg *resident, stored bool, id pageKey) string {
+	if stored && !id.zero() {
+		return ""
+	}
+	if pg == nil || pg.slot < 0 {
+		return ""
+	}
+	buf := make([]byte, h.pageSize)
+	if err := h.arena.Read(ctx, pg.slot, buf); err != nil {
+		return ""
+	}
+	for at, b := range buf {
+		if b != 0 {
+			return fmt.Sprintf("probe droppable: a page the volume holds no object for is being dropped "+
+				"from slot %d, and byte %d of it is %#x — the guest wrote bytes the volume does not have",
+				pg.slot, at, b)
+		}
+	}
+	return ""
 }
