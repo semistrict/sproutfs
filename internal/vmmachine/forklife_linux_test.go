@@ -151,6 +151,17 @@ func TestFirecrackerForkChildrenSurviveTheirFirstSeconds(t *testing.T) {
 		if ctx.Err() != nil {
 			break
 		}
+		// The parent is asked the same question its children were. A parent
+		// whose guest dies because children were forked from it is a defect of
+		// its own, and one this suite would otherwise only see as a console
+		// dump it could not attribute.
+		asking, stop := context.WithTimeout(ctx, forkLifeProbe)
+		err := guestCommand(asking, p, "ram 92\n", "SPROUTFS_RAM ram=92")
+		stop()
+		if err != nil {
+			t.Fatalf("the parent stopped answering after %d of its children had lived: %v\n%s",
+				lived+died, err, consoleText(p))
+		}
 	}
 	t.Logf("fork lives: arm=%s died=%d of %d in %s", arm, died, lived+died, time.Since(began))
 	if died != 0 {
