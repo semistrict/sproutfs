@@ -9,8 +9,11 @@ test "$(uname -m)" = x86_64
 test -c /dev/kvm
 # The host is disposable and dedicated to qualification. Reserve the pool before
 # workloads fragment physical RAM; all of it disappears with the instance.
-sysctl -w vm.nr_hugepages=4096
-[[ $(cat /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages) -ge 4096 ]]
+# The workload comparison's pager holds 32 GiB resident, so its pool is 36 GiB.
+hugepages=4096
+if [[ ${SPROUTFS_GCE_WORKLOAD:-0} == 1 ]]; then hugepages=18432; fi
+sysctl -w vm.nr_hugepages="$hugepages"
+[[ $(cat /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages) -ge $hugepages ]]
 touch /var/lib/sproutfs-bench/lease
 (
     while sleep 60; do touch /var/lib/sproutfs-bench/lease; done
@@ -92,6 +95,43 @@ CGO_ENABLED=0 go test -c ./internal/vmmachine -o "$work/build/vmmachine.test"
 } > "$results/environment.txt"
 
 if [[ ${SPROUTFS_GCE_BUILD_ONLY:-0} == 1 ]]; then exit 0; fi
+
+# The realistic comparison: the workload image scripts/lib/bench-image.sh builds
+# — a pnpm install, a cold build of the openai/codex workspace and one crate's
+# tests, that checkout as a git repository — run through
+# every scenario of the guest workload benchmark, managed and on plain
+# Firecracker, on this host. SPROUTFS_BENCH_SCENARIOS and SPROUTFS_BENCH_FORKS
+# narrow it as they do under scripts/bench-guest-lima.sh.
+if [[ ${SPROUTFS_GCE_WORKLOAD:-0} == 1 ]]; then
+    key=$(cat "$repo/scripts/lib/bench-image.sh" "$repo/internal/vmmachine/testdata/guest.c" | sha256sum | cut -c1-32)
+    image=$(HOME=$work bash "$repo/scripts/lib/bench-image.sh" "$repo" "$key" 2> "$results/image-build.log")
+    test -s "$image"
+    cp "$(dirname "$image")/manifest.json" "$results/guest-image.json"
+    # A smoke pass first: everything but the build, with a command that takes
+    # seconds, so that what is new in this comparison — the image, a 16 GiB
+    # guest, the plain side's clones — fails in minutes rather than hours in.
+    scenarios=${SPROUTFS_BENCH_SCENARIOS:-} forks=${SPROUTFS_BENCH_FORKS:-} output=workload
+    if [[ ${SPROUTFS_GCE_SMOKE:-0} == 1 ]]; then
+        scenarios=boot,pnpm-install,capture,restore-cold,fork-fanout,baseline forks=2 output=workload-smoke
+        export SPROUTFS_BENCH_TEST='cd /opt/codex && git grep -c fn | wc -l'
+    fi
+    run=$(mktemp -d "$work/run-workload.XXXXXX")
+    status=0
+    env SPROUTFS_FIRECRACKER_BENCH=1 \
+        SPROUTFS_FIRECRACKER="$work/build/firecracker" \
+        SPROUTFS_FIRECRACKER_SECCOMP="$work/build/seccomp.bpf" \
+        SPROUTFS_FIRECRACKER_KERNEL="$work/build/kernel" \
+        SPROUTFS_BENCH_IMAGE="$image" \
+        SPROUTFS_BENCH_WORK="$run/state" SPROUTFS_BENCH_OBJECT_DIR="$run/objects" \
+        SPROUTFS_BENCH_OUTPUT="$results/$output.json" \
+        SPROUTFS_BENCH_REVISION="$(cat "$repo/source-revision.txt")" \
+        SPROUTFS_BENCH_SCENARIOS="$scenarios" \
+        SPROUTFS_BENCH_FORKS="$forks" \
+        "$work/build/vmmachine.test" -test.v -test.run '^TestGuestWorkloadBenchmark$' -test.timeout=10h \
+        > "$results/$output.log" 2>&1 || status=$?
+    rm -rf -- "$run"
+    exit "$status"
+fi
 
 # Only the fork fan-out: forks of one published checkpoint each run one binary
 # off the DAX root and write nothing, and the record lists the pages each fork

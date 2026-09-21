@@ -30,20 +30,24 @@ import (
 	"github.com/semistrict/sproutfs/internal/volume"
 )
 
-// The measured sandbox: a 2 GiB guest with an 8 GiB PMEM root on a pager whose
-// resident pages are a third of the guest's RAM plus root.
+// The measured sandbox: a 16 GiB guest with a 32 GiB PMEM root on a pager whose
+// resident pages are 32 GiB. The shape is the workload's: a cold build of the
+// codex workspace writes 12 GiB under target/ and ends in a link of a debug
+// binary that the kernel killed for memory in a 16 GiB host running two of
+// them, and the arena holds that guest and the forks taken from it without the
+// spill file becoming the measurement.
 const (
-	benchRAMBytes      = 2 << 30
-	benchPmemBytes     = 8 << 30
+	benchRAMBytes      = 16 << 30
+	benchPmemBytes     = 32 << 30
 	benchVCPUs         = 4
-	benchResidentBytes = 3 << 30
+	benchResidentBytes = 32 << 30
 	// benchMaxWriteBytes is the volumes' write limit and so the pager's flush
 	// batch, and benchReadAheadBytes the window one read fault loads. Both are
 	// sizes, so the pager's page changes neither.
 	benchMaxWriteBytes  = checkpoint.PageSize2MiB
 	benchReadAheadBytes = checkpoint.PageSize2MiB
 	// benchMemoryBytes is shared by resident guest pages and decoded objects.
-	benchMemoryBytes = 4 << 30
+	benchMemoryBytes = 36 << 30
 	// Both guests run with transparent huge pages off. Guest RAM here is host
 	// pages served on demand, and khugepaged collapsing a 2 MiB range copies 512
 	// of them through the fault path with preemption disabled, which soft-locks
@@ -61,34 +65,27 @@ const (
 // The workloads, shared verbatim by the managed run and the baseline so the
 // ratio between them is a property of the storage and nothing else.
 //
-// The build is a real cold cargo build: the image ships the vendored ripgrep
-// workspace with `grep-matcher`'s dependency graph already compiled and the
-// crate itself cleaned, so what the guest builds is that crate's library and
-// its three test targets, and what the fan-out then runs is those tests, from a
-// target directory the forks inherit through the checkpoint.
-//
-// The whole vendored workspace is not a unit this host can measure. Its guests
-// run under nested virtualization — Firecracker inside KVM inside the Lima VM —
-// and are two orders of magnitude slower than the machine around them:
-// compiling memchr and grep-matcher alone took 31 minutes of guest time in a
-// trial run, and adding regex to that did not finish inside 85. The workspace's
-// fifty-odd crates, cold and warm and then in twenty concurrent forks, is a day
-// of compiling other people's code to measure a page fault.
-// `SPROUTFS_BENCH_BUILD` and `SPROUTFS_BENCH_TEST` select other units,
-// including much larger ones on a host that can afford them; the configuration
-// record names whichever commands the run actually used.
+// The build is a real cold cargo build of a real program: the image ships the
+// openai/codex workspace at a pinned release with every crate vendored and the
+// toolchain it pins, and nothing of it compiled, so what the guest builds is the
+// codex binary and the 993 crates under it — four and a half minutes and 12 GiB
+// of output on a fifteen-core laptop — and what the fan-out then runs is one
+// crate's tests, from a target directory the forks inherit through the
+// checkpoint. `SPROUTFS_BENCH_BUILD` and `SPROUTFS_BENCH_TEST` select other
+// units; the configuration record names whichever commands the run actually
+// used.
 const (
 	// The lockfile is frozen so the install is the work of linking a store into
 	// a project, not a resolution the guest has no network for.
 	workloadInstall      = "cd /opt/app && pnpm install --offline --frozen-lockfile --reporter=append-only"
-	defaultWorkloadBuild = "cd /opt/rust && cargo build --offline --all-targets -p grep-matcher"
-	defaultWorkloadTest  = "cd /opt/rust && cargo test --offline -p grep-matcher"
-	workloadGrep         = "cd /opt/repo && git grep -c fn | wc -l"
-	workloadCat          = "cd /opt/repo && find . -type f | xargs cat > /dev/null"
+	defaultWorkloadBuild = "cd /opt/codex/codex-rs && cargo build --offline -p codex-cli --bin codex"
+	defaultWorkloadTest  = "cd /opt/codex/codex-rs && cargo test --offline -p codex-apply-patch"
+	workloadGrep         = "cd /opt/codex && git grep -c fn | wc -l"
+	workloadCat          = "cd /opt/codex && find . -path ./codex-rs/target -prune -o -type f -print | xargs cat > /dev/null"
 	workloadTrue         = "true"
 	// The recorded shape of the two concurrent scenarios. Both have environment
 	// overrides for a quick run, and both record what they actually used.
-	defaultForks        = 20
+	defaultForks        = 4
 	defaultSteadyPeriod = 5 * time.Minute
 	steadyGuests        = 8
 )
@@ -1270,33 +1267,9 @@ func (b *benchmark) forkFanOut(ctx context.Context, origin *forkOrigin) {
 				return
 			}
 			issued := time.Now()
-			if err := c.send(ctx, "run "+workloadTest()); err != nil {
-				errs[index] = err
-				return
-			}
-			for {
-				grown, err := c.grown()
-				if err != nil {
-					errs[index] = err
-					return
-				}
-				if grown > 0 {
-					break
-				}
-				select {
-				case <-ctx.Done():
-					errs[index] = context.Cause(ctx)
-					return
-				case <-time.After(5 * time.Millisecond):
-				}
-			}
-			firstOutput[index] = time.Since(issued).Nanoseconds()
-			line, err := c.wait(ctx, "SPROUTFS_RUN")
-			if err != nil {
-				errs[index] = err
-				return
-			}
-			timing, err := parseGuestTiming(line)
+			timing, err := c.runObserved(ctx, workloadTest(), func() {
+				firstOutput[index] = time.Since(issued).Nanoseconds()
+			})
 			if err != nil {
 				errs[index] = err
 				return
@@ -1623,14 +1596,33 @@ func (b *benchmark) baseline(ctx context.Context) {
 	}
 	b.appendRecord(benchRecord{Scenario: "capture", Kind: "baseline", WallNS: snapshotElapsed.Nanoseconds(),
 		Extra: map[string]any{"memory_file_bytes": memoryInfo.Size()}})
-	if !b.scenarios["restore-cold"] {
-		return
+	// The root as it was when the memory was saved. A restore runs on the root
+	// it is given, so the clones below are cut from this copy rather than from a
+	// root the cold restore has since written to.
+	atSnapshot := filepath.Join(b.work, "baseline-root.snapshot.ext4")
+	if b.scenarios["fork-fanout"] {
+		if err := copySparse(root, atSnapshot); err != nil {
+			b.t.Fatal(err)
+		}
+		defer os.Remove(atSnapshot)
 	}
+	if b.scenarios["restore-cold"] {
+		b.baselineRestore(ctx, config, statePath, memoryPath, memoryInfo.Size())
+	}
+	if b.scenarios["fork-fanout"] {
+		b.baselineFanOut(ctx, config, statePath, memoryPath, atSnapshot)
+	}
+}
+
+// baselineRestore is the plain restore: one VM from the memory file, on the
+// root the snapshot was taken over.
+func (b *benchmark) baselineRestore(ctx context.Context, config plainConfig, statePath, memoryPath string, memoryBytes int64) {
+	b.t.Helper()
 
 	restoreConfig := config
 	restoreConfig.SnapshotPath = statePath
 	restoreConfig.MemoryPath = memoryPath
-	at = time.Now()
+	at := time.Now()
 	restored, err := startPlainVM(ctx, restoreConfig)
 	if err != nil {
 		b.t.Fatalf("baseline restore: %v", err)
@@ -1646,7 +1638,100 @@ func (b *benchmark) baseline(ctx context.Context) {
 	}
 	b.appendRecord(benchRecord{Scenario: "restore-cold", Kind: "baseline",
 		WallNS: time.Since(at).Nanoseconds(), Guest: &timing,
-		Extra: map[string]any{"memory_file_bytes": memoryInfo.Size()}})
+		Extra: map[string]any{"memory_file_bytes": memoryBytes}})
+}
+
+// baselineFanOut is what plain Firecracker offers in place of a fork: as many
+// VMs as the managed fan-out has forks, each restored from the one memory file
+// — which Firecracker maps privately, so the clones share its clean pages
+// through the host's page cache and copy what they write — and each over a copy
+// of the root of its own, because a block device cannot be shared by writers.
+// They run the fan-out's command together. What is recorded beside the managed
+// fan-out's numbers is what a clone costs before it runs — the copy of its root
+// — how long each took to its first output and to finish, and what the kernel
+// accounts to each VMM once it has: the memory that is its alone and its share
+// of what the clones hold in common.
+func (b *benchmark) baselineFanOut(ctx context.Context, config plainConfig, statePath, memoryPath, atSnapshot string) {
+	b.t.Helper()
+	count := b.forks()
+	type clone struct {
+		vm      *plainVM
+		console *console
+		root    string
+	}
+	clones := make([]clone, count)
+	copyEach := make([]int64, count)
+	restoreEach := make([]int64, count)
+	start := time.Now()
+	for index := range clones {
+		root := filepath.Join(b.work, "baseline-clone-"+strconv.Itoa(index)+".ext4")
+		at := time.Now()
+		if err := copySparse(atSnapshot, root); err != nil {
+			b.t.Fatal(err)
+		}
+		defer os.Remove(root)
+		copyEach[index] = time.Since(at).Nanoseconds()
+		cloneConfig := config
+		cloneConfig.SnapshotPath, cloneConfig.MemoryPath, cloneConfig.CloneRoot = statePath, memoryPath, root
+		at = time.Now()
+		vm, err := startPlainVM(ctx, cloneConfig)
+		if err != nil {
+			b.t.Fatalf("baseline clone %d: %v", index, err)
+		}
+		defer vm.Close()
+		restoreEach[index] = time.Since(at).Nanoseconds()
+		c := newConsole(vm)
+		if err := c.skipExisting(); err != nil {
+			b.t.Fatal(err)
+		}
+		clones[index] = clone{vm, c, root}
+	}
+	restored := time.Now()
+	firstOutput := make([]int64, count)
+	total := make([]int64, count)
+	errs := make([]error, count)
+	exits := make([]int, count)
+	var wg sync.WaitGroup
+	for index := range clones {
+		wg.Go(func() {
+			issued := time.Now()
+			timing, err := clones[index].console.runObserved(ctx, workloadTest(), func() {
+				firstOutput[index] = time.Since(issued).Nanoseconds()
+			})
+			errs[index], exits[index] = err, timing.Exit
+			total[index] = time.Since(issued).Nanoseconds()
+		})
+	}
+	wg.Wait()
+	for index, err := range errs {
+		if err != nil {
+			b.t.Fatalf("baseline clone %d: %v", index, err)
+		}
+		if exits[index] != 0 {
+			b.t.Fatalf("baseline clone %d exited %d", index, exits[index])
+		}
+	}
+	memory := make([]map[string]int64, count)
+	for index, item := range clones {
+		rollup, err := item.vm.memoryRollup()
+		if err != nil {
+			b.t.Fatal(err)
+		}
+		memory[index] = rollup
+	}
+	b.appendRecord(benchRecord{Scenario: "fork-fanout", Kind: "baseline", WallNS: time.Since(start).Nanoseconds(),
+		Extra: map[string]any{
+			"forks":            count,
+			"command":          workloadTest(),
+			"root_copy_ns":     copyEach,
+			"restore_each_ns":  restoreEach,
+			"restore_all_ns":   restored.Sub(start).Nanoseconds(),
+			"first_output_ns":  firstOutput,
+			"total_ns":         total,
+			"max_first_output": maxOf(firstOutput),
+			"max_total_ns":     maxOf(total),
+			"clone_memory":     memory,
+		}})
 }
 
 // appendRecord stores one finished record and rewrites the output file, so an

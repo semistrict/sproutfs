@@ -501,6 +501,34 @@ func (c *console) run(ctx context.Context, command string) (guestTiming, error) 
 	return parseGuestTiming(line)
 }
 
+// runObserved is run, calling first once the command has written anything at
+// all, which is when a fork has shown it is alive rather than when it is done.
+func (c *console) runObserved(ctx context.Context, command string, first func()) (guestTiming, error) {
+	if err := c.send(ctx, "run "+command); err != nil {
+		return guestTiming{}, err
+	}
+	for {
+		grown, err := c.grown()
+		if err != nil {
+			return guestTiming{}, err
+		}
+		if grown > 0 {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return guestTiming{}, context.Cause(ctx)
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	first()
+	line, err := c.wait(ctx, "SPROUTFS_RUN")
+	if err != nil {
+		return guestTiming{}, err
+	}
+	return parseGuestTiming(line)
+}
+
 // capture runs one shell command in the guest and returns what it printed.
 func (c *console) capture(ctx context.Context, command string) (string, error) {
 	if err := c.send(ctx, "run "+command); err != nil {
@@ -618,6 +646,10 @@ type plainConfig struct {
 	// SnapshotPath and MemoryPath restore an ordinary memory-file snapshot
 	// instead of booting.
 	SnapshotPath, MemoryPath string
+	// CloneRoot gives a restored VM a root of its own. A snapshot names its
+	// drive by the path it had, so several VMs restored from one would write
+	// the same file; a clone is loaded paused, given this copy, and resumed.
+	CloneRoot string
 }
 
 type plainVM struct {
@@ -713,9 +745,18 @@ func startPlainVM(ctx context.Context, c plainConfig) (*plainVM, error) {
 		if err := p.request(ctx, http.MethodPut, "/snapshot/load", map[string]any{
 			"snapshot_path": c.SnapshotPath,
 			"mem_backend":   map[string]any{"backend_type": "File", "backend_path": c.MemoryPath},
-			"resume_vm":     true,
+			"resume_vm":     c.CloneRoot == "",
 		}); err != nil {
 			return nil, err
+		}
+		if c.CloneRoot != "" {
+			if err := p.request(ctx, http.MethodPatch, "/drives/rootfs", map[string]any{
+				"drive_id": "rootfs", "path_on_host": c.CloneRoot}); err != nil {
+				return nil, err
+			}
+			if err := p.request(ctx, http.MethodPatch, "/vm", map[string]any{"state": "Resumed"}); err != nil {
+				return nil, err
+			}
 		}
 	}
 	started = true
@@ -748,6 +789,34 @@ func (p *plainVM) request(ctx context.Context, method, path string, value any) e
 	return nil
 }
 
+// memoryRollup reads what the kernel accounts to this VMM's address space, in
+// bytes, from smaps_rollup: what it holds resident, its proportional share of
+// that once pages other processes map are divided among them, and what is its
+// alone. Guest memory is the whole of a VMM's footprint but for a few MiB, so
+// this is what one plain clone costs the host.
+func (p *plainVM) memoryRollup() (map[string]int64, error) {
+	raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/smaps_rollup", p.cmd.Process.Pid))
+	if err != nil {
+		return nil, err
+	}
+	rollup := map[string]int64{}
+	for _, line := range strings.Split(string(raw), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 3 || fields[2] != "kB" {
+			continue
+		}
+		kib, err := strconv.ParseInt(fields[1], 10, 64)
+		if err != nil {
+			return nil, err
+		}
+		switch name := strings.TrimSuffix(fields[0], ":"); name {
+		case "Rss", "Pss", "Shared_Clean", "Shared_Dirty", "Private_Clean", "Private_Dirty":
+			rollup[strings.ToLower(name)+"_bytes"] = kib << 10
+		}
+	}
+	return rollup, nil
+}
+
 // ConsolePath is the baseline's own console file. The plain VMM writes its
 // whole output there, so nothing is ever dropped and a read is a plain ReadAt.
 func (p *plainVM) ConsolePath() string { return filepath.Join(p.dir, "console.log") }
@@ -762,7 +831,11 @@ func (p *plainVM) Console(offset int64, limit int) ([]byte, int64, int64) {
 	if err != nil {
 		return nil, offset, offset
 	}
-	length := min(max(info.Size()-offset, 0), int64(limit))
+	// An offset past the end is how a reader asks where the end is, which is
+	// what skipping a restored guest's existing output does: it reads from there,
+	// so the answer is the end and not the offset it asked with.
+	offset = min(offset, info.Size())
+	length := min(info.Size()-offset, int64(limit))
 	data := make([]byte, length)
 	if length != 0 {
 		if _, err := file.ReadAt(data, offset); err != nil && err != io.EOF {

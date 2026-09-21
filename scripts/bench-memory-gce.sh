@@ -1,11 +1,20 @@
 #!/usr/bin/env bash
 # Disposable nested-KVM memory measurements. `all` always deletes its VM.
 # SPROUTFS_GCE_FANOUT=1 runs only the fork fan-out that lists the pages each
-# fork came to own.
+# fork came to own. SPROUTFS_GCE_WORKLOAD=1 runs only the realistic comparison:
+# the workload image through every scenario of the guest workload benchmark,
+# managed and on plain Firecracker; with SPROUTFS_GCE_SMOKE=1 as well, everything
+# but the build, in minutes, which is what to run first on a host `create` made.
 # `create`, `run` and `delete` expose the same steps for interrupted runs.
 set -euo pipefail
 case ${SPROUTFS_GCE_BUILD_ONLY:-0} in 0|1) ;; *) echo "SPROUTFS_GCE_BUILD_ONLY must be 0 or 1" >&2; exit 2 ;; esac
 case ${SPROUTFS_GCE_FANOUT:-0} in 0|1) ;; *) echo "SPROUTFS_GCE_FANOUT must be 0 or 1" >&2; exit 2 ;; esac
+case ${SPROUTFS_GCE_WORKLOAD:-0} in 0|1) ;; *) echo "SPROUTFS_GCE_WORKLOAD must be 0 or 1" >&2; exit 2 ;; esac
+case ${SPROUTFS_GCE_SMOKE:-0} in 0|1) ;; *) echo "SPROUTFS_GCE_SMOKE must be 0 or 1" >&2; exit 2 ;; esac
+# These two cross a remote shell, so they are held to what a scenario list and a
+# count are made of.
+[[ ${SPROUTFS_BENCH_SCENARIOS:-} =~ ^[a-z,-]*$ ]] || { echo "SPROUTFS_BENCH_SCENARIOS is a comma-separated list of scenario names" >&2; exit 2; }
+[[ ${SPROUTFS_BENCH_FORKS:-} =~ ^[0-9]*$ ]] || { echo "SPROUTFS_BENCH_FORKS is a number" >&2; exit 2; }
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 project=${SPROUTFS_GCE_PROJECT:-$(gcloud config get-value project 2>/dev/null)}
 zone=${SPROUTFS_GCE_ZONE:-us-east4-a}
@@ -15,13 +24,18 @@ results=${3:-$repo/docs/measurements/gce-memory-$(date -u +%Y%m%d-%H%M%S)}
 [[ -n "$project" && "$project" != '(unset)' ]] || { echo 'Set SPROUTFS_GCE_PROJECT.' >&2; exit 2; }
 [[ "$instance" == sproutfs-memprobe-* ]] || { echo 'Use a sproutfs-memprobe- instance name.' >&2; exit 2; }
 cloud=(gcloud --quiet --project="$project")
+# The workload comparison runs 16 GiB guests, four at a time on each side, over a
+# 32 GiB root each clone of the plain side copies; the memory probe needs none
+# of that.
+machine=n2-standard-8 disk=80GB limit=5h
+if [[ ${SPROUTFS_GCE_WORKLOAD:-0} == 1 ]]; then machine=n2-standard-32 disk=400GB limit=11h; fi
 
 create() {
     "${cloud[@]}" compute instances create "$instance" --zone="$zone" \
-        --machine-type="${SPROUTFS_GCE_MACHINE_TYPE:-n2-standard-8}" \
+        --machine-type="${SPROUTFS_GCE_MACHINE_TYPE:-$machine}" \
         --min-cpu-platform='Intel Cascade Lake' --enable-nested-virtualization \
         --image=ubuntu-2604-resolute-amd64-v20260907 --image-project=ubuntu-os-cloud \
-        --boot-disk-size=80GB --boot-disk-type=pd-balanced --boot-disk-auto-delete \
+        --boot-disk-size="$disk" --boot-disk-type=pd-balanced --boot-disk-auto-delete \
         --network="${SPROUTFS_GCE_NETWORK:-default}" --no-service-account --no-scopes \
         --metadata=block-project-ssh-keys=TRUE \
         --metadata-from-file="startup-script=$repo/scripts/lib/gce-bench-startup.sh" \
@@ -107,7 +121,7 @@ PY
         sudo systemctl is-active sproutfs-bench-expire.timer
         mkdir -p source results
         tar -xzf source.tar.gz -C source
-        sudo env SPROUTFS_GCE_BUILD_ONLY='"${SPROUTFS_GCE_BUILD_ONLY:-0}"' SPROUTFS_GCE_FANOUT='"${SPROUTFS_GCE_FANOUT:-0}"' timeout --signal=TERM --kill-after=30s 2h bash source/scripts/lib/bench-memory-linux.sh "$PWD/source" "$PWD/results"' \
+        sudo env SPROUTFS_GCE_BUILD_ONLY='"${SPROUTFS_GCE_BUILD_ONLY:-0}"' SPROUTFS_GCE_FANOUT='"${SPROUTFS_GCE_FANOUT:-0}"' SPROUTFS_GCE_WORKLOAD='"${SPROUTFS_GCE_WORKLOAD:-0}"' SPROUTFS_GCE_SMOKE='"${SPROUTFS_GCE_SMOKE:-0}"' SPROUTFS_BENCH_SCENARIOS='"${SPROUTFS_BENCH_SCENARIOS:-}"' SPROUTFS_BENCH_FORKS='"${SPROUTFS_BENCH_FORKS:-}"' timeout --signal=TERM --kill-after=30s '"$limit"' bash source/scripts/lib/bench-memory-linux.sh "$PWD/source" "$PWD/results"' \
         > "$results/remote.log" 2>&1 || status=$?
     "${cloud[@]}" compute scp --recurse --zone="$zone" "$instance:results/." "$results/" || status=$?
     return "$status"
