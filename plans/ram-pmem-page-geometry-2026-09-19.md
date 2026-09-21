@@ -411,7 +411,10 @@ memory savings and workload time together.
    hold a run together across the few pages a later checkpoint rewrote in the
    middle of it — and an extent is capped at 4 MiB, which admits a whole 2 MiB
    run with room for its envelopes. Independent parts are fetched at once,
-   within the cache's own `MaxConcurrentLoads`.
+   within the cache's own `MaxConcurrentLoads`. A run itself covers at most
+   16 MiB of volume in whole pages, which bounds what one reader holds decoded:
+   a longer read is several runs, and 16 MiB is the largest read-ahead run a
+   pager may be configured with, so no pager's load is ever split.
 
    **The cached unit stays the member**, and the cache's batched path is what
    keeps it there: a run is one cache operation, holding one load slot however

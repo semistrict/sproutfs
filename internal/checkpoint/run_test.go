@@ -363,6 +363,57 @@ func TestARunThatStartsAndEndsInsideAPageIsOneRequest(t *testing.T) {
 	})
 }
 
+// A run covers a bounded piece of a volume, in whole pages, so a read longer
+// than one is served as several and no page is ever split between two of them
+// and fetched twice. The largest read-ahead run a pager may be configured with
+// is one run, so no pager's load is ever split.
+func TestARunIsBoundedInWholePages(t *testing.T) {
+	for _, geometry := range []Geometry{at4KiB, at2MiB} {
+		if got := runLimit(geometry, 0); got != maximumRunBytes {
+			t.Fatalf("the first run of a %d-byte-page volume ends at %d, want %d",
+				geometry.PageSize, got, maximumRunBytes)
+		}
+		if got := runLimit(geometry, geometry.PageSize/2); got != maximumRunBytes {
+			t.Fatalf("a run starting inside the first page ends at %d, want %d", got, maximumRunBytes)
+		}
+		if got := runLimit(geometry, maximumRunBytes); got != 2*maximumRunBytes {
+			t.Fatalf("the second run of a %d-byte-page volume ends at %d, want %d",
+				geometry.PageSize, got, 2*maximumRunBytes)
+		}
+	}
+	if maximumRunBytes < 16<<20 {
+		t.Fatalf("a run covers %d bytes, want at least the largest read-ahead run a pager may hold",
+			maximumRunBytes)
+	}
+}
+
+// extentsIn is how many requests a run of adjacent members costs: one per
+// maximumReadExtent of them, because that is what one request carries.
+func extentsIn(members int) int {
+	return (members*memberBytes + maximumReadExtent - 1) / maximumReadExtent
+}
+
+// A read longer than one run is served as several, each costing one request per
+// extent of it, and the bytes across the boundary are the ones that were
+// published. A 2 MiB run is one extent; a run of a whole maximumRunBytes of
+// 4 KiB pages holds more members than one request carries and splits.
+func TestAReadLongerThanOneRunIsServedAsSeveralRuns(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const whole = maximumRunBytes / PageSize4KiB
+		pages := uint64(whole + runPages)
+		f := newRunFixture(t)
+		f.publish(t, 0xee, pagesOf(0, pages, nil))
+		reads, read := f.read(t, 0, pages*PageSize4KiB)
+		if want := segmentReads + extentsIn(whole) + extentsIn(runPages); reads != want {
+			t.Fatalf("a read of %d pages cost %d reads of %d bytes, want %d",
+				pages, reads, read, want)
+		}
+		if extentsIn(runPages) != 1 {
+			t.Fatalf("a 2 MiB run of 4 KiB pages costs %d requests, want one", extentsIn(runPages))
+		}
+	})
+}
+
 // The second read of a run through a cache costs nothing: every page the first
 // read fetched was retained under its own identity, whichever request carried
 // it, so a second reader of any of them finds it there.

@@ -48,7 +48,21 @@ const (
 	// at a time. A run resolves to about one extent per part it reads from, so
 	// this is concurrency over parts and never over pages.
 	readExtentConcurrency = 8
+	// maximumRunBytes bounds the volume one run covers, which is what bounds the
+	// decoded pages one reader holds at once: a read of a larger range is served
+	// as several runs, each still one request per extent it finds. It is the
+	// largest read-ahead run a pager may be configured with, so no pager's load
+	// is ever split.
+	maximumRunBytes = 16 << 20
 )
+
+// runLimit is where the run holding one byte offset ends: maximumRunBytes on,
+// rounded up to a whole page, so that no page is ever split across two runs and
+// fetched twice.
+func runLimit(geometry Geometry, cursor uint64) uint64 {
+	pages := max(1, maximumRunBytes/geometry.PageSize)
+	return (geometry.PageOf(cursor) + pages) * geometry.PageSize
+}
 
 // pageRead is one page of a run: which page it is, where its member lives,
 // which byte of the page the read starts at, and the bytes of the caller's

@@ -459,11 +459,20 @@ func (s *Store) Read(ctx context.Context, index *Index, volume string, offset ui
 	if err := context.Cause(ctx); err != nil {
 		return err
 	}
-	run, err := s.resolveRun(ctx, index, volume, offset, dst)
-	if err != nil || len(run) == 0 {
-		return err
+	for cursor := offset; cursor < offset+length; {
+		limit := min(offset+length, runLimit(table.geometry, cursor))
+		run, err := s.resolveRun(ctx, index, volume, cursor, dst[cursor-offset:limit-offset])
+		if err != nil {
+			return err
+		}
+		if len(run) > 0 {
+			if err := s.readRun(ctx, table.geometry, volume, run); err != nil {
+				return err
+			}
+		}
+		cursor = limit
 	}
-	return s.readRun(ctx, table.geometry, volume, run)
+	return nil
 }
 
 // resolveRun reports where the bytes of every page of a range live, filling the

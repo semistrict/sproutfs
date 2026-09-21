@@ -86,7 +86,10 @@ part separated by up to 64 KiB of bytes nothing wants are read through rather
 than split at, because a request costs its latency and not its length; a larger
 gap splits, and so does an extent that has grown past 4 MiB. Independent parts
 are fetched at once. A page no checkpoint ever wrote has no member, reads as
-zeroes and costs nothing. So a pager's cold 2 MiB read-ahead run of 512 4 KiB
+zeroes and costs nothing. A run covers at most 16 MiB of volume, in whole
+pages, which bounds what one reader holds decoded; a longer read is several
+runs, and 16 MiB is the largest read-ahead run a pager may be configured with,
+so no pager's load is ever split. So a pager's cold 2 MiB read-ahead run of 512 4 KiB
 pages is two requests — the segment that locates them, and the extent their
 members lie in — where it was 513 before the pages of a run were grouped.
 
