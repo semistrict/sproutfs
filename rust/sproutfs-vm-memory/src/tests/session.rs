@@ -1,7 +1,13 @@
 use super::*;
+use std::os::fd::AsRawFd;
 
 #[path = "session_protocol.rs"]
 mod protocol;
+
+/// These lifetime tests are about mappings and descriptors rather than about
+/// geometry, so they run at the larger of the two pages; the geometry itself is
+/// exercised in session_protocol.rs.
+const PAGE_SIZE: usize = MAX_PAGE_SIZE;
 
 #[test]
 fn mapping_drop_releases_its_backing() {
@@ -99,7 +105,9 @@ fn session_drop_releases_mappings_and_closes_retained_controls() {
             Frame {
                 kind: wire::ATTACH,
                 id: wire::VERSION,
+                offset: PAGE_SIZE as u64,
                 len: PAGE_SIZE as u64,
+                backing: BACKING_HUGETLB,
                 ..Frame::default()
             }
             .send_fd(&mut socket, &backing)

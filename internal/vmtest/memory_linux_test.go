@@ -64,7 +64,8 @@ func startClient(t *testing.T, pager *pager, pages int) *process {
 		listener.SetDeadline(time.Now().Add(10 * time.Second))
 		listeners[i] = listener
 	}
-	cmd := exec.Command(os.Getenv("SPROUTFS_VM_MEMORY_CLIENT"), paths[0], paths[1], strconv.Itoa(pages))
+	cmd := exec.Command(os.Getenv("SPROUTFS_VM_MEMORY_CLIENT"), paths[0], paths[1],
+		strconv.Itoa(pages), strconv.Itoa(pager.pageSize))
 	input, err := cmd.StdinPipe()
 	if err != nil {
 		t.Fatal(err)

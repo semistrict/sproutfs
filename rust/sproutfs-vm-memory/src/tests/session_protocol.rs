@@ -1,5 +1,5 @@
 use crate::{
-    PAGE_SIZE, RegionKind, RegionSpec, Session,
+    BACKING_HUGETLB, BACKING_MEMFD, MAX_PAGE_SIZE, MIN_PAGE_SIZE, RegionKind, RegionSpec, Session,
     wire::{self, Frame},
 };
 use std::io;
@@ -10,6 +10,11 @@ use std::time::{Duration, Instant};
 
 #[path = "session_mapping.rs"]
 mod mapping;
+
+/// Most of these tests are about the protocol rather than about the geometry,
+/// so they run at a PMEM session's page; the ones that are about the geometry
+/// name both explicitly.
+const PAGE_SIZE: usize = MAX_PAGE_SIZE;
 
 struct Peer {
     directory: std::path::PathBuf,
@@ -62,7 +67,9 @@ impl Peer {
         );
         let region = Frame::read(&mut socket).unwrap();
         assert_ne!(region.offset, 0);
-        assert_eq!(region.offset % PAGE_SIZE as u64, 0);
+        // The region is reserved before the page is known, so it is reserved at
+        // the largest page this transport maps, which is aligned for both.
+        assert_eq!(region.offset % MAX_PAGE_SIZE as u64, 0);
         assert_eq!(
             region,
             Frame {
@@ -84,30 +91,48 @@ impl Drop for Peer {
     }
 }
 
-fn backing() -> OwnedFd {
-    let raw = unsafe {
-        libc::memfd_create(
-            c"sproutfs-protocol".as_ptr(),
-            libc::MFD_CLOEXEC | libc::MFD_HUGETLB | libc::MFD_HUGE_2MB,
-        )
-    };
+/// An arena of one page of the given geometry: the HugeTLB pool's memory for a
+/// 2 MiB page and an ordinary memfd for a 4 KiB one, which is exactly what the
+/// attachment claims and what the client checks the descriptor against.
+fn arena(page_size: usize) -> OwnedFd {
+    let mut flags = libc::MFD_CLOEXEC;
+    if page_size == MAX_PAGE_SIZE {
+        flags |= libc::MFD_HUGETLB | libc::MFD_HUGE_2MB;
+    }
+    let raw = unsafe { libc::memfd_create(c"sproutfs-protocol".as_ptr(), flags) };
     assert!(raw >= 0, "memfd: {}", io::Error::last_os_error());
     let backing = unsafe { OwnedFd::from_raw_fd(raw) };
     // Handshake validation never touches or reserves physical huge pages.
     assert_eq!(
-        unsafe { libc::ftruncate(backing.as_raw_fd(), PAGE_SIZE as _) },
+        unsafe { libc::ftruncate(backing.as_raw_fd(), page_size as _) },
         0
     );
     backing
 }
 
-fn attachment() -> Frame {
+fn backing() -> OwnedFd {
+    arena(PAGE_SIZE)
+}
+
+/// The attachment a well-behaved pager of this page sends: the page, the arena,
+/// and the memory that arena is made of.
+fn attachment_for(page_size: usize) -> Frame {
     Frame {
         kind: wire::ATTACH,
         id: wire::VERSION,
-        len: PAGE_SIZE as u64,
+        offset: page_size as u64,
+        len: page_size as u64,
+        backing: if page_size == MAX_PAGE_SIZE {
+            BACKING_HUGETLB
+        } else {
+            BACKING_MEMFD
+        },
         ..Frame::default()
     }
+}
+
+fn attachment() -> Frame {
+    attachment_for(PAGE_SIZE)
 }
 
 fn ready() -> Frame {
@@ -189,9 +214,27 @@ fn attachment_rejects_invalid_fields_before_exposing_the_region() {
             len: u64::MAX,
             ..valid
         },
+        // The geometry itself: a page this transport does not map, a page the
+        // stated arena kind is not the memory of, and an unknown arena kind.
         Frame { offset: 1, ..valid },
         Frame {
-            backing: 1,
+            offset: 64 << 10,
+            ..valid
+        },
+        Frame {
+            offset: MIN_PAGE_SIZE as u64,
+            ..valid
+        },
+        Frame {
+            backing: BACKING_MEMFD,
+            ..valid
+        },
+        Frame {
+            backing: 0,
+            ..valid
+        },
+        Frame {
+            backing: 3,
             ..valid
         },
         Frame {
@@ -258,6 +301,86 @@ fn a_handshake_maps_the_one_region_it_asked_for() {
         assert_eq!((region.kind, region.len), (spec.kind, spec.len));
         assert_ne!(region.address, 0);
         assert_eq!(region.address % PAGE_SIZE, 0);
+        assert_eq!(session.page_size(), PAGE_SIZE);
+    }
+}
+
+// The page is the session's, not the library's: a RAM session runs 4 KiB over
+// an ordinary memfd and a PMEM session runs 2 MiB over the pool, and a client
+// that reserved its region before either was stated serves whichever it is
+// given.
+#[test]
+#[ignore = "requires native HugeTLB/UFFD support and permission to create kernel-mode UFFD"]
+fn a_session_runs_the_page_its_attachment_states() {
+    for (page_size, kind) in [
+        (MIN_PAGE_SIZE, RegionKind::Ram),
+        (MAX_PAGE_SIZE, RegionKind::Pmem),
+    ] {
+        let spec = RegionSpec {
+            kind,
+            len: 4 * page_size,
+        };
+        let arena = arena(page_size);
+        let attach = Frame {
+            len: 4 * page_size as u64,
+            ..attachment_for(page_size)
+        };
+        assert_eq!(
+            unsafe { libc::ftruncate(arena.as_raw_fd(), 4 * page_size as libc::off_t) },
+            0
+        );
+        let session = handshake_with_backing(attach, ready(), spec, &arena).unwrap();
+        assert_eq!(session.page_size(), page_size);
+        let region = session.region();
+        assert_eq!(region.len, spec.len);
+        assert_eq!(region.address % MAX_PAGE_SIZE, 0);
+    }
+}
+
+// A geometry the two ends do not agree on is refused before the region is
+// exposed: a region that is not whole pages of the page the session states, and
+// an arena that is not the memory that page is made of.
+#[test]
+#[ignore = "requires native HugeTLB/UFFD support and permission to create kernel-mode UFFD"]
+fn a_mismatched_geometry_is_refused_before_the_region_is_exposed() {
+    // Whole 4 KiB pages, but not whole 2 MiB ones.
+    let ragged = RegionSpec {
+        kind: RegionKind::Pmem,
+        len: MAX_PAGE_SIZE + MIN_PAGE_SIZE,
+    };
+    let error = handshake(attachment(), ready(), ragged)
+        .err()
+        .expect("a region that is not whole pages of its session was accepted");
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{error}");
+    assert!(
+        error.to_string().contains("not whole"),
+        "the refusal must say what it refused: {error}"
+    );
+
+    // A 4 KiB session whose arena is the HugeTLB pool, and a 2 MiB session
+    // whose arena is ordinary memory. The attachment is well formed either
+    // way; it is the descriptor that does not match what it claims.
+    for (stated, attached) in [
+        (MIN_PAGE_SIZE, MAX_PAGE_SIZE),
+        (MAX_PAGE_SIZE, MIN_PAGE_SIZE),
+    ] {
+        let spec = RegionSpec {
+            kind: RegionKind::Ram,
+            len: MAX_PAGE_SIZE,
+        };
+        let wrong = arena(attached);
+        assert_eq!(
+            unsafe { libc::ftruncate(wrong.as_raw_fd(), MAX_PAGE_SIZE as libc::off_t) },
+            0
+        );
+        let attach = Frame {
+            len: MAX_PAGE_SIZE as u64,
+            ..attachment_for(stated)
+        };
+        let error = handshake_with_backing(attach, ready(), spec, &wrong)
+            .err()
+            .expect("an arena that is not the memory of its page was accepted");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{error}");
     }
 }
 

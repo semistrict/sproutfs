@@ -382,7 +382,8 @@ func startNativeWithConfig(t *testing.T, h *vmmemory.Host, pages int, config vmm
 		listeners[i] = l
 	}
 	p := &nativeProcess{t: t, lines: make(chan string, 16), done: make(chan error, 1)}
-	p.cmd = exec.Command(os.Getenv("SPROUTFS_VM_MEMORY_CLIENT"), paths[0], paths[1], strconv.Itoa(pages))
+	p.cmd = exec.Command(os.Getenv("SPROUTFS_VM_MEMORY_CLIENT"), paths[0], paths[1],
+		strconv.Itoa(pages), strconv.FormatUint(h.PageSize(), 10))
 	p.cmd.Stderr = os.Stderr
 	input, err := p.cmd.StdinPipe()
 	if err != nil {

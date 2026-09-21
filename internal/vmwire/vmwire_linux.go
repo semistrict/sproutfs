@@ -1,14 +1,12 @@
 //go:build linux && (amd64 || arm64)
 
-// Package vmwire carries the host side of the managed-memory control protocol
-// described in docs/vm-memory.md: fixed 56-byte little-endian frames over a
-// Unix socket, SCM_RIGHTS descriptor passing, sealed memfd arenas, and the
-// userfaultfd ioctls that resolve one fault. It is shared by the production
-// host in vmmemory and by the Go pager fixture that qualifies the Rust client.
+// This file is the half of vmwire that is syscalls: descriptor passing, the
+// arenas a host allocates, and the userfaultfd ioctls that resolve, wake and
+// protect a range. The frames and the geometry are in vmwire.go, which builds
+// everywhere.
 package vmwire
 
 import (
-	"encoding/binary"
 	"errors"
 	"io"
 	"net"
@@ -17,6 +15,8 @@ import (
 	"syscall"
 	"time"
 	"unsafe"
+
+	"github.com/semistrict/sproutfs/internal/checkpoint"
 )
 
 // The retry schedule of one userfaultfd ioctl: a few yields, which is all the
@@ -52,88 +52,6 @@ func ioctlRetrying(fd uintptr, number uint64, args []uint64, write bool) error {
 		backoff = min(2*backoff, ioctlMaxBackoff)
 	}
 }
-
-// Frame kinds. These control messages are separate from Linux's native
-// 32-byte UFFD events.
-const (
-	Hello    = 1
-	Region   = 2
-	Attach   = 3
-	MapRange = 4
-	Revoke   = 5
-	Ack      = 6
-	Stop     = 7
-	// Seal asks the host to take the session's checkpoint: it write-protects the
-	// dirty set and answers, without moving a byte. There is no durability request
-	// in this protocol — a guest's flush makes nothing durable and the device
-	// completes it itself.
-	Seal     = 8
-	Result   = 9
-	MapBatch = 10
-	Ready    = 11
-	MapZero  = 12
-)
-
-const (
-	// Version 6 dropped two fields at once: the region, because a session
-	// carries exactly one, and the page size, because the page is 2 MiB on both
-	// ends and the version is what says so.
-	Version      = 6
-	MaxBatchRuns = 1024
-)
-
-// FrameBytes is the encoded size of one control message.
-const FrameBytes = 56
-
-// Frame is one 56-byte control message. A session carries exactly one region,
-// so no frame names one.
-type Frame struct{ Kind, ID, Offset, Length, Backing, Generation, Flags uint64 }
-
-// Bytes encodes the frame as seven little-endian words.
-func (f Frame) Bytes() []byte {
-	b := make([]byte, FrameBytes)
-	for i, v := range []uint64{f.Kind, f.ID, f.Offset, f.Length, f.Backing, f.Generation, f.Flags} {
-		binary.LittleEndian.PutUint64(b[i*8:], v)
-	}
-	return b
-}
-
-// Decode reads a frame out of exactly FrameBytes encoded bytes.
-func Decode(b []byte) Frame {
-	var v [7]uint64
-	for i := range v {
-		v[i] = binary.LittleEndian.Uint64(b[i*8:])
-	}
-	return Frame{v[0], v[1], v[2], v[3], v[4], v[5], v[6]}
-}
-
-// Read consumes one whole frame, returning the zero frame on any error.
-func Read(r io.Reader) (Frame, error) {
-	var b [FrameBytes]byte
-	_, err := io.ReadFull(r, b[:])
-	if err != nil {
-		return Frame{}, err
-	}
-	return Decode(b[:]), nil
-}
-
-// WriteBytes writes b in full, tolerating short writes.
-func WriteBytes(w io.Writer, b []byte) error {
-	for len(b) > 0 {
-		n, err := w.Write(b)
-		if err != nil {
-			return err
-		}
-		if n == 0 {
-			return io.ErrShortWrite
-		}
-		b = b[n:]
-	}
-	return nil
-}
-
-// Write sends one encoded frame.
-func Write(w io.Writer, f Frame) error { return WriteBytes(w, f.Bytes()) }
 
 // ReceiveFD reads a frame that carries exactly one descriptor.
 func ReceiveFD(c *net.UnixConn) (Frame, *os.File, error) {
@@ -194,6 +112,32 @@ func HugeMemfd(name string, size int64) (*os.File, error) {
 		return nil, syscall.EINVAL
 	}
 	return memfd(name, size, 3|4|(21<<26))
+}
+
+// SharedMemfd creates the same size-sealed anonymous file over ordinary shared
+// memory, whose page is the host's own 4 KiB. It is what a RAM arena is made
+// of: a slot is replaceable at 4 KiB, the memory is charged to the pod rather
+// than to the HugeTLB pool, and a host with swap may swap it.
+func SharedMemfd(name string, size int64) (*os.File, error) {
+	if size <= 0 || size%checkpoint.PageSize4KiB != 0 {
+		return nil, syscall.EINVAL
+	}
+	return memfd(name, size, 3)
+}
+
+// ArenaMemfd creates the arena an instance of the given page runs on: the
+// HugeTLB pool's for a 2 MiB page, ordinary shared memory for a 4 KiB one.
+// Nothing else decides which, so a pager and the memory behind it cannot
+// disagree.
+func ArenaMemfd(name string, pageSize uint64, size int64) (*os.File, error) {
+	backing, err := BackingFor(pageSize)
+	if err != nil {
+		return nil, err
+	}
+	if backing == BackingHugeTLB {
+		return HugeMemfd(name, size)
+	}
+	return SharedMemfd(name, size)
 }
 
 func memfd(name string, size int64, flags uintptr) (*os.File, error) {

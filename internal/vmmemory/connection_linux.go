@@ -14,17 +14,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/semistrict/sproutfs/internal/checkpoint"
 	"github.com/semistrict/sproutfs/internal/ctxsync"
 	"github.com/semistrict/sproutfs/internal/vmmemory/internal/pageranges"
 	"github.com/semistrict/sproutfs/internal/vmwire"
 )
-
-// transportPageSize is the page this transport — vmwire, the Rust session and
-// the Firecracker integration together — maps. It is not the pager's: a pager
-// instance carries its own, and one whose page is not this is refused when a
-// session is set up.
-const transportPageSize = checkpoint.PageSize2MiB
 
 type ConnectionConfig struct {
 	// Name identifies this session's region in what it logs: the volume the
@@ -112,23 +105,21 @@ func Connect(ctx context.Context, h *Host, socket *net.UnixConn, backing RegionB
 	if h == nil || socket == nil {
 		return nil, ErrConfig
 	}
-	// The transport fixes the page at 2 MiB: version 6 of the control protocol
-	// carries no page size because both ends know it, the Rust session checks
-	// that the arena it is given is an explicit 2 MiB HugeTLB file, and every
-	// range and backing offset on the wire is 2 MiB aligned. A pager of another
-	// page is therefore refused here, at session setup, rather than serving
-	// faults the client would read in the wrong unit. Removing this refusal is
-	// what step 4 of the page-geometry plan does, together with the wire.
-	if h != nil && h.pageSize != transportPageSize {
+	// The page this session runs is the pager's, and the arena is the memory
+	// that page is made of. A pager whose page this transport does not map, or
+	// whose arena was made with another slot, is refused here rather than
+	// serving faults the client would read in the wrong unit; the geometry it
+	// does state goes out on the attachment below, where the client checks it
+	// against the descriptor it is given.
+	if _, err := vmwire.BackingFor(h.pageSize); err != nil {
 		_ = socket.Close()
-		return nil, fmt.Errorf("%w: this transport maps %d-byte pages, the pager's page is %d",
-			ErrConfig, transportPageSize, h.pageSize)
+		return nil, fmt.Errorf("%w: %w", ErrConfig, err)
 	}
 	a, ok := h.arena.(*LinuxArena)
 	if cfg.FaultWorkers == 0 {
 		cfg.FaultWorkers = 8
 	}
-	if !ok || h.cfg.ResidentPages != a.pages || backing.Backing == nil ||
+	if !ok || h.cfg.ResidentPages != a.pages || uint64(a.pageSize) != h.pageSize || backing.Backing == nil ||
 		(backing.Kind != Pmem && backing.Kind != Ram) || cfg.QueuePages < 1 || cfg.QueuePages > h.cfg.LogicalPages || cfg.FaultWorkers < 1 || cfg.FaultWorkers > 64 || cfg.MaxVMAs < 0 || (cfg.MaxVMAs > 0 && cfg.MaxVMAs < 128) || cfg.MaxVMAs > 1<<20 || cfg.CommandTimeout <= 0 || cfg.VerifyInterval <= 0 {
 		_ = socket.Close()
 		return nil, ErrConfig
@@ -177,8 +168,10 @@ func Connect(ctx context.Context, h *Host, socket *net.UnixConn, backing RegionB
 		}
 		return nil, err
 	}
-	// The hello carries nothing but the version: one session is one region and
-	// the page is 2 MiB on both ends, so the version is what says both.
+	// The hello carries nothing but the version: one session is one region, and
+	// what page that region runs is the attachment's to say. A version 6 peer
+	// fails here, which is the whole of this build's support for one — its page
+	// numbers mean something else.
 	if header.Kind != vmwire.Hello || header.ID != vmwire.Version || header.Length != 0 || header.Offset != 0 || header.Backing != 0 || header.Generation != 0 || header.Flags != 0 {
 		return fail(errors.New("invalid managed-memory hello"))
 	}
@@ -200,7 +193,13 @@ func Connect(ctx context.Context, h *Host, socket *net.UnixConn, backing RegionB
 	}
 	c.region = ConnectedRegion{backing.Kind, f.Offset, f.Length, r}
 	c.mapping = m
-	if err := vmwire.SendFD(socket, vmwire.Frame{Kind: vmwire.Attach, ID: vmwire.Version, Length: uint64(a.pages) * uint64(a.pageSize), Flags: uint64(cfg.MaxVMAs)}, a.file); err != nil {
+	// The attachment states the geometry: this region's page, the arena, what
+	// the arena is made of, and the mapping-count budget. The client refuses a
+	// page it does not map, a descriptor that is not the memory that page is, or
+	// a region of its own that is not whole pages of it — all before it exposes
+	// an address to the VMM.
+	attach := vmwire.AttachFrame(h.pageSize, uint64(a.pages)*uint64(a.pageSize), a.backing, uint64(cfg.MaxVMAs))
+	if err := vmwire.SendFD(socket, attach, a.file); err != nil {
 		return fail(err)
 	}
 	attached = true
