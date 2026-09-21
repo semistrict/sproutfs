@@ -81,6 +81,25 @@ type hostPagersConfig struct {
 	SpillDir string
 }
 
+// ramPageBytes is the page the RAM pager of these suites runs. It is 4 KiB,
+// which is what a host runs; SPROUTFS_RAM_PAGE_BYTES asks for 2 MiB instead,
+// which is the geometry this suite had before the page-geometry plan's fourth
+// step and the only way to ask whether a defect found at 4 KiB predates it. It
+// is a knob for a reduction, not a configuration a deployment has.
+func ramPageBytes(t testing.TB) uint64 {
+	t.Helper()
+	value := os.Getenv("SPROUTFS_RAM_PAGE_BYTES")
+	if value == "" {
+		return checkpoint.PageSize4KiB
+	}
+	page, err := strconv.ParseUint(value, 10, 64)
+	if err != nil || (page != checkpoint.PageSize4KiB && page != checkpoint.PageSize2MiB) {
+		t.Fatalf("SPROUTFS_RAM_PAGE_BYTES is %q, want %d or %d",
+			value, checkpoint.PageSize4KiB, checkpoint.PageSize2MiB)
+	}
+	return page
+}
+
 // newHostPagers gives each pager an arena of its own size and a logical cap and
 // dirty budget of the given bytes, each converted into that pager's own page.
 func newHostPagers(t testing.TB, ctx context.Context, ramArenaBytes, pmemArenaBytes, logicalBytes, dirtyBytes int) *hostPagers {
@@ -101,7 +120,7 @@ func newConfiguredHostPagers(t testing.TB, ctx context.Context, cfg hostPagersCo
 	}
 	p := &hostPagers{configs: map[vmmemory.RegionKind]vmmemory.Config{}}
 	for _, kind := range []vmmemory.RegionKind{vmmemory.Ram, vmmemory.Pmem} {
-		page, budgets := uint64(checkpoint.PageSize4KiB), cfg.RAM
+		page, budgets := ramPageBytes(t), cfg.RAM
 		if kind == vmmemory.Pmem {
 			page, budgets = checkpoint.PageSize2MiB, cfg.PMEM
 		}
@@ -270,7 +289,7 @@ func TestFirecrackerDAXCaptureRestoreForkAndFence(t *testing.T) {
 	source, err := manager.Create(ctx, "source", []volume.VolumeSpec{
 		// Each volume is published in the page of the pager that maps it, which
 		// is what a host creates them with.
-		{Name: vmmachine.RAMVolume, Size: 128 << 20, PageSize: checkpoint.PageSize4KiB},
+		{Name: vmmachine.RAMVolume, Size: 128 << 20, PageSize: ramPageBytes(t)},
 		{Name: "root", Size: 64 << 20, PageSize: checkpoint.PageSize2MiB},
 	})
 	if err != nil {

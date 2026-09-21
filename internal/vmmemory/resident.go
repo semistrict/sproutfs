@@ -103,6 +103,7 @@ func (h *Host) aliases(pg *resident) []*binding {
 
 func (h *Host) bind(b *binding, pg *resident) {
 	h.mu.Lock()
+	h.probe.bind(h, b, pg)
 	pg.aliases[b] = struct{}{}
 	b.resident = pg
 	h.mu.Unlock()

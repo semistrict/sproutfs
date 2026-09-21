@@ -107,9 +107,10 @@ back to sharing the page it was copied from.
   round: a settle runs with the guest running and holds neither the region nor
   the window that serializes a page's mappings, so the only replacement it may
   issue is the one that installs no page table and wakes nothing. Installing the
-  origin in its place corrupted a guest once the RAM page was 4 KiB and a
-  fan-out settled thousands of pages an interval; see the settle's entry in
-  [vm-memory.md](../docs/vm-memory.md). The guest's next access maps the origin
+  origin in its place is a large part of an open defect once the RAM page is
+  4 KiB and a fan-out settles thousands of pages an interval — it did not cause
+  all of it and revoking is not a fix for it, see
+  [open-work.md](../docs/open-work.md). The guest's next access maps the origin
   through the fault path instead, which is one fault per page re-shared.
 - **A fork point is not settled.** A fork point publishes nothing and its pause
   is what a child waits for; its children inherit an unchanged page as an
