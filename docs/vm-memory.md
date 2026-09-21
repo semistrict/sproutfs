@@ -101,15 +101,13 @@ either pager's pressure seals the whole VM, once, because one pause seals every
 region it maps; a VM's loss window is the oldest unpublished write across its
 regions in both; and a store neither pager can admit stops that VM alone.
 
-Both pagers run **2 MiB** on a real host today. The Linux transport, the Rust
-adapter and Firecracker map that page and nothing else, and the arena is
-HugeTLB, which is the same statement made of the memory behind it; the Linux
-connection refuses a pager of any other page when a session is set up, and that
-refusal is the seam step 4 of the
-[page-geometry plan](../plans/ram-pmem-page-geometry-2026-09-19.md) removes
-together with the wire. The simulation has neither a HugeTLB pool nor a wire
-that fixes a page, so it already runs the geometry the deployment is moving to:
-a 4 KiB RAM pager beside a 2 MiB PMEM one, with RAM volumes created at 4 KiB.
+**RAM's page is 4 KiB and PMEM's is 2 MiB**, on a real host and in the
+simulation alike. The page and the memory behind it are one statement: a 2 MiB
+page is a page of the host's provisioned HugeTLB pool, and a 4 KiB page is an
+ordinary shared memfd out of the pod's own memory, which a host with swap may
+swap. A session states its region's page and its arena's kind when it attaches,
+and both ends check the pair before a byte of guest memory exists; the two
+arenas of one host are separate memfds and never draw on the same allotment.
 
 ## Bounded host pager
 
@@ -140,23 +138,23 @@ failed publication nor a migration restarts the bound. Where no checkpoint of
 that VM will ever be taken the wait ends as a budget stall does, as
 `ErrWindowStalled`, which the region's owner answers by stopping that VM.
 
-A pager page on a real host is **2 MiB**, backed by an explicit HugeTLB memfd.
 Allocation, sharing, copy-on-write, write protection, spill, eviction, mapping
-commands and wire generations all use that instance's unit, and region addresses
-and lengths must be aligned to it. What fixes it at 2 MiB on Linux is not the
-pager — that is configuration now — but the arena, the Rust adapter and the
-control protocol, each of which knows only that page.
+commands and wire generations all use that instance's page, and region addresses
+and lengths must be aligned to it. What an instance may run is what a volume can
+be published in and what the transport maps, which are the same two sizes.
 
-The host must provision a 2 MiB HugeTLB pool before starting VMs, and its two
-arenas draw on the same pool: the deployment divides its allotment between them
-rather than giving each the whole. The arena
-reserves virtual address space without reserving its entire logical capacity,
-then allocates each resident slot with `fallocate` before touching its mapping.
-Pool exhaustion returns an allocation error, with no fallback to small pages.
-Eviction punches a whole slot only after revoking every alias. HugeTLB pages
-are unswappable; the pager's own spill path remains responsible for reclaim.
-The kernel must support HugeTLB missing/minor faults and write protection on
-userfaultfd. A pool is shared by all arenas on the host, so deployment admission
+The host must provision a 2 MiB HugeTLB pool before starting VMs for the **PMEM**
+arena; the **RAM** arena is an ordinary memfd charged to the pod's memory, so a
+node provisions the two separately and the pool is no longer divided between
+them. Either arena reserves virtual address space without reserving its entire
+logical capacity, then allocates each resident slot with `fallocate` before
+touching its mapping. Exhaustion — of the pool, or of the pod's memory — returns
+an allocation error, with no fallback to another page. Eviction punches a whole
+slot only after revoking every alias. HugeTLB pages are unswappable and shmem
+pages are swappable, so the pager's own spill path remains responsible for
+reclaim in both. The kernel must support missing, minor and write-protect faults
+on userfaultfd for HugeTLB **and** for shmem, because a host runs a pager of each
+kind. A pool is shared by all HugeTLB arenas on the host, so deployment admission
 must budget their combined resident capacity.
 
 Read-ahead and write-ahead select one page when a configuration leaves them
@@ -178,8 +176,8 @@ different amounts of memory in the two:
 
 | bound | production value | why |
 | --- | --- | --- |
-| `ReadAheadPages` | 8 MiB of this pager's pages — four at 2 MiB | a boot, a restore and a working set all walk memory forwards, so one fault serves what would otherwise be four |
-| `WriteAheadPages` | the same 8 MiB, or one page where that pager's dirty budget holds fewer than 64 such runs | the same run, charged to the dirty budget whether the guest uses it or not, so a small budget keeps one page |
+| `ReadAheadPages` | 8 MiB of this pager's pages — four at 2 MiB, 2,048 at 4 KiB | a boot, a restore and a working set all walk memory forwards, so one fault serves what would otherwise be four, and the run lands in consecutive arena slots so one command installs it |
+| `WriteAheadPages` | one page for RAM always; for PMEM the same 8 MiB, or one page where its dirty budget holds fewer than 64 such runs | RAM's unit of ownership is the whole point of its page, and a run that made a store's neighbours writable and privately dirty before the guest had used them would give back the sharing the small page buys. For PMEM it is the same run, charged to the dirty budget whether the guest uses it or not, so a small budget keeps one page |
 | `ConcurrentIO` | four per processor, held between 16 and 256, and never more read-ahead runs than that pager's arena has room for | each permit can hold one read-ahead or spill buffer, so it is both the parallelism a node can use and a bound on the buffers it costs |
 | `SettleWorkers` | the node's processors, capped at 64 | a settle compares resident pages and takes no I/O permit, so processors are what it can use, and it is time the upload waits for |
 | `ConnectionConfig.FaultWorkers` | two per processor, held between 8 and 64 | a fault spends most of its life in a store read; the I/O budget is what bounds the reads |
@@ -247,9 +245,11 @@ Storage compression does not compress mapped pages or change this accounting.
 An explicit sparse zero has no arena slot and no page identity. Contiguous zero
 ranges use Linux's shared zero page, so a large hole does not consume resident
 slots. These sparse zero mappings and untouched missing-fault traps have no
-resident page of their own; their anonymous page tables are the exception to physical
-HugeTLB backing. The first write replaces a whole 2 MiB range with a private
-HugeTLB page. The zero mapping is not an identity: nothing is shared under it.
+resident page of their own; their anonymous page tables are the exception to the
+arena's own backing. A zero range is one mapping command however many pages it
+covers, so a sparse hole costs neither a command nor a mapping per page at
+4 KiB. The first write replaces one page of it with a private page of the arena.
+The zero mapping is not an identity: nothing is shared under it.
 
 ## Faults and read-ahead
 

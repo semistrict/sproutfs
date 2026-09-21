@@ -75,7 +75,15 @@ func newHostPagers(t testing.TB, ctx context.Context, arenaBytes, logicalBytes, 
 		pager, err := vmmemory.New(ctx, testresource.New(), vmmemory.Config{PageSize: page,
 			ResidentPages: int(uint64(arenaBytes) / page),
 			LogicalPages:  int(uint64(logicalBytes) / page),
-			DirtyPages:    int(uint64(dirtyBytes) / page)}, arena, spill)
+			DirtyPages:    int(uint64(dirtyBytes) / page),
+			// A read-ahead run is stated in bytes, as a deployment states it,
+			// because it is a buffer: 2 MiB is the run the page-geometry plan
+			// targets, which is one PMEM page and 512 RAM pages loaded into
+			// consecutive slots and installed as one mapping. Write-ahead is
+			// one page — the plan's decision for RAM, and what these suites
+			// have always given PMEM.
+			ReadAheadPages:  int(checkpoint.PageSize2MiB / page),
+			WriteAheadPages: 1}, arena, spill)
 		if err != nil {
 			t.Fatalf("%s pager: %v", kind, err)
 		}
@@ -121,6 +129,22 @@ func addStats(total *vmmemory.Stats, one vmmemory.Stats) {
 			destination.Field(i).SetInt(destination.Field(i).Int() + source.Field(i).Int())
 		}
 	}
+}
+
+// SharedBytes is what both pagers' arenas hold and what their regions map,
+// which are bytes and so add across pagers of different pages.
+func (p *hostPagers) SharedBytes(ctx context.Context) (unique, mapped uint64, err error) {
+	for _, pager := range []*vmmemory.Host{p.pagers.Ram, p.pagers.Pmem} {
+		sharing, err := pager.Sharing(ctx)
+		if err != nil {
+			return 0, 0, err
+		}
+		for _, gauge := range []vmmemory.Sharing{sharing.Ram, sharing.Pmem} {
+			unique += gauge.UniqueBytes
+			mapped += gauge.MappedBytes
+		}
+	}
+	return unique, mapped, nil
 }
 
 // AllocatedBytes is what both arenas physically hold.
@@ -506,12 +530,26 @@ func TestFirecrackerDAXCaptureRestoreForkAndFence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats.LogicalPages != 0 || stats.DirtyPages != 0 || stats.ResidentPages != 0 {
+	if stats.LogicalPages != 0 || stats.DirtyPages != 0 {
 		t.Fatalf("stopped VMM mappings retained: %+v", stats)
 	}
+	// Nothing maps anything any more, which is what a stopped VMM must leave.
+	// What the arena may still hold is clean pages nothing maps — the pages
+	// stores copied away from, which stay under the identity they are published
+	// by so the next region naming one maps it instead of reading it, and which
+	// the next reclaim short of a slot takes like any other clean page. Those
+	// are memory, so the arena's blocks are exactly them and no more.
+	unique, mappedBytes, err := host.SharedBytes(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mappedBytes != 0 {
+		t.Fatalf("stopped VMM mappings retained %d bytes of arena: %+v", mappedBytes, stats)
+	}
 	allocated, err = host.AllocatedBytes()
-	if err != nil || allocated != 0 {
-		t.Fatalf("stopped VMM backing remains allocated: %d %v", allocated, err)
+	if err != nil || allocated != unique {
+		t.Fatalf("the arena holds %d bytes for %d bytes of unmapped clean pages: %v",
+			allocated, unique, err)
 	}
 	entries, err = os.ReadDir(vmConfig.Scratch.Directory())
 	if err != nil || len(entries) != 0 {
@@ -552,14 +590,26 @@ func residentPFNs(t *testing.T, pid int) (map[uint64]bool, int) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	managed := false
+	// An arena's memfd is named for the page it is made of, and this is where
+	// the kernel is asked whether it agrees: a guest's RAM is on ordinary 4 KiB
+	// memory and its disk on 2 MiB HugeTLB pages, and a mapping that is not
+	// what its arena says it is would share nothing the way this test means.
+	want := ""
 	for _, line := range strings.Split(string(smaps), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) > 1 && strings.Contains(fields[0], "-") {
-			managed = strings.Contains(line, "memfd:sproutfs-memory")
+			want = ""
+			for _, arena := range []struct{ name, kernelPage string }{
+				{"memfd:sproutfs-memory-4k", "4"},
+				{"memfd:sproutfs-memory-2048k", "2048"},
+			} {
+				if strings.Contains(line, arena.name) {
+					want = arena.kernelPage
+				}
+			}
 		}
-		if managed && strings.HasPrefix(line, "KernelPageSize:") && (len(fields) != 3 || fields[1] != "2048") {
-			t.Fatalf("managed mapping is not backed by 2 MiB HugeTLB pages: %s", line)
+		if want != "" && strings.HasPrefix(line, "KernelPageSize:") && (len(fields) != 3 || fields[1] != want) {
+			t.Fatalf("a managed mapping is not on the memory its arena is made of, want %s kB: %s", want, line)
 		}
 	}
 	raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/maps", pid))

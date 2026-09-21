@@ -222,12 +222,13 @@ func TestFirecrackerLiveMigration(t *testing.T) {
 	// volume's to answer, and a load of one this host never installed fails
 	// rather than handing the guest bytes from before its own write.
 	page := publishedPage(t, handoff, destination.Volume(vmmachine.RAMVolume))
-	data := make([]byte, handoff.PageSize)
-	if err := peers[vmmachine.RAMVolume].Load(ctx, page*uint64(handoff.PageSize), data); err != nil {
+	ramPage := destination.Volume(vmmachine.RAMVolume).PageSize()
+	data := make([]byte, ramPage)
+	if err := peers[vmmachine.RAMVolume].Load(ctx, page*ramPage, data); err != nil {
 		t.Fatal(err)
 	}
 	expected := make([]byte, len(data))
-	if err := destination.Volume(vmmachine.RAMVolume).Read(ctx, page*uint64(handoff.PageSize), expected); err != nil || !bytes.Equal(data, expected) {
+	if err := destination.Volume(vmmachine.RAMVolume).Read(ctx, page*ramPage, expected); err != nil || !bytes.Equal(data, expected) {
 		t.Fatalf("released source fallback returned different RAM bytes: %v", err)
 	}
 	released := peers[vmmachine.RAMVolume].Stats()
@@ -501,8 +502,12 @@ func guestCommand(ctx context.Context, p *vmmachine.Process, line, want string) 
 
 func peerBacking(t *testing.T, c *migrationCluster, handoff vmmigrate.Handoff, v *volume.Volume) *vmmigrate.PeerBacking {
 	t.Helper()
+	// The page this region's numbers are in is its volume's own, which both
+	// hosts read out of the same durable geometry. The handoff's page is the
+	// source's budget unit and says nothing about one volume, which is exactly
+	// what a mixed VM shows: its RAM is 4 KiB and its root 2 MiB.
 	backing, err := vmmigrate.NewPeerBacking(vmmigrate.PeerConfig{Volume: v, Peer: handoff.Source,
-		VM: handoff.VMID, PageSize: handoff.PageSize, Unpublished: unpublishedOf(t, handoff, v.Name()),
+		VM: handoff.VMID, Unpublished: unpublishedOf(t, handoff, v.Name()),
 		Dial: func(ctx context.Context, peer platform.Address) (platform.Conn, error) {
 			return c.network.Dial(ctx, "destination-host", peer)
 		}})
@@ -566,7 +571,7 @@ func publishedPage(t *testing.T, handoff vmmigrate.Handoff, v *volume.Volume) ui
 			unpublished[page] = true
 		}
 	}
-	for page := range v.Size() / uint64(handoff.PageSize) {
+	for page := range v.Size() / v.PageSize() {
 		if !unpublished[page] {
 			return page
 		}
@@ -590,10 +595,12 @@ func absentPage(t *testing.T, ctx context.Context, runs []vmmigrate.PageRun, reg
 	for _, page := range resident {
 		held[page] = true
 	}
+	// The page these numbers are in is the region's, which for RAM is 4 KiB.
+	size := region.PageSize()
 	for _, run := range runs {
 		for page := run.First; page < run.First+uint64(run.Count); page++ {
 			if !held[page] {
-				extents, err := backing.Locate(ctx, page*checkpoint.PageSize2MiB, checkpoint.PageSize2MiB)
+				extents, err := backing.Locate(ctx, page*size, size)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -637,7 +644,9 @@ func comparePeerAndVolume(t *testing.T, ctx context.Context, c *migrationCluster
 	if len(unpublished) == 0 {
 		t.Fatal("the source stopped a storing guest with nothing unpublished to carry")
 	}
-	size := uint64(handoff.PageSize)
+	// A page number of this region is a page of its volume, which for RAM is
+	// not the page the handoff's budget is stated in.
+	size := v.PageSize()
 	compared, carried := 0, 0
 	for _, run := range runs {
 		count := min(uint64(run.Count), 64)

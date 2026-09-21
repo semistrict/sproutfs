@@ -44,7 +44,10 @@ func NewLinuxArena(pages int, pageSize uint64) (*LinuxArena, error) {
 	if pages < 1 || uint64(pages) > uint64(^uint64(0)>>1)/pageSize {
 		return nil, ErrConfig
 	}
-	f, err := vmwire.ArenaMemfd("sproutfs-memory", pageSize, int64(pages)*int64(size))
+	// The name carries the page, because a host has two of these and /proc is
+	// where a qualification reads which memory a guest's mapping is really on.
+	f, err := vmwire.ArenaMemfd(fmt.Sprintf("sproutfs-memory-%dk", pageSize>>10),
+		pageSize, int64(pages)*int64(size))
 	if err != nil {
 		return nil, err
 	}

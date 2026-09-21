@@ -29,9 +29,10 @@ const (
 	forkFanOutRAM     = 256 << 20
 	forkFanOutRoot    = 64 << 20
 	forkFanOutTouched = 64
-	// forkFanOutArena and forkFanOutDirty are the destination pager's pages and
-	// its budget for private state no checkpoint has. Two children of this shape
-	// map four times the arena between them, so every read of theirs evicts,
+	// forkFanOutArena and forkFanOutDirty are each destination pager's arena
+	// and its budget for private state no checkpoint has, in bytes, because the
+	// two pagers count them in their own pages. Two children of this shape map
+	// four times the RAM arena between them, so every read of theirs evicts,
 	// spills and refaults, and the dirty budget is the arena's size as a
 	// deployment's is rather than the whole logical space.
 	forkFanOutArena = 128 << 20
