@@ -159,6 +159,59 @@ func newPager(t *testing.T, resources *resource.Budget) *hostPagers {
 	return newPagerWithWriteAhead(t, resources, 0)
 }
 
+// mixedVolumes is a VM whose two regions are two geometries: its RAM in 4 KiB
+// pages and its disk in 2 MiB pages, which is what a host's two pagers are for.
+// The page counts are the same either way, so nothing about the VM is larger —
+// only the bytes behind one of them.
+var mixedVolumes = []volume.VolumeSpec{
+	{Name: "ram0", Size: 8 * checkpoint.PageSize4KiB, PageSize: checkpoint.PageSize4KiB},
+	{Name: "disk", Size: 8 * checkpoint.PageSize2MiB, PageSize: checkpoint.PageSize2MiB},
+}
+
+// newMixedPagers is a host whose two pagers run different pages, which is the
+// arrangement every byte this host reports across them has to survive: a page
+// count of one says nothing about the other.
+func newMixedPagers(t *testing.T, resources *resource.Budget, budget func(*vmmemory.Config)) *hostPagers {
+	t.Helper()
+	disk, err := adapters.NewDisk(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	built := &hostPagers{arenas: map[vmmemory.RegionKind]*pageArena{}}
+	for _, kind := range []vmmemory.RegionKind{vmmemory.Ram, vmmemory.Pmem} {
+		cfg := vmmemory.Config{PageSize: checkpoint.PageSize2MiB,
+			ResidentPages: 32, LogicalPages: 64, DirtyPages: 32, ReadAheadPages: 1}
+		if kind == vmmemory.Ram {
+			cfg.PageSize = checkpoint.PageSize4KiB
+		}
+		if budget != nil {
+			budget(&cfg)
+		}
+		spill, err := disk.Open(t.Context(), "spill-"+kind.String(), platform.OpenOptions{Create: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = spill.Close() })
+		arena := &pageArena{slots: make([][]byte, cfg.ResidentPages)}
+		built.arenas[kind] = arena
+		pager, err := vmmemory.New(t.Context(), resources, cfg, arena, spill)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := pager.Close(context.Background()); err != nil {
+				t.Errorf("close %s pager: %v", kind, err)
+			}
+		})
+		if kind == vmmemory.Ram {
+			built.pagers.Ram = pager
+		} else {
+			built.pagers.Pmem = pager
+		}
+	}
+	return built
+}
+
 func newPagerWithWriteAhead(t *testing.T, resources *resource.Budget, writeAheadPages int) *hostPagers {
 	t.Helper()
 	return newPagerWithConfig(t, resources, vmmemory.Config{
