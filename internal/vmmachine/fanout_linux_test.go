@@ -59,11 +59,13 @@ const (
 // 512 times the page operations: read-ahead takes free arena slots and never
 // evicts, so under an arena a quarter of what the two children map every page
 // of a scan is its own fault, and two children scanning 512 MiB twice is on the
-// order of half a million of them. On this instance the phase takes about a
-// minute and a half on its own and longer behind the rest of the suite, so the
-// bound is five minutes: a child that is merely slow finishes, and one that has
-// stopped still fails.
-const forkFanOutRead = 5 * time.Minute
+// order of half a million of them. On the qualification instance the phase
+// takes about a minute and a half on its own and four and a half behind the
+// rest of the suite, so the bound is ten minutes. It is deliberately far above
+// either: it is here to tell a child that is merely slow from one that has
+// stopped, and a child that has stopped never finishes however long it is
+// given.
+const forkFanOutRead = 10 * time.Minute
 
 // TestFirecrackerForkFanOutServesBothChildrenAtOnce forks one running guest
 // into two children on a second pager and page server, receives them one after
@@ -81,7 +83,7 @@ func TestFirecrackerForkFanOutServesBothChildrenAtOnce(t *testing.T) {
 	if binaryPath == "" {
 		t.Skip("run the Firecracker Lima qualification script")
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Minute)
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Minute)
 	defer cancel()
 	c := newMigrationCluster(t, ctx)
 

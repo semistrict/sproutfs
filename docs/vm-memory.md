@@ -1214,10 +1214,14 @@ parent released before the next — and then both guests reading every page of
 their memory and their whole root volume at the same time while both are
 checkpointed on an interval. The page server runs at the budgets a deployment
 runs, because one peer is one destination host and both children are that host,
-so their regions share every budget counted per peer; the destination's arena is
-a quarter of what the two of them map, so eviction, spill and refault are on
-every one of those reads. Both children must answer: a child whose read never
-returns is a guest nothing can tell from a dead one.
+so their regions share every budget counted per peer; the destination's RAM
+arena is a quarter of the memory the two of them map, so eviction, spill and
+refault are on every one of those reads, while its PMEM arena holds both roots,
+because pressing the disk as well would measure that instead. Both children must
+answer: a child whose read never returns is a guest nothing can tell from a dead
+one. At 4 KiB that phase takes minutes rather than seconds — read-ahead takes
+only free arena slots, so under a quarter-sized arena every page of a scan is
+its own fault — and the bound on it is sized for that.
 
 Both suites report residency, sharing, load, mapping and fault counters; those
 are small-workload observations, not throughput or latency targets. Recorded on
