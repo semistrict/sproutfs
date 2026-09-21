@@ -76,13 +76,36 @@ type forkLifeShape struct {
 	// torn down, which is what the fan-out's own receive does and what a fast
 	// trial leaves out.
 	waitStreamed bool
-	// pauseOnly makes the interval a bare VMM pause, state capture and resume:
-	// the guest stops and starts exactly as a checkpoint makes it, and the
-	// pager seals nothing, settles nothing and publishes nothing. It is what
-	// separates a defect in the memory from a defect in stopping and starting a
-	// guest that was itself restored from a snapshot — and the deaths are all
-	// in the kernel's timer and clock code, which is what that would look like.
-	pauseOnly bool
+	// intervalDoes is what the interval does to the child, which is how the
+	// checkpoint is split: the whole of it, the capture without the settle and
+	// the publication, or the bare pause without even a capture.
+	intervalDoes intervalWork
+}
+
+// intervalWork is one rung of the interval checkpoint, taken apart.
+type intervalWork int
+
+const (
+	// intervalCheckpoint is the whole thing: pause, capture, seal, settle,
+	// publication — what a deployment does to a VM that is answering.
+	intervalCheckpoint intervalWork = iota
+	// intervalCapture is the pause, the state capture and the seal, unsealed
+	// and resumed straight away. Nothing is settled and nothing is published.
+	intervalCapture
+	// intervalPause is the vCPUs stopping and starting, and nothing else at
+	// all: no state captured, no region sealed, nothing written anywhere. If
+	// this kills, neither the pager nor the capture is the defect.
+	intervalPause
+)
+
+func (w intervalWork) String() string {
+	switch w {
+	case intervalCapture:
+		return "capture and seal, no settle"
+	case intervalPause:
+		return "pause and resume only"
+	}
+	return "whole checkpoint"
 }
 
 func (s forkLifeShape) String() string {
@@ -98,8 +121,8 @@ func (s forkLifeShape) String() string {
 	if s.waitStreamed {
 		parts = append(parts, "streamed before teardown")
 	}
-	if s.pauseOnly {
-		parts = append(parts, "pause only, no seal")
+	if s.intervalDoes != intervalCheckpoint {
+		parts = append(parts, s.intervalDoes.String())
 	}
 	return strings.Join(parts, ", ")
 }
@@ -121,7 +144,10 @@ func forkLifeArm(t *testing.T) (string, forkLifeShape) {
 		"solo-pair":     {siblings: 2, waitStreamed: true},
 		// The interval itself, bisected: the same pause without any of the
 		// pager's work behind it.
-		"solo-pause": {siblings: 1, interval: forkFanOutInterval, waitStreamed: true, pauseOnly: true},
+		"solo-capture": {siblings: 1, interval: forkFanOutInterval, waitStreamed: true,
+			intervalDoes: intervalCapture},
+		"solo-pause": {siblings: 1, interval: forkFanOutInterval, waitStreamed: true,
+			intervalDoes: intervalPause},
 	}
 	name := os.Getenv("SPROUTFS_FORK_ARM")
 	if name == "" {
@@ -214,15 +240,16 @@ func forkLifeTrial(t *testing.T, ctx context.Context, c *migrationCluster, pager
 		}
 	}()
 	for _, child := range children {
-		switch {
-		case shape.interval == 0:
-		case shape.pauseOnly:
-			stop := pauseEvery(t, ctx, child, shape.interval)
-			defer stop()
-		default:
+		if shape.interval == 0 {
+			continue
+		}
+		if shape.intervalDoes == intervalCheckpoint {
 			stop := checkpointEvery(t, ctx, child, shape.interval)
 			defer stop()
+			continue
 		}
+		stop := interruptEvery(t, ctx, child, shape.interval, shape.intervalDoes)
+		defer stop()
 	}
 	// The life itself: the children simply run, which is all the fan-out's
 	// children were doing when they died.
@@ -250,11 +277,15 @@ func forkLifeTrial(t *testing.T, ctx context.Context, c *migrationCluster, pager
 	return died
 }
 
-// pauseEvery stops and starts one child on an interval, capturing its VMM state
-// each time and sealing nothing: the guest's own experience of a checkpoint,
-// with none of the pager's work behind it. What it leaves out is the seal, the
-// settle and the publication; what it keeps is the pause itself.
-func pauseEvery(t *testing.T, ctx context.Context, child *forkedChild, interval time.Duration) func() {
+// interruptEvery interrupts one child on an interval with less than a whole
+// checkpoint: either the capture and the seal that a checkpoint begins with,
+// unsealed and resumed at once, or the bare pause and resume with nothing
+// captured and nothing sealed. Both are what the guest experiences of a
+// checkpoint, with the pager's work taken away a layer at a time. Both use the
+// pair a capture itself uses, so what is measured is that path and not a
+// misuse of the migration's stop.
+func interruptEvery(t *testing.T, ctx context.Context, child *forkedChild,
+	interval time.Duration, does intervalWork) func() {
 	t.Helper()
 	ticking, stop := context.WithCancel(ctx)
 	done := make(chan struct{})
@@ -266,15 +297,19 @@ func pauseEvery(t *testing.T, ctx context.Context, child *forkedChild, interval 
 				return
 			case <-time.After(interval):
 			}
-			if _, err := child.process.Stop(ticking); err != nil {
-				if ticking.Err() == nil {
-					t.Errorf("pausing %s: %v", child.id, err)
+			var err error
+			if does == intervalCapture {
+				// Prepare pauses, captures and seals; Release unseals and
+				// resumes. Nothing between them settles or publishes.
+				if _, _, err = child.process.Prepare(ticking); err == nil {
+					err = child.process.Release(ticking)
 				}
-				return
+			} else if err = child.process.Pause(ticking); err == nil {
+				err = child.process.Resume(ticking)
 			}
-			if err := child.process.Resume(ticking); err != nil {
+			if err != nil {
 				if ticking.Err() == nil {
-					t.Errorf("resuming %s: %v", child.id, err)
+					t.Errorf("interrupting %s with %s: %v", child.id, does, err)
 				}
 				return
 			}
