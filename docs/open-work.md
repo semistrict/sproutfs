@@ -23,14 +23,32 @@ everything open is listed here.
 
 ## Measurement
 
-- **RAM and PMEM still share a fixed 2 MiB page in the pager and on the wire.**
-  The store no longer does: a volume carries its own page size, 4 KiB or 2 MiB,
-  recorded in its checkpoints. The
-  [page-geometry plan](../plans/ram-pmem-page-geometry-2026-09-19.md) separates
-  their arenas, uses 4 KiB RAM ownership and COW, and retains large read-only
-  mapping batches; its steps 3 to 7 — the pager, the wire, migration, packing
-  small pages into parts — and realistic workload measurements of retained
-  sharing and runtime are open.
+- **RAM runs 4 KiB and PMEM 2 MiB, and what that costs is unmeasured.** The
+  store, the pager, the wire and the VMM all carry each region's own page now.
+  What the [page-geometry plan](../plans/ram-pmem-page-geometry-2026-09-19.md)
+  has left is its steps 5 to 7 — handoff and migration geometry, packing small
+  dirty pages into bounded parts and coalescing cold reads, and the
+  qualification — and the realistic workload measurements of retained sharing
+  and runtime that the whole change exists to justify. Nothing here has been run
+  against the recorded workload at 4 KiB.
+- **A fan-out of two children onto one destination pager corrupts a guest at
+  4 KiB.** `TestFirecrackerForkFanOutServesBothChildrenAtOnce` panics a child's
+  guest kernel in `__run_timers` on a poisoned list entry, which is the guest
+  reading bytes that are not its page's. It is the one shape that combines a
+  post-copy receive, a background stream of the source's resident pages faulting
+  beside the running guest, an interval checkpoint of each child and an arena a
+  quarter of what the two map — the same suite's capture/restore/fork/fence and
+  live-migration tests pass at 4 KiB, and the whole memory suite does. It must be
+  found before this geometry ships (`internal/vmmachine/fanout_linux_test.go`,
+  `internal/vmmigrate/receive.go`).
+- **The mapping budget is not enforced at 4 KiB.** `ConnectionConfig.MaxVMAs` is
+  still only the client's admission limit, answered with `ENOSPC` and a deferred
+  fault. The plan's step 4 also asks the pager to count the mappings a region
+  holds and, when a store would exceed the budget, to merge — to copy the
+  remaining shared 4 KiB pages of the densest 2 MiB-aligned range into private
+  pages so the whole range becomes one private run — rather than leaving the
+  guest waiting on a budget only revocation can free. A guest whose writes
+  scatter widely enough can still refuse its way into a stall.
 - **A page a guest only reads is copied, and the copy is given back at the next checkpoint.** A cold read that has to wait for the pager reaches it as a write fault — on x86-64 because KVM's asynchronous page fault worker always asks for the page writable, on aarch64 when the guest first executes a page — and the pager answers a write fault with a private page. What the [unchanged-page rule](../plans/unchanged-pages-2026-09-19.md) recovers is done: the copy remembers the page it was made from, the settle behind each checkpoint's pause compares the two, and a page that did not change is published nowhere and goes straight back to sharing its origin. What remains is the copy itself. Between the fault and the next checkpoint the host holds the page twice, and with 4 KiB RAM pages under a 2 MiB read-ahead run that is one page in 512, while for PMEM at 2 MiB it is a whole page per cold fault until the interval passes. Preventing it needs a host kernel that passes the guest's access through, or KVM userfault once it exists, and neither is ours to start. Fork points are not settled either: a child inherits an unchanged page as an unpublished one, which its own next checkpoint settles.
 - **The workload measurement predates the multi-page parts and wants re-taking.** It was measured against one object per dirty page, before `39bfe37`, so its object counts describe a store layout that no longer exists, and only one fork setting (`FORKS_BASE=2 FORKS_PER_REPO=1`) was run; the commands to re-take it on current `main` are in the document (`docs/measurements-2026-09-14-workload.md`).
 

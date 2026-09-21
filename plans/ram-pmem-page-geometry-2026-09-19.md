@@ -1,7 +1,7 @@
 # RAM and PMEM page geometry — 2026-09-19
 
-**Status: steps 1 to 3 are implemented, but for step 1's baseline measurement;
-steps 4 to 7 are planned.**
+**Status: steps 1 to 4 are implemented, but for step 1's baseline measurement,
+step 4's mapping budget and the fan-out suite; steps 5 to 7 are planned.**
 
 ## Decision
 
@@ -231,7 +231,8 @@ memory savings and workload time together.
    carries one page size for the whole VM and the wire format is unchanged,
    which is step 5.
 
-4. **Support small RAM mappings with large runs.** Update `internal/vmwire`,
+4. **Support small RAM mappings with large runs. Done, but for the mapping
+   budget and the fan-out suite.** Update `internal/vmwire`,
    `rust/sproutfs-vm-memory` and the Firecracker integration together. Validate
    each session's geometry and backing type, and configure RAM without the
    current mandatory HugeTLB setting. Use 4 KiB RAM generations, fault
@@ -239,6 +240,56 @@ memory savings and workload time together.
    runs in batches. Verify ordinary-memfd userfaultfd support and required
    missing/minor/write-protection features on the qualification kernels.
    Exercise sparse zeros, partial replacements and VMA-budget refusal.
+
+   **What was built.** The geometry is the session's, stated on the wire.
+   Mapping protocol **version 7** moves the page out of the version and into
+   ATTACH, which now carries this region's page size and the kind of memory its
+   arena is made of — 1 for an explicit 2 MiB HugeTLB memfd, 2 for an ordinary
+   shared memfd — beside the arena and the mapping-count budget. The pager
+   refuses a page this transport does not map and an arena whose slot is not its
+   own page; the client refuses a page it does not map, an arena kind that is
+   not the page's, a descriptor whose filesystem is not what was claimed, and a
+   region of its own that is not whole pages of it, all before it exposes an
+   address to the VMM. A version 6 peer fails on the version. The client reserves
+   its region at the larger of the two pages before the attachment arrives, which
+   is aligned for both, so the frame order did not change; `vmwire` split into a
+   portable half, so the frames and the geometry checks are tested anywhere.
+
+   **The arena.** `NewLinuxArena` is parameterised: a 2 MiB slot is a HugeTLB
+   memfd of the pool and a 4 KiB slot an ordinary one, named after its page so
+   `/proc` says which memory a guest's mapping is really on. `ramPageSize` is
+   4 KiB, `host.RAMPageSize` and `host.PMEMPageSize` are the one place either is
+   stated, and RAM's write-ahead is one page whatever its budget: a run that made
+   a store's neighbours privately dirty before the guest used them would give
+   back exactly the sharing the small page buys. Runs and per-run protection
+   needed nothing new — the plan already batched a run of consecutive pages in
+   consecutive slots into one command, the slot allocator already prefers
+   consecutive runs, and a seal already protects per run — so at 4 KiB a fork
+   maps a 512-page run with one command and a store copies one page.
+
+   **The crate.** `PAGE_SIZE` became `MIN_PAGE_SIZE`/`MAX_PAGE_SIZE` and a
+   per-session `page_size()`; every offset, length, backing offset and generation
+   is counted in it. The UFFD negotiates HugeTLB *and* shmem missing, minor and
+   write-protect features together, because a host runs a pager of each kind, and
+   names the ones a kernel lacks by asking a second descriptor what it supports.
+   A trap range prepared out of the middle of the region keeps its phase within
+   the larger page, so a revoked 4 KiB page still merges with the traps around it
+   instead of costing a mapping.
+
+   **Firecracker.** Managed RAM takes no `huge_pages` setting at all — the pager
+   owns that memory and states its page when the session attaches — on the boot
+   path and the restore path alike, and `volume_ranges` checks the guest's
+   regions against the page the session states rather than a constant. PMEM is
+   unchanged. Snapshot save and restore of a managed VM are unchanged and pass.
+
+   **What is left.** `ConnectionConfig.MaxVMAs` is still only the client's
+   admission limit: the pager does not count the mappings a region holds and does
+   not merge a scattered 2 MiB range into one private run when a store would
+   exceed the budget. And `TestFirecrackerForkFanOutServesBothChildrenAtOnce`
+   panics a child's guest kernel at 4 KiB — a post-copy receive, a background
+   stream faulting beside the running guest, interval checkpoints and a
+   quarter-sized arena together — while the rest of both Linux suites passes.
+   Both are in [open-work.md](../docs/open-work.md).
 
 5. **Carry geometry through handoff and migration.** Make page size a property
    of each served volume/region rather than the whole page server. Update
@@ -268,7 +319,8 @@ the checkpoint index and of the mapping and handoff formats, so an old 2 MiB
 RAM page number cannot be read as a 4 KiB page number; a reader given an
 earlier version fails clearly, before a guest starts, and that is the whole of
 its support for one. The checkpoint index is at version 8, which is the store's
-half of this and is done; the mapping and handoff formats are steps 4 and 5. Regenerate protocol code from its source
+half of this and is done; the mapping format is at version 7, which is step 4's
+and is done, and the handoff format is step 5's. Regenerate protocol code from its source
 schemas with the repository's generator; do not edit generated files.
 
 ## Acceptance
