@@ -15,10 +15,8 @@ import (
 	"github.com/semistrict/sproutfs/internal/checkpoint"
 	"github.com/semistrict/sproutfs/internal/control"
 	"github.com/semistrict/sproutfs/internal/platform"
-	"github.com/semistrict/sproutfs/internal/platform/adapters"
 	"github.com/semistrict/sproutfs/internal/platform/sim"
 	"github.com/semistrict/sproutfs/internal/testnet"
-	"github.com/semistrict/sproutfs/internal/testresource"
 	"github.com/semistrict/sproutfs/internal/vmmachine"
 	"github.com/semistrict/sproutfs/internal/vmmemory"
 	"github.com/semistrict/sproutfs/internal/vmmigrate"
@@ -42,7 +40,7 @@ func TestFirecrackerLiveMigration(t *testing.T) {
 	c := newMigrationCluster(t, ctx)
 
 	source, err := c.source.Create(ctx, "migrant", []volume.VolumeSpec{
-		{Name: vmmachine.RAMVolume, Size: 128 << 20, PageSize: checkpoint.PageSize2MiB},
+		{Name: vmmachine.RAMVolume, Size: 128 << 20, PageSize: checkpoint.PageSize4KiB},
 		{Name: "root", Size: 64 << 20, PageSize: checkpoint.PageSize2MiB},
 	})
 	if err != nil {
@@ -53,7 +51,7 @@ func TestFirecrackerLiveMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	sourcePager, sourceArena := newMigrationPager(t, ctx)
+	sourcePager := newMigrationPager(t, ctx)
 	config := migrationConfig(t, binaryPath, sourcePager, source)
 	p, err := vmmachine.Start(ctx, config)
 	if err != nil {
@@ -111,7 +109,7 @@ func TestFirecrackerLiveMigration(t *testing.T) {
 	// Every region of the destination attaches through the host that still holds
 	// its pages, which is what puts the source's page server on the VMM's own
 	// fault path rather than beside it. The volumes stay the regions' identity.
-	destinationPager, _ := newMigrationPager(t, ctx)
+	destinationPager := newMigrationPager(t, ctx)
 	peers := make(map[string]*vmmigrate.PeerBacking, len(handoff.Regions))
 	backings := make(map[string]vmmemory.Backing, len(handoff.Regions))
 	for _, region := range handoff.Regions {
@@ -267,7 +265,7 @@ func TestFirecrackerLiveMigration(t *testing.T) {
 	if err := p.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if allocated, err := sourceArena.AllocatedBytes(); err != nil || allocated != 0 {
+	if allocated, err := sourcePager.AllocatedBytes(); err != nil || allocated != 0 {
 		t.Fatalf("the migrated source retained %d arena bytes: %v", allocated, err)
 	}
 }
@@ -306,58 +304,39 @@ func newMigrationCluster(t *testing.T, ctx context.Context) *migrationCluster {
 	return c
 }
 
-// newMigrationPager builds one host's pager, sized for the one VM a migration
-// moves. Both hosts of this test live in one process, so each gets an arena of
+// newMigrationPager builds one host's pagers, sized for the one VM a migration
+// moves. Both hosts of this test live in one process, so each gets arenas of
 // its own.
-func newMigrationPager(t *testing.T, ctx context.Context) (*vmmemory.Host, *vmmemory.LinuxArena) {
+func newMigrationPager(t *testing.T, ctx context.Context) *hostPagers {
 	t.Helper()
-	// The single-guest resident budget is the suite's own knob, so this pager
-	// takes it; a pager sized for several guests states its own.
-	return newSizedMigrationPager(t, ctx, residentPages(t, pagerPageBytes(t), 128<<20), 384<<20, 384<<20)
+	// The single-guest resident budget is the suite's own knob, so these pagers
+	// take it; a host sized for several guests states its own.
+	return newSizedMigrationPager(t, ctx,
+		residentPages(t, pagerPageBytes(t), 128<<20)*pagerPageBytes(t), 384<<20, 384<<20)
 }
 
-// newSizedMigrationPager builds one host's pager with slots arena pages, room
-// for logicalBytes of mapped region and dirtyBytes of private state no
-// checkpoint has published. A host taking in more than one VM needs a larger
+// newSizedMigrationPager builds one host's pagers with an arena of arenaBytes
+// each, room for logicalBytes of mapped region and dirtyBytes of private state
+// no checkpoint has published. A host taking in more than one VM needs a larger
 // logical budget than the single-VM default; an arena smaller than what it maps
 // puts eviction, spill and refault on every path, and a dirty budget no larger
-// than the arena is what a deployment actually gives one.
+// than the arena is what a deployment actually gives one. Every budget is in
+// bytes because the two pagers count them in their own pages.
 func newSizedMigrationPager(t *testing.T, ctx context.Context,
-	slots, logicalBytes, dirtyBytes int) (*vmmemory.Host, *vmmemory.LinuxArena) {
+	arenaBytes, logicalBytes, dirtyBytes int) *hostPagers {
 	t.Helper()
-	pageBytes := pagerPageBytes(t)
-	arena, err := vmmemory.NewLinuxArena(slots, checkpoint.PageSize2MiB)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = arena.Close() })
-	disk, err := adapters.NewDisk(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	spill, err := disk.Open(ctx, "spill", platform.OpenOptions{Create: true, Exclusive: true, Permissions: 0o600})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = spill.Close() })
-	pages := logicalBytes / pageBytes
-	host, err := vmmemory.New(ctx, testresource.New(), vmmemory.Config{PageSize: checkpoint.PageSize2MiB, ResidentPages: slots,
-		LogicalPages: pages, DirtyPages: dirtyBytes / pageBytes}, arena, spill)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return host, arena
+	return newHostPagers(t, ctx, arenaBytes, logicalBytes, dirtyBytes)
 }
 
-func migrationConfig(t *testing.T, binary string, pager *vmmemory.Host, vm *volume.VM) vmmachine.Config {
+func migrationConfig(t *testing.T, binary string, pagers *hostPagers, vm *volume.VM) vmmachine.Config {
 	t.Helper()
 	return vmmachine.Config{Binary: binary, SeccompFilter: os.Getenv("SPROUTFS_FIRECRACKER_SECCOMP"),
 		KernelPath: os.Getenv("SPROUTFS_FIRECRACKER_KERNEL"), InitrdPath: os.Getenv("SPROUTFS_FIRECRACKER_INITRD"),
 		BootArgs: guestPmemBootArgs,
-		Pagers:   bothKinds(pager), VM: vm, Pmem: []vmmachine.Pmem{{ID: "root", Root: true}},
+		Pagers:   pagers.pagers, VM: vm, Pmem: []vmmachine.Pmem{{ID: "root", Root: true}},
 		VCPUs:   1,
 		Scratch: mustScratch(t),
-		Connection: vmmemory.ConnectionConfig{QueuePages: 128, CommandTimeout: 2 * time.Minute,
+		Connection: vmmemory.ConnectionConfig{QueuePages: 4096, CommandTimeout: 2 * time.Minute,
 			VerifyInterval: time.Second}}
 }
 

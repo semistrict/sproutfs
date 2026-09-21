@@ -419,7 +419,11 @@ func (p *Process) arguments(ctx context.Context, c Config, layout plan, pmem []m
 	if c.InitrdPath != "" {
 		boot["initrd_path"] = c.InitrdPath
 	}
-	config := map[string]any{"managed-memory": map[string]any{"socket_path": p.ramEndpoint().path}, "machine-config": map[string]any{"mem_size_mib": layout.ramBytes >> 20, "vcpu_count": c.VCPUs, "huge_pages": "2M"}, "boot-source": boot, "drives": []any{}, "pmem": pmem}
+	// The machine names no huge-page setting: managed RAM is the pager's own
+	// backing, and the session states its page when it attaches, so a setting
+	// here would be this VM claiming something about memory it does not own.
+	// The VMM refuses one.
+	config := map[string]any{"managed-memory": map[string]any{"socket_path": p.ramEndpoint().path}, "machine-config": map[string]any{"mem_size_mib": layout.ramBytes >> 20, "vcpu_count": c.VCPUs}, "boot-source": boot, "drives": []any{}, "pmem": pmem}
 	if p.vsock != "" {
 		config["vsock"] = map[string]any{"guest_cid": c.VsockCID, "uds_path": p.vsock}
 	}
@@ -489,8 +493,13 @@ func (p *Process) attach(ctx, lifetime context.Context, c Config) chan error {
 				cfg.Name = e.name
 				// A region attaches to the pager of its own kind: the two have
 				// separate arenas, and a page number of one means nothing in
-				// the other.
-				e.connection, err = vmmemory.Connect(lifetime, c.Pagers.For(e.backing.Kind), socket, e.backing, cfg)
+				// the other. The pending-fault queue is counted in that pager's
+				// page too, so it is bounded by this region's own pages rather
+				// than by a number that would be a whole disk in one pager and
+				// a fraction of the guest's memory in the other.
+				pager := c.Pagers.For(e.backing.Kind)
+				cfg.QueuePages = min(cfg.QueuePages, int(e.backing.Backing.Size()/pager.PageSize()))
+				e.connection, err = vmmemory.Connect(lifetime, pager, socket, e.backing, cfg)
 			} else if socket != nil {
 				_ = socket.Close()
 			}

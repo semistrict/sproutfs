@@ -7,7 +7,20 @@ import (
 	"time"
 
 	hostapi "github.com/semistrict/sproutfs/internal/api/host"
+	"github.com/semistrict/sproutfs/internal/checkpoint"
 	"github.com/semistrict/sproutfs/internal/platform"
+)
+
+// RAMPageSize and PMEMPageSize are the pages this build's two pagers run, which
+// a deployment does not choose. RAM's is 4 KiB, which is the unit a guest's
+// store copies, owns and publishes, on an arena of ordinary memory; PMEM's is
+// 2 MiB, on the HugeTLB pool, which is also the alignment Firecracker requires
+// of a PMEM device. They are here rather than beside either pager so that the
+// byte budgets a deployment divides are checked against the pages they will
+// actually be counted in, and so that the two statements cannot drift apart.
+const (
+	RAMPageSize  = checkpoint.PageSize4KiB
+	PMEMPageSize = checkpoint.PageSize2MiB
 )
 
 // VMs is every operation this host's API offers, and nothing about how a VM is
@@ -121,19 +134,22 @@ type SupervisorConfig struct {
 	// it makes to the orchestrator carries. An empty token is a deployment that
 	// admits anyone, which only a host run by hand is.
 	Orchestrator, APIToken string
-	// HugepageDir is the pod's hugetlbfs mount. The pager's arena is a
-	// MFD_HUGETLB memfd rather than a file in it, but the mount is what the
-	// kubelet grants the pod its HugeTLB allotment through, so its absence means
-	// there are no huge pages to allocate and is worth failing on at startup.
+	// HugepageDir is the pod's hugetlbfs mount. The PMEM arena is a MFD_HUGETLB
+	// memfd rather than a file in it, but the mount is what the kubelet grants
+	// the pod its HugeTLB allotment through, so its absence means there are no
+	// huge pages to allocate and is worth failing on at startup. The RAM arena
+	// is an ordinary memfd and does not touch the pool.
 	HugepageDir string
 	// ScratchDir is the node-disk directory holding the pager's spill file and
 	// the VMM scratch. A starting host wipes it: a restart is a host loss, so
 	// nothing under it is authority for anything.
 	ScratchDir string
-	// ArenaBytes is the resident page store of each pager, taken from the pod's
-	// HugeTLB allotment. The two arenas are separate memfds and their capacities
-	// sum to what the deployment gave this host; whoever fills this in has
-	// already divided it, so nothing below has a share to decide.
+	// ArenaBytes is the resident page store of each pager. The PMEM share comes
+	// out of the pod's HugeTLB allotment and the RAM share out of the pod's
+	// ordinary memory, so a node provisions the two separately. The two arenas
+	// are separate memfds and their capacities sum to what the deployment gave
+	// this host; whoever fills this in has already divided it, so nothing below
+	// has a share to decide.
 	ArenaBytes KindBytes
 	// MemoryBytes is the host-wide RAM allotment both pagers take their pages
 	// from. It is one budget because it is one machine's memory, and because

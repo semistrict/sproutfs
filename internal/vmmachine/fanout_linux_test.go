@@ -71,7 +71,7 @@ func TestFirecrackerForkFanOutServesBothChildrenAtOnce(t *testing.T) {
 	c := newMigrationCluster(t, ctx)
 
 	parent, err := c.source.Create(ctx, "parent", []volume.VolumeSpec{
-		{Name: vmmachine.RAMVolume, Size: forkFanOutRAM, PageSize: checkpoint.PageSize2MiB},
+		{Name: vmmachine.RAMVolume, Size: forkFanOutRAM, PageSize: checkpoint.PageSize4KiB},
 		{Name: "root", Size: forkFanOutRoot, PageSize: checkpoint.PageSize2MiB},
 	})
 	if err != nil {
@@ -82,7 +82,7 @@ func TestFirecrackerForkFanOutServesBothChildrenAtOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	sourcePager, _ := newMigrationPager(t, ctx)
+	sourcePager := newMigrationPager(t, ctx)
 	p, err := vmmachine.Start(ctx, migrationConfig(t, binaryPath, sourcePager, parent))
 	if err != nil {
 		t.Fatal(err)
@@ -167,7 +167,7 @@ func TestFirecrackerForkFanOutServesBothChildrenAtOnce(t *testing.T) {
 
 	// Both children land on one destination pager, which is what makes them
 	// share its pages, its budgets and what they inherited.
-	destinationPager, _ := newSizedMigrationPager(t, ctx, forkFanOutArena/pagerPageBytes(t),
+	destinationPager := newSizedMigrationPager(t, ctx, forkFanOutArena,
 		len(children)*(forkFanOutRAM+forkFanOutRoot)+(64<<20), forkFanOutDirty)
 	taken := make([]*forkedChild, 0, len(children))
 	for _, handoff := range handoffs {
@@ -336,7 +336,7 @@ func checkpointEvery(t *testing.T, ctx context.Context, child *forkedChild, inte
 // destination creates it and streams the pages no checkpoint holds out of the
 // parent's page server, publishes the child's root index once it has them all,
 // and only then does the parent's host release the hold that child kept.
-func receiveChild(t *testing.T, ctx context.Context, c *migrationCluster, pager *vmmemory.Host,
+func receiveChild(t *testing.T, ctx context.Context, c *migrationCluster, pager *hostPagers,
 	binaryPath string, handoff vmmigrate.Handoff, source *vmmigrate.PageSource) *forkedChild {
 	t.Helper()
 	var process *vmmachine.Process

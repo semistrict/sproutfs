@@ -58,10 +58,11 @@ func TestConfigTakesTheDocumentedDefaults(t *testing.T) {
 		t.Fatalf("the shares come to %d of arena and %d of spill", config.ArenaBytes.Total(), config.SpillBytes.Total())
 	}
 	// Each pager's resident pages are its own arena, and its other two bounds
-	// are derived from that. Counted in pages, the two still come to what one
-	// pager held, because both run the same page in this build.
-	if config.LogicalPages != (host.KindPages{RAM: 24 * 1024, PMEM: 8 * 1024}) ||
-		config.DirtyPages != (host.KindPages{RAM: 768, PMEM: 256}) {
+	// are derived from that — each counted in that pager's own page, which is
+	// why the two numbers are nothing like each other: 1.5 GiB of RAM arena is
+	// 393,216 pages of 4 KiB, and 512 MiB of PMEM arena is 256 of 2 MiB.
+	if config.LogicalPages != (host.KindPages{RAM: 393216 * 32, PMEM: 8 * 1024}) ||
+		config.DirtyPages != (host.KindPages{RAM: 393216, PMEM: 256}) {
 		t.Fatalf("pager bounds %v %v", config.LogicalPages, config.DirtyPages)
 	}
 	if config.VMMemoryBytes != 512<<20 || config.VCPUs != 1 {
@@ -170,8 +171,11 @@ func TestConfigDividesTheBudgetsByTheShare(t *testing.T) {
 		pmemDirty  int
 		ramLogical int
 	}{
-		{"50", 1 << 30, 1 << 30, 8 << 30, 8 << 30, 512, 512, 512 * 32},
-		{"25", 1 << 29, 3 << 29, 4 << 30, 12 << 30, 256, 768, 256 * 32},
+		// Each pager's page counts are its own: a RAM share is counted in
+		// 4 KiB pages and a PMEM share in 2 MiB ones, so the same bytes come to
+		// numbers 512 times apart.
+		{"50", 1 << 30, 1 << 30, 8 << 30, 8 << 30, 1 << 18, 512, (1 << 18) * 32},
+		{"25", 1 << 29, 3 << 29, 4 << 30, 12 << 30, 1 << 17, 768, (1 << 17) * 32},
 	} {
 		values := minimal()
 		values["SPROUTFS_RAM_SHARE_PERCENT"] = share.percent

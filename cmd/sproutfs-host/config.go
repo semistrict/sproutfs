@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/semistrict/sproutfs/internal/checkpoint"
 	"github.com/semistrict/sproutfs/internal/host"
 	"github.com/semistrict/sproutfs/internal/jsonhttp"
 )
@@ -64,14 +63,13 @@ const minimumCheckpointInterval = time.Second
 // defaultTemplates is the one guest image the demo image carries.
 const defaultTemplates = "alpine=/usr/share/sproutfs/guest.ext4"
 
-// ramPageSize and pmemPageSize are the pages this build's two pagers run, which
-// a deployment does not choose: they are what vmwire, the Rust adapter and the
-// Firecracker integration map, and what a HugeTLB arena is made of. They are
-// here so that the byte budgets this command divides are checked against the
-// pages they will actually be counted in.
+// The pages this build's two pagers run, which a deployment does not choose.
+// They are the supervisor's, and this command reads them from there so that the
+// byte budgets it divides are checked against the pages they will actually be
+// counted in.
 const (
-	ramPageSize  = checkpoint.PageSize2MiB
-	pmemPageSize = checkpoint.PageSize2MiB
+	ramPageSize  = host.RAMPageSize
+	pmemPageSize = host.PMEMPageSize
 )
 
 // defaultRAMSharePercent is how much of this host's arena, spill file and page
