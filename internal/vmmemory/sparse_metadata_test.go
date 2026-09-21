@@ -82,7 +82,7 @@ func (b *sparseMemoryBacking) Locate(ctx context.Context, offset, length uint64)
 		}
 		stop := end
 		for page := range b.pages {
-			if pos := page*uint64(pageSize); pos > offset {
+			if pos := page * uint64(pageSize); pos > offset {
 				stop = min(stop, pos)
 			}
 		}

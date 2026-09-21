@@ -277,12 +277,13 @@ durations.
 | `SPROUTFS_PAGE_SERVER_PORT` | literal | `8081` | port for the page server |
 | `SPROUTFS_HUGEPAGE_DIR` | literal | `/hugepages-2Mi` | the pod's hugetlbfs mount. The arena is a `MFD_HUGETLB` memfd rather than a file in it, but the mount is what the kubelet grants the pod its HugeTLB allotment through, so the host refuses to start without it |
 | `SPROUTFS_SCRATCH_DIR` | literal | `/var/lib/sproutfs` | node-disk `emptyDir` for the spill file and the VMM scratch. A starting host wipes it: a restart is a host loss |
-| `SPROUTFS_ARENA_BYTES` | literal | `5368709120` | the pager's resident page store, a whole number of 2 MiB pages out of the pod's 6 GiB HugeTLB allotment |
-| `SPROUTFS_MEMORY_BYTES` | literal | `8589934592` | the RAM allotment the pager takes its pages from. Defaults to the arena plus 1 GiB |
+| `SPROUTFS_ARENA_BYTES` | literal | `5368709120` | the host's whole resident page store, a whole number of pages out of the pod's 6 GiB HugeTLB allotment. It is divided between the two pagers by `SPROUTFS_RAM_SHARE_PERCENT`; the two arenas are separate memfds and their capacities come to exactly this |
+| `SPROUTFS_RAM_SHARE_PERCENT` | unset | `75` | how much of the arena, the spill file and the page budgets goes to the RAM pager; PMEM takes the rest. Three quarters, because RAM is where a guest's memory diverges and the root is mostly read: the 2026-09-19 fan-out measured a fork holding about 114 MB of RAM privately against 10 MB of root, and one shared root stands behind every fork's own RAM. A share that cannot divide the arena or the spill file into whole pages of both pagers is refused rather than rounded away |
+| `SPROUTFS_MEMORY_BYTES` | literal | `8589934592` | the RAM allotment both pagers take their pages from. It is one budget because it is one machine's memory, and because bytes are the only unit the two pagers' pages add up in. Defaults to the arena plus 1 GiB |
 | `SPROUTFS_CACHE_BYTES` | literal | `1073741824` | the page cache's own cap, which nothing else draws on |
-| `SPROUTFS_SPILL_BYTES` | literal | `17179869184` | the pager's spill file, out of the 20 GiB `emptyDir`. It is what bounds the dirty pages |
-| `SPROUTFS_LOGICAL_PAGES` | unset | arena pages × 32 | bounds the pager's per-region metadata, including never-faulted pages, and so bounds the VMs a host will start at all — see the arithmetic below |
-| `SPROUTFS_DIRTY_PAGES` | literal | `6144` | bounds volatile private state on RAM and spill together; at most `SPROUTFS_LOGICAL_PAGES`, and at most what `SPROUTFS_SPILL_BYTES` holds. It defaults to the smaller of the arena's pages and `SPROUTFS_SPILL_BYTES`, which a workload guest writing hundreds of megabytes between checkpoints outruns |
+| `SPROUTFS_SPILL_BYTES` | literal | `17179869184` | the host's spill store, out of the 20 GiB `emptyDir`, divided by the same share into one file per pager. Each file's share is what bounds that pager's dirty pages |
+| `SPROUTFS_RAM_LOGICAL_PAGES`, `SPROUTFS_PMEM_LOGICAL_PAGES` | unset | that pager's arena pages × 32 | bounds each pager's per-region metadata, including never-faulted pages, and so bounds the VMs a host will start at all — see the arithmetic below. Each is counted in its own pager's page, which is why they are two numbers and never a sum |
+| `SPROUTFS_RAM_DIRTY_PAGES`, `SPROUTFS_PMEM_DIRTY_PAGES` | unset | the smaller of that pager's arena pages and its spill share | bounds volatile private state on RAM and spill together, per pager; each is at most its own logical cap and at most what its spill share holds. The defaults are what a workload guest writing hundreds of megabytes between checkpoints outruns |
 | `SPROUTFS_TEMPLATES` | literal | `alpine=…/guest.ext4,workload=…/workload.ext4:2147483648` | the guest images a VM can be created from, as `name=path` pairs. A pair may name the RAM its VMs get after a colon, `name=path:bytes`, which is what an image needing more than the default uses. A create request that names none takes the only one |
 | `SPROUTFS_VM_MEMORY_BYTES` | literal | `536870912` | the RAM of a VM whose template names no size of its own, a whole number of 2 MiB pages. It is read when a guest image is imported, which happens once for the whole deployment, so changing it gives no new memory to a VM created from an image already imported — a cold start with `--memory` is what changes one VM's shape |
 | `GOMEMLIMIT` | literal | `6GiB` | Go's own ceiling, under the container's, so the collector runs before the cgroup kills the process |
@@ -300,49 +301,65 @@ durations.
 | `SPROUTFS_POD_NAME` | downward API `metadata.name` | | the host's name to the orchestrator and to an operator. Nothing durable is named after it, which is why the hosts are a Deployment |
 | `SPROUTFS_NAMESPACE` | downward API `metadata.namespace` | `sproutfs` | |
 
-#### How many VMs the logical cap admits
+#### Two pagers, and how the budgets are divided
 
-The logical cap is charged one region at a time, at attachment, and every
-region of every VM on a host is charged against it, so it is what decides which
-VMs a host will start. It reserves nothing — a page never touched has no
-metadata — and a host that runs out of it would otherwise admit a VM's RAM,
-start its VMM and then be refused its root, killing the guest part way through
-a restore. The host refuses such a VM before starting anything, and
-`GET /status` reports what the cap has left as `logical_pages_free`.
+A host runs one pager per kind of region: one for its guests' RAM and one for
+their PMEM disks, each with an arena of its own, a spill file of its own and a
+page of its own. Both run 2 MiB in this build — the transport, the Rust adapter
+and Firecracker map that page and nothing else — so the only thing that changed
+on a real host is that RAM and PMEM no longer compete for one arena.
 
-The arithmetic for this deployment, in the pager's 2 MiB pages:
+The byte budgets a deployment sets are the host's, and one share divides all of
+them: a deployment that gives RAM three quarters of the arena wants RAM to have
+three quarters of the spill file and of the budgets that fill it too. PMEM takes
+the remainder rather than a second rounding, so the two shares come to exactly
+what the host was given and nothing is counted twice. Page counts are never
+added across the two: a RAM page and a PMEM page need not be the same number of
+bytes, so everything host-wide — `SPROUTFS_MEMORY_BYTES`, the arena total,
+`GET /status` — is in bytes, and the per-pager numbers are reported apart, under
+`pager.ram` and `pager.pmem` and with a `kind` label on every pager metric.
 
-| | pages |
-| --- | --- |
-| arena, 5 GiB | 2,560 |
-| a workload VM's RAM, 2 GiB | 1,024 |
-| its root, the 5 GiB image | 2,560 |
-| **one workload VM** | **3,584** |
-| the workload run's VMs, all on one host because every fork lands on its parent's: the base, its two forks and their two | 5 |
-| **what that run charges** | **17,920** |
-| arena × 8 | 20,480 |
-| arena × 32 | 81,920 |
+#### How many VMs the logical caps admit
 
-Five VMs leave 2,560 pages under eight arenas, which is one root region and no
-RAM to go with it. The sixth VM on that host — a wider run, or one left over
-from `demo-gce.sh run` — had its RAM admitted and its root refused, and the
-guest died part way through its restore. Thirty-two arenas is twenty-two
-workload VMs on one host, well past what the arena and the placement allow. A
-deployment with larger guests sets `SPROUTFS_LOGICAL_PAGES` from the same
-arithmetic: the VMs one host holds, times each one's RAM plus root in 2 MiB
-pages.
+A logical cap is charged one region at a time, at attachment, against the pager
+of that region's kind, so the two caps together are what decide which VMs a host
+will start. Each reserves nothing — a page never touched has no metadata — and a
+host that ran out of one would otherwise admit a VM's RAM, start its VMM and
+then be refused its root, killing the guest part way through a restore. The host
+refuses such a VM before starting anything, and `GET /status` reports what each
+cap has left under `logical_pages_free`.
 
-The pager's remaining bounds are not environment variables: the host chooses
-them from the arena above and the node it lands on, and logs every one of them
-when it assembles. Read-ahead is four 2 MiB pages; write-ahead is the same four,
-or one where `SPROUTFS_DIRTY_PAGES` holds fewer than 64 such runs; concurrent
-page I/O is four permits per processor, held between 16 and 256 and never more
-read-ahead runs than the arena has room for; one session serves two faults per
-processor, between 8 and 64; and a VMM's mappings are admitted against half of
-the node's `/proc/sys/vm/max_map_count`, with the budget disabled below 128.
-A node whose `vm.max_map_count` is the kernel default is fine; one tuned down
-far enough loses the budget rather than gaining a tighter one, which the host
-says in its log. docs/vm-memory.md carries the reasoning.
+The arithmetic for this deployment, in each pager's 2 MiB pages:
+
+| | RAM pages | PMEM pages |
+| --- | --- | --- |
+| arena, 5 GiB at the default 75/25 share | 1,920 | 640 |
+| a workload VM's RAM, 2 GiB | 1,024 | |
+| its root, the 5 GiB image | | 2,560 |
+| the workload run's VMs, all on one host because every fork lands on its parent's: the base, its two forks and their two | 5 | 5 |
+| **what that run charges** | **5,120** | **12,800** |
+| arena × 32 | 61,440 | 20,480 |
+
+Both caps hold that run with room over, and each is sized by the regions of its
+own kind rather than by an arena the two share. A deployment with larger guests
+sets `SPROUTFS_RAM_LOGICAL_PAGES` and `SPROUTFS_PMEM_LOGICAL_PAGES` from the
+same arithmetic: the VMs one host holds, times each one's RAM in the first and
+each one's disks in the second.
+
+The pagers' remaining bounds are not environment variables: the host chooses
+them from the arenas above and the node it lands on, and logs every one of them,
+per pager, when it assembles. Read-ahead is an 8 MiB run, which each pager
+converts into its own pages — four at 2 MiB — because the run is a buffer and a
+number of pages would mean different amounts of memory in the two; write-ahead
+is the same 8 MiB, or one page where that pager's dirty budget holds fewer than
+64 such runs; concurrent page I/O is four permits per processor, held between 16
+and 256 and never more read-ahead runs than that pager's arena has room for; one
+session serves two faults per processor, between 8 and 64; and a VMM's mappings
+are admitted against half of the node's `/proc/sys/vm/max_map_count`, with the
+budget disabled below 128. A node whose `vm.max_map_count` is the kernel default
+is fine; one tuned down far enough loses the budget rather than gaining a
+tighter one, which the host says in its log. docs/vm-memory.md carries the
+reasoning.
 
 Credentials are not in the environment: the pod reaches GCS through the VM's
 metadata server, whose service account has `roles/storage.objectAdmin` on that

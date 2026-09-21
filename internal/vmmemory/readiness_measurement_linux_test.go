@@ -10,7 +10,6 @@ import (
 	"syscall"
 	"testing"
 	"time"
-
 )
 
 // Timings are observations, never correctness thresholds. Run through the

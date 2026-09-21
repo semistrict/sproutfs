@@ -18,9 +18,12 @@ page table covers. The host chooses the page size when it creates the volume —
 4 KiB or 2 MiB, and nothing else — and it is recorded in every checkpoint of
 that volume and fixed for its life: a page number means nothing without it, so
 every reader divides by what the root recorded rather than by a constant of its
-own. The pager, the wire and the VMM still have one page, 2 MiB, so a volume of
-any other page size is refused when it is attached; RAM at 4 KiB is
-[planned](../plans/ram-pmem-page-geometry-2026-09-19.md) and not yet built.
+own. A pager instance has a page too, fixed when it is built, and a volume of
+any other page size is refused when it is attached. The wire and the VMM still
+have one page, 2 MiB, so both of a real host's pagers run it; the simulation has
+neither, and already runs RAM at 4 KiB beside PMEM at 2 MiB. Giving a real
+host's RAM the small page is step 4 of the
+[page-geometry plan](../plans/ram-pmem-page-geometry-2026-09-19.md).
 
 **Overlay**: What a VM has written through the volume package since its last
 checkpoint — image building and tests, never a pager — held in memory on the
@@ -114,8 +117,12 @@ it — and a page with a name is referenced, never copied: in the store, on the
 wire, and in host memory, where pages of the same identity share one resident
 page within a pager.
 
-**Resident page**: The physical backing of one page in a host's pager,
-possibly shared by several regions with the same page identity.
+**Resident page**: The physical backing of one page in one of a host's pagers,
+possibly shared by several regions with the same page identity. A host runs one
+pager per kind of region — its guests' RAM in one, their PMEM disks in the
+other — each with its own arena, its own spill file and its own page, so a page
+count of one says nothing about the other and everything a host reports across
+the two is in bytes.
 
 ## Cluster
 

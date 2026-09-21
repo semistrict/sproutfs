@@ -354,7 +354,7 @@ func migrationConfig(t *testing.T, binary string, pager *vmmemory.Host, vm *volu
 	return vmmachine.Config{Binary: binary, SeccompFilter: os.Getenv("SPROUTFS_FIRECRACKER_SECCOMP"),
 		KernelPath: os.Getenv("SPROUTFS_FIRECRACKER_KERNEL"), InitrdPath: os.Getenv("SPROUTFS_FIRECRACKER_INITRD"),
 		BootArgs: guestPmemBootArgs,
-		Pagers: bothKinds(pager), VM: vm, Pmem: []vmmachine.Pmem{{ID: "root", Root: true}},
+		Pagers:   bothKinds(pager), VM: vm, Pmem: []vmmachine.Pmem{{ID: "root", Root: true}},
 		VCPUs:   1,
 		Scratch: mustScratch(t),
 		Connection: vmmemory.ConnectionConfig{QueuePages: 128, CommandTimeout: 2 * time.Minute,

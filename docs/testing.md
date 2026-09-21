@@ -132,12 +132,17 @@ outcome yet in the seeds that run.
 The opt-in is off by default because the recorded scenario compares its
 recordings byte for byte across processes, and a seed that also chose its
 tunables would be comparing a different run. A campaign holds the few knobs its
-own world is sized around: the pager arena has to hold every VM of the topology
+own world is sized around: a pager arena has to hold every VM of the topology
 twice over, because a fork or a migration has the parent's pages and the
 child's on one host at once, and the dirty budget goes with it, because there is
-no interval loop in these campaigns to answer the pager's pressure — they drive
+no interval loop in these campaigns to answer a pager's pressure — they drive
 their own checkpoints, so a budget smaller than what the guests on one host can
-dirty would stall a store on a checkpoint nobody is going to take. Read-ahead
+dirty would stall a store on a checkpoint nobody is going to take. A simulated
+host runs two pagers, as a real one does: its guests' memory at 4 KiB and their
+disks at 2 MiB, each over an arena and a spill file of its own. The knobs
+describe one pager, so each is given what they say, and a simulated RAM volume
+is 512 times fewer bytes than the disk beside it and exactly as many pages —
+which is what keeps a campaign's run time where it was. Read-ahead
 and write-ahead stay at one page, because the model counts what a source holds
 against what its guest wrote, and the open-VM bound is floored at what a
 takeover holds beside the handle it fenced. Everything else is the seed's.

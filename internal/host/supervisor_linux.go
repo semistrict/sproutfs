@@ -124,8 +124,8 @@ var _ Service = (*supervisor)(nil)
 func Start(ctx context.Context, config SupervisorConfig) (Service, error) {
 	s := &supervisor{config: config, clock: platform.ClockOr(config.Clock), templateMu: ctxsync.NewMutex(),
 		machines: map[string]*machine{}, templates: map[string]*ImportedTemplate{},
-		arenas:   map[vmmemory.RegionKind]*vmmemory.LinuxArena{},
-		spills:   map[vmmemory.RegionKind]platform.File{},
+		arenas: map[vmmemory.RegionKind]*vmmemory.LinuxArena{},
+		spills: map[vmmemory.RegionKind]platform.File{},
 		// The orchestrator's default client has no timeout of its own, and a
 		// drain's requests are the only ones this host makes: a connection that
 		// is never answered and never closed would hold one open past every
@@ -318,7 +318,7 @@ func (s *supervisor) Status(ctx context.Context) (hostapi.Status, error) {
 		Running: s.host.Machines(), Serving: status.Serving,
 		Outstanding: status.Outstanding, VMs: records,
 		Templates: s.templateReport(),
-		Pager: hostapi.Pager{RAM: ram, PMEM: pmem, CommittedBytes: s.committed()},
+		Pager:     hostapi.Pager{RAM: ram, PMEM: pmem, CommittedBytes: s.committed()},
 		Pages: hostapi.Pages{Requests: status.Pages.Requests, Served: status.Pages.Served,
 			Absent: status.Pages.Absent, Refused: status.Pages.Refused},
 		Resources: hostapi.Resources{MemoryLimit: resources.Limit, MemoryUsed: resources.Used,

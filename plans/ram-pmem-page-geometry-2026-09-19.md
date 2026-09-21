@@ -1,7 +1,7 @@
 # RAM and PMEM page geometry — 2026-09-19
 
-**Status: steps 1 and 2 are implemented, but for step 1's baseline measurement;
-steps 3 to 7 are planned.**
+**Status: steps 1 to 3 are implemented, but for step 1's baseline measurement;
+steps 4 to 7 are planned.**
 
 ## Decision
 
@@ -178,14 +178,58 @@ memory savings and workload time together.
    `internal/checkpoint` instead, and reaches the campaigns when step 3 gives
    the pager its own geometry.
 
-3. **Separate pager instances and arenas.** Parameterize `internal/vmmemory`
-   by a fixed page size per instance, including its arena, spill slots,
-   reservations, identities, read-ahead and buffer bounds. Assemble RAM and
-   PMEM instances in `internal/host`, and route each region to the correct
-   one. Share the host's byte resource budget without double counting its
-   capacities. Audit dirty/logical budget configuration, memory admission,
+3. **Separate pager instances and arenas. Done.** Parameterize
+   `internal/vmmemory` by a fixed page size per instance, including its arena,
+   spill slots, reservations, identities, read-ahead and buffer bounds. Assemble
+   RAM and PMEM instances in `internal/host`, and route each region to the
+   correct one. Share the host's byte resource budget without double counting
+   its capacities. Audit dirty/logical budget configuration, memory admission,
    pressure callbacks and shutdown for both instances. A checkpoint requested
    by either pager still seals the entire VM; the loss window spans both.
+
+   **What was built.** `vmmemory.Config.PageSize` is a pager instance's page,
+   validated by `checkpoint.GeometryFor` so that a pager and the volumes it maps
+   cannot disagree about what a page number means; the package constant is gone
+   and every arena slot, spill slot, budget, buffer, gauge conversion, region
+   check and fault calculation reads the instance's. `vmmemory.Pagers` is a
+   host's pager per kind, and `internal/host`, `internal/vmmachine` and
+   `internal/simtest` route each region to the pager of its kind. The host
+   answers both pagers' pressure through the same three callbacks, which act on
+   the VM a region belongs to: one pause seals every region it maps in both
+   pagers, its loss window is the oldest unpublished write across both, and a
+   stall in either stops that VM alone. `Host.AdmitRegions` charges each region
+   to its own pager's cap, `Status.LogicalPagesFree` reports the two apart, and
+   `hostapi.Pager` became a report per kind with byte totals across them; every
+   pager metric now carries the `kind` label it already had on the sharing
+   gauges, beside one `sproutfs_pager_arena_bytes` total.
+
+   **Budget split chosen:** `SPROUTFS_ARENA_BYTES` stays the host's whole
+   resident store and `SPROUTFS_SPILL_BYTES` its whole spill store;
+   `SPROUTFS_RAM_SHARE_PERCENT` divides both, and the logical and dirty budgets
+   with them, defaulting to 75 % to RAM — the 2026-09-19 fan-out measured a fork
+   holding about 114 MB of RAM privately against 10 MB of root, and one shared
+   root stands behind every fork's own RAM. PMEM takes the remainder rather than
+   a second rounding, so the two shares come to exactly what the host was given;
+   a share that cannot divide either store into whole pages of both pagers is
+   refused. The logical and dirty caps are named per pager,
+   `SPROUTFS_RAM_LOGICAL_PAGES` and its three siblings, because each is counted
+   in its own pager's page.
+
+   **Production page:** both pagers run 2 MiB. `vmwire`, the Rust adapter and
+   Firecracker map that page and nothing else, and the Linux connection refuses
+   a pager of any other page at session setup — the seam step 4 removes. The
+   simulation has neither a HugeTLB pool nor that wire, so it runs the target
+   geometry now: a 4 KiB RAM pager beside a 2 MiB PMEM one, with RAM volumes
+   created at 4 KiB and their byte sizes shrunk so page counts, and run times,
+   stay where they were.
+
+   **Migration, partly:** a page number is now the page of the volume it names
+   rather than the page server's, so `vmmigrate.Pages` states its page size, a
+   reply and a resident listing are counted in it, a request's page cap is
+   bytes, and a destination's peer backing takes its page from its own volume.
+   `SourceConfig.PageSize` is only the budget's unit now. The handoff still
+   carries one page size for the whole VM and the wire format is unchanged,
+   which is step 5.
 
 4. **Support small RAM mappings with large runs.** Update `internal/vmwire`,
    `rust/sproutfs-vm-memory` and the Firecracker integration together. Validate

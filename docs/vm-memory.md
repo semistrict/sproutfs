@@ -1,8 +1,10 @@
 # Managed VM memory
 
-A VM's RAM and PMEM are [volumes](volumes.md). The Go package `vmmemory` owns
-one host-wide pager: shared resident pages, fault resolution, private
-copy-on-write pages, scratch spill and eviction. The independent Rust library
+A VM's RAM and PMEM are [volumes](volumes.md). The Go package `vmmemory` is the
+pager: shared resident pages, fault resolution, private copy-on-write pages,
+scratch spill and eviction. A host runs one instance of it per kind of region —
+one for its guests' RAM and one for their PMEM disks — each with an arena of its
+own, a spill file of its own and a page of its own. The independent Rust library
 in `rust/sproutfs-vm-memory` owns the mappings inside one VMM process and has no
 Firecracker dependency. `vmmachine` supervises the process; `host` pauses and
 seals a VM, for a checkpoint or for a fork point. The `vmtest` package is
@@ -74,9 +76,44 @@ Upstream Firecracker's own userfaultfd restore copies pages into each VM's
 anonymous memory and cannot share a page between VMs; the integration replaces
 that path with this one.
 
+## One pager per kind of region
+
+A pager instance is built with a fixed page, and everything it does is counted
+in it: its arena slots, its spill slots and the extent of its spill file, its
+resident, logical and dirty budgets, the read-ahead and write-ahead runs a
+deployment states in bytes and each instance converts, its buffers, the
+comparison a settle makes, the byte conversions of `RegionStats` and `Sharing`,
+the size and alignment it requires of a region, and the fault arithmetic of the
+Linux connection. The page must be one a volume can be published in —
+`checkpoint.GeometryFor` is the one place that says which those are — so a
+pager and the volumes it maps cannot disagree about what a page number means.
+A volume published in another page size is refused when it is attached, which
+is also how a region that reached the wrong pager of a host is caught.
+
+A host assembles two: `vmmemory.Pagers` is the RAM pager and the PMEM pager, and
+a region attaches to the one of its own kind. Nothing adds their page counts
+together — a RAM page and a PMEM page need not be the same number of bytes — so
+everything a host reports across the two is in bytes: the two arenas' capacities
+and the two dirty budgets come to what the deployment gave the host, the sharing
+gauges are reported per kind under one metric name with a `kind` label, and
+`Host.PrivateBytes` adds a VM's regions up across both. A checkpoint asked for by
+either pager's pressure seals the whole VM, once, because one pause seals every
+region it maps; a VM's loss window is the oldest unpublished write across its
+regions in both; and a store neither pager can admit stops that VM alone.
+
+Both pagers run **2 MiB** on a real host today. The Linux transport, the Rust
+adapter and Firecracker map that page and nothing else, and the arena is
+HugeTLB, which is the same statement made of the memory behind it; the Linux
+connection refuses a pager of any other page when a session is set up, and that
+refusal is the seam step 4 of the
+[page-geometry plan](../plans/ram-pmem-page-geometry-2026-09-19.md) removes
+together with the wire. The simulation has neither a HugeTLB pool nor a wire
+that fixes a page, so it already runs the geometry the deployment is moving to:
+a 4 KiB RAM pager beside a 2 MiB PMEM one, with RAM volumes created at 4 KiB.
+
 ## Bounded host pager
 
-The pager takes an arena, a dedicated scratch spill file, and explicit
+Each pager takes an arena, a dedicated scratch spill file, and explicit
 resident, logical and dirty page budgets. The arena is a fixed-size sealed
 memfd holding exactly the resident page slots. Logical admission bounds
 metadata for every attached region, including pages never touched. Every
@@ -103,14 +140,16 @@ failed publication nor a migration restarts the bound. Where no checkpoint of
 that VM will ever be taken the wait ends as a budget stall does, as
 `ErrWindowStalled`, which the region's owner answers by stopping that VM.
 
-The pager page is **2 MiB**, backed by an explicit HugeTLB memfd. Allocation,
-sharing, copy-on-write, write protection, spill, eviction, mapping commands and
-wire generations all use that unit. Region addresses and lengths must be 2 MiB
-aligned. There is no page-size configuration: the pager, the arena, the Rust
-adapter and the control protocol all fix the page at 2 MiB, and the simulation
-model uses the same unit.
+A pager page on a real host is **2 MiB**, backed by an explicit HugeTLB memfd.
+Allocation, sharing, copy-on-write, write protection, spill, eviction, mapping
+commands and wire generations all use that instance's unit, and region addresses
+and lengths must be aligned to it. What fixes it at 2 MiB on Linux is not the
+pager — that is configuration now — but the arena, the Rust adapter and the
+control protocol, each of which knows only that page.
 
-The host must provision a 2 MiB HugeTLB pool before starting VMs. The arena
+The host must provision a 2 MiB HugeTLB pool before starting VMs, and its two
+arenas draw on the same pool: the deployment divides its allotment between them
+rather than giving each the whole. The arena
 reserves virtual address space without reserving its entire logical capacity,
 then allocates each resident slot with `fallocate` before touching its mapping.
 Pool exhaustion returns an allocation error, with no fallback to small pages.
@@ -121,30 +160,34 @@ userfaultfd. A pool is shared by all arenas on the host, so deployment admission
 must budget their combined resident capacity.
 
 Read-ahead and write-ahead select one page when a configuration leaves them
-zero, which is no read-ahead and no write-ahead. A store page is the same 2 MiB
-unit — a volume is published in a page size of its own, and one whose page is
-not this pager's is refused when it is attached — so a sealed pager page is
-exactly one member of a checkpoint's part.
-Read-ahead is one host policy, a power of two capped at 16 MiB (eight pages);
-no region overrides it. Population walks metadata in at most 256 MiB windows,
-independent of pager size. The Linux transport also bounds pending faults,
-control requests and fault workers.
+zero, which is no read-ahead and no write-ahead. A store page is the same unit
+this pager runs — a volume is published in a page size of its own, and one whose
+page is not this pager's is refused when it is attached — so a sealed pager page
+is exactly one member of a checkpoint's part.
+Read-ahead is one policy per pager, a power of two of that pager's pages capped
+at 16 MiB; no region overrides it. Population walks metadata in at most 256 MiB
+windows, independent of pager size. The Linux transport also bounds pending
+faults, control requests and fault workers.
 
 The production host does not leave any of them zero. It is the supervisor, in
-`internal/host`, that chooses them, from the arena the deployment gave it and
-the node it is on rather than from an environment variable each:
+`internal/host`, that chooses them, for each pager, from the share of the arena
+the deployment gave that kind and the node it is on rather than from an
+environment variable each. The two runs are stated in bytes and converted by
+each instance, because a run is a buffer and a number of pages would mean
+different amounts of memory in the two:
 
 | bound | production value | why |
 | --- | --- | --- |
-| `ReadAheadPages` | 4 (8 MiB) | a boot, a restore and a working set all walk memory forwards, so one fault serves what would otherwise be four |
-| `WriteAheadPages` | 4, or 1 where the dirty budget holds fewer than 64 such runs | the same run, charged to the dirty budget whether the guest uses it or not, so a small budget keeps one page |
-| `ConcurrentIO` | four per processor, held between 16 and 256, and never more read-ahead runs than the arena has room for | each permit can hold one read-ahead or spill buffer, so it is both the parallelism a node can use and a bound on the buffers it costs |
+| `ReadAheadPages` | 8 MiB of this pager's pages — four at 2 MiB | a boot, a restore and a working set all walk memory forwards, so one fault serves what would otherwise be four |
+| `WriteAheadPages` | the same 8 MiB, or one page where that pager's dirty budget holds fewer than 64 such runs | the same run, charged to the dirty budget whether the guest uses it or not, so a small budget keeps one page |
+| `ConcurrentIO` | four per processor, held between 16 and 256, and never more read-ahead runs than that pager's arena has room for | each permit can hold one read-ahead or spill buffer, so it is both the parallelism a node can use and a bound on the buffers it costs |
 | `SettleWorkers` | the node's processors, capped at 64 | a settle compares resident pages and takes no I/O permit, so processors are what it can use, and it is time the upload waits for |
 | `ConnectionConfig.FaultWorkers` | two per processor, held between 8 and 64 | a fault spends most of its life in a store read; the I/O budget is what bounds the reads |
 | `ConnectionConfig.MaxVMAs` | half of `/proc/sys/vm/max_map_count`, disabled below 128 and capped at 2²⁰ | the pager's mappings are not the VMM's only ones, so half the kernel's limit is the budget and the rest is headroom; an unreadable limit disables the budget, exactly as a client without `/proc` does |
 
-A starting host logs every one of them, so what a node chose is on the record
-next to the arena and the budgets the deployment set.
+A starting host logs every one of them, per pager and beside that pager's page,
+so what a node chose for each kind is on the record next to the arena and the
+budgets the deployment set.
 
 Attaching a region admits its metadata and verifies writer authority before
 exposing it. The mapping must initially consist entirely of armed missing-fault
@@ -193,13 +236,13 @@ page back to the guest as dirty state it may store into in place, which is why
 the retire takes the page away from anything still sharing it. By then whatever
 inherited it has copied, published or pulled the page and reads it from there.
 
-A resident 2 MiB page is exactly one store page, so one identity covers the
-whole page and there is no partial identity to rule out: a page is published
-whole or not at all. A page with no published bytes of its own — what a
-migration destination holds for the source's unpublished pages — has no identity
-and loads privately until a checkpoint gives it one. A one-byte store still
-copies and charges the whole 2 MiB page. Storage compression does not compress
-mapped pages or change this accounting.
+A resident page is exactly one store page, so one identity covers the whole page
+and there is no partial identity to rule out: a page is published whole or not
+at all. A page with no published bytes of its own — what a migration destination
+holds for the source's unpublished pages — has no identity and loads privately
+until a checkpoint gives it one. A one-byte store still copies and charges the
+whole page, which is why the page a pager runs is what a store costs its guest.
+Storage compression does not compress mapped pages or change this accounting.
 
 An explicit sparse zero has no arena slot and no page identity. Contiguous zero
 ranges use Linux's shared zero page, so a large hole does not consume resident
@@ -316,17 +359,23 @@ are also reported in bytes, because page counts of different geometries cannot
 be added and bytes can.
 
 A region carries its kind, RAM or PMEM, which `Attach` is given. Nothing about a
-fault, a seal or a page depends on it — the two are one arena and one page today
-— and it exists so a host can say which of its guests' memory and its guests'
-disks the sharing is in. It is stated by whoever attaches the region, never
-inferred from a volume's name.
+fault, a seal or a page depends on it inside one pager; what it decides is which
+of a host's two pagers the region attaches to, and it is what lets a host say
+which of its guests' memory and its guests' disks the sharing is in. It is
+stated by whoever attaches the region, never inferred from a volume's name — a
+host deciding which pager a VM's regions would be admitted against, before there
+is a machine to ask, says so itself.
 
 The host adds those per-region numbers up per VM, because the pager has regions
 and no idea of a VM: `Host.PrivateBytes` in `internal/host` is one VM's private
 bytes across every region it maps, which `/status`, `/metrics` and the VM
-listing report. The Prometheus gauges are `sproutfs_pager_unique_resident_bytes`,
+listing report; the pager it reads each region through is the pager of that
+region's kind. The Prometheus gauges are `sproutfs_pager_unique_resident_bytes`,
 `sproutfs_pager_mapped_resident_bytes` and `sproutfs_pager_shared_saved_bytes`,
-each carrying `kind="ram"` or `kind="pmem"`.
+each carrying `kind="ram"` or `kind="pmem"`, and every other pager series
+carries the same label, because the two run their own pages and a sum of their
+page counts would mean nothing. `sproutfs_pager_arena_bytes` is the one total,
+and it is bytes for that reason.
 
 Faults serialize only within one read-ahead run; different runs and different
 volumes proceed concurrently. A short host lock accounts for capacity, binding

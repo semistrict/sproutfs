@@ -9,9 +9,13 @@ across all of them is collected in [open-work.md](../docs/open-work.md).
   — separate arenas and volume geometry; 4 KiB RAM ownership and writes with
   2 MiB read-only mapping batches; PMEM stays 2 MiB on HugeTLB, unchanged. No
   stored data is converted: the formats' versions are bumped.
-  **Steps 1 and 2 are done — the sharing gauges, and a volume that carries its
-  own page size, 4 KiB or 2 MiB, recorded in its checkpoints at index format 8
-  — and the rest is planned.**
+  **Steps 1 to 3 are done — the sharing gauges; a volume that carries its own
+  page size, 4 KiB or 2 MiB, recorded in its checkpoints at index format 8; and
+  a pager whose page is an instance's, with one pager per kind of region on
+  every host, its own arena and spill file each and the deployment's byte
+  budgets divided between them. Both run 2 MiB on a real host because the wire
+  and the VMM still do; the simulation already runs RAM at 4 KiB beside PMEM at
+  2 MiB. The rest is planned.**
 - [2026-09-19 a private page that did not change](unchanged-pages-2026-09-19.md)
   — a write fault is not always a store (KVM's asynchronous page fault worker on
   x86-64, cache maintenance on aarch64), so a sealed page whose bytes equal the
