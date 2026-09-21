@@ -136,7 +136,7 @@ func (b *Builder) Add(ctx context.Context, member Member, data []byte) (offset, 
 // hold takes one member into the part and charges its entry against the table.
 func (b *Builder) hold(member Member) {
 	b.members = append(b.members, member)
-	b.entries += entryBytes(member)
+	b.entries += EntryBytes(member)
 }
 
 // TableBytes is what this part's table would encode to if it were sealed now.
@@ -156,7 +156,7 @@ func (b *Builder) Full(next Member, bodyTarget, tableLimit int) bool {
 	// charged at its widest: the part is sealed a few bytes early rather than
 	// one entry late.
 	next.Offset, next.Length = math.MaxUint64, math.MaxUint64
-	return len(b.body) >= bodyTarget || b.TableBytes()+entryBytes(next) > tableLimit
+	return len(b.body) >= bodyTarget || b.TableBytes()+EntryBytes(next) > tableLimit
 }
 
 // emptyTableBytes is what a part's table costs before any member: the layout
@@ -164,11 +164,14 @@ func (b *Builder) Full(next Member, bodyTarget, tableLimit int) bool {
 var emptyTableBytes = proto.Size(checkpointv1.PartTable_builder{
 	FormatVersion: proto.Uint32(FormatVersion)}.Build())
 
-// entryBytes is what one member costs in the encoded table: the repeated
+// EntryBytes is what one member costs in the encoded table: the repeated
 // field's tag and length prefix, and the entry itself. Every field of an entry
 // is written whether or not it is zero, so what an entry costs depends on how
-// long its names are and how large its numbers.
-func entryBytes(member Member) int {
+// long its names are and how large its numbers. It is exported because the
+// store sizes the bound it seals a part's table at from it: a part must fill to
+// its target on the bytes it holds rather than stop short on the entries
+// naming them.
+func EntryBytes(member Member) int {
 	size := proto.Size(tableEntry(member))
 	return protowire.SizeTag(membersField) + protowire.SizeBytes(size)
 }

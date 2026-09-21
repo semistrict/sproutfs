@@ -6,6 +6,7 @@ import (
 	"testing"
 	"testing/synctest"
 
+	"github.com/semistrict/sproutfs/internal/blob"
 	"github.com/semistrict/sproutfs/internal/checkpoint/internal/part"
 	"github.com/semistrict/sproutfs/internal/control"
 	"github.com/semistrict/sproutfs/internal/platform"
@@ -28,67 +29,136 @@ func tailStore(t *testing.T) (*Store, *sim.Runtime) {
 	return store, runtime
 }
 
-// spreadVolumes is how many volumes the checkpoint below fills one page of. A
-// volume name may be maximumName bytes, so one entry costs a little under 300
-// of them and this is comfortably more table than a part is allowed; every
-// volume is one sector long, so the checkpoint costs kilobytes rather than
-// gigabytes.
-const spreadVolumes = 1400
-
-// spreadVolumeName is a volume name of the longest kind a checkpoint admits.
+// spreadVolumeName is a volume name of the longest kind a checkpoint admits,
+// which makes every member of that volume the widest entry a part's table can
+// hold: a little under 300 bytes.
 func spreadVolumeName(number int) string {
 	name := fmt.Sprintf("volume-%04d-", number)
 	return name + strings.Repeat("x", maximumName-len(name))
 }
 
+const (
+	// spreadMembers is more members of that width than maximumTableSize admits,
+	// so it is the table and not the body that seals their parts: their pages
+	// are 4 KiB, so the whole checkpoint is megabytes against the 64 MiB a part
+	// fills to.
+	spreadMembers = 4000
+	// packedMembers is fewer than the table admits and far fewer bytes than a
+	// part fills to, so a checkpoint of them is one part — and it is more than
+	// the 256 KiB bound of the build before this one admitted, which wrote four.
+	packedMembers = 3000
+	// supersededTableSize is that earlier bound, which a part of 4 KiB pages
+	// reached at about 8,700 members, a third of the 64 MiB it fills to.
+	supersededTableSize = 256 << 10
+)
+
+// spreadStore publishes one checkpoint of count consecutive 4 KiB pages of a
+// volume whose members are the widest a table holds, and reports the reference
+// and the index it published.
+func spreadStore(t *testing.T, store *Store, count uint64) (control.Ref, *Index) {
+	t.Helper()
+	name := spreadVolumeName(0)
+	root, err := store.Root(t.Context(), control.Ref{VM: "spread", Sequence: 1},
+		volumesAt(at4KiB, map[string]uint64{name: count * PageSize4KiB}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := control.Ref{VM: "spread", Sequence: 2}
+	filling := store.Begin(root, ref)
+	for page := range count {
+		filling.Dirty(name, page)
+	}
+	filled, err := filling.Commit(t.Context(), randomPages{tag: 0xc0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ref, filled
+}
+
 // A checkpoint whose members' entries alone exceed the table bound spreads them
 // over several parts rather than writing one unbounded table. Their bodies are
-// a sector each, so nothing but the table's own bound seals those parts — and
-// that bound is what lets every part's table be read as one suffix of
-// maximumTableSize + TrailerSize bytes.
+// far short of what a part fills to, so nothing but the table's own bound seals
+// those parts — and that bound is what lets every part's table be read as one
+// suffix of maximumTableSize + TrailerSize bytes.
 func TestMembersPastTheTableBoundSealTheirPart(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		store, _ := tailStore(t)
-		sizes := make(map[string]uint64, spreadVolumes)
-		for number := range spreadVolumes {
-			sizes[spreadVolumeName(number)] = SectorSize
-		}
-		root, err := store.Root(t.Context(), control.Ref{VM: "spread", Sequence: 1}, volumesAt(at2MiB, sizes))
-		if err != nil {
-			t.Fatal(err)
-		}
-		filledRef := control.Ref{VM: "spread", Sequence: 2}
-		filling := store.Begin(root, filledRef)
-		for name := range sizes {
-			filling.Dirty(name, 0)
-		}
-		filled, err := filling.Commit(t.Context(), fillSource{value: 1})
-		if err != nil {
-			t.Fatal(err)
-		}
-		entry := filled.checkpoints[filledRef]
+		ref, filled := spreadStore(t, store, spreadMembers)
+		entry := filled.checkpoints[ref]
 		if entry.parts < 2 {
-			t.Fatalf("a checkpoint filling %d volumes wrote %d part(s), want its members spread over several",
-				spreadVolumes, entry.parts)
+			t.Fatalf("a checkpoint of %d wide members wrote %d part(s), want them spread over several",
+				spreadMembers, entry.parts)
+		}
+		if entry.bytes >= partTargetBytes {
+			t.Fatalf("the checkpoint holds %d bytes, want less than the %d a part fills to",
+				entry.bytes, partTargetBytes)
 		}
 		members := 0
 		for number := range entry.parts {
-			table, err := store.readPartTable(t.Context(), filledRef, number)
+			table, err := store.readPartTable(t.Context(), ref, number)
 			if err != nil {
 				t.Fatal(err)
 			}
 			members += len(table.members)
-			if bytes := partTableBytes(t, store, filledRef, number); bytes > maximumTableSize {
+			if bytes := partTableBytes(t, store, ref, number); bytes > maximumTableSize {
 				t.Fatalf("part %d holds a table of %d bytes, want no more than %d",
 					number, bytes, maximumTableSize)
 			}
 		}
-		// One page per volume, and nothing else: the segments locating them are
-		// the index object's.
-		if members != spreadVolumes {
-			t.Fatalf("the checkpoint's parts hold %d members, want %d", members, spreadVolumes)
+		if members != spreadMembers {
+			t.Fatalf("the checkpoint's parts hold %d members, want %d", members, spreadMembers)
 		}
 	})
+}
+
+// A checkpoint of many small pages writes the parts its bytes need. The table
+// bound is what used to stop a part short of what it fills to, and a checkpoint
+// of 4 KiB pages then cost about twice the PUTs its bytes needed.
+func TestACheckpointOfSmallPagesWritesThePartsItsBytesNeed(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		store, _ := tailStore(t)
+		ref, filled := spreadStore(t, store, packedMembers)
+		entry := filled.checkpoints[ref]
+		if entry.parts != 1 {
+			t.Fatalf("a checkpoint of %d members holding %d bytes wrote %d parts, want the one its bytes need",
+				packedMembers, entry.bytes, entry.parts)
+		}
+		// One suffix read still holds the whole table, and that table is past
+		// what the build before this one would have admitted into one part.
+		table := partTableBytes(t, store, ref, 0)
+		if table > maximumTableSize || table <= supersededTableSize {
+			t.Fatalf("the part's table is %d bytes, want more than %d and no more than %d",
+				table, supersededTableSize, maximumTableSize)
+		}
+	})
+}
+
+// The table admits the members a part that filled to its target on 4 KiB pages
+// holds. The entry cost is measured through the encoder rather than estimated,
+// because it is what the bound was chosen from.
+func TestTheTableAdmitsAFullPartOfSmallPages(t *testing.T) {
+	const members = partTargetBytes / PageSize4KiB
+	widest := part.Member{Volume: "ram0", Page: members - 1,
+		Offset: partTargetBytes, Length: PageSize4KiB + blob.HeaderSize}
+	entry := part.EntryBytes(widest)
+	if entry > 32 {
+		t.Fatalf("one entry of a 4 KiB member costs %d bytes, want the about 29 the bound was chosen from", entry)
+	}
+	if table := members * entry; table > maximumTableSize {
+		t.Fatalf("the %d members of a full part of 4 KiB pages cost %d bytes of table, want no more than %d",
+			members, table, maximumTableSize)
+	}
+	if table := members * entry; table <= supersededTableSize {
+		t.Fatalf("the %d members cost %d bytes of table, which the %d-byte bound before this one already admitted",
+			members, table, supersededTableSize)
+	}
+	// The envelope is what a member costs beyond the page it holds, and the
+	// entry naming it is what that member costs in table: together about 1.9 %
+	// of a checkpoint of whole 4 KiB pages.
+	overhead := blob.HeaderSize + entry
+	if overhead*100/PageSize4KiB > 2 {
+		t.Fatalf("a 4 KiB member costs %d bytes beyond its page, want under two percent of it", overhead)
+	}
 }
 
 // partTableBytes is the encoded size of one part's table, read out of the

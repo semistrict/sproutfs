@@ -442,9 +442,11 @@ func (s *Store) ReadState(ctx context.Context, index *Index) ([]byte, error) {
 	return s.readMember(ctx, index.state, maximumStateSize)
 }
 
-// Read fills dst from a volume of a published checkpoint. It fetches only the
-// pages the range resolves to, one range read of one part each; a page
-// with no member reads as zeroes. On error dst may be partially filled.
+// Read fills dst from a volume of a published checkpoint. The range is one run
+// of pages: the segments locating them are read once each however many pages
+// they locate, the members are fetched in as few ranged reads as the layout
+// allows, and a page with no member reads as zeroes and costs no request at
+// all. On error dst may be partially filled.
 func (s *Store) Read(ctx context.Context, index *Index, volume string, offset uint64, dst []byte) error {
 	table := index.volumes[volume]
 	if table == nil {
@@ -457,40 +459,44 @@ func (s *Store) Read(ctx context.Context, index *Index, volume string, offset ui
 	if err := context.Cause(ctx); err != nil {
 		return err
 	}
-	for cursor := offset; cursor < offset+length; {
-		number := table.geometry.PageOf(cursor)
-		start, span := table.geometry.PageSpan(table.size, number)
-		limit := min(offset+length, start+span)
-		if err := s.readPage(ctx, index, volume, number, cursor-start, dst[cursor-offset:limit-offset]); err != nil {
-			return err
+	run, err := s.resolveRun(ctx, index, volume, offset, dst)
+	if err != nil || len(run) == 0 {
+		return err
+	}
+	return s.readRun(ctx, table.geometry, volume, run)
+}
+
+// resolveRun reports where the bytes of every page of a range live, filling the
+// pages that have no member with zeroes as it goes. One segment is held across
+// the pages it locates, so a run costs one lookup of each segment it crosses
+// rather than one per page.
+func (s *Store) resolveRun(ctx context.Context, index *Index, volume string, offset uint64, dst []byte) ([]pageRead, error) {
+	table := index.volumes[volume]
+	geometry := table.geometry
+	end := offset + uint64(len(dst))
+	var run []pageRead
+	var held *segment
+	var current uint64
+	for cursor := offset; cursor < end; {
+		number := geometry.PageOf(cursor)
+		start, span := geometry.PageSpan(table.size, number)
+		limit := min(end, start+span)
+		if held == nil || current != geometry.SegmentOf(number) {
+			loaded, err := index.segmentAt(ctx, volume, geometry.SegmentOf(number))
+			if err != nil {
+				return nil, err
+			}
+			held, current = loaded, geometry.SegmentOf(number)
+		}
+		target := dst[cursor-offset : limit-offset]
+		if at, found := held.pages[geometry.OffsetIn(number)]; found {
+			run = append(run, pageRead{number: number, at: at, within: cursor - start, dst: target})
+		} else {
+			clear(target)
 		}
 		cursor = limit
 	}
-	return nil
-}
-
-// readPage fills dst from one page, starting within bytes into it. A member
-// published when the volume was shorter does not cover the whole page; the
-// bytes past its end read as zeroes, which is how a grown volume reads.
-func (s *Store) readPage(ctx context.Context, index *Index, volume string, number, within uint64, dst []byte) error {
-	at, held, err := index.pageAt(ctx, volume, number)
-	if err != nil {
-		return err
-	}
-	if !held {
-		clear(dst)
-		return nil
-	}
-	data, release, err := s.loadPage(ctx, index.volumes[volume].geometry, volume, number, at)
-	if err != nil {
-		return err
-	}
-	defer release()
-	clear(dst)
-	if within < uint64(len(data)) {
-		copy(dst, data[within:])
-	}
-	return nil
+	return run, nil
 }
 
 // loadPage fetches one page's decoded bytes, through the shared cache when one

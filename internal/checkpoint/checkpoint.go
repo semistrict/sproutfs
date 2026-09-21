@@ -81,9 +81,26 @@ const (
 	// It bounds what a writer produces as well as what a reader accepts: a part
 	// is sealed when the next member's entry would carry its table past this, so
 	// a reader holds a part's whole table after one suffix read of this many
-	// bytes plus the trailer. It admits a few thousand members of the longest
-	// kind, which is far more than a part of partTargetBytes holds.
-	maximumTableSize = 256 << 10
+	// bytes plus the trailer.
+	//
+	// It is a megabyte because a part must fill to partTargetBytes on the bytes
+	// it holds and not stop short on the entries naming them. A 64 MiB part of
+	// 4 KiB pages holds 16,384 members, and one entry of a volume named as
+	// briefly as ram0 costs about 29 bytes — the repeated field's tag and length
+	// prefix, the name, and the page, offset, length, state and two origin
+	// fields, which are written whether or not they are zero. So a megabyte of
+	// table is about 36,000 such entries, or about 3,700 of the widest kind a
+	// volume name of maximumName bytes makes, and the 16,384 a full part of
+	// small pages holds take about 470 KiB of it. At 256 KiB such a part was
+	// sealed at about 8,700 members, some 34 MiB, so a checkpoint of small pages
+	// cost about twice the PUTs its bytes needed.
+	//
+	// What it costs a reader is the suffix it fetches: one ranged read of the
+	// part's last megabyte and 32 bytes, which is one round trip, a request's
+	// own cost being its latency rather than its length. It is a read nothing on
+	// the page path makes — the root's segments carry the same offsets — so it
+	// is paid by consistency checking and by the refusal of a superseded layout.
+	maximumTableSize = 1 << 20
 	// maximumStateSize bounds one VMM state member.
 	maximumStateSize = 64 << 20
 	// partTargetBytes is the encoded member size a part fills to before it is

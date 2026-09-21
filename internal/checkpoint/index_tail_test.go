@@ -2,6 +2,8 @@ package checkpoint
 
 import (
 	"context"
+	"slices"
+	"sync"
 	"testing"
 	"testing/synctest"
 
@@ -10,18 +12,36 @@ import (
 )
 
 // readCounter records every read a store makes of object storage: how many,
-// and how many bytes each returned.
+// and how many bytes each returned. It is locked because a run of pages may be
+// fetched by several goroutines at once.
 type readCounter struct {
 	platform.ObjectStore
+	mu      sync.Mutex
 	lengths []int64
 }
 
 func (c *readCounter) Get(ctx context.Context, request platform.GetRequest) (platform.GetResult, error) {
 	result, err := c.ObjectStore.Get(ctx, request)
 	if err == nil {
+		c.mu.Lock()
 		c.lengths = append(c.lengths, result.ContentLength)
+		c.mu.Unlock()
 	}
 	return result, err
+}
+
+// reads reports the bytes each read so far returned, and reset forgets them, so
+// a test counts what one operation cost rather than everything before it.
+func (c *readCounter) reads() []int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.lengths)
+}
+
+func (c *readCounter) reset() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.lengths = nil
 }
 
 // countedStore is a store whose reads are counted and whose index tail is the
@@ -87,13 +107,13 @@ func TestOpeningACheckpointReadsOnlyTheEndOfItsIndexObject(t *testing.T) {
 		if size <= tail {
 			t.Fatalf("the index object is %d bytes, want more than the %d-byte tail", size, tail)
 		}
-		counter.lengths = nil
+		counter.reset()
 		index, err := store.Open(t.Context(), ref)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(counter.lengths) != 1 || counter.lengths[0] != tail {
-			t.Fatalf("the open read %v bytes, want one read of the %d-byte tail", counter.lengths, tail)
+		if lengths := counter.reads(); len(lengths) != 1 || lengths[0] != tail {
+			t.Fatalf("the open read %v bytes, want one read of the %d-byte tail", lengths, tail)
 		}
 		// The segments are fetched when a read needs them, and the page with them.
 		got := make([]byte, SectorSize)
@@ -119,13 +139,13 @@ func TestARootLongerThanTheTailIsFetchedInOneMoreRead(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		counter.lengths = nil
+		counter.reset()
 		index, err := store.Open(t.Context(), ref)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(counter.lengths) != 2 || counter.lengths[0] != tail {
-			t.Fatalf("the open read %v bytes, want the %d-byte tail and then the rest of the root", counter.lengths, tail)
+		if lengths := counter.reads(); len(lengths) != 2 || lengths[0] != tail {
+			t.Fatalf("the open read %v bytes, want the %d-byte tail and then the rest of the root", lengths, tail)
 		}
 		encoded, err := want.encode()
 		if err != nil {
@@ -160,13 +180,13 @@ func TestAnIndexObjectPastTheOldBoundPublishesAndOpens(t *testing.T) {
 		if err := store.putIndexObject(t.Context(), ref, data); err != nil {
 			t.Fatal(err)
 		}
-		counter.lengths = nil
+		counter.reset()
 		if _, err := store.Open(t.Context(), ref); err != nil {
 			t.Fatal(err)
 		}
-		if len(counter.lengths) != 1 || counter.lengths[0] != defaultIndexTail {
+		if lengths := counter.reads(); len(lengths) != 1 || lengths[0] != defaultIndexTail {
 			t.Fatalf("opening a %d-byte index object read %v bytes, want one read of %d",
-				len(data), counter.lengths, defaultIndexTail)
+				len(data), lengths, defaultIndexTail)
 		}
 	})
 }

@@ -84,14 +84,32 @@ func (entry *cacheEntry) dispose() {
 	}
 }
 
+// cacheFlight is one key a load is fetching, and what every caller waiting for
+// that key waits on.
 type cacheFlight struct {
 	done       chan struct{}
-	cancel     context.CancelFunc
+	load       *cacheLoad
 	waiters    int
 	generation uint64
 	finished   bool
 	entry      *cacheEntry
 	err        error
+}
+
+// cacheLoad is one fetch the cache is running: the keys it is fetching, a
+// flight for each of them, and the one slot of the concurrency budget they
+// share. A read of a single object owns one flight; a read of a run of pages
+// owns one per page it missed and still one slot, because what such a read
+// issues is one request per extent of a part and not one per page.
+//
+// The load's context is cancelled once the last caller waiting on any of its
+// flights has left, so one caller leaving never takes the fetch away from the
+// others, whichever key each of them wanted.
+type cacheLoad struct {
+	cancel  context.CancelFunc
+	keys    []cacheKey
+	flights []*cacheFlight
+	waiters int
 }
 
 // CacheStats reports current occupancy and cumulative accounting. Hits, misses
@@ -163,64 +181,116 @@ func (c *Cache) Close() {
 	close(c.changed)
 	c.changed = make(chan struct{})
 	for _, flight := range c.flights {
-		flight.cancel()
+		flight.load.cancel()
 	}
 	c.mu.Unlock()
 	c.Clear()
 	c.unregister()
 }
 
+// cacheAdmission is what one attempt at a batch of keys found: the retained
+// entry it pinned for each key it already held, the flight it must wait on for
+// every other, or the signal to try again once a running load has finished.
 type cacheAdmission struct {
-	entry  *cacheEntry
-	err    error
-	flight *cacheFlight
-	wait   <-chan struct{}
+	entries []*cacheEntry
+	flights []*cacheFlight
+	err     error
+	wait    <-chan struct{}
 }
 
-func (c *Cache) admit(ctx context.Context, key cacheKey, load func(context.Context) ([]byte, error)) cacheAdmission {
+// fetcher fills one buffer per key of a load. It is given the positions within
+// keys that this load owns, and returns their bytes in that order; the cache
+// copies what it keeps, so a fetcher may hand back slices of its own buffers.
+type fetcher func(ctx context.Context, wanted []int) ([][]byte, error)
+
+func (c *Cache) admit(ctx context.Context, keys []cacheKey, fetch fetcher) cacheAdmission {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
 		return cacheAdmission{err: resource.ErrClosed}
 	}
-	if element := c.entries[key]; element != nil {
-		c.hits++
-		c.lru.MoveToFront(element)
-		entry := element.Value.(*cacheEntry)
-		entry.readers++
-		return cacheAdmission{entry: entry}
+	// What this call would have to fetch is settled before anything is pinned,
+	// because a batch that has to wait for a slot must leave the cache exactly
+	// as it found it and try again.
+	var wanted []int
+	for at, key := range keys {
+		if c.entries[key] == nil && c.flights[key] == nil {
+			wanted = append(wanted, at)
+		}
 	}
-	if flight := c.flights[key]; flight != nil {
-		flight.waiters++
-		c.coalesced++
-		return cacheAdmission{flight: flight}
-	}
-	if c.active >= c.limit {
+	if len(wanted) > 0 && c.active >= c.limit {
 		return cacheAdmission{wait: c.changed}
+	}
+	found := cacheAdmission{entries: make([]*cacheEntry, len(keys)), flights: make([]*cacheFlight, len(keys))}
+	for at, key := range keys {
+		if element := c.entries[key]; element != nil {
+			c.hits++
+			c.lru.MoveToFront(element)
+			entry := element.Value.(*cacheEntry)
+			entry.readers++
+			found.entries[at] = entry
+			continue
+		}
+		if flight := c.flights[key]; flight != nil {
+			flight.waiters++
+			flight.load.waiters++
+			c.coalesced++
+			found.flights[at] = flight
+		}
+	}
+	if len(wanted) == 0 {
+		return found
 	}
 	// No individual caller owns a shared fetch. Its cancellation only stops
 	// the fetch after the last waiter has left.
 	loadCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
-	flight := &cacheFlight{done: make(chan struct{}), cancel: cancel, waiters: 1, generation: c.generation}
-	c.flights[key] = flight
+	load := &cacheLoad{cancel: cancel, keys: make([]cacheKey, 0, len(wanted)),
+		flights: make([]*cacheFlight, 0, len(wanted)), waiters: len(wanted)}
+	for _, at := range wanted {
+		flight := &cacheFlight{done: make(chan struct{}), load: load, waiters: 1, generation: c.generation}
+		c.flights[keys[at]] = flight
+		load.keys = append(load.keys, keys[at])
+		load.flights = append(load.flights, flight)
+		found.flights[at] = flight
+		c.misses++
+	}
 	c.active++
 	c.peak = max(c.peak, c.active)
-	c.misses++
-	go c.run(loadCtx, key, flight, load)
-	return cacheAdmission{flight: flight}
+	go c.run(loadCtx, load, wanted, fetch)
+	return found
 }
 
+// get reads one object, fetching it where the cache does not hold it.
 func (c *Cache) get(ctx context.Context, key cacheKey, load func(context.Context) ([]byte, error)) ([]byte, func(), error) {
+	data, release, err := c.getAll(ctx, []cacheKey{key}, func(ctx context.Context, _ []int) ([][]byte, error) {
+		found, err := load(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return [][]byte{found}, nil
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return data[0], release, nil
+}
+
+// getAll reads several objects at once, fetching the ones the cache does not
+// hold through one call of fetch. The keys must be distinct. It is what lets a
+// reader of a run of pages fetch the pages it is missing in as few requests as
+// the layout allows while every page stays cached under its own identity: what
+// two readers share is the page, not the request that happened to carry it.
+//
+// The returned bytes are pinned until the one release is called, and nothing is
+// pinned at all when it reports an error.
+func (c *Cache) getAll(ctx context.Context, keys []cacheKey, fetch fetcher) ([][]byte, func(), error) {
 	for {
 		if err := context.Cause(ctx); err != nil {
 			return nil, nil, err
 		}
-		next := c.admit(ctx, key, load)
+		next := c.admit(ctx, keys, fetch)
 		if next.err != nil {
 			return nil, nil, next.err
-		}
-		if next.entry != nil {
-			return next.entry.data, sync.OnceFunc(func() { c.release(next.entry) }), nil
 		}
 		if next.wait != nil {
 			select {
@@ -230,22 +300,55 @@ func (c *Cache) get(ctx context.Context, key cacheKey, load func(context.Context
 				return nil, nil, context.Cause(ctx)
 			}
 		}
-		select {
-		case <-next.flight.done:
-			if err := context.Cause(ctx); err != nil {
-				c.leave(key, next.flight)
-				return nil, nil, err
-			}
-			if next.flight.err != nil {
-				return nil, nil, next.flight.err
-			}
-			entry := next.flight.entry
-			return entry.data, sync.OnceFunc(func() { c.release(entry) }), nil
-		case <-ctx.Done():
-			c.leave(key, next.flight)
-			return nil, nil, context.Cause(ctx)
+		return c.collect(ctx, keys, next)
+	}
+}
+
+// collect waits for the flights an admission left and reports the bytes of
+// every key with them. A failure releases everything this call pinned and
+// leaves every flight it has not taken yet, so a read that fails holds nothing.
+func (c *Cache) collect(ctx context.Context, keys []cacheKey, next cacheAdmission) ([][]byte, func(), error) {
+	data := make([][]byte, len(keys))
+	pinned := make([]*cacheEntry, 0, len(keys))
+	for at, entry := range next.entries {
+		if entry != nil {
+			data[at], pinned = entry.data, append(pinned, entry)
 		}
 	}
+	release := func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		for _, entry := range pinned {
+			c.releaseLocked(entry)
+		}
+	}
+	fail := func(from int, err error) ([][]byte, func(), error) {
+		for at := from; at < len(keys); at++ {
+			if flight := next.flights[at]; flight != nil {
+				c.leave(keys[at], flight)
+			}
+		}
+		release()
+		return nil, nil, err
+	}
+	for at, flight := range next.flights {
+		if flight == nil {
+			continue
+		}
+		select {
+		case <-flight.done:
+			if err := context.Cause(ctx); err != nil {
+				return fail(at, err)
+			}
+			if flight.err != nil {
+				return fail(at+1, flight.err)
+			}
+			data[at], pinned = flight.entry.data, append(pinned, flight.entry)
+		case <-ctx.Done():
+			return fail(at, context.Cause(ctx))
+		}
+	}
+	return data, sync.OnceFunc(release), nil
 }
 
 func (c *Cache) leave(key cacheKey, flight *cacheFlight) {
@@ -258,60 +361,83 @@ func (c *Cache) leave(key cacheKey, flight *cacheFlight) {
 		return
 	}
 	flight.waiters--
-	if flight.waiters == 0 {
-		flight.cancel()
+	flight.load.waiters--
+	if flight.load.waiters == 0 {
+		flight.load.cancel()
 		// New callers must not join a fetch whose context was canceled. Its
 		// occupied slot is released only when the actual loader finishes.
-		if c.flights[key] == flight {
-			delete(c.flights, key)
+		for at, held := range flight.load.flights {
+			if c.flights[flight.load.keys[at]] == held {
+				delete(c.flights, flight.load.keys[at])
+			}
 		}
 	}
 }
 
-func (c *Cache) run(ctx context.Context, key cacheKey, flight *cacheFlight, load func(context.Context) ([]byte, error)) {
-	defer flight.cancel()
-	data, err := load(ctx)
-	var entry *cacheEntry
-	if err == nil {
+func (c *Cache) run(ctx context.Context, load *cacheLoad, wanted []int, fetch fetcher) {
+	defer load.cancel()
+	fetched, err := fetch(ctx, wanted)
+	if err == nil && len(fetched) != len(load.flights) {
+		err = ErrCorrupt
+	}
+	entries := make([]*cacheEntry, len(load.flights))
+	for at := range entries {
+		if err != nil {
+			break
+		}
 		// Try to reserve the owned copy, reclaiming unused cache first. If guest
 		// pages or pinned readers occupy the allotment, serve this read through
 		// transient I/O headroom and do not retain it. Cache capacity must not
 		// prevent a required read.
 		var lease *resource.Lease
-		lease, err = c.resources.TryAcquire(ctx, int64(len(data))+cacheEntryCharge)
+		lease, err = c.resources.TryAcquire(ctx, int64(len(fetched[at]))+cacheEntryCharge)
 		if errors.Is(err, resource.ErrCapacity) {
 			err = context.Cause(ctx)
 		}
-		if err == nil {
-			owned := make([]byte, len(data))
-			copy(owned, data)
-			entry = &cacheEntry{key: key, data: owned, lease: lease}
+		if err != nil {
+			break
 		}
+		owned := make([]byte, len(fetched[at]))
+		copy(owned, fetched[at])
+		entries[at] = &cacheEntry{key: load.keys[at], data: owned, lease: lease}
 	}
-	c.finish(key, flight, entry, err)
+	if err != nil {
+		// A load fails whole: the keys it had already copied are given back
+		// rather than served beside an error nobody can use them with.
+		for _, entry := range entries {
+			if entry != nil {
+				entry.dispose()
+			}
+		}
+		clear(entries)
+	}
+	c.finish(load, entries, err)
 }
 
-func (c *Cache) finish(key cacheKey, flight *cacheFlight, entry *cacheEntry, err error) {
+func (c *Cache) finish(load *cacheLoad, entries []*cacheEntry, err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	flight.entry, flight.err, flight.finished = entry, err, true
-	if c.flights[key] == flight {
-		delete(c.flights, key)
+	for at, flight := range load.flights {
+		key, entry := load.keys[at], entries[at]
+		flight.entry, flight.err, flight.finished = entry, err, true
+		if c.flights[key] == flight {
+			delete(c.flights, key)
+		}
+		if entry != nil {
+			entry.readers = flight.waiters
+			if entry.lease != nil && flight.waiters > 0 && flight.generation == c.generation && !c.closed && len(entry.data) > 0 {
+				charge := entry.lease.Bytes()
+				entry.retained = true
+				c.entries[key] = c.lru.PushFront(entry)
+				c.used += charge
+			}
+			if entry.readers == 0 {
+				entry.dispose()
+			}
+		}
+		close(flight.done)
 	}
 	c.active--
-	if entry != nil {
-		entry.readers = flight.waiters
-		if entry.lease != nil && flight.waiters > 0 && flight.generation == c.generation && !c.closed && len(entry.data) > 0 {
-			charge := entry.lease.Bytes()
-			entry.retained = true
-			c.entries[key] = c.lru.PushFront(entry)
-			c.used += charge
-		}
-		if entry.readers == 0 {
-			entry.dispose()
-		}
-	}
-	close(flight.done)
 	close(c.changed)
 	c.changed = make(chan struct{})
 }
