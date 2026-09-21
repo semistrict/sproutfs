@@ -6,7 +6,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -70,6 +72,10 @@ type forkLifeShape struct {
 	// interval checkpoints each child on that interval while it lives, zero
 	// for none.
 	interval time.Duration
+	// waitStreamed lets every page the source holds arrive before the child is
+	// torn down, which is what the fan-out's own receive does and what a fast
+	// trial leaves out.
+	waitStreamed bool
 }
 
 func (s forkLifeShape) String() string {
@@ -81,6 +87,9 @@ func (s forkLifeShape) String() string {
 	}
 	if s.interval > 0 {
 		parts = append(parts, "interval "+s.interval.String())
+	}
+	if s.waitStreamed {
+		parts = append(parts, "streamed before teardown")
 	}
 	return strings.Join(parts, ", ")
 }
@@ -94,6 +103,12 @@ func forkLifeArm(t *testing.T) (string, forkLifeShape) {
 		"late-root":   {siblings: 2, interval: forkFanOutInterval, checkpointAfterStream: true},
 		"one-child":   {siblings: 1, interval: forkFanOutInterval},
 		"no-interval": {siblings: 2},
+		// The reduction ladder: the least a trial can be, and then one thing at
+		// a time back towards the fan-out.
+		"solo":          {siblings: 1, waitStreamed: true},
+		"solo-nowait":   {siblings: 1},
+		"solo-interval": {siblings: 1, interval: forkFanOutInterval, waitStreamed: true},
+		"solo-pair":     {siblings: 2, waitStreamed: true},
 	}
 	name := os.Getenv("SPROUTFS_FORK_ARM")
 	if name == "" {
@@ -101,7 +116,7 @@ func forkLifeArm(t *testing.T) (string, forkLifeShape) {
 	}
 	shape, found := shapes[name]
 	if !found {
-		t.Fatalf("SPROUTFS_FORK_ARM=%q is not one of fanout, late-root, one-child, no-interval", name)
+		t.Fatalf("SPROUTFS_FORK_ARM=%q is not one of %v", name, slices.Sorted(maps.Keys(shapes)))
 	}
 	return name, shape
 }
@@ -257,7 +272,7 @@ func takeBriefly(t *testing.T, ctx context.Context, c *migrationCluster, pager *
 		release()
 		t.Fatalf("streaming %s from %s: %v", handoff.VMID, handoff.Source, err)
 	}
-	if shape.checkpointAfterStream {
+	if shape.checkpointAfterStream || shape.waitStreamed {
 		if err := received.Streamed(ctx); err != nil {
 			release()
 			t.Fatalf("the bulk stream of %s stopped early: %v", handoff.VMID, err)
