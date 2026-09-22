@@ -33,7 +33,8 @@ func TestScatteredStoresCostMappingsPerRunAndNotPerPage(t *testing.T) {
 		{"two adjacent pages forwards", []uint64{300, 301}, 1, 1},
 		{"two adjacent pages backwards", []uint64{301, 300}, 1, 1},
 		{"a run of eight", []uint64{304, 300, 302, 301, 306, 303, 305, 307}, 1, 1},
-		{"eight alternating pages", []uint64{300, 302, 304, 306, 308, 310, 312, 314}, 8, 1},
+		{"eight pages far enough apart to stay apart",
+			[]uint64{20, 52, 84, 116, 148, 180, 212, 244}, 8, 1},
 		{"one page in each of three ranges",
 			[]uint64{10, rangePages + 10, 2*rangePages + 10}, 3, 3},
 	} {

@@ -128,18 +128,19 @@ func TestTwoAdjacentPrivatePagesAreOneMappingInEitherOrder(t *testing.T) {
 	}
 }
 
-// Pages that alternate between shared and private are a mapping each, which is
-// the cost placement cannot take away: the shared pages between them are
-// somewhere else in the arena, so every private page is its own run.
+// Pages far enough apart to alternate between shared and private are a mapping
+// each, which is the cost placement alone cannot take away: the shared pages
+// between them are somewhere else in the arena, so every private page is its
+// own run. Stores nearer than that are the gap rule's, in rules_test.go.
 func TestAlternatingPrivatePagesAreAMappingEach(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		const stores = 8
+		const stores, stride = 8, 32
 		f, r, m, _ := placedRegion(t, 2*rangePages)
 		for i := range uint64(stores) {
-			access(t, r, m, 300+2*i, true)[0] = 7
+			access(t, r, m, 20+stride*i, true)[0] = 7
 		}
 		if got := mappings(m); got != stores {
-			t.Fatalf("%d private pages one apart are %d mappings, want %d", stores, got, stores)
+			t.Fatalf("%d private pages %d apart are %d mappings, want %d", stores, stride, got, stores)
 		}
 		if s := hostStats(t, f); s.PrivateExtents != 1 || s.ResidentPages != stores*copied {
 			t.Fatalf("%d alternating pages of one range own %d extents and %d pages, want 1 and %d",

@@ -46,6 +46,11 @@ type extent struct {
 	key  extentKey
 	base int
 	held int
+	// whole marks a range the half-private rule has filled. A whole range stays
+	// whole: it is one mapping and one write-protect command at a seal, and a
+	// settle handing one of its pages back would break it up again for a page
+	// the guest is about to write anyway. It goes with the extent.
+	whole bool
 }
 
 // placing reports whether this pager places anything. A pager whose page is the

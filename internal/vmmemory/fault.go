@@ -209,13 +209,36 @@ func (r *Region) fault(ctx context.Context, index uint64, write bool, spill *int
 	h.stats.CopyOnWrites++
 	h.mu.Unlock()
 	h.touch(pg)
+	// The two rules: the shared pages between this store and a page its range
+	// already held, and the holes of a range that has become half its own, are
+	// made private in this same fault. The whole run sits at consecutive offsets
+	// of one extent, so one command maps it.
+	first, last := index, index+1
 	if !b.mapped {
-		r.setMapped(b, true) // a failed ACK may still have installed the mapping
-		if err := r.mapPages(ctx, index, pg.slot, 1, true); err != nil {
-			return false, r.mappingFailed(err, func() { r.setMapped(b, false) })
+		if first, last, err = r.closeAround(ctx, index, pg.slot); err != nil {
+			return false, err
+		}
+		for page := first; page < last; page++ {
+			r.setMapped(r.binding(page), true) // a failed ACK may still have installed the mapping
+		}
+		slot, count := pg.slot-int(index-first), int(last-first)
+		if err := r.mapPages(ctx, first, slot, count, true); err != nil {
+			err = r.mappingFailed(err, func() { r.unmapPages(first, count) })
+			if !errors.Is(err, ErrMappingRefused) {
+				return false, err
+			}
+			// The backstop. The client has no mapping left for this store, so
+			// the range the guest is writing in is made whole: its alternations
+			// stop costing that process a mapping each, and the store is served
+			// again. It is expected never to act.
+			merged, mergeErr := r.makeWhole(ctx, index)
+			if mergeErr != nil {
+				return false, mergeErr
+			}
+			return merged, err
 		}
 	}
-	if err := r.resolvePages(ctx, index, 1, true); err != nil {
+	if err := r.resolvePages(ctx, first, int(last-first), true); err != nil {
 		return false, r.fail(err)
 	}
 	return false, nil
