@@ -220,7 +220,9 @@ func forkLifeTrial(t *testing.T, ctx context.Context, c *migrationCluster, pager
 	t.Helper()
 	handoffs := make([]vmmigrate.Handoff, 0, shape.siblings)
 	for index := range shape.siblings {
-		point.Hold()
+		if err := point.Hold(); err != nil {
+			t.Fatal(err)
+		}
 		id := fmt.Sprintf("life-%d-%d", trial, index)
 		handoff, err := vmmigrate.Fork(ctx, id, point, source, vmmigrate.Options{})
 		if err != nil {

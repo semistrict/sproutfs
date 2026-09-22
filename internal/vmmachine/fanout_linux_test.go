@@ -154,7 +154,9 @@ func forkPointFixture(t *testing.T, ctx context.Context, binaryPath string) (
 	}
 	// The fan-out's own hold keeps the point while the children are described,
 	// exactly as the host's does.
-	point.Hold()
+	if err := point.Hold(); err != nil {
+		t.Fatal(err)
+	}
 	if err := point.Pin(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +186,9 @@ func TestFirecrackerForkFanOutServesBothChildrenAtOnce(t *testing.T) {
 	children := []string{"child-a", "child-b"}
 	handoffs := make([]vmmigrate.Handoff, 0, len(children))
 	for _, child := range children {
-		point.Hold()
+		if err := point.Hold(); err != nil {
+			t.Fatal(err)
+		}
 		handoff, err := vmmigrate.Fork(ctx, child, point, pages, vmmigrate.Options{})
 		if err != nil {
 			t.Fatal(err)
@@ -196,7 +200,9 @@ func TestFirecrackerForkFanOutServesBothChildrenAtOnce(t *testing.T) {
 	// inherited must be the page the point froze: it is what says whether a
 	// child starts from one consistent picture of its parent while its siblings
 	// run, are checkpointed and settle beside it.
-	point.Hold()
+	if err := point.Hold(); err != nil {
+		t.Fatal(err)
+	}
 	stillHandoff, err := vmmigrate.Fork(ctx, "child-still", point, pages, vmmigrate.Options{})
 	if err != nil {
 		t.Fatal(err)
@@ -204,7 +210,9 @@ func TestFirecrackerForkFanOutServesBothChildrenAtOnce(t *testing.T) {
 	// And a second of them, to take the same measurement again once the running
 	// children are going: the two answers are what say whether the fan-out
 	// changes what a child inherits.
-	point.Hold()
+	if err := point.Hold(); err != nil {
+		t.Fatal(err)
+	}
 	besideHandoff, err := vmmigrate.Fork(ctx, "child-beside", point, pages, vmmigrate.Options{})
 	if err != nil {
 		t.Fatal(err)
@@ -250,7 +258,9 @@ func TestFirecrackerForkFanOutServesBothChildrenAtOnce(t *testing.T) {
 	taken := make([]*forkedChild, 0, len(children))
 	// The watch is a holder like any other, so the point is still there to be
 	// read when the last child releases its own hold.
-	point.Hold()
+	if err := point.Hold(); err != nil {
+		t.Fatal(err)
+	}
 	stopWatching := watchPoint(t, ctx, point, truth)
 	for _, handoff := range handoffs {
 		taken = append(taken, receiveChild(t, ctx, c, destinationPager, binaryPath, handoff, pages))

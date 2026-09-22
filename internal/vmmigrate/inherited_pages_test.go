@@ -19,13 +19,17 @@ func (m *migration) fanOut(t *testing.T, children ...string) []vmmigrate.Handoff
 		t.Fatal(err)
 	}
 	// The fan-out's own hold keeps the point while its children are described.
-	point.Hold()
+	if err := point.Hold(); err != nil {
+		t.Fatal(err)
+	}
 	if err := point.Pin(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	handoffs := make([]vmmigrate.Handoff, 0, len(children))
 	for _, child := range children {
-		point.Hold()
+		if err := point.Hold(); err != nil {
+			t.Fatal(err)
+		}
 		handoff, err := vmmigrate.Fork(t.Context(), child, point, m.pages, vmmigrate.Options{})
 		if err != nil {
 			t.Fatal(err)

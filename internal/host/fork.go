@@ -103,14 +103,18 @@ func (h *Host) Fork(ctx context.Context, parent string, children []string,
 	// its own. A child released while a later one had not been recorded yet
 	// would otherwise retire the point and hand the parent pages the next child
 	// still has to inherit.
-	point.Hold()
+	if err := point.Hold(); err != nil {
+		return nil, err
+	}
 	handoffs := make([]vmmigrate.Handoff, 0, len(children))
 	for _, child := range children {
 		// The hold is this child's, recorded before the child exists anywhere
 		// and under the deadline every handover gets: a takeover of the parent
 		// found in between still finds the hold to give up, and a child nothing
 		// ever releases does not seal the parent for good.
-		h.hold(parent, child, point, local)
+		if err := h.hold(parent, child, point, local); err != nil {
+			return nil, err
+		}
 		// The pin on the parent's checkpoint is written here, by the parent's own
 		// writer, because a destination has no handle on the parent to write one
 		// with. It is the one pin the point took, shared by every child of it,
@@ -159,13 +163,16 @@ func (h *Host) served(local bool) *vmmigrate.PageSource {
 // hold records one child this host holds a fork point for, under the deadline
 // that retires the point when nothing releases it. It is taken before the child
 // exists, so a takeover of the parent found in between still finds it.
-func (h *Host) hold(parent, child string, point *volume.ForkPoint, local bool) {
-	point.Hold()
+func (h *Host) hold(parent, child string, point *volume.ForkPoint, local bool) error {
+	if err := point.Hold(); err != nil {
+		return err
+	}
 	hold := &forkHold{parent: parent, point: point, local: local}
 	hold.timer = h.clock.AfterFunc(h.handoffTimeout(), func() { h.expire(child) })
 	h.machines.mu.Lock()
 	h.machines.forked[child] = hold
 	h.machines.mu.Unlock()
+	return nil
 }
 
 // seal is the fork point itself: the pause, the state capture and the seal of

@@ -37,6 +37,10 @@ var (
 	ErrUnknownVolume = errors.New("volume: unknown volume")
 	// ErrExists reports a VM identity whose control record already exists.
 	ErrExists = errors.New("volume: VM already exists")
+	// ErrRetired reports a fork point whose last holder has given it up: its
+	// seal has ended and the parent owns those pages again, so nothing may take
+	// a hold on it or start a child from it.
+	ErrRetired = errors.New("volume: the fork point has been retired")
 	// ErrIdentityUsed reports a create of an identity that has checkpoint
 	// objects under it and no control record: a VM deleted while a fork read
 	// through it, or a create interrupted before its record. Those objects are
