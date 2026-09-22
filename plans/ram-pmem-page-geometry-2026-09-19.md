@@ -50,10 +50,16 @@ protocol already expresses runs and batches, although its validation and
 arithmetic currently assume a universal 2 MiB page.
 
 The write path must reserve, copy, remap and charge only one 4 KiB RAM page.
-Read-ahead must not make its neighbors writable or privately dirty. In
-particular, disable RAM write-ahead initially: the current optimization grants
-writable private pages to neighboring fresh zero pages before they are used.
-Checkpoint protection and retirement must preserve this isolation too.
+Read-ahead must not make its neighbors writable or privately dirty. RAM
+write-ahead was disabled with it initially, and that was wrong: write-ahead
+serves fresh zeros and nothing else, and a hole is shared with nobody, so making
+a store's neighbours private gives back no sharing at whatever page. RAM takes
+the same 8 MiB run as PMEM, bounded by free slots, free dirty reservations and a
+dirty budget that must hold 64 such runs, and what bounds its cost is the
+untouched ahead page: it reads back as zeros, the publication gives it no object,
+and the retire — which is where the pager learns what the volume holds no object
+for — hands it back as the hole it was, slot and reservation with it. Checkpoint
+protection and retirement must preserve the 4 KiB isolation too.
 
 A mapping batch is not a promise of a physical huge page or huge translation.
 The baseline RAM implementation uses ordinary backing that supports 4 KiB
@@ -327,9 +333,9 @@ memory savings and workload time together.
    memfd of the pool and a 4 KiB slot an ordinary one, named after its page so
    `/proc` says which memory a guest's mapping is really on. `ramPageSize` is
    4 KiB, `host.RAMPageSize` and `host.PMEMPageSize` are the one place either is
-   stated, and RAM's write-ahead is one page whatever its budget: a run that made
-   a store's neighbours privately dirty before the guest used them would give
-   back exactly the sharing the small page buys. Runs and per-run protection
+   stated, and RAM's write-ahead was one page whatever its budget — which step 8
+   below undid, because the run only ever touches fresh zeros and those are
+   shared with nobody. Runs and per-run protection
    needed nothing new — the plan already batched a run of consecutive pages in
    consecutive slots into one command, the slot allocator already prefers
    consecutive runs, and a seal already protects per run — so at 4 KiB a fork
@@ -463,6 +469,64 @@ memory savings and workload time together.
    Update the architecture, terminology, volumes, VM-memory, hosting and
    migration documents when the implementation lands. Historical measurement
    reports retain their original geometry and environment.
+
+8. **Zero write-ahead for RAM. Done.** Give RAM the same write-ahead run as
+   PMEM, and make an ahead page the guest never stored into cost nothing past
+   the next checkpoint.
+
+   **Why the restriction was wrong.** Write-ahead is only ever reached by
+   `Region.storeFresh`, which serves a store into a hole or a zero mapping.
+   Neither has a resident page or a page identity, so nothing shares them and a
+   run of them takes no sharing away from anybody — the reasoning that disabled
+   it for RAM is about pages a checkpoint published, which this path never
+   touches.
+
+   **The run.** 8 MiB of the pager's own pages, which is the read-ahead run:
+   four at 2 MiB and 2,048 at 4 KiB. It is the read-ahead run because
+   `zeroRun` cannot leave the faulting page's read-ahead window anyway, and
+   because both are buffers a deployment states in bytes. A pager whose dirty
+   budget cannot hold 64 such runs keeps one page, which is the bound PMEM
+   already had: the deployment's 9 GiB of dirty RAM is 2,359,296 pages against
+   the 131,072 that bound needs, so a production RAM pager takes the whole run.
+   Beyond that, a run shrinks to the free dirty reservations and the consecutive
+   free arena slots it finds, and waits for neither.
+
+   **What it buys.** The boot survey of 2026-09-22 (`TestBootSurveyOfPrivateRAMPages`)
+   says a 16 GiB guest's boot makes 103,035 RAM pages private, and that they are
+   real kernel writes rather than spurious read faults: 65,280 of them are the
+   256 MiB memmap, written page by page by `__init_single_page`, and 16,384 are
+   swiotlb's 64 MiB bounce buffer, memset to zero in one block. Both are
+   contiguous and written forwards, so at 8 MiB a run those two cost 32 faults
+   instead of 81,664.
+
+   **What bounds its cost, and where.** An ahead page the guest never stored
+   into reads back as zeros, so `Publication.writeEdits` gives it no object —
+   a page that reads as all zeroes leaves the index — and the volume reports it
+   as a hole from then on. The **retire** is what hands it back:
+   `finalizeCheckpoint` looks up the identity the volume now gives each page,
+   and `publishLocked` drops a page the volume holds no object for, revoking the
+   guest's mapping, releasing the resident page and returning the dirty
+   reservation. The page is then as untouched as it was before the store. The
+   settle is the wrong place: it compares a copy with the page it was copied
+   from, and a page made from zeros has no origin — deciding it there would mean
+   a second zero test of every ahead page's bytes, duplicating the one the
+   publication already makes.
+
+   **Proved by exact counts.** `TestZeroWriteAheadPagesTheGuestNeverStoredIntoAreGivenBack`
+   runs the worst pattern for the run — the guest stores into one page of every
+   512 of a 4,096-page region of holes — and requires 8 faults, 8 private runs,
+   8 mapping commands, no revocation and no volume read; 4,096 private pages and
+   4,096 dirty; then, across the checkpoint, 4,096 sealed pages, 4,088 of them
+   write-ahead zeros, 8 pages and 32,768 bytes published, and afterwards 0 dirty
+   pages, 8 resident and 8 mapped, with every page reading back as the store the
+   guest made or the hole it was. `TestAGivenBackZeroAheadPageStoresAsAHoleAgain`
+   requires the next store into a given-back page to be a fresh-zero store again.
+   In the simulation, `TestZeroWriteAheadPublishesOnlyWhatTheGuestStored` runs
+   the same pattern through a cold-started VM on the deployment's own stack and
+   requires the byte model to hold through the guest's mappings and through the
+   volume, with the host holding the whole region privately before the checkpoint
+   and nothing after it. `internal/host/pager_test.go` pins both pagers' runs and
+   the dirty-budget bound, on either platform.
 
 ## Format and rollout
 

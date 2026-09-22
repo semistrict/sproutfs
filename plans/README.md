@@ -24,6 +24,10 @@ across all of them is collected in [open-work.md](../docs/open-work.md).
   4 KiB pages is two requests where it was 513; a part's table bound is 1 MiB,
   so a 64 MiB part of 4 KiB pages fills on its bytes rather than stopping at
   about 8,700 members; compression stays per member and no format version moved.
+  Step 8 is done: RAM writes ahead again, the same 8 MiB run as PMEM, because
+  the run only ever serves fresh zeros and a hole is shared with nobody — and an
+  ahead page the guest never stored into is published as a hole and handed back
+  by the retire, with its arena slot and its dirty reservation.
   **One open defect stands against step 4: a
   fan-out of two children panics a child's guest kernel at 4 KiB, about one run
   in thirty, and revoking is not a fix for it** — see docs/open-work.md. Step
