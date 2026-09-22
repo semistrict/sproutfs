@@ -223,12 +223,23 @@ func (r *Region) fault(ctx context.Context, index uint64, write bool, spill *int
 
 // readIn gives a store into a page this region holds no memory for something to
 // copy away from: the resident page that holds the identity this page's volume
-// gives it, locked and bound to nothing. One is there already where another
-// region of this pager inherited the same identity; otherwise the bytes are
-// read once into a page of their own, which enters the sharing index under that
-// identity — so the copy has an origin the settle can compare it with, and the
-// next region to inherit the identity maps that page rather than reading it
-// again.
+// gives it, locked. One is there already where another region of this pager
+// inherited the same identity; otherwise the bytes are read into a page of
+// their own, which enters the sharing index under that identity — so the copy
+// has an origin the settle can compare it with, and the next region to inherit
+// the identity maps that page rather than reading it again.
+//
+// It brings the faulting page's whole read-ahead window in while it is there,
+// because a store is how a cold fork faults. On x86-64 KVM finishes a fault
+// that had to wait for the pager from a worker that asks for the page writable
+// whatever the guest's access was, so a guest merely reading what it inherited
+// reaches the pager as a store; a store that read its own page alone made that
+// pass one round trip per page, which at 4 KiB is 512 of them per 2 MiB the
+// guest touches. The window is installed exactly as a read fault installs it —
+// shared residents under their identities, mapped read-only in runs, taking
+// only free slots — but for the faulting page itself, which is left unmapped
+// because the copy is about to replace it and mapping it read-only first would
+// cost every store a revocation and a fence for nothing.
 //
 // A page whose bytes no checkpoint published has none: a hole, a page whose
 // backing names another page, and a page only another host still holds, whose
@@ -238,8 +249,90 @@ func (r *Region) fault(ctx context.Context, index uint64, write bool, spill *int
 // Which of those a page is has two answers on a post-copy destination, and they
 // come from different places: the extents report the set its handoff fixed, and
 // a load reports what the source said when it answered. The load's is the one
-// that saw the bytes, so it decides — the extents only save the read.
+// that saw the bytes, so it decides — the extents only save the read. That
+// second answer is per page and only a load can give it, so a peer backing's
+// store reads its page alone, as every store did before.
 func (r *Region) readIn(ctx context.Context, index uint64) (*resident, error) {
+	if !r.peer {
+		for range loadAttempts {
+			pg, retry, err := r.readInWindow(ctx, index)
+			if err != nil || !retry {
+				return pg, err
+			}
+		}
+		// Nothing but a publication race gets here, and a store that could not
+		// win one still has a volume to read its copy from.
+		return nil, nil
+	}
+	return r.readInPage(ctx, index)
+}
+
+// readInWindow is readIn over the faulting page's whole window, for a backing
+// every page of which the volume itself holds. It reports the origin the store
+// copies from, still locked, with every other page of the window resident,
+// shared and mapped; or that the faulting page lost a publication race and the
+// store must try again, holding nothing.
+func (r *Region) readInWindow(ctx context.Context, index uint64) (pg *resident, retry bool, err error) {
+	start, end := r.window(index)
+	// The plan names no faulting page: nothing here resolves the guest's access
+	// or maps the page it trapped on, which the store does for itself once it
+	// holds its copy.
+	plan, err := r.plan(ctx, start, end, end)
+	if err != nil {
+		return nil, false, err
+	}
+	defer plan.unlock()
+	if id, named := plan.identity(index); !named || id.zero() {
+		return nil, false, nil
+	}
+	// The faulting page comes first, waiting for its identity's resident while
+	// the plan holds no other, and reserving a slot for it among the run of
+	// pages around it so that the run lands in consecutive slots.
+	if err := plan.bindShared(ctx, index, true); err != nil {
+		return nil, false, err
+	}
+	if plan.pages[index-start] == nil {
+		plan.reserveAround(index)
+		if plan.reserved[index-start] < 0 {
+			slot, err := r.reclaim(ctx)
+			if err != nil {
+				return nil, false, err
+			}
+			plan.reserve(index, slot)
+		}
+	}
+	for page := start; page < end; page++ {
+		i := page - start
+		if plan.pages[i] != nil || plan.zeros[i] || plan.reserved[i] >= 0 || !plan.eligible(page) {
+			continue
+		}
+		if err := plan.bindShared(ctx, page, false); err != nil {
+			return nil, false, err
+		}
+	}
+	plan.reserveRuns(index)
+	if err := plan.loadReserved(ctx); err != nil {
+		return nil, false, err
+	}
+	if pg = plan.pages[index-start]; pg == nil {
+		// Another fault published this identity while the read ran and its page
+		// was busy, so the plan left this one for a later fault. The store
+		// decides again from the top, holding nothing.
+		return nil, true, nil
+	}
+	plan.fresh[index-start] = false
+	if _, err := plan.install(ctx); err != nil {
+		return nil, false, err
+	}
+	// The caller holds the origin from here; the plan releases everything else.
+	delete(plan.locked, pg)
+	return pg, false, nil
+}
+
+// readInPage is readIn of the faulting page alone, which is what a backing
+// whose loads can answer that the source still holds a page needs: that answer
+// is per page, and a page it gives it for is one nothing may be shared under.
+func (r *Region) readInPage(ctx context.Context, index uint64) (*resident, error) {
 	h := r.host
 	window, err := r.plan(ctx, index, index+1, index)
 	if err != nil {

@@ -176,6 +176,18 @@ GCE host (`gce-fanout-2026-09-19/`), four forks each running `busybox uname`:
   So with a 4 KiB page under a 2 MiB read-ahead run this costs RAM one page in
   512, and it costs PMEM, at 2 MiB, a whole page for every cold fault. It is
   recorded in [open-work.md](../docs/open-work.md) and is not this plan's to fix.
+
+  **That one page in 512 was not what a fork paid until 2026-09-22.** Read-ahead
+  never ran for those faults: the store path read the one page it was copying
+  from and nothing else, so a fork's first pass over its memory was one fault,
+  one round trip and one private page per 4 KiB — the GCE fan-out that day took
+  21,130 faults of which 20,016 were copy-on-writes, and 10,313 loads for 35,257
+  pages. A store reads its whole window in now, exactly as a read fault does and
+  on the same terms — free slots only, one call to the volume, the run installed
+  shared and read-only — and then copies the one page the guest stored into,
+  which is never mapped read-only first, so a store still costs no revocation.
+  A migration destination's backing stays a page at a time: whether the source
+  still holds a page is an answer only a load gives, and it gives it per page.
 - **Real writes scatter on the root.** One small file written and synced
   changed 24 blocks, 96 KB, in seven places — superblock, bitmaps, inode table,
   two directories, the data block and the journal — and made ten root pages,

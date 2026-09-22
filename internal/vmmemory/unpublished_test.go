@@ -263,6 +263,36 @@ func TestAStoreTakesAPageNoCheckpointHoldsAndReportsItInstalled(t *testing.T) {
 
 func ptr[T any](value T) *T { return &value }
 
+// A store on a migration destination reads its own page and no more, where a
+// store over an ordinary volume brings its whole read-ahead window in. The
+// difference is the second answer this backing gives: whether the source still
+// holds a page is per page and only a load can report it, so a window read
+// would be asking for pages it cannot say that about. It stays a page at a
+// time until the backing can answer for a run.
+func TestAStoreOnAMigrationDestinationReadsItsOwnPageAlone(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 16, LogicalPages: 32,
+			DirtyPages: 8, ReadAheadPages: 8})
+		base := f.newBacking(8)
+		peer := &peerBacking{backing: base,
+			unpublished: map[uint64]bool{5: true}, served: map[uint64]byte{5: 55}}
+		r, m := f.attach(peer)
+		if _, err := memoryByte(t.Context(), r, m, 1, ptr(byte(99))); err != nil {
+			t.Fatal(err)
+		}
+		if peer.loads != 1 || base.loadedBytes != pageSize {
+			t.Fatalf("a destination's store made %d loads of %d bytes, want one of its own page",
+				peer.loads, base.loadedBytes)
+		}
+		if len(m.pages) != 1 || !m.pages[1].writable {
+			t.Fatalf("the store mapped %d pages (%v), want its own alone and writable", len(m.pages), m.pages)
+		}
+		if got := access(t, r, m, 1, false)[0]; got != 99 {
+			t.Fatalf("the page the guest stored into holds %d, want 99", got)
+		}
+	})
+}
+
 // A store into a page this region holds no memory for reads that page in first,
 // and puts what it read into the sharing index under the identity the volume
 // gives it, so that the copy has an origin and every sibling that inherits the

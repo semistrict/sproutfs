@@ -60,8 +60,12 @@ everything open is listed here.
   restore, because the pager split its window at every page it already held.
   That is fixed and counted as a unit (a 512-page window over three checkpoints
   with 64 pages resident: 65 loads and 195 GETs, against one load and three),
-  and the GCE fan-out has not been re-run: first output within 2 s is still
-  unmet as far as this repository knows.
+  and the GCE re-measurement on 2026-09-22 took a cold restore from 7.5 s to
+  4.6 s and its 1,323 loads to 293. The fan-out did not move, because a fork
+  does not fault the way a restore does: 20,016 of its 21,130 faults were
+  stores, and a store read its own page alone. A store reads its window ahead
+  now too, counted the same way, and the fan-out has not been re-run: first
+  output within 2 s is still unmet as far as this repository knows.
 - **Compaction reads the pages it rescues one at a time.** A read of a range of
   a volume now fetches a run of members as one ranged read per extent, but
   compaction walks a segment's pages and calls `Store.loadPage` for each one it
@@ -87,7 +91,7 @@ everything open is listed here.
   pages so the whole range becomes one private run — rather than leaving the
   guest waiting on a budget only revocation can free. A guest whose writes
   scatter widely enough can still refuse its way into a stall.
-- **A page a guest only reads is copied, and the copy is given back at the next checkpoint.** A cold read that has to wait for the pager reaches it as a write fault — on x86-64 because KVM's asynchronous page fault worker always asks for the page writable, on aarch64 when the guest first executes a page — and the pager answers a write fault with a private page. What the [unchanged-page rule](../plans/unchanged-pages-2026-09-19.md) recovers is done: the copy remembers the page it was made from, the settle behind each checkpoint's pause compares the two, and a page that did not change is published nowhere and goes straight back to sharing its origin. What remains is the copy itself. Between the fault and the next checkpoint the host holds the page twice, and with 4 KiB RAM pages under a 2 MiB read-ahead run that is one page in 512, while for PMEM at 2 MiB it is a whole page per cold fault until the interval passes. Preventing it needs a host kernel that passes the guest's access through, or KVM userfault once it exists, and neither is ours to start. Fork points are not settled either: a child inherits an unchanged page as an unpublished one, which its own next checkpoint settles.
+- **A page a guest only reads is copied, and the copy is given back at the next checkpoint.** A cold read that has to wait for the pager reaches it as a write fault — on x86-64 because KVM's asynchronous page fault worker always asks for the page writable, on aarch64 when the guest first executes a page — and the pager answers a write fault with a private page. What the [unchanged-page rule](../plans/unchanged-pages-2026-09-19.md) recovers is done: the copy remembers the page it was made from, the settle behind each checkpoint's pause compares the two, and a page that did not change is published nowhere and goes straight back to sharing its origin. What remains is the copy itself. Between the fault and the next checkpoint the host holds the page twice, and with 4 KiB RAM pages under a 2 MiB read-ahead run that is one page in 512, while for PMEM at 2 MiB it is a whole page per cold fault until the interval passes. That one-in-512 only became true on 2026-09-22: a store used to read its own page and no more, so a fork's first pass over its memory was one fault per page and every one of those pages was forced writable and copied — the GCE fan-out that day took 21,130 faults of which 20,016 were copy-on-writes. A store reads its window ahead now, and the pages it brings in ahead of a fault are read without waiting and stay shared. Preventing it needs a host kernel that passes the guest's access through, or KVM userfault once it exists, and neither is ours to start. Fork points are not settled either: a child inherits an unchanged page as an unpublished one, which its own next checkpoint settles.
 - **The workload measurement predates the multi-page parts and wants re-taking.** It was measured against one object per dirty page, before `39bfe37`, so its object counts describe a store layout that no longer exists, and only one fork setting (`FORKS_BASE=2 FORKS_PER_REPO=1`) was run; the commands to re-take it on current `main` are in the document (`docs/measurements-2026-09-14-workload.md`).
 
 ## Found by the 2026-09-14 GCE validation
