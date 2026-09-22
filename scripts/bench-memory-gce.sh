@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Disposable nested-KVM memory measurements. `all` always deletes its VM.
 # SPROUTFS_GCE_FANOUT=1 runs only the fork fan-out that lists the pages each
-# fork came to own. SPROUTFS_GCE_WORKLOAD=1 runs only the realistic comparison:
+# fork came to own. SPROUTFS_GCE_BOOTSURVEY=1 runs only the boot survey of what
+# a 4 KiB boot makes private. SPROUTFS_GCE_WORKLOAD=1 runs only the realistic comparison:
 # the workload image through every scenario of the guest workload benchmark,
 # managed and on plain Firecracker; with SPROUTFS_GCE_SMOKE=1 as well, everything
 # but the build, in minutes, which is what to run first on a host `create` made.
@@ -9,6 +10,7 @@
 set -euo pipefail
 case ${SPROUTFS_GCE_BUILD_ONLY:-0} in 0|1) ;; *) echo "SPROUTFS_GCE_BUILD_ONLY must be 0 or 1" >&2; exit 2 ;; esac
 case ${SPROUTFS_GCE_FANOUT:-0} in 0|1) ;; *) echo "SPROUTFS_GCE_FANOUT must be 0 or 1" >&2; exit 2 ;; esac
+case ${SPROUTFS_GCE_BOOTSURVEY:-0} in 0|1) ;; *) echo "SPROUTFS_GCE_BOOTSURVEY must be 0 or 1" >&2; exit 2 ;; esac
 case ${SPROUTFS_GCE_WORKLOAD:-0} in 0|1) ;; *) echo "SPROUTFS_GCE_WORKLOAD must be 0 or 1" >&2; exit 2 ;; esac
 case ${SPROUTFS_GCE_SMOKE:-0} in 0|1) ;; *) echo "SPROUTFS_GCE_SMOKE must be 0 or 1" >&2; exit 2 ;; esac
 # These cross a remote shell, so they are held to what a scenario list, a count
@@ -125,7 +127,7 @@ PY
         sudo systemctl is-active sproutfs-bench-expire.timer
         mkdir -p source results
         tar -xzf source.tar.gz -C source
-        sudo env SPROUTFS_GCE_BUILD_ONLY='"${SPROUTFS_GCE_BUILD_ONLY:-0}"' SPROUTFS_GCE_FANOUT='"${SPROUTFS_GCE_FANOUT:-0}"' SPROUTFS_GCE_WORKLOAD='"${SPROUTFS_GCE_WORKLOAD:-0}"' SPROUTFS_GCE_SMOKE='"${SPROUTFS_GCE_SMOKE:-0}"' SPROUTFS_BENCH_SCENARIOS='"${SPROUTFS_BENCH_SCENARIOS:-}"' SPROUTFS_BENCH_FORKS='"${SPROUTFS_BENCH_FORKS:-}"' SPROUTFS_BENCH_RAM_BYTES='"${SPROUTFS_BENCH_RAM_BYTES:-}"' SPROUTFS_BENCH_ROOT_BYTES='"${SPROUTFS_BENCH_ROOT_BYTES:-}"' SPROUTFS_BENCH_RAM_RESIDENT_BYTES='"${SPROUTFS_BENCH_RAM_RESIDENT_BYTES:-}"' SPROUTFS_BENCH_PMEM_RESIDENT_BYTES='"${SPROUTFS_BENCH_PMEM_RESIDENT_BYTES:-}"' timeout --signal=TERM --kill-after=30s '"$limit"' bash source/scripts/lib/bench-memory-linux.sh "$PWD/source" "$PWD/results"' \
+        sudo env SPROUTFS_GCE_BUILD_ONLY='"${SPROUTFS_GCE_BUILD_ONLY:-0}"' SPROUTFS_GCE_FANOUT='"${SPROUTFS_GCE_FANOUT:-0}"' SPROUTFS_GCE_BOOTSURVEY='"${SPROUTFS_GCE_BOOTSURVEY:-0}"' SPROUTFS_GCE_WORKLOAD='"${SPROUTFS_GCE_WORKLOAD:-0}"' SPROUTFS_GCE_SMOKE='"${SPROUTFS_GCE_SMOKE:-0}"' SPROUTFS_BENCH_SCENARIOS='"${SPROUTFS_BENCH_SCENARIOS:-}"' SPROUTFS_BENCH_FORKS='"${SPROUTFS_BENCH_FORKS:-}"' SPROUTFS_BENCH_RAM_BYTES='"${SPROUTFS_BENCH_RAM_BYTES:-}"' SPROUTFS_BENCH_ROOT_BYTES='"${SPROUTFS_BENCH_ROOT_BYTES:-}"' SPROUTFS_BENCH_RAM_RESIDENT_BYTES='"${SPROUTFS_BENCH_RAM_RESIDENT_BYTES:-}"' SPROUTFS_BENCH_PMEM_RESIDENT_BYTES='"${SPROUTFS_BENCH_PMEM_RESIDENT_BYTES:-}"' timeout --signal=TERM --kill-after=30s '"$limit"' bash source/scripts/lib/bench-memory-linux.sh "$PWD/source" "$PWD/results"' \
         > "$results/remote.log" 2>&1 || status=$?
     "${cloud[@]}" compute scp --recurse --zone="$zone" "$instance:results/." "$results/" || status=$?
     return "$status"

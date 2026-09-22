@@ -147,6 +147,31 @@ if [[ ${SPROUTFS_GCE_WORKLOAD:-0} == 1 ]]; then
     exit "$status"
 fi
 
+# Only the boot survey: one guest of the qualification image booted at the
+# comparison's 16 GiB and at 1 GiB, and every RAM page its boot made private
+# read back through the pager and classified by content and by place, which
+# says what a boot at a 4 KiB page actually writes.
+if [[ ${SPROUTFS_GCE_BOOTSURVEY:-0} == 1 ]]; then
+    mkdir -p "$work/build/qualification-root/dev" "$work/build/qualification-root/proc" \
+        "$work/build/qualification-root/sys" "$work/build/qualification-root/mnt" "$work/build/qualification-root/bin"
+    cp "$root/init" "$work/build/qualification-root/init"
+    cp /usr/bin/busybox "$work/build/qualification-root/bin/busybox"
+    ln -sfn busybox "$work/build/qualification-root/bin/sh"
+    truncate -s 64M "$work/build/qualification.ext4"
+    mkfs.ext4 -q -F -b 4096 -d "$work/build/qualification-root" "$work/build/qualification.ext4"
+    for ram in 17179869184 1073741824; do
+        env SPROUTFS_FIRECRACKER="$work/build/firecracker" \
+            SPROUTFS_FIRECRACKER_SECCOMP="$work/build/seccomp.bpf" \
+            SPROUTFS_FIRECRACKER_KERNEL="$work/build/kernel" \
+            SPROUTFS_FIRECRACKER_ROOT="$work/build/qualification.ext4" \
+            SPROUTFS_BOOT_RAM_BYTES="$ram" \
+            SPROUTFS_BOOT_SURVEY_OUT="$results/bootsurvey-$((ram >> 20)).json" \
+            "$work/build/vmmachine.test" -test.v -test.run '^TestBootSurveyOfPrivateRAMPages$' -test.timeout=20m \
+            > "$results/bootsurvey-$((ram >> 20)).log" 2>&1
+    done
+    exit 0
+fi
+
 # Only the fork fan-out: forks of one published checkpoint each run one binary
 # off the DAX root and write nothing, and the record lists the pages each fork
 # came to own, by region. busybox is the init's shell, so the parent has run it
