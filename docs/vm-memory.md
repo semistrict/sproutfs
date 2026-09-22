@@ -859,6 +859,17 @@ with UFFD and write-protects it when it is shared immutable backing, replaces
 the live range with `mremap(MREMAP_FIXED | MREMAP_MAYMOVE)`, and acknowledges
 only after that syscall completes.
 
+The runs of one batch that are a single stretch of the region are built
+together, in one reservation: three or more of them are placed in it, and the
+whole span takes one `MADV_DONTFORK`, one `UFFDIO_REGISTER` and one
+`UFFDIO_WRITEPROTECT` instead of one each. Each still takes an `mremap` of its
+own, because `mremap` moves a single mapping and two runs of a batch are never
+one — runs adjacent in both the region and the arena have already been merged
+into one before any of this, so what is left is adjacent in the region alone and
+the kernel keeps those apart. A batch of 64 such runs costs 136 kernel calls
+rather than 320; making the `mremap`s one would mean saying so on the wire, and
+the wire does not.
+
 Nonresident ranges are anonymous readable and writable mappings registered for
 missing and write-protect faults, with no populated pages. They are not
 `PROT_NONE` ranges, which would raise ordinary protection faults instead.

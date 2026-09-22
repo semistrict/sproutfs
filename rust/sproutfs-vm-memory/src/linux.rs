@@ -41,6 +41,7 @@ pub(crate) fn backing_for(page_size: usize) -> Option<u64> {
 pub(crate) fn check_backing(fd: &OwnedFd, kind: u64, len: u64) -> io::Result<()> {
     let refuse = |what: String| io::Error::new(io::ErrorKind::InvalidData, what);
     let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+    called();
     if unsafe { libc::fstat(fd.as_raw_fd(), &mut stat) } != 0 {
         return Err(io::Error::last_os_error());
     }
@@ -51,6 +52,7 @@ pub(crate) fn check_backing(fd: &OwnedFd, kind: u64, len: u64) -> io::Result<()>
         )));
     }
     let mut fs: libc::statfs = unsafe { std::mem::zeroed() };
+    called();
     if unsafe { libc::fstatfs(fd.as_raw_fd(), &mut fs) } != 0 {
         return Err(io::Error::last_os_error());
     }
@@ -73,6 +75,7 @@ pub(crate) fn ioctl<T>(fd: &OwnedFd, number: u32, value: &mut T) -> io::Result<(
     // asm-generic ioctl encoding, shared by the supported x86_64/aarch64 targets.
     let request =
         (3u64 << 30) | ((mem::size_of::<T>() as u64) << 16) | (0xaa << 8) | u64::from(number);
+    called();
     // SAFETY: value has the UAPI layout corresponding to this private call site.
     if unsafe { libc::ioctl(fd.as_raw_fd(), request as _, value) } < 0 {
         return Err(io::Error::last_os_error());
@@ -255,6 +258,7 @@ impl TrapSource {
         }
         let source = unsafe { self.0.addr.cast::<u8>().add(offset) }.cast();
         let destination = Mapping::anonymous(len, offset % MAX_PAGE_SIZE)?;
+        called();
         let addr = unsafe {
             libc::mremap(
                 source,
@@ -268,6 +272,91 @@ impl TrapSource {
             return Err(io::Error::last_os_error());
         }
         Ok(destination)
+    }
+}
+
+/// One batch's staging area: the reservation a contiguous span of a batch's
+/// MAP runs is built in, away from the live region. The span is advised,
+/// registered and write-protected once for all of its runs rather than once
+/// each, which is what makes a run of a scattered batch cheap.
+///
+/// Only the mremap that puts a run in the region stays the run's own. mremap
+/// moves one mapping, and two runs of a batch are never one: runs adjacent in
+/// both the region and the arena have already been merged by the caller, so the
+/// ones left here are adjacent in the region alone and the kernel keeps them
+/// apart. Making them one would mean the pager saying so on the wire.
+///
+/// Runs leave the span front to back, so what is left to release is always the
+/// tail that has not left. No address inside the span is ever both released
+/// here and available to another thread's mapping.
+pub(crate) struct Staging(Mapping);
+
+impl Staging {
+    /// Reserves a span of len bytes, aligned for the largest page this
+    /// transport maps: a HugeTLB arena can be placed only at such an address.
+    pub fn new(len: usize) -> io::Result<Self> {
+        Ok(Self(Mapping::anonymous(len, 0)?))
+    }
+
+    /// Places one run's arena bytes at offset within the span.
+    pub fn place(&self, offset: usize, len: usize, backing: &OwnedFd, at: u64) -> io::Result<()> {
+        if len == 0 || offset.checked_add(len).is_none_or(|end| end > self.0.len) {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        // SAFETY: the sum above is within the reservation this owns.
+        let target = unsafe { self.0.addr.cast::<u8>().add(offset) }.cast();
+        called();
+        let addr = unsafe {
+            libc::mmap(
+                target,
+                len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED | libc::MAP_FIXED,
+                backing.as_raw_fd(),
+                at as libc::off_t,
+            )
+        };
+        if addr == libc::MAP_FAILED {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    /// Arms the whole span at once, once every run of it is placed: one
+    /// MADV_DONTFORK, one registration, and for a read-only span one
+    /// write-protect. Each of the three takes a range and walks the mappings in
+    /// it, so a span costs what one run of it used to.
+    pub fn arm(&self, uffd: &Uffd, protect: bool) -> io::Result<()> {
+        self.0.advise(false)?;
+        uffd.register(&self.0, true)?;
+        if protect {
+            uffd.protect(&self.0)?;
+        }
+        Ok(())
+    }
+
+    /// Moves the front len bytes of the span to target, which is one run of it.
+    pub fn move_front(&mut self, len: usize, target: *mut libc::c_void) -> io::Result<()> {
+        if len == 0 || len > self.0.len {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        called();
+        let got = unsafe {
+            libc::mremap(
+                self.0.addr,
+                len,
+                len,
+                libc::MREMAP_MAYMOVE | libc::MREMAP_FIXED,
+                target,
+            )
+        };
+        if got == libc::MAP_FAILED {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: the run just left the span, so the span is what follows it.
+        self.0.addr = unsafe { self.0.addr.cast::<u8>().add(len) }.cast();
+        self.0.len -= len;
+        Ok(())
     }
 }
 
@@ -292,6 +381,7 @@ impl Mapping {
         let reserved_len = len
             .checked_add(MAX_PAGE_SIZE)
             .ok_or(io::ErrorKind::InvalidInput)?;
+        called();
         let reservation = unsafe {
             libc::mmap(
                 ptr::null_mut(),
@@ -315,9 +405,11 @@ impl Mapping {
         let prefix = aligned - base;
         unsafe {
             if prefix != 0 {
+                called();
                 libc::munmap(reservation, prefix);
             }
             if prefix != MAX_PAGE_SIZE {
+                called();
                 libc::munmap((aligned + len) as *mut _, MAX_PAGE_SIZE - prefix);
             }
         }
@@ -338,6 +430,7 @@ impl Mapping {
         };
         // Build away from the live address. No client can access this mapping
         // before registration and protection have completed.
+        called();
         let addr = unsafe {
             libc::mmap(
                 ptr::null_mut(),
@@ -361,6 +454,7 @@ impl Mapping {
             if advice == libc::MADV_NOHUGEPAGE && !anonymous {
                 continue;
             }
+            called();
             if unsafe { libc::madvise(self.addr, self.len, advice) } != 0 {
                 return Err(io::Error::last_os_error());
             }
@@ -371,6 +465,7 @@ impl Mapping {
     pub fn replace(mut self, target: *mut libc::c_void) -> io::Result<()> {
         // The Go UFFD reader must drain EVENT_REMAP independently of waiting
         // for this command's acknowledgement; mremap waits for that event read.
+        called();
         let got = unsafe {
             libc::mremap(
                 self.addr,
@@ -391,6 +486,7 @@ impl Mapping {
         // Only freshly created anonymous mappings may call this, before UFFD
         // registration or exposure. Linux installs its shared zero page; no
         // content scan or private data-page allocation is involved.
+        called();
         if unsafe { libc::madvise(self.addr, self.len, libc::MADV_POPULATE_READ) } != 0 {
             return Err(io::Error::last_os_error());
         }
@@ -402,9 +498,31 @@ impl Drop for Mapping {
     fn drop(&mut self) {
         if self.len != 0 {
             // No external users may remain when the owning session is dropped.
+            called();
             unsafe {
                 libc::munmap(self.addr, self.len);
             }
         }
+    }
+}
+
+#[inline]
+fn called() {
+    #[cfg(test)]
+    calls::COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Counts the kernel calls this module makes, so a test can say what one
+/// mapping command costs the client. It is compiled into test builds only:
+/// nothing a session does may depend on it.
+#[cfg(test)]
+pub(crate) mod calls {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    pub(super) static COUNT: AtomicU64 = AtomicU64::new(0);
+
+    /// How many kernel calls this module has made.
+    pub fn taken() -> u64 {
+        COUNT.load(Ordering::SeqCst)
     }
 }

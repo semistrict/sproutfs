@@ -26,8 +26,13 @@ use std::os::fd::OwnedFd;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 
-use linux::{Mapping, TrapSource, Uffd};
+use linux::{Mapping, Staging, TrapSource, Uffd};
 use wire::Frame;
+
+/// The shortest span applied as one. A reservation costs eight kernel calls and
+/// saves three of the five a run costs on its own, so a span of three is the
+/// first that pays for itself.
+const SPAN_RUNS: usize = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u64)]
@@ -349,8 +354,25 @@ impl Session {
                 ..Frame::default()
             });
         }
-        for run in merged {
-            self.replace(run)?;
+        // The runs of one contiguous stretch of the region are applied as a
+        // span: built in one reservation, and advised, registered and
+        // write-protected once for the whole of it. A span shorter than
+        // SPAN_RUNS would not pay for its reservation, so it is applied a run
+        // at a time as before.
+        let mut index = 0;
+        while index < merged.len() {
+            let mut end = index + 1;
+            while end < merged.len() && Self::spans(merged[end - 1], merged[end]) {
+                end += 1;
+            }
+            if end - index < SPAN_RUNS {
+                for run in &merged[index..end] {
+                    self.replace(*run)?;
+                }
+            } else {
+                self.replace_span(&merged[index..end])?;
+            }
+            index = end;
         }
         for run in runs {
             self.record_generation(run);
@@ -398,6 +420,45 @@ impl Session {
             c.generation,
         ) {
             return Err(libc::ESTALE);
+        }
+        Ok(())
+    }
+
+    /// Whether two of a batch's runs are one stretch of the region, which is
+    /// what one staging span covers: the same kind of arena mapping, the same
+    /// protection, and no gap between them. Their arena offsets are not
+    /// adjacent — runs whose are have already merged into one — so the kernel
+    /// keeps them as separate mappings inside the span, and each still needs an
+    /// mremap of its own.
+    fn spans(last: Frame, run: Frame) -> bool {
+        last.kind == wire::MAP
+            && run.kind == wire::MAP
+            && last.flags == run.flags
+            && last.offset + last.len == run.offset
+    }
+
+    /// Applies one span of MAP runs: every run placed in one reservation, the
+    /// reservation armed once, and then each run moved into the region.
+    fn replace_span(&mut self, runs: &[Frame]) -> io::Result<()> {
+        let total = runs.iter().map(|run| run.len as usize).sum();
+        let mut staging = Staging::new(total)?;
+        let mut at = 0;
+        for run in runs {
+            staging.place(at, run.len as usize, &self.backing, run.backing)?;
+            at += run.len as usize;
+        }
+        staging.arm(&self.uffd, runs[0].flags == wire::SHARED)?;
+        for run in runs {
+            // SAFETY: validate bounded every run by the region's length.
+            let target = unsafe {
+                self.region
+                    .mapping
+                    .addr
+                    .cast::<u8>()
+                    .add(run.offset as usize)
+            }
+            .cast();
+            staging.move_front(run.len as usize, target)?;
         }
         Ok(())
     }
