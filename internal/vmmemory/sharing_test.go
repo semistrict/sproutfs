@@ -127,6 +127,44 @@ func TestReadAheadLoadsTheWindowContiguouslyAndNeverEvicts(t *testing.T) {
 	})
 }
 
+// A store reads its window ahead on the same terms a read fault does: only
+// free arena slots, never an eviction for a page the guest has not asked for.
+// With the arena full it brings in its own page alone — evicting for it, as a
+// read fault's faulting page does, and once more for the private copy it makes
+// — and the guest's next page is a fault of its own rather than a copy of a
+// window nobody had room for.
+func TestAStoreReadsAheadOnlyIntoFreeSlots(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 8, LogicalPages: 32, DirtyPages: 8, ReadAheadPages: 8})
+		r, m, _ := f.region(8)
+		access(t, r, m, 0, false) // the arena is this image's whole window
+		other := f.newUnrelatedBacking(8)
+		o, om := f.attach(other)
+		before, err := f.h.Stats(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		access(t, o, om, 6, true)[0] = 99
+		after, err := f.h.Stats(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if other.loads != 1 || other.loadedBytes != pageSize {
+			t.Fatalf("a store under pressure made %d loads of %d bytes, want one of its own page",
+				other.loads, other.loadedBytes)
+		}
+		if got := after.Evictions - before.Evictions; got != 2 {
+			t.Fatalf("the store evicted %d pages, want the one its origin took and the one its copy took", got)
+		}
+		if len(om.pages) != 1 || !om.pages[6].writable {
+			t.Fatalf("the store mapped %d pages (%v), want its own alone and writable", len(om.pages), om.pages)
+		}
+		if got := access(t, o, om, 6, false)[0]; got != 99 {
+			t.Fatalf("the page the guest stored into holds %d, want 99", got)
+		}
+	})
+}
+
 func TestPopulateMapsEverythingResidentBeforeTheMachineRuns(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 16, LogicalPages: 64, DirtyPages: 16, ReadAheadPages: 4})
@@ -135,12 +173,15 @@ func TestPopulateMapsEverythingResidentBeforeTheMachineRuns(t *testing.T) {
 		access(t, a, am, 9, false) // window 8-11
 		// The store takes a private page of its own, which nothing may share;
 		// the page it copied away from stays in the sharing index under the
-		// identity the volume gives it, and that is what the sibling maps.
+		// identity the volume gives it, and that is what the sibling maps. The
+		// store brings its own window in as a read fault does, so pages 4, 6
+		// and 7 are shared and populated too.
 		access(t, a, am, 5, true)[0] = 7
 		bb := f.newBacking(12)
 		bb.private[10] = true // the sibling changed this page itself
 		b, bm := f.attach(bb)
-		want := map[uint64]bool{0: true, 1: true, 2: true, 3: true, 5: true, 8: true, 9: true, 11: true}
+		want := map[uint64]bool{0: true, 1: true, 2: true, 3: true, 4: true, 5: true,
+			6: true, 7: true, 8: true, 9: true, 11: true}
 		for page := range uint64(12) {
 			_, mapped := bm.pages[page]
 			if mapped != want[page] {
@@ -163,7 +204,7 @@ func TestPopulateMapsEverythingResidentBeforeTheMachineRuns(t *testing.T) {
 			}
 		}
 		stats, err := f.h.Stats(t.Context())
-		if err != nil || stats.IdentityHits != 8 {
+		if err != nil || stats.IdentityHits != 11 {
 			t.Fatalf("stats: %+v %v", stats, err)
 		}
 	})

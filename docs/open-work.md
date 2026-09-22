@@ -57,8 +57,12 @@ everything open is listed here.
   restore, because the pager split its window at every page it already held.
   That is fixed and counted as a unit (a 512-page window over three checkpoints
   with 64 pages resident: 65 loads and 195 GETs, against one load and three),
-  and the GCE fan-out has not been re-run: first output within 2 s is still
-  unmet as far as this repository knows.
+  and the GCE re-measurement on 2026-09-22 took a cold restore from 7.5 s to
+  4.6 s and its 1,323 loads to 293. The fan-out did not move, because a fork
+  does not fault the way a restore does: 20,016 of its 21,130 faults were
+  stores, and a store read its own page alone. A store reads its window ahead
+  now too, counted the same way, and the fan-out has not been re-run: first
+  output within 2 s is still unmet as far as this repository knows.
 - **Compaction reads the pages it rescues one at a time.** A read of a range of
   a volume now fetches a run of members as one ranged read per extent, but
   compaction walks a segment's pages and calls `Store.loadPage` for each one it

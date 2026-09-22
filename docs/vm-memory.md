@@ -330,6 +330,25 @@ exits is one that is never going to finish starting. A start that fails anywhere
 after it takes its directory from the shared scratch goes through Close, so the
 scratch is not left counting a process it will never see stop.
 
+A store into a page this region holds no memory for reads its whole read-ahead
+run in first, exactly as a read fault does, and then copies the one page the
+guest stored into. It has to: on x86-64 KVM finishes a fault that had to wait
+for the pager from a worker that asks for the page writable whatever the guest's
+access was, so a guest merely reading memory it inherited reaches the pager as a
+store, and a store that read its own page alone made a fork's first pass over
+its memory one round trip per 4 KiB — a GCE fan-out on 2026-09-22 took 21,130
+faults of which 20,016 were copy-on-writes. The run is installed shared: every
+page of it but the faulting one is mapped read-only under the identity its
+volume gives it, so the pages the guest goes on to read are served without a
+fault and stay shared, and only the page it stored into becomes private. The
+faulting page is not mapped read-only first — its copy is about to replace it —
+so a store still costs no revocation, and nothing is bound to it either: what
+this region holds there is the copy, and a binding that took the shared page
+first would be a second owner of that page's memory for as long as the copy
+takes. A migration destination's backing is read a page at a time, because
+whether the source still holds a page is an answer only a load can give and it
+gives it per page.
+
 A store into fresh memory, a zero-mapped page or a hole in the volume the guest
 has never touched, has no page to copy and nothing to fence, so nothing is
 revoked: one mapping command replaces the zero mapping or the trap with a

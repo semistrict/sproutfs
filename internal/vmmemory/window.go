@@ -14,11 +14,18 @@ type windowPlan struct {
 	region     *Region
 	start, end uint64
 	fault      uint64 // the faulting page, or end for Populate
-	extents    []control.Extent
-	pages      []*resident // locked, indexed by page-start
-	reserved   []int       // slot reserved for loading, -1 otherwise
-	fresh      []bool      // page tables not yet installed
-	zeros      []bool      // explicit zeros, requiring no resident or reservation
+	// store names the page a store faulted on, or end. The plan reads that page
+	// in and holds it locked like any other, but binds nothing to it and
+	// installs no page tables for it: what this region will hold there is the
+	// private copy the store is about to make, and a binding that took the
+	// shared page first would be a second owner of that page's memory for as
+	// long as the copy takes and would cost the store a revocation to undo.
+	store    uint64
+	extents  []control.Extent
+	pages    []*resident // locked, indexed by page-start
+	reserved []int       // slot reserved for loading, -1 otherwise
+	fresh    []bool      // page tables not yet installed
+	zeros    []bool      // explicit zeros, requiring no resident or reservation
 	// private marks pages loaded as this region's own dirty state, which a
 	// migration destination's peer-served pages are. They are mapped writable,
 	// because a dirty page the guest may store into without faulting is exactly
@@ -41,7 +48,7 @@ func (r *Region) plan(ctx context.Context, start, end, fault uint64) (*windowPla
 		return nil, err
 	}
 	none := -1
-	p := &windowPlan{region: r, start: start, end: end, fault: fault, extents: extents, pages: make([]*resident, end-start), reserved: make([]int, end-start), fresh: make([]bool, end-start), zeros: make([]bool, end-start), private: make([]bool, end-start), locked: make(map[*resident]bool), spill: &none}
+	p := &windowPlan{region: r, start: start, end: end, fault: fault, store: end, extents: extents, pages: make([]*resident, end-start), reserved: make([]int, end-start), fresh: make([]bool, end-start), zeros: make([]bool, end-start), private: make([]bool, end-start), locked: make(map[*resident]bool), spill: &none}
 	for i := range p.reserved {
 		p.reserved[i] = -1
 	}
@@ -210,7 +217,9 @@ func (p *windowPlan) bindShared(ctx context.Context, page uint64, wait bool) err
 		if found := h.probe.stable(ctx, h, pg, "bindShared"); found != "" {
 			panic(found)
 		}
-		h.bind(p.region.binding(page), pg)
+		if page != p.store {
+			h.bind(p.region.binding(page), pg)
+		}
 		h.mu.Lock()
 		h.stats.IdentityHits++
 		h.mu.Unlock()
@@ -452,7 +461,9 @@ func (p *windowPlan) publish(ctx context.Context, page uint64, data []byte, priv
 			return p.bindShared(ctx, page, false)
 		}
 	}
-	h.bind(p.region.binding(page), pg)
+	if page != p.store {
+		h.bind(p.region.binding(page), pg)
+	}
 	p.pages[i] = pg
 	p.locked[pg] = true
 	return nil
