@@ -66,6 +66,11 @@ pub struct Session {
     requests: std::sync::Arc<control::Requests>,
     uffd: Uffd,
     backing: OwnedFd,
+    /// The arena's offset space in bytes, as the attachment stated it and as
+    /// the descriptor's own size confirmed. It is addresses, not memory: the
+    /// file is sparse and holds a page only where the pager put one, so this
+    /// bounds a MAP's arena offset and says nothing about how much of it is
+    /// backed.
     backing_len: u64,
     /// The page this session's region runs, which the attachment states and
     /// which every offset, length and backing offset on this wire is counted
@@ -150,8 +155,11 @@ impl Session {
     /// Checks the geometry an attachment states, and reports the page this
     /// session runs. Nothing here has mapped the arena or exposed an address:
     /// a page this transport does not map, an arena that is not the memory that
-    /// page is made of, or a region of this length that is not whole pages of
-    /// it all end the session before the embedder sees a byte.
+    /// page is made of, an offset space the descriptor does not have, or a
+    /// region of this length that is not whole pages of it all end the session
+    /// before the embedder sees a byte. The length the descriptor is checked
+    /// against is the arena's addresses: the file is sparse, so how much of it
+    /// holds memory is the pager's business and not this check's.
     fn geometry(attach: Frame, backing: &OwnedFd, region_len: usize) -> io::Result<usize> {
         let refuse = |what: String| io::Error::new(io::ErrorKind::InvalidData, what);
         if attach.kind != wire::ATTACH || attach.id != wire::VERSION || attach.generation != 0 {

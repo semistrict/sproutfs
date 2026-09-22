@@ -112,11 +112,9 @@ func New(ctx context.Context, resources *resource.Budget, cfg Config, arena Aren
 		uint64(cfg.LogicalPages) > math.MaxInt64/pageSize || arena == nil || spill == nil {
 		return nil, ErrConfig
 	}
-	if cfg.ArenaOffsets == 0 {
-		// A pager that places nothing has one address per page, which is what
-		// PMEM runs: its offsets and its pages are one number.
-		cfg.ArenaOffsets = cfg.ResidentPages
-	}
+	// A pager that places nothing has one address per page, which is what PMEM
+	// runs: its offsets and its pages are one number.
+	cfg.ArenaOffsets = cfg.Offsets()
 	if cfg.ArenaOffsets < cfg.ResidentPages || uint64(cfg.ArenaOffsets) > math.MaxInt64/pageSize {
 		return nil, ErrConfig
 	}

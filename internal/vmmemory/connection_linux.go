@@ -119,7 +119,7 @@ func Connect(ctx context.Context, h *Host, socket *net.UnixConn, backing RegionB
 	if cfg.FaultWorkers == 0 {
 		cfg.FaultWorkers = 8
 	}
-	if !ok || h.cfg.ArenaOffsets != a.pages || uint64(a.pageSize) != h.pageSize || backing.Backing == nil ||
+	if !ok || h.cfg.ArenaOffsets != a.offsets || uint64(a.pageSize) != h.pageSize || backing.Backing == nil ||
 		(backing.Kind != Pmem && backing.Kind != Ram) || cfg.QueuePages < 1 || cfg.QueuePages > h.cfg.LogicalPages || cfg.FaultWorkers < 1 || cfg.FaultWorkers > 64 || cfg.MaxVMAs < 0 || (cfg.MaxVMAs > 0 && cfg.MaxVMAs < 128) || cfg.MaxVMAs > 1<<20 || cfg.CommandTimeout <= 0 || cfg.VerifyInterval <= 0 {
 		_ = socket.Close()
 		return nil, ErrConfig
@@ -193,12 +193,14 @@ func Connect(ctx context.Context, h *Host, socket *net.UnixConn, backing RegionB
 	}
 	c.region = ConnectedRegion{backing.Kind, f.Offset, f.Length, r}
 	c.mapping = m
-	// The attachment states the geometry: this region's page, the arena, what
-	// the arena is made of, and the mapping-count budget. The client refuses a
-	// page it does not map, a descriptor that is not the memory that page is, or
-	// a region of its own that is not whole pages of it — all before it exposes
-	// an address to the VMM.
-	attach := vmwire.AttachFrame(h.pageSize, uint64(a.pages)*uint64(a.pageSize), a.backing, uint64(cfg.MaxVMAs))
+	// The attachment states the geometry: this region's page, the arena's offset
+	// space, what the arena is made of, and the mapping-count budget. The arena
+	// is a sparse file, so what is stated is its addresses and not the memory
+	// behind them. The client refuses a page it does not map, a descriptor whose
+	// length is not the offset space claimed or whose filesystem is not the
+	// memory that page is, or a region of its own that is not whole pages of it
+	// — all before it exposes an address to the VMM.
+	attach := vmwire.AttachFrame(h.pageSize, uint64(a.offsets)*uint64(a.pageSize), a.backing, uint64(cfg.MaxVMAs))
 	if err := vmwire.SendFD(socket, attach, a.file); err != nil {
 		return fail(err)
 	}

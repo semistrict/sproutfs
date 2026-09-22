@@ -566,11 +566,22 @@ func (w *World) newPager(ctx context.Context, h *hostState) (*pager, func(), err
 			return nil, nil, err
 		}
 		p.spills[kind] = spill
-		a := newArena(k.ResidentPages)
+		// RAM places a private page at the offset it has within its 2 MiB range,
+		// so its arena has an address per logical page — one 512-offset extent
+		// per range any region may write into — beside the pages it may hold at
+		// once. PMEM places nothing, so its offsets and its pages are one
+		// number. The arena is sparse either way: an offset costs nothing until
+		// a page is put there.
+		offsets := k.ResidentPages
+		if kind == vmmemory.Ram {
+			offsets = k.LogicalPages + k.ResidentPages
+		}
+		a := newArena(offsets)
 		p.arenas[kind] = a
 		memory, err := vmmemory.New(ctx, h.config.Resources, vmmemory.Config{
 			PageSize:      pageSize,
-			ResidentPages: k.ResidentPages, LogicalPages: k.LogicalPages, DirtyPages: k.DirtyPages,
+			ResidentPages: k.ResidentPages, ArenaOffsets: offsets,
+			LogicalPages: k.LogicalPages, DirtyPages: k.DirtyPages,
 			ReadAheadPages: k.ReadAheadPages, WriteAheadPages: k.WriteAheadPages,
 			ConcurrentIO: k.ConcurrentIO, LossWindow: k.LossWindow,
 			// The window is measured on this host's own clock, which the

@@ -124,7 +124,17 @@ func newConfiguredHostPagers(t testing.TB, ctx context.Context, cfg hostPagersCo
 		if kind == vmmemory.Pmem {
 			page, budgets = checkpoint.PageSize2MiB, cfg.PMEM
 		}
-		arena, err := vmmemory.NewLinuxArena(int(budgets.Arena/page), page)
+		resident := int(budgets.Arena / page)
+		logical := int(budgets.Logical / page)
+		// RAM's arena has an address per logical page — one 512-offset extent
+		// per 2 MiB range any region may write into — beside the pages it may
+		// hold at once; PMEM's offsets and pages are one number. The file is
+		// sparse, so the extra addresses cost nothing until a page is put there.
+		offsets := resident
+		if kind == vmmemory.Ram {
+			offsets = logical + resident
+		}
+		arena, err := vmmemory.NewLinuxArena(offsets, page)
 		if err != nil {
 			t.Fatalf("%s arena: %v", kind, err)
 		}
@@ -150,8 +160,9 @@ func newConfiguredHostPagers(t testing.TB, ctx context.Context, cfg hostPagersCo
 		}
 		t.Cleanup(func() { _ = spill.Close() })
 		pagerConfig := vmmemory.Config{PageSize: page,
-			ResidentPages: int(budgets.Arena / page),
-			LogicalPages:  int(budgets.Logical / page),
+			ResidentPages: resident,
+			ArenaOffsets:  offsets,
+			LogicalPages:  logical,
 			DirtyPages:    int(budgets.Dirty / page),
 			// A read-ahead run is stated in bytes, as a deployment states it,
 			// because it is a buffer: 2 MiB is the run the page-geometry plan

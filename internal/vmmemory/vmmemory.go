@@ -342,6 +342,16 @@ type Config struct {
 	Clock platform.Clock
 }
 
+// Offsets is how many addresses this pager's arena has, which is what the arena
+// is built with and what an ATTACH states: ArenaOffsets, or ResidentPages for a
+// pager whose offsets and its pages are one number.
+func (c Config) Offsets() int {
+	if c.ArenaOffsets == 0 {
+		return c.ResidentPages
+	}
+	return c.ArenaOffsets
+}
+
 // ProbeEvictionDuringPublication marks an eviction that punched a page of a
 // region a publication was reading at that moment. The two hold different
 // locks over the same bytes, so it is the overlap a pager that only ever had

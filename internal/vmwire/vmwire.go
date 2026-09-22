@@ -40,14 +40,22 @@ const (
 )
 
 const (
-	// Version 7 moved ATTACH in front of REGION and gave it the geometry. The
-	// page is no longer one number both ends know: a session states the page of
-	// the region it carries and the kind of memory its arena is made of, the
-	// client builds its region at that page's alignment and checks the arena
-	// against both, and the pager checks the region it is then given against the
-	// page it runs. Version 6 clients are refused by version, because a 2 MiB
-	// page number read as a 4 KiB one names another page.
-	Version      = 7
+	// Version 8 made ATTACH's length the arena's offset space. An arena's
+	// offsets are not its pages: it is a sparse file, and a RAM pager that puts
+	// a private page at the offset it has within its 2 MiB range owns 512
+	// consecutive offsets per range whatever memory it holds there. The number
+	// the client checks the descriptor against, and bounds a MAP's arena offset
+	// by, is therefore the addresses and not the capacity. A version 7 peer
+	// would read the same number as a promise of that much memory.
+	//
+	// Version 7 moved ATTACH in front of REGION and gave it the geometry: a
+	// session states the page of the region it carries and the kind of memory
+	// its arena is made of, the client builds its region at that page's
+	// alignment and checks the arena against both, and the pager checks the
+	// region it is then given against the page it runs. Version 6 is refused by
+	// version too, because a 2 MiB page number read as a 4 KiB one names another
+	// page.
+	Version      = 8
 	MaxBatchRuns = 1024
 )
 
@@ -81,11 +89,13 @@ func BackingFor(pageSize uint64) (uint64, error) {
 }
 
 // AttachFrame is the pager's half of the geometry: the page of the region this
-// session carries, the arena it is attaching, what that arena is made of, and
-// the mapping-count budget the client admits its replacements against. It
-// carries the arena descriptor.
-func AttachFrame(pageSize, arenaBytes, backingKind, vmaBudget uint64) Frame {
-	return Frame{Kind: Attach, ID: Version, Offset: pageSize, Length: arenaBytes,
+// session carries, the offset space of the arena it is attaching — the
+// addresses the file has, which is what the descriptor's size is and what
+// bounds a MAP's arena offset, not the memory behind them — what that arena is
+// made of, and the mapping-count budget the client admits its replacements
+// against. It carries the arena descriptor.
+func AttachFrame(pageSize, arenaOffsetBytes, backingKind, vmaBudget uint64) Frame {
+	return Frame{Kind: Attach, ID: Version, Offset: pageSize, Length: arenaOffsetBytes,
 		Backing: backingKind, Flags: vmaBudget}
 }
 

@@ -10,11 +10,19 @@ use std::os::unix::net::UnixStream;
 #[path = "tests/wire.rs"]
 mod tests;
 
+/// Version 8 made the attachment's length the arena's offset space rather than
+/// its capacity. The arena is a sparse file whose offsets are not its pages: a
+/// pager that puts a private page at the offset it has within its 2 MiB range
+/// owns 512 consecutive offsets per range whatever memory it holds there. So
+/// the number this client checks the descriptor's size against, and bounds a
+/// MAP's arena offset by, is the addresses; a version 7 peer would read it as
+/// the memory behind them.
+///
 /// Version 7 gave the attachment the geometry: the page this session's region
 /// runs and the kind of memory its arena is made of. The page is no longer one
-/// number both ends know, so a version 6 peer is refused by version — its page
-/// numbers name other pages.
-pub(crate) const VERSION: u64 = 7;
+/// number both ends know, so a version 6 peer is refused by version too — its
+/// page numbers name other pages.
+pub(crate) const VERSION: u64 = 8;
 /// The encoded size of one frame.
 pub(crate) const FRAME_BYTES: usize = 56;
 pub(crate) const HELLO: u64 = 1;

@@ -13,10 +13,14 @@ import (
 // before a byte of guest memory exists. These are the checks themselves; the
 // Linux suites are what run them against a real client.
 
-func TestVersionSevenCarriesTheGeometry(t *testing.T) {
-	if vmwire.Version != 7 {
-		t.Fatalf("the mapping protocol is at version %d, want 7: a version 6 peer reads a"+
-			" 2 MiB page number as a 4 KiB one", vmwire.Version)
+// Version 8 changed what ATTACH's length means: it is the arena's offset space
+// and no longer its capacity. A version 7 peer would take a sparse arena of
+// terabytes of addresses for a promise of that much memory, so the two are told
+// apart by the version rather than by the number.
+func TestVersionEightStatesTheArenasOffsets(t *testing.T) {
+	if vmwire.Version != 8 {
+		t.Fatalf("the mapping protocol is at version %d, want 8: ATTACH's length is the"+
+			" arena's offsets now, and a version 7 peer reads it as its capacity", vmwire.Version)
 	}
 }
 
@@ -86,7 +90,7 @@ func TestAnAttachmentStatesAGeometryTheClientChecks(t *testing.T) {
 		frame vmwire.Frame
 		want  string
 	}{
-		{"a version 6 peer", func() vmwire.Frame { f := ram; f.ID = 6; return f }(), "version 6"},
+		{"a version 7 peer", func() vmwire.Frame { f := ram; f.ID = 7; return f }(), "version 7"},
 		{"a page this transport does not map",
 			func() vmwire.Frame { f := ram; f.Offset = 64 << 10; return f }(), "not 65536"},
 		{"a 4 KiB page claiming the HugeTLB pool",

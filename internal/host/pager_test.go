@@ -44,6 +44,34 @@ func TestBothPagersGetRunsOfTheSameSizeInTheirOwnPages(t *testing.T) {
 	}
 }
 
+// An offset is an address and a page is memory. RAM places a private page at
+// the offset it has within its range, so every 2 MiB range a region may write
+// into owns 512 consecutive offsets of which only the stored pages hold memory:
+// the offsets a pager needs are one extent per range of everything it may map —
+// which is `LogicalPages`, since a range is 512 pages and an extent 512 offsets
+// — plus the read-ahead runs, which come out of the offset space too and are
+// bounded by what the arena can hold at once. PMEM places nothing, so its
+// offsets and its pages stay one number.
+func TestRAMsOffsetSpaceCoversAnExtentPerRangeItMayWriteInto(t *testing.T) {
+	config := deploymentConfig()
+	ram := pagerConfig(config, vmmemory.Ram)
+	pmem := pagerConfig(config, vmmemory.Pmem)
+	if want := config.LogicalPages.RAM + ram.ResidentPages; ram.ArenaOffsets != want {
+		t.Errorf("RAM's arena has %d offsets, want %d: an extent per range it may write into,"+
+			" and the runs it may hold at once", ram.ArenaOffsets, want)
+	}
+	if pmem.ArenaOffsets != pmem.ResidentPages {
+		t.Errorf("PMEM's arena has %d offsets for %d pages, want the two to be one number",
+			pmem.ArenaOffsets, pmem.ResidentPages)
+	}
+	// The address space is the point: it is far larger than the memory behind
+	// it, and the memory is what the deployment budgeted.
+	if ram.ArenaOffsets <= ram.ResidentPages {
+		t.Errorf("RAM's arena has %d offsets for %d pages, want more addresses than memory",
+			ram.ArenaOffsets, ram.ResidentPages)
+	}
+}
+
 // A write-ahead run is charged a dirty reservation per page whether the guest
 // uses it or not, so a pager whose dirty budget cannot hold 64 of them keeps
 // one page. It is the budget that decides, not the kind: RAM writes ahead for
