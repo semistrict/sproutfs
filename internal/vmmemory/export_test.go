@@ -21,6 +21,15 @@ func SetEvictionSeam(t *testing.T, seam func(slot int)) {
 	t.Cleanup(func() { evictionSeam = previous })
 }
 
+// SetReclaimSeam installs what a reclaim for a private page runs while the
+// region is given up, so a test can end that page's dirty epoch in the one
+// window a fault serving it cannot see. It is restored when the test ends.
+func SetReclaimSeam(t *testing.T, seam func(index uint64)) {
+	previous := reclaimSeam
+	reclaimSeam = seam
+	t.Cleanup(func() { reclaimSeam = previous })
+}
+
 // SetSealSeam installs what a seal runs between taking the dirty set into the
 // checkpoint and recording the checkpoint on the region. It is restored when
 // the test ends.

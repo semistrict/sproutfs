@@ -401,12 +401,21 @@ func (r *Region) reclaimNear(ctx context.Context, index uint64) (int, error) {
 func (r *Region) reclaimPrivate(ctx context.Context, index uint64) (int, error) {
 	var slot int
 	err := r.withoutRegion(ctx, func() error {
+		if reclaimSeam != nil {
+			reclaimSeam(index)
+		}
 		var err error
 		slot, err = r.allocatePrivate(ctx, index)
 		return err
 	})
 	return slot, err
 }
+
+// reclaimSeam runs in a reclaim for a private page while the region is given
+// up, which is the one window in which a seal and a retire can run inside a
+// fault that has already decided what the page it is serving is. Production
+// leaves it nil; a test installs one to end that page's dirty epoch there.
+var reclaimSeam func(index uint64)
 
 // loadWindow is the plan's backing read, taken outside the region lock.
 func (r *Region) loadWindow(ctx context.Context, offset uint64, dst []byte) ([]bool, error) {
