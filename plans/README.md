@@ -21,7 +21,10 @@ across all of them is collected in [open-work.md](../docs/open-work.md).
   the origin under a running guest. Step 6 is done too: a read of a range of a
   volume is one run of pages, grouped by the part its members are in and fetched
   as one ranged read per extent, so a pager's cold 2 MiB read-ahead run of 512
-  4 KiB pages is two requests where it was 513; a part's table bound is 1 MiB,
+  4 KiB pages is two requests where it was 513 — and, since 2026-09-22, a fault
+  asks for the run rather than for each stretch of it the pages it already holds
+  leave, which took a 512-page window with 64 resident pages from 65 loads and
+  195 requests to one load and three; a part's table bound is 1 MiB,
   so a 64 MiB part of 4 KiB pages fills on its bytes rather than stopping at
   about 8,700 members; compression stays per member and no format version moved.
   **One open defect stands against step 4: a

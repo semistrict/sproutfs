@@ -449,6 +449,34 @@ memory savings and workload time together.
    compressed block would have to beat that while making every read of one page
    decode its neighbours too. It was not changed speculatively.
 
+   **What the pager was not asking for.** The grouping above is what a run
+   costs *if the run is asked for*, and until 2026-09-22 the pager never asked
+   for one. A fault's plan read each stretch of consecutive pages it had
+   reserved with a backing read of its own, so the pages a region already held —
+   the ones its populate mapped, and every page a sibling fork had made resident
+   — cut a window into stretches and each stretch paid its own request per part.
+   The fork fan-out measured on GCE that day spent 8,660 loads bringing 31,867
+   pages, 3.7 pages a load, and 7,365 object GETs on them, against 1,326 loads
+   of 16 pages each on the same run's cold restore, which has no resident pages
+   to cut its windows up. Counted as a unit test over a 512-page window
+   published by three checkpoints with 64 of its pages already resident: **65
+   loads and 195 object reads, against one load and three**.
+
+   So a read of part of a range is one operation the whole way down.
+   `Store.ReadPages` takes the pages of a range that are wanted, one element per
+   page: the rest are skipped whole, costing neither a request nor a segment
+   lookup, and what is left is grouped exactly as before, so a hole a reader
+   leaves is read through or split at on the same rule as a hole the volume
+   itself has. `Volume.LoadPages` carries that mask through the overlay and
+   through a seal — a masked read is page-wise where an unmasked one is
+   byte-wise, so the inherited checkpoint is asked once for every wanted page
+   the overlay does not already hold whole. `vmmemory.SparseLoader` is the
+   pager's name for a backing that can be asked this way and one fault's plan
+   makes one call; a migration destination's peer backing, which answers a
+   second thing per page, is read stretch by stretch as before. The bytes a
+   window fetches rise where its holes are small, because reading through them
+   is what the store already chose for a hole a later checkpoint left.
+
    **No format version moved.** No encoding changed: the part layout is version
    4 and the index format 8, and the committed fixtures are byte-identical. The
    table bound is the store's rather than the part layout's — the layout
