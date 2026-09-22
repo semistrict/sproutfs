@@ -171,7 +171,7 @@ func (r *Region) fault(ctx context.Context, index uint64, write bool, spill *int
 	// reclaim runs has nothing of this page's to take. Ending a seal does reach
 	// it, and hands it either its own reservation or clean state, so what this
 	// store needs is decided again from the top.
-	slot, err := r.reclaimNear(ctx, index)
+	slot, err := r.reclaimPrivate(ctx, index)
 	if err != nil {
 		return false, err
 	}
@@ -209,13 +209,36 @@ func (r *Region) fault(ctx context.Context, index uint64, write bool, spill *int
 	h.stats.CopyOnWrites++
 	h.mu.Unlock()
 	h.touch(pg)
+	// The two rules: the shared pages between this store and a page its range
+	// already held, and the holes of a range that has become half its own, are
+	// made private in this same fault. The whole run sits at consecutive offsets
+	// of one extent, so one command maps it.
+	first, last := index, index+1
 	if !b.mapped {
-		r.setMapped(b, true) // a failed ACK may still have installed the mapping
-		if err := r.mapPages(ctx, index, pg.slot, 1, true); err != nil {
-			return false, r.mappingFailed(err, func() { r.setMapped(b, false) })
+		if first, last, err = r.closeAround(ctx, index, pg.slot); err != nil {
+			return false, err
+		}
+		for page := first; page < last; page++ {
+			r.setMapped(r.binding(page), true) // a failed ACK may still have installed the mapping
+		}
+		slot, count := pg.slot-int(index-first), int(last-first)
+		if err := r.mapPages(ctx, first, slot, count, true); err != nil {
+			err = r.mappingFailed(err, func() { r.unmapPages(first, count) })
+			if !errors.Is(err, ErrMappingRefused) {
+				return false, err
+			}
+			// The backstop. The client has no mapping left for this store, so
+			// the range the guest is writing in is made whole: its alternations
+			// stop costing that process a mapping each, and the store is served
+			// again. It is expected never to act.
+			merged, mergeErr := r.makeWhole(ctx, index)
+			if mergeErr != nil {
+				return false, mergeErr
+			}
+			return merged, err
 		}
 	}
-	if err := r.resolvePages(ctx, index, 1, true); err != nil {
+	if err := r.resolvePages(ctx, first, int(last-first), true); err != nil {
 		return false, r.fail(err)
 	}
 	return false, nil
@@ -427,10 +450,12 @@ func around(index, first, last uint64, n int) (uint64, uint64) {
 }
 
 // storeZeros gives the fresh zero pages [first, last), which hold index, fresh
-// private pages and maps them writable with one command. The faulting page
-// brings its own dirty reservation and may evict for its slot; the rest of the
-// run takes only free reservations and free slots, never waiting for either,
-// and shrinks to what it finds.
+// private pages and maps them writable. The faulting page brings its own dirty
+// reservation and may evict for its slot; the rest of the run takes only free
+// reservations and free slots, never waiting for either, and shrinks to what it
+// finds. Each set of consecutive arena offsets the run landed in is one mapping
+// command — one, unless the placement rule put the run in the extents of
+// several ranges and those extents are not themselves consecutive.
 func (r *Region) storeZeros(ctx context.Context, index, first, last uint64, spill *int) error {
 	h := r.host
 	extras := h.takeFreeSpill(int(last-first) - 1)
@@ -441,11 +466,15 @@ func (r *Region) storeZeros(ctx context.Context, index, first, last uint64, spil
 		}
 	}()
 	first, last = around(index, first, last, 1+len(extras))
-	first, slot, count, err := r.allocateRun(ctx, index, first, last)
+	first, runs, err := r.allocateRun(ctx, index, first, last)
 	if err != nil {
 		return err
 	}
-	pages, err := h.createZeros(ctx, slot, count, r.kind)
+	count := 0
+	for _, run := range runs {
+		count += run.Count
+	}
+	pages, err := h.createZeroRuns(ctx, runs, r.kind)
 	if err != nil {
 		return err
 	}
@@ -473,23 +502,36 @@ func (r *Region) storeZeros(ctx context.Context, index, first, last uint64, spil
 	h.stats.CopyOnWrites++
 	h.stats.WriteAheadPages += uint64(count - 1)
 	h.mu.Unlock()
-	if err := r.mapPages(ctx, first, slot, count, true); err != nil {
-		return r.mappingFailed(err, func() { r.unmapPages(first, count) })
+	for _, run := range runs {
+		if err := r.mapPages(ctx, run.Page, run.Slot, run.Count, true); err != nil {
+			return r.mappingFailed(err, func() { r.unmapPages(first, count) })
+		}
 	}
-	if err := r.resolvePages(ctx, first, count, true); err != nil {
-		return r.fail(err)
+	for _, run := range runs {
+		if err := r.resolvePages(ctx, run.Page, run.Count, true); err != nil {
+			return r.fail(err)
+		}
 	}
 	return nil
 }
 
-// allocateRun takes arena slots for the run [first, last), which holds index.
-// A run of several pages takes only free slots, consecutive so that one
-// command maps them, preferably those after the slot of the page before it so
-// that the mapping continues its neighbour's; it shrinks to the free slots it
-// finds. A lone page, or a run finding no free slot, allocates for index
-// alone, which may evict.
-func (r *Region) allocateRun(ctx context.Context, index, first, last uint64) (uint64, int, int, error) {
+// allocateRun takes arena slots for the run [first, last), which holds index,
+// and reports the pages it covered and the runs of consecutive offsets they
+// landed in.
+//
+// The placement rule comes first: every page goes at the offset it has within
+// its range's extent, so a window crossing a range boundary is one run per
+// range unless the extents are consecutive too. Where a range can have no
+// extent, a run of several pages takes only free ordinary slots, consecutive so
+// that one command maps them, preferably those after the slot of the page
+// before it so that the mapping continues its neighbour's; it shrinks to the
+// free slots it finds. A lone page, or a run finding no free slot, allocates
+// for index alone, which may evict.
+func (r *Region) allocateRun(ctx context.Context, index, first, last uint64) (uint64, []MapRun, error) {
 	h := r.host
+	if start, runs := h.placeRun(r, index, first, last); len(runs) > 0 {
+		return start, runs, nil
+	}
 	if last-first > 1 {
 		prefer := -1
 		if first > 0 {
@@ -503,11 +545,14 @@ func (r *Region) allocateRun(ctx context.Context, index, first, last uint64) (ui
 		}
 		if slot, count := h.allocateFreeFrom(prefer, int(last-first)); count > 0 {
 			start, _ := around(index, first, last, count)
-			return start, slot, count, nil
+			return start, []MapRun{{Page: start, Slot: slot, Count: count}}, nil
 		}
 	}
-	slot, err := r.reclaimNear(ctx, index)
-	return index, slot, 1, err
+	slot, err := r.reclaimPrivate(ctx, index)
+	if err != nil {
+		return 0, nil, err
+	}
+	return index, []MapRun{{Page: index, Slot: slot, Count: 1}}, nil
 }
 
 // loadAttempts bounds how often a fault retries after losing a publication race
@@ -581,7 +626,7 @@ func (r *Region) loadOnce(ctx context.Context, index uint64, spill *int) (bool, 
 		h.mu.Lock()
 		h.stats.SpillRefaults++
 		h.mu.Unlock()
-		slot, err := r.reclaimNear(ctx, index)
+		slot, err := r.reclaimPrivate(ctx, index)
 		if err != nil {
 			return false, err
 		}

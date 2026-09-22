@@ -14,9 +14,10 @@ across all of them is collected in [open-work.md](../docs/open-work.md).
   pager whose page is an instance's, with one pager per kind of region on every
   host, its own arena and spill file each and the deployment's byte budgets
   divided between them; and, at step 4, RAM at 4 KiB on a real host. Mapping
-  protocol version 7 carries each session's page and the kind of memory its
-  arena is made of, the RAM arena is an ordinary memfd and PMEM's stays on the
-  HugeTLB pool, and Firecracker takes no huge-page setting for managed RAM. A
+  protocol version 8 carries each session's page, the kind of memory its arena
+  is made of and that arena's offset space, the RAM arena is an ordinary memfd
+  and PMEM's stays on the HugeTLB pool, and Firecracker takes no huge-page
+  setting for managed RAM. A
   settle re-shares an unchanged page by revoking it rather than by installing
   the origin under a running guest. Step 6 is done too: a read of a range of a
   volume is one run of pages, grouped by the part its members are in and fetched
@@ -27,11 +28,18 @@ across all of them is collected in [open-work.md](../docs/open-work.md).
   Step 8 is done: RAM writes ahead again, the same 8 MiB run as PMEM, because
   the run only ever serves fresh zeros and a hole is shared with nobody — and an
   ahead page the guest never stored into is published as a hole and handed back
-  by the retire, with its arena slot and its dirty reservation.
+  by the retire, with its arena slot and its dirty reservation. Keeping RAM's
+  mappings whole is done: an arena's offsets and its pages are two numbers and
+  its memfd is sized to the first, every 2 MiB-aligned range holding a private
+  page owns an extent of consecutive offsets and a private page sits at the
+  offset it has within its range, a store closes a gap of at most sixteen pages,
+  a range that reaches half its pages is filled, and the mapping budget is the
+  backstop with a counter.
   **One open defect stands against step 4: a
   fan-out of two children panics a child's guest kernel at 4 KiB, about one run
   in thirty, and revoking is not a fix for it** — see docs/open-work.md. Step
-  4's own outstanding piece is the VMA-budget merge; steps 5 and 7 are planned.**
+  4's own outstanding piece, the VMA-budget merge, landed with the mapping rules
+  above; steps 5 and 7 are planned.**
 - [2026-09-19 a private page that did not change](unchanged-pages-2026-09-19.md)
   — a write fault is not always a store (KVM's asynchronous page fault worker on
   x86-64, cache maintenance on aarch64), so a sealed page whose bytes equal the

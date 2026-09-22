@@ -112,8 +112,7 @@ arenas of one host are separate memfds and never draw on the same allotment.
 ## Bounded host pager
 
 Each pager takes an arena, a dedicated scratch spill file, and explicit
-resident, logical and dirty page budgets. The arena is a fixed-size sealed
-memfd holding exactly the resident page slots. Logical admission bounds
+resident, logical and dirty page budgets. Logical admission bounds
 metadata for every attached region, including pages never touched. Every
 private page takes a spill slot before a write can resume, covering resident
 and spilled dirty state together; the dirty budget is what sizes the spill
@@ -142,6 +141,27 @@ Allocation, sharing, copy-on-write, write protection, spill, eviction, mapping
 commands and wire generations all use that instance's page, and region addresses
 and lengths must be aligned to it. What an instance may run is what a volume can
 be published in and what the transport maps, which are the same two sizes.
+
+### An arena's offsets and its pages
+
+An offset is an address in the arena and a page is memory, and they are two
+numbers. `Config.ArenaOffsets` is how many addresses the arena has and
+`Config.ResidentPages` how many of them may hold memory at once; the memfd is
+sized to the first and is sparse, so an offset costs nothing until a page is put
+there and `Release` punches it back out. `slots.Space` holds one bit per offset
+and bounds every allocation by the pages left, and `Host.residentLeases` is a
+map, because there is one resource reservation per page and not one per address.
+`AllocatedBytes` — the memfd's own blocks — is the memory an arena really holds.
+
+RAM needs far more of the first than of the second, because it places a private
+page at the offset that page has within its 2 MiB range: a range holding one
+private page owns the whole run of 512 consecutive offsets its other pages would
+go at. So the supervisor sizes RAM's offset space at one such extent per range
+any region it admits may have written into — which is `LogicalPages`, a range
+being 512 pages and an extent 512 offsets — plus `ResidentPages` for the
+read-ahead runs, which take consecutive offsets of their own. PMEM places
+nothing, so its offsets and its pages stay one number, and a configuration that
+leaves `ArenaOffsets` zero is that pager.
 
 The host must provision a 2 MiB HugeTLB pool before starting VMs for the **PMEM**
 arena; the **RAM** arena is an ordinary memfd charged to the pod's memory, so a
@@ -306,6 +326,65 @@ zeros: the Linux arena allocates it with `fallocate` instead of writing zeros
 into it, the kernel clears it as the resolving `UFFDIO_CONTINUE` installs it,
 and the volume is not read. A store into a shared page or a sealed page still
 revokes the guest's alias before it copies.
+
+### Keeping a region's mappings whole
+
+Every separately mapped run of a guest's memory is a mapping in its VMM process,
+and a private page written into the middle of an inherited run makes three of
+one. The kernel's cap of 65,530 mappings is the last of what that costs: each
+separate dirty run is a write-protect command in a checkpoint's pause, the
+kernel's own mapping operations slow as their number grows, and a fragmented
+range can never be given a huge mapping. Three rules hold all the time, and the
+budget stands behind them.
+
+**A private page lives at its own offset.** Each 2 MiB-aligned range of a region
+that holds a private page owns one extent of the arena's offset space — one
+range's worth of consecutive offsets — and a private page of that range is put
+at the offset within the extent that it has within the range. Private pages
+adjacent in the guest are then adjacent in the arena and are one mapping,
+whatever order they were written in: what a range costs in mappings is how often
+it alternates between shared and private, not how many of its pages are private.
+Extents come off the offset space and go back to it whole, and the arena
+accounts pages, not extents. Two departures are deliberate: a store that copies
+away from the copy a checkpoint froze takes an ordinary offset, because its own
+is holding the bytes that checkpoint is uploading, and a page a migration
+destination loads privately from the host that still holds it arrives in a run
+like any other load. `Stats.PrivateExtents` is how many ranges own one.
+
+**A store closes a small gap.** A store landing within sixteen pages of a page
+its range already holds makes the pages between them private in the same fault,
+in one mapping command, so the two runs become one. Writes cluster, so the unit
+a store copies grows where the guest is writing and stays one page where a write
+is alone; the worst case is a guest writing one page in every seventeen, which
+costs seventeen times what it wrote against 512 times at a 2 MiB page. Sixteen
+was measured rather than chosen: of the 1,979 gaps between the private runs a
+4 KiB fan-out recorded on 2026-09-21, 1,532 — 77 % — are that or fewer. A gap is
+never closed across a range's boundary, because the extent belongs to the range.
+
+**A range that is half private becomes private.** When half a range's pages sit
+at their offsets in its extent, the rest are copied into the holes of it: the
+range is then one mapping, one write-protect command at a seal, and a candidate
+for a huge mapping. Nothing already there is copied again, so it costs at most
+twice what the guest wrote into that range.
+
+Neither rule waits and neither evicts: a page with no free dirty reservation, no
+offset of its own or one a checkpoint is still holding is left exactly as it was
+and the run ends there. A page a rule copied has its origin like any other copy,
+so the settle behind a pause hands back what the guest never wrote — unless the
+range was made whole, which a settle leaves whole, because handing one page back
+would break the range into three mappings again for a page the guest is about to
+write. `Stats.RuleCopies` counts the pages the rules copied beside the pages the
+guest stored into.
+
+**The budget is a backstop.** A store whose mapping command the client refuses
+against its own mapping-count budget makes the range the guest is writing in
+whole, in one command, and is served again. `Stats.MappingMerges` says it acted,
+and it is expected never to: a host that merges is a host whose guest fragments
+its memory faster than the rules hold it together.
+
+A pager whose page is the whole range — PMEM's — runs none of this: it has one
+page per range, so there is nothing to place, no gap to close and nothing to
+fill, and its offsets and its pages are one number.
 
 Such a store also writes ahead. The fresh zero pages after it in its read-ahead
 run, and before it where the run ends first, get private pages in the same
@@ -818,12 +897,17 @@ are covered by Linux mapping invalidation, not by a Rust lock around each load.
 Upstream's own UFFD restore copies pages into each VM's anonymous memory and
 cannot share a page between VMs; this integration replaces it.
 
-## Control protocol, version 7
+## Control protocol, version 8
 
-Version 6 clients are rejected because the page is no longer one number both
-ends know: ATTACH carries the page this session's region runs and the kind of
-memory its arena is made of, and a 2 MiB page number read as a 4 KiB one names
-another page. Version 6 had itself rejected version 5 for two removals at once —
+Version 7 clients are rejected because ATTACH's length is the arena's offset
+space now rather than its capacity. The arena is a sparse file whose offsets are
+not its pages, so the number the client checks the descriptor's own size against
+— and bounds a MAP's arena offset by — is the addresses; a version 7 peer would
+read it as a promise of that much memory. Version 7 had itself rejected version 6
+because the page stopped being one number both ends know: ATTACH carries the page
+this session's region runs and the kind of memory its arena is made of, and a
+2 MiB page number read as a 4 KiB one names another page. Version 6 rejected
+version 5 for two removals at once —
 a session carries one region, so the `region` field is gone from the frame and
 the frame is 56 bytes, and HELLO carries no page size — and version 4 before it
 for the removal of the FLUSH request, whose frame kind SEAL took. The
@@ -848,7 +932,7 @@ of why it could not start has to name the end the answer never came from.
 | --- | --- | --- |
 | HELLO | 1 | `id` protocol version, every other field zero; carries UFFD |
 | REGION | 2 | `offset=host address`, `length=bytes`, `flags=kind` (1 PMEM, 2 RAM) |
-| ATTACH | 3 | `id` protocol version, `offset=this region's page size`, `length=arena size`, `backing=arena kind` (1 explicit 2 MiB HugeTLB, 2 ordinary shared memfd), `flags=mapping-count budget`; carries the arena memfd |
+| ATTACH | 3 | `id` protocol version, `offset=this region's page size`, `length=the arena's offset space in bytes`, `backing=arena kind` (1 explicit 2 MiB HugeTLB, 2 ordinary shared memfd), `flags=mapping-count budget`; carries the arena memfd |
 | MAP | 4 | Command ID, region-relative offset and length, arena offset in `backing`, next generation; `flags=1` immutable and shared or `0` private and writable |
 | REVOKE | 5 | Command ID, region-relative offset and length, next generation; installs nonresident fault traps |
 | ACK | 6 | Echoes command ID and generation; `flags=0` success or a positive Linux errno |

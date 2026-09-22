@@ -29,8 +29,13 @@ type Stats struct {
 	// SpillWrites counts completed scratch writes, each of which may contain
 	// several pages, and SpillWriteBytes what they carried. Spill is scratch and
 	// never reaches the backing, so it is counted apart from the writes below.
-	SpillWrites, SpillWriteBytes                           uint64
-	ResidentPages, DirtyPages, LogicalPages                int
+	SpillWrites, SpillWriteBytes            uint64
+	ResidentPages, DirtyPages, LogicalPages int
+	// PrivateExtents is how many 2 MiB-aligned ranges of this pager's regions
+	// own an extent of the offset space, which is how many hold a private page.
+	// It is addresses and not memory: an extent whose range holds one private
+	// page costs the arena that one page. Zero for a pager that places nothing.
+	PrivateExtents                                         int
 	PeakResidentPages, PeakDirtyPages                      int
 	Faults, CopyOnWrites, Evictions, Spills, SpillRefaults uint64
 	// WriteAheadPages counts the pages stores into fresh zero pages mapped
@@ -66,6 +71,16 @@ type Stats struct {
 	// whose publications are not keeping up with its guests; one that stalls on
 	// it is running a VM it cannot make durable at all.
 	WindowWaits, WindowStalls uint64
+	// RuleCopies counts the pages the two rules made private beside the pages
+	// the guest stored into: those between a store and a page its range already
+	// held, and those copied into the holes of a range that had become half its
+	// own. Each is a page the guest may never write, and each takes a mapping
+	// away from the VMM. MappingMerges counts the times the backstop behind them
+	// acted — a store whose mapping the client refused, whose range was made
+	// whole so that the store could be served. It is expected to stay zero: a
+	// host that merges is a host whose guest fragments its memory faster than
+	// the rules hold it together.
+	RuleCopies, MappingMerges uint64
 	// RefusedMappings counts the faults a client refused a mapping command for,
 	// each of which is served again once the pager has revoked something. A
 	// host that refuses is a host whose client's mapping budget is too small
@@ -162,6 +177,7 @@ func (h *Host) Stats(ctx context.Context) (Stats, error) {
 	defer h.mu.Unlock()
 	stats := h.stats
 	stats.ResidentPages = h.slots.Held()
+	stats.PrivateExtents = len(h.extents)
 	stats.DirtyPages = h.dirty
 	stats.LogicalPages = h.logical
 	stats.UFFDReads = h.uffdReads.Load()

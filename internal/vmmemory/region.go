@@ -372,15 +372,17 @@ func (r *Region) withoutRegion(ctx context.Context, read func() error) error {
 	return r.ready()
 }
 
-// reclaim takes one arena slot outside the region lock, and reclaimNear takes
-// one near the page's neighbours. Taking a slot can reclaim one, which revokes
-// a victim's mappings and writes its bytes to the spill file: a vCPU pause must
-// wait for neither, exactly as it must not wait for a backing read.
+// reclaim takes one arena slot outside the region lock, reclaimNear takes one
+// near the page's neighbours, and reclaimPrivate the one the placement rule
+// gives a page this store is making private. Taking a slot can reclaim one,
+// which revokes a victim's mappings and writes its bytes to the spill file: a
+// vCPU pause must wait for neither, exactly as it must not wait for a backing
+// read.
 func (r *Region) reclaim(ctx context.Context) (int, error) {
 	var slot int
 	err := r.withoutRegion(ctx, func() error {
 		var err error
-		slot, err = r.host.allocate(ctx, sim.Buggify(ctx, "vmmemory/evict-past-a-free-slot", 0.5))
+		slot, err = r.host.allocate(ctx, nil, sim.Buggify(ctx, "vmmemory/evict-past-a-free-slot", 0.5))
 		return err
 	})
 	return slot, err
@@ -391,6 +393,16 @@ func (r *Region) reclaimNear(ctx context.Context, index uint64) (int, error) {
 	err := r.withoutRegion(ctx, func() error {
 		var err error
 		slot, err = r.allocateNear(ctx, index)
+		return err
+	})
+	return slot, err
+}
+
+func (r *Region) reclaimPrivate(ctx context.Context, index uint64) (int, error) {
+	var slot int
+	err := r.withoutRegion(ctx, func() error {
+		var err error
+		slot, err = r.allocatePrivate(ctx, index)
 		return err
 	})
 	return slot, err
@@ -508,6 +520,7 @@ func (r *Region) Detach(ctx context.Context) error {
 	}
 	h.mu.Lock()
 	h.logical -= r.pageCount
+	h.forgetExtents(r)
 	delete(h.regions, r)
 	if r.hasZeros {
 		h.zeroRegions--

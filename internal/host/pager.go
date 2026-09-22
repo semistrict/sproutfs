@@ -95,6 +95,7 @@ func pagerConfig(config SupervisorConfig, kind vmmemory.RegionKind) vmmemory.Con
 	return vmmemory.Config{
 		PageSize:        pageSize,
 		ResidentPages:   resident,
+		ArenaOffsets:    arenaOffsets(kind, resident, logical),
 		LogicalPages:    logical,
 		DirtyPages:      dirty,
 		ConcurrentIO:    concurrentIO(resident, readAhead),
@@ -105,6 +106,24 @@ func pagerConfig(config SupervisorConfig, kind vmmemory.RegionKind) vmmemory.Con
 		// the same bound the host reports and schedules its retries by.
 		LossWindow: lossWindowOf(config.LossWindow),
 	}
+}
+
+// arenaOffsets is how many addresses a pager's arena has, which is not how many
+// pages it may hold: the arena is a sparse file, so an offset costs nothing
+// until a page is put there.
+//
+// RAM puts a private page at the offset it has within its 2 MiB range, so every
+// range a region may have written into owns a run of 512 consecutive offsets
+// however few of its pages are private. A range is 512 pages and an extent 512
+// offsets, so the extents come to exactly the logical pages this pager admits —
+// every page of every region it may map — and the read-ahead runs, which take
+// consecutive offsets of their own, are bounded by what the arena can hold at
+// once. PMEM places nothing, so its offsets and its pages are one number.
+func arenaOffsets(kind vmmemory.RegionKind, resident, logical int) int {
+	if kind != vmmemory.Ram {
+		return resident
+	}
+	return logical + resident
 }
 
 // concurrentIO bounds page reads and spill writes in flight. It is the node's

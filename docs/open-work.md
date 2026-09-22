@@ -15,6 +15,8 @@ everything open is listed here.
 
   Three things are left behind deliberately. `vmmemory.ErrUndroppable` refuses the retire rather than trusting the answer: a page given up because the volume holds no object for it must be one the volume can reproduce without one, so it must be zeros, and anything else fails the retire with the checkpoint still durable, the page still sealed and the guest still holding its memory. `volume.ErrRetired` refuses a hold on a fork point its last holder retired, which caught a second defect on the way in — forking two children through the manager one after the other, each child's hold going as it closes, took the second from a point whose seal had ended. And `TestFirecrackerForkChildrenSurviveTheirFirstSeconds` reproduces the whole shape in about a hundred seconds a run rather than ten minutes, with the arms that isolated it (`SPROUTFS_FORK_ARM`: the whole checkpoint, the capture without the settle, the bare pause, one child, no interval) — the ladder that found it was 0/8 with no interval, 0/8 for a bare pause, 0/8 for a capture and seal, 5–8/8 for the whole checkpoint, and 0/16 fixed.
 
+- **The probe build's `TestSealTakingAReclaimingPagesReservationKeepsItsBytes` panics under load, and it predates the mapping work.** The pager's audit reports `probe bind: page N of region … was given slot -1 from outside its own store path while it owned generation G, and now takes slot S — a lost write`, from the store's own `takePrivate`. It needs contention to appear: `go test -tags sproutfsprobe ./internal/vmmemory` alone is green over a dozen runs, and ten copies of that binary at once on an eight-core machine reach it in about one lane in eight. Measured on 2026-09-22 with the same binary built from each side: **8 of 50 lanes on `5d7029e`, 6 of 50 after the mapping rules**, every one of them that test and that assertion, so it is the same defect at the same rate and not this work's. What it is saying is that the region the test drives — a seal taking the reservation of a page a reclaim is holding, with a store racing both — hands the store a page while the probe believes the binding still owns a newer generation. Either the audit's generation bookkeeping does not cover this three-way race or the store really does take a page the reclaim has moved; only the second is a defect, and nothing has told them apart yet.
+
 - **No simulation reaches the post-copy paths that defect lived in.** Two separate things were wrong there and neither simulated campaign saw either. The pager's own test double stripped the identity for ever exactly as the product did, so the retire's mistake was modelled rather than caught; and with an earlier fix to `readIn` disabled, a hundred soak seeds still passed, because in every campaign the source's unpublished set only ever shrinks. What is missing is a scenario whose source keeps storing and checkpointing while a destination post-copies from it, and whose destination then publishes and retires what it received. Until there is one, this class is only reachable on a real kernel.
 
 - **Nothing releases a pin: the collector is deferred indefinitely, and until it exists the store grows without bound.** The owner's decision on 2026-09-15 was to keep pins correct and permanent and to write no collector, background or otherwise, for now; accumulating data is accepted. What accumulates is every object a pin covers, and it is never given back. A pin says a checkpoint of a VM was forked, and it is permanent — no participant can tell that nothing reads through it any more, because a descendant sees neither its siblings nor the forks taken below it, and a grandchild's root names its grandparent's checkpoints directly. So the objects a pin covers accumulate: every checkpoint any VM was ever forked at, with every checkpoint its root names, and everything a deleted VM leaves pinned (`internal/control/record.go`, `internal/volume/fork.go`, `internal/volume/manager.go`, `internal/checkpoint/reclaim.go`). A collector is the only thing that can give one back, and it must handle:
@@ -63,59 +65,39 @@ everything open is listed here.
   and a third above the slowest behind the whole suite. Letting read-ahead evict,
   or reserving a run's worth of slots before a scan, is performance work this
   plan did not do (`internal/vmmemory/window.go`, `reserveRuns`).
-- **RAM's mappings are not kept whole, and the arena is what blocks it.** The
-  [page-geometry plan](../plans/ram-pmem-page-geometry-2026-09-19.md) has a step
-  of its own for this — a private page lives at its own offset in its range's
-  private extent, a store closes a gap of at most 16 pages, a range that reaches
-  256 private pages of 512 becomes wholly private, and the mapping budget is a
-  backstop with a counter — and none of the four is implemented. The measurement
-  behind it is: `fork_ram_geometry` records the private runs, their lengths, the
-  gaps between them and the half-private ranges per region, and the 2026-09-21
-  4 KiB smoke says 1,532 of 1,979 gaps are 16 pages or fewer and 19 of 197
-  ranges are already half private, which is where `gap` = 16 comes from.
+- **RAM's mappings are kept whole, and what that is worth is unmeasured on a
+  cluster.** The [page-geometry plan](../plans/ram-pmem-page-geometry-2026-09-19.md)'s
+  step for this is done: the arena's offsets are not its pages and its memfd is
+  sized to the first, every 2 MiB-aligned range that holds a private page owns
+  an extent and a private page sits at the offset it has within its range, a
+  store closes a gap of at most sixteen pages, a range that reaches half its
+  pages is filled, and the mapping budget is the backstop with
+  `Stats.MappingMerges` to say when it acted. The mapping protocol is at
+  version 8, because ATTACH's length is the offset space now rather than the
+  capacity. What is open is what it is worth on a real workload: the counts are
+  proved in `internal/vmmemory` and in the simulation, and one Lima reading of
+  the fork fan-out at 4 KiB says a child's VMM holds 3,299 and 3,288 mappings
+  where it held 4,485 and 4,631 before, with 28 private extents, 2,723 pages
+  copied by the rules and the backstop never acting — but that is one run of
+  each on an instance whose load differed between them, and nothing has been run
+  against the recorded workload or on GCE with the rules on and off.
 
-  The placement rule needs an arena whose offsets are not its pages: a range
-  holding a single private page owns 512 consecutive offsets of which one holds
-  memory, so the offsets follow the ranges a guest has written into while the
-  memory stays the arena's. **The first half of that is done.**
-  `Config.ArenaOffsets` is the address space and `Config.ResidentPages` the
-  capacity; `slots.Space` is built with both and bounds every allocation by the
-  pages left; `Host.residentLeases` is a map, because there is one per page and
-  not one per offset; and both the fixture's arena and the simulation's are
-  sparse maps that count the offsets holding a page. `ArenaOffsets` defaults to
-  `ResidentPages`, so no pager runs with an address space larger than its budget
-  yet.
+- **The Firecracker fork has to be rebuilt for mapping protocol version 8.** The
+  crate is vendored into the VMM by path, so a cached qualification build keeps
+  speaking version 7 and every session it opens fails with `invalid
+  managed-memory hello` before a guest starts. That is the refusal working, and
+  it is also the first thing to check when a Lima or GCE run that used to pass
+  stops attaching: rebuild the VMM, do not reuse
+  `~/.cache/sproutfs-fanout`.
 
-  What is left, in order:
-  1. **Extents and placement.** A region's 2 MiB range that holds a private page
-     owns 512 consecutive offsets; a private page goes at the offset it has
-     within its range. Extents come off a free list, and the region maps range
-     to extent. A private run that crosses a range boundary needs consecutive
-     extents or it is two mapping commands.
-  2. **The Linux arena.** Size the memfd to the offsets and keep it sparse;
-     `Release` already punches with `FALLOC_FL_PUNCH_HOLE`, and
-     `AllocatedBytes` is what proves the memory leaves. Prove memfd size against
-     allocated blocks after a scattered-store pattern: N pages of memory against
-     512·N offsets.
-  3. **The wire.** ATTACH's arena size becomes the offsets rather than the
-     capacity, which is a change of meaning and so a version bump of the mapping
-     protocol, with the Rust client checking the descriptor against it.
-  4. **The callers.** `internal/host`, `internal/vmmachine` and `internal/simtest`
-     size the RAM offset space — one extent per range the regions a pager admits
-     may have written into, which `LogicalPages` already bounds — and PMEM keeps
-     its offsets and pages one number.
-  5. **The three rules and the backstop**, with the mapping counts per store
-     pattern.
-
-- **The mapping budget is not enforced at 4 KiB.** `ConnectionConfig.MaxVMAs` is
-  still only the client's admission limit, answered with `ENOSPC` and a deferred
-  fault. The plan's step 4 also asks the pager to count the mappings a region
-  holds and, when a store would exceed the budget, to merge — to copy the
-  remaining shared 4 KiB pages of the densest 2 MiB-aligned range into private
-  pages so the whole range becomes one private run — rather than leaving the
-  guest waiting on a budget only revocation can free. A guest whose writes
-  scatter widely enough can still refuse its way into a stall. It is the
-  backstop of the step above and waits on the same arena change.
+  Two placements are deliberately left to an ordinary offset, and both are
+  recorded where they happen (`internal/vmmemory/placement.go`). A store that
+  copies away from the copy a checkpoint froze cannot have its own offset,
+  because that offset is holding the bytes the upload is reading; the page stays
+  outside its range's run until something releases it, and nothing moves it
+  back. And a page a migration destination loads privately from the source
+  arrives in a run of its own, like any other load, so a post-copy destination's
+  private pages are not placed at all until the guest stores into them.
 - **A page a guest only reads is copied, and the copy is given back at the next checkpoint.** A cold read that has to wait for the pager reaches it as a write fault — on x86-64 because KVM's asynchronous page fault worker always asks for the page writable, on aarch64 when the guest first executes a page — and the pager answers a write fault with a private page. What the [unchanged-page rule](../plans/unchanged-pages-2026-09-19.md) recovers is done: the copy remembers the page it was made from, the settle behind each checkpoint's pause compares the two, and a page that did not change is published nowhere and goes straight back to sharing its origin. What remains is the copy itself. Between the fault and the next checkpoint the host holds the page twice, and with 4 KiB RAM pages under a 2 MiB read-ahead run that is one page in 512, while for PMEM at 2 MiB it is a whole page per cold fault until the interval passes. Preventing it needs a host kernel that passes the guest's access through, or KVM userfault once it exists, and neither is ours to start. Fork points are not settled either: a child inherits an unchanged page as an unpublished one, which its own next checkpoint settles.
 - **The workload measurement predates the multi-page parts and wants re-taking.** It was measured against one object per dirty page, before `39bfe37`, so its object counts describe a store layout that no longer exists, and only one fork setting (`FORKS_BASE=2 FORKS_PER_REPO=1`) was run; the commands to re-take it on current `main` are in the document (`docs/measurements-2026-09-14-workload.md`).
 

@@ -116,6 +116,46 @@ type mapping struct {
 
 func newMapping(a *arena) *mapping { return &mapping{arena: a, pages: make(map[uint64]mapped)} }
 
+// mappings counts the mappings this region is to its VMM process, which is what
+// the kernel holds a VMA for: a run of consecutive pages at consecutive arena
+// offsets, with the same write access, is one mapping, and every break in
+// either is another. It is what the placement rule exists to keep down — a
+// private page put at the offset it has within its range keeps the private
+// pages of that range adjacent, so what the range costs here is how often it
+// alternates between shared and private rather than how many of its pages are
+// private.
+func (m *mapping) mappings() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return mappingRuns(m.pages)
+}
+
+// mappingRuns counts the mappings one page table's arena-backed pages are. A
+// zero mapping owns no arena offset and is left out: what the placement rule
+// governs is where the pages a pager holds sit, and a range of zeros is one
+// mapping wherever they are.
+func mappingRuns(pages map[uint64]mapped) int {
+	numbers := make([]uint64, 0, len(pages))
+	for page, m := range pages {
+		if m.slot >= 0 {
+			numbers = append(numbers, page)
+		}
+	}
+	slices.Sort(numbers)
+	count := 0
+	for i, page := range numbers {
+		if i > 0 {
+			previous, current := pages[numbers[i-1]], pages[page]
+			if numbers[i-1]+1 == page && current.slot == previous.slot+1 &&
+				previous.writable == current.writable {
+				continue
+			}
+		}
+		count++
+	}
+	return count
+}
+
 func (m *mapping) Map(_ context.Context, page uint64, slot, count int, writable bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

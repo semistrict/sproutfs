@@ -149,6 +149,13 @@ func (s *settler) compare(ctx context.Context, c *RegionCheckpoint, held *bindin
 	if origin == nil || held.spillSlot < 0 {
 		return nil, nil
 	}
+	if h.wholeRange(r, held.index) {
+		// The half-private rule filled this range, so it is one mapping and one
+		// write-protect command at a seal. A page handed back here would break
+		// it into three again, for a page the guest is about to write anyway: a
+		// whole range stays whole.
+		return nil, nil
+	}
 	if err := origin.mu.Lock(ctx); err != nil {
 		return nil, err
 	}

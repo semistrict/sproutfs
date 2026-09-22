@@ -221,7 +221,7 @@ func kernelHostConfigured(t *testing.T, cfg vmmemory.Config) *vmmemory.Host {
 	if os.Getenv("SPROUTFS_VM_MEMORY_CLIENT") == "" {
 		t.Skip("run scripts/test-vm-memory-lima.sh for Linux/KVM qualification")
 	}
-	a, err := vmmemory.NewLinuxArena(cfg.ResidentPages, cfg.PageSize)
+	a, err := vmmemory.NewLinuxArena(cfg.Offsets(), cfg.PageSize)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -175,6 +175,33 @@ func (h *Host) createZeros(ctx context.Context, slot, count int, kind RegionKind
 	return pages, nil
 }
 
+// createZeroRuns fills the slots of every run with zeros and returns their
+// locked private pages in page order, which is the order the runs are in. A run
+// that fails takes the runs after it and the pages before it with it, so a
+// store that could not have its whole run leaves the arena exactly as it was.
+func (h *Host) createZeroRuns(ctx context.Context, runs []MapRun, kind RegionKind) ([]*resident, error) {
+	if len(runs) == 1 {
+		return h.createZeros(ctx, runs[0].Slot, runs[0].Count, kind)
+	}
+	var pages []*resident
+	for i, run := range runs {
+		created, err := h.createZeros(ctx, run.Slot, run.Count, kind)
+		if err == nil {
+			pages = append(pages, created...)
+			continue
+		}
+		for _, pg := range pages {
+			err = errors.Join(err, h.release(ctx, pg))
+			h.unlock(pg)
+		}
+		for _, rest := range runs[i+1:] {
+			err = errors.Join(err, h.abandonSlots(ctx, rest.Slot, rest.Count, nil))
+		}
+		return nil, err
+	}
+	return pages, nil
+}
+
 // abandonSlots gives back reserved slots whose contents failed to arrive, or
 // that their reserver turned out not to need. A failed write may have allocated
 // partial contents, so each is punched before it is accounted free; a failed

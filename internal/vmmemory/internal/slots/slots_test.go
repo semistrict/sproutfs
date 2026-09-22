@@ -152,6 +152,68 @@ func TestPagesBoundWhatAnOffsetSpaceGivesOut(t *testing.T) {
 	}
 }
 
+// A space with room past its pages carves that room into extents: aligned runs
+// of consecutive offsets handed out and taken back whole, which is what lets a
+// region put every private page of one 2 MiB range at the offset it has within
+// the range.
+func TestExtentsAreWholeRunsOfConsecutiveOffsets(t *testing.T) {
+	// Eight pages of ordinary offsets, then four extents of sixteen.
+	s := slots.New(16+16*4, 8, 16)
+	if s.Extents() != 4 || s.FreeExtents() != 4 {
+		t.Fatalf("a space of %d offsets past its 8 pages has %d extents, %d free; want 4 and 4",
+			s.Offsets()-8, s.Extents(), s.FreeExtents())
+	}
+	first := s.TakeExtent()
+	if first < 0 || first%16 != 0 || first < 8 {
+		t.Fatalf("the first extent is at offset %d, want a multiple of 16 past the 8 pages", first)
+	}
+	if s.FreeExtents() != 3 {
+		t.Fatalf("%d extents are free after taking one, want 3", s.FreeExtents())
+	}
+	// Every offset past the pages is an extent's, taken or free, and none of
+	// them is ever handed out a page at a time.
+	for slot := 8; slot < s.Offsets(); slot++ {
+		if s.IsFree(slot) {
+			t.Fatalf("offset %d past the space's 8 pages is free for an ordinary page", slot)
+		}
+	}
+	// Putting a page at one of them is memory and not an address: the page
+	// budget moves, the extent does not.
+	s.Fill()
+	if s.Held() != 1 || s.Free() != 7 || s.FreeExtents() != 3 {
+		t.Fatalf("after one page in an extent: held=%d free=%d extents free=%d; want 1, 7 and 3",
+			s.Held(), s.Free(), s.FreeExtents())
+	}
+	s.Empty()
+	if s.Held() != 0 || s.Free() != 8 {
+		t.Fatalf("after the page left: held=%d free=%d; want 0 and 8", s.Held(), s.Free())
+	}
+	s.PutExtent(first)
+	if s.FreeExtents() != 4 {
+		t.Fatalf("after giving the extent back: %d free, want 4", s.FreeExtents())
+	}
+	if again := s.TakeExtent(); again != first {
+		t.Fatalf("the extent given back came out again at %d, want %d", again, first)
+	}
+	s.PutExtent(first)
+	// The ordinary allocator never reaches an extent's offsets, taken or not.
+	s.Take(0, 8)
+	if start, length := s.LongestRun(16); start != -1 || length != 0 {
+		t.Fatalf("the ordinary run past the pages = %d, %d, want -1 and 0", start, length)
+	}
+}
+
+// A space whose offsets are its pages has no extents at all, which is the pager
+// that places nothing: PMEM, whose page is the whole range.
+func TestASpaceWithNoRoomPastItsPagesHasNoExtents(t *testing.T) {
+	for _, s := range []*slots.Space{slots.New(64, 64, 16), slots.New(64, 64), slots.New(4096, 8, 1)} {
+		if s.Extents() != 0 || s.TakeExtent() != -1 {
+			t.Fatalf("a space of %d offsets and %d pages has %d extents",
+				s.Offsets(), s.Pages(), s.Extents())
+		}
+	}
+}
+
 // A space cannot be built with more pages than offsets: a page has to have
 // somewhere to be.
 func TestMorePagesThanOffsetsIsRefused(t *testing.T) {

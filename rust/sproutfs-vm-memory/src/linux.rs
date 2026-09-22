@@ -32,7 +32,12 @@ pub(crate) fn backing_for(page_size: usize) -> Option<u64> {
 }
 
 /// Checks a received arena descriptor against the backing kind the attachment
-/// claimed and the size it reported, before the descriptor is mapped.
+/// claimed and the offset space it reported, before the descriptor is mapped.
+///
+/// `len` is the arena's addresses, which is the file's length. The file is
+/// sparse — a pager that places a private page at the offset it has within its
+/// 2 MiB range owns 512 consecutive offsets per range and puts memory at a
+/// handful of them — so this checks the length and never the blocks behind it.
 pub(crate) fn check_backing(fd: &OwnedFd, kind: u64, len: u64) -> io::Result<()> {
     let refuse = |what: String| io::Error::new(io::ErrorKind::InvalidData, what);
     let mut stat: libc::stat = unsafe { std::mem::zeroed() };
@@ -41,7 +46,7 @@ pub(crate) fn check_backing(fd: &OwnedFd, kind: u64, len: u64) -> io::Result<()>
     }
     if len > i64::MAX as u64 || stat.st_size as u64 != len {
         return Err(refuse(format!(
-            "the attached arena is {} bytes, the attachment said {len}",
+            "the attached arena has {} bytes of offsets, the attachment said {len}",
             stat.st_size
         )));
     }

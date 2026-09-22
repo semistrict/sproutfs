@@ -228,10 +228,13 @@ func Start(ctx context.Context, config SupervisorConfig) (Service, error) {
 // its cap allows. Each is logged with the bounds the node chose for it, so what
 // a host gave each kind is on the record.
 func (s *supervisor) startPager(ctx context.Context, kind vmmemory.RegionKind, cfg vmmemory.Config) (*vmmemory.Host, error) {
-	arena, err := vmmemory.NewLinuxArena(cfg.ResidentPages, cfg.PageSize)
+	// The arena is sized to its addresses, not to the memory it may hold: it is
+	// a sparse file, and a pager that places a private page at the offset it has
+	// within its range owns far more of the first than of the second.
+	arena, err := vmmemory.NewLinuxArena(cfg.Offsets(), cfg.PageSize)
 	if err != nil {
-		return nil, fmt.Errorf("%s arena of %d pages of %d bytes: %w",
-			kind, cfg.ResidentPages, cfg.PageSize, err)
+		return nil, fmt.Errorf("%s arena of %d offsets for %d pages of %d bytes: %w",
+			kind, cfg.Offsets(), cfg.ResidentPages, cfg.PageSize, err)
 	}
 	s.arenas[kind] = arena
 	spill, err := s.config.Disk.Open(ctx, "spill-"+kind.String(),
@@ -246,6 +249,7 @@ func (s *supervisor) startPager(ctx context.Context, kind vmmemory.RegionKind, c
 	}
 	slog.InfoContext(ctx, "host: a pager was assembled", "kind", kind.String(),
 		"page_bytes", cfg.PageSize, "resident_pages", cfg.ResidentPages,
+		"arena_offsets", cfg.Offsets(),
 		"logical_pages", cfg.LogicalPages, "dirty_pages", cfg.DirtyPages,
 		"loss_window", cfg.LossWindow.String(), "concurrent_io", cfg.ConcurrentIO,
 		"read_ahead_pages", cfg.ReadAheadPages, "write_ahead_pages", cfg.WriteAheadPages,

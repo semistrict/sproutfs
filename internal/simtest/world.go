@@ -566,11 +566,22 @@ func (w *World) newPager(ctx context.Context, h *hostState) (*pager, func(), err
 			return nil, nil, err
 		}
 		p.spills[kind] = spill
-		a := newArena(k.ResidentPages)
+		// RAM places a private page at the offset it has within its 2 MiB range,
+		// so its arena has an address per logical page — one 512-offset extent
+		// per range any region may write into — beside the pages it may hold at
+		// once. PMEM places nothing, so its offsets and its pages are one
+		// number. The arena is sparse either way: an offset costs nothing until
+		// a page is put there.
+		offsets := k.ResidentPages
+		if kind == vmmemory.Ram {
+			offsets = k.LogicalPages + k.ResidentPages
+		}
+		a := newArena(offsets)
 		p.arenas[kind] = a
 		memory, err := vmmemory.New(ctx, h.config.Resources, vmmemory.Config{
 			PageSize:      pageSize,
-			ResidentPages: k.ResidentPages, LogicalPages: k.LogicalPages, DirtyPages: k.DirtyPages,
+			ResidentPages: k.ResidentPages, ArenaOffsets: offsets,
+			LogicalPages: k.LogicalPages, DirtyPages: k.DirtyPages,
 			ReadAheadPages: k.ReadAheadPages, WriteAheadPages: k.WriteAheadPages,
 			ConcurrentIO: k.ConcurrentIO, LossWindow: k.LossWindow,
 			// The window is measured on this host's own clock, which the
@@ -988,6 +999,39 @@ func (w *World) noteSealed(in *instance, sealed, unchanged int) {
 // Sealed reports what the last checkpoint of the named VM sealed and how many
 // of those pages the settle found the guest had never stored into, so that the
 // checkpoint published neither them nor anything under them.
+// PrivateExtents is how many 2 MiB-aligned ranges of one host's RAM regions own
+// an extent of its arena's offset space, which is how many hold a private page.
+// It is addresses and not memory: the pages such a range holds are whatever the
+// guest stored into.
+func (w *World) PrivateExtents(index int) int {
+	w.mu.Lock()
+	p := w.hosts[index].pager
+	w.mu.Unlock()
+	if p == nil {
+		return 0
+	}
+	stats, err := p.pagers.Ram.Stats(context.Background())
+	if err != nil {
+		return 0
+	}
+	return stats.PrivateExtents
+}
+
+// Mappings is how many mappings one volume's region is to the VMM of the named
+// VM's guest, zero where that VM is not running here. It is what a VMM process
+// holds VMAs for, and what the placement rule is measured by.
+func (w *World) Mappings(id, name string) int {
+	_, g := w.runningVM(id)
+	if g == nil {
+		return 0
+	}
+	mp := g.mappings[name]
+	if mp == nil {
+		return 0
+	}
+	return mp.mappings()
+}
+
 func (w *World) Sealed(id string) (sealed, unchanged int) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
