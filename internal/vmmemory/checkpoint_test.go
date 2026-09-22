@@ -320,45 +320,55 @@ func TestCheckpointRetirementNeverStrandsItsPrivatePage(t *testing.T) {
 	})
 }
 
-// A seal that fails partway captures nothing: the pages it took go back to the
-// guest, and sealing again takes a checkpoint of everything that is dirty then.
-// The pages it did take are counted as it takes them, so a capture that never
-// completes still reports the work it did.
+// A seal whose protection fails partway captures nothing, and takes no page at
+// all: the runs it did protect have their mappings taken away so the guest
+// faults and maps them writable again, and sealing again takes a checkpoint of
+// everything that is dirty then. The pause is the protect commands, so a
+// capture abandoned inside one has nothing to hand back but them.
 func TestSealRetriedAfterAPartialSealCapturesEveryDirtyPage(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 2, LogicalPages: 8, DirtyPages: 4})
-		r, m, b := f.region(2)
-		access(t, r, m, 1, true)[0] = 62
+		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 8, LogicalPages: 16, DirtyPages: 8})
+		r, m, b := f.region(4)
+		// Two runs: the gap at page 1 is what makes the seal two commands, so
+		// the capture can be abandoned between them.
+		access(t, r, m, 2, true)[0] = 62
 		access(t, r, m, 0, true)[0] = 61
-		// One page per batch, and the capture is abandoned once the first batch
-		// has been taken and protected: the seal is then half done, which is the
-		// state no capture may be built on.
 		vmmemory.SetCheckpointBatchPages(t, 1)
 		ctx, cancel := context.WithCancelCause(t.Context())
 		stop := errors.New("capture abandoned")
-		m.onProtect = func(uint64, int) { cancel(stop) }
+		commands := 0
+		m.onProtect = func(uint64, int) {
+			if commands++; commands == 2 {
+				cancel(stop)
+			}
+		}
 		if err := r.Seal(ctx); !errors.Is(err, stop) {
 			t.Fatalf("Seal = %v, want the cancelled capture", err)
 		}
 		m.onProtect = nil
+		if commands != 2 {
+			t.Fatalf("the abandoned seal issued %d write-protect commands, want 2", commands)
+		}
 		s, err := f.h.Stats(t.Context())
-		if err != nil || s.CheckpointPages != 1 {
-			t.Fatalf("the partial seal counted %d checkpoint pages, want the 1 it took: %v", s.CheckpointPages, err)
+		if err != nil || s.CheckpointPages != 0 {
+			t.Fatalf("the abandoned seal took %d pages into a checkpoint, want none: its pause is its commands: %v",
+				s.CheckpointPages, err)
 		}
 		if r.Checkpoint() != nil {
 			t.Fatal("a seal that failed partway left a checkpoint behind")
 		}
-		// The failed seal captured nothing, so this store belongs to the retry.
+		// The failed seal captured nothing, so this store belongs to the retry —
+		// and it reaches a page the abandoned seal had write-protected.
 		value := byte(99)
 		if _, err := memoryByte(t.Context(), r, m, 0, &value); err != nil {
 			t.Fatal(err)
 		}
 		f.mustCheckpoint(r, b)
-		if b.data[0] != 99 || b.data[pageSize] != 62 {
-			t.Fatalf("the retried checkpoint published %d and %d, want 99 and 62", b.data[0], b.data[pageSize])
+		if b.data[0] != 99 || b.data[2*pageSize] != 62 {
+			t.Fatalf("the retried checkpoint published %d and %d, want 99 and 62", b.data[0], b.data[2*pageSize])
 		}
-		if s, err := f.h.Stats(t.Context()); err != nil || s.CheckpointPages != 3 || s.DirtyPages != 0 {
-			t.Fatalf("the retry counted %d checkpoint pages and left %d dirty, want 3 and 0: %v", s.CheckpointPages, s.DirtyPages, err)
+		if s, err := f.h.Stats(t.Context()); err != nil || s.CheckpointPages != 2 || s.DirtyPages != 0 {
+			t.Fatalf("the retry counted %d checkpoint pages and left %d dirty, want 2 and 0: %v", s.CheckpointPages, s.DirtyPages, err)
 		}
 	})
 }

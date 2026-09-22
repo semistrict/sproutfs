@@ -485,6 +485,32 @@ memory savings and workload time together.
    [open-work.md](../docs/open-work.md), is the read-ahead run that becomes one
    page under arena pressure.
 
+   **Two costs the 2026-09-22 GCE run measured, and what they are now.** A
+   fan-out of three forks each running `cargo test` — 1.8 M pages published per
+   fork — issued **5,450,465 revocation commands over 5,481,191 pages, 1,753 s**:
+   2.6 a fault, about one per page the guests wrote, because every private page
+   was revoked before its copy was mapped. A store replaces that mapping
+   instead — the protocol's MAP over a range replaces whatever the pages of it
+   had — so a copy-on-write is one command and no revocation, and so is a store
+   that closes a gap or fills a range, however many pages it copied. What
+   replacing costs is an ordering, which `internal/vmmemory/replacement.go` is:
+   the page a store copied from stays where it is, unreclaimable and unreleased,
+   until that store's command lands. A store revokes only where the client
+   refused its mapping or the command failed, because then there is nothing to
+   put in its place.
+
+   And a capture of **2,204,672 sealed RAM pages paused 2.14 s**, of which
+   0.18 s was its 2,264 protect commands and 1.97 s — 0.9 µs a page — was the
+   seal's per-page bookkeeping. The pause is the commands now. The region keeps
+   its dirty set as runs as well as as pages, so the seal reads O(runs) and
+   write-protects them, takes the whole set in one step and returns; the walk
+   that moves each page into the checkpoint runs afterwards, with the guest
+   already running, holding the region the seal took. Only a fault of that
+   region waits for it, and `seal_walk_ns` is what it took. Because the seal no
+   longer holds the pages' locks, the region carries a protection lock that keeps
+   its write-protect commands apart from the one thing that can take a mapping
+   away meanwhile: a reclaim revoking its victim.
+
 5. **Carry geometry through handoff and migration.** Make page size a property
    of each served volume/region rather than the whole page server. Update
    request validation, page numbering, resident listings, unpublished runs,

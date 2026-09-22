@@ -87,6 +87,7 @@ type Host struct {
 	mappingLatency, resolveLatency  latency.Histogram
 	loadLatency, revokeLatency      latency.Histogram
 	protectLatency, sealLatency     latency.Histogram
+	sealWalkLatency                 latency.Histogram
 	// probe is the pager's audit of what it hands a guest, and is nothing at
 	// all unless this build has the sproutfsprobe tag; see probe_on.go.
 	probe probeState

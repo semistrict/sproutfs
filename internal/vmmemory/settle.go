@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -350,10 +351,26 @@ func (c *RegionCheckpoint) drop(ctx context.Context, held *binding, pg, origin *
 }
 
 // sealedPages is the set this checkpoint holds, which a settle is what changes.
+// It waits for the walk behind the pause: the set is what that walk makes, and
+// every reader of it runs after the capture resumed the guest.
 func (c *RegionCheckpoint) sealedPages() []*binding {
+	<-c.taken
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.pages
+}
+
+// heldPage is the checkpoint's copy of one page, nil where it holds none. The
+// set is in ascending page order, so it is found rather than indexed: a map of
+// it would be one insertion per page, which at a 4 KiB page is millions of them
+// for a reader that asks for each page once.
+func (c *RegionCheckpoint) heldPage(page uint64) *binding {
+	held := c.sealedPages()
+	at := sort.Search(len(held), func(i int) bool { return held[i].index >= page })
+	if at < len(held) && held[at].index == page {
+		return held[at]
+	}
+	return nil
 }
 
 // forget rebuilds the set this checkpoint lists without the pages a settle
@@ -367,7 +384,6 @@ func (c *RegionCheckpoint) forget(dropped []bool) {
 	pages := make([]*binding, 0, len(c.pages))
 	for i, held := range c.pages {
 		if i < len(dropped) && dropped[i] {
-			delete(c.byPage, held.index)
 			continue
 		}
 		pages = append(pages, held)

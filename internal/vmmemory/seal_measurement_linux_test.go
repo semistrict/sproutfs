@@ -37,12 +37,15 @@ func (b *measureBacking) Locate(_ context.Context, off, length uint64) ([]contro
 }
 func (b *measureBacking) Verify(context.Context) error { return nil }
 
-// Seal time is what a migration's pause pays for its dirty set, so it is
-// measured over the dirty page counts a migration actually meets, and with the
+// Seal time is what a capture's pause pays for its dirty set, so it is
+// measured over the dirty page counts a capture actually meets, and with the
 // pages both contiguous and scattered: a run of consecutive pages whose pages
-// are not consecutive is what a real guest's dirty set looks like. Timings are
-// observations, never correctness thresholds. Run through the Linux
-// qualification script with SPROUTFS_PAGER_MEASURE=1.
+// are not consecutive is what a real guest's dirty set looks like. The pause
+// and the walk behind it are two numbers, because only the first is time the
+// guest is stopped for: `seal_ns` is the write-protect commands and
+// `seal_walk_ns` the pages, which move into the checkpoint with the guest
+// running. Timings are observations, never correctness thresholds. Run through
+// the Linux qualification script with SPROUTFS_PAGER_MEASURE=1.
 // fillPages bounds one guest store request, so a large dirty set is created in
 // several requests rather than one the fixture would wait out.
 const fillPages = 4096
@@ -92,6 +95,13 @@ func TestManagedPagerSealCostMeasurements(t *testing.T) {
 				t.Fatal(err)
 			}
 			sealNS := time.Since(start).Nanoseconds()
+			// The pause is over; the walk that moves each page into the
+			// checkpoint runs behind it, and asking the checkpoint what it holds
+			// is what waits for that walk.
+			if got := len(region.Checkpoint().DirtyPages()); got != c.dirty {
+				t.Fatalf("the seal took %d pages into the checkpoint, want %d", got, c.dirty)
+			}
+			walkNS := time.Since(start).Nanoseconds() - sealNS
 			after, err := h.Stats(t.Context())
 			if err != nil {
 				t.Fatal(err)
@@ -103,6 +113,7 @@ func TestManagedPagerSealCostMeasurements(t *testing.T) {
 				"case": c.name, "dirty_pages": c.dirty, "page_gap": c.gap,
 				"dirty_ns": dirtyNS, "dirty_ns_per_page": dirtyNS / int64(c.dirty),
 				"seal_ns": sealNS, "seal_ns_per_page": sealNS / int64(c.dirty),
+				"seal_walk_ns": walkNS, "seal_walk_ns_per_page": walkNS / int64(c.dirty),
 				"seal_mapping_commands": after.Mappings - before.Mappings,
 				"seal_mapping_runs":     after.MappingRuns - before.MappingRuns,
 				"seal_protections":      after.Protections - before.Protections,

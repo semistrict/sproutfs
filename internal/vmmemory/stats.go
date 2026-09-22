@@ -101,8 +101,11 @@ type Stats struct {
 	// A fault's own duration contains the mapping, resolve and load spans it
 	// caused, so the four do not sum to it. Seal is one region's whole seal,
 	// which is what a capture's pause is made of and which contains that
-	// region's Protect spans.
-	FaultQueue, Fault, Mapping, Revoke, Protect, Resolve, Load, Seal Latency
+	// region's Protect spans and almost nothing else. SealWalk is what the walk
+	// behind that pause took — moving each sealed page into the checkpoint —
+	// which runs with the guest already running and holding the region, so it
+	// is not in the pause and only a fault of that region waits for it.
+	FaultQueue, Fault, Mapping, Revoke, Protect, Resolve, Load, Seal, SealWalk Latency
 }
 
 // Sharing is how much memory sharing this pager is retaining for one kind of
@@ -190,5 +193,6 @@ func (h *Host) Stats(ctx context.Context) (Stats, error) {
 	stats.Resolve = h.resolveLatency.Snapshot()
 	stats.Load = h.loadLatency.Snapshot()
 	stats.Seal = h.sealLatency.Snapshot()
+	stats.SealWalk = h.sealWalkLatency.Snapshot()
 	return stats, h.err
 }

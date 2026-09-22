@@ -39,7 +39,14 @@ across all of them is collected in [open-work.md](../docs/open-work.md).
   page owns an extent of consecutive offsets and a private page sits at the
   offset it has within its range, a store closes a gap of at most sixteen pages,
   a range that reaches half its pages is filled, and the mapping budget is the
-  backstop with a counter.
+  backstop with a counter. Two costs the 2026-09-22 GCE run measured are gone:
+  a store replaces the mapping it copied from rather than revoking it first, so
+  a copy-on-write — and a store that closes a gap or fills a range — is one
+  mapping command and no revocation, where a three-fork `cargo test` fan-out
+  had spent 1,753 s on 5.4 million revocations, about one per page it wrote; and
+  a seal's pause is its write-protect commands, the walk that moves each page
+  into the checkpoint running behind it with the guest already going, where a
+  capture of 2.2 M sealed pages had paused 2.14 s for 0.18 s of commands.
   **One open defect stands against step 4: a
   fan-out of two children panics a child's guest kernel at 4 KiB, about one run
   in thirty, and revoking is not a fix for it** — see docs/open-work.md. Step
