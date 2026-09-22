@@ -9,8 +9,8 @@ import (
 // The fault histogram decomposes the fault counter, so a record citing both can
 // be checked against itself. One read of an eight-page region loads and maps the
 // whole read-ahead run with one backing read and one mapping command; each of
-// the eight stores that follow revokes that page, maps a private page and
-// resolves it.
+// the eight stores that follow maps a private page over the page it copied from
+// and resolves it, revoking nothing.
 func TestFaultHistogramDecomposesFaultCount(t *testing.T) {
 	f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 16, LogicalPages: 32, DirtyPages: 16, ReadAheadPages: 8})
 	r, m, _ := f.region(8)
@@ -33,7 +33,7 @@ func TestFaultHistogramDecomposesFaultCount(t *testing.T) {
 		{"fault", stats.Fault, stats.Faults},
 		{"mapping", stats.Mapping, 9},
 		{"resolve", stats.Resolve, 9},
-		{"revoke", stats.Revoke, 8},
+		{"revoke", stats.Revoke, 0},
 		{"load", stats.Load, 1},
 	} {
 		var summed uint64

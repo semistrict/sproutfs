@@ -356,8 +356,29 @@ private page, and a zero mapping goes on serving reads until the replacement
 lands. The page is a free arena slot, which is punched and so already reads as
 zeros: the Linux arena allocates it with `fallocate` instead of writing zeros
 into it, the kernel clears it as the resolving `UFFDIO_CONTINUE` installs it,
-and the volume is not read. A store into a shared page or a sealed page still
-revokes the guest's alias before it copies.
+and the volume is not read.
+
+**A store replaces a mapping; it never takes one away.** A copy-on-write of a
+page the guest maps read-only — a shared page, a page a seal write-protected —
+has the copy to put in that mapping's place, and the protocol's MAP over a range
+replaces whatever the pages of it had: the client builds the new mapping,
+registers it and `mremap`s it over the guest's addresses in one command. So one
+command serves the store and the whole run the two rules copied with it, and a
+revocation, which installs no page table and wakes nothing, is left to what it
+is for — a reclaim taking a victim, a settle handing a page back to its origin,
+an abandoned checkpoint, and a store whose mapping the client refused. Until
+2026-09-22 every private page cost a revocation first, which is what a GCE
+fan-out of three forks running `cargo test` spent 1,753 s of 5.4 million
+commands on: 2.6 revocations a fault, about one per page the guests wrote.
+
+What replacing costs instead is an ordering, which `internal/vmmemory/replacement.go`
+is. Between the moment a store takes its binding off the page it copied from and
+the moment its mapping command lands, the guest goes on reading that page's
+offset while nothing names it any more, so the page stays where it is: no
+reclaim may take it, and where its last binding was this store's its memory goes
+back after the command rather than at the unlink. A store that could not map its
+run — the client out of mapping budget, or a command that failed — revokes the
+run instead, because then there is nothing to put in its place.
 
 ### Keeping a region's mappings whole
 

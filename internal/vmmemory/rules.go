@@ -51,7 +51,7 @@ const (
 //
 // A store the placement rule had no offset for is its own page and nothing
 // else: without the extent there is no run to be part of.
-func (r *Region) closeAround(ctx context.Context, index uint64, slot int) (first, last uint64, err error) {
+func (r *Region) closeAround(ctx context.Context, index uint64, slot int, replaced *replacement) (first, last uint64, err error) {
 	h := r.host
 	h.mu.Lock()
 	placed := h.placedAt(r, index, slot)
@@ -75,7 +75,7 @@ func (r *Region) closeAround(ctx context.Context, index uint64, slot int) (first
 	if last-first == 1 {
 		return first, last, nil
 	}
-	if err := r.takeShared(ctx, first, index, last); err != nil {
+	if err := r.takeShared(ctx, first, index, last, replaced); err != nil {
 		return 0, 0, err
 	}
 	if whole {
@@ -197,12 +197,12 @@ func (r *Region) isPrivateAt(page uint64) bool {
 // is left exactly as it was and the run ends there. Caller holds the region
 // shared, as a fault holds it, and the pages it takes are left unmapped for the
 // caller's one mapping command.
-func (r *Region) takeShared(ctx context.Context, first, index, last uint64) error {
+func (r *Region) takeShared(ctx context.Context, first, index, last uint64, replaced *replacement) error {
 	for page := first; page < last; page++ {
 		if page == index {
 			continue
 		}
-		taken, err := r.takeOneShared(ctx, page)
+		taken, err := r.takeOneShared(ctx, page, replaced)
 		if err != nil {
 			return err
 		}
@@ -216,7 +216,7 @@ func (r *Region) takeShared(ctx context.Context, first, index, last uint64) erro
 }
 
 // takeOneShared makes one page private for a rule, reporting whether it did.
-func (r *Region) takeOneShared(ctx context.Context, page uint64) (bool, error) {
+func (r *Region) takeOneShared(ctx context.Context, page uint64, replaced *replacement) (bool, error) {
 	h := r.host
 	b := r.binding(page)
 	if b.writable() || r.checkpointCopy(b) != nil {
@@ -284,7 +284,7 @@ func (r *Region) takeOneShared(ctx context.Context, page uint64) (bool, error) {
 		release()
 		return false, err
 	}
-	if err := r.takePrivate(ctx, b, old, private, spill, origin); err != nil {
+	if err := r.takePrivate(ctx, b, old, private, spill, origin, replaced); err != nil {
 		h.unlock(private)
 		return false, err
 	}
@@ -313,11 +313,12 @@ func (r *Region) makeWhole(ctx context.Context, index uint64) (bool, error) {
 	first := index - index%span
 	last := min(first+span, uint64(r.pageCount))
 	before := r.privatePages(first, last)
-	if err := r.takeShared(ctx, first, index, last); err != nil {
-		return false, err
+	replaced := &replacement{region: r}
+	if err := r.takeShared(ctx, first, index, last, replaced); err != nil {
+		return false, errors.Join(err, replaced.revoke(ctx))
 	}
 	if r.privatePages(first, last) <= before {
-		return false, nil
+		return false, replaced.done(ctx)
 	}
 	h.markWhole(r, index)
 	h.mu.Lock()
@@ -332,9 +333,12 @@ func (r *Region) makeWhole(ctx context.Context, index uint64) (bool, error) {
 		r.setMapped(r.binding(page), true)
 	}
 	if err := r.mapPages(ctx, first, slot, count, true); err != nil {
+		if revoked := replaced.revoke(ctx); revoked != nil {
+			return false, errors.Join(r.fail(err), revoked)
+		}
 		return false, r.mappingFailed(err, func() { r.unmapPages(first, count) })
 	}
-	return true, nil
+	return true, replaced.done(ctx)
 }
 
 // placedSlot is the arena offset the placement rule gives one page, or -1 where
