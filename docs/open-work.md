@@ -74,19 +74,38 @@ everything open is listed here.
   4 KiB smoke says 1,532 of 1,979 gaps are 16 pages or fewer and 19 of 197
   ranges are already half private, which is where `gap` = 16 comes from.
 
-  What stops the placement rule is that the arena's offsets and its pages are
-  one number. A range holding a single private page owns 512 consecutive arena
-  offsets of which one holds memory, so the offsets a host needs follow the
-  ranges its guests have written into — at the deployment's 9 GiB RAM dirty
-  budget, up to 2,359,296 extents — while the memory it may hold stays the
-  arena's. Today `Config.ResidentPages` is both: it sizes `slots.Set`,
-  `Host.residentLeases` and the Linux arena's memfd, and ATTACH states that size
-  on the wire for the client to check against the descriptor. The arena has to
-  become a sparse offset space with the page budget enforced where it already is,
-  in the resource lease `takeFree` acquires, before any of the four rules is
-  worth writing: a private run is one mapping only when its arena slots are
-  consecutive, which is what the placement rule is for, so the gap and
-  whole-range rules would copy more and save nothing without it.
+  The placement rule needs an arena whose offsets are not its pages: a range
+  holding a single private page owns 512 consecutive offsets of which one holds
+  memory, so the offsets follow the ranges a guest has written into while the
+  memory stays the arena's. **The first half of that is done.**
+  `Config.ArenaOffsets` is the address space and `Config.ResidentPages` the
+  capacity; `slots.Space` is built with both and bounds every allocation by the
+  pages left; `Host.residentLeases` is a map, because there is one per page and
+  not one per offset; and both the fixture's arena and the simulation's are
+  sparse maps that count the offsets holding a page. `ArenaOffsets` defaults to
+  `ResidentPages`, so no pager runs with an address space larger than its budget
+  yet.
+
+  What is left, in order:
+  1. **Extents and placement.** A region's 2 MiB range that holds a private page
+     owns 512 consecutive offsets; a private page goes at the offset it has
+     within its range. Extents come off a free list, and the region maps range
+     to extent. A private run that crosses a range boundary needs consecutive
+     extents or it is two mapping commands.
+  2. **The Linux arena.** Size the memfd to the offsets and keep it sparse;
+     `Release` already punches with `FALLOC_FL_PUNCH_HOLE`, and
+     `AllocatedBytes` is what proves the memory leaves. Prove memfd size against
+     allocated blocks after a scattered-store pattern: N pages of memory against
+     512·N offsets.
+  3. **The wire.** ATTACH's arena size becomes the offsets rather than the
+     capacity, which is a change of meaning and so a version bump of the mapping
+     protocol, with the Rust client checking the descriptor against it.
+  4. **The callers.** `internal/host`, `internal/vmmachine` and `internal/simtest`
+     size the RAM offset space — one extent per range the regions a pager admits
+     may have written into, which `LogicalPages` already bounds — and PMEM keeps
+     its offsets and pages one number.
+  5. **The three rules and the backstop**, with the mapping counts per store
+     pattern.
 
 - **The mapping budget is not enforced at 4 KiB.** `ConnectionConfig.MaxVMAs` is
   still only the client's admission limit, answered with `ENOSPC` and a deferred
