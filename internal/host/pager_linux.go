@@ -5,62 +5,14 @@ package host
 import (
 	"log/slog"
 	"os"
-	"runtime"
 	"strconv"
 	"strings"
-
-	"github.com/semistrict/sproutfs/internal/vmmemory"
 )
 
-// The pagers' own bounds, which a deployment does not set: they follow from the
-// arena each was given, the node's processors and the page each runs. Everything
-// a deployment does choose — the arenas, the logical and dirty budgets — is in
-// SupervisorConfig.
+// The mapping-count budget is the one pager bound a node reads off itself, so
+// it is the one that stays here; the rest are in pager.go, where both platforms
+// build them.
 const (
-	// readAheadBytes is the aligned run one fault loads and maps, stated in
-	// bytes because it is a buffer: each pager admits that many of its own
-	// pages, four at 2 MiB and two thousand and forty-eight at 4 KiB. A boot, a
-	// restore and a guest's own working set all walk memory forwards, so the run
-	// is served by the fault that would otherwise be the first of them, and the
-	// pages of it land in consecutive arena slots so that one mapping command
-	// installs the whole run. It must come to a power of two pages and at most
-	// 16 MiB, which is the largest buffer one fault may hold.
-	readAheadBytes = 8 << 20
-	// writeAheadBytes is the run one store into fresh zeros — a hole, or a page
-	// the guest has never touched — gives private pages in a single mapping
-	// command, likewise in bytes. Every page of it is charged a dirty
-	// reservation and written back whether the guest uses it or not, so it is
-	// kept to the read-ahead run rather than larger, and a pager whose dirty
-	// budget cannot afford runs of that size keeps one page.
-	//
-	// The RAM pager keeps one page whatever its budget: at 4 KiB the unit of
-	// ownership is the whole point, and a run that made a store's neighbours
-	// writable and privately dirty before the guest had used them would give
-	// back exactly the sharing the small page buys. That is the page-geometry
-	// plan's decision, not a tuning choice.
-	writeAheadBytes = 8 << 20
-	// writeAheadDirtyShare is the fraction of the dirty budget one write-ahead
-	// run may take before the run is not worth its reservations.
-	writeAheadDirtyShare = 64
-	// concurrentIOPerCPU is how many page reads and spill writes one processor
-	// is given in flight, and the bounds the result is held between. Each
-	// permit can hold one read-ahead run, so the budget is both the parallelism
-	// a node can use and a bound on the buffers it costs.
-	concurrentIOPerCPU  = 4
-	minimumConcurrentIO = 16
-	maximumConcurrentIO = 256
-	// maximumSettleWorkers bounds the workers one settle divides a sealed set
-	// between. A settle is a comparison of resident pages and no I/O at all, so
-	// the node's processors are what it can use; past a few dozen it is memory
-	// bandwidth that bounds it and more workers buy nothing.
-	maximumSettleWorkers = 64
-	// faultWorkersPerCPU bounds faults served concurrently, and the bounds the
-	// result is held between. A fault spends most of its life in a store read,
-	// so a node serves more of them than it has processors; the I/O budget is
-	// what actually bounds the reads.
-	faultWorkersPerCPU  = 2
-	minimumFaultWorkers = 8
-	maximumFaultWorkers = 64
 	// vmaHeadroom is the share of the node's mapping-count limit this host
 	// admits a VMM's replacements against. The pager's mappings are not the only
 	// ones a VMM process has, and the limit is the kernel's for the whole
@@ -73,55 +25,6 @@ const (
 	// maxMapCountPath is where Linux reports that limit.
 	maxMapCountPath = "/proc/sys/vm/max_map_count"
 )
-
-// pagerConfig is the configuration of one of a supervisor's two pagers: the
-// share of the budgets the deployment gave that kind, the page it runs, and the
-// read-ahead, write-ahead and I/O bounds that follow from the two. The
-// read-ahead and write-ahead runs are stated in bytes and converted here, so a
-// pager of small pages gets a run of the same size rather than the same number
-// of pages.
-func pagerConfig(config SupervisorConfig, kind vmmemory.RegionKind) vmmemory.Config {
-	pageSize, arenaBytes, logical, dirty := uint64(PMEMPageSize), config.ArenaBytes.PMEM, config.LogicalPages.PMEM, config.DirtyPages.PMEM
-	if kind == vmmemory.Ram {
-		pageSize, arenaBytes, logical, dirty = RAMPageSize, config.ArenaBytes.RAM, config.LogicalPages.RAM, config.DirtyPages.RAM
-	}
-	resident := int(uint64(arenaBytes) / pageSize)
-	readAhead := int(max(readAheadBytes/pageSize, 1))
-	writeAhead := int(max(writeAheadBytes/pageSize, 1))
-	if kind == vmmemory.Ram || dirty < writeAhead*writeAheadDirtyShare {
-		// RAM writes no pages ahead at all: see writeAheadBytes. For PMEM, a
-		// pager this small would spend a whole store's turn of the dirty budget
-		// on pages the guest may never touch.
-		writeAhead = 1
-	}
-	return vmmemory.Config{
-		PageSize:        pageSize,
-		ResidentPages:   resident,
-		LogicalPages:    logical,
-		DirtyPages:      dirty,
-		ConcurrentIO:    concurrentIO(resident, readAhead),
-		ReadAheadPages:  readAhead,
-		WriteAheadPages: writeAhead,
-		SettleWorkers:   min(max(runtime.NumCPU(), 1), maximumSettleWorkers),
-		// The pager is what holds a guest back past the window, so it carries
-		// the same bound the host reports and schedules its retries by.
-		LossWindow: lossWindowOf(config.LossWindow),
-	}
-}
-
-// concurrentIO bounds page reads and spill writes in flight. It is the node's
-// processors scaled up, held between a floor worth having and a ceiling, and
-// never more read-ahead runs than the arena has room for: a permit that cannot
-// put its run anywhere only queues for a page.
-func concurrentIO(resident, readAhead int) int {
-	permits := min(max(concurrentIOPerCPU*runtime.NumCPU(), minimumConcurrentIO), maximumConcurrentIO)
-	return max(1, min(permits, resident/max(readAhead, 1)))
-}
-
-// faultWorkers bounds the faults one session serves at a time.
-func faultWorkers() int {
-	return min(max(faultWorkersPerCPU*runtime.NumCPU(), minimumFaultWorkers), maximumFaultWorkers)
-}
 
 // vmaBudget is the mapping-count budget a VMM's replacements are admitted
 // against, read from the node's own limit with headroom. Zero disables the

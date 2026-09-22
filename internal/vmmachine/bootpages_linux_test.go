@@ -31,6 +31,26 @@ func bootPagesRAMBytes(t *testing.T) int {
 	return bytes
 }
 
+// bootPagesWriteAheadBytes is the write-ahead run the survey's RAM pager takes,
+// in bytes as a deployment states it: 8 MiB by default, which is what a host
+// gives either pager. A store into fresh zeros makes the run around it private
+// in one command, so the run is what decides how many faults a boot takes and
+// how many of the pages it ends up holding it never stored into.
+// SPROUTFS_BOOT_WRITE_AHEAD_BYTES takes the same survey at another run — 4096
+// is one 4 KiB page, which is the geometry before RAM wrote ahead at all.
+func bootPagesWriteAheadBytes(t *testing.T) uint64 {
+	t.Helper()
+	value := os.Getenv("SPROUTFS_BOOT_WRITE_AHEAD_BYTES")
+	if value == "" {
+		return 8 << 20
+	}
+	bytes, err := strconv.ParseUint(value, 10, 64)
+	if err != nil || bytes == 0 {
+		t.Fatalf("invalid SPROUTFS_BOOT_WRITE_AHEAD_BYTES %q", value)
+	}
+	return bytes
+}
+
 // bootPageClass is what one private RAM page held once the guest had booted.
 type bootPageClass struct {
 	Pages        int `json:"pages"`
@@ -66,8 +86,16 @@ func TestBootSurveyOfPrivateRAMPages(t *testing.T) {
 	}
 	// The arena holds whatever the boot makes private: a 16 GiB guest's boot
 	// on GCE made 237,269 pages private, under 1 GiB, and the budget here is
-	// twice the RAM so nothing is evicted or spilled during the survey.
-	pager := newSizedMigrationPager(t, ctx, ramBytes, 256<<20, 2*ramBytes, 2*ramBytes)
+	// twice the RAM so nothing is evicted or spilled during the survey. The
+	// RAM pager takes the write-ahead run a host gives it, because what the
+	// survey counts is what a deployment's boot makes private.
+	ramPage := ramPageBytes(t)
+	writeAhead := int(max(bootPagesWriteAheadBytes(t)/ramPage, 1))
+	pager := newConfiguredHostPagers(t, ctx, hostPagersConfig{
+		RAM: hostPagerBudgets{Arena: uint64(ramBytes), Logical: 2 * uint64(ramBytes),
+			Dirty: 2 * uint64(ramBytes), WriteAhead: writeAhead},
+		PMEM: hostPagerBudgets{Arena: 256 << 20, Logical: 2 * uint64(ramBytes),
+			Dirty: 2 * uint64(ramBytes)}})
 	config := migrationConfig(t, binaryPath, pager, vm)
 	started := time.Now()
 	p, err := vmmachine.Start(ctx, config)
@@ -156,13 +184,16 @@ func TestBootSurveyOfPrivateRAMPages(t *testing.T) {
 		lines = append(lines, fmt.Sprintf("%6d MiB: pages=%6d zero=%6d non-zero bytes=%d",
 			k*bucketBytes>>20, c.Pages, c.ZeroPages, c.NonZeroBytes))
 	}
-	t.Logf("boot %s: ram=%d MiB page=%d faults=%d copy-on-writes=%d resident=%d private=%d zero=%d non-zero bytes=%d\n%s\n%s\n%s",
-		booted.Round(time.Millisecond), ramBytes>>20, ram.PageSize(), stats.Faults, stats.CopyOnWrites,
+	t.Logf("boot %s: ram=%d MiB page=%d write-ahead=%d pages faults=%d copy-on-writes=%d write-ahead pages=%d of them zero=%d resident=%d private=%d zero=%d non-zero bytes=%d\n%s\n%s\n%s",
+		booted.Round(time.Millisecond), ramBytes>>20, ram.PageSize(), writeAhead, stats.Faults, stats.CopyOnWrites,
+		stats.WriteAheadPages, stats.WriteAheadZeroPages,
 		len(resident), private, total.ZeroPages, total.NonZeroBytes, strings.Join(lines, "\n"), meminfo, layout)
 	if out := os.Getenv("SPROUTFS_BOOT_SURVEY_OUT"); out != "" {
 		record := map[string]any{"ram_bytes": ramBytes, "page_size": ram.PageSize(), "boot_ns": booted.Nanoseconds(),
 			"faults": stats.Faults, "copy_on_writes": stats.CopyOnWrites, "resident": len(resident),
-			"private": private, "total": total, "buckets": buckets, "meminfo": meminfo, "layout": layout}
+			"write_ahead_pages": stats.WriteAheadPages, "write_ahead_zero_pages": stats.WriteAheadZeroPages,
+			"write_ahead_run_pages": writeAhead,
+			"private":               private, "total": total, "buckets": buckets, "meminfo": meminfo, "layout": layout}
 		data, err := json.MarshalIndent(record, "", " ")
 		if err != nil {
 			t.Fatal(err)

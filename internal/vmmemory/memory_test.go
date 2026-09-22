@@ -260,6 +260,10 @@ type backing struct {
 	// checkpoints counts the publications a test has made of this backing's sealed
 	// pages, and checkpointPages the pages those publications carried.
 	checkpoints, checkpointPages atomic.Int64
+	// publishedPages counts the pages those publications gave an object of their
+	// own, and publishedBytes what those objects carried. A page that reads as
+	// all zeroes is in neither: it leaves the index and costs nothing.
+	publishedPages, publishedBytes atomic.Int64
 }
 
 func (b *backing) Size() uint64 { return uint64(len(b.data)) }
@@ -333,6 +337,37 @@ func (b *backing) publish() {
 	clear(b.private)
 }
 
+// publishPage installs one page a checkpoint carried, or records that the page
+// is a hole. A page that reads as all zeroes leaves the index rather than
+// becoming a member of a part: it costs no object, not a byte is uploaded for
+// it, and it reads back as the zeroes it holds. That is what
+// Publication.writeEdits does, and a fixture that published zeroes as bytes
+// would hide exactly what a write-ahead run costs.
+func (b *backing) publishPage(number uint64, src []byte) {
+	size := uint64(b.pageSize)
+	if allZeroes(src) {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		clear(b.data[number*size : (number+1)*size])
+		b.zero[number] = true
+		delete(b.private, number)
+		return
+	}
+	b.publishedPages.Add(1)
+	b.publishedBytes.Add(int64(len(src)))
+	b.write(number*size, src)
+}
+
+// allZeroes is the publication's own test for a page that costs no object.
+func allZeroes(data []byte) bool {
+	for _, v := range data {
+		if v != 0 {
+			return false
+		}
+	}
+	return true
+}
+
 // write installs one page's published bytes, exactly as a checkpoint's page
 // object holds them. A page a checkpoint carries is no longer a hole.
 func (b *backing) write(off uint64, src []byte) {
@@ -403,7 +438,7 @@ func (f *fixture) publishCheckpoint(ctx context.Context, r *vmmemory.Region, b *
 		if err := ckpt.ReadDirty(ctx, number, page); err != nil {
 			return false, err
 		}
-		b.write(number*uint64(f.pageSize), page)
+		b.publishPage(number, page)
 	}
 	b.publish()
 	b.checkpoints.Add(1)

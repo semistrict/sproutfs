@@ -908,6 +908,24 @@ func (w *World) StoreAll(id string, value byte) error {
 	return g.storeAll(value)
 }
 
+// StorePages writes one named byte into each of the named pages of one volume,
+// which is what a scenario about where a guest's stores land needs: a pattern
+// the caller chose rather than pages drawn from a seed.
+func (w *World) StorePages(id, name string, pages []uint64, value byte) error {
+	in, g := w.runningVM(id)
+	if g == nil {
+		return nil
+	}
+	before := g.stored()
+	defer func() { w.noteWrites(in, g, before) }()
+	for _, page := range pages {
+		if err := g.storeValue(name, page, value); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Checkpoint publishes everything the named VM's guest has written and waits
 // for it to become durable. Under a fault that has taken the store away it
 // fails, which is a checkpoint that did not happen rather than an error: the

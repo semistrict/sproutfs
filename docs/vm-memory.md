@@ -177,7 +177,7 @@ different amounts of memory in the two:
 | bound | production value | why |
 | --- | --- | --- |
 | `ReadAheadPages` | 8 MiB of this pager's pages — four at 2 MiB, 2,048 at 4 KiB | a boot, a restore and a working set all walk memory forwards, so one fault serves what would otherwise be four, and the run lands in consecutive arena slots so one command installs it |
-| `WriteAheadPages` | one page for RAM always; for PMEM the same 8 MiB, or one page where its dirty budget holds fewer than 64 such runs | RAM's unit of ownership is the whole point of its page, and a run that made a store's neighbours writable and privately dirty before the guest had used them would give back the sharing the small page buys. For PMEM it is the same run, charged to the dirty budget whether the guest uses it or not, so a small budget keeps one page |
+| `WriteAheadPages` | the same 8 MiB of this pager's pages — four at 2 MiB, 2,048 at 4 KiB — or one page where that pager's dirty budget holds fewer than 64 such runs | write-ahead serves fresh zeros and nothing else, and a hole is shared with nobody, so making a store's neighbours private gives no sharing back whatever the page is. What it buys is one fault where a guest writing fresh memory forwards would take a run of them: 80 % of the pages a 16 GiB guest's boot makes private are two contiguous runs it writes in order. Every page of the run is charged a dirty reservation until the next checkpoint, so a pager whose budget cannot hold 64 runs keeps one page |
 | `ConcurrentIO` | four per processor, held between 16 and 256, and never more read-ahead runs than that pager's arena has room for | each permit can hold one read-ahead or spill buffer, so it is both the parallelism a node can use and a bound on the buffers it costs |
 | `SettleWorkers` | the node's processors, capped at 64 | a settle compares resident pages and takes no I/O permit, so processors are what it can use, and it is time the upload waits for |
 | `ConnectionConfig.FaultWorkers` | two per processor, held between 8 and 64 | a fault spends most of its life in a store read; the I/O budget is what bounds the reads |
@@ -309,21 +309,45 @@ revokes the guest's alias before it copies.
 
 Such a store also writes ahead. The fresh zero pages after it in its read-ahead
 run, and before it where the run ends first, get private pages in the same
-command, up to `Config.WriteAheadPages` pages in all — four on a production
-host, one where the dirty budget is too small for runs of that size.
-Consecutive slots continue the previous page's where those are free. Like
-read-ahead, write-ahead takes only free arena slots and free dirty reservations
-and never evicts or waits; only the faulting page may. The run is mapped
-writable, so a guest writing fresh memory in order faults once per run rather
-than once per page, and the pager never learns which pages of the run it stored
-into: each holds a dirty reservation, spills under pressure and is written back
-by a checkpoint like a stored page, zeros included. A guest whose stores would
-just fit the dirty budget can therefore run out of it sooner by the write-ahead
-pages it never used, and a migration source serves those pages as held.
-`Stats.WriteAheadPages` counts the pages runs mapped beyond the faulting ones,
-and `Stats.WriteAheadZeroPages` those whose written-back bytes were still all
-zero, which is as near as the bytes can tell to never stored into, since a store
-of zeros looks the same.
+command, up to `Config.WriteAheadPages` pages in all — 8 MiB of that pager's
+pages on a production host, one where the dirty budget is too small for runs of
+that size. Consecutive slots continue the previous page's where those are free.
+Like read-ahead, write-ahead takes only free arena slots and free dirty
+reservations and never evicts or waits; only the faulting page may. The run is
+mapped writable, so a guest writing fresh memory in order faults once per run
+rather than once per page, and the pager never learns which pages of the run it
+stored into: each holds a dirty reservation, spills under pressure and is
+written back by a checkpoint like a stored page, zeros included. A guest whose
+stores would just fit the dirty budget can therefore run out of it sooner by the
+write-ahead pages it never used, and a migration source serves those pages as
+held. `Stats.WriteAheadPages` counts the pages runs mapped beyond the faulting
+ones, and `Stats.WriteAheadZeroPages` those whose written-back bytes were still
+all zero, which is as near as the bytes can tell to never stored into, since a
+store of zeros looks the same.
+
+**Both pagers write ahead, and the small page does not change that.** Fresh
+zeros are the whole of what write-ahead serves: a hole and a zero mapping have
+no resident page and no page identity, so nothing shares them and making a
+store's neighbours private gives no sharing back. That is why a 4 KiB RAM page
+takes the same 8 MiB run as PMEM's: what the small page protects is the sharing
+of pages a checkpoint published, and this run never touches one. What a guest's
+boot writes is real, and contiguous — of the 103,035 pages a 16 GiB guest's boot
+made private on GCE, 65,280 are the 256 MiB memmap the kernel writes page by page
+as it initialises it and 16,384 are swiotlb's 64 MiB bounce buffer, memset in one
+block — so 80 % of that boot is two runs written forwards, which an 8 MiB run
+faults 32 times for instead of 81,664.
+
+**An ahead page the guest never stored into costs nothing past the next
+checkpoint.** It reads back as zeros, so the publication gives it no object at
+all — a page that reads as all zeroes leaves the index, which is the whole record
+that it is a hole — and the volume then reports it as one. The retire is where
+the pager learns that: it looks up the identity the volume now gives each page it
+is retiring, and a page the volume holds no object for is taken away from the
+guest, its resident page released and its dirty reservation returned, leaving the
+page exactly as untouched as it was before the store. The settle is the wrong
+place for it, and not only because it would duplicate the publication's own test
+for a zero page: what a settle compares is a copy with the page it was copied
+from, and a page made from zeros has no origin at all.
 
 ## What the sharing is worth
 

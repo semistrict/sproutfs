@@ -68,13 +68,21 @@ const (
 // 512 times the page operations: read-ahead takes free arena slots and never
 // evicts, so under an arena a quarter of what the two children map every page
 // of a scan is its own fault, and two children scanning 512 MiB twice is on the
-// order of half a million of them. On the qualification instance the phase
-// takes about a minute and a half on its own and four and a half behind the
-// rest of the suite, so the bound is ten minutes. It is deliberately far above
-// either: it is here to tell a child that is merely slow from one that has
+// order of half a million of them.
+//
+// Ten minutes was a guess made when that was all that was known. What the
+// readings since say, on the qualification instance: the phase takes 1m30 to
+// 1m56 on an idle instance under the probe build, which is the slowest the
+// suite runs it at — the accelerator deliberately slows the pager — and about
+// four and a half minutes behind the rest of the suite on a busy one. Six
+// minutes is therefore three times the slowest idle reading and a third above
+// the slowest busy one, which is the headroom a liveness bound wants and no
+// more: it is here to tell a child that is merely slow from one that has
 // stopped, and a child that has stopped never finishes however long it is
-// given.
-const forkFanOutRead = 10 * time.Minute
+// given. Re-measure it the way it was measured — the read phase's own duration
+// on an otherwise idle qualification instance, under the probe build — before
+// moving it again.
+const forkFanOutRead = 6 * time.Minute
 
 // forkPointFixture is everything both fork suites need before a child exists: a
 // parent whose guest has a working set of its own, one published checkpoint its
