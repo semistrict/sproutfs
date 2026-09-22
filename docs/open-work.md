@@ -73,10 +73,20 @@ everything open is listed here.
   `Stats.MappingMerges` to say when it acted. The mapping protocol is at
   version 8, because ATTACH's length is the offset space now rather than the
   capacity. What is open is what it is worth on a real workload: the counts are
-  proved in `internal/vmmemory` and in the simulation, and the fan-out's
-  `fork_vmm_mappings` and `fork_ram_geometry` are what measure it under a real
-  guest, but nothing has been run against the recorded workload or on GCE with
-  the rules on and off.
+  proved in `internal/vmmemory` and in the simulation, and one Lima reading of
+  the fork fan-out at 4 KiB says a child's VMM holds 3,299 and 3,288 mappings
+  where it held 4,485 and 4,631 before, with 28 private extents, 2,723 pages
+  copied by the rules and the backstop never acting — but that is one run of
+  each on an instance whose load differed between them, and nothing has been run
+  against the recorded workload or on GCE with the rules on and off.
+
+- **The Firecracker fork has to be rebuilt for mapping protocol version 8.** The
+  crate is vendored into the VMM by path, so a cached qualification build keeps
+  speaking version 7 and every session it opens fails with `invalid
+  managed-memory hello` before a guest starts. That is the refusal working, and
+  it is also the first thing to check when a Lima or GCE run that used to pass
+  stops attaching: rebuild the VMM, do not reuse
+  `~/.cache/sproutfs-fanout`.
 
   Two placements are deliberately left to an ordinary offset, and both are
   recorded where they happen (`internal/vmmemory/placement.go`). A store that

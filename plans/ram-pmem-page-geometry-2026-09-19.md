@@ -90,6 +90,36 @@ it has a page in that range. All three rules and the backstop are in
 `placement_test.go`, `rules_test.go` and `internal/simtest/placement_test.go`,
 whose model now accounts mappings the same way.
 
+**Measured in Lima, aarch64, 4 KiB RAM.** The fork fan-out
+(`TestFirecrackerForkFanOutServesBothChildrenAtOnce`, two children of one point,
+each reading all of its memory and all of its root twice) holds this many
+mappings in each child's VMM after the read phase:
+
+| Fan-out at 4 KiB | before (`5d7029e`) | after |
+| --- | --- | --- |
+| child 0's VMM mappings | 4,485 | **3,299** |
+| child 1's VMM mappings | 4,631 | **3,288** |
+| the pager's copy-on-writes | 167,084 | 154,528 |
+
+with 28 private extents, 2,723 pages copied by the two rules, and the backstop
+never acting. A quarter to a third of a child's mappings go, and the faults go
+with them: a gap closed in one fault is a run the guest stores into without
+faulting again. Both readings are one run each on the same instance, so they
+carry that instance's noise; what they are not is a controlled pair, because the
+instance was busier for one of them — the run phase took 4m33 before and 3m40
+after, and the bound it is measured against is a liveness bound rather than a
+speed one.
+
+**The boot survey at 16 GiB** (`TestBootSurveyOfPrivateRAMPages`, same instance)
+says what a write-ahead run is worth at this page, and the rules do not touch
+it: a store into fresh zeros has no page to copy from, so neither rule fires.
+
+| A 16 GiB boot at 4 KiB | write-ahead 1 page | write-ahead 8 MiB |
+| --- | --- | --- |
+| faults | 109,825 | **218** |
+| boot | 1 m 21 s | **21.6 s** |
+| private pages | 109,825 | 111,616, of which 111,398 were written ahead |
+
 **Three departures, each in the plan's own terms.** The extents are carved from
 the offsets past the capacity rather than found anywhere in the space, so an
 extent's base is a multiple of its size and a private page's offset and its page
