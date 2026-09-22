@@ -63,59 +63,29 @@ everything open is listed here.
   and a third above the slowest behind the whole suite. Letting read-ahead evict,
   or reserving a run's worth of slots before a scan, is performance work this
   plan did not do (`internal/vmmemory/window.go`, `reserveRuns`).
-- **RAM's mappings are not kept whole, and the arena is what blocks it.** The
-  [page-geometry plan](../plans/ram-pmem-page-geometry-2026-09-19.md) has a step
-  of its own for this — a private page lives at its own offset in its range's
-  private extent, a store closes a gap of at most 16 pages, a range that reaches
-  256 private pages of 512 becomes wholly private, and the mapping budget is a
-  backstop with a counter — and none of the four is implemented. The measurement
-  behind it is: `fork_ram_geometry` records the private runs, their lengths, the
-  gaps between them and the half-private ranges per region, and the 2026-09-21
-  4 KiB smoke says 1,532 of 1,979 gaps are 16 pages or fewer and 19 of 197
-  ranges are already half private, which is where `gap` = 16 comes from.
+- **RAM's mappings are kept whole, and what that is worth is unmeasured on a
+  cluster.** The [page-geometry plan](../plans/ram-pmem-page-geometry-2026-09-19.md)'s
+  step for this is done: the arena's offsets are not its pages and its memfd is
+  sized to the first, every 2 MiB-aligned range that holds a private page owns
+  an extent and a private page sits at the offset it has within its range, a
+  store closes a gap of at most sixteen pages, a range that reaches half its
+  pages is filled, and the mapping budget is the backstop with
+  `Stats.MappingMerges` to say when it acted. The mapping protocol is at
+  version 8, because ATTACH's length is the offset space now rather than the
+  capacity. What is open is what it is worth on a real workload: the counts are
+  proved in `internal/vmmemory` and in the simulation, and the fan-out's
+  `fork_vmm_mappings` and `fork_ram_geometry` are what measure it under a real
+  guest, but nothing has been run against the recorded workload or on GCE with
+  the rules on and off.
 
-  The placement rule needs an arena whose offsets are not its pages: a range
-  holding a single private page owns 512 consecutive offsets of which one holds
-  memory, so the offsets follow the ranges a guest has written into while the
-  memory stays the arena's. **The first half of that is done.**
-  `Config.ArenaOffsets` is the address space and `Config.ResidentPages` the
-  capacity; `slots.Space` is built with both and bounds every allocation by the
-  pages left; `Host.residentLeases` is a map, because there is one per page and
-  not one per offset; and both the fixture's arena and the simulation's are
-  sparse maps that count the offsets holding a page. `ArenaOffsets` defaults to
-  `ResidentPages`, so no pager runs with an address space larger than its budget
-  yet.
-
-  What is left, in order:
-  1. **Extents and placement.** A region's 2 MiB range that holds a private page
-     owns 512 consecutive offsets; a private page goes at the offset it has
-     within its range. Extents come off a free list, and the region maps range
-     to extent. A private run that crosses a range boundary needs consecutive
-     extents or it is two mapping commands.
-  2. **The Linux arena.** Size the memfd to the offsets and keep it sparse;
-     `Release` already punches with `FALLOC_FL_PUNCH_HOLE`, and
-     `AllocatedBytes` is what proves the memory leaves. Prove memfd size against
-     allocated blocks after a scattered-store pattern: N pages of memory against
-     512·N offsets.
-  3. **The wire.** ATTACH's arena size becomes the offsets rather than the
-     capacity, which is a change of meaning and so a version bump of the mapping
-     protocol, with the Rust client checking the descriptor against it.
-  4. **The callers.** `internal/host`, `internal/vmmachine` and `internal/simtest`
-     size the RAM offset space — one extent per range the regions a pager admits
-     may have written into, which `LogicalPages` already bounds — and PMEM keeps
-     its offsets and pages one number.
-  5. **The three rules and the backstop**, with the mapping counts per store
-     pattern.
-
-- **The mapping budget is not enforced at 4 KiB.** `ConnectionConfig.MaxVMAs` is
-  still only the client's admission limit, answered with `ENOSPC` and a deferred
-  fault. The plan's step 4 also asks the pager to count the mappings a region
-  holds and, when a store would exceed the budget, to merge — to copy the
-  remaining shared 4 KiB pages of the densest 2 MiB-aligned range into private
-  pages so the whole range becomes one private run — rather than leaving the
-  guest waiting on a budget only revocation can free. A guest whose writes
-  scatter widely enough can still refuse its way into a stall. It is the
-  backstop of the step above and waits on the same arena change.
+  Two placements are deliberately left to an ordinary offset, and both are
+  recorded where they happen (`internal/vmmemory/placement.go`). A store that
+  copies away from the copy a checkpoint froze cannot have its own offset,
+  because that offset is holding the bytes the upload is reading; the page stays
+  outside its range's run until something releases it, and nothing moves it
+  back. And a page a migration destination loads privately from the source
+  arrives in a run of its own, like any other load, so a post-copy destination's
+  private pages are not placed at all until the guest stores into them.
 - **A page a guest only reads is copied, and the copy is given back at the next checkpoint.** A cold read that has to wait for the pager reaches it as a write fault — on x86-64 because KVM's asynchronous page fault worker always asks for the page writable, on aarch64 when the guest first executes a page — and the pager answers a write fault with a private page. What the [unchanged-page rule](../plans/unchanged-pages-2026-09-19.md) recovers is done: the copy remembers the page it was made from, the settle behind each checkpoint's pause compares the two, and a page that did not change is published nowhere and goes straight back to sharing its origin. What remains is the copy itself. Between the fault and the next checkpoint the host holds the page twice, and with 4 KiB RAM pages under a 2 MiB read-ahead run that is one page in 512, while for PMEM at 2 MiB it is a whole page per cold fault until the interval passes. Preventing it needs a host kernel that passes the guest's access through, or KVM userfault once it exists, and neither is ours to start. Fork points are not settled either: a child inherits an unchanged page as an unpublished one, which its own next checkpoint settles.
 - **The workload measurement predates the multi-page parts and wants re-taking.** It was measured against one object per dirty page, before `39bfe37`, so its object counts describe a store layout that no longer exists, and only one fork setting (`FORKS_BASE=2 FORKS_PER_REPO=1`) was run; the commands to re-take it on current `main` are in the document (`docs/measurements-2026-09-14-workload.md`).
 

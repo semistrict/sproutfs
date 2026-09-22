@@ -1,7 +1,8 @@
 # RAM and PMEM page geometry — 2026-09-19
 
-**Status: steps 1 to 4 and 6 are implemented, but for step 1's baseline
-measurement and step 4's mapping budget; steps 5 and 7 are planned. Step 4 has
+**Status: steps 1 to 4, 6 and 8 are implemented, but for step 1's baseline
+measurement, and so is keeping RAM's mappings whole — the arena's offsets, the
+three rules and the budget behind them; steps 5 and 7 are planned. Step 4 has
 one open defect against it — a fan-out panics a child's guest kernel at 4 KiB —
 which [open-work.md](../docs/open-work.md) carries and which must be understood
 before this geometry ships.**
@@ -67,7 +68,41 @@ replacement. Explicit HugeTLB backing stays in the PMEM arena. Transparent
 huge-page promotion or a strategy for splitting true huge mappings is separate
 performance work and must preserve the 4 KiB ownership contract.
 
-## Keeping RAM's mappings whole
+## Keeping RAM's mappings whole — **done**
+
+**What was built.** The arena's offsets and its pages are two numbers and the
+memfd is sized to the first: `Config.ArenaOffsets` is the address space,
+`Config.ResidentPages` the capacity, and the file is sparse, so an offset costs
+nothing until a page is put there and `Release` punches it back out. The
+supervisor sizes RAM's offset space at one extent per range any region it admits
+may write into — `LogicalPages`, a range being 512 pages and an extent 512
+offsets — plus `ResidentPages` for the read-ahead runs; PMEM keeps its offsets
+and its pages one number. ATTACH's length is that offset space rather than the
+capacity, which is a change of meaning, so the mapping protocol is at
+**version 8** and the Rust client checks the descriptor's own size against it.
+
+`slots.Space` carves the offsets past its pages into aligned extents and hands
+them out and takes them back whole; a page put in one moves the page budget and
+not the address. The host keeps an extent per `(region, range)` and gives it
+back when its last page goes, so a region owns an extent for exactly as long as
+it has a page in that range. All three rules and the backstop are in
+`internal/vmmemory/placement.go` and `rules.go`, counted in
+`placement_test.go`, `rules_test.go` and `internal/simtest/placement_test.go`,
+whose model now accounts mappings the same way.
+
+**Three departures, each in the plan's own terms.** The extents are carved from
+the offsets past the capacity rather than found anywhere in the space, so an
+extent's base is a multiple of its size and a private page's offset and its page
+number agree modulo the extent — which is the invariant the tests read, and
+which makes the allocation a free list rather than a scan. A store that copies
+away from the copy a checkpoint froze takes an ordinary offset, because its own
+offset is holding the bytes that checkpoint is uploading and moving them would
+mean a copy and a fence in the middle of an upload; so does a page a migration
+destination loads privately from the host that still holds it, which arrives in
+a run like any other load. And the backstop makes the range the guest is writing
+in whole rather than the range with the most mappings: the pager does not count
+a region's mappings — the client does, which is what refuses the command — and
+the range the store is in is the one whose alternations that store is adding to.
 
 Every separately mapped run of a guest's RAM is a mapping in its VMM process,
 and a private 4 KiB page written into the middle of an inherited run makes three
@@ -145,20 +180,20 @@ sharing gauges before and after, by the byte model in every campaign, and on GCE
 by the mappings, the protect commands and the pause of the codex workload with
 the rules on and off.
 
-**What has to change first, and was not known when this was written.** The
-placement rule needs an arena whose *offsets* are not its *pages*. A region's
+**What had to change first, and was not known when this was written — done.**
+The placement rule needs an arena whose *offsets* are not its *pages*. A region's
 range that holds one private page owns 512 consecutive arena offsets, of which
 one holds memory, so the offsets a host's guests need are bounded by the ranges
 they have written into and not by the memory the arena may hold: at the
 deployment's 9 GiB RAM dirty budget the worst case is 2,359,296 extents, which
-is terabytes of offsets behind gigabytes of pages. Today the two are one number
-— `Config.ResidentPages` is both the arena's slot count and its capacity,
-`slots.Set` holds one bit per slot, `Host.residentLeases` is one entry per slot,
-the Linux arena's memfd is sized to it, and ATTACH states that size on the wire
-for the client to check. Decoupling them is the first piece of this step:
-the arena becomes a sparse offset space with a page budget enforced where it
-already is, in the resource lease `takeFree` acquires. Until that is done,
-rules 2 and 3 buy nothing on their own — a run of private pages is one mapping
+is terabytes of offsets behind gigabytes of pages. The two used to be one number
+— `Config.ResidentPages` was both the arena's slot count and its capacity,
+`slots.Set` held one bit per slot, `Host.residentLeases` one entry per slot,
+the Linux arena's memfd was sized to it, and ATTACH stated that size on the wire
+for the client to check. Decoupling them was the first piece of this step:
+the arena is a sparse offset space with a page budget enforced where it already
+was, in the resource lease `takeFree` acquires. Until that was done,
+rules 2 and 3 bought nothing on their own — a run of private pages is one mapping
 only if its arena slots are consecutive, which is what rule 1 is for.
 
 ## Why this change needs measurement
@@ -400,11 +435,13 @@ memory savings and workload time together.
    over a page the guest still maps with one command and no fence. That was
    never the defect, and it was wrong to describe it as most of it.
 
-   **What is left.** `ConnectionConfig.MaxVMAs` is still only the client's
-   admission limit: the pager does not count the mappings a region holds and does
-   not merge a scattered 2 MiB range into one private run when a store would
-   exceed the budget. It is in [open-work.md](../docs/open-work.md), beside the
-   read-ahead run that becomes one page under arena pressure.
+   **The mapping budget, since.** `ConnectionConfig.MaxVMAs` was only the
+   client's admission limit when this step landed. It is the backstop behind the
+   three rules above now: a store whose mapping command the client refuses makes
+   the range the guest is writing in whole, in one command, and is served again,
+   with `Stats.MappingMerges` saying it acted. What is left beside it, in
+   [open-work.md](../docs/open-work.md), is the read-ahead run that becomes one
+   page under arena pressure.
 
 5. **Carry geometry through handoff and migration.** Make page size a property
    of each served volume/region rather than the whole page server. Update

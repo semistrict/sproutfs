@@ -327,6 +327,65 @@ into it, the kernel clears it as the resolving `UFFDIO_CONTINUE` installs it,
 and the volume is not read. A store into a shared page or a sealed page still
 revokes the guest's alias before it copies.
 
+### Keeping a region's mappings whole
+
+Every separately mapped run of a guest's memory is a mapping in its VMM process,
+and a private page written into the middle of an inherited run makes three of
+one. The kernel's cap of 65,530 mappings is the last of what that costs: each
+separate dirty run is a write-protect command in a checkpoint's pause, the
+kernel's own mapping operations slow as their number grows, and a fragmented
+range can never be given a huge mapping. Three rules hold all the time, and the
+budget stands behind them.
+
+**A private page lives at its own offset.** Each 2 MiB-aligned range of a region
+that holds a private page owns one extent of the arena's offset space — one
+range's worth of consecutive offsets — and a private page of that range is put
+at the offset within the extent that it has within the range. Private pages
+adjacent in the guest are then adjacent in the arena and are one mapping,
+whatever order they were written in: what a range costs in mappings is how often
+it alternates between shared and private, not how many of its pages are private.
+Extents come off the offset space and go back to it whole, and the arena
+accounts pages, not extents. Two departures are deliberate: a store that copies
+away from the copy a checkpoint froze takes an ordinary offset, because its own
+is holding the bytes that checkpoint is uploading, and a page a migration
+destination loads privately from the host that still holds it arrives in a run
+like any other load. `Stats.PrivateExtents` is how many ranges own one.
+
+**A store closes a small gap.** A store landing within sixteen pages of a page
+its range already holds makes the pages between them private in the same fault,
+in one mapping command, so the two runs become one. Writes cluster, so the unit
+a store copies grows where the guest is writing and stays one page where a write
+is alone; the worst case is a guest writing one page in every seventeen, which
+costs seventeen times what it wrote against 512 times at a 2 MiB page. Sixteen
+was measured rather than chosen: of the 1,979 gaps between the private runs a
+4 KiB fan-out recorded on 2026-09-21, 1,532 — 77 % — are that or fewer. A gap is
+never closed across a range's boundary, because the extent belongs to the range.
+
+**A range that is half private becomes private.** When half a range's pages sit
+at their offsets in its extent, the rest are copied into the holes of it: the
+range is then one mapping, one write-protect command at a seal, and a candidate
+for a huge mapping. Nothing already there is copied again, so it costs at most
+twice what the guest wrote into that range.
+
+Neither rule waits and neither evicts: a page with no free dirty reservation, no
+offset of its own or one a checkpoint is still holding is left exactly as it was
+and the run ends there. A page a rule copied has its origin like any other copy,
+so the settle behind a pause hands back what the guest never wrote — unless the
+range was made whole, which a settle leaves whole, because handing one page back
+would break the range into three mappings again for a page the guest is about to
+write. `Stats.RuleCopies` counts the pages the rules copied beside the pages the
+guest stored into.
+
+**The budget is a backstop.** A store whose mapping command the client refuses
+against its own mapping-count budget makes the range the guest is writing in
+whole, in one command, and is served again. `Stats.MappingMerges` says it acted,
+and it is expected never to: a host that merges is a host whose guest fragments
+its memory faster than the rules hold it together.
+
+A pager whose page is the whole range — PMEM's — runs none of this: it has one
+page per range, so there is nothing to place, no gap to close and nothing to
+fill, and its offsets and its pages are one number.
+
 Such a store also writes ahead. The fresh zero pages after it in its read-ahead
 run, and before it where the run ends first, get private pages in the same
 command, up to `Config.WriteAheadPages` pages in all — 8 MiB of that pager's
