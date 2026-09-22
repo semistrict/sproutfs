@@ -52,6 +52,10 @@ const (
 	// batch. It is a size, so the pager's page does not change it; the read-ahead
 	// run each pager loads is likewise a size, stated once in newHostPagers.
 	benchMaxWriteBytes = checkpoint.PageSize2MiB
+	// benchRAMWriteAheadPages is the run a store into fresh zeros makes private
+	// at a 4 KiB RAM page: the 8 MiB a host gives its RAM pager
+	// (internal/host/pager.go, writeAheadBytes), in that pager's pages.
+	benchRAMWriteAheadPages = (8 << 20) / checkpoint.PageSize4KiB
 	// benchCacheBytes is what the shared budget holds above the two arenas, for
 	// decoded objects. The budget itself is the sum: resident guest pages of
 	// both pagers and the page cache are charged against one number, as they are
@@ -512,7 +516,7 @@ func newBenchmark(ctx context.Context, t *testing.T) *benchmark {
 	// a different amount of memory in each.
 	b.pagers = newConfiguredHostPagers(t, ctx, hostPagersConfig{
 		RAM: hostPagerBudgets{Arena: b.ramResidentBytes, Logical: b.ramLogicalBytes,
-			Dirty: b.ramDirtyBytes, WriteAhead: 1},
+			Dirty: b.ramDirtyBytes, WriteAhead: benchRAMWriteAheadPages},
 		PMEM: hostPagerBudgets{Arena: b.pmemResidentBytes, Logical: b.pmemLogicalBytes,
 			Dirty: b.pmemDirtyBytes, WriteAhead: benchWriteAheadPages()},
 		Resources: resources,
@@ -1000,6 +1004,18 @@ func TestGuestWorkloadBenchmark(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		// Every fork of this run comes off the one point, taken and given up
+		// one after another, so the benchmark holds it for its whole life as a
+		// host holds a fan-out's: a point its last child retired refuses the
+		// next.
+		if err := point.Hold(); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := point.Retire(context.Background()); err != nil {
+				t.Error(err)
+			}
+		})
 		origin = &forkOrigin{point: point, state: ckpt.State()}
 	}
 	if source != nil {
