@@ -56,6 +56,13 @@ type PeerConfig struct {
 	// them from it would silently rewind the guest, so this backing reports them
 	// as bytes of its own that the pager must load and hold privately.
 	Unpublished []PageRun
+	// Selected is the sequence of this VM's own checkpoint the handoff was taken
+	// against, which for a migration is the one the source's record selected
+	// when it gave the VM up. Every checkpoint of this VM up to and including it
+	// predates the pages Unpublished names; everything this VM publishes after
+	// receiving is newer than them. It is zero for a fork, whose child has
+	// published nothing and whose inherited pages name its parent instead.
+	Selected uint64
 	// PageSize is the page this region's numbers are counted in, which is the
 	// volume's own and therefore the source's too: both hosts read it out of the
 	// same durable geometry. Zero takes it from Volume, which is what every
@@ -130,7 +137,9 @@ type PeerStats struct {
 type PeerBacking struct {
 	config PeerConfig
 	// unpublished is the handoff's set as a lookup, fixed for this backing's
-	// life: the guest was stopped when it was taken.
+	// life: the guest was stopped when it was taken. What it decides is not
+	// fixed — a page of it stops being reported as this region's own once a
+	// checkpoint of this VM holds it, which Locate reads off the volume.
 	unpublished map[uint64]bool
 
 	// source is the host that still holds these pages, and the connections this
@@ -230,11 +239,27 @@ func (b *PeerBacking) Size() uint64 { return b.config.Volume.Size() }
 func (b *PeerBacking) PageSize() uint64                 { return b.config.Volume.PageSize() }
 func (b *PeerBacking) Verify(ctx context.Context) error { return b.config.Volume.Verify(ctx) }
 
-// Locate reports the volume's own identities everywhere except the pages the source
-// holds unpublished. Those it reports as bytes of this region alone — no
-// reference, so no page of them is ever shared and none of them is taken for a
-// hole — which is what makes the pager load them through Load, where the source
-// answers, rather than resolve them against a checkpoint that does not have them.
+// Locate reports the volume's own identities everywhere except the pages whose
+// bytes no checkpoint of this VM holds. Those it reports as bytes of this region
+// alone — no reference, so no page of them is ever shared and none of them is
+// taken for a hole — which is what makes the pager load them through Load, where
+// the source answers, rather than resolve them against a checkpoint that does
+// not have them.
+//
+// One rule decides it, and it is about which checkpoint rather than about time
+// or about whose VM it is: a page of the handoff's set is stripped for exactly
+// as long as the checkpoint the volume names for it predates the handoff. That
+// is any checkpoint of another VM — what a fork child inherits from its parent —
+// and any checkpoint of this VM's own up to the one the handoff selected, which
+// is what a migration's unpublished pages were written past.
+//
+// Both halves are load-bearing, in opposite directions. A migration keeps the
+// same VM, and its volume names that VM's own pre-handoff checkpoint for exactly
+// these pages: resolving one would hand the guest bytes from before its own
+// write. A fork child publishes its inherited pages itself within a second of
+// starting, under a sequence of its own above the selected one: going on
+// stripping those tells the pager a page it has just published has no object,
+// and the pager's retire then gives up the guest's only copy of those bytes.
 func (b *PeerBacking) Locate(ctx context.Context, offset, length uint64) ([]control.Extent, error) {
 	extents, err := b.config.Volume.Locate(ctx, offset, length)
 	if err != nil || len(b.unpublished) == 0 {
@@ -254,7 +279,7 @@ func (b *PeerBacking) Locate(ctx context.Context, offset, length uint64) ([]cont
 		for cursor := extent.Offset; cursor < end; {
 			page := cursor / size
 			stop := min(end, (page+1)*size)
-			if b.unpublished[page] {
+			if b.unpublished[page] && b.predatesHandoff(extent.Identity.Ref) {
 				add(control.Extent{Offset: cursor, Length: stop - cursor})
 			} else {
 				add(control.Extent{Offset: cursor, Length: stop - cursor, Identity: extent.Identity})
@@ -263,6 +288,14 @@ func (b *PeerBacking) Locate(ctx context.Context, offset, length uint64) ([]cont
 		}
 	}
 	return result, nil
+}
+
+// predatesHandoff reports a checkpoint reference older than the pages this
+// backing's handoff named: another VM's, or this VM's own from at or before the
+// checkpoint the handoff selected. A page the volume names by one of those is a
+// page the guest has already written past. See Locate.
+func (b *PeerBacking) predatesHandoff(ref control.Ref) bool {
+	return ref.VM != b.config.VM || ref.Sequence <= b.config.Selected
 }
 
 func (b *PeerBacking) Stats() PeerStats {

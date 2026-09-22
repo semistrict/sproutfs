@@ -219,6 +219,13 @@ func TestOneChildsDeletionLeavesWhatItsSiblingsRead(t *testing.T) {
 			t.Fatal(err)
 		}
 		pinned := point.Parent()
+		// The fan-out holds the point until every child of it has been taken,
+		// exactly as a host does: each child's own hold goes when it closes, and
+		// a point whose last hold has gone has given the parent its pages back
+		// and may not be forked from again.
+		if err := point.Hold(); err != nil {
+			t.Fatal(err)
+		}
 		for _, id := range []string{"first", "second"} {
 			fork, err := manager.Fork(t.Context(), id, point)
 			if err != nil {
@@ -230,6 +237,9 @@ func TestOneChildsDeletionLeavesWhatItsSiblingsRead(t *testing.T) {
 			if err := fork.Close(t.Context()); err != nil {
 				t.Fatal(err)
 			}
+		}
+		if err := point.Retire(t.Context()); err != nil {
+			t.Fatal(err)
 		}
 		if err := manager.Delete(t.Context(), "first"); err != nil {
 			t.Fatal(err)

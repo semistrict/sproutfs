@@ -3,6 +3,7 @@ package volume
 import (
 	"context"
 	"errors"
+	"fmt"
 	"maps"
 	"slices"
 	"sync"
@@ -131,10 +132,19 @@ func (f *ForkPoint) ReadPage(ctx context.Context, volume string, page uint64, ds
 // created from it here, or one this host serves the pages of while it starts on
 // another host. Every child of one fork point is one hold, which is what lets one
 // pause of the parent start any number of them.
-func (f *ForkPoint) Hold() {
+func (f *ForkPoint) Hold() error {
 	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.retired {
+		// The seal this point named has ended and the parent is storing into
+		// those pages again, so there is nothing here to keep: a child taken
+		// from this point now would inherit a mixture of the pause and whatever
+		// its parent has done since. Every caller takes its holds before any of
+		// them is given up; this is what makes that the point's own rule.
+		return fmt.Errorf("%w: a fork point retired by its last holder", ErrRetired)
+	}
 	f.holders++
-	f.mu.Unlock()
+	return nil
 }
 
 // Pin writes the pin on the checkpoint this point inherits, which is what keeps
@@ -395,7 +405,9 @@ func (m *Manager) Fork(ctx context.Context, id string, point *ForkPoint) (*VM, e
 	if err != nil {
 		return nil, err
 	}
-	point.Hold()
+	if err := point.Hold(); err != nil {
+		return nil, err
+	}
 	vm, err := m.attach(ctx, id, handle, point.index, nil, point)
 	if err != nil {
 		// The record is written before the handle exists, and a child's record

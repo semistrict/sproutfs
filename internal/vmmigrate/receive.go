@@ -328,8 +328,11 @@ func attach(ctx context.Context, vm *volume.VM, handoff Handoff, dial Dialer, st
 			// The page these numbers are in is this volume's own, which both
 			// hosts read out of the same durable geometry: the handoff's page
 			// is the source's budget unit and says nothing about one volume.
+			// Selected is what the handoff was taken against, which is zero for
+			// a fork: a child has published nothing of its own, and the pages it
+			// inherited name its parent. See PeerBacking.Locate.
 			peer, err := NewPeerBacking(PeerConfig{Volume: v, Peer: handoff.Source, VM: handoff.VMID,
-				Unpublished: region.Unpublished, Dial: dial, Clock: clock})
+				Unpublished: region.Unpublished, Selected: handoff.Checkpoint, Dial: dial, Clock: clock})
 			if err != nil {
 				return nil, err
 			}

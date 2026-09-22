@@ -18,6 +18,10 @@ type peerBacking struct {
 	// unpublished names the pages the source holds, and served their bytes.
 	unpublished map[uint64]bool
 	served      map[uint64]byte
+	// selected is the sequence this backing's handoff was taken against: this
+	// VM's own checkpoints up to it predate the pages the handoff named. Zero is
+	// a fork's child, which has published nothing of its own.
+	selected uint64
 	// hidden names pages the source serves out of its own dirty pages that the
 	// handoff's set did not list, and the bytes it serves for them. The two
 	// answers a real peer backing gives come from different places — Locate
@@ -97,7 +101,15 @@ func (b *peerBacking) Locate(ctx context.Context, offset, length uint64) ([]cont
 			page := cursor / size
 			stop := min(end, (page+1)*size)
 			next := control.Extent{Offset: cursor, Length: stop - cursor}
-			if !b.unpublished[page] {
+			// A page of the handoff's set is reported as this region's own for
+			// exactly as long as the checkpoint the volume names for it
+			// predates the handoff: another VM's, or this one's own up to the
+			// sequence the handoff selected. Anything this VM publishes after
+			// receiving is newer, and stripping that would tell the pager a
+			// page it has just published has no object. See
+			// vmmigrate.PeerBacking.Locate, whose rule this mirrors.
+			ref := extent.Identity.Ref
+			if !b.unpublished[page] || !(ref.VM != b.owner || ref.Sequence <= b.selected) {
 				next.Identity = extent.Identity
 			}
 			if n := len(result); n > 0 && result[n-1].Identity == next.Identity && result[n-1].Offset+result[n-1].Length == next.Offset {

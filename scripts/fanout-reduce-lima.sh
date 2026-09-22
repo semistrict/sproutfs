@@ -18,6 +18,10 @@
 #                           (the accelerator; see internal/vmmemory/probe_on.go)
 #   SPROUTFS_LIMA_INSTANCE  the instance, default `default`
 #   SPROUTFS_FANOUT_WORK    the persistent build directory in the instance
+#   SPROUTFS_FANOUT_TEST    which test one run is, default the fan-out's own;
+#                           TestFirecrackerForkChildrenSurviveTheirFirstSeconds
+#                           is the same defect measured by the second, and takes
+#                           SPROUTFS_FORK_ARM and SPROUTFS_FORK_LIVES with it
 #   SPROUTFS_RAM_PAGE_BYTES the RAM pager's page, 4096 by default; 2097152 runs
 #                           the geometry this suite had before the page-geometry
 #                           plan's fourth step, which is the arm that says
@@ -94,7 +98,7 @@ load=$(limactl shell "$instance" cat /proc/loadavg)
 patch=$HOME/.cache/sproutfs-reduce/$label.patch
 (cd "$repo" && git diff HEAD) > "$patch"
 {
-    echo "# $label: $runs runs, tags=${tags:-none}, ram page=${SPROUTFS_RAM_PAGE_BYTES:-4096}, load before=$load"
+    echo "# $label: $runs runs of ${SPROUTFS_FANOUT_TEST:-the fan-out}${SPROUTFS_FORK_ARM:+ arm $SPROUTFS_FORK_ARM}, tags=${tags:-none}, ram page=${SPROUTFS_RAM_PAGE_BYTES:-4096}, load before=$load"
     echo "# $(cd "$repo" && git rev-parse --short HEAD) plus $(wc -l < "$patch" | tr -d ' ') lines of $patch"
 } > "$results"
 echo "results: $results" >&2
@@ -111,15 +115,20 @@ for ((run = 1; run <= runs; run++)); do
         SPROUTFS_FIRECRACKER_ROOT="$work/root.ext4" \
         SPROUTFS_FIRECRACKER_RESIDENT_PAGES="${SPROUTFS_FIRECRACKER_RESIDENT_PAGES:-48}" \
         SPROUTFS_RAM_PAGE_BYTES="${SPROUTFS_RAM_PAGE_BYTES:-}" \
-        "$binary" -test.v -test.run TestFirecrackerForkFanOutServesBothChildrenAtOnce \
+        SPROUTFS_FORK_ARM="${SPROUTFS_FORK_ARM:-}" \
+        SPROUTFS_FORK_LIVES="${SPROUTFS_FORK_LIVES:-}" \
+        "$binary" -test.v -test.run "${SPROUTFS_FANOUT_TEST:-TestFirecrackerForkFanOutServesBothChildrenAtOnce}" \
         -test.count=1 -test.timeout=30m > "$one" 2>&1
     set -e
     elapsed=$((SECONDS - started))
+    # The fork-life suite counts children rather than runs, so its tally is the
+    # detail whatever the verdict is: a run of it is many trials, not one.
+    tally=$(grep -m1 -o 'fork lives: arm=.* died=.*' "$one" || true)
     # A guest kernel that died is the defect whatever else the run reported, so
     # it is looked for first.
     if grep -q 'Kernel panic - not syncing' "$one"; then
         verdict=panic
-        detail=$(grep -m1 -o 'pc : [^ ]*' "$one" | head -1)
+        detail="${tally:-$(grep -m1 -o 'pc : [^ ]*' "$one" | head -1)}"
         panics=$((panics + 1))
     elif grep -q '^probe ' "$one" || grep -q 'panic: probe ' "$one"; then
         verdict=bytes
@@ -127,7 +136,7 @@ for ((run = 1; run <= runs; run++)); do
         bytes=$((bytes + 1))
     elif grep -q -- '--- PASS' "$one"; then
         verdict=pass
-        detail=$(grep -m1 -o 'fan-out read: .*' "$one" || true)
+        detail="${tally:-$(grep -m1 -o 'fan-out read: .*' "$one" || true)}"
         passes=$((passes + 1))
     elif grep -q 'context deadline exceeded' "$one"; then
         verdict=timeout

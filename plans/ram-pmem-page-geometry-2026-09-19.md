@@ -350,18 +350,20 @@ memory savings and workload time together.
    regions against the page the session states rather than a constant. PMEM is
    unchanged. Snapshot save and restore of a managed VM are unchanged and pass.
 
-   **The settle, and an open defect.** Qualifying this at 4 KiB found a defect
-   the 2 MiB page had hidden: two children of one fork point, reading everything
-   they inherited on one destination pager while each was checkpointed every
-   250 ms, panic a child's guest kernel on a list entry the guest itself had
-   removed. Reducing it ruled out eviction, slot reuse, a shared page being
-   written and a private page reaching two regions. A settle re-sharing an
-   unchanged page by installing the origin over the page the guest still mapped
-   was a large part of it, so a settle now only revokes and the guest's next
-   access maps the origin through the fault path — but **that is not a fix**:
-   the defect survives it at about one run in thirty. It is in
-   [open-work.md](../docs/open-work.md) with its rates and what is ruled out,
-   and it is what the geometry has to answer for before it ships.
+   **The settle, and the defect this uncovered.** Qualifying at 4 KiB found a
+   defect the 2 MiB page had hidden, and it was not the settle's: a post-copy
+   child was told by its own volume that the pages it had just published had no
+   object, so the pager's retire gave up the only copy of bytes the guest had
+   written and the guest died on them a second later. The 4 KiB page did not
+   cause it — it made the handoff's set five hundred times larger, so the same
+   mistake was made five hundred times as often. It is fixed, with the rule and
+   the guards recorded in [open-work.md](../docs/open-work.md).
+
+   The settle changed on the way there and the change stands on its own: a
+   settle only revokes an unchanged page's mapping and the guest's next access
+   maps the origin through the fault path, rather than installing the origin
+   over a page the guest still maps with one command and no fence. That was
+   never the defect, and it was wrong to describe it as most of it.
 
    **What is left.** `ConnectionConfig.MaxVMAs` is still only the client's
    admission limit: the pager does not count the mappings a region holds and does

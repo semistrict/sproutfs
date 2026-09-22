@@ -107,6 +107,11 @@ func (h *Host) bind(b *binding, pg *resident) {
 	pg.aliases[b] = struct{}{}
 	b.resident = pg
 	h.mu.Unlock()
+	what := "bind-shared"
+	if pg.private {
+		what = "bind-private"
+	}
+	note(b.region, b.index, what, pg.slot, -1)
 	if found != "" {
 		panic(found)
 	}
@@ -213,6 +218,7 @@ func (h *Host) release(ctx context.Context, pg *resident) error {
 		return result
 	}
 	h.mu.Lock()
+	note(nil, 0, "release", pg.slot, -1)
 	h.putFree(pg.slot)
 	pg.slot = -1
 	h.lru.Remove(pg.recent)
@@ -260,6 +266,7 @@ func (h *Host) releaseOrigin(ctx context.Context, pg *resident) error {
 }
 
 func (h *Host) unlink(ctx context.Context, b *binding, pg *resident) error {
+	note(b.region, b.index, "unlink from "+caller(), pg.slot, -1)
 	h.mu.Lock()
 	last := len(pg.aliases) == 1
 	h.mu.Unlock()
@@ -329,10 +336,44 @@ func (r *Region) publishLocked(ctx context.Context, b *binding, pg *resident, id
 	if !drop {
 		return nil
 	}
+	note(r, b.index, "publish-dropped "+publishReason(stored, id, h, pg), pg.slot, -1)
+	if err := h.droppable(ctx, b, pg, stored, id); err != nil {
+		return err
+	}
 	if err := h.revoke(ctx, b); err != nil {
 		return err
 	}
 	return h.unlink(ctx, b, pg)
+}
+
+// ErrUndroppable reports a retire that would have given up the only copy of
+// bytes a guest wrote. It fails the retire rather than the VM: the checkpoint is
+// durable either way, the page stays sealed and the guest keeps its memory, and
+// the pager reports why its pages are still sealed.
+var ErrUndroppable = errors.New("a page the volume holds no object for is not zeros")
+
+// droppable refuses the one thing a retire may not get wrong. A page given up
+// here because the volume holds no object for it is a page the volume must be
+// able to reproduce without one, and the only such page is zeros: a publication
+// writes an all-zero page as a sparse hole and the volume reads it back as
+// zeros. A page with anything else in it holds bytes that exist nowhere but
+// here, so dropping it would hand the guest an older version of memory it wrote.
+//
+// It reads the page, which is why it runs only where a page is about to be
+// dropped rather than on every retire: that is a handful of pages per
+// checkpoint, against every page the checkpoint holds.
+func (h *Host) droppable(ctx context.Context, b *binding, pg *resident, stored bool, id pageKey) error {
+	if (stored && !id.zero()) || pg == nil || pg.slot < 0 {
+		return nil
+	}
+	data := make([]byte, h.pageSize)
+	if err := h.arena.Read(ctx, pg.slot, data); err != nil {
+		return err
+	}
+	if allZero(data) {
+		return nil
+	}
+	return fmt.Errorf("%w: page %d of %s", ErrUndroppable, b.index, b.region.kind)
 }
 
 // share names a private page in the sharing index without ending its privacy:

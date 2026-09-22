@@ -815,6 +815,36 @@ func (p *Process) prepare(ctx context.Context, kind captureKind) ([]byte, error)
 	})
 }
 
+// Pause stops this machine's vCPUs and does nothing else: no state is captured,
+// no region is sealed and nothing is written anywhere. Resume starts them
+// again. It is the first step of a capture on its own, which is what tells a
+// guest that cannot survive being stopped from one that cannot survive being
+// captured.
+func (p *Process) Pause(ctx context.Context) error {
+	if err := p.mu.Lock(ctx); err != nil {
+		return err
+	}
+	defer p.mu.Unlock()
+	ctx, cancel := operation(ctx)
+	defer cancel()
+	if !p.running {
+		return nil
+	}
+	if err := p.request(ctx, http.MethodPatch, "/vm", map[string]any{"state": "Paused"}); err != nil {
+		// A refusal is a pause that did not happen: the VMM answered, so it is
+		// running and its vCPUs are where they were. Anything else leaves the
+		// state unknown, and the machine is stopped rather than guessed about.
+		if errors.As(err, &refusal{}) {
+			return err
+		}
+		p.stop(err)
+		<-p.done
+		return err
+	}
+	p.running = false
+	return nil
+}
+
 // Resume restarts the vCPUs once the capture's state has been read. The regions
 // stay sealed and the checkpoint uploads their checkpoints behind the running
 // guest, so the pause a capture costs is Prepare plus this call.

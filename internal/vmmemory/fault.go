@@ -353,6 +353,11 @@ func (r *Region) takePrivate(ctx context.Context, b *binding, old, pg *resident,
 	h.bind(b, pg)
 	r.takeFromCheckpoint(b, slot, origin)
 	h.probe.granted(b, pg, origin)
+	from := -1
+	if origin != nil {
+		from = origin.slot
+	}
+	note(r, b.index, "copy-on-write", pg.slot, from)
 	return nil
 }
 
