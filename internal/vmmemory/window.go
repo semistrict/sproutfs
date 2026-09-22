@@ -334,7 +334,9 @@ func (p *windowPlan) loadReserved(ctx context.Context) error {
 	for page := first; page < last; page++ {
 		wanted[page-first] = p.reserved[page-p.start] >= 0
 	}
-	data := make([]byte, (last-first)*ps)
+	buffer := h.takeWindow(last - first)
+	defer h.putWindow(buffer)
+	data := *buffer
 	unpublished, err := p.region.loadRun(ctx, first, wanted, data)
 	if err != nil {
 		return err
