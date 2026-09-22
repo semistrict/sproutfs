@@ -119,7 +119,7 @@ func spillFixture(t *testing.T, seed uint64) (*fixture, *vmmemory.Region, *mappi
 	t.Helper()
 	disk := sim.New(sim.Config{Seed: seed}).NewDisk("pager", sim.DiskConfig{PowerLossFaults: true})
 	spill := openSurvivingSpill(t, disk, "spill")
-	a := &arena{pageSize: pageSize, slots: make([][]byte, 2)}
+	a := newArena(pageSize, 2)
 	cfg := vmmemory.Config{PageSize: uint64(pageSize), ResidentPages: 2, LogicalPages: 4, DirtyPages: 2}
 	h, err := vmmemory.New(t.Context(), testresource.New(), cfg, a, spill)
 	if err != nil {
