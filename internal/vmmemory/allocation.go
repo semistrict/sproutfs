@@ -226,7 +226,11 @@ func (h *Host) allocate(ctx context.Context, place func() int, preferEviction bo
 				busy = true
 				continue
 			}
-			usable := true
+			// A page a store is replacing is one the guest still reads through a
+			// mapping that names this offset, and the command that stops it
+			// naming it has not landed. It is not this reclaim's to take; the
+			// store gives it up itself once its mapping is in.
+			usable := pg.replacing == 0
 			for b := range pg.aliases {
 				if b.region.terminal.Load() != nil {
 					usable = false

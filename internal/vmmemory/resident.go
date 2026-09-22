@@ -38,6 +38,15 @@ type resident struct {
 	// reclaim finds it there.
 	aliases map[*binding]struct{}
 	recent  *list.Element
+	// replacing counts the stores that have taken a binding off this page and
+	// whose mapping command has not yet replaced the guest's mapping of it. The
+	// guest goes on reading this page's offset until that command lands, so no
+	// reclaim may take the page and its memory may not go back; dropped marks one
+	// whose last binding went while it was held, whose memory therefore goes back
+	// when the last of those stores lands rather than at the unlink. Both are
+	// protected by Host.mu. See replacement.
+	replacing int
+	dropped   bool
 }
 
 // published reports a resident page holding a page identity some checkpoint
@@ -285,6 +294,12 @@ func (h *Host) releaseOrigin(ctx context.Context, pg *resident) error {
 	defer h.unlock(pg)
 	h.mu.Lock()
 	keep := pg.slot < 0 || len(pg.aliases) > 0
+	if !keep && pg.replacing > 0 {
+		// A store of another region is replacing the guest's mapping of this
+		// page. Its memory goes back when that command lands, exactly as it
+		// would for the binding that store took away.
+		pg.dropped, keep = true, true
+	}
 	h.mu.Unlock()
 	if keep {
 		return nil
@@ -296,6 +311,12 @@ func (h *Host) unlink(ctx context.Context, b *binding, pg *resident) error {
 	note(b.region, b.index, "unlink from "+caller(), pg.slot, -1)
 	h.mu.Lock()
 	last := len(pg.aliases) == 1
+	// A page a store is replacing keeps its memory until that store's mapping
+	// command lands: the guest is still reading this offset. The release is not
+	// re-decided there, only deferred.
+	if last && pg.replacing > 0 {
+		pg.dropped, last = true, false
+	}
 	h.mu.Unlock()
 	if last {
 		if err := h.release(ctx, pg); err != nil {

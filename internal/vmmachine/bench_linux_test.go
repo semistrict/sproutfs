@@ -859,15 +859,20 @@ func (b *benchmark) capture(ctx context.Context, p *vmmachine.Process, vm *volum
 	if err != nil {
 		b.t.Fatalf("capture: %v", err)
 	}
-	sealedRAM := atResumeRAM.CheckpointPages - beforeRAM.CheckpointPages
-	sealedPMEM := atResumePMEM.CheckpointPages - beforePMEM.CheckpointPages
-	sealedBytes := sealedRAM*b.ramPageSize() + sealedPMEM*b.pmemPageSize()
 	protectedRAM := atResumeRAM.ProtectedPages - beforeRAM.ProtectedPages
 	protectedPMEM := atResumePMEM.ProtectedPages - beforePMEM.ProtectedPages
 	published := time.Now()
 	if err := ckpt.Wait(ctx); err != nil {
 		b.t.Fatal(err)
 	}
+	// The pages a seal freezes are moved into the checkpoint by the walk behind
+	// its pause, with the guest already running, so they are counted once that
+	// walk has run rather than at the resume — which is also where the walk's
+	// own duration is, the number the pause used to carry.
+	afterRAM, afterPMEM := b.pagerStats(ctx)
+	sealedRAM := afterRAM.CheckpointPages - beforeRAM.CheckpointPages
+	sealedPMEM := afterPMEM.CheckpointPages - beforePMEM.CheckpointPages
+	sealedBytes := sealedRAM*b.ramPageSize() + sealedPMEM*b.pmemPageSize()
 	pause := resumed.Sub(paused)
 	// Prepare is one API call pair: Firecracker pauses its vCPUs, saves its device
 	// and KVM state, and only then asks the pager for the memory checkpoint. The
@@ -894,11 +899,16 @@ func (b *benchmark) capture(ctx context.Context, p *vmmachine.Process, vm *volum
 		"protected_pages_pmem": protectedPMEM,
 		"protected_bytes":      protectedRAM*b.ramPageSize() + protectedPMEM*b.pmemPageSize(),
 		"seal_bookkeeping_ns":  seals - protects,
-		"vmm_pause_save_ns":    prepare - seals,
-		"resume_ns":            resumed.Sub(prepared).Nanoseconds(),
-		"publish_ns":           time.Since(published).Nanoseconds(),
-		"state_bytes":          len(state),
-		"vmm_mappings":         vmas,
+		// The walk behind the pause: moving each sealed page into the
+		// checkpoint, which runs with the guest running and holding its region,
+		// so a fault of that region waits for it and the VM does not.
+		"seal_walk_ns": int64(afterRAM.SealWalk.TotalNS-beforeRAM.SealWalk.TotalNS) +
+			int64(afterPMEM.SealWalk.TotalNS-beforePMEM.SealWalk.TotalNS),
+		"vmm_pause_save_ns": prepare - seals,
+		"resume_ns":         resumed.Sub(prepared).Nanoseconds(),
+		"publish_ns":        time.Since(published).Nanoseconds(),
+		"state_bytes":       len(state),
+		"vmm_mappings":      vmas,
 		// Per MiB rather than per page: a pause covers pages of both geometries
 		// and there is no page the two of them share.
 		"pause_ns_per_mib": 0,

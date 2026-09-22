@@ -93,7 +93,41 @@ func (b *binding) spillTarget() (slot int, elsewhere bool) {
 func (r *Region) setMapped(b *binding, mapped bool) {
 	r.bindingsMu.Lock()
 	b.mapped = mapped
+	r.noteSealableLocked(b)
 	r.bindingsMu.Unlock()
+}
+
+// noteSealableLocked records whether this page is one the next seal would
+// write-protect: this region's own dirty state, held by no checkpoint, and
+// mapped. The seal reads the runs of those pages rather than walking the dirty
+// set, so its pause costs the commands it issues and not the pages they cover;
+// every transition that changes any of the three keeps this up to date, which
+// is what makes reading it O(runs). Caller holds bindingsMu.
+func (r *Region) noteSealableLocked(b *binding) {
+	sealable := b.dirty && b.checkpoint == nil && b.mapped
+	if r.dirtyRuns.Get(b.index).Dirty == sealable {
+		// Replacing a run costs the depth of its boundaries, and most of these
+		// transitions change nothing: a read of the run is what tells them apart.
+		return
+	}
+	r.dirtyRuns.Set(b.index, b.index+1, pageranges.State{Dirty: sealable})
+}
+
+// sealableRuns is the runs of consecutive pages one seal write-protects. It is
+// the whole of what a seal does while the guest is paused. Caller holds the
+// exclusive region lock.
+func (r *Region) sealableRuns() []PageRun {
+	r.bindingsMu.Lock()
+	defer r.bindingsMu.Unlock()
+	var runs []PageRun
+	for page := uint64(0); page < uint64(r.pageCount); {
+		state, end := r.dirtyRuns.Run(page, uint64(r.pageCount))
+		if state.Dirty {
+			runs = append(runs, PageRun{Page: page, Count: int(end - page)})
+		}
+		page = end
+	}
+	return runs
 }
 
 // unmapPages takes back the record that a run of pages is mapped, which only a
@@ -107,7 +141,9 @@ func (r *Region) unmapPages(page uint64, count int) {
 	defer r.bindingsMu.Unlock()
 	for k := range uint64(count) {
 		if block := r.blocks[(page+k)/bindingBlockPages]; block != nil {
-			block[(page+k)%bindingBlockPages].mapped = false
+			b := &block[(page+k)%bindingBlockPages]
+			b.mapped = false
+			r.noteSealableLocked(b)
 		}
 	}
 }
@@ -260,6 +296,7 @@ func (r *Region) holdInCheckpoint(b, held *binding) {
 	// came from is the checkpoint's to compare them with.
 	held.origin, b.origin = b.origin, nil
 	delete(r.dirtyBindings, b.index)
+	r.noteSealableLocked(b)
 }
 
 // originOf reports the page a checkpoint's copy was made from, nil where it was
@@ -303,6 +340,7 @@ func (r *Region) takeFromCheckpoint(b *binding, slot int, origin *resident) {
 		r.dirtyBindings = make(map[uint64]*binding)
 	}
 	r.dirtyBindings[b.index] = b
+	r.noteSealableLocked(b)
 	r.noteDirtyLocked()
 }
 
@@ -322,6 +360,7 @@ func (r *Region) restoreFromCheckpoint(b, held *binding) {
 		r.dirtyBindings = make(map[uint64]*binding)
 	}
 	r.dirtyBindings[b.index] = b
+	r.noteSealableLocked(b)
 }
 func (r *Region) retireFromCheckpoint(b *binding) {
 	r.bindingsMu.Lock()
@@ -330,6 +369,7 @@ func (r *Region) retireFromCheckpoint(b *binding) {
 	// about it any more.
 	b.checkpoint, b.dirty, b.origin = nil, false, nil
 	delete(r.dirtyBindings, b.index)
+	r.noteSealableLocked(b)
 }
 
 // heldBy reports whether the live page still shares the checkpoint's copy,
@@ -361,6 +401,7 @@ func (r *Region) setDirty(b *binding, dirty bool) {
 	} else {
 		delete(r.dirtyBindings, b.index)
 	}
+	r.noteSealableLocked(b)
 }
 
 // dirtyCount reports how many pages hold private state a checkpoint has not
@@ -370,11 +411,23 @@ func (r *Region) dirtyCount() int {
 	defer r.bindingsMu.Unlock()
 	return len(r.dirtyBindings)
 }
-func (r *Region) dirtySnapshot() []*binding {
+
+// takeDirtySet hands the whole dirty set to a seal in one step and leaves the
+// region with none. It is O(1): a pause may not walk what it is freezing, and
+// what the seal has to do per page it does afterwards, with the guest running.
+// Caller holds the exclusive region lock.
+func (r *Region) takeDirtySet() map[uint64]*binding {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
-	result := make([]*binding, 0, len(r.dirtyBindings))
-	for _, b := range r.dirtyBindings {
+	pending := r.dirtyBindings
+	r.dirtyBindings = nil
+	r.dirtyRuns = pageranges.Map{}
+	return pending
+}
+
+func sortedBindings(set map[uint64]*binding) []*binding {
+	result := make([]*binding, 0, len(set))
+	for _, b := range set {
 		result = append(result, b)
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].index < result[j].index })

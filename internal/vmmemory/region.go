@@ -47,6 +47,13 @@ type Region struct {
 	blocks        map[uint64]*bindingBlock
 	zeroRanges    pageranges.Map
 	dirtyBindings map[uint64]*binding
+	// dirtyRuns is the same set as dirtyBindings less the pages no mapping of
+	// this region covers, held as runs rather than as pages: it is what a seal
+	// write-protects, and reading it is how a pause costs its commands rather
+	// than the pages they cover. It is maintained by every transition that
+	// changes whether a page is one the next seal would protect, all of which
+	// hold bindingsMu.
+	dirtyRuns pageranges.Map
 	// dirtySince is when the oldest write this region holds that no checkpoint
 	// covers landed, zero while it holds none. It is the loss window's own
 	// bookkeeping and is guarded by bindingsMu, because the transitions that
@@ -66,6 +73,15 @@ type Region struct {
 	// between batches, so the exclusive region lock is no longer what keeps two
 	// of them apart.
 	endMu *ctxsync.Mutex
+	// protectMu keeps a seal's write-protect commands apart from the one thing
+	// that can take a mapping away while the seal holds the region: a reclaim,
+	// which revokes its victim's pages under that page's lock alone. The seal no
+	// longer holds those locks — it reads the runs of the dirty set rather than
+	// its pages — so this is what says that every revocation is either finished,
+	// and out of the runs it reads, or has not begun. Revocations hold it
+	// shared, the protection exclusively, and nothing holds it and then waits
+	// for the region or for a page.
+	protectMu *ctxsync.RWMutex
 	// checkpointMu protects the pointer only; the checkpoint it names is immutable
 	// from the seal that took it until the publication or the unseal that retires
 	// it.
@@ -138,7 +154,7 @@ func (h *Host) admit(ctx context.Context, region RegionBacking, mapping Mapping)
 		return nil, err
 	}
 	_, peer := backing.(UnpublishedLoader)
-	r := &Region{live: ctxsync.NewRWMutex(), mu: ctxsync.NewRWMutex(), endMu: ctxsync.NewMutex(), host: h, backing: backing, kind: region.Kind, peer: peer, mapping: mapping, pageCount: int(count), blocks: make(map[uint64]*bindingBlock), readAheadPages: h.cfg.ReadAheadPages}
+	r := &Region{live: ctxsync.NewRWMutex(), mu: ctxsync.NewRWMutex(), endMu: ctxsync.NewMutex(), protectMu: ctxsync.NewRWMutex(), host: h, backing: backing, kind: region.Kind, peer: peer, mapping: mapping, pageCount: int(count), blocks: make(map[uint64]*bindingBlock), readAheadPages: h.cfg.ReadAheadPages}
 
 	windows := (r.pageCount + r.readAheadPages - 1) / r.readAheadPages
 	r.stripes = make([]*ctxsync.Mutex, min(windows, 1024))
@@ -600,6 +616,7 @@ func (r *Region) Detach(ctx context.Context) error {
 	r.blocks = nil
 	r.dirtyBindings = nil
 	r.zeroRanges = pageranges.Map{}
+	r.dirtyRuns = pageranges.Map{}
 	r.pageCount = 0
 	return nil
 }

@@ -10,6 +10,7 @@ package pageranges
 type State struct {
 	Generation uint64
 	Zero       bool
+	Dirty      bool
 }
 type entry struct {
 	start, end uint64

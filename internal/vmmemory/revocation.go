@@ -60,6 +60,12 @@ func (r *Region) revokeLocked(ctx context.Context, bindings []*binding) error {
 
 // Callers own all resident transitions (or an unmapped binding's region lock).
 // Preserve possibly mapped state until the whole batch has a successful ACK.
+//
+// Each command is issued with the region's protection held shared, as every
+// revocation is: a seal reads the runs of the dirty set rather than walking its
+// pages, so what says that a revocation of one of those pages is either
+// finished and out of the runs the seal reads, or has not begun, is this and
+// nothing else.
 func (r *Region) revokeBindings(ctx context.Context, bindings []*binding) error {
 	batch, ok := r.mapping.(BatchRevocation)
 	if !ok {
@@ -87,39 +93,59 @@ func (r *Region) revokeBindings(ctx context.Context, bindings []*binding) error 
 	if len(runs) == 0 {
 		return nil
 	}
-	commands, count, err := r.revokeBatch(ctx, batch, runs)
-	if err != nil {
-		return r.revocationFailed(err)
+	return r.underProtection(ctx, func() error {
+		commands, count, err := r.revokeBatch(ctx, batch, runs)
+		if err != nil {
+			return r.revocationFailed(err)
+		}
+		for _, b := range bindings {
+			r.setMapped(b, false)
+		}
+		r.host.mu.Lock()
+		r.host.stats.Revocations += uint64(commands)
+		r.host.stats.RevokeRuns += uint64(count)
+		r.host.stats.RevokedPages += uint64(pages)
+		r.host.mu.Unlock()
+		return nil
+	})
+}
+
+// underProtection runs one revocation with the region's protection held
+// shared, so that a seal's write-protect commands and the mappings a reclaim
+// takes away cannot overlap. It is never nested and never waits for the region
+// or for a page while it holds it.
+func (r *Region) underProtection(ctx context.Context, revoke func() error) error {
+	if err := r.protectMu.RLock(ctx); err != nil {
+		return err
 	}
-	for _, b := range bindings {
-		r.setMapped(b, false)
-	}
-	r.host.mu.Lock()
-	r.host.stats.Revocations += uint64(commands)
-	r.host.stats.RevokeRuns += uint64(count)
-	r.host.stats.RevokedPages += uint64(pages)
-	r.host.mu.Unlock()
-	return nil
+	defer r.protectMu.RUnlock()
+	return revoke()
 }
 
 func (h *Host) revoke(ctx context.Context, b *binding) error {
 	// A reclaim revokes its victim's pages under that page's lock alone and a
-	// seal reads them under the region, so the two do not exclude each other:
-	// the mapping state is read through the binding map, like every other
-	// holder of it.
+	// seal reads the runs of its dirty set under the region, so the two exclude
+	// each other through the region's protection and nothing else: the mapping
+	// state itself is read through the binding map, like every other holder of
+	// it.
 	if !b.region.isMapped(b) {
 		note(b.region, b.index, "revoke-skipped-unmapped", -1, -1)
 		return nil
 	}
-	if err := b.region.revokePage(ctx, b.index); err != nil {
-		return b.region.revocationFailed(err)
-	}
-	note(b.region, b.index, "revoke", -1, -1)
-	b.region.setMapped(b, false)
-	h.mu.Lock()
-	h.stats.Revocations++
-	h.stats.RevokeRuns++
-	h.stats.RevokedPages++
-	h.mu.Unlock()
-	return nil
+	return b.region.underProtection(ctx, func() error {
+		if !b.region.isMapped(b) {
+			return nil
+		}
+		if err := b.region.revokePage(ctx, b.index); err != nil {
+			return b.region.revocationFailed(err)
+		}
+		note(b.region, b.index, "revoke", -1, -1)
+		b.region.setMapped(b, false)
+		h.mu.Lock()
+		h.stats.Revocations++
+		h.stats.RevokeRuns++
+		h.stats.RevokedPages++
+		h.mu.Unlock()
+		return nil
+	})
 }

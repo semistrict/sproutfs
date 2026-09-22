@@ -30,9 +30,8 @@ func SetReclaimSeam(t *testing.T, seam func(index uint64)) {
 	t.Cleanup(func() { reclaimSeam = previous })
 }
 
-// SetSealSeam installs what a seal runs between taking the dirty set into the
-// checkpoint and recording the checkpoint on the region. It is restored when
-// the test ends.
+// SetSealSeam installs what a seal runs between write-protecting the dirty set
+// and recording the checkpoint on the region. It is restored when the test ends.
 func SetSealSeam(t *testing.T, seam func()) {
 	previous := sealSeam
 	sealSeam = seam
@@ -46,6 +45,15 @@ func SetPopulationRuns(t *testing.T, runs int) {
 	previous := populationRuns
 	populationRuns = runs
 	t.Cleanup(func() { populationRuns = previous })
+}
+
+// SetSealWalkSeam installs what the walk behind a seal's pause runs before it
+// takes its first page, so a test can hold the walk there and look at what the
+// pause itself cost. It is restored when the test ends.
+func SetSealWalkSeam(t *testing.T, seam func()) {
+	previous := sealWalkSeam
+	sealWalkSeam = seam
+	t.Cleanup(func() { sealWalkSeam = previous })
 }
 
 // Signal wakes every store waiting on the host, as any change to a page does.

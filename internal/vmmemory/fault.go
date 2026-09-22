@@ -192,7 +192,10 @@ func (r *Region) fault(ctx context.Context, index uint64, write bool, spill *int
 	if err != nil {
 		return false, err
 	}
-	if err := r.takePrivate(ctx, b, old, pg, *spill, origin); err != nil {
+	// The pages this store copies from stay where they are until its one mapping
+	// command has replaced the guest's mappings of them; nothing is revoked.
+	replaced := &replacement{region: r}
+	if err := r.takePrivate(ctx, b, old, pg, *spill, origin, replaced); err != nil {
 		return false, err
 	}
 	*spill = -1
@@ -213,30 +216,40 @@ func (r *Region) fault(ctx context.Context, index uint64, write bool, spill *int
 	// already held, and the holes of a range that has become half its own, are
 	// made private in this same fault. The whole run sits at consecutive offsets
 	// of one extent, so one command maps it.
-	first, last := index, index+1
-	if !b.mapped {
-		if first, last, err = r.closeAround(ctx, index, pg.slot); err != nil {
+	first, last, err := r.closeAround(ctx, index, pg.slot, replaced)
+	if err != nil {
+		return false, errors.Join(err, replaced.revoke(ctx))
+	}
+	for page := first; page < last; page++ {
+		r.setMapped(r.binding(page), true) // a failed ACK may still have installed the mapping
+	}
+	slot, count := pg.slot-int(index-first), int(last-first)
+	// One command for the run, and it replaces what the guest had: the copies go
+	// where the pages they were made from were mapped, so nothing was taken away
+	// first and nothing is left without a mapping in between.
+	if err := r.mapPages(ctx, first, slot, count, true); err != nil {
+		// It did not land, so the guest goes on mapping the pages this store
+		// copied from while their memory is about to go back. Taking those
+		// mappings away is the one revocation a store ever issues.
+		if revoked := replaced.revoke(ctx); revoked != nil {
+			return false, errors.Join(r.fail(err), revoked)
+		}
+		err = r.mappingFailed(err, func() { r.unmapPages(first, count) })
+		if !errors.Is(err, ErrMappingRefused) {
 			return false, err
 		}
-		for page := first; page < last; page++ {
-			r.setMapped(r.binding(page), true) // a failed ACK may still have installed the mapping
+		// The backstop. The client has no mapping left for this store, so
+		// the range the guest is writing in is made whole: its alternations
+		// stop costing that process a mapping each, and the store is served
+		// again. It is expected never to act.
+		merged, mergeErr := r.makeWhole(ctx, index)
+		if mergeErr != nil {
+			return false, mergeErr
 		}
-		slot, count := pg.slot-int(index-first), int(last-first)
-		if err := r.mapPages(ctx, first, slot, count, true); err != nil {
-			err = r.mappingFailed(err, func() { r.unmapPages(first, count) })
-			if !errors.Is(err, ErrMappingRefused) {
-				return false, err
-			}
-			// The backstop. The client has no mapping left for this store, so
-			// the range the guest is writing in is made whole: its alternations
-			// stop costing that process a mapping each, and the store is served
-			// again. It is expected never to act.
-			merged, mergeErr := r.makeWhole(ctx, index)
-			if mergeErr != nil {
-				return false, mergeErr
-			}
-			return merged, err
-		}
+		return merged, err
+	}
+	if err := replaced.done(ctx); err != nil {
+		return false, r.fail(err)
 	}
 	if err := r.resolvePages(ctx, first, int(last-first), true); err != nil {
 		return false, r.fail(err)
@@ -444,22 +457,27 @@ func (r *Region) readInPage(ctx context.Context, index uint64) (*resident, error
 	return nil, nil
 }
 
-// takePrivate makes a freshly filled resident page this page's own. The mapping
-// it had is revoked and the alias of the page it is leaving taken away under
-// that page's lock, and the dirty reservation the store was admitted under is
-// installed in the same step: a private page reachable from a binding owning
-// neither a reservation nor a checkpoint is one a reclaim would punch. The
-// caller holds the new resident page; old is the one the page is leaving, if
-// any, and is released here. origin is that page where the copy was made from a
-// published identity, and it is left in the arena rather than released, because
-// it is what the settle compares this copy against.
-func (r *Region) takePrivate(ctx context.Context, b *binding, old, pg *resident, slot int, origin *resident) error {
+// takePrivate makes a freshly filled resident page this page's own. The alias
+// of the page it is leaving is taken away under that page's lock, and the dirty
+// reservation the store was admitted under is installed in the same step: a
+// private page reachable from a binding owning neither a reservation nor a
+// checkpoint is one a reclaim would punch. The caller holds the new resident
+// page; old is the one the page is leaving, if any. origin is that page where
+// the copy was made from a published identity, and it is left in the arena
+// rather than released, because it is what the settle compares this copy
+// against.
+//
+// Nothing is revoked. The guest's mapping of this page is replaced by the one
+// command the store issues for its whole run, so the page it is leaving is
+// handed to replaced instead: held where it is until that command lands, and
+// given up there.
+func (r *Region) takePrivate(ctx context.Context, b *binding, old, pg *resident, slot int, origin *resident, replaced *replacement) error {
 	h := r.host
 	if old != nil {
 		defer h.unlock(old)
-	}
-	if err := h.revoke(ctx, b); err != nil {
-		return err
+		if r.isMapped(b) {
+			replaced.hold(b, old)
+		}
 	}
 	switch {
 	case old == nil:

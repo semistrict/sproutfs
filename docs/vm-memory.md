@@ -372,8 +372,29 @@ private page, and a zero mapping goes on serving reads until the replacement
 lands. The page is a free arena slot, which is punched and so already reads as
 zeros: the Linux arena allocates it with `fallocate` instead of writing zeros
 into it, the kernel clears it as the resolving `UFFDIO_CONTINUE` installs it,
-and the volume is not read. A store into a shared page or a sealed page still
-revokes the guest's alias before it copies.
+and the volume is not read.
+
+**A store replaces a mapping; it never takes one away.** A copy-on-write of a
+page the guest maps read-only — a shared page, a page a seal write-protected —
+has the copy to put in that mapping's place, and the protocol's MAP over a range
+replaces whatever the pages of it had: the client builds the new mapping,
+registers it and `mremap`s it over the guest's addresses in one command. So one
+command serves the store and the whole run the two rules copied with it, and a
+revocation, which installs no page table and wakes nothing, is left to what it
+is for — a reclaim taking a victim, a settle handing a page back to its origin,
+an abandoned checkpoint, and a store whose mapping the client refused. Until
+2026-09-22 every private page cost a revocation first, which is what a GCE
+fan-out of three forks running `cargo test` spent 1,753 s of 5.4 million
+commands on: 2.6 revocations a fault, about one per page the guests wrote.
+
+What replacing costs instead is an ordering, which `internal/vmmemory/replacement.go`
+is. Between the moment a store takes its binding off the page it copied from and
+the moment its mapping command lands, the guest goes on reading that page's
+offset while nothing names it any more, so the page stays where it is: no
+reclaim may take it, and where its last binding was this store's its memory goes
+back after the command rather than at the unlink. A store that could not map its
+run — the client out of mapping budget, or a command that failed — revokes the
+run instead, because then there is nothing to put in its place.
 
 ### Keeping a region's mappings whole
 
@@ -560,14 +581,40 @@ A window that restarted at every failed publication would bound nothing, since
 the host that cannot publish is exactly the host whose publications keep failing.
 
 Sealing a region revokes write access to its dirty pages, write-protecting the
-pages the guest already has, records those pages as the sealed set, and
-returns; nothing is copied and no byte crosses the network. Write protection is
-applied in place: one range write-protect per run of consecutive dirty pages,
-whatever memory those pages hold and however many of the client's mappings that
-run spans. No mapping is replaced and no page table is installed or dropped, so
-the guest keeps reading the same pages through the same page tables and only
-its next store traps. The seal portion of a capture's pause depends on the runs
-and per-page bookkeeping of the dirty set. Resuming waits for nothing beyond it.
+pages the guest already has, and returns; nothing is copied and no byte crosses
+the network. Write protection is applied in place: one range write-protect per
+run of consecutive dirty pages, whatever memory those pages hold and however
+many of the client's mappings that run spans. No mapping is replaced and no page
+table is installed or dropped, so the guest keeps reading the same pages through
+the same page tables and only its next store traps.
+
+**A seal's pause is those commands and nothing else.** From the moment a run is
+protected, no store to it can land without trapping and waiting for the region,
+so the set is fixed there; what a seal has to do per page — move the binding
+into the checkpoint, hand it that page's reservation and the page it was copied
+from — is a walk that runs afterwards, with the guest already running and
+holding the region the seal took. The region keeps its dirty set as runs for
+exactly this, maintained by every transition that changes whether a page is one
+the next seal would protect, so the pause reads O(runs) and never O(pages), and
+takes the whole set in one step. A fault of that region waits for the walk;
+nothing else does, and the checkpoint's own readers — the settle, the page list,
+the upload — run behind the pause anyway and wait for it there. On GCE a capture
+of 2,204,672 sealed RAM pages at a 4 KiB page paused 2.14 s, of which 0.18 s was
+its 2,264 protect commands and 1.97 s was the walk; `seal_ns` and `seal_walk_ns`
+are the two, and only the first is time the guest is stopped for.
+
+The one thing that can take a mapping away while a seal holds the region is a
+reclaim, which revokes its victim's pages under that page's lock alone — and the
+seal no longer holds those locks, because it does not walk the pages. So the
+region carries a protection lock: every revocation holds it shared, the seal's
+write-protect commands hold it exclusively, and under it every revocation is
+either finished, and out of the runs the seal reads, or has not begun. Nothing
+holds it and then waits for the region or for a page.
+
+A seal whose protection fails partway captures nothing and takes no page at all:
+the runs that landed have their mappings taken away, so the guest faults and maps
+them writable again rather than resolving a store against a read-only mapping,
+and the next checkpoint takes the whole dirty set.
 
 The seal waits for page-table work and never for bytes. A fault holds the region
 shared for its planning, its metadata and its page-table commands, and gives it
@@ -762,10 +809,11 @@ checkpoint takes them.
 One seal is outstanding per region: sealing a sealed region reports `ErrSealed`,
 and so does handing one off, because a publication is reading its pages under a
 volume handle a handoff would give away. A seal that fails partway captures
-nothing. Its half-protected pages go back to the guest as ordinary dirty state,
-so sealing again takes the whole of whatever is dirty then. Pages count as
-sealed as the seal takes them, so a capture that never completes still reports
-the work its pause paid for.
+nothing and takes no page: its half-protected pages have their mappings taken
+away and are the guest's ordinary dirty state again, so sealing again takes the
+whole of whatever is dirty then. Pages count as sealed as the walk behind the
+pause takes them, so a capture that never completes still reports the work that
+walk did.
 
 The spill file is scratch storage and is never an acknowledged crash-recovery
 image. A starting process truncates it: a restart is a host loss, and nothing
