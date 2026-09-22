@@ -191,10 +191,12 @@ func (r *Region) isPrivateAt(page uint64) bool {
 // the bytes it holds now and remembering the page they came from so a settle
 // can hand back what the guest never wrote.
 //
-// It never waits and never evicts: a page with no free dirty reservation, no
-// offset of its own, or one a checkpoint is still holding is left exactly as it
-// was. Caller holds the region shared, as a fault holds it, and the pages it
-// takes are left unmapped for the caller's one mapping command.
+// It never waits, never evicts and reads nothing: a page with no free dirty
+// reservation, no offset of its own, one a checkpoint is still holding, or one
+// whose bytes this host does not already have — a page no region has read in —
+// is left exactly as it was and the run ends there. Caller holds the region
+// shared, as a fault holds it, and the pages it takes are left unmapped for the
+// caller's one mapping command.
 func (r *Region) takeShared(ctx context.Context, first, index, last uint64) error {
 	for page := first; page < last; page++ {
 		if page == index {
@@ -234,10 +236,11 @@ func (r *Region) takeOneShared(ctx context.Context, page uint64) (bool, error) {
 		return false, err
 	}
 	if pg == nil && !b.zero && !b.dirty {
-		if pg, err = r.readIn(ctx, page); err != nil {
-			release()
-			return false, err
-		}
+		// This host does not hold the page's bytes, so copying it would mean a
+		// backing read and a page to read it into — which is an eviction, and a
+		// rule evicts for nothing the guest did not write. The run ends here.
+		release()
+		return false, nil
 	}
 	var origin *resident
 	if pg.published() {

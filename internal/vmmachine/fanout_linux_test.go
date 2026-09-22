@@ -340,6 +340,20 @@ func TestFirecrackerForkFanOutServesBothChildrenAtOnce(t *testing.T) {
 		t.Fatalf("a child of the fan-out never finished reading what it inherited\n%s", stacks())
 	}
 	t.Logf("fan-out read: children=%d rounds=%d elapsed=%s", len(taken), forkFanOutRounds, time.Since(began))
+	// What the read phase left each child's VMM holding in mappings, which is
+	// what the placement rule and the two rules behind it are for: a private
+	// page at the offset it has within its range keeps the private pages of a
+	// range adjacent, so a range costs a mapping per alternation rather than one
+	// per private page. The pager's own side of it is beside them.
+	for index, child := range taken {
+		t.Logf("fan-out mappings: child=%d vmm_mappings=%d", index, countMappings(child.process.PID()))
+	}
+	if stats, err := destinationPager.pagers.Ram.Stats(ctx); err == nil {
+		t.Logf("fan-out ram pager: private_extents=%d rule_copies=%d mapping_merges=%d"+
+			" copy_on_writes=%d resident_pages=%d",
+			stats.PrivateExtents, stats.RuleCopies, stats.MappingMerges,
+			stats.CopyOnWrites, stats.ResidentPages)
+	}
 
 	for _, child := range taken {
 		stats := child.received.Stats()

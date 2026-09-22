@@ -56,10 +56,18 @@ const copied = 2
 // access, is one mapping, and every break in either is another. A zero mapping
 // owns no arena offset and is left out — a range of zeros is one mapping
 // wherever they are, and what the placement rule governs is the pages.
-func mappings(m *mapping) int {
+func mappings(m *mapping) int { return mappingsOf(m, false) }
+
+// privateMappings counts only the mappings of the pages the guest may store
+// into where they are, which is what the placement rule and the two rules
+// behind it govern. The shared pages between them are mappings too, and are
+// somewhere else in the arena entirely.
+func privateMappings(m *mapping) int { return mappingsOf(m, true) }
+
+func mappingsOf(m *mapping, privateOnly bool) int {
 	numbers := make([]uint64, 0, len(m.pages))
 	for page, mp := range m.pages {
-		if mp.slot >= 0 {
+		if mp.slot >= 0 && (!privateOnly || mp.writable) {
 			numbers = append(numbers, page)
 		}
 	}

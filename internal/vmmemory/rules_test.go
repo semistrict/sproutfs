@@ -13,6 +13,17 @@ import (
 // restated here so a test that moves it reads as a test that moved it.
 const gap = 16
 
+// held makes the pages [first, last) of a region resident and shared, which is
+// what a guest has read and what a fork's attach populates. The rules copy only
+// pages whose bytes this host already holds, because a rule evicts for nothing
+// the guest did not write, so this is the state they act on.
+func held(t *testing.T, r *vmmemory.Region, m *mapping, first, last uint64) {
+	t.Helper()
+	for page := first; page < last; page++ {
+		access(t, r, m, page, false)
+	}
+}
+
 // A store within the gap of a page its range already holds makes the pages
 // between them private in the same fault: one mapping command, one run, and the
 // pages it copied counted exactly.
@@ -20,6 +31,7 @@ func TestAStoreNearAPrivatePageClosesTheGapInOneMapping(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f, r, m, _ := placedRegion(t, 2*rangePages)
 		const first = 100
+		held(t, r, m, first, first+gap+1)
 		access(t, r, m, first, true)[0] = 7
 		if got := hostStats(t, f).RuleCopies; got != 0 {
 			t.Fatalf("a store with nothing near it copied %d pages by a rule, want none", got)
@@ -29,8 +41,8 @@ func TestAStoreNearAPrivatePageClosesTheGapInOneMapping(t *testing.T) {
 		if got := m.maps - commands; got != 1 {
 			t.Fatalf("the store that closed the gap issued %d mapping commands, want 1", got)
 		}
-		if got := mappings(m); got != 1 {
-			t.Fatalf("two stores %d pages apart are %d mappings, want 1", gap, got)
+		if got := privateMappings(m); got != 1 {
+			t.Fatalf("two stores %d pages apart are %d private mappings, want 1", gap, got)
 		}
 		if got := hostStats(t, f).RuleCopies; got != gap-1 {
 			t.Fatalf("closing a gap of %d pages copied %d of them, want %d", gap, got, gap-1)
@@ -57,10 +69,11 @@ func TestAStorePastTheGapIsItsOwnMapping(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f, r, m, _ := placedRegion(t, 2*rangePages)
 		const first = 100
+		held(t, r, m, first, first+gap+2)
 		access(t, r, m, first, true)[0] = 7
 		access(t, r, m, first+gap+1, true)[0] = 7
-		if got := mappings(m); got != 2 {
-			t.Fatalf("two stores %d pages apart are %d mappings, want 2", gap+1, got)
+		if got := privateMappings(m); got != 2 {
+			t.Fatalf("two stores %d pages apart are %d private mappings, want 2", gap+1, got)
 		}
 		if got := hostStats(t, f).RuleCopies; got != 0 {
 			t.Fatalf("a store past the gap copied %d pages by a rule, want none", got)
@@ -73,6 +86,7 @@ func TestAStorePastTheGapIsItsOwnMapping(t *testing.T) {
 func TestAGapIsNeverClosedAcrossARangeBoundary(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f, r, m, _ := placedRegion(t, 2*rangePages)
+		held(t, r, m, rangePages-1, rangePages+4)
 		access(t, r, m, rangePages-1, true)[0] = 7
 		access(t, r, m, rangePages+3, true)[0] = 7
 		if got := hostStats(t, f).RuleCopies; got != 0 {
@@ -81,8 +95,8 @@ func TestAGapIsNeverClosedAcrossARangeBoundary(t *testing.T) {
 		if s := hostStats(t, f); s.PrivateExtents != 2 {
 			t.Fatalf("a page either side of a range boundary owns %d extents, want 2", s.PrivateExtents)
 		}
-		if got := mappings(m); got != 2 {
-			t.Fatalf("a page either side of a range boundary is %d mappings, want 2", got)
+		if got := privateMappings(m); got != 2 {
+			t.Fatalf("a page either side of a range boundary is %d private mappings, want 2", got)
 		}
 	})
 }
@@ -96,6 +110,7 @@ func TestARangeThatIsHalfPrivateBecomesWhole(t *testing.T) {
 		f := placedFixture(t, 4*rangePages)
 		b := f.newBacking(2 * rangePages)
 		r, m := f.attach(b)
+		held(t, r, m, 0, rangePages)
 		for page := range uint64(half) {
 			access(t, r, m, page, true)[0] = 7
 		}
@@ -104,8 +119,8 @@ func TestARangeThatIsHalfPrivateBecomesWhole(t *testing.T) {
 			t.Fatalf("filling a range that held %d pages copied %d, want %d: nothing already"+
 				" private is copied again", half, s.RuleCopies, half)
 		}
-		if got := mappings(m); got != 1 {
-			t.Fatalf("a whole range is %d mappings, want 1", got)
+		if got := privateMappings(m); got != 1 {
+			t.Fatalf("a whole range is %d private mappings, want 1", got)
 		}
 		if got := len(m.pages); got != rangePages {
 			t.Fatalf("a whole range maps %d pages, want %d", got, rangePages)
@@ -137,6 +152,7 @@ func TestASettleHandsBackTheGapPagesTheGuestNeverWrote(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f, r, m, b := placedRegion(t, 2*rangePages)
 		const first = 100
+		held(t, r, m, first, first+gap+1)
 		access(t, r, m, first, true)[0] = 7
 		access(t, r, m, first+gap, true)[0] = 7
 		if err := r.Seal(t.Context()); err != nil {
@@ -169,6 +185,7 @@ func TestAWholeRangeStaysWholeThroughASettle(t *testing.T) {
 		f := placedFixture(t, 4*rangePages)
 		b := f.newBacking(2 * rangePages)
 		r, m := f.attach(b)
+		held(t, r, m, 0, rangePages)
 		for page := range uint64(half) {
 			access(t, r, m, page, true)[0] = 7
 		}
@@ -182,6 +199,8 @@ func TestAWholeRangeStaysWholeThroughASettle(t *testing.T) {
 			t.Fatalf("a whole range publishes %d pages, want %d", got, rangePages)
 		}
 		f.finishCheckpoint(r, b)
+		// The checkpoint published every page of it in place, so the range is
+		// still one mapping — the guest's own no longer, but whole.
 		if got := mappings(m); got != 1 {
 			t.Fatalf("a whole range is %d mappings after its checkpoint, want 1", got)
 		}
@@ -197,11 +216,12 @@ func TestARefusedMappingMakesTheRangeWhole(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		const stores, stride = 8, 32
 		f, r, m, _ := placedRegion(t, 2*rangePages)
+		held(t, r, m, 0, rangePages)
 		for i := range uint64(stores) {
 			access(t, r, m, 20+stride*i, true)[0] = 7
 		}
-		if got := mappings(m); got != stores {
-			t.Fatalf("%d scattered stores are %d mappings, want %d", stores, got, stores)
+		if got := privateMappings(m); got != stores {
+			t.Fatalf("%d scattered stores are %d private mappings, want %d", stores, got, stores)
 		}
 		if got := hostStats(t, f).MappingMerges; got != 0 {
 			t.Fatalf("the backstop acted %d times before the budget was reached, want 0", got)
@@ -213,8 +233,8 @@ func TestARefusedMappingMakesTheRangeWhole(t *testing.T) {
 		if s := hostStats(t, f); s.MappingMerges != 1 {
 			t.Fatalf("a refused store made the backstop act %d times, want 1", s.MappingMerges)
 		}
-		if got := mappings(m); got != 1 {
-			t.Fatalf("the range the backstop made whole is %d mappings, want 1", got)
+		if got := privateMappings(m); got != 1 {
+			t.Fatalf("the range the backstop made whole is %d private mappings, want 1", got)
 		}
 		if got := len(m.pages); got != rangePages {
 			t.Fatalf("the range the backstop made whole maps %d pages, want %d", got, rangePages)
