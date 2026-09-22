@@ -29,10 +29,11 @@ use std::path::Path;
 use linux::{Mapping, Staging, TrapSource, Uffd};
 use wire::Frame;
 
-/// The shortest span applied as one. A reservation costs eight kernel calls and
-/// saves three of the five a run costs on its own, so a span of three is the
-/// first that pays for itself.
-const SPAN_RUNS: usize = 3;
+/// The shortest span applied as one. A reservation and its arming cost eight
+/// kernel calls and save three of the five a read-only run costs on its own —
+/// two of the four a writable one costs, which takes no write-protect — so a
+/// span of four is the first that pays for itself either way.
+const SPAN_RUNS: usize = 4;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u64)]
