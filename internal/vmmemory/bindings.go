@@ -270,6 +270,17 @@ func (r *Region) originOf(b *binding) *resident {
 	return b.origin
 }
 
+// privateEpoch reports whether this page is the region's own dirty state and
+// which checkpoint's copy it shares, read together so that a fault which gave
+// the region up can tell whether a seal or a retire ran while it was away. Both
+// change under the exclusive region lock, so a fault holding it shared reads
+// the pair it decided on.
+func (r *Region) privateEpoch(b *binding) (dirty bool, held *binding) {
+	r.bindingsMu.Lock()
+	defer r.bindingsMu.Unlock()
+	return b.dirty, b.checkpoint
+}
+
 // checkpointCopy reports the checkpoint's copy of this page while the two
 // share a resident page, nil when the page holds its own state.
 func (r *Region) checkpointCopy(b *binding) *binding {

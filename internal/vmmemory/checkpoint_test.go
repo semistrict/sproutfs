@@ -689,3 +689,98 @@ func TestAStoreThatCannotTakeItsPrivatePageLeavesThePageInTheCheckpoint(t *testi
 		}
 	})
 }
+
+// A refault of a page that has been spilled decides, under the region, that the
+// page is the guest's own dirty state, and then gives the region up to find an
+// arena slot for it. A checkpoint that runs in that window ends the page's
+// dirty epoch: the volume holds its bytes now, so the page is clean state under
+// the identity that checkpoint gave it, and the reservation that spilled it has
+// gone back. The refault has to see that rather than act on what it decided
+// before it gave the region up, exactly as a store does across its own reclaim.
+//
+// Two things go wrong when it does not. A private page bound to a binding that
+// owns neither a reservation nor a checkpoint is one a reclaim punches without
+// writing it anywhere. And the page is named by nothing, so nothing that
+// inherits the identity the checkpoint gave it can map it: every other region
+// of that volume reads its own copy of bytes this host is already holding.
+func TestARefaultWhoseCheckpointRetiresWhileItReclaimsGivesThePageToTheVolume(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newFixture(t, 2, 32, 8)
+		r, m, b := f.region(4)
+		stored := byte(91)
+		if _, err := memoryByte(t.Context(), r, m, 0, &stored); err != nil {
+			t.Fatalf("storing into page 0: %v", err)
+		}
+		// Page 0 leaves the arena for the spill file, so the access below is the
+		// refault this test is about.
+		for range 2 {
+			for page := uint64(1); page < 4; page++ {
+				if _, err := memoryByte(t.Context(), r, m, page, nil); err != nil {
+					t.Fatalf("reading page %d to press page 0 out of the arena: %v", page, err)
+				}
+			}
+		}
+		if _, mapped := m.pages[0]; mapped {
+			t.Fatal("page 0 is still mapped, so nothing below is a refault")
+		}
+		var once sync.Once
+		vmmemory.SetReclaimSeam(t, func(index uint64) {
+			if index != 0 {
+				return
+			}
+			once.Do(func() {
+				if err := f.checkpoint(r, b); err != nil {
+					t.Errorf("checkpointing while the refault reclaimed: %v", err)
+				}
+			})
+		})
+		if got, err := memoryByte(t.Context(), r, m, 0, nil); err != nil || got != stored {
+			t.Fatalf("the refaulted page reads %d, want the %d the guest stored: %v", got, stored, err)
+		}
+		// The checkpoint published those bytes, so the page this region holds is
+		// the volume's: a second region of the same volume maps that very page
+		// rather than reading the bytes again.
+		before, err := f.h.Stats(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		second, sm := f.attach(b)
+		if got, err := memoryByte(t.Context(), second, sm, 0, nil); err != nil || got != stored {
+			t.Fatalf("the second region reads %d for page 0, want %d: %v", got, stored, err)
+		}
+		after, err := f.h.Stats(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if sm.pages[0].slot != m.pages[0].slot {
+			t.Errorf("the second region maps slot %d for page 0 and the first slot %d; the retired page was kept private",
+				sm.pages[0].slot, m.pages[0].slot)
+		}
+		if after.Loads != before.Loads || after.IdentityHits-before.IdentityHits != 1 {
+			t.Errorf("the second region's page 0 cost %d backing reads and %d identity hits, want 0 and 1",
+				after.Loads-before.Loads, after.IdentityHits-before.IdentityHits)
+		}
+		// Taking the page out of the arena once more and reading it back is
+		// where the audit reported the mistake: a binding granted the right to
+		// store after its dirty epoch had ended is owed a generation nothing
+		// will ever give back, so the published page it is handed here, and the
+		// copy the store below takes, are both called a lost write.
+		for range 2 {
+			for page := uint64(1); page < 4; page++ {
+				if _, err := memoryByte(t.Context(), r, m, page, nil); err != nil {
+					t.Fatalf("reading page %d to press page 0 out a second time: %v", page, err)
+				}
+			}
+		}
+		if got, err := memoryByte(t.Context(), r, m, 0, nil); err != nil || got != stored {
+			t.Fatalf("page 0 reads %d after its second eviction, want %d: %v", got, stored, err)
+		}
+		next := byte(92)
+		if _, err := memoryByte(t.Context(), r, m, 0, &next); err != nil {
+			t.Fatalf("storing into page 0 after the retire: %v", err)
+		}
+		if got, err := memoryByte(t.Context(), r, m, 0, nil); err != nil || got != next {
+			t.Fatalf("page 0 reads %d after the store, want %d: %v", got, next, err)
+		}
+	})
+}
