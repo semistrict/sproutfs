@@ -11,6 +11,9 @@ use std::time::{Duration, Instant};
 #[path = "session_mapping.rs"]
 mod mapping;
 
+#[path = "session_batch.rs"]
+mod batching;
+
 /// Most of these tests are about the protocol rather than about the geometry,
 /// so they run at a PMEM session's page; the ones that are about the geometry
 /// name both explicitly.
@@ -456,13 +459,23 @@ fn serve_attachment(
     attach: Frame,
     script: impl FnOnce(&mut UnixStream) + Send,
 ) -> io::Result<()> {
+    serve_backing(spec, attach, &backing(), script)
+}
+
+/// serve_attachment over an arena the caller made, which is what a session of
+/// more than one page of memory needs.
+fn serve_backing(
+    spec: RegionSpec,
+    attach: Frame,
+    backing: &OwnedFd,
+    script: impl FnOnce(&mut UnixStream) + Send,
+) -> io::Result<()> {
     let peer = Peer::new();
-    let backing = backing();
     std::thread::scope(|scope| {
         let server = scope.spawn(|| {
             let (mut socket, uffd) = peer.accept(spec);
             let _events = RemapEvents::new(uffd);
-            attach.send_fd(&mut socket, &backing).unwrap();
+            attach.send_fd(&mut socket, backing).unwrap();
             ready().write(&mut socket).unwrap();
             assert_eq!(
                 Frame::read(&mut socket).unwrap(),

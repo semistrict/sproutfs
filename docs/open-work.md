@@ -63,6 +63,20 @@ everything open is listed here.
   stores, and a store read its own page alone. A store reads its window ahead
   now too, counted the same way, and the fan-out has not been re-run: first
   output within 2 s is still unmet as far as this repository knows.
+- **The attach populate's bound and the batched span are unmeasured on a
+  cluster.** The warm restore of 2026-09-22 spent 5.1 s of its 5.48 s in VMM
+  start, mapping 2,930,747 sibling-resident pages in 21,698 runs before the
+  guest ran, against a 0.5 s bound. A populate now installs a published run only
+  when it covers a read-ahead window and spends at most 128 runs in all
+  (`internal/vmmemory/population.go`), and a batch's contiguous runs are built
+  in one reservation, so 64 scattered runs cost the VMM 136 kernel calls rather
+  than 320 (`rust/sproutfs-vm-memory/src/linux.rs`, `Staging`). Both are proven
+  by counts in tests — the Go suite and the crate's own, the latter runnable
+  only on Linux — and neither has been timed on GCE, where the thing that
+  actually costs is the `mremap` per run and the REMAP event the pager reads
+  back for it. That one cannot be batched: `mremap` moves a single mapping and
+  the runs of a batch are separate ones, so making them one would be a wire
+  change.
 - **Compaction reads the pages it rescues one at a time.** A read of a range of
   a volume now fetches a run of members as one ranged read per extent, but
   compaction walks a segment's pages and calls `Store.loadPage` for each one it
