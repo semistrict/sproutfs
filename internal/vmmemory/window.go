@@ -310,60 +310,64 @@ func (p *windowPlan) reserveRuns(from uint64) {
 	}
 }
 
-// loadReserved reads every run of reserved pages with one backing read and
-// publishes the resulting residents under their stored identities.
+// loadReserved reads the reserved pages of this window with one backing read
+// and publishes the resulting residents under their stored identities. The
+// pages between them — the ones this region already holds, and the holes its
+// volume has — are left out of the read rather than splitting it: a window is
+// one run of a volume, and what a run costs is the volume's to decide.
 func (p *windowPlan) loadReserved(ctx context.Context) error {
 	h := p.region.host
-	ps := int(h.pageSize)
-	var buffer []byte
-	for page := p.start; page < p.end; {
-		i := page - p.start
-		if p.reserved[i] < 0 {
-			page++
+	ps := h.pageSize
+	first, last := p.end, p.start
+	loading := uint64(0)
+	for page := p.start; page < p.end; page++ {
+		if p.reserved[page-p.start] < 0 {
 			continue
 		}
-		run := uint64(1)
-		for page+run < p.end && p.reserved[i+run] >= 0 {
-			run++
+		first, last = min(first, page), page+1
+		loading++
+	}
+	if loading == 0 {
+		return nil
+	}
+	wanted := make([]bool, last-first)
+	for page := first; page < last; page++ {
+		wanted[page-first] = p.reserved[page-p.start] >= 0
+	}
+	data := make([]byte, (last-first)*ps)
+	unpublished, err := p.region.loadRun(ctx, first, wanted, data)
+	if err != nil {
+		return err
+	}
+	h.mu.Lock()
+	h.stats.Loads++
+	h.stats.LoadedPages += loading
+	h.mu.Unlock()
+	// A backing whose pages come from another host is told which of them this
+	// region went on to hold, so a page it served that the publish below
+	// dropped stays one only that host has.
+	var installed []bool
+	if len(unpublished) > 0 {
+		installed = make([]bool, last-first)
+	}
+	var failure error
+	for page := first; page < last; page++ {
+		at := page - first
+		if !wanted[at] {
+			continue
 		}
-		if uint64(len(buffer)) < run*uint64(ps) {
-			buffer = make([]byte, run*uint64(ps))
-		}
-		data := buffer[:run*uint64(ps)]
-		unpublished, err := p.region.loadWindow(ctx, page*uint64(ps), data)
-		if err != nil {
-			return err
-		}
-		h.mu.Lock()
-		h.stats.Loads++
-		h.stats.LoadedPages += run
-		h.mu.Unlock()
-		// A backing whose pages come from another host is told which of them
-		// this region went on to hold, so a page it served that the publish
-		// below dropped stays one only that host has.
-		var installed []bool
-		if len(unpublished) > 0 {
-			installed = make([]bool, run)
-		}
-		var failure error
-		for k := range run {
-			private := int(k) < len(unpublished) && unpublished[k]
-			if failure = p.publish(ctx, page+k, data[int(k)*ps:int(k+1)*ps], private); failure != nil {
-				break
-			}
-			if installed != nil {
-				installed[k] = p.private[page+k-p.start]
-			}
+		private := at < uint64(len(unpublished)) && unpublished[at]
+		if failure = p.publish(ctx, page, data[at*ps:(at+1)*ps], private); failure != nil {
+			break
 		}
 		if installed != nil {
-			p.region.installedUnpublished(page*uint64(ps), installed)
+			installed[at] = p.private[page-p.start]
 		}
-		if failure != nil {
-			return failure
-		}
-		page += run
 	}
-	return nil
+	if installed != nil {
+		p.region.installedUnpublished(first*ps, installed)
+	}
+	return failure
 }
 
 // publish creates the resident for a loaded page. A concurrent load of the

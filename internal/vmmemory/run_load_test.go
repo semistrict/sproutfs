@@ -33,10 +33,10 @@ const (
 	runCheckpoints = 3
 	// runVolume is the volume the window covers, whole.
 	runVolume = runWindow * checkpoint.PageSize4KiB
-	// windowSegmentReads is what one window costs in page table: one read of
-	// the segment that locates its pages, which a volume opened by itself has
-	// not read before.
-	windowSegmentReads = 1
+	// windowSegmentReads is what one fault costs in page table: nothing, because
+	// the segment locating the window's pages was read when the region attached
+	// and the index it was read into is the region's for the VM's life.
+	windowSegmentReads = 0
 )
 
 // objectReads counts the reads a store makes and the bytes they return, so a
@@ -165,11 +165,15 @@ func (b *publishedBacking) Verify(context.Context) error {
 }
 
 func (b *publishedBacking) Load(ctx context.Context, offset uint64, dst []byte) error {
+	return b.LoadPages(ctx, offset, dst, nil)
+}
+
+func (b *publishedBacking) LoadPages(ctx context.Context, offset uint64, dst []byte, wanted []bool) error {
 	b.mu.Lock()
 	b.loads = append(b.loads, [2]uint64{offset / checkpoint.PageSize4KiB,
 		uint64(len(dst)) / checkpoint.PageSize4KiB})
 	b.mu.Unlock()
-	return b.volume.store.Read(ctx, b.index, "ram", offset, dst)
+	return b.volume.store.ReadPages(ctx, b.index, "ram", offset, dst, wanted)
 }
 
 func (b *publishedBacking) Locate(ctx context.Context, offset, length uint64) ([]control.Extent, error) {
@@ -188,11 +192,11 @@ func (b *publishedBacking) recorded() [][2]uint64 {
 	return slices.Clone(b.loads)
 }
 
-// A fault brings its whole window in one read, and the pages the pager already
-// holds resident do not cut that read into pieces. The run is one ranged read
-// per part its pages lie in, plus the one read of the segment locating them, so
-// a window published by three checkpoints costs four reads whatever the guest
-// has already faulted in.
+// A fault brings its whole window in one read, and the pages the region already
+// holds — the ones its populate mapped because a sibling had made them resident
+// — do not cut that read into pieces. What is left of the run is one ranged
+// read per part its pages lie in, so a window published by three checkpoints
+// costs three reads however scattered through it the pages the region holds are.
 func TestAFaultOverResidentPagesIsOneLoadAndOneReadPerCheckpoint(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		published := newPublishedVolume(t, runCheckpoints)
@@ -211,8 +215,13 @@ func TestAFaultOverResidentPagesIsOneLoadAndOneReadPerCheckpoint(t *testing.T) {
 			access(t, s, sm, page, true)[0] = 0xaa
 		}
 
+		// The fork attaches and its populate maps exactly those pages, which is
+		// what leaves its first fault a window with holes in it.
 		fork := published.fork(t)
 		r, m := f.attach(fork)
+		if len(m.pages) != len(resident) {
+			t.Fatalf("the populate mapped %d pages, want the %d a sibling had made resident", len(m.pages), len(resident))
+		}
 		fork.reset()
 		published.reads.reset()
 		before, err := f.h.Stats(t.Context())
@@ -228,7 +237,7 @@ func TestAFaultOverResidentPagesIsOneLoadAndOneReadPerCheckpoint(t *testing.T) {
 		loads := fork.recorded()
 		reads, bytes := published.reads.count()
 		if len(loads) != 1 || loads[0] != [2]uint64{0, runWindow} {
-			t.Fatalf("one fault over %d pages of which %d were resident made %d loads (%v) and %d object reads of %d bytes, want one load of the whole window",
+			t.Fatalf("one fault over %d pages of which %d were already held made %d loads (%v) and %d object reads of %d bytes, want one load of the whole window",
 				runWindow, len(resident), len(loads), summarise(loads), reads, bytes)
 		}
 		if got := after.Loads - before.Loads; got != 1 {
@@ -237,11 +246,11 @@ func TestAFaultOverResidentPagesIsOneLoadAndOneReadPerCheckpoint(t *testing.T) {
 		if got, want := after.LoadedPages-before.LoadedPages, uint64(runWindow-len(resident)); got != want {
 			t.Fatalf("the fault loaded %d pages, want the %d the window did not already hold", got, want)
 		}
-		if got, want := after.IdentityHits-before.IdentityHits, uint64(len(resident)); got != want {
-			t.Fatalf("the fault mapped %d pages it already held, want %d", got, want)
+		if len(m.pages) != runWindow {
+			t.Fatalf("the fault left %d of the window's %d pages mapped", len(m.pages), runWindow)
 		}
 		if want := windowSegmentReads + runCheckpoints; reads != want {
-			t.Fatalf("the fault made %d object reads of %d bytes, want %d: one segment and one per checkpoint",
+			t.Fatalf("the fault made %d object reads of %d bytes, want %d: one per checkpoint that published the run",
 				reads, bytes, want)
 		}
 	})

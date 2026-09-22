@@ -454,6 +454,127 @@ func TestASecondReadOfARunThroughTheCacheCostsNoRequests(t *testing.T) {
 	})
 }
 
+// readPages is read of only the pages a mask marks. It reports the reads that
+// cost and asserts that the pages it asked for hold what was published and
+// that the bytes of every other page were left exactly as the caller had them.
+func (f *runFixture) readPages(t *testing.T, offset, length uint64, wanted []bool) (reads int, bytesRead int64) {
+	t.Helper()
+	index, err := f.store.Open(t.Context(), f.ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.counter.reset()
+	got := make([]byte, length)
+	for at := range got {
+		got[at] = 0xfe
+	}
+	if err := f.store.ReadPages(t.Context(), index, "ram", offset, got, wanted); err != nil {
+		t.Fatal(err)
+	}
+	published := f.model.want(offset, length)
+	for page := range uint64(len(wanted)) {
+		first := page * PageSize4KiB
+		stop := min(length, first+PageSize4KiB)
+		want := published[first:stop]
+		if !wanted[page] {
+			want = bytes.Repeat([]byte{0xfe}, int(stop-first))
+		}
+		if !bytes.Equal(got[first:stop], want) {
+			t.Fatalf("page %d of the read holds %#x..., want %#x...", page, got[first:first+8], want[:8])
+		}
+	}
+	lengths := f.counter.reads()
+	total := int64(0)
+	for _, at := range lengths {
+		total += at
+	}
+	return len(lengths), total
+}
+
+// wantedExcept marks every page of a run but the ones the caller already has.
+func wantedExcept(count uint64, held func(uint64) bool) []bool {
+	wanted := make([]bool, count)
+	for page := range count {
+		wanted[page] = !held(page)
+	}
+	return wanted
+}
+
+// A run asked for with pages left out of it costs what the run costs: the
+// members that are wanted still lie next to each other in their parts, and the
+// few the reader did not ask for are read through rather than split at, exactly
+// as the pages a later checkpoint rewrote in the middle of a run are. This is
+// what a pager's window is — a read-ahead run with the pages the region already
+// holds resident taken out.
+func TestARunAskedForWithPagesLeftOutIsOneRequestPerCheckpoint(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newRunFixture(t)
+		for remainder := range uint64(3) {
+			f.publish(t, 0x70+remainder, pagesOf(0, runPages, func(page uint64) bool {
+				return page%3 == remainder
+			}))
+		}
+		wanted := wantedExcept(runPages, func(page uint64) bool { return page%8 == 3 })
+		reads, read := f.readPages(t, 0, PageSize2MiB, wanted)
+		if want := segmentReads + 3; reads != want {
+			t.Fatalf("a run of %d pages from three checkpoints with every eighth left out cost %d reads of %d bytes, want %d",
+				runPages, reads, read, want)
+		}
+	})
+}
+
+// A stretch of a run nobody wants is large enough to split the request rather
+// than be read through, which is the same rule a hole the volume itself has
+// follows: the bytes between the two halves cost more than the round trip that
+// skips them.
+func TestALargeStretchOfARunNobodyWantsSplitsTheRequest(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newRunFixture(t)
+		f.publish(t, 0x81, pagesOf(0, runPages, nil))
+		wanted := wantedExcept(runPages, func(page uint64) bool { return page >= 100 && page < 200 })
+		reads, read := f.readPages(t, 0, PageSize2MiB, wanted)
+		if want := segmentReads + 2; reads != want {
+			t.Fatalf("a run with a hundred pages left out of its middle cost %d reads of %d bytes, want %d",
+				reads, read, want)
+		}
+		if want := int64((runPages - 100) * memberBytes); read < want || read > want+int64(defaultIndexTail) {
+			t.Fatalf("the read took %d bytes, want about the %d its %d members hold",
+				read, want, runPages-100)
+		}
+	})
+}
+
+// A range of which no page is wanted reads nothing at all: not the members, and
+// not the segment that would have located them.
+func TestARunNoPageOfWhichIsWantedCostsNothing(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newRunFixture(t)
+		f.publish(t, 0x82, pagesOf(0, runPages, nil))
+		reads, read := f.readPages(t, 0, PageSize2MiB, make([]bool, runPages))
+		if reads != 0 {
+			t.Fatalf("a run nobody wants cost %d reads of %d bytes, want none", reads, read)
+		}
+	})
+}
+
+// A mask that does not describe the range is refused rather than read against
+// the wrong pages.
+func TestAReadRefusesAMaskOfTheWrongLength(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newRunFixture(t)
+		f.publish(t, 0x83, pagesOf(0, runPages, nil))
+		index, err := f.store.Open(t.Context(), f.ref)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := make([]byte, PageSize2MiB)
+		if err := f.store.ReadPages(t.Context(), index, "ram", 0, got, make([]bool, runPages-1)); !errors.Is(err, ErrInvalidRange) {
+			t.Fatalf("a mask of %d pages over a run of %d was accepted with %v, want ErrInvalidRange",
+				runPages-1, runPages, err)
+		}
+	})
+}
+
 // Concurrent readers of one run each get the bytes that were published,
 // whatever requests the grouping shared between them.
 func TestConcurrentReadersOfOneRunAgreeOnItsBytes(t *testing.T) {

@@ -162,6 +162,24 @@ type PagedBacking interface {
 	PageSize() uint64
 }
 
+// SparseLoader is a Backing that can be asked for part of a range: the pages of
+// it a mask marks, leaving the bytes of every other page alone. *volume.Volume
+// is one.
+//
+// It is what makes a fault one read. A window is a run of pages of which the
+// ones this region already holds resident need no bytes, and a volume groups
+// the members it is asked for by the part they lie in, so a run with those
+// pages left out costs one ranged read per part it spans — where asking for
+// each stretch of the run separately costs a request per stretch, and the pages
+// a guest has already faulted in are what cut a window into stretches. A
+// backing that cannot leave a page out is read one stretch at a time.
+type SparseLoader interface {
+	// LoadPages fills the pages of [offset, offset+len(dst)) that wanted marks,
+	// one element per pager page of the range, and leaves the rest of dst as it
+	// was.
+	LoadPages(ctx context.Context, offset uint64, dst []byte, wanted []bool) error
+}
+
 // UnpublishedLoader is a Backing whose loads can return bytes its volume does
 // not hold. A migration destination's peer backing is one: the pages the source
 // host serves out of its own dirty pages are the guest's state since the

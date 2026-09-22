@@ -48,6 +48,39 @@ func (v *Volume) Load(ctx context.Context, offset uint64, dst []byte) error {
 	return v.Read(ctx, offset, dst)
 }
 
+// LoadPages is Load of only the pages of the range that wanted marks — one
+// element per page the range touches, or nil for every one of them — leaving
+// the bytes of every other page as the caller had them.
+//
+// It is one read whatever the mask leaves out, which is what a pager's window
+// is: a fault's read-ahead run with the pages the region already holds resident
+// taken out of it. Those pages cost neither a request nor bytes, and the rest
+// of the run is still grouped by the part it lies in, so the run costs what the
+// run costs rather than one request per stretch of it.
+func (v *Volume) LoadPages(ctx context.Context, offset uint64, dst []byte, wanted []bool) error {
+	if !validRange(v.size, offset, uint64(len(dst))) {
+		return ErrInvalidRange
+	}
+	if len(dst) == 0 {
+		return context.Cause(ctx)
+	}
+	size := v.geometry.PageSize
+	if wanted != nil && uint64(len(wanted)) != (offset+uint64(len(dst))-1)/size-offset/size+1 {
+		return ErrInvalidRange
+	}
+	if err := context.Cause(ctx); err != nil {
+		return err
+	}
+	current := v.vm.current.Load()
+	if current.err != nil {
+		return current.err
+	}
+	base := func(ctx context.Context, offset uint64, dst []byte, wanted []bool) error {
+		return current.base.readPages(ctx, v.name, offset, dst, wanted)
+	}
+	return readOverlayPages(ctx, base, current.overlays[v.ordinal], size, offset, dst, wanted)
+}
+
 // Write replaces one range in the VM's in-memory overlay and returns. It
 // contacts nothing and waits for nothing: the bytes become durable when the next
 // checkpoint publishes them, and are lost if this host dies first.

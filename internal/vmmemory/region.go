@@ -410,6 +410,65 @@ func (r *Region) loadWindow(ctx context.Context, offset uint64, dst []byte) ([]b
 	return unpublished, nil
 }
 
+// loadRun is one fault's whole backing read, taken outside the region lock: the
+// pages of [first, first+len(wanted)) that wanted marks, into dst, which covers
+// the run whole. The pages it leaves out are the ones this region already holds
+// — nothing is read for them and the bytes of dst they cover are untouched.
+//
+// A backing that can be asked for part of a range is asked once, so what the
+// run costs is what the volume makes of it. Every other backing is read one
+// stretch of wanted pages at a time, which is what a fault used to cost for
+// every backing: a request per stretch, and a window's resident pages are what
+// cut it into stretches.
+func (r *Region) loadRun(ctx context.Context, first uint64, wanted []bool, dst []byte) ([]bool, error) {
+	var unpublished []bool
+	err := r.withoutRegion(ctx, func() error {
+		var err error
+		unpublished, err = r.readRun(ctx, first, wanted, dst)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return unpublished, nil
+}
+
+func (r *Region) readRun(ctx context.Context, first uint64, wanted []bool, dst []byte) ([]bool, error) {
+	ps := r.host.pageSize
+	// A peer backing reports which pages the source still holds, which is a
+	// second answer per page; it is read stretch by stretch until it can give
+	// both at once.
+	if sparse, ok := r.backing.(SparseLoader); ok && !r.peer {
+		start := r.host.clock.Now()
+		err := sparse.LoadPages(ctx, first*ps, dst, wanted)
+		r.host.loadLatency.Observe(r.host.clock.Since(start))
+		return nil, err
+	}
+	var unpublished []bool
+	for at := 0; at < len(wanted); {
+		if !wanted[at] {
+			at++
+			continue
+		}
+		run := 1
+		for at+run < len(wanted) && wanted[at+run] {
+			run++
+		}
+		held, err := r.loadBacking(ctx, (first+uint64(at))*ps, dst[uint64(at)*ps:uint64(at+run)*ps])
+		if err != nil {
+			return nil, err
+		}
+		if len(held) > 0 {
+			if unpublished == nil {
+				unpublished = make([]bool, len(wanted))
+			}
+			copy(unpublished[at:], held)
+		}
+		at += run
+	}
+	return unpublished, nil
+}
+
 // readForCopy fills a store's private copy with the page's current bytes, and
 // reports whether those bytes are ones no checkpoint of this VM has. Bytes that
 // come from the backing are read outside the region lock; a resident page, a

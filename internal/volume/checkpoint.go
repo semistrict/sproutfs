@@ -140,6 +140,13 @@ func (c *Checkpoint) read(ctx context.Context, volume string, offset uint64, dst
 	return readOverlay(ctx, base, c.overlays[volume], offset, dst)
 }
 
+func (c *Checkpoint) readPages(ctx context.Context, volume string, offset uint64, dst []byte, wanted []bool) error {
+	base := func(ctx context.Context, offset uint64, dst []byte, wanted []bool) error {
+		return c.base.readPages(ctx, volume, offset, dst, wanted)
+	}
+	return readOverlayPages(ctx, base, c.overlays[volume], c.geometry[volume].PageSize, offset, dst, wanted)
+}
+
 func (c *Checkpoint) locate(ctx context.Context, volume string, offset, length uint64) ([]control.Extent, error) {
 	if _, found := c.sizes[volume]; !found {
 		return nil, ErrUnknownVolume

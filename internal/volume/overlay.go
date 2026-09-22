@@ -173,6 +173,65 @@ func readOverlay(ctx context.Context, base inherited, overlay *extentIndex, offs
 	return context.Cause(ctx)
 }
 
+// inheritedPages is inherited of only the pages a mask marks.
+type inheritedPages func(ctx context.Context, offset uint64, dst []byte, wanted []bool) error
+
+// readOverlayPages fills the pages of a range that wanted marks — one element
+// per page the range touches, or nil for every one of them — and leaves the
+// bytes of every other page as the caller had them.
+//
+// A masked read is page-wise where an unmasked one is byte-wise, because a mask
+// is per page: the inherited source is asked once for every wanted page the
+// overlay does not already hold whole, and the overlay is then laid over what
+// came back. So a window of pages costs one read of the source however many
+// pages of it the overlay holds, which is what a fault needs; the few bytes of
+// a page the overlay only partly covers are read and then overwritten.
+func readOverlayPages(ctx context.Context, base inheritedPages, overlay *extentIndex,
+	size, offset uint64, dst []byte, wanted []bool) error {
+	end := offset + uint64(len(dst))
+	if end == offset {
+		return context.Cause(ctx)
+	}
+	first := offset / size
+	held := make([]uint64, (end-1)/size-first+1)
+	pages := func(item extent, visit func(page, lo, hi uint64)) {
+		start, stop := max(item.start, offset), min(item.end, end)
+		for page := start / size; page <= (stop-1)/size; page++ {
+			visit(page, max(start, page*size), min(stop, (page+1)*size))
+		}
+	}
+	for item := range overlay.between(offset, end) {
+		pages(item, func(page, lo, hi uint64) { held[page-first] += hi - lo })
+	}
+	inherited := make([]bool, len(held))
+	asked := false
+	for at := range inherited {
+		page := first + uint64(at)
+		span := min(end, (page+1)*size) - max(offset, page*size)
+		inherited[at] = (wanted == nil || wanted[at]) && held[at] < span
+		asked = asked || inherited[at]
+	}
+	if asked {
+		if err := base(ctx, offset, dst, inherited); err != nil {
+			return err
+		}
+	}
+	for item := range overlay.between(offset, end) {
+		pages(item, func(page, lo, hi uint64) {
+			if wanted != nil && !wanted[page-first] {
+				return
+			}
+			target := dst[lo-offset : hi-offset]
+			if item.data == nil {
+				clear(target)
+				return
+			}
+			copy(target, item.data[lo-item.start:hi-item.start])
+		})
+	}
+	return context.Cause(ctx)
+}
+
 // coveredUnits yields the half-open run of units of the given size that each
 // extent of an overlay adds, skipping the units an earlier extent already
 // reported. Extents come in logical order, so the unit one run ends at carries
