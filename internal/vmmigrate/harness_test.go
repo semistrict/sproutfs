@@ -303,13 +303,16 @@ func newPager(t *testing.T, c *cluster, name string) *pager {
 // is the shared wrapper's, so this harness and the host's order their regions
 // against the scheduler the same way.
 type countingBacking struct {
-	*testbacking.Admitting
+	// attached is what the region maps: the shared wrapper, narrowed to the
+	// calls this volume's backing answers.
+	attached        vmmemory.Backing
 	loads, verifies atomic.Int64
 }
 
 func newCountingBacking(backing vmmemory.Backing, runtime *sim.Runtime, task string) *countingBacking {
-	counted := &countingBacking{Admitting: testbacking.New(backing, runtime, task)}
-	counted.Admitted = func(call string) {
+	attached, admitting := testbacking.New(backing, runtime, task)
+	counted := &countingBacking{attached: attached}
+	admitting.Admitted = func(call string) {
 		switch call {
 		case testbacking.Load:
 			counted.loads.Add(1)
@@ -397,7 +400,7 @@ func newMachine(t *testing.T, p *pager, vm *volume.VM, backings map[string]vmmem
 		counted := newCountingBacking(backing, p.runtime, vm.ID()+"/"+name)
 		mp := newMapping(p.arena)
 		region, err := p.host.Attach(sim.WithRuntime(t.Context(), p.runtime),
-			vmmemory.RegionBacking{Kind: regionKind(name), Backing: counted}, mp)
+			vmmemory.RegionBacking{Kind: regionKind(name), Backing: counted.attached}, mp)
 		if err != nil {
 			return nil, err
 		}

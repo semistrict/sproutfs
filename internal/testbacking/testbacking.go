@@ -34,11 +34,45 @@ type Admitting struct {
 	Admitted func(call string)
 }
 
-// New wraps backing. The task name must be unique among the tasks that run
-// concurrently with this one, which for a pager's regions means the VM and the
-// volume together.
-func New(backing vmmemory.Backing, runtime *sim.Runtime, task string) *Admitting {
-	return &Admitting{Backing: backing, runtime: runtime, task: task}
+// New wraps backing and reports the value to attach beside the wrapper itself,
+// which is where Admitted is set. The task name must be unique among the tasks
+// that run concurrently with this one, which for a pager's regions means the VM
+// and the volume together.
+//
+// The two results differ because a pager reads what a backing can do from the
+// methods it has: a backing whose pages can come from another host is attached
+// through a wrapper that reports them, one a fault can ask for part of a window
+// through a wrapper that forwards that, and an ordinary one through neither. A
+// single wrapper claiming everything would make every simulated volume look
+// like a migration destination's, and none of them look like a volume a fault
+// can ask for the window it needs.
+func New(backing vmmemory.Backing, runtime *sim.Runtime, task string) (vmmemory.Backing, *Admitting) {
+	admitting := &Admitting{Backing: backing, runtime: runtime, task: task}
+	switch backing.(type) {
+	case vmmemory.UnpublishedLoader:
+		return peerAdmitting{admitting}, admitting
+	case vmmemory.SparseLoader:
+		return sparseAdmitting{admitting}, admitting
+	}
+	return admitting, admitting
+}
+
+// peerAdmitting wraps a backing whose loads can return bytes its volume does
+// not hold, which is a migration destination's.
+type peerAdmitting struct{ *Admitting }
+
+// sparseAdmitting wraps a backing a fault can ask for part of a window, which
+// every volume is.
+type sparseAdmitting struct{ *Admitting }
+
+// LoadPages forwards the wrapped backing's masked window read, so a simulated
+// region's fault costs its volume what a real one's does.
+func (b sparseAdmitting) LoadPages(ctx context.Context, offset uint64, dst []byte, wanted []bool) error {
+	ctx, err := b.admit(ctx, Load)
+	if err != nil {
+		return err
+	}
+	return b.Backing.(vmmemory.SparseLoader).LoadPages(ctx, offset, dst, wanted)
 }
 
 func (b *Admitting) admit(ctx context.Context, call string) (context.Context, error) {
@@ -70,26 +104,26 @@ func (b *Admitting) Verify(ctx context.Context) error {
 
 // LoadUnpublished forwards the wrapped backing's report of which pages a
 // migration source served out of its own dirty pages, so a destination's
-// pager keeps them. A backing that does not track them is loaded plainly.
-func (b *Admitting) LoadUnpublished(ctx context.Context, offset uint64, dst []byte) ([]bool, error) {
-	tracked, ok := b.Backing.(vmmemory.UnpublishedLoader)
-	if !ok {
-		return nil, b.Load(ctx, offset, dst)
-	}
+// pager keeps them.
+func (b peerAdmitting) LoadUnpublished(ctx context.Context, offset uint64, dst []byte) ([]bool, error) {
 	ctx, err := b.admit(ctx, Load)
 	if err != nil {
 		return nil, err
 	}
-	return tracked.LoadUnpublished(ctx, offset, dst)
+	return b.Backing.(vmmemory.UnpublishedLoader).LoadUnpublished(ctx, offset, dst)
 }
 
 // InstalledUnpublished forwards the pager's report of which of those pages the
 // region went on to hold. It is admitted through nothing: it moves no bytes and
 // takes no lock, so there is no ordering here for a run to decide.
-func (b *Admitting) InstalledUnpublished(offset uint64, installed []bool) {
+func (b peerAdmitting) InstalledUnpublished(offset uint64, installed []bool) {
 	if held, ok := b.Backing.(vmmemory.UnpublishedInstaller); ok {
 		held.InstalledUnpublished(offset, installed)
 	}
 }
 
-var _ vmmemory.UnpublishedInstaller = (*Admitting)(nil)
+var (
+	_ vmmemory.UnpublishedLoader    = peerAdmitting{}
+	_ vmmemory.UnpublishedInstaller = peerAdmitting{}
+	_ vmmemory.SparseLoader         = sparseAdmitting{}
+)
