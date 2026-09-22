@@ -114,13 +114,26 @@ merge. It is three rules that hold all the time, and a budget behind them.
   with the most mappings private first. It is expected never to act, and a
   counter says when it has.
 
-`gap` is measured rather than chosen: the fan-out records how many changed pages
-each range holds but not where they are, so it gains the lengths of the private
-runs and of the gaps between them, and `gap` is set from the codex workload —
-the smallest value past which the mappings a fork holds stop falling. The
-unchanged-pages settle undoes what these rules copied and the guest never wrote:
-a page made private to close a gap or to fill a range has its origin like any
-other copy, and a settle that finds it unchanged hands it back — unless its
+**`gap` is 16 pages.** It was to be measured rather than chosen, and it now is.
+The fan-out records where a fork's private pages lie, not only how many each
+range holds: `fork_ram_geometry` carries, per region, the number of private
+runs, a histogram of their lengths, a histogram of the gaps between consecutive
+runs of one range, how many ranges hold a private page and how many are at least
+half private, in the fixed buckets 1, 4, 16, 64, 256 and 512 pages
+(`newPrivateGeometry` in `internal/vmmachine/bench_linux_test.go`). The
+2026-09-21 4 KiB smoke on the qualification instance recorded 1,979 gaps, of
+which 1,532 — 77 % — are 16 pages or fewer, and 19 of the 197 ranges a fork
+touched were already half private. Sixteen is therefore the bucket boundary at
+which three quarters of the alternations a fork holds stop being alternations,
+and it bounds the worst case at 17 times what a guest wrote, against 512 times
+at a 2 MiB page. Re-measure it by re-running the fan-out at 4 KiB and reading
+`fork_ram_geometry.gaps` out of the record: the right `gap` is the smallest
+bucket boundary past which the run count stops falling, and the buckets are
+carried in the record beside the counts so two runs compare directly.
+
+The unchanged-pages settle undoes what these rules copied and the guest never
+wrote: a page made private to close a gap or to fill a range has its origin like
+any other copy, and a settle that finds it unchanged hands it back — unless its
 range has been made whole, which a settle leaves whole.
 
 It is a step of its own, after step 4: the pager's placement and the three rules
@@ -131,6 +144,22 @@ stores, what a store copied, what a seal protected in how many commands — by t
 sharing gauges before and after, by the byte model in every campaign, and on GCE
 by the mappings, the protect commands and the pause of the codex workload with
 the rules on and off.
+
+**What has to change first, and was not known when this was written.** The
+placement rule needs an arena whose *offsets* are not its *pages*. A region's
+range that holds one private page owns 512 consecutive arena offsets, of which
+one holds memory, so the offsets a host's guests need are bounded by the ranges
+they have written into and not by the memory the arena may hold: at the
+deployment's 9 GiB RAM dirty budget the worst case is 2,359,296 extents, which
+is terabytes of offsets behind gigabytes of pages. Today the two are one number
+— `Config.ResidentPages` is both the arena's slot count and its capacity,
+`slots.Set` holds one bit per slot, `Host.residentLeases` is one entry per slot,
+the Linux arena's memfd is sized to it, and ATTACH states that size on the wire
+for the client to check. Decoupling them is the first piece of this step:
+the arena becomes a sparse offset space with a page budget enforced where it
+already is, in the resource lease `takeFree` acquires. Until that is done,
+rules 2 and 3 buy nothing on their own — a run of private pages is one mapping
+only if its arena slots are consecutive, which is what rule 1 is for.
 
 ## Why this change needs measurement
 
