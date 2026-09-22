@@ -282,6 +282,10 @@ func (r *Region) readInWindow(ctx context.Context, index uint64) (pg *resident, 
 		return nil, false, err
 	}
 	defer plan.unlock()
+	// The faulting page is the store's, so the plan leaves it bound to nothing
+	// and maps nothing for it; every other page of the window is this region's
+	// to hold and to map.
+	plan.store = index
 	if id, named := plan.identity(index); !named || id.zero() {
 		return nil, false, nil
 	}
@@ -320,6 +324,8 @@ func (r *Region) readInWindow(ctx context.Context, index uint64) (pg *resident, 
 		// decides again from the top, holding nothing.
 		return nil, true, nil
 	}
+	// Nothing is installed for the store's own page: its page tables are the
+	// copy's to install once the store holds it.
 	plan.fresh[index-start] = false
 	if _, err := plan.install(ctx); err != nil {
 		return nil, false, err
