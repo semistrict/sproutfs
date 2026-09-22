@@ -41,6 +41,20 @@ everything open is listed here.
 
 ## Measurement
 
+- **The two costs the 2026-09-22 GCE run measured are fixed in the simulation
+  and unmeasured on a host.** A store replaces the mapping it copied from rather
+  than revoking it first, so a copy-on-write — and a store that closes a gap or
+  fills a range — is one mapping command and no revocation, where that run's
+  three-fork `cargo test` fan-out spent 1,753 s on 5,450,465 revocations over
+  5,481,191 pages, about one per page the guests wrote. And a seal's pause is
+  its write-protect commands, with the walk that moves each page into the
+  checkpoint running behind it with the guest already going, where that run's
+  capture of 2,204,672 sealed pages paused 2.14 s for 0.18 s of commands. Both
+  are proved by exact counts in `internal/vmmemory` and by the campaigns; what
+  no run has yet said is what they are worth in seconds on a real host, which is
+  the same fan-out and the same capture re-taken (`revocations`, `revoked_pages`,
+  `pause_ns`, `seal_ns`, the new `seal_walk_ns`).
+
 - **RAM runs 4 KiB and PMEM 2 MiB, and what that costs is unmeasured.** The
   store, the pager, the wire and the VMM all carry each region's own page now.
   What the [page-geometry plan](../plans/ram-pmem-page-geometry-2026-09-19.md)
