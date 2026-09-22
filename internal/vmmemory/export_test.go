@@ -39,6 +39,15 @@ func SetSealSeam(t *testing.T, seam func()) {
 	t.Cleanup(func() { sealSeam = previous })
 }
 
+// SetPopulationRuns bounds the mapping runs one attach installs, so a test can
+// observe the bound without a region of production size. It is restored when
+// the test ends.
+func SetPopulationRuns(t *testing.T, runs int) {
+	previous := populationRuns
+	populationRuns = runs
+	t.Cleanup(func() { populationRuns = previous })
+}
+
 // Signal wakes every store waiting on the host, as any change to a page does.
 func Signal(h *Host) {
 	h.mu.Lock()

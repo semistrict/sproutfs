@@ -243,8 +243,11 @@ of its own and publishes nothing under it, so the identity it gives each of
 those pages belongs to every child of that point and to nothing else, ever,
 and the pager enters the pages in the sharing index under it. A child on the
 parent's host then maps them like any inherited page — the eager restore
-population included, so a machine forked at a point maps every page its
-parent has resident before its vCPUs run. The pages stay the parent's private
+population included, and whatever run they come in, so a machine forked at a
+point maps every page its parent holds dirty before its vCPUs run. The eager
+population's bound is the published pages' alone, because those a later fault
+can map from the same resident page and these it cannot: the name is gone by
+then. The pages stay the parent's private
 dirty state under the name: nothing is copied, nothing becomes durable, the
 parent still copies on write and still owns the reservation that spills them,
 and the name lasts exactly as long as the seal, whose bytes cannot change while
@@ -301,14 +304,27 @@ and 195 object reads where it is now one load and three. A backing that cannot
 be asked for part of a range, which a migration destination's peer backing is,
 is still read one stretch of wanted pages at a time.
 
-Attach populates every page whose identity is already resident in the same
-pager before the region is exposed, independently of the read-ahead size,
-loading nothing. The Rust session serves mapping commands after descriptor
-exchange and only then reports the region addresses to the VMM, so eager
-mappings finish before VMM setup uses those addresses and before any vCPU runs.
-This covers cold boot and snapshot load alike; a restore still returns paused.
-Pages absent from the arena keep the ordinary fault path. An explicit later
-population requires quiescent guest memory.
+Attach populates the pages whose identity is already resident in the same pager
+before the region is exposed, loading nothing. The Rust session serves mapping
+commands after descriptor exchange and only then reports the region addresses to
+the VMM, so eager mappings finish before VMM setup uses those addresses and
+before any vCPU runs. This covers cold boot and snapshot load alike; a restore
+still returns paused. Pages absent from the arena keep the ordinary fault path.
+An explicit later population requires quiescent guest memory.
+
+It is bounded, because a mapping run costs the same command whether or not the
+guest ever reads it and a page the populate leaves alone costs at most a share
+of one: the fault that reaches it maps its whole read-ahead window from the same
+resident pages. So a populate installs a published run only when it covers at
+least one read-ahead window, and at most 128 such runs in all. Neither explicit
+zeros nor the private pages a fork point names are counted against that: a hole
+is one run however many pages it covers, and a fork point's pages are the
+parent's dirty state under a name that ending the seal takes back, so the attach
+is the only moment a child can map them — and the parent's dirty budget bounds
+how many there are. Measured on GCE on 2026-09-22, an unbounded populate mapped
+2,930,747 sibling-resident pages of a 16 GiB guest in 21,698 runs before the
+guest ran, five seconds of a restore whose bound is half a second, after which
+the guest took 723 faults.
 
 A region the pager refuses is the one failure whose two halves sit on opposite
 sides of the socket. The VMM builds its sessions inside its own boot or load

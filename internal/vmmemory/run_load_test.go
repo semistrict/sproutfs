@@ -226,11 +226,13 @@ func newRunPager(t *testing.T) *fixture {
 }
 
 // residentWindow is the shape a fan-out leaves a child to fault into: a fork
-// whose first window already holds scattered pages of the run, because a
-// sibling fork inherited exactly those and has faulted them. The fork's own
-// populate maps them, which is what leaves its first fault a window with holes
-// in it. It reports the region, its mapping, its backing and the pages it
-// already holds, with the load and object-read counts reset to that moment.
+// whose first window is scattered with pages this pager already holds, because
+// a sibling fork inherited exactly those and has faulted them. They are what
+// leave its first fault a window with holes in it — the fault binds each of
+// them to the sibling's own page rather than reading it — and the attach maps
+// none of them, because runs of one page are not worth a mapping command each.
+// It reports the region, its mapping, its backing and the pages the pager
+// holds, with the load and object-read counts reset to that moment.
 func residentWindow(t *testing.T, f *fixture, published *publishedVolume) (*vmmemory.Region, *mapping, *publishedBacking, []uint64) {
 	t.Helper()
 	inherited := func(page uint64) bool { return page%8 == 3 }
@@ -248,8 +250,9 @@ func residentWindow(t *testing.T, f *fixture, published *publishedVolume) (*vmme
 	}
 	fork := published.fork(t)
 	r, m := f.attach(fork)
-	if len(m.pages) != len(resident) {
-		t.Fatalf("the populate mapped %d pages, want the %d a sibling had made resident", len(m.pages), len(resident))
+	if len(m.pages) != 0 {
+		t.Fatalf("the populate mapped %d pages, want none: a sibling holds them in runs of one",
+			len(m.pages))
 	}
 	fork.reset()
 	published.reads.reset()
@@ -364,9 +367,18 @@ func TestAStoreIntoAColdPageBringsItsWholeWindowIn(t *testing.T) {
 			t.Fatalf("the page the guest stored into holds %#x, want the byte it wrote", got)
 		}
 		// The window is in the sharing index, not this region's own: a third
-		// fork of the same checkpoint maps every page of it and reads nothing.
+		// fork of the same checkpoint takes every page of it and reads nothing.
+		// Its attach maps none of them — the sibling's pages and this fork's are
+		// interleaved in the arena, so no run of the window is a window long and
+		// none is worth a mapping command of its own — and its first fault takes
+		// the whole window out of the index.
 		third := published.fork(t)
-		_, om := f.attach(third)
+		tr, om := f.attach(third)
+		if len(om.pages) != 0 {
+			t.Fatalf("a third fork's attach mapped %d pages, want none: the window is in no run worth a command",
+				len(om.pages))
+		}
+		access(t, tr, om, 0, false)
 		if third.recorded() != nil || len(om.pages) != runWindow {
 			t.Fatalf("a third fork loaded %v and mapped %d of %d pages, want the whole window from the sharing index",
 				summarise(third.recorded()), len(om.pages), runWindow)

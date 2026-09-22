@@ -2,11 +2,14 @@ package vmmemory_test
 
 import (
 	"context"
+	"slices"
+	"sort"
 	"testing"
 	"testing/synctest"
 
 	"github.com/semistrict/sproutfs/internal/control"
 	"github.com/semistrict/sproutfs/internal/vmmemory"
+	"github.com/semistrict/sproutfs/internal/volume"
 )
 
 type delayedLocate struct {
@@ -129,6 +132,164 @@ func TestConcurrentPopulationsOfHeldPagesDoNotDeadlock(t *testing.T) {
 			if !firstOK || !secondOK || firstPage.slot != sm.pages[page].slot || secondPage.slot != sm.pages[page].slot {
 				t.Fatalf("page %d did not inherit the source page", page)
 			}
+		}
+	})
+}
+
+// carved attaches a region of pages whose identities match the sibling's
+// everywhere but the given pages, which are this backing's own unpublished
+// state: a page the sibling cannot hold, so it breaks the sibling's residency
+// into runs of exactly the lengths the test asks for.
+func (f *fixture) carved(pages int, private ...uint64) (*vmmemory.Region, *mapping, *backing) {
+	f.t.Helper()
+	b := f.newBacking(pages)
+	for _, page := range private {
+		b.private[page] = true
+	}
+	r, m := f.attach(b)
+	return r, m, b
+}
+
+// mappedPages reports the pages this mapping holds, in order.
+func (m *mapping) mappedPages() []uint64 {
+	pages := make([]uint64, 0, len(m.pages))
+	for page := range m.pages {
+		pages = append(pages, page)
+	}
+	sort.Slice(pages, func(i, j int) bool { return pages[i] < pages[j] })
+	return pages
+}
+
+// pageRange is the pages [first, last), which is what a test says a populate
+// installed.
+func pageRange(first, last uint64) []uint64 {
+	pages := make([]uint64, 0, last-first)
+	for page := first; page < last; page++ {
+		pages = append(pages, page)
+	}
+	return pages
+}
+
+// A populate run costs one mapping command whether or not the guest ever reads
+// the pages it covers. A run shorter than one read-ahead window saves at most
+// the one fault that would have mapped the same pages with the same single
+// command, and only if the guest touches them, so it is never worth installing.
+func TestPopulationSkipsRunsShorterThanTheWindowTheyWouldSave(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 40, LogicalPages: 96, DirtyPages: 8, ReadAheadPages: 4})
+		source, sm, _ := f.region(32)
+		for page := range uint64(32) {
+			access(t, source, sm, page, false)
+		}
+		// The sibling holds all thirty-two pages in slots of its own page
+		// number. The carve leaves runs of 6, then five single pages, then 15.
+		_, m, b := f.carved(32, 6, 8, 10, 12, 14, 16)
+		if m.maps != 2 {
+			t.Fatalf("the populate installed %d mapping runs, want the 2 runs of at least one 4-page window", m.maps)
+		}
+		want := append(pageRange(0, 6), pageRange(17, 32)...)
+		if got := m.mappedPages(); !slices.Equal(got, want) {
+			t.Fatalf("the populate mapped %v, want %v", got, want)
+		}
+		for _, page := range want {
+			if m.pages[page].slot != int(page) {
+				t.Fatalf("page %d mapped slot %d, want the sibling's slot %d", page, m.pages[page].slot, page)
+			}
+		}
+		if b.loads != 0 {
+			t.Fatalf("the populate read the backing %d times, want none", b.loads)
+		}
+	})
+}
+
+// What the populate leaves is left to the fault path, which maps a whole
+// read-ahead window from the sibling's own pages with one command and no read.
+// The bound is a fixed number of mapping runs before the guest runs, whatever
+// the sibling holds.
+func TestPopulationSpendsABoundedNumberOfRunsAndLeavesTheRestToFaults(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		vmmemory.SetPopulationRuns(t, 2)
+		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 40, LogicalPages: 96, DirtyPages: 8, ReadAheadPages: 4})
+		source, sm, _ := f.region(32)
+		for page := range uint64(32) {
+			access(t, source, sm, page, false)
+		}
+		// Three runs are worth installing — 8, 7 and 15 pages — and the budget
+		// pays for two of them.
+		r, m, b := f.carved(32, 8, 16)
+		if m.maps != 2 {
+			t.Fatalf("the populate installed %d mapping runs, want the 2 its budget admits", m.maps)
+		}
+		want := append(pageRange(0, 8), pageRange(9, 16)...)
+		if got := m.mappedPages(); !slices.Equal(got, want) {
+			t.Fatalf("the populate mapped %v, want %v", got, want)
+		}
+		// The guest's first touch of the stretch the budget did not reach costs
+		// one command for the whole window, and no read: the sibling holds it.
+		if err := r.Fault(t.Context(), 20, false); err != nil {
+			t.Fatal(err)
+		}
+		if m.maps != 3 {
+			t.Fatalf("the first touch beyond the populate took %d mapping runs in all, want 3", m.maps)
+		}
+		if got := m.mappedPages(); !slices.Equal(got, append(want, pageRange(20, 24)...)) {
+			t.Fatalf("the fault mapped %v, want its whole 4-page window", got)
+		}
+		if b.loads != 0 {
+			t.Fatalf("a warm fault read the backing %d times, want none", b.loads)
+		}
+	})
+}
+
+// A private page a fork point names is populated whatever its run is. The
+// parent's dirty state is shared under a name that ending the seal takes back,
+// so the attach is the only moment a child can map it; a fault arriving later
+// would read the bytes back out of the child's own first checkpoint. Here the
+// point's two pages are a run a quarter of the read-ahead window.
+func TestPopulationTakesAForkPointsPagesWhateverTheirRun(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		c := newPagerCluster(t)
+		source := c.create(t, "source", 8)
+		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 16, LogicalPages: 48, DirtyPages: 8, ReadAheadPages: 8})
+		r, m := f.attach(source.Volume("ram0"))
+		for _, page := range []uint64{1, 2} {
+			access(t, r, m, page, true)[0] = 44
+		}
+		if err := r.Seal(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		point, err := source.ForkPoint(t.Context(),
+			volume.Prepared([]byte("vmm"), map[string]volume.DirtySource{"ram0": r.Checkpoint()}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := point.Share(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		vm, err := c.manager.Fork(t.Context(), "child", point)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = vm.Close(context.Background()) })
+		before, _ := f.h.Stats(t.Context())
+		child, cm := f.attach(vm.Volume("ram0"))
+		for _, page := range []uint64{1, 2} {
+			if cm.pages[page].slot != m.pages[page].slot {
+				t.Fatalf("page %d mapped slot %d at attach, want the parent's own %d",
+					page, cm.pages[page].slot, m.pages[page].slot)
+			}
+			if access(t, child, cm, page, false)[0] != 44 {
+				t.Fatalf("the child lost the sealed bytes of page %d", page)
+			}
+		}
+		after, _ := f.h.Stats(t.Context())
+		if after.Loads != before.Loads {
+			t.Fatalf("the child read %d pages back that the point held",
+				after.LoadedPages-before.LoadedPages)
+		}
+		if after.IdentityHits-before.IdentityHits != 2 {
+			t.Fatalf("the child mapped %d pages by identity, want the point's 2",
+				after.IdentityHits-before.IdentityHits)
 		}
 	})
 }

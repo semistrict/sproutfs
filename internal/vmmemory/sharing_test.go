@@ -165,7 +165,14 @@ func TestAStoreReadsAheadOnlyIntoFreeSlots(t *testing.T) {
 	})
 }
 
-func TestPopulateMapsEverythingResidentBeforeTheMachineRuns(t *testing.T) {
+// The populate maps the resident runs that are worth a mapping command each —
+// at least one read-ahead window long — and leaves the shorter ones to the
+// faults that would cost the same command and only for the pages the guest
+// reads. A run is the pages consecutive in both the region and the arena, which
+// is neither the window nor the order they were read in: pages 0 to 7 are two
+// such runs and are installed, while pages 8 and 9 are a run of two and the
+// sibling's own page 10 leaves page 11 a run of one, and neither is.
+func TestPopulateMapsEveryResidentRunWorthItsCommandBeforeTheMachineRuns(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 16, LogicalPages: 64, DirtyPages: 16, ReadAheadPages: 4})
 		a, am, _ := f.region(12)
@@ -181,7 +188,7 @@ func TestPopulateMapsEverythingResidentBeforeTheMachineRuns(t *testing.T) {
 		bb.private[10] = true // the sibling changed this page itself
 		b, bm := f.attach(bb)
 		want := map[uint64]bool{0: true, 1: true, 2: true, 3: true, 4: true, 5: true,
-			6: true, 7: true, 8: true, 9: true, 11: true}
+			6: true, 7: true}
 		for page := range uint64(12) {
 			_, mapped := bm.pages[page]
 			if mapped != want[page] {
@@ -195,14 +202,16 @@ func TestPopulateMapsEverythingResidentBeforeTheMachineRuns(t *testing.T) {
 					page, bm.pages[page].slot, am.pages[page].slot)
 			}
 		}
-		if bb.loads != 0 || bm.maps != 4 {
-			t.Fatalf("populate loaded %d times and issued %d commands; want 0 loads, 4 range commands", bb.loads, bm.maps)
+		if bb.loads != 0 || bm.maps != 2 {
+			t.Fatalf("populate loaded %d times and issued %d commands; want 0 loads, 2 range commands", bb.loads, bm.maps)
 		}
 		for page := range uint64(12) {
 			if got := access(t, b, bm, page, false)[0]; got != byte(page+1) {
 				t.Fatalf("page %d holds %d", page, got)
 			}
 		}
+		// Eight hits at the populate, and three more from the fault that mapped
+		// the short runs it left behind when the guest reached them.
 		stats, err := f.h.Stats(t.Context())
 		if err != nil || stats.IdentityHits != 11 {
 			t.Fatalf("stats: %+v %v", stats, err)
