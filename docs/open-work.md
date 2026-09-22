@@ -51,7 +51,14 @@ everything open is listed here.
   but in the simulation: a cold 2 MiB read-ahead run of 512 RAM pages is two
   object-store requests where it was 513, and what that is worth against the
   169 s a GCE restore of a 16 GiB guest took on 2026-09-21 is unmeasured on a
-  real store.
+  real store. The fan-out on 2026-09-22 showed why a restore's numbers did not
+  carry: a restore's windows are whole, and a fork's are not — 8,660 loads
+  brought 31,867 pages, 3.7 pages a load, against 16 on the same run's cold
+  restore, because the pager split its window at every page it already held.
+  That is fixed and counted as a unit (a 512-page window over three checkpoints
+  with 64 pages resident: 65 loads and 195 GETs, against one load and three),
+  and the GCE fan-out has not been re-run: first output within 2 s is still
+  unmet as far as this repository knows.
 - **Compaction reads the pages it rescues one at a time.** A read of a range of
   a volume now fetches a run of members as one ranged read per extent, but
   compaction walks a segment's pages and calls `Store.loadPage` for each one it

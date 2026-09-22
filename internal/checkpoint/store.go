@@ -449,6 +449,22 @@ func (s *Store) ReadState(ctx context.Context, index *Index) ([]byte, error) {
 // member reads as zeroes and costs no request at all. On error dst may be
 // partially filled.
 func (s *Store) Read(ctx context.Context, index *Index, volume string, offset uint64, dst []byte) error {
+	return s.ReadPages(ctx, index, volume, offset, dst, nil)
+}
+
+// ReadPages is Read of only the pages of the range that wanted marks — one
+// element per page the range touches, or nil for every one of them. The bytes
+// of a page nothing wants are left as the caller had them and cost neither a
+// request nor a segment lookup, and the pages that are wanted are still grouped
+// into as few ranged reads as the layout allows: a hole in the middle of a run
+// is read through where reading through it is cheaper than a second round trip,
+// exactly as a hole the volume itself has is.
+//
+// That is what a pager's window read is. A fault's window is one run of pages
+// of which the ones the region already holds resident need no bytes, and asking
+// for the run with those pages left out costs what the run costs — where asking
+// for each stretch of it separately costs a request per stretch.
+func (s *Store) ReadPages(ctx context.Context, index *Index, volume string, offset uint64, dst []byte, wanted []bool) error {
 	table := index.volumes[volume]
 	if table == nil {
 		return ErrUnknownVolume
@@ -457,12 +473,19 @@ func (s *Store) Read(ctx context.Context, index *Index, volume string, offset ui
 	if offset > table.size || length > table.size-offset {
 		return ErrInvalidRange
 	}
+	if length == 0 {
+		return context.Cause(ctx)
+	}
+	first := table.geometry.PageOf(offset)
+	if wanted != nil && uint64(len(wanted)) != table.geometry.PageOf(offset+length-1)-first+1 {
+		return ErrInvalidRange
+	}
 	if err := context.Cause(ctx); err != nil {
 		return err
 	}
 	for cursor := offset; cursor < offset+length; {
 		limit := min(offset+length, runLimit(table.geometry, cursor))
-		run, err := s.resolveRun(ctx, index, volume, cursor, dst[cursor-offset:limit-offset])
+		run, err := s.resolveRun(ctx, index, volume, cursor, dst[cursor-offset:limit-offset], wanted, first)
 		if err != nil {
 			return err
 		}
@@ -479,8 +502,12 @@ func (s *Store) Read(ctx context.Context, index *Index, volume string, offset ui
 // resolveRun reports where the bytes of every page of a range live, filling the
 // pages that have no member with zeroes as it goes. One segment is held across
 // the pages it locates, so a run costs one lookup of each segment it crosses
-// rather than one per page.
-func (s *Store) resolveRun(ctx context.Context, index *Index, volume string, offset uint64, dst []byte) ([]pageRead, error) {
+// rather than one per page. A page wanted does not mark is skipped whole: its
+// bytes are the caller's and its segment is never looked up. first is the page
+// wanted is indexed from, which is the first page of the whole read and not of
+// this run.
+func (s *Store) resolveRun(ctx context.Context, index *Index, volume string, offset uint64, dst []byte,
+	wanted []bool, first uint64) ([]pageRead, error) {
 	table := index.volumes[volume]
 	geometry := table.geometry
 	end := offset + uint64(len(dst))
@@ -491,6 +518,10 @@ func (s *Store) resolveRun(ctx context.Context, index *Index, volume string, off
 		number := geometry.PageOf(cursor)
 		start, span := geometry.PageSpan(table.size, number)
 		limit := min(end, start+span)
+		if wanted != nil && !wanted[number-first] {
+			cursor = limit
+			continue
+		}
 		if held == nil || current != geometry.SegmentOf(number) {
 			loaded, err := index.segmentAt(ctx, volume, geometry.SegmentOf(number))
 			if err != nil {

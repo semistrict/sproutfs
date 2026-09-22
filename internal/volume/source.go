@@ -13,6 +13,13 @@ import (
 type source interface {
 	// read fills dst from a volume of this source.
 	read(ctx context.Context, volume string, offset uint64, dst []byte) error
+	// readPages is read of only the pages of the range that wanted marks — one
+	// element per page the range touches, or nil for every one of them —
+	// leaving the bytes of every other page as the caller had them. It is what
+	// a pager's window read is: the pages the region already holds resident
+	// need no bytes, and the run is still fetched as one, so what it costs is
+	// what the run costs rather than one request per stretch of it.
+	readPages(ctx context.Context, volume string, offset uint64, dst []byte, wanted []bool) error
 	// locate reports where the current bytes of a range live. It may fetch the
 	// segments of the checkpoint index a range falls in, which is why it takes
 	// a context; nothing on this path reads a page.
@@ -27,6 +34,10 @@ type indexSource struct {
 
 func (s indexSource) read(ctx context.Context, volume string, offset uint64, dst []byte) error {
 	return s.store.Read(ctx, s.index, volume, offset, dst)
+}
+
+func (s indexSource) readPages(ctx context.Context, volume string, offset uint64, dst []byte, wanted []bool) error {
+	return s.store.ReadPages(ctx, s.index, volume, offset, dst, wanted)
 }
 
 func (s indexSource) locate(ctx context.Context, volume string, offset, length uint64) ([]control.Extent, error) {

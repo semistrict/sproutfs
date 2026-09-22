@@ -16,6 +16,12 @@ import (
 	"github.com/semistrict/sproutfs/internal/volume"
 )
 
+// A volume is a backing a fault can ask for the window it needs, with the pages
+// its region already holds left out. It is asserted here because this is where
+// the two packages meet: a volume that stopped being one would cost every fault
+// a request per stretch of its window and nothing would fail.
+var _ vmmemory.SparseLoader = (*volume.Volume)(nil)
+
 // stateBytes is the simulated VMM state a migration carries: the guest's
 // current value and how many stores it has made. A destination that restored it
 // continues exactly where the source stopped, and one that lost it says so.
@@ -305,8 +311,8 @@ func (w *World) newGuest(h *hostState, p *pager, vm *volume.VM, backings map[str
 		}
 		pager := p.pagers.For(kind)
 		mp := newMapping(p.arenaOf(kind))
-		region, err := pager.Attach(ctx, vmmemory.RegionBacking{Kind: kind,
-			Backing: testbacking.New(backing, p.runtime, g.id+"/"+name)}, mp)
+		admitted, _ := testbacking.New(backing, p.runtime, g.id+"/"+name)
+		region, err := pager.Attach(ctx, vmmemory.RegionBacking{Kind: kind, Backing: admitted}, mp)
 		if err != nil {
 			return nil, err
 		}

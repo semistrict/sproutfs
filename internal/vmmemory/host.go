@@ -69,10 +69,13 @@ type Host struct {
 	logical     int
 	dirty       int
 	changed     chan struct{}
-	io          chan struct{}
-	writeback   chan struct{}
-	err         error
-	stats       Stats
+	// windows lends out the buffers window reads fill, as *[]byte so that
+	// handing one back allocates nothing. See takeWindow.
+	windows   sync.Pool
+	io        chan struct{}
+	writeback chan struct{}
+	err       error
+	stats     Stats
 	// The UFFD reader increments these outside the metadata lock: an idle
 	// descriptor read must not contend with page transitions.
 	uffdReads   atomic.Uint64
@@ -275,6 +278,30 @@ func (h *Host) locked(ctx context.Context, b *binding, fn func(pg *resident) err
 	h.unlock(pg)
 	return err
 }
+
+// takeWindow lends a fault the bytes its window read fills, of the given pages
+// of this pager. A window read covers the whole span of the pages it is
+// fetching, holes and all, so a fault that wants two pages at opposite ends of
+// a 2 MiB run still fills a 2 MiB buffer — and allocating one per fault is
+// megabytes of garbage per guest page fault. A fault holds one only while its
+// read runs, and an I/O permit for the whole of that, so what these cost a host
+// at once is ConcurrentIO windows, which is the bound that permit already
+// states. They come back dirty: only the pages a read asked for are ever taken
+// out of one.
+func (h *Host) takeWindow(pages uint64) *[]byte {
+	size := pages * h.pageSize
+	if held, ok := h.windows.Get().(*[]byte); ok {
+		if uint64(cap(*held)) >= size {
+			*held = (*held)[:size]
+			return held
+		}
+		h.windows.Put(held)
+	}
+	buffer := make([]byte, max(size, uint64(h.cfg.ReadAheadPages)*h.pageSize))[:size]
+	return &buffer
+}
+
+func (h *Host) putWindow(buffer *[]byte) { h.windows.Put(buffer) }
 
 func (h *Host) beginIO(ctx context.Context) error {
 	select {

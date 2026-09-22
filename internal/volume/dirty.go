@@ -155,6 +155,61 @@ func (s sealedSource) read(ctx context.Context, volume string, offset uint64, ds
 	return context.Cause(ctx)
 }
 
+// readPages fills the wanted pages the seal holds out of this host's own memory
+// and asks the inherited checkpoint for every other wanted page in one read, so
+// a pager's window costs what the run costs however many pages of it the seal
+// took.
+func (s sealedSource) readPages(ctx context.Context, volume string, offset uint64, dst []byte, wanted []bool) error {
+	src := s.sources[volume]
+	if src == nil {
+		return s.parent.readPages(ctx, volume, offset, dst, wanted)
+	}
+	size := s.geometry[volume].PageSize
+	held := s.pages[volume]
+	end := offset + uint64(len(dst))
+	first := offset / size
+	inherited := make([]bool, (end-1)/size-first+1)
+	asked := false
+	for at := range inherited {
+		inherited[at] = (wanted == nil || wanted[at]) && !held[first+uint64(at)]
+		asked = asked || inherited[at]
+	}
+	if asked {
+		if err := s.parent.readPages(ctx, volume, offset, dst, inherited); err != nil {
+			return err
+		}
+	}
+	var page []byte
+	for cursor := offset; cursor < end; {
+		number := cursor / size
+		stop := min(end, (number+1)*size)
+		if !held[number] || (wanted != nil && !wanted[number-first]) {
+			cursor = stop
+			continue
+		}
+		target := dst[cursor-offset : stop-offset]
+		if uint64(len(target)) == size {
+			// A publication reads whole aligned pages, and the pager fills them
+			// where they are wanted: no staging buffer, and nothing of one page
+			// held while the next is read.
+			if err := src.ReadDirty(ctx, number, target); err != nil {
+				return err
+			}
+			cursor = stop
+			continue
+		}
+		if page == nil {
+			page = make([]byte, size)
+		}
+		if err := src.ReadDirty(ctx, number, page); err != nil {
+			return err
+		}
+		copy(target, page[cursor-number*size:stop-number*size])
+		cursor = stop
+	}
+	return context.Cause(ctx)
+}
+
 // locate reports the sealed pages under the reference of the checkpoint that
 // publishes them, and everything else under the identity the inherited
 // checkpoint gives it. Every reported extent lies inside one page, which is

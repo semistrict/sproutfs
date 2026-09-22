@@ -280,13 +280,26 @@ periodic verification.
 
 A read fault serves its whole aligned read-ahead run, one pager page by
 default, when it can: pages already resident under the same page identity
-are mapped without any read, and the rest are loaded with one backing read per
-contiguous run into consecutive arena slots and installed as one mapping
+are mapped without any read, and the rest are loaded with **one backing read for
+the window** into consecutive arena slots and installed as one mapping
 command, with their page tables pre-installed to avoid missing-page faults
 while those mappings remain valid. Read-ahead uses only free slots and never
 evicts; only the faulting page itself may. Eviction can later revoke a mapping
 and require a refault. The read-ahead run is the host's, and every region of a
 host uses it.
+
+That one read asks for the pages of the window that need bytes and leaves out
+the ones the region already holds — `vmmemory.SparseLoader`, which
+`volume.Volume` is — rather than splitting itself at them. A window is a run of
+a volume and what a run costs is the volume's to decide: the pages that are
+wanted are still grouped by the part their members lie in, one ranged read each,
+and a few pages a reader leaves out in the middle of a run are read through
+exactly as the pages a later checkpoint rewrote there are. Splitting the read
+instead put that decision in the pager and cost a request per stretch — a
+512-page window with 64 pages scattered through it already resident was 65 loads
+and 195 object reads where it is now one load and three. A backing that cannot
+be asked for part of a range, which a migration destination's peer backing is,
+is still read one stretch of wanted pages at a time.
 
 Attach populates every page whose identity is already resident in the same
 pager before the region is exposed, independently of the read-ahead size,
