@@ -187,12 +187,25 @@ func (s *served) unpublishedDialing(t *testing.T, name string, runs []vmmigrate.
 	return s.unpublishedAt(t, sourceAddress, name, runs, dial)
 }
 
-func (s *served) unpublishedAt(t *testing.T, address platform.Address, name string,
-	runs []vmmigrate.PageRun, dial vmmigrate.Dialer) *vmmigrate.PeerBacking {
+// unpublishedSince is a migration's backing: the same VM, whose handoff selected
+// the checkpoint at that sequence, so this VM's own checkpoints up to there
+// predate the pages the handoff names.
+func (s *served) unpublishedSince(t *testing.T, name string, runs []vmmigrate.PageRun,
+	selected uint64) *vmmigrate.PeerBacking {
 	t.Helper()
+	return s.unpublishedAt(t, sourceAddress, name, runs, s.migration.cluster.dialer("dest"), selected)
+}
+
+func (s *served) unpublishedAt(t *testing.T, address platform.Address, name string,
+	runs []vmmigrate.PageRun, dial vmmigrate.Dialer, selected ...uint64) *vmmigrate.PeerBacking {
+	t.Helper()
+	chosen := uint64(0)
+	if len(selected) == 1 {
+		chosen = selected[0]
+	}
 	backing, err := vmmigrate.NewPeerBacking(vmmigrate.PeerConfig{Volume: s.vm.Volume(name),
 		Peer: address, VM: "vm-2", PageSize: pageSize, MaxPagesPerRequest: 8,
-		Unpublished: runs, Dial: dial})
+		Unpublished: runs, Selected: chosen, Dial: dial})
 	if err != nil {
 		t.Fatal(err)
 	}
