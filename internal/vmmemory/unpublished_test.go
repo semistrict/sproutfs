@@ -97,7 +97,13 @@ func (b *peerBacking) Locate(ctx context.Context, offset, length uint64) ([]cont
 			page := cursor / size
 			stop := min(end, (page+1)*size)
 			next := control.Extent{Offset: cursor, Length: stop - cursor}
-			if !b.unpublished[page] {
+			// A page of the handoff's set is reported as this region's own for
+			// exactly as long as no checkpoint of this VM holds it. Once one
+			// does — the identity names this backing's own reference — the
+			// volume's answer is the truth about where the page's bytes are,
+			// and going on stripping it would tell the pager a page it has just
+			// published has no object. See PeerBacking.Locate.
+			if !b.unpublished[page] || extent.Identity.Ref.VM == b.owner {
 				next.Identity = extent.Identity
 			}
 			if n := len(result); n > 0 && result[n-1].Identity == next.Identity && result[n-1].Offset+result[n-1].Length == next.Offset {

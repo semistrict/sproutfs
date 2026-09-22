@@ -337,16 +337,43 @@ func (r *Region) publishLocked(ctx context.Context, b *binding, pg *resident, id
 		return nil
 	}
 	note(r, b.index, "publish-dropped "+publishReason(stored, id, h, pg), pg.slot, -1)
-	// A page the volume holds no object for is a page whose bytes the volume
-	// reproduces without one, which is to say zeros. Dropping any other page
-	// here takes bytes away from a guest that wrote them.
-	if found := h.probe.droppable(ctx, h, pg, stored, id); found != "" {
-		panic(found)
+	if err := h.droppable(ctx, b, pg, stored, id); err != nil {
+		return err
 	}
 	if err := h.revoke(ctx, b); err != nil {
 		return err
 	}
 	return h.unlink(ctx, b, pg)
+}
+
+// ErrUndroppable reports a retire that would have given up the only copy of
+// bytes a guest wrote. It fails the retire rather than the VM: the checkpoint is
+// durable either way, the page stays sealed and the guest keeps its memory, and
+// the pager reports why its pages are still sealed.
+var ErrUndroppable = errors.New("a page the volume holds no object for is not zeros")
+
+// droppable refuses the one thing a retire may not get wrong. A page given up
+// here because the volume holds no object for it is a page the volume must be
+// able to reproduce without one, and the only such page is zeros: a publication
+// writes an all-zero page as a sparse hole and the volume reads it back as
+// zeros. A page with anything else in it holds bytes that exist nowhere but
+// here, so dropping it would hand the guest an older version of memory it wrote.
+//
+// It reads the page, which is why it runs only where a page is about to be
+// dropped rather than on every retire: that is a handful of pages per
+// checkpoint, against every page the checkpoint holds.
+func (h *Host) droppable(ctx context.Context, b *binding, pg *resident, stored bool, id pageKey) error {
+	if (stored && !id.zero()) || pg == nil || pg.slot < 0 {
+		return nil
+	}
+	data := make([]byte, h.pageSize)
+	if err := h.arena.Read(ctx, pg.slot, data); err != nil {
+		return err
+	}
+	if allZero(data) {
+		return nil
+	}
+	return fmt.Errorf("%w: page %d of %s", ErrUndroppable, b.index, b.region.kind)
 }
 
 // share names a private page in the sharing index without ending its privacy:

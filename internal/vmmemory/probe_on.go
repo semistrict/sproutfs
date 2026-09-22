@@ -353,28 +353,3 @@ func publishReason(stored bool, id pageKey, h *Host, pg *resident) string {
 	return fmt.Sprintf("identity %+v is already held by slot %d, and this page is slot %d",
 		id.id, existing.slot, pg.slot)
 }
-
-// droppable checks the one thing a retire may not get wrong: a page it gives up
-// because the volume holds no object for it must be a page the volume can
-// reproduce without one, and the only such page is zeros. A page with bytes in
-// it dropped here is a write the guest made and will not get back.
-func (p *probeState) droppable(ctx context.Context, h *Host, pg *resident, stored bool, id pageKey) string {
-	if stored && !id.zero() {
-		return ""
-	}
-	if pg == nil || pg.slot < 0 {
-		return ""
-	}
-	buf := make([]byte, h.pageSize)
-	if err := h.arena.Read(ctx, pg.slot, buf); err != nil {
-		return ""
-	}
-	for at, b := range buf {
-		if b != 0 {
-			return fmt.Sprintf("probe droppable: a page the volume holds no object for is being dropped "+
-				"from slot %d, and byte %d of it is %#x — the guest wrote bytes the volume does not have",
-				pg.slot, at, b)
-		}
-	}
-	return ""
-}

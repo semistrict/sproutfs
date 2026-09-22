@@ -27,5 +27,3 @@ func Ring(*Region, uint64, uint64) []string { return nil }
 func caller() string { return "" }
 
 func publishReason(bool, pageKey, *Host, *resident) string { return "" }
-
-func (probeState) droppable(context.Context, *Host, *resident, bool, pageKey) string { return "" }

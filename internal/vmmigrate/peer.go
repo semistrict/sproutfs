@@ -130,7 +130,9 @@ type PeerStats struct {
 type PeerBacking struct {
 	config PeerConfig
 	// unpublished is the handoff's set as a lookup, fixed for this backing's
-	// life: the guest was stopped when it was taken.
+	// life: the guest was stopped when it was taken. What it decides is not
+	// fixed — a page of it stops being reported as this region's own once a
+	// checkpoint of this VM holds it, which Locate reads off the volume.
 	unpublished map[uint64]bool
 
 	// source is the host that still holds these pages, and the connections this
@@ -230,11 +232,22 @@ func (b *PeerBacking) Size() uint64 { return b.config.Volume.Size() }
 func (b *PeerBacking) PageSize() uint64                 { return b.config.Volume.PageSize() }
 func (b *PeerBacking) Verify(ctx context.Context) error { return b.config.Volume.Verify(ctx) }
 
-// Locate reports the volume's own identities everywhere except the pages the source
-// holds unpublished. Those it reports as bytes of this region alone — no
-// reference, so no page of them is ever shared and none of them is taken for a
-// hole — which is what makes the pager load them through Load, where the source
-// answers, rather than resolve them against a checkpoint that does not have them.
+// Locate reports the volume's own identities everywhere except the pages whose
+// bytes no checkpoint of this VM holds. Those it reports as bytes of this region
+// alone — no reference, so no page of them is ever shared and none of them is
+// taken for a hole — which is what makes the pager load them through Load, where
+// the source answers, rather than resolve them against a checkpoint that does
+// not have them.
+//
+// One rule decides it, and it is the volume's own answer rather than anything
+// about time: a page of the handoff's set is stripped for exactly as long as the
+// checkpoint the volume names for it is one this VM inherited, which is to say
+// one some other VM published. The moment this VM's own checkpoint holds the
+// page — a child publishing its root index, or any checkpoint after it — the
+// volume names that checkpoint, and the identity is then the truth about where
+// the page's bytes are. Stripping it past that point tells the pager a page it
+// has just published has no object, and the pager's retire gives up the guest's
+// only copy of those bytes.
 func (b *PeerBacking) Locate(ctx context.Context, offset, length uint64) ([]control.Extent, error) {
 	extents, err := b.config.Volume.Locate(ctx, offset, length)
 	if err != nil || len(b.unpublished) == 0 {
@@ -254,7 +267,7 @@ func (b *PeerBacking) Locate(ctx context.Context, offset, length uint64) ([]cont
 		for cursor := extent.Offset; cursor < end; {
 			page := cursor / size
 			stop := min(end, (page+1)*size)
-			if b.unpublished[page] {
+			if b.unpublished[page] && extent.Identity.Ref.VM != b.config.VM {
 				add(control.Extent{Offset: cursor, Length: stop - cursor})
 			} else {
 				add(control.Extent{Offset: cursor, Length: stop - cursor, Identity: extent.Identity})
