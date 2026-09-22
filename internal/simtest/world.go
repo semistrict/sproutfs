@@ -566,7 +566,7 @@ func (w *World) newPager(ctx context.Context, h *hostState) (*pager, func(), err
 			return nil, nil, err
 		}
 		p.spills[kind] = spill
-		a := &arena{slots: make([][]byte, k.ResidentPages)}
+		a := newArena(k.ResidentPages)
 		p.arenas[kind] = a
 		memory, err := vmmemory.New(ctx, h.config.Resources, vmmemory.Config{
 			PageSize:      pageSize,

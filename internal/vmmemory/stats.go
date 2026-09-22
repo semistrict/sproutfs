@@ -161,7 +161,7 @@ func (h *Host) Stats(ctx context.Context) (Stats, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	stats := h.stats
-	stats.ResidentPages = h.slots.Total() - h.slots.Free()
+	stats.ResidentPages = h.slots.Held()
 	stats.DirtyPages = h.dirty
 	stats.LogicalPages = h.logical
 	stats.UFFDReads = h.uffdReads.Load()

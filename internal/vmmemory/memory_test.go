@@ -51,10 +51,20 @@ func TestMain(m *testing.M) {
 // errInjected is the failure a test makes a backing or an arena report.
 var errInjected = errors.New("injected failure")
 
+// arena is the fixture's page store. Its slots are a map and not one entry per
+// offset, because a real arena is a sparse file: it has more addresses than it
+// may hold pages at once, an offset costs nothing until a page is put there,
+// and releasing one punches that memory back out. held is how many offsets hold
+// a page — the memory the arena is really holding, which is what the pager's
+// budget bounds and what an offset space larger than that budget must not
+// change.
 type arena struct {
 	mu       sync.Mutex
 	pageSize int
-	slots    [][]byte
+	offsets  int
+	held     int
+	peak     int
+	slots    map[int][]byte
 	mappings []*mapping
 	// onRead runs before a slot is read, which is where an eviction holds its
 	// victims' page locks. A test uses it to stop an eviction mid-transition.
@@ -67,25 +77,60 @@ type arena struct {
 	writes, zeroed int
 }
 
+func newArena(pageSize, offsets int) *arena {
+	return &arena{pageSize: pageSize, offsets: offsets, slots: make(map[int][]byte)}
+}
+
+// at refuses an address this arena does not have.
+func (a *arena) at(slot int) error {
+	if slot < 0 || slot >= a.offsets {
+		return fmt.Errorf("arena offset %d is outside its %d", slot, a.offsets)
+	}
+	return nil
+}
+
+// put and drop keep the count of offsets holding a page, which is the memory.
+func (a *arena) put(slot int, data []byte) {
+	if a.slots[slot] == nil {
+		a.held++
+		a.peak = max(a.peak, a.held)
+	}
+	a.slots[slot] = data
+}
+func (a *arena) drop(slot int) {
+	if a.slots[slot] != nil {
+		a.held--
+	}
+	delete(a.slots, slot)
+}
+
 func (a *arena) Read(_ context.Context, slot int, dst []byte) error {
 	if a.onRead != nil {
 		a.onRead(slot)
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if err := a.at(slot); err != nil {
+		return err
+	}
+	// An offset no page has been put at is a hole, and a hole reads as zeros.
+	clear(dst)
 	copy(dst, a.slots[slot])
 	return nil
 }
 func (a *arena) Write(_ context.Context, slot int, src []byte) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if err := a.at(slot); err != nil {
+		return err
+	}
 	if a.failWrite {
 		return errInjected
 	}
 	if a.slots[slot] != nil {
 		return fmt.Errorf("write into allocated slot %d", slot)
 	}
-	a.slots[slot] = bytes.Clone(src)
+	a.put(slot, bytes.Clone(src))
 	a.writes++
 	return nil
 }
@@ -96,10 +141,13 @@ func (a *arena) Zero(_ context.Context, slot, count int) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	for s := slot; s < slot+count; s++ {
+		if err := a.at(s); err != nil {
+			return err
+		}
 		if a.slots[s] != nil {
 			return fmt.Errorf("zero of allocated slot %d", s)
 		}
-		a.slots[s] = make([]byte, a.pageSize)
+		a.put(s, make([]byte, a.pageSize))
 	}
 	a.zeroed++
 	return nil
@@ -107,6 +155,9 @@ func (a *arena) Zero(_ context.Context, slot, count int) error {
 func (a *arena) Release(_ context.Context, slot int) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if err := a.at(slot); err != nil {
+		return err
+	}
 	for _, m := range a.mappings {
 		for _, p := range m.pages {
 			if p.slot == slot {
@@ -114,7 +165,7 @@ func (a *arena) Release(_ context.Context, slot int) error {
 			}
 		}
 	}
-	a.slots[slot] = nil
+	a.drop(slot)
 	return nil
 }
 
@@ -508,7 +559,11 @@ func newBrokenFixture(t *testing.T, cfg vmmemory.Config, shared ...*resource.Bud
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = spill.Close() })
-	a := &arena{pageSize: int(cfg.PageSize), slots: make([][]byte, cfg.ResidentPages)}
+	offsets := cfg.ArenaOffsets
+	if offsets == 0 {
+		offsets = cfg.ResidentPages
+	}
+	a := newArena(int(cfg.PageSize), offsets)
 	resources := testresource.New()
 	if len(shared) != 0 {
 		resources = shared[0]

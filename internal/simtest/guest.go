@@ -21,17 +21,44 @@ import (
 // continues exactly where the source stopped, and one that lost it says so.
 const stateBytes = 9
 
-// arena is one pager's shared page store: one byte slice per resident slot,
-// which is what a real pager's shared memory is. A host has one per pager, each
-// of that pager's own page.
+// arena is one pager's shared page store: a byte slice at every offset a page
+// has been put at, which is what a real pager's shared memory is. A host has
+// one per pager, each of that pager's own page.
+//
+// It is a map rather than one entry per offset, because a real arena is a
+// sparse file: it has more addresses than it may ever hold pages at once, an
+// offset costs nothing until a page is put there, and releasing one punches
+// that memory back out. held is how many offsets hold a page, which is the
+// memory this arena is really holding and what its pager's budget bounds.
 type arena struct {
-	mu    sync.Mutex
-	slots [][]byte
+	mu      sync.Mutex
+	offsets int
+	slots   map[int][]byte
+	held    int
+	peak    int
+}
+
+func newArena(offsets int) *arena {
+	return &arena{offsets: offsets, slots: make(map[int][]byte)}
+}
+
+// at refuses an address this arena does not have, which is the check a real
+// arena's own bounds make.
+func (a *arena) at(slot int) error {
+	if slot < 0 || slot >= a.offsets {
+		return fmt.Errorf("arena offset %d is outside its %d", slot, a.offsets)
+	}
+	return nil
 }
 
 func (a *arena) Read(_ context.Context, slot int, dst []byte) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if err := a.at(slot); err != nil {
+		return err
+	}
+	// An offset no page has been put at is a hole, and a hole reads as zeros.
+	clear(dst)
 	copy(dst, a.slots[slot])
 	return nil
 }
@@ -39,10 +66,15 @@ func (a *arena) Read(_ context.Context, slot int, dst []byte) error {
 func (a *arena) Write(_ context.Context, slot int, src []byte) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if err := a.at(slot); err != nil {
+		return err
+	}
 	if a.slots[slot] != nil {
 		return fmt.Errorf("write into allocated slot %d", slot)
 	}
 	a.slots[slot] = bytes.Clone(src)
+	a.held++
+	a.peak = max(a.peak, a.held)
 	return nil
 }
 
@@ -57,7 +89,13 @@ func (a *arena) Equal(_ context.Context, first, second int) (bool, error) {
 func (a *arena) Release(_ context.Context, slot int) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.slots[slot] = nil
+	if err := a.at(slot); err != nil {
+		return err
+	}
+	if a.slots[slot] != nil {
+		a.held--
+	}
+	delete(a.slots, slot)
 	return nil
 }
 

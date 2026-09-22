@@ -12,6 +12,11 @@ import (
 // host budget: the pages they will hold are what that budget bounds, so a
 // refused reservation is a refused allocation. Caller holds h.mu.
 func (h *Host) takeFree(slot, count int) bool {
+	if count > h.slots.Free() {
+		// The arena's addresses are not its capacity: an offset run this long
+		// exists, and the memory behind it does not.
+		return false
+	}
 	lease, err := h.resources.TryAcquire(context.Background(), int64(count)*int64(h.pageSize))
 	if err != nil {
 		return false
@@ -20,7 +25,7 @@ func (h *Host) takeFree(slot, count int) bool {
 	for s := slot; s < slot+count; s++ {
 		h.residentLeases[s] = lease
 	}
-	h.stats.PeakResidentPages = max(h.stats.PeakResidentPages, h.slots.Total()-h.slots.Free())
+	h.stats.PeakResidentPages = max(h.stats.PeakResidentPages, h.slots.Held())
 	return true
 }
 
@@ -43,7 +48,7 @@ func (h *Host) putFree(slot int) {
 	if lease.Bytes() == 0 {
 		lease.Close()
 	}
-	h.residentLeases[slot] = nil
+	delete(h.residentLeases, slot)
 	h.slots.Put(slot)
 }
 
@@ -69,7 +74,7 @@ func (h *Host) allocateFree(want int) (int, int) {
 // prefer, so that a new mapping continues the slots of the one before it.
 func (h *Host) allocateFreeFrom(prefer, want int) (int, int) {
 	h.mu.Lock()
-	if prefer >= 0 && prefer <= h.cfg.ResidentPages-want {
+	if prefer >= 0 && prefer <= h.slots.Offsets()-want && want <= h.slots.Free() {
 		count := 0
 		for count < want && h.slots.IsFree(prefer+count) {
 			count++
@@ -115,7 +120,7 @@ func (r *Region) allocateNear(ctx context.Context, index uint64) (int, error) {
 		}
 		if pg := b.resident; pg != nil && pg.slot >= 0 {
 			slot := pg.slot - int(delta)
-			if slot >= 0 && slot < h.cfg.ResidentPages && h.slots.IsFree(slot) && h.takeFree(slot, 1) {
+			if slot >= 0 && slot < h.slots.Offsets() && h.slots.IsFree(slot) && h.takeFree(slot, 1) {
 				h.mu.Unlock()
 				return slot, nil
 			}
