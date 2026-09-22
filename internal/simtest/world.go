@@ -999,6 +999,39 @@ func (w *World) noteSealed(in *instance, sealed, unchanged int) {
 // Sealed reports what the last checkpoint of the named VM sealed and how many
 // of those pages the settle found the guest had never stored into, so that the
 // checkpoint published neither them nor anything under them.
+// PrivateExtents is how many 2 MiB-aligned ranges of one host's RAM regions own
+// an extent of its arena's offset space, which is how many hold a private page.
+// It is addresses and not memory: the pages such a range holds are whatever the
+// guest stored into.
+func (w *World) PrivateExtents(index int) int {
+	w.mu.Lock()
+	p := w.hosts[index].pager
+	w.mu.Unlock()
+	if p == nil {
+		return 0
+	}
+	stats, err := p.pagers.Ram.Stats(context.Background())
+	if err != nil {
+		return 0
+	}
+	return stats.PrivateExtents
+}
+
+// Mappings is how many mappings one volume's region is to the VMM of the named
+// VM's guest, zero where that VM is not running here. It is what a VMM process
+// holds VMAs for, and what the placement rule is measured by.
+func (w *World) Mappings(id, name string) int {
+	_, g := w.runningVM(id)
+	if g == nil {
+		return 0
+	}
+	mp := g.mappings[name]
+	if mp == nil {
+		return 0
+	}
+	return mp.mappings()
+}
+
 func (w *World) Sealed(id string) (sealed, unchanged int) {
 	w.mu.Lock()
 	defer w.mu.Unlock()

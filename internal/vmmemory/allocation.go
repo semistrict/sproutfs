@@ -2,11 +2,22 @@ package vmmemory
 
 import (
 	"context"
-
 	"errors"
 	"fmt"
+
 	"github.com/semistrict/sproutfs/internal/platform/sim"
+	"github.com/semistrict/sproutfs/internal/resource"
 )
+
+// residentSlot is what one arena offset holding a page costs: the resource
+// reservation it was admitted under, and the extent it belongs to where the
+// placement rule put it there rather than the allocator. An offset of an extent
+// stays that extent's when its page goes; an ordinary one goes back to the
+// offset space with it.
+type residentSlot struct {
+	lease  *resource.Lease
+	extent *extent
+}
 
 // takeFree takes count consecutive free slots starting at slot, against the
 // host budget: the pages they will hold are what that budget bounds, so a
@@ -23,7 +34,7 @@ func (h *Host) takeFree(slot, count int) bool {
 	}
 	h.slots.Take(slot, count)
 	for s := slot; s < slot+count; s++ {
-		h.residentLeases[s] = lease
+		h.residentLeases[s] = residentSlot{lease: lease}
 	}
 	h.stats.PeakResidentPages = max(h.stats.PeakResidentPages, h.slots.Held())
 	return true
@@ -36,19 +47,27 @@ func (h *Host) takeFree(slot, count int) bool {
 // in. The slot is not returned either, because nothing knows what it holds.
 // Caller holds h.mu.
 func (h *Host) putFree(slot int) {
-	lease := h.residentLeases[slot]
-	if lease == nil {
+	entry := h.residentLeases[slot]
+	if entry.lease == nil {
 		h.err = errors.Join(h.err, fmt.Errorf("managed arena terminal: slot %d freed without a resource reservation", slot))
 		return
 	}
-	if err := lease.Release(int64(h.pageSize)); err != nil {
+	if err := entry.lease.Release(int64(h.pageSize)); err != nil {
 		h.err = errors.Join(h.err, fmt.Errorf("managed arena terminal: releasing slot %d: %w", slot, err))
 		return
 	}
-	if lease.Bytes() == 0 {
-		lease.Close()
+	if entry.lease.Bytes() == 0 {
+		entry.lease.Close()
 	}
 	delete(h.residentLeases, slot)
+	if e := entry.extent; e != nil {
+		// The memory leaves and the address stays the range's, until the last
+		// page of the extent goes and the extent itself does.
+		h.slots.Empty()
+		e.held--
+		h.dropExtent(e)
+		return
+	}
 	h.slots.Put(slot)
 }
 
@@ -88,6 +107,37 @@ func (h *Host) allocateFreeFrom(prefer, want int) (int, int) {
 	return h.allocateFree(want)
 }
 
+// allocatePrivate takes the arena offset a private page of this index goes at:
+// the offset the placement rule gives it within its range's extent, evicting
+// where the page budget rather than the address is what is missing. A page the
+// rule has no offset for — a pager that places nothing, no extent left, or an
+// offset already holding the bytes a checkpoint froze — falls back to an
+// ordinary one beside its neighbours.
+func (r *Region) allocatePrivate(ctx context.Context, index uint64) (int, error) {
+	if err := context.Cause(ctx); err != nil {
+		return 0, err
+	}
+	h := r.host
+	h.mu.Lock()
+	if h.err != nil {
+		err := h.err
+		h.mu.Unlock()
+		return 0, err
+	}
+	slot, placeable := h.place(r, index)
+	h.mu.Unlock()
+	if slot >= 0 {
+		return slot, nil
+	}
+	if !placeable {
+		return r.allocateNear(ctx, index)
+	}
+	return h.allocate(ctx, func() int {
+		slot, _ := h.place(r, index)
+		return slot
+	}, sim.Buggify(ctx, "vmmemory/evict-past-a-free-slot", 0.5))
+}
+
 // Prefer extending a neighboring mapping's physical run before using the
 // first free slot. This consumes no speculative reservation and never waits
 // for a preferred slot; pressure falls back to ordinary bounded reclamation.
@@ -101,7 +151,7 @@ func (r *Region) allocateNear(ctx context.Context, index uint64) (int, error) {
 	// paths at all: a pager sized to hold its whole guest never evicts, so
 	// nothing ever overlaps an eviction with a publication or a seal.
 	if preferEviction := sim.Buggify(ctx, "vmmemory/evict-past-a-free-slot", 0.5); preferEviction {
-		return h.allocate(ctx, true)
+		return h.allocate(ctx, nil, true)
 	}
 	for _, delta := range []int64{-1, 1} {
 		neighbor := int64(index) + delta
@@ -127,17 +177,22 @@ func (r *Region) allocateNear(ctx context.Context, index uint64) (int, error) {
 		}
 		h.mu.Unlock()
 	}
-	return h.allocate(ctx, false)
+	return h.allocate(ctx, nil, false)
 }
 
 // allocate returns one slot, evicting the least recently used unlocked page
 // when the arena is full. It waits for progress rather than failing while
 // every candidate is temporarily busy.
 //
+// place, where it is not nil, is where the slot must be: the placement rule has
+// already decided this page's offset, so only the page budget is at stake and
+// only an eviction anywhere can make room for it. It is called under the host
+// lock and reports the offset it took, or -1 while that room is not there yet.
+//
 // preferEviction takes a victim even where a free slot would do, for one pass:
 // the iteration after a fruitless preference takes the free slot, so a
 // buggified allocation cannot wait on a victim that will not come.
-func (h *Host) allocate(ctx context.Context, preferEviction bool) (int, error) {
+func (h *Host) allocate(ctx context.Context, place func() int, preferEviction bool) (int, error) {
 	for {
 		h.mu.Lock()
 		if h.err != nil {
@@ -147,7 +202,17 @@ func (h *Host) allocate(ctx context.Context, preferEviction bool) (int, error) {
 		}
 		resourceChanged := h.resources.Changed()
 		capacityBlocked := false
-		if slot := h.slots.First(); slot >= 0 && !preferEviction && h.takeFree(slot, 1) {
+		if place != nil {
+			if !preferEviction {
+				if slot := place(); slot >= 0 {
+					h.mu.Unlock()
+					return slot, nil
+				}
+			}
+			// The address is this page's whatever happens; what is missing is a
+			// page of the budget, which every eviction gives back.
+			capacityBlocked = true
+		} else if slot := h.slots.First(); slot >= 0 && !preferEviction && h.takeFree(slot, 1) {
 			h.mu.Unlock()
 			return slot, nil
 		} else if slot >= 0 {

@@ -10,12 +10,6 @@ import (
 	"github.com/semistrict/sproutfs/internal/vmmemory"
 )
 
-// rangePages is the offsets one 2 MiB-aligned range of a 4 KiB-page region
-// owns: a private page of that range goes at the offset it has within it, so
-// the range owns the whole run whether one of its pages holds memory or all of
-// them do.
-const rangePages = (2 << 20) / checkpoint.PageSize4KiB
-
 // The arena is addresses, and its memory is what is put at them. A RAM arena is
 // sized to the offsets a host's regions may need — one extent per range — and
 // is a sparse file, so what it really holds is the pages put there and nothing

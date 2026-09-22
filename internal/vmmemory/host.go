@@ -29,11 +29,18 @@ type Host struct {
 	pageSize  uint64
 	resources *resource.Budget
 	// residentLeases names the resource reservation the page at one arena
-	// offset was admitted under. It is a map rather than one entry per offset
+	// offset was admitted under, and the extent that offset belongs to where the
+	// placement rule put it there. It is a map rather than one entry per offset
 	// because an arena has far more offsets than pages: what it holds is
 	// bounded by Config.ResidentPages, however large the address space is.
-	residentLeases map[int]*resource.Lease
-	spillWritten   []bool
+	residentLeases map[int]residentSlot
+	// extents is the extent each range of each region owns, and extentPages how
+	// many offsets one extent has — the pages of this pager one 2 MiB range
+	// holds. A pager whose page is the whole range has one, which is a pager
+	// that places nothing. Both are guarded by mu; see placement.go.
+	extents      map[extentKey]*extent
+	extentPages  int
+	spillWritten []bool
 	// spillSum is the checksum each written reservation's bytes must have when
 	// they come back. It is this process's own authority over a scratch file.
 	spillSum []uint32
@@ -149,10 +156,15 @@ func New(ctx context.Context, resources *resource.Budget, cfg Config, arena Aren
 	if err := spill.Truncate(ctx, int64(cfg.DirtyPages)*int64(pageSize)); err != nil {
 		return nil, err
 	}
-	h := &Host{pageSize: pageSize, cfg: cfg, clock: platform.ClockOr(cfg.Clock), arena: arena, spill: spill, resources: resources, residentLeases: make(map[int]*resource.Lease), spillWritten: make([]bool, cfg.DirtyPages),
-		spillSum: make([]uint32, cfg.DirtyPages),
-		slots:    slots.New(cfg.ArenaOffsets, cfg.ResidentPages),
-		clean:    make(map[pageKey]*resident), changed: make(chan struct{}),
+	// An extent is one 2 MiB-aligned range's worth of this pager's pages: 512 at
+	// 4 KiB, and one at 2 MiB, which is a pager with nothing to place.
+	extentPages := int(rangeBytes / pageSize)
+	h := &Host{pageSize: pageSize, cfg: cfg, clock: platform.ClockOr(cfg.Clock), arena: arena, spill: spill, resources: resources, residentLeases: make(map[int]residentSlot), spillWritten: make([]bool, cfg.DirtyPages),
+		spillSum:    make([]uint32, cfg.DirtyPages),
+		slots:       slots.New(cfg.ArenaOffsets, cfg.ResidentPages, extentPages),
+		extents:     make(map[extentKey]*extent),
+		extentPages: extentPages,
+		clean:       make(map[pageKey]*resident), changed: make(chan struct{}),
 		regions: make(map[*Region]struct{}), highWater: highWater(cfg.DirtyPages),
 		io: make(chan struct{}, cfg.ConcurrentIO), writeback: make(chan struct{}, 1)}
 	for i := cfg.DirtyPages - 1; i >= 0; i-- {
@@ -195,8 +207,8 @@ func (h *Host) Close(ctx context.Context) error {
 	}
 	h.signal()
 	var result error
-	for slot, lease := range h.residentLeases {
-		if lease == nil {
+	for slot, entry := range h.residentLeases {
+		if entry.lease == nil {
 			continue
 		}
 		if err := h.arena.Release(ctx, slot); err != nil {

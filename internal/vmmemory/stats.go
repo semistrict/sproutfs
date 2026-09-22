@@ -29,8 +29,13 @@ type Stats struct {
 	// SpillWrites counts completed scratch writes, each of which may contain
 	// several pages, and SpillWriteBytes what they carried. Spill is scratch and
 	// never reaches the backing, so it is counted apart from the writes below.
-	SpillWrites, SpillWriteBytes                           uint64
-	ResidentPages, DirtyPages, LogicalPages                int
+	SpillWrites, SpillWriteBytes            uint64
+	ResidentPages, DirtyPages, LogicalPages int
+	// PrivateExtents is how many 2 MiB-aligned ranges of this pager's regions
+	// own an extent of the offset space, which is how many hold a private page.
+	// It is addresses and not memory: an extent whose range holds one private
+	// page costs the arena that one page. Zero for a pager that places nothing.
+	PrivateExtents                                         int
 	PeakResidentPages, PeakDirtyPages                      int
 	Faults, CopyOnWrites, Evictions, Spills, SpillRefaults uint64
 	// WriteAheadPages counts the pages stores into fresh zero pages mapped
@@ -162,6 +167,7 @@ func (h *Host) Stats(ctx context.Context) (Stats, error) {
 	defer h.mu.Unlock()
 	stats := h.stats
 	stats.ResidentPages = h.slots.Held()
+	stats.PrivateExtents = len(h.extents)
 	stats.DirtyPages = h.dirty
 	stats.LogicalPages = h.logical
 	stats.UFFDReads = h.uffdReads.Load()
