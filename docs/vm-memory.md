@@ -322,9 +322,12 @@ page of it but the faulting one is mapped read-only under the identity its
 volume gives it, so the pages the guest goes on to read are served without a
 fault and stay shared, and only the page it stored into becomes private. The
 faulting page is not mapped read-only first — its copy is about to replace it —
-so a store still costs no revocation. A migration destination's backing is read
-a page at a time, because whether the source still holds a page is an answer
-only a load can give and it gives it per page.
+so a store still costs no revocation, and nothing is bound to it either: what
+this region holds there is the copy, and a binding that took the shared page
+first would be a second owner of that page's memory for as long as the copy
+takes. A migration destination's backing is read a page at a time, because
+whether the source still holds a page is an answer only a load can give and it
+gives it per page.
 
 A store into fresh memory, a zero-mapped page or a hole in the volume the guest
 has never touched, has no page to copy and nothing to fence, so nothing is
