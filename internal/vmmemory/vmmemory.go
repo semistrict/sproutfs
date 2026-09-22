@@ -195,9 +195,12 @@ type UnpublishedInstaller interface {
 	InstalledUnpublished(offset uint64, installed []bool)
 }
 
-// Arena holds exactly Config.ResidentPages slots. Release must punch the slot,
-// not just forget its address. Only Host decides when it is safe to release.
-// Arena calls must not retain the supplied buffers.
+// Arena holds exactly Config.ArenaOffsets slots, of which at most
+// Config.ResidentPages hold memory at once: an arena is a sparse file, so a
+// slot costs nothing until a page is put there. Release must punch the slot,
+// not just forget its address, so that the memory really leaves. Only Host
+// decides when it is safe to release. Arena calls must not retain the supplied
+// buffers.
 type Arena interface {
 	Read(context.Context, int, []byte) error
 	Write(context.Context, int, []byte) error
@@ -308,7 +311,18 @@ type Config struct {
 	// checkpoint will list, so what a settle leaves does not depend on how many
 	// there are. Zero selects one, which settles on the caller's own goroutine.
 	SettleWorkers int
+	// ResidentPages is the arena's capacity: how many of its offsets may hold
+	// memory at once. It is what a deployment budgets, because it is the host
+	// memory this pager owns.
 	ResidentPages int
+	// ArenaOffsets is how many addresses that arena has. It is at least
+	// ResidentPages and may be far more: the arena is a sparse file, so an
+	// offset holds memory only once a page is put there, and a pager that
+	// places a private page at an offset of its own — so that pages adjacent in
+	// a guest are adjacent in the arena and are one mapping — leaves most of the
+	// offsets it owns empty. Zero selects ResidentPages, which is a pager whose
+	// addresses and pages are one number.
+	ArenaOffsets int
 	// LogicalPages bounds all per-region metadata, including never-faulted pages.
 	LogicalPages int
 	// DirtyPages bounds volatile private state on RAM and spill combined.

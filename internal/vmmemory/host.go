@@ -26,9 +26,13 @@ type Host struct {
 	// slots, its spill slots, the numbers it faults and serves, and the
 	// alignment every region it maps must have. Nothing here is ever the other
 	// pager's page, and no count of these pages may be added to one of those.
-	pageSize       uint64
-	resources      *resource.Budget
-	residentLeases []*resource.Lease
+	pageSize  uint64
+	resources *resource.Budget
+	// residentLeases names the resource reservation the page at one arena
+	// offset was admitted under. It is a map rather than one entry per offset
+	// because an arena has far more offsets than pages: what it holds is
+	// bounded by Config.ResidentPages, however large the address space is.
+	residentLeases map[int]*resource.Lease
 	spillWritten   []bool
 	// spillSum is the checksum each written reservation's bytes must have when
 	// they come back. It is this process's own authority over a scratch file.
@@ -39,7 +43,7 @@ type Host struct {
 	clock        platform.Clock
 	arena        Arena
 	spill        platform.File
-	slots        *slots.Set
+	slots        *slots.Space
 	freeSpill    []int
 	clean        map[pageKey]*resident
 	cleanVersion uint64
@@ -108,6 +112,14 @@ func New(ctx context.Context, resources *resource.Budget, cfg Config, arena Aren
 		uint64(cfg.LogicalPages) > math.MaxInt64/pageSize || arena == nil || spill == nil {
 		return nil, ErrConfig
 	}
+	if cfg.ArenaOffsets == 0 {
+		// A pager that places nothing has one address per page, which is what
+		// PMEM runs: its offsets and its pages are one number.
+		cfg.ArenaOffsets = cfg.ResidentPages
+	}
+	if cfg.ArenaOffsets < cfg.ResidentPages || uint64(cfg.ArenaOffsets) > math.MaxInt64/pageSize {
+		return nil, ErrConfig
+	}
 	if cfg.ConcurrentIO == 0 {
 		cfg.ConcurrentIO = 16
 	}
@@ -139,9 +151,9 @@ func New(ctx context.Context, resources *resource.Budget, cfg Config, arena Aren
 	if err := spill.Truncate(ctx, int64(cfg.DirtyPages)*int64(pageSize)); err != nil {
 		return nil, err
 	}
-	h := &Host{pageSize: pageSize, cfg: cfg, clock: platform.ClockOr(cfg.Clock), arena: arena, spill: spill, resources: resources, residentLeases: make([]*resource.Lease, cfg.ResidentPages), spillWritten: make([]bool, cfg.DirtyPages),
+	h := &Host{pageSize: pageSize, cfg: cfg, clock: platform.ClockOr(cfg.Clock), arena: arena, spill: spill, resources: resources, residentLeases: make(map[int]*resource.Lease), spillWritten: make([]bool, cfg.DirtyPages),
 		spillSum: make([]uint32, cfg.DirtyPages),
-		slots:    slots.New(cfg.ResidentPages),
+		slots:    slots.New(cfg.ArenaOffsets, cfg.ResidentPages),
 		clean:    make(map[pageKey]*resident), changed: make(chan struct{}),
 		regions: make(map[*Region]struct{}), highWater: highWater(cfg.DirtyPages),
 		io: make(chan struct{}, cfg.ConcurrentIO), writeback: make(chan struct{}, 1)}
