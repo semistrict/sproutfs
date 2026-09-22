@@ -289,33 +289,24 @@ func TestFirecrackerForkFanOutServesBothChildrenAtOnce(t *testing.T) {
 	// restore's pages and no others; any more is a child being handed a page
 	// that is not its own.
 	beside, releaseBeside := receiveStill(t, ctx, c, destinationPager, binaryPath, besideHandoff, pages, point)
-	sweeping, stopSweeping := context.WithCancel(ctx)
-	defer stopSweeping()
-	swept := make(chan int, 1)
-	go func() {
-		sweeps := 0
-		defer func() { swept <- sweeps }()
-		// A sweep is a fault per page on the arena the running children are
-		// evicting each other out of, so more than a few would starve them into
-		// the liveness bound and measure this check rather than the pager. Two
-		// is every page twice while they read.
-		for sweeps < forkFanOutSweeps && sweeping.Err() == nil {
-			began := time.Now()
-			got := beside.sweep(t, sweeping, truth)
-			if sweeping.Err() != nil {
-				return
-			}
-			sweeps++
-			t.Logf("image sweep %d beside the running children: %d pages differ (%v) in %s",
-				sweeps, len(got), first(got, 16), time.Since(began))
-			if !slices.Equal(got, restored) {
-				t.Errorf("sweep %d of a child beside its running siblings differs from the point at %v, "+
-					"and one taken alone differed at %v: it was handed a page that is not its own",
-					sweeps, first(got, 16), first(restored, 16))
-				return
-			}
+	for sweep := range forkFanOutSweeps {
+		began := time.Now()
+		got := beside.sweep(t, ctx, truth)
+		t.Logf("image sweep %d beside the running children: %d pages differ (%v) in %s",
+			sweep+1, len(got), first(got, 16), time.Since(began))
+		if !slices.Equal(got, restored) {
+			releaseBeside()
+			t.Fatalf("sweep %d of a child beside its running siblings differs from the point at %v, "+
+				"and one taken alone differed at %v: it was handed a page that is not its own\n%s",
+				sweep+1, first(got, 16), first(restored, 16), consoleText(p))
 		}
-	}()
+	}
+	// It gives its memory back before the read phase. The question it answers is
+	// whether a child taken beside running, checkpointing, settling siblings
+	// inherits one image, and a sweep of every page answers that in under a
+	// second; leaving it mapped for the whole read phase would only take a third
+	// of the arena away from the two children this suite is about.
+	releaseBeside()
 
 	// Every child's read runs at once and every one of them has to answer. A
 	// checkpressure walks the whole working set the parent left in RAM and a
@@ -341,15 +332,6 @@ func TestFirecrackerForkFanOutServesBothChildrenAtOnce(t *testing.T) {
 		t.Fatalf("a child of the fan-out never finished reading what it inherited\n%s", stacks())
 	}
 	t.Logf("fan-out read: children=%d rounds=%d elapsed=%s", len(taken), forkFanOutRounds, time.Since(began))
-	stopSweeping()
-	t.Logf("image check beside the running children: %d sweeps of every page", <-swept)
-	// The still child gives its pages up here rather than at the end: what the
-	// parent's page server still owes is asserted below, and a child that has
-	// not been released is one it rightly still owes.
-	releaseBeside()
-	if t.Failed() {
-		t.Fatalf("a child was handed a page that is not its own\n%s", consoleText(p))
-	}
 
 	for _, child := range taken {
 		stats := child.received.Stats()
