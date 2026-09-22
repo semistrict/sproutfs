@@ -612,7 +612,8 @@ func (r *Region) loadOnce(ctx context.Context, index uint64, spill *int) (bool, 
 		}
 		return true, nil
 	}
-	if b.dirty {
+	dirty, held := r.privateEpoch(b)
+	if dirty {
 		// Spilled private state is reloaded alone; it has no shared source. A page a
 		// checkpoint still holds reloads read-only, so the next store copies, and
 		// onto a page it shares with the checkpoint again: the checkpoint's copy is
@@ -629,6 +630,19 @@ func (r *Region) loadOnce(ctx context.Context, index uint64, spill *int) (bool, 
 		slot, err := r.reclaimPrivate(ctx, index)
 		if err != nil {
 			return false, err
+		}
+		// The region was given up for the reclaim, and a seal or a retire taken
+		// while it was is exactly what this page being the guest's own dirty
+		// state was decided against. A retire ends that epoch — the volume holds
+		// these bytes now and the reservation that spilled them has gone back —
+		// and a private page bound to a binding owning neither a reservation nor
+		// a checkpoint is one the next reclaim punches without writing it
+		// anywhere. What this page is, is decided again from the top.
+		if now, current := r.privateEpoch(b); now != dirty || current != held {
+			if err := h.abandonSlots(ctx, slot, 1, nil); err != nil {
+				return false, err
+			}
+			return false, nil
 		}
 		pg, err := h.create(ctx, slot, data, pageKey{}, true, r.kind)
 		if err != nil {
