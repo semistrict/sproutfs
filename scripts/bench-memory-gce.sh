@@ -9,6 +9,13 @@
 # managed and on plain Firecracker; with SPROUTFS_GCE_SMOKE=1 as well, everything
 # but the build, in minutes, which is what to run first on a host `create` made.
 # `create`, `run` and `delete` expose the same steps for interrupted runs.
+#
+# SPROUTFS_GCE_BUCKET names a Cloud Storage bucket the benchmarks keep their
+# objects in instead of the host's disk, which is the deployment's object store
+# rather than a model of one. Each run keeps them under a prefix of its own and
+# deletes it once the results are back. The host reaches the bucket as
+# SPROUTFS_GCE_SERVICE_ACCOUNT: `create` gives a new host that account, and
+# `account` gives it to an existing one, which stops and starts it.
 set -euo pipefail
 case ${SPROUTFS_GCE_BUILD_ONLY:-0} in 0|1) ;; *) echo "SPROUTFS_GCE_BUILD_ONLY must be 0 or 1" >&2; exit 2 ;; esac
 case ${SPROUTFS_GCE_FANOUT:-0} in 0|1) ;; *) echo "SPROUTFS_GCE_FANOUT must be 0 or 1" >&2; exit 2 ;; esac
@@ -20,6 +27,8 @@ case ${SPROUTFS_GCE_SMOKE:-0} in 0|1) ;; *) echo "SPROUTFS_GCE_SMOKE must be 0 o
 # and a number of bytes are made of.
 [[ ${SPROUTFS_BENCH_SCENARIOS:-} =~ ^[a-z,-]*$ ]] || { echo "SPROUTFS_BENCH_SCENARIOS is a comma-separated list of scenario names" >&2; exit 2; }
 [[ ${SPROUTFS_BENCH_FORKS:-} =~ ^[0-9]*$ ]] || { echo "SPROUTFS_BENCH_FORKS is a number" >&2; exit 2; }
+[[ ${SPROUTFS_GCE_BUCKET:-} =~ ^[a-z0-9._-]*$ ]] || { echo "SPROUTFS_GCE_BUCKET is a bucket name" >&2; exit 2; }
+[[ ${SPROUTFS_GCE_SERVICE_ACCOUNT:-} =~ ^[a-z0-9@._-]*$ ]] || { echo "SPROUTFS_GCE_SERVICE_ACCOUNT is a service account email" >&2; exit 2; }
 for shape in SPROUTFS_BENCH_RAM_BYTES SPROUTFS_BENCH_ROOT_BYTES \
     SPROUTFS_BENCH_RAM_RESIDENT_BYTES SPROUTFS_BENCH_PMEM_RESIDENT_BYTES; do
     [[ ${!shape:-} =~ ^[0-9]*$ ]] || { echo "$shape is a number of bytes" >&2; exit 2; }
@@ -43,13 +52,20 @@ cloud=(gcloud --quiet --project="$project")
 machine=n2-standard-8 disk=80GB limit=5h
 if [[ ${SPROUTFS_GCE_WORKLOAD:-0} == 1 ]]; then machine=n2-highmem-8 disk=400GB limit=11h; fi
 
+# The host's identity: none unless it is to reach a bucket, and then the one
+# account that bucket grants, able to reach storage and nothing else.
+identity=(--no-service-account --no-scopes)
+if [[ -n ${SPROUTFS_GCE_SERVICE_ACCOUNT:-} ]]; then
+    identity=(--service-account="$SPROUTFS_GCE_SERVICE_ACCOUNT" --scopes=storage-rw)
+fi
+
 create() {
     "${cloud[@]}" compute instances create "$instance" --zone="$zone" \
         --machine-type="${SPROUTFS_GCE_MACHINE_TYPE:-$machine}" \
         --min-cpu-platform='Intel Cascade Lake' --enable-nested-virtualization \
         --image=ubuntu-2604-resolute-amd64-v20260907 --image-project=ubuntu-os-cloud \
         --boot-disk-size="$disk" --boot-disk-type=pd-balanced --boot-disk-auto-delete \
-        --network="${SPROUTFS_GCE_NETWORK:-default}" --no-service-account --no-scopes \
+        --network="${SPROUTFS_GCE_NETWORK:-default}" "${identity[@]}" \
         --metadata=block-project-ssh-keys=TRUE \
         --metadata-from-file="startup-script=$repo/scripts/lib/gce-bench-startup.sh" \
         --labels=purpose=memory-probe,lifecycle=temporary \
@@ -79,6 +95,14 @@ delete() {
     found=$("${cloud[@]}" compute disks list --filter="name=$instance" --format='value(name)')
     [[ -z "$found" ]] || { echo "Boot disk still exists: $instance" >&2; return 1; }
     echo "Verified deletion of $instance and its boot disk." >&2
+}
+
+account() {
+    check_owner
+    [[ -n ${SPROUTFS_GCE_SERVICE_ACCOUNT:-} ]] || { echo 'Set SPROUTFS_GCE_SERVICE_ACCOUNT.' >&2; return 1; }
+    "${cloud[@]}" compute instances stop "$instance" --zone="$zone"
+    "${cloud[@]}" compute instances set-service-account "$instance" --zone="$zone" "${identity[@]}"
+    "${cloud[@]}" compute instances start "$instance" --zone="$zone"
 }
 
 run() {
@@ -126,7 +150,11 @@ PY
         > "$results/instance.json"
     "${cloud[@]}" compute scp --zone="$zone" "$staging/source.tar.gz" "$instance:source.tar.gz"
     rm -rf -- "$staging"
-    local status=0
+    local status=0 prefix=""
+    if [[ -n ${SPROUTFS_GCE_BUCKET:-} ]]; then
+        prefix="sproutfs-bench/$(basename "$results")-$(date -u +%Y%m%dT%H%M%SZ)"
+        echo "gs://$SPROUTFS_GCE_BUCKET/$prefix" > "$results/bucket.txt"
+    fi
     # shellcheck disable=SC2016  # PWD is the remote shell's, deliberately.
     "${cloud[@]}" compute ssh "$instance" --zone="$zone" --command='set -eu
         test -e /var/lib/sproutfs-bench/ready
@@ -134,14 +162,20 @@ PY
         sudo systemctl is-active sproutfs-bench-expire.timer
         mkdir -p source results
         tar -xzf source.tar.gz -C source
-        sudo env SPROUTFS_GCE_BUILD_ONLY='"${SPROUTFS_GCE_BUILD_ONLY:-0}"' SPROUTFS_GCE_FANOUT='"${SPROUTFS_GCE_FANOUT:-0}"' SPROUTFS_GCE_BOOTSURVEY='"${SPROUTFS_GCE_BOOTSURVEY:-0}"' SPROUTFS_GCE_QUALIFY='"${SPROUTFS_GCE_QUALIFY:-0}"' SPROUTFS_GCE_WORKLOAD='"${SPROUTFS_GCE_WORKLOAD:-0}"' SPROUTFS_GCE_SMOKE='"${SPROUTFS_GCE_SMOKE:-0}"' SPROUTFS_BENCH_SCENARIOS='"${SPROUTFS_BENCH_SCENARIOS:-}"' SPROUTFS_BENCH_FORKS='"${SPROUTFS_BENCH_FORKS:-}"' SPROUTFS_BENCH_RAM_BYTES='"${SPROUTFS_BENCH_RAM_BYTES:-}"' SPROUTFS_BENCH_ROOT_BYTES='"${SPROUTFS_BENCH_ROOT_BYTES:-}"' SPROUTFS_BENCH_RAM_RESIDENT_BYTES='"${SPROUTFS_BENCH_RAM_RESIDENT_BYTES:-}"' SPROUTFS_BENCH_PMEM_RESIDENT_BYTES='"${SPROUTFS_BENCH_PMEM_RESIDENT_BYTES:-}"' SPROUTFS_RAM_PAGE_BYTES='"${SPROUTFS_RAM_PAGE_BYTES:-}"' timeout --signal=TERM --kill-after=30s '"$limit"' bash source/scripts/lib/bench-memory-linux.sh "$PWD/source" "$PWD/results"' \
+        sudo env SPROUTFS_GCE_BUILD_ONLY='"${SPROUTFS_GCE_BUILD_ONLY:-0}"' SPROUTFS_GCE_FANOUT='"${SPROUTFS_GCE_FANOUT:-0}"' SPROUTFS_GCE_BOOTSURVEY='"${SPROUTFS_GCE_BOOTSURVEY:-0}"' SPROUTFS_GCE_QUALIFY='"${SPROUTFS_GCE_QUALIFY:-0}"' SPROUTFS_GCE_WORKLOAD='"${SPROUTFS_GCE_WORKLOAD:-0}"' SPROUTFS_GCE_SMOKE='"${SPROUTFS_GCE_SMOKE:-0}"' SPROUTFS_BENCH_SCENARIOS='"${SPROUTFS_BENCH_SCENARIOS:-}"' SPROUTFS_BENCH_FORKS='"${SPROUTFS_BENCH_FORKS:-}"' SPROUTFS_BENCH_RAM_BYTES='"${SPROUTFS_BENCH_RAM_BYTES:-}"' SPROUTFS_BENCH_ROOT_BYTES='"${SPROUTFS_BENCH_ROOT_BYTES:-}"' SPROUTFS_BENCH_RAM_RESIDENT_BYTES='"${SPROUTFS_BENCH_RAM_RESIDENT_BYTES:-}"' SPROUTFS_BENCH_PMEM_RESIDENT_BYTES='"${SPROUTFS_BENCH_PMEM_RESIDENT_BYTES:-}"' SPROUTFS_RAM_PAGE_BYTES='"${SPROUTFS_RAM_PAGE_BYTES:-}"' SPROUTFS_GCS_BUCKET='"${SPROUTFS_GCE_BUCKET:-}"' SPROUTFS_GCS_PREFIX='"$prefix"' timeout --signal=TERM --kill-after=30s '"$limit"' bash source/scripts/lib/bench-memory-linux.sh "$PWD/source" "$PWD/results"' \
         > "$results/remote.log" 2>&1 || status=$?
     "${cloud[@]}" compute scp --recurse --zone="$zone" "$instance:results/." "$results/" || status=$?
+    # The run's objects are the benchmark's scratch, and the bucket keeps none
+    # of them; its lifecycle rule is only the backstop for a run cut short.
+    if [[ -n $prefix ]] && "${cloud[@]}" storage ls "gs://$SPROUTFS_GCE_BUCKET/$prefix/" > /dev/null 2>&1; then
+        "${cloud[@]}" storage rm --recursive "gs://$SPROUTFS_GCE_BUCKET/$prefix/" > "$results/bucket-cleanup.log" 2>&1 || status=$?
+    fi
     return "$status"
 }
 
 case "$action" in
     create) create ;;
+    account) account ;;
     run) run ;;
     delete) delete ;;
     all)
@@ -153,5 +187,5 @@ case "$action" in
         create
         run
         ;;
-    *) echo "Usage: $0 [all|create|run|delete] [instance] [results-directory]" >&2; exit 2 ;;
+    *) echo "Usage: $0 [all|create|account|run|delete] [instance] [results-directory]" >&2; exit 2 ;;
 esac

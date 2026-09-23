@@ -189,6 +189,7 @@ if [[ ${SPROUTFS_GCE_WORKLOAD:-0} == 1 ]]; then
         export SPROUTFS_BENCH_DB_KEYS=200000
     fi
     run=$(mktemp -d "$work/run-workload.XXXXXX")
+    mkdir -p "$results/heap-$output"
     status=0
     env SPROUTFS_FIRECRACKER_BENCH=1 \
         SPROUTFS_FIRECRACKER="$work/build/firecracker" \
@@ -206,6 +207,7 @@ if [[ ${SPROUTFS_GCE_WORKLOAD:-0} == 1 ]]; then
         SPROUTFS_BENCH_RAM_RESIDENT_BYTES="${SPROUTFS_BENCH_RAM_RESIDENT_BYTES:-}" \
         SPROUTFS_BENCH_PMEM_RESIDENT_BYTES="${SPROUTFS_BENCH_PMEM_RESIDENT_BYTES:-}" \
         SPROUTFS_RAM_PAGE_BYTES="${SPROUTFS_RAM_PAGE_BYTES:-}" \
+        SPROUTFS_BENCH_HEAP_DIR="$results/heap-$output" \
         "$work/build/vmmachine.test" -test.v -test.run '^TestGuestWorkloadBenchmark$' -test.timeout=10h \
         > "$results/$output.log" 2>&1 || status=$?
     rm -rf -- "$run"

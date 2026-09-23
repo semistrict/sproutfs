@@ -9,7 +9,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
+	"runtime"
 	"runtime/pprof"
 	"slices"
 	"strconv"
@@ -160,7 +162,22 @@ type benchRecord struct {
 	Volumes    *volumeDelta    `json:"volumes,omitempty"`
 	Objects    *objectCounters `json:"objects,omitempty"`
 	Cache      *cacheDelta     `json:"cache,omitempty"`
-	Extra      map[string]any  `json:"extra,omitempty"`
+	// Host is what the benchmark process itself holds when the scenario ends:
+	// the pagers, the volumes and the object caches all live in it, so its heap
+	// is the host's own memory beside the arenas.
+	Host  *hostMemory    `json:"host,omitempty"`
+	Extra map[string]any `json:"extra,omitempty"`
+}
+
+// hostMemory is the Go runtime's account of the benchmark process: the heap
+// its live objects occupy, what the runtime has taken from the operating system
+// in all, and the resident set the kernel charges it, anonymous and shared.
+type hostMemory struct {
+	HeapInuseBytes uint64 `json:"heap_inuse_bytes"`
+	HeapAllocBytes uint64 `json:"heap_alloc_bytes"`
+	SysBytes       uint64 `json:"sys_bytes"`
+	RSSAnonBytes   int64  `json:"rss_anon_bytes"`
+	RSSShmemBytes  int64  `json:"rss_shmem_bytes"`
 }
 
 // cacheDelta is what one scenario asked of the host's shared page cache. A
@@ -438,9 +455,55 @@ func (b *benchmark) record(ctx context.Context, name, kind string, start sample,
 			PeakLoads:      end.cache.PeakLoads}
 		rec.Volumes = &volumeDelta{OpenVMs: end.volumes.OpenVMs,
 			DirtyBytes: end.volumes.DirtyBytes, MaxOpenVMs: end.volumes.MaxOpenVMs}
+		rec.Host = b.hostMemory(name)
 	}
 	b.appendRecord(rec)
 	return rec
+}
+
+// hostMemory reads what this process holds once a scenario has ended, and
+// where SPROUTFS_BENCH_HEAP_DIR names a directory writes the scenario's heap
+// profile there, which is what says whose objects that heap is.
+func (b *benchmark) hostMemory(scenario string) *hostMemory {
+	b.t.Helper()
+	var stats runtime.MemStats
+	runtime.ReadMemStats(&stats)
+	host := &hostMemory{HeapInuseBytes: stats.HeapInuse, HeapAllocBytes: stats.HeapAlloc, SysBytes: stats.Sys}
+	raw, err := os.ReadFile("/proc/self/status")
+	if err != nil {
+		b.t.Fatal(err)
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 3 || fields[2] != "kB" {
+			continue
+		}
+		kib, err := strconv.ParseInt(fields[1], 10, 64)
+		if err != nil {
+			b.t.Fatal(err)
+		}
+		switch fields[0] {
+		case "RssAnon:":
+			host.RSSAnonBytes = kib << 10
+		case "RssShmem:":
+			host.RSSShmemBytes = kib << 10
+		}
+	}
+	if dir := os.Getenv("SPROUTFS_BENCH_HEAP_DIR"); dir != "" {
+		file, err := os.Create(filepath.Join(dir, scenario+".heap"))
+		if err != nil {
+			b.t.Fatal(err)
+		}
+		defer func() {
+			if err := file.Close(); err != nil {
+				b.t.Error(err)
+			}
+		}()
+		if err := pprof.Lookup("heap").WriteTo(file, 0); err != nil {
+			b.t.Fatal(err)
+		}
+	}
+	return host
 }
 
 func (b *benchmark) writeOutput(records []benchRecord) {
@@ -633,7 +696,11 @@ func newBenchObjectStore(t *testing.T, work string) (platform.ObjectStore, strin
 		BytesPerSecond: 200 << 20}
 	if bucket := os.Getenv("SPROUTFS_GCS_BUCKET"); bucket != "" {
 		endpoint := os.Getenv("SPROUTFS_GCS_ENDPOINT")
-		store, closer, err := adapters.NewGCS(t.Context(), endpoint, bucket, os.Getenv("SPROUTFS_GCS_PREFIX"))
+		// Every benchmark of a run shares the run's prefix, and each is a
+		// deployment of its own, so each takes a prefix of its own under it:
+		// two of them naming a VM "template" must not be one VM.
+		prefix := path.Join(os.Getenv("SPROUTFS_GCS_PREFIX"), fmt.Sprintf("benchmark-%d", time.Now().UnixNano()))
+		store, closer, err := adapters.NewGCS(t.Context(), endpoint, bucket, prefix)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -643,7 +710,7 @@ func newBenchObjectStore(t *testing.T, work string) (platform.ObjectStore, strin
 			}
 		})
 		where := cmpOr(endpoint, "storage.googleapis.com")
-		t.Logf("object store: Google Cloud Storage %s bucket %s", where, bucket)
+		t.Logf("object store: Google Cloud Storage %s bucket %s prefix %s", where, bucket, prefix)
 		return store, "gcs:" + where, objectLatency{}
 	}
 	if directory := os.Getenv("SPROUTFS_BENCH_OBJECT_DIR"); directory != "" {
