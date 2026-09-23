@@ -137,3 +137,33 @@ func TestReleasingOneSlotSplitsItsHugePage(t *testing.T) {
 		t.Fatalf("the page beside the released one reads %d at byte 7, want 7", got[7])
 	}
 }
+
+// BenchmarkZeroRun is what a boot's write-ahead run costs the arena: 8 MiB of
+// fresh zeros allocated, then punched back out for the next one. Aligned, the
+// run is four huge pages where the host allows them; shifted by a page, it is
+// three and two ends of ordinary pages.
+func BenchmarkZeroRun(b *testing.B) {
+	for _, shift := range []int{0, 1} {
+		b.Run(map[int]string{0: "aligned", 1: "shifted"}[shift], func(b *testing.B) {
+			a, err := vmmemory.NewLinuxArena(8*slotsPerHuge, checkpoint.PageSize4KiB)
+			if err != nil {
+				b.Fatal(err)
+			}
+			defer func() { _ = a.Close() }()
+			const run = 4 * slotsPerHuge
+			b.SetBytes(run * checkpoint.PageSize4KiB)
+			for b.Loop() {
+				if err := a.Zero(b.Context(), slotsPerHuge+shift, run); err != nil {
+					b.Fatal(err)
+				}
+				b.StopTimer()
+				for s := slotsPerHuge + shift; s < slotsPerHuge+shift+run; s++ {
+					if err := a.Release(b.Context(), s); err != nil {
+						b.Fatal(err)
+					}
+				}
+				b.StartTimer()
+			}
+		})
+	}
+}

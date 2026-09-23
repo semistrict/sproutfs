@@ -126,6 +126,26 @@ func (h *Host) bind(b *binding, pg *resident) {
 	}
 }
 
+// bindRun is bind for pages[k] to bindings[k], under one host lock.
+func (h *Host) bindRun(bindings []*binding, pages []*resident) {
+	found := ""
+	h.mu.Lock()
+	for k, b := range bindings {
+		if f := h.probe.bind(h, b, pages[k]); f != "" && found == "" {
+			found = f
+		}
+		pages[k].aliases[b] = struct{}{}
+		b.resident = pages[k]
+	}
+	h.mu.Unlock()
+	for k, b := range bindings {
+		note(b.region, b.index, "bind-private", pages[k].slot, -1)
+	}
+	if found != "" {
+		panic(found)
+	}
+}
+
 // joinReclaiming makes a binding an alias of the resident page another binding
 // holds, without that page's lock. It is what a seal uses for a page a reclaim
 // is holding: the reclaim writes that page's bytes to the reservation the seal
@@ -177,11 +197,7 @@ func (h *Host) createZeros(ctx context.Context, slot, count int, kind RegionKind
 	if err != nil {
 		return nil, h.abandonSlots(ctx, slot, count, err)
 	}
-	pages := make([]*resident, count)
-	for i := range pages {
-		pages[i] = h.adopt(slot+i, pageKey{}, true, kind)
-	}
-	return pages, nil
+	return h.adoptRun(slot, count, kind), nil
 }
 
 // createZeroRuns fills the slots of every run with zeros and returns their
@@ -242,6 +258,26 @@ func (h *Host) adopt(slot int, key pageKey, private bool, kind RegionKind) *resi
 	h.signal()
 	h.mu.Unlock()
 	return pg
+}
+
+// adoptRun is adopt for the private zero pages of count consecutive slots, in
+// slot order. A write-ahead run is thousands of pages that every other fault
+// of the host is waiting to see, so they join the recency list under one host
+// lock and wake waiters once.
+func (h *Host) adoptRun(slot, count int, kind RegionKind) []*resident {
+	pages := make([]*resident, count)
+	for i := range pages {
+		pg := &resident{mu: ctxsync.NewMutex(), slot: slot + i, private: true, kind: kind, aliases: make(map[*binding]struct{})}
+		_ = pg.mu.Lock(context.Background())
+		pages[i] = pg
+	}
+	h.mu.Lock()
+	for _, pg := range pages {
+		pg.recent = h.lru.PushBack(pg)
+	}
+	h.signal()
+	h.mu.Unlock()
+	return pages
 }
 
 func (h *Host) release(ctx context.Context, pg *resident) error {
