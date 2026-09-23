@@ -7,6 +7,7 @@ import (
 	"testing"
 	"testing/synctest"
 
+	"github.com/semistrict/sproutfs/internal/checkpoint"
 	"github.com/semistrict/sproutfs/internal/control"
 	"github.com/semistrict/sproutfs/internal/vmmemory"
 	"github.com/semistrict/sproutfs/internal/volume"
@@ -170,6 +171,81 @@ func pageRange(first, last uint64) []uint64 {
 	return pages
 }
 
+// holed attaches a region of a volume whose given pages are explicit zeros,
+// with a sibling that has faulted every page of it, so the sibling holds the
+// data pages and the holes break its residency into runs. Both regions are
+// forks of one checkpoint, so a hole is a hole in both.
+func (f *fixture) holed(pages int, holes ...uint64) (*mapping, *mapping, *backing) {
+	f.t.Helper()
+	sibling := f.newBacking(pages)
+	for _, page := range holes {
+		sibling.zero[page] = true
+		clear(sibling.data[page*uint64(f.pageSize) : (page+1)*uint64(f.pageSize)])
+	}
+	source, sm := f.attach(sibling)
+	for page := range uint64(pages) {
+		access(f.t, source, sm, page, false)
+	}
+	fork := f.newBacking(pages)
+	for _, page := range holes {
+		fork.zero[page] = true
+		clear(fork.data[page*uint64(f.pageSize) : (page+1)*uint64(f.pageSize)])
+	}
+	_, m := f.attach(fork)
+	return sm, m, fork
+}
+
+// A hole costs the same mapping command as a resident run and is worth it on the
+// same terms. A guest's address space is holes all through it, not one: measured
+// on GCE on 2026-09-22, a warm restore whose resident runs were already bounded
+// still installed 14,447 runs over 2,166,194 pages before its guest ran, of
+// which only 123,056 pages were resident identities — the rest were two million
+// pages of scattered holes, one command each.
+func TestPopulationSkipsHolesShorterThanTheWindowTheyWouldSave(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 40, LogicalPages: 128, DirtyPages: 8, ReadAheadPages: 4})
+		// Six single-page holes, which leave the data in runs of four and a
+		// tail of two.
+		_, m, b := f.holed(32, 4, 9, 14, 19, 24, 29)
+		if m.maps != 6 {
+			t.Fatalf("the populate installed %d mapping runs, want the 6 data runs of a whole 4-page window", m.maps)
+		}
+		var want []uint64
+		for _, first := range []uint64{0, 5, 10, 15, 20, 25} {
+			want = append(want, pageRange(first, first+4)...)
+		}
+		if got := m.mappedPages(); !slices.Equal(got, want) {
+			t.Fatalf("the populate mapped %v, want %v", got, want)
+		}
+		if b.loads != 0 {
+			t.Fatalf("the populate read the backing %d times, want none", b.loads)
+		}
+	})
+}
+
+// Everything a populate installs comes out of the one budget, so what an attach
+// costs before the guest runs is bounded whatever the volume looks like: the
+// pages a fork point names have the first claim on it, because nothing but this
+// populate can share them, and the rest is spent on the runs long enough to be
+// worth it.
+func TestPopulationSpendsOneBudgetOnHolesAndResidentRunsAlike(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		vmmemory.SetPopulationRuns(t, 3)
+		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 40, LogicalPages: 128, DirtyPages: 8, ReadAheadPages: 4})
+		// Long holes and long data runs alternate, so every run is worth its
+		// command and only the budget decides how many are installed.
+		_, m, _ := f.holed(32, 4, 5, 6, 7, 16, 17, 18, 19)
+		if m.maps != 3 {
+			t.Fatalf("the populate installed %d mapping runs, want the 3 its budget admits", m.maps)
+		}
+		want := append(pageRange(0, 4), pageRange(4, 8)...)
+		want = append(want, pageRange(8, 16)...)
+		if got := m.mappedPages(); !slices.Equal(got, want) {
+			t.Fatalf("the populate mapped %v, want %v", got, want)
+		}
+	})
+}
+
 // A populate run costs one mapping command whether or not the guest ever reads
 // the pages it covers. A run shorter than one read-ahead window saves at most
 // the one fault that would have mapped the same pages with the same single
@@ -290,6 +366,75 @@ func TestPopulationTakesAForkPointsPagesWhateverTheirRun(t *testing.T) {
 		if after.IdentityHits-before.IdentityHits != 2 {
 			t.Fatalf("the child mapped %d pages by identity, want the point's 2",
 				after.IdentityHits-before.IdentityHits)
+		}
+	})
+}
+
+// The bound is what an attach costs before the guest runs, whatever the volume
+// is made of. This one is made of 320 runs a page each — a hole between every
+// two pages a sibling holds — and every one of them is a whole read-ahead
+// window, so nothing but the budget decides.
+func TestPopulationInstallsNoMoreRunsThanItsBudgetHoweverManyTheVolumeHas(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const pages = 320
+		f := newConfiguredFixture(t, vmmemory.Config{PageSize: checkpoint.PageSize4KiB,
+			ResidentPages: 400, LogicalPages: 1024, DirtyPages: 8, ReadAheadPages: 1})
+		var holes []uint64
+		for page := uint64(1); page < pages; page += 2 {
+			holes = append(holes, page)
+		}
+		_, m, _ := f.holed(pages, holes...)
+		if m.maps != 128 {
+			t.Fatalf("the populate installed %d mapping runs, want the 128 its budget admits", m.maps)
+		}
+		if got := m.mappedPages(); !slices.Equal(got, pageRange(0, 128)) {
+			t.Fatalf("the populate mapped %d pages ending at %d, want the first 128 of the region",
+				len(got), got[len(got)-1])
+		}
+	})
+}
+
+// The pages a fork point names have the first claim on the budget, and they are
+// in it rather than outside it: an attach's cost is bounded whatever a point
+// names, and a page it could not afford is one the child reads back out of its
+// own first checkpoint rather than one no bound applies to.
+func TestAForkPointsPagesTakeTheBudgetFirstAndAreBoundedByIt(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		vmmemory.SetPopulationRuns(t, 2)
+		c := newPagerCluster(t)
+		source := c.create(t, "source", 16)
+		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 32, LogicalPages: 64, DirtyPages: 8, ReadAheadPages: 8})
+		r, m := f.attach(source.Volume("ram0"))
+		// Three pages the guest stored into and no checkpoint has, each a run of
+		// one, and a ten-page hole after them that is worth a command of its own.
+		for _, page := range []uint64{1, 3, 5} {
+			access(t, r, m, page, true)[0] = 44
+		}
+		if err := r.Seal(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		point, err := source.ForkPoint(t.Context(),
+			volume.Prepared([]byte("vmm"), map[string]volume.DirtySource{"ram0": r.Checkpoint()}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if pages := point.Pages("ram0"); !slices.Equal(pages, []uint64{1, 3, 5}) {
+			t.Fatalf("the fork point holds %v unpublished, want pages 1, 3 and 5", pages)
+		}
+		if err := point.Share(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		vm, err := c.manager.Fork(t.Context(), "child", point)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = vm.Close(context.Background()) })
+		_, cm := f.attach(vm.Volume("ram0"))
+		if cm.maps != 2 {
+			t.Fatalf("the populate installed %d mapping runs, want the 2 its budget admits", cm.maps)
+		}
+		if got := cm.mappedPages(); !slices.Equal(got, []uint64{1, 3}) {
+			t.Fatalf("the populate mapped %v, want the first two pages the point names", got)
 		}
 	})
 }

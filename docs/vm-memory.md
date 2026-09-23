@@ -244,10 +244,11 @@ those pages belongs to every child of that point and to nothing else, ever,
 and the pager enters the pages in the sharing index under it. A child on the
 parent's host then maps them like any inherited page — the eager restore
 population included, and whatever run they come in, so a machine forked at a
-point maps every page its parent holds dirty before its vCPUs run. The eager
-population's bound is the published pages' alone, because those a later fault
-can map from the same resident page and these it cannot: the name is gone by
-then. The pages stay the parent's private
+point maps the pages its parent holds dirty before its vCPUs run. The eager
+population's length test does not apply to them, because a later fault can map a
+published page from the same resident page and cannot map one of these: the name
+is gone by then. Its run budget does, and they have the first claim on it. The
+pages stay the parent's private
 dirty state under the name: nothing is copied, nothing becomes durable, the
 parent still copies on write and still owns the reservation that spills them,
 and the name lasts exactly as long as the seal, whose bytes cannot change while
@@ -315,16 +316,22 @@ An explicit later population requires quiescent guest memory.
 It is bounded, because a mapping run costs the same command whether or not the
 guest ever reads it and a page the populate leaves alone costs at most a share
 of one: the fault that reaches it maps its whole read-ahead window from the same
-resident pages. So a populate installs a published run only when it covers at
-least one read-ahead window, and at most 128 such runs in all. Neither explicit
-zeros nor the private pages a fork point names are counted against that: a hole
-is one run however many pages it covers, and a fork point's pages are the
-parent's dirty state under a name that ending the seal takes back, so the attach
-is the only moment a child can map them — and the parent's dirty budget bounds
-how many there are. Measured on GCE on 2026-09-22, an unbounded populate mapped
-2,930,747 sibling-resident pages of a 16 GiB guest in 21,698 runs before the
-guest ran, five seconds of a restore whose bound is half a second, after which
-the guest took 723 faults.
+resident pages. So a populate installs a run only when it covers at least one
+read-ahead window, and at most 128 runs in all — resident runs and holes alike,
+out of one budget. A hole is one run however many pages it covers, but a guest's
+address space is holes all through it rather than one, so a hole earns its
+command on the same terms as a resident run. The runs a fork point names are the
+exception to the length and not to the budget: they are the parent's dirty state
+under a name that ending the seal takes back, so the attach is the only moment a
+child can map them and they take the budget before anything else, whatever run
+they come in.
+
+Measured on GCE, an unbounded populate mapped 2,930,747 sibling-resident pages of
+a 16 GiB guest in 21,698 runs before the guest ran — five seconds of a restore
+whose bound is half a second, after which the guest took 723 faults. Bounding the
+resident runs alone left 14,447 runs over 2,166,194 pages, of which only 123,056
+pages were resident identities: two million pages of scattered holes were still
+paying a command each. That is what one budget over every kind of run is for.
 
 A region the pager refuses is the one failure whose two halves sit on opposite
 sides of the socket. The VMM builds its sessions inside its own boot or load
