@@ -21,6 +21,13 @@ if [[ ${SPROUTFS_GCE_WORKLOAD:-0} == 1 ]]; then
 fi
 sysctl -w vm.nr_hugepages="$hugepages"
 [[ $(cat /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages) -ge $hugepages ]]
+# The RAM arena is an ordinary shared memfd. Under advise, the only huge pages
+# in it are the ones its pager asks for through its huge mapping — the whole
+# 2 MiB blocks of a zero run, allocated and cleared at once instead of 512 times
+# over — and every other shared memory on the host keeps ordinary pages. The
+# guest's own pages stay 4 KiB whatever this is.
+echo advise > /sys/kernel/mm/transparent_hugepage/shmem_enabled
+[[ $(cat /sys/kernel/mm/transparent_hugepage/shmem_enabled) == *'[advise]'* ]]
 touch /var/lib/sproutfs-bench/lease
 (
     while sleep 60; do touch /var/lib/sproutfs-bench/lease; done
@@ -94,6 +101,7 @@ CGO_ENABLED=0 go test -c ./internal/vmmachine -o "$work/build/vmmachine.test"
     lscpu
     free -m
     cat /sys/kernel/mm/transparent_hugepage/enabled
+    cat /sys/kernel/mm/transparent_hugepage/shmem_enabled
     grep Huge /proc/meminfo
     cat /sys/module/kvm_intel/parameters/nested
     go version

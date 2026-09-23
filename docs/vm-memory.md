@@ -167,8 +167,9 @@ The host must provision a 2 MiB HugeTLB pool before starting VMs for the **PMEM*
 arena; the **RAM** arena is an ordinary memfd charged to the pod's memory, so a
 node provisions the two separately and the pool is no longer divided between
 them. Either arena reserves virtual address space without reserving its entire
-logical capacity, then allocates each resident slot with `fallocate` before
-touching its mapping. Exhaustion — of the pool, or of the pod's memory — returns
+logical capacity, then allocates each resident slot before touching its
+mapping: the HugeTLB arena with `fallocate`, the ordinary one with a populating
+write fault (`MADV_POPULATE_WRITE`) through a mapping of its own. Exhaustion — of the pool, or of the pod's memory — returns
 an allocation error, with no fallback to another page. Eviction punches a whole
 slot only after revoking every alias. HugeTLB pages are unswappable and shmem
 pages are swappable, so the pager's own spill path remains responsible for
@@ -176,6 +177,23 @@ reclaim in both. The kernel must support missing, minor and write-protect faults
 on userfaultfd for HugeTLB **and** for shmem, because a host runs a pager of each
 kind. A pool is shared by all HugeTLB arenas on the host, so deployment admission
 must budget their combined resident capacity.
+
+**The ordinary arena allocates a zero run's whole 2 MiB blocks as huge pages,
+and nothing else.** It maps its memfd twice: once advised never to be huge,
+which every access and every allocation of a page or a run's ends goes through,
+and once aligned to 2 MiB and advised to be, which is used only to allocate the
+blocks a zero run covers whole. Each such block is one transparent huge page
+that the kernel allocates and clears at once, where 512 ordinary ones cost a
+boot's write-ahead run several milliseconds each. The arena still holds exactly
+the slots the pager counted: a huge page for anything smaller than a whole block
+would hold memory for slots nobody asked for, and a mapping advised against huge
+pages is the one way to refuse one whatever the host's policy. Releasing one
+slot of a huge page splits it and gives back that slot alone. The host's
+`/sys/kernel/mm/transparent_hugepage/shmem_enabled` must be `advise` (or
+`within_size` or `always`) for the blocks to be huge; under `never` they are
+ordinary pages and the pager runs the same. The guest's own translations are
+4 KiB either way, because `UFFDIO_CONTINUE` installs one page table entry at a
+time.
 
 Read-ahead and write-ahead select one page when a configuration leaves them
 zero, which is no read-ahead and no write-ahead. A store page is the same unit
@@ -401,9 +419,8 @@ has never touched, has no page to copy and nothing to fence, so nothing is
 revoked: one mapping command replaces the zero mapping or the trap with a
 private page, and a zero mapping goes on serving reads until the replacement
 lands. The page is a free arena slot, which is punched and so already reads as
-zeros: the Linux arena allocates it with `fallocate` instead of writing zeros
-into it, the kernel clears it as the resolving `UFFDIO_CONTINUE` installs it,
-and the volume is not read.
+zeros: the Linux arena allocates it without writing zeros into it, the kernel
+clears it as it allocates it, and the volume is not read.
 
 **A store replaces a mapping; it never takes one away.** A copy-on-write of a
 page the guest maps read-only — a shared page, a page a seal write-protected —
