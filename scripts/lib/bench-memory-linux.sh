@@ -115,6 +115,55 @@ CGO_ENABLED=0 go test -c ./internal/vmmachine -o "$work/build/vmmachine.test"
 
 if [[ ${SPROUTFS_GCE_BUILD_ONLY:-0} == 1 ]]; then exit 0; fi
 
+# Only the Linux qualification, on x86-64: what scripts/test-vm-memory-lima.sh
+# and scripts/test-firecracker-lima.sh run on aarch64. The crate's own tests and
+# lints, the pager and its client against real UFFD, and every Firecracker
+# suite over a root holding the deployment's guest agent and witness. Each
+# suite's log is a result of its own and a failure fails the run.
+if [[ ${SPROUTFS_GCE_QUALIFY:-0} == 1 ]]; then
+    if [[ ! -x "$CARGO_HOME/bin/cargo-nextest" ]]; then
+        cargo install --locked cargo-nextest
+    fi
+    rustup component add clippy
+    status=0
+    qualify() {
+        local name=$1
+        shift
+        echo "== $name" >> "$results/qualify.txt"
+        if "$@" > "$results/$name.log" 2>&1; then
+            echo "pass" >> "$results/qualify.txt"
+        else
+            echo "FAIL $?" >> "$results/qualify.txt"
+            status=1
+        fi
+    }
+    qualify crate-clippy cargo clippy --locked --manifest-path rust/sproutfs-vm-memory/Cargo.toml --all-targets -- -D warnings
+    qualify crate-nextest cargo nextest run --locked --no-tests pass --manifest-path rust/sproutfs-vm-memory/Cargo.toml
+    export SPROUTFS_VM_MEMORY_CLIENT="$CARGO_TARGET_DIR/debug/examples/client"
+    qualify vmtest "$work/build/vmtest.test" -test.v -test.timeout=10m
+    qualify vmmemory "$work/build/vmmemory.test" -test.v -test.timeout=20m
+    qualify pool-exhaustion env SPROUTFS_HUGETLB_EXHAUSTION=1 "$work/build/vmmemory.test" -test.v \
+        -test.run '^TestLinuxArenaPoolExhaustionReturnsError$' -test.timeout=1m
+    # The Firecracker suites' root: the init, the deployment's guest agent and
+    # witness, and busybox for the shell the agent runs commands through.
+    fixture="$work/build/firecracker-root"
+    mkdir -p "$fixture/dev" "$fixture/proc" "$fixture/sys" "$fixture/mnt" "$fixture/bin"
+    cp "$root/init" "$fixture/init"
+    CGO_ENABLED=0 go build -o "$fixture/agent" ./cmd/sproutfs-guest-agent
+    CGO_ENABLED=0 go build -o "$fixture/bin/sproutfs-guest-witness" ./cmd/sproutfs-guest-witness
+    cp /usr/bin/busybox "$fixture/bin/busybox"
+    for applet in sh sleep echo test touch cat df; do ln -sfn busybox "$fixture/bin/$applet"; done
+    truncate -s 64M "$work/build/firecracker-root.ext4"
+    mkfs.ext4 -q -F -b 4096 -d "$fixture" "$work/build/firecracker-root.ext4"
+    qualify firecracker env SPROUTFS_FIRECRACKER="$work/build/firecracker" \
+        SPROUTFS_FIRECRACKER_SECCOMP="$work/build/seccomp.bpf" \
+        SPROUTFS_FIRECRACKER_KERNEL="$work/build/kernel" \
+        SPROUTFS_FIRECRACKER_ROOT="$work/build/firecracker-root.ext4" \
+        SPROUTFS_FIRECRACKER_RESIDENT_PAGES=48 \
+        "$work/build/vmmachine.test" -test.v -test.timeout=60m
+    exit "$status"
+fi
+
 # The realistic comparison: the workload image scripts/lib/bench-image.sh builds
 # — a pnpm install, a cold build of the openai/codex workspace and one crate's
 # tests, that checkout as a git repository — run through
