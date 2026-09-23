@@ -38,6 +38,9 @@ type resident struct {
 	// reclaim finds it there.
 	aliases map[*binding]struct{}
 	recent  *list.Element
+	// idle is this page's place in Host.idle while no region maps it, and nil
+	// otherwise. Protected by Host.mu.
+	idle *list.Element
 	// replacing counts the stores that have taken a binding off this page and
 	// whose mapping command has not yet replaced the guest's mapping of it. The
 	// guest goes on reading this page's offset until that command lands, so no
@@ -113,6 +116,7 @@ func (h *Host) aliases(pg *resident) []*binding {
 func (h *Host) bind(b *binding, pg *resident) {
 	h.mu.Lock()
 	found := h.probe.bind(h, b, pg)
+	h.mappedLocked(pg)
 	pg.aliases[b] = struct{}{}
 	b.resident = pg
 	h.mu.Unlock()
@@ -134,6 +138,7 @@ func (h *Host) bindRun(bindings []*binding, pages []*resident) {
 		if f := h.probe.bind(h, b, pages[k]); f != "" && found == "" {
 			found = f
 		}
+		h.mappedLocked(pages[k])
 		pages[k].aliases[b] = struct{}{}
 		b.resident = pages[k]
 	}
@@ -155,6 +160,7 @@ func (h *Host) joinReclaiming(held, b *binding) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if pg := b.resident; pg != nil {
+		h.mappedLocked(pg)
 		pg.aliases[held] = struct{}{}
 		held.resident = pg
 	}
@@ -294,6 +300,7 @@ func (h *Host) release(ctx context.Context, pg *resident) error {
 	h.putFree(pg.slot)
 	pg.slot = -1
 	h.lru.Remove(pg.recent)
+	h.mappedLocked(pg)
 	if pg.key != (pageKey{}) && h.clean[pg.key] == pg {
 		delete(h.clean, pg.key)
 		h.cleanVersion++
@@ -314,8 +321,27 @@ func (h *Host) leave(b *binding, pg *resident) {
 	h.mu.Lock()
 	delete(pg.aliases, b)
 	b.resident = nil
+	h.idleLocked(pg)
 	h.signal()
 	h.mu.Unlock()
+}
+
+// idleLocked puts a page no region maps any more on the idle list, newest
+// last, where it waits for a region that inherits its identity or for an
+// allocation that needs its slot. Caller holds h.mu.
+func (h *Host) idleLocked(pg *resident) {
+	if len(pg.aliases) == 0 && pg.idle == nil && pg.slot >= 0 {
+		pg.idle = h.idle.PushBack(pg)
+	}
+}
+
+// mappedLocked takes a page off the idle list, which a region mapping it again
+// or its memory going back does. Caller holds h.mu.
+func (h *Host) mappedLocked(pg *resident) {
+	if pg.idle != nil {
+		h.idle.Remove(pg.idle)
+		pg.idle = nil
+	}
 }
 
 // releaseOrigin gives up a page a copy was made from once nothing maps it and
@@ -353,6 +379,14 @@ func (h *Host) unlink(ctx context.Context, b *binding, pg *resident) error {
 	if last && pg.replacing > 0 {
 		pg.dropped, last = true, false
 	}
+	// A published page is still the page its identity names when the last
+	// region mapping it goes: it stays, idle, for the next region that
+	// inherits that identity, and an allocation short of a slot gives it up
+	// before anything mapped. A private page is one region's state and nobody
+	// else's, so it goes with that region.
+	if last && pg.published() && h.clean[pg.key] == pg {
+		last = false
+	}
 	h.mu.Unlock()
 	if last {
 		if err := h.release(ctx, pg); err != nil {
@@ -362,6 +396,7 @@ func (h *Host) unlink(ctx context.Context, b *binding, pg *resident) error {
 	h.mu.Lock()
 	delete(pg.aliases, b)
 	b.resident = nil
+	h.idleLocked(pg)
 	h.mu.Unlock()
 	return nil
 }

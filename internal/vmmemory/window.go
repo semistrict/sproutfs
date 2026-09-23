@@ -293,10 +293,11 @@ func (p *windowPlan) reserveAround(index uint64) {
 
 // reserveRuns takes free slots, without evicting, for the eligible pages that
 // still need loading. Runs of consecutive pages prefer consecutive slots so a
-// later mapping installs them as one range. When free slots cannot cover the
-// window, the pages after the faulting one come first: access tends to
-// continue forward.
-func (p *windowPlan) reserveRuns(from uint64) {
+// later mapping installs them as one range. Idle pages are given up first to
+// make those slots free, which is not an eviction: nothing maps them. When free
+// slots cannot cover the window even so, the pages after the faulting one come
+// first: access tends to continue forward.
+func (p *windowPlan) reserveRuns(ctx context.Context, from uint64) error {
 	h := p.region.host
 	needs := p.needsLoad
 	needed := 0
@@ -304,6 +305,9 @@ func (p *windowPlan) reserveRuns(from uint64) {
 		if needs(page) {
 			needed++
 		}
+	}
+	if err := h.makeRoom(ctx, needed); err != nil {
+		return err
 	}
 	spans := [][2]uint64{{p.start, p.end}}
 	h.mu.Lock()
@@ -326,11 +330,12 @@ func (p *windowPlan) reserveRuns(from uint64) {
 				p.reserve(page+uint64(k), slot+k)
 			}
 			if count == 0 {
-				return
+				return nil
 			}
 			page += run
 		}
 	}
+	return nil
 }
 
 // loadReserved reads the reserved pages of this window with one backing read

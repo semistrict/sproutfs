@@ -206,6 +206,11 @@ func TestReleasedSourceSendsTheDestinationToItsVolume(t *testing.T) {
 	// budget refuses without answering, which is not the answer this is about.
 	received.Close()
 	destination.close()
+	// The destination's published pages would otherwise stay idle in its pager
+	// and be mapped again without a read, which is not the restart this is.
+	if _, err := m.destPager.host.DropIdle(t.Context()); err != nil {
+		t.Fatal(err)
+	}
 	peers := map[string]vmmemory.Backing{}
 	backings := map[string]*vmmigrate.PeerBacking{}
 	for _, region := range handoff.Regions {

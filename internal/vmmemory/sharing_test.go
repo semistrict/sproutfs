@@ -640,3 +640,44 @@ func TestWritesDuringPublicationNeverAliasTheCheckpoint(t *testing.T) {
 		}
 	})
 }
+
+// A published page no region maps any more is still the page its identity
+// names. It stays in the arena, idle, and the next region that inherits the
+// identity maps it without reading the volume. An idle page is the first thing
+// an allocation short of a slot gives up, before any page a region maps.
+func TestAPublishedPageOutlivesTheLastRegionThatMappedIt(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 2, LogicalPages: 32, DirtyPages: 8, ReadAheadPages: 1})
+		a, am, _ := f.region(4)
+		access(t, a, am, 0, false)
+		access(t, a, am, 1, false)
+		clear(am.pages) // its VMM is gone
+		if err := a.Detach(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		stats, err := f.h.Stats(t.Context())
+		if err != nil || stats.ResidentPages != 2 || stats.IdlePages != 2 {
+			t.Fatalf("after the last region detached: %+v %v", stats, err)
+		}
+		// A region of other pages needs a slot of the full arena: the older idle
+		// page goes, and nothing is evicted.
+		other := f.newUnrelatedBacking(4)
+		c, cm := f.attach(other)
+		access(t, c, cm, 0, false)
+		stats, err = f.h.Stats(t.Context())
+		if err != nil || stats.IdleDrops != 1 || stats.Evictions != 0 || stats.IdlePages != 1 {
+			t.Fatalf("a slot for another region's page: %+v %v", stats, err)
+		}
+		// A region inheriting a's identities maps the idle page 1 without a read,
+		// and reads page 0 again, which was given up.
+		b, bm, bb := f.region(4)
+		access(t, b, bm, 1, false)
+		if bb.loads != 0 {
+			t.Fatalf("the idle page was loaded again %d times", bb.loads)
+		}
+		access(t, b, bm, 0, false)
+		if bb.loads != 1 {
+			t.Fatalf("the page given up was loaded %d times, want once", bb.loads)
+		}
+	})
+}

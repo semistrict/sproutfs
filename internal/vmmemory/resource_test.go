@@ -20,6 +20,30 @@ func pageBudget(t *testing.T, pages int) *resource.Budget {
 	return b
 }
 
+// expectIdleUntilReclaimed requires that what the last detach left behind is
+// idle cache and nothing else: the published pages stay resident, idle, still
+// charged to the budget, and a consumer that asks for the whole budget gets it
+// by taking every one of them, which leaves the pager holding nothing.
+func expectIdleUntilReclaimed(t *testing.T, f *fixture, b *resource.Budget, pages int, pageBytes int64) {
+	t.Helper()
+	stats, err := f.h.Stats(t.Context())
+	if err != nil || stats.ResidentPages != pages || stats.IdlePages != pages || b.Stats().Used != int64(pages)*pageBytes {
+		t.Fatalf("after the last detach: pager=%+v budget=%+v %v, want %d idle pages", stats, b.Stats(), err, pages)
+	}
+	whole, err := b.TryAcquire(t.Context(), b.Stats().Limit)
+	if err != nil {
+		t.Fatalf("the idle pages were not reclaimable: %v", err)
+	}
+	stats, err = f.h.Stats(t.Context())
+	if err != nil || stats.ResidentPages != 0 || stats.IdleDrops != uint64(pages) {
+		t.Fatalf("reclaiming the idle pages left pager=%+v %v", stats, err)
+	}
+	whole.Close()
+	if b.Stats().Used != 0 {
+		t.Fatalf("the budget holds %d bytes once the idle pages went", b.Stats().Used)
+	}
+}
+
 func TestPagerEvictsWithinSharedRAMAllowance(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		b := pageBudget(t, 2)
@@ -51,9 +75,7 @@ func TestPagerEvictsWithinSharedRAMAllowance(t *testing.T) {
 		if err := r.Detach(t.Context()); err != nil {
 			t.Fatal(err)
 		}
-		if got := b.Stats().Used; got != 0 {
-			t.Fatalf("detached pages retain %d bytes", got)
-		}
+		expectIdleUntilReclaimed(t, f, b, 2, int64(pageSize))
 	})
 }
 
@@ -81,9 +103,7 @@ func TestSharedPageIsChargedOnceUntilLastAliasDetaches(t *testing.T) {
 		if err := second.Detach(t.Context()); err != nil {
 			t.Fatal(err)
 		}
-		if b.Stats().Used != 0 {
-			t.Fatal("last detach retained a punched page")
-		}
+		expectIdleUntilReclaimed(t, f, b, 1, int64(pageSize))
 	})
 }
 
@@ -120,9 +140,7 @@ func TestFaultWaitsForOtherConsumerAndCancellationReleasesReservations(t *testin
 		if err := r.Detach(t.Context()); err != nil {
 			t.Fatal(err)
 		}
-		if b.Stats().Used != 0 {
-			t.Fatal("fault/teardown leaked RAM")
-		}
+		expectIdleUntilReclaimed(t, f, b, 1, int64(pageSize))
 	})
 }
 
@@ -227,8 +245,6 @@ func TestHugePageFaultReclaimsCacheBeforeEvictingGuestPages(t *testing.T) {
 		if err := r.Detach(t.Context()); err != nil {
 			t.Fatal(err)
 		}
-		if b.Stats().Used != 0 {
-			t.Fatal("huge-page teardown retained its reservation")
-		}
+		expectIdleUntilReclaimed(t, f, b, 2, huge)
 	})
 }

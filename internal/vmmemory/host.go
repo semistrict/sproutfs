@@ -66,9 +66,16 @@ type Host struct {
 	asked       bool
 	zeroRegions int // attached regions retaining knowledge of explicit zeros
 	lru         list.List
-	logical     int
-	dirty       int
-	changed     chan struct{}
+	// idle is the resident pages no region maps, oldest first: published
+	// pages kept for the next region that inherits their identity, and given
+	// up before any mapped page when a slot is short. See Host.idleLocked.
+	idle list.List
+	// unregisterIdle takes the idle pages out of the host budget's cache,
+	// which Close does before it gives their memory back.
+	unregisterIdle func()
+	logical        int
+	dirty          int
+	changed        chan struct{}
 	// windows lends out the buffers window reads fill, as *[]byte so that
 	// handing one back allocates nothing. See takeWindow.
 	windows   sync.Pool
@@ -175,6 +182,9 @@ func New(ctx context.Context, resources *resource.Budget, cfg Config, arena Aren
 	for i := cfg.DirtyPages - 1; i >= 0; i-- {
 		h.freeSpill = append(h.freeSpill, i)
 	}
+	// Idle pages are the host budget's cache: any consumer short of memory
+	// takes them before it waits, as it takes the checkpoint cache's.
+	h.unregisterIdle = resources.RegisterCache(h.reclaimIdle)
 	return h, nil
 }
 
@@ -211,6 +221,7 @@ func (h *Host) Close(ctx context.Context) error {
 		h.err = errors.Join(ErrClosed, h.err)
 	}
 	h.signal()
+	h.unregisterIdle()
 	var result error
 	for slot, entry := range h.residentLeases {
 		if entry.lease == nil {

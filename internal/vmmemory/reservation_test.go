@@ -53,10 +53,7 @@ func TestPartialReadAheadPublicationReturnsOnlyUnusedCapacity(t *testing.T) {
 		if err := r.Detach(t.Context()); err != nil {
 			t.Fatal(err)
 		}
-		stats, err = f.h.Stats(t.Context())
-		if err != nil || stats.ResidentPages != 0 || shared.Stats().Used != 0 {
-			t.Fatalf("partial publication retained capacity after detach: %+v, %v", stats, err)
-		}
+		expectIdleUntilReclaimed(t, f, shared, 2, int64(pageSize))
 	})
 }
 

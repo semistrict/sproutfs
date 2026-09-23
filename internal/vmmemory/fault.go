@@ -350,7 +350,9 @@ func (r *Region) readInWindow(ctx context.Context, index uint64) (pg *resident, 
 			return nil, false, err
 		}
 	}
-	plan.reserveRuns(index)
+	if err := plan.reserveRuns(ctx, index); err != nil {
+		return nil, false, err
+	}
 	if err := plan.loadReserved(ctx); err != nil {
 		return nil, false, err
 	}
@@ -643,6 +645,17 @@ func (r *Region) storeZeros(ctx context.Context, index, first, last uint64, spil
 // for index alone, which may evict.
 func (r *Region) allocateRun(ctx context.Context, index, first, last uint64) (uint64, []MapRun, error) {
 	h := r.host
+	if err := h.makeRoom(ctx, int(last-first)); err != nil {
+		return 0, nil, err
+	}
+	h.mu.Lock()
+	noExtent := h.placing() && h.slots.FreeExtents() == 0 && h.extents[extentKey{r, index / uint64(h.extentPages)}] == nil
+	h.mu.Unlock()
+	if noExtent {
+		if _, err := h.reclaimExtent(ctx); err != nil {
+			return 0, nil, err
+		}
+	}
 	if start, runs := h.placeRun(r, index, first, last); len(runs) > 0 {
 		return start, runs, nil
 	}
@@ -820,7 +833,9 @@ func (r *Region) loadOnce(ctx context.Context, index uint64, spill *int) (bool, 
 			return false, err
 		}
 	}
-	plan.reserveRuns(index)
+	if err := plan.reserveRuns(ctx, index); err != nil {
+		return false, err
+	}
 	if err := plan.loadReserved(ctx); err != nil {
 		return false, err
 	}

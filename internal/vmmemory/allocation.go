@@ -125,9 +125,26 @@ func (r *Region) allocatePrivate(ctx context.Context, index uint64) (int, error)
 		return 0, err
 	}
 	slot, placeable := h.place(r, index)
+	noExtent := !placeable && h.placing() && h.slots.FreeExtents() == 0
 	h.mu.Unlock()
 	if slot >= 0 {
 		return slot, nil
+	}
+	if noExtent {
+		// The offset space's extents are held by the idle pages of regions
+		// that have gone; one is given back for this range.
+		freed, err := h.reclaimExtent(ctx)
+		if err != nil {
+			return 0, err
+		}
+		if freed {
+			h.mu.Lock()
+			slot, placeable = h.place(r, index)
+			h.mu.Unlock()
+			if slot >= 0 {
+				return slot, nil
+			}
+		}
 	}
 	if !placeable {
 		return r.allocateNear(ctx, index)
@@ -218,6 +235,17 @@ func (h *Host) allocate(ctx context.Context, place func() int, preferEviction bo
 		} else if slot >= 0 {
 			capacityBlocked = true
 		}
+		// An idle page is the first thing given up: no region maps it, so its
+		// slot costs no revocation and no spill, and nothing a guest is using.
+		if !preferEviction {
+			if pg := h.takeIdleLocked(); pg != nil {
+				h.mu.Unlock()
+				if err := h.dropIdle(ctx, pg); err != nil {
+					return 0, err
+				}
+				continue
+			}
+		}
 		var candidates []*resident
 		busy := false
 		for e := h.lru.Front(); e != nil; e = e.Next() {
@@ -280,6 +308,134 @@ func (h *Host) allocate(ctx context.Context, place func() int, preferEviction bo
 			return 0, context.Cause(ctx)
 		case <-changed:
 		case <-resourceChanged:
+		}
+	}
+}
+
+// takeIdleLocked locks and returns the oldest idle page it can take without
+// waiting, or nil where there is none. Caller holds h.mu.
+func (h *Host) takeIdleLocked() *resident { return h.takeIdleWhereLocked(nil) }
+
+// takeIdleWhereLocked is takeIdleLocked for the idle pages want accepts, or
+// any where want is nil. Caller holds h.mu.
+func (h *Host) takeIdleWhereLocked(want func(*resident) bool) *resident {
+	for e := h.idle.Front(); e != nil; e = e.Next() {
+		pg := e.Value.(*resident)
+		if want != nil && !want(pg) {
+			continue
+		}
+		if !pg.mu.TryLock() {
+			continue
+		}
+		if len(pg.aliases) == 0 && pg.replacing == 0 {
+			return pg
+		}
+		pg.mu.Unlock()
+	}
+	return nil
+}
+
+// dropIdle gives up one idle page takeIdleLocked returned locked: its identity
+// stops naming it, so the next region that inherits it reads it again, and its
+// slot is free.
+func (h *Host) dropIdle(ctx context.Context, pg *resident) error {
+	err := h.release(ctx, pg)
+	if err == nil {
+		h.mu.Lock()
+		h.stats.IdleDrops++
+		h.mu.Unlock()
+	}
+	h.unlockAll([]*resident{pg})
+	return err
+}
+
+// makeRoom gives up idle pages until want slots are free, or no idle page is
+// left. The allocations that take free slots only — a store's write-ahead run,
+// a load's read-ahead — never evict, so an arena full of idle pages would
+// otherwise shrink every one of them to the single page that may.
+func (h *Host) makeRoom(ctx context.Context, want int) error {
+	for {
+		h.mu.Lock()
+		if h.slots.Free() >= want {
+			h.mu.Unlock()
+			return nil
+		}
+		pg := h.takeIdleLocked()
+		h.mu.Unlock()
+		if pg == nil {
+			return nil
+		}
+		if err := h.dropIdle(ctx, pg); err != nil {
+			return err
+		}
+	}
+}
+
+// reclaimIdle is the host budget's cache eviction for this pager: it gives up
+// one idle page, reporting whether it did. The budget calls it for whichever
+// consumer is short, and that may be this pager, from inside an allocation
+// that holds h.mu, or the other pager of this host from inside one of its own,
+// which is why it never waits for h.mu: an allocation of this pager gives up
+// idle pages itself, and another consumer that finds the lock taken waits for
+// the budget's next release, which a pager this busy is about to make.
+func (h *Host) reclaimIdle(ctx context.Context, _ int64) (bool, error) {
+	if !h.mu.TryLock() {
+		return false, nil
+	}
+	pg := h.takeIdleLocked()
+	h.mu.Unlock()
+	if pg == nil {
+		return false, nil
+	}
+	return true, h.dropIdle(ctx, pg)
+}
+
+// DropIdle gives up every idle page this host can take without waiting, and
+// reports how many it gave up. A host that wants its memory back rather than
+// kept for the next VM to inherit calls it; so does a test whose machine must
+// fault every page from scratch.
+func (h *Host) DropIdle(ctx context.Context) (int, error) {
+	dropped := 0
+	for {
+		h.mu.Lock()
+		pg := h.takeIdleLocked()
+		h.mu.Unlock()
+		if pg == nil {
+			return dropped, nil
+		}
+		if err := h.dropIdle(ctx, pg); err != nil {
+			return dropped, err
+		}
+		dropped++
+	}
+}
+
+// reclaimExtent gives up idle pages until an extent of the offset space is
+// free, where none is, and reports whether it freed one. A published page
+// stays at the offset the placement rule gave it when it goes idle, so it keeps
+// that offset's extent from going back after the region that placed it has
+// gone: an arena full of the idle pages of stopped VMs would otherwise have no
+// extent left for a running one, and every private page of it would be a page
+// of its own somewhere in the arena.
+func (h *Host) reclaimExtent(ctx context.Context) (bool, error) {
+	orphaned := func(pg *resident) bool {
+		e := h.residentLeases[pg.slot].extent
+		return e != nil && h.extents[e.key] != e
+	}
+	for {
+		h.mu.Lock()
+		if !h.placing() || h.slots.FreeExtents() > 0 {
+			freed := h.placing() && h.slots.FreeExtents() > 0
+			h.mu.Unlock()
+			return freed, nil
+		}
+		pg := h.takeIdleWhereLocked(orphaned)
+		h.mu.Unlock()
+		if pg == nil {
+			return false, nil
+		}
+		if err := h.dropIdle(ctx, pg); err != nil {
+			return false, err
 		}
 	}
 }

@@ -1170,6 +1170,27 @@ and terminal like one. `Stats.RefusedMappings` counts the deferred faults; a
 host that refuses has given its client a budget too small for the mappings its
 guest's access pattern fragments into.
 
+## Idle pages
+
+A published page is still the page its identity names when the last region
+mapping it goes, so it stays in the arena, idle, rather than going back. The
+next region that inherits the identity maps it without reading the volume: a
+seeded guest that is checkpointed and stopped leaves its memory for the forks of
+that checkpoint, which is what a fork of a stopped template needs and what plain
+Firecracker gets from the host's page cache. A private page is one region's
+state and goes with that region.
+
+An idle page is memory nobody is using, so it is the first thing given up and
+never a reason to wait. An allocation short of a slot takes the oldest idle page
+before it evicts anything a region maps, and a store's write-ahead run and a
+load's read-ahead, which only take free slots, give up idle pages to make those
+slots free. Idle pages are also the host budget's cache, so the other pager and
+the checkpoint cache take them before they wait. A page placed at its own offset
+keeps that offset's extent while it is idle, so a region that finds no extent
+free gives up the idle pages of an extent whose region has gone. `DropIdle`
+gives them all up at once. `Stats.IdlePages` is how many there are and
+`Stats.IdleDrops` how many were given up.
+
 ## Eviction ordering
 
 1. Hold the page transition so no new alias can be installed.
@@ -1468,7 +1489,8 @@ checkpoint, and must wait at a full dirty budget for a checkpoint to relieve it
 rather than fail the post-copy read. Finally they run a region against a volume whose
 every call fails, as a handed-off host's volume does: verification, listing and
 serving must all continue, a seal or a fault must report `ErrHandedOff`, and
-detaching must release every resident page, reservation and logical page.
+detaching must release every resident page, reservation and logical page it
+owns.
 
 The full-guest suite builds the feature-enabled VMM and the restrictive aarch64
 seccomp policy, downloads a pinned official Firecracker CI kernel with a

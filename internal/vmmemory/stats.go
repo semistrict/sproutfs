@@ -31,6 +31,13 @@ type Stats struct {
 	// never reaches the backing, so it is counted apart from the writes below.
 	SpillWrites, SpillWriteBytes            uint64
 	ResidentPages, DirtyPages, LogicalPages int
+	// IdlePages is how many of the resident pages no region maps: published
+	// pages whose last mapping went, kept under their identity so the next
+	// region that inherits one maps it instead of reading it. IdleDrops counts
+	// the idle pages given up for a slot, which is the first thing an
+	// allocation short of one gives up.
+	IdlePages int
+	IdleDrops uint64
 	// PrivateExtents is how many 2 MiB-aligned ranges of this pager's regions
 	// own an extent of the offset space, which is how many hold a private page.
 	// It is addresses and not memory: an extent whose range holds one private
@@ -180,6 +187,7 @@ func (h *Host) Stats(ctx context.Context) (Stats, error) {
 	defer h.mu.Unlock()
 	stats := h.stats
 	stats.ResidentPages = h.slots.Held()
+	stats.IdlePages = h.idle.Len()
 	stats.PrivateExtents = len(h.extents)
 	stats.DirtyPages = h.dirty
 	stats.LogicalPages = h.logical
