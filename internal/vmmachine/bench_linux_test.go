@@ -1209,33 +1209,40 @@ func TestGuestWorkloadBenchmark(t *testing.T) {
 // starts from the capture's checkpoint. "cargo-build" is the cold and the warm
 // build, "repository" the cold and the warm search and read of the repository,
 // and "baseline" the plain-Firecracker record of each other selected scenario.
-var benchScenarios = []struct{ name, needs string }{
-	{"boot", ""},
-	{"pnpm-install", "boot"},
-	{"cargo-build", "boot"},
-	{"repository", "boot"},
-	{"capture", "boot"},
-	{"restore-cold", "capture"},
-	{"restore-warm", "capture"},
-	{"fork-fanout", "capture"},
-	{"steady-state", "capture"},
-	{"db-fork", "capture"},
-	{"baseline", ""},
+var benchScenarios = []struct {
+	name, needs string
+	// optIn marks a scenario a run takes only when it names it: one that
+	// finds things out rather than times them, at a cost no timed run should
+	// carry.
+	optIn bool
+}{
+	{"boot", "", false},
+	{"pnpm-install", "boot", false},
+	{"cargo-build", "boot", false},
+	{"repository", "boot", false},
+	{"capture", "boot", false},
+	{"restore-cold", "capture", false},
+	{"restore-warm", "capture", false},
+	{"fork-fanout", "capture", false},
+	{"fork-diagnostics", "fork-fanout", true},
+	{"steady-state", "capture", false},
+	{"db-fork", "capture", false},
+	{"baseline", "", false},
 }
 
 // scenarioSet is the scenarios one run measures.
 type scenarioSet map[string]bool
 
 // selectedScenarios reads SPROUTFS_BENCH_SCENARIOS, a comma-separated list of
-// scenario names; unset, a run takes every one. A name it does not know, or a
-// scenario without the one it needs, fails the run rather than measuring
-// something other than what was asked for.
+// scenario names; unset, a run takes every one but those that are opt-in. A
+// name it does not know, or a scenario without the one it needs, fails the run
+// rather than measuring something other than what was asked for.
 func selectedScenarios(t *testing.T) scenarioSet {
 	t.Helper()
 	selected := scenarioSet{}
 	value := os.Getenv("SPROUTFS_BENCH_SCENARIOS")
 	for _, scenario := range benchScenarios {
-		selected[scenario.name] = value == ""
+		selected[scenario.name] = value == "" && !scenario.optIn
 	}
 	if value == "" {
 		return selected
@@ -1601,32 +1608,17 @@ func (b *benchmark) forkFanOut(ctx context.Context, origin *forkOrigin) {
 	privateBytes := make([]uint64, count)
 	residentBytes := make([]uint64, count)
 	regionPages := make([]map[string]map[string]uint64, count)
-	// Which pages those are, so that what a fork wrote can be looked up in the
-	// image: a page number times that region's page size is an offset into it.
-	ownPages := make([]map[string][]uint64, count)
-	// How the private pages of the fork's RAM lie: the runs they form, the gaps
-	// between them and the 2 MiB ranges they fall in. The page-geometry plan
-	// sets the gap a store closes from these, so they are measured here rather
-	// than chosen.
-	ramGeometry := make([]*privateGeometry, count)
 	// How many mappings each fork's VMM holds, which is what a region's runs
 	// and gaps cost in the address space.
 	forkMappings := make([]int, count)
 	for index, item := range children {
 		regionPages[index] = map[string]map[string]uint64{}
-		ownPages[index] = map[string][]uint64{}
 		forkMappings[index] = countMappings(item.process.PID())
 		for name, region := range item.process.Regions() {
 			stats, err := region.Stats(ctx)
 			if err != nil {
 				b.t.Fatal(err)
 			}
-			unpublished, err := region.Unpublished()
-			if err != nil {
-				b.t.Fatal(err)
-			}
-			slices.Sort(unpublished)
-			ownPages[index][name] = unpublished
 			regionPages[index][name] = map[string]uint64{
 				"page_size":      region.PageSize(),
 				"resident_pages": uint64(stats.ResidentPages), "private_pages": uint64(stats.PrivatePages),
@@ -1635,6 +1627,76 @@ func (b *benchmark) forkFanOut(ctx context.Context, origin *forkOrigin) {
 				"shared_bytes": stats.SharedBytes()}
 			privateBytes[index] += stats.PrivateBytes()
 			residentBytes[index] += stats.ResidentBytes()
+		}
+	}
+	b.record(ctx, "fork-fanout", "sproutfs", start, nil, map[string]any{
+		"forks":               count,
+		"command":             workloadTest(),
+		"restore_all_ns":      restored.Sub(start.at).Nanoseconds(),
+		"restore_each_ns":     restoreEach,
+		"restore_phases":      restorePhases,
+		"max_restore_ns":      maxOf(restoreEach),
+		"first_output_ns":     firstOutput,
+		"total_ns":            total,
+		"max_first_output":    maxOf(firstOutput),
+		"max_total_ns":        maxOf(total),
+		"fork_private_bytes":  privateBytes,
+		"fork_resident_bytes": residentBytes,
+		"fork_region_pages":   regionPages,
+		"fork_vmm_mappings":   forkMappings,
+	})
+	if b.scenarios["fork-diagnostics"] {
+		forks := make([]forkedVM, count)
+		for index, item := range children {
+			forks[index] = forkedVM{item.process, item.vm}
+		}
+		b.forkDiagnostics(ctx, origin, forks)
+	}
+	for _, item := range children {
+		item.console.close()
+		if err := item.process.Close(); err != nil {
+			b.t.Fatal(err)
+		}
+		if err := item.vm.Close(ctx); err != nil {
+			b.t.Fatal(err)
+		}
+	}
+}
+
+// forkedVM is one running fork: its VMM and its volumes.
+type forkedVM struct {
+	process *vmmachine.Process
+	vm      *volume.VM
+}
+
+// forkDiagnostics is what a fan-out's forks are made of once their command has
+// finished, which is a scenario of its own because finding out costs far more
+// than the fan-out: every page each fork owns, and how those pages lie in its
+// RAM; which 4 KiB blocks of them it changed, against a fork of the same point
+// that never ran; and a checkpoint of each fork, which uploads everything it
+// owns. On an 8-processor host these took 25 minutes and 15 GB of heap beside a
+// fan-out of 19, so a run that times the fan-out leaves them out.
+func (b *benchmark) forkDiagnostics(ctx context.Context, origin *forkOrigin, children []forkedVM) {
+	b.t.Helper()
+	count := len(children)
+	start := b.sample(ctx)
+	// Which pages those are, so that what a fork wrote can be looked up in the
+	// image: a page number times that region's page size is an offset into it.
+	ownPages := make([]map[string][]uint64, count)
+	// How the private pages of the fork's RAM lie: the runs they form, the gaps
+	// between them and the 2 MiB ranges they fall in. The page-geometry plan
+	// sets the gap a store closes from these, so they are measured here rather
+	// than chosen.
+	ramGeometry := make([]*privateGeometry, count)
+	for index, item := range children {
+		ownPages[index] = map[string][]uint64{}
+		for name, region := range item.process.Regions() {
+			unpublished, err := region.Unpublished()
+			if err != nil {
+				b.t.Fatal(err)
+			}
+			slices.Sort(unpublished)
+			ownPages[index][name] = unpublished
 			if region.Kind() == vmmemory.Ram {
 				ramGeometry[index] = newPrivateGeometry(unpublished, region.PageSize())
 			}
@@ -1730,36 +1792,14 @@ func (b *benchmark) forkFanOut(ctx context.Context, origin *forkOrigin) {
 			"region_pages":    after,
 		}
 	}
-	b.record(ctx, "fork-fanout", "sproutfs", start, nil, map[string]any{
+	b.record(ctx, "fork-diagnostics", "sproutfs", start, nil, map[string]any{
+		"forks":               count,
 		"fork_checkpoints":    forkCheckpoints,
 		"fork_changed_blocks": changedBlocks,
 		"fork_changed_counts": changedCounts,
-		"forks":               count,
-		"command":             workloadTest(),
-		"restore_all_ns":      restored.Sub(start.at).Nanoseconds(),
-		"restore_each_ns":     restoreEach,
-		"restore_phases":      restorePhases,
-		"max_restore_ns":      maxOf(restoreEach),
-		"first_output_ns":     firstOutput,
-		"total_ns":            total,
-		"max_first_output":    maxOf(firstOutput),
-		"max_total_ns":        maxOf(total),
-		"fork_private_bytes":  privateBytes,
-		"fork_resident_bytes": residentBytes,
-		"fork_region_pages":   regionPages,
 		"fork_own_pages":      ownPages,
 		"fork_ram_geometry":   ramGeometry,
-		"fork_vmm_mappings":   forkMappings,
 	})
-	for _, item := range children {
-		item.console.close()
-		if err := item.process.Close(); err != nil {
-			b.t.Fatal(err)
-		}
-		if err := item.vm.Close(ctx); err != nil {
-			b.t.Fatal(err)
-		}
-	}
 }
 
 // runBuckets and runBucketUpper are the fixed buckets a private run's length

@@ -265,7 +265,7 @@ if [[ ${SPROUTFS_GCE_FANOUT:-0} == 1 ]]; then
             SPROUTFS_BENCH_WORK="$run/state" SPROUTFS_BENCH_OBJECT_DIR="$run/objects" \
             SPROUTFS_BENCH_OUTPUT="$results/fanout-$name.json" \
             SPROUTFS_BENCH_REVISION="$(cat "$repo/source-revision.txt")" \
-            SPROUTFS_BENCH_SCENARIOS=boot,capture,fork-fanout SPROUTFS_BENCH_FORKS=4 \
+            SPROUTFS_BENCH_SCENARIOS=boot,capture,fork-fanout,fork-diagnostics SPROUTFS_BENCH_FORKS=4 \
             SPROUTFS_BENCH_TEST="$command" \
             "$work/build/vmmachine.test" -test.v -test.run '^TestGuestWorkloadBenchmark$' -test.timeout=10m \
             > "$results/fanout-$name.log" 2>&1
