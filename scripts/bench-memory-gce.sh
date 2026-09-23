@@ -61,8 +61,39 @@ if [[ -n ${SPROUTFS_GCE_SERVICE_ACCOUNT:-} ]]; then
     identity=(--service-account="$SPROUTFS_GCE_SERVICE_ACCOUNT" --scopes=storage-rw)
 fi
 
+# create makes the host in SPROUTFS_GCE_ZONE, or where that zone has no room
+# for its machine, in the next zone of the same region that does. A zone out of
+# capacity is common for the larger shapes; a region out of disk quota is not a
+# zone's problem, and is reported rather than retried.
 create() {
-    "${cloud[@]}" compute instances create "$instance" --zone="$zone" \
+    local region candidates candidate log
+    region=${zone%-*}
+    candidates=("$zone")
+    while read -r candidate; do
+        [[ "$candidate" == "$zone" ]] || candidates+=("$candidate")
+    done < <("${cloud[@]}" compute zones list --filter="region:$region" --format='value(name)' | sort)
+    log=$(mktemp)
+    for candidate in "${candidates[@]}"; do
+        if create_in "$candidate" 2> "$log"; then
+            zone=$candidate
+            echo "Created $instance in $zone." >&2
+            rm -f -- "$log"
+            return 0
+        fi
+        if ! grep -qE 'ZONE_RESOURCE_POOL_EXHAUSTED|does not have enough resources' "$log"; then
+            cat "$log" >&2
+            rm -f -- "$log"
+            return 1
+        fi
+        echo "$candidate has no room for this machine; trying the next zone." >&2
+    done
+    cat "$log" >&2
+    rm -f -- "$log"
+    return 1
+}
+
+create_in() {
+    "${cloud[@]}" compute instances create "$instance" --zone="$1" \
         --machine-type="${SPROUTFS_GCE_MACHINE_TYPE:-$machine}" \
         --min-cpu-platform='Intel Cascade Lake' --enable-nested-virtualization \
         --image=ubuntu-2604-resolute-amd64-v20260907 --image-project=ubuntu-os-cloud \
@@ -73,6 +104,26 @@ create() {
         --labels=purpose=memory-probe,lifecycle=temporary \
         --maintenance-policy=TERMINATE --no-restart-on-failure \
         --max-run-duration=24h --instance-termination-action=DELETE
+}
+
+# locate points zone at the zone the instance is in, which create may have
+# chosen: every other action finds the host by its name.
+locate() {
+    local found
+    found=$("${cloud[@]}" compute instances list --filter="name=$instance" --format='value(zone.basename())')
+    if [[ -n "$found" ]]; then zone=$found; fi
+}
+
+# deadline warns when the host will delete itself before this run's own limit
+# is up: every host lives 24 hours from its creation, however busy.
+deadline() {
+    local created left limit_seconds
+    created=$("${cloud[@]}" compute instances describe "$instance" --zone="$zone" --format='value(creationTimestamp)')
+    left=$(( $(python3 -c 'import datetime, sys; print(int(datetime.datetime.fromisoformat(sys.argv[1]).timestamp()))' "$created") + 24 * 3600 - $(date +%s) ))
+    limit_seconds=$(( ${limit%h} * 3600 ))
+    if (( left < limit_seconds )); then
+        echo "WARNING: $instance deletes itself in $((left / 60)) minutes, before this run's ${limit} limit." >&2
+    fi
 }
 
 check_owner() {
@@ -177,9 +228,9 @@ PY
 
 case "$action" in
     create) create ;;
-    account) account ;;
-    run) run ;;
-    delete) delete ;;
+    account) locate; account ;;
+    run) locate; deadline; run ;;
+    delete) locate; delete ;;
     all)
         existing=$("${cloud[@]}" compute instances list --filter="name=$instance" --format='value(name)')
         [[ -z "$existing" ]] || { echo "Instance already exists: $instance" >&2; exit 1; }
