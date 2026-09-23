@@ -124,10 +124,16 @@ func workloadTest() string  { return cmpOr(os.Getenv("SPROUTFS_BENCH_TEST"), def
 // from the numbers a recorded run writes to docs/measurements, keeping about a
 // quarter of headroom over what was observed.
 const (
-	boundInstallRatio    = 2.0
-	boundBuildRatio      = 2.0
-	boundWarmRestore     = 500 * time.Millisecond
-	boundForkFirstOutput = 2 * time.Second
+	boundInstallRatio = 2.0
+	boundBuildRatio   = 2.0
+	boundWarmRestore  = 500 * time.Millisecond
+	// A fork's first output is bounded against the plain side's clones running
+	// the same command, not against a constant: the workload's own command
+	// decides when it first prints — `cargo test` compiles for most of a minute
+	// before it does — and what the pager owes is that a fork is not slower to
+	// reach that point than a clone with its whole memory in place. The
+	// 2026-09-23 run measured 50.9 s against 49.2 s.
+	boundForkFirstOutputRatio = 1.25
 )
 
 // ---------------------------------------------------------------------------
@@ -2162,10 +2168,22 @@ func (b *benchmark) assertBounds(t *testing.T) {
 		}
 	}
 
-	if b.scenarios["fork-fanout"] {
+	if b.scenarios["fork-fanout"] && b.scenarios["baseline"] {
 		fanout := b.find("fork-fanout", "sproutfs")
-		if highest, ok := fanout.Extra["max_first_output"].(int64); !ok || time.Duration(highest) > boundForkFirstOutput {
-			t.Errorf("slowest fork produced its first output after %v, above %s", fanout.Extra["max_first_output"], boundForkFirstOutput)
+		highest, ok := fanout.Extra["max_first_output"].(int64)
+		if !ok {
+			t.Fatalf("the fan-out recorded no first output: %v", fanout.Extra["max_first_output"])
+		}
+		plain, ok := b.find("fork-fanout", "baseline").Extra["max_first_output"].(int64)
+		if !ok || plain <= 0 {
+			t.Fatalf("the plain fan-out recorded no first output")
+		}
+		got := float64(highest) / float64(plain)
+		t.Logf("fork first output: managed %s, baseline %s, ratio %.2f (bound %.2f)",
+			time.Duration(highest), time.Duration(plain), got, boundForkFirstOutputRatio)
+		if got > boundForkFirstOutputRatio {
+			t.Errorf("slowest fork produced its first output after %s, %.2fx the plain clone's %s, above the %.2fx bound",
+				time.Duration(highest), got, time.Duration(plain), boundForkFirstOutputRatio)
 		}
 	}
 
