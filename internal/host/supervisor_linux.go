@@ -249,7 +249,7 @@ func (s *supervisor) startPager(ctx context.Context, kind vmmemory.RegionKind, c
 	}
 	slog.InfoContext(ctx, "host: a pager was assembled", "kind", kind.String(),
 		"page_bytes", cfg.PageSize, "resident_pages", cfg.ResidentPages,
-		"arena_offsets", cfg.Offsets(),
+		"arena_offsets", cfg.Offsets(), "huge_pages", arena.HugePolicy(),
 		"logical_pages", cfg.LogicalPages, "dirty_pages", cfg.DirtyPages,
 		"loss_window", cfg.LossWindow.String(), "concurrent_io", cfg.ConcurrentIO,
 		"read_ahead_pages", cfg.ReadAheadPages, "write_ahead_pages", cfg.WriteAheadPages,

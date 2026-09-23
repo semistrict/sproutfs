@@ -269,6 +269,21 @@ func (h *Host) unlockAll(pages []*resident) {
 	h.mu.Unlock()
 }
 
+// unlockRun is unlock for a batch of pages: each is checked as unlock checks it,
+// and waiters are woken once for the lot.
+func (h *Host) unlockRun(pages []*resident) {
+	found := ""
+	for _, pg := range pages {
+		if f := h.probe.stable(context.Background(), h, pg, "unlock"); f != "" && found == "" {
+			found = f
+		}
+	}
+	h.unlockAll(pages)
+	if found != "" {
+		panic(found)
+	}
+}
+
 // locked runs fn under the binding's current page lock and always releases
 // that lock. A binding with no resident page is a no-op.
 func (h *Host) locked(ctx context.Context, b *binding, fn func(pg *resident) error) error {

@@ -51,6 +51,22 @@ func bootPagesWriteAheadBytes(t *testing.T) uint64 {
 	return bytes
 }
 
+// bootPagesVCPUs is how many vCPUs the surveyed guest boots with: one by
+// default, and SPROUTFS_BOOT_VCPUS for the comparison's 16, whose vCPUs fault
+// into the pager at once.
+func bootPagesVCPUs(t *testing.T) int {
+	t.Helper()
+	value := os.Getenv("SPROUTFS_BOOT_VCPUS")
+	if value == "" {
+		return 1
+	}
+	vcpus, err := strconv.Atoi(value)
+	if err != nil || vcpus < 1 {
+		t.Fatalf("invalid SPROUTFS_BOOT_VCPUS %q", value)
+	}
+	return vcpus
+}
+
 // bootPageClass is what one private RAM page held once the guest had booted.
 type bootPageClass struct {
 	Pages        int `json:"pages"`
@@ -97,6 +113,7 @@ func TestBootSurveyOfPrivateRAMPages(t *testing.T) {
 		PMEM: hostPagerBudgets{Arena: 256 << 20, Logical: 2 * uint64(ramBytes),
 			Dirty: 2 * uint64(ramBytes)}})
 	config := migrationConfig(t, binaryPath, pager, vm)
+	config.VCPUs = bootPagesVCPUs(t)
 	started := time.Now()
 	p, err := vmmachine.Start(ctx, config)
 	if err != nil {
@@ -184,13 +201,15 @@ func TestBootSurveyOfPrivateRAMPages(t *testing.T) {
 		lines = append(lines, fmt.Sprintf("%6d MiB: pages=%6d zero=%6d non-zero bytes=%d",
 			k*bucketBytes>>20, c.Pages, c.ZeroPages, c.NonZeroBytes))
 	}
-	t.Logf("boot %s: ram=%d MiB page=%d write-ahead=%d pages faults=%d copy-on-writes=%d write-ahead pages=%d of them zero=%d resident=%d private=%d zero=%d non-zero bytes=%d\n%s\n%s\n%s",
-		booted.Round(time.Millisecond), ramBytes>>20, ram.PageSize(), writeAhead, stats.Faults, stats.CopyOnWrites,
+	t.Logf("boot %s: ram=%d MiB page=%d write-ahead=%d pages faults=%d (mean %s, mapping %s, resolve %s) copy-on-writes=%d write-ahead pages=%d of them zero=%d resident=%d private=%d zero=%d non-zero bytes=%d\n%s\n%s\n%s",
+		booted.Round(time.Millisecond), ramBytes>>20, ram.PageSize(), writeAhead, stats.Faults,
+		time.Duration(stats.Fault.MeanNS()), time.Duration(stats.Mapping.MeanNS()), time.Duration(stats.Resolve.MeanNS()), stats.CopyOnWrites,
 		stats.WriteAheadPages, stats.WriteAheadZeroPages,
 		len(resident), private, total.ZeroPages, total.NonZeroBytes, strings.Join(lines, "\n"), meminfo, layout)
 	if out := os.Getenv("SPROUTFS_BOOT_SURVEY_OUT"); out != "" {
 		record := map[string]any{"ram_bytes": ramBytes, "page_size": ram.PageSize(), "boot_ns": booted.Nanoseconds(),
-			"faults": stats.Faults, "copy_on_writes": stats.CopyOnWrites, "resident": len(resident),
+			"faults": stats.Faults, "fault": stats.Fault, "mapping": stats.Mapping, "resolve": stats.Resolve,
+			"copy_on_writes": stats.CopyOnWrites, "resident": len(resident),
 			"write_ahead_pages": stats.WriteAheadPages, "write_ahead_zero_pages": stats.WriteAheadZeroPages,
 			"write_ahead_run_pages": writeAhead,
 			"private":               private, "total": total, "buckets": buckets, "meminfo": meminfo, "layout": layout}

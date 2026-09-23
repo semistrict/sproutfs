@@ -595,20 +595,17 @@ func (r *Region) storeZeros(ctx context.Context, index, first, last uint64, spil
 	if err != nil {
 		return err
 	}
-	defer func() {
-		for _, pg := range pages {
-			h.unlock(pg)
-		}
-	}()
-	for k, pg := range pages {
-		page := first + uint64(k)
-		b := r.binding(page)
-		h.bind(b, pg)
-		r.setDirty(b, true)
-		h.probe.granted(b, pg, nil)
+	defer h.unlockRun(pages)
+	// The run is bound, made dirty and marked mapped a lock at a time for the
+	// whole of it: a boot's vCPUs fault runs of thousands of pages at once, and
+	// taking the host's lock per page is what they would queue on.
+	bindings := r.bindingRun(first, uint64(len(pages)))
+	h.bindRun(bindings, pages)
+	r.setDirtyMappedRun(bindings) // a failed ACK may still have installed the mapping
+	for k, b := range bindings {
+		h.probe.granted(b, pages[k], nil)
 		b.zero = false
-		r.setMapped(b, true) // a failed ACK may still have installed the mapping
-		if page == index {
+		if b.index == index {
 			b.spillSlot, *spill = *spill, -1
 		} else {
 			b.spillSlot, b.ahead = extras[used], true

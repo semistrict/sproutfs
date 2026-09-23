@@ -55,9 +55,44 @@ type bindingBlock [bindingBlockPages]binding
 // alias sets retain them. Untouched blocks have no binding allocation.
 // The region access lock protects lifetime; this mutex only protects the map.
 func (r *Region) binding(index uint64) *binding {
-	key := index / bindingBlockPages
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
+	b := r.bindingLocked(index)
+	if r.zeroRanges.Get(index).Zero {
+		// A touched page leaves the compressed zero run and owns its own
+		// binding state before any revoke or copy-on-write can begin.
+		r.zeroRanges.Set(index, index+1, pageranges.State{})
+		b.zero, b.mapped = true, true
+	}
+	return b
+}
+
+// bindingRun is binding for the count pages from first, under one lock, and
+// takes the whole run out of the compressed zero runs at once.
+func (r *Region) bindingRun(first, count uint64) []*binding {
+	r.bindingsMu.Lock()
+	defer r.bindingsMu.Unlock()
+	bindings := make([]*binding, count)
+	touched := false
+	for k := range bindings {
+		index := first + uint64(k)
+		b := r.bindingLocked(index)
+		if r.zeroRanges.Get(index).Zero {
+			b.zero, b.mapped = true, true
+			touched = true
+		}
+		bindings[k] = b
+	}
+	if touched {
+		r.zeroRanges.Set(first, first+count, pageranges.State{})
+	}
+	return bindings
+}
+
+// bindingLocked is the binding of one page, allocating its block. Caller holds
+// bindingsMu.
+func (r *Region) bindingLocked(index uint64) *binding {
+	key := index / bindingBlockPages
 	block := r.blocks[key]
 	if block == nil {
 		block = new(bindingBlock)
@@ -66,14 +101,7 @@ func (r *Region) binding(index uint64) *binding {
 		}
 		r.blocks[key] = block
 	}
-	b := &block[index%bindingBlockPages]
-	if r.zeroRanges.Get(index).Zero {
-		// A touched page leaves the compressed zero run and owns its own
-		// binding state before any revoke or copy-on-write can begin.
-		r.zeroRanges.Set(index, index+1, pageranges.State{})
-		b.zero, b.mapped = true, true
-	}
-	return b
+	return &block[index%bindingBlockPages]
 }
 
 // spillTarget reports the dirty reservation this binding's bytes go to, and
@@ -402,6 +430,33 @@ func (r *Region) setDirty(b *binding, dirty bool) {
 		delete(r.dirtyBindings, b.index)
 	}
 	r.noteSealableLocked(b)
+}
+
+// setDirtyMappedRun is setDirty(b, true) then setMapped(b, true) for the
+// consecutive pages of a run, under one lock. A run of fresh pages no
+// checkpoint holds is one sealable run, which is one change to the runs a seal
+// reads rather than one per page.
+func (r *Region) setDirtyMappedRun(bindings []*binding) {
+	r.bindingsMu.Lock()
+	defer r.bindingsMu.Unlock()
+	if r.dirtyBindings == nil {
+		r.dirtyBindings = make(map[uint64]*binding)
+	}
+	held := false
+	for _, b := range bindings {
+		b.dirty, b.mapped = true, true
+		r.dirtyBindings[b.index] = b
+		held = held || b.checkpoint != nil
+	}
+	r.noteDirtyLocked()
+	if !held {
+		first := bindings[0].index
+		r.dirtyRuns.Set(first, first+uint64(len(bindings)), pageranges.State{Dirty: true})
+		return
+	}
+	for _, b := range bindings {
+		r.noteSealableLocked(b)
+	}
 }
 
 // dirtyCount reports how many pages hold private state a checkpoint has not
