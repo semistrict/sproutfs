@@ -110,6 +110,30 @@ func (b *benchmark) dbSeed(ctx context.Context, c *console) string {
 	return strings.TrimSpace(output)
 }
 
+// dbSteadyUpdates is how many updates the seeded guest itself makes, four
+// clients each keeping 32 in flight: with every page already its own and
+// mapped, nothing faults, and what the updates cost is the guest's own memory
+// access, which is what the size of its translations decides.
+const dbSteadyUpdates = 4_000_000
+
+// dbSteady runs those updates in the guest that seeded the database and
+// reports their rate and latency.
+func (b *benchmark) dbSteady(ctx context.Context, c *console) dbLatency {
+	b.t.Helper()
+	ctx, cancel := context.WithTimeout(ctx, benchCommandTimeout)
+	defer cancel()
+	output, err := c.capture(ctx, fmt.Sprintf("valkey-benchmark -s /tmp/valkey.sock -c 4 -P 32 -n %d -r %d --csv "+
+		"SETRANGE key:__rand_int__ 0 sproutfs", dbSteadyUpdates, b.dbKeys()))
+	if err != nil {
+		b.t.Fatalf("steady database updates: %v", err)
+	}
+	latency, err := parseDBLatency(output)
+	if err != nil {
+		b.t.Fatal(err)
+	}
+	return latency
+}
+
 // dbUpdate runs one step's updates in every guest at once, and reports each
 // guest's latency.
 func (b *benchmark) dbUpdate(ctx context.Context, consoles []*console, updates int) []dbLatency {
@@ -150,6 +174,9 @@ func (b *benchmark) dbFork(ctx context.Context, origin *forkOrigin) {
 	seeded := b.dbSeed(ctx, seederConsole)
 	b.record(ctx, "db-seed", "sproutfs", start, nil, map[string]any{"keys": b.dbKeys(),
 		"value_bytes": dbValueBytes, "store": seeded})
+	start = b.sample(ctx)
+	steady := b.dbSteady(ctx, seederConsole)
+	b.record(ctx, "db-steady", "sproutfs", start, nil, map[string]any{"updates": dbSteadyUpdates, "latency": steady})
 
 	start = b.sample(ctx)
 	ckpt, captureExtra := b.capture(ctx, seeder, seederVM)
@@ -265,6 +292,19 @@ func (b *benchmark) baselineDB(ctx context.Context, config plainConfig) {
 	seeded := b.dbSeed(ctx, c)
 	b.appendRecord(benchRecord{Scenario: "db-seed", Kind: "baseline", WallNS: time.Since(at).Nanoseconds(),
 		Extra: map[string]any{"keys": b.dbKeys(), "value_bytes": dbValueBytes, "store": seeded}})
+	at = time.Now()
+	steady := b.dbSteady(ctx, c)
+	b.appendRecord(benchRecord{Scenario: "db-steady", Kind: "baseline", WallNS: time.Since(at).Nanoseconds(),
+		Extra: map[string]any{"updates": dbSteadyUpdates, "latency": steady, "huge_pages": config.HugePages}})
+	if config.HugePages == "2M" {
+		// Firecracker restores a guest on the HugeTLB pool only through a
+		// userfaultfd, never from a memory file, so a plain guest on huge
+		// pages has no clones to measure.
+		if err := p.Close(); err != nil {
+			b.t.Fatal(err)
+		}
+		return
+	}
 
 	statePath := filepath.Join(b.work, "baseline-db.state")
 	memoryPath := filepath.Join(b.work, "baseline-db.mem")
