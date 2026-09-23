@@ -593,8 +593,14 @@ func (r *Region) endSeal(ctx context.Context, checkpoint *RegionCheckpoint, publ
 // spill reservation nor a checkpoint, which is what a concurrent eviction
 // between those steps would find, and it would punch the page with nowhere to
 // put its bytes.
+//
+// The pages this retire hands back have their mappings taken away first, all of
+// them together: see revokeHandedBack.
 func (r *Region) finalizeCheckpoint(ctx context.Context, held []*binding, identities map[uint64]storedPage) error {
 	h := r.host
+	if err := r.revokeHandedBack(ctx, held, identities); err != nil {
+		return err
+	}
 	for _, checkpoint := range held {
 		if checkpoint.spillSlot < 0 {
 			continue
@@ -630,6 +636,60 @@ func (r *Region) finalizeCheckpoint(ctx context.Context, held []*binding, identi
 		checkpoint.spillSlot, checkpoint.dirty = -1, false
 	}
 	return nil
+}
+
+// revokeHandedBack takes the guest's mapping away from every page of one retire
+// batch the retire is about to hand back: the volume holds no object for it, so
+// it is a hole again and there is nothing to put in that mapping's place. It is
+// the one revocation a published retire issues, and it goes as one command per
+// run of consecutive pages, before the walk.
+//
+// What a retire hands back at a 4 KiB page is the write-ahead pages the guest
+// never stored into, and write-ahead makes them in runs — thousands of pages of
+// them in one checkpoint, where a round trip each, serialized on the mapping
+// lock, is a stall the guest feels. A GCE fan-out of two forks on 2026-09-23
+// spent 12,428 revocations against 15,477 write-ahead pages on exactly that, one
+// command per page. The walk then finds these pages unmapped and revokes
+// nothing; the one page it can still revoke by itself is a page whose identity
+// another resident already holds, which is rare and alone.
+//
+// Deciding a hand-back needs no page's lock: the identity the volume now reports
+// was read before this batch took the region, and whether the guest still shares
+// the checkpoint's copy moves only under the exclusive region lock this holds.
+// Reading a page to check that it may be handed back needs that page's lock and
+// nothing wider, and it runs here, before a mapping has moved, so ErrUndroppable
+// still leaves the checkpoint durable, the pages sealed and the guest holding
+// its memory — one fault per page it had mapped, and not a byte lost.
+func (r *Region) revokeHandedBack(ctx context.Context, held []*binding, identities map[uint64]storedPage) error {
+	h := r.host
+	var guests []*binding
+	for _, checkpoint := range held {
+		if checkpoint.spillSlot < 0 {
+			continue
+		}
+		now := identities[checkpoint.index]
+		if now.stored && !now.id.zero() {
+			// The volume holds an object for this page, so the retire publishes
+			// it and the guest keeps reading it through the mapping it has.
+			continue
+		}
+		b := r.lookupBinding(checkpoint.index)
+		if b == nil || !r.heldBy(checkpoint.index, checkpoint) {
+			// The guest stored into the page since the seal, so only the
+			// checkpoint's own copy is given up and no mapping of the guest's
+			// names it.
+			continue
+		}
+		if err := h.locked(ctx, checkpoint, func(pg *resident) error {
+			return h.droppable(ctx, b, pg, now.stored, now.id)
+		}); err != nil {
+			return err
+		}
+		if r.isMapped(b) {
+			guests = append(guests, b)
+		}
+	}
+	return r.revokeLocked(ctx, guests)
 }
 
 // abandonPages gives up on a checkpoint's pages. A page the guest still shares

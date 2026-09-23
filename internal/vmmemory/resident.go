@@ -385,9 +385,12 @@ func (r *Region) publishLocked(ctx context.Context, b *binding, pg *resident, id
 		return nil
 	}
 	note(r, b.index, "publish-dropped "+publishReason(stored, id, h, pg), pg.slot, -1)
-	if err := h.droppable(ctx, b, pg, stored, id); err != nil {
-		return err
-	}
+	// A page given up because the volume holds no object for it was checked and
+	// its mapping taken away together with every other page this retire batch
+	// hands back; see Region.revokeHandedBack. What is left here is a page whose
+	// identity another resident already holds, which is the one hand-back that
+	// arrives alone — and one that arrives with its mapping already gone, which
+	// this skips.
 	if err := h.revoke(ctx, b); err != nil {
 		return err
 	}
