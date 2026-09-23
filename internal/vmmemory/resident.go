@@ -1,7 +1,6 @@
 package vmmemory
 
 import (
-	"container/list"
 	"context"
 	"errors"
 	"fmt"
@@ -36,11 +35,10 @@ type resident struct {
 	// aliases is protected by Host.mu, not by this page's lock: a seal joins
 	// the checkpoint's copy to a page a reclaim is already holding, and the
 	// reclaim finds it there.
-	aliases map[*binding]struct{}
-	recent  *list.Element
-	// idle is this page's place in Host.idle while no region maps it, and nil
-	// otherwise. Protected by Host.mu.
-	idle *list.Element
+	aliases aliasSet
+	// recent is this page's place on Host.lru, and idle its place on Host.idle
+	// while no region maps it. Protected by Host.mu.
+	recent, idle pageLinks
 	// replacing counts the stores that have taken a binding off this page and
 	// whose mapping command has not yet replaced the guest's mapping of it. The
 	// guest goes on reading this page's offset until that command lands, so no
@@ -106,8 +104,8 @@ func (h *Host) read(ctx context.Context, b *binding, pg *resident, dst []byte) e
 func (h *Host) aliases(pg *resident) []*binding {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	result := make([]*binding, 0, len(pg.aliases))
-	for b := range pg.aliases {
+	result := make([]*binding, 0, pg.aliases.len())
+	for b := range pg.aliases.all() {
 		result = append(result, b)
 	}
 	return result
@@ -117,7 +115,7 @@ func (h *Host) bind(b *binding, pg *resident) {
 	h.mu.Lock()
 	found := h.probe.bind(h, b, pg)
 	h.mappedLocked(pg)
-	pg.aliases[b] = struct{}{}
+	pg.aliases.add(b)
 	b.resident = pg
 	h.mu.Unlock()
 	what := "bind-shared"
@@ -139,7 +137,7 @@ func (h *Host) bindRun(bindings []*binding, pages []*resident) {
 			found = f
 		}
 		h.mappedLocked(pages[k])
-		pages[k].aliases[b] = struct{}{}
+		pages[k].aliases.add(b)
 		b.resident = pages[k]
 	}
 	h.mu.Unlock()
@@ -161,14 +159,14 @@ func (h *Host) joinReclaiming(held, b *binding) {
 	defer h.mu.Unlock()
 	if pg := b.resident; pg != nil {
 		h.mappedLocked(pg)
-		pg.aliases[held] = struct{}{}
+		pg.aliases.add(held)
 		held.resident = pg
 	}
 }
 
 func (h *Host) touch(pg *resident) {
 	h.mu.Lock()
-	h.lru.MoveToBack(pg.recent)
+	h.lru.moveToBack(pg)
 	h.mu.Unlock()
 }
 
@@ -257,10 +255,10 @@ func (h *Host) abandonSlots(ctx context.Context, slot, count int, err error) err
 
 // adopt makes a filled slot a locked resident page, most recently used.
 func (h *Host) adopt(slot int, key pageKey, private bool, kind RegionKind) *resident {
-	pg := &resident{mu: ctxsync.NewMutex(), slot: slot, key: key, private: private, kind: kind, aliases: make(map[*binding]struct{})}
+	pg := &resident{mu: ctxsync.NewMutex(), slot: slot, key: key, private: private, kind: kind}
 	_ = pg.mu.Lock(context.Background())
 	h.mu.Lock()
-	pg.recent = h.lru.PushBack(pg)
+	h.lru.pushBack(pg)
 	h.signal()
 	h.mu.Unlock()
 	return pg
@@ -273,13 +271,13 @@ func (h *Host) adopt(slot int, key pageKey, private bool, kind RegionKind) *resi
 func (h *Host) adoptRun(slot, count int, kind RegionKind) []*resident {
 	pages := make([]*resident, count)
 	for i := range pages {
-		pg := &resident{mu: ctxsync.NewMutex(), slot: slot + i, private: true, kind: kind, aliases: make(map[*binding]struct{})}
+		pg := &resident{mu: ctxsync.NewMutex(), slot: slot + i, private: true, kind: kind}
 		_ = pg.mu.Lock(context.Background())
 		pages[i] = pg
 	}
 	h.mu.Lock()
 	for _, pg := range pages {
-		pg.recent = h.lru.PushBack(pg)
+		h.lru.pushBack(pg)
 	}
 	h.signal()
 	h.mu.Unlock()
@@ -299,7 +297,7 @@ func (h *Host) release(ctx context.Context, pg *resident) error {
 	note(nil, 0, "release", pg.slot, -1)
 	h.putFree(pg.slot)
 	pg.slot = -1
-	h.lru.Remove(pg.recent)
+	h.lru.remove(pg)
 	h.mappedLocked(pg)
 	if pg.key != (pageKey{}) && h.clean[pg.key] == pg {
 		delete(h.clean, pg.key)
@@ -319,7 +317,7 @@ func (h *Host) release(ctx context.Context, pg *resident) error {
 // a slot takes it like any other. Caller holds the page's lock.
 func (h *Host) leave(b *binding, pg *resident) {
 	h.mu.Lock()
-	delete(pg.aliases, b)
+	pg.aliases.remove(b)
 	b.resident = nil
 	h.idleLocked(pg)
 	h.signal()
@@ -330,18 +328,15 @@ func (h *Host) leave(b *binding, pg *resident) {
 // last, where it waits for a region that inherits its identity or for an
 // allocation that needs its slot. Caller holds h.mu.
 func (h *Host) idleLocked(pg *resident) {
-	if len(pg.aliases) == 0 && pg.idle == nil && pg.slot >= 0 {
-		pg.idle = h.idle.PushBack(pg)
+	if pg.aliases.len() == 0 && pg.slot >= 0 {
+		h.idle.pushBack(pg)
 	}
 }
 
 // mappedLocked takes a page off the idle list, which a region mapping it again
 // or its memory going back does. Caller holds h.mu.
 func (h *Host) mappedLocked(pg *resident) {
-	if pg.idle != nil {
-		h.idle.Remove(pg.idle)
-		pg.idle = nil
-	}
+	h.idle.remove(pg)
 }
 
 // releaseOrigin gives up a page a copy was made from once nothing maps it and
@@ -355,7 +350,7 @@ func (h *Host) releaseOrigin(ctx context.Context, pg *resident) error {
 	}
 	defer h.unlock(pg)
 	h.mu.Lock()
-	keep := pg.slot < 0 || len(pg.aliases) > 0
+	keep := pg.slot < 0 || pg.aliases.len() > 0
 	if !keep && pg.replacing > 0 {
 		// A store of another region is replacing the guest's mapping of this
 		// page. Its memory goes back when that command lands, exactly as it
@@ -372,7 +367,7 @@ func (h *Host) releaseOrigin(ctx context.Context, pg *resident) error {
 func (h *Host) unlink(ctx context.Context, b *binding, pg *resident) error {
 	note(b.region, b.index, "unlink from "+caller(), pg.slot, -1)
 	h.mu.Lock()
-	last := len(pg.aliases) == 1
+	last := pg.aliases.len() == 1
 	// A page a store is replacing keeps its memory until that store's mapping
 	// command lands: the guest is still reading this offset. The release is not
 	// re-decided there, only deferred.
@@ -394,7 +389,7 @@ func (h *Host) unlink(ctx context.Context, b *binding, pg *resident) error {
 		}
 	}
 	h.mu.Lock()
-	delete(pg.aliases, b)
+	pg.aliases.remove(b)
 	b.resident = nil
 	h.idleLocked(pg)
 	h.mu.Unlock()
@@ -541,7 +536,7 @@ func (h *Host) unshare(pg *resident) {
 func (h *Host) dropSharers(ctx context.Context, pg *resident, keep ...*binding) error {
 	var sharers []*binding
 	h.mu.Lock()
-	for b := range pg.aliases {
+	for b := range pg.aliases.all() {
 		if !slices.Contains(keep, b) {
 			sharers = append(sharers, b)
 		}

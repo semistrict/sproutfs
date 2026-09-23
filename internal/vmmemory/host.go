@@ -1,7 +1,6 @@
 package vmmemory
 
 import (
-	"container/list"
 	"context"
 	"errors"
 	"fmt"
@@ -63,11 +62,11 @@ type Host struct {
 	highWater   int
 	asked       bool
 	zeroRegions int // attached regions retaining knowledge of explicit zeros
-	lru         list.List
+	lru         pageList
 	// idle is the resident pages no region maps, oldest first: published
 	// pages kept for the next region that inherits their identity, and given
 	// up before any mapped page when a slot is short. See Host.idleLocked.
-	idle list.List
+	idle pageList
 	// unregisterIdle takes the idle pages out of the host budget's cache,
 	// which Close does before it gives their memory back.
 	unregisterIdle func()
@@ -174,6 +173,7 @@ func New(ctx context.Context, resources *resource.Budget, cfg Config, arena Aren
 		extents:     make(map[extentKey]*extent),
 		extentPages: extentPages,
 		clean:       make(map[pageKey]*resident), changed: make(chan struct{}),
+		lru: pageList{links: recentLinks}, idle: pageList{links: idleLinks},
 		regions: make(map[*Region]struct{}), highWater: highWater(cfg.DirtyPages),
 		io: make(chan struct{}, cfg.ConcurrentIO), writeback: make(chan struct{}, 1)}
 	// Idle pages are the host budget's cache: any consumer short of memory

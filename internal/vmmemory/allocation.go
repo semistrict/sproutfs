@@ -248,8 +248,7 @@ func (h *Host) allocate(ctx context.Context, place func() int, preferEviction bo
 		}
 		var candidates []*resident
 		busy := false
-		for e := h.lru.Front(); e != nil; e = e.Next() {
-			pg := e.Value.(*resident)
+		for pg := h.lru.front(); pg != nil; pg = h.lru.next(pg) {
 			if !pg.mu.TryLock() {
 				busy = true
 				continue
@@ -259,7 +258,7 @@ func (h *Host) allocate(ctx context.Context, place func() int, preferEviction bo
 			// naming it has not landed. It is not this reclaim's to take; the
 			// store gives it up itself once its mapping is in.
 			usable := pg.replacing == 0
-			for b := range pg.aliases {
+			for b := range pg.aliases.all() {
 				if b.region.terminal.Load() != nil {
 					usable = false
 					break
@@ -275,7 +274,7 @@ func (h *Host) allocate(ctx context.Context, place func() int, preferEviction bo
 		}
 		changed := h.changed
 		// Slots reserved by a concurrent load have no LRU entry yet.
-		if h.lru.Len() < h.cfg.ResidentPages {
+		if h.lru.len() < h.cfg.ResidentPages {
 			busy = true
 		}
 		h.mu.Unlock()
@@ -319,15 +318,14 @@ func (h *Host) takeIdleLocked() *resident { return h.takeIdleWhereLocked(nil) }
 // takeIdleWhereLocked is takeIdleLocked for the idle pages want accepts, or
 // any where want is nil. Caller holds h.mu.
 func (h *Host) takeIdleWhereLocked(want func(*resident) bool) *resident {
-	for e := h.idle.Front(); e != nil; e = e.Next() {
-		pg := e.Value.(*resident)
+	for pg := h.idle.front(); pg != nil; pg = h.idle.next(pg) {
 		if want != nil && !want(pg) {
 			continue
 		}
 		if !pg.mu.TryLock() {
 			continue
 		}
-		if len(pg.aliases) == 0 && pg.replacing == 0 {
+		if pg.aliases.len() == 0 && pg.replacing == 0 {
 			return pg
 		}
 		pg.mu.Unlock()

@@ -248,10 +248,10 @@ func (h *Host) evictBatch(ctx context.Context, victims []*resident) error {
 		}
 		h.mu.Lock()
 		h.stats.Evictions++
-		for b := range pg.aliases {
+		for b := range pg.aliases.all() {
 			b.resident = nil
 		}
-		clear(pg.aliases)
+		pg.aliases.clear()
 		h.mu.Unlock()
 	}
 	return nil

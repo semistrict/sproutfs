@@ -124,7 +124,7 @@ func (p *probeState) stable(ctx context.Context, h *Host, pg *resident, where st
 // host lock.
 func (p *probeState) bind(h *Host, b *binding, pg *resident) string {
 	if pg.private && pg.key == (pageKey{}) {
-		for other := range pg.aliases {
+		for other := range pg.aliases.all() {
 			if other.region != b.region {
 				return fmt.Sprintf("probe bind: unnamed private slot %d is reached from two regions, pages %d and %d",
 					pg.slot, other.index, b.index)

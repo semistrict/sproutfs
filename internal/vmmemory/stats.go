@@ -165,14 +165,13 @@ func (h *Host) Sharing(ctx context.Context) (SharingStats, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	var stats SharingStats
-	for element := h.lru.Front(); element != nil; element = element.Next() {
-		pg := element.Value.(*resident)
+	for pg := h.lru.front(); pg != nil; pg = h.lru.next(pg) {
 		gauge := &stats.Pmem
 		if pg.kind == Ram {
 			gauge = &stats.Ram
 		}
 		gauge.UniqueBytes += h.pageSize
-		gauge.MappedBytes += uint64(len(pg.aliases)) * h.pageSize
+		gauge.MappedBytes += uint64(pg.aliases.len()) * h.pageSize
 	}
 	stats.Ram.SavedBytes = stats.Ram.MappedBytes - stats.Ram.UniqueBytes
 	stats.Pmem.SavedBytes = stats.Pmem.MappedBytes - stats.Pmem.UniqueBytes
@@ -187,7 +186,7 @@ func (h *Host) Stats(ctx context.Context) (Stats, error) {
 	defer h.mu.Unlock()
 	stats := h.stats
 	stats.ResidentPages = h.slots.Held()
-	stats.IdlePages = h.idle.Len()
+	stats.IdlePages = h.idle.len()
 	stats.PrivateExtents = len(h.extents)
 	stats.DirtyPages = h.dirty
 	stats.LogicalPages = h.logical

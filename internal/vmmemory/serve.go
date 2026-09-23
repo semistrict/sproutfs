@@ -241,7 +241,7 @@ func (r *Region) Stats(ctx context.Context) (RegionStats, error) {
 // region reads. Caller holds the host lock, which is what the alias set is
 // protected by; eachBinding holds it for the whole of a binding block.
 func (h *Host) sharedElsewhere(pg *resident, r *Region) bool {
-	for alias := range pg.aliases {
+	for alias := range pg.aliases.all() {
 		if alias.region != r {
 			return true
 		}

@@ -25,7 +25,7 @@ func (a slotArena) Write(_ context.Context, slot int, src []byte) error {
 func (a slotArena) Release(context.Context, int) error { return nil }
 
 func page(slot int, private bool) *resident {
-	return &resident{slot: slot, private: private, aliases: make(map[*binding]struct{})}
+	return &resident{slot: slot, private: private}
 }
 
 func wantFinding(t *testing.T, got, contains string) {
@@ -94,7 +94,7 @@ func TestTheProbeAllowsTwoRegionsToShareANamedPrivatePage(t *testing.T) {
 	parent, child := &Region{}, &Region{}
 	shared := page(1, true)
 	held := &binding{region: parent, index: 7}
-	shared.aliases[held] = struct{}{}
+	shared.aliases.add(held)
 
 	wantFinding(t, p.bind(nil, &binding{region: child, index: 7}, shared),
 		"reached from two regions")
