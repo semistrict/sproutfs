@@ -21,6 +21,10 @@ for shape in SPROUTFS_BENCH_RAM_BYTES SPROUTFS_BENCH_ROOT_BYTES \
     SPROUTFS_BENCH_RAM_RESIDENT_BYTES SPROUTFS_BENCH_PMEM_RESIDENT_BYTES; do
     [[ ${!shape:-} =~ ^[0-9]*$ ]] || { echo "$shape is a number of bytes" >&2; exit 2; }
 done
+# SPROUTFS_RAM_PAGE_BYTES is the RAM pager's page: 4096 (the default) on
+# ordinary memory, or 2097152 on the HugeTLB pool, which is the pager RAM ran
+# before it had a page of its own.
+case ${SPROUTFS_RAM_PAGE_BYTES:-} in ''|4096|2097152) ;; *) echo "SPROUTFS_RAM_PAGE_BYTES must be 4096 or 2097152" >&2; exit 2 ;; esac
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 project=${SPROUTFS_GCE_PROJECT:-$(gcloud config get-value project 2>/dev/null)}
 zone=${SPROUTFS_GCE_ZONE:-us-east4-a}
@@ -127,7 +131,7 @@ PY
         sudo systemctl is-active sproutfs-bench-expire.timer
         mkdir -p source results
         tar -xzf source.tar.gz -C source
-        sudo env SPROUTFS_GCE_BUILD_ONLY='"${SPROUTFS_GCE_BUILD_ONLY:-0}"' SPROUTFS_GCE_FANOUT='"${SPROUTFS_GCE_FANOUT:-0}"' SPROUTFS_GCE_BOOTSURVEY='"${SPROUTFS_GCE_BOOTSURVEY:-0}"' SPROUTFS_GCE_WORKLOAD='"${SPROUTFS_GCE_WORKLOAD:-0}"' SPROUTFS_GCE_SMOKE='"${SPROUTFS_GCE_SMOKE:-0}"' SPROUTFS_BENCH_SCENARIOS='"${SPROUTFS_BENCH_SCENARIOS:-}"' SPROUTFS_BENCH_FORKS='"${SPROUTFS_BENCH_FORKS:-}"' SPROUTFS_BENCH_RAM_BYTES='"${SPROUTFS_BENCH_RAM_BYTES:-}"' SPROUTFS_BENCH_ROOT_BYTES='"${SPROUTFS_BENCH_ROOT_BYTES:-}"' SPROUTFS_BENCH_RAM_RESIDENT_BYTES='"${SPROUTFS_BENCH_RAM_RESIDENT_BYTES:-}"' SPROUTFS_BENCH_PMEM_RESIDENT_BYTES='"${SPROUTFS_BENCH_PMEM_RESIDENT_BYTES:-}"' timeout --signal=TERM --kill-after=30s '"$limit"' bash source/scripts/lib/bench-memory-linux.sh "$PWD/source" "$PWD/results"' \
+        sudo env SPROUTFS_GCE_BUILD_ONLY='"${SPROUTFS_GCE_BUILD_ONLY:-0}"' SPROUTFS_GCE_FANOUT='"${SPROUTFS_GCE_FANOUT:-0}"' SPROUTFS_GCE_BOOTSURVEY='"${SPROUTFS_GCE_BOOTSURVEY:-0}"' SPROUTFS_GCE_WORKLOAD='"${SPROUTFS_GCE_WORKLOAD:-0}"' SPROUTFS_GCE_SMOKE='"${SPROUTFS_GCE_SMOKE:-0}"' SPROUTFS_BENCH_SCENARIOS='"${SPROUTFS_BENCH_SCENARIOS:-}"' SPROUTFS_BENCH_FORKS='"${SPROUTFS_BENCH_FORKS:-}"' SPROUTFS_BENCH_RAM_BYTES='"${SPROUTFS_BENCH_RAM_BYTES:-}"' SPROUTFS_BENCH_ROOT_BYTES='"${SPROUTFS_BENCH_ROOT_BYTES:-}"' SPROUTFS_BENCH_RAM_RESIDENT_BYTES='"${SPROUTFS_BENCH_RAM_RESIDENT_BYTES:-}"' SPROUTFS_BENCH_PMEM_RESIDENT_BYTES='"${SPROUTFS_BENCH_PMEM_RESIDENT_BYTES:-}"' SPROUTFS_RAM_PAGE_BYTES='"${SPROUTFS_RAM_PAGE_BYTES:-}"' timeout --signal=TERM --kill-after=30s '"$limit"' bash source/scripts/lib/bench-memory-linux.sh "$PWD/source" "$PWD/results"' \
         > "$results/remote.log" 2>&1 || status=$?
     "${cloud[@]}" compute scp --recurse --zone="$zone" "$instance:results/." "$results/" || status=$?
     return "$status"

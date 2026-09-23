@@ -52,10 +52,10 @@ const (
 	// batch. It is a size, so the pager's page does not change it; the read-ahead
 	// run each pager loads is likewise a size, stated once in newHostPagers.
 	benchMaxWriteBytes = checkpoint.PageSize2MiB
-	// benchRAMWriteAheadPages is the run a store into fresh zeros makes private
-	// at a 4 KiB RAM page: the 8 MiB a host gives its RAM pager
-	// (internal/host/pager.go, writeAheadBytes), in that pager's pages.
-	benchRAMWriteAheadPages = (8 << 20) / checkpoint.PageSize4KiB
+	// benchRAMWriteAheadBytes is the run a store into fresh zeros makes
+	// private: the 8 MiB a host gives its RAM pager (internal/host/pager.go,
+	// writeAheadBytes), which is 2048 pages at 4 KiB and 4 at 2 MiB.
+	benchRAMWriteAheadBytes = 8 << 20
 	// benchCacheBytes is what the shared budget holds above the two arenas, for
 	// decoded objects. The budget itself is the sum: resident guest pages of
 	// both pagers and the page cache are charged against one number, as they are
@@ -544,7 +544,7 @@ func newBenchmark(ctx context.Context, t *testing.T) *benchmark {
 	// a different amount of memory in each.
 	b.pagers = newConfiguredHostPagers(t, ctx, hostPagersConfig{
 		RAM: hostPagerBudgets{Arena: b.ramResidentBytes, Logical: b.ramLogicalBytes,
-			Dirty: b.ramDirtyBytes, WriteAhead: benchRAMWriteAheadPages},
+			Dirty: b.ramDirtyBytes, WriteAhead: int(benchRAMWriteAheadBytes / ramPageBytes(t))},
 		PMEM: hostPagerBudgets{Arena: b.pmemResidentBytes, Logical: b.pmemLogicalBytes,
 			Dirty: b.pmemDirtyBytes, WriteAhead: benchWriteAheadPages()},
 		Resources: resources,
@@ -576,10 +576,13 @@ func newBenchmark(ctx context.Context, t *testing.T) *benchmark {
 // asked for.
 func (b *benchmark) shape() {
 	b.t.Helper()
-	b.ramBytes = benchBytesEnv(b.t, "SPROUTFS_BENCH_RAM_BYTES", defaultBenchRAMBytes, checkpoint.PageSize4KiB)
+	// The RAM pager's page is SPROUTFS_RAM_PAGE_BYTES: 4 KiB on ordinary memory
+	// by default, or 2 MiB on the HugeTLB pool, which is the pager RAM ran
+	// before it had a page of its own and what a comparison of the two runs.
+	b.ramBytes = benchBytesEnv(b.t, "SPROUTFS_BENCH_RAM_BYTES", defaultBenchRAMBytes, ramPageBytes(b.t))
 	b.rootBytes = benchBytesEnv(b.t, "SPROUTFS_BENCH_ROOT_BYTES", defaultBenchRootBytes, checkpoint.PageSize2MiB)
 	b.ramResidentBytes = benchBytesEnv(b.t, "SPROUTFS_BENCH_RAM_RESIDENT_BYTES",
-		defaultBenchRAMResidentBytes, checkpoint.PageSize4KiB)
+		defaultBenchRAMResidentBytes, ramPageBytes(b.t))
 	b.pmemResidentBytes = benchBytesEnv(b.t, "SPROUTFS_BENCH_PMEM_RESIDENT_BYTES",
 		defaultBenchPmemResidentBytes, checkpoint.PageSize2MiB)
 	info, err := os.Stat(b.imagePath)
@@ -699,7 +702,7 @@ func (b *benchmark) createVM(ctx context.Context, id string) *volume.VM {
 	// Each volume is created in the page of the pager that will map it, which is
 	// what a host does: the guest's memory at 4 KiB and its root at 2 MiB.
 	vm, err := b.manager.Create(ctx, id, []volume.VolumeSpec{
-		{Name: vmmachine.RAMVolume, Size: b.ramBytes, PageSize: checkpoint.PageSize4KiB},
+		{Name: vmmachine.RAMVolume, Size: b.ramBytes, PageSize: ramPageBytes(b.t)},
 		{Name: "root", Size: b.rootBytes, PageSize: checkpoint.PageSize2MiB},
 	})
 	if err != nil {

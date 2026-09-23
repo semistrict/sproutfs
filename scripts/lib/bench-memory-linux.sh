@@ -10,14 +10,18 @@ test -c /dev/kvm
 # The host is disposable and dedicated to qualification. Reserve the pool before
 # workloads fragment physical RAM; all of it disappears with the instance.
 #
-# Only the PMEM pager is on the pool: the workload comparison runs a host's two
-# pagers, and the RAM one is 4 KiB pages of ordinary memory. So the pool is that
-# pager's resident budget and a tenth again for the arena's own rounding and for
-# anything else on the node that wants a huge page.
+# The PMEM pager is on the pool, and so is the RAM one when its page is 2 MiB
+# (SPROUTFS_RAM_PAGE_BYTES=2097152); at its default 4 KiB page RAM is ordinary
+# memory. So the pool is the resident budgets on it and a tenth again for the
+# arenas' own rounding and for anything else on the node that wants a huge
+# page. The budgets default to the benchmark's own.
 hugepages=4096
 if [[ ${SPROUTFS_GCE_WORKLOAD:-0} == 1 ]]; then
-    pmem_resident=${SPROUTFS_BENCH_PMEM_RESIDENT_BYTES:-$((24 << 30))}
-    hugepages=$((pmem_resident * 11 / 10 / (2 << 20)))
+    pooled=${SPROUTFS_BENCH_PMEM_RESIDENT_BYTES:-$((24 << 30))}
+    if [[ ${SPROUTFS_RAM_PAGE_BYTES:-4096} == 2097152 ]]; then
+        pooled=$((pooled + ${SPROUTFS_BENCH_RAM_RESIDENT_BYTES:-$((40 << 30))}))
+    fi
+    hugepages=$((pooled * 11 / 10 / (2 << 20)))
 fi
 sysctl -w vm.nr_hugepages="$hugepages"
 [[ $(cat /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages) -ge $hugepages ]]
@@ -149,6 +153,7 @@ if [[ ${SPROUTFS_GCE_WORKLOAD:-0} == 1 ]]; then
         SPROUTFS_BENCH_ROOT_BYTES="${SPROUTFS_BENCH_ROOT_BYTES:-}" \
         SPROUTFS_BENCH_RAM_RESIDENT_BYTES="${SPROUTFS_BENCH_RAM_RESIDENT_BYTES:-}" \
         SPROUTFS_BENCH_PMEM_RESIDENT_BYTES="${SPROUTFS_BENCH_PMEM_RESIDENT_BYTES:-}" \
+        SPROUTFS_RAM_PAGE_BYTES="${SPROUTFS_RAM_PAGE_BYTES:-}" \
         "$work/build/vmmachine.test" -test.v -test.run '^TestGuestWorkloadBenchmark$' -test.timeout=10h \
         > "$results/$output.log" 2>&1 || status=$?
     rm -rf -- "$run"
