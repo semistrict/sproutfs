@@ -45,15 +45,53 @@ type kernelBacking struct {
 	owner   string
 	zero    bool
 	private map[uint64]bool
-	fenced  atomic.Bool
+	// holes are the pages this volume holds no object for, which is what a
+	// publication makes of a page that reads as all zeroes: it costs no object,
+	// nothing is uploaded for it, and it reads back as the zeroes it holds.
+	holes  map[uint64]bool
+	fenced atomic.Bool
+	// page is the page this volume is published in, which must be the page of
+	// the pager it is given to. Zero means the one this file's tests run at.
+	page uint64
+	// sequence is the checkpoint the next publication of this volume names. Two
+	// publications may never name one checkpoint: the pager shares a resident
+	// page by the identity its volume gives it, so bytes published twice under
+	// one name are two contents the host holds one page for.
+	sequence uint64
 	// onPublish runs before a checkpoint's page lands, which lets a test hold a
 	// publication open and observe the pages the checkpoint still owns.
 	onPublish func()
 }
 
 func newKernelBacking(object byte, size int) *kernelBacking {
-	return &kernelBacking{data: make([]byte, size), owner: fmt.Sprintf("kernel-%d", object),
-		source: control.Ref{VM: fmt.Sprintf("checkpoint-%d", object), Sequence: 1}, private: map[uint64]bool{}}
+	return newPagedKernelBacking(object, size, hugePageSize)
+}
+
+// newPagedKernelBacking is a volume published in the named page, which is what
+// a RAM pager's 4 KiB tests attach.
+func newPagedKernelBacking(object byte, size int, page uint64) *kernelBacking {
+	return &kernelBacking{data: make([]byte, size), owner: fmt.Sprintf("kernel-%d", object), page: page, sequence: 2,
+		source:  control.Ref{VM: fmt.Sprintf("checkpoint-%d", object), Sequence: 1},
+		private: map[uint64]bool{}, holes: map[uint64]bool{}}
+}
+
+// hole records that this volume holds no object for a page, as a publication
+// does for one that reads as all zeroes. A test that starts a volume with
+// zeroes in it says so here, because the pager maps such a page rather than
+// reading it.
+func (b *kernelBacking) hole(page uint64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.holes[page] = true
+}
+
+// PageSize is the page this volume is published in. A pager refuses a volume
+// whose page is not its own, so every one of these states it.
+func (b *kernelBacking) PageSize() uint64 {
+	if b.page == 0 {
+		return hugePageSize
+	}
+	return b.page
 }
 func (b *kernelBacking) Size() uint64 { return uint64(len(b.data)) }
 func (b *kernelBacking) Load(_ context.Context, off uint64, dst []byte) error {
@@ -65,14 +103,14 @@ func (b *kernelBacking) Load(_ context.Context, off uint64, dst []byte) error {
 func (b *kernelBacking) Locate(_ context.Context, off, length uint64) ([]control.Extent, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	size := uint64(checkpoint.PageSize2MiB)
+	size := b.PageSize()
 	var extents []control.Extent
 	for cursor := off; cursor < off+length; cursor += size {
-		id := control.Identity{Ref: b.source, Volume: "v", Page: cursor / checkpoint.PageSize2MiB}
+		id := control.Identity{Ref: b.source, Volume: "v", Page: cursor / size}
 		switch {
-		case b.private[cursor/hugePageSize]:
-			id.Ref = control.Ref{VM: b.owner, Sequence: 2}
-		case b.zero:
+		case b.private[cursor/size]:
+			id.Ref = control.Ref{VM: b.owner, Sequence: b.sequence}
+		case b.zero || b.holes[cursor/size]:
 			id = control.Identity{Zero: true}
 		}
 		next := control.Extent{Offset: cursor, Length: size, Identity: id}
@@ -105,7 +143,8 @@ func (b *kernelBacking) checkpoint(ctx context.Context, r *vmmemory.Region) erro
 // publish installs one sealed checkpoint's pages, reporting whether the
 // checkpoint that would hold them was selected.
 func (b *kernelBacking) publish(ctx context.Context, ckpt *vmmemory.RegionCheckpoint) (bool, error) {
-	page := make([]byte, hugePageSize)
+	size := b.PageSize()
+	page := make([]byte, size)
 	for _, number := range ckpt.DirtyPages() {
 		if b.onPublish != nil {
 			b.onPublish()
@@ -118,12 +157,21 @@ func (b *kernelBacking) publish(ctx context.Context, ckpt *vmmemory.RegionCheckp
 			b.mu.Unlock()
 			return false, errInjected
 		}
-		copy(b.data[number*hugePageSize:], page)
-		b.private[number] = true
+		copy(b.data[number*size:], page)
+		// A page of zeroes is published as a hole, which is what makes a guest
+		// that frees memory leave one behind for the next fault to map.
+		if bytes.Equal(page, make([]byte, size)) {
+			b.holes[number] = true
+			delete(b.private, number)
+		} else {
+			delete(b.holes, number)
+			b.private[number] = true
+		}
 		b.mu.Unlock()
 	}
 	b.mu.Lock()
-	b.source = control.Ref{VM: b.owner, Sequence: 2}
+	b.source = control.Ref{VM: b.owner, Sequence: b.sequence}
+	b.sequence++
 	clear(b.private)
 	b.zero = false
 	b.mu.Unlock()
@@ -244,8 +292,14 @@ func kernelHostConfigured(t *testing.T, cfg vmmemory.Config) *vmmemory.Host {
 
 // zeroKernelBackings are two regions' volumes that are holes throughout.
 func zeroKernelBackings(size int) []*kernelBacking {
-	return []*kernelBacking{{data: make([]byte, size), owner: "zero-0", zero: true, private: map[uint64]bool{}},
-		{data: make([]byte, size), owner: "zero-1", zero: true, private: map[uint64]bool{}}}
+	var backings []*kernelBacking
+	for object := range byte(2) {
+		b := newKernelBacking(object, size)
+		b.owner = fmt.Sprintf("zero-%d", object)
+		b.zero = true
+		backings = append(backings, b)
+	}
+	return backings
 }
 
 func kernelStats(t *testing.T, h *vmmemory.Host) vmmemory.Stats {
@@ -544,6 +598,29 @@ func (p *nativeProcess) request(command, want string) {
 	}
 	if got := p.line(); got != want {
 		p.t.Fatalf("%s: got %q, want %q", command, got, want)
+	}
+}
+
+// ask is request for a caller that is not the test goroutine, which may not
+// fail a test itself: it reports what went wrong instead. One process serves
+// one caller at a time, as its single pair of pipes requires.
+func (p *nativeProcess) ask(command, want string) error {
+	if _, err := fmt.Fprintln(p.input, command); err != nil {
+		return fmt.Errorf("%s: %w", command, err)
+	}
+	select {
+	case line, ok := <-p.lines:
+		if !ok {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			return fmt.Errorf("%s: the memory process closed its output: %w", command, p.waitFailure(ctx))
+		}
+		if line != want {
+			return fmt.Errorf("%s: got %q, want %q", command, line, want)
+		}
+		return nil
+	case <-time.After(60 * time.Second):
+		return fmt.Errorf("%s: the memory process stalled", command)
 	}
 }
 func (p *nativeProcess) pfn(region int) uint64 {

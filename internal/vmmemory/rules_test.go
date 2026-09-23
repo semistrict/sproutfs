@@ -242,6 +242,86 @@ func TestARefusedMappingMakesTheRangeWhole(t *testing.T) {
 	})
 }
 
+// The offset the placement rule gives a page is not always holding that page.
+// A checkpoint freezes the guest's copy where it is, and retiring that
+// checkpoint leaves the page published at that same offset — so the next store
+// into it finds its own offset occupied and takes an ordinary one, while the
+// offset goes on holding the older, published page.
+//
+// A rule that reads such an offset as "this page is at its own offset" maps the
+// guest over the older page: the store the guest made is lost, and every region
+// that inherited that published identity has its page written under it. So the
+// run a rule maps is the pages whose memory really is at their own offsets, and
+// nothing else.
+func TestARuleNeverMapsAPageOntoAnOffsetHoldingAnotherPage(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const half = rangePages / 2
+		f := placedFixture(t, 4*rangePages)
+		b := f.newBacking(2 * rangePages)
+		r, m := f.attach(b)
+		held(t, r, m, 0, rangePages)
+		// One page of the range is the guest's own and is then published, which
+		// is what leaves it at the offset the rule gives it while belonging to
+		// the volume rather than to the guest.
+		const page = 5
+		access(t, r, m, page, true)[0] = 41
+		f.mustCheckpoint(r, b)
+		// The guest stores into it again. Its own offset holds the page the
+		// checkpoint published, so this copy goes to an ordinary offset.
+		access(t, r, m, page, true)[0] = 42
+		// And the range reaches half its own pages, so the rest of it is copied
+		// into the holes of its extent and the whole range becomes one mapping.
+		for p := range uint64(half + 1) {
+			if p != page {
+				access(t, r, m, p, true)[0] = 7
+			}
+		}
+		if got := access(t, r, m, page, false)[0]; got != 42 {
+			t.Fatalf("the page the guest stored 42 into reads %d once its range was filled", got)
+		}
+		if got := access(t, r, m, page, true)[0]; got != 42 {
+			t.Fatalf("the page the guest stored 42 into is mapped over something holding %d", got)
+		}
+	})
+}
+
+// A store maps one run, so the pages the rules make private are the pages of
+// that run and nothing else. A rule that reached past a page it could not take
+// would leave the pages beyond it private in the arena and still mapped to the
+// page they were copied from: the guest's next store to one of them would be
+// resolved against that older page — the copy it was given would hold nothing,
+// and a page its volume publishes would be written under every region that
+// inherited it.
+func TestEveryPageAStoreMakesPrivateIsInTheRunItMaps(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const half = rangePages / 2
+		f := placedFixture(t, 4*rangePages)
+		b := f.newBacking(2 * rangePages)
+		r, m := f.attach(b)
+		held(t, r, m, 0, rangePages)
+		// One page above them is a checkpoint's, so no rule may take it and the
+		// run a store maps has to stop there.
+		const blocked = half + 40
+		access(t, r, m, blocked, true)[0] = 9
+		if err := r.Seal(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		// The stores below it take the range past half its pages, so the rule
+		// that fills a range reaches across the page it cannot take.
+		for page := range uint64(half) {
+			access(t, r, m, page, true)[0] = 7
+		}
+		// Every page the guest may store into is one it stores into where the
+		// pager put it.
+		for page := uint64(blocked + 1); page < rangePages; page++ {
+			access(t, r, m, page, true)[0] = 8
+			if got := access(t, r, m, page, false)[0]; got != 8 {
+				t.Fatalf("page %d past the page the rule could not take reads %d, want 8", page, got)
+			}
+		}
+	})
+}
+
 // A pager whose page is the whole range runs neither rule: it has one page per
 // range, so there is no gap to close and nothing to fill.
 func TestAPagerWhosePageIsTheRangeRunsNeitherRule(t *testing.T) {

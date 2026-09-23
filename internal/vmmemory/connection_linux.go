@@ -257,11 +257,47 @@ func (c *Connection) Wait(ctx context.Context) error {
 // fails with the cancellation this installs, and those are consequences.
 func (c *Connection) fail(err error) {
 	c.reported.Do(func() {
-		slog.Error("vmmemory: the memory session failed", "region", c.cfg.Name,
-			"address", c.region.Address, "error", err)
+		attrs := []any{"region", c.cfg.Name, "address", c.region.Address}
+		var command *commandFailure
+		if errors.As(err, &command) {
+			attrs = append(attrs, command.attrs()...)
+		}
+		slog.Error("vmmemory: the memory session failed", append(attrs, "error", err)...)
 	})
 	c.cancel(err)
 	_ = c.socket.Close()
+}
+
+// commandFailure is the command a session was refused or failed on.
+//
+// The owner of a session sees only that the connection is gone: it kills the
+// client process and has no way back to what was asked for, and what the client
+// answers a refusal with is one errno. So the command travels with the error —
+// its kind, its identifier, the region offset and length it covers, the arena
+// offset it maps from, the generation it advances, its flags, and how many runs
+// followed it — and goes out as structured fields on the one line a failed
+// session logs. Without it an "invalid argument" on a host names neither the
+// pages it was about nor which of six commands it was.
+type commandFailure struct {
+	frame vmwire.Frame
+	// runs is how many run frames followed the command, which is zero for every
+	// command but a batch. A batch's own length is the same number.
+	runs int
+	err  error
+}
+
+func (f *commandFailure) Unwrap() error { return f.err }
+
+func (f *commandFailure) Error() string {
+	return fmt.Sprintf("%v (%s command id %d offset %d length %d backing %d generation %d flags %d runs %d)",
+		f.err, vmwire.KindName(f.frame.Kind), f.frame.ID, f.frame.Offset, f.frame.Length,
+		f.frame.Backing, f.frame.Generation, f.frame.Flags, f.runs)
+}
+
+func (f *commandFailure) attrs() []any {
+	return []any{"command", vmwire.KindName(f.frame.Kind), "id", f.frame.ID,
+		"offset", f.frame.Offset, "length", f.frame.Length, "backing", f.frame.Backing,
+		"generation", f.frame.Generation, "flags", f.frame.Flags, "runs", f.runs}
 }
 
 func (c *Connection) command(ctx context.Context, f vmwire.Frame) error {
@@ -284,8 +320,11 @@ func (c *Connection) commandFrames(ctx context.Context, f vmwire.Frame, runs []v
 	for i := range runs {
 		runs[i].ID = f.ID
 	}
+	// Every way this command can end names the command, because the failure a
+	// session reports is all its owner ever learns about it.
+	failed := func(err error) error { return &commandFailure{frame: f, runs: len(runs), err: err} }
 	if err := c.sendFrames(ctx, append([]vmwire.Frame{f}, runs...)); err != nil {
-		return err
+		return failed(err)
 	}
 	var response vmwire.Frame
 	timer := c.host.clock.NewTimer(c.cfg.CommandTimeout)
@@ -293,27 +332,27 @@ func (c *Connection) commandFrames(ctx context.Context, f vmwire.Frame, runs []v
 	select {
 	case response = <-c.acks:
 	case <-ctx.Done():
-		return context.Cause(ctx)
+		return failed(context.Cause(ctx))
 	case <-c.ctx.Done():
 		// The reader publishes a final ACK before recording a following EOF.
 		// Prefer that evidence when the peer closes immediately after STOP.
 		select {
 		case response = <-c.acks:
 		default:
-			return context.Cause(c.ctx)
+			return failed(context.Cause(c.ctx))
 		}
 	case <-timer.C():
-		return context.DeadlineExceeded
+		return failed(context.DeadlineExceeded)
 	}
 	if response.Kind != vmwire.Ack || response.ID != f.ID || response.Generation != f.Generation || response.Offset != 0 || response.Length != 0 || response.Backing != 0 {
-		return errors.New("invalid mapping acknowledgement")
+		return failed(errors.New("invalid mapping acknowledgement"))
 	}
 	if response.Flags != 0 {
 		// The client validates a command and admits it against its mapping
 		// budget before it touches anything, and answers a refusal as an
 		// ordinary acknowledgement; a failure after that point ends the session
 		// without one. So a flagged acknowledgement means nothing moved.
-		return fmt.Errorf("%w: %w", ErrMappingRefused, syscall.Errno(response.Flags))
+		return failed(fmt.Errorf("%w: %w", ErrMappingRefused, syscall.Errno(response.Flags)))
 	}
 	return nil
 }
@@ -466,6 +505,7 @@ func (m *remoteMapping) Protect(ctx context.Context, page uint64, count int) err
 	}
 	size := m.pageSize
 	if err := vmwire.ProtectRange(m.connection.uffd.Fd(), m.address+page*size, uint64(count)*size); err != nil {
+		err = fmt.Errorf("protecting %d pages from page %d: %w", count, page, err)
 		m.connection.fail(err)
 		return err
 	}
@@ -502,11 +542,15 @@ func (m *remoteMapping) Resolve(ctx context.Context, page uint64, count int, wri
 	if zero {
 		// Sparse zero runs are populated and protected before their temporary
 		// anonymous mapping is exposed, so they need no HugeTLB CONTINUE.
-		return vmwire.WakeRange(m.connection.uffd.Fd(), m.address+page*size, uint64(count)*size)
+		if err := vmwire.WakeRange(m.connection.uffd.Fd(), m.address+page*size, uint64(count)*size); err != nil {
+			return fmt.Errorf("waking %d zero pages from page %d: %w", count, page, err)
+		}
+		return nil
 	}
 	// One CONTINUE covers every HugeTLB page of the run; transient mapping races
 	// retry EAGAIN.
 	if err := vmwire.Resolve(m.connection.uffd.Fd(), m.address+page*size, uint64(count)*size, m.pageSize, writable); err != nil {
+		err = fmt.Errorf("resolving %d pages from page %d writable=%t: %w", count, page, writable, err)
 		m.connection.fail(err)
 		return err
 	}

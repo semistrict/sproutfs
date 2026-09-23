@@ -43,7 +43,7 @@ pub(crate) fn check_backing(fd: &OwnedFd, kind: u64, len: u64) -> io::Result<()>
     let mut stat: libc::stat = unsafe { std::mem::zeroed() };
     called();
     if unsafe { libc::fstat(fd.as_raw_fd(), &mut stat) } != 0 {
-        return Err(io::Error::last_os_error());
+        return Err(last("fstat"));
     }
     if len > i64::MAX as u64 || stat.st_size as u64 != len {
         return Err(refuse(format!(
@@ -54,7 +54,7 @@ pub(crate) fn check_backing(fd: &OwnedFd, kind: u64, len: u64) -> io::Result<()>
     let mut fs: libc::statfs = unsafe { std::mem::zeroed() };
     called();
     if unsafe { libc::fstatfs(fd.as_raw_fd(), &mut fs) } != 0 {
-        return Err(io::Error::last_os_error());
+        return Err(last("fstatfs"));
     }
     let (magic, block) = match kind {
         BACKING_HUGETLB => (HUGETLBFS_MAGIC, MAX_PAGE_SIZE),
@@ -71,14 +71,29 @@ pub(crate) fn check_backing(fd: &OwnedFd, kind: u64, len: u64) -> io::Result<()>
     Ok(())
 }
 
-pub(crate) fn ioctl<T>(fd: &OwnedFd, number: u32, value: &mut T) -> io::Result<()> {
+/// Names the kernel call a failure came out of.
+///
+/// A mutation that fails is terminal and sends no acknowledgement, so the
+/// pager learns nothing but that the connection went and the errno is the whole
+/// of what this client's embedder can print. Replacing one run is five
+/// different calls over three different ranges and most of them can answer the
+/// same errno, so the name is what turns that line into somewhere to look.
+pub(crate) fn failed(call: &str, err: io::Error) -> io::Error {
+    io::Error::new(err.kind(), format!("{call}: {err}"))
+}
+
+fn last(call: &str) -> io::Error {
+    failed(call, io::Error::last_os_error())
+}
+
+pub(crate) fn ioctl<T>(fd: &OwnedFd, call: &str, number: u32, value: &mut T) -> io::Result<()> {
     // asm-generic ioctl encoding, shared by the supported x86_64/aarch64 targets.
     let request =
         (3u64 << 30) | ((mem::size_of::<T>() as u64) << 16) | (0xaa << 8) | u64::from(number);
     called();
     // SAFETY: value has the UAPI layout corresponding to this private call site.
     if unsafe { libc::ioctl(fd.as_raw_fd(), request as _, value) } < 0 {
-        return Err(io::Error::last_os_error());
+        return Err(last(call));
     }
     Ok(())
 }
@@ -134,7 +149,7 @@ fn open_uffd() -> io::Result<OwnedFd> {
         raw = unsafe { libc::ioctl(device.as_raw_fd(), 0xaa00, flags) };
     }
     if raw < 0 {
-        return Err(io::Error::last_os_error());
+        return Err(last("userfaultfd"));
     }
     Ok(unsafe { OwnedFd::from_raw_fd(raw) })
 }
@@ -151,7 +166,7 @@ fn missing_features() -> io::Result<Vec<&'static str>> {
         features: 0,
         ioctls: 0,
     };
-    ioctl(&fd, u::_UFFDIO_API, &mut api)?;
+    ioctl(&fd, "UFFDIO_API", u::_UFFDIO_API, &mut api)?;
     Ok(REQUIRED_FEATURES
         .iter()
         .filter(|(_, bit)| api.features & u64::from(*bit) == 0)
@@ -168,7 +183,7 @@ impl Uffd {
             features: required,
             ioctls: 0,
         };
-        let enabled = ioctl(&fd, u::_UFFDIO_API, &mut api)
+        let enabled = ioctl(&fd, "UFFDIO_API", u::_UFFDIO_API, &mut api)
             .is_ok_and(|()| api.features & required == required);
         if !enabled {
             let missing = missing_features()?;
@@ -203,7 +218,7 @@ impl Uffd {
             mode: mode as u64,
             ioctls: 0,
         };
-        ioctl(&self.0, u::_UFFDIO_REGISTER, &mut reg)?;
+        ioctl(&self.0, "UFFDIO_REGISTER", u::_UFFDIO_REGISTER, &mut reg)?;
         let required = (1u64 << u::_UFFDIO_WRITEPROTECT)
             | if shared {
                 1u64 << u::_UFFDIO_CONTINUE
@@ -227,7 +242,12 @@ impl Uffd {
             },
             mode: 1, // UFFDIO_WRITEPROTECT_MODE_WP (not emitted by linux-raw-sys)
         };
-        ioctl(&self.0, u::_UFFDIO_WRITEPROTECT, &mut wp)
+        ioctl(
+            &self.0,
+            "UFFDIO_WRITEPROTECT",
+            u::_UFFDIO_WRITEPROTECT,
+            &mut wp,
+        )
     }
 }
 
@@ -269,7 +289,7 @@ impl TrapSource {
             )
         };
         if addr == libc::MAP_FAILED {
-            return Err(io::Error::last_os_error());
+            return Err(last("mremap"));
         }
         Ok(destination)
     }
@@ -317,7 +337,7 @@ impl Staging {
             )
         };
         if addr == libc::MAP_FAILED {
-            return Err(io::Error::last_os_error());
+            return Err(last("mmap"));
         }
         Ok(())
     }
@@ -351,7 +371,7 @@ impl Staging {
             )
         };
         if got == libc::MAP_FAILED {
-            return Err(io::Error::last_os_error());
+            return Err(last("mremap"));
         }
         // SAFETY: the run just left the span, so the span is what follows it.
         self.0.addr = unsafe { self.0.addr.cast::<u8>().add(len) }.cast();
@@ -393,7 +413,7 @@ impl Mapping {
             )
         };
         if reservation == libc::MAP_FAILED {
-            return Err(io::Error::last_os_error());
+            return Err(last("mmap"));
         }
         let base = reservation as usize;
         let aligned = ((base + MAX_PAGE_SIZE - 1) & !(MAX_PAGE_SIZE - 1)) + phase;
@@ -442,7 +462,7 @@ impl Mapping {
             )
         };
         if addr == libc::MAP_FAILED {
-            return Err(io::Error::last_os_error());
+            return Err(last("mmap"));
         }
         let mapping = Self { addr, len };
         mapping.advise(false)?;
@@ -456,7 +476,7 @@ impl Mapping {
             }
             called();
             if unsafe { libc::madvise(self.addr, self.len, advice) } != 0 {
-                return Err(io::Error::last_os_error());
+                return Err(last("madvise"));
             }
         }
         Ok(())
@@ -476,7 +496,7 @@ impl Mapping {
             )
         };
         if got == libc::MAP_FAILED {
-            return Err(io::Error::last_os_error());
+            return Err(last("mremap"));
         }
         self.len = 0; // the region, not this temporary owner, now owns the range
         Ok(())
@@ -488,7 +508,7 @@ impl Mapping {
         // content scan or private data-page allocation is involved.
         called();
         if unsafe { libc::madvise(self.addr, self.len, libc::MADV_POPULATE_READ) } != 0 {
-            return Err(io::Error::last_os_error());
+            return Err(last("madvise"));
         }
         Ok(())
     }

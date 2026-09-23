@@ -14,6 +14,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"strconv"
 
 	"github.com/semistrict/sproutfs/internal/checkpoint"
 )
@@ -38,6 +39,39 @@ const (
 	Ready    = 11
 	MapZero  = 12
 )
+
+// KindName is the one word a frame's kind goes by in a log line or an error,
+// so that a session ending on a command says what the client was asked to do
+// rather than a number. An unrecognized kind reports itself.
+func KindName(kind uint64) string {
+	switch kind {
+	case Hello:
+		return "hello"
+	case Region:
+		return "region"
+	case Attach:
+		return "attach"
+	case MapRange:
+		return "map"
+	case Revoke:
+		return "revoke"
+	case Ack:
+		return "ack"
+	case Stop:
+		return "stop"
+	case Seal:
+		return "seal"
+	case Result:
+		return "result"
+	case MapBatch:
+		return "batch"
+	case Ready:
+		return "ready"
+	case MapZero:
+		return "zero"
+	}
+	return strconv.FormatUint(kind, 10)
+}
 
 const (
 	// Version 8 made ATTACH's length the arena's offset space. An arena's

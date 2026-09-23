@@ -35,6 +35,27 @@ use wire::Frame;
 /// span of four is the first that pays for itself either way.
 const SPAN_RUNS: usize = 4;
 
+/// Names the run a command failed on and what that run asked for.
+///
+/// A command that fails after its first mutation is terminal and sends no
+/// acknowledgement, and a refused run of a batch ends the session the same way:
+/// either way the pager sees the connection go and nothing else, so the errno
+/// this client's embedder prints is the whole of the record. One batch carries
+/// up to a thousand runs and one span holds as many mappings as the pager put in
+/// it, so the index, the region range and the arena offset are what turn that
+/// line into a page to look at. The index counts within the span or the command
+/// it belongs to, which is where a reader of the pager's own frame log will look
+/// for it.
+fn in_run(index: usize, total: usize, run: Frame, err: io::Error) -> io::Error {
+    io::Error::new(
+        err.kind(),
+        format!(
+            "run {index} of {total}, region offset {} length {} arena offset {} generation {} flags {}: {err}",
+            run.offset, run.len, run.backing, run.generation, run.flags
+        ),
+    )
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u64)]
 pub enum RegionKind {
@@ -319,16 +340,18 @@ impl Session {
             return Err(io::ErrorKind::InvalidData.into());
         }
         let mut runs: Vec<Frame> = Vec::with_capacity(command.len as usize);
-        for _ in 0..command.len {
+        for index in 0..command.len as usize {
             let run = Frame::read(&mut self.socket)?;
-            self.validate(run).map_err(io::Error::from_raw_os_error)?;
+            let total = command.len as usize;
+            self.validate(run)
+                .map_err(|errno| in_run(index, total, run, io::Error::from_raw_os_error(errno)))?;
             if (run.kind != wire::MAP && run.kind != wire::MAP_ZERO && run.kind != wire::REVOKE)
                 || run.id != command.id
                 || runs
                     .last()
                     .is_some_and(|last| run.offset < last.offset + last.len)
             {
-                return Err(io::ErrorKind::InvalidData.into());
+                return Err(in_run(index, total, run, io::ErrorKind::InvalidData.into()));
             }
             runs.push(run);
         }
@@ -367,8 +390,10 @@ impl Session {
                 end += 1;
             }
             if end - index < SPAN_RUNS {
-                for run in &merged[index..end] {
-                    self.replace(*run)?;
+                let total = end - index;
+                for (at, run) in merged[index..end].iter().enumerate() {
+                    self.replace(*run)
+                        .map_err(|err| in_run(at, total, *run, err))?;
                 }
             } else {
                 self.replace_span(&merged[index..end])?;
@@ -441,15 +466,20 @@ impl Session {
     /// Applies one span of MAP runs: every run placed in one reservation, the
     /// reservation armed once, and then each run moved into the region.
     fn replace_span(&mut self, runs: &[Frame]) -> io::Result<()> {
-        let total = runs.iter().map(|run| run.len as usize).sum();
-        let mut staging = Staging::new(total)?;
+        let bytes = runs.iter().map(|run| run.len as usize).sum();
+        let total = runs.len();
+        let mut staging = Staging::new(bytes).map_err(|err| in_run(0, total, runs[0], err))?;
         let mut at = 0;
-        for run in runs {
-            staging.place(at, run.len as usize, &self.backing, run.backing)?;
+        for (index, run) in runs.iter().enumerate() {
+            staging
+                .place(at, run.len as usize, &self.backing, run.backing)
+                .map_err(|err| in_run(index, total, *run, err))?;
             at += run.len as usize;
         }
-        staging.arm(&self.uffd, runs[0].flags == wire::SHARED)?;
-        for run in runs {
+        staging
+            .arm(&self.uffd, runs[0].flags == wire::SHARED)
+            .map_err(|err| in_run(0, total, runs[0], err))?;
+        for (index, run) in runs.iter().enumerate() {
             // SAFETY: validate bounded every run by the region's length.
             let target = unsafe {
                 self.region
@@ -459,13 +489,15 @@ impl Session {
                     .add(run.offset as usize)
             }
             .cast();
-            staging.move_front(run.len as usize, target)?;
+            staging
+                .move_front(run.len as usize, target)
+                .map_err(|err| in_run(index, total, *run, err))?;
         }
         Ok(())
     }
 
     fn apply(&mut self, c: Frame) -> io::Result<()> {
-        self.replace(c)?;
+        self.replace(c).map_err(|err| in_run(0, 1, c, err))?;
         self.record_generation(c);
         Ok(())
     }

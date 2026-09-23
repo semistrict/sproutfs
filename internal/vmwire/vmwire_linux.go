@@ -8,6 +8,7 @@ package vmwire
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -34,19 +35,28 @@ const (
 // ioctlRetrying issues one userfaultfd ioctl, retrying the transient EAGAIN the
 // kernel returns while a concurrent mapping change on the same address space is
 // in flight. Concurrent fault workers on one region make that race ordinary.
-func ioctlRetrying(fd uintptr, number uint64, args []uint64, write bool) error {
+//
+// A failure carries the name of the ioctl. What the pager reports as the reason
+// a VM's memory ended is whatever these return, and an errno on its own is the
+// same word for four different calls over three different ranges: the errno
+// says the kernel refused, and the name says which range of which kind of
+// mapping it refused to install, wake or protect.
+func ioctlRetrying(name string, fd uintptr, number uint64, args []uint64, write bool) error {
 	backoff, started := ioctlBackoff, time.Now()
 	for attempt := 0; ; attempt++ {
 		err := IOCtl(fd, number, args, write)
-		if !errors.Is(err, syscall.EAGAIN) {
-			return err
+		if err != nil && !errors.Is(err, syscall.EAGAIN) {
+			return fmt.Errorf("%s: %w", name, err)
+		}
+		if err == nil {
+			return nil
 		}
 		if attempt < ioctlYields {
 			runtime.Gosched()
 			continue
 		}
 		if time.Since(started) >= ioctlMaxWait {
-			return err
+			return fmt.Errorf("%s: %w", name, err)
 		}
 		time.Sleep(backoff)
 		backoff = min(2*backoff, ioctlMaxBackoff)
@@ -194,10 +204,10 @@ func Resolve(fd uintptr, address, size, pageSize uint64, writable bool) error {
 	if err := continueRange(fd, address, size, pageSize, mode); err != nil {
 		return err
 	}
-	if err := ioctlRetrying(fd, 6, []uint64{address, size, wp}, true); err != nil {
+	if err := ioctlRetrying("UFFDIO_WRITEPROTECT", fd, 6, []uint64{address, size, wp}, true); err != nil {
 		return err
 	}
-	return ioctlRetrying(fd, 2, []uint64{address, size}, false)
+	return ioctlRetrying("UFFDIO_WAKE", fd, 2, []uint64{address, size}, false)
 }
 
 // continueRange installs a range with one CONTINUE when none of it is present.
@@ -206,12 +216,12 @@ func Resolve(fd uintptr, address, size, pageSize uint64, writable bool) error {
 // CONTINUE reports EAGAIN, whose retry finds its first page present and so
 // takes the same path; a concurrent mapping change is the other EAGAIN.
 func continueRange(fd uintptr, address, size, pageSize, mode uint64) error {
-	err := ioctlRetrying(fd, 7, []uint64{address, size, mode, 0}, true)
+	err := ioctlRetrying("UFFDIO_CONTINUE", fd, 7, []uint64{address, size, mode, 0}, true)
 	if !errors.Is(err, syscall.EEXIST) {
 		return err
 	}
 	for offset := uint64(0); offset < size; offset += pageSize {
-		err := ioctlRetrying(fd, 7, []uint64{address + offset, pageSize, mode, 0}, true)
+		err := ioctlRetrying("UFFDIO_CONTINUE", fd, 7, []uint64{address + offset, pageSize, mode, 0}, true)
 		if err != nil && !errors.Is(err, syscall.EEXIST) {
 			return err
 		}
@@ -222,7 +232,7 @@ func continueRange(fd uintptr, address, size, pageSize, mode uint64) error {
 // WakeRange releases faults after a replacement whose PTEs were populated by
 // the client. Installing those PTEs does not wake waiters on the old mapping.
 func WakeRange(fd uintptr, address, size uint64) error {
-	return ioctlRetrying(fd, 2, []uint64{address, size}, false)
+	return ioctlRetrying("UFFDIO_WAKE", fd, 2, []uint64{address, size}, false)
 }
 
 // ProtectRange takes write access away from a whole registered range with one
@@ -232,5 +242,5 @@ func WakeRange(fd uintptr, address, size uint64) error {
 // every registered VMA it covers, and it may already be protected. This is what
 // a seal costs instead of replacing one mapping per run.
 func ProtectRange(fd uintptr, address, size uint64) error {
-	return ioctlRetrying(fd, 6, []uint64{address, size, 1}, true) // WRITEPROTECT_MODE_WP
+	return ioctlRetrying("UFFDIO_WRITEPROTECT", fd, 6, []uint64{address, size, 1}, true) // WRITEPROTECT_MODE_WP
 }
