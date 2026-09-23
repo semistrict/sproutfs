@@ -317,10 +317,15 @@ It is bounded, because a mapping run costs the same command whether or not the
 guest ever reads it and a page the populate leaves alone costs at most a share
 of one: the fault that reaches it maps its whole read-ahead window from the same
 resident pages. So a populate installs a run only when it covers at least one
-read-ahead window, and at most 128 runs in all — resident runs and holes alike,
-out of one budget. A hole is one run however many pages it covers, but a guest's
-address space is holes all through it rather than one, so a hole earns its
-command on the same terms as a resident run. The runs a fork point names are the
+read-ahead window, and at most 128 runs and 16,384 pages in all — resident runs
+and holes alike, out of one budget. A run is not only its command: the kernel
+installs the run's pages one by one, a write-protected entry each, at about a
+microsecond a page — on 2026-09-23 on GCE a warm restore's 128 runs carried
+839,196 pages and took 1.10 s — so a run longer than the pages left is cut to
+them, and the fault that reaches the rest maps its window. A hole is one run
+however many pages it covers, but a guest's address space is holes all through
+it rather than one, so a hole earns its command on the same terms as a resident
+run and its pages are charged the same. The runs a fork point names are the
 exception to the length and not to the budget: they are the parent's dirty state
 under a name that ending the seal takes back, so the attach is the only moment a
 child can map them and they take the budget before anything else, whatever run

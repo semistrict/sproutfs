@@ -71,3 +71,12 @@ func Signal(h *Host) {
 	h.signal()
 	h.mu.Unlock()
 }
+
+// SetPopulationPages bounds the pages one attach installs, so a test can
+// observe the bound without a region of production size. It is restored when
+// the test ends.
+func SetPopulationPages(t *testing.T, pages uint64) {
+	previous := populationPages
+	populationPages = pages
+	t.Cleanup(func() { populationPages = previous })
+}

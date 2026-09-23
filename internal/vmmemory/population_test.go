@@ -594,3 +594,29 @@ func TestAttachmentIncludesPagesLoadedDuringMetadataLookup(t *testing.T) {
 		}
 	})
 }
+
+// A run's cost is not only its command. The kernel installs the run's pages one
+// by one — a write-protected entry each — and on 2026-09-23 on GCE a warm
+// restore's populate of 839,196 pages in 128 runs took 1.10 s, 1.3 µs a page,
+// against a half-second bound for the whole restore; a fork's took 2.0–2.3 s
+// over 2.03 M pages. So the populate is bounded in pages as well as in runs,
+// and a run it cannot afford in pages is left to the faults' windows like any
+// other.
+func TestPopulationInstallsNoMorePagesThanItsBudgetHoweverLongTheRuns(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		vmmemory.SetPopulationPages(t, 16)
+		const pages = 64
+		f := newConfiguredFixture(t, vmmemory.Config{PageSize: checkpoint.PageSize4KiB,
+			ResidentPages: 128, LogicalPages: 256, DirtyPages: 8, ReadAheadPages: 8})
+		// The sibling read the whole region window by window into consecutive
+		// slots, so it holds the region as one run: the populate installs the
+		// front of it, cut to the pages it can afford, in one command.
+		_, m, _ := f.holed(pages)
+		if got := m.mappedPages(); !slices.Equal(got, pageRange(0, 16)) {
+			t.Fatalf("the populate mapped %d pages, want the first 16 its page budget admits", len(got))
+		}
+		if m.maps != 1 {
+			t.Fatalf("the populate installed %d mapping runs, want the one run's front", m.maps)
+		}
+	})
+}

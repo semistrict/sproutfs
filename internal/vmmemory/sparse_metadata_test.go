@@ -170,8 +170,11 @@ func TestEagerZeroPopulationKeepsLargeLogicalMetadataSparse(t *testing.T) {
 		if allocated := int64(after.HeapAlloc) - int64(before.HeapAlloc); allocated > 2<<20 {
 			t.Fatalf("eager 32 GiB zero region retained %d metadata bytes, budget 2 MiB", allocated)
 		}
-		if m.zeroPages != pages {
-			t.Fatalf("only %d of %d zero pages were eagerly mapped", m.zeroPages, pages)
+		// The hole is one run and the populate installs its front: the pages
+		// its budget admits, because the kernel installs a zero page's entry
+		// per page like any other. The rest are the faults' windows.
+		if m.zeroPages != 16<<10 {
+			t.Fatalf("%d zero pages were eagerly mapped, want the 16384 the populate's page budget admits", m.zeroPages)
 		}
 		if err := r.Fault(t.Context(), pages-1, true); err != nil {
 			t.Fatal(err)

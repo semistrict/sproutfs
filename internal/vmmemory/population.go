@@ -40,6 +40,21 @@ import (
 // production size.
 var populationRuns = 128
 
+// populationPages bounds the pages one Populate installs, because a run's cost
+// is not only its command: the kernel installs the run's pages one by one, a
+// write-protected entry each, at about a microsecond a page. Measured on
+// 2026-09-23 on GCE, a warm restore's populate of 839,196 pages in 128 runs
+// took 1.10 s against a half-second bound for the whole restore, and a fork's
+// took 2.0–2.3 s over 2.03 M pages. Sixteen thousand pages — 64 MiB at 4 KiB,
+// 32 GiB at 2 MiB, where the cost is per run rather than per page — is about
+// twenty milliseconds, and what it does not install the faults' windows do, a
+// window per touch. A run of pages a fork point named is charged like any
+// other, so an attach's cost is bounded whatever a point names.
+//
+// It is a variable only so a test can observe the bound without a region of
+// production size.
+var populationPages uint64 = 16 << 10
+
 // populationRun is the shortest run of pages Populate installs: consecutive in
 // this region and resident in consecutive arena slots, which is what one
 // mapping command covers. It is the read-ahead window, because a run shorter
@@ -109,8 +124,8 @@ func (r *Region) Populate(ctx context.Context) error {
 	// 4 KiB page, decoded out of the index's segments — and a window reached with
 	// nothing left to spend can install no run of any kind, so every one of those
 	// answers would be metadata read before the guest runs for nothing at all.
-	budget := populationRuns
-	for start := uint64(0); start < uint64(r.pageCount) && budget > 0; {
+	budget := populationBudget{runs: populationRuns, pages: populationPages}
+	for start := uint64(0); start < uint64(r.pageCount) && budget.left(); {
 		end := min(start+max(populationWindowBytes/h.pageSize, 1), uint64(r.pageCount))
 		err := func() error {
 			if err := r.mu.Lock(ctx); err != nil {
@@ -250,19 +265,52 @@ func (p *windowPlan) residentRuns(candidates []candidate, runs []populateRun) []
 // because a shorter one saves at most the single fault that would have mapped
 // the same pages with the same single command. Within each of those two the
 // budget is spent in page order.
-func (p *windowPlan) afford(runs []populateRun, budget *int) []populateRun {
+// populationBudget is what one Populate may still spend: commands, and the
+// pages the kernel installs for them.
+type populationBudget struct {
+	runs  int
+	pages uint64
+}
+
+func (b *populationBudget) left() bool { return b.runs > 0 && b.pages > 0 }
+
+// spend takes a run out of the budget, cut down to the pages left when it is
+// longer than they are, and reports what was afforded. A sibling's residency is
+// often one run for most of a region, so refusing a long run outright would
+// leave the budget unspent; the front of it is worth the same command, and the
+// fault that reaches the rest maps its window from the same pages.
+func (b *populationBudget) spend(run populateRun) (populateRun, bool) {
+	if !b.left() {
+		return run, false
+	}
+	if run.last-run.first > b.pages {
+		run.last = run.first + b.pages
+		if !run.zero {
+			// A resident run's candidates are one per page, in page order.
+			run.to = run.from + int(b.pages)
+		}
+	}
+	b.runs--
+	b.pages -= run.last - run.first
+	return run, true
+}
+
+func (p *windowPlan) afford(runs []populateRun, budget *populationBudget) []populateRun {
 	sort.Slice(runs, func(i, j int) bool { return runs[i].first < runs[j].first })
 	least := uint64(p.region.populationRun())
 	kept := runs[:0:0]
 	for _, named := range [2]bool{true, false} {
 		for _, run := range runs {
-			if run.named != named || *budget <= 0 {
+			if run.named != named || !budget.left() {
 				continue
 			}
 			if !named && run.last-run.first < least {
 				continue
 			}
-			*budget--
+			run, ok := budget.spend(run)
+			if !ok {
+				continue
+			}
 			kept = append(kept, run)
 		}
 	}
@@ -270,7 +318,7 @@ func (p *windowPlan) afford(runs []populateRun, budget *int) []populateRun {
 	return kept
 }
 
-func (p *windowPlan) bindResidents(ctx context.Context, index *residentIndex, budget *int) error {
+func (p *windowPlan) bindResidents(ctx context.Context, index *residentIndex, budget *populationBudget) error {
 	var candidates []candidate
 	var runs []populateRun
 	ps := p.region.host.pageSize
