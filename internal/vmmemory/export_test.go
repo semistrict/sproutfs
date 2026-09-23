@@ -47,6 +47,15 @@ func SetPopulationRuns(t *testing.T, runs int) {
 	t.Cleanup(func() { populationRuns = previous })
 }
 
+// SetPopulationWindowBytes bounds the window one populate walks volume metadata
+// in, so a test can cross a window boundary without a region of production size.
+// It is restored when the test ends.
+func SetPopulationWindowBytes(t *testing.T, bytes uint64) {
+	previous := populationWindowBytes
+	populationWindowBytes = bytes
+	t.Cleanup(func() { populationWindowBytes = previous })
+}
+
 // SetSealWalkSeam installs what the walk behind a seal's pause runs before it
 // takes its first page, so a test can hold the walk there and look at what the
 // pause itself cost. It is restored when the test ends.

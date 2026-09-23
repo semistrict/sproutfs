@@ -234,7 +234,36 @@ type Process struct {
 	// closing is set by the owner that is stopping this process on purpose, so
 	// the exit it then sees is not reported as a death.
 	closing atomic.Bool
+	// phases is what Start spent, filled as it goes and read once it returns.
+	phases StartPhases
 }
+
+// StartPhases splits what starting one machine cost, so a restore that took
+// seconds says which part of it did. They are the phases of Start in order, and
+// they do not sum to it: a session is built by the VMM inside its own snapshot
+// load, so AttachNS overlaps StateLoadNS.
+//
+//   - ProcessNS is the VMM process itself: the arguments and state files, the
+//     exec, and the wait for the API socket it binds once it is past its own
+//     seccomp filter. Nothing of this pager's is in it.
+//   - StateLoadNS is the snapshot load request, which is where a restore's
+//     memory sessions are built: the VMM asks for each region's descriptor
+//     inside it, so the pager's attach and populate happen here.
+//   - SessionsNS is what was left of building those sessions once the load
+//     returned, which for a machine whose populate outlives the request is
+//     where that shows.
+//   - ReadyNS is the round trip that proves the machine is up.
+//   - Attachments is what each region's session cost, by the volume it maps.
+type StartPhases struct {
+	ProcessNS   int64
+	StateLoadNS int64
+	SessionsNS  int64
+	ReadyNS     int64
+	Attachments map[string]vmmemory.AttachStats
+}
+
+// StartPhases reports how this machine's start divided up.
+func (p *Process) StartPhases() StartPhases { return p.phases }
 
 type processFailure struct{ err error }
 
@@ -292,6 +321,10 @@ func Start(ctx context.Context, c Config) (*Process, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Each phase is timed where it happens: a restore of seconds is otherwise one
+	// number, and which of the VMM's own start, the pager's attach and the
+	// snapshot load it was is the whole question.
+	phase := time.Now()
 	if err := p.spawn(c, args, cancel); err != nil {
 		return nil, err
 	}
@@ -302,17 +335,22 @@ func Start(ctx context.Context, c Config) (*Process, error) {
 	if err := p.awaitAPI(ctx); err != nil {
 		return nil, err
 	}
+	phase, p.phases.ProcessNS = time.Now(), int64(time.Since(phase))
 	if len(c.RestoreState) > 0 {
 		if err := p.restore(ctx, c, overrides); err != nil {
 			return nil, p.withSessions(err, connectErrors)
 		}
 	}
+	phase, p.phases.StateLoadNS = time.Now(), int64(time.Since(phase))
 	if err := p.awaitSessions(ctx, connectErrors); err != nil {
 		return nil, err
 	}
+	phase, p.phases.SessionsNS = time.Now(), int64(time.Since(phase))
 	if err := p.request(ctx, http.MethodGet, "/", nil); err != nil {
 		return nil, p.withSessions(err, connectErrors)
 	}
+	p.phases.ReadyNS = int64(time.Since(phase))
+	p.phases.Attachments = p.attachments()
 	for _, name := range []string{"config.json", "restore.state"} {
 		if err := p.files.remove(ctx, name); err != nil {
 			return nil, err
@@ -913,6 +951,18 @@ func (p *Process) Stop(ctx context.Context) ([]byte, error) {
 // regions under those names, which are the names the destination opens the same
 // volumes under.
 func (p *Process) Regions() map[string]*vmmemory.Region { return p.namedRegions() }
+
+// attachments is what every region's session cost to build, by the volume it
+// maps, which is the pager's own share of a start.
+func (p *Process) attachments() map[string]vmmemory.AttachStats {
+	result := make(map[string]vmmemory.AttachStats, len(p.endpoints))
+	for _, e := range p.endpoints {
+		if e.connection != nil {
+			result[e.name] = e.connection.Attach()
+		}
+	}
+	return result
+}
 
 func (p *Process) namedRegions() map[string]*vmmemory.Region {
 	result := make(map[string]*vmmemory.Region)

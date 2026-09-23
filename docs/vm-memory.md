@@ -326,12 +326,31 @@ under a name that ending the seal takes back, so the attach is the only moment a
 child can map them and they take the budget before anything else, whatever run
 they come in.
 
+**The walk that finds those runs ends where the budget does.** It goes window by
+window over the region, and every window asks the volume for the identity of
+every page in it — four million of them for a 16 GiB guest at a 4 KiB page,
+decoded out of the index's segments — while a window reached with nothing left to
+spend can install no run of any kind. So the populate stops there rather than
+reading the rest of the page table before the guest runs. What it gives up by
+stopping is the note that this region knows about explicit zeros, which lets a
+sibling attachment map holes without metadata of its own; a region whose first
+windows hold none of them loses that, and its sibling's first fault finds the
+holes instead.
+
 Measured on GCE, an unbounded populate mapped 2,930,747 sibling-resident pages of
 a 16 GiB guest in 21,698 runs before the guest ran — five seconds of a restore
 whose bound is half a second, after which the guest took 723 faults. Bounding the
 resident runs alone left 14,447 runs over 2,166,194 pages, of which only 123,056
 pages were resident identities: two million pages of scattered holes were still
 paying a command each. That is what one budget over every kind of run is for.
+
+What one attach cost is on the record rather than inferred: `AttachStats` is the
+whole of a session's `Connect` — descriptor exchange, admission, ATTACH, populate
+and the READY round trip — with the populate's own commands, runs, pages and
+duration inside it (`Region.Populated`). `vmmachine.StartPhases` puts it beside
+the VMM process's own start, the snapshot load the sessions are built inside, and
+the round trip that proves the machine is up, so a restore of seconds says which
+of the four it was.
 
 A region the pager refuses is the one failure whose two halves sit on opposite
 sides of the socket. The VMM builds its sessions inside its own boot or load
@@ -389,10 +408,22 @@ registers it and `mremap`s it over the guest's addresses in one command. So one
 command serves the store and the whole run the two rules copied with it, and a
 revocation, which installs no page table and wakes nothing, is left to what it
 is for — a reclaim taking a victim, a settle handing a page back to its origin,
-an abandoned checkpoint, and a store whose mapping the client refused. Until
+a retire handing back a page the volume holds no object for, an abandoned
+checkpoint, and a store whose mapping the client refused. Until
 2026-09-22 every private page cost a revocation first, which is what a GCE
 fan-out of three forks running `cargo test` spent 1,753 s of 5.4 million
 commands on: 2.6 revocations a fault, about one per page the guests wrote.
+
+**Every one of those that is not a store's own goes as one command per run.** A
+settle re-shares thousands of pages at a checkpoint, an abandoned seal gives
+thousands back, and a retire hands back every write-ahead page its guest never
+stored into — and a round trip per page, serialized on the mapping lock, is a
+stall the guest feels. The retire's was one command a page until 2026-09-23,
+which is what a GCE fan-out of two forks spent 12,428 revocations on against
+15,477 write-ahead pages: about one per page each fork wrote, which is why it
+read as the store path's cost and was not. Its batch's hand-backs are now checked
+and revoked together, before the walk that publishes the rest
+(`Region.revokeHandedBack`).
 
 What replacing costs instead is an ordering, which `internal/vmmemory/replacement.go`
 is. Between the moment a store takes its binding off the page it copied from and

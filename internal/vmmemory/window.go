@@ -39,6 +39,20 @@ type windowPlan struct {
 	// is taken by the waiting path before the fault holds any lock. It is
 	// consumed by setting it to -1.
 	spill *int
+	// installed is what this plan's own mapping commands came to, beside the
+	// pager-wide counters they also advance: a populate adds it up over its
+	// windows to say what one attach cost before its guest ran.
+	installed installedRuns
+}
+
+// installedRuns is a set of mapping commands as what they cost: the commands
+// themselves, the runs they covered and the pages in those runs.
+type installedRuns struct{ commands, runs, pages uint64 }
+
+func (i *installedRuns) add(other installedRuns) {
+	i.commands += other.commands
+	i.runs += other.runs
+	i.pages += other.pages
 }
 
 func (r *Region) plan(ctx context.Context, start, end, fault uint64) (*windowPlan, error) {
@@ -469,6 +483,15 @@ func (p *windowPlan) publish(ctx context.Context, page uint64, data []byte, priv
 	return nil
 }
 
+// pagesOf is how many pages a set of runs covers.
+func pagesOf(runs []MapRun) uint64 {
+	pages := uint64(0)
+	for _, run := range runs {
+		pages += uint64(run.Count)
+	}
+	return pages
+}
+
 // install maps every planned page and populates its page tables. Consecutive
 // slots and explicit zero ranges coalesce into runs, sent in bounded batches.
 // It reports whether the faulting page ended resolved.
@@ -576,6 +599,8 @@ func (p *windowPlan) install(ctx context.Context) (bool, error) {
 		h.stats.Mappings += uint64(commands)
 		h.stats.MappingRuns += uint64(mappingRuns)
 		h.mu.Unlock()
+		p.installed.add(installedRuns{commands: uint64(commands),
+			runs: uint64(mappingRuns), pages: pagesOf(runs)})
 	}
 	for _, run := range writable {
 		if err := r.mapPages(ctx, run.Page, run.Slot, run.Count, true); err != nil {
@@ -585,6 +610,7 @@ func (p *windowPlan) install(ctx context.Context) (bool, error) {
 		h.stats.Mappings++
 		h.stats.MappingRuns++
 		h.mu.Unlock()
+		p.installed.add(installedRuns{commands: 1, runs: 1, pages: uint64(run.Count)})
 	}
 	resolved := false
 	for _, run := range runs {

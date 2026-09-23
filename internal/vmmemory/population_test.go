@@ -177,22 +177,26 @@ func pageRange(first, last uint64) []uint64 {
 // forks of one checkpoint, so a hole is a hole in both.
 func (f *fixture) holed(pages int, holes ...uint64) (*mapping, *mapping, *backing) {
 	f.t.Helper()
-	sibling := f.newBacking(pages)
-	for _, page := range holes {
-		sibling.zero[page] = true
-		clear(sibling.data[page*uint64(f.pageSize) : (page+1)*uint64(f.pageSize)])
-	}
+	sibling := f.holedBacking(pages, holes)
 	source, sm := f.attach(sibling)
 	for page := range uint64(pages) {
 		access(f.t, source, sm, page, false)
 	}
-	fork := f.newBacking(pages)
-	for _, page := range holes {
-		fork.zero[page] = true
-		clear(fork.data[page*uint64(f.pageSize) : (page+1)*uint64(f.pageSize)])
-	}
+	fork := f.holedBacking(pages, holes)
 	_, m := f.attach(fork)
 	return sm, m, fork
+}
+
+// holedBacking is one such volume: a fork of the fixture's checkpoint whose
+// named pages are explicit zeros.
+func (f *fixture) holedBacking(pages int, holes []uint64) *backing {
+	f.t.Helper()
+	b := f.newBacking(pages)
+	for _, page := range holes {
+		b.zero[page] = true
+		clear(b.data[page*uint64(f.pageSize) : (page+1)*uint64(f.pageSize)])
+	}
+	return b
 }
 
 // A hole costs the same mapping command as a resident run and is worth it on the
@@ -435,6 +439,53 @@ func TestAForkPointsPagesTakeTheBudgetFirstAndAreBoundedByIt(t *testing.T) {
 		}
 		if got := cm.mappedPages(); !slices.Equal(got, []uint64{1, 3}) {
 			t.Fatalf("the populate mapped %v, want the first two pages the point names", got)
+		}
+	})
+}
+
+// A populate whose run budget is spent stops walking. The budget bounds the
+// commands it installs, but the walk that finds them goes window by window over
+// the whole region, and every window asks the volume for the identity of every
+// page in it: for a 16 GiB guest at a 4 KiB page that is four million page
+// identities, decoded out of the index's segments, before the guest runs.
+//
+// So the walk ends where the budget does. Nothing after it can install a run of
+// any kind — a hole, a resident identity or a page a fork point named — so every
+// window it would still ask about is metadata read for nothing, and that is the
+// part of a restore's wait this pager owns.
+func TestPopulationStopsWalkingWhenItsRunBudgetIsSpent(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		vmmemory.SetPopulationRuns(t, 2)
+		// Four windows of eight pages, with a hole between every two pages the
+		// sibling holds, so every window has runs worth a command and the first
+		// one spends the whole budget.
+		const window, windows = 8, 4
+		const pages = window * windows
+		vmmemory.SetPopulationWindowBytes(t, window*checkpoint.PageSize4KiB)
+		f := newConfiguredFixture(t, vmmemory.Config{PageSize: checkpoint.PageSize4KiB,
+			ResidentPages: 2 * pages, LogicalPages: 4 * pages, DirtyPages: 8, ReadAheadPages: 1})
+		var holes []uint64
+		for page := uint64(1); page < pages; page += 2 {
+			holes = append(holes, page)
+		}
+		sibling := f.holedBacking(pages, holes)
+		source, sm := f.attach(sibling)
+		for page := range uint64(pages) {
+			access(t, source, sm, page, false)
+		}
+		fork := f.holedBacking(pages, holes)
+		var located []uint64
+		fork.onLocate = func(offset, _ uint64) {
+			located = append(located, offset/uint64(f.pageSize))
+		}
+		_, m := f.attach(fork)
+		if m.maps != 2 {
+			t.Fatalf("the populate installed %d mapping runs, want the 2 its budget admits", m.maps)
+		}
+		// One window's metadata and no more: the budget was spent inside it, so
+		// the three windows after it hold nothing this populate could install.
+		if !slices.Equal(located, []uint64{0}) {
+			t.Fatalf("the populate asked the volume about the pages at %v, want the first window's alone", located)
 		}
 	})
 }

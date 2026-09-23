@@ -71,6 +71,29 @@ type Connection struct {
 	workers   sync.WaitGroup
 	closeMu   *ctxsync.Mutex
 	closed    bool
+	// attachNS is what building this session cost, from the descriptor exchange
+	// to the acknowledged READY that ends the mandatory populate. It is written
+	// once, by Connect, before anything else can read it.
+	attachNS int64
+}
+
+// AttachStats is what one session's attachment cost, which is the part of a
+// restore the pager owns: the whole of Connect, and the populate inside it.
+// DurationNS is the attach — the descriptor exchange, the region admission, the
+// ATTACH, the populate and the READY round trip — so what it holds beyond the
+// populate is handshake and metadata and nothing else.
+type AttachStats struct {
+	DurationNS int64
+	Populate   PopulateStats
+}
+
+// Attach reports what this session's attachment cost.
+func (c *Connection) Attach() AttachStats {
+	stats := AttachStats{DurationNS: c.attachNS}
+	if c.region.Memory != nil {
+		stats.Populate = c.region.Memory.Populated()
+	}
+	return stats
 }
 
 // queuedFault is one page waiting for a worker: whether any of its trapped
@@ -128,6 +151,10 @@ func Connect(ctx context.Context, h *Host, socket *net.UnixConn, backing RegionB
 	// on cancellation too, including contexts without a startup deadline.
 	stopHandshake := context.AfterFunc(ctx, func() { _ = socket.Close() })
 	defer stopHandshake()
+	// What the attach costs is the pager's half of a restore, so it is timed from
+	// here: everything below is this session being built, and the guest cannot run
+	// until the READY at the end of it is acknowledged.
+	attaching := h.clock.Now()
 	// The deadline below is the kernel's, which knows only the wall clock: a
 	// socket deadline is an instant the operating system compares against, not
 	// something this process can be given its own reading of.
@@ -224,6 +251,7 @@ func Connect(ctx context.Context, h *Host, socket *net.UnixConn, backing RegionB
 		c.fail(err)
 		return fail(err)
 	}
+	c.attachNS = h.clock.Since(attaching).Nanoseconds()
 	return c, nil
 }
 

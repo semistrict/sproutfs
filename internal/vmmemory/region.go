@@ -87,6 +87,10 @@ type Region struct {
 	// it.
 	checkpointMu sync.Mutex
 	checkpoint   *RegionCheckpoint
+	// populated is what this region's attach populate installed, written once
+	// before its guest runs and read afterwards by whoever accounts for a
+	// restore's phases.
+	populated atomic.Pointer[PopulateStats]
 	// sealing is set while a seal is taking the dirty set into a checkpoint
 	// the region does not name yet, so a store asking what will relieve the
 	// dirty budget at that moment is told a checkpoint is coming rather than
