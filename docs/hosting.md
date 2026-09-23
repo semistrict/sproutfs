@@ -15,7 +15,9 @@ the migration page server, and the loops that keep what it runs durable and
 fenced. The supervisor around it — `host.Start`, which returns the `host.Service`
 the command serves — owns the two pagers, each over an arena and a spill file of
 its own: RAM's 4 KiB pages on an ordinary memfd, PMEM's 2 MiB pages on the
-node's HugeTLB pool. A node sets its shared memory's transparent huge pages to
+node's HugeTLB pool. A deployment may run RAM at 2 MiB on the pool too
+(`SPROUTFS_RAM_PAGE_BYTES`), which is the pager RAM ran before it had a page of
+its own and what the 4 KiB one is measured against. A node sets its shared memory's transparent huge pages to
 `advise`, which lets the RAM arena allocate a zero run's whole 2 MiB blocks as
 huge pages and leaves every other shared memory on the node as it was; see
 [the arena](vm-memory.md). It also owns the

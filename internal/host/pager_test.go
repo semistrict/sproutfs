@@ -25,17 +25,17 @@ func TestBothPagersGetRunsOfTheSameSizeInTheirOwnPages(t *testing.T) {
 	config := deploymentConfig()
 	ram := pagerConfig(config, vmmemory.Ram)
 	pmem := pagerConfig(config, vmmemory.Pmem)
-	if ram.PageSize != RAMPageSize || pmem.PageSize != PMEMPageSize {
-		t.Fatalf("pages %d and %d, want %d and %d", ram.PageSize, pmem.PageSize, RAMPageSize, PMEMPageSize)
+	if ram.PageSize != DefaultRAMPageSize || pmem.PageSize != PMEMPageSize {
+		t.Fatalf("pages %d and %d, want %d and %d", ram.PageSize, pmem.PageSize, DefaultRAMPageSize, PMEMPageSize)
 	}
 	for _, tc := range []struct {
 		what string
 		got  int
 		want int
 	}{
-		{"RAM read-ahead", ram.ReadAheadPages, readAheadBytes / RAMPageSize},
+		{"RAM read-ahead", ram.ReadAheadPages, readAheadBytes / DefaultRAMPageSize},
 		{"PMEM read-ahead", pmem.ReadAheadPages, readAheadBytes / PMEMPageSize},
-		{"RAM write-ahead", ram.WriteAheadPages, writeAheadBytes / RAMPageSize},
+		{"RAM write-ahead", ram.WriteAheadPages, writeAheadBytes / DefaultRAMPageSize},
 		{"PMEM write-ahead", pmem.WriteAheadPages, writeAheadBytes / PMEMPageSize},
 	} {
 		if tc.got != tc.want {
@@ -80,7 +80,7 @@ func TestASmallDirtyBudgetKeepsWriteAheadAtOnePage(t *testing.T) {
 	for _, kind := range []vmmemory.RegionKind{vmmemory.Ram, vmmemory.Pmem} {
 		pageSize := PMEMPageSize
 		if kind == vmmemory.Ram {
-			pageSize = int(RAMPageSize)
+			pageSize = int(DefaultRAMPageSize)
 		}
 		run := writeAheadBytes / pageSize
 		config := deploymentConfig()
@@ -109,12 +109,30 @@ func TestASmallDirtyBudgetKeepsWriteAheadAtOnePage(t *testing.T) {
 // deploy/10-host.yaml lands a production host on the one-page fallback.
 func TestTheDeploymentsBudgetsAffordBothWriteAheadRuns(t *testing.T) {
 	config := deploymentConfig()
-	if got := pagerConfig(config, vmmemory.Ram).WriteAheadPages; got != writeAheadBytes/RAMPageSize {
+	if got := pagerConfig(config, vmmemory.Ram).WriteAheadPages; got != writeAheadBytes/DefaultRAMPageSize {
 		t.Errorf("the deployment's RAM dirty budget of %d pages writes %d ahead, want %d",
-			config.DirtyPages.RAM, got, writeAheadBytes/RAMPageSize)
+			config.DirtyPages.RAM, got, writeAheadBytes/DefaultRAMPageSize)
 	}
 	if got := pagerConfig(config, vmmemory.Pmem).WriteAheadPages; got != writeAheadBytes/PMEMPageSize {
 		t.Errorf("the deployment's PMEM dirty budget of %d pages writes %d ahead, want %d",
 			config.DirtyPages.PMEM, got, writeAheadBytes/PMEMPageSize)
+	}
+}
+
+// A deployment may run RAM at 2 MiB, which is the pager RAM ran before it had a
+// page of its own: its arena is on the HugeTLB pool, a page is a whole range so
+// there is nothing to place and its offsets are its pages, and its runs are the
+// same bytes as PMEM's, in the same pages.
+func TestARAMPagerAtTwoMiBIsTheHugeTLBPager(t *testing.T) {
+	config := deploymentConfig()
+	config.RAMPageSize = PMEMPageSize
+	config.LogicalPages.RAM, config.DirtyPages.RAM = 1<<13, 4608
+	ram := pagerConfig(config, vmmemory.Ram)
+	if ram.PageSize != PMEMPageSize || ram.ArenaOffsets != ram.ResidentPages ||
+		ram.ReadAheadPages != readAheadBytes/PMEMPageSize || ram.WriteAheadPages != writeAheadBytes/PMEMPageSize {
+		t.Fatalf("a 2 MiB RAM pager has page %d, %d offsets for %d pages, read-ahead %d and write-ahead %d; "+
+			"want %d, as many offsets as pages, %d and %d",
+			ram.PageSize, ram.ArenaOffsets, ram.ResidentPages, ram.ReadAheadPages, ram.WriteAheadPages, PMEMPageSize,
+			readAheadBytes/PMEMPageSize, writeAheadBytes/PMEMPageSize)
 	}
 }

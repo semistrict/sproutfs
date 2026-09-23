@@ -63,14 +63,11 @@ const minimumCheckpointInterval = time.Second
 // defaultTemplates is the one guest image the demo image carries.
 const defaultTemplates = "alpine=/usr/share/sproutfs/guest.ext4"
 
-// The pages this build's two pagers run, which a deployment does not choose.
-// They are the supervisor's, and this command reads them from there so that the
-// byte budgets it divides are checked against the pages they will actually be
-// counted in.
-const (
-	ramPageSize  = host.RAMPageSize
-	pmemPageSize = host.PMEMPageSize
-)
+// pmemPageSize is the PMEM pager's page, which a deployment does not choose.
+// It is the supervisor's, and this command reads it from there so that the byte
+// budgets it divides are checked against the pages they will actually be
+// counted in. RAM's is SPROUTFS_RAM_PAGE_BYTES, checked the same way.
+const pmemPageSize = host.PMEMPageSize
 
 // defaultRAMSharePercent is how much of this host's arena, spill file and page
 // budgets goes to the RAM pager when a deployment names no share. Three
@@ -184,6 +181,14 @@ func loadConfig(lookup func(string) string) (config, error) {
 				retired.name, retired.ram, retired.pmem)
 		}
 	}
+	// RAM's page is 4 KiB on ordinary memory unless the deployment runs it at
+	// 2 MiB on the HugeTLB pool, and every RAM budget below is counted in it.
+	ramPageSize, err := host.RAMPage(uint64(number("SPROUTFS_RAM_PAGE_BYTES", int64(host.DefaultRAMPageSize))))
+	if err != nil {
+		fail("SPROUTFS_RAM_PAGE_BYTES: %v", err)
+		ramPageSize = host.DefaultRAMPageSize
+	}
+	c.RAMPageSize = ramPageSize
 	ramShare := number("SPROUTFS_RAM_SHARE_PERCENT", defaultRAMSharePercent)
 	if ramShare < 1 || ramShare > 99 {
 		fail("SPROUTFS_RAM_SHARE_PERCENT is %d, want 1 to 99", ramShare)
@@ -209,8 +214,8 @@ func loadConfig(lookup func(string) string) (config, error) {
 	if c.VCPUs < 1 || c.VCPUs > 32 {
 		fail("SPROUTFS_VM_VCPUS is %d, want 1 to 32", c.VCPUs)
 	}
-	resident := host.KindPages{RAM: int(c.ArenaBytes.RAM / ramPageSize), PMEM: int(c.ArenaBytes.PMEM / pmemPageSize)}
-	spillable := host.KindPages{RAM: int(c.SpillBytes.RAM / ramPageSize), PMEM: int(c.SpillBytes.PMEM / pmemPageSize)}
+	resident := host.KindPages{RAM: int(c.ArenaBytes.RAM / int64(ramPageSize)), PMEM: int(c.ArenaBytes.PMEM / pmemPageSize)}
+	spillable := host.KindPages{RAM: int(c.SpillBytes.RAM / int64(ramPageSize)), PMEM: int(c.SpillBytes.PMEM / pmemPageSize)}
 	// The logical cap bounds per-region metadata, which is the only thing it
 	// costs: it reserves nothing, and a page that is never touched has no
 	// metadata to bound. What it does decide is which VMs a host will run at

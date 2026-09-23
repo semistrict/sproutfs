@@ -11,17 +11,31 @@ import (
 	"github.com/semistrict/sproutfs/internal/platform"
 )
 
-// RAMPageSize and PMEMPageSize are the pages this build's two pagers run, which
-// a deployment does not choose. RAM's is 4 KiB, which is the unit a guest's
-// store copies, owns and publishes, on an arena of ordinary memory; PMEM's is
-// 2 MiB, on the HugeTLB pool, which is also the alignment Firecracker requires
+// DefaultRAMPageSize and PMEMPageSize are the pages the two pagers run. RAM's
+// is a deployment's choice: 4 KiB by default, the unit a guest's store copies,
+// owns and publishes, on an arena of ordinary memory; or 2 MiB on the HugeTLB
+// pool, which is the pager RAM ran before it had a page of its own. PMEM's is
+// always 2 MiB, on the pool, which is also the alignment Firecracker requires
 // of a PMEM device. They are here rather than beside either pager so that the
 // byte budgets a deployment divides are checked against the pages they will
-// actually be counted in, and so that the two statements cannot drift apart.
+// actually be counted in, and so that the statements cannot drift apart.
 const (
-	RAMPageSize  = checkpoint.PageSize4KiB
-	PMEMPageSize = checkpoint.PageSize2MiB
+	DefaultRAMPageSize = checkpoint.PageSize4KiB
+	PMEMPageSize       = checkpoint.PageSize2MiB
 )
+
+// RAMPage is the RAM pager's page a configuration names: DefaultRAMPageSize
+// where it names none, and an error for anything but 4 KiB and 2 MiB, which are
+// the two arenas there are.
+func RAMPage(size uint64) (uint64, error) {
+	switch size {
+	case 0:
+		return DefaultRAMPageSize, nil
+	case checkpoint.PageSize4KiB, checkpoint.PageSize2MiB:
+		return size, nil
+	}
+	return 0, fmt.Errorf("a RAM page of %d bytes: want %d or %d", size, checkpoint.PageSize4KiB, checkpoint.PageSize2MiB)
+}
 
 // VMs is every operation this host's API offers, and nothing about how a VM is
 // run. The supervisor implements it over Firecracker, and so does a test's
@@ -138,8 +152,12 @@ type SupervisorConfig struct {
 	// memfd rather than a file in it, but the mount is what the kubelet grants
 	// the pod its HugeTLB allotment through, so its absence means there are no
 	// huge pages to allocate and is worth failing on at startup. The RAM arena
-	// is an ordinary memfd and does not touch the pool.
+	// is an ordinary memfd and does not touch the pool unless its page is 2 MiB.
 	HugepageDir string
+	// RAMPageSize is the RAM pager's page, as RAMPage reads it: zero is the
+	// default 4 KiB. At 2 MiB the RAM arena's share comes out of the pod's
+	// HugeTLB allotment as PMEM's does.
+	RAMPageSize uint64
 	// ScratchDir is the node-disk directory holding the pager's spill file and
 	// the VMM scratch. A starting host wipes it: a restart is a host loss, so
 	// nothing under it is authority for anything.

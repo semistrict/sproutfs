@@ -388,3 +388,26 @@ func TestTheDefaultLogicalCapAdmitsTheDeployment(t *testing.T) {
 			config.LogicalPages.PMEM, vms, rootPagesPerVM*vms)
 	}
 }
+
+// A deployment may run RAM at 2 MiB, the pager RAM ran before it had a page of
+// its own, and then the RAM share is counted in 2 MiB pages as PMEM's is. Any
+// page but the two arenas there are is refused.
+func TestConfigRunsRAMAtTwoMiBWhenAsked(t *testing.T) {
+	values := minimal()
+	values["SPROUTFS_RAM_PAGE_BYTES"] = "2097152"
+	values["SPROUTFS_RAM_SHARE_PERCENT"] = "50"
+	config, err := loadConfig(environ(values))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.RAMPageSize != 2<<20 || config.DirtyPages != (host.KindPages{RAM: 512, PMEM: 512}) ||
+		config.LogicalPages.RAM != 512*32 {
+		t.Fatalf("a 2 MiB RAM page gave page %d, dirty budgets %v and a RAM logical cap of %d",
+			config.RAMPageSize, config.DirtyPages, config.LogicalPages.RAM)
+	}
+	values["SPROUTFS_RAM_PAGE_BYTES"] = "8192"
+	if _, err := loadConfig(environ(values)); err == nil ||
+		!strings.Contains(err.Error(), "SPROUTFS_RAM_PAGE_BYTES: a RAM page of 8192 bytes: want 4096 or 2097152") {
+		t.Fatalf("an 8 KiB RAM page was accepted: %v", err)
+	}
+}

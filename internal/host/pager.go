@@ -1,6 +1,7 @@
 package host
 
 import (
+	"fmt"
 	"runtime"
 
 	"github.com/semistrict/sproutfs/internal/vmmemory"
@@ -82,7 +83,7 @@ const (
 func pagerConfig(config SupervisorConfig, kind vmmemory.RegionKind) vmmemory.Config {
 	pageSize, arenaBytes, logical, dirty := uint64(PMEMPageSize), config.ArenaBytes.PMEM, config.LogicalPages.PMEM, config.DirtyPages.PMEM
 	if kind == vmmemory.Ram {
-		pageSize, arenaBytes, logical, dirty = RAMPageSize, config.ArenaBytes.RAM, config.LogicalPages.RAM, config.DirtyPages.RAM
+		pageSize, arenaBytes, logical, dirty = ramPage(config), config.ArenaBytes.RAM, config.LogicalPages.RAM, config.DirtyPages.RAM
 	}
 	resident := int(uint64(arenaBytes) / pageSize)
 	readAhead := int(max(readAheadBytes/pageSize, 1))
@@ -95,7 +96,7 @@ func pagerConfig(config SupervisorConfig, kind vmmemory.RegionKind) vmmemory.Con
 	return vmmemory.Config{
 		PageSize:        pageSize,
 		ResidentPages:   resident,
-		ArenaOffsets:    arenaOffsets(kind, resident, logical),
+		ArenaOffsets:    arenaOffsets(pageSize, resident, logical),
 		LogicalPages:    logical,
 		DirtyPages:      dirty,
 		ConcurrentIO:    concurrentIO(resident, readAhead),
@@ -112,18 +113,28 @@ func pagerConfig(config SupervisorConfig, kind vmmemory.RegionKind) vmmemory.Con
 // pages it may hold: the arena is a sparse file, so an offset costs nothing
 // until a page is put there.
 //
-// RAM puts a private page at the offset it has within its 2 MiB range, so every
-// range a region may have written into owns a run of 512 consecutive offsets
-// however few of its pages are private. A range is 512 pages and an extent 512
-// offsets, so the extents come to exactly the logical pages this pager admits —
-// every page of every region it may map — and the read-ahead runs, which take
-// consecutive offsets of their own, are bounded by what the arena can hold at
-// once. PMEM places nothing, so its offsets and its pages are one number.
-func arenaOffsets(kind vmmemory.RegionKind, resident, logical int) int {
-	if kind != vmmemory.Ram {
+// A pager of pages smaller than a range puts a private page at the offset it has
+// within its 2 MiB range, so every range a region may have written into owns a
+// run of consecutive offsets however few of its pages are private. At 4 KiB a
+// range is 512 pages and an extent 512 offsets, so the extents come to exactly
+// the logical pages this pager admits — every page of every region it may map —
+// and the read-ahead runs, which take consecutive offsets of their own, are
+// bounded by what the arena can hold at once. A pager whose page is the whole
+// range places nothing, so its offsets and its pages are one number.
+func arenaOffsets(pageSize uint64, resident, logical int) int {
+	if pageSize >= PMEMPageSize {
 		return resident
 	}
 	return logical + resident
+}
+
+// ramPage is the RAM page a validated configuration names.
+func ramPage(config SupervisorConfig) uint64 {
+	page, err := RAMPage(config.RAMPageSize)
+	if err != nil {
+		panic(fmt.Sprintf("host: pagerConfig of an unvalidated configuration: %v", err))
+	}
+	return page
 }
 
 // concurrentIO bounds page reads and spill writes in flight. It is the node's

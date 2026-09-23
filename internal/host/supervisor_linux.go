@@ -144,9 +144,12 @@ func Start(ctx context.Context, config SupervisorConfig) (Service, error) {
 	}()
 
 	// Huge pages are what the PMEM arena is made of; the RAM arena is ordinary
-	// memory charged to the pod. The pod's mount is what the kubelet grants its
-	// HugeTLB allotment through, so its absence means that arena cannot be
-	// allocated at all.
+	// memory charged to the pod unless its page is 2 MiB. The pod's mount is
+	// what the kubelet grants its HugeTLB allotment through, so its absence
+	// means that arena cannot be allocated at all.
+	if _, err := RAMPage(config.RAMPageSize); err != nil {
+		return nil, err
+	}
 	if _, err := os.Stat(config.HugepageDir); err != nil {
 		return nil, fmt.Errorf("hugepage mount %s: %w", config.HugepageDir, err)
 	}
