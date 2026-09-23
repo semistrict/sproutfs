@@ -224,12 +224,19 @@ func (b *benchmark) dbFork(ctx context.Context, origin *forkOrigin) {
 
 	start = b.sample(ctx)
 	published := make([]uint64, count)
+	// What each fork's checkpoint paused it for, and how many mappings its
+	// VMM held when it did: a fork whose scattered stores are mappings of their
+	// own is write-protected one run at a time.
+	pauses := make([]any, count)
+	mappings := make([]int, count)
 	for index := range count {
-		forked, _ := b.capture(ctx, processes[index], vms[index])
+		mappings[index] = countMappings(processes[index].PID())
+		forked, extra := b.capture(ctx, processes[index], vms[index])
 		_, published[index] = forked.Sealed()
+		pauses[index] = extra["pause_ns"]
 	}
 	b.record(ctx, "db-fork-checkpoint", "sproutfs", start, nil, map[string]any{
-		"updates_made": made, "published_bytes": published})
+		"updates_made": made, "published_bytes": published, "pause_ns": pauses, "vmm_mappings": mappings})
 }
 
 // baselineDB is the database scenario on plain Firecracker: a guest booted from
