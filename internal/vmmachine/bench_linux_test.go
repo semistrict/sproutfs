@@ -1592,7 +1592,17 @@ func (b *benchmark) forkFanOut(ctx context.Context, origin *forkOrigin) {
 		for name, region := range item.process.Regions() {
 			changedCounts[index][name] = map[string]int{}
 			pageSize := region.PageSize()
-			before, after := make([]byte, pageSize), make([]byte, pageSize)
+			after := make([]byte, pageSize)
+			// The pristine bytes are read a 2 MiB window at a time, the unit the
+			// store serves them in: a page at a time is a store read per page
+			// wherever nothing warmed the host's cache first, which is what a
+			// fork that mapped idle pages instead of loading them leaves, and
+			// those reads are this record's own cost and not the fan-out's.
+			const window = 2 << 20
+			span := max(uint64(window), pageSize)
+			size := pristine.Volume(name).Size()
+			var windowStart uint64
+			var windowBytes []byte
 			for _, page := range ownPages[index][name] {
 				held, _, err := region.ReadResident(ctx, page, after)
 				if err != nil {
@@ -1601,9 +1611,15 @@ func (b *benchmark) forkFanOut(ctx context.Context, origin *forkOrigin) {
 				if !held {
 					b.t.Fatalf("fork %d no longer holds its own %s page %d", index, name, page)
 				}
-				if err := pristine.Volume(name).Read(ctx, page*pageSize, before); err != nil {
-					b.t.Fatal(err)
+				at := page * pageSize
+				if windowBytes == nil || at < windowStart || at >= windowStart+uint64(len(windowBytes)) {
+					windowStart = at / span * span
+					windowBytes = make([]byte, min(span, size-windowStart))
+					if err := pristine.Volume(name).Read(ctx, windowStart, windowBytes); err != nil {
+						b.t.Fatal(err)
+					}
 				}
+				before := windowBytes[at-windowStart : at-windowStart+pageSize]
 				changed := []uint64{}
 				for offset := 0; offset < len(after); offset += block {
 					if !bytes.Equal(before[offset:offset+block], after[offset:offset+block]) {
