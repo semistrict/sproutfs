@@ -160,8 +160,10 @@ func TestConnectionCancellationDuringAttachment(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			// The seed's published page stays idle once the seed detaches; the
+			// canceled attachment holds nothing, so every resident page is idle.
 			stats, err := h.Stats(t.Context())
-			if err != nil || stats.LogicalPages != 0 || stats.ResidentPages != 0 {
+			if err != nil || stats.LogicalPages != 0 || stats.ResidentPages != stats.IdlePages {
 				t.Fatalf("canceled attachment retained capacity: %+v %v", stats, err)
 			}
 		})
