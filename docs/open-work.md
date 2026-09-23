@@ -55,6 +55,18 @@ everything open is listed here.
   the same fan-out and the same capture re-taken (`revocations`, `revoked_pages`,
   `pause_ns`, `seal_ns`, the new `seal_walk_ns`).
 
+  **The revocations the 2026-09-23 fan-out then recorded were not a store's.** Its
+  12,428 against 12,826 copy-on-writes read as one per page the forks wrote and
+  were the retire's: a published checkpoint hands back every page the volume holds
+  no object for — the write-ahead pages the guest never stored into, 15,477 of
+  them — and it revoked each one on its own. The hand-backs of one retire batch are
+  now checked and revoked together, one command per run
+  (`Region.revokeHandedBack`, `TestAForksFirstCheckpointRevokesItsHolesInRunsNotPages`).
+  Two per-page revocations are left and neither is in a fork's first seconds: a
+  page whose identity another resident already holds, which arrives alone, and
+  `Host.dropSharers`, which an abandoned checkpoint and a retired fork point use
+  per sharer per page.
+
 - **RAM runs 4 KiB and PMEM 2 MiB, and what that costs is unmeasured.** The
   store, the pager, the wire and the VMM all carry each region's own page now.
   What the [page-geometry plan](../plans/ram-pmem-page-geometry-2026-09-19.md)
@@ -93,6 +105,32 @@ everything open is listed here.
   `mremap` per run and the REMAP event the pager reads back for it. That one
   cannot be batched: `mremap` moves a single mapping and the runs of a batch are
   separate ones, so making them one would be a wire change.
+
+  What the bound left behind was the walk. It went window by window over the
+  whole region however much of the budget was left, and every window asks the
+  volume for the identity of every page in it — four million of them for a 16 GiB
+  guest at a 4 KiB page, decoded out of the index's segments before the guest
+  runs — while a window reached with nothing left to spend can install no run at
+  all. It now ends where the budget does
+  (`TestPopulationStopsWalkingWhenItsRunBudgetIsSpent`). Whether that is what a
+  managed restore's seconds were is the thing the phases below are for.
+
+- **What a managed restore's 1.7–3.3 s is made of is now recorded and still
+  untimed on a cluster.** A fork's restore was one duration, so the fan-out's
+  `restore_each_ns` — 1.68 s and 3.28 s against plain Firecracker's 0.22 s cold
+  restore — said nothing about which part of it was the VMM's own start, the
+  snapshot load, or the pager attaching and populating each region.
+  `vmmachine.StartPhases` is those four phases, `vmmemory.AttachStats` is what one
+  session's `Connect` cost with the populate's commands, runs, pages and duration
+  inside it, and the fan-out records all of it per fork as `restore_phases`
+  (`internal/vmmachine/process_linux.go`, `internal/vmmemory/connection_linux.go`,
+  `internal/vmmemory/population.go`). Nothing has run with them yet. What the
+  2026-09-23 record already rules out is the mapping commands: 482 of them carried
+  12,000 runs over 4,089,383 pages for the whole scenario, at about a fifth of a
+  millisecond each, so the round trips are a tenth of a second and not seconds.
+  With the populate bounded at 128 runs a region, those 12,000 runs are the
+  faults' windows and not the populate; the pages are the populate's holes, which
+  one command covers however many it names.
 - **Compaction reads the pages it rescues one at a time.** A read of a range of
   a volume now fetches a run of members as one ranged read per extent, but
   compaction walks a segment's pages and calls `Store.loadPage` for each one it
@@ -146,6 +184,8 @@ everything open is listed here.
   arrives in a run of its own, like any other load, so a post-copy destination's
   private pages are not placed at all until the guest stores into them.
 - **A page a guest only reads is copied, and the copy is given back at the next checkpoint.** A cold read that has to wait for the pager reaches it as a write fault — on x86-64 because KVM's asynchronous page fault worker always asks for the page writable, on aarch64 when the guest first executes a page — and the pager answers a write fault with a private page. What the [unchanged-page rule](../plans/unchanged-pages-2026-09-19.md) recovers is done: the copy remembers the page it was made from, the settle behind each checkpoint's pause compares the two, and a page that did not change is published nowhere and goes straight back to sharing its origin. What remains is the copy itself. Between the fault and the next checkpoint the host holds the page twice, and with 4 KiB RAM pages under a 2 MiB read-ahead run that is one page in 512, while for PMEM at 2 MiB it is a whole page per cold fault until the interval passes. Preventing it needs a host kernel that passes the guest's access through, or KVM userfault once it exists, and neither is ours to start. Fork points are not settled either: a child inherits an unchanged page as an unpublished one, which its own next checkpoint settles.
+
+  **It is one page per fault and no more, which the 2026-09-23 fan-out's counts say and the suite now asserts.** 12,826 copy-on-writes over 13,226 faults is one copy per store-served fault; the pages a store copies past the one it faulted on are the two rules', which are counted apart as `Stats.RuleCopies` and were missing from the record until now. `TestAForksFirstStoresRevokeNothing` holds the shape at 4 KiB: a region attached over a sibling's resident pages, a store into a page the populate mapped, one into a page the guest has never touched and one inside the window a read brought, each making exactly one page private and copying nothing for the rules. So what is left of a fork's first pass is the number of faults, not what each one copies: 13,226 of them at a mean of 1.01 ms, whose levers are a window bigger than the free arena slots a fault can reserve and a populate of the fork point's hot set rather than of whatever a sibling happens to hold. Neither is done.
 - **The workload measurement predates the multi-page parts and wants re-taking.** It was measured against one object per dirty page, before `39bfe37`, so its object counts describe a store layout that no longer exists, and only one fork setting (`FORKS_BASE=2 FORKS_PER_REPO=1`) was run; the commands to re-take it on current `main` are in the document (`docs/measurements-2026-09-14-workload.md`).
 
 ## Found by the 2026-09-14 GCE validation
