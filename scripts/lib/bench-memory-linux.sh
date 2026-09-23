@@ -14,12 +14,15 @@ test -c /dev/kvm
 # (SPROUTFS_RAM_PAGE_BYTES=2097152); at its default 4 KiB page RAM is ordinary
 # memory. So the pool is the resident budgets on it and a tenth again for the
 # arenas' own rounding and for anything else on the node that wants a huge
-# page. The budgets default to the benchmark's own.
+# page. The host is eight processors and 64 GiB, so the budgets are what it can
+# hold beside the plain side's guests: 24 GiB of RAM and 12 GiB of PMEM.
 hugepages=4096
 if [[ ${SPROUTFS_GCE_WORKLOAD:-0} == 1 ]]; then
-    pooled=${SPROUTFS_BENCH_PMEM_RESIDENT_BYTES:-$((24 << 30))}
+    export SPROUTFS_BENCH_RAM_RESIDENT_BYTES=${SPROUTFS_BENCH_RAM_RESIDENT_BYTES:-$((24 << 30))}
+    export SPROUTFS_BENCH_PMEM_RESIDENT_BYTES=${SPROUTFS_BENCH_PMEM_RESIDENT_BYTES:-$((12 << 30))}
+    pooled=$SPROUTFS_BENCH_PMEM_RESIDENT_BYTES
     if [[ ${SPROUTFS_RAM_PAGE_BYTES:-4096} == 2097152 ]]; then
-        pooled=$((pooled + ${SPROUTFS_BENCH_RAM_RESIDENT_BYTES:-$((40 << 30))}))
+        pooled=$((pooled + SPROUTFS_BENCH_RAM_RESIDENT_BYTES))
     fi
     hugepages=$((pooled * 11 / 10 / (2 << 20)))
 fi
@@ -169,9 +172,8 @@ fi
 # tests, that checkout as a git repository — run through
 # every scenario of the guest workload benchmark, managed and on plain
 # Firecracker, on this host. SPROUTFS_BENCH_SCENARIOS and SPROUTFS_BENCH_FORKS
-# narrow it as they do under scripts/bench-guest-lima.sh. A guest has sixteen of
-# this host's thirty-two processors, on both sides: with four, the build alone
-# is a quarter of an hour a side.
+# narrow it as they do under scripts/bench-guest-lima.sh. A guest has all eight
+# of this host's processors, on both sides.
 if [[ ${SPROUTFS_GCE_WORKLOAD:-0} == 1 ]]; then
     key=$(cat "$repo/scripts/lib/bench-image.sh" "$repo/internal/vmmachine/testdata/guest.c" | sha256sum | cut -c1-32)
     image=$(HOME=$work bash "$repo/scripts/lib/bench-image.sh" "$repo" "$key" 2> "$results/image-build.log")
@@ -198,7 +200,7 @@ if [[ ${SPROUTFS_GCE_WORKLOAD:-0} == 1 ]]; then
         SPROUTFS_BENCH_REVISION="$(cat "$repo/source-revision.txt")" \
         SPROUTFS_BENCH_SCENARIOS="$scenarios" \
         SPROUTFS_BENCH_FORKS="$forks" \
-        SPROUTFS_BENCH_VCPUS="${SPROUTFS_BENCH_VCPUS:-16}" \
+        SPROUTFS_BENCH_VCPUS="${SPROUTFS_BENCH_VCPUS:-8}" \
         SPROUTFS_BENCH_RAM_BYTES="${SPROUTFS_BENCH_RAM_BYTES:-}" \
         SPROUTFS_BENCH_ROOT_BYTES="${SPROUTFS_BENCH_ROOT_BYTES:-}" \
         SPROUTFS_BENCH_RAM_RESIDENT_BYTES="${SPROUTFS_BENCH_RAM_RESIDENT_BYTES:-}" \

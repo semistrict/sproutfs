@@ -37,11 +37,11 @@ results=${3:-$repo/docs/measurements/gce-memory-$(date -u +%Y%m%d-%H%M%S)}
 [[ -n "$project" && "$project" != '(unset)' ]] || { echo 'Set SPROUTFS_GCE_PROJECT.' >&2; exit 2; }
 [[ "$instance" == sproutfs-memprobe-* ]] || { echo 'Use a sproutfs-memprobe- instance name.' >&2; exit 2; }
 cloud=(gcloud --quiet --project="$project")
-# The workload comparison runs 16 GiB guests, four at a time on each side, over a
-# 32 GiB root each clone of the plain side copies; the memory probe needs none
-# of that.
+# Every host has eight processors. The workload comparison runs 16 GiB guests
+# over a 32 GiB root each clone of the plain side copies, so it takes the
+# high-memory shape of the same eight; the memory probe needs none of that.
 machine=n2-standard-8 disk=80GB limit=5h
-if [[ ${SPROUTFS_GCE_WORKLOAD:-0} == 1 ]]; then machine=n2-standard-32 disk=400GB limit=11h; fi
+if [[ ${SPROUTFS_GCE_WORKLOAD:-0} == 1 ]]; then machine=n2-highmem-8 disk=400GB limit=11h; fi
 
 create() {
     "${cloud[@]}" compute instances create "$instance" --zone="$zone" \
