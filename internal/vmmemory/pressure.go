@@ -54,13 +54,13 @@ func (h *Host) takeSpill(ctx context.Context, r *Region) (int, error) {
 			h.mu.Unlock()
 			return 0, err
 		}
-		if n := len(h.freeSpill); n > 0 && !over {
-			slot := h.freeSpill[n-1]
-			h.freeSpill = h.freeSpill[:n-1]
-			h.dirty++
-			h.stats.PeakDirtyPages = max(h.stats.PeakDirtyPages, h.dirty)
-			h.mu.Unlock()
-			return slot, nil
+		if !over {
+			if slot, ok := h.reservations.take(); ok {
+				h.dirty++
+				h.stats.PeakDirtyPages = max(h.stats.PeakDirtyPages, h.dirty)
+				h.mu.Unlock()
+				return slot, nil
+			}
 		}
 		h.mu.Unlock()
 		if over {

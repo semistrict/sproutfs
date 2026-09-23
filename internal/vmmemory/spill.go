@@ -21,7 +21,7 @@ func (h *Host) spillHolds(slot int) bool {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return h.spillWritten[slot]
+	return h.reservations.holds(slot)
 }
 
 // spillChecksums is what every spilled page is checked against when it comes
@@ -39,7 +39,7 @@ func (h *Host) spillDigest(slot int) (uint32, bool) {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return h.spillSum[slot], h.spillWritten[slot]
+	return h.reservations.digest(slot)
 }
 
 // ErrSpillCorrupt reports a spilled page whose bytes are not the ones that were
@@ -49,7 +49,7 @@ var ErrSpillCorrupt = errors.New("vmmemory: spilled page does not match its chec
 // releaseSpill returns a dirty page's spill slot to the host and wakes waiters.
 func (h *Host) releaseSpill(slot int) {
 	h.mu.Lock()
-	written := h.spillWritten[slot]
+	written := h.reservations.holds(slot)
 	h.mu.Unlock()
 	if written {
 		// Returning the slot's blocks is a courtesy to the node's filesystem,
@@ -60,8 +60,7 @@ func (h *Host) releaseSpill(slot int) {
 		}
 	}
 	h.mu.Lock()
-	h.spillWritten[slot] = false
-	h.freeSpill = append(h.freeSpill, slot)
+	h.reservations.put(slot)
 	h.dirty--
 	if h.dirty < h.highWater {
 		// Back under the mark: the next store to cross it asks again.
@@ -80,9 +79,7 @@ func (h *Host) tryTakeSpill() (int, error) {
 	if h.err != nil {
 		return 0, h.err
 	}
-	if n := len(h.freeSpill); n > 0 {
-		slot := h.freeSpill[n-1]
-		h.freeSpill = h.freeSpill[:n-1]
+	if slot, ok := h.reservations.take(); ok {
 		h.dirty++
 		h.stats.PeakDirtyPages = max(h.stats.PeakDirtyPages, h.dirty)
 		return slot, nil
@@ -99,11 +96,13 @@ func (h *Host) takeFreeSpill(want int) []int {
 	if h.err != nil || want <= 0 {
 		return nil
 	}
-	slots := make([]int, 0, min(want, len(h.freeSpill)))
-	for len(slots) < want && len(h.freeSpill) > 0 {
-		n := len(h.freeSpill)
-		slots = append(slots, h.freeSpill[n-1])
-		h.freeSpill = h.freeSpill[:n-1]
+	slots := make([]int, 0, min(want, h.reservations.available()))
+	for len(slots) < want {
+		slot, ok := h.reservations.take()
+		if !ok {
+			break
+		}
+		slots = append(slots, slot)
 	}
 	h.dirty += len(slots)
 	h.stats.PeakDirtyPages = max(h.stats.PeakDirtyPages, h.dirty)
@@ -222,8 +221,8 @@ func (h *Host) evictBatch(ctx context.Context, victims []*resident) error {
 				// The bytes are written to scratch and the slot is not recorded
 				// as holding them, so a refault reads whatever the slot held
 				// before instead of the guest's private page.
-				h.spillWritten[page.slot] = !sim.Bug(ctx, "pager-forget-spill")
-				h.spillSum[page.slot] = crc32.Checksum(bytes[i*ps:(i+1)*ps], spillChecksums)
+				h.reservations.record(page.slot, crc32.Checksum(bytes[i*ps:(i+1)*ps], spillChecksums),
+					!sim.Bug(ctx, "pager-forget-spill"))
 			}
 			h.mu.Unlock()
 			n, err := h.spill.WriteAt(ctx, bytes, int64(pages[start].slot)*int64(h.pageSize))

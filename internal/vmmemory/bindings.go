@@ -17,7 +17,7 @@ type binding struct {
 	dirty    bool
 	// spillSlot names the dirty reservation this page was admitted under, or
 	// -1. Whether the slot holds the page's bytes is the slot's own state, in
-	// Host.spillWritten: a seal hands a reservation to the checkpoint's copy
+	// Host.reservations: a seal hands a reservation to the checkpoint's copy
 	// while a reclaim may already be writing the bytes it will hold, and the
 	// fact has to follow the slot rather than the binding that named it.
 	spillSlot int
