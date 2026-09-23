@@ -242,6 +242,49 @@ func TestARefusedMappingMakesTheRangeWhole(t *testing.T) {
 	})
 }
 
+// The offset the placement rule gives a page is not always holding that page.
+// A checkpoint freezes the guest's copy where it is, and retiring that
+// checkpoint leaves the page published at that same offset — so the next store
+// into it finds its own offset occupied and takes an ordinary one, while the
+// offset goes on holding the older, published page.
+//
+// A rule that reads such an offset as "this page is at its own offset" maps the
+// guest over the older page: the store the guest made is lost, and every region
+// that inherited that published identity has its page written under it. So the
+// run a rule maps is the pages whose memory really is at their own offsets, and
+// nothing else.
+func TestARuleNeverMapsAPageOntoAnOffsetHoldingAnotherPage(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const half = rangePages / 2
+		f := placedFixture(t, 4*rangePages)
+		b := f.newBacking(2 * rangePages)
+		r, m := f.attach(b)
+		held(t, r, m, 0, rangePages)
+		// One page of the range is the guest's own and is then published, which
+		// is what leaves it at the offset the rule gives it while belonging to
+		// the volume rather than to the guest.
+		const page = 5
+		access(t, r, m, page, true)[0] = 41
+		f.mustCheckpoint(r, b)
+		// The guest stores into it again. Its own offset holds the page the
+		// checkpoint published, so this copy goes to an ordinary offset.
+		access(t, r, m, page, true)[0] = 42
+		// And the range reaches half its own pages, so the rest of it is copied
+		// into the holes of its extent and the whole range becomes one mapping.
+		for p := range uint64(half + 1) {
+			if p != page {
+				access(t, r, m, p, true)[0] = 7
+			}
+		}
+		if got := access(t, r, m, page, false)[0]; got != 42 {
+			t.Fatalf("the page the guest stored 42 into reads %d once its range was filled", got)
+		}
+		if got := access(t, r, m, page, true)[0]; got != 42 {
+			t.Fatalf("the page the guest stored 42 into is mapped over something holding %d", got)
+		}
+	})
+}
+
 // A pager whose page is the whole range runs neither rule: it has one page per
 // range, so there is no gap to close and nothing to fill.
 func TestAPagerWhosePageIsTheRangeRunsNeitherRule(t *testing.T) {

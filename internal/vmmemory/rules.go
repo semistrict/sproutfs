@@ -109,13 +109,13 @@ func (h *Host) nearby(r *Region, index uint64) (first, last uint64) {
 	high := min(low+span, uint64(r.pageCount))
 	first, last = index, index+1
 	for d := uint64(1); d <= gapPages && index-d >= low && index >= d; d++ {
-		if h.heldAt(e, index-d) {
+		if h.heldAt(r, e, index-d) {
 			first = index - d + 1
 			break
 		}
 	}
 	for d := uint64(1); d <= gapPages && index+d < high; d++ {
-		if h.heldAt(e, index+d) {
+		if h.heldAt(r, e, index+d) {
 			last = index + d
 			break
 		}
@@ -153,13 +153,25 @@ func (h *Host) wholeRange(r *Region, index uint64) bool {
 }
 
 // heldAt reports whether one page of a range sits at its own offset in the
-// range's extent. Caller holds h.mu.
-func (h *Host) heldAt(e *extent, page uint64) bool {
+// range's extent: this page's memory at that offset, and not merely some page's.
+//
+// The two are not the same, and the difference is a store the guest loses. A
+// checkpoint freezes the guest's copy where it is and retiring it leaves that
+// page published at the same offset, so the store that follows finds its own
+// offset occupied and takes an ordinary one — after which the offset goes on
+// holding a page this region no longer stores into. A rule that read the
+// offset as this page's would put the run's mapping over that older page: the
+// store the guest made would be lost, and every region that inherited the
+// published identity would have its page written under it. Caller holds h.mu.
+func (h *Host) heldAt(r *Region, e *extent, page uint64) bool {
 	if e == nil {
 		return false
 	}
-	_, held := h.residentLeases[e.base+int(page%uint64(h.extentPages))]
-	return held
+	b := r.lookupBinding(page)
+	if b == nil || b.resident == nil {
+		return false
+	}
+	return b.resident.slot == e.base+int(page%uint64(h.extentPages))
 }
 
 // placedRun reports the longest run of pages around index whose offsets are all
@@ -169,10 +181,10 @@ func (h *Host) heldAt(e *extent, page uint64) bool {
 func (h *Host) placedRun(r *Region, index, first, last uint64) (uint64, uint64) {
 	e := h.extents[extentKey{r, index / uint64(h.extentPages)}]
 	start, end := index, index+1
-	for start > first && h.heldAt(e, start-1) && r.isPrivateAt(start-1) {
+	for start > first && h.heldAt(r, e, start-1) && r.isPrivateAt(start-1) {
 		start--
 	}
-	for end < last && h.heldAt(e, end) && r.isPrivateAt(end) {
+	for end < last && h.heldAt(r, e, end) && r.isPrivateAt(end) {
 		end++
 	}
 	return start, end
