@@ -99,8 +99,8 @@ func (h *Host) placedAt(r *Region, index uint64, slot int) bool {
 }
 
 // nearby reports the pages one store makes private by the gap rule: the
-// faulting page, and the pages between it and the nearest page its range
-// already holds at an offset of the range's extent, where that page is within
+// faulting page, and the pages between it and the nearest page of its range the
+// guest already stores into at that page's own offset, where that page is within
 // gapPages. Caller holds h.mu.
 func (h *Host) nearby(r *Region, index uint64) (first, last uint64) {
 	span := uint64(h.extentPages)
@@ -109,13 +109,13 @@ func (h *Host) nearby(r *Region, index uint64) (first, last uint64) {
 	high := min(low+span, uint64(r.pageCount))
 	first, last = index, index+1
 	for d := uint64(1); d <= gapPages && index-d >= low && index >= d; d++ {
-		if h.heldAt(r, e, index-d) {
+		if h.placedPrivateAt(r, e, index-d) {
 			first = index - d + 1
 			break
 		}
 	}
 	for d := uint64(1); d <= gapPages && index+d < high; d++ {
-		if h.heldAt(r, e, index+d) {
+		if h.placedPrivateAt(r, e, index+d) {
 			last = index + d
 			break
 		}
@@ -152,39 +152,39 @@ func (h *Host) wholeRange(r *Region, index uint64) bool {
 	return e != nil && e.whole
 }
 
-// heldAt reports whether one page of a range sits at its own offset in the
-// range's extent: this page's memory at that offset, and not merely some page's.
+// placedPrivateAt reports the one thing every rule asks of a page: that this
+// region may store into it where the placement rule put it. That is its own
+// dirty state, held by no checkpoint, resident at the offset its range's extent
+// gives it — and it is exactly what one store's mapping command can cover, so a
+// run ends at the first page that is not it.
 //
-// The two are not the same, and the difference is a store the guest loses. A
-// checkpoint freezes the guest's copy where it is and retiring it leaves that
-// page published at the same offset, so the store that follows finds its own
-// offset occupied and takes an ordinary one — after which the offset goes on
-// holding a page this region no longer stores into. A rule that read the
+// The offset alone answers nothing, and the difference is a store the guest
+// loses. A checkpoint freezes the guest's copy where it is and retiring it
+// leaves that page published at the same offset, so the store that follows
+// finds its own offset occupied and takes an ordinary one — after which the
+// offset goes on holding a page this region no longer stores into. Reading the
 // offset as this page's would put the run's mapping over that older page: the
 // store the guest made would be lost, and every region that inherited the
 // published identity would have its page written under it. Caller holds h.mu.
-func (h *Host) heldAt(r *Region, e *extent, page uint64) bool {
+func (h *Host) placedPrivateAt(r *Region, e *extent, page uint64) bool {
 	if e == nil {
 		return false
 	}
 	b := r.lookupBinding(page)
-	if b == nil || b.resident == nil {
-		return false
-	}
-	return b.resident.slot == e.base+int(page%uint64(h.extentPages))
+	return b != nil && b.writable() && b.resident != nil &&
+		b.resident.slot == e.base+int(page%uint64(h.extentPages))
 }
 
-// placedRun reports the longest run of pages around index whose offsets are all
-// the ones the placement rule gives them, within [first, last). It is what the
-// store maps: every page of it is at a consecutive offset of one extent, so one
-// command installs the lot. Caller holds h.mu.
+// placedRun reports the longest run of pages around index that one mapping
+// command covers, within [first, last): every page of it is this region's own
+// at a consecutive offset of one extent. Caller holds h.mu.
 func (h *Host) placedRun(r *Region, index, first, last uint64) (uint64, uint64) {
 	e := h.extents[extentKey{r, index / uint64(h.extentPages)}]
 	start, end := index, index+1
-	for start > first && h.heldAt(r, e, start-1) && r.isPrivateAt(start-1) {
+	for start > first && h.placedPrivateAt(r, e, start-1) {
 		start--
 	}
-	for end < last && h.heldAt(r, e, end) && r.isPrivateAt(end) {
+	for end < last && h.placedPrivateAt(r, e, end) {
 		end++
 	}
 	return start, end
@@ -238,15 +238,13 @@ func (r *Region) takeShared(ctx context.Context, first, index, last uint64, repl
 	return nil
 }
 
-// joinsRun reports a page one store's mapping command may cover: this region's
-// own dirty state, at the offset the placement rule gives it. The command
-// installs consecutive offsets of one extent, so a page the guest owns
-// somewhere else in the arena is not one and the run ends there.
+// joinsRun reports a page one store's mapping command may cover, taking the
+// host lock to ask it.
 func (r *Region) joinsRun(page uint64) bool {
 	h := r.host
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return h.heldAt(r, h.extents[extentKey{r, page / uint64(h.extentPages)}], page) && r.isPrivateAt(page)
+	return h.placedPrivateAt(r, h.extents[extentKey{r, page / uint64(h.extentPages)}], page)
 }
 
 // takeOneShared makes one page private for a rule, reporting whether the page

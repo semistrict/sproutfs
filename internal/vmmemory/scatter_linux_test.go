@@ -141,11 +141,17 @@ func TestManagedPagerScatteredStoresUnderIntervalCheckpoints(t *testing.T) {
 				// the region and scattered through the arena.
 				stride := size * (1 + round%4)
 				value := byte(1 + round)
-				if err := guest.ask(fmt.Sprintf("stridefill 1 0 %d %d %d", pages*size, stride, value), "strided"); err != nil {
+				// Each round starts lower than the one before it and sweeps to
+				// the end, so a store always has pages an interval checkpoint is
+				// holding both below it and above it. A rule that reached past
+				// one of those is what leaves a page private and unmapped.
+				offset := (rounds - 1 - round) * pages * size / rounds
+				length := pages*size - offset
+				if err := guest.ask(fmt.Sprintf("stridefill 1 %d %d %d %d", offset, length, stride, value), "strided"); err != nil {
 					stores[i] = err
 					return
 				}
-				if err := guest.ask(fmt.Sprintf("stridescan 1 0 %d %d %d", pages*size, stride, value), "strided"); err != nil {
+				if err := guest.ask(fmt.Sprintf("stridescan 1 %d %d %d %d", offset, length, stride, value), "strided"); err != nil {
 					stores[i] = err
 					return
 				}

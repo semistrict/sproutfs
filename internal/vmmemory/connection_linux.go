@@ -289,7 +289,7 @@ type commandFailure struct {
 func (f *commandFailure) Unwrap() error { return f.err }
 
 func (f *commandFailure) Error() string {
-	return fmt.Sprintf("%v: %s command id %d offset %d length %d backing %d generation %d flags %d runs %d",
+	return fmt.Sprintf("%v (%s command id %d offset %d length %d backing %d generation %d flags %d runs %d)",
 		f.err, vmwire.KindName(f.frame.Kind), f.frame.ID, f.frame.Offset, f.frame.Length,
 		f.frame.Backing, f.frame.Generation, f.frame.Flags, f.runs)
 }
