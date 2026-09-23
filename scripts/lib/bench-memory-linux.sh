@@ -133,8 +133,9 @@ if [[ ${SPROUTFS_GCE_WORKLOAD:-0} == 1 ]]; then
     # guest, the plain side's clones — fails in minutes rather than hours in.
     scenarios=${SPROUTFS_BENCH_SCENARIOS:-} forks=${SPROUTFS_BENCH_FORKS:-} output=workload
     if [[ ${SPROUTFS_GCE_SMOKE:-0} == 1 ]]; then
-        scenarios=boot,pnpm-install,capture,restore-cold,fork-fanout,baseline forks=2 output=workload-smoke
+        scenarios=boot,pnpm-install,capture,restore-cold,fork-fanout,db-fork,baseline forks=2 output=workload-smoke
         export SPROUTFS_BENCH_TEST='cd /opt/codex && git grep -c fn | wc -l'
+        export SPROUTFS_BENCH_DB_KEYS=200000
     fi
     run=$(mktemp -d "$work/run-workload.XXXXXX")
     status=0

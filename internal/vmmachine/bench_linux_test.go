@@ -1122,6 +1122,12 @@ func TestGuestWorkloadBenchmark(t *testing.T) {
 		b.steadyState(ctx, origin)
 	}
 
+	// Scenario 8: a seeded database, forked per test run, each fork updating it
+	// at random.
+	if b.scenarios["db-fork"] {
+		b.dbFork(ctx, origin)
+	}
+
 	// Baseline: the same guest, kernel and workloads on plain Firecracker.
 	if b.scenarios["baseline"] {
 		b.baseline(ctx)
@@ -1146,6 +1152,7 @@ var benchScenarios = []struct{ name, needs string }{
 	{"restore-warm", "capture"},
 	{"fork-fanout", "capture"},
 	{"steady-state", "capture"},
+	{"db-fork", "capture"},
 	{"baseline", ""},
 }
 
@@ -1223,6 +1230,9 @@ func (b *benchmark) configuration() map[string]any {
 		"forks":                   b.forks(),
 		"steady_guests":           steadyGuests,
 		"steady_period_ns":        b.steadyPeriod().Nanoseconds(),
+		"db_keys":                 b.dbKeys(),
+		"db_value_bytes":          dbValueBytes,
+		"db_update_steps":         dbUpdateSteps,
 		"fault_workers":           16,
 		"queue_pages":             benchQueuePages,
 		"boot_args":               bootArgs(benchBootArgs),
@@ -1987,6 +1997,11 @@ func (b *benchmark) baseline(ctx context.Context) {
 	}
 	if b.scenarios["fork-fanout"] {
 		b.baselineFanOut(ctx, config, statePath, memoryPath, atSnapshot)
+	}
+	// Last, once every other plain VM is gone: the database takes a guest of
+	// its own and as many clones of it as the fan-out had.
+	if b.scenarios["db-fork"] {
+		b.baselineDB(ctx, config)
 	}
 }
 

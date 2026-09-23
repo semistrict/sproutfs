@@ -6,9 +6,10 @@
 #
 # The image is a 32 GiB ext4 filesystem with 4 KiB blocks holding an Alpine
 # userland of this host's architecture, a static /init built from
-# internal/vmmachine/testdata/guest.c, and three offline workloads: a pnpm
-# project with a pre-populated store, a Rust workspace with vendored crates, and
-# a git repository with full history. No guest workload needs a network.
+# internal/vmmachine/testdata/guest.c, and four offline workloads: a pnpm
+# project with a pre-populated store, a Rust workspace with vendored crates, a
+# git repository with full history, and a Valkey database the guest seeds
+# itself and then updates at random. No guest workload needs a network.
 #
 # Everything downloaded is pinned by version and checked against a recorded
 # sha256; the codex checkout is pinned by commit, which is its content hash.
@@ -83,7 +84,8 @@ sudo -n mount --bind /sys "$root/sys"
 echo "installing Alpine packages" >&2
 sudo -n chroot "$root" /sbin/apk add --no-cache \
     bash coreutils findutils git python3 build-base cmake perl linux-headers \
-    pkgconf openssl-dev openssl-libs-static nodejs npm pnpm rustup >&2
+    pkgconf openssl-dev openssl-libs-static nodejs npm pnpm rustup \
+    valkey valkey-cli valkey-benchmark >&2
 
 sudo -n tee "$root/sproutfs-workloads.sh" >/dev/null <<'INNER'
 #!/bin/sh
@@ -180,6 +182,57 @@ pnpm install --reporter=silent
 # are shipped.
 rm -rf /opt/app/node_modules
 
+# (d) the database workload: Valkey (BSD-3-Clause), an in-memory key-value
+# store, which the guest seeds with keys of one size and then updates at random
+# in place. Nothing of the data is in the image: the guest builds it in its own
+# RAM, so a fork of the seeded guest inherits every page of it and an update
+# stores into one of them at random. It listens on a unix socket, because a
+# guest brings up no network interface at all.
+mkdir -p /opt/db
+cat > /opt/db/start.sh <<'SH'
+#!/bin/sh
+# Start the server with nothing persisted, and return once it answers.
+set -eu
+valkey-server --daemonize yes --save '' --appendonly no --port 0 \
+    --unixsocket /tmp/valkey.sock --unixsocketperm 700 --dir /tmp
+until valkey-cli -s /tmp/valkey.sock ping > /dev/null 2>&1; do sleep 0.1; done
+SH
+cat > /opt/db/seed.py <<'PY'
+"""Write SET commands for keys key:000000000000 up to the count given, each
+holding a value of the size given, in the protocol valkey-cli --pipe reads.
+The key names are the ones valkey-benchmark's __rand_int__ expands to, so its
+random updates land on keys that are already there."""
+import sys
+count, size = int(sys.argv[1]), int(sys.argv[2])
+out = sys.stdout.buffer
+batch = []
+for i in range(count):
+    key = b"key:%012d" % i
+    value = (b"%012d" % i) * (size // 12) + b"v" * (size % 12)
+    batch.append(b"*3\r\n$3\r\nSET\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n" % (len(key), key, len(value), value))
+    if len(batch) == 10000:
+        out.write(b"".join(batch))
+        batch.clear()
+out.write(b"".join(batch))
+PY
+cat > /opt/db/seed.sh <<'SH'
+#!/bin/sh
+# Seed the running server with $1 keys of $2 bytes each.
+set -eu
+python3 /opt/db/seed.py "$1" "$2" | valkey-cli -s /tmp/valkey.sock --pipe
+valkey-cli -s /tmp/valkey.sock info memory | grep -E '^used_memory:'
+SH
+cat > /opt/db/update.sh <<'SH'
+#!/bin/sh
+# $1 updates by one client, each overwriting the first bytes of a key chosen at
+# random among the $2 seeded, in place: one small store into the page that
+# value is on. The CSV line is the latency distribution of those updates.
+set -eu
+valkey-benchmark -s /tmp/valkey.sock -c 1 -n "$1" -r "$2" --csv \
+    SETRANGE key:__rand_int__ 0 sproutfs
+SH
+chmod 0755 /opt/db/start.sh /opt/db/seed.sh /opt/db/update.sh
+
 # Nothing here needs documentation, and the image is measured on its bytes.
 rm -rf /usr/share/man /usr/share/doc /usr/share/gtk-doc /root/.cache /root/.npm
 INNER
@@ -212,6 +265,13 @@ cargo test --offline -p codex-apply-patch -- \
 cargo clean --offline
 cd /opt/codex
 git grep -c fn > /dev/null
+# The database workload end to end, small: a server, a seed, updates whose CSV
+# names its percentiles, and the server gone again so the image holds no data.
+/opt/db/start.sh
+/opt/db/seed.sh 1000 1024
+/opt/db/update.sh 100 1000 | grep -q p99_latency_ms
+valkey-cli -s /tmp/valkey.sock shutdown nosave || true
+rm -f /tmp/valkey.sock
 INNER
 sudo -n chmod 0755 "$root/sproutfs-verify.sh"
 sudo -n chmod 0755 "$root/sproutfs-workloads.sh"
@@ -258,7 +318,7 @@ json.dump({
     "codex_commit": "$codex_commit",
     "codex_url": "$codex_url",
     "rust_toolchain": "$rust_toolchain",
-    "packages": "bash coreutils findutils git python3 build-base cmake perl linux-headers pkgconf openssl-dev openssl-libs-static nodejs npm pnpm rustup",
+    "packages": "bash coreutils findutils git python3 build-base cmake perl linux-headers pkgconf openssl-dev openssl-libs-static nodejs npm pnpm rustup valkey valkey-cli valkey-benchmark",
     "prebuilt": "nothing: cargo build --offline -p codex-cli --bin codex is proved with no network and then cleaned",
     "npm": {"react": "19.3.0", "react-dom": "19.3.0", "vite": "8.2.2", "@vitejs/plugin-react": "6.1.1"},
     "image_bytes": 32 << 30,
