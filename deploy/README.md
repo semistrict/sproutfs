@@ -368,10 +368,13 @@ dirty budget holds fewer than 64 such runs; concurrent page I/O is four permits 
 and 256 and never more read-ahead runs than that pager's arena has room for; one
 session serves two faults per processor, between 8 and 64; and a VMM's mappings
 are admitted against half of the node's `/proc/sys/vm/max_map_count`, with the
-budget disabled below 128. A node whose `vm.max_map_count` is the kernel default
-is fine; one tuned down far enough loses the budget rather than gaining a
-tighter one, which the host says in its log. docs/vm-memory.md carries the
-reasoning.
+budget disabled below 128. A node should allow 1,048,576 mappings
+(`vm.max_map_count`), which current distributions set: a VMM's RAM pager maps a
+scattered store as a mapping of its own until that budget refuses one, and only
+then trades memory for mappings, so a node at the kernel's own 65,530 makes every
+guest that writes scattered pages pay for it in copies. One tuned down far
+enough loses the budget rather than gaining a tighter one, which the host says
+in its log. docs/vm-memory.md carries the reasoning.
 
 Credentials are not in the environment: the pod reaches GCS through the VM's
 metadata server, whose service account has `roles/storage.objectAdmin` on that

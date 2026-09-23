@@ -241,7 +241,9 @@ func (r *Region) fault(ctx context.Context, index uint64, write bool, spill *int
 		// The backstop. The client has no mapping left for this store, so
 		// the range the guest is writing in is made whole: its alternations
 		// stop costing that process a mapping each, and the store is served
-		// again. It is expected never to act.
+		// again. The region is near its budget from here, so its stores close
+		// gaps from now on.
+		r.pressed.Store(true)
 		merged, mergeErr := r.makeWhole(ctx, index)
 		if mergeErr != nil {
 			return false, mergeErr

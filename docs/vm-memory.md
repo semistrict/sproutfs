@@ -480,15 +480,23 @@ is holding the bytes that checkpoint is uploading, and a page a migration
 destination loads privately from the host that still holds it arrives in a run
 like any other load. `Stats.PrivateExtents` is how many ranges own one.
 
-**A store closes a small gap.** A store landing within sixteen pages of a page
-its range already holds makes the pages between them private in the same fault,
-in one mapping command, so the two runs become one. Writes cluster, so the unit
-a store copies grows where the guest is writing and stays one page where a write
-is alone; the worst case is a guest writing one page in every seventeen, which
-costs seventeen times what it wrote against 512 times at a 2 MiB page. Sixteen
-was measured rather than chosen: of the 1,979 gaps between the private runs a
-4 KiB fan-out recorded on 2026-09-21, 1,532 — 77 % — are that or fewer. A gap is
-never closed across a range's boundary, because the extent belongs to the range.
+**A store closes a small gap once its region is near its mapping budget.** A
+store landing within sixteen pages of a page its range already holds makes the
+pages between them private in the same fault, in one mapping command, so the two
+runs become one; the worst case is a guest writing one page in every seventeen,
+which costs seventeen times what it wrote against 512 times at a 2 MiB page.
+Sixteen was measured rather than chosen: of the 1,979 gaps between the private
+runs a 4 KiB fan-out recorded on 2026-09-21, 1,532 — 77 % — are that or fewer. A
+gap is never closed across a range's boundary, because the extent belongs to the
+range. What the rule saves is mappings and what it costs is memory, so it waits
+until mappings are what is short: a region closes gaps only once its process
+has refused it a mapping. Before that a scattered store is a mapping of its own.
+On 2026-09-23 forks of a seeded database updating keys at random held 4.7 GiB
+each with the rule always on, for 345,000 copies of pages the guest wrote
+against 3,040,000 the rule made, where plain Firecracker's clones held 0.69 GiB.
+A process is given half the node's `vm.max_map_count`, which is 1,048,576 on a
+current distribution, so a region is near its budget only past half a million
+mappings.
 
 **A range that is half private becomes private.** When half a range's pages sit
 at their offsets in its extent, the rest are copied into the holes of it: the
@@ -505,11 +513,12 @@ would break the range into three mappings again for a page the guest is about to
 write. `Stats.RuleCopies` counts the pages the rules copied beside the pages the
 guest stored into.
 
-**The budget is a backstop.** A store whose mapping command the client refuses
-against its own mapping-count budget makes the range the guest is writing in
-whole, in one command, and is served again. `Stats.MappingMerges` says it acted,
-and it is expected never to: a host that merges is a host whose guest fragments
-its memory faster than the rules hold it together.
+**The budget is what turns the gap rule on.** A store whose mapping command the
+client refuses against its own mapping-count budget makes the range the guest is
+writing in whole, in one command, and is served again, and its region closes
+gaps from then on. `Stats.MappingMerges` says how often that happened: a region
+that keeps merging is one whose guest fragments its memory faster than the rules
+hold it together even near the budget.
 
 A pager whose page is the whole range — PMEM's — runs none of this: it has one
 page per range, so there is nothing to place, no gap to close and nothing to

@@ -24,12 +24,59 @@ func held(t *testing.T, r *vmmemory.Region, m *mapping, first, last uint64) {
 	}
 }
 
+// A process with mappings to spare pays for a scattered store in a mapping and
+// not in memory: a store near a private page is its own run, and nothing
+// between them is copied. Scattered updates to a large heap are exactly this,
+// and closing every such gap made a fork of a seeded database hold ten times
+// what it wrote.
+func TestAStoreNearAPrivatePageIsItsOwnMappingWhileTheProcessHasRoom(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f, r, m, _ := placedRegion(t, 2*rangePages)
+		const first = 100
+		held(t, r, m, first, first+gap+1)
+		access(t, r, m, first, true)[0] = 7
+		access(t, r, m, first+gap, true)[0] = 7
+		if got := privateMappings(m); got != 2 {
+			t.Fatalf("two stores %d pages apart are %d private mappings, want 2", gap, got)
+		}
+		if got := hostStats(t, f).RuleCopies; got != 0 {
+			t.Fatalf("two stores with room to spare copied %d pages by a rule, want none", got)
+		}
+	})
+}
+
+// Once its process has refused it a mapping, a region closes gaps from then on:
+// it is near the budget, and a store that can join its neighbour's run costs no
+// mapping at all.
+func TestARegionRefusedAMappingClosesGapsFromThenOn(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		// Room for the range the backstop makes whole and for the gap after it.
+		f := placedFixture(t, 4*rangePages)
+		r, m, _ := f.region(2 * rangePages)
+		const first = rangePages + 100
+		held(t, r, m, 0, rangePages)
+		held(t, r, m, first, first+gap+1)
+		commands := 0
+		m.onMap = func(uint64, int) { commands++; m.refuseMap = commands == 1 }
+		access(t, r, m, 20, true)[0] = 7
+		m.onMap = nil
+		before := hostStats(t, f).RuleCopies
+		access(t, r, m, first, true)[0] = 7
+		access(t, r, m, first+gap, true)[0] = 7
+		if got := hostStats(t, f).RuleCopies - before; got != gap-1 {
+			t.Fatalf("closing a gap of %d pages after a refusal copied %d of them, want %d", gap, got, gap-1)
+		}
+	})
+}
+
 // A store within the gap of a page its range already holds makes the pages
-// between them private in the same fault: one mapping command, one run, and the
-// pages it copied counted exactly.
+// between them private in the same fault, once the region is near its mapping
+// budget: one mapping command, one run, and the pages it copied counted
+// exactly.
 func TestAStoreNearAPrivatePageClosesTheGapInOneMapping(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f, r, m, _ := placedRegion(t, 2*rangePages)
+		r.PressMappings()
 		const first = 100
 		held(t, r, m, first, first+gap+1)
 		access(t, r, m, first, true)[0] = 7
@@ -68,6 +115,7 @@ func TestAStoreNearAPrivatePageClosesTheGapInOneMapping(t *testing.T) {
 func TestAStorePastTheGapIsItsOwnMapping(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f, r, m, _ := placedRegion(t, 2*rangePages)
+		r.PressMappings()
 		const first = 100
 		held(t, r, m, first, first+gap+2)
 		access(t, r, m, first, true)[0] = 7
@@ -86,6 +134,7 @@ func TestAStorePastTheGapIsItsOwnMapping(t *testing.T) {
 func TestAGapIsNeverClosedAcrossARangeBoundary(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f, r, m, _ := placedRegion(t, 2*rangePages)
+		r.PressMappings()
 		held(t, r, m, rangePages-1, rangePages+4)
 		access(t, r, m, rangePages-1, true)[0] = 7
 		access(t, r, m, rangePages+3, true)[0] = 7
@@ -151,6 +200,7 @@ func TestARangeThatIsHalfPrivateBecomesWhole(t *testing.T) {
 func TestASettleHandsBackTheGapPagesTheGuestNeverWrote(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f, r, m, b := placedRegion(t, 2*rangePages)
+		r.PressMappings()
 		const first = 100
 		held(t, r, m, first, first+gap+1)
 		access(t, r, m, first, true)[0] = 7

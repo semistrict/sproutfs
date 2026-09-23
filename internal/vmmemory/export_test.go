@@ -80,3 +80,7 @@ func SetPopulationPages(t *testing.T, pages uint64) {
 	populationPages = pages
 	t.Cleanup(func() { populationPages = previous })
 }
+
+// PressMappings is what a region's first refused mapping command does: from
+// then on its stores close gaps. The rules' own tests start there.
+func (r *Region) PressMappings() { r.pressed.Store(true) }

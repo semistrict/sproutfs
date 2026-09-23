@@ -8,18 +8,21 @@ import (
 // What a store makes private besides the page the guest wrote.
 //
 // Placement alone keeps the private pages of a range adjacent; it cannot make
-// them fewer runs than the guest's own writes are. Two rules do that, and both
-// hold all the time rather than waiting for a budget to be exceeded — a budget
-// that merges when it is passed does nothing until the limit and then puts a
-// copy of up to a whole range on the fault path at the moment the guest is
-// busiest.
+// them fewer runs than the guest's own writes are. Two rules do that.
 //
-//   - A store closes a small gap. A store landing within gapPages of a page the
-//     same range already holds makes the pages between them private in the same
-//     fault, in one mapping command, so the two runs are one. Writes cluster, so
-//     the unit a store copies grows where the guest is writing and stays one
-//     page where a write is alone. A gap is never closed across a range's
-//     boundary: the extent belongs to the range.
+//   - A store closes a small gap, once its region is near its mapping budget.
+//     A store landing within gapPages of a page the same range already holds
+//     makes the pages between them private in the same fault, in one mapping
+//     command, so the two runs are one. A gap is never closed across a range's
+//     boundary: the extent belongs to the range. It waits for the budget
+//     because what it saves is mappings and what it costs is memory: a
+//     process with mappings to spare pays for a scattered store with one, and
+//     scattered small stores into a large heap — a seeded database updated at
+//     random — are exactly where closing every gap copied ten times what the
+//     guest wrote. A node's limit is a million mappings, of which a process is
+//     given half, so a region is near it only once its process has refused it
+//     a mapping; from then on it closes gaps, and the range that refusal was
+//     for is made whole.
 //
 //   - A range that is half private becomes private. When half a range's pages
 //     are at their offsets in its extent, the rest are copied into the holes of
@@ -103,6 +106,9 @@ func (h *Host) placedAt(r *Region, index uint64, slot int) bool {
 // guest already stores into at that page's own offset, where that page is within
 // gapPages. Caller holds h.mu.
 func (h *Host) nearby(r *Region, index uint64) (first, last uint64) {
+	if !r.pressed.Load() {
+		return index, index + 1
+	}
 	span := uint64(h.extentPages)
 	e := h.extents[extentKey{r, index / span}]
 	low := index - index%span

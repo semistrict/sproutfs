@@ -61,6 +61,10 @@ type Region struct {
 	// that start and end it.
 	dirtySince time.Time
 	terminal   atomic.Pointer[failure]
+	// pressed is set by the first mapping command this region's process
+	// refused for want of mapping budget, and closes gaps from then on; see
+	// rules.go.
+	pressed atomic.Bool
 	// heldReported marks the one line this region's unreclaimable pages are
 	// worth; see heldPages.
 	heldReported atomic.Bool

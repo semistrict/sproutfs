@@ -47,6 +47,7 @@ func TestAStoreIntoAMappedSharedPageIsOneMappingAndNoRevocation(t *testing.T) {
 func TestAStoreThatClosesAGapIsOneMappingAndNoRevocation(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		_, r, m, _ := placedRegion(t, 2*rangePages)
+		r.PressMappings()
 		const first = 100
 		held(t, r, m, first, first+gap+1)
 		access(t, r, m, first, true)[0] = 7
