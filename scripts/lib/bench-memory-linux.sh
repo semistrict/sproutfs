@@ -169,8 +169,8 @@ if [[ ${SPROUTFS_GCE_QUALIFY:-0} == 1 ]]; then
 fi
 
 # The realistic comparison: the workload image scripts/lib/bench-image.sh builds
-# — a pnpm install, a cold build of the openai/codex workspace and one crate's
-# tests, that checkout as a git repository — run through
+# — a pnpm install, one crate's tests in the openai/codex workspace, that
+# checkout as a git repository and a seeded database — run through
 # every scenario of the guest workload benchmark, managed and on plain
 # Firecracker, on this host. SPROUTFS_BENCH_SCENARIOS and SPROUTFS_BENCH_FORKS
 # narrow it as they do under scripts/bench-guest-lima.sh. A guest has all eight

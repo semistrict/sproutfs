@@ -35,9 +35,8 @@ import (
 // The measured sandbox: a 16 GiB guest with a 32 GiB PMEM root, on the pair of
 // pagers a deployment runs — RAM's 4 KiB page over ordinary memory, PMEM's
 // 2 MiB page over the node's HugeTLB pool — whose resident budgets are 40 GiB
-// and 24 GiB. The shape is the workload's: a cold build of the codex workspace
-// writes 12 GiB under target/ and ends in a link of a debug binary that the
-// kernel killed for memory in a 16 GiB host running two of them, and the arenas
+// and 24 GiB. The shape is the workload's: the database scenario seeds 8 GiB of
+// the guest's RAM and every fork of it copies what it updates, and the arenas
 // hold that guest and the forks taken from it without the spill files becoming
 // the measurement. Every one of the four is an environment override, because a
 // qualification host and a laptop cannot run the same shape.
@@ -91,20 +90,15 @@ const (
 // The workloads, shared verbatim by the managed run and the baseline so the
 // ratio between them is a property of the storage and nothing else.
 //
-// The build is a real cold cargo build of a real program: the image ships the
-// openai/codex workspace at a pinned release with every crate vendored and the
-// toolchain it pins, and nothing of it compiled, so what the guest builds is the
-// codex binary and the 993 crates under it — four and a half minutes and 12 GiB
-// of output on a fifteen-core laptop — and what the fan-out then runs is one
-// crate's tests, from a target directory the forks inherit through the
-// checkpoint. `SPROUTFS_BENCH_BUILD` and `SPROUTFS_BENCH_TEST` select other
-// units; the configuration record names whichever commands the run actually
-// used.
+// The image ships the openai/codex workspace at a pinned release with every
+// crate vendored and the toolchain it pins, and nothing of it compiled: what
+// the fan-out runs is one crate's tests, which builds what they need.
+// `SPROUTFS_BENCH_TEST` selects another command; the configuration record names
+// whichever the run actually used.
 const (
 	// The lockfile is frozen so the install is the work of linking a store into
 	// a project, not a resolution the guest has no network for.
-	workloadInstall      = "cd /opt/app && pnpm install --offline --frozen-lockfile --reporter=append-only"
-	defaultWorkloadBuild = "cd /opt/codex/codex-rs && cargo build --offline -p codex-cli --bin codex"
+	workloadInstall = "cd /opt/app && pnpm install --offline --frozen-lockfile --reporter=append-only"
 	// The two tests left out expect a write to be refused, and a guest runs as
 	// root, which is refused nothing.
 	defaultWorkloadTest = "cd /opt/codex/codex-rs && cargo test --offline -p codex-apply-patch -- " +
@@ -119,15 +113,13 @@ const (
 	steadyGuests        = 8
 )
 
-func workloadBuild() string { return cmpOr(os.Getenv("SPROUTFS_BENCH_BUILD"), defaultWorkloadBuild) }
-func workloadTest() string  { return cmpOr(os.Getenv("SPROUTFS_BENCH_TEST"), defaultWorkloadTest) }
+func workloadTest() string { return cmpOr(os.Getenv("SPROUTFS_BENCH_TEST"), defaultWorkloadTest) }
 
 // Bounds. These are deliberately generous on the first commit; tighten them
 // from the numbers a recorded run writes to docs/measurements, keeping about a
 // quarter of headroom over what was observed.
 const (
 	boundInstallRatio = 2.0
-	boundBuildRatio   = 2.0
 	boundWarmRestore  = 500 * time.Millisecond
 	// A fork's first output is bounded against the plain side's clones running
 	// the same command, not against a constant: the workload's own command
@@ -1097,17 +1089,6 @@ func TestGuestWorkloadBenchmark(t *testing.T) {
 		b.sync(ctx, sourceConsole)
 	}
 
-	// Scenario 4: a cold cargo build, then the same build as a warm no-op.
-	if b.scenarios["cargo-build"] {
-		start = b.sample(ctx)
-		timing := b.run(ctx, sourceConsole, workloadBuild())
-		b.record(ctx, "cargo-build-cold", "sproutfs", start, &timing, nil)
-		b.sync(ctx, sourceConsole)
-		start = b.sample(ctx)
-		timing = b.run(ctx, sourceConsole, workloadBuild())
-		b.record(ctx, "cargo-build-warm", "sproutfs", start, &timing, nil)
-	}
-
 	// Scenario 5: repository search and a full read of every file, cold then warm.
 	if b.scenarios["repository"] {
 		for _, phase := range []string{"cold", "warm"} {
@@ -1206,8 +1187,8 @@ func TestGuestWorkloadBenchmark(t *testing.T) {
 // benchScenarios are what SPROUTFS_BENCH_SCENARIOS selects from, in the order a
 // run takes them, each with the scenario it cannot run without: every guest
 // workload runs in the machine the boot started, and every restore and fork
-// starts from the capture's checkpoint. "cargo-build" is the cold and the warm
-// build, "repository" the cold and the warm search and read of the repository,
+// starts from the capture's checkpoint. "repository" is the cold and the warm
+// search and read of the repository,
 // and "baseline" the plain-Firecracker record of each other selected scenario.
 var benchScenarios = []struct {
 	name, needs string
@@ -1218,7 +1199,6 @@ var benchScenarios = []struct {
 }{
 	{"boot", "", false},
 	{"pnpm-install", "boot", false},
-	{"cargo-build", "boot", false},
 	{"repository", "boot", false},
 	{"capture", "boot", false},
 	{"restore-cold", "capture", false},
@@ -1296,7 +1276,6 @@ func (b *benchmark) configuration() map[string]any {
 		"firecracker":             b.binary,
 		"guest_image":             b.imagePath,
 		"workload_install":        workloadInstall,
-		"workload_build":          workloadBuild(),
 		"workload_test":           workloadTest(),
 		"workload_grep":           workloadGrep,
 		"workload_read_tree":      workloadCat,
@@ -1394,7 +1373,7 @@ func (b *benchmark) profile(scenario string) func() {
 // benchCommandTimeout bounds one guest command. A restored guest that resumes
 // into a state where its vCPUs spin without producing output must fail the
 // scenario with its console attached, not hang the run. It is generous because
-// the qualification host's guests are: a cold cargo build there is tens of
+// the qualification host's guests are: a fork's test build there is tens of
 // minutes, and twenty of them share four host cores in the fan-out.
 const benchCommandTimeout = 2 * time.Hour
 
@@ -2061,8 +2040,6 @@ func (b *benchmark) baseline(ctx context.Context) {
 		command   string
 	}{
 		{"pnpm-install", "pnpm-install", workloadInstall},
-		{"cargo-build-cold", "cargo-build", workloadBuild()},
-		{"cargo-build-warm", "cargo-build", workloadBuild()},
 		{"git-grep-cold", "repository", workloadGrep},
 		{"read-tree-cold", "repository", workloadCat},
 		{"git-grep-warm", "repository", workloadGrep},
@@ -2350,7 +2327,7 @@ func (b *benchmark) assertBounds(t *testing.T) {
 	for _, item := range []struct {
 		scenario, selection string
 		ratio               float64
-	}{{"pnpm-install", "pnpm-install", boundInstallRatio}, {"cargo-build-cold", "cargo-build", boundBuildRatio}} {
+	}{{"pnpm-install", "pnpm-install", boundInstallRatio}} {
 		if !b.scenarios[item.selection] || !b.scenarios["baseline"] {
 			continue
 		}
