@@ -26,11 +26,15 @@ import (
 // the sibling holds, and this is what that bet may lose: 128 commands, about a
 // fortieth of the restore's budget.
 //
-// It bounds the runs of published identities alone. Explicit zeros are not
-// counted against it: a hole is one run however many pages it covers and owns
-// no arena slot, so mapping it eagerly costs one command for a whole sparse
-// span. Nor are the private pages a fork point names, which nothing but this
-// populate can share and which the parent's dirty budget already bounds.
+// It bounds every run a populate installs, of whatever kind. A hole is one run
+// however many pages it covers, but a guest's address space is holes all through
+// it rather than one: on 2026-09-23, with the resident runs already bounded, a
+// warm restore still installed 14,447 runs over 2,166,194 pages of which only
+// 123,056 were resident identities, so two million pages of scattered holes were
+// paying a command each. A run of pages a fork point named is in the budget too,
+// and has the first claim on it: nothing but this populate can share one, so it
+// is worth more than a hole or a published run, but it is not worth an unbounded
+// number of commands before the guest runs.
 //
 // It is a variable only so a test can observe the bound without a region of
 // production size.
@@ -155,69 +159,102 @@ type candidate struct {
 	key  pageKey
 }
 
-// affordable drops the candidates whose run is not worth the mapping command it
-// would cost, and stops once the populate's run budget is spent. A run is the
-// candidates consecutive in the region and resident in consecutive arena slots,
-// which is exactly what install sends as one run.
-//
-// A private page a seal named is never dropped. It is the fork point's: the
-// parent's own dirty state, shared under a name that belongs to the point and
-// that ending the seal takes back, so this populate is the only moment a child
-// can map it and a fault that came later would read the bytes back out of the
-// child's own first checkpoint. There is no budget to keep for it either — the
-// set is exactly what the parent held dirty, which its dirty budget bounds.
+// populateRun is one stretch of pages a populate would install with a single
+// mapping command: pages consecutive in the region that are all explicit zeros,
+// or all bound to resident pages in consecutive arena slots. For a resident run,
+// from and to bound the candidates it is made of.
+type populateRun struct {
+	first, last uint64
+	from, to    int
+	zero        bool
+	// named marks a run of private pages a fork point named — the parent's own
+	// dirty state, shared under a name that ending the seal takes back. This
+	// populate is the only moment a child can map one, and a fault arriving later
+	// reads the bytes back out of the child's own first checkpoint, so a named
+	// run takes the budget before any other.
+	named bool
+}
+
+// residentRuns groups the candidates into the runs one mapping command each
+// covers, and appends them to runs.
 //
 // The slots are read once, without taking any page's lock. Nothing here decides
 // what a page holds: an eviction or a publication between this reading and the
 // binding below can only make install send a kept run as two, or bind one page
 // fewer, which costs a command and a fault and never a page.
-func (p *windowPlan) affordable(candidates []candidate, budget *int) []candidate {
+func (p *windowPlan) residentRuns(candidates []candidate, runs []populateRun) []populateRun {
 	h := p.region.host
 	slots := make([]int, len(candidates))
-	private := make([]bool, len(candidates))
+	named := make([]bool, len(candidates))
 	h.mu.Lock()
 	for i, item := range candidates {
 		slots[i] = -1
 		if pg := h.clean[item.key]; pg != nil {
-			slots[i], private[i] = pg.slot, pg.private
+			slots[i], named[i] = pg.slot, pg.private
 		}
 	}
 	h.mu.Unlock()
-	least := p.region.populationRun()
-	kept := candidates[:0:0]
 	for first := 0; first < len(candidates); first++ {
 		if slots[first] < 0 {
 			continue
 		}
 		last := first + 1
-		for last < len(candidates) && private[last] == private[first] &&
+		for last < len(candidates) && named[last] == named[first] &&
 			slots[last] == slots[last-1]+1 && candidates[last].page == candidates[last-1].page+1 {
 			last++
 		}
-		switch {
-		case private[first]:
-			kept = append(kept, candidates[first:last]...)
-		case last-first >= least && *budget > 0:
-			*budget--
-			kept = append(kept, candidates[first:last]...)
-		}
+		runs = append(runs, populateRun{first: candidates[first].page, last: candidates[last-1].page + 1,
+			from: first, to: last, named: named[first]})
 		first = last - 1
 	}
+	return runs
+}
+
+// afford spends the populate's run budget on the runs worth a mapping command,
+// and reports them in page order. The runs a fork point named go first, whatever
+// their length; every other run must cover at least one read-ahead window,
+// because a shorter one saves at most the single fault that would have mapped
+// the same pages with the same single command. Within each of those two the
+// budget is spent in page order.
+func (p *windowPlan) afford(runs []populateRun, budget *int) []populateRun {
+	sort.Slice(runs, func(i, j int) bool { return runs[i].first < runs[j].first })
+	least := uint64(p.region.populationRun())
+	kept := runs[:0:0]
+	for _, named := range [2]bool{true, false} {
+		for _, run := range runs {
+			if run.named != named || *budget <= 0 {
+				continue
+			}
+			if !named && run.last-run.first < least {
+				continue
+			}
+			*budget--
+			kept = append(kept, run)
+		}
+	}
+	sort.Slice(kept, func(i, j int) bool { return kept[i].first < kept[j].first })
 	return kept
 }
 
 func (p *windowPlan) bindResidents(ctx context.Context, index *residentIndex, budget *int) error {
 	var candidates []candidate
+	var runs []populateRun
 	ps := p.region.host.pageSize
 	for _, extent := range p.extents {
 		if err := context.Cause(ctx); err != nil {
 			return err
 		}
 		if extent.Identity.Zero {
-			// A hole is one range, however large: it owns no arena slot and
-			// needs no per-page identity lookup.
-			first := (extent.Offset + ps - 1) / ps
-			p.markZeros(max(first, p.start), min((extent.Offset+extent.Length)/ps, p.end))
+			// A hole is one run, however large: it owns no arena slot and needs
+			// no per-page identity lookup. It is observed whether or not this
+			// populate can afford to map it, because that is what lets a sibling
+			// attachment find holes without reading metadata of its own.
+			first := max((extent.Offset+ps-1)/ps, p.start)
+			last := min((extent.Offset+extent.Length)/ps, p.end)
+			if first < last {
+				p.observeZeros()
+				runs = append(runs, populateRun{first: first, last: last, zero: true})
+			}
 			continue
 		}
 		if extent.Identity.Ref.IsZero() || extent.Length < ps || !index.present[extent.Identity] {
@@ -229,17 +266,24 @@ func (p *windowPlan) bindResidents(ctx context.Context, index *residentIndex, bu
 		}
 		candidates = append(candidates, candidate{page: page, key: pageKey{id: extent.Identity}})
 	}
-	candidates = p.affordable(candidates, budget)
+	var kept []candidate
+	for _, run := range p.afford(p.residentRuns(candidates, runs), budget) {
+		if run.zero {
+			p.markZeros(run.first, run.last)
+			continue
+		}
+		kept = append(kept, candidates[run.from:run.to]...)
+	}
 	// Every population takes resident locks in the same immutable identity
 	// order. Logical page order may differ between related images; using it
 	// would deadlock opposing attachments once the host-wide queue is removed.
-	sort.Slice(candidates, func(i, j int) bool {
-		if candidates[i].key == candidates[j].key {
-			return candidates[i].page < candidates[j].page
+	sort.Slice(kept, func(i, j int) bool {
+		if kept[i].key == kept[j].key {
+			return kept[i].page < kept[j].page
 		}
-		return identityLess(candidates[i].key.id, candidates[j].key.id)
+		return identityLess(kept[i].key.id, kept[j].key.id)
 	})
-	for _, item := range candidates {
+	for _, item := range kept {
 		if err := p.bindShared(ctx, item.page, true); err != nil {
 			return err
 		}
