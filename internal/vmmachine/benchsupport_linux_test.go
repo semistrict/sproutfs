@@ -647,6 +647,11 @@ type plainConfig struct {
 	RootPath                          string
 	Directory                         string
 	MemoryMiB, VCPUs                  int
+	// HugePages is Firecracker's huge_pages for guest memory: empty or "None"
+	// for ordinary 4 KiB pages, "Transparent" to advise the host's THP, "2M" for
+	// the HugeTLB pool. It is what separates the size of the guest's
+	// translations from everything a pager does.
+	HugePages string
 	// SnapshotPath and MemoryPath restore an ordinary memory-file snapshot
 	// instead of booting.
 	SnapshotPath, MemoryPath string
@@ -690,7 +695,7 @@ func startPlainVM(ctx context.Context, c plainConfig) (*plainVM, error) {
 	}
 	if c.SnapshotPath == "" {
 		config := map[string]any{
-			"machine-config": map[string]any{"mem_size_mib": c.MemoryMiB, "vcpu_count": c.VCPUs},
+			"machine-config": plainMachineConfig(c),
 			"boot-source":    map[string]any{"kernel_image_path": c.Kernel, "boot_args": c.BootArgs},
 			"drives": []any{map[string]any{"drive_id": "rootfs", "path_on_host": c.RootPath,
 				"is_root_device": true, "is_read_only": false}},
@@ -999,4 +1004,13 @@ func TestConsoleReaderWaitsForALineTheVMMHasNotFinished(t *testing.T) {
 	if string(reader.pending) != "SPROUTFS_VALUE ram=1 disk=2\nSPROUTFS_SYNC\n" {
 		t.Fatalf("the completed VMM line was not taken out: %q", reader.pending)
 	}
+}
+
+// plainMachineConfig is a plain VM's machine-config.
+func plainMachineConfig(c plainConfig) map[string]any {
+	config := map[string]any{"mem_size_mib": c.MemoryMiB, "vcpu_count": c.VCPUs}
+	if c.HugePages != "" {
+		config["huge_pages"] = c.HugePages
+	}
+	return config
 }

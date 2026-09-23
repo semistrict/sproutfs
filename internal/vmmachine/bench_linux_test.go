@@ -1304,6 +1304,7 @@ func (b *benchmark) configuration() map[string]any {
 		"queue_pages":             benchQueuePages,
 		"boot_args":               bootArgs(benchBootArgs),
 		"baseline_boot_args":      bootArgs(benchPlainBootArgs),
+		"baseline_huge_pages":     os.Getenv("SPROUTFS_BENCH_PLAIN_HUGE_PAGES"),
 	}
 	// Each pager's own budgets, named for its kind and given in its own pages
 	// and in bytes: the pages say what the pager admits against, the bytes are
@@ -1988,7 +1989,11 @@ func (b *benchmark) baseline(ctx context.Context) {
 	defer os.Remove(root)
 	config := plainConfig{Binary: b.binary, Kernel: b.kernel,
 		BootArgs: bootArgs(benchPlainBootArgs), RootPath: root, Directory: b.scratch,
-		MemoryMiB: int(b.ramBytes >> 20), VCPUs: benchGuestVCPUs()}
+		MemoryMiB: int(b.ramBytes >> 20), VCPUs: benchGuestVCPUs(),
+		// SPROUTFS_BENCH_PLAIN_HUGE_PAGES backs the plain guest's memory with
+		// huge pages, which measures what the size of a guest's translations
+		// costs with no pager involved at all.
+		HugePages: os.Getenv("SPROUTFS_BENCH_PLAIN_HUGE_PAGES")}
 
 	copied := time.Now()
 	p, err := startPlainVM(ctx, config)

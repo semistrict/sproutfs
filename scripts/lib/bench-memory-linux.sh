@@ -21,6 +21,10 @@ if [[ ${SPROUTFS_GCE_WORKLOAD:-0} == 1 ]]; then
     if [[ ${SPROUTFS_RAM_PAGE_BYTES:-4096} == 2097152 ]]; then
         pooled=$((pooled + ${SPROUTFS_BENCH_RAM_RESIDENT_BYTES:-$((40 << 30))}))
     fi
+    # A plain guest on 2 MiB pages takes its whole memory from the pool.
+    if [[ ${SPROUTFS_BENCH_PLAIN_HUGE_PAGES:-} == 2M ]]; then
+        pooled=$((pooled + ${SPROUTFS_BENCH_RAM_BYTES:-$((16 << 30))}))
+    fi
     hugepages=$((pooled * 11 / 10 / (2 << 20)))
 fi
 sysctl -w vm.nr_hugepages="$hugepages"
@@ -209,6 +213,7 @@ if [[ ${SPROUTFS_GCE_WORKLOAD:-0} == 1 ]]; then
         SPROUTFS_BENCH_RAM_RESIDENT_BYTES="${SPROUTFS_BENCH_RAM_RESIDENT_BYTES:-}" \
         SPROUTFS_BENCH_PMEM_RESIDENT_BYTES="${SPROUTFS_BENCH_PMEM_RESIDENT_BYTES:-}" \
         SPROUTFS_RAM_PAGE_BYTES="${SPROUTFS_RAM_PAGE_BYTES:-}" \
+        SPROUTFS_BENCH_PLAIN_HUGE_PAGES="${SPROUTFS_BENCH_PLAIN_HUGE_PAGES:-}" \
         SPROUTFS_BENCH_HEAP_DIR="$results/heap-$output" \
         GOMEMLIMIT="${SPROUTFS_BENCH_GOMEMLIMIT:-12GiB}" \
         "$work/build/vmmachine.test" -test.v -test.run '^TestGuestWorkloadBenchmark$' -test.timeout=10h \

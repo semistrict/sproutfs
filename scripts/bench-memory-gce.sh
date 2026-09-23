@@ -27,6 +27,7 @@ case ${SPROUTFS_GCE_SMOKE:-0} in 0|1) ;; *) echo "SPROUTFS_GCE_SMOKE must be 0 o
 # and a number of bytes are made of.
 [[ ${SPROUTFS_BENCH_SCENARIOS:-} =~ ^[a-z,-]*$ ]] || { echo "SPROUTFS_BENCH_SCENARIOS is a comma-separated list of scenario names" >&2; exit 2; }
 [[ ${SPROUTFS_BENCH_FORKS:-} =~ ^[0-9]*$ ]] || { echo "SPROUTFS_BENCH_FORKS is a number" >&2; exit 2; }
+case ${SPROUTFS_BENCH_PLAIN_HUGE_PAGES:-} in ''|None|Transparent|2M) ;; *) echo "SPROUTFS_BENCH_PLAIN_HUGE_PAGES must be None, Transparent or 2M" >&2; exit 2 ;; esac
 [[ ${SPROUTFS_GCE_BUCKET:-} =~ ^[a-z0-9._-]*$ ]] || { echo "SPROUTFS_GCE_BUCKET is a bucket name" >&2; exit 2; }
 [[ ${SPROUTFS_GCE_SERVICE_ACCOUNT:-} =~ ^[a-z0-9@._-]*$ ]] || { echo "SPROUTFS_GCE_SERVICE_ACCOUNT is a service account email" >&2; exit 2; }
 for shape in SPROUTFS_BENCH_RAM_BYTES SPROUTFS_BENCH_ROOT_BYTES \
@@ -163,7 +164,7 @@ PY
         sudo systemctl is-active sproutfs-bench-expire.timer
         mkdir -p source results
         tar -xzf source.tar.gz -C source
-        sudo env SPROUTFS_GCE_BUILD_ONLY='"${SPROUTFS_GCE_BUILD_ONLY:-0}"' SPROUTFS_GCE_FANOUT='"${SPROUTFS_GCE_FANOUT:-0}"' SPROUTFS_GCE_BOOTSURVEY='"${SPROUTFS_GCE_BOOTSURVEY:-0}"' SPROUTFS_GCE_QUALIFY='"${SPROUTFS_GCE_QUALIFY:-0}"' SPROUTFS_GCE_WORKLOAD='"${SPROUTFS_GCE_WORKLOAD:-0}"' SPROUTFS_GCE_SMOKE='"${SPROUTFS_GCE_SMOKE:-0}"' SPROUTFS_BENCH_SCENARIOS='"${SPROUTFS_BENCH_SCENARIOS:-}"' SPROUTFS_BENCH_FORKS='"${SPROUTFS_BENCH_FORKS:-}"' SPROUTFS_BENCH_RAM_BYTES='"${SPROUTFS_BENCH_RAM_BYTES:-}"' SPROUTFS_BENCH_ROOT_BYTES='"${SPROUTFS_BENCH_ROOT_BYTES:-}"' SPROUTFS_BENCH_RAM_RESIDENT_BYTES='"${SPROUTFS_BENCH_RAM_RESIDENT_BYTES:-}"' SPROUTFS_BENCH_PMEM_RESIDENT_BYTES='"${SPROUTFS_BENCH_PMEM_RESIDENT_BYTES:-}"' SPROUTFS_RAM_PAGE_BYTES='"${SPROUTFS_RAM_PAGE_BYTES:-}"' SPROUTFS_GCS_BUCKET='"${SPROUTFS_GCE_BUCKET:-}"' SPROUTFS_GCS_PREFIX='"$prefix"' timeout --signal=TERM --kill-after=30s '"$limit"' bash source/scripts/lib/bench-memory-linux.sh "$PWD/source" "$PWD/results"' \
+        sudo env SPROUTFS_GCE_BUILD_ONLY='"${SPROUTFS_GCE_BUILD_ONLY:-0}"' SPROUTFS_GCE_FANOUT='"${SPROUTFS_GCE_FANOUT:-0}"' SPROUTFS_GCE_BOOTSURVEY='"${SPROUTFS_GCE_BOOTSURVEY:-0}"' SPROUTFS_GCE_QUALIFY='"${SPROUTFS_GCE_QUALIFY:-0}"' SPROUTFS_GCE_WORKLOAD='"${SPROUTFS_GCE_WORKLOAD:-0}"' SPROUTFS_GCE_SMOKE='"${SPROUTFS_GCE_SMOKE:-0}"' SPROUTFS_BENCH_SCENARIOS='"${SPROUTFS_BENCH_SCENARIOS:-}"' SPROUTFS_BENCH_FORKS='"${SPROUTFS_BENCH_FORKS:-}"' SPROUTFS_BENCH_RAM_BYTES='"${SPROUTFS_BENCH_RAM_BYTES:-}"' SPROUTFS_BENCH_ROOT_BYTES='"${SPROUTFS_BENCH_ROOT_BYTES:-}"' SPROUTFS_BENCH_RAM_RESIDENT_BYTES='"${SPROUTFS_BENCH_RAM_RESIDENT_BYTES:-}"' SPROUTFS_BENCH_PMEM_RESIDENT_BYTES='"${SPROUTFS_BENCH_PMEM_RESIDENT_BYTES:-}"' SPROUTFS_RAM_PAGE_BYTES='"${SPROUTFS_RAM_PAGE_BYTES:-}"' SPROUTFS_BENCH_PLAIN_HUGE_PAGES='"${SPROUTFS_BENCH_PLAIN_HUGE_PAGES:-}"' SPROUTFS_GCS_BUCKET='"${SPROUTFS_GCE_BUCKET:-}"' SPROUTFS_GCS_PREFIX='"$prefix"' timeout --signal=TERM --kill-after=30s '"$limit"' bash source/scripts/lib/bench-memory-linux.sh "$PWD/source" "$PWD/results"' \
         > "$results/remote.log" 2>&1 || status=$?
     "${cloud[@]}" compute scp --recurse --zone="$zone" "$instance:results/." "$results/" || status=$?
     # The run's objects are the benchmark's scratch, and the bucket keeps none
