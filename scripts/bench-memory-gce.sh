@@ -47,10 +47,11 @@ results=${3:-$repo/docs/measurements/gce-memory-$(date -u +%Y%m%d-%H%M%S)}
 [[ "$instance" == sproutfs-memprobe-* ]] || { echo 'Use a sproutfs-memprobe- instance name.' >&2; exit 2; }
 cloud=(gcloud --quiet --project="$project")
 # Every host has eight processors. The workload comparison runs 16 GiB guests
-# over a 32 GiB root each clone of the plain side copies, so it takes the
-# high-memory shape of the same eight; the memory probe needs none of that.
+# over a 32 GiB root each clone of the plain side copies, beside arenas of
+# 40 GiB of RAM and 24 GiB of PMEM, so it takes eight processors with 128 GiB
+# of extended memory; the memory probe needs none of that.
 machine=n2-standard-8 disk=80GB limit=5h
-if [[ ${SPROUTFS_GCE_WORKLOAD:-0} == 1 ]]; then machine=n2-highmem-8 disk=400GB limit=11h; fi
+if [[ ${SPROUTFS_GCE_WORKLOAD:-0} == 1 ]]; then machine=n2-custom-8-131072-ext disk=400GB limit=11h; fi
 
 # The host's identity: none unless it is to reach a bucket, and then the one
 # account that bucket grants, able to reach storage and nothing else.

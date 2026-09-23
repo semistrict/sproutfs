@@ -14,15 +14,12 @@ test -c /dev/kvm
 # (SPROUTFS_RAM_PAGE_BYTES=2097152); at its default 4 KiB page RAM is ordinary
 # memory. So the pool is the resident budgets on it and a tenth again for the
 # arenas' own rounding and for anything else on the node that wants a huge
-# page. The host is eight processors and 64 GiB, so the budgets are what it can
-# hold beside the plain side's guests: 24 GiB of RAM and 12 GiB of PMEM.
+# page. The budgets default to the benchmark's own.
 hugepages=4096
 if [[ ${SPROUTFS_GCE_WORKLOAD:-0} == 1 ]]; then
-    export SPROUTFS_BENCH_RAM_RESIDENT_BYTES=${SPROUTFS_BENCH_RAM_RESIDENT_BYTES:-$((24 << 30))}
-    export SPROUTFS_BENCH_PMEM_RESIDENT_BYTES=${SPROUTFS_BENCH_PMEM_RESIDENT_BYTES:-$((12 << 30))}
-    pooled=$SPROUTFS_BENCH_PMEM_RESIDENT_BYTES
+    pooled=${SPROUTFS_BENCH_PMEM_RESIDENT_BYTES:-$((24 << 30))}
     if [[ ${SPROUTFS_RAM_PAGE_BYTES:-4096} == 2097152 ]]; then
-        pooled=$((pooled + SPROUTFS_BENCH_RAM_RESIDENT_BYTES))
+        pooled=$((pooled + ${SPROUTFS_BENCH_RAM_RESIDENT_BYTES:-$((40 << 30))}))
     fi
     hugepages=$((pooled * 11 / 10 / (2 << 20)))
 fi
@@ -188,6 +185,11 @@ if [[ ${SPROUTFS_GCE_WORKLOAD:-0} == 1 ]]; then
         export SPROUTFS_BENCH_TEST='cd /opt/codex && git grep -c fn | wc -l'
         export SPROUTFS_BENCH_DB_KEYS=200000
     fi
+    # The benchmark process is the host: its pagers, volumes and object cache
+    # are Go heap beside the arenas, and the collector left alone lets that
+    # heap reach twice what is live. GOMEMLIMIT holds it to what a deployment
+    # gives its host, as deploy/10-host.yaml does, and a heap profile is kept
+    # per scenario.
     run=$(mktemp -d "$work/run-workload.XXXXXX")
     mkdir -p "$results/heap-$output"
     status=0
@@ -208,6 +210,7 @@ if [[ ${SPROUTFS_GCE_WORKLOAD:-0} == 1 ]]; then
         SPROUTFS_BENCH_PMEM_RESIDENT_BYTES="${SPROUTFS_BENCH_PMEM_RESIDENT_BYTES:-}" \
         SPROUTFS_RAM_PAGE_BYTES="${SPROUTFS_RAM_PAGE_BYTES:-}" \
         SPROUTFS_BENCH_HEAP_DIR="$results/heap-$output" \
+        GOMEMLIMIT="${SPROUTFS_BENCH_GOMEMLIMIT:-12GiB}" \
         "$work/build/vmmachine.test" -test.v -test.run '^TestGuestWorkloadBenchmark$' -test.timeout=10h \
         > "$results/$output.log" 2>&1 || status=$?
     rm -rf -- "$run"
