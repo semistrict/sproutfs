@@ -40,26 +40,37 @@ func forkFixture(t *testing.T, pages int) *fixture {
 // a fork doing nothing but reading and storing must never move.
 func revocations(t *testing.T, f *fixture) uint64 {
 	t.Helper()
-	stats, err := f.h.Stats(t.Context())
+	return hostStats(t, f).Revocations
+}
+
+// privatePages is how many pages of one region hold bytes of its own, which is
+// what a store is supposed to cost a fork: one, whatever its window brought.
+func privatePages(t *testing.T, r *vmmemory.Region) int {
+	t.Helper()
+	stats, err := r.Stats(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
-	return stats.Revocations
+	return stats.PrivatePages
 }
 
 func TestAForksFirstStoresRevokeNothing(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		const pages = 2 * rangePages
+		const pages = 4 * rangePages
 		f := forkFixture(t, pages)
-		// The parent, whose pages a capture left resident: it has read its whole
-		// first range, so every page of it is in the sharing index under the
-		// identity its volume gives it.
+		// The parent, whose pages a capture left resident: one read a range, each
+		// bringing its whole window, so those pages are in the sharing index under
+		// the identity the volume gives them.
 		parent, pm, _ := f.region(pages)
-		access(t, parent, pm, 0, false)
+		for _, page := range []uint64{0, 2 * rangePages, 3 * rangePages} {
+			access(t, parent, pm, page, false)
+		}
 		// The fork: a region of the same checkpoint, attached over those pages.
-		// The populate maps the run it finds resident before the guest runs.
+		// The populate maps the runs it finds resident before the guest runs.
 		child, cm := f.attach(f.newBacking(pages))
 
+		// Every store below is more than gapPages from the last, so no rule takes
+		// a page with it and what each one costs is the page it faulted on alone.
 		for _, item := range []struct {
 			what string
 			page uint64
@@ -67,31 +78,53 @@ func TestAForksFirstStoresRevokeNothing(t *testing.T) {
 			// A store into a page the populate mapped read-only from the
 			// sibling's resident page.
 			{"a page the attach populated", 8},
-			// A store into a page of the same window, well away from the first,
-			// so neither rule takes it.
+			// A store into a page of the same window, well away from the first.
 			{"a page of a window the populate brought", 300},
 			// A store into a page of a range the fork has never touched at all:
 			// the store reads its window in, shared and read-only, and then
 			// copies the one page it stored into.
-			{"a page the guest has never touched", rangePages + 8},
+			{"a page the guest has never touched", 2*rangePages + 8},
 			// And one inside the window that store brought.
-			{"a page inside the window a store read in", rangePages + 300},
+			{"a page inside the window a store read in", 2*rangePages + 300},
 		} {
-			before := revocations(t, f)
+			before, owned := hostStats(t, f), privatePages(t, child)
 			access(t, child, cm, item.page, true)[0] = byte(item.page)
-			if got := revocations(t, f) - before; got != 0 {
+			after := hostStats(t, f)
+			if got := after.Revocations - before.Revocations; got != 0 {
 				t.Errorf("a store into %s cost %d revocations, want 0", item.what, got)
+			}
+			// The window arrives read-only around the faulting page, so one page
+			// of it is copied and the rest stay shared. The stores are far apart,
+			// so no rule takes a page with them either.
+			if got := privatePages(t, child) - owned; got != 1 {
+				t.Errorf("a store into %s made %d pages private, want the one it stored into", item.what, got)
+			}
+			if got := after.RuleCopies - before.RuleCopies; got != 0 {
+				t.Errorf("a store into %s copied %d pages for the rules, want 0", item.what, got)
 			}
 		}
 
 		// A read of a page the fork has not touched, then a store into another
 		// page of the window that read brought: the window is installed
 		// read-only, and the store replaces its own page's mapping.
-		access(t, child, cm, 3*rangePages/2, false)
-		before := revocations(t, f)
-		access(t, child, cm, 3*rangePages/2+40, true)[0] = 9
-		if got := revocations(t, f) - before; got != 0 {
+		access(t, child, cm, 3*rangePages+100, false)
+		before, owned := hostStats(t, f), privatePages(t, child)
+		access(t, child, cm, 3*rangePages+400, true)[0] = 9
+		after := hostStats(t, f)
+		if got := after.Revocations - before.Revocations; got != 0 {
 			t.Errorf("a store into a page a read brought cost %d revocations, want 0", got)
+		}
+		if got := privatePages(t, child) - owned; got != 1 {
+			t.Errorf("a store into a page a read brought made %d pages private, want 1", got)
+		}
+		// Every other page the windows brought is still the parent's: what a fork's
+		// first pass over its memory copies is the pages it faulted on and nothing
+		// else, which is the whole of what the read-only window is for.
+		if got, want := privatePages(t, child), 5; got != want {
+			t.Errorf("the fork owns %d pages after 5 stores, want %d", got, want)
+		}
+		if got := after.RuleCopies; got != 0 {
+			t.Errorf("the fork's stores copied %d pages for the rules, want 0", got)
 		}
 	})
 }
