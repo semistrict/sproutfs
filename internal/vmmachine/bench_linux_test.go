@@ -180,21 +180,37 @@ type cacheDelta struct {
 // in PageSize, which is the only page it means: the other pager's record counts
 // its own, and the two are never added.
 type memoryDelta struct {
-	PageSize          uint64 `json:"page_size"`
-	Faults            uint64 `json:"faults"`
-	CopyOnWrites      uint64 `json:"copy_on_writes"`
-	Evictions         uint64 `json:"evictions"`
-	Spills            uint64 `json:"spills"`
-	SpillRefaults     uint64 `json:"spill_refaults"`
-	SpillWrites       uint64 `json:"spill_writes"`
-	Loads             uint64 `json:"loads"`
-	LoadedPages       uint64 `json:"loaded_pages"`
-	IdentityHits      uint64 `json:"identity_hits"`
-	Mappings          uint64 `json:"mappings"`
-	MappedPages       uint64 `json:"mapped_pages"`
-	MappingRuns       uint64 `json:"mapping_runs"`
-	Revocations       uint64 `json:"revocations"`
-	RevokedPages      uint64 `json:"revoked_pages"`
+	PageSize      uint64 `json:"page_size"`
+	Faults        uint64 `json:"faults"`
+	CopyOnWrites  uint64 `json:"copy_on_writes"`
+	Evictions     uint64 `json:"evictions"`
+	Spills        uint64 `json:"spills"`
+	SpillRefaults uint64 `json:"spill_refaults"`
+	SpillWrites   uint64 `json:"spill_writes"`
+	Loads         uint64 `json:"loads"`
+	LoadedPages   uint64 `json:"loaded_pages"`
+	IdentityHits  uint64 `json:"identity_hits"`
+	Mappings      uint64 `json:"mappings"`
+	MappedPages   uint64 `json:"mapped_pages"`
+	MappingRuns   uint64 `json:"mapping_runs"`
+	Revocations   uint64 `json:"revocations"`
+	RevokeRuns    uint64 `json:"revoke_runs"`
+	RevokedPages  uint64 `json:"revoked_pages"`
+	// RuleCopies is the pages the two mapping rules made private beside the ones
+	// the guest stored into, which is the whole of what a store copies past its
+	// faulting page: with it beside CopyOnWrites a record says whether a fork's
+	// first pass over its memory copies one page a window or more than one.
+	// MappingMerges says the backstop behind those rules acted, and
+	// RefusedMappings counts the faults a client refused a command for.
+	RuleCopies      uint64 `json:"rule_copies"`
+	MappingMerges   uint64 `json:"mapping_merges"`
+	RefusedMappings uint64 `json:"refused_mappings"`
+	// UnchangedPages is the pages a settle found to hold exactly their origin's
+	// bytes: write faults the guest never stored through, which no checkpoint
+	// publishes and which go straight back to sharing. PrivateExtents is how many
+	// 2 MiB ranges of this pager's regions hold a private page.
+	UnchangedPages    uint64 `json:"unchanged_pages"`
+	PrivateExtents    int    `json:"private_extents"`
 	Protections       uint64 `json:"protections"`
 	ProtectedPages    uint64 `json:"protected_pages"`
 	CheckpointPages   uint64 `json:"checkpoint_pages"`
@@ -277,8 +293,14 @@ func memoryBetween(pageSize uint64, before, after vmmemory.Stats) *memoryDelta {
 		Loads: after.Loads - before.Loads, LoadedPages: after.LoadedPages - before.LoadedPages,
 		IdentityHits: after.IdentityHits - before.IdentityHits, Mappings: after.Mappings - before.Mappings,
 		MappedPages: after.MappedPages - before.MappedPages, MappingRuns: after.MappingRuns - before.MappingRuns,
-		Revocations: after.Revocations - before.Revocations, RevokedPages: after.RevokedPages - before.RevokedPages,
-		Protections: after.Protections - before.Protections, ProtectedPages: after.ProtectedPages - before.ProtectedPages,
+		Revocations: after.Revocations - before.Revocations, RevokeRuns: after.RevokeRuns - before.RevokeRuns,
+		RevokedPages:    after.RevokedPages - before.RevokedPages,
+		RuleCopies:      after.RuleCopies - before.RuleCopies,
+		MappingMerges:   after.MappingMerges - before.MappingMerges,
+		RefusedMappings: after.RefusedMappings - before.RefusedMappings,
+		UnchangedPages:  after.UnchangedPages - before.UnchangedPages,
+		PrivateExtents:  after.PrivateExtents,
+		Protections:     after.Protections - before.Protections, ProtectedPages: after.ProtectedPages - before.ProtectedPages,
 		CheckpointPages: after.CheckpointPages - before.CheckpointPages,
 		SpillWriteBytes: after.SpillWriteBytes - before.SpillWriteBytes,
 		ResidentPages:   after.ResidentPages, DirtyPages: after.DirtyPages, LogicalPages: after.LogicalPages,
@@ -771,18 +793,43 @@ const (
 //
 // A restore reports only VMMStartNS and ToReadyNS: it resumes a guest that
 // booted long ago and runs no init.
+//
+// Phases is what VMMStartNS divides into, so a restore of seconds says which
+// part of it was the VMM's own start, which was the snapshot load, and which was
+// the pager attaching and populating each region — and, per region, what that
+// populate installed. A managed fan-out's restore is the number to explain
+// before its first output is, and none of it is explainable from one duration.
 type startTiming struct {
 	VMMStartNS  int64 `json:"vmm_start_ns"`
 	ToReadyNS   int64 `json:"to_ready_ns"`
 	KernelNS    int64 `json:"kernel_ns,omitempty"`
 	InitNS      int64 `json:"init_ns,omitempty"`
 	PreKernelNS int64 `json:"pre_kernel_ns,omitempty"`
+	Phases      vmmachine.StartPhases
 }
 
 func (s startTiming) extra(hostSetup time.Duration) map[string]any {
-	return map[string]any{"host_setup_ns": hostSetup.Nanoseconds(), "vmm_start_ns": s.VMMStartNS,
+	extra := map[string]any{"host_setup_ns": hostSetup.Nanoseconds(), "vmm_start_ns": s.VMMStartNS,
 		"to_ready_ns": s.ToReadyNS, "kernel_ns": s.KernelNS, "init_ns": s.InitNS,
 		"pre_kernel_ns": s.PreKernelNS}
+	for key, value := range s.phases() {
+		extra[key] = value
+	}
+	return extra
+}
+
+// phases is the start's own split as a record carries it: the four phases of
+// vmmachine.Start, and per region the attach and the populate inside it.
+func (s startTiming) phases() map[string]any {
+	attach := map[string]map[string]any{}
+	for name, stats := range s.Phases.Attachments {
+		attach[name] = map[string]any{"attach_ns": stats.DurationNS,
+			"populate_ns": stats.Populate.DurationNS, "populate_commands": stats.Populate.Commands,
+			"populate_runs": stats.Populate.Runs, "populate_pages": stats.Populate.Pages}
+	}
+	return map[string]any{"vmm_process_ns": s.Phases.ProcessNS,
+		"state_load_ns": s.Phases.StateLoadNS, "sessions_ns": s.Phases.SessionsNS,
+		"vmm_ready_ns": s.Phases.ReadyNS, "region_attach": attach}
 }
 
 // start launches one managed machine and waits for the guest to be ready. A
@@ -794,7 +841,7 @@ func (b *benchmark) start(ctx context.Context, vm *volume.VM, restore []byte) (*
 	if err != nil {
 		b.t.Fatalf("start %s: %v", vm.ID(), err)
 	}
-	timing := startTiming{VMMStartNS: time.Since(launched).Nanoseconds()}
+	timing := startTiming{VMMStartNS: time.Since(launched).Nanoseconds(), Phases: p.StartPhases()}
 	running := time.Now()
 	c := newConsole(p)
 	if len(restore) > 0 {
@@ -1049,7 +1096,7 @@ func TestGuestWorkloadBenchmark(t *testing.T) {
 	// Scenario 2, warm: a sibling that has already run the warm repository
 	// search keeps the pages resident, so the restore inherits them.
 	if b.scenarios["restore-warm"] {
-		sibling, siblingVM, siblingConsole := b.fork(ctx, origin, "sibling")
+		sibling, siblingVM, siblingConsole, _, _ := b.fork(ctx, origin, "sibling")
 		b.run(ctx, siblingConsole, workloadGrep)
 		b.run(ctx, siblingConsole, workloadCat)
 		b.restoreScenario(ctx, origin, "restore-warm", "sibling-warm")
@@ -1349,15 +1396,19 @@ type forkOrigin struct {
 	state []byte
 }
 
-// fork restores one child of the origin and returns it ready to take commands.
-func (b *benchmark) fork(ctx context.Context, origin *forkOrigin, id string) (*vmmachine.Process, *volume.VM, *console) {
+// fork restores one child of the origin and returns it ready to take commands,
+// with what its restore divided into: taking the handle off the parent's point,
+// and then every phase of the start itself.
+func (b *benchmark) fork(ctx context.Context, origin *forkOrigin, id string) (*vmmachine.Process, *volume.VM, *console, startTiming, time.Duration) {
 	b.t.Helper()
+	handle := time.Now()
 	vm, err := b.manager.Fork(ctx, id, origin.point)
 	if err != nil {
 		b.t.Fatalf("fork %s: %v", id, err)
 	}
-	p, c, _ := b.start(ctx, vm, origin.state)
-	return p, vm, c
+	forked := time.Since(handle)
+	p, c, timing := b.start(ctx, vm, origin.state)
+	return p, vm, c, timing, forked
 }
 
 // restoreScenario measures a restore from the checkpoint to the first trivial
@@ -1405,10 +1456,21 @@ func (b *benchmark) forkFanOut(ctx context.Context, origin *forkOrigin) {
 	}
 	children := make([]child, count)
 	restoreEach := make([]int64, count)
+	// What each of those restores was made of. A managed fork's restore is the
+	// larger half of its first output, so it is recorded in its phases rather
+	// than as one duration: the handle on the parent's point, the VMM process,
+	// the snapshot load, the pager's attach of each region and the populate
+	// inside it.
+	restorePhases := make([]map[string]any, count)
 	for index := range children {
 		at := time.Now()
-		p, vm, c := b.fork(ctx, origin, "fanout-"+strconv.Itoa(index))
+		p, vm, c, timing, forked := b.fork(ctx, origin, "fanout-"+strconv.Itoa(index))
 		restoreEach[index] = time.Since(at).Nanoseconds()
+		phases := timing.phases()
+		phases["fork_ns"] = forked.Nanoseconds()
+		phases["vmm_start_ns"] = timing.VMMStartNS
+		phases["to_ready_ns"] = timing.ToReadyNS
+		restorePhases[index] = phases
 		children[index] = child{p, vm, c}
 	}
 	restored := time.Now()
@@ -1579,6 +1641,7 @@ func (b *benchmark) forkFanOut(ctx context.Context, origin *forkOrigin) {
 		"command":             workloadTest(),
 		"restore_all_ns":      restored.Sub(start.at).Nanoseconds(),
 		"restore_each_ns":     restoreEach,
+		"restore_phases":      restorePhases,
 		"max_restore_ns":      maxOf(restoreEach),
 		"first_output_ns":     firstOutput,
 		"total_ns":            total,
@@ -1745,7 +1808,7 @@ func (b *benchmark) steadyState(ctx context.Context, origin *forkOrigin) {
 	}
 	children := make([]child, guests)
 	for index := range children {
-		p, vm, c := b.fork(ctx, origin, "steady-"+strconv.Itoa(index))
+		p, vm, c, _, _ := b.fork(ctx, origin, "steady-"+strconv.Itoa(index))
 		children[index] = child{p, vm, c}
 	}
 	deadline := time.Now().Add(period)

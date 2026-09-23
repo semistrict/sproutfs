@@ -48,6 +48,27 @@ var populationRuns = 128
 // region smaller than the read-ahead run is one window, so that is its length.
 func (r *Region) populationRun() int { return max(min(r.readAheadPages, r.pageCount), 1) }
 
+// PopulateStats is what one attach's populate installed before the guest ran:
+// the mapping commands it issued, the runs those commands covered and the pages
+// in them, and how long it took. It is the region's own rather than the pager's,
+// because an attach is per region and a host brings several up at once — and it
+// is what says whether a restore's wait was the populate at all. A command is
+// what the VMM answers with an mmap of the arena, a UFFD registration, a
+// write-protect and an mremap whose REMAP event this pager reads back, so
+// commands and not pages are what a populate costs.
+type PopulateStats struct {
+	Commands, Runs, Pages uint64
+	DurationNS            int64
+}
+
+// Populated is what this region's populate came to, zero until it has run.
+func (r *Region) Populated() PopulateStats {
+	if stats := r.populated.Load(); stats != nil {
+		return *stats
+	}
+	return PopulateStats{}
+}
+
 // Populate maps the pages of the region that are already resident under their
 // stored identity, so a restored or forked machine starts with the pages its
 // siblings loaded and takes no faults on them. It loads nothing, and it installs
@@ -55,6 +76,12 @@ func (r *Region) populationRun() int { return max(min(r.readAheadPages, r.pageCo
 // and before memory users start.
 func (r *Region) Populate(ctx context.Context) error {
 	h := r.host
+	started := h.clock.Now()
+	var installed installedRuns
+	defer func() {
+		r.populated.Store(&PopulateStats{Commands: installed.commands, Runs: installed.runs,
+			Pages: installed.pages, DurationNS: h.clock.Since(started).Nanoseconds()})
+	}()
 	if err := r.mu.Lock(ctx); err != nil {
 		return err
 	}
@@ -76,8 +103,14 @@ func (r *Region) Populate(ctx context.Context) error {
 	// two of the windows below is two runs to this walk and may fall under the
 	// length the budget asks for; that costs a fault the populate could have
 	// saved, never a page.
+	//
+	// The walk ends where the budget does. Each window asks the volume for the
+	// identity of every page in it — four million of them for a 16 GiB guest at a
+	// 4 KiB page, decoded out of the index's segments — and a window reached with
+	// nothing left to spend can install no run of any kind, so every one of those
+	// answers would be metadata read before the guest runs for nothing at all.
 	budget := populationRuns
-	for start := uint64(0); start < uint64(r.pageCount); {
+	for start := uint64(0); start < uint64(r.pageCount) && budget > 0; {
 		end := min(start+max(populationWindowBytes/h.pageSize, 1), uint64(r.pageCount))
 		err := func() error {
 			if err := r.mu.Lock(ctx); err != nil {
@@ -101,6 +134,7 @@ func (r *Region) Populate(ctx context.Context) error {
 				return err
 			}
 			_, err = plan.install(ctx)
+			installed.add(plan.installed)
 			return err
 		}()
 		if err != nil {

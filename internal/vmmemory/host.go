@@ -93,13 +93,14 @@ type Host struct {
 	probe probeState
 }
 
-// The byte bounds a page count is checked against, independently of the pager
-// geometry: the largest run one fault may hold a buffer for, and the window a
-// population walks metadata in.
-const (
-	maximumReadAheadBytes = 16 << 20
-	populationWindowBytes = 256 << 20
-)
+// maximumReadAheadBytes is the largest run one fault may hold a buffer for,
+// independently of the pager geometry.
+const maximumReadAheadBytes = 16 << 20
+
+// populationWindowBytes is the window a population walks metadata in. It is a
+// variable only so a test can cross a window boundary without a region of
+// production size.
+var populationWindowBytes uint64 = 256 << 20
 
 // New uses a dedicated scratch spill file. It is not crash recovery metadata
 // and must not be shared with another Host, which includes the other pager of
