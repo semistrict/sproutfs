@@ -5,7 +5,7 @@ set -euo pipefail
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 instance=${SPROUTFS_LIMA_INSTANCE:-default}
 toolchain=${SPROUTFS_RUST_TOOLCHAIN:-stable}
-if (($# != 0)); then echo "Usage: $0" >&2; exit 2; fi
+if (($# != 0)); then echo "Usage: $0 (SPROUTFS_FIRECRACKER_RUN selects tests by -test.run)" >&2; exit 2; fi
 arch=$(limactl shell "$instance" uname -m)
 if [[ "$arch" != aarch64 ]]; then
     echo 'This full-guest qualification pins an aarch64 kernel. Use the memory suite for x86_64.' >&2
@@ -62,7 +62,7 @@ if [[ ! -x "$busybox" ]]; then
     exit 1
 fi
 install -m 0755 "$busybox" "$work/root/bin/busybox"
-for applet in sh sleep echo test touch cat df; do ln -sf busybox "$work/root/bin/$applet"; done
+for applet in sh sleep echo test touch cat df sync; do ln -sf busybox "$work/root/bin/$applet"; done
 truncate -s 64M "$work/root.ext4"
 mkfs.ext4 -q -F -b 4096 -d "$work/root" "$work/root.ext4"
 GUEST
@@ -73,4 +73,4 @@ limactl shell "$instance" sudo -n env \
     SPROUTFS_FIRECRACKER_KERNEL="$guest_work/kernel" \
     SPROUTFS_FIRECRACKER_ROOT="$guest_work/root.ext4" \
     SPROUTFS_FIRECRACKER_RESIDENT_PAGES="$resident_pages" \
-    "$host_work/firecracker.test" -test.v -test.timeout=30m
+    "$host_work/firecracker.test" -test.v -test.timeout=30m -test.run="${SPROUTFS_FIRECRACKER_RUN:-}"
