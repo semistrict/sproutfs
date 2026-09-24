@@ -397,6 +397,9 @@ func StartHost(ctx context.Context, config Config) (*Host, error) {
 		// region of that VM, in both pagers, exactly once.
 		pager.SetPressure(vmmemory.Pressure{Checkpoint: h.checkpointNow, Stop: h.stopStalled,
 			Oldest: h.oldestUnpublished})
+		// A guest's flush waits on this host too: the pager answers it when
+		// this says the VM's disks are fresh enough.
+		pager.SetFlushed(h.flushed)
 	}
 	started = true
 	go func() {
@@ -619,6 +622,11 @@ func (h *Host) shutdown() {
 		// Nothing here answers for either budget any more: the loops are
 		// stopping and the VMs are being released.
 		pager.SetPressure(vmmemory.Pressure{})
+		// Nor for a flush. It is dropped rather than answered: a pager with
+		// nothing installed answers every flush with success, and the disks a
+		// closing host can no longer checkpoint are not durable. The guest's
+		// device asks again wherever the VM is opened next.
+		pager.SetFlushed(dropFlush)
 	}
 	// The checkpoint loops stop before the VM handles do: a checkpoint of a VM
 	// whose handle is closing has nothing to select its index in.

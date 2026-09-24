@@ -89,6 +89,9 @@ func (h *Host) flushed(region *vmmemory.Region, done func(error)) {
 	}
 }
 
+// dropFlush answers no flush, which is what a closing host does with them.
+func dropFlush(*vmmemory.Region, func(error)) {}
+
 // releaseFlushes completes every flush a publication that just landed has
 // covered, and keeps the ones it has not.
 func releaseFlushes(entry *registration) {

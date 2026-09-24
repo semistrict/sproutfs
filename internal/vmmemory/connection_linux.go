@@ -776,12 +776,7 @@ func (c *Connection) deliverFlushes() {
 			return
 		case request = <-c.flushes:
 		}
-		done := c.answerFlush(request.ID)
-		if flushed := c.host.flushedCallback(); flushed != nil {
-			flushed(c.region.Memory, done)
-		} else {
-			done(nil)
-		}
+		c.region.Memory.deliverFlush(c.answerFlush(request.ID))
 	}
 }
 
