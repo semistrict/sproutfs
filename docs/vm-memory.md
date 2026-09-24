@@ -638,8 +638,11 @@ until the process exits.
 ## Seal, checkpoint and verification
 
 A checkpoint is how a region's dirty pages become durable, and the only way.
-There is no flush: the pager never writes to a volume, and a guest's
-virtio-pmem flush makes nothing durable and returns success at the device.
+The pager never writes to a volume, not even for a guest's flush: a
+virtio-pmem flush is a FLUSH request the device sends and holds, and the guest's
+flush returns when the host answers it. The host answers once the VM's disks are
+as durable as its flush policy asks, taking a disk checkpoint first when they
+are not.
 
 A seal also takes the region's loss window: the age of the oldest page it is
 freezing becomes the sealed set's, and the region's own starts again at its next
@@ -916,7 +919,9 @@ The Rust library owns:
 
 PMEM and RAM share one mapping implementation and one durability contract:
 both become durable only through a checkpoint, and a guest's PMEM flush makes
-nothing durable. A local spill is not durability either.
+nothing durable itself: it waits for the host, which answers once a disk
+checkpoint covers it as its flush policy asks. A local spill is not durability
+either.
 
 ## Rust interface and lifetimes
 
@@ -1055,9 +1060,9 @@ zeroes. The pager therefore revokes every alias and waits for acknowledgements
 before it releases a slot.
 
 Guest PMEM is byte-addressable memory whose stores become durable only through
-the host's checkpoint, so neither store completion nor a guest flush is
-durability; guest DAX bypasses the guest page cache but changes nothing about
-the host backing. Firecracker requires 2 MiB PMEM alignment. Its save order is
+the host's checkpoint, so store completion is not durability, and a guest flush
+is what the host's answer to it says it is; guest DAX bypasses the guest page
+cache but changes nothing about the host backing. Firecracker requires 2 MiB PMEM alignment. Its save order is
 fixed: pause vCPUs, save devices before KVM state because device completion can
 inject interrupts, then capture memory, which is why a seal must survive device
 accesses after the vCPUs pause: those accesses copy on write like any other
@@ -1067,16 +1072,21 @@ session attaches, so a setting there would be the VM claiming something about
 backing it does not choose — and rejects ballooning, memory hotplug, vhost-user
 and asynchronous block I/O with managed RAM, and a coordinated capture requires managed PMEM for
 every disk and refuses ordinary block devices. A managed virtio-pmem flush
-completes with success at the device and asks the host for nothing. KVM slots
-are unregistered before mappings drop. Ordinary CPU and the tested KVM accesses
-are covered by Linux mapping invalidation, not by a Rust lock around each load.
+waits for the host's answer to the FLUSH request the device sends for it. KVM
+slots are unregistered before mappings drop. Ordinary CPU and the tested KVM
+accesses are covered by Linux mapping invalidation, not by a Rust lock around
+each load.
 Upstream's own UFFD restore copies pages into each VM's anonymous memory and
 cannot share a page between VMs; this integration replaces it.
 
-## Control protocol, version 8
+## Control protocol, version 9
 
-Version 7 clients are rejected because ATTACH's length is the arena's offset
-space now rather than its capacity. The arena is a sparse file whose offsets are
+Version 8 peers are rejected because FLUSH is new. A pager ends a session on a
+control message it does not know, so a version 8 pager would end a guest at its
+first flush; the version tells the two apart before a guest runs.
+
+Version 8 had rejected version 7 because ATTACH's length is the arena's offset
+space rather than its capacity. The arena is a sparse file whose offsets are
 not its pages, so the number the client checks the descriptor's own size against
 — and bounds a MAP's arena offset by — is the addresses; a version 7 peer would
 read it as a promise of that much memory. Version 7 had itself rejected version 6
@@ -1086,7 +1096,9 @@ this session's region runs and the kind of memory its arena is made of, and a
 version 5 for two removals at once —
 a session carries one region, so the `region` field is gone from the frame and
 the frame is 56 bytes, and HELLO carries no page size — and version 4 before it
-for the removal of the FLUSH request, whose frame kind SEAL took. The
+for the removal of that version's FLUSH request, whose frame kind SEAL took;
+version 9's FLUSH is a request of a kind of its own, answered once the host has
+made the flush durable rather than by writing it anywhere. The
 supervisor, Rust adapter and Firecracker integration must be deployed together.
 
 A Unix stream carries fixed 56-byte frames of seven little-endian `u64` fields:
@@ -1113,11 +1125,12 @@ of why it could not start has to name the end the answer never came from.
 | REVOKE | 5 | Command ID, region-relative offset and length, next generation; installs nonresident fault traps |
 | ACK | 6 | Echoes command ID and generation; `flags=0` success or a positive Linux errno |
 | STOP | 7 | Command ID; the embedder must have stopped all memory users |
-| SEAL | 8 | Client request ID; write-protects this session's region's dirty set and records it, completing in page-table time. There is no durability request in this protocol |
-| RESULT | 9 | Echoes the request ID; `flags=0` success or a positive Linux errno |
+| SEAL | 8 | Client request ID; write-protects this session's region's dirty set and records it, completing in page-table time |
+| RESULT | 9 | Answers a SEAL or a FLUSH: echoes the request ID; `flags=0` success or a positive Linux errno |
 | MAP_BATCH | 10 | `length=run count` (1–1024), followed by that many MAP or MAP_ZERO frames; one ACK for the batch |
 | READY | 11 | Ends the mandatory attach population; acknowledged before `Session::connect` returns |
 | MAP_ZERO | 12 | Explicit sparse zero range, `backing=0`, `flags=1`; installs populated anonymous shared-zero page tables under write protection |
+| FLUSH | 13 | Client request ID, every other field zero; the client's guest flushed this session's region, which must be PMEM. RESULT answers it once the host has made the flush durable, and the guest's flush returns then |
 
 The attach READY handshake and batched mappings are mandatory. All batch ranges
 are validated before any mutation and must be ordered and disjoint. The Rust
@@ -1130,6 +1143,35 @@ each session, so independent regions' requests can arrive out of global order.
 The control reader dispatches requests without waiting for their work, because
 a seal can itself need revoke acknowledgements. Writes serialize complete
 commands, including every frame of a batch.
+
+A FLUSH is a request like a SEAL: its ID comes from the same sequence, which
+the client takes under the lock it writes with so that IDs reach the pager in
+order, and RESULT answers it once. The guest waits for that answer and the VMM
+does not. The device takes a queue drain's flushes off the ring and holds them
+as one request, `Control::start_flush` writes it and returns, and the answer is
+handed back to the VMM thread through an event, which completes the held
+flushes — status, used ring, interrupt — with what the host said. A session that
+ends answers every flush still waiting with EPIPE, which the guest reads as a
+failed flush rather than waiting forever.
+
+The pager's control reader counts each FLUSH in `Stats.Flushes` and hands it,
+with the region, to the callback `Host.SetFlushed` installed, together with the
+`done` that sends its RESULT. The callback runs on a goroutine of the session,
+never on the reader, because a checkpoint the host takes for the flush needs
+the reader for its seal; it returns at once, and the host calls `done` when the
+flush is durable, from any goroutine, at most once. With no callback installed
+every flush is answered at once. A host need never call `done`: it drops the
+flushes of a VM that leaves it, since an answer would write into guest memory
+the destination now owns, and nothing in the pager waits for them when the
+session closes. A FLUSH on a RAM session, one without a fresh ID, or one with
+another field set, ends the session.
+
+A flush the host never answered is not lost with its host. The device records
+the flushes it holds in its snapshot — snapshot format version 14 — and a device
+restored from one sends them to its own host when the guest resumes. A handoff
+takes the flushes back from the host the guest is leaving, so that host's
+session ending completes none of them; a guest that resumes where it was after
+all, because the handoff was abandoned, sends them again.
 
 All ranges and backing offsets must be aligned to the page the attachment stated
 and bounded, and every command covers whole pages of it. Generations start at zero and advance by exactly one
@@ -1344,10 +1386,11 @@ git submodule update --init third_party/firecracker
 
 Edit source inside the submodule and commit it on the fork's `sproutfs` branch.
 The integration covers the feature, API schema, mapping owners, PMEM worker,
-snapshot and restore paths, and the seccomp policy source. Snapshot format
-version 13 records managed backing, so an ordinary memory-file snapshot cannot
-silently capture a managed VM, and a build without the feature rejects managed
-configuration. A managed capture is always a full snapshot with no memory file,
+snapshot and restore paths, and the seccomp policy source. The snapshot format
+records managed backing, since version 13, so an ordinary memory-file snapshot
+cannot silently capture a managed VM, and a build without the feature rejects
+managed configuration. Version 14 records a managed PMEM device's waiting
+flushes. A managed capture is always a full snapshot with no memory file,
 and a managed restore requires fixed RAM with no huge-page setting, in this
 architecture's own layout.
 
@@ -1379,9 +1422,10 @@ guest.
 
 The supervisor creates private Unix sockets and checks the peer credentials
 against its child process. Attachments initialize concurrently. A managed PMEM
-device completes a guest flush with success on the VMM thread and asks the host
-for nothing: durability is the host's interval checkpoint, taken under a vCPU
-pause, so a flush is neither a fence nor a trigger. A timeout, pager loss or
+device holds a guest flush and asks the host over that disk's memory session,
+and completes it on the VMM thread when the answer comes, which may be after a
+disk checkpoint taken under a vCPU pause; the VMM thread goes on serving every
+other queue and device meanwhile. A timeout, pager loss or
 authority failure terminates the VMM, which cannot keep running against
 anonymous replacement pages. Failed starts and shutdown remove private sockets
 and state files, detach logical pages and release arena allocation; console

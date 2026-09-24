@@ -86,9 +86,11 @@ place, so those pages become the checkpoint's while the guest keeps running.
 Nothing is copied and no byte moves — a store into a sealed page copies that
 one page — so the pause is page-table work.
 
-**Flush**: A guest's virtio-pmem flush. It makes nothing durable: the device
-completes it itself and the host is not asked. Ordering is the checkpoint's,
-which is one pause of the whole machine.
+**Flush**: A guest's virtio-pmem flush. The device holds it and asks the host
+over that disk's memory session, and the guest's flush returns when the host
+answers. The host answers once the VM's disks are as durable as its flush policy
+asks, taking a disk checkpoint first when they are not. Ordering is the
+checkpoint's, which is one pause of the whole machine.
 
 **Reclamation**: Deleting, after a checkpoint is selected, the checkpoints its
 root no longer names and no pin protects, whole. Compaction bounds what that
