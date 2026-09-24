@@ -22,24 +22,30 @@ import (
 // nothing since its last checkpoint is not stale however long ago that was, and
 // its flushes complete at once.
 
-// DefaultFlushBound is how old a VM's oldest unpublished disk write may be for
-// a flush of it to complete at once, when a host configures none. It is the
-// checkpoint interval: a guest whose disks the interval is keeping up with never
-// waits, and one whose writes have outlived an interval waits for the
-// checkpoint its flush asked for.
-const DefaultFlushBound = DefaultCheckpointInterval
+// FlushBoundIntervals is the default flush bound in checkpoint intervals. A
+// write made just after a checkpoint is up to one interval old when the next
+// checkpoint seals it, and older still by the time that checkpoint lands. Two
+// intervals leave room for that, so a guest whose disks the interval keeps up
+// with does not wait on its flushes.
+const FlushBoundIntervals = 2
 
-// flushBoundOf resolves what a configuration asked for into the bound itself:
-// zero is the default, and a negative value turns the bound off, which
-// everything below spells as zero.
-func flushBoundOf(configured time.Duration) time.Duration {
+// DefaultFlushBound is the flush bound of a host that configures neither a
+// bound nor a checkpoint interval: two default intervals, 120 s.
+const DefaultFlushBound = FlushBoundIntervals * DefaultCheckpointInterval
+
+// flushBoundOf resolves the configured bound. Zero selects FlushBoundIntervals
+// checkpoint intervals, or DefaultFlushBound when the loop is off. A negative
+// value turns the bound off, which the host represents as zero.
+func flushBoundOf(configured, interval time.Duration) time.Duration {
 	switch {
-	case configured == 0:
-		return DefaultFlushBound
 	case configured < 0:
 		return 0
+	case configured > 0:
+		return configured
+	case interval > 0:
+		return FlushBoundIntervals * interval
 	}
-	return configured
+	return DefaultFlushBound
 }
 
 // pendingFlush is one flush a VM's disks were too stale to complete. since is

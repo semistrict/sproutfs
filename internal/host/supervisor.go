@@ -210,7 +210,7 @@ type SupervisorConfig struct {
 	LossWindow time.Duration
 	// FlushBound is how stale a VM's disks may be for a guest's flush to
 	// complete at once; past it the flush waits for a checkpoint of them.
-	// Zero selects host.DefaultFlushBound and a negative value completes every
+	// Zero selects twice the checkpoint interval and a negative value completes every
 	// flush at once.
 	FlushBound time.Duration
 }

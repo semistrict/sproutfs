@@ -46,8 +46,9 @@ func TestConfigTakesTheDocumentedDefaults(t *testing.T) {
 	if config.LossWindow != 5*time.Minute {
 		t.Fatalf("loss window %s", config.LossWindow)
 	}
-	if config.FlushBound != 60*time.Second {
-		t.Fatalf("flush bound %s", config.FlushBound)
+	// Unset, the flush bound is the host's default: twice the interval.
+	if config.FlushBound != 0 {
+		t.Fatalf("flush bound %s, want the host's default", config.FlushBound)
 	}
 	// The arena and the spill file are divided between the two pagers, three
 	// quarters to RAM, and the two shares come to exactly what the deployment

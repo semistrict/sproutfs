@@ -114,7 +114,8 @@ only that page. So the pause is only page-table work.
 host. The device holds the flush and asks the host over that disk's memory
 session. The guest's flush returns when the host answers. The host answers
 immediately if the VM holds no unpublished disk write older than the flush
-bound: `SPROUTFS_FLUSH_BOUND`, sixty seconds by default, zero to disable.
+bound: `SPROUTFS_FLUSH_BOUND`, twice the checkpoint interval (120 s) by default, zero
+to disable.
 Otherwise the host answers when a checkpoint that covers those writes lands,
 and it requests that checkpoint outside the interval's schedule. A flush never
 runs a checkpoint directly. The ordering comes from the checkpoint, which is

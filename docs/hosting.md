@@ -183,8 +183,9 @@ to disks only. RAM regions do not age and do not request checkpoints, because
 no checkpoint the loop takes would publish them.
 
 A guest's flush reaches the host through the pager. `Config.FlushBound`
-(`SPROUTFS_FLUSH_BOUND`) is sixty seconds by default; zero completes every
-flush at once. It is the maximum age of the VM's oldest unpublished disk write
+(`SPROUTFS_FLUSH_BOUND`) is twice the checkpoint interval by default, so
+120 s; zero completes every flush at once. Two intervals leave room for a write
+made just after one checkpoint to be sealed and published by the next. It is the maximum age of the VM's oldest unpublished disk write
 at which a flush still completes at once. Past that age, the flush waits until a
 checkpoint covers the write. The loop takes that checkpoint out of the
 interval's turn. A flush of fresh disks takes no checkpoint. When a VM leaves

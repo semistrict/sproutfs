@@ -141,6 +141,51 @@ func TestAFlushOfRAMIsRefused(t *testing.T) {
 	}
 }
 
+// With no bound configured, the bound is twice the checkpoint interval: a write
+// one and a half intervals old does not hold a flush back, and one of two and a
+// half intervals does.
+func TestTheDefaultFlushBoundIsTwoIntervals(t *testing.T) {
+	h := newSizedHostHarness(t, 1)
+	clock := sim.New(sim.Config{Seed: 1}).NewClock("host")
+	h.configs[0].Clock = clock
+	h.configs[0].EpochInterval = -1
+	h.configs[0].CheckpointInterval = time.Hour
+	pagers := newMixedPagers(t, h.configs[0].Resources, func(cfg *vmmemory.Config) { cfg.Clock = clock })
+	h.configs[0].Pagers = pagers.pagers
+	h.start(t)
+	vm, err := h.hosts[0].Volumes().Create(t.Context(), "vm-1", mixedVolumes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guest, err := newMachine(t, pagers, vm, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.hosts[0].AddMachine("vm-1", guest); err != nil {
+		t.Fatal(err)
+	}
+	guest.store("disk", 0, 7)
+	// The store fails, so the interval's own checkpoint at the hour lands
+	// nothing and the write keeps its age.
+	h.runtime.ObjectStore().Fail()
+	clock.Advance(90 * time.Minute)
+	select {
+	case err := <-flush(guest):
+		if err != nil {
+			t.Fatalf("the flush failed: %v", err)
+		}
+	default:
+		t.Fatal("a flush waited on a write 1.5 intervals old, inside the default bound of 2")
+	}
+	clock.Advance(time.Hour)
+	select {
+	case err := <-flush(guest):
+		t.Fatalf("a flush of a write 2.5 intervals old was answered while nothing could be published: %v", err)
+	default:
+	}
+	h.runtime.ObjectStore().Recover()
+}
+
 // With the bound turned off every flush completes at once, however stale.
 func TestAFlushWithNoBoundCompletesAtOnce(t *testing.T) {
 	h := newSizedHostHarness(t, 1)

@@ -194,7 +194,7 @@ If the host is lost before that, the disk writes since the last selected checkpo
 
 The interval is 60 s with jitter. It is a target, not a guarantee. The loss window is the guarantee for disk writes: if a VM has held an unpublished disk write for longer than the window (5 minutes by default; 0 disables it), its stores block until a checkpoint lands, and the host requests one immediately. The age of unpublished writes is carried across migrations and forks. The dirty budget bounds unpublished data in bytes.
 
-An fsync is a guest flush that the device holds until the host answers. The host answers immediately if the VM has no unpublished disk write older than the flush bound (60 s by default). Otherwise it answers after the checkpoint it requests has landed. As a result, data is durable within the flush bound plus one interval after an fsync returns, and fsync blocks if the disks cannot be published.
+An fsync is a guest flush that the device holds until the host answers. The host answers immediately if the VM has no unpublished disk write older than the flush bound (twice the checkpoint interval, 120 s by default). Otherwise it answers after the checkpoint it requests has landed. As a result, data is durable within the flush bound plus one interval after an fsync returns, and fsync blocks if the disks cannot be published.
 -->
 
 ---

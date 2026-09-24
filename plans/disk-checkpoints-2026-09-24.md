@@ -27,7 +27,7 @@ agent recovers its in-memory state from it.
    store past it stops the VM as a full budget does today.
 5. **A guest flush blocks while the disks are stale.** A flush completes at
    once when the VM's last successful disk checkpoint landed within
-   `SPROUTFS_FLUSH_BOUND` (default 60 s); otherwise it waits until one lands, and
+   `SPROUTFS_FLUSH_BOUND` (default twice the checkpoint interval, 120 s); otherwise it waits until one lands, and
    the host asks for one out of the interval's turn. A flush never triggers a
    checkpoint on its own. So an fsync that returned is never more than the bound
    plus one interval from durable, and a guest whose disks cannot be published

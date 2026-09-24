@@ -118,8 +118,8 @@ type Config struct {
 	// guest's flush to complete at once. A flush of a VM holding an older one
 	// waits until a checkpoint covers it, and the host takes that checkpoint
 	// out of the interval's turn; a flush never takes one otherwise. Zero
-	// selects DefaultFlushBound; a negative value completes every flush at
-	// once.
+	// selects twice the checkpoint interval (FlushBoundIntervals); a negative
+	// value completes every flush at once.
 	FlushBound time.Duration
 	// EpochInterval is how often this host re-reads the control record of every
 	// VM it holds, which is how it learns that a later writer has taken one
@@ -330,7 +330,7 @@ func StartHost(ctx context.Context, config Config) (*Host, error) {
 		holdTimeout: config.Migration.HoldTimeout,
 		clock:       platform.ClockOr(config.Clock), entropy: platform.EntropyOr(config.Entropy),
 		cacheBytes: config.CacheBytes, checkpointInterval: interval, epochInterval: epochs,
-		lossWindow: window, flushBound: flushBoundOf(config.FlushBound),
+		lossWindow: window, flushBound: flushBoundOf(config.FlushBound, interval),
 		done: make(chan struct{}),
 		machines: machines{running: make(map[string]*registration), migrated: make(map[string]*migratedHold),
 			forked: make(map[string]*forkHold), fenced: make(map[string]bool)}}

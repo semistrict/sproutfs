@@ -145,7 +145,8 @@ Guest CPU stores are not durability acknowledgements. A guest's flush (its
 fsync reaching the virtio-pmem device) is a durability acknowledgement within a
 bound. The flush reaches the pager. The host completes it immediately if the VM
 holds no unpublished disk write older than `host.Config.FlushBound`
-(`SPROUTFS_FLUSH_BOUND`, 60 s by default, zero to disable). Otherwise the flush
+(`SPROUTFS_FLUSH_BOUND`, twice the checkpoint interval by default, so 120 s,
+zero to disable). Otherwise the flush
 waits until a checkpoint covers those writes, and the host requests that
 checkpoint outside the interval's schedule. A flush never takes a checkpoint
 when the disks are fresh. As a result:
