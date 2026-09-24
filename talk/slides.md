@@ -76,7 +76,7 @@ Three things have to be true at once. Inherited data is shared rather than copie
 
 **Volume** — `ram0` or a PMEM disk; fixed size; one writer
 
-**Page** — 2 MiB; the unit of everything
+**Page** — 2 MiB; the unit of everything (RAM may run 4 KiB)
 
 **Resident** — a page in host memory now
 
@@ -99,7 +99,7 @@ Three things have to be true at once. Inherited data is shared rather than copie
 </div>
 
 <!--
-VM: one machine, one identity, one series of checkpoints. Volume: one byte-addressed image of a VM, its RAM or one of its PMEM disks, fixed size, one writer at a time. Page: 2 MiB of a volume, the unit of what is stored, what faults in, what is owned. Resident: a page whose bytes are in host memory right now; a page nothing touched may not be, and comes in on a fault. Pager: the one service per host that owns every resident page, resolves the VMM's page faults, and is what a guest's memory is mapped through.
+VM: one machine, one identity, one series of checkpoints. Volume: one byte-addressed image of a VM, its RAM or one of its PMEM disks, fixed size, one writer at a time. Page: 2 MiB of a volume, the unit of what is stored, what faults in, what is owned; a deployment may run RAM at 4 KiB instead, which the disks never do. Resident: a page whose bytes are in host memory right now; a page nothing touched may not be, and comes in on a fault. Pager: the one service per host that owns every resident page, resolves the VMM's page faults, and is what a guest's memory is mapped through.
 
 Checkpoint: the operation that makes a running VM durable, and what it leaves in the object store, numbered by a sequence. Control record: the one mutable object a VM has: who may write it, which checkpoint is current. Page identity: the name of a page's bytes, which checkpoint published them; a fork's pages carry its parent's names until it writes them. Fork: a new VM taken from a running one at one pause of the parent. Migration: the same VM moved, running, to another host. Host: a machine running VMs. Orchestrator: the one process that places VMs on hosts and drives moves and forks between them.
 -->
@@ -110,7 +110,7 @@ Checkpoint: the operation that makes a running VM durable, and what it leaves in
 
 <div class="text-2xl mt-8 space-y-8">
 
-<div v-click>1. <b>One published checkpoint</b> is a VM's whole durable state.</div>
+<div v-click>1. <b>One published checkpoint</b> is a VM's whole durable state. The interval keeps the <b>disks</b>; RAM only on request.</div>
 
 <div v-click>2. <b>Every page has one name</b>: the checkpoint that published it. A fork inherits its parent's names.</div>
 
@@ -121,11 +121,11 @@ Checkpoint: the operation that makes a running VM durable, and what it leaves in
 <!--
 Everything else follows from these.
 
-One: a VM's durable state is exactly one published checkpoint, selected by its control record. Nothing is durable between checkpoints. Losing a host loses every write since its VMs' last checkpoints.
+One: a VM's durable state is exactly one published checkpoint, selected by its control record. Nothing is durable between checkpoints. Losing a host loses every write since its VMs' last checkpoints. What a host keeps durable on its own is a VM's disks: the interval checkpoints them and not its RAM, because the target is an agent sandbox, where the disk must survive and software recovers its in-memory state from it. RAM is uploaded only by an explicit capture or a suspending stop; a checkpoint without VMM state is opened by booting over its disks.
 
 Two: every page has one name, the checkpoint that published it, and a fork inherits its parent's names. Sharing in the store, in host memory and on the wire is sharing by name: a page with a name is never copied, only referenced. A page no checkpoint holds reads as zeroes.
 
-Three: a checkpoint is a pause and an upload, and only the pause is on anyone's latency path. The pause stops the vCPUs, saves the VMM state and write-protects the dirty pages: milliseconds. The upload runs behind the running guest. A fork and a migration take only the pause and upload nothing: the unpublished pages reach the other side through the pager.
+Three: a checkpoint is a pause and an upload, and only the pause is on anyone's latency path. The pause stops the vCPUs and write-protects the dirty pages — of the disks alone on the interval, of every region with the VMM state saved on a capture: milliseconds. The upload runs behind the running guest. A fork and a migration take only the pause and upload nothing: the unpublished pages reach the other side through the pager.
 -->
 
 ---
@@ -188,9 +188,9 @@ A guest store lands in a resident page. It contacts nothing, so it cannot fail f
 
 The next checkpoint makes it so: the dirty pages upload in parts, the data objects; then the index object, whose last piece is the root, the map of every page; then a conditional write selects the checkpoint in the control record.
 
-Losing the host before that loses every write since the last selected checkpoint. That is the design: a guest write never waits on the object store.
+Losing the host before that loses every disk write since the last selected checkpoint, and all of RAM: the interval checkpoints disks alone, so the VM comes back by cold booting over its last disk checkpoint, a power cut its filesystem's journal recovers from. That is the design: a guest write never waits on the object store.
 
-The interval is 60 s, jittered, and it is a target, not a bound. The loss window is the bound: once a VM has held an unpublished write for longer than it, five minutes by default, zero to disable, its stores wait until a checkpoint lands, and the checkpoint is asked for out of turn. The age travels with a migration or a fork. Bytes are bounded too, by the dirty budget. A virtio-pmem flush means nothing; only a checkpoint is a durability acknowledgement.
+The interval is 60 s, jittered, and it is a target, not a bound. The loss window is the bound on disk writes: once a VM has held an unpublished disk write for longer than it, five minutes by default, zero to disable, its stores wait until a checkpoint lands, and the checkpoint is asked for out of turn. The age travels with a migration or a fork. Bytes are bounded too, by the dirty budget. An fsync is a guest flush the device holds until the host answers: at once while the VM holds no disk write older than the flush bound, 60 s by default, and otherwise when the checkpoint it asks for lands. So an fsync that returned is durable within the bound plus one interval, and a guest whose disks cannot be published stops making fsync progress.
 -->
 
 ---
@@ -208,7 +208,7 @@ clicks: 7
 <div class="grid grid-cols-2 gap-10 mt-4">
 <div class="text-xl space-y-5">
 
-<div v-click>pause: stop vCPUs · save VMM state · <b>write-protect</b> dirty pages</div>
+<div v-click>pause: stop vCPUs · <b>write-protect</b> dirty pages · (a capture also saves VMM state)</div>
 
 <div v-click><b>no byte moves</b></div>
 
@@ -221,7 +221,7 @@ clicks: 7
 
 | pause | |
 | --- | --- |
-| checkpoint, 2 GiB guest | 7–9 ms |
+| disk checkpoint, cargo build | 6–14 ms |
 | fork, 512 MiB guest | 0.1 s |
 | migration stop | 0.6–0.75 s |
 
@@ -231,11 +231,11 @@ clicks: 7
 </div>
 
 <!--
-The pause is three things: stop the vCPUs, save the VMM state, write-protect every dirty page of every region, a region being one volume as mapped into one VMM process, in place. No byte moves. The pages become the checkpoint's while the guest keeps running on them.
+The pause is two things: stop the vCPUs, and write-protect every dirty page of the regions being checkpointed, a region being one volume as mapped into one VMM process, in place — the disks on the interval, every region with the VMM state saved as well on a capture. No byte moves. The pages become the checkpoint's while the guest keeps running on them.
 
 A store into a sealed page copies that one page into a private page of its own, which counts against the pager's dirty budget: the bound on how much unpublished state a host holds. The checkpoint goes on reading the sealed original.
 
-The numbers are from GCE: the checkpoint pause of a 2 GiB guest under pnpm install; a fork's pause and a migration's stop for 512 MiB guests.
+The numbers are from GCE: the pause of each 60 s disk checkpoint of a guest running cargo build, against Cloud Storage; a fork's pause and a migration's stop for 512 MiB guests.
 
 The upload runs behind the guest. A checkpoint that fails to publish hands its pages back: the previous checkpoint stays selected, nothing durable changed.
 -->
@@ -447,7 +447,7 @@ clicks: 3
 - **sharing is a map lookup** — keyed by `(checkpoint, volume, page)`
 - **sealed pages get a name** — a fork point's, for as long as the seal
 - **sparse zeroes cost nothing** — the shared zero page
-- **a one-byte store costs a page** — 2 MiB copied, charged, published
+- **a one-byte store seals a page** — the settle drops what did not change; the upload tracks the bytes that did
 
 </div>
 
@@ -462,7 +462,7 @@ Sealed pages get a name: a fork point, the pause a fork is taken at, which seals
 
 Sparse zeroes cost nothing: a page no checkpoint holds maps the shared zero page. The first store replaces the whole 2 MiB range with a private page.
 
-A one-byte store costs a page: 2 MiB copied, 2 MiB charged, 2 MiB published. This is the trade the workload measurement examines.
+A one-byte store costs a page in memory: 2 MiB copied and charged against the dirty budget. What is published is less: the settle behind the pause drops every sealed page whose bytes did not change, and compression takes most of the rest. Measured on disk checkpoints, the upload never exceeded the bytes the guest changed.
 -->
 
 ---
@@ -570,11 +570,11 @@ clicks: 3
 <Topology />
 
 <!--
-The host opens VMs over object storage and the cluster network, checkpoints every VM on the interval, confirms its epochs on a timer and closes a fenced VM rather than leave it running, serves migration and fork pages, owns the pager and the VMM processes, and drains before it exits: migrates every VM away, then waits until it serves no pages.
+The host opens VMs over object storage and the cluster network, checkpoints every VM's disks on the interval, answers its guests' flushes, confirms its epochs on a timer and closes a fenced VM rather than leave it running, serves migration and fork pages, owns the pager and the VMM processes, and drains before it exits: migrates every VM away, then waits until it serves no pages.
 
 The orchestrator allocates identities, places VMs, and drives both halves of every migration and fork. It surveys every host on an interval, what each runs and serves, and ends a migration only on positive evidence its source is gone. Its SQLite table is a view; the control records are the authority. It refuses to name a VM's host while two hosts claim it.
 
-On Kubernetes: hosts are a Deployment with maxSurge 0 and maxUnavailable 1, a 2 MiB HugeTLB pool per node, one bearer token for the whole control plane, one object store. Templates named by image digest mean a rolled host pod imports nothing again.
+On Kubernetes: hosts are a Deployment with maxSurge 0 and maxUnavailable 1, whose preStop drain has thirty minutes to move every VM away before the pod is given up, a 2 MiB HugeTLB pool per node, one bearer token for the whole control plane, one object store. Templates named by image digest mean a rolled host pod imports nothing again.
 -->
 
 ---
@@ -585,8 +585,9 @@ On Kubernetes: hosts are a Deployment with maxSurge 0 and maxUnavailable 1, a 2 
 
 <div class="text-xl space-y-5 mt-4">
 
-- **stop** — a final checkpoint; close
-- **start** — reopen warm; restore the VMM; pages fault in
+- **stop** — a final checkpoint of the disks; close
+- **stop --suspend** — memory and VMM state too
+- **start** — resume a suspended VM; boot one that was not
 - **cold start** — discard memory; boot; the one place the shape may change
 - **delete** — remove the record; sweep the VM's own checkpoints; keep the pinned
 
@@ -595,9 +596,7 @@ On Kubernetes: hosts are a Deployment with maxSurge 0 and maxUnavailable 1, a 2 
 </v-clicks>
 
 <!--
-Stop publishes a final checkpoint and closes the VM. The difference between a stop and a host loss is exactly the writes since the last checkpoint.
-
-Start reopens it, warm: the VMM restores from the checkpoint's captured state; the pages fault in.
+Stop publishes a final checkpoint of the disks and closes the VM: nothing written to disk is lost, and the start after it boots the guest over them. Stop with suspend publishes memory and VMM state as well, and the start after it resumes the guest where it was, the pages faulting in. Uploading memory is the one thing a stop does only when asked.
 
 Cold start discards the memory in a checkpoint of its own and boots the guest instead of resuming it. It is the one place a VM's shape may change: more memory, and a root volume the guest grows into.
 
@@ -613,8 +612,9 @@ Delete removes the record, which frees the identity, then sweeps the VM's own ch
 
 **fork of Firecracker**, branch `sproutfs`
 
-- guest memory mapped through the Rust library: userfaultfd, 2 MiB, control protocol v6
-- checkpoint = snapshot + resume
+- guest memory mapped through the Rust library: userfaultfd, control protocol v9
+- capture = snapshot + resume; interval = pause + seal disks + resume
+- a guest flush is **held** until the host answers
 - vsock reset only on restore
 - `handoff` drops connections on the way out
 
@@ -629,7 +629,7 @@ Delete removes the record, which frees the identity, then sweeps the VM's own ch
 </div>
 
 <!--
-The Firecracker fork, branch sproutfs, Apache-2.0. Guest memory is a mapping the Rust library controls: missing-fault and write-protect traps over userfaultfd, 2 MiB pages, a control protocol, version 6, between the VMM and the pager. A checkpoint is a snapshot and a resume; the pause is the VMM's own. The vsock transport is reset only on restore, so a checkpoint leaves a guest's connections alone. A handoff flag drops connections when the guest leaves the host.
+The Firecracker fork, branch sproutfs, Apache-2.0. Guest memory is a mapping the Rust library controls: missing-fault and write-protect traps over userfaultfd, the pager's page, a control protocol, version 9, between the VMM and the pager. A capture is a snapshot and a resume; the interval's checkpoint pauses the vCPUs, seals the disks and resumes. A virtio-pmem flush is a request the device holds, off the VMM thread, until the host answers; the flushes it holds are in its snapshot, so they survive a migration and are sent again to the next host. The vsock transport is reset only on restore, so a checkpoint leaves a guest's connections alone. A handoff flag drops connections when the guest leaves the host.
 
 Guest side: an init that names /dev/root, an agent for exec and console, and a witness that fills memory and disk with seeded data and checks it after every fork, migration, stop and cold start.
 
@@ -658,7 +658,7 @@ simulated: process · disk · clock · network · object store
 </div>
 <div class="space-y-5">
 
-<div v-click>drive: <code>Store Checkpoint Migrate Fork Delete Takeover Kill Restart …</code></div>
+<div v-click>drive: <code>Store Checkpoint CheckpointDisks Migrate Fork Stop Suspend Kill Restart …</code></div>
 
 <div v-click>require: <b>Verify · VerifyDurable · CheckSelected · CheckDeployment · VerifyLossWindow</b></div>
 
@@ -672,7 +672,7 @@ A simtest World is one running deployment: every host is a real host inside a si
 
 Campaigns drive it with one short list and require one short list: no guest reads bytes it never wrote; the same bytes through the volume; every record selects a checkpoint some writer published; the store agrees with itself; and a lost host rewinds a VM by at most the loss window.
 
-A VM that lost its host comes back at the checkpoint its record names, and the bytes must be that checkpoint's, page for page. An interrupted publication is answered for exactly.
+A VM that lost its host comes back at the checkpoint its record names, and the bytes must be that checkpoint's, page for page — with its memory zeroes when that checkpoint was of the disks alone, because it has no registers to resume. An interrupted publication is answered for exactly. That oracle is what found a checkpoint of the disks naming the registers of the capture before it.
 -->
 
 ---
@@ -708,7 +708,7 @@ Power loss on the simulated disk returns unsynced writes applied, dropped, torn 
 
 # Measured on a real cluster
 
-<div class="text-base opacity-70 mb-3">two hosts on GCE · 512 MiB guests · memory and disk witnesses · 166 operations, 146 checks, all holding</div>
+<div class="text-base opacity-70 mb-3">two hosts on GCE · 512 MiB guests · memory and disk witnesses · 166 operations, 146 checks, all holding · 2026-09-17, when a stop and the interval still captured memory</div>
 
 | | pause | behind it | wall, slowest |
 | --- | --- | --- | --- |
@@ -731,29 +731,32 @@ Two hosts on GCE, 512 MiB Alpine guests each carrying a 256 MiB memory witness a
 
 ---
 
-# What a checkpoint costs under a workload
+# What a disk checkpoint costs
 
-<div class="text-base opacity-70 mb-3">one base VM, forks, forks of forks · git, ripgrep, pnpm install, pnpm build · 28 checkpoints</div>
+<div class="text-base opacity-70 mb-3">GCE · Cloud Storage · the disk checkpointed every 60 s · 2 MiB pages · changed = 4 KiB blocks the guest really changed</div>
 
-| phase | dirty | uploaded | max pause | max upload |
-| --- | --- | --- | --- | --- |
-| boot | 212 MiB | 20.5 MiB | 8 ms | 1.6 s |
-| search | 78 MiB | 12.2 MiB | 7 ms | 1.1 s |
-| install | 1510 MiB | 297 MiB | 9 ms | 11.2 s |
+| workload | changed | sealed | published | uploaded | pause |
+| --- | --- | --- | --- | --- | --- |
+| pnpm install | 1.6 MiB | 212 MiB | 30 MiB | 1.6 MiB | 3 ms |
+| cargo build, 7 checkpoints | 6.1 GiB | 11.7 GiB | 6.9 GiB | 1.7 GiB | 6–14 ms |
+| Valkey append-only log | 3.0 GiB | 3.1 GiB | 3.0 GiB | 23 MiB | 4 ms |
 
 <v-clicks>
 
 <div class="text-xl mt-6 space-y-3">
 
-- the pause is **single-digit milliseconds**, whatever the guest did
-- dirty is counted in 2 MiB pages; the 4 KiB share is not yet measured
+- the pause is **milliseconds**, whatever the guest did
+- 2 MiB pages cost **memory**, not upload: the settle drops unchanged pages, compression the rest
+- the upload never exceeded **what changed**
 
 </div>
 
 </v-clicks>
 
 <!--
-The pause is single-digit milliseconds whatever the guest did. The upload scales with what it dirtied. Dirty is counted in 2 MiB pages; uploaded is compressed. How much of each 2 MiB page the guest touched is not yet measured: the VMM does not report it.
+Measured on GCE against Cloud Storage, the host checkpointing the disk alone every 60 seconds. Changed is what the guest really changed, counted in 4 KiB blocks by summing each page when it became private and again at the checkpoint. Sealed is what the 2 MiB pages took; published is what was left after the settle dropped the pages whose bytes had not changed; uploaded is compressed.
+
+Small scattered writes, a package manager's, seal a hundred times what changed; almost all of it is dropped or compressed away. Large writes, a compiler's or a log's, seal about what changed. Valkey's benchmark writes identical values, which flatters its compression.
 -->
 
 ---
@@ -773,6 +776,7 @@ The pause is single-digit milliseconds whatever the guest did. The upload scales
 - **a drain tries its receive once**
 - **a local fork's hold is invisible** to the survey; only the deadline ends it
 - **recovery after a real host loss** — proven in simulation, not yet on a cluster
+- **disk checkpoints and the flush bound** — not yet qualified on GCE
 
 </div>
 
@@ -788,6 +792,8 @@ A drain tries its receive once. A destination briefly unreachable costs the gues
 A child forked onto its parent's own host holds the fork point invisibly to the orchestrator's survey; only the host's own deadline ends a hold whose child never publishes.
 
 Recovery after a real host loss is proven in simulation and over fakes, not yet on a cluster: the one soak's kill landed on a host running nothing. A seed whose kill lands on a loaded host is the next run to take.
+
+Disk-only checkpoints, cold boot on a checkpoint without state, and the blocking flush are proven in the simulation, the host suite and Lima; the GCE qualification of them together is still to run.
 -->
 
 ---
@@ -821,10 +827,10 @@ Cost what the VM <b>changed</b>. Never what it inherited. Never its size.
 
 | | the pause | what moves |
 | --- | --- | --- |
-| checkpoint | 7–9 ms | the pages dirtied since the last one |
+| disk checkpoint | 3–14 ms | about the disk bytes changed since the last one |
 | fork | 0.1 s | nothing: the child maps the parent's pages by name |
 | migration | 0.6–0.75 s | the pages no checkpoint has, behind the running guest |
-| losing a host | — | the writes since the last checkpoint; at most the loss window |
+| losing a host | — | disk writes since the last checkpoint, at most the loss window; RAM, by design |
 
 <v-click>
 

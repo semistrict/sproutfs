@@ -12,8 +12,8 @@ const step = useStep()
 const caption = computed(() => [
   'a store lands in a resident page: contacts nothing, cannot fail, not durable',
   'a checkpoint lands: every write before it is durable',
-  'lose the host: the writes since the last checkpoint are gone. A guest write never waits on the object store.',
-  'the interval (60 s) is a target. The loss window (5 min) is the bound: past it, stores wait for a checkpoint.',
+  'lose the host: disk writes since the last checkpoint are gone, and RAM: the VM cold boots from its disks.',
+  'the interval (60 s) is a target. The loss window (5 min) bounds disk writes; an fsync waits once they are 60 s stale.',
   'bytes are bounded too: the dirty budget forces a checkpoint before it fills',
 ][step.value])
 </script>

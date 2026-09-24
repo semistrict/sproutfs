@@ -10,7 +10,7 @@ import { useStep } from './Steps'
 const step = useStep()
 const caption = computed(() => [
   'two kinds of process and one object store. Every host reads and writes the store directly; hosts serve pages to each other.',
-  'a host: opens VMs, checkpoints them on the interval, confirms its epochs, serves pages, owns the pager and the VMMs, drains before it exits.',
+  'a host: opens VMs, checkpoints their disks on the interval, confirms its epochs, serves pages, owns the pager and the VMMs, drains before it exits.',
   'the orchestrator: identities, placement, both halves of every move and fork; surveys hosts; its table is a view, the records are the authority.',
   'Kubernetes: a Deployment of hosts, a HugeTLB pool per node, one token, one object store.',
 ][step.value])

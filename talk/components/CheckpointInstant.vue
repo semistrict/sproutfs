@@ -18,7 +18,7 @@ const stored = 5 // the page the guest stores into after the seal
 const phase = computed(() => [
   'guest running; four dirty pages',
   'pause: vCPUs stop',
-  'save the VMM state',
+  'save the VMM state — a capture only; the interval seals the disks alone',
   'seal: write-protect the dirty pages in place — nothing copied',
   'resume; a store into a sealed page copies that one page',
   'parts upload behind the running guest',
