@@ -58,9 +58,11 @@ type Host struct {
 	// pressure is who to ask for that checkpoint, highWater the dirty occupancy
 	// at which the host asks without waiting to be empty, and asked whether it
 	// has already asked since the budget last fell below that mark.
-	pressure    Pressure
-	highWater   int
-	asked       bool
+	pressure  Pressure
+	highWater int
+	asked     bool
+	// flushed is what a guest's flush of a region is handed to. See SetFlushed.
+	flushed     func(*Region, func(error))
 	zeroRegions int // attached regions retaining knowledge of explicit zeros
 	lru         pageList
 	// idle is the resident pages no region maps, oldest first: published

@@ -30,14 +30,20 @@ const (
 	Ack      = 6
 	Stop     = 7
 	// Seal asks the host to take the session's checkpoint: it write-protects the
-	// dirty set and answers, without moving a byte. There is no durability request
-	// in this protocol — a guest's flush makes nothing durable and the device
-	// completes it itself.
-	Seal     = 8
+	// dirty set and answers, without moving a byte.
+	Seal = 8
+	// Result answers a Seal or a Flush, echoing its request ID, with Flags zero
+	// or a positive Linux errno.
 	Result   = 9
 	MapBatch = 10
 	Ready    = 11
 	MapZero  = 12
+	// Flush asks the host to make durable a flush the guest made of the
+	// session's region, under a request ID from the same sequence as Seal's and
+	// with every other field zero. The host answers with Result once the flush
+	// is durable, which may take a disk checkpoint first, and the device
+	// completes the guest's flush then.
+	Flush = 13
 )
 
 // KindName is the one word a frame's kind goes by in a log line or an error,
@@ -69,11 +75,19 @@ func KindName(kind uint64) string {
 		return "ready"
 	case MapZero:
 		return "zero"
+	case Flush:
+		return "flush"
 	}
 	return strconv.FormatUint(kind, 10)
 }
 
 const (
+	// Version 9 added FLUSH, the request a client sends when its guest flushes
+	// the region and whose RESULT completes that flush. A version 8 pager ends a
+	// session on a control message it does not know, which would end the guest
+	// at its first flush, so the two are told apart by the version before a
+	// guest runs.
+	//
 	// Version 8 made ATTACH's length the arena's offset space. An arena's
 	// offsets are not its pages: it is a sparse file, and a RAM pager that puts
 	// a private page at the offset it has within its 2 MiB range owns 512
@@ -89,7 +103,7 @@ const (
 	// region it is then given against the page it runs. Version 6 is refused by
 	// version too, because a 2 MiB page number read as a 4 KiB one names another
 	// page.
-	Version      = 8
+	Version      = 9
 	MaxBatchRuns = 1024
 )
 

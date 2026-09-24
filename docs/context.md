@@ -95,7 +95,7 @@ Nothing is copied and no byte moves — a store into a sealed page copies that
 one page — so the pause is page-table work.
 
 **Flush**: A guest's virtio-pmem flush, which is its fsync reaching the host.
-The device asks the pager and holds the request until the host answers. The host
+The device holds it and asks the host over that disk's memory session, and the guest's flush returns when the host answers. The host
 answers at once when the VM holds no disk write older than the flush bound —
 `SPROUTFS_FLUSH_BOUND`, sixty seconds by default, zero to disable — that no
 checkpoint has published; otherwise it answers when a checkpoint covering those

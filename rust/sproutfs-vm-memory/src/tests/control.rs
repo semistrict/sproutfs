@@ -162,7 +162,7 @@ fn timeout_counts_time_since_submission_and_terminates_the_session() {
 #[test]
 fn id_exhaustion_cannot_send_a_wrapped_id() {
     let (control, mut peer) = pair();
-    control.0.sequence.store(u64::MAX - 1, Ordering::Relaxed);
+    control.0.writer.lock().unwrap().sequence = u64::MAX - 1;
     let final_request = control.start_seal().unwrap();
     let request = Frame::read(&mut peer).unwrap();
     assert_eq!(request.id, u64::MAX);
@@ -191,4 +191,136 @@ fn every_representable_positive_errno_is_a_valid_completion() {
             Some(errno)
         );
     }
+}
+
+type Answers = mpsc::Receiver<Result<(), Option<i32>>>;
+
+/// Starts one flush whose answer arrives on the returned channel, as the errno
+/// it failed with. The channel disconnects without a message if the answer is
+/// dropped unanswered.
+fn start_flush(control: &Control) -> io::Result<Answers> {
+    let (sender, receiver) = mpsc::channel();
+    control.start_flush(move |result| {
+        sender
+            .send(result.map_err(|err| err.raw_os_error()))
+            .unwrap()
+    })?;
+    Ok(receiver)
+}
+
+fn flush(id: u64) -> Frame {
+    Frame {
+        kind: wire::FLUSH,
+        id,
+        ..Frame::default()
+    }
+}
+
+fn unanswered(answers: &Answers) {
+    assert_eq!(answers.try_recv(), Err(mpsc::TryRecvError::Empty));
+}
+
+/// The answer ran and is gone, so it can never run again.
+fn answered_once(answers: &Answers) {
+    assert_eq!(answers.try_recv(), Err(mpsc::TryRecvError::Disconnected));
+}
+
+// A guest's flush waits for the host: the request goes out at once, and its
+// answer is the RESULT that echoes it, however long the host takes.
+#[test]
+fn a_flush_is_pending_until_its_result() {
+    let (control, mut peer) = pair();
+    let answers = start_flush(&control).unwrap();
+    assert_eq!(Frame::read(&mut peer).unwrap(), flush(1));
+    unanswered(&answers);
+    control.0.complete(completion(flush(1), 0)).unwrap();
+    assert_eq!(answers.try_recv(), Ok(Ok(())));
+    answered_once(&answers);
+}
+
+// Flushes and seals are one sequence of requests, so the pager sees their IDs
+// rise whatever the mix, and it answers them in whatever order it finishes
+// them. Each flush is answered once, with its own result.
+#[test]
+fn flushes_and_seals_share_one_sequence_and_complete_in_any_order() {
+    let (control, mut peer) = pair();
+    let first = start_flush(&control).unwrap();
+    let seal = control.start_seal().unwrap();
+    let second = start_flush(&control).unwrap();
+    let sent: Vec<Frame> = (0..3).map(|_| Frame::read(&mut peer).unwrap()).collect();
+    assert_eq!(
+        sent,
+        [
+            flush(1),
+            Frame {
+                kind: wire::SEAL,
+                id: 2,
+                ..Frame::default()
+            },
+            flush(3)
+        ]
+    );
+    control.0.complete(completion(flush(3), libc::EIO)).unwrap();
+    assert_eq!(second.try_recv(), Ok(Err(Some(libc::EIO))));
+    unanswered(&first);
+    control.0.complete(completion(sent[1], 0)).unwrap();
+    seal.wait(Duration::from_secs(1)).unwrap();
+    unanswered(&first);
+    control.0.complete(completion(flush(1), 0)).unwrap();
+    assert_eq!(first.try_recv(), Ok(Ok(())));
+    assert_eq!(
+        control
+            .0
+            .complete(completion(flush(1), 0))
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::InvalidData,
+        "a flush was answered twice"
+    );
+    answered_once(&first);
+    answered_once(&second);
+}
+
+// A session that ends leaves nobody to answer its flushes, so each fails with
+// EPIPE rather than holding its guest's flush forever, and a flush asked for
+// afterwards is refused without its answer ever running.
+#[test]
+fn a_disconnect_fails_every_pending_flush() {
+    let (control, mut peer) = pair();
+    let first = start_flush(&control).unwrap();
+    let second = start_flush(&control).unwrap();
+    Frame::read(&mut peer).unwrap();
+    Frame::read(&mut peer).unwrap();
+    control.disconnect();
+    assert_eq!(first.try_recv(), Ok(Err(Some(libc::EPIPE))));
+    assert_eq!(second.try_recv(), Ok(Err(Some(libc::EPIPE))));
+    answered_once(&first);
+    answered_once(&second);
+    let (sender, receiver) = mpsc::channel::<()>();
+    assert_eq!(
+        control
+            .start_flush(move |_| sender.send(()).unwrap())
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::BrokenPipe
+    );
+    assert_eq!(receiver.try_recv(), Err(mpsc::TryRecvError::Disconnected));
+}
+
+// A flush the socket would not take was never sent, so nothing will answer it:
+// its caller is told by the error and its answer never runs. The session is
+// over, and the flushes it had already sent fail with it.
+#[test]
+fn a_flush_that_cannot_be_sent_is_refused_and_ends_the_session() {
+    let (control, peer) = pair();
+    let sent = start_flush(&control).unwrap();
+    drop(peer);
+    let (sender, receiver) = mpsc::channel::<()>();
+    assert!(
+        control
+            .start_flush(move |_| sender.send(()).unwrap())
+            .is_err()
+    );
+    assert_eq!(receiver.try_recv(), Err(mpsc::TryRecvError::Disconnected));
+    assert_eq!(sent.try_recv(), Ok(Err(Some(libc::EPIPE))));
 }

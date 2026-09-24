@@ -161,23 +161,25 @@ everything open is listed here.
   an extent and a private page sits at the offset it has within its range, a
   store closes a gap of at most sixteen pages, a range that reaches half its
   pages is filled, and the mapping budget is the backstop with
-  `Stats.MappingMerges` to say when it acted. The mapping protocol is at
-  version 8, because ATTACH's length is the offset space now rather than the
-  capacity. What is open is what it is worth on a real workload: the counts are
-  proved in `internal/vmmemory` and in the simulation, and one Lima reading of
+  `Stats.MappingMerges` to say when it acted. The mapping protocol went to
+  version 8 for it, because ATTACH's length is the offset space now rather than
+  the capacity. What is open is what it is worth on a real workload: the counts
+  are proved in `internal/vmmemory` and in the simulation, and one Lima reading of
   the fork fan-out at 4 KiB says a child's VMM holds 3,299 and 3,288 mappings
   where it held 4,485 and 4,631 before, with 28 private extents, 2,723 pages
   copied by the rules and the backstop never acting — but that is one run of
   each on an instance whose load differed between them, and nothing has been run
   against the recorded workload or on GCE with the rules on and off.
 
-- **The Firecracker fork has to be rebuilt for mapping protocol version 8.** The
+- **The Firecracker fork has to be rebuilt for mapping protocol version 9.** The
   crate is vendored into the VMM by path, so a cached qualification build keeps
-  speaking version 7 and every session it opens fails with `invalid
+  speaking an older version and every session it opens fails with `invalid
   managed-memory hello` before a guest starts. That is the refusal working, and
   it is also the first thing to check when a Lima or GCE run that used to pass
   stops attaching: rebuild the VMM, do not reuse
-  `~/.cache/sproutfs-fanout`.
+  `~/.cache/sproutfs-fanout`. Its snapshot format is at version 14 too, so VMM
+  state an older build captured is refused on restore rather than read without
+  its PMEM devices' waiting flushes.
 
   Two placements are deliberately left to an ordinary offset, and both are
   recorded where they happen (`internal/vmmemory/placement.go`). A store that

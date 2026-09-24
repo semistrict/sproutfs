@@ -194,7 +194,13 @@ func newGuestVM(t *testing.T, ctx context.Context, name string) *volume.VM {
 // inside it is serving on its vsock.
 func bootGuestWithAgent(t *testing.T, ctx context.Context, binaryPath string, vm *volume.VM) *vmmachine.Process {
 	t.Helper()
-	pager := newMigrationPager(t, ctx)
+	return bootGuestWithAgentOn(t, ctx, binaryPath, newMigrationPager(t, ctx), vm)
+}
+
+// bootGuestWithAgentOn is bootGuestWithAgent on pagers the caller has built,
+// for a suite that installs something on them before the guest runs.
+func bootGuestWithAgentOn(t *testing.T, ctx context.Context, binaryPath string, pager *hostPagers, vm *volume.VM) *vmmachine.Process {
+	t.Helper()
 	config := migrationConfig(t, binaryPath, pager, vm)
 	config.VsockCID = guestVsockCID
 	p, err := vmmachine.Start(ctx, config)
