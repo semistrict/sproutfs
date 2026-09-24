@@ -8,7 +8,9 @@ Three decisions determine everything else.
 
 1. A VM's durable state is exactly one published checkpoint, selected by its
    control record. Nothing is durable between checkpoints, so losing a host
-   loses every write since its VMs' last checkpoints.
+   loses every write since its VMs' last checkpoints. What a host keeps durable
+   on its own is a VM's disks: the interval checkpoints them and not its RAM,
+   and a VM whose checkpoint has no VMM state comes back by booting over them.
 2. Every page has one name — the checkpoint that published it — and a fork
    inherits its parent's names. A page with a name is referenced, never copied:
    in the store, in host memory and on the wire. Two VMs share a resident page
@@ -50,16 +52,41 @@ accepted: a guest write must never wait on object-store latency.
 volume manager's `Stats` sums it over every VM the host runs.
 
 The volume layer has no automatic trigger. `Checkpoint` and `Snapshot` publish
-on demand, `Close` publishes a final checkpoint, and `Handoff` and `ForkPoint`
-publish nothing. The interval belongs to the host that runs the guest and knows
-when the vCPUs may be paused: every 60 s by default
-(`host.Config.CheckpointInterval`, `SPROUTFS_CHECKPOINT_INTERVAL`), each wait
-jittered by up to an eighth either side so VMs do not checkpoint in lockstep,
-and the next wait measured from the end of the last upload.
+on demand, `SnapshotDisks` publishes a VM's disks alone, `Close` publishes a
+final checkpoint, and `Handoff` and `ForkPoint` publish nothing. The interval
+belongs to the host that runs the guest and knows when the vCPUs may be paused:
+every 60 s by default (`host.Config.CheckpointInterval`,
+`SPROUTFS_CHECKPOINT_INTERVAL`), each wait jittered by up to an eighth either
+side so VMs do not checkpoint in lockstep, and the next wait measured from the
+end of the last upload.
 
-The interval is what a host loss costs a VM when everything works. What it costs
-when nothing works is the **loss window**: how long a VM may hold a write no
-landed checkpoint covers — `host.Config.LossWindow`, `SPROUTFS_LOSS_WINDOW`,
+The interval checkpoints a VM's **disks** and nothing else. Its pause stops the
+vCPUs and seals the PMEM regions; RAM is neither sealed nor uploaded, and no VMM
+state is captured. The target is an agent sandbox: what must survive the loss of
+a host is the disk, and the software in the guest recovers its in-memory state
+from it, because most software never assumed RAM outlives the machine. Uploading
+RAM every interval would cost far more than it buys. Every disk seals inside one
+pause, so the checkpoint is one point in time across all of them.
+
+A checkpoint of the disks names **no VMM state** — not even the state of the
+checkpoint before it, which is what a checkpoint that captured none otherwise
+goes on naming, because those registers over these disks are a guest that never
+existed. A VM opened at a checkpoint without state is **cold booted**: the host
+discards its memory in a checkpoint of its own (`Host.Starting`) and boots the
+kernel over its disks, which is a power cut at that checkpoint — the guest's
+filesystem recovers what its journal recovers. After a host loss, a VM whose
+last checkpoint was the interval's therefore comes back cold at it.
+
+RAM is uploaded only when asked for. An explicit capture (the host API's
+`capture`) seals every region and captures the VMM state, and so does a stop that
+asks to suspend (`stop --suspend`), so the start after it resumes the guest where
+it was. A plain stop publishes the disks alone, as the interval does, and the
+start after it boots. A migration and a fork upload nothing either way: RAM moves
+pager to pager.
+
+The interval is what a host loss costs a VM's disks when everything works. What
+it costs when nothing works is the **loss window**: how long a VM may hold a
+disk write no landed checkpoint covers — `host.Config.LossWindow`, `SPROUTFS_LOSS_WINDOW`,
 five minutes by default, zero to disable. While a VM's oldest unpublished write
 is older than that, the pager admits no further dirty page for it: every store
 that needs a dirty reservation waits, exactly as a store past the dirty budget
@@ -68,7 +95,10 @@ the lost writes of one VM span at most the window plus one checkpoint attempt's
 pause, from the first of them to the last. Losing the host after an outage
 longer than the window still loses writes older than the window — nothing can
 publish through an outage — but the guest was stopped from building on them from
-the window on.
+the window on. RAM is outside the window: no checkpoint the interval takes would
+ever cover a RAM write, so RAM regions neither age nor ask for a checkpoint under
+dirty pressure. A RAM pager's dirty budget has to hold every private RAM page its
+guests make, and a store past it stops the VM as any full budget does.
 
 A store into a page the guest has already dirtied and that no seal covers does
 not fault and is not blocked. The checkpoint the pager asks for seals every dirty
@@ -94,9 +124,19 @@ past it. The exception is a handle a later writer has fenced. The interval check
 because a running VM writes nothing else; it then closes the VMM and releases
 the VM rather than leave a guest running whose writes can never be published.
 
-Guest CPU stores are not durability acknowledgements, and neither is a guest
-flush: virtio-pmem flush completes without making anything durable. Only a
-checkpoint does. Local scratch spill is not durable storage either.
+Guest CPU stores are not durability acknowledgements. A guest's flush — its
+fsync reaching the virtio-pmem device — is one within a bound: the flush reaches
+the pager, and the host completes it at once when the VM holds no disk write
+older than `host.Config.FlushBound` (`SPROUTFS_FLUSH_BOUND`, 60 s by default, zero
+to disable) that no checkpoint has published. Otherwise the flush waits until a
+checkpoint covers those writes, and the host asks for that checkpoint out of the
+interval's turn; a flush never takes a checkpoint when the disks are fresh. So a
+flush that returned leaves nothing older than the bound unpublished, the data it
+flushed is durable within the bound plus one interval, and a guest whose disks
+cannot be published stops making fsync progress rather than being told they
+were. The ordering is a power cut's: a checkpoint is one point in time across
+the VM's disks, so nothing written after a flush is durable without everything
+written before it. Local scratch spill is not durable storage.
 
 Published checkpoint objects survive host loss under the assumption that the
 shared object store remains durable. A configured host can open a VM by identity
@@ -116,7 +156,7 @@ captured state and compatible runtime configuration.
    whose identity is already resident in the same pager before vCPUs
    run. Missing pages load on demand.
 4. Volume writes apply to the overlay and return. The interval checkpoint pauses
-   the guest, saves VMM state, seals every dirty page by write protection and
+   the guest, seals every dirty page of its disks by write protection and
    resumes; the sealed pages stream out as parts behind the running guest,
    the last part carries the root, and the control record selects it.
 5. A fork takes that same pause and publishes nothing. It is a handoff,

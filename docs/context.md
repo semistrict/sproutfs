@@ -40,14 +40,22 @@ as parts, and the index object carrying the segments they changed and the
 checkpoint's root is written last; a conditional
 write then selects that checkpoint in the control record, which is when the VM
 survives the loss of this host. Every VM a
-host runs is checkpointed on an interval — sixty seconds by default, each wait
-jittered by up to an eighth either side, the next measured from the last upload —
-and on request. Capture returns without waiting for the upload; the upload can
-fail, and its pages then go back to the guest. A VM's whole durable state is
-the one checkpoint its record selects; an initial sparse checkpoint writes no
-part at all.
+host runs has its disks checkpointed on an interval — sixty seconds by default,
+each wait jittered by up to an eighth either side, the next measured from the
+last upload: that pause seals the disks alone and saves no VMM state, and the
+checkpoint names none. A capture on request, and a suspending stop, seal RAM and
+save the VMM state as well. Capture returns without waiting for the upload; the
+upload can fail, and its pages then go back to the guest. A VM's whole durable
+state is the one checkpoint its record selects; an initial sparse checkpoint
+writes no part at all.
 
-**Loss window**: How long a VM may hold a write no landed checkpoint covers —
+**Cold boot**: Starting a VM over a checkpoint without VMM state — the
+interval's checkpoint of its disks, a plain stop's, a template's. The host
+discards the VM's memory in a checkpoint of its own and boots the kernel over
+the disks, which the guest sees as a power cut at that checkpoint. It is what a
+VM comes back as after a host loss, and what an operator's cold start asks for.
+
+**Loss window**: How long a VM may hold a disk write no landed checkpoint covers —
 `SPROUTFS_LOSS_WINDOW`, five minutes by default, zero to disable — and, as a
 measurement, the age of its oldest such write. Past the window the pager admits
 no further dirty page for that VM: every store that needs a dirty reservation
@@ -86,9 +94,14 @@ place, so those pages become the checkpoint's while the guest keeps running.
 Nothing is copied and no byte moves — a store into a sealed page copies that
 one page — so the pause is page-table work.
 
-**Flush**: A guest's virtio-pmem flush. It makes nothing durable: the device
-completes it itself and the host is not asked. Ordering is the checkpoint's,
-which is one pause of the whole machine.
+**Flush**: A guest's virtio-pmem flush, which is its fsync reaching the host.
+The device asks the pager and holds the request until the host answers. The host
+answers at once when the VM holds no disk write older than the flush bound —
+`SPROUTFS_FLUSH_BOUND`, sixty seconds by default, zero to disable — that no
+checkpoint has published; otherwise it answers when a checkpoint covering those
+writes lands, which it asks for out of the interval's turn. A flush never takes
+a checkpoint of its own. Ordering is the checkpoint's, which is one pause of all
+the VM's disks.
 
 **Reclamation**: Deleting, after a checkpoint is selected, the checkpoints its
 root no longer names and no pin protects, whole. Compaction bounds what that

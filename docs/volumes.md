@@ -60,8 +60,9 @@ checkpoint that seals them reports those.
 
 `Verify` makes nothing durable and orders nothing. It confirms that this handle
 still owns its VM and returns; durability is a checkpoint, and a checkpoint
-happens on the interval or on request, never because a guest flushed. A caller
-that needs the bytes in object storage calls `Checkpoint`.
+happens on the interval or on request. A guest's flush waits for one only when
+its disks are staler than the host's flush bound, and never takes one of its own.
+A caller that needs the bytes in object storage calls `Checkpoint`.
 
 A write is refused only when the handle itself is terminal: closed, handed off,
 or fenced by a later writer. A fenced handle keeps serving reads from what it
@@ -457,12 +458,14 @@ these is refused by the version it does carry, and a deployment written when the
 root was the last member of a part — a checkpoint with no index object at
 all — is refused by that part's layout version.
 
-VMM state is inherited like a page. Only a capture pauses the guest for it, so
-an interval checkpoint has none of its own and goes on naming the state member
-of the checkpoint it replaces — and that checkpoint's parts — which is what
-keeps the VM restorable between captures. A capture's own state member replaces
-it, and compaction moves an inherited one with the pages when the parts holding
-it become mostly dead.
+VMM state is inherited like a page. A checkpoint that captured none goes on
+naming the state member of the checkpoint it replaces — and that checkpoint's
+parts — and a capture's own state member replaces it; compaction moves an
+inherited one with the pages when the parts holding it become mostly dead. Two
+checkpoints name no state at all: a cold boot's, which discards the memory the
+state described, and `SnapshotDisks`, the host's interval checkpoint of a VM's
+disks, whose disks are not the ones any earlier state was captured over. A VM
+opened at either is booted rather than restored.
 
 A page is published whole or not at all, so the page table holds one entry per
 page that has bytes: the checkpoint that holds them, the part, and the member's
@@ -732,7 +735,7 @@ the layout that collector is built for.
 ## VM integration
 
 The [Firecracker integration](vm-memory.md) maps the single `ram0` volume and
-each PMEM volume through the host pager. A guest PMEM flush makes nothing
-durable and completes at the device; guest PMEM and RAM stores alike remain
-private pager state, resident or in scratch spill, until a checkpoint publishes
-those pages. A local scratch spill is not a durability mechanism at all.
+each PMEM volume through the host pager. A guest PMEM flush reaches the pager
+and completes when the host says the VM's disks are fresh enough; guest PMEM and
+RAM stores alike remain private pager state, resident or in scratch spill, until
+a checkpoint publishes those pages. A local scratch spill is not a durability mechanism at all.

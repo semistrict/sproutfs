@@ -139,11 +139,14 @@ nothing else.
 
 `Host.AddMachine` records which VMM process belongs to which VM, which is what
 makes a VM drainable and what starts its checkpoint loop: the host checkpoints
-every VM it runs every `Config.CheckpointInterval`, sixty seconds by
-default, each wait jittered by up to an eighth either side so VMs do not checkpoint
-in lockstep, and waits for each publication before scheduling the next. That
-loop is the only thing that makes a running guest durable, so the interval
-bounds what losing this host rewinds a VM by. A failure is logged and retried at
+the disks of every VM it runs every `Config.CheckpointInterval`, sixty seconds
+by default, each wait jittered by up to an eighth either side so VMs do not
+checkpoint in lockstep, and waits for each publication before scheduling the
+next. Each is `CaptureDisks`: the pause seals the VM's PMEM regions alone and
+captures no VMM state, so RAM is never uploaded on the interval and a VM opened
+at such a checkpoint is cold booted over its disks (`Host.Starting`). That loop
+is the only thing that makes a running guest's disks durable, so the interval
+bounds what losing this host rewinds them by. A failure is logged and retried at
 the next interval, and the loop stops when the VM is removed, migrated away or
 the host closes. An interval whose VM is sealed by a fork point is skipped: the
 child takes those pages first. A negative interval disables the loop, which is
@@ -157,7 +160,17 @@ the window, the pager admits no further dirty page for it, and the host's own
 part is the loop. A publication that failed while the window is exceeded is
 retried at an eighth of the interval, doubling to the interval, rather than an
 interval later: the guest is held back for the whole of that wait, so an
-interval's patience is exactly what it must not spend. Inside the window nothing
+interval's patience is exactly what it must not spend. The window is the disks':
+RAM regions neither age nor ask for a checkpoint, because none the loop takes
+would publish them.
+
+A guest's flush reaches the host through the pager. `Config.FlushBound` —
+`SPROUTFS_FLUSH_BOUND`, sixty seconds by default, zero to complete every flush at
+once — is how old the VM's oldest unpublished disk write may be for the flush to
+complete at once; past it the flush waits until a checkpoint covers that write,
+which the loop takes out of the interval's turn. A flush of fresh disks takes no
+checkpoint. A VM that leaves the host — migrated, stopped, given up — takes its
+waiting flushes with it unanswered, and its device asks the next host again. Inside the window nothing
 changes, because retrying eight times as often would only multiply what a store
 outage costs the deployment in requests. That backoff is the one wait a request
 out of turn does not cut short — the store the window holds back asks again
@@ -351,9 +364,10 @@ one process must not close a pager still serving other VMs.
 ## Stopping a VM
 
 `Host.Stop` is the deliberate end of a VM this host runs that leaves the VM
-behind. It captures a checkpoint of everything the guest still holds and waits
-for it, and only then closes the VMM process, gives the pages back and releases
-the handle. The control record and the objects stay where they are, so any host
+behind. It captures a checkpoint of the guest's disks — of its memory and VMM
+state too when the stop suspends it, so the start after it resumes the guest
+rather than booting it — and waits for it, and only then closes the VMM process,
+gives the pages back and releases the handle. The control record and the objects stay where they are, so any host
 can open the VM again at exactly the bytes the stop published — which is the
 whole difference between a stop and losing the host, where the writes since each
 VM's last checkpoint go with it. It reports the checkpoint it published, because

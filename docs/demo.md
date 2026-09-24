@@ -303,11 +303,13 @@ scripts/demo-gce.sh kubectl exec -n sproutfs deploy/sproutfs-orchestrator -- \
 ```
 
 A stop is the deliberate end of a running VM that leaves the VM behind: the host
-running it publishes everything its guest holds, closes the VMM process, gives
-the pages back and releases the handle. The VM is then exactly its control
-record and its objects — still listed, on no host — and a start opens it again at
-exactly the bytes the stop published, on the host named or on the ready one whose
-guests have promised the least of its arena.
+running it publishes its guest's disks, closes the VMM process, gives the pages
+back and releases the handle. The VM is then exactly its control record and its
+objects — still listed, on no host — and a start opens it again at exactly the
+disks the stop published, on the host named or on the ready one whose guests
+have promised the least of its arena, and boots it over them. `stop --suspend`
+publishes the guest's memory and VMM state as well, and the start after it
+resumes the guest where it was.
 
 That is the whole difference between a stop and losing the host, which takes the
 writes since the last checkpoint with it. It is also why a start needs none of
