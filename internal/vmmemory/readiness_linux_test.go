@@ -21,9 +21,23 @@ import (
 	"github.com/semistrict/sproutfs/internal/vmwire"
 )
 
+// pipeSession is one session whose client is the test: events writes complete
+// UFFD events into the pager, and client is the client's end of the control
+// socket, on which a peer acknowledges every command while the test may send
+// requests of its own. results is every answer to those requests, in the order
+// the pager sent them.
+type pipeSession struct {
+	c       *vmmemory.Connection
+	h       *vmmemory.Host
+	events  *os.File
+	client  *net.UnixConn
+	results <-chan vmwire.Frame
+	cancel  context.CancelCauseFunc
+}
+
 // A pipe injects complete UFFD events; the peer only acknowledges control
 // messages. No memory is actually mapped, and fault backing remains stalled.
-func pipeConnection(t testing.TB, backing vmmemory.Backing) (*vmmemory.Connection, *vmmemory.Host, *os.File, context.CancelCauseFunc) {
+func pipeConnection(t testing.TB, kind vmmemory.RegionKind, backing vmmemory.Backing) pipeSession {
 	t.Helper()
 	a, err := vmmemory.NewLinuxArena(1, hugePageSize)
 	if err != nil {
@@ -67,10 +81,11 @@ func pipeConnection(t testing.TB, backing vmmemory.Backing) (*vmmemory.Connectio
 	if err := vmwire.SendFD(client, vmwire.Frame{Kind: vmwire.Hello, ID: vmwire.Version}, r); err != nil {
 		t.Fatal(err)
 	}
-	if err := vmwire.Write(client, vmwire.Frame{Kind: vmwire.Region, Flags: uint64(vmmemory.Ram), Length: backing.Size(), Offset: 2 << 20}); err != nil {
+	if err := vmwire.Write(client, vmwire.Frame{Kind: vmwire.Region, Flags: uint64(kind), Length: backing.Size(), Offset: 2 << 20}); err != nil {
 		t.Fatal(err)
 	}
 	peerDone := make(chan struct{})
+	results := make(chan vmwire.Frame, 64)
 	go func() {
 		defer close(peerDone)
 		_, fd, err := vmwire.ReceiveFD(client)
@@ -82,6 +97,10 @@ func pipeConnection(t testing.TB, backing vmmemory.Backing) (*vmmemory.Connectio
 			f, err := vmwire.Read(client)
 			if err != nil {
 				return
+			}
+			if f.Kind == vmwire.Result {
+				results <- f
+				continue
 			}
 			if f.Kind == vmwire.MapBatch {
 				for range f.Length {
@@ -96,7 +115,7 @@ func pipeConnection(t testing.TB, backing vmmemory.Backing) (*vmmemory.Connectio
 		}
 	}()
 	ctx, cancel := context.WithCancelCause(t.Context())
-	c, err := vmmemory.Connect(ctx, h, server, vmmemory.RegionBacking{Kind: vmmemory.Ram, Backing: backing}, vmmemory.ConnectionConfig{QueuePages: 1, FaultWorkers: 1, CommandTimeout: time.Minute, VerifyInterval: time.Hour})
+	c, err := vmmemory.Connect(ctx, h, server, vmmemory.RegionBacking{Kind: kind, Backing: backing}, vmmemory.ConnectionConfig{QueuePages: 1, FaultWorkers: 1, CommandTimeout: time.Minute, VerifyInterval: time.Hour})
 	if err != nil {
 		cancel(err)
 		t.Fatal(err)
@@ -109,11 +128,12 @@ func pipeConnection(t testing.TB, backing vmmemory.Backing) (*vmmemory.Connectio
 		}
 		<-peerDone
 	})
-	return c, h, w, cancel
+	return pipeSession{c: c, h: h, events: w, client: client, results: results, cancel: cancel}
 }
 
 func TestIdleConnectionWaitsForDescriptorReadiness(t *testing.T) {
-	c, h, events, cancel := pipeConnection(t, newKernelBacking(1, hugePageSize))
+	s := pipeConnection(t, vmmemory.Ram, newKernelBacking(1, hugePageSize))
+	c, h, events, cancel := s.c, s.h, s.events, s.cancel
 	before, err := h.Stats(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -158,7 +178,8 @@ func (b *stalledFaultBacking) Load(ctx context.Context, _ uint64, _ []byte) erro
 
 func TestRemapsDrainWhileFaultWorkerWaitsForBacking(t *testing.T) {
 	b := &stalledFaultBacking{kernelBacking: newKernelBacking(1, hugePageSize), entered: make(chan struct{})}
-	c, h, events, _ := pipeConnection(t, b)
+	s := pipeConnection(t, vmmemory.Ram, b)
+	c, h, events := s.c, s.h, s.events
 	var fault [32]byte
 	fault[0] = 0x12
 	binary.LittleEndian.PutUint64(fault[16:24], 2<<20)
@@ -199,7 +220,7 @@ func TestLargeConnectionKeepsTransportMetadataSparse(t *testing.T) {
 	runtime.GC()
 	var before, after runtime.MemStats
 	runtime.ReadMemStats(&before)
-	c, _, _, _ := pipeConnection(t, backing)
+	c := pipeConnection(t, vmmemory.Ram, backing).c
 	runtime.GC()
 	runtime.ReadMemStats(&after)
 	if retained := int64(after.HeapAlloc) - int64(before.HeapAlloc); retained > 2<<20 {

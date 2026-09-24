@@ -78,6 +78,9 @@ type Stats struct {
 	// whose publications are not keeping up with its guests; one that stalls on
 	// it is running a VM it cannot make durable at all.
 	WindowWaits, WindowStalls uint64
+	// Flushes counts the flush requests guests sent of this pager's regions,
+	// each of which waits in its guest for the answer SetFlushed's done sends.
+	Flushes uint64
 	// RuleCopies counts the pages the two rules made private beside the pages
 	// the guest stored into: those between a store and a page its range already
 	// held, and those copied into the holes of a range that had become half its

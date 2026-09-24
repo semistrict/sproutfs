@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -63,14 +64,17 @@ type Connection struct {
 	writeMu   *ctxsync.Mutex
 	acks      chan vmwire.Frame
 	requests  chan vmwire.Frame
-	sequence  uint64
-	queueMu   sync.Mutex
-	queue     map[uint64]queuedFault
-	inflight  map[uint64]struct{}
-	notify    chan struct{}
-	workers   sync.WaitGroup
-	closeMu   *ctxsync.Mutex
-	closed    bool
+	// flushes holds the guest's flush requests the host has not yet been
+	// handed, in the order they came. See maxQueuedFlushes.
+	flushes  chan vmwire.Frame
+	sequence uint64
+	queueMu  sync.Mutex
+	queue    map[uint64]queuedFault
+	inflight map[uint64]struct{}
+	notify   chan struct{}
+	workers  sync.WaitGroup
+	closeMu  *ctxsync.Mutex
+	closed   bool
 	// attachNS is what building this session cost, from the descriptor exchange
 	// to the acknowledged READY that ends the mandatory populate. It is written
 	// once, by Connect, before anything else can read it.
@@ -172,7 +176,7 @@ func Connect(ctx context.Context, h *Host, socket *net.UnixConn, backing RegionB
 		return nil, errors.Join(err, context.Cause(ctx))
 	}
 	sessionCtx, cancel := context.WithCancelCause(ctx)
-	c := &Connection{host: h, socket: socket, uffd: fd, cfg: cfg, ctx: sessionCtx, cancel: cancel, commandMu: ctxsync.NewMutex(), writeMu: ctxsync.NewMutex(), acks: make(chan vmwire.Frame, 1), requests: make(chan vmwire.Frame, 1), closeMu: ctxsync.NewMutex(), queue: make(map[uint64]queuedFault), inflight: make(map[uint64]struct{}), notify: make(chan struct{}, cfg.FaultWorkers)}
+	c := &Connection{host: h, socket: socket, uffd: fd, cfg: cfg, ctx: sessionCtx, cancel: cancel, commandMu: ctxsync.NewMutex(), writeMu: ctxsync.NewMutex(), acks: make(chan vmwire.Frame, 1), requests: make(chan vmwire.Frame, 1), flushes: make(chan vmwire.Frame, maxQueuedFlushes), closeMu: ctxsync.NewMutex(), queue: make(map[uint64]queuedFault), inflight: make(map[uint64]struct{}), notify: make(chan struct{}, cfg.FaultWorkers)}
 	attached := false
 	fail := func(err error) (*Connection, error) {
 		err = errors.Join(err, context.Cause(ctx))
@@ -236,8 +240,9 @@ func Connect(ctx context.Context, h *Host, socket *net.UnixConn, backing RegionB
 		return fail(err)
 	}
 	context.AfterFunc(sessionCtx, func() { _ = socket.Close() })
-	c.workers.Add(4 + cfg.FaultWorkers)
+	c.workers.Add(5 + cfg.FaultWorkers)
 	go c.work()
+	go c.deliverFlushes()
 	go c.verify()
 	for range cfg.FaultWorkers {
 		go c.serveFaults()
@@ -753,6 +758,60 @@ func (c *Connection) work() {
 	}
 }
 
+// maxQueuedFlushes bounds the flush requests a session holds before the host
+// has been handed them. A guest has no more flushes outstanding than its
+// virtio-pmem queue has entries, and its device asks once for each queue drain,
+// so a client past this is one this pager does not understand.
+const maxQueuedFlushes = 1024
+
+// deliverFlushes hands the region's guest flushes to the host's callback, one
+// at a time and off the reader, so a callback that takes its time holds up only
+// the flushes after it and never the session.
+func (c *Connection) deliverFlushes() {
+	defer c.workers.Done()
+	for {
+		var request vmwire.Frame
+		select {
+		case <-c.ctx.Done():
+			return
+		case request = <-c.flushes:
+		}
+		done := c.answerFlush(request.ID)
+		if flushed := c.host.flushedCallback(); flushed != nil {
+			flushed(c.region.Memory, done)
+		} else {
+			done(nil)
+		}
+	}
+}
+
+// answerFlush is the done a flush request is handed with: it sends the RESULT
+// that completes the guest's flush, once. A session that has ended has nobody
+// to answer, and its client has already failed the flushes it was waiting on.
+func (c *Connection) answerFlush(id uint64) func(error) {
+	var answered atomic.Bool
+	return func(err error) {
+		if answered.Swap(true) {
+			slog.Error("vmmemory: a flush was answered twice; the second answer is ignored",
+				"region", c.cfg.Name, "request", id, "error", err)
+			return
+		}
+		response := vmwire.Frame{Kind: vmwire.Result, ID: id}
+		if err != nil {
+			slog.Warn("vmmemory: a guest's flush failed", "region", c.cfg.Name, "request", id, "error", err)
+			response.Flags = uint64(syscall.EIO)
+		}
+		if sendErr := c.send(c.ctx, response); sendErr != nil {
+			if context.Cause(c.ctx) != nil {
+				slog.Info("vmmemory: a flush was answered after its session ended",
+					"region", c.cfg.Name, "request", id, "error", sendErr)
+				return
+			}
+			c.fail(fmt.Errorf("answering flush %d: %w", id, sendErr))
+		}
+	}
+}
+
 // serveFaults is one of the region's fault workers. Workers drain the queue
 // concurrently; the pager serializes only faults within one read-ahead window.
 func (c *Connection) serveFaults() {
@@ -800,8 +859,10 @@ func (c *Connection) serveFaults() {
 	}
 }
 
-// One control reader demultiplexes mapping ACKs and seal requests. It never
-// waits for a seal, which can itself need mapping revocation ACKs.
+// One control reader demultiplexes mapping ACKs, seal requests and flush
+// requests, which share one sequence of IDs. It never waits for a seal, which
+// can itself need mapping revocation ACKs, nor for the host to answer a flush,
+// whose checkpoint needs the same.
 func (c *Connection) readControl() {
 	defer c.workers.Done()
 	var lastRequest uint64
@@ -827,6 +888,25 @@ func (c *Connection) readControl() {
 			lastRequest = f.ID
 			select {
 			case c.requests <- f:
+			default:
+				c.fail(ErrCapacity)
+				return
+			}
+		case vmwire.Flush:
+			if f.ID == 0 || f.ID <= lastRequest || f.Offset != 0 || f.Length != 0 || f.Backing != 0 || f.Generation != 0 || f.Flags != 0 {
+				c.fail(errors.New("invalid flush request"))
+				return
+			}
+			// A flush is a disk's. RAM is not made durable by a disk checkpoint,
+			// so a client that flushes it is one this pager does not understand.
+			if c.region.Kind != Pmem {
+				c.fail(fmt.Errorf("a flush of a %s region", c.region.Kind))
+				return
+			}
+			lastRequest = f.ID
+			c.host.countFlush()
+			select {
+			case c.flushes <- f:
 			default:
 				c.fail(ErrCapacity)
 				return
