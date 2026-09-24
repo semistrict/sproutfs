@@ -32,7 +32,7 @@ import (
 // checkpoint. They run one after the other, so the shutdown behind the signal
 // is at most twice this — sixty seconds — and the deployment's termination
 // grace period is that plus the drainTimeout the preStop hook spends before it:
-// ninety and sixty, which is the hundred and fifty
+// thirty-one minutes and one, which is the 1920 seconds of
 // `terminationGracePeriodSeconds` the manifest sets.
 const shutdownTimeout = 30 * time.Second
 
@@ -42,14 +42,13 @@ const shutdownTimeout = 30 * time.Second
 var version = "dev"
 
 // drainTimeout is how long the preStop command waits for the drain it asked
-// for. The drain bounds itself at eighty seconds, so this is only the backstop
-// for an answer that never comes back over the loopback at all — and it has to
-// be a shorter backstop than the grace period has room for, not a longer one: a
-// client that waited two minutes for a drain the server gives up on in eighty
-// seconds spends the shutdown's own share of the grace waiting for nothing, and
-// the pod is killed with the VMs that did not move still holding pages no
-// checkpoint has.
-const drainTimeout = 90 * time.Second
+// for. The drain bounds itself at thirty minutes, so this is only the backstop
+// for an answer that never comes back over the loopback at all — a minute past
+// the server's bound, and no more: a client that waited much longer than the
+// drain the server gives up on spends the shutdown's own share of the grace
+// waiting for nothing, and the pod is killed with the VMs that did not move
+// still holding pages no checkpoint has.
+const drainTimeout = 31 * time.Minute
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))

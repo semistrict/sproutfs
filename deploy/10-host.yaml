@@ -66,14 +66,14 @@ spec:
         app.kubernetes.io/part-of: sproutfs
     spec:
       # The grace period is the preStop hook plus the shutdown behind it. The
-      # hook migrates every VM away — the drain bounds itself at 80 s, including
-      # the wait for each destination to report that it holds the pages, and the
-      # command waiting on it gives up at 90 s. Then SIGTERM: the API stops
-      # within 30 s and the supervisor's close within another 30 s, publishing a
-      # final checkpoint of every VM that did not move. Ninety and sixty is this
-      # hundred and fifty; a grace period shorter than drain plus shutdown kills
-      # the pod with pages no checkpoint has.
-      terminationGracePeriodSeconds: 150
+      # hook migrates every VM away — the drain bounds itself at 30 min,
+      # including the wait for each destination to report that it holds the
+      # pages, and the command waiting on it gives up at 31 min. Then SIGTERM:
+      # the API stops within 30 s and the supervisor's close within another
+      # 30 s, publishing a final checkpoint of every VM that did not move.
+      # Thirty-one minutes and one is this 1920 s; a grace period shorter than
+      # drain plus shutdown kills the pod with pages no checkpoint has.
+      terminationGracePeriodSeconds: 1920
       containers:
         - name: host
           image: sproutfs:demo

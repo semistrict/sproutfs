@@ -339,20 +339,23 @@ unpublished local forks.
 The drain bounds itself, because nothing else does: the hook carries no deadline
 and what waits behind it is a termination grace period after which the pod is
 killed with everything it still holds. Four VMs are handed over at once, each
-with a 60-second deadline of its own, the whole drain with 80 seconds including
-the wait for `Serving` to empty, and the orchestrator client with a timeout so
-that a connection nobody answers cannot outlast either. The preStop command
-waiting on that drain gives up at 90 seconds, which is a backstop for an answer
-that never comes back over the loopback at all and has to be the shorter one:
+with a 60-second deadline of its own — under the four intervals a source serves
+an unreleased handover's pages for and the two minutes the orchestrator believes
+its record of one — the whole drain with 30 minutes including the wait for
+`Serving` to empty, which is what a host full of VMs needs four at a time, and
+the orchestrator client with a timeout so that a connection nobody answers
+cannot outlast either. The preStop command waiting on that drain gives up at 31
+minutes, which is a backstop for an answer that never comes back over the
+loopback at all and has to be the shorter one:
 a client that waited longer than the server's own bound would spend the
 shutdown's share of the grace period waiting for nothing. A VM whose hand-over
 ran out of time is left running here and goes on being checkpointed, and is
 reported as remaining.
 
-`terminationGracePeriodSeconds` is the hook's 90 seconds plus the shutdown
+`terminationGracePeriodSeconds` is the hook's 31 minutes plus the shutdown
 behind it, which is two 30-second halves run one after the other — stopping the
 API, then the supervisor's close, in which every VM publishes a final checkpoint
-— so 90 and 60 is the manifest's 150. A shorter one turns an orderly exit into a
+— so 31 minutes and one is the manifest's 1920 seconds. A shorter one turns an orderly exit into a
 host loss.
 
 The supervisor owns VMM processes and the shared pager. After finishing the

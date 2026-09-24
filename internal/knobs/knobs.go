@@ -138,7 +138,7 @@ func Defaults() Knobs {
 		SettleWorkers:   4,
 
 		DrainConcurrency: 4,
-		DrainTimeout:     90 * time.Second,
+		DrainTimeout:     30 * time.Minute,
 		DrainPerVM:       60 * time.Second,
 	}
 }
@@ -308,13 +308,14 @@ func Randomize(r Random) Knobs {
 	interval("epoch-interval", &k.EpochInterval,
 		time.Millisecond, 100*time.Millisecond, 2*time.Second, time.Hour)
 	interval("drain-timeout", &k.DrainTimeout,
-		time.Millisecond, time.Second, 90*time.Second)
-	// One VM's bound never exceeds the drain's.
-	k.DrainPerVM = k.DrainTimeout
+		time.Millisecond, time.Second, 90*time.Second, 30*time.Minute)
+	// One VM's bound never exceeds the drain's, nor the ninety seconds a
+	// handover has before the hold and the orchestrator's record of it expire.
+	k.DrainPerVM = min(k.DrainTimeout, 90*time.Second)
 	if !keep("drain-per-vm") {
-		k.DrainPerVM = k.DrainTimeout / time.Duration(1+r.Intn("knobs/drain-per-vm", 4))
+		k.DrainPerVM = min(k.DrainTimeout, 90*time.Second) / time.Duration(1+r.Intn("knobs/drain-per-vm", 4))
 		if k.DrainPerVM <= 0 {
-			k.DrainPerVM = k.DrainTimeout
+			k.DrainPerVM = min(k.DrainTimeout, 90*time.Second)
 		}
 	}
 	return k

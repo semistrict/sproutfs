@@ -39,19 +39,23 @@ const (
 	// arrived. A drain is finished when nothing is left to serve.
 	drainPoll = 250 * time.Millisecond
 	// drainTimeout bounds the whole drain and drainVMTimeout one VM's handover
-	// inside it; drainConcurrency is how many are handed over at once. The
-	// deployment's termination grace period is the preStop hook's own bound plus
-	// the shutdown behind it — ninety and sixty, which is the manifest's hundred
-	// and fifty — and this is under the hook's, so a drain that runs to its bound
-	// still answers the hook and still leaves the process the whole of that
-	// shutdown to publish a final checkpoint of every VM that did not move.
+	// inside it; drainConcurrency is how many are handed over at once. A drain
+	// is how an upgrade loses nothing, so it is given as long as a host full of
+	// VMs needs, four at a time: thirty minutes. One handover stays short, under
+	// the four intervals its source serves the pages for unreleased and the two
+	// minutes the orchestrator believes its record of it. The deployment's
+	// termination grace period is the preStop hook's own bound plus the shutdown
+	// behind it — thirty-one minutes and one, the manifest's thirty-two — and
+	// this is under the hook's, so a drain that runs to its bound still answers
+	// the hook and still leaves the process the whole of that shutdown to publish
+	// a final checkpoint of every VM that did not move.
 	//
 	// The caller is a preStop hook and carries no deadline of its own, and the
 	// orchestrator drives both halves of every migration, so an orchestrator
 	// that is wedged answers none of these calls. Bounding each one is what
 	// turns that into a drain that moved some of its VMs rather than a pod
 	// killed with all of their pages still on it.
-	drainTimeout     = 80 * time.Second
+	drainTimeout     = 30 * time.Minute
 	drainVMTimeout   = 60 * time.Second
 	drainConcurrency = 4
 	// drainReportTimeout bounds one report to the orchestrator. A report is a
