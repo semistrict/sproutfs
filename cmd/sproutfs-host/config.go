@@ -292,6 +292,20 @@ func loadConfig(lookup func(string) string) (config, error) {
 		c.LossWindow = held
 	}
 
+	// A flush waits while the VM's disks hold a write older than the bound, so
+	// zero here is a guest that never waits, which the host spells as a
+	// negative value — zero there is the default.
+	flush := text("SPROUTFS_FLUSH_BOUND", "60s")
+	bound, flushErr := time.ParseDuration(flush)
+	switch {
+	case flushErr != nil || bound < 0:
+		fail("SPROUTFS_FLUSH_BOUND is %q, want a duration such as 60s, or 0 to disable it", flush)
+	case bound == 0:
+		c.FlushBound = -1
+	default:
+		c.FlushBound = bound
+	}
+
 	c.Templates, err = parseTemplates(text("SPROUTFS_TEMPLATES", defaultTemplates), c.VMMemoryBytes)
 	if err != nil {
 		fail("SPROUTFS_TEMPLATES: %v", err)

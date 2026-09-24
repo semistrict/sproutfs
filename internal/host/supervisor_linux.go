@@ -199,6 +199,7 @@ func Start(ctx context.Context, config SupervisorConfig) (Service, error) {
 		CacheBytes:         config.CacheBytes,
 		CheckpointInterval: config.CheckpointInterval,
 		LossWindow:         config.LossWindow,
+		FlushBound:         config.FlushBound,
 		// The page server's budgets are sized against the largest page either
 		// pager serves; what a reply is counted in is the page of the volume it
 		// answers for.

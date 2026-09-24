@@ -114,6 +114,13 @@ type Config struct {
 	// reports the window and hurries its retries, and the pager is what holds the
 	// guest back.
 	LossWindow time.Duration
+	// FlushBound is how old a VM's oldest unpublished disk write may be for a
+	// guest's flush to complete at once. A flush of a VM holding an older one
+	// waits until a checkpoint covers it, and the host takes that checkpoint
+	// out of the interval's turn; a flush never takes one otherwise. Zero
+	// selects DefaultFlushBound; a negative value completes every flush at
+	// once.
+	FlushBound time.Duration
 	// EpochInterval is how often this host re-reads the control record of every
 	// VM it holds, which is how it learns that a later writer has taken one
 	// over. The other place that is learned is a checkpoint, and not every VM
@@ -176,6 +183,9 @@ type Host struct {
 	// host reports its stores as waiting and stops spacing its retries out by
 	// the interval. Zero or less is the bound turned off.
 	lossWindow time.Duration
+	// flushBound is how stale a VM's disks may be for a flush of them to
+	// complete at once. Zero or less completes every flush at once.
+	flushBound time.Duration
 	machines   machines
 	closeOnce  sync.Once
 	done       chan struct{}
@@ -320,8 +330,8 @@ func StartHost(ctx context.Context, config Config) (*Host, error) {
 		holdTimeout: config.Migration.HoldTimeout,
 		clock:       platform.ClockOr(config.Clock), entropy: platform.EntropyOr(config.Entropy),
 		cacheBytes: config.CacheBytes, checkpointInterval: interval, epochInterval: epochs,
-		lossWindow: window,
-		done:       make(chan struct{}),
+		lossWindow: window, flushBound: flushBoundOf(config.FlushBound),
+		done: make(chan struct{}),
 		machines: machines{running: make(map[string]*registration), migrated: make(map[string]*migratedHold),
 			forked: make(map[string]*forkHold), fenced: make(map[string]bool)}}
 	started := false

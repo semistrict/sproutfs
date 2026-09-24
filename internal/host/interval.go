@@ -86,6 +86,7 @@ func (h *Host) checkpointing(ctx context.Context, vmID string, entry *registrati
 			}
 		} else {
 			failures = 0
+			releaseFlushes(entry)
 		}
 		if ctx.Err() != nil {
 			return

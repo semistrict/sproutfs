@@ -46,6 +46,9 @@ func TestConfigTakesTheDocumentedDefaults(t *testing.T) {
 	if config.LossWindow != 5*time.Minute {
 		t.Fatalf("loss window %s", config.LossWindow)
 	}
+	if config.FlushBound != 60*time.Second {
+		t.Fatalf("flush bound %s", config.FlushBound)
+	}
 	// The arena and the spill file are divided between the two pagers, three
 	// quarters to RAM, and the two shares come to exactly what the deployment
 	// gave this host.
@@ -218,6 +221,30 @@ func TestConfigDisablesTheLossWindowOnZero(t *testing.T) {
 	}
 	if config.LossWindow >= 0 {
 		t.Fatalf("a window of zero configured %s, want the bound disabled", config.LossWindow)
+	}
+}
+
+// A flush bound of zero is a guest whose flushes never wait, which the host
+// spells as a negative value for the same reason the loss window does.
+func TestConfigDisablesTheFlushBoundOnZero(t *testing.T) {
+	values := minimal()
+	values["SPROUTFS_FLUSH_BOUND"] = "0"
+	config, err := loadConfig(environ(values))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.FlushBound >= 0 {
+		t.Fatalf("a flush bound of zero configured %s, want the bound disabled", config.FlushBound)
+	}
+}
+
+// A negative bound is not a configuration anyone meant.
+func TestConfigRefusesANegativeFlushBound(t *testing.T) {
+	values := minimal()
+	values["SPROUTFS_FLUSH_BOUND"] = "-5s"
+	_, err := loadConfig(environ(values))
+	if err == nil || !strings.Contains(err.Error(), `SPROUTFS_FLUSH_BOUND is "-5s"`) {
+		t.Fatalf("a negative flush bound gave %v", err)
 	}
 }
 

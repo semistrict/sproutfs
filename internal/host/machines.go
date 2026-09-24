@@ -79,12 +79,18 @@ type StartFunc func(ctx context.Context, vm *volume.VM, backings map[string]vmme
 // now asks that loop for a checkpoint out of the interval's turn, which is what
 // the pager's dirty-budget pressure reaches it through; it is set with the loop
 // and never replaced, so the pressure can read it under the machines lock.
+//
+// flushes are the guest's flushes waiting for a checkpoint of its disks, guarded
+// by mu. A VM that leaves this host — migrated, stopped, given up — takes them
+// with it unanswered: its VMM is paused or gone, and a flush it completed now
+// would write into memory the VM's next host already owns.
 type registration struct {
 	runtime Machine
 	mu      sync.Mutex
 	stop    context.CancelFunc
 	done    chan struct{}
 	now     chan struct{}
+	flushes []pendingFlush
 	// migrating is set while a handover of this VM is in flight and is guarded
 	// by the machines lock, not mu: it is what admits one of them at a time.
 	migrating bool

@@ -208,6 +208,11 @@ type SupervisorConfig struct {
 	// guest back, and the host, which reports the window and hurries its retries
 	// while one is exceeded.
 	LossWindow time.Duration
+	// FlushBound is how stale a VM's disks may be for a guest's flush to
+	// complete at once; past it the flush waits for a checkpoint of them.
+	// Zero selects host.DefaultFlushBound and a negative value completes every
+	// flush at once.
+	FlushBound time.Duration
 }
 
 // Template is one guest image a VM can be created from: the image on this
