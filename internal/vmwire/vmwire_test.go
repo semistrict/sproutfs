@@ -13,14 +13,24 @@ import (
 // before a byte of guest memory exists. These are the checks themselves; the
 // Linux suites are what run them against a real client.
 
-// Version 8 changed what ATTACH's length means: it is the arena's offset space
-// and no longer its capacity. A version 7 peer would take a sparse arena of
-// terabytes of addresses for a promise of that much memory, so the two are told
-// apart by the version rather than by the number.
-func TestVersionEightStatesTheArenasOffsets(t *testing.T) {
-	if vmwire.Version != 8 {
-		t.Fatalf("the mapping protocol is at version %d, want 8: ATTACH's length is the"+
-			" arena's offsets now, and a version 7 peer reads it as its capacity", vmwire.Version)
+// Version 9 added FLUSH, the request a client sends when its guest flushes the
+// region, which RESULT answers. A version 8 pager reads one as a control
+// message it does not know and ends the session, which ends the guest, so the
+// two are told apart by the version before a guest runs rather than at its first
+// flush.
+//
+// Version 8 before it changed what ATTACH's length means: it is the arena's
+// offset space and no longer its capacity.
+func TestVersionNineCarriesTheFlush(t *testing.T) {
+	if vmwire.Version != 9 {
+		t.Fatalf("the mapping protocol is at version %d, want 9: a version 8 peer ends"+
+			" the session on the first flush it is sent", vmwire.Version)
+	}
+	if vmwire.Flush != 13 {
+		t.Fatalf("FLUSH is frame kind %d, want 13", vmwire.Flush)
+	}
+	if name := vmwire.KindName(vmwire.Flush); name != "flush" {
+		t.Fatalf("FLUSH is logged as %q, want \"flush\"", name)
 	}
 }
 

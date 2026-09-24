@@ -10,6 +10,11 @@ use std::os::unix::net::UnixStream;
 #[path = "tests/wire.rs"]
 mod tests;
 
+/// Version 9 added FLUSH, the request this client sends when its guest flushes
+/// the region and whose RESULT completes that flush. A version 8 pager ends the
+/// session on a control message it does not know, which would end the guest at
+/// its first flush, so the two are told apart before a guest runs.
+///
 /// Version 8 made the attachment's length the arena's offset space rather than
 /// its capacity. The arena is a sparse file whose offsets are not its pages: a
 /// pager that puts a private page at the offset it has within its 2 MiB range
@@ -22,7 +27,7 @@ mod tests;
 /// runs and the kind of memory its arena is made of. The page is no longer one
 /// number both ends know, so a version 6 peer is refused by version too — its
 /// page numbers name other pages.
-pub(crate) const VERSION: u64 = 8;
+pub(crate) const VERSION: u64 = 9;
 /// The encoded size of one frame.
 pub(crate) const FRAME_BYTES: usize = 56;
 pub(crate) const HELLO: u64 = 1;
@@ -32,14 +37,19 @@ pub(crate) const MAP: u64 = 4;
 pub(crate) const REVOKE: u64 = 5;
 pub(crate) const ACK: u64 = 6;
 pub(crate) const STOP: u64 = 7;
-/// Asks the host to take the session's checkpoint. There is no durability
-/// request in this protocol: a guest flush makes nothing durable and the
-/// device completes it itself.
+/// Asks the host to take the session's checkpoint.
 pub(crate) const SEAL: u64 = 8;
+/// Answers a SEAL or a FLUSH, echoing its request ID.
 pub(crate) const RESULT: u64 = 9;
 pub(crate) const MAP_BATCH: u64 = 10;
 pub(crate) const READY: u64 = 11;
 pub(crate) const MAP_ZERO: u64 = 12;
+/// Asks the host to make durable a flush the guest made of this session's
+/// region, under a request ID from the same sequence as SEAL's and with every
+/// other field zero. The host answers with RESULT once the flush is durable,
+/// which may take a disk checkpoint first, and the device completes the
+/// guest's flush then.
+pub(crate) const FLUSH: u64 = 13;
 pub(crate) const MAX_BATCH_RUNS: u64 = 1024;
 pub(crate) const SHARED: u64 = 1;
 
