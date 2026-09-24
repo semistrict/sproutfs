@@ -59,10 +59,11 @@ func TestConfigTakesTheDocumentedDefaults(t *testing.T) {
 	}
 	// Each pager's resident pages are its own arena, and its other two bounds
 	// are derived from that — each counted in that pager's own page, which is
-	// why the two numbers are nothing like each other: 1.5 GiB of RAM arena is
-	// 393,216 pages of 4 KiB, and 512 MiB of PMEM arena is 256 of 2 MiB.
-	if config.LogicalPages != (host.KindPages{RAM: 393216 * 32, PMEM: 8 * 1024}) ||
-		config.DirtyPages != (host.KindPages{RAM: 393216, PMEM: 256}) {
+	// why a RAM page other than the default would make them nothing alike: at
+	// the default 2 MiB, 1.5 GiB of RAM arena is 768 pages and 512 MiB of PMEM
+	// arena is 256.
+	if config.LogicalPages != (host.KindPages{RAM: 768 * 32, PMEM: 8 * 1024}) ||
+		config.DirtyPages != (host.KindPages{RAM: 768, PMEM: 256}) {
 		t.Fatalf("pager bounds %v %v", config.LogicalPages, config.DirtyPages)
 	}
 	if config.VMMemoryBytes != 512<<20 || config.VCPUs != 1 {
@@ -171,11 +172,9 @@ func TestConfigDividesTheBudgetsByTheShare(t *testing.T) {
 		pmemDirty  int
 		ramLogical int
 	}{
-		// Each pager's page counts are its own: a RAM share is counted in
-		// 4 KiB pages and a PMEM share in 2 MiB ones, so the same bytes come to
-		// numbers 512 times apart.
-		{"50", 1 << 30, 1 << 30, 8 << 30, 8 << 30, 1 << 18, 512, (1 << 18) * 32},
-		{"25", 1 << 29, 3 << 29, 4 << 30, 12 << 30, 1 << 17, 768, (1 << 17) * 32},
+		// Each pager's page counts are its own, here both 2 MiB.
+		{"50", 1 << 30, 1 << 30, 8 << 30, 8 << 30, 512, 512, 512 * 32},
+		{"25", 1 << 29, 3 << 29, 4 << 30, 12 << 30, 256, 768, 256 * 32},
 	} {
 		values := minimal()
 		values["SPROUTFS_RAM_SHARE_PERCENT"] = share.percent
@@ -389,20 +388,20 @@ func TestTheDefaultLogicalCapAdmitsTheDeployment(t *testing.T) {
 	}
 }
 
-// A deployment may run RAM at 2 MiB, the pager RAM ran before it had a page of
-// its own, and then the RAM share is counted in 2 MiB pages as PMEM's is. Any
-// page but the two arenas there are is refused.
-func TestConfigRunsRAMAtTwoMiBWhenAsked(t *testing.T) {
+// A deployment may run RAM at 4 KiB on ordinary memory, and then the RAM share
+// is counted in 4 KiB pages: the same bytes are 512 times as many pages as
+// PMEM's. Any page but the two arenas there are is refused.
+func TestConfigRunsRAMAtFourKiBWhenAsked(t *testing.T) {
 	values := minimal()
-	values["SPROUTFS_RAM_PAGE_BYTES"] = "2097152"
+	values["SPROUTFS_RAM_PAGE_BYTES"] = "4096"
 	values["SPROUTFS_RAM_SHARE_PERCENT"] = "50"
 	config, err := loadConfig(environ(values))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.RAMPageSize != 2<<20 || config.DirtyPages != (host.KindPages{RAM: 512, PMEM: 512}) ||
-		config.LogicalPages.RAM != 512*32 {
-		t.Fatalf("a 2 MiB RAM page gave page %d, dirty budgets %v and a RAM logical cap of %d",
+	if config.RAMPageSize != 4<<10 || config.DirtyPages != (host.KindPages{RAM: 1 << 18, PMEM: 512}) ||
+		config.LogicalPages.RAM != (1<<18)*32 {
+		t.Fatalf("a 4 KiB RAM page gave page %d, dirty budgets %v and a RAM logical cap of %d",
 			config.RAMPageSize, config.DirtyPages, config.LogicalPages.RAM)
 	}
 	values["SPROUTFS_RAM_PAGE_BYTES"] = "8192"

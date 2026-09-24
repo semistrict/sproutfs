@@ -108,8 +108,8 @@ spec:
               value: /var/lib/sproutfs
             # The pager's page store and the RAM allotment it takes its pages
             # from. The share below gives RAM three quarters of it — 3.75 GiB
-            # of ordinary memory out of the pod's own request — and PMEM the
-            # rest, 1.25 GiB of the pod's 2Gi HugeTLB allotment. A workload
+            # — and PMEM the rest, 1.25 GiB, both 2 MiB pages out of the pod's
+            # 6Gi HugeTLB allotment. A workload
             # guest is 2 GiB and its forks share what they have not diverged
             # from, so an arena of 5 GiB is what keeps a handful of them
             # resident rather than reading one another out of the spill file.
@@ -124,16 +124,15 @@ spec:
             - name: SPROUTFS_SPILL_BYTES
               value: "17179869184"
             # The volatile private state each pager may hold in its arena and
-            # its spill file together, counted in that pager's own page: RAM's
-            # is 4 KiB and PMEM's 2 MiB, so the same bytes are numbers 512
-            # apart. Each defaults to its share of the arena, which is what a
+            # its spill file together, counted in that pager's own page, which
+            # is 2 MiB for both. Each defaults to its share of the arena, which is what a
             # guest whose dirty set never outruns the arena needs; a workload
             # guest writing hundreds of megabytes between checkpoints, with
             # forks doing the same beside it, outruns that long before the spill
             # file is full. The two are 12 GiB divided as the arena is, three
-            # quarters to RAM: 9 GiB of 4 KiB pages and 3 GiB of 2 MiB ones.
+            # quarters to RAM: 9 GiB and 3 GiB of 2 MiB pages.
             - name: SPROUTFS_RAM_DIRTY_PAGES
-              value: "2359296"
+              value: "4608"
             - name: SPROUTFS_PMEM_DIRTY_PAGES
               value: "1536"
             # The guest images a VM can be created from, on the node's own
@@ -189,24 +188,22 @@ spec:
             - name: GOMEMLIMIT
               value: "6GiB"
           resources:
-            # The HugeTLB allotment is the PMEM arena alone, 1.25 GiB of it
-            # with room over. The ordinary memory beside it holds the RAM
-            # arena — 3.75 GiB of guests' memory, which is charged to the pod
-            # now that it is a plain memfd — the Go heap, the page cache, one
-            # Firecracker process per VM and the page cache of the spill file.
-            # A checkpoint plans every page it is about to upload in memory at
-            # once, so the peak scales with the dirty set, which is what a
-            # guest that installs a few hundred megabytes between checkpoints
-            # makes large: two pods of 12 GiB fit inside the node's 32 GiB with
-            # its 4 GiB HugeTLB pool taken out.
+            # The HugeTLB allotment is both arenas, 5 GiB of them with room
+            # over. The ordinary memory beside it holds the Go heap, the page
+            # cache, one Firecracker process per VM and the page cache of the
+            # spill file. A checkpoint plans every page it is about to upload
+            # in memory at once, so the peak scales with the dirty set, which
+            # is what a guest that installs a few hundred megabytes between
+            # checkpoints makes large: two pods of 8 GiB fit inside the node's
+            # 32 GiB with its 12 GiB HugeTLB pool taken out.
             requests:
               cpu: "2"
-              memory: 12Gi
-              hugepages-2Mi: 2Gi
+              memory: 8Gi
+              hugepages-2Mi: 6Gi
             limits:
               cpu: "3"
-              memory: 12Gi
-              hugepages-2Mi: 2Gi
+              memory: 8Gi
+              hugepages-2Mi: 6Gi
           lifecycle:
             # Drain before the process is signalled: migrate every VM to the
             # other host and return only when none are left to hand over. It is

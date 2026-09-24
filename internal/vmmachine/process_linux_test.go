@@ -81,16 +81,14 @@ type hostPagersConfig struct {
 	SpillDir string
 }
 
-// ramPageBytes is the page the RAM pager of these suites runs. It is 4 KiB,
-// which is what a host runs; SPROUTFS_RAM_PAGE_BYTES asks for 2 MiB instead,
-// which is the geometry this suite had before the page-geometry plan's fourth
-// step and the only way to ask whether a defect found at 4 KiB predates it. It
-// is a knob for a reduction, not a configuration a deployment has.
+// ramPageBytes is the page the RAM pager of these suites runs. It is 2 MiB,
+// which is what a host runs by default; SPROUTFS_RAM_PAGE_BYTES asks for 4 KiB,
+// the page a deployment may choose instead.
 func ramPageBytes(t testing.TB) uint64 {
 	t.Helper()
 	value := os.Getenv("SPROUTFS_RAM_PAGE_BYTES")
 	if value == "" {
-		return checkpoint.PageSize4KiB
+		return checkpoint.PageSize2MiB
 	}
 	page, err := strconv.ParseUint(value, 10, 64)
 	if err != nil || (page != checkpoint.PageSize4KiB && page != checkpoint.PageSize2MiB) {

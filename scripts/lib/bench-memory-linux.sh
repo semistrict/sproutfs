@@ -18,7 +18,7 @@ test -c /dev/kvm
 hugepages=4096
 if [[ ${SPROUTFS_GCE_WORKLOAD:-0} == 1 ]]; then
     pooled=${SPROUTFS_BENCH_PMEM_RESIDENT_BYTES:-$((24 << 30))}
-    if [[ ${SPROUTFS_RAM_PAGE_BYTES:-4096} == 2097152 ]]; then
+    if [[ ${SPROUTFS_RAM_PAGE_BYTES:-2097152} == 2097152 ]]; then
         pooled=$((pooled + ${SPROUTFS_BENCH_RAM_RESIDENT_BYTES:-$((40 << 30))}))
     fi
     # A plain guest on 2 MiB pages takes its whole memory from the pool.

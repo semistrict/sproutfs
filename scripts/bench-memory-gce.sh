@@ -34,9 +34,8 @@ for shape in SPROUTFS_BENCH_RAM_BYTES SPROUTFS_BENCH_ROOT_BYTES \
     SPROUTFS_BENCH_RAM_RESIDENT_BYTES SPROUTFS_BENCH_PMEM_RESIDENT_BYTES; do
     [[ ${!shape:-} =~ ^[0-9]*$ ]] || { echo "$shape is a number of bytes" >&2; exit 2; }
 done
-# SPROUTFS_RAM_PAGE_BYTES is the RAM pager's page: 4096 (the default) on
-# ordinary memory, or 2097152 on the HugeTLB pool, which is the pager RAM ran
-# before it had a page of its own.
+# SPROUTFS_RAM_PAGE_BYTES is the RAM pager's page: 2097152 (the default) on the
+# HugeTLB pool, or 4096 on ordinary memory.
 case ${SPROUTFS_RAM_PAGE_BYTES:-} in ''|4096|2097152) ;; *) echo "SPROUTFS_RAM_PAGE_BYTES must be 4096 or 2097152" >&2; exit 2 ;; esac
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 project=${SPROUTFS_GCE_PROJECT:-$(gcloud config get-value project 2>/dev/null)}

@@ -14,13 +14,13 @@ this machine: the object namespace, the shared page cache, the volume manager,
 the migration page server, and the loops that keep what it runs durable and
 fenced. The supervisor around it — `host.Start`, which returns the `host.Service`
 the command serves — owns the two pagers, each over an arena and a spill file of
-its own: RAM's 4 KiB pages on an ordinary memfd, PMEM's 2 MiB pages on the
-node's HugeTLB pool. A deployment may run RAM at 2 MiB on the pool too
-(`SPROUTFS_RAM_PAGE_BYTES`), which is the pager RAM ran before it had a page of
-its own and what the 4 KiB one is measured against. A node sets its shared memory's transparent huge pages to
-`advise`, which lets the RAM arena allocate a zero run's whole 2 MiB blocks as
-huge pages and leaves every other shared memory on the node as it was; see
-[the arena](vm-memory.md). It also owns the
+its own: 2 MiB pages of the node's HugeTLB pool for both by default. A
+deployment may run RAM at 4 KiB on an ordinary memfd instead
+(`SPROUTFS_RAM_PAGE_BYTES=4096`), which holds a tenth of the memory for forks
+that write little and scattered and is slower at everything else; such a node
+sets its shared memory's transparent huge pages to `advise`, which lets the RAM
+arena allocate a zero run's whole 2 MiB blocks as huge pages and leaves every
+other shared memory on the node as it was; see [the arena](vm-memory.md). It also owns the
 Firecracker processes, the templates guest images are imported into, and the
 channel to the agent in a guest. `cmd/sproutfs-host` keeps its configuration, its
 HTTP handlers and the wiring between them, and nothing else.

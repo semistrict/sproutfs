@@ -23,12 +23,13 @@ Both containers come from one image, `sproutfs:demo`, with
 that image exists the pods stay in `ErrImageNeverPull`, which is the expected
 state of a freshly created demo VM.
 
-The node must have a 2 MiB HugeTLB pool of 4 GiB and `/dev/kvm`;
+The node must have a 2 MiB HugeTLB pool of 12 GiB and `/dev/kvm`;
 `scripts/lib/gce-demo-startup.sh` sets both up before k3s starts, so kubelet
-advertises `hugepages-2Mi: 4Gi` when it first registers the node. The pool is
-only the PMEM arenas now: a host runs one pager per kind of region, RAM's page
-is 4 KiB on ordinary memory and PMEM's is 2 MiB on the pool, so a host's RAM
-arena is charged to the pod's `memory` request instead. The sizes are what they
+advertises `hugepages-2Mi: 12Gi` when it first registers the node. A host runs
+one pager per kind of region and both run 2 MiB pages on the pool, so both
+arenas come out of the pod's `hugepages-2Mi` allotment. A deployment that runs
+RAM at 4 KiB (`SPROUTFS_RAM_PAGE_BYTES=4096`) puts its RAM arena on ordinary
+memory charged to the pod's `memory` request instead. The sizes are what they
 are because of the workload template: a 2 GiB guest and a few forks of it need
 an arena of about 5 GiB per host to stay resident, of which the default share
 gives 3.75 GiB to RAM and 1.25 GiB to PMEM.
@@ -282,7 +283,7 @@ durations.
 | `SPROUTFS_HUGEPAGE_DIR` | literal | `/hugepages-2Mi` | the pod's hugetlbfs mount. The PMEM arena is a `MFD_HUGETLB` memfd rather than a file in it, but the mount is what the kubelet grants the pod its HugeTLB allotment through, so the host refuses to start without it. The RAM arena is an ordinary memfd and does not touch the pool |
 | `SPROUTFS_SCRATCH_DIR` | literal | `/var/lib/sproutfs` | node-disk `emptyDir` for the spill file and the VMM scratch. A starting host wipes it: a restart is a host loss |
 | `SPROUTFS_ARENA_BYTES` | literal | `5368709120` | the host's whole resident page store. It is divided between the two pagers by `SPROUTFS_RAM_SHARE_PERCENT`; the two arenas are separate memfds and their capacities come to exactly this. The RAM share comes out of the pod's `memory` request and the PMEM share out of its HugeTLB allotment, so a node provisions the two separately |
-| `SPROUTFS_RAM_PAGE_BYTES` | unset | `4096` | the RAM pager's page: `4096` on ordinary memory, or `2097152` on the HugeTLB pool, which is the pager RAM ran before it had a page of its own. At 2 MiB the RAM share of the arena comes out of the pod's HugeTLB allotment as PMEM's does, so the allotment must cover both; every RAM budget, template memory and `SPROUTFS_VM_MEMORY_BYTES` is counted in this page |
+| `SPROUTFS_RAM_PAGE_BYTES` | unset | `2097152` | the RAM pager's page: `2097152` on the HugeTLB pool, where the RAM share of the arena comes out of the pod's HugeTLB allotment as PMEM's does, or `4096` on ordinary memory, which holds a tenth of the memory for forks that write little and scattered and is slower at everything else (docs/vm-memory.md). Every RAM budget, template memory and `SPROUTFS_VM_MEMORY_BYTES` is counted in this page |
 | `SPROUTFS_RAM_SHARE_PERCENT` | unset | `75` | how much of the arena, the spill file and the page budgets goes to the RAM pager; PMEM takes the rest. Three quarters, because RAM is where a guest's memory diverges and the root is mostly read: the 2026-09-19 fan-out measured a fork holding about 114 MB of RAM privately against 10 MB of root, and one shared root stands behind every fork's own RAM. A share that cannot divide the arena or the spill file into whole pages of both pagers is refused rather than rounded away |
 | `SPROUTFS_MEMORY_BYTES` | literal | `12884901888` | the RAM allotment both pagers take their pages from. It is one budget because it is one machine's memory, and because bytes are the only unit the two pagers' pages add up in. Defaults to the arena plus 1 GiB |
 | `SPROUTFS_CACHE_BYTES` | literal | `1073741824` | the page cache's own cap, which nothing else draws on |
@@ -310,12 +311,12 @@ durations.
 
 A host runs one pager per kind of region: one for its guests' RAM and one for
 their PMEM disks, each with an arena of its own, a spill file of its own and a
-page of its own. **RAM's page is 4 KiB and PMEM's is 2 MiB**, and the arena is
-the memory that page is: RAM's is an ordinary memfd out of the pod's own memory,
-PMEM's is a `MFD_HUGETLB` memfd out of the node's 2 MiB pool. A store into a
-guest's memory therefore copies and owns 4 KiB, while a store into its disk
-still costs the whole 2 MiB page; inherited RAM is still mapped in contiguous
-runs, so the small page costs mapping commands rather than paying for them.
+page of its own. **Both pages are 2 MiB by default**, and the arena is the memory
+that page is: a `MFD_HUGETLB` memfd out of the node's 2 MiB pool. A deployment
+may run RAM at 4 KiB instead, on an ordinary memfd out of the pod's own memory,
+where a store into a guest's memory copies and owns 4 KiB rather than 2 MiB;
+that holds a tenth of the memory for forks that write little and scattered, and
+is slower at everything else.
 
 The byte budgets a deployment sets are the host's, and one share divides all of
 them: a deployment that gives RAM three quarters of the arena wants RAM to have
@@ -337,18 +338,18 @@ then be refused its root, killing the guest part way through a restore. The host
 refuses such a VM before starting anything, and `GET /status` reports what each
 cap has left under `logical_pages_free`.
 
-The arithmetic for this deployment, each column in its own pager's page —
-4 KiB for RAM and 2 MiB for PMEM, which is why the two are nothing like each
-other and why neither is a number to add to the other:
+The arithmetic for this deployment, each column in its own pager's page — both
+2 MiB here, though neither is a number to add to the other, since a deployment
+may run RAM at 4 KiB:
 
-| | RAM pages (4 KiB) | PMEM pages (2 MiB) |
+| | RAM pages (2 MiB) | PMEM pages (2 MiB) |
 | --- | --- | --- |
-| arena, 5 GiB at the default 75/25 share | 983,040 | 640 |
-| a workload VM's RAM, 2 GiB | 524,288 | |
+| arena, 5 GiB at the default 75/25 share | 1,920 | 640 |
+| a workload VM's RAM, 2 GiB | 1,024 | |
 | its root, the 5 GiB image | | 2,560 |
 | the workload run's VMs, all on one host because every fork lands on its parent's: the base, its two forks and their two | 5 | 5 |
-| **what that run charges** | **2,621,440** | **12,800** |
-| arena × 32 | 31,457,280 | 20,480 |
+| **what that run charges** | **5,120** | **12,800** |
+| arena × 32 | 61,440 | 20,480 |
 
 Both caps hold that run with room over, and each is sized by the regions of its
 own kind rather than by an arena the two share. A deployment with larger guests
@@ -361,9 +362,7 @@ them from the arenas above and the node it lands on, and logs every one of them,
 per pager, when it assembles. Read-ahead is an 8 MiB run, which each pager
 converts into its own pages — four at 2 MiB, 2,048 at 4 KiB — because the run is
 a buffer and a number of pages would mean different amounts of memory in the
-two; write-ahead is one page for RAM always, because a run that made a store's
-neighbours privately dirty before the guest had used them would give back the
-sharing the small page buys, and for PMEM the same 8 MiB, or one page where its
+two; write-ahead is the same 8 MiB for each, or one page where that pager's
 dirty budget holds fewer than 64 such runs; concurrent page I/O is four permits per processor, held between 16
 and 256 and never more read-ahead runs than that pager's arena has room for; one
 session serves two faults per processor, between 8 and 64; and a VMM's mappings
@@ -413,8 +412,8 @@ flow, and not enough to touch anything outside the namespace.
 
 | | host (each of two pods) | orchestrator |
 | --- | --- | --- |
-| `hugepages-2Mi` | 2Gi request = limit | none |
-| `memory` | 12Gi request = limit | 256Mi / 512Mi |
+| `hugepages-2Mi` | 6Gi request = limit | none |
+| `memory` | 8Gi request = limit | 256Mi / 512Mi |
 | `cpu` | 2 request, 3 limit | 200m / 1 |
 | `emptyDir` | 20Gi on the node disk | none |
 | privileged | yes, plus a `hostPath` `CharDevice` on `/dev/kvm` and the node's read-only guest-image directory | no, one `hostPath` directory for its table |

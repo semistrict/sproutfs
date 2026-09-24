@@ -12,15 +12,19 @@ import (
 )
 
 // DefaultRAMPageSize and PMEMPageSize are the pages the two pagers run. RAM's
-// is a deployment's choice: 4 KiB by default, the unit a guest's store copies,
-// owns and publishes, on an arena of ordinary memory; or 2 MiB on the HugeTLB
-// pool, which is the pager RAM ran before it had a page of its own. PMEM's is
+// is a deployment's choice: 2 MiB on the HugeTLB pool by default, or 4 KiB on
+// an arena of ordinary memory, where a guest's store copies, owns and
+// publishes 4 KiB. 2 MiB is faster at every timing measured on 2026-09-23 —
+// boot 0.75 s against 4.4, a third more updates a second over a heap nothing
+// faults in — and costs about the same memory once forks do real work; 4 KiB
+// holds a tenth of the memory only for forks that write little and scattered,
+// such as a seeded database updated at random. PMEM's is
 // always 2 MiB, on the pool, which is also the alignment Firecracker requires
 // of a PMEM device. They are here rather than beside either pager so that the
 // byte budgets a deployment divides are checked against the pages they will
 // actually be counted in, and so that the statements cannot drift apart.
 const (
-	DefaultRAMPageSize = checkpoint.PageSize4KiB
+	DefaultRAMPageSize = checkpoint.PageSize2MiB
 	PMEMPageSize       = checkpoint.PageSize2MiB
 )
 

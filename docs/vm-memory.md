@@ -1431,8 +1431,8 @@ eviction, spill and refault.
 
 The memory suite runs a PMEM pager's 2 MiB page throughout, with one 4 KiB RAM
 pager beside it in `small_page_linux_test.go`; the full-guest suites run the
-production pair, a 4 KiB RAM pager over an ordinary memfd and a 2 MiB PMEM one
-over the pool. One fault installs a whole pager page, a store copies it, a seal
+production pair, a 2 MiB RAM pager and a 2 MiB PMEM one over the pool, and a
+4 KiB RAM pager over an ordinary memfd where `SPROUTFS_RAM_PAGE_BYTES=4096`. One fault installs a whole pager page, a store copies it, a seal
 write-protects it and a checkpoint publishes it as one part member, and a
 spilled page comes back whole. Migration requests default to one 2 MiB page with
 an 8 MiB per-peer in-flight byte budget; what a reply is counted in is the page

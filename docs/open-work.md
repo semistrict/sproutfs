@@ -67,7 +67,11 @@ everything open is listed here.
   `Host.dropSharers`, which an abandoned checkpoint and a retired fork point use
   per sharer per page.
 
-- **RAM runs 4 KiB and PMEM 2 MiB, and what that costs is unmeasured.** The
+- **RAM runs 2 MiB by default again; 4 KiB is measured and optional.** The
+  measurements of 2026-09-23 are in docs/measurements: 2 MiB is faster at every
+  timing and costs about the same memory once forks do real work, and 4 KiB
+  holds a tenth of the memory only for sparse writers. What follows is the
+  history of the 4 KiB work. The
   store, the pager, the wire and the VMM all carry each region's own page now.
   What the [page-geometry plan](../plans/ram-pmem-page-geometry-2026-09-19.md)
   has left is its steps 5 and 7 — handoff and migration geometry, and the

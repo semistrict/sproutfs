@@ -8,13 +8,13 @@ import (
 
 // deploymentConfig is the budgets deploy/10-host.yaml gives a host, divided
 // between the two pagers as SPROUTFS_RAM_SHARE_PERCENT divides them: a 5 GiB
-// arena three quarters to RAM, 9 GiB of dirty RAM in 4 KiB pages and 3 GiB of
-// dirty PMEM in 2 MiB ones.
+// arena three quarters to RAM, 9 GiB of dirty RAM and 3 GiB of dirty PMEM, both
+// in 2 MiB pages.
 func deploymentConfig() SupervisorConfig {
 	return SupervisorConfig{
 		ArenaBytes:   KindBytes{RAM: 3 << 30, PMEM: 5<<30 - 3<<30},
-		LogicalPages: KindPages{RAM: 1 << 22, PMEM: 1 << 13},
-		DirtyPages:   KindPages{RAM: 2359296, PMEM: 1536},
+		LogicalPages: KindPages{RAM: 1 << 13, PMEM: 1 << 13},
+		DirtyPages:   KindPages{RAM: 4608, PMEM: 1536},
 	}
 }
 
@@ -54,6 +54,7 @@ func TestBothPagersGetRunsOfTheSameSizeInTheirOwnPages(t *testing.T) {
 // offsets and its pages stay one number.
 func TestRAMsOffsetSpaceCoversAnExtentPerRangeItMayWriteInto(t *testing.T) {
 	config := deploymentConfig()
+	config.RAMPageSize, config.LogicalPages.RAM, config.DirtyPages.RAM = 4<<10, 1<<22, 2359296
 	ram := pagerConfig(config, vmmemory.Ram)
 	pmem := pagerConfig(config, vmmemory.Pmem)
 	if want := config.LogicalPages.RAM + ram.ResidentPages; ram.ArenaOffsets != want {

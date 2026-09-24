@@ -22,10 +22,8 @@
 #                           TestFirecrackerForkChildrenSurviveTheirFirstSeconds
 #                           is the same defect measured by the second, and takes
 #                           SPROUTFS_FORK_ARM and SPROUTFS_FORK_LIVES with it
-#   SPROUTFS_RAM_PAGE_BYTES the RAM pager's page, 4096 by default; 2097152 runs
-#                           the geometry this suite had before the page-geometry
-#                           plan's fourth step, which is the arm that says
-#                           whether a defect found at 4 KiB predates it
+#   SPROUTFS_RAM_PAGE_BYTES the RAM pager's page, 2097152 by default as a host
+#                           runs it; 4096 runs the page a deployment may choose
 #
 # One line per run goes to the results file, classified as:
 #   panic    the guest kernel died — the defect, whatever else the run did
@@ -98,7 +96,7 @@ load=$(limactl shell "$instance" cat /proc/loadavg)
 patch=$HOME/.cache/sproutfs-reduce/$label.patch
 (cd "$repo" && git diff HEAD) > "$patch"
 {
-    echo "# $label: $runs runs of ${SPROUTFS_FANOUT_TEST:-the fan-out}${SPROUTFS_FORK_ARM:+ arm $SPROUTFS_FORK_ARM}, tags=${tags:-none}, ram page=${SPROUTFS_RAM_PAGE_BYTES:-4096}, load before=$load"
+    echo "# $label: $runs runs of ${SPROUTFS_FANOUT_TEST:-the fan-out}${SPROUTFS_FORK_ARM:+ arm $SPROUTFS_FORK_ARM}, tags=${tags:-none}, ram page=${SPROUTFS_RAM_PAGE_BYTES:-2097152}, load before=$load"
     echo "# $(cd "$repo" && git rev-parse --short HEAD) plus $(wc -l < "$patch" | tr -d ' ') lines of $patch"
 } > "$results"
 echo "results: $results" >&2
