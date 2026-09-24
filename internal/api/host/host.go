@@ -412,6 +412,13 @@ type CaptureResult struct {
 	Publish    Seconds `json:"publish_seconds"`
 }
 
+// StopRequest is how a VM is stopped. A plain stop publishes the VM's disks and
+// discards its memory, so a start boots it over them; Suspend publishes its
+// memory and its VMM state too, so a start resumes the guest where it was.
+type StopRequest struct {
+	Suspend bool `json:"suspend,omitempty"`
+}
+
 // StopResult reports one VM stopped: the checkpoint its last writes were
 // published under, which is the pause it comes back at, and what the whole
 // stop cost. The VM's control record and its objects stay where they are, so

@@ -64,19 +64,25 @@ vm-2  sproutfs-host-0  running  1' \
 
 # A stopped VM keeps its row and its identity, and its host is a dash: that is
 # what a flow asking whether any host still runs it reads.
-ctl stop vm-2 > /dev/null
+want_printed 'stop says which host closed the VM and at which checkpoint' \
+    'stopped vm-2 on sproutfs-host-0 at checkpoint 2 in 0.420s' \
+    ctl stop vm-2
 want_printed 'a stopped VM is listed with no host' \
     'VM    HOST             STATE    CHECKPOINT
 vm-1  sproutfs-host-0  running  1
 vm-2  -                stopped  2' \
     ctl list
-want_printed 'stop says which host closed the VM and at which checkpoint' \
-    'stopped vm-1 on sproutfs-host-0 at checkpoint 2 in 0.420s' \
-    ctl stop vm-1
-want_printed 'start says where the VM came back and at which checkpoint' \
+want_printed 'a suspend says so' \
+    'suspended vm-1 on sproutfs-host-0 at checkpoint 2 in 0.420s' \
+    ctl stop vm-1 --suspend
+want_printed 'start says where a suspended VM came back and at which checkpoint' \
     'vm-1 started on sproutfs-host-1 from checkpoint 2 in 1.250s' \
     ctl start vm-1 --to sproutfs-host-1
-ctl start vm-2 --to sproutfs-host-0 > /dev/null
+# A plain stop published the disk alone, so the start boots the VM, and the
+# checkpoint it names is the one that discarded the memory.
+want_printed 'start of a plainly stopped VM says it came back cold' \
+    'vm-2 cold started on sproutfs-host-0 from checkpoint 3 in 1.250s' \
+    ctl start vm-2 --to sproutfs-host-0
 
 # hosts is the table a flow reads which hosts are ready out of the second
 # column of.

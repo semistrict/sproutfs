@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/semistrict/sproutfs/internal/api/orch"
 	"github.com/semistrict/sproutfs/internal/jsonhttp"
 )
 
@@ -25,7 +26,7 @@ func TestAHostsRefusalIsReportedAsARefusalAndNotAsAFailure(t *testing.T) {
 	d := newDeployment(t, map[string][]string{"host-0": {"vm-a"}, "host-1": {}})
 	d.hosts["host-0"].refuse = sealed()
 
-	_, err := d.orchestrator.Stop(t.Context(), "vm-a")
+	_, err := d.orchestrator.Stop(t.Context(), "vm-a", orch.StopRequest{})
 	if err == nil {
 		t.Fatal("stopping a VM its host refused reported success")
 	}
@@ -47,7 +48,7 @@ func TestAHostsOwnInternalFailureIsTheDeploymentsOwn(t *testing.T) {
 	d := newDeployment(t, map[string][]string{"host-0": {"vm-a"}})
 	d.hosts["host-0"].refuse = jsonhttp.Error{Op: "stop", Status: http.StatusInternalServerError,
 		Message: "the object store refused the publication"}
-	_, err := d.orchestrator.Stop(t.Context(), "vm-a")
+	_, err := d.orchestrator.Stop(t.Context(), "vm-a", orch.StopRequest{})
 	if err == nil {
 		t.Fatal("stopping a VM whose host failed reported success")
 	}
@@ -61,7 +62,7 @@ func TestAHostsOwnInternalFailureIsTheDeploymentsOwn(t *testing.T) {
 // status carried in a joined error must not override that.
 func TestTheOrchestratorsOwnRefusalWinsOverAHostsStatus(t *testing.T) {
 	d := newDeployment(t, map[string][]string{"host-0": {"vm-a"}, "host-1": {}})
-	if _, err := d.orchestrator.Stop(t.Context(), "vm-nobody-runs"); statusOf(err) != http.StatusNotFound {
+	if _, err := d.orchestrator.Stop(t.Context(), "vm-nobody-runs", orch.StopRequest{}); statusOf(err) != http.StatusNotFound {
 		t.Fatalf("stopping a VM no host runs is reported as %d: %v", statusOf(err), err)
 	}
 }

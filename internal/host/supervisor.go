@@ -91,14 +91,14 @@ type VMs interface {
 	Abandoned(ctx context.Context, id string) error
 	Drain(ctx context.Context) (hostapi.DrainResult, error)
 	// Stop ends a VM this host runs and leaves it behind: a last checkpoint of
-	// everything its guest still holds, and then the VMM process, the pages
-	// and the handle go. Its control record and its objects stay, so any host
+	// its disks — of its memory and VMM state too, when the request suspends
+	// it — and then the VMM process, the pages and the handle go. Its control record and its objects stay, so any host
 	// can open it again at the bytes the stop published — which is what makes
 	// a stop different from losing the host, where the writes since the last
 	// checkpoint go with it. Refused for a VM a fork point holds sealed, as
 	// a delete is. It reports the checkpoint it published, which is the pause
 	// the VM comes back at.
-	Stop(ctx context.Context, id string) (hostapi.StopResult, error)
+	Stop(ctx context.Context, id string, request hostapi.StopRequest) (hostapi.StopResult, error)
 	Delete(ctx context.Context, id string) error
 }
 

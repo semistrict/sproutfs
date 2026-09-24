@@ -80,7 +80,12 @@ func newServer(o *orchestrator, token string) http.Handler {
 		reply(w, r, "recover", recovered, err)
 	})
 	mux.HandleFunc("POST /vms/{id}/stop", func(w http.ResponseWriter, r *http.Request) {
-		stopped, err := o.Stop(r.Context(), r.PathValue("id"))
+		var request orch.StopRequest
+		if err := jsonhttp.Read(r, &request); err != nil {
+			jsonhttp.Fail(r.Context(), w, http.StatusBadRequest, "stop", err)
+			return
+		}
+		stopped, err := o.Stop(r.Context(), r.PathValue("id"), request)
 		reply(w, r, "stop", stopped, err)
 	})
 	mux.HandleFunc("POST /vms/{id}/start", func(w http.ResponseWriter, r *http.Request) {

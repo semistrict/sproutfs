@@ -49,10 +49,12 @@ type Checkpoint struct {
 	state     []byte
 	hasState  bool
 	// dropState publishes a checkpoint naming no VMM state rather than one that
-	// goes on naming its parent's, and resized the sizes this checkpoint gives
-	// the volumes it names. Both belong to a cold boot and to nothing else: the
-	// memory the state describes is gone, and the shape of a VM can change only
-	// at the moment nothing in memory describes it.
+	// goes on naming its parent's, which a cold boot and a checkpoint of the
+	// disks alone both are: the memory the state describes is gone, or the
+	// disks it was captured over are not these. resized is the sizes this
+	// checkpoint gives the volumes it names, which belongs to a cold boot and
+	// to nothing else: the shape of a VM can change only at the moment nothing
+	// in memory describes it.
 	dropState bool
 	resized   map[string]uint64
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/semistrict/sproutfs/internal/checkpoint"
 	"github.com/semistrict/sproutfs/internal/volume"
 )
 
@@ -97,4 +98,31 @@ func coldRegions(vm *volume.VM, sizes map[string]uint64) []Region {
 		regions = append(regions, regionOf(v.Name(), size))
 	}
 	return regions
+}
+
+// Starting is the VMM state a VM opened on this host starts from: the state its
+// selected checkpoint carries, which its guest is restored from, or none, which
+// its guest is cold booted with. A checkpoint published without state — the
+// interval's checkpoint of the disks, a template's, a VM that never ran — has
+// memory no registers describe, so starting over it is a power cut at that
+// checkpoint: the memory is discarded here, in a checkpoint of its own, and the
+// guest boots its kernel over the disks and recovers what its journal recovers.
+//
+// memory names the volume the guest's memory is in. A VM the state cannot be
+// read for is left open; closing it is the caller's.
+func (h *Host) Starting(ctx context.Context, vm *volume.VM, memory string) ([]byte, error) {
+	state, err := State(ctx, h.Checkpoints(), vm.Status().Checkpoint)
+	if err == nil {
+		return state, nil
+	}
+	if !errors.Is(err, checkpoint.ErrNoState) {
+		return nil, fmt.Errorf("reading the VMM state of %s: %w", vm.ID(), err)
+	}
+	opened := vm.Status().Checkpoint.Sequence
+	if err := vm.DiscardMemory(ctx, memory, nil); err != nil {
+		return nil, fmt.Errorf("discarding the memory of %s: %w", vm.ID(), err)
+	}
+	slog.InfoContext(ctx, "host: a VM with no VMM state is cold booted", "vm", vm.ID(),
+		"opened", opened, "checkpoint", vm.Status().Checkpoint.Sequence)
+	return nil, nil
 }

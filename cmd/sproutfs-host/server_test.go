@@ -114,7 +114,10 @@ func (f *fakeHost) Drain(context.Context) (hostapi.DrainResult, error) {
 	return f.drained, f.record("drain")
 }
 
-func (f *fakeHost) Stop(_ context.Context, id string) (hostapi.StopResult, error) {
+func (f *fakeHost) Stop(_ context.Context, id string, request hostapi.StopRequest) (hostapi.StopResult, error) {
+	if request.Suspend {
+		return f.stopped, f.record("suspend %s", id)
+	}
 	return f.stopped, f.record("stop %s", id)
 }
 
@@ -441,6 +444,19 @@ func TestStopClosesTheVMOnItsHost(t *testing.T) {
 	}
 	if len(fake.calls) != 1 || fake.calls[0] != "stop vm-1" {
 		t.Fatalf("the host was asked for %v", fake.calls)
+	}
+}
+
+// TestASuspendingStopSaysSo: a stop publishes the VM's disks alone unless its
+// request asks to suspend it, which is what keeps its memory and its VMM state.
+func TestASuspendingStopSaysSo(t *testing.T) {
+	fake := &fakeHost{stopped: hostapi.StopResult{VM: "vm-1", Checkpoint: 19}}
+	status, body := call(t, fake, http.MethodPost, "/vms/vm-1/stop", `{"suspend":true}`)
+	if status != http.StatusOK {
+		t.Fatalf("status %d: %s", status, body)
+	}
+	if len(fake.calls) != 1 || fake.calls[0] != "suspend vm-1" {
+		t.Fatalf("the host was asked for %v, want a suspend", fake.calls)
 	}
 }
 

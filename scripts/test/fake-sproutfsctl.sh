@@ -196,9 +196,9 @@ load_vm() {
 }
 
 save_vm() {
-    printf 'vm_host=%s\nvm_state=%s\nvm_checkpoint=%s\nvm_wseed=%s\nvm_wstep=%s\nvm_cseed=%s\nvm_cstep=%s\nvm_resident=%s\nvm_memory=%s\nvm_disk=%s\nvm_grown=%s\nvm_file=%s\nvm_cfile=%s\n' \
+    printf 'vm_host=%s\nvm_state=%s\nvm_checkpoint=%s\nvm_wseed=%s\nvm_wstep=%s\nvm_cseed=%s\nvm_cstep=%s\nvm_resident=%s\nvm_memory=%s\nvm_disk=%s\nvm_grown=%s\nvm_file=%s\nvm_cfile=%s\nvm_suspended=%s\n' \
         "$vm_host" "$vm_state" "$vm_checkpoint" "$vm_wseed" "$vm_wstep" "$vm_cseed" "$vm_cstep" \
-        "$vm_resident" "$vm_memory" "$vm_disk" "$vm_grown" "$vm_file" "$vm_cfile" \
+        "$vm_resident" "$vm_memory" "$vm_disk" "$vm_grown" "$vm_file" "$vm_cfile" "${vm_suspended:-0}" \
         > "$vms/$1"
 }
 
@@ -551,6 +551,8 @@ recover)
     printf '%s reopened on %s from checkpoint %s in 2.500s\n' "$target" "$host" "$vm_checkpoint"
     ;;
 stop)
+    suspend=0
+    [[ ${1:-} == --suspend ]] && suspend=1
     nth=$(counter stop)
     refused stop "$nth" && refuse stop
     load_vm "$target"
@@ -558,10 +560,16 @@ stop)
     was=$vm_host
     vm_checkpoint=$((vm_checkpoint + 1))
     vm_cseed=$vm_wseed vm_cstep=$vm_wstep vm_cfile=$vm_file
-    vm_host='' vm_state=stopped
+    # A plain stop publishes the disk alone, so the start after it boots; a
+    # suspend keeps the memory, and the start after it resumes.
+    vm_host='' vm_state=stopped vm_suspended=$suspend
     save_vm "$target"
     charge "$was" put 5 4194304
-    printf 'stopped %s on %s at checkpoint %s in 0.420s\n' "$target" "$was" "$vm_checkpoint"
+    if ((suspend)); then
+        printf 'suspended %s on %s at checkpoint %s in 0.420s\n' "$target" "$was" "$vm_checkpoint"
+    else
+        printf 'stopped %s on %s at checkpoint %s in 0.420s\n' "$target" "$was" "$vm_checkpoint"
+    fi
     ;;
 start)
     to='' cold=0 memory='' disk=''
@@ -591,6 +599,10 @@ start)
     [[ -n $to ]] || to=$(a_ready_host)
     host_ready "$to" || refuse start
     vm_host=$to vm_state=running
+    # A VM a plain stop left has no memory to resume, so it boots whether or not
+    # the start asked for that.
+    ((vm_suspended)) || cold=1
+    vm_suspended=0
     if ((cold)); then
         # The memory and the witness that lived in it are discarded and the
         # kernel is booted; the disk is exactly what the last checkpoint

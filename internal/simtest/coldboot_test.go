@@ -42,7 +42,7 @@ func TestAColdStartedVMComesBackWithoutItsMemory(t *testing.T) {
 		if err := world.StoreAll("vm-0", 7); err != nil {
 			t.Fatal(err)
 		}
-		if err := world.Stop(ctx, "vm-0"); err != nil {
+		if err := world.Suspend(ctx, "vm-0"); err != nil {
 			t.Fatal(err)
 		}
 		if err := world.StartCold(ctx, "vm-0", 1); err != nil {
@@ -65,7 +65,7 @@ func TestAColdStartedVMComesBackWithoutItsMemory(t *testing.T) {
 		if err := world.Checkpoint(ctx, "vm-0"); err != nil {
 			t.Fatal(err)
 		}
-		if err := world.Stop(ctx, "vm-0"); err != nil {
+		if err := world.Suspend(ctx, "vm-0"); err != nil {
 			t.Fatal(err)
 		}
 		if err := world.Start(ctx, "vm-0", 0); err != nil {
@@ -95,7 +95,7 @@ func TestAHostComingBackLeavesAStoppedVMStopped(t *testing.T) {
 		if err := world.StoreAll("vm-0", 6); err != nil {
 			t.Fatal(err)
 		}
-		if err := world.Stop(ctx, "vm-0"); err != nil {
+		if err := world.Suspend(ctx, "vm-0"); err != nil {
 			t.Fatal(err)
 		}
 		if err := world.LoseHost(ctx, 0); err != nil {
@@ -120,6 +120,59 @@ func TestAHostComingBackLeavesAStoppedVMStopped(t *testing.T) {
 		}
 		if err := world.Verify(ctx, simtest.ReadsMustSucceed); err != nil {
 			t.Fatal(err)
+		}
+		if err := world.Close(ctx); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+// TestALostHostColdBootsFromTheLastCheckpointOfTheDisks: the interval checkpoints
+// a VM's disks and not its memory, so after a host loss the checkpoint its
+// record selects has no VMM state to restore. The VM comes back cold on the host
+// that takes it over: its memory zeroes, even though an earlier checkpoint
+// published memory and registers, and its disk exactly what the checkpoint of
+// the disks sealed — never those registers over these disks.
+func TestALostHostColdBootsFromTheLastCheckpointOfTheDisks(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		runtime := newCampaignRuntime(4, false)
+		ctx := sim.WithRuntime(t.Context(), runtime)
+		world := coldWorld(t, runtime, "lost-disks/")
+
+		if err := world.StoreAll("vm-0", 5); err != nil {
+			t.Fatal(err)
+		}
+		if err := world.Checkpoint(ctx, "vm-0"); err != nil {
+			t.Fatal(err)
+		}
+		if err := world.StoreAll("vm-0", 6); err != nil {
+			t.Fatal(err)
+		}
+		if err := world.CheckpointDisks(ctx, "vm-0"); err != nil {
+			t.Fatal(err)
+		}
+		// Past the checkpoint of the disks, and lost with the host.
+		if err := world.StoreAll("vm-0", 8); err != nil {
+			t.Fatal(err)
+		}
+		if err := world.LoseHost(ctx, 0); err != nil {
+			t.Fatal(err)
+		}
+		if err := world.Settle(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if at := world.HostOf("vm-0"); at != 1 {
+			t.Fatalf("the VM of the lost host is on host-%d, want the one that took it over", at)
+		}
+		if got := world.Takeovers(); got != 1 {
+			t.Fatalf("%d takeovers, want the one of the lost host's VM", got)
+		}
+		if err := world.VerifyDurable(ctx, "vm-0"); err != nil {
+			t.Fatal(err)
+		}
+		// Zeroes where the memory was, and generation 6 on the disk.
+		if err := world.Verify(ctx, simtest.ReadsMustSucceed); err != nil {
+			t.Fatalf("a VM cold booted from its disks reads back something it does not hold: %v", err)
 		}
 		if err := world.Close(ctx); err != nil {
 			t.Fatal(err)

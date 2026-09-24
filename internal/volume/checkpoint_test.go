@@ -298,3 +298,49 @@ func TestFailedPublicationBurnsItsSequence(t *testing.T) {
 		}
 	})
 }
+
+// A checkpoint of the disks alone names no VMM state, not even its parent's: the
+// registers of the capture before it, over the disks of this one, are a guest
+// that never existed.
+func TestSnapshotDisksNamesNoState(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		h := newHarness(t)
+		defer h.close(t.Context())
+		manager := h.manager(t, h.config())
+		defer manager.Close(t.Context())
+		vm, want := createVM(t, manager, "vm")
+		defer vm.Close(t.Context())
+		store := h.imageStore(t, h.objects)
+
+		full, err := vm.Snapshot(t.Context(), volume.Prepared([]byte("registers"), nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := full.Wait(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if err := vm.Volume("root").Write(t.Context(), 0, []byte("disk only")); err != nil {
+			t.Fatal(err)
+		}
+		copy(want["root"], []byte("disk only"))
+		disks, err := vm.SnapshotDisks(t.Context(), volume.Prepared(nil, nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := disks.Wait(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		index, err := store.Open(t.Context(), vm.Status().Checkpoint)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if state, err := store.ReadState(t.Context(), index); !errors.Is(err, checkpoint.ErrNoState) {
+			t.Fatalf("a checkpoint of the disks names state %q (%v), want none", state, err)
+		}
+		want.checkCheckpoint(t, disks, "the checkpoint of the disks")
+
+		if _, err := vm.SnapshotDisks(t.Context(), volume.Prepared([]byte("registers"), nil)); !errors.Is(err, volume.ErrInvalidConfig) {
+			t.Fatalf("a checkpoint of the disks that captured state gave %v, want ErrInvalidConfig", err)
+		}
+	})
+}

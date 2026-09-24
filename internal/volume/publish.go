@@ -182,6 +182,37 @@ func Prepared(state []byte, sources map[string]DirtySource) PrepareFunc {
 // and goes on serving writes into a new overlay generation while the
 // publication runs.
 func (vm *VM) Snapshot(ctx context.Context, prepare PrepareFunc) (*Checkpoint, error) {
+	return vm.snapshot(ctx, prepare, false)
+}
+
+// SnapshotDisks is Snapshot of a VM's disks alone, which is the checkpoint a
+// host's interval takes: prepare pauses the guest and seals the regions of its
+// disks, and captures no VMM state. The checkpoint names none either — not
+// even its parent's, which is what a checkpoint that captured none otherwise
+// goes on naming — because the registers of an earlier pause over the disks of
+// this one are a guest that never existed. Its memory volume keeps the pages
+// the checkpoint before it published, and a VM opened at it has no state to
+// restore those with: it is cold booted, which discards them.
+//
+// A prepare that captured state anyway is refused, leaving the sources to the
+// caller to release as any failed prepare does.
+func (vm *VM) SnapshotDisks(ctx context.Context, prepare PrepareFunc) (*Checkpoint, error) {
+	if prepare == nil {
+		return nil, ErrInvalidConfig
+	}
+	return vm.snapshot(ctx, func(ctx context.Context) ([]byte, map[string]DirtySource, error) {
+		state, sources, err := prepare(ctx)
+		if err == nil && state != nil {
+			err = fmt.Errorf("%w: a checkpoint of the disks captured %d bytes of VMM state",
+				ErrInvalidConfig, len(state))
+		}
+		return nil, sources, err
+	}, true)
+}
+
+// snapshot is Snapshot and SnapshotDisks: dropState is a checkpoint that names
+// no VMM state at all.
+func (vm *VM) snapshot(ctx context.Context, prepare PrepareFunc, dropState bool) (*Checkpoint, error) {
 	if prepare == nil {
 		return nil, ErrInvalidConfig
 	}
@@ -218,7 +249,7 @@ func (vm *VM) Snapshot(ctx context.Context, prepare PrepareFunc) (*Checkpoint, e
 		vm.pubMu.Unlock()
 		return nil, err
 	}
-	ckpt.unchanged = unchanged
+	ckpt.unchanged, ckpt.dropState = unchanged, dropState
 	go func() {
 		if err := vm.complete(vm.ctx, ckpt); err != nil {
 			report(vm.ctx, "volume: snapshot publication failed", vm.id, err)

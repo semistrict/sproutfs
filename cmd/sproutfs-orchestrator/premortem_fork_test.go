@@ -81,7 +81,7 @@ func TestStartingAForkedChildIsAdmittedAgainstItsTemplate(t *testing.T) {
 		t.Fatal(err)
 	}
 	child := forked.Children[0]
-	if _, err := d.orchestrator.Stop(t.Context(), child); err != nil {
+	if _, err := d.orchestrator.Stop(t.Context(), child, orch.StopRequest{}); err != nil {
 		t.Fatal(err)
 	}
 	// Both hosts are now promised their whole arena, so the child fits nowhere

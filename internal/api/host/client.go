@@ -113,11 +113,12 @@ func (c *Client) Drain(ctx context.Context) (DrainResult, error) {
 	return jsonhttp.Call[DrainResult](ctx, c.http, http.MethodPost, c.path("/drain"), nil)
 }
 
-// Stop ends a VM this host runs and leaves it behind: its last writes are
-// published and its guest, pages and handle go, so any host can open it again.
-func (c *Client) Stop(ctx context.Context, id string) (StopResult, error) {
+// Stop ends a VM this host runs and leaves it behind: its disks are published,
+// with its memory and its VMM state when the request suspends it, and its
+// guest, pages and handle go, so any host can open it again.
+func (c *Client) Stop(ctx context.Context, id string, request StopRequest) (StopResult, error) {
 	return jsonhttp.Call[StopResult](ctx, c.http, http.MethodPost,
-		c.path("/vms/%s/stop", url.PathEscape(id)), nil)
+		c.path("/vms/%s/stop", url.PathEscape(id)), request)
 }
 
 func (c *Client) Delete(ctx context.Context, id string) error {

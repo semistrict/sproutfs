@@ -99,7 +99,7 @@ func placedWorld(t *testing.T) (context.Context, *simtest.World) {
 	c := sim.WithRuntime(t.Context(), runtime)
 	world := simtest.MustStart(t, c, simtest.Config{Runtime: runtime, Topology: topology,
 		Knobs: k, Prefix: prefix, Log: t.Logf})
-	if err := world.Stop(c, "vm-1"); err != nil {
+	if err := world.Suspend(c, "vm-1"); err != nil {
 		t.Fatal(err)
 	}
 	if err := world.StartCold(c, "vm-1", 0); err != nil {

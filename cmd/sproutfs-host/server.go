@@ -199,7 +199,12 @@ func newServer(h host.VMs, token string) http.Handler {
 		reply(w, r, "drain", drained, err)
 	})
 	mux.HandleFunc("POST /vms/{id}/stop", func(w http.ResponseWriter, r *http.Request) {
-		stopped, err := h.Stop(r.Context(), r.PathValue("id"))
+		var request hostapi.StopRequest
+		if err := jsonhttp.Read(r, &request); err != nil {
+			jsonhttp.Fail(r.Context(), w, http.StatusBadRequest, "stop", err)
+			return
+		}
+		stopped, err := h.Stop(r.Context(), r.PathValue("id"), request)
 		reply(w, r, "stop", stopped, err)
 	})
 	mux.HandleFunc("DELETE /vms/{id}", func(w http.ResponseWriter, r *http.Request) {

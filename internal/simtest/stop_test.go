@@ -45,7 +45,7 @@ func TestAStoppedVMKeepsWhatItsGuestWroteAndComesBackAtIt(t *testing.T) {
 		if err := world.StoreAll("vm-0", 7); err != nil {
 			t.Fatal(err)
 		}
-		if err := world.Stop(ctx, "vm-0"); err != nil {
+		if err := world.Suspend(ctx, "vm-0"); err != nil {
 			t.Fatal(err)
 		}
 		if at := world.HostOf("vm-0"); at >= 0 {
@@ -93,10 +93,10 @@ func TestStoppingAVMTwiceDoesNothingTheSecondTime(t *testing.T) {
 		ctx := sim.WithRuntime(t.Context(), runtime)
 		world, _ := startStopWorld(t, runtime, "twice/")
 
-		if err := world.Stop(ctx, "vm-0"); err != nil {
+		if err := world.Suspend(ctx, "vm-0"); err != nil {
 			t.Fatal(err)
 		}
-		if err := world.Stop(ctx, "vm-0"); err != nil {
+		if err := world.Suspend(ctx, "vm-0"); err != nil {
 			t.Fatalf("stopping a VM that is already stopped: %v", err)
 		}
 		if err := world.Start(ctx, "vm-0", 0); err != nil {
@@ -127,7 +127,7 @@ func TestAStoppedVMSurvivesLosingTheHostItRanOn(t *testing.T) {
 		if err := world.StoreAll("vm-0", 5); err != nil {
 			t.Fatal(err)
 		}
-		if err := world.Stop(ctx, "vm-0"); err != nil {
+		if err := world.Suspend(ctx, "vm-0"); err != nil {
 			t.Fatal(err)
 		}
 		if err := world.Kill(ctx, 0, sim.CrashProcess); err != nil {

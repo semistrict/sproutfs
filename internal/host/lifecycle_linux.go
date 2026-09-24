@@ -9,7 +9,6 @@ import (
 	"log/slog"
 
 	hostapi "github.com/semistrict/sproutfs/internal/api/host"
-	"github.com/semistrict/sproutfs/internal/checkpoint"
 	"github.com/semistrict/sproutfs/internal/platform"
 	"github.com/semistrict/sproutfs/internal/vmmachine"
 	"github.com/semistrict/sproutfs/internal/vmmemory"
@@ -87,8 +86,10 @@ func (s *supervisor) Open(ctx context.Context, id string, request hostapi.OpenRe
 	if err != nil {
 		return hostapi.OpenResult{}, err
 	}
+	// A VM whose checkpoint had no VMM state booted whether or not it was asked
+	// to, and a flow reading what it came back as has to know.
 	return hostapi.OpenResult{VM: s.record(m), Restore: s.since(restored),
-		Total: s.since(began), Cold: request.Cold}, nil
+		Total: s.since(began), Cold: len(state) == 0}, nil
 }
 
 // coldRequest refuses an open this host will not act on whatever its VMs are
@@ -129,13 +130,10 @@ func (s *supervisor) opening(ctx context.Context, id string,
 		return nil, nil, fmt.Errorf("opening %s: %w", id, err)
 	}
 	// The VMM state of the checkpoint the control record selects is what this
-	// guest resumes from; a checkpoint published without one — a template's, a
-	// VM that was never running, or one a cold start discarded the memory of —
-	// is cold booted instead.
-	state, err := State(ctx, s.host.Checkpoints(), vm.Status().Checkpoint)
-	if err != nil && !errors.Is(err, checkpoint.ErrNoState) {
-		return nil, nil, errors.Join(fmt.Errorf("reading the VMM state of %s", id), err,
-			closing(ctx, vm))
+	// guest resumes from; a checkpoint published without one is cold booted.
+	state, err := s.host.Starting(ctx, vm, vmmachine.RAMVolume)
+	if err != nil {
+		return nil, nil, errors.Join(err, closing(ctx, vm))
 	}
 	return vm, state, nil
 }
@@ -275,9 +273,9 @@ func (s *supervisor) Delete(ctx context.Context, id string) error {
 // apart in, and the refusal of a VM something still holds sealed — and this
 // only stops reporting a guest that no longer exists here, once the host has
 // said the stop happened. A refused stop leaves the VM running and reported.
-func (s *supervisor) Stop(ctx context.Context, id string) (hostapi.StopResult, error) {
+func (s *supervisor) Stop(ctx context.Context, id string, request hostapi.StopRequest) (hostapi.StopResult, error) {
 	began := s.clock.Now()
-	checkpoint, err := s.host.Stop(ctx, id)
+	checkpoint, err := s.host.Stop(ctx, id, request.Suspend)
 	if err != nil {
 		return hostapi.StopResult{}, err
 	}

@@ -23,7 +23,28 @@ func TestStopPrintsWhichHostClosedTheVM(t *testing.T) {
 	if out.String() != want {
 		t.Fatalf("printed %q, want %q", out.String(), want)
 	}
-	if len(stub.requests) != 1 || stub.requests[0] != "POST /vms/vm-1/stop" {
+	if len(stub.requests) != 1 || stub.requests[0] != "POST /vms/vm-1/stop {}" {
+		t.Fatalf("the CLI asked for %v", stub.requests)
+	}
+}
+
+// TestSuspendAsksToKeepTheMemory: a plain stop keeps a VM's disks, and
+// --suspend is how an operator asks for its memory and VMM state as well.
+func TestSuspendAsksToKeepTheMemory(t *testing.T) {
+	client, stub := serve(t, func(*http.Request) (int, any) {
+		return http.StatusOK, orch.StopResult{VM: "vm-1", Host: "sproutfs-host-a",
+			Checkpoint: 18, Total: 0.42}
+	})
+	var out bytes.Buffer
+	command := invocation{Command: "stop", Target: "vm-1", Suspend: true}
+	if err := execute(t.Context(), client, command, nil, &out, &out); err != nil {
+		t.Fatal(err)
+	}
+	want := "suspended vm-1 on sproutfs-host-a at checkpoint 18 in 0.420s\n"
+	if out.String() != want {
+		t.Fatalf("printed %q, want %q", out.String(), want)
+	}
+	if len(stub.requests) != 1 || stub.requests[0] != `POST /vms/vm-1/stop {"suspend":true}` {
 		t.Fatalf("the CLI asked for %v", stub.requests)
 	}
 }

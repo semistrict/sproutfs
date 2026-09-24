@@ -44,6 +44,8 @@ func TestParseReadsEachCommand(t *testing.T) {
 			want: invocation{Command: "delete", Target: "vm-1", Count: 1}},
 		{name: "stop", args: []string{"stop", "vm-1"},
 			want: invocation{Command: "stop", Target: "vm-1", Count: 1}},
+		{name: "suspend", args: []string{"stop", "vm-1", "--suspend"},
+			want: invocation{Command: "stop", Target: "vm-1", Count: 1, Suspend: true}},
 		{name: "start", args: []string{"start", "vm-1"},
 			want: invocation{Command: "start", Target: "vm-1", Count: 1}},
 		{name: "start on a named host", args: []string{"start", "vm-1", "--to", "sproutfs-host-b"},

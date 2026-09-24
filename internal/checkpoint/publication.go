@@ -55,10 +55,12 @@ type Publication struct {
 	state    []byte
 	hasState bool
 	// dropState publishes a checkpoint that names no VMM state at all, rather
-	// than going on naming the parent's. It is what a cold boot needs: the
+	// than going on naming the parent's. A cold boot needs it, because the
 	// memory the state describes is being discarded in the same publication,
-	// and state without the memory it was captured with is a moment that
-	// never existed.
+	// and so does a checkpoint of the disks alone, because the disks it
+	// publishes are not the ones the parent's state was captured over. Either
+	// way state beside the pages it would restore is a moment that never
+	// existed.
 	dropState bool
 	err       error
 }
@@ -193,7 +195,8 @@ func (p *Publication) Commit(ctx context.Context, source Source) (*Index, error)
 	}
 	// A checkpoint with no state of its own keeps the parent's: only a capture
 	// pauses the guest for VMM state, and the VM stays restorable from the last
-	// one between captures. A cold boot is the exception and says so.
+	// one between captures. A cold boot and a checkpoint of the disks alone
+	// are the exceptions and say so.
 	if p.dropState {
 		index.state = location{}
 	}

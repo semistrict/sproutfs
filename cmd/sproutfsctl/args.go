@@ -36,6 +36,9 @@ type invocation struct {
 	// may change, because it is the one moment nothing in memory describes it.
 	Cold         bool
 	Memory, Disk uint64
+	// Suspend stops a VM with its memory and its VMM state published beside
+	// its disks, so a start resumes it rather than booting it.
+	Suspend bool
 }
 
 // errUsage reports a command line this CLI will not run. Its message is what
@@ -57,7 +60,9 @@ const usage = `sproutfsctl drives a sproutfs demo deployment through its orchest
   sproutfsctl capture VM                   take a checkpoint now
   sproutfsctl kill-host HOST               delete a host pod, losing its unpublished writes
   sproutfsctl recover VM [--force]         reopen a VM whose host is gone
-  sproutfsctl stop VM                      checkpoint a VM and close it, keeping the VM
+  sproutfsctl stop VM [--suspend]          checkpoint a VM's disks and close it, keeping
+                                           the VM; --suspend keeps its memory too,
+                                           so a start resumes it rather than booting it
   sproutfsctl start VM [--to HOST] [--cold] [--memory 1G] [--disk 4G]
                                            open a stopped VM on a host again;
                                            --cold discards its memory and boots
@@ -93,7 +98,7 @@ var commands = map[string]struct {
 	"capture":   {target: "vm"},
 	"kill-host": {target: "host"},
 	"recover":   {target: "vm", switches: []string{"force"}},
-	"stop":      {target: "vm"},
+	"stop":      {target: "vm", switches: []string{"suspend"}},
 	"start":     {target: "vm", flags: []string{"to", "memory", "disk"}, switches: []string{"cold"}},
 	"delete":    {target: "vm"},
 	"check":     {},
@@ -144,6 +149,8 @@ func parse(args []string) (invocation, error) {
 				result.Force = true
 			case "cold":
 				result.Cold = true
+			case "suspend":
+				result.Suspend = true
 			}
 			continue
 		}

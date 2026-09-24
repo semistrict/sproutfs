@@ -183,12 +183,16 @@ func execute(ctx context.Context, client *orch.Client, command invocation,
 			result.Result.VM.ID, result.Host, result.Result.VM.Checkpoint, float64(result.Result.Total))
 		return err
 	case "stop":
-		result, err := client.Stop(ctx, command.Target)
+		result, err := client.Stop(ctx, command.Target, orch.StopRequest{Suspend: command.Suspend})
 		if err != nil {
 			return err
 		}
-		_, err = fmt.Fprintf(out, "stopped %s on %s at checkpoint %d in %.3fs\n",
-			result.VM, result.Host, result.Checkpoint, float64(result.Total))
+		verb := "stopped"
+		if command.Suspend {
+			verb = "suspended"
+		}
+		_, err = fmt.Fprintf(out, "%s %s on %s at checkpoint %d in %.3fs\n",
+			verb, result.VM, result.Host, result.Checkpoint, float64(result.Total))
 		return err
 	case "start":
 		result, err := client.Start(ctx, command.Target, orch.StartRequest{To: command.To,

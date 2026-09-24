@@ -194,6 +194,13 @@ type RecoverResult struct {
 	Result host.OpenResult `json:"result"`
 }
 
+// StopRequest is how a VM is stopped: a plain stop keeps its disks and a start
+// boots it over them, and Suspend keeps its memory and its VMM state as well, so
+// a start resumes the guest where it was.
+type StopRequest struct {
+	Suspend bool `json:"suspend,omitempty"`
+}
+
 // StopResult reports one VM stopped: the host that published its last writes
 // and closed it. The VM is still there — its control record and its objects are
 // where they were — so a start opens it again at exactly those bytes.

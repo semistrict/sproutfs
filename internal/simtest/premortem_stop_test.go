@@ -50,7 +50,7 @@ func TestStoppingAndStartingOneVMOverAndOverKeepsWhatItsGuestWrote(t *testing.T)
 			if err := world.StoreAll("vm-0", byte(turn+1)); err != nil {
 				t.Fatal(err)
 			}
-			if err := world.Stop(ctx, "vm-0"); err != nil {
+			if err := world.Suspend(ctx, "vm-0"); err != nil {
 				t.Fatal(err)
 			}
 			if running := world.Started(); len(running) != 0 {
@@ -102,7 +102,7 @@ func TestAForksChildIsStoppedAndStartedLikeAnyOtherVM(t *testing.T) {
 		if err := world.StoreAll("vm-1", 4); err != nil {
 			t.Fatal(err)
 		}
-		if err := world.Stop(ctx, "vm-1"); err != nil {
+		if err := world.Suspend(ctx, "vm-1"); err != nil {
 			t.Fatal(err)
 		}
 		if err := world.Start(ctx, "vm-1", 0); err != nil {
@@ -148,7 +148,7 @@ func TestStoppingAParentAndStartingItAgainLeavesItsChildrenAlone(t *testing.T) {
 		if err := world.StoreAll("vm-0", 6); err != nil {
 			t.Fatal(err)
 		}
-		if err := world.Stop(ctx, "vm-0"); err != nil {
+		if err := world.Suspend(ctx, "vm-0"); err != nil {
 			t.Fatal(err)
 		}
 		if err := world.Verify(ctx, simtest.ReadsMustSucceed); err != nil {
@@ -188,7 +188,7 @@ func TestDeletingAStoppedVMRemovesIt(t *testing.T) {
 		if err := world.StoreAll("vm-0", 8); err != nil {
 			t.Fatal(err)
 		}
-		if err := world.Stop(ctx, "vm-0"); err != nil {
+		if err := world.Suspend(ctx, "vm-0"); err != nil {
 			t.Fatal(err)
 		}
 		if err := world.Delete(ctx, "vm-0"); err != nil {
@@ -229,7 +229,7 @@ func TestADeliberateStartIsNotATakeover(t *testing.T) {
 		world, _ := startStopWorld(t, runtime, "start-not-takeover/")
 
 		took := world.Takeovers()
-		if err := world.Stop(ctx, "vm-0"); err != nil {
+		if err := world.Suspend(ctx, "vm-0"); err != nil {
 			t.Fatal(err)
 		}
 		if err := world.Start(ctx, "vm-0", 1); err != nil {

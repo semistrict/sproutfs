@@ -240,6 +240,11 @@ func (d *Driver) step(ctx context.Context, step int) error {
 			// what it is worth is still its last one.
 			d.log("step %d: %s could not publish: %v", step, id, err)
 		}
+	case "checkpoint-disks":
+		d.log("step %d: checkpoint the disks of %s", step, id)
+		if err := d.world.CheckpointDisks(ctx, id); err != nil {
+			d.log("step %d: %s could not publish its disks: %v", step, id, err)
+		}
 	case "migrate":
 		to := choose(d.world.Hosts())
 		d.log("step %d: migrate %s to host-%d", step, id, to)
@@ -269,8 +274,12 @@ func (d *Driver) step(ctx context.Context, step int) error {
 			return nil
 		}
 		stopping := started[choose(len(started))]
-		d.log("step %d: stop %s", step, stopping)
-		return d.world.Stop(ctx, stopping)
+		if choose(2) == 0 {
+			d.log("step %d: stop %s", step, stopping)
+			return d.world.Stop(ctx, stopping)
+		}
+		d.log("step %d: suspend %s", step, stopping)
+		return d.world.Suspend(ctx, stopping)
 	case "start":
 		// Only a stopped VM can be started, and nothing else will bring one
 		// back, so a schedule with none is a step that does nothing.
@@ -304,7 +313,9 @@ func (d *Driver) step(ctx context.Context, step int) error {
 }
 
 // operation draws what this step does. Checkpoints and migrations are the
-// common ones because they are what a deployment spends its life doing; a fork,
+// common ones because they are what a deployment spends its life doing, and
+// most checkpoints are of the disks alone because that is what the interval
+// takes: a VM whose last checkpoint was one of them comes back cold. A fork,
 // a stop, a start, a delete and a host restart are rarer and each changes what
 // the deployment is rather than what it holds.
 //
@@ -313,7 +324,7 @@ func (d *Driver) step(ctx context.Context, step int) error {
 // is where the faults land on a VM that is nothing but its objects, and where a
 // host that comes back without it has to leave it alone.
 func (d *Driver) operation(choose func(int) int) string {
-	weighted := []string{"checkpoint", "checkpoint", "checkpoint", "migrate", "migrate",
+	weighted := []string{"checkpoint-disks", "checkpoint-disks", "checkpoint", "migrate", "migrate",
 		"fork", "stop", "start", "delete", "restart"}
 	return weighted[choose(len(weighted))]
 }

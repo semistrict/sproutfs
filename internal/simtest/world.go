@@ -226,10 +226,15 @@ type instance struct {
 // store counter at that moment, which is what the VMM state it carries has to
 // restore. The sequence is what says which of them a VM came back at — the
 // control record names it — so the bytes are an assertion rather than a search.
+//
+// stateless is a checkpoint that carries no VMM state — the root a create
+// publishes, a checkpoint of the disks alone, a cold start's — which a VM that
+// comes back at it is cold booted over rather than restored from.
 type durableState struct {
-	sequence uint64
-	model    map[string][]byte
-	writes   int64
+	sequence  uint64
+	model     map[string][]byte
+	writes    int64
+	stateless bool
 }
 
 // Start builds the world one topology describes: every host, then every VM that
@@ -728,7 +733,7 @@ func (w *World) create(ctx context.Context, spec VMSpec) error {
 	for _, name := range g.names {
 		zeros[name] = make([]byte, g.pages[name]*g.pageBytes[name])
 	}
-	w.offer(in, durableState{sequence: root, model: zeros})
+	w.offer(in, durableState{sequence: root, model: zeros, stateless: true})
 	for _, name := range g.names {
 		for page := range uint64(g.pages[name]) {
 			before := g.stored()
@@ -945,6 +950,46 @@ func (w *World) StorePages(id, name string, pages []uint64, value byte) error {
 			return err
 		}
 	}
+	return nil
+}
+
+// CheckpointDisks publishes what the named VM's guest has written to its disks
+// and waits for it to become durable, which is the checkpoint a host's interval
+// takes: the guest pauses for the seal of its disks alone, and its memory and
+// its VMM state are neither sealed nor published. A VM that comes back at it
+// comes back cold — its memory gone, its disks exactly as this pause left them —
+// because a checkpoint with no registers is one no guest can be resumed from.
+//
+// Under a fault that has taken the store away it fails, as Checkpoint does, and
+// the pause it sealed stays one the VM may come back at.
+func (w *World) CheckpointDisks(ctx context.Context, id string) error {
+	in, g := w.runningVM(id)
+	if in == nil {
+		return nil
+	}
+	vm := w.vm(in)
+	if vm == nil {
+		return nil
+	}
+	at := durableState{model: g.snapshot(), writes: g.stored(), stateless: true}
+	ckpt, err := host.CaptureDisks(ctx, vm, g, w.hosts[in.host].clock)
+	if err != nil {
+		return fmt.Errorf("%s: disk capture: %w", id, err)
+	}
+	at.sequence = ckpt.Ref().Sequence
+	sealed, _ := ckpt.Sealed()
+	w.noteSealed(in, sealed, ckpt.Unchanged())
+	w.notePublished(id, at.sequence)
+	if err := ckpt.Wait(ctx); err != nil {
+		w.offer(in, at)
+		return fmt.Errorf("%s: publication: %w", id, err)
+	}
+	if ckpt.State() != nil {
+		return fmt.Errorf("%s: a checkpoint of the disks carries %d state bytes, want none",
+			id, len(ckpt.State()))
+	}
+	w.landed(in, g, at)
+	w.notePublished(id, vm.Status().Checkpoint.Sequence)
 	return nil
 }
 
@@ -1779,16 +1824,27 @@ func (w *World) Delete(ctx context.Context, id string) error {
 }
 
 // Stop ends one VM deliberately and leaves the VM behind: the host publishes
-// everything its guest still holds, closes the VMM process, gives the pages
-// back and releases the handle. Nothing runs it afterwards and nothing starts it
-// again on its own — that is the whole difference between a stop and every other
-// way a VM stops running here, all of which are repairs waiting to happen.
+// its guest's disks, closes the VMM process, gives the pages back and releases
+// the handle. Nothing runs it afterwards and nothing starts it again on its own
+// — that is the whole difference between a stop and every other way a VM stops
+// running here, all of which are repairs waiting to happen. Its memory is not
+// published, so a start boots it over its disks.
 //
 // The pause the stop publishes is the only one the VM can come back at, so it
 // supersedes every earlier one exactly as a checkpoint that landed does. A stop
 // the store refused is a stop that did not happen: the guest goes on running out
 // of its own pages and the VM is worth what its last checkpoint was.
 func (w *World) Stop(ctx context.Context, id string) error {
+	return w.stop(ctx, id, false)
+}
+
+// Suspend is Stop with the guest's memory and VMM state published beside its
+// disks, so a start resumes it where it was.
+func (w *World) Suspend(ctx context.Context, id string) error {
+	return w.stop(ctx, id, true)
+}
+
+func (w *World) stop(ctx context.Context, id string, suspend bool) error {
 	in, g := w.runningVM(id)
 	if in == nil {
 		return nil
@@ -1800,8 +1856,8 @@ func (w *World) Stop(ctx context.Context, id string) error {
 	// The model at the pause is what this publishes. Nothing stores into this
 	// guest while the stop runs — the driver is the only thing that stores at
 	// all — so the snapshot taken here is exactly what the seal froze.
-	at := durableState{model: g.snapshot(), writes: g.stored()}
-	stopped, err := running.Stop(ctx, id)
+	at := durableState{model: g.snapshot(), writes: g.stored(), stateless: !suspend}
+	stopped, err := running.Stop(ctx, id, suspend)
 	if err != nil {
 		w.logf("%s: the stop was refused: %v", id, err)
 		return nil
@@ -1819,7 +1875,7 @@ func (w *World) Stop(ctx context.Context, id string) error {
 	w.mu.Lock()
 	in.guest, in.present, in.stopped = nil, false, true
 	w.mu.Unlock()
-	w.logf("%s: stopped at %s", id, stopped)
+	w.logf("%s: stopped at %s, suspended=%t", id, stopped, suspend)
 	return nil
 }
 
@@ -2095,21 +2151,39 @@ func (w *World) reopenWith(ctx context.Context, in *instance, index int, why str
 	// comes back at is this writer's rather than one that already existed, and
 	// the pause it stands for is the one the world works out below.
 	selected := vm.Status().Checkpoint
+	var stopped durableState
 	if cold {
 		w.notePublished(in.spec.ID, selected.Sequence)
-		w.coldState(in, selected.Sequence)
+		stopped = w.latest(in)
+		w.coldState(in, stopped, selected.Sequence)
 	}
 	if !w.published[in.spec.ID][selected.Sequence] {
 		return false, fmt.Errorf("%s came back at checkpoint %s, which no writer of it published",
 			in.spec.ID, selected)
 	}
+	// What this VM reads back has to be exactly one of the checkpoints it may
+	// have come back at: never two of them mixed, and never a byte no guest
+	// wrote. It is found by the sequence the record selects before the guest
+	// starts, because a start over a checkpoint with no VMM state publishes one
+	// of its own.
+	came, ok := w.at(in, selected.Sequence)
+	if !ok {
+		return false, fmt.Errorf("%s came back at %s, which is not one of the checkpoints it may have come back at",
+			in.spec.ID, selected)
+	}
 	// The VMM state that checkpoint carries is what this guest is restored
-	// from: a volume's bytes without the registers that were running over them
-	// is a VM that cannot be resumed. A cold start has none by construction, and
-	// its guest boots instead, which here is a process that has written nothing.
-	state, err := host.State(ctx, running.Checkpoints(), selected)
-	if cold && errors.Is(err, checkpoint.ErrNoState) {
-		state, err = nil, nil
+	// from. One that carries none is cold booted, which is the host's own
+	// decision: it discards the memory in a checkpoint of its own, and the
+	// guest boots over the disks, which here is a process that has written
+	// nothing. A cold start has already discarded it.
+	var state []byte
+	if cold {
+		state, err = host.State(ctx, running.Checkpoints(), selected)
+		if errors.Is(err, checkpoint.ErrNoState) {
+			state, err = nil, nil
+		}
+	} else {
+		state, err = running.Starting(ctx, vm, MemoryVolume)
 	}
 	if err != nil {
 		w.logf("%s: %s could not read the VMM state of %s: %v", in.spec.ID, h.name, selected, err)
@@ -2119,20 +2193,26 @@ func (w *World) reopenWith(ctx context.Context, in *instance, index int, why str
 		in.host, in.present = index, false
 		return false, nil
 	}
+	if came.stateless != (state == nil) {
+		return false, fmt.Errorf("%s came back at %s with %d bytes of VMM state, and that checkpoint was published stateless=%t",
+			in.spec.ID, selected, len(state), came.stateless)
+	}
+	if !cold && came.stateless {
+		// The host cold booted it: what it comes back as is the checkpoint it
+		// opened with its memory replaced by zeroes, under the sequence the
+		// discard published, and the writes that checkpoint rewound are the
+		// ones past its own pause.
+		booted := vm.Status().Checkpoint.Sequence
+		w.notePublished(in.spec.ID, booted)
+		stopped = came
+		came = w.coldState(in, came, booted)
+		cold = true
+	}
 	g, err := w.newGuest(h, h.pager, vm, nil, state)
 	if err != nil {
 		return false, err
 	}
 	h.running(g)
-	// What this VM reads back has to be exactly one of the checkpoints it may
-	// have come back at: never two of them mixed, and never a byte no guest
-	// wrote. The read happens through the guest's own fault path, which is the
-	// only place a page the pager reconstructed wrongly shows.
-	came, ok := w.at(in, selected.Sequence)
-	if !ok {
-		return false, fmt.Errorf("%s came back at %s, which is not one of the checkpoints it may have come back at",
-			in.spec.ID, selected)
-	}
 	read, missing, unreadable := g.readAll(ctx)
 	if !agrees(read, missing, came.model) {
 		return false, fmt.Errorf("%s came back at %s reading state that checkpoint did not publish: %s",
@@ -2148,7 +2228,14 @@ func (w *World) reopenWith(ctx context.Context, in *instance, index int, why str
 	// What this recovery cost the guest in time is the other half of what it
 	// cost it: the writes past this checkpoint are gone, and the loss window is
 	// what says how many of them there may be.
-	w.rewind(in, came)
+	if cold {
+		// A booted guest counts its stores from none, so the writes that date
+		// them start over with it.
+		w.rewind(in, stopped)
+		in.writes = nil
+	} else {
+		w.rewind(in, came)
+	}
 	windowErr := w.spanHolds(in)
 	w.mu.Unlock()
 	if windowErr != nil {
@@ -2175,29 +2262,38 @@ func (w *World) openFor(ctx context.Context, running *host.Host, id string, cold
 	return running.Volumes().Open(ctx, id)
 }
 
-// coldState is the pause a cold start brings a VM back at: the one it was
-// stopped at with its memory replaced by zeroes, under the sequence the cold
-// start published. The guest that comes back has written nothing — it booted
-// rather than being restored — so the stores that pause is worth are none.
+// coldState is the pause a cold boot brings a VM back at: the pause from, with
+// its memory replaced by zeroes, under the sequence the boot's discard
+// published. The guest that comes back has written nothing — it booted rather
+// than being restored — so the stores that pause is worth are none.
 //
 // It supersedes every pause before it exactly as a checkpoint that landed
 // does: the memory those pauses held is gone from the store.
-func (w *World) coldState(in *instance, sequence uint64) {
+func (w *World) coldState(in *instance, from durableState, sequence uint64) durableState {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	was := durableState{}
-	if len(in.durables) > 0 {
-		was = in.durables[len(in.durables)-1]
-	}
-	model := make(map[string][]byte, len(was.model))
-	for name, data := range was.model {
+	model := make(map[string][]byte, len(from.model))
+	for name, data := range from.model {
 		if name == MemoryVolume {
 			model[name] = make([]byte, len(data))
 			continue
 		}
 		model[name] = bytes.Clone(data)
 	}
-	in.durables = []durableState{{sequence: sequence, model: model}}
+	booted := durableState{sequence: sequence, model: model, stateless: true}
+	in.durables = []durableState{booted}
+	return booted
+}
+
+// latest is the last pause this VM may have come back at, which is the one a
+// stop published.
+func (w *World) latest(in *instance) durableState {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if len(in.durables) == 0 {
+		return durableState{}
+	}
+	return in.durables[len(in.durables)-1]
 }
 
 // at is the checkpoint a VM came back at, found by the sequence its control

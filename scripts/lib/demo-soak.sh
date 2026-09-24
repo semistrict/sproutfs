@@ -463,17 +463,24 @@ migrate_vm() {
 }
 
 # stop_and_start stops one VM, requires that no host runs it, starts it — on the
-# other host when there is one — and checks it. A stop publishes everything the
-# guest held, so what comes back has to be exactly what went away; a stop that
-# lost the writes since the last checkpoint would look like a host loss, and
-# this is what tells them apart.
+# other host when there is one — and checks it. Most stops suspend the VM, which
+# publishes everything the guest held, so what comes back has to be exactly what
+# went away; a suspend that lost the writes since the last checkpoint would look
+# like a host loss, and this is what tells them apart. The rest are plain stops,
+# which publish the disk alone, and come back cold.
 stop_and_start() {
-    local vm=$1 was line began ended
+    local vm=$1 was line began ended cold=0
     was=$(host_of "$vm")
     [[ -n $was ]] || return 0
     check_at "$vm" before-stop
+    # A share of them come back cold, which is its own flow: what a cold start
+    # keeps is the disk, so what it can be asked is the disk, and a stop that
+    # is followed by one has no reason to publish the memory.
+    one_in "$cold_starts" && cold=1
+    local -a stopping=(stop "$vm")
+    ((cold)) || stopping+=(--suspend)
     began=$(now)
-    if ! line=$(ctl stop "$vm" 2>&1); then
+    if ! line=$(ctl "${stopping[@]}" 2>&1); then
         record_refusal "$round" stop "$vm" "$line"
         return 0
     fi
@@ -490,9 +497,7 @@ stop_and_start() {
     local to
     to=$(other_host "$was")
     [[ -n $to ]] || to=$was
-    # A share of them come back cold, which is its own flow: what a cold start
-    # keeps is the disk, so what it can be asked is the disk.
-    if one_in "$cold_starts"; then
+    if ((cold)); then
         cold_start "$vm" "$to"
         return 0
     fi

@@ -271,7 +271,7 @@ func (h *Host) stopped(vmID string, entry *registration, cause error) {
 	// nothing of what it could still have kept.
 	errs := h.retireForks(vmID)
 	if vm := h.vm(vmID); vm != nil {
-		if checkpoint, err := Capture(ctx, vm, entry.runtime, h.clock); err != nil {
+		if checkpoint, err := CaptureDisks(ctx, vm, entry.runtime, h.clock); err != nil {
 			errs = append(errs, err)
 		} else {
 			errs = append(errs, checkpoint.Wait(ctx))
@@ -387,12 +387,19 @@ func (h *Host) Delete(ctx context.Context, vmID string) error {
 	return errors.Join(append(errs, h.volumes.Delete(ctx, vmID))...)
 }
 
-// Stop ends a VM this host runs and leaves the VM behind: a last checkpoint of
-// everything the guest still holds, and then the VMM process is closed, the
-// pages go back to the pager and the handle is released. Its control record
-// and its objects stay where they are, so any host can open it again at exactly
-// the bytes this published — which is the whole difference between a stop and
-// losing the host, where the writes since the last checkpoint go with it.
+// Stop ends a VM this host runs and leaves the VM behind: a last checkpoint,
+// and then the VMM process is closed, the pages go back to the pager and the
+// handle is released. Its control record and its objects stay where they are,
+// so any host can open it again at exactly the bytes this published — which is
+// the whole difference between a stop and losing the host, where the writes
+// since the last checkpoint go with it.
+//
+// The checkpoint is of the disks alone, as the interval's is, unless suspend
+// asks for the guest's memory and VMM state as well: a VM stopped plainly is
+// cold booted over its disks when it starts again, and a suspended one resumes
+// where it was. Uploading a guest's memory is the one thing a stop does not do
+// unless asked, because it is the part that is expensive and that most
+// software never expected to survive.
 //
 // It is refused for a VM something still holds sealed, as a delete is. A fork
 // point holds the pages of the VMM process this would close, and a child
@@ -409,7 +416,7 @@ func (h *Host) Delete(ctx context.Context, vmID string) error {
 // The checkpoint it published is what it reports, because that is the pause
 // the VM comes back at and nothing else records it: the handle that knew is
 // released by the time this answers.
-func (h *Host) Stop(ctx context.Context, vmID string) (control.Ref, error) {
+func (h *Host) Stop(ctx context.Context, vmID string, suspend bool) (control.Ref, error) {
 	vm := h.vm(vmID)
 	h.machines.mu.Lock()
 	entry := h.machines.running[vmID]
@@ -432,7 +439,11 @@ func (h *Host) Stop(ctx context.Context, vmID string) (control.Ref, error) {
 	// pages, and what a checkpoint that did not land costs is only how far a
 	// host loss would rewind it.
 	entry.end()
-	checkpoint, err := Capture(ctx, vm, entry.runtime, h.clock)
+	capture := CaptureDisks
+	if suspend {
+		capture = Capture
+	}
+	checkpoint, err := capture(ctx, vm, entry.runtime, h.clock)
 	if err != nil {
 		h.run(vmID, entry)
 		return control.Ref{}, fmt.Errorf("the last checkpoint of %s: %w", vmID, err)
@@ -457,7 +468,7 @@ func (h *Host) Stop(ctx context.Context, vmID string) (control.Ref, error) {
 		return control.Ref{}, err
 	}
 	slog.InfoContext(ctx, "host: stopped a VM", "vm", vmID,
-		"checkpoint", checkpoint.Ref().Sequence)
+		"checkpoint", checkpoint.Ref().Sequence, "suspended", suspend)
 	return checkpoint.Ref(), nil
 }
 

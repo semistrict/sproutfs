@@ -15,7 +15,7 @@ import (
 // longer anywhere.
 func TestStopAsksTheHostRunningTheVMAndRecordsIt(t *testing.T) {
 	d := newDeployment(t, map[string][]string{"host-0": {"vm-a"}, "host-1": {}})
-	result, err := d.orchestrator.Stop(t.Context(), "vm-a")
+	result, err := d.orchestrator.Stop(t.Context(), "vm-a", orch.StopRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,11 +35,23 @@ func TestStopAsksTheHostRunningTheVMAndRecordsIt(t *testing.T) {
 	}
 }
 
+// TestASuspendReachesTheHost: whether a stop keeps the guest's memory is the
+// caller's choice, and the orchestrator passes it to the host that publishes.
+func TestASuspendReachesTheHost(t *testing.T) {
+	d := newDeployment(t, map[string][]string{"host-0": {"vm-a"}})
+	if _, err := d.orchestrator.Stop(t.Context(), "vm-a", orch.StopRequest{Suspend: true}); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"host-0 suspend vm-a"}; !slices.Equal(d.log, want) {
+		t.Fatalf("the deployment did %v, want %v", d.log, want)
+	}
+}
+
 // TestStopOfAVMNoHostRunsIsNotFound. A VM nothing runs has nothing to stop: it
 // is already only its control record and its objects.
 func TestStopOfAVMNoHostRunsIsNotFound(t *testing.T) {
 	d := newDeployment(t, map[string][]string{"host-0": {"vm-a"}})
-	if _, err := d.orchestrator.Stop(t.Context(), "vm-z"); !errors.Is(err, errNotFound) {
+	if _, err := d.orchestrator.Stop(t.Context(), "vm-z", orch.StopRequest{}); !errors.Is(err, errNotFound) {
 		t.Fatalf("stopping a VM no host runs = %v, want not found", err)
 	}
 }
@@ -160,7 +172,7 @@ func TestStartOnAHostWithoutRoomIsRefused(t *testing.T) {
 // which is the pair the soak drives.
 func TestStoppingAndStartingReturnsTheVMAtItsCheckpoint(t *testing.T) {
 	d := newDeployment(t, map[string][]string{"host-0": {"vm-a"}, "host-1": {}})
-	if _, err := d.orchestrator.Stop(t.Context(), "vm-a"); err != nil {
+	if _, err := d.orchestrator.Stop(t.Context(), "vm-a", orch.StopRequest{}); err != nil {
 		t.Fatal(err)
 	}
 	if running := d.hosts["host-0"].running; slices.Contains(running, "vm-a") {

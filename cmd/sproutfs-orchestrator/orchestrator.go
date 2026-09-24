@@ -48,7 +48,7 @@ type hostClient interface {
 	Receive(ctx context.Context, handoff host.Handoff) (host.ReceiveResult, error)
 	Released(ctx context.Context, id string) error
 	Abandoned(ctx context.Context, id string) error
-	Stop(ctx context.Context, id string) (host.StopResult, error)
+	Stop(ctx context.Context, id string, request host.StopRequest) (host.StopResult, error)
 	Delete(ctx context.Context, id string) error
 }
 
@@ -1148,7 +1148,7 @@ func (o *orchestrator) Recover(ctx context.Context, id string, force bool) (orch
 // stop, and a VM two hosts claim is refused here as everywhere else: one of
 // them is a writer whose stores can never be published, and nothing here can
 // say which.
-func (o *orchestrator) Stop(ctx context.Context, id string) (orch.StopResult, error) {
+func (o *orchestrator) Stop(ctx context.Context, id string, request orch.StopRequest) (orch.StopResult, error) {
 	began := time.Now()
 	hosts, err := o.survey(ctx)
 	if err != nil {
@@ -1158,13 +1158,13 @@ func (o *orchestrator) Stop(ctx context.Context, id string) (orch.StopResult, er
 	if err != nil {
 		return orch.StopResult{}, err
 	}
-	stopped, err := source.client.Stop(ctx, id)
+	stopped, err := source.client.Stop(ctx, id, host.StopRequest{Suspend: request.Suspend})
 	if err != nil {
 		return orch.StopResult{}, fmt.Errorf("stopping %s on %s: %w", id, source.report.Name, err)
 	}
 	o.note(ctx, vmRecord{ID: id, State: stateStopped})
 	slog.InfoContext(ctx, "sproutfs-orchestrator: stopped a VM", "vm", id, "host", source.report.Name,
-		"checkpoint", stopped.Checkpoint)
+		"checkpoint", stopped.Checkpoint, "suspended", request.Suspend)
 	return orch.StopResult{VM: id, Host: source.report.Name, Checkpoint: stopped.Checkpoint,
 		Total: host.Since(began)}, nil
 }

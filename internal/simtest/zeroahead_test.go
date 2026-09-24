@@ -54,7 +54,7 @@ func TestZeroWriteAheadPublishesOnlyWhatTheGuestStored(t *testing.T) {
 
 		// A cold start discards the memory the create wrote, so every page of
 		// the region is a hole again and none of it is this host's.
-		if err := world.Stop(ctx, "vm-1"); err != nil {
+		if err := world.Suspend(ctx, "vm-1"); err != nil {
 			t.Fatal(err)
 		}
 		if err := world.StartCold(ctx, "vm-1", 0); err != nil {

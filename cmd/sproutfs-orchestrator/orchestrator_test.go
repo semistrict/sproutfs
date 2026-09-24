@@ -343,10 +343,14 @@ func (f *fakeHostClient) Abandoned(_ context.Context, id string) error {
 
 // Stop closes the guest and leaves the VM: this host stops running it, and
 // nothing else about it changes.
-func (f *fakeHostClient) Stop(_ context.Context, id string) (host.StopResult, error) {
+func (f *fakeHostClient) Stop(_ context.Context, id string, request host.StopRequest) (host.StopResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.record("stop %s", id)
+	if request.Suspend {
+		f.record("suspend %s", id)
+	} else {
+		f.record("stop %s", id)
+	}
 	if f.refuse != nil {
 		return host.StopResult{}, f.refuse
 	}

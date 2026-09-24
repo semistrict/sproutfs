@@ -79,11 +79,12 @@ func (c *Client) Recover(ctx context.Context, id string, force bool) (RecoverRes
 }
 
 // Stop ends a running VM and leaves it behind: the host running it publishes
-// what its guest holds and closes it, and the VM is then only its control
-// record and its objects until something starts it again.
-func (c *Client) Stop(ctx context.Context, id string) (StopResult, error) {
+// its disks — and its memory and VMM state, when the request suspends it — and
+// closes it, and the VM is then only its control record and its objects until
+// something starts it again.
+func (c *Client) Stop(ctx context.Context, id string, request StopRequest) (StopResult, error) {
 	return jsonhttp.Call[StopResult](ctx, c.http, http.MethodPost,
-		c.path("/vms/%s/stop", url.PathEscape(id)), nil)
+		c.path("/vms/%s/stop", url.PathEscape(id)), request)
 }
 
 // Start opens a stopped VM on a host again. An empty destination places it on

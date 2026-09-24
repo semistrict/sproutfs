@@ -261,7 +261,7 @@ func runPremortemSoak(t *testing.T, seed uint64) {
 		if started := world.Started(); len(started) > 1 {
 			stopping := s.pick(started)
 			was := world.HostOf(stopping)
-			if err := world.Stop(ctx, stopping); err != nil {
+			if err := world.Suspend(ctx, stopping); err != nil {
 				t.Fatalf("round %d: stopping %s: %v", round, stopping, err)
 			}
 			for host := range topology.Hosts {

@@ -62,7 +62,7 @@ func Capture(ctx context.Context, vm *volume.VM, machine Machine, clock platform
 	if machine == nil {
 		return nil, ErrInvalidCapture
 	}
-	return capture(ctx, vm, machine, clock, machine.Prepare)
+	return capture(ctx, vm, machine, clock, vm.Snapshot, machine.Prepare)
 }
 
 // CaptureDisks is the checkpoint the interval takes: Capture of the VM's disks
@@ -81,23 +81,29 @@ func CaptureDisks(ctx context.Context, vm *volume.VM, machine Machine, clock pla
 	if machine == nil {
 		return nil, ErrInvalidCapture
 	}
-	return capture(ctx, vm, machine, clock, func(ctx context.Context) ([]byte, map[string]volume.DirtySource, error) {
-		sources, err := machine.SealDisks(ctx)
-		return nil, sources, err
-	})
+	if vm == nil {
+		return nil, ErrInvalidCapture
+	}
+	return capture(ctx, vm, machine, clock, vm.SnapshotDisks,
+		func(ctx context.Context) ([]byte, map[string]volume.DirtySource, error) {
+			sources, err := machine.SealDisks(ctx)
+			return nil, sources, err
+		})
 }
 
-// capture is Capture with the pause's own step: seal what prepare seals, resume,
-// and publish it behind the running guest.
+// capture is Capture with the pause's own step: snapshot takes the checkpoint,
+// prepare seals what it seals, the guest resumes, and the checkpoint publishes
+// behind the running guest.
 func capture(ctx context.Context, vm *volume.VM, machine Machine, clock platform.Clock,
-	prepare func(context.Context) ([]byte, map[string]volume.DirtySource, error)) (*volume.Checkpoint, error) {
+	snapshot func(context.Context, volume.PrepareFunc) (*volume.Checkpoint, error),
+	prepare volume.PrepareFunc) (*volume.Checkpoint, error) {
 	if vm == nil {
 		return nil, ErrInvalidCapture
 	}
 	clock = platform.ClockOr(clock)
 	paused := false
 	var pause time.Duration
-	ckpt, err := vm.Snapshot(ctx, func(ctx context.Context) ([]byte, map[string]volume.DirtySource, error) {
+	ckpt, err := snapshot(ctx, func(ctx context.Context) ([]byte, map[string]volume.DirtySource, error) {
 		began := clock.Now()
 		paused = true
 		state, sources, err := prepare(ctx)
