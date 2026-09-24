@@ -6,7 +6,7 @@ import { useStep } from './Steps'
 // 0 the old root names checkpoints 3, 5, 6, 7; 5 is pinned (a fork was taken there)
 // 1 checkpoint 8 lands; its root names 6, 7, 8 (3 was compacted into 8)
 // 2 reclaim = named by old root − named by new root − pins = {3}; 5 stays, pinned
-// 3 no collector: the pin on 5 is permanent, so 5 and what its root names stay for ever
+// 3 no collector: the pin on 5 is permanent, so 5 and everything its root references are kept
 const step = useStep()
 const ckpts = [3, 5, 6, 7, 8]
 const oldRoot = new Set([3, 5, 6, 7])
@@ -22,7 +22,7 @@ const caption = computed(() => [
   'the VM\'s selected root names checkpoints 3, 5, 6 and 7. Checkpoint 5 is pinned: a fork was taken there.',
   'checkpoint 8 lands. Compaction rewrote the live pages of 3 into it, so its root names 6, 7 and 8.',
   'reclaim = (old root) − (new root) − (pins) = {3}. Deleted whole, index object first. 5 stays: pinned.',
-  'a pin is permanent — no one can see that nothing reads through it any more — so 5 and what its root names are kept for ever. A collector is deferred by decision.',
+  'a pin is permanent because nothing can tell when it is no longer read, so 5 and everything its root references are kept. There is no collector yet.',
 ][step.value])
 </script>
 
@@ -48,7 +48,7 @@ const caption = computed(() => [
         <text x="500" y="230" class="small left">reclaim: {3, 5, 6, 7} − {6, 7, 8} − {5} = {3}</text>
       </g>
       <g :class="{ hidden: step < 3 }" class="fade">
-        <text x="500" y="255" class="small left warn">5 and everything its root names: kept for ever</text>
+        <text x="500" y="255" class="small left warn">5 and everything its root references: kept</text>
       </g>
     </svg>
     <p class="phase">{{ caption }}</p>

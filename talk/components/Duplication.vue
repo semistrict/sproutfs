@@ -8,9 +8,9 @@ import { useStep } from './Steps'
 const step = useStep()
 const vms = [0, 1, 2]
 const caption = computed(() => [
-  'the kernel\'s page cache is per file. One writable copy of the image per VM — a reflink is its own inode — is one copy of the same bytes per VM.',
-  'a virtio-blk disk gets a page cache inside each guest too: the same bytes again, once per VM, invisible to the host.',
-  'the pager keeps one resident page per name, however many VMs map it, and the guest reaches it over PMEM DAX: the host\'s copy is the only copy.',
+  'the kernel\'s page cache is per file. Each VM\'s writable copy of the image, even a reflink, is a separate inode, so each VM gets its own copy of the same data.',
+  'with virtio-blk, each guest also caches the disk in its own page cache: another copy per VM that the host cannot see.',
+  'the pager keeps one resident page per name, however many VMs map it, and the guest accesses it through PMEM DAX, so host memory holds one copy.',
 ][step.value])
 </script>
 

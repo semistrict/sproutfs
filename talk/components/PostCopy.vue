@@ -16,10 +16,10 @@ const caption = computed(() => [
   'the source runs the guest at (7,2); pages 1 and 3 written since exist only here',
   'stop: quiesce the loop, pause the vCPUs, capture the VMM state. Nothing sealed, nothing uploaded.',
   'hand off: regions give their volumes up, keep their pages, report which pages no checkpoint has',
-  'the destination opens the VM: record, epoch 7→8, root. Two objects, no page. Any other sequence: stale, refused.',
+  'the destination opens the VM: reads the record, increments the epoch 7→8, reads the root. It reads two objects and no pages, and refuses any other sequence as stale.',
   'resume: faults ask the source\'s page server first, the destination\'s own volume otherwise',
   'a stream fetches the unpublished pages first, to completion, then the rest of the resident set',
-  'every unpublished page here: the source is released and may exit',
+  'the destination has every unpublished page; the source is released and may exit',
   'the destination\'s next checkpoint publishes them under (8,1). The migration uploaded nothing.',
 ][step.value])
 </script>

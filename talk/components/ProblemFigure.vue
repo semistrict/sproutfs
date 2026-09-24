@@ -9,8 +9,8 @@ const step = useStep()
 const vms = [0, 1, 2, 3]
 const caption = computed(() => [
   'many VMs, mostly the same: one image, forks of running parents, free to move between hosts',
-  'a VM owns its differences. Everything else it inherited.',
-  'snapshot, restore, migrate, fork: each copies the whole VM. The cost is its size — mostly bytes nobody wrote.',
+  'a VM\'s own data is its changes; the rest comes from the image, its parent or earlier checkpoints.',
+  'snapshot, restore, migrate, fork: each copies the whole VM, so the cost grows with its size, mostly for unchanged data.',
 ][step.value])
 </script>
 

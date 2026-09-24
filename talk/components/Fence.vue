@@ -12,9 +12,9 @@ const step = useStep()
 const caption = computed(() => [
   'host A holds epoch 7; its checkpoints are (7,1), (7,2), …',
   'host A stops answering. The orchestrator acts only on evidence: pod gone, or a host that answers and holds nothing.',
-  'host B opens the VM: a conditional write takes the epoch to 8. That is the fence.',
+  'host B opens the VM: a conditional write increments the epoch to 8, which fences host A.',
   'host A returns and tries to select (7,3): refused, stale epoch. It closes the VMM and releases the VM.',
-  'B\'s (8,1), (8,2) are above anything epoch 7 could allocate, and every object is create-if-absent: A\'s late uploads collide with nothing.',
+  'B\'s (8,1), (8,2) are greater than any sequence epoch 7 can allocate, and every object is create-if-absent, so A\'s late uploads cannot collide.',
 ][step.value])
 </script>
 
