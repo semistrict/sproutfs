@@ -66,6 +66,8 @@ func (c *RegionCheckpoint) Settle(ctx context.Context) (int, error) {
 	dropped := make([]bool, len(held))
 	failures := make([]error, len(held))
 	workers := min(max(r.host.cfg.SettleWorkers, 1), len(held))
+	measuring := r.host.measuring()
+	var changed, measured, unmeasured atomic.Uint64
 	var next atomic.Int64
 	var wait sync.WaitGroup
 	for range workers {
@@ -78,11 +80,32 @@ func (c *RegionCheckpoint) Settle(ctx context.Context) (int, error) {
 				if i >= len(held) {
 					return
 				}
+				if measuring {
+					blocks, known, err := worker.changedBlocks(ctx, c, held[i])
+					if err != nil {
+						failures[i] = err
+						continue
+					}
+					if known {
+						changed.Add(uint64(blocks))
+						measured.Add(1)
+					} else {
+						unmeasured.Add(1)
+					}
+				}
 				equal[i], failures[i] = worker.compare(ctx, c, held[i])
 			}
 		}()
 	}
 	wait.Wait()
+	if measuring {
+		h := r.host
+		h.mu.Lock()
+		h.stats.ChangedBlocks += changed.Load()
+		h.stats.MeasuredPages += measured.Load()
+		h.stats.UnmeasuredPages += unmeasured.Load()
+		h.mu.Unlock()
+	}
 	// The comparison holds no page across the walk, so what it decided is
 	// applied afterwards, in page order and in bounded batches: a settle of a
 	// guest's whole working set is thousands of pages at 4 KiB, and revoking

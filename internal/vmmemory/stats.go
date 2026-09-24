@@ -65,6 +65,11 @@ type Stats struct {
 	// checkpoint therefore publishes nothing for and which goes back to sharing
 	// the page it came from.
 	CheckpointPages, UnchangedPages uint64
+	// ChangedBlocks counts, where Config.MeasureChanges is on, the 4 KiB
+	// blocks of the pages checkpoints settled whose bytes the guest changed
+	// since the page became private; MeasuredPages the pages that was known
+	// for, and UnmeasuredPages the settled pages it was not.
+	ChangedBlocks, MeasuredPages, UnmeasuredPages uint64
 	// DirtyWaits counts the times a store waited for the dirty budget,
 	// CheckpointRequests the checkpoints that wait asked for out of the
 	// interval's turn, and DirtyStalls the stores no checkpoint could admit,

@@ -497,6 +497,11 @@ func (r *Region) takePrivate(ctx context.Context, b *binding, old, pg *resident,
 	h.bind(b, pg)
 	r.takeFromCheckpoint(b, slot, origin)
 	h.probe.granted(b, pg, origin)
+	if h.measuring() {
+		if err := r.noteCopied(ctx, b.index, pg); err != nil {
+			return err
+		}
+	}
 	from := -1
 	if origin != nil {
 		from = origin.slot
@@ -608,6 +613,9 @@ func (r *Region) storeZeros(ctx context.Context, index, first, last uint64, spil
 	r.setDirtyMappedRun(bindings) // a failed ACK may still have installed the mapping
 	for k, b := range bindings {
 		h.probe.granted(b, pages[k], nil)
+		if h.measuring() {
+			r.noteZeroed(b.index)
+		}
 		b.zero = false
 		if b.index == index {
 			b.spillSlot, *spill = *spill, -1

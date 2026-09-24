@@ -358,6 +358,11 @@ type Config struct {
 	// anything: the histograms are instrumentation, and injecting the clock is
 	// what keeps a simulated run from reading the machine it happens to be on.
 	Clock platform.Clock
+	// MeasureChanges counts, at every settle, how many 4 KiB blocks of each
+	// checkpointed page the guest actually changed, into Stats.ChangedBlocks.
+	// It sums a page's bytes when it becomes private and again behind the seal,
+	// so it is a benchmark's instrument and not a deployment's.
+	MeasureChanges bool
 }
 
 // Offsets is how many addresses this pager's arena has, which is what the arena

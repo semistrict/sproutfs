@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/maphash"
 	"math"
 	"sync"
 	"sync/atomic"
@@ -97,6 +98,8 @@ type Host struct {
 	// probe is the pager's audit of what it hands a guest, and is nothing at
 	// all unless this build has the sproutfsprobe tag; see probe_on.go.
 	probe probeState
+	// changeSeed keys the block sums Config.MeasureChanges compares.
+	changeSeed maphash.Seed
 }
 
 // maximumReadAheadBytes is the largest run one fault may hold a buffer for,
@@ -170,7 +173,7 @@ func New(ctx context.Context, resources *resource.Budget, cfg Config, arena Aren
 	// An extent is one 2 MiB-aligned range's worth of this pager's pages: 512 at
 	// 4 KiB, and one at 2 MiB, which is a pager with nothing to place.
 	extentPages := int(rangeBytes / pageSize)
-	h := &Host{pageSize: pageSize, cfg: cfg, clock: platform.ClockOr(cfg.Clock), arena: arena, spill: spill, resources: resources, residentLeases: make(map[int]residentSlot), reservations: newReservations(cfg.DirtyPages),
+	h := &Host{changeSeed: maphash.MakeSeed(), pageSize: pageSize, cfg: cfg, clock: platform.ClockOr(cfg.Clock), arena: arena, spill: spill, resources: resources, residentLeases: make(map[int]residentSlot), reservations: newReservations(cfg.DirtyPages),
 		slots:       slots.New(cfg.ArenaOffsets, cfg.ResidentPages, extentPages),
 		extents:     make(map[extentKey]*extent),
 		extentPages: extentPages,

@@ -40,10 +40,12 @@ type Region struct {
 	// peer marks a backing whose loads can return bytes no checkpoint holds, so
 	// a page it serves enters this region as private dirty state. It decides
 	// whether a fault has to reserve against the dirty budget before it loads.
-	peer          bool
-	mapping       Mapping
-	pageCount     int
-	bindingsMu    sync.Mutex
+	peer       bool
+	mapping    Mapping
+	pageCount  int
+	bindingsMu sync.Mutex
+	// changes is Config.MeasureChanges's state, empty unless it is on.
+	changes       changes
 	blocks        map[uint64]*bindingBlock
 	zeroRanges    pageranges.Map
 	dirtyBindings map[uint64]*binding

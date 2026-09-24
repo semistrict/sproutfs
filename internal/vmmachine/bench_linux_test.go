@@ -602,8 +602,9 @@ func newBenchmark(ctx context.Context, t *testing.T) *benchmark {
 			Dirty: b.ramDirtyBytes, WriteAhead: int(benchRAMWriteAheadBytes / ramPageBytes(t))},
 		PMEM: hostPagerBudgets{Arena: b.pmemResidentBytes, Logical: b.pmemLogicalBytes,
 			Dirty: b.pmemDirtyBytes, WriteAhead: benchWriteAheadPages()},
-		Resources: resources,
-		SpillDir:  work,
+		Resources:   resources,
+		SpillDir:    work,
+		MeasurePMEM: b.scenarios["disk-checkpoints"],
 	})
 	b.managedScratch, err = vmmachine.NewScratch(t.Context(), filepath.Join(b.scratch, "managed"), adapters.NewDisk)
 	if err != nil {
@@ -1102,6 +1103,12 @@ func TestGuestWorkloadBenchmark(t *testing.T) {
 		b.sync(ctx, sourceConsole)
 	}
 
+	// What a checkpoint of the disks costs against the bytes the guest really
+	// changed, one checkpoint at a time, under workloads that write the disk.
+	if b.scenarios["disk-checkpoints"] {
+		b.diskCheckpoints(ctx, sourceConsole, source, template)
+	}
+
 	// The capture whose checkpoint every restore and fork below starts from,
 	// rebuilt as the pause a fork inherits: a published checkpoint with
 	// nothing held back, which is what a template is.
@@ -1200,6 +1207,7 @@ var benchScenarios = []struct {
 	{"boot", "", false},
 	{"pnpm-install", "boot", false},
 	{"repository", "boot", false},
+	{"disk-checkpoints", "boot", true},
 	{"capture", "boot", false},
 	{"restore-cold", "capture", false},
 	{"restore-warm", "capture", false},

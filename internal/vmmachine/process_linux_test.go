@@ -79,6 +79,9 @@ type hostPagersConfig struct {
 	// kind. Empty is a directory of the test's own; a run whose guests write
 	// gigabytes names the disk it was given instead.
 	SpillDir string
+	// MeasurePMEM has the PMEM pager count the blocks each checkpoint's pages
+	// really changed, which is what the disk-checkpoints scenario reports.
+	MeasurePMEM bool
 }
 
 // ramPageBytes is the page the RAM pager of these suites runs. It is 2 MiB,
@@ -169,7 +172,8 @@ func newConfiguredHostPagers(t testing.TB, ctx context.Context, cfg hostPagersCo
 			// one page by default — the plan's decision for RAM, and what these
 			// suites have always given PMEM.
 			ReadAheadPages:  int(checkpoint.PageSize2MiB / page),
-			WriteAheadPages: max(budgets.WriteAhead, 1)}
+			WriteAheadPages: max(budgets.WriteAhead, 1),
+			MeasureChanges:  kind == vmmemory.Pmem && cfg.MeasurePMEM}
 		pager, err := vmmemory.New(ctx, resources, pagerConfig, arena, spill)
 		if err != nil {
 			t.Fatalf("%s pager: %v", kind, err)
