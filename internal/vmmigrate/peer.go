@@ -70,6 +70,7 @@ type PeerConfig struct {
 	PageSize int
 	Dial     Dialer
 	// MaxConnections bounds this region's requests in flight, four by default.
+	// The post-copy stream uses all but one, which is kept for guest faults.
 	MaxConnections int
 	// MaxPagesPerRequest bounds one request: one 2 MiB production page by
 	// default, or at most 256 smaller model pages within 2 MiB.
@@ -100,7 +101,15 @@ type PeerStats struct {
 	Fetched   int64
 	// FellBack reports that this region will never ask the source again.
 	FellBack bool
+	// Latency is how long this region's requests to the source took, guest
+	// faults and the post-copy stream apart.
+	Latency RequestLatency
 }
+
+// RequestLatency is how long requests to a migration's source took: a guest
+// fault's and the post-copy stream's, each in total and waiting for a
+// connection.
+type RequestLatency = peer.Latency
 
 // PeerBacking is a pager backing whose loads ask the source host of a migration
 // first and read the destination's own volume for everything it does not hold.
@@ -220,7 +229,8 @@ func NewPeerBacking(config PeerConfig) (*PeerBacking, error) {
 		life:        life, endLife: endLife,
 		source: peer.New(peer.Config{Peer: config.Peer, VM: config.VM,
 			Volume: config.Volume.Name(), PageSize: config.PageSize,
-			MaxConnections: config.MaxConnections, MaxRuns: defaultMaxRuns, Dial: config.Dial})}
+			MaxConnections: config.MaxConnections, MaxRuns: defaultMaxRuns, Dial: config.Dial,
+			Clock: config.Clock})}
 	for _, run := range config.Unpublished {
 		for page := run.First; page < run.First+uint64(run.Count); page++ {
 			b.unpublished[page] = true
@@ -301,7 +311,8 @@ func (b *PeerBacking) predatesHandoff(ref control.Ref) bool {
 func (b *PeerBacking) Stats() PeerStats {
 	return PeerStats{PeerPages: b.served.Load(), VolumePages: b.fromDisk.Load(),
 		Requests: b.source.Requests(), Refusals: b.refusals.Load(), Stalls: b.stalls.Load(),
-		Unfetched: b.Unfetched(), Fetched: b.fetched.Load(), FellBack: b.gone()}
+		Unfetched: b.Unfetched(), Fetched: b.fetched.Load(), FellBack: b.gone(),
+		Latency: b.source.Latency()}
 }
 
 // Unfetched reports how many pages no checkpoint holds are still only on the
@@ -312,8 +323,8 @@ func (b *PeerBacking) Unfetched() int {
 	return len(b.unfetched)
 }
 
-// Concurrency is how many requests this region may have in flight at once,
-// which is what a stream fetching its pages should run in parallel.
+// Concurrency is how many requests the post-copy stream may have in flight for
+// this region at once: every connection but the one kept for guest faults.
 func (b *PeerBacking) Concurrency() int { return b.source.Concurrency() }
 
 // onlyOnSource reports the first page of a run whose bytes are still only on the

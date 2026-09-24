@@ -10,9 +10,9 @@ import (
 	"sync/atomic"
 
 	"github.com/semistrict/sproutfs/internal/checkpoint"
+	"github.com/semistrict/sproutfs/internal/latency"
 	"github.com/semistrict/sproutfs/internal/platform"
 	"github.com/semistrict/sproutfs/internal/resource"
-	"github.com/semistrict/sproutfs/internal/vmmemory/internal/latency"
 	"github.com/semistrict/sproutfs/internal/vmmemory/internal/slots"
 )
 

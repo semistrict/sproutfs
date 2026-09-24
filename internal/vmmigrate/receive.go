@@ -13,6 +13,7 @@ import (
 	"github.com/semistrict/sproutfs/internal/platform"
 	"github.com/semistrict/sproutfs/internal/platform/sim"
 	"github.com/semistrict/sproutfs/internal/vmmemory"
+	"github.com/semistrict/sproutfs/internal/vmmigrate/internal/peer"
 	"github.com/semistrict/sproutfs/internal/volume"
 )
 
@@ -116,6 +117,9 @@ type ReceiveStats struct {
 	// waiting for the source past a few seconds, which is a guest thread — or
 	// this stream — stopped for that long.
 	Requests, Refusals, Stalls int64
+	// Latency is how long requests to the source took, summed over every
+	// region: guest faults and the post-copy stream apart.
+	Latency RequestLatency
 	// PausedAt is when the source stopped its guest and ResumedAt when this host
 	// resumed it. Their difference is the migration's pause.
 	PausedAt, ResumedAt time.Time
@@ -212,6 +216,7 @@ func (r *Received) Stats() ReceiveStats {
 		stats.Requests += peer.Requests
 		stats.Refusals += peer.Refusals
 		stats.Stalls += peer.Stalls
+		stats.Latency = stats.Latency.Merge(peer.Latency)
 		// Only the pages the source actually served are fetched. A page read from
 		// this host's own volume is the checkpoint's, not the source's.
 		stats.Fetched += peer.Fetched
@@ -489,7 +494,9 @@ func (r *Received) fetch(ctx context.Context, region *vmmemory.Region, backing i
 	if len(runs) == 0 {
 		return nil
 	}
-	fetchCtx, stop := context.WithCancel(ctx)
+	// The stream's requests are marked as the stream's, so the source keeps a
+	// connection for the guest's own faults while they run.
+	fetchCtx, stop := context.WithCancel(peer.WithStream(ctx))
 	defer stop()
 	pages := make(chan uint64)
 	var once sync.Once

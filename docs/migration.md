@@ -294,6 +294,14 @@ that are still asking. Those regions ask for pages no checkpoint has, and they
 keep asking indefinitely. If a region kept a whole burst's connections for the
 life of its receive, the bound would become a deadlock instead of a queue.
 
+A region has four connections by default. The post-copy stream may use at most
+three of them, so one is always left for the guest's own faults. Each
+connection carries one request at a time, so without this a fault could wait
+behind the stream's requests while a vCPU is stopped on it. A region with one
+connection shares it between the two. The destination records how long each
+kind of request took, in total and waiting for a connection, and logs both
+when the post-copy finishes.
+
 If the source says it does not serve the VM, the region reads from its volume
 permanently, and this is logged once. The exception is pages that no checkpoint
 has. They have no copy in the volume, so the fault fails. Every other answer is

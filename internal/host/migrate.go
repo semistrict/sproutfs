@@ -321,6 +321,13 @@ func (h *Host) Receive(ctx context.Context, handoff vmmigrate.Handoff) (*vmmigra
 		"unpublished_pages", post.Unpublished, "fetched_pages", post.Fetched,
 		"peer_pages", post.PeerPages, "volume_pages", post.VolumePages,
 		"requests", post.Requests, "refusals", post.Refusals, "stalls", post.Stalls,
+		"fault_requests", post.Latency.Fault.Count,
+		"fault_p50_seconds", seconds(post.Latency.Fault.QuantileUpperNS(0.5)),
+		"fault_p99_seconds", seconds(post.Latency.Fault.QuantileUpperNS(0.99)),
+		"fault_max_seconds", seconds(post.Latency.Fault.MaxNS),
+		"fault_wait_p99_seconds", seconds(post.Latency.FaultWait.QuantileUpperNS(0.99)),
+		"stream_requests", post.Latency.Stream.Count,
+		"stream_p99_seconds", seconds(post.Latency.Stream.QuantileUpperNS(0.99)),
 		"pause_seconds", post.ResumedAt.Sub(post.PausedAt).Seconds(),
 		"seconds", h.clock.Since(post.ResumedAt).Seconds())
 	if handoff.IsFork() {
@@ -491,3 +498,6 @@ func (h *Host) stopHolds() {
 func (h *Host) dialPages(ctx context.Context, peer platform.Address) (platform.Conn, error) {
 	return h.network.Dial(ctx, "", peer)
 }
+
+// seconds is a histogram's nanoseconds as the seconds a log line reports.
+func seconds(ns uint64) float64 { return time.Duration(ns).Seconds() }

@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 
 	"github.com/semistrict/sproutfs/internal/blob"
+	"github.com/semistrict/sproutfs/internal/latency"
 	"github.com/semistrict/sproutfs/internal/platform"
 	migratev1 "github.com/semistrict/sproutfs/internal/vmmigrate/internal/gen/sproutfs/migrate/v1"
 	"github.com/semistrict/sproutfs/internal/vmmigrate/internal/wire"
@@ -64,12 +65,30 @@ type Config struct {
 	// PageSize must be the source's, which the handoff reports. A source that
 	// serves another size is refused rather than misread.
 	PageSize int
-	// MaxConnections bounds this region's requests in flight.
+	// MaxConnections bounds this region's requests in flight. The post-copy
+	// stream may use all but one of them, so a guest fault always has one; with
+	// a single connection the two share it.
 	MaxConnections int
 	// MaxRuns bounds one resident listing, so a destination walks a large
 	// region's residency rather than asking for all of it in one reply.
 	MaxRuns int
 	Dial    Dialer
+	// Clock times the requests for their latency histograms. Nil is the wall
+	// clock.
+	Clock platform.Clock
+}
+
+// Latency is how long this region's requests took, by kind: a guest fault's,
+// and the post-copy stream's. Wait is the part spent waiting for a connection;
+// the other histogram is the whole request, wait included.
+type Latency struct {
+	Fault, FaultWait, Stream, StreamWait latency.Snapshot
+}
+
+// Merge adds another region's latencies to these.
+func (l Latency) Merge(other Latency) Latency {
+	return Latency{Fault: l.Fault.Merge(other.Fault), FaultWait: l.FaultWait.Merge(other.FaultWait),
+		Stream: l.Stream.Merge(other.Stream), StreamWait: l.StreamWait.Merge(other.StreamWait)}
 }
 
 // Source is one region's handle on the host that still holds its pages: the
@@ -82,6 +101,12 @@ type Source struct {
 	// page.
 	idle  chan platform.Conn
 	slots chan struct{}
+	// stream bounds the stream's requests in flight to one fewer than the
+	// connections, so a guest fault never queues behind the stream.
+	stream chan struct{}
+	clock  platform.Clock
+
+	fault, faultWait, streamed, streamWait latency.Histogram
 
 	closed atomic.Bool
 	// inflight is how many requests this region has between admission and
@@ -94,17 +119,32 @@ type Source struct {
 // New opens nothing: the first request dials the first connection.
 func New(config Config) *Source {
 	s := &Source{config: config,
-		idle:  make(chan platform.Conn, config.MaxConnections),
-		slots: make(chan struct{}, config.MaxConnections)}
+		idle:   make(chan platform.Conn, config.MaxConnections),
+		slots:  make(chan struct{}, config.MaxConnections),
+		stream: make(chan struct{}, streamConnections(config.MaxConnections)),
+		clock:  platform.ClockOr(config.Clock)}
 	for range config.MaxConnections {
 		s.slots <- struct{}{}
+	}
+	for range cap(s.stream) {
+		s.stream <- struct{}{}
 	}
 	return s
 }
 
-// Concurrency is how many requests this region may have in flight at once,
-// which is what a stream fetching its pages should run in parallel.
-func (s *Source) Concurrency() int { return s.config.MaxConnections }
+// streamConnections is how many of a region's connections the post-copy stream
+// may use: all but the one kept for guest faults, and never none.
+func streamConnections(connections int) int { return max(1, connections-1) }
+
+// Concurrency is how many requests the post-copy stream may have in flight at
+// once, which is what it should run in parallel.
+func (s *Source) Concurrency() int { return cap(s.stream) }
+
+// Latency reports how long this region's requests have taken so far.
+func (s *Source) Latency() Latency {
+	return Latency{Fault: s.fault.Snapshot(), FaultWait: s.faultWait.Snapshot(),
+		Stream: s.streamed.Snapshot(), StreamWait: s.streamWait.Snapshot()}
+}
 
 // Requests is every request sent to the source.
 func (s *Source) Requests() int64 { return s.requests.Load() }
@@ -226,6 +266,19 @@ func (s *Source) call(ctx context.Context, request, response proto.Message, maxP
 	if err := admit(ctx, s.config.VM+"/"+s.config.Volume); err != nil {
 		return nil, err
 	}
+	began := s.clock.Now()
+	total, wait := &s.fault, &s.faultWait
+	if streaming(ctx) {
+		total, wait = &s.streamed, &s.streamWait
+		// The stream takes one of its own slots before a connection, so it
+		// never holds the last connection a guest fault needs.
+		select {
+		case <-ctx.Done():
+			return nil, context.Cause(ctx)
+		case <-s.stream:
+		}
+		defer func() { s.stream <- struct{}{} }()
+	}
 	s.requests.Add(1)
 	s.inflight.Add(1)
 	defer func() {
@@ -237,6 +290,8 @@ func (s *Source) call(ctx context.Context, request, response proto.Message, maxP
 	if err != nil {
 		return nil, err
 	}
+	wait.Observe(s.clock.Since(began))
+	defer func() { total.Observe(s.clock.Since(began)) }()
 	id := s.nextID.Add(1)
 	payload, err := exchange(ctx, conn, id, request, response, maxPayload)
 	if err != nil {

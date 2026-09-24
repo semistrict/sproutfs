@@ -1,4 +1,4 @@
-// Package latency is the pager's latency instrumentation: the live histograms
+// Package latency is latency instrumentation: the live histograms
 // the fault path writes without taking the host lock, and the snapshots a
 // stats record carries. Nothing the pager does depends on what they hold.
 package latency
@@ -88,4 +88,34 @@ func BucketOf(d time.Duration) int {
 		return 0
 	}
 	return min(bits.Len64(micros), BucketCount-1)
+}
+
+// Merge adds another snapshot's observations to this one, which is how
+// histograms of several regions become one record.
+func (l Snapshot) Merge(other Snapshot) Snapshot {
+	l.Count += other.Count
+	l.TotalNS += other.TotalNS
+	l.MaxNS = max(l.MaxNS, other.MaxNS)
+	for i := range l.Buckets {
+		l.Buckets[i] += other.Buckets[i]
+	}
+	return l
+}
+
+// QuantileUpperNS is the upper bound of the bucket the quantile q falls in, or
+// zero for no observations. A histogram cannot report a quantile more precisely
+// than its buckets.
+func (l Snapshot) QuantileUpperNS(q float64) uint64 {
+	if l.Count == 0 {
+		return 0
+	}
+	want := uint64(float64(l.Count) * q)
+	var seen uint64
+	for i, count := range l.Buckets {
+		seen += count
+		if seen > want {
+			return BucketUpperNS(i)
+		}
+	}
+	return BucketUpperNS(BucketCount - 1)
 }

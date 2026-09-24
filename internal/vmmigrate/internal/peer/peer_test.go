@@ -9,6 +9,7 @@ import (
 	"slices"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 
 	"github.com/semistrict/sproutfs/internal/blob"
 	"github.com/semistrict/sproutfs/internal/platform"
@@ -308,4 +309,70 @@ func TestAnAlreadyCanceledRequestIsStillAdmitted(t *testing.T) {
 	if s.dials.Load() != 0 {
 		t.Fatalf("a canceled listing dialed %d connections", s.dials.Load())
 	}
+}
+
+// The post-copy stream never holds the last connection. With two connections
+// and the stream's requests stuck at the source, a guest fault still gets an
+// answer, over the connection the stream is not allowed to take. Each kind is
+// recorded in its own latency histogram.
+func TestAGuestFaultHasAConnectionTheStreamCannotTake(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		page := bytes.Repeat([]byte{0x5a}, pageSize)
+		gate := make(chan struct{})
+		var entered atomic.Int64
+		s := &script{answer: func(incoming wire.Incoming) (proto.Message, []byte, error) {
+			request := new(migratev1.PageRequest)
+			if err := incoming.UnmarshalTo(request); err != nil {
+				return nil, nil, err
+			}
+			if request.GetFirstPage() >= 100 {
+				entered.Add(1)
+				<-gate
+			}
+			message, payload := pageReply(t, 1, []byte{0b1}, []byte{0}, page)
+			return message, payload, nil
+		}}
+		source := s.source(2)
+		if got := source.Concurrency(); got != 1 {
+			t.Fatalf("the stream may run %d requests of two connections, want 1", got)
+		}
+		stream := peer.WithStream(t.Context())
+		streamed := make(chan error, 2)
+		for first := range uint64(2) {
+			go func() {
+				_, err := source.Pages(stream, 100+first, 1)
+				streamed <- err
+			}()
+		}
+		synctest.Wait()
+		if got := entered.Load(); got != 1 {
+			t.Fatalf("%d stream requests reached the source, want 1", got)
+		}
+		faulted := make(chan error, 1)
+		go func() {
+			_, err := source.Pages(t.Context(), 0, 1)
+			faulted <- err
+		}()
+		synctest.Wait()
+		select {
+		case err := <-faulted:
+			if err != nil {
+				t.Fatal(err)
+			}
+		default:
+			t.Fatal("a guest fault waited behind the stream")
+		}
+		close(gate)
+		for range 2 {
+			if err := <-streamed; err != nil {
+				t.Fatal(err)
+			}
+		}
+		latency := source.Latency()
+		if latency.Fault.Count != 1 || latency.FaultWait.Count != 1 ||
+			latency.Stream.Count != 2 || latency.StreamWait.Count != 2 {
+			t.Fatalf("recorded %d faults (%d waits) and %d stream requests (%d waits), want 1 (1) and 2 (2)",
+				latency.Fault.Count, latency.FaultWait.Count, latency.Stream.Count, latency.StreamWait.Count)
+		}
+	})
 }

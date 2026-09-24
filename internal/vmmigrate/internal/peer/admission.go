@@ -40,3 +40,19 @@ func admit(ctx context.Context, region string) error {
 	}
 	return admitter(ctx, region)
 }
+
+type streamKey struct{}
+
+// WithStream marks the requests made under ctx as the post-copy stream's. The
+// stream fetches pages behind a running guest, and a guest fault waits on the
+// source while it does. So a Source keeps one connection that stream requests
+// never use, and records the two kinds of request in separate histograms.
+func WithStream(ctx context.Context) context.Context {
+	return context.WithValue(ctx, streamKey{}, true)
+}
+
+// streaming reports a request made by the post-copy stream.
+func streaming(ctx context.Context) bool {
+	stream, _ := ctx.Value(streamKey{}).(bool)
+	return stream
+}

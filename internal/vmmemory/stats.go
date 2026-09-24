@@ -3,7 +3,7 @@ package vmmemory
 import (
 	"context"
 
-	"github.com/semistrict/sproutfs/internal/vmmemory/internal/latency"
+	"github.com/semistrict/sproutfs/internal/latency"
 )
 
 // LatencyBuckets is how many fixed log-scale buckets every latency histogram

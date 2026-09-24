@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/semistrict/sproutfs/internal/vmmemory/internal/latency"
+	"github.com/semistrict/sproutfs/internal/latency"
 )
 
 // The scale is fixed, so a record written by one run is read by another without
