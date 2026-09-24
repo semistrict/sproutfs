@@ -1,513 +1,576 @@
 # Hosting
 
-A host runs VMs. One process assembles that role over one object store, one
-plain TCP network and one RAM allotment. It owns no durable local state: a VM's
+A host runs VMs. One process provides that role over one object store, one plain
+TCP network and one RAM allotment. The host has no durable local state. A VM's
 authority is the epoch in its [control record](metadata.md), and its data is the
-checkpoint that record selects. It holds no identity either: hosts run on a
-trusted cluster network, and the only address one ever dials is the page-server
-address a [handoff](migration.md) carries.
+checkpoint that record selects. The host also has no identity. Hosts run on a
+trusted cluster network, and the only address a host ever dials is the
+page-server address that a [handoff](migration.md) carries.
 
 ## Assembly
 
-Everything a host does is `internal/host`. `Host` is what the deployment runs on
-this machine: the object namespace, the shared page cache, the volume manager,
-the migration page server, and the loops that keep what it runs durable and
-fenced. The supervisor around it — `host.Start`, which returns the `host.Service`
-the command serves — owns the two pagers, each over an arena and a spill file of
-its own: 2 MiB pages of the node's HugeTLB pool for both by default. A
-deployment may run RAM at 4 KiB on an ordinary memfd instead
-(`SPROUTFS_RAM_PAGE_BYTES=4096`), which holds a tenth of the memory for forks
-that write little and scattered and is slower at everything else; such a node
-sets its shared memory's transparent huge pages to `advise`, which lets the RAM
-arena allocate a zero run's whole 2 MiB blocks as huge pages and leaves every
-other shared memory on the node as it was; see [the arena](vm-memory.md). It also owns the
-Firecracker processes, the templates guest images are imported into, and the
-channel to the agent in a guest. `cmd/sproutfs-host` keeps its configuration, its
-HTTP handlers and the wiring between them, and nothing else.
+All host logic is in `internal/host`. `Host` is what the deployment runs on this
+machine. It contains:
 
-Starting a `Host` requires a resource owner with a positive RAM allotment, the
-network its page server and its handoffs run over, and the object store with the
-deployment's prefix. The host owns, in one lifetime: the control client that
-reads and writes the deployment's control records; one checkpoint store with the
-host's shared [page cache](volumes.md#page-cache), which is given a cap of its
-own rather than the host allotment; the volume manager that opens this host's
-VMs; and, when a migration address is configured, the page server.
-A host without that address neither drains nor receives.
+- the object namespace;
+- the shared page cache;
+- the volume manager;
+- the migration page server;
+- the loops that keep its VMs durable and fenced.
 
-Which adapter stands behind each of those ports is the command's decision and
-nothing else's. `sproutfs-host` builds the GCS object store, the plain TCP
-network and the node disk, and hands them over. GCS is the only object store
-adapter shipped, because it is the only one a deployment runs on; the port is
-the conditional-write contract `internal/platform/internal/real`'s conformance
-suite states, so another store's adapter is a package-local addition and a
-second `runObjectStoreConformance` caller. The host names no adapter and
-neither does `vmmachine`, which is given a `platform.Disks` for the staging
-directory each VMM gets.
+The supervisor around it is `host.Start`, which returns the `host.Service` that
+the command serves. The supervisor owns the two pagers. Each pager has its own
+arena and its own spill file. By default both use 2 MiB pages from the node's
+HugeTLB pool. A deployment may instead run RAM at 4 KiB on an ordinary memfd
+(`SPROUTFS_RAM_PAGE_BYTES=4096`). This uses a tenth of the memory for forks that
+write little and in scattered places, and it is slower at everything else. Such
+a node sets its shared memory's transparent huge pages to `advise`. This lets
+the RAM arena allocate a zero run's whole 2 MiB blocks as huge pages, and leaves
+all other shared memory on the node unchanged; see [the arena](vm-memory.md).
+The supervisor also owns the Firecracker processes, the templates that guest
+images are imported into, and the channel to the agent in a guest.
+`cmd/sproutfs-host` contains only its configuration, its HTTP handlers and the
+wiring between them.
 
-Every VM the host starts is one RAM volume, `ram0`, plus one volume per PMEM
-device; the supervisor gives each VM a single PMEM device, `root`, which the
+Starting a `Host` requires:
+
+- a resource owner with a positive RAM allotment;
+- the network that its page server and its handoffs run over;
+- the object store with the deployment's prefix.
+
+The host owns the following, all with the same lifetime:
+
+- the control client that reads and writes the deployment's control records;
+- one checkpoint store with the host's shared
+  [page cache](volumes.md#page-cache), which has its own cap and does not use
+  the host allotment;
+- the volume manager that opens this host's VMs;
+- the page server, when a migration address is configured.
+
+A host without a migration address can neither drain nor receive.
+
+Only the command chooses which adapter implements each of those ports.
+`sproutfs-host` builds the GCS object store, the plain TCP network and the node
+disk, and passes them in. GCS is the only object store adapter shipped, because
+it is the only one a deployment runs on. The port is the conditional-write
+contract that the conformance suite in `internal/platform/internal/real`
+states. So an adapter for another store is a package-local addition plus a
+second `runObjectStoreConformance` caller. The host names no adapter. Neither
+does `vmmachine`, which receives a `platform.Disks` for the staging directory
+each VMM gets.
+
+Every VM the host starts has one RAM volume, `ram0`, plus one volume per PMEM
+device. The supervisor gives each VM a single PMEM device, `root`, which the
 guest boots from. The supervisor opens a `vmmachine.Scratch` and passes it to
 each VMM configuration.
 
-A process restart is a host loss. Nothing under the scratch, and nothing in the
-spill file, survives one: opening the scratch deletes its VM directories and
-recreates them empty, and the spill file is truncated. There is no
-reconciliation, no scan of what a previous process left, and no lock held across
-processes — a host that restarts has lost every VM it was running, and the
-deployment reopens each of them, wherever they land, from the checkpoint its
-control record selects. The deployment must give one host process one scratch
-directory.
+A process restart is a host loss. Nothing in the scratch directory or in the
+spill file survives a restart. Opening the scratch deletes its VM directories
+and recreates them empty, and the spill file is truncated. There is no
+reconciliation, no scan of what a previous process left, and no lock held
+across processes. A host that restarts has lost every VM it was running. The
+deployment reopens each of them, on whatever host they land, from the
+checkpoint its control record selects. The deployment must give each host
+process its own scratch directory.
 
-`sproutfs-host` takes its whole configuration from the environment, reporting
-every problem it finds rather than the first, and serves the host API over HTTP:
-status, create, open, fork, capture, console, exec, migrate, receive, released,
-drain and delete. Each handler is one call on the supervisor plus the shared
-JSON failure shape; the API's own types live in `internal/api/host` and link
-nothing of the runtime, so the host converts a handoff at its boundary rather
-than putting a pager on the wire. The GCS store the command builds is metered
-per operation, so that one counter is the deployment's whole object traffic; an
-endpoint selects an emulator instead of the ambient Google credentials.
+`sproutfs-host` reads its whole configuration from the environment. It reports
+every configuration problem it finds, not only the first. It serves the host
+API over HTTP: status, create, open, fork, capture, console, exec, migrate,
+receive, released, drain and delete. Each handler is one call on the supervisor
+plus the shared JSON failure shape. The API's types live in `internal/api/host`
+and do not link the runtime. So the host converts a handoff at its boundary
+instead of putting a pager on the wire. The GCS store that the command builds is
+metered per operation, so that one counter measures all of the deployment's
+object traffic. Setting an endpoint selects an emulator instead of the ambient
+Google credentials.
 
-Every one of those requests but the kubelet's probe carries the deployment's
-shared bearer token, `SPROUTFS_API_TOKEN`, and is refused with 401 without it;
-the same token admits the orchestrator's API, and the same middleware serves
-both. It is not authority over any VM — that is the epoch in the control record
-— and it names no caller: it says only that the request comes from inside this
-deployment, which is what an API that can delete or drain every VM on the pod
-network needs before anything else. Restricting the ports to the deployment's
-own pods is the cluster's network policy, which `deploy/30-networkpolicy.yaml`
-ships. Draining is a POST for the same reason: a GET is what anything that walks
-URLs does, and this one migrates every VM off the host, so the preStop hook runs
-`sproutfs-host drain` rather than fetching a URL.
+Every request except the kubelet's probe must carry the deployment's shared
+bearer token, `SPROUTFS_API_TOKEN`. A request without it is refused with 401.
+The same token admits requests to the orchestrator's API, and the same
+middleware serves both. The token grants no authority over any VM; that
+authority is the epoch in the control record. The token also does not identify
+the caller. It only shows that the request comes from inside this deployment.
+An API that can delete or drain every VM on the pod network needs that check
+first. The cluster's network policy restricts the ports to the deployment's own
+pods, and `deploy/30-networkpolicy.yaml` ships that policy. Draining is a POST
+for the same reason. Tools that crawl URLs issue GETs, and a drain migrates
+every VM off the host. So the preStop hook runs `sproutfs-host drain` instead of
+fetching a URL.
 
-Creating a VM forks a template: each guest image is imported once, into a VM
-that is never booted, and every VM created from that image inherits the
-template's published checkpoint without copying a byte. A template is an
-ordinary VM with an ordinary control record — that is what lets a fork inherit a
-published checkpoint — under a reserved identity namespace, which is what keeps
-this bookkeeping out of the deployment's list of VMs.
+Creating a VM forks a template. Each guest image is imported once into a VM that
+is never booted. Every VM created from that image inherits the template's
+published checkpoint without copying any bytes. A template is an ordinary VM
+with an ordinary control record, which lets a fork inherit a published
+checkpoint. It lives under a reserved identity namespace, which keeps templates
+out of the deployment's list of VMs.
 
-**A template is named by its image.** The identity is `template-<sha256 of the
-image file>`, computed by the host over the file it was configured with. A
-template is not a VM that lives on a host: it is an imported image, and an
-image's identity is its bytes. So every host configured with one image names one
-template, and what a starting host does depends only on what the deployment
-already holds of it:
+**A template is named by its image.** The identity is
+`template-<sha256 of the image file>`. The host computes it over the file it
+was configured with. A template does not belong to a host. It is an imported
+image, and an image's identity is its bytes. So every host configured with the
+same image names the same template. What a starting host does depends only on
+the template's current state in the deployment:
 
-- **published** — its control record pins the checkpoint it selects — and the
-  host opens nothing and writes nothing. It reads that checkpoint the way any
-  host reads a checkpoint it did not publish, and remembers it for `create`.
-  This is the case for every restarted pod, and for the second host of a pair;
-- **absent**, and the host creates the template, writes the image into its root
-  volume, checkpoints it and pins that checkpoint, which is what publishes it;
-- **a record with no pin**, which is an import that has not finished. The host
-  waits for it — an import in flight is the ordinary reason, and opening the
-  record would take the epoch out from under the host doing it — and past that
-  wait takes the host that wrote it for gone and recovers the template as any VM
-  is recovered: it takes the epoch, which fences a writer that is alive after
-  all, and imports again under it. What the interrupted attempt published stays
-  where it is, a superseded epoch's checkpoints like any other takeover's.
+- **published**: its control record pins the checkpoint it selects. The host
+  opens nothing and writes nothing. It reads that checkpoint the way any host
+  reads a checkpoint it did not publish, and remembers it for `create`. This is
+  the case for every restarted pod, and for the second host of a pair.
+- **absent**: the host creates the template, writes the image into its root
+  volume, checkpoints it and pins that checkpoint. Pinning the checkpoint
+  publishes the template.
+- **a record with no pin**: an import has not finished. The host waits for it.
+  The usual reason is an import in progress, and opening the record would take
+  the epoch from the host doing the import. After the wait, the host assumes
+  that the host that wrote the record is gone. It recovers the template like
+  any other VM: it takes the epoch, which fences that writer if it is still
+  alive, and imports again under the new epoch. Checkpoints published by the
+  interrupted attempt stay in place, like a superseded epoch's checkpoints after
+  any other takeover.
 
-Two hosts starting together race on the record's create-if-absent; the one that
-loses is refused the create and is then in the third case above.
+Two hosts that start at the same time race on the record's create-if-absent.
+The losing host's create is refused, and that host is then in the third case
+above.
 
-The imports run at startup, behind the API, and a host is ready when every image
-it is configured with has a published template, whoever imported it: an image
-nothing has yet costs a whole file read and a checkpoint, and one another pod
-has already imported costs a read of one control record. A host that cannot read
-its images stays unready and says why, rather than taking VMs it would fail to
-create. Liveness is a separate endpoint, so a host doing an honest import is not
-restarted for failing readiness.
+The imports run at startup, behind the API. A host is ready when every image it
+is configured with has a published template, whichever host imported it. An
+image that nothing has imported yet costs a full file read and a checkpoint. An
+image that another pod has already imported costs a read of one control record.
+A host that cannot read its images stays unready and reports why, instead of
+accepting VMs it would fail to create. Liveness is a separate endpoint, so a
+host that is still importing is not restarted for failing readiness.
 
-No host deletes a template: another host may be forking from it, and an image
-that changed under its name is a template of its own rather than the same one
-holding other bytes. The templates of images nothing creates from any more are a
-collector's, like every other pinned checkpoint — the checkpoint a template pins is
-the fork point every VM created from it was taken at.
+No host deletes a template, because another host may be forking from it. An
+image whose content changed under the same name is a different template, not
+the same template with other bytes. Templates of images that nothing creates
+from any more are left to a collector, like every other pinned checkpoint. The
+checkpoint a template pins is the fork point of every VM created from it.
 
-One thing comes with that and is worth saying plainly: the RAM a VM gets is the
-size the image's template was imported at, and the template was imported once.
-`SPROUTFS_VM_MEMORY_BYTES` and a template's own `name=path:bytes` are read at
-that import, so raising either gives no new memory to a VM created from an image
-the deployment already holds. A cold start with a new size is what changes one
-VM's shape.
+One consequence follows. A VM's RAM size is the size its image's template was
+imported at, and the template was imported once. `SPROUTFS_VM_MEMORY_BYTES` and
+a template's own `name=path:bytes` are read at that import. So raising either
+one gives no extra memory to a VM created from an image the deployment already
+holds. A cold start with a new size is how to change one VM's shape.
 
-Software in the guest is reached over the VM's vsock, which carries exec and
-nothing else.
+Software in the guest is reached over the VM's vsock, which carries only exec.
 
 ## The checkpoint loop
 
-`Host.AddMachine` records which VMM process belongs to which VM, which is what
-makes a VM drainable and what starts its checkpoint loop: the host checkpoints
-the disks of every VM it runs every `Config.CheckpointInterval`, sixty seconds
-by default, each wait jittered by up to an eighth either side so VMs do not
-checkpoint in lockstep, and waits for each publication before scheduling the
-next. Each is `CaptureDisks`: the pause seals the VM's PMEM regions alone and
-captures no VMM state, so RAM is never uploaded on the interval and a VM opened
-at such a checkpoint is cold booted over its disks (`Host.Starting`). That loop
+`Host.AddMachine` records which VMM process belongs to which VM. This makes the
+VM drainable and starts its checkpoint loop. The host checkpoints the disks of
+every VM it runs every `Config.CheckpointInterval`, sixty seconds by default.
+Each wait is jittered by up to an eighth either way, so VMs do not checkpoint in
+lockstep. The host waits for each publication before scheduling the next. Each
+checkpoint is `CaptureDisks`. Its pause seals only the VM's PMEM regions and
+captures no VMM state. So RAM is never uploaded on the interval, and a VM opened
+at such a checkpoint is cold booted over its disks (`Host.Starting`). This loop
 is the only thing that makes a running guest's disks durable, so the interval
-bounds what losing this host rewinds them by. A failure is logged and retried at
-the next interval, and the loop stops when the VM is removed, migrated away or
-the host closes. An interval whose VM is sealed by a fork point is skipped: the
-child takes those pages first. A negative interval disables the loop, which is
-what a caller driving its own checkpoints wants.
+bounds how far losing this host rewinds them. A failure is logged and retried at
+the next interval. The loop stops when the VM is removed or migrated away, or
+when the host closes. An interval is skipped when a fork point has sealed the
+VM, because the child takes those pages first. A negative interval disables the
+loop, for a caller that drives its own checkpoints.
 
-The interval bounds that rewind only while publications land. `Config.LossWindow`
-bounds it when they do not: five minutes by default, zero to disable, and never
-shorter than the interval — a window below it is one every VM is past before its
-first checkpoint is even due. While a VM's oldest unpublished write is older than
-the window, the pager admits no further dirty page for it, and the host's own
-part is the loop. A publication that failed while the window is exceeded is
-retried at an eighth of the interval, doubling to the interval, rather than an
-interval later: the guest is held back for the whole of that wait, so an
-interval's patience is exactly what it must not spend. The window is the disks':
-RAM regions neither age nor ask for a checkpoint, because none the loop takes
-would publish them.
+The interval bounds that rewind only while publications succeed.
+`Config.LossWindow` bounds it when they fail. It is five minutes by default,
+zero disables it, and it is never shorter than the interval, because every VM
+would exceed a shorter window before its first checkpoint is due. While a VM's
+oldest unpublished write is older than the window, the pager admits no further
+dirty pages for it. The host's part is the loop. If a publication fails while
+the window is exceeded, it is retried after an eighth of the interval, doubling
+up to the interval, instead of a full interval later. The guest is blocked for
+the whole wait, so the loop must not wait a full interval. The window applies
+to disks only. RAM regions do not age and do not request checkpoints, because
+no checkpoint the loop takes would publish them.
 
-A guest's flush reaches the host through the pager. `Config.FlushBound` —
-`SPROUTFS_FLUSH_BOUND`, sixty seconds by default, zero to complete every flush at
-once — is how old the VM's oldest unpublished disk write may be for the flush to
-complete at once; past it the flush waits until a checkpoint covers that write,
-which the loop takes out of the interval's turn. A flush of fresh disks takes no
-checkpoint. A VM that leaves the host — migrated, stopped, given up — takes its
-waiting flushes with it unanswered, and its device asks the next host again. Inside the window nothing
-changes, because retrying eight times as often would only multiply what a store
-outage costs the deployment in requests. That backoff is the one wait a request
-out of turn does not cut short — the store the window holds back asks again
-every time this loop signals, and a capture that cannot be published gives it
-nothing, so answering each ask would spin a host that cannot reach the store.
+A guest's flush reaches the host through the pager. `Config.FlushBound`
+(`SPROUTFS_FLUSH_BOUND`) is sixty seconds by default; zero completes every
+flush at once. It is the maximum age of the VM's oldest unpublished disk write
+at which a flush still completes at once. Past that age, the flush waits until a
+checkpoint covers the write. The loop takes that checkpoint out of the
+interval's turn. A flush of fresh disks takes no checkpoint. When a VM leaves
+the host (migrated, stopped or given up), its waiting flushes go unanswered,
+and its device asks the next host again.
 
-The window is a VM's, not a region's, because the checkpoint that ends it is: one
-pause seals every region a VM maps. The pager holds no idea of a VM, so the host
-answers for the age as it answers for the checkpoint — `Pressure.Oldest` reports
-the oldest unpublished write across every region of the VM that maps the region
-it is asked about. `Host.LossWindow` reports that age per VM together with
-whether its stores are waiting, which `/status`, `/metrics` and `sproutfsctl
-list` carry.
+Inside the window, a failed publication is still retried a full interval later,
+because retrying eight times as often would only multiply the requests that a
+store outage costs the deployment. That backoff is the one wait that an
+out-of-turn request does not shorten. A store that the window blocks asks again
+every time this loop signals. A capture that cannot be published does not help
+that store, so answering each request would make a host that cannot reach the
+store spin.
 
-A guest can fill the host's dirty budget long before its interval comes round,
-and it is then waiting for a checkpoint nothing has scheduled. `Config.Pager`
-is how the host hears about that: the pager asks it for an immediate checkpoint
-of the region holding the largest dirty set, the loop takes it out of the
-interval's turn, and the stalled stores land when it retires. The host answers
-for a VM it runs whose volume no fork point has sealed, and otherwise declines
-so the pager can offer another region. Where no region can be checkpointed, the
-pager reports the stall instead, and the host stops that VM deliberately. A store
-the loss window holds back ends the same way where no checkpoint of that VM can
-ever be taken, and the pager reports that apart — a window stall rather than a
-budget stall, because the two say different things about a deployment: one that
-its guests dirty faster than their checkpoints drain, the other that a guest's
-writes cannot be made durable at all. That
-stop is the same give-up every other loss of a VM goes through, with one last
-checkpoint inside it: the registration is dropped and the close claimed, so a
-stall, a takeover and the watcher finding the same process dead close the VM
-once between them; the fork points taken on it are retired first, both because
-a child reads them out of the process this is about to close and because a VM
-one of them holds sealed cannot be captured at all; then the last checkpoint
-takes whatever the VMM can still be paused for, before the process is closed,
-since its regions are where those pages live; and then the VM is given up and
-reported through `MachineClosed` like a fenced one. Where the failed store has
-already killed the VMM, that capture is no longer possible and the stop keeps
-nothing the kill would have kept either; what it adds is a logged reason, which
-the kill has never had.
+The window belongs to a VM, not a region, because the checkpoint that ends it
+covers the VM: one pause seals every region a VM maps. The pager has no concept
+of a VM. So the host reports the age, in the same way that it provides the
+checkpoint. `Pressure.Oldest` reports the oldest unpublished write across every
+region of the VM that maps the queried region. `Host.LossWindow` reports that
+age per VM, and whether the VM's stores are waiting. `/status`, `/metrics` and
+`sproutfsctl list` show these values.
 
-The loop also stops when another host has taken the VM's control record: that
-handle can never publish again, and a refused publication is one place a fenced
-host finds out. It is not a place every VM reaches, so it is not the only one.
-A host re-reads the control record of every VM it holds every
-`Config.EpochInterval`, two seconds by default, a few at a time rather than one
-after another, and closes any whose epoch has moved past the handle it holds. A
-round of one small read per VM, serialised, would take the slowest of them times
-their number, which on a store having a bad minute is longer than the interval
-itself — the check would fall behind exactly when a takeover is most likely.
+A guest can fill the host's dirty budget long before its interval comes round.
+It then waits for a checkpoint that nothing has scheduled. `Config.Pager` is how
+the host learns about this. The pager asks the host for an immediate checkpoint
+of the region with the largest dirty set. The loop takes it out of the
+interval's turn, and the stalled stores complete when it retires. The host
+accepts for a VM it runs whose volume no fork point has sealed. Otherwise it
+declines, so the pager can offer another region. If no region can be
+checkpointed, the pager reports the stall instead, and the host stops that VM
+deliberately. A store that the loss window blocks ends the same way when no
+checkpoint of that VM can ever be taken. The pager reports this case
+separately, as a window stall instead of a budget stall, because the two mean
+different things for a deployment. A budget stall means that its guests dirty
+pages faster than their checkpoints drain. A window stall means that a guest's
+writes cannot be made durable at all.
 
-That interval is what bounds how long a host fenced
-between checkpoints — or fenced while a fork point holds a VM's pages sealed,
-which is never checkpointed at all — goes on running a guest whose writes have
-nowhere to go. A record that cannot be read changes nothing: only the record
-itself, naming an epoch this host does not hold, is evidence of a takeover, and
-a negative interval disables the timer for a test that drives the check itself.
-Either way the host gives the whole VM up: it retires the fork points taken on
-it and stops serving their children's pages, stops serving the VM's own, stops
-the VMM, releases the VM's volumes, and reports the VM through
-`Config.MachineClosed` so the supervisor forgets it and refuses exec against
-it. Nothing a fenced host produced after the takeover can become that VM's
-state — its every control-record write is refused — and from here nothing it
-holds is served as that VM's state either.
+That stop uses the same give-up path as every other loss of a VM, with one last
+checkpoint inside it. The steps are:
 
-A timer is not enough for a handoff. Handing a VM over is the one thing a host
-does that gives another host pages no checkpoint holds, and the store cannot
-refuse those the way it refuses a fenced writer's publication: the destination
-post-copies whatever it is served over the checkpoint the real writer published,
-so a source that was taken over between epoch ticks — or one whose reads of the
-store are failing while its pod network is fine, which never reaches a tick that
-tells it anything — would build one VM's memory out of two writers' pages. So
-`Migrate` and the fork point both re-read the control record themselves before
-the pause, one GET, and refuse on an epoch that has moved. A read that fails
-refuses the handoff too, which is the one place a record that cannot be read is
-not treated as no evidence: everything else a stale handle does is caught by the
-store later, and this is not. The VM goes on running here either way, so the
-next attempt — or the epoch timer, if the takeover was real — is what settles
-it.
+1. The registration is dropped and this caller takes ownership of the close. So
+   a stall, a takeover and the watcher finding the same process dead close the
+   VM only once between them.
+2. The fork points taken on the VM are retired. This comes first because a
+   child reads them out of the process that is about to close, and because a VM
+   that a fork point holds sealed cannot be captured.
+3. The last checkpoint captures whatever the VMM can still be paused for, before
+   the process is closed, because the process's regions hold those pages.
+4. The VM is given up and reported through `MachineClosed`, like a fenced VM.
 
-One handover of a VM runs at a time, claimed under the same lock the
-registration lives behind. Two callers that found one registration each stopped
-the guest, gave every region's volume up and registered the pages with the page
-server; the loser, whose regions had already given their volumes up, then gave
-the VM up and closed the process whose pages the winner's destination was about
-to fault out of. The second caller is told instead, and the VM it asked about is
-left exactly as the first left it. A VM a fork point holds sealed is refused the
-same way, and so is a fork that has not published a checkpoint of its own: that
-handle is the only thing that could ever publish that root, so handing it over
-would leave an identity no host can open and a parent sealed for good. Both
-refusals come before the guest is stopped.
+If the failed store has already killed the VMM, that capture is not possible,
+and the stop keeps nothing that the kill did not keep. What the stop adds is a
+logged reason, which the kill never had.
 
-`AddMachine` also watches the VMM process itself, through `Machine.Wait`, and
-gives the VM up the same way when that process ends without being asked to: the
-host kills it because its memory session failed, the kernel kills it, or it
-crashes. The checkpoint loop would not notice for an interval, and what it would
-find then is a socket that refuses the connection, which it logs and retries for
-as long as the host runs while the supervisor reports a guest that no longer
-exists. The watcher stops with the machine, so a process this host ends on
-purpose — a handoff, a removal, a shutdown — is not reported as a death. The
-account of one that is comes from the process: `vmmachine` writes a single error
-record naming the VM, the pid, the cause the kill carried and the tail of the
-console, and the memory session that ended writes what ended it — the region,
-and the page when the failure was a fault.
+The loop also stops when another host has taken the VM's control record. That
+handle can never publish again. A refused publication is one way a fenced host
+finds out. Not every VM reaches that point, so it is not the only way. Every
+`Config.EpochInterval` (two seconds by default), a host re-reads the control
+record of every VM it holds. It reads a few at a time, not one after another,
+and closes any VM whose epoch has moved past the handle it holds. If each round
+did one small read per VM in series, it would take the slowest read times the
+number of VMs. When the store has a bad minute, that is longer than the
+interval, so the check would fall behind when a takeover is most likely.
+
+That interval bounds how long a host that was fenced between checkpoints keeps
+running a guest whose writes have nowhere to go. The same bound applies to a
+host that was fenced while a fork point holds a VM's pages sealed, because such
+a VM is never checkpointed. A record that cannot be read changes nothing. Only
+the record itself, naming an epoch this host does not hold, is evidence of a
+takeover. A negative interval disables the timer, for a test that drives the
+check itself. In either case the host gives up the whole VM:
+
+- it retires the fork points taken on the VM and stops serving their children's
+  pages;
+- it stops serving the VM's own pages;
+- it stops the VMM;
+- it releases the VM's volumes;
+- it reports the VM through `Config.MachineClosed`, so the supervisor forgets it
+  and refuses exec against it.
+
+Nothing a fenced host produces after the takeover can become that VM's state,
+because the store refuses every control-record write it makes. From this point
+on, the host also serves nothing it holds as that VM's state.
+
+A timer is not enough for a handoff. A handoff is the only operation in which a
+host gives another host pages that no checkpoint holds. The store cannot refuse
+those pages the way it refuses a fenced writer's publication. The destination
+post-copies whatever it is served on top of the checkpoint that the real writer
+published. Two kinds of source would build one VM's memory from two writers'
+pages:
+
+- a source that was taken over between epoch ticks;
+- a source whose store reads fail while its pod network works, so no tick ever
+  tells it anything.
+
+So `Migrate` and the fork point each re-read the control record before the
+pause, with one GET, and refuse if the epoch has moved. A failed read also
+refuses the handoff. This is the only place where an unreadable record is
+treated as evidence. The store later catches everything else a stale handle
+does, but it does not catch this. The VM keeps running here in either case. The
+next attempt, or the epoch timer if the takeover was real, resolves it.
+
+Only one handover of a VM runs at a time. It is reserved under the same lock
+that protects the registration. Without this, two callers that each found the
+registration would both stop the guest, give up every region's volume and
+register the pages with the page server. The loser, whose regions had already
+given up their volumes, would then give up the VM and close the process that
+the winner's destination was about to fault pages from. Instead, the second
+caller is told, and the VM is left as the first caller left it. A VM that a
+fork point holds sealed is refused in the same way. So is a fork that has not
+published a checkpoint of its own. That handle is the only thing that could
+ever publish that root. Handing it over would leave an identity that no host
+can open and a parent that stays sealed permanently. Both refusals happen
+before the guest is stopped.
+
+`AddMachine` also watches the VMM process through `Machine.Wait`. It gives the
+VM up in the same way when that process ends unexpectedly. This happens when:
+
+- the host kills the process because its memory session failed;
+- the kernel kills it;
+- it crashes.
+
+The checkpoint loop would not notice for an interval. It would then find a
+socket that refuses the connection. It would log and retry for as long as the
+host runs, while the supervisor reports a guest that no longer exists. The
+watcher stops with the machine, so a process that this host ends on purpose (a
+handoff, a removal or a shutdown) is not reported as a death. When a process
+does die, the report comes from the process. `vmmachine` writes a single error
+record with the VM, the pid, the cause the kill carried and the tail of the
+console. The memory session that ended writes what ended it: the region, and
+the page when the failure was a fault.
 
 Every mapped region must use `Host.Resources()`. Registration rejects a machine
-whose regions use another budget and leaves cleanup to the supervisor; the
+whose regions use another budget and leaves cleanup to the supervisor. The
 receive path closes a mismatched runtime before streaming pages or registering
 it.
 
 ## Draining a host
 
-A host configured with a migration address serves a second protocol there: the
-page server that holds the memory of every VM it has handed to another host, and
-of every child it has forked onto one. A child it forked onto itself is not
-there: that child maps the pages rather than fetching them, so nothing of it is
-ever served. It serves any peer that reaches it,
-bounded per remote address by eight connections and 8 MiB of pages in flight.
-Restricting that port to this deployment's hosts is the cluster's network
-policy, not this process's.
+A host configured with a migration address serves a second protocol at that
+address: the page server. The page server holds the memory of every VM the host
+has handed to another host, and of every child it has forked onto another host.
+A child forked onto the same host is not there. That child maps the pages
+instead of fetching them, so none of it is ever served. The page server serves
+any peer that reaches it, bounded per remote address to eight connections and
+8 MiB of pages in flight. The cluster's network policy, not this process,
+restricts that port to this deployment's hosts.
 
-`Host.Drain` migrates every VM the host runs, bounded to four at a time by
-default: a drain is planned work whose cost is one host's memory, and moving all
-of it at once would put all of it on the network together. It returns one
-handoff per VM that moved and joins the failures of the ones that did not, which
-keep running here. A failure before the handoff leaves the VM running and
-checkpointing on the interval; a later one can leave the guest stopped and
-needing to be reopened at its last checkpoint, as described in
+`Host.Drain` migrates every VM the host runs, four at a time by default. A drain
+is planned work whose cost is one host's memory. Moving all of it at once would
+put all of that memory on the network at the same time. `Host.Drain` returns
+one handoff per VM that moved, and joins the errors of the VMs that did not
+move. Those VMs keep running here. A failure before the handoff leaves the VM
+running and checkpointing on the interval. A later failure can leave the guest
+stopped, and it must then be reopened at its last checkpoint, as described in
 [migration](migration.md).
 
-The process's drain does not choose destinations: it asks the orchestrator to
-move each VM, which drives both halves of the migration and is told when each
-one starts and finishes. The destination's `Host.Receive` opens the VM, starts
-the VMM from the captured state and streams the pages in. That stream reports
-completion only once every page the source holds that no checkpoint has is on
-the destination: a migration publishes nothing, so those pages exist nowhere
-else. When it does, the source's `Host.ReleaseMigrated` stops serving that VM
-and closes the process that held its pages.
+The process's drain does not choose destinations. It asks the orchestrator to
+move each VM. The orchestrator drives both halves of the migration and is told
+when each one starts and finishes. The destination's `Host.Receive` opens the
+VM, starts the VMM from the captured state and streams the pages in. The stream
+reports completion only when every page that the source holds and no checkpoint
+has is on the destination. A migration publishes nothing, so those pages exist
+nowhere else. When the stream completes, the source's `Host.ReleaseMigrated`
+stops serving that VM and closes the process that held its pages.
 
-That word is the orchestrator's, so a migration carries the same deadline a
-fork's hold does: four checkpoint intervals after the handoff, a source
-nothing has released gives those pages up itself, closing the stopped VMM
-process that maps them. Otherwise an orchestrator that restarted between the
-handoff and the release pins the source's arena for as long as the host runs.
-The destination loses nothing it already fetched and reads the rest from the
-checkpoint its record selects.
+The release comes from the orchestrator, so a migration has the same deadline
+as a fork's hold. Four checkpoint intervals after the handoff, a source that
+nothing has released gives up those pages itself and closes the stopped VMM
+process that maps them. Without the deadline, an orchestrator that restarted
+between the handoff and the release would pin the source's arena for as long as
+the host runs. The destination loses nothing it already fetched, and reads the
+rest from the checkpoint its record selects.
 
-`/status` reports, beside `serving`, an `outstanding` count per VM in it: how
-many pages this host still holds that no checkpoint has and that the
-destination has not fetched. It is what says which of two things a name in that
-list is — a handover still pulling its pages across, or one that has them all
-and is waiting only for the word that releases it — which a drain that is not
-finishing is the question about. A VM whose volumes cannot be listed reports
-`-1`, because what it still holds is unknown. The destination's own side of it
-is a line per receive when the post-copy finishes, carrying the pages served,
-the requests its source refused for its per-peer budget and how long it took,
-and a line whenever one read of pages only the source has has been waiting for
-it past a few seconds — which is a guest thread stopped for exactly that long.
+`/status` reports an `outstanding` count per VM next to `serving`. The count is
+the number of pages this host still holds that no checkpoint has and that the
+destination has not fetched. It shows which of two states a VM in that list is
+in:
+
+- a handover that is still pulling its pages across;
+- a handover that has all its pages and is waiting only for the release.
+
+That is the question to ask about a drain that is not finishing. A VM whose
+volumes cannot be listed reports `-1`, because the number of pages it still
+holds is unknown. On the destination side, each receive logs a line when the
+post-copy finishes. The line carries the pages served, the requests that the
+source refused for its per-peer budget, and the duration. The destination also
+logs a line whenever a read of pages that only the source has waits longer than
+a few seconds. Such a wait stops a guest thread for the same length of time.
 
 The deployment's preStop hook drains and then exits. The drain returns only when
-nothing is left to hand over — `Status().Serving` is empty — and that is the
-contract: once it is empty, every page this host held is either on a destination
-or in object storage, so exiting costs nothing. Exiting before it loses every
-write since each VM's last checkpoint, including dirty RAM, dirty PMEM and
-unpublished local forks.
+nothing is left to hand over, which means `Status().Serving` is empty. That is
+the contract. When `Serving` is empty, every page this host held is on a
+destination or in object storage, so exiting loses nothing. Exiting earlier
+loses every write since each VM's last checkpoint, including dirty RAM, dirty
+PMEM and unpublished local forks.
 
-The drain bounds itself, because nothing else does: the hook carries no deadline
-and what waits behind it is a termination grace period after which the pod is
-killed with everything it still holds. Four VMs are handed over at once, each
-with a 60-second deadline of its own — under the four intervals a source serves
-an unreleased handover's pages for and the two minutes the orchestrator believes
-its record of one — the whole drain with 30 minutes including the wait for
-`Serving` to empty, which is what a host full of VMs needs four at a time, and
-the orchestrator client with a timeout so that a connection nobody answers
-cannot outlast either. The preStop command waiting on that drain gives up at 31
-minutes, which is a backstop for an answer that never comes back over the
-loopback at all and has to be the shorter one:
-a client that waited longer than the server's own bound would spend the
-shutdown's share of the grace period waiting for nothing. A VM whose hand-over
-ran out of time is left running here and goes on being checkpointed, and is
+The drain sets its own bounds, because nothing else bounds it. The hook has no
+deadline. After the hook starts, a termination grace period runs, and when it
+ends the pod is killed with everything it still holds. The bounds are:
+
+- Four VMs are handed over at once, each with its own 60-second deadline. This
+  is shorter than the four intervals for which a source serves an unreleased
+  handover's pages. It is also shorter than the two minutes for which the
+  orchestrator trusts its record of a handover.
+- The whole drain has 30 minutes, including the wait for `Serving` to empty. A
+  host full of VMs needs that long at four at a time.
+- The orchestrator client has a timeout, so a connection that nobody answers
+  cannot outlast either bound.
+
+The preStop command that waits on the drain gives up at 31 minutes. This is a
+backstop for an answer that never comes back over the loopback. It is only one
+minute longer than the drain's own bound. A client that waited much longer
+would use up the shutdown's share of the grace period waiting for an answer
+that is not coming. A VM whose
+handover ran out of time is left running here, keeps being checkpointed, and is
 reported as remaining.
 
-`terminationGracePeriodSeconds` is the hook's 31 minutes plus the shutdown
-behind it, which is two 30-second halves run one after the other — stopping the
-API, then the supervisor's close, in which every VM publishes a final checkpoint
-— so 31 minutes and one is the manifest's 1920 seconds. A shorter one turns an orderly exit into a
-host loss.
+`terminationGracePeriodSeconds` is the hook's 31 minutes plus the shutdown after
+it. The shutdown is two 30-second halves run in sequence: first stopping the
+API, then the supervisor's close, in which every VM publishes a final
+checkpoint. So 31 minutes plus one minute gives the manifest's 1920 seconds. A
+shorter grace period turns an orderly exit into a host loss.
 
-The supervisor owns VMM processes and the shared pager. After finishing the
-required capture or handoff, it closes the processes and detaches their regions,
-then calls the pager's `Close` before closing its arena and spill handles. Pager
-cleanup failure keeps unproven allocations charged and must be retried; closing
-one process must not close a pager still serving other VMs.
+The supervisor owns VMM processes and the shared pager. After it finishes the
+required capture or handoff, it closes the processes and detaches their
+regions. It then calls the pager's `Close` before closing its arena and spill
+handles. If pager cleanup fails, unproven allocations stay charged, and cleanup
+must be retried. Closing one process must not close a pager that still serves
+other VMs.
 
 ## Stopping a VM
 
-`Host.Stop` is the deliberate end of a VM this host runs that leaves the VM
-behind. It captures a checkpoint of the guest's disks — of its memory and VMM
-state too when the stop suspends it, so the start after it resumes the guest
-rather than booting it — and waits for it, and only then closes the VMM process,
-gives the pages back and releases the handle. The control record and the objects stay where they are, so any host
-can open the VM again at exactly the bytes the stop published — which is the
-whole difference between a stop and losing the host, where the writes since each
-VM's last checkpoint go with it. It reports the checkpoint it published, because
-that is the pause the VM comes back at and nothing else records it: the handle
-that knew is released by the time the stop answers.
+`Host.Stop` deliberately ends a VM that this host runs, and leaves the VM in
+place so it can be opened again. It captures a checkpoint of the guest's disks
+and waits for it. When the stop suspends the guest, the checkpoint also includes
+its memory and VMM state, so the next start resumes the guest instead of booting
+it. Only then does the stop close the VMM process, return the pages and release
+the handle. The control record and the objects stay in place, so any host can
+open the VM again at the bytes the stop published. This is the difference
+between a stop and a host loss: a host loss loses the writes since each VM's
+last checkpoint. The stop reports the checkpoint it published, because the VM
+comes back at that checkpoint and nothing else records it. The handle that knew
+it is released by the time the stop returns.
 
-The checkpoint comes first and nothing is given up until it has landed. A
-publication the store refused leaves the VM exactly as it was — running,
-registered, checkpointed on the interval — because the alternative is a stop that
-reported a failure and lost the guest's last writes anyway.
+The checkpoint comes first, and nothing is given up until it has landed. If the
+store refuses the publication, the VM stays as it was: running, registered and
+checkpointed on the interval. The alternative would be a stop that reported a
+failure and lost the guest's last writes anyway.
 
-A VM something still holds sealed is refused, as a delete of one is: a fork
-point holds the pages of the process a stop would close, and a child elsewhere
-reads the pages no checkpoint holds out of them, so closing it would take the
-point away mid-fault. Nothing is retired to get past that, which is where a
-stop parts company with a delete — a delete ends the VM for good and stops the
-children reading it on the way out, and a stop is a VM that is coming back.
+A stop of a VM that something still holds sealed is refused, as a delete of
+such a VM is. A fork point holds the pages of the process that a stop would
+close. A child on another host reads the pages that no checkpoint holds from
+that process. So closing the process would remove the point in the middle of a
+fault. The stop does not retire anything to get past this, and here a stop
+differs from a delete. A delete ends the VM permanently and stops the children
+from reading it as it goes. A stopped VM will come back.
 
-Starting one again is `Host.Open`, which is the same call a recovery makes:
-there is nothing about a stopped VM for this process to remember. What differs
-is above it, in what the control plane requires before it asks — see
+Starting a stopped VM again is `Host.Open`, the same call a recovery makes. This
+process does not need to remember anything about a stopped VM. The difference is
+in the control plane, in what it requires before it calls `Host.Open`; see
 [the deployment's API](../deploy/README.md#the-orchestrator-api).
 
 ## Starting a VM cold
 
-A VM always comes back exactly where it was: its selected checkpoint holds the
-VMM state and every page of guest RAM, and an open restores them. A cold start
-is the exception, and the reasons are the reasons one reboots any machine — a
-guest that is wedged, a kernel or init change on the disk, or simply not to pay
-for memory the guest does not need to keep.
+A VM always comes back where it was. Its selected checkpoint holds the VMM state
+and every page of guest RAM, and an open restores them. A cold start is the
+exception. The reasons for it are the usual reasons to reboot any machine:
 
-`Host.OpenCold` opens the VM and, in one publication, discards it: every page of
-the RAM volume is dropped, which makes those pages read as zeroes and leaves
-them out of the new root, and the VMM state member is dropped with it, so the
-new root names none. `volume.VM.DiscardMemory` is that one operation, under the
-VM's publication lock, because half of either is a VM that can neither be
-resumed nor booted — memory without the state captured over it, or state without
-the memory it describes. The guest is then started through the existing path,
-which boots the kernel because there is no state to restore; a template's
-children already come up that way.
+- the guest is wedged;
+- the kernel or init on the disk changed;
+- to stop paying for memory the guest does not need to keep.
 
-The root volume is exactly what the last checkpoint published, so the guest's
-filesystem sees the boot as a power cut after that checkpoint: **the journal
-recovers what a journal recovers, and nothing here promises more.** The pages
-the discarded memory held are unreferenced by the new root and reclaimed by the
-usual set difference except where a pin protects them, and the checkpoint that
-dropped them is small.
+`Host.OpenCold` opens the VM and discards its memory in one publication. Every
+page of the RAM volume is dropped, so those pages read as zeroes and are left
+out of the new root. The VMM state member is dropped too, so the new root names
+none. `volume.VM.DiscardMemory` performs both as one operation under the VM's
+publication lock. Doing only half would leave a VM that can be neither resumed
+nor booted: memory without the state captured over it, or state without the
+memory it describes. The guest is then started through the existing path, which
+boots the kernel because there is no state to restore. A template's children
+already start that way.
 
-It applies to a VM this host does not run. A running one is stopped first, by
-the operator. A cold start this host could not boot cold — it has no kernel
-configured — is refused before anything is discarded, and so is one whose
-regions the pager could not all map.
+The root volume is what the last checkpoint published. So the guest's filesystem
+sees the boot as a power cut after that checkpoint. **The filesystem's journal
+recovers what it can, and this system guarantees nothing beyond that.** The new
+root no longer references the pages that the discarded memory held. The usual
+set difference reclaims them, except where a pin protects them. The checkpoint
+that dropped them is small.
+
+A cold start applies only to a VM that this host does not run. The operator
+must stop a running VM first. A cold start is refused before anything is
+discarded if this host cannot boot cold because it has no kernel configured. It
+is also refused if the pager could not map all of the VM's regions.
 
 ### Resizing at a cold boot
 
-A cold boot is the one moment a VM's shape can change, because nothing in memory
-describes it any more. `OpenCold` therefore takes a `ColdShape`:
+A cold boot is the only moment when a VM's shape can change, because nothing in
+memory describes the shape any more. So `OpenCold` takes a `ColdShape`:
 
 - `MemoryBytes` sets the RAM volume's size in the discarding publication. Any
-  size the host admits is allowed, up or down; the memory is being discarded
-  anyway.
+  size the host admits is allowed, larger or smaller, because the memory is
+  discarded anyway.
 - `RootBytes` grows the root volume in the same publication. The new pages read
-  as zeroes, which is what a filesystem grown in place expects, and the guest
-  takes them after the boot with `sproutfs-guest-witness grow /`. Shrinking is
-  refused: the end of a filesystem is not the volume's to cut.
+  as zeroes, which is what a filesystem grown in place expects. After the boot,
+  the guest takes them with `sproutfs-guest-witness grow /`. Shrinking is
+  refused, because the volume must not remove the end of a filesystem.
 
-Both are refused for a warm start, at every layer that carries them. From a
-resize on, a VM's committed RAM is its own rather than its template's, which is
-what the control plane's own record of it tracks — see
+Both are refused for a warm start, at every layer that carries them. After a
+resize, a VM's committed RAM is its own and no longer its template's. The
+control plane's record of the VM tracks this; see
 [the deployment's API](../deploy/README.md#the-orchestrator-api).
 
 ## Budgets
 
-The host takes one `Resources` owner, and it accounts RAM alone: the pager's
+The host takes one `Resources` owner, which accounts only RAM: the pager's
 pages. `Status().Resources` reports its reservations and configured total.
 
-Disk is not shared and not accounted. Each concern that writes to the node's
-disk has a fixed cap of its own — the page cache's allotment, and the pager's
-spill file, `SPROUTFS_SPILL_BYTES`, which is what bounds the dirty pages the
-pager admits — so nothing has to be reclaimed across concerns, no ledger orders
-them, and a full disk is a configuration error rather than a path through the
-code.
+Disk is not shared and not accounted. Each component that writes to the node's
+disk has its own fixed cap:
+
+- the page cache's allotment;
+- the pager's spill file, `SPROUTFS_SPILL_BYTES`, which bounds the dirty pages
+  the pager admits.
+
+So nothing has to be reclaimed across components, no ledger orders them, and a
+full disk is a configuration error, not a code path.
 
 - **VMM staging files** live in each process's own directory under the scratch,
-  which goes with the process. Configuration and restore files are removed after
-  startup, and a capture's state file is read back and deleted. The capture is
-  bounded at 64 MiB by the file-size limit the VMM process runs under, so an
-  oversized state file is refused rather than read. Failed cleanup is reported
+  and are removed with the process. Configuration and restore files are removed
+  after startup. A capture's state file is read back and deleted. The capture is
+  limited to 64 MiB by the file-size limit the VMM process runs under, so an
+  oversized state file is refused instead of read. Failed cleanup is reported
   and can be retried. The scratch owner's `Close` refuses live VMMs and closes
-  the stopped ones; close the processes, then the scratch owner.
+  stopped ones. Close the processes first, then the scratch owner.
 - **VMM console output** is drained into a 1 MiB in-memory ring buffer per VMM
-  process, which touches no disk and no budget. Output past that capacity
-  displaces the oldest bytes rather than blocking or killing the VM, and the
-  ring goes with the process. A read names an offset in the whole output and
-  returns at most 256 KiB; a read from before what is still retained is answered
-  from the oldest byte the ring has and reports that offset, which is how a
-  reader that fell behind learns output was dropped. This is diagnostics, not an
-  audit log.
-- **The page cache** retains decoded pages inside a cap of its own,
-  `SPROUTFS_CACHE_BYTES`, and yields unused entries before a retention fails. It
-  is not taken from the allotment a guest's pages come out of, so nothing has
-  to be reclaimed between them, and a miss that does not fit is served without
-  being retained. Concurrent misses remain bounded.
-- **Checkpoint uploads** are bounded by the checkpoint store, not by one
+  process. It uses no disk and no budget. Output beyond that capacity replaces
+  the oldest bytes; it does not block or kill the VM. The ring is removed with
+  the process. A read names an offset in the whole output and returns at most
+  256 KiB. If a read asks for an offset before the retained output, it is
+  answered from the oldest retained byte and reports that offset. This is how a
+  reader that fell behind learns that output was dropped. This is diagnostics,
+  not an audit log.
+- **The page cache** keeps decoded pages within its own cap,
+  `SPROUTFS_CACHE_BYTES`, and evicts unused entries before a retention fails.
+  The cap is separate from the allotment that a guest's pages come from, so
+  nothing has to be reclaimed between them. A miss that does not fit is served
+  without being kept. Concurrent misses remain bounded.
+- **Checkpoint uploads** are bounded by the checkpoint store, not per
   publication: half this machine's cores, between 8 and 64, shared by every
-  checkpoint the host publishes. The part builders behind them are bounded
-  separately, at a quarter of the cores between 2 and 8, which with the parts in
-  flight is what publication costs this host in memory.
-- **Open VMs** bound the live handles one manager owns, 4,096 by default, with
-  the per-write bound described in [volumes](volumes.md#writes). There is no
-  bound on unpublished bytes: a write waits for nothing, and what it leaves
-  unpublished is what losing the host would cost. `Stats().DirtyBytes` is that
-  amount, summed over every VM the host runs.
-- **The pager** budgets resident, logical and dirty pages host-wide; see
-  [managed VM memory](vm-memory.md#bounded-host-pager). The logical budget is
-  the one a VM is admitted against: it bounds per-region metadata, the pager
-  checks it one attachment at a time, and a VM whose regions overrun it would
-  otherwise have its first region admitted, its VMM started and then killed.
-  So a create, an open and a receive each ask what the cap has left before
-  anything starts a VMM, and a VM that cannot fit is refused. A fork is a
-  handoff, so a child is admitted by the receive that takes it in, on whichever
-  host that is; the orchestrator admits the whole fan-out against that host
-  before the parent is paused for it.
+  checkpoint the host publishes. The part builders behind them have a separate
+  bound: a quarter of the cores, between 2 and 8. Together with the parts in
+  flight, this determines how much memory publication uses on this host.
+- **Open VMs**: one manager owns at most 4,096 live handles by default, with the
+  per-write bound described in [volumes](volumes.md#writes). There is no bound
+  on unpublished bytes. A write waits for nothing, and the bytes it leaves
+  unpublished are what losing the host would cost. `Stats().DirtyBytes` reports
+  that amount, summed over every VM the host runs.
+- **The pager** budgets resident, logical and dirty pages across the host; see
+  [managed VM memory](vm-memory.md#bounded-host-pager). A VM is admitted
+  against the logical budget. That budget bounds per-region metadata, and the
+  pager checks it one attachment at a time. Without an earlier check, a VM
+  whose regions exceed it would have its first region admitted and its VMM
+  started, and would then be killed. So a create, an open and a receive each
+  check what the cap has left before starting a VMM, and refuse a VM that
+  cannot fit. A fork is a handoff, so the receive that takes in a child admits
+  it, on whichever host that is. The orchestrator admits the whole fan-out
+  against that host before the parent is paused for it.
 
-The host's status reports cache usage and its cap, the volume manager's totals,
-the pager's counters — including what the logical cap still has free, which is
-what admits a VM — the object traffic and what the page server has served.
+The host's status reports:
+
+- cache usage and its cap;
+- the volume manager's totals;
+- the pager's counters, including the free space in the logical cap, which is
+  what admits a VM;
+- the object traffic;
+- what the page server has served.
 
 ## Shutdown
 
 Quiesce caller operations first. Closing the host stops the checkpoint loops,
-then the page server, then the VM handles, and closes the cache. Each VM
-publishes a final checkpoint if anything is dirty, which is what makes an
-orderly shutdown lose nothing; a failure there is logged and does not block the
-release, and the bytes it could not publish are lost. Cancelling the wait stops
-only the wait; cleanup continues, and the close can be retried with a fresh
-context.
+then the page server, then the VM handles, and then closes the cache. Each VM
+publishes a final checkpoint if anything is dirty, so an orderly shutdown loses
+nothing. A failure there is logged and does not block the release, and the
+bytes it could not publish are lost. Cancelling the wait stops only the wait.
+Cleanup continues, and the close can be retried with a fresh context.
 
 Close proves nothing about object storage. A host that exits without closing its
 VMs loses every write since their last checkpoints.

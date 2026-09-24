@@ -5,158 +5,177 @@ supporting documents.
 
 ## Storage
 
-**VM**: One virtual machine. It is the unit of identity, of write ownership and
-of durability: one identity, one control record, one series of checkpoints.
+**VM**: One virtual machine. It is the unit of identity, write ownership and
+durability. Each VM has one identity, one control record and one series of
+checkpoints.
 
-**Volume**: One named byte-addressed image of a VM: its memory, `ram0`, or one
+**Volume**: One named, byte-addressed image of a VM: its memory (`ram0`) or one
 of its PMEM disks. A volume's size is fixed for the VM's lifetime.
 
-**Page**: The unit of publication, of a fault and of resident ownership.
+**Page**: The unit of publication, of faults and of resident ownership.
 
-**Geometry**: A volume's page size and how many of its pages one segment of its
-page table covers. The host chooses the page size when it creates the volume —
-4 KiB or 2 MiB, and nothing else — and it is recorded in every checkpoint of
-that volume and fixed for its life: a page number means nothing without it, so
-every reader divides by what the root recorded rather than by a constant of its
-own. A pager instance has a page too, fixed when it is built, and a volume of
-any other page size is refused when it is attached. A host runs RAM at 4 KiB and
-PMEM at 2 MiB, on a real machine and in the simulation alike; the mapping
-protocol carries each session's page and the kind of memory its arena is made
-of, and both ends refuse a mismatch before any guest memory exists.
+**Geometry**: A volume's page size, and the number of its pages that one
+segment of its page table covers. The host chooses the page size when it
+creates the volume. The page size is either 4 KiB or 2 MiB. It is recorded in
+every checkpoint of the volume and never changes. A page number is meaningless
+without the page size, so every reader divides by the page size the root
+recorded, not by a constant. A pager instance also has a page size, fixed when
+the pager is built. The pager refuses to attach a volume with any other page
+size. A host runs RAM and PMEM at 2 MiB by default and can run RAM at 4 KiB
+(`SPROUTFS_RAM_PAGE_BYTES`); the simulation runs RAM at 4 KiB. The mapping protocol carries each session's page size and the
+kind of memory its arena uses. Both ends refuse a mismatch before any guest
+memory exists.
 
 **Overlay**: What a VM has written through the volume package since its last
-checkpoint — image building and tests, never a pager — held in memory on the
-host that owns it. It is durable nowhere: losing that host loses it.
+checkpoint, held in memory on the host that owns the VM. Only image building
+and tests write through the overlay; a pager never does. The overlay is not
+durable anywhere: losing that host loses it.
 
-**Control record**: The one mutable object a VM owns in the store. It selects
-the writer epoch and the checkpoint, lists the checkpoints of this VM that have
-been forked — the pins, which reclamation spares and nothing gives back — and
-changes only by conditional write. See [Metadata authority](metadata.md).
+**Control record**: The only mutable object a VM owns in the store. It selects
+the writer epoch and the checkpoint. It lists the checkpoints of this VM that
+have been forked. These are the pins. Reclamation spares pinned checkpoints,
+and nothing releases a pin. The record changes only by conditional write. See
+[Metadata authority](metadata.md).
 
-**Checkpoint**: Both the operation that makes a running VM durable and what it
-leaves in the store. The vCPUs pause while the VMM state is saved and every
-region's dirty pages are sealed; the guest resumes; the sealed pages stream out
-as parts, and the index object carrying the segments they changed and the
-checkpoint's root is written last; a conditional
-write then selects that checkpoint in the control record, which is when the VM
-survives the loss of this host. Every VM a
-host runs has its disks checkpointed on an interval — sixty seconds by default,
-each wait jittered by up to an eighth either side, the next measured from the
-last upload: that pause seals the disks alone and saves no VMM state, and the
-checkpoint names none. A capture on request, and a suspending stop, seal RAM and
-save the VMM state as well. Capture returns without waiting for the upload; the
-upload can fail, and its pages then go back to the guest. A VM's whole durable
-state is the one checkpoint its record selects; an initial sparse checkpoint
-writes no part at all.
+**Checkpoint**: Both the operation that makes a running VM durable and the
+objects that operation leaves in the store. The operation has these steps:
 
-**Cold boot**: Starting a VM over a checkpoint without VMM state — the
-interval's checkpoint of its disks, a plain stop's, a template's. The host
-discards the VM's memory in a checkpoint of its own and boots the kernel over
-the disks, which the guest sees as a power cut at that checkpoint. It is what a
-VM comes back as after a host loss, and what an operator's cold start asks for.
+1. The vCPUs pause while the VMM state is saved and every region's dirty pages
+   are sealed.
+2. The guest resumes.
+3. The sealed pages stream out as parts.
+4. The index object is written last. It carries the segments the parts changed
+   and the checkpoint's root.
+5. A conditional write selects the checkpoint in the control record. From this
+   point, the VM survives the loss of this host.
 
-**Loss window**: How long a VM may hold a disk write no landed checkpoint covers —
-`SPROUTFS_LOSS_WINDOW`, five minutes by default, zero to disable — and, as a
-measurement, the age of its oldest such write. Past the window the pager admits
-no further dirty page for that VM: every store that needs a dirty reservation
-waits, and a checkpoint of that VM is asked for out of the interval's turn. So
-what losing a host can cost one VM is bounded in time as the dirty budget bounds
-it in bytes: the lost writes span at most the window plus one checkpoint
-attempt's pause. The age travels with the pages a handoff moves, so a
-destination inherits the window rather than restarting it, and where a VM can
-never be checkpointed the wait ends as a full dirty budget does — the host stops
-that VM deliberately, with a last checkpoint of what it can still capture.
+Every VM a host runs has its disks checkpointed on an interval. The interval is
+sixty seconds by default. Each wait is jittered by up to an eighth in either
+direction, and the next wait is measured from the last upload. The interval's
+pause seals only the disks and saves no VMM state, and its checkpoint names no
+VMM state. A capture on request and a suspending stop also seal RAM and save
+the VMM state. Capture returns without waiting for the upload. The upload can
+fail, and its pages then go back to the guest. A VM's entire durable state is
+the one checkpoint its record selects. An initial sparse checkpoint writes no
+part.
 
-**Index object**: One checkpoint's metadata, at
-`vm/<id>/ckpt/<seq>/index`: a fixed record, the page-table segments the
-checkpoint changed, the **root**, and the record again, so that the object's end
-alone locates the root. The root says for every volume where each segment of its
-page table is fetched from and which checkpoints this one reads. The root carries its parent's segment addresses forward and replaces only
-the segments its own checkpoint changed, so it is complete on its own and names
-no parent. The index object's create-if-absent PUT is the publication's commit.
+**Cold boot**: Starting a VM over a checkpoint that has no VMM state. Examples
+are the interval's checkpoint of the VM's disks, a plain stop's checkpoint, and
+a template's checkpoint. The host takes a separate checkpoint that discards the
+VM's memory, and boots the kernel over the disks. The guest sees this as a
+power cut at that checkpoint. A VM comes back this way after a host loss, and
+an operator's cold start requests it.
+
+**Loss window**: How long a VM may hold a disk write that no landed checkpoint
+covers: `SPROUTFS_LOSS_WINDOW`, five minutes by default, zero to disable. As a
+measurement, the loss window is the age of the VM's oldest such write. Past the
+window, the pager admits no further dirty page for that VM. Every store that
+needs a dirty reservation waits, and the host requests a checkpoint of that VM
+outside the interval's schedule. So the window bounds in time what losing a
+host can cost one VM, as the dirty budget bounds it in bytes. The lost writes
+span at most the window plus the pause of one checkpoint attempt. The age
+travels with the pages a handoff moves, so a destination inherits the window
+and does not restart it. If a VM can never be checkpointed, the wait ends as a
+full dirty budget does: the host deliberately stops that VM and takes a last
+checkpoint of what it can still capture.
+
+**Index object**: One checkpoint's metadata, at `vm/<id>/ckpt/<seq>/index`. It
+contains a fixed record, the page-table segments the checkpoint changed, the
+**root**, and the fixed record again. So the end of the object is enough to
+locate the root. For every volume, the root says where each segment of the
+volume's page table is fetched from, and which checkpoints this one reads. The
+root copies its parent's segment addresses forward and replaces only the
+segments its own checkpoint changed. So the root is complete on its own and
+does not name a parent. The index object's create-if-absent PUT commits the
+publication.
 
 **Part**: One object of a checkpoint's data, at
-`vm/<id>/ckpt/<seq>/part/<n>`: filled to 64 MiB and uploaded as it fills, a
-sequence of encoded members — the VMM state, then each volume's changed pages in
-page order, then compaction's rescues — followed by a table of at most 1 MiB
-naming them and a fixed trailer naming the table, so a part describes itself.
+`vm/<id>/ckpt/<seq>/part/<n>`. A part is filled to 64 MiB and uploaded as it
+fills. It holds a sequence of encoded members: the VMM state, then each
+volume's changed pages in page order, then the pages compaction rescued. The
+members are followed by a table of at most 1 MiB that names them, and a fixed
+trailer that names the table. So a part describes itself.
 
-**Extent**: A member's place in the part that holds it, and the bytes one ranged
-read fetches. A read of a range of a volume is a **run** of pages: its members
-are grouped by the part they are in and by where in that part they sit, and each
-group is fetched as one extent and decoded out of that one buffer. Publishing in
-page order is what makes the members of consecutive pages adjacent, so a pager's
-cold 2 MiB read-ahead run of 512 4 KiB pages is two requests — the segment that
-locates them and the extent they lie in — and not one per page.
+**Extent**: A member's location in the part that holds it, and the bytes that
+one ranged read fetches. A read of a range of a volume is a **run** of pages.
+The run's members are grouped by the part they are in and by their position in
+that part. Each group is fetched as one extent and decoded from that one
+buffer. Publishing in page order places the members of consecutive pages next
+to each other. So a pager's cold 2 MiB read-ahead run of 512 4 KiB pages takes
+two requests instead of one per page: one for the segment that locates the
+pages, and one for the extent that holds them.
 
-**Seal**: Taking the guest's write access to a region's dirty pages away in
-place, so those pages become the checkpoint's while the guest keeps running.
-Nothing is copied and no byte moves — a store into a sealed page copies that
-one page — so the pause is page-table work.
+**Seal**: Removing the guest's write access to a region's dirty pages in place.
+Those pages then belong to the checkpoint while the guest keeps running.
+Nothing is copied and no bytes move. A later store into a sealed page copies
+only that page. So the pause is only page-table work.
 
-**Flush**: A guest's virtio-pmem flush, which is its fsync reaching the host.
-The device holds it and asks the host over that disk's memory session, and the guest's flush returns when the host answers. The host
-answers at once when the VM holds no disk write older than the flush bound —
-`SPROUTFS_FLUSH_BOUND`, sixty seconds by default, zero to disable — that no
-checkpoint has published; otherwise it answers when a checkpoint covering those
-writes lands, which it asks for out of the interval's turn. A flush never takes
-a checkpoint of its own. Ordering is the checkpoint's, which is one pause of all
-the VM's disks.
+**Flush**: A guest's virtio-pmem flush, which is how its fsync reaches the
+host. The device holds the flush and asks the host over that disk's memory
+session. The guest's flush returns when the host answers. The host answers
+immediately if the VM holds no unpublished disk write older than the flush
+bound: `SPROUTFS_FLUSH_BOUND`, sixty seconds by default, zero to disable.
+Otherwise the host answers when a checkpoint that covers those writes lands,
+and it requests that checkpoint outside the interval's schedule. A flush never
+runs a checkpoint directly. The ordering comes from the checkpoint, which is
+one pause across all of the VM's disks.
 
-**Reclamation**: Deleting, after a checkpoint is selected, the checkpoints its
-root no longer names and no pin protects, whole. Compaction bounds what that
-leaves behind: a checkpoint rewrites the live pages of checkpoints that are less
-than half live into its own parts, up to 64 MiB of live bytes, after the guest
-has resumed.
+**Reclamation**: After a checkpoint is selected, deleting the checkpoints that
+its root no longer names and no pin protects. Each such checkpoint is deleted
+whole. Compaction limits what reclamation leaves behind. A checkpoint rewrites
+the live pages of checkpoints that are less than half live into its own parts,
+up to 64 MiB of live bytes, after the guest has resumed.
 
-**Fork point**: One pause of a running parent: the checkpoint it has
-published, the pages sealed since, and the VMM state saved with them. Nothing
-is published to take one and the parent keeps running, so a fork costs the
-pause and the child's boot, and one pause serves any number of children. The
-parent's pages stay sealed until every child has published or pulled the pages
-it inherited.
+**Fork point**: One pause of a running parent. It consists of the checkpoint
+the parent has published, the pages sealed since then, and the VMM state saved
+with them. Taking a fork point publishes nothing, and the parent keeps running.
+So a fork costs the pause and the child's boot, and one pause serves any number
+of children. The parent's pages stay sealed until every child has published or
+pulled the pages it inherited.
 
-**Fork**: A VM created from a parent's fork point without changing a byte. It
-has its own control record and its writes are isolated; the parent's published
-sequence is pinned in the parent's record, which keeps reclamation off the
-checkpoint the child inherits and off every checkpoint its root names. The pin
-is permanent: only a collector, which can see every fork, may release one. A
-child runs on the parent's host, sharing the sealed pages, or on another host,
-pulling them from the parent's page server.
+**Fork**: A VM created from a parent's fork point without changing any bytes.
+It has its own control record, and its writes are isolated. The parent's
+published sequence is pinned in the parent's record. The pin stops reclamation
+from deleting the checkpoint the child inherits and every checkpoint that
+checkpoint's root names. The pin is permanent. Only a collector, which can see
+every fork, may release a pin. A child runs either on the parent's host,
+sharing the sealed pages, or on another host, pulling them from the parent's
+page server.
 
 **Handoff**: The plain data that starts a VM on another host: the VMM state,
-the checkpoint it inherits, the runs of unpublished pages and the page-server
-address they are served from. A migration hands off a VM the source released; a
-fork hands off a child from a parent that keeps running.
+the checkpoint the VM inherits, the runs of unpublished pages, and the address
+of the page server that serves them. A migration hands off a VM that the source
+released. A fork hands off a child from a parent that keeps running.
 
-**Page identity**: The name of the page whose bytes a range reads, reported
-as (checkpoint reference, volume, page); sparse zeroes have a special identity.
-Every page has one name — the checkpoint that published it — and a fork
-inherits its parent's names. Inherited pages retain the same identity —
-compaction moving their bytes into another checkpoint's parts does not change
-it — and a page with a name is referenced, never copied: in the store, on the
-wire, and in host memory, where pages of the same identity share one resident
+**Page identity**: The name of the page whose bytes a range reads, reported as
+(checkpoint reference, volume, page). Sparse zeroes have a special identity.
+Every page has one name: the checkpoint that published it. A fork inherits its
+parent's names. Inherited pages keep the same identity. Compaction can move
+their bytes into another checkpoint's parts without changing their identity. A
+named page is referenced and never copied: in the store, on the wire, and in
+host memory. In host memory, pages with the same identity share one resident
 page within a pager.
 
-**Resident page**: The physical backing of one page in one of a host's pagers,
-possibly shared by several regions with the same page identity. A host runs one
-pager per kind of region — its guests' RAM in one, their PMEM disks in the
-other — each with its own arena, its own spill file and its own page, 4 KiB for
-RAM and 2 MiB for PMEM, so a page count of one says nothing about the other and
-everything a host reports across the two is in bytes. An arena is the memory its
-page is: the HugeTLB pool's for 2 MiB, an ordinary shared memfd for 4 KiB.
+**Resident page**: The physical backing of one page in one of a host's pagers.
+Several regions with the same page identity can share it. A host runs one pager
+per kind of region: one for its guests' RAM and one for their PMEM disks. Each
+pager has its own arena, spill file and page size: 2 MiB for PMEM, and 2 MiB
+for RAM by default or 4 KiB when configured. So a page count from one pager says nothing about the other, and
+everything a host reports across both pagers is in bytes. An arena's memory
+matches its page size: the HugeTLB pool for 2 MiB, and an ordinary shared memfd
+for 4 KiB.
 
 ## Cluster
 
 **Host**: A machine that runs VMs and serves their pages to migration
 destinations and to forks on other hosts.
 
-**Writer**: The single process allowed to publish a VM's checkpoints,
-established by the epoch in the control record. Every open advances that epoch,
-which fences the writer before it.
+**Writer**: The single process allowed to publish a VM's checkpoints. The epoch
+in the control record establishes the writer. Every open advances that epoch,
+which fences the previous writer.
 
-**Epoch**: The writer token in the control record, and the high half of every
-checkpoint sequence that writer allocates.
+**Epoch**: The writer token in the control record. It is also the high half of
+every checkpoint sequence that writer allocates.
 
-**Drain**: Migrating every VM a host runs to other hosts, so the process can
-exit without rewinding any of them.
+**Drain**: Migrating every VM on a host to other hosts, so that the host
+process can exit without rewinding any of its VMs.

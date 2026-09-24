@@ -1,144 +1,169 @@
 # Live migration
 
-A VM moves between hosts by stopping the source and then running on the
-destination while its pages arrive from the source's pager. This is what a
-planned host restart or scale-down does for every VM on the host: it is the
-drain. It is post-copy only: nothing is uploaded inside the pause, whose
-duration is the VMM state capture, the region handoff and destination startup.
+A VM moves between hosts in two steps. The source host stops the VM. The
+destination host then runs it while its pages arrive from the source's pager. A
+planned host restart or scale-down does this for every VM on the host; this is
+the drain. Migration is post-copy only. Nothing is uploaded during the pause.
+The pause lasts for the VMM state capture, the region handoff and destination
+startup.
 
 ## Why it is cheap here
 
-Guest RAM stores and PMEM writes are private pager state — resident or in
-scratch spill — until a [checkpoint](vm-memory.md) publishes them. A migration
-publishes nothing at all: the source hands the VM over at the checkpoint its
-control record already selects, and everything the guest wrote since that
-checkpoint stays in the source's pages, where the destination fetches it from.
-Uploading that residue inside the pause is the one cost this design exists to
-avoid.
+Guest RAM stores and PMEM writes are private pager state, either resident or in
+scratch spill, until a [checkpoint](vm-memory.md) publishes them. A migration
+publishes nothing. The source hands the VM over at the checkpoint that its
+control record already selects. Everything the guest wrote since that checkpoint
+stays in the source's pages, and the destination fetches it from there. This
+design exists to avoid uploading those pages during the pause.
 
-The exposure is the source dying during the post-copy, which loses the guest's
-writes since the source's last interval checkpoint — the same window, up to one
-60 s interval, that any host loss costs. Until the destination reports that it
-has fetched every one of those pages, the source may not stop serving.
+The risk is that the source dies during the post-copy. That loses the guest's
+writes since the source's last interval checkpoint. This is the same window that
+any host loss costs: up to one 60 s interval. The source must keep serving until
+the destination reports that it has fetched every one of those pages.
 
 ## Phases
 
-0. **Quiesce the checkpoint loop.** The host's interval checkpoint stops first,
-   and stopping it waits for the one it had in flight to finish publishing. A
-   checkpoint that is still publishing owns the guest's sealed regions, and a
-   hand-off that found one sealed would have to give the migration up and resume
-   the guest.
+0. **Quiesce the checkpoint loop.** The host's interval checkpoint stops first.
+   Stopping it waits for the checkpoint in flight to finish publishing. A
+   checkpoint that is still publishing owns the guest's sealed regions. If the
+   handoff found a sealed region, it would have to abandon the migration and
+   resume the guest.
 1. **Stop.** The VMM pauses the vCPUs, drains device completions and captures
    the VMM state. Nothing is sealed and nothing is uploaded.
-2. **Hand off.** Every region gives its volume up while keeping its pages, and
-   reports which of its pages no checkpoint has — the guest is stopped, so that
-   set is final. The source then releases the VM handle without publishing. The
-   handoff carries the VMM state, the region layout, those unpublished page runs,
-   the address of the source's page server, and the sequence the source's control
-   record selected when it gave the VM up.
-3. **Resume on the destination.** The destination opens the VM: it reads the
-   control record, advances its epoch — which fences the source for good — and
-   reads the selected checkpoint's root. That is two objects and no page. A record selecting
-   any sequence but the one the handoff names is refused with `ErrStale` and
-   released again without publishing: a migration publishes nothing, so that
-   record was openable by anybody in between — a recovery that took the source
-   for gone, an operator — and streaming the source's pages over a writer that
-   got in would make one VM's memory out of two writers' pages, with no error
-   anywhere. Otherwise it attaches the regions, binding each to the source host
-   as well as to its own volume, and starts the VMM with the captured state.
-4. **Post-copy.** Pages the guest touches fault in from the source host's pager
-   first, over plain TCP to the handoff's page-server address, and from the
-   destination's own checkpoint where the source cannot supply them. A page the
-   source served out of its own dirty pages is dirty on the destination too:
-   its volume reports those pages as the checkpoint's bytes or as holes, which
-   would silently rewind the guest, so the peer backing reports them as bytes of
-   its own and the pager holds each as a private page under a spill
-   reservation. The destination's next interval checkpoint publishes them.
+2. **Hand off.** Every region gives up its volume but keeps its pages. Each
+   region reports which of its pages no checkpoint has. The guest is stopped, so
+   that set is final. The source then releases the VM handle without publishing.
+   The handoff carries:
+   - the VMM state;
+   - the region layout;
+   - the unpublished page runs;
+   - the address of the source's page server;
+   - the sequence that the source's control record selected when the source
+     gave up the VM.
+3. **Resume on the destination.** The destination opens the VM. It reads the
+   control record and advances its epoch, which fences the source permanently.
+   It then reads the selected checkpoint's root. That is two objects and no
+   pages. If the record selects any sequence other than the one the handoff
+   names, the open fails with `ErrStale`, and the VM is released again without
+   publishing. The reason is that a migration publishes nothing, so anybody
+   could have opened that record in between. Examples are a recovery that
+   assumed the source was gone, or an operator. If the destination streamed the
+   source's pages over the pages of a writer that got in, the VM's memory would
+   mix two writers' pages, and no error would be reported. If the sequence
+   matches, the destination attaches the regions. It binds each region to the
+   source host and to its own volume. It then starts the VMM with the captured
+   state.
+4. **Post-copy.** When the guest touches a page, the page faults in from the
+   source host's pager first, over plain TCP to the handoff's page-server
+   address. If the source cannot supply it, the page comes from the
+   destination's own checkpoint. A page that the source served from its dirty
+   pages is also dirty on the destination. The destination's volume would report
+   those pages as the checkpoint's bytes or as holes, which would silently
+   rewind the guest. So the peer backing reports them as its own bytes, and the
+   pager holds each one as a private page under a spill reservation. The
+   destination's next interval checkpoint publishes them.
 
-   A background stream fetches the unpublished pages first and to completion,
-   then the rest of the source's resident set as an optimization. `Done` returns
-   only once every unpublished page is here or has failed to arrive, and that is
-   what allows `ReleaseMigrated` and the source host's exit; the bulk pass runs
-   on behind it, and `Streamed` is what reports that the whole resident set has
-   arrived.
+   A background stream first fetches all the unpublished pages. It then fetches
+   the rest of the source's resident set, as an optimization. `Done` returns
+   only when every unpublished page has arrived or has failed to arrive. `Done`
+   returning is what allows `ReleaseMigrated` and the source host's exit. The
+   bulk pass continues after that. `Streamed` reports when the whole resident
+   set has arrived.
 
-   **Failure during post-copy.** A page only the source holds is asked for until
-   it arrives, or until something that knows says the source is gone. An
-   unpublished page is never satisfiable from the destination's own volume,
-   because the checkpoint there predates the guest's write, and nothing in a
-   destination can tell a source that stumbled from one that died: a `BUSY`
-   reply, a reset connection, a timeout, a listener restarting and a connection
-   a budget dropped are all asked again, with backoff, for as long as the
-   backing lives. There is no attempt count and no failure threshold. Two
-   things end the asking. The source itself, answering that it no longer serves
-   this VM, which it does only after a release it agreed to: from then a page
-   the checkpoint holds reads from the volume and a page only the source held
-   fails with `ErrUnpublishedLost`. And this host closing the backing, which
-   says the same thing from this side: a read it interrupts reads the volume
-   too, and only one that still holds a page only the source had ends with the
-   close's own cause.
+   **Failure during post-copy.** A page that only the source holds is requested
+   until it arrives, or until a party that knows says the source is gone. The
+   destination's own volume can never supply an unpublished page, because its
+   checkpoint predates the guest's write. The destination cannot tell a source
+   that stumbled from one that died. So it retries all of the following, with
+   backoff, for as long as the backing exists:
+   - a `BUSY` reply;
+   - a reset connection;
+   - a timeout;
+   - a listener restarting;
+   - a connection dropped by a budget.
 
-   That second end is two different moments. A destination closes the backing
-   the moment its post-copy is over, and its guest is running and faulting all
-   the while, so one of those faults is on the wire when the close lands: every
-   page it asked for is published by then, so it comes back from the volume and
-   the guest never notices — a fault that failed would end the memory session
-   and the guest with it. The other is the orchestrator ending the migration,
-   which discards the destination's received VM when it has lost the source
-   host; the pages only that host had are lost with it, the reads waiting for
-   them end with the discard's cause rather than as pages lost, and the VM is
-   recovered from its checkpoint.
+   There is no attempt count and no failure threshold. Two things stop the
+   retries:
+   - The source answers that it no longer serves this VM. It does this only
+     after a release it agreed to. After that, a page that the checkpoint holds
+     is read from the volume, and a page that only the source held fails with
+     `ErrUnpublishedLost`.
+   - This host closes the backing. This has the same meaning from the
+     destination's side. A read that the close interrupts is served from the
+     volume. Only a read that still needs a page that only the source had fails,
+     with the close's cause.
 
-   A run every checkpoint holds is not worth waiting on, busy or broken: it is
-   read from the volume this time and decides nothing for the next load, which
-   asks the source again. A source serving pages of another size and a reply
-   this host cannot read are neither a source that is gone nor one that
-   stumbled — they are a source this destination cannot use — so the fault
-   fails with that cause and the received VM is torn, exactly as a torn
-   post-copy is handled anyway. The resident listing is decided the same way,
-   and for the same reason: the caller of that listing is the stream, which the
-   destination stops itself, so giving the source up there would send a healthy
-   region to a volume that does not hold the pages no checkpoint has.
-   Only pages the pager went on to install count as fetched, so `Done` cannot
-   report a complete set the source could then release. Serving a page is not
-   holding it: the bytes reach a buffer and the pager may still drop the page,
-   so the destination strikes one off only when its own pager reports having
-   bound it as dirty state of this region. The source keeps the
-   same count from its own side: it records each region's unpublished set when
-   the migration registers it, strikes off every one of those pages as it
-   answers for it, and refuses a release while any remain, keeping the VM
-   served. A page is struck off only once the reply carrying it has left this
-   host: a reply the source could not send carried nothing, so striking it off
-   when the bytes were merely assembled would let the release drop the only
-   copy of the guest's writes. Nothing about that rests on the orchestrator's
-   table — the source answered the fetches, so it is the one thing that knows —
-   and the refusal is
-   a `409` the caller repeats once the destination is done. A VM the host is
-   giving up rather than handing over, such as a fork hold that outlived its
-   deadline or a fan-out that failed, is discarded instead, because its pages
-   are going either way. A set that never completes leaves a guest made of
-   this host's half and a missing half, and nothing can publish it:
-   `Host.Receive` waits for `Done` itself and discards such a VM rather than
-   returning it: the VMM process is closed, the handle is released through
-   `Handoff` so that nothing dirty is published, and the supervisor is told to
-   forget it. What a recovery then opens is the checkpoint the control record
-   already selects. Only `ErrUnpublishedLost` says a VM is that, and nothing
-   else `Done` returns is grounds for giving one up — the caller's own
-   cancellation stops the wait and nothing else, because the stream runs on a
-   context of the package's own and `Done` may simply be called again, and
-   `ErrClosed` is a stream this host stopped, which says the source may not
-   release yet rather than that this guest is torn. Each region's pages are
-   fetched over as many of its connections as it has, rather than one page per
-   round trip. The held set includes private zero-filled pages allocated by
-   [write-ahead](vm-memory.md), even if the guest has not stored into them, so
-   peer-page counts measure transferred held pages and can exceed the pages the
-   guest explicitly wrote.
+   Closing the backing happens at two different moments. First, a destination
+   closes the backing as soon as its post-copy is over. Its guest is running
+   and faulting throughout, so a fault can be on the wire when the close
+   happens. Every page that fault asked for is already published by then, so
+   the read returns from the volume and the guest does not notice. If the fault
+   failed instead, it would end the memory session and the guest. Second, the
+   orchestrator ends the migration when it has lost the source host. That
+   discards the destination's received VM. The pages that only that host had
+   are lost with it. Reads waiting for them end with the discard's cause, not
+   as lost pages, and the VM is recovered from its checkpoint.
+
+   The destination does not wait for a run that every checkpoint holds, whether
+   the source is busy or broken. It reads the run from the volume this time.
+   This does not affect the next load, which asks the source again. Two cases
+   are neither a gone source nor a stumbling one: a source that serves pages of
+   a different size, and a reply this host cannot read. Both mean the
+   destination cannot use this source. The fault fails with that cause and the
+   received VM is torn, the same way any torn post-copy is handled. The
+   resident listing is handled the same way, for the same reason. The caller of
+   that listing is the stream, and the destination stops the stream itself.
+   Giving up the source there would send a healthy region to a volume that does
+   not hold the pages no checkpoint has.
+
+   Only pages that the pager installed count as fetched. So `Done` cannot
+   report a complete set that the source could then release. Serving a page is
+   not the same as holding it. The bytes reach a buffer, and the pager may still
+   drop the page. So the destination marks a page as fetched only when its own
+   pager reports that it bound the page as dirty state of this region.
+
+   The source keeps the same count from its side. When the migration registers
+   a region, the source records the region's unpublished set. It marks off each
+   of those pages as it answers for it. It refuses a release while any remain,
+   and keeps serving the VM. A page is marked off only after the reply carrying
+   it has left this host. A reply that the source could not send carried
+   nothing. If the source marked a page off when the bytes were only assembled,
+   the release could drop the only copy of the guest's writes. This check does
+   not depend on the orchestrator's table. The source answered the fetches, so
+   only the source knows. The refusal is a `409`, and the caller retries once
+   the destination is done.
+
+   If the host is giving a VM up instead of handing it over, the VM is
+   discarded, because its pages are lost in either case. Examples are a fork
+   hold that outlived its deadline and a fan-out that failed.
+
+   If the set never completes, the guest consists of this host's half and a
+   missing half, and nothing can publish it. `Host.Receive` waits for `Done`
+   and discards such a VM instead of returning it:
+   - the VMM process is closed;
+   - the handle is released through `Handoff`, so nothing dirty is published;
+   - the supervisor is told to forget the VM.
+
+   A recovery then opens the checkpoint that the control record already
+   selects.
+
+   Only `ErrUnpublishedLost` means a VM is in that state. No other error from
+   `Done` is grounds for giving a VM up. The caller's own cancellation only
+   stops the wait, because the stream runs on the package's own context and
+   `Done` can be called again. `ErrClosed` means this host stopped the stream.
+   It means the source may not release yet, not that this guest is torn.
+
+   Each region fetches its pages over all of its connections, instead of one
+   page per round trip. The held set includes private zero-filled pages
+   allocated by [write-ahead](vm-memory.md), even if the guest has not stored
+   into them. So peer-page counts measure transferred held pages and can exceed
+   the pages the guest explicitly wrote.
 
 Before any region has handed off its volume, a failed migration attempts to
-resume the source. Once a region has successfully handed off, that process
-cannot resume the VM; the VM is still openable anywhere, at the checkpoint its
-control record selects. Resuming a machine also requires the captured VMM state
-and matching region configuration.
+resume the source. After a region has handed off, that process cannot resume
+the VM. The VM can still be opened anywhere, at the checkpoint its control
+record selects. Resuming a machine also requires the captured VMM state and
+matching region configuration.
 
 ```go
 // vmmemory
@@ -237,191 +262,221 @@ func Receive(ctx context.Context, manager *volume.Manager, handoff Handoff, dial
 type StartFunc func(ctx context.Context, vm *volume.VM, backings map[string]vmmemory.Backing, state []byte) (Runtime, error)
 ```
 
-The page protocol is two requests over the framed host codec. A page request
-names the VM, the volume and a run of pages; its reply carries a bitmap with one
-bit per requested page and, in the payload frame, exactly the pages whose bit is
-set, in ascending order. A second bitmap marks which of those pages are the
-source's own state that no checkpoint has. A clear present bit is not an error:
-it is the plain fact that this host does not hold that page, and the destination
-reads it from its own volume. A resident request lists what a region holds, in
-runs, bounded per reply, which is what a destination's bulk stream walks before
-it faults those pages in through the pager's ordinary load path — streamed bytes
-are never written into a region directly, because the load path is what keeps a
-page shared by identity with the other VMs on that host. Both are bounded per
-peer, and a peer is the destination host rather than one of its connections: a
-destination opens a connection per region and dials again whenever one breaks,
-each with an ephemeral port of its own, so counting those separately would bind
-neither budget and would grow the table of peers with every reconnect. A
-connection over the budget is closed, and a request over the bytes-in-flight
-budget is answered `BUSY`, which the destination reads from its volume this time
-unless the run still holds a page no checkpoint has, in which case it asks again
-with backoff until the source serves it. That is why a region gives its
-connections back the moment it has no request in flight, keeping one: the
-connection budget is a bound on what one destination host holds at once across
-every region of every VM it is receiving, so connections a region pooled for a
-burst that is over are a bound held against the regions still asking — and what
-they ask for is the pages no checkpoint has, which they ask for for ever. A
-region that kept a whole burst's connections for the life of its receive would
-make the bound a deadlock rather than a queue. A source that says it does not serve
-the VM sends that region to its volume permanently, logged once — for every page
-but those, which have no copy in the volume and fail the fault instead; every
-other answer is asked again, under the rule above.
+The page protocol has two requests over the framed host codec.
 
-Ordering inside the pause is fixed and asymmetric. The regions give their
-volumes up before the VM is released, because a region that kept its volume
-across the release would fail its next verification. A failure before the first
-region's handoff completes attempts to resume the guest here; resumption can
-itself fail. After a region has handed its volume off, resumption is no longer
-possible, and `ErrStopped` says so: this process will not run that VM again. The
-host acts on it. A VM whose migration stopped it and then failed is discarded
-rather than put back on the checkpoint interval: its fork points are retired,
-its pages stop being served, its VMM process is closed, its handle is released
-and the supervisor is told. Putting it back would leave a stopped guest whose
-interval seals regions that no longer own the volumes they map, with a VMM still
-running and a handle nothing closes. Reopening the VM advances its epoch even if
-the source did not finish releasing it. Resuming the same machine execution additionally requires its captured VMM
-state.
+A page request names the VM, the volume and a run of pages. The reply carries a
+bitmap with one bit per requested page. The payload frame carries only the
+pages whose bit is set, in ascending order. A second bitmap marks which of those pages
+are the source's own state that no checkpoint has. A clear present bit is not an
+error. It means this host does not hold that page, and the destination reads it
+from its own volume.
+
+A resident request lists the pages a region holds, in runs, bounded per reply. A
+destination's bulk stream walks this list and then faults those pages in
+through the pager's ordinary load path. Streamed bytes are never written into a
+region directly, because the load path is what keeps a page shared by identity
+with the other VMs on that host.
+
+Both requests are bounded per peer. A peer is the destination host, not one of
+its connections. A destination opens a connection per region and dials again
+whenever one breaks, each time with a new ephemeral port. If each connection
+counted separately, neither budget would bind, and the peer table would grow
+with every reconnect. A connection over the budget is closed. A request over
+the bytes-in-flight budget is answered `BUSY`. The destination then reads the
+run from its volume this time. If the run holds a page no checkpoint has, the
+destination instead retries with backoff until the source serves it.
+
+For this reason a region returns its connections as soon as it has no request
+in flight, and keeps one. The connection budget bounds what one destination
+host holds at once, across every region of every VM it is receiving.
+Connections that a region pooled for a finished burst count against the regions
+that are still asking. Those regions ask for pages no checkpoint has, and they
+keep asking indefinitely. If a region kept a whole burst's connections for the
+life of its receive, the bound would become a deadlock instead of a queue.
+
+If the source says it does not serve the VM, the region reads from its volume
+permanently, and this is logged once. The exception is pages that no checkpoint
+has. They have no copy in the volume, so the fault fails. Every other answer is
+retried under the rule above.
+
+The order of steps inside the pause is fixed and not symmetric. The regions give
+up their volumes before the VM is released, because a region that kept its
+volume across the release would fail its next verification. If a failure
+happens before the first region's handoff completes, the host attempts to
+resume the guest here. Resumption can also fail. After a region has handed off
+its volume, resumption is no longer possible, and `ErrStopped` reports this:
+this process will not run that VM again. The host acts on this error. If a
+migration stopped a VM and then failed, the VM is discarded instead of
+returning to the checkpoint interval:
+
+- its fork points are retired;
+- its pages stop being served;
+- its VMM process is closed;
+- its handle is released;
+- the supervisor is told.
+
+Returning it to the interval would leave a stopped guest whose interval seals
+regions that no longer own the volumes they map. Its VMM would still be running,
+and nothing would close its handle. Reopening the VM advances its epoch even if
+the source did not finish releasing it. Resuming the same machine execution
+also requires its captured VMM state.
 
 The pause contains the VMM state capture, the region handoff and the
-destination's open. It uploads nothing. The destination reads the control record
-and the selected checkpoint's root from object storage, and no checkpoint page
-during open; the simulated suite asserts that access pattern. The measured pause
-is an observation for that workload, not a general latency target.
+destination's open. It uploads nothing. During open, the destination reads the
+control record and the selected checkpoint's root from object storage, and no
+checkpoint page. The simulated suite asserts that access pattern. The measured
+pause is an observation for that workload, not a general latency target.
 
-The host exposes `Host.Migrate(ctx, vmID, destination)` for the drain
-hook and `Host.Receive` for the destination daemon; `Host.Drain` runs the first
+The host exposes `Host.Migrate(ctx, vmID, destination)` for the drain hook and
+`Host.Receive` for the destination daemon. `Host.Drain` runs `Host.Migrate`
 over every VM the host holds, four at a time by default. The deployment must
-arrange the drain and destination handoffs before exit. `sproutfsctl migrate VM
-[--to HOST]` drives it through the orchestrator, which picks the emptiest
-other host when no destination is named. See [hosting](hosting.md#draining-a-host).
+arrange the drain and destination handoffs before exit.
+`sproutfsctl migrate VM [--to HOST]` drives a migration through the
+orchestrator. When no destination is named, the orchestrator picks the
+emptiest other host. See [hosting](hosting.md#draining-a-host).
 
-The orchestrator holds the other end of the post-copy rule. While a
-destination is receiving, it surveys the host that handed the VM over, every
-`SourceWatchInterval`; losing that host ends the receive, which is what
-discards the destination's half-received VM, and the VM is then recovered from
-the checkpoint its control record still selects, with the in-flight row going
-with it. The evidence has to be positive, because a guest is torn down by it: a
-pod the Kubernetes API no longer lists, or a host that answers and neither runs
-the VM nor serves its pages, which is a host that came back without the pages
-it was holding. A host that is merely quiet is a host whose guest may be
-perfectly well, so the destination goes on waiting for it — and a source that
-is alive but unreachable ends the wait itself, because its own handover
-deadline of four checkpoint intervals gives those pages up, after which its
-next answer is the one that says it no longer serves the VM.
+The orchestrator enforces the other side of the post-copy rule. While a
+destination is receiving, the orchestrator checks the host that handed the VM
+over, every `SourceWatchInterval`. If that host is lost, the receive ends. This
+discards the destination's half-received VM. The VM is then recovered from the
+checkpoint its control record still selects, and the in-flight row is removed
+with it. The evidence must be positive, because it causes a guest to be torn
+down. Two things count as evidence:
+
+- the Kubernetes API no longer lists the pod;
+- the host answers but neither runs the VM nor serves its pages, which means
+  the host came back without the pages it was holding.
+
+A host that is only quiet may still have a healthy guest, so the destination
+keeps waiting for it. A source that is alive but unreachable ends the wait from
+its own side. Its handover deadline of four checkpoint intervals makes it give
+those pages up, and its next answer then says that it no longer serves the VM.
 
 ## A fork is a handoff from a parent that keeps running
 
-A [fork](volumes.md#the-fork-point) is this same mechanism with the source
-left running. There is one fork path and it is a handoff, whatever host the
-child lands on: where it lands changes only how the pages it inherits reach it.
+A [fork](volumes.md#the-fork-point) uses the same mechanism, but the source
+keeps running. There is one fork path, and it is a handoff, whichever host the
+child lands on. The child's host changes only how the inherited pages reach it.
 
-Phase 1 becomes the capture's pause rather than the migration's stop — the vCPUs
-pause, the VMM state is saved, the dirty set is sealed and the guest resumes —
-and phase 2 gives nothing up: no region hands its volume off, the VM handle is
-not released, and nothing is published. For a child bound for another host, what
-the source registers with its page source is the fork point, under the child's
-identity, and what it serves out of it is exactly the pages no checkpoint of the
-parent holds; everything else is in object storage, where the child reads it
-from. For a child the parent's own host takes in, nothing is registered at all:
-that host has the pages.
+Phase 1 is the capture's pause instead of the migration's stop. The vCPUs
+pause, the VMM state is saved, the dirty set is sealed and the guest resumes.
+Phase 2 gives nothing up. No region hands off its volume, the VM handle is not
+released, and nothing is published. For a child going to another host, the
+source registers the fork point with its page source, under the child's
+identity. From the fork point it serves only the pages that no checkpoint of the
+parent holds. Everything else is in object storage, and the child reads it from
+there. For a child that the parent's own host takes in, nothing is registered,
+because that host already has the pages.
 
-Phase 3 creates the child instead of opening the VM: the handoff carries
-`Parent` and `ParentCheckpoint`, the destination rebuilds the point from that
-pinned checkpoint, and the child's control record selects a checkpoint that its
-own first publication writes. The pin was written on the parent's host before
-the handoff was built, by the only writer that holds the parent's epoch, and
-nothing gives it back: the destination has no way to know what else reads that
-checkpoint, and neither has the parent. A destination that is the parent's own host
-skips the rebuild: it holds the point itself, so the child is created from it
-and reads the pages written since the pinned checkpoint through it.
+Phase 3 creates the child instead of opening the VM. The handoff carries
+`Parent` and `ParentCheckpoint`. The destination rebuilds the point from that
+pinned checkpoint. The child's control record selects a checkpoint that the
+child's own first publication writes. The pin was written on the parent's host
+before the handoff was built, by the only writer that holds the parent's epoch.
+Nothing releases the pin, because neither the destination nor the parent can
+know what else reads that checkpoint. If the destination is the parent's own
+host, it skips the rebuild. It already holds the point, so it creates the child
+from the point, and the child reads the pages written since the pinned
+checkpoint through it.
 
-Phase 4 is the backing, and it is the whole of the difference between the two
-destinations. On another host it is `PeerBacking`: it marks the pages the parent
-served as this host's own, the background stream fetches them first and to
-completion, and `Done` reports when the parent may stop serving. On the parent's
-own host it is the local backing: attaching it offers the parent's sealed pages
-to the pager under the identity the point gives them, so every inherited page
-is present the moment the region attaches, `Done` reports immediately, no byte
-is copied and nothing is dialed.
+Phase 4 is the backing, and the backing is the only difference between the two
+kinds of destination. On another host it is `PeerBacking`. It marks the pages
+the parent served as this host's own. The background stream fetches them first
+and to completion, and `Done` reports when the parent may stop serving. On the
+parent's own host it is the local backing. Attaching it offers the parent's
+sealed pages to the pager under the identity the point gives them. So every
+inherited page is present as soon as the region attaches, `Done` reports
+immediately, no bytes are copied and nothing is dialed.
 
 The destination publishes the child's root index as soon as `Done` reports.
-Until it lands nothing outside that host can open the child — a host lost in the
-meantime loses it, and nothing can seal it, so it can be neither forked nor
-migrated — so a fork is not finished until it has one. Publishing it is also
-what gives back the hold the child's own handle has on the point.
+Until then, nothing outside that host can open the child. If the host is lost
+before then, the child is lost. Nothing can seal the child, so it can be
+neither forked nor migrated. So a fork is not finished until the child has a
+root index. Publishing it also releases the hold that the child's own handle
+has on the point.
 
-Releasing the parent is `ReleaseMigrated` under the child's identity, and unlike
-a migration it closes no process: it stops serving those pages and retires the
-fork point, which hands the sealed pages back to the parent's guest. The parent
-is not checkpointed while a fork point holds its pages, so the release is also
-what lets its interval checkpoint run again.
+Releasing the parent is `ReleaseMigrated` under the child's identity. Unlike a
+migration, it closes no process. It stops serving those pages and retires the
+fork point, which returns the sealed pages to the parent's guest. The parent is
+not checkpointed while a fork point holds its pages, so the release also lets
+its interval checkpoint run again.
 
-That release is not the only thing that ends the hold, because a parent sealed
-for good is a VM nothing can checkpoint, fence or migrate and whose dirty set
-only grows. Every hold carries a deadline of four checkpoint intervals, wherever
-its child went: when it passes, the host stops holding the point for that
-child and retires the point itself, and the child falls back to the checkpoint
-its record already selects. The
-orchestrator reconciles from the other side — every survey reads each host's
-`Serving` set against its table and releases whatever has no operation in
-flight, so an orchestrator that restarted between the handoff and the release
-makes it on its first survey, while a migration or fork that is still running is
-left alone. That set is every handover the host holds, a child taken in on its
-parent's own host included: such a child is served nothing over the wire, but
-the hold on the point is what keeps the parent sealed, and a host that
-reported it as holding nothing would be telling the deployment that a parent
-nothing can checkpoint is a parent nothing is waiting on.
+The release is not the only thing that ends the hold. A parent that stays sealed
+permanently cannot be checkpointed, fenced or migrated, and its dirty set only
+grows. So every hold has a deadline of four checkpoint intervals, wherever its
+child went. When the deadline passes, the host stops holding the point for that
+child and retires the point. The child falls back to the checkpoint its record
+already selects. The orchestrator reconciles from the other side. Every survey
+compares each host's `Serving` set with the orchestrator's table and releases
+every entry that has no operation in flight. So if the orchestrator restarted
+between the handoff and the release, it makes the release on its first survey.
+A migration or fork that is still running is left alone. The `Serving` set
+includes every handover the host holds, including a child taken in on its
+parent's own host. Such a child is served nothing over the wire, but its hold on
+the point keeps the parent sealed. If the host reported that child as holding
+nothing, the deployment would see a parent that cannot be checkpointed as a
+parent that nothing is waiting on.
 
-A handover of a VM no host runs and the table has never heard of is given up
-rather than released. It is the child of a fan-out that failed, so nothing holds
-the pages the source kept for it and nothing ever will: a release of those is
-the one request the source must refuse, because they are the only copy of the
-parent's writes since its last checkpoint. `POST /vms/{id}/abandoned` is the
-word for that, and it refuses nothing.
+A handover is given up instead of released when no host runs its VM and the
+table has no record of it. Such a VM is the child of a fan-out that failed.
+Nothing holds the pages the source kept for it, and nothing ever will. A release
+of those pages is the one request the source must refuse, because they are the
+only copy of the parent's writes since its last checkpoint.
+`POST /vms/{id}/abandoned` is the request that gives them up, and it refuses
+nothing.
 
-One pause serves any number of children: each is one hold on the point, and
-the seal ends when the last is retired, so a fan-out of forks costs the parent
-one pause and one request. A second pause is refused while one is outstanding,
-because only one seal of a region is.
+One pause serves any number of children. Each child is one hold on the point,
+and the seal ends when the last hold is retired. So a fan-out of forks costs the
+parent one pause and one request. A second pause is refused while one is
+outstanding, because a region can have only one seal at a time.
 
-Deleting the parent ends every hold on it the same way. `Host.Delete` retires
-the points taken on that VM before it closes the process whose pages they are:
-what a child holds is a point in this host's memory, not an object, so a
-parent deleted under one would leave the page server offering a point whose
-pages are gone, and every page the child had not yet fetched would come back
-absent and be read from the checkpoint instead. Retired first, the child's next
-fault for one of those pages fails and says so. A VM still sealed after that is
-refused, exactly as a migration of one is, and left running: the holder is not
-one of this host's own holds — a child created here whose first checkpoint has not
-published yet holds the point through its own handle, and a capture in flight
-holds it through the publication — and deleting it would take the point out
-from under whoever has it. The parent's checkpoint objects are untouched by a
-delete where a pin covers them — a child still inherits them — and reclaiming
-what a deleted VM left pinned is the collector's.
+Deleting the parent ends every hold on it in the same way. `Host.Delete` retires
+the points taken on that VM before it closes the process that holds their
+pages. A child holds a point in this host's memory, not an object. If the
+parent were deleted while a child held a point, the page server would offer a
+point whose pages are gone. Every page the child had not yet fetched would come
+back absent and be read from the checkpoint instead. Because the point is
+retired first, the child's next fault for one of those pages fails and reports
+the failure. If the VM is still sealed after that, the delete is refused, as a
+migration of a sealed VM is, and the VM keeps running. In that case the holder
+is not one of this host's own holds. It is one of the following:
 
-A fork on the parent's own host skips the network entirely, and it is the same
-call: `Host.Fork` builds a handoff for every child and holds the point for
-each of them, and a child with no destination named is served nothing, because
-the host that takes it in is the one holding the pages. The orchestrator drives
-both halves for every child — `sproutfsctl fork VM [--count N] [--to HOST]`,
-defaulting to the parent's host — giving each handoff to its destination's
-`Receive` and then telling the parent's host to release that child. Every fork
-goes through the orchestrator, which allocates each child's identity and records
-its host and its parent before the parent is paused, and which admits the whole
-fan-out against the host that will take it in before the parent is paused for
-it; a host never forks on its own.
+- a child created here whose first checkpoint has not published yet, which
+  holds the point through its own handle;
+- a capture in flight, which holds the point through the publication.
+
+Deleting the VM would remove the point from under that holder. A delete does
+not touch the parent's checkpoint objects that a pin covers, because a child
+still inherits them. The collector reclaims what a deleted VM left pinned.
+
+A fork on the parent's own host skips the network entirely, and it uses the
+same call. `Host.Fork` builds a handoff for every child and holds the point for
+each child. A child with no named destination is served nothing, because the
+host that takes it in already holds the pages. The orchestrator drives both
+halves for every child. The command is
+`sproutfsctl fork VM [--count N] [--to HOST]`, and the destination defaults to
+the parent's host. The orchestrator gives each handoff to its destination's
+`Receive` and then tells the parent's host to release that child. Every fork
+goes through the orchestrator. Before the parent is paused, the orchestrator
+allocates each child's identity, records the child's host and parent, and
+admits the whole fan-out against the host that will take it in. A host never
+forks on its own.
 
 A fan-out that did not happen leaves nothing behind, wherever the children were
-going, and it is one rollback. The parent's host gives up every hold of a
-fan-out it could not hand over whole. The orchestrator gives up every child of
-one whose destination refused: whichever children exist under the identities it
-named are deleted, and deleting an identity that was never created removes
-nothing. A child that was taken in is released — it holds every page it
-inherited, which is what the release says — and one that never started is given
-up on the source instead, because nothing fetched what its hold keeps and
-nothing ever will. The children of
-a failed request are guests nobody asked for, holding a host's memory under
-names only that request ever knew.
+going. One rollback covers every case:
+
+- The parent's host gives up every hold of a fan-out that it could not hand
+  over completely.
+- The orchestrator gives up every child of a fan-out whose destination refused.
+  It deletes whichever children exist under the identities it named. Deleting
+  an identity that was never created removes nothing.
+- A child that was taken in is released, because it holds every page it
+  inherited, which is what a release states.
+- A child that never started is given up on the source instead, because
+  nothing fetched the pages its hold keeps, and nothing ever will.
+
+The children of a failed request are guests that nobody asked for. They hold a
+host's memory under names that only that request knew.
 
 ```go
 // volume
@@ -460,82 +515,100 @@ func (h *Host) Receive(ctx context.Context, handoff vmmigrate.Handoff) (*vmmigra
 ## Qualification
 
 The simulated suite runs two volume managers and two pagers over one simulated
-world, with a guest that stores continuously through a simulated mapping. It
-requires that the destination's byte model equal the source's at the stop, that
-the pause read and write no object of the volumes at all, that every page the
-source held be served by the source and never asked for again, that every page
-no checkpoint had be fetched before `Done` returns and published by the
-destination's own next checkpoint, and that `Done` not return while one of them
-is still only on the source. A failure in the stop must leave the guest running
-here with its memory intact, and losing the source before the destination
-fetched its unpublished pages must leave the VM openable at the checkpoint its
-control record still selects, rewound by exactly the writes since it. A
-destination whose supervisor starts a machine that does not map every region the
-source had is refused before that machine runs, and the machine is closed. The
-page protocol is covered on its own: a partially resident region answered in one
-request, an unserved volume ending the asking on the one answer that says so, an
-unreachable source costing each load its round trip and no more for the pages a
-checkpoint holds, a connection over the per-peer budget refused, and a busy
-source not mistaken for a gone one.
+world. Its guest stores continuously through a simulated mapping. The suite
+requires that:
 
-Failure during post-copy is four requirements, under the simulated clock and
-network. A source that resets twenty connections in a row still serves the page
-afterwards and the fault completes. A source silent for ten simulated minutes
-leaves the fault waiting rather than failed, and completes it with the right
-bytes when it answers. A source answering that it no longer serves the VM fails
-a fault for a page only it held at once, with `ErrUnpublishedLost`, and serves
-the pages a checkpoint holds from the volume. Discarding the received VM ends a
-waiting fault with the cancellation's cause and nothing else — which is also
-what an unreachable source comes to: `Done` waits, and the discard is what ends
-it. Beside them, a busy source is asked again until it serves the pages no
-checkpoint holds and the destination ends with its bytes rather than the
-checkpoint's, and `Done` returns while the bulk resident stream is still
+- the destination's byte model equals the source's at the stop;
+- the pause reads and writes no object of the volumes;
+- every page the source held is served by the source and never requested again;
+- every page that no checkpoint had is fetched before `Done` returns, and is
+  published by the destination's own next checkpoint;
+- `Done` does not return while one of those pages is still only on the source.
+
+A failure in the stop must leave the guest running here with its memory intact.
+If the source is lost before the destination fetched its unpublished pages, the
+VM must remain openable at the checkpoint its control record still selects,
+rewound by exactly the writes since that checkpoint. If the destination's
+supervisor starts a machine that does not map every region the source had, the
+destination is refused before that machine runs, and the machine is closed. The
+page protocol has its own tests:
+
+- a partially resident region is answered in one request;
+- an unserved volume stops the retries on the one answer that says so;
+- an unreachable source costs each load one round trip and no more for the
+  pages a checkpoint holds;
+- a connection over the per-peer budget is refused;
+- a busy source is not mistaken for a gone one.
+
+Failure during post-copy has four requirements, tested under the simulated
+clock and network:
+
+- A source that resets twenty connections in a row still serves the page
+  afterwards, and the fault completes.
+- A source that is silent for ten simulated minutes leaves the fault waiting,
+  not failed. When the source answers, the fault completes with the right
+  bytes.
+- A source that answers that it no longer serves the VM immediately fails a
+  fault for a page only it held, with `ErrUnpublishedLost`. The pages a
+  checkpoint holds are then served from the volume.
+- Discarding the received VM ends a waiting fault with the cancellation's cause
+  and nothing else. An unreachable source ends the same way: `Done` waits, and
+  the discard ends the wait.
+
+The suite also tests two more cases. A busy source is retried until it serves
+the pages no checkpoint holds, and the destination ends with the source's bytes,
+not the checkpoint's. `Done` returns while the bulk resident stream is still
 running.
 
-The deployment's half is in the simulated deployment: losing the host that
-handed a VM over, while its destination is in the post-copy, ends that handover
-at the moment of the loss rather than at the end of anybody's patience, and the
-VM comes back on the host that is left at the checkpoint its record selects.
+The deployment's half is tested in the simulated deployment. The host that
+handed a VM over is lost while its destination is in the post-copy. The
+handover ends at the moment of the loss, not when some timeout expires. The VM
+comes back on the remaining host at the checkpoint its record selects.
 
 The host suite runs the same migration between two hosts over loopback TCP,
 including a drain that moves every VM one host runs.
 
-Forks are qualified on the same model. A fork on the parent's own host has to
-receive its child over the pages the seal froze — every inherited page mapped
-by identity, no page loaded back and no connection dialed — and the children of
-one fork point have to map each other's pages rather than their own copies. A fork
-onto another host has to name and pull exactly the pages no checkpoint of the
-parent holds and nothing else, and leave neither side able to see the other's
-later stores. Either way the child's root is published when it holds those pages
-and not at whatever interval checkpoint comes first: with the interval loop off
-on every host, a third host opens the child as soon as its handoff is done.
-Losing the parent's host after that leaves the child openable anywhere, reading
-back the point it was forked at; before the child has published, opening it
-anywhere reports `ErrForkPending`. A parent deleted or left unreleased under a
-child is handled the same way wherever that child is: the delete retires the
-holds this host has, a parent something else holds sealed is refused, and a hold
-nothing releases is given up by its deadline.
+Forks are qualified on the same model. A fork on the parent's own host must
+receive its child over the pages the seal froze. Every inherited page is mapped
+by identity, no page is loaded back, and no connection is dialed. The children
+of one fork point must map each other's pages, not their own copies. A fork
+onto another host must name and pull only the pages that no checkpoint of the
+parent holds. Neither side may see the other's later stores. In both cases the
+child's root is published when the child holds those pages, not at the next
+interval checkpoint. With the interval loop off on every host, a third host
+opens the child as soon as its handoff is done. If the parent's host is lost
+after that, the child can still be opened anywhere, and it reads back the point
+it was forked at. Before the child has published, opening it anywhere reports
+`ErrForkPending`. A parent that is deleted or left unreleased under a child is
+handled the same way wherever the child is:
 
-The full-guest suite migrates a real Firecracker guest between two pagers and two
-managers in one process, over loopback TCP: the
-guest stores into its RAM and its DAX disk until the vCPUs stop, and every
-region of the destination is started through a `PeerBacking`, so the source's
-page server is on the VMM's own fault path rather than beside it. The guest comes
-back with its counters intact, read back through the console, and the pages those
-faults touched are shown by `PeerStats` to have come from the source; a fault on
-a page the guest has not reached and only the source holds is served by the
-source too. What the source serves is compared byte for byte against what the
-destination's own checkpoint holds. After `Release` the same fault path reads the
-volume, the peer count stops moving, and the region never asks that source again.
-It reports the stop-to-resume pause, how many pages of each region the handoff
-named as unpublished, and the peer and volume page counts of every region.
+- the delete retires the holds this host has;
+- a parent that something else holds sealed is refused;
+- a hold that nothing releases is given up at its deadline.
+
+The full-guest suite migrates a real Firecracker guest between two pagers and
+two managers in one process, over loopback TCP. The guest stores into its RAM
+and its DAX disk until the vCPUs stop. Every region of the destination is
+started through a `PeerBacking`, so the source's page server is on the VMM's own
+fault path, not beside it. The guest comes back with its counters intact, read
+back through the console. `PeerStats` shows that the pages those faults touched
+came from the source. A fault on a page that the guest has not reached and that
+only the source holds is also served by the source. The suite compares what the
+source serves byte for byte against what the destination's own checkpoint
+holds. After `Release`, the same fault path reads the volume, the peer count
+stops increasing, and the region never asks that source again. The suite
+reports:
+
+- the stop-to-resume pause;
+- how many pages of each region the handoff named as unpublished;
+- the peer and volume page counts of every region.
 
 ### Page payload compression
 
-Page requests and replies require payload format 1. Each successful reply carries
-one independent raw-or-Zstandard blob containing the present pages in bitmap
-order, normally one 2 MiB page. CRC32C covers transmitted bytes; the blob checks
-its decoded length and contents before any bytes reach guest memory. Source
-admission still charges full logical page bytes. Old page protocols are rejected.
-The control plane's `Handoff.State` remains the runtime's raw state; checkpoint
-VMM-state objects are compressed.
+Page requests and replies require payload format 1. Each successful reply
+carries one independent raw or Zstandard blob. The blob contains the present
+pages in bitmap order, normally one 2 MiB page. CRC32C covers transmitted
+bytes. The blob checks its decoded length and contents before any bytes reach
+guest memory. Source admission still charges full logical page bytes. Old page
+protocols are rejected. The control plane's `Handoff.State` remains the
+runtime's raw state. Checkpoint VMM-state objects are compressed.

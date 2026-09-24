@@ -1,46 +1,58 @@
 # Sproutfs
 
-Sproutfs is storage and managed memory for virtual machines that can move
+Sproutfs is storage and managed memory for virtual machines. The VMs can move
 between hosts and fork without copying their inherited disk and memory data.
-It combines whole-VM checkpoints in object storage with a shared memory pager
-and a Firecracker integration.
+Sproutfs combines whole-VM checkpoints in object storage with a shared memory
+pager and a Firecracker integration.
 
 The project is under active development. It provides the host and orchestrator
-commands the demo deployment runs, and the Rust library the VMM maps its guest
-memory through; every Go package is internal to the module and none is offered
-as a library. No production deployment is recorded yet.
+commands that the demo deployment runs. It also provides the Rust library
+through which the VMM maps its guest memory. Every Go package is internal to
+the module, and none is offered as a library. No production deployment is
+recorded yet.
 
-There is no garbage collector, by decision, and its absence is not a gap to
-close before the next release: it is deferred indefinitely. Until one exists the
-object store grows without bound — every checkpoint a VM was ever forked at, the
-checkpoints its index names, and the pinned checkpoints a deleted VM leaves behind are
-kept forever. Deleting a VM reclaims only what nothing forked from. See
+There is no garbage collector. This is a deliberate decision, and the absence
+is not a gap to close before the next release: the collector is deferred
+indefinitely. Until one exists, the object store grows without bound. It keeps
+these objects permanently:
+
+- every checkpoint at which a VM was ever forked;
+- the checkpoints that checkpoint's index names;
+- the pinned checkpoints that a deleted VM leaves behind.
+
+Deleting a VM reclaims only checkpoints that no fork was taken from. See
 [open work](docs/open-work.md#correctness-and-unbounded-growth).
 
 ## What it does
 
-- Serves VM volume reads and writes from memory, and makes them durable with a
+- Serves VM volume reads and writes from memory. It makes them durable with a
   periodic whole-VM checkpoint: pause the vCPUs, save VMM state, seal the dirty
   pages by write protection, resume, then upload the sealed pages and an index.
-- Forks a running VM as a handoff from the parent: one pause yields one fork
-  point of it for any number of children, here or on another host, and nothing is
-  published to take it.
+- Forks a running VM as a handoff from the parent. One pause gives one fork
+  point, which serves any number of children on this host or on another host.
+  Taking the fork point publishes nothing.
 - Shares resident memory pages of the same identity within a pager.
-- Moves a running VM between hosts post-copy: the destination resumes first and
-  pulls the pages no checkpoint holds from the source's page server.
+- Moves a running VM between hosts post-copy. The destination resumes first and
+  pulls the pages that no checkpoint holds from the source's page server.
 
-A VM's durable state is exactly one checkpoint, selected by the VM's control
-record in the object store. A guest write never waits on object-store latency,
-and losing a host rewinds its VMs to their last checkpoint — at most one
-checkpoint interval, 60 seconds by default. See
+A VM's durable state is one checkpoint, which the VM's control record in the
+object store selects. A guest write never waits on object-store latency.
+Losing a host rewinds its VMs to their last checkpoint, which is at most one
+checkpoint interval old (60 seconds by default). Read
 the [loss model](docs/architecture.md#loss-model) before integrating.
 
 ## See it run
 
-One disposable GCE VM runs a single-node cluster with two host pods, and the
-five flows — boot, fork, live migration, recovery after a host is killed, and
-running a command inside a guest across a fork and a move — run against it
-non-interactively:
+One disposable GCE VM runs a single-node cluster with two host pods. Five flows
+run against it non-interactively:
+
+- boot;
+- fork;
+- live migration;
+- recovery after a host is killed;
+- running a command inside a guest across a fork and a move.
+
+Run them with:
 
 ```sh
 scripts/demo-gce.sh create

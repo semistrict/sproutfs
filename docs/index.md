@@ -1,7 +1,7 @@
 # Sproutfs
 
-Sproutfs runs virtual machines whose disk and memory follow them between hosts
-and can be forked without copying. Start with the architecture.
+Sproutfs runs virtual machines. Their disk and memory move with them between
+hosts, and they can be forked without copying. Start with the architecture.
 
 - [Architecture](architecture.md): the decisions, the components, the loss model and the VM lifecycle.
 - [Terminology](context.md): the shared domain language.
