@@ -48,8 +48,10 @@ func (w *World) LoseStore(index int, lost bool) {
 	w.hosts[index].objects.setFailed(lost)
 }
 
-// StoreInBackground has one VM's guest store into one page of its memory on a
-// goroutine of its own, and reports what that store did. A scenario about the
+// StoreInBackground has one VM's guest store into one page of its disk on a
+// goroutine of its own, and reports what that store did. It is the disk
+// because that is what the loss window bounds: RAM is never published by the
+// interval, so its stores wait for nothing. A scenario about the
 // loss window needs it: the store it is about does not return until a
 // checkpoint of its VM lands, so a test that made it inline would hang instead
 // of asserting. A VM that is running nowhere stores nothing and reports nil at
@@ -66,7 +68,7 @@ func (w *World) StoreInBackground(ctx context.Context, id string, page uint64) <
 	}
 	go func() {
 		before := g.stored()
-		err := g.storeIn(ctx, MemoryVolume, page)
+		err := g.storeIn(ctx, DiskVolume, page)
 		w.noteWrites(in, g, before)
 		done <- err
 	}()

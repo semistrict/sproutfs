@@ -265,6 +265,18 @@ func (r *fakeRuntime) Prepare(context.Context) ([]byte, map[string]volume.DirtyS
 	return bytes.Clone(r.state), r.sources, nil
 }
 
+// SealDisks is the disk checkpoint's pause, which this runtime records like the
+// capture's: every source it holds stands for a disk.
+func (r *fakeRuntime) SealDisks(context.Context) (map[string]volume.DirtySource, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, "seal disks")
+	if r.prepareErr != nil {
+		return nil, r.prepareErr
+	}
+	return r.sources, nil
+}
+
 func (r *fakeRuntime) Resume(context.Context) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

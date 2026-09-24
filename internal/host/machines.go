@@ -37,6 +37,12 @@ type Machine interface {
 	// Prepare pauses the process and returns its captured VMM state together
 	// with the sealed checkpoint of every memory region, by volume name.
 	Prepare(ctx context.Context) ([]byte, map[string]volume.DirtySource, error)
+	// SealDisks pauses the process's vCPUs and seals the regions of its disks,
+	// leaving its RAM as it is and capturing no VMM state, and returns those
+	// regions' checkpoints by volume name. It is the pause of a disk
+	// checkpoint: the process stays paused until Resume, and Release unseals
+	// what it sealed and resumes it.
+	SealDisks(ctx context.Context) (map[string]volume.DirtySource, error)
 	// Stop pauses the vCPUs, drains device completions and returns the VMM
 	// state with the process left paused. It seals nothing and waits for
 	// nothing: the pages it leaves behind are what a destination fetches.

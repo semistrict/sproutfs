@@ -45,10 +45,15 @@ func (h *Host) oldestUnpublished(region *vmmemory.Region) time.Time {
 	return oldestOf(entry.runtime.Regions())
 }
 
-// oldestOf is the oldest unpublished write across one VM's regions.
+// oldestOf is the oldest unpublished write across one VM's disks. RAM is not
+// in it: the interval checkpoints disks alone, so nothing it takes would ever
+// make a RAM write published, and a guest's RAM is not what the window bounds.
 func oldestOf(regions map[string]*vmmemory.Region) time.Time {
 	var oldest time.Time
 	for _, region := range regions {
+		if region.Kind() == vmmemory.Ram {
+			continue
+		}
 		since := region.OldestUnpublished()
 		if since.IsZero() {
 			continue

@@ -48,6 +48,10 @@ const (
 // vmmachine gives a guest's RAM and the volume a cold start discards.
 const MemoryVolume = "ram0"
 
+// DiskVolume is the disk a VM with one has beside its memory: the volume the
+// interval checkpoints and the loss window bounds.
+const DiskVolume = "disk"
+
 // PageSizeOf is the page one volume of a simulated VM is created with, which is
 // the page of the pager that maps it. It is the naming convention the host
 // itself uses to decide which pager a region belongs to, and nothing about a
@@ -166,7 +170,7 @@ func NewTopology(r sim.Random) Topology {
 		spec.Volumes = append(spec.Volumes, volume.VolumeSpec{Name: MemoryVolume, PageSize: RAMPage,
 			Size: uint64(minVolumePages+r.Intn(id+"/ram0", maxVolumePages-minVolumePages+1)) * RAMPage})
 		if r.Chance(id+"/disk", 0.5) {
-			spec.Volumes = append(spec.Volumes, volume.VolumeSpec{Name: "disk", PageSize: PMEMPage,
+			spec.Volumes = append(spec.Volumes, volume.VolumeSpec{Name: DiskVolume, PageSize: PMEMPage,
 				Size: uint64(minVolumePages+r.Intn(id+"/disk-pages", maxVolumePages-minVolumePages+1)) * PMEMPage})
 		}
 		t.VMs = append(t.VMs, spec)

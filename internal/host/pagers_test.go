@@ -86,85 +86,108 @@ func TestPrivateBytesAddsTheTwoPagersUpInBytes(t *testing.T) {
 	}
 }
 
-// One pause seals every region a VM maps, in both pagers, so pressure from
-// either pager is one checkpoint of the whole VM and not two. Here the PMEM
-// budget is the one that fills, and what relieves it is a checkpoint that
-// publishes the RAM pages too.
-func TestPressureFromEitherPagerSealsTheWholeVMOnce(t *testing.T) {
-	for _, full := range []struct {
-		name      string
-		volume    string
-		pages     uint64
-		configure func(kind vmmemory.RegionKind, cfg *vmmemory.Config)
-	}{
-		{"the RAM pager's budget fills", "ram0", 8, func(kind vmmemory.RegionKind, cfg *vmmemory.Config) {
-			if kind == vmmemory.Ram {
-				cfg.DirtyPages = 4
-			}
-		}},
-		{"the PMEM pager's budget fills", "disk", 8, func(kind vmmemory.RegionKind, cfg *vmmemory.Config) {
-			if kind == vmmemory.Pmem {
-				cfg.DirtyPages = 4
-			}
-		}},
-	} {
-		t.Run(full.name, func(t *testing.T) {
-			h := newSizedHostHarness(t, 1)
-			// Far longer than this test: every checkpoint it sees is one the
-			// pressure of one of the two pagers asked for.
-			h.configs[0].CheckpointInterval = time.Hour
-			kind := vmmemory.Ram
-			pagers := newMixedPagers(t, h.configs[0].Resources, func(cfg *vmmemory.Config) {
-				full.configure(kind, cfg)
-				kind = vmmemory.Pmem
-			})
-			h.configs[0].Pagers = pagers.pagers
-			h.start(t)
+// Pressure from the disk pager is one checkpoint of the VM's disks, which is
+// what relieves it: the disk's stores that were waiting for a reservation land,
+// and the guest's RAM goes on being its own, unpublished.
+func TestPressureFromTheDiskPagerIsOneCheckpointOfTheDisks(t *testing.T) {
+	h := newSizedHostHarness(t, 1)
+	// Far longer than this test: every checkpoint it sees is one the pressure
+	// asked for.
+	h.configs[0].CheckpointInterval = time.Hour
+	kind := vmmemory.Ram
+	pagers := newMixedPagers(t, h.configs[0].Resources, func(cfg *vmmemory.Config) {
+		if kind == vmmemory.Pmem {
+			cfg.DirtyPages = 4
+		}
+		kind = vmmemory.Pmem
+	})
+	h.configs[0].Pagers = pagers.pagers
+	h.start(t)
 
-			vm, err := h.hosts[0].Volumes().Create(t.Context(), "vm-1", mixedVolumes)
-			if err != nil {
-				t.Fatal(err)
-			}
-			guest, err := newMachine(t, pagers, vm, nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := h.hosts[0].AddMachine("vm-1", guest); err != nil {
-				t.Fatal(err)
-			}
-			// One store into the other region first, so the checkpoint the
-			// pressure asks for has both regions to seal.
-			other := "disk"
-			if full.volume == "disk" {
-				other = "ram0"
-			}
-			guest.store(other, 0, 77)
-			before := vm.Status().Checkpoint.Sequence
-			for page := range full.pages {
-				guest.store(full.volume, page, byte(page+1))
-			}
-			after := vm.Status().Checkpoint.Sequence
-			if after == before {
-				t.Fatalf("%s outran its dirty budget with no checkpoint of its own", full.volume)
-			}
-			// Every page of both regions still reads what the guest wrote,
-			// which is what says the one pause took both.
-			if got := guest.load(other, 0)[0]; got != 77 {
-				t.Fatalf("the other region reads %d after the checkpoint, want 77", got)
-			}
-			for page := range full.pages {
-				if got := guest.load(full.volume, page)[0]; got != byte(page+1) {
-					t.Fatalf("%s page %d reads %d, want %d", full.volume, page, got, byte(page+1))
-				}
-			}
-		})
+	vm, err := h.hosts[0].Volumes().Create(t.Context(), "vm-1", mixedVolumes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guest, err := newMachine(t, pagers, vm, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.hosts[0].AddMachine("vm-1", guest); err != nil {
+		t.Fatal(err)
+	}
+	guest.store("ram0", 0, 77)
+	before := vm.Status().Checkpoint.Sequence
+	for page := range uint64(8) {
+		guest.store("disk", page, byte(page+1))
+	}
+	if after := vm.Status().Checkpoint.Sequence; after == before {
+		t.Fatal("the disk outran its dirty budget with no checkpoint of its own")
+	}
+	for page := range uint64(8) {
+		if got := guest.load("disk", page)[0]; got != byte(page+1) {
+			t.Fatalf("disk page %d reads %d, want %d", page, got, byte(page+1))
+		}
+	}
+	if got := guest.load("ram0", 0)[0]; got != 77 {
+		t.Fatalf("RAM reads %d after the disks' checkpoint, want 77", got)
+	}
+	if guest.regions["ram0"].OldestUnpublished().IsZero() {
+		t.Fatal("the disks' checkpoint published the guest's RAM")
 	}
 }
 
-// A VM's loss window is the oldest unpublished write across every region it
-// maps, in both pagers. A host that measured one of them would report a VM as
-// durable while its disk held writes minutes old.
-func TestTheLossWindowSpansBothPagers(t *testing.T) {
+// A RAM pager whose dirty budget fills is one no checkpoint relieves, because
+// the interval checkpoints disks alone: the store is a stall and the host stops
+// the VM, with its checkpoint loop running all the while.
+func TestAFullRAMBudgetIsAStallEvenWithTheLoopRunning(t *testing.T) {
+	h := newSizedHostHarness(t, 1)
+	closed := make(chan string, 1)
+	h.configs[0].MachineClosed = func(vmID string) { closed <- vmID }
+	h.configs[0].CheckpointInterval = time.Hour
+	kind := vmmemory.Ram
+	pagers := newMixedPagers(t, h.configs[0].Resources, func(cfg *vmmemory.Config) {
+		if kind == vmmemory.Ram {
+			cfg.DirtyPages = 2
+		}
+		kind = vmmemory.Pmem
+	})
+	h.configs[0].Pagers = pagers.pagers
+	h.start(t)
+
+	vm, err := h.hosts[0].Volumes().Create(t.Context(), "vm-1", mixedVolumes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guest, err := newMachine(t, pagers, vm, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.hosts[0].AddMachine("vm-1", guest); err != nil {
+		t.Fatal(err)
+	}
+	var stalled error
+	for page := range uint64(4) {
+		if stalled = guest.regions["ram0"].Fault(t.Context(), page, true); stalled != nil {
+			break
+		}
+	}
+	if !errors.Is(stalled, vmmemory.ErrDirtyStalled) {
+		t.Fatalf("the store past the RAM budget reported %v, want a stall", stalled)
+	}
+	select {
+	case id := <-closed:
+		if id != "vm-1" {
+			t.Fatalf("the host closed %s, want vm-1", id)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the VM whose RAM no checkpoint could admit was not stopped")
+	}
+}
+
+// A VM's loss window is the oldest unpublished write across its disks, in
+// whichever pager they are. RAM is not in it: no interval checkpoint publishes
+// RAM, so a RAM write is not one a window could ever end.
+func TestTheLossWindowIsTheDisks(t *testing.T) {
 	h := newSizedHostHarness(t, 1)
 	h.configs[0].CheckpointInterval = -1
 	h.configs[0].LossWindow = time.Hour
@@ -183,38 +206,19 @@ func TestTheLossWindowSpansBothPagers(t *testing.T) {
 	if err := h.hosts[0].AddMachine("vm-1", guest); err != nil {
 		t.Fatal(err)
 	}
-	if age, waiting := h.hosts[0].LossWindow("vm-1"); age != 0 || waiting {
-		t.Fatalf("a VM that has stored nothing has held a write for %s", age)
-	}
-	// A write held by the PMEM pager alone opens the VM's window. A host that
-	// read the RAM pager would report this VM as holding nothing.
-	guest.store("disk", 0, 5)
-	disk, waiting := h.hosts[0].LossWindow("vm-1")
-	if disk <= 0 || waiting {
-		t.Fatalf("a write only the PMEM pager holds reports %s (waiting %t)", disk, waiting)
-	}
-	// A later write to RAM does not restart it: the window is the oldest write
-	// across both pagers, so it goes on running from the disk's.
-	const gap = 20 * time.Millisecond
-	time.Sleep(gap)
 	guest.store("ram0", 0, 6)
-	both, _ := h.hosts[0].LossWindow("vm-1")
-	if both < disk+gap {
-		t.Fatalf("after a RAM store the window is %s, want at least the disk's %s plus %s",
-			both, disk, gap)
+	if age, waiting := h.hosts[0].LossWindow("vm-1"); age != 0 || waiting {
+		t.Fatalf("a VM that has stored only into RAM reports a window of %s (waiting %t)", age, waiting)
 	}
-	// Publishing the VM ends it for both regions at once: one pause sealed
-	// them, so neither pager is left holding a write.
+	guest.store("disk", 0, 5)
+	if age, waiting := h.hosts[0].LossWindow("vm-1"); age <= 0 || waiting {
+		t.Fatalf("a write the disk holds reports %s (waiting %t)", age, waiting)
+	}
 	if err := guest.checkpoint(t.Context(), vm); err != nil {
 		t.Fatal(err)
 	}
 	if age, _ := h.hosts[0].LossWindow("vm-1"); age != 0 {
 		t.Fatalf("a checkpointed VM has held a write for %s", age)
-	}
-	// And the RAM pager alone opens it too, which is the other direction.
-	guest.store("ram0", 1, 7)
-	if age, _ := h.hosts[0].LossWindow("vm-1"); age <= 0 {
-		t.Fatal("a write only the RAM pager holds reports no window")
 	}
 }
 

@@ -320,6 +320,22 @@ func (m *machine) Prepare(ctx context.Context) ([]byte, map[string]volume.DirtyS
 	return []byte("vmm-state"), sources, nil
 }
 
+// SealDisks is a disk checkpoint's pause: the regions of the machine's disks
+// seal, and its RAM and its state are left alone.
+func (m *machine) SealDisks(ctx context.Context) (map[string]volume.DirtySource, error) {
+	sources := map[string]volume.DirtySource{}
+	for _, name := range slices.Sorted(maps.Keys(m.regions)) {
+		if m.regions[name].Kind() != vmmemory.Pmem {
+			continue
+		}
+		if err := m.regions[name].Seal(ctx); err != nil {
+			return nil, err
+		}
+		sources[name] = m.regions[name].Checkpoint()
+	}
+	return sources, nil
+}
+
 // Stop is a migration's pause: it seals nothing, because the pages it leaves
 // behind are what the destination fetches.
 func (m *machine) Stop(context.Context) ([]byte, error) { return []byte("vmm-state"), nil }
@@ -497,14 +513,17 @@ func TestMigrationWaitsForTheIntervalCheckpointItInterrupts(t *testing.T) {
 	pagers := make([]*hostPagers, len(h.configs))
 	for i := range h.configs {
 		pagers[i] = newPagerWithWriteAhead(t, h.configs[i].Resources, 0)
-		h.configs[i].Migration = host.MigrationConfig{Address: h.pages[i], PageSize: migrationPageSize}
+		// The handover is held for as long as a real one is: the destination
+		// fetches the guest's RAM from here, which no checkpoint publishes.
+		h.configs[i].Migration = host.MigrationConfig{Address: h.pages[i], PageSize: migrationPageSize,
+			HoldTimeout: 4 * host.DefaultCheckpointInterval}
 		h.configs[i].CheckpointInterval = 5 * time.Millisecond
 	}
 	var received *machine
 	h.configs[1].Migration.StartVM = starter(t, pagers[1], &received)
 	h.start(t)
 
-	vm, err := h.hosts[0].Volumes().Create(t.Context(), "vm-1", migrationVolumes)
+	vm, err := h.hosts[0].Volumes().Create(t.Context(), "vm-1", diskVolumes())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -514,6 +533,7 @@ func TestMigrationWaitsForTheIntervalCheckpointItInterrupts(t *testing.T) {
 	}
 	for page := range uint64(4) {
 		source.store("ram0", page, byte(page+1))
+		source.store("disk", page, byte(page+11))
 	}
 	started := publishing.next()
 	if err := h.hosts[0].AddMachine("vm-1", source); err != nil {
@@ -548,7 +568,10 @@ func TestMigrationWaitsForTheIntervalCheckpointItInterrupts(t *testing.T) {
 		t.Fatalf("the destination does not run the VM: %v", machines)
 	}
 	if got := received.load("ram0", 3); got[0] != 4 {
-		t.Fatalf("the destination reads page 3 as %d, want the guest's 4", got[0])
+		t.Fatalf("the destination reads RAM page 3 as %d, want the guest's 4", got[0])
+	}
+	if got := received.load("disk", 3); got[0] != 14 {
+		t.Fatalf("the destination reads disk page 3 as %d, want the guest's 14", got[0])
 	}
 }
 

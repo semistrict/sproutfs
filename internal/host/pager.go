@@ -86,6 +86,12 @@ func pagerConfig(config SupervisorConfig, kind vmmemory.RegionKind) vmmemory.Con
 		pageSize, arenaBytes, logical, dirty = ramPage(config), config.ArenaBytes.RAM, config.LogicalPages.RAM, config.DirtyPages.RAM
 	}
 	resident := int(uint64(arenaBytes) / pageSize)
+	// RAM is outside the loss window: the interval checkpoints disks alone, so
+	// no checkpoint of it would ever end a RAM page's window.
+	lossWindow := lossWindowOf(config.LossWindow)
+	if kind == vmmemory.Ram {
+		lossWindow = 0
+	}
 	readAhead := int(max(readAheadBytes/pageSize, 1))
 	writeAhead := int(max(writeAheadBytes/pageSize, 1))
 	if dirty < writeAhead*writeAheadDirtyShare {
@@ -105,7 +111,7 @@ func pagerConfig(config SupervisorConfig, kind vmmemory.RegionKind) vmmemory.Con
 		SettleWorkers:   min(max(runtime.NumCPU(), 1), maximumSettleWorkers),
 		// The pager is what holds a guest back past the window, so it carries
 		// the same bound the host reports and schedules its retries by.
-		LossWindow: lossWindowOf(config.LossWindow),
+		LossWindow: lossWindow,
 	}
 }
 

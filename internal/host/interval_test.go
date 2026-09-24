@@ -4,22 +4,87 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/semistrict/sproutfs/internal/checkpoint"
 	"github.com/semistrict/sproutfs/internal/host"
 	"github.com/semistrict/sproutfs/internal/volume"
 )
 
+// The interval makes a guest's disks durable and not its RAM. The checkpoint it
+// publishes holds what the guest stored into its disk and nothing of what it
+// stored into its RAM, and no VMM state, so opening it is a cold boot over
+// that disk: RAM is uploaded only when a capture asks for it.
+func TestTheIntervalCheckpointsDisksAndNotRAM(t *testing.T) {
+	h := newSizedHostHarness(t, 1)
+	h.configs[0].CheckpointInterval = 10 * time.Millisecond
+	h.start(t)
+	pagers := newPager(t, h.configs[0].Resources)
+	vm, err := h.hosts[0].Volumes().Create(t.Context(), "vm-1", diskVolumes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	guest, err := newMachine(t, pagers, vm, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guest.store("ram0", 0, 7)
+	guest.store("disk", 0, 9)
+	before := vm.Status().Checkpoint
+	counting := newCountingMachine(guest)
+	if err := h.hosts[0].AddMachine("vm-1", counting); err != nil {
+		t.Fatal(err)
+	}
+	defer h.hosts[0].RemoveMachine("vm-1")
+	deadline := time.Now().Add(10 * time.Second)
+	for vm.Status().Checkpoint == before {
+		if time.Now().After(deadline) {
+			t.Fatalf("the interval checkpoint never landed: %+v", vm.Status())
+		}
+		time.Sleep(time.Millisecond)
+	}
+	durable := make([]byte, migrationPageSize)
+	if err := vm.Volume("disk").Read(t.Context(), 0, durable); err != nil {
+		t.Fatal(err)
+	}
+	if want := bytes.Repeat([]byte{9}, migrationPageSize); !bytes.Equal(durable, want) {
+		t.Fatalf("the disk reads %d... after the interval checkpoint, want 9...", durable[0])
+	}
+	if err := vm.Volume("ram0").Read(t.Context(), 0, durable); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(durable, make([]byte, migrationPageSize)) {
+		t.Fatalf("the interval checkpoint published RAM: page 0 reads %d...", durable[0])
+	}
+	if _, err := host.State(t.Context(), h.hosts[0].Checkpoints(), vm.Status().Checkpoint); !errors.Is(err, checkpoint.ErrNoState) {
+		t.Fatalf("the interval checkpoint's VMM state: %v, want none", err)
+	}
+	if got := counting.stateCaptures(); got != 0 {
+		t.Fatalf("the interval captured the VMM state %d times, want never", got)
+	}
+}
+
+// diskVolumes is a VM with RAM and a disk beside it, which is the VM an
+// interval checkpoint makes durable part of.
+func diskVolumes() []volume.VolumeSpec {
+	return append(slices.Clone(migrationVolumes),
+		volume.VolumeSpec{Name: "disk", Size: 8 * migrationPageSize, PageSize: migrationPageSize})
+}
+
 // countingMachine records every capture a host's interval loop drives, so a test
-// can see the loop run rather than only its effect. turns carries one value per
-// capture, which is how a test waits for the loop to take a turn instead of
-// waiting out a stretch of wall clock and hoping it did.
+// can see the loop run rather than only its effect. The loop's captures are of
+// the VM's disks; a capture of its whole state is counted apart, because only
+// a request makes one. turns carries one value per capture of either kind,
+// which is how a test waits for the loop to take a turn instead of waiting out
+// a stretch of wall clock and hoping it did.
 type countingMachine struct {
 	*machine
 	mu       sync.Mutex
 	captures int
+	states   int
 	turns    chan struct{}
 }
 
@@ -32,13 +97,36 @@ func (m *countingMachine) Prepare(ctx context.Context) ([]byte, map[string]volum
 	if err == nil {
 		m.mu.Lock()
 		m.captures++
+		m.states++
 		m.mu.Unlock()
-		select {
-		case m.turns <- struct{}{}:
-		default:
-		}
+		m.turned()
 	}
 	return state, sources, err
+}
+
+func (m *countingMachine) SealDisks(ctx context.Context) (map[string]volume.DirtySource, error) {
+	sources, err := m.machine.SealDisks(ctx)
+	if err == nil {
+		m.mu.Lock()
+		m.captures++
+		m.mu.Unlock()
+		m.turned()
+	}
+	return sources, err
+}
+
+func (m *countingMachine) turned() {
+	select {
+	case m.turns <- struct{}{}:
+	default:
+	}
+}
+
+// stateCaptures is how many captures took the whole VMM state.
+func (m *countingMachine) stateCaptures() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.states
 }
 
 func (m *countingMachine) count() int {
@@ -61,16 +149,16 @@ func (m *countingMachine) awaitTurns(t *testing.T, n int) {
 	}
 }
 
-// A host checkpoints every VM it runs on its interval, which is the only thing
-// that makes a running guest durable. The loop starts with the machine and stops
-// when the host stops running it.
+// A host checkpoints the disks of every VM it runs on its interval, which is
+// the only thing that makes a running guest's disks durable. The loop starts
+// with the machine and stops when the host stops running it.
 func TestHostCheckpointsEveryVMOnItsInterval(t *testing.T) {
 	h := newSizedHostHarness(t, 1)
 	h.configs[0].CheckpointInterval = 10 * time.Millisecond
 	h.start(t)
 	pagers := newPager(t, h.configs[0].Resources)
 
-	vm, err := h.hosts[0].Volumes().Create(t.Context(), "vm-1", migrationVolumes)
+	vm, err := h.hosts[0].Volumes().Create(t.Context(), "vm-1", diskVolumes())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,12 +167,12 @@ func TestHostCheckpointsEveryVMOnItsInterval(t *testing.T) {
 		t.Fatal(err)
 	}
 	for page := range uint64(4) {
-		guest.store("ram0", page, byte(page+1))
+		guest.store("disk", page, byte(page+1))
 	}
 	// Nothing is durable yet: the pager holds every one of those pages.
 	before := vm.Status().Checkpoint
 	durable := make([]byte, migrationPageSize)
-	if err := vm.Volume("ram0").Read(t.Context(), 0, durable); err != nil {
+	if err := vm.Volume("disk").Read(t.Context(), 0, durable); err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(durable, make([]byte, migrationPageSize)) {
@@ -104,7 +192,7 @@ func TestHostCheckpointsEveryVMOnItsInterval(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	for page := range uint64(4) {
-		if err := vm.Volume("ram0").Read(t.Context(), page*migrationPageSize, durable); err != nil {
+		if err := vm.Volume("disk").Read(t.Context(), page*migrationPageSize, durable); err != nil {
 			t.Fatal(err)
 		}
 		if want := bytes.Repeat([]byte{byte(page + 1)}, migrationPageSize); !bytes.Equal(durable, want) {

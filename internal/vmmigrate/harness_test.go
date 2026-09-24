@@ -479,6 +479,23 @@ func (m *machine) Prepare(ctx context.Context) ([]byte, map[string]volume.DirtyS
 	return state, sources, nil
 }
 
+// SealDisks is a disk checkpoint's pause: the guest stops storing and the
+// regions of its disks seal; its RAM and its state are left alone.
+func (m *machine) SealDisks(ctx context.Context) (map[string]volume.DirtySource, error) {
+	m.pause()
+	sources := map[string]volume.DirtySource{}
+	for _, name := range m.names {
+		if m.regions[name].Kind() != vmmemory.Pmem {
+			continue
+		}
+		if err := m.regions[name].Seal(ctx); err != nil {
+			return nil, err
+		}
+		sources[name] = m.regions[name].Checkpoint()
+	}
+	return sources, nil
+}
+
 // Stop is the migration's pause: the guest stops storing and its state is
 // captured. Nothing is sealed and nothing is uploaded — the pages this machine
 // keeps are what the destination fetches.

@@ -780,6 +780,42 @@ func (p *Process) Prepare(ctx context.Context) ([]byte, map[string]volume.DirtyS
 	return state, sources, nil
 }
 
+// SealDisks pauses the VM and seals the regions of its disks, and returns their
+// checkpoints by the name of the volume each maps. It is the pause of a disk
+// checkpoint: nothing asks the VMM for its state and its RAM is left as it is,
+// so the pause is the vCPUs stopping and the disks' write-protect commands.
+// The vCPUs stay paused until Resume; Release unseals the disks and resumes.
+func (p *Process) SealDisks(ctx context.Context) (map[string]volume.DirtySource, error) {
+	if err := p.mu.Lock(ctx); err != nil {
+		return nil, err
+	}
+	defer p.mu.Unlock()
+	ctx, cancel := operation(ctx)
+	defer cancel()
+	if p.running {
+		if err := p.request(ctx, http.MethodPatch, "/vm", map[string]any{"state": "Paused"}); err != nil {
+			if errors.As(err, &refusal{}) {
+				return nil, err
+			}
+			p.stop(err)
+			<-p.done
+			return nil, err
+		}
+		p.running = false
+	}
+	sources := map[string]volume.DirtySource{}
+	for name, region := range p.namedRegions() {
+		if region.Kind() != vmmemory.Pmem {
+			continue
+		}
+		if err := region.Seal(ctx); err != nil {
+			return nil, fmt.Errorf("vmmachine: sealing disk %q: %w", name, err)
+		}
+		sources[name] = region.Checkpoint()
+	}
+	return sources, nil
+}
+
 // captureKind is what one state capture is for. The VMM is told, because a
 // device holding something on the guest's behalf acts on it: a vsock connection
 // to a guest that will run again is left alone, and one to a guest that will not

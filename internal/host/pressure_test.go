@@ -23,7 +23,7 @@ func TestHostCheckpointsOutOfTurnWhenTheDirtyBudgetFills(t *testing.T) {
 	h.configs[0].Pagers = pagers.pagers
 	h.start(t)
 
-	vm, err := h.hosts[0].Volumes().Create(t.Context(), "vm-1", migrationVolumes)
+	vm, err := h.hosts[0].Volumes().Create(t.Context(), "vm-1", diskVolumes())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,13 +38,13 @@ func TestHostCheckpointsOutOfTurnWhenTheDirtyBudgetFills(t *testing.T) {
 	// Eight pages against a four-page budget: the stores past it are admitted
 	// only by a checkpoint nothing else in this test asks for.
 	for page := range uint64(8) {
-		guest.store("ram0", page, byte(page+1))
+		guest.store("disk", page, byte(page+1))
 	}
 	if after := vm.Status().Checkpoint.Sequence; after == before {
 		t.Fatalf("the guest outran its dirty budget at checkpoint %d with no checkpoint of its own", after)
 	}
 	for page := range uint64(8) {
-		if got := guest.load("ram0", page)[0]; got != byte(page+1) {
+		if got := guest.load("disk", page)[0]; got != byte(page+1) {
 			t.Fatalf("page %d holds %d after the out-of-turn checkpoint, want %d", page, got, byte(page+1))
 		}
 	}

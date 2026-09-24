@@ -433,6 +433,25 @@ func (g *guest) setRefuseStop(err error) {
 // so what a resume means here is that stores are accepted again — which is
 // exactly what an abandoned capture or migration owes the guest it stopped, and
 // exactly what a run that never checked would not notice was missing.
+// SealDisks is a disk checkpoint's pause: the guest stops storing and the
+// regions of its disks seal, while its RAM and its state are left alone.
+func (g *guest) SealDisks(ctx context.Context) (map[string]volume.DirtySource, error) {
+	g.mu.Lock()
+	g.stopped = true
+	g.mu.Unlock()
+	sources := map[string]volume.DirtySource{}
+	for _, name := range g.names {
+		if g.regions[name].Kind() != vmmemory.Pmem {
+			continue
+		}
+		if err := g.regions[name].Seal(ctx); err != nil {
+			return nil, err
+		}
+		sources[name] = g.regions[name].Checkpoint()
+	}
+	return sources, nil
+}
+
 func (g *guest) Resume(context.Context) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()

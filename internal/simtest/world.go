@@ -433,6 +433,17 @@ func checkpointInterval(configured time.Duration) time.Duration {
 	return configured
 }
 
+// lossWindowOf is the window one of a simulated host's pagers keeps, which is
+// what a real host gives it: its disks keep the knob's, and its RAM none, since
+// the interval checkpoints disks alone and nothing it takes would end a RAM
+// page's window.
+func lossWindowOf(kind vmmemory.RegionKind, window time.Duration) time.Duration {
+	if kind == vmmemory.Ram {
+		return 0
+	}
+	return window
+}
+
 // hostLossWindow spells a knob's window the way a host reads one: zero is the
 // knob turning the bound off, and zero is the host's own default, so the two
 // meet through the negative value that disables it.
@@ -583,7 +594,7 @@ func (w *World) newPager(ctx context.Context, h *hostState) (*pager, func(), err
 			ResidentPages: k.ResidentPages, ArenaOffsets: offsets,
 			LogicalPages: k.LogicalPages, DirtyPages: k.DirtyPages,
 			ReadAheadPages: k.ReadAheadPages, WriteAheadPages: k.WriteAheadPages,
-			ConcurrentIO: k.ConcurrentIO, LossWindow: k.LossWindow,
+			ConcurrentIO: k.ConcurrentIO, LossWindow: lossWindowOf(kind, k.LossWindow),
 			// The window is measured on this host's own clock, which the
 			// simulation moves itself: a pager reading the wall clock would
 			// measure a bound written in checkpoint intervals against a

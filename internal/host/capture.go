@@ -59,7 +59,39 @@ var ErrInvalidCapture = errors.New("host: invalid capture argument")
 // anything: it retires each of them when it lands, and hands their pages back
 // to the guest when it does not.
 func Capture(ctx context.Context, vm *volume.VM, machine Machine, clock platform.Clock) (*volume.Checkpoint, error) {
-	if vm == nil || machine == nil {
+	if machine == nil {
+		return nil, ErrInvalidCapture
+	}
+	return capture(ctx, vm, machine, clock, machine.Prepare)
+}
+
+// CaptureDisks is the checkpoint the interval takes: Capture of the VM's disks
+// alone. The pause seals the regions of its disks and captures no VMM state, so
+// the checkpoint publishes what the guest stored into its disks, nothing of its
+// RAM, and opening it is a cold boot over those disks — a power cut at the
+// moment the pause began. A disk is what a guest expects to survive the loss
+// of the machine it runs on, and RAM is not; RAM is uploaded only by Capture,
+// which is a request for it.
+//
+// The pause is the vCPUs stopping and the disks' write-protect commands, with
+// no state written anywhere, and every disk is sealed inside the one pause, so
+// the checkpoint is a single point in time across all of them: nothing a guest
+// stored after a flush is in it without everything it stored before.
+func CaptureDisks(ctx context.Context, vm *volume.VM, machine Machine, clock platform.Clock) (*volume.Checkpoint, error) {
+	if machine == nil {
+		return nil, ErrInvalidCapture
+	}
+	return capture(ctx, vm, machine, clock, func(ctx context.Context) ([]byte, map[string]volume.DirtySource, error) {
+		sources, err := machine.SealDisks(ctx)
+		return nil, sources, err
+	})
+}
+
+// capture is Capture with the pause's own step: seal what prepare seals, resume,
+// and publish it behind the running guest.
+func capture(ctx context.Context, vm *volume.VM, machine Machine, clock platform.Clock,
+	prepare func(context.Context) ([]byte, map[string]volume.DirtySource, error)) (*volume.Checkpoint, error) {
+	if vm == nil {
 		return nil, ErrInvalidCapture
 	}
 	clock = platform.ClockOr(clock)
@@ -68,7 +100,7 @@ func Capture(ctx context.Context, vm *volume.VM, machine Machine, clock platform
 	ckpt, err := vm.Snapshot(ctx, func(ctx context.Context) ([]byte, map[string]volume.DirtySource, error) {
 		began := clock.Now()
 		paused = true
-		state, sources, err := machine.Prepare(ctx)
+		state, sources, err := prepare(ctx)
 		if err != nil {
 			return nil, nil, err
 		}

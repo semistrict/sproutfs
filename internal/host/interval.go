@@ -11,9 +11,10 @@ import (
 	"github.com/semistrict/sproutfs/internal/volume"
 )
 
-// checkpointing checkpoints one VM every interval for as long as this host runs
-// it, and again whenever the pager asks for one out of that turn. Each
-// checkpoint pauses the vCPUs only for the VMM state capture and the seal; the
+// checkpointing checkpoints one VM's disks every interval for as long as this
+// host runs it, and again whenever the pager asks for one out of that turn. Its
+// RAM is not checkpointed here at all: see CaptureDisks. Each checkpoint pauses
+// the vCPUs only for the seal of the disks; the
 // upload runs behind the resumed guest, and the next interval is measured from
 // its completion, so a VM whose checkpoint takes longer than the interval is
 // checkpointed back to back rather than piling captures up.
@@ -49,7 +50,7 @@ func (h *Host) checkpointing(ctx context.Context, vmID string, entry *registrati
 		}
 		// An explicit capture, a fork's, holds the VM's publication lock, so the
 		// two serialize rather than checkpointing the same guest twice.
-		checkpoint, err := Capture(ctx, vm, entry.runtime, h.clock)
+		checkpoint, err := CaptureDisks(ctx, vm, entry.runtime, h.clock)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
@@ -170,6 +171,12 @@ func jittered(entropy platform.Entropy, interval time.Duration) time.Duration {
 // It runs on the goroutine of the store that is waiting, so it only signals:
 // the capture stays the loop's, as it is on the interval.
 func (h *Host) checkpointNow(region *vmmemory.Region) bool {
+	// The checkpoint this asks for is of the VM's disks, which relieves no
+	// RAM page: a RAM pager whose dirty budget is full is one no checkpoint
+	// can help, and the store it holds is a stall.
+	if region.Kind() == vmmemory.Ram {
+		return false
+	}
 	vmID, entry := h.machineFor(region)
 	if entry == nil || entry.now == nil {
 		return false

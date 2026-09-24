@@ -23,7 +23,7 @@ func TestAHostReportsEachVMsLossWindow(t *testing.T) {
 	h.configs[0].Pagers = pagers.pagers
 	h.start(t)
 
-	vm, err := h.hosts[0].Volumes().Create(t.Context(), "vm-1", migrationVolumes)
+	vm, err := h.hosts[0].Volumes().Create(t.Context(), "vm-1", diskVolumes())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +37,7 @@ func TestAHostReportsEachVMsLossWindow(t *testing.T) {
 	if age, waiting := h.hosts[0].LossWindow("vm-1"); age != 0 || waiting {
 		t.Fatalf("a VM holding nothing unpublished reports %s and waiting=%t, want no window at all", age, waiting)
 	}
-	guest.store("ram0", 0, 7)
+	guest.store("disk", 0, 7)
 	age, waiting := h.hosts[0].LossWindow("vm-1")
 	if age <= 0 {
 		t.Fatal("a VM holding an unpublished write reports no loss window")
@@ -126,7 +126,7 @@ func TestTheLoopRetriesPromptlyWhileTheLossWindowIsExceeded(t *testing.T) {
 	h.configs[0].Pagers = pagers.pagers
 	h.start(t)
 
-	vm, err := h.hosts[0].Volumes().Create(t.Context(), "vm-1", migrationVolumes)
+	vm, err := h.hosts[0].Volumes().Create(t.Context(), "vm-1", diskVolumes())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +137,7 @@ func TestTheLoopRetriesPromptlyWhileTheLossWindowIsExceeded(t *testing.T) {
 	// One write no checkpoint covers, and then nothing this host does can
 	// publish it. Nothing stores after this, so the loop's own schedule is the
 	// only thing that decides when it tries again.
-	guest.store("ram0", 0, 7)
+	guest.store("disk", 0, 7)
 	unavailable.Store(true)
 	t.Cleanup(func() { unavailable.Store(false) })
 	counting := newCountingMachine(guest)
@@ -178,7 +178,7 @@ func TestTheLoopKeepsItsIntervalWhileTheLossWindowIsNotExceeded(t *testing.T) {
 	h.configs[0].Pagers = pagers.pagers
 	h.start(t)
 
-	vm, err := h.hosts[0].Volumes().Create(t.Context(), "vm-1", migrationVolumes)
+	vm, err := h.hosts[0].Volumes().Create(t.Context(), "vm-1", diskVolumes())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,7 +186,7 @@ func TestTheLoopKeepsItsIntervalWhileTheLossWindowIsNotExceeded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	guest.store("ram0", 0, 7)
+	guest.store("disk", 0, 7)
 	unavailable.Store(true)
 	t.Cleanup(func() { unavailable.Store(false) })
 	counting := newCountingMachine(guest)

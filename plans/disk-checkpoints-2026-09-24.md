@@ -1,6 +1,9 @@
 # Disk checkpoints, and RAM only on request
 
-Decided 2026-09-24.
+Decided 2026-09-24. Most software does not assume RAM survives the loss of the
+node it runs on, and distributed storage is expected to keep the disk. The
+target is an agent sandbox: what matters is that its disk is preserved, and the
+agent recovers its in-memory state from it.
 
 ## What changes
 
@@ -22,13 +25,15 @@ Decided 2026-09-24.
    ask for a checkpoint under dirty pressure, since no disk checkpoint relieves
    them. A RAM pager's dirty budget has to hold every private RAM page, and a
    store past it stops the VM as a full budget does today.
-5. **A guest flush is durable within a bound.** Firecracker's virtio-pmem
-   flush still completes at once, and now also tells the host over the region's
-   memory session. The host takes a disk checkpoint of that VM within
-   `SPROUTFS_FLUSH_BOUND` (default 1 s), one checkpoint for every flush that
-   arrives before it starts. A disk checkpoint is a point in time across all of
-   a VM's disks, so ordering is a power cut's: nothing after a flush is durable
-   without everything before it.
+5. **A guest flush blocks while the disks are stale.** A flush completes at
+   once when the VM's last successful disk checkpoint landed within
+   `SPROUTFS_FLUSH_BOUND` (default 60 s); otherwise it waits until one lands, and
+   the host asks for one out of the interval's turn. A flush never triggers a
+   checkpoint on its own. So an fsync that returned is never more than the bound
+   plus one interval from durable, and a guest whose disks cannot be published
+   stops making fsync progress. A disk checkpoint is a point in time across all
+   of a VM's disks, so ordering is a power cut's: nothing after a flush is
+   durable without everything before it.
 6. **Moving a VM between hosts is unchanged.** A migration and a fork hand RAM
    over pager to pager and upload nothing.
 
@@ -38,9 +43,9 @@ Decided 2026-09-24.
    simulation's oracle learns that a host loss cold boots from the last disk
    checkpoint.
 2. RAM regions out of the loss window and pressure; the RAM dirty budget.
-3. The flush signal: the device, the memory client, the wire (a new frame, wire
-   version 9) and the pager, ending in a callback the host turns into a disk
-   checkpoint within the bound.
+3. The flush request: the device, the memory client, the wire (a new frame
+   with a reply, wire version 9) and the pager, ending in a callback that
+   completes the flush when the host says the disks are fresh enough.
 4. Docs: the loss model in architecture.md, Flush in context.md, hosting.md,
    volumes.md, vm-memory.md.
 5. Qualification on GCE.
