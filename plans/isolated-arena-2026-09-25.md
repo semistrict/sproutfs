@@ -531,6 +531,55 @@ Each step lands on main with every suite passing.
    separate commands leave. It runs in Lima and on GCE. If any of it fails on a
    qualification kernel, the plan stops here and goes back to the owner.
 
+   **Result in Lima, 2026-09-25: every property holds.** The tests are in
+   `internal/vmtest/readonly_linux_test.go`, and run with
+   `SPROUTFS_VM_MEMORY_RUN='^TestReadOnly' scripts/test-vm-memory-lima.sh`. The
+   kernel is 7.0.0-29-generic on aarch64. Each case runs at 4 KiB over an
+   ordinary memfd and at 2 MiB over a HugeTLB memfd. They passed five runs in a
+   row. What the kernel did:
+
+   - The read-only reopen refuses a writable shared mapping and mprotect to
+     writable with `EACCES`, write and fallocate in both modes with `EBADF`,
+     ftruncate with `EINVAL`, and `F_ADD_SEALS` with `EPERM` on a file the
+     pager's descriptor can still seal. `F_SETFL` with `O_RDWR` succeeds and
+     changes nothing: the descriptor stays read-only.
+   - A memfd is created with mode 0777. Another user reopens the read-only
+     descriptor for writing through `/proc/self/fd` at 0777, and gets `EACCES`
+     at 0600. Its fchmod gets `EPERM`. It cannot reach the pager's descriptors
+     through `/proc/<pid>/fd` at all. A process reopens a 0600 memfd of its own
+     for writing.
+   - `UFFDIO_REGISTER` refuses a shared mapping of the read-only file with
+     `EPERM`. A `MAP_PRIVATE | MAP_NORESERVE` mapping registers for missing,
+     minor and write-protect faults with the client's feature set, and offers
+     `UFFDIO_CONTINUE`, `UFFDIO_WRITEPROTECT` and `UFFDIO_WAKE`.
+   - A load of a page the file holds is a minor fault, and a load of a hole a
+     missing one. `UFFDIO_CONTINUE` with write protection installs the pager's
+     own frame: pagemap shows the same frame in the pager and the VMM, at both
+     ends of a 2 MiB page, marked file-backed and write-protected.
+   - A store traps as a write-protect fault, from a thread and from a KVM vCPU.
+     A store as the first access is a minor fault with the write flag, then a
+     write-protect fault. When the test clears the write protection, the store
+     copies into an anonymous page and the file keeps its bytes. That is the
+     copy the pager must never allow.
+   - A private HugeTLB mapping with `MAP_NORESERVE` reserves no pool page when
+     it is made, read or installed. Without it, it reserves one per page.
+   - Eight adjacent runs, mapped and installed one command each, leave these
+     mappings:
+
+     | | ascending | descending | interleaved |
+     | --- | --- | --- | --- |
+     | 4 KiB shared, as today | 1 | 1 | 1 |
+     | 4 KiB private | 1 | 1 | 4 |
+     | 2 MiB shared, as today | 8 | 8 | 8 |
+     | 2 MiB private | 8 | 8 | 8 |
+
+     A private run between two runs that already have pages installed merges
+     with only one of them, because their anon_vmas differ. HugeTLB mappings
+     never merge, so at 2 MiB nothing changes from today.
+
+   Not yet proven: the same tests on the GCE x86_64 kernel. The x86 half of the
+   KVM guest builds and vets, but has not run.
+
 2. **Make the arena a set of files, with one file. Medium, one to one and a half
    weeks.** A resident page's slot becomes a file and a slot. The `Arena`
    interface makes files, and each file reads, writes, zeroes, compares and

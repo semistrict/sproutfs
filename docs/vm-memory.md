@@ -1806,6 +1806,10 @@ The pager suite covers:
   write-protect covering several of the client's mappings. The guest must keep
   reading those pages without a fault, and the next store must still trap and
   copy.
+- what the isolated arena needs of read-only files, in
+  `readonly_linux_test.go`. The test plays both the pager and the VMM, without
+  the Rust client. See step 1 of
+  [the plan](../plans/arena-by-trust-2026-09-25.md#steps).
 
 The simulated pager tests also require the following of seals:
 
