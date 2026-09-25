@@ -25,11 +25,11 @@ here.
 
   A reclaim for a private page releases the memory region while it looks for an arena slot. So a seal and a retire can both run inside a fault that has already decided what the page it serves is. The store path re-checks its decision across its own reclaim: `fault` compares the checkpoint's copy before and after. The spill refault in `loadOnce` did not re-check. A checkpoint taken in that window retires the page: the volume holds its bytes, the reservation that spilled them is returned, and the binding is clean. The refault then bound a private page into the binding anyway. That page has neither a reservation nor a checkpoint. `evictBatch` punches out a page in that state without writing it anywhere. Nothing names the page, so nothing that inherits the identity the checkpoint gave it can map it. Every other memory region of that volume reads its own copy of bytes this host already holds. The audit's generation bookkeeping is correct. The binding that owed the audit a newer generation was one the pager should never have granted.
 
-  `loadOnce` now reads the page's dirty state and the checkpoint's copy of the page together, before and after the reclaim. If either changed, it decides again from the start what the page is (`internal/vmmemory/fault.go`, `bindings.go`, `privateEpoch`). `TestARefaultWhoseCheckpointRetiresWhileItReclaimsGivesThePageToTheVolume` drives the interleaving through a reclaim seam. Without the fix it fails on every run in both builds. The ordinary build fails with the second memory region reading its own copy. The probe build fails with the same panic and the same stack. Measured on 2026-09-22 on a fifteen-core machine, with 50 lanes each and a detector on the grant: **10 of 50 lanes before, 0 of 50 after**. At that rate, the chance of a clean result by luck is about 1 in 70,000. The panic that the lanes produce is rarer than the grant that causes it: about 1 lane in 50 on this machine, against 1 in 8 on the eight-core machine the earlier counts came from. After the fix the panic count is 0 of 150 lanes, but the grant's count is what supports the result.
+  `loadOnce` now reads the page's dirty state and the checkpoint's copy of the page together, before and after the reclaim. If either changed, it decides again from the start what the page is (`vmmemory/fault.go`, `bindings.go`, `privateEpoch`). `TestARefaultWhoseCheckpointRetiresWhileItReclaimsGivesThePageToTheVolume` drives the interleaving through a reclaim seam. Without the fix it fails on every run in both builds. The ordinary build fails with the second memory region reading its own copy. The probe build fails with the same panic and the same stack. Measured on 2026-09-22 on a fifteen-core machine, with 50 lanes each and a detector on the grant: **10 of 50 lanes before, 0 of 50 after**. At that rate, the chance of a clean result by luck is about 1 in 70,000. The panic that the lanes produce is rarer than the grant that causes it: about 1 lane in 50 on this machine, against 1 in 8 on the eight-core machine the earlier counts came from. After the fix the panic count is 0 of 150 lanes, but the grant's count is what supports the result.
 
 - **No simulation reaches the post-copy paths where that defect was.** Two separate things were wrong there, and neither simulated campaign caught either of them. First, the pager's test double stripped the identity permanently, as the product did, so the tests modelled the retire's mistake instead of catching it. Second, with an earlier fix to `readIn` disabled, a hundred soak seeds still passed, because in every campaign the source's unpublished set only shrinks. The missing piece is a scenario in which the source keeps storing and checkpointing while a destination post-copies from it, and the destination then publishes and retires what it received. Until that scenario exists, this class of defect can only be reached on a real kernel.
 
-- **Nothing releases a pin. The collector is deferred indefinitely, and until it exists the store grows without bound.** On 2026-09-15 the owner decided to keep pins correct and permanent, and not to write a collector, background or otherwise, for now. Accumulating data is accepted. Every object a pin covers accumulates and is never released. A pin records that a checkpoint of a VM was forked, and the pin is permanent. No participant can tell that nothing reads through a pinned checkpoint any more, because a descendant sees neither its siblings nor the forks taken below it, and a grandchild's root names its grandparent's checkpoints directly. So these objects accumulate: every checkpoint at which any VM was ever forked, every checkpoint that checkpoint's root names, and everything a deleted VM leaves pinned (`internal/control/record.go`, `internal/volume/fork.go`, `internal/volume/manager.go`, `internal/checkpoint/reclaim.go`). Only a collector can release a pin, and it must handle:
+- **Nothing releases a pin. The collector is deferred indefinitely, and until it exists the store grows without bound.** On 2026-09-15 the owner decided to keep pins correct and permanent, and not to write a collector, background or otherwise, for now. Accumulating data is accepted. Every object a pin covers accumulates and is never released. A pin records that a checkpoint of a VM was forked, and the pin is permanent. No participant can tell that nothing reads through a pinned checkpoint any more, because a descendant sees neither its siblings nor the forks taken below it, and a grandchild's root names its grandparent's checkpoints directly. So these objects accumulate: every checkpoint at which any VM was ever forked, every checkpoint that checkpoint's root names, and everything a deleted VM leaves pinned (`control/record.go`, `volume/fork.go`, `volume/manager.go`, `checkpoint/reclaim.go`). Only a collector can release a pin, and it must handle:
   - **Pins nothing reads through any more.** This is the common case: every child forked from that point has been deleted, or every child has published a root that names none of the checkpoints the pin protects. Establishing this requires reading every live record's selected root, including the roots of VMs on other hosts. So the answer holds only against a survey that also accounts for what is in flight.
   - **Pins nothing ever read through**: a fork that failed after the pin, a fork point retired with no child taken from it, a child abandoned before it published its root, and a host lost between the pin and the child's record.
   - **The objects of deleted VMs.** A delete removes the record and sweeps what no pin covers. So what is left under `vm/<id>/ckpt/` is exactly the pinned checkpoints of a VM that no longer has a record. Nothing names them. The collector must reach them from the roots of the VMs that still read them, or by listing the deployment's objects against its live set.
@@ -40,7 +40,7 @@ here.
 
 - **A migration whose source host is unreachable but still listed waits for that host.** A destination asks its source for the pages no checkpoint holds until they arrive. The orchestrator ends the migration only on positive evidence that the source is gone: the Kubernetes API no longer lists the pod, or the pod answers and neither runs the VM nor serves its pages (`cmd/sproutfs-orchestrator/orchestrator.go`). If the source host's process is alive, the migration resolves either way. The source's own handover deadline of four checkpoint intervals gives the pages up, and the source's next answer stops the asking. But a host that is unreachable while its pod is still listed does neither. The migration then stays in flight for as long as the request driving it lives. The rule exists to avoid guessing, so the open item is better evidence, not a timeout. The orchestrator has no liveness signal for a pod it cannot reach, other than the Kubernetes API's own.
 - **A migration tries the receive once. If the receive fails, the guest loses its writes since its last checkpoint.** The source stops the guest and gives up its volumes before the destination is asked to take the VM. The source keeps the pages no checkpoint holds until it is told that the destination has all of them. When the destination cannot take the VM, the orchestrator records the VM as stopped and reports the failure. Nothing retries the same destination, or another one, while the source still holds those pages (`cmd/sproutfs-orchestrator/orchestrator.go`). The VM reopens from its last checkpoint, and the source's own four-interval hold deadline retires the pages. A drain performs one such migration per VM. So a host that leaves while a destination is briefly unreachable takes the guest's unpublished writes with it. The simulated swizzle campaign shows that a retry is sound, because the source's handoff stays valid for as long as the source holds it. The campaign also shows that the first attempt does fail under a separated link (`internal/simtest/swizzle_test.go`). The nightly seed sweep found this on 2026-09-18. Its seeds 21 and 227 had been passing only because the world reported a VM as on a host that a failed takeover had only attempted.
-- **A child forked onto its parent's own host holds the fork point without the orchestrator seeing the hold.** Such a child is served no pages, so it is not in the parent host's `Status().Serving`. The orchestrator's survey of stale handovers therefore cannot see the hold. Only the host's own four-interval deadline ends a hold whose child never publishes its root (`internal/host/fork.go`, `internal/host/migrate.go`). If hosts reported local holds alongside served ones, the survey could release them the same way.
+- **A child forked onto its parent's own host holds the fork point without the orchestrator seeing the hold.** Such a child is served no pages, so it is not in the parent host's `Status().Serving`. The orchestrator's survey of stale handovers therefore cannot see the hold. Only the host's own four-interval deadline ends a hold whose child never publishes its root (`host/fork.go`, `host/migrate.go`). If hosts reported local holds alongside served ones, the survey could release them the same way.
 - **The orchestrator's watch of a migration's source is unproven on a cluster.** The simulated deployment and the orchestrator's own tests over fakes cover it. The one soak run that passed killed a host that ran no VMs. So no GCE run has yet lost a host during a real migration (`cmd/sproutfs-orchestrator/lostsource_test.go`, `internal/simtest/lostmigrationsource_test.go`).
 
 ## Measurement
@@ -57,7 +57,7 @@ here.
     guest is already running. In that run, the capture of 2,204,672 sealed
     pages paused for 2.14 s, of which 0.18 s was commands.
 
-  Exact counts in `internal/vmmemory` and the campaigns prove both changes. No
+  Exact counts in `vmmemory` and the campaigns prove both changes. No
   run has yet measured what they are worth in seconds on a real host. That
   requires re-running the same fan-out and the same capture (`revocations`,
   `revoked_pages`, `pause_ns`, `seal_ns`, the new `seal_walk_ns`).
@@ -111,7 +111,7 @@ here.
   those pages were resident identities. The other two million pages were
   scattered holes, and each paid one command. So holes and the runs a fork
   point names now share one budget, and an attach installs at most 128 runs of
-  any kind (`internal/vmmemory/population.go`). A batch's contiguous runs are
+  any kind (`vmmemory/population.go`). A batch's contiguous runs are
   built in one reservation, so 64 scattered runs cost the VMM 136 kernel calls
   instead of 320 (`rust/sproutfs-vm-memory/src/linux.rs`, `Staging`). Counts in
   tests prove both changes: the Go suite, and the crate's own tests, which run
@@ -138,9 +138,9 @@ here.
   `vmmachine.StartPhases` records those four phases. `vmmemory.AttachStats`
   records what one session's `Connect` cost, including the populate's
   commands, runs, pages and duration. The fan-out records all of this per fork
-  as `restore_phases` (`internal/vmmachine/process_linux.go`,
-  `internal/vmmemory/connection_linux.go`,
-  `internal/vmmemory/population.go`). Nothing has run with them yet. The
+  as `restore_phases` (`vmmachine/process_linux.go`,
+  `vmmemory/connection_linux.go`,
+  `vmmemory/population.go`). Nothing has run with them yet. The
   2026-09-23 record already rules out the mapping commands. 482 of them carried
   12,000 runs over 4,089,383 pages for the whole scenario, at about a fifth of a
   millisecond each. So the round trips total a tenth of a second, not seconds.
@@ -152,7 +152,7 @@ here.
   compaction walks a segment's pages and calls `Store.loadPage` for each page it
   moves. So rewriting a mostly dead checkpoint of 4 KiB pages costs one request
   per page, up to `compactionBudget`. That budget is 64 MiB, which is 16,384
-  requests (`internal/checkpoint/publication.go`, `compact`). The pages it moves
+  requests (`checkpoint/publication.go`, `compact`). The pages it moves
   are consecutive within a segment, and their members are adjacent in the part
   they came from, so the same grouping would apply. It was left as it is
   because compaction runs after the guest has resumed and off the fault path.
@@ -166,7 +166,7 @@ here.
   under the probe build, and a third above the slowest reading behind the whole
   suite. Letting read-ahead evict, or reserving a run's worth of slots before a
   scan, is performance work that this plan did not do
-  (`internal/vmmemory/window.go`, `reserveRuns`).
+  (`vmmemory/window.go`, `reserveRuns`).
 - **RAM's mappings are kept whole, and the benefit is unmeasured on a
   cluster.** The step of the
   [page-geometry plan](../plans/ram-pmem-page-geometry-2026-09-19.md) for this
@@ -182,7 +182,7 @@ here.
 
   The mapping protocol went to version 8 for this change, because ATTACH's
   length is now the offset space instead of the capacity. What remains open is
-  the benefit on a real workload. The counts are proved in `internal/vmmemory`
+  the benefit on a real workload. The counts are proved in `vmmemory`
   and in the simulation. One Lima reading of the fork fan-out at 4 KiB shows a
   child's VMM holding 3,299 and 3,288 mappings, down from 4,485 and 4,631. It
   also shows 28 private extents, 2,723 pages copied by the rules, and the
@@ -201,7 +201,7 @@ here.
   instead of being read without its PMEM devices' waiting flushes.
 
   Two placements deliberately use an ordinary offset, and the code records both
-  where they happen (`internal/vmmemory/placement.go`):
+  where they happen (`vmmemory/placement.go`):
   - A store that copies away from the copy a checkpoint froze cannot use its own
     offset, because that offset holds the bytes the upload is reading. The page
     stays outside its range's run until something releases it, and nothing

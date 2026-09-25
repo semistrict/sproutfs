@@ -6,8 +6,8 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/semistrict/sproutfs/internal/platform/sim"
 	"github.com/semistrict/sproutfs/internal/testsoak"
+	"github.com/semistrict/sproutfs/platform/sim"
 )
 
 // buggifiedCampaignName is what the campaign's per-seed records are filed under

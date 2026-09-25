@@ -1,23 +1,23 @@
 [
   {
     "id": "sim-ignore-object-cas",
-    "path": "internal/platform/sim/object_store.go",
+    "path": "platform/sim/object_store.go",
     "before": "if !conditionsMatch(request.Conditions, current.etag, exists) {",
     "after": "if false && !conditionsMatch(request.Conditions, current.etag, exists) {",
     "packages": [
       "internal/simtest",
-      "internal/platform/sim"
+      "platform/sim"
     ],
     "purpose": "Make the simulated object store accept failed conditional writes."
   },
   {
     "id": "sim-power-loss-keeps-volatile",
-    "path": "internal/platform/sim/disk.go",
+    "path": "platform/sim/disk.go",
     "before": "image.volatile = append([]byte(nil), image.durable...)",
     "after": "image.volatile = append([]byte(nil), image.volatile...)",
     "packages": [
       "internal/simtest",
-      "internal/platform/sim"
+      "platform/sim"
     ],
     "purpose": "Incorrectly preserve unsynced bytes of existing files across simulated power loss."
   }

@@ -144,10 +144,10 @@ failure is `{"op":"...","error":"..."}` with a status saying whose problem it
 is — 400 for the request, 404 for a VM this host does not run, 409 for one it
 already runs or cannot hand over, 503 while it is closing.
 
-Every shape here is declared in `internal/api/host`, which is wire types and
+Every shape here is declared in `api/host`, which is wire types and
 nothing else: a handoff crossing this API is plain data the control plane
 carries unread, so `sproutfsctl` and the orchestrator speak it without linking a
-pager or a checkpoint store. `internal/host` converts between it and what the
+pager or a checkpoint store. `host` converts between it and what the
 host actually runs, at its own boundary.
 
 | Method | Path | What it does |

@@ -430,7 +430,7 @@ Six: the same pager runs in the simulation on a simulated arena, disk and clock.
 </div>
 
 <!--
-internal/vmmemory manages the host's guest memory. The arena is a fixed-size, sealed HugeTLB memfd with 2 MiB slots. There are explicit budgets for resident, logical and dirty pages; the dirty budget sizes the spill file, which is the pager's total disk allowance. Faults are resolved over userfaultfd, with private copy-on-write, eviction, read-ahead and write-ahead.
+vmmemory manages the host's guest memory. The arena is a fixed-size, sealed HugeTLB memfd with 2 MiB slots. There are explicit budgets for resident, logical and dirty pages; the dirty budget sizes the spill file, which is the pager's total disk allowance. Faults are resolved over userfaultfd, with private copy-on-write, eviction, read-ahead and write-ahead.
 
 A memory region is one volume mapped into one VMM process. It loads pages from the volume, or from a backing placed in front of it. A migration destination uses a backing to read from its source.
 
@@ -824,14 +824,14 @@ Disk-only checkpoints, cold boot from a checkpoint without VMM state, and blocki
 cmd/sproutfs-host            the host process
 cmd/sproutfs-orchestrator    ids, placement, migrations, forks
 cmd/sproutfs-guest-witness   fill / mutate / check / grow, in the guest
-internal/checkpoint          the store: parts, index objects, roots, reclamation
-internal/control             control records
-internal/volume              volumes, publication, forks, handoffs
-internal/vmmemory            the pager
-internal/vmmigrate           page server and peer backing
-internal/host                one host: checkpoint loop, drain, fork, migration, templates
+checkpoint          the store: parts, index objects, roots, reclamation
+control             control records
+volume              volumes, publication, forks, handoffs
+vmmemory            the pager
+vmmigrate           page server and peer backing
+host                one host: checkpoint loop, drain, fork, migration, templates
 internal/simtest             the simulation harness and its campaigns
-internal/platform/sim        simulated processes, disks, clocks, networks, faults
+platform/sim        simulated processes, disks, clocks, networks, faults
 rust/sproutfs-vm-memory      the mappings inside the VMM
 third_party/firecracker      the fork, branch sproutfs
 docs/  plans/                design, decisions, measurements

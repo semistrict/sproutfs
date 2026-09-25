@@ -3,9 +3,9 @@
 ## The problem
 
 Four campaigns build a simulated deployment four ways: the migration chaos
-campaign over `internal/vmmigrate`'s `cluster`, the scheduled scenarios in
-`internal/volume`, `internal/vmmigrate` and `internal/host` over their own
-fixtures, the crash campaign over `internal/host`'s `hostHarness` with a
+campaign over `vmmigrate`'s `cluster`, the scheduled scenarios in
+`volume`, `vmmigrate` and `host` over their own
+fixtures, the crash campaign over `host`'s `hostHarness` with a
 `sim.Process` per host, and `internal/simtest`'s `World`, which already runs
 real `host.Host`s from a seeded `Topology`. Each fixed the same things
 separately — stores, networks, clocks, guests that remember what they wrote —
@@ -38,11 +38,11 @@ campaign is a schedule, a fault set and an invariant set over a `World`.
 
 - **The migration chaos campaign** becomes a `simtest` schedule: its ten
   faults are already ported; what moves is its assertion set, its soak and
-  its buggify and fingerprint tests. `internal/vmmigrate/chaos_test.go` and
+  its buggify and fingerprint tests. `vmmigrate/chaos_test.go` and
   the campaign-only parts of its `harness_test.go` go; the `cluster` fixture
   stays only where package unit tests need it.
 - **The crash campaign** and **the swizzle campaign** become `simtest`
-  schedules; `internal/host/crash_campaign_test.go`, `crash_test.go`,
+  schedules; `host/crash_campaign_test.go`, `crash_test.go`,
   `swizzle_test.go`, `soak_test.go` and `newSimHostHarness` go.
 - **The scheduled scenarios** are what recording, replay and byte-exact
   cross-process reproduction run over. One scenario over a `World` with a
@@ -71,8 +71,8 @@ assertion. Concretely, after the change:
 ## Proof
 
 The gates above, plus 200 seeds of each converged campaign green and a
-40-seed soak block, and `-race` on `internal/simtest`, `internal/host`,
-`internal/vmmigrate` and `internal/volume`.
+40-seed soak block, and `-race` on `internal/simtest`, `host`,
+`vmmigrate` and `volume`.
 
 ## Docs
 

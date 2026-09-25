@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/semistrict/sproutfs/internal/api/host"
-	"github.com/semistrict/sproutfs/internal/api/orch"
+	"github.com/semistrict/sproutfs/api/host"
+	"github.com/semistrict/sproutfs/api/orch"
 )
 
 func TestStopPrintsWhichHostClosedTheVM(t *testing.T) {

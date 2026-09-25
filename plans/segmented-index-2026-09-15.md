@@ -71,7 +71,7 @@ stays immutable and safe for concurrent use; the per-index segment map is a
 memo in front of the cache, filled under a mutex.
 
 `volume.source` and every other caller pass their context through. Nothing
-outside `internal/checkpoint` sees a segment.
+outside `checkpoint` sees a segment.
 
 ### Publication
 
@@ -116,13 +116,13 @@ the set its entries name, and every entry must lie inside its volume.
 ### Fixtures
 
 New `index-6` and `pack-2` fixtures and a regenerated deployment fixture
-under `internal/volume/testdata`; `index-5`, `pack-1` and the
+under `volume/testdata`; `index-5`, `pack-1` and the
 `deployment-record-4-index-5-pack-1` twin stay byte-identical as refusal
 fixtures, and their refusal text is asserted with the version named.
 
 ## Proof
 
-Red first, in `internal/checkpoint`: publish one checkpoint that fills 2048
+Red first, in `checkpoint`: publish one checkpoint that fills 2048
 pages of a 4 GiB volume with compressible, non-zero data (eight segments),
 then a second that dirties one page. Assert the second checkpoint's pack
 holds exactly one segment member, its root names seven segments in the first
@@ -130,7 +130,7 @@ checkpoint's pack and one in its own, and the root object is under 4 KiB.
 On the tree as it is, the second index is one entry per page and the
 assertion on the root's size fails.
 
-Then: the whole suite, `-race` on `internal/checkpoint` and `internal/volume`,
+Then: the whole suite, `-race` on `checkpoint` and `volume`,
 both format fixture tests, `TestScheduled*Reproduces`, and the migration chaos
 campaign's first sixteen seeds, since a destination now locates pages through
 segments it fetches lazily.

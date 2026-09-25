@@ -4,9 +4,9 @@ import (
 	"testing"
 	"testing/synctest"
 
-	"github.com/semistrict/sproutfs/internal/platform/sim"
 	"github.com/semistrict/sproutfs/internal/simtest"
-	"github.com/semistrict/sproutfs/internal/volume"
+	"github.com/semistrict/sproutfs/platform/sim"
+	"github.com/semistrict/sproutfs/volume"
 )
 
 // forkedStopTopology is two hosts, one VM and a fork of it on the other host,

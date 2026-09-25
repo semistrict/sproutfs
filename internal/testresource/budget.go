@@ -3,7 +3,7 @@
 package testresource
 
 import (
-	"github.com/semistrict/sproutfs/internal/resource"
+	"github.com/semistrict/sproutfs/resource"
 )
 
 func New() *resource.Budget {

@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/semistrict/sproutfs/internal/api/host"
-	"github.com/semistrict/sproutfs/internal/api/orch"
+	"github.com/semistrict/sproutfs/api/host"
+	"github.com/semistrict/sproutfs/api/orch"
 )
 
 // A cold start is a start with one word added, and the sizes a cold boot may

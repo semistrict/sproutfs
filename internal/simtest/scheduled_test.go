@@ -14,22 +14,22 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/semistrict/sproutfs/internal/checkpoint"
-	"github.com/semistrict/sproutfs/internal/control"
+	"github.com/semistrict/sproutfs/checkpoint"
+	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/internal/knobs"
-	"github.com/semistrict/sproutfs/internal/platform"
-	"github.com/semistrict/sproutfs/internal/platform/sim"
 	"github.com/semistrict/sproutfs/internal/simtest"
 	"github.com/semistrict/sproutfs/internal/testsoak"
-	"github.com/semistrict/sproutfs/internal/vmmigrate"
-	"github.com/semistrict/sproutfs/internal/volume"
+	"github.com/semistrict/sproutfs/platform"
+	"github.com/semistrict/sproutfs/platform/sim"
+	"github.com/semistrict/sproutfs/vmmigrate"
+	"github.com/semistrict/sproutfs/volume"
 )
 
 // The scheduled scenario is the one workload recording, replay and byte-exact
 // cross-process reproduction run over. Everything it drives is a real
 // deployment — the volume managers, the checkpoint store, the control records,
 // the pagers, the page servers and the migration coordinator, on the simulated
-// network, object store, disks and clocks of internal/platform/sim — and the
+// network, object store, disks and clocks of platform/sim — and the
 // shared controller chooses every completion order, so two runs of one seed
 // must produce byte-identical execution and adapter traces however the Go
 // scheduler ran them.

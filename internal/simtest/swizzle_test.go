@@ -8,12 +8,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/semistrict/sproutfs/internal/control"
-	"github.com/semistrict/sproutfs/internal/platform"
-	"github.com/semistrict/sproutfs/internal/platform/sim"
+	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/internal/simtest"
 	"github.com/semistrict/sproutfs/internal/testsoak"
-	"github.com/semistrict/sproutfs/internal/volume"
+	"github.com/semistrict/sproutfs/platform"
+	"github.com/semistrict/sproutfs/platform/sim"
+	"github.com/semistrict/sproutfs/volume"
 )
 
 // swizzleCampaignName is what this campaign's per-seed records are filed under

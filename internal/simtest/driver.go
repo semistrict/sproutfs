@@ -7,7 +7,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/semistrict/sproutfs/internal/platform/sim"
+	"github.com/semistrict/sproutfs/platform/sim"
 )
 
 // The shape of one seed's schedule. A step is one operation with a few stores

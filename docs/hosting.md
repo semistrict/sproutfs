@@ -9,7 +9,7 @@ page-server address that a [handoff](migration.md) carries.
 
 ## Assembly
 
-All host logic is in `internal/host`. `Host` is what the deployment runs on this
+All host logic is in `host`. `Host` is what the deployment runs on this
 machine. It contains:
 
 - the object namespace;
@@ -53,7 +53,7 @@ Only the command chooses which adapter implements each of those ports.
 `sproutfs-host` builds the GCS object store, the plain TCP network and the node
 disk, and passes them in. GCS is the only object store adapter shipped, because
 it is the only one a deployment runs on. The port is the conditional-write
-contract that the conformance suite in `internal/platform/internal/real`
+contract that the conformance suite in `platform/internal/real`
 states. So an adapter for another store is a package-local addition plus a
 second `runObjectStoreConformance` caller. The host names no adapter. Neither
 does `vmmachine`, which receives a `platform.Disks` for the staging directory
@@ -77,7 +77,7 @@ process its own scratch directory.
 every configuration problem it finds, not only the first. It serves the host
 API over HTTP: status, create, open, fork, capture, console, exec, migrate,
 receive, released, drain and delete. Each handler is one call on the supervisor
-plus the shared JSON failure shape. The API's types live in `internal/api/host`
+plus the shared JSON failure shape. The API's types live in `api/host`
 and do not link the runtime. So the host converts a handoff at its boundary
 instead of putting a pager on the wire. The GCS store that the command builds is
 metered per operation, so that one counter measures all of the deployment's

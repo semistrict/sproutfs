@@ -1,11 +1,11 @@
 version: v2
 
 inputs:
-  - directory: internal/checkpoint/proto
-  - directory: internal/control/proto
-  - directory: internal/platform/proto
-  - directory: internal/vmmigrate/proto
-  - directory: internal/vmmigrate/internal/wire/proto
+  - directory: checkpoint/proto
+  - directory: control/proto
+  - directory: platform/proto
+  - directory: vmmigrate/proto
+  - directory: vmmigrate/internal/wire/proto
 
 plugins:
   - local:

@@ -8,11 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/semistrict/sproutfs/internal/host"
-	"github.com/semistrict/sproutfs/internal/platform/sim"
+	"github.com/semistrict/sproutfs/host"
 	"github.com/semistrict/sproutfs/internal/simtest"
 	"github.com/semistrict/sproutfs/internal/testsoak"
-	"github.com/semistrict/sproutfs/internal/volume"
+	"github.com/semistrict/sproutfs/platform/sim"
+	"github.com/semistrict/sproutfs/volume"
 )
 
 // crashCampaignName is what this campaign's per-seed records are filed under in

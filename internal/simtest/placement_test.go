@@ -7,10 +7,10 @@ import (
 	"time"
 
 	"github.com/semistrict/sproutfs/internal/knobs"
-	"github.com/semistrict/sproutfs/internal/platform"
-	"github.com/semistrict/sproutfs/internal/platform/sim"
 	"github.com/semistrict/sproutfs/internal/simtest"
-	"github.com/semistrict/sproutfs/internal/volume"
+	"github.com/semistrict/sproutfs/platform"
+	"github.com/semistrict/sproutfs/platform/sim"
+	"github.com/semistrict/sproutfs/volume"
 )
 
 // rangePages is the RAM pages one 2 MiB-aligned range holds, which is the

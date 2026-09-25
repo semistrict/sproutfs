@@ -4,10 +4,10 @@ import (
 	"context"
 	"testing"
 
-	"github.com/semistrict/sproutfs/internal/control"
-	"github.com/semistrict/sproutfs/internal/platform/sim"
+	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/internal/testbacking"
-	"github.com/semistrict/sproutfs/internal/vmmemory"
+	"github.com/semistrict/sproutfs/platform/sim"
+	"github.com/semistrict/sproutfs/vmmemory"
 )
 
 // plainBacking answers the four calls every backing answers and nothing else.

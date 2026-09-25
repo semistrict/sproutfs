@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/semistrict/sproutfs/internal/platform/sim"
 	"github.com/semistrict/sproutfs/internal/testsoak"
+	"github.com/semistrict/sproutfs/platform/sim"
 )
 
 // Every campaign over a block of the seed range rather than the fixed list the

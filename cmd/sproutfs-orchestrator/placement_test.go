@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/semistrict/sproutfs/internal/api/host"
+	"github.com/semistrict/sproutfs/api/host"
 )
 
 // TestPlacementMeasuresCommittedGuestRAMRatherThanArenaResidency: the arena is

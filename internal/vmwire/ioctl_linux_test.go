@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/semistrict/sproutfs/internal/checkpoint"
+	"github.com/semistrict/sproutfs/checkpoint"
 	"github.com/semistrict/sproutfs/internal/vmwire"
 )
 

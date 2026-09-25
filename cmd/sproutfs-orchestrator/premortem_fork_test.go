@@ -4,8 +4,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/semistrict/sproutfs/internal/api/host"
-	"github.com/semistrict/sproutfs/internal/api/orch"
+	"github.com/semistrict/sproutfs/api/host"
+	"github.com/semistrict/sproutfs/api/orch"
 )
 
 // demoTemplates is what the deployment configures: two guest images, of

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/semistrict/sproutfs/internal/volume"
+	"github.com/semistrict/sproutfs/volume"
 )
 
 // TestCheckReportsADeploymentThatAgreesWithItself: the check reads the whole

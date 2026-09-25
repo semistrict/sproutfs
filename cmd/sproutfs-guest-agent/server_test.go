@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/semistrict/sproutfs/internal/api/guest"
+	"github.com/semistrict/sproutfs/api/guest"
 )
 
 // TestHealthzAnswers is what a host asks a guest that may still be booting.

@@ -35,7 +35,7 @@ def main():
               "scenario": args.scenario, "seeds": args.seeds, "first_full_difference": None, "runs": []}
     test_name = {"batch": "TestOverlapPrototypeTraceFiles", "dynamic": "TestDynamicOverlapTraceFiles",
                  "world": "TestScheduledWorldReproduces"}[args.scenario]
-    package = {"world": "./internal/simtest"}.get(args.scenario, "./internal/platform/sim")
+    package = {"world": "./internal/simtest"}.get(args.scenario, "./platform/sim")
     baseline = None
     print(f"Traces: {output}", flush=True)
     with tempfile.TemporaryDirectory(prefix="overlap-test-bin-") as build:

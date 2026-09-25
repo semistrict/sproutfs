@@ -50,7 +50,7 @@ work=$2
 agent=$3
 witness=$4
 mkdir -p "$work/root/dev" "$work/root/proc" "$work/root/sys" "$work/root/mnt" "$work/root/bin"
-cc -static -O2 -Wall -Wextra -Werror "$repo/internal/vmmachine/testdata/guest.c" -o "$work/root/init"
+cc -static -O2 -Wall -Wextra -Werror "$repo/vmmachine/testdata/guest.c" -o "$work/root/init"
 install -m 0755 "$agent" "$work/root/agent"
 install -m 0755 "$witness" "$work/root/bin/sproutfs-guest-witness"
 # The agent runs what it is asked to through a shell, so the image needs one.
@@ -66,7 +66,7 @@ for applet in sh sleep echo test touch cat df sync; do ln -sf busybox "$work/roo
 truncate -s 64M "$work/root.ext4"
 mkfs.ext4 -q -F -b 4096 -d "$work/root" "$work/root.ext4"
 GUEST
-GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go test -c ./internal/vmmachine -o "$host_work/firecracker.test"
+GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go test -c ./vmmachine -o "$host_work/firecracker.test"
 limactl shell "$instance" sudo -n env \
     SPROUTFS_FIRECRACKER="$guest_work/firecracker" \
     SPROUTFS_FIRECRACKER_SECCOMP="$guest_work/seccomp.bpf" \

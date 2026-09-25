@@ -70,7 +70,7 @@ it, and its callers publish a checkpoint of their own when they are done.
 
 ## The changes
 
-### `internal/vmmemory`
+### `vmmemory`
 
 - `Config.LossWindow time.Duration`. Zero disables.
 - Each `MemoryRegion` records `dirtySince`: the clock time its first unpublished
@@ -100,13 +100,13 @@ it, and its callers publish a checkpoint of their own when they are done.
   peer backing, and a peer-served unpublished load keeps the older of that and
   its own arrival.
 
-### `internal/vmmigrate` and `internal/host`
+### `vmmigrate` and `host`
 
 - `Handoff` memory regions carry `UnpublishedAge`; the wire encodes it; the Lima
   fixture asserts it survives the round trip.
 - `host.Config.LossWindow`, passed to the pager; `cmd/sproutfs-host` reads
   `SPROUTFS_LOSS_WINDOW`, logs it at start beside the interval.
-- The checkpoint loop, `internal/host/interval.go`: a failed publication of a
+- The checkpoint loop, `host/interval.go`: a failed publication of a
   VM whose window is exceeded schedules the next attempt at an eighth of the
   interval, doubling to the interval, instead of the full jittered wait.
 - `host.VM` status: `LossWindow time.Duration` (the current age of the oldest

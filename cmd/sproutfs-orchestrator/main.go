@@ -20,11 +20,11 @@ import (
 
 	"github.com/oklog/ulid/v2"
 
-	"github.com/semistrict/sproutfs/internal/control"
+	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/internal/jsonhttp"
-	"github.com/semistrict/sproutfs/internal/platform"
-	"github.com/semistrict/sproutfs/internal/platform/adapters"
-	"github.com/semistrict/sproutfs/internal/volume"
+	"github.com/semistrict/sproutfs/platform"
+	"github.com/semistrict/sproutfs/platform/adapters"
+	"github.com/semistrict/sproutfs/volume"
 )
 
 // shutdownTimeout bounds the orderly stop. The orchestrator holds nothing, so

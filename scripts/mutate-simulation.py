@@ -26,7 +26,7 @@ import time
 
 SCHEDULED = {
     "internal/simtest": "TestScheduledWorldReproduces",
-    "internal/platform/sim": "TestDynamicOverlapTraceFiles",
+    "platform/sim": "TestDynamicOverlapTraceFiles",
 }
 
 

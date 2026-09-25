@@ -12,9 +12,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/semistrict/sproutfs/internal/api/host"
-	"github.com/semistrict/sproutfs/internal/api/orch"
-	"github.com/semistrict/sproutfs/internal/volume"
+	"github.com/semistrict/sproutfs/api/host"
+	"github.com/semistrict/sproutfs/api/orch"
+	"github.com/semistrict/sproutfs/volume"
 )
 
 // pod is one host pod as the Kubernetes API reports it. It is the whole of what

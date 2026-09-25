@@ -25,12 +25,12 @@ import (
 // checked are the packages the rule applies to: everything that decides what
 // becomes durable, who may write it, and when. Subdirectories are included.
 var checked = []string{
-	"internal/volume",
-	"internal/checkpoint",
-	"internal/control",
-	"internal/vmmigrate",
-	"internal/host",
-	"internal/vmmemory",
+	"volume",
+	"checkpoint",
+	"control",
+	"vmmigrate",
+	"host",
+	"vmmemory",
 }
 
 // forbiddenImports are the packages that draw from a source no seed reaches.
@@ -63,13 +63,13 @@ var allowed = map[string]allowance{
 	// handed to the operating system, so both readings stay on the wall clock.
 	// Neither decides anything about a VM: each bounds one exchange with the
 	// pager's client, and a client that misses it fails that command.
-	"internal/vmmemory/connection_linux.go:time.Now": {2,
+	"vmmemory/connection_linux.go:time.Now": {2,
 		"kernel socket deadlines, which the operating system compares against its own clock"},
 	// The audit ring exists only under the sproutfsprobe build tag, and all it
 	// dates is the post-mortem dump it prints after a guest has already died.
 	// No build a deployment or a campaign runs contains it, and nothing it
 	// records reaches a decision, let alone a durable one.
-	"internal/vmmemory/probe_on.go:time.Now": {1,
+	"vmmemory/probe_on.go:time.Now": {1,
 		"the audit ring's post-mortem timestamps, behind a build tag no deployment uses"},
 }
 
@@ -123,34 +123,34 @@ func TestTheRuleRejectsEachKindOfStrayReading(t *testing.T) {
 	}{
 		"a wall-clock reading": {
 			source: "package host\nimport \"time\"\nfunc f() { _ = time.Now() }\n",
-			want:   []string{"internal/host/x.go:time.Now"},
+			want:   []string{"host/x.go:time.Now"},
 		},
 		"a timer nothing can advance": {
 			source: "package host\nimport \"time\"\nfunc f() { _ = time.NewTimer(0); time.Sleep(0) }\n",
-			want:   []string{"internal/host/x.go:time.NewTimer", "internal/host/x.go:time.Sleep"},
+			want:   []string{"host/x.go:time.NewTimer", "host/x.go:time.Sleep"},
 		},
 		"a sleep wearing the repository's own name": {
 			source: "package host\nimport \"context\"\nimport \"github.com/semistrict/sproutfs/internal/ctxsync\"\nfunc f(ctx context.Context) { _ = ctxsync.Sleep(ctx, 0) }\n",
-			want:   []string{"internal/host/x.go:ctxsync.Sleep"},
+			want:   []string{"host/x.go:ctxsync.Sleep"},
 		},
 		"an unseeded random source": {
 			source: "package host\nimport \"math/rand/v2\"\nfunc f() int { return rand.IntN(2) }\n",
-			want:   []string{"internal/host/x.go:import math/rand/v2"},
+			want:   []string{"host/x.go:import math/rand/v2"},
 		},
 		"the operating system's entropy": {
 			source: "package control\nimport \"crypto/rand\"\nfunc f(b []byte) { _, _ = rand.Read(b) }\n",
-			want:   []string{"internal/control/x.go:import crypto/rand"},
+			want:   []string{"control/x.go:import crypto/rand"},
 		},
 		"a clock, which is the whole point": {
-			source: "package host\nimport \"github.com/semistrict/sproutfs/internal/platform\"\nfunc f(c platform.Clock) { _ = c.Now() }\n",
+			source: "package host\nimport \"github.com/semistrict/sproutfs/platform\"\nfunc f(c platform.Clock) { _ = c.Now() }\n",
 			want:   nil,
 		},
 	}
 	for name, test := range cases {
 		fset := token.NewFileSet()
-		relative := "internal/host/x.go"
+		relative := "host/x.go"
 		if strings.HasPrefix(test.source, "package control") {
-			relative = "internal/control/x.go"
+			relative = "control/x.go"
 		}
 		file, err := parser.ParseFile(fset, relative, test.source, parser.SkipObjectResolution)
 		if err != nil {

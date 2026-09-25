@@ -13,17 +13,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/semistrict/sproutfs/internal/checkpoint"
-	"github.com/semistrict/sproutfs/internal/control"
+	"github.com/semistrict/sproutfs/checkpoint"
+	"github.com/semistrict/sproutfs/control"
+	"github.com/semistrict/sproutfs/host"
 	"github.com/semistrict/sproutfs/internal/ctxsync"
-	"github.com/semistrict/sproutfs/internal/host"
 	"github.com/semistrict/sproutfs/internal/knobs"
-	"github.com/semistrict/sproutfs/internal/platform"
-	"github.com/semistrict/sproutfs/internal/platform/sim"
 	"github.com/semistrict/sproutfs/internal/testresource"
-	"github.com/semistrict/sproutfs/internal/vmmemory"
-	"github.com/semistrict/sproutfs/internal/vmmigrate"
-	"github.com/semistrict/sproutfs/internal/volume"
+	"github.com/semistrict/sproutfs/platform"
+	"github.com/semistrict/sproutfs/platform/sim"
+	"github.com/semistrict/sproutfs/vmmemory"
+	"github.com/semistrict/sproutfs/vmmigrate"
+	"github.com/semistrict/sproutfs/volume"
 )
 
 // StoreAddress is the object store's endpoint on the simulated network. The

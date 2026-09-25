@@ -86,7 +86,7 @@ them out and takes them back whole; a page put in one moves the page budget and
 not the address. The host keeps an extent per `(memoryRegion, range)` and gives it
 back when its last page goes, so a memory region owns an extent for exactly as long as
 it has a page in that range. All three rules and the backstop are in
-`internal/vmmemory/placement.go` and `rules.go`, counted in
+`vmmemory/placement.go` and `rules.go`, counted in
 `placement_test.go`, `rules_test.go` and `internal/simtest/placement_test.go`,
 whose model now accounts mappings the same way.
 
@@ -185,7 +185,7 @@ range holds: `fork_ram_geometry` carries, per memory region, the number of priva
 runs, a histogram of their lengths, a histogram of the gaps between consecutive
 runs of one range, how many ranges hold a private page and how many are at least
 half private, in the fixed buckets 1, 4, 16, 64, 256 and 512 pages
-(`newPrivateGeometry` in `internal/vmmachine/bench_linux_test.go`). The
+(`newPrivateGeometry` in `vmmachine/bench_linux_test.go`). The
 2026-09-21 4 KiB smoke on the qualification instance recorded 1,979 gaps, of
 which 1,532 — 77 % — are 16 pages or fewer, and 19 of the 197 ranges a fork
 touched were already half private. Sixteen is therefore the bucket boundary at
@@ -319,7 +319,7 @@ memory savings and workload time together.
    enumeration, `Locate`, page identity offsets, publication and reads to use
    that volume's geometry. Compaction preserves the original identity and
    page size. Changed 4 KiB pages must not give unchanged neighbors a new
-   identity. Start in `internal/volume` and `internal/checkpoint`.
+   identity. Start in `volume` and `checkpoint`.
 
    Explicitly choose and version page-table segment geometry. Today's 256
    entries cover 512 MiB at 2 MiB per page but only 1 MiB at 4 KiB per page;
@@ -354,14 +354,14 @@ memory savings and workload time together.
    host creates is still a 2 MiB-page volume and the pager refuses one of any
    other page size when it is attached. The simulation campaigns run through
    that pager, so they stay at 2 MiB; a 4 KiB-page volume goes through
-   checkpoints, forks, compaction and reclamation in `internal/volume` and
-   `internal/checkpoint` instead, and reaches the campaigns when step 3 gives
+   checkpoints, forks, compaction and reclamation in `volume` and
+   `checkpoint` instead, and reaches the campaigns when step 3 gives
    the pager its own geometry.
 
 3. **Separate pager instances and arenas. Done.** Parameterize
-   `internal/vmmemory` by a fixed page size per instance, including its arena,
+   `vmmemory` by a fixed page size per instance, including its arena,
    spill slots, reservations, identities, read-ahead and buffer bounds. Assemble
-   RAM and PMEM instances in `internal/host`, and route each memory region to the
+   RAM and PMEM instances in `host`, and route each memory region to the
    correct one. Share the host's byte resource budget without double counting
    its capacities. Audit dirty/logical budget configuration, memory admission,
    pressure callbacks and shutdown for both instances. A checkpoint requested
@@ -372,7 +372,7 @@ memory savings and workload time together.
    cannot disagree about what a page number means; the package constant is gone
    and every arena slot, spill slot, budget, buffer, gauge conversion, memory region
    check and fault calculation reads the instance's. `vmmemory.Pagers` is a
-   host's pager per kind, and `internal/host`, `internal/vmmachine` and
+   host's pager per kind, and `host`, `vmmachine` and
    `internal/simtest` route each memory region to the pager of its kind. The host
    answers both pagers' pressure through the same three callbacks, which act on
    the VM a memory region belongs to: one pause seals every memory region it maps in both
@@ -493,7 +493,7 @@ memory savings and workload time together.
    instead — the protocol's MAP over a range replaces whatever the pages of it
    had — so a copy-on-write is one command and no revocation, and so is a store
    that closes a gap or fills a range, however many pages it copied. What
-   replacing costs is an ordering, which `internal/vmmemory/replacement.go` is:
+   replacing costs is an ordering, which `vmmemory/replacement.go` is:
    the page a store copied from stays where it is, unreclaimable and unreleased,
    until that store's command lands. A store revokes only where the client
    refused its mapping or the command failed, because then there is nothing to
@@ -514,7 +514,7 @@ memory savings and workload time together.
 5. **Carry geometry through handoff and migration.** Make page size a property
    of each served volume/memory region rather than the whole page server. Update
    request validation, page numbering, resident listings, unpublished runs,
-   transfer completion and destination checks in `internal/vmmigrate`.
+   transfer completion and destination checks in `vmmigrate`.
    Bound requests and in-flight data in bytes, allowing batches of 4 KiB RAM
    pages. Reject a mismatch before mapping or accepting guest data.
 
@@ -687,7 +687,7 @@ memory savings and workload time together.
    the same pattern through a cold-started VM on the deployment's own stack and
    requires the byte model to hold through the guest's mappings and through the
    volume, with the host holding the whole memory region privately before the checkpoint
-   and nothing after it. `internal/host/pager_test.go` pins both pagers' runs and
+   and nothing after it. `host/pager_test.go` pins both pagers' runs and
    the dirty-budget bound, on either platform.
 
 ## Format and rollout

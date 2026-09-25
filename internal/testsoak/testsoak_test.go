@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/semistrict/sproutfs/internal/platform/sim"
 	"github.com/semistrict/sproutfs/internal/testsoak"
+	"github.com/semistrict/sproutfs/platform/sim"
 )
 
 func TestRequireReportsTheBlockTheEnvironmentSelects(t *testing.T) {

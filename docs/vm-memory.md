@@ -245,7 +245,7 @@ independent of pager size. The Linux transport also bounds pending faults,
 control requests and fault workers.
 
 The production host sets all of these bounds to nonzero values. The supervisor
-in `internal/host` chooses them for each pager. It bases them on the share of
+in `host` chooses them for each pager. It bases them on the share of
 the arena the deployment gave that kind and on the node, not on one environment
 variable per bound. The two runs are stated in bytes and each instance converts
 them. A run is a buffer, and the same number of pages would be a different
@@ -516,7 +516,7 @@ revokes a batch's handed-back pages together, before the walk that publishes the
 rest (`MemoryRegion.revokeHandedBack`).
 
 Replacement instead requires an ordering, which
-`internal/vmmemory/replacement.go` implements. A store removes its binding from
+`vmmemory/replacement.go` implements. A store removes its binding from
 the page it copied from. Until its mapping command lands, the guest keeps
 reading that page's offset, although nothing names the page any more. So the
 page stays in place. No reclaim may take it. If this store held its last
@@ -701,7 +701,7 @@ decides which pager a VM's memory regions would be admitted to, before a machine
 exists, states the kind itself.
 
 The pager has memory regions but no concept of a VM, so the host adds the per-memory-region
-numbers up per VM. `Host.PrivateBytes` in `internal/host` is one VM's private
+numbers up per VM. `Host.PrivateBytes` in `host` is one VM's private
 bytes across every memory region it maps. `/status`, `/metrics` and the VM listing
 report it. The host reads each memory region through the pager of that memory region's kind.
 The Prometheus gauges are `sproutfs_pager_unique_resident_bytes`,

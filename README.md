@@ -7,8 +7,10 @@ pager and a Firecracker integration.
 
 The project is under active development. It provides the host and orchestrator
 commands that the demo deployment runs. It also provides the Rust library
-through which the VMM maps its guest memory. Every Go package is internal to
-the module, and none is offered as a library. No production deployment is
+through which the VMM maps its guest memory. The runtime packages at the
+module root (`host`, `volume`, `vmmemory`, `vmmigrate`, `vmmachine`, `api/host`
+and what they build on) can be imported by a program that embeds a host.
+Helpers and test harnesses stay under `internal`. No production deployment is
 recorded yet.
 
 There is no garbage collector. This is a deliberate decision, and the absence

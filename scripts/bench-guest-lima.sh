@@ -48,7 +48,7 @@ limactl shell "$instance" mkdir -p "$guest_work/run" "$guest_work/objects"
 cd "$repo"
 revision=$(git rev-parse HEAD)
 if ! git diff --quiet || ! git diff --cached --quiet; then revision="$revision-dirty"; fi
-GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go test -c ./internal/vmmachine -o "$host_work/bench.test"
+GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go test -c ./vmmachine -o "$host_work/bench.test"
 # The whole run stays under the work directory: replica journals, the pager's
 # scratch spill, every VM's private sockets, and the checkpoint objects. The
 # object store keeps the same latency model on disk because the instance cannot

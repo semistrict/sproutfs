@@ -16,7 +16,7 @@ import (
 	"io"
 	"strconv"
 
-	"github.com/semistrict/sproutfs/internal/checkpoint"
+	"github.com/semistrict/sproutfs/checkpoint"
 )
 
 // Frame kinds. These control messages are separate from Linux's native

@@ -71,7 +71,7 @@ control record and are written before the fork handle is returned.
   enrollment, retirement, roster snapshots and their root, the refresh watcher,
   revocation, the joining/active/draining/removed states, the 4,096-entry roster
   bound and its retirement backlog. Remove TLS from
-  `internal/platform/internal/real/network.go` and the identity-binding network
+  `platform/internal/real/network.go` and the identity-binding network
   wrapper. A host needs no admitted identity or local view to start; the handoff
   carries the source pod's page-server address and the destination dials it.
   Draining is `Host.Drain` from the preStop hook, as now, with the deployment

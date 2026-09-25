@@ -5,8 +5,8 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/semistrict/sproutfs/internal/api/host"
-	"github.com/semistrict/sproutfs/internal/api/orch"
+	"github.com/semistrict/sproutfs/api/host"
+	"github.com/semistrict/sproutfs/api/orch"
 )
 
 // TestColdStartAsksTheHostToDiscardTheMemory: a cold start is the ordinary

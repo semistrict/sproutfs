@@ -4,9 +4,9 @@ import (
 	"testing"
 	"testing/synctest"
 
-	"github.com/semistrict/sproutfs/internal/platform/sim"
 	"github.com/semistrict/sproutfs/internal/simtest"
-	"github.com/semistrict/sproutfs/internal/volume"
+	"github.com/semistrict/sproutfs/platform/sim"
+	"github.com/semistrict/sproutfs/volume"
 )
 
 // coldTopology is two hosts and one VM with memory and a disk, which is the

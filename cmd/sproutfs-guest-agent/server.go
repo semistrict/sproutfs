@@ -11,7 +11,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/semistrict/sproutfs/internal/api/guest"
+	"github.com/semistrict/sproutfs/api/guest"
 )
 
 // defaultTimeout bounds a command that did not ask for a bound of its own, and

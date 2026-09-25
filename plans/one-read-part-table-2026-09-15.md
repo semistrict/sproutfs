@@ -46,7 +46,7 @@ against the writer.
 
 ## Proof
 
-Red first, in `internal/checkpoint`:
+Red first, in `checkpoint`:
 
 1. A publication whose tombstones alone would exceed the 256 KiB table
    bound produces more than one part, and every part's table decodes from a
@@ -57,7 +57,7 @@ Red first, in `internal/checkpoint`:
    test; the simulated store's suffix read is tested for a suffix longer
    than the object.
 
-Then the whole suite, `-race` on `internal/checkpoint`, the format fixture
+Then the whole suite, `-race` on `checkpoint`, the format fixture
 tests, `TestScheduled*Reproduces` and the migration chaos seeds 1–16.
 
 ## Docs

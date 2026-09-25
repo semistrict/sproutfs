@@ -24,7 +24,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/semistrict/sproutfs/internal/api/guest"
+	"github.com/semistrict/sproutfs/api/guest"
 )
 
 // shutdownTimeout bounds the orderly stop. The agent holds nothing, so this is

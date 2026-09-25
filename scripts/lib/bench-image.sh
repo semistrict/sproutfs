@@ -6,7 +6,7 @@
 #
 # The image is a 32 GiB ext4 filesystem with 4 KiB blocks holding an Alpine
 # userland of this host's architecture, a static /init built from
-# internal/vmmachine/testdata/guest.c, and four offline workloads: a pnpm
+# vmmachine/testdata/guest.c, and four offline workloads: a pnpm
 # project with a pre-populated store, a Rust workspace with vendored crates, a
 # git repository with full history, and a Valkey database the guest seeds
 # itself and then updates at random. No guest workload needs a network.
@@ -285,7 +285,7 @@ sudo -n unshare --net chroot "$root" /bin/sh /sproutfs-verify.sh >&2
 sudo -n rm -f "$root/sproutfs-workloads.sh" "$root/sproutfs-verify.sh" "$root/etc/resolv.conf"
 
 echo "building the guest init" >&2
-cc -static -O2 -Wall -Wextra -Werror "$repo/internal/vmmachine/testdata/guest.c" -o "$work/init"
+cc -static -O2 -Wall -Wextra -Werror "$repo/vmmachine/testdata/guest.c" -o "$work/init"
 sudo -n cp "$work/init" "$root/init"
 sudo -n chmod 0755 "$root/init"
 

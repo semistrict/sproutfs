@@ -15,7 +15,7 @@
 # an arm: edit the tree, run this, compare.
 #
 #   SPROUTFS_FANOUT_TAGS    build tags for the test binary, default sproutfsprobe
-#                           (the accelerator; see internal/vmmemory/probe_on.go)
+#                           (the accelerator; see vmmemory/probe_on.go)
 #   SPROUTFS_LIMA_INSTANCE  the instance, default `default`
 #   SPROUTFS_FANOUT_WORK    the persistent build directory in the instance
 #   SPROUTFS_FANOUT_TEST    which test one run is, default the fan-out's own;
@@ -74,7 +74,7 @@ if ! limactl shell "$instance" test -s "$work/root.ext4"; then
 set -euo pipefail
 repo=$1; work=$2; agent=$3; witness=$4
 mkdir -p "$work/root/dev" "$work/root/proc" "$work/root/sys" "$work/root/mnt" "$work/root/bin"
-cc -static -O2 -Wall -Wextra -Werror "$repo/internal/vmmachine/testdata/guest.c" -o "$work/root/init"
+cc -static -O2 -Wall -Wextra -Werror "$repo/vmmachine/testdata/guest.c" -o "$work/root/init"
 install -m 0755 "$agent" "$work/root/agent"
 install -m 0755 "$witness" "$work/root/bin/sproutfs-guest-witness"
 busybox=$(command -v busybox || echo /usr/lib/initramfs-tools/bin/busybox)
@@ -88,7 +88,7 @@ fi
 
 binary=$HOME/.cache/sproutfs-reduce/$label.test
 GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go test -c ${tags:+-tags "$tags"} \
-    -o "$binary" "$repo/internal/vmmachine"
+    -o "$binary" "$repo/vmmachine"
 
 load=$(limactl shell "$instance" cat /proc/loadavg)
 # An arm is a change to the tree, so the change itself is written down beside

@@ -17,8 +17,8 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/semistrict/sproutfs/internal/api/host"
-	"github.com/semistrict/sproutfs/internal/api/orch"
+	"github.com/semistrict/sproutfs/api/host"
+	"github.com/semistrict/sproutfs/api/orch"
 	"github.com/semistrict/sproutfs/internal/jsonhttp"
 )
 

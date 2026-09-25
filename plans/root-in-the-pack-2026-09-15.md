@@ -77,7 +77,7 @@ shape.
 
 ## Proof
 
-Red first, in `internal/checkpoint`:
+Red first, in `checkpoint`:
 
 1. A published checkpoint's objects are exactly its parts: no key under its
    prefix but `pack/<n>` and `pack/last`, and `Open` issues exactly one
@@ -89,7 +89,7 @@ Red first, in `internal/checkpoint`:
 4. Opening a format-6 deployment (the existing fixture) is refused with the
    version named.
 
-Then the whole suite, `-race` on `internal/checkpoint` and `internal/volume`,
+Then the whole suite, `-race` on `checkpoint` and `volume`,
 the format fixture tests with a new `pack-3` fixture and a regenerated
 deployment fixture, `TestScheduled*Reproduces`, the migration chaos seeds
 1–16 and 200 seeds of `internal/simtest`'s campaign.

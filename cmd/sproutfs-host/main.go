@@ -21,10 +21,10 @@ import (
 	"syscall"
 	"time"
 
-	hostapi "github.com/semistrict/sproutfs/internal/api/host"
-	"github.com/semistrict/sproutfs/internal/host"
+	hostapi "github.com/semistrict/sproutfs/api/host"
+	"github.com/semistrict/sproutfs/host"
 	"github.com/semistrict/sproutfs/internal/jsonhttp"
-	"github.com/semistrict/sproutfs/internal/platform/adapters"
+	"github.com/semistrict/sproutfs/platform/adapters"
 )
 
 // shutdownTimeout bounds each half of the orderly close: stopping the API, and

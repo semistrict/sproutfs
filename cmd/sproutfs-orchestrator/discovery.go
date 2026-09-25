@@ -11,9 +11,9 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
-	"github.com/semistrict/sproutfs/internal/api/host"
-	"github.com/semistrict/sproutfs/internal/control"
-	"github.com/semistrict/sproutfs/internal/platform"
+	"github.com/semistrict/sproutfs/api/host"
+	"github.com/semistrict/sproutfs/control"
+	"github.com/semistrict/sproutfs/platform"
 )
 
 // clusterPods finds host pods through the Kubernetes API, with the

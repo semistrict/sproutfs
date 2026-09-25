@@ -9,15 +9,15 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/semistrict/sproutfs/internal/api/guest"
-	hostapi "github.com/semistrict/sproutfs/internal/api/host"
-	"github.com/semistrict/sproutfs/internal/control"
-	"github.com/semistrict/sproutfs/internal/host"
+	"github.com/semistrict/sproutfs/api/guest"
+	hostapi "github.com/semistrict/sproutfs/api/host"
+	"github.com/semistrict/sproutfs/control"
+	"github.com/semistrict/sproutfs/host"
 	"github.com/semistrict/sproutfs/internal/jsonhttp"
-	"github.com/semistrict/sproutfs/internal/platform"
-	"github.com/semistrict/sproutfs/internal/vmmemory"
-	"github.com/semistrict/sproutfs/internal/vmmigrate"
-	"github.com/semistrict/sproutfs/internal/volume"
+	"github.com/semistrict/sproutfs/platform"
+	"github.com/semistrict/sproutfs/vmmemory"
+	"github.com/semistrict/sproutfs/vmmigrate"
+	"github.com/semistrict/sproutfs/volume"
 )
 
 // newServer routes the host API. Every handler reports the shared JSON error

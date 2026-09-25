@@ -214,7 +214,7 @@ byte afterwards. Every page it touched must be the parent's page again.
 `crypto/rand`, and bare `time.Now`, `time.Since`, `time.After`, `time.Sleep`,
 `time.NewTimer`, `time.NewTicker`, `time.Tick`, `time.AfterFunc` and
 `ctxsync.Sleep` in the non-test code of
-`internal/{volume,checkpoint,control,vmmigrate,host,vmmemory}`. This includes
+`{volume,checkpoint,control,vmmigrate,host,vmmemory}`. This includes
 the Linux-only files that this machine does not build. A stray wall-clock read
 decides how long a hold lives. A stray `math/rand` call decides which VM
 checkpoints first. If a run cannot reproduce either, its seed reports nothing
@@ -631,7 +631,7 @@ Every hop in the campaigns makes the same checks:
 The recorded scenario adds the layout refusal. A handoff that would truncate a
 memory region or map beyond its volume is refused before any guest starts.
 
-`internal/vmmigrate`'s own suite keeps the tests that are about the package and
+`vmmigrate`'s own suite keeps the tests that are about the package and
 not about a deployment:
 
 - `Done` returns only after every unpublished page is on the destination, and
@@ -793,7 +793,7 @@ in the system, and then several problems in the simulated world.
   hole in what a fork inherits appears from outside. It is reachable only where
   a fork point, a compaction and a later sweep line up: ten of the first two
   hundred seeds. The fix spares everything that the pinned root names.
-  `TestReclamationSparesThePacksAPinnedIndexOnlyNames` in `internal/checkpoint`
+  `TestReclamationSparesThePacksAPinnedIndexOnlyNames` in `checkpoint`
   covers the case.
 - A frame held by the stalled-stream fault deadlocked the whole bubble. The
   fault was written for a migration's post-copy, which gives up on its own
@@ -1006,7 +1006,7 @@ event order. Missing or empty recordings fail the test. A mismatch prints the
 first differing readable record.
 
 ```sh
-go test ./internal/platform/sim ./internal/simtest \
+go test ./platform/sim ./internal/simtest \
   -run 'ReproducesAcrossProcesses$' -count=1
 ```
 
@@ -1019,12 +1019,12 @@ cross-process comparison. Repetition cannot enumerate every possible
 interleaving. The larger seed campaigns and the race detector remain
 complementary.
 
-The schema is in `internal/platform/sim/proto/sproutfs/sim/v1/trace.proto`.
+The schema is in `platform/sim/proto/sproutfs/sim/v1/trace.proto`.
 Regenerate it with `buf generate`. Each `.txt` companion is a readable rendering
 decoded from the protobuf file. Events are buffered in the virtual-time bubble
 and written after the bubble exits. To retain files from one process, set
 `SPROUTFS_OVERLAP_TRACE_DIR` and run
-`go test ./internal/platform/sim -run '^TestDynamicOverlapTraceFiles$' -count=1`.
+`go test ./platform/sim -run '^TestDynamicOverlapTraceFiles$' -count=1`.
 Use a fresh directory for each invocation.
 
 Use `SPROUTFS_OVERLAP_TRACE_SEEDS` to select the count when you invoke a trace
@@ -1036,7 +1036,7 @@ They do not replace its uncontrolled concurrency coverage.
 
 ## Fault injection, probes and fingerprints
 
-Three primitives in `internal/platform/sim` reach into the real volume,
+Three primitives in `platform/sim` reach into the real volume,
 checkpoint, control, pager and migration code. All three read the runtime from
 the context. A harness puts the runtime there once with `sim.WithRuntime`. In a
 context without a runtime, each primitive does a lookup and returns false. This
@@ -1145,7 +1145,7 @@ SPROUTFS_SIM_BUG=volume-ignore-discard \
 SPROUTFS_SIM_BUG=volume-shift-write \
   go test ./internal/simtest -run '^TestScheduledWorldReproduces$' -count=1
 SPROUTFS_SIM_BUG=volume-unbounded-write \
-  go test ./internal/volume -run '^TestWriteBatchIsOneGenerationAppliedInOrder$' -count=1
+  go test ./volume -run '^TestWriteBatchIsOneGenerationAppliedInOrder$' -count=1
 SPROUTFS_SIM_BUG=volume-drop-captured-state \
   go test ./internal/simtest -run '^TestScheduledWorldReproduces$' -count=1
 SPROUTFS_SIM_BUG=checkpoint-part-member-offset \
@@ -1155,7 +1155,7 @@ SPROUTFS_SIM_BUG=checkpoint-reclaim-live-checkpoint \
 SPROUTFS_SIM_BUG=migration-accept-wrong-size \
   go test ./internal/simtest -run '^TestScheduledWorldReproduces$' -count=1
 SPROUTFS_SIM_BUG=migration-accept-missing-memoryRegion \
-  go test ./internal/vmmigrate -run '^TestReceiveRefusesAMachineMissingAMemoryRegion$' -count=1
+  go test ./vmmigrate -run '^TestReceiveRefusesAMachineMissingAMemoryRegion$' -count=1
 SPROUTFS_SIM_BUG=migration-corrupt-peer-page \
   go test ./internal/simtest -run '^TestScheduledWorldReproduces$' -count=1
 SPROUTFS_SIM_BUG=migration-corrupt-fallback \
@@ -1236,7 +1236,7 @@ python3 scripts/mutate-gremlins.py --gremlins /path/to/gremlins --all
 
 This separate wrapper also copies the current source. Gremlins generates and
 executes the mutations. It does not use the curated catalogue. The default
-target is `internal/vmmigrate`, with generated protobuf files excluded.
+target is `vmmigrate`, with generated protobuf files excluded.
 `GOFLAGS` selects only `TestScheduled.*Reproduces`, and integration mode lets
 every scheduled scenario detect mutations in the selected package. `--coverpkg`
 includes that package's execution from the host scenario. Use `--package` to
@@ -1270,8 +1270,8 @@ For a change in one Go package, start with its ordinary tests. Then mutate that
 package with the full module available to detect the changes. For example:
 
 ```sh
-go test ./internal/checkpoint
-python3 scripts/mutate-gremlins.py --package internal/checkpoint --suite full \
+go test ./checkpoint
+python3 scripts/mutate-gremlins.py --package checkpoint --suite full \
   --integration --gremlins /path/to/gremlins --output /tmp/checkpoint-mutations
 ```
 
@@ -1529,10 +1529,10 @@ store is not migrated. Committed fixtures enforce that contract:
 
 | Fixture | What it holds |
 | --- | --- |
-| `internal/volume/testdata/deployment-record-4-index-7-part-4`, `deployment-record-4-part-3`, `deployment-record-4-index-6-part-2`, `deployment-record-4-index-5-part-1`, `deployment-record-3-index-5-part-1` | The whole object namespace of a small deployment: a VM with a history of checkpoints and VMM state whose record pins the point it was forked at, and a fork of it whose root names that point's checkpoints. The four older dumps are what the builds before the parts and the index object were split, before the root moved into the last part, before the segmented index and before the pin bump wrote, and their test requires that opening each is refused with the version that moved named — the part layout's for the first, the index object's for the next two, the record's for the last. |
-| `internal/control/testdata/record-4`, `record-3`, `record-2` | Two records with pins, at this build's version and at each version committed before it. |
-| `internal/checkpoint/testdata/index-7-part-4`, `part-3`, `index-6-part-2`, `index-5-part-1`, `index-4` | The objects of a published checkpoint at this build's formats — its index object and its parts — the objects of the three format sets before it, each refused by the version that moved, and one index table restamped with a version older still. |
-| `internal/checkpoint/internal/part/testdata/part-4`, `part-3`, `part-2`, `part-1`, `part-0` | One sealed part holding the VMM state and pages of two volumes, which is everything a part holds; the layout-3 part before it, which also held a segment and the root; the layout-2 part before that, which has a tombstone and no root; the layout-1 part before that, which has no segment member; and a part and table restamped with a version older still. |
+| `volume/testdata/deployment-record-4-index-7-part-4`, `deployment-record-4-part-3`, `deployment-record-4-index-6-part-2`, `deployment-record-4-index-5-part-1`, `deployment-record-3-index-5-part-1` | The whole object namespace of a small deployment: a VM with a history of checkpoints and VMM state whose record pins the point it was forked at, and a fork of it whose root names that point's checkpoints. The four older dumps are what the builds before the parts and the index object were split, before the root moved into the last part, before the segmented index and before the pin bump wrote, and their test requires that opening each is refused with the version that moved named — the part layout's for the first, the index object's for the next two, the record's for the last. |
+| `control/testdata/record-4`, `record-3`, `record-2` | Two records with pins, at this build's version and at each version committed before it. |
+| `checkpoint/testdata/index-7-part-4`, `part-3`, `index-6-part-2`, `index-5-part-1`, `index-4` | The objects of a published checkpoint at this build's formats — its index object and its parts — the objects of the three format sets before it, each refused by the version that moved, and one index table restamped with a version older still. |
+| `checkpoint/internal/part/testdata/part-4`, `part-3`, `part-2`, `part-1`, `part-0` | One sealed part holding the VMM state and pages of two volumes, which is everything a part holds; the layout-3 part before it, which also held a segment and the root; the layout-2 part before that, which has a tombstone and no root; the layout-1 part before that, which has no segment member; and a part and table restamped with a version older still. |
 
 The deployment fixture's test loads the fixture into a simulated object store
 and runs `CheckDeployment` over it with no allowances. It opens every VM. It
@@ -1549,10 +1549,10 @@ version actually wrote.
 Every fixture is written by a `-update` flag on its own test:
 
 ```sh
-go test ./internal/volume -run TestTheCommittedDeploymentFixture -update
-go test ./internal/control -run Fixture -update
-go test ./internal/checkpoint -run Fixture -update
-go test ./internal/checkpoint/internal/part -run Committed -update
+go test ./volume -run TestTheCommittedDeploymentFixture -update
+go test ./control -run Fixture -update
+go test ./checkpoint -run Fixture -update
+go test ./checkpoint/internal/part -run Committed -update
 ```
 
 A format bump keeps every fixture that is already committed, adds one named for

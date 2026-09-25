@@ -9,6 +9,6 @@ set -euo pipefail
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 instance=${SPROUTFS_LIMA_INSTANCE:-default}
 if (($# != 0)); then echo "Usage: $0" >&2; exit 2; fi
-key=$(cat "$repo/scripts/lib/bench-image.sh" "$repo/internal/vmmachine/testdata/guest.c" | shasum -a 256 | cut -c1-32)
+key=$(cat "$repo/scripts/lib/bench-image.sh" "$repo/vmmachine/testdata/guest.c" | shasum -a 256 | cut -c1-32)
 limactl shell "$instance" sudo -n true
 limactl shell "$instance" bash "$repo/scripts/lib/bench-image.sh" "$repo" "$key"

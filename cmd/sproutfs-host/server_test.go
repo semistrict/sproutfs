@@ -12,11 +12,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/semistrict/sproutfs/internal/api/guest"
-	hostapi "github.com/semistrict/sproutfs/internal/api/host"
-	"github.com/semistrict/sproutfs/internal/host"
-	"github.com/semistrict/sproutfs/internal/platform"
-	"github.com/semistrict/sproutfs/internal/volume"
+	"github.com/semistrict/sproutfs/api/guest"
+	hostapi "github.com/semistrict/sproutfs/api/host"
+	"github.com/semistrict/sproutfs/host"
+	"github.com/semistrict/sproutfs/platform"
+	"github.com/semistrict/sproutfs/volume"
 )
 
 // fakeHost is a host that runs no VM: it records what the HTTP layer asked it

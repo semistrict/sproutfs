@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/semistrict/sproutfs/internal/api/orch"
+	"github.com/semistrict/sproutfs/api/orch"
 	"github.com/semistrict/sproutfs/internal/jsonhttp"
 )
 

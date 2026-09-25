@@ -9,11 +9,11 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/semistrict/sproutfs/internal/platform"
-	"github.com/semistrict/sproutfs/internal/platform/sim"
 	"github.com/semistrict/sproutfs/internal/testbacking"
-	"github.com/semistrict/sproutfs/internal/vmmemory"
-	"github.com/semistrict/sproutfs/internal/volume"
+	"github.com/semistrict/sproutfs/platform"
+	"github.com/semistrict/sproutfs/platform/sim"
+	"github.com/semistrict/sproutfs/vmmemory"
+	"github.com/semistrict/sproutfs/volume"
 )
 
 // A volume is a backing a fault can ask for the window it needs, with the pages

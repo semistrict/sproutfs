@@ -13,7 +13,7 @@
   },
   {
     "id": "volume-unbounded-write",
-    "package": "internal/volume",
+    "package": "volume",
     "run": "^TestWriteBatchIsOneGenerationAppliedInOrder$",
     "purpose": "Accept a write exceeding the configured payload budget."
   },
@@ -31,7 +31,7 @@
   },
   {
     "id": "migration-accept-missing-memory-region",
-    "package": "internal/vmmigrate",
+    "package": "vmmigrate",
     "run": "^TestReceiveRefusesAMachineMissingAMemoryRegion$",
     "purpose": "Accept a started VMM that omits a handed-off memory region."
   },

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	hostapi "github.com/semistrict/sproutfs/internal/api/host"
+	hostapi "github.com/semistrict/sproutfs/api/host"
 )
 
 // metrics writes one host's status as Prometheus text. The format is four lines

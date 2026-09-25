@@ -6,10 +6,10 @@ import (
 	"time"
 
 	"github.com/semistrict/sproutfs/internal/knobs"
-	"github.com/semistrict/sproutfs/internal/platform"
-	"github.com/semistrict/sproutfs/internal/platform/sim"
 	"github.com/semistrict/sproutfs/internal/simtest"
-	"github.com/semistrict/sproutfs/internal/volume"
+	"github.com/semistrict/sproutfs/platform"
+	"github.com/semistrict/sproutfs/platform/sim"
+	"github.com/semistrict/sproutfs/volume"
 )
 
 // TestForksThatOnlyReadPublishNothingAndGoOnSharing is the fan-out the pager

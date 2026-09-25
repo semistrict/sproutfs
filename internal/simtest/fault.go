@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/semistrict/sproutfs/internal/platform"
-	"github.com/semistrict/sproutfs/internal/platform/sim"
+	"github.com/semistrict/sproutfs/platform"
+	"github.com/semistrict/sproutfs/platform/sim"
 )
 
 // Fault is one thing that goes wrong to a deployment: it begins at an offset in

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/semistrict/sproutfs/internal/host"
+	"github.com/semistrict/sproutfs/host"
 	"github.com/semistrict/sproutfs/internal/jsonhttp"
 )
 

@@ -20,16 +20,16 @@
 // Nothing here is a mock of the thing under test: the volume managers, the
 // checkpoint store, the control records, the pagers and the migration
 // coordinator are the real ones, over the simulated network, object store and
-// disks of internal/platform/sim. Only the VMM process is simulated, because a
+// disks of platform/sim. Only the VMM process is simulated, because a
 // guest is what a VMM has instead of a life of its own.
 package simtest
 
 import (
 	"fmt"
 
-	"github.com/semistrict/sproutfs/internal/checkpoint"
-	"github.com/semistrict/sproutfs/internal/platform/sim"
-	"github.com/semistrict/sproutfs/internal/volume"
+	"github.com/semistrict/sproutfs/checkpoint"
+	"github.com/semistrict/sproutfs/platform/sim"
+	"github.com/semistrict/sproutfs/volume"
 )
 
 // RAMPage and PMEMPage are the pages a simulated host's two pagers run, which

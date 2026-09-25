@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/semistrict/sproutfs/internal/knobs"
-	"github.com/semistrict/sproutfs/internal/platform/sim"
+	"github.com/semistrict/sproutfs/platform/sim"
 )
 
 // The defaults are what a deployment runs, so a run with these knobs must be

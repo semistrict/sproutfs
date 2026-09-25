@@ -96,14 +96,14 @@ cp /usr/bin/busybox "$root/bin/busybox"
 ln -sfn busybox "$root/bin/sh"
 ln -sfn busybox "$root/bin/uname"
 ln -sfn busybox "$root/bin/cat"
-cc -static -O2 -Wall -Wextra -Werror internal/vmmachine/testdata/guest.c -o "$root/init"
-cc -static -O2 -Wall -Wextra -Werror internal/vmmachine/testdata/memprobe.c -o "$root/usr/local/bin/memprobe"
+cc -static -O2 -Wall -Wextra -Werror vmmachine/testdata/guest.c -o "$root/init"
+cc -static -O2 -Wall -Wextra -Werror vmmachine/testdata/memprobe.c -o "$root/usr/local/bin/memprobe"
 truncate -s 8G "$work/build/root.ext4"
 mkfs.ext4 -q -F -b 4096 -d "$root" "$work/build/root.ext4"
 
 CGO_ENABLED=0 go test -c ./internal/vmtest -o "$work/build/vmtest.test"
-CGO_ENABLED=0 go test -c ./internal/vmmemory -o "$work/build/vmmemory.test"
-CGO_ENABLED=0 go test -c ./internal/vmmachine -o "$work/build/vmmachine.test"
+CGO_ENABLED=0 go test -c ./vmmemory -o "$work/build/vmmemory.test"
+CGO_ENABLED=0 go test -c ./vmmachine -o "$work/build/vmmachine.test"
 {
     uname -a
     lscpu
@@ -176,7 +176,7 @@ fi
 # narrow it as they do under scripts/bench-guest-lima.sh. A guest has all eight
 # of this host's processors, on both sides.
 if [[ ${SPROUTFS_GCE_WORKLOAD:-0} == 1 ]]; then
-    key=$(cat "$repo/scripts/lib/bench-image.sh" "$repo/internal/vmmachine/testdata/guest.c" | sha256sum | cut -c1-32)
+    key=$(cat "$repo/scripts/lib/bench-image.sh" "$repo/vmmachine/testdata/guest.c" | sha256sum | cut -c1-32)
     image=$(HOME=$work bash "$repo/scripts/lib/bench-image.sh" "$repo" "$key" 2> "$results/image-build.log")
     test -s "$image"
     cp "$(dirname "$image")/manifest.json" "$results/guest-image.json"

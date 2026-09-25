@@ -109,14 +109,14 @@ checkpoints into the current parts, and never touches an index object.
 ### Terminology
 
 "Pack" is gone from identifiers, keys, docs, comments, metrics and tests:
-`internal/checkpoint/internal/pack` becomes `internal/checkpoint/internal/part`,
+`checkpoint/internal/pack` becomes `checkpoint/internal/part`,
 `Pack`/`packs`/`packCost`/`partKey` and the rest are renamed to say
 checkpoint or part, `PackTable` becomes `PartTable`, the root's list is
 `checkpoints`, and the docs say "a checkpoint's parts".
 
 ## Proof
 
-Red first, in `internal/checkpoint`:
+Red first, in `checkpoint`:
 
 1. A published checkpoint's objects are exactly `index` and `part/<n>`; the
    index object holds only the segments it changed; `Open` issues one request.
@@ -132,7 +132,7 @@ Red first, in `internal/checkpoint`:
 6. Opening a format-6 or a root-in-part deployment is refused with the
    version named (existing fixtures).
 
-Then the whole suite, `-race` on `internal/checkpoint` and `internal/volume`,
+Then the whole suite, `-race` on `checkpoint` and `volume`,
 the fixture tests with new `index-7` and `part-4` fixtures and a regenerated
 deployment fixture, `TestScheduled*Reproduces`, the migration chaos seeds
 1–16, and 200 seeds of `internal/simtest`'s campaign.

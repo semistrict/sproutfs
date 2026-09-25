@@ -1,6 +1,6 @@
 // PID 1 for the sproutfs demo guest.
 //
-// The qualification init, internal/vmmachine/testdata/guest.c, owns the serial console
+// The qualification init, vmmachine/testdata/guest.c, owns the serial console
 // for its own line protocol: it turns echo off and consumes every line. The
 // demo needs the opposite, a console a person types into, so it gets this init
 // instead. It mounts what a shell expects, prints a banner, and keeps an

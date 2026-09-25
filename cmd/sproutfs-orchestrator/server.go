@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/semistrict/sproutfs/internal/api/orch"
+	"github.com/semistrict/sproutfs/api/orch"
 	"github.com/semistrict/sproutfs/internal/jsonhttp"
 )
 

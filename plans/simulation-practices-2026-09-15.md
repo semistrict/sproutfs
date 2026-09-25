@@ -3,7 +3,7 @@
 A read-only comparison of FoundationDB's deterministic simulation
 (`fdbrpc/sim2.cpp`, `flow/Buggify.h`, `fdbserver/SimulatedCluster.cpp`,
 `fdbserver/workloads/`, `contrib/TestHarness2`) against
-[docs/testing.md](../docs/testing.md) and `internal/platform/sim`. Ranked by
+[docs/testing.md](../docs/testing.md) and `platform/sim`. Ranked by
 value against sproutfs's real risks: two writers mixing, lost unpublished
 pages, host loss, format drift. Nothing here is implemented.
 
@@ -24,7 +24,7 @@ catalogue. Do not spend effort there.
    unsynced writes, and reboots from the same folders. `sim.Process` already
    has this shape (`Crash`, `PowerLoss`, `DestroyMachine`, `FailDisk`) and is
    used by nothing outside its own test; host restarts in
-   `internal/host/scheduled_test.go` are orderly closes onto a fresh disk. No
+   `host/scheduled_test.go` are orderly closes onto a fresh disk. No
    host is ever lost mid-checkpoint, while holding a fork point, or while
    serving a migration. First step: the host harness owns a `sim.Process` per
    host and one `sim.Disk` per host index; a `crash_test.go` replaces one
@@ -234,10 +234,10 @@ catalogue. Do not spend effort there.
    no fixtures. First step: byte-exact dumps of a small simulated store under
    `testdata/` for record 3, index 5 and pack 1, written by an `-update`
    flag and read back by a test; keep the old fixture at every bump. **Done**:
-   a whole deployment under `internal/volume/testdata`, opened and read back
+   a whole deployment under `volume/testdata`, opened and read back
    byte for byte and checked with `CheckDeployment`, plus per-format fixtures
-   and superseded twins under `internal/control`, `internal/checkpoint` and
-   `internal/checkpoint/internal/pack`. The contract is refusal with the
+   and superseded twins under `control`, `checkpoint` and
+   `checkpoint/internal/pack`. The contract is refusal with the
    version named, and every refusal's text is asserted; see
    [docs/testing.md](../docs/testing.md#format-fixtures).
 8. **Determinism validation and a no-cheating rule.** FDB prints an unseed
@@ -292,7 +292,7 @@ catalogue. Do not spend effort there.
     volume fallback fire. The two the plan's list does not name — a pin
     released and a tombstone finished — have no site at all now that a pin is
     permanent, and were dropped. `unreachedProbes` in
-    `internal/vmmigrate/probe_test.go` names the three and is asserted in both
+    `vmmigrate/probe_test.go` names the three and is asserted in both
     directions, so the list can only shrink. Probes are counted on the runtime
     rather than traced, so registering one changes no recording.
 11. **Seed sweeps on a schedule.** Joshua runs tens of thousands of seeds
@@ -329,7 +329,7 @@ catalogue. Do not spend effort there.
     simulated dependencies themselves, which no guard in production code can
     express.
 
-Two corrections: `internal/platform/sim/process.go` is complete and
+Two corrections: `platform/sim/process.go` is complete and
 unreachable; wire it in (item 1) or delete it. `docs/testing.md`'s failure
 coverage section implies a fault surface the tests do not drive. *The first is
 settled: `sim.Process` is what every harness host runs inside, and

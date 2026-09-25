@@ -7,11 +7,11 @@ import (
 	"testing"
 	"testing/synctest"
 
-	"github.com/semistrict/sproutfs/internal/checkpoint"
-	"github.com/semistrict/sproutfs/internal/control"
+	"github.com/semistrict/sproutfs/checkpoint"
+	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/internal/testsoak"
-	"github.com/semistrict/sproutfs/internal/vmmemory"
-	"github.com/semistrict/sproutfs/internal/vmmigrate"
+	"github.com/semistrict/sproutfs/vmmemory"
+	"github.com/semistrict/sproutfs/vmmigrate"
 )
 
 // registeredProbes is every place the production code marks as one a campaign

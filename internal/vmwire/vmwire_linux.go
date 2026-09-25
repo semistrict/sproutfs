@@ -17,7 +17,7 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/semistrict/sproutfs/internal/checkpoint"
+	"github.com/semistrict/sproutfs/checkpoint"
 )
 
 // The retry schedule of one userfaultfd ioctl: a few yields, which is all the

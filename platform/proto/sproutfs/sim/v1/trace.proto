@@ -1,0 +1,50 @@
+edition = "2024";
+
+package sproutfs.sim.v1;
+
+option go_package = "github.com/semistrict/sproutfs/platform/internal/gen/sproutfs/sim/v1;simv1";
+
+// TraceEvent records an observation at the overlap prototype's operation seams.
+// Files contain length-delimited messages in observed order, without sorting.
+// Time is relative virtual time; process IDs and wall-clock time are excluded.
+message TraceEvent {
+  uint64 seed = 1;
+  uint64 sequence = 2;
+  int64 elapsed_ns = 3;
+  string operation_id = 4;
+  EventKind kind = 5;
+  string outcome = 6;
+  bytes payload = 7;
+  int64 earliest_ns = 8;
+  int64 latest_ns = 9;
+  AdapterEvent adapter = 10;
+}
+
+// An unmodified event from the simulator's existing trace, in recorded order.
+message AdapterEvent {
+  string kind = 1;
+  string resource = 2;
+  string operation = 3;
+  int64 byte_count = 4;
+  uint64 local_id = 5;
+}
+
+enum EventKind {
+  EVENT_KIND_UNSPECIFIED = 0;
+  EVENT_KIND_SUBMITTED = 1;
+  EVENT_KIND_READY = 2;
+  EVENT_KIND_BARRIER = 3;
+  EVENT_KIND_RELEASED = 4;
+  EVENT_KIND_COMPLETED = 5;
+  EVENT_KIND_LISTEN = 6;
+  EVENT_KIND_DIAL = 7;
+  EVENT_KIND_ACCEPT = 8;
+  EVENT_KIND_SEND = 9;
+  EVENT_KIND_RECEIVE = 10;
+  EVENT_KIND_CLOSE = 11;
+  EVENT_KIND_ADAPTER = 12;
+  EVENT_KIND_CANCELED = 13;
+  EVENT_KIND_TASK_STARTED = 14;
+  EVENT_KIND_TASK_DONE = 15;
+  EVENT_KIND_CHECKED = 16;
+}

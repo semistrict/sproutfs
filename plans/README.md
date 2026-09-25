@@ -65,8 +65,8 @@ across all of them is collected in [open-work.md](../docs/open-work.md).
   nothing outside `platform` can name a platform adapter. **Step 1 done**:
   page identity moved to `control`, `image` renamed to `checkpoint`, and every
   non-`cmd` package moved under `internal/`, with the real adapters behind
-  `internal/platform/adapters` and the API packages at `internal/api/{host,orch,guest}`.
-  Open: the nested splits, the `internal/host` consolidation, and decoupling the
+  `platform/adapters` and the API packages at `internal/api/{host,orch,guest}`.
+  Open: the nested splits, the `host` consolidation, and decoupling the
   API packages from the runtime.
 
 ## Designs carried out
@@ -120,7 +120,7 @@ across all of them is collected in [open-work.md](../docs/open-work.md).
   Proof: `just check`, including the shell harness, whose new
   `scripts/test/fixes-test.sh` runs the fixes flow's rollout step against a
   model of the deployment that replaces a pod with a pod of another name;
-  `go test -race` over `internal/host`, `internal/volume`, `internal/control`,
+  `go test -race` over `host`, `volume`, `control`,
   `internal/simtest` and `cmd/...`; 200 seeds of `TestSeededTopologySoak`;
   `TestScheduledWorldReproduces`; and the Lima Firecracker suite. Open: the
   whole of it is unproven on a cluster — `scripts/demo-gce.sh redeploy` and
@@ -161,14 +161,14 @@ across all of them is collected in [open-work.md](../docs/open-work.md).
   start of it was a second writer. A settle already left one alone; a host
   restart does now too.
 
-  Proof: `just check`; `go test -race` over `internal/volume`,
-  `internal/checkpoint`, `internal/host`, `internal/simtest` and `cmd/...`; 200
+  Proof: `just check`; `go test -race` over `volume`,
+  `checkpoint`, `host`, `internal/simtest` and `cmd/...`; 200
   seeds of `TestSeededTopologySoak`, which drew 89 cold starts and 84 warm ones
   over 307 stops; `TestScheduledWorldReproduces` and
   `TestSeededTopologyFingerprintIsStable`; `shellcheck` and the shell harness,
   which runs the soak's cold half, its resize share and its grow against the
   model; and the Lima Firecracker suite. Open: the host's cold start is
-  proven on the simulated deployment and in `internal/host`, and the real
+  proven on the simulated deployment and in `host`, and the real
   Firecracker suite proves the cold boot it ends in but not that whole path —
   the GCE soak run is where the two meet, and it is the owner's.
 - [2026-09-16 GCE soak](gce-soak-2026-09-16.md) — `scripts/demo-gce.sh soak`:
@@ -209,7 +209,7 @@ across all of them is collected in [open-work.md](../docs/open-work.md).
   and nothing else records it — the handle that knew is released by the time
   the stop answers.
 
-  Proof: `just check`; `go test -race` over `internal/simtest`, `internal/host`
+  Proof: `just check`; `go test -race` over `internal/simtest`, `host`
   and `cmd/...`; 200 seeds of `TestSeededTopologySoak`, which drew 329 stops and
   177 starts; `TestScheduledWorldReproduces` and
   `TestSeededTopologyFingerprintIsStable`; `shellcheck`; the Lima Firecracker
@@ -359,7 +359,7 @@ across all of them is collected in [open-work.md](../docs/open-work.md).
   position, part and offset in the index, set-difference reclamation and bounded
   compaction. *Superseded by the two planes above.* **Done** (`39bfe37`, refined
   by `5cd5d01`). `checkpoint.Config.PartBytes` defaults to 64 MiB;
-  `internal/checkpoint/internal/part` writes the self-describing parts. Open: the
+  `checkpoint/internal/part` writes the self-describing parts. Open: the
   host-wide bound on concurrent publications' part buffers.
 - [2026-09-14 fork by handoff](fork-by-handoff-2026-09-14.md) — a fork is a
   migration handoff from a parent that keeps running, so no checkpoint is

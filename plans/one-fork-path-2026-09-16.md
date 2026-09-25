@@ -77,8 +77,8 @@ Red first:
 4. A partial fan-out, local and remote, leaves no child running, no child
    record, and the parent checkpointable.
 
-Then the whole suite, `-race` on `internal/host`, `internal/vmmigrate`,
-`internal/volume` and `internal/simtest`, both Lima suites (the same-host
+Then the whole suite, `-race` on `host`, `vmmigrate`,
+`volume` and `internal/simtest`, both Lima suites (the same-host
 fork test in the Firecracker suite is the real-guest proof), 200 seeds of
 `internal/simtest`'s topology campaign, whose faults fork on both kinds of
 host, and the reproducibility scenario.

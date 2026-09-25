@@ -5,8 +5,8 @@ import (
 	"testing"
 	"testing/synctest"
 
-	"github.com/semistrict/sproutfs/internal/platform/sim"
 	"github.com/semistrict/sproutfs/internal/simtest"
+	"github.com/semistrict/sproutfs/platform/sim"
 )
 
 // connectionAttempt is the one class of event this campaign's own concurrency

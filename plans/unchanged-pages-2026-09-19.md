@@ -87,7 +87,7 @@ back to sharing the page it was copied from.
 - **The settle is parallel.** Each page is settled alone — its comparison and
   its re-sharing take that page's lock and its origin's and nothing wider — so
   a settle hands its pages to `Config.SettleWorkers` workers — the host's
-  processors, which `internal/host` chooses; a configuration that leaves it
+  processors, which `host` chooses; a configuration that leaves it
   zero settles on the caller's own goroutine — and the memory regions of one VM settle
   at the same time as each other. What bounds it is memory bandwidth and not the pager's I/O
   permits, which it does not take: it reads no disk and no store. A thousand
@@ -134,7 +134,7 @@ the guest's access through, or KVM userfault; both are recorded in
 
 Red tests first, exact numbers, beside the code.
 
-- `internal/vmmemory`: a memory region shares N pages with a sibling; it takes a write
+- `vmmemory`: a memory region shares N pages with a sibling; it takes a write
   fault on one and stores nothing. After seal and settle: the checkpoint lists
   no page, the sharing gauges are what they were before the fault (unique N,
   saved N), the memory region's private bytes are zero, its dirty reservation is back,
@@ -177,6 +177,6 @@ Red tests first, exact numbers, beside the code.
 ## Order
 
 After step 2 of the [page-geometry plan](ram-pmem-page-geometry-2026-09-19.md)
-and before its step 3: step 3 parameterises the whole of `internal/vmmemory` by
+and before its step 3: step 3 parameterises the whole of `vmmemory` by
 page size, and this change is in the same files. It was taken there, against
 `vmmemory.PageSize`.

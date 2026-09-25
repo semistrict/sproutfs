@@ -49,7 +49,7 @@ limactl shell "$instance" sudo -n env \
     SPROUTFS_VM_MEMORY_CLIENT="$target/debug/examples/client" \
     "$host_work/memory.test" -test.v -test.count="$repeat" -test.timeout=3m
 
-GOOS=linux GOARCH="$arch" CGO_ENABLED=0 go test -c ./internal/vmmemory -o "$host_work/managed.test"
+GOOS=linux GOARCH="$arch" CGO_ENABLED=0 go test -c ./vmmemory -o "$host_work/managed.test"
 limactl shell "$instance" sudo -n env \
     SPROUTFS_VM_MEMORY_CLIENT="$target/debug/examples/client" \
     SPROUTFS_PAGER_MEASURE="${SPROUTFS_PAGER_MEASURE:-}" \

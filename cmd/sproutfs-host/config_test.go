@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/semistrict/sproutfs/internal/host"
+	"github.com/semistrict/sproutfs/host"
 )
 
 // environ is one pod's environment.

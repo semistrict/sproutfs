@@ -21,7 +21,7 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/semistrict/sproutfs/internal/platform/sim"
+	"github.com/semistrict/sproutfs/platform/sim"
 )
 
 // Environment variables. SPROUTFS_TEST_SOAK enables the campaigns at all, the

@@ -59,7 +59,7 @@ source holds.
 
 ## Proof
 
-Red first, in `internal/vmmigrate` under the simulated clock and network:
+Red first, in `vmmigrate` under the simulated clock and network:
 
 1. A source that resets the connection twenty times in a row still serves
    the page afterwards, and the fault completes.
@@ -73,7 +73,7 @@ Red first, in `internal/vmmigrate` under the simulated clock and network:
 5. In `internal/simtest`: the orchestrator-side rule above, through the
    `LostHost` fault landing on a migration source.
 
-Then the whole suite, `-race` on `internal/vmmigrate` and `internal/simtest`,
+Then the whole suite, `-race` on `vmmigrate` and `internal/simtest`,
 200 seeds of the topology campaign, the Lima Firecracker suite's live
 migration test, and the reproducibility scenario.
 

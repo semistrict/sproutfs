@@ -25,7 +25,7 @@ change had left unimplemented.
 ## Blockers
 
 1. **A failed publication wedges a pager-backed VM forever.** *(proven)*
-   `internal/volume/checkpoint.go:349` reuses the sequence after a failed
+   `volume/checkpoint.go:349` reuses the sequence after a failed
    publication because `vm.applied` counts overlay writes only, which a guest
    never makes. The retry seals a different dirty set under the same sequence,
    hits the already-uploaded part and reports `ErrConflict` on every interval
@@ -33,7 +33,7 @@ change had left unimplemented.
    unbounded durability loss after one transient store error. Fix: never reuse a
    sequence.
 2. **The dirty budget kills the guest instead of stalling it.**
-   `internal/vmmemory/memory.go:606` waits only while the memory region's own
+   `vmmemory/memory.go:606` waits only while the memory region's own
    checkpoint is draining; otherwise `ErrCapacity` fails the fault, the session
    closes and the VMM is SIGKILLed. The budget is host-wide, the wait
    memory-region-local, and the default is the arena's page count for all VMs against a
@@ -41,20 +41,20 @@ change had left unimplemented.
    wait; a high-water mark that triggers an immediate checkpoint; a deliberate
    stop with a logged reason only as last resort.
 3. **Post-copy substitutes stale bytes for unpublished pages and reports
-   success.** `internal/vmmigrate/peer.go:325`: a BUSY reply returns an empty
+   success.** `vmmigrate/peer.go:325`: a BUSY reply returns an empty
    present set with no error, so the page is filled from the destination's
    volume, which holds the previous checkpoint. `Done` then succeeds and the
    source releases the only copy. BUSY is the normal state under a drain (8 MiB
    in flight per peer is four pages). Same on dial fallback. Fix: an unpublished
    page is never satisfiable from the volume; retry BUSY; `Done` counts only
    pages the source served.
-4. **Fork pins are never released.** `internal/control/client.go:271`: no unpin
+4. **Fork pins are never released.** `control/client.go:271`: no unpin
    exists. Every fork keeps its parent's pinned checkpoints forever, and
    `MaximumPins` of 4096 is a lifetime cap after which a parent cannot be
    forked. Fix: release on the child's root publication or on
    `ForkPoint.Retire`.
 5. **No collector, and reclamation is not self-healing.** *(proven)* One skipped
-   sweep leaks permanently (`internal/checkpoint/reclaim.go:32` computes the
+   sweep leaks permanently (`checkpoint/reclaim.go:32` computes the
    dead set from the previous index only); every takeover leaks the first
    publication's predecessors and the fenced writer's in-flight objects;
    `Delete` leaves every object. Fix: sweep by listing the checkpoint prefix
@@ -87,7 +87,7 @@ change had left unimplemented.
 ## Serious
 
 - **Compaction changes page identity** *(proven)*:
-  `internal/checkpoint/index.go:100` keys identity by the pack a page currently
+  `checkpoint/index.go:100` keys identity by the pack a page currently
   lives in, so a compacted page stops sharing memory with forks and is cached
   twice. Carry an origin ref.
 - **`Rebuild` truncates silently at a gap in the parts** *(proven)*; parts

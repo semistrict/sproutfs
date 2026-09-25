@@ -17,7 +17,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--gremlins", default="gremlins", help="Gremlins executable (qualified with v0.6.0)")
     scope = parser.add_mutually_exclusive_group()
-    scope.add_argument("--package", help="package whose production code is mutated (default: internal/vmmigrate)")
+    scope.add_argument("--package", help="package whose production code is mutated (default: vmmigrate)")
     scope.add_argument("--all", action="store_true", help="mutate all first-party Go packages")
     parser.add_argument("--suite", choices=("scheduled", "full"),
                         help="default: full with --all, otherwise scheduled")
@@ -33,7 +33,7 @@ def main():
     parser.add_argument("--output", type=Path, help="new directory for source and results")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
-    package = Path("." if args.all else args.package or "internal/vmmigrate")
+    package = Path("." if args.all else args.package or "vmmigrate")
     if package.is_absolute() or ".." in package.parts or not (root / package).is_dir():
         parser.error("package must name a directory inside this repository")
     suite = args.suite or ("full" if args.all else "scheduled")

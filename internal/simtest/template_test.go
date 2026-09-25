@@ -8,11 +8,11 @@ import (
 	"testing/synctest"
 	"time"
 
-	hostapi "github.com/semistrict/sproutfs/internal/api/host"
-	"github.com/semistrict/sproutfs/internal/host"
-	"github.com/semistrict/sproutfs/internal/platform/sim"
+	hostapi "github.com/semistrict/sproutfs/api/host"
+	"github.com/semistrict/sproutfs/host"
 	"github.com/semistrict/sproutfs/internal/simtest"
-	"github.com/semistrict/sproutfs/internal/volume"
+	"github.com/semistrict/sproutfs/platform/sim"
+	"github.com/semistrict/sproutfs/volume"
 )
 
 // templateVolumes are what a template has: the RAM every VM forked from it

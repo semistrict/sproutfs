@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-// adapterChoosers is every package that may name internal/platform/adapters
+// adapterChoosers is every package that may name platform/adapters
 // outside a test file. Choosing an implementation of a platform port is a
 // startup decision, so the commands that start something make it; internal
 // packages take the port in their configuration and name no adapter, which is
@@ -47,7 +47,7 @@ func TestOnlyTheCommandsChooseAnAdapter(t *testing.T) {
 	}
 }
 
-const adaptersPath = "github.com/semistrict/sproutfs/internal/platform/adapters"
+const adaptersPath = "github.com/semistrict/sproutfs/platform/adapters"
 
 // listedPackage is the part of `go list`'s package record this test reads.
 // Imports is the package's own imports; a test file's are TestImports and

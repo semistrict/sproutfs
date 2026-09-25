@@ -3,15 +3,15 @@
 // volumes' loads complete out of order, so a test that must replay the same
 // interleaving twice has to name the caller of every load rather than let I/O
 // completion order stand in for it. Every harness that drives a pager under
-// internal/platform/sim needs the same wrapper, which is why it is here rather
+// platform/sim needs the same wrapper, which is why it is here rather
 // than copied into each of them.
 package testbacking
 
 import (
 	"context"
 
-	"github.com/semistrict/sproutfs/internal/platform/sim"
-	"github.com/semistrict/sproutfs/internal/vmmemory"
+	"github.com/semistrict/sproutfs/platform/sim"
+	"github.com/semistrict/sproutfs/vmmemory"
 )
 
 // The calls this wrapper admits, named as the task they run under and as the

@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/semistrict/sproutfs/internal/api/host"
-	"github.com/semistrict/sproutfs/internal/api/orch"
+	"github.com/semistrict/sproutfs/api/host"
+	"github.com/semistrict/sproutfs/api/orch"
 )
 
 // fakePods is the Kubernetes API: the host pods the orchestrator finds, and the

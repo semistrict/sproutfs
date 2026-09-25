@@ -1,11 +1,11 @@
 version: v2
 
 modules:
-  - path: internal/checkpoint/proto
-  - path: internal/control/proto
-  - path: internal/platform/proto
-  - path: internal/vmmigrate/proto
-  - path: internal/vmmigrate/internal/wire/proto
+  - path: checkpoint/proto
+  - path: control/proto
+  - path: platform/proto
+  - path: vmmigrate/proto
+  - path: vmmigrate/internal/wire/proto
 
 lint:
   use:
