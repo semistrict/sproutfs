@@ -82,6 +82,12 @@ func newServer(h host.VMs, token string) http.Handler {
 				fmt.Errorf("%w: a created VM needs an identity", host.ErrRequest))
 			return
 		}
+		if request.From != nil && (request.From.VM == "" || request.Template != "") {
+			jsonhttp.Fail(r.Context(), w, http.StatusBadRequest, "create",
+				fmt.Errorf("%w: a create from a checkpoint names the VM it is of, and no template",
+					host.ErrRequest))
+			return
+		}
 		created, err := h.Create(r.Context(), request)
 		reply(w, r, "create", created, err)
 	})
@@ -273,6 +279,9 @@ func statusOf(err error) int {
 		return http.StatusConflict
 	case errors.Is(err, host.ErrNotMigratable), errors.Is(err, volume.ErrHandedOff),
 		errors.Is(err, volume.ErrForkPending), errors.Is(err, control.ErrFenced),
+		// A checkpoint that is not published, or that its VM's writer may be
+		// reclaiming, is one to create from once its VM has published again.
+		errors.Is(err, control.ErrNotPublished),
 		// A release refused because the destination has not fetched every page
 		// this host holds for it is a request that is merely early: the pages
 		// exist nowhere else, and the caller asks again once they are there.

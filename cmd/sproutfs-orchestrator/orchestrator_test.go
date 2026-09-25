@@ -194,10 +194,14 @@ func (f *fakeHostClient) Status(ctx context.Context) (host.Status, error) {
 func (f *fakeHostClient) Create(_ context.Context, request host.CreateRequest) (host.CreateResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if request.Memory != 0 || request.Disk != 0 || request.VCPUs != 0 {
+	switch {
+	case request.From != nil:
+		f.record("create %s from %s@%d memory=%d", request.ID, request.From.VM, request.From.Checkpoint,
+			request.Memory)
+	case request.Memory != 0 || request.Disk != 0 || request.VCPUs != 0:
 		f.record("create %s %s memory=%d disk=%d vcpus=%d", request.ID, request.Template,
 			request.Memory, request.Disk, request.VCPUs)
-	} else {
+	default:
 		f.record("create %s %s", request.ID, request.Template)
 	}
 	f.running = append(f.running, request.ID)

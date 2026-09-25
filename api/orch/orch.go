@@ -118,11 +118,17 @@ type DrainReport struct {
 // places it on the host with the most memory free for it. Memory, Disk and
 // VCPUs are the VM's shape, as the host's create takes it: zero keeps the
 // template's RAM and disk and the host's processor count.
+//
+// From creates the VM from another VM's published checkpoint instead of a
+// template: the checkpoint its record selects, or the one named. That VM need
+// not run anywhere, which is what a stopped VM is. The new VM boots cold over
+// the disk it inherits, and takes that VM's memory where it names none.
 type CreateRequest struct {
-	Template string `json:"template,omitempty"`
-	Memory   uint64 `json:"memory,omitempty"`
-	Disk     uint64 `json:"disk,omitempty"`
-	VCPUs    int    `json:"vcpus,omitempty"`
+	Template string              `json:"template,omitempty"`
+	From     *host.CheckpointRef `json:"from,omitempty"`
+	Memory   uint64              `json:"memory,omitempty"`
+	Disk     uint64              `json:"disk,omitempty"`
+	VCPUs    int                 `json:"vcpus,omitempty"`
 }
 
 // CreateResult is where the VM went and what its creation cost.

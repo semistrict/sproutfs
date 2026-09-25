@@ -9,6 +9,7 @@ import (
 	"log/slog"
 
 	hostapi "github.com/semistrict/sproutfs/api/host"
+	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/vmmachine"
 	"github.com/semistrict/sproutfs/vmmemory"
@@ -18,32 +19,37 @@ import (
 func (s *supervisor) Create(ctx context.Context, request hostapi.CreateRequest) (hostapi.CreateResult, error) {
 	began := s.clock.Now()
 	id := request.ID
+	if request.From != nil && request.Template != "" {
+		return hostapi.CreateResult{}, fmt.Errorf("%w: a create names a template or a checkpoint, not both",
+			ErrRequest)
+	}
 	if err := s.absent(id); err != nil {
 		return hostapi.CreateResult{}, err
 	}
 	prepared := s.clock.Now()
-	template, name, err := s.templateNamed(ctx, request.Template)
+	point, source, name, err := s.createPoint(ctx, request)
 	if err != nil {
 		return hostapi.CreateResult{}, err
 	}
 	templateSeconds := s.since(prepared)
 
 	forked := s.clock.Now()
-	vm, _, err := CreateFork(ctx, s.host.Volumes(), id, template.Point)
+	vm, _, err := CreateFork(ctx, s.host.Volumes(), id, point)
 	if err != nil {
-		return hostapi.CreateResult{}, fmt.Errorf("forking %s from template %s: %w", id, name, err)
+		return hostapi.CreateResult{}, fmt.Errorf("forking %s from %s: %w", id, source, err)
 	}
 	forkSeconds := s.since(forked)
 
-	// A new VM is a fork of the template's root checkpoint, and a fork runs on
-	// the host that took it and nowhere else until it has published a root
-	// index of its own: nothing can open it, so a host lost in the meantime
-	// loses it, and nothing can seal it, so it cannot be forked or migrated.
+	// A new VM is a fork of a published checkpoint: a template's, or another
+	// VM's. A fork runs on the host that took it and nowhere else until it has
+	// published a root index of its own: nothing can open it, so a host lost
+	// in the meantime loses it, and nothing can seal it, so it cannot be forked
+	// or migrated.
 	// Create is not finished until that is no longer true — every VM it returns
 	// is one the rest of the deployment can act on.
 	//
 	// It is published here, before the guest exists, because that is when it is
-	// free: the VM's bytes are still exactly the template's, so the root seals
+	// free: the VM's bytes are still exactly what it inherited, so the root seals
 	// no pages and uploads none, and writes only its own index and the control
 	// record's selection of it. Taking it after the boot instead would pause a
 	// guest that has not yet done anything, to seal the little it had.
@@ -51,7 +57,8 @@ func (s *supervisor) Create(ctx context.Context, request hostapi.CreateRequest) 
 	// It is also where the VM takes the shape the request asks for: its RAM,
 	// its disk and its processors. The root is a cold boot's publication, so
 	// it is the one moment the shape may change. A template never ran, so there
-	// is no memory to lose by discarding it, and the guest boots its kernel.
+	// is no memory to lose by discarding it. Another VM's checkpoint loses its
+	// memory here too: the new VM boots its kernel over the disk it inherits.
 	rooted := s.clock.Now()
 	shape := ColdShape{Memory: vmmachine.RAMVolume, Root: rootVolume,
 		MemoryBytes: request.Memory, RootBytes: request.Disk, VCPUs: request.VCPUs}
@@ -71,6 +78,27 @@ func (s *supervisor) Create(ctx context.Context, request hostapi.CreateRequest) 
 	}
 	return hostapi.CreateResult{VM: s.record(m), Template: templateSeconds, Fork: forkSeconds,
 		Boot: s.since(booted), Root: rootSeconds, Total: s.since(began)}, nil
+}
+
+// createPoint is the published checkpoint a create forks, and what the create
+// names it by in its errors: another VM's checkpoint when the request names
+// one, and the template's otherwise. Another VM's is pinned in its record
+// without its epoch, because that VM need not run anywhere.
+func (s *supervisor) createPoint(ctx context.Context, request hostapi.CreateRequest) (*volume.ForkPoint, string, string, error) {
+	from := request.From
+	if from == nil {
+		template, name, err := s.templateNamed(ctx, request.Template)
+		if err != nil {
+			return nil, "", "", err
+		}
+		return template.Point, "template " + name, name, nil
+	}
+	parent := control.Ref{VM: from.VM, Sequence: from.Checkpoint}
+	point, err := s.host.Volumes().InheritPublished(ctx, parent)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("pinning the checkpoint of %s: %w", from.VM, err)
+	}
+	return point, "checkpoint " + point.Parent().String(), "", nil
 }
 
 func (s *supervisor) Open(ctx context.Context, id string, request hostapi.OpenRequest) (hostapi.OpenResult, error) {

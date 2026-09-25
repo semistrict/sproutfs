@@ -344,22 +344,39 @@ type Status struct {
 // VM is created from an image imported on request, on any host. An empty
 // Template selects the host's only configured one.
 //
+// From creates the VM from a published checkpoint of another VM instead, and
+// names no template. That VM need not run anywhere: a stopped VM's last
+// checkpoint is its whole state. The checkpoint is pinned in that VM's control
+// record without its epoch, so only the published checkpoint its record
+// selects, or one a pin already keeps, can be named. The new VM copies no
+// byte, and boots cold over the disk it inherits.
+//
 // Memory, Disk and VCPUs are the VM's shape: its RAM, the size its root volume
-// grows to, and its processors. Zero keeps what the template has for the first
-// two and the host's default processor count. The VM keeps its shape from then
-// on, wherever it runs, until a cold open changes it. A disk may only grow, and
-// the guest grows its filesystem over the new pages after its first boot.
+// grows to, and its processors. Zero keeps what the template or the checkpoint
+// has for the first two, and the host's default processor count or the
+// checkpoint's. The VM keeps its shape from then on, wherever it runs, until a
+// cold open changes it. A disk may only grow, and the guest grows its
+// filesystem over the new pages after its first boot.
 type CreateRequest struct {
-	ID       string `json:"id"`
-	Template string `json:"template,omitempty"`
-	Memory   uint64 `json:"memory,omitempty"`
-	Disk     uint64 `json:"disk,omitempty"`
-	VCPUs    int    `json:"vcpus,omitempty"`
+	ID       string         `json:"id"`
+	Template string         `json:"template,omitempty"`
+	From     *CheckpointRef `json:"from,omitempty"`
+	Memory   uint64         `json:"memory,omitempty"`
+	Disk     uint64         `json:"disk,omitempty"`
+	VCPUs    int            `json:"vcpus,omitempty"`
+}
+
+// CheckpointRef names one checkpoint of a VM. A zero Checkpoint is the one the
+// VM's control record selects.
+type CheckpointRef struct {
+	VM         string `json:"vm"`
+	Checkpoint uint64 `json:"checkpoint,omitempty"`
 }
 
 // CreateResult reports the VM and where its time went. Template is the time
 // spent making this host's template checkpoint of the image, which is zero for
-// every VM after the first. Root is the new VM's own first checkpoint, taken
+// every VM after the first. For a create from another VM's checkpoint it is the
+// pin and the read of that checkpoint. Root is the new VM's own first checkpoint, taken
 // between the fork and the boot: until it is published the VM is a fork of the
 // template that runs here and nowhere else, so nothing could recover it and
 // nothing could fork it. Nothing has run at that point, so the root seals no

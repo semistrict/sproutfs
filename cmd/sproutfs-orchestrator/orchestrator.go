@@ -710,16 +710,27 @@ func named(hosts []liveHost, name string) (liveHost, error) {
 
 // Create allocates an identity and creates the VM on the least loaded host.
 func (o *orchestrator) Create(ctx context.Context, request orch.CreateRequest) (orch.CreateResult, error) {
-	template := request.Template
+	if request.From != nil && (request.From.VM == "" || request.Template != "") {
+		return orch.CreateResult{}, fmt.Errorf("%w: a create from a checkpoint names the VM it is of, and no template",
+			errRequest)
+	}
+	template, parent := request.Template, ""
 	hosts, err := o.survey(ctx)
 	if err != nil {
 		return orch.CreateResult{}, err
 	}
-	// The memory a VM has is what its create asks for, or else its template's,
-	// and it is written down here, so that everything after — a fork of it, a
-	// migration, a start — measures the VM rather than looking a template up
-	// again for it.
+	// The memory a VM has is what its create asks for, or else its template's
+	// or the VM it starts from, and it is written down here, so that
+	// everything after — a fork of it, a migration, a start — measures the VM
+	// rather than looking a template up again for it.
 	need := request.Memory
+	if request.From != nil {
+		parent = request.From.VM
+		template = o.rowOf(ctx, parent).Template
+		if need == 0 {
+			need = o.memoryFor(ctx, hosts, parent)
+		}
+	}
 	if need == 0 {
 		need = memoryOf(hosts, template)
 	}
@@ -729,15 +740,15 @@ func (o *orchestrator) Create(ctx context.Context, request orch.CreateRequest) (
 	}
 	id := o.identify()
 	o.note(ctx, vmRecord{ID: id, Host: target.report.Name, State: stateCreating,
-		Template: template, Memory: need})
-	result, err := target.client.Create(ctx, host.CreateRequest{ID: id, Template: template,
-		Memory: request.Memory, Disk: request.Disk, VCPUs: request.VCPUs})
+		Template: template, Parent: parent, Memory: need})
+	result, err := target.client.Create(ctx, host.CreateRequest{ID: id, Template: request.Template,
+		From: request.From, Memory: request.Memory, Disk: request.Disk, VCPUs: request.VCPUs})
 	if err != nil {
 		o.forget(ctx, id)
 		return orch.CreateResult{}, fmt.Errorf("creating %s on %s: %w", id, target.report.Name, err)
 	}
 	o.note(ctx, vmRecord{ID: id, Host: target.report.Name, State: stateRunning,
-		Template: template, Memory: need})
+		Template: template, Parent: parent, Memory: need})
 	slog.InfoContext(ctx, "sproutfs-orchestrator: created a VM", "vm", id, "host", target.report.Name,
 		"template", template, "seconds", float64(result.Total))
 	return orch.CreateResult{Host: target.report.Name, Result: result}, nil

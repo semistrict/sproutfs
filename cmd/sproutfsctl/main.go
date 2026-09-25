@@ -61,8 +61,12 @@ func execute(ctx context.Context, client *orch.Client, command invocation,
 		_, err := fmt.Fprintln(out, usage)
 		return err
 	case "create":
-		result, err := client.Create(ctx, orch.CreateRequest{Template: command.Template,
-			Memory: command.Memory, Disk: command.Disk, VCPUs: command.VCPUs})
+		request := orch.CreateRequest{Template: command.Template,
+			Memory: command.Memory, Disk: command.Disk, VCPUs: command.VCPUs}
+		if command.From != "" {
+			request.From = &host.CheckpointRef{VM: command.From, Checkpoint: command.FromCheckpoint}
+		}
+		result, err := client.Create(ctx, request)
 		if err != nil {
 			return err
 		}

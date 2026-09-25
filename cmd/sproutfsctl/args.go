@@ -20,6 +20,10 @@ type invocation struct {
 	Template string
 	Count    int
 	To       string
+	// From is the VM a create starts from instead of a template, and
+	// FromCheckpoint the checkpoint of it, zero for the one its record selects.
+	From           string
+	FromCheckpoint uint64
 	// For is how long a console session stays attached whatever its input does.
 	// Zero ends it with the input, which is what an interactive session wants.
 	For time.Duration
@@ -54,6 +58,10 @@ const usage = `sproutfsctl drives a sproutfs demo deployment through its orchest
   sproutfsctl import-template FILE [--memory 1G]
                                            import a guest image into a template, and
                                            print the identity create --template takes
+  sproutfsctl create --from VM[@CHECKPOINT] [--memory 1G] [--disk 4G] [--vcpus 2]
+                                           create a VM from another VM's published
+                                           checkpoint, which that VM's record selects
+                                           unless one is named, and boot it cold
   sproutfsctl list                         list the VMs, their hosts and their states
   sproutfsctl hosts                        list the host pods
   sproutfsctl store                        what each host's object store has served
@@ -93,7 +101,7 @@ var commands = map[string]struct {
 	// keeps a guest's own flags and quoting out of this CLI's parser.
 	trailing bool
 }{
-	"create":          {flags: []string{"template", "memory", "disk", "vcpus"}},
+	"create":          {flags: []string{"template", "from", "memory", "disk", "vcpus"}},
 	"import-template": {target: "file", flags: []string{"memory"}},
 	"list":            {},
 	"hosts":           {},
@@ -176,6 +184,20 @@ func parse(args []string) (invocation, error) {
 		switch flag {
 		case "template":
 			result.Template = value
+		case "from":
+			vm, sequence, named := strings.Cut(value, "@")
+			if vm == "" {
+				return invocation{}, fmt.Errorf("%w: --from is %q, want VM or VM@CHECKPOINT", errUsage, value)
+			}
+			result.From = vm
+			if named {
+				checkpoint, err := strconv.ParseUint(sequence, 10, 64)
+				if err != nil || checkpoint == 0 {
+					return invocation{}, fmt.Errorf("%w: --from is %q, want VM@CHECKPOINT with a checkpoint sequence",
+						errUsage, value)
+				}
+				result.FromCheckpoint = checkpoint
+			}
 		case "to":
 			result.To = value
 		case "count":
@@ -221,6 +243,9 @@ func parse(args []string) (invocation, error) {
 		return invocation{}, fmt.Errorf(
 			"%w: --memory, --disk and --vcpus need --cold, which is the one moment a VM's shape can change",
 			errUsage)
+	}
+	if result.From != "" && result.Template != "" {
+		return invocation{}, fmt.Errorf("%w: a create starts from --template or --from, not both", errUsage)
 	}
 	if spec.trailing {
 		return invocation{}, fmt.Errorf("%w: %s needs a command after --", errUsage, name)

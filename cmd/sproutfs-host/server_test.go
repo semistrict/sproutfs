@@ -15,6 +15,7 @@ import (
 
 	"github.com/semistrict/sproutfs/api/guest"
 	hostapi "github.com/semistrict/sproutfs/api/host"
+	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/host"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/volume"
@@ -63,6 +64,10 @@ func (f *fakeHost) Status(context.Context) (hostapi.Status, error) {
 }
 
 func (f *fakeHost) Create(_ context.Context, request hostapi.CreateRequest) (hostapi.CreateResult, error) {
+	if request.From != nil {
+		return f.created, f.record("create %s from %s@%d memory=%d disk=%d vcpus=%d", request.ID,
+			request.From.VM, request.From.Checkpoint, request.Memory, request.Disk, request.VCPUs)
+	}
 	if request.Memory != 0 || request.Disk != 0 || request.VCPUs != 0 {
 		return f.created, f.record("create %s %s memory=%d disk=%d vcpus=%d", request.ID, request.Template,
 			request.Memory, request.Disk, request.VCPUs)
@@ -281,6 +286,48 @@ func TestCreateCarriesIdentityAndTemplate(t *testing.T) {
 	}
 	if result.VM.ID != "vm-1" || result.Total != 1.5 {
 		t.Fatalf("result %+v", result)
+	}
+}
+
+// A create from another VM's checkpoint names that VM, and the checkpoint when
+// it is not the one the VM's record selects, with the shape it asks for.
+func TestCreateCarriesTheCheckpointItStartsFrom(t *testing.T) {
+	fake := &fakeHost{}
+	status, body := call(t, fake, http.MethodPost, "/vms",
+		`{"id":"vm-2","from":{"vm":"vm-1","checkpoint":7},"memory":1073741824,"vcpus":2}`)
+	if status != http.StatusOK {
+		t.Fatalf("status %d: %s", status, body)
+	}
+	if len(fake.calls) != 1 || fake.calls[0] != "create vm-2 from vm-1@7 memory=1073741824 disk=0 vcpus=2" {
+		t.Fatalf("the host was asked for %v", fake.calls)
+	}
+}
+
+// A create starts from one thing: a template, or another VM's checkpoint. A
+// request that names both, or a checkpoint of no VM, never reaches the host.
+func TestCreateFromACheckpointNamesItAlone(t *testing.T) {
+	for _, request := range []string{
+		`{"id":"vm-2","template":"alpine","from":{"vm":"vm-1"}}`,
+		`{"id":"vm-2","from":{"checkpoint":7}}`,
+	} {
+		fake := &fakeHost{}
+		status, body := call(t, fake, http.MethodPost, "/vms", request)
+		if status != http.StatusBadRequest {
+			t.Fatalf("%s: status %d: %s", request, status, body)
+		}
+		if len(fake.calls) != 0 {
+			t.Fatalf("%s reached the host: %v", request, fake.calls)
+		}
+	}
+}
+
+// A checkpoint the VM's record no longer selects and no pin keeps may be
+// reclaimed by its writer, so a create from it is refused as a conflict.
+func TestCreateFromACheckpointThatIsNotPublishedIsAConflict(t *testing.T) {
+	fake := &fakeHost{err: fmt.Errorf("pinning: %w", control.ErrNotPublished)}
+	status, body := call(t, fake, http.MethodPost, "/vms", `{"id":"vm-2","from":{"vm":"vm-1","checkpoint":7}}`)
+	if status != http.StatusConflict {
+		t.Fatalf("status %d: %s", status, body)
 	}
 }
 

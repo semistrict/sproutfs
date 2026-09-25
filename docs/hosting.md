@@ -596,6 +596,37 @@ resize, a VM's committed RAM is its own and no longer its template's. The
 control plane's record of the VM tracks this; see
 [the deployment's API](../deploy/README.md#the-orchestrator-api).
 
+## Creating a VM from a checkpoint
+
+A create can start from another VM's published checkpoint instead of a
+template (`CreateRequest.From`). That VM need not run anywhere. A stopped VM's
+last checkpoint is its whole state, and this is how a new VM starts from it.
+The create is the same path as a create from a template: a fork of a published
+checkpoint, the new VM's own root at the shape asked for, and a boot. So the
+new VM copies no byte, discards the memory it inherits, and boots cold over the
+disk it inherits. A shape that names no size keeps the checkpoint's.
+
+The checkpoint must be pinned in the other VM's control record before the fork,
+as every fork's is. A stopped VM has no writer to pin with. Taking its epoch to
+pin would fence a host that turns out to run it after all. So the pin is
+written without the epoch (`volume.Manager.InheritPublished`, and
+`control.Client.Pin` below it). It keeps the record's epoch and nonce, and it
+is conditional on the record as it was read. See
+[metadata](metadata.md#the-control-record) for why that is safe.
+
+This limits which checkpoint a create may name. By default it is the one the
+VM's record selects, and that one must be published. A create may also name a
+checkpoint that a pin already keeps, such as an earlier fork point. Any other
+checkpoint is refused with `control.ErrNotPublished`, because the VM's writer
+may be reclaiming it. A pending fork, whose root has not landed, is refused the
+same way. So is an identity that already exists. The API answers these with
+409.
+
+If the other VM is in fact running, nothing breaks. The new VM inherits its
+last published checkpoint, which for a running VM is its last interval
+checkpoint of the disks. The running VM's writer adopts the pin at its next
+selection and spares the pinned checkpoint from then on.
+
 ## Budgets
 
 The host takes one `Resources` owner, which accounts only RAM: the pager's
