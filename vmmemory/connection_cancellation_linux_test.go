@@ -58,7 +58,7 @@ func TestConnectionCancellationDuringAttachment(t *testing.T) {
 	}
 	for _, stage := range []string{"descriptor", "admission", "metadata"} {
 		t.Run(stage, func(t *testing.T) {
-			a, err := vmmemory.NewLinuxArena(1, hugePageSize)
+			a, err := vmmemory.NewLinuxArena(hugePageSize)
 			if err != nil {
 				t.Fatal(err)
 			}

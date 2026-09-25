@@ -83,6 +83,9 @@ func newArena(pageSize, offsets int) *arena {
 	return &arena{pageSize: pageSize, offsets: offsets, slots: make(map[int][]byte)}
 }
 
+// File is the one file this arena is. A pager makes exactly one.
+func (a *arena) File(context.Context, int) (vmmemory.ArenaFile, error) { return a, nil }
+
 // at refuses an address this arena does not have.
 func (a *arena) at(slot int) error {
 	if slot < 0 || slot >= a.offsets {

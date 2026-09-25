@@ -39,7 +39,7 @@ type pipeSession struct {
 // messages. No memory is actually mapped, and fault backing remains stalled.
 func pipeConnection(t testing.TB, kind vmmemory.MemoryRegionKind, backing vmmemory.Backing) pipeSession {
 	t.Helper()
-	a, err := vmmemory.NewLinuxArena(1, hugePageSize)
+	a, err := vmmemory.NewLinuxArena(hugePageSize)
 	if err != nil {
 		t.Fatal(err)
 	}

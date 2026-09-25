@@ -38,12 +38,13 @@ type extentKey struct {
 	rng          uint64
 }
 
-// extent is the run of consecutive arena offsets one range owns. held is how
-// many of those offsets hold a page; the extent goes back to the offset space
-// when the last of them is given up, so a memory region owns an extent for exactly as
-// long as it has a page in the range.
+// extent is the run of consecutive slots of one file that one range owns.
+// held is how many of those slots hold a page; the extent goes back to its
+// file when the last of them is given up, so a memory region owns an extent for
+// exactly as long as it has a page in the range.
 type extent struct {
 	key  extentKey
+	file *arenaFile
 	base int
 	held int
 	// whole marks a range the half-private rule has filled. A whole range stays
@@ -53,14 +54,20 @@ type extent struct {
 	whole bool
 }
 
-// placing reports whether this pager places anything. A pager whose page is the
-// whole range has one page per range, so placement has nothing to decide and
-// its offsets and its pages are one number; so has one whose offset space is no
-// larger than its capacity, which is a pager with no extents to give out.
-func (h *Host) placing() bool { return h.extentPages > 1 && h.slots.Extents() > 0 }
+// placing reports whether this pager places anything in f. A pager whose page
+// is the whole range has one page per range, so placement has nothing to
+// decide and its offsets and its pages are one number; so has a file whose
+// offsets are no more than its capacity, which is a file with no extents to
+// give out.
+func (h *Host) placing(f *arenaFile) bool { return h.extentPages > 1 && f.slots.Extents() > 0 }
 
-// place reports the arena offset the placement rule gives page index of memory region
-// r, having taken a page there.
+// slotIn is the slot the placement rule gives page within extent e.
+func (h *Host) slotIn(e *extent, page uint64) fileSlot {
+	return fileSlot{e.file, e.base + int(page%uint64(h.extentPages))}
+}
+
+// place reports the slot of r's private file the placement rule gives page
+// index of memory region r, having taken a page there.
 //
 // It reports -1 with placeable false where this page has no offset of its own:
 // a pager that places nothing, an offset space with no extent left for a range
@@ -71,46 +78,48 @@ func (h *Host) placing() bool { return h.extentPages > 1 && h.slots.Extents() > 
 // for.
 //
 // Caller holds h.mu.
-func (h *Host) place(r *MemoryRegion, index uint64) (slot int, placeable bool) {
-	if !h.placing() {
-		return -1, false
+func (h *Host) place(r *MemoryRegion, index uint64) (at fileSlot, placeable bool) {
+	f := r.privateFile()
+	none := fileSlot{f, -1}
+	if !h.placing(f) {
+		return none, false
 	}
 	key := extentKey{r, index / uint64(h.extentPages)}
 	e := h.extents[key]
 	if e == nil {
-		base := h.slots.TakeExtent()
+		base := f.slots.TakeExtent()
 		if base < 0 {
-			return -1, false
+			return none, false
 		}
-		e = &extent{key: key, base: base}
+		e = &extent{key: key, file: f, base: base}
 		h.extents[key] = e
 	}
-	slot = e.base + int(index%uint64(h.extentPages))
-	if _, taken := h.residentLeases[slot]; taken {
+	at = h.slotIn(e, index)
+	if _, taken := at.file.leases[at.slot]; taken {
 		// The page's own offset holds an older version of it — the copy a
 		// checkpoint froze, which is being uploaded from where it is. The store
 		// takes an ordinary offset until that checkpoint retires.
 		h.dropExtent(e)
-		return -1, false
+		return none, false
 	}
-	if h.slots.Free() == 0 {
+	if f.slots.Free() == 0 {
 		h.dropExtent(e)
-		return -1, true
+		return none, true
 	}
 	lease, err := h.resources.TryAcquire(context.Background(), int64(h.pageSize))
 	if err != nil {
 		h.dropExtent(e)
-		return -1, true
+		return none, true
 	}
-	h.slots.Fill()
+	f.slots.Fill()
 	e.held++
-	h.residentLeases[slot] = residentSlot{lease: lease, extent: e}
-	h.stats.PeakResidentPages = max(h.stats.PeakResidentPages, h.slots.Held())
-	return slot, true
+	f.leases[at.slot] = residentSlot{lease: lease, extent: e}
+	h.stats.PeakResidentPages = max(h.stats.PeakResidentPages, h.heldLocked())
+	return at, true
 }
 
-// dropExtent gives an extent back to the offset space once nothing of it holds
-// a page. A memory region that has detached is no longer in the extent table, so the
+// dropExtent gives an extent back to its file once nothing of it holds a
+// page. A memory region that has detached is no longer in the extent table, so the
 // entry is removed only where it is still this extent's. Caller holds h.mu.
 func (h *Host) dropExtent(e *extent) {
 	if e.held != 0 {
@@ -119,7 +128,7 @@ func (h *Host) dropExtent(e *extent) {
 	if h.extents[e.key] == e {
 		delete(h.extents, e.key)
 	}
-	h.slots.PutExtent(e.base)
+	e.file.slots.PutExtent(e.base)
 }
 
 // forgetExtents takes a detached memory region's extents out of the table. The offsets
@@ -131,16 +140,16 @@ func (h *Host) forgetExtents(r *MemoryRegion) {
 		if key.memoryRegion == r {
 			delete(h.extents, key)
 			if e.held == 0 {
-				h.slots.PutExtent(e.base)
+				e.file.slots.PutExtent(e.base)
 			}
 		}
 	}
 }
 
-// placeRun takes arena offsets for the pages [first, last), which hold index,
-// by the placement rule. It reports the pages it covered and one run per set of
-// consecutive offsets: a window crossing a range boundary is two extents, and
-// two runs unless those extents are themselves consecutive.
+// placeRun takes slots of r's private file for the pages [first, last), which
+// hold index, by the placement rule. It reports the pages it covered and one
+// run per set of consecutive slots: a window crossing a range boundary is two
+// extents, and two runs unless those extents are themselves consecutive.
 //
 // The faulting page's range comes first — without it there is no run at all —
 // then the ranges after it and then those before it, stopping at the first that
@@ -148,7 +157,7 @@ func (h *Host) forgetExtents(r *MemoryRegion) {
 func (h *Host) placeRun(r *MemoryRegion, index, first, last uint64) (uint64, []MapRun) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if !h.placing() {
+	if !h.placing(r.privateFile()) {
 		return 0, nil
 	}
 	span := uint64(h.extentPages)
@@ -184,20 +193,20 @@ func (h *Host) placeRun(r *MemoryRegion, index, first, last uint64) (uint64, []M
 // those offsets. A page it cannot place undoes the pages before it, so the
 // caller gets the whole sub-run or nothing. Caller holds h.mu.
 func (h *Host) placePages(r *MemoryRegion, from, to uint64) (int, bool) {
-	base := -1
+	base := fileSlot{slot: -1}
 	for page := from; page < to; page++ {
-		slot, _ := h.place(r, page)
-		if slot < 0 {
+		at, _ := h.place(r, page)
+		if at.slot < 0 {
 			for undo := from; undo < page; undo++ {
-				h.putFree(base + int(undo-from))
+				h.putFree(base.plus(int(undo - from)))
 			}
 			return 0, false
 		}
-		if base < 0 {
-			base = slot
+		if base.slot < 0 {
+			base = at
 		}
 	}
-	return base, base >= 0
+	return base.slot, base.slot >= 0
 }
 
 // mergeRuns joins runs whose pages and whose offsets both continue, which is

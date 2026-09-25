@@ -140,7 +140,7 @@ func newConfiguredHostPagers(t testing.TB, ctx context.Context, cfg hostPagersCo
 		if kind == vmmemory.Ram {
 			offsets = logical + resident
 		}
-		arena, err := vmmemory.NewLinuxArena(offsets, page)
+		arena, err := vmmemory.NewLinuxArena(page)
 		if err != nil {
 			t.Fatalf("%s arena: %v", kind, err)
 		}

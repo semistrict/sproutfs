@@ -218,32 +218,41 @@ type UnpublishedInstaller interface {
 	InstalledUnpublished(offset uint64, installed []bool)
 }
 
-// Arena holds exactly Config.ArenaOffsets slots, of which at most
-// Config.ResidentPages hold memory at once: an arena is a sparse file, so a
-// slot costs nothing until a page is put there. Release must punch the slot,
-// not just forget its address, so that the memory really leaves. Only Host
-// decides when it is safe to release. Arena calls must not retain the supplied
-// buffers.
+// Arena is where a pager keeps its resident pages: a set of files it makes.
+// Every page is in one slot of one file. The pager makes file 0 when it starts,
+// and every page is in it.
 type Arena interface {
+	// File makes a file of offsets slots, each one page of the pager, and every
+	// one of them punched.
+	File(ctx context.Context, offsets int) (ArenaFile, error)
+}
+
+// ArenaFile is one file of an arena. It holds exactly the slots it was made
+// with, and a slot costs nothing until a page is put there, because the file is
+// sparse. Release must punch the slot, not just forget its address, so that
+// the memory really leaves. Only Host decides when it is safe to release. File
+// calls must not retain the supplied buffers.
+type ArenaFile interface {
 	Read(context.Context, int, []byte) error
 	Write(context.Context, int, []byte) error
 	Release(context.Context, int) error
 }
 
-// ZeroArena is an Arena that gives free slots zero contents without writing
+// ZeroFile is an ArenaFile that gives free slots zero contents without writing
 // them. Every free slot is punched and so already reads as zeros; Zero makes
 // count consecutive such slots mappable, which on Linux allocates their pages
-// without copying anything into them. An Arena without it is written zeros.
-type ZeroArena interface {
+// without copying anything into them. A file without it is written zeros.
+type ZeroFile interface {
 	Zero(ctx context.Context, slot, count int) error
 }
 
-// EqualArena is an Arena that compares two of its own slots without copying
-// their bytes out. A settle's whole cost is that comparison, and an arena whose
+// EqualFile is an ArenaFile that compares two of its own slots without copying
+// their bytes out. A settle's whole cost is that comparison, and a file whose
 // slots are in this process's address space answers it with one bytes.Equal
-// over the two of them. An Arena without it is read into two buffers instead,
-// which is the same answer for twice the memory traffic.
-type EqualArena interface {
+// over the two of them. Two slots of different files, or of a file without it,
+// are read into two buffers instead, which is the same answer for twice the
+// memory traffic.
+type EqualFile interface {
 	Equal(ctx context.Context, first, second int) (bool, error)
 }
 

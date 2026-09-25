@@ -10,6 +10,22 @@ import (
 	"github.com/semistrict/sproutfs/vmmemory"
 )
 
+// linuxFile makes an arena of the given page and one file of it with offsets
+// slots, closed when the test ends.
+func linuxFile(t *testing.T, offsets int, page uint64) *vmmemory.LinuxFile {
+	t.Helper()
+	arena, err := vmmemory.NewLinuxArena(page)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = arena.Close() })
+	f, err := arena.NewFile(offsets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
 // The arena is addresses, and its memory is what is put at them. A RAM arena is
 // sized to the offsets a host's memory regions may need — one extent per range — and
 // is a sparse file, so what it really holds is the pages put there and nothing
@@ -20,11 +36,7 @@ func TestALinuxArenaHoldsOnlyThePagesPutAtItsOffsets(t *testing.T) {
 	const ranges = 8
 	const size = checkpoint.PageSize4KiB
 	offsets := ranges * rangePages
-	a, err := vmmemory.NewLinuxArena(offsets, size)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer a.Close()
+	a := linuxFile(t, offsets, size)
 	if a.Offsets() != offsets {
 		t.Fatalf("the arena has %d offsets, want %d", a.Offsets(), offsets)
 	}

@@ -151,6 +151,9 @@ type failedResourceArena struct {
 	failPunch bool
 }
 
+// File is this arena itself, so that the pager's one file fails as it does.
+func (a *failedResourceArena) File(context.Context, int) (vmmemory.ArenaFile, error) { return a, nil }
+
 func (a *failedResourceArena) Write(ctx context.Context, slot int, data []byte) error {
 	if err := a.arena.Write(ctx, slot, data); err != nil {
 		return err

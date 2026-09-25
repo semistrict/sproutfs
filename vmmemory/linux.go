@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"os"
 	"strings"
+	"sync"
 	"syscall"
 	"unsafe"
 
@@ -18,8 +19,26 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// LinuxArena owns the host's shared memfd. The descriptor must only be given to
-// trusted mapping clients in the Host's sharing domain.
+// LinuxArena makes the memfds a pager keeps its resident pages in, and owns
+// every one it made. A file's descriptor must only be given to trusted mapping
+// clients in the Host's sharing domain.
+type LinuxArena struct {
+	// pageSize is the slot size of every file, which must be the page of the
+	// pager the arena is given to. A host runs one arena per pager, so the two
+	// arenas of one host need not agree about it.
+	pageSize int
+	// backing is what the memory behind those slots is, which the session
+	// states so the client can check the descriptor it is given against it.
+	backing uint64
+	// hugePolicy is the host's policy for huge pages in its shared memory, as
+	// this arena found it; see HugePolicy.
+	hugePolicy string
+
+	mu    sync.Mutex
+	files []*LinuxFile
+}
+
+// LinuxFile is one memfd of an arena.
 //
 // Its offsets are not its pages. The memfd is sized to the addresses the pager
 // may place a page at and is sparse: an offset costs nothing until a page is
@@ -27,9 +46,9 @@ import (
 // private page at the offset it has within its 2 MiB range, so it owns a whole
 // run of 512 offsets per range any of whose pages it has copied, while the
 // memory behind them stays what its resident budget allows.
-type LinuxArena struct {
+type LinuxFile struct {
 	file *os.File
-	// mapping is every access this process makes to the arena's pages. On an
+	// mapping is every access this process makes to the file's pages. On an
 	// ordinary memfd it is advised never to be huge, so that a page allocated
 	// through it is the one page the pager asked for and counted, whatever the
 	// host's policy for its shared memory is.
@@ -39,18 +58,10 @@ type LinuxArena struct {
 	// and nil otherwise. It is used for one thing: allocating the whole 2 MiB
 	// blocks of a zero run, each of which the kernel then allocates and clears
 	// as one huge page instead of 512 ordinary ones.
-	huge    []byte
-	offsets int
-	// pageSize is the slot size this arena was made with, which must be the
-	// page of the pager it is given to. A host runs one arena per pager, so the
-	// two arenas of one host need not agree about it.
+	huge     []byte
+	offsets  int
 	pageSize int
-	// backing is what the memory behind those slots is, which the session
-	// states so the client can check the descriptor it is given against it.
-	backing uint64
-	// hugePolicy is the host's policy for huge pages in its shared memory, as
-	// this arena found it; see HugePolicy.
-	hugePolicy string
+	backing  uint64
 }
 
 // hugeBytes is the transparent huge page an ordinary memfd's 2 MiB block is
@@ -58,65 +69,83 @@ type LinuxArena struct {
 // whole range of a guest can be one allocation at.
 const hugeBytes = 2 << 20
 
-// NewLinuxArena creates offsets addresses of pageSize bytes each, over the
-// memory that page is: the host's provisioned 2 MiB HugeTLB pool for a 2 MiB
-// slot, which never falls back to ordinary pages and reports pool exhaustion as
-// an allocation error, and an ordinary shared memfd for a 4 KiB one, which is
-// the pod's own memory and which a host with swap may swap. Every other slot
-// size is refused, because it is not a page a volume can be published in.
-//
-// The file is sparse and the mappings take no reservation, so an arena of far
-// more addresses than its pager may hold pages costs address space and nothing
-// else. How many of them may hold memory at once is the pager's budget, not
-// this.
-func NewLinuxArena(offsets int, pageSize uint64) (*LinuxArena, error) {
+// NewLinuxArena makes an arena of files whose slots are pageSize bytes each,
+// over the memory that page is: the host's provisioned 2 MiB HugeTLB pool for a
+// 2 MiB slot, which never falls back to ordinary pages and reports pool
+// exhaustion as an allocation error, and ordinary shared memfds for a 4 KiB
+// one, which are the pod's own memory and which a host with swap may swap.
+// Every other slot size is refused, because it is not a page a volume can be
+// published in.
+func NewLinuxArena(pageSize uint64) (*LinuxArena, error) {
 	backing, err := vmwire.BackingFor(pageSize)
 	if err != nil {
 		return nil, fmt.Errorf("%w: an arena's slot is a pager's page: %w", ErrConfig, err)
 	}
-	size := int(pageSize)
-	if offsets < 1 || uint64(offsets) > uint64(^uint64(0)>>1)/pageSize {
-		return nil, ErrConfig
-	}
-	// The name carries the page, because a host has two of these and /proc is
-	// where a qualification reads which memory a guest's mapping is really on.
-	f, err := vmwire.ArenaMemfd(fmt.Sprintf("sproutfs-memory-%dk", pageSize>>10),
-		pageSize, int64(offsets)*int64(size))
-	if err != nil {
-		return nil, err
-	}
-	a := &LinuxArena{file: f, offsets: offsets, pageSize: size, backing: backing, hugePolicy: "hugetlb"}
-	a.mapping, err = syscall.Mmap(int(f.Fd()), 0, offsets*size, syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED|syscall.MAP_NORESERVE)
-	if err != nil {
-		_ = f.Close()
-		return nil, err
-	}
+	a := &LinuxArena{pageSize: int(pageSize), backing: backing, hugePolicy: "hugetlb"}
 	if backing != vmwire.BackingHugeTLB {
-		if err := a.mapHuge(); err != nil {
-			return nil, errors.Join(err, a.Close())
+		if a.hugePolicy, err = shmemHugePolicy(); err != nil {
+			return nil, err
 		}
 	}
 	return a, nil
 }
 
-// mapHuge gives an ordinary memfd's arena its two mappings: the ordinary one
-// advised never to be huge, and the aligned one advised to be. A kernel built
-// without transparent huge pages refuses both pieces of advice, and its arena
-// has the ordinary mapping only, which is every page at 4 KiB.
-func (a *LinuxArena) mapHuge() error {
-	if err := unix.Madvise(a.mapping, unix.MADV_NOHUGEPAGE); err != nil {
+// File makes a file of offsets slots; see NewFile.
+func (a *LinuxArena) File(_ context.Context, offsets int) (ArenaFile, error) {
+	f, err := a.NewFile(offsets)
+	if err != nil {
+		return nil, err
+	}
+	return f, nil
+}
+
+// NewFile makes a memfd of offsets addresses, each one page of the arena.
+//
+// The file is sparse and its mappings take no reservation, so a file of far
+// more addresses than its pager may hold pages costs address space and nothing
+// else. How many of them may hold memory at once is the pager's budget, not
+// this.
+func (a *LinuxArena) NewFile(offsets int) (*LinuxFile, error) {
+	size := a.pageSize
+	if offsets < 1 || uint64(offsets) > uint64(^uint64(0)>>1)/uint64(size) {
+		return nil, ErrConfig
+	}
+	// The name carries the page, because a host has two arenas and /proc is
+	// where a qualification reads which memory a guest's mapping is really on.
+	memfd, err := vmwire.ArenaMemfd(fmt.Sprintf("sproutfs-memory-%dk", size>>10),
+		uint64(size), int64(offsets)*int64(size))
+	if err != nil {
+		return nil, err
+	}
+	f := &LinuxFile{file: memfd, offsets: offsets, pageSize: size, backing: a.backing}
+	f.mapping, err = syscall.Mmap(int(memfd.Fd()), 0, offsets*size, syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED|syscall.MAP_NORESERVE)
+	if err != nil {
+		_ = memfd.Close()
+		return nil, err
+	}
+	if a.backing != vmwire.BackingHugeTLB {
+		if err := f.mapHuge(); err != nil {
+			return nil, errors.Join(err, f.close())
+		}
+	}
+	a.mu.Lock()
+	a.files = append(a.files, f)
+	a.mu.Unlock()
+	return f, nil
+}
+
+// mapHuge gives an ordinary memfd its two mappings: the ordinary one advised
+// never to be huge, and the aligned one advised to be. A kernel built without
+// transparent huge pages refuses both pieces of advice, and its file has the
+// ordinary mapping only, which is every page at 4 KiB.
+func (f *LinuxFile) mapHuge() error {
+	if err := unix.Madvise(f.mapping, unix.MADV_NOHUGEPAGE); err != nil {
 		if !errors.Is(err, unix.EINVAL) {
 			return fmt.Errorf("advising the arena's mapping against huge pages: %w", err)
 		}
-		a.hugePolicy = "never"
 		return nil
 	}
-	policy, err := shmemHugePolicy()
-	if err != nil {
-		return err
-	}
-	a.hugePolicy = policy
-	length := uintptr(len(a.mapping))
+	length := uintptr(len(f.mapping))
 	// The mapping has to start on a 2 MiB boundary for the kernel to put a huge
 	// page at its offsets, which are 2 MiB aligned in the file too. So the
 	// address space is reserved with a block to spare, the file is mapped at
@@ -128,11 +157,11 @@ func (a *LinuxArena) mapHuge() error {
 	}
 	head := int((uintptr(reserved)+hugeBytes-1)&^(hugeBytes-1) - uintptr(reserved))
 	aligned := unsafe.Add(reserved, head)
-	if _, err := unix.MmapPtr(int(a.file.Fd()), 0, aligned, length,
+	if _, err := unix.MmapPtr(int(f.file.Fd()), 0, aligned, length,
 		unix.PROT_READ|unix.PROT_WRITE, unix.MAP_SHARED|unix.MAP_NORESERVE|unix.MAP_FIXED); err != nil {
 		return errors.Join(fmt.Errorf("mapping the arena huge: %w", err), unix.MunmapPtr(reserved, length+hugeBytes))
 	}
-	a.huge = unsafe.Slice((*byte)(aligned), length)
+	f.huge = unsafe.Slice((*byte)(aligned), length)
 	var spare []error
 	if head > 0 {
 		spare = append(spare, unix.MunmapPtr(reserved, uintptr(head)))
@@ -143,7 +172,7 @@ func (a *LinuxArena) mapHuge() error {
 	if err := errors.Join(spare...); err != nil {
 		return fmt.Errorf("giving back the spare around the arena's huge mapping: %w", err)
 	}
-	if err := unix.Madvise(a.huge, unix.MADV_HUGEPAGE); err != nil {
+	if err := unix.Madvise(f.huge, unix.MADV_HUGEPAGE); err != nil {
 		return fmt.Errorf("advising the arena's huge mapping: %w", err)
 	}
 	return nil
@@ -179,51 +208,79 @@ func shmemHugePolicy() (string, error) {
 	return "", fmt.Errorf("the host's shmem huge-page policy names none: %q", raw)
 }
 
-// PageSize is the slot this arena was made with, which must be the page of the
-// pager it is given to.
+// PageSize is the slot this arena's files are made with, which must be the
+// page of the pager it is given to.
 func (a *LinuxArena) PageSize() uint64 { return uint64(a.pageSize) }
-
-// Offsets is how many addresses this arena has, which is what its memfd is
-// sized to and what an ATTACH states. Only the offsets a page has been put at
-// hold memory; AllocatedBytes is how much that is.
-func (a *LinuxArena) Offsets() int { return a.offsets }
 
 // Backing is what the memory behind the slots is, as a session states it.
 func (a *LinuxArena) Backing() uint64 { return a.backing }
 
-func (a *LinuxArena) offset(ctx context.Context, slot int, length int) (int64, error) {
+// Close closes every file this arena made. It is valid only after every
+// process using the arena has detached.
+func (a *LinuxArena) Close() error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	var result error
+	for _, f := range a.files {
+		result = errors.Join(result, f.close())
+	}
+	a.files = nil
+	return result
+}
+
+// AllocatedBytes adds up what every file of this arena really holds.
+func (a *LinuxArena) AllocatedBytes() (uint64, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	total := uint64(0)
+	for _, f := range a.files {
+		held, err := f.AllocatedBytes()
+		if err != nil {
+			return 0, err
+		}
+		total += held
+	}
+	return total, nil
+}
+
+// Offsets is how many addresses this file has, which is what its memfd is
+// sized to and what an ATTACH states. Only the offsets a page has been put at
+// hold memory; AllocatedBytes is how much that is.
+func (f *LinuxFile) Offsets() int { return f.offsets }
+
+func (f *LinuxFile) offset(ctx context.Context, slot int, length int) (int64, error) {
 	if err := context.Cause(ctx); err != nil {
 		return 0, err
 	}
-	if slot < 0 || slot >= a.offsets || length != a.pageSize {
+	if slot < 0 || slot >= f.offsets || length != f.pageSize {
 		return 0, ErrRange
 	}
-	return int64(slot) * int64(a.pageSize), nil
+	return int64(slot) * int64(f.pageSize), nil
 }
-func (a *LinuxArena) Read(ctx context.Context, slot int, dst []byte) error {
-	off, err := a.offset(ctx, slot, len(dst))
+func (f *LinuxFile) Read(ctx context.Context, slot int, dst []byte) error {
+	off, err := f.offset(ctx, slot, len(dst))
 	if err != nil {
 		return err
 	}
-	n, err := a.file.ReadAt(dst, off)
+	n, err := f.file.ReadAt(dst, off)
 	if err == nil && n != len(dst) {
 		err = io.ErrUnexpectedEOF
 	}
 	return err
 }
-func (a *LinuxArena) Write(ctx context.Context, slot int, src []byte) error {
-	off, err := a.offset(ctx, slot, len(src))
+func (f *LinuxFile) Write(ctx context.Context, slot int, src []byte) error {
+	off, err := f.offset(ctx, slot, len(src))
 	if err != nil {
 		return err
 	}
-	// HugeTLB files do not implement write(2), so both arenas go through the
-	// mmap. Allocate before touching it so exhaustion — of the pool, or of the
-	// pod's memory — is an error rather than a process-killing SIGBUS. One slot
-	// is always one ordinary page on an ordinary memfd; see Zero.
-	if err := a.Zero(ctx, slot, 1); err != nil {
+	// HugeTLB files do not implement write(2), so both kinds of file go through
+	// the mmap. Allocate before touching it so exhaustion — of the pool, or of
+	// the pod's memory — is an error rather than a process-killing SIGBUS. One
+	// slot is always one ordinary page on an ordinary memfd; see Zero.
+	if err := f.Zero(ctx, slot, 1); err != nil {
 		return err
 	}
-	copy(a.mapping[off:off+int64(len(src))], src)
+	copy(f.mapping[off:off+int64(len(src))], src)
 	return nil
 }
 
@@ -239,24 +296,24 @@ func (a *LinuxArena) Write(ctx context.Context, slot int, src []byte) error {
 // either way. A huge page for an end would take memory for slots the pager
 // never asked for and never counted, which is why a single page — a store's
 // copy, a load — is always an ordinary one.
-func (a *LinuxArena) Zero(ctx context.Context, slot, count int) error {
+func (f *LinuxFile) Zero(ctx context.Context, slot, count int) error {
 	if err := context.Cause(ctx); err != nil {
 		return err
 	}
-	if count < 1 || slot < 0 || slot > a.offsets-count {
+	if count < 1 || slot < 0 || slot > f.offsets-count {
 		return ErrRange
 	}
-	start, end := slot*a.pageSize, (slot+count)*a.pageSize
-	if a.backing == vmwire.BackingHugeTLB {
+	start, end := slot*f.pageSize, (slot+count)*f.pageSize
+	if f.backing == vmwire.BackingHugeTLB {
 		const keepSize = 1 // FALLOC_FL_KEEP_SIZE
-		return a.fallocate(ctx, keepSize, int64(start), int64(end-start))
+		return f.fallocate(ctx, keepSize, int64(start), int64(end-start))
 	}
 	first, last := (start+hugeBytes-1)&^(hugeBytes-1), end&^(hugeBytes-1)
-	if a.huge == nil || first >= last {
-		return populate(ctx, a.mapping[start:end])
+	if f.huge == nil || first >= last {
+		return populate(ctx, f.mapping[start:end])
 	}
-	return errors.Join(populate(ctx, a.mapping[start:first]), populate(ctx, a.huge[first:last]),
-		populate(ctx, a.mapping[last:end]))
+	return errors.Join(populate(ctx, f.mapping[start:first]), populate(ctx, f.huge[first:last]),
+		populate(ctx, f.mapping[last:end]))
 }
 
 // populate allocates the pages behind b by write-faulting every one of them,
@@ -277,58 +334,57 @@ func populate(ctx context.Context, b []byte) error {
 }
 
 // Equal compares two slots where they are, without copying either out. The
-// arena is mapped into this process, so a settle's comparison is one
+// file is mapped into this process, so a settle's comparison is one
 // bytes.Equal over the pair and the memory traffic is the pages themselves.
-func (a *LinuxArena) Equal(ctx context.Context, first, second int) (bool, error) {
-	x, err := a.offset(ctx, first, a.pageSize)
+func (f *LinuxFile) Equal(ctx context.Context, first, second int) (bool, error) {
+	x, err := f.offset(ctx, first, f.pageSize)
 	if err != nil {
 		return false, err
 	}
-	y, err := a.offset(ctx, second, a.pageSize)
+	y, err := f.offset(ctx, second, f.pageSize)
 	if err != nil {
 		return false, err
 	}
-	size := int64(a.pageSize)
-	return bytes.Equal(a.mapping[x:x+size], a.mapping[y:y+size]), nil
+	size := int64(f.pageSize)
+	return bytes.Equal(f.mapping[x:x+size], f.mapping[y:y+size]), nil
 }
 
-func (a *LinuxArena) Release(ctx context.Context, slot int) error {
-	off, err := a.offset(ctx, slot, a.pageSize)
+func (f *LinuxFile) Release(ctx context.Context, slot int) error {
+	off, err := f.offset(ctx, slot, f.pageSize)
 	if err != nil {
 		return err
 	}
-	return a.fallocate(ctx, 3, off, int64(a.pageSize))
+	return f.fallocate(ctx, 3, off, int64(f.pageSize))
 }
 
 // HugeTLB allocation can observe a runtime signal after dropping its locks.
 // Retrying the same allocation/punch is safe even after partial progress.
-func (a *LinuxArena) fallocate(ctx context.Context, mode uint32, offset, length int64) error {
+func (f *LinuxFile) fallocate(ctx context.Context, mode uint32, offset, length int64) error {
 	for {
 		if err := context.Cause(ctx); err != nil {
 			return err
 		}
-		err := syscall.Fallocate(int(a.file.Fd()), mode, offset, length)
+		err := syscall.Fallocate(int(f.file.Fd()), mode, offset, length)
 		if !errors.Is(err, syscall.EINTR) {
 			return err
 		}
 	}
 }
 
-// Close is valid only after every process using this arena has detached.
-func (a *LinuxArena) Close() error {
+func (f *LinuxFile) close() error {
 	var huge error
-	if a.huge != nil {
-		huge = unix.MunmapPtr(unsafe.Pointer(&a.huge[0]), uintptr(len(a.huge)))
+	if f.huge != nil {
+		huge = unix.MunmapPtr(unsafe.Pointer(&f.huge[0]), uintptr(len(f.huge)))
 	}
-	return errors.Join(syscall.Munmap(a.mapping), huge, a.file.Close())
+	return errors.Join(syscall.Munmap(f.mapping), huge, f.file.Close())
 }
 
 // AllocatedBytes reports physically allocated memfd blocks, including slots
-// between allocation and mapping. It is the memory this arena really holds,
+// between allocation and mapping. It is the memory this file really holds,
 // which is the pages put at its offsets and not the offsets themselves.
-func (a *LinuxArena) AllocatedBytes() (uint64, error) {
+func (f *LinuxFile) AllocatedBytes() (uint64, error) {
 	var stat syscall.Stat_t
-	if err := syscall.Fstat(int(a.file.Fd()), &stat); err != nil {
+	if err := syscall.Fstat(int(f.file.Fd()), &stat); err != nil {
 		return 0, err
 	}
 	return uint64(stat.Blocks) * 512, nil

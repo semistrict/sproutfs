@@ -54,10 +54,10 @@ const (
 //
 // A store the placement rule had no offset for is its own page and nothing
 // else: without the extent there is no run to be part of.
-func (r *MemoryRegion) closeAround(ctx context.Context, index uint64, slot int, replaced *replacement) (first, last uint64, err error) {
+func (r *MemoryRegion) closeAround(ctx context.Context, index uint64, at fileSlot, replaced *replacement) (first, last uint64, err error) {
 	h := r.host
 	h.mu.Lock()
-	placed := h.placedAt(r, index, slot)
+	placed := h.placedAt(r, index, at)
 	first, last = index, index+1
 	whole := false
 	if placed {
@@ -93,12 +93,12 @@ func (r *MemoryRegion) closeAround(ctx context.Context, index uint64, slot int, 
 	return first, last, nil
 }
 
-// placedAt reports whether one page's resident offset is the one the placement
+// placedAt reports whether one page's resident slot is the one the placement
 // rule gives it, which is what makes it part of a run of its range rather than
 // a page of its own somewhere in the arena. Caller holds h.mu.
-func (h *Host) placedAt(r *MemoryRegion, index uint64, slot int) bool {
+func (h *Host) placedAt(r *MemoryRegion, index uint64, at fileSlot) bool {
 	e := h.extents[extentKey{r, index / uint64(h.extentPages)}]
-	return e != nil && slot == e.base+int(index%uint64(h.extentPages))
+	return e != nil && at == h.slotIn(e, index)
 }
 
 // nearby reports the pages one store makes private by the gap rule: the
@@ -178,7 +178,7 @@ func (h *Host) placedPrivateAt(r *MemoryRegion, e *extent, page uint64) bool {
 	}
 	b := r.lookupBinding(page)
 	return b != nil && b.writable() && b.resident != nil &&
-		b.resident.slot == e.base+int(page%uint64(h.extentPages))
+		b.resident.fileSlot == h.slotIn(e, page)
 }
 
 // placedRun reports the longest run of pages around index that one mapping
@@ -297,9 +297,9 @@ func (r *MemoryRegion) takeOneShared(ctx context.Context, page uint64, replaced 
 		h.unlock(pg)
 	}
 	h.mu.Lock()
-	slot, _ := h.place(r, page)
+	at, _ := h.place(r, page)
 	h.mu.Unlock()
-	if slot < 0 {
+	if at.slot < 0 {
 		// The offset of this page's own is not to be had — the budget is full,
 		// or a checkpoint's copy is sitting on it. A rule never evicts for a
 		// page the guest did not write, so the run ends here.
@@ -310,9 +310,9 @@ func (r *MemoryRegion) takeOneShared(ctx context.Context, page uint64, replaced 
 		// A seal ran while the bytes were being read. The page is the
 		// checkpoint's or the guest's now, and either way not this rule's.
 		release()
-		return false, h.abandonSlots(ctx, slot, 1, nil)
+		return false, h.abandonSlots(ctx, at, 1, nil)
 	}
-	private, err := h.create(ctx, slot, data, pageKey{}, true, r.kind)
+	private, err := h.create(ctx, at, data, pageKey{}, true, r.kind)
 	if err != nil {
 		release()
 		return false, err
@@ -380,14 +380,14 @@ func (r *MemoryRegion) makeWhole(ctx context.Context, index uint64) (bool, error
 	return true, replaced.done(ctx)
 }
 
-// placedSlot is the arena offset the placement rule gives one page, or -1 where
-// its range owns no extent. Caller holds h.mu.
+// placedSlot is the slot the placement rule gives one page, or -1 where its
+// range owns no extent. Caller holds h.mu.
 func (h *Host) placedSlot(r *MemoryRegion, page uint64) int {
 	e := h.extents[extentKey{r, page / uint64(h.extentPages)}]
 	if e == nil {
 		return -1
 	}
-	return e.base + int(page%uint64(h.extentPages))
+	return h.slotIn(e, page).slot
 }
 
 // privatePages is how many pages of one range this memory region may store into where

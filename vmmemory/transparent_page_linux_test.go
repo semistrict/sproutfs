@@ -39,21 +39,27 @@ func hostShmemPolicy(t *testing.T) string {
 	return ""
 }
 
-func newHugeArena(t *testing.T) *vmmemory.LinuxArena {
+// newHugeArena makes an arena of 4 KiB pages and the one file of it every test
+// here works in.
+func newHugeArena(t *testing.T) (*vmmemory.LinuxArena, *vmmemory.LinuxFile) {
 	t.Helper()
-	a, err := vmmemory.NewLinuxArena(8*slotsPerHuge, checkpoint.PageSize4KiB)
+	arena, err := vmmemory.NewLinuxArena(checkpoint.PageSize4KiB)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if err := a.Close(); err != nil {
+		if err := arena.Close(); err != nil {
 			t.Error(err)
 		}
 	})
-	return a
+	a, err := arena.NewFile(8 * slotsPerHuge)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return arena, a
 }
 
-func expectArena(t *testing.T, a *vmmemory.LinuxArena, allocated, huge uint64) {
+func expectArena(t *testing.T, a *vmmemory.LinuxFile, allocated, huge uint64) {
 	t.Helper()
 	gotAllocated, err := a.AllocatedBytes()
 	if err != nil {
@@ -74,9 +80,9 @@ func expectArena(t *testing.T, a *vmmemory.LinuxArena, allocated, huge uint64) {
 // aligned 8 MiB run is four huge pages and exactly the 8 MiB the pager counted.
 func TestZeroRunIsWholeHugePagesWhereItCoversWholeBlocks(t *testing.T) {
 	policy := hostShmemPolicy(t)
-	a := newHugeArena(t)
-	if a.HugePolicy() != policy {
-		t.Fatalf("the arena recorded the policy %q, want the host's %q", a.HugePolicy(), policy)
+	arena, a := newHugeArena(t)
+	if arena.HugePolicy() != policy {
+		t.Fatalf("the arena recorded the policy %q, want the host's %q", arena.HugePolicy(), policy)
 	}
 	if err := a.Zero(t.Context(), slotsPerHuge, 4*slotsPerHuge); err != nil {
 		t.Fatal(err)
@@ -89,7 +95,7 @@ func TestZeroRunIsWholeHugePagesWhereItCoversWholeBlocks(t *testing.T) {
 // for and counted, never the whole blocks its ends fall in.
 func TestZeroRunEndsAreOrdinaryPages(t *testing.T) {
 	hostShmemPolicy(t)
-	a := newHugeArena(t)
+	_, a := newHugeArena(t)
 	if err := a.Zero(t.Context(), slotsPerHuge+1, 4*slotsPerHuge); err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +105,7 @@ func TestZeroRunEndsAreOrdinaryPages(t *testing.T) {
 // One page is one ordinary page, whatever the host's policy: a store's copy put
 // into an empty block holds 4 KiB, not the 2 MiB block around it.
 func TestOnePageIsOneOrdinaryPage(t *testing.T) {
-	a := newHugeArena(t)
+	_, a := newHugeArena(t)
 	page := make([]byte, checkpoint.PageSize4KiB)
 	page[0] = 1
 	if err := a.Write(t.Context(), 2*slotsPerHuge, page); err != nil {
@@ -116,7 +122,7 @@ func TestOnePageIsOneOrdinaryPage(t *testing.T) {
 // it did.
 func TestReleasingOneSlotSplitsItsHugePage(t *testing.T) {
 	hostShmemPolicy(t)
-	a := newHugeArena(t)
+	_, a := newHugeArena(t)
 	if err := a.Zero(t.Context(), slotsPerHuge, 4*slotsPerHuge); err != nil {
 		t.Fatal(err)
 	}
@@ -145,11 +151,15 @@ func TestReleasingOneSlotSplitsItsHugePage(t *testing.T) {
 func BenchmarkZeroRun(b *testing.B) {
 	for _, shift := range []int{0, 1} {
 		b.Run(map[int]string{0: "aligned", 1: "shifted"}[shift], func(b *testing.B) {
-			a, err := vmmemory.NewLinuxArena(8*slotsPerHuge, checkpoint.PageSize4KiB)
+			arena, err := vmmemory.NewLinuxArena(checkpoint.PageSize4KiB)
 			if err != nil {
 				b.Fatal(err)
 			}
-			defer func() { _ = a.Close() }()
+			defer func() { _ = arena.Close() }()
+			a, err := arena.NewFile(8 * slotsPerHuge)
+			if err != nil {
+				b.Fatal(err)
+			}
 			const run = 4 * slotsPerHuge
 			b.SetBytes(run * checkpoint.PageSize4KiB)
 			for b.Loop() {

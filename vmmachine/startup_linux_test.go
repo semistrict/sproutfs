@@ -261,7 +261,7 @@ func startupFixture(t *testing.T) (vmmachine.Config, *admissionBacking, *vmmemor
 	if err := vm.Volume(vmmachine.RAMVolume).Write(t.Context(), 0, bytes.Repeat([]byte{1}, checkpoint.PageSize2MiB)); err != nil {
 		t.Fatal(err)
 	}
-	a, err := vmmemory.NewLinuxArena(4, checkpoint.PageSize2MiB)
+	a, err := vmmemory.NewLinuxArena(checkpoint.PageSize2MiB)
 	if err != nil {
 		t.Fatal(err)
 	}

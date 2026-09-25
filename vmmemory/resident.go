@@ -22,8 +22,10 @@ type pageKey struct {
 func (f pageKey) zero() bool { return f.id.Zero }
 
 type resident struct {
-	mu      *ctxsync.Mutex
-	slot    int
+	mu *ctxsync.Mutex
+	// fileSlot is where the page is. Its slot is -1 once the page's memory
+	// has gone back.
+	fileSlot
 	key     pageKey
 	private bool
 	// kind is what the memory region that created this page maps it as, RAM or PMEM.
@@ -63,7 +65,7 @@ func (pg *resident) published() bool {
 // under MemoryRegion.mu. Eviction publishes backing before making it nonresident.
 func (h *Host) read(ctx context.Context, b *binding, pg *resident, dst []byte) error {
 	if pg != nil {
-		return h.arena.Read(ctx, pg.slot, dst)
+		return pg.file.Read(ctx, pg.slot, dst)
 	}
 	if b.zero {
 		clear(dst)
@@ -172,49 +174,50 @@ func (h *Host) touch(pg *resident) {
 
 // create fills an already reserved slot and returns its locked page, not yet
 // visible in the sharing index.
-func (h *Host) create(ctx context.Context, slot int, data []byte, key pageKey, private bool, kind MemoryRegionKind) (*resident, error) {
+func (h *Host) create(ctx context.Context, at fileSlot, data []byte, key pageKey, private bool, kind MemoryRegionKind) (*resident, error) {
 	if sim.Bug(ctx, "pager-zero-new-page") {
 		// The page is created without the bytes that were loaded or copied
 		// into it, which every later read of that page then sees as zeroes.
 		clear(data)
 	}
-	if err := h.arena.Write(ctx, slot, data); err != nil {
-		return nil, h.abandonSlots(ctx, slot, 1, err)
+	if err := at.file.Write(ctx, at.slot, data); err != nil {
+		return nil, h.abandonSlots(ctx, at, 1, err)
 	}
-	return h.adopt(slot, key, private, kind), nil
+	return h.adopt(at, key, private, kind), nil
 }
 
 // createZeros fills count consecutive reserved slots with zeros and returns
 // their locked private pages. Every free slot is punched, so it already reads
-// as zeros: an arena that can make such a slot mappable without writing it
-// does so for the whole run at once, and only another arena is written.
-func (h *Host) createZeros(ctx context.Context, slot, count int, kind MemoryRegionKind) ([]*resident, error) {
+// as zeros: a file that can make such a slot mappable without writing it does
+// so for the whole run at once, and only another file is written.
+func (h *Host) createZeros(ctx context.Context, at fileSlot, count int, kind MemoryRegionKind) ([]*resident, error) {
 	var err error
-	if zeroing, ok := h.arena.(ZeroArena); ok {
-		err = zeroing.Zero(ctx, slot, count)
+	if zeroing, ok := at.file.ArenaFile.(ZeroFile); ok {
+		err = zeroing.Zero(ctx, at.slot, count)
 	} else {
 		zeros := make([]byte, h.pageSize)
-		for s := slot; s < slot+count && err == nil; s++ {
-			err = h.arena.Write(ctx, s, zeros)
+		for s := at.slot; s < at.slot+count && err == nil; s++ {
+			err = at.file.Write(ctx, s, zeros)
 		}
 	}
 	if err != nil {
-		return nil, h.abandonSlots(ctx, slot, count, err)
+		return nil, h.abandonSlots(ctx, at, count, err)
 	}
-	return h.adoptRun(slot, count, kind), nil
+	return h.adoptRun(at, count, kind), nil
 }
 
-// createZeroRuns fills the slots of every run with zeros and returns their
-// locked private pages in page order, which is the order the runs are in. A run
-// that fails takes the runs after it and the pages before it with it, so a
-// store that could not have its whole run leaves the arena exactly as it was.
-func (h *Host) createZeroRuns(ctx context.Context, runs []MapRun, kind MemoryRegionKind) ([]*resident, error) {
+// createZeroRuns fills the slots of every run, which are slots of f, with
+// zeros and returns their locked private pages in page order, which is the
+// order the runs are in. A run that fails takes the runs after it and the pages
+// before it with it, so a store that could not have its whole run leaves the
+// arena exactly as it was.
+func (h *Host) createZeroRuns(ctx context.Context, f *arenaFile, runs []MapRun, kind MemoryRegionKind) ([]*resident, error) {
 	if len(runs) == 1 {
-		return h.createZeros(ctx, runs[0].Slot, runs[0].Count, kind)
+		return h.createZeros(ctx, fileSlot{f, runs[0].Slot}, runs[0].Count, kind)
 	}
 	var pages []*resident
 	for i, run := range runs {
-		created, err := h.createZeros(ctx, run.Slot, run.Count, kind)
+		created, err := h.createZeros(ctx, fileSlot{f, run.Slot}, run.Count, kind)
 		if err == nil {
 			pages = append(pages, created...)
 			continue
@@ -224,7 +227,7 @@ func (h *Host) createZeroRuns(ctx context.Context, runs []MapRun, kind MemoryReg
 			h.unlock(pg)
 		}
 		for _, rest := range runs[i+1:] {
-			err = errors.Join(err, h.abandonSlots(ctx, rest.Slot, rest.Count, nil))
+			err = errors.Join(err, h.abandonSlots(ctx, fileSlot{f, rest.Slot}, rest.Count, nil))
 		}
 		return nil, err
 	}
@@ -235,17 +238,17 @@ func (h *Host) createZeroRuns(ctx context.Context, runs []MapRun, kind MemoryReg
 // that their reserver turned out not to need. A failed write may have allocated
 // partial contents, so each is punched before it is accounted free; a failed
 // punch makes the host terminal.
-func (h *Host) abandonSlots(ctx context.Context, slot, count int, err error) error {
+func (h *Host) abandonSlots(ctx context.Context, at fileSlot, count int, err error) error {
 	var cleanup error
-	for s := slot; s < slot+count; s++ {
-		cleanup = errors.Join(cleanup, h.arena.Release(context.WithoutCancel(ctx), s))
+	for i := range count {
+		cleanup = errors.Join(cleanup, at.file.Release(context.WithoutCancel(ctx), at.slot+i))
 	}
 	h.mu.Lock()
 	if cleanup != nil {
 		h.err = errors.Join(err, cleanup)
 	} else {
-		for s := slot; s < slot+count; s++ {
-			h.putFree(s)
+		for i := range count {
+			h.putFree(at.plus(i))
 		}
 	}
 	h.signal()
@@ -254,8 +257,8 @@ func (h *Host) abandonSlots(ctx context.Context, slot, count int, err error) err
 }
 
 // adopt makes a filled slot a locked resident page, most recently used.
-func (h *Host) adopt(slot int, key pageKey, private bool, kind MemoryRegionKind) *resident {
-	pg := &resident{mu: ctxsync.NewMutex(), slot: slot, key: key, private: private, kind: kind}
+func (h *Host) adopt(at fileSlot, key pageKey, private bool, kind MemoryRegionKind) *resident {
+	pg := &resident{mu: ctxsync.NewMutex(), fileSlot: at, key: key, private: private, kind: kind}
 	_ = pg.mu.Lock(context.Background())
 	h.mu.Lock()
 	h.lru.pushBack(pg)
@@ -268,10 +271,10 @@ func (h *Host) adopt(slot int, key pageKey, private bool, kind MemoryRegionKind)
 // slot order. A write-ahead run is thousands of pages that every other fault
 // of the host is waiting to see, so they join the recency list under one host
 // lock and wake waiters once.
-func (h *Host) adoptRun(slot, count int, kind MemoryRegionKind) []*resident {
+func (h *Host) adoptRun(at fileSlot, count int, kind MemoryRegionKind) []*resident {
 	pages := make([]*resident, count)
 	for i := range pages {
-		pg := &resident{mu: ctxsync.NewMutex(), slot: slot + i, private: true, kind: kind}
+		pg := &resident{mu: ctxsync.NewMutex(), fileSlot: at.plus(i), private: true, kind: kind}
 		_ = pg.mu.Lock(context.Background())
 		pages[i] = pg
 	}
@@ -285,7 +288,7 @@ func (h *Host) adoptRun(slot, count int, kind MemoryRegionKind) []*resident {
 }
 
 func (h *Host) release(ctx context.Context, pg *resident) error {
-	if err := h.arena.Release(ctx, pg.slot); err != nil {
+	if err := pg.file.Release(ctx, pg.slot); err != nil {
 		h.mu.Lock()
 		h.err = fmt.Errorf("managed arena terminal: %w", err)
 		h.signal()
@@ -295,7 +298,7 @@ func (h *Host) release(ctx context.Context, pg *resident) error {
 	}
 	h.mu.Lock()
 	note(nil, 0, "release", pg.slot, -1)
-	h.putFree(pg.slot)
+	h.putFree(pg.fileSlot)
 	pg.slot = -1
 	h.lru.remove(pg)
 	h.mappedLocked(pg)
@@ -521,7 +524,7 @@ func (h *Host) droppable(ctx context.Context, b *binding, pg *resident, stored b
 		return nil
 	}
 	data := make([]byte, h.pageSize)
-	if err := h.arena.Read(ctx, pg.slot, data); err != nil {
+	if err := pg.file.Read(ctx, pg.slot, data); err != nil {
 		return err
 	}
 	if allZero(data) {

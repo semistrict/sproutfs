@@ -13,7 +13,6 @@ import (
 	"github.com/semistrict/sproutfs/internal/latency"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/resource"
-	"github.com/semistrict/sproutfs/vmmemory/internal/slots"
 )
 
 // Host accounts for shared backing under a short metadata lock. Each MemoryRegion
@@ -28,12 +27,6 @@ type Host struct {
 	// pager's page, and no count of these pages may be added to one of those.
 	pageSize  uint64
 	resources *resource.Budget
-	// residentLeases names the resource reservation the page at one arena
-	// offset was admitted under, and the extent that offset belongs to where the
-	// placement rule put it there. It is a map rather than one entry per offset
-	// because an arena has far more offsets than pages: what it holds is
-	// bounded by Config.ResidentPages, however large the address space is.
-	residentLeases map[int]residentSlot
 	// extents is the extent each range of each memory region owns, and extentPages how
 	// many offsets one extent has — the pages of this pager one 2 MiB range
 	// holds. A pager whose page is the whole range has one, which is a pager
@@ -46,10 +39,11 @@ type Host struct {
 	mu           sync.Mutex
 	cfg          Config
 	// clock times the fault path. It is Config.Clock, or the wall clock.
-	clock        platform.Clock
-	arena        Arena
+	clock platform.Clock
+	// files is every file this pager has made of its arena, by number. It
+	// makes file 0 when it starts, and every page is in it.
+	files        []*arenaFile
 	spill        platform.File
-	slots        *slots.Space
 	clean        map[pageKey]*resident
 	cleanVersion uint64
 	// memory regions is every attached memory region, which is what the dirty budget's
@@ -123,7 +117,8 @@ var populationWindowBytes uint64 = 256 << 20
 // the same host: each owns its arena and its spill file alone. The file's
 // maximum size is DirtyPages times this pager's page; acknowledged durability
 // always goes through Backing, never spill. The caller retains ownership of
-// Arena and spill until every MemoryRegion detaches.
+// Arena, and of every file it makes, and of spill until every MemoryRegion
+// detaches.
 func New(ctx context.Context, resources *resource.Budget, cfg Config, arena Arena, spill platform.File) (*Host, error) {
 	if resources == nil {
 		return nil, ErrConfig
@@ -180,8 +175,12 @@ func New(ctx context.Context, resources *resource.Budget, cfg Config, arena Aren
 	// An extent is one 2 MiB-aligned range's worth of this pager's pages: 512 at
 	// 4 KiB, and one at 2 MiB, which is a pager with nothing to place.
 	extentPages := int(rangeBytes / pageSize)
-	h := &Host{changeSeed: maphash.MakeSeed(), pageSize: pageSize, cfg: cfg, clock: platform.ClockOr(cfg.Clock), arena: arena, spill: spill, resources: resources, residentLeases: make(map[int]residentSlot), reservations: newReservations(cfg.DirtyPages),
-		slots:       slots.New(cfg.ArenaOffsets, cfg.ResidentPages, extentPages),
+	file, err := arena.File(ctx, cfg.ArenaOffsets)
+	if err != nil {
+		return nil, fmt.Errorf("making file 0 of the arena: %w", err)
+	}
+	h := &Host{changeSeed: maphash.MakeSeed(), pageSize: pageSize, cfg: cfg, clock: platform.ClockOr(cfg.Clock), spill: spill, resources: resources, reservations: newReservations(cfg.DirtyPages),
+		files:       []*arenaFile{newArenaFile(file, 0, cfg.ArenaOffsets, cfg.ResidentPages, extentPages)},
 		extents:     make(map[extentKey]*extent),
 		extentPages: extentPages,
 		clean:       make(map[pageKey]*resident), changed: make(chan struct{}), revoked: make(chan struct{}),
@@ -229,15 +228,17 @@ func (h *Host) Close(ctx context.Context) error {
 	h.signal()
 	h.unregisterIdle()
 	var result error
-	for slot, entry := range h.residentLeases {
-		if entry.lease == nil {
-			continue
+	for _, f := range h.files {
+		for slot, entry := range f.leases {
+			if entry.lease == nil {
+				continue
+			}
+			if err := f.Release(ctx, slot); err != nil {
+				result = errors.Join(result, err)
+				continue
+			}
+			h.putFree(fileSlot{f, slot})
 		}
-		if err := h.arena.Release(ctx, slot); err != nil {
-			result = errors.Join(result, err)
-			continue
-		}
-		h.putFree(slot)
 	}
 	if err := h.spill.Truncate(ctx, 0); err != nil {
 		result = errors.Join(result, err)

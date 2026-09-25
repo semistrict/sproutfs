@@ -11,11 +11,11 @@ import (
 	"unsafe"
 )
 
-// HugePageBytes is how much of this arena's huge mapping the kernel has
-// installed as 2 MiB pages, from this process's own smaps: zero for an arena
+// HugePageBytes is how much of this file's huge mapping the kernel has
+// installed as 2 MiB pages, from this process's own smaps: zero for a file
 // with no huge mapping. A huge page Zero allocates is installed there by the
 // fault that allocated it, and split out of it again by a release inside it.
-func (a *LinuxArena) HugePageBytes() (uint64, error) {
+func (a *LinuxFile) HugePageBytes() (uint64, error) {
 	if a.huge == nil {
 		return 0, nil
 	}

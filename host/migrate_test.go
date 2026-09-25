@@ -34,6 +34,9 @@ type pageArena struct {
 	slots [][]byte
 }
 
+// File is the one file this arena is. A pager makes exactly one.
+func (a *pageArena) File(context.Context, int) (vmmemory.ArenaFile, error) { return a, nil }
+
 func (a *pageArena) Read(_ context.Context, slot int, dst []byte) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()

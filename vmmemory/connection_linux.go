@@ -146,7 +146,7 @@ func Connect(ctx context.Context, h *Host, socket *net.UnixConn, backing MemoryR
 		_ = socket.Close()
 		return nil, fmt.Errorf("%w: %w", ErrConfig, err)
 	}
-	a, ok := h.arena.(*LinuxArena)
+	a, ok := h.files[0].ArenaFile.(*LinuxFile)
 	if cfg.FaultWorkers == 0 {
 		cfg.FaultWorkers = 8
 	}

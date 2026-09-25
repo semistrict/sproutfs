@@ -96,27 +96,29 @@ func (h *Host) Unreachable() []string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	var found []string
-	claimed := map[int]bool{}
+	claimed := map[fileSlot]bool{}
 	listed := 0
 	for pg := h.lru.front(); pg != nil; pg = h.lru.next(pg) {
 		listed++
-		if claimed[pg.slot] {
+		if claimed[pg.fileSlot] {
 			found = append(found, fmt.Sprintf("slot %d is claimed twice", pg.slot))
 		}
-		claimed[pg.slot] = true
+		claimed[pg.fileSlot] = true
 		if pg.aliases.len() > 0 || h.idle.contains(pg) {
 			continue
 		}
 		found = append(found, fmt.Sprintf("slot %d key %+v private %t replacing %d dropped %t indexed %t free %t",
-			pg.slot, pg.key.id, pg.private, pg.replacing, pg.dropped, h.clean[pg.key] == pg, pg.slot >= 0 && h.slots.IsFree(pg.slot)))
+			pg.slot, pg.key.id, pg.private, pg.replacing, pg.dropped, h.clean[pg.key] == pg, pg.slot >= 0 && pg.file.slots.IsFree(pg.slot)))
 	}
-	for slot, entry := range h.residentLeases {
-		if !claimed[slot] {
-			found = append(found, fmt.Sprintf("slot %d is held for no page, in an extent %t", slot, entry.extent != nil))
+	for _, f := range h.files {
+		for slot, entry := range f.leases {
+			if !claimed[fileSlot{f, slot}] {
+				found = append(found, fmt.Sprintf("slot %d is held for no page, in an extent %t", slot, entry.extent != nil))
+			}
 		}
 	}
-	if listed != h.slots.Held() {
-		found = append(found, fmt.Sprintf("%d pages are listed and %d slots held", listed, h.slots.Held()))
+	if held := h.heldLocked(); listed != held {
+		found = append(found, fmt.Sprintf("%d pages are listed and %d slots held", listed, held))
 	}
 	return found
 }

@@ -184,17 +184,17 @@ func (r *MemoryRegion) fault(ctx context.Context, index uint64, write bool, spil
 	// reclaim runs has nothing of this page's to take. Ending a seal does reach
 	// it, and hands it either its own reservation or clean state, so what this
 	// store needs is decided again from the top.
-	slot, err := r.reclaimPrivate(ctx, index)
+	at, err := r.reclaimPrivate(ctx, index)
 	if err != nil {
 		return false, err
 	}
 	if r.checkpointCopy(b) != held {
-		if err := h.abandonSlots(ctx, slot, 1, nil); err != nil {
+		if err := h.abandonSlots(ctx, at, 1, nil); err != nil {
 			return false, err
 		}
 		return true, nil
 	}
-	pg, err = h.create(ctx, slot, data, pageKey{}, true, r.kind)
+	pg, err = h.create(ctx, at, data, pageKey{}, true, r.kind)
 	if err != nil {
 		return false, err
 	}
@@ -230,7 +230,7 @@ func (r *MemoryRegion) fault(ctx context.Context, index uint64, write bool, spil
 	// already held, and the holes of a range that has become half its own, are
 	// made private in this same fault. The whole run sits at consecutive offsets
 	// of one extent, so one command maps it.
-	first, last, err := r.closeAround(ctx, index, pg.slot, replaced)
+	first, last, err := r.closeAround(ctx, index, pg.fileSlot, replaced)
 	if err != nil {
 		return false, errors.Join(err, replaced.revoke(ctx))
 	}
@@ -350,11 +350,11 @@ func (r *MemoryRegion) readInWindow(ctx context.Context, index uint64) (pg *resi
 	if plan.pages[index-start] == nil {
 		plan.reserveAround(index)
 		if plan.reserved[index-start] < 0 {
-			slot, err := r.reclaim(ctx)
+			at, err := r.reclaim(ctx, plan.file)
 			if err != nil {
 				return nil, false, err
 			}
-			plan.reserve(index, slot)
+			plan.reserve(index, at.slot)
 		}
 	}
 	for page := start; page < end; page++ {
@@ -424,14 +424,14 @@ func (r *MemoryRegion) readInPage(ctx context.Context, index uint64) (*resident,
 			h.touch(pg)
 			return pg, nil
 		}
-		slot, err := r.reclaimNear(ctx, index)
+		at, err := r.reclaimNear(ctx, r.sharedFile(), index)
 		if err != nil {
 			return nil, err
 		}
 		data := make([]byte, h.pageSize)
 		unpublished, err := r.loadWindow(ctx, index*h.pageSize, data)
 		if err != nil {
-			return nil, h.abandonSlots(ctx, slot, 1, err)
+			return nil, h.abandonSlots(ctx, at, 1, err)
 		}
 		if len(unpublished) > 0 && unpublished[0] {
 			// The extents named this page the volume's and the load found the
@@ -442,13 +442,13 @@ func (r *MemoryRegion) readInPage(ctx context.Context, index uint64) (*resident,
 			// the store reads its own copy from the backing and tells the
 			// backing it took the page, exactly as for a page the extents
 			// themselves call unpublished.
-			return nil, h.abandonSlots(ctx, slot, 1, nil)
+			return nil, h.abandonSlots(ctx, at, 1, nil)
 		}
 		h.mu.Lock()
 		h.stats.Loads++
 		h.stats.LoadedPages++
 		h.mu.Unlock()
-		pg, err = h.create(ctx, slot, data, id, false, r.kind)
+		pg, err = h.create(ctx, at, data, id, false, r.kind)
 		if err != nil {
 			return nil, err
 		}
@@ -615,7 +615,7 @@ func (r *MemoryRegion) storeZeros(ctx context.Context, index, first, last uint64
 	for _, run := range runs {
 		count += run.Count
 	}
-	pages, err := h.createZeroRuns(ctx, runs, r.kind)
+	pages, err := h.createZeroRuns(ctx, r.privateFile(), runs, r.kind)
 	if err != nil {
 		return err
 	}
@@ -656,9 +656,9 @@ func (r *MemoryRegion) storeZeros(ctx context.Context, index, first, last uint64
 	return nil
 }
 
-// allocateRun takes arena slots for the run [first, last), which holds index,
-// and reports the pages it covered and the runs of consecutive offsets they
-// landed in.
+// allocateRun takes slots of r's private file for the run [first, last), which
+// holds index, and reports the pages it covered and the runs of consecutive
+// slots they landed in.
 //
 // The placement rule comes first: every page goes at the offset it has within
 // its range's extent, so a window crossing a range boundary is one run per
@@ -670,14 +670,15 @@ func (r *MemoryRegion) storeZeros(ctx context.Context, index, first, last uint64
 // for index alone, which may evict.
 func (r *MemoryRegion) allocateRun(ctx context.Context, index, first, last uint64) (uint64, []MapRun, error) {
 	h := r.host
-	if err := h.makeRoom(ctx, int(last-first)); err != nil {
+	f := r.privateFile()
+	if err := h.makeRoom(ctx, f, int(last-first)); err != nil {
 		return 0, nil, err
 	}
 	h.mu.Lock()
-	noExtent := h.placing() && h.slots.FreeExtents() == 0 && h.extents[extentKey{r, index / uint64(h.extentPages)}] == nil
+	noExtent := h.placing(f) && f.slots.FreeExtents() == 0 && h.extents[extentKey{r, index / uint64(h.extentPages)}] == nil
 	h.mu.Unlock()
 	if noExtent {
-		if _, err := h.reclaimExtent(ctx); err != nil {
+		if _, err := h.reclaimExtent(ctx, f); err != nil {
 			return 0, nil, err
 		}
 	}
@@ -685,26 +686,26 @@ func (r *MemoryRegion) allocateRun(ctx context.Context, index, first, last uint6
 		return start, runs, nil
 	}
 	if last-first > 1 {
-		prefer := -1
+		prefer := fileSlot{f, -1}
 		if first > 0 {
 			if b := r.lookupBinding(first - 1); b != nil {
 				h.mu.Lock()
-				if b.resident != nil && b.resident.slot >= 0 {
-					prefer = b.resident.slot + 1
+				if pg := b.resident; pg != nil && pg.slot >= 0 && pg.file == f {
+					prefer = pg.plus(1)
 				}
 				h.mu.Unlock()
 			}
 		}
-		if slot, count := h.allocateFreeFrom(prefer, int(last-first)); count > 0 {
+		if at, count := h.allocateFreeFrom(prefer, int(last-first)); count > 0 {
 			start, _ := around(index, first, last, count)
-			return start, []MapRun{{Page: start, Slot: slot, Count: count}}, nil
+			return start, []MapRun{{Page: start, Slot: at.slot, Count: count}}, nil
 		}
 	}
-	slot, err := r.reclaimPrivate(ctx, index)
+	at, err := r.reclaimPrivate(ctx, index)
 	if err != nil {
 		return 0, nil, err
 	}
-	return index, []MapRun{{Page: index, Slot: slot, Count: 1}}, nil
+	return index, []MapRun{{Page: index, Slot: at.slot, Count: 1}}, nil
 }
 
 // loadAttempts bounds how often a fault retries after losing a publication race
@@ -779,7 +780,7 @@ func (r *MemoryRegion) loadOnce(ctx context.Context, index uint64, spill *int) (
 		h.mu.Lock()
 		h.stats.SpillRefaults++
 		h.mu.Unlock()
-		slot, err := r.reclaimPrivate(ctx, index)
+		at, err := r.reclaimPrivate(ctx, index)
 		if err != nil {
 			return false, err
 		}
@@ -791,12 +792,12 @@ func (r *MemoryRegion) loadOnce(ctx context.Context, index uint64, spill *int) (
 		// a checkpoint is one the next reclaim punches without writing it
 		// anywhere. What this page is, is decided again from the top.
 		if now, current := r.privateEpoch(b); now != dirty || current != held {
-			if err := h.abandonSlots(ctx, slot, 1, nil); err != nil {
+			if err := h.abandonSlots(ctx, at, 1, nil); err != nil {
 				return false, err
 			}
 			return false, nil
 		}
-		pg, err := h.create(ctx, slot, data, pageKey{}, true, r.kind)
+		pg, err := h.create(ctx, at, data, pageKey{}, true, r.kind)
 		if err != nil {
 			return false, err
 		}
@@ -844,11 +845,11 @@ func (r *MemoryRegion) loadOnce(ctx context.Context, index uint64, spill *int) (
 		plan.reserveAround(index)
 	}
 	if plan.pages[index-start] == nil && !plan.zeros[index-start] && plan.reserved[index-start] < 0 {
-		slot, err := r.reclaim(ctx)
+		at, err := r.reclaim(ctx, plan.file)
 		if err != nil {
 			return false, err
 		}
-		plan.reserve(index, slot)
+		plan.reserve(index, at.slot)
 	}
 	for p := start; p < end; p++ {
 		if plan.pages[p-start] != nil || plan.zeros[p-start] || plan.reserved[p-start] >= 0 || !plan.eligible(p) {

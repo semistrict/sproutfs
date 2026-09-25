@@ -27,81 +27,100 @@ var _ vmmemory.SparseLoader = (*volume.Volume)(nil)
 // continues exactly where the source stopped, and one that lost it says so.
 const stateBytes = 9
 
-// arena is one pager's shared page store: a byte slice at every offset a page
-// has been put at, which is what a real pager's shared memory is. A host has
-// one per pager, each of that pager's own page.
-//
-// It is a map rather than one entry per offset, because a real arena is a
-// sparse file: it has more addresses than it may ever hold pages at once, an
-// offset costs nothing until a page is put there, and releasing one punches
-// that memory back out. held is how many offsets hold a page, which is the
-// memory this arena is really holding and what its pager's budget bounds.
+// arena is one pager's shared page store: the files that pager makes, which is
+// what a real pager's shared memory is. A host has one per pager, each of that
+// pager's own page. One lock covers every file, because a guest's store and the
+// seal that write-protects it must be one step whichever file the page is in.
 type arena struct {
-	mu      sync.Mutex
+	mu    sync.Mutex
+	files []*arenaFile
+}
+
+// arenaFile is one file of an arena: a byte slice at every offset a page has
+// been put at.
+//
+// It is a map rather than one entry per offset, because a real file is sparse:
+// it has more addresses than it may ever hold pages at once, an offset costs
+// nothing until a page is put there, and releasing one punches that memory
+// back out. held is how many offsets hold a page, which is the memory this file
+// is really holding and what its pager's budget bounds.
+type arenaFile struct {
+	arena   *arena
 	offsets int
 	slots   map[int][]byte
 	held    int
 	peak    int
 }
 
-func newArena(offsets int) *arena {
-	return &arena{offsets: offsets, slots: make(map[int][]byte)}
+func newArena() *arena { return &arena{} }
+
+// File makes a file of offsets slots, every one of them a hole.
+func (a *arena) File(_ context.Context, offsets int) (vmmemory.ArenaFile, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	f := &arenaFile{arena: a, offsets: offsets, slots: make(map[int][]byte)}
+	a.files = append(a.files, f)
+	return f, nil
 }
 
-// at refuses an address this arena does not have, which is the check a real
-// arena's own bounds make.
-func (a *arena) at(slot int) error {
-	if slot < 0 || slot >= a.offsets {
-		return fmt.Errorf("arena offset %d is outside its %d", slot, a.offsets)
+// mapped is the page one mapping's slot names. A mapping names a slot of file
+// 0, which holds every page. Caller holds a.mu.
+func (a *arena) mapped(slot int) []byte { return a.files[0].slots[slot] }
+
+// at refuses an address this file does not have, which is the check a real
+// file's own bounds make.
+func (f *arenaFile) at(slot int) error {
+	if slot < 0 || slot >= f.offsets {
+		return fmt.Errorf("arena offset %d is outside its %d", slot, f.offsets)
 	}
 	return nil
 }
 
-func (a *arena) Read(_ context.Context, slot int, dst []byte) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if err := a.at(slot); err != nil {
+func (f *arenaFile) Read(_ context.Context, slot int, dst []byte) error {
+	f.arena.mu.Lock()
+	defer f.arena.mu.Unlock()
+	if err := f.at(slot); err != nil {
 		return err
 	}
 	// An offset no page has been put at is a hole, and a hole reads as zeros.
 	clear(dst)
-	copy(dst, a.slots[slot])
+	copy(dst, f.slots[slot])
 	return nil
 }
 
-func (a *arena) Write(_ context.Context, slot int, src []byte) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if err := a.at(slot); err != nil {
+func (f *arenaFile) Write(_ context.Context, slot int, src []byte) error {
+	f.arena.mu.Lock()
+	defer f.arena.mu.Unlock()
+	if err := f.at(slot); err != nil {
 		return err
 	}
-	if a.slots[slot] != nil {
+	if f.slots[slot] != nil {
 		return fmt.Errorf("write into allocated slot %d", slot)
 	}
-	a.slots[slot] = bytes.Clone(src)
-	a.held++
-	a.peak = max(a.peak, a.held)
+	f.slots[slot] = bytes.Clone(src)
+	f.held++
+	f.peak = max(f.peak, f.held)
 	return nil
 }
 
-// Equal compares two slots where they are, as a real arena mapped into this
+// Equal compares two slots where they are, as a real file mapped into this
 // process does, so a settle costs the comparison and no copy.
-func (a *arena) Equal(_ context.Context, first, second int) (bool, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return bytes.Equal(a.slots[first], a.slots[second]), nil
+func (f *arenaFile) Equal(_ context.Context, first, second int) (bool, error) {
+	f.arena.mu.Lock()
+	defer f.arena.mu.Unlock()
+	return bytes.Equal(f.slots[first], f.slots[second]), nil
 }
 
-func (a *arena) Release(_ context.Context, slot int) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if err := a.at(slot); err != nil {
+func (f *arenaFile) Release(_ context.Context, slot int) error {
+	f.arena.mu.Lock()
+	defer f.arena.mu.Unlock()
+	if err := f.at(slot); err != nil {
 		return err
 	}
-	if a.slots[slot] != nil {
-		a.held--
+	if f.slots[slot] != nil {
+		f.held--
 	}
-	delete(a.slots, slot)
+	delete(f.slots, slot)
 	return nil
 }
 
@@ -225,7 +244,7 @@ func (m *mapping) store(page uint64, value byte) bool {
 	}
 	m.arena.mu.Lock()
 	defer m.arena.mu.Unlock()
-	slot := m.arena.slots[p.slot]
+	slot := m.arena.mapped(p.slot)
 	for i := range slot {
 		slot[i] = value
 	}
@@ -634,7 +653,7 @@ func (g *guest) read(ctx context.Context, name string, page uint64) ([]byte, err
 	}
 	mp.arena.mu.Lock()
 	defer mp.arena.mu.Unlock()
-	return bytes.Clone(mp.arena.slots[p.slot]), nil
+	return bytes.Clone(mp.arena.mapped(p.slot)), nil
 }
 
 // readAll reads every page of every memory region through this guest's own fault path

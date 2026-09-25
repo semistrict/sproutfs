@@ -36,9 +36,9 @@ type changes struct {
 func (h *Host) measuring() bool { return h.cfg.MeasureChanges }
 
 // blockSums sums the bytes one arena slot holds, a changeBlock at a time.
-func (h *Host) blockSums(ctx context.Context, slot int) ([]uint64, error) {
+func (h *Host) blockSums(ctx context.Context, at fileSlot) ([]uint64, error) {
 	data := make([]byte, h.pageSize)
-	if err := h.arena.Read(ctx, slot, data); err != nil {
+	if err := at.file.Read(ctx, at.slot, data); err != nil {
 		return nil, err
 	}
 	sums := make([]uint64, 0, len(data)/changeBlock)
@@ -51,7 +51,7 @@ func (h *Host) blockSums(ctx context.Context, slot int) ([]uint64, error) {
 // noteCopied records what a page held as it became private: the bytes of the
 // resident page it now owns, before the guest can store into them.
 func (r *MemoryRegion) noteCopied(ctx context.Context, index uint64, pg *resident) error {
-	sums, err := r.host.blockSums(ctx, pg.slot)
+	sums, err := r.host.blockSums(ctx, pg.fileSlot)
 	if err != nil {
 		return err
 	}
@@ -128,7 +128,7 @@ func (s *settler) changedBlocks(ctx context.Context, c *MemoryRegionCheckpoint, 
 		return 0, false, err
 	}
 	defer h.unlock(pg)
-	now, err := h.blockSums(ctx, pg.slot)
+	now, err := h.blockSums(ctx, pg.fileSlot)
 	if err != nil {
 		return 0, false, err
 	}

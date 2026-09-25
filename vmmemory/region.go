@@ -422,18 +422,18 @@ func (r *MemoryRegion) withoutMemoryRegion(ctx context.Context, read func() erro
 // which revokes a victim's mappings and writes its bytes to the spill file: a
 // vCPU pause must wait for neither, exactly as it must not wait for a backing
 // read.
-func (r *MemoryRegion) reclaim(ctx context.Context) (int, error) {
-	return r.reclaimWith(ctx, func() (int, error) {
-		return r.host.allocate(ctx, r, nil, sim.Buggify(ctx, "vmmemory/evict-past-a-free-slot", 0.5))
+func (r *MemoryRegion) reclaim(ctx context.Context, f *arenaFile) (fileSlot, error) {
+	return r.reclaimWith(ctx, func() (fileSlot, error) {
+		return r.host.allocate(ctx, r, f, nil, sim.Buggify(ctx, "vmmemory/evict-past-a-free-slot", 0.5))
 	})
 }
 
-func (r *MemoryRegion) reclaimNear(ctx context.Context, index uint64) (int, error) {
-	return r.reclaimWith(ctx, func() (int, error) { return r.allocateNear(ctx, index) })
+func (r *MemoryRegion) reclaimNear(ctx context.Context, f *arenaFile, index uint64) (fileSlot, error) {
+	return r.reclaimWith(ctx, func() (fileSlot, error) { return r.allocateNear(ctx, f, index) })
 }
 
-func (r *MemoryRegion) reclaimPrivate(ctx context.Context, index uint64) (int, error) {
-	return r.reclaimWith(ctx, func() (int, error) {
+func (r *MemoryRegion) reclaimPrivate(ctx context.Context, index uint64) (fileSlot, error) {
+	return r.reclaimWith(ctx, func() (fileSlot, error) {
 		if reclaimSeam != nil {
 			reclaimSeam(index)
 		}
@@ -445,19 +445,19 @@ func (r *MemoryRegion) reclaimPrivate(ctx context.Context, index uint64) (int, e
 // given back if the memory region cannot be taken again, or is terminal once it
 // is: the fault that wanted the slot is over, and nothing else would ever
 // return it.
-func (r *MemoryRegion) reclaimWith(ctx context.Context, take func() (int, error)) (int, error) {
-	slot := -1
+func (r *MemoryRegion) reclaimWith(ctx context.Context, take func() (fileSlot, error)) (fileSlot, error) {
+	at := fileSlot{slot: -1}
 	err := r.withoutMemoryRegion(ctx, func() error {
 		taken, err := take()
 		if err == nil {
-			slot = taken
+			at = taken
 		}
 		return err
 	})
-	if err != nil && slot >= 0 {
-		return -1, r.host.abandonSlots(context.WithoutCancel(ctx), slot, 1, err)
+	if err != nil && at.slot >= 0 {
+		return fileSlot{slot: -1}, r.host.abandonSlots(context.WithoutCancel(ctx), at, 1, err)
 	}
-	return slot, err
+	return at, err
 }
 
 // reclaimSeam runs in a reclaim for a private page while the memory region is given

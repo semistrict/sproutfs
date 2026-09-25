@@ -199,6 +199,8 @@ func TestFirecrackerRefusesWhatItCannotStart(t *testing.T) {
 // is touched.
 type planArena struct{}
 
+func (a planArena) File(context.Context, int) (vmmemory.ArenaFile, error) { return a, nil }
+
 func (planArena) Read(context.Context, int, []byte) error  { return nil }
 func (planArena) Write(context.Context, int, []byte) error { return nil }
 func (planArena) Release(context.Context, int) error       { return nil }

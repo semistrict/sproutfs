@@ -135,24 +135,24 @@ func (c *MemoryRegionCheckpoint) Settle(ctx context.Context) (int, error) {
 	return unchanged, errors.Join(failures...)
 }
 
-// settler is one worker. Where the arena cannot compare two of its own slots
-// the comparison needs a page of each, which is made once and reused for every
-// page that worker settles.
+// settler is one worker. Where a file cannot compare two of its own slots, or
+// the two pages are in different files, the comparison needs a page of each,
+// which is made once and reused for every page that worker settles.
 type settler struct{ first, second []byte }
 
 // equal reports whether two arena slots hold the same bytes. Caller holds both
 // pages' locks, so neither slot can be released or refilled while it runs.
-func (s *settler) equal(ctx context.Context, h *Host, first, second int) (bool, error) {
-	if comparing, ok := h.arena.(EqualArena); ok {
-		return comparing.Equal(ctx, first, second)
+func (s *settler) equal(ctx context.Context, h *Host, first, second fileSlot) (bool, error) {
+	if comparing, ok := first.file.ArenaFile.(EqualFile); ok && first.file == second.file {
+		return comparing.Equal(ctx, first.slot, second.slot)
 	}
 	if s.first == nil {
 		s.first, s.second = make([]byte, h.pageSize), make([]byte, h.pageSize)
 	}
-	if err := h.arena.Read(ctx, first, s.first); err != nil {
+	if err := first.file.Read(ctx, first.slot, s.first); err != nil {
 		return false, err
 	}
-	if err := h.arena.Read(ctx, second, s.second); err != nil {
+	if err := second.file.Read(ctx, second.slot, s.second); err != nil {
 		return false, err
 	}
 	return bytes.Equal(s.first, s.second), nil
@@ -200,7 +200,7 @@ func (s *settler) compare(ctx context.Context, c *MemoryRegionCheckpoint, held *
 		return nil, nil
 	}
 	defer h.unlock(pg)
-	same, err := s.equal(ctx, h, origin.slot, pg.slot)
+	same, err := s.equal(ctx, h, origin.fileSlot, pg.fileSlot)
 	if err != nil || !same {
 		return nil, err
 	}

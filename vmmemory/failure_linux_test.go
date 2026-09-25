@@ -40,7 +40,7 @@ func (holeVolume) Locate(_ context.Context, offset, length uint64) ([]control.Ex
 func TestARefusedCommandNamesTheFrameTheClientRefused(t *testing.T) {
 	const page = checkpoint.PageSize4KiB
 	const pages = 8
-	arena, err := vmmemory.NewLinuxArena(rangePages, page)
+	arena, err := vmmemory.NewLinuxArena(page)
 	if err != nil {
 		t.Fatal(err)
 	}

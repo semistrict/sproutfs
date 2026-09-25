@@ -10,7 +10,7 @@ import (
 	"github.com/semistrict/sproutfs/control"
 )
 
-// slotArena is an arena of fixed pages held in memory, which is all the
+// slotArena is an arena file of fixed pages held in memory, which is all the
 // lost-write check needs to be exercised: it compares two slots' bytes.
 type slotArena [][]byte
 
@@ -25,7 +25,7 @@ func (a slotArena) Write(_ context.Context, slot int, src []byte) error {
 func (a slotArena) Release(context.Context, int) error { return nil }
 
 func page(slot int, private bool) *resident {
-	return &resident{slot: slot, private: private}
+	return &resident{fileSlot: fileSlot{slot: slot}, private: private}
 }
 
 func wantFinding(t *testing.T, got, contains string) {
@@ -110,10 +110,12 @@ func TestTheProbeAllowsTwoMemoryRegionsToShareANamedPrivatePage(t *testing.T) {
 // them rather than trusting the comparison that chose the page.
 func TestTheProbeChecksTheSettlesReShareByItsBytes(t *testing.T) {
 	arena := slotArena{make([]byte, 8), make([]byte, 8), make([]byte, 8)}
-	h := &Host{pageSize: 8, arena: arena}
+	file := &arenaFile{ArenaFile: arena}
+	h := &Host{pageSize: 8, files: []*arenaFile{file}}
 	var p probeState
 	b := &binding{index: 7}
 	origin, copied := page(1, false), page(2, true)
+	origin.file, copied.file = file, file
 	copy(arena[1], []byte("abcdefgh"))
 	copy(arena[2], []byte("abcdefgh"))
 	p.granted(b, copied, origin)

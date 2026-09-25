@@ -187,6 +187,11 @@ contain the same two sizes.
 
 ### An arena's offsets and its pages
 
+An arena is a set of files, and a resident page is one slot of one file. The
+pager makes file 0 when it starts, of `Config.ArenaOffsets` slots, and every
+page is in it. Each file reads, writes, zeroes, compares and releases its own
+slots, and keeps its own set of held offsets.
+
 An offset is an address in the arena. A page is memory. They are counted
 separately. `Config.ArenaOffsets` is the number of addresses the arena has.
 `Config.ResidentPages` is how many of them can hold memory at once. The memfd is

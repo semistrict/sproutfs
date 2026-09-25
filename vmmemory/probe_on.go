@@ -95,7 +95,7 @@ func (p *probeState) stable(ctx context.Context, h *Host, pg *resident, where st
 		return ""
 	}
 	buf := make([]byte, h.pageSize)
-	if err := h.arena.Read(ctx, pg.slot, buf); err != nil {
+	if err := pg.file.Read(ctx, pg.slot, buf); err != nil {
 		return ""
 	}
 	sum := crc32.ChecksumIEEE(buf)
@@ -206,10 +206,10 @@ func (p *probeState) reshared(ctx context.Context, h *Host, copied, origin *resi
 	}
 	was := make([]byte, h.pageSize)
 	now := make([]byte, h.pageSize)
-	if err := h.arena.Read(ctx, copied.slot, was); err != nil {
+	if err := copied.file.Read(ctx, copied.slot, was); err != nil {
 		return ""
 	}
-	if err := h.arena.Read(ctx, origin.slot, now); err != nil {
+	if err := origin.file.Read(ctx, origin.slot, now); err != nil {
 		return ""
 	}
 	if !bytes.Equal(was, now) {

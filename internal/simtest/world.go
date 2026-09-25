@@ -592,7 +592,7 @@ func (w *World) newPager(ctx context.Context, h *hostState) (*pager, func(), err
 		if kind == vmmemory.Ram {
 			offsets = k.LogicalPages + k.ResidentPages
 		}
-		a := newArena(offsets)
+		a := newArena()
 		p.arenas[kind] = a
 		memory, err := vmmemory.New(ctx, h.config.Resources, vmmemory.Config{
 			PageSize:      pageSize,

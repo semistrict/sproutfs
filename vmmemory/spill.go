@@ -206,7 +206,7 @@ func (h *Host) evictBatch(ctx context.Context, victims []*resident) error {
 		ps := int(h.pageSize)
 		data := make([]byte, len(pages)*ps)
 		for i, page := range pages {
-			if err := h.arena.Read(ctx, page.resident.slot, data[i*ps:(i+1)*ps]); err != nil {
+			if err := page.resident.file.Read(ctx, page.resident.slot, data[i*ps:(i+1)*ps]); err != nil {
 				return err
 			}
 		}

@@ -233,23 +233,23 @@ type populateRun struct {
 // fewer, which costs a command and a fault and never a page.
 func (p *windowPlan) residentRuns(candidates []candidate, runs []populateRun) []populateRun {
 	h := p.memoryRegion.host
-	slots := make([]int, len(candidates))
+	slots := make([]fileSlot, len(candidates))
 	named := make([]bool, len(candidates))
 	h.mu.Lock()
 	for i, item := range candidates {
-		slots[i] = -1
+		slots[i] = fileSlot{slot: -1}
 		if pg := h.clean[item.key]; pg != nil {
-			slots[i], named[i] = pg.slot, pg.private
+			slots[i], named[i] = pg.fileSlot, pg.private
 		}
 	}
 	h.mu.Unlock()
 	for first := 0; first < len(candidates); first++ {
-		if slots[first] < 0 {
+		if slots[first].slot < 0 {
 			continue
 		}
 		last := first + 1
 		for last < len(candidates) && named[last] == named[first] &&
-			slots[last] == slots[last-1]+1 && candidates[last].page == candidates[last-1].page+1 {
+			slots[last] == slots[last-1].plus(1) && candidates[last].page == candidates[last-1].page+1 {
 			last++
 		}
 		runs = append(runs, populateRun{first: candidates[first].page, last: candidates[last-1].page + 1,
