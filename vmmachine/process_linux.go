@@ -217,7 +217,7 @@ type Process struct {
 	// attaching is set once the memory sessions are being accepted, which is
 	// when connectionsReady will close.
 	attaching bool
-	// released is set once the Starter's Close has run, under mu.
+	// released is set once the Starter's Close has been called, under mu.
 	released bool
 	failure  atomic.Pointer[processFailure]
 	// id is the VM this machine runs, which is what its diagnostics name it by.
@@ -326,10 +326,13 @@ func Start(ctx context.Context, c Config) (*Process, error) {
 		return nil, fmt.Errorf("vmmachine: the Starter of %s started a VMM without preparing its memory", c.VM.ID())
 	}
 	connectErrors := p.attach(ctx, lifetime, c)
-	if err := limitStateFiles(vmm.PID()); err != nil {
+	if err := p.awaitAPI(ctx); err != nil {
 		return nil, err
 	}
-	if err := p.awaitAPI(ctx); err != nil {
+	// The limit goes on once the VMM is up and before any request that could
+	// make it write a state file. A VMM that exits at once is then reported by
+	// its exit, not by a limit there was no process left to take.
+	if err := limitStateFiles(vmm.PID()); err != nil {
 		return nil, err
 	}
 	phase, p.phases.ProcessNS = time.Now(), int64(time.Since(phase))
@@ -510,6 +513,13 @@ func (p *Process) attach(ctx, lifetime context.Context, c Config) chan error {
 			_ = e.listener.SetDeadline(time.Now().Add(2 * time.Minute))
 			socket, err := e.listener.AcceptUnix()
 			_ = e.listener.Close()
+			if errors.Is(err, net.ErrClosed) {
+				// Close closed the listener before the VMM connected. The
+				// start failed for a reason reported where it happened, and
+				// this session has nothing to add to it.
+				connectErrors <- errAbandoned
+				return
+			}
 			if err == nil {
 				err = checkPeer(socket, p.vmm.PID())
 			}
@@ -553,6 +563,10 @@ func (p *Process) attach(ctx, lifetime context.Context, c Config) chan error {
 	return connectErrors
 }
 
+// errAbandoned is the result of a session whose listener Close closed before
+// the VMM connected to it. It is never the reason a start failed.
+var errAbandoned = errors.New("vmmachine: the process closed before its VMM connected")
+
 // withSessions is what a request to the VMM has to be reported through once the
 // sessions exist. The VMM builds them inside its own requests, so a memory region the
 // pager refused fails the request with the only thing that side has — the
@@ -567,7 +581,7 @@ func (p *Process) withSessions(err error, connectErrors chan error) error {
 	for range p.endpoints {
 		select {
 		case connectErr := <-connectErrors:
-			if connectErr != nil {
+			if connectErr != nil && !errors.Is(connectErr, errAbandoned) {
 				errs = append(errs, connectErr)
 			}
 		default:
@@ -1147,12 +1161,14 @@ func (p *Process) Close() error {
 		p.scratch.removed(p)
 	}
 	// What the Starter built for the process goes last: a chroot the directory
-	// was in, and whatever the process ran inside.
+	// was in, and whatever the process ran inside. It is released once: a
+	// release that failed is the Starter's to finish, and a retried Close
+	// reports it again rather than asking for it twice.
 	if p.vmm != nil && !p.released {
-		if err := p.vmm.Close(); err != nil {
-			return errors.Join(p.closeErr, fmt.Errorf("vmmachine: releasing the VMM of %s: %w", p.id, err))
-		}
 		p.released = true
+		if err := p.vmm.Close(); err != nil {
+			p.closeErr = errors.Join(p.closeErr, fmt.Errorf("vmmachine: releasing the VMM of %s: %w", p.id, err))
+		}
 	}
 	return p.closeErr
 }
