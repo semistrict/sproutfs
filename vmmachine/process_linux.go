@@ -58,8 +58,11 @@ type Config struct {
 	Pagers vmmemory.Pagers
 	// VM owns every volume this machine maps. The pager is its only mutator
 	// while the machine runs.
-	VM           *volume.VM
-	Pmem         []Pmem
+	VM   *volume.VM
+	Pmem []Pmem
+	// VCPUs is how many processors a boot gives the guest, zero for the
+	// Starter's default. A restore's state carries its own.
+	VCPUs        int
 	RestoreState []byte
 	Connection   vmmemory.ConnectionConfig
 	// Backings replaces, by volume name, the backing a memory region attaches with. The
@@ -101,7 +104,7 @@ type plan struct {
 
 func (c Config) plan() (plan, error) {
 	if c.Starter == nil || c.Pagers.Ram == nil || c.Pagers.Pmem == nil || c.VM == nil ||
-		len(c.Pmem) > 63 || len(c.RestoreState) > MaxStateBytes {
+		len(c.Pmem) > 63 || c.VCPUs < 0 || c.VCPUs > 32 || len(c.RestoreState) > MaxStateBytes {
 		return plan{}, errors.New("vmmachine: invalid configuration")
 	}
 	var result plan
@@ -301,7 +304,7 @@ func Start(ctx context.Context, c Config) (*Process, error) {
 		}
 	}()
 	var memory *Memory
-	launch := &Launch{vm: c.VM.ID(), restore: len(c.RestoreState) > 0,
+	launch := &Launch{vm: c.VM.ID(), restore: len(c.RestoreState) > 0, vcpus: c.VCPUs,
 		prepare: func(ctx context.Context, placement Placement) (*Memory, error) {
 			prepared, err := p.prepareMemory(ctx, c, layout, placement)
 			if err != nil {

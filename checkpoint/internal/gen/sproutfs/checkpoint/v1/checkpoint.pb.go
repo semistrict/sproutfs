@@ -36,6 +36,7 @@ type Root struct {
 	xxx_hidden_StateLength     uint64                 `protobuf:"varint,7,opt,name=state_length,json=stateLength"`
 	xxx_hidden_Origins         *[]*Ref                `protobuf:"bytes,8,rep,name=origins"`
 	xxx_hidden_StateOrigin     uint32                 `protobuf:"varint,9,opt,name=state_origin,json=stateOrigin"`
+	xxx_hidden_Vcpus           uint32                 `protobuf:"varint,10,opt,name=vcpus"`
 	XXX_raceDetectHookData     protoimpl.RaceDetectHookData
 	XXX_presence               [1]uint32
 	unknownFields              protoimpl.UnknownFields
@@ -129,6 +130,13 @@ func (x *Root) GetStateOrigin() uint32 {
 	return 0
 }
 
+func (x *Root) GetVcpus() uint32 {
+	if x != nil {
+		return x.xxx_hidden_Vcpus
+	}
+	return 0
+}
+
 func (x *Root) SetVolumes(v []*Volume) {
 	x.xxx_hidden_Volumes = &v
 }
@@ -139,22 +147,22 @@ func (x *Root) SetCheckpoints(v []*Checkpoint) {
 
 func (x *Root) SetStateCheckpoint(v uint32) {
 	x.xxx_hidden_StateCheckpoint = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 2, 8)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 2, 9)
 }
 
 func (x *Root) SetStatePart(v uint32) {
 	x.xxx_hidden_StatePart = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 3, 8)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 3, 9)
 }
 
 func (x *Root) SetStateOffset(v uint64) {
 	x.xxx_hidden_StateOffset = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 4, 8)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 4, 9)
 }
 
 func (x *Root) SetStateLength(v uint64) {
 	x.xxx_hidden_StateLength = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 5, 8)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 5, 9)
 }
 
 func (x *Root) SetOrigins(v []*Ref) {
@@ -163,7 +171,12 @@ func (x *Root) SetOrigins(v []*Ref) {
 
 func (x *Root) SetStateOrigin(v uint32) {
 	x.xxx_hidden_StateOrigin = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 7, 8)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 7, 9)
+}
+
+func (x *Root) SetVcpus(v uint32) {
+	x.xxx_hidden_Vcpus = v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 8, 9)
 }
 
 func (x *Root) HasStateCheckpoint() bool {
@@ -201,6 +214,13 @@ func (x *Root) HasStateOrigin() bool {
 	return protoimpl.X.Present(&(x.XXX_presence[0]), 7)
 }
 
+func (x *Root) HasVcpus() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 8)
+}
+
 func (x *Root) ClearStateCheckpoint() {
 	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 2)
 	x.xxx_hidden_StateCheckpoint = 0
@@ -226,6 +246,11 @@ func (x *Root) ClearStateOrigin() {
 	x.xxx_hidden_StateOrigin = 0
 }
 
+func (x *Root) ClearVcpus() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 8)
+	x.xxx_hidden_Vcpus = 0
+}
+
 type Root_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
@@ -249,6 +274,11 @@ type Root_builder struct {
 	// State_origin is one past the position of the state's origin in origins.
 	// Zero means the state still lives in the checkpoint that published it.
 	StateOrigin *uint32
+	// Vcpus is how many processors a boot of this checkpoint gives the guest.
+	// A restore takes the count from the VMM state instead. Zero records none,
+	// and the host's default applies. A root carries its parent's, so a fork
+	// and every later checkpoint of a VM keep the count it was created with.
+	Vcpus *uint32
 }
 
 func (b0 Root_builder) Build() *Root {
@@ -258,25 +288,29 @@ func (b0 Root_builder) Build() *Root {
 	x.xxx_hidden_Volumes = &b.Volumes
 	x.xxx_hidden_Checkpoints = &b.Checkpoints
 	if b.StateCheckpoint != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 2, 8)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 2, 9)
 		x.xxx_hidden_StateCheckpoint = *b.StateCheckpoint
 	}
 	if b.StatePart != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 3, 8)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 3, 9)
 		x.xxx_hidden_StatePart = *b.StatePart
 	}
 	if b.StateOffset != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 4, 8)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 4, 9)
 		x.xxx_hidden_StateOffset = *b.StateOffset
 	}
 	if b.StateLength != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 5, 8)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 5, 9)
 		x.xxx_hidden_StateLength = *b.StateLength
 	}
 	x.xxx_hidden_Origins = &b.Origins
 	if b.StateOrigin != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 7, 8)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 7, 9)
 		x.xxx_hidden_StateOrigin = *b.StateOrigin
+	}
+	if b.Vcpus != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 8, 9)
+		x.xxx_hidden_Vcpus = *b.Vcpus
 	}
 	return m0
 }
@@ -1787,7 +1821,7 @@ var File_sproutfs_checkpoint_v1_checkpoint_proto protoreflect.FileDescriptor
 
 const file_sproutfs_checkpoint_v1_checkpoint_proto_rawDesc = "" +
 	"\n" +
-	"'sproutfs/checkpoint/v1/checkpoint.proto\x12\x16sproutfs.checkpoint.v1\"\xf6\x02\n" +
+	"'sproutfs/checkpoint/v1/checkpoint.proto\x12\x16sproutfs.checkpoint.v1\"\x8c\x03\n" +
 	"\x04Root\x128\n" +
 	"\avolumes\x18\x02 \x03(\v2\x1e.sproutfs.checkpoint.v1.VolumeR\avolumes\x12D\n" +
 	"\vcheckpoints\x18\x03 \x03(\v2\".sproutfs.checkpoint.v1.CheckpointR\vcheckpoints\x12)\n" +
@@ -1797,7 +1831,9 @@ const file_sproutfs_checkpoint_v1_checkpoint_proto_rawDesc = "" +
 	"\fstate_offset\x18\x06 \x01(\x04R\vstateOffset\x12!\n" +
 	"\fstate_length\x18\a \x01(\x04R\vstateLength\x125\n" +
 	"\aorigins\x18\b \x03(\v2\x1b.sproutfs.checkpoint.v1.RefR\aorigins\x12!\n" +
-	"\fstate_origin\x18\t \x01(\rR\vstateOriginJ\x04\b\x01\x10\x02\"1\n" +
+	"\fstate_origin\x18\t \x01(\rR\vstateOrigin\x12\x14\n" +
+	"\x05vcpus\x18\n" +
+	" \x01(\rR\x05vcpusJ\x04\b\x01\x10\x02\"1\n" +
 	"\x03Ref\x12\x0e\n" +
 	"\x02vm\x18\x01 \x01(\tR\x02vm\x12\x1a\n" +
 	"\bsequence\x18\x02 \x01(\x04R\bsequence\"\xba\x01\n" +

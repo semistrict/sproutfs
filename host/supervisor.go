@@ -64,7 +64,7 @@ type VMs interface {
 	// reason these are two questions.
 	Live(ctx context.Context) error
 	Status(ctx context.Context) (hostapi.Status, error)
-	Create(ctx context.Context, id, template string) (hostapi.CreateResult, error)
+	Create(ctx context.Context, request hostapi.CreateRequest) (hostapi.CreateResult, error)
 	// Open opens a VM no host runs and starts its guest. An empty request
 	// restores the VM exactly where it was, from the VMM state its selected
 	// checkpoint holds; a cold one discards every page of its memory and that

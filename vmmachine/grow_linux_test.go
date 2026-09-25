@@ -13,6 +13,7 @@ import (
 
 	"github.com/semistrict/sproutfs/api/guest"
 	"github.com/semistrict/sproutfs/vmmachine"
+	"github.com/semistrict/sproutfs/volume"
 )
 
 // grownRootBytes is what the root volume becomes at the cold start below. A
@@ -62,7 +63,7 @@ func TestAGuestGrowsItsFilesystemOverARootVolumeThatGrew(t *testing.T) {
 	// The cold start's own publication: the memory is discarded and the root
 	// volume grows, which is the one moment either may change.
 	if err := vm.DiscardMemory(ctx, vmmachine.RAMVolume,
-		map[string]uint64{"root": grownRootBytes}); err != nil {
+		volume.Shape{Sizes: map[string]uint64{"root": grownRootBytes}}); err != nil {
 		t.Fatal(err)
 	}
 	if size := vm.Volume("root").Size(); size != grownRootBytes {

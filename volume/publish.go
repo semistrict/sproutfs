@@ -52,29 +52,55 @@ func (vm *VM) checkpoint(ctx context.Context, force bool) error {
 // memory without the state that was captured over it, or state without the
 // memory it describes.
 //
-// sizes is the shape the VM takes from here, by volume name; a volume it does
-// not name keeps the size it has. The memory may take any size, up or down — it
-// is being discarded anyway — and every other volume may only grow, because the
-// end of a filesystem is not this package's to cut. A grown volume's new pages
-// read as zeroes.
+// shape is the shape the VM takes from here. A volume its sizes do not name
+// keeps the size it has. The memory may take any size, up or down — it is being
+// discarded anyway — and every other volume may only grow, because the end of a
+// filesystem is not this package's to cut. A grown volume's new pages read as
+// zeroes. A shape with no processor count keeps the one the VM has.
 //
 // It is called on a VM nothing is running: a cold start opens the VM, discards
-// its memory and only then boots it. A publication that fails leaves the VM
-// exactly as it was, at the checkpoint it was opened on and at the shape it had.
-func (vm *VM) DiscardMemory(ctx context.Context, memory string, sizes map[string]uint64) error {
+// its memory and only then boots it, and a create publishes its first
+// checkpoint this way before the first boot. A publication that fails leaves the
+// VM exactly as it was, at the checkpoint it was opened on and at the shape it
+// had.
+func (vm *VM) DiscardMemory(ctx context.Context, memory string, shape Shape) error {
 	if err := vm.pubMu.Lock(ctx); err != nil {
 		return err
 	}
-	ckpt, undo, err := vm.discarding(memory, sizes)
+	if shape.VCPUs < 0 {
+		vm.pubMu.Unlock()
+		return ErrInvalidConfig
+	}
+	ckpt, undo, err := vm.discarding(memory, shape.Sizes)
 	if ckpt == nil || err != nil {
 		vm.pubMu.Unlock()
 		return err
 	}
+	ckpt.vcpus = shape.VCPUs
 	if err := vm.complete(ctx, ckpt); err != nil {
 		undo()
 		return err
 	}
 	return nil
+}
+
+// Shape is what a cold boot gives a VM from here: the sizes of the volumes it
+// changes, by name, and how many processors the guest boots with, zero to keep
+// the count the VM has.
+type Shape struct {
+	Sizes map[string]uint64
+	VCPUs int
+}
+
+// VCPUs is how many processors a boot of this VM's selected checkpoint gives
+// the guest, zero where none is recorded and the host's default applies.
+func (vm *VM) VCPUs() int {
+	vm.mu.Lock()
+	defer vm.mu.Unlock()
+	if vm.baseIndex == nil {
+		return 0
+	}
+	return vm.baseIndex.VCPUs()
 }
 
 // discarding zeroes the whole memory volume and captures the checkpoint that
@@ -478,6 +504,9 @@ func (vm *VM) publish(ctx context.Context, ckpt *Checkpoint) (*checkpoint.Index,
 		publication.SetState(ckpt.state)
 	case ckpt.dropState:
 		publication.DropState()
+	}
+	if ckpt.vcpus != 0 {
+		publication.SetVCPUs(ckpt.vcpus)
 	}
 	index, err := publication.Commit(ctx, checkpointSource{checkpoint: ckpt})
 	if err != nil {

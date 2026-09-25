@@ -32,10 +32,12 @@ type invocation struct {
 	Force bool
 	// Cold starts a VM without its memory: the host discards every page of it
 	// and the VMM state with it, and boots the kernel from the root volume.
-	// Memory and Disk are the shape it comes back at, which only a cold start
-	// may change, because it is the one moment nothing in memory describes it.
+	// Memory, Disk and VCPUs are the shape a VM is created at, or the shape it
+	// comes back at, which only a cold start may change, because it is the one
+	// moment nothing in memory describes it.
 	Cold         bool
 	Memory, Disk uint64
+	VCPUs        int
 	// Suspend stops a VM with its memory and its VMM state published beside
 	// its disks, so a start resumes it rather than booting it.
 	Suspend bool
@@ -47,7 +49,8 @@ var errUsage = errors.New("usage")
 
 const usage = `sproutfsctl drives a sproutfs demo deployment through its orchestrator.
 
-  sproutfsctl create [--template NAME]     create a VM and boot it
+  sproutfsctl create [--template NAME] [--memory 1G] [--disk 4G] [--vcpus 2]
+                                           create a VM at a shape and boot it
   sproutfsctl list                         list the VMs, their hosts and their states
   sproutfsctl hosts                        list the host pods
   sproutfsctl store                        what each host's object store has served
@@ -63,7 +66,7 @@ const usage = `sproutfsctl drives a sproutfs demo deployment through its orchest
   sproutfsctl stop VM [--suspend]          checkpoint a VM's disks and close it, keeping
                                            the VM; --suspend keeps its memory too,
                                            so a start resumes it rather than booting it
-  sproutfsctl start VM [--to HOST] [--cold] [--memory 1G] [--disk 4G]
+  sproutfsctl start VM [--to HOST] [--cold] [--memory 1G] [--disk 4G] [--vcpus 2]
                                            open a stopped VM on a host again;
                                            --cold discards its memory and boots
                                            its kernel, and only a cold start may
@@ -87,7 +90,7 @@ var commands = map[string]struct {
 	// keeps a guest's own flags and quoting out of this CLI's parser.
 	trailing bool
 }{
-	"create":    {flags: []string{"template"}},
+	"create":    {flags: []string{"template", "memory", "disk", "vcpus"}},
 	"list":      {},
 	"hosts":     {},
 	"store":     {},
@@ -99,7 +102,7 @@ var commands = map[string]struct {
 	"kill-host": {target: "host"},
 	"recover":   {target: "vm", switches: []string{"force"}},
 	"stop":      {target: "vm", switches: []string{"suspend"}},
-	"start":     {target: "vm", flags: []string{"to", "memory", "disk"}, switches: []string{"cold"}},
+	"start":     {target: "vm", flags: []string{"to", "memory", "disk", "vcpus"}, switches: []string{"cold"}},
 	"delete":    {target: "vm"},
 	"check":     {},
 }
@@ -189,6 +192,12 @@ func parse(args []string) (invocation, error) {
 				return invocation{}, fmt.Errorf("%w: --timeout is %q, want a duration such as 30s", errUsage, value)
 			}
 			result.Timeout = period
+		case "vcpus":
+			vcpus, err := strconv.Atoi(value)
+			if err != nil || vcpus < 1 || vcpus > 32 {
+				return invocation{}, fmt.Errorf("%w: --vcpus is %q, want 1 to 32", errUsage, value)
+			}
+			result.VCPUs = vcpus
 		case "memory", "disk":
 			size, err := parseBytes(value)
 			if err != nil {
@@ -204,9 +213,9 @@ func parse(args []string) (invocation, error) {
 	// A shape is a cold boot's and nothing else's: a warm start brings the VM
 	// back at the shape its memory describes, and a flag that quietly did
 	// nothing would be worse than one that is not accepted.
-	if !result.Cold && (result.Memory != 0 || result.Disk != 0) {
+	if name == "start" && !result.Cold && (result.Memory != 0 || result.Disk != 0 || result.VCPUs != 0) {
 		return invocation{}, fmt.Errorf(
-			"%w: --memory and --disk need --cold, which is the one moment a VM's shape can change",
+			"%w: --memory, --disk and --vcpus need --cold, which is the one moment a VM's shape can change",
 			errUsage)
 	}
 	if spec.trailing {

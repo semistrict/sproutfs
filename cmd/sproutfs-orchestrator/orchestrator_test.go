@@ -193,7 +193,12 @@ func (f *fakeHostClient) Status(ctx context.Context) (host.Status, error) {
 func (f *fakeHostClient) Create(_ context.Context, request host.CreateRequest) (host.CreateResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.record("create %s %s", request.ID, request.Template)
+	if request.Memory != 0 || request.Disk != 0 || request.VCPUs != 0 {
+		f.record("create %s %s memory=%d disk=%d vcpus=%d", request.ID, request.Template,
+			request.Memory, request.Disk, request.VCPUs)
+	} else {
+		f.record("create %s %s", request.ID, request.Template)
+	}
 	f.running = append(f.running, request.ID)
 	return host.CreateResult{VM: host.VM{ID: request.ID, Template: request.Template, Host: f.name}}, nil
 }
@@ -470,7 +475,7 @@ func TestCreatePlacesOnTheHostWithTheMostMemoryFree(t *testing.T) {
 	d := newDeployment(t, map[string][]string{"host-0": {"vm-a", "vm-b"}, "host-1": {"vm-c"}})
 	d.hosts["host-0"].arena(1024, 900)
 	d.hosts["host-1"].arena(1024, 300)
-	result, err := d.orchestrator.Create(t.Context(), "alpine")
+	result, err := d.orchestrator.Create(t.Context(), orch.CreateRequest{Template: "alpine"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -488,7 +493,7 @@ func TestCreatePlacesOnTheHostWithTheMostMemoryFree(t *testing.T) {
 func TestCreateSkipsAHostThatDoesNotAnswer(t *testing.T) {
 	d := newDeployment(t, map[string][]string{"host-0": {"vm-a", "vm-b"}, "host-1": {}})
 	d.hosts["host-1"].down = true
-	result, err := d.orchestrator.Create(t.Context(), "alpine")
+	result, err := d.orchestrator.Create(t.Context(), orch.CreateRequest{Template: "alpine"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -500,7 +505,7 @@ func TestCreateSkipsAHostThatDoesNotAnswer(t *testing.T) {
 func TestCreateWithoutAnyLiveHostIsRefused(t *testing.T) {
 	d := newDeployment(t, map[string][]string{"host-0": {}})
 	d.hosts["host-0"].down = true
-	_, err := d.orchestrator.Create(t.Context(), "alpine")
+	_, err := d.orchestrator.Create(t.Context(), orch.CreateRequest{Template: "alpine"})
 	if !errors.Is(err, errNoHost) {
 		t.Fatalf("error %v, want no host available", err)
 	}
@@ -941,7 +946,7 @@ func TestExecReportsAVMNoHostRuns(t *testing.T) {
 // slow boot shows a VM being created rather than nothing at all.
 func TestCreateRecordsTheVMBeforeAndAfterItStarts(t *testing.T) {
 	d := newDeployment(t, map[string][]string{"host-0": {}})
-	result, err := d.orchestrator.Create(t.Context(), "alpine")
+	result, err := d.orchestrator.Create(t.Context(), orch.CreateRequest{Template: "alpine"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1164,7 +1169,7 @@ func TestPlacementFollowsFreeMemoryAndRefusesWhatDoesNotFit(t *testing.T) {
 	for _, h := range d.hosts {
 		h.templates = []host.Template{{Name: "workload", MemoryBytes: 512 << 20, Imported: true}}
 	}
-	created, err := d.orchestrator.Create(t.Context(), "workload")
+	created, err := d.orchestrator.Create(t.Context(), orch.CreateRequest{Template: "workload"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1175,7 +1180,7 @@ func TestPlacementFollowsFreeMemoryAndRefusesWhatDoesNotFit(t *testing.T) {
 	// And a template no host can hold is refused, rather than started on
 	// whichever host is running the fewest VMs and lost when it will not start.
 	d.hosts["host-1"].arena(1024, 1020)
-	if _, err := d.orchestrator.Create(t.Context(), "workload"); !errors.Is(err, errNoHost) {
+	if _, err := d.orchestrator.Create(t.Context(), orch.CreateRequest{Template: "workload"}); !errors.Is(err, errNoHost) {
 		t.Fatalf("a create that fits nowhere = %v, want errNoHost", err)
 	}
 	for _, line := range d.log {

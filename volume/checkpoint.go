@@ -57,6 +57,9 @@ type Checkpoint struct {
 	// in memory describes it.
 	dropState bool
 	resized   map[string]uint64
+	// vcpus is the processor count a cold boot gave this checkpoint, zero to
+	// keep the one its parent records.
+	vcpus int
 	// retry is asked after a failed publication, and protected is the pins its
 	// first attempt compacted around, which every retry uses again.
 	retry     Retry

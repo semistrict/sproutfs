@@ -62,7 +62,10 @@ type Publication struct {
 	// way state beside the pages it would restore is a moment that never
 	// existed.
 	dropState bool
-	err       error
+	// vcpus is the processor count this checkpoint records, zero to keep the
+	// parent's.
+	vcpus uint32
+	err   error
 }
 
 // Begin starts a checkpoint that inherits parent, which may be nil for a VM
@@ -152,6 +155,20 @@ func (p *Publication) DropState() {
 	p.state, p.hasState, p.dropState = nil, false, true
 }
 
+// SetVCPUs records how many processors a boot of this checkpoint gives the
+// guest. A checkpoint that sets none keeps its parent's count.
+func (p *Publication) SetVCPUs(vcpus int) {
+	if vcpus < 1 || vcpus > maximumVCPUs {
+		p.fail(ErrInvalidConfig)
+		return
+	}
+	p.vcpus = uint32(vcpus)
+}
+
+// maximumVCPUs bounds the processor count a checkpoint records, which is the
+// most a Firecracker guest can have.
+const maximumVCPUs = 32
+
 func (p *Publication) fail(err error) {
 	if p.err == nil {
 		p.err = err
@@ -192,6 +209,10 @@ func (p *Publication) Commit(ctx context.Context, source Source) (*Index, error)
 			index.checkpoints[ref] = entry
 		}
 		index.state = p.parent.state
+		index.vcpus = p.parent.vcpus
+	}
+	if p.vcpus != 0 {
+		index.vcpus = p.vcpus
 	}
 	// A checkpoint with no state of its own keeps the parent's: only a capture
 	// pauses the guest for VMM state, and the VM stays restorable from the last

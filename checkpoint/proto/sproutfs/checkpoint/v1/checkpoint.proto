@@ -32,6 +32,11 @@ message Root {
   // State_origin is one past the position of the state's origin in origins.
   // Zero means the state still lives in the checkpoint that published it.
   uint32 state_origin = 9;
+  // Vcpus is how many processors a boot of this checkpoint gives the guest.
+  // A restore takes the count from the VMM state instead. Zero records none,
+  // and the host's default applies. A root carries its parent's, so a fork
+  // and every later checkpoint of a VM keep the count it was created with.
+  uint32 vcpus = 10;
 }
 
 // Ref names one checkpoint: the VM that published it and its sequence.

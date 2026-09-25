@@ -196,11 +196,13 @@ the same template with other bytes. Templates of images that nothing creates
 from any more are left to a collector, like every other pinned checkpoint. The
 checkpoint a template pins is the fork point of every VM created from it.
 
-One consequence follows. A VM's RAM size is the size its image's template was
-imported at, and the template was imported once. `SPROUTFS_VM_MEMORY_BYTES` and
-a template's own `name=path:bytes` are read at that import. So raising either
-one gives no extra memory to a VM created from an image the deployment already
-holds. A cold start with a new size is how to change one VM's shape.
+A VM does not have to keep its template's shape. A create names the VM's RAM,
+the size its root volume grows to, and its processors. It publishes the VM's
+first checkpoint at that shape, through the same publication a cold boot uses
+(see [resizing at a cold boot](#resizing-at-a-cold-boot)), before the first
+boot. A template never ran, so nothing is lost by discarding its memory. What a
+create does not name is the template's: its RAM and disk as imported, and the
+host's processor count.
 
 Software in the guest is reached over the VM's vsock, which carries only exec.
 
@@ -559,7 +561,8 @@ is also refused if the pager could not map all of the VM's memory regions.
 ### Resizing at a cold boot
 
 A cold boot is the only moment when a VM's shape can change, because nothing in
-memory describes the shape any more. So `OpenCold` takes a `ColdShape`:
+memory describes the shape any more. A create's first checkpoint is one. So
+`OpenCold` and `Host.Reshape` take a `ColdShape`:
 
 - `MemoryBytes` sets the RAM volume's size in the discarding publication. Any
   size the host admits is allowed, larger or smaller, because the memory is
@@ -568,8 +571,14 @@ memory describes the shape any more. So `OpenCold` takes a `ColdShape`:
   as zeroes, which is what a filesystem grown in place expects. After the boot,
   the guest takes them with `sproutfs-guest-witness grow /`. Shrinking is
   refused, because the volume must not remove the end of a filesystem.
+- `VCPUs` sets how many processors the guest boots with. The checkpoint
+  records the count, and every later checkpoint and every fork keeps it, so a
+  VM booted cold after its host is lost boots with its own count, on any host.
+  The host gives it to the Starter as `Launch.VCPUs`. A VM that records none
+  boots with the Starter's default. A restore takes its count from the VMM
+  state.
 
-Both are refused for a warm start, at every layer that carries them. After a
+All three are refused for a warm start, at every layer that carries them. After a
 resize, a VM's committed RAM is its own and no longer its template's. The
 control plane's record of the VM tracks this; see
 [the deployment's API](../deploy/README.md#the-orchestrator-api).

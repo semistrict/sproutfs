@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/semistrict/sproutfs/api/host"
+	"github.com/semistrict/sproutfs/api/orch"
 )
 
 // TestPlacementMeasuresCommittedGuestRAMRatherThanArenaResidency: the arena is
@@ -27,7 +28,7 @@ func TestPlacementMeasuresCommittedGuestRAMRatherThanArenaResidency(t *testing.T
 	for _, h := range d.hosts {
 		h.templates = []host.Template{{Name: "workload", MemoryBytes: 512 << 20, Imported: true}}
 	}
-	created, err := d.orchestrator.Create(t.Context(), "workload")
+	created, err := d.orchestrator.Create(t.Context(), orch.CreateRequest{Template: "workload"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,7 +39,7 @@ func TestPlacementMeasuresCommittedGuestRAMRatherThanArenaResidency(t *testing.T
 	// however little of it is resident.
 	d.hosts["host-0"].commit(1024 << 21)
 	d.hosts["host-1"].commit(1024 << 21)
-	if _, err := d.orchestrator.Create(t.Context(), "workload"); !errors.Is(err, errNoHost) {
+	if _, err := d.orchestrator.Create(t.Context(), orch.CreateRequest{Template: "workload"}); !errors.Is(err, errNoHost) {
 		t.Fatalf("a create that fits nowhere = %v, want errNoHost", err)
 	}
 }

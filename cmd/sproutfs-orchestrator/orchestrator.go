@@ -707,15 +707,20 @@ func named(hosts []liveHost, name string) (liveHost, error) {
 }
 
 // Create allocates an identity and creates the VM on the least loaded host.
-func (o *orchestrator) Create(ctx context.Context, template string) (orch.CreateResult, error) {
+func (o *orchestrator) Create(ctx context.Context, request orch.CreateRequest) (orch.CreateResult, error) {
+	template := request.Template
 	hosts, err := o.survey(ctx)
 	if err != nil {
 		return orch.CreateResult{}, err
 	}
-	// The memory a VM has starts as its template's and is written down here, so
-	// that everything after — a fork of it, a migration, a start — measures the
-	// VM rather than looking a template up again for it.
-	need := memoryOf(hosts, template)
+	// The memory a VM has is what its create asks for, or else its template's,
+	// and it is written down here, so that everything after — a fork of it, a
+	// migration, a start — measures the VM rather than looking a template up
+	// again for it.
+	need := request.Memory
+	if need == 0 {
+		need = memoryOf(hosts, template)
+	}
 	target, err := place(hosts, "", need)
 	if err != nil {
 		return orch.CreateResult{}, err
@@ -723,7 +728,8 @@ func (o *orchestrator) Create(ctx context.Context, template string) (orch.Create
 	id := o.identify()
 	o.note(ctx, vmRecord{ID: id, Host: target.report.Name, State: stateCreating,
 		Template: template, Memory: need})
-	result, err := target.client.Create(ctx, host.CreateRequest{ID: id, Template: template})
+	result, err := target.client.Create(ctx, host.CreateRequest{ID: id, Template: template,
+		Memory: request.Memory, Disk: request.Disk, VCPUs: request.VCPUs})
 	if err != nil {
 		o.forget(ctx, id)
 		return orch.CreateResult{}, fmt.Errorf("creating %s on %s: %w", id, target.report.Name, err)
@@ -1184,13 +1190,14 @@ func (o *orchestrator) Start(ctx context.Context, id string, request orch.StartR
 	// A VM that comes back where it was comes back at the shape its memory
 	// describes, so there is nothing to resize; asking is a mistake rather than
 	// a request that quietly does nothing.
-	if !request.Cold && (request.Memory != 0 || request.Disk != 0) {
+	if !request.Cold && (request.Memory != 0 || request.Disk != 0 || request.VCPUs != 0) {
 		return orch.StartResult{}, fmt.Errorf(
-			"%w: a VM's memory and disk can be resized only at a cold start, "+
+			"%w: a VM's memory, disk and processors can change only at a cold start, "+
 				"which is the one moment nothing in memory describes its shape", errRequest)
 	}
 	return o.reopen(ctx, id, reopening{to: request.To, state: stateStarting, what: "started",
-		open: host.OpenRequest{Cold: request.Cold, Memory: request.Memory, Disk: request.Disk}})
+		open: host.OpenRequest{Cold: request.Cold, Memory: request.Memory, Disk: request.Disk,
+			VCPUs: request.VCPUs}})
 }
 
 // reopening is the terms one reopen runs under: where the VM is to go, the

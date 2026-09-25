@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"slices"
 	"testing"
 
@@ -119,7 +120,7 @@ func TestCreateRecordsTheTemplatesMemory(t *testing.T) {
 		h.arena(1024, 0)
 		h.commit(0)
 	}
-	created, err := d.orchestrator.Create(t.Context(), "workload")
+	created, err := d.orchestrator.Create(t.Context(), orch.CreateRequest{Template: "workload"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,6 +130,39 @@ func TestCreateRecordsTheTemplatesMemory(t *testing.T) {
 	}
 	if row.Memory != 512<<20 {
 		t.Fatalf("the created VM was recorded with %d bytes of memory, want its template's", row.Memory)
+	}
+}
+
+// TestACreateIsPlacedAndRecordedAtTheMemoryItAsksFor: a create that asks for
+// more RAM than its template has costs a host that much, so it is placed by
+// it, written down with it, and handed to the host with the rest of its shape.
+func TestACreateIsPlacedAndRecordedAtTheMemoryItAsksFor(t *testing.T) {
+	d := newDeployment(t, map[string][]string{"host-0": {}})
+	host0 := d.hosts["host-0"]
+	host0.templates = []host.Template{{Name: "workload", MemoryBytes: 512 << 20, Imported: true}}
+	host0.arena(1024, 0)
+	host0.commit(0)
+	// The arena is 2 GiB: a 4 GiB guest fits nowhere, whatever its template.
+	if _, err := d.orchestrator.Create(t.Context(), orch.CreateRequest{Template: "workload",
+		Memory: 4 << 30}); !errors.Is(err, errNoHost) {
+		t.Fatalf("a create bigger than every host = %v, want errNoHost", err)
+	}
+	created, err := d.orchestrator.Create(t.Context(), orch.CreateRequest{Template: "workload",
+		Memory: 1 << 30, Disk: 4 << 30, VCPUs: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := created.Result.VM.ID
+	row, found, err := d.orchestrator.table.VM(t.Context(), id)
+	if err != nil || !found {
+		t.Fatalf("the table has no row for the created VM: %v %v", found, err)
+	}
+	if row.Memory != 1<<30 {
+		t.Fatalf("the created VM was recorded with %d bytes of memory, want the 1 GiB it asked for", row.Memory)
+	}
+	want := fmt.Sprintf("host-0 create %s workload memory=%d disk=%d vcpus=2", id, 1<<30, 4<<30)
+	if len(d.log) == 0 || d.log[len(d.log)-1] != want {
+		t.Fatalf("the deployment did %v, want %q last", d.log, want)
 	}
 }
 

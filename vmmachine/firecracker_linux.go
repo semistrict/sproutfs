@@ -48,7 +48,11 @@ func (f *Firecracker) Start(ctx context.Context, launch *Launch) (VMM, error) {
 		if f.Initrd != "" {
 			boot["initrd_path"] = f.Initrd
 		}
-		document := map[string]any{"machine-config": map[string]any{"vcpu_count": f.VCPUs},
+		vcpus := f.VCPUs
+		if launch.VCPUs() > 0 {
+			vcpus = launch.VCPUs()
+		}
+		document := map[string]any{"machine-config": map[string]any{"vcpu_count": vcpus},
 			"boot-source": boot, "drives": []any{}}
 		if vsock != "" {
 			document["vsock"] = map[string]any{"guest_cid": f.VsockCID, "uds_path": vsockWithin}

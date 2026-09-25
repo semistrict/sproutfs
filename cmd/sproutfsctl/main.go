@@ -61,7 +61,8 @@ func execute(ctx context.Context, client *orch.Client, command invocation,
 		_, err := fmt.Fprintln(out, usage)
 		return err
 	case "create":
-		result, err := client.Create(ctx, command.Template)
+		result, err := client.Create(ctx, orch.CreateRequest{Template: command.Template,
+			Memory: command.Memory, Disk: command.Disk, VCPUs: command.VCPUs})
 		if err != nil {
 			return err
 		}
@@ -196,7 +197,7 @@ func execute(ctx context.Context, client *orch.Client, command invocation,
 		return err
 	case "start":
 		result, err := client.Start(ctx, command.Target, orch.StartRequest{To: command.To,
-			Cold: command.Cold, Memory: command.Memory, Disk: command.Disk})
+			Cold: command.Cold, Memory: command.Memory, Disk: command.Disk, VCPUs: command.VCPUs})
 		if err != nil {
 			return err
 		}

@@ -434,6 +434,7 @@ func (s *supervisor) records(ctx context.Context) ([]hostapi.VM, error) {
 			return nil, err
 		}
 		records = append(records, hostapi.VM{ID: id, Template: m.template, Host: s.config.PodName,
+			VCPUs:      m.vm.VCPUs(),
 			Checkpoint: status.Checkpoint.Sequence, Epoch: status.Epoch, DirtyBytes: status.DirtyBytes,
 			LossWindow: window, Waiting: waiting, PrivateBytes: private})
 	}
@@ -577,7 +578,7 @@ func (s *supervisor) forget(id string) {
 
 func (s *supervisor) record(m *machine) hostapi.VM {
 	status := m.vm.Status()
-	return hostapi.VM{ID: m.vm.ID(), Template: m.template, Host: s.config.PodName,
+	return hostapi.VM{ID: m.vm.ID(), Template: m.template, Host: s.config.PodName, VCPUs: m.vm.VCPUs(),
 		Checkpoint: status.Checkpoint.Sequence, Epoch: status.Epoch, DirtyBytes: status.DirtyBytes}
 }
 

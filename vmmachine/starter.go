@@ -75,6 +75,7 @@ type VsockVMM interface {
 type Launch struct {
 	vm      string
 	restore bool
+	vcpus   int
 	prepare func(context.Context, Placement) (*Memory, error)
 }
 
@@ -85,6 +86,11 @@ func (l *Launch) VM() string { return l.vm }
 // A restore's devices are in its state: its Starter gives it a configuration
 // with no devices, and Memory.Load the new host names of anything that moved.
 func (l *Launch) Restore() bool { return l.restore }
+
+// VCPUs is how many processors a boot gives the guest, zero where the VM
+// records none and the Starter's own default applies. A restore takes the count
+// from its state and ignores it.
+func (l *Launch) VCPUs() int { return l.vcpus }
 
 // Prepare creates the process's directory where the placement puts it and
 // opens the sockets the VMM's memory attaches through. It is called once, before

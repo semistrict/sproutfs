@@ -15,9 +15,10 @@ import (
 	"github.com/semistrict/sproutfs/volume"
 )
 
-func (s *supervisor) Create(ctx context.Context, id, selected string) (hostapi.CreateResult, error) {
+func (s *supervisor) Create(ctx context.Context, request hostapi.CreateRequest) (hostapi.CreateResult, error) {
 	began := s.clock.Now()
-	name, chosen, err := s.config.Templates.Resolve(selected)
+	id := request.ID
+	name, chosen, err := s.config.Templates.Resolve(request.Template)
 	if err != nil {
 		return hostapi.CreateResult{}, fmt.Errorf("%w: %w", ErrRequest, err)
 	}
@@ -32,7 +33,7 @@ func (s *supervisor) Create(ctx context.Context, id, selected string) (hostapi.C
 	templateSeconds := s.since(prepared)
 
 	forked := s.clock.Now()
-	vm, state, err := CreateFork(ctx, s.host.Volumes(), id, template.Point)
+	vm, _, err := CreateFork(ctx, s.host.Volumes(), id, template.Point)
 	if err != nil {
 		return hostapi.CreateResult{}, fmt.Errorf("forking %s from template %s: %w", id, name, err)
 	}
@@ -50,8 +51,15 @@ func (s *supervisor) Create(ctx context.Context, id, selected string) (hostapi.C
 	// no pages and uploads none, and writes only its own index and the control
 	// record's selection of it. Taking it after the boot instead would pause a
 	// guest that has not yet done anything, to seal the little it had.
+	//
+	// It is also where the VM takes the shape the request asks for: its RAM,
+	// its disk and its processors. The root is a cold boot's publication, so
+	// it is the one moment the shape may change. A template never ran, so there
+	// is no memory to lose by discarding it, and the guest boots its kernel.
 	rooted := s.clock.Now()
-	if err := vm.Checkpoint(ctx); err != nil {
+	shape := ColdShape{Memory: vmmachine.RAMVolume, Root: rootVolume,
+		MemoryBytes: request.Memory, RootBytes: request.Disk, VCPUs: request.VCPUs}
+	if err := s.host.Reshape(ctx, vm, shape); err != nil {
 		// A VM whose root never published is one nothing else can ever act on,
 		// so it is given up rather than left behind as an unopenable record.
 		return hostapi.CreateResult{}, errors.Join(
@@ -61,7 +69,7 @@ func (s *supervisor) Create(ctx context.Context, id, selected string) (hostapi.C
 	rootSeconds := s.since(rooted)
 
 	booted := s.clock.Now()
-	m, err := s.boot(ctx, vm, state, name)
+	m, err := s.boot(ctx, vm, nil, name)
 	if err != nil {
 		return hostapi.CreateResult{}, err
 	}
@@ -99,8 +107,8 @@ func (s *supervisor) Open(ctx context.Context, id string, request hostapi.OpenRe
 // that was never going to work.
 func (s *supervisor) coldRequest(request hostapi.OpenRequest) error {
 	if !request.Cold {
-		if request.Memory != 0 || request.Disk != 0 {
-			return fmt.Errorf("%w: a VM's memory and disk can be resized only at a cold start, "+
+		if request.Memory != 0 || request.Disk != 0 || request.VCPUs != 0 {
+			return fmt.Errorf("%w: a VM's memory, disk and processors can change only at a cold start, "+
 				"which is the one moment nothing in memory describes its shape", ErrRequest)
 		}
 		return nil
@@ -119,7 +127,7 @@ func (s *supervisor) opening(ctx context.Context, id string,
 	request hostapi.OpenRequest) (*volume.VM, []byte, error) {
 	if request.Cold {
 		vm, err := s.host.OpenCold(ctx, id, ColdShape{Memory: vmmachine.RAMVolume, Root: rootVolume,
-			MemoryBytes: request.Memory, RootBytes: request.Disk})
+			MemoryBytes: request.Memory, RootBytes: request.Disk, VCPUs: request.VCPUs})
 		if err != nil {
 			return nil, nil, fmt.Errorf("cold starting %s: %w", id, err)
 		}
@@ -236,6 +244,9 @@ func (s *supervisor) boot(ctx context.Context, vm *volume.VM, state []byte, temp
 func (s *supervisor) machineConfig(vm *volume.VM, state []byte, backings map[string]vmmemory.Backing) vmmachine.Config {
 	return vmmachine.Config{
 		Starter: s.config.Starter, Scratch: s.scratch, Pagers: s.pagers, VM: vm,
+		// A VM that records a processor count boots with it, on any host: the
+		// count is in its checkpoint, not in this host's configuration.
+		VCPUs:        vm.VCPUs(),
 		Pmem:         []vmmachine.Pmem{{ID: rootVolume, Root: true}},
 		Connection:   s.connection,
 		RestoreState: state,

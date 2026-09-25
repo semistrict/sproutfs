@@ -11,7 +11,8 @@ type Firecracker struct {
 	// Kernel, Initrd and BootArgs are what a cold boot boots. A Firecracker
 	// without a kernel can only restore.
 	Kernel, Initrd, BootArgs string
-	// VCPUs is a booted guest's processors. A restore carries its own.
+	// VCPUs is a booted guest's processors when its VM records none. A VM that
+	// records a count boots with that, and a restore carries its own.
 	VCPUs int
 	// VsockCID is the guest context id of the VM's virtio-vsock device, and
 	// zero a VM without one. The device's host end is a socket in the process's

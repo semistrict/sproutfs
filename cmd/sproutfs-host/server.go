@@ -82,7 +82,7 @@ func newServer(h host.VMs, token string) http.Handler {
 				fmt.Errorf("%w: a created VM needs an identity", host.ErrRequest))
 			return
 		}
-		created, err := h.Create(r.Context(), request.ID, request.Template)
+		created, err := h.Create(r.Context(), request)
 		reply(w, r, "create", created, err)
 	})
 	mux.HandleFunc("POST /vms/{id}/open", func(w http.ResponseWriter, r *http.Request) {

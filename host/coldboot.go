@@ -24,6 +24,9 @@ type ColdShape struct {
 	// the volume's to cut — and the pages it grows into read as zeroes, which is
 	// what a filesystem grown in place expects.
 	MemoryBytes, RootBytes uint64
+	// VCPUs is how many processors the guest boots with from here, zero to keep
+	// the count the VM has.
+	VCPUs int
 }
 
 // sizes is the shape as the volume manager takes it: the volumes whose size is
@@ -63,27 +66,43 @@ func (s ColdShape) sizes() (map[string]uint64, error) {
 // The caller boots the returned handle. A VM whose boot then fails is an
 // ordinary failed open — its memory is gone, which is what was asked for.
 func (h *Host) OpenCold(ctx context.Context, vmID string, shape ColdShape) (*volume.VM, error) {
-	sizes, err := shape.sizes()
-	if err != nil {
+	if _, err := shape.sizes(); err != nil {
 		return nil, err
 	}
 	vm, err := h.volumes.Open(ctx, vmID)
 	if err != nil {
 		return nil, err
 	}
-	// A VM the pager could not map every memory region of is one that would be
-	// discovered at the attachment of whichever memory region ran into the cap, with
-	// its memory already gone. The question is asked at the shape it is being
-	// given, before anything is published.
-	if err := h.AdmitMemoryRegions(coldMemoryRegions(vm, sizes)); err != nil {
+	if err := h.Reshape(ctx, vm, shape); err != nil {
 		return nil, errors.Join(fmt.Errorf("cold starting %s", vmID), err, closing(ctx, vm))
 	}
-	if err := vm.DiscardMemory(ctx, shape.Memory, sizes); err != nil {
-		return nil, errors.Join(fmt.Errorf("discarding the memory of %s", vmID), err, closing(ctx, vm))
-	}
 	slog.InfoContext(ctx, "host: a VM was cold started", "vm", vmID,
-		"checkpoint", vm.Status().Checkpoint.Sequence, "memory", shape.MemoryBytes, "disk", shape.RootBytes)
+		"checkpoint", vm.Status().Checkpoint.Sequence, "memory", shape.MemoryBytes, "disk", shape.RootBytes,
+		"vcpus", vm.VCPUs())
 	return vm, nil
+}
+
+// Reshape discards the memory of a VM nothing runs and publishes it at the
+// shape given, in one checkpoint. It is the cold start's publication, and a
+// create's first one: a VM created from a template takes its own RAM, disk and
+// processor count there, before its first boot.
+//
+// A VM the pager could not map every memory region of is one that would be
+// discovered at the attachment of whichever memory region ran into the cap,
+// with its memory already gone. The question is asked at the shape it is being
+// given, before anything is published. The handle stays the caller's either way.
+func (h *Host) Reshape(ctx context.Context, vm *volume.VM, shape ColdShape) error {
+	sizes, err := shape.sizes()
+	if err != nil {
+		return err
+	}
+	if err := h.AdmitMemoryRegions(coldMemoryRegions(vm, sizes)); err != nil {
+		return err
+	}
+	if err := vm.DiscardMemory(ctx, shape.Memory, volume.Shape{Sizes: sizes, VCPUs: shape.VCPUs}); err != nil {
+		return fmt.Errorf("discarding the memory of %s: %w", vm.ID(), err)
+	}
+	return nil
 }
 
 // coldMemoryRegions is the size of every memory region this VM would have at the shape it is
@@ -119,7 +138,7 @@ func (h *Host) Starting(ctx context.Context, vm *volume.VM, memory string) ([]by
 		return nil, fmt.Errorf("reading the VMM state of %s: %w", vm.ID(), err)
 	}
 	opened := vm.Status().Checkpoint.Sequence
-	if err := vm.DiscardMemory(ctx, memory, nil); err != nil {
+	if err := vm.DiscardMemory(ctx, memory, volume.Shape{}); err != nil {
 		return nil, fmt.Errorf("discarding the memory of %s: %w", vm.ID(), err)
 	}
 	slog.InfoContext(ctx, "host: a VM with no VMM state is cold booted", "vm", vm.ID(),

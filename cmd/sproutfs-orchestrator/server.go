@@ -45,7 +45,7 @@ func newServer(o *orchestrator, token string) http.Handler {
 			jsonhttp.Fail(r.Context(), w, http.StatusBadRequest, "create", err)
 			return
 		}
-		created, err := o.Create(r.Context(), request.Template)
+		created, err := o.Create(r.Context(), request)
 		reply(w, r, "create", created, err)
 	})
 	mux.HandleFunc("POST /vms/{id}/fork", func(w http.ResponseWriter, r *http.Request) {

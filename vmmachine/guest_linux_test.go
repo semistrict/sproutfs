@@ -256,3 +256,32 @@ func awaitGuestMarker(t *testing.T, ctx context.Context, p *vmmachine.Process) {
 		time.Sleep(50 * time.Millisecond)
 	}
 }
+
+// TestAVMBootsWithItsOwnProcessorCount: a VM that records a processor count
+// boots with it, whatever its Starter's own default is. That count lives in the
+// VM's checkpoint, so it is the same on every host that boots the VM.
+func TestAVMBootsWithItsOwnProcessorCount(t *testing.T) {
+	binaryPath := os.Getenv("SPROUTFS_FIRECRACKER")
+	if binaryPath == "" {
+		t.Skip("run the Firecracker Lima qualification script")
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 6*time.Minute)
+	defer cancel()
+	vm := newGuestVM(t, ctx, "shaped")
+	config := migrationConfig(t, binaryPath, newMigrationPager(t, ctx), vm)
+	config.Starter.(*vmmachine.Firecracker).VsockCID = guestVsockCID
+	config.VCPUs = 2
+	p, err := vmmachine.Start(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = p.Close() })
+	waitLine(t, ctx, p, fmt.Sprintf("sproutfs-guest-agent: serving on vsock port %d", guest.Port), 0)
+	result, err := guestExec(ctx, p, guest.ExecRequest{Cmd: "cat /sys/devices/system/cpu/online"})
+	if err != nil {
+		t.Fatalf("asking the guest for its processors: %v\n%s", err, consoleText(p))
+	}
+	if result.Stdout != "0-1\n" {
+		t.Fatalf("the guest has processors %q, want the VM's own two", result.Stdout)
+	}
+}

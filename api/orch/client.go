@@ -48,9 +48,8 @@ func (c *Client) VMs(ctx context.Context) ([]VM, error) {
 	return jsonhttp.Call[[]VM](ctx, c.http, http.MethodGet, c.path("/vms"), nil)
 }
 
-func (c *Client) Create(ctx context.Context, template string) (CreateResult, error) {
-	return jsonhttp.Call[CreateResult](ctx, c.http, http.MethodPost, c.path("/vms"),
-		CreateRequest{Template: template})
+func (c *Client) Create(ctx context.Context, request CreateRequest) (CreateResult, error) {
+	return jsonhttp.Call[CreateResult](ctx, c.http, http.MethodPost, c.path("/vms"), request)
 }
 
 func (c *Client) Fork(ctx context.Context, id string, count int, to string) (ForkResult, error) {

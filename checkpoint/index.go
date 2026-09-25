@@ -136,6 +136,9 @@ type Index struct {
 	// so reclamation and compaction never open another index object.
 	checkpoints map[control.Ref]checkpointCost
 	state       location
+	// vcpus is the processor count a boot of this checkpoint gives the guest,
+	// zero where none is recorded.
+	vcpus uint32
 	// store is what segments are read through. A root built without one — which
 	// nothing but a test does — can locate nothing it did not write itself.
 	store *Store
@@ -176,6 +179,10 @@ func (i *Index) Geometry(volume string) Geometry {
 	}
 	return table.geometry
 }
+
+// VCPUs is how many processors a boot of this checkpoint gives the guest, zero
+// where the checkpoint records none and the host's default applies.
+func (i *Index) VCPUs() int { return int(i.vcpus) }
 
 // HasState reports whether VMM state was published with this checkpoint.
 func (i *Index) HasState() bool { return !i.state.isZero() }
@@ -440,6 +447,11 @@ func (i *Index) encode() ([]byte, error) {
 		StateLength:     proto.Uint64(i.state.length),
 		StateOrigin:     proto.Uint32(slot[i.state.origin]),
 	}.Build()
+	// A root that records no count leaves the field out, so every root written
+	// before the field existed decodes, and re-encodes, as it was.
+	if i.vcpus != 0 {
+		message.SetVcpus(i.vcpus)
+	}
 	return proto.MarshalOptions{Deterministic: true}.Marshal(message)
 }
 
@@ -765,6 +777,10 @@ func decodeRoot(store *Store, ref control.Ref, data []byte) (*Index, error) {
 		index.names = append(index.names, name)
 	}
 	slices.Sort(index.names)
+	index.vcpus = message.GetVcpus()
+	if index.vcpus > maximumVCPUs {
+		return nil, ErrCorrupt
+	}
 	if message.GetStateLength() != 0 {
 		state, err := locate(message.GetStateCheckpoint(), message.GetStateOrigin(),
 			message.GetStatePart(), message.GetStateOffset(), message.GetStateLength())

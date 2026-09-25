@@ -153,3 +153,58 @@ func TestColdStartRefusesToShrinkTheDisk(t *testing.T) {
 		t.Fatalf("a refused cold start left the VM with no state to restore: %v", err)
 	}
 }
+
+// TestACreateTakesItsShapeInItsFirstCheckpoint: a VM created from a template
+// takes the RAM, disk and processors its create asks for in the checkpoint that
+// makes it a VM of its own, before its first boot. Any host that opens it later
+// finds that shape, and the template's bytes on its disk.
+func TestACreateTakesItsShapeInItsFirstCheckpoint(t *testing.T) {
+	h := newHostHarness(t)
+	h.start(t)
+	template, err := h.hosts[0].Volumes().Create(t.Context(), "template-a", coldVolumes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	image := bytes.Repeat([]byte{5}, migrationPageSize)
+	if err := template.Volume("root").Write(t.Context(), 0, image); err != nil {
+		t.Fatal(err)
+	}
+	if err := template.Checkpoint(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	point, err := template.ForkPoint(t.Context(), volume.Prepared(nil, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer point.Retire(t.Context())
+	child, _, err := host.CreateFork(t.Context(), h.hosts[0].Volumes(), "vm-1", point)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shape := host.ColdShape{Memory: "ram0", Root: "root",
+		MemoryBytes: 8 * migrationPageSize, RootBytes: 3 * migrationPageSize, VCPUs: 2}
+	if err := h.hosts[0].Reshape(t.Context(), child, shape); err != nil {
+		t.Fatalf("publishing the created VM at its shape: %v", err)
+	}
+	if err := child.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+
+	opened, err := h.hosts[1].Volumes().Open(t.Context(), "vm-1")
+	if err != nil {
+		t.Fatalf("another host opening the created VM: %v", err)
+	}
+	defer opened.Close(t.Context())
+	if got := opened.Volume("ram0").Size(); got != 8*migrationPageSize {
+		t.Fatalf("the created VM's memory is %d bytes, want %d", got, 8*migrationPageSize)
+	}
+	if got := opened.Volume("root").Size(); got != 3*migrationPageSize {
+		t.Fatalf("the created VM's disk is %d bytes, want %d", got, 3*migrationPageSize)
+	}
+	if got := opened.VCPUs(); got != 2 {
+		t.Fatalf("the created VM boots with %d processors, want 2", got)
+	}
+	if disk := volumeBytes(t, opened, "root"); !bytes.Equal(disk[:migrationPageSize], image) {
+		t.Fatalf("the created VM's disk holds %d..., want the template's image", disk[0])
+	}
+}

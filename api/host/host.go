@@ -126,6 +126,9 @@ type VM struct {
 	Epoch      uint64 `json:"epoch"`
 	// Host is the host that reported this VM.
 	Host string `json:"host"`
+	// VCPUs is how many processors a boot of this VM gives its guest, zero
+	// where it records none and its host's default applies.
+	VCPUs int `json:"vcpus,omitempty"`
 	// DirtyBytes is an upper bound on what losing this host would cost this VM.
 	DirtyBytes uint64 `json:"dirty_bytes"`
 	// LossWindow is how long this VM has held a write no checkpoint covers,
@@ -318,9 +321,18 @@ type Status struct {
 
 // CreateRequest creates one VM from a guest image. An empty Template selects
 // the host's only configured one.
+//
+// Memory, Disk and VCPUs are the VM's shape: its RAM, the size its root volume
+// grows to, and its processors. Zero keeps what the template has for the first
+// two and the host's default processor count. The VM keeps its shape from then
+// on, wherever it runs, until a cold open changes it. A disk may only grow, and
+// the guest grows its filesystem over the new pages after its first boot.
 type CreateRequest struct {
 	ID       string `json:"id"`
 	Template string `json:"template,omitempty"`
+	Memory   uint64 `json:"memory,omitempty"`
+	Disk     uint64 `json:"disk,omitempty"`
+	VCPUs    int    `json:"vcpus,omitempty"`
 }
 
 // CreateResult reports the VM and where its time went. Template is the time
@@ -353,14 +365,15 @@ type CreateResult struct {
 // sees that as a power cut after that checkpoint.
 type OpenRequest struct {
 	Cold bool `json:"cold,omitempty"`
-	// Memory is the size the VM's RAM takes from here, up or down, and Disk the
-	// size its root volume grows to; zero keeps the size the VM has. A cold boot
-	// is the one moment a VM's shape can change, because nothing in memory
-	// describes it any more, so both are refused for a warm start. A disk may
-	// only grow, and the guest grows its filesystem over the new pages after the
-	// boot.
+	// Memory is the size the VM's RAM takes from here, up or down, Disk the
+	// size its root volume grows to, and VCPUs its processors; zero keeps what
+	// the VM has. A cold boot is the one moment a VM's shape can change, because
+	// nothing in memory describes it any more, so all three are refused for a
+	// warm start. A disk may only grow, and the guest grows its filesystem over
+	// the new pages after the boot.
 	Memory uint64 `json:"memory,omitempty"`
 	Disk   uint64 `json:"disk,omitempty"`
+	VCPUs  int    `json:"vcpus,omitempty"`
 }
 
 // OpenResult reports a VM opened from its last checkpoint, which is what a host

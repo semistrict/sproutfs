@@ -62,7 +62,7 @@ func TestDiscardMemoryPublishesNoMemoryPagesAndNoState(t *testing.T) {
 		defer manager.Close(t.Context())
 		vm, want := coldVM(t, manager, "vm")
 
-		if err := vm.DiscardMemory(t.Context(), "ram0", nil); err != nil {
+		if err := vm.DiscardMemory(t.Context(), "ram0", volume.Shape{}); err != nil {
 			t.Fatalf("DiscardMemory: %v", err)
 		}
 		clear(want["ram0"])
@@ -114,7 +114,7 @@ func TestDiscardMemoryReclaimsTheMemorysParts(t *testing.T) {
 			t.Fatalf("the checkpoint holding the memory published %v", got)
 		}
 
-		if err := vm.DiscardMemory(t.Context(), "ram0", nil); err != nil {
+		if err := vm.DiscardMemory(t.Context(), "ram0", volume.Shape{}); err != nil {
 			t.Fatalf("DiscardMemory: %v", err)
 		}
 		// The memory's pages and the VMM state leave the index together, so the
@@ -146,7 +146,7 @@ func TestDiscardMemoryResizesInTheSamePublication(t *testing.T) {
 		vm, want := coldVM(t, manager, "vm")
 
 		sizes := map[string]uint64{"ram0": 4 * checkpoint.PageSize2MiB, "root": 3 * checkpoint.PageSize2MiB}
-		if err := vm.DiscardMemory(t.Context(), "ram0", sizes); err != nil {
+		if err := vm.DiscardMemory(t.Context(), "ram0", volume.Shape{Sizes: sizes}); err != nil {
 			t.Fatalf("DiscardMemory: %v", err)
 		}
 		want["ram0"] = make([]byte, 4*checkpoint.PageSize2MiB)
@@ -178,7 +178,7 @@ func TestDiscardMemoryShrinksMemoryAndRefusesToShrinkTheRest(t *testing.T) {
 		vm, want := coldVM(t, manager, "vm")
 
 		refused := map[string]uint64{"root": checkpoint.PageSize2MiB}
-		if err := vm.DiscardMemory(t.Context(), "ram0", refused); !errors.Is(err, volume.ErrInvalidRange) {
+		if err := vm.DiscardMemory(t.Context(), "ram0", volume.Shape{Sizes: refused}); !errors.Is(err, volume.ErrInvalidRange) {
 			t.Fatalf("shrinking the root volume = %v, want %v", err, volume.ErrInvalidRange)
 		}
 		if got := vm.Volume("root").Size(); got != 2*checkpoint.PageSize2MiB {
@@ -186,7 +186,7 @@ func TestDiscardMemoryShrinksMemoryAndRefusesToShrinkTheRest(t *testing.T) {
 		}
 		want.check(t, vm, "after a refused shrink")
 
-		if err := vm.DiscardMemory(t.Context(), "ram0", map[string]uint64{"ram0": checkpoint.PageSize2MiB}); err != nil {
+		if err := vm.DiscardMemory(t.Context(), "ram0", volume.Shape{Sizes: map[string]uint64{"ram0": checkpoint.PageSize2MiB}}); err != nil {
 			t.Fatalf("shrinking the memory: %v", err)
 		}
 		want["ram0"] = make([]byte, checkpoint.PageSize2MiB)
@@ -208,16 +208,74 @@ func TestDiscardMemoryRefusesAnUnknownVolume(t *testing.T) {
 		vm, want := coldVM(t, manager, "vm")
 		before := vm.Status().Checkpoint
 
-		if err := vm.DiscardMemory(t.Context(), "ram1", nil); !errors.Is(err, volume.ErrUnknownVolume) {
+		if err := vm.DiscardMemory(t.Context(), "ram1", volume.Shape{}); !errors.Is(err, volume.ErrUnknownVolume) {
 			t.Fatalf("discarding a volume that does not exist = %v, want %v", err, volume.ErrUnknownVolume)
 		}
 		if err := vm.DiscardMemory(t.Context(), "ram0",
-			map[string]uint64{"scratch": checkpoint.PageSize2MiB}); !errors.Is(err, volume.ErrUnknownVolume) {
+			volume.Shape{Sizes: map[string]uint64{"scratch": checkpoint.PageSize2MiB}}); !errors.Is(err, volume.ErrUnknownVolume) {
 			t.Fatalf("resizing a volume that does not exist = %v, want %v", err, volume.ErrUnknownVolume)
 		}
 		if got := vm.Status().Checkpoint; got != before {
 			t.Fatalf("a refused cold boot published %s", got)
 		}
 		want.check(t, vm, "after two refused cold boots")
+	})
+}
+
+// A cold boot may give the guest another processor count, and the count is
+// the VM's from then on: the handle, a host that reopens the VM, and a fork of
+// it all read the count its checkpoint records, as a boot of any of them will
+// need after a host loss.
+func TestDiscardMemoryRecordsTheProcessorsTheVMBootsWith(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		h := newHarness(t)
+		defer h.close(t.Context())
+		manager := h.manager(t, h.config())
+		defer manager.Close(t.Context())
+		vm, _ := coldVM(t, manager, "vm")
+		if got := vm.VCPUs(); got != 0 {
+			t.Fatalf("a VM never given a count records %d processors, want none", got)
+		}
+		if err := vm.DiscardMemory(t.Context(), "ram0", volume.Shape{VCPUs: 3}); err != nil {
+			t.Fatal(err)
+		}
+		if got := vm.VCPUs(); got != 3 {
+			t.Fatalf("the handle reads %d processors after the cold boot, want 3", got)
+		}
+		if err := vm.DiscardMemory(t.Context(), "ram0", volume.Shape{}); err != nil {
+			t.Fatal(err)
+		}
+		if got := vm.VCPUs(); got != 3 {
+			t.Fatalf("a cold boot that names no count left %d processors, want the 3 the VM has", got)
+		}
+		point, err := manager.Inherit(t.Context(), vm.Status().Checkpoint)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := vm.Close(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		reopened, err := manager.Open(t.Context(), "vm")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer reopened.Close(t.Context())
+		if got := reopened.VCPUs(); got != 3 {
+			t.Fatalf("the reopened VM reads %d processors, want 3", got)
+		}
+		fork, err := manager.Fork(t.Context(), "fork", point)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer fork.Close(t.Context())
+		if err := fork.Checkpoint(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if got := fork.VCPUs(); got != 3 {
+			t.Fatalf("the fork reads %d processors, want the 3 it inherits", got)
+		}
+		if err := reopened.DiscardMemory(t.Context(), "ram0", volume.Shape{VCPUs: -1}); !errors.Is(err, volume.ErrInvalidConfig) {
+			t.Fatalf("a negative processor count gave %v, want ErrInvalidConfig", err)
+		}
 	})
 }

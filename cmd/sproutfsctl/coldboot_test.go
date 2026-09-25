@@ -69,12 +69,15 @@ func TestParseRefusesASizeThatIsNotOne(t *testing.T) {
 }
 
 // Every other command takes neither the flag nor the sizes: a cold boot is a
-// start and nothing else.
+// start and nothing else. A create is the one other moment a shape is chosen,
+// and it takes the sizes without the flag.
 func TestOnlyStartIsCold(t *testing.T) {
 	for _, args := range [][]string{
 		{"recover", "vm-1", "--cold"},
-		{"create", "--memory", "1G"},
+		{"create", "--cold"},
 		{"migrate", "vm-1", "--disk", "4G"},
+		{"start", "vm-1", "--vcpus", "2"},
+		{"create", "--vcpus", "33"},
 	} {
 		if _, err := parse(args); !errors.Is(err, errUsage) {
 			t.Fatalf("parsing %v = %v, want a usage error", args, err)
@@ -104,5 +107,17 @@ func TestColdStartPrintsThatTheVMCameBackWithoutItsMemory(t *testing.T) {
 	asked := `POST /vms/vm-1/start {"to":"sproutfs-host-b","cold":true,"memory":1073741824,"disk":4294967296}`
 	if len(stub.requests) != 1 || stub.requests[0] != asked {
 		t.Fatalf("the CLI asked for %v", stub.requests)
+	}
+}
+
+// A create carries the shape it asks for, which is the VM's from its first
+// checkpoint on.
+func TestCreateTakesAShape(t *testing.T) {
+	command, err := parse([]string{"create", "--template", "alpine", "--memory", "1G", "--disk", "4G", "--vcpus", "2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if command.Template != "alpine" || command.Memory != 1<<30 || command.Disk != 4<<30 || command.VCPUs != 2 {
+		t.Fatalf("parsed %+v, want alpine at 1 GiB, 4 GiB and 2 processors", command)
 	}
 }

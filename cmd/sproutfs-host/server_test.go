@@ -60,12 +60,20 @@ func (f *fakeHost) Status(context.Context) (hostapi.Status, error) {
 	return f.status, f.record("status")
 }
 
-func (f *fakeHost) Create(_ context.Context, id, template string) (hostapi.CreateResult, error) {
-	return f.created, f.record("create %s %s", id, template)
+func (f *fakeHost) Create(_ context.Context, request hostapi.CreateRequest) (hostapi.CreateResult, error) {
+	if request.Memory != 0 || request.Disk != 0 || request.VCPUs != 0 {
+		return f.created, f.record("create %s %s memory=%d disk=%d vcpus=%d", request.ID, request.Template,
+			request.Memory, request.Disk, request.VCPUs)
+	}
+	return f.created, f.record("create %s %s", request.ID, request.Template)
 }
 
 func (f *fakeHost) Open(_ context.Context, id string, request hostapi.OpenRequest) (hostapi.OpenResult, error) {
 	if request.Cold {
+		if request.VCPUs != 0 {
+			return f.opened, f.record("open %s cold memory=%d disk=%d vcpus=%d", id, request.Memory,
+				request.Disk, request.VCPUs)
+		}
 		return f.opened, f.record("open %s cold memory=%d disk=%d", id, request.Memory, request.Disk)
 	}
 	return f.opened, f.record("open %s", id)
@@ -205,6 +213,20 @@ func TestHealthzReportsReady(t *testing.T) {
 	}
 	if body != `{"status":"ok"}` {
 		t.Fatalf("body %s", body)
+	}
+}
+
+// A create carries the shape it asks for — RAM, disk and processors — to the
+// host, which publishes the VM's first checkpoint at that shape.
+func TestCreateCarriesItsShape(t *testing.T) {
+	fake := &fakeHost{}
+	status, body := call(t, fake, http.MethodPost, "/vms",
+		`{"id":"vm-1","template":"alpine","memory":1073741824,"disk":4294967296,"vcpus":2}`)
+	if status != http.StatusOK {
+		t.Fatalf("status %d: %s", status, body)
+	}
+	if len(fake.calls) != 1 || fake.calls[0] != "create vm-1 alpine memory=1073741824 disk=4294967296 vcpus=2" {
+		t.Fatalf("the host was asked for %v", fake.calls)
 	}
 }
 

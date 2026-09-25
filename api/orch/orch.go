@@ -115,9 +115,14 @@ type DrainReport struct {
 }
 
 // CreateRequest creates one VM. The orchestrator allocates its identity and
-// places it on the host running the fewest.
+// places it on the host with the most memory free for it. Memory, Disk and
+// VCPUs are the VM's shape, as the host's create takes it: zero keeps the
+// template's RAM and disk and the host's processor count.
 type CreateRequest struct {
 	Template string `json:"template,omitempty"`
+	Memory   uint64 `json:"memory,omitempty"`
+	Disk     uint64 `json:"disk,omitempty"`
+	VCPUs    int    `json:"vcpus,omitempty"`
 }
 
 // CreateResult is where the VM went and what its creation cost.
@@ -223,13 +228,15 @@ type StartRequest struct {
 	// from the root volume, which is exactly what the last checkpoint published.
 	// The guest's filesystem sees that as a power cut after that checkpoint.
 	Cold bool `json:"cold,omitempty"`
-	// Memory is the size the VM's RAM takes from here and Disk the size its root
-	// volume grows to; zero keeps the size it has. A cold boot is the one moment
-	// a VM's shape can change, because nothing in memory describes it any more,
-	// so both are refused without Cold. A disk may only grow, and the guest
-	// grows its filesystem over the new pages after the boot.
+	// Memory is the size the VM's RAM takes from here, Disk the size its root
+	// volume grows to, and VCPUs its processors; zero keeps what it has. A cold
+	// boot is the one moment a VM's shape can change, because nothing in memory
+	// describes it any more, so all three are refused without Cold. A disk may
+	// only grow, and the guest grows its filesystem over the new pages after the
+	// boot.
 	Memory uint64 `json:"memory,omitempty"`
 	Disk   uint64 `json:"disk,omitempty"`
+	VCPUs  int    `json:"vcpus,omitempty"`
 }
 
 // StartResult reports a stopped VM running again: where it went and the
