@@ -272,8 +272,28 @@ func TestFirecrackerLiveMigration(t *testing.T) {
 	if err := p.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if allocated, err := sourcePager.AllocatedBytes(); err != nil || allocated != 0 {
-		t.Fatalf("the migrated source retained %d arena bytes: %v", allocated, err)
+	// The source keeps nothing of the VM it handed over: no memory region, no
+	// page a checkpoint does not hold. What its arena may still hold is clean
+	// pages nothing maps, under the identity their checkpoint published them
+	// by, so the next memory region naming one maps it instead of reading it.
+	// Those are a cache, and the arena's blocks are exactly them.
+	after, err := sourcePager.Stats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.LogicalPages != 0 || after.DirtyPages != 0 {
+		t.Fatalf("the migrated source still maps or owns pages: %+v", after)
+	}
+	unique, mappedBytes, err := sourcePager.SharedBytes(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mappedBytes != 0 {
+		t.Fatalf("the migrated source's stopped VMM left %d bytes mapped", mappedBytes)
+	}
+	if allocated, err := sourcePager.AllocatedBytes(); err != nil || allocated != unique {
+		t.Fatalf("the migrated source's arena holds %d bytes for %d bytes of unmapped clean pages: %v",
+			allocated, unique, err)
 	}
 }
 
