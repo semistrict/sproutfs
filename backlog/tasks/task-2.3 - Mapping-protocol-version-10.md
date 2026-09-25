@@ -16,7 +16,7 @@ ordinal: 39000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Step 3 of plans/arena-by-trust-2026-09-25.md: FILE, DROP_FILE and the file number in MAP; the Rust client's file table and private mappings of read-only files; Firecracker rebuilt with the crate and the seccomp change. The pager still sends one read-write file.
+Step 3 of plans/isolated-arena-2026-09-25.md: FILE, DROP_FILE and the file number in MAP; the Rust client's file table and private mappings of read-only files; Firecracker rebuilt with the crate and the seccomp change. The pager still sends one read-write file.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

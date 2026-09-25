@@ -17,7 +17,7 @@ ordinal: 37000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Step 1 of plans/arena-by-trust-2026-09-25.md. A gate: read-only private mappings of a shared memfd registered with userfaultfd, UFFDIO_CONTINUE installing them read-only, stores trapping from a thread and from KVM, pagemap showing one physical page in both processes, HugeTLB MAP_NORESERVE reserving no pool pages, another user's reopen through /proc/self/fd failing after fchmod 0600, and mapping counts.
+Step 1 of plans/isolated-arena-2026-09-25.md. A gate: read-only private mappings of a shared memfd registered with userfaultfd, UFFDIO_CONTINUE installing them read-only, stores trapping from a thread and from KVM, pagemap showing one physical page in both processes, HugeTLB MAP_NORESERVE reserving no pool pages, another user's reopen through /proc/self/fd failing after fchmod 0600, and mapping counts.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

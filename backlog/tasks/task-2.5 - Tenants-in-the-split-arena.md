@@ -17,10 +17,10 @@ ordinal: 41000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Step 5 of plans/arena-by-trust-2026-09-25.md: MemoryRegionBacking.Tenant from TASK-18, one shared file per tenant.
+Step 5 of plans/isolated-arena-2026-09-25.md: MemoryRegionBacking.Tenant from TASK-18, one shared file per tenant.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 No resident page is shared across tenants in trust mode
+- [ ] #1 No resident page is shared across tenants in isolated mode
 <!-- AC:END -->

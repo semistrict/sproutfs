@@ -1,11 +1,11 @@
 ---
 id: TASK-2
-title: Decide whether to split the pager arena by trust
+title: Split the pager arena so a VMM reaches only its own VM's memory
 status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-09-25 18:17'
-updated_date: '2026-09-25 23:02'
+updated_date: '2026-09-25 23:08'
 labels:
   - security
 dependencies: []
@@ -34,7 +34,7 @@ This undoes what the jailer is for, so it blocks running untrusted tenants. The 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
-Plan: plans/arena-by-trust-2026-09-25.md. Waiting on the owner's five decisions at its end.
+Plan: plans/isolated-arena-2026-09-25.md. Waiting on the owner's five decisions at its end.
 
-2026-09-25: owner said build it behind a switch (SPROUTFS_ARENA_ISOLATION=shared|trust), accepting the recommendations; BLAKE3 for the digest; one GCE run at the end measures both modes.
+2026-09-25: owner said build it behind a switch (SPROUTFS_ARENA=shared|isolated), accepting the recommendations; BLAKE3 for the digest; one GCE run at the end measures both modes.
 <!-- SECTION:NOTES:END -->

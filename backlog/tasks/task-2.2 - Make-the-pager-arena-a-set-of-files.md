@@ -16,7 +16,7 @@ ordinal: 38000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Step 2 of plans/arena-by-trust-2026-09-25.md, behind vmmemory.Config.Isolation (shared|trust) and SPROUTFS_ARENA_ISOLATION. A resident page's slot becomes a file and a slot; still one file in both modes.
+Step 2 of plans/isolated-arena-2026-09-25.md, behind vmmemory.Config.Arena (ArenaShared|ArenaIsolated) and SPROUTFS_ARENA=shared|isolated. A resident page's slot becomes a file and a slot; still one file in both modes.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

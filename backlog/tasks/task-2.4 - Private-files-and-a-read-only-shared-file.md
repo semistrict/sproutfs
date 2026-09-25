@@ -16,11 +16,11 @@ ordinal: 40000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Step 4 of plans/arena-by-trust-2026-09-25.md, in the trust mode only: a private file per memory region, the shared file sent read-only, the BLAKE3 digest in ReadDirty and the checked move, fork files, and the reach test.
+Step 4 of plans/isolated-arena-2026-09-25.md, in the isolated mode only: a private file per memory region, the shared file sent read-only, the BLAKE3 digest in ReadDirty and the checked move, fork files, and the reach test.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 TestAHostileVMMReachesNoOtherVMsBytes passes in trust mode and fails in shared mode
+- [ ] #1 TestAHostileVMMReachesNoOtherVMsBytes passes in isolated mode and fails in shared mode
 - [ ] #2 Every suite passes in both modes
 <!-- AC:END -->

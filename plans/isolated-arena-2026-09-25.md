@@ -1,4 +1,4 @@
-# Splitting the arena by trust — 2026-09-25
+# An isolated arena — 2026-09-25
 
 **Status: planned. Nothing is built. TASK-2 waits for the owner's decision. The
 decisions are at the end.**
@@ -502,8 +502,8 @@ a real client and a writer mapping of the private file.
 ## A switch, and one measurement at the end
 
 The owner accepted the recommendations below and asked for the split to be
-built behind a switch. `SPROUTFS_ARENA_ISOLATION` (`vmmemory.Config.Isolation`)
-is `shared`, the single read-write arena of today, or `trust`, the split. It is
+built behind a switch. `SPROUTFS_ARENA` (`vmmemory.Config.Arena`) is `shared`,
+the single read-write arena of today, or `isolated`, the split. It is
 `shared` by default until the measurement says otherwise. The pager and the
 protocol run either mode on the same build, so one GCE run measures both on the
 same workloads: fan-out time to first output, checkpoint pause, upload time and
@@ -512,7 +512,7 @@ digest is BLAKE3 rather than SHA-256, because it is several times faster per
 core and as hard to forge.
 
 Every step below keeps `shared` exactly as it is today: its suites pass
-unchanged. Steps 2 and 3 add no behaviour to `trust` beyond what they need.
+unchanged. Steps 2 and 3 add no behaviour to `isolated` beyond what they need.
 
 ## Steps
 

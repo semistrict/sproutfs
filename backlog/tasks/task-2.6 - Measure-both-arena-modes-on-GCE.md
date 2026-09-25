@@ -17,7 +17,7 @@ ordinal: 42000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Step 6 of plans/arena-by-trust-2026-09-25.md: one GCE run comparing shared and trust on the same workloads, then the docs.
+Step 6 of plans/isolated-arena-2026-09-25.md: one GCE run comparing shared and isolated on the same workloads, then the docs.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
