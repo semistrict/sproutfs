@@ -168,14 +168,21 @@ func (m *Memory) WriteFile(ctx context.Context, name string, data []byte) (strin
 // RAM's socket and size, and the managed PMEM devices ahead of any the document
 // already declares, so the managed root is the guest's first. Everything else
 // in the document is the Starter's, and none of it may claim the managed
-// memory's keys.
+// memory's keys. A document it refuses is left as it was.
 func (m *Memory) Configure(document map[string]any) error {
+	if document == nil {
+		return errors.New("vmmachine: there is no configuration to add the managed memory to")
+	}
 	if _, found := document["managed-memory"]; found {
 		return errors.New("vmmachine: the configuration already names its managed memory")
 	}
-	machine, _ := document["machine-config"].(map[string]any)
-	if machine == nil {
-		machine = map[string]any{}
+	machine := map[string]any{}
+	if existing, found := document["machine-config"]; found {
+		object, ok := existing.(map[string]any)
+		if !ok {
+			return fmt.Errorf("vmmachine: the configuration's machine-config is %T, not an object", existing)
+		}
+		machine = object
 	}
 	if _, found := machine["mem_size_mib"]; found {
 		return errors.New("vmmachine: the configuration already sizes the guest's memory")
@@ -185,27 +192,28 @@ func (m *Memory) Configure(document map[string]any) error {
 		// page when it attaches. The VMM refuses a setting of its own.
 		return errors.New("vmmachine: managed memory takes no huge-page setting")
 	}
-	machine["mem_size_mib"] = m.Bytes >> 20
-	document["machine-config"] = machine
-	document["managed-memory"] = map[string]any{"socket_path": m.RAM}
-	pmem := make([]any, 0, len(m.Pmem))
-	for _, device := range m.Pmem {
-		pmem = append(pmem, map[string]any{"id": device.ID, "root_device": device.Root,
-			"managed": map[string]any{"socket_path": device.Socket, "length": device.Bytes}})
-	}
+	var others []any
 	if existing, found := document["pmem"]; found {
-		others, ok := existing.([]any)
+		list, ok := existing.([]any)
 		if !ok {
 			return fmt.Errorf("vmmachine: the configuration's pmem is %T, not a list", existing)
 		}
-		for _, other := range others {
+		for _, other := range list {
 			if device, ok := other.(map[string]any); ok && device["root_device"] == true {
 				return errors.New("vmmachine: the root device is the managed one")
 			}
 		}
-		pmem = append(pmem, others...)
+		others = list
 	}
-	document["pmem"] = pmem
+	machine["mem_size_mib"] = m.Bytes >> 20
+	document["machine-config"] = machine
+	document["managed-memory"] = map[string]any{"socket_path": m.RAM}
+	pmem := make([]any, 0, len(m.Pmem)+len(others))
+	for _, device := range m.Pmem {
+		pmem = append(pmem, map[string]any{"id": device.ID, "root_device": device.Root,
+			"managed": map[string]any{"socket_path": device.Socket, "length": device.Bytes}})
+	}
+	document["pmem"] = append(pmem, others...)
 	return nil
 }
 
