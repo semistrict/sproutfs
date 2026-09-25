@@ -5,11 +5,9 @@ package host
 import (
 	"context"
 	"fmt"
-	"net/http"
 
 	"github.com/semistrict/sproutfs/api/guest"
 	hostapi "github.com/semistrict/sproutfs/api/host"
-	"github.com/semistrict/sproutfs/internal/jsonhttp"
 )
 
 func (s *supervisor) Console(ctx context.Context, id string, since int64) (hostapi.Console, error) {
@@ -40,28 +38,21 @@ func (s *supervisor) WriteConsole(ctx context.Context, id string, data string) e
 // The guest
 // ---------------------------------------------------------------------------
 
-// guestClient reaches the agent in one VM's guest. Every connection it makes is
-// a fresh forwarded vsock stream to the machine this host is running now, so a
-// VM that has just migrated in is reached over its new process's socket without
-// anything having to invalidate a cached one.
-func (s *supervisor) guestClient(id string) (*http.Client, error) {
-	m, err := s.running(id)
-	if err != nil {
-		return nil, err
-	}
-	socket := m.process.VsockPath()
-	if socket == "" {
-		return nil, fmt.Errorf("%w: %s was started without a vsock", guest.ErrNoGuest, id)
-	}
-	return guest.NewClient(socket, guestTimeout), nil
-}
-
+// Exec runs a command in one VM's guest. Every connection it makes is a fresh
+// forwarded vsock stream to the machine this host is running now, so a VM that
+// has just migrated in is reached over its new process's socket without
+// anything having to invalidate a cached one. guest.Exec bounds what the
+// guest's answer can cost this host, in time and in bytes.
 func (s *supervisor) Exec(ctx context.Context, id string, request hostapi.ExecRequest) (hostapi.ExecResult, error) {
-	client, err := s.guestClient(id)
+	m, err := s.running(id)
 	if err != nil {
 		return hostapi.ExecResult{}, err
 	}
-	result, err := jsonhttp.Call[hostapi.ExecResult](ctx, client, http.MethodPost, guest.URL("/exec"), request)
+	socket := m.process.VsockPath()
+	if socket == "" {
+		return hostapi.ExecResult{}, fmt.Errorf("%w: %s was started without a vsock", guest.ErrNoGuest, id)
+	}
+	result, err := guest.Exec(ctx, socket, request)
 	if err != nil {
 		return hostapi.ExecResult{}, fmt.Errorf("running a command in %s: %w", id, err)
 	}

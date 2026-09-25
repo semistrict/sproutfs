@@ -83,6 +83,37 @@ func TestExecTruncatesALargeOutput(t *testing.T) {
 	}
 }
 
+// TestTheLargestAnswerFitsTheHostsBound: a host refuses an answer past
+// guest.MaxResultBytes, so no answer this agent gives may be longer. The
+// longest is both streams full of bytes JSON spells in six, and a timeout's
+// note added to stderr.
+func TestTheLargestAnswerFitsTheHostsBound(t *testing.T) {
+	full := fmt.Sprintf("head -c %d /dev/zero", 2*guest.MaxOutputBytes)
+	raw, err := json.Marshal(guest.ExecRequest{
+		Cmd: fmt.Sprintf("%s; %s >&2; sleep 5", full, full), Timeout: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := post(t, string(raw))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("/exec answered %d, want 200", recorder.Code)
+	}
+	if size := recorder.Body.Len(); size > guest.MaxResultBytes {
+		t.Fatalf("the answer is %d bytes, past the host's %d-byte bound", size, guest.MaxResultBytes)
+	}
+	var result guest.ExecResult
+	if err := json.Unmarshal(recorder.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Stdout != strings.Repeat("\x00", guest.MaxOutputBytes) {
+		t.Fatalf("stdout is %d bytes, want the %d-byte bound of zeros", len(result.Stdout), guest.MaxOutputBytes)
+	}
+	if want := strings.Repeat("\x00", guest.MaxOutputBytes) +
+		"sproutfs-guest-agent: the command ran past its timeout\n"; result.Stderr != want {
+		t.Fatalf("stderr is %d bytes, want the bound of zeros and the timeout's note", len(result.Stderr))
+	}
+}
+
 // TestExecRefusesARequestWithNoCommand, which is the one request shape the
 // agent will not act on.
 func TestExecRefusesARequestWithNoCommand(t *testing.T) {

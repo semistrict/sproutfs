@@ -14,15 +14,6 @@ import (
 	"github.com/semistrict/sproutfs/api/guest"
 )
 
-// defaultTimeout bounds a command that did not ask for a bound of its own, and
-// maxTimeout bounds every command whatever it asked for: the host is waiting on
-// the other end of one vsock stream, and a guest that never answers is worse
-// than a command that was killed.
-const (
-	defaultTimeout = 30 * time.Second
-	maxTimeout     = 10 * time.Minute
-)
-
 // timeoutExit is the status of a command the deadline killed, which is what a
 // shell's timeout(1) reports and what this agent reports for the same reason.
 const timeoutExit = 124
@@ -101,11 +92,10 @@ func newServer(execs int) *http.ServeMux {
 // fails is not an error: its exit status is the answer, and only a guest that
 // could not run a shell at all has nothing to report.
 func runCommand(ctx context.Context, request guest.ExecRequest) guest.ExecResult {
-	timeout := defaultTimeout
-	if request.Timeout > 0 {
-		timeout = min(time.Duration(request.Timeout*float64(time.Second)), maxTimeout)
-	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	// The host is waiting on the other end of one vsock stream, and it waits by
+	// the same bound: a guest that never answers is worse than a command that
+	// was killed.
+	ctx, cancel := context.WithTimeout(ctx, request.Bound())
 	defer cancel()
 
 	began := time.Now()

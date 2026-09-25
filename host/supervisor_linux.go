@@ -62,10 +62,6 @@ const (
 	// diagnostic, and it is sent on a context of its own so that the VM whose
 	// handover just ran out of time is still reported as having done so.
 	drainReportTimeout = 5 * time.Second
-	// guestTimeout bounds one request to a guest's agent. It is longer than
-	// the agent's own longest command, so a command that is killed is killed
-	// by the guest, which can say so, rather than by a host that cannot.
-	guestTimeout = 11 * time.Minute
 )
 
 // machine is one VM this host runs: the handle that owns its volumes and

@@ -5,7 +5,6 @@ package vmmachine_test
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"os"
 	"strings"
 	"testing"
@@ -13,7 +12,6 @@ import (
 
 	"github.com/semistrict/sproutfs/api/guest"
 	"github.com/semistrict/sproutfs/checkpoint"
-	"github.com/semistrict/sproutfs/internal/jsonhttp"
 	"github.com/semistrict/sproutfs/vmmachine"
 	"github.com/semistrict/sproutfs/volume"
 )
@@ -27,10 +25,6 @@ const (
 	// guestVsockCID is this machine's own name for its vsock device. It never
 	// leaves the guest, so every VM of this suite may use the same one.
 	guestVsockCID = 3
-	// guestExecTimeout is what the host allows one command, and is deliberately
-	// far longer than anything here waits for: a failure must be the exec being
-	// answered late or not at all, never this bound firing and hiding it.
-	guestExecTimeout = 2 * time.Minute
 	// guestCommandSeconds is how long the command these suites interrupt runs
 	// for, which is long enough that what interrupts it lands in the middle
 	// rather than near either end.
@@ -217,10 +211,10 @@ func bootGuestWithAgentOn(t *testing.T, ctx context.Context, binaryPath string, 
 
 // guestExec runs one command in a guest over its vsock: the socket the VMM
 // listens on, the connection forwarding request, and the agent's own API. It is
-// the path host takes, built from the same client.
+// the path host takes, with its bounds: the command's own timeout plus a grace,
+// which is far longer than anything here waits for.
 func guestExec(ctx context.Context, p *vmmachine.Process, request guest.ExecRequest) (guest.ExecResult, error) {
-	client := guest.NewClient(p.VsockPath(), guestExecTimeout)
-	return jsonhttp.Call[guest.ExecResult](ctx, client, http.MethodPost, guest.URL("/exec"), request)
+	return guest.Exec(ctx, p.VsockPath(), request)
 }
 
 // execution is one exec's answer, whichever kind it turned out to be.

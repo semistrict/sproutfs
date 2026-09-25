@@ -19,6 +19,16 @@ import (
 // fields plus, at most, one VMM state blob.
 const MaxBody = 64 << 20
 
+// ErrTooLarge reports a body longer than the bound it was read under. The
+// bytes past the bound are never read, so a peer that sends without end costs
+// the reader the bound and no more.
+var ErrTooLarge = errors.New("the body is larger than its bound")
+
+// quotedBytes is how much of a body that is not the shared error shape a
+// failure quotes. It is enough to say what the far side was; the rest of
+// what it sent is not worth carrying in an error.
+const quotedBytes = 512
+
 // Error is the body of every failed request. Op names the operation, which is
 // what a client fanning out over hosts reports back.
 type Error struct {
@@ -65,12 +75,9 @@ func Fail(ctx context.Context, w http.ResponseWriter, status int, op string, err
 // Read decodes a request body into value. An empty body leaves value alone,
 // which is what an operation whose every field is optional wants.
 func Read(r *http.Request, value any) error {
-	raw, err := io.ReadAll(io.LimitReader(r.Body, MaxBody+1))
+	raw, err := readBounded(r.Body, MaxBody)
 	if err != nil {
-		return err
-	}
-	if len(raw) > MaxBody {
-		return fmt.Errorf("request body is larger than %d bytes", MaxBody)
+		return fmt.Errorf("reading the request body: %w", err)
 	}
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return nil
@@ -78,10 +85,31 @@ func Read(r *http.Request, value any) error {
 	return json.Unmarshal(raw, value)
 }
 
+// readBounded reads all of body, refusing it with ErrTooLarge once it is past
+// limit bytes. It reads one byte past the limit to tell the two apart, and
+// nothing after that.
+func readBounded(body io.Reader, limit int64) ([]byte, error) {
+	raw, err := io.ReadAll(io.LimitReader(body, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(raw)) > limit {
+		return nil, fmt.Errorf("%w of %d bytes", ErrTooLarge, limit)
+	}
+	return raw, nil
+}
+
 // Call sends body, when it is not nil, as JSON and decodes the response into R.
 // A response that is not 2xx is returned as an Error, so a caller can report
 // what the far side said rather than its status line.
 func Call[R any](ctx context.Context, client *http.Client, method, url string, body any) (R, error) {
+	return CallWithin[R](ctx, client, method, url, body, MaxBody)
+}
+
+// CallWithin is Call for a peer whose answer has a bound of its own, smaller
+// than MaxBody. A response past limit bytes fails with ErrTooLarge, whatever
+// its status, and is not decoded.
+func CallWithin[R any](ctx context.Context, client *http.Client, method, url string, body any, limit int64) (R, error) {
 	var result R
 	var reader io.Reader
 	if body != nil {
@@ -106,9 +134,9 @@ func Call[R any](ctx context.Context, client *http.Client, method, url string, b
 		return result, err
 	}
 	defer response.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(response.Body, MaxBody+1))
+	raw, err := readBounded(response.Body, limit)
 	if err != nil {
-		return result, err
+		return result, fmt.Errorf("%s %s: %s: reading the response: %w", method, url, response.Status, err)
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		var failure Error
@@ -116,7 +144,7 @@ func Call[R any](ctx context.Context, client *http.Client, method, url string, b
 			failure.Status = response.StatusCode
 			return result, failure
 		}
-		return result, fmt.Errorf("%s %s: %s: %s", method, url, response.Status, bytes.TrimSpace(raw))
+		return result, fmt.Errorf("%s %s: %s: %s", method, url, response.Status, quote(raw))
 	}
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return result, nil
@@ -125,4 +153,14 @@ func Call[R any](ctx context.Context, client *http.Client, method, url string, b
 		return result, errors.Join(fmt.Errorf("%s %s: decoding the response failed", method, url), err)
 	}
 	return result, nil
+}
+
+// quote is what a failure says of a body that is not the shared error shape:
+// its first quotedBytes, and how much more there was.
+func quote(raw []byte) string {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) <= quotedBytes {
+		return string(raw)
+	}
+	return fmt.Sprintf("%s... (%d more bytes)", raw[:quotedBytes], len(raw)-quotedBytes)
 }

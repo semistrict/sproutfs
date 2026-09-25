@@ -18,6 +18,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/semistrict/sproutfs/internal/jsonhttp"
 )
 
 // Port is the guest vsock port the agent serves on. It is the guest's own
@@ -29,11 +31,49 @@ const Port = 80
 // than carried through two proxies.
 const MaxOutputBytes = 1 << 20
 
+// MaxResultBytes bounds the agent's whole answer to an exec, as a host reads
+// it. JSON spells one byte of output in at most six, so two streams of
+// MaxOutputBytes fit, with room for the other fields and for what the agent
+// adds to stderr. A guest runs untrusted code and its agent may be anything:
+// an answer past this is refused, not read.
+const MaxResultBytes = 2*6*MaxOutputBytes + 64<<10
+
+// DefaultTimeout bounds a command that names no timeout of its own, and
+// MaxTimeout every command, whatever it names. The agent applies both, and a
+// host waits for the answer by the same rule.
+const (
+	DefaultTimeout = 30 * time.Second
+	MaxTimeout     = 10 * time.Minute
+)
+
+// answerGrace is how much longer than a command's own bound a host waits for
+// the answer. The agent kills what is left of the command, then encodes and
+// sends what it kept. An agent that has not answered by then will not.
+var answerGrace = 30 * time.Second
+
+// maxHeaderBytes bounds the headers of an agent's answer. The agent sends two
+// short ones.
+const maxHeaderBytes = 64 << 10
+
 // ExecRequest runs one shell command in the guest. Timeout is in seconds and
 // zero takes the agent's default.
 type ExecRequest struct {
 	Cmd     string  `json:"cmd"`
 	Timeout float64 `json:"timeout,omitempty"`
+}
+
+// Bound is how long the agent lets this command run: its own timeout, or
+// DefaultTimeout where it names none, and never more than MaxTimeout.
+func (r ExecRequest) Bound() time.Duration {
+	if r.Timeout <= 0 {
+		return DefaultTimeout
+	}
+	// Compared in seconds, because a timeout of centuries does not fit in a
+	// Duration.
+	if r.Timeout >= MaxTimeout.Seconds() {
+		return MaxTimeout
+	}
+	return time.Duration(r.Timeout * float64(time.Second))
 }
 
 // ExecResult is what the command did. Exit is the shell's status, which is
@@ -115,17 +155,30 @@ func readLine(conn net.Conn) (string, error) {
 // NewClient is an HTTP client whose every connection is a fresh forwarded vsock
 // stream to the agent in one guest. Connections are not reused: the forwarding
 // request is per-connection, so a pooled one would carry another VM's stream
-// after the socket path changed under a migration.
+// after the socket path changed under a migration. timeout bounds each request
+// whole, from the dial to the last byte of the body.
 func NewClient(socket string, timeout time.Duration) *http.Client {
 	return &http.Client{
 		Timeout: timeout,
 		Transport: &http.Transport{
-			DisableKeepAlives: true,
+			DisableKeepAlives:      true,
+			MaxResponseHeaderBytes: maxHeaderBytes,
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 				return Dial(ctx, socket, Port)
 			},
 		},
 	}
+}
+
+// Exec runs one command in the guest whose vsock the VMM serves on socket.
+//
+// The guest is not trusted, so neither is its answer. Exec waits the command's
+// Bound plus a grace for it, reads at most MaxResultBytes of it, and refuses
+// anything that is not an ExecResult. A guest that never answers, answers
+// without end, or answers nonsense costs the host that bound and an error.
+func Exec(ctx context.Context, socket string, request ExecRequest) (ExecResult, error) {
+	client := NewClient(socket, request.Bound()+answerGrace)
+	return jsonhttp.CallWithin[ExecResult](ctx, client, http.MethodPost, URL("/exec"), request, MaxResultBytes)
 }
 
 // URL addresses the agent. The host in it is a name the dialer ignores — every

@@ -582,6 +582,14 @@ full disk is a configuration error, not a code path.
   answered from the oldest retained byte and reports that offset. This is how a
   reader that fell behind learns that output was dropped. This is diagnostics,
   not an audit log.
+- **An exec's answer** comes from the guest's agent, and a guest runs untrusted
+  code. So the host bounds what the answer can cost it. It waits for the
+  command's own timeout plus 30 seconds. A request that names no timeout gets
+  the agent's 30 seconds, and none gets more than ten minutes. It reads at most
+  `guest.MaxResultBytes` of the answer, which is two full output streams as JSON
+  spells them, and 64 KiB of its headers. An answer that is late, too long or
+  not an exec result fails the exec. The error quotes at most 512 bytes of what
+  the agent sent.
 - **The page cache** keeps decoded pages within its own cap,
   `SPROUTFS_CACHE_BYTES`, and evicts unused entries before a retention fails.
   The cap is separate from the allotment that a guest's pages come from, so
