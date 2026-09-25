@@ -83,6 +83,11 @@ func TestLinuxArenaPoolExhaustionReturnsError(t *testing.T) {
 	defer holder.Close()
 	for slot := range pages {
 		err := syscall.Fallocate(int(holder.Fd()), 1, int64(slot)*hugePageSize, hugePageSize)
+		// Faulting in a huge page can be interrupted by the Go runtime's own
+		// preemption signal; that is a retry, not a failure of the pool.
+		for errors.Is(err, syscall.EINTR) {
+			err = syscall.Fallocate(int(holder.Fd()), 1, int64(slot)*hugePageSize, hugePageSize)
+		}
 		if errors.Is(err, syscall.ENOSPC) || errors.Is(err, syscall.ENOMEM) {
 			break
 		}

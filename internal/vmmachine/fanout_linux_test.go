@@ -36,11 +36,12 @@ const (
 	// and its budget for private state no checkpoint has, in bytes, because the
 	// two pagers count them in their own pages. Two children of this shape map
 	// four times the RAM arena between them, so every read of theirs evicts,
-	// spills and refaults, and the dirty budget is the arena's size as a
-	// deployment's is rather than the whole logical space.
-	//
+	// spills and refaults. A host never checkpoints RAM to relieve its dirty
+	// budget, so a RAM budget has to hold every private page its guests make:
+	// here the RAM of the three children the destination runs at once, which
+	// at 2 MiB pages is what their scattered stores dirty between checkpoints.
 	forkFanOutArena = 128 << 20
-	forkFanOutDirty = 128 << 20
+	forkFanOutDirty = 3 * forkFanOutRAM
 	// forkFanOutRootArena is the destination's PMEM arena. It is stated apart
 	// because the two pagers hold different things: the ratio above is about the
 	// memory two children map, and the roots are what a host keeps resident.
