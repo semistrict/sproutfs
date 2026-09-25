@@ -190,7 +190,10 @@ contain the same two sizes.
 An arena is a set of files, and a resident page is one slot of one file. The
 pager makes file 0 when it starts, of `Config.ArenaOffsets` slots, and every
 page is in it. Each file reads, writes, zeroes, compares and releases its own
-slots, and keeps its own set of held offsets.
+slots, and keeps its own set of held offsets. `Config.Arena` (the host's
+`SPROUTFS_ARENA`) is `shared`, which is this arena, or `isolated`, which will
+give each memory region a private file. `isolated` is being built, and until it
+is it runs exactly as `shared` does.
 
 An offset is an address in the arena. A page is memory. They are counted
 separately. `Config.ArenaOffsets` is the number of addresses the arena has.

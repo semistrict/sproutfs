@@ -132,7 +132,8 @@ func New(ctx context.Context, resources *resource.Budget, cfg Config, arena Aren
 	pageSize := cfg.PageSize
 	if cfg.ResidentPages < 1 || cfg.LogicalPages < 1 || cfg.DirtyPages < 1 ||
 		cfg.DirtyPages > cfg.LogicalPages || cfg.ResidentPages > cfg.LogicalPages ||
-		uint64(cfg.LogicalPages) > math.MaxInt64/pageSize || arena == nil || spill == nil {
+		uint64(cfg.LogicalPages) > math.MaxInt64/pageSize || arena == nil || spill == nil ||
+		(cfg.Arena != ArenaShared && cfg.Arena != ArenaIsolated) {
 		return nil, ErrConfig
 	}
 	// A pager that places nothing has one address per page, which is what PMEM

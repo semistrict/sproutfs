@@ -103,6 +103,7 @@ func pagerConfig(config SupervisorConfig, kind vmmemory.MemoryRegionKind) vmmemo
 		PageSize:        pageSize,
 		ResidentPages:   resident,
 		ArenaOffsets:    arenaOffsets(pageSize, resident, logical),
+		Arena:           config.Arena,
 		LogicalPages:    logical,
 		DirtyPages:      dirty,
 		ConcurrentIO:    concurrentIO(resident, readAhead),

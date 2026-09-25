@@ -11,6 +11,7 @@ import (
 	"github.com/semistrict/sproutfs/checkpoint"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/vmmachine"
+	"github.com/semistrict/sproutfs/vmmemory"
 )
 
 // DefaultRAMPageSize and PMEMPageSize are the pages the two pagers run. RAM's
@@ -182,6 +183,9 @@ type SupervisorConfig struct {
 	// this host; whoever fills this in has already divided it, so nothing below
 	// has a share to decide.
 	ArenaBytes KindBytes
+	// Arena is how both pagers divide their resident pages between the files
+	// of their arenas. The zero value is vmmemory.ArenaShared.
+	Arena vmmemory.ArenaMode
 	// MemoryBytes is the host-wide RAM allotment both pagers take their pages
 	// from. It is one budget because it is one machine's memory, and because
 	// bytes are the only unit the two pagers' pages can be added in.

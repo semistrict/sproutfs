@@ -10,6 +10,7 @@ package vmmemory
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/semistrict/sproutfs/control"
@@ -220,7 +221,7 @@ type UnpublishedInstaller interface {
 
 // Arena is where a pager keeps its resident pages: a set of files it makes.
 // Every page is in one slot of one file. The pager makes file 0 when it starts,
-// and every page is in it.
+// and in both arena modes every page is in it; see ArenaMode.
 type Arena interface {
 	// File makes a file of offsets slots, each one page of the pager, and every
 	// one of them punched.
@@ -254,6 +255,42 @@ type ZeroFile interface {
 // memory traffic.
 type EqualFile interface {
 	Equal(ctx context.Context, first, second int) (bool, error)
+}
+
+// ArenaMode is how a pager divides its resident pages between the files of its
+// arena.
+type ArenaMode int
+
+const (
+	// ArenaShared keeps every resident page in file 0, which every VMM that
+	// attaches a memory region receives read-write. It is the default.
+	ArenaShared ArenaMode = iota
+	// ArenaIsolated splits the arena by who may read each page: a private file
+	// per memory region, and read-only files for the pages another memory
+	// region may map. It is being built. Until it is, it behaves exactly like
+	// ArenaShared: every page is in file 0.
+	ArenaIsolated
+)
+
+// String is the mode as a deployment names it.
+func (m ArenaMode) String() string {
+	switch m {
+	case ArenaShared:
+		return "shared"
+	case ArenaIsolated:
+		return "isolated"
+	}
+	return fmt.Sprintf("ArenaMode(%d)", int(m))
+}
+
+// ParseArenaMode reads a mode as a deployment names it.
+func ParseArenaMode(name string) (ArenaMode, error) {
+	for _, m := range []ArenaMode{ArenaShared, ArenaIsolated} {
+		if name == m.String() {
+			return m, nil
+		}
+	}
+	return 0, fmt.Errorf("%w: arena mode %q, want shared or isolated", ErrConfig, name)
 }
 
 // Mapping controls one process memory region. Map installs already armed mappings for
@@ -355,6 +392,9 @@ type Config struct {
 	// offsets it owns empty. Zero selects ResidentPages, which is a pager whose
 	// addresses and pages are one number.
 	ArenaOffsets int
+	// Arena is how this pager divides its resident pages between the files of
+	// its arena. The zero value is ArenaShared.
+	Arena ArenaMode
 	// LogicalPages bounds all per-memory-region metadata, including never-faulted pages.
 	LogicalPages int
 	// DirtyPages bounds volatile private state on RAM and spill combined.

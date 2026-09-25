@@ -12,6 +12,7 @@ import (
 	"github.com/semistrict/sproutfs/host"
 	"github.com/semistrict/sproutfs/internal/jsonhttp"
 	"github.com/semistrict/sproutfs/vmmachine"
+	"github.com/semistrict/sproutfs/vmmemory"
 )
 
 // guestCID is the context id every guest has on its own virtio-vsock device.
@@ -212,6 +213,13 @@ func loadConfig(lookup func(string) string) (config, error) {
 	if c.ArenaBytes.Total() != arenaBytes {
 		fail("SPROUTFS_ARENA_BYTES is %d, which %d%% cannot divide into whole %d-byte RAM pages and whole %d-byte PMEM pages",
 			arenaBytes, ramShare, ramPageSize, pmemPageSize)
+	}
+	// The arena mode is how each pager divides its resident pages between the
+	// files of its arena. Isolated is being built, and until it is it runs
+	// exactly as shared does.
+	arena := text("SPROUTFS_ARENA", vmmemory.ArenaShared.String())
+	if c.Arena, err = vmmemory.ParseArenaMode(arena); err != nil {
+		fail("SPROUTFS_ARENA is %q, want shared or isolated", arena)
 	}
 	if c.SpillBytes.Total() != spillBytes {
 		fail("SPROUTFS_SPILL_BYTES is %d, which %d%% cannot divide into whole %d-byte RAM pages and whole %d-byte PMEM pages",

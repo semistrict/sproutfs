@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/semistrict/sproutfs/host"
+	"github.com/semistrict/sproutfs/vmmemory"
 )
 
 // environ is one pod's environment.
@@ -207,6 +208,38 @@ func TestConfigDividesTheBudgetsByTheShare(t *testing.T) {
 	if _, err := loadConfig(environ(values)); err == nil ||
 		!strings.Contains(err.Error(), "SPROUTFS_RAM_SHARE_PERCENT is 100") {
 		t.Fatalf("a whole-arena share was accepted: %v", err)
+	}
+}
+
+// A pod that names no arena mode runs the one arena of today, and one that
+// names the isolated arena gets it.
+func TestConfigReadsTheArenaMode(t *testing.T) {
+	config, err := loadConfig(environ(minimal()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Arena != vmmemory.ArenaShared {
+		t.Fatalf("an unset arena mode configured %s, want shared", config.Arena)
+	}
+	values := minimal()
+	values["SPROUTFS_ARENA"] = "isolated"
+	config, err = loadConfig(environ(values))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Arena != vmmemory.ArenaIsolated {
+		t.Fatalf("SPROUTFS_ARENA=isolated configured %s, want isolated", config.Arena)
+	}
+}
+
+// A mode the pager does not have is refused at startup rather than read as the
+// default.
+func TestConfigRefusesAnUnknownArenaMode(t *testing.T) {
+	values := minimal()
+	values["SPROUTFS_ARENA"] = "split"
+	_, err := loadConfig(environ(values))
+	if err == nil || !strings.Contains(err.Error(), `SPROUTFS_ARENA is "split", want shared or isolated`) {
+		t.Fatalf("an unknown arena mode gave %v", err)
 	}
 }
 
