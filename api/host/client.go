@@ -72,8 +72,8 @@ func (c *Client) Fork(ctx context.Context, parent string, request ForkRequest) (
 	return jsonhttp.Call[ForkResult](ctx, c.http, http.MethodPost, c.path("/vms/%s/fork", url.PathEscape(parent)), request)
 }
 
-func (c *Client) Capture(ctx context.Context, id string) (CaptureResult, error) {
-	return jsonhttp.Call[CaptureResult](ctx, c.http, http.MethodPost, c.path("/vms/%s/capture", url.PathEscape(id)), nil)
+func (c *Client) Capture(ctx context.Context, id string, request CaptureRequest) (CaptureResult, error) {
+	return jsonhttp.Call[CaptureResult](ctx, c.http, http.MethodPost, c.path("/vms/%s/capture", url.PathEscape(id)), request)
 }
 
 func (c *Client) Console(ctx context.Context, id string, since int64) (Console, error) {

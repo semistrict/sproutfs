@@ -42,7 +42,7 @@ type hostClient interface {
 	ImportTemplate(ctx context.Context, image io.Reader, request host.ImportTemplateRequest) (host.ImportTemplateResult, error)
 	Open(ctx context.Context, id string, request host.OpenRequest) (host.OpenResult, error)
 	Fork(ctx context.Context, parent string, request host.ForkRequest) (host.ForkResult, error)
-	Capture(ctx context.Context, id string) (host.CaptureResult, error)
+	Capture(ctx context.Context, id string, request host.CaptureRequest) (host.CaptureResult, error)
 	Console(ctx context.Context, id string, since int64) (host.Console, error)
 	WriteConsole(ctx context.Context, id string, data string) error
 	Exec(ctx context.Context, id string, request host.ExecRequest) (host.ExecResult, error)
@@ -966,7 +966,7 @@ func (o *orchestrator) discardChildren(ctx context.Context, target liveHost, chi
 }
 
 // Capture takes one explicit checkpoint on the host running the VM.
-func (o *orchestrator) Capture(ctx context.Context, id string) (orch.CaptureResult, error) {
+func (o *orchestrator) Capture(ctx context.Context, id string, request orch.CaptureRequest) (orch.CaptureResult, error) {
 	hosts, err := o.recent(ctx)
 	if err != nil {
 		return orch.CaptureResult{}, err
@@ -975,10 +975,30 @@ func (o *orchestrator) Capture(ctx context.Context, id string) (orch.CaptureResu
 	if err != nil {
 		return orch.CaptureResult{}, err
 	}
-	result, err := source.client.Capture(ctx, id)
-	if err != nil {
-		return orch.CaptureResult{}, fmt.Errorf("capturing %s on %s: %w", id, source.report.Name, err)
+	if !request.New {
+		result, err := source.client.Capture(ctx, id, host.CaptureRequest{})
+		if err != nil {
+			return orch.CaptureResult{}, fmt.Errorf("capturing %s on %s: %w", id, source.report.Name, err)
+		}
+		return orch.CaptureResult{Host: source.report.Name, Result: result}, nil
 	}
+	// The new VM is a copy of the source at one pause, so it is of the
+	// source's template and has the source's memory. It is written down before
+	// the host creates it, as every identity is, and it runs nowhere after.
+	parent := o.rowOf(ctx, id)
+	into := vmRecord{ID: o.identify(), State: stateCreating, Template: parent.Template, Parent: id,
+		Memory: o.memoryFor(ctx, hosts, id)}
+	o.note(ctx, into)
+	result, err := source.client.Capture(ctx, id, host.CaptureRequest{Into: into.ID})
+	if err != nil {
+		o.forget(ctx, into.ID)
+		return orch.CaptureResult{}, fmt.Errorf("capturing %s into %s on %s: %w", id, into.ID,
+			source.report.Name, err)
+	}
+	into.State = stateStopped
+	o.note(ctx, into)
+	slog.InfoContext(ctx, "sproutfs-orchestrator: captured a VM into a new one", "vm", id,
+		"into", into.ID, "host", source.report.Name, "checkpoint", result.Checkpoint)
 	return orch.CaptureResult{Host: source.report.Name, Result: result}, nil
 }
 

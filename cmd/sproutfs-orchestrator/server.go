@@ -74,7 +74,12 @@ func newServer(o *orchestrator, token string) http.Handler {
 		reply(w, r, "fork", forked, err)
 	})
 	mux.HandleFunc("POST /vms/{id}/capture", func(w http.ResponseWriter, r *http.Request) {
-		captured, err := o.Capture(r.Context(), r.PathValue("id"))
+		var request orch.CaptureRequest
+		if err := jsonhttp.Read(r, &request); err != nil {
+			jsonhttp.Fail(r.Context(), w, http.StatusBadRequest, "capture", err)
+			return
+		}
+		captured, err := o.Capture(r.Context(), r.PathValue("id"), request)
 		reply(w, r, "capture", captured, err)
 	})
 	mux.HandleFunc("POST /vms/{id}/migrate", func(w http.ResponseWriter, r *http.Request) {

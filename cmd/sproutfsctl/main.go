@@ -177,8 +177,14 @@ func execute(ctx context.Context, client *orch.Client, command invocation,
 			result.PeerPages, result.Unpublished)
 		return err
 	case "capture":
-		result, err := client.Capture(ctx, command.Target)
+		result, err := client.Capture(ctx, command.Target, orch.CaptureRequest{New: command.New})
 		if err != nil {
+			return err
+		}
+		if command.New {
+			_, err = fmt.Fprintf(out, "%s captured into %s at checkpoint %d on %s in %.3fs\n",
+				command.Target, result.Result.VM, result.Result.Checkpoint, result.Host,
+				float64(result.Result.Publish))
 			return err
 		}
 		_, err = fmt.Fprintf(out, "%s checkpoint %d on %s: pause %.3fs, publish %.3fs\n",

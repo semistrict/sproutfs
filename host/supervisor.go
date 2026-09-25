@@ -79,7 +79,10 @@ type VMs interface {
 	// anything is discarded.
 	Open(ctx context.Context, id string, request hostapi.OpenRequest) (hostapi.OpenResult, error)
 	Fork(ctx context.Context, parent string, request hostapi.ForkRequest) (hostapi.ForkResult, error)
-	Capture(ctx context.Context, id string) (hostapi.CaptureResult, error)
+	// Capture takes a checkpoint of a VM this host runs now. A request with
+	// Into captures it into a new VM instead, which publishes its root and
+	// never boots; the source keeps running.
+	Capture(ctx context.Context, id string, request hostapi.CaptureRequest) (hostapi.CaptureResult, error)
 	Console(ctx context.Context, id string, since int64) (hostapi.Console, error)
 	WriteConsole(ctx context.Context, id string, data string) error
 	Exec(ctx context.Context, id string, request hostapi.ExecRequest) (hostapi.ExecResult, error)

@@ -183,8 +183,17 @@ type MigrateResult struct {
 	Total       Seconds `json:"total_seconds"`
 }
 
+// CaptureRequest is an explicit checkpoint of a running VM. New captures the VM
+// into a new VM instead, whose identity the orchestrator allocates: the new VM
+// publishes its root and never boots, and the source keeps running. The table
+// records the new VM as stopped, so a start opens it where the capture's pause
+// left the source, and a create can start from it.
+type CaptureRequest struct {
+	New bool `json:"new,omitempty"`
+}
+
 // CaptureResult reports one explicit checkpoint taken on the host running the
-// VM.
+// VM. For a capture into a new VM, the result names the new VM and its root.
 type CaptureResult struct {
 	Host   string             `json:"host"`
 	Result host.CaptureResult `json:"result"`

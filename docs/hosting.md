@@ -627,6 +627,32 @@ last published checkpoint, which for a running VM is its last interval
 checkpoint of the disks. The running VM's writer adopts the pin at its next
 selection and spares the pinned checkpoint from then on.
 
+## Capturing a VM into a new VM
+
+`Host.CaptureInto` captures a VM this host runs into a new VM that never boots
+(`CaptureRequest.Into`). It is a fork whose child publishes its root here and
+is then closed, without a VMM:
+
+1. The source pauses once, as a fork's parent does. The pause saves its VMM
+   state and seals its memory regions, and the source runs again. Its
+   published checkpoint is pinned by its own writer.
+2. The child is created over that fork point, on this host.
+3. The child's root is published. It reads the pages the pause sealed through
+   the fork point, as a child on the parent's own host does, and it carries
+   the VMM state the pause saved.
+4. The child's handle is closed, and the fork point is retired.
+
+Nothing is served over the network and no VMM starts. The source keeps
+running throughout. Its seal ends when the capture returns, on every path: the
+capture holds the fork point itself until the child's root has landed or
+failed. A child whose root did not land is closed, which removes its record.
+An identity that already exists is refused before anything is published, and
+the source is unsealed again.
+
+The new VM is then like a stopped VM. Any host can open it, and it resumes the
+guest where the pause left the source. A create can also start from it (see
+[creating a VM from a checkpoint](#creating-a-vm-from-a-checkpoint)).
+
 ## Budgets
 
 The host takes one `Resources` owner, which accounts only RAM: the pager's

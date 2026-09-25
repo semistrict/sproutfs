@@ -134,7 +134,19 @@ func newServer(h host.VMs, token string) http.Handler {
 		reply(w, r, "fork", forked, err)
 	})
 	mux.HandleFunc("POST /vms/{id}/capture", func(w http.ResponseWriter, r *http.Request) {
-		checkpoint, err := h.Capture(r.Context(), r.PathValue("id"))
+		// A capture with no body at all is the ordinary one: a checkpoint of
+		// the VM itself.
+		var request hostapi.CaptureRequest
+		if err := jsonhttp.Read(r, &request); err != nil {
+			jsonhttp.Fail(r.Context(), w, http.StatusBadRequest, "capture", err)
+			return
+		}
+		if request.Into == r.PathValue("id") {
+			jsonhttp.Fail(r.Context(), w, http.StatusBadRequest, "capture",
+				fmt.Errorf("%w: a VM is captured into a new VM, not into itself", host.ErrRequest))
+			return
+		}
+		checkpoint, err := h.Capture(r.Context(), r.PathValue("id"), request)
 		reply(w, r, "capture", checkpoint, err)
 	})
 	mux.HandleFunc("GET /vms/{id}/console", func(w http.ResponseWriter, r *http.Request) {

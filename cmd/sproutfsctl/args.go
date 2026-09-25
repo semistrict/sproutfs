@@ -45,6 +45,9 @@ type invocation struct {
 	// Suspend stops a VM with its memory and its VMM state published beside
 	// its disks, so a start resumes it rather than booting it.
 	Suspend bool
+	// New captures a running VM into a new VM that never boots, rather than
+	// taking a checkpoint of the VM itself.
+	New bool
 }
 
 // errUsage reports a command line this CLI will not run. Its message is what
@@ -71,7 +74,9 @@ const usage = `sproutfsctl drives a sproutfs demo deployment through its orchest
   sproutfsctl fork VM [--count N] [--to HOST]
                                            fork a running VM, here or on another host
   sproutfsctl migrate VM [--to HOST]       move a VM to another host
-  sproutfsctl capture VM                   take a checkpoint now
+  sproutfsctl capture VM [--new]           take a checkpoint now; --new captures
+                                           the VM into a new, stopped VM instead,
+                                           and the VM keeps running
   sproutfsctl kill-host HOST               delete a host pod, losing its unpublished writes
   sproutfsctl recover VM [--force]         reopen a VM whose host is gone
   sproutfsctl stop VM [--suspend]          checkpoint a VM's disks and close it, keeping
@@ -110,7 +115,7 @@ var commands = map[string]struct {
 	"exec":            {target: "vm", flags: []string{"timeout"}, trailing: true},
 	"fork":            {target: "vm", flags: []string{"count", "to"}},
 	"migrate":         {target: "vm", flags: []string{"to"}},
-	"capture":         {target: "vm"},
+	"capture":         {target: "vm", switches: []string{"new"}},
 	"kill-host":       {target: "host"},
 	"recover":         {target: "vm", switches: []string{"force"}},
 	"stop":            {target: "vm", switches: []string{"suspend"}},
@@ -166,6 +171,8 @@ func parse(args []string) (invocation, error) {
 				result.Cold = true
 			case "suspend":
 				result.Suspend = true
+			case "new":
+				result.New = true
 			}
 			continue
 		}

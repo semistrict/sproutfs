@@ -262,9 +262,13 @@ func (f *fakeHostClient) Fork(_ context.Context, parent string, request host.For
 	return result, nil
 }
 
-func (f *fakeHostClient) Capture(_ context.Context, id string) (host.CaptureResult, error) {
+func (f *fakeHostClient) Capture(_ context.Context, id string, request host.CaptureRequest) (host.CaptureResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if request.Into != "" {
+		f.record("capture %s into %s", id, request.Into)
+		return host.CaptureResult{VM: request.Into, Checkpoint: 12}, nil
+	}
 	f.record("capture %s", id)
 	return host.CaptureResult{VM: id, Checkpoint: 11}, nil
 }
@@ -647,7 +651,7 @@ func TestTwoHostsClaimingOneVMStopsTheDeploymentActingOnIt(t *testing.T) {
 			return err
 		},
 		"capturing": func() error {
-			_, err := d.orchestrator.Capture(t.Context(), "vm-a")
+			_, err := d.orchestrator.Capture(t.Context(), "vm-a", orch.CaptureRequest{})
 			return err
 		},
 		"running a command in": func() error {

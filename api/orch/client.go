@@ -77,9 +77,9 @@ func (c *Client) Migrate(ctx context.Context, id, to string) (MigrateResult, err
 		c.path("/vms/%s/migrate", url.PathEscape(id)), MigrateRequest{To: to})
 }
 
-func (c *Client) Capture(ctx context.Context, id string) (CaptureResult, error) {
+func (c *Client) Capture(ctx context.Context, id string, request CaptureRequest) (CaptureResult, error) {
 	return jsonhttp.Call[CaptureResult](ctx, c.http, http.MethodPost,
-		c.path("/vms/%s/capture", url.PathEscape(id)), nil)
+		c.path("/vms/%s/capture", url.PathEscape(id)), request)
 }
 
 // Recover reopens a VM whose host is gone. force carries the operator's own

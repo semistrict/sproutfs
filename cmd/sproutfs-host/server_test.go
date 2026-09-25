@@ -103,7 +103,10 @@ func (f *fakeHost) Fork(_ context.Context, parent string, request hostapi.ForkRe
 	return f.forked, f.record("fork %s %s", parent, ids)
 }
 
-func (f *fakeHost) Capture(_ context.Context, id string) (hostapi.CaptureResult, error) {
+func (f *fakeHost) Capture(_ context.Context, id string, request hostapi.CaptureRequest) (hostapi.CaptureResult, error) {
+	if request.Into != "" {
+		return f.captured, f.record("capture %s into %s", id, request.Into)
+	}
 	return f.captured, f.record("capture %s", id)
 }
 
@@ -486,6 +489,23 @@ func TestDrainAndReleaseAreTheHandoverContract(t *testing.T) {
 		t.Fatalf("status %d: %s", status, body)
 	}
 	if want := []string{"drain", "released vm-1", "abandoned vm-2"}; !slices.Equal(fake.calls, want) {
+		t.Fatalf("the host was asked for %v, want %v", fake.calls, want)
+	}
+}
+
+// A capture with no body checkpoints the VM itself, and one that names a new
+// VM captures the VM into it. A VM is not captured into itself.
+func TestCaptureCarriesTheVMItIsCapturedInto(t *testing.T) {
+	fake := &fakeHost{}
+	for _, body := range []string{"", `{"into":"vm-2"}`} {
+		if status, reply := call(t, fake, http.MethodPost, "/vms/vm-1/capture", body); status != http.StatusOK {
+			t.Fatalf("%q: status %d: %s", body, status, reply)
+		}
+	}
+	if status, reply := call(t, fake, http.MethodPost, "/vms/vm-1/capture", `{"into":"vm-1"}`); status != http.StatusBadRequest {
+		t.Fatalf("capturing a VM into itself: status %d: %s", status, reply)
+	}
+	if want := []string{"capture vm-1", "capture vm-1 into vm-2"}; !slices.Equal(fake.calls, want) {
 		t.Fatalf("the host was asked for %v, want %v", fake.calls, want)
 	}
 }

@@ -200,10 +200,22 @@ func (s *supervisor) Fork(ctx context.Context, parent string, request hostapi.Fo
 		Total: s.since(began)}, nil
 }
 
-func (s *supervisor) Capture(ctx context.Context, id string) (hostapi.CaptureResult, error) {
+func (s *supervisor) Capture(ctx context.Context, id string, request hostapi.CaptureRequest) (hostapi.CaptureResult, error) {
 	m, err := s.running(id)
 	if err != nil {
 		return hostapi.CaptureResult{}, err
+	}
+	if request.Into != "" {
+		// The new VM never boots here, so this host keeps nothing of it.
+		if err := s.absent(request.Into); err != nil {
+			return hostapi.CaptureResult{}, err
+		}
+		began := s.clock.Now()
+		root, err := s.host.CaptureInto(ctx, id, request.Into)
+		if err != nil {
+			return hostapi.CaptureResult{}, err
+		}
+		return hostapi.CaptureResult{VM: request.Into, Checkpoint: root.Sequence, Publish: s.since(began)}, nil
 	}
 	paused := s.clock.Now()
 	ckpt, err := Capture(ctx, m.vm, m.process, s.clock)

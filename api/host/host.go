@@ -455,8 +455,19 @@ type ForkResult struct {
 	Total    Seconds   `json:"total_seconds"`
 }
 
+// CaptureRequest is an explicit checkpoint of a running VM. Into captures the
+// VM into a new VM of that identity instead: a fork whose child publishes its
+// root and never boots. The source pauses once and keeps running. The new VM
+// is then like a stopped one: any host can open it, and it resumes where the
+// pause left the source, or a create can start from it.
+type CaptureRequest struct {
+	Into string `json:"into,omitempty"`
+}
+
 // CaptureResult reports one explicit checkpoint: the guest's pause, and how
-// long the sealed pages took to become durable behind it.
+// long the sealed pages took to become durable behind it. For a capture into a
+// new VM, VM and Checkpoint are the new VM and its root, and Publish is the
+// whole capture, pause included.
 type CaptureResult struct {
 	VM         string  `json:"vm"`
 	Checkpoint uint64  `json:"checkpoint"`
