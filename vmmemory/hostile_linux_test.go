@@ -912,6 +912,8 @@ var hostileCases = []struct {
 		ops: []hostileOp{{opFault, 1, 0}}}, "UFFDIO_CONTINUE"},
 	{"a store into a page it never read", hostileScript{awaitEnd: true,
 		ops: []hostileOp{{opFault, 1, 1}}}, "UFFDIO_CONTINUE"},
+	{"a store after a refused populate", hostileScript{pmem: true, inherits: true, answers: []answer{refuse, acknowledge},
+		ops: []hostileOp{{opFault, 2, 7}, {opLinger, 0, 0}}}, "managed-memory mapping refused"},
 	{"a fault on a page it shares", hostileScript{inherits: true, awaitEnd: true,
 		ops: []hostileOp{{opFault, 1, 1}}}, "UFFDIO_CONTINUE"},
 	{"faults past its queue", hostileScript{awaitEnd: true, answers: []answer{acknowledge, stayQuiet},

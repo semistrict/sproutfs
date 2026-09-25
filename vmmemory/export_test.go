@@ -110,6 +110,11 @@ func (h *Host) Unreachable() []string {
 		found = append(found, fmt.Sprintf("slot %d key %+v private %t replacing %d dropped %t indexed %t free %t",
 			pg.slot, pg.key.id, pg.private, pg.replacing, pg.dropped, h.clean[pg.key] == pg, pg.slot >= 0 && h.slots.IsFree(pg.slot)))
 	}
+	for slot, entry := range h.residentLeases {
+		if !claimed[slot] {
+			found = append(found, fmt.Sprintf("slot %d is held for no page, in an extent %t", slot, entry.extent != nil))
+		}
+	}
 	if listed != h.slots.Held() {
 		found = append(found, fmt.Sprintf("%d pages are listed and %d slots held", listed, h.slots.Held()))
 	}
