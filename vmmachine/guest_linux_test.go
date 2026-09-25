@@ -202,7 +202,7 @@ func bootGuestWithAgent(t *testing.T, ctx context.Context, binaryPath string, vm
 func bootGuestWithAgentOn(t *testing.T, ctx context.Context, binaryPath string, pager *hostPagers, vm *volume.VM) *vmmachine.Process {
 	t.Helper()
 	config := migrationConfig(t, binaryPath, pager, vm)
-	config.VsockCID = guestVsockCID
+	config.Starter.(*vmmachine.Firecracker).VsockCID = guestVsockCID
 	p, err := vmmachine.Start(ctx, config)
 	if err != nil {
 		t.Fatal(err)

@@ -63,7 +63,11 @@ func NewScratch(ctx context.Context, directory string, disks platform.Disks) (*S
 // Consumers must use Start instead of writing or removing files beneath it.
 func (s *Scratch) Directory() string { return s.root }
 
-func (s *Scratch) create(ctx context.Context, p *Process) (string, error) {
+// create takes one process's directory: placed, when its Starter chose where,
+// or a fresh one under the scratch. A placed directory must not exist yet, so a
+// process never shares one with another or with what was left behind by one
+// this host no longer runs.
+func (s *Scratch) create(ctx context.Context, p *Process, placed string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := context.Cause(ctx); err != nil {
@@ -72,7 +76,13 @@ func (s *Scratch) create(ctx context.Context, p *Process) (string, error) {
 	if s.closed || s.closing {
 		return "", resource.ErrClosed
 	}
-	dir, err := os.MkdirTemp(s.root, "vm-")
+	var dir string
+	var err error
+	if placed == "" {
+		dir, err = os.MkdirTemp(s.root, "vm-")
+	} else if dir, err = filepath.Abs(placed); err == nil {
+		err = os.Mkdir(dir, 0o700)
+	}
 	if err != nil {
 		return "", err
 	}

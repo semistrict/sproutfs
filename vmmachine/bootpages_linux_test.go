@@ -113,7 +113,7 @@ func TestBootSurveyOfPrivateRAMPages(t *testing.T) {
 		PMEM: hostPagerBudgets{Arena: 256 << 20, Logical: 2 * uint64(ramBytes),
 			Dirty: 2 * uint64(ramBytes)}})
 	config := migrationConfig(t, binaryPath, pager, vm)
-	config.VCPUs = bootPagesVCPUs(t)
+	config.Starter.(*vmmachine.Firecracker).VCPUs = bootPagesVCPUs(t)
 	started := time.Now()
 	p, err := vmmachine.Start(ctx, config)
 	if err != nil {

@@ -115,6 +115,7 @@ func run() error {
 	supervisor := config.SupervisorConfig
 	supervisor.ObjectStore, supervisor.Network = objects, adapters.NewNetwork()
 	supervisor.Disk, supervisor.Disks = disk, adapters.NewDisk
+	supervisor.Starter = &config.Firecracker
 
 	svc, err := host.Start(ctx, supervisor)
 	if err != nil {

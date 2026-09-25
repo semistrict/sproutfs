@@ -11,13 +11,20 @@ import (
 
 	"github.com/semistrict/sproutfs/host"
 	"github.com/semistrict/sproutfs/internal/jsonhttp"
+	"github.com/semistrict/sproutfs/vmmachine"
 )
+
+// guestCID is the context id every guest has on its own virtio-vsock device.
+const guestCID = 3
 
 // config is this process's environment: the host it assembles, and the names of
 // the things only this command builds from them — the object store the
 // deployment's VMs live in, and the port its own API listens on.
 type config struct {
 	host.SupervisorConfig
+	// Firecracker is how this command runs every VMM: Firecracker directly,
+	// as the host's Starter.
+	Firecracker vmmachine.Firecracker
 	// Bucket and Prefix are the deployment's object namespace, and Endpoint
 	// selects a GCS emulator instead of the ambient Google credentials.
 	Bucket, Prefix, Endpoint string
@@ -141,11 +148,17 @@ func loadConfig(lookup func(string) string) (config, error) {
 			Namespace:   text("SPROUTFS_NAMESPACE", "sproutfs"),
 			HugepageDir: text("SPROUTFS_HUGEPAGE_DIR", "/hugepages-2Mi"),
 			ScratchDir:  text("SPROUTFS_SCRATCH_DIR", "/var/lib/sproutfs"),
-			Firecracker: text("SPROUTFS_FIRECRACKER", "/usr/local/bin/firecracker"),
-			Seccomp:     text("SPROUTFS_SECCOMP", "/usr/share/sproutfs/seccomp.bpf"),
-			Kernel:      text("SPROUTFS_KERNEL", "/usr/share/sproutfs/vmlinux"),
-			BootArgs:    text("SPROUTFS_BOOT_ARGS", defaultBootArgs),
-			VCPUs:       int(number("SPROUTFS_VM_VCPUS", 1)),
+		},
+		Firecracker: vmmachine.Firecracker{
+			Binary:        text("SPROUTFS_FIRECRACKER", "/usr/local/bin/firecracker"),
+			SeccompFilter: text("SPROUTFS_SECCOMP", "/usr/share/sproutfs/seccomp.bpf"),
+			Kernel:        text("SPROUTFS_KERNEL", "/usr/share/sproutfs/vmlinux"),
+			BootArgs:      text("SPROUTFS_BOOT_ARGS", defaultBootArgs),
+			VCPUs:         int(number("SPROUTFS_VM_VCPUS", 1)),
+			// Every guest knows itself by the same context id on its own
+			// vsock: the device is a private channel to the process running
+			// it, so the name is the guest's alone.
+			VsockCID: guestCID,
 		},
 	}
 	arenaBytes := number("SPROUTFS_ARENA_BYTES", 2<<30)
@@ -208,11 +221,11 @@ func loadConfig(lookup func(string) string) (config, error) {
 		fail("SPROUTFS_VM_MEMORY_BYTES is %d, want a multiple of the RAM pager's %d-byte page",
 			c.VMMemoryBytes, ramPageSize)
 	}
-	if !mountsRootWithDAX(c.BootArgs) {
-		fail("SPROUTFS_BOOT_ARGS mounts the root without rootflags=dax=always: %q", c.BootArgs)
+	if !mountsRootWithDAX(c.Firecracker.BootArgs) {
+		fail("SPROUTFS_BOOT_ARGS mounts the root without rootflags=dax=always: %q", c.Firecracker.BootArgs)
 	}
-	if c.VCPUs < 1 || c.VCPUs > 32 {
-		fail("SPROUTFS_VM_VCPUS is %d, want 1 to 32", c.VCPUs)
+	if c.Firecracker.VCPUs < 1 || c.Firecracker.VCPUs > 32 {
+		fail("SPROUTFS_VM_VCPUS is %d, want 1 to 32", c.Firecracker.VCPUs)
 	}
 	resident := host.KindPages{RAM: int(c.ArenaBytes.RAM / int64(ramPageSize)), PMEM: int(c.ArenaBytes.PMEM / pmemPageSize)}
 	spillable := host.KindPages{RAM: int(c.SpillBytes.RAM / int64(ramPageSize)), PMEM: int(c.SpillBytes.PMEM / pmemPageSize)}

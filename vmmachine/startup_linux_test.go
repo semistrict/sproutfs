@@ -291,8 +291,8 @@ func startupFixture(t *testing.T) (vmmachine.Config, *admissionBacking, *vmmemor
 	scratch := mustScratch(t)
 	stall := &admissionBacking{Backing: vm.Volume(vmmachine.RAMVolume),
 		entered: make(chan struct{}), release: make(chan struct{})}
-	return vmmachine.Config{Binary: launcher, SeccompFilter: "unused", KernelPath: "unused", Pagers: bothKinds(h), VM: vm,
-		VCPUs: 1, Scratch: scratch, Connection: vmmemory.ConnectionConfig{QueuePages: 256},
+	return vmmachine.Config{Starter: &vmmachine.Firecracker{Binary: launcher, SeccompFilter: "unused",
+		Kernel: "unused", VCPUs: 1}, Pagers: bothKinds(h), VM: vm, Scratch: scratch, Connection: vmmemory.ConnectionConfig{QueuePages: 256},
 		Backings: map[string]vmmemory.Backing{vmmachine.RAMVolume: stall}}, stall, h
 }
 

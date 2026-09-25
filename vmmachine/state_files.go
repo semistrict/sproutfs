@@ -23,16 +23,19 @@ var ErrStateTooLarge = errors.New("vmmachine: VMM state exceeds the supported si
 // capture, bounded at MaxStateBytes by the file-size limit the VMM process
 // runs under, and the whole directory goes with the process.
 type stateFiles struct {
-	mu     sync.Mutex
-	disk   platform.Disk
+	mu   sync.Mutex
+	disk platform.Disk
+	// own gives a file this package creates to the user the VMM runs as, so a
+	// VMM without this process's privileges can read it or write into it.
+	own    func(name string) error
 	closed bool
 }
 
-func newStateFiles(raw platform.Disk) (*stateFiles, error) {
-	if raw == nil {
+func newStateFiles(raw platform.Disk, own func(name string) error) (*stateFiles, error) {
+	if raw == nil || own == nil {
 		return nil, errors.New("vmmachine: staging namespace is required")
 	}
-	return &stateFiles{disk: raw}, nil
+	return &stateFiles{disk: raw, own: own}, nil
 }
 
 func (s *stateFiles) write(ctx context.Context, name string, data []byte) (err error) {
@@ -41,6 +44,9 @@ func (s *stateFiles) write(ctx context.Context, name string, data []byte) (err e
 		return err
 	}
 	defer func() { err = errors.Join(err, file.Close()) }()
+	if err := s.own(name); err != nil {
+		return err
+	}
 	if n, err := file.WriteAt(ctx, data, 0); err != nil {
 		return err
 	} else if n != len(data) {
@@ -74,6 +80,9 @@ func (s *stateFiles) capture(ctx context.Context, produce func() error) (data []
 	defer func() {
 		err = errors.Join(err, file.Close(), s.remove(context.WithoutCancel(ctx), "capture.state"))
 	}()
+	if err := s.own("capture.state"); err != nil {
+		return nil, err
+	}
 	if err := produce(); err != nil {
 		return nil, err
 	}

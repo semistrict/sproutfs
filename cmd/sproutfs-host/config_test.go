@@ -35,10 +35,10 @@ func TestConfigTakesTheDocumentedDefaults(t *testing.T) {
 	if config.HugepageDir != "/hugepages-2Mi" || config.ScratchDir != "/var/lib/sproutfs" {
 		t.Fatalf("directories %s %s", config.HugepageDir, config.ScratchDir)
 	}
-	if config.Firecracker != "/usr/local/bin/firecracker" ||
-		config.Seccomp != "/usr/share/sproutfs/seccomp.bpf" ||
-		config.Kernel != "/usr/share/sproutfs/vmlinux" {
-		t.Fatalf("VMM paths %s %s %s", config.Firecracker, config.Seccomp, config.Kernel)
+	if config.Firecracker.Binary != "/usr/local/bin/firecracker" ||
+		config.Firecracker.SeccompFilter != "/usr/share/sproutfs/seccomp.bpf" ||
+		config.Firecracker.Kernel != "/usr/share/sproutfs/vmlinux" {
+		t.Fatalf("VMM paths %s %s %s", config.Firecracker.Binary, config.Firecracker.SeccompFilter, config.Firecracker.Kernel)
 	}
 	if config.CheckpointInterval != 60*time.Second {
 		t.Fatalf("checkpoint interval %s", config.CheckpointInterval)
@@ -70,11 +70,11 @@ func TestConfigTakesTheDocumentedDefaults(t *testing.T) {
 		config.DirtyPages != (host.KindPages{RAM: 768, PMEM: 256}) {
 		t.Fatalf("pager bounds %v %v", config.LogicalPages, config.DirtyPages)
 	}
-	if config.VMMemoryBytes != 512<<20 || config.VCPUs != 1 {
-		t.Fatalf("VM shape %d %d", config.VMMemoryBytes, config.VCPUs)
+	if config.VMMemoryBytes != 512<<20 || config.Firecracker.VCPUs != 1 {
+		t.Fatalf("VM shape %d %d", config.VMMemoryBytes, config.Firecracker.VCPUs)
 	}
-	if config.BootArgs != defaultBootArgs {
-		t.Fatalf("boot args %q", config.BootArgs)
+	if config.Firecracker.BootArgs != defaultBootArgs {
+		t.Fatalf("boot args %q", config.Firecracker.BootArgs)
 	}
 	if config.Orchestrator != "http://sproutfs-orchestrator.sproutfs.svc:8080" {
 		t.Fatalf("orchestrator %q", config.Orchestrator)
@@ -134,8 +134,8 @@ func TestTheDefaultBootArgsDoNotProbeTheKeyboardController(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, flag := range []string{"i8042.noaux", "i8042.nomux", "i8042.nopnp", "i8042.dumbkbd"} {
-		if !slices.Contains(strings.Fields(config.BootArgs), flag) {
-			t.Fatalf("boot args %q do not carry %s", config.BootArgs, flag)
+		if !slices.Contains(strings.Fields(config.Firecracker.BootArgs), flag) {
+			t.Fatalf("boot args %q do not carry %s", config.Firecracker.BootArgs, flag)
 		}
 	}
 }
@@ -291,8 +291,8 @@ func TestConfigAcceptsBootArgsThatKeepDAXAmongOtherRootFlags(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.BootArgs != values["SPROUTFS_BOOT_ARGS"] {
-		t.Fatalf("boot args %q", config.BootArgs)
+	if config.Firecracker.BootArgs != values["SPROUTFS_BOOT_ARGS"] {
+		t.Fatalf("boot args %q", config.Firecracker.BootArgs)
 	}
 }
 

@@ -338,11 +338,8 @@ func newSizedMigrationPager(t *testing.T, ctx context.Context,
 
 func migrationConfig(t *testing.T, binary string, pagers *hostPagers, vm *volume.VM) vmmachine.Config {
 	t.Helper()
-	return vmmachine.Config{Binary: binary, SeccompFilter: os.Getenv("SPROUTFS_FIRECRACKER_SECCOMP"),
-		KernelPath: os.Getenv("SPROUTFS_FIRECRACKER_KERNEL"), InitrdPath: os.Getenv("SPROUTFS_FIRECRACKER_INITRD"),
-		BootArgs: guestPmemBootArgs,
-		Pagers:   pagers.pagers, VM: vm, Pmem: []vmmachine.Pmem{{ID: "root", Root: true}},
-		VCPUs:   1,
+	return vmmachine.Config{Starter: &vmmachine.Firecracker{Binary: binary, SeccompFilter: os.Getenv("SPROUTFS_FIRECRACKER_SECCOMP"), Kernel: os.Getenv("SPROUTFS_FIRECRACKER_KERNEL"), Initrd: os.Getenv("SPROUTFS_FIRECRACKER_INITRD"), BootArgs: guestPmemBootArgs, VCPUs: 1},
+		Pagers: pagers.pagers, VM: vm, Pmem: []vmmachine.Pmem{{ID: "root", Root: true}},
 		Scratch: mustScratch(t),
 		Connection: vmmemory.ConnectionConfig{QueuePages: 4096, CommandTimeout: 2 * time.Minute,
 			VerifyInterval: time.Second}}

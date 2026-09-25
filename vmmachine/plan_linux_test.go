@@ -115,14 +115,13 @@ func TestPlanRefusesAMachineItCannotBind(t *testing.T) {
 	}{
 		{"no pagers", func(c *Config) { c.Pagers = vmmemory.Pagers{} }, "vmmachine: invalid configuration"},
 		{"only one pager", func(c *Config) { c.Pagers.Pmem = nil }, "vmmachine: invalid configuration"},
-		{"no kernel to boot", func(c *Config) { c.KernelPath = "" }, "vmmachine: cold boot needs a kernel"},
+		{"no starter", func(c *Config) { c.Starter = nil }, "vmmachine: invalid configuration"},
 		{"a PMEM device with no volume", func(c *Config) { c.Pmem = []Pmem{{ID: "missing"}} },
 			`vmmachine: invalid PMEM device "missing"`},
 		{"a PMEM device over a RAM memory region", func(c *Config) { c.Pmem = []Pmem{{ID: RAMVolume}} },
 			`vmmachine: invalid PMEM device "ram0"`},
 		{"two PMEM roots", func(c *Config) { c.Pmem = []Pmem{{ID: "root", Root: true}, {ID: "scratch", Root: true}} },
 			"vmmachine: multiple PMEM roots"},
-		{"a reserved vsock CID", func(c *Config) { c.VsockCID = 2 }, "vmmachine: vsock CID 2 is reserved"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			c := planConfig(t, vm)
@@ -153,9 +152,46 @@ func TestPlanRefusesAVMWithoutRAM(t *testing.T) {
 // planConfig is a configuration that would start planVM's machine, with a
 // binary that does not exist: nothing here reaches an exec.
 func planConfig(t *testing.T, vm *volume.VM) Config {
-	return Config{Binary: "/nonexistent-sproutfs-vmm", SeccompFilter: "/nonexistent-sproutfs-seccomp",
-		KernelPath: "/nonexistent-sproutfs-kernel", Pagers: planPagers(t), VM: vm,
-		Pmem: []Pmem{{ID: "root", Root: true}}, VCPUs: 1}
+	return Config{Starter: planFirecracker(), Pagers: planPagers(t), VM: vm,
+		Pmem: []Pmem{{ID: "root", Root: true}}}
+}
+
+// planFirecracker is a Firecracker whose files do not exist.
+func planFirecracker() *Firecracker {
+	return &Firecracker{Binary: "/nonexistent-sproutfs-vmm", SeccompFilter: "/nonexistent-sproutfs-seccomp",
+		Kernel: "/nonexistent-sproutfs-kernel", VCPUs: 1}
+}
+
+// TestFirecrackerRefusesWhatItCannotStart keeps the rules this package's own
+// Starter applies before it prepares anything: a launch it refuses is one whose
+// memory it never asked for.
+func TestFirecrackerRefusesWhatItCannotStart(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		modify func(*Firecracker)
+		want   string
+	}{
+		{"no binary", func(f *Firecracker) { f.Binary = "" }, "vmmachine: invalid Firecracker configuration"},
+		{"no processors", func(f *Firecracker) { f.VCPUs = 0 }, "vmmachine: invalid Firecracker configuration"},
+		{"no kernel to boot", func(f *Firecracker) { f.Kernel = "" }, "vmmachine: cold boot needs a kernel"},
+		{"a reserved vsock CID", func(f *Firecracker) { f.VsockCID = 2 }, "vmmachine: vsock CID 2 is reserved"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := planFirecracker()
+			test.modify(f)
+			prepared := false
+			launch := &Launch{vm: "planned", prepare: func(context.Context, Placement) (*Memory, error) {
+				prepared = true
+				return nil, errors.New("prepared")
+			}}
+			if _, err := f.Start(t.Context(), launch); err == nil || err.Error() != test.want {
+				t.Fatalf("start reported %v, want %s", err, test.want)
+			}
+			if prepared {
+				t.Fatal("the refused launch prepared its memory")
+			}
+		})
+	}
 }
 
 // planArena is the shared page store a planning test's pagers are built over.

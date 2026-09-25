@@ -6,7 +6,8 @@ copy-on-write pages, scratch spill and eviction. A host runs one instance of it
 per kind of memory region: one for its guests' RAM and one for their PMEM disks. Each
 instance has a separate arena, spill file and page size. The independent Rust
 library in `rust/sproutfs-vm-memory` owns the mappings inside one VMM process.
-It has no Firecracker dependency. `vmmachine` supervises the process. `host`
+It has no Firecracker dependency. `vmmachine` prepares a VMM's memory and
+drives the process that a Starter starts; see [hosting](hosting.md#running-the-vmm). `host`
 pauses and seals a VM for a checkpoint or for a fork point. The `vmtest` package
 is the low-level syscall fixture for mapping races and malformed commands.
 

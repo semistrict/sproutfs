@@ -1,6 +1,8 @@
 //go:build linux && (amd64 || arm64)
 
-// Package vmmachine supervises Firecracker processes using host-managed volumes.
+// Package vmmachine drives Firecracker processes over host-managed volumes. A
+// Starter starts each process; this package prepares the memory it maps and
+// takes it over.
 package vmmachine
 
 import (
@@ -11,10 +13,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"sync"
@@ -42,13 +44,13 @@ const RAMVolume = "ram0"
 // Config supervises one VM over the volumes of one *volume.VM. RAM binds to the
 // volume named "ram0" and each PMEM device binds to the volume named by its
 // device id. Source data must already have been ingested before Start. The
-// shared pagers outlive all their Process instances. SeccompFilter must include
-// the VMM's explicit memory-worker policy. Cold boot uses
-// KernelPath/InitrdPath/BootArgs; restore replays the VMM state bytes the caller
-// read from the checkpoint.
+// shared pagers outlive all their Process instances. A restore replays the VMM
+// state bytes the caller read from the checkpoint; anything else boots.
 type Config struct {
-	Binary, SeccompFilter, KernelPath, InitrdPath, BootArgs string
-	Scratch                                                 *Scratch
+	// Starter runs the VMM process; this package prepares its memory and takes
+	// it over.
+	Starter Starter
+	Scratch *Scratch
 	// Pagers is the host's pager per kind of memory region: RAM attaches to one and
 	// every PMEM device to the other, each with its own arena and its own page.
 	// A machine takes both, because one VM maps both kinds.
@@ -57,19 +59,8 @@ type Config struct {
 	// while the machine runs.
 	VM           *volume.VM
 	Pmem         []Pmem
-	VCPUs        int
 	RestoreState []byte
-	// VsockCID is the guest context id of a virtio-vsock device, and zero is a
-	// machine without one. The device's host end is a Unix socket this process
-	// owns, under its own scratch directory, which VsockPath names: the host
-	// reaches a guest by connecting to it and asking for a guest port.
-	//
-	// A restore carries the device in its VMM state and this configuration only
-	// moves its socket, so a fork and a migrated VM are reachable at their own
-	// new path without the guest noticing anything. The CID is the guest's own
-	// name for itself and never leaves it, so every VM may use the same one.
-	VsockCID   uint32
-	Connection vmmemory.ConnectionConfig
+	Connection   vmmemory.ConnectionConfig
 	// Backings replaces, by volume name, the backing a memory region attaches with. The
 	// volume stays the memory region's identity — its name, its size, its writer,
 	// everything a seal and a checkpoint are made of — and only what the
@@ -108,17 +99,9 @@ type plan struct {
 }
 
 func (c Config) plan() (plan, error) {
-	if c.Pagers.Ram == nil || c.Pagers.Pmem == nil || c.Binary == "" || c.SeccompFilter == "" || c.VM == nil ||
-		len(c.Pmem) > 63 || c.VCPUs < 1 || c.VCPUs > 32 || len(c.RestoreState) > MaxStateBytes {
+	if c.Starter == nil || c.Pagers.Ram == nil || c.Pagers.Pmem == nil || c.VM == nil ||
+		len(c.Pmem) > 63 || len(c.RestoreState) > MaxStateBytes {
 		return plan{}, errors.New("vmmachine: invalid configuration")
-	}
-	if len(c.RestoreState) == 0 && c.KernelPath == "" {
-		return plan{}, errors.New("vmmachine: cold boot needs a kernel")
-	}
-	// Zero is no vsock at all, and the three lowest context ids are the
-	// hypervisor's, the loopback's and the host's.
-	if c.VsockCID != 0 && c.VsockCID < 3 {
-		return plan{}, fmt.Errorf("vmmachine: vsock CID %d is reserved", c.VsockCID)
 	}
 	var result plan
 	// mapped is every memory region name this machine binds, which is what a backing
@@ -208,27 +191,35 @@ type Process struct {
 	// cancel ends the process-lifetime context every pager attachment runs
 	// under, so a startup that is abandoned or a VMM that exits wakes them.
 	cancel context.CancelCauseFunc
-	dir    string
+	// dir is this process's directory on the host and within the same
+	// directory as the VMM names it; owner is the user the VMM runs as, nil for
+	// this process's own.
+	dir, within string
+	owner       *Owner
 	// api is the VMM's API socket, which the VMM binds and this process's
 	// client dials.
 	api string
+	// vmm is the process its Starter started, nil until Start has it.
+	vmm VMM
 	// vsock is the host end of this machine's virtio-vsock device, empty for a
-	// machine configured without one.
+	// machine without one.
 	vsock            string
-	cmd              *exec.Cmd
 	client           *http.Client
 	endpoints        []*endpoint
 	connectionsReady chan struct{}
 	done             chan struct{}
 	exitErr          error
-	stdin            *os.File
-	log              *consoleRing
 	files            *stateFiles
 	scratch          *Scratch
 	closeOnce        sync.Once
 	closeErr         error
 	running          bool
-	failure          atomic.Pointer[processFailure]
+	// attaching is set once the memory sessions are being accepted, which is
+	// when connectionsReady will close.
+	attaching bool
+	// released is set once the Starter's Close has run, under mu.
+	released bool
+	failure  atomic.Pointer[processFailure]
 	// id is the VM this machine runs, which is what its diagnostics name it by.
 	id string
 	// closing is set by the owner that is stopping this process on purpose, so
@@ -275,7 +266,7 @@ func (p *Process) stop(err error) {
 	default:
 	}
 	p.failure.CompareAndSwap(nil, &processFailure{err})
-	_ = p.cmd.Process.Kill()
+	_ = p.vmm.Kill()
 }
 
 func (p *Process) result() error {
@@ -285,13 +276,12 @@ func (p *Process) result() error {
 	return p.exitErr
 }
 
-// Start builds one VMM process out of its configuration, in the order the
-// parts depend on each other: the scratch directory and the state files that
-// live in it, the pager endpoints the VMM will attach to, the arguments and
-// boot configuration that name them, the process itself, and then the two
-// things that have to be waited for — the API socket and the memory sessions.
-// Every phase is below, one function each; this is only their order and what
-// they hand each other.
+// Start runs one VM's VMM: it asks the configuration's Starter to start the
+// process, prepares the memory the Starter starts it with, and then takes the
+// process over in the order the parts depend on each other — the API socket,
+// the snapshot load of a restore, the memory sessions — returning only once the
+// guest's memory is attached. Every phase is below, one function each; this is
+// only their order and what they hand each other.
 func Start(ctx context.Context, c Config) (*Process, error) {
 	layout, err := c.startable()
 	if err != nil {
@@ -299,37 +289,44 @@ func Start(ctx context.Context, c Config) (*Process, error) {
 	}
 	lifetime, cancel := context.WithCancelCause(context.WithoutCancel(ctx))
 	p := &Process{mu: ctxsync.NewMutex(), cancel: cancel, done: make(chan struct{}), connectionsReady: make(chan struct{}), running: len(c.RestoreState) == 0, id: c.VM.ID()}
-	// The cleanup covers openScratch too: it takes this process's directory
-	// from the shared scratch before anything below it can fail, and a process
-	// left registered there is one the scratch counts as live for ever, so its
-	// owner can never close and the host can never exit.
+	// The cleanup covers the preparation too: it takes this process's
+	// directory from the shared scratch before anything below it can fail, and
+	// a process left registered there is one the scratch counts as live for
+	// ever, so its owner can never close and the host can never exit.
 	started := false
 	defer func() {
 		if !started {
 			_ = p.Close()
 		}
 	}()
-	if err := p.openScratch(ctx, c); err != nil {
-		cancel(err)
-		return nil, err
-	}
-	pmem, overrides, err := p.listen(layout)
-	if err != nil {
-		return nil, err
-	}
-	args, err := p.arguments(ctx, c, layout, pmem)
-	if err != nil {
-		return nil, err
-	}
+	var memory *Memory
+	launch := &Launch{vm: c.VM.ID(), restore: len(c.RestoreState) > 0,
+		prepare: func(ctx context.Context, placement Placement) (*Memory, error) {
+			prepared, err := p.prepareMemory(ctx, c, layout, placement)
+			if err != nil {
+				return nil, err
+			}
+			memory = prepared
+			return prepared, nil
+		}}
 	// Each phase is timed where it happens: a restore of seconds is otherwise one
 	// number, and which of the VMM's own start, the pager's attach and the
 	// snapshot load it was is the whole question.
 	phase := time.Now()
-	if err := p.spawn(c, args, cancel); err != nil {
-		return nil, err
+	vmm, err := c.Starter.Start(ctx, launch)
+	if err != nil {
+		cancel(err)
+		return nil, fmt.Errorf("vmmachine: starting the VMM of %s: %w", c.VM.ID(), err)
+	}
+	if vmm == nil {
+		return nil, fmt.Errorf("vmmachine: the Starter of %s started no VMM", c.VM.ID())
+	}
+	p.adopt(vmm, cancel)
+	if memory == nil {
+		return nil, fmt.Errorf("vmmachine: the Starter of %s started a VMM without preparing its memory", c.VM.ID())
 	}
 	connectErrors := p.attach(ctx, lifetime, c)
-	if err := limitStateFiles(p.cmd.Process.Pid); err != nil {
+	if err := limitStateFiles(vmm.PID()); err != nil {
 		return nil, err
 	}
 	if err := p.awaitAPI(ctx); err != nil {
@@ -337,7 +334,7 @@ func Start(ctx context.Context, c Config) (*Process, error) {
 	}
 	phase, p.phases.ProcessNS = time.Now(), int64(time.Since(phase))
 	if len(c.RestoreState) > 0 {
-		if err := p.restore(ctx, c, overrides); err != nil {
+		if err := p.restore(ctx, c, memory); err != nil {
 			return nil, p.withSessions(err, connectErrors)
 		}
 	}
@@ -384,47 +381,81 @@ func (c *Config) startable() (plan, error) {
 	return layout, nil
 }
 
-// openScratch takes this machine's directory from the shared scratch and opens
-// the state files the VMM reads its configuration and its snapshot out of. It
-// is the first phase that owns anything: a failure after it must go through
-// Close.
-func (p *Process) openScratch(ctx context.Context, c Config) error {
-	dir, err := c.Scratch.create(ctx, p)
-	if err != nil {
-		return err
+// prepareMemory is what a Starter's Prepare does: it takes this machine's
+// directory where the placement puts it, opens the state files the VMM reads
+// its configuration and its snapshot out of, and opens one socket per memory
+// region for the VMM to attach to. It is the first phase that owns anything: a
+// failure after it goes through Close.
+func (p *Process) prepareMemory(ctx context.Context, c Config, layout plan, placement Placement) (*Memory, error) {
+	if placement.Within != "" && !filepath.IsAbs(placement.Within) {
+		return nil, fmt.Errorf("vmmachine: the VMM's view of its directory is not absolute: %q", placement.Within)
 	}
-	p.dir = dir
+	dir, err := c.Scratch.create(ctx, p, placement.Directory)
+	if err != nil {
+		return nil, err
+	}
+	p.dir, p.within, p.owner = dir, placement.Within, placement.Owner
+	if p.within == "" {
+		p.within = dir
+	}
+	if err := p.own(dir); err != nil {
+		return nil, err
+	}
 	p.api = filepath.Join(dir, "api.sock")
-	if c.VsockCID != 0 {
-		p.vsock = filepath.Join(dir, "vsock.sock")
-	}
-	stateDisk, err := c.Scratch.disks(filepath.Join(dir, "state"))
+	stateDisk, err := c.Scratch.disks(filepath.Join(dir, stateDirectory))
 	if err != nil {
-		return err
+		return nil, err
 	}
-	p.files, err = newStateFiles(stateDisk)
-	return err
-}
-
-// listen opens one Unix socket per memory region for the VMM to attach to, and
-// describes the PMEM devices twice over: pmem is what a fresh boot's
-// configuration file declares, overrides what a restore is told the sockets of
-// the devices its snapshot already describes are.
-func (p *Process) listen(layout plan) (pmem, overrides []map[string]any, err error) {
-	if _, err := p.endpoint("ram", layout.ram); err != nil {
-		return nil, nil, err
+	if err := p.own(filepath.Join(dir, stateDirectory)); err != nil {
+		return nil, err
 	}
-	pmem = make([]map[string]any, 0, len(layout.pmem))
-	overrides = make([]map[string]any, 0, len(layout.pmem))
+	p.files, err = newStateFiles(stateDisk, p.ownState)
+	if err != nil {
+		return nil, err
+	}
+	memory := &Memory{Directory: dir, Within: p.within, APISocket: p.view(p.api),
+		Bytes: layout.ramBytes, Load: map[string]any{}, write: p.files.write}
+	ram, err := p.endpoint("ram", layout.ram)
+	if err != nil {
+		return nil, err
+	}
+	memory.RAM = p.view(ram.path)
 	for i, r := range layout.pmem {
 		e, err := p.endpoint("pmem-"+strconv.Itoa(i), r)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
-		pmem = append(pmem, map[string]any{"id": r.name, "root_device": r.root, "managed": map[string]any{"socket_path": e.path, "length": r.volume.Size()}})
-		overrides = append(overrides, map[string]any{"id": r.name, "socket_path": e.path})
+		memory.Pmem = append(memory.Pmem, ManagedPmem{ID: r.name, Root: r.root,
+			Socket: p.view(e.path), Bytes: r.volume.Size()})
 	}
-	return pmem, overrides, nil
+	return memory, nil
+}
+
+// view is a path in this process's directory as the VMM names it.
+func (p *Process) view(path string) string {
+	relative, err := filepath.Rel(p.dir, path)
+	if err != nil {
+		// Every path this package gives the VMM is one it made in its own
+		// directory, so this is a defect rather than a configuration.
+		panic(fmt.Sprintf("vmmachine: %s is not in %s", path, p.dir))
+	}
+	return filepath.Join(p.within, relative)
+}
+
+// own gives a path in this process's directory to the user the VMM runs as.
+func (p *Process) own(path string) error {
+	if p.owner == nil {
+		return nil
+	}
+	if err := os.Lchown(path, p.owner.UID, p.owner.GID); err != nil {
+		return fmt.Errorf("vmmachine: giving %s to the VMM's user: %w", path, err)
+	}
+	return nil
+}
+
+// ownState gives one staging file to the user the VMM runs as.
+func (p *Process) ownState(name string) error {
+	return p.own(filepath.Join(p.dir, stateDirectory, name))
 }
 
 // endpoint opens one memory region's socket and records it. The first is the RAM
@@ -438,65 +469,24 @@ func (p *Process) endpoint(socket string, r memoryRegion) (*endpoint, error) {
 	}
 	e := &endpoint{listener: l, path: path, backing: r.backing, name: r.name}
 	p.endpoints = append(p.endpoints, e)
+	if err := p.own(path); err != nil {
+		return nil, err
+	}
 	return e, nil
 }
 
-// ramEndpoint is the RAM memory region's socket, which listen opens first.
+// ramEndpoint is the RAM memory region's socket, which prepareMemory opens first.
 func (p *Process) ramEndpoint() *endpoint { return p.endpoints[0] }
 
-// arguments is the VMM's command line, and for a fresh boot the configuration
-// file it names: the kernel, the machine size, and every device this process
-// has opened a socket for. A restore carries all of that in its snapshot and
-// takes none of it here.
-func (p *Process) arguments(ctx context.Context, c Config, layout plan, pmem []map[string]any) ([]string, error) {
-	args := []string{"--api-sock", p.api, "--seccomp-filter", c.SeccompFilter}
-	if len(c.RestoreState) > 0 {
-		return args, nil
+// adopt takes over the process a Starter started: the watcher that records its
+// exit, and the client that reaches its API socket.
+func (p *Process) adopt(vmm VMM, cancel context.CancelCauseFunc) {
+	p.vmm = vmm
+	if vsock, ok := vmm.(VsockVMM); ok {
+		p.vsock = vsock.VsockPath()
 	}
-	boot := map[string]any{"kernel_image_path": c.KernelPath, "boot_args": c.BootArgs}
-	if c.InitrdPath != "" {
-		boot["initrd_path"] = c.InitrdPath
-	}
-	// The machine names no huge-page setting: managed RAM is the pager's own
-	// backing, and the session states its page when it attaches, so a setting
-	// here would be this VM claiming something about memory it does not own.
-	// The VMM refuses one.
-	config := map[string]any{"managed-memory": map[string]any{"socket_path": p.ramEndpoint().path}, "machine-config": map[string]any{"mem_size_mib": layout.ramBytes >> 20, "vcpu_count": c.VCPUs}, "boot-source": boot, "drives": []any{}, "pmem": pmem}
-	if p.vsock != "" {
-		config["vsock"] = map[string]any{"guest_cid": c.VsockCID, "uds_path": p.vsock}
-	}
-	raw, err := json.Marshal(config)
-	if err != nil {
-		return nil, err
-	}
-	if err := p.files.write(ctx, "config.json", raw); err != nil {
-		return nil, err
-	}
-	return append(args, "--config-file", filepath.Join(p.dir, "state", "config.json")), nil
-}
-
-// spawn starts the VMM with its console captured, the watcher that records its
-// exit, and the client that reaches its API socket. The pipe on its standard
-// input is what a console write goes to; the read end belongs to the child.
-func (p *Process) spawn(c Config, args []string, cancel context.CancelCauseFunc) error {
-	p.log = newConsoleRing()
-	input, output, err := os.Pipe()
-	if err != nil {
-		return err
-	}
-	p.stdin = output
-	p.cmd = exec.Command(c.Binary, args...)
-	p.cmd.WaitDelay = time.Second
-	p.cmd.Stdin = input
-	p.cmd.Stdout = p.log
-	p.cmd.Stderr = p.log
-	if err := p.cmd.Start(); err != nil {
-		_ = input.Close()
-		return err
-	}
-	_ = input.Close()
 	go func() {
-		p.exitErr = p.cmd.Wait()
+		p.exitErr = vmm.Wait()
 		cancel(errors.New("vmmachine: process exited"))
 		close(p.done)
 	}()
@@ -505,7 +495,6 @@ func (p *Process) spawn(c Config, args []string, cancel context.CancelCauseFunc)
 		return (&net.Dialer{}).DialContext(ctx, "unix", api)
 	}, MaxConnsPerHost: 1}
 	p.client = &http.Client{Transport: transport, Timeout: 2 * time.Minute}
-	return nil
 }
 
 // attach accepts the VMM's connection on every memory region's socket and builds the
@@ -513,6 +502,7 @@ func (p *Process) spawn(c Config, args []string, cancel context.CancelCauseFunc)
 // builds them inside its own requests, so the result of each is reported on the
 // returned channel rather than waited for here.
 func (p *Process) attach(ctx, lifetime context.Context, c Config) chan error {
+	p.attaching = true
 	connectErrors := make(chan error, len(p.endpoints))
 	var wg sync.WaitGroup
 	for _, e := range p.endpoints {
@@ -521,7 +511,7 @@ func (p *Process) attach(ctx, lifetime context.Context, c Config) chan error {
 			socket, err := e.listener.AcceptUnix()
 			_ = e.listener.Close()
 			if err == nil {
-				err = checkPeer(socket, p.cmd.Process.Pid)
+				err = checkPeer(socket, p.vmm.PID())
 			}
 			if err == nil {
 				// Each session is named for the volume it stands in front of,
@@ -621,18 +611,30 @@ func (p *Process) awaitAPI(ctx context.Context) error {
 }
 
 // restore loads this machine's snapshot: the VMM's own state from the state
-// file, its guest memory from the RAM memory region's session, and each PMEM device
-// from the socket this process opened for it.
-func (p *Process) restore(ctx context.Context, c Config, overrides []map[string]any) error {
+// file, its guest memory from the RAM memory region's session, and each PMEM
+// device from the socket this process opened for it. What the Starter added to
+// the request goes with it — the new host end of a network interface or a
+// vsock — and none of it may name what this package loads.
+func (p *Process) restore(ctx context.Context, c Config, memory *Memory) error {
+	load := make(map[string]any, len(memory.Load)+4)
+	for key, value := range memory.Load {
+		switch key {
+		case "snapshot_path", "mem_file_path", "mem_backend", "pmem_overrides", "resume_vm":
+			return fmt.Errorf("vmmachine: the Starter's load request names %q, which this package loads", key)
+		}
+		load[key] = value
+	}
 	if err := p.files.write(ctx, "restore.state", c.RestoreState); err != nil {
 		return err
 	}
-	load := map[string]any{"snapshot_path": filepath.Join(p.dir, "state", "restore.state"), "mem_backend": map[string]any{"backend_type": "Sproutfs", "backend_path": p.ramEndpoint().path}, "pmem_overrides": overrides, "resume_vm": false}
-	// The device is in the state; only its host socket is this process's, so
-	// the restore is told where this one put it.
-	if p.vsock != "" {
-		load["vsock_override"] = map[string]any{"uds_path": p.vsock}
+	overrides := make([]map[string]any, 0, len(memory.Pmem))
+	for _, device := range memory.Pmem {
+		overrides = append(overrides, map[string]any{"id": device.ID, "socket_path": device.Socket})
 	}
+	load["snapshot_path"] = p.view(filepath.Join(p.dir, stateDirectory, "restore.state"))
+	load["mem_backend"] = map[string]any{"backend_type": "Sproutfs", "backend_path": memory.RAM}
+	load["pmem_overrides"] = overrides
+	load["resume_vm"] = false
 	return p.request(ctx, http.MethodPut, "/snapshot/load", load)
 }
 
@@ -665,7 +667,7 @@ func (p *Process) watch() {
 		return
 	}
 	slog.Error("vmmachine: the VMM exited", "vm", p.id, "pid", p.PID(),
-		"error", p.result(), "console", string(p.log.tail(consoleTailBytes)))
+		"error", p.result(), "console", string(p.consoleTail()))
 }
 
 // consoleTailBytes is how much of a dead machine's console its diagnostic
@@ -865,7 +867,7 @@ func (p *Process) prepare(ctx context.Context, kind captureKind) ([]byte, error)
 			return err
 		}
 		p.running = false
-		path := filepath.Join(p.dir, "state", "capture.state")
+		path := p.view(filepath.Join(p.dir, stateDirectory, "capture.state"))
 		// The state file is staging, never recovery authority: it is read back
 		// and deleted before the guest resumes, and a host that restarts wipes
 		// the whole directory. Syncing it would put a disk flush inside the
@@ -1029,12 +1031,32 @@ func (p *Process) memoryRegions(fn func(vmmemory.ConnectedMemoryRegion) error) e
 	return result
 }
 
-// Console reads this machine's serial output from the in-memory ring that
-// retains its newest 1 MiB. A reader asking for an offset the ring has already
-// dropped is answered from the oldest byte still retained: the returned from
-// offset is what the data begins at, and next is what to ask for after it.
+// ErrNoConsole reports a VMM whose Starter keeps no console.
+var ErrNoConsole = errors.New("vmmachine: this VMM's Starter keeps no console")
+
+// Console reads this machine's serial output from what its Starter retains. A
+// reader asking for an offset already dropped is answered from the oldest byte
+// still retained: the returned from offset is what the data begins at, and next
+// is what to ask for after it. A VMM whose Starter keeps no console reads as
+// one that has printed nothing.
 func (p *Process) Console(offset int64, limit int) (data []byte, from, next int64) {
-	return p.log.read(offset, limit)
+	console, ok := p.vmm.(ConsoleVMM)
+	if !ok {
+		return nil, offset, offset
+	}
+	return console.Console(offset, limit)
+}
+
+// consoleTail is the newest console output, for reporting what a VMM printed
+// before it died, and nothing for a VMM whose Starter keeps no console.
+func (p *Process) consoleTail() []byte {
+	console, ok := p.vmm.(ConsoleVMM)
+	if !ok {
+		return nil
+	}
+	_, _, end := console.Console(math.MaxInt64, 0)
+	data, _, _ := console.Console(max(0, end-consoleTailBytes), consoleTailBytes)
+	return data
 }
 
 // Directory is this process's private scratch directory, which holds its
@@ -1042,33 +1064,27 @@ func (p *Process) Console(offset int64, limit int) (data []byte, from, next int6
 // authority for anything; it is a diagnostic path.
 func (p *Process) Directory() string { return p.dir }
 
-// VsockPath is the Unix socket Firecracker listens on for this machine's
-// virtio-vsock device, and empty for a machine configured without one. A host
-// reaches software in the guest by connecting to it and asking for a guest
-// port. It lives in this process's scratch directory and goes with it, so a
-// migrated or forked VM is reached at the path of whichever process runs it.
+// VsockPath is the Unix socket the VMM listens on for this machine's
+// virtio-vsock device, and empty for a machine without one. A host reaches
+// software in the guest by connecting to it and asking for a guest port. The
+// Starter puts it where the process runs, so a migrated or forked VM is reached
+// at the path of whichever process runs it.
 func (p *Process) VsockPath() string { return p.vsock }
 
 // PID identifies the supervised process for host resource accounting.
-func (p *Process) PID() int { return p.cmd.Process.Pid }
+func (p *Process) PID() int { return p.vmm.PID() }
 
+// WriteConsole types into the guest's serial console, through its Starter.
 func (p *Process) WriteConsole(ctx context.Context, data []byte) error {
-	if len(data) > 4096 {
-		return errors.New("vmmachine: console write too large")
+	console, ok := p.vmm.(ConsoleVMM)
+	if !ok {
+		return ErrNoConsole
 	}
-	deadline := time.Now().Add(time.Second)
-	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
-		deadline = d
-	}
-	if err := p.stdin.SetWriteDeadline(deadline); err != nil {
-		return err
-	}
-	_, err := p.stdin.Write(data)
-	return err
+	return console.WriteConsole(ctx, data)
 }
 
 func (p *Process) failed(stage string) error {
-	raw := p.log.tail(consoleTailBytes)
+	raw := p.consoleTail()
 	return fmt.Errorf("vmmachine: %s: process exited: %w: %s", stage, p.result(), raw)
 }
 
@@ -1089,14 +1105,14 @@ func (p *Process) Close() error {
 		// This exit is asked for, so it is not the death watch reports.
 		p.closing.Store(true)
 		p.cancel(errors.New("vmmachine: process closed"))
-		if p.cmd != nil && p.cmd.Process != nil {
-			_ = p.cmd.Process.Kill()
+		if p.vmm != nil {
+			_ = p.vmm.Kill()
 			<-p.done
 		}
 		for _, e := range p.endpoints {
 			_ = e.listener.Close()
 		}
-		if p.cmd != nil && p.cmd.Process != nil {
+		if p.attaching {
 			<-p.connectionsReady
 		}
 		for _, e := range p.endpoints {
@@ -1106,9 +1122,6 @@ func (p *Process) Close() error {
 		}
 		if p.client != nil {
 			p.client.CloseIdleConnections()
-		}
-		if p.stdin != nil {
-			_ = p.stdin.Close()
 		}
 	})
 	if p.scratch != nil {
@@ -1125,11 +1138,21 @@ func (p *Process) Close() error {
 			return errors.Join(p.closeErr, err)
 		}
 	}
-	if err := os.RemoveAll(p.dir); err != nil {
-		return errors.Join(p.closeErr, err)
+	if p.dir != "" {
+		if err := os.RemoveAll(p.dir); err != nil {
+			return errors.Join(p.closeErr, err)
+		}
 	}
 	if p.scratch != nil {
 		p.scratch.removed(p)
+	}
+	// What the Starter built for the process goes last: a chroot the directory
+	// was in, and whatever the process ran inside.
+	if p.vmm != nil && !p.released {
+		if err := p.vmm.Close(); err != nil {
+			return errors.Join(p.closeErr, fmt.Errorf("vmmachine: releasing the VMM of %s: %w", p.id, err))
+		}
+		p.released = true
 	}
 	return p.closeErr
 }

@@ -27,8 +27,10 @@ write little and in scattered places, and it is slower at everything else. Such
 a node sets its shared memory's transparent huge pages to `advise`. This lets
 the RAM arena allocate a zero run's whole 2 MiB blocks as huge pages, and leaves
 all other shared memory on the node unchanged; see [the arena](vm-memory.md).
-The supervisor also owns the Firecracker processes, the templates that guest
-images are imported into, and the channel to the agent in a guest.
+The supervisor also drives the VMM processes, owns the templates that guest
+images are imported into, and reaches the agent in a guest. It does not start a
+VMM. A `vmmachine.Starter` does, as [running the VMM](#running-the-vmm)
+describes.
 `cmd/sproutfs-host` contains only its configuration, its HTTP handlers and the
 wiring between them.
 
@@ -63,6 +65,55 @@ Every VM the host starts has one RAM volume, `ram0`, plus one volume per PMEM
 device. The supervisor gives each VM a single PMEM device, `root`, which the
 guest boots from. The supervisor opens a `vmmachine.Scratch` and passes it to
 each VMM configuration.
+
+## Running the VMM
+
+The host prepares a VM's memory and drives its VMM. It does not start the VMM
+process. `SupervisorConfig.Starter` does that, on every path a VM takes to run
+on a host: a create, an open, and a receive of a migrated or forked VM. A
+program that embeds a host writes its own Starter. `cmd/sproutfs-host` uses
+`vmmachine.Firecracker`, which runs Firecracker directly.
+
+A start has three steps.
+
+1. The Starter calls `Launch.Prepare` with a placement: the host directory for
+   the process's files, the same directory as the VMM names it, and the user
+   the VMM runs as. The two paths differ when the VMM runs in a jailer's
+   chroot. `Prepare` creates the directory, gives it to that user, and opens
+   one socket per memory region. It returns the memory the VMM must be started
+   with: the API socket path, the RAM socket and size, and the managed PMEM
+   devices, all as the VMM names them.
+2. The Starter starts the VMM however it likes: under a jailer, in a network
+   namespace and a cgroup, with network interfaces, drives, read-only PMEM
+   files and a vsock of its own. For a boot, `Memory.Configure` adds the
+   managed memory to the Starter's configuration document. For a restore, the
+   Starter adds new host names for moved devices to `Memory.Load`. It returns
+   the process as a `vmmachine.VMM`.
+3. The host takes the process over. It accepts the memory sessions, issues the
+   snapshot load of a restore, and waits for every session before the guest
+   runs.
+
+The load stays with the host because the sessions attach during it, and a
+restored guest must not resume before every one of them is up.
+
+The memory sessions admit only a connection from the PID the Starter reported.
+So a jailer must exec the VMM in the same process. It must not daemonize or
+fork into a new PID namespace.
+
+Drives and plain PMEM files that a Starter adds must be read-only. A checkpoint
+holds only the volumes, so a disk the guest could write to outside them would
+come back from a checkpoint without its writes. The VMM refuses to capture a VM
+with one. A restore's devices are in its VMM state, so drives and PMEM files
+keep the paths the VM's first boot gave them, on whichever host restores it. A
+Starter that adds them uses paths that are the same on every host, such as
+paths inside its chroot. Network interfaces and the vsock can move, through
+`Memory.Load`.
+
+The host reads a guest's console and reaches its agent only through what the
+Starter's process offers. A `vmmachine.ConsoleVMM` keeps a console, and a
+`vmmachine.VsockVMM` names its vsock socket. `vmmachine.Spawn` runs a command
+as a child with its console kept in memory. That command may be a jailer.
+`Starter.Boots` says whether the Starter can boot a kernel.
 
 A process restart is a host loss. Nothing in the scratch directory or in the
 spill file survives a restart. Opening the scratch deletes its VM directories
@@ -480,7 +531,7 @@ that dropped them is small.
 
 A cold start applies only to a VM that this host does not run. The operator
 must stop a running VM first. A cold start is refused before anything is
-discarded if this host cannot boot cold because it has no kernel configured. It
+discarded if this host's Starter cannot boot a kernel. It
 is also refused if the pager could not map all of the VM's memory regions.
 
 ### Resizing at a cold boot

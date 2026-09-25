@@ -747,9 +747,10 @@ func bootArgs(base string) string {
 // are volumes of one VM, and the pager is their only mutator.
 func (b *benchmark) machineConfig(vm *volume.VM, restore []byte) vmmachine.Config {
 	return vmmachine.Config{
-		Binary: b.binary, SeccompFilter: b.seccomp, KernelPath: b.kernel, BootArgs: bootArgs(benchBootArgs),
+		Starter: &vmmachine.Firecracker{Binary: b.binary, SeccompFilter: b.seccomp, Kernel: b.kernel,
+			BootArgs: bootArgs(benchBootArgs), VCPUs: benchGuestVCPUs()},
 		Scratch: b.managedScratch, Pagers: b.pagers.pagers, VM: vm,
-		Pmem: []vmmachine.Pmem{{ID: "root", Root: true}}, VCPUs: benchGuestVCPUs(), RestoreState: restore,
+		Pmem: []vmmachine.Pmem{{ID: "root", Root: true}}, RestoreState: restore,
 		// The queue is a ceiling: a machine clamps it to each memory region's own size
 		// in that memory region's pager's page, so nothing here is stated in a page.
 		Connection: vmmemory.ConnectionConfig{QueuePages: benchQueuePages, FaultWorkers: 16,

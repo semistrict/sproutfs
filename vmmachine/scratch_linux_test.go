@@ -68,7 +68,7 @@ func TestScratchRetriesFailedStartCleanup(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := &Process{mu: ctxsync.NewMutex(), cancel: func(error) {}}
-	p.dir, err = s.create(t.Context(), p)
+	p.dir, err = s.create(t.Context(), p, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +77,7 @@ func TestScratchRetriesFailedStartCleanup(t *testing.T) {
 		t.Fatal(err)
 	}
 	failures := &failedStateRemoval{Disk: raw}
-	p.files, err = newStateFiles(failures)
+	p.files, err = newStateFiles(failures, keepOwner)
 	if err != nil {
 		t.Fatal(err)
 	}

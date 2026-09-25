@@ -105,8 +105,8 @@ func (s *supervisor) coldRequest(request hostapi.OpenRequest) error {
 		}
 		return nil
 	}
-	if s.config.Kernel == "" {
-		return fmt.Errorf("%w: this host has no kernel configured, so it cannot boot a VM cold",
+	if !s.config.Starter.Boots() {
+		return fmt.Errorf("%w: this host's VMM starter cannot boot a kernel, so it cannot boot a VM cold",
 			ErrRequest)
 	}
 	return nil
@@ -229,24 +229,17 @@ func (s *supervisor) boot(ctx context.Context, vm *volume.VM, state []byte, temp
 	return m, nil
 }
 
-// machineConfig is one VM's Firecracker configuration: its RAM memory region, its PMEM
-// root, the kernel a cold boot uses and the VMM state a restore replays.
-// backings is what a migration's destination attaches its memory regions through.
+// machineConfig is one VM's VMM configuration: its RAM memory region, its PMEM
+// root and the VMM state a restore replays. backings is what a migration's
+// destination attaches its memory regions through. Everything about the process
+// itself is the Starter's.
 func (s *supervisor) machineConfig(vm *volume.VM, state []byte, backings map[string]vmmemory.Backing) vmmachine.Config {
 	return vmmachine.Config{
-		Binary: s.config.Firecracker, SeccompFilter: s.config.Seccomp,
-		KernelPath: s.config.Kernel, BootArgs: s.config.BootArgs,
-		Scratch: s.scratch, Pagers: s.pagers, VM: vm,
+		Starter: s.config.Starter, Scratch: s.scratch, Pagers: s.pagers, VM: vm,
 		Pmem:         []vmmachine.Pmem{{ID: rootVolume, Root: true}},
-		VCPUs:        s.config.VCPUs,
 		Connection:   s.connection,
 		RestoreState: state,
 		Backings:     backings,
-		// Every boot and every resume gets a vsock, which is how this host
-		// reaches the agent in the guest. A restore carries the device itself;
-		// only the socket is this process's own, so a fork and a migrated VM
-		// need nothing carried between hosts.
-		VsockCID: guestCID,
 	}
 }
 

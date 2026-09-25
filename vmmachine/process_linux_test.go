@@ -349,10 +349,12 @@ func TestFirecrackerDAXCaptureRestoreForkAndFence(t *testing.T) {
 	// same number of bytes. The guest's RAM is what this suite puts under
 	// pressure, and at 4 KiB its arena is no longer a share of the pool.
 	host := newHostPagers(t, ctx, arenaBytes, arenaBytes, 384<<20, 384<<20)
-	vmConfig := vmmachine.Config{Binary: binaryPath, SeccompFilter: os.Getenv("SPROUTFS_FIRECRACKER_SECCOMP"), KernelPath: os.Getenv("SPROUTFS_FIRECRACKER_KERNEL"), InitrdPath: os.Getenv("SPROUTFS_FIRECRACKER_INITRD"), BootArgs: guestPmemBootArgs, Pagers: host.pagers, VM: source, Pmem: []vmmachine.Pmem{{ID: "root", Root: true}}, VCPUs: 1, Connection: vmmemory.ConnectionConfig{QueuePages: 4096, CommandTimeout: 2 * time.Minute, VerifyInterval: time.Second}}
+	vmConfig := vmmachine.Config{Starter: &vmmachine.Firecracker{Binary: binaryPath, SeccompFilter: os.Getenv("SPROUTFS_FIRECRACKER_SECCOMP"), Kernel: os.Getenv("SPROUTFS_FIRECRACKER_KERNEL"), Initrd: os.Getenv("SPROUTFS_FIRECRACKER_INITRD"), BootArgs: guestPmemBootArgs, VCPUs: 1}, Pagers: host.pagers, VM: source, Pmem: []vmmachine.Pmem{{ID: "root", Root: true}}, Connection: vmmemory.ConnectionConfig{QueuePages: 4096, CommandTimeout: 2 * time.Minute, VerifyInterval: time.Second}}
 	vmConfig.Scratch = mustScratch(t)
 	bad := vmConfig
-	bad.KernelPath = "/missing-sproutfs-qualification-kernel"
+	badFirecracker := *vmConfig.Starter.(*vmmachine.Firecracker)
+	badFirecracker.Kernel = "/missing-sproutfs-qualification-kernel"
+	bad.Starter = &badFirecracker
 	if _, err := vmmachine.Start(ctx, bad); err == nil {
 		t.Fatal("missing kernel started a VM")
 	}

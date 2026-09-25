@@ -9,6 +9,7 @@ import (
 	hostapi "github.com/semistrict/sproutfs/api/host"
 	"github.com/semistrict/sproutfs/checkpoint"
 	"github.com/semistrict/sproutfs/platform"
+	"github.com/semistrict/sproutfs/vmmachine"
 )
 
 // DefaultRAMPageSize and PMEMPageSize are the pages the two pagers run. RAM's
@@ -187,17 +188,16 @@ type SupervisorConfig struct {
 	// belongs to. DirtyPages is what fills a spill file, so SpillBytes is its
 	// bound, per pager.
 	LogicalPages, DirtyPages KindPages
-	// Firecracker, Seccomp and Kernel are the VMM, its compiled policy and the
-	// guest kernel; Templates are the guest images a VM can be created from, by
-	// the name a request selects.
-	Firecracker, Seccomp, Kernel string
-	Templates                    Templates
-	// VMMemoryBytes is the RAM of a VM whose template names no size of its own,
-	// and VCPUs its processors.
+	// Starter runs every VMM process this host takes over: this host prepares
+	// a VM's memory and drives the process once it runs, and the Starter owns
+	// everything else about it — the binary, a jailer, the kernel, the devices
+	// and the vsock the host reaches the guest's agent through.
+	Starter vmmachine.Starter
+	// Templates are the guest images a VM can be created from, by the name a
+	// request selects.
+	Templates Templates
+	// VMMemoryBytes is the RAM of a VM whose template names no size of its own.
 	VMMemoryBytes uint64
-	VCPUs         int
-	// BootArgs is the guest kernel command line of a cold boot.
-	BootArgs string
 	// CheckpointInterval is how often every VM this host runs is checkpointed,
 	// which bounds what losing this host rewinds a guest by.
 	CheckpointInterval time.Duration

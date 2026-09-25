@@ -66,11 +66,6 @@ const (
 	// the agent's own longest command, so a command that is killed is killed
 	// by the guest, which can say so, rather than by a host that cannot.
 	guestTimeout = 11 * time.Minute
-	// guestCID is the context id every guest knows itself by on its own
-	// virtio-vsock device. A VM's vsock is a private channel between it and the
-	// process running it, so the name is the guest's alone and the same one
-	// serves every VM on the host.
-	guestCID = 3
 )
 
 // machine is one VM this host runs: the handle that owns its volumes and
@@ -153,6 +148,9 @@ func Start(ctx context.Context, config SupervisorConfig) (Service, error) {
 	// means that arena cannot be allocated at all.
 	if _, err := RAMPage(config.RAMPageSize); err != nil {
 		return nil, err
+	}
+	if config.Starter == nil {
+		return nil, fmt.Errorf("%w: a host needs a VMM starter", ErrInvalidConfig)
 	}
 	if _, err := os.Stat(config.HugepageDir); err != nil {
 		return nil, fmt.Errorf("hugepage mount %s: %w", config.HugepageDir, err)

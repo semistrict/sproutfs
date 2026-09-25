@@ -15,7 +15,7 @@ func stateFixture(t *testing.T) (*stateFiles, platform.Disk) {
 	t.Helper()
 	runtime := sim.New(sim.Config{})
 	raw := runtime.NewDisk("state", sim.DiskConfig{})
-	files, err := newStateFiles(raw)
+	files, err := newStateFiles(raw, keepOwner)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +110,7 @@ func (d *failedStateRemoval) Remove(ctx context.Context, name string) error {
 func TestStateCleanupFailureIsReportedAndRetryable(t *testing.T) {
 	runtime := sim.New(sim.Config{})
 	raw := &failedStateRemoval{Disk: runtime.NewDisk("state", sim.DiskConfig{})}
-	files, err := newStateFiles(raw)
+	files, err := newStateFiles(raw, keepOwner)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +146,7 @@ func TestCaptureRefusesAPowerLossDuringTheVMMsWrite(t *testing.T) {
 	for seed := uint64(1); seed <= 16; seed++ {
 		runtime := sim.New(sim.Config{Seed: seed})
 		raw := runtime.NewDisk("state", sim.DiskConfig{PowerLossFaults: true})
-		files, err := newStateFiles(raw)
+		files, err := newStateFiles(raw, keepOwner)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -203,3 +203,7 @@ func TestCaptureRefusesAPowerLossDuringTheVMMsWrite(t *testing.T) {
 		}
 	}
 }
+
+// keepOwner leaves every staging file with this process, as a VMM that runs as
+// this process's own user needs.
+func keepOwner(string) error { return nil }

@@ -137,7 +137,7 @@ func TestStartGivesUpOnAVMMThatNeverBindsItsAPI(t *testing.T) {
 	if err := os.WriteFile(silent, []byte("#!/bin/sh\nexec sleep 300\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	config.Binary = silent
+	config.Starter.(*vmmachine.Firecracker).Binary = silent
 	start := time.Now()
 	if _, err := vmmachine.Start(t.Context(), config); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("starting a VMM that never binds its API socket = %v", err)
