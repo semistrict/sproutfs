@@ -167,13 +167,18 @@ func pfn(t *testing.T, p *process, memoryRegion, offset int) uint64 {
 	return number
 }
 
+// allocated is the memory the pager's files hold.
 func allocated(t *testing.T, p *pager) int64 {
 	t.Helper()
-	info, err := p.arena.Stat()
-	if err != nil {
-		t.Fatal(err)
+	var bytes int64
+	for _, f := range p.files {
+		info, err := f.file.Stat()
+		if err != nil {
+			t.Fatal(err)
+		}
+		bytes += info.Sys().(*syscall.Stat_t).Blocks * 512
 	}
-	return info.Sys().(*syscall.Stat_t).Blocks * 512
+	return bytes
 }
 
 func checkPager(t *testing.T, p *pager) {
@@ -186,86 +191,92 @@ func checkPager(t *testing.T, p *pager) {
 }
 
 func TestSharedCOWSpillRefault(t *testing.T) {
-	p := newPager(t, 16)
-	a, b := startClient(t, p, 1), startClient(t, p, 1)
-	for memoryRegion := range 2 {
-		original, changed, sibling := byte(17+memoryRegion*17), byte(161+memoryRegion), byte(201+memoryRegion)
-		a.read("read", memoryRegion, 0, p.pageSize, original)
-		b.read("read", memoryRegion, 0, p.pageSize, original)
-		if pfn(t, a, memoryRegion, 0) != pfn(t, b, memoryRegion, 0) {
-			t.Fatal("unchanged data is not physically shared")
+	eachArena(t, func(t *testing.T, layout arenaLayout) {
+		p := newArenaPager(t, 16, layout)
+		a, b := startClient(t, p, 1), startClient(t, p, 1)
+		for memoryRegion := range 2 {
+			original, changed, sibling := byte(17+memoryRegion*17), byte(161+memoryRegion), byte(201+memoryRegion)
+			a.read("read", memoryRegion, 0, p.pageSize, original)
+			b.read("read", memoryRegion, 0, p.pageSize, original)
+			if pfn(t, a, memoryRegion, 0) != pfn(t, b, memoryRegion, 0) {
+				t.Fatal("unchanged data is not physically shared")
+			}
+			a.fill(memoryRegion, 0, p.pageSize, changed)
+			a.read("read", memoryRegion, 0, p.pageSize, changed)
+			b.read("read", memoryRegion, 0, p.pageSize, original)
+			if pfn(t, a, memoryRegion, 0) == pfn(t, b, memoryRegion, 0) {
+				t.Fatal("private write still shares its physical page")
+			}
+			p.mu.Lock()
+			oldSlot := a.clients[memoryRegion].aliases[0].page.slot
+			p.mu.Unlock()
+			before := allocated(t, p)
+			if err := p.evict(a.clients[memoryRegion], 0); err != nil {
+				t.Fatal(err)
+			}
+			if after := allocated(t, p); before-after < int64(p.pageSize) {
+				t.Fatalf("eviction did not release backing memory: before=%d after=%d", before, after)
+			}
+			// Reuse the actual freed slot for different contents before refault.
+			b.fill(memoryRegion, 0, p.pageSize, sibling)
+			p.mu.Lock()
+			reused := b.clients[memoryRegion].aliases[0].page.slot
+			p.mu.Unlock()
+			if reused != oldSlot {
+				t.Fatalf("test did not exercise slot reuse: old=%d new=%d", oldSlot, reused)
+			}
+			a.read("read", memoryRegion, 0, p.pageSize, changed)
+			b.read("read", memoryRegion, 0, p.pageSize, sibling)
+			// Write after swap-in, then evict again: old spill contents must not win.
+			a.fill(memoryRegion, 0, p.pageSize, changed+1)
+			if err := p.evict(a.clients[memoryRegion], 0); err != nil {
+				t.Fatal(err)
+			}
+			a.read("read", memoryRegion, 0, p.pageSize, changed+1)
 		}
-		a.fill(memoryRegion, 0, p.pageSize, changed)
-		a.read("read", memoryRegion, 0, p.pageSize, changed)
-		b.read("read", memoryRegion, 0, p.pageSize, original)
-		if pfn(t, a, memoryRegion, 0) == pfn(t, b, memoryRegion, 0) {
-			t.Fatal("private write still shares its physical page")
-		}
-		p.mu.Lock()
-		oldSlot := a.clients[memoryRegion].aliases[0].page.slot
-		p.mu.Unlock()
-		before := allocated(t, p)
-		if err := p.evict(a.clients[memoryRegion], 0); err != nil {
-			t.Fatal(err)
-		}
-		if after := allocated(t, p); before-after < int64(p.pageSize) {
-			t.Fatalf("eviction did not release backing memory: before=%d after=%d", before, after)
-		}
-		// Reuse the actual freed slot for different contents before refault.
-		b.fill(memoryRegion, 0, p.pageSize, sibling)
-		p.mu.Lock()
-		reused := b.clients[memoryRegion].aliases[0].page.slot
-		p.mu.Unlock()
-		if reused != oldSlot {
-			t.Fatalf("test did not exercise slot reuse: old=%d new=%d", oldSlot, reused)
-		}
-		a.read("read", memoryRegion, 0, p.pageSize, changed)
-		b.read("read", memoryRegion, 0, p.pageSize, sibling)
-		// Write after swap-in, then evict again: old spill contents must not win.
-		a.fill(memoryRegion, 0, p.pageSize, changed+1)
-		if err := p.evict(a.clients[memoryRegion], 0); err != nil {
-			t.Fatal(err)
-		}
-		a.read("read", memoryRegion, 0, p.pageSize, changed+1)
-	}
-	checkPager(t, p)
+		checkPager(t, p)
+	})
 }
 
 func TestSharedEvictionRevokesEveryAlias(t *testing.T) {
-	p := newPager(t, 8)
-	a, b := startClient(t, p, 1), startClient(t, p, 1)
-	a.read("read", 0, 0, 16, 17)
-	b.read("read", 0, 0, 16, 17)
-	before := allocated(t, p)
-	if err := p.evict(a.clients[0], 0); err != nil {
-		t.Fatal(err)
-	}
-	p.mu.Lock()
-	am, bm, writes := a.clients[0].aliases[0].mapped, b.clients[0].aliases[0].mapped, p.spillWrites
-	p.mu.Unlock()
-	if am || bm || writes != 0 {
-		t.Fatalf("shared eviction: mapped=%v,%v spill writes=%d", am, bm, writes)
-	}
-	if after := allocated(t, p); before-after < int64(p.pageSize) {
-		t.Fatal("shared page remained resident")
-	}
-	a.read("read", 0, 0, p.pageSize, 17)
-	b.read("read", 0, 0, p.pageSize, 17)
-	if pfn(t, a, 0, 0) != pfn(t, b, 0, 0) {
-		t.Fatal("refault lost physical sharing")
-	}
-	checkPager(t, p)
+	eachArena(t, func(t *testing.T, layout arenaLayout) {
+		p := newArenaPager(t, 8, layout)
+		a, b := startClient(t, p, 1), startClient(t, p, 1)
+		a.read("read", 0, 0, 16, 17)
+		b.read("read", 0, 0, 16, 17)
+		before := allocated(t, p)
+		if err := p.evict(a.clients[0], 0); err != nil {
+			t.Fatal(err)
+		}
+		p.mu.Lock()
+		am, bm, writes := a.clients[0].aliases[0].mapped, b.clients[0].aliases[0].mapped, p.spillWrites
+		p.mu.Unlock()
+		if am || bm || writes != 0 {
+			t.Fatalf("shared eviction: mapped=%v,%v spill writes=%d", am, bm, writes)
+		}
+		if after := allocated(t, p); before-after < int64(p.pageSize) {
+			t.Fatal("shared page remained resident")
+		}
+		a.read("read", 0, 0, p.pageSize, 17)
+		b.read("read", 0, 0, p.pageSize, 17)
+		if pfn(t, a, 0, 0) != pfn(t, b, 0, 0) {
+			t.Fatal("refault lost physical sharing")
+		}
+		checkPager(t, p)
+	})
 }
 
 func TestFirstAccessWriteDoesNotMutateSibling(t *testing.T) {
-	p := newPager(t, 16)
-	a, b := startClient(t, p, 1), startClient(t, p, 1)
-	for r := range 2 {
-		a.fill(r, 0, p.pageSize, 99)
-		b.read("read", r, 0, p.pageSize, byte(17+r*17))
-		a.read("read", r, 0, p.pageSize, 99)
-	}
-	checkPager(t, p)
+	eachArena(t, func(t *testing.T, layout arenaLayout) {
+		p := newArenaPager(t, 16, layout)
+		a, b := startClient(t, p, 1), startClient(t, p, 1)
+		for r := range 2 {
+			a.fill(r, 0, p.pageSize, 99)
+			b.read("read", r, 0, p.pageSize, byte(17+r*17))
+			a.read("read", r, 0, p.pageSize, 99)
+		}
+		checkPager(t, p)
+	})
 }
 
 func TestSpillFailureKeepsRecoverableRAM(t *testing.T) {
@@ -294,36 +305,40 @@ func TestSpillFailureKeepsRecoverableRAM(t *testing.T) {
 }
 
 func TestConcurrentAccessDuringEviction(t *testing.T) {
-	p := newPager(t, 8)
-	a, b := startClient(t, p, 1), startClient(t, p, 1)
-	a.read("read", 0, 0, 1, 17)
-	b.read("read", 0, 0, 1, 17)
-	a.send(fmt.Sprintf("scan 0 0 %d 17 2000000", p.pageSize))
-	b.send(fmt.Sprintf("scan 0 0 %d 17 2000000", p.pageSize))
-	for range 100 {
-		if err := p.evict(a.clients[0], 0); err != nil {
-			t.Fatal(err)
+	eachArena(t, func(t *testing.T, layout arenaLayout) {
+		p := newArenaPager(t, 8, layout)
+		a, b := startClient(t, p, 1), startClient(t, p, 1)
+		a.read("read", 0, 0, 1, 17)
+		b.read("read", 0, 0, 1, 17)
+		a.send(fmt.Sprintf("scan 0 0 %d 17 2000000", p.pageSize))
+		b.send(fmt.Sprintf("scan 0 0 %d 17 2000000", p.pageSize))
+		for range 100 {
+			if err := p.evict(a.clients[0], 0); err != nil {
+				t.Fatal(err)
+			}
+			time.Sleep(time.Millisecond)
 		}
-		time.Sleep(time.Millisecond)
-	}
-	a.expect("scanned")
-	b.expect("scanned")
-	a.read("read", 0, 0, p.pageSize, 17)
-	b.read("read", 0, 0, p.pageSize, 17)
-	checkPager(t, p)
+		a.expect("scanned")
+		b.expect("scanned")
+		a.read("read", 0, 0, p.pageSize, 17)
+		b.read("read", 0, 0, p.pageSize, 17)
+		checkPager(t, p)
+	})
 }
 
 func TestKernelAccessAsFirstFault(t *testing.T) {
-	p := newPager(t, 8)
-	a := startClient(t, p, 1)
-	for r := range 2 {
-		a.read("gup", r, 0, p.pageSize, byte(17+r*17))
-		if err := p.evict(a.clients[r], 0); err != nil {
-			t.Fatal(err)
+	eachArena(t, func(t *testing.T, layout arenaLayout) {
+		p := newArenaPager(t, 8, layout)
+		a := startClient(t, p, 1)
+		for r := range 2 {
+			a.read("gup", r, 0, p.pageSize, byte(17+r*17))
+			if err := p.evict(a.clients[r], 0); err != nil {
+				t.Fatal(err)
+			}
+			a.read("gup", r, 0, p.pageSize, byte(17+r*17))
 		}
-		a.read("gup", r, 0, p.pageSize, byte(17+r*17))
-	}
-	checkPager(t, p)
+		checkPager(t, p)
+	})
 }
 
 func TestWritesDuringEviction(t *testing.T) {
@@ -392,47 +407,49 @@ func TestFragmentedMappingsAndReuse(t *testing.T) {
 }
 
 func TestKVMSharingCOWAndRefault(t *testing.T) {
-	p := newPager(t, 16)
-	a, b := startClient(t, p, 1), startClient(t, p, 1)
-	for r := range 2 {
-		original := 17 + r*17
-		for _, client := range []*process{a, b} {
-			client.send(fmt.Sprintf("kvmread %d 0", r))
-			client.expect(fmt.Sprintf("kvm %d", original))
+	eachArena(t, func(t *testing.T, layout arenaLayout) {
+		p := newArenaPager(t, 16, layout)
+		a, b := startClient(t, p, 1), startClient(t, p, 1)
+		for r := range 2 {
+			original := 17 + r*17
+			for _, client := range []*process{a, b} {
+				client.send(fmt.Sprintf("kvmread %d 0", r))
+				client.expect(fmt.Sprintf("kvm %d", original))
+			}
+			if pfn(t, a, r, 0) != pfn(t, b, r, 0) {
+				t.Fatal("KVM first reads did not preserve sharing")
+			}
+			// Leave the same KVM slots and vCPU alive through shared eviction.
+			if err := p.evict(a.clients[r], 0); err != nil {
+				t.Fatal(err)
+			}
+			for _, client := range []*process{a, b} {
+				client.send(fmt.Sprintf("kvmread %d 0", r))
+				client.expect(fmt.Sprintf("kvm %d", original))
+			}
+			a.send(fmt.Sprintf("kvmwrite %d 0 97", r))
+			a.expect("kvm 97")
+			b.send(fmt.Sprintf("kvmread %d 0", r))
+			b.expect(fmt.Sprintf("kvm %d", original))
+			if pfn(t, a, r, 0) == pfn(t, b, r, 0) {
+				t.Fatal("KVM store did not make a private page")
+			}
+			if err := p.evict(a.clients[r], 0); err != nil {
+				t.Fatal(err)
+			}
+			a.send(fmt.Sprintf("kvmread %d 0", r))
+			a.expect("kvm 97")
+			// Guest first access after eviction can itself be a store.
+			if err := p.evict(a.clients[r], 0); err != nil {
+				t.Fatal(err)
+			}
+			a.send(fmt.Sprintf("kvmwrite %d 1 98", r))
+			a.expect("kvm 98")
+			a.send(fmt.Sprintf("kvmread %d 0", r))
+			a.expect("kvm 97")
 		}
-		if pfn(t, a, r, 0) != pfn(t, b, r, 0) {
-			t.Fatal("KVM first reads did not preserve sharing")
-		}
-		// Leave the same KVM slots and vCPU alive through shared eviction.
-		if err := p.evict(a.clients[r], 0); err != nil {
-			t.Fatal(err)
-		}
-		for _, client := range []*process{a, b} {
-			client.send(fmt.Sprintf("kvmread %d 0", r))
-			client.expect(fmt.Sprintf("kvm %d", original))
-		}
-		a.send(fmt.Sprintf("kvmwrite %d 0 97", r))
-		a.expect("kvm 97")
-		b.send(fmt.Sprintf("kvmread %d 0", r))
-		b.expect(fmt.Sprintf("kvm %d", original))
-		if pfn(t, a, r, 0) == pfn(t, b, r, 0) {
-			t.Fatal("KVM store did not make a private page")
-		}
-		if err := p.evict(a.clients[r], 0); err != nil {
-			t.Fatal(err)
-		}
-		a.send(fmt.Sprintf("kvmread %d 0", r))
-		a.expect("kvm 97")
-		// Guest first access after eviction can itself be a store.
-		if err := p.evict(a.clients[r], 0); err != nil {
-			t.Fatal(err)
-		}
-		a.send(fmt.Sprintf("kvmwrite %d 1 98", r))
-		a.expect("kvm 98")
-		a.send(fmt.Sprintf("kvmread %d 0", r))
-		a.expect("kvm 97")
-	}
-	checkPager(t, p)
+		checkPager(t, p)
+	})
 }
 
 func TestMappingCommandValidation(t *testing.T) {

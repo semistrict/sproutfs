@@ -31,24 +31,57 @@ pub(crate) fn backing_for(page_size: usize) -> Option<u64> {
     }
 }
 
-/// Checks a received arena descriptor against the backing kind the attachment
-/// claimed and the offset space it reported, before the descriptor is mapped.
+/// Which file a descriptor opens: a file that grows keeps its identity, so a
+/// FILE that repeats a number must name the same one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Identity {
+    device: u64,
+    inode: u64,
+}
+
+/// Checks a received file's descriptor against what its FILE frame stated,
+/// before the descriptor is mapped: the kind of memory the attachment said
+/// every file is made of, at least the length stated, and the access the
+/// frame claims. The private file must be open read-write and every other file
+/// read-only, and a descriptor opened otherwise is a pager this client does not
+/// understand.
 ///
-/// `len` is the arena's addresses, which is the file's length. The file is
-/// sparse — a pager that places a private page at the offset it has within its
-/// 2 MiB range owns 512 consecutive offsets per range and puts memory at a
-/// handful of them — so this checks the length and never the blocks behind it.
-pub(crate) fn check_backing(fd: &OwnedFd, kind: u64, len: u64) -> io::Result<()> {
+/// `len` is the file's addresses. The file is sparse, so this checks its length
+/// and never the blocks behind it. The file may be longer than stated, because
+/// a file that grows is stated again once it has grown, and only the stated
+/// length bounds a MAP.
+pub(crate) fn check_file(
+    fd: &OwnedFd,
+    kind: u64,
+    len: u64,
+    writable: bool,
+) -> io::Result<Identity> {
     let refuse = |what: String| io::Error::new(io::ErrorKind::InvalidData, what);
     let mut stat: libc::stat = unsafe { std::mem::zeroed() };
     called();
     if unsafe { libc::fstat(fd.as_raw_fd(), &mut stat) } != 0 {
         return Err(last("fstat"));
     }
-    if len > i64::MAX as u64 || stat.st_size as u64 != len {
+    if len > i64::MAX as u64 || (stat.st_size as u64) < len {
         return Err(refuse(format!(
-            "the attached arena has {} bytes of offsets, the attachment said {len}",
+            "the file has {} bytes of offsets, its frame said {len}",
             stat.st_size
+        )));
+    }
+    called();
+    let access = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) };
+    if access < 0 {
+        return Err(last("fcntl"));
+    }
+    let want = if writable {
+        libc::O_RDWR
+    } else {
+        libc::O_RDONLY
+    };
+    if access & libc::O_ACCMODE != want {
+        return Err(refuse(format!(
+            "the file's descriptor is open with access mode {}, its frame said writable={writable}",
+            access & libc::O_ACCMODE
         )));
     }
     let mut fs: libc::statfs = unsafe { std::mem::zeroed() };
@@ -68,7 +101,28 @@ pub(crate) fn check_backing(fd: &OwnedFd, kind: u64, len: u64) -> io::Result<()>
             fs.f_type as u64, fs.f_bsize as i64
         )));
     }
-    Ok(())
+    // dev_t and ino_t are u64 on every target this crate builds for.
+    #[allow(clippy::unnecessary_cast)]
+    Ok(Identity {
+        device: stat.st_dev as u64,
+        inode: stat.st_ino as u64,
+    })
+}
+
+/// The flags a run of a file is mapped with. The private file is mapped
+/// shared, so the guest's stores reach the pager's page. A read-only file is
+/// mapped private, because the kernel refuses to register a shared mapping of a
+/// read-only file with userfaultfd. Its pages are still the pager's pages,
+/// installed read-only and write-protected, so a store traps to the pager and
+/// never copies into memory the pager does not see. MAP_NORESERVE keeps a
+/// private HugeTLB mapping from reserving pool pages for copies that never
+/// happen.
+fn file_mapping(writable: bool) -> libc::c_int {
+    if writable {
+        libc::MAP_SHARED
+    } else {
+        libc::MAP_PRIVATE | libc::MAP_NORESERVE
+    }
 }
 
 /// Names the kernel call a failure came out of.
@@ -202,10 +256,14 @@ impl Uffd {
         Ok(Self(fd))
     }
 
-    pub fn register(&self, mapping: &Mapping, shared: bool) -> io::Result<()> {
+    /// Registers a mapping for missing and write-protect faults, and a mapping
+    /// of a file for minor faults too, which is how the pager installs the
+    /// file's own pages in it. That holds for a private mapping of a read-only
+    /// file as much as for a shared mapping of the private file.
+    pub fn register(&self, mapping: &Mapping, file: bool) -> io::Result<()> {
         let mode = u::UFFDIO_REGISTER_MODE_MISSING
             | u::UFFDIO_REGISTER_MODE_WP
-            | if shared {
+            | if file {
                 u::UFFDIO_REGISTER_MODE_MINOR
             } else {
                 0
@@ -220,7 +278,7 @@ impl Uffd {
         };
         ioctl(&self.0, "UFFDIO_REGISTER", u::_UFFDIO_REGISTER, &mut reg)?;
         let required = (1u64 << u::_UFFDIO_WRITEPROTECT)
-            | if shared {
+            | if file {
                 1u64 << u::_UFFDIO_CONTINUE
             } else {
                 1u64 << u::_UFFDIO_COPY
@@ -302,9 +360,11 @@ impl TrapSource {
 ///
 /// Only the mremap that puts a run in the memory region stays the run's own. mremap
 /// moves one mapping, and two runs of a batch are never one: runs adjacent in
-/// both the memory region and the arena have already been merged by the caller, so the
-/// ones left here are adjacent in the memory region alone and the kernel keeps them
-/// apart. Making them one would mean the pager saying so on the wire.
+/// both the memory region and one file have already been merged by the caller, so
+/// the ones left here are adjacent in the memory region alone and the kernel keeps
+/// them apart. Making them one would mean the pager saying so on the wire. The
+/// runs of a span may be of different files, and each is mapped as its own file
+/// is.
 ///
 /// Runs leave the span front to back, so what is left to release is always the
 /// tail that has not left. No address inside the span is ever both released
@@ -318,8 +378,8 @@ impl Staging {
         Ok(Self(Mapping::anonymous(len, 0)?))
     }
 
-    /// Places one run's arena bytes at offset within the span.
-    pub fn place(&self, offset: usize, len: usize, backing: &OwnedFd, at: u64) -> io::Result<()> {
+    /// Places one run's bytes of a file at offset within the span.
+    pub fn place(&self, offset: usize, len: usize, file: FileRange) -> io::Result<()> {
         if len == 0 || offset.checked_add(len).is_none_or(|end| end > self.0.len) {
             return Err(io::ErrorKind::InvalidInput.into());
         }
@@ -331,9 +391,9 @@ impl Staging {
                 target,
                 len,
                 libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_SHARED | libc::MAP_FIXED,
-                backing.as_raw_fd(),
-                at as libc::off_t,
+                file_mapping(file.writable) | libc::MAP_FIXED,
+                file.fd.as_raw_fd(),
+                file.at as libc::off_t,
             )
         };
         if addr == libc::MAP_FAILED {
@@ -378,6 +438,15 @@ impl Staging {
         self.0.len -= len;
         Ok(())
     }
+}
+
+/// Where a run's bytes are: a file's descriptor, the offset in it, and whether
+/// the descriptor is read-write, which decides how the run is mapped.
+#[derive(Clone, Copy)]
+pub(crate) struct FileRange<'a> {
+    pub fd: &'a OwnedFd,
+    pub at: u64,
+    pub writable: bool,
 }
 
 pub(crate) struct Mapping {
@@ -441,11 +510,11 @@ impl Mapping {
         Ok(mapping)
     }
 
-    pub fn new(len: usize, backing: Option<(&OwnedFd, u64)>) -> io::Result<Self> {
+    pub fn new(len: usize, file: Option<FileRange>) -> io::Result<Self> {
         if len == 0 || len % MIN_PAGE_SIZE != 0 {
             return Err(io::ErrorKind::InvalidInput.into());
         }
-        let Some((fd, offset)) = backing else {
+        let Some(file) = file else {
             return Self::anonymous(len, 0);
         };
         // Build away from the live address. No client can access this mapping
@@ -456,9 +525,9 @@ impl Mapping {
                 ptr::null_mut(),
                 len,
                 libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_SHARED,
-                fd.as_raw_fd(),
-                offset as libc::off_t,
+                file_mapping(file.writable),
+                file.fd.as_raw_fd(),
+                file.at as libc::off_t,
             )
         };
         if addr == libc::MAP_FAILED {

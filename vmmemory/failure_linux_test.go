@@ -106,7 +106,7 @@ func TestARefusedCommandNamesTheFrameTheClientRefused(t *testing.T) {
 	refused := make(chan struct{})
 	go func() {
 		defer close(refused)
-		if _, fd, err := vmwire.ReceiveFD(client); err == nil {
+		if _, fd, err := vmwire.ReceiveAttachment(client); err == nil {
 			defer fd.Close()
 		}
 		for {

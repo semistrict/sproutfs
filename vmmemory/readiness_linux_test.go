@@ -88,7 +88,7 @@ func pipeConnection(t testing.TB, kind vmmemory.MemoryRegionKind, backing vmmemo
 	results := make(chan vmwire.Frame, 64)
 	go func() {
 		defer close(peerDone)
-		_, fd, err := vmwire.ReceiveFD(client)
+		_, fd, err := vmwire.ReceiveAttachment(client)
 		if err != nil {
 			return
 		}

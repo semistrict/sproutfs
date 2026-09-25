@@ -1,4 +1,5 @@
 use super::*;
+use std::io::Read;
 use std::net::Shutdown;
 use std::time::Duration;
 
@@ -32,6 +33,19 @@ fn pair() -> (UnixStream, UnixStream) {
             .unwrap();
     }
     (left, right)
+}
+
+/// Version 10 hands this client files and names one in every MAP. The kinds and
+/// the bits are the Go pager's, in internal/vmwire, and a peer that disagrees
+/// on any of them is refused at HELLO by the version.
+#[test]
+fn version_ten_names_files_in_frames_and_map_flags() {
+    assert_eq!(VERSION, 10);
+    assert_eq!((FILE, DROP_FILE), (14, 15));
+    assert_eq!((IMMUTABLE, FILE_WRITABLE, PRIVATE_FILE), (1, 1, 0));
+    for (flags, file) in [(0, 0), (1, 0), (3, 1), (5, 2), ((1 << 41) | 1, 1 << 40)] {
+        assert_eq!(map_file(flags), file, "flags {flags}");
+    }
 }
 
 #[test]
@@ -171,36 +185,44 @@ fn descriptor_receive_rejects_a_truncated_frame_and_a_closed_peer() {
     );
 }
 
-/// A pager that closes the socket instead of attaching backing is the one
-/// failure this handshake has no other evidence of: the memory region was refused —
-/// the host's logical-page cap is full, say — and the descriptor never came.
-/// It must not be reported as a malformed ancillary message, which names the
-/// wire and sends the reader looking at the wrong end of the connection.
+/// A pager that closes the socket is the pager ending the session: before the
+/// attachment it refused the memory region — the host's logical-page cap is
+/// full, say. It must not be reported as a malformed ancillary message, which
+/// names the wire and sends the reader looking at the wrong end of the
+/// connection. A close partway through a frame is a frame that never came
+/// whole, and says so.
 #[test]
-fn descriptor_receive_names_the_pager_closing_before_attach() {
+fn a_receive_names_the_pager_closing_the_session() {
     let (writer, mut reader) = pair();
     drop(writer);
-    let err = Frame::receive_fd(&mut reader).unwrap_err();
+    let err = Frame::receive(&mut reader).unwrap_err();
+    assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+    assert_eq!(err.to_string(), "the pager closed the session");
+
+    let (mut writer, mut reader) = pair();
+    writer.write_all(&BYTES[..FRAME_BYTES - 1]).unwrap();
+    drop(writer);
+    let err = Frame::receive(&mut reader).unwrap_err();
     assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
     assert_eq!(
         err.to_string(),
-        "the pager closed the session before attaching backing"
+        "the pager closed the session partway through a frame"
     );
 }
 
 /// The one message these three shared sent a reader looking at the wire for a
-/// buffer this side sized, for a pager that answered without attaching
-/// anything, and for a pager that attached more than a session takes. Each has
-/// a different place to look, so each says which it is.
+/// buffer this side sized, for a pager that sent a file without its
+/// descriptor, and for a pager that sent more than a file takes. Each has a
+/// different place to look, so each says which it is.
 #[test]
-fn descriptor_receive_names_which_attachment_failure_it_is() {
+fn descriptor_receive_names_which_failure_it_is() {
     let (mut writer, mut reader) = pair();
     writer.write_all(&BYTES).unwrap();
     let none = Frame::receive_fd(&mut reader).unwrap_err();
     assert_eq!(none.kind(), io::ErrorKind::InvalidData);
     assert_eq!(
         none.to_string(),
-        "the pager answered without a backing descriptor"
+        "the pager sent 0 descriptors with frame kind 1, expected one"
     );
 
     let (writer, mut reader) = pair();
@@ -211,7 +233,7 @@ fn descriptor_receive_names_which_attachment_failure_it_is() {
     assert_eq!(many.kind(), io::ErrorKind::InvalidData);
     assert_eq!(
         many.to_string(),
-        "the pager attached 2 backing descriptors, expected one"
+        "the pager sent 2 descriptors with frame kind 1, expected one"
     );
 
     let (writer, mut reader) = pair();
@@ -220,8 +242,39 @@ fn descriptor_receive_names_which_attachment_failure_it_is() {
     assert_eq!(truncated.kind(), io::ErrorKind::InvalidData);
     assert_eq!(
         truncated.to_string(),
-        "the pager's backing descriptors did not fit this session's ancillary buffer"
+        "the pager's descriptors did not fit this session's ancillary buffer"
     );
+}
+
+/// A FILE follows other frames closely and arrives in the middle of a session.
+/// Every frame is read with recvmsg, so a frame without descriptors that
+/// arrived in pieces and the FILE right behind it each come with their own:
+/// none for the first, and the file's one for the second. A plain read that
+/// reached the FILE would have had the kernel close its descriptor.
+#[test]
+fn frames_keep_their_own_descriptors_back_to_back() {
+    let (mut writer, mut reader) = pair();
+    let (sent, _peer) = pair();
+    let descriptor: OwnedFd = sent.into();
+    let plain = Frame {
+        kind: FILE - 1,
+        ..frame()
+    };
+    let file = Frame {
+        kind: FILE,
+        ..frame()
+    };
+    let bytes = plain.bytes();
+    writer.write_all(&bytes[..3]).unwrap();
+    writer.write_all(&bytes[3..]).unwrap();
+    file.send_fd(&mut writer, &descriptor).unwrap();
+    plain.write(&mut writer).unwrap();
+    let (first, none) = Frame::receive(&mut reader).unwrap();
+    assert_eq!((first, none.len()), (plain, 0));
+    let (second, one) = Frame::receive(&mut reader).unwrap();
+    assert_eq!((second, one.len()), (file, 1));
+    let (third, none) = Frame::receive(&mut reader).unwrap();
+    assert_eq!((third, none.len()), (plain, 0));
 }
 
 #[test]

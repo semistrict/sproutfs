@@ -21,12 +21,13 @@ mod tests;
 
 pub use control::{Control, PendingSeal};
 
+use std::collections::BTreeMap;
 use std::io;
 use std::os::fd::OwnedFd;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 
-use linux::{Mapping, Staging, TrapSource, Uffd};
+use linux::{FileRange, Mapping, Staging, TrapSource, Uffd};
 use wire::Frame;
 
 /// The shortest span applied as one. A reservation and its arming cost eight
@@ -42,18 +43,37 @@ const SPAN_RUNS: usize = 4;
 /// either way the pager sees the connection go and nothing else, so the errno
 /// this client's embedder prints is the whole of the record. One batch carries
 /// up to a thousand runs and one span holds as many mappings as the pager put in
-/// it, so the index, the memory region range and the arena offset are what turn that
-/// line into a page to look at. The index counts within the span or the command
-/// it belongs to, which is where a reader of the pager's own frame log will look
-/// for it.
+/// it, so the index, the memory region range, and the file and offset it maps
+/// from are what turn that line into a page to look at. The index counts within
+/// the span or the command it belongs to, which is where a reader of the pager's
+/// own frame log will look for it.
 fn in_run(index: usize, total: usize, run: Frame, err: io::Error) -> io::Error {
     io::Error::new(
         err.kind(),
         format!(
-            "run {index} of {total}, memory region offset {} length {} arena offset {} generation {} flags {}: {err}",
-            run.offset, run.len, run.backing, run.generation, run.flags
+            "run {index} of {total}, memory region offset {} length {} file {} offset {} generation {} flags {}: {err}",
+            run.offset,
+            run.len,
+            wire::map_file(run.flags),
+            run.backing,
+            run.generation,
+            run.flags
         ),
     )
+}
+
+/// One file this session may map, as its FILE frame stated it and its
+/// descriptor confirmed.
+struct File {
+    fd: OwnedFd,
+    /// The file's offsets in bytes, which bound a MAP of it. The file is
+    /// sparse and holds a page only where the pager put one, so this says
+    /// nothing about how much memory is behind them.
+    len: u64,
+    /// Whether the descriptor is read-write, which only the private file's is.
+    /// It decides how a run of the file is mapped.
+    writable: bool,
+    identity: linux::Identity,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -92,13 +112,12 @@ pub struct Session {
     socket: UnixStream,
     requests: std::sync::Arc<control::Requests>,
     uffd: Uffd,
-    backing: OwnedFd,
-    /// The arena's offset space in bytes, as the attachment stated it and as
-    /// the descriptor's own size confirmed. It is addresses, not memory: the
-    /// file is sparse and holds a page only where the pager put one, so this
-    /// bounds a MAP's arena offset and says nothing about how much of it is
-    /// backed.
-    backing_len: u64,
+    /// What every file of this session is made of, as the attachment stated
+    /// it: the HugeTLB pool or ordinary shared memory.
+    backing: u64,
+    /// The files the pager has handed this session, by number. File 0 is the
+    /// region's private file, and READY is refused until it is here.
+    files: BTreeMap<u64, File>,
     /// The page this session's memory region runs, which the attachment states and
     /// which every offset, length and backing offset on this wire is counted
     /// in. It is not a constant of the library: a host's RAM and its PMEM are
@@ -158,36 +177,48 @@ impl Session {
             ..Frame::default()
         }
         .write(&mut socket)?;
-        let (attach, backing) = Frame::receive_fd(&mut socket)?;
-        let page_size = Self::geometry(attach, &backing, spec.len)?;
+        // A close here is the pager refusing this memory region — its
+        // logical-page cap is full, say — so the error says it came before the
+        // attachment, which is the end of the connection the answer had to come
+        // from.
+        let (attach, descriptors) = Frame::receive(&mut socket)
+            .map_err(|err| io::Error::new(err.kind(), format!("before attaching: {err}")))?;
+        if !descriptors.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "the pager sent {} descriptors with its attachment, which carries none",
+                    descriptors.len()
+                ),
+            ));
+        }
+        let page_size = Self::geometry(attach, spec.len)?;
         let vmas = vma_budget::VmaBudget::new(attach.flags)?;
         let mut session = Self {
             vmas,
             requests: control::Requests::new(socket.try_clone()?)?,
             socket,
             uffd,
-            backing,
-            backing_len: attach.len,
+            backing: attach.backing,
+            files: BTreeMap::new(),
             page_size,
             memory_region,
             last_command: None,
             terminal: false,
         };
-        // Service eager maps before exposing addresses to an embedder. The Go
-        // side also installs page tables before sending READY.
+        // Take the files and service eager maps before exposing addresses to an
+        // embedder. The Go side also installs page tables before sending READY.
         session.run_inner(true)?;
         Ok(session)
     }
 
     /// Checks the geometry an attachment states, and reports the page this
-    /// session runs. Nothing here has mapped the arena or exposed an address:
-    /// a page this transport does not map, an arena that is not the memory that
-    /// page is made of, an offset space the descriptor does not have, or a
-    /// memory region of this length that is not whole pages of it all end the session
-    /// before the embedder sees a byte. The length the descriptor is checked
-    /// against is the arena's addresses: the file is sparse, so how much of it
-    /// holds memory is the pager's business and not this check's.
-    fn geometry(attach: Frame, backing: &OwnedFd, memory_region_len: usize) -> io::Result<usize> {
+    /// session runs. Nothing here has mapped a file or exposed an address: a
+    /// page this transport does not map, an arena kind that is not the memory
+    /// that page is made of, or a memory region of this length that is not
+    /// whole pages of it all end the session before the embedder sees a byte.
+    /// Each file is checked against this geometry as it arrives.
+    fn geometry(attach: Frame, memory_region_len: usize) -> io::Result<usize> {
         let refuse = |what: String| io::Error::new(io::ErrorKind::InvalidData, what);
         if attach.kind != wire::ATTACH || attach.id != wire::VERSION || attach.generation != 0 {
             return Err(refuse(format!(
@@ -212,9 +243,9 @@ impl Session {
                 attach.backing
             )));
         }
-        if attach.len == 0 || attach.len % page_size as u64 != 0 {
+        if attach.len != 0 {
             return Err(refuse(format!(
-                "an arena of {} bytes is not whole {page_size}-byte pages",
+                "the attachment states a length of {}, where each file states its own",
                 attach.len
             )));
         }
@@ -223,8 +254,109 @@ impl Session {
                 "a memory region of {memory_region_len} bytes is not whole {page_size}-byte pages"
             )));
         }
-        linux::check_backing(backing, kind, attach.len)?;
         Ok(page_size)
+    }
+
+    /// Takes one file the pager hands this session, or a larger length of one
+    /// it already has. Nothing is mapped from it yet. A file this client cannot
+    /// map as stated ends the session: the pager sent something it would not
+    /// send, and the checks keep this client safe from that pager's bug.
+    fn add_file(&mut self, frame: Frame, fd: OwnedFd) -> io::Result<()> {
+        let refuse = |what: String| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("file {}: {what}", frame.id),
+            )
+        };
+        let size = self.page_size as u64;
+        let writable = frame.flags == wire::FILE_WRITABLE;
+        if frame.offset != 0 || frame.generation != 0 || frame.flags > wire::FILE_WRITABLE {
+            return Err(refuse(format!(
+                "offset {} generation {} flags {}",
+                frame.offset, frame.generation, frame.flags
+            )));
+        }
+        if frame.backing != self.backing {
+            return Err(refuse(format!(
+                "arena kind {}, the attachment said {}",
+                frame.backing, self.backing
+            )));
+        }
+        if frame.len == 0 || frame.len % size != 0 {
+            return Err(refuse(format!(
+                "{} bytes is not whole {size}-byte pages",
+                frame.len
+            )));
+        }
+        if writable != (frame.id == wire::PRIVATE_FILE) {
+            return Err(refuse(format!(
+                "writable is {writable}, and only file {} is writable",
+                wire::PRIVATE_FILE
+            )));
+        }
+        let identity = linux::check_file(&fd, self.backing, frame.len, writable)
+            .map_err(|err| io::Error::new(err.kind(), format!("file {}: {err}", frame.id)))?;
+        // A repeated number grows the file it names. Mappings already made of
+        // it keep the file, so the descriptor it replaces can close.
+        if let Some(held) = self.files.get(&frame.id)
+            && (held.identity != identity || frame.len <= held.len)
+        {
+            return Err(refuse(format!(
+                "a repeated file must be the same file at a larger length, not {} bytes \
+                 over {} (same file: {})",
+                frame.len,
+                held.len,
+                held.identity == identity
+            )));
+        }
+        self.files.insert(
+            frame.id,
+            File {
+                fd,
+                len: frame.len,
+                writable,
+                identity,
+            },
+        );
+        Ok(())
+    }
+
+    /// Closes the descriptor of a file the pager has revoked every mapping of.
+    /// The private file lasts as long as the session, so dropping it, or a
+    /// file this session was never given, ends the session.
+    fn drop_file(&mut self, frame: Frame) -> io::Result<()> {
+        if frame.id == wire::PRIVATE_FILE
+            || frame.offset != 0
+            || frame.len != 0
+            || frame.backing != 0
+            || frame.generation != 0
+            || frame.flags != 0
+            || self.files.remove(&frame.id).is_none()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid drop of file {}: {frame:?}", frame.id),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Reads the next frame, with the descriptor it carries. Only a FILE
+    /// carries one, and it carries exactly one.
+    fn receive(&mut self) -> io::Result<(Frame, Option<OwnedFd>)> {
+        let (frame, mut descriptors) = Frame::receive(&mut self.socket)?;
+        let expected = usize::from(frame.kind == wire::FILE);
+        if descriptors.len() != expected {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "the pager sent {} descriptors with frame kind {}, which carries {expected}",
+                    descriptors.len(),
+                    frame.kind
+                ),
+            ));
+        }
+        Ok((frame, descriptors.pop()))
     }
 
     /// The page this session's memory region runs, which the attachment stated. Every
@@ -266,9 +398,20 @@ impl Session {
 
     fn run_inner(&mut self, attaching: bool) -> io::Result<()> {
         loop {
-            let command = Frame::read(&mut self.socket)?;
+            let (command, descriptor) = self.receive()?;
+            if let Some(fd) = descriptor {
+                // Only a FILE carries a descriptor. A FILE arrives before READY
+                // and at any time after it, in order with the mapping commands.
+                self.add_file(command, fd)?;
+                continue;
+            }
+            if command.kind == wire::DROP_FILE {
+                self.drop_file(command)?;
+                continue;
+            }
             if command.kind == wire::READY {
                 if !attaching
+                    || !self.files.contains_key(&wire::PRIVATE_FILE)
                     || command.id == 0
                     || self.last_command.is_some_and(|last| command.id <= last.id)
                     || command.offset != 0
@@ -341,7 +484,9 @@ impl Session {
         }
         let mut runs: Vec<Frame> = Vec::with_capacity(command.len as usize);
         for index in 0..command.len as usize {
-            let run = Frame::read(&mut self.socket)?;
+            // A FILE is never a run, so one here is refused below and its
+            // descriptor closed.
+            let (run, _) = self.receive()?;
             let total = command.len as usize;
             self.validate(run)
                 .map_err(|errno| in_run(index, total, run, io::Error::from_raw_os_error(errno)))?;
@@ -426,19 +571,26 @@ impl Session {
             || c.offset
                 .checked_add(c.len)
                 .is_none_or(|end| end > r.descriptor.len as u64)
-            || c.flags > wire::SHARED
             || (c.kind == wire::REVOKE && (c.flags != 0 || c.backing != 0))
-            || (c.kind == wire::MAP_ZERO && (c.flags != wire::SHARED || c.backing != 0))
+            || (c.kind == wire::MAP_ZERO && (c.flags != wire::IMMUTABLE || c.backing != 0))
         {
             return Err(libc::EINVAL);
         }
-        if c.kind == wire::MAP
-            && (c.backing % size != 0
-                || c.backing
-                    .checked_add(c.len)
-                    .is_none_or(|end| end > self.backing_len))
-        {
-            return Err(libc::EINVAL);
+        // A MAP names a file this session holds, within the length stated for
+        // it, and only the private file may be mapped writable.
+        if c.kind == wire::MAP {
+            let file = wire::map_file(c.flags);
+            let immutable = c.flags & wire::IMMUTABLE != 0;
+            if (!immutable && file != wire::PRIVATE_FILE)
+                || c.backing % size != 0
+                || self.files.get(&file).is_none_or(|file| {
+                    c.backing
+                        .checked_add(c.len)
+                        .is_none_or(|end| end > file.len)
+                })
+            {
+                return Err(libc::EINVAL);
+            }
         }
         if !r.generations.accepts(
             (c.offset / size) as usize,
@@ -451,16 +603,26 @@ impl Session {
     }
 
     /// Whether two of a batch's runs are one stretch of the memory region, which is
-    /// what one staging span covers: the same kind of arena mapping, the same
-    /// protection, and no gap between them. Their arena offsets are not
-    /// adjacent — runs whose are have already merged into one — so the kernel
-    /// keeps them as separate mappings inside the span, and each still needs an
-    /// mremap of its own.
+    /// what one staging span covers: two mappings of files, the same
+    /// protection, and no gap between them. They may be of different files.
+    /// Runs of one file whose offsets are adjacent have already merged into one,
+    /// so the kernel keeps these as separate mappings inside the span, and each
+    /// still needs an mremap of its own.
     fn spans(last: Frame, run: Frame) -> bool {
         last.kind == wire::MAP
             && run.kind == wire::MAP
-            && last.flags == run.flags
+            && last.flags & wire::IMMUTABLE == run.flags & wire::IMMUTABLE
             && last.offset + last.len == run.offset
+    }
+
+    /// Where a validated MAP's bytes are.
+    fn file_range(&self, c: Frame) -> FileRange<'_> {
+        let file = &self.files[&wire::map_file(c.flags)];
+        FileRange {
+            fd: &file.fd,
+            at: c.backing,
+            writable: file.writable,
+        }
     }
 
     /// Applies one span of MAP runs: every run placed in one reservation, the
@@ -472,12 +634,12 @@ impl Session {
         let mut at = 0;
         for (index, run) in runs.iter().enumerate() {
             staging
-                .place(at, run.len as usize, &self.backing, run.backing)
+                .place(at, run.len as usize, self.file_range(*run))
                 .map_err(|err| in_run(index, total, *run, err))?;
             at += run.len as usize;
         }
         staging
-            .arm(&self.uffd, runs[0].flags == wire::SHARED)
+            .arm(&self.uffd, runs[0].flags & wire::IMMUTABLE != 0)
             .map_err(|err| in_run(0, total, runs[0], err))?;
         for (index, run) in runs.iter().enumerate() {
             // SAFETY: validate bounded every run by the memory region's length.
@@ -503,9 +665,9 @@ impl Session {
     }
 
     fn replace(&mut self, c: Frame) -> io::Result<()> {
-        let shared_mapping = c.kind == wire::MAP;
-        let mapping = if shared_mapping {
-            Mapping::new(c.len as usize, Some((&self.backing, c.backing)))?
+        let file = c.kind == wire::MAP;
+        let mapping = if file {
+            Mapping::new(c.len as usize, Some(self.file_range(c)))?
         } else {
             self.memory_region
                 .traps
@@ -514,8 +676,11 @@ impl Session {
         if c.kind == wire::MAP_ZERO {
             mapping.populate_zero()?;
         }
-        self.uffd.register(&mapping, shared_mapping)?;
-        if (shared_mapping && c.flags == wire::SHARED) || c.kind == wire::MAP_ZERO {
+        self.uffd.register(&mapping, file)?;
+        // A MAP of a read-only file is always immutable, so its private
+        // mapping is write-protected here, before it is exposed: a store the
+        // kernel let through would copy into memory the pager never sees.
+        if c.flags & wire::IMMUTABLE != 0 {
             self.uffd.protect(&mapping)?;
         }
         let r = &mut self.memory_region;

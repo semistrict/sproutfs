@@ -1,7 +1,7 @@
 //! Fixed-size managed-memory control frames. See docs/vm-memory.md in the parent
 //! project. A session maps one memory region, so no frame names one.
 
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 use std::mem;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
@@ -10,6 +10,13 @@ use std::os::unix::net::UnixStream;
 #[path = "tests/wire.rs"]
 mod tests;
 
+/// Version 10 moved the arena off ATTACH and into files. ATTACH carries no
+/// descriptor and no length. The pager hands this client each file it may map
+/// in a FILE frame with its descriptor, and a MAP names the file it maps from.
+/// File 0 is the region's private file and the only one this client maps
+/// writable. A version 9 peer would read ATTACH as the arena and a MAP's file
+/// number as a protection flag.
+///
 /// Version 9 added FLUSH, the request this client sends when its guest flushes
 /// the memory region and whose RESULT completes that flush. A version 8 pager ends the
 /// session on a control message it does not know, which would end the guest at
@@ -27,7 +34,7 @@ mod tests;
 /// runs and the kind of memory its arena is made of. The page is no longer one
 /// number both ends know, so a version 6 peer is refused by version too — its
 /// page numbers name other pages.
-pub(crate) const VERSION: u64 = 9;
+pub(crate) const VERSION: u64 = 10;
 /// The encoded size of one frame.
 pub(crate) const FRAME_BYTES: usize = 56;
 pub(crate) const HELLO: u64 = 1;
@@ -50,8 +57,28 @@ pub(crate) const MAP_ZERO: u64 = 12;
 /// which may take a disk checkpoint first, and the device completes the
 /// guest's flush then.
 pub(crate) const FLUSH: u64 = 13;
+/// Hands this client one file it may map, with its descriptor: `id` is the
+/// file's number, `len` its size in bytes, `backing` the arena kind, and
+/// `flags` FILE_WRITABLE or zero. A FILE that repeats a number with a larger
+/// length grows that file.
+pub(crate) const FILE: u64 = 14;
+/// Closes the descriptor of the file `id` names. The pager sends it once every
+/// mapping of that file is revoked.
+pub(crate) const DROP_FILE: u64 = 15;
 pub(crate) const MAX_BATCH_RUNS: u64 = 1024;
-pub(crate) const SHARED: u64 = 1;
+/// The bit of a MAP's flags that maps its pages read-only and write-protected.
+/// The bits above it are the file the MAP names. MAP_ZERO carries it alone.
+pub(crate) const IMMUTABLE: u64 = 1;
+/// The flag of a FILE whose descriptor is read-write.
+pub(crate) const FILE_WRITABLE: u64 = 1;
+/// The region's private file: the only file whose descriptor is read-write,
+/// and the only one a writable MAP may name. Every other file is read-only.
+pub(crate) const PRIVATE_FILE: u64 = 0;
+
+/// The file a MAP's flags name.
+pub(crate) fn map_file(flags: u64) -> u64 {
+    flags >> 1
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Frame {
@@ -96,7 +123,11 @@ impl Frame {
         }
     }
 
+    /// Reads one whole frame with a plain read, as the pager a test plays does.
+    /// This client reads every frame with receive, which keeps descriptors.
+    #[cfg(test)]
     pub fn read(socket: &mut UnixStream) -> io::Result<Self> {
+        use std::io::Read;
         let mut bytes = [0; FRAME_BYTES];
         socket.read_exact(&mut bytes)?;
         Ok(Self::decode(bytes))
@@ -147,11 +178,66 @@ impl Frame {
         socket.write_all(&bytes[sent..])
     }
 
-    pub fn receive_fd(socket: &mut UnixStream) -> io::Result<(Self, OwnedFd)> {
+    /// Reads one whole frame and every descriptor that came with it.
+    ///
+    /// Every read of a frame is a recvmsg, including the reads that finish a
+    /// frame that arrived in pieces. The kernel closes the descriptors a plain
+    /// read reaches, so a FILE that followed another frame closely would lose
+    /// its descriptor. The kernel ends a read at the message that carries
+    /// descriptors, and the pager sends a frame's descriptors with its first
+    /// byte, so the descriptors a frame's reads collect are that frame's own.
+    pub fn receive(socket: &mut UnixStream) -> io::Result<(Self, Vec<OwnedFd>)> {
         let mut bytes = [0; FRAME_BYTES];
+        let mut fds = Vec::new();
+        let mut filled = 0;
+        while filled < FRAME_BYTES {
+            let n = Self::receive_some(socket, &mut bytes[filled..], &mut fds)?;
+            // An orderly close with nothing on it is the pager ending the
+            // session, which its caller may know more about. One in the middle
+            // of a frame is a frame that never came whole.
+            if n == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    if filled == 0 && fds.is_empty() {
+                        "the pager closed the session"
+                    } else {
+                        "the pager closed the session partway through a frame"
+                    },
+                ));
+            }
+            filled += n;
+        }
+        Ok((Self::decode(bytes), fds))
+    }
+
+    /// Reads one whole frame that must carry exactly one descriptor, as the
+    /// pager a test plays reads HELLO.
+    #[cfg(test)]
+    pub fn receive_fd(socket: &mut UnixStream) -> io::Result<(Self, OwnedFd)> {
+        let (frame, mut fds) = Self::receive(socket)?;
+        if fds.len() != 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "the pager sent {} descriptors with frame kind {}, expected one",
+                    fds.len(),
+                    frame.kind
+                ),
+            ));
+        }
+        Ok((frame, fds.pop().unwrap()))
+    }
+
+    /// One recvmsg into buffer. It takes the descriptors that came with the
+    /// bytes it read into fds and reports how many bytes it read.
+    fn receive_some(
+        socket: &mut UnixStream,
+        buffer: &mut [u8],
+        fds: &mut Vec<OwnedFd>,
+    ) -> io::Result<usize> {
         let mut iov = libc::iovec {
-            iov_base: bytes.as_mut_ptr().cast(),
-            iov_len: bytes.len(),
+            iov_base: buffer.as_mut_ptr().cast(),
+            iov_len: buffer.len(),
         };
         let mut control = [0usize; 8];
         let mut msg: libc::msghdr = unsafe { mem::zeroed() };
@@ -170,7 +256,6 @@ impl Frame {
                 return Err(err);
             }
         };
-        let mut fds = Vec::new();
         // SAFETY: libc walks kernel-validated ancillary messages within control.
         unsafe {
             let mut cmsg = libc::CMSG_FIRSTHDR(&msg);
@@ -187,48 +272,14 @@ impl Frame {
                 cmsg = libc::CMSG_NXTHDR(&msg, cmsg);
             }
         }
-        // Every way this can go wrong says something different about where to
-        // look, and one message for all of them sent a reader to the wire when
-        // the answer was at the other end of the connection.
-        //
         // Truncated ancillary data is this side's buffer, not the pager's
         // message: the kernel dropped descriptors that did not fit.
         if msg.msg_flags & libc::MSG_CTRUNC != 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "the pager's backing descriptors did not fit this session's ancillary buffer",
+                "the pager's descriptors did not fit this session's ancillary buffer",
             ));
         }
-        // An orderly close with nothing on it is its own failure: the pager
-        // refused this memory region — its logical-page cap is full, say — and closed
-        // instead of attaching backing. It is the end of the connection the
-        // answer had to come from, not a malformed message.
-        if n == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                if fds.is_empty() {
-                    "the pager closed the session before attaching backing"
-                } else {
-                    "the pager closed the session after its backing descriptor and before the frame"
-                },
-            ));
-        }
-        // The pager answered, so this is the message itself: either it carried
-        // no descriptor, or it carried more than the one a session attaches.
-        if fds.len() != 1 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                if fds.is_empty() {
-                    "the pager answered without a backing descriptor".to_owned()
-                } else {
-                    format!(
-                        "the pager attached {} backing descriptors, expected one",
-                        fds.len()
-                    )
-                },
-            ));
-        }
-        socket.read_exact(&mut bytes[n..])?;
-        Ok((Self::decode(bytes), fds.pop().unwrap()))
+        Ok(n)
     }
 }

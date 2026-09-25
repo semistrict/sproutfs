@@ -18,15 +18,53 @@ import (
 )
 
 // shared is the mapping-command flag that keeps a page read-only and shared.
-const shared = 1
+const shared = vmwire.Immutable
 
 type page struct {
 	id      int
 	initial []byte // immutable fixture backing; nil for private pages
 	private bool
-	slot    int // -1 means nonresident
+	file    uint64 // the file the page's slot is in
+	slot    int    // -1 means nonresident
 	spilled bool
 	aliases map[*alias]struct{}
+}
+
+// arenaLayout is where the fixture puts the pages it shares.
+type arenaLayout int
+
+const (
+	// sharedArena puts every page in one file that every client receives
+	// read-write, as the pager does today.
+	sharedArena arenaLayout = iota
+	// isolatedArena puts the pages it shares in a second file that clients
+	// receive read-only and map private, and only private pages in the file
+	// they receive read-write.
+	isolatedArena
+)
+
+func (l arenaLayout) String() string {
+	if l == isolatedArena {
+		return "isolated"
+	}
+	return "shared"
+}
+
+// eachArena runs a test once over each layout.
+func eachArena(t *testing.T, test func(t *testing.T, layout arenaLayout)) {
+	for _, layout := range []arenaLayout{sharedArena, isolatedArena} {
+		t.Run(layout.String(), func(t *testing.T) { test(t, layout) })
+	}
+}
+
+// fixtureFile is one file the fixture hands its clients: its number, the
+// fixture's own read-write descriptor, the descriptor its clients receive, and
+// its free slots.
+type fixtureFile struct {
+	number uint64
+	file   *os.File
+	client *os.File
+	free   []int
 }
 
 type alias struct {
@@ -60,46 +98,74 @@ type fault struct {
 // state lock serializes page transitions; independent UFFD readers always drain
 // REMAP events, even while a transition is waiting for a client acknowledgement.
 type pager struct {
-	t            *testing.T
-	mu           sync.Mutex
-	pageSize     int
-	arena, spill *os.File
-	free         []int
-	pages        []*page
-	initial      map[[2]int]*page
-	clients      []*pagerClient
-	sequence     uint64
-	err          error
-	failSpill    bool
-	spillWrites  int
-	remaps       atomic.Int64
-	faults       atomic.Int64
-	queueMu      sync.Mutex
-	queue        map[faultKey]uint64
-	notify       chan struct{}
-	done         chan struct{}
-	workerDone   chan struct{}
+	t        *testing.T
+	mu       sync.Mutex
+	pageSize int
+	// files are the files every client receives. File 0 is the arena every
+	// client receives read-write. An isolated arena has a second file, which
+	// clients receive read-only.
+	files       []*fixtureFile
+	spill       *os.File
+	pages       []*page
+	initial     map[[2]int]*page
+	clients     []*pagerClient
+	sequence    uint64
+	err         error
+	failSpill   bool
+	spillWrites int
+	remaps      atomic.Int64
+	faults      atomic.Int64
+	queueMu     sync.Mutex
+	queue       map[faultKey]uint64
+	notify      chan struct{}
+	done        chan struct{}
+	workerDone  chan struct{}
 }
 
 func newPager(t *testing.T, slots int) *pager {
+	t.Helper()
+	return newArenaPager(t, slots, sharedArena)
+}
+
+// newArenaPager is a pager of the given layout whose every file has this many
+// slots.
+func newArenaPager(t *testing.T, slots int, layout arenaLayout) *pager {
 	t.Helper()
 	if os.Getenv("SPROUTFS_VM_MEMORY_CLIENT") == "" {
 		t.Skip("run scripts/test-vm-memory-lima.sh for real Linux memory tests")
 	}
 	size := 2 << 20
-	arena, err := vmwire.ArenaMemfd("sproutfs-page-arena", uint64(size), int64(slots*size))
-	if err != nil {
-		t.Fatal(err)
+	p := &pager{t: t, pageSize: size, initial: make(map[[2]int]*page), queue: make(map[faultKey]uint64), notify: make(chan struct{}, 1), done: make(chan struct{}), workerDone: make(chan struct{})}
+	names := []string{"sproutfs-page-arena"}
+	if layout == isolatedArena {
+		names = append(names, "sproutfs-page-shared")
+	}
+	for number, name := range names {
+		f := &fixtureFile{number: uint64(number)}
+		var err error
+		if f.file, err = vmwire.ArenaMemfd(name, uint64(size), int64(slots*size)); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { f.file.Close() })
+		// Every file but the private one goes to clients as a new open of it
+		// that can only read, as the pager sends it.
+		f.client = f.file
+		if number != vmwire.PrivateFile {
+			if f.client, err = os.OpenFile(fmt.Sprintf("/proc/self/fd/%d", f.file.Fd()), os.O_RDONLY, 0); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { f.client.Close() })
+		}
+		for i := slots - 1; i >= 0; i-- {
+			f.free = append(f.free, i)
+		}
+		p.files = append(p.files, f)
 	}
 	spill, err := os.CreateTemp(t.TempDir(), "spill-")
 	if err != nil {
-		arena.Close()
 		t.Fatal(err)
 	}
-	p := &pager{t: t, pageSize: size, arena: arena, spill: spill, initial: make(map[[2]int]*page), queue: make(map[faultKey]uint64), notify: make(chan struct{}, 1), done: make(chan struct{}), workerDone: make(chan struct{})}
-	for i := slots - 1; i >= 0; i-- {
-		p.free = append(p.free, i)
-	}
+	p.spill = spill
 	go p.work()
 	t.Cleanup(func() {
 		close(p.done)
@@ -110,10 +176,18 @@ func newPager(t *testing.T, slots int) *pager {
 			<-c.readerDone
 		}
 		<-p.workerDone
-		p.arena.Close()
 		p.spill.Close()
 	})
 	return p
+}
+
+// fileFor is the file a page belongs in: an isolated arena's shared file for a
+// page the pager shares, and the arena for every other.
+func (p *pager) fileFor(pg *page) *fixtureFile {
+	if !pg.private && len(p.files) > 1 {
+		return p.files[vmwire.SharedFile]
+	}
+	return p.files[vmwire.PrivateFile]
 }
 
 // accept takes one session of a client process. memory region names the family of
@@ -158,19 +232,24 @@ func (p *pager) accept(listener *net.UnixListener, memoryRegion int) (*pagerClie
 		pg.aliases[a] = struct{}{}
 		c.aliases = append(c.aliases, a)
 	}
-	stat, err := p.arena.Stat()
-	if err != nil {
-		return fail(err)
-	}
-	// The attachment states this fixture's geometry: the page its memory regions run,
-	// and the memory its arena is made of.
+	// The attachment states this fixture's geometry: the page its memory
+	// regions run, and the memory its files are made of. The files follow it.
 	backing, err := vmwire.BackingFor(uint64(p.pageSize))
 	if err != nil {
 		return fail(err)
 	}
-	attach := vmwire.AttachFrame(uint64(p.pageSize), uint64(stat.Size()), backing, 0)
-	if err = vmwire.SendFD(conn, attach, p.arena); err != nil {
+	if err := vmwire.Write(conn, vmwire.AttachFrame(uint64(p.pageSize), backing, 0)); err != nil {
 		return fail(err)
+	}
+	for _, file := range p.files {
+		stat, err := file.file.Stat()
+		if err != nil {
+			return fail(err)
+		}
+		frame := vmwire.FileFrame(file.number, uint64(stat.Size()), backing, file.number == vmwire.PrivateFile)
+		if err := vmwire.SendFD(conn, frame, file.client); err != nil {
+			return fail(err)
+		}
 	}
 	p.sequence++
 	if err := vmwire.Write(conn, vmwire.Frame{Kind: vmwire.Ready, ID: p.sequence}); err != nil {
@@ -287,9 +366,7 @@ func (p *pager) change(a *alias, kind uint64) error {
 	f := vmwire.Frame{Kind: kind, ID: p.sequence, Offset: a.index * uint64(p.pageSize), Length: uint64(p.pageSize), Generation: a.generation + 1}
 	if kind == vmwire.MapRange {
 		f.Backing = uint64(a.page.slot * p.pageSize)
-		if !a.page.private {
-			f.Flags = shared
-		}
+		f.Flags = vmwire.MapFlags(a.page.file, !a.page.private)
 	}
 	response, err := p.command(a.client, f)
 	if err != nil {
@@ -306,9 +383,9 @@ func (p *pager) change(a *alias, kind uint64) error {
 // fallocate allocates or punches one arena slot. HugeTLB allocation can observe
 // a runtime signal after dropping its locks, and retrying the same request is
 // safe even after partial progress, exactly as the production arena does it.
-func (p *pager) fallocate(mode uint32, offset int64) error {
+func (p *pager) fallocate(f *fixtureFile, mode uint32, offset int64) error {
 	for {
-		err := syscall.Fallocate(int(p.arena.Fd()), mode, offset, int64(p.pageSize))
+		err := syscall.Fallocate(int(f.file.Fd()), mode, offset, int64(p.pageSize))
 		if !errors.Is(err, syscall.EINTR) {
 			return err
 		}
@@ -319,8 +396,9 @@ func (p *pager) makeResident(pg *page) error {
 	if pg.slot >= 0 {
 		return nil
 	}
-	if len(p.free) == 0 {
-		return errors.New("fixture arena exhausted")
+	f := p.fileFor(pg)
+	if len(f.free) == 0 {
+		return fmt.Errorf("fixture file %d exhausted", f.number)
 	}
 	bytes := pg.initial
 	if pg.spilled {
@@ -332,11 +410,11 @@ func (p *pager) makeResident(pg *page) error {
 	if len(bytes) != p.pageSize {
 		return errors.New("page has no recoverable backing")
 	}
-	slot := p.free[len(p.free)-1]
-	if err := p.fallocate(1, int64(slot*p.pageSize)); err != nil {
+	slot := f.free[len(f.free)-1]
+	if err := p.fallocate(f, 1, int64(slot*p.pageSize)); err != nil {
 		return err
 	}
-	mapped, err := syscall.Mmap(int(p.arena.Fd()), int64(slot*p.pageSize), p.pageSize, syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
+	mapped, err := syscall.Mmap(int(f.file.Fd()), int64(slot*p.pageSize), p.pageSize, syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
 	if err != nil {
 		return err
 	}
@@ -344,9 +422,16 @@ func (p *pager) makeResident(pg *page) error {
 	if err := syscall.Munmap(mapped); err != nil {
 		return err
 	}
-	p.free = p.free[:len(p.free)-1]
-	pg.slot = slot
+	f.free = f.free[:len(f.free)-1]
+	pg.file, pg.slot = f.number, slot
 	return nil
+}
+
+// read reads a resident page's bytes from its file.
+func (p *pager) read(pg *page) ([]byte, error) {
+	bytes := make([]byte, p.pageSize)
+	_, err := p.files[pg.file].file.ReadAt(bytes, int64(pg.slot*p.pageSize))
+	return bytes, err
 }
 
 func (p *pager) handleFault(f fault) error {
@@ -369,8 +454,8 @@ func (p *pager) handleFault(f fault) error {
 	// A WRITE or WP event must obtain private backing before any write resumes,
 	// including first access being a store into an entirely nonresident page.
 	if f.flags&3 != 0 && !a.page.private {
-		bytes := make([]byte, p.pageSize)
-		if _, err := p.arena.ReadAt(bytes, int64(a.page.slot*p.pageSize)); err != nil {
+		bytes, err := p.read(a.page)
+		if err != nil {
 			return err
 		}
 		private := &page{id: len(p.pages), private: true, slot: -1, initial: bytes, aliases: make(map[*alias]struct{})}
@@ -406,8 +491,8 @@ func (p *pager) evictLocked(pg *page) error {
 		}
 	}
 	if pg.private {
-		bytes := make([]byte, p.pageSize)
-		if _, err := p.arena.ReadAt(bytes, int64(pg.slot*p.pageSize)); err != nil {
+		bytes, err := p.read(pg)
+		if err != nil {
 			return err
 		}
 		if p.failSpill {
@@ -422,10 +507,11 @@ func (p *pager) evictLocked(pg *page) error {
 		pg.spilled = true
 		p.spillWrites++
 	}
-	if err := p.fallocate(3, int64(pg.slot*p.pageSize)); err != nil { // KEEP_SIZE | PUNCH_HOLE
+	f := p.files[pg.file]
+	if err := p.fallocate(f, 3, int64(pg.slot*p.pageSize)); err != nil { // KEEP_SIZE | PUNCH_HOLE
 		return err
 	}
-	p.free = append(p.free, pg.slot)
+	f.free = append(f.free, pg.slot)
 	pg.slot = -1
 	return nil
 }

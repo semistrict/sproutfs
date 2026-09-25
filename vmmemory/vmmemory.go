@@ -420,7 +420,7 @@ type Config struct {
 }
 
 // Offsets is how many addresses this pager's arena has, which is what the arena
-// is built with and what an ATTACH states: ArenaOffsets, or ResidentPages for a
+// is built with and what its FILE frame states: ArenaOffsets, or ResidentPages for a
 // pager whose offsets and its pages are one number.
 func (c Config) Offsets() int {
 	if c.ArenaOffsets == 0 {

@@ -114,6 +114,29 @@ func SendFD(c *net.UnixConn, f Frame, file *os.File) error {
 	return WriteBytes(c, b[n:])
 }
 
+// ReceiveAttachment reads what a pager attaches a session with, as a client
+// does: the ATTACH frame, which carries no descriptor, and the FILE frame of
+// the private file that follows it, with that file's descriptor. It is for a
+// process that stands in for the client.
+func ReceiveAttachment(c *net.UnixConn) (Frame, *os.File, error) {
+	attach, err := Read(c)
+	if err != nil {
+		return Frame{}, nil, err
+	}
+	if err := CheckAttach(attach); err != nil {
+		return Frame{}, nil, err
+	}
+	file, private, err := ReceiveFD(c)
+	if err != nil {
+		return Frame{}, nil, err
+	}
+	if err := CheckFile(file, attach.Offset, attach.Backing); err != nil || file.ID != PrivateFile {
+		_ = private.Close()
+		return Frame{}, nil, fmt.Errorf("the attachment's first file is not the private file: %+v: %v", file, err)
+	}
+	return attach, private, nil
+}
+
 // HugeMemfd creates a size-sealed anonymous file over explicit 2 MiB HugeTLB
 // pages from the host's provisioned pool. Writes and punching stay allowed;
 // resizing and further seals do not.

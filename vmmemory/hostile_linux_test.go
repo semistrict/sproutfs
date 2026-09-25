@@ -812,7 +812,7 @@ func (p *hostilePeer) play(op hostileOp) error {
 // script says, until either end hangs up.
 func (p *hostilePeer) respond() {
 	defer close(p.ended)
-	_, arena, err := vmwire.ReceiveFD(p.conn)
+	_, arena, err := vmwire.ReceiveAttachment(p.conn)
 	if err != nil {
 		return
 	}

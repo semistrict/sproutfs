@@ -185,7 +185,7 @@ func attachChild(socket string) error {
 	if err := vmwire.Write(c, vmwire.Frame{Kind: vmwire.MemoryRegion, Flags: uint64(vmmemory.Ram), Length: checkpoint.PageSize2MiB, Offset: 2 << 20}); err != nil {
 		return err
 	}
-	_, arena, err := vmwire.ReceiveFD(c)
+	_, arena, err := vmwire.ReceiveAttachment(c)
 	if err != nil {
 		return err
 	}

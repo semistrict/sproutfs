@@ -25,7 +25,15 @@ fn mapping_drop_releases_its_backing() {
         unsafe { libc::ftruncate(backing.as_raw_fd(), PAGE_SIZE as _) },
         0
     );
-    let mapping = Mapping::new(PAGE_SIZE, Some((&backing, 0))).unwrap();
+    let mapping = Mapping::new(
+        PAGE_SIZE,
+        Some(FileRange {
+            fd: &backing,
+            at: 0,
+            writable: true,
+        }),
+    )
+    .unwrap();
     let marker = "/memfd:sproutfs-mapping-lifetime-test";
     assert!(
         std::fs::read_to_string("/proc/self/maps")
@@ -40,6 +48,149 @@ fn mapping_drop_releases_its_backing() {
             .unwrap()
             .contains(marker)
     );
+}
+
+/// An ordinary memfd of the given pages and name, and a second descriptor of
+/// it opened read-only through /proc/self/fd, as the pager opens every file but
+/// the private one.
+fn memfd_and_read_only(name: &std::ffi::CStr, pages: usize) -> (OwnedFd, OwnedFd) {
+    use std::os::fd::FromRawFd;
+    let raw = unsafe { libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC) };
+    assert!(raw >= 0, "memfd: {}", io::Error::last_os_error());
+    let file = unsafe { OwnedFd::from_raw_fd(raw) };
+    assert_eq!(
+        unsafe { libc::ftruncate(file.as_raw_fd(), (pages * MIN_PAGE_SIZE) as _) },
+        0
+    );
+    let path = std::ffi::CString::new(format!("/proc/self/fd/{raw}")).unwrap();
+    let raw = unsafe { libc::open(path.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
+    assert!(raw >= 0, "reopen: {}", io::Error::last_os_error());
+    (file, unsafe { OwnedFd::from_raw_fd(raw) })
+}
+
+/// The permissions /proc/self/maps shows for the mapping at address.
+fn permissions(address: usize) -> String {
+    let maps = std::fs::read_to_string("/proc/self/maps").unwrap();
+    for line in maps.lines() {
+        let mut fields = line.split_whitespace();
+        let (range, perms) = (fields.next().unwrap(), fields.next().unwrap());
+        let (start, end) = range.split_once('-').unwrap();
+        let (start, end) = (
+            usize::from_str_radix(start, 16).unwrap(),
+            usize::from_str_radix(end, 16).unwrap(),
+        );
+        if start <= address && address < end {
+            return perms.to_owned();
+        }
+    }
+    panic!("nothing is mapped at {address:#x}");
+}
+
+// The private file is mapped shared, so the guest's stores reach the pager's
+// page. A read-only file is mapped private, because the kernel will not register
+// a shared mapping of a read-only file with userfaultfd, and the kernel lets
+// that private mapping be made from the read-only descriptor.
+#[test]
+fn a_read_only_file_is_mapped_private_and_the_private_file_shared() {
+    let (file, read_only) = memfd_and_read_only(c"sproutfs-mapping-kinds-test", 2);
+    let shared = Mapping::new(
+        MIN_PAGE_SIZE,
+        Some(FileRange {
+            fd: &file,
+            at: 0,
+            writable: true,
+        }),
+    )
+    .unwrap();
+    let private = Mapping::new(
+        MIN_PAGE_SIZE,
+        Some(FileRange {
+            fd: &read_only,
+            at: MIN_PAGE_SIZE as u64,
+            writable: false,
+        }),
+    )
+    .unwrap();
+    assert_eq!(permissions(shared.addr as usize), "rw-s");
+    assert_eq!(permissions(private.addr as usize), "rw-p");
+    // A shared mapping of the read-only descriptor is what the kernel refuses.
+    let refused = Mapping::new(
+        MIN_PAGE_SIZE,
+        Some(FileRange {
+            fd: &read_only,
+            at: 0,
+            writable: true,
+        }),
+    )
+    .err()
+    .expect("a writable shared mapping of a read-only descriptor");
+    assert_eq!(refused.raw_os_error(), None);
+    assert_eq!(refused.to_string(), "mmap: Permission denied (os error 13)");
+}
+
+// A file's descriptor must be what its FILE frame says: the memory the
+// attachment names, at least the length stated, and open read-write for the
+// private file and read-only for every other. The identity it reports is the
+// file's, whichever descriptor of it was checked.
+#[test]
+fn a_file_is_checked_against_what_its_frame_states() {
+    let (file, read_only) = memfd_and_read_only(c"sproutfs-file-check-test", 2);
+    let len = 2 * MIN_PAGE_SIZE as u64;
+    let writable = linux::check_file(&file, BACKING_MEMFD, len, true).unwrap();
+    let readable = linux::check_file(&read_only, BACKING_MEMFD, len, false).unwrap();
+    assert_eq!(writable, readable);
+    assert_eq!(
+        linux::check_file(&read_only, BACKING_MEMFD, MIN_PAGE_SIZE as u64, false).unwrap(),
+        writable,
+        "a file longer than stated is taken at the stated length"
+    );
+    let (other, _) = memfd_and_read_only(c"sproutfs-file-check-other", 2);
+    assert_ne!(
+        linux::check_file(&other, BACKING_MEMFD, len, true).unwrap(),
+        writable
+    );
+    for (name, fd, kind, len, want_writable, error) in [
+        (
+            "a read-write descriptor stated read-only",
+            &file,
+            BACKING_MEMFD,
+            len,
+            false,
+            "the file's descriptor is open with access mode 2, its frame said writable=false",
+        ),
+        (
+            "a read-only descriptor stated read-write",
+            &read_only,
+            BACKING_MEMFD,
+            len,
+            true,
+            "the file's descriptor is open with access mode 0, its frame said writable=true",
+        ),
+        (
+            "a file shorter than stated",
+            &read_only,
+            BACKING_MEMFD,
+            3 * MIN_PAGE_SIZE as u64,
+            false,
+            "the file has 8192 bytes of offsets, its frame said 12288",
+        ),
+        (
+            "ordinary memory stated as the HugeTLB pool",
+            &read_only,
+            BACKING_HUGETLB,
+            len,
+            false,
+            "arena kind 1 is a filesystem of type 0x958458f6 with 2097152-byte blocks, \
+             the descriptor is type 0x1021994 with 4096-byte blocks",
+        ),
+    ] {
+        let err = linux::check_file(fd, kind, len, want_writable).expect_err(name);
+        assert_eq!(
+            (err.kind(), err.to_string()),
+            (io::ErrorKind::InvalidData, error.to_owned()),
+            "{name}"
+        );
+    }
 }
 
 #[test]
@@ -109,8 +260,17 @@ fn session_drop_releases_mappings_and_closes_retained_controls() {
                 kind: wire::ATTACH,
                 id: wire::VERSION,
                 offset: PAGE_SIZE as u64,
+                backing: BACKING_HUGETLB,
+                ..Frame::default()
+            }
+            .write(&mut socket)
+            .unwrap();
+            Frame {
+                kind: wire::FILE,
+                id: wire::PRIVATE_FILE,
                 len: PAGE_SIZE as u64,
                 backing: BACKING_HUGETLB,
+                flags: wire::FILE_WRITABLE,
                 ..Frame::default()
             }
             .send_fd(&mut socket, &backing)

@@ -129,7 +129,7 @@ func TestConnectionCancellationDuringAttachment(t *testing.T) {
 					t.Fatal(err)
 				}
 				if stage == "metadata" {
-					_, fd, err := vmwire.ReceiveFD(client)
+					_, fd, err := vmwire.ReceiveAttachment(client)
 					if err != nil {
 						t.Fatal(err)
 					}

@@ -244,7 +244,7 @@ func (a *LinuxArena) AllocatedBytes() (uint64, error) {
 }
 
 // Offsets is how many addresses this file has, which is what its memfd is
-// sized to and what an ATTACH states. Only the offsets a page has been put at
+// sized to and what its FILE frame states. Only the offsets a page has been put at
 // hold memory; AllocatedBytes is how much that is.
 func (f *LinuxFile) Offsets() int { return f.offsets }
 

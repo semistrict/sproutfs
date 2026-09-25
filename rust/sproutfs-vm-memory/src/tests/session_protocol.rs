@@ -15,6 +15,9 @@ mod mapping;
 #[path = "session_batch.rs"]
 mod batching;
 
+#[path = "session_files.rs"]
+mod files;
+
 /// Most of these tests are about the protocol rather than about the geometry,
 /// so they run at a PMEM session's page; the ones that are about the geometry
 /// name both explicitly.
@@ -99,44 +102,83 @@ impl Drop for Peer {
 /// 2 MiB page and an ordinary memfd for a 4 KiB one, which is exactly what the
 /// attachment claims and what the client checks the descriptor against.
 fn arena(page_size: usize) -> OwnedFd {
+    named_file(c"sproutfs-protocol", page_size, 1)
+}
+
+/// A file of the given geometry and name, of the given number of pages.
+fn named_file(name: &std::ffi::CStr, page_size: usize, pages: usize) -> OwnedFd {
     let mut flags = libc::MFD_CLOEXEC;
     if page_size == MAX_PAGE_SIZE {
         flags |= libc::MFD_HUGETLB | libc::MFD_HUGE_2MB;
     }
-    let raw = unsafe { libc::memfd_create(c"sproutfs-protocol".as_ptr(), flags) };
+    let raw = unsafe { libc::memfd_create(name.as_ptr(), flags) };
     assert!(raw >= 0, "memfd: {}", io::Error::last_os_error());
     let backing = unsafe { OwnedFd::from_raw_fd(raw) };
     // Handshake validation never touches or reserves physical huge pages.
     assert_eq!(
-        unsafe { libc::ftruncate(backing.as_raw_fd(), page_size as _) },
+        unsafe { libc::ftruncate(backing.as_raw_fd(), (pages * page_size) as _) },
         0
     );
     backing
+}
+
+/// A new descriptor of the same file, opened read-only through /proc/self/fd,
+/// as the pager opens every file but the private one.
+fn read_only(file: &OwnedFd) -> OwnedFd {
+    let path = std::ffi::CString::new(format!("/proc/self/fd/{}", file.as_raw_fd())).unwrap();
+    let raw = unsafe { libc::open(path.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
+    assert!(raw >= 0, "reopen: {}", io::Error::last_os_error());
+    unsafe { OwnedFd::from_raw_fd(raw) }
 }
 
 fn backing() -> OwnedFd {
     arena(PAGE_SIZE)
 }
 
-/// The attachment a well-behaved pager of this page sends: the page, the arena,
-/// and the memory that arena is made of.
+fn kind_for(page_size: usize) -> u64 {
+    if page_size == MAX_PAGE_SIZE {
+        BACKING_HUGETLB
+    } else {
+        BACKING_MEMFD
+    }
+}
+
+/// The attachment a well-behaved pager of this page sends: the page and the
+/// memory its files are made of.
 fn attachment_for(page_size: usize) -> Frame {
     Frame {
         kind: wire::ATTACH,
         id: wire::VERSION,
         offset: page_size as u64,
-        len: page_size as u64,
-        backing: if page_size == MAX_PAGE_SIZE {
-            BACKING_HUGETLB
-        } else {
-            BACKING_MEMFD
-        },
+        backing: kind_for(page_size),
         ..Frame::default()
     }
 }
 
 fn attachment() -> Frame {
     attachment_for(PAGE_SIZE)
+}
+
+/// The FILE a well-behaved pager sends for a file of this page and length.
+/// File 0 is the private file, the one writable file.
+fn file_for(number: u64, page_size: usize, len: usize) -> Frame {
+    Frame {
+        kind: wire::FILE,
+        id: number,
+        len: len as u64,
+        backing: kind_for(page_size),
+        flags: if number == wire::PRIVATE_FILE {
+            wire::FILE_WRITABLE
+        } else {
+            0
+        },
+        ..Frame::default()
+    }
+}
+
+/// The private file of the one-page arena `backing` makes.
+fn private_file() -> Frame {
+    file_for(wire::PRIVATE_FILE, PAGE_SIZE, PAGE_SIZE)
 }
 
 fn ready() -> Frame {
@@ -151,40 +193,55 @@ fn ready() -> Frame {
 // error even though the peer offers a complete path to successful readiness.
 fn handshake(attach: Frame, ready: Frame, spec: MemoryRegionSpec) -> io::Result<Session> {
     let backing = backing();
-    handshake_with_backing(attach, ready, spec, &backing)
+    handshake_with_backing(attach, private_file(), ready, spec, &backing)
 }
 
 fn handshake_with_backing(
     attach: Frame,
+    file: Frame,
     ready: Frame,
     spec: MemoryRegionSpec,
     backing: &OwnedFd,
 ) -> io::Result<Session> {
+    let (result, acknowledged) = connect_with(spec, |socket| {
+        // Rejection can close the socket before the file or READY is written.
+        if attach.write(socket).is_ok()
+            && file.send_fd(socket, backing).is_ok()
+            && ready.write(socket).is_ok()
+        {
+            Frame::read(socket).ok()
+        } else {
+            None
+        }
+    });
+    if result.is_ok() {
+        assert_eq!(
+            acknowledged,
+            Some(Frame {
+                kind: wire::ACK,
+                id: ready.id,
+                ..Frame::default()
+            })
+        );
+    }
+    result
+}
+
+/// Connects a session to a peer that plays script after HELLO and
+/// MEMORY_REGION, and reports how the connect ended and what the script
+/// returned.
+fn connect_with<T: Send>(
+    spec: MemoryRegionSpec,
+    script: impl FnOnce(&mut UnixStream) -> T + Send,
+) -> (io::Result<Session>, T) {
     let peer = Peer::new();
     std::thread::scope(|scope| {
         let server = scope.spawn(|| {
             let (mut socket, _uffd) = peer.accept(spec);
-            attach.send_fd(&mut socket, backing).unwrap();
-            // Rejection can close the socket before READY is written.
-            if ready.write(&mut socket).is_ok() {
-                Frame::read(&mut socket).ok()
-            } else {
-                None
-            }
+            script(&mut socket)
         });
-        let result = Session::connect(peer.directory.join("control.sock"), spec);
-        let acknowledged = server.join().unwrap();
-        if result.is_ok() {
-            assert_eq!(
-                acknowledged,
-                Some(Frame {
-                    kind: wire::ACK,
-                    id: ready.id,
-                    ..Frame::default()
-                })
-            );
-        }
-        result
+        let session = Session::connect(peer.directory.join("control.sock"), spec);
+        (session, server.join().unwrap())
     })
 }
 
@@ -205,7 +262,13 @@ fn attachment_rejects_invalid_fields_before_exposing_the_memory_region() {
             id: wire::VERSION + 1,
             ..valid
         },
-        Frame { len: 0, ..valid },
+        // A version 9 peer, and an attachment that states the arena's length as
+        // version 9's did: each file states its own now.
+        Frame { id: 9, ..valid },
+        Frame {
+            len: PAGE_SIZE as u64,
+            ..valid
+        },
         Frame {
             len: 2 * PAGE_SIZE as u64,
             ..valid
@@ -327,16 +390,15 @@ fn a_session_runs_the_page_its_attachment_states() {
             kind,
             len: 4 * page_size,
         };
-        let arena = arena(page_size);
-        let attach = Frame {
-            len: 4 * page_size as u64,
-            ..attachment_for(page_size)
-        };
-        assert_eq!(
-            unsafe { libc::ftruncate(arena.as_raw_fd(), 4 * page_size as libc::off_t) },
-            0
-        );
-        let session = handshake_with_backing(attach, ready(), spec, &arena).unwrap();
+        let arena = named_file(c"sproutfs-protocol", page_size, 4);
+        let session = handshake_with_backing(
+            attachment_for(page_size),
+            file_for(wire::PRIVATE_FILE, page_size, 4 * page_size),
+            ready(),
+            spec,
+            &arena,
+        )
+        .unwrap();
         assert_eq!(session.page_size(), page_size);
         let memory_region = session.memory_region();
         assert_eq!(memory_region.len, spec.len);
@@ -380,13 +442,15 @@ fn a_mismatched_geometry_is_refused_before_the_memory_region_is_exposed() {
             unsafe { libc::ftruncate(wrong.as_raw_fd(), MAX_PAGE_SIZE as libc::off_t) },
             0
         );
-        let attach = Frame {
-            len: MAX_PAGE_SIZE as u64,
-            ..attachment_for(stated)
-        };
-        let error = handshake_with_backing(attach, ready(), spec, &wrong)
-            .err()
-            .expect("an arena that is not the memory of its page was accepted");
+        let error = handshake_with_backing(
+            attachment_for(stated),
+            file_for(wire::PRIVATE_FILE, stated, MAX_PAGE_SIZE),
+            ready(),
+            spec,
+            &wrong,
+        )
+        .err()
+        .expect("an arena that is not the memory of its page was accepted");
         assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{error}");
     }
 }
@@ -466,14 +530,15 @@ fn serve_attachment(
     attach: Frame,
     script: impl FnOnce(&mut UnixStream) + Send,
 ) -> io::Result<()> {
-    serve_backing(spec, attach, &backing(), script)
+    serve_backing(spec, attach, private_file(), &backing(), script)
 }
 
-/// serve_attachment over an arena the caller made, which is what a session of
-/// more than one page of memory needs.
+/// serve_attachment over a private file the caller made, which is what a
+/// session of more than one page of memory needs.
 fn serve_backing(
     spec: MemoryRegionSpec,
     attach: Frame,
+    file: Frame,
     backing: &OwnedFd,
     script: impl FnOnce(&mut UnixStream) + Send,
 ) -> io::Result<()> {
@@ -482,7 +547,8 @@ fn serve_backing(
         let server = scope.spawn(|| {
             let (mut socket, uffd) = peer.accept(spec);
             let _events = RemapEvents::new(uffd);
-            attach.send_fd(&mut socket, backing).unwrap();
+            attach.write(&mut socket).unwrap();
+            file.send_fd(&mut socket, backing).unwrap();
             ready().write(&mut socket).unwrap();
             assert_eq!(
                 Frame::read(&mut socket).unwrap(),
@@ -545,7 +611,7 @@ fn mapping_commands_reject_invalid_ranges_flags_and_stale_ids() {
         };
         let zero = Frame {
             kind: wire::MAP_ZERO,
-            flags: wire::SHARED,
+            flags: wire::IMMUTABLE,
             ..revoke
         };
         for invalid in [
@@ -583,7 +649,10 @@ fn mapping_commands_reject_invalid_ranges_flags_and_stale_ids() {
                 offset: u64::MAX - PAGE_SIZE as u64 + 1,
                 ..revoke
             },
+            // Writable of file 1, and immutable of file 1: this session was
+            // given only the private file.
             Frame { flags: 2, ..map },
+            Frame { flags: 3, ..map },
             Frame { flags: 1, ..revoke },
             Frame {
                 backing: PAGE_SIZE as u64,
@@ -882,7 +951,7 @@ fn batch_budget_rejection_acknowledges_the_command_and_errno() {
                     offset: 2 * page * PAGE_SIZE as u64,
                     len: PAGE_SIZE as u64,
                     generation: 1,
-                    flags: wire::SHARED,
+                    flags: wire::IMMUTABLE,
                     ..Frame::default()
                 })
                 .collect();

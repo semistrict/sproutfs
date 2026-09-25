@@ -228,15 +228,20 @@ func Connect(ctx context.Context, h *Host, socket *net.UnixConn, backing MemoryR
 	}
 	c.memoryRegion = ConnectedMemoryRegion{backing.Kind, f.Offset, f.Length, r}
 	c.mapping = m
-	// The attachment states the geometry: this memory region's page, the arena's offset
-	// space, what the arena is made of, and the mapping-count budget. The arena
-	// is a sparse file, so what is stated is its addresses and not the memory
-	// behind them. The client refuses a page it does not map, a descriptor whose
-	// length is not the offset space claimed or whose filesystem is not the
-	// memory that page is, or a memory region of its own that is not whole pages of it
-	// — all before it exposes an address to the VMM.
-	attach := vmwire.AttachFrame(h.pageSize, uint64(a.offsets)*uint64(a.pageSize), a.backing, uint64(cfg.MaxVMAs))
-	if err := vmwire.SendFD(socket, attach, a.file); err != nil {
+	// The attachment states the geometry: this memory region's page, what its
+	// files are made of, and the mapping-count budget. The files follow it,
+	// each with its descriptor. The arena is the one file, file 0, and the
+	// client receives it read-write. It is a sparse file, so its length is its
+	// addresses and not the memory behind them. The client refuses a page it
+	// does not map, a descriptor shorter than the length stated or whose
+	// filesystem is not the memory that page is, or a memory region of its own
+	// that is not whole pages of it — all before it exposes an address to the
+	// VMM.
+	if err := vmwire.Write(socket, vmwire.AttachFrame(h.pageSize, a.backing, uint64(cfg.MaxVMAs))); err != nil {
+		return fail(err)
+	}
+	private := vmwire.FileFrame(vmwire.PrivateFile, uint64(a.offsets)*uint64(a.pageSize), a.backing, true)
+	if err := vmwire.SendFD(socket, private, a.file); err != nil {
 		return fail(err)
 	}
 	attached = true
@@ -427,12 +432,11 @@ func (m *remoteMapping) frames(frames []vmwire.Frame, kind uint64, run MapRun, w
 		f := vmwire.Frame{Kind: kind, Offset: page * size, Length: uint64(count) * size, Generation: state.Generation + 1}
 		switch kind {
 		case vmwire.MapRange:
+			// Every page is in the arena, which is the session's private file.
 			f.Backing = uint64(run.Slot+done) * size
-			if !writable {
-				f.Flags = 1
-			}
+			f.Flags = vmwire.MapFlags(vmwire.PrivateFile, !writable)
 		case vmwire.MapZero:
-			f.Flags = 1
+			f.Flags = vmwire.Immutable
 		}
 		frames = append(frames, f)
 		done += count

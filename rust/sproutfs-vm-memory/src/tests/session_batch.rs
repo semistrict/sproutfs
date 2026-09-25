@@ -43,11 +43,9 @@ fn a_batch_of_scattered_runs_costs_one_span_and_one_mremap_a_run() {
         unsafe { libc::ftruncate(arena.as_raw_fd(), (RUNS * page) as libc::off_t) },
         0
     );
-    let attach = Frame {
-        len: (RUNS * page) as u64,
-        ..attachment_for(page)
-    };
-    serve_backing(spec, attach, &arena, |socket| {
+    let attach = attachment_for(page);
+    let file = file_for(wire::PRIVATE_FILE, page, RUNS * page);
+    serve_backing(spec, attach, file, &arena, |socket| {
         // Run k puts arena page RUNS-1-k at memory region page k: adjacent in the
         // memory region, never adjacent in the arena.
         let runs: Vec<_> = (0..RUNS)
@@ -57,7 +55,7 @@ fn a_batch_of_scattered_runs_costs_one_span_and_one_mremap_a_run() {
                 offset: (k * page) as u64,
                 len: page as u64,
                 backing: ((RUNS - 1 - k) * page) as u64,
-                flags: wire::SHARED,
+                flags: wire::IMMUTABLE,
                 generation: 1,
             })
             .collect();
@@ -138,11 +136,9 @@ fn a_span_the_kernel_refuses_names_the_call_and_the_run() {
         len: RUNS * page,
     };
     let arena = sealed_arena(RUNS * page);
-    let attach = Frame {
-        len: (RUNS * page) as u64,
-        ..attachment_for(page)
-    };
-    let error = serve_backing(spec, attach, &arena, |socket| {
+    let attach = attachment_for(page);
+    let file = file_for(wire::PRIVATE_FILE, page, RUNS * page);
+    let error = serve_backing(spec, attach, file, &arena, |socket| {
         let runs: Vec<_> = (0..RUNS)
             .map(|k| Frame {
                 kind: wire::MAP,
@@ -150,7 +146,7 @@ fn a_span_the_kernel_refuses_names_the_call_and_the_run() {
                 offset: (k * page) as u64,
                 len: page as u64,
                 backing: ((RUNS - 1 - k) * page) as u64,
-                flags: wire::SHARED,
+                flags: wire::IMMUTABLE,
                 generation: 1,
             })
             .collect();
@@ -193,13 +189,11 @@ fn a_refused_run_of_a_batch_names_itself() {
         unsafe { libc::ftruncate(arena.as_raw_fd(), (RUNS * page) as libc::off_t) },
         0
     );
-    let attach = Frame {
-        len: (RUNS * page) as u64,
-        ..attachment_for(page)
-    };
+    let attach = attachment_for(page);
+    let file = file_for(wire::PRIVATE_FILE, page, RUNS * page);
     // Run 5 maps from one page past the end of the arena's offsets, which is
     // the frame this client refuses.
-    let error = serve_backing(spec, attach, &arena, |socket| {
+    let error = serve_backing(spec, attach, file, &arena, |socket| {
         let runs: Vec<_> = (0..RUNS)
             .map(|k| Frame {
                 kind: wire::MAP,
@@ -207,7 +201,7 @@ fn a_refused_run_of_a_batch_names_itself() {
                 offset: (k * page) as u64,
                 len: page as u64,
                 backing: if k == 5 { (RUNS * page) as u64 } else { 0 },
-                flags: wire::SHARED,
+                flags: wire::IMMUTABLE,
                 generation: 1,
             })
             .collect();
@@ -226,7 +220,7 @@ fn a_refused_run_of_a_batch_names_itself() {
     let said = error.to_string();
     for want in [
         &format!("run 5 of {RUNS}"),
-        "arena offset 262144",
+        "file 0 offset 262144",
         "Invalid argument",
     ] {
         assert!(said.contains(want), "{said:?} does not name {want}");
