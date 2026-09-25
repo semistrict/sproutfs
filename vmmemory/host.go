@@ -80,6 +80,9 @@ type Host struct {
 	// protectedLocked.
 	displaced uint64
 	changed   chan struct{}
+	// revoked is closed, and replaced, whenever a revocation lands. A fault
+	// whose mapping its client refused waits for it. See revocations.
+	revoked chan struct{}
 	// windows lends out the buffers window reads fill, as *[]byte so that
 	// handing one back allocates nothing. See takeWindow.
 	windows   sync.Pool
@@ -181,7 +184,7 @@ func New(ctx context.Context, resources *resource.Budget, cfg Config, arena Aren
 		slots:       slots.New(cfg.ArenaOffsets, cfg.ResidentPages, extentPages),
 		extents:     make(map[extentKey]*extent),
 		extentPages: extentPages,
-		clean:       make(map[pageKey]*resident), changed: make(chan struct{}),
+		clean:       make(map[pageKey]*resident), changed: make(chan struct{}), revoked: make(chan struct{}),
 		lru: pageList{links: recentLinks}, idle: pageList{links: idleLinks},
 		memoryRegions: make(map[*MemoryRegion]struct{}), highWater: highWater(cfg.DirtyPages),
 		io: make(chan struct{}, cfg.ConcurrentIO), writeback: make(chan struct{}, 1)}
@@ -255,6 +258,24 @@ func (h *Host) changes() <-chan struct{} {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.changed
+}
+
+// revocations reports the signal the host's next revocation closes. A client
+// refuses a mapping command for want of mapping budget, and a revocation is the
+// only work of this pager's that gives a client budget back. Any other change
+// does not: a fault that waited for any change would be woken by the pages it
+// takes and gives back itself, and two refused faults would wake each other
+// for as long as their client refuses them.
+func (h *Host) revocations() <-chan struct{} {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.revoked
+}
+
+// revokedLocked records that a revocation landed. Caller holds h.mu.
+func (h *Host) revokedLocked() {
+	close(h.revoked)
+	h.revoked = make(chan struct{})
 }
 
 func (h *Host) unlock(pg *resident) {

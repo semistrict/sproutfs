@@ -1355,10 +1355,14 @@ recorded as mapped. Ambiguous failures require the opposite. A command whose
 acknowledgement never arrives may have been applied, so its pages stay recorded
 as mapped. Otherwise a revocation would skip the unmapped binding and release a
 page that the guest still reads through. After a refusal, the fault fails and
-the memory region keeps serving. The worker queues that fault again once the pager has
-made some progress. Revocation frees the budget, and revocation is other work of
-this pager. The guest waits there as it waits for the dirty budget. The VM stays
-alive so that it can be checkpointed or migrated off the host.
+the memory region keeps serving. Revocation frees the budget, and revocation is
+other work of this pager. So the worker queues that fault again once the pager
+has revoked a mapping, and not after any other change. The refused fault took
+and gave back pages itself. Two refused faults that each waited for any change
+would wake each other, and a client that refuses every command would keep the
+pager serving it for as long as it lived. The guest waits there as it waits for
+the dirty budget. The VM stays alive so that it can be checkpointed or migrated
+off the host.
 
 This is recoverable because of what the budget admits. Only replacements that
 install a mapping are charged against it. A revocation installs none. The range

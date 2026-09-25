@@ -695,22 +695,25 @@ func (c *Connection) takeFault() (page uint64, entry queuedFault, ok bool) {
 }
 
 // deferFault holds a fault the client refused a mapping command for until the
-// pager has made some progress, then queues it to be served again. It reports
+// pager has revoked a mapping, then queues it to be served again. It reports
 // whether the session is still live. The page is neither queued nor in flight
 // while this waits, so no worker retries it meanwhile: the budget it ran out of
 // is freed by revocation, and nothing about serving the same page again before
-// one has happened can free it. A page that faults again in the meantime is
-// merged with this entry, so the wait for the queue is measured from the access
-// that has waited longest.
+// one has happened can free it. It waits for a revocation and not for any
+// change, because the refused fault took and gave back pages itself: two
+// refused faults would each wake the other, and a client that refuses every
+// command would keep the pager serving it for as long as it lives. A page that
+// faults again in the meantime is merged with this entry, so the wait for the
+// queue is measured from the access that has waited longest.
 func (c *Connection) deferFault(page uint64, entry queuedFault) bool {
-	changed := c.host.changes()
+	revoked := c.host.revocations()
 	c.host.mu.Lock()
 	c.host.stats.RefusedMappings++
 	c.host.mu.Unlock()
 	select {
 	case <-c.ctx.Done():
 		return false
-	case <-changed:
+	case <-revoked:
 	}
 	c.queueMu.Lock()
 	if existing, ok := c.queue[page]; ok {
@@ -838,9 +841,8 @@ func (c *Connection) serveFaults() {
 				// changed nothing, so this fault is one to serve again rather
 				// than a session to end. What frees that budget is revocation,
 				// which is other work of this pager's: the fault is queued
-				// again once something has moved, which is what the host's
-				// progress signal reports. Until then the guest waits, as it
-				// does for the dirty budget.
+				// again once a revocation has landed. Until then the guest
+				// waits, as it does for the dirty budget.
 				if !c.deferFault(page, entry) {
 					return
 				}
