@@ -62,8 +62,12 @@ type Connection struct {
 	reported  sync.Once
 	commandMu *ctxsync.Mutex
 	writeMu   *ctxsync.Mutex
-	acks      chan vmwire.Frame
-	requests  chan vmwire.Frame
+	// awaiting is the ID of the command waiting for its acknowledgement, and
+	// zero while none is. The control reader takes an ACK only for that
+	// command, and only once, so acks never holds more than its answer.
+	awaiting atomic.Uint64
+	acks     chan vmwire.Frame
+	requests chan vmwire.Frame
 	// flushes holds the guest's flush requests the host has not yet been
 	// handed, in the order they came. See maxQueuedFlushes.
 	flushes  chan vmwire.Frame
@@ -356,7 +360,11 @@ func (c *Connection) commandFrames(ctx context.Context, f vmwire.Frame, runs []v
 	// Every way this command can end names the command, because the failure a
 	// session reports is all its owner ever learns about it.
 	failed := func(err error) error { return &commandFailure{frame: f, runs: len(runs), err: err} }
+	// The command is awaited before it is sent, because its answer can arrive
+	// before the send returns.
+	c.awaiting.Store(f.ID)
 	if err := c.sendFrames(ctx, append([]vmwire.Frame{f}, runs...)); err != nil {
+		c.giveUp(f.ID)
 		return failed(err)
 	}
 	var response vmwire.Frame
@@ -365,16 +373,18 @@ func (c *Connection) commandFrames(ctx context.Context, f vmwire.Frame, runs []v
 	select {
 	case response = <-c.acks:
 	case <-ctx.Done():
+		c.giveUp(f.ID)
 		return failed(context.Cause(ctx))
 	case <-c.ctx.Done():
 		// The reader publishes a final ACK before recording a following EOF.
-		// Prefer that evidence when the peer closes immediately after STOP.
-		select {
-		case response = <-c.acks:
-		default:
+		// Prefer that evidence when the peer closes immediately after STOP. If
+		// the reader has not taken this command's ACK, no reader will.
+		if c.awaiting.CompareAndSwap(f.ID, 0) {
 			return failed(context.Cause(c.ctx))
 		}
+		response = <-c.acks
 	case <-timer.C():
+		c.giveUp(f.ID)
 		return failed(context.DeadlineExceeded)
 	}
 	if response.Kind != vmwire.Ack || response.ID != f.ID || response.Generation != f.Generation || response.Offset != 0 || response.Length != 0 || response.Backing != 0 {
@@ -388,6 +398,15 @@ func (c *Connection) commandFrames(ctx context.Context, f vmwire.Frame, runs []v
 		return failed(fmt.Errorf("%w: %w", ErrMappingRefused, syscall.Errno(response.Flags)))
 	}
 	return nil
+}
+
+// giveUp stops awaiting a command whose answer its caller no longer waits for.
+// If the reader has already taken that answer, it is in acks or about to be,
+// and it is taken out so that the next command does not read it as its own.
+func (c *Connection) giveUp(id uint64) {
+	if !c.awaiting.CompareAndSwap(id, 0) {
+		<-c.acks
+	}
 }
 
 // frames appends one frame of the given kind per span of the run whose pages
@@ -871,6 +890,14 @@ func (c *Connection) readControl() {
 		}
 		switch f.Kind {
 		case vmwire.Ack:
+			// An ACK answers the one command awaiting it, once. Any other is a
+			// client answering what it was not asked, or answering twice. Read
+			// as the next command's answer, it would acknowledge that command
+			// before it was sent.
+			if f.ID == 0 || !c.awaiting.CompareAndSwap(f.ID, 0) {
+				c.fail(fmt.Errorf("unexpected mapping ACK of command %d", f.ID))
+				return
+			}
 			select {
 			case c.acks <- f:
 			default:
