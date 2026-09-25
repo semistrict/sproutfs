@@ -371,6 +371,29 @@ func (m *Manager) Inherit(ctx context.Context, parent control.Ref) (*ForkPoint, 
 	return &ForkPoint{ref: parent, index: index}, nil
 }
 
+// InheritPublished is the point a new VM starts from one published checkpoint
+// of a VM nothing need be running: a stopped VM, whose last checkpoint is its
+// whole state. A zero sequence names the checkpoint the parent's record
+// selects.
+//
+// Nobody holds the parent's epoch, so the pin is written without it
+// (control.Client.Pin). It comes before the index is read, because a child
+// that exists while what it inherits is unpinned could have it reclaimed under
+// it. Only the published checkpoint the record selects, or one a pin already
+// keeps, can be pinned this way; any other is refused with
+// control.ErrNotPublished. A parent that turns out to be running goes on
+// running, and its writer carries the pin on.
+func (m *Manager) InheritPublished(ctx context.Context, parent control.Ref) (*ForkPoint, error) {
+	if !validID(parent.VM) {
+		return nil, ErrInvalidConfig
+	}
+	pinned, err := m.config.Control.Pin(ctx, parent.VM, parent.Sequence)
+	if err != nil {
+		return nil, err
+	}
+	return m.Inherit(ctx, pinned)
+}
+
 // Fork creates the VM a fork point starts: a control record selecting a root
 // index over the parent's pinned checkpoint, and a handle that reads through
 // the point until it publishes that root itself.

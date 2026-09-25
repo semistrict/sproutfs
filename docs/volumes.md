@@ -779,6 +779,12 @@ fork point gives those pages the same identity. On another host,
 `Manager.Inherit` rebuilds the point from the pinned checkpoint alone. The
 child's pager then pulls those pages from the parent's page server, post-copy.
 
+`Manager.InheritPublished` builds the same point over a published checkpoint of
+a VM that nothing runs, such as a stopped VM. There is no writer to pin with, so
+it pins the checkpoint first without the epoch. It may name only the published
+checkpoint the record selects, or one a pin already keeps. See
+[metadata](metadata.md#the-control-record).
+
 The child's first checkpoint is its own root. It publishes the pages the child
 inherited as the child's own. Only after that can any host open the child.
 Before then, opening the child reports `ErrForkPending`, and a host loss loses
