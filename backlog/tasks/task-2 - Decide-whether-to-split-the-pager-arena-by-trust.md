@@ -1,9 +1,11 @@
 ---
 id: TASK-2
 title: Decide whether to split the pager arena by trust
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-09-25 18:17'
+updated_date: '2026-09-25 22:03'
 labels:
   - needs-owner
   - security

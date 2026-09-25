@@ -1,9 +1,11 @@
 ---
 id: TASK-6
 title: Set each VM's shape per request
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@claude'
 created_date: '2026-09-25 18:17'
+updated_date: '2026-09-25 22:13'
 labels:
   - embedder
 dependencies: []
@@ -22,7 +24,30 @@ An embedding program replaces JuiceFS with sproutfs in its sandbox host. This is
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A create request sets vCPUs, RAM and disk size
-- [ ] #2 A VM booted cold after its host is lost gets its own vCPU count, and a fork inherits it
-- [ ] #3 The host-wide settings are only defaults
+- [x] #1 A create request sets vCPUs, RAM and disk size
+- [x] #2 A VM booted cold after its host is lost gets its own vCPU count, and a fork inherits it
+- [x] #3 The host-wide settings are only defaults
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. checkpoint: root field vcpus (zero = none recorded); Index.VCPUs; Publication.SetVCPUs; a root inherits its parent's.
+2. volume: DiscardMemory takes a Shape (sizes and vCPUs); VM.VCPUs.
+3. host: Create forks the template and publishes its root at the requested shape through DiscardMemory; ColdShape carries vCPUs; the Starter gets the VM's vCPUs through Launch.VCPUs.
+4. api/host and api/orch: create takes vcpus, memory and disk; open cold takes vcpus; VM reports vcpus.
+5. orchestrator: places a create by its requested memory and records it; sproutfsctl create flags.
+6. Prove: unit tests per layer, simtest create at a shape and cold boot after host loss keeps vCPUs, Lima boot of a created VM at 2 vCPUs.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Lima: TestAVMBootsWithItsOwnProcessorCount passes (guest sees 0-1 with the Starter default at 1). Mac: go test ./... passes.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Committed. The checkpoint root records a processor count that forks and later checkpoints keep; a create publishes its first checkpoint at the requested RAM, disk and processors through Host.Reshape; the Starter boots with Launch.VCPUs. Verified on Lima and by unit tests at every layer.
+<!-- SECTION:FINAL_SUMMARY:END -->
