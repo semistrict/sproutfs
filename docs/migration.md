@@ -520,6 +520,19 @@ func (h *Host) Fork(ctx context.Context, parent string, children []string, desti
 func (h *Host) Receive(ctx context.Context, handoff vmmigrate.Handoff) (*vmmigrate.Received, error)
 ```
 
+### A post-copy child's own published pages
+
+A post-copy child was once told that its own published pages had no object. The defect killed a child's guest a second or so after it resumed. Usually the crash was in the kernel's timer wheel: `__run_timers` on a node whose `pprev` was `dead000000000122`, the poison value that `hlist_del` leaves. Otherwise the guest crashed in `rb_erase`, `profile_tick` or `process_one_work`, jumped to a wild address, or hung silently. All of these were one defect: the guest read an older version of a page it had written.
+
+A destination reports no identity for the pages its handoff named. So the pager loads those pages through the peer backing, where the source answers. It does not resolve them against a checkpoint, because no checkpoint holds them. That set was fixed for the backing's lifetime. So the backing kept reporting no identity for those pages after the child's own checkpoint had published them. The pager trusted the answer. A retire gives up a page when the volume holds no object for it, because a publication writes an all-zero page as a sparse hole, and the volume can reproduce such a page without an object. Here the answer was wrong. The retire revoked the guest's mapping and released the only copy of bytes the guest had written. The guest's next read of that page returned the fork point's version. The failure rate scaled with the page count: the fan-out fixture's handoff set is about 8300 pages at 4 KiB, against about 16 at 2 MiB. That is why the defect appeared with the page-geometry plan's fourth step, although that step did not cause it.
+
+`PeerBacking.Locate` now removes a page from that set only while the checkpoint the volume names for the page predates the handoff. That covers another VM's checkpoint, and this VM's own checkpoints up to the sequence the handoff selected. Both conditions are required, and each has a test that fails without it. Both are needed because a migration keeps the same VM, and its unpublished pages are written after its own last checkpoint.
+
+Three safeguards were deliberately left in place:
+- `vmmemory.ErrUndroppable` refuses the retire instead of trusting the answer. A page that is given up because the volume holds no object for it must be a page the volume can reproduce without an object, so it must be zeros. Any other page fails the retire. The checkpoint stays durable, the page stays sealed, and the guest keeps its memory.
+- `volume.ErrRetired` refuses a hold on a fork point that its last holder retired. It caught a second defect when it was added. Forking two children through the manager one after the other, with each child's hold released as the child closed, took the second child from a fork point whose seal had ended.
+- `TestFirecrackerForkChildrenSurviveTheirFirstSeconds` reproduces the whole failure in about a hundred seconds per run instead of ten minutes. It keeps the arms that isolated the defect (`SPROUTFS_FORK_ARM`: the whole checkpoint, the capture without the settle, the bare pause, one child, no interval). The sequence of runs that found the defect was 0/8 with no interval, 0/8 for a bare pause, 0/8 for a capture and seal, 5–8/8 for the whole checkpoint, and 0/16 after the fix.
+
 ## Qualification
 
 The simulated suite runs two volume managers and two pagers over one simulated

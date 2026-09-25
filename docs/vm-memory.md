@@ -284,6 +284,16 @@ remains the memory region's identity: its name, its size, its writer, its page
 identities and every write. So the substitution does not change a seal, a
 checkpoint or a fence.
 
+Two placements deliberately use an ordinary offset, and the code records both
+where they happen (`vmmemory/placement.go`):
+- A store that copies away from the copy a checkpoint froze cannot use its own
+  offset, because that offset holds the bytes the upload is reading. The page
+  stays outside its range's run until something releases it, and nothing
+  moves it back.
+- A page that a migration destination loads privately from the source arrives
+  in its own run, like any other load. So a post-copy destination's private
+  pages are not placed at all until the guest stores into them.
+
 ## Sharing by identity
 
 Resident pages are keyed by the [page identity](volumes.md#reads) that the
@@ -949,13 +959,12 @@ guest. A settle runs while the guest is running. It holds neither the memory reg
 the window that orders a page's mapping changes. So the only change it may make
 is one that installs no page table and wakes nothing. It used to install the
 origin in place of the copy: one command, no fence, identical bytes and a
-write-protected page in both cases. That was a large part of an open defect. In
-a fan-out of two children at a 4 KiB RAM page, a child's guest kernel panics on
-a list entry that the guest itself had removed. Revoking instead reduced the
-rate from about one run in five to about one in thirty. **It did not remove the
-defect, and this is not a fix for it.** See the entry in
-[open-work.md](open-work.md), which records the rates and what has been ruled
-out. Revoking costs one fault per page that a settle re-shares. The guest would
+write-protected page in both cases. In a fan-out of two children at a 4 KiB RAM
+page, a child's guest kernel used to panic on a list entry that the guest itself
+had removed. Revoking instead reduced the rate from about one run in five to
+about one in thirty, but it was not the fix. The cause was elsewhere and is
+fixed: see [a post-copy child's own published
+pages](migration.md#a-post-copy-childs-own-published-pages). Revoking costs one fault per page that a settle re-shares. The guest would
 take that fault at the page's next write anyway. On a host whose kernel reports
 a cold read as a write fault, that fault copies the page again, and the next
 settle undoes the copy again.
@@ -1026,6 +1035,16 @@ closes the control channel. The supervisor must then terminate the process
 before mappings are detached. Verification checks authority at the time of the
 call. It is not an expiring lease. The storage guarantee is that a fenced writer
 cannot obtain another conditional write.
+
+### A refault decides again after its reclaim
+
+The probe build's `TestSealTakingAReclaimingPagesReservationKeepsItsBytes` once panicked under load. The cause was a refault that acted on a decision a checkpoint had already superseded. The pager's audit reported `probe bind: page N of memoryRegion … was given slot -1 from outside its own store path while it owned generation G, and now takes slot S — a lost write`. The report came from the store's own `takePrivate`, in about one lane in eight under contention.
+
+No write was lost. At every step, the page the guest was bound to held the bytes the guest last stored. With the audit finding made non-fatal, thirty lanes ran to completion, and the test's own `reads %d, want the %d the guest stored` check never fired. The audit had caught something else: the pager granted a binding the right to store into memory after that binding's dirty epoch had already ended.
+
+A reclaim for a private page releases the memory region while it looks for an arena slot. So a seal and a retire can both run inside a fault that has already decided what the page it serves is. The store path re-checks its decision across its own reclaim: `fault` compares the checkpoint's copy before and after. The spill refault in `loadOnce` did not re-check. A checkpoint taken in that window retires the page: the volume holds its bytes, the reservation that spilled them is returned, and the binding is clean. The refault then bound a private page into the binding anyway. That page has neither a reservation nor a checkpoint. `evictBatch` punches out a page in that state without writing it anywhere. Nothing names the page, so nothing that inherits the identity the checkpoint gave it can map it. Every other memory region of that volume reads its own copy of bytes this host already holds. The audit's generation bookkeeping is correct. The binding that owed the audit a newer generation was one the pager should never have granted.
+
+`loadOnce` now reads the page's dirty state and the checkpoint's copy of the page together, before and after the reclaim. If either changed, it decides again from the start what the page is (`vmmemory/fault.go`, `bindings.go`, `privateEpoch`). `TestARefaultWhoseCheckpointRetiresWhileItReclaimsGivesThePageToTheVolume` drives the interleaving through a reclaim seam. Without the fix it fails on every run in both builds. The ordinary build fails with the second memory region reading its own copy. The probe build fails with the same panic and the same stack. Measured on 2026-09-22 on a fifteen-core machine, with 50 lanes each and a detector on the grant: **10 of 50 lanes before, 0 of 50 after**. At that rate, the chance of a clean result by luck is about 1 in 70,000. The panic that the lanes produce is rarer than the grant that causes it: about 1 lane in 50 on this machine, against 1 in 8 on the eight-core machine the earlier counts came from. After the fix the panic count is 0 of 150 lanes, but the grant's count is what supports the result.
 
 ## Ownership
 
@@ -1636,6 +1655,15 @@ managed configuration. Version 14 records a managed PMEM device's waiting
 flushes. A managed capture is always a full snapshot with no memory file. A
 managed restore requires fixed RAM with no huge-page setting, in this
 architecture's own layout.
+
+The Firecracker fork has to be rebuilt for mapping protocol version 9. The crate is vendored into the VMM by path. So a cached qualification build
+keeps speaking an older version, and every session it opens fails with
+`invalid managed-memory hello` before a guest starts. That failure is the
+version check working as intended. It is also the first thing to check when a
+Lima or GCE run that used to pass stops attaching: rebuild the VMM, and do not
+reuse `~/.cache/sproutfs-fanout`. The VMM's snapshot format is also at
+version 14. So VMM state that an older build captured is refused on restore,
+instead of being read without its PMEM devices' waiting flushes.
 
 Starting a machine requires:
 

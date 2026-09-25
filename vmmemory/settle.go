@@ -337,9 +337,9 @@ func (c *MemoryRegionCheckpoint) reshareBatch(ctx context.Context, held []*bindi
 // path, under the window that serializes every mapping of that page against
 // every other. Installing the origin in its place — one command, no fence, the
 // bytes identical and the page write-protected either way — is what the settle
-// used to do, and it is a large part of an open defect rather than all of it:
-// see docs/open-work.md, which carries the rates. Revoking is not a fix for
-// that defect.
+// used to do. Revoking instead lowered the rate of a fan-out panic whose cause
+// was elsewhere: see "A post-copy child's own published pages" in
+// docs/migration.md.
 //
 // Either way the checkpoint's copy goes, and with it the dirty reservation it
 // held. Caller holds the memory region exclusively and both resident pages.

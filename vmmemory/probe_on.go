@@ -1,10 +1,11 @@
 //go:build sproutfsprobe
 
 // Package build tag `sproutfsprobe` turns on the pager's own audit of what it
-// hands a guest. It exists for one open defect: a fan-out of two children at a
-// 4 KiB RAM page panics a child's guest kernel on a data structure the guest
-// itself wrote, which is a guest reading bytes that are not its page's. See
-// docs/open-work.md.
+// hands a guest. It was built for a defect now fixed: a fan-out of two
+// children at a 4 KiB RAM page panicked a child's guest kernel on a data
+// structure the guest itself wrote, which is a guest reading bytes that are not
+// its page's. See "A post-copy child's own published pages" in
+// docs/migration.md.
 //
 // Three things to know before using it.
 //
