@@ -323,7 +323,7 @@ func TestSnapshotDisksNamesNoState(t *testing.T) {
 			t.Fatal(err)
 		}
 		copy(want["root"], []byte("disk only"))
-		disks, err := vm.SnapshotDisks(t.Context(), volume.Prepared(nil, nil))
+		disks, err := vm.SnapshotDisks(t.Context(), volume.Prepared(nil, nil), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -339,7 +339,7 @@ func TestSnapshotDisksNamesNoState(t *testing.T) {
 		}
 		want.checkCheckpoint(t, disks, "the checkpoint of the disks")
 
-		if _, err := vm.SnapshotDisks(t.Context(), volume.Prepared([]byte("registers"), nil)); !errors.Is(err, volume.ErrInvalidConfig) {
+		if _, err := vm.SnapshotDisks(t.Context(), volume.Prepared([]byte("registers"), nil), nil); !errors.Is(err, volume.ErrInvalidConfig) {
 			t.Fatalf("a checkpoint of the disks that captured state gave %v, want ErrInvalidConfig", err)
 		}
 	})

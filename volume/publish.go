@@ -196,23 +196,46 @@ func (vm *VM) Snapshot(ctx context.Context, prepare PrepareFunc) (*Checkpoint, e
 //
 // A prepare that captured state anyway is refused, leaving the sources to the
 // caller to release as any failed prepare does.
-func (vm *VM) SnapshotDisks(ctx context.Context, prepare PrepareFunc) (*Checkpoint, error) {
+//
+// retry decides what a failed publication does; nil gives its pages back at
+// once. See Retry.
+func (vm *VM) SnapshotDisks(ctx context.Context, prepare PrepareFunc, retry Retry) (*Checkpoint, error) {
 	if prepare == nil {
 		return nil, ErrInvalidConfig
 	}
-	return vm.snapshot(ctx, func(ctx context.Context) ([]byte, map[string]DirtySource, error) {
+	return vm.snapshotRetrying(ctx, func(ctx context.Context) ([]byte, map[string]DirtySource, error) {
 		state, sources, err := prepare(ctx)
 		if err == nil && state != nil {
 			err = fmt.Errorf("%w: a checkpoint of the disks captured %d bytes of VMM state",
 				ErrInvalidConfig, len(state))
 		}
 		return nil, sources, err
-	}, true)
+	}, true, retry)
 }
+
+// Retry decides whether a checkpoint whose publication failed keeps its pages
+// sealed and publishes again. It is asked after each failed attempt, and may
+// wait before it answers; attempt counts the failures so far. Yes publishes the
+// same checkpoint again under the same reference: the same pages, the same
+// parent and the same compaction, so every object it writes is byte-identical to
+// what the failed attempt may have left, and the store carries on past them.
+// No gives the pages back to the guest, and the next checkpoint seals them
+// again. A publication a later writer fenced is never retried.
+//
+// Keeping the seal is what lets a checkpoint be taken again without a pause.
+// A pager holding a guest's stores until a checkpoint lands holds the vCPUs that
+// made them, and a pause needs every vCPU: a checkpoint that gave its pages back
+// could not be taken again while those stores wait.
+type Retry func(ctx context.Context, attempt int, err error) bool
 
 // snapshot is Snapshot and SnapshotDisks: dropState is a checkpoint that names
 // no VMM state at all.
 func (vm *VM) snapshot(ctx context.Context, prepare PrepareFunc, dropState bool) (*Checkpoint, error) {
+	return vm.snapshotRetrying(ctx, prepare, dropState, nil)
+}
+
+// snapshotRetrying is snapshot whose failed publication asks retry.
+func (vm *VM) snapshotRetrying(ctx context.Context, prepare PrepareFunc, dropState bool, retry Retry) (*Checkpoint, error) {
 	if prepare == nil {
 		return nil, ErrInvalidConfig
 	}
@@ -249,7 +272,7 @@ func (vm *VM) snapshot(ctx context.Context, prepare PrepareFunc, dropState bool)
 		vm.pubMu.Unlock()
 		return nil, err
 	}
-	ckpt.unchanged, ckpt.dropState = unchanged, dropState
+	ckpt.unchanged, ckpt.dropState, ckpt.retry = unchanged, dropState, retry
 	go func() {
 		if err := vm.complete(vm.ctx, ckpt); err != nil {
 			report(vm.ctx, "volume: snapshot publication failed", vm.id, err)
@@ -378,6 +401,9 @@ func (vm *VM) complete(ctx context.Context, ckpt *Checkpoint) error {
 	// separable from that of the checkpoints running beside it.
 	ctx = platform.WithObjectMeter(ctx, &ckpt.meter)
 	index, record, err := vm.publish(ctx, ckpt)
+	for attempt := 1; err != nil && ckpt.retrying(ctx, attempt, err); attempt++ {
+		index, record, err = vm.publish(ctx, ckpt)
+	}
 	var replaced *checkpoint.Index
 	if err == nil {
 		replaced = vm.install(ckpt, index)
@@ -429,8 +455,13 @@ func (vm *VM) publish(ctx context.Context, ckpt *Checkpoint) (*checkpoint.Index,
 	publication := vm.manager.config.Store.Begin(ckpt.parentIndex, ckpt.ref)
 	// The pins this handle knows of are what compaction must leave alone; the
 	// selection below reports any a fork took while this publication ran, and
-	// reclamation spares those.
-	publication.Protect(vm.control.Record().Pinned)
+	// reclamation spares those. They are read once: a retry of this
+	// publication compacts exactly as its first attempt did, so it writes the
+	// same bytes under the same reference.
+	if ckpt.protected == nil {
+		ckpt.protected = append([]uint64{}, vm.control.Record().Pinned...)
+	}
+	publication.Protect(ckpt.protected)
 	// The shape comes before the pages: a volume that shrank drops the pages
 	// past its new end rather than republishing them, and one that grew has
 	// somewhere for its new pages to be.

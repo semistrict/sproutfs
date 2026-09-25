@@ -39,9 +39,9 @@ func (h *Host) SetPressure(p Pressure) {
 //
 // The loss window is the other reason to wait, and it comes first: a VM that has
 // held a write no checkpoint covers for longer than the window admits no further
-// dirty page however much room the budget has. The wait is the same wait — ask
-// for the checkpoint, sleep on the host's own signal, stall where none is coming
-// — because what ends it is the same thing, a checkpoint of this VM landing.
+// dirty page however much room the budget has, while a sealed checkpoint of it
+// is uploading. See window for when a store past the window waits and when it
+// goes through.
 func (h *Host) takeSpill(ctx context.Context, r *MemoryRegion) (int, error) {
 	for {
 		// The signal this attempt will wait on is taken before anything is
@@ -50,7 +50,12 @@ func (h *Host) takeSpill(ctx context.Context, r *MemoryRegion) (int, error) {
 		// otherwise close a signal this store is not listening to yet, and the
 		// store would wait on the next one with nothing left to give it.
 		changed := h.changes()
-		over := h.overWindow(r)
+		answer := h.window(r)
+		if answer == windowStall {
+			h.stall(r, ErrWindowStalled)
+			return 0, ErrWindowStalled
+		}
+		over := answer == windowWait
 		h.mu.Lock()
 		if h.err != nil {
 			err := h.err
@@ -66,12 +71,7 @@ func (h *Host) takeSpill(ctx context.Context, r *MemoryRegion) (int, error) {
 			}
 		}
 		h.mu.Unlock()
-		if over {
-			if !h.windowRelief(r) {
-				h.stall(r, ErrWindowStalled)
-				return 0, ErrWindowStalled
-			}
-		} else if !h.relief() && !h.takeBack(r) {
+		if !over && !h.relief() && !h.takeBack(r) {
 			return 0, ErrDirtyStalled
 		}
 		h.mu.Lock()

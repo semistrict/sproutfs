@@ -115,7 +115,7 @@ func (b *benchmark) diskCheckpoint(ctx context.Context, p *vmmachine.Process, vm
 		}
 		pause = time.Since(paused)
 		return nil, sources, nil
-	})
+	}, nil)
 	if err != nil {
 		b.t.Fatalf("checkpointing the disks during %s: %v", workload, err)
 	}

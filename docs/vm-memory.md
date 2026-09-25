@@ -146,9 +146,23 @@ all the others.
 `LossWindow` bounds the same private state in time. For each memory region, the pager
 records the age of the oldest page that no landed checkpoint covers. While that
 age, across the memory regions of one VM, exceeds the window, the pager admits no
-further dirty page for that VM. The store waits in the same way as a store past
-the dirty budget. The pager asks for a checkpoint of that VM through the same
-`Pressure.Checkpoint`. Zero disables the window.
+further dirty page for that VM while a sealed checkpoint of it is uploading.
+The store waits in the same way as a store past the dirty budget. Zero
+disables the window.
+
+A store is never held while the checkpoint it would wait for still needs a
+pause. A held store holds the vCPU that made it, inside its fault, and a pause
+needs every vCPU, so such a store would wait for a pause it prevents. So a
+store past the window goes through, and asks for the checkpoint through
+`Pressure.Checkpoint`, when nothing of its VM is sealed yet, when a pause is
+under way, and when a fork point's hold stands, since that hold ends in a
+checkpoint of its own. The stores after it wait once the checkpoint has sealed.
+The guest writes past the window for at most one pause. The owner's own clock
+normally takes the checkpoint before the window runs out, at three quarters of
+it. A store does not ask then: a guest that rewrites pages it has already
+dirtied needs no new page, so no store of it would ever ask. Where no
+checkpoint of the VM can be taken at all, the store past the window stalls,
+and the VM's owner stops it.
 
 The window belongs to the VM and not to the memory region, because the checkpoint that
 ends it covers the whole VM. The pager knows nothing about VMs, so it asks the
@@ -1904,8 +1918,9 @@ its arena. The loads are:
   hog runs past the RAM dirty budget, which nothing relieves. It must be
   stopped, with the logged reason, and the neighbour must not.
 - A small `hog disk` past a two-second loss window, which only checkpoints out
-  of turn relieve. This one fails on aarch64 Lima today; see
-  TASK-1 in the [backlog](../backlog/tasks).
+  of turn relieve. Its stores used to hold a vCPU that the relieving
+  checkpoint's pause then waited on; see the loss window in
+  [the bounded host pager](#bounded-host-pager).
 - `hog sync`, an fsync loop. It may cost at most one checkpoint of the storming
   guest per flush bound beside the interval's own, and the neighbour's flushes
   must complete.

@@ -28,7 +28,7 @@ func (r *MemoryRegion) takeDirtySince() time.Time {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
 	since := r.dirtySince
-	r.dirtySince = time.Time{}
+	r.dirtySince, r.windowAsked = time.Time{}, false
 	return since
 }
 
@@ -40,7 +40,7 @@ func (r *MemoryRegion) takeDirtySince() time.Time {
 func (r *MemoryRegion) restoreDirtySince(since time.Time) {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
-	r.dirtySince = older(r.dirtySince, since)
+	r.dirtySince, r.windowAsked = older(r.dirtySince, since), false
 }
 
 // SetUnpublishedAge dates the pages this memory region has inherited from another host,
@@ -101,54 +101,110 @@ func older(a, b time.Time) time.Time {
 	return a
 }
 
-// overWindow reports whether the VM this memory region belongs to has held a write no
-// checkpoint covers for longer than the configured window. It is asked before
-// every dirty reservation, so it takes no lock a fault holds and asks the
-// memory region's owner rather than knowing anything about VMs.
-func (h *Host) overWindow(r *MemoryRegion) bool {
-	if h.cfg.LossWindow <= 0 {
-		return false
-	}
+// windowAge is how long the VM this memory region belongs to has held its oldest
+// write no checkpoint covers, zero where it holds none. It is asked before every
+// dirty reservation, so it takes no lock a fault holds and asks the memory
+// region's owner rather than knowing anything about VMs.
+func (h *Host) windowAge(r *MemoryRegion) time.Duration {
 	since := r.OldestUnpublished()
 	if !since.IsZero() && h.clock.Since(since) > h.cfg.LossWindow {
-		// This memory region alone is past it, so what its siblings hold cannot make
-		// the answer anything else. It is the case a store held back asks in,
+		// This memory region alone is past the window, so what its siblings
+		// hold cannot change the answer. A store held back asks in this case,
 		// over and over, and it costs nothing to answer.
-		return true
+		return h.clock.Since(since)
 	}
 	h.mu.Lock()
 	oldest := h.pressure.Oldest
 	h.mu.Unlock()
-	if oldest == nil {
-		return false
+	if oldest != nil {
+		since = older(since, oldest(r))
 	}
-	since = older(since, oldest(r))
-	return !since.IsZero() && h.clock.Since(since) > h.cfg.LossWindow
+	if since.IsZero() {
+		return 0
+	}
+	return max(h.clock.Since(since), 0)
 }
 
-// windowRelief reports whether a checkpoint that ends this memory region's window is
-// coming, asking for one where none is. Only a checkpoint of this VM ends it, so
-// this memory region is the one offered — unlike the dirty budget, which any memory region's
-// checkpoint can relieve and which therefore offers the largest dirty set first.
+// windowAnswer is what a store does about its VM's loss window.
+type windowAnswer int
+
+const (
+	// windowAdmit lets the store through.
+	windowAdmit windowAnswer = iota
+	// windowWait holds it until a checkpoint of its VM lands.
+	windowWait
+	// windowStall fails it: its VM is past the window and no checkpoint of it
+	// can ever be taken.
+	windowStall
+)
+
+// window decides what a store into r does about its VM's loss window.
 //
-// A seal already under way is that checkpoint. So is one already draining,
-// including a fork point's hold: the hold ends at its deadline and the parent
-// is checkpointed then, which is a bound a store may wait under, where the dirty
-// budget gets nothing back from it at all. What is left is a VM this host cannot
-// checkpoint — its loop is off, or the memory region belongs to no VM it runs — and
-// that is a stall.
-func (h *Host) windowRelief(r *MemoryRegion) bool {
-	if sealing, draining := r.sealState(); sealing || draining != nil {
-		return true
+// A store is held only behind a checkpoint that is already sealed and
+// uploading. A held store holds the vCPU that made it, inside its fault, and a
+// pause needs every vCPU. So a store held while its checkpoint still needed a
+// pause would wait for a pause it prevents. Past the window, then:
+//
+//   - a sealed publication of the VM is uploading: the store waits for it;
+//   - a pause is under way, or a fork point holds the pages until its children
+//     have them: the store goes through. The fork hold ends at its deadline in
+//     a checkpoint that needs a pause of its own;
+//   - nothing is sealed: the store goes through and asks for the checkpoint,
+//     and the stores after it wait once that checkpoint has sealed;
+//   - no checkpoint of the VM can be taken at all: the store stalls, and the
+//     VM's owner stops it.
+//
+// So the guest writes past the window for at most the time one pause takes.
+// Before the window runs out, the owner's own clock normally takes the
+// checkpoint that ends it, so the pause comes while the guest still runs.
+func (h *Host) window(r *MemoryRegion) windowAnswer {
+	window := h.cfg.LossWindow
+	if window <= 0 {
+		return windowAdmit
+	}
+	age := h.windowAge(r)
+	if age <= window {
+		return windowAdmit
+	}
+	sealing, draining := r.sealState()
+	if draining != nil && draining.relieves() {
+		return windowWait
+	}
+	if sealing || draining != nil {
+		return windowAdmit
+	}
+	if !r.askWindow() {
+		return windowAdmit
 	}
 	h.mu.Lock()
 	request := h.pressure.Checkpoint
 	h.mu.Unlock()
-	if request == nil || !request(r) {
+	if request != nil && request(r) {
+		h.mu.Lock()
+		h.stats.CheckpointRequests++
+		h.mu.Unlock()
+		return windowAdmit
+	}
+	r.forgetWindowAsk()
+	return windowStall
+}
+
+// askWindow claims this memory region's one request for the checkpoint that
+// ends its window, reporting whether this caller is the one to ask.
+func (r *MemoryRegion) askWindow() bool {
+	r.bindingsMu.Lock()
+	defer r.bindingsMu.Unlock()
+	if r.windowAsked {
 		return false
 	}
-	h.mu.Lock()
-	h.stats.CheckpointRequests++
-	h.mu.Unlock()
+	r.windowAsked = true
 	return true
+}
+
+// forgetWindowAsk gives the request back when nobody took it, so the next
+// store asks again.
+func (r *MemoryRegion) forgetWindowAsk() {
+	r.bindingsMu.Lock()
+	defer r.bindingsMu.Unlock()
+	r.windowAsked = false
 }

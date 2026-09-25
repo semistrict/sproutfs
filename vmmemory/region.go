@@ -62,7 +62,12 @@ type MemoryRegion struct {
 	// put a page into the dirty set and take it out again are the transitions
 	// that start and end it.
 	dirtySince time.Time
-	terminal   atomic.Pointer[failure]
+	// windowAsked is set once a store has asked for the checkpoint that ends
+	// this memory region's window, so the stores after it do not ask again. The
+	// checkpoint that seals the window, and one that gives it back, clear it.
+	// It is guarded by bindingsMu, as dirtySince is.
+	windowAsked bool
+	terminal    atomic.Pointer[failure]
 	// pressed is set by the first mapping command this memory region's process
 	// refused for want of mapping budget, and closes gaps from then on; see
 	// rules.go.

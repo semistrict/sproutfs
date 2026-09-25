@@ -77,14 +77,20 @@ func Capture(ctx context.Context, vm *volume.VM, machine Machine, clock platform
 // no state written anywhere, and every disk is sealed inside the one pause, so
 // the checkpoint is a single point in time across all of them: nothing a guest
 // stored after a flush is in it without everything it stored before.
-func CaptureDisks(ctx context.Context, vm *volume.VM, machine Machine, clock platform.Clock) (*volume.Checkpoint, error) {
+//
+// retry decides whether a publication that fails keeps the disks sealed and
+// publishes again; see volume.Retry. Nil gives the pages back at once.
+func CaptureDisks(ctx context.Context, vm *volume.VM, machine Machine, clock platform.Clock, retry volume.Retry) (*volume.Checkpoint, error) {
 	if machine == nil {
 		return nil, ErrInvalidCapture
 	}
 	if vm == nil {
 		return nil, ErrInvalidCapture
 	}
-	return capture(ctx, vm, machine, clock, vm.SnapshotDisks,
+	snapshot := func(ctx context.Context, prepare volume.PrepareFunc) (*volume.Checkpoint, error) {
+		return vm.SnapshotDisks(ctx, prepare, retry)
+	}
+	return capture(ctx, vm, machine, clock, snapshot,
 		func(ctx context.Context) ([]byte, map[string]volume.DirtySource, error) {
 			sources, err := machine.SealDisks(ctx)
 			return nil, sources, err

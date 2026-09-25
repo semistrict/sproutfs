@@ -534,16 +534,16 @@ func TestAGuestFloodingItsVsockLeavesTheHostsExec(t *testing.T) {
 
 // TestAGuestPastItsLossWindowIsCheckpointedOutOfTurn: a guest that writes two
 // pages of its disk over and over stays inside the dirty budget, so only the
-// loss window holds it back. With the interval an hour away, every store past
-// the window waits for a checkpoint taken out of turn. The neighbour's own
-// writes age past the same window. Both must go on answering.
+// loss window bounds it. With the interval an hour away, every window it lives
+// through ends in a checkpoint taken out of turn. The neighbour's own writes age
+// past the same window. Both must go on answering.
 //
-// It fails on the aarch64 Lima instance, and the defect is not fixed: see
-// TASK-1 in backlog/tasks. A store the window holds keeps its vCPU inside a
-// userfault. The checkpoint that would end the wait has to pause that vCPU
-// first, and the pause's signal does not bring it out. Firecracker gives up on
-// the pause after 30 seconds, and the loop then backs off without answering the
-// pager's requests, so the guest stops for an eighth of the interval.
+// A store the window holds keeps its vCPU inside a userfault, and a pause's
+// signal does not bring it out. So this used to stop both guests: the
+// checkpoint that would end the wait had to pause that vCPU first, Firecracker
+// gave up on the pause after 30 seconds, and the loop backed off for an eighth
+// of the interval. A store is now held only behind a checkpoint that is already
+// sealed, so no pause ever waits on one.
 func TestAGuestPastItsLossWindowIsCheckpointedOutOfTurn(t *testing.T) {
 	binaryPath := os.Getenv("SPROUTFS_FIRECRACKER")
 	if binaryPath == "" {
@@ -574,10 +574,13 @@ func TestAGuestPastItsLossWindowIsCheckpointedOutOfTurn(t *testing.T) {
 	taken := n.logs.count("host: checkpoint", hostile.id) - checkpoints
 	t.Logf("in %s past the window: %d checkpoints of the hog; PMEM %s",
 		time.Since(began).Round(time.Millisecond), taken, brief(pmem))
-	// Every window the hog outlives ends in a checkpoint of it out of turn.
-	if pmem.WindowWaits == 0 || taken < 4 {
-		t.Fatalf("the window held %d stores and %d checkpoints of the hog landed in %s, want waits and at least 4",
-			pmem.WindowWaits, taken, 10*window)
+	// Every window the hog lives through ends in a checkpoint of it out of
+	// turn, taken on the loop's clock before the window runs out, so the
+	// window never has to hold a store. Ten windows are at least four such
+	// checkpoints, even at the window itself after one that failed.
+	if taken < 4 || pmem.WindowStalls != 0 {
+		t.Fatalf("%d checkpoints of the hog landed in %s and the window stalled %d stores, want at least 4 and none",
+			taken, 10*window, pmem.WindowStalls)
 	}
 	command(t, ctx, hostile.process, "read\n", "SPROUTFS_VALUE ram=7")
 	n.noneClosed(t)

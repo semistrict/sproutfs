@@ -8,8 +8,10 @@ import (
 	"maps"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/semistrict/sproutfs/control"
+	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/vmmemory"
 	"github.com/semistrict/sproutfs/vmmigrate"
 	"github.com/semistrict/sproutfs/volume"
@@ -91,6 +93,9 @@ type registration struct {
 	done    chan struct{}
 	now     chan struct{}
 	flushes []pendingFlush
+	// windowTurn is when the loss window last gave the loop a turn at this VM.
+	// Only the loop reads and writes it.
+	windowTurn time.Time
 	// migrating is set while a handover of this VM is in flight and is guarded
 	// by the machines lock, not mu: it is what admits one of them at a time.
 	migrating bool
@@ -282,7 +287,7 @@ func (h *Host) stopped(vmID string, entry *registration, cause error) {
 	// nothing of what it could still have kept.
 	errs := h.retireForks(vmID)
 	if vm := h.vm(vmID); vm != nil {
-		if checkpoint, err := CaptureDisks(ctx, vm, entry.runtime, h.clock); err != nil {
+		if checkpoint, err := CaptureDisks(ctx, vm, entry.runtime, h.clock, nil); err != nil {
 			errs = append(errs, err)
 		} else {
 			errs = append(errs, checkpoint.Wait(ctx))
@@ -453,7 +458,9 @@ func (h *Host) Stop(ctx context.Context, vmID string, suspend bool) (control.Ref
 	// pages, and what a checkpoint that did not land costs is only how far a
 	// host loss would rewind it.
 	entry.end()
-	capture := CaptureDisks
+	capture := func(ctx context.Context, vm *volume.VM, machine Machine, clock platform.Clock) (*volume.Checkpoint, error) {
+		return CaptureDisks(ctx, vm, machine, clock, nil)
+	}
 	if suspend {
 		capture = Capture
 	}

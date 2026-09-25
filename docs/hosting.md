@@ -225,13 +225,30 @@ The interval bounds that rewind only while publications succeed.
 `Config.LossWindow` bounds it when they fail. It is five minutes by default,
 zero disables it, and it is never shorter than the interval, because every VM
 would exceed a shorter window before its first checkpoint is due. While a VM's
-oldest unpublished write is older than the window, the pager admits no further
-dirty pages for it. The host's part is the loop. If a publication fails while
-the window is exceeded, it is retried after an eighth of the interval, doubling
-up to the interval, instead of a full interval later. The guest is blocked for
-the whole wait, so the loop must not wait a full interval. The window applies
-to disks only. RAM memory regions do not age and do not request checkpoints, because
-no checkpoint the loop takes would publish them.
+oldest unpublished write is older than the window, and a sealed checkpoint of
+it is uploading, the pager admits no further dirty pages for it; see
+[managed VM memory](vm-memory.md#bounded-host-pager) for when a store past the
+window goes through instead. The window applies to disks only. RAM memory
+regions do not age and do not request checkpoints, because no checkpoint the
+loop takes would publish them.
+
+The host's part is the loop. It takes a checkpoint out of turn when a VM's
+oldest unpublished write reaches three quarters of the window, so the pause
+comes while the guest still runs. The clock does this, not a store: a guest
+that only rewrites pages it has already dirtied needs no new page, so no store
+of it ever reaches the pager's window check. Once its checkpoint has sealed
+those pages, its next store into one needs a copy, and the window holds it.
+After a failed attempt the loop waits for the window itself instead, so a store
+outage is not retried at every wake.
+If a publication fails while the window is exceeded, the loop does not give its
+pages back. It publishes the same sealed checkpoint again, under the same
+reference, after an eighth of the interval, doubling up to the interval. The
+guest's stores are held behind that checkpoint, and each held store holds the
+vCPU that made it. A pause needs every vCPU, so a checkpoint that gave its
+pages back could not be taken again while those stores wait. The sealed one
+needs no pause, and it lands as soon as the store answers. The retries stop
+when the loop does, so a migration, a stop or a removal gets the pages back
+without waiting for the store.
 
 A guest's flush reaches the host through the pager. `Config.FlushBound`
 (`SPROUTFS_FLUSH_BOUND`) is twice the checkpoint interval by default, so
@@ -243,13 +260,9 @@ interval's turn. A flush of fresh disks takes no checkpoint. When a VM leaves
 the host (migrated, stopped or given up), its waiting flushes go unanswered,
 and its device asks the next host again.
 
-Inside the window, a failed publication is still retried a full interval later,
-because retrying eight times as often would only multiply the requests that a
-store outage costs the deployment. That backoff is the one wait that an
-out-of-turn request does not shorten. A store that the window blocks asks again
-every time this loop signals. A capture that cannot be published does not help
-that store, so answering each request would make a host that cannot reach the
-store spin.
+Inside the window, a failed publication gives its pages back and is retried a
+full interval later, because retrying eight times as often would only multiply
+the requests that a store outage costs the deployment.
 
 The window belongs to a VM, not a memory region, because the checkpoint that ends it
 covers the VM: one pause seals every memory region a VM maps. The pager has no concept

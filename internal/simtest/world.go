@@ -972,7 +972,7 @@ func (w *World) CheckpointDisks(ctx context.Context, id string) error {
 		return nil
 	}
 	at := durableState{model: g.snapshot(), writes: g.stored(), stateless: true}
-	ckpt, err := host.CaptureDisks(ctx, vm, g, w.hosts[in.host].clock)
+	ckpt, err := host.CaptureDisks(ctx, vm, g, w.hosts[in.host].clock, nil)
 	if err != nil {
 		return fmt.Errorf("%s: disk capture: %w", id, err)
 	}

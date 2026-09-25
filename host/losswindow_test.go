@@ -104,17 +104,20 @@ func TestAForkHandsTheChildTheParentsLossWindow(t *testing.T) {
 }
 
 // A publication that fails while its VM is already past the loss window is not
-// retried at the next interval: the guest is held back for the whole of that
-// wait, so an interval's patience is exactly what it must not spend. The loop
-// tries again at an eighth of the interval and doubles from there, so a store
-// that comes back publishes at once instead of an interval later.
-func TestTheLoopRetriesPromptlyWhileTheLossWindowIsExceeded(t *testing.T) {
+// given up and taken again at the next interval. The pager is holding the
+// guest's stores behind it, and a held store holds its vCPU, so a new pause
+// could not be taken at all. The sealed checkpoint is published again instead,
+// with no pause, at an eighth of the interval and doubling from there, and it
+// lands as soon as the store answers.
+func TestTheLoopRepublishesPromptlyWhileTheLossWindowIsExceeded(t *testing.T) {
 	const interval = time.Second
 	h := newSizedHostHarness(t, 1)
 	var unavailable atomic.Bool
+	var refused atomic.Int64
 	h.configs[0].ObjectStore = &gatedStore{ObjectStore: h.configs[0].ObjectStore,
 		blocked: func() error {
 			if unavailable.Load() {
+				refused.Add(1)
 				return platform.ErrUnavailable
 			}
 			return nil
@@ -138,6 +141,7 @@ func TestTheLoopRetriesPromptlyWhileTheLossWindowIsExceeded(t *testing.T) {
 	// publish it. Nothing stores after this, so the loop's own schedule is the
 	// only thing that decides when it tries again.
 	guest.store("disk", 0, 7)
+	before := vm.Status().Checkpoint
 	unavailable.Store(true)
 	t.Cleanup(func() { unavailable.Store(false) })
 	counting := newCountingMachine(guest)
@@ -146,12 +150,32 @@ func TestTheLoopRetriesPromptlyWhileTheLossWindowIsExceeded(t *testing.T) {
 	}
 	t.Cleanup(func() { h.hosts[0].RemoveMachine("vm-1") })
 	counting.awaitTurns(t, 1)
-	// An eighth of the interval, then a quarter: both attempts are well inside
-	// the interval a loop that waited out its turn would still be waiting.
+	// The first attempt, then an eighth of the interval and a quarter: all
+	// well inside the interval a loop that waited out its turn would still be
+	// waiting.
 	began := time.Now()
-	counting.awaitTurns(t, 2)
+	deadline := began.Add(10 * time.Second)
+	for refused.Load() < 3 {
+		if time.Now().After(deadline) {
+			t.Fatalf("the store refused %d requests, want at least three attempts", refused.Load())
+		}
+		time.Sleep(time.Millisecond)
+	}
 	if elapsed := time.Since(began); elapsed >= interval-interval/8 {
-		t.Fatalf("two more attempts took %s, which is the interval's own wait rather than a backoff", elapsed)
+		t.Fatalf("three attempts took %s, which is the interval's own wait rather than a backoff", elapsed)
+	}
+	unavailable.Store(false)
+	for vm.Status().Checkpoint == before {
+		if time.Now().After(deadline) {
+			t.Fatalf("the held checkpoint never landed once the store answered: %+v", vm.Status())
+		}
+		time.Sleep(time.Millisecond)
+	}
+	counting.mu.Lock()
+	captures := counting.captures
+	counting.mu.Unlock()
+	if captures != 1 {
+		t.Fatalf("the loop paused the guest %d times, want once: the retries publish what it sealed", captures)
 	}
 }
 
@@ -199,5 +223,54 @@ func TestTheLoopKeepsItsIntervalWhileTheLossWindowIsNotExceeded(t *testing.T) {
 	counting.awaitTurns(t, 2)
 	if elapsed := time.Since(began); elapsed < 2*(interval-interval/8) {
 		t.Fatalf("two more attempts took %s, want at least two jittered intervals of %s", elapsed, interval)
+	}
+}
+
+// A guest that dirties a page and then only rewrites it needs no new page, so
+// no store of it reaches the pager's window check and nothing asks for a
+// checkpoint. The loop's own clock takes one at three quarters of the window
+// anyway, long before the interval.
+func TestTheLoopCheckpointsAVMNearItsLossWindowOnItsOwnClock(t *testing.T) {
+	const window = 400 * time.Millisecond
+	h := newSizedHostHarness(t, 1)
+	h.configs[0].CheckpointInterval = time.Hour
+	h.configs[0].LossWindow = window
+	pagers := newPagerWithConfig(t, h.configs[0].Resources, vmmemory.Config{
+		ResidentPages: 16, LogicalPages: 32, DirtyPages: 8, ReadAheadPages: 1})
+	h.configs[0].Pagers = pagers.pagers
+	h.start(t)
+
+	vm, err := h.hosts[0].Volumes().Create(t.Context(), "vm-1", diskVolumes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	guest, err := newMachine(t, pagers, vm, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guest.store("disk", 0, 7)
+	before := vm.Status().Checkpoint
+	began := time.Now()
+	if err := h.hosts[0].AddMachine("vm-1", guest); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { h.hosts[0].RemoveMachine("vm-1") })
+	deadline := began.Add(10 * time.Second)
+	for vm.Status().Checkpoint == before {
+		if time.Now().After(deadline) {
+			t.Fatalf("no checkpoint of a VM near its window landed: %+v", vm.Status())
+		}
+		guest.store("disk", 0, 8)
+		time.Sleep(time.Millisecond)
+	}
+	if elapsed := time.Since(began); elapsed >= window {
+		t.Fatalf("the checkpoint landed after %s, want before the %s window ran out", elapsed, window)
+	}
+	stats, err := pagers.pagers.Pmem.Stats(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.CheckpointRequests != 0 {
+		t.Fatalf("the pager asked for %d checkpoints, want the loop's clock alone to take it", stats.CheckpointRequests)
 	}
 }

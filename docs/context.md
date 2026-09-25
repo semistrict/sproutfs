@@ -69,11 +69,13 @@ an operator's cold start requests it.
 **Loss window**: How long a VM may hold a disk write that no landed checkpoint
 covers: `SPROUTFS_LOSS_WINDOW`, five minutes by default, zero to disable. As a
 measurement, the loss window is the age of the VM's oldest such write. Past the
-window, the pager admits no further dirty page for that VM. Every store that
-needs a dirty reservation waits, and the host requests a checkpoint of that VM
-outside the interval's schedule. So the window bounds in time what losing a
-host can cost one VM, as the dirty budget bounds it in bytes. The lost writes
-span at most the window plus the pause of one checkpoint attempt. The age
+window, the pager admits no further dirty page for that VM while a sealed
+checkpoint of it is uploading, and the host requests a checkpoint of that VM
+outside the interval's schedule. A store is never held while its checkpoint
+still needs a pause, because a held store holds its vCPU and a pause needs
+every vCPU. So the window bounds in time what losing a host can cost one VM, as
+the dirty budget bounds it in bytes. The lost writes span at most the window
+plus the pause of one checkpoint attempt. The age
 travels with the pages a handoff moves, so a destination inherits the window
 and does not restart it. If a VM can never be checkpointed, the wait ends as a
 full dirty budget does: the host deliberately stops that VM and takes a last

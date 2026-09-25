@@ -34,7 +34,7 @@ func (h *Host) checkpointing(ctx context.Context, vmID string, entry *registrati
 	failures := 0
 	for {
 		wait, onRequest := h.nextAttempt(entry, failures)
-		if !waitForCheckpoint(ctx, entry, h.clock, wait, onRequest) {
+		if !h.waitForCheckpoint(ctx, entry, wait, onRequest, failures) {
 			return
 		}
 		vm := h.vm(vmID)
@@ -50,7 +50,7 @@ func (h *Host) checkpointing(ctx context.Context, vmID string, entry *registrati
 		}
 		// An explicit capture, a fork's, holds the VM's publication lock, so the
 		// two serialize rather than checkpointing the same guest twice.
-		checkpoint, err := CaptureDisks(ctx, vm, entry.runtime, h.clock)
+		checkpoint, err := CaptureDisks(ctx, vm, entry.runtime, h.clock, h.retryPastWindow(ctx, vmID, entry))
 		if err != nil {
 			if ctx.Err() != nil {
 				return
@@ -94,6 +94,41 @@ func (h *Host) checkpointing(ctx context.Context, vmID string, entry *registrati
 	}
 }
 
+// retryPastWindow is the Retry of one VM's interval checkpoint. A publication
+// that fails while the VM is past its loss window keeps its disks sealed and is
+// published again, after the same backoff the loop would have waited, for as
+// long as the VM stays past it and the loop runs. The pager is holding that
+// guest's stores until a checkpoint of it lands, and each held store holds the
+// vCPU that made it. A checkpoint that gave its pages back would need a new
+// pause to be taken again, and no pause can finish while a vCPU is held. The
+// one that is already sealed needs none.
+//
+// Inside the window a failure gives the pages back at once, as it always has:
+// nothing is held, so the next interval takes them again.
+//
+// The loop ending stops the retries, so a migration, a stop or a removal gets
+// the guest's pages back without waiting for the store.
+func (h *Host) retryPastWindow(ctx context.Context, vmID string, entry *registration) volume.Retry {
+	return func(publishing context.Context, attempt int, err error) bool {
+		if !h.overLossWindow(entry) {
+			return false
+		}
+		wait := backoff(h.checkpointInterval, attempt)
+		slog.WarnContext(ctx, "host: publishing a checkpoint past the loss window failed; it stays sealed and is published again",
+			"vm", vmID, "attempt", attempt, "wait", wait.String(), "error", err)
+		timer := h.clock.NewTimer(wait)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return false
+		case <-publishing.Done():
+			return false
+		case <-timer.C():
+			return true
+		}
+	}
+}
+
 // nextAttempt is how long the loop waits for its next turn at one VM, and
 // whether a request out of turn may cut that wait short: the jittered interval,
 // which one may, or the backoff of a VM whose last attempt failed and whose
@@ -109,11 +144,21 @@ func (h *Host) nextAttempt(entry *registration, failures int) (time.Duration, bo
 }
 
 // waitForCheckpoint waits for this VM's next checkpoint and reports whether one
-// is due. That is the jittered interval, or — while onRequest — the pager asking
-// for one before it: a guest that fills the host's dirty budget between
-// intervals is stalled until a checkpoint releases the reservations its pages
-// hold, so the checkpoint it waits for is taken out of turn rather than on the
-// clock.
+// is due. That is the jittered interval, or — while onRequest — one of two
+// things before it:
+//
+//   - the pager asking for one. A guest that fills the host's dirty budget
+//     between intervals is stalled until a checkpoint releases the
+//     reservations its pages hold, so the checkpoint it waits for is taken out
+//     of turn rather than on the clock;
+//   - the VM's loss window reaching its mark: three quarters of the window, or
+//     the window itself after an attempt that failed. The pause then comes
+//     while the guest still runs. A guest that only rewrites pages it has
+//     already dirtied needs no new page, so no store of it ever asks, and only
+//     the clock can see its window run out. Once its checkpoint has sealed
+//     those pages, its next store into one needs a copy, and the window holds
+//     it. After a failure the mark is the window itself, so a store outage is
+//     not retried at every wake.
 //
 // A backoff is the one wait a request may not cut short. It is the wait after a
 // publication that failed while the VM was already past its loss window, and the
@@ -121,22 +166,72 @@ func (h *Host) nextAttempt(entry *registration, failures int) (time.Duration, bo
 // while a capture that cannot be published gives it nothing. Answering each of
 // those asks would spin a host that cannot reach the store. The request stays in
 // the channel and is answered by the attempt the backoff schedules.
-func waitForCheckpoint(ctx context.Context, entry *registration, clock platform.Clock,
-	interval time.Duration, onRequest bool) bool {
-	timer := clock.NewTimer(interval)
+func (h *Host) waitForCheckpoint(ctx context.Context, entry *registration, interval time.Duration,
+	onRequest bool, failures int) bool {
+	timer := h.clock.NewTimer(interval)
 	defer timer.Stop()
 	requested := entry.now
 	if !onRequest {
 		requested = nil
 	}
-	select {
-	case <-ctx.Done():
-		return false
-	case <-requested:
-		return true
-	case <-timer.C():
-		return true
+	for {
+		var window <-chan time.Time
+		var check platform.Timer
+		if onRequest {
+			if mark, watched := h.windowMark(entry, failures); watched {
+				if mark <= 0 {
+					// A turn the window took may have taken nothing: the VM
+					// was sealed by a fork point, or its handle had gone. The
+					// window gets one turn an eighth of a window, so such a VM
+					// is not turned over again at once and for ever.
+					now := h.clock.Now()
+					next := entry.windowTurn.Add(h.lossWindow / 8)
+					if !now.Before(next) {
+						entry.windowTurn = now
+						return true
+					}
+					mark = next.Sub(now)
+				}
+				check = h.clock.NewTimer(mark)
+				window = check.C()
+			}
+		}
+		due, waiting := true, false
+		select {
+		case <-ctx.Done():
+			due = false
+		case <-requested:
+		case <-timer.C():
+		case <-window:
+			waiting = true
+		}
+		if check != nil {
+			check.Stop()
+		}
+		if !waiting {
+			return due
+		}
 	}
+}
+
+// windowMark is how long until this VM's loss window reaches the mark at which
+// the loop takes a checkpoint of it, and whether there is a window to watch. A
+// VM holding no unpublished write is checked again a quarter of a window later,
+// because a store may start one at any moment and nothing tells the loop.
+func (h *Host) windowMark(entry *registration, failures int) (time.Duration, bool) {
+	window := h.lossWindow
+	if window <= 0 {
+		return 0, false
+	}
+	oldest := oldestOf(entry.runtime.MemoryRegions())
+	if oldest.IsZero() {
+		return window / 4, true
+	}
+	mark := window - window/4
+	if failures > 0 {
+		mark = window
+	}
+	return oldest.Add(mark).Sub(h.clock.Now()), true
 }
 
 // jittered spreads one wait uniformly within an eighth of the interval either

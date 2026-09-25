@@ -57,6 +57,10 @@ type Checkpoint struct {
 	// in memory describes it.
 	dropState bool
 	resized   map[string]uint64
+	// retry is asked after a failed publication, and protected is the pins its
+	// first attempt compacted around, which every retry uses again.
+	retry     Retry
+	protected []uint64
 
 	// meter counts the object-store calls this checkpoint's publication makes,
 	// which is what one checkpoint cost in traffic. It is attributed by context,
@@ -170,6 +174,16 @@ func (c *Checkpoint) retire(ctx context.Context, published bool) error {
 		}
 	}
 	return result
+}
+
+// retrying reports whether a failed publication of this checkpoint is to be
+// tried again, which keeps its pages sealed. A fenced handle can never publish,
+// and a VM whose handle is closing publishes nothing more.
+func (c *Checkpoint) retrying(ctx context.Context, attempt int, err error) bool {
+	if c.retry == nil || errors.Is(err, control.ErrFenced) || ctx.Err() != nil {
+		return false
+	}
+	return c.retry(ctx, attempt, err)
 }
 
 // finish releases everything waiting on the publication. err is safe to read

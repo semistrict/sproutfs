@@ -23,14 +23,19 @@ func windowFixture(t *testing.T, window time.Duration) *fixture {
 }
 
 // A VM whose oldest unpublished write is older than the loss window admits no
-// further dirty page: the store waits in the pager exactly as a store past the
-// dirty budget waits, and lands when the checkpoint it asked for lands. That is
-// what makes the bound a bound — without it a guest whose publications keep
-// failing goes on building on writes that could be lost.
+// further dirty page while a sealed checkpoint of it is uploading: the store
+// waits in the pager exactly as a store past the dirty budget waits, and lands
+// when that checkpoint lands. That is what makes the bound a bound — without it a
+// guest whose publications keep failing goes on building on writes that could be
+// lost.
+//
+// The first store past the window finds nothing sealed. It goes through and
+// asks for the checkpoint, because holding it would hold its vCPU, and the
+// checkpoint's pause needs every vCPU.
 func TestAStorePastTheLossWindowWaitsForItsCheckpoint(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := windowFixture(t, lossWindow)
-		r, m, b := f.memoryRegion(4)
+		r, m, _ := f.memoryRegion(4)
 		requested := make(chan *vmmemory.MemoryRegion, 4)
 		f.h.SetPressure(vmmemory.Pressure{Checkpoint: func(memoryRegion *vmmemory.MemoryRegion) bool {
 			select {
@@ -46,31 +51,42 @@ func TestAStorePastTheLossWindowWaitsForItsCheckpoint(t *testing.T) {
 			t.Fatalf("%d stores waited on the window before it expired, want none", s.WindowWaits)
 		}
 		time.Sleep(lossWindow + time.Second)
-		stored := make(chan error, 1)
-		go func() { stored <- r.Fault(t.Context(), 2, true) }()
-		synctest.Wait()
-		select {
-		case err := <-stored:
-			t.Fatalf("a store past the loss window did not wait: %v", err)
-		default:
-		}
+		access(t, r, m, 2, true)[0] = 13
 		select {
 		case got := <-requested:
 			if got != r {
 				t.Fatalf("the pager asked to checkpoint %v, want the memory region over its window", got)
 			}
 		default:
-			t.Fatal("a store past the loss window waited without asking for a checkpoint")
+			t.Fatal("a store past the loss window did not ask for a checkpoint")
 		}
-		f.mustCheckpoint(r, b)
+		if s := hostStats(t, f); s.WindowWaits != 0 {
+			t.Fatalf("%d stores waited with nothing sealed, want none", s.WindowWaits)
+		}
+		// The checkpoint it asked for seals, and the stores after it wait for
+		// that checkpoint to land.
+		if err := r.Seal(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		stored := make(chan error, 1)
+		go func() { stored <- r.Fault(t.Context(), 3, true) }()
+		synctest.Wait()
+		select {
+		case err := <-stored:
+			t.Fatalf("a store past the loss window did not wait for the sealed checkpoint: %v", err)
+		default:
+		}
+		if err := r.Checkpoint().Retire(t.Context(), true); err != nil {
+			t.Fatal(err)
+		}
 		if err := <-stored; err != nil {
 			t.Fatalf("the store failed after the checkpoint that ended the window: %v", err)
 		}
 		if s := hostStats(t, f); s.WindowWaits == 0 {
 			t.Fatal("the wait was not counted as a loss-window wait")
 		}
-		access(t, r, m, 2, true)[0] = 13
-		if access(t, r, m, 2, false)[0] != 13 {
+		access(t, r, m, 3, true)[0] = 14
+		if access(t, r, m, 3, false)[0] != 14 {
 			t.Fatal("the store that waited did not write the guest's own bytes")
 		}
 	})
@@ -141,8 +157,13 @@ func TestAnAbandonedCheckpointHandsTheLossWindowBack(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := windowFixture(t, lossWindow)
 		r, m, _ := f.memoryRegion(4)
-		f.h.SetPressure(vmmemory.Pressure{Checkpoint: func(*vmmemory.MemoryRegion) bool { return true }})
+		asks := 0
+		f.h.SetPressure(vmmemory.Pressure{Checkpoint: func(*vmmemory.MemoryRegion) bool {
+			asks++
+			return true
+		}})
 		access(t, r, m, 0, true)[0] = 11
+		written := r.OldestUnpublished()
 		time.Sleep(lossWindow + time.Second)
 		if err := r.Seal(t.Context()); err != nil {
 			t.Fatal(err)
@@ -152,16 +173,25 @@ func TestAnAbandonedCheckpointHandsTheLossWindowBack(t *testing.T) {
 		if err := r.Checkpoint().Retire(t.Context(), false); err != nil {
 			t.Fatal(err)
 		}
+		if got := r.OldestUnpublished(); !got.Equal(written) {
+			t.Fatalf("the abandoned checkpoint gave back pages dated %v, want the guest's own store at %v", got, written)
+		}
+		// Nothing is sealed, so the next store goes through and asks for the
+		// checkpoint again, and the one after it waits once that has sealed.
+		access(t, r, m, 1, true)[0] = 12
+		if asks != 1 {
+			t.Fatalf("the store past the window asked for %d checkpoints, want one", asks)
+		}
+		if err := r.Seal(t.Context()); err != nil {
+			t.Fatal(err)
+		}
 		stored := make(chan error, 1)
-		go func() { stored <- r.Fault(t.Context(), 1, true) }()
+		go func() { stored <- r.Fault(t.Context(), 2, true) }()
 		synctest.Wait()
 		select {
 		case err := <-stored:
 			t.Fatalf("a store past a window an abandoned checkpoint gave back did not wait: %v", err)
 		default:
-		}
-		if err := r.Seal(t.Context()); err != nil {
-			t.Fatal(err)
 		}
 		if err := r.Checkpoint().Retire(t.Context(), true); err != nil {
 			t.Fatal(err)
@@ -195,10 +225,16 @@ func TestTheLossWindowIsTheVMsRatherThanOneMemoryRegions(t *testing.T) {
 		})
 		access(t, ram, ramMapping, 0, true)[0] = 11
 		time.Sleep(lossWindow + time.Second)
-		// This memory region holds nothing at all, so only its VM's other memory region can be
-		// what stops this store.
+		// This memory region holds nothing at all, so only its VM's other memory
+		// region can be what puts this store past the window. Nothing is sealed,
+		// so it goes through and asks; once the VM's checkpoint has sealed this
+		// memory region, the next store waits for it.
+		access(t, disk, diskMapping, 0, true)[0] = 21
+		if err := disk.Seal(t.Context()); err != nil {
+			t.Fatal(err)
+		}
 		stored := make(chan error, 1)
-		go func() { stored <- disk.Fault(t.Context(), 0, true) }()
+		go func() { stored <- disk.Fault(t.Context(), 1, true) }()
 		synctest.Wait()
 		select {
 		case err := <-stored:
@@ -206,10 +242,13 @@ func TestTheLossWindowIsTheVMsRatherThanOneMemoryRegions(t *testing.T) {
 		default:
 		}
 		f.mustCheckpoint(ram, ramBacking)
-		if err := <-stored; err != nil {
-			t.Fatalf("the store failed after its VM's other memory region was checkpointed: %v", err)
+		if err := disk.Checkpoint().Retire(t.Context(), true); err != nil {
+			t.Fatal(err)
 		}
-		access(t, disk, diskMapping, 0, true)[0] = 21
+		if err := <-stored; err != nil {
+			t.Fatalf("the store failed after its VM was checkpointed: %v", err)
+		}
+		access(t, disk, diskMapping, 1, true)[0] = 22
 	})
 }
 
@@ -259,13 +298,16 @@ func TestAHandoffOfACleanMemoryRegionCarriesNoAge(t *testing.T) {
 func TestAReceivedMemoryRegionInheritsItsSourcesWindow(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := windowFixture(t, lossWindow)
-		r, m, b := f.memoryRegion(4)
+		r, m, _ := f.memoryRegion(4)
 		f.h.SetPressure(vmmemory.Pressure{Checkpoint: func(*vmmemory.MemoryRegion) bool { return true }})
 		// The source held this VM's writes for nine tenths of the window; a tenth
 		// of it is all this host has.
 		r.SetUnpublishedAge(lossWindow - lossWindow/10)
 		access(t, r, m, 0, true)[0] = 11
 		time.Sleep(lossWindow/10 + time.Second)
+		if err := r.Seal(t.Context()); err != nil {
+			t.Fatal(err)
+		}
 		stored := make(chan error, 1)
 		go func() { stored <- r.Fault(t.Context(), 1, true) }()
 		synctest.Wait()
@@ -274,9 +316,61 @@ func TestAReceivedMemoryRegionInheritsItsSourcesWindow(t *testing.T) {
 			t.Fatalf("a store past a window inherited from the source did not wait: %v", err)
 		default:
 		}
-		f.mustCheckpoint(r, b)
+		if err := r.Checkpoint().Retire(t.Context(), true); err != nil {
+			t.Fatal(err)
+		}
 		if err := <-stored; err != nil {
 			t.Fatalf("the store failed after the destination's first checkpoint: %v", err)
+		}
+	})
+}
+
+// A store near the window, inside it, goes through without asking: the owner's
+// own clock takes the checkpoint that ends it, because a guest that rewrites
+// pages it has already dirtied needs no new page and no store of it would ever
+// ask.
+func TestAStoreInsideTheLossWindowNeverAsks(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := windowFixture(t, lossWindow)
+		r, m, _ := f.memoryRegion(4)
+		f.h.SetPressure(vmmemory.Pressure{Checkpoint: func(*vmmemory.MemoryRegion) bool {
+			t.Error("a store inside the window asked for a checkpoint")
+			return true
+		}})
+		access(t, r, m, 0, true)[0] = 11
+		time.Sleep(lossWindow - time.Second)
+		access(t, r, m, 1, true)[0] = 12
+		if s := hostStats(t, f); s.WindowWaits != 0 || s.CheckpointRequests != 0 {
+			t.Fatalf("a store inside the window waited %d times and asked %d times, want neither",
+				s.WindowWaits, s.CheckpointRequests)
+		}
+	})
+}
+
+// A fork point's hold ends at its deadline in a checkpoint of the parent, and
+// that checkpoint needs a pause. So a store past the window is not held behind a
+// fork hold: holding it would hold the vCPU the parent's next pause needs.
+func TestAStorePastTheLossWindowIsNotHeldBehindAForkHold(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := windowFixture(t, lossWindow)
+		r, m, _ := f.memoryRegion(4)
+		f.h.SetPressure(vmmemory.Pressure{Checkpoint: func(*vmmemory.MemoryRegion) bool {
+			t.Error("a store asked for a checkpoint of a memory region a fork point holds")
+			return false
+		}})
+		access(t, r, m, 0, true)[0] = 11
+		if err := r.Seal(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		r.Checkpoint().Hold()
+		time.Sleep(lossWindow + time.Second)
+		access(t, r, m, 1, true)[0] = 12
+		if s := hostStats(t, f); s.WindowWaits != 0 || s.WindowStalls != 0 {
+			t.Fatalf("a store behind a fork hold waited %d times and stalled %d, want neither",
+				s.WindowWaits, s.WindowStalls)
+		}
+		if err := r.Checkpoint().Retire(t.Context(), false); err != nil {
+			t.Fatal(err)
 		}
 	})
 }

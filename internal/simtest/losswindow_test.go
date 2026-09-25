@@ -135,9 +135,9 @@ func TestAMigratedGuestInheritsItsSourcesLossWindow(t *testing.T) {
 		if err := <-stored; err != nil {
 			t.Fatal(err)
 		}
-		// Most of the window is spent on the source, and the pages the
+		// Half the window is spent on the source, and the pages the
 		// destination fetches are that old when they arrive.
-		world.Advance(3 * scenarioWindow / 4)
+		world.Advance(scenarioWindow / 2)
 		world.LoseStore(0, false)
 		if err := world.Migrate(ctx, "vm-0", 1); err != nil {
 			t.Fatal(err)
@@ -147,10 +147,22 @@ func TestAMigratedGuestInheritsItsSourcesLossWindow(t *testing.T) {
 		}
 
 		// The destination cannot publish either, so the rest of the window runs
-		// out here — a quarter of it, not a whole one.
+		// out here: half of it, not a whole one. At three quarters of it the
+		// loop's clock takes a checkpoint, which cannot publish and, inside the
+		// window, gives its pages back; a store then still goes through.
 		world.LoseStore(1, true)
-		world.Advance(scenarioWindow / 2)
-		waiting := world.StoreInBackground(ctx, "vm-0", 1)
+		world.Advance(scenarioWindow/4 + scenarioWindow/16)
+		near := world.StoreInBackground(ctx, "vm-0", 1)
+		synctest.Wait()
+		if err := <-near; err != nil {
+			t.Fatalf("a store inside the window failed: %v", err)
+		}
+		// At the window the clock takes the checkpoint again. It seals, cannot
+		// publish, and now holds the next store behind it. A destination that
+		// had restarted the window at the VM's arrival would be at half of it
+		// here, and hold nothing.
+		world.Advance(scenarioWindow / 4)
+		waiting := world.StoreInBackground(ctx, "vm-0", 2)
 		synctest.Wait()
 		select {
 		case err := <-waiting:

@@ -313,16 +313,16 @@ func TestTheLossWindowEndsWhenEveryPrivatePageWasUnchanged(t *testing.T) {
 		f.h.SetPressure(vmmemory.Pressure{Checkpoint: func(*vmmemory.MemoryRegion) bool { return true }})
 		access(t, a, am, 0, true)
 		time.Sleep(lossWindow + time.Second)
+		if err := a.Seal(t.Context()); err != nil {
+			t.Fatal(err)
+		}
 		stored := make(chan error, 1)
 		go func() { stored <- a.Fault(t.Context(), 1, true) }()
 		synctest.Wait()
 		select {
 		case err := <-stored:
-			t.Fatalf("a store past the loss window did not wait: %v", err)
+			t.Fatalf("a store past the loss window did not wait for the sealed checkpoint: %v", err)
 		default:
-		}
-		if err := a.Seal(t.Context()); err != nil {
-			t.Fatal(err)
 		}
 		if unchanged := f.settle(a); unchanged != 1 {
 			t.Fatalf("the settle found %d unchanged pages, want exactly one", unchanged)
