@@ -182,7 +182,7 @@ func (b *kernelBacking) publish(ctx context.Context, ckpt *vmmemory.MemoryRegion
 // managed-memory session over its own socket, as a VMM's RAM and each of its
 // PMEM devices are: memory region 0 is PMEM and memory region 1 is RAM.
 type nativeProcess struct {
-	t           *testing.T
+	t           testing.TB
 	cmd         *exec.Cmd
 	input       io.WriteCloser
 	lines       chan string
@@ -261,7 +261,15 @@ func kernelHostPaged(t *testing.T, page, slots, pages, dirty int) *vmmemory.Host
 // kernelHostConfigured is a host exactly as configured over a Linux arena. The
 // arena is HugeTLB, so a configuration that names no page takes the one it can
 // be made of.
-func kernelHostConfigured(t *testing.T, cfg vmmemory.Config) *vmmemory.Host {
+func kernelHostConfigured(t testing.TB, cfg vmmemory.Config) *vmmemory.Host {
+	t.Helper()
+	h, _ := kernelHostArena(t, cfg)
+	return h
+}
+
+// kernelHostArena is kernelHostConfigured with the arena it runs on, for a test
+// that counts the memory the arena holds.
+func kernelHostArena(t testing.TB, cfg vmmemory.Config) (*vmmemory.Host, *vmmemory.LinuxArena) {
 	t.Helper()
 	if cfg.PageSize == 0 {
 		cfg.PageSize = hugePageSize
@@ -287,7 +295,7 @@ func kernelHostConfigured(t *testing.T, cfg vmmemory.Config) *vmmemory.Host {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return h
+	return h, a
 }
 
 // zeroKernelBackings are two memory regions' volumes that are holes throughout.
@@ -414,10 +422,10 @@ func TestManagedPagerSequentialStoresIntoFreshMemoryFaultOncePerRun(t *testing.T
 		})
 	}
 }
-func startNative(t *testing.T, h *vmmemory.Host, pages int, provided ...vmmemory.Backing) *nativeProcess {
+func startNative(t testing.TB, h *vmmemory.Host, pages int, provided ...vmmemory.Backing) *nativeProcess {
 	return startNativeWithConfig(t, h, pages, vmmemory.ConnectionConfig{QueuePages: pages * 2, CommandTimeout: 5 * time.Second, VerifyInterval: 50 * time.Millisecond}, provided...)
 }
-func startNativeWithConfig(t *testing.T, h *vmmemory.Host, pages int, config vmmemory.ConnectionConfig, provided ...vmmemory.Backing) *nativeProcess {
+func startNativeWithConfig(t testing.TB, h *vmmemory.Host, pages int, config vmmemory.ConnectionConfig, provided ...vmmemory.Backing) *nativeProcess {
 	t.Helper()
 	if len(provided) != 0 && len(provided) != 2 {
 		t.Fatal("two memory region backings are required")

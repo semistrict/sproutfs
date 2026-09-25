@@ -1343,8 +1343,35 @@ unknown operations are rejected before any change is made.
 A syscall failure after a change has begun is terminal. It is not treated as a
 rejected command, because a failed `mremap` can leave its destination unmapped.
 A pager that does not receive the matching successful acknowledgement must not
-assume that the old backing can be freed. The protocol assumes a trusted local
-pager and VMM process. Guests cannot access it.
+assume that the old backing can be freed. Guests cannot access the protocol.
+
+The pager does not trust the VMM. A VMM runs untrusted guest code, and an
+embedder jails it because it may be compromised. So everything a VMM sends is
+checked, and anything outside the protocol ends that session and no other:
+
+- A HELLO carries exactly one descriptor, and every field but its version is
+  zero. The descriptor may be anything. A read of it that is not a whole
+  fault or remap event ends the session, and so does an ioctl it refuses.
+- MEMORY_REGION must name the kind and the size the pager was given for the
+  session, at an address aligned to its page.
+- A fault must be inside the memory region and carry only the flags the kernel
+  sets. The pending faults are bounded by `ConnectionConfig.QueuePages`.
+- An ACK answers the one command awaiting it, once, with every field but its
+  identifier and generation zero. An ACK that no command awaits ends the
+  session. So does a second ACK of one command.
+- SEAL and FLUSH take increasing request identifiers and no other field. At
+  most one SEAL and 1,024 FLUSHes wait at a time.
+- Descriptors passed with any frame after HELLO are dropped by the kernel,
+  because the pager reads those frames without ancillary data.
+
+A session that ends this way is closed like any other. Its pages go back to the
+pager, and the host process keeps no descriptor of it.
+`vmmemory/hostile_linux_test.go` plays each of these against a real pager,
+beside a well-behaved process on the same pager, and `FuzzHostileSession` plays
+arbitrary sequences of them. The pager does not bound how much work a VMM can
+cause by faulting its own memory over and over. And the arena's descriptor
+gives a VMM more than the protocol does: see
+[open-work.md](open-work.md).
 
 So a rejected command is the only failure known to have changed nothing. The
 pager treats it as a failed operation, not a failed session. In practice, the

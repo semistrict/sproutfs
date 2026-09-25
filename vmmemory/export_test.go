@@ -1,6 +1,9 @@
 package vmmemory
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 // SetCheckpointBatchPages bounds the pages one seal or retire transition holds
 // the memory region for, so a test can observe a batch boundary without a dirty set of
@@ -84,3 +87,31 @@ func SetPopulationPages(t *testing.T, pages uint64) {
 // PressMappings is what a memory region's first refused mapping command does: from
 // then on its stores close gaps. The rules' own tests start there.
 func (r *MemoryRegion) PressMappings() { r.pressed.Store(true) }
+
+// Unreachable describes every resident page that no memory region maps and
+// that is not idle either: memory nothing will ever give back. A host whose
+// memory regions have all released what they held has none. It also reports a
+// slot two pages claim, and a recency list whose length is not the slots held.
+func (h *Host) Unreachable() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var found []string
+	claimed := map[int]bool{}
+	listed := 0
+	for pg := h.lru.front(); pg != nil; pg = h.lru.next(pg) {
+		listed++
+		if claimed[pg.slot] {
+			found = append(found, fmt.Sprintf("slot %d is claimed twice", pg.slot))
+		}
+		claimed[pg.slot] = true
+		if pg.aliases.len() > 0 || h.idle.contains(pg) {
+			continue
+		}
+		found = append(found, fmt.Sprintf("slot %d key %+v private %t replacing %d dropped %t indexed %t free %t",
+			pg.slot, pg.key.id, pg.private, pg.replacing, pg.dropped, h.clean[pg.key] == pg, pg.slot >= 0 && h.slots.IsFree(pg.slot)))
+	}
+	if listed != h.slots.Held() {
+		found = append(found, fmt.Sprintf("%d pages are listed and %d slots held", listed, h.slots.Held()))
+	}
+	return found
+}
