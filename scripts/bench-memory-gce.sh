@@ -202,7 +202,13 @@ PY
         > "$results/instance.json"
     "${cloud[@]}" compute scp --zone="$zone" "$staging/source.tar.gz" "$instance:source.tar.gz"
     rm -rf -- "$staging"
-    local status=0 prefix=""
+    local status=0 prefix="" run
+    # Each run unpacks into a directory of its own. Reusing one kept files an
+    # earlier run wrote — its results were copied back as this run's — and kept
+    # the source's recorded times, which cargo compares against its earlier
+    # build: a file edited before that build looked unchanged and was not
+    # rebuilt. A fresh path is a fresh fingerprint.
+    run="run-$(date -u +%Y%m%dT%H%M%SZ)"
     if [[ -n ${SPROUTFS_GCE_BUCKET:-} ]]; then
         prefix="sproutfs-bench/$(basename "$results")-$(date -u +%Y%m%dT%H%M%SZ)"
         echo "gs://$SPROUTFS_GCE_BUCKET/$prefix" > "$results/bucket.txt"
@@ -212,11 +218,11 @@ PY
         test -e /var/lib/sproutfs-bench/ready
         sudo /usr/local/sbin/sproutfs-bench-expire --check-only
         sudo systemctl is-active sproutfs-bench-expire.timer
-        mkdir -p source results
-        tar -xzf source.tar.gz -C source
-        sudo env SPROUTFS_GCE_BUILD_ONLY='"${SPROUTFS_GCE_BUILD_ONLY:-0}"' SPROUTFS_GCE_FANOUT='"${SPROUTFS_GCE_FANOUT:-0}"' SPROUTFS_GCE_BOOTSURVEY='"${SPROUTFS_GCE_BOOTSURVEY:-0}"' SPROUTFS_GCE_QUALIFY='"${SPROUTFS_GCE_QUALIFY:-0}"' SPROUTFS_GCE_WORKLOAD='"${SPROUTFS_GCE_WORKLOAD:-0}"' SPROUTFS_GCE_SMOKE='"${SPROUTFS_GCE_SMOKE:-0}"' SPROUTFS_BENCH_SCENARIOS='"${SPROUTFS_BENCH_SCENARIOS:-}"' SPROUTFS_BENCH_FORKS='"${SPROUTFS_BENCH_FORKS:-}"' SPROUTFS_BENCH_RAM_BYTES='"${SPROUTFS_BENCH_RAM_BYTES:-}"' SPROUTFS_BENCH_ROOT_BYTES='"${SPROUTFS_BENCH_ROOT_BYTES:-}"' SPROUTFS_BENCH_RAM_RESIDENT_BYTES='"${SPROUTFS_BENCH_RAM_RESIDENT_BYTES:-}"' SPROUTFS_BENCH_PMEM_RESIDENT_BYTES='"${SPROUTFS_BENCH_PMEM_RESIDENT_BYTES:-}"' SPROUTFS_RAM_PAGE_BYTES='"${SPROUTFS_RAM_PAGE_BYTES:-}"' SPROUTFS_BENCH_PLAIN_HUGE_PAGES='"${SPROUTFS_BENCH_PLAIN_HUGE_PAGES:-}"' SPROUTFS_GCS_BUCKET='"${SPROUTFS_GCE_BUCKET:-}"' SPROUTFS_GCS_PREFIX='"$prefix"' timeout --signal=TERM --kill-after=30s '"$limit"' bash source/scripts/lib/bench-memory-linux.sh "$PWD/source" "$PWD/results"' \
+        mkdir -p '"$run"'/source '"$run"'/results
+        tar -xzf source.tar.gz -C '"$run"'/source
+        sudo env SPROUTFS_GCE_BUILD_ONLY='"${SPROUTFS_GCE_BUILD_ONLY:-0}"' SPROUTFS_GCE_FANOUT='"${SPROUTFS_GCE_FANOUT:-0}"' SPROUTFS_GCE_BOOTSURVEY='"${SPROUTFS_GCE_BOOTSURVEY:-0}"' SPROUTFS_GCE_QUALIFY='"${SPROUTFS_GCE_QUALIFY:-0}"' SPROUTFS_GCE_WORKLOAD='"${SPROUTFS_GCE_WORKLOAD:-0}"' SPROUTFS_GCE_SMOKE='"${SPROUTFS_GCE_SMOKE:-0}"' SPROUTFS_BENCH_SCENARIOS='"${SPROUTFS_BENCH_SCENARIOS:-}"' SPROUTFS_BENCH_FORKS='"${SPROUTFS_BENCH_FORKS:-}"' SPROUTFS_BENCH_RAM_BYTES='"${SPROUTFS_BENCH_RAM_BYTES:-}"' SPROUTFS_BENCH_ROOT_BYTES='"${SPROUTFS_BENCH_ROOT_BYTES:-}"' SPROUTFS_BENCH_RAM_RESIDENT_BYTES='"${SPROUTFS_BENCH_RAM_RESIDENT_BYTES:-}"' SPROUTFS_BENCH_PMEM_RESIDENT_BYTES='"${SPROUTFS_BENCH_PMEM_RESIDENT_BYTES:-}"' SPROUTFS_RAM_PAGE_BYTES='"${SPROUTFS_RAM_PAGE_BYTES:-}"' SPROUTFS_BENCH_PLAIN_HUGE_PAGES='"${SPROUTFS_BENCH_PLAIN_HUGE_PAGES:-}"' SPROUTFS_GCS_BUCKET='"${SPROUTFS_GCE_BUCKET:-}"' SPROUTFS_GCS_PREFIX='"$prefix"' timeout --signal=TERM --kill-after=30s '"$limit"' bash '"$run"'/source/scripts/lib/bench-memory-linux.sh "$PWD/'"$run"'/source" "$PWD/'"$run"'/results"' \
         > "$results/remote.log" 2>&1 || status=$?
-    "${cloud[@]}" compute scp --recurse --zone="$zone" "$instance:results/." "$results/" || status=$?
+    "${cloud[@]}" compute scp --recurse --zone="$zone" "$instance:$run/results/." "$results/" || status=$?
     # The run's objects are the benchmark's scratch, and the bucket keeps none
     # of them; its lifecycle rule is only the backstop for a run cut short.
     if [[ -n $prefix ]] && "${cloud[@]}" storage ls "gs://$SPROUTFS_GCE_BUCKET/$prefix/" > /dev/null 2>&1; then
