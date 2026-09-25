@@ -1,9 +1,11 @@
 ---
 id: TASK-7
 title: Register templates at runtime
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-09-25 18:17'
+updated_date: '2026-09-25 22:14'
 labels:
   - embedder
 dependencies: []

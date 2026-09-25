@@ -72,6 +72,19 @@ func execute(ctx context.Context, client *orch.Client, command invocation,
 			float64(result.Result.Fork), float64(result.Result.Boot),
 			float64(result.Result.Root), float64(result.Result.Total))
 		return err
+	case "import-template":
+		image, err := os.Open(command.Target)
+		if err != nil {
+			return err
+		}
+		defer image.Close()
+		result, err := client.ImportTemplate(ctx, image, host.ImportTemplateRequest{Memory: command.Memory})
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintf(out, "%s at checkpoint %d (%d bytes of RAM, %.2fs)\n", result.Template.ID,
+			result.Checkpoint, result.Template.MemoryBytes, float64(result.Seconds))
+		return err
 	case "list":
 		vms, err := client.VMs(ctx)
 		if err != nil {

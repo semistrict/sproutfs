@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"time"
 
 	hostapi "github.com/semistrict/sproutfs/api/host"
@@ -65,6 +66,10 @@ type VMs interface {
 	Live(ctx context.Context) error
 	Status(ctx context.Context) (hostapi.Status, error)
 	Create(ctx context.Context, request hostapi.CreateRequest) (hostapi.CreateResult, error)
+	// ImportTemplate imports a guest image into the template its bytes name,
+	// which any host can then create VMs from by that identity. An image that
+	// is already imported costs one control record read.
+	ImportTemplate(ctx context.Context, image io.Reader, request hostapi.ImportTemplateRequest) (hostapi.ImportTemplateResult, error)
 	// Open opens a VM no host runs and starts its guest. An empty request
 	// restores the VM exactly where it was, from the VMM state its selected
 	// checkpoint holds; a cold one discards every page of its memory and that

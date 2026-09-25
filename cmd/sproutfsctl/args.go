@@ -51,6 +51,9 @@ const usage = `sproutfsctl drives a sproutfs demo deployment through its orchest
 
   sproutfsctl create [--template NAME] [--memory 1G] [--disk 4G] [--vcpus 2]
                                            create a VM at a shape and boot it
+  sproutfsctl import-template FILE [--memory 1G]
+                                           import a guest image into a template, and
+                                           print the identity create --template takes
   sproutfsctl list                         list the VMs, their hosts and their states
   sproutfsctl hosts                        list the host pods
   sproutfsctl store                        what each host's object store has served
@@ -81,7 +84,7 @@ deployment's shared token every request carries.`
 // commands is what each command takes: whether it names a VM or a host, and
 // which flags it accepts.
 var commands = map[string]struct {
-	target string // "vm", "host" or "" for none
+	target string // "vm", "host", "file" or "" for none
 	flags  []string
 	// switches are the flags that stand alone: they carry no value and mean
 	// themselves.
@@ -90,21 +93,22 @@ var commands = map[string]struct {
 	// keeps a guest's own flags and quoting out of this CLI's parser.
 	trailing bool
 }{
-	"create":    {flags: []string{"template", "memory", "disk", "vcpus"}},
-	"list":      {},
-	"hosts":     {},
-	"store":     {},
-	"console":   {target: "vm", flags: []string{"for"}},
-	"exec":      {target: "vm", flags: []string{"timeout"}, trailing: true},
-	"fork":      {target: "vm", flags: []string{"count", "to"}},
-	"migrate":   {target: "vm", flags: []string{"to"}},
-	"capture":   {target: "vm"},
-	"kill-host": {target: "host"},
-	"recover":   {target: "vm", switches: []string{"force"}},
-	"stop":      {target: "vm", switches: []string{"suspend"}},
-	"start":     {target: "vm", flags: []string{"to", "memory", "disk", "vcpus"}, switches: []string{"cold"}},
-	"delete":    {target: "vm"},
-	"check":     {},
+	"create":          {flags: []string{"template", "memory", "disk", "vcpus"}},
+	"import-template": {target: "file", flags: []string{"memory"}},
+	"list":            {},
+	"hosts":           {},
+	"store":           {},
+	"console":         {target: "vm", flags: []string{"for"}},
+	"exec":            {target: "vm", flags: []string{"timeout"}, trailing: true},
+	"fork":            {target: "vm", flags: []string{"count", "to"}},
+	"migrate":         {target: "vm", flags: []string{"to"}},
+	"capture":         {target: "vm"},
+	"kill-host":       {target: "host"},
+	"recover":         {target: "vm", switches: []string{"force"}},
+	"stop":            {target: "vm", switches: []string{"suspend"}},
+	"start":           {target: "vm", flags: []string{"to", "memory", "disk", "vcpus"}, switches: []string{"cold"}},
+	"delete":          {target: "vm"},
+	"check":           {},
 }
 
 // parse reads one command line. Flags are --name value or --name=value, in any

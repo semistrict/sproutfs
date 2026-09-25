@@ -338,12 +338,17 @@ func loadConfig(lookup func(string) string) (config, error) {
 }
 
 // parseTemplates reads the guest images a VM can be created from, written as
-// name=path pairs separated by commas. A pair may name the RAM its VMs get,
+// name=path pairs separated by commas. "none" configures no image at all: a
+// deployment whose images a builder produces imports each of them on request,
+// and creates from it by its identity. A pair may name the RAM its VMs get,
 // after a colon — name=path:bytes — which is what an image that needs more than
 // the deployment's default uses; a path with a colon in it therefore cannot
 // carry one, and the default applies. defaultMemory is that default.
 func parseTemplates(value string, defaultMemory uint64) (host.Templates, error) {
 	templates := host.Templates{}
+	if value == "none" {
+		return templates, nil
+	}
 	for entry := range strings.SplitSeq(value, ",") {
 		entry = strings.TrimSpace(entry)
 		if entry == "" {
@@ -372,7 +377,7 @@ func parseTemplates(value string, defaultMemory uint64) (host.Templates, error) 
 		templates[name] = host.Template{Path: path, MemoryBytes: memory}
 	}
 	if len(templates) == 0 {
-		return nil, errors.New("no template is configured")
+		return nil, errors.New(`no template is configured; "none" says so on purpose`)
 	}
 	return templates, nil
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"slices"
@@ -38,6 +39,7 @@ type pods interface {
 type hostClient interface {
 	Status(ctx context.Context) (host.Status, error)
 	Create(ctx context.Context, request host.CreateRequest) (host.CreateResult, error)
+	ImportTemplate(ctx context.Context, image io.Reader, request host.ImportTemplateRequest) (host.ImportTemplateResult, error)
 	Open(ctx context.Context, id string, request host.OpenRequest) (host.OpenResult, error)
 	Fork(ctx context.Context, parent string, request host.ForkRequest) (host.ForkResult, error)
 	Capture(ctx context.Context, id string) (host.CaptureResult, error)
@@ -739,6 +741,30 @@ func (o *orchestrator) Create(ctx context.Context, request orch.CreateRequest) (
 	slog.InfoContext(ctx, "sproutfs-orchestrator: created a VM", "vm", id, "host", target.report.Name,
 		"template", template, "seconds", float64(result.Total))
 	return orch.CreateResult{Host: target.report.Name, Result: result}, nil
+}
+
+// ImportTemplate hands a guest image to one ready host, which imports it into
+// the template its bytes name. The template is the deployment's from then on:
+// any host creates from it by the identity this reports. The host is the ready
+// one with the most memory free, which says nothing about the template and only
+// spreads the work of reading images.
+func (o *orchestrator) ImportTemplate(ctx context.Context, image io.Reader,
+	request host.ImportTemplateRequest) (host.ImportTemplateResult, error) {
+	hosts, err := o.survey(ctx)
+	if err != nil {
+		return host.ImportTemplateResult{}, err
+	}
+	target, err := place(hosts, "", 0)
+	if err != nil {
+		return host.ImportTemplateResult{}, err
+	}
+	result, err := target.client.ImportTemplate(ctx, image, request)
+	if err != nil {
+		return host.ImportTemplateResult{}, fmt.Errorf("importing a template on %s: %w", target.report.Name, err)
+	}
+	slog.InfoContext(ctx, "sproutfs-orchestrator: imported a template", "template", result.Template.ID,
+		"host", target.report.Name, "checkpoint", result.Checkpoint)
+	return result, nil
 }
 
 // Fork forks a running VM. Every fork goes through here: the orchestrator

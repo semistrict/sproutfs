@@ -18,15 +18,11 @@ import (
 func (s *supervisor) Create(ctx context.Context, request hostapi.CreateRequest) (hostapi.CreateResult, error) {
 	began := s.clock.Now()
 	id := request.ID
-	name, chosen, err := s.config.Templates.Resolve(request.Template)
-	if err != nil {
-		return hostapi.CreateResult{}, fmt.Errorf("%w: %w", ErrRequest, err)
-	}
 	if err := s.absent(id); err != nil {
 		return hostapi.CreateResult{}, err
 	}
 	prepared := s.clock.Now()
-	template, err := s.templateOf(ctx, name, chosen)
+	template, name, err := s.templateNamed(ctx, request.Template)
 	if err != nil {
 		return hostapi.CreateResult{}, err
 	}

@@ -428,3 +428,43 @@ func TestAnImportInFlightIsWaitedForRatherThanTakenOver(t *testing.T) {
 		t.Fatal("the host waiting on the import never saw it published")
 	}
 }
+
+// TestAnotherHostOpensATemplateByItsIdentity: a template imported on request on
+// one host is the deployment's, not that host's. Any other host opens it by its
+// identity alone — one read of its control record, no image and no import —
+// and a VM created there reads the image. An identity nothing imported is
+// refused, and so is one whose import has not published yet.
+func TestAnotherHostOpensATemplateByItsIdentity(t *testing.T) {
+	h := newHostHarness(t)
+	h.start(t)
+	imported := templateOn(t, h, 0, templateImport("builder-output", 0x42))
+
+	opened, err := h.hosts[1].Template(t.Context(), imported.ID())
+	if err != nil {
+		t.Fatalf("host-1 opening %s by its identity: %v", imported.ID(), err)
+	}
+	if opened.ID() != imported.ID() || opened.Point.Parent() != imported.Point.Parent() {
+		t.Fatalf("host-1 opened %s at %v, want %s at %v", opened.ID(), opened.Point.Parent(),
+			imported.ID(), imported.Point.Parent())
+	}
+	if got := forkReads(t, h, 1, "vm-1", opened); !bytes.Equal(got, guestImage(0x42)) {
+		t.Fatalf("a VM created on host-1 reads %x..., want the imported image", got[:4])
+	}
+
+	missing := templateIDOf(guestImage(0x43))
+	if _, err := h.hosts[1].Template(t.Context(), missing); !errors.Is(err, host.ErrUnknownTemplate) {
+		t.Fatalf("opening a template nothing imported gave %v, want ErrUnknownTemplate", err)
+	}
+	pending := templateIDOf(guestImage(0x44))
+	vm, err := h.hosts[0].Volumes().Create(t.Context(), pending, templateVolumes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer vm.Close(t.Context())
+	if _, err := h.hosts[1].Template(t.Context(), pending); !errors.Is(err, host.ErrTemplatePending) {
+		t.Fatalf("opening a template whose import has not published gave %v, want ErrTemplatePending", err)
+	}
+	if _, err := h.hosts[1].Template(t.Context(), "vm-not-a-template"); !errors.Is(err, host.ErrRequest) {
+		t.Fatalf("opening an identity outside the template namespace gave %v, want ErrRequest", err)
+	}
+}

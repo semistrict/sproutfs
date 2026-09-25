@@ -108,7 +108,11 @@ type supervisor struct {
 	mu        sync.Mutex
 	machines  map[string]*machine
 	templates map[string]*ImportedTemplate
-	closed    bool
+	// byID is every template this host has imported or opened, by identity:
+	// the configured images, and the ones imported on request here or on
+	// another host.
+	byID   map[string]*ImportedTemplate
+	closed bool
 }
 
 var _ Service = (*supervisor)(nil)
@@ -119,6 +123,7 @@ var _ Service = (*supervisor)(nil)
 func Start(ctx context.Context, config SupervisorConfig) (Service, error) {
 	s := &supervisor{config: config, clock: platform.ClockOr(config.Clock), templateMu: ctxsync.NewMutex(),
 		machines: map[string]*machine{}, templates: map[string]*ImportedTemplate{},
+		byID:   map[string]*ImportedTemplate{},
 		arenas: map[vmmemory.MemoryRegionKind]*vmmemory.LinuxArena{},
 		spills: map[vmmemory.MemoryRegionKind]platform.File{},
 		// The orchestrator's default client has no timeout of its own, and a
@@ -364,20 +369,37 @@ func (s *supervisor) committed() uint64 {
 	return total
 }
 
-// templateReport describes the guest images this host can create VMs from, in
-// name order. Every configured template is reported, imported or not: what a
-// placement needs to know is what a VM created here would cost, which the
-// configuration says before any image has been read.
+// templateReport describes the guest images this host can create VMs from: every
+// configured one, in name order, imported or not — what a placement needs to
+// know is what a VM created here would cost, which the configuration says
+// before any image has been read — and then, by identity, every other template
+// this host has imported on request or opened for a create.
 func (s *supervisor) templateReport() []hostapi.Template {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	report := make([]hostapi.Template, 0, len(s.config.Templates))
+	report := make([]hostapi.Template, 0, len(s.config.Templates)+len(s.byID))
+	configured := map[string]bool{}
 	for _, name := range slices.Sorted(maps.Keys(s.config.Templates)) {
-		report = append(report, hostapi.Template{Name: name,
-			MemoryBytes: s.config.Templates[name].MemoryBytes,
-			Imported:    s.templates[name] != nil})
+		entry := hostapi.Template{Name: name, MemoryBytes: s.config.Templates[name].MemoryBytes}
+		if imported := s.templates[name]; imported != nil {
+			entry.ID, entry.Imported = imported.ID(), true
+			configured[imported.ID()] = true
+		}
+		report = append(report, entry)
+	}
+	for _, id := range slices.Sorted(maps.Keys(s.byID)) {
+		if !configured[id] {
+			report = append(report, templateEntry(s.byID[id], id))
+		}
 	}
 	return report
+}
+
+// templateEntry reports one template by the name a create selects it with:
+// the RAM a VM created from it starts with, which is its own RAM volume.
+func templateEntry(template *ImportedTemplate, name string) hostapi.Template {
+	return hostapi.Template{Name: name, ID: template.ID(),
+		MemoryBytes: template.Point.Size(vmmachine.RAMVolume), Imported: true}
 }
 
 // pagerReport is one pager's half of the status: its own page, its own arena

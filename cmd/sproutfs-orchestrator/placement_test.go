@@ -2,6 +2,8 @@ package main
 
 import (
 	"errors"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/semistrict/sproutfs/api/host"
@@ -69,5 +71,28 @@ func TestLocalForkIsAdmittedAgainstTheParentsHost(t *testing.T) {
 	// Two fit, and the parent is paused once for both.
 	if _, err := d.orchestrator.Fork(t.Context(), "vm-a", 2, ""); err != nil {
 		t.Fatalf("a fan-out its host has room for: %v", err)
+	}
+}
+
+// TestAnImportGoesToOneReadyHost: a guest image is imported once, by one host,
+// into the template its bytes name; which host does it says nothing about the
+// template, and every host creates from it by its identity afterwards.
+func TestAnImportGoesToOneReadyHost(t *testing.T) {
+	d := newDeployment(t, map[string][]string{"host-0": {}, "host-1": {}})
+	d.hosts["host-0"].arena(1024, 0)
+	d.hosts["host-0"].commit(0)
+	d.hosts["host-1"].arena(1024, 0)
+	d.hosts["host-1"].commit(1 << 30)
+	imported, err := d.orchestrator.ImportTemplate(t.Context(), strings.NewReader("ext4 bytes"),
+		host.ImportTemplateRequest{Memory: 1 << 30})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if imported.Template.ID != "template-ab" || imported.Checkpoint != 3 {
+		t.Fatalf("the import reported %+v", imported)
+	}
+	want := []string{`host-0 import template "ext4 bytes" memory=1073741824`}
+	if !slices.Equal(d.log, want) {
+		t.Fatalf("the deployment did %v, want %v", d.log, want)
 	}
 }

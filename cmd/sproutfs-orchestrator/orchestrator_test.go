@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"path/filepath"
 	"slices"
@@ -201,6 +202,19 @@ func (f *fakeHostClient) Create(_ context.Context, request host.CreateRequest) (
 	}
 	f.running = append(f.running, request.ID)
 	return host.CreateResult{VM: host.VM{ID: request.ID, Template: request.Template, Host: f.name}}, nil
+}
+
+func (f *fakeHostClient) ImportTemplate(_ context.Context, image io.Reader,
+	request host.ImportTemplateRequest) (host.ImportTemplateResult, error) {
+	read, err := io.ReadAll(image)
+	if err != nil {
+		return host.ImportTemplateResult{}, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("import template %q memory=%d", read, request.Memory)
+	return host.ImportTemplateResult{Template: host.Template{Name: "template-ab", ID: "template-ab",
+		MemoryBytes: request.Memory, Imported: true}, Checkpoint: 3}, nil
 }
 
 func (f *fakeHostClient) Open(_ context.Context, id string, request host.OpenRequest) (host.OpenResult, error) {

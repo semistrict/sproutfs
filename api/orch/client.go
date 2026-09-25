@@ -3,11 +3,13 @@ package orch
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 
+	"github.com/semistrict/sproutfs/api/host"
 	"github.com/semistrict/sproutfs/internal/jsonhttp"
 )
 
@@ -50,6 +52,17 @@ func (c *Client) VMs(ctx context.Context) ([]VM, error) {
 
 func (c *Client) Create(ctx context.Context, request CreateRequest) (CreateResult, error) {
 	return jsonhttp.Call[CreateResult](ctx, c.http, http.MethodPost, c.path("/vms"), request)
+}
+
+// ImportTemplate sends a guest image, streamed, to be imported into the
+// template its bytes name.
+func (c *Client) ImportTemplate(ctx context.Context, image io.Reader,
+	request host.ImportTemplateRequest) (host.ImportTemplateResult, error) {
+	target := c.path("/templates")
+	if request.Memory != 0 {
+		target += "?memory=" + strconv.FormatUint(request.Memory, 10)
+	}
+	return jsonhttp.Upload[host.ImportTemplateResult](ctx, c.http, http.MethodPost, target, image)
 }
 
 func (c *Client) Fork(ctx context.Context, id string, count int, to string) (ForkResult, error) {

@@ -323,6 +323,20 @@ func TestConfigReadsEveryTemplate(t *testing.T) {
 	}
 }
 
+// "none" configures no guest image: every template is one a builder produced
+// and a request imported, created from by its identity.
+func TestConfigTakesNoTemplateOnPurpose(t *testing.T) {
+	values := minimal()
+	values["SPROUTFS_TEMPLATES"] = "none"
+	config, err := loadConfig(environ(values))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(config.Templates) != 0 {
+		t.Fatalf("templates %+v, want none", config.Templates)
+	}
+}
+
 func TestASingleTemplateIsWhatAnUnnamedRequestMeans(t *testing.T) {
 	config, err := loadConfig(environ(minimal()))
 	if err != nil {

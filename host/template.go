@@ -157,6 +157,34 @@ func (h *Host) TemplateOf(ctx context.Context, request TemplateImport) (*Importe
 	}
 }
 
+// ErrUnknownTemplate reports a template identity nothing has imported, and
+// ErrTemplatePending one whose import has not published yet: a create asked
+// for it too early, and asking again after the import finishes succeeds.
+var (
+	ErrUnknownTemplate = errors.New("host: no template of that identity has been imported")
+	ErrTemplatePending = errors.New("host: that template's import has not published yet")
+)
+
+// Template opens a template by its identity, which is how any host creates
+// from an image that another host imported on request. It reads the template's
+// control record and nothing else: a published template is the checkpoint its
+// record pins, and no image, no import and no writer of it is needed to fork it.
+func (h *Host) Template(ctx context.Context, id string) (*ImportedTemplate, error) {
+	if !hostapi.IsTemplate(id) {
+		return nil, fmt.Errorf("%w: %q is not a template's identity", ErrRequest, id)
+	}
+	record, err := h.control.Read(ctx, id)
+	switch {
+	case errors.Is(err, platform.ErrNotFound):
+		return nil, fmt.Errorf("%w: %s", ErrUnknownTemplate, id)
+	case err != nil:
+		return nil, fmt.Errorf("reading the control record of template %s: %w", id, err)
+	case !record.IsPinned(record.Selected):
+		return nil, fmt.Errorf("%w: %s", ErrTemplatePending, id)
+	}
+	return h.templatePoint(ctx, id, record.Selected)
+}
+
 // imageDigest is the sha256 of a guest image, which is the whole of what names
 // its template. The file is left where the import wants it: at the front.
 func imageDigest(source io.ReadSeeker) ([sha256.Size]byte, error) {

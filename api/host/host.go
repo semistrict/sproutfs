@@ -288,9 +288,29 @@ func IsTemplate(id string) bool { return strings.HasPrefix(id, TemplatePrefix) }
 // has imported the image into a checkpoint yet. The size is the template's
 // because a VM is a fork of the template and a fork inherits what it forked.
 type Template struct {
-	Name        string `json:"name"`
+	Name string `json:"name"`
+	// ID is the template's identity, the image's digest, once it is known. A
+	// create may select any template of the deployment by it, on any host.
+	ID          string `json:"id,omitempty"`
 	MemoryBytes uint64 `json:"memory_bytes"`
 	Imported    bool   `json:"imported"`
+}
+
+// ImportTemplateRequest imports a guest image a builder produced into a
+// template. The image is the request's body. Memory is the RAM a VM created
+// from it starts with, zero for the host's default; a create may give a VM
+// another size.
+type ImportTemplateRequest struct {
+	Memory uint64 `json:"memory,omitempty"`
+}
+
+// ImportTemplateResult reports the template an image is now: its identity, which
+// any host creates from, and the checkpoint that holds it. An image the
+// deployment had already imported reports the template it already was.
+type ImportTemplateResult struct {
+	Template   Template `json:"template"`
+	Checkpoint uint64   `json:"checkpoint"`
+	Seconds    Seconds  `json:"seconds"`
 }
 
 // Status is one host's whole report.
@@ -319,8 +339,10 @@ type Status struct {
 	Store     Store      `json:"store"`
 }
 
-// CreateRequest creates one VM from a guest image. An empty Template selects
-// the host's only configured one.
+// CreateRequest creates one VM from a guest image. Template is a configured
+// image's name, or any template's identity (template-<digest>), which is how a
+// VM is created from an image imported on request, on any host. An empty
+// Template selects the host's only configured one.
 //
 // Memory, Disk and VCPUs are the VM's shape: its RAM, the size its root volume
 // grows to, and its processors. Zero keeps what the template has for the first

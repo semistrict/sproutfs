@@ -190,6 +190,19 @@ A host that cannot read its images stays unready and reports why, instead of
 accepting VMs it would fail to create. Liveness is a separate endpoint, so a
 host that is still importing is not restarted for failing readiness.
 
+A guest image does not have to be configured. A builder's image can be
+imported on request (`ImportTemplate`, `POST /templates`, with the image as the
+body). The host stages an image that is not a seekable file under its scratch
+directory, because an import reads the image twice: once for the digest that
+names the template, and once for its bytes. It then imports it as it imports a
+configured one, and reports the template's identity. Any host creates from
+that template by its identity, `template-<digest>`, as a create's `template`.
+That host reads the template's control record, finds the checkpoint it pins,
+and forks it. It needs no image and no import. An identity nothing imported is
+refused, and so is one whose import has not published yet. A host configured
+with `SPROUTFS_TEMPLATES=none` has no images of its own, is ready at once, and
+creates only from templates imported on request.
+
 No host deletes a template, because another host may be forking from it. An
 image whose content changed under the same name is a different template, not
 the same template with other bytes. Templates of images that nothing creates

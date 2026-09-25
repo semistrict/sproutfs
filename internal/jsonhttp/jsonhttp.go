@@ -126,6 +126,26 @@ func CallWithin[R any](ctx context.Context, client *http.Client, method, url str
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}
+	return send[R](client, request, limit)
+}
+
+// Upload sends body's bytes as they are, not as JSON, and decodes the response
+// into R as Call does. It is for a request whose body is a file, such as a
+// guest image, which is streamed rather than held in memory.
+func Upload[R any](ctx context.Context, client *http.Client, method, url string, body io.Reader) (R, error) {
+	var result R
+	request, err := http.NewRequestWithContext(ctx, method, url, body)
+	if err != nil {
+		return result, err
+	}
+	request.Header.Set("Content-Type", "application/octet-stream")
+	return send[R](client, request, MaxBody)
+}
+
+// send makes one request and decodes its response, at most limit bytes of it.
+func send[R any](client *http.Client, request *http.Request, limit int64) (R, error) {
+	var result R
+	method, url := request.Method, request.URL.String()
 	if client == nil {
 		client = http.DefaultClient
 	}

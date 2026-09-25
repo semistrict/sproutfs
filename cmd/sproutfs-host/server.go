@@ -85,6 +85,23 @@ func newServer(h host.VMs, token string) http.Handler {
 		created, err := h.Create(r.Context(), request)
 		reply(w, r, "create", created, err)
 	})
+	// A guest image is the request's body, streamed rather than decoded: a
+	// builder's image is gigabytes. The RAM a VM of it starts with is a query
+	// parameter, because the body is the image.
+	mux.HandleFunc("POST /templates", func(w http.ResponseWriter, r *http.Request) {
+		var request hostapi.ImportTemplateRequest
+		if text := r.URL.Query().Get("memory"); text != "" {
+			memory, err := strconv.ParseUint(text, 10, 64)
+			if err != nil || memory == 0 {
+				jsonhttp.Fail(r.Context(), w, http.StatusBadRequest, "import template",
+					fmt.Errorf("%w: memory is %q, want a positive number of bytes", host.ErrRequest, text))
+				return
+			}
+			request.Memory = memory
+		}
+		imported, err := h.ImportTemplate(r.Context(), r.Body, request)
+		reply(w, r, "import template", imported, err)
+	})
 	mux.HandleFunc("POST /vms/{id}/open", func(w http.ResponseWriter, r *http.Request) {
 		// An open with no body at all is the ordinary one: the VM comes back
 		// exactly where it was.

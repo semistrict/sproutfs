@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -32,6 +33,7 @@ type fakeHost struct {
 
 	status   hostapi.Status
 	created  hostapi.CreateResult
+	imported hostapi.ImportTemplateResult
 	opened   hostapi.OpenResult
 	forked   hostapi.ForkResult
 	captured hostapi.CaptureResult
@@ -66,6 +68,15 @@ func (f *fakeHost) Create(_ context.Context, request hostapi.CreateRequest) (hos
 			request.Memory, request.Disk, request.VCPUs)
 	}
 	return f.created, f.record("create %s %s", request.ID, request.Template)
+}
+
+func (f *fakeHost) ImportTemplate(_ context.Context, image io.Reader,
+	request hostapi.ImportTemplateRequest) (hostapi.ImportTemplateResult, error) {
+	read, err := io.ReadAll(image)
+	if err != nil {
+		return hostapi.ImportTemplateResult{}, err
+	}
+	return f.imported, f.record("import template %q memory=%d", read, request.Memory)
 }
 
 func (f *fakeHost) Open(_ context.Context, id string, request hostapi.OpenRequest) (hostapi.OpenResult, error) {
@@ -218,6 +229,31 @@ func TestHealthzReportsReady(t *testing.T) {
 
 // A create carries the shape it asks for — RAM, disk and processors — to the
 // host, which publishes the VM's first checkpoint at that shape.
+// An imported guest image is the request's body, streamed to the host as it
+// is, and the RAM a VM of it starts with rides in the query.
+func TestImportTemplateStreamsTheImage(t *testing.T) {
+	fake := &fakeHost{imported: hostapi.ImportTemplateResult{
+		Template:   hostapi.Template{Name: "template-ab", ID: "template-ab", MemoryBytes: 1 << 30, Imported: true},
+		Checkpoint: 7}}
+	status, body := call(t, fake, http.MethodPost, "/templates?memory=1073741824", "ext4 bytes")
+	if status != http.StatusOK {
+		t.Fatalf("status %d: %s", status, body)
+	}
+	if len(fake.calls) != 1 || fake.calls[0] != `import template "ext4 bytes" memory=1073741824` {
+		t.Fatalf("the host was asked for %v", fake.calls)
+	}
+	var result hostapi.ImportTemplateResult
+	if err := json.Unmarshal([]byte(body), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Template.ID != "template-ab" || result.Checkpoint != 7 {
+		t.Fatalf("the import reported %+v", result)
+	}
+	if status, body := call(t, &fakeHost{}, http.MethodPost, "/templates?memory=lots", "ext4"); status != http.StatusBadRequest {
+		t.Fatalf("an import with memory=lots answered %d: %s, want 400", status, body)
+	}
+}
+
 func TestCreateCarriesItsShape(t *testing.T) {
 	fake := &fakeHost{}
 	status, body := call(t, fake, http.MethodPost, "/vms",

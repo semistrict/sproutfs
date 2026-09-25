@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -367,5 +370,32 @@ func TestExecFailsWhenTheGuestsCommandDid(t *testing.T) {
 	}
 	if out.String() != "partial\n" {
 		t.Fatalf("stdout is %q, want what the command did print", out.String())
+	}
+}
+
+// An imported guest image is streamed from its file, and what is printed first
+// is the identity a create takes as its template.
+func TestImportTemplateStreamsTheFileAndPrintsItsIdentity(t *testing.T) {
+	client, stub := serve(t, func(*http.Request) (int, any) {
+		return http.StatusOK, host.ImportTemplateResult{Template: host.Template{Name: "template-ab",
+			ID: "template-ab", MemoryBytes: 1 << 30, Imported: true}, Checkpoint: 3, Seconds: 1.5}
+	})
+	image := filepath.Join(t.TempDir(), "guest.ext4")
+	if err := os.WriteFile(image, []byte("ext4 bytes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command, err := parse([]string{"import-template", image, "--memory", "1G"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := execute(t.Context(), client, command, nil, &out, &out); err != nil {
+		t.Fatal(err)
+	}
+	if want := "template-ab at checkpoint 3 (1073741824 bytes of RAM, 1.50s)\n"; out.String() != want {
+		t.Fatalf("printed %q, want %q", out.String(), want)
+	}
+	if want := []string{"POST /templates?memory=1073741824 ext4 bytes"}; !slices.Equal(stub.requests, want) {
+		t.Fatalf("the orchestrator was asked for %v, want %v", stub.requests, want)
 	}
 }

@@ -3,6 +3,7 @@ package host
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -50,6 +51,16 @@ func (c *Client) Status(ctx context.Context) (Status, error) {
 
 func (c *Client) Create(ctx context.Context, request CreateRequest) (CreateResult, error) {
 	return jsonhttp.Call[CreateResult](ctx, c.http, http.MethodPost, c.path("/vms"), request)
+}
+
+// ImportTemplate sends a guest image to be imported into the template its bytes
+// name. The image is streamed as the request's body.
+func (c *Client) ImportTemplate(ctx context.Context, image io.Reader, request ImportTemplateRequest) (ImportTemplateResult, error) {
+	target := c.path("/templates")
+	if request.Memory != 0 {
+		target += "?memory=" + strconv.FormatUint(request.Memory, 10)
+	}
+	return jsonhttp.Upload[ImportTemplateResult](ctx, c.http, http.MethodPost, target, image)
 }
 
 func (c *Client) Open(ctx context.Context, id string, request OpenRequest) (OpenResult, error) {

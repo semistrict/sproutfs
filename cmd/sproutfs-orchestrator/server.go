@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/semistrict/sproutfs/api/host"
 	"github.com/semistrict/sproutfs/api/orch"
 	"github.com/semistrict/sproutfs/internal/jsonhttp"
 )
@@ -47,6 +48,21 @@ func newServer(o *orchestrator, token string) http.Handler {
 		}
 		created, err := o.Create(r.Context(), request)
 		reply(w, r, "create", created, err)
+	})
+	// A guest image is the body, streamed through to the host that imports it.
+	mux.HandleFunc("POST /templates", func(w http.ResponseWriter, r *http.Request) {
+		var request host.ImportTemplateRequest
+		if text := r.URL.Query().Get("memory"); text != "" {
+			memory, err := strconv.ParseUint(text, 10, 64)
+			if err != nil || memory == 0 {
+				jsonhttp.Fail(r.Context(), w, http.StatusBadRequest, "import template",
+					fmt.Errorf("%w: memory is %q, want a positive number of bytes", errRequest, text))
+				return
+			}
+			request.Memory = memory
+		}
+		imported, err := o.ImportTemplate(r.Context(), r.Body, request)
+		reply(w, r, "import template", imported, err)
 	})
 	mux.HandleFunc("POST /vms/{id}/fork", func(w http.ResponseWriter, r *http.Request) {
 		var request orch.ForkRequest
