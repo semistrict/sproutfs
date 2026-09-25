@@ -72,6 +72,8 @@ type arena struct {
 	// failWrite makes filling a slot fail, which is the arena a test gives a
 	// store whose private copy cannot be made.
 	failWrite bool
+	// onWrite runs after a slot is filled, outside the arena's lock.
+	onWrite func(int)
 	// writes counts slots filled by copying bytes in, and zeroed the calls
 	// that gave fresh slots zeros without writing them.
 	writes, zeroed int
@@ -132,6 +134,11 @@ func (a *arena) Write(_ context.Context, slot int, src []byte) error {
 	}
 	a.put(slot, bytes.Clone(src))
 	a.writes++
+	if onWrite := a.onWrite; onWrite != nil {
+		a.mu.Unlock()
+		defer a.mu.Lock()
+		onWrite(slot)
+	}
 	return nil
 }
 

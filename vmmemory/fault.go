@@ -203,7 +203,8 @@ func (r *MemoryRegion) fault(ctx context.Context, index uint64, write bool, spil
 	// own nor a checkpoint holding one.
 	old, err := h.current(ctx, b)
 	if err != nil {
-		return false, err
+		// No binding reaches the copy, so it goes back now or never.
+		return false, errors.Join(err, h.release(context.WithoutCancel(ctx), pg))
 	}
 	// The pages this store copies from stay where they are until its one mapping
 	// command has replaced the guest's mappings of them; nothing is revoked.
@@ -504,7 +505,8 @@ func (r *MemoryRegion) takePrivate(ctx context.Context, b *binding, old, pg *res
 		// A page still held by a checkpoint keeps its memory: the checkpoint's
 		// own alias survives this unlink, and the guest gets its own copy.
 		if err := h.unlink(ctx, b, old); err != nil {
-			return err
+			// No binding reaches the copy, so it goes back now or never.
+			return errors.Join(err, h.release(context.WithoutCancel(ctx), pg))
 		}
 	}
 	h.bind(b, pg)
