@@ -28,11 +28,11 @@ type stalledAttachmentBacking struct {
 // seedMapping retains a resident page without any kernel memory users.
 type seedMapping struct{}
 
-func (seedMapping) Map(context.Context, uint64, int, int, bool) error { return nil }
-func (seedMapping) MapZero(context.Context, uint64, int) error        { return nil }
-func (seedMapping) Revoke(context.Context, uint64) error              { return nil }
-func (seedMapping) Resolve(context.Context, uint64, int, bool) error  { return nil }
-func (seedMapping) Protect(context.Context, uint64, int) error        { return nil }
+func (seedMapping) Map(context.Context, uint64, int, int, int, bool) error { return nil }
+func (seedMapping) MapZero(context.Context, uint64, int) error             { return nil }
+func (seedMapping) Revoke(context.Context, uint64) error                   { return nil }
+func (seedMapping) Resolve(context.Context, uint64, int, bool) error       { return nil }
+func (seedMapping) Protect(context.Context, uint64, int) error             { return nil }
 
 func (b *stalledAttachmentBacking) Verify(ctx context.Context) error {
 	if b.stage == "admission" {

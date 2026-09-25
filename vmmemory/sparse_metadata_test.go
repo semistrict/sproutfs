@@ -2,6 +2,7 @@ package vmmemory_test
 
 import (
 	"context"
+	"fmt"
 	"runtime"
 	"sync"
 	"testing"
@@ -132,7 +133,10 @@ type sparseZeroMapping struct {
 	zeroPages uint64
 }
 
-func (m *sparseZeroMapping) Map(_ context.Context, page uint64, slot, count int, _ bool) error {
+func (m *sparseZeroMapping) Map(_ context.Context, page uint64, file, slot, count int, _ bool) error {
+	if file != 0 {
+		return fmt.Errorf("map of file %d, and this arena has only file 0", file)
+	}
 	for i := range count {
 		m.data[page+uint64(i)] = slot + i
 	}

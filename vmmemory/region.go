@@ -278,9 +278,9 @@ func (r *MemoryRegion) stripe(index uint64) *ctxsync.Mutex {
 // issues is timed in one place. They add a monotonic reading and one atomic
 // increment each and change nothing else: the command, its arguments, its
 // error and its ordering are exactly the interface's.
-func (r *MemoryRegion) mapPages(ctx context.Context, page uint64, slot, count int, writable bool) error {
+func (r *MemoryRegion) mapPages(ctx context.Context, run MapRun, writable bool) error {
 	start := r.host.clock.Now()
-	err := r.mapping.Map(ctx, page, slot, count, writable)
+	err := r.mapping.Map(ctx, run.Page, run.File, run.Slot, run.Count, writable)
 	r.host.mappingLatency.Observe(r.host.clock.Since(start))
 	return err
 }

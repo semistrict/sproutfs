@@ -72,7 +72,10 @@ func newPageMapping(a *pageArena) *pageMapping {
 	return &pageMapping{arena: a, pages: map[uint64]int{}, write: map[uint64]bool{}}
 }
 
-func (m *pageMapping) Map(_ context.Context, page uint64, slot, count int, writable bool) error {
+func (m *pageMapping) Map(_ context.Context, page uint64, file, slot, count int, writable bool) error {
+	if file != 0 {
+		return fmt.Errorf("map of file %d, and this arena has only file 0", file)
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for i := range count {

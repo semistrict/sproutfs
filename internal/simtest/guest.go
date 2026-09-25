@@ -63,9 +63,8 @@ func (a *arena) File(_ context.Context, offsets int) (vmmemory.ArenaFile, error)
 	return f, nil
 }
 
-// mapped is the page one mapping's slot names. A mapping names a slot of file
-// 0, which holds every page. Caller holds a.mu.
-func (a *arena) mapped(slot int) []byte { return a.files[0].slots[slot] }
+// mapped is the page one mapping names: a slot of one file. Caller holds a.mu.
+func (a *arena) mapped(p mapped) []byte { return a.files[p.file].slots[p.slot] }
 
 // at refuses an address this file does not have, which is the check a real
 // file's own bounds make.
@@ -124,9 +123,11 @@ func (f *arenaFile) Release(_ context.Context, slot int) error {
 	return nil
 }
 
+// mapped is what one page of a mapping maps: a slot of one file of the arena,
+// or zeros where slot is -1.
 type mapped struct {
-	slot     int
-	writable bool
+	file, slot int
+	writable   bool
 }
 
 // mapping is one simulated process memory region's page table. Every lookup takes the
@@ -171,7 +172,7 @@ func mappingRuns(pages map[uint64]mapped) int {
 	for i, page := range numbers {
 		if i > 0 {
 			previous, current := pages[numbers[i-1]], pages[page]
-			if numbers[i-1]+1 == page && current.slot == previous.slot+1 &&
+			if numbers[i-1]+1 == page && current.file == previous.file && current.slot == previous.slot+1 &&
 				previous.writable == current.writable {
 				continue
 			}
@@ -181,11 +182,11 @@ func mappingRuns(pages map[uint64]mapped) int {
 	return count
 }
 
-func (m *mapping) Map(_ context.Context, page uint64, slot, count int, writable bool) error {
+func (m *mapping) Map(_ context.Context, page uint64, file, slot, count int, writable bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for i := range count {
-		m.pages[page+uint64(i)] = mapped{slot + i, writable}
+		m.pages[page+uint64(i)] = mapped{file, slot + i, writable}
 	}
 	return nil
 }
@@ -194,7 +195,7 @@ func (m *mapping) MapZero(_ context.Context, page uint64, count int) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for i := range count {
-		m.pages[page+uint64(i)] = mapped{-1, false}
+		m.pages[page+uint64(i)] = mapped{0, -1, false}
 	}
 	return nil
 }
@@ -244,7 +245,7 @@ func (m *mapping) store(page uint64, value byte) bool {
 	}
 	m.arena.mu.Lock()
 	defer m.arena.mu.Unlock()
-	slot := m.arena.mapped(p.slot)
+	slot := m.arena.mapped(p)
 	for i := range slot {
 		slot[i] = value
 	}
@@ -653,7 +654,7 @@ func (g *guest) read(ctx context.Context, name string, page uint64) ([]byte, err
 	}
 	mp.arena.mu.Lock()
 	defer mp.arena.mu.Unlock()
-	return bytes.Clone(mp.arena.mapped(p.slot)), nil
+	return bytes.Clone(mp.arena.mapped(p)), nil
 }
 
 // readAll reads every page of every memory region through this guest's own fault path

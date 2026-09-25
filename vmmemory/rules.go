@@ -362,7 +362,7 @@ func (r *MemoryRegion) makeWhole(ctx context.Context, index uint64) (bool, error
 	h.markWhole(r, index)
 	h.mu.Lock()
 	first, last = h.placedRun(r, index, first, last)
-	slot := h.placedSlot(r, first)
+	at := h.placedSlot(r, first)
 	h.stats.MappingMerges++
 	h.mu.Unlock()
 	// The whole run in one command, which is the point: the mappings the range's
@@ -371,7 +371,7 @@ func (r *MemoryRegion) makeWhole(ctx context.Context, index uint64) (bool, error
 	for page := first; page < last; page++ {
 		r.setMapped(r.binding(page), true)
 	}
-	if err := r.mapPages(ctx, first, slot, count, true); err != nil {
+	if err := r.mapPages(ctx, runAt(first, at, count), true); err != nil {
 		if revoked := replaced.revoke(ctx); revoked != nil {
 			return false, errors.Join(r.fail(err), revoked)
 		}
@@ -380,14 +380,14 @@ func (r *MemoryRegion) makeWhole(ctx context.Context, index uint64) (bool, error
 	return true, replaced.done(ctx)
 }
 
-// placedSlot is the slot the placement rule gives one page, or -1 where its
-// range owns no extent. Caller holds h.mu.
-func (h *Host) placedSlot(r *MemoryRegion, page uint64) int {
+// placedSlot is the slot of r's private file the placement rule gives one page,
+// or slot -1 of it where its range owns no extent. Caller holds h.mu.
+func (h *Host) placedSlot(r *MemoryRegion, page uint64) fileSlot {
 	e := h.extents[extentKey{r, page / uint64(h.extentPages)}]
 	if e == nil {
-		return -1
+		return fileSlot{r.privateFile(), -1}
 	}
-	return h.slotIn(e, page).slot
+	return h.slotIn(e, page)
 }
 
 // privatePages is how many pages of one range this memory region may store into where

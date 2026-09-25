@@ -202,7 +202,10 @@ type mapping struct {
 
 func newMapping(a *arena) *mapping { return &mapping{arena: a, pages: make(map[uint64]mapped)} }
 
-func (m *mapping) Map(_ context.Context, page uint64, slot, count int, writable bool) error {
+func (m *mapping) Map(_ context.Context, page uint64, file, slot, count int, writable bool) error {
+	if file != 0 {
+		return fmt.Errorf("map of file %d, and this arena has only file 0", file)
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for i := range count {

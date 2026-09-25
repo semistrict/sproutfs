@@ -542,7 +542,7 @@ func (p *windowPlan) install(ctx context.Context) (bool, error) {
 				h.touch(p.pages[i+k])
 				p.fresh[i+k] = false
 			}
-			writable = append(writable, MapRun{Page: page, Slot: pg.slot, Count: int(run)})
+			writable = append(writable, runAt(page, pg.fileSlot, int(run)))
 			h.mu.Lock()
 			h.stats.MappedPages += run
 			h.mu.Unlock()
@@ -561,7 +561,6 @@ func (p *windowPlan) install(ctx context.Context) (bool, error) {
 		if pg != nil {
 			at = pg.fileSlot
 		}
-		slot := at.slot
 		run := uint64(1)
 		for page+run < p.end {
 			next := p.pages[i+run]
@@ -573,6 +572,7 @@ func (p *windowPlan) install(ctx context.Context) (bool, error) {
 		}
 		if zero {
 			r.mapZeros(page, page+run) // retain possible zero mappings on an ambiguous ACK
+			runs = append(runs, MapRun{Page: page, Count: int(run), Zero: true})
 		} else {
 			for k := range run {
 				r.setMapped(r.binding(page+k), true)
@@ -580,8 +580,8 @@ func (p *windowPlan) install(ctx context.Context) (bool, error) {
 					h.touch(pg)
 				}
 			}
+			runs = append(runs, runAt(page, at, int(run)))
 		}
-		runs = append(runs, MapRun{Page: page, Slot: slot, Count: int(run), Zero: zero})
 		h.mu.Lock()
 		h.stats.MappedPages += run
 		h.mu.Unlock()
@@ -602,7 +602,7 @@ func (p *windowPlan) install(ctx context.Context) (bool, error) {
 				if run.Zero {
 					err = r.mapZeroPages(ctx, run.Page, run.Count)
 				} else {
-					err = r.mapPages(ctx, run.Page, run.Slot, run.Count, false)
+					err = r.mapPages(ctx, run, false)
 				}
 				if err != nil {
 					// The runs before this one are commands that landed.
@@ -618,7 +618,7 @@ func (p *windowPlan) install(ctx context.Context) (bool, error) {
 			runs: uint64(mappingRuns), pages: pagesOf(runs)})
 	}
 	for _, run := range writable {
-		if err := r.mapPages(ctx, run.Page, run.Slot, run.Count, true); err != nil {
+		if err := r.mapPages(ctx, run, true); err != nil {
 			return false, r.mappingFailed(err, func() { r.unmapRuns([]MapRun{run}) })
 		}
 		h.mu.Lock()

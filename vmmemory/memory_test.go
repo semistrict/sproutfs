@@ -201,10 +201,13 @@ type mapping struct {
 
 // Map replaces whatever the pages had with the slots, atomically, as the
 // client's mremap does. A slot must hold contents: Linux cannot install a
-// punched one.
-func (m *mapping) Map(_ context.Context, page uint64, slot, count int, writable bool) error {
+// punched one. This arena is one file, file 0, which holds every page.
+func (m *mapping) Map(_ context.Context, page uint64, file, slot, count int, writable bool) error {
 	if m.onMap != nil {
 		m.onMap(page, count)
+	}
+	if file != 0 {
+		return fmt.Errorf("map of file %d, and this arena has only file 0", file)
 	}
 	if m.refuseMap {
 		return vmmemory.ErrMappingRefused

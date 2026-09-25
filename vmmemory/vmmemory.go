@@ -294,7 +294,8 @@ func ParseArenaMode(name string) (ArenaMode, error) {
 }
 
 // Mapping controls one process memory region. Map installs already armed mappings for
-// count consecutive pages backed by count consecutive arena slots; Revoke
+// count consecutive pages backed by count consecutive slots of one arena file,
+// which it names by number; Revoke
 // installs a missing-fault trap. Both wait for acknowledgement and drain
 // transient kernel users before returning. Long-lived external pins are not
 // permitted. Errors can be ambiguous, so Host retains all possibly mapped slots
@@ -302,7 +303,7 @@ func ParseArenaMode(name string) (ArenaMode, error) {
 // count consecutive mapped pages and completes any trapped access to them.
 // Callbacks must not call Host or MemoryRegion methods recursively.
 type Mapping interface {
-	Map(ctx context.Context, page uint64, slot, count int, writable bool) error
+	Map(ctx context.Context, page uint64, file, slot, count int, writable bool) error
 	// MapZero installs read-only, first-write-trapped zeros without arena slots.
 	MapZero(ctx context.Context, page uint64, count int) error
 	Revoke(ctx context.Context, page uint64) error
@@ -316,10 +317,19 @@ type Mapping interface {
 	Protect(ctx context.Context, page uint64, count int) error
 }
 
+// MapRun is Count pages from Page, mapped from Count consecutive slots from
+// Slot of the arena file numbered File, or explicit zeros.
 type MapRun struct {
 	Page        uint64
+	File        int
 	Slot, Count int
 	Zero        bool // explicit sparse/discarded zero backing, never inferred from bytes
+}
+
+// runAt is the run of count pages from page that count slots of one file
+// from at back.
+func runAt(page uint64, at fileSlot, count int) MapRun {
+	return MapRun{Page: page, File: at.file.number, Slot: at.slot, Count: count}
 }
 
 // BatchMapping installs disjoint read-only runs with bounded command overhead.

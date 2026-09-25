@@ -166,14 +166,14 @@ func (h *Host) placeRun(r *MemoryRegion, index, first, last uint64) (uint64, []M
 	if !ok {
 		return 0, nil
 	}
-	runs := []MapRun{{Page: from, Slot: base, Count: int(to - from)}}
+	runs := []MapRun{runAt(from, base, int(to-from))}
 	for to < last {
 		end := min(last, to+span)
 		base, ok := h.placePages(r, to, end)
 		if !ok {
 			break
 		}
-		runs = append(runs, MapRun{Page: to, Slot: base, Count: int(end - to)})
+		runs = append(runs, runAt(to, base, int(end-to)))
 		to = end
 	}
 	for from > first {
@@ -182,7 +182,7 @@ func (h *Host) placeRun(r *MemoryRegion, index, first, last uint64) (uint64, []M
 		if !ok {
 			break
 		}
-		runs = append([]MapRun{{Page: start, Slot: base, Count: int(from - start)}}, runs...)
+		runs = append([]MapRun{runAt(start, base, int(from-start))}, runs...)
 		from = start
 	}
 	return from, mergeRuns(runs)
@@ -192,7 +192,7 @@ func (h *Host) placeRun(r *MemoryRegion, index, first, last uint64) (uint64, []M
 // them at consecutive offsets of that range's extent. It reports the first of
 // those offsets. A page it cannot place undoes the pages before it, so the
 // caller gets the whole sub-run or nothing. Caller holds h.mu.
-func (h *Host) placePages(r *MemoryRegion, from, to uint64) (int, bool) {
+func (h *Host) placePages(r *MemoryRegion, from, to uint64) (fileSlot, bool) {
 	base := fileSlot{slot: -1}
 	for page := from; page < to; page++ {
 		at, _ := h.place(r, page)
@@ -200,22 +200,22 @@ func (h *Host) placePages(r *MemoryRegion, from, to uint64) (int, bool) {
 			for undo := from; undo < page; undo++ {
 				h.putFree(base.plus(int(undo - from)))
 			}
-			return 0, false
+			return fileSlot{}, false
 		}
 		if base.slot < 0 {
 			base = at
 		}
 	}
-	return base.slot, base.slot >= 0
+	return base, base.slot >= 0
 }
 
-// mergeRuns joins runs whose pages and whose offsets both continue, which is
-// what two extents the offset space handed out consecutively come to.
+// mergeRuns joins runs whose pages and whose offsets in one file both continue,
+// which is what two extents the offset space handed out consecutively come to.
 func mergeRuns(runs []MapRun) []MapRun {
 	merged := runs[:1]
 	for _, run := range runs[1:] {
 		last := &merged[len(merged)-1]
-		if last.Page+uint64(last.Count) == run.Page && last.Slot+last.Count == run.Slot {
+		if last.Page+uint64(last.Count) == run.Page && last.File == run.File && last.Slot+last.Count == run.Slot {
 			last.Count += run.Count
 			continue
 		}

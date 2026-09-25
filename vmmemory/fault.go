@@ -237,11 +237,11 @@ func (r *MemoryRegion) fault(ctx context.Context, index uint64, write bool, spil
 	for page := first; page < last; page++ {
 		r.setMapped(r.binding(page), true) // a failed ACK may still have installed the mapping
 	}
-	slot, count := pg.slot-int(index-first), int(last-first)
+	count := int(last - first)
 	// One command for the run, and it replaces what the guest had: the copies go
 	// where the pages they were made from were mapped, so nothing was taken away
 	// first and nothing is left without a mapping in between.
-	if err := r.mapPages(ctx, first, slot, count, true); err != nil {
+	if err := r.mapPages(ctx, runAt(first, pg.plus(-int(index-first)), count), true); err != nil {
 		// It did not land, so the guest goes on mapping the pages this store
 		// copied from while their memory is about to go back. Taking those
 		// mappings away is the one revocation a store ever issues.
@@ -644,7 +644,7 @@ func (r *MemoryRegion) storeZeros(ctx context.Context, index, first, last uint64
 	h.stats.WriteAheadPages += uint64(count - 1)
 	h.mu.Unlock()
 	for _, run := range runs {
-		if err := r.mapPages(ctx, run.Page, run.Slot, run.Count, true); err != nil {
+		if err := r.mapPages(ctx, run, true); err != nil {
 			return r.mappingFailed(err, func() { r.unmapPages(first, count) })
 		}
 	}
@@ -698,14 +698,14 @@ func (r *MemoryRegion) allocateRun(ctx context.Context, index, first, last uint6
 		}
 		if at, count := h.allocateFreeFrom(prefer, int(last-first)); count > 0 {
 			start, _ := around(index, first, last, count)
-			return start, []MapRun{{Page: start, Slot: at.slot, Count: count}}, nil
+			return start, []MapRun{runAt(start, at, count)}, nil
 		}
 	}
 	at, err := r.reclaimPrivate(ctx, index)
 	if err != nil {
 		return 0, nil, err
 	}
-	return index, []MapRun{{Page: index, Slot: at.slot, Count: 1}}, nil
+	return index, []MapRun{runAt(index, at, 1)}, nil
 }
 
 // loadAttempts bounds how often a fault retries after losing a publication race
@@ -756,7 +756,7 @@ func (r *MemoryRegion) loadOnce(ctx context.Context, index uint64, spill *int) (
 		h.touch(pg)
 		if !b.mapped {
 			r.setMapped(b, true)
-			if err := r.mapPages(ctx, index, pg.slot, 1, b.writable()); err != nil {
+			if err := r.mapPages(ctx, runAt(index, pg.fileSlot, 1), b.writable()); err != nil {
 				return false, r.mappingFailed(err, func() { r.setMapped(b, false) })
 			}
 		}
@@ -811,7 +811,7 @@ func (r *MemoryRegion) loadOnce(ctx context.Context, index uint64, spill *int) (
 		h.probe.granted(b, pg, nil)
 		h.touch(pg)
 		r.setMapped(b, true)
-		if err := r.mapPages(ctx, index, pg.slot, 1, b.writable()); err != nil {
+		if err := r.mapPages(ctx, runAt(index, pg.fileSlot, 1), b.writable()); err != nil {
 			return false, r.mappingFailed(err, func() { r.setMapped(b, false) })
 		}
 		if err := r.resolvePages(ctx, index, 1, b.writable()); err != nil {

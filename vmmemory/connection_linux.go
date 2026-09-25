@@ -416,10 +416,16 @@ func (c *Connection) giveUp(id uint64) {
 
 // frames appends one frame of the given kind per span of the run whose pages
 // share a generation, since the protocol advances every page of a frame from
-// the same one. Caller holds the mapping lock.
+// the same one. A MAP names the file of the run's slots, and only the private
+// file may be mapped writable: the client refuses anything else. Caller holds
+// the mapping lock.
 func (m *remoteMapping) frames(frames []vmwire.Frame, kind uint64, run MapRun, writable bool) ([]vmwire.Frame, error) {
 	if run.Count < 1 || run.Page >= m.pageCount || uint64(run.Count) > m.pageCount-run.Page {
 		return nil, ErrRange
+	}
+	if kind == vmwire.MapRange && (run.File < 0 || (writable && run.File != vmwire.PrivateFile)) {
+		return nil, fmt.Errorf("%w: a map of file %d writable=%t, and only file %d is writable",
+			ErrRange, run.File, writable, vmwire.PrivateFile)
 	}
 	size := m.pageSize
 	for done := 0; done < run.Count; {
@@ -432,9 +438,8 @@ func (m *remoteMapping) frames(frames []vmwire.Frame, kind uint64, run MapRun, w
 		f := vmwire.Frame{Kind: kind, Offset: page * size, Length: uint64(count) * size, Generation: state.Generation + 1}
 		switch kind {
 		case vmwire.MapRange:
-			// Every page is in the arena, which is the session's private file.
 			f.Backing = uint64(run.Slot+done) * size
-			f.Flags = vmwire.MapFlags(vmwire.PrivateFile, !writable)
+			f.Flags = vmwire.MapFlags(uint64(run.File), !writable)
 		case vmwire.MapZero:
 			f.Flags = vmwire.Immutable
 		}
@@ -491,20 +496,20 @@ func (m *remoteMapping) commit(ctx context.Context, frames []vmwire.Frame) (comm
 }
 
 // change replaces one run of pages with a single mapping kind.
-func (m *remoteMapping) change(ctx context.Context, page uint64, slot, count int, writable bool, kind uint64) error {
+func (m *remoteMapping) change(ctx context.Context, run MapRun, writable bool, kind uint64) error {
 	if err := m.mu.Lock(ctx); err != nil {
 		return err
 	}
 	defer m.mu.Unlock()
-	frames, err := m.frames(nil, kind, MapRun{Page: page, Slot: slot, Count: count}, writable)
+	frames, err := m.frames(nil, kind, run, writable)
 	if err != nil {
 		return err
 	}
 	_, _, err = m.commit(ctx, frames)
 	return err
 }
-func (m *remoteMapping) Map(ctx context.Context, page uint64, slot, count int, writable bool) error {
-	return m.change(ctx, page, slot, count, writable, vmwire.MapRange)
+func (m *remoteMapping) Map(ctx context.Context, page uint64, file, slot, count int, writable bool) error {
+	return m.change(ctx, MapRun{Page: page, File: file, Slot: slot, Count: count}, writable, vmwire.MapRange)
 }
 
 func (m *remoteMapping) MapZero(ctx context.Context, page uint64, count int) error {
@@ -543,7 +548,7 @@ func (m *remoteMapping) batch(ctx context.Context, runs []MapRun, revoke bool) (
 	return m.commit(ctx, frames)
 }
 func (m *remoteMapping) Revoke(ctx context.Context, page uint64) error {
-	return m.change(ctx, page, 0, 1, false, vmwire.Revoke)
+	return m.change(ctx, MapRun{Page: page, Count: 1}, false, vmwire.Revoke)
 }
 
 // Protect write-protects a whole run in place with one UFFD ioctl. It sends no
