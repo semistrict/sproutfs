@@ -5,6 +5,7 @@ package vmmachine_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -22,18 +23,17 @@ import (
 )
 
 // placedStarter is a Starter the way a program that embeds a host writes one:
-// the process's directory where it chooses, named by the VMM through another
-// path, owned by another user, and a device of its own beside the managed
-// memory — a read-only PMEM file, as a tools image is. The other path is a
-// symbolic link to the directory, which is what a chroot's view of it is to a
-// VMM that has none.
+// the VMM runs as a jailer leaves it, chrooted and as another user, with the
+// process's directory inside the chroot and a device of its own beside the
+// managed memory — a read-only PMEM file, as a tools image is. Only paths
+// inside the chroot resolve for the VMM, so a host path given to it fails.
 type placedStarter struct {
-	binary, seccomp, kernel string
-	// hosts holds each process's directory and views the path the VMM is given
-	// for it; tools is the plain file behind the extra PMEM device.
-	hosts, views, tools string
-	owner               vmmachine.Owner
-	launches            []startedLaunch
+	// jail is the chroot on the host. Its root holds the VMM, its seccomp
+	// filter, the kernel and the tools image, and vms the directory of every
+	// process.
+	jail     string
+	owner    vmmachine.Owner
+	launches []startedLaunch
 }
 
 // startedLaunch is what one Start was asked and what it prepared.
@@ -63,25 +63,22 @@ func (s *placedStarter) Boots() bool { return true }
 
 func (s *placedStarter) Start(ctx context.Context, launch *vmmachine.Launch) (vmmachine.VMM, error) {
 	name := fmt.Sprintf("%s-%d", launch.VM(), len(s.launches))
-	host, view := filepath.Join(s.hosts, name), filepath.Join(s.views, name)
-	memory, err := launch.Prepare(ctx, vmmachine.Placement{Directory: host, Within: view, Owner: &s.owner})
+	host := filepath.Join(s.jail, "vms", name)
+	memory, err := launch.Prepare(ctx, vmmachine.Placement{Directory: host, Within: "/vms/" + name, Owner: &s.owner})
 	if err != nil {
 		return nil, err
 	}
-	if err := os.Symlink(host, view); err != nil {
-		return nil, err
-	}
 	vsock, vsockWithin := memory.Path("guest.vsock")
-	args := []string{"--api-sock", memory.APISocket, "--seccomp-filter", s.seccomp}
+	args := []string{"--api-sock", memory.APISocket, "--seccomp-filter", "/seccomp.bpf"}
 	if launch.Restore() {
 		memory.Load["vsock_override"] = map[string]any{"uds_path": vsockWithin}
 	} else {
 		document := map[string]any{
 			"machine-config": map[string]any{"vcpu_count": 1},
-			"boot-source":    map[string]any{"kernel_image_path": s.kernel, "boot_args": guestPmemBootArgs},
+			"boot-source":    map[string]any{"kernel_image_path": "/kernel", "boot_args": guestPmemBootArgs},
 			"drives":         []any{},
 			"vsock":          map[string]any{"guest_cid": guestVsockCID, "uds_path": vsockWithin},
-			"pmem":           []any{map[string]any{"id": "tools", "path_on_host": s.tools, "read_only": true}},
+			"pmem":           []any{map[string]any{"id": "tools", "path_on_host": "/tools.img", "read_only": true}},
 		}
 		if err := memory.Configure(document); err != nil {
 			return nil, err
@@ -100,7 +97,13 @@ func (s *placedStarter) Start(ctx context.Context, launch *vmmachine.Launch) (vm
 	if err != nil {
 		return nil, err
 	}
-	child, err := vmmachine.Spawn(exec.Command(s.binary, args...), vsock)
+	// The chroot and the change of user happen in the child before its exec,
+	// so the process started is the VMM itself, as a jailer that execs leaves it.
+	command := exec.Command("/firecracker", args...)
+	command.Dir = "/"
+	command.SysProcAttr = &syscall.SysProcAttr{Chroot: s.jail,
+		Credential: &syscall.Credential{Uid: uint32(s.owner.UID), Gid: uint32(s.owner.GID)}}
+	child, err := vmmachine.Spawn(command, vsock)
 	if err != nil {
 		return nil, err
 	}
@@ -110,9 +113,102 @@ func (s *placedStarter) Start(ctx context.Context, launch *vmmachine.Launch) (vm
 	return counted, nil
 }
 
+// newJail builds the chroot a jailer builds for the VMM: the binary and the
+// shared libraries it loads, its seccomp filter, the kernel and the tools image
+// at the root, the KVM and userfaultfd devices given to the VMM's user, and an
+// empty vms directory. The files are hard links where the host allows them.
+func newJail(t *testing.T, owner vmmachine.Owner) string {
+	t.Helper()
+	jail := filepath.Join(t.TempDir(), "jail")
+	for _, dir := range []string{jail, filepath.Join(jail, "dev"), filepath.Join(jail, "vms")} {
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	binary := os.Getenv("SPROUTFS_FIRECRACKER")
+	jailFile(t, binary, filepath.Join(jail, "firecracker"))
+	jailFile(t, os.Getenv("SPROUTFS_FIRECRACKER_SECCOMP"), filepath.Join(jail, "seccomp.bpf"))
+	jailFile(t, os.Getenv("SPROUTFS_FIRECRACKER_KERNEL"), filepath.Join(jail, "kernel"))
+	for _, library := range sharedLibraries(t, binary) {
+		inside := filepath.Join(jail, library)
+		if err := os.MkdirAll(filepath.Dir(inside), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		jailFile(t, library, inside)
+	}
+	// Firecracker maps a PMEM file in whole 2 MiB pages.
+	if err := os.WriteFile(filepath.Join(jail, "tools.img"), make([]byte, 2<<20), 0o444); err != nil {
+		t.Fatal(err)
+	}
+	for _, device := range []string{"/dev/kvm", "/dev/userfaultfd"} {
+		var stat syscall.Stat_t
+		if err := syscall.Stat(device, &stat); err != nil {
+			t.Fatal(err)
+		}
+		inside := filepath.Join(jail, device)
+		if err := syscall.Mknod(inside, syscall.S_IFCHR|0o600, int(stat.Rdev)); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chown(inside, owner.UID, owner.GID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return jail
+}
+
+// jailFile puts the file behind path at inside: a hard link, or a copy when the
+// two are on different file systems.
+func jailFile(t *testing.T, path, inside string) {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = os.Link(resolved, inside)
+	if err == nil {
+		return
+	}
+	if !errors.Is(err, syscall.EXDEV) {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(resolved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(inside, data, info.Mode().Perm()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// sharedLibraries is every library the dynamic loader maps for binary, the
+// loader itself included, by its path on this host.
+func sharedLibraries(t *testing.T, binary string) []string {
+	t.Helper()
+	output, err := exec.Command("ldd", binary).Output()
+	if err != nil {
+		t.Fatalf("ldd %s: %v", binary, err)
+	}
+	var libraries []string
+	for line := range strings.Lines(string(output)) {
+		for _, field := range strings.Fields(line) {
+			if strings.HasPrefix(field, "/") {
+				libraries = append(libraries, field)
+				break
+			}
+		}
+	}
+	return libraries
+}
+
 // TestAStarterPlacesTheVMMAndItsDevices: a VM whose Starter is not this
 // package's own runs where the Starter put it, on the paths it gave the VMM,
 // with the device it added, and comes back from a checkpoint the same way. The
+// VMM runs in a chroot as the placement's user, so it reaches its memory only
+// through the paths within the chroot and the sockets given to that user. The
 // guest's agent answers over the vsock the Starter owns, both after the boot
 // and after the restore, and the restore sees the Starter's plain PMEM file as
 // the boot did.
@@ -123,20 +219,8 @@ func TestAStarterPlacesTheVMMAndItsDevices(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 6*time.Minute)
 	defer cancel()
-	work := t.TempDir()
-	starter := &placedStarter{binary: binary, seccomp: os.Getenv("SPROUTFS_FIRECRACKER_SECCOMP"),
-		kernel: os.Getenv("SPROUTFS_FIRECRACKER_KERNEL"),
-		hosts:  filepath.Join(work, "hosts"), views: filepath.Join(work, "views"),
-		tools: filepath.Join(work, "tools.img"), owner: vmmachine.Owner{UID: 65534, GID: 65534}}
-	for _, dir := range []string{starter.hosts, starter.views} {
-		if err := os.Mkdir(dir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	// Firecracker maps a PMEM file in whole 2 MiB pages.
-	if err := os.WriteFile(starter.tools, make([]byte, 2<<20), 0o444); err != nil {
-		t.Fatal(err)
-	}
+	owner := vmmachine.Owner{UID: 65534, GID: 65534}
+	starter := &placedStarter{jail: newJail(t, owner), owner: owner}
 
 	cluster := newMigrationCluster(t, ctx)
 	vm, err := cluster.source.Create(ctx, "placed", []volume.VolumeSpec{
@@ -159,7 +243,7 @@ func TestAStarterPlacesTheVMMAndItsDevices(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = p.Close() })
 	booted := starter.launches[0]
-	checkPlaced(t, p, booted, filepath.Join(starter.hosts, "placed-0"), filepath.Join(starter.views, "placed-0"))
+	checkPlaced(t, p, booted, filepath.Join(starter.jail, "vms", "placed-0"), "/vms/placed-0")
 	waitLine(t, ctx, p, "SPROUTFS_READY ram=7 disk=0 dax=1 root=pmem", 0)
 	waitLine(t, ctx, p, fmt.Sprintf("sproutfs-guest-agent: serving on vsock port %d", guest.Port), 0)
 	checkToolsDevice(t, ctx, p)
@@ -204,8 +288,7 @@ func TestAStarterPlacesTheVMMAndItsDevices(t *testing.T) {
 	if err := restored.Release(ctx); err != nil {
 		t.Fatal(err)
 	}
-	checkPlaced(t, restored, starter.launches[1],
-		filepath.Join(starter.hosts, "restored-1"), filepath.Join(starter.views, "restored-1"))
+	checkPlaced(t, restored, starter.launches[1], filepath.Join(starter.jail, "vms", "restored-1"), "/vms/restored-1")
 	if !starter.launches[1].restore {
 		t.Fatal("the Starter was not told the second launch restores")
 	}
