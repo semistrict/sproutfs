@@ -499,6 +499,21 @@ region must read the published bytes from its volume. The owner must end with
 `ErrTampered`, and `Stats.Tampered` must be one. A Linux test does the same with
 a real client and a writer mapping of the private file.
 
+## A switch, and one measurement at the end
+
+The owner accepted the recommendations below and asked for the split to be
+built behind a switch. `SPROUTFS_ARENA_ISOLATION` (`vmmemory.Config.Isolation`)
+is `shared`, the single read-write arena of today, or `trust`, the split. It is
+`shared` by default until the measurement says otherwise. The pager and the
+protocol run either mode on the same build, so one GCE run measures both on the
+same workloads: fan-out time to first output, checkpoint pause, upload time and
+CPU, restore time, mappings per guest, and the memory sharing saves. The page
+digest is BLAKE3 rather than SHA-256, because it is several times faster per
+core and as hard to forge.
+
+Every step below keeps `shared` exactly as it is today: its suites pass
+unchanged. Steps 2 and 3 add no behaviour to `trust` beyond what they need.
+
 ## Steps
 
 Each step lands on main with every suite passing.

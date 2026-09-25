@@ -5,9 +5,8 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-09-25 18:17'
-updated_date: '2026-09-25 22:26'
+updated_date: '2026-09-25 23:02'
 labels:
-  - needs-owner
   - security
 dependencies: []
 references:
@@ -28,7 +27,7 @@ This undoes what the jailer is for, so it blocks running untrusted tenants. The 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The owner has decided whether and when to do it
+- [x] #1 The owner has decided whether and when to do it
 - [x] #2 A plan for the split is in plans/
 <!-- AC:END -->
 
@@ -36,4 +35,6 @@ This undoes what the jailer is for, so it blocks running untrusted tenants. The 
 
 <!-- SECTION:NOTES:BEGIN -->
 Plan: plans/arena-by-trust-2026-09-25.md. Waiting on the owner's five decisions at its end.
+
+2026-09-25: owner said build it behind a switch (SPROUTFS_ARENA_ISOLATION=shared|trust), accepting the recommendations; BLAKE3 for the digest; one GCE run at the end measures both modes.
 <!-- SECTION:NOTES:END -->
