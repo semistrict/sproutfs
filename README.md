@@ -23,7 +23,7 @@ these objects permanently:
 - the pinned checkpoints that a deleted VM leaves behind.
 
 Deleting a VM reclaims only checkpoints that no fork was taken from. See
-[open work](docs/open-work.md#correctness-and-unbounded-growth).
+TASK-24 in the [backlog](backlog/tasks).
 
 ## What it does
 

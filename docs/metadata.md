@@ -40,7 +40,7 @@ Neither the grandparent's record nor the child's record shows this. A release
 based on one descendant's view is a guess. A wrong guess deletes a checkpoint
 that another descendant still reads, without that descendant being consulted.
 So releasing a pin is a job for a collector, which can survey every record and
-every root in the deployment. See [open work](open-work.md).
+every root in the deployment. See TASK-24 in the [backlog](../backlog/tasks).
 
 One pin covers every child of one fork point, and repeating a pin writes
 nothing. So a fan-out of any size costs one pin. But a VM forked at many

@@ -14,4 +14,5 @@ hosts, and they can be forked without copying. Start with the architecture.
 - [The demo](demo.md): the five flows on one disposable GCE VM, in three commands.
 - [What a checkpoint costs under a workload](measurements-2026-09-14-workload.md): object-store traffic per checkpoint under a guest that searches, installs and builds.
 - [Measurement reports](measurements/README.md): the dated reports behind the numbers quoted elsewhere.
-- [Open work](open-work.md): the open engineering items.
+- [Backlog](../backlog/tasks): the open work, one Backlog.md task per file. Run `backlog board` or `backlog task list --plain`.
+- [Fixed defects and notes](open-work.md): defects kept for reference, and notes for running the qualification.

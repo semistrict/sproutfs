@@ -539,7 +539,7 @@ func TestAGuestFloodingItsVsockLeavesTheHostsExec(t *testing.T) {
 // writes age past the same window. Both must go on answering.
 //
 // It fails on the aarch64 Lima instance, and the defect is not fixed: see
-// docs/open-work.md. A store the window holds keeps its vCPU inside a
+// TASK-1 in backlog/tasks. A store the window holds keeps its vCPU inside a
 // userfault. The checkpoint that would end the wait has to pause that vCPU
 // first, and the pause's signal does not bring it out. Firecracker gives up on
 // the pause after 30 seconds, and the loop then backs off without answering the

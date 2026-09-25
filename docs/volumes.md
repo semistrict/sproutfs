@@ -744,7 +744,7 @@ forked from that child reads the grandparent's checkpoints through its own root,
 and neither the child nor the grandparent can see that. So a release based on
 one descendant's view cannot be correct. Releasing a pin is a job for a
 collector, which can survey every record and root in the deployment. See
-[open work](open-work.md). Until a collector exists, a fork permanently costs
+TASK-24 in the [backlog](../backlog/tasks). Until a collector exists, a fork permanently costs
 its parent the checkpoint it was taken at. A parent forked at many distinct
 checkpoints uses one of `MaximumPins` (4096) for each.
 

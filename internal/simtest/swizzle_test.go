@@ -134,7 +134,7 @@ func runSwizzleCampaign(t *testing.T, seed uint64) *sim.Runtime {
 	// of the same handoff — and it has to succeed before those retries run
 	// out, because a link the swizzle separated is a link that heals inside
 	// the window. The retrying is this campaign's: a deployment's drain tries
-	// the receive once, which docs/open-work.md records.
+	// the receive once, which TASK-14 in backlog/tasks records.
 	took := world.Takeovers()
 	if err := world.MigrateWith(ctx, swizzleGuestID, 1,
 		simtest.Handover{Attempts: 64, Pause: swizzleWindow / 32}); err != nil {

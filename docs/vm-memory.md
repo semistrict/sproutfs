@@ -985,8 +985,8 @@ the page. This is a pager rule, so it applies to RAM and PMEM.
 
 The settle does not prevent the copy. Between the fault and the next checkpoint,
 the host holds the page twice. Preventing that needs a host kernel that passes
-the guest's access type through, or KVM userfault. Both are recorded in
-[open-work.md](open-work.md).
+the guest's access type through, or KVM userfault. Both are TASK-32 in the
+[backlog](../backlog/tasks).
 
 The publication retires the seal. A sealed set whose checkpoint was selected
 retires as published:
@@ -1370,8 +1370,8 @@ pager, and the host process keeps no descriptor of it.
 beside a well-behaved process on the same pager, and `FuzzHostileSession` plays
 arbitrary sequences of them. The pager does not bound how much work a VMM can
 cause by faulting its own memory over and over. And the arena's descriptor
-gives a VMM more than the protocol does: see
-[open-work.md](open-work.md).
+gives a VMM more than the protocol does: see TASK-2 in the
+[backlog](../backlog/tasks).
 
 So a rejected command is the only failure known to have changed nothing. The
 pager treats it as a failed operation, not a failed session. In practice, the
@@ -1877,7 +1877,7 @@ its arena. The loads are:
   stopped, with the logged reason, and the neighbour must not.
 - A small `hog disk` past a two-second loss window, which only checkpoints out
   of turn relieve. This one fails on aarch64 Lima today; see
-  [open work](open-work.md).
+  TASK-1 in the [backlog](../backlog/tasks).
 - `hog sync`, an fsync loop. It may cost at most one checkpoint of the storming
   guest per flush bound beside the interval's own, and the neighbour's flushes
   must complete.

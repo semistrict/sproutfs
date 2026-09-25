@@ -1,7 +1,7 @@
 # Plans
 
 One status line per plan: what is done, what is open. The open engineering work
-across all of them is collected in [open-work.md](../docs/open-work.md).
+across all of them is in the [backlog](../backlog/tasks), one task per file.
 
 ## Designs under way
 

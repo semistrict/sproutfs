@@ -43,7 +43,7 @@ import (
 //
 // The protocol is not all a VMM is given. The attachment hands it the arena's
 // descriptor, and a VMM can write through that to any page of the arena. These
-// tests do not cover that. See docs/open-work.md.
+// tests do not cover that. See TASK-2 in backlog/tasks.
 
 const (
 	// hostilePage is the page every memory region here runs: RAM's, over an
