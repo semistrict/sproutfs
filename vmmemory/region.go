@@ -75,6 +75,14 @@ type MemoryRegion struct {
 	// set and read under the memory region lock, like closed.
 	handed   bool
 	hasZeros bool // protected by Host.mu; contributes one zeroMemoryRegions reference
+	// resident is how many resident pages this memory region's bindings map,
+	// and wanted the pager's count of displaced pages when it last asked for a
+	// page. Both
+	// are protected by Host.mu, like the alias sets resident counts. An
+	// eviction reads them to leave a memory region within its share of the
+	// arena its pages: see Host.protectedLocked.
+	resident int
+	wanted   uint64
 	// stopping marks a memory region whose owner has agreed to stop its VM for a
 	// bound nothing else could relieve. It is protected by Host.mu. The owner is
 	// asked once, and the pages the memory region holds come back when it
@@ -413,7 +421,7 @@ func (r *MemoryRegion) reclaim(ctx context.Context) (int, error) {
 	var slot int
 	err := r.withoutMemoryRegion(ctx, func() error {
 		var err error
-		slot, err = r.host.allocate(ctx, nil, sim.Buggify(ctx, "vmmemory/evict-past-a-free-slot", 0.5))
+		slot, err = r.host.allocate(ctx, r, nil, sim.Buggify(ctx, "vmmemory/evict-past-a-free-slot", 0.5))
 		return err
 	})
 	return slot, err

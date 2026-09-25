@@ -13,24 +13,36 @@ type aliasSet struct {
 	more map[*binding]struct{}
 }
 
-func (a *aliasSet) add(b *binding) {
+// add reports whether b was not an alias already.
+func (a *aliasSet) add(b *binding) bool {
 	switch {
 	case a.more != nil:
+		if _, ok := a.more[b]; ok {
+			return false
+		}
 		a.more[b] = struct{}{}
-	case a.one == nil || a.one == b:
+	case a.one == b:
+		return false
+	case a.one == nil:
 		a.one = b
 	default:
 		a.more = map[*binding]struct{}{a.one: {}, b: {}}
 		a.one = nil
 	}
+	return true
 }
 
-func (a *aliasSet) remove(b *binding) {
+// remove reports whether b was an alias.
+func (a *aliasSet) remove(b *binding) bool {
 	if a.more == nil {
-		if a.one == b {
-			a.one = nil
+		if a.one != b {
+			return false
 		}
-		return
+		a.one = nil
+		return true
+	}
+	if _, ok := a.more[b]; !ok {
+		return false
 	}
 	delete(a.more, b)
 	if len(a.more) == 1 {
@@ -39,6 +51,7 @@ func (a *aliasSet) remove(b *binding) {
 		}
 		a.more = nil
 	}
+	return true
 }
 
 func (a *aliasSet) len() int {
@@ -50,8 +63,6 @@ func (a *aliasSet) len() int {
 	}
 	return 0
 }
-
-func (a *aliasSet) clear() { *a = aliasSet{} }
 
 // all yields every alias once, in no particular order.
 func (a *aliasSet) all() iter.Seq[*binding] {

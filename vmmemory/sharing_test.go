@@ -544,8 +544,8 @@ func TestSharingASealedPageLeavesItSpilledByItsSeal(t *testing.T) {
 		if err := parent.Checkpoint(t.Context()); err != nil {
 			t.Fatal(err)
 		}
-		// Three pages: the parent's sealed page and two of the child's leave
-		// the next fault of the child nothing free.
+		// Three pages, so each memory region's share is one. The parent's own
+		// faults past its share take its oldest page, which is the sealed one.
 		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 3, LogicalPages: 32, DirtyPages: 8, ReadAheadPages: 1})
 		pr, pm := f.attach(parent.Volume("ram0"))
 		access(t, pr, pm, 1, true)[0] = 91
@@ -567,8 +567,8 @@ func TestSharingASealedPageLeavesItSpilledByItsSeal(t *testing.T) {
 			t.Fatal("the child did not read the sealed page")
 		}
 		for _, page := range []uint64{2, 3, 0} {
-			if got := access(t, cr, cm, page, false)[0]; got != byte(page+1) {
-				t.Fatalf("the child read %d from page %d", got, page)
+			if got := access(t, pr, pm, page, false)[0]; got != byte(page+1) {
+				t.Fatalf("the parent read %d from page %d", got, page)
 			}
 		}
 		stats, err := f.h.Stats(t.Context())

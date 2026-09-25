@@ -149,7 +149,7 @@ func (r *MemoryRegion) allocatePrivate(ctx context.Context, index uint64) (int, 
 	if !placeable {
 		return r.allocateNear(ctx, index)
 	}
-	return h.allocate(ctx, func() int {
+	return h.allocate(ctx, r, func() int {
 		slot, _ := h.place(r, index)
 		return slot
 	}, sim.Buggify(ctx, "vmmemory/evict-past-a-free-slot", 0.5))
@@ -168,7 +168,7 @@ func (r *MemoryRegion) allocateNear(ctx context.Context, index uint64) (int, err
 	// paths at all: a pager sized to hold its whole guest never evicts, so
 	// nothing ever overlaps an eviction with a publication or a seal.
 	if preferEviction := sim.Buggify(ctx, "vmmemory/evict-past-a-free-slot", 0.5); preferEviction {
-		return h.allocate(ctx, nil, true)
+		return h.allocate(ctx, r, nil, true)
 	}
 	for _, delta := range []int64{-1, 1} {
 		neighbor := int64(index) + delta
@@ -194,12 +194,15 @@ func (r *MemoryRegion) allocateNear(ctx context.Context, index uint64) (int, err
 		}
 		h.mu.Unlock()
 	}
-	return h.allocate(ctx, nil, false)
+	return h.allocate(ctx, r, nil, false)
 }
 
-// allocate returns one slot, evicting the least recently used unlocked page
-// when the arena is full. It waits for progress rather than failing while
-// every candidate is temporarily busy.
+// allocate returns one slot for a page of r, evicting the least recently used
+// unlocked page when the arena is full. It waits for progress rather than
+// failing while every candidate is temporarily busy.
+//
+// The victim leaves every protected memory region its pages where it can: see
+// protectedLocked. Where it cannot, it is the least recently used page of all.
 //
 // place, where it is not nil, is where the slot must be: the placement rule has
 // already decided this page's offset, so only the page budget is at stake and
@@ -209,13 +212,16 @@ func (r *MemoryRegion) allocateNear(ctx context.Context, index uint64) (int, err
 // preferEviction takes a victim even where a free slot would do, for one pass:
 // the iteration after a fruitless preference takes the free slot, so a
 // buggified allocation cannot wait on a victim that will not come.
-func (h *Host) allocate(ctx context.Context, place func() int, preferEviction bool) (int, error) {
+func (h *Host) allocate(ctx context.Context, r *MemoryRegion, place func() int, preferEviction bool) (int, error) {
 	for {
 		h.mu.Lock()
 		if h.err != nil {
 			err := h.err
 			h.mu.Unlock()
 			return 0, err
+		}
+		if r != nil {
+			r.wanted = h.displaced
 		}
 		resourceChanged := h.resources.Changed()
 		capacityBlocked := false
@@ -248,29 +254,38 @@ func (h *Host) allocate(ctx context.Context, place func() int, preferEviction bo
 		}
 		var candidates []*resident
 		busy := false
-		for pg := h.lru.front(); pg != nil; pg = h.lru.next(pg) {
-			if !pg.mu.TryLock() {
-				busy = true
-				continue
-			}
-			// A page a store is replacing is one the guest still reads through a
-			// mapping that names this offset, and the command that stops it
-			// naming it has not landed. It is not this reclaim's to take; the
-			// store gives it up itself once its mapping is in.
-			usable := pg.replacing == 0
-			for b := range pg.aliases.all() {
-				if b.memoryRegion.terminal.Load() != nil {
-					usable = false
+		share := h.cfg.ResidentPages / max(len(h.memoryRegions), 1)
+		for _, fair := range []bool{true, false} {
+			for pg := h.lru.front(); pg != nil; pg = h.lru.next(pg) {
+				if fair && !h.fairLocked(pg, r, share) {
+					continue
+				}
+				if !pg.mu.TryLock() {
+					busy = true
+					continue
+				}
+				// A page a store is replacing is one the guest still reads through a
+				// mapping that names this offset, and the command that stops it
+				// naming it has not landed. It is not this reclaim's to take; the
+				// store gives it up itself once its mapping is in.
+				usable := pg.replacing == 0
+				for b := range pg.aliases.all() {
+					if b.memoryRegion.terminal.Load() != nil {
+						usable = false
+						break
+					}
+				}
+				if usable {
+					// One victim per reclaim: a page is the whole scratch budget one
+					// eviction may read out of the arena.
+					candidates = append(candidates, pg)
 					break
 				}
+				pg.mu.Unlock()
 			}
-			if usable {
-				// One victim per reclaim: a page is the whole scratch budget one
-				// eviction may read out of the arena.
-				candidates = append(candidates, pg)
+			if len(candidates) > 0 {
 				break
 			}
-			pg.mu.Unlock()
 		}
 		changed := h.changed
 		// Slots reserved by a concurrent load have no LRU entry yet.
@@ -309,6 +324,35 @@ func (h *Host) allocate(ctx context.Context, place func() int, preferEviction bo
 		case <-resourceChanged:
 		}
 	}
+}
+
+// fairLocked reports whether evicting pg to make room for a page of r leaves
+// every other protected memory region its pages. Caller holds h.mu.
+func (h *Host) fairLocked(pg *resident, r *MemoryRegion, share int) bool {
+	for b := range pg.aliases.all() {
+		if q := b.memoryRegion; q != r && h.protectedLocked(q, share) {
+			return false
+		}
+	}
+	return true
+}
+
+// protectedLocked reports a memory region whose pages an eviction for another
+// memory region leaves alone. Every attached memory region is owed share of the
+// arena's pages. One is protected while it holds no more than that and has
+// asked for a page within the arena's last turnover: as many evictions of
+// mapped pages as the arena has pages.
+//
+// The pager sees a guest's faults and not its other accesses, so asking for a
+// page is the only sign it has that a guest is using its memory. A guest whose
+// working set is resident asks for nothing. It loses its protection after a
+// turnover, gives up its least recently faulted page, and is protected again as
+// soon as it faults on that page. So a guest that cycles through more memory
+// than the arena holds evicts its own pages, and costs a neighbour within its
+// share one refault a turnover rather than its working set. An idle guest's
+// pages are anyone's to take, which keeps the arena in use. Caller holds h.mu.
+func (h *Host) protectedLocked(q *MemoryRegion, share int) bool {
+	return q.resident <= share && h.displaced-q.wanted < uint64(h.cfg.ResidentPages)
 }
 
 // takeIdleLocked locks and returns the oldest idle page it can take without

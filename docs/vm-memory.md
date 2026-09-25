@@ -1425,6 +1425,50 @@ victim instead. The terminal memory region excludes its pages from every later p
 the arena consists only of such pages, it reports capacity exhaustion. One
 guest's death does not spread across the host.
 
+### Choosing the victim
+
+The victim is the least recently faulted page that leaves every protected
+memory region its pages. The pager sees a guest's faults and none of its other
+accesses, so fault order is the only recency it has. Alone, that order lets one
+guest take the arena from all the others. A guest that cycles through more
+memory than the arena holds faults on almost every store. Its pages are always
+the newest, so its neighbours' working sets are always the oldest, and each
+fault of the hog evicted one of them. A neighbour then held the arena only in
+proportion to how often it faulted, which is to say only by thrashing.
+
+So each attached memory region is owed a share: the arena's pages divided by
+the memory regions attached. A memory region is protected while it holds no
+more than its share and has asked for a page within the last turnover. A
+turnover is as many evictions of mapped pages as the arena has pages. An
+eviction for one memory region takes no page another protected memory region
+maps. Where every candidate is protected, it takes the least recently faulted
+page of all, so an allocation never waits on the rule.
+
+A guest whose working set is resident asks for nothing, so it loses its
+protection after a turnover. It then gives up its least recently faulted page,
+and is protected again at its next fault. So a hog evicts its own pages, and
+costs a neighbour within its share about one refault a turnover. An idle
+guest's pages are anyone's to take, so a guest that is booting or growing can
+still use memory its neighbours are not using. The share is a floor for a guest
+that is using its memory, not a ceiling for one that is.
+
+Each memory region counts the resident pages it maps. A page it reaches twice,
+from its binding and from a checkpoint's copy, counts once. The alias changes
+that bind, unbind and evict a page keep the count under the host lock, so the
+rule reads it without walking anything.
+
+The rule helps a neighbour only as far as its share holds its working set. On
+the aarch64 Lima instance, two 128 MiB guests at 2 MiB pages, one storing into
+80 MiB over and over:
+
+| RAM arena | share | neighbour, rule off | neighbour, rule on |
+| --- | --- | --- | --- |
+| 64 MiB | 16 pages | `echo` through the agent past 30 s | `echo` through the agent past 30 s |
+| 96 MiB | 24 pages | slowest `echo` 96 ms, 1,016 evictions | slowest `echo` 32 ms, 590 evictions |
+
+A booted guest of this image holds 21 dirty 2 MiB pages, so a share of 16 is
+below its working set whatever the rule does. Each figure is one run.
+
 ## Capture, fork and restore
 
 A capture is the checkpoint's pause. The prepare step pauses the vCPUs, drains

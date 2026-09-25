@@ -115,7 +115,7 @@ func (h *Host) bind(b *binding, pg *resident) {
 	h.mu.Lock()
 	found := h.probe.bind(h, b, pg)
 	h.mappedLocked(pg)
-	pg.aliases.add(b)
+	aliasLocked(pg, b)
 	b.resident = pg
 	h.mu.Unlock()
 	what := "bind-shared"
@@ -137,7 +137,7 @@ func (h *Host) bindRun(bindings []*binding, pages []*resident) {
 			found = f
 		}
 		h.mappedLocked(pages[k])
-		pages[k].aliases.add(b)
+		aliasLocked(pages[k], b)
 		b.resident = pages[k]
 	}
 	h.mu.Unlock()
@@ -159,7 +159,7 @@ func (h *Host) joinReclaiming(held, b *binding) {
 	defer h.mu.Unlock()
 	if pg := b.resident; pg != nil {
 		h.mappedLocked(pg)
-		pg.aliases.add(held)
+		aliasLocked(pg, held)
 		held.resident = pg
 	}
 }
@@ -317,11 +317,48 @@ func (h *Host) release(ctx context.Context, pg *resident) error {
 // a slot takes it like any other. Caller holds the page's lock.
 func (h *Host) leave(b *binding, pg *resident) {
 	h.mu.Lock()
-	pg.aliases.remove(b)
+	unaliasLocked(pg, b)
 	b.resident = nil
 	h.idleLocked(pg)
 	h.signal()
 	h.mu.Unlock()
+}
+
+// aliasLocked makes b an alias of pg, and counts pg against b's memory region
+// where no alias of that memory region counted it already. A page a memory
+// region reaches twice, from its binding and from a checkpoint's copy of it, is
+// one page of the arena. Caller holds h.mu.
+func aliasLocked(pg *resident, b *binding) {
+	counted := mappedBy(pg, b.memoryRegion)
+	if pg.aliases.add(b) && !counted {
+		b.memoryRegion.resident++
+	}
+}
+
+// unaliasLocked is the reverse of aliasLocked. Caller holds h.mu.
+func unaliasLocked(pg *resident, b *binding) {
+	if pg.aliases.remove(b) && !mappedBy(pg, b.memoryRegion) {
+		b.memoryRegion.resident--
+	}
+}
+
+// unaliasAllLocked takes every alias off pg, which an eviction does. Caller
+// holds h.mu.
+func unaliasAllLocked(pg *resident) {
+	for _, b := range slices.Collect(pg.aliases.all()) {
+		b.resident = nil
+		unaliasLocked(pg, b)
+	}
+}
+
+// mappedBy reports whether any alias of pg belongs to r. Caller holds h.mu.
+func mappedBy(pg *resident, r *MemoryRegion) bool {
+	for b := range pg.aliases.all() {
+		if b.memoryRegion == r {
+			return true
+		}
+	}
+	return false
 }
 
 // idleLocked puts a page no memory region maps any more on the idle list, newest
@@ -389,7 +426,7 @@ func (h *Host) unlink(ctx context.Context, b *binding, pg *resident) error {
 		}
 	}
 	h.mu.Lock()
-	pg.aliases.remove(b)
+	unaliasLocked(pg, b)
 	b.resident = nil
 	h.idleLocked(pg)
 	h.mu.Unlock()

@@ -75,7 +75,11 @@ type Host struct {
 	unregisterIdle func()
 	logical        int
 	dirty          int
-	changed        chan struct{}
+	// displaced counts the evictions of pages a memory region mapped, which is
+	// the clock a memory region's protection is measured on: see
+	// protectedLocked.
+	displaced uint64
+	changed   chan struct{}
 	// windows lends out the buffers window reads fill, as *[]byte so that
 	// handing one back allocates nothing. See takeWindow.
 	windows   sync.Pool
