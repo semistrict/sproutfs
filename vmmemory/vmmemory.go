@@ -123,11 +123,16 @@ type Pressure struct {
 	// the memory region holding the largest dirty set first and works down; a false
 	// answer for every memory region is what makes a store a stall.
 	Checkpoint func(*MemoryRegion) bool
-	// Stop reports a memory region whose store could not be admitted, with the cause
-	// to log. Its owner stops that VM deliberately: a last checkpoint of what
-	// it can still capture, and a reason on the record, where the killed VMM
-	// the fault path produces leaves neither.
-	Stop func(*MemoryRegion, error)
+	// Stop asks the owner to stop the VM a memory region belongs to, with the
+	// cause to log, and reports whether it will. It is asked when a bound runs
+	// out that nothing else can relieve: the loss window of the memory region a
+	// store is waiting in, or a full dirty budget, where the memory region is
+	// the one holding the most of it. The owner stops that VM deliberately: a
+	// last checkpoint of what it can still capture, and a reason on the record,
+	// where the killed VMM the fault path produces leaves neither. An owner that
+	// does not run the memory region's VM declines, and the pager asks about the
+	// next one.
+	Stop func(*MemoryRegion, error) bool
 	// Oldest reports the oldest unpublished write of the whole VM one memory region
 	// belongs to, zero where that VM holds none. The loss window is a VM's,
 	// because the checkpoint that ends it is: one memory region's pages are published

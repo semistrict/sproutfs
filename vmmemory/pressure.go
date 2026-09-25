@@ -3,6 +3,7 @@ package vmmemory
 import (
 	"context"
 	"errors"
+	"fmt"
 	"maps"
 	"slices"
 )
@@ -31,8 +32,10 @@ func (h *Host) SetPressure(p Pressure) {
 // pages, and it is the host's, not the memory region's: whichever checkpoint lands
 // next releases reservations this store can have, so the wait is for all of
 // them. With none in flight the host asks for one, which is what a dirty set
-// that grows between intervals needs. Only a budget no checkpoint can relieve
-// fails the store, as ErrDirtyStalled.
+// that grows between intervals needs. A budget no checkpoint can relieve is
+// taken back from the memory region holding the most of it, which its owner
+// stops. The store waits for that stop, or fails as ErrDirtyStalled when its own
+// memory region is the one stopped.
 //
 // The loss window is the other reason to wait, and it comes first: a VM that has
 // held a write no checkpoint covers for longer than the window admits no further
@@ -68,8 +71,7 @@ func (h *Host) takeSpill(ctx context.Context, r *MemoryRegion) (int, error) {
 				h.stall(r, ErrWindowStalled)
 				return 0, ErrWindowStalled
 			}
-		} else if !h.relief() {
-			h.stall(r, ErrDirtyStalled)
+		} else if !h.relief() && !h.takeBack(r) {
 			return 0, ErrDirtyStalled
 		}
 		h.mu.Lock()
@@ -111,11 +113,18 @@ func (h *Host) askAtHighWater() {
 // offering the memory regions holding the largest dirty sets first, since those
 // release the most. It holds no lock while it asks: the callback runs on the
 // waiting store's goroutine and must not reach back into the host.
+//
+// A memory region whose owner is stopping it relieves the budget too: it gives
+// every page it holds back when it detaches.
 func (h *Host) relief() bool {
 	h.mu.Lock()
 	attached := slices.Collect(maps.Keys(h.memoryRegions))
+	stopping := slices.ContainsFunc(attached, func(r *MemoryRegion) bool { return r.stopping })
 	request := h.pressure.Checkpoint
 	h.mu.Unlock()
+	if stopping {
+		return true
+	}
 	type candidate struct {
 		memoryRegion *MemoryRegion
 		dirty        int
@@ -155,23 +164,90 @@ func (h *Host) relief() bool {
 	return false
 }
 
-// stall reports a store nothing can admit to the memory region's owner, which stops
-// that VM deliberately. The store still fails, because the guest cannot be left
-// waiting on a checkpoint nothing will take; what the report buys is a logged
-// reason and a stop that publishes, in place of a fault failure that only kills
-// the VMM. cause says which bound the store ran into, since a deployment answers
-// the two differently: a budget too small for its guests, or a VM whose writes
-// cannot be published at all.
-func (h *Host) stall(r *MemoryRegion, cause error) {
+// takeBack ends a full dirty budget that no checkpoint can relieve, for a store
+// into r. The budget is taken back from the memory region that holds the most of
+// it. So the owner is asked to stop the memory regions holding more of it than r,
+// largest first, and r last. A guest that holds little of a budget is never
+// stopped for one that holds much. A guest that stores into all of its RAM
+// holds most of a RAM budget, and no checkpoint the interval takes gives it
+// back, so this is where such a guest ends and its neighbour does not.
+//
+// It reports whether the store may wait: another memory region is being
+// stopped, and every page it holds comes back when it detaches. The store fails
+// when its own memory region is the one stopped, or when no owner will stop any
+// of them.
+func (h *Host) takeBack(r *MemoryRegion) bool {
 	h.mu.Lock()
-	stop := h.pressure.Stop
+	attached := slices.Collect(maps.Keys(h.memoryRegions))
+	h.mu.Unlock()
+	type holder struct {
+		memoryRegion *MemoryRegion
+		dirty        int
+	}
+	own := r.dirtyCount()
+	var larger []holder
+	for _, memoryRegion := range attached {
+		if dirty := memoryRegion.dirtyCount(); memoryRegion != r && dirty > own {
+			larger = append(larger, holder{memoryRegion, dirty})
+		}
+	}
+	slices.SortFunc(larger, func(a, b holder) int { return b.dirty - a.dirty })
+	for _, c := range larger {
+		cause := fmt.Errorf("%w: this memory region holds %d of the budget's %d pages, more than the store waiting for one",
+			ErrDirtyStalled, c.dirty, h.cfg.DirtyPages)
+		if h.stop(c.memoryRegion, cause) {
+			return true
+		}
+	}
+	h.stall(r, fmt.Errorf("%w: a store into this memory region needs one of the budget's %d pages, and it holds %d of them",
+		ErrDirtyStalled, h.cfg.DirtyPages, own))
+	return false
+}
+
+// stall ends a store that nothing can admit. It asks the owner to stop the
+// store's own VM, and the store fails either way.
+func (h *Host) stall(r *MemoryRegion, cause error) {
+	if !h.stop(r, cause) {
+		h.mu.Lock()
+		h.countStall(cause)
+		h.mu.Unlock()
+	}
+}
+
+// stop asks a memory region's owner to stop its VM deliberately, because a bound
+// nothing else can relieve has run out. What that buys is a logged reason and a
+// stop that publishes, in place of a fault failure that only kills the VMM.
+// cause says which bound it was, since a deployment answers the two
+// differently: a budget too small for its guests, or a VM whose writes cannot be
+// published at all.
+//
+// It reports whether the owner will stop it, now or because an earlier store
+// asked. An owner that does not run the memory region's VM declines. Each
+// memory region is stopped, and counted, once.
+func (h *Host) stop(r *MemoryRegion, cause error) bool {
+	h.mu.Lock()
+	stopping, stop := r.stopping, h.pressure.Stop
+	h.mu.Unlock()
+	if stopping {
+		return true
+	}
+	if stop == nil || !stop(r, cause) {
+		return false
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if !r.stopping {
+		r.stopping = true
+		h.countStall(cause)
+	}
+	return true
+}
+
+// countStall counts one bound that ran out. Caller holds h.mu.
+func (h *Host) countStall(cause error) {
 	if errors.Is(cause, ErrWindowStalled) {
 		h.stats.WindowStalls++
 	} else {
 		h.stats.DirtyStalls++
-	}
-	h.mu.Unlock()
-	if stop != nil {
-		stop(r, cause)
 	}
 }

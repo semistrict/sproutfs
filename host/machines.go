@@ -108,6 +108,11 @@ type machines struct {
 	migrated map[string]*migratedHold
 	forked   map[string]*forkHold
 	fenced   map[string]bool
+	// stopping is the VMs this host is stopping because a pager ran out of a
+	// bound, from the moment it forgets them until their processes are closed.
+	// Their memory regions still hold pages until then, and a pager asking to
+	// stop one of them again is told it will be.
+	stopping map[*registration]string
 }
 
 // AddMachine registers the VMM process of a VM this host runs, which is what a
@@ -288,6 +293,9 @@ func (h *Host) stopped(vmID string, entry *registration, cause error) {
 			"vm", vmID, "error", err)
 	}
 	h.discard(ctx, vmID, entry, stalledMessage, cause)
+	h.machines.mu.Lock()
+	delete(h.machines.stopping, entry)
+	h.machines.mu.Unlock()
 }
 
 // machineFor finds the VM whose VMM maps one of the pager's memory regions, which is

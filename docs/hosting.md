@@ -266,9 +266,18 @@ of the memory region with the largest dirty set. The loop takes it out of the
 interval's turn, and the stalled stores complete when it retires. The host
 accepts for a VM it runs whose volume no fork point has sealed. Otherwise it
 declines, so the pager can offer another memory region. If no memory region can be
-checkpointed, the pager reports the stall instead, and the host stops that VM
-deliberately. A store that the loss window blocks ends the same way when no
-checkpoint of that VM can ever be taken. The pager reports this case
+checkpointed, the budget is taken back from the VM that holds the most of it.
+The pager asks the host to stop the memory region with the largest dirty set,
+then the next, down to the memory region whose store is waiting. The host stops
+the first one that belongs to a VM it runs, deliberately. The waiting store
+then waits for that VM's pages to come back. It fails only when its own VM is
+the one stopped. So a guest that holds little of a budget is never stopped for
+one that holds much. This matters most for RAM. No checkpoint the loop takes
+gives RAM back, so a guest that stores into all of its RAM holds that much of
+the budget until it stops. Its neighbour's next fresh store would otherwise be
+the one stopped. A store that the loss window blocks ends with its own VM
+stopped when no checkpoint of that VM can ever be taken, because the window is
+that VM's alone. The pager reports this case
 separately, as a window stall instead of a budget stall, because the two mean
 different things for a deployment. A budget stall means that its guests dirty
 pages faster than their checkpoints drain. A window stall means that a guest's

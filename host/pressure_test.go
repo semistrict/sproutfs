@@ -96,3 +96,56 @@ func TestHostStopsAVMNoCheckpointCanAdmitStoresFor(t *testing.T) {
 		t.Fatal("the deliberate stop published nothing of what it could still capture")
 	}
 }
+
+// A guest that stores into all of its RAM holds most of the RAM dirty budget,
+// and no checkpoint the host takes gives RAM back. So its neighbour's next fresh
+// store finds the budget full. The host stops the hog, which holds the most of
+// the budget, and not the neighbour, whose store arrived last. The neighbour's
+// store waits for that stop and lands once the hog's pages are back.
+func TestHostStopsTheLargestHolderOfAFullRAMBudgetNotItsNeighbour(t *testing.T) {
+	h := newSizedHostHarness(t, 1)
+	closed := make(chan string, 2)
+	h.configs[0].MachineClosed = func(vmID string) { closed <- vmID }
+	pagers := newPagerWithConfig(t, h.configs[0].Resources, vmmemory.Config{
+		ResidentPages: 16, LogicalPages: 32, DirtyPages: 4, ReadAheadPages: 1})
+	h.configs[0].Pagers = pagers.pagers
+	h.start(t)
+
+	machines := map[string]*machine{}
+	for _, id := range []string{"hog", "calm"} {
+		vm, err := h.hosts[0].Volumes().Create(t.Context(), id, migrationVolumes)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m, err := newMachine(t, pagers, vm, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := h.hosts[0].AddMachine(id, m); err != nil {
+			t.Fatal(err)
+		}
+		machines[id] = m
+	}
+	for page := range uint64(3) {
+		machines["hog"].store("ram0", page, byte(page+1))
+	}
+	machines["calm"].store("ram0", 0, 21)
+	// The budget is full. This store is admitted only once the hog is gone.
+	machines["calm"].store("ram0", 1, 22)
+	select {
+	case stopped := <-closed:
+		if stopped != "hog" {
+			t.Fatalf("the host stopped %q, want the hog", stopped)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the host stopped nothing for a full RAM budget")
+	}
+	if running := h.hosts[0].Machines(); len(running) != 1 || running[0] != "calm" {
+		t.Fatalf("the host runs %v, want only the neighbour", running)
+	}
+	for page, want := range []byte{21, 22} {
+		if got := machines["calm"].load("ram0", uint64(page))[0]; got != want {
+			t.Fatalf("the neighbour's page %d holds %d, want %d", page, got, want)
+		}
+	}
+}

@@ -109,8 +109,9 @@ func TestAStorePastTheLossWindowWithNoCheckpointComingIsAStall(t *testing.T) {
 		var stoppedCause error
 		f.h.SetPressure(vmmemory.Pressure{
 			Checkpoint: func(*vmmemory.MemoryRegion) bool { return false },
-			Stop: func(memoryRegion *vmmemory.MemoryRegion, cause error) {
+			Stop: func(memoryRegion *vmmemory.MemoryRegion, cause error) bool {
 				stoppedMemoryRegion, stoppedCause = memoryRegion, cause
+				return true
 			},
 		})
 		access(t, r, m, 0, true)[0] = 11

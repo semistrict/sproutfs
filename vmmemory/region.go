@@ -75,6 +75,11 @@ type MemoryRegion struct {
 	// set and read under the memory region lock, like closed.
 	handed   bool
 	hasZeros bool // protected by Host.mu; contributes one zeroMemoryRegions reference
+	// stopping marks a memory region whose owner has agreed to stop its VM for a
+	// bound nothing else could relieve. It is protected by Host.mu. The owner is
+	// asked once, and the pages the memory region holds come back when it
+	// detaches, which is what a store waiting on the dirty budget waits for.
+	stopping bool
 	// endMu admits one retire or unseal at a time. The walk gives the memory region up
 	// between batches, so the exclusive memory region lock is no longer what keeps two
 	// of them apart.

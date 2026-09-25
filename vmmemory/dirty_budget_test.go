@@ -186,8 +186,9 @@ func TestDirtyBudgetStallIsADeliberateStopNotACapacityFailure(t *testing.T) {
 		var stoppedCause error
 		f.h.SetPressure(vmmemory.Pressure{
 			Checkpoint: func(*vmmemory.MemoryRegion) bool { return false },
-			Stop: func(memoryRegion *vmmemory.MemoryRegion, cause error) {
+			Stop: func(memoryRegion *vmmemory.MemoryRegion, cause error) bool {
 				stoppedMemoryRegion, stoppedCause = memoryRegion, cause
+				return true
 			},
 		})
 		access(t, r, m, 0, true)[0] = 33
@@ -200,6 +201,110 @@ func TestDirtyBudgetStallIsADeliberateStopNotACapacityFailure(t *testing.T) {
 		}
 		if stoppedMemoryRegion != r || !errors.Is(stoppedCause, vmmemory.ErrDirtyStalled) {
 			t.Fatalf("the host stopped %v for %v, want the stalled memory region", stoppedMemoryRegion, stoppedCause)
+		}
+	})
+}
+
+// A full budget that no checkpoint can relieve is taken back from the memory
+// region that holds the most of it, not from whichever store came last. A guest
+// that stores into all of its RAM holds most of a RAM budget, and no checkpoint
+// the interval takes gives RAM back. So its neighbour's next fresh store finds
+// the budget full. The neighbour must not be the guest stopped for it: its
+// store waits while the owner stops the hog, and lands once the hog's pages are
+// back.
+func TestAFullBudgetIsTakenBackFromItsLargestHolder(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newFixture(t, 8, 16, 4)
+		hog, hm, _ := f.memoryRegion(4)
+		calm, cm, _ := f.memoryRegion(4)
+		access(t, hog, hm, 0, true)[0] = 11
+		access(t, hog, hm, 1, true)[0] = 12
+		access(t, hog, hm, 2, true)[0] = 13
+		access(t, calm, cm, 0, true)[0] = 21
+		type stop struct {
+			memoryRegion *vmmemory.MemoryRegion
+			cause        error
+		}
+		stops := make(chan stop, 4)
+		f.h.SetPressure(vmmemory.Pressure{
+			Checkpoint: func(*vmmemory.MemoryRegion) bool { return false },
+			Stop: func(memoryRegion *vmmemory.MemoryRegion, cause error) bool {
+				stops <- stop{memoryRegion, cause}
+				return true
+			},
+		})
+		stored := make(chan error, 1)
+		go func() { stored <- calm.Fault(t.Context(), 1, true) }()
+		synctest.Wait()
+		select {
+		case s := <-stops:
+			if s.memoryRegion != hog {
+				t.Fatal("the full budget stopped the memory region that stored last, not the one holding three of its four pages")
+			}
+			if want := "managed-memory dirty budget stalled: this memory region holds 3 of the budget's 4 pages, more than the store waiting for one"; s.cause == nil || s.cause.Error() != want || !errors.Is(s.cause, vmmemory.ErrDirtyStalled) {
+				t.Fatalf("the hog was stopped for %v, want %q", s.cause, want)
+			}
+		default:
+			t.Fatal("nothing was stopped for a budget no checkpoint could relieve")
+		}
+		select {
+		case err := <-stored:
+			t.Fatalf("the neighbour's store did not wait for the hog to be stopped: %v", err)
+		default:
+		}
+		// The owner stops the hog: its process exits, and detaching gives every
+		// page it held back.
+		clear(hm.pages)
+		if err := hog.Detach(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if err := <-stored; err != nil {
+			t.Fatalf("the neighbour's store failed once the hog's pages were back: %v", err)
+		}
+		access(t, calm, cm, 1, true)[0] = 22
+		if got := access(t, calm, cm, 0, false)[0]; got != 21 {
+			t.Fatalf("the neighbour's first page holds %d, want 21", got)
+		}
+		select {
+		case s := <-stops:
+			t.Fatalf("a second stop, of %v, for one full budget", s.memoryRegion)
+		default:
+		}
+		if s, err := f.h.Stats(t.Context()); err != nil || s.DirtyStalls != 1 || s.DirtyPages != 2 {
+			t.Fatalf("%d stalls and %d dirty pages, want the one stop and the neighbour's two pages: %v",
+				s.DirtyStalls, s.DirtyPages, err)
+		}
+	})
+}
+
+// An owner stops only the VMs it runs. A holder no owner will stop, such as a
+// VM still being started, cannot give the budget back, so the store ends as a
+// stall of its own memory region, as it did before anything else was asked.
+func TestAFullBudgetNoOwnerWillTakeBackStallsTheStore(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newFixture(t, 8, 16, 4)
+		hog, hm, _ := f.memoryRegion(4)
+		calm, cm, _ := f.memoryRegion(4)
+		access(t, hog, hm, 0, true)[0] = 11
+		access(t, hog, hm, 1, true)[0] = 12
+		access(t, hog, hm, 2, true)[0] = 13
+		access(t, calm, cm, 0, true)[0] = 21
+		var asked []*vmmemory.MemoryRegion
+		f.h.SetPressure(vmmemory.Pressure{
+			Checkpoint: func(*vmmemory.MemoryRegion) bool { return false },
+			Stop: func(memoryRegion *vmmemory.MemoryRegion, _ error) bool {
+				asked = append(asked, memoryRegion)
+				return memoryRegion != hog
+			},
+		})
+		if err := calm.Fault(t.Context(), 1, true); !errors.Is(err, vmmemory.ErrDirtyStalled) {
+			t.Fatalf("the store failed with %v, want a dirty-budget stall", err)
+		}
+		if len(asked) != 2 || asked[0] != hog || asked[1] != calm {
+			t.Fatalf("the owner was asked to stop %v, want the hog and then the store's own memory region", asked)
+		}
+		if s, err := f.h.Stats(t.Context()); err != nil || s.DirtyStalls != 1 {
+			t.Fatalf("%d stalls, want one: %v", s.DirtyStalls, err)
 		}
 	})
 }
@@ -219,7 +324,7 @@ func TestAStoreWokenDuringASealIsNotStalled(t *testing.T) {
 		var stalled atomic.Bool
 		f.h.SetPressure(vmmemory.Pressure{
 			Checkpoint: func(*vmmemory.MemoryRegion) bool { return true },
-			Stop:       func(*vmmemory.MemoryRegion, error) { stalled.Store(true) },
+			Stop:       func(*vmmemory.MemoryRegion, error) bool { stalled.Store(true); return true },
 		})
 		// The whole budget is page 0's, so this store waits for the checkpoint
 		// it asked for.

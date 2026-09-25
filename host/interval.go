@@ -194,29 +194,57 @@ func (h *Host) checkpointNow(memoryRegion *vmmemory.MemoryRegion) bool {
 	return true
 }
 
-// stopStalled stops a VM whose stores the pager's dirty budget can no longer
-// admit and no checkpoint can relieve. It is the deliberate end of a guest that
-// would otherwise die of a failed fault with nothing recorded: the loop stops,
-// the fork points taken on the VM are retired, a last checkpoint takes whatever the
-// VMM can still be paused for, and then the VM is given up exactly as a fenced
-// or a dead one is.
+// stopStalled stops a VM that a pager has run out of a bound for: its loss
+// window, or a full dirty budget no checkpoint can relieve, of which this VM
+// holds the most. It is the deliberate end of a guest that would otherwise die
+// of a failed fault with nothing recorded: the loop stops, the fork points
+// taken on the VM are retired, a last checkpoint takes whatever the VMM can
+// still be paused for, and then the VM is given up exactly as a fenced or a
+// dead one is.
 //
 // Dropping the registration and claiming the close come first, both here: a
 // stall, a takeover and the watcher finding the same process dead can arrive
 // together, and the VM must be closed — and the supervisor told — once between
 // them.
 //
-// The pager calls it on the goroutine of the store that stalled, which must not
-// wait for any of that, so the stop runs on one of this host's own.
-func (h *Host) stopStalled(memoryRegion *vmmemory.MemoryRegion, cause error) {
+// It reports whether the VM is going, which is what gives its pages back. A VM
+// this host is already giving up is. A memory region of no VM this host runs
+// is not this host's to stop, and the pager is told so.
+//
+// The pager calls it on the goroutine of a store that is waiting, which must
+// not wait for any of that, so the stop runs on one of this host's own.
+func (h *Host) stopStalled(memoryRegion *vmmemory.MemoryRegion, cause error) bool {
 	vmID, entry := h.machineFor(memoryRegion)
 	if entry == nil {
+		if h.stoppingWith(memoryRegion) {
+			return true
+		}
 		slog.ErrorContext(h.ctx, "host: a stalled memory region belongs to no VM this host runs",
 			"error", cause)
-		return
+		return false
 	}
 	if !h.forget(vmID, entry) || !h.claimFence(vmID) {
-		return
+		return true
 	}
+	h.machines.mu.Lock()
+	h.machines.stopping[entry] = vmID
+	h.machines.mu.Unlock()
 	go h.stopped(vmID, entry, cause)
+	return true
+}
+
+// stoppingWith reports a memory region of a VM this host is stopping for a
+// bound. The other pager may run out while that stop is under way, and the
+// pages it holds there come back with it too.
+func (h *Host) stoppingWith(memoryRegion *vmmemory.MemoryRegion) bool {
+	h.machines.mu.Lock()
+	defer h.machines.mu.Unlock()
+	for entry := range h.machines.stopping {
+		for _, mapped := range entry.runtime.MemoryRegions() {
+			if mapped == memoryRegion {
+				return true
+			}
+		}
+	}
+	return false
 }
