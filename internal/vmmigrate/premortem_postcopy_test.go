@@ -17,7 +17,7 @@ import (
 // onto the other host twice in a round and then, as soon as each child's agent
 // answers, reads every byte of that child's memory and its disk back. That is a
 // check running while the source is still streaming the rest of what it holds,
-// with several regions pulling from one page source at the same time, over a
+// with several memory regions pulling from one page source at the same time, over a
 // per-peer budget a busy host spends its life at.
 
 // premortemStreamDeadline bounds a post-copy that should finish. It is
@@ -27,7 +27,7 @@ import (
 const premortemStreamDeadline = 2 * time.Minute
 
 // premortemSource is a page source with a per-peer connection budget of the
-// caller's choosing, which is what decides whether every region of a received
+// caller's choosing, which is what decides whether every memory region of a received
 // VM can be served at once.
 func premortemSource(t *testing.T, m *migration, connections int) *vmmigrate.PageSource {
 	t.Helper()
@@ -44,11 +44,11 @@ func premortemSource(t *testing.T, m *migration, connections int) *vmmigrate.Pag
 // TestPremortemAPostCopyFinishesUnderAPerPeerConnectionBudget: a source at its
 // per-peer connection budget must slow a destination down, never stop it.
 //
-// The pages no checkpoint holds exist nowhere else, so a region that cannot get
+// The pages no checkpoint holds exist nowhere else, so a memory region that cannot get
 // a connection asks for one for ever. What it is waiting for is held by the
-// regions that were served first: a region pools every connection it dialled
+// memory regions that were served first: a memory region pools every connection it dialled
 // and gives none of them back until the whole receive is over. A budget below
-// what the earlier regions pool is therefore a post-copy that never finishes, a
+// what the earlier memory regions pool is therefore a post-copy that never finishes, a
 // fork call that never returns and a parent sealed for good.
 func TestPremortemAPostCopyFinishesUnderAPerPeerConnectionBudget(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
@@ -63,7 +63,7 @@ func TestPremortemAPostCopyFinishesUnderAPerPeerConnectionBudget(t *testing.T) {
 			m.machine.write("disk", page)
 		}
 		at := m.machine.snapshot()
-		// Fewer connections than the first region alone can pool, which is what
+		// Fewer connections than the first memory region alone can pool, which is what
 		// a host receiving a second VM from the same source has left.
 		pages := premortemSource(t, m, 4)
 
@@ -110,8 +110,8 @@ func TestPremortemFanOutChecksEveryPageWhileTheSourceIsStillStreaming(t *testing
 			m.machine.write("disk", page)
 		}
 		at := m.machine.snapshot()
-		// The production budget, which the two regions of one VM already fill:
-		// a fan-out of two children is four regions against it.
+		// The production budget, which the two memory regions of one VM already fill:
+		// a fan-out of two children is four memory regions against it.
 		pages := premortemSource(t, m, 8)
 
 		point, err := host.Seal(t.Context(), m.vm, m.machine)

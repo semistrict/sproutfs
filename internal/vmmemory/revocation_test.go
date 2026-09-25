@@ -109,11 +109,11 @@ func TestAmbiguousRevokeBatchPinsAllVictimsUntilDetach(t *testing.T) {
 func TestPrivateAllocationExtendsAdjacentArenaRun(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 8, LogicalPages: 8, DirtyPages: 4, ReadAheadPages: 1})
-		other, om, _ := f.region(4)
+		other, om, _ := f.memoryRegion(4)
 		for page := range uint64(4) {
 			access(t, other, om, page, false)
 		}
-		r, m, _ := f.region(4)
+		r, m, _ := f.memoryRegion(4)
 		access(t, r, m, 0, true)[0] = 71
 		clear(om.pages)
 		if err := other.Detach(t.Context()); err != nil {

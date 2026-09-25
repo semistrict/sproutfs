@@ -11,7 +11,7 @@ description = "Per-process memory mappings controlled by an external pager"
 libc = "0.2.189"
 linux-raw-sys = { version = "0.12.1", features = ["general"] }
 
-# KVM is how the client example gives a managed region a real guest to fault
+# KVM is how the client example gives a managed memory region a real guest to fault
 # on, and it exists on Linux alone. Keeping these here rather than in
 # [dev-dependencies] is what lets `cargo test` and `cargo clippy --all-targets`
 # run on a developer's macOS checkout: the library is already

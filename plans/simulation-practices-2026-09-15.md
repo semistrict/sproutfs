@@ -57,7 +57,7 @@ catalogue. Do not spend effort there.
    acknowledged checkpoint and the last one written, through its volume and
    through a guest's own fault path; every one republished; every scenario left
    a deployment behind. Three other things. The shared `machine` double emptied
-   its page mapping before detaching the region, so the pager was still mapping
+   its page mapping before detaching the memory region, so the pager was still mapping
    and protecting through a map the close was clearing — nothing before this
    had closed a machine with a capture in flight, so the race had never been
    reached. A fork's child handed to another host has no root index until
@@ -252,7 +252,7 @@ catalogue. Do not spend effort there.
    allowed entry — the pager client's two kernel socket deadlines — and a test
    of its own that it rejects each thing it forbids.
    *Fingerprint done*, and it found that the migration chaos campaign is not
-   reproducible at the dependency level: how many of a destination's regions
+   reproducible at the dependency level: how many of a destination's memory regions
    dial a source that is being taken away before the first failure marks it
    fallen is a race between goroutines, and one extra connection attempt moves
    the simulated clock and the network's operation numbering for the rest of
@@ -269,7 +269,7 @@ catalogue. Do not spend effort there.
    `TestScheduledWorldFingerprintIsStable` asserts the strict digest over the
    one recorded scenario, and `TestSeededTopologyFingerprintIsStable` the work
    digest over the generated schedule, bounding the connection attempts it
-   excludes by the number of regions the topology has.
+   excludes by the number of memory regions the topology has.
 9. **One clock, injected.** *Done.* `platform.Clock` and its sibling
    `platform.Entropy` sit beside `platform.Disk`, with wall implementations and
    a simulated clock the test advances itself. They are threaded through
@@ -349,6 +349,6 @@ serving — so the fault now runs over a handoff that carries pages. With one, i
 found a real post-copy defect: `PeerBacking.Resident` gave the source up for
 good on any listing error, and the caller of that listing is the stream the
 destination itself stops and cancels with a cause of its own, so stopping a
-healthy stream sent the region to a volume that does not hold the pages no
+healthy stream sent the memory region to a volume that does not hold the pages no
 checkpoint has. A cancellation is now read from the context there, as it
 already is on the load path.

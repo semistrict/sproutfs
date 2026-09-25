@@ -1,8 +1,8 @@
 //! Memory mappings owned by one process and controlled by an external Go pager.
 //!
 //! The pager owns shared backing and all policy. This library only creates
-//! one region, transfers UFFD, and executes versioned mapping commands. It has
-//! no Firecracker dependency. Read the safety contract on [`Session::region`].
+//! one memory region, transfers UFFD, and executes versioned mapping commands. It has
+//! no Firecracker dependency. Read the safety contract on [`Session::memory region`].
 
 #![cfg(target_os = "linux")]
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
@@ -42,7 +42,7 @@ const SPAN_RUNS: usize = 4;
 /// either way the pager sees the connection go and nothing else, so the errno
 /// this client's embedder prints is the whole of the record. One batch carries
 /// up to a thousand runs and one span holds as many mappings as the pager put in
-/// it, so the index, the region range and the arena offset are what turn that
+/// it, so the index, the memory region range and the arena offset are what turn that
 /// line into a page to look at. The index counts within the span or the command
 /// it belongs to, which is where a reader of the pager's own frame log will look
 /// for it.
@@ -50,7 +50,7 @@ fn in_run(index: usize, total: usize, run: Frame, err: io::Error) -> io::Error {
     io::Error::new(
         err.kind(),
         format!(
-            "run {index} of {total}, region offset {} length {} arena offset {} generation {} flags {}: {err}",
+            "run {index} of {total}, memory region offset {} length {} arena offset {} generation {} flags {}: {err}",
             run.offset, run.len, run.backing, run.generation, run.flags
         ),
     )
@@ -58,33 +58,33 @@ fn in_run(index: usize, total: usize, run: Frame, err: io::Error) -> io::Error {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u64)]
-pub enum RegionKind {
+pub enum MemoryRegionKind {
     Pmem = 1,
     Ram = 2,
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct RegionSpec {
-    pub kind: RegionKind,
+pub struct MemoryRegionSpec {
+    pub kind: MemoryRegionKind,
     pub len: usize,
 }
 
 /// An address descriptor, not a borrow of the bytes. Its owner is the session.
 #[derive(Clone, Copy, Debug)]
-pub struct Region {
-    pub kind: RegionKind,
+pub struct MemoryRegion {
+    pub kind: MemoryRegionKind,
     pub address: usize,
     pub len: usize,
 }
 
-struct OwnedRegion {
+struct OwnedMemoryRegion {
     mapping: Mapping,
     traps: TrapSource,
-    descriptor: Region,
+    descriptor: MemoryRegion,
     generations: generations::Generations,
 }
 
-/// Keeps UFFD and the region alive, including after a control error.
+/// Keeps UFFD and the memory region alive, including after a control error.
 ///
 /// A control failure is terminal: the embedder must stop all memory users before
 /// dropping the session. Never close UFFD and continue running with this range.
@@ -99,12 +99,12 @@ pub struct Session {
     /// bounds a MAP's arena offset and says nothing about how much of it is
     /// backed.
     backing_len: u64,
-    /// The page this session's region runs, which the attachment states and
+    /// The page this session's memory region runs, which the attachment states and
     /// which every offset, length and backing offset on this wire is counted
     /// in. It is not a constant of the library: a host's RAM and its PMEM are
     /// two pagers and need not agree.
     page_size: usize,
-    region: OwnedRegion,
+    memory_region: OwnedMemoryRegion,
     last_command: Option<Frame>,
     terminal: bool,
     vmas: vma_budget::VmaBudget,
@@ -117,27 +117,27 @@ impl Drop for Session {
 }
 
 impl Session {
-    pub fn connect(path: impl AsRef<Path>, spec: RegionSpec) -> io::Result<Self> {
-        // The region is reserved before the page is known, so it is reserved at
+    pub fn connect(path: impl AsRef<Path>, spec: MemoryRegionSpec) -> io::Result<Self> {
+        // The memory region is reserved before the page is known, so it is reserved at
         // the largest page this transport maps and checked against the page the
         // attachment states below. Both geometries are then aligned: nothing is
         // exposed to the embedder until that check has passed.
         if spec.len == 0 || spec.len % linux::MIN_PAGE_SIZE != 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "expected a nonempty host-page-aligned region",
+                "expected a nonempty host-page-aligned memory region",
             ));
         }
         let uffd = Uffd::new()?;
         let traps = TrapSource::new(spec.len)?;
         let mapping = traps.prepare(0, spec.len)?;
         uffd.register(&mapping, false)?;
-        let descriptor = Region {
+        let descriptor = MemoryRegion {
             kind: spec.kind,
             address: mapping.addr as usize,
             len: spec.len,
         };
-        let region = OwnedRegion {
+        let memory_region = OwnedMemoryRegion {
             mapping,
             traps,
             descriptor,
@@ -151,7 +151,7 @@ impl Session {
         }
         .send_fd(&mut socket, &uffd.0)?;
         Frame {
-            kind: wire::REGION,
+            kind: wire::MEMORY_REGION,
             offset: descriptor.address as u64,
             len: descriptor.len as u64,
             flags: descriptor.kind as u64,
@@ -169,7 +169,7 @@ impl Session {
             backing,
             backing_len: attach.len,
             page_size,
-            region,
+            memory_region,
             last_command: None,
             terminal: false,
         };
@@ -183,11 +183,11 @@ impl Session {
     /// session runs. Nothing here has mapped the arena or exposed an address:
     /// a page this transport does not map, an arena that is not the memory that
     /// page is made of, an offset space the descriptor does not have, or a
-    /// region of this length that is not whole pages of it all end the session
+    /// memory region of this length that is not whole pages of it all end the session
     /// before the embedder sees a byte. The length the descriptor is checked
     /// against is the arena's addresses: the file is sparse, so how much of it
     /// holds memory is the pager's business and not this check's.
-    fn geometry(attach: Frame, backing: &OwnedFd, region_len: usize) -> io::Result<usize> {
+    fn geometry(attach: Frame, backing: &OwnedFd, memory_region_len: usize) -> io::Result<usize> {
         let refuse = |what: String| io::Error::new(io::ErrorKind::InvalidData, what);
         if attach.kind != wire::ATTACH || attach.id != wire::VERSION || attach.generation != 0 {
             return Err(refuse(format!(
@@ -218,18 +218,18 @@ impl Session {
                 attach.len
             )));
         }
-        if region_len % page_size != 0 {
+        if memory_region_len % page_size != 0 {
             return Err(refuse(format!(
-                "a region of {region_len} bytes is not whole {page_size}-byte pages"
+                "a memory region of {memory_region_len} bytes is not whole {page_size}-byte pages"
             )));
         }
         linux::check_backing(backing, kind, attach.len)?;
         Ok(page_size)
     }
 
-    /// The page this session's region runs, which the attachment stated. Every
+    /// The page this session's memory region runs, which the attachment stated. Every
     /// offset and length on this wire is counted in it, and an embedder placing
-    /// the region in a guest's address space must respect it.
+    /// the memory region in a guest's address space must respect it.
     pub fn page_size(&self) -> usize {
         self.page_size
     }
@@ -240,8 +240,8 @@ impl Session {
     /// ordinary Rust references may not span mapping changes. CPU accesses may
     /// race replacement, but external kernel/device pins require coordination
     /// by the embedder. The Firecracker adapter owns that coordination.
-    pub fn region(&self) -> Region {
-        self.region.descriptor
+    pub fn memory_region(&self) -> MemoryRegion {
+        self.memory_region.descriptor
     }
 
     /// Returns a device-side handle. The mapping service must run independently
@@ -378,7 +378,7 @@ impl Session {
                 ..Frame::default()
             });
         }
-        // The runs of one contiguous stretch of the region are applied as a
+        // The runs of one contiguous stretch of the memory region are applied as a
         // span: built in one reservation, and advised, registered and
         // write-protected once for the whole of it. A span shorter than
         // SPAN_RUNS would not pay for its reservation, so it is applied a run
@@ -418,7 +418,7 @@ impl Session {
         if c.id == 0 || self.last_command.is_some_and(|last| c.id <= last.id) {
             return Err(libc::ESTALE);
         }
-        let r = &self.region;
+        let r = &self.memory_region;
         let size = self.page_size as u64;
         if c.len == 0
             || c.offset % size != 0
@@ -450,7 +450,7 @@ impl Session {
         Ok(())
     }
 
-    /// Whether two of a batch's runs are one stretch of the region, which is
+    /// Whether two of a batch's runs are one stretch of the memory region, which is
     /// what one staging span covers: the same kind of arena mapping, the same
     /// protection, and no gap between them. Their arena offsets are not
     /// adjacent — runs whose are have already merged into one — so the kernel
@@ -464,7 +464,7 @@ impl Session {
     }
 
     /// Applies one span of MAP runs: every run placed in one reservation, the
-    /// reservation armed once, and then each run moved into the region.
+    /// reservation armed once, and then each run moved into the memory region.
     fn replace_span(&mut self, runs: &[Frame]) -> io::Result<()> {
         let bytes = runs.iter().map(|run| run.len as usize).sum();
         let total = runs.len();
@@ -480,9 +480,9 @@ impl Session {
             .arm(&self.uffd, runs[0].flags == wire::SHARED)
             .map_err(|err| in_run(0, total, runs[0], err))?;
         for (index, run) in runs.iter().enumerate() {
-            // SAFETY: validate bounded every run by the region's length.
+            // SAFETY: validate bounded every run by the memory region's length.
             let target = unsafe {
-                self.region
+                self.memory_region
                     .mapping
                     .addr
                     .cast::<u8>()
@@ -507,7 +507,7 @@ impl Session {
         let mapping = if shared_mapping {
             Mapping::new(c.len as usize, Some((&self.backing, c.backing)))?
         } else {
-            self.region
+            self.memory_region
                 .traps
                 .prepare(c.offset as usize, c.len as usize)?
         };
@@ -518,14 +518,14 @@ impl Session {
         if (shared_mapping && c.flags == wire::SHARED) || c.kind == wire::MAP_ZERO {
             self.uffd.protect(&mapping)?;
         }
-        let r = &mut self.region;
+        let r = &mut self.memory_region;
         let target = unsafe { r.mapping.addr.cast::<u8>().add(c.offset as usize) }.cast();
         mapping.replace(target)
     }
 
     fn record_generation(&mut self, c: Frame) {
         let size = self.page_size as u64;
-        self.region.generations.set(
+        self.memory_region.generations.set(
             (c.offset / size) as usize,
             ((c.offset + c.len) / size) as usize,
             c.generation,

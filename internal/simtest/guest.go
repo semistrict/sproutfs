@@ -17,7 +17,7 @@ import (
 )
 
 // A volume is a backing a fault can ask for the window it needs, with the pages
-// its region already holds left out. It is asserted here because this is where
+// its memory region already holds left out. It is asserted here because this is where
 // the two packages meet: a volume that stopped being one would cost every fault
 // a request per stretch of its window and nothing would fail.
 var _ vmmemory.SparseLoader = (*volume.Volume)(nil)
@@ -110,7 +110,7 @@ type mapped struct {
 	writable bool
 }
 
-// mapping is one simulated process region's page table. Every lookup takes the
+// mapping is one simulated process memory region's page table. Every lookup takes the
 // arena lock, because a guest storing into a page races the seal that
 // write-protects it: the store and the writability check must be one step,
 // exactly as the hardware makes them.
@@ -122,7 +122,7 @@ type mapping struct {
 
 func newMapping(a *arena) *mapping { return &mapping{arena: a, pages: make(map[uint64]mapped)} }
 
-// mappings counts the mappings this region is to its VMM process, which is what
+// mappings counts the mappings this memory region is to its VMM process, which is what
 // the kernel holds a VMA for: a run of consecutive pages at consecutive arena
 // offsets, with the same write access, is one mapping, and every break in
 // either is another. It is what the placement rule exists to keep down — a
@@ -232,7 +232,7 @@ func (m *mapping) store(page uint64, value byte) bool {
 	return true
 }
 
-// guest is the simulated VMM process of one VM: one region per volume, a guest
+// guest is the simulated VMM process of one VM: one memory region per volume, a guest
 // that stores into them through their mappings, and the migration Runtime the
 // coordinator drives.
 //
@@ -247,7 +247,7 @@ type guest struct {
 	// restarted host's guest a different logical caller from the dead one's.
 	id  string
 	ctx context.Context
-	// admit is what every concurrent region seal passes through, and reverse
+	// admit is what every concurrent memory region seal passes through, and reverse
 	// the order they are created in. Both are the recorded scenario's; a
 	// campaign that chooses no completion order has neither.
 	admit   func(ctx context.Context, id string) error
@@ -256,12 +256,12 @@ type guest struct {
 	// capture's seals apart from the next one's.
 	captures int
 
-	names    []string
-	pages    map[string]int
-	regions  map[string]*vmmemory.Region
-	mappings map[string]*mapping
+	names         []string
+	pages         map[string]int
+	memoryRegions map[string]*vmmemory.MemoryRegion
+	mappings      map[string]*mapping
 	// pageBytes is the page each of this guest's volumes is mapped in, which is
-	// the page of the pager holding that region. A VM's memory and its disks are
+	// the page of the pager holding that memory region. A VM's memory and its disks are
 	// two pagers of two pages, so every byte offset here is per volume.
 	pageBytes map[string]int
 
@@ -272,7 +272,7 @@ type guest struct {
 	writes int64
 	value  byte
 	// refuseStop is the fault that fails a migration's pause after the guest
-	// has already stopped: the release must unseal the regions and leave the
+	// has already stopped: the release must unseal the memory regions and leave the
 	// guest running again.
 	refuseStop error
 	// stopped reports vCPUs that are not running. A guest stores nothing while
@@ -283,18 +283,18 @@ type guest struct {
 	closed  bool
 }
 
-// newGuest attaches one region per volume of vm through backing, which is the
+// newGuest attaches one memory region per volume of vm through backing, which is the
 // volume itself on a source and a peer-backed volume on a destination. Every
-// region enters the simulator through a stable identity of its own — the VM,
+// memory region enters the simulator through a stable identity of its own — the VM,
 // the host running it and that host's incarnation — so two concurrent
 // identical reads are ordered by their logical caller rather than by
 // completion.
 func (w *World) newGuest(h *hostState, p *pager, vm *volume.VM, backings map[string]vmmemory.Backing, state []byte) (*guest, error) {
 	ctx := w.ctx
 	g := &guest{instance: vm.ID(), ctx: ctx, pages: map[string]int{},
-		regions: map[string]*vmmemory.Region{}, mappings: map[string]*mapping{},
+		memoryRegions: map[string]*vmmemory.MemoryRegion{}, mappings: map[string]*mapping{},
 		pageBytes: map[string]int{},
-		model:     map[string][]byte{}, admit: w.config.Admit, reverse: w.config.ReverseRegions,
+		model:     map[string][]byte{}, admit: w.config.Admit, reverse: w.config.ReverseMemoryRegions,
 		id: fmt.Sprintf("%s/%s/%d/%d", vm.ID(), h.name, h.incarnation, w.nextGuest())}
 	for _, v := range vm.Volumes() {
 		name := v.Name()
@@ -312,12 +312,12 @@ func (w *World) newGuest(h *hostState, p *pager, vm *volume.VM, backings map[str
 		pager := p.pagers.For(kind)
 		mp := newMapping(p.arenaOf(kind))
 		admitted, _ := testbacking.New(backing, p.runtime, g.id+"/"+name)
-		region, err := pager.Attach(ctx, vmmemory.RegionBacking{Kind: kind, Backing: admitted}, mp)
+		memoryRegion, err := pager.Attach(ctx, vmmemory.MemoryRegionBacking{Kind: kind, Backing: admitted}, mp)
 		if err != nil {
 			return nil, err
 		}
 		g.names = append(g.names, name)
-		g.regions[name] = region
+		g.memoryRegions[name] = memoryRegion
 		g.mappings[name] = mp
 		g.pageBytes[name] = int(pager.PageSize())
 		g.pages[name] = int(v.Size() / pager.PageSize())
@@ -336,18 +336,18 @@ func (w *World) newGuest(h *hostState, p *pager, vm *volume.VM, backings map[str
 	return g, nil
 }
 
-// Regions reports this process's memory by volume name, which is what a
+// MemoryRegions reports this process's memory by volume name, which is what a
 // migration hands over and a capture seals.
-func (g *guest) Regions() map[string]*vmmemory.Region {
-	result := make(map[string]*vmmemory.Region, len(g.regions))
-	for name, region := range g.regions {
-		result[name] = region
+func (g *guest) MemoryRegions() map[string]*vmmemory.MemoryRegion {
+	result := make(map[string]*vmmemory.MemoryRegion, len(g.memoryRegions))
+	for name, memoryRegion := range g.memoryRegions {
+		result[name] = memoryRegion
 	}
 	return result
 }
 
 // Prepare is a capture's pause: the guest stops storing, its state is captured,
-// and every region seals the pages the checkpoint will publish.
+// and every memory region seals the pages the checkpoint will publish.
 func (g *guest) Prepare(ctx context.Context) ([]byte, map[string]volume.DirtySource, error) {
 	state, err := g.Stop(ctx)
 	if err != nil {
@@ -359,16 +359,16 @@ func (g *guest) Prepare(ctx context.Context) ([]byte, map[string]volume.DirtySou
 		slices.Reverse(names)
 	}
 	if g.admit == nil {
-		sources := make(map[string]volume.DirtySource, len(g.regions))
+		sources := make(map[string]volume.DirtySource, len(g.memoryRegions))
 		for _, name := range names {
-			if err := g.regions[name].Seal(ctx); err != nil {
+			if err := g.memoryRegions[name].Seal(ctx); err != nil {
 				return nil, nil, err
 			}
-			sources[name] = g.regions[name].Checkpoint()
+			sources[name] = g.memoryRegions[name].Checkpoint()
 		}
 		return state, sources, nil
 	}
-	// Every region seals concurrently, each admitted as a caller of its own, so
+	// Every memory region seals concurrently, each admitted as a caller of its own, so
 	// the order they seal in is the scheduler's rather than the order the
 	// goroutines happened to be created in.
 	sources := map[string]volume.DirtySource{}
@@ -381,12 +381,12 @@ func (g *guest) Prepare(ctx context.Context) ([]byte, map[string]volume.DirtySou
 			defer wg.Done()
 			err := g.admit(ctx, fmt.Sprintf("capture/%s/%d/%s", g.id, g.captures, name))
 			if err == nil {
-				err = g.regions[name].Seal(ctx)
+				err = g.memoryRegions[name].Seal(ctx)
 			}
 			mu.Lock()
 			defer mu.Unlock()
 			if err == nil {
-				sources[name] = g.regions[name].Checkpoint()
+				sources[name] = g.memoryRegions[name].Checkpoint()
 			}
 			result = errors.Join(result, err)
 		}()
@@ -410,10 +410,10 @@ func (g *guest) Stop(ctx context.Context) ([]byte, error) {
 	g.stopped = true
 	g.mu.Unlock()
 	if refused != nil {
-		// A stop that fails after the pause began seals one region on its way
+		// A stop that fails after the pause began seals one memory region on its way
 		// out, so the release has to unseal this process and leave both the
 		// memory and the disk writable before a migration can be retried.
-		if err := g.regions[g.names[0]].Seal(ctx); err != nil {
+		if err := g.memoryRegions[g.names[0]].Seal(ctx); err != nil {
 			return nil, err
 		}
 		return nil, refused
@@ -434,20 +434,20 @@ func (g *guest) setRefuseStop(err error) {
 // exactly what an abandoned capture or migration owes the guest it stopped, and
 // exactly what a run that never checked would not notice was missing.
 // SealDisks is a disk checkpoint's pause: the guest stops storing and the
-// regions of its disks seal, while its RAM and its state are left alone.
+// memory regions of its disks seal, while its RAM and its state are left alone.
 func (g *guest) SealDisks(ctx context.Context) (map[string]volume.DirtySource, error) {
 	g.mu.Lock()
 	g.stopped = true
 	g.mu.Unlock()
 	sources := map[string]volume.DirtySource{}
 	for _, name := range g.names {
-		if g.regions[name].Kind() != vmmemory.Pmem {
+		if g.memoryRegions[name].Kind() != vmmemory.Pmem {
 			continue
 		}
-		if err := g.regions[name].Seal(ctx); err != nil {
+		if err := g.memoryRegions[name].Seal(ctx); err != nil {
 			return nil, err
 		}
-		sources[name] = g.regions[name].Checkpoint()
+		sources[name] = g.memoryRegions[name].Checkpoint()
 	}
 	return sources, nil
 }
@@ -459,11 +459,11 @@ func (g *guest) Resume(context.Context) error {
 	return nil
 }
 
-// Release unseals every region and resumes a still-paused process, which is
+// Release unseals every memory region and resumes a still-paused process, which is
 // what an abandoned capture or migration owes the guest it stopped.
 func (g *guest) Release(ctx context.Context) error {
 	for _, name := range g.names {
-		if err := g.regions[name].Unseal(ctx); err != nil {
+		if err := g.memoryRegions[name].Unseal(ctx); err != nil {
 			return err
 		}
 	}
@@ -496,10 +496,10 @@ func (g *guest) detach(ctx context.Context) error {
 	g.mu.Unlock()
 	var errs []error
 	for _, name := range g.names {
-		// The region goes first: the pager maps and protects through this
+		// The memory region goes first: the pager maps and protects through this
 		// mapping, so emptying it before the detach leaves a capture in flight
 		// driving a map that is being cleared underneath it.
-		errs = append(errs, g.regions[name].Detach(ctx))
+		errs = append(errs, g.memoryRegions[name].Detach(ctx))
 		mp := g.mappings[name]
 		mp.mu.Lock()
 		clear(mp.pages)
@@ -547,7 +547,7 @@ func (g *guest) storeValueIn(ctx context.Context, name string, page uint64, valu
 		if g.storeModel(name, mp, page, value) {
 			return nil
 		}
-		if err := g.regions[name].Fault(ctx, page, true); err != nil {
+		if err := g.memoryRegions[name].Fault(ctx, page, true); err != nil {
 			return fmt.Errorf("%s store fault on %s page %d: %w", g.instance, name, page, err)
 		}
 	}
@@ -568,7 +568,7 @@ func (g *guest) takeWritable(ctx context.Context, name string, page uint64) erro
 	if stopped {
 		return fmt.Errorf("%s: the guest's vCPUs are stopped, so it faults on nothing", g.instance)
 	}
-	if err := g.regions[name].Fault(ctx, page, true); err != nil {
+	if err := g.memoryRegions[name].Fault(ctx, page, true); err != nil {
 		return fmt.Errorf("%s write fault on %s page %d: %w", g.instance, name, page, err)
 	}
 	return nil
@@ -619,7 +619,7 @@ func (g *guest) read(ctx context.Context, name string, page uint64) ([]byte, err
 	p, ok := mp.pages[page]
 	mp.mu.Unlock()
 	if !ok {
-		if err := g.regions[name].Fault(ctx, page, false); err != nil {
+		if err := g.memoryRegions[name].Fault(ctx, page, false); err != nil {
 			return nil, err
 		}
 		mp.mu.Lock()
@@ -637,7 +637,7 @@ func (g *guest) read(ctx context.Context, name string, page uint64) ([]byte, err
 	return bytes.Clone(mp.arena.slots[p.slot]), nil
 }
 
-// readAll reads every page of every region through this guest's own fault path
+// readAll reads every page of every memory region through this guest's own fault path
 // and reports what it read, which pages could not be read at all, and the
 // failures that made them unreadable. It is what a VM that came back somewhere
 // else is compared against: the pager reconstructing a page and the volume
@@ -691,7 +691,7 @@ func (g *guest) adopt(model map[string][]byte) {
 // compare. It is not a byte read wrong, which is why it is told apart from one.
 var errUnreadable = errors.New("the page could not be read")
 
-// verify reads every page of every region and requires it to equal model. It is
+// verify reads every page of every memory region and requires it to equal model. It is
 // the campaign's first invariant: a guest never reads bytes it did not write.
 //
 // A page that reads the wrong bytes ends the verification, because there is
@@ -726,17 +726,17 @@ func (g *guest) verify(ctx context.Context, model map[string][]byte) error {
 // bytes, so a slot of one arena could not hold a page of the other.
 type pager struct {
 	pagers  vmmemory.Pagers
-	arenas  map[vmmemory.RegionKind]*arena
-	spills  map[vmmemory.RegionKind]platform.File
+	arenas  map[vmmemory.MemoryRegionKind]*arena
+	spills  map[vmmemory.MemoryRegionKind]platform.File
 	runtime *sim.Runtime
 }
 
-// arenaOf is the shared page store the regions of one kind map through.
-func (p *pager) arenaOf(kind vmmemory.RegionKind) *arena { return p.arenas[kind] }
+// arenaOf is the shared page store the memory regions of one kind map through.
+func (p *pager) arenaOf(kind vmmemory.MemoryRegionKind) *arena { return p.arenas[kind] }
 
 func (p *pager) close(ctx context.Context) error {
 	var errs []error
-	for _, kind := range []vmmemory.RegionKind{vmmemory.Ram, vmmemory.Pmem} {
+	for _, kind := range []vmmemory.MemoryRegionKind{vmmemory.Ram, vmmemory.Pmem} {
 		errs = append(errs, p.pagers.For(kind).Close(ctx), p.spills[kind].Close())
 	}
 	return errors.Join(errs...)

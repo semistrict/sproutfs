@@ -987,7 +987,7 @@ func (o *orchestrator) Migrate(ctx context.Context, id, to string) (orch.Migrate
 	received, err := o.receive(ctx, source, target, id, handoff.Handoff)
 	if err != nil {
 		// The guest is stopped and the source still holds its pages. Nothing
-		// here can resume it: its regions have given their volumes up, so the
+		// here can resume it: its memory regions have given their volumes up, so the
 		// VM is reopened from its last checkpoint instead.
 		o.note(ctx, vmRecord{ID: id, State: stateStopped})
 		err = fmt.Errorf("receiving %s on %s: %w", id, target.report.Name, err)

@@ -7,13 +7,13 @@ import (
 	"time"
 )
 
-// ErrHandedOff reports a region whose volume belongs to another host now. Its
+// ErrHandedOff reports a memory region whose volume belongs to another host now. Its
 // pages are still served; nothing that would read or write the volume is.
-var ErrHandedOff = errors.New("managed-memory region handed its volume off")
+var ErrHandedOff = errors.New("managed-memory-region handed its volume off")
 
 // ReadResident copies one page's current bytes for a peer, reports false for a
 // page whose bytes this host does not hold, and reports separately whether the
-// page it served is this region's own state rather than the volume's. It never
+// page it served is this memory region's own state rather than the volume's. It never
 // loads: a page the destination is told is absent is one it reads from the
 // volume itself, which is what the volume is for.
 //
@@ -38,7 +38,7 @@ var ErrHandedOff = errors.New("managed-memory region handed its volume off")
 //
 // While the guest runs, the answer is only as current as the moment it is
 // taken, exactly like the pages a bulk stream already sent.
-func (r *Region) ReadResident(ctx context.Context, page uint64, dst []byte) (held, unpublished bool, err error) {
+func (r *MemoryRegion) ReadResident(ctx context.Context, page uint64, dst []byte) (held, unpublished bool, err error) {
 	h := r.host
 	if uint64(len(dst)) != h.pageSize {
 		return false, false, ErrRange
@@ -54,7 +54,7 @@ func (r *Region) ReadResident(ctx context.Context, page uint64, dst []byte) (hel
 	// page's bytes, and the I/O permit is taken before any resident page's lock,
 	// as a fault takes it: a reader holding a page and waiting for a permit would
 	// deadlock against a fault holding a permit and waiting for that page. The
-	// stripe comes before the region here for the same reason it does in a
+	// stripe comes before the memory region here for the same reason it does in a
 	// fault: the two orders must be one order.
 	if err := r.stripe(page).Lock(ctx); err != nil {
 		return false, false, err
@@ -91,18 +91,18 @@ func (r *Region) ReadResident(ctx context.Context, page uint64, dst []byte) (hel
 	return true, b.dirty, nil
 }
 
-// Resident lists the pages this region holds, in ascending order, for a bulk
+// Resident lists the pages this memory region holds, in ascending order, for a bulk
 // stream to the destination of a migration. These are the pages ReadResident
 // can serve; the rest are the destination's own reads from the volume. It is a
 // snapshot: a page can be evicted before the stream asks for it, which
 // ReadResident then reports as absent.
 //
-// A region that cannot answer reports why. An empty listing is a region that
+// A memory region that cannot answer reports why. An empty listing is a memory region that
 // holds nothing, and a destination told that reads every page from the volume,
 // which is only correct when this host really holds none of them.
-func (r *Region) Resident() ([]uint64, error) {
+func (r *MemoryRegion) Resident() ([]uint64, error) {
 	// The caller of a listing has no deadline to give: this waits only for the
-	// exclusive holders of the region, which are bounded page-table work.
+	// exclusive holders of the memory region, which are bounded page-table work.
 	if err := r.mu.RLock(context.Background()); err != nil {
 		return nil, err
 	}
@@ -113,7 +113,7 @@ func (r *Region) Resident() ([]uint64, error) {
 	return r.residentPages(), nil
 }
 
-// Handoff gives up this region's volume while keeping its pages. It belongs to
+// Handoff gives up this memory region's volume while keeping its pages. It belongs to
 // a live migration: the guest is stopped, the final checkpoint is in the log,
 // and the volume handle is about to be released so another host can acquire the
 // log at once. Nothing here may touch that volume again, so verification stops
@@ -122,15 +122,15 @@ func (r *Region) Resident() ([]uint64, error) {
 // would mean it is not. ReadResident and Resident keep serving this host's
 // pages to the destination until Detach releases them.
 //
-// A sealed region is not something to hand off: a checkpoint is reading its
+// A sealed memory region is not something to hand off: a checkpoint is reading its
 // checkpoint under a volume handle that is about to be another host's, so the
-// seal is reported and the region keeps its volume.
+// seal is reported and the memory region keeps its volume.
 //
-// It reports how long this region has held its oldest unpublished write, which
+// It reports how long this memory region has held its oldest unpublished write, which
 // the handoff carries so the destination goes on measuring the same loss window
 // instead of starting a new one. It is read here, under the lock that makes the
 // volume another host's, because that is the moment the set stops changing.
-func (r *Region) Handoff(ctx context.Context) (time.Duration, error) {
+func (r *MemoryRegion) Handoff(ctx context.Context) (time.Duration, error) {
 	if err := r.mu.Lock(ctx); err != nil {
 		return 0, err
 	}
@@ -145,16 +145,16 @@ func (r *Region) Handoff(ctx context.Context) (time.Duration, error) {
 	return r.unpublishedAge(), nil
 }
 
-// Unpublished lists the pages this region holds that no checkpoint of its VM
+// Unpublished lists the pages this memory region holds that no checkpoint of its VM
 // has, in ascending order. They are the guest's writes since this host's last
 // checkpoint, and they exist nowhere but here: a migration destination must
 // fetch every one of them before this host may stop serving, while the rest of
 // Resident is an optimization it can skip and read from object storage instead.
 //
-// A region that cannot answer reports why, because the empty set is what a
+// A memory region that cannot answer reports why, because the empty set is what a
 // destination acts on by fetching nothing: these pages exist nowhere else, and
 // a handoff that names none of them rewinds the guest to the last checkpoint.
-func (r *Region) Unpublished() ([]uint64, error) {
+func (r *MemoryRegion) Unpublished() ([]uint64, error) {
 	if err := r.mu.RLock(context.Background()); err != nil {
 		return nil, err
 	}
@@ -172,7 +172,7 @@ func (r *Region) Unpublished() ([]uint64, error) {
 }
 
 // residentPages collects the pages holding host memory or private state.
-func (r *Region) residentPages() []uint64 {
+func (r *MemoryRegion) residentPages() []uint64 {
 	var result []uint64
 	r.eachBinding(func(b *binding) {
 		if b.resident != nil || b.dirty {
@@ -182,25 +182,25 @@ func (r *Region) residentPages() []uint64 {
 	return result
 }
 
-// RegionStats is one region's share of the host's pages. Like Stats it is
+// MemoryRegionStats is one memory region's share of the host's pages. Like Stats it is
 // read-only instrumentation: nothing consults it.
-type RegionStats struct {
+type MemoryRegionStats struct {
 	// ResidentPages counts pages holding host memory, shared or private.
-	// PrivatePages counts pages whose bytes are this region's own and not yet
+	// PrivatePages counts pages whose bytes are this memory region's own and not yet
 	// its volume's, whether they are resident, spilled or held by a checkpoint.
-	// SharedPages counts the resident ones at least one other region of this
-	// pager also maps, which is the part of this region's memory the host is
+	// SharedPages counts the resident ones at least one other memory region of this
+	// pager also maps, which is the part of this memory region's memory the host is
 	// holding once rather than once per guest.
 	ResidentPages, PrivatePages, SharedPages int
 	// DirtySince is when the oldest of those private pages was written, zero
 	// where there are none. It is the one field here a host acts on rather than
-	// reports: the loss window of the VM this region belongs to is the oldest of
-	// its regions' DirtySince, and while that is older than the window the
+	// reports: the loss window of the VM this memory region belongs to is the oldest of
+	// its memory regions' DirtySince, and while that is older than the window the
 	// pager holds the guest's stores back.
 	DirtySince time.Time
-	// PageSize is the page of the pager holding this region, carried with the
+	// PageSize is the page of the pager holding this memory region, carried with the
 	// counts so the byte conversions below need nothing else. A host adds a VM's
-	// regions up across two pagers of different geometry, and page counts of
+	// memory regions up across two pagers of different geometry, and page counts of
 	// different pages cannot be added at all.
 	PageSize uint64
 }
@@ -208,18 +208,18 @@ type RegionStats struct {
 // The three counts in the unit the host accounts memory in. Page counts belong
 // to the pager that holds them and cannot be added across pagers of different
 // geometry; bytes can, which is what a host-wide report needs.
-func (s RegionStats) ResidentBytes() uint64 { return uint64(s.ResidentPages) * s.PageSize }
-func (s RegionStats) PrivateBytes() uint64  { return uint64(s.PrivatePages) * s.PageSize }
-func (s RegionStats) SharedBytes() uint64   { return uint64(s.SharedPages) * s.PageSize }
+func (s MemoryRegionStats) ResidentBytes() uint64 { return uint64(s.ResidentPages) * s.PageSize }
+func (s MemoryRegionStats) PrivateBytes() uint64  { return uint64(s.PrivatePages) * s.PageSize }
+func (s MemoryRegionStats) SharedBytes() uint64   { return uint64(s.SharedPages) * s.PageSize }
 
-// Stats reports this region's pages. It is a snapshot taken without stopping
+// Stats reports this memory region's pages. It is a snapshot taken without stopping
 // the guest, exactly like Resident.
-func (r *Region) Stats(ctx context.Context) (RegionStats, error) {
+func (r *MemoryRegion) Stats(ctx context.Context) (MemoryRegionStats, error) {
 	if err := r.mu.RLock(ctx); err != nil {
-		return RegionStats{}, err
+		return MemoryRegionStats{}, err
 	}
 	defer r.mu.RUnlock()
-	stats := RegionStats{PageSize: r.host.pageSize}
+	stats := MemoryRegionStats{PageSize: r.host.pageSize}
 	r.eachBinding(func(b *binding) {
 		if b.resident != nil {
 			stats.ResidentPages++
@@ -235,14 +235,14 @@ func (r *Region) Stats(ctx context.Context) (RegionStats, error) {
 	return stats, nil
 }
 
-// sharedElsewhere reports a resident page some region other than r also reaches.
-// A page two of one region's own pages both map is not shared in this sense:
+// sharedElsewhere reports a resident page some memory region other than r also reaches.
+// A page two of one memory region's own pages both map is not shared in this sense:
 // what the count is for is memory this host holds once and more than one guest
-// region reads. Caller holds the host lock, which is what the alias set is
+// memory region reads. Caller holds the host lock, which is what the alias set is
 // protected by; eachBinding holds it for the whole of a binding block.
-func (h *Host) sharedElsewhere(pg *resident, r *Region) bool {
+func (h *Host) sharedElsewhere(pg *resident, r *MemoryRegion) bool {
 	for alias := range pg.aliases.all() {
-		if alias.region != r {
+		if alias.memoryRegion != r {
 			return true
 		}
 	}
@@ -251,11 +251,11 @@ func (h *Host) sharedElsewhere(pg *resident, r *Region) bool {
 
 // eachBinding visits every page that has per-page state, in ascending order,
 // with the binding map and the host lock held. Both are taken per binding block
-// rather than for the whole scan, so a large region does not hold up the page
+// rather than for the whole scan, so a large memory region does not hold up the page
 // transitions that need them — a reclaim reading which reservation a page names
-// among them. Caller holds the region lock, which is what keeps the blocks
+// among them. Caller holds the memory region lock, which is what keeps the blocks
 // themselves in existence across the scan.
-func (r *Region) eachBinding(visit func(*binding)) {
+func (r *MemoryRegion) eachBinding(visit func(*binding)) {
 	h := r.host
 	r.bindingsMu.Lock()
 	keys := make([]uint64, 0, len(r.blocks))

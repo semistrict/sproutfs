@@ -19,8 +19,8 @@ import (
 func TestStoredIdentitySharesWithoutLoadingOrComparingBytes(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 8, LogicalPages: 32, DirtyPages: 8, ReadAheadPages: 1})
-		a, am, ab := f.region(4)
-		b, bm, bb := f.region(4)
+		a, am, ab := f.memoryRegion(4)
+		b, bm, bb := f.memoryRegion(4)
 		access(t, a, am, 0, false)
 		if ab.loads != 1 {
 			t.Fatalf("first fault loaded %d times", ab.loads)
@@ -84,7 +84,7 @@ func TestZeroPagesNeedNoArenaCapacityOrBackingReads(t *testing.T) {
 func TestReadAheadLoadsTheWindowContiguouslyAndNeverEvicts(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 8, LogicalPages: 32, DirtyPages: 8, ReadAheadPages: 8})
-		r, m, b := f.region(8)
+		r, m, b := f.memoryRegion(8)
 		var loads [][2]int
 		b.onLoad = func(offset uint64, length int) {
 			loads = append(loads, [2]int{int(offset) / pageSize, length / pageSize})
@@ -108,8 +108,8 @@ func TestReadAheadLoadsTheWindowContiguouslyAndNeverEvicts(t *testing.T) {
 				t.Fatalf("page %d holds %d", page, got)
 			}
 		}
-		// A second region of the same image needs no reads at all.
-		s, sm, sb := f.region(8)
+		// A second memory region of the same image needs no reads at all.
+		s, sm, sb := f.memoryRegion(8)
 		access(t, s, sm, 3, false)
 		if sb.loads != 0 || len(sm.pages) != 8 || sm.maps != 1 {
 			t.Fatalf("sibling fault: loads=%d mapped=%d commands=%d", sb.loads, len(sm.pages), sm.maps)
@@ -136,7 +136,7 @@ func TestReadAheadLoadsTheWindowContiguouslyAndNeverEvicts(t *testing.T) {
 func TestAStoreReadsAheadOnlyIntoFreeSlots(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 8, LogicalPages: 32, DirtyPages: 8, ReadAheadPages: 8})
-		r, m, _ := f.region(8)
+		r, m, _ := f.memoryRegion(8)
 		access(t, r, m, 0, false) // the arena is this image's whole window
 		other := f.newUnrelatedBacking(8)
 		o, om := f.attach(other)
@@ -168,14 +168,14 @@ func TestAStoreReadsAheadOnlyIntoFreeSlots(t *testing.T) {
 // The populate maps the resident runs that are worth a mapping command each —
 // at least one read-ahead window long — and leaves the shorter ones to the
 // faults that would cost the same command and only for the pages the guest
-// reads. A run is the pages consecutive in both the region and the arena, which
+// reads. A run is the pages consecutive in both the memory region and the arena, which
 // is neither the window nor the order they were read in: pages 0 to 7 are two
 // such runs and are installed, while pages 8 and 9 are a run of two and the
 // sibling's own page 10 leaves page 11 a run of one, and neither is.
 func TestPopulateMapsEveryResidentRunWorthItsCommandBeforeTheMachineRuns(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 16, LogicalPages: 64, DirtyPages: 16, ReadAheadPages: 4})
-		a, am, _ := f.region(12)
+		a, am, _ := f.memoryRegion(12)
 		access(t, a, am, 0, false) // window 0-3
 		access(t, a, am, 9, false) // window 8-11
 		// The store takes a private page of its own, which nothing may share;
@@ -222,7 +222,7 @@ func TestPopulateMapsEveryResidentRunWorthItsCommandBeforeTheMachineRuns(t *test
 func TestFaultsInDifferentWindowsProceedConcurrently(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 8, LogicalPages: 32, DirtyPages: 8, ReadAheadPages: 1})
-		r, m, b := f.region(4)
+		r, m, b := f.memoryRegion(4)
 		entered, release := make(chan struct{}), make(chan struct{})
 		b.onLoad = func(offset uint64, _ int) {
 			if offset == 0 {
@@ -244,8 +244,8 @@ func TestFaultsInDifferentWindowsProceedConcurrently(t *testing.T) {
 		default:
 			t.Fatal("a fault in another window waited behind a stalled load")
 		}
-		// A seal of the region runs straight through the in-flight fault: the
-		// region is held for planning and page-table work, never for a load.
+		// A seal of the memory region runs straight through the in-flight fault: the
+		// memory region is held for planning and page-table work, never for a load.
 		sealed := make(chan error, 1)
 		go func() { sealed <- r.Seal(t.Context()) }()
 		synctest.Wait()
@@ -275,18 +275,18 @@ func TestFaultsInDifferentWindowsProceedConcurrently(t *testing.T) {
 	})
 }
 
-func TestFaultPastTheRegionIsRejected(t *testing.T) {
+func TestFaultPastTheMemoryRegionIsRejected(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newFixture(t, 2, 4, 2)
-		r, _, _ := f.region(2)
+		r, _, _ := f.memoryRegion(2)
 		if err := r.Fault(t.Context(), 2, false); !errors.Is(err, vmmemory.ErrRange) {
-			t.Fatalf("fault past the region: %v", err)
+			t.Fatalf("fault past the memory region: %v", err)
 		}
 	})
 }
 
-// Read-ahead is one host policy: every region of a host loads the same aligned
-// run, and no region chooses its own.
+// Read-ahead is one host policy: every memory region of a host loads the same aligned
+// run, and no memory region chooses its own.
 func TestReadAheadFollowsTheHostPolicy(t *testing.T) {
 	for _, pages := range []int{1, 4, 8} {
 		t.Run(fmt.Sprint(pages), func(t *testing.T) {
@@ -372,7 +372,7 @@ func TestForksShareTheirPointsResidentPages(t *testing.T) {
 			t.Fatal(err)
 		}
 		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 8, LogicalPages: 32, DirtyPages: 8, ReadAheadPages: 1})
-		fork := func(id string, from *volume.ForkPoint) (*volume.VM, *vmmemory.Region, *mapping) {
+		fork := func(id string, from *volume.ForkPoint) (*volume.VM, *vmmemory.MemoryRegion, *mapping) {
 			vm, err := c.manager.Fork(t.Context(), id, from)
 			if err != nil {
 				t.Fatal(err)
@@ -494,7 +494,7 @@ func TestForkPointSharesThePagesItSealed(t *testing.T) {
 		}
 		t.Cleanup(func() { _ = child.Close(context.Background()) })
 		// Offering the pages is what a host taking the child in does before the
-		// child's regions attach: it is the whole of the local backing's attach.
+		// child's memory regions attach: it is the whole of the local backing's attach.
 		if err := point.Share(t.Context()); err != nil {
 			t.Fatal(err)
 		}
@@ -641,14 +641,14 @@ func TestWritesDuringPublicationNeverAliasTheCheckpoint(t *testing.T) {
 	})
 }
 
-// A published page no region maps any more is still the page its identity
-// names. It stays in the arena, idle, and the next region that inherits the
+// A published page no memory region maps any more is still the page its identity
+// names. It stays in the arena, idle, and the next memory region that inherits the
 // identity maps it without reading the volume. An idle page is the first thing
-// an allocation short of a slot gives up, before any page a region maps.
-func TestAPublishedPageOutlivesTheLastRegionThatMappedIt(t *testing.T) {
+// an allocation short of a slot gives up, before any page a memory region maps.
+func TestAPublishedPageOutlivesTheLastMemoryRegionThatMappedIt(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 2, LogicalPages: 32, DirtyPages: 8, ReadAheadPages: 1})
-		a, am, _ := f.region(4)
+		a, am, _ := f.memoryRegion(4)
 		access(t, a, am, 0, false)
 		access(t, a, am, 1, false)
 		clear(am.pages) // its VMM is gone
@@ -657,20 +657,20 @@ func TestAPublishedPageOutlivesTheLastRegionThatMappedIt(t *testing.T) {
 		}
 		stats, err := f.h.Stats(t.Context())
 		if err != nil || stats.ResidentPages != 2 || stats.IdlePages != 2 {
-			t.Fatalf("after the last region detached: %+v %v", stats, err)
+			t.Fatalf("after the last memory region detached: %+v %v", stats, err)
 		}
-		// A region of other pages needs a slot of the full arena: the older idle
+		// A memory region of other pages needs a slot of the full arena: the older idle
 		// page goes, and nothing is evicted.
 		other := f.newUnrelatedBacking(4)
 		c, cm := f.attach(other)
 		access(t, c, cm, 0, false)
 		stats, err = f.h.Stats(t.Context())
 		if err != nil || stats.IdleDrops != 1 || stats.Evictions != 0 || stats.IdlePages != 1 {
-			t.Fatalf("a slot for another region's page: %+v %v", stats, err)
+			t.Fatalf("a slot for another memory region's page: %+v %v", stats, err)
 		}
-		// A region inheriting a's identities maps the idle page 1 without a read,
+		// A memory region inheriting a's identities maps the idle page 1 without a read,
 		// and reads page 0 again, which was given up.
-		b, bm, bb := f.region(4)
+		b, bm, bb := f.memoryRegion(4)
 		access(t, b, bm, 1, false)
 		if bb.loads != 0 {
 			t.Fatalf("the idle page was loaded again %d times", bb.loads)

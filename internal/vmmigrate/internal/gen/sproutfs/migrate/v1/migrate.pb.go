@@ -31,7 +31,7 @@ const (
 	// STATUS_UNKNOWN_VM reports a VM this host does not serve, which is either a
 	// migration it never held or one it has already released.
 	Status_STATUS_UNKNOWN_VM Status = 2
-	// STATUS_UNKNOWN_VOLUME reports a VM this host serves without that region.
+	// STATUS_UNKNOWN_VOLUME reports a VM this host serves without that memory region.
 	Status_STATUS_UNKNOWN_VOLUME  Status = 3
 	Status_STATUS_INVALID_REQUEST Status = 4
 	// STATUS_BUSY reports the per-peer budget, and is retryable.
@@ -83,7 +83,7 @@ func (x Status) Number() protoreflect.EnumNumber {
 	return protoreflect.EnumNumber(x)
 }
 
-// PageRequest asks one region of one VM for a run of consecutive pages. The
+// PageRequest asks one memory region of one VM for a run of consecutive pages. The
 // server bounds count itself and answers a longer run with what it will serve.
 type PageRequest struct {
 	state                    protoimpl.MessageState `protogen:"opaque.v1"`
@@ -639,8 +639,8 @@ func (b0 PageRun_builder) Build() *PageRun {
 	return m0
 }
 
-// ResidentRequest asks for the pages one region holds, from first_page on. The
-// listing is bounded, so a destination walks a large region with several
+// ResidentRequest asks for the pages one memory region holds, from first_page on. The
+// listing is bounded, so a destination walks a large memory region with several
 // requests rather than one unbounded reply.
 type ResidentRequest struct {
 	state                  protoimpl.MessageState `protogen:"opaque.v1"`
@@ -813,8 +813,8 @@ func (b0 ResidentRequest_builder) Build() *ResidentRequest {
 	return m0
 }
 
-// ResidentResponse lists that region's resident runs in ascending order. more
-// reports that the region holds pages above the last run returned, which the
+// ResidentResponse lists that memory region's resident runs in ascending order. more
+// reports that the memory region holds pages above the last run returned, which the
 // next request asks for.
 type ResidentResponse struct {
 	state                  protoimpl.MessageState `protogen:"opaque.v1"`

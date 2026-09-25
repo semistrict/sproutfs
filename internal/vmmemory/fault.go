@@ -5,13 +5,13 @@ import (
 	"errors"
 )
 
-// Fault orders operations only within this region's read-ahead window. Shared
+// Fault orders operations only within this memory region's read-ahead window. Shared
 // page transitions additionally take that page's lock. Different windows and
 // volumes can load, spill, and flush concurrently, bounded by ConcurrentIO and
 // the resident/dirty budgets. A read fault loads and maps as much of its window
 // as free slots allow; pages of the window that are already resident under the
 // same stored identity are mapped without loading anything.
-func (r *Region) Fault(ctx context.Context, index uint64, write bool) error {
+func (r *MemoryRegion) Fault(ctx context.Context, index uint64, write bool) error {
 	if index >= uint64(r.pageCount) {
 		return ErrRange
 	}
@@ -22,11 +22,11 @@ func (r *Region) Fault(ctx context.Context, index uint64, write bool) error {
 	reserve := false
 	for range faultAttempts {
 		// A store that needs a private page takes its dirty reservation before
-		// any region, page or I/O resource. While a checkpoint publishes, that
+		// any memory region, page or I/O resource. While a checkpoint publishes, that
 		// reservation waits for it to release one, and the publication needs
 		// exactly those resources to get there. A read of a page another host
 		// still holds is the same kind of page — the load makes it this
-		// region's dirty state — so the attempt that discovers it comes back
+		// memory region's dirty state — so the attempt that discovers it comes back
 		// here to take one the same way.
 		spill := -1
 		if reserve || (write && r.needsPrivatePage(index)) {
@@ -51,27 +51,27 @@ func (r *Region) Fault(ctx context.Context, index uint64, write bool) error {
 }
 
 // errUnpublishedReservation reports a fault whose window turned out to hold
-// pages no checkpoint has, which the load takes as this region's dirty state.
+// pages no checkpoint has, which the load takes as this memory region's dirty state.
 // It never leaves the package: the fault releases everything it holds, takes a
 // dirty reservation through the waiting path, and tries again.
 var errUnpublishedReservation = errors.New("managed-memory fault needs a dirty reservation")
 
 // faultAttempts bounds how often a fault re-decides whether it needs a private
-// page. Only a seal taken between that decision and the region lock can force
+// page. Only a seal taken between that decision and the memory region lock can force
 // another attempt, so one repetition is enough in every observed case.
 const faultAttempts = 8
 
 // fault serves one attempt and reports whether it must be retried with a dirty
 // reservation it did not hold. It consumes *spill by setting it to -1.
-func (r *Region) fault(ctx context.Context, index uint64, write bool, spill *int) (retry bool, err error) {
+func (r *MemoryRegion) fault(ctx context.Context, index uint64, write bool, spill *int) (retry bool, err error) {
 	started := r.host.clock.Now()
 	if err := r.live.RLock(ctx); err != nil {
 		return false, err
 	}
 	defer r.live.RUnlock()
-	// The window's stripe comes before the region, not after it: a fault gives
-	// the region up across its backing read and takes it again, and a fault
-	// waiting for a stripe while holding the region would leave that second
+	// The window's stripe comes before the memory region, not after it: a fault gives
+	// the memory region up across its backing read and takes it again, and a fault
+	// waiting for a stripe while holding the memory region would leave that second
 	// acquisition queued behind a seal the stripe holder is waiting for.
 	if err := r.stripe(index).Lock(ctx); err != nil {
 		return false, err
@@ -81,9 +81,9 @@ func (r *Region) fault(ctx context.Context, index uint64, write bool, spill *int
 		return false, err
 	}
 	defer func() {
-		// A read that was cancelled while it waited for the region back holds
+		// A read that was cancelled while it waited for the memory region back holds
 		// it no longer, and says so.
-		if !errors.Is(err, errRegionDropped) {
+		if !errors.Is(err, errMemoryRegionDropped) {
 			r.mu.RUnlock()
 		}
 	}()
@@ -97,7 +97,7 @@ func (r *Region) fault(ctx context.Context, index uint64, write bool, spill *int
 	h.mu.Unlock()
 	// Observed for exactly the attempts the counter above counts, and from the
 	// top of the attempt, so the histogram decomposes Stats.Faults and includes
-	// the region, page and I/O waits a fault can spend before it does any work.
+	// the memory region, page and I/O waits a fault can spend before it does any work.
 	defer func() { h.faultLatency.Observe(h.clock.Since(started)) }()
 	if !write && r.zeroMapped(index) {
 		if err := r.resolvePages(ctx, index, 1, false); err != nil {
@@ -121,17 +121,17 @@ func (r *Region) fault(ctx context.Context, index uint64, write bool, spill *int
 		return false, err
 	}
 	if pg == nil && !b.zero && !b.dirty {
-		// This region holds no memory for the page, so the copy has nothing
+		// This memory region holds no memory for the page, so the copy has nothing
 		// here to be made from. Reading the page in first is the read fault
 		// this write fault often really is: it lands in the sharing index under
 		// the identity its volume gives it, so the copy has an origin and every
-		// region that inherits that identity maps the page rather than reading
+		// memory region that inherits that identity maps the page rather than reading
 		// it again.
 		if pg, err = r.readIn(ctx, index); err != nil {
 			return false, err
 		}
 		if pg != nil && !r.needsPrivatePage(index) {
-			// The region was given up to read, and this page is the guest's own
+			// The memory region was given up to read, and this page is the guest's own
 			// state now. What the store needs is decided again from the top.
 			h.unlock(pg)
 			return true, nil
@@ -166,7 +166,7 @@ func (r *Region) fault(ctx context.Context, index uint64, write bool, spill *int
 		h.unlock(pg)
 		pg = nil
 	}
-	// The region is given up for the reclaim too: this page is in no dirty set
+	// The memory region is given up for the reclaim too: this page is in no dirty set
 	// until the store below puts it back in one, so a seal taken while the
 	// reclaim runs has nothing of this page's to take. Ending a seal does reach
 	// it, and hands it either its own reservation or clean state, so what this
@@ -194,14 +194,14 @@ func (r *Region) fault(ctx context.Context, index uint64, write bool, spill *int
 	}
 	// The pages this store copies from stay where they are until its one mapping
 	// command has replaced the guest's mappings of them; nothing is revoked.
-	replaced := &replacement{region: r}
+	replaced := &replacement{memoryRegion: r}
 	if err := r.takePrivate(ctx, b, old, pg, *spill, origin, replaced); err != nil {
 		return false, err
 	}
 	*spill = -1
 	if unpublished {
 		// The bytes came from the host that still holds them and this store has
-		// just bound them here as this region's own dirty state, so that host no
+		// just bound them here as this memory region's own dirty state, so that host no
 		// longer holds the only copy. Telling the backing is the whole of how it
 		// learns: the load path is not the only way a page only another host had
 		// arrives, and a page nothing reports stays one the source may not stop
@@ -241,7 +241,7 @@ func (r *Region) fault(ctx context.Context, index uint64, write bool, spill *int
 		// The backstop. The client has no mapping left for this store, so
 		// the range the guest is writing in is made whole: its alternations
 		// stop costing that process a mapping each, and the store is served
-		// again. The region is near its budget from here, so its stores close
+		// again. The memory region is near its budget from here, so its stores close
 		// gaps from now on.
 		r.pressed.Store(true)
 		merged, mergeErr := r.makeWhole(ctx, index)
@@ -259,12 +259,12 @@ func (r *Region) fault(ctx context.Context, index uint64, write bool, spill *int
 	return false, nil
 }
 
-// readIn gives a store into a page this region holds no memory for something to
+// readIn gives a store into a page this memory region holds no memory for something to
 // copy away from: the resident page that holds the identity this page's volume
-// gives it, locked. One is there already where another region of this pager
+// gives it, locked. One is there already where another memory region of this pager
 // inherited the same identity; otherwise the bytes are read into a page of
 // their own, which enters the sharing index under that identity — so the copy
-// has an origin the settle can compare it with, and the next region to inherit
+// has an origin the settle can compare it with, and the next memory region to inherit
 // the identity maps that page rather than reading it again.
 //
 // It brings the faulting page's whole read-ahead window in while it is there,
@@ -290,7 +290,7 @@ func (r *Region) fault(ctx context.Context, index uint64, write bool, spill *int
 // that saw the bytes, so it decides — the extents only save the read. That
 // second answer is per page and only a load can give it, so a peer backing's
 // store reads its page alone, as every store did before.
-func (r *Region) readIn(ctx context.Context, index uint64) (*resident, error) {
+func (r *MemoryRegion) readIn(ctx context.Context, index uint64) (*resident, error) {
 	if !r.peer {
 		for range loadAttempts {
 			pg, retry, err := r.readInWindow(ctx, index)
@@ -310,7 +310,7 @@ func (r *Region) readIn(ctx context.Context, index uint64) (*resident, error) {
 // copies from, still locked, with every other page of the window resident,
 // shared and mapped; or that the faulting page lost a publication race and the
 // store must try again, holding nothing.
-func (r *Region) readInWindow(ctx context.Context, index uint64) (pg *resident, retry bool, err error) {
+func (r *MemoryRegion) readInWindow(ctx context.Context, index uint64) (pg *resident, retry bool, err error) {
 	start, end := r.window(index)
 	// The plan names no faulting page: nothing here resolves the guest's access
 	// or maps the page it trapped on, which the store does for itself once it
@@ -321,7 +321,7 @@ func (r *Region) readInWindow(ctx context.Context, index uint64) (pg *resident, 
 	}
 	defer plan.unlock()
 	// The faulting page is the store's, so the plan leaves it bound to nothing
-	// and maps nothing for it; every other page of the window is this region's
+	// and maps nothing for it; every other page of the window is this memory region's
 	// to hold and to map.
 	plan.store = index
 	if id, named := plan.identity(index); !named || id.zero() {
@@ -378,7 +378,7 @@ func (r *Region) readInWindow(ctx context.Context, index uint64) (pg *resident, 
 // readInPage is readIn of the faulting page alone, which is what a backing
 // whose loads can answer that the source still holds a page needs: that answer
 // is per page, and a page it gives it for is one nothing may be shared under.
-func (r *Region) readInPage(ctx context.Context, index uint64) (*resident, error) {
+func (r *MemoryRegion) readInPage(ctx context.Context, index uint64) (*resident, error) {
 	h := r.host
 	window, err := r.plan(ctx, index, index+1, index)
 	if err != nil {
@@ -449,7 +449,7 @@ func (r *Region) readInPage(ctx context.Context, index uint64) (*resident, error
 			return pg, nil
 		}
 		// Another fault published this identity while the read ran; that page
-		// is the one every region maps, so this one goes back to the arena.
+		// is the one every memory region maps, so this one goes back to the arena.
 		err = h.release(ctx, pg)
 		h.unlock(pg)
 		if err != nil {
@@ -475,7 +475,7 @@ func (r *Region) readInPage(ctx context.Context, index uint64) (*resident, error
 // command the store issues for its whole run, so the page it is leaving is
 // handed to replaced instead: held where it is until that command lands, and
 // given up there.
-func (r *Region) takePrivate(ctx context.Context, b *binding, old, pg *resident, slot int, origin *resident, replaced *replacement) error {
+func (r *MemoryRegion) takePrivate(ctx context.Context, b *binding, old, pg *resident, slot int, origin *resident, replaced *replacement) error {
 	h := r.host
 	if old != nil {
 		defer h.unlock(old)
@@ -517,7 +517,7 @@ func (r *Region) takePrivate(ctx context.Context, b *binding, old, pg *resident,
 // command puts fresh pages where the zeros or the trap were, and a zero
 // mapping keeps serving reads until it lands. Write-ahead makes the fresh zero
 // pages around it private in that same command.
-func (r *Region) storeFresh(ctx context.Context, index uint64, spill *int) (bool, error) {
+func (r *MemoryRegion) storeFresh(ctx context.Context, index uint64, spill *int) (bool, error) {
 	zero, untouched := r.fresh(index)
 	if !zero && !untouched {
 		return false, nil
@@ -544,7 +544,7 @@ func (r *Region) storeFresh(ctx context.Context, index uint64, spill *int) (bool
 // before it, at most WriteAheadPages together. A page is fresh zeros when it is
 // zero-mapped or, by the window's extents when the store has them, an untouched
 // hole.
-func (r *Region) zeroRun(index uint64, plan *windowPlan) (uint64, uint64) {
+func (r *MemoryRegion) zeroRun(index uint64, plan *windowPlan) (uint64, uint64) {
 	start, end := r.window(index)
 	limit := uint64(r.host.cfg.WriteAheadPages)
 	zeros := func(page uint64) bool {
@@ -582,7 +582,7 @@ func around(index, first, last uint64, n int) (uint64, uint64) {
 // finds. Each set of consecutive arena offsets the run landed in is one mapping
 // command — one, unless the placement rule put the run in the extents of
 // several ranges and those extents are not themselves consecutive.
-func (r *Region) storeZeros(ctx context.Context, index, first, last uint64, spill *int) error {
+func (r *MemoryRegion) storeZeros(ctx context.Context, index, first, last uint64, spill *int) error {
 	h := r.host
 	extras := h.takeFreeSpill(int(last-first) - 1)
 	used := 0
@@ -653,7 +653,7 @@ func (r *Region) storeZeros(ctx context.Context, index, first, last uint64, spil
 // before it so that the mapping continues its neighbour's; it shrinks to the
 // free slots it finds. A lone page, or a run finding no free slot, allocates
 // for index alone, which may evict.
-func (r *Region) allocateRun(ctx context.Context, index, first, last uint64) (uint64, []MapRun, error) {
+func (r *MemoryRegion) allocateRun(ctx context.Context, index, first, last uint64) (uint64, []MapRun, error) {
 	h := r.host
 	if err := h.makeRoom(ctx, int(last-first)); err != nil {
 		return 0, nil, err
@@ -701,7 +701,7 @@ const loadAttempts = 64
 // without evicting. A publication race for the faulting page's identity is
 // resolved by retrying with no resident lock held, never by waiting for the
 // winner from inside a plan that already holds others.
-func (r *Region) load(ctx context.Context, index uint64, spill *int) error {
+func (r *MemoryRegion) load(ctx context.Context, index uint64, spill *int) error {
 	for range loadAttempts {
 		resolved, err := r.loadOnce(ctx, index, spill)
 		if err != nil || resolved {
@@ -714,7 +714,7 @@ func (r *Region) load(ctx context.Context, index uint64, spill *int) error {
 // loadOnce reports whether the faulting page ended mapped and resolved. The
 // faulting page may evict; read-ahead only uses free slots and only pages whose
 // locks are free, so it never waits behind other work and cannot deadlock.
-func (r *Region) loadOnce(ctx context.Context, index uint64, spill *int) (bool, error) {
+func (r *MemoryRegion) loadOnce(ctx context.Context, index uint64, spill *int) (bool, error) {
 	h := r.host
 	b := r.binding(index)
 	if b.zero {
@@ -768,7 +768,7 @@ func (r *Region) loadOnce(ctx context.Context, index uint64, spill *int) (bool, 
 		if err != nil {
 			return false, err
 		}
-		// The region was given up for the reclaim, and a seal or a retire taken
+		// The memory region was given up for the reclaim, and a seal or a retire taken
 		// while it was is exactly what this page being the guest's own dirty
 		// state was decided against. A retire ends that epoch — the volume holds
 		// these bytes now and the reservation that spilled them has gone back —
@@ -811,8 +811,8 @@ func (r *Region) loadOnce(ctx context.Context, index uint64, spill *int) (bool, 
 	defer plan.unlock()
 	if plan.unpublished(index) && *spill < 0 {
 		// The extents say another host still holds this page, so the load takes
-		// it as this region's dirty state. The reservation for it is taken by
-		// the waiting path, with no region, page or I/O resource held: a
+		// it as this memory region's dirty state. The reservation for it is taken by
+		// the waiting path, with no memory region, page or I/O resource held: a
 		// destination at its dirty bound stalls the post-copy read until a
 		// checkpoint relieves the budget, it never fails the session.
 		return false, errUnpublishedReservation

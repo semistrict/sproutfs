@@ -30,7 +30,7 @@ import (
 	"github.com/semistrict/sproutfs/internal/volume"
 )
 
-// bothKinds gives a machine the same pager for both kinds of region, which a
+// bothKinds gives a machine the same pager for both kinds of memory region, which a
 // test whose subject is neither the geometry nor the memory a guest holds uses
 // to avoid a second arena. A host assembles one pager per kind; hostPagers
 // below is that assembly, and it is what the full-guest suites run on.
@@ -49,11 +49,11 @@ type hostPagers struct {
 	// configs is what each pager was built with, kept so a run that records its
 	// own configuration reports the budgets that were actually applied rather
 	// than recomputing them beside the code that converted them.
-	configs map[vmmemory.RegionKind]vmmemory.Config
+	configs map[vmmemory.MemoryRegionKind]vmmemory.Config
 }
 
 // hostPagerBudgets is one kind's share of a host's memory: the arena that
-// kind's pages live in, the region it may map at once, and the private state no
+// kind's pages live in, the memory region it may map at once, and the private state no
 // checkpoint has published that it may hold. All three are bytes, because a
 // number of pages would mean different amounts of memory in the two pagers.
 // WriteAhead is the one field in pages, since a run of them is a count and not
@@ -119,8 +119,8 @@ func newConfiguredHostPagers(t testing.TB, ctx context.Context, cfg hostPagersCo
 	if resources == nil {
 		resources = testresource.New()
 	}
-	p := &hostPagers{configs: map[vmmemory.RegionKind]vmmemory.Config{}}
-	for _, kind := range []vmmemory.RegionKind{vmmemory.Ram, vmmemory.Pmem} {
+	p := &hostPagers{configs: map[vmmemory.MemoryRegionKind]vmmemory.Config{}}
+	for _, kind := range []vmmemory.MemoryRegionKind{vmmemory.Ram, vmmemory.Pmem} {
 		page, budgets := ramPageBytes(t), cfg.RAM
 		if kind == vmmemory.Pmem {
 			page, budgets = checkpoint.PageSize2MiB, cfg.PMEM
@@ -128,7 +128,7 @@ func newConfiguredHostPagers(t testing.TB, ctx context.Context, cfg hostPagersCo
 		resident := int(budgets.Arena / page)
 		logical := int(budgets.Logical / page)
 		// RAM's arena has an address per logical page — one 512-offset extent
-		// per 2 MiB range any region may write into — beside the pages it may
+		// per 2 MiB range any memory region may write into — beside the pages it may
 		// hold at once; PMEM's offsets and pages are one number. The file is
 		// sparse, so the extra addresses cost nothing until a page is put there.
 		offsets := resident
@@ -235,7 +235,7 @@ func addStats(total *vmmemory.Stats, one vmmemory.Stats) {
 	}
 }
 
-// SharedBytes is what both pagers' arenas hold and what their regions map,
+// SharedBytes is what both pagers' arenas hold and what their memory regions map,
 // which are bytes and so add across pagers of different pages.
 func (p *hostPagers) SharedBytes(ctx context.Context) (unique, mapped uint64, err error) {
 	for _, pager := range []*vmmemory.Host{p.pagers.Ram, p.pagers.Pmem} {
@@ -395,7 +395,7 @@ func TestFirecrackerDAXCaptureRestoreForkAndFence(t *testing.T) {
 		t.Fatalf("the volume holds %d at the DAX extent after a guest flush, want nothing published", got)
 	}
 	command(t, ctx, p, "ram 73\n", "SPROUTFS_RAM ram=73")
-	// Capture: the VMM pauses and seals every region as it writes its state, the
+	// Capture: the VMM pauses and seals every memory region as it writes its state, the
 	// vCPUs resume, and the checkpoint uploads the sealed pages behind them.
 	// The pause must contain the page-table work of the seal and none of that
 	// traffic.
@@ -547,9 +547,9 @@ func TestFirecrackerDAXCaptureRestoreForkAndFence(t *testing.T) {
 	// The source half of a live migration: stop the guest and capture its state,
 	// uploading nothing. The pages this host holds keep serving the
 	// destination afterwards, which is the whole of what moves.
-	regions := p.Regions()
-	if len(regions) != 2 || regions[vmmachine.RAMVolume] == nil || regions["root"] == nil {
-		t.Fatalf("Regions reports %d entries, want one named for each volume this machine maps", len(regions))
+	memoryRegions := p.MemoryRegions()
+	if len(memoryRegions) != 2 || memoryRegions[vmmachine.RAMVolume] == nil || memoryRegions["root"] == nil {
+		t.Fatalf("MemoryRegions reports %d entries, want one named for each volume this machine maps", len(memoryRegions))
 	}
 	beforeStop, err := host.Stats(ctx)
 	if err != nil {
@@ -574,7 +574,7 @@ func TestFirecrackerDAXCaptureRestoreForkAndFence(t *testing.T) {
 	}
 	// A stopped source still holds its pages, which is what the destination
 	// fetches from before it ever reads an object.
-	ram := regions[vmmachine.RAMVolume]
+	ram := memoryRegions[vmmachine.RAMVolume]
 	resident, err := ram.Resident()
 	if err != nil {
 		t.Fatalf("listing what the stopped source holds: %v", err)
@@ -582,7 +582,7 @@ func TestFirecrackerDAXCaptureRestoreForkAndFence(t *testing.T) {
 	if len(resident) == 0 {
 		t.Fatal("the stopped source holds no page to serve its destination")
 	}
-	// A page of this region is a page of the pager that holds it, which for RAM
+	// A page of this memory region is a page of the pager that holds it, which for RAM
 	// is not the PMEM page the arena budgets above are stated in.
 	sample := make([]byte, ram.PageSize())
 	middle := resident[len(resident)/2]
@@ -640,7 +640,7 @@ func TestFirecrackerDAXCaptureRestoreForkAndFence(t *testing.T) {
 	// Nothing maps anything any more, which is what a stopped VMM must leave.
 	// What the arena may still hold is clean pages nothing maps — the pages
 	// stores copied away from, which stay under the identity they are published
-	// by so the next region naming one maps it instead of reading it, and which
+	// by so the next memory region naming one maps it instead of reading it, and which
 	// the next reclaim short of a slot takes like any other clean page. Those
 	// are memory, so the arena's blocks are exactly them and no more.
 	unique, mappedBytes, err := host.SharedBytes(ctx)
@@ -667,7 +667,7 @@ const pressureBytes = 96 << 20
 
 // pagerPageBytes is the PMEM pager's 2 MiB page, which is the larger of the
 // two a host runs and so the unit the suites' arena and page-server budgets are
-// stated in. A RAM page is 4 KiB; a test that means one asks its region.
+// stated in. A RAM page is 4 KiB; a test that means one asks its memory region.
 func pagerPageBytes(t testing.TB) int {
 	t.Helper()
 	return checkpoint.PageSize2MiB

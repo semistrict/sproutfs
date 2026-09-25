@@ -51,8 +51,8 @@ var ErrInvalidCapture = errors.New("host: invalid capture argument")
 //
 // The pause happens under the VM's publication lock, so two captures of one
 // guest — an explicit one and the host's interval checkpoint — serialize there
-// rather than racing to seal the same regions. A phase that fails after the
-// pause began releases the VM: every region is unsealed and the guest resumes.
+// rather than racing to seal the same memory regions. A phase that fails after the
+// pause began releases the VM: every memory region is unsealed and the guest resumes.
 // A VM that refused the capture before its guest was touched is left exactly as
 // it was, which is what a VM whose pages a fork point holds does. Once the
 // publication has the checkpoints it owns them, so nothing here unseals
@@ -66,7 +66,7 @@ func Capture(ctx context.Context, vm *volume.VM, machine Machine, clock platform
 }
 
 // CaptureDisks is the checkpoint the interval takes: Capture of the VM's disks
-// alone. The pause seals the regions of its disks and captures no VMM state, so
+// alone. The pause seals the memory regions of its disks and captures no VMM state, so
 // the checkpoint publishes what the guest stored into its disks, nothing of its
 // RAM, and opening it is a cold boot over those disks — a power cut at the
 // moment the pause began. A disk is what a guest expects to survive the loss

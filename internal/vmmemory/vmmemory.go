@@ -1,4 +1,4 @@
-// Package vmmemory manages bounded shared backing for mapped volume regions.
+// Package vmmemory manages bounded shared backing for mapped volume memory regions.
 // The Linux adapter implements mapping changes; the same ownership machine is
 // exercised with simulated mappings and storage in ordinary Go tests.
 //
@@ -16,20 +16,20 @@ import (
 	"github.com/semistrict/sproutfs/internal/platform"
 )
 
-// RegionKind is what one region is to the guest that maps it. A host runs one
+// MemoryRegionKind is what one memory region is to the guest that maps it. A host runs one
 // pager per kind, each with its own arena, its own spill file and its own page
 // size, because what a deployment plans for is RAM and disk separately and the
-// two no longer share a unit. It is set by whoever attaches the region, which
+// two no longer share a unit. It is set by whoever attaches the memory region, which
 // is the only party that knows: a volume's name says nothing, and the pager
 // must not read one.
-type RegionKind uint64
+type MemoryRegionKind uint64
 
 const (
-	Pmem RegionKind = 1
-	Ram  RegionKind = 2
+	Pmem MemoryRegionKind = 1
+	Ram  MemoryRegionKind = 2
 )
 
-func (k RegionKind) String() string {
+func (k MemoryRegionKind) String() string {
 	switch k {
 	case Ram:
 		return "ram"
@@ -39,16 +39,16 @@ func (k RegionKind) String() string {
 	return "unknown"
 }
 
-// Pagers is one host's pager per kind of region. Nothing adds their page counts
+// Pagers is one host's pager per kind of memory region. Nothing adds their page counts
 // together — a RAM page and a PMEM page are different numbers of bytes — so
 // everything a host reports across the two is in bytes.
 type Pagers struct {
 	Ram, Pmem *Host
 }
 
-// For reports the pager a region of this kind attaches to, nil where this host
+// For reports the pager a memory region of this kind attaches to, nil where this host
 // runs none of that kind.
-func (p Pagers) For(kind RegionKind) *Host {
+func (p Pagers) For(kind MemoryRegionKind) *Host {
 	switch kind {
 	case Ram:
 		return p.Ram
@@ -70,17 +70,17 @@ func (p Pagers) All() []*Host {
 	return all
 }
 
-// RegionBacking is the one region a session maps: what it is to the guest and
+// MemoryRegionBacking is the one memory region a session maps: what it is to the guest and
 // the bytes it stands in front of.
-type RegionBacking struct {
-	Kind    RegionKind
+type MemoryRegionBacking struct {
+	Kind    MemoryRegionKind
 	Backing Backing
 }
 
 var (
 	ErrConfig   = errors.New("invalid managed-memory configuration")
 	ErrCapacity = errors.New("managed-memory capacity exhausted")
-	ErrClosed   = errors.New("managed-memory region closed")
+	ErrClosed   = errors.New("managed-memory-region closed")
 	ErrRange    = errors.New("invalid managed-memory page")
 	// ErrContended reports a faulting page whose identity kept losing
 	// publication races. It is retryable and never observed in practice.
@@ -90,18 +90,18 @@ var (
 	// so a refusal is the one failure that is known to have changed nothing.
 	// Nothing about the client's mappings moved, which makes it a failed
 	// operation rather than a failed session — the pages are not mapped, the
-	// region goes on serving, and the fault is served again once the budget it
+	// memory region goes on serving, and the fault is served again once the budget it
 	// ran out of has been freed. Every other mapping failure is ambiguous: the
-	// command may have been applied, and the region is terminal.
+	// command may have been applied, and the memory region is terminal.
 	ErrMappingRefused = errors.New("managed-memory mapping refused")
 	// ErrDirtyStalled reports a store the dirty budget cannot admit and no
 	// checkpoint can make room for. It is deliberately not ErrCapacity: a store
 	// that only has to wait waits, and this is the one case left, which the
-	// region's owner is told about through Pressure.Stop so that it stops the VM
+	// memory region's owner is told about through Pressure.Stop so that it stops the VM
 	// itself rather than letting a failed fault kill the VMM.
 	ErrDirtyStalled = errors.New("managed-memory dirty budget stalled")
 	// ErrWindowStalled reports a store held back by the loss window whose VM can
-	// never be checkpointed: its loop is off, or its region belongs to no VM this
+	// never be checkpointed: its loop is off, or its memory region belongs to no VM this
 	// host runs. It is told apart from a budget stall because the two say
 	// different things about a deployment — one that its guests dirty faster than
 	// their checkpoints drain, this one that a guest's writes cannot be made
@@ -110,7 +110,7 @@ var (
 )
 
 // Pressure is how the pager pushes a full dirty budget back to whoever owns its
-// regions, which is the only party that can checkpoint one or stop its VM. A
+// memory regions, which is the only party that can checkpoint one or stop its VM. A
 // host with no Pressure installed can do neither, so every store past the
 // budget stalls.
 //
@@ -118,31 +118,31 @@ var (
 // may block or call back into the host: they signal, and the work happens
 // elsewhere. Both may be called repeatedly while one store waits.
 type Pressure struct {
-	// Checkpoint asks for an immediate checkpoint of one region, out of the
+	// Checkpoint asks for an immediate checkpoint of one memory region, out of the
 	// interval's turn, and reports whether one will be taken. The host asks for
-	// the region holding the largest dirty set first and works down; a false
-	// answer for every region is what makes a store a stall.
-	Checkpoint func(*Region) bool
-	// Stop reports a region whose store could not be admitted, with the cause
+	// the memory region holding the largest dirty set first and works down; a false
+	// answer for every memory region is what makes a store a stall.
+	Checkpoint func(*MemoryRegion) bool
+	// Stop reports a memory region whose store could not be admitted, with the cause
 	// to log. Its owner stops that VM deliberately: a last checkpoint of what
 	// it can still capture, and a reason on the record, where the killed VMM
 	// the fault path produces leaves neither.
-	Stop func(*Region, error)
-	// Oldest reports the oldest unpublished write of the whole VM one region
+	Stop func(*MemoryRegion, error)
+	// Oldest reports the oldest unpublished write of the whole VM one memory region
 	// belongs to, zero where that VM holds none. The loss window is a VM's,
-	// because the checkpoint that ends it is: one region's pages are published
+	// because the checkpoint that ends it is: one memory region's pages are published
 	// by the same pause as its siblings'. The pager holds no idea of a VM, so
-	// the owner that already answers Checkpoint per region answers this too;
-	// a host that installs none leaves each region answering for itself, which
-	// bounds every region and therefore the VM, only less sharply.
-	Oldest func(*Region) time.Time
+	// the owner that already answers Checkpoint per memory region answers this too;
+	// a host that installs none leaves each memory region answering for itself, which
+	// bounds every memory region and therefore the VM, only less sharply.
+	Oldest func(*MemoryRegion) time.Time
 }
 
 // Backing is satisfied by *volume.Volume. The pager never writes to it: a
-// region's dirty pages reach storage through the checkpoint that reads its
+// memory region's dirty pages reach storage through the checkpoint that reads its
 // sealed checkpoint, not through this interface. Load and Locate serve the
 // handle's current view without a writer-authority check and without network
-// I/O; Verify checks that this host still owns the VM, and Region.Verify runs
+// I/O; Verify checks that this host still owns the VM, and MemoryRegion.Verify runs
 // it on the supervisor's schedule.
 type Backing interface {
 	Size() uint64
@@ -167,7 +167,7 @@ type PagedBacking interface {
 // is one.
 //
 // It is what makes a fault one read. A window is a run of pages of which the
-// ones this region already holds resident need no bytes, and a volume groups
+// ones this memory region already holds resident need no bytes, and a volume groups
 // the members it is asked for by the part they lie in, so a run with those
 // pages left out costs one ranged read per part it spans — where asking for
 // each stretch of the run separately costs a request per stretch, and the pages
@@ -185,7 +185,7 @@ type SparseLoader interface {
 // host serves out of its own dirty pages are the guest's state since the
 // source's last checkpoint, and no checkpoint has them.
 //
-// A page reported unpublished is loaded as this region's private dirty state —
+// A page reported unpublished is loaded as this memory region's private dirty state —
 // a private page under a spill reservation — rather than as clean state of the
 // checkpoint the volume reports for it, because the checkpoint's identity names
 // different bytes. The next checkpoint is what publishes it, which on a
@@ -198,7 +198,7 @@ type UnpublishedLoader interface {
 }
 
 // UnpublishedInstaller is an UnpublishedLoader that is told which of the pages
-// it reported unpublished this region went on to hold. A load is not an
+// it reported unpublished this memory region went on to hold. A load is not an
 // install: the bytes reach a buffer, and the pager may still drop the page — a
 // read-ahead page on a full dirty budget is the ordinary way — after which the
 // bytes are nowhere. A backing whose unpublished pages exist only on another
@@ -207,7 +207,7 @@ type UnpublishedLoader interface {
 type UnpublishedInstaller interface {
 	UnpublishedLoader
 	// InstalledUnpublished reports, for the range one load filled starting at
-	// offset, which pages this region now holds as its own dirty state. It is
+	// offset, which pages this memory region now holds as its own dirty state. It is
 	// called after the load's pages have been bound, and a page it does not
 	// name is one the load did not leave behind.
 	InstalledUnpublished(offset uint64, installed []bool)
@@ -242,14 +242,14 @@ type EqualArena interface {
 	Equal(ctx context.Context, first, second int) (bool, error)
 }
 
-// Mapping controls one process region. Map installs already armed mappings for
+// Mapping controls one process memory region. Map installs already armed mappings for
 // count consecutive pages backed by count consecutive arena slots; Revoke
 // installs a missing-fault trap. Both wait for acknowledgement and drain
 // transient kernel users before returning. Long-lived external pins are not
 // permitted. Errors can be ambiguous, so Host retains all possibly mapped slots
 // until Detach after process termination. Resolve installs the page tables for
 // count consecutive mapped pages and completes any trapped access to them.
-// Callbacks must not call Host or Region methods recursively.
+// Callbacks must not call Host or MemoryRegion methods recursively.
 type Mapping interface {
 	Map(ctx context.Context, page uint64, slot, count int, writable bool) error
 	// MapZero installs read-only, first-write-trapped zeros without arena slots.
@@ -291,7 +291,7 @@ type BatchRevocation interface {
 type Config struct {
 	// PageSize is this pager's unit: its arena slots, its spill slots, the
 	// numbers it faults, keys and serves, and the alignment it requires of every
-	// region. It is fixed for the pager's life, because a page number means
+	// memory region. It is fixed for the pager's life, because a page number means
 	// nothing without it, and it must be one of the page sizes a volume can be
 	// published in — checkpoint.GeometryFor is the one place that says which
 	// those are, so a pager and the volumes it maps cannot disagree about it.
@@ -304,7 +304,7 @@ type Config struct {
 	ConcurrentIO int
 	// ReadAheadPages bounds the aligned run a fault loads and maps at once, in
 	// pages of this pager. It is the host's one read-ahead policy for this kind
-	// of region: no region overrides it. A deployment states the run in bytes
+	// of memory region: no memory region overrides it. A deployment states the run in bytes
 	// and each pager converts it into its own pages, because the run is a buffer
 	// and a number of pages means different amounts of memory in the two.
 	// Read-ahead only uses free arena slots; it never evicts. Zero selects one
@@ -341,12 +341,12 @@ type Config struct {
 	// offsets it owns empty. Zero selects ResidentPages, which is a pager whose
 	// addresses and pages are one number.
 	ArenaOffsets int
-	// LogicalPages bounds all per-region metadata, including never-faulted pages.
+	// LogicalPages bounds all per-memory-region metadata, including never-faulted pages.
 	LogicalPages int
 	// DirtyPages bounds volatile private state on RAM and spill combined.
 	DirtyPages int
 	// LossWindow bounds a VM's unpublished writes in time as DirtyPages bounds
-	// them in bytes. While the oldest unpublished write of a region's VM is
+	// them in bytes. While the oldest unpublished write of a memory region's VM is
 	// older than this, the pager admits no further dirty page for it: every
 	// store that needs a reservation waits, and a checkpoint of that VM is asked
 	// for out of the interval's turn. What a host loss can then cost one VM
@@ -376,7 +376,7 @@ func (c Config) Offsets() int {
 }
 
 // ProbeEvictionDuringPublication marks an eviction that punched a page of a
-// region a publication was reading at that moment. The two hold different
+// memory region a publication was reading at that moment. The two hold different
 // locks over the same bytes, so it is the overlap a pager that only ever had
 // room for its guest never reaches.
 const ProbeEvictionDuringPublication = "vmmemory/eviction-during-publication"

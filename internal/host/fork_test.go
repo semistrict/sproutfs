@@ -121,7 +121,7 @@ func TestHostForksEveryChildFromOnePause(t *testing.T) {
 		}
 	}
 	// A point nothing has retired holds the parent, and one checkpoint of a
-	// region is outstanding at a time, so a fork taken while one is held is
+	// memory region is outstanding at a time, so a fork taken while one is held is
 	// refused.
 	point, err := host.Seal(t.Context(), vm, guest)
 	if err != nil {
@@ -353,14 +353,14 @@ func (n *countingNetwork) Dial(ctx context.Context, from, to platform.Address) (
 // a child that lands on its parent's own host receives one over a local backing
 // rather than over the page server: the pager shares the parent's sealed pages
 // with the child by identity, so every inherited page is present the moment the
-// region attaches. No byte is copied, no page is loaded back out of the store
+// memory region attaches. No byte is copied, no page is loaded back out of the store
 // and nothing is dialed. The child's root is published by the host that took it
 // in, as soon as it holds every page, which is before the parent's seal ends.
 func TestLocalForkReceivesTheForkPointOverThePages(t *testing.T) {
 	h, pagers := startMigrationHosts(t)
 	var child *machine
 	// The destination of this fork is the parent's own host, so the child's
-	// regions attach to the pager the parent's pages are in.
+	// memory regions attach to the pager the parent's pages are in.
 	h.configs[0].Migration.StartVM = starter(t, pagers[0], &child)
 	network := &countingNetwork{Network: h.configs[0].Network}
 	h.configs[0].Network = network

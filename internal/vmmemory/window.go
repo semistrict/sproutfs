@@ -11,12 +11,12 @@ import (
 // windowPlan collects the pages of one page that a fault or Populate installs
 // together: locked residents, slots reserved for loading, and their order.
 type windowPlan struct {
-	region     *Region
-	start, end uint64
-	fault      uint64 // the faulting page, or end for Populate
+	memoryRegion *MemoryRegion
+	start, end   uint64
+	fault        uint64 // the faulting page, or end for Populate
 	// store names the page a store faulted on, or end. The plan reads that page
 	// in and holds it locked like any other, but binds nothing to it and
-	// installs no page tables for it: what this region will hold there is the
+	// installs no page tables for it: what this memory region will hold there is the
 	// private copy the store is about to make, and a binding that took the
 	// shared page first would be a second owner of that page's memory for as
 	// long as the copy takes and would cost the store a revocation to undo.
@@ -26,7 +26,7 @@ type windowPlan struct {
 	reserved []int       // slot reserved for loading, -1 otherwise
 	fresh    []bool      // page tables not yet installed
 	zeros    []bool      // explicit zeros, requiring no resident or reservation
-	// private marks pages loaded as this region's own dirty state, which a
+	// private marks pages loaded as this memory region's own dirty state, which a
 	// migration destination's peer-served pages are. They are mapped writable,
 	// because a dirty page the guest may store into without faulting is exactly
 	// what their bindings say they are.
@@ -34,7 +34,7 @@ type windowPlan struct {
 	observedZeros bool
 	locked        map[*resident]bool
 	// spill names the dirty reservation the fault brought with it, or -1. A
-	// page the backing serves out of another host's memory is this region's own
+	// page the backing serves out of another host's memory is this memory region's own
 	// dirty state, so loading it takes a reservation, and the faulting page's
 	// is taken by the waiting path before the fault holds any lock. It is
 	// consumed by setting it to -1.
@@ -55,14 +55,14 @@ func (i *installedRuns) add(other installedRuns) {
 	i.pages += other.pages
 }
 
-func (r *Region) plan(ctx context.Context, start, end, fault uint64) (*windowPlan, error) {
+func (r *MemoryRegion) plan(ctx context.Context, start, end, fault uint64) (*windowPlan, error) {
 	ps := r.host.pageSize
 	extents, err := r.backing.Locate(ctx, start*ps, (end-start)*ps)
 	if err != nil {
 		return nil, err
 	}
 	none := -1
-	p := &windowPlan{region: r, start: start, end: end, fault: fault, store: end, extents: extents, pages: make([]*resident, end-start), reserved: make([]int, end-start), fresh: make([]bool, end-start), zeros: make([]bool, end-start), private: make([]bool, end-start), locked: make(map[*resident]bool), spill: &none}
+	p := &windowPlan{memoryRegion: r, start: start, end: end, fault: fault, store: end, extents: extents, pages: make([]*resident, end-start), reserved: make([]int, end-start), fresh: make([]bool, end-start), zeros: make([]bool, end-start), private: make([]bool, end-start), locked: make(map[*resident]bool), spill: &none}
 	for i := range p.reserved {
 		p.reserved[i] = -1
 	}
@@ -70,7 +70,7 @@ func (r *Region) plan(ctx context.Context, start, end, fault uint64) (*windowPla
 }
 
 func (p *windowPlan) unlock() {
-	h := p.region.host
+	h := p.memoryRegion.host
 	h.mu.Lock()
 	for i, slot := range p.reserved {
 		if slot >= 0 {
@@ -92,14 +92,14 @@ func (p *windowPlan) unlock() {
 // eligible reports whether a page other than the faulting one can join the
 // plan: it must have no private state and must not already be resident.
 func (p *windowPlan) eligible(page uint64) bool {
-	b := p.region.lookupBinding(page)
+	b := p.memoryRegion.lookupBinding(page)
 	if b == nil {
 		return true
 	}
 	if b.dirty {
 		return false
 	}
-	h := p.region.host
+	h := p.memoryRegion.host
 	h.mu.Lock()
 	resident := b.resident != nil
 	h.mu.Unlock()
@@ -109,7 +109,7 @@ func (p *windowPlan) eligible(page uint64) bool {
 // identity reports the store page whose bytes this page reads, which is the
 // whole of what names it: a page is published whole or not at all.
 func (p *windowPlan) identity(page uint64) (pageKey, bool) {
-	offset := page * p.region.host.pageSize
+	offset := page * p.memoryRegion.host.pageSize
 	first := sort.Search(len(p.extents), func(i int) bool { return p.extents[i].Offset+p.extents[i].Length > offset })
 	if first >= len(p.extents) {
 		return pageKey{}, false
@@ -118,7 +118,7 @@ func (p *windowPlan) identity(page uint64) (pageKey, bool) {
 	if e.Identity.Zero {
 		return pageKey{id: control.Identity{Zero: true}}, true
 	}
-	// A page with no object is private to this region and never shared, and so
+	// A page with no object is private to this memory region and never shared, and so
 	// is one whose backing named a page other than this one.
 	if e.Identity.Ref.IsZero() || e.Identity.Page != page {
 		return pageKey{}, false
@@ -129,14 +129,14 @@ func (p *windowPlan) identity(page uint64) (pageKey, bool) {
 // unpublished reports whether the window's extents say this page's bytes belong
 // to no object of this volume, which for a backing that fetches from another
 // host means the source still holds them: the load will take the page as this
-// region's private dirty state and needs a dirty reservation for it. Only such
+// memory region's private dirty state and needs a dirty reservation for it. Only such
 // a backing is asked; for every other one the answer is that the volume holds
 // every page it reports.
 func (p *windowPlan) unpublished(page uint64) bool {
-	if !p.region.peer {
+	if !p.memoryRegion.peer {
 		return false
 	}
-	offset := page * p.region.host.pageSize
+	offset := page * p.memoryRegion.host.pageSize
 	first := sort.Search(len(p.extents), func(i int) bool { return p.extents[i].Offset+p.extents[i].Length > offset })
 	if first >= len(p.extents) {
 		return false
@@ -145,18 +145,18 @@ func (p *windowPlan) unpublished(page uint64) bool {
 	return !e.Identity.Zero && e.Identity.Ref.IsZero()
 }
 
-// observeZeros records that this region knows about explicit zeros, which is
+// observeZeros records that this memory region knows about explicit zeros, which is
 // what lets a sibling attachment map them eagerly without any metadata of its
 // own. It is idempotent per plan.
 func (p *windowPlan) observeZeros() {
 	if p.observedZeros {
 		return
 	}
-	h := p.region.host
+	h := p.memoryRegion.host
 	h.mu.Lock()
-	if !p.region.hasZeros {
-		p.region.hasZeros = true
-		h.zeroRegions++
+	if !p.memoryRegion.hasZeros {
+		p.memoryRegion.hasZeros = true
+		h.zeroMemoryRegions++
 	}
 	h.mu.Unlock()
 	p.observedZeros = true
@@ -170,7 +170,7 @@ func (p *windowPlan) markZeros(first, last uint64) {
 		return
 	}
 	p.observeZeros()
-	r := p.region
+	r := p.memoryRegion
 	for page := first; page < last; {
 		stop := min(last, (page/bindingBlockPages+1)*bindingBlockPages)
 		if !r.touchedBlock(page) {
@@ -203,7 +203,7 @@ func (p *windowPlan) bindShared(ctx context.Context, page uint64, wait bool) err
 		p.fresh[page-p.start] = true
 		return nil
 	}
-	h := p.region.host
+	h := p.memoryRegion.host
 	key := id
 	for {
 		h.mu.Lock()
@@ -232,7 +232,7 @@ func (p *windowPlan) bindShared(ctx context.Context, page uint64, wait bool) err
 			panic(found)
 		}
 		if page != p.store {
-			h.bind(p.region.binding(page), pg)
+			h.bind(p.memoryRegion.binding(page), pg)
 		}
 		h.mu.Lock()
 		h.stats.IdentityHits++
@@ -263,7 +263,7 @@ func (p *windowPlan) needsLoad(page uint64) bool {
 	if !ok {
 		return true
 	}
-	h := p.region.host
+	h := p.memoryRegion.host
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.clean[id] == nil
@@ -281,7 +281,7 @@ func (p *windowPlan) reserveAround(index uint64) {
 	for last < p.end && p.needsLoad(last) {
 		last++
 	}
-	slot, count := p.region.host.allocateFree(int(last - first))
+	slot, count := p.memoryRegion.host.allocateFree(int(last - first))
 	if count == 0 {
 		return
 	}
@@ -298,7 +298,7 @@ func (p *windowPlan) reserveAround(index uint64) {
 // slots cannot cover the window even so, the pages after the faulting one come
 // first: access tends to continue forward.
 func (p *windowPlan) reserveRuns(ctx context.Context, from uint64) error {
-	h := p.region.host
+	h := p.memoryRegion.host
 	needs := p.needsLoad
 	needed := 0
 	for page := p.start; page < p.end; page++ {
@@ -340,11 +340,11 @@ func (p *windowPlan) reserveRuns(ctx context.Context, from uint64) error {
 
 // loadReserved reads the reserved pages of this window with one backing read
 // and publishes the resulting residents under their stored identities. The
-// pages between them — the ones this region already holds, and the holes its
+// pages between them — the ones this memory region already holds, and the holes its
 // volume has — are left out of the read rather than splitting it: a window is
 // one run of a volume, and what a run costs is the volume's to decide.
 func (p *windowPlan) loadReserved(ctx context.Context) error {
-	h := p.region.host
+	h := p.memoryRegion.host
 	ps := h.pageSize
 	first, last := p.end, p.start
 	loading := uint64(0)
@@ -365,7 +365,7 @@ func (p *windowPlan) loadReserved(ctx context.Context) error {
 	buffer := h.takeWindow(last - first)
 	defer h.putWindow(buffer)
 	data := *buffer
-	unpublished, err := p.region.loadRun(ctx, first, wanted, data)
+	unpublished, err := p.memoryRegion.loadRun(ctx, first, wanted, data)
 	if err != nil {
 		return err
 	}
@@ -374,7 +374,7 @@ func (p *windowPlan) loadReserved(ctx context.Context) error {
 	h.stats.LoadedPages += loading
 	h.mu.Unlock()
 	// A backing whose pages come from another host is told which of them this
-	// region went on to hold, so a page it served that the publish below
+	// memory region went on to hold, so a page it served that the publish below
 	// dropped stays one only that host has.
 	var installed []bool
 	if len(unpublished) > 0 {
@@ -395,7 +395,7 @@ func (p *windowPlan) loadReserved(ctx context.Context) error {
 		}
 	}
 	if installed != nil {
-		p.region.installedUnpublished(first*ps, installed)
+		p.memoryRegion.installedUnpublished(first*ps, installed)
 	}
 	return failure
 }
@@ -406,12 +406,12 @@ func (p *windowPlan) loadReserved(ctx context.Context) error {
 // resident locks, and a population acquires them in identity order, so waiting
 // here could deadlock. The fault retries instead, holding nothing.
 func (p *windowPlan) publish(ctx context.Context, page uint64, data []byte, private bool) error {
-	h := p.region.host
+	h := p.memoryRegion.host
 	i := page - p.start
 	slot := p.reserved[i]
 	if private {
 		// The bytes are the guest's own and no checkpoint has them, so this page
-		// enters the region as dirty state: a private page under a dirty
+		// enters the memory region as dirty state: a private page under a dirty
 		// reservation, which the next checkpoint publishes. The faulting page
 		// brings the reservation the waiting path admitted it under, so a full
 		// budget stalls the fault before it holds anything rather than failing
@@ -436,15 +436,15 @@ func (p *windowPlan) publish(ctx context.Context, page uint64, data []byte, priv
 			}
 		}
 		p.reserved[i] = -1
-		pg, err := h.create(ctx, slot, data, pageKey{}, true, p.region.kind)
+		pg, err := h.create(ctx, slot, data, pageKey{}, true, p.memoryRegion.kind)
 		if err != nil {
 			h.releaseSpill(spill)
 			return err
 		}
-		b := p.region.binding(page)
+		b := p.memoryRegion.binding(page)
 		b.zero = false
 		b.spillSlot = spill
-		p.region.setDirty(b, true)
+		p.memoryRegion.setDirty(b, true)
 		h.bind(b, pg)
 		h.probe.granted(b, pg, nil)
 		p.pages[i] = pg
@@ -458,7 +458,7 @@ func (p *windowPlan) publish(ctx context.Context, page uint64, data []byte, priv
 	if shared {
 		key = id
 	}
-	pg, err := h.create(ctx, slot, data, key, false, p.region.kind)
+	pg, err := h.create(ctx, slot, data, key, false, p.memoryRegion.kind)
 	if err != nil {
 		return err
 	}
@@ -481,7 +481,7 @@ func (p *windowPlan) publish(ctx context.Context, page uint64, data []byte, priv
 		}
 	}
 	if page != p.store {
-		h.bind(p.region.binding(page), pg)
+		h.bind(p.memoryRegion.binding(page), pg)
 	}
 	p.pages[i] = pg
 	p.locked[pg] = true
@@ -501,7 +501,7 @@ func pagesOf(runs []MapRun) uint64 {
 // slots and explicit zero ranges coalesce into runs, sent in bounded batches.
 // It reports whether the faulting page ended resolved.
 func (p *windowPlan) install(ctx context.Context) (bool, error) {
-	r := p.region
+	r := p.memoryRegion
 	h := r.host
 	var runs []MapRun
 	var writable []MapRun

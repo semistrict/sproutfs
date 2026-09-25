@@ -24,10 +24,10 @@ import (
 type Dialer = peer.Dialer
 
 // Admitter orders a destination's decision to ask its source for pages against
-// everything else a controlled run is running, named by the region it is for.
+// everything else a controlled run is running, named by the memory region it is for.
 type Admitter = peer.Admitter
 
-// WithAdmission installs admit for every request the regions of every VM
+// WithAdmission installs admit for every request the memory regions of every VM
 // received under ctx make to their source, including the ones the post-copy
 // stream makes behind the running guest. A deployment installs none.
 //
@@ -63,13 +63,13 @@ type PeerConfig struct {
 	// receiving is newer than them. It is zero for a fork, whose child has
 	// published nothing and whose inherited pages name its parent instead.
 	Selected uint64
-	// PageSize is the page this region's numbers are counted in, which is the
+	// PageSize is the page this memory region's numbers are counted in, which is the
 	// volume's own and therefore the source's too: both hosts read it out of the
 	// same durable geometry. Zero takes it from Volume, which is what every
 	// caller but a scaled-model test wants.
 	PageSize int
 	Dial     Dialer
-	// MaxConnections bounds this region's requests in flight, four by default.
+	// MaxConnections bounds this memory region's requests in flight, four by default.
 	// The post-copy stream uses all but one, which is kept for guest faults.
 	MaxConnections int
 	// MaxPagesPerRequest bounds one request: one 2 MiB production page by
@@ -81,7 +81,7 @@ type PeerConfig struct {
 	Clock platform.Clock
 }
 
-// PeerStats reports where one region's pages came from.
+// PeerStats reports where one memory region's pages came from.
 type PeerStats struct {
 	// PeerPages is the pages the source host served and VolumePages the pages
 	// read from this host's own volume, whether because the source did not hold
@@ -99,9 +99,9 @@ type PeerStats struct {
 	// source, and Fetched how many of them it has served.
 	Unfetched int
 	Fetched   int64
-	// FellBack reports that this region will never ask the source again.
+	// FellBack reports that this memory region will never ask the source again.
 	FellBack bool
-	// Latency is how long this region's requests to the source took, guest
+	// Latency is how long this memory region's requests to the source took, guest
 	// faults and the post-copy stream apart.
 	Latency RequestLatency
 }
@@ -147,17 +147,17 @@ type PeerBacking struct {
 	config PeerConfig
 	// unpublished is the handoff's set as a lookup, fixed for this backing's
 	// life: the guest was stopped when it was taken. What it decides is not
-	// fixed — a page of it stops being reported as this region's own once a
+	// fixed — a page of it stops being reported as this memory region's own once a
 	// checkpoint of this VM holds it, which Locate reads off the volume.
 	unpublished map[uint64]bool
 
 	// source is the host that still holds these pages, and the connections this
-	// region asks it over.
+	// memory region asks it over.
 	source *peer.Source
 
 	// mu guards unfetched, which is the part of unpublished the source has not
 	// served yet. It only ever shrinks, and empties when the source may stop
-	// serving this region.
+	// serving this memory region.
 	mu        sync.Mutex
 	unfetched map[uint64]struct{}
 
@@ -169,7 +169,7 @@ type PeerBacking struct {
 	fetched  atomic.Int64
 	stalls   atomic.Int64
 
-	// life ends when this backing does, which is this region's half of the
+	// life ends when this backing does, which is this memory region's half of the
 	// migration ending: a fault waiting for a source that never answered ends
 	// there, because nothing else would ever end it. Every request this backing
 	// sends is made under it as well as under its caller's own context.
@@ -250,7 +250,7 @@ func (b *PeerBacking) PageSize() uint64                 { return b.config.Volume
 func (b *PeerBacking) Verify(ctx context.Context) error { return b.config.Volume.Verify(ctx) }
 
 // Locate reports the volume's own identities everywhere except the pages whose
-// bytes no checkpoint of this VM holds. Those it reports as bytes of this region
+// bytes no checkpoint of this VM holds. Those it reports as bytes of this memory region
 // alone — no reference, so no page of them is ever shared and none of them is
 // taken for a hole — which is what makes the pager load them through Load, where
 // the source answers, rather than resolve them against a checkpoint that does
@@ -316,7 +316,7 @@ func (b *PeerBacking) Stats() PeerStats {
 }
 
 // Unfetched reports how many pages no checkpoint holds are still only on the
-// source. The source may stop serving this region when it reaches zero.
+// source. The source may stop serving this memory region when it reaches zero.
 func (b *PeerBacking) Unfetched() int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -324,7 +324,7 @@ func (b *PeerBacking) Unfetched() int {
 }
 
 // Concurrency is how many requests the post-copy stream may have in flight for
-// this region at once: every connection but the one kept for guest faults.
+// this memory region at once: every connection but the one kept for guest faults.
 func (b *PeerBacking) Concurrency() int { return b.source.Concurrency() }
 
 // onlyOnSource reports the first page of a run whose bytes are still only on the
@@ -524,7 +524,7 @@ func (b *PeerBacking) Unpublished() []PageRun { return b.config.Unpublished }
 // the caller of this one is the stream, which the destination stops itself and
 // cancels with a cause of its own, and neither that nor a busy source nor a
 // source that stumbled is this source's last word. Ending the asking here would
-// send the region to a volume that does not hold the pages no checkpoint has,
+// send the memory region to a volume that does not hold the pages no checkpoint has,
 // and every later fault on one of them would fail with the source still there.
 // Only the source's own answer that it does not serve this VM does that.
 func (b *PeerBacking) Resident(ctx context.Context) ([]PageRun, error) {
@@ -688,7 +688,7 @@ func (b *PeerBacking) fallBack(ctx context.Context, cause error) {
 	b.source.Close()
 }
 
-// Close ends this region's half of the migration: every connection it holds is
+// Close ends this memory region's half of the migration: every connection it holds is
 // dropped, every fault waiting for a source that never answered is given that
 // end as its cause, and nothing is asked of the source again. The volume keeps
 // working, which is every page a checkpoint holds; a page only the source held
@@ -703,6 +703,6 @@ func (b *PeerBacking) Close() error {
 	return nil
 }
 
-// gone reports a region that will not ask its source again: one the source
+// gone reports a memory region that will not ask its source again: one the source
 // answered out of, and one this host closed.
 func (b *PeerBacking) gone() bool { return b.fallen.Load() || b.life.Err() != nil }

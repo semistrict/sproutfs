@@ -126,7 +126,7 @@ func TestAColdRunOfSmallPagesIsTwoRequests(t *testing.T) {
 // runPages is the 512 4 KiB pages one 2 MiB read-ahead run holds.
 const runPages = checkpoint.PageSize2MiB / checkpoint.PageSize4KiB
 
-// A pager's window is a run with the pages its region already holds taken out
+// A pager's window is a run with the pages its memory region already holds taken out
 // of it, and a volume fills exactly the pages it was asked for: out of the
 // overlay where the VM has written since its checkpoint and out of the
 // checkpoint everywhere else, leaving the bytes of every other page as the

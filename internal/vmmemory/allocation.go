@@ -113,7 +113,7 @@ func (h *Host) allocateFreeFrom(prefer, want int) (int, int) {
 // rule has no offset for — a pager that places nothing, no extent left, or an
 // offset already holding the bytes a checkpoint froze — falls back to an
 // ordinary one beside its neighbours.
-func (r *Region) allocatePrivate(ctx context.Context, index uint64) (int, error) {
+func (r *MemoryRegion) allocatePrivate(ctx context.Context, index uint64) (int, error) {
 	if err := context.Cause(ctx); err != nil {
 		return 0, err
 	}
@@ -131,7 +131,7 @@ func (r *Region) allocatePrivate(ctx context.Context, index uint64) (int, error)
 		return slot, nil
 	}
 	if noExtent {
-		// The offset space's extents are held by the idle pages of regions
+		// The offset space's extents are held by the idle pages of memory regions
 		// that have gone; one is given back for this range.
 		freed, err := h.reclaimExtent(ctx)
 		if err != nil {
@@ -158,7 +158,7 @@ func (r *Region) allocatePrivate(ctx context.Context, index uint64) (int, error)
 // Prefer extending a neighboring mapping's physical run before using the
 // first free slot. This consumes no speculative reservation and never waits
 // for a preferred slot; pressure falls back to ordinary bounded reclamation.
-func (r *Region) allocateNear(ctx context.Context, index uint64) (int, error) {
+func (r *MemoryRegion) allocateNear(ctx context.Context, index uint64) (int, error) {
 	if err := context.Cause(ctx); err != nil {
 		return 0, err
 	}
@@ -235,7 +235,7 @@ func (h *Host) allocate(ctx context.Context, place func() int, preferEviction bo
 		} else if slot >= 0 {
 			capacityBlocked = true
 		}
-		// An idle page is the first thing given up: no region maps it, so its
+		// An idle page is the first thing given up: no memory region maps it, so its
 		// slot costs no revocation and no spill, and nothing a guest is using.
 		if !preferEviction {
 			if pg := h.takeIdleLocked(); pg != nil {
@@ -259,7 +259,7 @@ func (h *Host) allocate(ctx context.Context, place func() int, preferEviction bo
 			// store gives it up itself once its mapping is in.
 			usable := pg.replacing == 0
 			for b := range pg.aliases.all() {
-				if b.region.terminal.Load() != nil {
+				if b.memoryRegion.terminal.Load() != nil {
 					usable = false
 					break
 				}
@@ -282,8 +282,8 @@ func (h *Host) allocate(ctx context.Context, place func() int, preferEviction bo
 			preferEviction = false
 			err := h.evictBatch(ctx, candidates)
 			h.unlockAll(candidates)
-			// A victim another region will not give up is not this allocation's
-			// failure: the next pass skips it, because that region is terminal
+			// A victim another memory region will not give up is not this allocation's
+			// failure: the next pass skips it, because that memory region is terminal
 			// from here, and takes another page. The arena is finite, so every
 			// such pass removes one page from what this loop will consider,
 			// and an arena made entirely of them reports ErrCapacity rather
@@ -334,7 +334,7 @@ func (h *Host) takeIdleWhereLocked(want func(*resident) bool) *resident {
 }
 
 // dropIdle gives up one idle page takeIdleLocked returned locked: its identity
-// stops naming it, so the next region that inherits it reads it again, and its
+// stops naming it, so the next memory region that inherits it reads it again, and its
 // slot is free.
 func (h *Host) dropIdle(ctx context.Context, pg *resident) error {
 	err := h.release(ctx, pg)
@@ -411,7 +411,7 @@ func (h *Host) DropIdle(ctx context.Context) (int, error) {
 // reclaimExtent gives up idle pages until an extent of the offset space is
 // free, where none is, and reports whether it freed one. A published page
 // stays at the offset the placement rule gave it when it goes idle, so it keeps
-// that offset's extent from going back after the region that placed it has
+// that offset's extent from going back after the memory region that placed it has
 // gone: an arena full of the idle pages of stopped VMs would otherwise have no
 // extent left for a running one, and every private page of it would be a page
 // of its own somewhere in the arena.

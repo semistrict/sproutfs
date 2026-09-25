@@ -58,7 +58,7 @@ the three control-plane changes only a cluster can prove.
    is punched.
 5. **One failed page allocation while copying away from a checkpoint
    orphans the page for good.** *(proven)* `b.checkpoint` is cleared before
-   the replacement page is bound and the region is not made terminal.
+   the replacement page is bound and the memory region is not made terminal.
 6. **A caller's cancelled context reaches the VMM's control requests and
    kills the guest**, from an HTTP disconnect on capture, fork, migrate or
    drain; the recovery path uses the same dead context, leaving the guest
@@ -118,5 +118,5 @@ logical-page admission; write-ahead arithmetic; fork-point page sharing;
 the production pager config; the wire, opcodes and seccomp filter across all
 three implementations; the x86 gap arithmetic; `PageSource.Release` refusing
 with pages outstanding; `Done` gating on the unpublished set; contested
-claims refused; symmetric jitter; `AdmitRegions` before every VMM start;
+claims refused; symmetric jitter; `AdmitMemoryRegions` before every VMM start;
 `ForkOut`'s rollback; the guest agent's limits; constant-time token checks.

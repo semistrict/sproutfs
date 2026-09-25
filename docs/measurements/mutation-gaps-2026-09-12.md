@@ -45,7 +45,7 @@ against the final test version, with an unmutated baseline first.
 Eight additional native tests exercise `Session::connect` and `Session::run`
 through a real Unix protocol peer and detect another 42 original survivors:
 
-- Attachment fields and READY validation, including the valid 64-region limit.
+- Attachment fields and READY validation, including the valid 64-memory region limit.
 - Invalid ranges, flags, backing offsets and stale IDs; rejected commands leave
   generations unchanged, and an immediate identical retry remains valid.
 - Batch headers rejected before reading runs, matching command IDs, ordered

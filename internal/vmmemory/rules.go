@@ -10,7 +10,7 @@ import (
 // Placement alone keeps the private pages of a range adjacent; it cannot make
 // them fewer runs than the guest's own writes are. Two rules do that.
 //
-//   - A store closes a small gap, once its region is near its mapping budget.
+//   - A store closes a small gap, once its memory region is near its mapping budget.
 //     A store landing within gapPages of a page the same range already holds
 //     makes the pages between them private in the same fault, in one mapping
 //     command, so the two runs are one. A gap is never closed across a range's
@@ -20,7 +20,7 @@ import (
 //     scattered small stores into a large heap — a seeded database updated at
 //     random — are exactly where closing every gap copied ten times what the
 //     guest wrote. A node's limit is a million mappings, of which a process is
-//     given half, so a region is near it only once its process has refused it
+//     given half, so a memory region is near it only once its process has refused it
 //     a mapping; from then on it closes gaps, and the range that refusal was
 //     for is made whole.
 //
@@ -54,7 +54,7 @@ const (
 //
 // A store the placement rule had no offset for is its own page and nothing
 // else: without the extent there is no run to be part of.
-func (r *Region) closeAround(ctx context.Context, index uint64, slot int, replaced *replacement) (first, last uint64, err error) {
+func (r *MemoryRegion) closeAround(ctx context.Context, index uint64, slot int, replaced *replacement) (first, last uint64, err error) {
 	h := r.host
 	h.mu.Lock()
 	placed := h.placedAt(r, index, slot)
@@ -96,7 +96,7 @@ func (r *Region) closeAround(ctx context.Context, index uint64, slot int, replac
 // placedAt reports whether one page's resident offset is the one the placement
 // rule gives it, which is what makes it part of a run of its range rather than
 // a page of its own somewhere in the arena. Caller holds h.mu.
-func (h *Host) placedAt(r *Region, index uint64, slot int) bool {
+func (h *Host) placedAt(r *MemoryRegion, index uint64, slot int) bool {
 	e := h.extents[extentKey{r, index / uint64(h.extentPages)}]
 	return e != nil && slot == e.base+int(index%uint64(h.extentPages))
 }
@@ -105,7 +105,7 @@ func (h *Host) placedAt(r *Region, index uint64, slot int) bool {
 // faulting page, and the pages between it and the nearest page of its range the
 // guest already stores into at that page's own offset, where that page is within
 // gapPages. Caller holds h.mu.
-func (h *Host) nearby(r *Region, index uint64) (first, last uint64) {
+func (h *Host) nearby(r *MemoryRegion, index uint64) (first, last uint64) {
 	if !r.pressed.Load() {
 		return index, index + 1
 	}
@@ -131,7 +131,7 @@ func (h *Host) nearby(r *Region, index uint64) (first, last uint64) {
 
 // halfPrivate reports a range whose extent holds pages at half its offsets,
 // which is when the rest are copied into its holes. Caller holds h.mu.
-func (h *Host) halfPrivate(r *Region, index uint64) bool {
+func (h *Host) halfPrivate(r *MemoryRegion, index uint64) bool {
 	e := h.extents[extentKey{r, index / uint64(h.extentPages)}]
 	return e != nil && e.held*wholeRangeShare >= h.extentPages
 }
@@ -140,7 +140,7 @@ func (h *Host) halfPrivate(r *Region, index uint64) bool {
 // rules: a range that was filled stays filled. A settle that handed one of its
 // pages back would break the range into three mappings again, for a page the
 // guest is about to write anyway.
-func (h *Host) markWhole(r *Region, index uint64) {
+func (h *Host) markWhole(r *MemoryRegion, index uint64) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if e := h.extents[extentKey{r, index / uint64(h.extentPages)}]; e != nil {
@@ -148,7 +148,7 @@ func (h *Host) markWhole(r *Region, index uint64) {
 	}
 }
 
-func (h *Host) wholeRange(r *Region, index uint64) bool {
+func (h *Host) wholeRange(r *MemoryRegion, index uint64) bool {
 	if h.extentPages <= 1 {
 		return false
 	}
@@ -159,7 +159,7 @@ func (h *Host) wholeRange(r *Region, index uint64) bool {
 }
 
 // placedPrivateAt reports the one thing every rule asks of a page: that this
-// region may store into it where the placement rule put it. That is its own
+// memory region may store into it where the placement rule put it. That is its own
 // dirty state, held by no checkpoint, resident at the offset its range's extent
 // gives it — and it is exactly what one store's mapping command can cover, so a
 // run ends at the first page that is not it.
@@ -168,11 +168,11 @@ func (h *Host) wholeRange(r *Region, index uint64) bool {
 // loses. A checkpoint freezes the guest's copy where it is and retiring it
 // leaves that page published at the same offset, so the store that follows
 // finds its own offset occupied and takes an ordinary one — after which the
-// offset goes on holding a page this region no longer stores into. Reading the
+// offset goes on holding a page this memory region no longer stores into. Reading the
 // offset as this page's would put the run's mapping over that older page: the
-// store the guest made would be lost, and every region that inherited the
+// store the guest made would be lost, and every memory region that inherited the
 // published identity would have its page written under it. Caller holds h.mu.
-func (h *Host) placedPrivateAt(r *Region, e *extent, page uint64) bool {
+func (h *Host) placedPrivateAt(r *MemoryRegion, e *extent, page uint64) bool {
 	if e == nil {
 		return false
 	}
@@ -182,9 +182,9 @@ func (h *Host) placedPrivateAt(r *Region, e *extent, page uint64) bool {
 }
 
 // placedRun reports the longest run of pages around index that one mapping
-// command covers, within [first, last): every page of it is this region's own
+// command covers, within [first, last): every page of it is this memory region's own
 // at a consecutive offset of one extent. Caller holds h.mu.
-func (h *Host) placedRun(r *Region, index, first, last uint64) (uint64, uint64) {
+func (h *Host) placedRun(r *MemoryRegion, index, first, last uint64) (uint64, uint64) {
 	e := h.extents[extentKey{r, index / uint64(h.extentPages)}]
 	start, end := index, index+1
 	for start > first && h.placedPrivateAt(r, e, start-1) {
@@ -196,15 +196,15 @@ func (h *Host) placedRun(r *Region, index, first, last uint64) (uint64, uint64) 
 	return start, end
 }
 
-// isPrivateAt reports a page this region may store into where it is: its own
+// isPrivateAt reports a page this memory region may store into where it is: its own
 // dirty state, held by no checkpoint. It is what the rules leave behind for
 // every page they took.
-func (r *Region) isPrivateAt(page uint64) bool {
+func (r *MemoryRegion) isPrivateAt(page uint64) bool {
 	b := r.lookupBinding(page)
 	return b != nil && b.writable()
 }
 
-// takeShared makes the pages either side of the faulting one this region's own
+// takeShared makes the pages either side of the faulting one this memory region's own
 // dirty state, at the offset the placement rule gives each, copying the bytes
 // it holds now and remembering the page they came from so a settle can hand
 // back what the guest never wrote.
@@ -219,10 +219,10 @@ func (r *Region) isPrivateAt(page uint64) bool {
 // was given would hold nothing the guest ever reached, and the guest's next
 // store would be resolved against a page its volume publishes.
 //
-// It never waits, never evicts and reads nothing. Caller holds the region
+// It never waits, never evicts and reads nothing. Caller holds the memory region
 // shared, as a fault holds it, and the pages it takes are left for the caller's
 // one mapping command.
-func (r *Region) takeShared(ctx context.Context, first, index, last uint64, replaced *replacement) error {
+func (r *MemoryRegion) takeShared(ctx context.Context, first, index, last uint64, replaced *replacement) error {
 	for page := index + 1; page < last; page++ {
 		joined, err := r.takeOneShared(ctx, page, replaced)
 		if err != nil {
@@ -246,7 +246,7 @@ func (r *Region) takeShared(ctx context.Context, first, index, last uint64, repl
 
 // joinsRun reports a page one store's mapping command may cover, taking the
 // host lock to ask it.
-func (r *Region) joinsRun(page uint64) bool {
+func (r *MemoryRegion) joinsRun(page uint64) bool {
 	h := r.host
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -255,7 +255,7 @@ func (r *Region) joinsRun(page uint64) bool {
 
 // takeOneShared makes one page private for a rule, reporting whether the page
 // is one the store's run now covers.
-func (r *Region) takeOneShared(ctx context.Context, page uint64, replaced *replacement) (bool, error) {
+func (r *MemoryRegion) takeOneShared(ctx context.Context, page uint64, replaced *replacement) (bool, error) {
 	h := r.host
 	b := r.binding(page)
 	if b.writable() || r.checkpointCopy(b) != nil {
@@ -340,7 +340,7 @@ func (r *Region) takeOneShared(ctx context.Context, page uint64, replaced *repla
 // mapping command: the range the guest is writing in becomes one run, so the
 // mappings it was costing that process go with it and the store is served
 // again. It reports whether it took anything.
-func (r *Region) makeWhole(ctx context.Context, index uint64) (bool, error) {
+func (r *MemoryRegion) makeWhole(ctx context.Context, index uint64) (bool, error) {
 	h := r.host
 	span := uint64(h.extentPages)
 	h.mu.Lock()
@@ -352,7 +352,7 @@ func (r *Region) makeWhole(ctx context.Context, index uint64) (bool, error) {
 	first := index - index%span
 	last := min(first+span, uint64(r.pageCount))
 	before := r.privatePages(first, last)
-	replaced := &replacement{region: r}
+	replaced := &replacement{memoryRegion: r}
 	if err := r.takeShared(ctx, first, index, last, replaced); err != nil {
 		return false, errors.Join(err, replaced.revoke(ctx))
 	}
@@ -382,7 +382,7 @@ func (r *Region) makeWhole(ctx context.Context, index uint64) (bool, error) {
 
 // placedSlot is the arena offset the placement rule gives one page, or -1 where
 // its range owns no extent. Caller holds h.mu.
-func (h *Host) placedSlot(r *Region, page uint64) int {
+func (h *Host) placedSlot(r *MemoryRegion, page uint64) int {
 	e := h.extents[extentKey{r, page / uint64(h.extentPages)}]
 	if e == nil {
 		return -1
@@ -390,9 +390,9 @@ func (h *Host) placedSlot(r *Region, page uint64) int {
 	return e.base + int(page%uint64(h.extentPages))
 }
 
-// privatePages is how many pages of one range this region may store into where
+// privatePages is how many pages of one range this memory region may store into where
 // they are, which is what a range made whole has all of.
-func (r *Region) privatePages(first, last uint64) int {
+func (r *MemoryRegion) privatePages(first, last uint64) int {
 	count := 0
 	for page := first; page < last; page++ {
 		if r.isPrivateAt(page) {

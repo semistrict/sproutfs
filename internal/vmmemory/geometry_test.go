@@ -23,7 +23,7 @@ func (b publishedIn) PageSize() uint64 { return b.pageSize }
 // A volume published in a page size other than this pager's is refused when it
 // is attached: a page number of it means something else, so serving it would
 // fault, key and map the wrong bytes. The refusal names both sizes, and it
-// happens before any mapping is armed. It is also how a region reaches the
+// happens before any mapping is armed. It is also how a memory region reaches the
 // wrong one of a host's two pagers, which is why both directions are here: the
 // 4 KiB pager refuses a 2 MiB-page volume and the 2 MiB pager refuses a 4 KiB
 // one, whichever page the suite is running.
@@ -65,7 +65,7 @@ func TestNewRefusesAPageNoVolumeCouldBePublishedIn(t *testing.T) {
 }
 
 // Every budget a pager keeps is in its own page: the spill file is its dirty
-// pages times that page, a region is admitted in that page, and the read-ahead
+// pages times that page, a memory region is admitted in that page, and the read-ahead
 // run a deployment states in bytes becomes that many of them. Two pagers of
 // different pages given the same page counts therefore hold different amounts
 // of memory and disk, which is the whole reason a host accounts in bytes.
@@ -81,9 +81,9 @@ func TestBudgetsAreCountedInThisPagersPage(t *testing.T) {
 		t.Fatalf("the spill file is %d bytes, want %d", got, 8*checkpoint.PageSize4KiB)
 	}
 	// Read-ahead is in this pager's pages too: a four-page run over 4 KiB pages
-	// serves 16 KiB, so a fault on page 0 of a region maps pages 0 to 3 and no
+	// serves 16 KiB, so a fault on page 0 of a memory region maps pages 0 to 3 and no
 	// more.
-	r, m, b := f.region(16)
+	r, m, b := f.memoryRegion(16)
 	access(t, r, m, 0, false)
 	if len(m.pages) != 4 || b.loadedBytes != 4*checkpoint.PageSize4KiB {
 		t.Fatalf("a four-page read-ahead run mapped %d pages and loaded %d bytes",
@@ -104,7 +104,7 @@ func TestBudgetsAreCountedInThisPagersPage(t *testing.T) {
 	}
 }
 
-// The plan's first acceptance bullet, at the pager level: a region inherits a
+// The plan's first acceptance bullet, at the pager level: a memory region inherits a
 // run of pages from a sibling, a store into one of them costs exactly one page
 // of private backing, and the pages around it stay shared — before and after a
 // checkpoint publishes it, across a spill and refault, and through a settle
@@ -115,13 +115,13 @@ func TestAStoreCostsOnePageAndLeavesItsNeighboursShared(t *testing.T) {
 		ResidentPages: 2 * pages, LogicalPages: 8 * pages, DirtyPages: pages, ReadAheadPages: 1})
 	page := uint64(checkpoint.PageSize4KiB)
 
-	parent, parentMap, _ := f.region(pages)
-	child, childMap, childBacking := f.region(pages)
+	parent, parentMap, _ := f.memoryRegion(pages)
+	child, childMap, childBacking := f.memoryRegion(pages)
 	for i := range uint64(pages) {
 		access(t, parent, parentMap, i, false)
 		access(t, child, childMap, i, false)
 	}
-	// Every page is one resident page two regions map, so the arena holds the
+	// Every page is one resident page two memory regions map, so the arena holds the
 	// run once.
 	if shared := sharing(t, f).Ram; shared.UniqueBytes != pages*page || shared.MappedBytes != 2*pages*page {
 		t.Fatalf("an inherited run holds %d unique and %d mapped bytes, want %d and %d",
@@ -129,7 +129,7 @@ func TestAStoreCostsOnePageAndLeavesItsNeighboursShared(t *testing.T) {
 	}
 
 	// One store into one page. Exactly one page of private backing appears, and
-	// the other seven stay the one copy both regions read.
+	// the other seven stay the one copy both memory regions read.
 	access(t, child, childMap, 3, true)[0] = 99
 	assertOnePagePrivate := func(when string) {
 		t.Helper()

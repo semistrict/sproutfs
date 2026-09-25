@@ -87,20 +87,20 @@ func TestTheProbeStopsOwingAGuestOnceItsPageIsRetired(t *testing.T) {
 
 // A fork on this host names a private page rather than copying it, which is how
 // the machines that inherit the identity map it instead of reading it. So a
-// named private page reached from two regions is the sharing working, and only
+// named private page reached from two memory regions is the sharing working, and only
 // an unnamed one is a guest writing into another's memory.
-func TestTheProbeAllowsTwoRegionsToShareANamedPrivatePage(t *testing.T) {
+func TestTheProbeAllowsTwoMemoryRegionsToShareANamedPrivatePage(t *testing.T) {
 	var p probeState
-	parent, child := &Region{}, &Region{}
+	parent, child := &MemoryRegion{}, &MemoryRegion{}
 	shared := page(1, true)
-	held := &binding{region: parent, index: 7}
+	held := &binding{memoryRegion: parent, index: 7}
 	shared.aliases.add(held)
 
-	wantFinding(t, p.bind(nil, &binding{region: child, index: 7}, shared),
-		"reached from two regions")
+	wantFinding(t, p.bind(nil, &binding{memoryRegion: child, index: 7}, shared),
+		"reached from two memory regions")
 
 	shared.key = pageKey{id: control.Identity{Volume: "fork-point", Page: 7}}
-	if found := p.bind(nil, &binding{region: child, index: 7}, shared); found != "" {
+	if found := p.bind(nil, &binding{memoryRegion: child, index: 7}, shared); found != "" {
 		t.Fatalf("a fork point's named page was reported as %q", found)
 	}
 }

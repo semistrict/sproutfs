@@ -19,13 +19,13 @@ here.
   - `volume.ErrRetired` refuses a hold on a fork point that its last holder retired. It caught a second defect when it was added. Forking two children through the manager one after the other, with each child's hold released as the child closed, took the second child from a fork point whose seal had ended.
   - `TestFirecrackerForkChildrenSurviveTheirFirstSeconds` reproduces the whole failure in about a hundred seconds per run instead of ten minutes. It keeps the arms that isolated the defect (`SPROUTFS_FORK_ARM`: the whole checkpoint, the capture without the settle, the bare pause, one child, no interval). The sequence of runs that found the defect was 0/8 with no interval, 0/8 for a bare pause, 0/8 for a capture and seal, 5–8/8 for the whole checkpoint, and 0/16 after the fix.
 
-- **Fixed: the probe build's `TestSealTakingAReclaimingPagesReservationKeepsItsBytes` panicked under load. The cause was a refault that acted on a decision a checkpoint had already superseded.** The pager's audit reported `probe bind: page N of region … was given slot -1 from outside its own store path while it owned generation G, and now takes slot S — a lost write`. The report came from the store's own `takePrivate`, in about one lane in eight under contention.
+- **Fixed: the probe build's `TestSealTakingAReclaimingPagesReservationKeepsItsBytes` panicked under load. The cause was a refault that acted on a decision a checkpoint had already superseded.** The pager's audit reported `probe bind: page N of memoryRegion … was given slot -1 from outside its own store path while it owned generation G, and now takes slot S — a lost write`. The report came from the store's own `takePrivate`, in about one lane in eight under contention.
 
   No write was lost. At every step, the page the guest was bound to held the bytes the guest last stored. With the audit finding made non-fatal, thirty lanes ran to completion, and the test's own `reads %d, want the %d the guest stored` check never fired. The audit had caught something else: the pager granted a binding the right to store into memory after that binding's dirty epoch had already ended.
 
-  A reclaim for a private page releases the region while it looks for an arena slot. So a seal and a retire can both run inside a fault that has already decided what the page it serves is. The store path re-checks its decision across its own reclaim: `fault` compares the checkpoint's copy before and after. The spill refault in `loadOnce` did not re-check. A checkpoint taken in that window retires the page: the volume holds its bytes, the reservation that spilled them is returned, and the binding is clean. The refault then bound a private page into the binding anyway. That page has neither a reservation nor a checkpoint. `evictBatch` punches out a page in that state without writing it anywhere. Nothing names the page, so nothing that inherits the identity the checkpoint gave it can map it. Every other region of that volume reads its own copy of bytes this host already holds. The audit's generation bookkeeping is correct. The binding that owed the audit a newer generation was one the pager should never have granted.
+  A reclaim for a private page releases the memory region while it looks for an arena slot. So a seal and a retire can both run inside a fault that has already decided what the page it serves is. The store path re-checks its decision across its own reclaim: `fault` compares the checkpoint's copy before and after. The spill refault in `loadOnce` did not re-check. A checkpoint taken in that window retires the page: the volume holds its bytes, the reservation that spilled them is returned, and the binding is clean. The refault then bound a private page into the binding anyway. That page has neither a reservation nor a checkpoint. `evictBatch` punches out a page in that state without writing it anywhere. Nothing names the page, so nothing that inherits the identity the checkpoint gave it can map it. Every other memory region of that volume reads its own copy of bytes this host already holds. The audit's generation bookkeeping is correct. The binding that owed the audit a newer generation was one the pager should never have granted.
 
-  `loadOnce` now reads the page's dirty state and the checkpoint's copy of the page together, before and after the reclaim. If either changed, it decides again from the start what the page is (`internal/vmmemory/fault.go`, `bindings.go`, `privateEpoch`). `TestARefaultWhoseCheckpointRetiresWhileItReclaimsGivesThePageToTheVolume` drives the interleaving through a reclaim seam. Without the fix it fails on every run in both builds. The ordinary build fails with the second region reading its own copy. The probe build fails with the same panic and the same stack. Measured on 2026-09-22 on a fifteen-core machine, with 50 lanes each and a detector on the grant: **10 of 50 lanes before, 0 of 50 after**. At that rate, the chance of a clean result by luck is about 1 in 70,000. The panic that the lanes produce is rarer than the grant that causes it: about 1 lane in 50 on this machine, against 1 in 8 on the eight-core machine the earlier counts came from. After the fix the panic count is 0 of 150 lanes, but the grant's count is what supports the result.
+  `loadOnce` now reads the page's dirty state and the checkpoint's copy of the page together, before and after the reclaim. If either changed, it decides again from the start what the page is (`internal/vmmemory/fault.go`, `bindings.go`, `privateEpoch`). `TestARefaultWhoseCheckpointRetiresWhileItReclaimsGivesThePageToTheVolume` drives the interleaving through a reclaim seam. Without the fix it fails on every run in both builds. The ordinary build fails with the second memory region reading its own copy. The probe build fails with the same panic and the same stack. Measured on 2026-09-22 on a fifteen-core machine, with 50 lanes each and a detector on the grant: **10 of 50 lanes before, 0 of 50 after**. At that rate, the chance of a clean result by luck is about 1 in 70,000. The panic that the lanes produce is rarer than the grant that causes it: about 1 lane in 50 on this machine, against 1 in 8 on the eight-core machine the earlier counts came from. After the fix the panic count is 0 of 150 lanes, but the grant's count is what supports the result.
 
 - **No simulation reaches the post-copy paths where that defect was.** Two separate things were wrong there, and neither simulated campaign caught either of them. First, the pager's test double stripped the identity permanently, as the product did, so the tests modelled the retire's mistake instead of catching it. Second, with an earlier fix to `readIn` disabled, a hundred soak seeds still passed, because in every campaign the source's unpublished set only shrinks. The missing piece is a scenario in which the source keeps storing and checkpointing while a destination post-copies from it, and the destination then publishes and retires what it received. Until that scenario exists, this class of defect can only be reached on a real kernel.
 
@@ -69,7 +69,7 @@ here.
   were the write-ahead pages the guest never stored into, 15,477 of them, and
   the retire revoked each one separately. The hand-backs of one retire batch are
   now checked and revoked together, with one command per run
-  (`Region.revokeHandedBack`, `TestAForksFirstCheckpointRevokesItsHolesInRunsNotPages`).
+  (`MemoryRegion.revokeHandedBack`, `TestAForksFirstCheckpointRevokesItsHolesInRunsNotPages`).
   Two per-page revocations remain, and neither happens in a fork's first
   seconds:
   - a page whose identity another resident already holds, which arrives alone;
@@ -81,7 +81,7 @@ here.
   timing, and it costs about the same memory once forks do real work. 4 KiB
   holds a tenth of the memory, but only for sparse writers. The rest of this
   item is the history of the 4 KiB work. The store, the pager, the wire and the
-  VMM all carry each region's own page size now. The
+  VMM all carry each memory region's own page size now. The
   [page-geometry plan](../plans/ram-pmem-page-geometry-2026-09-19.md) still has
   steps 5 and 7 left (handoff and migration geometry, and the qualification).
   It also still lacks the realistic workload measurements of retained sharing
@@ -121,7 +121,7 @@ here.
   batch are separate mappings, so combining them would require a wire change.
 
   After the bound, the walk remained. The walk went window by window over the
-  whole region, regardless of how much of the budget was left. Every window
+  whole memory region, regardless of how much of the budget was left. Every window
   asks the volume for the identity of every page in it. For a 16 GiB guest at a
   4 KiB page, that is four million identities, decoded from the index's
   segments before the guest runs. But a window reached with no budget left can
@@ -134,7 +134,7 @@ here.
   untimed on a cluster.** A fork's restore used to be recorded as one duration.
   So the fan-out's `restore_each_ns` (1.68 s and 3.28 s, against plain
   Firecracker's 0.22 s cold restore) did not show which part was the VMM's own
-  start, the snapshot load, or the pager attaching and populating each region.
+  start, the snapshot load, or the pager attaching and populating each memory region.
   `vmmachine.StartPhases` records those four phases. `vmmemory.AttachStats`
   records what one session's `Connect` cost, including the populate's
   commands, runs, pages and duration. The fan-out records all of this per fork
@@ -144,7 +144,7 @@ here.
   2026-09-23 record already rules out the mapping commands. 482 of them carried
   12,000 runs over 4,089,383 pages for the whole scenario, at about a fifth of a
   millisecond each. So the round trips total a tenth of a second, not seconds.
-  With the populate bounded at 128 runs per region, those 12,000 runs are the
+  With the populate bounded at 128 runs per memory region, those 12,000 runs are the
   faults' windows, not the populate. The pages are the populate's holes, and
   one command covers any number of holes.
 - **Compaction reads the pages it rescues one at a time.** A read of a range of
@@ -211,7 +211,7 @@ here.
     pages are not placed at all until the guest stores into them.
 - **A page that a guest only reads is copied, and the copy is released at the next checkpoint.** A cold read that has to wait for the pager arrives as a write fault. On x86-64 this happens because KVM's asynchronous page fault worker always requests the page as writable. On aarch64 it happens when the guest first executes a page. The pager answers a write fault with a private page. The part that the [unchanged-page rule](../plans/unchanged-pages-2026-09-19.md) recovers is done. The copy records the page it was made from, and the settle after each checkpoint's pause compares the two. A page that did not change is published nowhere and goes straight back to sharing its origin. The copy itself remains. Between the fault and the next checkpoint, the host holds the page twice. With 4 KiB RAM pages under a 2 MiB read-ahead run, that is one page in 512. For PMEM at 2 MiB, it is a whole page per cold fault until the interval passes. Preventing the copy requires a host kernel that passes the guest's access through, or KVM userfault once it exists. Neither is this project's to start. Fork points are not settled either. A child inherits an unchanged page as an unpublished page, and the child's own next checkpoint settles it.
 
-  **The copy is one page per fault and no more. The 2026-09-23 fan-out's counts show this, and the suite now asserts it.** 12,826 copy-on-writes over 13,226 faults is one copy per store-served fault. The pages a store copies beyond the one it faulted on come from the two rules. They are counted separately as `Stats.RuleCopies`, which was missing from the record until now. `TestAForksFirstStoresRevokeNothing` checks this at 4 KiB. It attaches a region over a sibling's resident pages. It then stores into a page the populate mapped, into a page the guest has never touched, and into a page inside the window a read brought in. Each store makes exactly one page private and copies nothing for the rules. So what remains of a fork's first pass is the number of faults, not what each fault copies: 13,226 faults at a mean of 1.01 ms. The levers for the fault count are a window larger than the free arena slots a fault can reserve, and a populate of the fork point's hot set instead of whatever pages a sibling happens to hold. Neither is done.
+  **The copy is one page per fault and no more. The 2026-09-23 fan-out's counts show this, and the suite now asserts it.** 12,826 copy-on-writes over 13,226 faults is one copy per store-served fault. The pages a store copies beyond the one it faulted on come from the two rules. They are counted separately as `Stats.RuleCopies`, which was missing from the record until now. `TestAForksFirstStoresRevokeNothing` checks this at 4 KiB. It attaches a memory region over a sibling's resident pages. It then stores into a page the populate mapped, into a page the guest has never touched, and into a page inside the window a read brought in. Each store makes exactly one page private and copies nothing for the rules. So what remains of a fork's first pass is the number of faults, not what each fault copies: 13,226 faults at a mean of 1.01 ms. The levers for the fault count are a window larger than the free arena slots a fault can reserve, and a populate of the fork point's hot set instead of whatever pages a sibling happens to hold. Neither is done.
 - **The workload measurement predates multi-page parts and needs to be re-taken.** It was measured with one object per dirty page, before `39bfe37`. So its object counts describe a store layout that no longer exists. Only one fork setting (`FORKS_BASE=2 FORKS_PER_REPO=1`) was run. The commands to re-take it on current `main` are in the document (`docs/measurements-2026-09-14-workload.md`).
 
 ## Found by the 2026-09-14 GCE validation

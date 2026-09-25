@@ -152,7 +152,7 @@ func (vm *VM) reshape(sizes map[string]uint64, memory string) (map[string]uint64
 	return changed, nil
 }
 
-// PrepareFunc pauses the guest, captures its VMM state and seals every region,
+// PrepareFunc pauses the guest, captures its VMM state and seals every memory region,
 // returning the sealed pager state of each by volume name. Snapshot runs it
 // under the VM's publication lock, so it is where two captures of one guest
 // serialize.
@@ -186,7 +186,7 @@ func (vm *VM) Snapshot(ctx context.Context, prepare PrepareFunc) (*Checkpoint, e
 }
 
 // SnapshotDisks is Snapshot of a VM's disks alone, which is the checkpoint a
-// host's interval takes: prepare pauses the guest and seals the regions of its
+// host's interval takes: prepare pauses the guest and seals the memory regions of its
 // disks, and captures no VMM state. The checkpoint names none either — not
 // even its parent's, which is what a checkpoint that captured none otherwise
 // goes on naming — because the registers of an earlier pause over the disks of
@@ -292,7 +292,7 @@ func (vm *VM) isRoot() bool {
 
 // sealable reports whether this VM's pages may be sealed now. A fork point
 // holds them until the child it was taken for has them, and one seal of a
-// region is outstanding at a time.
+// memory region is outstanding at a time.
 func (vm *VM) sealable() error {
 	vm.mu.Lock()
 	defer vm.mu.Unlock()

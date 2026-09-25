@@ -21,7 +21,7 @@ import (
 )
 
 type ConnectionConfig struct {
-	// Name identifies this session's region in what it logs: the volume the
+	// Name identifies this session's memory region in what it logs: the volume the
 	// backing stands in front of. It is a diagnostic only — nothing selects a
 	// volume, a page or an authority by it — and empty is allowed.
 	Name string
@@ -39,25 +39,25 @@ type ConnectionConfig struct {
 	CommandTimeout time.Duration
 	VerifyInterval time.Duration
 }
-type ConnectedRegion struct {
-	Kind            RegionKind
+type ConnectedMemoryRegion struct {
+	Kind            MemoryRegionKind
 	Address, Length uint64
-	Memory          *Region
+	Memory          *MemoryRegion
 }
 
-// Connection serves one Rust Session, which maps exactly one region. Wait
+// Connection serves one Rust Session, which maps exactly one memory region. Wait
 // reports terminal failure; its owner must stop the process before Close
 // releases possibly mapped slots. Neither a transport disconnect nor
 // cancellation proves that memory users have stopped.
 type Connection struct {
-	host    *Host
-	socket  *net.UnixConn
-	uffd    *os.File
-	region  ConnectedRegion
-	mapping *remoteMapping
-	cfg     ConnectionConfig
-	ctx     context.Context
-	cancel  context.CancelCauseFunc
+	host         *Host
+	socket       *net.UnixConn
+	uffd         *os.File
+	memoryRegion ConnectedMemoryRegion
+	mapping      *remoteMapping
+	cfg          ConnectionConfig
+	ctx          context.Context
+	cancel       context.CancelCauseFunc
 	// reported admits the one failure this session is logged as ending on.
 	reported  sync.Once
 	commandMu *ctxsync.Mutex
@@ -83,7 +83,7 @@ type Connection struct {
 
 // AttachStats is what one session's attachment cost, which is the part of a
 // restore the pager owns: the whole of Connect, and the populate inside it.
-// DurationNS is the attach — the descriptor exchange, the region admission, the
+// DurationNS is the attach — the descriptor exchange, the memory region admission, the
 // ATTACH, the populate and the READY round trip — so what it holds beyond the
 // populate is handshake and metadata and nothing else.
 type AttachStats struct {
@@ -94,8 +94,8 @@ type AttachStats struct {
 // Attach reports what this session's attachment cost.
 func (c *Connection) Attach() AttachStats {
 	stats := AttachStats{DurationNS: c.attachNS}
-	if c.region.Memory != nil {
-		stats.Populate = c.region.Memory.Populated()
+	if c.memoryRegion.Memory != nil {
+		stats.Populate = c.memoryRegion.Memory.Populated()
 	}
 	return stats
 }
@@ -123,12 +123,12 @@ type remoteMapping struct {
 }
 
 // Connect consumes an already accepted local socket and verifies the advertised
-// region against trusted configuration. The caller must authenticate the peer
+// memory region against trusted configuration. The caller must authenticate the peer
 // and authorize its volume identity before calling. No identity supplied by the
 // Rust process selects a volume.
 // An error may return a retained Connection once mappings can be installed;
 // stop the client process before closing that connection and releasing aliases.
-func Connect(ctx context.Context, h *Host, socket *net.UnixConn, backing RegionBacking, cfg ConnectionConfig) (*Connection, error) {
+func Connect(ctx context.Context, h *Host, socket *net.UnixConn, backing MemoryRegionBacking, cfg ConnectionConfig) (*Connection, error) {
 	if h == nil || socket == nil {
 		return nil, ErrConfig
 	}
@@ -184,7 +184,7 @@ func Connect(ctx context.Context, h *Host, socket *net.UnixConn, backing RegionB
 		// and reports that to whatever request built the session. This is where
 		// the reason is, so it is written down here as well as returned.
 		slog.ErrorContext(ctx, "vmmemory: a memory session never attached",
-			"region", cfg.Name, "kind", backing.Kind, "error", err)
+			"memory_region", cfg.Name, "kind", backing.Kind, "error", err)
 		cancel(err)
 		_ = socket.Close()
 		if attached {
@@ -192,15 +192,15 @@ func Connect(ctx context.Context, h *Host, socket *net.UnixConn, backing RegionB
 			return c, err
 		}
 		_ = fd.Close()
-		if c.region.Memory != nil {
-			if detachErr := c.region.Memory.Detach(context.Background()); detachErr != nil {
+		if c.memoryRegion.Memory != nil {
+			if detachErr := c.memoryRegion.Memory.Detach(context.Background()); detachErr != nil {
 				err = errors.Join(err, detachErr)
 			}
 		}
 		return nil, err
 	}
-	// The hello carries nothing but the version: one session is one region, and
-	// what page that region runs is the attachment's to say. A version 6 peer
+	// The hello carries nothing but the version: one session is one memory region, and
+	// what page that memory region runs is the attachment's to say. A version 6 peer
 	// fails here, which is the whole of this build's support for one — its page
 	// numbers mean something else.
 	if header.Kind != vmwire.Hello || header.ID != vmwire.Version || header.Length != 0 || header.Offset != 0 || header.Backing != 0 || header.Generation != 0 || header.Flags != 0 {
@@ -213,8 +213,8 @@ func Connect(ctx context.Context, h *Host, socket *net.UnixConn, backing RegionB
 	if err != nil {
 		return fail(err)
 	}
-	if f.Kind != vmwire.Region || f.Flags != uint64(backing.Kind) || f.Length != backing.Backing.Size() || f.Length == 0 || f.Length%h.pageSize != 0 || f.Offset%h.pageSize != 0 || f.Offset > ^uint64(0)-f.Length || f.ID != 0 || f.Backing != 0 || f.Generation != 0 {
-		return fail(errors.New("invalid managed-memory region"))
+	if f.Kind != vmwire.MemoryRegion || f.Flags != uint64(backing.Kind) || f.Length != backing.Backing.Size() || f.Length == 0 || f.Length%h.pageSize != 0 || f.Offset%h.pageSize != 0 || f.Offset > ^uint64(0)-f.Length || f.ID != 0 || f.Backing != 0 || f.Generation != 0 {
+		return fail(errors.New("invalid managed-memory-region"))
 	}
 	// Admission bounds logical capacity; untouched generations are implicit.
 	m := &remoteMapping{connection: c, address: f.Offset, pageCount: f.Length / h.pageSize, pageSize: h.pageSize, mu: ctxsync.NewRWMutex()}
@@ -222,14 +222,14 @@ func Connect(ctx context.Context, h *Host, socket *net.UnixConn, backing RegionB
 	if err != nil {
 		return fail(err)
 	}
-	c.region = ConnectedRegion{backing.Kind, f.Offset, f.Length, r}
+	c.memoryRegion = ConnectedMemoryRegion{backing.Kind, f.Offset, f.Length, r}
 	c.mapping = m
-	// The attachment states the geometry: this region's page, the arena's offset
+	// The attachment states the geometry: this memory region's page, the arena's offset
 	// space, what the arena is made of, and the mapping-count budget. The arena
 	// is a sparse file, so what is stated is its addresses and not the memory
 	// behind them. The client refuses a page it does not map, a descriptor whose
 	// length is not the offset space claimed or whose filesystem is not the
-	// memory that page is, or a region of its own that is not whole pages of it
+	// memory that page is, or a memory region of its own that is not whole pages of it
 	// — all before it exposes an address to the VMM.
 	attach := vmwire.AttachFrame(h.pageSize, uint64(a.offsets)*uint64(a.pageSize), a.backing, uint64(cfg.MaxVMAs))
 	if err := vmwire.SendFD(socket, attach, a.file); err != nil {
@@ -264,15 +264,15 @@ func Connect(ctx context.Context, h *Host, socket *net.UnixConn, backing RegionB
 // Connect calls it while Rust serves commands before exposing addresses to the
 // VMM. An explicit later call requires quiescent guest memory.
 func (c *Connection) Populate(ctx context.Context) error {
-	if err := c.region.Memory.Populate(ctx); err != nil {
+	if err := c.memoryRegion.Memory.Populate(ctx); err != nil {
 		c.fail(err)
 		return err
 	}
 	return nil
 }
 
-// Region is the one region this session maps.
-func (c *Connection) Region() ConnectedRegion { return c.region }
+// MemoryRegion is the one memory region this session maps.
+func (c *Connection) MemoryRegion() ConnectedMemoryRegion { return c.memoryRegion }
 func (c *Connection) Wait(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
@@ -284,13 +284,13 @@ func (c *Connection) Wait(ctx context.Context) error {
 
 // fail ends the session. Its owner learns only that the connection is gone — it
 // kills the client process and has no way back to what happened here — so this
-// is where the error that ended a VM's memory is written down. Which region it
+// is where the error that ended a VM's memory is written down. Which memory region it
 // was is this session's name, and which page it was is in the error the caller
 // built. Only the first failure is logged: everything the session does after it
 // fails with the cancellation this installs, and those are consequences.
 func (c *Connection) fail(err error) {
 	c.reported.Do(func() {
-		attrs := []any{"region", c.cfg.Name, "address", c.region.Address}
+		attrs := []any{"memory_region", c.cfg.Name, "address", c.memoryRegion.Address}
 		var command *commandFailure
 		if errors.As(err, &command) {
 			attrs = append(attrs, command.attrs()...)
@@ -306,7 +306,7 @@ func (c *Connection) fail(err error) {
 // The owner of a session sees only that the connection is gone: it kills the
 // client process and has no way back to what was asked for, and what the client
 // answers a refusal with is one errno. So the command travels with the error —
-// its kind, its identifier, the region offset and length it covers, the arena
+// its kind, its identifier, the memory region offset and length it covers, the arena
 // offset it maps from, the generation it advances, its flags, and how many runs
 // followed it — and goes out as structured fields on the one line a failed
 // session logs. Without it an "invalid argument" on a host names neither the
@@ -527,7 +527,7 @@ func (m *remoteMapping) Revoke(ctx context.Context, page uint64) error {
 // mapping command and advances no generation: the client's mappings are not
 // touched, so nothing about them has to be acknowledged, and the run may cover
 // as many of them as it likes. Like the ioctls Resolve issues, it runs under no
-// mapping lock; the region's exclusive lock is what keeps this range's mappings
+// mapping lock; the memory region's exclusive lock is what keeps this range's mappings
 // from changing underneath it.
 func (m *remoteMapping) Protect(ctx context.Context, page uint64, count int) error {
 	if err := context.Cause(ctx); err != nil {
@@ -643,13 +643,13 @@ func (c *Connection) readFaults() {
 		}
 		flags := binary.LittleEndian.Uint64(b[8:16])
 		// The kernel reports the faulting host page. Its pager page is counted
-		// from the region's base, which need only be host-page aligned.
+		// from the memory region's base, which need only be host-page aligned.
 		address := binary.LittleEndian.Uint64(b[16:24])
-		if address < c.region.Address || address-c.region.Address >= c.region.Length || flags&^uint64(7) != 0 {
+		if address < c.memoryRegion.Address || address-c.memoryRegion.Address >= c.memoryRegion.Length || flags&^uint64(7) != 0 {
 			c.fail(errors.New("invalid UFFD page fault"))
 			return
 		}
-		page := (address - c.region.Address) / c.mapping.pageSize
+		page := (address - c.memoryRegion.Address) / c.mapping.pageSize
 		c.queueMu.Lock()
 		entry, exists := c.queue[page]
 		if !exists {
@@ -735,7 +735,7 @@ func (c *Connection) finishFault(page uint64) {
 	}
 }
 
-// work serves the region's seal requests.
+// work serves the memory region's seal requests.
 func (c *Connection) work() {
 	defer c.workers.Done()
 	for {
@@ -744,7 +744,7 @@ func (c *Connection) work() {
 			return
 		case request := <-c.requests:
 			ctx, cancel := context.WithTimeout(c.ctx, c.cfg.CommandTimeout)
-			err := c.region.Memory.Seal(ctx)
+			err := c.memoryRegion.Memory.Seal(ctx)
 			cancel()
 			response := vmwire.Frame{Kind: vmwire.Result, ID: request.ID}
 			if err != nil {
@@ -764,7 +764,7 @@ func (c *Connection) work() {
 // so a client past this is one this pager does not understand.
 const maxQueuedFlushes = 1024
 
-// deliverFlushes hands the region's guest flushes to the host's callback, one
+// deliverFlushes hands the memory region's guest flushes to the host's callback, one
 // at a time and off the reader, so a callback that takes its time holds up only
 // the flushes after it and never the session.
 func (c *Connection) deliverFlushes() {
@@ -776,7 +776,7 @@ func (c *Connection) deliverFlushes() {
 			return
 		case request = <-c.flushes:
 		}
-		c.region.Memory.deliverFlush(c.answerFlush(request.ID))
+		c.memoryRegion.Memory.deliverFlush(c.answerFlush(request.ID))
 	}
 }
 
@@ -788,18 +788,18 @@ func (c *Connection) answerFlush(id uint64) func(error) {
 	return func(err error) {
 		if answered.Swap(true) {
 			slog.Error("vmmemory: a flush was answered twice; the second answer is ignored",
-				"region", c.cfg.Name, "request", id, "error", err)
+				"memory_region", c.cfg.Name, "request", id, "error", err)
 			return
 		}
 		response := vmwire.Frame{Kind: vmwire.Result, ID: id}
 		if err != nil {
-			slog.Warn("vmmemory: a guest's flush failed", "region", c.cfg.Name, "request", id, "error", err)
+			slog.Warn("vmmemory: a guest's flush failed", "memory_region", c.cfg.Name, "request", id, "error", err)
 			response.Flags = uint64(syscall.EIO)
 		}
 		if sendErr := c.send(c.ctx, response); sendErr != nil {
 			if context.Cause(c.ctx) != nil {
 				slog.Info("vmmemory: a flush was answered after its session ended",
-					"region", c.cfg.Name, "request", id, "error", sendErr)
+					"memory_region", c.cfg.Name, "request", id, "error", sendErr)
 				return
 			}
 			c.fail(fmt.Errorf("answering flush %d: %w", id, sendErr))
@@ -807,7 +807,7 @@ func (c *Connection) answerFlush(id uint64) func(error) {
 	}
 }
 
-// serveFaults is one of the region's fault workers. Workers drain the queue
+// serveFaults is one of the memory region's fault workers. Workers drain the queue
 // concurrently; the pager serializes only faults within one read-ahead window.
 func (c *Connection) serveFaults() {
 	defer c.workers.Done()
@@ -831,7 +831,7 @@ func (c *Connection) serveFaults() {
 			// that makes a fault long is the host's dirty budget, which stalls
 			// a guest deliberately. Failing that wait on a deadline is the
 			// killed VMM the budget exists to avoid.
-			err := c.region.Memory.Fault(c.ctx, page, entry.write)
+			err := c.memoryRegion.Memory.Fault(c.ctx, page, entry.write)
 			c.finishFault(page)
 			if errors.Is(err, ErrMappingRefused) {
 				// The client refused a command for want of mapping budget and
@@ -894,8 +894,8 @@ func (c *Connection) readControl() {
 			}
 			// A flush is a disk's. RAM is not made durable by a disk checkpoint,
 			// so a client that flushes it is one this pager does not understand.
-			if c.region.Kind != Pmem {
-				c.fail(fmt.Errorf("a flush of a %s region", c.region.Kind))
+			if c.memoryRegion.Kind != Pmem {
+				c.fail(fmt.Errorf("a flush of a %s memory region", c.memoryRegion.Kind))
 				return
 			}
 			lastRequest = f.ID
@@ -951,7 +951,7 @@ func (c *Connection) verify() {
 		case <-timer.C():
 		}
 		ctx, cancel := context.WithTimeout(c.ctx, c.cfg.CommandTimeout)
-		err := c.region.Memory.Verify(ctx)
+		err := c.memoryRegion.Memory.Verify(ctx)
 		cancel()
 		if err != nil {
 			c.fail(err)
@@ -979,7 +979,7 @@ func (c *Connection) Close(ctx context.Context) error {
 	}
 	c.fail(ErrClosed)
 	c.workers.Wait()
-	if err := c.region.Memory.Detach(ctx); err != nil {
+	if err := c.memoryRegion.Memory.Detach(ctx); err != nil {
 		return err
 	}
 	c.closed = true

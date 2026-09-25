@@ -11,7 +11,7 @@ import "context"
 // — and that is true exactly when private pages adjacent in the guest are
 // adjacent in the arena, whatever order they were written in.
 //
-// So each 2 MiB-aligned range of a region that holds a private page owns one
+// So each 2 MiB-aligned range of a memory region that holds a private page owns one
 // extent: rangeBytes worth of consecutive arena offsets, of which only the
 // pages stored into hold memory. A private page of that range is put at the
 // offset within the extent that it has within the range. Extents come off the
@@ -26,21 +26,21 @@ import "context"
 // destination loads privately from the host that still holds it arrives in a
 // run of its own, like any other load, rather than in its range's extent.
 
-// rangeBytes is what one extent covers: the 2 MiB-aligned range of a region
+// rangeBytes is what one extent covers: the 2 MiB-aligned range of a memory region
 // whose private pages are placed together. It is the largest page a volume may
 // be published in, which is what makes it the unit a whole range could be given
 // a huge mapping at.
 const rangeBytes = 2 << 20
 
-// extentKey names the one range of one region an extent belongs to.
+// extentKey names the one range of one memory region an extent belongs to.
 type extentKey struct {
-	region *Region
-	rng    uint64
+	memoryRegion *MemoryRegion
+	rng          uint64
 }
 
 // extent is the run of consecutive arena offsets one range owns. held is how
 // many of those offsets hold a page; the extent goes back to the offset space
-// when the last of them is given up, so a region owns an extent for exactly as
+// when the last of them is given up, so a memory region owns an extent for exactly as
 // long as it has a page in the range.
 type extent struct {
 	key  extentKey
@@ -59,7 +59,7 @@ type extent struct {
 // larger than its capacity, which is a pager with no extents to give out.
 func (h *Host) placing() bool { return h.extentPages > 1 && h.slots.Extents() > 0 }
 
-// place reports the arena offset the placement rule gives page index of region
+// place reports the arena offset the placement rule gives page index of memory region
 // r, having taken a page there.
 //
 // It reports -1 with placeable false where this page has no offset of its own:
@@ -71,7 +71,7 @@ func (h *Host) placing() bool { return h.extentPages > 1 && h.slots.Extents() > 
 // for.
 //
 // Caller holds h.mu.
-func (h *Host) place(r *Region, index uint64) (slot int, placeable bool) {
+func (h *Host) place(r *MemoryRegion, index uint64) (slot int, placeable bool) {
 	if !h.placing() {
 		return -1, false
 	}
@@ -110,7 +110,7 @@ func (h *Host) place(r *Region, index uint64) (slot int, placeable bool) {
 }
 
 // dropExtent gives an extent back to the offset space once nothing of it holds
-// a page. A region that has detached is no longer in the extent table, so the
+// a page. A memory region that has detached is no longer in the extent table, so the
 // entry is removed only where it is still this extent's. Caller holds h.mu.
 func (h *Host) dropExtent(e *extent) {
 	if e.held != 0 {
@@ -122,13 +122,13 @@ func (h *Host) dropExtent(e *extent) {
 	h.slots.PutExtent(e.base)
 }
 
-// forgetExtents takes a detached region's extents out of the table. The offsets
-// go back as their pages do: a page of one may outlive the region that placed
-// it, because retiring a checkpoint publishes it and another region that
+// forgetExtents takes a detached memory region's extents out of the table. The offsets
+// go back as their pages do: a page of one may outlive the memory region that placed
+// it, because retiring a checkpoint publishes it and another memory region that
 // inherits that identity maps it where it is.
-func (h *Host) forgetExtents(r *Region) {
+func (h *Host) forgetExtents(r *MemoryRegion) {
 	for key, e := range h.extents {
-		if key.region == r {
+		if key.memoryRegion == r {
 			delete(h.extents, key)
 			if e.held == 0 {
 				h.slots.PutExtent(e.base)
@@ -145,7 +145,7 @@ func (h *Host) forgetExtents(r *Region) {
 // The faulting page's range comes first — without it there is no run at all —
 // then the ranges after it and then those before it, stopping at the first that
 // has no extent or no page budget left. It takes nothing it does not keep.
-func (h *Host) placeRun(r *Region, index, first, last uint64) (uint64, []MapRun) {
+func (h *Host) placeRun(r *MemoryRegion, index, first, last uint64) (uint64, []MapRun) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if !h.placing() {
@@ -183,7 +183,7 @@ func (h *Host) placeRun(r *Region, index, first, last uint64) (uint64, []MapRun)
 // them at consecutive offsets of that range's extent. It reports the first of
 // those offsets. A page it cannot place undoes the pages before it, so the
 // caller gets the whole sub-run or nothing. Caller holds h.mu.
-func (h *Host) placePages(r *Region, from, to uint64) (int, bool) {
+func (h *Host) placePages(r *MemoryRegion, from, to uint64) (int, bool) {
 	base := -1
 	for page := from; page < to; page++ {
 		slot, _ := h.place(r, page)

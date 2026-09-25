@@ -69,14 +69,14 @@ func TestLargeNativeZeroMappingsKeepMetadataSparse(t *testing.T) {
 		t.Fatalf("32 GiB mappings retained %d Go heap bytes, budget 4 MiB", retained)
 	}
 	// Exercise distant range splits and private spill, then check untouched zeros.
-	for region := range 2 {
+	for memoryRegion := range 2 {
 		for i, page := range []int{0, pages / 2, pages - 1} {
-			a.request(fmt.Sprintf("fill %d %d 1 %d", region, page*os.Getpagesize(), 71+i), "filled")
+			a.request(fmt.Sprintf("fill %d %d 1 %d", memoryRegion, page*os.Getpagesize(), 71+i), "filled")
 		}
 		for i, page := range []int{0, pages / 2, pages - 1} {
-			a.request(fmt.Sprintf("read %d %d 1", region, page*os.Getpagesize()), fmt.Sprintf("data %02x", 71+i))
+			a.request(fmt.Sprintf("read %d %d 1", memoryRegion, page*os.Getpagesize()), fmt.Sprintf("data %02x", 71+i))
 		}
-		a.request(fmt.Sprintf("read %d %d 1", region, (pages-2)*os.Getpagesize()), "data 00")
+		a.request(fmt.Sprintf("read %d %d 1", memoryRegion, (pages-2)*os.Getpagesize()), "data 00")
 	}
 	runtime.KeepAlive(a)
 }

@@ -154,7 +154,7 @@ func TestAReplyThatNeverLeavesKeepsItsPagesOutstanding(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = source.Close() })
-	source.Serve("vm-2", vmmigrate.RegionPages(s.machine.Regions()))
+	source.Serve("vm-2", vmmigrate.MemoryRegionPages(s.machine.MemoryRegions()))
 
 	backing := s.backing(t, source, "ram0")
 	data := make([]byte, 4*pageSize)

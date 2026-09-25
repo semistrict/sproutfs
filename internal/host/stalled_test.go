@@ -52,7 +52,7 @@ func TestStoppingAStalledVMGivesUpTheForkPointsTakenOnIt(t *testing.T) {
 
 	// The seal holds the whole dirty budget and a sealed VM is not checkpointed,
 	// so the next store is a stall no checkpoint can relieve.
-	if err := guest.Regions()["ram0"].Fault(t.Context(), 2, true); !errors.Is(err, vmmemory.ErrDirtyStalled) {
+	if err := guest.MemoryRegions()["ram0"].Fault(t.Context(), 2, true); !errors.Is(err, vmmemory.ErrDirtyStalled) {
 		t.Fatalf("the store past the budget failed with %v, want a dirty-budget stall", err)
 	}
 	select {

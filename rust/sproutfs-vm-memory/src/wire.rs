@@ -1,5 +1,5 @@
 //! Fixed-size managed-memory control frames. See docs/vm-memory.md in the parent
-//! project. A session maps one region, so no frame names one.
+//! project. A session maps one memory region, so no frame names one.
 
 use std::io::{self, Read, Write};
 use std::mem;
@@ -11,7 +11,7 @@ use std::os::unix::net::UnixStream;
 mod tests;
 
 /// Version 9 added FLUSH, the request this client sends when its guest flushes
-/// the region and whose RESULT completes that flush. A version 8 pager ends the
+/// the memory region and whose RESULT completes that flush. A version 8 pager ends the
 /// session on a control message it does not know, which would end the guest at
 /// its first flush, so the two are told apart before a guest runs.
 ///
@@ -23,7 +23,7 @@ mod tests;
 /// MAP's arena offset by, is the addresses; a version 7 peer would read it as
 /// the memory behind them.
 ///
-/// Version 7 gave the attachment the geometry: the page this session's region
+/// Version 7 gave the attachment the geometry: the page this session's memory region
 /// runs and the kind of memory its arena is made of. The page is no longer one
 /// number both ends know, so a version 6 peer is refused by version too — its
 /// page numbers name other pages.
@@ -31,7 +31,7 @@ pub(crate) const VERSION: u64 = 9;
 /// The encoded size of one frame.
 pub(crate) const FRAME_BYTES: usize = 56;
 pub(crate) const HELLO: u64 = 1;
-pub(crate) const REGION: u64 = 2;
+pub(crate) const MEMORY_REGION: u64 = 2;
 pub(crate) const ATTACH: u64 = 3;
 pub(crate) const MAP: u64 = 4;
 pub(crate) const REVOKE: u64 = 5;
@@ -45,7 +45,7 @@ pub(crate) const MAP_BATCH: u64 = 10;
 pub(crate) const READY: u64 = 11;
 pub(crate) const MAP_ZERO: u64 = 12;
 /// Asks the host to make durable a flush the guest made of this session's
-/// region, under a request ID from the same sequence as SEAL's and with every
+/// memory region, under a request ID from the same sequence as SEAL's and with every
 /// other field zero. The host answers with RESULT once the flush is durable,
 /// which may take a disk checkpoint first, and the device completes the
 /// guest's flush then.
@@ -200,7 +200,7 @@ impl Frame {
             ));
         }
         // An orderly close with nothing on it is its own failure: the pager
-        // refused this region — its logical-page cap is full, say — and closed
+        // refused this memory region — its logical-page cap is full, say — and closed
         // instead of attaching backing. It is the end of the connection the
         // answer had to come from, not a malformed message.
         if n == 0 {

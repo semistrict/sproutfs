@@ -26,7 +26,7 @@ import (
 // so the offsets its extent owns.
 const rangePages = (2 << 20) / checkpoint.PageSize4KiB
 
-// placedFixture is a 4 KiB pager with an extent for every range its regions may
+// placedFixture is a 4 KiB pager with an extent for every range its memory regions may
 // write into — the offset space a production RAM pager is given, one extent per
 // logical page's worth of range, and the pages it may hold at once beside them.
 // Read-ahead and write-ahead are one page, so what a test stores into is the
@@ -38,20 +38,20 @@ func placedFixture(t *testing.T, logical int) *fixture {
 		DirtyPages: logical, ReadAheadPages: 1, WriteAheadPages: 1})
 }
 
-// placedRegion is one region of that pager, as large as everything it admits.
-func placedRegion(t *testing.T, pages int) (*fixture, *vmmemory.Region, *mapping, *backing) {
+// placedMemoryRegion is one memory region of that pager, as large as everything it admits.
+func placedMemoryRegion(t *testing.T, pages int) (*fixture, *vmmemory.MemoryRegion, *mapping, *backing) {
 	t.Helper()
 	f := placedFixture(t, pages)
-	r, m, b := f.region(pages)
+	r, m, b := f.memoryRegion(pages)
 	return f, r, m, b
 }
 
 // copied is the pages one store leaves in the arena: the private copy, and the
 // page it was copied from, which stays under its published identity so that the
-// settle can compare the two and any region inheriting that identity maps it.
+// settle can compare the two and any memory region inheriting that identity maps it.
 const copied = 2
 
-// mappings counts the mappings a region's arena-backed pages are to its VMM: a
+// mappings counts the mappings a memory region's arena-backed pages are to its VMM: a
 // run of consecutive pages at consecutive arena offsets, with the same write
 // access, is one mapping, and every break in either is another. A zero mapping
 // owns no arena offset and is left out — a range of zeros is one mapping
@@ -91,7 +91,7 @@ func mappingsOf(m *mapping, privateOnly bool) int {
 // read off one page.
 func TestAPrivatePageIsPlacedAtItsOwnOffsetInItsRangesExtent(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		f, r, m, _ := placedRegion(t, 2*rangePages)
+		f, r, m, _ := placedMemoryRegion(t, 2*rangePages)
 		const page = 300
 		access(t, r, m, page, true)[0] = 7
 		slot := m.pages[page].slot
@@ -116,7 +116,7 @@ func TestTwoAdjacentPrivatePagesAreOneMappingInEitherOrder(t *testing.T) {
 	for _, order := range [][2]uint64{{300, 301}, {301, 300}} {
 		t.Run(fmt.Sprintf("%d-then-%d", order[0], order[1]), func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				f, r, m, _ := placedRegion(t, 2*rangePages)
+				f, r, m, _ := placedMemoryRegion(t, 2*rangePages)
 				for _, page := range order {
 					access(t, r, m, page, true)[0] = 7
 				}
@@ -143,7 +143,7 @@ func TestTwoAdjacentPrivatePagesAreOneMappingInEitherOrder(t *testing.T) {
 func TestAlternatingPrivatePagesAreAMappingEach(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		const stores, stride = 8, 32
-		f, r, m, _ := placedRegion(t, 2*rangePages)
+		f, r, m, _ := placedMemoryRegion(t, 2*rangePages)
 		for i := range uint64(stores) {
 			access(t, r, m, 20+stride*i, true)[0] = 7
 		}
@@ -163,7 +163,7 @@ func TestAlternatingPrivatePagesAreAMappingEach(t *testing.T) {
 // property of the free list and not of the rule, and the extents are still two.
 func TestPagesOfTwoRangesAreTwoExtents(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		f, r, m, _ := placedRegion(t, 4*rangePages)
+		f, r, m, _ := placedMemoryRegion(t, 4*rangePages)
 		for _, page := range []uint64{rangePages - 1, rangePages} {
 			access(t, r, m, page, true)[0] = 7
 		}
@@ -182,7 +182,7 @@ func TestPagesOfTwoRangesAreTwoExtents(t *testing.T) {
 }
 
 // An extent is the range's for as long as the range holds a page, and goes back
-// to the offset space whole when it holds none. Detaching the region is what
+// to the offset space whole when it holds none. Detaching the memory region is what
 // ends the last of them here; an eviction or a settle ends one the same way.
 func TestARangeGivesItsExtentBackWhenItHoldsNoPage(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
@@ -199,7 +199,7 @@ func TestARangeGivesItsExtentBackWhenItHoldsNoPage(t *testing.T) {
 			t.Fatal(err)
 		}
 		if s := hostStats(t, f); s.PrivateExtents != 0 || s.ResidentPages != 0 {
-			t.Fatalf("after the region detached it owns %d extents and %d pages, want 0 and 0",
+			t.Fatalf("after the memory region detached it owns %d extents and %d pages, want 0 and 0",
 				s.PrivateExtents, s.ResidentPages)
 		}
 	})
@@ -213,7 +213,7 @@ func TestAPagerWhosePageIsTheRangePlacesNothing(t *testing.T) {
 		f := newConfiguredFixture(t, vmmemory.Config{PageSize: checkpoint.PageSize2MiB,
 			ResidentPages: 8, ArenaOffsets: 4096, LogicalPages: 16, DirtyPages: 8,
 			ReadAheadPages: 1, WriteAheadPages: 1})
-		r, m, _ := f.region(8)
+		r, m, _ := f.memoryRegion(8)
 		access(t, r, m, 3, true)[0] = 7
 		if s := hostStats(t, f); s.PrivateExtents != 0 || s.ResidentPages != copied {
 			t.Fatalf("a 2 MiB pager's store owns %d extents and %d pages, want 0 and %d",

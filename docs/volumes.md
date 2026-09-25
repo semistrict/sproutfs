@@ -36,7 +36,7 @@ A host creates each volume with the page size of the pager that will map it. A
 VM's `ram0` uses 4 KiB, and each of its PMEM devices uses 2 MiB. The pager, the
 mapping protocol and the VMM carry that page size end to end. A session states
 the page size when it attaches. A pager refuses to attach a volume published in
-any other page size. This check also catches a region that reached the wrong
+any other page size. This check also catches a memory region that reached the wrong
 one of a host's two pagers.
 
 ## Writes
@@ -754,7 +754,7 @@ was taken early. The pin says that a fork may read through that checkpoint, and
 a fork that never started reads nothing.
 
 A parent whose pages a fork point holds is `Status.Sealed`. Only one seal of a
-region can be outstanding at a time, so the parent cannot be captured or forked
+memory region can be outstanding at a time, so the parent cannot be captured or forked
 again. A capture request is refused before its guest is touched. The seal ends
 when the last child of that point has retired it. A child retires it when every
 page it inherited is either published by the child or fetched by it. The

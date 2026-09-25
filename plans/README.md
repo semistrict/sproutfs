@@ -11,7 +11,7 @@ across all of them is collected in [open-work.md](../docs/open-work.md).
   stored data is converted: the formats' versions are bumped.
   **Steps 1 to 4 are done — the sharing gauges; a volume that carries its own
   page size, 4 KiB or 2 MiB, recorded in its checkpoints at index format 8; a
-  pager whose page is an instance's, with one pager per kind of region on every
+  pager whose page is an instance's, with one pager per kind of memory region on every
   host, its own arena and spill file each and the deployment's byte budgets
   divided between them; and, at step 4, RAM at 4 KiB on a real host. Mapping
   protocol version 8 carries each session's page, the kind of memory its arena
@@ -349,7 +349,7 @@ across all of them is collected in [open-work.md](../docs/open-work.md).
 - [2026-09-13 complexity cuts](complexity-cuts-2026-09-13.md) — the requirement
   answers and the features removed. **Done.** All seven steps are complete: the
   log, replication, membership, TLS, deltas, configurable page size, multi-RAM
-  regions, pre-copy and the shared disk ledger are gone, and the documentation
+  memory regions, pre-copy and the shared disk ledger are gone, and the documentation
   and `TODO.md` rewrite that was step 7 has landed. The index per checkpoint it
   left open is closed by the segmented index above. Its checkpoint-interval
   question is answered for one workload at 60 s with jitter; the measurement

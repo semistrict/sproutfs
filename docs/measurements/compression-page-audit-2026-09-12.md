@@ -9,7 +9,7 @@ legacy readers are deliberately absent.
 
 | Surface | Finding | Correction or retained contract |
 | --- | --- | --- |
-| Fault read-ahead | The old maximum of 4,096 pages allowed an 8 GiB scratch range at 2 MiB per page. | Cap the byte range at 16 MiB, including region overrides: eight production pages. |
+| Fault read-ahead | The old maximum of 4,096 pages allowed an 8 GiB scratch range at 2 MiB per page. | Cap the byte range at 16 MiB, including memory region overrides: eight production pages. |
 | Initial population | A 65,536-page window grew from 256 MiB to 128 GiB and could enumerate millions of storage extents. | Derive the page count from a 256 MiB byte window. |
 | Immutable resident identity | A production page previously combined two 1 MiB chunk identities. | One 2 MiB chunk identifies a production page. A page of mixed identities cannot share a whole page. |
 | Storage deltas | Doubling a chunk doubles its 4 KiB page count. | 512 pages, a 64-byte bitmap, and updated format version and generated schema. Exercise the final bitmap bit. |
@@ -32,7 +32,7 @@ The following small units remain intentional:
   the whole object before returning the requested bytes.
 - Guest filesystem blocks, guest workload touches, ordinary host pages,
   `mincore` results and KVM dirty bitmap bits are not pager page counts.
-  Managed capture seals pager regions; it does not reinterpret KVM bitmap
+  Managed capture seals pager memory regions; it does not reinterpret KVM bitmap
   bits as 2 MiB pages.
 - Scaled 4/16/64 KiB simulation geometries are retained. The Rust/native
   adapter requires 2 MiB alignment, including rejection of 4 KiB and 1 MiB

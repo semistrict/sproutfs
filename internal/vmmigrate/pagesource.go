@@ -37,7 +37,7 @@ const (
 	// to one 2 MiB page, within the same bounded byte budget.
 	defaultMaxPages = 256
 	// defaultMaxRuns bounds one resident listing, so a destination walks a large
-	// region in several bounded replies rather than one unbounded one.
+	// memory region in several bounded replies rather than one unbounded one.
 	defaultMaxRuns = 1024
 	// defaultConnectionsPerPeer bounds how many requests one peer can have in
 	// flight here, since each connection serves one request at a time.
@@ -65,7 +65,7 @@ type SourceConfig struct {
 	Address  platform.Address
 	// PageSize is the largest page this source serves, which is what its
 	// per-peer byte budgets are sized against. What a reply is actually counted
-	// in is the page of the volume it answers for — a host's two kinds of region
+	// in is the page of the volume it answers for — a host's two kinds of memory region
 	// need not agree — so this bounds the budgets and names nothing else. Zero
 	// selects the largest page a volume may be published in.
 	PageSize int
@@ -93,7 +93,7 @@ type SourceStats struct {
 }
 
 // Pages is one volume's worth of pages a host still holds for another: a
-// migrated VM's region, whose volume has been given up but whose pages have
+// migrated VM's memory region, whose volume has been given up but whose pages have
 // not, or the sealed fork point a fork was taken at, which the parent goes on
 // running behind. The protocol above does not know which it is answering from.
 type Pages interface {
@@ -114,17 +114,17 @@ type Pages interface {
 	Unpublished() ([]uint64, error)
 	// PageSize is the page this volume's numbers are counted in. It is the
 	// volume's own, which both hosts read out of the same durable geometry, so
-	// the two kinds of region a VM maps may answer differently.
+	// the two kinds of memory region a VM maps may answer differently.
 	PageSize() uint64
 }
 
-// RegionPages presents the regions of a migrated VM as what its page source
-// serves, by volume name. The regions keep their pages after their volumes
+// MemoryRegionPages presents the memory regions of a migrated VM as what its page source
+// serves, by volume name. The memory regions keep their pages after their volumes
 // were handed off, which is exactly what this serves.
-func RegionPages(regions map[string]*vmmemory.Region) map[string]Pages {
-	pages := make(map[string]Pages, len(regions))
-	for name, region := range regions {
-		pages[name] = region
+func MemoryRegionPages(memoryRegions map[string]*vmmemory.MemoryRegion) map[string]Pages {
+	pages := make(map[string]Pages, len(memoryRegions))
+	for name, memoryRegion := range memoryRegions {
+		pages[name] = memoryRegion
 	}
 	return pages
 }
@@ -203,7 +203,7 @@ type PageSource struct {
 	settled chan struct{}
 	// unlisted is why a VM's volumes could not report what they still hold,
 	// which is as good a reason to refuse a release as pages known to be
-	// outstanding: an unlistable region may hold anything.
+	// outstanding: an unlistable memory region may hold anything.
 	unlisted map[string]error
 	peers    map[string]*peerBudget
 
@@ -219,7 +219,7 @@ type peerBudget struct {
 }
 
 // NewPageSource starts serving on address until Close. It serves nothing until a
-// migration registers a VM's regions.
+// migration registers a VM's memory regions.
 func NewPageSource(ctx context.Context, config SourceConfig) (*PageSource, error) {
 	if (config.Network == nil && config.Listener == nil) || config.Address == "" {
 		return nil, fmt.Errorf("%w: a page source needs a listener or a network, and an address", ErrInvalid)
@@ -467,7 +467,7 @@ func (s *PageSource) Stats() SourceStats {
 }
 
 // Close stops accepting and drops every connection. It does not release the
-// regions: their pages belong to the VMM process that owns them.
+// memory regions: their pages belong to the VMM process that owns them.
 func (s *PageSource) Close() error {
 	s.closeOnce.Do(func() {
 		s.cancel(ErrClosed)
@@ -492,7 +492,7 @@ func (s *PageSource) accept() {
 
 // peerKey is the identity a budget is counted against: the host a connection
 // came from, without the ephemeral port it happens to have been given. A
-// destination opens a connection per region and dials again whenever one
+// destination opens a connection per memory region and dials again whenever one
 // breaks, so counting connections by their full address counts each of them as
 // a peer of its own: neither budget ever binds, and the table of peers grows
 // with every reconnect for as long as this host serves. A simulated address is
@@ -737,7 +737,7 @@ func (s *PageSource) pages(peer string, request *migratev1.PageRequest) (*migrat
 		PageSize: proto.Uint32(uint32(pageSize)), Count: proto.Uint32(uint32(count)), PayloadFormat: proto.Uint32(1)}.Build(), encoded, served
 }
 
-// resident lists what one region holds, from the requested page on, in runs.
+// resident lists what one memory region holds, from the requested page on, in runs.
 func (s *PageSource) resident(request *migratev1.ResidentRequest) *migratev1.ResidentResponse {
 	s.listings.Add(1)
 	pageSize := s.config.PageSize

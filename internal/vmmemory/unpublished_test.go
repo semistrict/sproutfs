@@ -31,7 +31,7 @@ type peerBacking struct {
 	hidden map[uint64]byte
 	loads  int
 	// installedMu guards installed, which is every page this backing was told
-	// the region went on to hold. A real peer backing stops asking its source
+	// the memory region went on to hold. A real peer backing stops asking its source
 	// for those and lets it stop serving, so a page missing from here is a page
 	// that host goes on holding for a destination that already has it.
 	installedMu sync.Mutex
@@ -53,7 +53,7 @@ func (b *peerBacking) InstalledUnpublished(offset uint64, installed []bool) {
 	}
 }
 
-// holds reports whether this backing was told the region took the page, which
+// holds reports whether this backing was told the memory region took the page, which
 // is what decides whether the source may stop serving it.
 func (b *peerBacking) holds(page uint64) bool {
 	b.installedMu.Lock()
@@ -85,7 +85,7 @@ func (b *peerBacking) LoadUnpublished(ctx context.Context, offset uint64, dst []
 	return result, nil
 }
 
-// Locate reports the pages the source holds as bytes of this region alone, which
+// Locate reports the pages the source holds as bytes of this memory region alone, which
 // is what the peer backing does so the pager never resolves them against a
 // checkpoint that does not have them.
 func (b *peerBacking) Locate(ctx context.Context, offset, length uint64) ([]control.Extent, error) {
@@ -101,7 +101,7 @@ func (b *peerBacking) Locate(ctx context.Context, offset, length uint64) ([]cont
 			page := cursor / size
 			stop := min(end, (page+1)*size)
 			next := control.Extent{Offset: cursor, Length: stop - cursor}
-			// A page of the handoff's set is reported as this region's own for
+			// A page of the handoff's set is reported as this memory region's own for
 			// exactly as long as the checkpoint the volume names for it
 			// predates the handoff: another VM's, or this one's own up to the
 			// sequence the handoff selected. Anything this VM publishes after
@@ -123,9 +123,9 @@ func (b *peerBacking) Locate(ctx context.Context, offset, length uint64) ([]cont
 	return result, nil
 }
 
-// A page a backing reports as unpublished is this region's own dirty state: the
+// A page a backing reports as unpublished is this memory region's own dirty state: the
 // guest may store into it without faulting again, it counts against the dirty
-// budget, and the region's next checkpoint publishes it. Anything else stays
+// budget, and the memory region's next checkpoint publishes it. Anything else stays
 // clean.
 func TestUnpublishedLoadBecomesDirtyAndReachesTheNextCheckpoint(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
@@ -191,12 +191,12 @@ func TestUnpublishedLoadBeyondTheDirtyBudgetWaitsForACheckpoint(t *testing.T) {
 		if got := access(t, r, m, 0, false)[0]; got != 61 {
 			t.Fatalf("page 0 reads %d, want the 61 the source served", got)
 		}
-		// The one reservation is page 0's, so only a checkpoint of this region
+		// The one reservation is page 0's, so only a checkpoint of this memory region
 		// can admit the next peer-served page.
-		requested := make(chan *vmmemory.Region, 4)
-		f.h.SetPressure(vmmemory.Pressure{Checkpoint: func(region *vmmemory.Region) bool {
+		requested := make(chan *vmmemory.MemoryRegion, 4)
+		f.h.SetPressure(vmmemory.Pressure{Checkpoint: func(memoryRegion *vmmemory.MemoryRegion) bool {
 			select {
-			case requested <- region:
+			case requested <- memoryRegion:
 			default:
 			}
 			return true
@@ -212,7 +212,7 @@ func TestUnpublishedLoadBeyondTheDirtyBudgetWaitsForACheckpoint(t *testing.T) {
 		select {
 		case got := <-requested:
 			if got != r {
-				t.Fatal("the host asked to checkpoint a region other than the waiting one")
+				t.Fatal("the host asked to checkpoint a memory region other than the waiting one")
 			}
 		default:
 			t.Fatal("the post-copy read asked for no checkpoint")
@@ -230,7 +230,7 @@ func TestUnpublishedLoadBeyondTheDirtyBudgetWaitsForACheckpoint(t *testing.T) {
 // A destination's guest runs while the pages only its source holds are still
 // arriving, and its first touch of one of them can be a store rather than a
 // read. The store reads that page from the source exactly as a load does and
-// binds those bytes here as this region's own dirty state, so the source stops
+// binds those bytes here as this memory region's own dirty state, so the source stops
 // holding the only copy of it and has to be told: a backing that hears only
 // about loads goes on expecting a page this host already has, and the source it
 // speaks for is never allowed to stop serving.
@@ -252,7 +252,7 @@ func TestAStoreTakesAPageNoCheckpointHoldsAndReportsItInstalled(t *testing.T) {
 		}
 
 		// Page 1 is never read: the guest's first touch of it is a store, which
-		// this region serves by reading the source's bytes and copying the guest
+		// this memory region serves by reading the source's bytes and copying the guest
 		// away from them.
 		if _, err := memoryByte(t.Context(), r, m, 1, ptr(byte(99))); err != nil {
 			t.Fatal(err)
@@ -305,7 +305,7 @@ func TestAStoreOnAMigrationDestinationReadsItsOwnPageAlone(t *testing.T) {
 	})
 }
 
-// A store into a page this region holds no memory for reads that page in first,
+// A store into a page this memory region holds no memory for reads that page in first,
 // and puts what it read into the sharing index under the identity the volume
 // gives it, so that the copy has an origin and every sibling that inherits the
 // identity maps the page instead of reading it again. That is only sound while
@@ -327,7 +327,7 @@ func TestASourceServedPageTheExtentsCallPublishedIsNotSharedUnderItsIdentity(t *
 		// it out of its own dirty pages anyway.
 		peer := &peerBacking{backing: base, hidden: map[uint64]byte{1: 71}}
 		r, m := f.attach(peer)
-		sibling, siblingMapping, _ := f.region(4)
+		sibling, siblingMapping, _ := f.memoryRegion(4)
 
 		// The store reads the page in, copies away from it and stores.
 		access(t, r, m, 1, true)[0] = 99
@@ -341,7 +341,7 @@ func TestASourceServedPageTheExtentsCallPublishedIsNotSharedUnderItsIdentity(t *
 		// And the source is told the destination has the page, or it goes on
 		// holding bytes this host has already taken.
 		if !peer.holds(1) {
-			t.Fatal("the backing was never told this region took the page the source served")
+			t.Fatal("the backing was never told this memory region took the page the source served")
 		}
 	})
 }

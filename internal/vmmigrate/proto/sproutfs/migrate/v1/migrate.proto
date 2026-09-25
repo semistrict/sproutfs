@@ -13,7 +13,7 @@ enum Status {
   // STATUS_UNKNOWN_VM reports a VM this host does not serve, which is either a
   // migration it never held or one it has already released.
   STATUS_UNKNOWN_VM = 2;
-  // STATUS_UNKNOWN_VOLUME reports a VM this host serves without that region.
+  // STATUS_UNKNOWN_VOLUME reports a VM this host serves without that memory region.
   STATUS_UNKNOWN_VOLUME = 3;
   STATUS_INVALID_REQUEST = 4;
   // STATUS_BUSY reports the per-peer budget, and is retryable.
@@ -21,7 +21,7 @@ enum Status {
   STATUS_INTERNAL = 6;
 }
 
-// PageRequest asks one region of one VM for a run of consecutive pages. The
+// PageRequest asks one memory region of one VM for a run of consecutive pages. The
 // server bounds count itself and answers a longer run with what it will serve.
 message PageRequest {
   string vm = 1;
@@ -60,8 +60,8 @@ message PageRun {
   uint32 count = 2;
 }
 
-// ResidentRequest asks for the pages one region holds, from first_page on. The
-// listing is bounded, so a destination walks a large region with several
+// ResidentRequest asks for the pages one memory region holds, from first_page on. The
+// listing is bounded, so a destination walks a large memory region with several
 // requests rather than one unbounded reply.
 message ResidentRequest {
   string vm = 1;
@@ -70,8 +70,8 @@ message ResidentRequest {
   uint32 max_runs = 4;
 }
 
-// ResidentResponse lists that region's resident runs in ascending order. more
-// reports that the region holds pages above the last run returned, which the
+// ResidentResponse lists that memory region's resident runs in ascending order. more
+// reports that the memory region holds pages above the last run returned, which the
 // next request asks for.
 message ResidentResponse {
   Status status = 1;

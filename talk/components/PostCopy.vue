@@ -5,7 +5,7 @@ import { useStep } from './Steps'
 // Post-copy migration.
 // 0 source runs the guest; selected (7,2); pages 1,3 unpublished (dirty since)
 // 1 quiesce + stop: vCPUs pause, VMM state captured; nothing sealed, nothing uploaded
-// 2 hand off: regions give volumes up, keep frames; handoff = state, layout, unpublished runs, page-server address, sequence
+// 2 hand off: memory regions give volumes up, keep frames; handoff = state, layout, unpublished runs, page-server address, sequence
 // 3 destination opens: record read, epoch 7→8 (fence), root of (7,2) read: two objects, no page
 // 4 resume: guest runs on destination; faults pull pages from source's page server first, own volume otherwise
 // 5 stream: unpublished pages first, to completion; then the rest of the resident set
@@ -15,7 +15,7 @@ const step = useStep()
 const caption = computed(() => [
   'the source runs the guest at (7,2); pages 1 and 3 written since exist only here',
   'stop: quiesce the loop, pause the vCPUs, capture the VMM state. Nothing sealed, nothing uploaded.',
-  'hand off: regions give their volumes up, keep their pages, report which pages no checkpoint has',
+  'hand off: memory regions give their volumes up, keep their pages, report which pages no checkpoint has',
   'the destination opens the VM: reads the record, increments the epoch 7→8, reads the root. It reads two objects and no pages, and refuses any other sequence as stale.',
   'resume: faults ask the source\'s page server first, the destination\'s own volume otherwise',
   'a stream fetches the unpublished pages first, to completion, then the rest of the resident set',

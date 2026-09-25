@@ -23,9 +23,9 @@ import "context"
 //
 // It holds no page's lock, because a store copies the pages of its run in page
 // order after the page it faulted on: two stores of overlapping runs in two
-// regions would take the same origins in two orders and wait on each other.
+// memory regions would take the same origins in two orders and wait on each other.
 type replacement struct {
-	region *Region
+	memoryRegion *MemoryRegion
 	// pages are the pages being replaced and guests the bindings whose mappings
 	// of them the command replaces, in the order they were taken.
 	pages  []*resident
@@ -35,7 +35,7 @@ type replacement struct {
 // hold keeps one page the guest still maps where it is until this store's
 // mapping command lands. Caller holds pg's lock and the binding is mapped.
 func (p *replacement) hold(b *binding, pg *resident) {
-	h := p.region.host
+	h := p.memoryRegion.host
 	h.mu.Lock()
 	pg.replacing++
 	h.mu.Unlock()
@@ -48,7 +48,7 @@ func (p *replacement) hold(b *binding, pg *resident) {
 // one whose last binding went while it was held has its memory released here
 // rather than at the unlink that took that binding away.
 func (p *replacement) done(ctx context.Context) error {
-	h := p.region.host
+	h := p.memoryRegion.host
 	pages := p.pages
 	p.pages, p.guests = nil, nil
 	// Nothing about giving a page back is the caller's context to abandon: a
@@ -93,12 +93,12 @@ func (p *replacement) done(ctx context.Context) error {
 // It is the one revocation a store ever issues, on the one path where the
 // client refused its mapping or the command failed.
 //
-// A revocation that fails is a terminal region, and then the pages stay held:
+// A revocation that fails is a terminal memory region, and then the pages stay held:
 // nothing reclaims them and nothing releases them, which is what a terminal
-// region's pages are until it is detached. Region.heldPages is what says so.
+// memory region's pages are until it is detached. MemoryRegion.heldPages is what says so.
 func (p *replacement) revoke(ctx context.Context) error {
 	guests := p.guests
-	if err := p.region.revokeBindings(ctx, guests); err != nil {
+	if err := p.memoryRegion.revokeBindings(ctx, guests); err != nil {
 		p.pages, p.guests = nil, nil
 		return err
 	}

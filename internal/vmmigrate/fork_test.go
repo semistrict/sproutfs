@@ -55,8 +55,8 @@ func TestForkAcrossHostsPullsExactlyTheUnpublishedPages(t *testing.T) {
 				handoff.ParentCheckpoint, point.Parent().Sequence)
 		}
 		unpublished := 0
-		for _, region := range handoff.Regions {
-			for _, run := range region.Unpublished {
+		for _, memoryRegion := range handoff.MemoryRegions {
+			for _, run := range memoryRegion.Unpublished {
 				unpublished += run.Count
 			}
 		}

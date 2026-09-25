@@ -214,7 +214,7 @@ func (f *ForkPoint) Retire(ctx context.Context) error {
 // shared by every child of it and never given back.
 //
 // It runs under the publication lock, so a fork and an interval checkpoint of
-// one guest serialize there rather than racing to seal the same regions. The
+// one guest serialize there rather than racing to seal the same memory regions. The
 // seal stays until the point is retired: nothing may capture this VM in the
 // meantime, which Status reports as Sealed.
 func (vm *VM) ForkPoint(ctx context.Context, prepare PrepareFunc) (*ForkPoint, error) {
@@ -250,7 +250,7 @@ func (vm *VM) ForkPoint(ctx context.Context, prepare PrepareFunc) (*ForkPoint, e
 // Share offers the parent's sealed pages to this host under the identity this
 // point gives them, so a child started here maps them instead of reading
 // them. It is what a child taken in on the parent's own host attaches over:
-// every page it inherited is present the moment its region attaches, and no
+// every page it inherited is present the moment its memory region attaches, and no
 // byte is copied and nothing is fetched.
 //
 // A point over a published checkpoint alone — one rebuilt on a host that never
@@ -272,7 +272,7 @@ func (f *ForkPoint) Share(ctx context.Context) error {
 }
 
 // beginFork takes this VM's seal for a fork about to be taken. Only one is
-// outstanding at a time, because only one checkpoint of a region is.
+// outstanding at a time, because only one checkpoint of a memory region is.
 func (vm *VM) beginFork() error {
 	vm.mu.Lock()
 	defer vm.mu.Unlock()

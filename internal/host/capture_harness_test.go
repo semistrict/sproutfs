@@ -138,7 +138,7 @@ func (s *holdStore) Put(ctx context.Context, request platform.PutRequest) (platf
 	return s.ObjectStore.Put(ctx, request)
 }
 
-// fakeSource stands in for one region's sealed checkpoint: the pager pages the
+// fakeSource stands in for one memory region's sealed checkpoint: the pager pages the
 // seal froze, the bytes of each, and what the publication did with them.
 type fakeSource struct {
 	pageSize int
@@ -243,7 +243,7 @@ func (s *fakeSource) outcome() (retires int, published bool) {
 
 // fakeRuntime stands in for the VMM process: it records the order of the pause
 // and the resume a capture drives, and hands out the VMM state and the sealed
-// checkpoint of every region.
+// checkpoint of every memory region.
 type fakeRuntime struct {
 	state      []byte
 	sources    map[string]volume.DirtySource
@@ -293,7 +293,7 @@ func (r *fakeRuntime) Release(context.Context) error {
 
 // The rest of host.Machine is the migration's and the watcher's half, which a
 // capture never reaches: this fake is only ever paused, resumed and released.
-func (r *fakeRuntime) Regions() map[string]*vmmemory.Region { return nil }
+func (r *fakeRuntime) MemoryRegions() map[string]*vmmemory.MemoryRegion { return nil }
 
 func (r *fakeRuntime) Stop(context.Context) ([]byte, error) { return bytes.Clone(r.state), nil }
 

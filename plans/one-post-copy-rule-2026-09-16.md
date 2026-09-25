@@ -8,7 +8,7 @@ the source's RAM holds — written since the last checkpoint — are fetched
 from the source's page server. Around that core `PeerBacking` grew a policy
 layer, each rule fixing a real bug: five attempts per request with backoff,
 four consecutive exhausted loads before the source is given up for good, a
-classification of which errors are final, a fallback that sends a region to
+classification of which errors are final, a fallback that sends a memory region to
 its volume after one line of log, and a `failures` counter reset by any
 reply. The numbers are guesses. Give up too early and a live source's page
 is lost for good; the guest then reads a page no checkpoint holds and the

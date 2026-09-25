@@ -1,5 +1,5 @@
 // Package peer is the destination's half of a migration's page protocol: the
-// pooled connections to the one host that still holds a region's pages, and the
+// pooled connections to the one host that still holds a memory region's pages, and the
 // two requests a destination makes over them.
 //
 // It holds no policy. Whether to ask a busy source again, whether to stop
@@ -54,23 +54,23 @@ type Answer struct {
 	Busy                    bool
 }
 
-// Config names the host one region asks for its pages, and the budgets every
+// Config names the host one memory region asks for its pages, and the budgets every
 // request to it obeys. The caller has already checked them.
 type Config struct {
 	// Peer is the source host's page source, VM the migrated VM's identity and
-	// Volume the region's volume. Both requests name all three.
+	// Volume the memory region's volume. Both requests name all three.
 	Peer   platform.Address
 	VM     string
 	Volume string
 	// PageSize must be the source's, which the handoff reports. A source that
 	// serves another size is refused rather than misread.
 	PageSize int
-	// MaxConnections bounds this region's requests in flight. The post-copy
+	// MaxConnections bounds this memory region's requests in flight. The post-copy
 	// stream may use all but one of them, so a guest fault always has one; with
 	// a single connection the two share it.
 	MaxConnections int
 	// MaxRuns bounds one resident listing, so a destination walks a large
-	// region's residency rather than asking for all of it in one reply.
+	// memory region's residency rather than asking for all of it in one reply.
 	MaxRuns int
 	Dial    Dialer
 	// Clock times the requests for their latency histograms. Nil is the wall
@@ -78,20 +78,20 @@ type Config struct {
 	Clock platform.Clock
 }
 
-// Latency is how long this region's requests took, by kind: a guest fault's,
+// Latency is how long this memory region's requests took, by kind: a guest fault's,
 // and the post-copy stream's. Wait is the part spent waiting for a connection;
 // the other histogram is the whole request, wait included.
 type Latency struct {
 	Fault, FaultWait, Stream, StreamWait latency.Snapshot
 }
 
-// Merge adds another region's latencies to these.
+// Merge adds another memory region's latencies to these.
 func (l Latency) Merge(other Latency) Latency {
 	return Latency{Fault: l.Fault.Merge(other.Fault), FaultWait: l.FaultWait.Merge(other.FaultWait),
 		Stream: l.Stream.Merge(other.Stream), StreamWait: l.StreamWait.Merge(other.StreamWait)}
 }
 
-// Source is one region's handle on the host that still holds its pages: the
+// Source is one memory region's handle on the host that still holds its pages: the
 // connections to it, and what every request over them names. Its methods are
 // safe for concurrent use.
 type Source struct {
@@ -109,8 +109,8 @@ type Source struct {
 	fault, faultWait, streamed, streamWait latency.Histogram
 
 	closed atomic.Bool
-	// inflight is how many requests this region has between admission and
-	// answer. A region with none holds no connection: see call.
+	// inflight is how many requests this memory region has between admission and
+	// answer. A memory region with none holds no connection: see call.
 	inflight atomic.Int64
 	nextID   atomic.Uint64
 	requests atomic.Int64
@@ -132,7 +132,7 @@ func New(config Config) *Source {
 	return s
 }
 
-// streamConnections is how many of a region's connections the post-copy stream
+// streamConnections is how many of a memory region's connections the post-copy stream
 // may use: all but the one kept for guest faults, and never none.
 func streamConnections(connections int) int { return max(1, connections-1) }
 
@@ -140,7 +140,7 @@ func streamConnections(connections int) int { return max(1, connections-1) }
 // once, which is what it should run in parallel.
 func (s *Source) Concurrency() int { return cap(s.stream) }
 
-// Latency reports how long this region's requests have taken so far.
+// Latency reports how long this memory region's requests have taken so far.
 func (s *Source) Latency() Latency {
 	return Latency{Fault: s.fault.Snapshot(), FaultWait: s.faultWait.Snapshot(),
 		Stream: s.streamed.Snapshot(), StreamWait: s.streamWait.Snapshot()}
@@ -236,7 +236,7 @@ func (s *Source) Resident(ctx context.Context) ([]Run, error) {
 	}
 }
 
-// Close drops every connection this region holds. A later request dials again:
+// Close drops every connection this memory region holds. A later request dials again:
 // stopping is the caller's decision, not this one's.
 func (s *Source) Close() {
 	s.closed.Store(true)
@@ -251,16 +251,16 @@ func (s *Source) Close() {
 // context before it does anything, so this is the only point between a caller's
 // cancellation and the wire that a controlled run can order; see Admitter.
 //
-// A region with no request in flight keeps one connection and gives the rest
+// A memory region with no request in flight keeps one connection and gives the rest
 // back. The pool is there so that concurrent requests pipeline rather than
 // opening a socket per page, and a burst that is over needs one connection
 // rather than the several it opened: the source bounds what one peer may hold
-// at once, and connections a region is not using take that bound from the
-// regions that are. Those regions ask for the pages no checkpoint holds, which
-// exist nowhere else, so they ask for ever — and a region whose whole pass is
+// at once, and connections a memory region is not using take that bound from the
+// memory regions that are. Those memory regions ask for the pages no checkpoint holds, which
+// exist nowhere else, so they ask for ever — and a memory region whose whole pass is
 // over would never have given its connections back. Keeping one and dropping
 // the rest is what makes the bound a queue rather than a deadlock, while a
-// region asking one page at a time still pays one socket rather than one per
+// memory region asking one page at a time still pays one socket rather than one per
 // page.
 func (s *Source) call(ctx context.Context, request, response proto.Message, maxPayload int64) ([]byte, error) {
 	if err := admit(ctx, s.config.VM+"/"+s.config.Volume); err != nil {
@@ -302,7 +302,7 @@ func (s *Source) call(ctx context.Context, request, response proto.Message, maxP
 	return payload, nil
 }
 
-// connection takes an idle connection or dials one under this region's bound.
+// connection takes an idle connection or dials one under this memory region's bound.
 func (s *Source) connection(ctx context.Context) (platform.Conn, error) {
 	select {
 	case conn := <-s.idle:
@@ -318,7 +318,7 @@ func (s *Source) connection(ctx context.Context) (platform.Conn, error) {
 	}
 	// A slot can fall free at the same moment the caller gives up, and a select
 	// picks either. Dialing a peer for a request nobody is waiting for costs a
-	// connection this region's bound then has to take back.
+	// connection this memory region's bound then has to take back.
 	if err := context.Cause(ctx); err != nil {
 		s.slots <- struct{}{}
 		return nil, err
@@ -331,7 +331,7 @@ func (s *Source) connection(ctx context.Context) (platform.Conn, error) {
 	return conn, nil
 }
 
-// recycle returns a usable connection, closing it when this region has stopped
+// recycle returns a usable connection, closing it when this memory region has stopped
 // asking or already holds its share of idle connections.
 func (s *Source) recycle(conn platform.Conn) {
 	if s.closed.Load() {
@@ -351,8 +351,8 @@ func (s *Source) discard(conn platform.Conn) {
 	s.slots <- struct{}{}
 }
 
-// trim gives back every pooled connection but one, which is what a region with
-// nothing in flight keeps. It is not a drain: a region that asks one page at a
+// trim gives back every pooled connection but one, which is what a memory region with
+// nothing in flight keeps. It is not a drain: a memory region that asks one page at a
 // time goes on reusing the connection it kept.
 func (s *Source) trim() {
 	for {

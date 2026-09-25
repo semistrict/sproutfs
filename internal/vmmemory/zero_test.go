@@ -21,9 +21,9 @@ func TestSparseSiblingsSurviveArenaPressureWithoutRevocation(t *testing.T) {
 				t.Fatal("sparse page was not zero")
 			}
 		}
-		// Reclaiming real data must not need to contact either zero-only region.
+		// Reclaiming real data must not need to contact either zero-only memory region.
 		am.failRevoke, bm.failRevoke = true, true
-		data, dm, _ := f.region(1)
+		data, dm, _ := f.memoryRegion(1)
 		if got := access(t, data, dm, 0, false)[0]; got != 1 {
 			t.Fatalf("data page = %d", got)
 		}

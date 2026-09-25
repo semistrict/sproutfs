@@ -53,7 +53,7 @@ func (v *Volume) Load(ctx context.Context, offset uint64, dst []byte) error {
 // the bytes of every other page as the caller had them.
 //
 // It is one read whatever the mask leaves out, which is what a pager's window
-// is: a fault's read-ahead run with the pages the region already holds resident
+// is: a fault's read-ahead run with the pages the memory region already holds resident
 // taken out of it. Those pages cost neither a request nor bytes, and the rest
 // of the run is still grouped by the part it lies in, so the run costs what the
 // run costs rather than one request per stretch of it.

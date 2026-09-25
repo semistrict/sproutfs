@@ -18,37 +18,37 @@ import (
 // apiHandoff is the wire form of a handoff the control plane carries to the
 // destination's Receive.
 func apiHandoff(handoff vmmigrate.Handoff) hostapi.Handoff {
-	regions := make([]hostapi.HandoffRegion, 0, len(handoff.Regions))
-	for _, region := range handoff.Regions {
-		runs := make([]hostapi.HandoffPageRun, 0, len(region.Unpublished))
-		for _, run := range region.Unpublished {
+	memoryRegions := make([]hostapi.HandoffMemoryRegion, 0, len(handoff.MemoryRegions))
+	for _, memoryRegion := range handoff.MemoryRegions {
+		runs := make([]hostapi.HandoffPageRun, 0, len(memoryRegion.Unpublished))
+		for _, run := range memoryRegion.Unpublished {
 			runs = append(runs, hostapi.HandoffPageRun{First: run.First, Count: run.Count})
 		}
-		regions = append(regions, hostapi.HandoffRegion{Name: region.Name, Size: region.Size,
-			Unpublished: runs, UnpublishedAge: region.UnpublishedAge})
+		memoryRegions = append(memoryRegions, hostapi.HandoffMemoryRegion{Name: memoryRegion.Name, Size: memoryRegion.Size,
+			Unpublished: runs, UnpublishedAge: memoryRegion.UnpublishedAge})
 	}
 	return hostapi.Handoff{VMID: handoff.VMID, State: handoff.State, Checkpoint: handoff.Checkpoint,
 		Parent: handoff.Parent, ParentCheckpoint: handoff.ParentCheckpoint,
 		Source: string(handoff.Source), PageSize: handoff.PageSize,
-		Regions: regions, PausedAt: handoff.PausedAt}
+		MemoryRegions: memoryRegions, PausedAt: handoff.PausedAt}
 }
 
 // handoffOf is the wire form read back, which is what a destination takes a VM
 // over from.
 func handoffOf(handoff hostapi.Handoff) vmmigrate.Handoff {
-	regions := make([]vmmigrate.RegionInfo, 0, len(handoff.Regions))
-	for _, region := range handoff.Regions {
-		runs := make([]vmmigrate.PageRun, 0, len(region.Unpublished))
-		for _, run := range region.Unpublished {
+	memoryRegions := make([]vmmigrate.MemoryRegionInfo, 0, len(handoff.MemoryRegions))
+	for _, memoryRegion := range handoff.MemoryRegions {
+		runs := make([]vmmigrate.PageRun, 0, len(memoryRegion.Unpublished))
+		for _, run := range memoryRegion.Unpublished {
 			runs = append(runs, vmmigrate.PageRun{First: run.First, Count: run.Count})
 		}
-		regions = append(regions, vmmigrate.RegionInfo{Name: region.Name, Size: region.Size,
-			Unpublished: runs, UnpublishedAge: region.UnpublishedAge})
+		memoryRegions = append(memoryRegions, vmmigrate.MemoryRegionInfo{Name: memoryRegion.Name, Size: memoryRegion.Size,
+			Unpublished: runs, UnpublishedAge: memoryRegion.UnpublishedAge})
 	}
 	return vmmigrate.Handoff{VMID: handoff.VMID, State: handoff.State, Checkpoint: handoff.Checkpoint,
 		Parent: handoff.Parent, ParentCheckpoint: handoff.ParentCheckpoint,
 		Source: platform.Address(handoff.Source), PageSize: handoff.PageSize,
-		Regions: regions, PausedAt: handoff.PausedAt}
+		MemoryRegions: memoryRegions, PausedAt: handoff.PausedAt}
 }
 
 // apiStore is the wire form of what this host's object store has served.

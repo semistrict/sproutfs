@@ -3,7 +3,7 @@
 A VM's RAM and PMEM are [volumes](volumes.md). The Go package `vmmemory` is the
 pager. It handles shared resident pages, fault resolution, private
 copy-on-write pages, scratch spill and eviction. A host runs one instance of it
-per kind of region: one for its guests' RAM and one for their PMEM disks. Each
+per kind of memory region: one for its guests' RAM and one for their PMEM disks. Each
 instance has a separate arena, spill file and page size. The independent Rust
 library in `rust/sproutfs-vm-memory` owns the mappings inside one VMM process.
 It has no Firecracker dependency. `vmmachine` supervises the process. `host`
@@ -17,7 +17,7 @@ Three parts of `vmmemory` are nested packages that only `vmmemory` can import:
 - `internal/slots` holds the arena free set and the consecutive runs of it that
   one mapping command covers.
 
-None of them uses any pager state: no host lock, no region and no page.
+None of them uses any pager state: no host lock, no memory region and no page.
 Everything else stays in `vmmemory`. The arena, the spill file, the UFFD session
 and the binding blocks all read and write the pager's state under its metadata
 lock, so they are files of one package and not separate packages.
@@ -84,7 +84,7 @@ Upstream Firecracker's userfaultfd restore copies pages into each VM's anonymous
 memory, so it cannot share a page between VMs. The integration replaces that
 path with this one.
 
-## One pager per kind of region
+## One pager per kind of memory region
 
 A pager instance is built with a fixed page size. Everything it does is counted
 in pages of that size:
@@ -95,18 +95,18 @@ in pages of that size:
   each instance converts
 - its buffers
 - the comparison a settle makes
-- the byte conversions of `RegionStats` and `Sharing`
-- the size and alignment it requires of a region
+- the byte conversions of `MemoryRegionStats` and `Sharing`
+- the size and alignment it requires of a memory region
 - the fault arithmetic of the Linux connection
 
 The page size must be one that a volume can be published in.
 `checkpoint.GeometryFor` is the only place that defines those sizes. So a pager
 and the volumes it maps always agree about what a page number means. The pager
 refuses to attach a volume published in another page size. This check also
-catches a region that reached the wrong pager of a host.
+catches a memory region that reached the wrong pager of a host.
 
 A host assembles two pagers. `vmmemory.Pagers` holds the RAM pager and the PMEM
-pager, and a region attaches to the pager of its kind. A RAM page and a PMEM
+pager, and a memory region attaches to the pager of its kind. A RAM page and a PMEM
 page can differ in size, so nothing adds their page counts together. Everything
 a host reports across the two pagers is in bytes:
 
@@ -114,18 +114,18 @@ a host reports across the two pagers is in bytes:
   deployment gave the host.
 - The sharing gauges are reported per kind under one metric name with a `kind`
   label.
-- `Host.PrivateBytes` adds up a VM's regions across both pagers.
+- `Host.PrivateBytes` adds up a VM's memory regions across both pagers.
 
 Pressure from either pager can ask for a checkpoint. That checkpoint seals the
-whole VM once, because one pause seals every region the VM maps. A VM's loss
-window is the oldest unpublished write across its regions in both pagers. If
+whole VM once, because one pause seals every memory region the VM maps. A VM's loss
+window is the oldest unpublished write across its memory regions in both pagers. If
 neither pager can admit a store, only that VM is stopped.
 
 **RAM's page is 4 KiB and PMEM's is 2 MiB**, on a real host and in the
 simulation. The page size determines the memory behind it. A 2 MiB page comes
 from the host's provisioned HugeTLB pool. A 4 KiB page comes from an ordinary
 shared memfd in the pod's own memory, which a host with swap may swap. A session
-states its region's page size and its arena's kind when it attaches. Both ends
+states its memory region's page size and its arena's kind when it attaches. Both ends
 check the pair before any guest memory exists. The two arenas of one host are
 separate memfds and never draw on the same allotment.
 
@@ -133,7 +133,7 @@ separate memfds and never draw on the same allotment.
 
 Each pager takes an arena, a dedicated scratch spill file, and explicit
 resident, logical and dirty page budgets. Logical admission bounds metadata for
-every attached region, including pages never touched. Every private page takes
+every attached memory region, including pages never touched. Every private page takes
 a spill slot before a write can resume. The spill slot covers resident and
 spilled dirty state together. The dirty budget sets the size of the spill file.
 So the file's whole extent is the pager's fixed disk cap, and a store never
@@ -142,30 +142,30 @@ permit covers one read-ahead or spill buffer. One extra permit is reserved so
 that a checkpoint's read of a sealed set makes progress while cold faults use
 all the others.
 
-`LossWindow` bounds the same private state in time. For each region, the pager
+`LossWindow` bounds the same private state in time. For each memory region, the pager
 records the age of the oldest page that no landed checkpoint covers. While that
-age, across the regions of one VM, exceeds the window, the pager admits no
+age, across the memory regions of one VM, exceeds the window, the pager admits no
 further dirty page for that VM. The store waits in the same way as a store past
 the dirty budget. The pager asks for a checkpoint of that VM through the same
 `Pressure.Checkpoint`. Zero disables the window.
 
-The window belongs to the VM and not to the region, because the checkpoint that
+The window belongs to the VM and not to the memory region, because the checkpoint that
 ends it covers the whole VM. The pager knows nothing about VMs, so it asks the
-region's owner through `Pressure.Oldest`. The age stamp moves with the pages it
+memory region's owner through `Pressure.Oldest`. The age stamp moves with the pages it
 measures:
 
 - At the seal, it moves to the checkpoint.
-- When that checkpoint is abandoned, it moves back to the region.
-- In a handoff, `Region.Handoff` reports the age and `Region.SetUnpublishedAge`
+- When that checkpoint is abandoned, it moves back to the memory region.
+- In a handoff, `MemoryRegion.Handoff` reports the age and `MemoryRegion.SetUnpublishedAge`
   applies it.
 
 So neither a failed publication nor a migration restarts the bound. If no
 checkpoint of that VM will ever be taken, the wait ends with
-`ErrWindowStalled`, in the same way as a budget stall. The region's owner then
+`ErrWindowStalled`, in the same way as a budget stall. The memory region's owner then
 stops that VM.
 
 Allocation, sharing, copy-on-write, write protection, spill, eviction, mapping
-commands and wire generations all use the instance's page size. Region
+commands and wire generations all use the instance's page size. Memory region
 addresses and lengths must be aligned to it. An instance can run any page size
 that a volume can be published in and that the transport maps. Both sets
 contain the same two sizes.
@@ -188,7 +188,7 @@ holds one private page therefore owns the whole run of 512 consecutive offsets
 where its other pages would go. So the supervisor sizes RAM's offset space as
 follows:
 
-- one such extent for each range that any admitted region may have written
+- one such extent for each range that any admitted memory region may have written
   into, which is `LogicalPages`, because a range is 512 pages and an extent is
   512 offsets
 - plus `ResidentPages` for the read-ahead runs, which take their own
@@ -239,7 +239,7 @@ which means no read-ahead and no write-ahead. A store page is the same unit as
 this pager's page. Each volume is published in its own page size, and the pager
 refuses to attach a volume whose page size differs from its own. So a sealed
 pager page is one member of a checkpoint's part. Read-ahead is one policy per
-pager: a power of two of that pager's pages, capped at 16 MiB. No region
+pager: a power of two of that pager's pages, capped at 16 MiB. No memory region
 overrides it. Population walks metadata in windows of at most 256 MiB,
 independent of pager size. The Linux transport also bounds pending faults,
 control requests and fault workers.
@@ -254,7 +254,7 @@ amount of memory in each pager:
 | bound | production value | why |
 | --- | --- | --- |
 | `ReadAheadPages` | 8 MiB of this pager's pages — four at 2 MiB, 2,048 at 4 KiB | a boot, a restore and a working set all walk memory forwards, so one fault serves what would otherwise take four. The run lands in consecutive arena slots, so one command installs it |
-| `WriteAheadPages` | the same 8 MiB of this pager's pages — four at 2 MiB, 2,048 at 4 KiB — or one page where that pager's dirty budget holds fewer than 64 such runs | write-ahead serves only fresh zeros. No other region shares a hole, so making a store's neighbours private loses no sharing at any page size. The benefit is one fault where a guest writing fresh memory forwards would otherwise take many: 80 % of the pages a 16 GiB guest's boot makes private are two contiguous runs written in order. Every page of the run holds a dirty reservation until the next checkpoint, so a pager whose budget cannot hold 64 runs uses one page |
+| `WriteAheadPages` | the same 8 MiB of this pager's pages — four at 2 MiB, 2,048 at 4 KiB — or one page where that pager's dirty budget holds fewer than 64 such runs | write-ahead serves only fresh zeros. No other memory region shares a hole, so making a store's neighbours private loses no sharing at any page size. The benefit is one fault where a guest writing fresh memory forwards would otherwise take many: 80 % of the pages a 16 GiB guest's boot makes private are two contiguous runs written in order. Every page of the run holds a dirty reservation until the next checkpoint, so a pager whose budget cannot hold 64 runs uses one page |
 | `ConcurrentIO` | four per processor, held between 16 and 256, and never more read-ahead runs than that pager's arena has room for | each permit can hold one read-ahead or spill buffer. So the value sets both the parallelism a node can use and a bound on the buffers it costs |
 | `SettleWorkers` | the node's processors, capped at 64 | a settle compares resident pages and takes no I/O permit, so it is limited by processors. The upload waits for the settle |
 | `ConnectionConfig.FaultWorkers` | two per processor, held between 8 and 64 | a fault spends most of its time in a store read. The I/O budget bounds the reads |
@@ -264,30 +264,30 @@ A starting host logs each of these values per pager, next to that pager's page
 size. So the log records what a node chose for each kind, next to the arena and
 the budgets the deployment set.
 
-Attaching a region admits its metadata and verifies writer authority before the
-region is exposed. At first, the mapping must consist only of armed
+Attaching a memory region admits its metadata and verifies writer authority before the
+memory region is exposed. At first, the mapping must consist only of armed
 missing-fault traps. A caller must not attach one writable volume to two
-regions, because the pager is the only thing that changes the volume's contents
+memory regions, because the pager is the only thing that changes the volume's contents
 while it is attached. A volume implements the backing interface directly. Its
 load and locate calls serve the handle's current view. Locate needs no I/O. A
 cold load is a range read inside the part that holds the page. The pager never
-writes to a volume. A region's dirty pages reach storage only through the
+writes to a volume. A memory region's dirty pages reach storage only through the
 checkpoint that reads its sealed set. Verify confirms that the handle still owns
 its VM. It makes nothing durable.
 
-A region can also attach through a backing placed in front of its volume.
+A memory region can also attach through a backing placed in front of its volume.
 `vmmachine.Config.Backings` names such a backing per volume, and a
 [migration](migration.md) destination binds one. Loads first ask the host that
 still holds those pages, and the volume serves everything else. The volume
-remains the region's identity: its name, its size, its writer, its page
+remains the memory region's identity: its name, its size, its writer, its page
 identities and every write. So the substitution does not change a seal, a
 checkpoint or a fence.
 
 ## Sharing by identity
 
 Resident pages are keyed by the [page identity](volumes.md#reads) that the
-volume reports for a page. Any region in the same pager whose current identity
-matches a resident page maps that page, regardless of which region loaded it. A
+volume reports for a page. Any memory region in the same pager whose current identity
+matches a resident page maps that page, regardless of which memory region loaded it. A
 fork inherits its parent's identities until it writes a page, in the same way
 that a forked process shares pages until copy-on-write. A first store allocates
 a private page. A page is named by the checkpoint that published it. So
@@ -320,7 +320,7 @@ parent's private dirty state under the name:
 Ending the seal removes the name. A published checkpoint replaces it with the
 identity the volume then reports. A retired fork point hands the page back to
 the guest as dirty state that the guest may store into in place. For that
-reason, the retire takes the page away from any region still sharing it. By
+reason, the retire takes the page away from any memory region still sharing it. By
 then, every child that inherited the page has copied, published or pulled it
 and reads it from there.
 
@@ -355,10 +355,10 @@ Their page tables are pre-installed, which avoids missing-page faults while
 those mappings remain valid. Read-ahead uses only free slots and never evicts.
 Only the faulting page may cause an eviction. Eviction can later revoke a
 mapping and require a refault. The read-ahead run is set per host, and every
-region of a host uses it.
+memory region of a host uses it.
 
 That one read asks only for the pages of the window that need bytes. It leaves
-out the pages the region already holds, through `vmmemory.SparseLoader`, which
+out the pages the memory region already holds, through `vmmemory.SparseLoader`, which
 `volume.Volume` implements. It does not split into several reads around those
 pages. A window is a run of a volume, and the volume decides how to read a run.
 The wanted pages are still grouped by the part that holds their members, with
@@ -371,9 +371,9 @@ reads. It now takes one load and three object reads. A backing that cannot be
 asked for part of a range, such as a migration destination's peer backing, is
 still read one stretch of wanted pages at a time.
 
-Before the region is exposed, attach populates the pages whose identity is
+Before the memory region is exposed, attach populates the pages whose identity is
 already resident in the same pager. It loads nothing. The Rust session serves
-mapping commands after the descriptor exchange, and only then reports the region
+mapping commands after the descriptor exchange, and only then reports the memory region
 addresses to the VMM. So eager mappings finish before VMM setup uses those
 addresses and before any vCPU runs. This applies to cold boot and to snapshot
 load. A restore still returns paused. Pages absent from the arena use the
@@ -401,13 +401,13 @@ removes. So the attach is the only time a child can map them. They take the
 budget before any other run, regardless of which run contains them.
 
 **The walk that finds those runs stops when the budget runs out.** It goes over
-the region window by window. For each window it asks the volume for the identity
+the memory region window by window. For each window it asks the volume for the identity
 of every page in it. For a 16 GiB guest at a 4 KiB page that is four million
 pages, decoded from the index's segments. A window reached with no budget left
 cannot install any run. So the populate stops there and does not read the rest
 of the page table before the guest runs. Stopping loses one thing: the record of
-which explicit zeros this region knows about. That record lets a sibling
-attachment map holes without its own metadata. If a region's first windows
+which explicit zeros this memory region knows about. That record lets a sibling
+attachment map holes without its own metadata. If a memory region's first windows
 contain no holes, that record is lost, and the sibling's first fault finds the
 holes instead.
 
@@ -422,7 +422,7 @@ of run.
 The cost of each attach is recorded, not inferred. `AttachStats` covers a
 session's whole `Connect`: descriptor exchange, admission, ATTACH, populate and
 the READY round trip. It includes the populate's commands, runs, pages and
-duration (`Region.Populated`). `vmmachine.StartPhases` reports it next to three
+duration (`MemoryRegion.Populated`). `vmmachine.StartPhases` reports it next to three
 other phases:
 
 - the VMM process's start
@@ -432,7 +432,7 @@ other phases:
 So when a restore takes seconds, the record shows which of the four phases took
 the time.
 
-When the pager refuses a region, the two halves of the failure are on opposite
+When the pager refuses a memory region, the two halves of the failure are on opposite
 sides of the socket. The VMM builds its sessions inside its own boot or load
 request. So a refusal fails that request, and the VMM knows only that the
 backing descriptor never came. The reason is on the pager's side, in a connect
@@ -443,20 +443,20 @@ it saw, because each kind points to a different end of the connection:
 - the pager closed the session before attaching
 - the pager closed it after the descriptor and before the frame
 - the pager answered with no descriptor
-- the pager attached more than the one region a session takes
+- the pager attached more than the one memory region a session takes
 - the descriptors did not fit this side's ancillary buffer
 
 A failed request to the VMM is reported together with every session's result.
 The supervisor closes the process first, which ends the listeners and every
 connect attempt. So those results are final, and joining them does not wait.
-Every step of a start that could wait is bounded. The region listeners give the
+Every step of a start that could wait is bounded. The memory region listeners give the
 VMM two minutes to connect. The wait for its API socket has the same bound,
 because a process that neither binds the socket nor exits will never finish
 starting. A start can fail after it takes its directory from the shared scratch.
 Such a start goes through Close, so the scratch does not keep counting a process
 it will never see stop.
 
-A store into a page for which this region holds no memory first reads in its
+A store into a page for which this memory region holds no memory first reads in its
 whole read-ahead run, as a read fault does. It then copies the one page the
 guest stored into. This is necessary because of how KVM behaves on x86-64. KVM
 finishes a fault that had to wait for the pager from a worker thread. That
@@ -471,7 +471,7 @@ read-only under the identity its volume gives it. So the pages the guest reads
 next are served without a fault and stay shared. Only the page the guest stored
 into becomes private. The faulting page is not mapped read-only first, because
 its copy is about to replace it. So a store still costs no revocation. The
-faulting page is also not bound to the shared page. This region holds the copy
+faulting page is also not bound to the shared page. This memory region holds the copy
 at that position. A binding to the shared page would be a second owner of that
 page's memory while the copy is made. A migration destination's backing is read
 one page at a time. Only a load can tell whether the source still holds a page,
@@ -513,7 +513,7 @@ page. A GCE fan-out of two forks spent 12,428 revocations on this, against
 15,477 write-ahead pages. That is about one per page each fork wrote, so it
 looked like a cost of the store path, but it was not. The retire now checks and
 revokes a batch's handed-back pages together, before the walk that publishes the
-rest (`Region.revokeHandedBack`).
+rest (`MemoryRegion.revokeHandedBack`).
 
 Replacement instead requires an ordering, which
 `internal/vmmemory/replacement.go` implements. A store removes its binding from
@@ -525,7 +525,7 @@ store may fail to map its run, because the client is out of mapping budget or a
 command failed. The store then revokes the run instead, because it has nothing
 to put in its place.
 
-### Keeping a region's mappings whole
+### Keeping a memory region's mappings whole
 
 Every separately mapped run of a guest's memory is a mapping in its VMM process.
 A private page written into the middle of an inherited run turns one mapping
@@ -535,7 +535,7 @@ The kernel's mapping operations slow down as the number of mappings grows. A
 fragmented range can never get a huge mapping. Three rules always apply, and the
 mapping budget backs them up.
 
-**A private page lives at its own offset.** Each 2 MiB-aligned range of a region
+**A private page lives at its own offset.** Each 2 MiB-aligned range of a memory region
 that holds a private page owns one extent of the arena's offset space. An extent
 is one range's worth of consecutive offsets. A private page of that range goes
 at the same offset within the extent as it has within the range. So private
@@ -553,7 +553,7 @@ exceptions:
 
 `Stats.PrivateExtents` is the number of ranges that own an extent.
 
-**A store closes a small gap once its region is near its mapping budget.** A
+**A store closes a small gap once its memory region is near its mapping budget.** A
 store may land within sixteen pages of a page that its range already holds. The
 store then makes the pages between them private in the same fault, with one
 mapping command, so the two runs become one. The worst case is a guest that
@@ -564,13 +564,13 @@ runs, and 1,532 of them (77 %) were sixteen pages or fewer. A gap is never
 closed across a range's boundary, because the extent belongs to the range.
 
 The rule saves mappings and costs memory. So it applies only when mappings run
-short: a region closes gaps only after its process has refused it a mapping.
+short: a memory region closes gaps only after its process has refused it a mapping.
 Before that, a scattered store gets a separate mapping. On 2026-09-23, forks of
 a seeded database updating keys at random held 4.7 GiB each with the rule always
 on. The guest's writes caused 345,000 page copies, and the rule caused
 3,040,000. Plain Firecracker's clones held 0.69 GiB. A process gets half the
 node's `vm.max_map_count`, which is 1,048,576 on a current distribution. So a
-region is near its budget only after half a million mappings.
+memory region is near its budget only after half a million mappings.
 
 **A range that is half private becomes private.** When half a range's pages are
 at their offsets in its extent, the pager copies the rest into the extent's
@@ -590,8 +590,8 @@ the pages the rules copied, separately from the pages the guest stored into.
 **The mapping budget turns the gap rule on.** The client can refuse a store's
 mapping command because of its mapping-count budget. The store then makes the
 range the guest is writing in whole, with one command, and is served again. From
-then on its region closes gaps. `Stats.MappingMerges` counts how often this
-happened. If a region keeps merging, its guest fragments memory faster than the
+then on its memory region closes gaps. `Stats.MappingMerges` counts how often this
+happened. If a memory region keeps merging, its guest fragments memory faster than the
 rules can keep it together, even near the budget.
 
 PMEM's pager does none of this, because its page is the whole range. It has one
@@ -661,49 +661,49 @@ These counters never decrease. So a host whose guests have all diverged shows
 the same values as one whose guests share everything. The checkpoint's log line
 reports the settle's count next to its dirty set, as `unchanged_pages`.
 
-`Host.Sharing` is the matching gauge, per region kind:
+`Host.Sharing` is the matching gauge, per memory region kind:
 
 - `UniqueBytes` is the host memory the arena holds. One resident page counts
-  once, however many regions map it.
-- `MappedBytes` is the sum, over regions, of the resident pages each region
-  maps. A page that three regions map counts three times.
+  once, however many memory regions map it.
+- `MappedBytes` is the sum, over memory regions, of the resident pages each memory region
+  maps. A page that three memory regions map counts three times.
 - `SavedBytes` is the difference. It is the memory this host did not have to
   provide.
 
-Every alias counts in `MappedBytes`. That includes two regions of one VM, and a
+Every alias counts in `MappedBytes`. That includes two memory regions of one VM, and a
 checkpoint's copy of a page that the guest still shares with it. A page that no
-region maps is still memory the arena holds. An example is the page a store
+memory region maps is still memory the arena holds. An example is the page a store
 copied away from. It stays in the arena until it is compared with that copy or
-inherited by the next region that names its identity. Such a page counts in
-`UniqueBytes` and in no mapping, under the kind of the region that created it.
+inherited by the next memory region that names its identity. Such a page counts in
+`UniqueBytes` and in no mapping, under the kind of the memory region that created it.
 The gauge measures only resident sharing. A fork inherits all of its parent's
 page identities. The ones that neither has faulted in are shared in the store
 and on the wire and cost this host no memory, so the gauge does not include
 them.
 
-`RegionStats` reports the same for one region:
+`MemoryRegionStats` reports the same for one memory region:
 
 - `ResidentPages`: the pages that hold host memory.
-- `PrivatePages`: the pages whose bytes belong to this region and not yet to its
+- `PrivatePages`: the pages whose bytes belong to this memory region and not yet to its
   volume, whether resident, spilled or held by a checkpoint.
-- `SharedPages`: the resident pages that at least one other region of this pager
+- `SharedPages`: the resident pages that at least one other memory region of this pager
   also maps.
 
 All three are also reported in bytes. Page counts of different geometries cannot
 be added, but bytes can.
 
-A region has a kind, RAM or PMEM, which is passed to `Attach`. Inside one pager,
+A memory region has a kind, RAM or PMEM, which is passed to `Attach`. Inside one pager,
 no fault, seal or page depends on the kind. The kind decides which of a host's
-two pagers the region attaches to. It also lets a host report whether the
+two pagers the memory region attaches to. It also lets a host report whether the
 sharing is in its guests' memory or in their disks. The caller that attaches the
-region states the kind. It is never inferred from a volume's name. A host that
-decides which pager a VM's regions would be admitted to, before a machine
+memory region states the kind. It is never inferred from a volume's name. A host that
+decides which pager a VM's memory regions would be admitted to, before a machine
 exists, states the kind itself.
 
-The pager has regions but no concept of a VM, so the host adds the per-region
+The pager has memory regions but no concept of a VM, so the host adds the per-memory-region
 numbers up per VM. `Host.PrivateBytes` in `internal/host` is one VM's private
-bytes across every region it maps. `/status`, `/metrics` and the VM listing
-report it. The host reads each region through the pager of that region's kind.
+bytes across every memory region it maps. `/status`, `/metrics` and the VM listing
+report it. The host reads each memory region through the pager of that memory region's kind.
 The Prometheus gauges are `sproutfs_pager_unique_resident_bytes`,
 `sproutfs_pager_mapped_resident_bytes` and `sproutfs_pager_shared_saved_bytes`.
 Each carries `kind="ram"` or `kind="pmem"`. Every other pager series carries the
@@ -716,11 +716,11 @@ volumes proceed concurrently. A short host lock covers capacity accounting,
 binding pointers and the shared index. No backing read, spill or mapping
 acknowledgement holds it. Each resident page has its own transition lock for
 mapping changes and reclaim. Read-ahead skips a page whose lock is busy instead
-of waiting. A region's per-page state is kept under that region's binding map
+of waiting. A memory region's per-page state is kept under that memory region's binding map
 lock. That state records whether a page is mapped, what it is dirty under and
 which checkpoint holds it. This lock is needed because only one pair of holders
 does not otherwise exclude each other: a reclaim that revokes its victim's pages
-under a page's lock, and a seal that reads those pages under the region.
+under a page's lock, and a seal that reads those pages under the memory region.
 
 Reclaim uses fault and read-ahead recency. Accesses through page tables that are
 already present do not update it. So eagerly mapped pages can be reclaimed while
@@ -730,7 +730,7 @@ slots allocated until the process exits.
 
 ## Seal, checkpoint and verification
 
-A checkpoint is the only way a region's dirty pages become durable. The pager
+A checkpoint is the only way a memory region's dirty pages become durable. The pager
 never writes to a volume, even for a guest's flush. A virtio-pmem flush is a
 FLUSH request that the device sends and holds. The guest's flush returns when
 the host answers. The host answers at once if the VM holds no unpublished disk
@@ -738,16 +738,16 @@ write older than its flush bound. Otherwise the host asks for a disk checkpoint
 outside the interval's schedule and answers once that checkpoint covers the
 write ([hosting](hosting.md#the-checkpoint-loop)).
 
-A seal also takes over the region's loss window. The age of the oldest page the
-seal freezes becomes the sealed set's age. The region's own age restarts at its
+A seal also takes over the memory region's loss window. The age of the oldest page the
+seal freezes becomes the sealed set's age. The memory region's own age restarts at its
 next store. Retiring the set as published drops its age, because the store then
-holds those bytes. Abandoning the set hands its age back to the region. A set is
-abandoned when a publication does not land, or on an unseal. The region then
+holds those bytes. Abandoning the set hands its age back to the memory region. A set is
+abandoned when a publication does not land, or on an unseal. The memory region then
 keeps the older of the returned age and the age of anything it has written
 since. A window that restarted at every failed publication would bound nothing.
 A host that cannot publish is the same host whose publications keep failing.
 
-Sealing a region revokes write access to its dirty pages and returns. It
+Sealing a memory region revokes write access to its dirty pages and returns. It
 write-protects the pages the guest already has. Nothing is copied and no data
 crosses the network. Write protection is applied in place, with one range
 write-protect per run of consecutive dirty pages. This applies regardless of the memory
@@ -757,39 +757,39 @@ keeps reading the same pages through the same page tables, and only its next
 store traps.
 
 **A seal's pause consists only of those commands.** Once a run is protected, any
-store to it traps and waits for the region. So the set is fixed at that point.
+store to it traps and waits for the memory region. So the set is fixed at that point.
 The seal's per-page work runs afterwards, as a walk, while the guest is already
-running. The walk holds the region that the seal took. For each page it:
+running. The walk holds the memory region that the seal took. For each page it:
 
 - moves the binding into the checkpoint
 - hands the checkpoint that page's reservation and the page it was copied from
 
-The region keeps its dirty set as runs for this purpose. Every transition that
+The memory region keeps its dirty set as runs for this purpose. Every transition that
 changes whether the next seal would protect a page updates the runs. So the
 pause reads O(runs), never O(pages), and takes the whole set in one step. A fault
-of that region waits for the walk. Nothing else waits for it. The checkpoint's own
+of that memory region waits for the walk. Nothing else waits for it. The checkpoint's own
 readers (the settle, the page list and the upload) run after the pause anyway,
 and they wait for the walk there. On GCE, a capture of 2,204,672 sealed RAM
 pages at a 4 KiB page paused for 2.14 s. The 2,264 protect commands took 0.18 s
 and the walk took 1.97 s. `seal_ns` and `seal_walk_ns` report the two. Only
 `seal_ns` is time during which the guest is stopped.
 
-While a seal holds the region, only a reclaim can revoke a mapping. A reclaim
+While a seal holds the memory region, only a reclaim can revoke a mapping. A reclaim
 revokes its victim's pages under that page's lock only. The seal does not walk
-the pages, so it does not hold those locks. So the region has a protection lock.
+the pages, so it does not hold those locks. So the memory region has a protection lock.
 Every revocation holds it shared, and the seal's write-protect commands hold it
 exclusively. Under this lock, every revocation has either finished, and is no
 longer in the runs the seal reads, or has not begun. Nothing that holds this lock
-then waits for the region or for a page.
+then waits for the memory region or for a page.
 
 If a seal's protection fails partway, the seal captures nothing and takes no
 page. The pager revokes the mappings of the runs that were protected. So the
 guest faults and maps them writable again, instead of resolving a store against
 a read-only mapping. The next checkpoint takes the whole dirty set.
 
-The seal waits for page-table work but never for data. A fault holds the region
+The seal waits for page-table work but never for data. A fault holds the memory region
 shared during its planning, its metadata and its page-table commands. It
-releases the region during the two steps that can be slow:
+releases the memory region during the two steps that can be slow:
 
 - the backing read: a volume load, or a migration source that keeps answering
   BUSY
@@ -797,13 +797,13 @@ releases the region during the two steps that can be slow:
   writes its bytes to the spill file
 
 A seal taken during either step does not wait for it. The window's stripe still
-owns that window for the whole fault. The stripe is taken before the region, so
-there is one lock order. The region's exclusive holders are a seal, a retire, an
+owns that window for the whole fault. The stripe is taken before the memory region, so
+there is one lock order. The memory region's exclusive holders are a seal, a retire, an
 unseal, a handoff and a detach. Only the detach waits for faults. It waits on a
 separate lock that a fault holds from start to end.
 
 So a reclaim can hold a page that the seal is about to take. The seal never
-waits for it. A reclaim is the only thing that can hold a page of the region
+waits for it. A reclaim is the only thing that can hold a page of the memory region
 being sealed. It ends with the page nonresident and the page's bytes in that
 page's own dirty reservation. So the seal joins the checkpoint's copy of the
 page to that resident page without taking its lock, and lets the reservation
@@ -819,11 +819,11 @@ the reservation moved to is then in the set. So the page's bytes reach a
 reservation in either order.
 
 Retiring a checkpoint walks a set as large as the capture's. So it walks it the
-same way the seal does: in bounded batches, releasing the region between them.
+same way the seal does: in bounded batches, releasing the memory region between them.
 A fault then waits for one batch, not for the whole walk. Each batch needs
 volume metadata: the identity the volume now gives each page, which decides
 whether the page joins the sharing index. That metadata is one lookup per
-read-ahead window, done before taking the region or any page. Only one retire or
+read-ahead window, done before taking the memory region or any page. Only one retire or
 unseal runs at a time. A page already retired is skipped, so repeating a failed
 retire finishes the remaining work.
 
@@ -843,21 +843,21 @@ at that budget. It does not fail or exceed the budget.
 
 The dirty budget belongs to the host, so the wait does too. A store waits for
 the next checkpoint that lands anywhere on the host, not only for its own
-region's checkpoint. A migration destination's read of a page that the source
-still holds waits in the same way. The load takes that page as this region's
+memory region's checkpoint. A migration destination's read of a page that the source
+still holds waits in the same way. The load takes that page as this memory region's
 dirty state. So the fault's window extents decide that it needs a reservation.
-Before it loads anything, the fault releases the region, its page and its I/O
+Before it loads anything, the fault releases the memory region, its page and its I/O
 permit, and takes a reservation through the waiting path. Read-ahead around it
 takes only free reservations. It leaves pages for which it finds none to a later
 fault.
 
 If no checkpoint is in flight, the pager asks for one instead of refusing the
-store. `Pressure` is the pair of callbacks through which the region's owner
-responds. The host offers the regions with the largest dirty sets first, because
+store. `Pressure` is the pair of callbacks through which the memory region's owner
+responds. The host offers the memory regions with the largest dirty sets first, because
 those release the most. A fault that crosses three quarters of the budget asks
 for a checkpoint before any store has to wait. So the checkpoint is already
 running when the last quarter runs out. The crossing is measured when the fault
-returns and holds no region, page or reservation. So every path that admits a
+returns and holds no memory region, page or reservation. So every path that admits a
 page counts against it:
 
 - the reservation a store waits for
@@ -865,17 +865,17 @@ page counts against it:
 - the run of reservations that write-ahead takes without waiting, which can
   cross the mark by itself
 
-A sealed region cannot take another checkpoint, so it is not offered one. It
+A sealed memory region cannot take another checkpoint, so it is not offered one. It
 answers the wait only when ending its checkpoint relieves the budget. A
 publication's end does that: it returns its reservations, and if it holds none,
-it lets the region take the checkpoint that will. A fork point's hold does
+it lets the memory region take the checkpoint that will. A fork point's hold does
 neither while the children it named are still reading it. So while a fork holds
-a region here, every other region's pressure must be relieved by a checkpoint of
-that other region.
+a memory region here, every other memory region's pressure must be relieved by a checkpoint of
+that other memory region.
 
-A store fails only when no region can be checkpointed to free the budget. It
+A store fails only when no memory region can be checkpointed to free the budget. It
 fails with `ErrDirtyStalled`, not `ErrCapacity`. The same pressure reports the
-region to its owner, so that the VM is stopped deliberately and publishes what
+memory region to its owner, so that the VM is stopped deliberately and publishes what
 it holds. A failed fault kills the VMM and loses those bytes without recording a
 reason. This whole path exists to avoid that. For the same reason, a fault has no
 separate deadline. The command timeout bounds each round trip inside it, and
@@ -885,13 +885,13 @@ outcomes. A host that stalls has a budget or an interval too small for its
 guests.
 
 The publication reads the sealed set directly from those pages.
-`Region.Checkpoint` exposes that set as `volume.DirtySource`. It provides the
+`MemoryRegion.Checkpoint` exposes that set as `volume.DirtySource`. It provides the
 pager pages the set holds, one whole pager page at a time under an I/O permit
 and that page's lock, and the retire that ends the set. A pager page is a store
 page. So each sealed page is written as one member of the checkpoint's parts, at
 the part and offset that the index records. Nothing copies those bytes into the
 volume package on the way. The guest runs throughout. A read of a set that has
-already ended fails with `ErrNotSealed`, or with the reason a detached region
+already ended fails with `ErrNotSealed`, or with the reason a detached memory region
 discarded it. It does not answer from pages that belong to the guest again.
 
 A write fault is not always a store, so a sealed page is not always dirty. On
@@ -915,14 +915,14 @@ origin. Some copies have no origin:
 - a page copied from another host's unpublished page
 - a page made from zeros
 
-A store into a page for which this region holds no memory first reads that page
+A store into a page for which this memory region holds no memory first reads that page
 in, under the identity its volume gives it. So the page it copies away from is
-one the settle can compare with, and every region that inherits that identity
+one the settle can compare with, and every memory region that inherits that identity
 maps it instead of reading it. The page a store copied from stays in the arena
 when the binding leaves it. Nothing holds it there, and the next reclaim that
 needs a slot takes it like any other clean page.
 
-`RegionCheckpoint.Settle` performs the comparison. The publication calls
+`MemoryRegionCheckpoint.Settle` performs the comparison. The publication calls
 `volume.DirtySource.Settle` once, after the pause and before it enumerates the
 pages, while the guest is running. A published identity's bytes never change.
 So comparing the sealed page with its origin, under both pages' locks, is a
@@ -944,7 +944,7 @@ nothing, that checkpoint also holds no unpublished write. So the loss window it
 took at the seal ends there.
 
 The settle revokes the mapping on purpose instead of replacing it under the
-guest. A settle runs while the guest is running. It holds neither the region nor
+guest. A settle runs while the guest is running. It holds neither the memory region nor
 the window that orders a page's mapping changes. So the only change it may make
 is one that installs no page table and wakes nothing. It used to install the
 origin in place of the copy: one command, no fence, identical bytes and a
@@ -962,13 +962,13 @@ settle undoes the copy again.
 The settle runs in parallel and then applies its decisions. Each page is
 compared on its own, under that page's lock and its origin's lock and nothing
 wider. So a settle hands its pages to `Config.SettleWorkers` workers, which
-default to the host's processors. The regions of one VM settle concurrently.
+default to the host's processors. The memory regions of one VM settle concurrently.
 The comparison changes nothing. Its decisions are applied afterwards, in page
-order and in bounded batches under the region, in the same way as a retire. This
+order and in bounded batches under the memory region, in the same way as a retire. This
 lets the revocations go as **one command per run of consecutive pages**. A
 settle at 4 KiB re-shares thousands of pages at every checkpoint. One round trip
 per page, serialized on the mapping lock, would be a stall the guest notices.
-The region is released between batches, so a fault waits for one batch and not
+The memory region is released between batches, so a fault waits for one batch and not
 for the whole walk. The settle is limited by memory bandwidth, not by the
 pager's I/O permits. It takes no permits, because it reads no disk and no store.
 The workers share only the count of unchanged pages and the set the checkpoint
@@ -998,14 +998,14 @@ retires as published:
 
 In both cases the dirty reservation is returned. The page and its sealed copy
 are retired together under the resident page they share. A sealed set whose
-checkpoint never landed is abandoned instead. `Region.Unseal` does the same.
+checkpoint never landed is abandoned instead. `MemoryRegion.Unseal` does the same.
 Pages that the guest still shares take their reservations back and are dirty
 again, so nothing is lost. Their mappings are revoked, so the next store faults
 and maps them writable again instead of trapping on the protection the seal
 left. The next checkpoint takes them.
 
-A region has at most one outstanding seal. Sealing a sealed region reports
-`ErrSealed`. Handing off a sealed region also reports `ErrSealed`, because a
+A memory region has at most one outstanding seal. Sealing a sealed memory region reports
+`ErrSealed`. Handing off a sealed memory region also reports `ErrSealed`, because a
 publication is reading its pages under a volume handle that the handoff would
 give away. A seal that fails partway captures nothing and takes no page. Its
 half-protected pages have their mappings revoked and become the guest's ordinary
@@ -1057,32 +1057,32 @@ has one RAM volume, `ram0`. The library knows nothing about guest addresses. The
 VMM places a volume's bytes in the guest's address space, as described under
 [the Firecracker build](#firecracker-build-and-process-lifecycle).
 
-`Session::connect` reserves the region's range, creates the UFFD and exchanges
+`Session::connect` reserves the memory region's range, creates the UFFD and exchanges
 descriptors. The range is reserved before the page size is known. So it is
 reserved at the largest page size this transport maps, which is aligned for both
-sizes. The attachment then states this region's page size and what its arena is
+sizes. The attachment then states this memory region's page size and what its arena is
 made of. The client checks three things:
 
 - that it maps that page size
 - that the descriptor is that kind of memory: an explicit 2 MiB HugeTLB file,
   or an ordinary shared memfd of 4 KiB pages
-- that the region's length is a nonzero multiple of the page size
+- that the memory region's length is a nonzero multiple of the page size
 
 A mismatch ends the session before any address is exposed to the embedder.
-`Session::page_size` reports the agreed page size. `Session::region` returns an
+`Session::page_size` reports the agreed page size. `Session::memoryRegion` returns an
 address descriptor, not a Rust borrow. The session owns its lifetime.
 `Session::run` services commands on a dedicated thread. The Go pager reads the
 UFFD directly. Rust does not relay fault messages.
 
 `Session::control` returns a cloneable device-side handle. Its `start_seal` asks
-the host to seal this region while the session thread keeps serving mapping
+the host to seal this memory region while the session thread keeps serving mapping
 commands. Sessions seal independently, with at most one request pending per
 session. So a coordinated capture issues all the requests and then waits.
 
 Only the host's deadline decides a seal. The host bounds the command. If it
 cannot finish a seal, it answers with a failure, which means the checkpoint did
 not happen. Every page the seal took goes back to the guest as ordinary dirty
-state. The region stays usable, and the next checkpoint takes the whole dirty
+state. The memory region stays usable, and the next checkpoint takes the whole dirty
 set. The VMM answers its capture request with that failure and keeps running.
 Its caller unseals and resumes. The client's own wait is much longer than the
 host's: five minutes, against the host's command timeout. So it is only a
@@ -1114,14 +1114,14 @@ library does the following:
 3. It replaces the live range with `mremap(MREMAP_FIXED | MREMAP_MAYMOVE)`.
 4. It acknowledges only after that syscall completes.
 
-Some runs of one batch form a single stretch of the region. When there are three
+Some runs of one batch form a single stretch of the memory region. When there are three
 or more such runs, they are built together in one reservation. The whole span
 then takes one `MADV_DONTFORK`, one `UFFDIO_REGISTER` and one
 `UFFDIO_WRITEPROTECT`, instead of one of each per run. Each run still takes its
 own `mremap`, because `mremap` moves a single mapping, and two runs of a batch
-are never one mapping. Runs that are adjacent in both the region and the arena
+are never one mapping. Runs that are adjacent in both the memory region and the arena
 have already been merged before this step. The remaining runs are adjacent only
-in the region, and the kernel keeps those separate. A batch of 64 such runs
+in the memory region, and the kernel keeps those separate. A batch of 64 such runs
 costs 136 kernel calls instead of 320. Combining the `mremap`s would require the
 wire protocol to express it, and it does not.
 
@@ -1238,11 +1238,11 @@ Earlier versions were rejected for these reasons:
   and uses to bound a MAP's arena offset, is the number of addresses. A version
   7 peer would read it as a promise of that much memory.
 - Version 7 rejected version 6 because the page size was no longer one number
-  that both ends know. ATTACH carries the page size of this session's region
+  that both ends know. ATTACH carries the page size of this session's memory region
   and the kind of memory its arena is made of. A 2 MiB page number read as a
   4 KiB page number names a different page.
 - Version 6 rejected version 5 because of two removals. A session carries one
-  region, so the `region` field was removed from the frame and the frame is 56
+  memory region, so the `memoryRegion` field was removed from the frame and the frame is 56
   bytes. HELLO carries no page size.
 - Before that, version 4 was rejected because its FLUSH request was removed,
   and SEAL took its frame kind.
@@ -1260,7 +1260,7 @@ kind, id, offset, length, backing, generation, flags
 Frames must be read and written completely; stream boundaries are not message
 boundaries. `SCM_RIGHTS` carries exactly one descriptor on HELLO and ATTACH.
 The receiver closes unexpected descriptors and rejects truncated ancillary
-data. A pager refuses a region by closing the socket instead of sending ATTACH.
+data. A pager refuses a memory region by closing the socket instead of sending ATTACH.
 The usual reason is a full logical-page cap. The client reads this as an orderly
 close and reports it as the pager closing before attaching, not as a malformed
 descriptor message. The client's report of why it could not start must name the
@@ -1269,18 +1269,18 @@ end that did not answer.
 | Kind | Value | Fields |
 | --- | --- | --- |
 | HELLO | 1 | `id` protocol version, every other field zero; carries UFFD |
-| REGION | 2 | `offset=host address`, `length=bytes`, `flags=kind` (1 PMEM, 2 RAM) |
-| ATTACH | 3 | `id` protocol version, `offset=this region's page size`, `length=the arena's offset space in bytes`, `backing=arena kind` (1 explicit 2 MiB HugeTLB, 2 ordinary shared memfd), `flags=mapping-count budget`; carries the arena memfd |
-| MAP | 4 | Command ID, region-relative offset and length, arena offset in `backing`, next generation; `flags=1` immutable and shared or `0` private and writable |
-| REVOKE | 5 | Command ID, region-relative offset and length, next generation; installs nonresident fault traps |
+| MEMORY_REGION | 2 | `offset=host address`, `length=bytes`, `flags=kind` (1 PMEM, 2 RAM) |
+| ATTACH | 3 | `id` protocol version, `offset=this memoryRegion's page size`, `length=the arena's offset space in bytes`, `backing=arena kind` (1 explicit 2 MiB HugeTLB, 2 ordinary shared memfd), `flags=mapping-count budget`; carries the arena memfd |
+| MAP | 4 | Command ID, memory-region-relative offset and length, arena offset in `backing`, next generation; `flags=1` immutable and shared or `0` private and writable |
+| REVOKE | 5 | Command ID, memory-region-relative offset and length, next generation; installs nonresident fault traps |
 | ACK | 6 | Echoes command ID and generation; `flags=0` success or a positive Linux errno |
 | STOP | 7 | Command ID; the embedder must have stopped all memory users |
-| SEAL | 8 | Client request ID; write-protects this session's region's dirty set and records it, completing in page-table time |
+| SEAL | 8 | Client request ID; write-protects this session's memory region's dirty set and records it, completing in page-table time |
 | RESULT | 9 | Answers a SEAL or a FLUSH: echoes the request ID; `flags=0` success or a positive Linux errno |
 | MAP_BATCH | 10 | `length=run count` (1–1024), followed by that many MAP or MAP_ZERO frames; one ACK for the batch |
 | READY | 11 | Ends the mandatory attach population; acknowledged before `Session::connect` returns |
 | MAP_ZERO | 12 | Explicit sparse zero range, `backing=0`, `flags=1`; installs populated anonymous shared-zero page tables under write protection |
-| FLUSH | 13 | Client request ID, every other field zero; the client's guest flushed this session's region, which must be PMEM. RESULT answers it once the host has made the flush durable, and the guest's flush returns then |
+| FLUSH | 13 | Client request ID, every other field zero; the client's guest flushed this session's memory region, which must be PMEM. RESULT answers it once the host has made the flush durable, and the guest's flush returns then |
 
 The attach READY handshake and batched mappings are mandatory. All batch ranges
 are validated before any change is made, and they must be ordered and disjoint.
@@ -1289,7 +1289,7 @@ pager installs arena page tables with ranged `UFFDIO_CONTINUE`. It retries the
 transient `EAGAIN` that a concurrent mapping change causes.
 
 Client request IDs are separate from mapping command IDs. They increase within
-each session, so requests from independent regions can arrive out of global
+each session, so requests from independent memory regions can arrive out of global
 order. The control reader dispatches requests without waiting for their work to
 finish, because a seal can itself need revoke acknowledgements. Writes send
 complete commands one at a time, including every frame of a batch.
@@ -1310,7 +1310,7 @@ When a session ends, it answers every waiting flush with EPIPE. The guest reads
 that as a failed flush and does not wait forever.
 
 The pager's control reader counts each FLUSH in `Stats.Flushes`. It passes the
-FLUSH and its region to the callback that `Host.SetFlushed` installed, together
+FLUSH and its memory region to the callback that `Host.SetFlushed` installed, together
 with the `done` function that sends its RESULT. The callback runs on a goroutine
 of the session, never on the reader. A checkpoint that the host takes for the
 flush needs the reader for its seal. The callback returns at once. The host
@@ -1354,14 +1354,14 @@ recorded as mapped. Ambiguous failures require the opposite. A command whose
 acknowledgement never arrives may have been applied, so its pages stay recorded
 as mapped. Otherwise a revocation would skip the unmapped binding and release a
 page that the guest still reads through. After a refusal, the fault fails and
-the region keeps serving. The worker queues that fault again once the pager has
+the memory region keeps serving. The worker queues that fault again once the pager has
 made some progress. Revocation frees the budget, and revocation is other work of
 this pager. The guest waits there as it waits for the dirty budget. The VM stays
 alive so that it can be checkpointed or migrated off the host.
 
 This is recoverable because of what the budget admits. Only replacements that
 install a mapping are charged against it. A revocation installs none. The range
-it replaces becomes the trap mapping that the region was attached as, and that
+it replaces becomes the trap mapping that the memory region was attached as, and that
 merges with the traps around it. So a revocation can only lower the count. It is
 admitted regardless of the budget, and so is a batch of revocations of any size.
 If a revocation were charged like a mapping, it would be refused when it
@@ -1380,22 +1380,22 @@ guest's access pattern creates.
 
 ## Idle pages
 
-When the last region that maps a published page goes away, the page still holds
+When the last memory region that maps a published page goes away, the page still holds
 the bytes its identity names. So it stays in the arena, idle, instead of being
-released. The next region that inherits the identity maps it without reading the
+released. The next memory region that inherits the identity maps it without reading the
 volume. So a seeded guest that is checkpointed and stopped leaves its memory for
 the forks of that checkpoint. A fork of a stopped template needs this. Plain
 Firecracker gets the same effect from the host's page cache. A private page is
-one region's state and is released with that region.
+one memory region's state and is released with that memory region.
 
 An idle page is memory that nothing uses. So it is the first memory given up,
 and it is never a reason to wait. An allocation that needs a slot takes the
-oldest idle page before it evicts anything a region maps. A store's write-ahead
+oldest idle page before it evicts anything a memory region maps. A store's write-ahead
 run and a load's read-ahead take only free slots, and they give up idle pages to
 free slots. Idle pages also act as the cache of the host budget, so the other
 pager and the checkpoint cache take them before they wait. A page placed at its
-own offset keeps that offset's extent while it is idle. So a region that finds
-no free extent gives up the idle pages of an extent whose region has gone.
+own offset keeps that offset's extent while it is idle. So a memory region that finds
+no free extent gives up the idle pages of an extent whose memory region has gone.
 `DropIdle` gives up all idle pages at once. `Stats.IdlePages` is the number of
 idle pages, and `Stats.IdleDrops` is the number given up.
 
@@ -1412,15 +1412,15 @@ the resident slot is kept even though its aliases were revoked, so a later fault
 can map it again. Private pages are conservatively spilled again after another
 writable residency period. No slot is reused only because a revoke was sent.
 
-Step 2 can fail because another machine has died. A region whose memory session
+Step 2 can fail because another machine has died. A memory region whose memory session
 has stopped answering cannot revoke a mapping. So this host can never reuse a
-page that such a region can reach. The revocation that discovers this makes that
-region terminal, and the page stays mapped there until the region is closed. But
+page that such a memory region can reach. The revocation that discovers this makes that
+memory region terminal, and the page stays mapped there until the memory region is closed. But
 the eviction that discovered it belongs to whichever machine needed a page. The
 children of one fork share every page they inherited. If the eviction failed
 that machine with the dead machine's error, it would end that machine too, and
 then the next machine sharing a page with it. So the eviction takes another
-victim instead. The terminal region excludes its pages from every later pass. If
+victim instead. The terminal memory region excludes its pages from every later pass. If
 the arena consists only of such pages, it reports capacity exhaustion. One
 guest's death does not spread across the host.
 
@@ -1428,16 +1428,16 @@ guest's death does not spread across the host.
 
 A capture is the checkpoint's pause. The prepare step pauses the vCPUs, drains
 device completions, saves device and register state and seals every memory
-region. It returns each region's sealed set under the name of the volume the
-region maps. The resume step restarts the vCPUs while the regions stay sealed.
+memory region. It returns each memory region's sealed set under the name of the volume the
+memory region maps. The resume step restarts the vCPUs while the memory regions stay sealed.
 The publication then writes those sealed pages with the captured VMM state. It
 retires the seals when it lands. The guest's pause consists only of the state
 capture and the seal. No data crosses the network during the pause.
 
 The pause happens under the VM's publication lock. So an explicit capture and
 the host's interval checkpoint are serialized there and do not race to seal the
-same regions. If a phase fails before the publication starts, the VM is
-released: every region is unsealed and the guest resumes.
+same memory regions. If a phase fails before the publication starts, the VM is
+released: every memory region is unsealed and the guest resumes.
 
 The caller cannot cancel any of these operations. Pause, snapshot create, resume
 and release run on a context owned by `vmmachine`, bounded by its own timeout.
@@ -1503,14 +1503,14 @@ The pager has two jobs in [live migration](migration.md): serving pages to the
 destination, and giving up the volume. Migration is post-copy only. Nothing is
 uploaded during the pause.
 
-`Region.ReadResident` copies one page for a peer. If this host does not hold the
+`MemoryRegion.ReadResident` copies one page for a peer. If this host does not hold the
 page, it says so, and the destination reads from the volume instead. It also
-reports whether the served page is this region's own state and not the volume's.
+reports whether the served page is this memory region's own state and not the volume's.
 It never loads. A page server that loaded would turn a destination's fault into
 a volume read on the source. "Held" means the page is in host memory or is
 private state of this host. "Unpublished" means the page is dirty here, so no
 checkpoint has it. `Resident` lists the pages this host holds.
-`Region.Unpublished` lists the subset that no checkpoint has. Both are
+`MemoryRegion.Unpublished` lists the subset that no checkpoint has. Both are
 snapshots. A page reclaimed before a stream asks for it is reported absent.
 
 On the destination's side of the same protocol, a load is not an install. A
@@ -1519,21 +1519,21 @@ buffer, but the pager may still not keep the page. On a full dirty budget, a
 read-ahead page is dropped so that the fault that carried it does not fail. The
 bytes are then lost, because the volume's bytes for that page are older than the
 guest's write. A backing that also implements `UnpublishedInstaller` is told,
-after the load's pages have been bound, which of them this region now holds as
+after the load's pages have been bound, which of them this memory region now holds as
 its own dirty state. Only those pages may be removed from the set that the
 destination still needs from the source. A page the pager dropped is requested
 again. A read that cannot get it fails. It does not fall back to the volume.
 
-`Region.Handoff` gives up the volume but keeps the pages. It must run after the
+`MemoryRegion.Handoff` gives up the volume but keeps the pages. It must run after the
 guest is stopped. The control record is about to be released so that another
 host can take it. So verification stops checking authority that this host no
 longer has. A seal, a population or any fault then reports `ErrHandedOff`,
 because the guest is stopped and a fault would mean it is running. Serving
-continues until `Detach` releases the pages. A sealed region cannot be handed
+continues until `Detach` releases the pages. A sealed memory region cannot be handed
 off. A publication is reading its pages under the handle that the handoff would
-give away. So the handoff reports `ErrSealed` and the region keeps its volume.
+give away. So the handoff reports `ErrSealed` and the memory region keeps its volume.
 
-The supervisor exposes this per VM. `Process.Regions` names every region by the
+The supervisor exposes this per VM. `Process.MemoryRegions` names every memory region by the
 volume it maps: `ram0`, and one per PMEM device id. The destination opens the
 same volumes under these names. `Process.Stop` is the stop phase. It pauses the
 vCPUs, drains device completions and returns the VMM state, and it leaves the VM
@@ -1578,13 +1578,13 @@ The qualification guest uses ext4 with `dax=always`.
 RAM is one volume and one session, but the guest's physical address space is
 not contiguous. Each architecture reserves holes in it for MMIO. On x86_64, the
 hole from 3 GiB to 4 GiB splits the RAM of any VM with more than 3 GiB into two
-regions. A second hole at 256 GiB splits a larger VM's RAM again. The volume
+memory regions. A second hole at 256 GiB splits a larger VM's RAM again. The volume
 does not contain the holes. The VMM maps the volume's single byte range onto the
-guest's regions in ascending guest order. So on x86_64, volume bytes
+guest's memory regions in ascending guest order. So on x86_64, volume bytes
 `[0, 3 GiB)` are guest addresses `[0, 3 GiB)`, and the rest begins at guest
 address 4 GiB. Volume offset 3 GiB + x is guest address 4 GiB + x on every path
 the volume takes: fault, seal, checkpoint, restore, fork and migration. On
-aarch64, RAM below 256 GiB is one region, and the volume is that region. The
+aarch64, RAM below 256 GiB is one memory region, and the volume is that memory region. The
 split follows Firecracker's architectural layout for the memory size. A restore
 whose snapshot records any other layout is refused. It is not read at shifted
 offsets. Only the VMM knows about the holes. The volume, the index, the pager and
@@ -1675,7 +1675,7 @@ The pager suite covers:
 - a failed spill that keeps the only current copy
 - concurrent loads racing eviction
 - kernel access as the first accessor, without synthetic prefaulting
-- tiny KVM guests using both region kinds across eviction and refault
+- tiny KVM guests using both memory region kinds across eviction and refault
 - stale, overflowing and out-of-range commands, identical retries, control loss
   and teardown
 - fragmented mappings with reported mapping counts
@@ -1711,8 +1711,8 @@ concurrent cases run under the race detector.
 
 They require the following of the settle:
 
-- A region that shares pages with a sibling takes one page writable and stores
-  nothing. The region publishes no page. The page ends up shared again, with its
+- A memory region that shares pages with a sibling takes one page writable and stores
+  nothing. The memory region publishes no page. The page ends up shared again, with its
   private bytes zero, its reservation returned and its mapping of the copy gone.
   A read of it takes one fault onto the sibling's page.
 - A page the guest really stored into is published as before.
@@ -1722,7 +1722,7 @@ They require the following of the settle:
   made from zeros, one made from the checkpoint's own held copy, one made from
   the name a fork point lent a page, and one made from a page only another host
   holds.
-- A region whose only private pages were unchanged lets a store that waits on
+- A memory region whose only private pages were unchanged lets a store that waits on
   the loss window proceed.
 - One worker and sixteen workers leave the same set.
 
@@ -1739,10 +1739,10 @@ They require the following of the page server:
 A destination's pager must hold every peer-served unpublished page as private
 dirty state and publish it in its next checkpoint. At a full dirty budget it
 must wait for a checkpoint to free space, and not fail the post-copy read.
-Finally, the tests run a region against a volume on which every call fails, as
+Finally, the tests run a memory region against a volume on which every call fails, as
 a handed-off host's volume does. Verification, listing and serving must all
 continue. A seal or a fault must report `ErrHandedOff`. Detaching must release
-every resident page, reservation and logical page the region owns.
+every resident page, reservation and logical page the memory region owns.
 
 The full-guest suite builds the feature-enabled VMM and the restrictive aarch64
 seccomp policy. It downloads a pinned official Firecracker CI kernel with a
@@ -1757,7 +1757,7 @@ then does the following:
 2. It restores a fork at the original values.
 3. It verifies isolated fork writes and shared physical pages.
 4. It replaces the fork's PMEM writer and requires the stale VMM to exit.
-5. It migrates the source away. It names both regions by their volumes and stops
+5. It migrates the source away. It names both memory regions by their volumes and stops
    the VM. It requires that the stop seals nothing and that the stopped source
    still serves the pages it lists.
 
@@ -1773,7 +1773,7 @@ then read every page of their memory and their whole root volume at the same
 time, while both are checkpointed on an interval.
 
 The page server runs at a deployment's budgets. One peer is one destination
-host, and both children are on that host, so their regions share every budget
+host, and both children are on that host, so their memory regions share every budget
 counted per peer. The destination's RAM arena is a quarter of the memory the two
 children map. So every one of those reads involves eviction, spill and refault.
 Its PMEM arena holds both roots, because also putting pressure on the disk would
@@ -1788,7 +1788,7 @@ are observations of small workloads, not throughput or latency targets. Recorded
 on 2026-09-10 on the Lima aarch64 instance:
 
 - A second machine restored from a point its sibling had already loaded, with
-  two regions of 512 pages, mapped all 1,024 pages with 2 commands. It loaded
+  two memory regions of 512 pages, mapped all 1,024 pages with 2 commands. It loaded
   nothing and took no fault.
 - The full-guest fork of a machine with 128 MiB RAM and 64 MiB PMEM mapped
   47,600 pages with 4 commands before resume. It loaded 15 pages and took 3

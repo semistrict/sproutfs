@@ -156,7 +156,7 @@ func TestResumeFailureCapturesNothingAndReleases(t *testing.T) {
 	})
 }
 
-// A checkpoint publishes the sealed pager pages of every region, and the
+// A checkpoint publishes the sealed pager pages of every memory region, and the
 // publication retires them once its checkpoint is selected: the pager is told
 // its pages are the volume's now, which is what makes them clean under their
 // new identity.
@@ -169,7 +169,7 @@ func TestCapturePublishesSealedPagesAndRetiresThem(t *testing.T) {
 		vm, want := createVM(t, manager, "vm")
 		defer closeVM(t, vm)
 
-		// One whole 2 MiB pager page of a region the pager owns. Nothing was
+		// One whole 2 MiB pager page of a memory region the pager owns. Nothing was
 		// written through the volume, so this is all the checkpoint has.
 		source := newFakeSource(2 << 20)
 		sealed := bytes.Repeat([]byte{0x5a}, 4096)
@@ -215,7 +215,7 @@ func TestCapturePublishesSealedPagesAndRetiresThem(t *testing.T) {
 }
 
 // A publication that never lands hands every sealed page back to the guest, so
-// the region's next checkpoint takes them again and nothing the guest wrote is
+// the memory region's next checkpoint takes them again and nothing the guest wrote is
 // lost.
 func TestFailedPublicationReturnsTheSealedPagesToTheGuest(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
@@ -249,7 +249,7 @@ func TestFailedPublicationReturnsTheSealedPagesToTheGuest(t *testing.T) {
 			t.Fatal("the abandoned checkpoint is readable")
 		}
 		// The guest's own volume is untouched: the sealed bytes were never the
-		// overlay's, and the region has them back.
+		// overlay's, and the memory region has them back.
 		want.check(t, vm, "the VM after a failed publication")
 	})
 }

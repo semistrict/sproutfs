@@ -80,7 +80,7 @@ const (
 // read-ahead and write-ahead runs are stated in bytes and converted here, so a
 // pager of small pages gets a run of the same size rather than the same number
 // of pages.
-func pagerConfig(config SupervisorConfig, kind vmmemory.RegionKind) vmmemory.Config {
+func pagerConfig(config SupervisorConfig, kind vmmemory.MemoryRegionKind) vmmemory.Config {
 	pageSize, arenaBytes, logical, dirty := uint64(PMEMPageSize), config.ArenaBytes.PMEM, config.LogicalPages.PMEM, config.DirtyPages.PMEM
 	if kind == vmmemory.Ram {
 		pageSize, arenaBytes, logical, dirty = ramPage(config), config.ArenaBytes.RAM, config.LogicalPages.RAM, config.DirtyPages.RAM
@@ -120,10 +120,10 @@ func pagerConfig(config SupervisorConfig, kind vmmemory.RegionKind) vmmemory.Con
 // until a page is put there.
 //
 // A pager of pages smaller than a range puts a private page at the offset it has
-// within its 2 MiB range, so every range a region may have written into owns a
+// within its 2 MiB range, so every range a memory region may have written into owns a
 // run of consecutive offsets however few of its pages are private. At 4 KiB a
 // range is 512 pages and an extent 512 offsets, so the extents come to exactly
-// the logical pages this pager admits — every page of every region it may map —
+// the logical pages this pager admits — every page of every memory region it may map —
 // and the read-ahead runs, which take consecutive offsets of their own, are
 // bounded by what the arena can hold at once. A pager whose page is the whole
 // range places nothing, so its offsets and its pages are one number.

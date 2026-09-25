@@ -53,7 +53,7 @@ func TestEmptyResidencyAttachesWithoutReadingColdMetadata(t *testing.T) {
 func TestConcurrentPopulationsOfHeldPagesDoNotDeadlock(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 2, LogicalPages: 6, DirtyPages: 2, ReadAheadPages: 1})
-		source, sm, _ := f.region(2)
+		source, sm, _ := f.memoryRegion(2)
 		access(t, source, sm, 0, false)
 		access(t, source, sm, 1, false)
 		entered := [2]chan struct{}{make(chan struct{}), make(chan struct{})}
@@ -82,7 +82,7 @@ func TestConcurrentPopulationsOfHeldPagesDoNotDeadlock(t *testing.T) {
 			f.a.mu.Unlock()
 			done := make(chan struct{})
 			result := make(chan error, 1)
-			var r *vmmemory.Region
+			var r *vmmemory.MemoryRegion
 			go func() {
 				var err error
 				r, err = f.h.Attach(ctx, ram(backing), m)
@@ -137,11 +137,11 @@ func TestConcurrentPopulationsOfHeldPagesDoNotDeadlock(t *testing.T) {
 	})
 }
 
-// carved attaches a region of pages whose identities match the sibling's
+// carved attaches a memory region of pages whose identities match the sibling's
 // everywhere but the given pages, which are this backing's own unpublished
 // state: a page the sibling cannot hold, so it breaks the sibling's residency
 // into runs of exactly the lengths the test asks for.
-func (f *fixture) carved(pages int, private ...uint64) (*vmmemory.Region, *mapping, *backing) {
+func (f *fixture) carved(pages int, private ...uint64) (*vmmemory.MemoryRegion, *mapping, *backing) {
 	f.t.Helper()
 	b := f.newBacking(pages)
 	for _, page := range private {
@@ -171,9 +171,9 @@ func pageRange(first, last uint64) []uint64 {
 	return pages
 }
 
-// holed attaches a region of a volume whose given pages are explicit zeros,
+// holed attaches a memory region of a volume whose given pages are explicit zeros,
 // with a sibling that has faulted every page of it, so the sibling holds the
-// data pages and the holes break its residency into runs. Both regions are
+// data pages and the holes break its residency into runs. Both memory regions are
 // forks of one checkpoint, so a hole is a hole in both.
 func (f *fixture) holed(pages int, holes ...uint64) (*mapping, *mapping, *backing) {
 	f.t.Helper()
@@ -257,7 +257,7 @@ func TestPopulationSpendsOneBudgetOnHolesAndResidentRunsAlike(t *testing.T) {
 func TestPopulationSkipsRunsShorterThanTheWindowTheyWouldSave(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 40, LogicalPages: 96, DirtyPages: 8, ReadAheadPages: 4})
-		source, sm, _ := f.region(32)
+		source, sm, _ := f.memoryRegion(32)
 		for page := range uint64(32) {
 			access(t, source, sm, page, false)
 		}
@@ -290,7 +290,7 @@ func TestPopulationSpendsABoundedNumberOfRunsAndLeavesTheRestToFaults(t *testing
 	synctest.Test(t, func(t *testing.T) {
 		vmmemory.SetPopulationRuns(t, 2)
 		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 40, LogicalPages: 96, DirtyPages: 8, ReadAheadPages: 4})
-		source, sm, _ := f.region(32)
+		source, sm, _ := f.memoryRegion(32)
 		for page := range uint64(32) {
 			access(t, source, sm, page, false)
 		}
@@ -392,7 +392,7 @@ func TestPopulationInstallsNoMoreRunsThanItsBudgetHoweverManyTheVolumeHas(t *tes
 			t.Fatalf("the populate installed %d mapping runs, want the 128 its budget admits", m.maps)
 		}
 		if got := m.mappedPages(); !slices.Equal(got, pageRange(0, 128)) {
-			t.Fatalf("the populate mapped %d pages ending at %d, want the first 128 of the region",
+			t.Fatalf("the populate mapped %d pages ending at %d, want the first 128 of the memory region",
 				len(got), got[len(got)-1])
 		}
 	})
@@ -445,7 +445,7 @@ func TestAForkPointsPagesTakeTheBudgetFirstAndAreBoundedByIt(t *testing.T) {
 
 // A populate whose run budget is spent stops walking. The budget bounds the
 // commands it installs, but the walk that finds them goes window by window over
-// the whole region, and every window asks the volume for the identity of every
+// the whole memory region, and every window asks the volume for the identity of every
 // page in it: for a 16 GiB guest at a 4 KiB page that is four million page
 // identities, decoded out of the index's segments, before the guest runs.
 //
@@ -503,7 +503,7 @@ func (b *delayedLocate) Locate(ctx context.Context, offset, length uint64) ([]co
 func TestStalledMetadataDoesNotDelayUnrelatedWarmAttachment(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newFixture(t, 4, 12, 4)
-		source, sm, _ := f.region(4)
+		source, sm, _ := f.memoryRegion(4)
 		for page := range uint64(4) {
 			access(t, source, sm, page, false)
 		}
@@ -515,7 +515,7 @@ func TestStalledMetadataDoesNotDelayUnrelatedWarmAttachment(t *testing.T) {
 			f.a.mappings = append(f.a.mappings, m)
 			f.a.mu.Unlock()
 			done := make(chan struct{})
-			var r *vmmemory.Region
+			var r *vmmemory.MemoryRegion
 			var err error
 			go func() { r, err = f.h.Attach(t.Context(), ram(backing), m); close(done) }()
 			t.Cleanup(func() {
@@ -555,7 +555,7 @@ func TestStalledMetadataDoesNotDelayUnrelatedWarmAttachment(t *testing.T) {
 func TestAttachmentIncludesPagesLoadedDuringMetadataLookup(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newFixture(t, 6, 9, 4)
-		source, sm, _ := f.region(4)
+		source, sm, _ := f.memoryRegion(4)
 		for page := range uint64(3) {
 			access(t, source, sm, page, false)
 		}
@@ -567,7 +567,7 @@ func TestAttachmentIncludesPagesLoadedDuringMetadataLookup(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
 		defer cancel()
 		done := make(chan struct{})
-		var r *vmmemory.Region
+		var r *vmmemory.MemoryRegion
 		var err error
 		go func() { r, err = f.h.Attach(ctx, ram(slow), m); close(done) }()
 		t.Cleanup(func() {
@@ -608,8 +608,8 @@ func TestPopulationInstallsNoMorePagesThanItsBudgetHoweverLongTheRuns(t *testing
 		const pages = 64
 		f := newConfiguredFixture(t, vmmemory.Config{PageSize: checkpoint.PageSize4KiB,
 			ResidentPages: 128, LogicalPages: 256, DirtyPages: 8, ReadAheadPages: 8})
-		// The sibling read the whole region window by window into consecutive
-		// slots, so it holds the region as one run: the populate installs the
+		// The sibling read the whole memory region window by window into consecutive
+		// slots, so it holds the memory region as one run: the populate installs the
 		// front of it, cut to the pages it can afford, in one command.
 		_, m, _ := f.holed(pages)
 		if got := m.mappedPages(); !slices.Equal(got, pageRange(0, 16)) {

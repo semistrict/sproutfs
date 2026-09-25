@@ -11,10 +11,10 @@ import (
 //
 // A seal's pause is its write-protect commands and nothing else. From the
 // moment a run is protected no store to it can land without trapping and
-// waiting for the region, so the set is fixed there; what the seal has to do per
+// waiting for the memory region, so the set is fixed there; what the seal has to do per
 // page — move the binding into the checkpoint, hand it the page's reservation
 // and the page it was copied from — is a walk that runs afterwards, with the
-// guest already running and holding the region the seal took. On GCE a capture
+// guest already running and holding the memory region the seal took. On GCE a capture
 // of 2,204,672 sealed RAM pages paused 2.14 s, of which 0.18 s was its 2,264
 // protect commands and 1.97 s was that walk.
 
@@ -23,7 +23,7 @@ import (
 func TestASealsPauseIsItsWriteProtectCommandsAndNotItsPages(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		const pages = 1024
-		f, r, m, b := placedRegion(t, 2*rangePages)
+		f, r, m, b := placedMemoryRegion(t, 2*rangePages)
 		held(t, r, m, 0, pages)
 		// Every page of this backing holds its own number plus one, so a zero is
 		// a byte none of them had and the settle finds every one of them changed.
@@ -65,12 +65,12 @@ func TestASealsPauseIsItsWriteProtectCommandsAndNotItsPages(t *testing.T) {
 }
 
 // A guest that resumes into the walk behind the pause is a guest that faults:
-// its store into a sealed page traps, waits for the region the walk holds, and
+// its store into a sealed page traps, waits for the memory region the walk holds, and
 // is served the moment the walk gives it back. Nothing of it is lost.
 func TestAStoreIntoASealedPageWaitsForTheWalkBehindThePause(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		const pages = 32
-		f, r, m, b := placedRegion(t, 2*rangePages)
+		f, r, m, b := placedMemoryRegion(t, 2*rangePages)
 		held(t, r, m, 0, pages)
 		for page := range uint64(pages) {
 			access(t, r, m, page, true)[0] = 0
@@ -86,7 +86,7 @@ func TestAStoreIntoASealedPageWaitsForTheWalkBehindThePause(t *testing.T) {
 		synctest.Wait()
 		select {
 		case err := <-stored:
-			t.Fatalf("the store into a sealed page was served while the walk held the region: %v", err)
+			t.Fatalf("the store into a sealed page was served while the walk held the memory region: %v", err)
 		default:
 		}
 		close(release)

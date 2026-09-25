@@ -59,7 +59,7 @@ func TestHugePageSpillAndWritebackPreserveEverySubpage(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newConfiguredFixture(t, vmmemory.Config{PageSize: checkpoint.PageSize2MiB,
 			ResidentPages: 1, LogicalPages: 3, DirtyPages: 3})
-		r, m, b := f.region(3)
+		r, m, b := f.memoryRegion(3)
 		want := make([][]byte, 3)
 		for page := range uint64(3) {
 			data := access(t, r, m, page, true)

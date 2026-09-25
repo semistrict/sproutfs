@@ -34,7 +34,7 @@ const (
 
 // ioctlRetrying issues one userfaultfd ioctl, retrying the transient EAGAIN the
 // kernel returns while a concurrent mapping change on the same address space is
-// in flight. Concurrent fault workers on one region make that race ordinary.
+// in flight. Concurrent fault workers on one memory region make that race ordinary.
 //
 // A failure carries the name of the ioctl. What the pager reports as the reason
 // a VM's memory ended is whatever these return, and an errno on its own is the

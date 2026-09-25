@@ -40,19 +40,19 @@ func TestSameHostForkSharesSealedPagesAndPublishesNothing(t *testing.T) {
 			t.Fatalf("the fork point holds %v unpublished, want pages 1 and 2", pages)
 		}
 		// Offering the pages is what the host taking these children in does
-		// before their regions attach: it is the whole of the local backing's
+		// before their memory regions attach: it is the whole of the local backing's
 		// attach, and it is what the first child below maps rather than reads.
 		if err := point.Share(t.Context()); err != nil {
 			t.Fatal(err)
 		}
-		fork := func(id string) (*volume.VM, *vmmemory.Region, *mapping) {
+		fork := func(id string) (*volume.VM, *vmmemory.MemoryRegion, *mapping) {
 			vm, err := c.manager.Fork(t.Context(), id, point)
 			if err != nil {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = vm.Close(context.Background()) })
-			region, mp := f.attach(vm.Volume("ram0"))
-			return vm, region, mp
+			memoryRegion, mp := f.attach(vm.Volume("ram0"))
+			return vm, memoryRegion, mp
 		}
 		atFirst, _ := f.h.Stats(t.Context())
 		_, a, am := fork("a")
@@ -68,7 +68,7 @@ func TestSameHostForkSharesSealedPagesAndPublishesNothing(t *testing.T) {
 			t.Errorf("first fork: identity hits=%d loads=%d; want 2 hits and 0 loads",
 				first.IdentityHits-atFirst.IdentityHits, first.Loads-atFirst.Loads)
 		}
-		// Attaching the sibling's region inherits the pages eagerly, by the
+		// Attaching the sibling's memory region inherits the pages eagerly, by the
 		// identity the fork point gives them: no byte is read for either page.
 		atSibling, _ := f.h.Stats(t.Context())
 		_, b, bm := fork("b")

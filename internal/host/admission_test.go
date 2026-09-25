@@ -15,10 +15,10 @@ import (
 var fillerVolumes = []volume.VolumeSpec{{Name: "ram0", Size: 63 * migrationPageSize, PageSize: migrationPageSize}}
 
 // TestReceiveRefusesAVMThePagerCannotMap. The pager's logical-page cap is
-// checked one region at a time, at attachment, which is long after the VMM
-// process exists: a VM whose regions do not all fit has some of them admitted,
+// checked one memory region at a time, at attachment, which is long after the VMM
+// process exists: a VM whose memory regions do not all fit has some of them admitted,
 // its process started and then killed, and the guest dies with nothing but a
-// socket that closed to say why. A host knows every region's size before it
+// socket that closed to say why. A host knows every memory region's size before it
 // starts anything, so a VM that cannot fit is refused there and nothing is
 // started to be killed.
 func TestReceiveRefusesAVMThePagerCannotMap(t *testing.T) {
@@ -49,9 +49,9 @@ func TestReceiveRefusesAVMThePagerCannotMap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Fill the destination's logical cap with a region of its own, so the
+	// Fill the destination's logical cap with a memory region of its own, so the
 	// received VM's eight pages are exactly what does not fit. Its pages are
-	// untouched: this is the per-region metadata cap, not the arena.
+	// untouched: this is the per-memory-region metadata cap, not the arena.
 	filler, err := h.hosts[1].Volumes().Create(t.Context(), "vm-filler", fillerVolumes)
 	if err != nil {
 		t.Fatal(err)
@@ -62,7 +62,7 @@ func TestReceiveRefusesAVMThePagerCannotMap(t *testing.T) {
 	if free := pagers[1].ram().LogicalHeadroom(); free >= 8 {
 		t.Fatalf("the destination's pager still has room for the VM: %d pages left", free)
 	}
-	// The filler is a RAM region, so it is the RAM pager's cap it fills; the
+	// The filler is a RAM memory region, so it is the RAM pager's cap it fills; the
 	// PMEM pager has its own and is untouched.
 	if free := h.hosts[1].Status().LogicalPagesFree; free.RAM != 1 || free.PMEM != 64 {
 		t.Fatalf("host status reports %d RAM and %d PMEM logical pages left, want 1 and 64", free.RAM, free.PMEM)

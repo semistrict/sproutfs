@@ -81,7 +81,7 @@ impl VmaBudget {
     /// A replacement that installs a mapping — a range mapped from the backing,
     /// a range mapped as zeros — is admitted against the limit and reserves the
     /// cost below. A revocation installs none: the range it replaces becomes
-    /// the trap mapping the region was attached as, which merges with the traps
+    /// the trap mapping the memory region was attached as, which merges with the traps
     /// around it, so it can only lower the count and is admitted whatever the
     /// budget holds. That is what makes the budget recoverable. A refused
     /// mapping sends the pager to revoke, which is the only thing that frees

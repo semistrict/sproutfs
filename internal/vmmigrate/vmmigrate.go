@@ -33,10 +33,10 @@ import (
 )
 
 var (
-	// ErrInvalid reports a missing VM, process, page source or region.
+	// ErrInvalid reports a missing VM, process, page source or memory region.
 	ErrInvalid = errors.New("vmmigrate: invalid argument")
 	// ErrStopped reports a migration that stopped the guest and could not hand
-	// the VM over. This process cannot resume it: its regions have already given
+	// the VM over. This process cannot resume it: its memory regions have already given
 	// their volumes up. The VM is reopened, here or anywhere else, from the
 	// checkpoint its control record selects.
 	ErrStopped = errors.New("vmmigrate: the guest was stopped and cannot resume")
@@ -59,30 +59,30 @@ var (
 )
 
 // Runtime is one VMM process a migration drives, and is satisfied by
-// *vmmachine.Process. Regions names every memory region by the volume it maps,
+// *vmmachine.Process. MemoryRegions names every memory region by the volume it maps,
 // which are the names the destination opens the same volumes under.
 type Runtime interface {
-	// Regions reports the memory regions by volume name.
-	Regions() map[string]*vmmemory.Region
+	// MemoryRegions reports the memory regions by volume name.
+	MemoryRegions() map[string]*vmmemory.MemoryRegion
 	// Stop pauses the vCPUs, drains device completions and returns the VMM
 	// state with the process left paused. It seals nothing and waits for
 	// nothing: the pages it leaves behind are what the destination fetches.
 	Stop(context.Context) ([]byte, error)
 	// Resume restarts the vCPUs.
 	Resume(context.Context) error
-	// Release unseals every region and resumes a process an earlier phase left
+	// Release unseals every memory region and resumes a process an earlier phase left
 	// paused, which is how an abandoned migration gives the VM back.
 	Release(context.Context) error
 	// Close ends the process.
 	Close() error
 }
 
-// RegionInfo names one region of a migrated VM and the size of the volume it
+// MemoryRegionInfo names one memory region of a migrated VM and the size of the volume it
 // maps, so the destination can bind the same layout.
-type RegionInfo struct {
+type MemoryRegionInfo struct {
 	Name string
 	Size uint64
-	// Unpublished names the pages of this region that no checkpoint of the VM has:
+	// Unpublished names the pages of this memory region that no checkpoint of the VM has:
 	// the guest's writes since the source's last checkpoint. They exist only in
 	// the source's pages, so the destination must not read them from its own
 	// volume — which reports them as the checkpoint's bytes or as holes — and must
@@ -133,8 +133,8 @@ type Handoff struct {
 	// page they are served in.
 	Source   platform.Address
 	PageSize int
-	// Regions is the memory layout, in ascending name order.
-	Regions []RegionInfo
+	// MemoryRegions is the memory layout, in ascending name order.
+	MemoryRegions []MemoryRegionInfo
 	// PausedAt is when the guest stopped, which with the destination's resume
 	// bounds the pause the migration cost.
 	PausedAt time.Time
@@ -156,8 +156,8 @@ type Options struct {
 	Clock platform.Clock
 	// Point is what a Receive of a fork's child binds to when that child's
 	// parent runs on this host: the point the parent was sealed at. The child
-	// is created from it and its regions attach over a local backing of it, so
-	// every page it inherited is present the moment the region attaches and
+	// is created from it and its memory regions attach over a local backing of it, so
+	// every page it inherited is present the moment the memory region attaches and
 	// nothing is fetched. It is nil for every other receive — a migration, or a
 	// child whose parent is elsewhere — which rebuilds the point from the
 	// checkpoint the parent pinned and pulls those pages out of its page server.
@@ -166,40 +166,40 @@ type Options struct {
 
 // Migrate runs the source's half of a live migration.
 //
-// It stops the guest, gives the regions' volumes up while keeping their pages,
-// releases the VM without publishing, and registers the regions with the page
+// It stops the guest, gives the memory regions' volumes up while keeping their pages,
+// releases the VM without publishing, and registers the memory regions with the page
 // source so the destination can fault from them. The returned handoff is what
 // the destination needs and nothing more.
 //
 // Nothing is uploaded here. The pages the guest wrote since this host's last
-// interval checkpoint are in the pages the regions keep, and the destination
+// interval checkpoint are in the pages the memory regions keep, and the destination
 // pulls them out of those pages and publishes them in its own next checkpoint.
 // The exposure is the source dying during the post-copy, which loses those
 // writes exactly as any host loss does.
 //
 // A failure before the handoff leaves the VM running on this host: nothing was
-// released. A failure after the regions gave their volumes up cannot resume the
+// released. A failure after the memory regions gave their volumes up cannot resume the
 // guest — it reports ErrStopped.
 func Migrate(ctx context.Context, vm *volume.VM, process Runtime, source *PageSource, opts Options) (Handoff, error) {
 	if vm == nil || process == nil || source == nil {
 		return Handoff{}, ErrInvalid
 	}
-	regions := process.Regions()
-	if len(regions) == 0 {
-		return Handoff{}, fmt.Errorf("%w: %s maps no region", ErrInvalid, vm.ID())
+	memoryRegions := process.MemoryRegions()
+	if len(memoryRegions) == 0 {
+		return Handoff{}, fmt.Errorf("%w: %s maps no memory region", ErrInvalid, vm.ID())
 	}
-	names := make([]string, 0, len(regions))
-	for name := range regions {
+	names := make([]string, 0, len(memoryRegions))
+	for name := range memoryRegions {
 		names = append(names, name)
 	}
 	slices.Sort(names)
-	layout := make([]RegionInfo, 0, len(names))
+	layout := make([]MemoryRegionInfo, 0, len(names))
 	for _, name := range names {
 		v := vm.Volume(name)
 		if v == nil {
-			return Handoff{}, fmt.Errorf("%w: region %q maps no volume of %s", ErrInvalid, name, vm.ID())
+			return Handoff{}, fmt.Errorf("%w: memory region %q maps no volume of %s", ErrInvalid, name, vm.ID())
 		}
-		layout = append(layout, RegionInfo{Name: name, Size: v.Size()})
+		layout = append(layout, MemoryRegionInfo{Name: name, Size: v.Size()})
 	}
 	address := opts.Source
 	if address == "" {
@@ -217,12 +217,12 @@ func Migrate(ctx context.Context, vm *volume.VM, process Runtime, source *PageSo
 	if err != nil {
 		return Handoff{}, resume(ctx, process, err)
 	}
-	// Giving the volumes up is local and comes first: from here the regions
+	// Giving the volumes up is local and comes first: from here the memory regions
 	// serve their pages without touching a VM that is about to be another
-	// host's. A region a checkpoint still has sealed keeps its volume and
+	// host's. A memory region a checkpoint still has sealed keeps its volume and
 	// reports that here, which is a migration that has not happened.
 	for index, name := range names {
-		age, err := regions[name].Handoff(ctx)
+		age, err := memoryRegions[name].Handoff(ctx)
 		if err != nil {
 			if index == 0 {
 				return Handoff{}, resume(ctx, process, err)
@@ -233,13 +233,13 @@ func Migrate(ctx context.Context, vm *volume.VM, process Runtime, source *PageSo
 		// receives from this age rather than from its own arrival, so a VM
 		// cannot outrun the bound by being handed on.
 		layout[index].UnpublishedAge = age
-		// The guest is stopped and this region's volume is given up, so its
+		// The guest is stopped and this memory region's volume is given up, so its
 		// unpublished set can no longer change: it is exactly what the
-		// destination must fetch out of these pages. A region that cannot
+		// destination must fetch out of these pages. A memory region that cannot
 		// list it stops the migration here rather than handing over a layout
 		// that names no pages to fetch, which the destination would honour by
 		// rewinding the guest to the last checkpoint.
-		unpublished, err := regions[name].Unpublished()
+		unpublished, err := memoryRegions[name].Unpublished()
 		if err != nil {
 			return Handoff{}, errors.Join(ErrStopped, err)
 		}
@@ -248,9 +248,9 @@ func Migrate(ctx context.Context, vm *volume.VM, process Runtime, source *PageSo
 	if err := vm.Handoff(ctx); err != nil {
 		return Handoff{}, errors.Join(ErrStopped, err)
 	}
-	source.Serve(vm.ID(), RegionPages(regions))
+	source.Serve(vm.ID(), MemoryRegionPages(memoryRegions))
 	return Handoff{VMID: vm.ID(), State: state, Checkpoint: selected,
-		Source: address, PageSize: source.PageSize(), Regions: layout,
+		Source: address, PageSize: source.PageSize(), MemoryRegions: layout,
 		PausedAt: paused}, nil
 }
 
@@ -258,7 +258,7 @@ func Migrate(ctx context.Context, vm *volume.VM, process Runtime, source *PageSo
 //
 // The pause already happened: point is the fork point host.Seal took, and the
 // parent has been running again since. Nothing is stopped, nothing gives its
-// volume up and nothing is published — the parent keeps its handle, its regions
+// volume up and nothing is published — the parent keeps its handle, its memory regions
 // and its pages. This only registers the pages the child must fetch and
 // describes them, which is the whole difference between a fork and a migration
 // on the wire.
@@ -284,13 +284,13 @@ func Fork(ctx context.Context, child string, point *volume.ForkPoint, source *Pa
 	}
 	parent := point.Parent()
 	names := point.Volumes()
-	layout := make([]RegionInfo, 0, len(names))
+	layout := make([]MemoryRegionInfo, 0, len(names))
 	for _, name := range names {
-		layout = append(layout, RegionInfo{Name: name, Size: point.Size(name),
+		layout = append(layout, MemoryRegionInfo{Name: name, Size: point.Size(name),
 			Unpublished: runsOf(point.Pages(name)), UnpublishedAge: point.UnpublishedAge(name)})
 	}
 	handoff := Handoff{VMID: child, State: point.State(),
-		Parent: parent.VM, ParentCheckpoint: parent.Sequence, Regions: layout,
+		Parent: parent.VM, ParentCheckpoint: parent.Sequence, MemoryRegions: layout,
 		PausedAt: platform.ClockOr(opts.Clock).Now()}
 	if source == nil {
 		return handoff, nil
@@ -317,7 +317,7 @@ func runsOf(pages []uint64) []PageRun {
 	return runs
 }
 
-// resume gives an abandoned migration's VM back: it unseals every region and
+// resume gives an abandoned migration's VM back: it unseals every memory region and
 // restarts a guest an earlier phase paused. The migration's own failure is what
 // the caller needs, so the release's failure is joined to it rather than
 // replacing it.
@@ -333,7 +333,7 @@ func resume(ctx context.Context, process Runtime, cause error) error {
 	return cause
 }
 
-// ProbeVolumeFallback marks a destination region giving up on the source host
+// ProbeVolumeFallback marks a destination memory region giving up on the source host
 // and reading the rest of its pages from its own volume. It is correct only
 // because every page no checkpoint holds is refused rather than substituted,
 // which is exactly what a run that never falls back never checks.

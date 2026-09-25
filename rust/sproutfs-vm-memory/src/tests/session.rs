@@ -100,8 +100,11 @@ fn session_drop_releases_mappings_and_closes_retained_controls() {
                 .unwrap();
             let (hello, _uffd) = Frame::receive_fd(&mut socket).unwrap();
             assert_eq!((hello.kind, hello.id), (wire::HELLO, wire::VERSION));
-            let region = Frame::read(&mut socket).unwrap();
-            assert_eq!((region.kind, region.len), (wire::REGION, PAGE_SIZE as u64));
+            let memory_region = Frame::read(&mut socket).unwrap();
+            assert_eq!(
+                (memory_region.kind, memory_region.len),
+                (wire::MEMORY_REGION, PAGE_SIZE as u64)
+            );
             Frame {
                 kind: wire::ATTACH,
                 id: wire::VERSION,
@@ -133,13 +136,13 @@ fn session_drop_releases_mappings_and_closes_retained_controls() {
         });
         let session = Session::connect(
             &path,
-            RegionSpec {
-                kind: RegionKind::Ram,
+            MemoryRegionSpec {
+                kind: MemoryRegionKind::Ram,
                 len: PAGE_SIZE,
             },
         )
         .unwrap();
-        let region = session.region();
+        let memory_region = session.memory_region();
         // Name the owned anonymous range so an unrelated allocation reusing its
         // address after drop cannot be mistaken for a leaked mapping.
         let marker = c"sproutfs-session-lifetime-test";
@@ -147,8 +150,8 @@ fn session_drop_releases_mappings_and_closes_retained_controls() {
             libc::prctl(
                 libc::PR_SET_VMA,
                 libc::PR_SET_VMA_ANON_NAME,
-                region.address,
-                region.len,
+                memory_region.address,
+                memory_region.len,
                 marker.as_ptr(),
             )
         };
@@ -183,30 +186,30 @@ fn session_drop_releases_mappings_and_closes_retained_controls() {
 }
 
 #[test]
-fn invalid_region_specs_are_rejected_before_kernel_or_socket_access() {
+fn invalid_memory_region_specs_are_rejected_before_kernel_or_socket_access() {
     let page = PAGE_SIZE;
-    let valid = RegionSpec {
-        kind: RegionKind::Ram,
+    let valid = MemoryRegionSpec {
+        kind: MemoryRegionKind::Ram,
         len: page,
     };
     for spec in [
-        RegionSpec { len: 0, ..valid },
-        RegionSpec {
+        MemoryRegionSpec { len: 0, ..valid },
+        MemoryRegionSpec {
             len: page - 1,
             ..valid
         },
-        RegionSpec {
+        MemoryRegionSpec {
             len: page + 1,
             ..valid
         },
-        RegionSpec {
-            kind: RegionKind::Pmem,
+        MemoryRegionSpec {
+            kind: MemoryRegionKind::Pmem,
             len: 1,
         },
     ] {
         let error = Session::connect("/nonexistent-sproutfs-unit-test.sock", spec)
             .err()
-            .expect("an invalid region was accepted");
+            .expect("an invalid memory region was accepted");
         assert_eq!(
             error.kind(),
             io::ErrorKind::InvalidInput,

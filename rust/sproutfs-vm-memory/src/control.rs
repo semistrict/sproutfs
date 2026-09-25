@@ -171,7 +171,7 @@ impl Control {
     }
 
     /// Asks the host to make durable a flush the guest made of this session's
-    /// region, and hands its answer to `flushed`: success once the host has
+    /// memory region, and hands its answer to `flushed`: success once the host has
     /// made it durable, or the errno it failed with. The host may take a disk
     /// checkpoint for it first, so the answer can be seconds away; this returns
     /// as soon as the request is written, and the device completes the guest's
@@ -189,15 +189,15 @@ impl Control {
             .request(wire::FLUSH, Answer::Flush(Box::new(flushed)))
     }
 
-    /// Records the host's checkpoint of this session's region without moving
+    /// Records the host's checkpoint of this session's memory region without moving
     /// its bytes, so this completes in page-table time and the embedder can
     /// resume its vCPUs at once. Stores into the checkpoint copy on write.
-    /// The region publishes nothing newer until the publication that uploads
+    /// The memory region publishes nothing newer until the publication that uploads
     /// the checkpoint retires it.
     ///
     /// Run this on a device/control thread while Session::run continues on its
     /// own thread. Issue every session's request before waiting on the handles,
-    /// so the regions seal concurrently.
+    /// so the memory regions seal concurrently.
     pub fn start_seal(&self) -> io::Result<PendingSeal> {
         let started = Instant::now();
         let (sender, receiver) = mpsc::sync_channel(1);

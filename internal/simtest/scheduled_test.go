@@ -98,14 +98,14 @@ func driveScheduledWorld(t *testing.T, runtime *sim.Runtime, scheduler *sim.Sche
 	// Deciding to ask a source for pages is the destination's own decision, not
 	// an adapter operation: a stream closed between two requests may either send
 	// the next one and have it refused on the wire or abandon it, and a pooled
-	// connection leaves nothing admitted in between. Naming the region makes the
+	// connection leaves nothing admitted in between. Naming the memory region makes the
 	// decision one the scheduler orders against the cancellation that stops it.
 	// The probes and buggified sites inside the real host, volume, checkpoint,
 	// control, pager and migration code read the runtime out of the context;
 	// without it they are no-ops.
 	ctx := vmmigrate.WithAdmission(sim.WithRuntime(t.Context(), runtime),
-		func(ctx context.Context, region string) error {
-			return runtime.Admit(sim.WithTask(ctx, "post-copy/"+region), "peer/request")
+		func(ctx context.Context, memoryRegion string) error {
+			return runtime.Admit(sim.WithTask(ctx, "post-copy/"+memoryRegion), "peer/request")
 		})
 	specs := []volume.VolumeSpec{{Name: "disk", Size: 2 * simtest.PMEMPage, PageSize: simtest.PMEMPage},
 		{Name: "ram0", Size: 3 * simtest.RAMPage, PageSize: simtest.RAMPage}}
@@ -118,7 +118,7 @@ func driveScheduledWorld(t *testing.T, runtime *sim.Runtime, scheduler *sim.Sche
 		t.Fatal(err)
 	}
 	world := simtest.MustStart(t, ctx, simtest.Config{Runtime: runtime, Topology: topology,
-		Knobs: k, Prefix: prefix, Log: t.Logf, ReverseRegions: reverse,
+		Knobs: k, Prefix: prefix, Log: t.Logf, ReverseMemoryRegions: reverse,
 		Admit: func(ctx context.Context, id string) error { return scheduler.Wait(ctx, id, 0, 0) }})
 	closed := false
 	defer func() {
@@ -366,7 +366,7 @@ func scheduledVolumeWorkload(t *testing.T, ctx context.Context, world *simtest.W
 // a handover can fail: a healthy one, one taken over a fresh checkpoint, a
 // destination that cannot read the control record, a destination that cannot
 // start the guest, and a source whose frames are held until whatever asked for
-// them gives up. A layout that would truncate a region or map beyond its volume
+// them gives up. A layout that would truncate a memory region or map beyond its volume
 // is refused before anything starts a guest.
 //
 // What the destination reads back is checked by the world itself at every hop:
@@ -460,7 +460,7 @@ func scheduledHandoverWorkload(t *testing.T, ctx context.Context, world *simtest
 	}
 }
 
-// refuseLayouts requires a control-plane layout that would truncate a region or
+// refuseLayouts requires a control-plane layout that would truncate a memory region or
 // map beyond its volume to be refused before anything starts a guest. Neither
 // request may start one, and the unchanged handoff must still be receivable
 // afterwards.
@@ -469,8 +469,8 @@ func refuseLayouts(t *testing.T, ctx context.Context, world *simtest.World,
 	t.Helper()
 	for _, delta := range []int{-simtest.PMEMPage, simtest.PMEMPage} {
 		invalid := handoff
-		invalid.Regions = slices.Clone(handoff.Regions)
-		invalid.Regions[0].Size = uint64(int64(invalid.Regions[0].Size) + int64(delta))
+		invalid.MemoryRegions = slices.Clone(handoff.MemoryRegions)
+		invalid.MemoryRegions[0].Size = uint64(int64(invalid.MemoryRegions[0].Size) + int64(delta))
 		received, err := world.Host(to).Receive(ctx, invalid)
 		if received != nil || !errors.Is(err, vmmigrate.ErrInvalid) {
 			return fmt.Errorf("receive layout delta %d: received=%v error=%w", delta, received != nil, err)

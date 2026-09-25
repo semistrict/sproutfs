@@ -9,7 +9,7 @@ import (
 	"github.com/semistrict/sproutfs/internal/vmmemory"
 )
 
-// servingFixture keeps read-ahead to one page, so what a region holds is
+// servingFixture keeps read-ahead to one page, so what a memory region holds is
 // exactly what its guest touched and a listing can be asserted page by page.
 func servingFixture(t *testing.T, resident, logical, dirty int) *fixture {
 	t.Helper()
@@ -24,7 +24,7 @@ func servingFixture(t *testing.T, resident, logical, dirty int) *fixture {
 func TestReadResidentServesHeldPagesAndNeverLoads(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := servingFixture(t, 8, 16, 8)
-		r, m, b := f.region(8)
+		r, m, b := f.memoryRegion(8)
 		access(t, r, m, 0, false)        // clean, shared under the volume's identity
 		access(t, r, m, 1, true)[0] = 71 // private, written by the guest
 		if got, err := r.Resident(); err != nil || !slices.Equal(got, []uint64{0, 1}) {
@@ -57,7 +57,7 @@ func TestReadResidentServesHeldPagesAndNeverLoads(t *testing.T) {
 			t.Fatalf("the page server read the volume %d times, want none", b.loads-loads)
 		}
 		if _, _, err := r.ReadResident(t.Context(), 8, dst); !errors.Is(err, vmmemory.ErrRange) {
-			t.Fatalf("ReadResident past the region = %v, want ErrRange", err)
+			t.Fatalf("ReadResident past the memory region = %v, want ErrRange", err)
 		}
 		if _, _, err := r.ReadResident(t.Context(), 0, dst[:pageSize-1]); !errors.Is(err, vmmemory.ErrRange) {
 			t.Fatalf("ReadResident into a short buffer = %v, want ErrRange", err)
@@ -70,7 +70,7 @@ func TestReadResidentServesHeldPagesAndNeverLoads(t *testing.T) {
 func TestReadResidentReportsAPublishedPageAsTheCheckpointsOwn(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := servingFixture(t, 8, 16, 8)
-		r, m, b := f.region(4)
+		r, m, b := f.memoryRegion(4)
 		access(t, r, m, 0, true)[0] = 71
 		dst := make([]byte, pageSize)
 		_, unpublished, err := r.ReadResident(t.Context(), 0, dst)
@@ -92,7 +92,7 @@ func TestReadResidentReportsAPublishedPageAsTheCheckpointsOwn(t *testing.T) {
 func TestReadResidentServesTheCheckpointsPageAndTheGuestsCopy(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := servingFixture(t, 8, 16, 8)
-		r, m, b := f.region(4)
+		r, m, b := f.memoryRegion(4)
 		access(t, r, m, 0, true)[0] = 60
 		access(t, r, m, 1, true)[0] = 61
 		seal(t, r)
@@ -129,30 +129,30 @@ func TestReadResidentServesTheCheckpointsPageAndTheGuestsCopy(t *testing.T) {
 }
 
 // A listing is what a migration acts on: the destination fetches the
-// unpublished pages and reads the rest from the volume. A region that cannot
+// unpublished pages and reads the rest from the volume. A memory region that cannot
 // answer must say so, because the answer it would otherwise give — this host
 // holds nothing — is the answer that sends the destination to the volume for
 // every page and rewinds the guest to the last checkpoint.
-func TestListingARegionThatCannotAnswerReportsTheFailure(t *testing.T) {
+func TestListingAMemoryRegionThatCannotAnswerReportsTheFailure(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := servingFixture(t, 8, 16, 8)
-		r, m, _ := f.region(4)
+		r, m, _ := f.memoryRegion(4)
 		access(t, r, m, 0, true)[0] = 71
 		pages, err := r.Unpublished()
 		if err != nil || !slices.Equal(pages, []uint64{0}) {
 			t.Fatalf("Unpublished lists %v, %v; want the one page the guest stored into", pages, err)
 		}
-		// A failed write protection is a region nothing can reason about any
+		// A failed write protection is a memory region nothing can reason about any
 		// more, which is exactly when what it holds must not read as nothing.
 		m.failProtect = true
 		if err := r.Seal(t.Context()); !errors.Is(err, errInjected) {
 			t.Fatalf("the seal whose protection failed = %v, want the injected failure", err)
 		}
 		if pages, err := r.Unpublished(); err == nil {
-			t.Fatalf("the unpublished set of a failed region = %v, nil; want the failure", pages)
+			t.Fatalf("the unpublished set of a failed memory region = %v, nil; want the failure", pages)
 		}
 		if pages, err := r.Resident(); err == nil {
-			t.Fatalf("the resident set of a failed region = %v, nil; want the failure", pages)
+			t.Fatalf("the resident set of a failed memory region = %v, nil; want the failure", pages)
 		}
 	})
 }
@@ -163,7 +163,7 @@ func TestListingARegionThatCannotAnswerReportsTheFailure(t *testing.T) {
 func TestReadResidentReportsAPageEvictedSinceItWasListed(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := servingFixture(t, 1, 8, 4)
-		r, m, b := f.region(2)
+		r, m, b := f.memoryRegion(2)
 		// Unrelated identities, so this volume's fault takes the only slot
 		// rather than sharing the resident page it already holds.
 		other, om := f.attach(f.newUnrelatedBacking(2))
@@ -189,13 +189,13 @@ func TestReadResidentReportsAPageEvictedSinceItWasListed(t *testing.T) {
 }
 
 // A migration's stop seals nothing: the volume is handed to another host while
-// this region still holds the guest's own dirty pages, and it keeps serving
+// this memory region still holds the guest's own dirty pages, and it keeps serving
 // them without touching that volume again. Detaching then releases everything it
 // kept.
-func TestHandedOffRegionKeepsServingItsPagesWithoutItsVolume(t *testing.T) {
+func TestHandedOffMemoryRegionKeepsServingItsPagesWithoutItsVolume(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := servingFixture(t, 8, 16, 8)
-		r, m, b := f.region(4)
+		r, m, b := f.memoryRegion(4)
 		for page := range uint64(2) {
 			access(t, r, m, page, true)[0] = byte(60 + page)
 		}
@@ -203,13 +203,13 @@ func TestHandedOffRegionKeepsServingItsPagesWithoutItsVolume(t *testing.T) {
 			t.Fatal(err)
 		}
 		// The volume handle is gone: every use of it now fails, and nothing the
-		// region still does may be a use of it.
+		// memory region still does may be a use of it.
 		b.failRead, b.failVerify = true, true
 		if err := r.Verify(t.Context()); err != nil {
 			t.Fatalf("verification used a volume this host handed off: %v", err)
 		}
 		if got, err := r.Resident(); err != nil || !slices.Equal(got, []uint64{0, 1}) {
-			t.Fatalf("a handed-off region lists %v, %v; want the pages it still holds", got, err)
+			t.Fatalf("a handed-off memory region lists %v, %v; want the pages it still holds", got, err)
 		}
 		dst := make([]byte, pageSize)
 		for page := range uint64(2) {
@@ -223,7 +223,7 @@ func TestHandedOffRegionKeepsServingItsPagesWithoutItsVolume(t *testing.T) {
 			"Fault": r.Fault(t.Context(), 3, false),
 		} {
 			if !errors.Is(err, vmmemory.ErrHandedOff) {
-				t.Fatalf("%s on a handed-off region = %v, want ErrHandedOff", name, err)
+				t.Fatalf("%s on a handed-off memory region = %v, want ErrHandedOff", name, err)
 			}
 		}
 		clear(m.pages) // the VMM process has exited
@@ -232,29 +232,29 @@ func TestHandedOffRegionKeepsServingItsPagesWithoutItsVolume(t *testing.T) {
 		}
 		s, err := f.h.Stats(t.Context())
 		if err != nil || s.ResidentPages != 0 || s.DirtyPages != 0 || s.LogicalPages != 0 {
-			t.Fatalf("detaching a handed-off region left %+v: %v", s, err)
+			t.Fatalf("detaching a handed-off memory region left %+v: %v", s, err)
 		}
 	})
 }
 
-// A region a checkpoint still has sealed is not something to hand off: that
+// A memory region a checkpoint still has sealed is not something to hand off: that
 // publication is reading its pages under a volume handle the handoff would give
-// away. The region keeps its volume and says why.
-func TestHandoffRefusesASealedRegion(t *testing.T) {
+// away. The memory region keeps its volume and says why.
+func TestHandoffRefusesASealedMemoryRegion(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := servingFixture(t, 8, 16, 8)
-		r, m, b := f.region(4)
+		r, m, b := f.memoryRegion(4)
 		access(t, r, m, 0, true)[0] = 60
 		seal(t, r)
 		if _, err := r.Handoff(t.Context()); !errors.Is(err, vmmemory.ErrSealed) {
-			t.Fatalf("Handoff of a sealed region = %v, want ErrSealed", err)
+			t.Fatalf("Handoff of a sealed memory region = %v, want ErrSealed", err)
 		}
 		if err := r.Unseal(t.Context()); err != nil {
 			t.Fatal(err)
 		}
 		f.mustCheckpoint(r, b)
 		if b.data[0] != 60 {
-			t.Fatalf("the region that kept its volume published %d, want 60", b.data[0])
+			t.Fatalf("the memory region that kept its volume published %d, want 60", b.data[0])
 		}
 		if _, err := r.Handoff(t.Context()); err != nil {
 			t.Fatal(err)

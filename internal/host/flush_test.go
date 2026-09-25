@@ -46,7 +46,7 @@ func flushHost(t *testing.T) (*hostHarness, *sim.Clock, *volume.VM, *machine) {
 // flush has the guest flush its disk and returns where the answer arrives.
 func flush(guest *machine) <-chan error {
 	answered := make(chan error, 1)
-	guest.regions["disk"].Flush(func(err error) { answered <- err })
+	guest.memoryRegions["disk"].Flush(func(err error) { answered <- err })
 	return answered
 }
 
@@ -69,7 +69,7 @@ func TestAFlushOfFreshDisksCompletesAtOnce(t *testing.T) {
 	if after := vm.Status().Checkpoint; after != before {
 		t.Fatalf("a flush of fresh disks took checkpoint %s", after)
 	}
-	if guest.regions["disk"].OldestUnpublished().IsZero() {
+	if guest.memoryRegions["disk"].OldestUnpublished().IsZero() {
 		t.Fatal("a flush of fresh disks published them")
 	}
 }
@@ -93,7 +93,7 @@ func TestAFlushOfStaleDisksWaitsForTheCheckpointItAsksFor(t *testing.T) {
 	if after := vm.Status().Checkpoint; after.Sequence <= before.Sequence {
 		t.Fatalf("a flush of stale disks was answered at checkpoint %s, the one it found", after)
 	}
-	if !guest.regions["disk"].OldestUnpublished().IsZero() {
+	if !guest.memoryRegions["disk"].OldestUnpublished().IsZero() {
 		t.Fatal("a flush was answered with the disk's write still unpublished")
 	}
 }
@@ -135,7 +135,7 @@ func TestAFlushWaitsWhileTheDisksCannotBePublished(t *testing.T) {
 func TestAFlushOfRAMIsRefused(t *testing.T) {
 	_, _, _, guest := flushHost(t)
 	answered := make(chan error, 1)
-	guest.regions["ram0"].Flush(func(err error) { answered <- err })
+	guest.memoryRegions["ram0"].Flush(func(err error) { answered <- err })
 	if err := <-answered; err == nil {
 		t.Fatal("a flush of RAM succeeded")
 	}

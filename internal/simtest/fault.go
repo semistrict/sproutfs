@@ -323,8 +323,8 @@ func (f *lostHost) Holds(_ context.Context, w *World) error {
 }
 
 // refusedStop fails a migration pause after the guest has already stopped and
-// one region has been sealed. It is the migration campaign's stop-failed: the
-// release must unseal that region and leave the guest running on the host it
+// one memory region has been sealed. It is the migration campaign's stop-failed: the
+// release must unseal that memory region and leave the guest running on the host it
 // was already on, with nothing handed over.
 //
 // It is on every VM rather than one drawn from the seed, because what it is
@@ -348,7 +348,7 @@ func (f *refusedStop) End(_ context.Context, w *World) error {
 }
 
 // Holds requires every VM to be storing again. A pause that failed owes the
-// guest its memory back: the vCPUs running, every region unsealed and every
+// guest its memory back: the vCPUs running, every memory region unsealed and every
 // page writable.
 func (f *refusedStop) Holds(_ context.Context, w *World) error {
 	var errs []error

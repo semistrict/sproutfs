@@ -15,7 +15,7 @@ func TestAMeasuringPagerCountsTheBlocksTheGuestChanged(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 8, LogicalPages: 32, DirtyPages: 8,
 			MeasureChanges: true})
-		a, am, _ := f.region(4)
+		a, am, _ := f.memoryRegion(4)
 		for page := uint64(0); page < 4; page++ {
 			access(t, a, am, page, false)
 		}
@@ -46,7 +46,7 @@ func TestAMeasuringPagerCountsTheBlocksTheGuestChanged(t *testing.T) {
 func TestAPagerThatIsNotMeasuringCountsNoBlocks(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newFixture(t, 8, 32, 8)
-		a, am, _ := f.region(4)
+		a, am, _ := f.memoryRegion(4)
 		access(t, a, am, 0, false)
 		access(t, a, am, 0, true)[0] = 99
 		if err := a.Seal(t.Context()); err != nil {

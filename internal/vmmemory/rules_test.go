@@ -13,11 +13,11 @@ import (
 // restated here so a test that moves it reads as a test that moved it.
 const gap = 16
 
-// held makes the pages [first, last) of a region resident and shared, which is
+// held makes the pages [first, last) of a memory region resident and shared, which is
 // what a guest has read and what a fork's attach populates. The rules copy only
 // pages whose bytes this host already holds, because a rule evicts for nothing
 // the guest did not write, so this is the state they act on.
-func held(t *testing.T, r *vmmemory.Region, m *mapping, first, last uint64) {
+func held(t *testing.T, r *vmmemory.MemoryRegion, m *mapping, first, last uint64) {
 	t.Helper()
 	for page := first; page < last; page++ {
 		access(t, r, m, page, false)
@@ -31,7 +31,7 @@ func held(t *testing.T, r *vmmemory.Region, m *mapping, first, last uint64) {
 // what it wrote.
 func TestAStoreNearAPrivatePageIsItsOwnMappingWhileTheProcessHasRoom(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		f, r, m, _ := placedRegion(t, 2*rangePages)
+		f, r, m, _ := placedMemoryRegion(t, 2*rangePages)
 		const first = 100
 		held(t, r, m, first, first+gap+1)
 		access(t, r, m, first, true)[0] = 7
@@ -45,14 +45,14 @@ func TestAStoreNearAPrivatePageIsItsOwnMappingWhileTheProcessHasRoom(t *testing.
 	})
 }
 
-// Once its process has refused it a mapping, a region closes gaps from then on:
+// Once its process has refused it a mapping, a memory region closes gaps from then on:
 // it is near the budget, and a store that can join its neighbour's run costs no
 // mapping at all.
-func TestARegionRefusedAMappingClosesGapsFromThenOn(t *testing.T) {
+func TestAMemoryRegionRefusedAMappingClosesGapsFromThenOn(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		// Room for the range the backstop makes whole and for the gap after it.
 		f := placedFixture(t, 4*rangePages)
-		r, m, _ := f.region(2 * rangePages)
+		r, m, _ := f.memoryRegion(2 * rangePages)
 		const first = rangePages + 100
 		held(t, r, m, 0, rangePages)
 		held(t, r, m, first, first+gap+1)
@@ -70,12 +70,12 @@ func TestARegionRefusedAMappingClosesGapsFromThenOn(t *testing.T) {
 }
 
 // A store within the gap of a page its range already holds makes the pages
-// between them private in the same fault, once the region is near its mapping
+// between them private in the same fault, once the memory region is near its mapping
 // budget: one mapping command, one run, and the pages it copied counted
 // exactly.
 func TestAStoreNearAPrivatePageClosesTheGapInOneMapping(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		f, r, m, _ := placedRegion(t, 2*rangePages)
+		f, r, m, _ := placedMemoryRegion(t, 2*rangePages)
 		r.PressMappings()
 		const first = 100
 		held(t, r, m, first, first+gap+1)
@@ -114,7 +114,7 @@ func TestAStoreNearAPrivatePageClosesTheGapInOneMapping(t *testing.T) {
 // A store past the gap is its own run: the rule is a bound and not a habit.
 func TestAStorePastTheGapIsItsOwnMapping(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		f, r, m, _ := placedRegion(t, 2*rangePages)
+		f, r, m, _ := placedMemoryRegion(t, 2*rangePages)
 		r.PressMappings()
 		const first = 100
 		held(t, r, m, first, first+gap+2)
@@ -133,7 +133,7 @@ func TestAStorePastTheGapIsItsOwnMapping(t *testing.T) {
 // range, so the pages either side of one are two runs however near they are.
 func TestAGapIsNeverClosedAcrossARangeBoundary(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		f, r, m, _ := placedRegion(t, 2*rangePages)
+		f, r, m, _ := placedMemoryRegion(t, 2*rangePages)
 		r.PressMappings()
 		held(t, r, m, rangePages-1, rangePages+4)
 		access(t, r, m, rangePages-1, true)[0] = 7
@@ -199,7 +199,7 @@ func TestARangeThatIsHalfPrivateBecomesWhole(t *testing.T) {
 // that finds it unchanged hands it back.
 func TestASettleHandsBackTheGapPagesTheGuestNeverWrote(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		f, r, m, b := placedRegion(t, 2*rangePages)
+		f, r, m, b := placedMemoryRegion(t, 2*rangePages)
 		r.PressMappings()
 		const first = 100
 		held(t, r, m, first, first+gap+1)
@@ -265,7 +265,7 @@ func TestAWholeRangeStaysWholeThroughASettle(t *testing.T) {
 func TestARefusedMappingMakesTheRangeWhole(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		const stores, stride = 8, 32
-		f, r, m, _ := placedRegion(t, 2*rangePages)
+		f, r, m, _ := placedMemoryRegion(t, 2*rangePages)
 		held(t, r, m, 0, rangePages)
 		for i := range uint64(stores) {
 			access(t, r, m, 20+stride*i, true)[0] = 7
@@ -299,7 +299,7 @@ func TestARefusedMappingMakesTheRangeWhole(t *testing.T) {
 // offset goes on holding the older, published page.
 //
 // A rule that reads such an offset as "this page is at its own offset" maps the
-// guest over the older page: the store the guest made is lost, and every region
+// guest over the older page: the store the guest made is lost, and every memory region
 // that inherited that published identity has its page written under it. So the
 // run a rule maps is the pages whose memory really is at their own offsets, and
 // nothing else.
@@ -340,7 +340,7 @@ func TestARuleNeverMapsAPageOntoAnOffsetHoldingAnotherPage(t *testing.T) {
 // would leave the pages beyond it private in the arena and still mapped to the
 // page they were copied from: the guest's next store to one of them would be
 // resolved against that older page — the copy it was given would hold nothing,
-// and a page its volume publishes would be written under every region that
+// and a page its volume publishes would be written under every memory region that
 // inherited it.
 func TestEveryPageAStoreMakesPrivateIsInTheRunItMaps(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
@@ -379,7 +379,7 @@ func TestAPagerWhosePageIsTheRangeRunsNeitherRule(t *testing.T) {
 		f := newConfiguredFixture(t, vmmemory.Config{PageSize: checkpoint.PageSize2MiB,
 			ResidentPages: 16, ArenaOffsets: 4096, LogicalPages: 32, DirtyPages: 16,
 			ReadAheadPages: 1, WriteAheadPages: 1})
-		r, m, _ := f.region(8)
+		r, m, _ := f.memoryRegion(8)
 		access(t, r, m, 1, true)[0] = 7
 		access(t, r, m, 3, true)[0] = 7
 		if got := hostStats(t, f).RuleCopies; got != 0 {

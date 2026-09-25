@@ -17,14 +17,14 @@ import (
 )
 
 const (
-	// scatterRanges is how many 2 MiB ranges of a region a guest writes into,
+	// scatterRanges is how many 2 MiB ranges of a memory region a guest writes into,
 	// which is how many extents the placement rule hands out for it.
 	scatterRanges = 8
 	// scatterGuests is how many guests write at once, which is what the fan-out
 	// the workload runs is: several children of one point, storing into their
 	// own memory on one pager and checkpointed on an interval while they do.
 	scatterGuests = 3
-	// scatterInterval is how often each guest's region is checkpointed, which is
+	// scatterInterval is how often each guest's memory region is checkpointed, which is
 	// short enough that a round of stores spans several of them.
 	scatterInterval = 15 * time.Millisecond
 	// scatterVMAs is the mapping budget each guest's client admits replacements
@@ -34,7 +34,7 @@ const (
 	scatterVMAs = 4096
 )
 
-// scatterRounds is how many times each guest writes its whole region. A run of
+// scatterRounds is how many times each guest writes its whole memory region. A run of
 // the suite takes the few that say whether the page-table work holds together
 // at all; a hunt for something rarer raises it.
 func scatterRounds(t *testing.T) int {
@@ -48,7 +48,7 @@ func scatterRounds(t *testing.T) int {
 	return 8
 }
 
-// A guest storing into scattered pages of a 4 KiB region while a checkpoint of
+// A guest storing into scattered pages of a 4 KiB memory region while a checkpoint of
 // it is taken on an interval is the whole of what the pager's page-table work
 // has to survive, and it is what the workload's fork fan-out does: every page
 // the guest writes is placed at the offset it has within its range, the rules
@@ -118,7 +118,7 @@ func TestManagedPagerScatteredStoresUnderIntervalCheckpoints(t *testing.T) {
 					return
 				case <-time.After(scatterInterval):
 				}
-				if err := checkpointRegion(t.Context(), guest, 1); err != nil {
+				if err := checkpointMemoryRegion(t.Context(), guest, 1); err != nil {
 					failures[i] = errors.Join(failures[i], err)
 					return
 				}
@@ -138,7 +138,7 @@ func TestManagedPagerScatteredStoresUnderIntervalCheckpoints(t *testing.T) {
 				// one page in four, then every page, then one in three. That is
 				// what makes a store close a gap, a range reach half its own
 				// pages, and a batch carry runs that are next to each other in
-				// the region and scattered through the arena.
+				// the memory region and scattered through the arena.
 				stride := size * (1 + round%4)
 				value := byte(1 + round)
 				// Each round starts lower than the one before it and sweeps to
@@ -181,27 +181,27 @@ func timeoutContext(t *testing.T) context.Context {
 	return ctx
 }
 
-// checkpointRegion is one interval checkpoint of one region: the seal the guest
+// checkpointMemoryRegion is one interval checkpoint of one memory region: the seal the guest
 // asks for over the control protocol, the settle behind its pause, the
 // publication of what is left, and the retirement that makes those pages clean.
-func checkpointRegion(ctx context.Context, p *nativeProcess, region int) error {
-	r := p.region(region)
+func checkpointMemoryRegion(ctx context.Context, p *nativeProcess, memoryRegion int) error {
+	r := p.memoryRegion(memoryRegion)
 	if err := r.Seal(ctx); err != nil {
 		if errors.Is(err, vmmemory.ErrSealed) {
 			return nil
 		}
-		return fmt.Errorf("sealing region %d: %w", region, err)
+		return fmt.Errorf("sealing memory region %d: %w", memoryRegion, err)
 	}
 	ckpt := r.Checkpoint()
 	if _, err := ckpt.Settle(ctx); err != nil {
-		return fmt.Errorf("settling region %d: %w", region, err)
+		return fmt.Errorf("settling memory region %d: %w", memoryRegion, err)
 	}
-	published, err := p.backing[region].publish(ctx, ckpt)
+	published, err := p.backing[memoryRegion].publish(ctx, ckpt)
 	if err != nil {
-		return fmt.Errorf("publishing region %d: %w", region, err)
+		return fmt.Errorf("publishing memory region %d: %w", memoryRegion, err)
 	}
 	if err := ckpt.Retire(ctx, published); err != nil {
-		return fmt.Errorf("retiring region %d: %w", region, err)
+		return fmt.Errorf("retiring memory region %d: %w", memoryRegion, err)
 	}
 	return nil
 }

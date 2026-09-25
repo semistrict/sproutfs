@@ -125,7 +125,7 @@ One: a VM's durable state is the one published checkpoint its control record sel
 
 Two: each page is named by the checkpoint that published it, and a fork keeps its parent's names. The store, host memory and the network share pages by name: a named page is referenced, not copied. A page that no checkpoint holds reads as zeroes.
 
-Three: a checkpoint is a pause followed by an upload, and only the pause affects latency. The pause stops the vCPUs and write-protects the dirty pages. On the interval this covers the disks only; a capture covers every region and also saves the VMM state. It takes milliseconds. The upload runs while the guest continues. A fork or migration takes the pause and uploads nothing; the pager moves the unpublished pages to the other side.
+Three: a checkpoint is a pause followed by an upload, and only the pause affects latency. The pause stops the vCPUs and write-protects the dirty pages. On the interval this covers the disks only; a capture covers every memory region and also saves the VMM state. It takes milliseconds. The upload runs while the guest continues. A fork or migration takes the pause and uploads nothing; the pager moves the unpublished pages to the other side.
 -->
 
 ---
@@ -235,7 +235,7 @@ clicks: 7
 </div>
 
 <!--
-The pause stops the vCPUs and write-protects the dirty pages in place, for each region being checkpointed. A region is one volume mapped into one VMM process. The interval covers the disks; a capture covers every region and also saves the VMM state. No data is copied. The sealed pages belong to the checkpoint while the guest keeps running.
+The pause stops the vCPUs and write-protects the dirty pages in place, for each memory region being checkpointed. A memory region is one volume mapped into one VMM process. The interval covers the disks; a capture covers every memory region and also saves the VMM state. No data is copied. The sealed pages belong to the checkpoint while the guest keeps running.
 
 If the guest stores to a sealed page, the pager copies that page to a new private page, which counts against the dirty budget. The dirty budget limits how much unpublished data a host holds. The checkpoint keeps reading the sealed original.
 
@@ -415,7 +415,7 @@ Six: the same pager runs in the simulation on a simulated arena, disk and clock.
 
 **faults** — userfaultfd; copy-on-write; read-ahead; eviction
 
-**region** — one volume in one VMM; loads from the volume or a **backing**
+**memory region** — one volume in one VMM; loads from the volume or a **backing**
 
 </div>
 <div class="space-y-5">
@@ -432,7 +432,7 @@ Six: the same pager runs in the simulation on a simulated arena, disk and clock.
 <!--
 internal/vmmemory manages the host's guest memory. The arena is a fixed-size, sealed HugeTLB memfd with 2 MiB slots. There are explicit budgets for resident, logical and dirty pages; the dirty budget sizes the spill file, which is the pager's total disk allowance. Faults are resolved over userfaultfd, with private copy-on-write, eviction, read-ahead and write-ahead.
 
-A region is one volume mapped into one VMM process. It loads pages from the volume, or from a backing placed in front of it. A migration destination uses a backing to read from its source.
+A memory region is one volume mapped into one VMM process. It loads pages from the volume, or from a backing placed in front of it. A migration destination uses a backing to read from its source.
 
 The Rust library manages the mappings inside the VMM process. It does not depend on Firecracker; the Firecracker fork maps guest memory through it.
 
@@ -541,7 +541,7 @@ clicks: 7
 # The handoff
 
 ```text
-Handoff { VMID, Sequence, VMMState, Regions[] (unpublished runs, age), PageServer }
+Handoff { VMID, Sequence, VMMState, MemoryRegions[] (unpublished runs, age), PageServer }
 ```
 
 <v-clicks>
@@ -558,7 +558,7 @@ Handoff { VMID, Sequence, VMMState, Regions[] (unpublished runs, age), PageServe
 </v-clicks>
 
 <!--
-A handoff is plain data: the VM and the sequence its record selected when the source released it; the VMM state from the pause; for each region, its name, its size, the runs of pages that no checkpoint has, and the age of the oldest of them; and the address the source serves them from.
+A handoff is plain data: the VM and the sequence its record selected when the source released it; the VMM state from the pause; for each memory region, its name, its size, the runs of pages that no checkpoint has, and the age of the oldest of them; and the address the source serves them from.
 
 A migration hands off a VM the source has released. A fork hands off a child while the parent keeps running. The data is the same, and the destination uses one receive path for both.
 

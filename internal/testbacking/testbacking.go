@@ -1,5 +1,5 @@
 // Package testbacking wraps a volume so a simulated run decides the order in
-// which regions reach it. A pager's regions fault concurrently and their
+// which memory regions reach it. A pager's memory regions fault concurrently and their
 // volumes' loads complete out of order, so a test that must replay the same
 // interleaving twice has to name the caller of every load rather than let I/O
 // completion order stand in for it. Every harness that drives a pager under
@@ -23,7 +23,7 @@ const (
 
 // Admitting forwards a vmmemory.Backing's calls through the simulated
 // runtime's admission under one task name, so the scheduler orders this
-// region's work against every other task's.
+// memory region's work against every other task's.
 type Admitting struct {
 	vmmemory.Backing
 	runtime *sim.Runtime
@@ -36,7 +36,7 @@ type Admitting struct {
 
 // New wraps backing and reports the value to attach beside the wrapper itself,
 // which is where Admitted is set. The task name must be unique among the tasks
-// that run concurrently with this one, which for a pager's regions means the VM
+// that run concurrently with this one, which for a pager's memory regions means the VM
 // and the volume together.
 //
 // The two results differ because a pager reads what a backing can do from the
@@ -66,7 +66,7 @@ type peerAdmitting struct{ *Admitting }
 type sparseAdmitting struct{ *Admitting }
 
 // LoadPages forwards the wrapped backing's masked window read, so a simulated
-// region's fault costs its volume what a real one's does.
+// memory region's fault costs its volume what a real one's does.
 func (b sparseAdmitting) LoadPages(ctx context.Context, offset uint64, dst []byte, wanted []bool) error {
 	ctx, err := b.admit(ctx, Load)
 	if err != nil {
@@ -114,7 +114,7 @@ func (b peerAdmitting) LoadUnpublished(ctx context.Context, offset uint64, dst [
 }
 
 // InstalledUnpublished forwards the pager's report of which of those pages the
-// region went on to hold. It is admitted through nothing: it moves no bytes and
+// memory region went on to hold. It is admitted through nothing: it moves no bytes and
 // takes no lock, so there is no ordering here for a run to decide.
 func (b peerAdmitting) InstalledUnpublished(offset uint64, installed []bool) {
 	if held, ok := b.Backing.(vmmemory.UnpublishedInstaller); ok {

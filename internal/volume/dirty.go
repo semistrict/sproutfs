@@ -11,7 +11,7 @@ import (
 // DirtySource is one volume's pager state at a checkpoint: the pager pages the
 // pager holds privately when the guest is sealed, the bytes of each, and what
 // becomes of them when the publication ends. It is satisfied by
-// *vmmemory.RegionCheckpoint.
+// *vmmemory.MemoryRegionCheckpoint.
 //
 // A checkpoint given sources publishes their pages alongside its own overlay.
 // Nothing copies those bytes into this package on the way: the upload reads the

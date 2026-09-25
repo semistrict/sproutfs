@@ -28,7 +28,7 @@ func commands(m *mapping, action func()) (maps, revokes int) {
 // one command, and nothing is taken away.
 func TestAStoreIntoAMappedSharedPageIsOneMappingAndNoRevocation(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		_, r, m, _ := placedRegion(t, 2*rangePages)
+		_, r, m, _ := placedMemoryRegion(t, 2*rangePages)
 		const page = 100
 		held(t, r, m, page, page+1)
 		maps, revokes := commands(m, func() { access(t, r, m, page, true)[0] = 7 })
@@ -46,7 +46,7 @@ func TestAStoreIntoAMappedSharedPageIsOneMappingAndNoRevocation(t *testing.T) {
 // the same command: the run is one MAP, and no page of it is taken away first.
 func TestAStoreThatClosesAGapIsOneMappingAndNoRevocation(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		_, r, m, _ := placedRegion(t, 2*rangePages)
+		_, r, m, _ := placedMemoryRegion(t, 2*rangePages)
 		r.PressMappings()
 		const first = 100
 		held(t, r, m, first, first+gap+1)
@@ -96,7 +96,7 @@ func TestAStoreThatFillsARangeIsOneMappingAndNoRevocation(t *testing.T) {
 func TestAnIntervalCheckpointIsOneProtectPerRunAndNoRevocation(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		const pages = 64
-		f, r, m, b := placedRegion(t, 2*rangePages)
+		f, r, m, b := placedMemoryRegion(t, 2*rangePages)
 		held(t, r, m, 0, pages)
 		// Every page of this backing holds its own number plus one, so a zero is
 		// a byte none of them had: the settle finds every one of them changed.

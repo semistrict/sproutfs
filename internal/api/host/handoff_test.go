@@ -17,7 +17,7 @@ func TestAHandoffCarriesTheUnpublishedAgeAcrossTheWire(t *testing.T) {
 	handoff := hostapi.Handoff{
 		VMID: "vm-1", State: []byte("vmm-state"), Checkpoint: 7,
 		Source: "10.0.0.1:9000", PageSize: 2 << 20,
-		Regions: []hostapi.HandoffRegion{{
+		MemoryRegions: []hostapi.HandoffMemoryRegion{{
 			Name: "ram0", Size: 8 << 20,
 			Unpublished:    []hostapi.HandoffPageRun{{First: 2, Count: 3}},
 			UnpublishedAge: 90 * time.Second,
@@ -32,19 +32,19 @@ func TestAHandoffCarriesTheUnpublishedAgeAcrossTheWire(t *testing.T) {
 	if err := json.Unmarshal(encoded, &read); err != nil {
 		t.Fatal(err)
 	}
-	if len(read.Regions) != 1 {
-		t.Fatalf("the handoff read back %d regions, want one", len(read.Regions))
+	if len(read.MemoryRegions) != 1 {
+		t.Fatalf("the handoff read back %d memory regions, want one", len(read.MemoryRegions))
 	}
-	if got := read.Regions[0].UnpublishedAge; got != 90*time.Second {
-		t.Fatalf("the region read back an unpublished age of %s, want 90s", got)
+	if got := read.MemoryRegions[0].UnpublishedAge; got != 90*time.Second {
+		t.Fatalf("the memory region read back an unpublished age of %s, want 90s", got)
 	}
 }
 
-// A region holding nothing unpublished carries no age at all, so a destination
+// A memory region holding nothing unpublished carries no age at all, so a destination
 // reading an older source's handoff dates nothing and starts the window at its
 // own first store.
 func TestAHandoffOmitsAnUnpublishedAgeOfZero(t *testing.T) {
-	encoded, err := json.Marshal(hostapi.HandoffRegion{Name: "ram0", Size: 8 << 20})
+	encoded, err := json.Marshal(hostapi.HandoffMemoryRegion{Name: "ram0", Size: 8 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,6 +53,6 @@ func TestAHandoffOmitsAnUnpublishedAgeOfZero(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, present := fields["UnpublishedAge"]; present {
-		t.Fatalf("a region with nothing unpublished encoded an age: %s", encoded)
+		t.Fatalf("a memory region with nothing unpublished encoded an age: %s", encoded)
 	}
 }

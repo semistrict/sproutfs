@@ -74,10 +74,10 @@ func readAheadContents(dst []byte) {
 // coldRun publishes one 2 MiB run of 4 KiB RAM pages from one host, takes the
 // VM over on a second whose page cache has read none of it, and attaches its
 // memory to a RAM pager whose read-ahead run is the whole of it. It reports the
-// object reads that host makes, its pagers, the mapping the region installs
-// into, the region and the bytes that were published, with the read count reset
+// object reads that host makes, its pagers, the mapping the memory region installs
+// into, the memory region and the bytes that were published, with the read count reset
 // to the moment before the first fault.
-func coldRun(t *testing.T) (*countedObjects, *hostPagers, *pageMapping, *vmmemory.Region, []byte) {
+func coldRun(t *testing.T) (*countedObjects, *hostPagers, *pageMapping, *vmmemory.MemoryRegion, []byte) {
 	t.Helper()
 	h := newSizedHostHarness(t, 2)
 	counted := &countedObjects{ObjectStore: h.configs[1].ObjectStore}
@@ -119,25 +119,25 @@ func coldRun(t *testing.T) (*countedObjects, *hostPagers, *pageMapping, *vmmemor
 		}
 	})
 	mapping := newPageMapping(pagers.arenas[vmmemory.Ram])
-	region, err := pagers.pagers.For(vmmemory.Ram).Attach(t.Context(),
-		vmmemory.RegionBacking{Kind: vmmemory.Ram, Backing: opened.Volume("ram0")}, mapping)
+	memoryRegion, err := pagers.pagers.For(vmmemory.Ram).Attach(t.Context(),
+		vmmemory.MemoryRegionBacking{Kind: vmmemory.Ram, Backing: opened.Volume("ram0")}, mapping)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if err := region.Detach(context.Background()); err != nil {
+		if err := memoryRegion.Detach(context.Background()); err != nil {
 			t.Error(err)
 		}
 	})
 	counted.reset()
-	return counted, pagers, mapping, region, want
+	return counted, pagers, mapping, memoryRegion, want
 }
 
 // One cold read-ahead run of 512 RAM pages costs two object-store requests: the
 // page table segment that locates them, and the one extent their members lie in.
 func TestAColdReadAheadRunOfRAMPagesIsTwoRequests(t *testing.T) {
-	counted, pagers, mapping, region, want := coldRun(t)
-	if err := region.Fault(t.Context(), 0, false); err != nil {
+	counted, pagers, mapping, memoryRegion, want := coldRun(t)
+	if err := memoryRegion.Fault(t.Context(), 0, false); err != nil {
 		t.Fatal(err)
 	}
 	if gets := counted.count(); gets != 2 {
@@ -174,13 +174,13 @@ func TestAColdReadAheadRunOfRAMPagesIsTwoRequests(t *testing.T) {
 // stored into is private, and that page is never mapped read-only first, so a
 // store still costs no revocation.
 func TestAColdStoreBringsInTheRunAndCopiesOnePage(t *testing.T) {
-	counted, pagers, mapping, region, want := coldRun(t)
+	counted, pagers, mapping, memoryRegion, want := coldRun(t)
 	ram := pagers.ram()
 	before, err := ram.Stats(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := region.Fault(t.Context(), 0, true); err != nil {
+	if err := memoryRegion.Fault(t.Context(), 0, true); err != nil {
 		t.Fatal(err)
 	}
 	after, err := ram.Stats(t.Context())

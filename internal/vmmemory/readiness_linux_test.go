@@ -37,7 +37,7 @@ type pipeSession struct {
 
 // A pipe injects complete UFFD events; the peer only acknowledges control
 // messages. No memory is actually mapped, and fault backing remains stalled.
-func pipeConnection(t testing.TB, kind vmmemory.RegionKind, backing vmmemory.Backing) pipeSession {
+func pipeConnection(t testing.TB, kind vmmemory.MemoryRegionKind, backing vmmemory.Backing) pipeSession {
 	t.Helper()
 	a, err := vmmemory.NewLinuxArena(1, hugePageSize)
 	if err != nil {
@@ -81,7 +81,7 @@ func pipeConnection(t testing.TB, kind vmmemory.RegionKind, backing vmmemory.Bac
 	if err := vmwire.SendFD(client, vmwire.Frame{Kind: vmwire.Hello, ID: vmwire.Version}, r); err != nil {
 		t.Fatal(err)
 	}
-	if err := vmwire.Write(client, vmwire.Frame{Kind: vmwire.Region, Flags: uint64(kind), Length: backing.Size(), Offset: 2 << 20}); err != nil {
+	if err := vmwire.Write(client, vmwire.Frame{Kind: vmwire.MemoryRegion, Flags: uint64(kind), Length: backing.Size(), Offset: 2 << 20}); err != nil {
 		t.Fatal(err)
 	}
 	peerDone := make(chan struct{})
@@ -115,7 +115,7 @@ func pipeConnection(t testing.TB, kind vmmemory.RegionKind, backing vmmemory.Bac
 		}
 	}()
 	ctx, cancel := context.WithCancelCause(t.Context())
-	c, err := vmmemory.Connect(ctx, h, server, vmmemory.RegionBacking{Kind: kind, Backing: backing}, vmmemory.ConnectionConfig{QueuePages: 1, FaultWorkers: 1, CommandTimeout: time.Minute, VerifyInterval: time.Hour})
+	c, err := vmmemory.Connect(ctx, h, server, vmmemory.MemoryRegionBacking{Kind: kind, Backing: backing}, vmmemory.ConnectionConfig{QueuePages: 1, FaultWorkers: 1, CommandTimeout: time.Minute, VerifyInterval: time.Hour})
 	if err != nil {
 		cancel(err)
 		t.Fatal(err)

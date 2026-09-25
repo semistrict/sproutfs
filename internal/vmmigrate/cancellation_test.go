@@ -118,7 +118,7 @@ func TestAStoppedStreamIsNotALostPage(t *testing.T) {
 // holds before it streams anything in behind the guest, and the caller that
 // asks is the stream — which the destination stops itself, cancelling with a
 // cause of its own. That cancellation says nothing about the source: giving it
-// up there sends the region to a volume that does not hold the pages no
+// up there sends the memory region to a volume that does not hold the pages no
 // checkpoint has, so every later fault on one of them fails while the source is
 // still there and still serving.
 func TestACancelledListingIsNotAFallback(t *testing.T) {

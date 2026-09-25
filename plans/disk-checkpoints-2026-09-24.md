@@ -8,20 +8,20 @@ agent recovers its in-memory state from it.
 ## What changes
 
 1. **The interval checkpoints disks only.** A checkpoint of the interval pauses
-   the vCPUs, seals the regions of the VM's disks (PMEM) and nothing else,
+   the vCPUs, seals the memory regions of the VM's disks (PMEM) and nothing else,
    resumes, and publishes those pages with no VMM state. RAM is not sealed and
    not uploaded. The published root keeps RAM's pages as the last checkpoint
    that had them left them, so nothing reclaims objects a resident page still
    names.
 2. **RAM is uploaded only on request.** An explicit capture (the host API's
-   checkpoint, and a stop that asks to suspend) seals every region and captures
+   checkpoint, and a stop that asks to suspend) seals every memory region and captures
    the VMM state, as every capture does today. A plain stop publishes disks
    only.
 3. **A checkpoint without VMM state is a cold boot.** Opening one discards RAM
    and boots the kernel over the disks, which is a power cut at that checkpoint:
    the guest's filesystem recovers what its journal recovers. After a host
    loss a VM therefore cold boots from its latest disk checkpoint.
-4. **RAM is outside durability.** RAM regions leave the loss window and never
+4. **RAM is outside durability.** RAM memory regions leave the loss window and never
    ask for a checkpoint under dirty pressure, since no disk checkpoint relieves
    them. A RAM pager's dirty budget has to hold every private RAM page, and a
    store past it stops the VM as a full budget does today.
@@ -42,7 +42,7 @@ agent recovers its in-memory state from it.
 1. `Machine.SealDisks` and `host.CaptureDisks`; the interval uses them; the
    simulation's oracle learns that a host loss cold boots from the last disk
    checkpoint.
-2. RAM regions out of the loss window and pressure; the RAM dirty budget.
+2. RAM memory regions out of the loss window and pressure; the RAM dirty budget.
 3. The flush request: the device, the memory client, the wire (a new frame
    with a reply, wire version 9) and the pager, ending in a callback that
    completes the flush when the host says the disks are fresh enough.

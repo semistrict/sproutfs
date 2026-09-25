@@ -54,7 +54,7 @@ const DiskVolume = "disk"
 
 // PageSizeOf is the page one volume of a simulated VM is created with, which is
 // the page of the pager that maps it. It is the naming convention the host
-// itself uses to decide which pager a region belongs to, and nothing about a
+// itself uses to decide which pager a memory region belongs to, and nothing about a
 // page or a fault reads it.
 func PageSizeOf(name string) uint64 {
 	if name == MemoryVolume {
@@ -162,7 +162,7 @@ func NewTopology(r sim.Random) Topology {
 			spec.Parent = t.VMs[r.Intn(id+"/parent", i)].ID
 		}
 		// ram0 is every VM's memory. A PMEM disk is there half the time, so a
-		// migration has to name and move more than one region on some seeds and
+		// migration has to name and move more than one memory region on some seeds and
 		// exactly one on others.
 		// The page counts are the same either way, which is what keeps a
 		// campaign's run time where it was: a RAM volume is 512 times fewer

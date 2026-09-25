@@ -43,7 +43,7 @@ func (h *Host) checkpointing(ctx context.Context, vmID string, entry *registrati
 			continue
 		}
 		if vm.Status().Sealed {
-			// A fork point holds this VM's pages, and one checkpoint of a region is
+			// A fork point holds this VM's pages, and one checkpoint of a memory region is
 			// outstanding at a time. The next interval takes the checkpoint, once the
 			// child that was forked from here has the pages it inherited.
 			continue
@@ -64,9 +64,9 @@ func (h *Host) checkpointing(ctx context.Context, vmID string, entry *registrati
 			continue
 		}
 		// The wait is the host's, not this loop's. A checkpoint in flight owns the
-		// guest's sealed regions until it lands, and end() — which a migration
+		// guest's sealed memory regions until it lands, and end() — which a migration
 		// and a removal both stop this loop through — has to return with those
-		// regions back in the guest's hands: a handoff that found one still
+		// memory regions back in the guest's hands: a handoff that found one still
 		// sealed would have to give the migration up and resume the guest. Only
 		// the host closing cuts the wait short, and a host that is closing is
 		// migrating nothing.
@@ -163,22 +163,22 @@ func jittered(entropy platform.Entropy, interval time.Duration) time.Duration {
 }
 
 // checkpointNow answers the pager's request for an immediate checkpoint of one
-// region: the VM that maps it is checkpointed out of the interval's turn, which
+// memory region: the VM that maps it is checkpointed out of the interval's turn, which
 // is what releases the dirty reservations a stalled store is waiting for. It
-// reports whether that checkpoint will be taken — a region belonging to a VM
+// reports whether that checkpoint will be taken — a memory region belonging to a VM
 // this host does not run, whose loop is off, or whose volume a fork hold has
-// sealed gets none, and the pager offers another region instead.
+// sealed gets none, and the pager offers another memory region instead.
 //
 // It runs on the goroutine of the store that is waiting, so it only signals:
 // the capture stays the loop's, as it is on the interval.
-func (h *Host) checkpointNow(region *vmmemory.Region) bool {
+func (h *Host) checkpointNow(memoryRegion *vmmemory.MemoryRegion) bool {
 	// The checkpoint this asks for is of the VM's disks, which relieves no
 	// RAM page: a RAM pager whose dirty budget is full is one no checkpoint
 	// can help, and the store it holds is a stall.
-	if region.Kind() == vmmemory.Ram {
+	if memoryRegion.Kind() == vmmemory.Ram {
 		return false
 	}
-	vmID, entry := h.machineFor(region)
+	vmID, entry := h.machineFor(memoryRegion)
 	if entry == nil || entry.now == nil {
 		return false
 	}
@@ -208,10 +208,10 @@ func (h *Host) checkpointNow(region *vmmemory.Region) bool {
 //
 // The pager calls it on the goroutine of the store that stalled, which must not
 // wait for any of that, so the stop runs on one of this host's own.
-func (h *Host) stopStalled(region *vmmemory.Region, cause error) {
-	vmID, entry := h.machineFor(region)
+func (h *Host) stopStalled(memoryRegion *vmmemory.MemoryRegion, cause error) {
+	vmID, entry := h.machineFor(memoryRegion)
 	if entry == nil {
-		slog.ErrorContext(h.ctx, "host: a stalled region belongs to no VM this host runs",
+		slog.ErrorContext(h.ctx, "host: a stalled memory region belongs to no VM this host runs",
 			"error", cause)
 		return
 	}

@@ -76,7 +76,7 @@ func TestConnectionCancellationDuringAttachment(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			var seed *vmmemory.Region
+			var seed *vmmemory.MemoryRegion
 			if stage == "metadata" {
 				seed, err = h.Attach(t.Context(), ram(newKernelBacking(1, hugePageSize)), seedMapping{})
 				if err != nil {
@@ -107,7 +107,7 @@ func TestConnectionCancellationDuringAttachment(t *testing.T) {
 			defer cancel(context.Canceled)
 			done := make(chan error, 1)
 			go func() {
-				c, err := vmmemory.Connect(ctx, h, server, vmmemory.RegionBacking{Kind: vmmemory.Ram, Backing: b}, vmmemory.ConnectionConfig{QueuePages: 1, CommandTimeout: time.Minute, VerifyInterval: time.Hour})
+				c, err := vmmemory.Connect(ctx, h, server, vmmemory.MemoryRegionBacking{Kind: vmmemory.Ram, Backing: b}, vmmemory.ConnectionConfig{QueuePages: 1, CommandTimeout: time.Minute, VerifyInterval: time.Hour})
 				// This client never maps memory, so no guest users can outlive it.
 				_ = client.Close()
 				if c != nil {
@@ -125,7 +125,7 @@ func TestConnectionCancellationDuringAttachment(t *testing.T) {
 				if err := vmwire.SendFD(client, vmwire.Frame{Kind: vmwire.Hello, ID: vmwire.Version}, r); err != nil {
 					t.Fatal(err)
 				}
-				if err := vmwire.Write(client, vmwire.Frame{Kind: vmwire.Region, Flags: uint64(vmmemory.Ram), Length: b.Size(), Offset: 2 << 20}); err != nil {
+				if err := vmwire.Write(client, vmwire.Frame{Kind: vmwire.MemoryRegion, Flags: uint64(vmmemory.Ram), Length: b.Size(), Offset: 2 << 20}); err != nil {
 					t.Fatal(err)
 				}
 				if stage == "metadata" {

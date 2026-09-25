@@ -47,7 +47,7 @@ type Config struct {
 	Namespace string
 	// Log is where the world says what it did. Nil discards it.
 	Log func(format string, args ...any)
-	// Admit is what every concurrent region seal of a capture passes through
+	// Admit is what every concurrent memory region seal of a capture passes through
 	// before it happens, which is how a scheduled scenario orders two seals of
 	// one pause against each other. Nil seals them in the world's own order.
 	Admit func(ctx context.Context, id string) error
@@ -58,11 +58,11 @@ type Config struct {
 	// pager's pressure turns it on, because a pager that asks for a checkpoint
 	// out of turn needs a loop to ask.
 	CheckpointInterval time.Duration
-	// ReverseRegions seals a capture's regions in the opposite order. It is the
+	// ReverseMemoryRegions seals a capture's memory regions in the opposite order. It is the
 	// creation order a recorded scenario reverses: the execution it produces
 	// must not change, because the order those goroutines are created in is not
 	// an input the simulation is allowed to depend on.
-	ReverseRegions bool
+	ReverseMemoryRegions bool
 }
 
 // World is a running deployment of one topology: every host is a real
@@ -442,7 +442,7 @@ func checkpointInterval(configured time.Duration) time.Duration {
 // what a real host gives it: its disks keep the knob's, and its RAM none, since
 // the interval checkpoints disks alone and nothing it takes would end a RAM
 // page's window.
-func lossWindowOf(kind vmmemory.RegionKind, window time.Duration) time.Duration {
+func lossWindowOf(kind vmmemory.MemoryRegionKind, window time.Duration) time.Duration {
 	if kind == vmmemory.Ram {
 		return 0
 	}
@@ -548,7 +548,7 @@ func (w *World) launch(h *hostState) error {
 }
 
 // newPager builds one incarnation's two pagers over that host's own disk, one
-// per kind of region: RAM at its page and PMEM at its own, each with an arena
+// per kind of memory region: RAM at its page and PMEM at its own, each with an arena
 // and a spill file of its own. The knobs describe one pager, so each is given
 // what they say — a campaign that wants a tight arena gets a tight arena of
 // each kind. The spill files are the only local state a host keeps, and they
@@ -556,13 +556,13 @@ func (w *World) launch(h *hostState) error {
 // restart reads none of what its crash left in it.
 func (w *World) newPager(ctx context.Context, h *hostState) (*pager, func(), error) {
 	k := w.config.Knobs
-	p := &pager{arenas: map[vmmemory.RegionKind]*arena{},
-		spills: map[vmmemory.RegionKind]platform.File{}, runtime: w.runtime}
+	p := &pager{arenas: map[vmmemory.MemoryRegionKind]*arena{},
+		spills: map[vmmemory.MemoryRegionKind]platform.File{}, runtime: w.runtime}
 	// The two are released in a fixed order, because what they do on the way out
 	// reaches this host's simulated disk: a release that walked a map would give
 	// one seed two runs.
 	release := func() {
-		for _, kind := range []vmmemory.RegionKind{vmmemory.Ram, vmmemory.Pmem} {
+		for _, kind := range []vmmemory.MemoryRegionKind{vmmemory.Ram, vmmemory.Pmem} {
 			if memory := p.pagers.For(kind); memory != nil {
 				_ = memory.Close(context.Background())
 			}
@@ -571,7 +571,7 @@ func (w *World) newPager(ctx context.Context, h *hostState) (*pager, func(), err
 			}
 		}
 	}
-	for _, kind := range []vmmemory.RegionKind{vmmemory.Ram, vmmemory.Pmem} {
+	for _, kind := range []vmmemory.MemoryRegionKind{vmmemory.Ram, vmmemory.Pmem} {
 		pageSize := uint64(PMEMPage)
 		if kind == vmmemory.Ram {
 			pageSize = RAMPage
@@ -584,7 +584,7 @@ func (w *World) newPager(ctx context.Context, h *hostState) (*pager, func(), err
 		p.spills[kind] = spill
 		// RAM places a private page at the offset it has within its 2 MiB range,
 		// so its arena has an address per logical page — one 512-offset extent
-		// per range any region may write into — beside the pages it may hold at
+		// per range any memory region may write into — beside the pages it may hold at
 		// once. PMEM places nothing, so its offsets and its pages are one
 		// number. The arena is sparse either way: an offset costs nothing until
 		// a page is put there.
@@ -885,7 +885,7 @@ func (w *World) Store(ctx context.Context, id string, writes int, choose func(li
 	defer func() { w.noteWrites(in, g, before) }()
 	for range writes {
 		// Both volumes are written, so a migration has to move more than one
-		// region's worth of pages on the seeds that have two.
+		// memory region's worth of pages on the seeds that have two.
 		name := g.names[choose(len(g.names))]
 		page := uint64(choose(g.pages[name]))
 		// One access in four is a write fault the guest stores nothing
@@ -1055,7 +1055,7 @@ func (w *World) noteSealed(in *instance, sealed, unchanged int) {
 // Sealed reports what the last checkpoint of the named VM sealed and how many
 // of those pages the settle found the guest had never stored into, so that the
 // checkpoint published neither them nor anything under them.
-// PrivateExtents is how many 2 MiB-aligned ranges of one host's RAM regions own
+// PrivateExtents is how many 2 MiB-aligned ranges of one host's RAM memory regions own
 // an extent of its arena's offset space, which is how many hold a private page.
 // It is addresses and not memory: the pages such a range holds are whatever the
 // guest stored into.
@@ -1073,7 +1073,7 @@ func (w *World) PrivateExtents(index int) int {
 	return stats.PrivateExtents
 }
 
-// Mappings is how many mappings one volume's region is to the VMM of the named
+// Mappings is how many mappings one volume's memory region is to the VMM of the named
 // VM's guest, zero where that VM is not running here. It is what a VMM process
 // holds VMAs for, and what the placement rule is measured by.
 func (w *World) Mappings(id, name string) int {
@@ -1315,7 +1315,7 @@ func (w *World) MigrateWith(ctx context.Context, id string, to int, terms Handov
 		}
 		// Nothing was released, so the VM is still running where it was, and it
 		// is still the VM it was: a pause that failed owes the guest every
-		// region unsealed and every page writable.
+		// memory region unsealed and every page writable.
 		w.logf("%s: the migration to %s was refused: %v", id, destination.name, err)
 		// A host that was taken away in the middle of this owes the VM nothing:
 		// what a refused migration owes is what it owes a host that is still
@@ -2380,7 +2380,7 @@ func (w *World) Close(ctx context.Context) error {
 	}
 	// Every VMM process of every host, not only the one each VM is running in:
 	// a takeover leaves the superseded host running a guest of its own, and a
-	// pager with a region still attached is one that cannot close.
+	// pager with a memory region still attached is one that cannot close.
 	for _, h := range w.hosts {
 		h.mu.Lock()
 		running := slices.Clone(h.guests)

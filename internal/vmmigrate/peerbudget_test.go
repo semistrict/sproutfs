@@ -37,7 +37,7 @@ type portedConn struct {
 func (c portedConn) RemoteAddress() platform.Address { return c.remote }
 
 // TestPeerBudgetsCountOneDestinationHostOnce. A destination opens a connection
-// per region and dials again whenever one breaks, and every one of those gets an
+// per memory region and dials again whenever one breaks, and every one of those gets an
 // ephemeral port of its own. Counting them as separate peers counts nothing: the
 // connection budget never binds, the bytes budget never binds, and the table of
 // peers grows with every reconnect for as long as the source serves.
@@ -55,7 +55,7 @@ func TestPeerBudgetsCountOneDestinationHostOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = source.Close() })
-	source.Serve("vm-2", vmmigrate.RegionPages(s.machine.Regions()))
+	source.Serve("vm-2", vmmigrate.MemoryRegionPages(s.machine.MemoryRegions()))
 
 	first, second := s.backing(t, source, "ram0"), s.backing(t, source, "ram0")
 	data := make([]byte, 4*pageSize)

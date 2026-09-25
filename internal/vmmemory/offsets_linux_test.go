@@ -11,7 +11,7 @@ import (
 )
 
 // The arena is addresses, and its memory is what is put at them. A RAM arena is
-// sized to the offsets a host's regions may need — one extent per range — and
+// sized to the offsets a host's memory regions may need — one extent per range — and
 // is a sparse file, so what it really holds is the pages put there and nothing
 // else. This is that fact through the real memfd: pages at one offset per
 // range, N pages of allocated blocks behind 512·N offsets, and the blocks gone

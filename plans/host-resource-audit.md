@@ -11,7 +11,7 @@ space-error handling. This is reservation management, not an OS-enforced quota.
 
 | Requirement | Current implementation and inspected proof |
 | --- | --- |
-| One owner across host, pager and caches | `HostConfig.Resources`, log owner validation, `Host.AddMachine` and migration received-region checks reject foreign budgets. Host owner tests and migration suite pass. |
+| One owner across host, pager and caches | `HostConfig.Resources`, log owner validation, `Host.AddMachine` and migration received-memory-region checks reject foreign budgets. Host owner tests and migration suite pass. |
 | Count shared pages once; admit before allocating | `takeFree` reserves a run before arena allocation; aliases reference slots. `TestSharedPageIsChargedOnceUntilLastAliasDetaches`, physical-cleanup failure tests and the 2 MiB cache-first fault test pass. |
 | Cache yields before required refusal | Required acquire/grow/protect/workspace paths invoke registered evictors outside the budget lock. Pinned bytes remain charged; finishing readers yield to queued work. Image cache resource tests, console tests and replay-headroom test pass. |
 | Required reads work when pages fill RAM | Cache misses use an unretained transient copy from I/O headroom when no retained reservation fits. The full-page read regression checks data and absence of retained cache. |

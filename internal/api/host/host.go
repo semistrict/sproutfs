@@ -69,19 +69,19 @@ type Handoff struct {
 	// page they are served in.
 	Source   string
 	PageSize int
-	// Regions is the memory layout, in ascending name order.
-	Regions []HandoffRegion
+	// MemoryRegions is the memory layout, in ascending name order.
+	MemoryRegions []HandoffMemoryRegion
 	// PausedAt is when the guest stopped, which with the destination's resume
 	// bounds the pause the migration cost.
 	PausedAt time.Time
 }
 
-// HandoffRegion names one region of a handed-over VM and the size of the volume
+// HandoffMemoryRegion names one memory region of a handed-over VM and the size of the volume
 // it maps, so the destination can bind the same layout.
-type HandoffRegion struct {
+type HandoffMemoryRegion struct {
 	Name string
 	Size uint64
-	// Unpublished names the pages of this region that no checkpoint of the VM
+	// Unpublished names the pages of this memory region that no checkpoint of the VM
 	// has: the guest's writes since the source's last checkpoint. They exist
 	// only in the source's pages, so the destination must fetch every one of
 	// them before the source may stop serving. The guest was stopped when this
@@ -144,7 +144,7 @@ type VM struct {
 }
 
 // Sharing is how much memory sharing a host's pager is retaining for one kind
-// of region, at the moment its status was taken. It is a gauge rather than a
+// of memory region, at the moment its status was taken. It is a gauge rather than a
 // total: Pager.SharedPages counts every page ever mapped to an already resident
 // identity and never falls, which says how often sharing happened rather than
 // how much of it is still there.
@@ -154,9 +154,9 @@ type VM struct {
 // so none of them are here.
 type Sharing struct {
 	// UniqueBytes is the host memory the arena actually holds: one resident
-	// page counted once, however many regions map it. MappedBytes is the sum
-	// over regions of the resident pages each maps, counting every alias, so a
-	// page three regions map counts three times. SavedBytes is the difference,
+	// page counted once, however many memory regions map it. MappedBytes is the sum
+	// over memory regions of the resident pages each maps, counting every alias, so a
+	// page three memory regions map counts three times. SavedBytes is the difference,
 	// which is the memory this host did not have to find.
 	UniqueBytes uint64 `json:"unique_bytes"`
 	MappedBytes uint64 `json:"mapped_bytes"`
@@ -179,8 +179,8 @@ type PagerKind struct {
 	ResidentPages int `json:"resident_pages"`
 	DirtyPages    int `json:"dirty_pages"`
 	LogicalPages  int `json:"logical_pages"`
-	// LogicalPagesFree is what this pager's per-region metadata cap still has
-	// left, which is what admits a VM: a create, fork or receive whose regions
+	// LogicalPagesFree is what this pager's per-memory-region metadata cap still has
+	// left, which is what admits a VM: a create, fork or receive whose memory regions
 	// of this kind need more than this is refused before anything starts its
 	// VMM.
 	LogicalPagesFree int `json:"logical_pages_free"`
@@ -202,7 +202,7 @@ func (p PagerKind) ArenaBytes() uint64    { return uint64(p.ArenaPages) * uint64
 func (p PagerKind) ResidentBytes() uint64 { return uint64(p.ResidentPages) * uint64(p.PageBytes) }
 func (p PagerKind) DirtyBytes() uint64    { return uint64(p.DirtyPages) * uint64(p.PageBytes) }
 
-// Pager is what the host's pagers hold: one report per kind of region, and the
+// Pager is what the host's pagers hold: one report per kind of memory region, and the
 // byte totals across the two. SharedPages is the demo's sharing measure: pages
 // mapped to an already resident identity without a read, which is what a fork of
 // a running guest inherits.

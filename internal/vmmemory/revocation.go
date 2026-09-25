@@ -10,8 +10,8 @@ const revokeBatchPages = 1024
 
 // errVictimHeld reports an eviction that could not take one resident page away
 // from every binding it is reachable from, because one of those bindings belongs
-// to a region that can no longer take mapping commands. The page stays mapped
-// there, so it is not this host's to reuse, and the region it could not be
+// to a memory region that can no longer take mapping commands. The page stays mapped
+// there, so it is not this host's to reuse, and the memory region it could not be
 // taken from is terminal from here — which is what keeps the reclaim from
 // choosing that page again. It never reaches a caller: an allocation that
 // meets it takes another victim.
@@ -19,21 +19,21 @@ var errVictimHeld = errors.New("vmmemory: a resident page's other holder cannot 
 
 // revocationFailed makes a failed revocation terminal, as every one of them is:
 // the pages stay recorded as mapped, which is what keeps the page the guest
-// may still read through reachable, and the region can no longer take mappings
+// may still read through reachable, and the memory region can no longer take mappings
 // away. A revocation the client refused is terminal too, and deliberately not
 // the refusal a fault is served again for: what a fault waits for is a
 // revocation, and this is one that could not happen.
-func (r *Region) revocationFailed(err error) error {
+func (r *MemoryRegion) revocationFailed(err error) error {
 	if errors.Is(err, ErrMappingRefused) {
 		err = errors.New("managed-memory revocation refused: " + err.Error())
 	}
 	return r.fail(err)
 }
 
-// revokeLocked revokes a bounded set of this region's own bindings, holding
+// revokeLocked revokes a bounded set of this memory region's own bindings, holding
 // each one's current resident page across its revoke so no reclaim can change the
-// mapping underneath it. Caller owns the region exclusively.
-func (r *Region) revokeLocked(ctx context.Context, bindings []*binding) error {
+// mapping underneath it. Caller owns the memory region exclusively.
+func (r *MemoryRegion) revokeLocked(ctx context.Context, bindings []*binding) error {
 	for len(bindings) > 0 {
 		count := min(len(bindings), revokeBatchPages)
 		var locked []*resident
@@ -58,15 +58,15 @@ func (r *Region) revokeLocked(ctx context.Context, bindings []*binding) error {
 	return nil
 }
 
-// Callers own all resident transitions (or an unmapped binding's region lock).
+// Callers own all resident transitions (or an unmapped binding's memory region lock).
 // Preserve possibly mapped state until the whole batch has a successful ACK.
 //
-// Each command is issued with the region's protection held shared, as every
+// Each command is issued with the memory region's protection held shared, as every
 // revocation is: a seal reads the runs of the dirty set rather than walking its
 // pages, so what says that a revocation of one of those pages is either
 // finished and out of the runs the seal reads, or has not begun, is this and
 // nothing else.
-func (r *Region) revokeBindings(ctx context.Context, bindings []*binding) error {
+func (r *MemoryRegion) revokeBindings(ctx context.Context, bindings []*binding) error {
 	batch, ok := r.mapping.(BatchRevocation)
 	if !ok {
 		for _, b := range bindings {
@@ -110,11 +110,11 @@ func (r *Region) revokeBindings(ctx context.Context, bindings []*binding) error 
 	})
 }
 
-// underProtection runs one revocation with the region's protection held
+// underProtection runs one revocation with the memory region's protection held
 // shared, so that a seal's write-protect commands and the mappings a reclaim
-// takes away cannot overlap. It is never nested and never waits for the region
+// takes away cannot overlap. It is never nested and never waits for the memory region
 // or for a page while it holds it.
-func (r *Region) underProtection(ctx context.Context, revoke func() error) error {
+func (r *MemoryRegion) underProtection(ctx context.Context, revoke func() error) error {
 	if err := r.protectMu.RLock(ctx); err != nil {
 		return err
 	}
@@ -124,23 +124,23 @@ func (r *Region) underProtection(ctx context.Context, revoke func() error) error
 
 func (h *Host) revoke(ctx context.Context, b *binding) error {
 	// A reclaim revokes its victim's pages under that page's lock alone and a
-	// seal reads the runs of its dirty set under the region, so the two exclude
-	// each other through the region's protection and nothing else: the mapping
+	// seal reads the runs of its dirty set under the memory region, so the two exclude
+	// each other through the memory region's protection and nothing else: the mapping
 	// state itself is read through the binding map, like every other holder of
 	// it.
-	if !b.region.isMapped(b) {
-		note(b.region, b.index, "revoke-skipped-unmapped", -1, -1)
+	if !b.memoryRegion.isMapped(b) {
+		note(b.memoryRegion, b.index, "revoke-skipped-unmapped", -1, -1)
 		return nil
 	}
-	return b.region.underProtection(ctx, func() error {
-		if !b.region.isMapped(b) {
+	return b.memoryRegion.underProtection(ctx, func() error {
+		if !b.memoryRegion.isMapped(b) {
 			return nil
 		}
-		if err := b.region.revokePage(ctx, b.index); err != nil {
-			return b.region.revocationFailed(err)
+		if err := b.memoryRegion.revokePage(ctx, b.index); err != nil {
+			return b.memoryRegion.revocationFailed(err)
 		}
-		note(b.region, b.index, "revoke", -1, -1)
-		b.region.setMapped(b, false)
+		note(b.memoryRegion, b.index, "revoke", -1, -1)
+		b.memoryRegion.setMapped(b, false)
 		h.mu.Lock()
 		h.stats.Revocations++
 		h.stats.RevokeRuns++

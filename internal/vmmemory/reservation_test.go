@@ -36,7 +36,7 @@ func TestPartialReadAheadPublicationReturnsOnlyUnusedCapacity(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		r, m, _ := f.region(4)
+		r, m, _ := f.memoryRegion(4)
 		if err := r.Fault(t.Context(), 0, false); !errors.Is(err, errInjected) {
 			t.Fatalf("partial publication: %v", err)
 		}
@@ -57,10 +57,10 @@ func TestPartialReadAheadPublicationReturnsOnlyUnusedCapacity(t *testing.T) {
 	})
 }
 
-func TestFailedReadAheadReturnsCapacityForNextRegion(t *testing.T) {
+func TestFailedReadAheadReturnsCapacityForNextMemoryRegion(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newFixture(t, 4, 4, 4)
-		r, m, b := f.region(4)
+		r, m, b := f.memoryRegion(4)
 		b.failRead = true
 		if err := r.Fault(t.Context(), 0, false); !errors.Is(err, errInjected) {
 			t.Fatalf("failed backing read: %v", err)
@@ -73,10 +73,10 @@ func TestFailedReadAheadReturnsCapacityForNextRegion(t *testing.T) {
 		if err != nil || stats.ResidentPages != 0 || stats.LogicalPages != 0 {
 			t.Fatalf("failed read retained capacity after detach: %+v, %v", stats, err)
 		}
-		next, mapping, _ := f.region(4)
+		next, mapping, _ := f.memoryRegion(4)
 		for page := range uint64(4) {
 			if got := access(t, next, mapping, page, false)[0]; got != byte(page+1) {
-				t.Fatalf("next region page %d = %d", page, got)
+				t.Fatalf("next memory region page %d = %d", page, got)
 			}
 		}
 	})

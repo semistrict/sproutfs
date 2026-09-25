@@ -60,7 +60,7 @@ func TestFirecrackerLiveMigration(t *testing.T) {
 	t.Cleanup(func() { _ = p.Close() })
 	waitLine(t, ctx, p, "SPROUTFS_READY ram=7 disk=0 dax=1 root=pmem", 0)
 
-	// Both hosts are one process, so every region's connections and the
+	// Both hosts are one process, so every memory region's connections and the
 	// comparison's come from the same peer address and share one budget.
 	pages, err := vmmigrate.NewPageSource(ctx, vmmigrate.SourceConfig{Network: c.network,
 		Address: "source-pages", PageSize: pagerPageBytes(t),
@@ -106,19 +106,19 @@ func TestFirecrackerLiveMigration(t *testing.T) {
 	if got := destination.Status().Checkpoint; got != final {
 		t.Fatalf("the destination opened at %v, want the handed-off %v", got, final)
 	}
-	// Every region of the destination attaches through the host that still holds
+	// Every memory region of the destination attaches through the host that still holds
 	// its pages, which is what puts the source's page server on the VMM's own
-	// fault path rather than beside it. The volumes stay the regions' identity.
+	// fault path rather than beside it. The volumes stay the memory regions' identity.
 	destinationPager := newMigrationPager(t, ctx)
-	peers := make(map[string]*vmmigrate.PeerBacking, len(handoff.Regions))
-	backings := make(map[string]vmmemory.Backing, len(handoff.Regions))
-	for _, region := range handoff.Regions {
-		v := destination.Volume(region.Name)
+	peers := make(map[string]*vmmigrate.PeerBacking, len(handoff.MemoryRegions))
+	backings := make(map[string]vmmemory.Backing, len(handoff.MemoryRegions))
+	for _, memoryRegion := range handoff.MemoryRegions {
+		v := destination.Volume(memoryRegion.Name)
 		if v == nil {
-			t.Fatalf("the destination opened no volume named %s", region.Name)
+			t.Fatalf("the destination opened no volume named %s", memoryRegion.Name)
 		}
 		backing := peerBacking(t, c, handoff, v)
-		peers[region.Name], backings[region.Name] = backing, backing
+		peers[memoryRegion.Name], backings[memoryRegion.Name] = backing, backing
 	}
 	restore := migrationConfig(t, binaryPath, destinationPager, destination)
 	restore.RestoreState = handoff.State
@@ -136,14 +136,14 @@ func TestFirecrackerLiveMigration(t *testing.T) {
 	// exactly what the destination's own log holds.
 	resident, comparedPeer, comparedVolume := comparePeerAndVolume(t, ctx, c, handoff, destination)
 
-	ramRegion := fp.Regions()[vmmachine.RAMVolume]
-	if ramRegion == nil {
-		t.Fatal("the destination maps no region for its RAM volume")
+	ramMemoryRegion := fp.MemoryRegions()[vmmachine.RAMVolume]
+	if ramMemoryRegion == nil {
+		t.Fatal("the destination maps no memory region for its RAM volume")
 	}
 	beforeFault := peers[vmmachine.RAMVolume].Stats()
 	// A page the guest has not reached yet arrives the same way, which pins the
 	// count to one fault rather than to whatever the guest happened to touch.
-	if err := ramRegion.Fault(ctx, absentPage(t, ctx, resident, ramRegion, peers[vmmachine.RAMVolume]), false); err != nil {
+	if err := ramMemoryRegion.Fault(ctx, absentPage(t, ctx, resident, ramMemoryRegion, peers[vmmachine.RAMVolume]), false); err != nil {
 		t.Fatal(err)
 	}
 	faulted := peers[vmmachine.RAMVolume].Stats()
@@ -158,8 +158,8 @@ func TestFirecrackerLiveMigration(t *testing.T) {
 	// holds the only copy of that page, and the account below is what has to
 	// know it — a source told otherwise never stops serving, and the
 	// destination is told its guest's memory is part missing.
-	stored := unheldUnpublished(t, unpublishedOf(t, handoff, vmmachine.RAMVolume), ramRegion)
-	if err := ramRegion.Fault(ctx, stored, true); err != nil {
+	stored := unheldUnpublished(t, unpublishedOf(t, handoff, vmmachine.RAMVolume), ramMemoryRegion)
+	if err := ramMemoryRegion.Fault(ctx, stored, true); err != nil {
 		t.Fatalf("storing into %s page %d, which no checkpoint holds: %v", vmmachine.RAMVolume, stored, err)
 	}
 
@@ -186,20 +186,20 @@ func TestFirecrackerLiveMigration(t *testing.T) {
 	// still only on the source. That is the whole of what lets a source stop
 	// serving, and it counts the pages a store took as much as the ones a read
 	// did — those bytes are just as much here.
-	for _, region := range handoff.Regions {
-		mapped := fp.Regions()[region.Name]
+	for _, memoryRegion := range handoff.MemoryRegions {
+		mapped := fp.MemoryRegions()[memoryRegion.Name]
 		if mapped == nil {
-			t.Fatalf("the destination maps no region for %s", region.Name)
+			t.Fatalf("the destination maps no memory region for %s", memoryRegion.Name)
 		}
-		for _, run := range region.Unpublished {
+		for _, run := range memoryRegion.Unpublished {
 			for page := run.First; page < run.First+uint64(run.Count); page++ {
 				if err := mapped.Fault(ctx, page, false); err != nil {
-					t.Fatalf("fetching %s page %d, which no checkpoint holds: %v", region.Name, page, err)
+					t.Fatalf("fetching %s page %d, which no checkpoint holds: %v", memoryRegion.Name, page, err)
 				}
 			}
 		}
-		if left := peers[region.Name].Unfetched(); left != 0 {
-			t.Fatalf("%s still owes the source %d pages no checkpoint holds, every one of which was fetched", region.Name, left)
+		if left := peers[memoryRegion.Name].Unfetched(); left != 0 {
+			t.Fatalf("%s still owes the source %d pages no checkpoint holds, every one of which was fetched", memoryRegion.Name, left)
 		}
 	}
 	if err := pages.Release(handoff.VMID); err != nil {
@@ -213,7 +213,7 @@ func TestFirecrackerLiveMigration(t *testing.T) {
 	// go either way.
 	pages.Discard(handoff.VMID)
 	// Nothing the source serves can be counted from here, so this is the last
-	// peer page this region will ever have.
+	// peer page this memory region will ever have.
 	atRelease := peers[vmmachine.RAMVolume].Stats()
 	// At 2 MiB granularity the resumed guest can hold every stored RAM page.
 	// Exercise a cold backing request directly so this does not depend on a
@@ -248,19 +248,19 @@ func TestFirecrackerLiveMigration(t *testing.T) {
 	served := pages.Stats()
 	t.Logf("migration pause: stop_to_ready=%s stop_to_resume=%s (guest stores ram=%d disk=%d)",
 		ready.Sub(handoff.PausedAt), resumed.Sub(handoff.PausedAt), ram, disk)
-	for _, region := range handoff.Regions {
+	for _, memoryRegion := range handoff.MemoryRegions {
 		unpublished := 0
-		for _, run := range region.Unpublished {
+		for _, run := range memoryRegion.Unpublished {
 			unpublished += run.Count
 		}
-		t.Logf("migration handoff %s: unpublished_pages=%d", region.Name, unpublished)
+		t.Logf("migration handoff %s: unpublished_pages=%d", memoryRegion.Name, unpublished)
 	}
 	for name, backing := range peers {
-		region := backing.Stats()
-		t.Logf("migration region %s: peer_pages=%d volume_pages=%d requests=%d fell_back=%t",
-			name, region.PeerPages, region.VolumePages, region.Requests, region.FellBack)
-		latency := region.Latency
-		t.Logf("migration region %s latency: faults=%d p50<=%s p99<=%s max=%s wait_p99<=%s stream=%d p99<=%s wait_p99<=%s",
+		memoryRegion := backing.Stats()
+		t.Logf("migration memory region %s: peer_pages=%d volume_pages=%d requests=%d fell_back=%t",
+			name, memoryRegion.PeerPages, memoryRegion.VolumePages, memoryRegion.Requests, memoryRegion.FellBack)
+		latency := memoryRegion.Latency
+		t.Logf("migration memory region %s latency: faults=%d p50<=%s p99<=%s max=%s wait_p99<=%s stream=%d p99<=%s wait_p99<=%s",
 			name, latency.Fault.Count, time.Duration(latency.Fault.QuantileUpperNS(0.5)),
 			time.Duration(latency.Fault.QuantileUpperNS(0.99)), time.Duration(latency.Fault.MaxNS),
 			time.Duration(latency.FaultWait.QuantileUpperNS(0.99)), latency.Stream.Count,
@@ -323,10 +323,10 @@ func newMigrationPager(t *testing.T, ctx context.Context) *hostPagers {
 }
 
 // newSizedMigrationPager builds one host's pagers with a RAM arena and a PMEM
-// arena of their own sizes, room for logicalBytes of mapped region and
+// arena of their own sizes, room for logicalBytes of mapped memory region and
 // dirtyBytes of private state no checkpoint has published. A host taking in
 // more than one VM needs a larger logical budget than the single-VM default; an
-// arena smaller than what its kind of region maps puts eviction, spill and
+// arena smaller than what its kind of memory region maps puts eviction, spill and
 // refault on every path of that kind, and a dirty budget no larger than the
 // arenas is what a deployment actually gives one. Every budget is in bytes
 // because the two pagers count them in their own pages.
@@ -509,7 +509,7 @@ func guestCommand(ctx context.Context, p *vmmachine.Process, line, want string) 
 
 func peerBacking(t *testing.T, c *migrationCluster, handoff vmmigrate.Handoff, v *volume.Volume) *vmmigrate.PeerBacking {
 	t.Helper()
-	// The page this region's numbers are in is its volume's own, which both
+	// The page this memory region's numbers are in is its volume's own, which both
 	// hosts read out of the same durable geometry. The handoff's page is the
 	// source's budget unit and says nothing about one volume, which is exactly
 	// what a mixed VM shows: its RAM is 4 KiB and its root 2 MiB.
@@ -525,18 +525,18 @@ func peerBacking(t *testing.T, c *migrationCluster, handoff vmmigrate.Handoff, v
 	return backing
 }
 
-// unpublishedOf reports the pages of one region that the handoff says exist
+// unpublishedOf reports the pages of one memory region that the handoff says exist
 // nowhere but the source's pages. A destination that does not carry them treats
 // its own checkpoint's bytes as current, which is the whole hazard a post-copy
 // has.
 func unpublishedOf(t *testing.T, handoff vmmigrate.Handoff, name string) []vmmigrate.PageRun {
 	t.Helper()
-	for _, region := range handoff.Regions {
-		if region.Name == name {
-			return region.Unpublished
+	for _, memoryRegion := range handoff.MemoryRegions {
+		if memoryRegion.Name == name {
+			return memoryRegion.Unpublished
 		}
 	}
-	t.Fatalf("the handoff names no region %q", name)
+	t.Fatalf("the handoff names no memory region %q", name)
 	return nil
 }
 
@@ -544,12 +544,12 @@ func unpublishedOf(t *testing.T, handoff vmmigrate.Handoff, name string) []vmmig
 // this destination has not taken yet, which is what a guest's first touch of
 // one of those pages reaches: a store into it has to fetch it from the source,
 // exactly as a read would.
-func unheldUnpublished(t *testing.T, runs []vmmigrate.PageRun, region *vmmemory.Region) uint64 {
+func unheldUnpublished(t *testing.T, runs []vmmigrate.PageRun, memoryRegion *vmmemory.MemoryRegion) uint64 {
 	t.Helper()
 	held := make(map[uint64]bool)
-	resident, err := region.Resident()
+	resident, err := memoryRegion.Resident()
 	if err != nil {
-		t.Fatalf("listing what the region holds: %v", err)
+		t.Fatalf("listing what the memory region holds: %v", err)
 	}
 	for _, page := range resident {
 		held[page] = true
@@ -588,22 +588,22 @@ func publishedPage(t *testing.T, handoff vmmigrate.Handoff, v *volume.Volume) ui
 }
 
 // absentPage selects a stored page this host has not faulted in yet, as the
-// backing that region attaches through reports it. Sparse zeros bypass the
+// backing that memory region attaches through reports it. Sparse zeros bypass the
 // backing and cannot establish a fault's origin, and a page the source holds
 // unpublished is exactly the one that is not a hole there while the
 // destination's own log has nothing for it.
-func absentPage(t *testing.T, ctx context.Context, runs []vmmigrate.PageRun, region *vmmemory.Region, backing vmmemory.Backing) uint64 {
+func absentPage(t *testing.T, ctx context.Context, runs []vmmigrate.PageRun, memoryRegion *vmmemory.MemoryRegion, backing vmmemory.Backing) uint64 {
 	t.Helper()
 	held := make(map[uint64]bool)
-	resident, err := region.Resident()
+	resident, err := memoryRegion.Resident()
 	if err != nil {
-		t.Fatalf("listing what the region holds: %v", err)
+		t.Fatalf("listing what the memory region holds: %v", err)
 	}
 	for _, page := range resident {
 		held[page] = true
 	}
-	// The page these numbers are in is the region's, which for RAM is 4 KiB.
-	size := region.PageSize()
+	// The page these numbers are in is the memory region's, which for RAM is 4 KiB.
+	size := memoryRegion.PageSize()
 	for _, run := range runs {
 		for page := run.First; page < run.First+uint64(run.Count); page++ {
 			if !held[page] {
@@ -629,7 +629,7 @@ func absentPage(t *testing.T, ctx context.Context, runs []vmmigrate.PageRun, reg
 // log holds them; every other page the source serves must be exactly what the
 // destination's own log holds. The destination is still paused, so nothing is
 // writing either copy. It reports the source's resident runs, which is what the
-// migrated regions fault from.
+// migrated memory regions fault from.
 func comparePeerAndVolume(t *testing.T, ctx context.Context, c *migrationCluster,
 	handoff vmmigrate.Handoff, destination *volume.VM) (resident []vmmigrate.PageRun, peerPages, volumePages int64) {
 	t.Helper()
@@ -651,7 +651,7 @@ func comparePeerAndVolume(t *testing.T, ctx context.Context, c *migrationCluster
 	if len(unpublished) == 0 {
 		t.Fatal("the source stopped a storing guest with nothing unpublished to carry")
 	}
-	// A page number of this region is a page of its volume, which for RAM is
+	// A page number of this memory region is a page of its volume, which for RAM is
 	// not the page the handoff's budget is stated in.
 	size := v.PageSize()
 	compared, carried := 0, 0

@@ -46,8 +46,8 @@ func TestACallerGoingAwayDoesNotKillTheGuest(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer p.Close()
-	for name, region := range p.Regions() {
-		if err := region.Seal(t.Context()); err != nil {
+	for name, memoryRegion := range p.MemoryRegions() {
+		if err := memoryRegion.Seal(t.Context()); err != nil {
 			t.Fatalf("sealing %s: %v", name, err)
 		}
 	}

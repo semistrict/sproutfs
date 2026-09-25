@@ -12,10 +12,10 @@ import (
 	"github.com/semistrict/sproutfs/internal/vmmemory"
 )
 
-// holeRegion attaches a region whose every page is an explicit hole in its
+// holeMemoryRegion attaches a memory region whose every page is an explicit hole in its
 // volume, which is what fresh guest memory is. Read first, a window of it is
 // zero-mapped; stored into first, a page of it has never been mapped at all.
-func holeRegion(t *testing.T, cfg vmmemory.Config, pages int) (*fixture, *vmmemory.Region, *mapping, *backing) {
+func holeMemoryRegion(t *testing.T, cfg vmmemory.Config, pages int) (*fixture, *vmmemory.MemoryRegion, *mapping, *backing) {
 	t.Helper()
 	f := newConfiguredFixture(t, cfg)
 	b := f.newBacking(pages)
@@ -38,7 +38,7 @@ func hostStats(t *testing.T, f *fixture) vmmemory.Stats {
 
 // requireBytes reads every page the way the guest would, faulting where it
 // must, and requires exactly the bytes the model holds.
-func requireBytes(t *testing.T, r *vmmemory.Region, m *mapping, want []byte, pageSize int) {
+func requireBytes(t *testing.T, r *vmmemory.MemoryRegion, m *mapping, want []byte, pageSize int) {
 	t.Helper()
 	for page := range len(want) / pageSize {
 		got := access(t, r, m, uint64(page), false)
@@ -56,7 +56,7 @@ func TestStoreIntoFreshZeroPageIsOneMappingCommand(t *testing.T) {
 	for _, zeroMapped := range []bool{false, true} {
 		t.Run(fmt.Sprintf("zeroMapped=%t", zeroMapped), func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				f, r, m, b := holeRegion(t, vmmemory.Config{ResidentPages: 8, LogicalPages: 8,
+				f, r, m, b := holeMemoryRegion(t, vmmemory.Config{ResidentPages: 8, LogicalPages: 8,
 					DirtyPages: 8, ReadAheadPages: 8, WriteAheadPages: 1}, 8)
 				if zeroMapped {
 					access(t, r, m, 0, false)
@@ -112,7 +112,7 @@ func TestZeroMappedPageStaysReadableWhileAStoreMapsItsOwnCopy(t *testing.T) {
 	for _, ahead := range []int{1, 4} {
 		t.Run(fmt.Sprintf("writeAhead=%d", ahead), func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				_, r, m, _ := holeRegion(t, vmmemory.Config{ResidentPages: 8, LogicalPages: 8,
+				_, r, m, _ := holeMemoryRegion(t, vmmemory.Config{ResidentPages: 8, LogicalPages: 8,
 					DirtyPages: 8, ReadAheadPages: 8, WriteAheadPages: ahead}, 8)
 				access(t, r, m, 0, false)
 				entered, release := make(chan struct{}), make(chan struct{})
@@ -180,7 +180,7 @@ func TestSequentialStoresIntoFreshMemoryTakeOneFaultPerRun(t *testing.T) {
 		t.Run(fmt.Sprintf("zeroMapped=%t", zeroMapped), func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				const pages, ahead = 8, 2
-				f, r, m, b := holeRegion(t, vmmemory.Config{ResidentPages: pages, LogicalPages: pages,
+				f, r, m, b := holeMemoryRegion(t, vmmemory.Config{ResidentPages: pages, LogicalPages: pages,
 					DirtyPages: pages, ReadAheadPages: pages, WriteAheadPages: ahead}, pages)
 				if zeroMapped {
 					access(t, r, m, 0, false)
@@ -235,7 +235,7 @@ func TestSequentialStoresIntoFreshMemoryTakeOneFaultPerRun(t *testing.T) {
 // back towards its start, and never past either end.
 func TestWriteAheadStaysInsideTheReadAheadWindow(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		f, r, m, _ := holeRegion(t, vmmemory.Config{ResidentPages: 16, LogicalPages: 16,
+		f, r, m, _ := holeMemoryRegion(t, vmmemory.Config{ResidentPages: 16, LogicalPages: 16,
 			DirtyPages: 16, ReadAheadPages: 4, WriteAheadPages: 16}, 16)
 		access(t, r, m, 1, true)[0] = 1
 		if len(m.pages) != 4 {
@@ -264,7 +264,7 @@ func TestWriteAheadStaysInsideTheReadAheadWindow(t *testing.T) {
 func TestWriteAheadTakesOnlyFreeArenaSlots(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		const pages = 16
-		f, r, m, b := holeRegion(t, vmmemory.Config{ResidentPages: 4, LogicalPages: pages,
+		f, r, m, b := holeMemoryRegion(t, vmmemory.Config{ResidentPages: 4, LogicalPages: pages,
 			DirtyPages: pages, ReadAheadPages: 8, WriteAheadPages: 8}, pages)
 		want := make([]byte, pages*uint64(pageSize))
 		access(t, r, m, 0, true)[0] = 10
@@ -295,7 +295,7 @@ func TestWriteAheadTakesOnlyFreeArenaSlots(t *testing.T) {
 func TestWriteAheadTakesOnlySpareDirtyReservations(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		const pages = 16
-		f, r, m, b := holeRegion(t, vmmemory.Config{ResidentPages: pages, LogicalPages: pages,
+		f, r, m, b := holeMemoryRegion(t, vmmemory.Config{ResidentPages: pages, LogicalPages: pages,
 			DirtyPages: 3, ReadAheadPages: 8, WriteAheadPages: 8}, pages)
 		want := make([]byte, pages*uint64(pageSize))
 		access(t, r, m, 0, true)[0] = 10
@@ -329,7 +329,7 @@ func TestWriteAheadTakesOnlySpareDirtyReservations(t *testing.T) {
 func TestACheckpointPublishesEveryWriteAheadPage(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		const pages = 8
-		f, r, m, b := holeRegion(t, vmmemory.Config{ResidentPages: pages, LogicalPages: pages,
+		f, r, m, b := holeMemoryRegion(t, vmmemory.Config{ResidentPages: pages, LogicalPages: pages,
 			DirtyPages: pages, ReadAheadPages: pages, WriteAheadPages: 4}, pages)
 		access(t, r, m, 0, true)[0] = 5
 		seal(t, r)
@@ -376,7 +376,7 @@ func TestACheckpointPublishesEveryWriteAheadPage(t *testing.T) {
 	})
 }
 
-// Random stores and reads over a region half holes and half data, through an
+// Random stores and reads over a memory region half holes and half data, through an
 // arena too small to hold it and flushed now and then, must always read back
 // what an independent byte model holds and never exceed a budget.
 func TestWriteAheadAgainstIndependentByteModel(t *testing.T) {

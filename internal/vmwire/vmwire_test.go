@@ -14,7 +14,7 @@ import (
 // Linux suites are what run them against a real client.
 
 // Version 9 added FLUSH, the request a client sends when its guest flushes the
-// region, which RESULT answers. A version 8 pager reads one as a control
+// memory region, which RESULT answers. A version 8 pager reads one as a control
 // message it does not know and ends the session, which ends the guest, so the
 // two are told apart by the version before a guest runs rather than at its first
 // flush.
@@ -113,7 +113,7 @@ func TestAnAttachmentStatesAGeometryTheClientChecks(t *testing.T) {
 			func() vmwire.Frame { f := pmem; f.Length = 3 << 20; return f }(), "not whole 2097152-byte pages"},
 		{"an empty arena", func() vmwire.Frame { f := ram; f.Length = 0; return f }(), "not whole"},
 		{"a frame that is not an attachment",
-			func() vmwire.Frame { f := ram; f.Kind = vmwire.Region; return f }(), "kind 2"},
+			func() vmwire.Frame { f := ram; f.Kind = vmwire.MemoryRegion; return f }(), "kind 2"},
 	} {
 		err := vmwire.CheckAttach(c.frame)
 		if err == nil {

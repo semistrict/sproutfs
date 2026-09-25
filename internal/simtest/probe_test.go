@@ -29,7 +29,7 @@ var registeredProbes = []string{
 // unreachedProbes are the registered probes no campaign in this repository
 // reaches. The store either answers or fails outright here, so no conditional
 // write ever loses its reply and is reconciled by its writer's nonce; and the
-// pagers evict, but never while the region an eviction takes a page from is
+// pagers evict, but never while the memory region an eviction takes a page from is
 // sealed.
 //
 // The list is asserted in both directions. A probe on it that starts firing is

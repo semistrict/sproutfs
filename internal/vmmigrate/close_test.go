@@ -98,7 +98,7 @@ func (s *served) heldSourceHolding(t *testing.T, address platform.Address,
 		held.let()
 		_ = source.Close()
 	})
-	source.Serve("vm-2", vmmigrate.RegionPages(s.machine.Regions()))
+	source.Serve("vm-2", vmmigrate.MemoryRegionPages(s.machine.MemoryRegions()))
 	s.source = source
 	return held
 }

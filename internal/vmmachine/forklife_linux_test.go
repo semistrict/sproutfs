@@ -94,7 +94,7 @@ const (
 	// and resumed straight away. Nothing is settled and nothing is published.
 	intervalCapture
 	// intervalPause is the vCPUs stopping and starting, and nothing else at
-	// all: no state captured, no region sealed, nothing written anywhere. If
+	// all: no state captured, no memory region sealed, nothing written anywhere. If
 	// this kills, neither the pager nor the capture is the defect.
 	intervalPause
 )
@@ -336,11 +336,11 @@ const ringRadius = 2
 // says what the pager did to it.
 func reportRing(t *testing.T, child *forkedChild, console string) {
 	t.Helper()
-	region := child.process.Regions()[vmmachine.RAMVolume]
-	if region == nil {
+	memoryRegion := child.process.MemoryRegions()[vmmachine.RAMVolume]
+	if memoryRegion == nil {
 		return
 	}
-	size := region.PageSize()
+	size := memoryRegion.PageSize()
 	seen := make(map[uint64]bool)
 	for _, match := range kernelAddresses.FindAllString(console, -1) {
 		address, err := strconv.ParseUint(strings.TrimPrefix(match, "ffff"), 16, 64)
@@ -354,7 +354,7 @@ func reportRing(t *testing.T, child *forkedChild, console string) {
 			continue
 		}
 		seen[page] = true
-		lines := vmmemory.Ring(region, page, ringRadius)
+		lines := vmmemory.Ring(memoryRegion, page, ringRadius)
 		if len(lines) == 0 {
 			continue
 		}

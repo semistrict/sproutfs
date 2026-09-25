@@ -1,6 +1,6 @@
 //! A small process adapter used by the real Go pager tests in internal/vmtest/.
 //!
-//! It maps two regions, one PMEM and one RAM, as a VMM does: each is its own
+//! It maps two memory regions, one PMEM and one RAM, as a VMM does: each is its own
 //! managed-memory session over its own socket. Test commands name them 0 and 1.
 
 #[cfg(target_os = "linux")]

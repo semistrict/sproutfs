@@ -36,7 +36,7 @@ import (
 // is worth more than a hole or a published run, but it is not worth an unbounded
 // number of commands before the guest runs.
 //
-// It is a variable only so a test can observe the bound without a region of
+// It is a variable only so a test can observe the bound without a memory region of
 // production size.
 var populationRuns = 128
 
@@ -51,22 +51,22 @@ var populationRuns = 128
 // window per touch. A run of pages a fork point named is charged like any
 // other, so an attach's cost is bounded whatever a point names.
 //
-// It is a variable only so a test can observe the bound without a region of
+// It is a variable only so a test can observe the bound without a memory region of
 // production size.
 var populationPages uint64 = 16 << 10
 
 // populationRun is the shortest run of pages Populate installs: consecutive in
-// this region and resident in consecutive arena slots, which is what one
+// this memory region and resident in consecutive arena slots, which is what one
 // mapping command covers. It is the read-ahead window, because a run shorter
 // than one saves at most the single fault that would have mapped the same pages
 // with the same single command — and only if the guest reads them at all. A
-// region smaller than the read-ahead run is one window, so that is its length.
-func (r *Region) populationRun() int { return max(min(r.readAheadPages, r.pageCount), 1) }
+// memory region smaller than the read-ahead run is one window, so that is its length.
+func (r *MemoryRegion) populationRun() int { return max(min(r.readAheadPages, r.pageCount), 1) }
 
 // PopulateStats is what one attach's populate installed before the guest ran:
 // the mapping commands it issued, the runs those commands covered and the pages
-// in them, and how long it took. It is the region's own rather than the pager's,
-// because an attach is per region and a host brings several up at once — and it
+// in them, and how long it took. It is the memory region's own rather than the pager's,
+// because an attach is per memory region and a host brings several up at once — and it
 // is what says whether a restore's wait was the populate at all. A command is
 // what the VMM answers with an mmap of the arena, a UFFD registration, a
 // write-protect and an mremap whose REMAP event this pager reads back, so
@@ -76,20 +76,20 @@ type PopulateStats struct {
 	DurationNS            int64
 }
 
-// Populated is what this region's populate came to, zero until it has run.
-func (r *Region) Populated() PopulateStats {
+// Populated is what this memory region's populate came to, zero until it has run.
+func (r *MemoryRegion) Populated() PopulateStats {
 	if stats := r.populated.Load(); stats != nil {
 		return *stats
 	}
 	return PopulateStats{}
 }
 
-// Populate maps the pages of the region that are already resident under their
+// Populate maps the pages of the memory region that are already resident under their
 // stored identity, so a restored or forked machine starts with the pages its
 // siblings loaded and takes no faults on them. It loads nothing, and it installs
 // at most populationRuns runs of them. Call it once the mapping accepts commands
 // and before memory users start.
-func (r *Region) Populate(ctx context.Context) error {
+func (r *MemoryRegion) Populate(ctx context.Context) error {
 	h := r.host
 	started := h.clock.Now()
 	var installed installedRuns
@@ -106,7 +106,7 @@ func (r *Region) Populate(ctx context.Context) error {
 	}
 	index := h.residentIndex(nil)
 	h.mu.Lock()
-	available := len(index.present) > 0 || h.zeroRegions > 0
+	available := len(index.present) > 0 || h.zeroMemoryRegions > 0
 	h.mu.Unlock()
 	r.mu.Unlock()
 	if !available {
@@ -114,7 +114,7 @@ func (r *Region) Populate(ctx context.Context) error {
 		// cold data or zeros without making attachment wait for metadata.
 		return nil
 	}
-	// The budget is the whole region's, spent in page order. A run that straddles
+	// The budget is the whole memory region's, spent in page order. A run that straddles
 	// two of the windows below is two runs to this walk and may fall under the
 	// length the budget asks for; that costs a fault the populate could have
 	// saved, never a page.
@@ -209,7 +209,7 @@ type candidate struct {
 }
 
 // populateRun is one stretch of pages a populate would install with a single
-// mapping command: pages consecutive in the region that are all explicit zeros,
+// mapping command: pages consecutive in the memory region that are all explicit zeros,
 // or all bound to resident pages in consecutive arena slots. For a resident run,
 // from and to bound the candidates it is made of.
 type populateRun struct {
@@ -232,7 +232,7 @@ type populateRun struct {
 // binding below can only make install send a kept run as two, or bind one page
 // fewer, which costs a command and a fault and never a page.
 func (p *windowPlan) residentRuns(candidates []candidate, runs []populateRun) []populateRun {
-	h := p.region.host
+	h := p.memoryRegion.host
 	slots := make([]int, len(candidates))
 	named := make([]bool, len(candidates))
 	h.mu.Lock()
@@ -276,7 +276,7 @@ func (b *populationBudget) left() bool { return b.runs > 0 && b.pages > 0 }
 
 // spend takes a run out of the budget, cut down to the pages left when it is
 // longer than they are, and reports what was afforded. A sibling's residency is
-// often one run for most of a region, so refusing a long run outright would
+// often one run for most of a memory region, so refusing a long run outright would
 // leave the budget unspent; the front of it is worth the same command, and the
 // fault that reaches the rest maps its window from the same pages.
 func (b *populationBudget) spend(run populateRun) (populateRun, bool) {
@@ -297,7 +297,7 @@ func (b *populationBudget) spend(run populateRun) (populateRun, bool) {
 
 func (p *windowPlan) afford(runs []populateRun, budget *populationBudget) []populateRun {
 	sort.Slice(runs, func(i, j int) bool { return runs[i].first < runs[j].first })
-	least := uint64(p.region.populationRun())
+	least := uint64(p.memoryRegion.populationRun())
 	kept := runs[:0:0]
 	for _, named := range [2]bool{true, false} {
 		for _, run := range runs {
@@ -321,7 +321,7 @@ func (p *windowPlan) afford(runs []populateRun, budget *populationBudget) []popu
 func (p *windowPlan) bindResidents(ctx context.Context, index *residentIndex, budget *populationBudget) error {
 	var candidates []candidate
 	var runs []populateRun
-	ps := p.region.host.pageSize
+	ps := p.memoryRegion.host.pageSize
 	for _, extent := range p.extents {
 		if err := context.Cause(ctx); err != nil {
 			return err

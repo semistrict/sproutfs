@@ -33,10 +33,10 @@ change had left unimplemented.
    unbounded durability loss after one transient store error. Fix: never reuse a
    sequence.
 2. **The dirty budget kills the guest instead of stalling it.**
-   `internal/vmmemory/memory.go:606` waits only while the region's own
+   `internal/vmmemory/memory.go:606` waits only while the memory region's own
    checkpoint is draining; otherwise `ErrCapacity` fails the fault, the session
    closes and the VMM is SIGKILLed. The budget is host-wide, the wait
-   region-local, and the default is the arena's page count for all VMs against a
+   memory-region-local, and the default is the arena's page count for all VMs against a
    60 s interval. This is the VMM death the workload run saw. Fix: host-wide
    wait; a high-water mark that triggers an immediate checkpoint; a deliberate
    stop with a logged reason only as last resort.
@@ -113,8 +113,8 @@ change had left unimplemented.
 - **The VMA budget is never set in production**; a fragmented arena around
   128 GiB hits `max_map_count` and the VMM exits.
 - **`ConcurrentIO` of 16 host-wide** caps cold faults at 32 MiB in flight.
-- **A migration failing after the first region's handoff leaves a zombie**
-  with the checkpoint loop restarted against handed-off regions.
+- **A migration failing after the first memory region's handoff leaves a zombie**
+  with the checkpoint loop restarted against handed-off memory regions.
 - **`h.signal()` per page unlock inside the pause.**
 - **`GET /drain` is unauthenticated, unguarded and on the API port**; no
   auth anywhere and no NetworkPolicy shipped.
@@ -159,7 +159,7 @@ metered store; `podReady` excluding terminating pods.
 
 Every doc described at least one removed feature as existing (the log,
 replication, quorum, membership, deltas, per-page objects, pre-copy, the
-fork over a published checkpoint, scaled page sizes, multi-RAM regions). The
+fork over a published checkpoint, scaled page sizes, multi-RAM memory regions). The
 recurring factual errors, now fixed: the page cache has its own budget, not
 the pager's; the index has no parent or ref; the VMM state is a pack member;
 the interval is 60 s jittered with the timer restarting after upload; the

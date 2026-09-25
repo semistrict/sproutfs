@@ -113,9 +113,9 @@ func (s *survivingSpill) Close() error {
 
 var _ platform.SparseFile = (*survivingSpill)(nil)
 
-// spillFixture is a one-region pager whose scratch spill lives on a device that
+// spillFixture is a one-memory-region pager whose scratch spill lives on a device that
 // resolves unsynced writes at a power loss.
-func spillFixture(t *testing.T, seed uint64) (*fixture, *vmmemory.Region, *mapping, *survivingSpill) {
+func spillFixture(t *testing.T, seed uint64) (*fixture, *vmmemory.MemoryRegion, *mapping, *survivingSpill) {
 	t.Helper()
 	disk := sim.New(sim.Config{Seed: seed}).NewDisk("pager", sim.DiskConfig{PowerLossFaults: true})
 	spill := openSurvivingSpill(t, disk, "spill")
@@ -138,7 +138,7 @@ func spillFixture(t *testing.T, seed uint64) (*fixture, *vmmemory.Region, *mappi
 	}
 	f := &fixture{t: t, h: h, a: a, disk: disk, pageSize: pageSize,
 		source: control.Ref{VM: t.Name(), Sequence: 1}}
-	r, m, _ := f.region(3)
+	r, m, _ := f.memoryRegion(3)
 	return f, r, m, spill
 }
 

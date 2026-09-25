@@ -3,7 +3,7 @@ package vmmemory
 import "testing"
 
 // SetCheckpointBatchPages bounds the pages one seal or retire transition holds
-// the region for, so a test can observe a batch boundary without a dirty set of
+// the memory region for, so a test can observe a batch boundary without a dirty set of
 // production size. It is restored when the test ends.
 func SetCheckpointBatchPages(t *testing.T, pages int) {
 	previous := checkpointBatchPages
@@ -22,7 +22,7 @@ func SetEvictionSeam(t *testing.T, seam func(slot int)) {
 }
 
 // SetReclaimSeam installs what a reclaim for a private page runs while the
-// region is given up, so a test can end that page's dirty epoch in the one
+// memory region is given up, so a test can end that page's dirty epoch in the one
 // window a fault serving it cannot see. It is restored when the test ends.
 func SetReclaimSeam(t *testing.T, seam func(index uint64)) {
 	previous := reclaimSeam
@@ -31,7 +31,7 @@ func SetReclaimSeam(t *testing.T, seam func(index uint64)) {
 }
 
 // SetSealSeam installs what a seal runs between write-protecting the dirty set
-// and recording the checkpoint on the region. It is restored when the test ends.
+// and recording the checkpoint on the memory region. It is restored when the test ends.
 func SetSealSeam(t *testing.T, seam func()) {
 	previous := sealSeam
 	sealSeam = seam
@@ -39,7 +39,7 @@ func SetSealSeam(t *testing.T, seam func()) {
 }
 
 // SetPopulationRuns bounds the mapping runs one attach installs, so a test can
-// observe the bound without a region of production size. It is restored when
+// observe the bound without a memory region of production size. It is restored when
 // the test ends.
 func SetPopulationRuns(t *testing.T, runs int) {
 	previous := populationRuns
@@ -48,7 +48,7 @@ func SetPopulationRuns(t *testing.T, runs int) {
 }
 
 // SetPopulationWindowBytes bounds the window one populate walks volume metadata
-// in, so a test can cross a window boundary without a region of production size.
+// in, so a test can cross a window boundary without a memory region of production size.
 // It is restored when the test ends.
 func SetPopulationWindowBytes(t *testing.T, bytes uint64) {
 	previous := populationWindowBytes
@@ -73,7 +73,7 @@ func Signal(h *Host) {
 }
 
 // SetPopulationPages bounds the pages one attach installs, so a test can
-// observe the bound without a region of production size. It is restored when
+// observe the bound without a memory region of production size. It is restored when
 // the test ends.
 func SetPopulationPages(t *testing.T, pages uint64) {
 	previous := populationPages
@@ -81,6 +81,6 @@ func SetPopulationPages(t *testing.T, pages uint64) {
 	t.Cleanup(func() { populationPages = previous })
 }
 
-// PressMappings is what a region's first refused mapping command does: from
+// PressMappings is what a memory region's first refused mapping command does: from
 // then on its stores close gaps. The rules' own tests start there.
-func (r *Region) PressMappings() { r.pressed.Store(true) }
+func (r *MemoryRegion) PressMappings() { r.pressed.Store(true) }

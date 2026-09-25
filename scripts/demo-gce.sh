@@ -400,8 +400,8 @@ fixes() {
 }
 
 # A guest larger than the x86_64 MMIO gap, run on the node by
-# scripts/lib/demo-bigguest.sh. Only an x86_64 node exercises the two-region
-# mapping at all, which is why this is here and not in the Lima tests.
+# scripts/lib/demo-bigguest.sh. Only an x86_64 node exercises the mapping of two
+# guest memory regions at all, which is why this is here and not in the Lima tests.
 bigguest() {
     check_instance_owner
     wait_for_pods

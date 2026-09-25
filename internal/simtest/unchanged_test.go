@@ -68,7 +68,7 @@ func TestForksThatOnlyReadPublishNothingAndGoOnSharing(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		// The two regions are two pagers of two pages, so what a child holds
+		// The two memory regions are two pagers of two pages, so what a child holds
 		// privately is bytes and not a page count: memory in one unit, disk in
 		// the other. The pages themselves still add up, because a settle counts
 		// pages of whichever pager settled them.

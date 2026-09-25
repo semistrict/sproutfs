@@ -7,10 +7,10 @@ import (
 )
 
 // The loss window is a VM's, because the checkpoint that ends it is: one pause
-// seals every region a VM maps, so the pages of one region and the pages of its
+// seals every memory region a VM maps, so the pages of one memory region and the pages of its
 // siblings become durable together. The pager holds no idea of a VM — it has
-// regions and a dirty budget — so this is where the two meet: the host already
-// answers the pager's pressure per region, and it answers the age the same way.
+// memory regions and a dirty budget — so this is where the two meet: the host already
+// answers the pager's pressure per memory region, and it answers the age the same way.
 
 // lossWindowOf resolves what a configuration asked for into the window itself:
 // zero is the default a deployment that named none gets, and a negative value is
@@ -29,32 +29,32 @@ func lossWindowOf(configured time.Duration) time.Duration {
 }
 
 // oldestUnpublished answers Pressure.Oldest: when the oldest write no
-// checkpoint of this region's VM covers was made, zero where that VM holds
-// none. A region belonging to no VM this host runs answers for itself, which is
-// the safe reading — it is at least as old as the region's own pages — and the
+// checkpoint of this memory region's VM covers was made, zero where that VM holds
+// none. A memory region belonging to no VM this host runs answers for itself, which is
+// the safe reading — it is at least as old as the memory region's own pages — and the
 // pager stalls such a store anyway, since no checkpoint of it can be taken.
 //
 // It runs on the goroutine of the store that is waiting, so it only reads: every
-// region reports its own oldest page under its own bookkeeping lock, and nothing
+// memory region reports its own oldest page under its own bookkeeping lock, and nothing
 // here waits for a fault, a seal or a publication.
-func (h *Host) oldestUnpublished(region *vmmemory.Region) time.Time {
-	_, entry := h.machineFor(region)
+func (h *Host) oldestUnpublished(memoryRegion *vmmemory.MemoryRegion) time.Time {
+	_, entry := h.machineFor(memoryRegion)
 	if entry == nil {
-		return region.OldestUnpublished()
+		return memoryRegion.OldestUnpublished()
 	}
-	return oldestOf(entry.runtime.Regions())
+	return oldestOf(entry.runtime.MemoryRegions())
 }
 
 // oldestOf is the oldest unpublished write across one VM's disks. RAM is not
 // in it: the interval checkpoints disks alone, so nothing it takes would ever
 // make a RAM write published, and a guest's RAM is not what the window bounds.
-func oldestOf(regions map[string]*vmmemory.Region) time.Time {
+func oldestOf(memoryRegions map[string]*vmmemory.MemoryRegion) time.Time {
 	var oldest time.Time
-	for _, region := range regions {
-		if region.Kind() == vmmemory.Ram {
+	for _, memoryRegion := range memoryRegions {
+		if memoryRegion.Kind() == vmmemory.Ram {
 			continue
 		}
-		since := region.OldestUnpublished()
+		since := memoryRegion.OldestUnpublished()
 		if since.IsZero() {
 			continue
 		}
@@ -67,11 +67,11 @@ func oldestOf(regions map[string]*vmmemory.Region) time.Time {
 
 // LossWindow reports how long the named VM has held a write no checkpoint
 // covers, and whether the pager is holding its stores back for it. Zero is a VM
-// with nothing unpublished, a VM this host does not run, and a VM whose regions
+// with nothing unpublished, a VM this host does not run, and a VM whose memory regions
 // this host cannot see; waiting is always false where the bound is disabled.
 //
 // It is what a host's status says about one VM's exposure, and the only place
-// the number exists: the pager measures it per region and nothing else adds them
+// the number exists: the pager measures it per memory region and nothing else adds them
 // up.
 func (h *Host) LossWindow(vmID string) (age time.Duration, waiting bool) {
 	h.machines.mu.Lock()
@@ -80,7 +80,7 @@ func (h *Host) LossWindow(vmID string) (age time.Duration, waiting bool) {
 	if entry == nil {
 		return 0, false
 	}
-	oldest := oldestOf(entry.runtime.Regions())
+	oldest := oldestOf(entry.runtime.MemoryRegions())
 	if oldest.IsZero() {
 		return 0, false
 	}
@@ -94,7 +94,7 @@ func (h *Host) overLossWindow(entry *registration) bool {
 	if h.lossWindow <= 0 || entry == nil {
 		return false
 	}
-	oldest := oldestOf(entry.runtime.Regions())
+	oldest := oldestOf(entry.runtime.MemoryRegions())
 	return !oldest.IsZero() && h.clock.Since(oldest) > h.lossWindow
 }
 

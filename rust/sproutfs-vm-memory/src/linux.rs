@@ -5,7 +5,7 @@ use std::ptr;
 
 use linux_raw_sys::general as u;
 
-/// The pages this transport maps. A session states which of them its region
+/// The pages this transport maps. A session states which of them its memory region
 /// runs, and the arena it attaches is the memory that page is made of: the
 /// host's 2 MiB HugeTLB pool, or an ordinary shared memfd over the host's own
 /// 4 KiB pages.
@@ -19,7 +19,7 @@ pub const BACKING_MEMFD: u64 = 2;
 const HUGETLBFS_MAGIC: u64 = 0x958458f6;
 const TMPFS_MAGIC: u64 = 0x01021994;
 
-/// The arena a region of this page must be attached over, or `None` for a page
+/// The arena a memory region of this page must be attached over, or `None` for a page
 /// this transport does not map. The two are one statement: a 2 MiB page is a
 /// page of the pool and a 4 KiB page is ordinary memory, so a session that
 /// stated one and attached the other is refused before anything is mapped.
@@ -100,7 +100,7 @@ pub(crate) fn ioctl<T>(fd: &OwnedFd, call: &str, number: u32, value: &mut T) -> 
 
 pub(crate) struct Uffd(pub OwnedFd);
 
-/// Every feature a session can need, whichever geometry its region turns out to
+/// Every feature a session can need, whichever geometry its memory region turns out to
 /// run. The page is the attachment's to state and the UFFD is created before
 /// it, so the set is negotiated once here: a host runs a pager of each kind, so
 /// a kernel that serves only one of the two geometries cannot run this build at
@@ -251,7 +251,7 @@ impl Uffd {
     }
 }
 
-// One untouched anonymous source per logical region preserves a common
+// One untouched anonymous source per logical memory region preserves a common
 // anonymous offset origin for zero and missing-trap replacements. Creating
 // unrelated anonymous mappings for each revoke prevents adjacent VMAs from
 // merging, even when only a few arena pages remain resident.
@@ -268,7 +268,7 @@ impl TrapSource {
     //
     // The destination is reserved at the source's own phase within the largest
     // page this transport maps, so that a range prepared from the middle of the
-    // source keeps the anonymous offset origin the region was attached with and
+    // source keeps the anonymous offset origin the memory region was attached with and
     // the trap a revocation installs still merges with the traps around it. At
     // a 2 MiB page every offset is a whole page and the phase is zero; at 4 KiB
     // it is what keeps a revoked page from costing a mapping of its own.
@@ -296,14 +296,14 @@ impl TrapSource {
 }
 
 /// One batch's staging area: the reservation a contiguous span of a batch's
-/// MAP runs is built in, away from the live region. The span is advised,
+/// MAP runs is built in, away from the live memory region. The span is advised,
 /// registered and write-protected once for all of its runs rather than once
 /// each, which is what makes a run of a scattered batch cheap.
 ///
-/// Only the mremap that puts a run in the region stays the run's own. mremap
+/// Only the mremap that puts a run in the memory region stays the run's own. mremap
 /// moves one mapping, and two runs of a batch are never one: runs adjacent in
-/// both the region and the arena have already been merged by the caller, so the
-/// ones left here are adjacent in the region alone and the kernel keeps them
+/// both the memory region and the arena have already been merged by the caller, so the
+/// ones left here are adjacent in the memory region alone and the kernel keeps them
 /// apart. Making them one would mean the pager saying so on the wire.
 ///
 /// Runs leave the span front to back, so what is left to release is always the
@@ -391,7 +391,7 @@ unsafe impl Send for Mapping {}
 
 impl Mapping {
     /// Reserves an anonymous range of len bytes whose address sits at `phase`
-    /// within the largest page this transport maps. The whole region and the
+    /// within the largest page this transport maps. The whole memory region and the
     /// trap source take phase zero; a range prepared out of the middle of the
     /// source takes its own, so its anonymous offset origin is preserved.
     pub fn anonymous(len: usize, phase: usize) -> io::Result<Self> {
@@ -498,7 +498,7 @@ impl Mapping {
         if got == libc::MAP_FAILED {
             return Err(last("mremap"));
         }
-        self.len = 0; // the region, not this temporary owner, now owns the range
+        self.len = 0; // the memory region, not this temporary owner, now owns the range
         Ok(())
     }
 

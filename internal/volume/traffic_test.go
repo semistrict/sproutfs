@@ -13,7 +13,7 @@ import (
 )
 
 // sealedPages is a pager checkpoint of fixed content, which is what a running
-// guest's regions give a checkpoint. It is the only thing that makes Sealed
+// guest's memory regions give a checkpoint. It is the only thing that makes Sealed
 // non-zero.
 type sealedPages struct {
 	size  int

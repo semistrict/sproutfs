@@ -22,7 +22,7 @@ func TestAnArenaWithMoreOffsetsThanPagesHoldsTheSamePages(t *testing.T) {
 			const pages = 4
 			f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: pages, ArenaOffsets: offsets,
 				LogicalPages: 16, DirtyPages: pages, ReadAheadPages: 1})
-			r, m, b := f.region(8)
+			r, m, b := f.memoryRegion(8)
 			for page := range uint64(8) {
 				access(t, r, m, page, false)
 			}
@@ -60,7 +60,7 @@ func TestAnArenaWithMoreOffsetsThanPagesHoldsTheSamePages(t *testing.T) {
 func TestReleasingAPageGivesTheArenasMemoryBack(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		const pages, run = 8, 4
-		f, r, m, b := zeroAheadRegion(t, pages, run)
+		f, r, m, b := zeroAheadMemoryRegion(t, pages, run)
 		access(t, r, m, 0, true)[0] = 42
 		if f.a.held != run || f.a.peak != run {
 			t.Fatalf("the arena holds %d pages after one store and held %d at its peak, want %d of each",

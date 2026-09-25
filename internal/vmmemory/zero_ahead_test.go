@@ -17,11 +17,11 @@ import (
 // suite is running, because a run of thousands of pages is the RAM geometry's
 // and a 2 MiB arena of that many slots is gigabytes of fixture.
 
-// zeroAheadRegion is a region of holes at a stated run, with read-ahead and
+// zeroAheadMemoryRegion is a memory region of holes at a stated run, with read-ahead and
 // write-ahead both that run, which is what a production host gives each pager.
-func zeroAheadRegion(t *testing.T, pages, run int) (*fixture, *vmmemory.Region, *mapping, *backing) {
+func zeroAheadMemoryRegion(t *testing.T, pages, run int) (*fixture, *vmmemory.MemoryRegion, *mapping, *backing) {
 	t.Helper()
-	return holeRegion(t, vmmemory.Config{PageSize: checkpoint.PageSize4KiB,
+	return holeMemoryRegion(t, vmmemory.Config{PageSize: checkpoint.PageSize4KiB,
 		ResidentPages: pages, LogicalPages: pages, DirtyPages: pages,
 		ReadAheadPages: run, WriteAheadPages: run}, pages)
 }
@@ -37,7 +37,7 @@ func TestZeroWriteAheadPagesTheGuestNeverStoredIntoAreGivenBack(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		const pages, run = 4096, 512
 		const stores = pages / run
-		f, r, m, b := zeroAheadRegion(t, pages, run)
+		f, r, m, b := zeroAheadMemoryRegion(t, pages, run)
 		for page := range uint64(stores) {
 			access(t, r, m, page*run, true)[0] = byte(page + 1)
 		}
@@ -77,7 +77,7 @@ func TestZeroWriteAheadPagesTheGuestNeverStoredIntoAreGivenBack(t *testing.T) {
 		}
 		requireBytes(t, r, m, want, checkpoint.PageSize4KiB)
 		if b.loads != 0 {
-			t.Fatalf("reading the region back read the volume %d times, want none: every page is a hole or resident", b.loads)
+			t.Fatalf("reading the memory region back read the volume %d times, want none: every page is a hole or resident", b.loads)
 		}
 	})
 }
@@ -88,7 +88,7 @@ func TestZeroWriteAheadPagesTheGuestNeverStoredIntoAreGivenBack(t *testing.T) {
 func TestAGivenBackZeroAheadPageStoresAsAHoleAgain(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		const pages, run = 1024, 256
-		f, r, m, b := zeroAheadRegion(t, pages, run)
+		f, r, m, b := zeroAheadMemoryRegion(t, pages, run)
 		access(t, r, m, 0, true)[0] = 1
 		f.mustCheckpoint(r, b)
 		if s := hostStats(t, f); s.ResidentPages != 1 || s.DirtyPages != 0 {

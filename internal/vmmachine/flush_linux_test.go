@@ -44,9 +44,9 @@ func TestAGuestFlushWaitsForTheHost(t *testing.T) {
 	var mu sync.Mutex
 	holding := false
 	var held []func(error)
-	var regions []*vmmemory.Region
+	var memoryRegions []*vmmemory.MemoryRegion
 	arrived := make(chan struct{}, 1)
-	pagers.pagers.Pmem.SetFlushed(func(r *vmmemory.Region, done func(error)) {
+	pagers.pagers.Pmem.SetFlushed(func(r *vmmemory.MemoryRegion, done func(error)) {
 		mu.Lock()
 		if !holding {
 			mu.Unlock()
@@ -54,7 +54,7 @@ func TestAGuestFlushWaitsForTheHost(t *testing.T) {
 			return
 		}
 		held = append(held, done)
-		regions = append(regions, r)
+		memoryRegions = append(memoryRegions, r)
 		mu.Unlock()
 		select {
 		case arrived <- struct{}{}:
@@ -73,7 +73,7 @@ func TestAGuestFlushWaitsForTheHost(t *testing.T) {
 	}
 	t.Cleanup(release)
 	p := bootGuestWithAgentOn(t, ctx, binaryPath, pagers, vm)
-	root := p.Regions()["root"]
+	root := p.MemoryRegions()["root"]
 
 	mu.Lock()
 	holding = true
@@ -95,10 +95,10 @@ func TestAGuestFlushWaitsForTheHost(t *testing.T) {
 	case <-time.After(flushHeld):
 	}
 	mu.Lock()
-	for _, r := range regions {
+	for _, r := range memoryRegions {
 		if r != root {
 			mu.Unlock()
-			t.Fatalf("a flush reached the host as region %p, want the root's %p", r, root)
+			t.Fatalf("a flush reached the host as memory region %p, want the root's %p", r, root)
 		}
 	}
 	mu.Unlock()

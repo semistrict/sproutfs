@@ -36,7 +36,7 @@ func metrics(status hostapi.Status) string {
 	write("sproutfs_vms_waiting", "gauge",
 		"VMs past their loss window, whose stores the pager is holding back until a checkpoint of them lands.", waiting)
 
-	// A host runs one pager per kind of region, so every pager series carries
+	// A host runs one pager per kind of memory region, so every pager series carries
 	// the kind as a label: two kinds, one series each, and comparing RAM against
 	// PMEM is a query rather than twice the metrics. Page counts have to be
 	// labelled — the two pagers run their own pages, so a sum of them would mean
@@ -76,10 +76,10 @@ func metrics(status hostapi.Status) string {
 	// The sharing gauges are what the counter above is not — how much sharing is
 	// still there, rather than how often it happened.
 	byKind("sproutfs_pager_unique_resident_bytes", "gauge",
-		"Host memory the pager's arena holds, one resident page counted once however many regions map it.",
+		"Host memory the pager's arena holds, one resident page counted once however many memory regions map it.",
 		func(p hostapi.PagerKind) any { return p.Sharing.UniqueBytes })
 	byKind("sproutfs_pager_mapped_resident_bytes", "gauge",
-		"Resident pages summed over the regions that map them, counting every alias, which is what this host would hold if nothing shared anything.",
+		"Resident pages summed over the memory regions that map them, counting every alias, which is what this host would hold if nothing shared anything.",
 		func(p hostapi.PagerKind) any { return p.Sharing.MappedBytes })
 	byKind("sproutfs_pager_shared_saved_bytes", "gauge",
 		"Mapped less unique: the memory this host did not have to find because its guests are reading the same pages.",

@@ -35,8 +35,8 @@ import (
 // the same UFFD and the same transport.
 const hugePageSize = checkpoint.PageSize2MiB
 
-// kernelBacking models one region's volume: its pages are inherited from one
-// checkpoint shared by every process mapping that region, and a written page
+// kernelBacking models one memory region's volume: its pages are inherited from one
+// checkpoint shared by every process mapping that memory region, and a written page
 // becomes this backing's own overlay data until published again.
 type kernelBacking struct {
 	mu      sync.Mutex
@@ -129,10 +129,10 @@ func (b *kernelBacking) Verify(context.Context) error {
 	return nil
 }
 
-// checkpoint is what a checkpoint does to a region: it seals, reads every
+// checkpoint is what a checkpoint does to a memory region: it seals, reads every
 // sealed page out of the pages the guest is running on, installs them and
 // retires the checkpoint.
-func (b *kernelBacking) checkpoint(ctx context.Context, r *vmmemory.Region) error {
+func (b *kernelBacking) checkpoint(ctx context.Context, r *vmmemory.MemoryRegion) error {
 	if err := r.Seal(ctx); err != nil {
 		return err
 	}
@@ -142,7 +142,7 @@ func (b *kernelBacking) checkpoint(ctx context.Context, r *vmmemory.Region) erro
 
 // publish installs one sealed checkpoint's pages, reporting whether the
 // checkpoint that would hold them was selected.
-func (b *kernelBacking) publish(ctx context.Context, ckpt *vmmemory.RegionCheckpoint) (bool, error) {
+func (b *kernelBacking) publish(ctx context.Context, ckpt *vmmemory.MemoryRegionCheckpoint) (bool, error) {
 	size := b.PageSize()
 	page := make([]byte, size)
 	for _, number := range ckpt.DirtyPages() {
@@ -178,9 +178,9 @@ func (b *kernelBacking) publish(ctx context.Context, ckpt *vmmemory.RegionCheckp
 	return true, nil
 }
 
-// nativeProcess is one real client process. Each of its regions is its own
+// nativeProcess is one real client process. Each of its memory regions is its own
 // managed-memory session over its own socket, as a VMM's RAM and each of its
-// PMEM devices are: region 0 is PMEM and region 1 is RAM.
+// PMEM devices are: memory region 0 is PMEM and memory region 1 is RAM.
 type nativeProcess struct {
 	t           *testing.T
 	cmd         *exec.Cmd
@@ -192,9 +192,9 @@ type nativeProcess struct {
 	backing     []*kernelBacking
 }
 
-// region is the memory of one of the process's regions.
-func (p *nativeProcess) region(index int) *vmmemory.Region {
-	return p.connections[index].Region().Memory
+// memory region is the memory of one of the process's memory regions.
+func (p *nativeProcess) memoryRegion(index int) *vmmemory.MemoryRegion {
+	return p.connections[index].MemoryRegion().Memory
 }
 
 // populate maps every session's already resident identities, as a restore does.
@@ -216,30 +216,30 @@ func (p *nativeProcess) waitFailure(ctx context.Context) error {
 	return <-failures
 }
 
-// seal takes one region's checkpoint over the control protocol, exactly as a
+// seal takes one memory region's checkpoint over the control protocol, exactly as a
 // coordinated capture does: the guest process asks and the pager answers in
 // page-table time.
-func (p *nativeProcess) seal(region int) {
+func (p *nativeProcess) seal(memoryRegion int) {
 	p.t.Helper()
-	p.request(fmt.Sprintf("seal %d", region), "sealed")
+	p.request(fmt.Sprintf("seal %d", memoryRegion), "sealed")
 }
 
-// checkpoint is one region's whole checkpoint: the wire seal, the publication
+// checkpoint is one memory region's whole checkpoint: the wire seal, the publication
 // of the sealed pages into its backing, and the retirement that makes them
 // clean.
-func (p *nativeProcess) checkpoint(region int) {
+func (p *nativeProcess) checkpoint(memoryRegion int) {
 	p.t.Helper()
-	p.seal(region)
-	if region >= len(p.backing) {
-		p.t.Fatalf("region %d has no kernel backing to publish into", region)
+	p.seal(memoryRegion)
+	if memoryRegion >= len(p.backing) {
+		p.t.Fatalf("memory region %d has no kernel backing to publish into", memoryRegion)
 	}
-	r := p.region(region)
-	published, err := p.backing[region].publish(p.t.Context(), r.Checkpoint())
+	r := p.memoryRegion(memoryRegion)
+	published, err := p.backing[memoryRegion].publish(p.t.Context(), r.Checkpoint())
 	if err != nil {
-		p.t.Fatalf("publishing region %d: %v", region, err)
+		p.t.Fatalf("publishing memory region %d: %v", memoryRegion, err)
 	}
 	if err := r.Checkpoint().Retire(p.t.Context(), published); err != nil {
-		p.t.Fatalf("retiring region %d: %v", region, err)
+		p.t.Fatalf("retiring memory region %d: %v", memoryRegion, err)
 	}
 }
 
@@ -290,7 +290,7 @@ func kernelHostConfigured(t *testing.T, cfg vmmemory.Config) *vmmemory.Host {
 	return h
 }
 
-// zeroKernelBackings are two regions' volumes that are holes throughout.
+// zeroKernelBackings are two memory regions' volumes that are holes throughout.
 func zeroKernelBackings(size int) []*kernelBacking {
 	var backings []*kernelBacking
 	for object := range byte(2) {
@@ -420,7 +420,7 @@ func startNative(t *testing.T, h *vmmemory.Host, pages int, provided ...vmmemory
 func startNativeWithConfig(t *testing.T, h *vmmemory.Host, pages int, config vmmemory.ConnectionConfig, provided ...vmmemory.Backing) *nativeProcess {
 	t.Helper()
 	if len(provided) != 0 && len(provided) != 2 {
-		t.Fatal("two region backings are required")
+		t.Fatal("two memory region backings are required")
 	}
 	dir := t.TempDir()
 	paths := [2]string{filepath.Join(dir, "pmem.sock"), filepath.Join(dir, "ram.sock")}
@@ -471,9 +471,9 @@ func startNativeWithConfig(t *testing.T, h *vmmemory.Host, pages int, config vmm
 			}
 		}
 	})
-	// The client connects its sessions in region order, so each listener is
+	// The client connects its sessions in memory region order, so each listener is
 	// accepted in turn.
-	for i, kind := range []vmmemory.RegionKind{vmmemory.Pmem, vmmemory.Ram} {
+	for i, kind := range []vmmemory.MemoryRegionKind{vmmemory.Pmem, vmmemory.Ram} {
 		var b vmmemory.Backing
 		if len(provided) != 0 {
 			b = provided[i]
@@ -493,7 +493,7 @@ func startNativeWithConfig(t *testing.T, h *vmmemory.Host, pages int, config vmm
 		if err != nil {
 			t.Fatal(err)
 		}
-		p.connections[i], err = vmmemory.Connect(t.Context(), h, socket, vmmemory.RegionBacking{Kind: kind, Backing: b}, config)
+		p.connections[i], err = vmmemory.Connect(t.Context(), h, socket, vmmemory.MemoryRegionBacking{Kind: kind, Backing: b}, config)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -520,18 +520,18 @@ func TestKVMVolumeCheckpointWithSpillRequiresAuthority(t *testing.T) {
 	t.Cleanup(func() { _ = vm.Close(context.Background()) })
 	volumes := []*volume.Volume{vm.Volume("pmem0"), vm.Volume("ram0")}
 	p := startNativeWithConfig(t, h, 8, vmmemory.ConnectionConfig{QueuePages: 16, CommandTimeout: 5 * time.Second, VerifyInterval: time.Hour}, volumes[0], volumes[1])
-	for region := range 2 {
+	for memoryRegion := range 2 {
 		for page := range 8 {
-			value := 91 + region + page
-			p.request(fmt.Sprintf("kvmwrite %d %d %d", region, page*hugePageSize, value), fmt.Sprintf("kvm %d", value))
+			value := 91 + memoryRegion + page
+			p.request(fmt.Sprintf("kvmwrite %d %d %d", memoryRegion, page*hugePageSize, value), fmt.Sprintf("kvm %d", value))
 		}
 	}
-	// One checkpoint of the whole VM: every region seals over the control protocol
+	// One checkpoint of the whole VM: every memory region seals over the control protocol
 	// and the checkpoint publishes their pages together.
 	sources := make(map[string]volume.DirtySource, len(volumes))
-	for region, v := range volumes {
-		p.seal(region)
-		sources[v.Name()] = p.region(region).Checkpoint()
+	for memoryRegion, v := range volumes {
+		p.seal(memoryRegion)
+		sources[v.Name()] = p.memoryRegion(memoryRegion).Checkpoint()
 	}
 	ckpt, err := vm.Snapshot(t.Context(), volume.Prepared([]byte("kvm"), sources))
 	if err != nil {
@@ -540,10 +540,10 @@ func TestKVMVolumeCheckpointWithSpillRequiresAuthority(t *testing.T) {
 	if err := ckpt.Wait(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	for region, v := range volumes {
+	for memoryRegion, v := range volumes {
 		for page := range 8 {
 			var data [1]byte
-			if err := v.Read(t.Context(), uint64(page*hugePageSize), data[:]); err != nil || data[0] != byte(91+region+page) {
+			if err := v.Read(t.Context(), uint64(page*hugePageSize), data[:]); err != nil || data[0] != byte(91+memoryRegion+page) {
 				t.Fatalf("the checkpoint lost a KVM store: %v %d", err, data[0])
 			}
 		}
@@ -553,13 +553,13 @@ func TestKVMVolumeCheckpointWithSpillRequiresAuthority(t *testing.T) {
 		t.Fatalf("spill/checkpoint coverage: %+v %v", stats, err)
 	}
 	// A subsequent real KVM store cannot become durable when the VM's control
-	// record is unavailable: the publication fails and the region keeps its
+	// record is unavailable: the publication fails and the memory region keeps its
 	// pages, which the next checkpoint takes again.
 	p.request("kvmwrite 0 0 199", "kvm 199")
-	region := p.region(0)
+	memoryRegion := p.memoryRegion(0)
 	p.seal(0)
 	c.runtime.ObjectStore().Fail()
-	publication, err := vm.Snapshot(t.Context(), volume.Prepared(nil, map[string]volume.DirtySource{"pmem0": region.Checkpoint()}))
+	publication, err := vm.Snapshot(t.Context(), volume.Prepared(nil, map[string]volume.DirtySource{"pmem0": memoryRegion.Checkpoint()}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -568,8 +568,8 @@ func TestKVMVolumeCheckpointWithSpillRequiresAuthority(t *testing.T) {
 	if !errors.Is(err, platform.ErrUnavailable) {
 		t.Fatalf("a checkpoint without the object store = %v, want ErrUnavailable", err)
 	}
-	if err := region.Verify(t.Context()); err != nil {
-		t.Fatalf("a failed publication left the KVM region ineligible to run: %v", err)
+	if err := memoryRegion.Verify(t.Context()); err != nil {
+		t.Fatalf("a failed publication left the KVM memory region ineligible to run: %v", err)
 	}
 	if s, err := h.Stats(t.Context()); err != nil || s.DirtyPages == 0 {
 		t.Fatalf("the abandoned checkpoint kept %d dirty pages, want the store it could not publish: %v", s.DirtyPages, err)
@@ -623,7 +623,7 @@ func (p *nativeProcess) ask(command, want string) error {
 		return fmt.Errorf("%s: the memory process stalled", command)
 	}
 }
-func (p *nativeProcess) pfn(region int) uint64 {
+func (p *nativeProcess) pfn(memoryRegion int) uint64 {
 	p.t.Helper()
 	f, err := os.Open(fmt.Sprintf("/proc/%d/pagemap", p.cmd.Process.Pid))
 	if err != nil {
@@ -631,7 +631,7 @@ func (p *nativeProcess) pfn(region int) uint64 {
 	}
 	defer f.Close()
 	var b [8]byte
-	if _, err := f.ReadAt(b[:], int64(p.bases[region]/uint64(os.Getpagesize())*8)); err != nil {
+	if _, err := f.ReadAt(b[:], int64(p.bases[memoryRegion]/uint64(os.Getpagesize())*8)); err != nil {
 		p.t.Fatal(err)
 	}
 	entry := binary.LittleEndian.Uint64(b[:])
@@ -645,25 +645,25 @@ func (p *nativeProcess) pfn(region int) uint64 {
 func TestManagedPagerKVMSharingBoundedReclaimCheckpoint(t *testing.T) {
 	h := kernelHost(t, 3, 32)
 	a, b := startNative(t, h, 8), startNative(t, h, 8)
-	for region := range 2 {
-		value := 1 + region*32
-		a.request(fmt.Sprintf("kvmread %d 0", region), fmt.Sprintf("kvm %d", value))
-		b.request(fmt.Sprintf("kvmread %d 0", region), fmt.Sprintf("kvm %d", value))
-		if a.pfn(region) != b.pfn(region) {
+	for memoryRegion := range 2 {
+		value := 1 + memoryRegion*32
+		a.request(fmt.Sprintf("kvmread %d 0", memoryRegion), fmt.Sprintf("kvm %d", value))
+		b.request(fmt.Sprintf("kvmread %d 0", memoryRegion), fmt.Sprintf("kvm %d", value))
+		if a.pfn(memoryRegion) != b.pfn(memoryRegion) {
 			t.Fatal("clean KVM pages not physically shared")
 		}
-		a.request(fmt.Sprintf("kvmwrite %d 0 91", region), "kvm 91")
-		b.request(fmt.Sprintf("kvmread %d 0", region), fmt.Sprintf("kvm %d", value))
+		a.request(fmt.Sprintf("kvmwrite %d 0 91", memoryRegion), "kvm 91")
+		b.request(fmt.Sprintf("kvmread %d 0", memoryRegion), fmt.Sprintf("kvm %d", value))
 		for page := 1; page < 8; page++ {
-			b.request(fmt.Sprintf("kvmread %d %d", region, page*hugePageSize), fmt.Sprintf("kvm %d", value+page))
+			b.request(fmt.Sprintf("kvmread %d %d", memoryRegion, page*hugePageSize), fmt.Sprintf("kvm %d", value+page))
 		}
-		a.request(fmt.Sprintf("kvmread %d 0", region), "kvm 91")
-		a.checkpoint(region)
+		a.request(fmt.Sprintf("kvmread %d 0", memoryRegion), "kvm 91")
+		a.checkpoint(memoryRegion)
 		var data [1]byte
-		if err := a.backing[region].Load(t.Context(), 0, data[:]); err != nil || data[0] != 91 {
+		if err := a.backing[memoryRegion].Load(t.Context(), 0, data[:]); err != nil || data[0] != 91 {
 			t.Fatalf("the checkpoint published %d: %v", data[0], err)
 		}
-		a.request(fmt.Sprintf("kvmwrite %d 0 92", region), "kvm 92")
+		a.request(fmt.Sprintf("kvmwrite %d 0 92", memoryRegion), "kvm 92")
 	}
 	s, err := h.Stats(t.Context())
 	if err != nil || s.ResidentPages > 3 {
@@ -696,9 +696,9 @@ func TestManagedPagerPopulateAvoidsKVMFirstTouchFaults(t *testing.T) {
 	h := kernelHost(t, 2*pages, 6*pages)
 	a := startNative(t, h, pages)
 	touch := func(p *nativeProcess) {
-		for region := range 2 {
+		for memoryRegion := range 2 {
 			for page := range pages {
-				p.request(fmt.Sprintf("kvmread %d %d", region, page*hugePageSize), fmt.Sprintf("kvm %d", 1+region*32+page))
+				p.request(fmt.Sprintf("kvmread %d %d", memoryRegion, page*hugePageSize), fmt.Sprintf("kvm %d", 1+memoryRegion*32+page))
 			}
 		}
 	}
@@ -750,9 +750,9 @@ func TestManagedPagerEagerZeroMappingsRemainCopyOnWrite(t *testing.T) {
 	if attached.MappedPages-before.MappedPages != 2*pages || attached.Mappings-before.Mappings != 2 || attached.MappingRuns-before.MappingRuns != 2 {
 		t.Fatalf("zero attach was not two contiguous mappings: before=%+v after=%+v", before, attached)
 	}
-	for region := range 2 {
+	for memoryRegion := range 2 {
 		for page := range pages {
-			b.request(fmt.Sprintf("kvmread %d %d", region, page*hugePageSize), "kvm 0")
+			b.request(fmt.Sprintf("kvmread %d %d", memoryRegion, page*hugePageSize), "kvm 0")
 		}
 	}
 	after, _ := h.Stats(t.Context())
@@ -813,12 +813,12 @@ func TestManagedPagerSealProtectsARunSpanningSeveralMappings(t *testing.T) {
 		p.request(fmt.Sprintf("fill 1 %d 1 %d", page*size, 70+page), "filled")
 	}
 	sealed := p.pfn(1)
-	region := p.region(1)
+	memoryRegion := p.memoryRegion(1)
 	before, err := h.Stats(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := region.Seal(t.Context()); err != nil {
+	if err := memoryRegion.Seal(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	after, err := h.Stats(t.Context())
@@ -848,11 +848,11 @@ func TestManagedPagerSealProtectsARunSpanningSeveralMappings(t *testing.T) {
 	if got := p.pfn(1); got == sealed {
 		t.Fatal("a store into a protected page kept the physical page the checkpoint holds")
 	}
-	published, err := p.backing[1].publish(t.Context(), region.Checkpoint())
+	published, err := p.backing[1].publish(t.Context(), memoryRegion.Checkpoint())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := region.Checkpoint().Retire(t.Context(), published); err != nil {
+	if err := memoryRegion.Checkpoint().Retire(t.Context(), published); err != nil {
 		t.Fatal(err)
 	}
 	for page := range pages {
@@ -887,7 +887,7 @@ func TestManagedPagerHugePagesFaultCopySealAndSpill(t *testing.T) {
 	}
 	p := startNativeWithConfig(t, h, pages, vmmemory.ConnectionConfig{QueuePages: pages,
 		CommandTimeout: 5 * time.Second, VerifyInterval: 50 * time.Millisecond}, backings...)
-	region := p.region(1)
+	memoryRegion := p.memoryRegion(1)
 	at := func(page, sub int) int { return page*hugePageSize + sub*host }
 	want := func(page, sub int) byte { return byte(1 + page*per + sub) }
 	read := func(page, sub int, value byte) {
@@ -934,17 +934,17 @@ func TestManagedPagerHugePagesFaultCopySealAndSpill(t *testing.T) {
 
 	// A seal takes the whole pager page, and the checkpoint publishes all of it.
 	before = stats()
-	if err := region.Seal(t.Context()); err != nil {
+	if err := memoryRegion.Seal(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if got := region.Checkpoint().DirtyPages(); len(got) != 1 || got[0] != 1 {
+	if got := memoryRegion.Checkpoint().DirtyPages(); len(got) != 1 || got[0] != 1 {
 		t.Fatalf("the seal checkpoint %v, want the one pager page the guest stored into", got)
 	}
-	published, err := ram.publish(t.Context(), region.Checkpoint())
+	published, err := ram.publish(t.Context(), memoryRegion.Checkpoint())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := region.Checkpoint().Retire(t.Context(), published); err != nil {
+	if err := memoryRegion.Checkpoint().Retire(t.Context(), published); err != nil {
 		t.Fatal(err)
 	}
 	after = stats()
@@ -973,7 +973,7 @@ func TestManagedPagerHugePagesFaultCopySealAndSpill(t *testing.T) {
 	if spills, bytes, refaults := after.Spills-before.Spills, after.SpillWriteBytes-before.SpillWriteBytes, after.SpillRefaults-before.SpillRefaults; spills != 1 || bytes != hugePageSize || refaults != 1 {
 		t.Fatalf("eviction spilled %d pages as %d bytes and refaulted %d, want 1 page of %d bytes and 1", spills, bytes, refaults, hugePageSize)
 	}
-	if err := ram.checkpoint(t.Context(), region); err != nil {
+	if err := ram.checkpoint(t.Context(), memoryRegion); err != nil {
 		t.Fatal(err)
 	}
 	for sub := range per {
@@ -995,8 +995,8 @@ func TestManagedPagerSealProtectsAndCopiesOnWriteOnUFFD(t *testing.T) {
 	p.request("fill 1 0 1 70", "filled")
 	p.request("read 1 0 1", "data 46")
 	sealed := p.pfn(1)
-	region := p.region(1)
-	if err := region.Seal(t.Context()); err != nil {
+	memoryRegion := p.memoryRegion(1)
+	if err := memoryRegion.Seal(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	// The write-protected mapping still serves reads from the checkpoint's page.
@@ -1010,11 +1010,11 @@ func TestManagedPagerSealProtectsAndCopiesOnWriteOnUFFD(t *testing.T) {
 	if got := p.pfn(1); got == sealed {
 		t.Fatal("a store into a sealed page kept the physical page the checkpoint holds")
 	}
-	published, err := p.backing[1].publish(t.Context(), region.Checkpoint())
+	published, err := p.backing[1].publish(t.Context(), memoryRegion.Checkpoint())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := region.Checkpoint().Retire(t.Context(), published); err != nil {
+	if err := memoryRegion.Checkpoint().Retire(t.Context(), published); err != nil {
 		t.Fatal(err)
 	}
 	var data [1]byte

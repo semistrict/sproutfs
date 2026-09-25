@@ -119,12 +119,12 @@ func (m *pageMapping) Resolve(_ context.Context, page uint64, count int, writabl
 }
 
 // machine is the VMM process one host runs for a VM: the migration Runtime over
-// one region, and the stores a test makes through its mapping.
+// one memory region, and the stores a test makes through its mapping.
 type machine struct {
-	t       *testing.T
-	regions map[string]*vmmemory.Region
-	maps    map[string]*pageMapping
-	// closed says this machine's regions have been detached, and closing admits
+	t             *testing.T
+	memoryRegions map[string]*vmmemory.MemoryRegion
+	maps          map[string]*pageMapping
+	// closed says this machine's memory regions have been detached, and closing admits
 	// the first Close: a hold this host expires closes the machine on its own
 	// goroutine and the test's cleanup closes it too, so a test reads the flag
 	// while another goroutine may be setting it.
@@ -138,11 +138,11 @@ type machine struct {
 
 // hostPagers is one host's two pagers and the arena each of them owns, which is
 // what a test builds because it is what a host builds: the two run their own
-// pages over their own arenas and share nothing, so a region attaches to the
+// pages over their own arenas and share nothing, so a memory region attaches to the
 // pager of its kind or to none.
 type hostPagers struct {
 	pagers vmmemory.Pagers
-	arenas map[vmmemory.RegionKind]*pageArena
+	arenas map[vmmemory.MemoryRegionKind]*pageArena
 }
 
 func (p *hostPagers) ram() *vmmemory.Host  { return p.pagers.Ram }
@@ -159,7 +159,7 @@ func newPager(t *testing.T, resources *resource.Budget) *hostPagers {
 	return newPagerWithWriteAhead(t, resources, 0)
 }
 
-// mixedVolumes is a VM whose two regions are two geometries: its RAM in 4 KiB
+// mixedVolumes is a VM whose two memory regions are two geometries: its RAM in 4 KiB
 // pages and its disk in 2 MiB pages, which is what a host's two pagers are for.
 // The page counts are the same either way, so nothing about the VM is larger —
 // only the bytes behind one of them.
@@ -177,8 +177,8 @@ func newMixedPagers(t *testing.T, resources *resource.Budget, budget func(*vmmem
 	if err != nil {
 		t.Fatal(err)
 	}
-	built := &hostPagers{arenas: map[vmmemory.RegionKind]*pageArena{}}
-	for _, kind := range []vmmemory.RegionKind{vmmemory.Ram, vmmemory.Pmem} {
+	built := &hostPagers{arenas: map[vmmemory.MemoryRegionKind]*pageArena{}}
+	for _, kind := range []vmmemory.MemoryRegionKind{vmmemory.Ram, vmmemory.Pmem} {
 		cfg := vmmemory.Config{PageSize: checkpoint.PageSize2MiB,
 			ResidentPages: 32, LogicalPages: 64, DirtyPages: 32, ReadAheadPages: 1}
 		if kind == vmmemory.Ram {
@@ -232,8 +232,8 @@ func newPagerWithConfig(t *testing.T, resources *resource.Budget, cfg vmmemory.C
 	if cfg.PageSize == 0 {
 		cfg.PageSize = migrationPageSize
 	}
-	built := &hostPagers{arenas: map[vmmemory.RegionKind]*pageArena{}}
-	for _, kind := range []vmmemory.RegionKind{vmmemory.Ram, vmmemory.Pmem} {
+	built := &hostPagers{arenas: map[vmmemory.MemoryRegionKind]*pageArena{}}
+	for _, kind := range []vmmemory.MemoryRegionKind{vmmemory.Ram, vmmemory.Pmem} {
 		spill, err := disk.Open(t.Context(), "spill-"+kind.String(), platform.OpenOptions{Create: true})
 		if err != nil {
 			t.Fatal(err)
@@ -261,7 +261,7 @@ func newPagerWithConfig(t *testing.T, resources *resource.Budget, cfg vmmemory.C
 
 func newMachine(t *testing.T, p *hostPagers, vm *volume.VM,
 	backings map[string]vmmemory.Backing) (*machine, error) {
-	m := &machine{t: t, regions: map[string]*vmmemory.Region{}, maps: map[string]*pageMapping{},
+	m := &machine{t: t, memoryRegions: map[string]*vmmemory.MemoryRegion{}, maps: map[string]*pageMapping{},
 		exit: make(chan struct{})}
 	for _, v := range vm.Volumes() {
 		var backing vmmemory.Backing = v
@@ -270,24 +270,24 @@ func newMachine(t *testing.T, p *hostPagers, vm *volume.VM,
 		}
 		// One RAM volume and PMEM for the rest, which is the shape a real
 		// machine binds; the kind is the attacher's to state, and it decides
-		// which pager and which arena the region belongs to.
+		// which pager and which arena the memory region belongs to.
 		kind := vmmemory.Pmem
 		if v.Name() == "ram0" {
 			kind = vmmemory.Ram
 		}
 		mapping := newPageMapping(p.arenas[kind])
-		region, err := p.pagers.For(kind).Attach(t.Context(),
-			vmmemory.RegionBacking{Kind: kind, Backing: backing}, mapping)
+		memoryRegion, err := p.pagers.For(kind).Attach(t.Context(),
+			vmmemory.MemoryRegionBacking{Kind: kind, Backing: backing}, mapping)
 		if err != nil {
 			return nil, err
 		}
-		m.regions[v.Name()], m.maps[v.Name()] = region, mapping
+		m.memoryRegions[v.Name()], m.maps[v.Name()] = memoryRegion, mapping
 	}
 	t.Cleanup(func() { _ = m.Close() })
 	return m, nil
 }
 
-func (m *machine) Regions() map[string]*vmmemory.Region { return m.regions }
+func (m *machine) MemoryRegions() map[string]*vmmemory.MemoryRegion { return m.memoryRegions }
 
 // Wait reports the end of this machine's VMM process, which for a fake with no
 // process is the death a test stages through die.
@@ -307,31 +307,31 @@ func (m *machine) die(err error) {
 	close(m.exit)
 }
 
-// Prepare is a capture's pause: the VMM state is captured and every region
+// Prepare is a capture's pause: the VMM state is captured and every memory region
 // seals the pages the checkpoint will publish.
 func (m *machine) Prepare(ctx context.Context) ([]byte, map[string]volume.DirtySource, error) {
-	sources := make(map[string]volume.DirtySource, len(m.regions))
-	for _, name := range slices.Sorted(maps.Keys(m.regions)) {
-		if err := m.regions[name].Seal(ctx); err != nil {
+	sources := make(map[string]volume.DirtySource, len(m.memoryRegions))
+	for _, name := range slices.Sorted(maps.Keys(m.memoryRegions)) {
+		if err := m.memoryRegions[name].Seal(ctx); err != nil {
 			return nil, nil, err
 		}
-		sources[name] = m.regions[name].Checkpoint()
+		sources[name] = m.memoryRegions[name].Checkpoint()
 	}
 	return []byte("vmm-state"), sources, nil
 }
 
-// SealDisks is a disk checkpoint's pause: the regions of the machine's disks
+// SealDisks is a disk checkpoint's pause: the memory regions of the machine's disks
 // seal, and its RAM and its state are left alone.
 func (m *machine) SealDisks(ctx context.Context) (map[string]volume.DirtySource, error) {
 	sources := map[string]volume.DirtySource{}
-	for _, name := range slices.Sorted(maps.Keys(m.regions)) {
-		if m.regions[name].Kind() != vmmemory.Pmem {
+	for _, name := range slices.Sorted(maps.Keys(m.memoryRegions)) {
+		if m.memoryRegions[name].Kind() != vmmemory.Pmem {
 			continue
 		}
-		if err := m.regions[name].Seal(ctx); err != nil {
+		if err := m.memoryRegions[name].Seal(ctx); err != nil {
 			return nil, err
 		}
-		sources[name] = m.regions[name].Checkpoint()
+		sources[name] = m.memoryRegions[name].Checkpoint()
 	}
 	return sources, nil
 }
@@ -354,9 +354,9 @@ func (m *machine) checkpoint(ctx context.Context, vm *volume.VM) error {
 func (m *machine) Resume(context.Context) error { return nil }
 
 func (m *machine) Release(ctx context.Context) error {
-	for _, name := range slices.Sorted(maps.Keys(m.regions)) {
-		region := m.regions[name]
-		if err := region.Unseal(ctx); err != nil {
+	for _, name := range slices.Sorted(maps.Keys(m.memoryRegions)) {
+		memoryRegion := m.memoryRegions[name]
+		if err := memoryRegion.Unseal(ctx); err != nil {
 			return err
 		}
 	}
@@ -367,15 +367,15 @@ func (m *machine) Close() error {
 	var errs []error
 	m.closing.Do(func() {
 		defer m.closed.Store(true)
-		for _, name := range slices.Sorted(maps.Keys(m.regions)) {
-			region := m.regions[name]
-			// The region gives its pages up first. Until it has, the pager may
+		for _, name := range slices.Sorted(maps.Keys(m.memoryRegions)) {
+			memoryRegion := m.memoryRegions[name]
+			// The memory region gives its pages up first. Until it has, the pager may
 			// still be mapping, protecting and revoking through this mapping —
 			// a capture sealing it, a fault installing a window — and emptying
 			// the mapping under that is a write beside their reads. Emptying it
 			// afterwards is what a VMM process's address space going away is,
 			// and it is done under the mapping's own lock for the same reason.
-			errs = append(errs, region.Detach(context.Background()))
+			errs = append(errs, memoryRegion.Detach(context.Background()))
 			mapping := m.maps[name]
 			mapping.mu.Lock()
 			clear(mapping.pages)
@@ -404,14 +404,14 @@ func (m *machine) store(name string, page uint64, value byte) {
 			return
 		}
 		mapping.mu.Unlock()
-		if err := m.regions[name].Fault(m.t.Context(), page, true); err != nil {
+		if err := m.memoryRegions[name].Fault(m.t.Context(), page, true); err != nil {
 			m.t.Fatal(err)
 		}
 	}
 	m.t.Fatalf("store on %s page %d never resolved", name, page)
 }
 
-// load reads one page through the region, which is what a destination's guest
+// load reads one page through the memory region, which is what a destination's guest
 // faults on.
 func (m *machine) load(name string, page uint64) []byte {
 	m.t.Helper()
@@ -420,7 +420,7 @@ func (m *machine) load(name string, page uint64) []byte {
 	slot, mapped := mapping.pages[page]
 	mapping.mu.Unlock()
 	if !mapped {
-		if err := m.regions[name].Fault(m.t.Context(), page, false); err != nil {
+		if err := m.memoryRegions[name].Fault(m.t.Context(), page, false); err != nil {
 			m.t.Fatal(err)
 		}
 		mapping.mu.Lock()
@@ -462,7 +462,7 @@ func startMigrationHostsWithWriteAhead(t *testing.T, sourceWriteAheadPages int) 
 	return h, pagers
 }
 
-// starter is the destination's StartVM: it attaches every region of the received
+// starter is the destination's StartVM: it attaches every memory region of the received
 // VM through the backings the migration supplies and returns the running machine.
 func starter(t *testing.T, pagers *hostPagers, out **machine) host.StartFunc {
 	return func(ctx context.Context, vm *volume.VM, backings map[string]vmmemory.Backing, state []byte) (host.Machine, error) {
@@ -496,7 +496,7 @@ func starters(t *testing.T, pagers *hostPagers, out map[string]*machine) host.St
 }
 
 // TestMigrationWaitsForTheIntervalCheckpointItInterrupts: a checkpoint that is
-// still publishing owns the guest's sealed regions, and a handoff that found
+// still publishing owns the guest's sealed memory regions, and a handoff that found
 // one sealed would have to give the migration up and resume the guest. Stopping
 // the checkpoint loop has to mean the checkpoint it had in flight has landed,
 // not merely that the loop noticed it should stop.
@@ -613,7 +613,7 @@ func TestHostMigratesAVMToAnotherHost(t *testing.T) {
 			for page := range wantResident {
 				wantResident[page] = uint64(page)
 			}
-			if got, err := source.regions["ram0"].Resident(); err != nil || !slices.Equal(got, wantResident) {
+			if got, err := source.memoryRegions["ram0"].Resident(); err != nil || !slices.Equal(got, wantResident) {
 				t.Fatalf("source resident pages: got %v, %v, want %v", got, err, wantResident)
 			}
 			if err := h.hosts[0].AddMachine("vm-1", source); err != nil {
@@ -653,12 +653,12 @@ func TestHostMigratesAVMToAnotherHost(t *testing.T) {
 			// The handoff published nothing, so the destination ends up holding
 			// exactly the pages the source held and nothing else: the rest of the
 			// volume is a hole its own reads resolve.
-			if got, err := received.regions["ram0"].Resident(); err != nil || !slices.Equal(got, wantResident) {
+			if got, err := received.memoryRegions["ram0"].Resident(); err != nil || !slices.Equal(got, wantResident) {
 				t.Fatalf("destination resident pages: got %v, %v, want %v", got, err, wantResident)
 			}
 			// Every one of them is this host's own state now, which its next checkpoint
 			// publishes: the source published none of them.
-			if got, err := received.regions["ram0"].Unpublished(); err != nil || !slices.Equal(got, wantResident) {
+			if got, err := received.memoryRegions["ram0"].Unpublished(); err != nil || !slices.Equal(got, wantResident) {
 				t.Fatalf("destination unpublished pages: got %v, %v, want %v", got, err, wantResident)
 			}
 			if stats := taken.Stats(); stats.Unpublished != int64(tc.heldPages) || stats.Fetched != stats.Unpublished {
@@ -845,7 +845,7 @@ func TestReceiveClosesMachineWithMismatchedResourceBudget(t *testing.T) {
 		t.Fatalf("rejected receive streamed source pages: %d -> %d", before, got)
 	}
 	if err := pagers[2].close(t.Context()); err != nil {
-		t.Fatalf("rejected runtime kept regions attached: %v", err)
+		t.Fatalf("rejected runtime kept memory regions attached: %v", err)
 	}
 }
 

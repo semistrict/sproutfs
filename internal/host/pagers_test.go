@@ -10,7 +10,7 @@ import (
 	"github.com/semistrict/sproutfs/internal/vmmemory"
 )
 
-// A host runs one pager per kind of region, each with its own arena, its own
+// A host runs one pager per kind of memory region, each with its own arena, its own
 // spill file and its own page. The pager knows nothing about VMs, so everything
 // a VM is — its checkpoint, its loss window, what it holds privately — is the
 // host's to put back together across the two. These are the places that would
@@ -131,7 +131,7 @@ func TestPressureFromTheDiskPagerIsOneCheckpointOfTheDisks(t *testing.T) {
 	if got := guest.load("ram0", 0)[0]; got != 77 {
 		t.Fatalf("RAM reads %d after the disks' checkpoint, want 77", got)
 	}
-	if guest.regions["ram0"].OldestUnpublished().IsZero() {
+	if guest.memoryRegions["ram0"].OldestUnpublished().IsZero() {
 		t.Fatal("the disks' checkpoint published the guest's RAM")
 	}
 }
@@ -167,7 +167,7 @@ func TestAFullRAMBudgetIsAStallEvenWithTheLoopRunning(t *testing.T) {
 	}
 	var stalled error
 	for page := range uint64(4) {
-		if stalled = guest.regions["ram0"].Fault(t.Context(), page, true); stalled != nil {
+		if stalled = guest.memoryRegions["ram0"].Fault(t.Context(), page, true); stalled != nil {
 			break
 		}
 	}
@@ -224,7 +224,7 @@ func TestTheLossWindowIsTheDisks(t *testing.T) {
 
 // A store no checkpoint can admit stops that VM, whichever pager's budget it
 // ran out of, and stops only that VM: the other guest on the host goes on
-// storing through both of its own regions.
+// storing through both of its own memory regions.
 func TestAStallInEitherPagerStopsOnlyThatVM(t *testing.T) {
 	h := newSizedHostHarness(t, 1)
 	closed := make(chan string, 2)
@@ -257,7 +257,7 @@ func TestAStallInEitherPagerStopsOnlyThatVM(t *testing.T) {
 
 	// The PMEM budget is what this one runs out of. Its VM is stopped.
 	for page := range uint64(4) {
-		if err := stalling.regions["disk"].Fault(t.Context(), page, true); err != nil {
+		if err := stalling.memoryRegions["disk"].Fault(t.Context(), page, true); err != nil {
 			if !errors.Is(err, vmmemory.ErrDirtyStalled) {
 				t.Fatalf("the store past the PMEM budget failed with %v", err)
 			}
@@ -312,7 +312,7 @@ func TestClosingAHostClosesBothPagers(t *testing.T) {
 	}
 	// The host's own shutdown does not close the pagers — the supervisor does,
 	// after the VMM processes — so this is what that ordering looks like: the
-	// regions are detached and then both pagers close, each releasing its own
+	// memory regions are detached and then both pagers close, each releasing its own
 	// arena and its own spill file.
 	if err := guest.Close(); err != nil {
 		t.Fatal(err)
@@ -320,7 +320,7 @@ func TestClosingAHostClosesBothPagers(t *testing.T) {
 	if err := pagers.close(context.Background()); err != nil {
 		t.Fatalf("closing both pagers: %v", err)
 	}
-	for kind, arena := range map[vmmemory.RegionKind]*pageArena{
+	for kind, arena := range map[vmmemory.MemoryRegionKind]*pageArena{
 		vmmemory.Ram: pagers.arenas[vmmemory.Ram], vmmemory.Pmem: pagers.arenas[vmmemory.Pmem]} {
 		for slot, held := range arena.slots {
 			if held != nil {
@@ -329,10 +329,10 @@ func TestClosingAHostClosesBothPagers(t *testing.T) {
 		}
 	}
 	// A closed pager admits nothing, which is the other half of closing both.
-	for _, kind := range []vmmemory.RegionKind{vmmemory.Ram, vmmemory.Pmem} {
+	for _, kind := range []vmmemory.MemoryRegionKind{vmmemory.Ram, vmmemory.Pmem} {
 		if _, err := pagers.pagers.For(kind).Attach(t.Context(),
-			vmmemory.RegionBacking{Kind: kind, Backing: vm.Volume("ram0")}, newPageMapping(pagers.arenas[kind])); err == nil {
-			t.Fatalf("the %s pager attached a region after it closed", kind)
+			vmmemory.MemoryRegionBacking{Kind: kind, Backing: vm.Volume("ram0")}, newPageMapping(pagers.arenas[kind])); err == nil {
+			t.Fatalf("the %s pager attached a memory region after it closed", kind)
 		}
 	}
 }

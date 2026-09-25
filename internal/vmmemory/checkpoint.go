@@ -13,22 +13,22 @@ import (
 )
 
 // checkpointBatchPages bounds how many pages one seal or retire transition
-// holds the region for at a time, so a large dirty set costs a bounded number
-// of long-held page locks and a bounded hold of the region.
+// holds the memory region for at a time, so a large dirty set costs a bounded number
+// of long-held page locks and a bounded hold of the memory region.
 var checkpointBatchPages = 1024
 
 var (
-	// ErrSealed reports a region that already holds a checkpoint. One seal is
+	// ErrSealed reports a memory region that already holds a checkpoint. One seal is
 	// outstanding at a time: the checkpoint is retired by the publication that
 	// uploads it, or abandoned by Unseal, and only then may another be taken.
-	ErrSealed = errors.New("managed-memory region is already sealed")
-	// ErrNotSealed reports a region asked for its checkpoint while it holds none.
-	ErrNotSealed = errors.New("managed-memory region has no sealed checkpoint")
+	ErrSealed = errors.New("managed-memory-region is already sealed")
+	// ErrNotSealed reports a memory region asked for its checkpoint while it holds none.
+	ErrNotSealed = errors.New("managed-memory-region has no sealed checkpoint")
 )
 
-// RegionCheckpoint is one checkpoint of a volume's dirty pages, taken by Seal
+// MemoryRegionCheckpoint is one checkpoint of a volume's dirty pages, taken by Seal
 // and published by the checkpoint that uploads it. Its pages are detached
-// bindings: they are not reachable from the region's bindings, they alias the
+// bindings: they are not reachable from the memory region's bindings, they alias the
 // resident pages the guest had at the seal, and they own the dirty reservations
 // those pages were admitted under. The set is fixed when Seal returns, which is
 // what lets the guest keep running against the same pages: a store copies away
@@ -42,22 +42,22 @@ var (
 // The set is fixed once Settle has run and safe for concurrent use; Settle
 // itself is the one thing that changes it, and the publication calls it before
 // it reads anything.
-type RegionCheckpoint struct {
-	region *Region
+type MemoryRegionCheckpoint struct {
+	memoryRegion *MemoryRegion
 	// taken is closed once the walk behind the pause has moved every page of
 	// the sealed set into this checkpoint. The set is not readable before that
 	// and every reader of it waits here; the walk runs with the guest already
-	// running, holding the region the seal took, so what waits for it is a
-	// fault of that region rather than its VM.
+	// running, holding the memory region the seal took, so what waits for it is a
+	// fault of that memory region rather than its VM.
 	taken chan struct{}
 	// mu guards the set and the window below, which a settle takes pages out
 	// of. Everything else here is fixed when the walk closes taken. The set is
 	// in ascending page order, which is how a page of it is found.
 	mu    sync.Mutex
 	pages []*binding
-	// dirtySince is the region's loss window at the seal: when the oldest of
-	// these pages was written. The seal takes it off the region, so that what
-	// the region reports from here is its own new writes; an abandoned
+	// dirtySince is the memory region's loss window at the seal: when the oldest of
+	// these pages was written. The seal takes it off the memory region, so that what
+	// the memory region reports from here is its own new writes; an abandoned
 	// checkpoint hands it back, and a published one drops it, because the store
 	// holds those bytes then. A settle that leaves the set empty ends it there:
 	// a checkpoint holding nothing holds no unpublished write.
@@ -70,17 +70,17 @@ type RegionCheckpoint struct {
 	err  error // read only after done is closed
 }
 
-func (c *RegionCheckpoint) finish(err error) {
+func (c *MemoryRegionCheckpoint) finish(err error) {
 	c.err = err
 	close(c.done)
 }
 
-func (r *Region) currentCheckpoint() *RegionCheckpoint {
+func (r *MemoryRegion) currentCheckpoint() *MemoryRegionCheckpoint {
 	r.checkpointMu.Lock()
 	defer r.checkpointMu.Unlock()
 	return r.checkpoint
 }
-func (r *Region) setCheckpoint(c *RegionCheckpoint) {
+func (r *MemoryRegion) setCheckpoint(c *MemoryRegionCheckpoint) {
 	r.checkpointMu.Lock()
 	defer r.checkpointMu.Unlock()
 	r.checkpoint = c
@@ -89,24 +89,24 @@ func (r *Region) setCheckpoint(c *RegionCheckpoint) {
 
 // setSealing marks a seal in progress, or one that failed before it recorded
 // its checkpoint; recording the checkpoint clears the mark itself.
-func (r *Region) setSealing(sealing bool) {
+func (r *MemoryRegion) setSealing(sealing bool) {
 	r.checkpointMu.Lock()
 	defer r.checkpointMu.Unlock()
 	r.sealing = sealing
 }
 
-// Checkpoint reports the sealed checkpoint this region holds, nil when it holds
-// none. It is what a checkpoint publishes this region's pages from.
-func (r *Region) Checkpoint() *RegionCheckpoint { return r.currentCheckpoint() }
+// Checkpoint reports the sealed checkpoint this memory region holds, nil when it holds
+// none. It is what a checkpoint publishes this memory region's pages from.
+func (r *MemoryRegion) Checkpoint() *MemoryRegionCheckpoint { return r.currentCheckpoint() }
 
-// sealState reports whether a seal of this region is in progress, and the
+// sealState reports whether a seal of this memory region is in progress, and the
 // checkpoint it has sealed and not yet ended, which together decide whether
 // another checkpoint can be asked for and whether this one will give dirty
 // reservations back. The two are read under one lock: a seal takes the dirty
-// set into the checkpoint before it records the checkpoint on the region, and a
+// set into the checkpoint before it records the checkpoint on the memory region, and a
 // waiting store that asked between the two would otherwise find neither a
 // draining checkpoint nor a dirty page and be stalled for it.
-func (r *Region) sealState() (sealing bool, draining *RegionCheckpoint) {
+func (r *MemoryRegion) sealState() (sealing bool, draining *MemoryRegionCheckpoint) {
 	r.checkpointMu.Lock()
 	defer r.checkpointMu.Unlock()
 	if c := r.checkpoint; c != nil {
@@ -121,18 +121,18 @@ func (r *Region) sealState() (sealing bool, draining *RegionCheckpoint) {
 
 // relieves reports whether ending this checkpoint will relieve the dirty
 // budget under a bound a waiting store may wait for. A publication's does: it
-// gives its reservations back, and where it holds none it gives the region back
+// gives its reservations back, and where it holds none it gives the memory region back
 // the right to take the checkpoint that will. A fork point's hold does
 // neither for as long as the children it named are still reading it, and no
 // store can be left waiting on that.
-func (c *RegionCheckpoint) relieves() bool { return !c.held.Load() }
+func (c *MemoryRegionCheckpoint) relieves() bool { return !c.held.Load() }
 
 // Hold marks this seal as a fork point's, which a fork point does when it
 // takes the pause. It is what says the seal lasts as long as the children of
 // that fork point rather than as long as an upload, so no store waiting for the
 // dirty budget is left waiting on it. Sharing the pages is separate: a child
 // on another host never maps them, so only a child taken in here names them.
-func (c *RegionCheckpoint) Hold() { c.held.Store(true) }
+func (c *MemoryRegionCheckpoint) Hold() { c.held.Store(true) }
 
 // Seal takes the capture's checkpoint of this volume and returns. It revokes
 // the guest's write access to every dirty page and records those pages as the
@@ -145,16 +145,16 @@ func (c *RegionCheckpoint) Hold() { c.held.Store(true) }
 // move the binding into the checkpoint, hand it the page's reservation, hand it
 // where that page was copied from — is not what makes the guest's writes
 // coherent; the write protection is, because from the moment a run is protected
-// no store to it can land without trapping and waiting for the region. So the
-// pause reads the runs of the dirty set, which the region keeps as runs for
+// no store to it can land without trapping and waiting for the memory region. So the
+// pause reads the runs of the dirty set, which the memory region keeps as runs for
 // exactly this, protects them, and takes the whole set in one step; the walk
-// over its pages runs afterwards, with the guest running, holding the region the
-// seal took. A fault of this region waits for that walk, and nothing else does.
+// over its pages runs afterwards, with the guest running, holding the memory region the
+// seal took. A fault of this memory region waits for that walk, and nothing else does.
 // At 4 KiB the difference is the whole of it: a GCE capture of 2,204,672 sealed
 // RAM pages paused 2.14 s, of which 0.18 s was its 2,264 protect commands and
 // 1.97 s was the walk.
 //
-// The region stays sealed, publishing nothing newer, until the checkpoint is
+// The memory region stays sealed, publishing nothing newer, until the checkpoint is
 // retired. Retiring it belongs to the publication: it reads the sealed
 // pages, and when it lands they become clean under the checkpoint that
 // holds them. Unseal abandons a checkpoint no publication will take, which
@@ -162,7 +162,7 @@ func (c *RegionCheckpoint) Hold() { c.held.Store(true) }
 // protection fails partway captures nothing: the runs it protected have their
 // mappings taken away, so the guest faults and maps them writable again, and
 // sealing again takes a checkpoint of everything that is dirty then.
-func (r *Region) Seal(ctx context.Context) error {
+func (r *MemoryRegion) Seal(ctx context.Context) error {
 	// A capture's pause is this call, so it is timed: the range write-protects
 	// are timed separately inside it, and the difference is what the pager
 	// spends on the pause beside its commands.
@@ -194,16 +194,16 @@ func (r *Region) Seal(ctx context.Context) error {
 	// The window moves to the checkpoint with the pages it is measured over.
 	// It is taken after the protection succeeded: a seal that protected nothing
 	// is a checkpoint that did not happen, so it must take nothing else either.
-	checkpoint := &RegionCheckpoint{region: r, dirtySince: r.takeDirtySince(),
+	checkpoint := &MemoryRegionCheckpoint{memoryRegion: r, dirtySince: r.takeDirtySince(),
 		done: make(chan struct{}), taken: make(chan struct{})}
 	pending := r.takeDirtySet()
 	r.setCheckpoint(checkpoint)
-	// The region stays locked, and the walk gives it back. Nothing of this VM
-	// but a fault of this region waits for it.
+	// The memory region stays locked, and the walk gives it back. Nothing of this VM
+	// but a fault of this memory region waits for it.
 	held = true
 	go checkpoint.take(context.WithoutCancel(ctx), pending)
 	// A store that woke while the seal was in progress waited on it; the
-	// checkpoint it was promised is now the region's to answer for.
+	// checkpoint it was promised is now the memory region's to answer for.
 	r.host.mu.Lock()
 	r.host.signal()
 	r.host.mu.Unlock()
@@ -211,7 +211,7 @@ func (r *Region) Seal(ctx context.Context) error {
 }
 
 // sealSeam runs in a seal between write-protecting the dirty set and recording
-// the checkpoint on the region. It is nil in production; a test installs one to
+// the checkpoint on the memory region. It is nil in production; a test installs one to
 // wake a store waiting for the dirty budget in that pause. sealWalkSeam runs in
 // the walk behind that pause, before it takes its first page, which is where a
 // test holds the walk to see what the pause alone cost.
@@ -219,18 +219,18 @@ var sealSeam, sealWalkSeam func()
 
 // take is the walk behind the pause: it detaches the checkpoint's copy of every
 // page the seal froze. It runs with the guest already running, holding the
-// region the seal locked, and gives that region back when it is done — so a
-// fault of this region waits for one walk rather than its VM waiting for one
+// memory region the seal locked, and gives that memory region back when it is done — so a
+// fault of this memory region waits for one walk rather than its VM waiting for one
 // pause. Page locks are taken in bounded batches, and no page's bytes and no
 // page's mapping move.
 //
 // The pages are already write-protected, so nothing the guest does can change
 // what this walk is recording: a store into one of them traps and waits for the
-// region. The only thing that can fail here is the revocation a page a reclaim
-// is holding needs, and that is a terminal region, which every reader of this
+// memory region. The only thing that can fail here is the revocation a page a reclaim
+// is holding needs, and that is a terminal memory region, which every reader of this
 // checkpoint reports rather than publishing a set that is missing pages.
-func (c *RegionCheckpoint) take(ctx context.Context, pending map[uint64]*binding) {
-	r := c.region
+func (c *MemoryRegionCheckpoint) take(ctx context.Context, pending map[uint64]*binding) {
+	r := c.memoryRegion
 	defer r.mu.Unlock()
 	defer close(c.taken)
 	if sealWalkSeam != nil {
@@ -249,8 +249,8 @@ func (c *RegionCheckpoint) take(ctx context.Context, pending map[uint64]*binding
 
 // takePages detaches the checkpoint's copy of every page of the sealed set, in
 // ascending page order and in bounded batches. Caller holds the exclusive
-// region lock for the whole of it.
-func (r *Region) takePages(ctx context.Context, pending map[uint64]*binding) ([]*binding, error) {
+// memory region lock for the whole of it.
+func (r *MemoryRegion) takePages(ctx context.Context, pending map[uint64]*binding) ([]*binding, error) {
 	h := r.host
 	bindings := sortedBindings(pending)
 	// One slab of copies rather than one allocation each: a checkpoint of a
@@ -270,13 +270,13 @@ func (r *Region) takePages(ctx context.Context, pending map[uint64]*binding) ([]
 					locked = append(locked, pg)
 				}
 				held := &copies[taken+i]
-				*held = binding{region: r, index: b.index, dirty: true, spillSlot: b.spillSlot}
+				*held = binding{memoryRegion: r, index: b.index, dirty: true, spillSlot: b.spillSlot}
 				switch {
 				case pg != nil:
 					h.bind(held, pg)
 				case busy:
 					// A reclaim is the only thing that can hold a resident page
-					// of the region being sealed, and it is writing that page's
+					// of the memory region being sealed, and it is writing that page's
 					// bytes to this page's reservation, which the checkpoint's
 					// copy is taking over. Joining the copy to that page without
 					// waiting for the reclaim keeps the walk off its I/O.
@@ -315,13 +315,13 @@ func (r *Region) takePages(ctx context.Context, pending map[uint64]*binding) ([]
 }
 
 // protectDirtyRuns is the whole of a seal's pause: the runs of the dirty set,
-// write-protected. The region's protection is held exclusively across reading
+// write-protected. The memory region's protection is held exclusively across reading
 // them and issuing the commands, because the one thing that can take a mapping
-// away while the seal holds the region is a reclaim, which revokes its victim's
+// away while the seal holds the memory region is a reclaim, which revokes its victim's
 // pages under that page's lock alone — and the seal no longer holds those
 // locks. Under it, every revocation is either finished, and out of the runs
 // read here, or has not begun.
-func (r *Region) protectDirtyRuns(ctx context.Context) ([]PageRun, error) {
+func (r *MemoryRegion) protectDirtyRuns(ctx context.Context) ([]PageRun, error) {
 	if err := r.protectMu.Lock(ctx); err != nil {
 		return nil, err
 	}
@@ -336,7 +336,7 @@ func (r *Region) protectDirtyRuns(ctx context.Context) ([]PageRun, error) {
 // for the guest to fault on. One range command covers a run of consecutive
 // pages whatever memory they hold, so the pause pays for runs, not pages. It
 // reports the runs that landed, which a failure has to undo.
-func (r *Region) protect(ctx context.Context, runs []PageRun) ([]PageRun, error) {
+func (r *MemoryRegion) protect(ctx context.Context, runs []PageRun) ([]PageRun, error) {
 	h := r.host
 	commands, pages := 0, 0
 	defer func() {
@@ -350,9 +350,9 @@ func (r *Region) protect(ctx context.Context, runs []PageRun) ([]PageRun, error)
 	for _, run := range runs {
 		if err := r.protectPages(ctx, run.Page, run.Count); err != nil {
 			// A seal that ran out of time is a checkpoint that did not happen,
-			// not a region that is over: the undo above takes the protection off
+			// not a memory region that is over: the undo above takes the protection off
 			// every run that landed and the next checkpoint takes the whole
-			// dirty set. Only a command that actually failed leaves the region
+			// dirty set. Only a command that actually failed leaves the memory region
 			// in a state nothing can reason about, and only that is terminal.
 			if cause := context.Cause(ctx); cause != nil && errors.Is(err, cause) {
 				return runs[:commands], err
@@ -369,8 +369,8 @@ func (r *Region) protect(ctx context.Context, runs []PageRun) ([]PageRun, error)
 // so the guest's next store to one of those pages faults and maps it writable
 // again rather than resolving a store against a read-only mapping. It is the
 // whole of what such a seal has to undo, because the pause takes nothing else.
-// Caller holds the exclusive region lock.
-func (r *Region) unprotect(ctx context.Context, runs []PageRun) error {
+// Caller holds the exclusive memory region lock.
+func (r *MemoryRegion) unprotect(ctx context.Context, runs []PageRun) error {
 	var bindings []*binding
 	for _, run := range runs {
 		for page := run.Page; page < run.Page+uint64(run.Count); page++ {
@@ -383,7 +383,7 @@ func (r *Region) unprotect(ctx context.Context, runs []PageRun) error {
 // DirtyPages reports the pages this checkpoint publishes, in ascending order. A
 // pager page is a store page, so these are the store pages a checkpoint
 // republishes.
-func (c *RegionCheckpoint) DirtyPages() []uint64 {
+func (c *MemoryRegionCheckpoint) DirtyPages() []uint64 {
 	held := c.sealedPages()
 	pages := make([]uint64, 0, len(held))
 	for _, held := range held {
@@ -394,20 +394,20 @@ func (c *RegionCheckpoint) DirtyPages() []uint64 {
 }
 
 // UnpublishedAge is how long the oldest write this checkpoint holds has gone
-// unpublished, zero where it holds none. It is the region's loss window as the
+// unpublished, zero where it holds none. It is the memory region's loss window as the
 // seal took it, still running: a fork point's hold can outlast several
 // intervals, and the child that inherits these pages inherits their age with
 // them rather than starting a window of its own.
-func (c *RegionCheckpoint) UnpublishedAge() time.Duration {
+func (c *MemoryRegionCheckpoint) UnpublishedAge() time.Duration {
 	since := c.since()
 	if since.IsZero() {
 		return 0
 	}
-	return max(c.region.host.clock.Since(since), 0)
+	return max(c.memoryRegion.host.clock.Since(since), 0)
 }
 
 // Share names every page this checkpoint holds by the identity the checkpoint
-// publishing it gives that page, so a region that inherits the identity maps
+// publishing it gives that page, so a memory region that inherits the identity maps
 // the resident page instead of reading the page. A fork point is what calls it,
 // when a child of that fork point is taken in on this host: the fork point takes
 // a reference of its own and publishes nothing under it, so the name it gives
@@ -420,8 +420,8 @@ func (c *RegionCheckpoint) UnpublishedAge() time.Duration {
 // when the seal ends. A page already evicted is simply not named — whoever
 // inherits it reads the page through its own backing, which reaches these same
 // pages through the seal.
-func (c *RegionCheckpoint) Share(ctx context.Context, ref control.Ref, volume string) error {
-	h := c.region.host
+func (c *MemoryRegionCheckpoint) Share(ctx context.Context, ref control.Ref, volume string) error {
+	h := c.memoryRegion.host
 	c.held.Store(true)
 	for _, held := range c.sealedPages() {
 		key := pageKey{id: control.Identity{Ref: ref, Volume: volume, Page: held.index}}
@@ -438,10 +438,10 @@ func (c *RegionCheckpoint) Share(ctx context.Context, ref control.Ref, volume st
 // ReadDirty fills dst, exactly one pager page, with the bytes the seal froze. A
 // store the guest made since then copied that page away from the checkpoint, so
 // it is not in them. It takes an I/O permit and the page's lock, never the
-// region's: the guest goes on faulting and storing while a checkpoint reads its
+// memory region's: the guest goes on faulting and storing while a checkpoint reads its
 // checkpoint.
-func (c *RegionCheckpoint) ReadDirty(ctx context.Context, page uint64, dst []byte) error {
-	h := c.region.host
+func (c *MemoryRegionCheckpoint) ReadDirty(ctx context.Context, page uint64, dst []byte) error {
+	h := c.memoryRegion.host
 	if uint64(len(dst)) != h.pageSize {
 		return ErrRange
 	}
@@ -449,7 +449,7 @@ func (c *RegionCheckpoint) ReadDirty(ctx context.Context, page uint64, dst []byt
 	case <-c.done:
 		// Retired, abandoned or discarded: these pages are the guest's own
 		// state again or the volume's, and the memory behind them holds whatever
-		// has happened since, which is not what this checkpoint holds. A region
+		// has happened since, which is not what this checkpoint holds. A memory region
 		// that discarded it reports why it ended.
 		if c.err != nil {
 			return c.err
@@ -491,38 +491,38 @@ func (c *RegionCheckpoint) ReadDirty(ctx context.Context, page uint64, dst []byt
 // pages go back to the guest as dirty state and the next checkpoint takes them
 // again.
 //
-// Either way the region publishes again once this returns. It is idempotent: a
-// checkpoint already retired, or one a detached region discarded, reports
+// Either way the memory region publishes again once this returns. It is idempotent: a
+// checkpoint already retired, or one a detached memory region discarded, reports
 // success.
-func (c *RegionCheckpoint) Retire(ctx context.Context, published bool) error {
-	return c.region.endSeal(ctx, c, published)
+func (c *MemoryRegionCheckpoint) Retire(ctx context.Context, published bool) error {
+	return c.memoryRegion.endSeal(ctx, c, published)
 }
 
 // Unseal abandons a checkpoint no publication is going to take and ends the
 // seal. Its pages become ordinary dirty state again, exactly as they were
 // before the seal, and the next checkpoint takes them. A capture whose
 // publication landed does not come here: that checkpoint is retired by
-// RegionCheckpoint.Retire, which makes its pages clean under the checkpoint
+// MemoryRegionCheckpoint.Retire, which makes its pages clean under the checkpoint
 // that holds them.
 //
 // Guest stores never waited for the seal: with copy-on-write, what it holds back
-// is the region's next checkpoint, not the guest.
-func (r *Region) Unseal(ctx context.Context) error {
+// is the memory region's next checkpoint, not the guest.
+func (r *MemoryRegion) Unseal(ctx context.Context) error {
 	return r.endSeal(ctx, nil, false)
 }
 
-// endSeal retires or abandons the region's checkpoint and ends the seal. A
+// endSeal retires or abandons the memory region's checkpoint and ends the seal. A
 // failure leaves the checkpoint in place, so the caller can repeat the call
-// with a live context; nothing else may seal this region until it succeeds.
+// with a live context; nothing else may seal this memory region until it succeeds.
 //
 // The set is as large as a capture's, so it is walked in the same bounded
-// batches a seal takes, and the region is given back between them: a fault
+// batches a seal takes, and the memory region is given back between them: a fault
 // waits for one batch, not for the walk. Each batch's volume metadata is looked
-// up first, with neither the region nor any page held. A page already retired
+// up first, with neither the memory region nor any page held. A page already retired
 // is skipped, so a repeated call finishes what a failed one left.
-func (r *Region) endSeal(ctx context.Context, checkpoint *RegionCheckpoint, published bool) error {
-	// The walk gives the region up between batches, so what keeps the
-	// checkpoint this region's for the whole of it is the lifetime lock and one
+func (r *MemoryRegion) endSeal(ctx context.Context, checkpoint *MemoryRegionCheckpoint, published bool) error {
+	// The walk gives the memory region up between batches, so what keeps the
+	// checkpoint this memory region's for the whole of it is the lifetime lock and one
 	// end at a time.
 	if err := r.live.RLock(ctx); err != nil {
 		return err
@@ -567,7 +567,7 @@ func (r *Region) endSeal(ctx context.Context, checkpoint *RegionCheckpoint, publ
 	defer r.mu.Unlock()
 	if !published {
 		// These pages are the guest's dirty state again, so the window they were
-		// written in is the region's again. A window that restarted here would
+		// written in is the memory region's again. A window that restarted here would
 		// bound nothing: the host that cannot publish is exactly the host whose
 		// publications keep failing.
 		r.restoreDirtySince(current.since())
@@ -599,7 +599,7 @@ func (r *Region) endSeal(ctx context.Context, checkpoint *RegionCheckpoint, publ
 //
 // The pages this retire hands back have their mappings taken away first, all of
 // them together: see revokeHandedBack.
-func (r *Region) finalizeCheckpoint(ctx context.Context, held []*binding, identities map[uint64]storedPage) error {
+func (r *MemoryRegion) finalizeCheckpoint(ctx context.Context, held []*binding, identities map[uint64]storedPage) error {
 	h := r.host
 	if err := r.revokeHandedBack(ctx, held, identities); err != nil {
 		return err
@@ -657,13 +657,13 @@ func (r *Region) finalizeCheckpoint(ctx context.Context, held []*binding, identi
 // another resident already holds, which is rare and alone.
 //
 // Deciding a hand-back needs no page's lock: the identity the volume now reports
-// was read before this batch took the region, and whether the guest still shares
-// the checkpoint's copy moves only under the exclusive region lock this holds.
+// was read before this batch took the memory region, and whether the guest still shares
+// the checkpoint's copy moves only under the exclusive memory region lock this holds.
 // Reading a page to check that it may be handed back needs that page's lock and
 // nothing wider, and it runs here, before a mapping has moved, so ErrUndroppable
 // still leaves the checkpoint durable, the pages sealed and the guest holding
 // its memory — one fault per page it had mapped, and not a byte lost.
-func (r *Region) revokeHandedBack(ctx context.Context, held []*binding, identities map[uint64]storedPage) error {
+func (r *MemoryRegion) revokeHandedBack(ctx context.Context, held []*binding, identities map[uint64]storedPage) error {
 	h := r.host
 	var guests []*binding
 	for _, checkpoint := range held {
@@ -699,13 +699,13 @@ func (r *Region) revokeHandedBack(ctx context.Context, held []*binding, identiti
 // with the checkpoint takes its copy's reservation back and is dirty again, so
 // nothing the guest wrote before the seal is lost; a page the guest copied away
 // from needs only its own newer state, so the checkpoint's copy is released.
-// Caller holds the exclusive region lock.
+// Caller holds the exclusive memory region lock.
 //
 // The reservation moves under the resident page's lock, together with the
 // unlink that takes the checkpoint's alias away: an eviction that saw the two
 // apart would find a private page with neither a reservation of its own nor a
 // checkpoint still holding one, skip spilling it, and punch the page.
-func (r *Region) abandonPages(ctx context.Context, pages []*binding) error {
+func (r *MemoryRegion) abandonPages(ctx context.Context, pages []*binding) error {
 	h := r.host
 	var restored []*binding
 	for _, held := range pages {
@@ -764,13 +764,13 @@ func (r *Region) abandonPages(ctx context.Context, pages []*binding) error {
 }
 
 // discardCheckpoint drops a checkpoint entirely, which is what detaching a
-// region does: its memory users are gone and unpublished stores are discarded
+// memory region does: its memory users are gone and unpublished stores are discarded
 // with them.
-func (r *Region) discardCheckpoint(ctx context.Context, checkpoint *RegionCheckpoint) error {
+func (r *MemoryRegion) discardCheckpoint(ctx context.Context, checkpoint *MemoryRegionCheckpoint) error {
 	h := r.host
 	for _, held := range checkpoint.sealedPages() {
 		if err := h.locked(ctx, held, func(pg *resident) error {
-			// The seal ends with the region, so its name for the page does
+			// The seal ends with the memory region, so its name for the page does
 			// too. Whatever still shares the page keeps it: nothing can store
 			// into it any more, and its bytes stay what the seal froze.
 			h.unshare(pg)

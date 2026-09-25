@@ -73,10 +73,10 @@ func TestManagedPagerSealCostMeasurements(t *testing.T) {
 			}
 			p := startNativeWithConfig(t, h, pages, vmmemory.ConnectionConfig{
 				QueuePages: 1024, CommandTimeout: 10 * time.Minute, VerifyInterval: time.Hour}, backing...)
-			region := p.region(1)
+			memoryRegion := p.memoryRegion(1)
 			start := time.Now()
 			// The guest dirties in bounded pieces: one request per fault is the
-			// harness's own cost, and a single request for a large region would
+			// harness's own cost, and a single request for a large memory region would
 			// outrun the fixture's output wait rather than the pager.
 			for first := 0; first < pages; first += fillPages {
 				run := min(fillPages, pages-first)
@@ -91,14 +91,14 @@ func TestManagedPagerSealCostMeasurements(t *testing.T) {
 				t.Fatalf("the guest dirtied %d pages, want %d", before.DirtyPages, c.dirty)
 			}
 			start = time.Now()
-			if err := region.Seal(t.Context()); err != nil {
+			if err := memoryRegion.Seal(t.Context()); err != nil {
 				t.Fatal(err)
 			}
 			sealNS := time.Since(start).Nanoseconds()
 			// The pause is over; the walk that moves each page into the
 			// checkpoint runs behind it, and asking the checkpoint what it holds
 			// is what waits for that walk.
-			if got := len(region.Checkpoint().DirtyPages()); got != c.dirty {
+			if got := len(memoryRegion.Checkpoint().DirtyPages()); got != c.dirty {
 				t.Fatalf("the seal took %d pages into the checkpoint, want %d", got, c.dirty)
 			}
 			walkNS := time.Since(start).Nanoseconds() - sealNS

@@ -21,15 +21,15 @@ const flushAnswer = 10 * time.Second
 
 // heldFlush is one flush request as the host's callback was handed it.
 type heldFlush struct {
-	region *vmmemory.Region
-	done   func(error)
+	memoryRegion *vmmemory.MemoryRegion
+	done         func(error)
 }
 
 // holdFlushes installs a callback that answers nothing itself and hands every
 // flush to the test, in the order the pager delivered them.
 func holdFlushes(s pipeSession) <-chan heldFlush {
 	held := make(chan heldFlush, 16)
-	s.h.SetFlushed(func(r *vmmemory.Region, done func(error)) { held <- heldFlush{r, done} })
+	s.h.SetFlushed(func(r *vmmemory.MemoryRegion, done func(error)) { held <- heldFlush{r, done} })
 	return held
 }
 
@@ -67,7 +67,7 @@ func result(id uint64, errno syscall.Errno) vmwire.Frame {
 }
 
 // A guest's flush waits for the host. The pager hands the request, with the
-// region it was sent on, to the callback the host installed, and answers it
+// memory region it was sent on, to the callback the host installed, and answers it
 // when the host calls done and not before: a second flush answered first is
 // the first answer the client sees.
 func TestAFlushIsAnsweredWhenTheHostCallsDone(t *testing.T) {
@@ -75,8 +75,8 @@ func TestAFlushIsAnsweredWhenTheHostCallsDone(t *testing.T) {
 	held := holdFlushes(s)
 	sendFlush(t, s, 1)
 	first := nextHeld(t, held)
-	if first.region != s.c.Region().Memory {
-		t.Fatalf("the flush reached the host as region %p, want the session's %p", first.region, s.c.Region().Memory)
+	if first.memoryRegion != s.c.MemoryRegion().Memory {
+		t.Fatalf("the flush reached the host as memory region %p, want the session's %p", first.memoryRegion, s.c.MemoryRegion().Memory)
 	}
 	sendFlush(t, s, 2)
 	second := nextHeld(t, held)
@@ -139,7 +139,7 @@ func TestABusyFlushCallbackDoesNotHoldUpTheReader(t *testing.T) {
 	held := make(chan heldFlush)
 	release := make(chan struct{})
 	first := true
-	s.h.SetFlushed(func(r *vmmemory.Region, done func(error)) {
+	s.h.SetFlushed(func(r *vmmemory.MemoryRegion, done func(error)) {
 		held <- heldFlush{r, done}
 		if first {
 			first = false
@@ -204,11 +204,11 @@ func TestAnUnansweredFlushDoesNotHoldASessionOpen(t *testing.T) {
 func TestAMalformedFlushEndsTheSession(t *testing.T) {
 	for _, c := range []struct {
 		name   string
-		kind   vmmemory.RegionKind
+		kind   vmmemory.MemoryRegionKind
 		frames []vmwire.Frame
 		want   string
 	}{
-		{"a flush of RAM", vmmemory.Ram, []vmwire.Frame{{Kind: vmwire.Flush, ID: 1}}, "flush of a ram region"},
+		{"a flush of RAM", vmmemory.Ram, []vmwire.Frame{{Kind: vmwire.Flush, ID: 1}}, "flush of a ram memory region"},
 		{"a flush without an ID", vmmemory.Pmem, []vmwire.Frame{{Kind: vmwire.Flush}}, "invalid flush request"},
 		{"a flush whose ID is not fresh", vmmemory.Pmem,
 			[]vmwire.Frame{{Kind: vmwire.Flush, ID: 2}, {Kind: vmwire.Flush, ID: 2}}, "invalid flush request"},

@@ -8,8 +8,8 @@ import (
 
 // What one VM holds privately is the memory its host could not have shared with
 // anything, which is the number an operator reads beside what the pager is
-// sharing. The pager measures it per region and knows nothing about VMs, so the
-// host is where the regions of one VM are added up; nowhere else has both
+// sharing. The pager measures it per memory region and knows nothing about VMs, so the
+// host is where the memory regions of one VM are added up; nowhere else has both
 // halves.
 func TestAHostReportsEachVMsPrivateBytes(t *testing.T) {
 	h := newSizedHostHarness(t, 1)

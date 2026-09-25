@@ -45,10 +45,10 @@ func TestManagedPagerSmallRAMPageOwnsOnePageAndMapsARunAtOnce(t *testing.T) {
 	// inherited page is shared by name and a copy is visible as a copy. No page
 	// is all zeros: a checkpoint publishes one of those as a sparse hole, which
 	// owns no arena slot and so is not a page a run of shared memory is made of.
-	for region, name := range names {
+	for memoryRegion, name := range names {
 		data := make([]byte, pages*size)
 		for i := range data {
-			data[i] = pageByte(region, i/size)
+			data[i] = pageByte(memoryRegion, i/size)
 		}
 		if err := source.Volume(name).Write(t.Context(), 0, data); err != nil {
 			t.Fatal(err)
@@ -76,12 +76,12 @@ func TestManagedPagerSmallRAMPageOwnsOnePageAndMapsARunAtOnce(t *testing.T) {
 	config := vmmemory.ConnectionConfig{QueuePages: pages, CommandTimeout: 30 * time.Second,
 		VerifyInterval: time.Hour}
 
-	// The parent reads one byte of each region. Read-ahead serves the whole run
+	// The parent reads one byte of each memory region. Read-ahead serves the whole run
 	// from one fault, loading it into consecutive arena slots, which is what
 	// lets a single command install it here and on every child after.
 	parent := startNativeWithConfig(t, h, pages, config, fork("parent")...)
-	for region := range names {
-		parent.request(fmt.Sprintf("read %d 0 1", region), fmt.Sprintf("data %02x", pageByte(region, 0)))
+	for memoryRegion := range names {
+		parent.request(fmt.Sprintf("read %d 0 1", memoryRegion), fmt.Sprintf("data %02x", pageByte(memoryRegion, 0)))
 	}
 	warm := kernelStats(t, h)
 	if warm.ResidentPages != 2*pages {
@@ -111,9 +111,9 @@ func TestManagedPagerSmallRAMPageOwnsOnePageAndMapsARunAtOnce(t *testing.T) {
 	// own private bytes are that page and nothing more, the other 511 of the run
 	// stay shared with the parent, and the parent's own memory is untouched.
 	const stored = 100
-	ram := child.region(1)
-	parentRAM := parent.region(1)
-	beforeChild, beforeParent := regionBytes(t, ram), regionBytes(t, parentRAM)
+	ram := child.memoryRegion(1)
+	parentRAM := parent.memoryRegion(1)
+	beforeChild, beforeParent := memoryRegionBytes(t, ram), memoryRegionBytes(t, parentRAM)
 	beforeShared, err := h.Sharing(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -123,7 +123,7 @@ func TestManagedPagerSmallRAMPageOwnsOnePageAndMapsARunAtOnce(t *testing.T) {
 			beforeChild, pages)
 	}
 	child.request(fmt.Sprintf("fill 1 %d 1 7", stored*size), "filled")
-	afterChild, afterParent := regionBytes(t, ram), regionBytes(t, parentRAM)
+	afterChild, afterParent := memoryRegionBytes(t, ram), memoryRegionBytes(t, parentRAM)
 	if afterChild.PrivatePages != 1 {
 		t.Fatalf("one byte stored made %d pages private, want exactly one", afterChild.PrivatePages)
 	}
@@ -162,13 +162,13 @@ func TestManagedPagerSmallRAMPageOwnsOnePageAndMapsARunAtOnce(t *testing.T) {
 	child.request(fmt.Sprintf("read 1 %d 1", (stored+1)*size), fmt.Sprintf("data %02x", pageByte(1, stored+1)))
 }
 
-// pageByte is the byte every offset of one page of one region holds. It is
+// pageByte is the byte every offset of one page of one memory region holds. It is
 // never zero, so no page of these volumes is published as a hole.
-func pageByte(region, page int) byte { return byte(1 + (region*32+page)%251) }
+func pageByte(memoryRegion, page int) byte { return byte(1 + (memoryRegion*32+page)%251) }
 
-// regionBytes is one region's statistics, which is where a store's cost in
+// memory regionBytes is one memory region's statistics, which is where a store's cost in
 // bytes is read from.
-func regionBytes(t *testing.T, r *vmmemory.Region) vmmemory.RegionStats {
+func memoryRegionBytes(t *testing.T, r *vmmemory.MemoryRegion) vmmemory.MemoryRegionStats {
 	t.Helper()
 	stats, err := r.Stats(t.Context())
 	if err != nil {

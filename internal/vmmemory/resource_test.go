@@ -52,7 +52,7 @@ func TestPagerEvictsWithinSharedRAMAllowance(t *testing.T) {
 			t.Fatal(err)
 		}
 		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 2, LogicalPages: 4, DirtyPages: 4, ReadAheadPages: 1}, b)
-		r, m, _ := f.region(2)
+		r, m, _ := f.memoryRegion(2)
 		for _, page := range []uint64{0, 1, 0} {
 			if got := access(t, r, m, page, false)[0]; got != byte(page+1) {
 				t.Fatalf("page %d lost data: %d", page, got)
@@ -83,9 +83,9 @@ func TestSharedPageIsChargedOnceUntilLastAliasDetaches(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		b := pageBudget(t, 1)
 		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 2, LogicalPages: 2, DirtyPages: 2, ReadAheadPages: 1}, b)
-		first, fm, _ := f.region(1)
+		first, fm, _ := f.memoryRegion(1)
 		access(t, first, fm, 0, false)
-		second, sm, _ := f.region(1)
+		second, sm, _ := f.memoryRegion(1)
 		if got := access(t, second, sm, 0, false)[0]; got != 1 {
 			t.Fatal(got)
 		}
@@ -115,7 +115,7 @@ func TestFaultWaitsForOtherConsumerAndCancellationReleasesReservations(t *testin
 			t.Fatal(err)
 		}
 		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 1, LogicalPages: 1, DirtyPages: 1, ReadAheadPages: 1}, b)
-		r, m, _ := f.region(1)
+		r, m, _ := f.memoryRegion(1)
 		ctx, cancel := context.WithCancel(t.Context())
 		done := make(chan error, 1)
 		go func() { done <- r.Fault(ctx, 0, false) }()
@@ -178,7 +178,7 @@ func TestFailedPhysicalCleanupRetainsRAMUntilRetry(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		r, m, _ := f.region(1)
+		r, m, _ := f.memoryRegion(1)
 		if err := r.Fault(t.Context(), 0, false); !errors.Is(err, errInjected) {
 			t.Fatal(err)
 		}
@@ -228,7 +228,7 @@ func TestHugePageFaultReclaimsCacheBeforeEvictingGuestPages(t *testing.T) {
 		// 2 MiB admission behaves against a cache holding the other half.
 		f := newConfiguredFixture(t, vmmemory.Config{PageSize: huge, ResidentPages: 2, LogicalPages: 2,
 			DirtyPages: 2, ReadAheadPages: 1}, b)
-		r, m, _ := f.region(2)
+		r, m, _ := f.memoryRegion(2)
 		access(t, r, m, 0, false)
 		if data == nil {
 			t.Fatal("cache was discarded while the first huge page still fit")

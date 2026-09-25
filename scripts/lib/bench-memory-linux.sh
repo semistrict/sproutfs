@@ -249,7 +249,7 @@ fi
 
 # Only the fork fan-out: forks of one published checkpoint each run one binary
 # off the DAX root and write nothing, and the record lists the pages each fork
-# came to own, by region. busybox is the init's shell, so the parent has run it
+# came to own, by memory region. busybox is the init's shell, so the parent has run it
 # before the checkpoint; memprobe is a binary no parent ever ran, so a fork is
 # the first to execute its pages. It is the x86-64 half of a comparison with
 # scripts/bench-guest-lima.sh on aarch64.

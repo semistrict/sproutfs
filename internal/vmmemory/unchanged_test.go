@@ -18,20 +18,20 @@ import (
 func TestASealedPageThatNeverChangedIsNotPublished(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newFixture(t, 8, 32, 8)
-		a, am, _ := f.region(4)
-		b, bm, _ := f.region(4)
+		a, am, _ := f.memoryRegion(4)
+		b, bm, _ := f.memoryRegion(4)
 		for page := uint64(0); page < 4; page++ {
 			access(t, a, am, page, false)
 			access(t, b, bm, page, false)
 		}
-		wantSharing(t, sharing(t, f).Ram, 4, 8, "four pages shared by two regions")
+		wantSharing(t, sharing(t, f).Ram, 4, 8, "four pages shared by two memory regions")
 		// The whole of what the guest does: it takes the page writable and
 		// stores not one byte into it.
 		access(t, a, am, 0, true)
 		if err := a.Seal(t.Context()); err != nil {
 			t.Fatal(err)
 		}
-		// A settle runs with the guest running and holds neither the region nor
+		// A settle runs with the guest running and holds neither the memory region nor
 		// the window that serializes a page's mappings against one another, so
 		// the only replacement it may issue is the one that installs no page
 		// table and wakes nothing. Installing the origin over the page the guest
@@ -58,8 +58,8 @@ func TestASealedPageThatNeverChangedIsNotPublished(t *testing.T) {
 			t.Errorf("%d dirty reservations are still held, want none", stats.DirtyPages)
 		}
 		wantSharing(t, sharing(t, f).Ram, 4, 8, "after the settle")
-		wantRegion(t, a, 4, 0, 4, "the region that faulted and stored nothing")
-		wantRegion(t, b, 4, 0, 4, "the region that never faulted for writing")
+		wantMemoryRegion(t, a, 4, 0, 4, "the memory region that faulted and stored nothing")
+		wantMemoryRegion(t, b, 4, 0, 4, "the memory region that never faulted for writing")
 		// The guest's mapping of the copy is taken away rather than swapped for
 		// the origin underneath a running guest: replacing it in place is what
 		// corrupted the fan-out's children. So the page is missing here, and the
@@ -89,8 +89,8 @@ func TestASealedPageThatNeverChangedIsNotPublished(t *testing.T) {
 func TestASealedPageTheGuestChangedIsPublishedAsBefore(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newFixture(t, 8, 32, 8)
-		a, am, ab := f.region(4)
-		b, bm, _ := f.region(4)
+		a, am, ab := f.memoryRegion(4)
+		b, bm, _ := f.memoryRegion(4)
 		for page := uint64(0); page < 4; page++ {
 			access(t, a, am, page, false)
 			access(t, b, bm, page, false)
@@ -123,8 +123,8 @@ func TestASealedPageTheGuestChangedIsPublishedAsBefore(t *testing.T) {
 func TestAStoreBetweenTheSealAndTheSettleKeepsTheGuestsOwnPage(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newFixture(t, 8, 32, 8)
-		a, am, ab := f.region(4)
-		b, bm, _ := f.region(4)
+		a, am, ab := f.memoryRegion(4)
+		b, bm, _ := f.memoryRegion(4)
 		for page := uint64(0); page < 4; page++ {
 			access(t, a, am, page, false)
 			access(t, b, bm, page, false)
@@ -143,7 +143,7 @@ func TestAStoreBetweenTheSealAndTheSettleKeepsTheGuestsOwnPage(t *testing.T) {
 		if err := a.Checkpoint().Retire(t.Context(), true); err != nil {
 			t.Fatal(err)
 		}
-		wantRegion(t, a, 4, 1, 3, "the region that stored after the seal")
+		wantMemoryRegion(t, a, 4, 1, 3, "the memory region that stored after the seal")
 		if got := access(t, a, am, 0, false)[0]; got != 99 {
 			t.Fatalf("the page reads %d, want the byte the guest stored", got)
 		}
@@ -169,10 +169,10 @@ func TestAStoreBetweenTheSealAndTheSettleKeepsTheGuestsOwnPage(t *testing.T) {
 func TestACopyWhoseOriginWasEvictedIsPublished(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newFixture(t, 2, 32, 8)
-		a, am, _ := f.region(4)
+		a, am, _ := f.memoryRegion(4)
 		access(t, a, am, 0, false)
 		access(t, a, am, 0, true)
-		// Two slots hold the origin and the copy; another region's fault takes
+		// Two slots hold the origin and the copy; another memory region's fault takes
 		// the least recently used of them, which is the origin.
 		c, cm := f.attach(f.newUnrelatedBacking(2))
 		access(t, c, cm, 0, false)
@@ -222,7 +222,7 @@ func TestAPageMadeFromZerosIsNeverCompared(t *testing.T) {
 
 // A page whose bytes exist only on the host that is handing this VM over is not
 // the volume's, so nothing published holds them and no copy of one can be
-// settled against anything: the region's next checkpoint is what makes them
+// settled against anything: the memory region's next checkpoint is what makes them
 // durable, whatever a write fault did to them first.
 func TestAPageOnlyAnotherHostHoldsIsNeverCompared(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
@@ -257,7 +257,7 @@ func TestAPageOnlyAnotherHostHoldsIsNeverCompared(t *testing.T) {
 func TestAPageCopiedFromAForkPointsNameIsNeverCompared(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newFixture(t, 8, 32, 8)
-		parent, pm, _ := f.region(4)
+		parent, pm, _ := f.memoryRegion(4)
 		access(t, parent, pm, 0, true)[0] = 44
 		if err := parent.Seal(t.Context()); err != nil {
 			t.Fatal(err)
@@ -297,20 +297,20 @@ func TestAPageCopiedFromAForkPointsNameIsNeverCompared(t *testing.T) {
 	})
 }
 
-// A region whose only private pages turn out to be unchanged holds no
+// A memory region whose only private pages turn out to be unchanged holds no
 // unpublished write once the settle has run, so the loss window that was
 // holding its guest back ends there rather than at the publication.
 func TestTheLossWindowEndsWhenEveryPrivatePageWasUnchanged(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 8, LogicalPages: 32,
 			DirtyPages: 8, LossWindow: lossWindow})
-		a, am, _ := f.region(4)
-		b, bm, _ := f.region(4)
+		a, am, _ := f.memoryRegion(4)
+		b, bm, _ := f.memoryRegion(4)
 		for page := uint64(0); page < 4; page++ {
 			access(t, a, am, page, false)
 			access(t, b, bm, page, false)
 		}
-		f.h.SetPressure(vmmemory.Pressure{Checkpoint: func(*vmmemory.Region) bool { return true }})
+		f.h.SetPressure(vmmemory.Pressure{Checkpoint: func(*vmmemory.MemoryRegion) bool { return true }})
 		access(t, a, am, 0, true)
 		time.Sleep(lossWindow + time.Second)
 		stored := make(chan error, 1)
@@ -345,8 +345,8 @@ func TestTheSettleDoesNotDependOnItsWorkers(t *testing.T) {
 			t.Helper()
 			f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 64, LogicalPages: 128,
 				DirtyPages: 64, SettleWorkers: workers})
-			a, am, _ := f.region(16)
-			b, bm, _ := f.region(16)
+			a, am, _ := f.memoryRegion(16)
+			b, bm, _ := f.memoryRegion(16)
 			for page := uint64(0); page < 16; page++ {
 				access(t, a, am, page, false)
 				access(t, b, bm, page, false)
@@ -395,9 +395,9 @@ func TestASettleRevokesUnchangedPagesInRuns(t *testing.T) {
 		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 4 * pages,
 			LogicalPages: 8 * pages, DirtyPages: 2 * pages, ReadAheadPages: 1,
 			SettleWorkers: 4})
-		// A sibling holds the same identities, so every page this region takes
+		// A sibling holds the same identities, so every page this memory region takes
 		// writable has an origin to be compared with and re-shared onto.
-		sibling, siblingMap, _ := f.region(pages)
+		sibling, siblingMap, _ := f.memoryRegion(pages)
 		for page := uint64(0); page < pages; page++ {
 			access(t, sibling, siblingMap, page, false)
 		}

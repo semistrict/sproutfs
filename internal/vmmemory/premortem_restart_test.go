@@ -55,15 +55,15 @@ func TestPremortemAStartOnAHostThatStillHoldsItsPagesMapsOnlyWhatIsStillItsOwn(t
 		// running: it inherited every page, so it shares the pages by identity
 		// and they are what the host still holds once the parent stops.
 		child := &identifiedBacking{f.newBacking(pages), held}
-		childRegion, childMap := f.attach(child)
+		childMemoryRegion, childMap := f.attach(child)
 		for page := range uint64(pages) {
-			access(t, childRegion, childMap, page, false)
+			access(t, childMemoryRegion, childMap, page, false)
 		}
 		if child.loads != 0 {
 			t.Fatalf("the child loaded %d pages its parent already held", child.loads)
 		}
 
-		// The stop: the process closes and the region detaches, which gives its
+		// The stop: the process closes and the memory region detaches, which gives its
 		// logical pages and its own pages back. What this host still holds of
 		// the VM is the pages the child shares.
 		clear(firstMap.pages)
@@ -125,9 +125,9 @@ func TestPremortemAPageOfAnEarlierIncarnationIsNeverServedForANewIdentity(t *tes
 		// A fork of it taken on this host and still running, which is what keeps
 		// the earlier incarnation's pages here after the stop.
 		sibling := f.newBacking(pages)
-		siblingRegion, siblingMap := f.attach(sibling)
+		siblingMemoryRegion, siblingMap := f.attach(sibling)
 		for page := range uint64(pages) {
-			access(t, siblingRegion, siblingMap, page, false)
+			access(t, siblingMemoryRegion, siblingMap, page, false)
 		}
 		if sibling.loads != 0 {
 			t.Fatalf("the sibling loaded %d pages this host already held", sibling.loads)

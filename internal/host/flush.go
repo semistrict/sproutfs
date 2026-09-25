@@ -58,7 +58,7 @@ type pendingFlush struct {
 	done  func(error)
 }
 
-// flushed answers the pager's flush of one region: at once when the VM's disks
+// flushed answers the pager's flush of one memory region: at once when the VM's disks
 // are fresh enough, otherwise once a checkpoint makes them so.
 //
 // It runs on the pager's goroutine, so it only records the flush and signals the
@@ -66,15 +66,15 @@ type pendingFlush struct {
 // registration's lock, and so is the loop's release after a publication lands,
 // so a flush either sees that publication or is released by it.
 //
-// A flush the host cannot make durable completes at once: a region no VM this
+// A flush the host cannot make durable completes at once: a memory region no VM this
 // host runs maps, and a VM with no checkpoint loop, have nothing that would ever
 // release it, and a guest must not hang on a flush for that.
-func (h *Host) flushed(region *vmmemory.Region, done func(error)) {
+func (h *Host) flushed(memoryRegion *vmmemory.MemoryRegion, done func(error)) {
 	if h.flushBound <= 0 {
 		done(nil)
 		return
 	}
-	_, entry := h.machineFor(region)
+	_, entry := h.machineFor(memoryRegion)
 	if entry == nil || entry.now == nil {
 		done(nil)
 		return
@@ -96,7 +96,7 @@ func (h *Host) flushed(region *vmmemory.Region, done func(error)) {
 }
 
 // dropFlush answers no flush, which is what a closing host does with them.
-func dropFlush(*vmmemory.Region, func(error)) {}
+func dropFlush(*vmmemory.MemoryRegion, func(error)) {}
 
 // releaseFlushes completes every flush a publication that just landed has
 // covered, and keeps the ones it has not.
@@ -122,6 +122,6 @@ func releaseFlushes(entry *registration) {
 // covered reports that one VM holds no disk write made before since that no
 // checkpoint has published.
 func covered(entry *registration, since time.Time) bool {
-	oldest := oldestOf(entry.runtime.Regions())
+	oldest := oldestOf(entry.runtime.MemoryRegions())
 	return oldest.IsZero() || !oldest.Before(since)
 }

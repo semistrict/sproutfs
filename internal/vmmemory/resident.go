@@ -26,18 +26,18 @@ type resident struct {
 	slot    int
 	key     pageKey
 	private bool
-	// kind is what the region that created this page maps it as, RAM or PMEM.
-	// A page identity names a volume, so every region that ever maps this page
+	// kind is what the memory region that created this page maps it as, RAM or PMEM.
+	// A page identity names a volume, so every memory region that ever maps this page
 	// agrees; it is kept on the page rather than read off an alias because a
 	// page can outlive every mapping of it — the page a store copied away from
 	// is host memory whether anything maps it or not.
-	kind RegionKind
+	kind MemoryRegionKind
 	// aliases is protected by Host.mu, not by this page's lock: a seal joins
 	// the checkpoint's copy to a page a reclaim is already holding, and the
 	// reclaim finds it there.
 	aliases aliasSet
 	// recent is this page's place on Host.lru, and idle its place on Host.idle
-	// while no region maps it. Protected by Host.mu.
+	// while no memory region maps it. Protected by Host.mu.
 	recent, idle pageLinks
 	// replacing counts the stores that have taken a binding off this page and
 	// whose mapping command has not yet replaced the guest's mapping of it. The
@@ -60,7 +60,7 @@ func (pg *resident) published() bool {
 }
 
 // Caller holds the resident lock, or owns a currently nonresident binding
-// under Region.mu. Eviction publishes backing before making it nonresident.
+// under MemoryRegion.mu. Eviction publishes backing before making it nonresident.
 func (h *Host) read(ctx context.Context, b *binding, pg *resident, dst []byte) error {
 	if pg != nil {
 		return h.arena.Read(ctx, pg.slot, dst)
@@ -94,7 +94,7 @@ func (h *Host) read(ctx context.Context, b *binding, pg *resident, dst []byte) e
 		}
 		return nil
 	}
-	_, err := b.region.loadBacking(ctx, b.index*h.pageSize, dst)
+	_, err := b.memoryRegion.loadBacking(ctx, b.index*h.pageSize, dst)
 	return err
 }
 
@@ -122,7 +122,7 @@ func (h *Host) bind(b *binding, pg *resident) {
 	if pg.private {
 		what = "bind-private"
 	}
-	note(b.region, b.index, what, pg.slot, -1)
+	note(b.memoryRegion, b.index, what, pg.slot, -1)
 	if found != "" {
 		panic(found)
 	}
@@ -142,7 +142,7 @@ func (h *Host) bindRun(bindings []*binding, pages []*resident) {
 	}
 	h.mu.Unlock()
 	for k, b := range bindings {
-		note(b.region, b.index, "bind-private", pages[k].slot, -1)
+		note(b.memoryRegion, b.index, "bind-private", pages[k].slot, -1)
 	}
 	if found != "" {
 		panic(found)
@@ -172,7 +172,7 @@ func (h *Host) touch(pg *resident) {
 
 // create fills an already reserved slot and returns its locked page, not yet
 // visible in the sharing index.
-func (h *Host) create(ctx context.Context, slot int, data []byte, key pageKey, private bool, kind RegionKind) (*resident, error) {
+func (h *Host) create(ctx context.Context, slot int, data []byte, key pageKey, private bool, kind MemoryRegionKind) (*resident, error) {
 	if sim.Bug(ctx, "pager-zero-new-page") {
 		// The page is created without the bytes that were loaded or copied
 		// into it, which every later read of that page then sees as zeroes.
@@ -188,7 +188,7 @@ func (h *Host) create(ctx context.Context, slot int, data []byte, key pageKey, p
 // their locked private pages. Every free slot is punched, so it already reads
 // as zeros: an arena that can make such a slot mappable without writing it
 // does so for the whole run at once, and only another arena is written.
-func (h *Host) createZeros(ctx context.Context, slot, count int, kind RegionKind) ([]*resident, error) {
+func (h *Host) createZeros(ctx context.Context, slot, count int, kind MemoryRegionKind) ([]*resident, error) {
 	var err error
 	if zeroing, ok := h.arena.(ZeroArena); ok {
 		err = zeroing.Zero(ctx, slot, count)
@@ -208,7 +208,7 @@ func (h *Host) createZeros(ctx context.Context, slot, count int, kind RegionKind
 // locked private pages in page order, which is the order the runs are in. A run
 // that fails takes the runs after it and the pages before it with it, so a
 // store that could not have its whole run leaves the arena exactly as it was.
-func (h *Host) createZeroRuns(ctx context.Context, runs []MapRun, kind RegionKind) ([]*resident, error) {
+func (h *Host) createZeroRuns(ctx context.Context, runs []MapRun, kind MemoryRegionKind) ([]*resident, error) {
 	if len(runs) == 1 {
 		return h.createZeros(ctx, runs[0].Slot, runs[0].Count, kind)
 	}
@@ -254,7 +254,7 @@ func (h *Host) abandonSlots(ctx context.Context, slot, count int, err error) err
 }
 
 // adopt makes a filled slot a locked resident page, most recently used.
-func (h *Host) adopt(slot int, key pageKey, private bool, kind RegionKind) *resident {
+func (h *Host) adopt(slot int, key pageKey, private bool, kind MemoryRegionKind) *resident {
 	pg := &resident{mu: ctxsync.NewMutex(), slot: slot, key: key, private: private, kind: kind}
 	_ = pg.mu.Lock(context.Background())
 	h.mu.Lock()
@@ -268,7 +268,7 @@ func (h *Host) adopt(slot int, key pageKey, private bool, kind RegionKind) *resi
 // slot order. A write-ahead run is thousands of pages that every other fault
 // of the host is waiting to see, so they join the recency list under one host
 // lock and wake waiters once.
-func (h *Host) adoptRun(slot, count int, kind RegionKind) []*resident {
+func (h *Host) adoptRun(slot, count int, kind MemoryRegionKind) []*resident {
 	pages := make([]*resident, count)
 	for i := range pages {
 		pg := &resident{mu: ctxsync.NewMutex(), slot: slot + i, private: true, kind: kind}
@@ -312,7 +312,7 @@ func (h *Host) release(ctx context.Context, pg *resident) error {
 // that page in the arena, where unlink would release it once its last alias
 // went. The bytes stay under the identity they are published by, so the settle
 // has something to compare this copy against and something to re-share it onto,
-// and any other region that inherits that identity maps it instead of reading
+// and any other memory region that inherits that identity maps it instead of reading
 // it. Nothing is pinned by this: the page is clean, so the next reclaim short of
 // a slot takes it like any other. Caller holds the page's lock.
 func (h *Host) leave(b *binding, pg *resident) {
@@ -324,8 +324,8 @@ func (h *Host) leave(b *binding, pg *resident) {
 	h.mu.Unlock()
 }
 
-// idleLocked puts a page no region maps any more on the idle list, newest
-// last, where it waits for a region that inherits its identity or for an
+// idleLocked puts a page no memory region maps any more on the idle list, newest
+// last, where it waits for a memory region that inherits its identity or for an
 // allocation that needs its slot. Caller holds h.mu.
 func (h *Host) idleLocked(pg *resident) {
 	if pg.aliases.len() == 0 && pg.slot >= 0 {
@@ -333,14 +333,14 @@ func (h *Host) idleLocked(pg *resident) {
 	}
 }
 
-// mappedLocked takes a page off the idle list, which a region mapping it again
+// mappedLocked takes a page off the idle list, which a memory region mapping it again
 // or its memory going back does. Caller holds h.mu.
 func (h *Host) mappedLocked(pg *resident) {
 	h.idle.remove(pg)
 }
 
 // releaseOrigin gives up a page a copy was made from once nothing maps it and
-// nothing names it any more, which is what detaching a region does with the
+// nothing names it any more, which is what detaching a memory region does with the
 // pages its stores left behind: a page no binding reaches is one nothing else
 // would ever release. A page something still maps, or one already evicted, is
 // left alone.
@@ -352,7 +352,7 @@ func (h *Host) releaseOrigin(ctx context.Context, pg *resident) error {
 	h.mu.Lock()
 	keep := pg.slot < 0 || pg.aliases.len() > 0
 	if !keep && pg.replacing > 0 {
-		// A store of another region is replacing the guest's mapping of this
+		// A store of another memory region is replacing the guest's mapping of this
 		// page. Its memory goes back when that command lands, exactly as it
 		// would for the binding that store took away.
 		pg.dropped, keep = true, true
@@ -365,7 +365,7 @@ func (h *Host) releaseOrigin(ctx context.Context, pg *resident) error {
 }
 
 func (h *Host) unlink(ctx context.Context, b *binding, pg *resident) error {
-	note(b.region, b.index, "unlink from "+caller(), pg.slot, -1)
+	note(b.memoryRegion, b.index, "unlink from "+caller(), pg.slot, -1)
 	h.mu.Lock()
 	last := pg.aliases.len() == 1
 	// A page a store is replacing keeps its memory until that store's mapping
@@ -375,10 +375,10 @@ func (h *Host) unlink(ctx context.Context, b *binding, pg *resident) error {
 		pg.dropped, last = true, false
 	}
 	// A published page is still the page its identity names when the last
-	// region mapping it goes: it stays, idle, for the next region that
+	// memory region mapping it goes: it stays, idle, for the next memory region that
 	// inherits that identity, and an allocation short of a slot gives it up
-	// before anything mapped. A private page is one region's state and nobody
-	// else's, so it goes with that region.
+	// before anything mapped. A private page is one memory region's state and nobody
+	// else's, so it goes with that memory region.
 	if last && pg.published() && h.clean[pg.key] == pg {
 		last = false
 	}
@@ -405,10 +405,10 @@ type storedPage struct {
 
 // storedIdentities reports that identity for every page of one retire batch,
 // located once per read-ahead window rather than once per page. It is volume
-// metadata, not a page transition, so it runs with neither the region nor any
+// metadata, not a page transition, so it runs with neither the memory region nor any
 // page held; the batch's pages are in ascending order, so one window's extents
 // answer for the run of pages that falls in it.
-func (r *Region) storedIdentities(ctx context.Context, held []*binding) (map[uint64]storedPage, error) {
+func (r *MemoryRegion) storedIdentities(ctx context.Context, held []*binding) (map[uint64]storedPage, error) {
 	result := make(map[uint64]storedPage, len(held))
 	var window *windowPlan
 	for _, checkpoint := range held {
@@ -432,7 +432,7 @@ func (r *Region) storedIdentities(ctx context.Context, held []*binding) (map[uin
 // publishLocked is publishClean with the page already locked, which is
 // what retiring a page of a checkpoint needs: it must not be reachable
 // from an unreserved binding for even a moment.
-func (r *Region) publishLocked(ctx context.Context, b *binding, pg *resident, id pageKey, stored bool) error {
+func (r *MemoryRegion) publishLocked(ctx context.Context, b *binding, pg *resident, id pageKey, stored bool) error {
 	h := r.host
 	drop := !stored || id.zero()
 	if !drop {
@@ -453,7 +453,7 @@ func (r *Region) publishLocked(ctx context.Context, b *binding, pg *resident, id
 	note(r, b.index, "publish-dropped "+publishReason(stored, id, h, pg), pg.slot, -1)
 	// A page given up because the volume holds no object for it was checked and
 	// its mapping taken away together with every other page this retire batch
-	// hands back; see Region.revokeHandedBack. What is left here is a page whose
+	// hands back; see MemoryRegion.revokeHandedBack. What is left here is a page whose
 	// identity another resident already holds, which is the one hand-back that
 	// arrives alone — and one that arrives with its mapping already gone, which
 	// this skips.
@@ -490,7 +490,7 @@ func (h *Host) droppable(ctx context.Context, b *binding, pg *resident, stored b
 	if allZero(data) {
 		return nil
 	}
-	return fmt.Errorf("%w: page %d of %s", ErrUndroppable, b.index, b.region.kind)
+	return fmt.Errorf("%w: page %d of %s", ErrUndroppable, b.index, b.memoryRegion.kind)
 }
 
 // share names a private page in the sharing index without ending its privacy:

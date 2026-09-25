@@ -67,7 +67,7 @@ func (s *supervisor) Receive(ctx context.Context, wire hostapi.Handoff) (hostapi
 		Fetched: stats.Fetched, Unpublished: stats.Unpublished}, nil
 }
 
-// startReceived builds the VMM of a VM this host takes over. Every region
+// startReceived builds the VMM of a VM this host takes over. Every memory region
 // attaches through the backing the migration supplies — the source host that
 // still holds its pages, with this host's own volume behind it — so a fault
 // reaches the source rather than reading a checkpoint that does not have the

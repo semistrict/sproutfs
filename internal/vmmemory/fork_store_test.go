@@ -20,13 +20,13 @@ import (
 //
 // A GCE fan-out on 2026-09-23 spent 12,428 revocations on 12,826
 // copy-on-writes, about one per page each fork wrote, so these are the shapes a
-// fork's stores come in at a 4 KiB page: a region attached over a sibling's
+// fork's stores come in at a 4 KiB page: a memory region attached over a sibling's
 // resident pages, a store into a page the guest has never touched, and a store
 // into a page inside a window an earlier read brought.
 
-// forkFixture is the shape a fork's RAM region has on a production host: a
+// forkFixture is the shape a fork's RAM memory region has on a production host: a
 // 4 KiB pager whose read-ahead run is one 2 MiB range, with an extent for every
-// range its regions may write into and room for everything it admits. It is
+// range its memory regions may write into and room for everything it admits. It is
 // that pager whatever page the suite is running at, because a fork at a 2 MiB
 // page has one page per range and no window to speak of.
 func forkFixture(t *testing.T, pages int) *fixture {
@@ -43,9 +43,9 @@ func revocations(t *testing.T, f *fixture) uint64 {
 	return hostStats(t, f).Revocations
 }
 
-// privatePages is how many pages of one region hold bytes of its own, which is
+// privatePages is how many pages of one memory region hold bytes of its own, which is
 // what a store is supposed to cost a fork: one, whatever its window brought.
-func privatePages(t *testing.T, r *vmmemory.Region) int {
+func privatePages(t *testing.T, r *vmmemory.MemoryRegion) int {
 	t.Helper()
 	stats, err := r.Stats(t.Context())
 	if err != nil {
@@ -61,11 +61,11 @@ func TestAForksFirstStoresRevokeNothing(t *testing.T) {
 		// The parent, whose pages a capture left resident: one read a range, each
 		// bringing its whole window, so those pages are in the sharing index under
 		// the identity the volume gives them.
-		parent, pm, _ := f.region(pages)
+		parent, pm, _ := f.memoryRegion(pages)
 		for _, page := range []uint64{0, 2 * rangePages, 3 * rangePages} {
 			access(t, parent, pm, page, false)
 		}
-		// The fork: a region of the same checkpoint, attached over those pages.
+		// The fork: a memory region of the same checkpoint, attached over those pages.
 		// The populate maps the runs it finds resident before the guest runs.
 		child, cm := f.attach(f.newBacking(pages))
 
@@ -147,7 +147,7 @@ func TestAForksFirstCheckpointRevokesItsHolesInRunsNotPages(t *testing.T) {
 		const pages, run = 2 * 512, 512
 		const stores = pages / run
 		const handedBack = pages - stores
-		f, r, m, b := zeroAheadBatchRegion(t, pages, run)
+		f, r, m, b := zeroAheadBatchMemoryRegion(t, pages, run)
 		for page := range uint64(stores) {
 			access(t, r, m.mapping, page*run, true)[0] = byte(page + 1)
 		}
@@ -172,10 +172,10 @@ func TestAForksFirstCheckpointRevokesItsHolesInRunsNotPages(t *testing.T) {
 	})
 }
 
-// zeroAheadBatchRegion is zeroAheadRegion whose client revokes in batches, which
+// zeroAheadBatchMemoryRegion is zeroAheadMemoryRegion whose client revokes in batches, which
 // is what the real one does: a pager talking to a client that can only revoke a
 // page at a time cannot show what a run costs.
-func zeroAheadBatchRegion(t *testing.T, pages, run int) (*fixture, *vmmemory.Region, *revokeBatchMapping, *backing) {
+func zeroAheadBatchMemoryRegion(t *testing.T, pages, run int) (*fixture, *vmmemory.MemoryRegion, *revokeBatchMapping, *backing) {
 	t.Helper()
 	f := newConfiguredFixture(t, vmmemory.Config{PageSize: checkpoint.PageSize4KiB,
 		ResidentPages: pages, LogicalPages: pages, DirtyPages: pages,

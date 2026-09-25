@@ -17,10 +17,10 @@ import (
 	"github.com/semistrict/sproutfs/internal/volume"
 )
 
-// TestPlanBindsRegionsToTheirVolumes is the layout every start binds: the one
-// RAM volume, one region per PMEM device, and each region attached with the
-// volume it maps. A VM's other volumes, ram1 among them, are not regions.
-func TestPlanBindsRegionsToTheirVolumes(t *testing.T) {
+// TestPlanBindsMemoryRegionsToTheirVolumes is the layout every start binds: the one
+// RAM volume, one memory region per PMEM device, and each memory region attached with the
+// volume it maps. A VM's other volumes, ram1 among them, are not memory regions.
+func TestPlanBindsMemoryRegionsToTheirVolumes(t *testing.T) {
 	vm := planVM(t)
 	layout, err := planConfig(t, vm).plan()
 	if err != nil {
@@ -36,18 +36,18 @@ func TestPlanBindsRegionsToTheirVolumes(t *testing.T) {
 		t.Fatalf("RAM attaches with %#v rather than its own volume", layout.ram.backing)
 	}
 	if len(layout.pmem) != 1 || layout.pmem[0].name != "root" {
-		t.Fatalf("the plan maps %d PMEM regions, want one named root: %+v", len(layout.pmem), layout.pmem)
+		t.Fatalf("the plan maps %d PMEM memory regions, want one named root: %+v", len(layout.pmem), layout.pmem)
 	}
 	if layout.pmem[0].backing.Kind != vmmemory.Pmem ||
 		layout.pmem[0].backing.Backing != vmmemory.Backing(vm.Volume("root")) {
-		t.Fatalf("the PMEM region attaches with %#v rather than its own volume", layout.pmem[0].backing)
+		t.Fatalf("the PMEM memory region attaches with %#v rather than its own volume", layout.pmem[0].backing)
 	}
 }
 
 // TestPlanAttachesTheSuppliedBackings is what a migration's destination needs:
-// the named regions read through the backing the receive supplied — the host
+// the named memory regions read through the backing the receive supplied — the host
 // that still holds their pages — while the volume stays their identity, and
-// every region the configuration did not name keeps reading its own volume.
+// every memory region the configuration did not name keeps reading its own volume.
 func TestPlanAttachesTheSuppliedBackings(t *testing.T) {
 	vm := planVM(t)
 	c := planConfig(t, vm)
@@ -80,11 +80,11 @@ func TestPlanRefusesABackingItWouldNotUse(t *testing.T) {
 		want     string
 	}{
 		{"a volume this machine does not map", map[string]vmmemory.Backing{"scratch": &fakeBacking{size: 4 << 20}},
-			`vmmachine: planned maps no region named "scratch"`},
+			`vmmachine: planned maps no memory region named "scratch"`},
 		{"no volume at all", map[string]vmmemory.Backing{"ram7": &fakeBacking{size: 4 << 20}},
-			`vmmachine: planned maps no region named "ram7"`},
+			`vmmachine: planned maps no memory region named "ram7"`},
 		{"a second RAM volume", map[string]vmmemory.Backing{"ram1": &fakeBacking{size: 4 << 20}},
-			`vmmachine: planned maps no region named "ram1"`},
+			`vmmachine: planned maps no memory region named "ram1"`},
 		{"a nil backing", map[string]vmmemory.Backing{RAMVolume: nil},
 			`vmmachine: the backing of "ram0" is nil`},
 		{"a backing of another size", map[string]vmmemory.Backing{RAMVolume: &fakeBacking{size: 2 << 20}},
@@ -118,7 +118,7 @@ func TestPlanRefusesAMachineItCannotBind(t *testing.T) {
 		{"no kernel to boot", func(c *Config) { c.KernelPath = "" }, "vmmachine: cold boot needs a kernel"},
 		{"a PMEM device with no volume", func(c *Config) { c.Pmem = []Pmem{{ID: "missing"}} },
 			`vmmachine: invalid PMEM device "missing"`},
-		{"a PMEM device over a RAM region", func(c *Config) { c.Pmem = []Pmem{{ID: RAMVolume}} },
+		{"a PMEM device over a RAM memory region", func(c *Config) { c.Pmem = []Pmem{{ID: RAMVolume}} },
 			`vmmachine: invalid PMEM device "ram0"`},
 		{"two PMEM roots", func(c *Config) { c.Pmem = []Pmem{{ID: "root", Root: true}, {ID: "scratch", Root: true}} },
 			"vmmachine: multiple PMEM roots"},
@@ -169,7 +169,7 @@ func (planArena) Release(context.Context, int) error       { return nil }
 
 // planPagers is the pair of pagers a machine takes, each with the page this
 // build's transport maps. A layout reads nothing from them but their pages,
-// which is what a region's size has to be a whole number of.
+// which is what a memory region's size has to be a whole number of.
 func planPagers(t *testing.T) vmmemory.Pagers {
 	t.Helper()
 	disk := sim.New(sim.Config{}).NewDisk("pager", sim.DiskConfig{})
@@ -191,7 +191,7 @@ func planPagers(t *testing.T) vmmemory.Pagers {
 }
 
 // planVM is a VM with its RAM volume, a PMEM volume and two volumes no machine
-// maps — "ram1" among them, since a machine has one RAM region — which is what
+// maps — "ram1" among them, since a machine has one RAM memory region — which is what
 // an override must not name.
 func planVM(t *testing.T) *volume.VM {
 	t.Helper()
@@ -209,7 +209,7 @@ func planVM(t *testing.T) *volume.VM {
 }
 
 // planManager is one volume manager over a simulated object store, which is all
-// a layout needs: no region is ever attached here.
+// a layout needs: no memory region is ever attached here.
 func planManager(t *testing.T) *volume.Manager {
 	t.Helper()
 	ctx := t.Context()

@@ -7,8 +7,8 @@ import (
 )
 
 type binding struct {
-	region *Region
-	index  uint64
+	memoryRegion *MemoryRegion
+	index        uint64
 	// Host.mu protects the pointer. The pointed-to resident's lock protects
 	// mapping state. Eviction publishes spill before clearing this pointer.
 	resident *resident
@@ -25,7 +25,7 @@ type binding struct {
 	// checkpoint ingests. Such a binding is dirty but owns neither the spill
 	// reservation nor the right to store: it shares the checkpoint's page until a
 	// store copies away from it. The detached copy itself is not reachable from
-	// the region's bindings and always has checkpoint == nil.
+	// the memory region's bindings and always has checkpoint == nil.
 	checkpoint *binding
 	// ahead marks a private page that write-ahead made resident before any
 	// store into it. A store into a writable page never faults, so it stays
@@ -51,10 +51,10 @@ const bindingBlockPages = 256
 
 type bindingBlock [bindingBlockPages]binding
 
-// Binding addresses stay stable while a region is attached because resident
+// Binding addresses stay stable while a memory region is attached because resident
 // alias sets retain them. Untouched blocks have no binding allocation.
-// The region access lock protects lifetime; this mutex only protects the map.
-func (r *Region) binding(index uint64) *binding {
+// The memory region access lock protects lifetime; this mutex only protects the map.
+func (r *MemoryRegion) binding(index uint64) *binding {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
 	b := r.bindingLocked(index)
@@ -69,7 +69,7 @@ func (r *Region) binding(index uint64) *binding {
 
 // bindingRun is binding for the count pages from first, under one lock, and
 // takes the whole run out of the compressed zero runs at once.
-func (r *Region) bindingRun(first, count uint64) []*binding {
+func (r *MemoryRegion) bindingRun(first, count uint64) []*binding {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
 	bindings := make([]*binding, count)
@@ -91,13 +91,13 @@ func (r *Region) bindingRun(first, count uint64) []*binding {
 
 // bindingLocked is the binding of one page, allocating its block. Caller holds
 // bindingsMu.
-func (r *Region) bindingLocked(index uint64) *binding {
+func (r *MemoryRegion) bindingLocked(index uint64) *binding {
 	key := index / bindingBlockPages
 	block := r.blocks[key]
 	if block == nil {
 		block = new(bindingBlock)
 		for i := range block {
-			block[i] = binding{region: r, index: key*bindingBlockPages + uint64(i), spillSlot: -1}
+			block[i] = binding{memoryRegion: r, index: key*bindingBlockPages + uint64(i), spillSlot: -1}
 		}
 		r.blocks[key] = block
 	}
@@ -106,19 +106,19 @@ func (r *Region) bindingLocked(index uint64) *binding {
 
 // spillTarget reports the dirty reservation this binding's bytes go to, and
 // whether a page that names none has them held elsewhere: by the checkpoint's
-// copy of it, or because the page is not this region's own state at all. Both
+// copy of it, or because the page is not this memory region's own state at all. Both
 // are read together under the map lock, because a seal moves the reservation to
 // the checkpoint's copy while a reclaim of the resident page is reading it.
 func (b *binding) spillTarget() (slot int, elsewhere bool) {
-	b.region.bindingsMu.Lock()
-	defer b.region.bindingsMu.Unlock()
+	b.memoryRegion.bindingsMu.Lock()
+	defer b.memoryRegion.bindingsMu.Unlock()
 	return b.spillSlot, !b.dirty || b.checkpoint != nil
 }
 
 // setMapped and isMapped carry a page's mapping state across the one pair of
 // holders that do not exclude each other: a reclaim revokes a victim's pages
-// under that page's lock alone, and a seal reads them under the region.
-func (r *Region) setMapped(b *binding, mapped bool) {
+// under that page's lock alone, and a seal reads them under the memory region.
+func (r *MemoryRegion) setMapped(b *binding, mapped bool) {
 	r.bindingsMu.Lock()
 	b.mapped = mapped
 	r.noteSealableLocked(b)
@@ -126,12 +126,12 @@ func (r *Region) setMapped(b *binding, mapped bool) {
 }
 
 // noteSealableLocked records whether this page is one the next seal would
-// write-protect: this region's own dirty state, held by no checkpoint, and
+// write-protect: this memory region's own dirty state, held by no checkpoint, and
 // mapped. The seal reads the runs of those pages rather than walking the dirty
 // set, so its pause costs the commands it issues and not the pages they cover;
 // every transition that changes any of the three keeps this up to date, which
 // is what makes reading it O(runs). Caller holds bindingsMu.
-func (r *Region) noteSealableLocked(b *binding) {
+func (r *MemoryRegion) noteSealableLocked(b *binding) {
 	sealable := b.dirty && b.checkpoint == nil && b.mapped
 	if r.dirtyRuns.Get(b.index).Dirty == sealable {
 		// Replacing a run costs the depth of its boundaries, and most of these
@@ -143,8 +143,8 @@ func (r *Region) noteSealableLocked(b *binding) {
 
 // sealableRuns is the runs of consecutive pages one seal write-protects. It is
 // the whole of what a seal does while the guest is paused. Caller holds the
-// exclusive region lock.
-func (r *Region) sealableRuns() []PageRun {
+// exclusive memory region lock.
+func (r *MemoryRegion) sealableRuns() []PageRun {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
 	var runs []PageRun
@@ -164,7 +164,7 @@ func (r *Region) sealableRuns() []PageRun {
 // nothing behind it. A page the client did map must never lose the record — a
 // revocation skips an unmapped binding, and the memory the guest still reads
 // through would be released under it.
-func (r *Region) unmapPages(page uint64, count int) {
+func (r *MemoryRegion) unmapPages(page uint64, count int) {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
 	for k := range uint64(count) {
@@ -178,7 +178,7 @@ func (r *Region) unmapPages(page uint64, count int) {
 
 // unmapRuns is unmapPages for the runs one mapping command carried, including
 // the compressed zero ranges a plan records instead of per-page bindings.
-func (r *Region) unmapRuns(runs []MapRun) {
+func (r *MemoryRegion) unmapRuns(runs []MapRun) {
 	for _, run := range runs {
 		if run.Zero {
 			r.bindingsMu.Lock()
@@ -190,13 +190,13 @@ func (r *Region) unmapRuns(runs []MapRun) {
 	}
 }
 
-func (r *Region) isMapped(b *binding) bool {
+func (r *MemoryRegion) isMapped(b *binding) bool {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
 	return b.mapped
 }
 
-func (r *Region) lookupBinding(index uint64) *binding {
+func (r *MemoryRegion) lookupBinding(index uint64) *binding {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
 	if block := r.blocks[index/bindingBlockPages]; block != nil {
@@ -208,7 +208,7 @@ func (r *Region) lookupBinding(index uint64) *binding {
 // touchedBlock reports whether any page of the binding block holding index has
 // ever been given per-page state. A range operation checks this once per 256
 // pages instead of looking each page up.
-func (r *Region) touchedBlock(index uint64) bool {
+func (r *MemoryRegion) touchedBlock(index uint64) bool {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
 	return r.blocks[index/bindingBlockPages] != nil
@@ -216,7 +216,7 @@ func (r *Region) touchedBlock(index uint64) bool {
 
 // Snapshot only allocated blocks in logical order. No binding-map lock is held
 // while taking resident locks, making kernel changes or accessing backing.
-func (r *Region) bindings() []*binding {
+func (r *MemoryRegion) bindings() []*binding {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
 	keys := make([]uint64, 0, len(r.blocks))
@@ -238,12 +238,12 @@ func (r *Region) bindings() []*binding {
 
 // Compressed zeros own no arena alias and need no per-page binding. Faults
 // extract individual bindings only when they need private or explicit state.
-func (r *Region) zeroMapped(index uint64) bool {
+func (r *MemoryRegion) zeroMapped(index uint64) bool {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
 	return r.zeroRanges.Get(index).Zero
 }
-func (r *Region) mapped(index uint64) bool {
+func (r *MemoryRegion) mapped(index uint64) bool {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
 	if r.zeroRanges.Get(index).Zero {
@@ -254,7 +254,7 @@ func (r *Region) mapped(index uint64) bool {
 	}
 	return false
 }
-func (r *Region) mapZeros(start, end uint64) {
+func (r *MemoryRegion) mapZeros(start, end uint64) {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
 	r.zeroRanges.Set(start, end, pageranges.State{Zero: true})
@@ -266,7 +266,7 @@ func (r *Region) mapZeros(start, end uint64) {
 // volume holds. Either way it owns no memory, no private state and no
 // checkpoint, and nothing needs fencing before a private page takes its place.
 // Caller holds the page's fault stripe.
-func (r *Region) fresh(index uint64) (zero, untouched bool) {
+func (r *MemoryRegion) fresh(index uint64) (zero, untouched bool) {
 	r.bindingsMu.Lock()
 	if r.zeroRanges.Get(index).Zero {
 		r.bindingsMu.Unlock()
@@ -298,9 +298,9 @@ func (r *Region) fresh(index uint64) (zero, untouched bool) {
 }
 
 // needsPrivatePage reports whether a store to index would have to allocate a
-// private page, and with it a dirty reservation. It takes no region lock: a
+// private page, and with it a dirty reservation. It takes no memory region lock: a
 // store decides this before it competes for one, and rechecks it afterwards.
-func (r *Region) needsPrivatePage(index uint64) bool {
+func (r *MemoryRegion) needsPrivatePage(index uint64) bool {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
 	block := r.blocks[index/bindingBlockPages]
@@ -315,7 +315,7 @@ func (r *Region) needsPrivatePage(index uint64) bool {
 // detached copy the checkpoint keeps. The page stays dirty: the volume does not
 // hold its bytes yet, and a store must copy away from the checkpoint before it
 // can change them.
-func (r *Region) holdInCheckpoint(b, held *binding) {
+func (r *MemoryRegion) holdInCheckpoint(b, held *binding) {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
 	b.checkpoint, b.spillSlot = held, -1
@@ -329,18 +329,18 @@ func (r *Region) holdInCheckpoint(b, held *binding) {
 
 // originOf reports the page a checkpoint's copy was made from, nil where it was
 // made from nothing a settle may compare it with.
-func (r *Region) originOf(b *binding) *resident {
+func (r *MemoryRegion) originOf(b *binding) *resident {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
 	return b.origin
 }
 
-// privateEpoch reports whether this page is the region's own dirty state and
+// privateEpoch reports whether this page is the memory region's own dirty state and
 // which checkpoint's copy it shares, read together so that a fault which gave
-// the region up can tell whether a seal or a retire ran while it was away. Both
-// change under the exclusive region lock, so a fault holding it shared reads
+// the memory region up can tell whether a seal or a retire ran while it was away. Both
+// change under the exclusive memory region lock, so a fault holding it shared reads
 // the pair it decided on.
-func (r *Region) privateEpoch(b *binding) (dirty bool, held *binding) {
+func (r *MemoryRegion) privateEpoch(b *binding) (dirty bool, held *binding) {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
 	return b.dirty, b.checkpoint
@@ -348,7 +348,7 @@ func (r *Region) privateEpoch(b *binding) (dirty bool, held *binding) {
 
 // checkpointCopy reports the checkpoint's copy of this page while the two
 // share a resident page, nil when the page holds its own state.
-func (r *Region) checkpointCopy(b *binding) *binding {
+func (r *MemoryRegion) checkpointCopy(b *binding) *binding {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
 	return b.checkpoint
@@ -359,7 +359,7 @@ func (r *Region) checkpointCopy(b *binding) *binding {
 // because a page that is dirty with neither of them is a page a reclaim would
 // punch. It is also what a store into a clean page does, which depends on no
 // checkpoint and takes the same reservation.
-func (r *Region) takeFromCheckpoint(b *binding, slot int, origin *resident) {
+func (r *MemoryRegion) takeFromCheckpoint(b *binding, slot int, origin *resident) {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
 	b.checkpoint, b.spillSlot, b.dirty, b.zero = nil, slot, true, false
@@ -378,7 +378,7 @@ func (r *Region) takeFromCheckpoint(b *binding, slot int, origin *resident) {
 // page's dirty epoch, because the volume now holds its bytes. Both leave the
 // resident page with an alias that owns what it needs at every moment, so they
 // run under that page's lock.
-func (r *Region) restoreFromCheckpoint(b, held *binding) {
+func (r *MemoryRegion) restoreFromCheckpoint(b, held *binding) {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
 	b.checkpoint, b.spillSlot, b.dirty, b.ahead = nil, held.spillSlot, true, held.ahead
@@ -390,7 +390,7 @@ func (r *Region) restoreFromCheckpoint(b, held *binding) {
 	r.dirtyBindings[b.index] = b
 	r.noteSealableLocked(b)
 }
-func (r *Region) retireFromCheckpoint(b *binding) {
+func (r *MemoryRegion) retireFromCheckpoint(b *binding) {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
 	// The page is the volume's again, so where it was copied from says nothing
@@ -402,16 +402,16 @@ func (r *Region) retireFromCheckpoint(b *binding) {
 
 // heldBy reports whether the live page still shares the checkpoint's copy,
 // which is what decides between publishing that copy and discarding it.
-func (r *Region) heldBy(index uint64, held *binding) bool {
+func (r *MemoryRegion) heldBy(index uint64, held *binding) bool {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
 	block := r.blocks[index/bindingBlockPages]
 	return block != nil && block[index%bindingBlockPages].checkpoint == held
 }
 
-// Dirty ownership changes under the region access lock. The map mutex lets
+// Dirty ownership changes under the memory region access lock. The map mutex lets
 // independent faults add entries without scanning all touched blocks.
-func (r *Region) setDirty(b *binding, dirty bool) {
+func (r *MemoryRegion) setDirty(b *binding, dirty bool) {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
 	b.dirty = dirty
@@ -436,7 +436,7 @@ func (r *Region) setDirty(b *binding, dirty bool) {
 // consecutive pages of a run, under one lock. A run of fresh pages no
 // checkpoint holds is one sealable run, which is one change to the runs a seal
 // reads rather than one per page.
-func (r *Region) setDirtyMappedRun(bindings []*binding) {
+func (r *MemoryRegion) setDirtyMappedRun(bindings []*binding) {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
 	if r.dirtyBindings == nil {
@@ -461,17 +461,17 @@ func (r *Region) setDirtyMappedRun(bindings []*binding) {
 
 // dirtyCount reports how many pages hold private state a checkpoint has not
 // taken, which is what the next seal takes.
-func (r *Region) dirtyCount() int {
+func (r *MemoryRegion) dirtyCount() int {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
 	return len(r.dirtyBindings)
 }
 
 // takeDirtySet hands the whole dirty set to a seal in one step and leaves the
-// region with none. It is O(1): a pause may not walk what it is freezing, and
+// memory region with none. It is O(1): a pause may not walk what it is freezing, and
 // what the seal has to do per page it does afterwards, with the guest running.
-// Caller holds the exclusive region lock.
-func (r *Region) takeDirtySet() map[uint64]*binding {
+// Caller holds the exclusive memory region lock.
+func (r *MemoryRegion) takeDirtySet() map[uint64]*binding {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
 	pending := r.dirtyBindings

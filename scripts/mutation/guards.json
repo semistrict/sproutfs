@@ -30,9 +30,9 @@
     "purpose": "Accept a handoff layout with the wrong volume size."
   },
   {
-    "id": "migration-accept-missing-region",
+    "id": "migration-accept-missing-memory-region",
     "package": "internal/vmmigrate",
-    "run": "^TestReceiveRefusesAMachineMissingARegion$",
+    "run": "^TestReceiveRefusesAMachineMissingAMemoryRegion$",
     "purpose": "Accept a started VMM that omits a handed-off memory region."
   },
   {

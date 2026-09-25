@@ -1,5 +1,6 @@
 use crate::{
-    BACKING_HUGETLB, BACKING_MEMFD, MAX_PAGE_SIZE, MIN_PAGE_SIZE, RegionKind, RegionSpec, Session,
+    BACKING_HUGETLB, BACKING_MEMFD, MAX_PAGE_SIZE, MIN_PAGE_SIZE, MemoryRegionKind,
+    MemoryRegionSpec, Session,
     wire::{self, Frame},
 };
 use std::io;
@@ -41,7 +42,7 @@ impl Peer {
         }
     }
 
-    fn accept(&self, spec: RegionSpec) -> (UnixStream, OwnedFd) {
+    fn accept(&self, spec: MemoryRegionSpec) -> (UnixStream, OwnedFd) {
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut socket = loop {
             match self.listener.accept() {
@@ -68,16 +69,16 @@ impl Peer {
                 ..Frame::default()
             }
         );
-        let region = Frame::read(&mut socket).unwrap();
-        assert_ne!(region.offset, 0);
-        // The region is reserved before the page is known, so it is reserved at
+        let memory_region = Frame::read(&mut socket).unwrap();
+        assert_ne!(memory_region.offset, 0);
+        // The memory region is reserved before the page is known, so it is reserved at
         // the largest page this transport maps, which is aligned for both.
-        assert_eq!(region.offset % MAX_PAGE_SIZE as u64, 0);
+        assert_eq!(memory_region.offset % MAX_PAGE_SIZE as u64, 0);
         assert_eq!(
-            region,
+            memory_region,
             Frame {
-                kind: wire::REGION,
-                offset: region.offset,
+                kind: wire::MEMORY_REGION,
+                offset: memory_region.offset,
                 len: spec.len as u64,
                 flags: spec.kind as u64,
                 ..Frame::default()
@@ -148,7 +149,7 @@ fn ready() -> Frame {
 
 // Exercise the real connect boundary. A rejected handshake must produce an
 // error even though the peer offers a complete path to successful readiness.
-fn handshake(attach: Frame, ready: Frame, spec: RegionSpec) -> io::Result<Session> {
+fn handshake(attach: Frame, ready: Frame, spec: MemoryRegionSpec) -> io::Result<Session> {
     let backing = backing();
     handshake_with_backing(attach, ready, spec, &backing)
 }
@@ -156,7 +157,7 @@ fn handshake(attach: Frame, ready: Frame, spec: RegionSpec) -> io::Result<Sessio
 fn handshake_with_backing(
     attach: Frame,
     ready: Frame,
-    spec: RegionSpec,
+    spec: MemoryRegionSpec,
     backing: &OwnedFd,
 ) -> io::Result<Session> {
     let peer = Peer::new();
@@ -189,9 +190,9 @@ fn handshake_with_backing(
 
 #[test]
 #[ignore = "requires native HugeTLB/UFFD support and permission to create kernel-mode UFFD"]
-fn attachment_rejects_invalid_fields_before_exposing_the_region() {
-    let spec = RegionSpec {
-        kind: RegionKind::Ram,
+fn attachment_rejects_invalid_fields_before_exposing_the_memory_region() {
+    let spec = MemoryRegionSpec {
+        kind: MemoryRegionKind::Ram,
         len: PAGE_SIZE,
     };
     let valid = attachment();
@@ -259,8 +260,8 @@ fn attachment_rejects_invalid_fields_before_exposing_the_region() {
 #[test]
 #[ignore = "requires native HugeTLB/UFFD support and permission to create kernel-mode UFFD"]
 fn readiness_rejects_zero_ids_and_nonzero_reserved_fields() {
-    let spec = RegionSpec {
-        kind: RegionKind::Pmem,
+    let spec = MemoryRegionSpec {
+        kind: MemoryRegionKind::Pmem,
         len: PAGE_SIZE,
     };
     let valid = ready();
@@ -289,37 +290,40 @@ fn readiness_rejects_zero_ids_and_nonzero_reserved_fields() {
     }
 }
 
-// A session maps exactly one region, whichever kind it is, and exposes it at a
+// A session maps exactly one memory region, whichever kind it is, and exposes it at a
 // page-aligned address of its own.
 #[test]
 #[ignore = "requires native HugeTLB/UFFD support and permission to create kernel-mode UFFD"]
-fn a_handshake_maps_the_one_region_it_asked_for() {
-    for kind in [RegionKind::Ram, RegionKind::Pmem] {
-        let spec = RegionSpec {
+fn a_handshake_maps_the_one_memory_region_it_asked_for() {
+    for kind in [MemoryRegionKind::Ram, MemoryRegionKind::Pmem] {
+        let spec = MemoryRegionSpec {
             kind,
             len: 2 * PAGE_SIZE,
         };
         let session = handshake(attachment(), ready(), spec).unwrap();
-        let region = session.region();
-        assert_eq!((region.kind, region.len), (spec.kind, spec.len));
-        assert_ne!(region.address, 0);
-        assert_eq!(region.address % PAGE_SIZE, 0);
+        let memory_region = session.memory_region();
+        assert_eq!(
+            (memory_region.kind, memory_region.len),
+            (spec.kind, spec.len)
+        );
+        assert_ne!(memory_region.address, 0);
+        assert_eq!(memory_region.address % PAGE_SIZE, 0);
         assert_eq!(session.page_size(), PAGE_SIZE);
     }
 }
 
 // The page is the session's, not the library's: a RAM session runs 4 KiB over
 // an ordinary memfd and a PMEM session runs 2 MiB over the pool, and a client
-// that reserved its region before either was stated serves whichever it is
+// that reserved its memory region before either was stated serves whichever it is
 // given.
 #[test]
 #[ignore = "requires native HugeTLB/UFFD support and permission to create kernel-mode UFFD"]
 fn a_session_runs_the_page_its_attachment_states() {
     for (page_size, kind) in [
-        (MIN_PAGE_SIZE, RegionKind::Ram),
-        (MAX_PAGE_SIZE, RegionKind::Pmem),
+        (MIN_PAGE_SIZE, MemoryRegionKind::Ram),
+        (MAX_PAGE_SIZE, MemoryRegionKind::Pmem),
     ] {
-        let spec = RegionSpec {
+        let spec = MemoryRegionSpec {
             kind,
             len: 4 * page_size,
         };
@@ -334,26 +338,26 @@ fn a_session_runs_the_page_its_attachment_states() {
         );
         let session = handshake_with_backing(attach, ready(), spec, &arena).unwrap();
         assert_eq!(session.page_size(), page_size);
-        let region = session.region();
-        assert_eq!(region.len, spec.len);
-        assert_eq!(region.address % MAX_PAGE_SIZE, 0);
+        let memory_region = session.memory_region();
+        assert_eq!(memory_region.len, spec.len);
+        assert_eq!(memory_region.address % MAX_PAGE_SIZE, 0);
     }
 }
 
-// A geometry the two ends do not agree on is refused before the region is
-// exposed: a region that is not whole pages of the page the session states, and
+// A geometry the two ends do not agree on is refused before the memory region is
+// exposed: a memory region that is not whole pages of the page the session states, and
 // an arena that is not the memory that page is made of.
 #[test]
 #[ignore = "requires native HugeTLB/UFFD support and permission to create kernel-mode UFFD"]
-fn a_mismatched_geometry_is_refused_before_the_region_is_exposed() {
+fn a_mismatched_geometry_is_refused_before_the_memory_region_is_exposed() {
     // Whole 4 KiB pages, but not whole 2 MiB ones.
-    let ragged = RegionSpec {
-        kind: RegionKind::Pmem,
+    let ragged = MemoryRegionSpec {
+        kind: MemoryRegionKind::Pmem,
         len: MAX_PAGE_SIZE + MIN_PAGE_SIZE,
     };
     let error = handshake(attachment(), ready(), ragged)
         .err()
-        .expect("a region that is not whole pages of its session was accepted");
+        .expect("a memory region that is not whole pages of its session was accepted");
     assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{error}");
     assert!(
         error.to_string().contains("not whole"),
@@ -367,8 +371,8 @@ fn a_mismatched_geometry_is_refused_before_the_region_is_exposed() {
         (MIN_PAGE_SIZE, MAX_PAGE_SIZE),
         (MAX_PAGE_SIZE, MIN_PAGE_SIZE),
     ] {
-        let spec = RegionSpec {
-            kind: RegionKind::Ram,
+        let spec = MemoryRegionSpec {
+            kind: MemoryRegionKind::Ram,
             len: MAX_PAGE_SIZE,
         };
         let wrong = arena(attached);
@@ -441,21 +445,24 @@ impl Drop for RemapEvents {
 }
 
 fn serve(script: impl FnOnce(&mut UnixStream) + Send) -> io::Result<()> {
-    serve_region(
-        RegionSpec {
-            kind: RegionKind::Ram,
+    serve_memory_region(
+        MemoryRegionSpec {
+            kind: MemoryRegionKind::Ram,
             len: 2 * PAGE_SIZE,
         },
         script,
     )
 }
 
-fn serve_region(spec: RegionSpec, script: impl FnOnce(&mut UnixStream) + Send) -> io::Result<()> {
+fn serve_memory_region(
+    spec: MemoryRegionSpec,
+    script: impl FnOnce(&mut UnixStream) + Send,
+) -> io::Result<()> {
     serve_attachment(spec, attachment(), script)
 }
 
 fn serve_attachment(
-    spec: RegionSpec,
+    spec: MemoryRegionSpec,
     attach: Frame,
     script: impl FnOnce(&mut UnixStream) + Send,
 ) -> io::Result<()> {
@@ -465,7 +472,7 @@ fn serve_attachment(
 /// serve_attachment over an arena the caller made, which is what a session of
 /// more than one page of memory needs.
 fn serve_backing(
-    spec: RegionSpec,
+    spec: MemoryRegionSpec,
     attach: Frame,
     backing: &OwnedFd,
     script: impl FnOnce(&mut UnixStream) + Send,
@@ -702,8 +709,8 @@ fn batches_require_matching_ids_and_ordered_disjoint_ranges() {
         generation: 1,
         ..Frame::default()
     };
-    let spec = RegionSpec {
-        kind: RegionKind::Ram,
+    let spec = MemoryRegionSpec {
+        kind: MemoryRegionKind::Ram,
         len: 4 * PAGE_SIZE,
     };
     for invalid in [
@@ -727,7 +734,7 @@ fn batches_require_matching_ids_and_ordered_disjoint_ranges() {
             },
         ],
     ] {
-        let result = serve_region(spec, |socket| {
+        let result = serve_memory_region(spec, |socket| {
             let command = Frame {
                 kind: wire::MAP_BATCH,
                 id: 2,
@@ -747,7 +754,7 @@ fn batches_require_matching_ids_and_ordered_disjoint_ranges() {
             "{invalid:?}: {error}"
         );
     }
-    serve_region(spec, |socket| {
+    serve_memory_region(spec, |socket| {
         // The first two runs are adjacent and merge into one mapping operation;
         // the third is separated by an untouched page and stays its own.
         let runs = [
@@ -798,11 +805,11 @@ fn batches_require_matching_ids_and_ordered_disjoint_ranges() {
 fn batch_accepts_the_protocol_limit_of_1024_runs() {
     // The ranges reserve virtual addresses only. Contiguous trap replacements
     // merge, so this neither allocates huge pages nor touches 2 GiB of memory.
-    let spec = RegionSpec {
-        kind: RegionKind::Ram,
+    let spec = MemoryRegionSpec {
+        kind: MemoryRegionKind::Ram,
         len: 1024 * PAGE_SIZE,
     };
-    serve_region(spec, |socket| {
+    serve_memory_region(spec, |socket| {
         let runs: Vec<_> = (0..1024)
             .map(|page| Frame {
                 kind: wire::REVOKE,
@@ -853,8 +860,8 @@ fn batch_accepts_the_protocol_limit_of_1024_runs() {
 #[test]
 #[ignore = "requires native HugeTLB/UFFD support and permission to create kernel-mode UFFD"]
 fn batch_budget_rejection_acknowledges_the_command_and_errno() {
-    let spec = RegionSpec {
-        kind: RegionKind::Ram,
+    let spec = MemoryRegionSpec {
+        kind: MemoryRegionKind::Ram,
         len: 64 * PAGE_SIZE,
     };
     serve_attachment(

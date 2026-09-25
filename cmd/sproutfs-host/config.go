@@ -163,7 +163,7 @@ func loadConfig(lookup func(string) string) (config, error) {
 	spillBytes := number("SPROUTFS_SPILL_BYTES", 16<<30)
 	c.VMMemoryBytes = uint64(number("SPROUTFS_VM_MEMORY_BYTES", 512<<20))
 
-	// A host runs one pager per kind of region, each with an arena and a spill
+	// A host runs one pager per kind of memory region, each with an arena and a spill
 	// file of its own, so the byte budgets the deployment gives this host are
 	// divided between them. One share decides all of them, because a deployment
 	// that gives RAM three quarters of the arena wants RAM to have three
@@ -216,15 +216,15 @@ func loadConfig(lookup func(string) string) (config, error) {
 	}
 	resident := host.KindPages{RAM: int(c.ArenaBytes.RAM / int64(ramPageSize)), PMEM: int(c.ArenaBytes.PMEM / pmemPageSize)}
 	spillable := host.KindPages{RAM: int(c.SpillBytes.RAM / int64(ramPageSize)), PMEM: int(c.SpillBytes.PMEM / pmemPageSize)}
-	// The logical cap bounds per-region metadata, which is the only thing it
+	// The logical cap bounds per-memory-region metadata, which is the only thing it
 	// costs: it reserves nothing, and a page that is never touched has no
 	// metadata to bound. What it does decide is which VMs a host will run at
-	// all, because every region of every VM is charged against the pager of its
+	// all, because every memory region of every VM is charged against the pager of its
 	// kind, so it has to be sized by the VMs a host holds rather than by the
 	// arena they share. Thirty-two arenas is twenty-two of the deployment's
-	// workload VMs, whose regions are 2 GiB of RAM over a 5 GiB root; the arenas
+	// workload VMs, whose memory regions are 2 GiB of RAM over a 5 GiB root; the arenas
 	// and the placement are what actually bound a host, and this is the backstop
-	// that catches a region absurd next to them. Each pager is capped in its own
+	// that catches a memory region absurd next to them. Each pager is capped in its own
 	// pages, which is why the two numbers are set apart.
 	c.LogicalPages = host.KindPages{
 		RAM:  int(number("SPROUTFS_RAM_LOGICAL_PAGES", int64(resident.RAM)*32)),

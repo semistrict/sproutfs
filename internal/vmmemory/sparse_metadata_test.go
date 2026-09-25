@@ -40,9 +40,9 @@ func (b *sparseMemoryBacking) Load(ctx context.Context, offset uint64, dst []byt
 	return nil
 }
 
-// checkpoint publishes a region's sealed pages into this backing, which is what
+// checkpoint publishes a memory region's sealed pages into this backing, which is what
 // a checkpoint of it does.
-func (b *sparseMemoryBacking) checkpoint(t *testing.T, r *vmmemory.Region) error {
+func (b *sparseMemoryBacking) checkpoint(t *testing.T, r *vmmemory.MemoryRegion) error {
 	t.Helper()
 	if err := r.Seal(t.Context()); err != nil {
 		return err
@@ -92,7 +92,7 @@ func (b *sparseMemoryBacking) Locate(ctx context.Context, offset, length uint64)
 	return result, nil
 }
 
-func TestLargeLogicalRegionAllocatesMetadataOnlyWhenUsed(t *testing.T) {
+func TestLargeLogicalMemoryRegionAllocatesMetadataOnlyWhenUsed(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		pages := uint64(32 << 30 / pageSize)
 		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 2, LogicalPages: int(pages), DirtyPages: 4, ReadAheadPages: 1})
@@ -102,7 +102,7 @@ func TestLargeLogicalRegionAllocatesMetadataOnlyWhenUsed(t *testing.T) {
 		r, m := f.attach(b)
 		runtime.ReadMemStats(&after)
 		if allocated := after.TotalAlloc - before.TotalAlloc; allocated > 2<<20 {
-			t.Fatalf("untouched 32 GiB region allocated %d metadata bytes, budget 2 MiB", allocated)
+			t.Fatalf("untouched 32 GiB memory region allocated %d metadata bytes, budget 2 MiB", allocated)
 		}
 		selected := []uint64{0, 255, 1 << 13, pages - 1}
 		for i, page := range selected {
@@ -168,7 +168,7 @@ func TestEagerZeroPopulationKeepsLargeLogicalMetadataSparse(t *testing.T) {
 		runtime.GC()
 		runtime.ReadMemStats(&after)
 		if allocated := int64(after.HeapAlloc) - int64(before.HeapAlloc); allocated > 2<<20 {
-			t.Fatalf("eager 32 GiB zero region retained %d metadata bytes, budget 2 MiB", allocated)
+			t.Fatalf("eager 32 GiB zero memory region retained %d metadata bytes, budget 2 MiB", allocated)
 		}
 		// The hole is one run and the populate installs its front: the pages
 		// its budget admits, because the kernel installs a zero page's entry

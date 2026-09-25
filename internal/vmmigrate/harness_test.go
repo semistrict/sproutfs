@@ -187,7 +187,7 @@ type mapped struct {
 	writable bool
 }
 
-// mapping is one simulated process region. Every lookup takes the arena lock,
+// mapping is one simulated process memory region. Every lookup takes the arena lock,
 // because a guest storing into a page races the seal that write-protects it:
 // the store and the writability check must be one step, exactly as the hardware
 // makes them.
@@ -298,12 +298,12 @@ func newPager(t *testing.T, c *cluster, name string) *pager {
 	return &pager{host: host, arena: a, cleanup: c.cleanup, runtime: c.runtime}
 }
 
-// countingBacking counts what one region's volume was asked to do, which is how
+// countingBacking counts what one memory region's volume was asked to do, which is how
 // a test observes what a pause window cost. The admission the count hangs off
-// is the shared wrapper's, so this harness and the host's order their regions
+// is the shared wrapper's, so this harness and the host's order their memory regions
 // against the scheduler the same way.
 type countingBacking struct {
-	// attached is what the region maps: the shared wrapper, narrowed to the
+	// attached is what the memory region maps: the shared wrapper, narrowed to the
 	// calls this volume's backing answers.
 	attached        vmmemory.Backing
 	loads, verifies atomic.Int64
@@ -323,16 +323,16 @@ func newCountingBacking(backing vmmemory.Backing, runtime *sim.Runtime, task str
 	return counted
 }
 
-// machine is the simulated VMM process of one VM: one region per volume, a
+// machine is the simulated VMM process of one VM: one memory region per volume, a
 // guest that stores into them, and the migration Runtime the coordinator drives.
 type machine struct {
-	t        *testing.T
-	pager    *pager
-	regions  map[string]*vmmemory.Region
-	mappings map[string]*mapping
-	backings map[string]*countingBacking
-	names    []string
-	pages    map[string]int
+	t             *testing.T
+	pager         *pager
+	memoryRegions map[string]*vmmemory.MemoryRegion
+	mappings      map[string]*mapping
+	backings      map[string]*countingBacking
+	names         []string
+	pages         map[string]int
 
 	// model is what the guest has stored into every page of every volume, which
 	// is what the destination must read back byte for byte.
@@ -352,7 +352,7 @@ type machine struct {
 	// is where a test fails the phases that come after the pause has already
 	// begun.
 	onStopped func()
-	// stopLoads and stopVerifies are what the regions' volumes had been asked
+	// stopLoads and stopVerifies are what the memory regions' volumes had been asked
 	// for when the pause began, so a test can attribute the work of the pause
 	// window exactly.
 	stopLoads, stopVerifies int64
@@ -366,7 +366,7 @@ func (m *machine) ctx() context.Context {
 	return sim.WithRuntime(m.t.Context(), m.pager.runtime)
 }
 
-// volumeWork reports how many loads and authority checks this machine's regions
+// volumeWork reports how many loads and authority checks this machine's memory regions
 // have sent to their volumes.
 func (m *machine) volumeWork() (loads, verifies int64) {
 	for _, name := range m.names {
@@ -376,20 +376,20 @@ func (m *machine) volumeWork() (loads, verifies int64) {
 	return loads, verifies
 }
 
-// regionKind is what a volume of this harness's machines is to its guest: the
+// memory regionKind is what a volume of this harness's machines is to its guest: the
 // one volume named ram0 is its RAM and everything else is a PMEM disk, which is
 // the shape a real machine binds.
-func regionKind(volume string) vmmemory.RegionKind {
+func memoryRegionKind(volume string) vmmemory.MemoryRegionKind {
 	if volume == "ram0" {
 		return vmmemory.Ram
 	}
 	return vmmemory.Pmem
 }
 
-// newMachine attaches one region per volume of vm through backing, which is the
+// newMachine attaches one memory region per volume of vm through backing, which is the
 // volume itself on a source and a peer-backed volume on a destination.
 func newMachine(t *testing.T, p *pager, vm *volume.VM, backings map[string]vmmemory.Backing, state []byte) (*machine, error) {
-	m := &machine{t: t, pager: p, regions: map[string]*vmmemory.Region{}, mappings: map[string]*mapping{},
+	m := &machine{t: t, pager: p, memoryRegions: map[string]*vmmemory.MemoryRegion{}, mappings: map[string]*mapping{},
 		backings: map[string]*countingBacking{}, pages: map[string]int{}, model: map[string][]byte{}}
 	for _, v := range vm.Volumes() {
 		name := v.Name()
@@ -399,13 +399,13 @@ func newMachine(t *testing.T, p *pager, vm *volume.VM, backings map[string]vmmem
 		}
 		counted := newCountingBacking(backing, p.runtime, vm.ID()+"/"+name)
 		mp := newMapping(p.arena)
-		region, err := p.host.Attach(sim.WithRuntime(t.Context(), p.runtime),
-			vmmemory.RegionBacking{Kind: regionKind(name), Backing: counted.attached}, mp)
+		memoryRegion, err := p.host.Attach(sim.WithRuntime(t.Context(), p.runtime),
+			vmmemory.MemoryRegionBacking{Kind: memoryRegionKind(name), Backing: counted.attached}, mp)
 		if err != nil {
 			return nil, err
 		}
 		m.names = append(m.names, name)
-		m.regions[name] = region
+		m.memoryRegions[name] = memoryRegion
 		m.mappings[name] = mp
 		m.backings[name] = counted
 		m.pages[name] = int(v.Size() / pageSize)
@@ -423,19 +423,19 @@ func newMachine(t *testing.T, p *pager, vm *volume.VM, backings map[string]vmmem
 	return m, nil
 }
 
-// partialMachine is a machine that maps every region but one, which is what a
+// partialMachine is a machine that maps every memory region but one, which is what a
 // supervisor misconfigured for the VM it received starts: whatever state it
-// restored, it is not that VM, and the region it lacks would fault from nowhere.
+// restored, it is not that VM, and the memory region it lacks would fault from nowhere.
 type partialMachine struct {
 	*machine
 	missing string
 	closed  atomic.Bool
 }
 
-func (p *partialMachine) Regions() map[string]*vmmemory.Region {
-	regions := p.machine.Regions()
-	delete(regions, p.missing)
-	return regions
+func (p *partialMachine) MemoryRegions() map[string]*vmmemory.MemoryRegion {
+	memoryRegions := p.machine.MemoryRegions()
+	delete(memoryRegions, p.missing)
+	return memoryRegions
 }
 
 func (p *partialMachine) Close() error {
@@ -443,16 +443,16 @@ func (p *partialMachine) Close() error {
 	return p.machine.Close()
 }
 
-func (m *machine) Regions() map[string]*vmmemory.Region {
-	result := make(map[string]*vmmemory.Region, len(m.regions))
-	for name, region := range m.regions {
-		result[name] = region
+func (m *machine) MemoryRegions() map[string]*vmmemory.MemoryRegion {
+	result := make(map[string]*vmmemory.MemoryRegion, len(m.memoryRegions))
+	for name, memoryRegion := range m.memoryRegions {
+		result[name] = memoryRegion
 	}
 	return result
 }
 
 // checkpoint is this machine's interval checkpoint: the guest pauses, every
-// region seals, the guest resumes, and the checkpoint publishes the sealed
+// memory region seals, the guest resumes, and the checkpoint publishes the sealed
 // pages. It is the only thing that makes a running VM's memory durable.
 func (m *machine) checkpoint(ctx context.Context, vm *volume.VM) error {
 	ckpt, err := host.Capture(ctx, vm, m, nil)
@@ -463,35 +463,35 @@ func (m *machine) checkpoint(ctx context.Context, vm *volume.VM) error {
 }
 
 // Prepare is the capture's pause: the guest stops storing, its state is
-// captured, and every region seals the pages the checkpoint will publish.
+// captured, and every memory region seals the pages the checkpoint will publish.
 func (m *machine) Prepare(ctx context.Context) ([]byte, map[string]volume.DirtySource, error) {
 	state, err := m.Stop(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
-	sources := make(map[string]volume.DirtySource, len(m.regions))
+	sources := make(map[string]volume.DirtySource, len(m.memoryRegions))
 	for _, name := range m.names {
-		if err := m.regions[name].Seal(ctx); err != nil {
+		if err := m.memoryRegions[name].Seal(ctx); err != nil {
 			return nil, nil, err
 		}
-		sources[name] = m.regions[name].Checkpoint()
+		sources[name] = m.memoryRegions[name].Checkpoint()
 	}
 	return state, sources, nil
 }
 
 // SealDisks is a disk checkpoint's pause: the guest stops storing and the
-// regions of its disks seal; its RAM and its state are left alone.
+// memory regions of its disks seal; its RAM and its state are left alone.
 func (m *machine) SealDisks(ctx context.Context) (map[string]volume.DirtySource, error) {
 	m.pause()
 	sources := map[string]volume.DirtySource{}
 	for _, name := range m.names {
-		if m.regions[name].Kind() != vmmemory.Pmem {
+		if m.memoryRegions[name].Kind() != vmmemory.Pmem {
 			continue
 		}
-		if err := m.regions[name].Seal(ctx); err != nil {
+		if err := m.memoryRegions[name].Seal(ctx); err != nil {
 			return nil, err
 		}
-		sources[name] = m.regions[name].Checkpoint()
+		sources[name] = m.memoryRegions[name].Checkpoint()
 	}
 	return sources, nil
 }
@@ -533,7 +533,7 @@ func (m *machine) Resume(context.Context) error {
 
 func (m *machine) Release(ctx context.Context) error {
 	for _, name := range m.names {
-		if err := m.regions[name].Unseal(ctx); err != nil {
+		if err := m.memoryRegions[name].Unseal(ctx); err != nil {
 			return err
 		}
 	}
@@ -557,13 +557,13 @@ func (m *machine) close() {
 	m.closed = true
 	for _, name := range m.names {
 		clear(m.mappings[name].pages)
-		if err := m.regions[name].Detach(context.Background()); err != nil {
+		if err := m.memoryRegions[name].Detach(context.Background()); err != nil {
 			m.t.Error(err)
 		}
 	}
 }
 
-// start runs the guest: it stores into a fixed working set of every region,
+// start runs the guest: it stores into a fixed working set of every memory region,
 // round after round, until pause stops it. That is the load a pre-copy has to
 // converge against.
 func (m *machine) start(workingSet int) {
@@ -615,7 +615,7 @@ func (m *machine) write(name string, page uint64) {
 		if m.storeModel(name, mp, page, value) {
 			return
 		}
-		if err := m.regions[name].Fault(m.ctx(), page, true); err != nil {
+		if err := m.memoryRegions[name].Fault(m.ctx(), page, true); err != nil {
 			if errors.Is(err, context.Canceled) {
 				return
 			}
@@ -700,7 +700,7 @@ func (m *machine) read(ctx context.Context, name string, page uint64) ([]byte, e
 	p, ok := mp.pages[page]
 	mp.mu.Unlock()
 	if !ok {
-		if err := m.regions[name].Fault(ctx, page, false); err != nil {
+		if err := m.memoryRegions[name].Fault(ctx, page, false); err != nil {
 			return nil, err
 		}
 		mp.mu.Lock()
@@ -718,7 +718,7 @@ func (m *machine) read(ctx context.Context, name string, page uint64) ([]byte, e
 	return bytes.Clone(mp.arena.slots[p.slot]), nil
 }
 
-// verify reads every page of every region and requires it to equal the model
+// verify reads every page of every memory region and requires it to equal the model
 // the source's guest left behind.
 func (m *machine) verify(ctx context.Context, model map[string][]byte) error {
 	for _, name := range m.names {
@@ -739,12 +739,12 @@ func (m *machine) verify(ctx context.Context, model map[string][]byte) error {
 	return nil
 }
 
-// residentPages is how many pages this machine's regions hold, which is exactly
+// residentPages is how many pages this machine's memory regions hold, which is exactly
 // what a destination must fetch from the peer rather than from its volume.
 func (m *machine) residentPages() int {
 	total := 0
 	for _, name := range m.names {
-		resident, err := m.regions[name].Resident()
+		resident, err := m.memoryRegions[name].Resident()
 		if err != nil {
 			m.t.Fatalf("listing what %s holds: %v", name, err)
 		}
@@ -754,7 +754,7 @@ func (m *machine) residentPages() int {
 }
 
 // vmSpec is the VM every migration test runs: one RAM volume and one PMEM
-// volume, so a migration has to name and move more than one region.
+// volume, so a migration has to name and move more than one memory region.
 var vmSpec = []volume.VolumeSpec{{Name: "ram0", Size: 8 * pageSize, PageSize: checkpoint.PageSize2MiB}, {Name: "disk", Size: 4 * pageSize, PageSize: checkpoint.PageSize2MiB}}
 
 // vmSpecPages is every page of that VM. One hop can dirty all of them, so it is

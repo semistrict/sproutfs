@@ -11,8 +11,8 @@ import (
 // A client admits a mapping command against its own mapping budget before it
 // touches anything and answers a refusal as an ordinary acknowledgement, so a
 // refused command is the one failure that is known to have changed nothing. It
-// is a failed fault, not a failed region: the pages it did not map are not
-// recorded as mapped, the region goes on serving, and the same fault served
+// is a failed fault, not a failed memory region: the pages it did not map are not
+// recorded as mapped, the memory region goes on serving, and the same fault served
 // again once the budget has been freed maps them and completes.
 //
 // A page recorded as mapped that the client never mapped is resolved with
@@ -20,7 +20,7 @@ import (
 // opposite, a page recorded as mapped that the client did map, is what every
 // ambiguous failure must leave behind, because a revocation skips an unmapped
 // binding and would release the page the guest still reads through.
-func TestARefusedMappingFailsTheFaultAndNotTheRegion(t *testing.T) {
+func TestARefusedMappingFailsTheFaultAndNotTheMemoryRegion(t *testing.T) {
 	for _, mode := range []struct {
 		name  string
 		write bool
@@ -28,7 +28,7 @@ func TestARefusedMappingFailsTheFaultAndNotTheRegion(t *testing.T) {
 		t.Run(mode.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				f := newFixture(t, 8, 16, 8)
-				r, m, b := f.region(4)
+				r, m, b := f.memoryRegion(4)
 				m.refuseMap = true
 				maps := m.maps
 				if err := r.Fault(t.Context(), 1, mode.write); !errors.Is(err, vmmemory.ErrMappingRefused) {
@@ -40,7 +40,7 @@ func TestARefusedMappingFailsTheFaultAndNotTheRegion(t *testing.T) {
 				if _, ok := m.pages[1]; ok {
 					t.Fatal("the refused command mapped the page")
 				}
-				// The region is not terminal: the same fault is served once the
+				// The memory region is not terminal: the same fault is served once the
 				// budget the client ran out of has been freed.
 				m.refuseMap = false
 				if err := r.Fault(t.Context(), 1, mode.write); err != nil {
@@ -52,8 +52,8 @@ func TestARefusedMappingFailsTheFaultAndNotTheRegion(t *testing.T) {
 				if got, err := memoryByte(t.Context(), r, m, 1, nil); err != nil || got != 2 {
 					t.Fatalf("page 1 reads %d after the refusal, want its inherited 2: %v", got, err)
 				}
-				// A checkpoint of the region still works, which a terminal
-				// region's would not.
+				// A checkpoint of the memory region still works, which a terminal
+				// memory region's would not.
 				value := byte(71)
 				if _, err := memoryByte(t.Context(), r, m, 1, &value); err != nil {
 					t.Fatal(err)
@@ -72,11 +72,11 @@ func TestARefusedMappingFailsTheFaultAndNotTheRegion(t *testing.T) {
 // not happen. It is terminal like every other failed revocation — the pages
 // stay recorded as mapped, which is what keeps the page the guest may still
 // read through reachable — and it must not reach the fault worker as a command
-// to try again, which would leave the guest waiting on a region that is over.
+// to try again, which would leave the guest waiting on a memory region that is over.
 func TestARefusedRevocationIsTerminalRatherThanServedAgain(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newFixture(t, 1, 8, 4)
-		r, m, _ := f.region(4)
+		r, m, _ := f.memoryRegion(4)
 		access(t, r, m, 0, true)[0] = 41
 		m.refuseRevoke = true
 		// The only page is page 0's, so this fault reclaims it, which revokes
@@ -101,7 +101,7 @@ func TestARefusedRevocationIsTerminalRatherThanServedAgain(t *testing.T) {
 // the store that faults again maps the run and completes.
 func TestARefusedWriteAheadRunKeepsItsPagesUnmapped(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		f, r, m, b := holeRegion(t, vmmemory.Config{ResidentPages: 8, LogicalPages: 8,
+		f, r, m, b := holeMemoryRegion(t, vmmemory.Config{ResidentPages: 8, LogicalPages: 8,
 			DirtyPages: 8, ReadAheadPages: 8, WriteAheadPages: 4}, 8)
 		m.refuseMap = true
 		if err := r.Fault(t.Context(), 0, true); !errors.Is(err, vmmemory.ErrMappingRefused) {

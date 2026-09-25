@@ -22,7 +22,7 @@ import (
 func TestARetireRefusesToDropAPageTheVolumeCannotReproduce(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newFixture(t, 8, 16, 8)
-		r, m, b := f.region(4)
+		r, m, b := f.memoryRegion(4)
 		access(t, r, m, 1, true)[0] = 0x2b
 		seal(t, r)
 		if _, err := f.publishCheckpoint(t.Context(), r, b); err != nil {

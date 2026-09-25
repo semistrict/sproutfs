@@ -87,7 +87,7 @@ func capturing(t *testing.T) *records {
 // writes is the refused connection of an interval checkpoint up to a minute
 // later. The process is what knows why it died, so it says so — the VM, the
 // process, the cause and the console tail the guest left — and the session that
-// ended says which region and which error ended it.
+// ended says which memory region and which error ended it.
 func TestAKilledVMMSaysWhyItDied(t *testing.T) {
 	config, stall, _ := startupFixture(t)
 	// The authority check every session runs is what fails here, which is a
@@ -121,8 +121,8 @@ func TestAKilledVMMSaysWhyItDied(t *testing.T) {
 		t.Errorf("the exit carried the console tail %q, want the guest's output", exit["console"])
 	}
 	session := logs.await(t, "vmmemory", slog.LevelError)
-	if session["region"] != vmmachine.RAMVolume {
-		t.Errorf("the session failure named region %q, want %q", session["region"], vmmachine.RAMVolume)
+	if session["memory_region"] != vmmachine.RAMVolume {
+		t.Errorf("the session failure named memory region %q, want %q", session["memory_region"], vmmachine.RAMVolume)
 	}
 	if !strings.Contains(session["error"], platform.ErrUnavailable.Error()) {
 		t.Errorf("the session failure gave the error as %q, want what ended it", session["error"])

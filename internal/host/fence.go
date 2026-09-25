@@ -64,7 +64,7 @@ const epochConcurrency = 8
 
 // fence closes a VM the epoch timer found this host fenced out of. The VM's
 // checkpoint loop is stopped first — it may have a capture in flight that still
-// holds the guest's regions sealed — and then everything the host holds of that
+// holds the guest's memory regions sealed — and then everything the host holds of that
 // VM is given up, with the record's own refusal as the cause.
 func (h *Host) fence(ctx context.Context, vmID string, cause error) {
 	h.machines.mu.Lock()

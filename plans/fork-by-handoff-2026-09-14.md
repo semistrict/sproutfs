@@ -64,7 +64,7 @@ retire path.
 ## Interfaces
 
 `vmmigrate` grows a source mode in which the VM keeps running: the handoff
-is built from a seal rather than a stop, and the source's regions are not
+is built from a seal rather than a stop, and the source's memory regions are not
 released on handoff. `vmcapture.Fork` becomes: seal, handoff, child open from
 handoff. `replica.Host` gains `ForkOut`/`ForkIn` beside `Migrate`/`Receive`,
 or `Migrate` takes a `KeepRunning` flag. The orchestrator's fork takes a

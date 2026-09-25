@@ -9,7 +9,7 @@ import (
 )
 
 // A guest that dirties faster than its interval is not a guest to kill: the
-// pager asks its host for a checkpoint of the largest dirty region, the host
+// pager asks its host for a checkpoint of the largest dirty memory region, the host
 // takes it out of the interval's turn, and the stores that were waiting for a
 // reservation land. Without the wiring the guest's fifth store fails, the
 // session closes and the VMM dies.
@@ -78,7 +78,7 @@ func TestHostStopsAVMNoCheckpointCanAdmitStoresFor(t *testing.T) {
 	}
 	guest.store("ram0", 0, 1)
 	guest.store("ram0", 1, 2)
-	if err := guest.Regions()["ram0"].Fault(t.Context(), 2, true); !errors.Is(err, vmmemory.ErrDirtyStalled) {
+	if err := guest.MemoryRegions()["ram0"].Fault(t.Context(), 2, true); !errors.Is(err, vmmemory.ErrDirtyStalled) {
 		t.Fatalf("the store past the budget failed with %v, want a dirty-budget stall", err)
 	}
 	select {

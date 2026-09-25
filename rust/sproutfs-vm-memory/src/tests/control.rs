@@ -15,7 +15,7 @@ fn completion(request: Frame, errno: i32) -> Frame {
     }
 }
 
-// A VM's regions are separate sessions, so their seals are separate requests
+// A VM's memory regions are separate sessions, so their seals are separate requests
 // that complete in whichever order the host answers them.
 #[test]
 fn independent_sessions_seal_in_either_order() {

@@ -13,7 +13,7 @@ them. No source changes are included.
 | Flush is neither a fence nor a trigger. | virtio-pmem flush does nothing. Cuts run on the interval and on explicit request only. |
 | Hosts run as a Kubernetes deployment on a trusted cluster network, plain TCP. | No membership, no host identity, no TLS. The orchestrator carries pod addresses. |
 | Migration pause is at most 1 s. | One mechanism whose pause does not depend on the dirty set. |
-| A VM is one RAM region plus a few PMEM disks. | Single RAM volume; PMEM devices stay per disk and are treated like RAM. |
+| A VM is one RAM memory region plus a few PMEM disks. | Single RAM volume; PMEM devices stay per disk and are treated like RAM. |
 | Forks of running VMs are required. | The cut under a vCPU pause stays. |
 | A process restart is a host loss. | No local state survives a restart. |
 | Recovery may give the VM a new identity. | No in-place recovery. |
@@ -22,7 +22,7 @@ them. No source changes are included.
 
 A VM's durable state is one checkpoint: an index, the 2 MiB chunks it
 references, and VMM state. Every interval, and on request, the host pauses the
-vCPUs, saves device state, seals the dirty set of every region by write
+vCPUs, saves device state, seals the dirty set of every memory region by write
 protection, and resumes. The sealed pages upload straight from the arena as
 chunk objects; a store into a sealed page during its upload copies that page.
 The index and VMM state follow, and the control record selects the new
@@ -91,13 +91,13 @@ control record and are written before the fork handle is returned.
   and scratch/console cleanup under an old VMM's lock. A starting process
   wipes its local directories. The deployment reopens every VM a restarted
   host ran elsewhere.
-- **Multi-RAM regions.** One RAM volume, `ram0`. Remove the region list and
+- **Multi-RAM memory regions.** One RAM volume, `ram0`. Remove the memory region list and
   guest-address ordering for RAM.
 
 ### Determined from the requirements
 
 - **Migration is post-copy only.** Stop saves VMM state and hands off the
-  regions and the control record without uploading anything; the destination
+  memory regions and the control record without uploading anything; the destination
   resumes and pulls pages from the source page server, with the bulk stream
   behind it. Remove pre-copy rounds, their residue threshold and round count.
   Exposure: source death during post-copy loses the cuts since the last
@@ -184,7 +184,7 @@ Recorded so they are not proposed again.
 2. Remove membership and TLS; the page server dials by address. *(done)*
 3. Restart is host loss, per-concern disk caps, console. *(done)*
 4. Deltas, then fixed pager page. *(done)*
-5. Single RAM region, read-ahead overrides. *(done)*
+5. Single RAM memory region, read-ahead overrides. *(done)*
 6. Post-copy-only migration. *(done in step 1: no pre-copy code remains)*
 7. TODO.md rewrite and documentation updates in `docs/` for every cut above;
    `docs/replication.md` and `docs/membership.md` go, `docs/hosting.md` loses

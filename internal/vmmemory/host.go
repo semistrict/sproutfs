@@ -16,15 +16,15 @@ import (
 	"github.com/semistrict/sproutfs/internal/vmmemory/internal/slots"
 )
 
-// Host accounts for shared backing under a short metadata lock. Each Region
-// orders faults per read-ahead window and flushes for the whole region;
+// Host accounts for shared backing under a short metadata lock. Each MemoryRegion
+// orders faults per read-ahead window and flushes for the whole memory region;
 // resident pages independently serialize alias changes and reclamation.
 // Storage and mapping I/O never hold the host lock. Recency tracks faults and
 // read-ahead, not accesses through already present PTEs.
 type Host struct {
 	// pageSize is this pager's unit, fixed by its configuration: its arena
 	// slots, its spill slots, the numbers it faults and serves, and the
-	// alignment every region it maps must have. Nothing here is ever the other
+	// alignment every memory region it maps must have. Nothing here is ever the other
 	// pager's page, and no count of these pages may be added to one of those.
 	pageSize  uint64
 	resources *resource.Budget
@@ -34,7 +34,7 @@ type Host struct {
 	// because an arena has far more offsets than pages: what it holds is
 	// bounded by Config.ResidentPages, however large the address space is.
 	residentLeases map[int]residentSlot
-	// extents is the extent each range of each region owns, and extentPages how
+	// extents is the extent each range of each memory region owns, and extentPages how
 	// many offsets one extent has — the pages of this pager one 2 MiB range
 	// holds. A pager whose page is the whole range has one, which is a pager
 	// that places nothing. Both are guarded by mu; see placement.go.
@@ -52,22 +52,22 @@ type Host struct {
 	slots        *slots.Space
 	clean        map[pageKey]*resident
 	cleanVersion uint64
-	// regions is every attached region, which is what the dirty budget's
+	// memory regions is every attached memory region, which is what the dirty budget's
 	// pressure is measured and acted on across: the budget is the host's, so
-	// the checkpoint that relieves it need not be the waiting region's.
-	regions map[*Region]struct{}
+	// the checkpoint that relieves it need not be the waiting memory region's.
+	memoryRegions map[*MemoryRegion]struct{}
 	// pressure is who to ask for that checkpoint, highWater the dirty occupancy
 	// at which the host asks without waiting to be empty, and asked whether it
 	// has already asked since the budget last fell below that mark.
 	pressure  Pressure
 	highWater int
 	asked     bool
-	// flushed is what a guest's flush of a region is handed to. See SetFlushed.
-	flushed     func(*Region, func(error))
-	zeroRegions int // attached regions retaining knowledge of explicit zeros
-	lru         pageList
-	// idle is the resident pages no region maps, oldest first: published
-	// pages kept for the next region that inherits their identity, and given
+	// flushed is what a guest's flush of a memory region is handed to. See SetFlushed.
+	flushed           func(*MemoryRegion, func(error))
+	zeroMemoryRegions int // attached memory regions retaining knowledge of explicit zeros
+	lru               pageList
+	// idle is the resident pages no memory region maps, oldest first: published
+	// pages kept for the next memory region that inherits their identity, and given
 	// up before any mapped page when a slot is short. See Host.idleLocked.
 	idle pageList
 	// unregisterIdle takes the idle pages out of the host budget's cache,
@@ -107,7 +107,7 @@ type Host struct {
 const maximumReadAheadBytes = 16 << 20
 
 // populationWindowBytes is the window a population walks metadata in. It is a
-// variable only so a test can cross a window boundary without a region of
+// variable only so a test can cross a window boundary without a memory region of
 // production size.
 var populationWindowBytes uint64 = 256 << 20
 
@@ -116,7 +116,7 @@ var populationWindowBytes uint64 = 256 << 20
 // the same host: each owns its arena and its spill file alone. The file's
 // maximum size is DirtyPages times this pager's page; acknowledged durability
 // always goes through Backing, never spill. The caller retains ownership of
-// Arena and spill until every Region detaches.
+// Arena and spill until every MemoryRegion detaches.
 func New(ctx context.Context, resources *resource.Budget, cfg Config, arena Arena, spill platform.File) (*Host, error) {
 	if resources == nil {
 		return nil, ErrConfig
@@ -179,7 +179,7 @@ func New(ctx context.Context, resources *resource.Budget, cfg Config, arena Aren
 		extentPages: extentPages,
 		clean:       make(map[pageKey]*resident), changed: make(chan struct{}),
 		lru: pageList{links: recentLinks}, idle: pageList{links: idleLinks},
-		regions: make(map[*Region]struct{}), highWater: highWater(cfg.DirtyPages),
+		memoryRegions: make(map[*MemoryRegion]struct{}), highWater: highWater(cfg.DirtyPages),
 		io: make(chan struct{}, cfg.ConcurrentIO), writeback: make(chan struct{}, 1)}
 	// Idle pages are the host budget's cache: any consumer short of memory
 	// takes them before it waits, as it takes the checkpoint cache's.
@@ -190,14 +190,14 @@ func New(ctx context.Context, resources *resource.Budget, cfg Config, arena Aren
 // Resources returns the same host-wide budget used for resident pages.
 func (h *Host) Resources() *resource.Budget { return h.resources }
 
-// PageSize is this pager's unit. A region's size and a volume's page must be a
+// PageSize is this pager's unit. A memory region's size and a volume's page must be a
 // multiple of it and equal to it respectively, and every page count this pager
 // reports is counted in it — which is why a caller adding two pagers' numbers
 // must convert to bytes first.
 func (h *Host) PageSize() uint64 { return h.pageSize }
 
 // LogicalHeadroom is how many more logical pages this pager would still admit.
-// A region larger than this is refused at attachment, which is a VMM that has
+// A memory region larger than this is refused at attachment, which is a VMM that has
 // already started and a guest that has to be killed, so the thing that decides
 // to run a VM asks this before it starts one.
 func (h *Host) LogicalHeadroom() int {
@@ -207,7 +207,7 @@ func (h *Host) LogicalHeadroom() int {
 }
 
 // Close releases any unpublished arena allocations left by failed cleanup.
-// All regions must already be detached. The caller still owns the arena and
+// All memory regions must already be detached. The caller still owns the arena and
 // spill handles and closes them after this succeeds. A failed punch retains
 // its reservation and can be retried; new attachments are no longer accepted.
 func (h *Host) Close(ctx context.Context) error {
@@ -358,7 +358,7 @@ func (h *Host) beginCheckpointIO(ctx context.Context) (func(), error) {
 
 // tryCurrent acquires the binding's resident page without waiting for it. It
 // reports the locked page, or nil with reclaiming set when something else holds
-// it. A seal is what uses it: it owns the region exclusively, so a reclaim is the
+// it. A seal is what uses it: it owns the memory region exclusively, so a reclaim is the
 // only thing that can hold one of its pages, and a reclaim ends with the page
 // nonresident and its bytes in the page's own reservation.
 func (h *Host) tryCurrent(b *binding) (pg *resident, reclaiming bool) {

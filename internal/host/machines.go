@@ -23,7 +23,7 @@ import (
 //
 // Prepare, Resume and Release are the phases of one capture. Prepare pauses the
 // vCPUs, drains device completions, captures the VMM state and seals every
-// memory region, returning each region's sealed checkpoint by the name of the
+// memory region, returning each memory region's sealed checkpoint by the name of the
 // volume it maps; sealing records the checkpoint without moving a byte, so
 // Resume can restart the guest immediately while the checkpoint uploads those
 // pages behind it. Release unseals and resumes a VM still paused because an
@@ -32,14 +32,14 @@ import (
 // A migration uses the same Resume and Release, which are the same call either
 // way.
 type Machine interface {
-	// Regions reports the memory regions by volume name.
-	Regions() map[string]*vmmemory.Region
+	// MemoryRegions reports the memory regions by volume name.
+	MemoryRegions() map[string]*vmmemory.MemoryRegion
 	// Prepare pauses the process and returns its captured VMM state together
 	// with the sealed checkpoint of every memory region, by volume name.
 	Prepare(ctx context.Context) ([]byte, map[string]volume.DirtySource, error)
-	// SealDisks pauses the process's vCPUs and seals the regions of its disks,
+	// SealDisks pauses the process's vCPUs and seals the memory regions of its disks,
 	// leaving its RAM as it is and capturing no VMM state, and returns those
-	// regions' checkpoints by volume name. It is the pause of a disk
+	// memory regions' checkpoints by volume name. It is the pause of a disk
 	// checkpoint: the process stays paused until Resume, and Release unseals
 	// what it sealed and resumes it.
 	SealDisks(ctx context.Context) (map[string]volume.DirtySource, error)
@@ -191,7 +191,7 @@ func (h *Host) awaitingExit(ctx context.Context, cancel context.CancelFunc, vmID
 
 // end stops everything this host runs for a VM and waits for the capture its
 // loop may have in flight, publication and all, so nothing checkpoints a VM this
-// host has given up and nothing still holds its regions sealed when it returns.
+// host has given up and nothing still holds its memory regions sealed when it returns.
 // It is idempotent and safe to call from two callers at once, which is what a
 // migration racing the epoch timer does. It must not be called from either of
 // those goroutines: it waits for both to return.
@@ -213,7 +213,7 @@ func (m *registration) end() {
 // the only account of it anything gets.
 //
 // The fork points taken on this VM go first: retiring them stops the children
-// this host serves that point's pages to and gives the regions back before the
+// this host serves that point's pages to and gives the memory regions back before the
 // process that maps them is closed. Then the page server drops the VM, the VMM
 // process is stopped, the VM handle is released — a fenced handle publishes
 // nothing on close — and the supervisor that owns them both is told.
@@ -259,7 +259,7 @@ func (h *Host) retireForks(vmID string) []error {
 }
 
 // stopped ends one VM deliberately, checkpointing before it closes anything.
-// The pages the stall is about live in the VMM's regions, which closing the
+// The pages the stall is about live in the VMM's memory regions, which closing the
 // process detaches, and only a capture publishes them; the handle's own close
 // publishes the overlay alone. A VMM the failed fault has already killed can no
 // longer be paused for one, and then the stop keeps nothing the kill would have
@@ -290,14 +290,14 @@ func (h *Host) stopped(vmID string, entry *registration, cause error) {
 	h.discard(ctx, vmID, entry, stalledMessage, cause)
 }
 
-// machineFor finds the VM whose VMM maps one of the pager's regions, which is
-// how dirty-budget pressure on a region reaches the loop that can relieve it.
-func (h *Host) machineFor(region *vmmemory.Region) (string, *registration) {
+// machineFor finds the VM whose VMM maps one of the pager's memory regions, which is
+// how dirty-budget pressure on a memory region reaches the loop that can relieve it.
+func (h *Host) machineFor(memoryRegion *vmmemory.MemoryRegion) (string, *registration) {
 	h.machines.mu.Lock()
 	defer h.machines.mu.Unlock()
 	for vmID, entry := range h.machines.running {
-		for _, mapped := range entry.runtime.Regions() {
-			if mapped == region {
+		for _, mapped := range entry.runtime.MemoryRegions() {
+			if mapped == memoryRegion {
 				return vmID, entry
 			}
 		}
@@ -317,19 +317,19 @@ func (h *Host) forget(vmID string, entry *registration) bool {
 	return true
 }
 
-// validateMachine checks the actual mapped regions, rather than trusting an
+// validateMachine checks the actual mapped memory regions, rather than trusting an
 // additional budget declaration from the process adapter.
 func (h *Host) validateMachine(runtime vmmigrate.Runtime) error {
 	if runtime == nil || h.resources == nil {
 		return ErrInvalidConfig
 	}
-	regions := runtime.Regions()
-	if len(regions) == 0 {
+	memoryRegions := runtime.MemoryRegions()
+	if len(memoryRegions) == 0 {
 		return fmt.Errorf("%w: machine has no memory regions", ErrInvalidConfig)
 	}
-	for name, region := range regions {
-		if region.Resources() != h.resources {
-			return fmt.Errorf("%w: region %s does not use the host resource budget", ErrInvalidConfig, name)
+	for name, memoryRegion := range memoryRegions {
+		if memoryRegion.Resources() != h.resources {
+			return fmt.Errorf("%w: memory region %s does not use the host resource budget", ErrInvalidConfig, name)
 		}
 	}
 	return nil

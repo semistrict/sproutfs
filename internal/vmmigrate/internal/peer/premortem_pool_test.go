@@ -10,20 +10,20 @@ import (
 )
 
 // The pre-mortem of the GCE soak's fan-out. A source bounds the connections one
-// destination host may hold at once, over every region of every VM it is
-// serving that host. A region that pooled the connections of a burst it has
-// finished holds that bound against the regions still asking — and what they
+// destination host may hold at once, over every memory region of every VM it is
+// serving that host. A memory region that pooled the connections of a burst it has
+// finished holds that bound against the memory regions still asking — and what they
 // ask for is the pages no checkpoint holds, which exist nowhere else, so they
 // ask for ever.
 
-// TestPremortemABurstGivesItsConnectionsBackWhenItIsOver: a region's pool exists
-// so that concurrent requests pipeline. When the burst is over the region keeps
+// TestPremortemABurstGivesItsConnectionsBackWhenItIsOver: a memory region's pool exists
+// so that concurrent requests pipeline. When the burst is over the memory region keeps
 // one connection and gives the rest back, so the source's per-peer bound is a
-// queue the next region gets to the front of rather than one this region holds
+// queue the next memory region gets to the front of rather than one this memory region holds
 // for the life of its receive.
 func TestPremortemABurstGivesItsConnectionsBackWhenItIsOver(t *testing.T) {
 	// Every request waits until the whole burst has arrived, so all four are in
-	// flight at once and the region really does open four connections.
+	// flight at once and the memory region really does open four connections.
 	var mu sync.Mutex
 	arrived := 0
 	all := make(chan struct{})
@@ -53,11 +53,11 @@ func TestPremortemABurstGivesItsConnectionsBackWhenItIsOver(t *testing.T) {
 		t.Fatalf("four concurrent requests opened %d connections, want one each", s.dials.Load())
 	}
 	// The burst is over. Three of the four go back to the source, which is what
-	// lets another region of this host be served at all.
+	// lets another memory region of this host be served at all.
 	if dropped := s.closes.Load(); dropped != 3 {
 		t.Fatalf("a finished burst gave %d of its 4 connections back, want all but the one it keeps", dropped)
 	}
-	// And the one it kept is reused, so a region asking one page at a time
+	// And the one it kept is reused, so a memory region asking one page at a time
 	// still pays one socket rather than one per page.
 	if _, err := source.Pages(t.Context(), 0, 1); err != nil {
 		t.Fatal(err)

@@ -461,7 +461,7 @@ func (s *Store) Read(ctx context.Context, index *Index, volume string, offset ui
 // exactly as a hole the volume itself has is.
 //
 // That is what a pager's window read is. A fault's window is one run of pages
-// of which the ones the region already holds resident need no bytes, and asking
+// of which the ones the memory region already holds resident need no bytes, and asking
 // for the run with those pages left out costs what the run costs — where asking
 // for each stretch of it separately costs a request per stretch.
 func (s *Store) ReadPages(ctx context.Context, index *Index, volume string, offset uint64, dst []byte, wanted []bool) error {
@@ -670,7 +670,7 @@ func (s *Store) readSuffix(ctx context.Context, key platform.ObjectKey, suffix i
 }
 
 // partTable is what one part says about itself: the members it names, the size
-// of its member region, and, in a checkpoint's last part alone, how many parts
+// of its member memory region, and, in a checkpoint's last part alone, how many parts
 // the checkpoint has.
 type partTable struct {
 	members []part.Member

@@ -118,10 +118,10 @@ func populationOrder(t *testing.T, identities []control.Identity, held [2]uint64
 			f.a.mu.Unlock()
 			result := make(chan error, 1)
 			done := make(chan struct{})
-			var region *vmmemory.Region
+			var memoryRegion *vmmemory.MemoryRegion
 			go func() {
 				var err error
-				region, err = f.h.Attach(ctx, ram(b), m)
+				memoryRegion, err = f.h.Attach(ctx, ram(b), m)
 				result <- err
 				close(done)
 			}()
@@ -130,8 +130,8 @@ func populationOrder(t *testing.T, identities []control.Identity, held [2]uint64
 				f.a.mu.Lock()
 				clear(m.pages)
 				f.a.mu.Unlock()
-				if region != nil {
-					if err := region.Detach(context.Background()); err != nil {
+				if memoryRegion != nil {
+					if err := memoryRegion.Detach(context.Background()); err != nil {
 						t.Error(err)
 					}
 				}

@@ -43,10 +43,10 @@ func TestRestoreFromSharedSnapshotLoadsNothingOnTheSecondMachine(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = source.Close(context.Background()) })
-	for region, name := range []string{"pmem0", "ram0"} {
+	for memoryRegion, name := range []string{"pmem0", "ram0"} {
 		data := make([]byte, pages*size)
 		for i := range data {
-			data[i] = byte(1 + region*32 + i/size)
+			data[i] = byte(1 + memoryRegion*32 + i/size)
 		}
 		for offset := 0; offset < len(data); offset += 1 << 20 {
 			if err := source.Volume(name).Write(t.Context(), uint64(offset), data[offset:offset+(1<<20)]); err != nil {
@@ -77,9 +77,9 @@ func TestRestoreFromSharedSnapshotLoadsNothingOnTheSecondMachine(t *testing.T) {
 		return backing, counted
 	}
 	touch := func(p *nativeProcess) {
-		for region := range 2 {
+		for memoryRegion := range 2 {
 			for page := range pages {
-				p.request(fmt.Sprintf("kvmread %d %d", region, page*size), fmt.Sprintf("kvm %d", byte(1+region*32+page)))
+				p.request(fmt.Sprintf("kvmread %d %d", memoryRegion, page*size), fmt.Sprintf("kvm %d", byte(1+memoryRegion*32+page)))
 			}
 		}
 	}
@@ -107,7 +107,7 @@ func TestRestoreFromSharedSnapshotLoadsNothingOnTheSecondMachine(t *testing.T) {
 	}
 	for i, v := range secondCounted {
 		if loads := v.loads.Load(); loads != 0 {
-			t.Errorf("region %d of the second machine issued %d backing loads", i, loads)
+			t.Errorf("memory region %d of the second machine issued %d backing loads", i, loads)
 		}
 	}
 	mapped := attached.MappedPages - before.MappedPages
@@ -126,7 +126,7 @@ func TestRestoreFromSharedSnapshotLoadsNothingOnTheSecondMachine(t *testing.T) {
 		t.Fatalf("the restored machine loaded %d times from its volumes", after.Loads-attached.Loads)
 	}
 	raw, err := json.Marshal(map[string]any{
-		"pages_per_region": pages, "regions": 2, "page_size": size,
+		"pages_per_memory_region": pages, "memory_regions": 2, "page_size": size,
 		"first_machine_loaded_pages":   firstCounted[0].loadedPages.Load() + firstCounted[1].loadedPages.Load(),
 		"first_machine_backing_loads":  firstCounted[0].loads.Load() + firstCounted[1].loads.Load(),
 		"second_machine_backing_loads": secondCounted[0].loads.Load() + secondCounted[1].loads.Load(),
@@ -174,10 +174,10 @@ func TestKVMNestedForkMapsResidentPagesBeforeItRuns(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = source.Close(context.Background()) })
-	for region, name := range names {
+	for memoryRegion, name := range names {
 		data := make([]byte, pages*size)
 		for i := range data {
-			data[i] = byte(1 + region*32 + i/size)
+			data[i] = byte(1 + memoryRegion*32 + i/size)
 		}
 		for offset := 0; offset < len(data); offset += size {
 			if err := source.Volume(name).Write(t.Context(), uint64(offset), data[offset:offset+size]); err != nil {
@@ -205,13 +205,13 @@ func TestKVMNestedForkMapsResidentPagesBeforeItRuns(t *testing.T) {
 		return vm, backing
 	}
 	touch := func(p *nativeProcess, written bool) {
-		for region := range 2 {
+		for memoryRegion := range 2 {
 			for page := range pages {
-				value := 1 + region*32 + page
+				value := 1 + memoryRegion*32 + page
 				if written && page == 0 {
 					value = 91
 				}
-				p.request(fmt.Sprintf("kvmread %d %d", region, page*size), fmt.Sprintf("kvm %d", value))
+				p.request(fmt.Sprintf("kvmread %d %d", memoryRegion, page*size), fmt.Sprintf("kvm %d", value))
 			}
 		}
 	}
@@ -236,24 +236,24 @@ func TestKVMNestedForkMapsResidentPagesBeforeItRuns(t *testing.T) {
 	bv, bb := fork("b", point)
 	b := check(bb, false)
 	// What the guest stored reaches the nested fork through the seal: it freezes
-	// each region's dirty set and the child reads those pages straight out of
+	// each memory region's dirty set and the child reads those pages straight out of
 	// the pager. The fork's own root index has to exist before it can be forked
 	// again, so it publishes first.
 	if err := bv.Checkpoint(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	sources := make(map[string]volume.DirtySource, len(names))
-	for region, name := range names {
-		b.request(fmt.Sprintf("kvmwrite %d 0 91", region), "kvm 91")
-		b.seal(region)
-		sources[name] = b.region(region).Checkpoint()
+	for memoryRegion, name := range names {
+		b.request(fmt.Sprintf("kvmwrite %d 0 91", memoryRegion), "kvm 91")
+		b.seal(memoryRegion)
+		sources[name] = b.memoryRegion(memoryRegion).Checkpoint()
 	}
 	nested, err := bv.ForkPoint(t.Context(), volume.Prepared(nil, sources))
 	if err != nil {
 		t.Fatal(err)
 	}
 	// Offering the pages the seal froze is what the host taking this child in
-	// does before its regions attach: the child maps them rather than reading
+	// does before its memory regions attach: the child maps them rather than reading
 	// the pages back.
 	if err := nested.Share(t.Context()); err != nil {
 		t.Fatal(err)

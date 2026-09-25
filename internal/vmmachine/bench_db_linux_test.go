@@ -233,13 +233,13 @@ func (b *benchmark) dbFork(ctx context.Context, origin *forkOrigin) {
 		private := make([]uint64, count)
 		ramPrivate := make([]uint64, count)
 		for index, p := range processes {
-			for _, region := range p.Regions() {
-				stats, err := region.Stats(ctx)
+			for _, memoryRegion := range p.MemoryRegions() {
+				stats, err := memoryRegion.Stats(ctx)
 				if err != nil {
 					b.t.Fatal(err)
 				}
 				private[index] += stats.PrivateBytes()
-				if region.Kind() == vmmemory.Ram {
+				if memoryRegion.Kind() == vmmemory.Ram {
 					ramPrivate[index] += stats.PrivateBytes()
 				}
 			}

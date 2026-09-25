@@ -32,7 +32,7 @@ how its inherited pages reach it.
   host that backing is the peer backing over the page server, as today. On
   the parent's host it is a local backing over the fork point: the pager
   shares the parent's sealed pages with the child by identity, so every
-  inherited page is present the moment the region attaches and no byte is
+  inherited page is present the moment the memory region attaches and no byte is
   copied. Both satisfy the same interface; `Received.Done` means the same
   thing for both: the child holds every page only the parent had.
 - **Publish the root when the child has its pages.** The child's root is

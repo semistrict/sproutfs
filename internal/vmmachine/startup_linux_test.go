@@ -104,7 +104,7 @@ func TestStartupAttachmentChild(t *testing.T) {
 				// VMM as an error, and the VMM answers the capture with one.
 				// It is still running: only the checkpoint failed.
 				if request.Seal && os.Getenv("SPROUTFS_STARTUP_CHILD_REFUSE_SEAL") == "1" {
-					http.Error(w, "sealing a managed region failed", http.StatusBadRequest)
+					http.Error(w, "sealing a managed memory region failed", http.StatusBadRequest)
 					return
 				}
 				if err := os.WriteFile(request.Path, []byte("bounded VMM state"), 0o600); err != nil {
@@ -154,10 +154,10 @@ func TestStartupAttachmentChild(t *testing.T) {
 	select {}
 }
 
-// attachChild speaks the descriptor exchange one region's session begins with
+// attachChild speaks the descriptor exchange one memory region's session begins with
 // and, once it has the arena, serves that session's mapping commands on a
 // goroutine of its own. It reports the handshake's failure, which is all a VMM
-// whose pager refused the region ever has.
+// whose pager refused the memory region ever has.
 func attachChild(socket string) error {
 	c, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: socket, Net: "unix"})
 	if err != nil {
@@ -182,7 +182,7 @@ func attachChild(socket string) error {
 	if err := vmwire.SendFD(c, vmwire.Frame{Kind: vmwire.Hello, ID: vmwire.Version}, r); err != nil {
 		return err
 	}
-	if err := vmwire.Write(c, vmwire.Frame{Kind: vmwire.Region, Flags: uint64(vmmemory.Ram), Length: checkpoint.PageSize2MiB, Offset: 2 << 20}); err != nil {
+	if err := vmwire.Write(c, vmwire.Frame{Kind: vmwire.MemoryRegion, Flags: uint64(vmmemory.Ram), Length: checkpoint.PageSize2MiB, Offset: 2 << 20}); err != nil {
 		return err
 	}
 	_, arena, err := vmwire.ReceiveFD(c)
@@ -212,7 +212,7 @@ func attachChild(socket string) error {
 }
 
 // admissionBacking stands in front of a RAM volume so a test can stall the
-// authority check every region attachment ends with, which is the admission a
+// authority check every memory region attachment ends with, which is the admission a
 // startup waits on.
 type admissionBacking struct {
 	vmmemory.Backing
@@ -358,14 +358,14 @@ func TestStartupCancellationReleasesStalledAdmission(t *testing.T) {
 
 // TestRefusedAttachmentReportsThePagerFailure is the account a restore that
 // never attached leaves. The VMM builds its sessions inside the load request,
-// so a region the pager refuses fails that request, and all the VMM can say is
+// so a memory region the pager refuses fails that request, and all the VMM can say is
 // that the descriptor never came. The pager's own reason is on this side, in
 // the connect result nothing read, and a startup that returns the VMM's message
 // alone reports a wire problem for what is an admission refusal.
 func TestRefusedAttachmentReportsThePagerFailure(t *testing.T) {
 	config, stall, h := startupFixture(t)
 	config.RestoreState = []byte("bounded VMM state")
-	// The region is refused the moment the pager checks its volume, which is
+	// The memory region is refused the moment the pager checks its volume, which is
 	// what a full logical-page cap does at the same point in the handshake.
 	stall.blocked.Store(true)
 	close(stall.release)
@@ -438,10 +438,10 @@ func TestProcessCaptureStagesAndRemovesItsStateFile(t *testing.T) {
 	defer process.Close()
 	// The fixture's VMM answers the snapshot request without asking the pager for
 	// a checkpoint, so the seal a real one issues over the control protocol is
-	// made here: Prepare reports the checkpoint of every region and refuses a
-	// region that has none.
-	for name, region := range process.Regions() {
-		if err := region.Seal(t.Context()); err != nil {
+	// made here: Prepare reports the checkpoint of every memory region and refuses a
+	// memory region that has none.
+	for name, memoryRegion := range process.MemoryRegions() {
+		if err := memoryRegion.Seal(t.Context()); err != nil {
 			t.Fatalf("sealing %s: %v", name, err)
 		}
 	}
@@ -453,7 +453,7 @@ func TestProcessCaptureStagesAndRemovesItsStateFile(t *testing.T) {
 		t.Fatalf("state: %q", state)
 	}
 	if len(sources) == 0 {
-		t.Fatal("the capture sealed no region")
+		t.Fatal("the capture sealed no memory region")
 	}
 	if err := process.Release(t.Context()); err != nil {
 		t.Fatal(err)

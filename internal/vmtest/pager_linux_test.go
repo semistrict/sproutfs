@@ -38,7 +38,7 @@ type alias struct {
 	page       *page
 }
 
-// pagerClient is one managed-memory session, which maps one region.
+// pagerClient is one managed-memory session, which maps one memory region.
 type pagerClient struct {
 	conn       *net.UnixConn
 	uffd       *os.File
@@ -116,9 +116,9 @@ func newPager(t *testing.T, slots int) *pager {
 	return p
 }
 
-// accept takes one session of a client process. region names the family of
+// accept takes one session of a client process. memory region names the family of
 // pages it maps, which is what two processes share when they map the same one.
-func (p *pager) accept(listener *net.UnixListener, region int) (*pagerClient, error) {
+func (p *pager) accept(listener *net.UnixListener, memoryRegion int) (*pagerClient, error) {
 	conn, err := listener.AcceptUnix()
 	if err != nil {
 		return nil, err
@@ -140,16 +140,16 @@ func (p *pager) accept(listener *net.UnixListener, region int) (*pagerClient, er
 	if err != nil {
 		return fail(err)
 	}
-	if f.Kind != vmwire.Region || f.Flags != uint64(region+1) || f.Length == 0 || f.Length > uint64(p.pageSize*4096) || f.Length%uint64(p.pageSize) != 0 || f.Offset%uint64(p.pageSize) != 0 || f.Offset > ^uint64(0)-f.Length {
-		return fail(fmt.Errorf("invalid region: %+v", f))
+	if f.Kind != vmwire.MemoryRegion || f.Flags != uint64(memoryRegion+1) || f.Length == 0 || f.Length > uint64(p.pageSize*4096) || f.Length%uint64(p.pageSize) != 0 || f.Offset%uint64(p.pageSize) != 0 || f.Offset > ^uint64(0)-f.Length {
+		return fail(fmt.Errorf("invalid memory region: %+v", f))
 	}
 	for i := range int(f.Length / uint64(p.pageSize)) {
-		key := [2]int{region, i}
+		key := [2]int{memoryRegion, i}
 		pg := p.initial[key]
 		if pg == nil {
 			pg = &page{id: len(p.pages), slot: -1, initial: make([]byte, p.pageSize), aliases: make(map[*alias]struct{})}
 			for j := range pg.initial {
-				pg.initial[j] = byte(17 + region*17 + i)
+				pg.initial[j] = byte(17 + memoryRegion*17 + i)
 			}
 			p.pages = append(p.pages, pg)
 			p.initial[key] = pg
@@ -162,7 +162,7 @@ func (p *pager) accept(listener *net.UnixListener, region int) (*pagerClient, er
 	if err != nil {
 		return fail(err)
 	}
-	// The attachment states this fixture's geometry: the page its regions run,
+	// The attachment states this fixture's geometry: the page its memory regions run,
 	// and the memory its arena is made of.
 	backing, err := vmwire.BackingFor(uint64(p.pageSize))
 	if err != nil {
@@ -361,7 +361,7 @@ func (p *pager) handleFault(f fault) error {
 		}
 	}
 	if a == nil {
-		return fmt.Errorf("fault outside the registered region: %#x", f.key.address)
+		return fmt.Errorf("fault outside the registered memory region: %#x", f.key.address)
 	}
 	if err := p.makeResident(a.page); err != nil {
 		return err

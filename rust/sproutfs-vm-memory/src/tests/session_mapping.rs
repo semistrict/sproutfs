@@ -22,13 +22,16 @@ fn vm_flags(address: usize) -> Vec<String> {
 #[test]
 #[ignore = "requires native HugeTLB/UFFD support and permission to create kernel-mode UFFD"]
 fn exposed_trap_ranges_disable_fork_inheritance_and_transparent_huge_pages() {
-    let spec = RegionSpec {
-        kind: RegionKind::Ram,
+    let spec = MemoryRegionSpec {
+        kind: MemoryRegionKind::Ram,
         len: PAGE_SIZE,
     };
     let session = handshake(attachment(), ready(), spec).unwrap();
-    let region = session.region();
-    for address in [region.address, region.address + region.len - 1] {
+    let memory_region = session.memory_region();
+    for address in [
+        memory_region.address,
+        memory_region.address + memory_region.len - 1,
+    ] {
         let flags = vm_flags(address);
         assert!(
             flags.iter().any(|flag| flag == "dc"),

@@ -25,10 +25,10 @@ func TestNativeMappingBudgetRejectsBeforeKernelMutation(t *testing.T) {
 	const pages = 256
 	h := kernelHost(t, pages, 2*pages)
 	a := startNativeWithConfig(t, h, pages, vmmemory.ConnectionConfig{QueuePages: 16, MaxVMAs: 128, CommandTimeout: 5 * time.Second, VerifyInterval: time.Hour})
-	region := a.region(0)
+	memoryRegion := a.memoryRegion(0)
 	for page := uint64(0); page < pages; page += 2 {
 		before, _ := h.Stats(t.Context())
-		if err := region.Fault(t.Context(), page, true); err != nil {
+		if err := memoryRegion.Fault(t.Context(), page, true); err != nil {
 			if !errors.Is(err, syscall.ENOSPC) {
 				t.Fatalf("mapping budget returned unexpected error: %v", err)
 			}
@@ -47,7 +47,7 @@ func TestNativeMappingBudgetRejectsBeforeKernelMutation(t *testing.T) {
 
 // A refused mapping command is a failed operation, not a failed session. The
 // client admits a command against its mapping budget before it touches
-// anything, so a refusal changed nothing: the pages are not mapped, the region
+// anything, so a refusal changed nothing: the pages are not mapped, the memory region
 // goes on serving its guest, and the fault is served again once revocation has
 // freed the budget. Ending the session here would kill a VMM over a command
 // that did nothing, and recording the refused pages as mapped would resolve a
@@ -56,10 +56,10 @@ func TestNativeRefusedMappingLeavesTheSessionServing(t *testing.T) {
 	const pages = 256
 	h := kernelHost(t, pages, 2*pages)
 	a := startNativeWithConfig(t, h, pages, vmmemory.ConnectionConfig{QueuePages: 16, MaxVMAs: 128, CommandTimeout: 5 * time.Second, VerifyInterval: time.Hour})
-	region := a.region(0)
+	memoryRegion := a.memoryRegion(0)
 	refused, found := uint64(0), false
 	for page := uint64(0); page < pages && !found; page += 2 {
-		err := region.Fault(t.Context(), page, true)
+		err := memoryRegion.Fault(t.Context(), page, true)
 		if err == nil {
 			continue
 		}
@@ -71,13 +71,13 @@ func TestNativeRefusedMappingLeavesTheSessionServing(t *testing.T) {
 	if !found {
 		t.Fatal("fragmented private mappings exceeded the configured VMA admission budget")
 	}
-	if err := region.Verify(t.Context()); err != nil {
-		t.Fatalf("a refused mapping command left the region unable to serve: %v", err)
+	if err := memoryRegion.Verify(t.Context()); err != nil {
+		t.Fatalf("a refused mapping command left the memory region unable to serve: %v", err)
 	}
 	// The refused page is refused again, rather than resolved against a mapping
 	// the client never installed, which is what recording it as mapped would
 	// leave for the fault that comes back to it.
-	if err := region.Fault(t.Context(), refused, true); !errors.Is(err, vmmemory.ErrMappingRefused) {
+	if err := memoryRegion.Fault(t.Context(), refused, true); !errors.Is(err, vmmemory.ErrMappingRefused) {
 		t.Fatalf("faulting the refused page again = %v, want the refusal again", err)
 	}
 	// The session still serves: its control path answers a seal, which is
@@ -109,22 +109,22 @@ func TestNativeRefusedMappingLeavesTheSessionServing(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond)
 	}
-	if err := region.Verify(t.Context()); err != nil {
-		t.Fatalf("a client's refused access left the region unable to serve: %v", err)
+	if err := memoryRegion.Verify(t.Context()); err != nil {
+		t.Fatalf("a client's refused access left the memory region unable to serve: %v", err)
 	}
 	// Revocation is what frees the budget, and the client admits one whatever
 	// its budget holds: the range a revocation replaces becomes a trap that
 	// merges with the traps around it, so it installs nothing. Abandoning the
 	// seal revokes every page the guest had, and the deferred fault is served
 	// as soon as it lands.
-	if err := region.Unseal(t.Context()); err != nil {
+	if err := memoryRegion.Unseal(t.Context()); err != nil {
 		t.Fatalf("abandoning the seal to revoke the guest's mappings: %v", err)
 	}
 	if got := a.line(); got != "filled" {
 		t.Fatalf("the deferred access answered %q, want it served once the revocations freed the budget", got)
 	}
 	a.request(fmt.Sprintf("read 0 %d 1", hugePageSize), "data 2a")
-	if err := region.Fault(t.Context(), refused, true); err != nil {
+	if err := memoryRegion.Fault(t.Context(), refused, true); err != nil {
 		t.Fatalf("the page whose mapping was refused, faulted again after the revocations: %v", err)
 	}
 }
@@ -133,15 +133,15 @@ func TestNativeAbandonedCheckpointCoalescesRevokesAcrossGenerationBoundaries(t *
 	const pages = 128
 	h := kernelHost(t, 2*pages, 2*pages)
 	a := startNative(t, h, pages)
-	region := a.region(0)
+	memoryRegion := a.memoryRegion(0)
 	// Odd pages first acquire a clean generation; every page then becomes private.
 	for page := uint64(1); page < pages; page += 2 {
-		if err := region.Fault(t.Context(), page, false); err != nil {
+		if err := memoryRegion.Fault(t.Context(), page, false); err != nil {
 			t.Fatal(err)
 		}
 	}
 	for page := range uint64(pages) {
-		if err := region.Fault(t.Context(), page, true); err != nil {
+		if err := memoryRegion.Fault(t.Context(), page, true); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -149,10 +149,10 @@ func TestNativeAbandonedCheckpointCoalescesRevokesAcrossGenerationBoundaries(t *
 	// An abandoned checkpoint is what revokes a whole dirty set: it takes the
 	// read-only mappings the seal installed away, in one command over the
 	// contiguous run.
-	if err := region.Seal(t.Context()); err != nil {
+	if err := memoryRegion.Seal(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if err := region.Unseal(t.Context()); err != nil {
+	if err := memoryRegion.Unseal(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	after, _ := h.Stats(t.Context())
@@ -219,10 +219,10 @@ func (b *patternBacking) Locate(ctx context.Context, offset, length uint64) ([]c
 	return result, nil
 }
 
-// checkpoint publishes a region's sealed pages, which is the only way this
+// checkpoint publishes a memory region's sealed pages, which is the only way this
 // backing's values change. Every page is validated as it arrives: a private
 // page must hold exactly the one byte the guest stored.
-func (b *patternBacking) checkpoint(ctx context.Context, r *vmmemory.Region) error {
+func (b *patternBacking) checkpoint(ctx context.Context, r *vmmemory.MemoryRegion) error {
 	if err := r.Seal(ctx); err != nil {
 		return err
 	}
@@ -263,12 +263,12 @@ func nativeVMAs(t *testing.T, p *nativeProcess) int {
 	return bytes.Count(raw, []byte{'\n'})
 }
 
-// Opt in with SPROUTFS_FRAGMENT_MIB=2048: two 2 GiB regions, 2 GiB of
+// Opt in with SPROUTFS_FRAGMENT_MIB=2048: two 2 GiB memory regions, 2 GiB of
 // alternating dirty pages, a 4 MiB arena, and two write/flush epochs.
 func TestNativeFragmentedWritebackMeasurements(t *testing.T) {
 	raw := os.Getenv("SPROUTFS_FRAGMENT_MIB")
 	if raw == "" {
-		t.Skip("set SPROUTFS_FRAGMENT_MIB to logical MiB per region")
+		t.Skip("set SPROUTFS_FRAGMENT_MIB to logical MiB per memory region")
 	}
 	mib, err := strconv.Atoi(raw)
 	if err != nil || mib < 2 || mib > 2048 {
@@ -291,24 +291,24 @@ func TestNativeFragmentedWritebackMeasurements(t *testing.T) {
 	for epoch, value := range []byte{51, 73} {
 		before, _ := h.Stats(t.Context())
 		start := time.Now()
-		for region := range 2 {
+		for memoryRegion := range 2 {
 			for offset := 0; offset < length; offset += 16 << 20 {
 				count := min(length-offset, 16<<20)
-				a.request(fmt.Sprintf("stridefill %d %d %d %d %d", region, offset, count, 2*size, value), "strided")
+				a.request(fmt.Sprintf("stridefill %d %d %d %d %d", memoryRegion, offset, count, 2*size, value), "strided")
 				current := nativeVMAs(t, a)
 				peakVMAs = max(peakVMAs, current)
-				t.Logf("epoch=%d region=%d written_mib=%d vmas=%d", epoch+1, region, (offset+count)>>20, current)
+				t.Logf("epoch=%d memory region=%d written_mib=%d vmas=%d", epoch+1, memoryRegion, (offset+count)>>20, current)
 			}
 		}
 		writeNS := time.Since(start).Nanoseconds()
 		beforeCheckpoint, _ := h.Stats(t.Context())
 		dirtyVMAs := nativeVMAs(t, a)
 		start = time.Now()
-		// The checkpoint is what moves the dirty set: it seals every region, reads
+		// The checkpoint is what moves the dirty set: it seals every memory region, reads
 		// the sealed pages and retires them.
 		backings := []*patternBacking{first, second}
-		for region := range 2 {
-			if err := backings[region].checkpoint(t.Context(), a.region(region)); err != nil {
+		for memoryRegion := range 2 {
+			if err := backings[memoryRegion].checkpoint(t.Context(), a.memoryRegion(memoryRegion)); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -334,10 +334,10 @@ func TestNativeFragmentedWritebackMeasurements(t *testing.T) {
 		// Sample distant native reads after the complete checkpoint, including
 		// untouched neighboring zeros; earlier tests cover exhaustive spill/refault
 		// bytes.
-		for region := range 2 {
+		for memoryRegion := range 2 {
 			for _, page := range []int{0, (pages / 2) &^ 1, pages - 2} {
-				a.request(fmt.Sprintf("read %d %d 1", region, page*size), fmt.Sprintf("data %02x", value))
-				a.request(fmt.Sprintf("read %d %d 1", region, (page+1)*size), "data 00")
+				a.request(fmt.Sprintf("read %d %d 1", memoryRegion, page*size), fmt.Sprintf("data %02x", value))
+				a.request(fmt.Sprintf("read %d %d 1", memoryRegion, (page+1)*size), "data 00")
 			}
 		}
 	}

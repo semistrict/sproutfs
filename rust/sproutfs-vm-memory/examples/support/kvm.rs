@@ -1,9 +1,9 @@
-//! Minimal KVM adapter: guest code lives outside the managed regions and never
+//! Minimal KVM adapter: guest code lives outside the managed memory regions and never
 //! prefaults their data. The same VM/vCPU and memory slots survive refault tests.
 
 use kvm_bindings::kvm_userspace_memory_region;
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
-use sproutfs_vm_memory::Region;
+use sproutfs_vm_memory::MemoryRegion;
 use std::io;
 
 const CODE: u64 = 0x1000;
@@ -24,13 +24,13 @@ pub struct Machine {
     vcpu: VcpuFd,
     _vm: VmFd,
     _code: Code,
-    regions: Vec<Region>,
+    memory_regions: Vec<MemoryRegion>,
 }
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 impl Machine {
-    pub fn new(regions: &[Region]) -> Result<Self> {
+    pub fn new(memory_regions: &[MemoryRegion]) -> Result<Self> {
         let kvm = Kvm::new()?;
         let vm = kvm.create_vm()?;
         let size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
@@ -89,7 +89,7 @@ impl Machine {
                 flags: 0,
             })?;
         }
-        for (i, r) in regions.iter().enumerate() {
+        for (i, r) in memory_regions.iter().enumerate() {
             assert!(i < DATA.len() && r.len as u64 <= 0x1000_0000);
             unsafe {
                 vm.set_user_memory_region(kvm_userspace_memory_region {
@@ -144,14 +144,14 @@ impl Machine {
             vcpu,
             _vm: vm,
             _code: code,
-            regions: regions.to_vec(),
+            memory_regions: memory_regions.to_vec(),
         })
     }
 
-    pub fn access(&mut self, region: usize, offset: usize, value: Option<u8>) -> Result<u8> {
-        assert!(offset < self.regions[region].len);
+    pub fn access(&mut self, memory_region: usize, offset: usize, value: Option<u8>) -> Result<u8> {
+        assert!(offset < self.memory_regions[memory_region].len);
         let pc = CODE + if value.is_some() { 16 } else { 0 };
-        let address = DATA[region] + offset as u64;
+        let address = DATA[memory_region] + offset as u64;
         #[cfg(target_arch = "aarch64")]
         {
             let base = 0x6030_0000_0010_0000;

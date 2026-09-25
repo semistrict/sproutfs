@@ -504,7 +504,7 @@ func wantedExcept(count uint64, held func(uint64) bool) []bool {
 // members that are wanted still lie next to each other in their parts, and the
 // few the reader did not ask for are read through rather than split at, exactly
 // as the pages a later checkpoint rewrote in the middle of a run are. This is
-// what a pager's window is — a read-ahead run with the pages the region already
+// what a pager's window is — a read-ahead run with the pages the memory region already
 // holds resident taken out.
 func TestARunAskedForWithPagesLeftOutIsOneRequestPerCheckpoint(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {

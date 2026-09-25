@@ -3,7 +3,7 @@ package peer
 import "context"
 
 // Admitter orders the decision to make one request to a source against
-// everything else a controlled run is running. It is given the region the
+// everything else a controlled run is running. It is given the memory region the
 // request is for — the VM and the volume — and returns the reason the request
 // must not be made, which is normally the cancellation the caller has just
 // been given.
@@ -17,13 +17,13 @@ import "context"
 // reproduced. Pooling makes it unavoidable rather than incidental: an idle
 // connection is taken without dialing, so the request reaches the wire with no
 // adapter operation between the cancellation and the send.
-type Admitter func(ctx context.Context, region string) error
+type Admitter func(ctx context.Context, memoryRegion string) error
 
 type admissionKey struct{}
 
 // WithAdmission installs admit for every request made by a Source under ctx.
 // The stream a destination runs behind its guest inherits this context, so one
-// call at the top of a controlled workload covers the requests of every region
+// call at the top of a controlled workload covers the requests of every memory region
 // it receives.
 func WithAdmission(ctx context.Context, admit Admitter) context.Context {
 	if admit == nil {
@@ -33,12 +33,12 @@ func WithAdmission(ctx context.Context, admit Admitter) context.Context {
 }
 
 // admit runs the context's admitter, where a controlled run installed one.
-func admit(ctx context.Context, region string) error {
+func admit(ctx context.Context, memoryRegion string) error {
 	admitter, ok := ctx.Value(admissionKey{}).(Admitter)
 	if !ok {
 		return nil
 	}
-	return admitter(ctx, region)
+	return admitter(ctx, memoryRegion)
 }
 
 type streamKey struct{}

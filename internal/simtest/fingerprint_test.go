@@ -11,7 +11,7 @@ import (
 
 // connectionAttempt is the one class of event this campaign's own concurrency
 // decides rather than its seed, and the reason the strict fingerprint is logged
-// rather than asserted. A destination's regions each ask the source for their
+// rather than asserted. A destination's memory regions each ask the source for their
 // own pages, and a source that is being taken away — closed, partitioned, or
 // losing a reply — is discovered independently by each of them: how many of
 // them dial before the first failure marks the source fallen is a race between
@@ -32,7 +32,7 @@ func TestSeededTopologyFingerprintIsStable(t *testing.T) {
 		t.Run(fmt.Sprintf("seed-%d", seed), func(t *testing.T) {
 			var work, strict [2]uint64
 			var dials [2]int
-			var regions int
+			var memoryRegions int
 			for run := range work {
 				synctest.Test(t, func(t *testing.T) {
 					runtime := runTopologyCampaign(t, seed, false)
@@ -44,31 +44,31 @@ func TestSeededTopologyFingerprintIsStable(t *testing.T) {
 							dials[run]++
 						}
 					}
-					regions = regionsOf(simtest.NewTopology(runtime.Random("simtest/topology")))
+					memoryRegions = memoryRegionsOf(simtest.NewTopology(runtime.Random("simtest/topology")))
 				})
 			}
 			t.Logf("seed=%d work=%#016x strict=%v connection-attempts=%v", seed, work[0], strict, dials)
 			if work[0] != work[1] {
 				t.Fatalf("seed %d did different work on its second run: %#016x then %#016x", seed, work[0], work[1])
 			}
-			// The excluded class cannot grow quietly: one region per volume of
+			// The excluded class cannot grow quietly: one memory region per volume of
 			// the topology may race one failure, so a handful of extra attempts
 			// across a whole schedule is the whole of what the fingerprint above
 			// hides.
-			if difference := max(dials[0], dials[1]) - min(dials[0], dials[1]); difference > regions {
-				t.Fatalf("seed %d varied by %d connection attempts across two runs (%v), more than the %d regions that can race one source's loss",
-					seed, difference, dials, regions)
+			if difference := max(dials[0], dials[1]) - min(dials[0], dials[1]); difference > memoryRegions {
+				t.Fatalf("seed %d varied by %d connection attempts across two runs (%v), more than the %d memory regions that can race one source's loss",
+					seed, difference, dials, memoryRegions)
 			}
 		})
 	}
 }
 
-// regionsOf is every memory region of a topology, which is how many callers can
+// memory regionsOf is every memory region of a topology, which is how many callers can
 // independently discover one source being taken away.
-func regionsOf(topology simtest.Topology) int {
-	regions := 0
+func memoryRegionsOf(topology simtest.Topology) int {
+	memoryRegions := 0
 	for _, vm := range topology.VMs {
-		regions += len(vm.Volumes)
+		memoryRegions += len(vm.Volumes)
 	}
-	return regions
+	return memoryRegions
 }

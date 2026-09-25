@@ -7,23 +7,23 @@ the text below:
 
 - **A copy needs a page to be made from, and a cold write fault had none.** The
   plan says the copy remembers "the resident page it was copied from", but a
-  store into a page its region holds no memory for read the volume straight
+  store into a page its memory region holds no memory for read the volume straight
   into its private page and had nothing to remember — which is exactly the
   x86-64 case the defect is about. Such a store now reads the page in first,
   under the identity its volume gives it, and copies away from that: one extra
-  resident page for the fault, and an identity every other region inheriting it
+  resident page for the fault, and an identity every other memory region inheriting it
   maps rather than reads.
 - **The page a store copies from is left in the arena rather than released.**
   Unlinking the binding from it released it whenever the binding was its last
   alias, which is the ordinary case, so the origin would have been gone before
   the seal. Nothing pins it — it is clean, and the next reclaim short of a slot
   takes it like any other page — but a store no longer releases it, and the
-  region that left it there gives it up when it detaches. `Host.Sharing` counts
-  such a page in `UniqueBytes` under the kind of the region that made it,
+  memory region that left it there gives it up when it detaches. `Host.Sharing` counts
+  such a page in `UniqueBytes` under the kind of the memory region that made it,
   because it is memory the arena holds.
-- **The settle takes the region live, not the region lock.** "Nothing wider"
+- **The settle takes the memory region live, not the memory region lock.** "Nothing wider"
   than the two page locks is what the plan asks for and what the code does; the
-  region is held only in the sense a fault holds it against a detach, so a
+  memory region is held only in the sense a fault holds it against a detach, so a
   seal, a retire or a detach waits for a settle and never for a page of one.
   A sealed page the pager has spilled is not compared either, for the same
   reason the store is not read: the settle takes no I/O permit.
@@ -64,7 +64,7 @@ back to sharing the page it was copied from.
   a pointer to that resident page — `origin`. Not its identity: eight bytes per
   binding, and an origin that has been evicted is simply no longer an origin. A
   page copied from a checkpoint's held copy, from another host's unpublished
-  page, or made from zeros has no origin. A store into a page its region holds
+  page, or made from zeros has no origin. A store into a page its memory region holds
   no memory for reads that page in first, so that there is a resident page
   under the volume's identity to copy away from and to remember; the page is
   left in the arena when the binding takes its private copy instead, and is an
@@ -81,14 +81,14 @@ back to sharing the page it was copied from.
 - **It happens behind the pause.** The seal is unchanged. The publication asks
   each dirty source to settle before it enumerates its pages —
   `DirtySource.Settle(ctx)`, called once, off the pause path, with the guest
-  running — and `RegionCheckpoint.Settle` compares every held page that has an
+  running — and `MemoryRegionCheckpoint.Settle` compares every held page that has an
   origin. An unchanged page leaves the checkpoint's set, so `DirtyPages` does
   not list it and it costs the store nothing.
 - **The settle is parallel.** Each page is settled alone — its comparison and
   its re-sharing take that page's lock and its origin's and nothing wider — so
   a settle hands its pages to `Config.SettleWorkers` workers — the host's
   processors, which `internal/host` chooses; a configuration that leaves it
-  zero settles on the caller's own goroutine — and the regions of one VM settle
+  zero settles on the caller's own goroutine — and the memory regions of one VM settle
   at the same time as each other. What bounds it is memory bandwidth and not the pager's I/O
   permits, which it does not take: it reads no disk and no store. A thousand
   2 MiB pages are about a tenth of a second of comparing on one processor, and
@@ -104,7 +104,7 @@ back to sharing the page it was copied from.
   returned. A store that lands first copies away from the checkpoint as it does
   today, and then only the checkpoint's copy is released. **The mapping is
   revoked rather than replaced**, which this plan originally had the other way
-  round: a settle runs with the guest running and holds neither the region nor
+  round: a settle runs with the guest running and holds neither the memory region nor
   the window that serializes a page's mappings, so the only replacement it may
   issue is the one that installs no page table and wakes nothing. Installing the
   origin in its place is a large part of an open defect once the RAM page is
@@ -134,17 +134,17 @@ the guest's access through, or KVM userfault; both are recorded in
 
 Red tests first, exact numbers, beside the code.
 
-- `internal/vmmemory`: a region shares N pages with a sibling; it takes a write
+- `internal/vmmemory`: a memory region shares N pages with a sibling; it takes a write
   fault on one and stores nothing. After seal and settle: the checkpoint lists
   no page, the sharing gauges are what they were before the fault (unique N,
-  saved N), the region's private bytes are zero, its dirty reservation is back,
+  saved N), the memory region's private bytes are zero, its dirty reservation is back,
   and a read of the page maps without a fault. The same with a real store: the
   page is listed and published exactly as today. A store that lands between the
   seal and the settle. An origin evicted before the settle: published as today.
   A page copied from a checkpoint's held copy, from zeros, and from an
   unpublished page: never compared. A settle of many pages gives the same
   result with one worker and with sixteen, and under the race detector.
-- The loss window: a region whose only private pages were unchanged has no
+- The loss window: a memory region whose only private pages were unchanged has no
   unpublished write after the settle, and a store waiting on the window is let
   through.
 - `internal/simtest`: the simulated guest gains a write fault that stores

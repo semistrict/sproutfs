@@ -343,7 +343,7 @@ block of the seed range.
 The campaign found three problems:
 
 1. The shared `machine` double emptied its page mapping before it detached the
-   region. So the pager was still mapping and protecting pages through a map
+   memory region. So the pager was still mapping and protecting pages through a map
    that the close was clearing. No earlier test had closed a machine with a
    capture in flight.
 2. A fork's child handed to another host has no checkpoint of its own until
@@ -466,7 +466,7 @@ Capture is tested for:
 
 - returning without waiting for publication;
 - capturing nothing when preparation or resume fails;
-- a checkpoint publishing the sealed pager pages of every region, and retiring
+- a checkpoint publishing the sealed pager pages of every memory region, and retiring
   them once the checkpoint is selected;
 - a failed publication handing every sealed page back to the guest.
 
@@ -625,11 +625,11 @@ Every hop in the campaigns makes the same checks:
 - The destination's first read is the source's last checkpoint plus the pages
   the source serves. It is read through the destination's own mappings, before
   the destination writes anything.
-- A refused migration leaves the guest running where it was, with every region
+- A refused migration leaves the guest running where it was, with every memory region
   unsealed, every page writable and its vCPUs running.
 
 The recorded scenario adds the layout refusal. A handoff that would truncate a
-region or map beyond its volume is refused before any guest starts.
+memory region or map beyond its volume is refused before any guest starts.
 
 `internal/vmmigrate`'s own suite keeps the tests that are about the package and
 not about a deployment:
@@ -712,7 +712,7 @@ plus the faults that only a generated topology can express:
 | `lost-page-replies` | One host's page reply is dropped after the source has already answered it. |
 | `stalled-stream` | The first frame one host receives is held until whatever asked for it gives up. |
 | `lost-host` | A whole host is taken away at a moment and started again when the fault ends. |
-| `refused-stop` | One VM's migration pause fails after its guest has stopped and a region is sealed. |
+| `refused-stop` | One VM's migration pause fails after its guest has stopped and a memory region is sealed. |
 | `refused-start` | One host's half of a receive fails before the guest is started. |
 | `degraded-links` | The page-server links duplicate, delay and slow what they carry. |
 
@@ -898,7 +898,7 @@ The handover part moves one guest from host to host through a seeded
 permutation of six cases:
 
 - a healthy handoff;
-- a layout that would truncate a region or map beyond its volume;
+- a layout that would truncate a memory region or map beyond its volume;
 - an interval checkpoint before the migration;
 - a destination that cannot read the control record;
 - a destination that cannot start the guest;
@@ -906,7 +906,7 @@ permutation of six cases:
 
 The world's checks run at every hop: restored VMM counters, the destination's
 first read, and a checkpoint of what the destination received, read back
-through the volume. The controller orders every guest store and every region
+through the volume. The controller orders every guest store and every memory region
 seal.
 
 The host part does to whole machines what a deployment does:
@@ -926,7 +926,7 @@ python3 scripts/check-overlap-reproducibility.py --scenario world --seeds 32 --r
 ```
 
 `sim.WithTask` labels logical callers before concurrent work. The scheduled
-harnesses put each region's backing loads and authority checks through
+harnesses put each memory region's backing loads and authority checks through
 `Runtime.Admit`. So two concurrent identical reads are ordered by their logical
 caller, not by completion. Disk and object-store operations also enter a gate
 before they compete for their shared queue. So spill and page-cache work cannot
@@ -1091,7 +1091,7 @@ guarantee only this fingerprint.
 two runs of a seed, because that scenario chooses every completion order.
 `TestSeededTopologyFingerprintIsStable` asserts the work fingerprint instead.
 It excludes connection attempts, and it bounds how many it excludes by the
-number of regions in the topology. Each of a destination's regions separately
+number of memory regions in the topology. Each of a destination's memory regions separately
 discovers that a source is being removed. How many of them dial before the
 first failure marks the source as fallen is a race between goroutines, not a
 choice the seed made. Every other event of that campaign is identical between
@@ -1117,7 +1117,7 @@ that the campaigns are registered to cover to have fired. No campaign in this
 repository covers two of the five registered probes. `unreachedProbes` in
 `internal/simtest/probe_test.go` names them. Here the store either answers or
 fails outright, so no conditional write ever loses its reply and is reconciled
-by its writer's nonce. The pagers evict, but never while the region that a page
+by its writer's nonce. The pagers evict, but never while the memory region that a page
 is taken from is sealed.
 
 A fenced publication was removed from the list when the two-writer campaign
@@ -1154,8 +1154,8 @@ SPROUTFS_SIM_BUG=checkpoint-reclaim-live-checkpoint \
   go test ./internal/simtest -run '^TestScheduledWorldReproduces$' -count=1
 SPROUTFS_SIM_BUG=migration-accept-wrong-size \
   go test ./internal/simtest -run '^TestScheduledWorldReproduces$' -count=1
-SPROUTFS_SIM_BUG=migration-accept-missing-region \
-  go test ./internal/vmmigrate -run '^TestReceiveRefusesAMachineMissingARegion$' -count=1
+SPROUTFS_SIM_BUG=migration-accept-missing-memoryRegion \
+  go test ./internal/vmmigrate -run '^TestReceiveRefusesAMachineMissingAMemoryRegion$' -count=1
 SPROUTFS_SIM_BUG=migration-corrupt-peer-page \
   go test ./internal/simtest -run '^TestScheduledWorldReproduces$' -count=1
 SPROUTFS_SIM_BUG=migration-corrupt-fallback \
@@ -1320,10 +1320,10 @@ pins that a fork left.
 
 The managed-memory client has ordinary unit tests for interval generation
 history, control-request lifecycles, protocol frames and descriptor transfer,
-mapping budgets, and early region validation. The history tests compare every
+mapping budgets, and early memory region validation. The history tests compare every
 queried interval with an independent per-page model. Protocol tests use a
 fixed wire fixture and deliberately malformed ancillary input. Control tests
-check invalid completions, independent regions, cancellation and exhausted
+check invalid completions, independent memory regions, cancellation and exhausted
 request IDs.
 
 Run these on Linux without KVM, a HugeTLB pool or elevated privileges:
@@ -1356,7 +1356,7 @@ The ignored `tests::protocol` tests exercise `Session::connect` and
 `Session::run` through a real Unix peer. They cover:
 
 - attachment and READY validation;
-- the one region that a handshake asks for, in both RAM and PMEM kinds;
+- the one memory region that a handshake asks for, in both RAM and PMEM kinds;
 - rejected commands and unchanged generations;
 - immediate retries;
 - ordered disjoint batches;

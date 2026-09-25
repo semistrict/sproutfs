@@ -83,7 +83,7 @@ type Knobs struct {
 	// fork's child that nothing ever reported complete.
 	HoldIntervals int
 
-	// ResidentPages is the pager's arena, LogicalPages its per-region metadata
+	// ResidentPages is the pager's arena, LogicalPages its per-memory-region metadata
 	// cap including never-faulted pages, and DirtyPages the volatile private
 	// state it admits across RAM and spill.
 	ResidentPages, LogicalPages, DirtyPages int

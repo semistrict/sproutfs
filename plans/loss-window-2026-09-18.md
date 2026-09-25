@@ -22,7 +22,7 @@ not checkpointed at all until the hold's deadline.
 ## What is guaranteed, exactly
 
 The **loss window of a VM** is the age of its oldest unpublished write: the
-time since the first store, into any of its regions, that no landed checkpoint
+time since the first store, into any of its memory regions, that no landed checkpoint
 covers. It is measured on the host's clock — the pager's `platform.Clock`, so
 a simulated deployment measures it in simulated time.
 
@@ -52,12 +52,12 @@ loses writes older than the window — nothing can publish through an outage —
 but the guest was stopped from building on them from the window on.
 
 A migration or a fork moves unpublished pages to another host; their age moves
-with them. The handoff carries, per region, how old that region's oldest
+with them. The handoff carries, per memory region, how old that memory region's oldest
 unpublished write is at the handoff, and the destination dates the pages it
 receives from that, on its own clock. A destination therefore inherits the
 source's window rather than restarting it.
 
-Where a VM's checkpoint can never be taken — its loop is off, or its region
+Where a VM's checkpoint can never be taken — its loop is off, or its memory region
 belongs to no VM the host runs — a store waiting on the window is a store
 waiting for a checkpoint nothing will take, and it ends the way a budget stall
 ends today: the host stops the VM deliberately, with a last checkpoint of what
@@ -73,36 +73,36 @@ it, and its callers publish a checkpoint of their own when they are done.
 ### `internal/vmmemory`
 
 - `Config.LossWindow time.Duration`. Zero disables.
-- Each `Region` records `dirtySince`: the clock time its first unpublished
-  store landed, zero while it holds no unpublished page. Set under the region
+- Each `MemoryRegion` records `dirtySince`: the clock time its first unpublished
+  store landed, zero while it holds no unpublished page. Set under the memory region
   lock where a page first becomes privately dirty (the store path and the
   peer-served unpublished load path in `fault.go`), when it is zero. A
-  `RegionCheckpoint` records the region's `dirtySince` at the seal and the
-  region's own is cleared; a retire that published drops the checkpoint's; a
-  retire that did not, and an `Unseal`, hand it back — the region's becomes the
-  older of the two. `Region.oldestUnpublished()` is the older of the region's
+  `MemoryRegionCheckpoint` records the memory region's `dirtySince` at the seal and the
+  memory region's own is cleared; a retire that published drops the checkpoint's; a
+  retire that did not, and an `Unseal`, hand it back — the memory region's becomes the
+  older of the two. `MemoryRegion.oldestUnpublished()` is the older of the memory region's
   and its draining checkpoint's.
-- `Host.takeSpill` waits, before it takes a slot, while the region's VM is
+- `Host.takeSpill` waits, before it takes a slot, while the memory region's VM is
   over the window: `h.clock.Since(oldest) > LossWindow`. The wait is the
   existing one — `relief()` to ask for a checkpoint, `h.changed` to be woken
   when one ends, `stall` when none will ever be taken. A `WindowWaits` counter
   beside `DirtyWaits`, and a `WindowStalls` beside `DirtyStalls`.
-- The window is a VM's, so the pager needs the VM's regions together: the
-  region's owner, which `Pressure` already identifies per region, is asked for
-  the oldest across the VM. Add `Pressure.Oldest func(*Region) time.Time`, or
-  key regions by an owner the host sets at attach — whichever leaves the pager
+- The window is a VM's, so the pager needs the VM's memory regions together: the
+  memory region's owner, which `Pressure` already identifies per memory region, is asked for
+  the oldest across the VM. Add `Pressure.Oldest func(*MemoryRegion) time.Time`, or
+  key memory regions by an owner the host sets at attach — whichever leaves the pager
   with no knowledge of VMs. The implementer picks; the plan needs the window to
-  be per VM, not per region, because the checkpoint is.
-- `Region.Status()` (or the host's per-region report) exposes `DirtySince`, so
+  be per VM, not per memory region, because the checkpoint is.
+- `MemoryRegion.Status()` (or the host's per-memory-region report) exposes `DirtySince`, so
   the host can report a VM's loss window and whether its stores are waiting.
-- The handoff: `Region.Handoff()` reports `UnpublishedAge time.Duration`; the
-  receive path sets `dirtySince = now - age` on the region when it binds the
+- The handoff: `MemoryRegion.Handoff()` reports `UnpublishedAge time.Duration`; the
+  receive path sets `dirtySince = now - age` on the memory region when it binds the
   peer backing, and a peer-served unpublished load keeps the older of that and
   its own arrival.
 
 ### `internal/vmmigrate` and `internal/host`
 
-- `Handoff` regions carry `UnpublishedAge`; the wire encodes it; the Lima
+- `Handoff` memory regions carry `UnpublishedAge`; the wire encodes it; the Lima
   fixture asserts it survives the round trip.
 - `host.Config.LossWindow`, passed to the pager; `cmd/sproutfs-host` reads
   `SPROUTFS_LOSS_WINDOW`, logs it at start beside the interval.

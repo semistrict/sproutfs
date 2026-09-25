@@ -13,12 +13,12 @@ import (
 // checkpoint that did not happen, not a VM that is over — every page the guest
 // wrote is still here and the next interval takes the whole dirty set.
 //
-// A region that went terminal on that deadline turns it into the end of the VM
+// A memory region that went terminal on that deadline turns it into the end of the VM
 // instead: every later fault, seal and command fails, the session is killed and
 // the guest dies for a checkpoint that was only slow.
 func TestASealWhoseDeadlinePassesLeavesTheGuestRunning(t *testing.T) {
 	f := newFixture(t, 8, 8, 8)
-	r, m, b := f.region(4)
+	r, m, b := f.memoryRegion(4)
 	for page := range uint64(3) {
 		bytes := access(t, r, m, page, true)
 		for i := range bytes {

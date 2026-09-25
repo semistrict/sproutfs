@@ -71,11 +71,11 @@ func (h *Host) OpenCold(ctx context.Context, vmID string, shape ColdShape) (*vol
 	if err != nil {
 		return nil, err
 	}
-	// A VM the pager could not map every region of is one that would be
-	// discovered at the attachment of whichever region ran into the cap, with
+	// A VM the pager could not map every memory region of is one that would be
+	// discovered at the attachment of whichever memory region ran into the cap, with
 	// its memory already gone. The question is asked at the shape it is being
 	// given, before anything is published.
-	if err := h.AdmitRegions(coldRegions(vm, sizes)); err != nil {
+	if err := h.AdmitMemoryRegions(coldMemoryRegions(vm, sizes)); err != nil {
 		return nil, errors.Join(fmt.Errorf("cold starting %s", vmID), err, closing(ctx, vm))
 	}
 	if err := vm.DiscardMemory(ctx, shape.Memory, sizes); err != nil {
@@ -86,18 +86,18 @@ func (h *Host) OpenCold(ctx context.Context, vmID string, shape ColdShape) (*vol
 	return vm, nil
 }
 
-// coldRegions is the size of every region this VM would have at the shape it is
+// coldMemoryRegions is the size of every memory region this VM would have at the shape it is
 // being given: the new size where one is named and the size it has otherwise.
-func coldRegions(vm *volume.VM, sizes map[string]uint64) []Region {
-	regions := make([]Region, 0, len(vm.Volumes()))
+func coldMemoryRegions(vm *volume.VM, sizes map[string]uint64) []MemoryRegion {
+	memoryRegions := make([]MemoryRegion, 0, len(vm.Volumes()))
 	for _, v := range vm.Volumes() {
 		size := v.Size()
 		if next, found := sizes[v.Name()]; found {
 			size = next
 		}
-		regions = append(regions, regionOf(v.Name(), size))
+		memoryRegions = append(memoryRegions, memoryRegionOf(v.Name(), size))
 	}
-	return regions
+	return memoryRegions
 }
 
 // Starting is the VMM state a VM opened on this host starts from: the state its

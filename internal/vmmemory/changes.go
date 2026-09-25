@@ -24,7 +24,7 @@ const changeBlock = 4096
 // page that became private as zeros.
 type changeSums struct{ sums []uint64 }
 
-// changes is one region's measurement state: the sums of every private page by
+// changes is one memory region's measurement state: the sums of every private page by
 // page, and those a seal has handed to a checkpoint's copy by that copy.
 type changes struct {
 	mu     sync.Mutex
@@ -50,7 +50,7 @@ func (h *Host) blockSums(ctx context.Context, slot int) ([]uint64, error) {
 
 // noteCopied records what a page held as it became private: the bytes of the
 // resident page it now owns, before the guest can store into them.
-func (r *Region) noteCopied(ctx context.Context, index uint64, pg *resident) error {
+func (r *MemoryRegion) noteCopied(ctx context.Context, index uint64, pg *resident) error {
 	sums, err := r.host.blockSums(ctx, pg.slot)
 	if err != nil {
 		return err
@@ -60,9 +60,9 @@ func (r *Region) noteCopied(ctx context.Context, index uint64, pg *resident) err
 }
 
 // noteZeroed records a page that became private as zeros.
-func (r *Region) noteZeroed(index uint64) { r.noteSums(index, changeSums{}) }
+func (r *MemoryRegion) noteZeroed(index uint64) { r.noteSums(index, changeSums{}) }
 
-func (r *Region) noteSums(index uint64, sums changeSums) {
+func (r *MemoryRegion) noteSums(index uint64, sums changeSums) {
 	r.changes.mu.Lock()
 	defer r.changes.mu.Unlock()
 	if r.changes.byPage == nil {
@@ -73,7 +73,7 @@ func (r *Region) noteSums(index uint64, sums changeSums) {
 
 // sealSums hands a page's sums to the checkpoint copy a seal made of it: the
 // next store copies away from that copy and records sums of its own.
-func (r *Region) sealSums(index uint64, held *binding) {
+func (r *MemoryRegion) sealSums(index uint64, held *binding) {
 	r.changes.mu.Lock()
 	defer r.changes.mu.Unlock()
 	sums, ok := r.changes.byPage[index]
@@ -88,7 +88,7 @@ func (r *Region) sealSums(index uint64, held *binding) {
 }
 
 // unsealSums gives an abandoned checkpoint's sums back to the page.
-func (r *Region) unsealSums(index uint64, held *binding) {
+func (r *MemoryRegion) unsealSums(index uint64, held *binding) {
 	r.changes.mu.Lock()
 	defer r.changes.mu.Unlock()
 	sums, ok := r.changes.byHeld[held]
@@ -104,7 +104,7 @@ func (r *Region) unsealSums(index uint64, held *binding) {
 
 // takeSums is the sums a checkpoint's copy was sealed with, which the settle
 // consumes.
-func (r *Region) takeSums(held *binding) (changeSums, bool) {
+func (r *MemoryRegion) takeSums(held *binding) (changeSums, bool) {
 	r.changes.mu.Lock()
 	defer r.changes.mu.Unlock()
 	sums, ok := r.changes.byHeld[held]
@@ -116,8 +116,8 @@ func (r *Region) takeSums(held *binding) (changeSums, bool) {
 // what the page held as it became private, and reports false where that is not
 // known: a page private since before it was measured, one another host made
 // private, or one spilled since the seal.
-func (s *settler) changedBlocks(ctx context.Context, c *RegionCheckpoint, held *binding) (int, bool, error) {
-	r := c.region
+func (s *settler) changedBlocks(ctx context.Context, c *MemoryRegionCheckpoint, held *binding) (int, bool, error) {
+	r := c.memoryRegion
 	h := r.host
 	was, ok := r.takeSums(held)
 	if !ok {

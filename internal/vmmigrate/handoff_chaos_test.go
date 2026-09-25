@@ -54,8 +54,8 @@ func TestSourceLostAfterHandoffRewindsToTheLastCheckpoint(t *testing.T) {
 				if !vm.Status().HandedOff || guest.running {
 					t.Fatalf("the handoff left the source running: %+v", vm.Status())
 				}
-				for name, region := range guest.regions {
-					if err := region.Fault(t.Context(), 0, true); !errors.Is(err, vmmemory.ErrHandedOff) {
+				for name, memoryRegion := range guest.memoryRegions {
+					if err := memoryRegion.Fault(t.Context(), 0, true); !errors.Is(err, vmmemory.ErrHandedOff) {
 						t.Fatalf("%s remained writable after the handoff: %v", name, err)
 					}
 				}

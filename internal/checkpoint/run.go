@@ -36,7 +36,7 @@ const (
 	// round trip until the gap grows large. Sixteen 4 KiB members is the bound
 	// chosen: it holds a run together across the few pages a later checkpoint
 	// rewrote in the middle of it, and a run whose halves sit in different
-	// regions of one part still splits rather than dragging everything between
+	// memory regions of one part still splits rather than dragging everything between
 	// them along.
 	readThroughBytes = 64 << 10
 	// maximumReadExtent bounds what one request of a run fetches, which is what

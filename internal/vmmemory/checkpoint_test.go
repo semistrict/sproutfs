@@ -17,7 +17,7 @@ import (
 // checkpoint: a Seal that has not returned once every goroutine is blocked is
 // waiting for something, which is what the guest's pause time must never
 // include.
-func seal(t *testing.T, r *vmmemory.Region) {
+func seal(t *testing.T, r *vmmemory.MemoryRegion) {
 	t.Helper()
 	done := make(chan error, 1)
 	go func() { done <- r.Seal(t.Context()) }()
@@ -62,12 +62,12 @@ func (g *gate) reached(t *testing.T) {
 }
 
 // A checkpoint publishes the sealed pages themselves: what reaches the volume
-// is the region exactly as it stood at the seal, and afterwards those pages are
+// is the memory region exactly as it stood at the seal, and afterwards those pages are
 // clean under the checkpoint that now holds them.
 func TestCheckpointPublishesTheSealedPagesAndRetiresThemClean(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newFixture(t, 8, 16, 8)
-		r, m, b := f.region(8)
+		r, m, b := f.memoryRegion(8)
 		for page := range uint64(4) {
 			access(t, r, m, page, true)[0] = byte(50 + page)
 		}
@@ -113,7 +113,7 @@ func TestCheckpointPublishesTheSealedPagesAndRetiresThemClean(t *testing.T) {
 func TestStoreIntoASealedPageKeepsTheCheckpointBytes(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newFixture(t, 8, 16, 8)
-		r, m, b := f.region(4)
+		r, m, b := f.memoryRegion(4)
 		access(t, r, m, 0, true)[0] = 90
 		access(t, r, m, 1, true)[0] = 91
 		seal(t, r)
@@ -157,7 +157,7 @@ func TestStoreIntoASealedPageKeepsTheCheckpointBytes(t *testing.T) {
 func TestAbandonedCheckpointHandsBackWritablePages(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newFixture(t, 8, 16, 8)
-		r, m, b := f.region(4)
+		r, m, b := f.memoryRegion(4)
 		for page := range uint64(4) {
 			access(t, r, m, page, true)[0] = byte(60 + page)
 		}
@@ -187,24 +187,24 @@ func TestAbandonedCheckpointHandsBackWritablePages(t *testing.T) {
 }
 
 // Unseal is the abandon a caller reaches for when no checkpoint is going to take
-// the checkpoint, and it leaves the region sealable again.
+// the checkpoint, and it leaves the memory region sealable again.
 func TestUnsealAbandonsTheCheckpointAndAllowsAnotherSeal(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newFixture(t, 8, 16, 8)
-		r, m, b := f.region(4)
+		r, m, b := f.memoryRegion(4)
 		access(t, r, m, 0, true)[0] = 21
 		seal(t, r)
 		if err := r.Seal(t.Context()); !errors.Is(err, vmmemory.ErrSealed) {
-			t.Fatalf("sealing a sealed region = %v, want ErrSealed", err)
+			t.Fatalf("sealing a sealed memory region = %v, want ErrSealed", err)
 		}
 		if err := r.Unseal(t.Context()); err != nil {
 			t.Fatal(err)
 		}
 		if r.Checkpoint() != nil {
-			t.Fatal("the region still holds a checkpoint after its unseal")
+			t.Fatal("the memory region still holds a checkpoint after its unseal")
 		}
 		if err := r.Unseal(t.Context()); err != nil {
-			t.Fatalf("unsealing an unsealed region: %v", err)
+			t.Fatalf("unsealing an unsealed memory region: %v", err)
 		}
 		access(t, r, m, 1, true)[0] = 22
 		f.mustCheckpoint(r, b)
@@ -215,14 +215,14 @@ func TestUnsealAbandonsTheCheckpointAndAllowsAnotherSeal(t *testing.T) {
 }
 
 // A retire walks a whole dirty set, which is as large as a capture's. It takes
-// the region in batches, so a fault on the region waits for one batch and not
+// the memory region in batches, so a fault on the memory region waits for one batch and not
 // for the walk, and its volume metadata is one lookup per read-ahead window,
-// taken before it holds the region or any page.
-func TestRetireLocatesPerWindowAndFreesTheRegionBetweenBatches(t *testing.T) {
+// taken before it holds the memory region or any page.
+func TestRetireLocatesPerWindowAndFreesTheMemoryRegionBetweenBatches(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		vmmemory.SetCheckpointBatchPages(t, 2)
 		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 8, LogicalPages: 16, DirtyPages: 8, ReadAheadPages: 4})
-		r, m, b := f.region(8)
+		r, m, b := f.memoryRegion(8)
 		for page := range uint64(4) {
 			access(t, r, m, page, true)[0] = byte(40 + page)
 		}
@@ -288,8 +288,8 @@ func TestRetireLocatesPerWindowAndFreesTheRegionBetweenBatches(t *testing.T) {
 func TestCheckpointRetirementNeverStrandsItsPrivatePage(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newFixture(t, 1, 8, 4)
-		r, m, b := f.region(1)
-		other, _, _ := f.region(1)
+		r, m, b := f.memoryRegion(1)
+		other, _, _ := f.memoryRegion(1)
 		access(t, r, m, 0, true)[0] = 41
 		seal(t, r)
 		if _, err := f.publishCheckpoint(t.Context(), r, b); err != nil {
@@ -328,7 +328,7 @@ func TestCheckpointRetirementNeverStrandsItsPrivatePage(t *testing.T) {
 func TestSealRetriedAfterAPartialSealCapturesEveryDirtyPage(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 8, LogicalPages: 16, DirtyPages: 8})
-		r, m, b := f.region(4)
+		r, m, b := f.memoryRegion(4)
 		// Two runs: the gap at page 1 is what makes the seal two commands, so
 		// the capture can be abandoned between them.
 		access(t, r, m, 2, true)[0] = 62
@@ -380,8 +380,8 @@ func TestSealRetriedAfterAPartialSealCapturesEveryDirtyPage(t *testing.T) {
 func TestAbandonedCheckpointKeepsItsPagesAcrossConcurrentEviction(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newFixture(t, 2, 16, 8)
-		r, m, b := f.region(4)
-		other, _, _ := f.region(4)
+		r, m, b := f.memoryRegion(4)
+		other, _, _ := f.memoryRegion(4)
 		for page := range uint64(2) {
 			access(t, r, m, page, true)[0] = byte(60 + page)
 		}
@@ -422,7 +422,7 @@ func TestAbandonedCheckpointKeepsItsPagesAcrossConcurrentEviction(t *testing.T) 
 func TestCheckpointPagesHoldTheDirtyBudgetUntilRetired(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newFixture(t, 4, 8, 2)
-		r, m, b := f.region(4)
+		r, m, b := f.memoryRegion(4)
 		access(t, r, m, 0, true)[0] = 10
 		access(t, r, m, 1, true)[0] = 11
 		seal(t, r)
@@ -470,7 +470,7 @@ func TestCheckpointPagesHoldTheDirtyBudgetUntilRetired(t *testing.T) {
 func TestSealedCheckpointSurvivesReclaimAndRefault(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newFixture(t, 2, 8, 8)
-		r, m, b := f.region(4)
+		r, m, b := f.memoryRegion(4)
 		for page := range uint64(4) {
 			access(t, r, m, page, true)[0] = byte(80 + page)
 		}
@@ -509,7 +509,7 @@ func TestSealedCheckpointSurvivesReclaimAndRefault(t *testing.T) {
 func TestAPageOfTheCheckpointRefaultedFromSpillRetiresWithIt(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newFixture(t, 2, 8, 8)
-		r, m, b := f.region(4)
+		r, m, b := f.memoryRegion(4)
 		// Two slots: storing into pages 2 and 3 spills pages 0 and 1.
 		for page := range uint64(4) {
 			access(t, r, m, page, true)[0] = byte(80 + page)
@@ -544,7 +544,7 @@ func TestRandomizedCapturesAgainstAnIndependentByteModel(t *testing.T) {
 		t.Run(fmt.Sprint(seed), func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				f := newFixture(t, 3, 16, 16)
-				r, m, b := f.region(8)
+				r, m, b := f.memoryRegion(8)
 				want := bytes.Clone(b.data)
 				rng := rand.New(rand.NewPCG(seed, seed+11))
 				for step := range 200 {
@@ -591,8 +591,8 @@ func TestRandomizedCapturesAgainstAnIndependentByteModel(t *testing.T) {
 func TestSealedCaptureKeepsTheVolumeStableWhileTheGuestRuns(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newFixture(t, 4, 8, 8)
-		a, am, ab := f.region(2)
-		b, bm, bb := f.region(2)
+		a, am, ab := f.memoryRegion(2)
+		b, bm, bb := f.memoryRegion(2)
 		access(t, a, am, 0, true)[0] = 90
 		seal(t, a)
 		if _, err := f.publishCheckpoint(t.Context(), a, ab); err != nil {
@@ -629,12 +629,12 @@ func TestSealedCaptureKeepsTheVolumeStableWhileTheGuestRuns(t *testing.T) {
 // dirty state again or the volume's clean state, and the pages behind them
 // hold whatever the guest has done since. A publication still reading it would
 // be reading bytes no checkpoint stands behind and publishing them as that
-// checkpoint's, so the read fails instead. A region that discarded its
+// checkpoint's, so the read fails instead. A memory region that discarded its
 // checkpoint reports why it ended.
 func TestReadingACheckpointThatHasEndedFails(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newFixture(t, 4, 8, 4)
-		r, m, b := f.region(4)
+		r, m, b := f.memoryRegion(4)
 		access(t, r, m, 0, true)[0] = 41
 		seal(t, r)
 		retired := r.Checkpoint()
@@ -655,7 +655,7 @@ func TestReadingACheckpointThatHasEndedFails(t *testing.T) {
 			t.Fatal(err)
 		}
 		if err := discarded.ReadDirty(t.Context(), 1, page); !errors.Is(err, vmmemory.ErrClosed) {
-			t.Fatalf("reading the checkpoint a detached region discarded = %v, want ErrClosed", err)
+			t.Fatalf("reading the checkpoint a detached memory region discarded = %v, want ErrClosed", err)
 		}
 	})
 }
@@ -666,12 +666,12 @@ func TestReadingACheckpointThatHasEndedFails(t *testing.T) {
 // the way — the arena refusing the slot it was filling — has to leave the page
 // exactly where the seal left it. A page released from the checkpoint before
 // its replacement exists is dirty state with no memory, no reservation and no
-// checkpoint holding either: its bytes are unreachable for good, and the region
+// checkpoint holding either: its bytes are unreachable for good, and the memory region
 // carries on as though nothing had happened.
 func TestAStoreThatCannotTakeItsPrivatePageLeavesThePageInTheCheckpoint(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newFixture(t, 4, 8, 4)
-		r, m, b := f.region(4)
+		r, m, b := f.memoryRegion(4)
 		access(t, r, m, 0, true)[0] = 41
 		seal(t, r)
 		f.a.failWrite = true
@@ -700,23 +700,23 @@ func TestAStoreThatCannotTakeItsPrivatePageLeavesThePageInTheCheckpoint(t *testi
 	})
 }
 
-// A refault of a page that has been spilled decides, under the region, that the
-// page is the guest's own dirty state, and then gives the region up to find an
+// A refault of a page that has been spilled decides, under the memory region, that the
+// page is the guest's own dirty state, and then gives the memory region up to find an
 // arena slot for it. A checkpoint that runs in that window ends the page's
 // dirty epoch: the volume holds its bytes now, so the page is clean state under
 // the identity that checkpoint gave it, and the reservation that spilled it has
 // gone back. The refault has to see that rather than act on what it decided
-// before it gave the region up, exactly as a store does across its own reclaim.
+// before it gave the memory region up, exactly as a store does across its own reclaim.
 //
 // Two things go wrong when it does not. A private page bound to a binding that
 // owns neither a reservation nor a checkpoint is one a reclaim punches without
 // writing it anywhere. And the page is named by nothing, so nothing that
-// inherits the identity the checkpoint gave it can map it: every other region
+// inherits the identity the checkpoint gave it can map it: every other memory region
 // of that volume reads its own copy of bytes this host is already holding.
 func TestARefaultWhoseCheckpointRetiresWhileItReclaimsGivesThePageToTheVolume(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newFixture(t, 2, 32, 8)
-		r, m, b := f.region(4)
+		r, m, b := f.memoryRegion(4)
 		stored := byte(91)
 		if _, err := memoryByte(t.Context(), r, m, 0, &stored); err != nil {
 			t.Fatalf("storing into page 0: %v", err)
@@ -747,8 +747,8 @@ func TestARefaultWhoseCheckpointRetiresWhileItReclaimsGivesThePageToTheVolume(t 
 		if got, err := memoryByte(t.Context(), r, m, 0, nil); err != nil || got != stored {
 			t.Fatalf("the refaulted page reads %d, want the %d the guest stored: %v", got, stored, err)
 		}
-		// The checkpoint published those bytes, so the page this region holds is
-		// the volume's: a second region of the same volume maps that very page
+		// The checkpoint published those bytes, so the page this memory region holds is
+		// the volume's: a second memory region of the same volume maps that very page
 		// rather than reading the bytes again.
 		before, err := f.h.Stats(t.Context())
 		if err != nil {
@@ -756,18 +756,18 @@ func TestARefaultWhoseCheckpointRetiresWhileItReclaimsGivesThePageToTheVolume(t 
 		}
 		second, sm := f.attach(b)
 		if got, err := memoryByte(t.Context(), second, sm, 0, nil); err != nil || got != stored {
-			t.Fatalf("the second region reads %d for page 0, want %d: %v", got, stored, err)
+			t.Fatalf("the second memory region reads %d for page 0, want %d: %v", got, stored, err)
 		}
 		after, err := f.h.Stats(t.Context())
 		if err != nil {
 			t.Fatal(err)
 		}
 		if sm.pages[0].slot != m.pages[0].slot {
-			t.Errorf("the second region maps slot %d for page 0 and the first slot %d; the retired page was kept private",
+			t.Errorf("the second memory region maps slot %d for page 0 and the first slot %d; the retired page was kept private",
 				sm.pages[0].slot, m.pages[0].slot)
 		}
 		if after.Loads != before.Loads || after.IdentityHits-before.IdentityHits != 1 {
-			t.Errorf("the second region's page 0 cost %d backing reads and %d identity hits, want 0 and 1",
+			t.Errorf("the second memory region's page 0 cost %d backing reads and %d identity hits, want 0 and 1",
 				after.Loads-before.Loads, after.IdentityHits-before.IdentityHits)
 		}
 		// Taking the page out of the arena once more and reading it back is

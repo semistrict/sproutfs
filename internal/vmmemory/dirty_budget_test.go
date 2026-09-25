@@ -11,14 +11,14 @@ import (
 )
 
 // The dirty budget is the host's, so the wait for one is too: a store into any
-// region waits for the reservations a checkpoint of any other region is about
+// memory region waits for the reservations a checkpoint of any other memory region is about
 // to release. Failing it instead fails the fault, which closes the session and
 // kills the VMM of a guest that only had to wait.
-func TestDirtyBudgetWaitsForAnotherRegionsCheckpoint(t *testing.T) {
+func TestDirtyBudgetWaitsForAnotherMemoryRegionsCheckpoint(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newFixture(t, 4, 8, 2)
-		a, am, ab := f.region(2)
-		b, bm, _ := f.region(2)
+		a, am, ab := f.memoryRegion(2)
+		b, bm, _ := f.memoryRegion(2)
 		access(t, a, am, 0, true)[0] = 11
 		access(t, a, am, 1, true)[0] = 12
 		// The whole budget is A's checkpoint's now, and only its publication
@@ -45,21 +45,21 @@ func TestDirtyBudgetWaitsForAnotherRegionsCheckpoint(t *testing.T) {
 }
 
 // With nothing draining, a full budget is not a dead end either: the host asks
-// its supervisor for an immediate checkpoint of the region holding the largest
+// its supervisor for an immediate checkpoint of the memory region holding the largest
 // dirty set, out of the interval's turn, and the store lands when that
 // checkpoint does.
-func TestDirtyBudgetRequestsACheckpointOfTheLargestDirtyRegion(t *testing.T) {
+func TestDirtyBudgetRequestsACheckpointOfTheLargestDirtyMemoryRegion(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newFixture(t, 6, 12, 3)
-		a, am, ab := f.region(2)
-		b, bm, _ := f.region(2)
+		a, am, ab := f.memoryRegion(2)
+		b, bm, _ := f.memoryRegion(2)
 		access(t, a, am, 0, true)[0] = 11
 		access(t, a, am, 1, true)[0] = 12
 		access(t, b, bm, 0, true)[0] = 21
 		// Every reservation is a live private page and no checkpoint is in
 		// flight, so only a new one can admit this store.
-		requested := make(chan *vmmemory.Region, 4)
-		f.h.SetPressure(vmmemory.Pressure{Checkpoint: func(r *vmmemory.Region) bool {
+		requested := make(chan *vmmemory.MemoryRegion, 4)
+		f.h.SetPressure(vmmemory.Pressure{Checkpoint: func(r *vmmemory.MemoryRegion) bool {
 			select {
 			case requested <- r:
 			default:
@@ -75,7 +75,7 @@ func TestDirtyBudgetRequestsACheckpointOfTheLargestDirtyRegion(t *testing.T) {
 		default:
 		}
 		if got := <-requested; got != a {
-			t.Fatal("the host asked to checkpoint a region other than the largest dirty one")
+			t.Fatal("the host asked to checkpoint a memory region other than the largest dirty one")
 		}
 		f.mustCheckpoint(a, ab)
 		if err := <-stored; err != nil {
@@ -89,13 +89,13 @@ func TestDirtyBudgetRequestsACheckpointOfTheLargestDirtyRegion(t *testing.T) {
 
 // A fork point is a seal held open until the children it named have the pages
 // they inherited, so it releases no reservation a waiting store may wait for.
-// It must not answer for the whole host: a store in another region still gets
+// It must not answer for the whole host: a store in another memory region still gets
 // the checkpoint of its own that admits it.
-func TestForkHoldDoesNotAnswerAnotherRegionsPressure(t *testing.T) {
+func TestForkHoldDoesNotAnswerAnotherMemoryRegionsPressure(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newFixture(t, 8, 16, 3)
-		a, am, _ := f.region(2)
-		b, bm, bb := f.region(3)
+		a, am, _ := f.memoryRegion(2)
+		b, bm, bb := f.memoryRegion(3)
 		access(t, a, am, 0, true)[0] = 11
 		access(t, b, bm, 0, true)[0] = 21
 		access(t, b, bm, 1, true)[0] = 22
@@ -107,10 +107,10 @@ func TestForkHoldDoesNotAnswerAnotherRegionsPressure(t *testing.T) {
 		if err := a.Checkpoint().Share(t.Context(), control.Ref{VM: "child", Sequence: 1}, "ram0"); err != nil {
 			t.Fatal(err)
 		}
-		requested := make(chan *vmmemory.Region, 4)
-		f.h.SetPressure(vmmemory.Pressure{Checkpoint: func(region *vmmemory.Region) bool {
+		requested := make(chan *vmmemory.MemoryRegion, 4)
+		f.h.SetPressure(vmmemory.Pressure{Checkpoint: func(memoryRegion *vmmemory.MemoryRegion) bool {
 			select {
-			case requested <- region:
+			case requested <- memoryRegion:
 			default:
 			}
 			return true
@@ -126,10 +126,10 @@ func TestForkHoldDoesNotAnswerAnotherRegionsPressure(t *testing.T) {
 		select {
 		case got := <-requested:
 			if got != b {
-				t.Fatal("the host asked to checkpoint a region other than the one holding a dirty set it can release")
+				t.Fatal("the host asked to checkpoint a memory region other than the one holding a dirty set it can release")
 			}
 		default:
-			t.Fatal("the fork hold answered the pressure of another region, so no checkpoint was asked for")
+			t.Fatal("the fork hold answered the pressure of another memory region, so no checkpoint was asked for")
 		}
 		f.mustCheckpoint(b, bb)
 		if err := <-stored; err != nil {
@@ -144,12 +144,12 @@ func TestForkHoldDoesNotAnswerAnotherRegionsPressure(t *testing.T) {
 // which can carry the budget past the mark on their own.
 func TestWriteAheadPastTheHighWaterMarkAsksForACheckpoint(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		f, r, m, _ := holeRegion(t, vmmemory.Config{ResidentPages: 8, LogicalPages: 8,
+		f, r, m, _ := holeMemoryRegion(t, vmmemory.Config{ResidentPages: 8, LogicalPages: 8,
 			DirtyPages: 8, ReadAheadPages: 8, WriteAheadPages: 8}, 8)
-		requested := make(chan *vmmemory.Region, 4)
-		f.h.SetPressure(vmmemory.Pressure{Checkpoint: func(region *vmmemory.Region) bool {
+		requested := make(chan *vmmemory.MemoryRegion, 4)
+		f.h.SetPressure(vmmemory.Pressure{Checkpoint: func(memoryRegion *vmmemory.MemoryRegion) bool {
 			select {
-			case requested <- region:
+			case requested <- memoryRegion:
 			default:
 			}
 			return true
@@ -164,7 +164,7 @@ func TestWriteAheadPastTheHighWaterMarkAsksForACheckpoint(t *testing.T) {
 		select {
 		case got := <-requested:
 			if got != r {
-				t.Fatalf("the host asked to checkpoint %v, want the region holding the dirty set", got)
+				t.Fatalf("the host asked to checkpoint %v, want the memory region holding the dirty set", got)
 			}
 		default:
 			t.Fatal("the write-ahead run carried the dirty budget past its high-water mark without asking for a checkpoint")
@@ -181,13 +181,13 @@ func TestWriteAheadPastTheHighWaterMarkAsksForACheckpoint(t *testing.T) {
 func TestDirtyBudgetStallIsADeliberateStopNotACapacityFailure(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newFixture(t, 2, 4, 1)
-		r, m, _ := f.region(2)
-		var stoppedRegion *vmmemory.Region
+		r, m, _ := f.memoryRegion(2)
+		var stoppedMemoryRegion *vmmemory.MemoryRegion
 		var stoppedCause error
 		f.h.SetPressure(vmmemory.Pressure{
-			Checkpoint: func(*vmmemory.Region) bool { return false },
-			Stop: func(region *vmmemory.Region, cause error) {
-				stoppedRegion, stoppedCause = region, cause
+			Checkpoint: func(*vmmemory.MemoryRegion) bool { return false },
+			Stop: func(memoryRegion *vmmemory.MemoryRegion, cause error) {
+				stoppedMemoryRegion, stoppedCause = memoryRegion, cause
 			},
 		})
 		access(t, r, m, 0, true)[0] = 33
@@ -198,8 +198,8 @@ func TestDirtyBudgetStallIsADeliberateStopNotACapacityFailure(t *testing.T) {
 		if errors.Is(err, vmmemory.ErrCapacity) {
 			t.Fatal("a stalled store must not reach the fault path as capacity exhaustion")
 		}
-		if stoppedRegion != r || !errors.Is(stoppedCause, vmmemory.ErrDirtyStalled) {
-			t.Fatalf("the host stopped %v for %v, want the stalled region", stoppedRegion, stoppedCause)
+		if stoppedMemoryRegion != r || !errors.Is(stoppedCause, vmmemory.ErrDirtyStalled) {
+			t.Fatalf("the host stopped %v for %v, want the stalled memory region", stoppedMemoryRegion, stoppedCause)
 		}
 	})
 }
@@ -207,19 +207,19 @@ func TestDirtyBudgetStallIsADeliberateStopNotACapacityFailure(t *testing.T) {
 // A store waiting for the dirty budget wakes on any change to the host — a
 // page freed, a page adopted — and asks again what will relieve it. A seal
 // takes the dirty set into the checkpoint page by page before it records the
-// checkpoint on the region, and a waiter that asks in between finds a region
+// checkpoint on the memory region, and a waiter that asks in between finds a memory region
 // with neither a draining checkpoint nor a dirty page: told that nothing will
 // relieve it, it is stalled, and the guest is stopped for a checkpoint that was
 // an instruction away from admitting it.
 func TestAStoreWokenDuringASealIsNotStalled(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newFixture(t, 4, 8, 1)
-		r, m, b := f.region(2)
+		r, m, b := f.memoryRegion(2)
 		access(t, r, m, 0, true)[0] = 11
 		var stalled atomic.Bool
 		f.h.SetPressure(vmmemory.Pressure{
-			Checkpoint: func(*vmmemory.Region) bool { return true },
-			Stop:       func(*vmmemory.Region, error) { stalled.Store(true) },
+			Checkpoint: func(*vmmemory.MemoryRegion) bool { return true },
+			Stop:       func(*vmmemory.MemoryRegion, error) { stalled.Store(true) },
 		})
 		// The whole budget is page 0's, so this store waits for the checkpoint
 		// it asked for.

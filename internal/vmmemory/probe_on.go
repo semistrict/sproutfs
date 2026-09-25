@@ -11,7 +11,7 @@
 //   - What it checks. A resident page holding a published page identity is
 //     immutable while it holds that name, so its bytes must never change: if
 //     they do, something wrote into memory a guest only reads. And a private
-//     page is one region's own, so two regions reaching one is one guest
+//     page is one memory region's own, so two memory regions reaching one is one guest
 //     writing into another's memory. Neither check has ever fired, across
 //     sixteen runs that produced eight guest panics between them — so the
 //     corruption is not a shared page being overwritten.
@@ -115,18 +115,18 @@ func (p *probeState) stable(ctx context.Context, h *Host, pg *resident, where st
 	return ""
 }
 
-// bind checks that a private page nothing has named is reached from one region
+// bind checks that a private page nothing has named is reached from one memory region
 // only, and that the page being installed is not older than what this guest was
 // last given writable. A private page a seal has named is not checked for the
 // first of those: naming one is exactly how a fork on this host lets the
 // machines that inherit the identity map the page instead of reading it, so
-// more than one region reaching it is the sharing working. Caller holds the
+// more than one memory region reaching it is the sharing working. Caller holds the
 // host lock.
 func (p *probeState) bind(h *Host, b *binding, pg *resident) string {
 	if pg.private && pg.key == (pageKey{}) {
 		for other := range pg.aliases.all() {
-			if other.region != b.region {
-				return fmt.Sprintf("probe bind: unnamed private slot %d is reached from two regions, pages %d and %d",
+			if other.memoryRegion != b.memoryRegion {
+				return fmt.Sprintf("probe bind: unnamed private slot %d is reached from two memory regions, pages %d and %d",
 					pg.slot, other.index, b.index)
 			}
 		}
@@ -139,16 +139,16 @@ func (p *probeState) bind(h *Host, b *binding, pg *resident) string {
 	}
 	if held, dated := p.generation[pg]; dated {
 		if held < given {
-			return fmt.Sprintf("probe bind: page %d of region %p is being given generation %d in slot %d, "+
+			return fmt.Sprintf("probe bind: page %d of memory region %p is being given generation %d in slot %d, "+
 				"older than generation %d it was last given writable — a lost write",
-				b.index, b.region, held, pg.slot, given)
+				b.index, b.memoryRegion, held, pg.slot, given)
 		}
 		return ""
 	}
 	if stale, waiting := p.pending[b]; waiting && stale != pg {
-		return fmt.Sprintf("probe bind: page %d of region %p was given slot %d from outside its own "+
+		return fmt.Sprintf("probe bind: page %d of memory region %p was given slot %d from outside its own "+
 			"store path while it owned generation %d, and now takes slot %d — a lost write",
-			b.index, b.region, stale.slot, given, pg.slot)
+			b.index, b.memoryRegion, stale.slot, given, pg.slot)
 	}
 	if p.pending == nil {
 		p.pending = make(map[*binding]*resident)
@@ -230,7 +230,7 @@ func (p *probeState) reshared(ctx context.Context, h *Host, copied, origin *resi
 
 // The ring is what the pager did to one page, in order. A guest that dies on a
 // page it wrote leaves a kernel address in its oops, which is a page number of
-// its RAM region; this answers what happened to that page and the pages beside
+// its RAM memory region; this answers what happened to that page and the pages beside
 // it, which is the whole question a reduction ends at.
 //
 // It is bounded and lossy on purpose: the interesting window is the last
@@ -240,11 +240,11 @@ const ringEvents = 1 << 16
 
 // ringEvent is one thing the pager did, in the order it did it.
 type ringEvent struct {
-	at     time.Time
-	region *Region
-	page   uint64
-	what   string
-	slot   int
+	at           time.Time
+	memoryRegion *MemoryRegion
+	page         uint64
+	what         string
+	slot         int
 	// other is a second slot the event is about: the origin a page is dropped
 	// onto, or the page a copy was made from.
 	other int
@@ -260,20 +260,20 @@ var ring probeRing
 
 // note records one event. It takes no page lock and no host lock, so it may be
 // called from anywhere the pager is already holding something.
-func note(r *Region, page uint64, what string, slot, other int) {
+func note(r *MemoryRegion, page uint64, what string, slot, other int) {
 	ring.mu.Lock()
 	ring.events[ring.next%ringEvents] = ringEvent{
-		at: time.Now(), region: r, page: page, what: what, slot: slot, other: other}
+		at: time.Now(), memoryRegion: r, page: page, what: what, slot: slot, other: other}
 	ring.next++
 	ring.mu.Unlock()
 }
 
 // Ring reports, oldest first, everything the pager did to the pages within
-// radius of page in this region, and everything it did to every arena slot
+// radius of page in this memory region, and everything it did to every arena slot
 // those pages ever occupied — a slot handed to another page is how a guest
 // reaches bytes that are not its own, so the slot's own history is part of the
 // page's. It is for a test that has just watched a guest die.
-func Ring(r *Region, page uint64, radius uint64) []string {
+func Ring(r *MemoryRegion, page uint64, radius uint64) []string {
 	ring.mu.Lock()
 	defer ring.mu.Unlock()
 	first := uint64(0)
@@ -283,7 +283,7 @@ func Ring(r *Region, page uint64, radius uint64) []string {
 	slots := make(map[int]bool)
 	for i := first; i < ring.next; i++ {
 		e := ring.events[i%ringEvents]
-		if e.region != r || e.page+radius < page || e.page > page+radius {
+		if e.memoryRegion != r || e.page+radius < page || e.page > page+radius {
 			continue
 		}
 		if e.slot >= 0 {
@@ -296,7 +296,7 @@ func Ring(r *Region, page uint64, radius uint64) []string {
 	var lines []string
 	for i := first; i < ring.next; i++ {
 		e := ring.events[i%ringEvents]
-		if e.region != r {
+		if e.memoryRegion != r {
 			continue
 		}
 		near := e.page+radius >= page && e.page <= page+radius

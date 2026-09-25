@@ -16,7 +16,7 @@ type source interface {
 	// readPages is read of only the pages of the range that wanted marks — one
 	// element per page the range touches, or nil for every one of them —
 	// leaving the bytes of every other page as the caller had them. It is what
-	// a pager's window read is: the pages the region already holds resident
+	// a pager's window read is: the pages the memory region already holds resident
 	// need no bytes, and the run is still fetched as one, so what it costs is
 	// what the run costs rather than one request per stretch of it.
 	readPages(ctx context.Context, volume string, offset uint64, dst []byte, wanted []bool) error

@@ -172,7 +172,7 @@ fn descriptor_receive_rejects_a_truncated_frame_and_a_closed_peer() {
 }
 
 /// A pager that closes the socket instead of attaching backing is the one
-/// failure this handshake has no other evidence of: the region was refused —
+/// failure this handshake has no other evidence of: the memory region was refused —
 /// the host's logical-page cap is full, say — and the descriptor never came.
 /// It must not be reported as a malformed ancillary message, which names the
 /// wire and sends the reader looking at the wrong end of the connection.

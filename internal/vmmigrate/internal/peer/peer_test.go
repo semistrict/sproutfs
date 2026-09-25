@@ -35,7 +35,7 @@ func (s *script) dial(context.Context, platform.Address) (platform.Conn, error) 
 	return &scriptedConn{script: s, pending: make(chan platform.ReceivedFrame, 1)}, nil
 }
 
-// source is a Source over this script, with the budgets a region takes by
+// source is a Source over this script, with the budgets a memory region takes by
 // default.
 func (s *script) source(connections int) *peer.Source {
 	return peer.New(peer.Config{Peer: "source", VM: "vm", Volume: "ram0", PageSize: pageSize,
@@ -203,7 +203,7 @@ func TestResidentRefusesASourceOfAnotherPageSize(t *testing.T) {
 }
 
 // A connection that answered is reused, one that failed is dropped, and Close
-// drops what is left — so a region's requests cost one socket rather than one
+// drops what is left — so a memory region's requests cost one socket rather than one
 // per page.
 func TestConnectionsAreReusedUntilOneFails(t *testing.T) {
 	s := &script{answer: func(wire.Incoming) (proto.Message, []byte, error) {
@@ -255,10 +255,10 @@ func TestEveryRequestIsAdmittedBeforeItTakesAConnection(t *testing.T) {
 		return migratev1.PageResponse_builder{Status: &status, PageSize: proto.Uint32(pageSize)}.Build(), nil, nil
 	}}
 	refused := errors.New("the stream was closed")
-	var regions []string
-	ctx := peer.WithAdmission(t.Context(), func(_ context.Context, region string) error {
-		regions = append(regions, region)
-		if len(regions) == 1 {
+	var memoryRegions []string
+	ctx := peer.WithAdmission(t.Context(), func(_ context.Context, memoryRegion string) error {
+		memoryRegions = append(memoryRegions, memoryRegion)
+		if len(memoryRegions) == 1 {
 			return nil
 		}
 		return refused
@@ -270,8 +270,8 @@ func TestEveryRequestIsAdmittedBeforeItTakesAConnection(t *testing.T) {
 	if _, err := source.Pages(ctx, 0, 1); !errors.Is(err, refused) {
 		t.Fatalf("the second request was not refused by the admitter: %v", err)
 	}
-	if want := []string{"vm/ram0", "vm/ram0"}; !slices.Equal(regions, want) {
-		t.Fatalf("the admitter saw %v, want %v", regions, want)
+	if want := []string{"vm/ram0", "vm/ram0"}; !slices.Equal(memoryRegions, want) {
+		t.Fatalf("the admitter saw %v, want %v", memoryRegions, want)
 	}
 	// The connection the first request left idle is the one a refused request
 	// would have reached the wire over.

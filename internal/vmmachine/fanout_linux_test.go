@@ -147,7 +147,7 @@ func forkPointFixture(t *testing.T, ctx context.Context, binaryPath string) (
 	// The source's page server at the budgets a deployment runs, rather than
 	// the raised ones a single migration is measured under: one peer is one
 	// destination host, and both children of this fan-out are that one host, so
-	// their regions share every budget counted per peer.
+	// their memory regions share every budget counted per peer.
 	pages, err := vmmigrate.NewPageSource(ctx, vmmigrate.SourceConfig{Network: c.network,
 		Address: "source-pages", PageSize: pagerPageBytes(t)})
 	if err != nil {
@@ -237,8 +237,8 @@ func TestFirecrackerForkFanOutServesBothChildrenAtOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	inherited := 0
-	for _, region := range handoffs[0].Regions {
-		for _, run := range region.Unpublished {
+	for _, memoryRegion := range handoffs[0].MemoryRegions {
+		for _, run := range memoryRegion.Unpublished {
 			inherited += run.Count
 		}
 	}
@@ -291,7 +291,7 @@ func TestFirecrackerForkFanOutServesBothChildrenAtOnce(t *testing.T) {
 
 	// And the image check again, now with both siblings running, checkpointed
 	// every interval and settling on the same pager. Every page of this child
-	// is read through its region for as long as the siblings read, so what it
+	// is read through its memory region for as long as the siblings read, so what it
 	// sees goes through the sharing index they are reaching too, a read-ahead
 	// window and the post-copy. Every sweep must differ from the point by the
 	// restore's pages and no others; any more is a child being handed a page
@@ -405,7 +405,7 @@ func TestFirecrackerForkFanOutServesBothChildrenAtOnce(t *testing.T) {
 // touched and every page of its root volume, a few times over. One round is
 // already every page; the rounds are there because the second one reads them
 // through whatever the first left behind — evicted, spilled, sealed by an
-// interval checkpoint — rather than through a cold region.
+// interval checkpoint — rather than through a cold memory region.
 func readEverything(ctx context.Context, child *forkedChild) error {
 	for round := range forkFanOutRounds {
 		if err := guestCommand(ctx, child.process, "checkpressure\n",
@@ -681,18 +681,18 @@ func receiveStill(t *testing.T, ctx context.Context, c *migrationCluster, pager 
 		release()
 		t.Fatalf("streaming the still child %s: %v", handoff.VMID, err)
 	}
-	return &stillChild{id: handoff.VMID, regions: received.Runtime().Regions(), point: point}, release
+	return &stillChild{id: handoff.VMID, memoryRegions: received.Runtime().MemoryRegions(), point: point}, release
 }
 
 // stillChild is a child of the fork point whose guest never runs, and the whole
 // instrument of the image check.
 type stillChild struct {
-	id      string
-	regions map[string]*vmmemory.Region
-	point   *volume.ForkPoint
+	id            string
+	memoryRegions map[string]*vmmemory.MemoryRegion
+	point         *volume.ForkPoint
 }
 
-// sweep reads every page of every volume through this child's region — a read
+// sweep reads every page of every volume through this child's memory region — a read
 // fault for each, so the answer arrives through Locate, the sharing index its
 // siblings are reaching too, a read-ahead window and the post-copy — and
 // reports the pages whose bytes are not the ones the point froze.
@@ -701,21 +701,21 @@ func (s *stillChild) sweep(t *testing.T, ctx context.Context, truth frozen) []ui
 	var differing []uint64
 	reported := 0
 	for name, hashes := range truth {
-		region := s.regions[name]
-		if region == nil {
-			t.Fatalf("the still child has no region for %s", name)
+		memoryRegion := s.memoryRegions[name]
+		if memoryRegion == nil {
+			t.Fatalf("the still child has no memory region for %s", name)
 		}
-		page := make([]byte, region.PageSize())
-		again := make([]byte, region.PageSize())
+		page := make([]byte, memoryRegion.PageSize())
+		again := make([]byte, memoryRegion.PageSize())
 		for _, number := range slices.Sorted(maps.Keys(hashes)) {
 			if ctx.Err() != nil {
 				return differing
 			}
-			if err := region.Fault(ctx, number, false); err != nil {
+			if err := memoryRegion.Fault(ctx, number, false); err != nil {
 				t.Errorf("faulting page %d of %s in %s: %v", number, name, s.id, err)
 				return differing
 			}
-			held, _, err := region.ReadResident(ctx, number, page)
+			held, _, err := memoryRegion.ReadResident(ctx, number, page)
 			if err != nil {
 				t.Errorf("reading page %d of %s from %s: %v", number, name, s.id, err)
 				return differing

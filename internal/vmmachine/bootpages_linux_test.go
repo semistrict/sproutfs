@@ -148,7 +148,7 @@ func TestBootSurveyOfPrivateRAMPages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ram := p.Regions()[vmmachine.RAMVolume]
+	ram := p.MemoryRegions()[vmmachine.RAMVolume]
 	resident, err := ram.Resident()
 	if err != nil {
 		t.Fatal(err)

@@ -38,7 +38,7 @@ const (
 )
 
 // premortemVolumes is what every VM of this pre-mortem has: memory and a disk,
-// so every fork, every migration and every stop carries more than one region.
+// so every fork, every migration and every stop carries more than one memory region.
 func premortemVolumes() []volume.VolumeSpec {
 	return []volume.VolumeSpec{
 		{Name: "ram0", Size: soakVMPages * simtest.RAMPage, PageSize: simtest.RAMPage},

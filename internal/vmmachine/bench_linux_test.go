@@ -70,17 +70,17 @@ const (
 	// the two differ only in where their memory and their root come from.
 	benchBootArgs      = guestPmemBootArgs + " transparent_hugepage=never"
 	benchPlainBootArgs = guestConsoleArgs + " reboot=k panic=1 init=/init root=/dev/vda rw transparent_hugepage=never"
-	// benchMaxGuests sizes logical admission. Attaching a region admits metadata
+	// benchMaxGuests sizes logical admission. Attaching a memory region admits metadata
 	// for every one of its pages, so the bound is the largest number of guests
 	// any scenario holds open at once, which is the twenty forks plus the
 	// template and the siblings around them.
 	benchMaxGuests = 26
-	// benchQueuePages bounds the faults one region has pending. A machine clamps
-	// it to the region's own size in its own pager's page, so this is a ceiling
+	// benchQueuePages bounds the faults one memory region has pending. A machine clamps
+	// it to the memory region's own size in its own pager's page, so this is a ceiling
 	// over both geometries rather than a budget stated in either.
 	benchQueuePages = 16384
 	// benchRangeBytes is the 2 MiB-aligned range the page-geometry plan makes a
-	// RAM region's unit of mapping: a private page lives at its own offset
+	// RAM memory region's unit of mapping: a private page lives at its own offset
 	// within its range's extent, so what a range costs in mappings is how often
 	// it alternates between shared and private. The fan-out reports the private
 	// runs and the gaps between them within one of these.
@@ -138,7 +138,7 @@ const (
 // comes from one of these, and the bounds this test asserts are checked against
 // the same fields, so the table and the regression test cannot drift apart.
 //
-// A host runs one pager per kind of region, so what a scenario cost the pagers
+// A host runs one pager per kind of memory region, so what a scenario cost the pagers
 // is two records and never their sum: MemoryRAM is the 4 KiB pager that holds
 // guest memory and MemoryPMEM the 2 MiB pager that holds the disks. They
 // replace the single `memory` field of records taken before the two geometries
@@ -217,7 +217,7 @@ type memoryDelta struct {
 	// UnchangedPages is the pages a settle found to hold exactly their origin's
 	// bytes: write faults the guest never stored through, which no checkpoint
 	// publishes and which go straight back to sharing. PrivateExtents is how many
-	// 2 MiB ranges of this pager's regions hold a private page.
+	// 2 MiB ranges of this pager's memory regions hold a private page.
 	UnchangedPages    uint64 `json:"unchanged_pages"`
 	PrivateExtents    int    `json:"private_extents"`
 	Protections       uint64 `json:"protections"`
@@ -750,8 +750,8 @@ func (b *benchmark) machineConfig(vm *volume.VM, restore []byte) vmmachine.Confi
 		Binary: b.binary, SeccompFilter: b.seccomp, KernelPath: b.kernel, BootArgs: bootArgs(benchBootArgs),
 		Scratch: b.managedScratch, Pagers: b.pagers.pagers, VM: vm,
 		Pmem: []vmmachine.Pmem{{ID: "root", Root: true}}, VCPUs: benchGuestVCPUs(), RestoreState: restore,
-		// The queue is a ceiling: a machine clamps it to each region's own size
-		// in that region's pager's page, so nothing here is stated in a page.
+		// The queue is a ceiling: a machine clamps it to each memory region's own size
+		// in that memory region's pager's page, so nothing here is stated in a page.
 		Connection: vmmemory.ConnectionConfig{QueuePages: benchQueuePages, FaultWorkers: 16,
 			CommandTimeout: 5 * time.Minute, VerifyInterval: 5 * time.Second},
 	}
@@ -848,7 +848,7 @@ const (
 // startTiming splits what a start actually cost, so a boot is explainable
 // rather than a single number. VMMStartNS is everything `vmmachine.Start` does:
 // launching the VMM, exchanging descriptors, admitting and populating every
-// region, and the API round trip that proves the machine is up. ToReadyNS is
+// memory region, and the API round trip that proves the machine is up. ToReadyNS is
 // what follows on the console. KernelNS and InitNS come from the guest's own
 // monotonic clock, so the two of them together say how much of the wait was the
 // guest at all; PreKernelNS is the remainder, which is the VMM's own setup
@@ -859,7 +859,7 @@ const (
 //
 // Phases is what VMMStartNS divides into, so a restore of seconds says which
 // part of it was the VMM's own start, which was the snapshot load, and which was
-// the pager attaching and populating each region — and, per region, what that
+// the pager attaching and populating each memory region — and, per memory region, what that
 // populate installed. A managed fan-out's restore is the number to explain
 // before its first output is, and none of it is explainable from one duration.
 type startTiming struct {
@@ -882,7 +882,7 @@ func (s startTiming) extra(hostSetup time.Duration) map[string]any {
 }
 
 // phases is the start's own split as a record carries it: the four phases of
-// vmmachine.Start, and per region the attach and the populate inside it.
+// vmmachine.Start, and per memory region the attach and the populate inside it.
 func (s startTiming) phases() map[string]any {
 	attach := map[string]map[string]any{}
 	for name, stats := range s.Phases.Attachments {
@@ -892,7 +892,7 @@ func (s startTiming) phases() map[string]any {
 	}
 	return map[string]any{"vmm_process_ns": s.Phases.ProcessNS,
 		"state_load_ns": s.Phases.StateLoadNS, "sessions_ns": s.Phases.SessionsNS,
-		"vmm_ready_ns": s.Phases.ReadyNS, "region_attach": attach}
+		"vmm_ready_ns": s.Phases.ReadyNS, "memory_region_attach": attach}
 }
 
 // start launches one managed machine and waits for the guest to be ready. A
@@ -943,7 +943,7 @@ func (b *benchmark) splitBoot(timing *startTiming, ready string) {
 }
 
 // capture runs a coordinated capture and reports what the guest's pause bought.
-// A capture seals both of the machine's regions, so it reads both pagers: what
+// A capture seals both of the machine's memory regions, so it reads both pagers: what
 // the two spent and how many commands they issued adds, because nanoseconds and
 // commands are the same unit in either; what they sealed and protected does
 // not, so those are reported per kind and in bytes.
@@ -1016,8 +1016,8 @@ func (b *benchmark) capture(ctx context.Context, p *vmmachine.Process, vm *volum
 		"protected_bytes":      protectedRAM*b.ramPageSize() + protectedPMEM*b.pmemPageSize(),
 		"seal_bookkeeping_ns":  seals - protects,
 		// The walk behind the pause: moving each sealed page into the
-		// checkpoint, which runs with the guest running and holding its region,
-		// so a fault of that region waits for it and the VM does not.
+		// checkpoint, which runs with the guest running and holding its memory region,
+		// so a fault of that memory region waits for it and the VM does not.
 		"seal_walk_ns": int64(afterRAM.SealWalk.TotalNS-beforeRAM.SealWalk.TotalNS) +
 			int64(afterPMEM.SealWalk.TotalNS-beforePMEM.SealWalk.TotalNS),
 		"vmm_pause_save_ns": prepare - seals,
@@ -1047,7 +1047,7 @@ func TestGuestWorkloadBenchmark(t *testing.T) {
 	}
 	ctx := t.Context()
 	b := newBenchmark(ctx, t)
-	for _, kind := range []vmmemory.RegionKind{vmmemory.Ram, vmmemory.Pmem} {
+	for _, kind := range []vmmemory.MemoryRegionKind{vmmemory.Ram, vmmemory.Pmem} {
 		cfg := b.pagers.configs[kind]
 		t.Logf("%s pager: page=%d resident=%d pages (%d MiB) dirty=%d logical=%d read-ahead=%d write-ahead=%d",
 			kind, cfg.PageSize, cfg.ResidentPages, uint64(cfg.ResidentPages)*cfg.PageSize>>20,
@@ -1303,7 +1303,7 @@ func (b *benchmark) configuration() map[string]any {
 	// Each pager's own budgets, named for its kind and given in its own pages
 	// and in bytes: the pages say what the pager admits against, the bytes are
 	// what a reader may compare between the two or against another run's.
-	for _, kind := range []vmmemory.RegionKind{vmmemory.Ram, vmmemory.Pmem} {
+	for _, kind := range []vmmemory.MemoryRegionKind{vmmemory.Ram, vmmemory.Pmem} {
 		cfg := b.pagers.configs[kind]
 		for name, pages := range map[string]int{"resident": cfg.ResidentPages, "dirty": cfg.DirtyPages,
 			"logical": cfg.LogicalPages, "read_ahead": cfg.ReadAheadPages, "write_ahead": cfg.WriteAheadPages} {
@@ -1534,7 +1534,7 @@ func (b *benchmark) forkFanOut(ctx context.Context, origin *forkOrigin) {
 	// What each of those restores was made of. A managed fork's restore is the
 	// larger half of its first output, so it is recorded in its phases rather
 	// than as one duration: the handle on the parent's point, the VMM process,
-	// the snapshot load, the pager's attach of each region and the populate
+	// the snapshot load, the pager's attach of each memory region and the populate
 	// inside it.
 	restorePhases := make([]map[string]any, count)
 	for index := range children {
@@ -1586,28 +1586,28 @@ func (b *benchmark) forkFanOut(ctx context.Context, origin *forkOrigin) {
 	}
 	// What each fork holds once its command has finished, per volume: the
 	// pages it maps, the pages whose bytes are its own, and the resident pages
-	// another region still maps, which is the sharing this fork has kept. A
+	// another memory region still maps, which is the sharing this fork has kept. A
 	// larger page copies more of what a fork writes into pages of its own, and
 	// the shared count is what that costs on the other side. The same three in
 	// bytes, because page counts of different geometries cannot be compared and
 	// the whole point of the record is to compare them — which is also why the
-	// fork's own totals across its two regions are bytes and nothing else.
+	// fork's own totals across its two memory regions are bytes and nothing else.
 	privateBytes := make([]uint64, count)
 	residentBytes := make([]uint64, count)
-	regionPages := make([]map[string]map[string]uint64, count)
-	// How many mappings each fork's VMM holds, which is what a region's runs
+	memoryRegionPages := make([]map[string]map[string]uint64, count)
+	// How many mappings each fork's VMM holds, which is what a memory region's runs
 	// and gaps cost in the address space.
 	forkMappings := make([]int, count)
 	for index, item := range children {
-		regionPages[index] = map[string]map[string]uint64{}
+		memoryRegionPages[index] = map[string]map[string]uint64{}
 		forkMappings[index] = countMappings(item.process.PID())
-		for name, region := range item.process.Regions() {
-			stats, err := region.Stats(ctx)
+		for name, memoryRegion := range item.process.MemoryRegions() {
+			stats, err := memoryRegion.Stats(ctx)
 			if err != nil {
 				b.t.Fatal(err)
 			}
-			regionPages[index][name] = map[string]uint64{
-				"page_size":      region.PageSize(),
+			memoryRegionPages[index][name] = map[string]uint64{
+				"page_size":      memoryRegion.PageSize(),
 				"resident_pages": uint64(stats.ResidentPages), "private_pages": uint64(stats.PrivatePages),
 				"shared_pages":   uint64(stats.SharedPages),
 				"resident_bytes": stats.ResidentBytes(), "private_bytes": stats.PrivateBytes(),
@@ -1617,20 +1617,20 @@ func (b *benchmark) forkFanOut(ctx context.Context, origin *forkOrigin) {
 		}
 	}
 	b.record(ctx, "fork-fanout", "sproutfs", start, nil, map[string]any{
-		"forks":               count,
-		"command":             workloadTest(),
-		"restore_all_ns":      restored.Sub(start.at).Nanoseconds(),
-		"restore_each_ns":     restoreEach,
-		"restore_phases":      restorePhases,
-		"max_restore_ns":      maxOf(restoreEach),
-		"first_output_ns":     firstOutput,
-		"total_ns":            total,
-		"max_first_output":    maxOf(firstOutput),
-		"max_total_ns":        maxOf(total),
-		"fork_private_bytes":  privateBytes,
-		"fork_resident_bytes": residentBytes,
-		"fork_region_pages":   regionPages,
-		"fork_vmm_mappings":   forkMappings,
+		"forks":                    count,
+		"command":                  workloadTest(),
+		"restore_all_ns":           restored.Sub(start.at).Nanoseconds(),
+		"restore_each_ns":          restoreEach,
+		"restore_phases":           restorePhases,
+		"max_restore_ns":           maxOf(restoreEach),
+		"first_output_ns":          firstOutput,
+		"total_ns":                 total,
+		"max_first_output":         maxOf(firstOutput),
+		"max_total_ns":             maxOf(total),
+		"fork_private_bytes":       privateBytes,
+		"fork_resident_bytes":      residentBytes,
+		"fork_memory_region_pages": memoryRegionPages,
+		"fork_vmm_mappings":        forkMappings,
 	})
 	if b.scenarios["fork-diagnostics"] {
 		forks := make([]forkedVM, count)
@@ -1668,7 +1668,7 @@ func (b *benchmark) forkDiagnostics(ctx context.Context, origin *forkOrigin, chi
 	count := len(children)
 	start := b.sample(ctx)
 	// Which pages those are, so that what a fork wrote can be looked up in the
-	// image: a page number times that region's page size is an offset into it.
+	// image: a page number times that memory region's page size is an offset into it.
 	ownPages := make([]map[string][]uint64, count)
 	// How the private pages of the fork's RAM lie: the runs they form, the gaps
 	// between them and the 2 MiB ranges they fall in. The page-geometry plan
@@ -1677,15 +1677,15 @@ func (b *benchmark) forkDiagnostics(ctx context.Context, origin *forkOrigin, chi
 	ramGeometry := make([]*privateGeometry, count)
 	for index, item := range children {
 		ownPages[index] = map[string][]uint64{}
-		for name, region := range item.process.Regions() {
-			unpublished, err := region.Unpublished()
+		for name, memoryRegion := range item.process.MemoryRegions() {
+			unpublished, err := memoryRegion.Unpublished()
 			if err != nil {
 				b.t.Fatal(err)
 			}
 			slices.Sort(unpublished)
 			ownPages[index][name] = unpublished
-			if region.Kind() == vmmemory.Ram {
-				ramGeometry[index] = newPrivateGeometry(unpublished, region.PageSize())
+			if memoryRegion.Kind() == vmmemory.Ram {
+				ramGeometry[index] = newPrivateGeometry(unpublished, memoryRegion.PageSize())
 			}
 		}
 	}
@@ -1699,16 +1699,16 @@ func (b *benchmark) forkDiagnostics(ctx context.Context, origin *forkOrigin, chi
 	}
 	const block = 4096
 	changedBlocks := make([]map[string][]uint64, count)
-	// How many blocks of each page a fork owns it changed, in every region: a
+	// How many blocks of each page a fork owns it changed, in every memory region: a
 	// root page's blocks are too many to list, and the count is what says
 	// whether the page was written at all.
 	changedCounts := make([]map[string]map[string]int, count)
 	for index, item := range children {
 		changedBlocks[index] = map[string][]uint64{}
 		changedCounts[index] = map[string]map[string]int{}
-		for name, region := range item.process.Regions() {
+		for name, memoryRegion := range item.process.MemoryRegions() {
 			changedCounts[index][name] = map[string]int{}
-			pageSize := region.PageSize()
+			pageSize := memoryRegion.PageSize()
 			after := make([]byte, pageSize)
 			// The pristine bytes are read a 2 MiB window at a time, the unit the
 			// store serves them in: a page at a time is a store read per page
@@ -1721,7 +1721,7 @@ func (b *benchmark) forkDiagnostics(ctx context.Context, origin *forkOrigin, chi
 			var windowStart uint64
 			var windowBytes []byte
 			for _, page := range ownPages[index][name] {
-				held, _, err := region.ReadResident(ctx, page, after)
+				held, _, err := memoryRegion.ReadResident(ctx, page, after)
 				if err != nil {
 					b.t.Fatal(err)
 				}
@@ -1755,28 +1755,28 @@ func (b *benchmark) forkDiagnostics(ctx context.Context, origin *forkOrigin, chi
 	}
 	// A checkpoint of each fork, which is where a page the fork never stored
 	// into stops being its own: what the settle dropped, what the checkpoint
-	// published, and what each region holds and shares once it landed.
+	// published, and what each memory region holds and shares once it landed.
 	forkCheckpoints := make([]map[string]any, count)
 	for index, item := range children {
 		ckpt, _ := b.capture(ctx, item.process, item.vm)
 		published, publishedBytes := ckpt.Sealed()
 		after := map[string]map[string]uint64{}
-		for name, region := range item.process.Regions() {
-			stats, err := region.Stats(ctx)
+		for name, memoryRegion := range item.process.MemoryRegions() {
+			stats, err := memoryRegion.Stats(ctx)
 			if err != nil {
 				b.t.Fatal(err)
 			}
-			after[name] = map[string]uint64{"page_size": region.PageSize(),
+			after[name] = map[string]uint64{"page_size": memoryRegion.PageSize(),
 				"resident_pages": uint64(stats.ResidentPages), "private_pages": uint64(stats.PrivatePages),
 				"shared_pages":   uint64(stats.SharedPages),
 				"resident_bytes": stats.ResidentBytes(), "private_bytes": stats.PrivateBytes(),
 				"shared_bytes": stats.SharedBytes()}
 		}
 		forkCheckpoints[index] = map[string]any{
-			"unchanged_pages": ckpt.Unchanged(),
-			"published_pages": published,
-			"published_bytes": publishedBytes,
-			"region_pages":    after,
+			"unchanged_pages":     ckpt.Unchanged(),
+			"published_pages":     published,
+			"published_bytes":     publishedBytes,
+			"memory_region_pages": after,
 		}
 	}
 	b.record(ctx, "fork-diagnostics", "sproutfs", start, nil, map[string]any{
@@ -1816,7 +1816,7 @@ func (h *runHistogram) add(length int) {
 	}
 }
 
-// privateGeometry is how one region's private pages lie in it: the runs of
+// privateGeometry is how one memory region's private pages lie in it: the runs of
 // consecutive pages they form, the gaps between consecutive runs of one
 // 2 MiB-aligned range, and how many ranges hold any private page at all. A run
 // is what one mapping covers under the page-geometry plan — a private page
@@ -1836,8 +1836,8 @@ type privateGeometry struct {
 	HalfRanges int          `json:"half_private_ranges"`
 }
 
-// newPrivateGeometry reads that geometry off one region's own page numbers,
-// which must be sorted. The pages are the region's own, not the volume's: a
+// newPrivateGeometry reads that geometry off one memory region's own page numbers,
+// which must be sorted. The pages are the memory region's own, not the volume's: a
 // page a checkpoint has published is shared again and is no longer a mapping of
 // this fork's alone.
 func newPrivateGeometry(pages []uint64, pageSize uint64) *privateGeometry {

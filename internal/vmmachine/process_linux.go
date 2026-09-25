@@ -36,7 +36,7 @@ type Pmem struct {
 }
 
 // RAMVolume is the name of the volume backing the VM's RAM. A machine has one
-// RAM region, so the name is fixed.
+// RAM memory region, so the name is fixed.
 const RAMVolume = "ram0"
 
 // Config supervises one VM over the volumes of one *volume.VM. RAM binds to the
@@ -49,7 +49,7 @@ const RAMVolume = "ram0"
 type Config struct {
 	Binary, SeccompFilter, KernelPath, InitrdPath, BootArgs string
 	Scratch                                                 *Scratch
-	// Pagers is the host's pager per kind of region: RAM attaches to one and
+	// Pagers is the host's pager per kind of memory region: RAM attaches to one and
 	// every PMEM device to the other, each with its own arena and its own page.
 	// A machine takes both, because one VM maps both kinds.
 	Pagers vmmemory.Pagers
@@ -70,40 +70,40 @@ type Config struct {
 	// name for itself and never leaves it, so every VM may use the same one.
 	VsockCID   uint32
 	Connection vmmemory.ConnectionConfig
-	// Backings replaces, by volume name, the backing a region attaches with. The
-	// volume stays the region's identity — its name, its size, its writer,
+	// Backings replaces, by volume name, the backing a memory region attaches with. The
+	// volume stays the memory region's identity — its name, its size, its writer,
 	// everything a seal and a checkpoint are made of — and only what the
 	// pager loads through changes. That is what a migration's destination needs:
-	// its regions read from the host that still holds the pages, and read their
+	// its memory regions read from the host that still holds the pages, and read their
 	// own log for everything that host does not have.
 	//
-	// Every name must be a region this machine maps, and the backing must be
+	// Every name must be a memory region this machine maps, and the backing must be
 	// the size of the volume it stands in front of. A name this machine binds no
-	// region for is refused rather than ignored: ignoring it would start a
+	// memory region for is refused rather than ignored: ignoring it would start a
 	// destination that faults from its own volumes and never asks the host
 	// holding its pages at all.
 	Backings map[string]vmmemory.Backing
 }
 
-// region is one memory region a machine maps: the volume it takes its identity
+// memory region is one memory region a machine maps: the volume it takes its identity
 // from, and the backing it attaches with, which is that volume unless the
 // configuration overrode it.
-type region struct {
+type memoryRegion struct {
 	name    string
 	volume  *volume.Volume
-	backing vmmemory.RegionBacking
+	backing vmmemory.MemoryRegionBacking
 	// root marks the PMEM device the guest boots from, which is what the VMM's
 	// configuration file calls root_device. It is never set on RAM.
 	root bool
 }
 
-// plan is the layout one configuration maps: the one RAM region, one region per
+// plan is the layout one configuration maps: the one RAM memory region, one memory region per
 // PMEM device in configuration order, and the RAM the machine boots with.
 // Computing it validates the configuration, so nothing is created before an
 // invalid one is refused.
 type plan struct {
-	ram      region
-	pmem     []region
+	ram      memoryRegion
+	pmem     []memoryRegion
 	ramBytes uint64
 }
 
@@ -121,7 +121,7 @@ func (c Config) plan() (plan, error) {
 		return plan{}, fmt.Errorf("vmmachine: vsock CID %d is reserved", c.VsockCID)
 	}
 	var result plan
-	// mapped is every region name this machine binds, which is what a backing
+	// mapped is every memory region name this machine binds, which is what a backing
 	// override must name and what keeps a PMEM device from colliding with RAM.
 	mapped := map[string]bool{}
 	ram := c.VM.Volume(RAMVolume)
@@ -136,8 +136,8 @@ func (c Config) plan() (plan, error) {
 	if err != nil {
 		return plan{}, err
 	}
-	result.ram = region{name: RAMVolume, volume: ram,
-		backing: vmmemory.RegionBacking{Kind: vmmemory.Ram, Backing: ramBacking}}
+	result.ram = memoryRegion{name: RAMVolume, volume: ram,
+		backing: vmmemory.MemoryRegionBacking{Kind: vmmemory.Ram, Backing: ramBacking}}
 	result.ramBytes = ram.Size()
 	mapped[RAMVolume] = true
 	roots := 0
@@ -154,8 +154,8 @@ func (c Config) plan() (plan, error) {
 		if err != nil {
 			return plan{}, err
 		}
-		result.pmem = append(result.pmem, region{name: d.ID, volume: v, root: d.Root,
-			backing: vmmemory.RegionBacking{Kind: vmmemory.Pmem, Backing: backing}})
+		result.pmem = append(result.pmem, memoryRegion{name: d.ID, volume: v, root: d.Root,
+			backing: vmmemory.MemoryRegionBacking{Kind: vmmemory.Pmem, Backing: backing}})
 		if d.Root {
 			roots++
 		}
@@ -168,13 +168,13 @@ func (c Config) plan() (plan, error) {
 	// so it is a configuration error rather than an unused entry.
 	for name := range c.Backings {
 		if !mapped[name] {
-			return plan{}, fmt.Errorf("vmmachine: %s maps no region named %q", c.VM.ID(), name)
+			return plan{}, fmt.Errorf("vmmachine: %s maps no memory region named %q", c.VM.ID(), name)
 		}
 	}
 	return result, nil
 }
 
-// backingOf is what one region attaches with: its volume, or the backing the
+// backingOf is what one memory region attaches with: its volume, or the backing the
 // configuration put in front of that volume.
 func (c Config) backingOf(name string, v *volume.Volume) (vmmemory.Backing, error) {
 	override, overridden := c.Backings[name]
@@ -194,9 +194,9 @@ func (c Config) backingOf(name string, v *volume.Volume) (vmmemory.Backing, erro
 type endpoint struct {
 	listener *net.UnixListener
 	path     string
-	backing  vmmemory.RegionBacking
+	backing  vmmemory.MemoryRegionBacking
 	// name is the volume the backing stands in front of, which is how a
-	// migration addresses this machine's regions.
+	// migration addresses this machine's memory regions.
 	name       string
 	connection *vmmemory.Connection
 }
@@ -247,13 +247,13 @@ type Process struct {
 //     exec, and the wait for the API socket it binds once it is past its own
 //     seccomp filter. Nothing of this pager's is in it.
 //   - StateLoadNS is the snapshot load request, which is where a restore's
-//     memory sessions are built: the VMM asks for each region's descriptor
+//     memory sessions are built: the VMM asks for each memory region's descriptor
 //     inside it, so the pager's attach and populate happen here.
 //   - SessionsNS is what was left of building those sessions once the load
 //     returned, which for a machine whose populate outlives the request is
 //     where that shows.
 //   - ReadyNS is the round trip that proves the machine is up.
-//   - Attachments is what each region's session cost, by the volume it maps.
+//   - Attachments is what each memory region's session cost, by the volume it maps.
 type StartPhases struct {
 	ProcessNS   int64
 	StateLoadNS int64
@@ -361,7 +361,7 @@ func Start(ctx context.Context, c Config) (*Process, error) {
 	return p, nil
 }
 
-// startable plans the machine's regions and fills in the connection settings a
+// startable plans the machine's memory regions and fills in the connection settings a
 // caller left at zero. It reports the plan, so a caller that has one has a
 // configuration Start can build from.
 func (c *Config) startable() (plan, error) {
@@ -406,7 +406,7 @@ func (p *Process) openScratch(ctx context.Context, c Config) error {
 	return err
 }
 
-// listen opens one Unix socket per region for the VMM to attach to, and
+// listen opens one Unix socket per memory region for the VMM to attach to, and
 // describes the PMEM devices twice over: pmem is what a fresh boot's
 // configuration file declares, overrides what a restore is told the sockets of
 // the devices its snapshot already describes are.
@@ -427,10 +427,10 @@ func (p *Process) listen(layout plan) (pmem, overrides []map[string]any, err err
 	return pmem, overrides, nil
 }
 
-// endpoint opens one region's socket and records it. The first is the RAM
-// region's, which is the one the machine configuration and a restore's memory
+// endpoint opens one memory region's socket and records it. The first is the RAM
+// memory region's, which is the one the machine configuration and a restore's memory
 // backend both name.
-func (p *Process) endpoint(socket string, r region) (*endpoint, error) {
+func (p *Process) endpoint(socket string, r memoryRegion) (*endpoint, error) {
 	path := filepath.Join(p.dir, socket+".sock")
 	l, err := net.ListenUnix("unix", &net.UnixAddr{Net: "unix", Name: path})
 	if err != nil {
@@ -441,7 +441,7 @@ func (p *Process) endpoint(socket string, r region) (*endpoint, error) {
 	return e, nil
 }
 
-// ramEndpoint is the RAM region's socket, which listen opens first.
+// ramEndpoint is the RAM memory region's socket, which listen opens first.
 func (p *Process) ramEndpoint() *endpoint { return p.endpoints[0] }
 
 // arguments is the VMM's command line, and for a fresh boot the configuration
@@ -508,7 +508,7 @@ func (p *Process) spawn(c Config, args []string, cancel context.CancelCauseFunc)
 	return nil
 }
 
-// attach accepts the VMM's connection on every region's socket and builds the
+// attach accepts the VMM's connection on every memory region's socket and builds the
 // memory session behind it. The sessions come up concurrently and the VMM
 // builds them inside its own requests, so the result of each is reported on the
 // returned channel rather than waited for here.
@@ -525,14 +525,14 @@ func (p *Process) attach(ctx, lifetime context.Context, c Config) chan error {
 			}
 			if err == nil {
 				// Each session is named for the volume it stands in front of,
-				// which is how the failure that ends one says which region of
+				// which is how the failure that ends one says which memory region of
 				// this machine it was.
 				cfg := c.Connection
 				cfg.Name = e.name
-				// A region attaches to the pager of its own kind: the two have
+				// A memory region attaches to the pager of its own kind: the two have
 				// separate arenas, and a page number of one means nothing in
 				// the other. The pending-fault queue is counted in that pager's
-				// page too, so it is bounded by this region's own pages rather
+				// page too, so it is bounded by this memory region's own pages rather
 				// than by a number that would be a whole disk in one pager and
 				// a fraction of the guest's memory in the other.
 				pager := c.Pagers.For(e.backing.Kind)
@@ -547,7 +547,7 @@ func (p *Process) attach(ctx, lifetime context.Context, c Config) chan error {
 				// the one place the reason exists, so it is written down here
 				// whether or not anything reads the result below.
 				slog.ErrorContext(ctx, "vmmachine: a memory session never attached",
-					"vm", p.id, "region", e.name, "socket", filepath.Base(e.path), "error", err)
+					"vm", p.id, "memory_region", e.name, "socket", filepath.Base(e.path), "error", err)
 			}
 			connectErrors <- err
 			if err == nil {
@@ -564,7 +564,7 @@ func (p *Process) attach(ctx, lifetime context.Context, c Config) chan error {
 }
 
 // withSessions is what a request to the VMM has to be reported through once the
-// sessions exist. The VMM builds them inside its own requests, so a region the
+// sessions exist. The VMM builds them inside its own requests, so a memory region the
 // pager refused fails the request with the only thing that side has — the
 // descriptor that never arrived — and the reason is here, in a connect result
 // nothing would otherwise read. Closing the process first is what makes those
@@ -591,7 +591,7 @@ func (p *Process) withSessions(err error, connectErrors chan error) error {
 // binary that is not the VMM, a seccomp filter it hangs inside — and a caller
 // with no deadline of its own would otherwise wait on it for ever, holding a
 // create open and a scratch directory with it. It is the same two minutes the
-// region listeners give the same process to connect.
+// memory region listeners give the same process to connect.
 var apiDeadline = 2 * time.Minute
 
 // awaitAPI waits for the VMM to bind its API socket, which is the first sign it
@@ -621,7 +621,7 @@ func (p *Process) awaitAPI(ctx context.Context) error {
 }
 
 // restore loads this machine's snapshot: the VMM's own state from the state
-// file, its guest memory from the RAM region's session, and each PMEM device
+// file, its guest memory from the RAM memory region's session, and each PMEM device
 // from the socket this process opened for it.
 func (p *Process) restore(ctx context.Context, c Config, overrides []map[string]any) error {
 	if err := p.files.write(ctx, "restore.state", c.RestoreState); err != nil {
@@ -636,7 +636,7 @@ func (p *Process) restore(ctx context.Context, c Config, overrides []map[string]
 	return p.request(ctx, http.MethodPut, "/snapshot/load", load)
 }
 
-// awaitSessions waits for every region's session to be built or to fail. A VMM
+// awaitSessions waits for every memory region's session to be built or to fail. A VMM
 // that exited first is reported as the attachment failure it is.
 func (p *Process) awaitSessions(ctx context.Context, connectErrors chan error) error {
 	for range p.endpoints {
@@ -752,8 +752,8 @@ func (r refusal) Error() string { return r.err.Error() }
 func (r refusal) Unwrap() error { return r.err }
 
 // Prepare pauses the VM and returns its VMM state together with the sealed
-// checkpoint of every region, by the name of the volume it maps. It implements
-// the capture coordinator's runtime. Sealing every region is part of the
+// checkpoint of every memory region, by the name of the volume it maps. It implements
+// the capture coordinator's runtime. Sealing every memory region is part of the
 // snapshot request and moves no bytes, so the pause this opens ends at Resume
 // rather than when the checkpoint is uploaded. Publication belongs to the
 // capture coordinator, which reads these checkpoints and retires them.
@@ -768,19 +768,19 @@ func (p *Process) Prepare(ctx context.Context) ([]byte, map[string]volume.DirtyS
 	if err != nil {
 		return nil, nil, err
 	}
-	named := p.namedRegions()
+	named := p.namedMemoryRegions()
 	sources := make(map[string]volume.DirtySource, len(named))
-	for name, region := range named {
-		checkpoint := region.Checkpoint()
+	for name, memoryRegion := range named {
+		checkpoint := memoryRegion.Checkpoint()
 		if checkpoint == nil {
-			return nil, nil, fmt.Errorf("vmmachine: region %q was not sealed by the capture", name)
+			return nil, nil, fmt.Errorf("vmmachine: memory region %q was not sealed by the capture", name)
 		}
 		sources[name] = checkpoint
 	}
 	return state, sources, nil
 }
 
-// SealDisks pauses the VM and seals the regions of its disks, and returns their
+// SealDisks pauses the VM and seals the memory regions of its disks, and returns their
 // checkpoints by the name of the volume each maps. It is the pause of a disk
 // checkpoint: nothing asks the VMM for its state and its RAM is left as it is,
 // so the pause is the vCPUs stopping and the disks' write-protect commands.
@@ -804,14 +804,14 @@ func (p *Process) SealDisks(ctx context.Context) (map[string]volume.DirtySource,
 		p.running = false
 	}
 	sources := map[string]volume.DirtySource{}
-	for name, region := range p.namedRegions() {
-		if region.Kind() != vmmemory.Pmem {
+	for name, memoryRegion := range p.namedMemoryRegions() {
+		if memoryRegion.Kind() != vmmemory.Pmem {
 			continue
 		}
-		if err := region.Seal(ctx); err != nil {
+		if err := memoryRegion.Seal(ctx); err != nil {
 			return nil, fmt.Errorf("vmmachine: sealing disk %q: %w", name, err)
 		}
-		sources[name] = region.Checkpoint()
+		sources[name] = memoryRegion.Checkpoint()
 	}
 	return sources, nil
 }
@@ -843,7 +843,7 @@ func limitStateFiles(pid int) error {
 
 // prepare pauses the VM, drains its device completions and captures its VMM
 // state. Which of the two things the capture is decides two more: a checkpoint
-// takes the checkpoint of every region and leaves the guest's vsock connections
+// takes the checkpoint of every memory region and leaves the guest's vsock connections
 // alone, because the same guest resumes and whatever was running over one of
 // them goes on running. A handoff seals nothing — the pages it would seal are
 // the ones the destination is about to fault out of this host's pages — and
@@ -872,7 +872,7 @@ func (p *Process) prepare(ctx context.Context, kind captureKind) ([]byte, error)
 		// pause for bytes nothing will ever look for.
 		if err := p.request(ctx, http.MethodPut, "/snapshot/create", map[string]any{"snapshot_type": "Full", "snapshot_path": path, "managed": true, "seal": !handoff, "handoff": handoff, "sync_snapshot_files": false}); err != nil {
 			// A refusal is a capture that did not happen: the VMM answered, so
-			// it is running and writing nothing, and every region it sealed is
+			// it is running and writing nothing, and every memory region it sealed is
 			// unsealed by the Release its caller runs. A seal the host could
 			// not finish in time arrives here, and killing the guest for it
 			// would lose every write since the last checkpoint that landed.
@@ -890,7 +890,7 @@ func (p *Process) prepare(ctx context.Context, kind captureKind) ([]byte, error)
 }
 
 // Pause stops this machine's vCPUs and does nothing else: no state is captured,
-// no region is sealed and nothing is written anywhere. Resume starts them
+// no memory region is sealed and nothing is written anywhere. Resume starts them
 // again. It is the first step of a capture on its own, which is what tells a
 // guest that cannot survive being stopped from one that cannot survive being
 // captured.
@@ -919,7 +919,7 @@ func (p *Process) Pause(ctx context.Context) error {
 	return nil
 }
 
-// Resume restarts the vCPUs once the capture's state has been read. The regions
+// Resume restarts the vCPUs once the capture's state has been read. The memory regions
 // stay sealed and the checkpoint uploads their checkpoints behind the running
 // guest, so the pause a capture costs is Prepare plus this call.
 func (p *Process) Resume(ctx context.Context) error {
@@ -957,7 +957,7 @@ func (p *Process) Release(ctx context.Context) error {
 	// the failure of the context it was given.
 	ctx, cancel := operation(ctx)
 	defer cancel()
-	if err := p.regions(func(r vmmemory.ConnectedRegion) error { return r.Memory.Unseal(ctx) }); err != nil {
+	if err := p.memoryRegions(func(r vmmemory.ConnectedMemoryRegion) error { return r.Memory.Unseal(ctx) }); err != nil {
 		p.stop(err)
 		return err
 	}
@@ -982,13 +982,13 @@ func (p *Process) Stop(ctx context.Context) ([]byte, error) {
 	return p.prepare(ctx, capturedForHandoff)
 }
 
-// Regions reports this machine's memory regions by the volume each one maps:
+// MemoryRegions reports this machine's memory regions by the volume each one maps:
 // "ram0" and one entry per PMEM device id. A migration serves and hands off
-// regions under those names, which are the names the destination opens the same
+// memory regions under those names, which are the names the destination opens the same
 // volumes under.
-func (p *Process) Regions() map[string]*vmmemory.Region { return p.namedRegions() }
+func (p *Process) MemoryRegions() map[string]*vmmemory.MemoryRegion { return p.namedMemoryRegions() }
 
-// attachments is what every region's session cost to build, by the volume it
+// attachments is what every memory region's session cost to build, by the volume it
 // maps, which is the pager's own share of a start.
 func (p *Process) attachments() map[string]vmmemory.AttachStats {
 	result := make(map[string]vmmemory.AttachStats, len(p.endpoints))
@@ -1000,25 +1000,25 @@ func (p *Process) attachments() map[string]vmmemory.AttachStats {
 	return result
 }
 
-func (p *Process) namedRegions() map[string]*vmmemory.Region {
-	result := make(map[string]*vmmemory.Region)
+func (p *Process) namedMemoryRegions() map[string]*vmmemory.MemoryRegion {
+	result := make(map[string]*vmmemory.MemoryRegion)
 	for _, e := range p.endpoints {
 		if e.connection == nil {
 			continue
 		}
-		result[e.name] = e.connection.Region().Memory
+		result[e.name] = e.connection.MemoryRegion().Memory
 	}
 	return result
 }
 
-// regions runs fn for every attached region concurrently and joins the results.
-func (p *Process) regions(fn func(vmmemory.ConnectedRegion) error) error {
+// memory regions runs fn for every attached memory region concurrently and joins the results.
+func (p *Process) memoryRegions(fn func(vmmemory.ConnectedMemoryRegion) error) error {
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	var result error
 	for _, e := range p.endpoints {
 		wg.Go(func() {
-			if err := fn(e.connection.Region()); err != nil {
+			if err := fn(e.connection.MemoryRegion()); err != nil {
 				mu.Lock()
 				result = errors.Join(result, err)
 				mu.Unlock()

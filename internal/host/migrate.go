@@ -27,13 +27,13 @@ type MigrationConfig struct {
 	// selects the largest page a volume may be published in.
 	PageSize int
 	// StartVM builds and starts the VMM of a VM this host receives. A host
-	// without one can migrate its VMs away but cannot take any in. Every region
+	// without one can migrate its VMs away but cannot take any in. Every memory region
 	// must use the same resource budget as Config.Resources; a mismatched
 	// machine is closed before post-copy streaming or host registration.
 	//
-	// The backings it is handed are one per region, by volume name, and every
+	// The backings it is handed are one per memory region, by volume name, and every
 	// one of them must reach the machine that is started: with a Firecracker
-	// supervisor that is vmmachine.Config.Backings, which attaches those regions
+	// supervisor that is vmmachine.Config.Backings, which attaches those memory regions
 	// through the source host while their volumes stay their identity. A
 	// supervisor that drops them starts a destination that faults from its own
 	// checkpoint and never asks the host still holding its pages, which is a
@@ -117,7 +117,7 @@ func (h *Host) Migrate(ctx context.Context, vmID string, destination platform.Ad
 	}
 	status := vm.Status()
 	if status.Sealed {
-		// A region a fork point still has sealed cannot give its volume up, and
+		// A memory region a fork point still has sealed cannot give its volume up, and
 		// a migration that tried would abandon the checkpoint the child inherits.
 		h.endMigration(entry)
 		return vmmigrate.Handoff{}, fmt.Errorf("%w: %s", volume.ErrSealed, vmID)
@@ -137,15 +137,15 @@ func (h *Host) Migrate(ctx context.Context, vmID string, destination platform.Ad
 		return vmmigrate.Handoff{}, err
 	}
 	// The checkpoint loop stops first: a checkpoint taken while the guest is being
-	// stopped would seal regions the handoff is about to give up.
+	// stopped would seal memory regions the handoff is about to give up.
 	entry.end()
 	handoff, err := vmmigrate.Migrate(ctx, vm, entry.runtime, h.pages, vmmigrate.Options{})
 	if err != nil {
 		h.endMigration(entry)
 		if errors.Is(err, vmmigrate.ErrStopped) {
-			// The guest is stopped and some of its regions have given their
+			// The guest is stopped and some of its memory regions have given their
 			// volumes up, so there is nothing here to run again: an interval
-			// checkpoint would try to seal regions that no longer own what they
+			// checkpoint would try to seal memory regions that no longer own what they
 			// map, and the VMM process would go on running a guest no host can
 			// publish. This host gives the VM up instead.
 			if h.forget(vmID, entry) {
@@ -173,10 +173,10 @@ func (h *Host) Migrate(ctx context.Context, vmID string, destination platform.Ad
 }
 
 // beginMigration admits one handover of a VM at a time and reports the
-// registration it claimed. A migration stops the guest, gives every region's
+// registration it claimed. A migration stops the guest, gives every memory region's
 // volume up and hands the pages to a page server: two callers that found one
 // registration each did all of that to one VMM process, and the loser — whose
-// regions had already given their volumes up — gave the VM up, closing the
+// memory regions had already given their volumes up — gave the VM up, closing the
 // process whose pages the winner's destination was about to fault out of.
 //
 // The claim is under the machines lock, so the second caller is told rather than
@@ -236,7 +236,7 @@ func confirmHandoff(ctx context.Context, vm *volume.VM) error {
 // parent runs elsewhere streams the pages out of that host's page server. A
 // child whose parent runs here attaches over the fork point itself: the pager
 // shares the parent's sealed pages with it by identity, so every inherited
-// page is present the moment the region attaches and nothing is fetched.
+// page is present the moment the memory region attaches and nothing is fetched.
 //
 // A fork's child publishes its root index here, as soon as it holds every page
 // its parent had — locally that is right after it attaches, and remotely it is
@@ -267,13 +267,13 @@ func (h *Host) Receive(ctx context.Context, handoff vmmigrate.Handoff) (*vmmigra
 		return nil, fmt.Errorf("%w: the fork point %s inherits from %s is no longer held here",
 			ErrNotMigratable, handoff.VMID, handoff.Parent)
 	}
-	// The handoff names every region and its size, so whether this host's pagers
+	// The handoff names every memory region and its size, so whether this host's pagers
 	// could map them is known before the VM is opened and its VMM started.
-	regions := make([]Region, 0, len(handoff.Regions))
-	for _, region := range handoff.Regions {
-		regions = append(regions, regionOf(region.Name, region.Size))
+	memoryRegions := make([]MemoryRegion, 0, len(handoff.MemoryRegions))
+	for _, memoryRegion := range handoff.MemoryRegions {
+		memoryRegions = append(memoryRegions, memoryRegionOf(memoryRegion.Name, memoryRegion.Size))
 	}
-	if err := h.AdmitRegions(regions); err != nil {
+	if err := h.AdmitMemoryRegions(memoryRegions); err != nil {
 		return nil, fmt.Errorf("receiving %s: %w", handoff.VMID, err)
 	}
 	var started Machine

@@ -4,7 +4,7 @@ A VM moves between hosts in two steps. The source host stops the VM. The
 destination host then runs it while its pages arrive from the source's pager. A
 planned host restart or scale-down does this for every VM on the host; this is
 the drain. Migration is post-copy only. Nothing is uploaded during the pause.
-The pause lasts for the VMM state capture, the region handoff and destination
+The pause lasts for the VMM state capture, the memory region handoff and destination
 startup.
 
 ## Why it is cheap here
@@ -25,17 +25,17 @@ the destination reports that it has fetched every one of those pages.
 
 0. **Quiesce the checkpoint loop.** The host's interval checkpoint stops first.
    Stopping it waits for the checkpoint in flight to finish publishing. A
-   checkpoint that is still publishing owns the guest's sealed regions. If the
-   handoff found a sealed region, it would have to abandon the migration and
+   checkpoint that is still publishing owns the guest's sealed memory regions. If the
+   handoff found a sealed memory region, it would have to abandon the migration and
    resume the guest.
 1. **Stop.** The VMM pauses the vCPUs, drains device completions and captures
    the VMM state. Nothing is sealed and nothing is uploaded.
-2. **Hand off.** Every region gives up its volume but keeps its pages. Each
-   region reports which of its pages no checkpoint has. The guest is stopped, so
+2. **Hand off.** Every memory region gives up its volume but keeps its pages. Each
+   memory region reports which of its pages no checkpoint has. The guest is stopped, so
    that set is final. The source then releases the VM handle without publishing.
    The handoff carries:
    - the VMM state;
-   - the region layout;
+   - the memory region layout;
    - the unpublished page runs;
    - the address of the source's page server;
    - the sequence that the source's control record selected when the source
@@ -50,7 +50,7 @@ the destination reports that it has fetched every one of those pages.
    assumed the source was gone, or an operator. If the destination streamed the
    source's pages over the pages of a writer that got in, the VM's memory would
    mix two writers' pages, and no error would be reported. If the sequence
-   matches, the destination attaches the regions. It binds each region to the
+   matches, the destination attaches the memory regions. It binds each memory region to the
    source host and to its own volume. It then starts the VMM with the captured
    state.
 4. **Post-copy.** When the guest touches a page, the page faults in from the
@@ -113,17 +113,17 @@ the destination reports that it has fetched every one of those pages.
    received VM is torn, the same way any torn post-copy is handled. The
    resident listing is handled the same way, for the same reason. The caller of
    that listing is the stream, and the destination stops the stream itself.
-   Giving up the source there would send a healthy region to a volume that does
+   Giving up the source there would send a healthy memory region to a volume that does
    not hold the pages no checkpoint has.
 
    Only pages that the pager installed count as fetched. So `Done` cannot
    report a complete set that the source could then release. Serving a page is
    not the same as holding it. The bytes reach a buffer, and the pager may still
    drop the page. So the destination marks a page as fetched only when its own
-   pager reports that it bound the page as dirty state of this region.
+   pager reports that it bound the page as dirty state of this memory region.
 
    The source keeps the same count from its side. When the migration registers
-   a region, the source records the region's unpublished set. It marks off each
+   a memory region, the source records the memory region's unpublished set. It marks off each
    of those pages as it answers for it. It refuses a release while any remain,
    and keeps serving the VM. A page is marked off only after the reply carrying
    it has left this host. A reply that the source could not send carried
@@ -153,50 +153,50 @@ the destination reports that it has fetched every one of those pages.
    `Done` can be called again. `ErrClosed` means this host stopped the stream.
    It means the source may not release yet, not that this guest is torn.
 
-   Each region fetches its pages over all of its connections, instead of one
+   Each memory region fetches its pages over all of its connections, instead of one
    page per round trip. The held set includes private zero-filled pages
    allocated by [write-ahead](vm-memory.md), even if the guest has not stored
    into them. So peer-page counts measure transferred held pages and can exceed
    the pages the guest explicitly wrote.
 
-Before any region has handed off its volume, a failed migration attempts to
-resume the source. After a region has handed off, that process cannot resume
+Before any memory region has handed off its volume, a failed migration attempts to
+resume the source. After a memory region has handed off, that process cannot resume
 the VM. The VM can still be opened anywhere, at the checkpoint its control
 record selects. Resuming a machine also requires the captured VMM state and
-matching region configuration.
+matching memory region configuration.
 
 ```go
 // vmmemory
 // ReadResident copies one resident page for a peer, if this host holds it;
 // false when it does not, and separately whether the page it served is this
 // host's own state that no checkpoint has. It never loads.
-func (r *Region) ReadResident(ctx context.Context, page uint64, dst []byte) (held, unpublished bool, err error)
-// Resident lists the pages this region currently holds, for a bulk stream, and
-// Unpublished the subset of them no checkpoint has. A region that cannot answer
+func (r *MemoryRegion) ReadResident(ctx context.Context, page uint64, dst []byte) (held, unpublished bool, err error)
+// Resident lists the pages this memory region currently holds, for a bulk stream, and
+// Unpublished the subset of them no checkpoint has. A memory region that cannot answer
 // reports why: an empty listing is one a destination acts on by fetching
 // nothing and reading the volume instead, which for the unpublished set means
 // rewinding the guest to the last checkpoint. A source whose volumes cannot say
 // what they hold keeps serving them — only Discard gives such a VM up.
-func (r *Region) Resident() ([]uint64, error)
-func (r *Region) Unpublished() ([]uint64, error)
+func (r *MemoryRegion) Resident() ([]uint64, error)
+func (r *MemoryRegion) Unpublished() ([]uint64, error)
 // Handoff gives up the volume while keeping the pages, after the guest is
 // stopped. Verification stops touching the volume; a flush, a seal, a
 // population or any fault reports ErrHandedOff; serving continues until Detach.
-// A region a checkpoint still has sealed reports ErrSealed and keeps its volume.
-func (r *Region) Handoff(ctx context.Context) error
+// A memory region a checkpoint still has sealed reports ErrSealed and keeps its volume.
+func (r *MemoryRegion) Handoff(ctx context.Context) error
 
 // vmmachine
-// Backings replaces, by volume name, the backing a region attaches with. The
-// volume stays the region's identity — name, size, writer, page identities,
+// Backings replaces, by volume name, the backing a memory region attaches with. The
+// volume stays the memory region's identity — name, size, writer, page identities,
 // every write — and only what the pager loads through changes, which is how a
-// destination's regions fault from the host that still holds their pages.
-// Every name must be a region the machine maps, and the backing must be the
+// destination's memory regions fault from the host that still holds their pages.
+// Every name must be a memory region the machine maps, and the backing must be the
 // size of the volume it stands in front of; a start refuses anything else
 // rather than silently binding a destination to its own volumes.
 type Config struct { ...; Backings map[string]vmmemory.Backing }
-// Regions names every region by the volume it maps: ram0 and one per PMEM
+// MemoryRegions names every memory region by the volume it maps: ram0 and one per PMEM
 // device id.
-func (p *Process) Regions() map[string]*vmmemory.Region
+func (p *Process) MemoryRegions() map[string]*vmmemory.MemoryRegion
 // Stop pauses the vCPUs, drains device completions and returns the VMM state,
 // leaving the process paused. It seals nothing and uploads nothing: the pages
 // it leaves behind are what the destination fetches. Prepare is the capture
@@ -213,7 +213,7 @@ func (vm *VM) Handoff(ctx context.Context) error
 
 // vmmigrate
 // PageSource serves the pages one host holds for another to peers over the host
-// network: a migrated VM's regions, or the fork point a fork was taken at. One per
+// network: a migrated VM's memory regions, or the fork point a fork was taken at. One per
 // host, registered under the identity of the VM that runs elsewhere. It opens a
 // listener on Network at Address, or takes one the caller already opened. Hosts
 // share a trusted network, so every peer that reaches it is served, bounded per
@@ -231,10 +231,10 @@ func (s *PageSource) Discard(vmID string)
 // host first and reads the volume for every page a checkpoint holds, and which
 // reports the pages the source served out of its own dirty memory so the pager
 // holds them privately. Locate is the volume's except for those pages, which it
-// reports as bytes of this region alone so nothing resolves them against a
+// reports as bytes of this memory region alone so nothing resolves them against a
 // checkpoint lacking them. A page only the source holds is asked for until it
 // arrives, the source says it no longer serves the VM, or Close ends this
-// region's half of the migration.
+// memory region's half of the migration.
 func NewPeerBacking(config PeerConfig) (*PeerBacking, error)
 // Close ends that: every connection dropped and nothing asked of the source
 // again. A read it interrupts reads the volume, exactly as one interrupted by
@@ -243,22 +243,22 @@ func NewPeerBacking(config PeerConfig) (*PeerBacking, error)
 // is over does, and what discarding a received VM comes to.
 func (b *PeerBacking) Close() error
 // Migrate runs phases 1 and 2 on the source: stop the process, give the
-// regions' volumes up, record which of their pages no checkpoint has, release
+// memory regions' volumes up, record which of their pages no checkpoint has, release
 // the VM without publishing, and serve the pages from there on. It returns the
 // VMM state the destination restores.
 func Migrate(ctx context.Context, vm *volume.VM, process Runtime, source *PageSource, opts Options) (Handoff, error)
 // Receive runs phases 3 and 4 on the destination: open the VM, attach
-// regions through PeerBacking, start the VMM from the state, and stream the
+// memory regions through PeerBacking, start the VMM from the state, and stream the
 // resident set in the background. It reports when the stream has finished so
 // the source may release.
 func Receive(ctx context.Context, manager *volume.Manager, handoff Handoff, dial Dialer, start StartFunc) (*Received, error)
 // StartFunc is the supervisor the destination host supplies: one backing per
-// region, keyed by the volume that region maps, and every one of them must be
+// memory region, keyed by the volume that memory region maps, and every one of them must be
 // what the machine attaches with — vmmachine.Config.Backings for a Firecracker
 // supervisor, host.MigrationConfig.StartVM for the host that wires it.
 // A start that drops them binds the destination to its own volumes: nothing
 // ever faults to the source and the post-copy is a cold read of storage. A
-// machine that maps fewer regions than the source had is refused and closed.
+// machine that maps fewer memory regions than the source had is refused and closed.
 type StartFunc func(ctx context.Context, vm *volume.VM, backings map[string]vmmemory.Backing, state []byte) (Runtime, error)
 ```
 
@@ -271,14 +271,14 @@ are the source's own state that no checkpoint has. A clear present bit is not an
 error. It means this host does not hold that page, and the destination reads it
 from its own volume.
 
-A resident request lists the pages a region holds, in runs, bounded per reply. A
+A resident request lists the pages a memory region holds, in runs, bounded per reply. A
 destination's bulk stream walks this list and then faults those pages in
 through the pager's ordinary load path. Streamed bytes are never written into a
-region directly, because the load path is what keeps a page shared by identity
+memory region directly, because the load path is what keeps a page shared by identity
 with the other VMs on that host.
 
 Both requests are bounded per peer. A peer is the destination host, not one of
-its connections. A destination opens a connection per region and dials again
+its connections. A destination opens a connection per memory region and dials again
 whenever one breaks, each time with a new ephemeral port. If each connection
 counted separately, neither budget would bind, and the peer table would grow
 with every reconnect. A connection over the budget is closed. A request over
@@ -286,32 +286,32 @@ the bytes-in-flight budget is answered `BUSY`. The destination then reads the
 run from its volume this time. If the run holds a page no checkpoint has, the
 destination instead retries with backoff until the source serves it.
 
-For this reason a region returns its connections as soon as it has no request
+For this reason a memory region returns its connections as soon as it has no request
 in flight, and keeps one. The connection budget bounds what one destination
-host holds at once, across every region of every VM it is receiving.
-Connections that a region pooled for a finished burst count against the regions
-that are still asking. Those regions ask for pages no checkpoint has, and they
-keep asking indefinitely. If a region kept a whole burst's connections for the
+host holds at once, across every memory region of every VM it is receiving.
+Connections that a memory region pooled for a finished burst count against the memory regions
+that are still asking. Those memory regions ask for pages no checkpoint has, and they
+keep asking indefinitely. If a memory region kept a whole burst's connections for the
 life of its receive, the bound would become a deadlock instead of a queue.
 
-A region has four connections by default. The post-copy stream may use at most
+A memory region has four connections by default. The post-copy stream may use at most
 three of them, so one is always left for the guest's own faults. Each
 connection carries one request at a time, so without this a fault could wait
-behind the stream's requests while a vCPU is stopped on it. A region with one
+behind the stream's requests while a vCPU is stopped on it. A memory region with one
 connection shares it between the two. The destination records how long each
 kind of request took, in total and waiting for a connection, and logs both
 when the post-copy finishes.
 
-If the source says it does not serve the VM, the region reads from its volume
+If the source says it does not serve the VM, the memory region reads from its volume
 permanently, and this is logged once. The exception is pages that no checkpoint
 has. They have no copy in the volume, so the fault fails. Every other answer is
 retried under the rule above.
 
-The order of steps inside the pause is fixed and not symmetric. The regions give
-up their volumes before the VM is released, because a region that kept its
+The order of steps inside the pause is fixed and not symmetric. The memory regions give
+up their volumes before the VM is released, because a memory region that kept its
 volume across the release would fail its next verification. If a failure
-happens before the first region's handoff completes, the host attempts to
-resume the guest here. Resumption can also fail. After a region has handed off
+happens before the first memory region's handoff completes, the host attempts to
+resume the guest here. Resumption can also fail. After a memory region has handed off
 its volume, resumption is no longer possible, and `ErrStopped` reports this:
 this process will not run that VM again. The host acts on this error. If a
 migration stopped a VM and then failed, the VM is discarded instead of
@@ -324,12 +324,12 @@ returning to the checkpoint interval:
 - the supervisor is told.
 
 Returning it to the interval would leave a stopped guest whose interval seals
-regions that no longer own the volumes they map. Its VMM would still be running,
+memory regions that no longer own the volumes they map. Its VMM would still be running,
 and nothing would close its handle. Reopening the VM advances its epoch even if
 the source did not finish releasing it. Resuming the same machine execution
 also requires its captured VMM state.
 
-The pause contains the VMM state capture, the region handoff and the
+The pause contains the VMM state capture, the memory region handoff and the
 destination's open. It uploads nothing. During open, the destination reads the
 control record and the selected checkpoint's root from object storage, and no
 checkpoint page. The simulated suite asserts that access pattern. The measured
@@ -368,7 +368,7 @@ child lands on. The child's host changes only how the inherited pages reach it.
 
 Phase 1 is the capture's pause instead of the migration's stop. The vCPUs
 pause, the VMM state is saved, the dirty set is sealed and the guest resumes.
-Phase 2 gives nothing up. No region hands off its volume, the VM handle is not
+Phase 2 gives nothing up. No memory region hands off its volume, the VM handle is not
 released, and nothing is published. For a child going to another host, the
 source registers the fork point with its page source, under the child's
 identity. From the fork point it serves only the pages that no checkpoint of the
@@ -393,7 +393,7 @@ the parent served as this host's own. The background stream fetches them first
 and to completion, and `Done` reports when the parent may stop serving. On the
 parent's own host it is the local backing. Attaching it offers the parent's
 sealed pages to the pager under the identity the point gives them. So every
-inherited page is present as soon as the region attaches, `Done` reports
+inherited page is present as soon as the memory region attaches, `Done` reports
 immediately, no bytes are copied and nothing is dialed.
 
 The destination publishes the child's root index as soon as `Done` reports.
@@ -436,7 +436,7 @@ nothing.
 One pause serves any number of children. Each child is one hold on the point,
 and the seal ends when the last hold is retired. So a fan-out of forks costs the
 parent one pause and one request. A second pause is refused while one is
-outstanding, because a region can have only one seal at a time.
+outstanding, because a memory region can have only one seal at a time.
 
 Deleting the parent ends every hold on it in the same way. `Host.Delete` retires
 the points taken on that VM before it closes the process that holds their
@@ -502,15 +502,15 @@ func (m *Manager) Fork(ctx context.Context, id string, point *ForkPoint) (*VM, e
 func (f *ForkPoint) Share(ctx context.Context) error
 
 // vmmigrate
-// Pages is what a page source serves one volume out of: a migrated VM's region,
-// or a fork point. RegionPages and ForkPages adapt each.
+// Pages is what a page source serves one volume out of: a migrated VM's memory region,
+// or a fork point. MemoryRegionPages and ForkPages adapt each.
 type Pages interface { ... }
 // Fork registers a fork point under the child's identity and describes it. The
 // pause already happened; nothing is stopped and nothing is released. A nil
 // source is a child the parent's own host takes in: it is served nothing.
 func Fork(ctx context.Context, child string, point *volume.ForkPoint, source *PageSource, opts Options) (Handoff, error)
 // Options.Point is the fork point a child whose parent runs here is received over.
-// Receive creates the child from it and binds its regions to a local backing.
+// Receive creates the child from it and binds its memory regions to a local backing.
 
 // host
 // Fork hands every child of one fork point over, to another host or to this one.
@@ -537,11 +537,11 @@ A failure in the stop must leave the guest running here with its memory intact.
 If the source is lost before the destination fetched its unpublished pages, the
 VM must remain openable at the checkpoint its control record still selects,
 rewound by exactly the writes since that checkpoint. If the destination's
-supervisor starts a machine that does not map every region the source had, the
+supervisor starts a machine that does not map every memory region the source had, the
 destination is refused before that machine runs, and the machine is closed. The
 page protocol has its own tests:
 
-- a partially resident region is answered in one request;
+- a partially resident memory region is answered in one request;
 - an unserved volume stops the retries on the one answer that says so;
 - an unreachable source costs each load one round trip and no more for the
   pages a checkpoint holds;
@@ -596,7 +596,7 @@ handled the same way wherever the child is:
 
 The full-guest suite migrates a real Firecracker guest between two pagers and
 two managers in one process, over loopback TCP. The guest stores into its RAM
-and its DAX disk until the vCPUs stop. Every region of the destination is
+and its DAX disk until the vCPUs stop. Every memory region of the destination is
 started through a `PeerBacking`, so the source's page server is on the VMM's own
 fault path, not beside it. The guest comes back with its counters intact, read
 back through the console. `PeerStats` shows that the pages those faults touched
@@ -604,12 +604,12 @@ came from the source. A fault on a page that the guest has not reached and that
 only the source holds is also served by the source. The suite compares what the
 source serves byte for byte against what the destination's own checkpoint
 holds. After `Release`, the same fault path reads the volume, the peer count
-stops increasing, and the region never asks that source again. The suite
+stops increasing, and the memory region never asks that source again. The suite
 reports:
 
 - the stop-to-resume pause;
-- how many pages of each region the handoff named as unpublished;
-- the peer and volume page counts of every region.
+- how many pages of each memory region the handoff named as unpublished;
+- the peer and volume page counts of every memory region.
 
 ### Page payload compression
 

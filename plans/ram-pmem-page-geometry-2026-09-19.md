@@ -74,7 +74,7 @@ performance work and must preserve the 4 KiB ownership contract.
 memfd is sized to the first: `Config.ArenaOffsets` is the address space,
 `Config.ResidentPages` the capacity, and the file is sparse, so an offset costs
 nothing until a page is put there and `Release` punches it back out. The
-supervisor sizes RAM's offset space at one extent per range any region it admits
+supervisor sizes RAM's offset space at one extent per range any memory region it admits
 may write into — `LogicalPages`, a range being 512 pages and an extent 512
 offsets — plus `ResidentPages` for the read-ahead runs; PMEM keeps its offsets
 and its pages one number. ATTACH's length is that offset space rather than the
@@ -83,8 +83,8 @@ capacity, which is a change of meaning, so the mapping protocol is at
 
 `slots.Space` carves the offsets past its pages into aligned extents and hands
 them out and takes them back whole; a page put in one moves the page budget and
-not the address. The host keeps an extent per `(region, range)` and gives it
-back when its last page goes, so a region owns an extent for exactly as long as
+not the address. The host keeps an extent per `(memoryRegion, range)` and gives it
+back when its last page goes, so a memory region owns an extent for exactly as long as
 it has a page in that range. All three rules and the backstop are in
 `internal/vmmemory/placement.go` and `rules.go`, counted in
 `placement_test.go`, `rules_test.go` and `internal/simtest/placement_test.go`,
@@ -131,7 +131,7 @@ mean a copy and a fence in the middle of an upload; so does a page a migration
 destination loads privately from the host that still holds it, which arrives in
 a run like any other load. And the backstop makes the range the guest is writing
 in whole rather than the range with the most mappings: the pager does not count
-a region's mappings — the client does, which is what refuses the command — and
+a memory region's mappings — the client does, which is what refuses the command — and
 the range the store is in is the one whose alternations that store is adding to.
 
 Every separately mapped run of a guest's RAM is a mapping in its VMM process,
@@ -147,7 +147,7 @@ the moment the guest is busiest, and has to search every range for the one to
 merge. It is three rules that hold all the time, and a budget behind them.
 
 - **A private page lives at its own offset.** Each 2 MiB-aligned range of a
-  region that holds a private page has one private extent in the RAM arena, 2 MiB
+  memory region that holds a private page has one private extent in the RAM arena, 2 MiB
   of arena offsets of which only the pages stored into hold memory, and a
   private page of that range is put at the offset within the extent that it has
   within the range. Private pages that are adjacent in the guest are then
@@ -174,14 +174,14 @@ merge. It is three rules that hold all the time, and a budget behind them.
   `memprobe 16` wrote into, 8 held 75 %, and the cost would have been 1 MiB. The
   other ranges are barely touched — a median of 8 to 52 pages of 512 — and they
   are what a 4 KiB page is for.
-- **The budget is a backstop.** A region still counts its mappings against a
+- **The budget is a backstop.** A memory region still counts its mappings against a
   budget below the kernel's cap, and a store that would pass it makes the range
   with the most mappings private first. It is expected never to act, and a
   counter says when it has.
 
 **`gap` is 16 pages.** It was to be measured rather than chosen, and it now is.
 The fan-out records where a fork's private pages lie, not only how many each
-range holds: `fork_ram_geometry` carries, per region, the number of private
+range holds: `fork_ram_geometry` carries, per memory region, the number of private
 runs, a histogram of their lengths, a histogram of the gaps between consecutive
 runs of one range, how many ranges hold a private page and how many are at least
 half private, in the fixed buckets 1, 4, 16, 64, 256 and 512 pages
@@ -211,7 +211,7 @@ by the mappings, the protect commands and the pause of the codex workload with
 the rules on and off.
 
 **What had to change first, and was not known when this was written — done.**
-The placement rule needs an arena whose *offsets* are not its *pages*. A region's
+The placement rule needs an arena whose *offsets* are not its *pages*. A memory region's
 range that holds one private page owns 512 consecutive arena offsets, of which
 one holds memory, so the offsets a host's guests need are bounded by the ranges
 they have written into and not by the memory the arena may hold: at the
@@ -303,13 +303,13 @@ memory savings and workload time together.
 
 1. **Establish the comparison.** *Done, except the baseline.* `Host.Sharing`
    reports unique resident bytes, mapped resident bytes and the difference,
-   split by RAM and PMEM; a region carries its kind, stated by whoever attaches
-   it. `RegionStats` adds the resident pages another region maps, and the host
-   adds a VM's private bytes up across its regions for `/status`, `/metrics` and
-   the VM listing. The gauges count every alias, including two regions of one VM,
+   split by RAM and PMEM; a memory region carries its kind, stated by whoever attaches
+   it. `MemoryRegionStats` adds the resident pages another memory region maps, and the host
+   adds a VM's private bytes up across its memory regions for `/status`, `/metrics` and
+   the VM listing. The gauges count every alias, including two memory regions of one VM,
    and resident sharing only: inheritance of pages neither VM has faulted in is
    not in them. `Stats.IdentityHits` and `Stats.CopyOnWrites` stay as they were.
-   The fork fan-out records the per-region gauges beside `fork_region_pages`.
+   The fork fan-out records the per-memory-region gauges beside `fork_memory_region_pages`.
    What is left is recording an unchanged baseline with the existing workload
    flow, which needs a KVM host.
 
@@ -361,7 +361,7 @@ memory savings and workload time together.
 3. **Separate pager instances and arenas. Done.** Parameterize
    `internal/vmmemory` by a fixed page size per instance, including its arena,
    spill slots, reservations, identities, read-ahead and buffer bounds. Assemble
-   RAM and PMEM instances in `internal/host`, and route each region to the
+   RAM and PMEM instances in `internal/host`, and route each memory region to the
    correct one. Share the host's byte resource budget without double counting
    its capacities. Audit dirty/logical budget configuration, memory admission,
    pressure callbacks and shutdown for both instances. A checkpoint requested
@@ -370,14 +370,14 @@ memory savings and workload time together.
    **What was built.** `vmmemory.Config.PageSize` is a pager instance's page,
    validated by `checkpoint.GeometryFor` so that a pager and the volumes it maps
    cannot disagree about what a page number means; the package constant is gone
-   and every arena slot, spill slot, budget, buffer, gauge conversion, region
+   and every arena slot, spill slot, budget, buffer, gauge conversion, memory region
    check and fault calculation reads the instance's. `vmmemory.Pagers` is a
    host's pager per kind, and `internal/host`, `internal/vmmachine` and
-   `internal/simtest` route each region to the pager of its kind. The host
+   `internal/simtest` route each memory region to the pager of its kind. The host
    answers both pagers' pressure through the same three callbacks, which act on
-   the VM a region belongs to: one pause seals every region it maps in both
+   the VM a memory region belongs to: one pause seals every memory region it maps in both
    pagers, its loss window is the oldest unpublished write across both, and a
-   stall in either stops that VM alone. `Host.AdmitRegions` charges each region
+   stall in either stops that VM alone. `Host.AdmitMemoryRegions` charges each memory region
    to its own pager's cap, `Status.LogicalPagesFree` reports the two apart, and
    `hostapi.Pager` became a report per kind with byte totals across them; every
    pager metric now carries the `kind` label it already had on the sharing
@@ -423,15 +423,15 @@ memory savings and workload time together.
 
    **What was built.** The geometry is the session's, stated on the wire.
    Mapping protocol **version 7** moves the page out of the version and into
-   ATTACH, which now carries this region's page size and the kind of memory its
+   ATTACH, which now carries this memory region's page size and the kind of memory its
    arena is made of — 1 for an explicit 2 MiB HugeTLB memfd, 2 for an ordinary
    shared memfd — beside the arena and the mapping-count budget. The pager
    refuses a page this transport does not map and an arena whose slot is not its
    own page; the client refuses a page it does not map, an arena kind that is
    not the page's, a descriptor whose filesystem is not what was claimed, and a
-   region of its own that is not whole pages of it, all before it exposes an
+   memory region of its own that is not whole pages of it, all before it exposes an
    address to the VMM. A version 6 peer fails on the version. The client reserves
-   its region at the larger of the two pages before the attachment arrives, which
+   its memory region at the larger of the two pages before the attachment arrives, which
    is aligned for both, so the frame order did not change; `vmwire` split into a
    portable half, so the frames and the geometry checks are tested anywhere.
 
@@ -452,14 +452,14 @@ memory savings and workload time together.
    is counted in it. The UFFD negotiates HugeTLB *and* shmem missing, minor and
    write-protect features together, because a host runs a pager of each kind, and
    names the ones a kernel lacks by asking a second descriptor what it supports.
-   A trap range prepared out of the middle of the region keeps its phase within
+   A trap range prepared out of the middle of the memory region keeps its phase within
    the larger page, so a revoked 4 KiB page still merges with the traps around it
    instead of costing a mapping.
 
    **Firecracker.** Managed RAM takes no `huge_pages` setting at all — the pager
    owns that memory and states its page when the session attaches — on the boot
    path and the restore path alike, and `volume_ranges` checks the guest's
-   regions against the page the session states rather than a constant. PMEM is
+   memory regions against the page the session states rather than a constant. PMEM is
    unchanged. Snapshot save and restore of a managed VM are unchanged and pass.
 
    **The settle, and the defect this uncovered.** Qualifying at 4 KiB found a
@@ -501,18 +501,18 @@ memory savings and workload time together.
 
    And a capture of **2,204,672 sealed RAM pages paused 2.14 s**, of which
    0.18 s was its 2,264 protect commands and 1.97 s — 0.9 µs a page — was the
-   seal's per-page bookkeeping. The pause is the commands now. The region keeps
+   seal's per-page bookkeeping. The pause is the commands now. The memory region keeps
    its dirty set as runs as well as as pages, so the seal reads O(runs) and
    write-protects them, takes the whole set in one step and returns; the walk
    that moves each page into the checkpoint runs afterwards, with the guest
-   already running, holding the region the seal took. Only a fault of that
-   region waits for it, and `seal_walk_ns` is what it took. Because the seal no
-   longer holds the pages' locks, the region carries a protection lock that keeps
+   already running, holding the memory region the seal took. Only a fault of that
+   memory region waits for it, and `seal_walk_ns` is what it took. Because the seal no
+   longer holds the pages' locks, the memory region carries a protection lock that keeps
    its write-protect commands apart from the one thing that can take a mapping
    away meanwhile: a reclaim revoking its victim.
 
 5. **Carry geometry through handoff and migration.** Make page size a property
-   of each served volume/region rather than the whole page server. Update
+   of each served volume/memory region rather than the whole page server. Update
    request validation, page numbering, resident listings, unpublished runs,
    transfer completion and destination checks in `internal/vmmigrate`.
    Bound requests and in-flight data in bytes, allowing batches of 4 KiB RAM
@@ -538,7 +538,7 @@ memory savings and workload time together.
    | Sparse — half the pages never written | 257 reads, 1,062,050 B | **2** |
 
    End to end through the pager, a cold read-ahead run of 512 RAM pages — one
-   `Region.Fault` on a VM a second host has just opened — went from **513
+   `MemoryRegion.Fault` on a VM a second host has just opened — went from **513
    requests to 2**. A run of one checkpoint's pages crossing a page-table
    segment boundary is 3: the segment boundary is a boundary of the page table,
    not of the part. A run spread over N parts is one request per part, fetched
@@ -594,7 +594,7 @@ memory savings and workload time together.
    **What the pager was not asking for.** The grouping above is what a run
    costs *if the run is asked for*, and until 2026-09-22 the pager never asked
    for one. A fault's plan read each stretch of consecutive pages it had
-   reserved with a backing read of its own, so the pages a region already held —
+   reserved with a backing read of its own, so the pages a memory region already held —
    the ones its populate mapped, and every page a sibling fork had made resident
    — cut a window into stretches and each stretch paid its own request per part.
    The fork fan-out measured on GCE that day spent 8,660 loads bringing 31,867
@@ -637,7 +637,7 @@ memory savings and workload time together.
    the next checkpoint.
 
    **Why the restriction was wrong.** Write-ahead is only ever reached by
-   `Region.storeFresh`, which serves a store into a hole or a zero mapping.
+   `MemoryRegion.storeFresh`, which serves a store into a hole or a zero mapping.
    Neither has a resident page or a page identity, so nothing shares them and a
    run of them takes no sharing away from anybody — the reasoning that disabled
    it for RAM is about pages a checkpoint published, which this path never
@@ -676,7 +676,7 @@ memory savings and workload time together.
 
    **Proved by exact counts.** `TestZeroWriteAheadPagesTheGuestNeverStoredIntoAreGivenBack`
    runs the worst pattern for the run — the guest stores into one page of every
-   512 of a 4,096-page region of holes — and requires 8 faults, 8 private runs,
+   512 of a 4,096-page memory region of holes — and requires 8 faults, 8 private runs,
    8 mapping commands, no revocation and no volume read; 4,096 private pages and
    4,096 dirty; then, across the checkpoint, 4,096 sealed pages, 4,088 of them
    write-ahead zeros, 8 pages and 32,768 bytes published, and afterwards 0 dirty
@@ -686,7 +686,7 @@ memory savings and workload time together.
    In the simulation, `TestZeroWriteAheadPublishesOnlyWhatTheGuestStored` runs
    the same pattern through a cold-started VM on the deployment's own stack and
    requires the byte model to hold through the guest's mappings and through the
-   volume, with the host holding the whole region privately before the checkpoint
+   volume, with the host holding the whole memory region privately before the checkpoint
    and nothing after it. `internal/host/pager_test.go` pins both pagers' runs and
    the dirty-budget bound, on either platform.
 

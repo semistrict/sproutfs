@@ -154,7 +154,7 @@ func TestPagesBoundWhatAnOffsetSpaceGivesOut(t *testing.T) {
 
 // A space with room past its pages carves that room into extents: aligned runs
 // of consecutive offsets handed out and taken back whole, which is what lets a
-// region put every private page of one 2 MiB range at the offset it has within
+// memory region put every private page of one 2 MiB range at the offset it has within
 // the range.
 func TestExtentsAreWholeRunsOfConsecutiveOffsets(t *testing.T) {
 	// Eight pages of ordinary offsets, then four extents of sixteen.

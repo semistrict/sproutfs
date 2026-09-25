@@ -40,7 +40,7 @@ and nothing releases a pin. The record changes only by conditional write. See
 **Checkpoint**: Both the operation that makes a running VM durable and the
 objects that operation leaves in the store. The operation has these steps:
 
-1. The vCPUs pause while the VMM state is saved and every region's dirty pages
+1. The vCPUs pause while the VMM state is saved and every memory region's dirty pages
    are sealed.
 2. The guest resumes.
 3. The sealed pages stream out as parts.
@@ -105,7 +105,7 @@ to each other. So a pager's cold 2 MiB read-ahead run of 512 4 KiB pages takes
 two requests instead of one per page: one for the segment that locates the
 pages, and one for the extent that holds them.
 
-**Seal**: Removing the guest's write access to a region's dirty pages in place.
+**Seal**: Removing the guest's write access to a memory region's dirty pages in place.
 Those pages then belong to the checkpoint while the guest keeps running.
 Nothing is copied and no bytes move. A later store into a sealed page copies
 only that page. So the pause is only page-table work.
@@ -158,8 +158,8 @@ host memory. In host memory, pages with the same identity share one resident
 page within a pager.
 
 **Resident page**: The physical backing of one page in one of a host's pagers.
-Several regions with the same page identity can share it. A host runs one pager
-per kind of region: one for its guests' RAM and one for their PMEM disks. Each
+Several memory regions with the same page identity can share it. A host runs one pager
+per kind of memory region: one for its guests' RAM and one for their PMEM disks. Each
 pager has its own arena, spill file and page size: 2 MiB for PMEM, and 2 MiB
 for RAM by default or 4 KiB when configured. So a page count from one pager says nothing about the other, and
 everything a host reports across both pagers is in bytes. An arena's memory

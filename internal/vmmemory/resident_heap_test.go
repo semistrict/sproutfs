@@ -31,7 +31,7 @@ func TestAResidentPageCostsLittleHeap(t *testing.T) {
 	// on purpose, so this is a bound on the ordinary one.
 	f := newConfiguredFixture(t, vmmemory.Config{PageSize: checkpoint.PageSize4KiB, ResidentPages: residentHeapPages,
 		LogicalPages: residentHeapPages, DirtyPages: 8, ReadAheadPages: 512})
-	r, m, _ := f.region(residentHeapPages)
+	r, m, _ := f.memoryRegion(residentHeapPages)
 	runtime.MemProfileRate = 64
 	var before, after runtime.MemStats
 	runtime.GC()

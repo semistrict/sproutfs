@@ -616,7 +616,7 @@ func TestMetricsExposeThePagerAndTheStore(t *testing.T) {
 
 // How much sharing the pager is retaining is a gauge and the counter beside it
 // is not: the counter only ever rises, so a host whose guests have all diverged
-// reads the same as one whose guests share everything. The two kinds of region
+// reads the same as one whose guests share everything. The two kinds of memory region
 // are separate series, because they are separate things to plan for.
 func TestMetricsExposeTheSharingGauges(t *testing.T) {
 	fake := &fakeHost{status: hostapi.Status{

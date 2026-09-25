@@ -40,7 +40,7 @@ compaction grace) and the pack format 1 (versioned trailer and table).
    reconciles pins against live descendants.
 3. **Fork of a fork dies at restore, silently.** Root cause: the host's
    logical-page cap (`LogicalPages`, 8 × arena) refuses the sixth workload
-   VM's PMEM region after admitting its RAM; the pager closes the socket
+   VM's PMEM memory region after admitting its RAM; the pager closes the socket
    before ATTACH and logs nothing; Firecracker reports an orderly close as
    "expected exactly one backing descriptor"; `vmmachine.Start` returns the
    HTTP error before reading the connect errors. Fix: distinguish EOF in
@@ -84,12 +84,12 @@ Memory and migration:
 - Seal blocks on page locks held across eviction I/O (unchanged).
 - The 30 s seal timeout on both sides, the VMM's timer starting first, kills
   the guest instead of failing the checkpoint (unchanged).
-- One sealed region disables pressure-driven checkpoints host-wide: `relief`
-  returns at the first draining region, and a fork hold counts.
-- A migration failing after the first region's handoff restarts the
+- One sealed memory region disables pressure-driven checkpoints host-wide: `relief`
+  returns at the first draining memory region, and a fork hold counts.
+- A migration failing after the first memory region's handoff restarts the
   checkpoint loop on a half-released VM; nothing inspects `ErrStopped`
   (unchanged).
-- The retire holds the region exclusively for the whole dirty set.
+- The retire holds the memory region exclusively for the whole dirty set.
 
 Control plane:
 - In-flight table rows are never aged; an orchestrator restart mid-migration

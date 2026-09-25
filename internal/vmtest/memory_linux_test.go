@@ -44,7 +44,7 @@ type process struct {
 	done   chan struct{}
 	err    error
 	stderr *lockedBuffer
-	// clients is one session per region, as a VMM's RAM and each of its PMEM
+	// clients is one session per memory region, as a VMM's RAM and each of its PMEM
 	// devices are their own session.
 	clients [2]*pagerClient
 	base    [2]uint64
@@ -89,7 +89,7 @@ func startClient(t *testing.T, pager *pager, pages int) *process {
 	}()
 	go func() { p.err = cmd.Wait(); close(p.done) }()
 	t.Cleanup(func() { input.Close(); cmd.Process.Kill(); <-p.done })
-	// The client connects its sessions in region order.
+	// The client connects its sessions in memory region order.
 	for i := range listeners {
 		p.clients[i], err = pager.accept(listeners[i], i)
 		if err != nil {
@@ -136,19 +136,19 @@ func (p *process) expect(want string) {
 	}
 }
 
-func (p *process) read(kind string, region, offset, length int, want byte) {
+func (p *process) read(kind string, memoryRegion, offset, length int, want byte) {
 	p.t.Helper()
-	p.send(fmt.Sprintf("%s %d %d %d", kind, region, offset, length))
+	p.send(fmt.Sprintf("%s %d %d %d", kind, memoryRegion, offset, length))
 	p.expect("data " + hex.EncodeToString(bytes.Repeat([]byte{want}, length)))
 }
 
-func (p *process) fill(region, offset, length int, value byte) {
+func (p *process) fill(memoryRegion, offset, length int, value byte) {
 	p.t.Helper()
-	p.send(fmt.Sprintf("fill %d %d %d %d", region, offset, length, value))
+	p.send(fmt.Sprintf("fill %d %d %d %d", memoryRegion, offset, length, value))
 	p.expect("filled")
 }
 
-func pfn(t *testing.T, p *process, region, offset int) uint64 {
+func pfn(t *testing.T, p *process, memoryRegion, offset int) uint64 {
 	t.Helper()
 	f, err := os.Open(fmt.Sprintf("/proc/%d/pagemap", p.cmd.Process.Pid))
 	if err != nil {
@@ -156,7 +156,7 @@ func pfn(t *testing.T, p *process, region, offset int) uint64 {
 	}
 	defer f.Close()
 	var b [8]byte
-	if _, err := f.ReadAt(b[:], int64((p.base[region]+uint64(offset))/uint64(os.Getpagesize())*8)); err != nil {
+	if _, err := f.ReadAt(b[:], int64((p.base[memoryRegion]+uint64(offset))/uint64(os.Getpagesize())*8)); err != nil {
 		t.Fatal(err)
 	}
 	entry := binary.LittleEndian.Uint64(b[:])
@@ -188,45 +188,45 @@ func checkPager(t *testing.T, p *pager) {
 func TestSharedCOWSpillRefault(t *testing.T) {
 	p := newPager(t, 16)
 	a, b := startClient(t, p, 1), startClient(t, p, 1)
-	for region := range 2 {
-		original, changed, sibling := byte(17+region*17), byte(161+region), byte(201+region)
-		a.read("read", region, 0, p.pageSize, original)
-		b.read("read", region, 0, p.pageSize, original)
-		if pfn(t, a, region, 0) != pfn(t, b, region, 0) {
+	for memoryRegion := range 2 {
+		original, changed, sibling := byte(17+memoryRegion*17), byte(161+memoryRegion), byte(201+memoryRegion)
+		a.read("read", memoryRegion, 0, p.pageSize, original)
+		b.read("read", memoryRegion, 0, p.pageSize, original)
+		if pfn(t, a, memoryRegion, 0) != pfn(t, b, memoryRegion, 0) {
 			t.Fatal("unchanged data is not physically shared")
 		}
-		a.fill(region, 0, p.pageSize, changed)
-		a.read("read", region, 0, p.pageSize, changed)
-		b.read("read", region, 0, p.pageSize, original)
-		if pfn(t, a, region, 0) == pfn(t, b, region, 0) {
+		a.fill(memoryRegion, 0, p.pageSize, changed)
+		a.read("read", memoryRegion, 0, p.pageSize, changed)
+		b.read("read", memoryRegion, 0, p.pageSize, original)
+		if pfn(t, a, memoryRegion, 0) == pfn(t, b, memoryRegion, 0) {
 			t.Fatal("private write still shares its physical page")
 		}
 		p.mu.Lock()
-		oldSlot := a.clients[region].aliases[0].page.slot
+		oldSlot := a.clients[memoryRegion].aliases[0].page.slot
 		p.mu.Unlock()
 		before := allocated(t, p)
-		if err := p.evict(a.clients[region], 0); err != nil {
+		if err := p.evict(a.clients[memoryRegion], 0); err != nil {
 			t.Fatal(err)
 		}
 		if after := allocated(t, p); before-after < int64(p.pageSize) {
 			t.Fatalf("eviction did not release backing memory: before=%d after=%d", before, after)
 		}
 		// Reuse the actual freed slot for different contents before refault.
-		b.fill(region, 0, p.pageSize, sibling)
+		b.fill(memoryRegion, 0, p.pageSize, sibling)
 		p.mu.Lock()
-		reused := b.clients[region].aliases[0].page.slot
+		reused := b.clients[memoryRegion].aliases[0].page.slot
 		p.mu.Unlock()
 		if reused != oldSlot {
 			t.Fatalf("test did not exercise slot reuse: old=%d new=%d", oldSlot, reused)
 		}
-		a.read("read", region, 0, p.pageSize, changed)
-		b.read("read", region, 0, p.pageSize, sibling)
+		a.read("read", memoryRegion, 0, p.pageSize, changed)
+		b.read("read", memoryRegion, 0, p.pageSize, sibling)
 		// Write after swap-in, then evict again: old spill contents must not win.
-		a.fill(region, 0, p.pageSize, changed+1)
-		if err := p.evict(a.clients[region], 0); err != nil {
+		a.fill(memoryRegion, 0, p.pageSize, changed+1)
+		if err := p.evict(a.clients[memoryRegion], 0); err != nil {
 			t.Fatal(err)
 		}
-		a.read("read", region, 0, p.pageSize, changed+1)
+		a.read("read", memoryRegion, 0, p.pageSize, changed+1)
 	}
 	checkPager(t, p)
 }

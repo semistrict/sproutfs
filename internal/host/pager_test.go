@@ -45,7 +45,7 @@ func TestBothPagersGetRunsOfTheSameSizeInTheirOwnPages(t *testing.T) {
 }
 
 // An offset is an address and a page is memory. RAM places a private page at
-// the offset it has within its range, so every 2 MiB range a region may write
+// the offset it has within its range, so every 2 MiB range a memory region may write
 // into owns 512 consecutive offsets of which only the stored pages hold memory:
 // the offsets a pager needs are one extent per range of everything it may map —
 // which is `LogicalPages`, since a range is 512 pages and an extent 512 offsets
@@ -78,7 +78,7 @@ func TestRAMsOffsetSpaceCoversAnExtentPerRangeItMayWriteInto(t *testing.T) {
 // one page. It is the budget that decides, not the kind: RAM writes ahead for
 // the same reason PMEM does, because fresh zeros are shared with nobody.
 func TestASmallDirtyBudgetKeepsWriteAheadAtOnePage(t *testing.T) {
-	for _, kind := range []vmmemory.RegionKind{vmmemory.Ram, vmmemory.Pmem} {
+	for _, kind := range []vmmemory.MemoryRegionKind{vmmemory.Ram, vmmemory.Pmem} {
 		pageSize := PMEMPageSize
 		if kind == vmmemory.Ram {
 			pageSize = int(DefaultRAMPageSize)

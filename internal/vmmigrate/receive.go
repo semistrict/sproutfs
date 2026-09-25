@@ -18,31 +18,31 @@ import (
 )
 
 // StartFunc builds and starts the VMM the destination resumes. It is given the
-// VM this host opened, one backing per region keyed by the volume that region
+// VM this host opened, one backing per memory region keyed by the volume that memory region
 // maps — each the source host that still holds those pages, with the
 // destination's own volume behind it — and the VMM state the source captured.
 // It returns a running process.
 //
-// Every backing must be the one its region attaches with, which for a
+// Every backing must be the one its memory region attaches with, which for a
 // Firecracker supervisor is vmmachine.Config.Backings. The volume stays the
-// region's identity; only what the pager loads through changes. A start that
+// memory region's identity; only what the pager loads through changes. A start that
 // drops these binds the destination to its own volumes, and then no fault ever
 // reaches the source: the post-copy becomes a cold read of the checkpoint.
 //
 // The supervisor stays the caller's: this package never imports vmmachine.
 type StartFunc func(ctx context.Context, vm *volume.VM, backings map[string]vmmemory.Backing, state []byte) (Runtime, error)
 
-// inheritedBacking is what one region of a received VM faults through while the
+// inheritedBacking is what one memory region of a received VM faults through while the
 // pages only its source had reach it. There are two, and they differ in nothing
 // but how those pages get here: PeerBacking fetches them from the host that
 // still holds them, and localBacking maps them, because that host is this one.
 //
 // Done means the same thing for both — the VM holds every page only its source
 // had — which for a peer is the end of the fetch and for a local backing is
-// true the moment the region attaches.
+// true the moment the memory region attaches.
 type inheritedBacking interface {
 	vmmemory.Backing
-	// Unpublished is what this region must have before the source may stop
+	// Unpublished is what this memory region must have before the source may stop
 	// serving, in the pages the handoff named. A backing that already holds
 	// them names none.
 	Unpublished() []PageRun
@@ -51,7 +51,7 @@ type inheritedBacking interface {
 	// Resident is the rest of what the source holds, streamed behind the
 	// running guest as an optimization.
 	Resident(ctx context.Context) ([]PageRun, error)
-	// Concurrency is how many requests this region may have in flight at once.
+	// Concurrency is how many requests this memory region may have in flight at once.
 	Concurrency() int
 	Stats() PeerStats
 	Close() error
@@ -60,7 +60,7 @@ type inheritedBacking interface {
 // localBacking is what a fork's child attaches over when its parent runs on
 // this host: the child's own volume, with the parent's sealed pages offered to
 // the pager under the identity the point gives them. Every page the child
-// inherited is therefore present as a shared page the moment the region
+// inherited is therefore present as a shared page the moment the memory region
 // attaches — no byte is copied, nothing is fetched, and the pages the parent
 // holds that no checkpoint has are exactly as reachable as the published ones.
 //
@@ -98,7 +98,7 @@ func (localBacking) Close() error { return nil }
 // ReceiveStats reports what a destination has taken over.
 type ReceiveStats struct {
 	// PeerPages is what the source host served and VolumePages what this host
-	// read from its own volumes and checkpoints, summed over every region.
+	// read from its own volumes and checkpoints, summed over every memory region.
 	PeerPages, VolumePages int64
 	// Streamed is how many of the source's resident pages the background stream
 	// has faulted in, and Complete reports that it finished.
@@ -109,16 +109,16 @@ type ReceiveStats struct {
 	// only when the two are equal: every other page of it is in object storage
 	// and this host can read it whenever it likes.
 	Unpublished, Fetched int64
-	// Requests is every request this VM's regions sent to the source and
+	// Requests is every request this VM's memory regions sent to the source and
 	// Refusals how many of them it answered BUSY, which is a destination
 	// queueing behind the source's per-peer budget rather than anything wrong.
 	// A post-copy whose requests are mostly refusals is one sharing its source
-	// with another destination region. Stalls is every read that went on
+	// with another destination memory region. Stalls is every read that went on
 	// waiting for the source past a few seconds, which is a guest thread — or
 	// this stream — stopped for that long.
 	Requests, Refusals, Stalls int64
 	// Latency is how long requests to the source took, summed over every
-	// region: guest faults and the post-copy stream apart.
+	// memory region: guest faults and the post-copy stream apart.
 	Latency RequestLatency
 	// PausedAt is when the source stopped its guest and ResumedAt when this host
 	// resumed it. Their difference is the migration's pause.
@@ -237,7 +237,7 @@ func (r *Received) Close() {
 }
 
 // Receive runs the destination's half of a live migration: it opens the VM,
-// which takes the control record's epoch over, binds every region to the source
+// which takes the control record's epoch over, binds every memory region to the source
 // host that still holds its pages, starts the VMM from the captured state, and
 // streams the source's resident set in behind the running guest.
 //
@@ -247,7 +247,7 @@ func (r *Received) Close() {
 // published while the guest was stopped, so nothing the guest wrote is behind
 // it.
 func Receive(ctx context.Context, manager *volume.Manager, handoff Handoff, dial Dialer, start StartFunc, opts Options) (*Received, error) {
-	if manager == nil || start == nil || dial == nil || handoff.VMID == "" || len(handoff.Regions) == 0 {
+	if manager == nil || start == nil || dial == nil || handoff.VMID == "" || len(handoff.MemoryRegions) == 0 {
 		return nil, fmt.Errorf("%w: a receive needs a manager, a handoff, a dialer and a start", ErrInvalid)
 	}
 	vm, err := open(ctx, manager, handoff, opts.Point)
@@ -310,7 +310,7 @@ func open(ctx context.Context, manager *volume.Manager, handoff Handoff, point *
 
 func attach(ctx context.Context, vm *volume.VM, handoff Handoff, dial Dialer, start StartFunc,
 	point *volume.ForkPoint, clock platform.Clock) (*Received, error) {
-	// The point's pages are offered to this host's pager before any region
+	// The point's pages are offered to this host's pager before any memory region
 	// attaches, which is what makes every page the child inherited present
 	// rather than fetched. It is the local backing's whole attach.
 	if point != nil {
@@ -318,17 +318,17 @@ func attach(ctx context.Context, vm *volume.VM, handoff Handoff, dial Dialer, st
 			return nil, fmt.Errorf("offering the point %s inherits: %w", handoff.VMID, err)
 		}
 	}
-	backings := make(map[string]inheritedBacking, len(handoff.Regions))
-	supplied := make(map[string]vmmemory.Backing, len(handoff.Regions))
-	for _, region := range handoff.Regions {
-		v := vm.Volume(region.Name)
-		if v == nil || (v.Size() != region.Size && !sim.Bug(ctx, "migration-accept-wrong-size")) {
+	backings := make(map[string]inheritedBacking, len(handoff.MemoryRegions))
+	supplied := make(map[string]vmmemory.Backing, len(handoff.MemoryRegions))
+	for _, memoryRegion := range handoff.MemoryRegions {
+		v := vm.Volume(memoryRegion.Name)
+		if v == nil || (v.Size() != memoryRegion.Size && !sim.Bug(ctx, "migration-accept-wrong-size")) {
 			return nil, fmt.Errorf("%w: %s has no volume %s of %d bytes",
-				ErrInvalid, handoff.VMID, region.Name, region.Size)
+				ErrInvalid, handoff.VMID, memoryRegion.Name, memoryRegion.Size)
 		}
 		var backing inheritedBacking
 		if point != nil {
-			backing = localBacking{Volume: v, inherited: region.Unpublished}
+			backing = localBacking{Volume: v, inherited: memoryRegion.Unpublished}
 		} else {
 			// The page these numbers are in is this volume's own, which both
 			// hosts read out of the same durable geometry: the handoff's page
@@ -337,13 +337,13 @@ func attach(ctx context.Context, vm *volume.VM, handoff Handoff, dial Dialer, st
 			// a fork: a child has published nothing of its own, and the pages it
 			// inherited name its parent. See PeerBacking.Locate.
 			peer, err := NewPeerBacking(PeerConfig{Volume: v, Peer: handoff.Source, VM: handoff.VMID,
-				Unpublished: region.Unpublished, Selected: handoff.Checkpoint, Dial: dial, Clock: clock})
+				Unpublished: memoryRegion.Unpublished, Selected: handoff.Checkpoint, Dial: dial, Clock: clock})
 			if err != nil {
 				return nil, err
 			}
 			backing = peer
 		}
-		backings[region.Name], supplied[region.Name] = backing, backing
+		backings[memoryRegion.Name], supplied[memoryRegion.Name] = backing, backing
 	}
 	drop := func() {
 		for _, backing := range backings {
@@ -355,18 +355,18 @@ func attach(ctx context.Context, vm *volume.VM, handoff Handoff, dial Dialer, st
 		drop()
 		return nil, err
 	}
-	// A machine that does not map every region the source had is not this VM,
-	// whatever it started from: the region it lacks would fault from nowhere. It
+	// A machine that does not map every memory region the source had is not this VM,
+	// whatever it started from: the memory region it lacks would fault from nowhere. It
 	// is closed rather than run.
-	regions := runtime.Regions()
-	for _, region := range handoff.Regions {
-		if regions[region.Name] == nil && !sim.Bug(ctx, "migration-accept-missing-region") {
+	memoryRegions := runtime.MemoryRegions()
+	for _, memoryRegion := range handoff.MemoryRegions {
+		if memoryRegions[memoryRegion.Name] == nil && !sim.Bug(ctx, "migration-accept-missing-memory-region") {
 			if closeErr := runtime.Close(); closeErr != nil {
-				slog.WarnContext(ctx, "vmmigrate: closing a machine that did not map every region",
+				slog.WarnContext(ctx, "vmmigrate: closing a machine that did not map every memory region",
 					"vm", handoff.VMID, "error", closeErr)
 			}
 			drop()
-			return nil, fmt.Errorf("%w: the started machine has no region %s", ErrInvalid, region.Name)
+			return nil, fmt.Errorf("%w: the started machine has no memory region %s", ErrInvalid, memoryRegion.Name)
 		}
 		// The loss window came over with the pages. Dating them from the
 		// source's own measurement rather than from this arrival is what keeps a
@@ -374,8 +374,8 @@ func attach(ctx context.Context, vm *volume.VM, handoff Handoff, dial Dialer, st
 		// fresh window would give every migration a whole window more of
 		// unpublished writes, and a VM migrated often enough would never reach
 		// one at all.
-		if mapped := regions[region.Name]; mapped != nil {
-			mapped.SetUnpublishedAge(region.UnpublishedAge)
+		if mapped := memoryRegions[memoryRegion.Name]; mapped != nil {
+			mapped.SetUnpublishedAge(memoryRegion.UnpublishedAge)
 		}
 	}
 	streamCtx, cancel := context.WithCancelCause(context.WithoutCancel(ctx))
@@ -385,17 +385,17 @@ func attach(ctx context.Context, vm *volume.VM, handoff Handoff, dial Dialer, st
 	// counted from the handoff rather than from the backings, so that the pages
 	// only the source had mean the same number whether they were fetched from
 	// it or held here all along.
-	for _, region := range handoff.Regions {
-		for _, run := range region.Unpublished {
+	for _, memoryRegion := range handoff.MemoryRegions {
+		for _, run := range memoryRegion.Unpublished {
 			r.unpublished += int64(run.Count)
 		}
 	}
-	go r.stream(streamCtx, regions)
+	go r.stream(streamCtx, memoryRegions)
 	return r, nil
 }
 
 // stream faults the source's pages in behind the running guest. It goes through
-// the pager's own load path rather than writing pages into the region: that is
+// the pager's own load path rather than writing pages into the memory region: that is
 // what keeps a page shared by identity with every other VM on this host that
 // inherited the same checkpoint, what makes a page the guest faults on first
 // arrive exactly once, and what puts the pages no checkpoint has into this
@@ -405,24 +405,24 @@ func attach(ctx context.Context, vm *volume.VM, handoff Handoff, dial Dialer, st
 // to completion: they exist nowhere else, so the source cannot stop serving
 // until they are here. Everything else follows as an optimization, and a page of
 // it that will not arrive is simply read from object storage later.
-func (r *Received) stream(ctx context.Context, regions map[string]*vmmemory.Region) {
+func (r *Received) stream(ctx context.Context, memoryRegions map[string]*vmmemory.MemoryRegion) {
 	defer close(r.done)
 	func() {
 		defer close(r.held)
-		r.heldErr = r.streamHeld(ctx, regions)
+		r.heldErr = r.streamHeld(ctx, memoryRegions)
 	}()
-	r.streamErr = errors.Join(r.heldErr, r.streamResident(ctx, regions))
+	r.streamErr = errors.Join(r.heldErr, r.streamResident(ctx, memoryRegions))
 }
 
 // streamHeld fetches the pages no checkpoint has. They are what Done waits for,
 // so they come before any published page: a source waiting to shut down is not
-// held up behind bytes it has already put in object storage. Every region is
+// held up behind bytes it has already put in object storage. Every memory region is
 // bound, because attach refused a machine that lacked one.
-func (r *Received) streamHeld(ctx context.Context, regions map[string]*vmmemory.Region) error {
+func (r *Received) streamHeld(ctx context.Context, memoryRegions map[string]*vmmemory.MemoryRegion) error {
 	var errs []error
-	for _, info := range r.handoff.Regions {
+	for _, info := range r.handoff.MemoryRegions {
 		backing := r.backings[info.Name]
-		if err := r.fetch(ctx, regions[info.Name], backing, info.Name, backing.Unpublished()); err != nil {
+		if err := r.fetch(ctx, memoryRegions[info.Name], backing, info.Name, backing.Unpublished()); err != nil {
 			errs = append(errs, err)
 			continue
 		}
@@ -437,9 +437,9 @@ func (r *Received) streamHeld(ctx context.Context, regions map[string]*vmmemory.
 // streamResident fetches the rest of what the source holds, behind the running
 // guest. Every page of it is in object storage as well, so one that will not
 // arrive costs the VM speed rather than correctness.
-func (r *Received) streamResident(ctx context.Context, regions map[string]*vmmemory.Region) error {
+func (r *Received) streamResident(ctx context.Context, memoryRegions map[string]*vmmemory.MemoryRegion) error {
 	var errs []error
-	for _, info := range r.handoff.Regions {
+	for _, info := range r.handoff.MemoryRegions {
 		backing := r.backings[info.Name]
 		resident, err := backing.Resident(ctx)
 		if err != nil {
@@ -448,7 +448,7 @@ func (r *Received) streamResident(ctx context.Context, regions map[string]*vmmem
 		}
 		// The published remainder is what this pass streams, so no page is
 		// faulted, or counted, twice.
-		if err := r.fetch(ctx, regions[info.Name], backing, info.Name, subtractRuns(resident, backing.Unpublished())); err != nil {
+		if err := r.fetch(ctx, memoryRegions[info.Name], backing, info.Name, subtractRuns(resident, backing.Unpublished())); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -457,7 +457,7 @@ func (r *Received) streamResident(ctx context.Context, regions map[string]*vmmem
 
 // subtractRuns reports the pages of runs that remove does not cover. The
 // unpublished set is bounded by the source's dirty budget, so holding it as a
-// set costs a bounded amount however large the region is.
+// set costs a bounded amount however large the memory region is.
 func subtractRuns(runs, remove []PageRun) []PageRun {
 	if len(remove) == 0 {
 		return runs
@@ -484,13 +484,13 @@ func subtractRuns(runs, remove []PageRun) []PageRun {
 	return result
 }
 
-// fetch faults in one region's runs, as many at once as that region's backing
+// fetch faults in one memory region's runs, as many at once as that memory region's backing
 // holds connections for: one page at a time would pay the round trip to the
 // source for every page and leave the other connections idle. The first page
-// that will not load stops this region — the failure is the source's, so the
+// that will not load stops this memory region — the failure is the source's, so the
 // pages behind it would fail the same way — and the fault that took it is what
 // this reports.
-func (r *Received) fetch(ctx context.Context, region *vmmemory.Region, backing inheritedBacking, name string, runs []PageRun) error {
+func (r *Received) fetch(ctx context.Context, memoryRegion *vmmemory.MemoryRegion, backing inheritedBacking, name string, runs []PageRun) error {
 	if len(runs) == 0 {
 		return nil
 	}
@@ -505,7 +505,7 @@ func (r *Received) fetch(ctx context.Context, region *vmmemory.Region, backing i
 	for range max(1, backing.Concurrency()) {
 		wg.Go(func() {
 			for page := range pages {
-				if err := region.Fault(fetchCtx, page, false); err != nil {
+				if err := memoryRegion.Fault(fetchCtx, page, false); err != nil {
 					if fetchCtx.Err() == nil {
 						slog.WarnContext(ctx, "vmmigrate: streaming a page from the source failed",
 							"vm", r.handoff.VMID, "volume", name, "page", page, "error", err)

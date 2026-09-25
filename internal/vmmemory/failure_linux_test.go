@@ -60,10 +60,10 @@ func TestARefusedCommandNamesTheFrameTheClientRefused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A sibling region that has seen its volume's holes is what gives the
+	// A sibling memory region that has seen its volume's holes is what gives the
 	// populate below something to map eagerly, which is the command the client
 	// refuses.
-	sibling, err := h.Attach(t.Context(), vmmemory.RegionBacking{Kind: vmmemory.Ram,
+	sibling, err := h.Attach(t.Context(), vmmemory.MemoryRegionBacking{Kind: vmmemory.Ram,
 		Backing: holeVolume{pages * page}}, seedMapping{})
 	if err != nil {
 		t.Fatal(err)
@@ -97,7 +97,7 @@ func TestARefusedCommandNamesTheFrameTheClientRefused(t *testing.T) {
 	if err := vmwire.SendFD(client, vmwire.Frame{Kind: vmwire.Hello, ID: vmwire.Version}, events); err != nil {
 		t.Fatal(err)
 	}
-	if err := vmwire.Write(client, vmwire.Frame{Kind: vmwire.Region,
+	if err := vmwire.Write(client, vmwire.Frame{Kind: vmwire.MemoryRegion,
 		Flags: uint64(vmmemory.Ram), Length: pages * page, Offset: 2 << 20}); err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +128,7 @@ func TestARefusedCommandNamesTheFrameTheClientRefused(t *testing.T) {
 			}
 		}
 	}()
-	_, err = vmmemory.Connect(t.Context(), h, server, vmmemory.RegionBacking{Kind: vmmemory.Ram,
+	_, err = vmmemory.Connect(t.Context(), h, server, vmmemory.MemoryRegionBacking{Kind: vmmemory.Ram,
 		Backing: holeVolume{pages * page}}, vmmemory.ConnectionConfig{Name: "ram0", QueuePages: 1,
 		FaultWorkers: 1, CommandTimeout: 10 * time.Second, VerifyInterval: time.Hour})
 	if err == nil {

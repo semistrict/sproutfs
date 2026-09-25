@@ -25,7 +25,7 @@ type served struct {
 }
 
 // newServed creates a second VM, stores into the first pages of its RAM without
-// ever flushing them, and registers its regions. The volume therefore reads as
+// ever flushing them, and registers its memory regions. The volume therefore reads as
 // zeroes exactly where the pager holds the guest's bytes, so a test can tell
 // which of the two answered a load.
 func newServed(t *testing.T, source *vmmigrate.PageSource, written int) *served {
@@ -45,7 +45,7 @@ func newServed(t *testing.T, source *vmmigrate.PageSource, written int) *served 
 	if source == nil {
 		source = m.pages
 	}
-	source.Serve("vm-2", vmmigrate.RegionPages(built.Regions()))
+	source.Serve("vm-2", vmmigrate.MemoryRegionPages(built.MemoryRegions()))
 	return &served{migration: m, vm: vm, machine: built, written: written}
 }
 
@@ -121,12 +121,12 @@ func TestPageServerAnswersHeldAndAbsentPagesInOneRequest(t *testing.T) {
 	}
 }
 
-// TestUnknownVolumeFallsBackForGood requires a region the source does not serve
+// TestUnknownVolumeFallsBackForGood requires a memory region the source does not serve
 // to stop asking after the one answer that says so.
 func TestUnknownVolumeFallsBackForGood(t *testing.T) {
 	s := newServed(t, nil, 4)
 	// Only RAM is registered, so the disk is a volume this source does not serve.
-	s.migration.pages.Serve("vm-2", vmmigrate.RegionPages(map[string]*vmmemory.Region{"ram0": s.machine.regions["ram0"]}))
+	s.migration.pages.Serve("vm-2", vmmigrate.MemoryRegionPages(map[string]*vmmemory.MemoryRegion{"ram0": s.machine.memoryRegions["ram0"]}))
 	backing := s.backing(t, nil, "disk")
 	data := make([]byte, 4*pageSize)
 	if err := backing.Load(t.Context(), 0, data); err != nil {
@@ -146,7 +146,7 @@ func TestUnknownVolumeFallsBackForGood(t *testing.T) {
 
 // TestAnUnreachableSourceStillAnswersForThePagesTheCheckpointHolds requires a
 // source that cannot be reached to cost a load the round trip and nothing else.
-// Every page of this region is in a checkpoint this host can read, so there is
+// Every page of this memory region is in a checkpoint this host can read, so there is
 // nothing to wait for: the load reads its volume this time and decides nothing
 // for the next one, which asks again, because a host that cannot be dialed now
 // is not a host that is gone. Only the source's own answer ends the asking.
@@ -183,7 +183,7 @@ func TestAnUnreachableSourceStillAnswersForThePagesTheCheckpointHolds(t *testing
 func TestPageSourceBoundsConnectionsPerPeer(t *testing.T) {
 	s := newServed(t, nil, 4)
 	source := s.migration.pageSource(t, vmmigrate.SourceConfig{MaxConnectionsPerPeer: 1})
-	source.Serve("vm-2", vmmigrate.RegionPages(s.machine.Regions()))
+	source.Serve("vm-2", vmmigrate.MemoryRegionPages(s.machine.MemoryRegions()))
 	first, second := s.backing(t, source, "ram0"), s.backing(t, source, "ram0")
 	data := make([]byte, 4*pageSize)
 	if err := first.Load(t.Context(), 0, data); err != nil {
@@ -215,7 +215,7 @@ func TestPageSourceReusesConnectionBudgetAfterDisconnect(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		s := newServed(t, nil, 4)
 		source := s.migration.pageSource(t, vmmigrate.SourceConfig{MaxConnectionsPerPeer: 1})
-		source.Serve("vm-2", vmmigrate.RegionPages(s.machine.Regions()))
+		source.Serve("vm-2", vmmigrate.MemoryRegionPages(s.machine.MemoryRegions()))
 		want := s.machine.snapshot()["ram0"][:4*pageSize]
 		for attempt := range 4 {
 			backing := s.backing(t, source, "ram0")
@@ -248,7 +248,7 @@ func TestPageSourceReusesConnectionBudgetAfterDisconnect(t *testing.T) {
 func TestBusySourceIsNotAFallback(t *testing.T) {
 	s := newServed(t, nil, 4)
 	source := s.migration.pageSource(t, vmmigrate.SourceConfig{MaxBytesInFlightPerPeer: pageSize})
-	source.Serve("vm-2", vmmigrate.RegionPages(s.machine.Regions()))
+	source.Serve("vm-2", vmmigrate.MemoryRegionPages(s.machine.MemoryRegions()))
 	backing := s.backing(t, source, "ram0")
 	data := make([]byte, 4*pageSize)
 	for range 2 {

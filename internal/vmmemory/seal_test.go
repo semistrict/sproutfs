@@ -18,7 +18,7 @@ import (
 func TestSealProtectsRunsOfDirtyPagesWithoutReplacingTheirMappings(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newFixture(t, 8, 16, 8)
-		r, m, b := f.region(8)
+		r, m, b := f.memoryRegion(8)
 		// Dirtying backwards gives consecutive pages descending slots, which is
 		// exactly the run a mapping command cannot cover but a range protection
 		// can. A real guest's dirty set is at least this fragmented. Each store
@@ -87,12 +87,12 @@ func TestSealProtectsRunsOfDirtyPagesWithoutReplacingTheirMappings(t *testing.T)
 
 // A seal is the vCPU pause, so nothing in it may wait for bytes. A fault
 // blocked in its backing load — a volume read, or a migration source that keeps
-// answering BUSY — holds the region only for the planning and page-table work
+// answering BUSY — holds the memory region only for the planning and page-table work
 // around that read, and the seal runs straight through it.
 func TestSealDoesNotWaitForAFaultsBackingLoad(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newFixture(t, 8, 16, 8)
-		r, m, b := f.region(4)
+		r, m, b := f.memoryRegion(4)
 		// One dirty page, so the seal has a page to take and a protection to
 		// issue rather than nothing to do.
 		access(t, r, m, 0, true)[0] = 41
@@ -149,11 +149,11 @@ func TestSealDoesNotWaitForAnEvictionsSpill(t *testing.T) {
 }
 
 // sealThroughAReclaim runs one fault into a full arena, holds its reclaim in
-// the victim's spill read, and takes a seal of the region meanwhile.
+// the victim's spill read, and takes a seal of the memory region meanwhile.
 func sealThroughAReclaim(t *testing.T, write bool) {
 	t.Helper()
 	f := newFixture(t, 2, 8, 4)
-	r, m, b := f.region(4)
+	r, m, b := f.memoryRegion(4)
 	access(t, r, m, 0, true)[0] = 41
 	access(t, r, m, 1, false)
 	// Page 0 is the least recently used page and the whole dirty set, so the
@@ -197,15 +197,15 @@ func sealThroughAReclaim(t *testing.T, write bool) {
 	}
 }
 
-// A fault gives the region up across its backing read and takes it again, and
+// A fault gives the memory region up across its backing read and takes it again, and
 // what holds that second acquisition up is a seal, a retire or an unseal — page
 // table work, which can itself be waiting on a VMM that is not answering. A
 // fault whose guest is gone must not be stuck behind it: the wait is the
 // caller's to end, exactly like every other wait a fault does.
-func TestAFaultWaitingForTheRegionAfterItsLoadHonoursCancellation(t *testing.T) {
+func TestAFaultWaitingForTheMemoryRegionAfterItsLoadHonoursCancellation(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newFixture(t, 8, 16, 8)
-		r, m, b := f.region(4)
+		r, m, b := f.memoryRegion(4)
 		access(t, r, m, 0, true)[0] = 41 // one dirty page, so the seal has work
 		loading := newGate(t)
 		b.onLoad = func(uint64, int) { loading.stop() }
@@ -214,7 +214,7 @@ func TestAFaultWaitingForTheRegionAfterItsLoadHonoursCancellation(t *testing.T) 
 		faulted := make(chan error, 1)
 		go func() { faulted <- r.Fault(ctx, 2, false) }()
 		loading.reached(t)
-		// The seal takes the region the fault gave up, and holds it in a
+		// The seal takes the memory region the fault gave up, and holds it in a
 		// page-table command that is not coming back.
 		protecting := newGate(t)
 		m.onProtect = func(uint64, int) { protecting.stop() }
@@ -225,7 +225,7 @@ func TestAFaultWaitingForTheRegionAfterItsLoadHonoursCancellation(t *testing.T) 
 		synctest.Wait()
 		cancel()
 		if err := <-faulted; !errors.Is(err, context.Canceled) {
-			t.Fatalf("the cancelled fault waiting for the region back = %v, want the cancellation", err)
+			t.Fatalf("the cancelled fault waiting for the memory region back = %v, want the cancellation", err)
 		}
 		protecting.open()
 		if err := <-sealed; err != nil {
@@ -248,7 +248,7 @@ func TestAFaultWaitingForTheRegionAfterItsLoadHonoursCancellation(t *testing.T) 
 func TestSealInsideAReclaimsAliasWalkKeepsThePagesOnlyCopy(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newFixture(t, 2, 8, 4)
-		r, m, b := f.region(4)
+		r, m, b := f.memoryRegion(4)
 		access(t, r, m, 0, true)[0] = 41
 		access(t, r, m, 1, false)
 		// Page 0 is the least recently used page and the whole dirty set, so
@@ -294,11 +294,11 @@ func TestSealInsideAReclaimsAliasWalkKeepsThePagesOnlyCopy(t *testing.T) {
 //
 // Real parallelism is what makes the two meet, so this runs outside a synctest
 // bubble: four guests store into a two-page arena while a checkpoint of their
-// region is sealed, published and retired in a loop.
+// memory region is sealed, published and retired in a loop.
 func TestSealTakingAReclaimingPagesReservationKeepsItsBytes(t *testing.T) {
 	const pages, steps = 8, 400
 	f := newFixture(t, 2, 32, 24)
-	r, m, b := f.region(pages)
+	r, m, b := f.memoryRegion(pages)
 	var stopped atomic.Bool
 	var wg sync.WaitGroup
 	for page := range uint64(pages) {
@@ -330,7 +330,7 @@ func TestSealTakingAReclaimingPagesReservationKeepsItsBytes(t *testing.T) {
 		wg.Wait()
 		close(guests)
 	}()
-	// A migration source lists what this region holds while it runs, which is
+	// A migration source lists what this memory region holds while it runs, which is
 	// the other reader of the per-page state a seal and a reclaim are handing
 	// between them.
 	go func() {
@@ -352,7 +352,7 @@ func TestSealTakingAReclaimingPagesReservationKeepsItsBytes(t *testing.T) {
 		default:
 		}
 		if err := f.checkpoint(r, b); err != nil {
-			t.Errorf("checkpointing the region the guests are storing into: %v", err)
+			t.Errorf("checkpointing the memory region the guests are storing into: %v", err)
 			stopped.Store(true)
 			<-guests
 			return

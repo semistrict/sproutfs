@@ -385,7 +385,7 @@ func TestConfigRefusesMalformedTemplates(t *testing.T) {
 }
 
 // TestTheDefaultLogicalCapAdmitsTheDeployment. The logical cap is what admits
-// a VM: it bounds per-region metadata and the pager checks it one attachment at
+// a VM: it bounds per-memory-region metadata and the pager checks it one attachment at
 // a time, so a host that runs out of it kills a guest part way through starting
 // one. The deployment the manifests describe gives a host a 5 GiB arena and its
 // workload template gives every VM 2 GiB of RAM over the image's 5 GiB root,
@@ -400,8 +400,8 @@ func TestTheDefaultLogicalCapAdmitsTheDeployment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Each pager holds one kind of region, so each cap is asked about the
-	// regions it would hold: six VMs' RAM against the RAM pager's, six roots
+	// Each pager holds one kind of memory region, so each cap is asked about the
+	// memory regions it would hold: six VMs' RAM against the RAM pager's, six roots
 	// against the PMEM pager's.
 	const ramPagesPerVM = (2 << 30) / (2 << 20)
 	const rootPagesPerVM = (5 << 30) / (2 << 20)

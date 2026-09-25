@@ -33,7 +33,7 @@ type forkHold struct {
 	point  *volume.ForkPoint
 	// local reports a child this host takes in itself, which receives the
 	// handoff over the fork point rather than over the page server. It is what
-	// says the point is the one that Receive binds the child's regions to.
+	// says the point is the one that Receive binds the child's memory regions to.
 	local bool
 	// timer retires the hold when nothing releases it. It is armed on the
 	// host's clock, so a simulation reaches the deadline by advancing to it

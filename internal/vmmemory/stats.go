@@ -31,14 +31,14 @@ type Stats struct {
 	// never reaches the backing, so it is counted apart from the writes below.
 	SpillWrites, SpillWriteBytes            uint64
 	ResidentPages, DirtyPages, LogicalPages int
-	// IdlePages is how many of the resident pages no region maps: published
+	// IdlePages is how many of the resident pages no memory region maps: published
 	// pages whose last mapping went, kept under their identity so the next
-	// region that inherits one maps it instead of reading it. IdleDrops counts
+	// memory region that inherits one maps it instead of reading it. IdleDrops counts
 	// the idle pages given up for a slot, which is the first thing an
 	// allocation short of one gives up.
 	IdlePages int
 	IdleDrops uint64
-	// PrivateExtents is how many 2 MiB-aligned ranges of this pager's regions
+	// PrivateExtents is how many 2 MiB-aligned ranges of this pager's memory regions
 	// own an extent of the offset space, which is how many hold a private page.
 	// It is addresses and not memory: an extent whose range holds one private
 	// page costs the arena that one page. Zero for a pager that places nothing.
@@ -83,7 +83,7 @@ type Stats struct {
 	// whose publications are not keeping up with its guests; one that stalls on
 	// it is running a VM it cannot make durable at all.
 	WindowWaits, WindowStalls uint64
-	// Flushes counts the flush requests guests sent of this pager's regions,
+	// Flushes counts the flush requests guests sent of this pager's memory regions,
 	// each of which waits in its guest for the answer SetFlushed's done sends.
 	Flushes uint64
 	// RuleCopies counts the pages the two rules made private beside the pages
@@ -114,17 +114,17 @@ type Stats struct {
 	// revocation's, Protect one seal range's; Resolve is the page-table
 	// installation that completes a trapped access, and Load one backing read.
 	// A fault's own duration contains the mapping, resolve and load spans it
-	// caused, so the four do not sum to it. Seal is one region's whole seal,
+	// caused, so the four do not sum to it. Seal is one memory region's whole seal,
 	// which is what a capture's pause is made of and which contains that
-	// region's Protect spans and almost nothing else. SealWalk is what the walk
+	// memory region's Protect spans and almost nothing else. SealWalk is what the walk
 	// behind that pause took — moving each sealed page into the checkpoint —
-	// which runs with the guest already running and holding the region, so it
-	// is not in the pause and only a fault of that region waits for it.
+	// which runs with the guest already running and holding the memory region, so it
+	// is not in the pause and only a fault of that memory region waits for it.
 	FaultQueue, Fault, Mapping, Revoke, Protect, Resolve, Load, Seal, SealWalk Latency
 }
 
 // Sharing is how much memory sharing this pager is retaining for one kind of
-// region, read at the moment it is asked for. It is a gauge and not a total:
+// memory region, read at the moment it is asked for. It is a gauge and not a total:
 // Stats.IdentityHits counts every page ever mapped to an already resident
 // identity and never falls, which says how often sharing happened rather than
 // how much of it is still there.
@@ -135,11 +135,11 @@ type Stats struct {
 // because none of it is host memory. What is here is the arena.
 type Sharing struct {
 	// UniqueBytes is the host memory the arena actually holds for this kind:
-	// one resident page counted once, however many regions map it.
+	// one resident page counted once, however many memory regions map it.
 	UniqueBytes uint64
-	// MappedBytes is the sum over regions of the resident pages each maps, so a
-	// page three regions map counts three times. Every alias counts, including
-	// two regions of one VM and a checkpoint's copy of a page the guest still
+	// MappedBytes is the sum over memory regions of the resident pages each maps, so a
+	// page three memory regions map counts three times. Every alias counts, including
+	// two memory regions of one VM and a checkpoint's copy of a page the guest still
 	// shares with it: what it answers is how much memory this host would be
 	// holding if nothing shared anything.
 	MappedBytes uint64
@@ -148,7 +148,7 @@ type Sharing struct {
 	SavedBytes uint64
 }
 
-// SharingStats is that gauge for each kind of region a pager holds. The two are
+// SharingStats is that gauge for each kind of memory region a pager holds. The two are
 // reported apart because they are separate things to plan for — a host cannot
 // read one number and tell which of its guests' RAM and its guests' disks is
 // sharing anything — and because they are about to be separate arenas.
@@ -161,9 +161,9 @@ type SharingStats struct {
 // consistent reading of the alias sets rather than a sum of readings taken at
 // different moments.
 //
-// A page is counted under the kind of the region that created it: a page
-// identity names a volume, so every region that maps it is a region of that one
-// volume and they agree. A page no region maps is still the memory the arena
+// A page is counted under the kind of the memory region that created it: a page
+// identity names a volume, so every memory region that maps it is a memory region of that one
+// volume and they agree. A page no memory region maps is still the memory the arena
 // holds — a page a store copied away from and left behind, or one a fault has
 // created and not yet bound — so it counts in UniqueBytes and in no mapping.
 func (h *Host) Sharing(ctx context.Context) (SharingStats, error) {

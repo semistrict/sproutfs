@@ -10,10 +10,10 @@ import (
 	"github.com/semistrict/sproutfs/internal/volume"
 )
 
-// checkpointVolume is what a checkpoint does to a region attached to a real
+// checkpointVolume is what a checkpoint does to a memory region attached to a real
 // volume: it seals, publishes the sealed pages through VM.Snapshot, and lets
 // that publication retire the checkpoint.
-func checkpointVolume(t *testing.T, vm *volume.VM, name string, r *vmmemory.Region) error {
+func checkpointVolume(t *testing.T, vm *volume.VM, name string, r *vmmemory.MemoryRegion) error {
 	t.Helper()
 	if err := r.Seal(t.Context()); err != nil {
 		return err
@@ -25,7 +25,7 @@ func checkpointVolume(t *testing.T, vm *volume.VM, name string, r *vmmemory.Regi
 	return checkpoint.Wait(t.Context())
 }
 
-// A checkpoint publishes a mapped region's dirty pages into its volume's
+// A checkpoint publishes a mapped memory region's dirty pages into its volume's
 // checkpoint, which is the moment they survive the loss of this host. A
 // replacement owner fences the stale mapping, whose next checkpoint can no
 // longer land.
@@ -58,13 +58,13 @@ func TestMappedVolumeCheckpointAndWriterReplacement(t *testing.T) {
 		}
 		// The old mapping can still store into its own doomed pages, but those
 		// bytes have nowhere to go: the checkpoint that would publish them is
-		// fenced, and the region stops being eligible to run.
+		// fenced, and the memory region stops being eligible to run.
 		access(t, r, m, 0, true)[0] = 99
 		if err := checkpointVolume(t, vm, "ram0", r); !errors.Is(err, volume.ErrNeedsRecovery) {
 			t.Fatalf("the stale owner published a checkpoint: %v", err)
 		}
 		if err := r.Verify(t.Context()); err == nil {
-			t.Fatal("fenced region remained eligible to run")
+			t.Fatal("fenced memory region remained eligible to run")
 		}
 		if err := replacement.Volume("ram0").Read(t.Context(), 0, data[:]); err != nil || data[0] != 61 {
 			t.Fatalf("the stale owner changed the published checkpoint: %v %d", err, data[0])
@@ -73,7 +73,7 @@ func TestMappedVolumeCheckpointAndWriterReplacement(t *testing.T) {
 }
 
 // An object-store outage cannot fail a guest store, which contacts nothing.
-// What it fails is the checkpoint, and the region stays eligible to run: the
+// What it fails is the checkpoint, and the memory region stays eligible to run: the
 // bytes are still there, they are simply not durable yet.
 func TestMappedVolumeOutageStallsTheCheckpointNotTheGuest(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
@@ -92,7 +92,7 @@ func TestMappedVolumeOutageStallsTheCheckpointNotTheGuest(t *testing.T) {
 		}
 		c.runtime.ObjectStore().Recover()
 		if err := r.Verify(t.Context()); err != nil {
-			t.Fatalf("a failed publication left the region ineligible to run: %v", err)
+			t.Fatalf("a failed publication left the memory region ineligible to run: %v", err)
 		}
 		// The abandoned checkpoint handed its pages back, so the retry carries them.
 		if err := checkpointVolume(t, vm, "ram0", r); err != nil {

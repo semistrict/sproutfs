@@ -91,7 +91,7 @@ func BucketOf(d time.Duration) int {
 }
 
 // Merge adds another snapshot's observations to this one, which is how
-// histograms of several regions become one record.
+// histograms of several memory regions become one record.
 func (l Snapshot) Merge(other Snapshot) Snapshot {
 	l.Count += other.Count
 	l.TotalNS += other.TotalNS

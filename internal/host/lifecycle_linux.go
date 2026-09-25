@@ -191,15 +191,15 @@ func (s *supervisor) Capture(ctx context.Context, id string) (hostapi.CaptureRes
 // checkpoint loop. A machine that cannot be registered is closed rather than
 // left running unaccounted for.
 func (s *supervisor) boot(ctx context.Context, vm *volume.VM, state []byte, template string) (*machine, error) {
-	// A VM's regions are its volumes, and the pager's logical cap is what says
+	// A VM's memory regions are its volumes, and the pager's logical cap is what says
 	// whether it can map them all. Asking here is what makes a create, an open
 	// or a fork that could never run a refusal rather than a VMM that is
 	// started and then killed part way through attaching.
-	regions := make([]Region, 0, len(vm.Volumes()))
+	memoryRegions := make([]MemoryRegion, 0, len(vm.Volumes()))
 	for _, v := range vm.Volumes() {
-		regions = append(regions, regionOf(v.Name(), v.Size()))
+		memoryRegions = append(memoryRegions, memoryRegionOf(v.Name(), v.Size()))
 	}
-	if err := s.host.AdmitRegions(regions); err != nil {
+	if err := s.host.AdmitMemoryRegions(memoryRegions); err != nil {
 		return nil, errors.Join(fmt.Errorf("starting the VMM of %s", vm.ID()), err,
 			closing(ctx, vm))
 	}
@@ -208,7 +208,7 @@ func (s *supervisor) boot(ctx context.Context, vm *volume.VM, state []byte, temp
 		return nil, errors.Join(fmt.Errorf("starting the VMM of %s", vm.ID()), err,
 			closing(ctx, vm))
 	}
-	// A restore starts paused: the vCPUs run again once its regions are its own.
+	// A restore starts paused: the vCPUs run again once its memory regions are its own.
 	if len(state) > 0 {
 		if err := process.Release(ctx); err != nil {
 			return nil, errors.Join(fmt.Errorf("resuming %s", vm.ID()), err, process.Close(),
@@ -229,9 +229,9 @@ func (s *supervisor) boot(ctx context.Context, vm *volume.VM, state []byte, temp
 	return m, nil
 }
 
-// machineConfig is one VM's Firecracker configuration: its RAM region, its PMEM
+// machineConfig is one VM's Firecracker configuration: its RAM memory region, its PMEM
 // root, the kernel a cold boot uses and the VMM state a restore replays.
-// backings is what a migration's destination attaches its regions through.
+// backings is what a migration's destination attaches its memory regions through.
 func (s *supervisor) machineConfig(vm *volume.VM, state []byte, backings map[string]vmmemory.Backing) vmmachine.Config {
 	return vmmachine.Config{
 		Binary: s.config.Firecracker, SeccompFilter: s.config.Seccomp,

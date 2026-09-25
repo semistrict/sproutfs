@@ -103,9 +103,9 @@ func TestMigrationMovesARunningGuestWithoutObjectStorage(t *testing.T) {
 	if handoff.VMID != "vm-1" || handoff.Source != sourceAddress || len(handoff.State) != stateBytes {
 		t.Fatalf("handoff: %+v", handoff)
 	}
-	if len(handoff.Regions) != 2 || handoff.Regions[0].Name != "disk" || handoff.Regions[1].Name != "ram0" ||
-		handoff.Regions[0].Size != 4*pageSize || handoff.Regions[1].Size != 8*pageSize {
-		t.Fatalf("handoff regions: %+v", handoff.Regions)
+	if len(handoff.MemoryRegions) != 2 || handoff.MemoryRegions[0].Name != "disk" || handoff.MemoryRegions[1].Name != "ram0" ||
+		handoff.MemoryRegions[0].Size != 4*pageSize || handoff.MemoryRegions[1].Size != 8*pageSize {
+		t.Fatalf("handoff memory regions: %+v", handoff.MemoryRegions)
 	}
 	if handoff.PageSize != pageSize {
 		t.Fatalf("handoff page size = %d", handoff.PageSize)
@@ -213,14 +213,14 @@ func TestReleasedSourceSendsTheDestinationToItsVolume(t *testing.T) {
 	}
 	peers := map[string]vmmemory.Backing{}
 	backings := map[string]*vmmigrate.PeerBacking{}
-	for _, region := range handoff.Regions {
+	for _, memoryRegion := range handoff.MemoryRegions {
 		backing, err := vmmigrate.NewPeerBacking(vmmigrate.PeerConfig{
-			Volume: received.VM().Volume(region.Name), Peer: handoff.Source, VM: handoff.VMID,
+			Volume: received.VM().Volume(memoryRegion.Name), Peer: handoff.Source, VM: handoff.VMID,
 			PageSize: pageSize, Dial: m.cluster.dialer("dest")})
 		if err != nil {
 			t.Fatal(err)
 		}
-		peers[region.Name], backings[region.Name] = backing, backing
+		peers[memoryRegion.Name], backings[memoryRegion.Name] = backing, backing
 	}
 	restarted, err := newMachine(t, m.destPager, received.VM(), peers, handoff.State)
 	if err != nil {
@@ -306,14 +306,14 @@ func TestAbandonedMigrationStillReopens(t *testing.T) {
 	}
 }
 
-// TestReceiveRefusesAMachineMissingARegion requires the destination to check
+// TestReceiveRefusesAMachineMissingAMemoryRegion requires the destination to check
 // that its supervisor started the VM it received: a machine that maps fewer
-// regions than the source had would leave one faulting from nowhere, so it is
+// memory regions than the source had would leave one faulting from nowhere, so it is
 // closed rather than run, and the VM goes back to whoever opens it next.
-func TestReceiveRefusesAMachineMissingARegion(t *testing.T) {
+func TestReceiveRefusesAMachineMissingAMemoryRegion(t *testing.T) {
 	m := newMigration(t)
 	// The in-tree bug guard on this check reads the runtime out of the
-	// context, so this test is also what kills migration-accept-missing-region.
+	// context, so this test is also what kills migration-accept-missing-memory-region.
 	ctx := sim.WithRuntime(t.Context(), m.cluster.runtime)
 	m.machine.start(4)
 	handoff, err := vmmigrate.Migrate(ctx, m.vm, m.machine, m.pages, vmmigrate.Options{})
@@ -332,7 +332,7 @@ func TestReceiveRefusesAMachineMissingARegion(t *testing.T) {
 			return started, nil
 		}, vmmigrate.Options{})
 	if !errors.Is(err, vmmigrate.ErrInvalid) {
-		t.Fatalf("a destination without a region for ram0 reported %v", err)
+		t.Fatalf("a destination without a memory region for ram0 reported %v", err)
 	}
 	if started == nil || !started.closed.Load() {
 		t.Fatalf("the refused machine was left running: %+v", started)

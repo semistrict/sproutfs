@@ -22,7 +22,7 @@ import (
 // This is that through the deployment's own stack. A cold start is where a
 // guest's memory is holes, so the VM is stopped and started cold, and then the
 // guest stores into one page of every run: the worst pattern for write-ahead,
-// which makes the whole region private for one page in eight stored into. What
+// which makes the whole memory region private for one page in eight stored into. What
 // the host holds privately afterwards, what the volume holds and what every
 // page reads back as must all be exactly the stores.
 func TestZeroWriteAheadPublishesOnlyWhatTheGuestStored(t *testing.T) {
@@ -53,7 +53,7 @@ func TestZeroWriteAheadPublishesOnlyWhatTheGuestStored(t *testing.T) {
 			Knobs: k, Prefix: prefix, Log: t.Logf})
 
 		// A cold start discards the memory the create wrote, so every page of
-		// the region is a hole again and none of it is this host's.
+		// the memory region is a hole again and none of it is this host's.
 		if err := world.Suspend(ctx, "vm-1"); err != nil {
 			t.Fatal(err)
 		}
@@ -79,12 +79,12 @@ func TestZeroWriteAheadPublishesOnlyWhatTheGuestStored(t *testing.T) {
 			t.Fatal(err)
 		}
 		if want := uint64(memoryPages) * simtest.RAMPage; held != want {
-			t.Fatalf("%d stores made %d private bytes, want the whole region's %d", len(stored), held, want)
+			t.Fatalf("%d stores made %d private bytes, want the whole memory region's %d", len(stored), held, want)
 		}
 		if err := world.Checkpoint(ctx, "vm-1"); err != nil {
 			t.Fatal(err)
 		}
-		// Every page of the region was sealed and the settle gave none of them
+		// Every page of the memory region was sealed and the settle gave none of them
 		// back: a page made from zeros has no origin to be compared with. What
 		// takes them back is the retire, once the publication has said which of
 		// them the volume holds no object for.

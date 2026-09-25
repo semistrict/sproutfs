@@ -132,7 +132,7 @@ func (h *Host) evictBatch(ctx context.Context, victims []*resident) error {
 	}
 	var pages []spillPage
 	taken := make(map[int]bool)
-	byRegion := make(map[*Region][]*binding)
+	byMemoryRegion := make(map[*MemoryRegion][]*binding)
 	for _, pg := range victims {
 		// The seal joins the checkpoint's copy to the page before it hands
 		// that copy the page's reservation, so an alias set that has not grown
@@ -153,9 +153,9 @@ func (h *Host) evictBatch(ctx context.Context, victims []*resident) error {
 					continue
 				}
 				walked[b], grown = true, true
-				byRegion[b.region] = append(byRegion[b.region], b)
-				if b.region.Checkpoint() != nil {
-					// The region is sealed: a publication is reading its pages
+				byMemoryRegion[b.memoryRegion] = append(byMemoryRegion[b.memoryRegion], b)
+				if b.memoryRegion.Checkpoint() != nil {
+					// The memory region is sealed: a publication is reading its pages
 					// while this eviction punches one of them. Nothing may lose
 					// bytes here, and nothing reaches it without arena pressure
 					// at exactly the wrong moment.
@@ -184,18 +184,18 @@ func (h *Host) evictBatch(ctx context.Context, victims []*resident) error {
 			}
 		}
 	}
-	for r, bindings := range byRegion {
+	for r, bindings := range byMemoryRegion {
 		if err := r.revokeBindings(ctx, bindings); err != nil {
-			// A region this page is also reachable from cannot take the mapping
+			// A memory region this page is also reachable from cannot take the mapping
 			// away, which is what a machine whose memory session has stopped
 			// answering looks like from here. The page therefore stays mapped
 			// there and is not this host's to reuse — but that is a fact about
-			// that region, which the failed revocation has just made terminal,
+			// that memory region, which the failed revocation has just made terminal,
 			// and not about whoever is evicting. A fan-out's children share
 			// every page they inherited, so returning this to the caller ends
 			// one machine for another machine's death and then the next for
 			// that one's. The caller takes another victim instead; this page
-			// is excluded from every later pass by the region it could not be
+			// is excluded from every later pass by the memory region it could not be
 			// taken from.
 			r.heldPages(ctx, err)
 			return errors.Join(errVictimHeld, err)

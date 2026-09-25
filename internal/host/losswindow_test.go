@@ -91,14 +91,14 @@ func TestAForkHandsTheChildTheParentsLossWindow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(handoffs) != 1 || len(handoffs[0].Regions) != 1 {
-		t.Fatalf("the fork handed over %+v, want one region of one child", handoffs)
+	if len(handoffs) != 1 || len(handoffs[0].MemoryRegions) != 1 {
+		t.Fatalf("the fork handed over %+v, want one memory region of one child", handoffs)
 	}
-	region := handoffs[0].Regions[0]
-	if len(region.Unpublished) == 0 {
+	memoryRegion := handoffs[0].MemoryRegions[0]
+	if len(memoryRegion.Unpublished) == 0 {
 		t.Fatal("the fork handed the child no unpublished pages to inherit")
 	}
-	if region.UnpublishedAge <= 0 {
+	if memoryRegion.UnpublishedAge <= 0 {
 		t.Fatal("the fork handed the child unpublished pages with no age, so its window starts again")
 	}
 }

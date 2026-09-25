@@ -287,7 +287,7 @@ func (m *mapping) Resolve(_ context.Context, page uint64, count int, writable bo
 }
 
 // backing models one volume of a VM. Its untouched pages are inherited from one
-// checkpoint reference shared by every region of a fixture, so equal page
+// checkpoint reference shared by every memory region of a fixture, so equal page
 // numbers of two backings report equal page identities exactly as two forks
 // of one checkpoint do. A write makes a page private to this backing's own next
 // checkpoint until the test publishes it, which is when those bytes acquire an
@@ -338,7 +338,7 @@ func (b *backing) Load(_ context.Context, off uint64, dst []byte) error {
 func (b *backing) identity(page uint64) control.Identity {
 	// A page identity is numbered in the volume's own page, which is this
 	// pager's: a number in anything else would name a different page and two
-	// regions inheriting the same checkpoint would stop sharing.
+	// memory regions inheriting the same checkpoint would stop sharing.
 	number := page
 	switch {
 	case b.zero[page]:
@@ -445,7 +445,7 @@ type fixture struct {
 	disk     *sim.Disk
 	spill    platform.File
 	pageSize int
-	source   control.Ref // the checkpoint every region of the fixture inherits
+	source   control.Ref // the checkpoint every memory region of the fixture inherits
 	owners   int
 }
 
@@ -460,15 +460,15 @@ func (f *fixture) spillBytes() int64 {
 	return size
 }
 
-// checkpoint is what a checkpoint does to one region: it seals the dirty set,
+// checkpoint is what a checkpoint does to one memory region: it seals the dirty set,
 // reads every sealed page out of the pages the guest is still running on,
 // writes those bytes into the volume, selects the checkpoint, and retires the
-// checkpoint. It is the only way a region's pages reach its volume.
-func (f *fixture) checkpoint(r *vmmemory.Region, b *backing) error {
+// checkpoint. It is the only way a memory region's pages reach its volume.
+func (f *fixture) checkpoint(r *vmmemory.MemoryRegion, b *backing) error {
 	return f.checkpointContext(f.t.Context(), r, b)
 }
 
-func (f *fixture) checkpointContext(ctx context.Context, r *vmmemory.Region, b *backing) error {
+func (f *fixture) checkpointContext(ctx context.Context, r *vmmemory.MemoryRegion, b *backing) error {
 	if err := r.Seal(ctx); err != nil {
 		return err
 	}
@@ -478,7 +478,7 @@ func (f *fixture) checkpointContext(ctx context.Context, r *vmmemory.Region, b *
 
 // publishCheckpoint reads the sealed pages and installs them in the volume,
 // reporting whether the checkpoint that would hold them was selected.
-func (f *fixture) publishCheckpoint(ctx context.Context, r *vmmemory.Region, b *backing) (bool, error) {
+func (f *fixture) publishCheckpoint(ctx context.Context, r *vmmemory.MemoryRegion, b *backing) (bool, error) {
 	ckpt := r.Checkpoint()
 	if ckpt == nil {
 		return false, vmmemory.ErrNotSealed
@@ -500,7 +500,7 @@ func (f *fixture) publishCheckpoint(ctx context.Context, r *vmmemory.Region, b *
 // settle is what a publication does behind the pause before it enumerates a
 // checkpoint's pages: every page whose sealed bytes are the ones its origin
 // still holds leaves the set. It reports how many did.
-func (f *fixture) settle(r *vmmemory.Region) int {
+func (f *fixture) settle(r *vmmemory.MemoryRegion) int {
 	f.t.Helper()
 	unchanged, err := r.Checkpoint().Settle(f.t.Context())
 	if err != nil {
@@ -510,16 +510,16 @@ func (f *fixture) settle(r *vmmemory.Region) int {
 }
 
 // mustCheckpoint fails the test when a checkpoint does not complete.
-func (f *fixture) mustCheckpoint(r *vmmemory.Region, b *backing) {
+func (f *fixture) mustCheckpoint(r *vmmemory.MemoryRegion, b *backing) {
 	f.t.Helper()
 	if err := f.checkpoint(r, b); err != nil {
-		f.t.Fatalf("checkpointing the region: %v", err)
+		f.t.Fatalf("checkpointing the memory region: %v", err)
 	}
 }
 
 // finishCheckpoint publishes and retires a checkpoint the test has already
 // sealed.
-func (f *fixture) finishCheckpoint(r *vmmemory.Region, b *backing) {
+func (f *fixture) finishCheckpoint(r *vmmemory.MemoryRegion, b *backing) {
 	f.t.Helper()
 	if _, err := f.publishCheckpoint(f.t.Context(), r, b); err != nil {
 		f.t.Fatalf("publishing the checkpoint: %v", err)
@@ -582,7 +582,7 @@ func newBrokenFixture(t *testing.T, cfg vmmemory.Config, shared ...*resource.Bud
 }
 
 // newBacking returns a backing whose pages are inherited from the fixture's
-// shared checkpoint, every byte of page i holding i+1, so regions of one
+// shared checkpoint, every byte of page i holding i+1, so memory regions of one
 // fixture are forks of one checkpoint.
 func (f *fixture) newBacking(pages int) *backing {
 	f.owners++
@@ -598,14 +598,14 @@ func (f *fixture) newBacking(pages int) *backing {
 }
 
 // newUnrelatedBacking returns a backing whose bytes are identical but whose
-// page identities are not: nothing about it may be shared with the fixture's regions.
+// page identities are not: nothing about it may be shared with the fixture's memory regions.
 func (f *fixture) newUnrelatedBacking(pages int) *backing {
 	b := f.newBacking(pages)
 	b.source = control.Ref{VM: b.owner + "-unrelated", Sequence: 1}
 	return b
 }
 
-func (f *fixture) region(pages int) (*vmmemory.Region, *mapping, *backing) {
+func (f *fixture) memoryRegion(pages int) (*vmmemory.MemoryRegion, *mapping, *backing) {
 	f.t.Helper()
 	b := f.newBacking(pages)
 	r, m := f.attach(b)
@@ -614,21 +614,21 @@ func (f *fixture) region(pages int) (*vmmemory.Region, *mapping, *backing) {
 
 // ram is one backing attached as guest RAM, which is what every test that does
 // not care about the kind maps.
-func ram(b vmmemory.Backing) vmmemory.RegionBacking {
-	return vmmemory.RegionBacking{Kind: vmmemory.Ram, Backing: b}
+func ram(b vmmemory.Backing) vmmemory.MemoryRegionBacking {
+	return vmmemory.MemoryRegionBacking{Kind: vmmemory.Ram, Backing: b}
 }
 
 // attach maps one backing as guest RAM, which is what all but the tests of the
 // kinds themselves care about; attachKind states the kind.
-func (f *fixture) attach(b vmmemory.Backing) (*vmmemory.Region, *mapping) {
+func (f *fixture) attach(b vmmemory.Backing) (*vmmemory.MemoryRegion, *mapping) {
 	f.t.Helper()
 	return f.attachKind(vmmemory.Ram, b)
 }
-func (f *fixture) attachKind(kind vmmemory.RegionKind, b vmmemory.Backing) (*vmmemory.Region, *mapping) {
+func (f *fixture) attachKind(kind vmmemory.MemoryRegionKind, b vmmemory.Backing) (*vmmemory.MemoryRegion, *mapping) {
 	f.t.Helper()
 	m := &mapping{arena: f.a, pages: make(map[uint64]mapped)}
 	f.a.mappings = append(f.a.mappings, m)
-	r, err := f.h.Attach(f.t.Context(), vmmemory.RegionBacking{Kind: kind, Backing: b}, m)
+	r, err := f.h.Attach(f.t.Context(), vmmemory.MemoryRegionBacking{Kind: kind, Backing: b}, m)
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -640,7 +640,7 @@ func (f *fixture) attachKind(kind vmmemory.RegionKind, b vmmemory.Backing) (*vmm
 	})
 	return r, m
 }
-func access(t *testing.T, r *vmmemory.Region, m *mapping, page uint64, write bool) []byte {
+func access(t *testing.T, r *vmmemory.MemoryRegion, m *mapping, page uint64, write bool) []byte {
 	t.Helper()
 	p, ok := m.pages[page]
 	if !ok || (write && !p.writable) {
@@ -658,8 +658,8 @@ func access(t *testing.T, r *vmmemory.Region, m *mapping, page uint64, write boo
 func TestSharingCOWReclaimAndDurability(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newFixture(t, 2, 8, 4)
-		a, am, ab := f.region(4)
-		b, bm, _ := f.region(4)
+		a, am, ab := f.memoryRegion(4)
+		b, bm, _ := f.memoryRegion(4)
 		access(t, a, am, 0, false)
 		access(t, b, bm, 0, false)
 		if am.pages[0].slot != bm.pages[0].slot {
@@ -695,8 +695,8 @@ func TestSharingCOWReclaimAndDurability(t *testing.T) {
 func TestBudgetOneSlotCOWAndDirtyAdmission(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newFixture(t, 1, 4, 1)
-		a, am, ab := f.region(2)
-		b, bm, _ := f.region(2)
+		a, am, ab := f.memoryRegion(2)
+		b, bm, _ := f.memoryRegion(2)
 		access(t, a, am, 0, false)
 		access(t, b, bm, 0, false)
 		access(t, a, am, 0, true)[0] = 71
@@ -729,7 +729,7 @@ func TestSpillFailureKeepsCurrentCopy(t *testing.T) {
 		t.Run(string(operation), func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				f := newFixture(t, 1, 2, 2)
-				r, m, _ := f.region(2)
+				r, m, _ := f.memoryRegion(2)
 				access(t, r, m, 0, true)[0] = 51
 				f.disk.FailNext(operation, 1)
 				if err := r.Fault(t.Context(), 1, false); !errors.Is(err, platform.ErrInjectedFault) {
@@ -753,7 +753,7 @@ func TestSpillFailureKeepsCurrentCopy(t *testing.T) {
 func TestAbandonedCheckpointRetainsEveryDirtyPage(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newFixture(t, 2, 2, 2)
-		r, m, b := f.region(2)
+		r, m, b := f.memoryRegion(2)
 		access(t, r, m, 0, true)[0] = 33
 		access(t, r, m, 1, true)[0] = 44
 		if err := r.Seal(t.Context()); err != nil {
@@ -779,7 +779,7 @@ func TestAmbiguousMappingFailurePinsUntilProcessExit(t *testing.T) {
 		t.Run(op, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				f := newFixture(t, 1, 2, 2)
-				a, am, _ := f.region(1)
+				a, am, _ := f.memoryRegion(1)
 				b, bm := f.attach(f.newUnrelatedBacking(1))
 				if op == "map" {
 					am.failMap = true
@@ -789,18 +789,18 @@ func TestAmbiguousMappingFailurePinsUntilProcessExit(t *testing.T) {
 				} else {
 					access(t, a, am, 0, false)
 					am.failRevoke = true
-					// The revocation that failed is the other region's, and so
+					// The revocation that failed is the other memory region's, and so
 					// is the failure: this fault only wanted a page, and the
 					// one it tried for turned out not to be this host's to take
 					// back. It is told the arena has nothing, which is true,
-					// rather than told the other region's error, which would end
+					// rather than told the other memory region's error, which would end
 					// this machine for that one's death.
 					err := b.Fault(t.Context(), 0, false)
 					if !errors.Is(err, vmmemory.ErrCapacity) {
-						t.Fatalf("one region's failed revocation was reported to another: %v", err)
+						t.Fatalf("one memory region's failed revocation was reported to another: %v", err)
 					}
 					if errors.Is(err, errInjected) {
-						t.Fatal("the other region's injected failure reached this one")
+						t.Fatal("the other memory region's injected failure reached this one")
 					}
 				}
 				if err := b.Fault(t.Context(), 0, false); !errors.Is(err, vmmemory.ErrCapacity) {
@@ -821,8 +821,8 @@ func TestAmbiguousMappingFailurePinsUntilProcessExit(t *testing.T) {
 func TestASharedPageStillChecksWriterAuthority(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newFixture(t, 2, 2, 2)
-		a, am, ab := f.region(1)
-		b, bm, _ := f.region(1)
+		a, am, ab := f.memoryRegion(1)
+		b, bm, _ := f.memoryRegion(1)
 		access(t, a, am, 0, false)
 		access(t, b, bm, 0, false)
 		if am.pages[0].slot != bm.pages[0].slot {
@@ -833,10 +833,10 @@ func TestASharedPageStillChecksWriterAuthority(t *testing.T) {
 			t.Fatal(err)
 		}
 		if err := a.Fault(t.Context(), 0, true); !errors.Is(err, errInjected) {
-			t.Fatal("fenced region resumed")
+			t.Fatal("fenced memory region resumed")
 		}
 		if access(t, b, bm, 0, false)[0] != 1 {
-			t.Fatal("fencing one region changed its sibling's bytes")
+			t.Fatal("fencing one memory region changed its sibling's bytes")
 		}
 	})
 }
@@ -846,13 +846,13 @@ func TestRandomizedEvictionAgainstIndependentByteModel(t *testing.T) {
 		t.Run(fmt.Sprint(seed), func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				f := newFixture(t, 3, 16, 16)
-				var regions []*vmmemory.Region
+				var memoryRegions []*vmmemory.MemoryRegion
 				var mappings []*mapping
 				var backings []*backing
 				var expected [][]byte
 				for range 2 {
-					r, m, b := f.region(8)
-					regions = append(regions, r)
+					r, m, b := f.memoryRegion(8)
+					memoryRegions = append(memoryRegions, r)
 					mappings = append(mappings, m)
 					backings = append(backings, b)
 					expected = append(expected, bytes.Clone(b.data))
@@ -863,7 +863,7 @@ func TestRandomizedEvictionAgainstIndependentByteModel(t *testing.T) {
 					p := uint64(rng.IntN(8))
 					off := rng.IntN(pageSize)
 					write := rng.IntN(3) == 0
-					data := access(t, regions[vm], mappings[vm], p, write)
+					data := access(t, memoryRegions[vm], mappings[vm], p, write)
 					if write {
 						value := byte(rng.Uint32())
 						data[off] = value
@@ -873,7 +873,7 @@ func TestRandomizedEvictionAgainstIndependentByteModel(t *testing.T) {
 						t.Fatalf("step %d: page mismatch", step)
 					}
 					if step%37 == 0 {
-						if err := f.checkpoint(regions[vm], backings[vm]); err != nil {
+						if err := f.checkpoint(memoryRegions[vm], backings[vm]); err != nil {
 							t.Fatal(err)
 						}
 						if !bytes.Equal(backings[vm].data, expected[vm]) {
@@ -887,13 +887,13 @@ func TestRandomizedEvictionAgainstIndependentByteModel(t *testing.T) {
 }
 
 // A checkpoint of one volume must not stop another volume's guest, and must not
-// stop its own: a sealed region keeps faulting and storing for the whole of the
+// stop its own: a sealed memory region keeps faulting and storing for the whole of the
 // publication that is reading its pages.
 func TestACheckpointInFlightStopsNeitherVolume(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newFixture(t, 4, 8, 8)
-		a, am, ab := f.region(2)
-		b, bm, bb := f.region(2)
+		a, am, ab := f.memoryRegion(2)
+		b, bm, bb := f.memoryRegion(2)
 		access(t, a, am, 0, true)[0] = 90
 		if err := a.Seal(t.Context()); err != nil {
 			t.Fatal(err)
@@ -936,7 +936,7 @@ func TestACheckpointInFlightStopsNeitherVolume(t *testing.T) {
 // A simulated CPU byte access atomically checks its PTE and accesses its slot.
 // Revocation can happen between Fault and retry, just as it can with real UFFD.
 // A zero mapping reads zeros and is never writable.
-func memoryByte(ctx context.Context, r *vmmemory.Region, m *mapping, page uint64, value *byte) (byte, error) {
+func memoryByte(ctx context.Context, r *vmmemory.MemoryRegion, m *mapping, page uint64, value *byte) (byte, error) {
 	for {
 		m.arena.mu.Lock()
 		p, ok := m.pages[page]
@@ -962,17 +962,17 @@ func memoryByte(ctx context.Context, r *vmmemory.Region, m *mapping, page uint64
 func TestConcurrentVolumesShareReclaimAndCheckpoints(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newFixture(t, 4, 32, 32)
-		var regions []*vmmemory.Region
+		var memoryRegions []*vmmemory.MemoryRegion
 		var mappings []*mapping
 		var backings []*backing
 		for range 4 {
-			r, m, b := f.region(8)
-			regions = append(regions, r)
+			r, m, b := f.memoryRegion(8)
+			memoryRegions = append(memoryRegions, r)
 			mappings = append(mappings, m)
 			backings = append(backings, b)
 		}
 		var wg sync.WaitGroup
-		for vm := range regions {
+		for vm := range memoryRegions {
 			wg.Go(func() {
 				rng := rand.New(rand.NewPCG(uint64(vm), uint64(vm+7)))
 				var expected [8]byte
@@ -987,7 +987,7 @@ func TestConcurrentVolumesShareReclaimAndCheckpoints(t *testing.T) {
 						expected[page] = v
 						write = &v
 					}
-					got, err := memoryByte(t.Context(), regions[vm], mappings[vm], uint64(page), write)
+					got, err := memoryByte(t.Context(), memoryRegions[vm], mappings[vm], uint64(page), write)
 					if err != nil {
 						t.Error(err)
 						return
@@ -997,7 +997,7 @@ func TestConcurrentVolumesShareReclaimAndCheckpoints(t *testing.T) {
 						return
 					}
 					if step%23 == 0 {
-						if err := f.checkpoint(regions[vm], backings[vm]); err != nil {
+						if err := f.checkpoint(memoryRegions[vm], backings[vm]); err != nil {
 							t.Error(err)
 							return
 						}

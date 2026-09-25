@@ -14,7 +14,7 @@ import (
 func highWater(dirty int) int { return max(1, dirty-dirty/4) }
 
 // SetPressure installs the callbacks this host answers a full dirty budget
-// with. A supervisor sets them once, before any region is attached, and clears
+// with. A supervisor sets them once, before any memory region is attached, and clears
 // them by installing a zero Pressure before it stops answering.
 func (h *Host) SetPressure(p Pressure) {
 	h.mu.Lock()
@@ -28,7 +28,7 @@ func (h *Host) SetPressure(p Pressure) {
 // closes the session and kills its VMM.
 //
 // The budget counts the pages a checkpoint still holds as well as live private
-// pages, and it is the host's, not the region's: whichever checkpoint lands
+// pages, and it is the host's, not the memory region's: whichever checkpoint lands
 // next releases reservations this store can have, so the wait is for all of
 // them. With none in flight the host asks for one, which is what a dirty set
 // that grows between intervals needs. Only a budget no checkpoint can relieve
@@ -39,7 +39,7 @@ func (h *Host) SetPressure(p Pressure) {
 // dirty page however much room the budget has. The wait is the same wait — ask
 // for the checkpoint, sleep on the host's own signal, stall where none is coming
 // — because what ends it is the same thing, a checkpoint of this VM landing.
-func (h *Host) takeSpill(ctx context.Context, r *Region) (int, error) {
+func (h *Host) takeSpill(ctx context.Context, r *MemoryRegion) (int, error) {
 	for {
 		// The signal this attempt will wait on is taken before anything is
 		// decided, because deciding takes locks of its own: a checkpoint that
@@ -94,7 +94,7 @@ func (h *Host) takeSpill(ctx context.Context, r *Region) (int, error) {
 // this runs: the reservation a store waits for, the one a peer-served load
 // takes, and the run of them write-ahead takes without waiting, any of which
 // can cross the mark. Once per crossing is enough — a store that waits asks
-// again for as long as it waits — and it holds no region, page or reservation
+// again for as long as it waits — and it holds no memory region, page or reservation
 // when it asks.
 func (h *Host) askAtHighWater() {
 	h.mu.Lock()
@@ -108,22 +108,22 @@ func (h *Host) askAtHighWater() {
 
 // relief reports whether some checkpoint will release dirty reservations. One
 // already in flight will when it retires; otherwise the host asks for one,
-// offering the regions holding the largest dirty sets first, since those
+// offering the memory regions holding the largest dirty sets first, since those
 // release the most. It holds no lock while it asks: the callback runs on the
 // waiting store's goroutine and must not reach back into the host.
 func (h *Host) relief() bool {
 	h.mu.Lock()
-	attached := slices.Collect(maps.Keys(h.regions))
+	attached := slices.Collect(maps.Keys(h.memoryRegions))
 	request := h.pressure.Checkpoint
 	h.mu.Unlock()
 	type candidate struct {
-		region *Region
-		dirty  int
+		memoryRegion *MemoryRegion
+		dirty        int
 	}
 	var candidates []candidate
 	relieving := false
-	for _, region := range attached {
-		if sealing, c := region.sealState(); sealing || c != nil {
+	for _, memoryRegion := range attached {
+		if sealing, c := memoryRegion.sealState(); sealing || c != nil {
 			// Sealed, or being sealed, so no further checkpoint of it can be
 			// asked for. It answers the wait only when retiring it gives
 			// reservations back: a fork hold lasts as long as the children it
@@ -133,8 +133,8 @@ func (h *Host) relief() bool {
 			relieving = relieving || sealing || c.relieves()
 			continue
 		}
-		if dirty := region.dirtyCount(); dirty > 0 {
-			candidates = append(candidates, candidate{region, dirty})
+		if dirty := memoryRegion.dirtyCount(); dirty > 0 {
+			candidates = append(candidates, candidate{memoryRegion, dirty})
 		}
 	}
 	if relieving {
@@ -145,7 +145,7 @@ func (h *Host) relief() bool {
 	}
 	slices.SortFunc(candidates, func(a, b candidate) int { return b.dirty - a.dirty })
 	for _, c := range candidates {
-		if request(c.region) {
+		if request(c.memoryRegion) {
 			h.mu.Lock()
 			h.stats.CheckpointRequests++
 			h.mu.Unlock()
@@ -155,14 +155,14 @@ func (h *Host) relief() bool {
 	return false
 }
 
-// stall reports a store nothing can admit to the region's owner, which stops
+// stall reports a store nothing can admit to the memory region's owner, which stops
 // that VM deliberately. The store still fails, because the guest cannot be left
 // waiting on a checkpoint nothing will take; what the report buys is a logged
 // reason and a stop that publishes, in place of a fault failure that only kills
 // the VMM. cause says which bound the store ran into, since a deployment answers
 // the two differently: a budget too small for its guests, or a VM whose writes
 // cannot be published at all.
-func (h *Host) stall(r *Region, cause error) {
+func (h *Host) stall(r *MemoryRegion, cause error) {
 	h.mu.Lock()
 	stop := h.pressure.Stop
 	if errors.Is(cause, ErrWindowStalled) {

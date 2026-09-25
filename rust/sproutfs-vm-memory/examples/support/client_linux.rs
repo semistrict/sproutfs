@@ -2,7 +2,7 @@
 //! rather than the example itself so that the example's only unconditional
 //! item is a main that says why there is nothing to run off Linux.
 
-use sproutfs_vm_memory::{Region, RegionKind, RegionSpec, Session};
+use sproutfs_vm_memory::{MemoryRegion, MemoryRegionKind, MemoryRegionSpec, Session};
 use std::io::{self, BufRead, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
@@ -11,12 +11,16 @@ use std::thread;
 #[path = "kvm.rs"]
 mod kvm;
 
-fn range(regions: &[Region], words: &[&str]) -> (usize, usize) {
-    let region = regions[words[1].parse::<usize>().unwrap()];
+fn range(memory_regions: &[MemoryRegion], words: &[&str]) -> (usize, usize) {
+    let memory_region = memory_regions[words[1].parse::<usize>().unwrap()];
     let offset = words[2].parse::<usize>().unwrap();
     let len = words[3].parse::<usize>().unwrap();
-    assert!(offset.checked_add(len).is_some_and(|end| end <= region.len));
-    (region.address + offset, len)
+    assert!(
+        offset
+            .checked_add(len)
+            .is_some_and(|end| end <= memory_region.len)
+    );
+    (memory_region.address + offset, len)
 }
 
 fn load(address: usize) -> u8 {
@@ -35,13 +39,16 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|s| s.parse().unwrap())
         .unwrap_or(sproutfs_vm_memory::MAX_PAGE_SIZE);
     let pages: usize = args.get(3).map(|s| s.parse().unwrap()).unwrap_or(1);
-    // The sessions connect in region order, which is the order the pager accepts
+    // The sessions connect in memory region order, which is the order the pager accepts
     // them in.
     let mut sessions = Vec::new();
-    for (index, kind) in [RegionKind::Pmem, RegionKind::Ram].into_iter().enumerate() {
+    for (index, kind) in [MemoryRegionKind::Pmem, MemoryRegionKind::Ram]
+        .into_iter()
+        .enumerate()
+    {
         let session = Session::connect(
             &args[1 + index],
-            RegionSpec {
+            MemoryRegionSpec {
                 kind,
                 len: pages * page_size,
             },
@@ -53,7 +60,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
         sessions.push(session);
     }
-    let regions: Vec<Region> = sessions.iter().map(Session::region).collect();
+    let memory_regions: Vec<MemoryRegion> = sessions.iter().map(Session::memory_region).collect();
     let controls: Vec<_> = sessions.iter().map(Session::control).collect();
     let mut machine = None;
     let mut counter = None;
@@ -72,10 +79,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "ready {} {} {} {} {}",
         std::process::id(),
-        regions[0].address,
-        regions[0].len,
-        regions[1].address,
-        regions[1].len
+        memory_regions[0].address,
+        memory_regions[0].len,
+        memory_regions[1].address,
+        memory_regions[1].len
     );
     io::stdout().flush()?;
     for line in io::stdin().lock().lines() {
@@ -89,21 +96,24 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("sealed");
             }
             Some("kvmread") | Some("kvmwrite") => {
-                let region: usize = words[1].parse()?;
+                let memory_region: usize = words[1].parse()?;
                 let offset: usize = words[2].parse()?;
                 if machine.is_none() {
-                    machine = Some(kvm::Machine::new(&regions)?);
+                    machine = Some(kvm::Machine::new(&memory_regions)?);
                 }
                 let value = if words[0] == "kvmwrite" {
                     Some(words[3].parse::<u8>()?)
                 } else {
                     None
                 };
-                let byte = machine.as_mut().unwrap().access(region, offset, value)?;
+                let byte = machine
+                    .as_mut()
+                    .unwrap()
+                    .access(memory_region, offset, value)?;
                 println!("kvm {byte}");
             }
             Some("read") | Some("gup") => {
-                let (address, len) = range(&regions, &words);
+                let (address, len) = range(&memory_regions, &words);
                 let mut bytes = vec![0u8; len];
                 if words[0] == "gup" {
                     let local = libc::iovec {
@@ -134,7 +144,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!();
             }
             Some("fill") => {
-                let (address, len) = range(&regions, &words);
+                let (address, len) = range(&memory_regions, &words);
                 let value: u8 = words[4].parse()?;
                 for i in 0..len {
                     unsafe {
@@ -144,13 +154,14 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("filled");
             }
             Some("racefill") => {
-                // racefill REGION OFFSET LEN VALUE SCAN_OFFSET SCAN_LEN stores
+                // racefill MEMORY_REGION OFFSET LEN VALUE SCAN_OFFSET SCAN_LEN stores
                 // VALUE into the first range while four threads keep reading
                 // the second, which the store never touches: every byte they
                 // read, before, during and after the store's fault, must be 0.
-                let (address, len) = range(&regions, &words);
+                let (address, len) = range(&memory_regions, &words);
                 let value: u8 = words[4].parse()?;
-                let (scan, scan_len) = range(&regions, &[words[0], words[1], words[5], words[6]]);
+                let (scan, scan_len) =
+                    range(&memory_regions, &[words[0], words[1], words[5], words[6]]);
                 let done = Arc::new(AtomicBool::new(false));
                 let started = Arc::new(std::sync::Barrier::new(5));
                 let readers: Vec<_> = (0..4)
@@ -186,7 +197,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("raced");
             }
             Some("stridefill") | Some("stridescan") => {
-                let (address, len) = range(&regions, &words);
+                let (address, len) = range(&memory_regions, &words);
                 let stride: usize = words[4].parse()?;
                 let value: u8 = words[5].parse()?;
                 assert!(stride > 0);
@@ -203,7 +214,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("strided");
             }
             Some("scan") => {
-                let (address, len) = range(&regions, &words);
+                let (address, len) = range(&memory_regions, &words);
                 let expected: u8 = words[4].parse()?;
                 let iterations: usize = words[5].parse()?;
                 let workers: Vec<_> = (0..4)
@@ -221,7 +232,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("scanned");
             }
             Some("start-counter") => {
-                let (address, len) = range(&regions, &words);
+                let (address, len) = range(&memory_regions, &words);
                 assert_eq!(len, 8);
                 assert_eq!(address % 8, 0);
                 assert!(counter.is_none());

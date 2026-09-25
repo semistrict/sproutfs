@@ -34,8 +34,8 @@ const (
 	// runVolume is the volume the window covers, whole.
 	runVolume = runWindow * checkpoint.PageSize4KiB
 	// windowSegmentReads is what one fault costs in page table: nothing, because
-	// the segment locating the window's pages was read when the region attached
-	// and the index it was read into is the region's for the VM's life.
+	// the segment locating the window's pages was read when the memory region attached
+	// and the index it was read into is the memory region's for the VM's life.
 	windowSegmentReads = 0
 )
 
@@ -135,7 +135,7 @@ func newPublishedVolume(t *testing.T, checkpoints int) *publishedVolume {
 	return v
 }
 
-// fork is one region's view of the published checkpoint, opened by itself: two
+// fork is one memory region's view of the published checkpoint, opened by itself: two
 // forks of one checkpoint hold their own index handles and share nothing but
 // the objects.
 func (v *publishedVolume) fork(t *testing.T) *publishedBacking {
@@ -159,7 +159,7 @@ func (v *publishedVolume) forkHolding(t *testing.T, keep func(uint64) bool) *pub
 	return b
 }
 
-// publishedBacking is a pager's view of that volume: the one backing a region
+// publishedBacking is a pager's view of that volume: the one backing a memory region
 // maps, reading through the checkpoint store exactly as *volume.Volume does.
 type publishedBacking struct {
 	volume *publishedVolume
@@ -231,9 +231,9 @@ func newRunPager(t *testing.T) *fixture {
 // leave its first fault a window with holes in it — the fault binds each of
 // them to the sibling's own page rather than reading it — and the attach maps
 // none of them, because runs of one page are not worth a mapping command each.
-// It reports the region, its mapping, its backing and the pages the pager
+// It reports the memory region, its mapping, its backing and the pages the pager
 // holds, with the load and object-read counts reset to that moment.
-func residentWindow(t *testing.T, f *fixture, published *publishedVolume) (*vmmemory.Region, *mapping, *publishedBacking, []uint64) {
+func residentWindow(t *testing.T, f *fixture, published *publishedVolume) (*vmmemory.MemoryRegion, *mapping, *publishedBacking, []uint64) {
 	t.Helper()
 	inherited := func(page uint64) bool { return page%8 == 3 }
 	var resident []uint64
@@ -259,11 +259,11 @@ func residentWindow(t *testing.T, f *fixture, published *publishedVolume) (*vmme
 	return r, m, fork, resident
 }
 
-// A fault brings its whole window in one read, and the pages the region already
+// A fault brings its whole window in one read, and the pages the memory region already
 // holds — the ones its populate mapped because a sibling had made them resident
 // — do not cut that read into pieces. What is left of the run is one ranged
 // read per part its pages lie in, so a window published by three checkpoints
-// costs three reads however scattered through it the pages the region holds are.
+// costs three reads however scattered through it the pages the memory region holds are.
 func TestAFaultOverResidentPagesIsOneLoadAndOneReadPerCheckpoint(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		published := newPublishedVolume(t, runCheckpoints)
@@ -301,7 +301,7 @@ func TestAFaultOverResidentPagesIsOneLoadAndOneReadPerCheckpoint(t *testing.T) {
 	})
 }
 
-// A store into a page this region holds nothing for brings its window in
+// A store into a page this memory region holds nothing for brings its window in
 // exactly as a read fault does — one load, one object read per checkpoint that
 // published the run — and then copies one page. On x86-64 that is how a fork
 // faults at all: KVM finishes a fault that had to wait for the pager from a
@@ -349,7 +349,7 @@ func TestAStoreIntoAColdPageBringsItsWholeWindowIn(t *testing.T) {
 			t.Fatalf("the store copied %d pages, want the one the guest wrote", got)
 		}
 		if after.DirtyPages != 1 {
-			t.Fatalf("the region holds %d dirty pages, want the one page stored into", after.DirtyPages)
+			t.Fatalf("the memory region holds %d dirty pages, want the one page stored into", after.DirtyPages)
 		}
 		if got := after.Revocations - before.Revocations; got != 0 {
 			t.Fatalf("the store revoked %d mappings, want none: its own page was never mapped read-only first", got)
@@ -366,7 +366,7 @@ func TestAStoreIntoAColdPageBringsItsWholeWindowIn(t *testing.T) {
 		if got := access(t, r, m, 0, false)[0]; got != 0x5a {
 			t.Fatalf("the page the guest stored into holds %#x, want the byte it wrote", got)
 		}
-		// The window is in the sharing index, not this region's own: a third
+		// The window is in the sharing index, not this memory region's own: a third
 		// fork of the same checkpoint takes every page of it and reads nothing.
 		// Its attach maps none of them — the sibling's pages and this fork's are
 		// interleaved in the arena, so no run of the window is a window long and

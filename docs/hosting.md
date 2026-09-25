@@ -160,7 +160,7 @@ VM drainable and starts its checkpoint loop. The host checkpoints the disks of
 every VM it runs every `Config.CheckpointInterval`, sixty seconds by default.
 Each wait is jittered by up to an eighth either way, so VMs do not checkpoint in
 lockstep. The host waits for each publication before scheduling the next. Each
-checkpoint is `CaptureDisks`. Its pause seals only the VM's PMEM regions and
+checkpoint is `CaptureDisks`. Its pause seals only the VM's PMEM memory regions and
 captures no VMM state. So RAM is never uploaded on the interval, and a VM opened
 at such a checkpoint is cold booted over its disks (`Host.Starting`). This loop
 is the only thing that makes a running guest's disks durable, so the interval
@@ -179,7 +179,7 @@ dirty pages for it. The host's part is the loop. If a publication fails while
 the window is exceeded, it is retried after an eighth of the interval, doubling
 up to the interval, instead of a full interval later. The guest is blocked for
 the whole wait, so the loop must not wait a full interval. The window applies
-to disks only. RAM regions do not age and do not request checkpoints, because
+to disks only. RAM memory regions do not age and do not request checkpoints, because
 no checkpoint the loop takes would publish them.
 
 A guest's flush reaches the host through the pager. `Config.FlushBound`
@@ -200,21 +200,21 @@ every time this loop signals. A capture that cannot be published does not help
 that store, so answering each request would make a host that cannot reach the
 store spin.
 
-The window belongs to a VM, not a region, because the checkpoint that ends it
-covers the VM: one pause seals every region a VM maps. The pager has no concept
+The window belongs to a VM, not a memory region, because the checkpoint that ends it
+covers the VM: one pause seals every memory region a VM maps. The pager has no concept
 of a VM. So the host reports the age, in the same way that it provides the
 checkpoint. `Pressure.Oldest` reports the oldest unpublished write across every
-region of the VM that maps the queried region. `Host.LossWindow` reports that
+memory region of the VM that maps the queried memory region. `Host.LossWindow` reports that
 age per VM, and whether the VM's stores are waiting. `/status`, `/metrics` and
 `sproutfsctl list` show these values.
 
 A guest can fill the host's dirty budget long before its interval comes round.
 It then waits for a checkpoint that nothing has scheduled. `Config.Pager` is how
 the host learns about this. The pager asks the host for an immediate checkpoint
-of the region with the largest dirty set. The loop takes it out of the
+of the memory region with the largest dirty set. The loop takes it out of the
 interval's turn, and the stalled stores complete when it retires. The host
 accepts for a VM it runs whose volume no fork point has sealed. Otherwise it
-declines, so the pager can offer another region. If no region can be
+declines, so the pager can offer another memory region. If no memory region can be
 checkpointed, the pager reports the stall instead, and the host stops that VM
 deliberately. A store that the loss window blocks ends the same way when no
 checkpoint of that VM can ever be taken. The pager reports this case
@@ -233,7 +233,7 @@ checkpoint inside it. The steps are:
    child reads them out of the process that is about to close, and because a VM
    that a fork point holds sealed cannot be captured.
 3. The last checkpoint captures whatever the VMM can still be paused for, before
-   the process is closed, because the process's regions hold those pages.
+   the process is closed, because the process's memory regions hold those pages.
 4. The VM is given up and reported through `MachineClosed`, like a fenced VM.
 
 If the failed store has already killed the VMM, that capture is not possible,
@@ -290,8 +290,8 @@ next attempt, or the epoch timer if the takeover was real, resolves it.
 
 Only one handover of a VM runs at a time. It is reserved under the same lock
 that protects the registration. Without this, two callers that each found the
-registration would both stop the guest, give up every region's volume and
-register the pages with the page server. The loser, whose regions had already
+registration would both stop the guest, give up every memory region's volume and
+register the pages with the page server. The loser, whose memory regions had already
 given up their volumes, would then give up the VM and close the process that
 the winner's destination was about to fault pages from. Instead, the second
 caller is told, and the VM is left as the first caller left it. A VM that a
@@ -315,11 +315,11 @@ watcher stops with the machine, so a process that this host ends on purpose (a
 handoff, a removal or a shutdown) is not reported as a death. When a process
 does die, the report comes from the process. `vmmachine` writes a single error
 record with the VM, the pid, the cause the kill carried and the tail of the
-console. The memory session that ended writes what ended it: the region, and
+console. The memory session that ended writes what ended it: the memory region, and
 the page when the failure was a fault.
 
-Every mapped region must use `Host.Resources()`. Registration rejects a machine
-whose regions use another budget and leaves cleanup to the supervisor. The
+Every mapped memory region must use `Host.Resources()`. Registration rejects a machine
+whose memory regions use another budget and leaves cleanup to the supervisor. The
 receive path closes a mismatched runtime before streaming pages or registering
 it.
 
@@ -414,7 +414,7 @@ shorter grace period turns an orderly exit into a host loss.
 
 The supervisor owns VMM processes and the shared pager. After it finishes the
 required capture or handoff, it closes the processes and detaches their
-regions. It then calls the pager's `Close` before closing its arena and spill
+memory regions. It then calls the pager's `Close` before closing its arena and spill
 handles. If pager cleanup fails, unproven allocations stay charged, and cleanup
 must be retried. Closing one process must not close a pager that still serves
 other VMs.
@@ -481,7 +481,7 @@ that dropped them is small.
 A cold start applies only to a VM that this host does not run. The operator
 must stop a running VM first. A cold start is refused before anything is
 discarded if this host cannot boot cold because it has no kernel configured. It
-is also refused if the pager could not map all of the VM's regions.
+is also refused if the pager could not map all of the VM's memory regions.
 
 ### Resizing at a cold boot
 
@@ -548,9 +548,9 @@ full disk is a configuration error, not a code path.
   that amount, summed over every VM the host runs.
 - **The pager** budgets resident, logical and dirty pages across the host; see
   [managed VM memory](vm-memory.md#bounded-host-pager). A VM is admitted
-  against the logical budget. That budget bounds per-region metadata, and the
+  against the logical budget. That budget bounds per-memory-region metadata, and the
   pager checks it one attachment at a time. Without an earlier check, a VM
-  whose regions exceed it would have its first region admitted and its VMM
+  whose memory regions exceed it would have its first memory region admitted and its VMM
   started, and would then be killed. So a create, an open and a receive each
   check what the cap has left before starting a VMM, and refuse a VM that
   cannot fit. A fork is a handoff, so the receive that takes in a child admits

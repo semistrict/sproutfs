@@ -182,7 +182,7 @@ type SupervisorConfig struct {
 	// other needs, so there is no ledger between them.
 	CacheBytes int64
 	SpillBytes KindBytes
-	// LogicalPages bounds per-region metadata and DirtyPages the volatile
+	// LogicalPages bounds per-memory-region metadata and DirtyPages the volatile
 	// private state on RAM and spill together, each in the pages of the pager it
 	// belongs to. DirtyPages is what fills a spill file, so SpillBytes is its
 	// bound, per pager.

@@ -30,7 +30,7 @@ import (
 
 const (
 	// rootVolume is the PMEM device the guest boots from, and ramVolume its
-	// RAM. A VM's regions bind to volumes by these names.
+	// RAM. A VM's memory regions bind to volumes by these names.
 	rootVolume = "root"
 	// consoleWindowBytes bounds one console read, which is a window on a
 	// disposable ring buffer rather than a stream.
@@ -94,8 +94,8 @@ type supervisor struct {
 	objects   *platform.MeteredObjectStore
 	// arenas and spills are one per pager: a pager's arena and spill file are
 	// its own, and the two pagers of a host share neither.
-	arenas map[vmmemory.RegionKind]*vmmemory.LinuxArena
-	spills map[vmmemory.RegionKind]platform.File
+	arenas map[vmmemory.MemoryRegionKind]*vmmemory.LinuxArena
+	spills map[vmmemory.MemoryRegionKind]platform.File
 	// connection is what every session this host opens is configured with: the
 	// node's fault-worker and mapping-count bounds, which no VM varies.
 	connection vmmemory.ConnectionConfig
@@ -128,8 +128,8 @@ var _ Service = (*supervisor)(nil)
 func Start(ctx context.Context, config SupervisorConfig) (Service, error) {
 	s := &supervisor{config: config, clock: platform.ClockOr(config.Clock), templateMu: ctxsync.NewMutex(),
 		machines: map[string]*machine{}, templates: map[string]*ImportedTemplate{},
-		arenas: map[vmmemory.RegionKind]*vmmemory.LinuxArena{},
-		spills: map[vmmemory.RegionKind]platform.File{},
+		arenas: map[vmmemory.MemoryRegionKind]*vmmemory.LinuxArena{},
+		spills: map[vmmemory.MemoryRegionKind]platform.File{},
 		// The orchestrator's default client has no timeout of its own, and a
 		// drain's requests are the only ones this host makes: a connection that
 		// is never answered and never closed would hold one open past every
@@ -172,7 +172,7 @@ func Start(ctx context.Context, config SupervisorConfig) (Service, error) {
 	if err != nil {
 		return nil, fmt.Errorf("metered object store: %w", err)
 	}
-	// One pager per kind of region, each over an arena and a spill file of its
+	// One pager per kind of memory region, each over an arena and a spill file of its
 	// own. The two capacities sum to what the deployment gave this host, so
 	// nothing is counted twice and the arenas never compete for a slot.
 	ram, err := s.startPager(ctx, vmmemory.Ram, pagerConfig(config, vmmemory.Ram))
@@ -235,7 +235,7 @@ func Start(ctx context.Context, config SupervisorConfig) (Service, error) {
 // loss, so the spill file starts empty; the pager sizes it to the dirty pages
 // its cap allows. Each is logged with the bounds the node chose for it, so what
 // a host gave each kind is on the record.
-func (s *supervisor) startPager(ctx context.Context, kind vmmemory.RegionKind, cfg vmmemory.Config) (*vmmemory.Host, error) {
+func (s *supervisor) startPager(ctx context.Context, kind vmmemory.MemoryRegionKind, cfg vmmemory.Config) (*vmmemory.Host, error) {
 	// The arena is sized to its addresses, not to the memory it may hold: it is
 	// a sparse file, and a pager that places a private page at the offset it has
 	// within its range owns far more of the first than of the second.
@@ -390,7 +390,7 @@ func (s *supervisor) templateReport() []hostapi.Template {
 // and budgets, and the sharing it holds. The gauges come from that pager alone,
 // so the two halves are never a sum of readings taken at different moments of
 // one pager.
-func (s *supervisor) pagerReport(ctx context.Context, kind vmmemory.RegionKind, free int) (hostapi.PagerKind, error) {
+func (s *supervisor) pagerReport(ctx context.Context, kind vmmemory.MemoryRegionKind, free int) (hostapi.PagerKind, error) {
 	pager := s.pagers.For(kind)
 	if pager == nil {
 		return hostapi.PagerKind{}, nil
@@ -431,9 +431,9 @@ func (s *supervisor) records(ctx context.Context) ([]hostapi.VM, error) {
 		status := m.vm.Status()
 		// What this host would cost the VM in time, beside what it would cost it
 		// in bytes: the host is the only thing that has both halves, since the
-		// window is measured across every region the VM maps.
+		// window is measured across every memory region the VM maps.
 		window, waiting := s.host.LossWindow(id)
-		// The same is true of what the VM holds that nothing shares: its regions
+		// The same is true of what the VM holds that nothing shares: its memory regions
 		// are the pager's and this host is what knows they are one VM's.
 		private, err := s.host.PrivateBytes(ctx, id)
 		if err != nil {
@@ -505,7 +505,7 @@ func (s *supervisor) Close(ctx context.Context) error {
 	// arena must never be closed under a pager that may still hold it. The other
 	// pager is still released, because leaving it attached to a process that is
 	// exiting helps nothing.
-	for _, kind := range []vmmemory.RegionKind{vmmemory.Ram, vmmemory.Pmem} {
+	for _, kind := range []vmmemory.MemoryRegionKind{vmmemory.Ram, vmmemory.Pmem} {
 		pager := s.pagers.For(kind)
 		if pager != nil {
 			if err := pager.Close(ctx); err != nil {

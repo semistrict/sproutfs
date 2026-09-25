@@ -1,6 +1,6 @@
 // Package slots is the pager's arena addresses: which of its offsets hold no
 // page, the consecutive runs of them that let consecutive pages become one
-// mapping command, the extents a region places its private pages in, and how
+// mapping command, the extents a memory region places its private pages in, and how
 // many pages it may hold at once. It accounts for nothing else — the resource
 // reservation a page costs and the statistics it moves belong to the host,
 // which serializes every call here under its own lock.
@@ -118,7 +118,7 @@ func (s *Space) Free() int { return s.pages - s.held }
 func (s *Space) ExtentOffsets() int { return s.extent }
 
 // Extents is how many extents the space was carved into, and FreeExtents how
-// many of them no region owns.
+// many of them no memory region owns.
 func (s *Space) Extents() int {
 	if s.extent == 0 {
 		return 0

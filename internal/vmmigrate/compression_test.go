@@ -86,7 +86,7 @@ func TestPageRepliesCompressAndRejectInvalidDecodedPages(t *testing.T) {
 						t.Fatal(err)
 					}
 					want := make([]byte, pageSize)
-					if held, _, err := s.machine.Regions()["ram0"].ReadResident(t.Context(), 0, want); err != nil || !held {
+					if held, _, err := s.machine.MemoryRegions()["ram0"].ReadResident(t.Context(), 0, want); err != nil || !held {
 						t.Fatalf("resident source: %v", err)
 					}
 					if !bytes.Equal(got, want) || backing.Stats().PeerPages != 1 {

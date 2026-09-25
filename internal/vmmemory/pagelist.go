@@ -2,7 +2,7 @@ package vmmemory
 
 // pageList is an ordered list of resident pages whose links live in the pages
 // themselves: the recency list every resident page is on and the idle list of
-// the pages no region maps. A list that allocated an element per page cost each
+// the pages no memory region maps. A list that allocated an element per page cost each
 // resident page one more heap object, and a 4 KiB pager holds millions. The
 // lists are protected by Host.mu.
 type pageList struct {
