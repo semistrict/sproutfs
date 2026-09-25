@@ -1828,6 +1828,31 @@ minutes, not seconds. Read-ahead takes only free arena slots, so under a
 quarter-sized arena every page of a scan takes its own fault. The phase's time
 bound is sized for this.
 
+The suite also runs hostile neighbours, in `neighbours_linux_test.go`. Each
+test runs two guests on one real `host.Host` over one pair of pagers, so the
+host's loop, its loss window and its answers to pressure and to flushes are the
+deployment's. One guest runs a load from the guest init's `hog` command in a
+child, and the other goes on working: a RAM store, a DAX store it syncs, both
+read back, and an exec through its agent, each within 30 seconds. Every test
+then checks that no pager's peak dirty or resident pages passed its budget or
+its arena. The loads are:
+
+- `hog ram`, a guest storing into all of its RAM over and over, on a RAM arena
+  three eighths of what the two guests map. The neighbour's working set must
+  fault back in whole, its agent must answer, and nothing is stopped.
+- `hog disk` and then `hog ram`, with the interval an hour away. The disk hog
+  runs past the PMEM dirty budget and must be checkpointed out of turn. The RAM
+  hog runs past the RAM dirty budget, which nothing relieves. It must be
+  stopped, with the logged reason, and the neighbour must not.
+- A small `hog disk` past a two-second loss window, which only checkpoints out
+  of turn relieve. This one fails on aarch64 Lima today; see
+  [open work](open-work.md).
+- `hog sync`, an fsync loop. It may cost at most one checkpoint of the storming
+  guest per flush bound beside the interval's own, and the neighbour's flushes
+  must complete.
+- `hog vsock`, a guest connecting to the host over and over where nothing
+  listens. The host's exec must still reach that guest's agent.
+
 Both suites report residency, sharing, load, mapping and fault counters. These
 are observations of small workloads, not throughput or latency targets. Recorded
 on 2026-09-10 on the Lima aarch64 instance:

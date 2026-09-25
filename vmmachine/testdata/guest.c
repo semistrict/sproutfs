@@ -5,6 +5,7 @@
 #include <linux/fiemap.h>
 #include <linux/fs.h>
 #include <linux/magic.h>
+#include <linux/vm_sockets.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,6 +14,7 @@
 #include <sys/ioctl.h>
 #include <sys/mount.h>
 #include <sys/resource.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <sys/sysmacros.h>
@@ -116,6 +118,59 @@ static void start_agent(void) {
     if (child == 0) {
         execl("/agent", "/agent", (char *)NULL);
         _exit(127);
+    }
+}
+
+// hog runs one hostile load in a child until the VM ends, so the console loop
+// goes on answering. It stands in for untrusted code that uses as much of the
+// host as its guest can reach:
+//   ram N    stores into every 4 KiB page of N MiB of RAM, over and over;
+//   disk N   does the same over an N MiB file on the DAX root;
+//   sync N   writes one 4 KiB block of an N MiB file on the root and fsyncs it,
+//            over and over, which is a virtio-pmem flush each time;
+//   vsock N  connects to the host over the vsock, where nothing listens, over
+//            and over, N connections to a pass.
+// The child says when it has been over the whole of it once.
+static void hog(const char *kind, unsigned long size) {
+    if (!size || (strcmp(kind, "vsock") && size > 1024)) { errno = EINVAL; fail("hog size"); }
+    pid_t child = fork();
+    if (child < 0) fail("fork hog");
+    if (child > 0) { printf("SPROUTFS_HOG kind=%s size=%lu\n", kind, size); return; }
+    int null = open("/dev/null", O_RDONLY);
+    if (null >= 0) { dup2(null, 0); close(null); }
+    if (!strcmp(kind, "vsock")) {
+        struct sockaddr_vm host = {.svm_family = AF_VSOCK, .svm_cid = VMADDR_CID_HOST, .svm_port = 1024};
+        for (unsigned long round = 1;; round++) {
+            int s = socket(AF_VSOCK, SOCK_STREAM, 0);
+            if (s < 0) fail("hog vsock");
+            // Refused: the host serves nothing a guest can connect to.
+            if (!connect(s, (struct sockaddr *)&host, sizeof host)) { errno = EISCONN; fail("hog vsock connect"); }
+            close(s);
+            if (round == size) printf("SPROUTFS_HOG_PASS kind=%s\n", kind);
+        }
+    }
+    size_t bytes = (size_t)size << 20;
+    int file = -1;
+    if (strcmp(kind, "ram")) {
+        file = open("/hog", O_CREAT | O_RDWR, 0600);
+        if (file < 0 || fallocate(file, 0, 0, (off_t)bytes)) fail("hog file");
+    }
+    if (!strcmp(kind, "sync")) {
+        char block[4096];
+        for (unsigned long round = 1;; round++) {
+            memset(block, (int)round, sizeof block);
+            off_t at = (off_t)(round % (bytes / sizeof block)) * (off_t)sizeof block;
+            if (pwrite(file, block, sizeof block, at) != (ssize_t)sizeof block || fsync(file)) fail("hog sync");
+            if (round == bytes / sizeof block) printf("SPROUTFS_HOG_PASS kind=%s\n", kind);
+        }
+    }
+    volatile unsigned char *region = file < 0
+        ? mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)
+        : mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_SHARED, file, 0);
+    if (region == MAP_FAILED) fail("hog mmap");
+    for (unsigned long round = 1;; round++) {
+        for (size_t at = 0; at < bytes; at += 4096) region[at] = (unsigned char)round;
+        if (round == 1) printf("SPROUTFS_HOG_PASS kind=%s\n", kind);
     }
 }
 
@@ -242,6 +297,13 @@ int main(void) {
         } else if (!strncmp(line, "run ", 4)) {
             line[strcspn(line, "\n")] = '\0';
             run_command(line + 4);
+        } else if (!strncmp(line, "hog ", 4)) {
+            char kind[8];
+            if (sscanf(line, "hog %7s %lu", kind, &value) != 2 ||
+                (strcmp(kind, "ram") && strcmp(kind, "disk") && strcmp(kind, "sync") && strcmp(kind, "vsock"))) {
+                errno = EINVAL; fail("hog command");
+            }
+            hog(kind, value);
         } else if (!strncmp(line, "sync", 4)) {
             sync();
             printf("SPROUTFS_SYNC\n");

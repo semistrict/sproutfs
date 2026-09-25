@@ -82,6 +82,11 @@ type hostPagersConfig struct {
 	// MeasurePMEM has the PMEM pager count the blocks each checkpoint's pages
 	// really changed, which is what the disk-checkpoints scenario reports.
 	MeasurePMEM bool
+	// LossWindow is the PMEM pager's loss window. Zero is none, which is what
+	// a suite with no host loop above its pagers wants: nothing would ever end
+	// a wait on it. RAM has none, as on a host: no checkpoint the loop takes
+	// would ever end a RAM page's window.
+	LossWindow time.Duration
 }
 
 // ramPageBytes is the page the RAM pager of these suites runs. It is 2 MiB,
@@ -174,6 +179,9 @@ func newConfiguredHostPagers(t testing.TB, ctx context.Context, cfg hostPagersCo
 			ReadAheadPages:  int(checkpoint.PageSize2MiB / page),
 			WriteAheadPages: max(budgets.WriteAhead, 1),
 			MeasureChanges:  kind == vmmemory.Pmem && cfg.MeasurePMEM}
+		if kind == vmmemory.Pmem {
+			pagerConfig.LossWindow = cfg.LossWindow
+		}
 		pager, err := vmmemory.New(ctx, resources, pagerConfig, arena, spill)
 		if err != nil {
 			t.Fatalf("%s pager: %v", kind, err)
