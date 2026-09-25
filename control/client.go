@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -216,7 +217,8 @@ func (c *Client) Open(ctx context.Context, vm string) (*Handle, error) {
 }
 
 // Delete removes a VM's control record, after which nothing can open it. It is
-// unconditional: a caller that has not stopped the VM's writer first races it.
+// unconditional: a caller that has not stopped the VM's writer first races it,
+// and so does a pin added without the writer. Remove is the conditional one.
 // The checkpoint objects are not touched, and neither is any record this VM
 // pins a checkpoint of: a pin outlives the record that took it, and what a
 // deleted VM leaves pinned is a collector's to release.
@@ -226,6 +228,111 @@ func (c *Client) Delete(ctx context.Context, vm string) error {
 		return err
 	}
 	return c.objects.Delete(ctx, platform.DeleteRequest{Key: key})
+}
+
+// Remove removes a VM's control record and reports the record it removed,
+// whose pins are what a sweep of the VM's objects must spare. The removal is
+// conditional on the record as it was read, and a record that moved is read
+// again, so a pin added without the writer between the read and the removal
+// is in the pins it reports. A VM with no record reports platform.ErrNotFound.
+//
+// Like Delete, it does not stop the VM's writer: close that first.
+func (c *Client) Remove(ctx context.Context, vm string) (Record, error) {
+	key, err := c.key(vm)
+	if err != nil {
+		return Record{}, err
+	}
+	for {
+		current, etag, err := c.read(ctx, vm)
+		if err != nil {
+			return Record{}, err
+		}
+		err = c.objects.Delete(ctx, platform.DeleteRequest{Key: key, IfMatch: &etag})
+		if err == nil {
+			return current, nil
+		}
+		if errors.Is(err, platform.ErrPrecondition) {
+			continue
+		}
+		// A reply may be lost: a record that is gone was removed, by this call
+		// or a retry of it inside the store's client.
+		_, observedETag, readErr := c.read(ctx, vm)
+		switch {
+		case errors.Is(readErr, platform.ErrNotFound):
+			return current, nil
+		case readErr != nil:
+			return Record{}, errors.Join(err, readErr)
+		case observedETag == etag:
+			return Record{}, err
+		}
+	}
+}
+
+// Pin records a fork of a published checkpoint of a VM this client holds no
+// handle on, and reports the checkpoint it pinned. It is how a VM nobody runs
+// is forked: a stopped VM has no writer to pin with, and taking its epoch to
+// pin would fence a host that turns out to run it after all.
+//
+// Sequence zero names the checkpoint the record selects. Only two checkpoints
+// may be named. One is the published checkpoint the record selects: a writer's
+// sweep never deletes the checkpoint its own selection selected, nor anything
+// that checkpoint's index names. The other is one a pin already keeps, which
+// costs no write. Any other checkpoint may be in a sweep that read the pins
+// before this one landed, so it is refused with ErrNotPublished.
+//
+// The write is conditional on the record as it was read, with the pin added
+// and the epoch and nonce kept. A record that moved in between is read again.
+// A writer that holds the epoch has its next write refused, adopts the record
+// with the pin, and makes its change again over it, so its next selection
+// reports the pin to its reclamation. Pins are only ever added, so a record
+// read back that pins the checkpoint settles a reply that was lost.
+func (c *Client) Pin(ctx context.Context, vm string, sequence uint64) (Ref, error) {
+	if !ValidID(vm) {
+		return Ref{}, ErrInvalidConfig
+	}
+	for {
+		current, etag, err := c.read(ctx, vm)
+		if err != nil {
+			return Ref{}, err
+		}
+		wanted := sequence
+		if wanted == 0 {
+			wanted = current.Selected
+		}
+		pinned := Ref{VM: vm, Sequence: wanted}
+		if current.IsPinned(wanted) {
+			return pinned, nil
+		}
+		if wanted != current.Selected || !current.Created {
+			return Ref{}, fmt.Errorf("%w: checkpoint %d of %s is not the published checkpoint its record selects, "+
+				"and no pin keeps it", ErrNotPublished, wanted, vm)
+		}
+		if err := current.admits(wanted); err != nil {
+			return Ref{}, err
+		}
+		next := current.clone()
+		next.Pinned = current.withPin(wanted)
+		_, err = c.put(ctx, next, platform.PutConditions{IfMatch: &etag})
+		if err == nil {
+			return pinned, nil
+		}
+		if errors.Is(err, platform.ErrPrecondition) {
+			// The record moved between the read and the write.
+			continue
+		}
+		observed, _, readErr := c.read(ctx, vm)
+		if readErr != nil {
+			return Ref{}, errors.Join(err, readErr)
+		}
+		if observed.IsPinned(wanted) {
+			sim.Probe(ctx, ProbeReplyReconciled)
+			return pinned, nil
+		}
+		if observed.equal(current) {
+			// Nothing was written. The caller may repeat the call.
+			return Ref{}, err
+		}
+	}
 }
 
 // Handle is one writer's hold on a VM's control record at one epoch. Its
@@ -329,10 +436,14 @@ func (h *Handle) Pin(ctx context.Context, sequence uint64) (Record, error) {
 // mutate reports the record to write; writing the record that is already there
 // costs nothing and writes nothing.
 //
-// The handle at the current epoch is the record's only writer: a pin is taken
-// by the record's own writer and never given back, so nothing moves underneath
-// this write that is not a later open taking the VM over. One attempt settles
-// it.
+// The handle at the current epoch is the record's only writer of everything
+// but a pin. A pin of the published checkpoint the record selects may be added
+// without the epoch (Client.Pin), which is how a VM nobody runs is forked. So
+// the record can move underneath this write in two ways: a later open taking
+// the VM over, which fences this handle, or a pin added, which this handle
+// adopts. After adopting, the change is made again over the adopted record,
+// and mutate settles a change that had already landed by writing nothing.
+// Pins are only ever added and are bounded, so this ends.
 //
 // One control-record write is in flight at a time, so the tracked state is
 // never behind the store; a caller waiting its turn waits under its own
@@ -342,19 +453,29 @@ func (h *Handle) update(ctx context.Context, mutate func(Record) (Record, error)
 		return Record{}, err
 	}
 	defer h.write.Unlock()
-	current, err := h.begin()
-	if err != nil {
-		return Record{}, err
+	for {
+		current, err := h.begin()
+		if err != nil {
+			return Record{}, err
+		}
+		next, err := mutate(current)
+		if err != nil {
+			return Record{}, err
+		}
+		if next.equal(current) {
+			return current, nil
+		}
+		record, err := h.replace(ctx, next)
+		if !errors.Is(err, errAdopted) {
+			return record, err
+		}
 	}
-	next, err := mutate(current)
-	if err != nil {
-		return Record{}, err
-	}
-	if next.equal(current) {
-		return current, nil
-	}
-	return h.replace(ctx, next)
 }
+
+// errAdopted reports a write refused because the record had moved to another
+// record of this handle's own epoch and nonce, which the handle has adopted.
+// update makes its change again over it.
+var errAdopted = errors.New("control: the record moved to one this handle adopted")
 
 // begin reports the record this handle currently owns, or why it owns none.
 // The caller holds the write lock.
@@ -386,12 +507,12 @@ func (h *Handle) settle(record Record, etag platform.ETag, fenced bool) {
 // handle tracks, and reconciles a reply that was lost rather than refused. The
 // caller holds the write lock.
 //
-// Only this handle can produce a record carrying its epoch and nonce, so the
-// record read back settles what happened without ambiguity: the one it meant to
-// write means the write landed; the one it already had means it did not; any
-// other record of this epoch and nonce is a write of its own it never saw land,
-// which it adopts so the caller can repeat the one that was refused; and
-// anything else means a later open has taken the VM over.
+// Only this handle, and a pin added without the epoch, can produce a record
+// carrying its epoch and nonce, so the record read back settles what happened:
+// the one it meant to write means the write landed; the one it already had
+// means it did not; any other record of this epoch and nonce is a write of its
+// own it never saw land or a pin, which it adopts so that update makes its
+// change again; and anything else means a later open has taken the VM over.
 func (h *Handle) replace(ctx context.Context, next Record) (Record, error) {
 	h.mu.Lock()
 	expected, current := h.etag, h.record.clone()
@@ -403,13 +524,11 @@ func (h *Handle) replace(ctx context.Context, next Record) (Record, error) {
 	}
 	observed, observedETag, readErr := h.client.read(ctx, next.VM)
 	if readErr != nil {
-		if errors.Is(err, platform.ErrPrecondition) {
-			// Refused, and the record cannot be read to say by whom. The epoch
-			// is gone either way: nothing else can refuse this handle's write.
-			sim.Probe(ctx, ProbePublicationFenced)
-			h.settle(Record{}, expected, true)
-			return Record{}, errors.Join(ErrFenced, err, readErr)
-		}
+		// Refused or lost, and the record cannot be read to say why. A refusal
+		// is no evidence of a takeover: a pin added without the epoch refuses
+		// this write too, and fencing on it would give up a running guest for
+		// a pin. The handle keeps its epoch. Its next write reads what
+		// happened, and a takeover fences it then.
 		return Record{}, errors.Join(err, readErr)
 	}
 	switch {
@@ -426,14 +545,15 @@ func (h *Handle) replace(ctx context.Context, next Record) (Record, error) {
 		return Record{}, err
 	case observed.mine(h.epoch, next.Nonce):
 		sim.Probe(ctx, ProbeReplyReconciled)
-		// A write of this handle's own that it never saw land: its reply was
-		// lost and the read that would have reconciled it failed too, so the
-		// handle has been tracking a record the store moved past, and this write
-		// was refused against its stale validator. Nothing was taken over — no
-		// other writer can produce this epoch and nonce — so the handle catches
-		// up on the record it wrote and the caller repeats the call.
+		// Either a write of this handle's own that it never saw land — its
+		// reply was lost and the read that would have reconciled it failed
+		// too — or a pin added without the epoch. Either way the handle has
+		// been tracking a record the store moved past, and this write was
+		// refused against its stale validator. Nothing was taken over: only
+		// this handle and a pin keep this epoch and nonce. So the handle
+		// catches up on the record it finds and makes its change again.
 		h.settle(observed, observedETag, false)
-		return Record{}, err
+		return Record{}, errors.Join(errAdopted, err)
 	default:
 		// A later open owns the VM. This writer's publication is fenced: the
 		// checkpoint it was selecting must never become the selected one.

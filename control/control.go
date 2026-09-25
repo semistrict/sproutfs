@@ -52,6 +52,10 @@ var (
 	// ErrTooManyPins reports a VM that has been forked more times than one
 	// record can carry.
 	ErrTooManyPins = errors.New("control: too many pinned checkpoints")
+	// ErrNotPublished reports a checkpoint a pin without the VM's writer may
+	// not name: one whose index was never published, or one the record no
+	// longer selects and no pin keeps, which a writer may be reclaiming.
+	ErrNotPublished = errors.New("control: checkpoint not published")
 )
 
 const (

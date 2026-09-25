@@ -796,7 +796,9 @@ The caller must close the writer before deleting a VM. Deletion has these
 steps:
 
 1. Read the record.
-2. Remove the record unconditionally. After this, nothing can open the VM.
+2. Remove the record, on the condition that it is still the version read. A
+   record that moved is read again, so a pin added without the writer in
+   between is spared. After this, nothing can open the VM.
 3. Delete what the VM published: every object under its checkpoint prefix that
    no pin of the VM covers. Each checkpoint's index object is deleted first.
 

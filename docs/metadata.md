@@ -47,10 +47,32 @@ nothing. So a fan-out of any size costs one pin. But a VM forked at many
 distinct checkpoints accumulates one pin per checkpoint, permanently.
 `MaximumPins` (4096) is the limit on that count until a collector releases some.
 
-Pins are written by the holder of the record's epoch, like everything else in
-the record. So the record has exactly one writer at a time, and a write settles
-in a single attempt. The only thing that can change the record underneath a
-write is a later open that takes the VM over, and that is a fence.
+The holder of the record's epoch writes everything in the record. A pin is the
+one exception. A VM that nobody runs has no writer, and it can still be forked:
+a create can start from its published checkpoint (see
+[hosting](hosting.md#creating-a-vm-from-a-checkpoint)). Taking the epoch to pin
+would fence a host that turns out to run the VM after all. So `Client.Pin` adds
+a pin without the epoch. It reads the record and writes it back with the pin
+added, under `IfMatch` against the version it read. It keeps the epoch and the
+nonce. A record that moved in between is read again.
+
+Such a pin may name only two checkpoints:
+
+- the published checkpoint the record selects. A writer's sweep never deletes
+  the checkpoint its own selection selected, nor anything that checkpoint's
+  index names. A selection that lands between the read and the write moves the
+  record, so the pin reads again and names the new selection.
+- a checkpoint that a pin already keeps. That costs no write.
+
+Any other checkpoint may be in the middle of a sweep that read the pins before
+this pin landed. So it is refused, not pinned too late.
+
+If a writer does hold the epoch, the pin moves the record under it. Its next
+write is refused. It reads the record back, finds its own epoch and nonce, and
+adopts that record with the pin. It then makes its change again over it. So its
+next selection reports the pin, and its reclamation spares the pinned
+checkpoint from then on. Only a later open that takes the VM over fences a
+writer.
 
 The record allocates and selects sequences, so the names built on sequences are
 defined with it:
@@ -113,8 +135,11 @@ that the child exists, nothing could then create or open the child. For the same
 reason, a fork that cannot build its child's handle after writing that record
 deletes the record again.
 
-Deletion is a separate, unconditional operation. The caller must close the
-writer first. Removing the control record prevents later opens. The VM's
+Deletion is a separate operation. It takes no epoch, so the caller must close
+the writer first. The delete reads the record for its pins and then removes it
+with `IfMatch` against the version it read. A record that moved is read again.
+So a pin added without the writer while the delete runs is one its sweep
+spares. Removing the control record prevents later opens. The VM's
 checkpoint objects are then deleted too, each checkpoint's index object first.
 Deleting them frees the identity. Checkpoint objects are named by the VM and a
 sequence. A VM created under a deleted VM's identity would be refused if it
@@ -142,18 +167,21 @@ spare, and an identity that nobody can delete is the smaller loss.
 A missing response does not prove that a write failed. A writer reconciles by
 reading the record back. If it finds the record it meant to write, the write
 landed. If it finds the record it already had, the write did not land. Only the
-writer of an epoch can produce a record that carries that epoch's nonce, so the
-answer is never ambiguous.
+writer of an epoch, and a pin added without the epoch, produce a record that
+carries that epoch's nonce.
 
 One case remains. The writer may find a record with its own epoch and nonce that
-is neither of those two records. That record is ambiguous only about which of
-the writer's writes it is. This happens when a reply is lost and the read-back
-also fails. The writer then tracks a version that the store has moved past, and
-the store refuses the writer's next write against that version. That refusal is
-not a takeover. The writer adopts the record it finds and repeats the refused
-call. Only a foreign epoch or nonce fences the writer. This behaviour lets each
-of these be finished by repeating it: an interrupted creation, an interrupted
-takeover, and an interrupted checkpoint selection.
+is neither of those two records. This happens in two ways. A reply is lost and
+the read-back also fails, so the writer tracks a version that the store has
+moved past. Or a pin was added without the epoch. Either way the store refuses
+the writer's next write against its stale version. That refusal is not a
+takeover. The writer adopts the record it finds and makes its change again over
+it. A change that had already landed then writes nothing. Only a foreign epoch
+or nonce fences the writer. A refusal whose record cannot be read fences
+nothing either, because a pin refuses a write as a takeover does. The writer's
+next write reads what happened. This behaviour lets each of these be finished
+by repeating it: an interrupted creation, an interrupted takeover, and an
+interrupted checkpoint selection.
 
 ## Fencing and selection
 

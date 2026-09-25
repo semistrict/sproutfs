@@ -248,15 +248,14 @@ func (m *Manager) Delete(ctx context.Context, id string) error {
 	if !validID(id) {
 		return ErrInvalidConfig
 	}
-	record, err := m.config.Control.Read(ctx, id)
+	// The removal is conditional on the record it reports, so a pin added
+	// without the writer while this runs is one the sweep spares.
+	record, err := m.config.Control.Remove(ctx, id)
 	if errors.Is(err, platform.ErrNotFound) {
 		// Nothing left that says which of this identity's objects are read.
 		return nil
 	}
 	if err != nil {
-		return err
-	}
-	if err := m.config.Control.Delete(ctx, id); err != nil {
 		return err
 	}
 	return m.config.Store.DeleteVM(ctx, id, record.Pinned)

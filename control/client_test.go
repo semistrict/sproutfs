@@ -304,8 +304,8 @@ func TestLostReplyIsReconciledByNonce(t *testing.T) {
 // What its next write reads back is therefore neither the record it meant to
 // write nor the one it thinks it has, and that must not be read as a takeover:
 // only this handle's epoch and nonce can have produced it. The handle adopts it
-// and the caller repeats its work. Fencing there would be a writer fenced
-// against nothing but itself, with a running guest given up for it.
+// and makes its change again. Fencing there would be a writer fenced against
+// nothing but itself, with a running guest given up for it.
 func TestALostReplyWhoseReadBackFailedDoesNotFenceTheWriter(t *testing.T) {
 	client, store := newClient(t)
 	ctx := t.Context()
@@ -321,13 +321,10 @@ func TestALostReplyWhoseReadBackFailedDoesNotFenceTheWriter(t *testing.T) {
 	}
 	// The selection landed. The handle's next write is refused, because the
 	// validator it tracks is the one that write replaced, but the record it
-	// reads back is its own and the repeat lands.
-	if _, err := handle.Pin(ctx, second); errors.Is(err, control.ErrFenced) {
-		t.Fatalf("pinning after a lost reply = %v, want a refusal the handle may repeat", err)
-	}
+	// reads back is its own, so it adopts it and the pin lands.
 	record, err := handle.Pin(ctx, second)
 	if err != nil {
-		t.Fatalf("repeating the pin: %v", err)
+		t.Fatalf("pinning after a lost reply: %v", err)
 	}
 	if record.Selected != second || !record.IsPinned(second) {
 		t.Fatalf("the reconciled record = %+v, want the lost selection and the pin", record)
