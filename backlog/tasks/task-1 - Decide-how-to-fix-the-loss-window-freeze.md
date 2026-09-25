@@ -1,11 +1,12 @@
 ---
 id: TASK-1
 title: Decide how to fix the loss-window freeze
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@claude'
 created_date: '2026-09-25 18:17'
+updated_date: '2026-09-25 19:27'
 labels:
-  - needs-owner
   - correctness
 dependencies: []
 references:
@@ -31,7 +32,28 @@ Recommendation: the pager-side fix. Ask for the window's checkpoint before the w
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The owner has chosen a fix
-- [ ] #2 TestAGuestPastItsLossWindowIsCheckpointedOutOfTurn passes on Lima
-- [ ] #3 A guest held by the window while the object store is down is stopped deliberately, not frozen
+- [x] #1 The owner has chosen a fix
+- [x] #2 TestAGuestPastItsLossWindowIsCheckpointedOutOfTurn passes on Lima
+- [x] #3 A guest held by the window while the object store is down resumes when the store answers, with no new pause
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Host loop: a checkpoint on its own clock at three quarters of the loss window (a rewrite-only guest never asks through a store).
+2. Pager: past the window, hold a store only while a sealed publication of its VM uploads; otherwise admit it, asking when nothing is sealed.
+3. Volume: a failed disk publication past the window keeps its seal and is published again under the same reference (volume.Retry).
+4. Prove on Lima and with unit and simulation tests.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Lima: TestAGuestPastItsLossWindowIsCheckpointedOutOfTurn passes (13 checkpoints of the hog in 20 s, neighbour answering every round in about 20 ms), with the flush-storm, vsock-flood, RAM-hog and budget neighbour tests. Mac: go test ./... passes. Unit tests in vmmemory, volume and host, and simtest's migrated-window case, each fail without their part. A guest whose store stays down is held by the window until it answers; it is not stopped.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Committed as 285153e. The loop checkpoints on its clock at three quarters of the window; the pager holds a store only behind a sealed upload; a failed upload past the window is retried with its seal kept, under the same reference. Verified on Lima and by unit and simulation tests.
+<!-- SECTION:FINAL_SUMMARY:END -->
