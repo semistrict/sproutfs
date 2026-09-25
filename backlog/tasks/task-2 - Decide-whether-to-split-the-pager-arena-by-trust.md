@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-09-25 18:17'
-updated_date: '2026-09-25 22:03'
+updated_date: '2026-09-25 22:26'
 labels:
   - needs-owner
   - security
@@ -29,5 +29,11 @@ This undoes what the jailer is for, so it blocks running untrusted tenants. The 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [ ] #1 The owner has decided whether and when to do it
-- [ ] #2 A plan for the split is in plans/
+- [x] #2 A plan for the split is in plans/
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Plan: plans/arena-by-trust-2026-09-25.md. Waiting on the owner's five decisions at its end.
+<!-- SECTION:NOTES:END -->
