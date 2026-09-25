@@ -259,6 +259,12 @@ func TestFirecrackerLiveMigration(t *testing.T) {
 		region := backing.Stats()
 		t.Logf("migration region %s: peer_pages=%d volume_pages=%d requests=%d fell_back=%t",
 			name, region.PeerPages, region.VolumePages, region.Requests, region.FellBack)
+		latency := region.Latency
+		t.Logf("migration region %s latency: faults=%d p50<=%s p99<=%s max=%s wait_p99<=%s stream=%d p99<=%s wait_p99<=%s",
+			name, latency.Fault.Count, time.Duration(latency.Fault.QuantileUpperNS(0.5)),
+			time.Duration(latency.Fault.QuantileUpperNS(0.99)), time.Duration(latency.Fault.MaxNS),
+			time.Duration(latency.FaultWait.QuantileUpperNS(0.99)), latency.Stream.Count,
+			time.Duration(latency.Stream.QuantileUpperNS(0.99)), time.Duration(latency.StreamWait.QuantileUpperNS(0.99)))
 	}
 	t.Logf("migration page server: served=%d absent=%d requests=%d compared_peer_pages=%d compared_volume_pages=%d source_resident=%d",
 		served.Served, served.Absent, served.Requests, comparedPeer, comparedVolume, stats.ResidentPages)
