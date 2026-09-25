@@ -80,12 +80,18 @@ func (p *windowPlan) unlock() {
 			p.reserved[i] = -1
 		}
 	}
-	h.signal()
-	h.mu.Unlock()
 	pages := make([]*resident, 0, len(p.locked))
 	for pg := range p.locked {
 		pages = append(pages, pg)
+		// A published page the plan loaded and a failure left unmapped is idle,
+		// like any other published page nothing maps. Off the idle list, only
+		// a reclaim would ever give its memory back.
+		if pg.published() {
+			h.idleLocked(pg)
+		}
 	}
+	h.signal()
+	h.mu.Unlock()
 	h.unlockAll(pages)
 }
 

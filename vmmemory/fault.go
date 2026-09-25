@@ -130,6 +130,19 @@ func (r *MemoryRegion) fault(ctx context.Context, index uint64, write bool, spil
 		if pg, err = r.readIn(ctx, index); err != nil {
 			return false, err
 		}
+		if origin := pg; origin != nil {
+			// No memory region maps the page read in, so it is idle once this
+			// store is over, as the page an ordinary store copies from is once
+			// the store leaves it. It is not idle before then, so that the copy's
+			// own slot is not taken from it. Off the idle list, only a reclaim
+			// would ever give its memory back, whether the store succeeds or
+			// fails.
+			defer func() {
+				h.mu.Lock()
+				h.idleLocked(origin)
+				h.mu.Unlock()
+			}()
+		}
 		if pg != nil && !r.needsPrivatePage(index) {
 			// The memory region was given up to read, and this page is the guest's own
 			// state now. What the store needs is decided again from the top.
