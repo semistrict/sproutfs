@@ -468,16 +468,17 @@ the time.
 When the pager refuses a memory region, the two halves of the failure are on opposite
 sides of the socket. The VMM builds its sessions inside its own boot or load
 request. So a refusal fails that request, and the VMM knows only that the
-backing descriptor never came. The reason is on the pager's side, in a connect
+attachment never came. The reason is on the pager's side, in a connect
 result that the supervisor would otherwise never read. Both sides log the
 failure where it happens. The VMM's log names which kind of attachment failure
 it saw, because each kind points to a different end of the connection:
 
 - the pager closed the session before attaching
-- the pager closed it after the descriptor and before the frame
-- the pager answered with no descriptor
-- the pager attached more than the one memory region a session takes
+- the pager closed it partway through a frame
+- the pager sent a file without its descriptor, or a descriptor with a frame
+  that carries none
 - the descriptors did not fit this side's ancillary buffer
+- a file whose descriptor is not what its frame states
 
 A failed request to the VMM is reported together with every session's result.
 The supervisor closes the process first, which ends the listeners and every
@@ -1102,12 +1103,13 @@ VMM places a volume's bytes in the guest's address space, as described under
 `Session::connect` reserves the memory region's range, creates the UFFD and exchanges
 descriptors. The range is reserved before the page size is known. So it is
 reserved at the largest page size this transport maps, which is aligned for both
-sizes. The attachment then states this memory region's page size and what its arena is
-made of. The client checks three things:
+sizes. The attachment then states this memory region's page size and what its files
+are made of. The client checks three things:
 
 - that it maps that page size
-- that the descriptor is that kind of memory: an explicit 2 MiB HugeTLB file,
-  or an ordinary shared memfd of 4 KiB pages
+- that the private file's descriptor, and every file's after it, is that kind
+  of memory: an explicit 2 MiB HugeTLB file, or an ordinary shared memfd of
+  4 KiB pages
 - that the memory region's length is a nonzero multiple of the page size
 
 A mismatch ends the session before any address is exposed to the embedder.
@@ -1151,8 +1153,8 @@ access it in between and bypass demand loading or copy-on-write. Instead, the
 library does the following:
 
 1. It builds the mapping away from the live address.
-2. It registers the mapping with UFFD. If the mapping is shared immutable
-   backing, it write-protects it.
+2. It registers the mapping with UFFD. If the mapping is immutable, it
+   write-protects it. A mapping of a read-only file is always immutable.
 3. It replaces the live range with `mremap(MREMAP_FIXED | MREMAP_MAYMOVE)`.
 4. It acknowledges only after that syscall completes.
 
@@ -1161,9 +1163,10 @@ or more such runs, they are built together in one reservation. The whole span
 then takes one `MADV_DONTFORK`, one `UFFDIO_REGISTER` and one
 `UFFDIO_WRITEPROTECT`, instead of one of each per run. Each run still takes its
 own `mremap`, because `mremap` moves a single mapping, and two runs of a batch
-are never one mapping. Runs that are adjacent in both the memory region and the arena
+are never one mapping. Runs that are adjacent in both the memory region and one file
 have already been merged before this step. The remaining runs are adjacent only
-in the memory region, and the kernel keeps those separate. A batch of 64 such runs
+in the memory region, and the kernel keeps those separate. A span may hold runs
+of different files, and each run is mapped as its own file is. A batch of 64 such runs
 costs 136 kernel calls instead of 320. Combining the `mremap`s would require the
 wire protocol to express it, and it does not.
 
@@ -1171,9 +1174,17 @@ Nonresident ranges are anonymous readable and writable mappings registered for
 missing and write-protect faults, with no populated pages. They are not
 `PROT_NONE` ranges, because those would raise ordinary protection faults.
 
-Resident ranges are `MAP_SHARED` views of the arena, registered for missing,
-minor and write-protect faults. A shared immutable page is armed for synchronous
-write protection before it becomes accessible. The pager installs resident
+Resident ranges are views of a file, registered for missing, minor and
+write-protect faults. The private file is mapped `MAP_SHARED`. A read-only file
+is mapped `MAP_PRIVATE`, because the kernel refuses to register a shared
+mapping of a read-only file with userfaultfd. On HugeTLB it is also mapped
+`MAP_NORESERVE`, so it reserves no pool pages for copies that never happen. An
+immutable page is armed for synchronous write protection before it becomes
+accessible. `UFFDIO_CONTINUE` installs the file's own page, read-only in a
+private mapping, so a read-only file's pages are shared as physically as the
+private file's. A store into one traps to the pager, which replaces the
+mapping. A store the kernel let through would copy into memory the pager never
+sees, so the pager never clears write protection on a read-only file's range. The pager installs resident
 backing with `UFFDIO_CONTINUE`, including its write-protect mode for shared
 data. It does not copy bytes into a private anonymous destination. This
 makes the page physically shared. The pager issues `UFFDIO_CONTINUE` over whole
@@ -1265,15 +1276,20 @@ ordinary CPU accesses and the tested KVM accesses. No Rust lock surrounds each
 load. Upstream's UFFD restore copies pages into each VM's anonymous memory and
 cannot share a page between VMs. This integration replaces it.
 
-## Control protocol, version 9
+## Control protocol, version 10
 
-Version 8 peers are rejected because FLUSH is new. A pager ends a session when
-it receives a control message it does not know. So a version 8 pager would end a
-guest at its first flush. The version check tells the two apart before a guest
-runs.
+Version 9 peers are rejected because the arena moved off ATTACH and into files.
+ATTACH carries no descriptor and no length. The pager hands the client each
+file it may map in a FILE frame, with its descriptor, and a MAP names the file
+it maps from. A version 9 peer would read ATTACH as the arena and a MAP's file
+number as a protection flag. Both ends refuse the other's version at HELLO and
+ATTACH, before any guest memory exists.
 
 Earlier versions were rejected for these reasons:
 
+- Version 9 rejected version 8 because FLUSH was new. A pager ends a session
+  when it receives a control message it does not know. So a version 8 pager
+  would end a guest at its first flush.
 - Version 8 rejected version 7 because ATTACH's length is the arena's offset
   space, not its capacity. The arena is a sparse file whose offsets are not its
   pages. So the number that the client checks the descriptor's size against,
@@ -1289,9 +1305,8 @@ Earlier versions were rejected for these reasons:
 - Before that, version 4 was rejected because its FLUSH request was removed,
   and SEAL took its frame kind.
 
-Version 9's FLUSH is a request with its own kind. The host answers it once it
-has made the flush durable. It does not write the flush anywhere. The
-supervisor, Rust adapter and Firecracker integration must be deployed together.
+The supervisor, Rust adapter and Firecracker integration must be deployed
+together.
 
 A Unix stream carries fixed 56-byte frames of seven little-endian `u64` fields:
 
@@ -1300,20 +1315,23 @@ kind, id, offset, length, backing, generation, flags
 ```
 
 Frames must be read and written completely; stream boundaries are not message
-boundaries. `SCM_RIGHTS` carries exactly one descriptor on HELLO and ATTACH.
-The receiver closes unexpected descriptors and rejects truncated ancillary
-data. A pager refuses a memory region by closing the socket instead of sending ATTACH.
-The usual reason is a full logical-page cap. The client reads this as an orderly
-close and reports it as the pager closing before attaching, not as a malformed
-descriptor message. The client's report of why it could not start must name the
-end that did not answer.
+boundaries. `SCM_RIGHTS` carries exactly one descriptor on HELLO and on FILE,
+and none on any other frame. The client reads every frame with `recvmsg`, after
+READY too, because a FILE can arrive at any time. A plain read that reached a
+FILE would have the kernel close its descriptor. The client ends the session on
+a descriptor with any other frame, on a FILE without one, and on truncated
+ancillary data. A pager refuses a memory region by closing the socket instead
+of sending ATTACH. The usual reason is a full logical-page cap. The client
+reads this as an orderly close and reports it as the pager closing before
+attaching, not as a malformed descriptor message. The client's report of why it
+could not start must name the end that did not answer.
 
 | Kind | Value | Fields |
 | --- | --- | --- |
 | HELLO | 1 | `id` protocol version, every other field zero; carries UFFD |
 | MEMORY_REGION | 2 | `offset=host address`, `length=bytes`, `flags=kind` (1 PMEM, 2 RAM) |
-| ATTACH | 3 | `id` protocol version, `offset=this memoryRegion's page size`, `length=the arena's offset space in bytes`, `backing=arena kind` (1 explicit 2 MiB HugeTLB, 2 ordinary shared memfd), `flags=mapping-count budget`; carries the arena memfd |
-| MAP | 4 | Command ID, memory-region-relative offset and length, arena offset in `backing`, next generation; `flags=1` immutable and shared or `0` private and writable |
+| ATTACH | 3 | `id` protocol version, `offset=this memoryRegion's page size`, `length=0`, `backing=arena kind` (1 explicit 2 MiB HugeTLB, 2 ordinary shared memfd), `flags=mapping-count budget`; carries no descriptor. The files follow as FILE frames |
+| MAP | 4 | Command ID, memory-region-relative offset and length, the offset in its file in `backing`, next generation; `flags` bit 0 is 1 for immutable and 0 for writable, and the bits above it are the file number. A writable MAP must name file 0 |
 | REVOKE | 5 | Command ID, memory-region-relative offset and length, next generation; installs nonresident fault traps |
 | ACK | 6 | Echoes command ID and generation; `flags=0` success or a positive Linux errno |
 | STOP | 7 | Command ID; the embedder must have stopped all memory users |
@@ -1323,6 +1341,45 @@ end that did not answer.
 | READY | 11 | Ends the mandatory attach population; acknowledged before `Session::connect` returns |
 | MAP_ZERO | 12 | Explicit sparse zero range, `backing=0`, `flags=1`; installs populated anonymous shared-zero page tables under write protection |
 | FLUSH | 13 | Client request ID, every other field zero; the client's guest flushed this session's memory region, which must be PMEM. RESULT answers it once the host has made the flush durable, and the guest's flush returns then |
+| FILE | 14 | `id` file number, `length` its size in bytes, `backing` arena kind, `flags=1` writable or `0` read-only, every other field zero; carries the file's descriptor. Not acknowledged. A FILE that repeats a number with a larger length grows that file |
+| DROP_FILE | 15 | `id` file number, every other field zero. Sent once every mapping of the file is revoked. The client closes its descriptor. Not acknowledged |
+
+### Files
+
+File 0 is the memory region's private file. It is the only file whose
+descriptor is read-write, and the only one a writable MAP may name. Every other
+file is read-only. The plan is that file 1 is the tenant's shared file and fork
+files are 2 and up (see the [isolated arena](../plans/isolated-arena-2026-09-25.md)).
+Today the pager sends one file: the arena, as file 0, read-write. It maps every
+page from it. A MAP of file 0 encodes as MAP did in version 9.
+
+A session attaches with HELLO, MEMORY_REGION, ATTACH, FILE 0, any other files,
+the populate's MAP_BATCH frames and READY. The client refuses READY before it
+has file 0. The pager sends FILE and DROP_FILE under the lock it sends commands
+with, so they reach the client in order with the MAPs that use them.
+
+The client keeps a table of its files. For each FILE it checks:
+
+- that the frame's arena kind is the attachment's, and its length is whole
+  pages
+- that file 0 is stated writable and every other file read-only
+- that the descriptor is that kind of memory, as it checks the page with
+  `fstatfs`
+- that the file is at least the length stated, by `fstat`. Only the stated
+  length bounds a MAP, so a file may grow before it is stated again
+- that the descriptor is open read-write for file 0 and read-only for every
+  other, by `fcntl(F_GETFL)`
+- that a repeated number names the same file, by device and inode, at a
+  larger length
+
+A FILE that fails any of these ends the session. So does a DROP_FILE of file 0
+or of a file the client does not hold. The client refuses a MAP that names a
+file it does not hold, reaches past that file's stated length, or is writable
+and names any file but file 0. It answers such a MAP with `EINVAL` and changes
+nothing, as it does any other invalid command.
+
+None of these checks keeps a VMM out. The pager's descriptors do that. The
+checks keep a well-behaved client safe from a pager bug.
 
 The attach READY handshake and batched mappings are mandatory. All batch ranges
 are validated before any change is made, and they must be ordered and disjoint.
@@ -1678,7 +1735,11 @@ flushes. A managed capture is always a full snapshot with no memory file. A
 managed restore requires fixed RAM with no huge-page setting, in this
 architecture's own layout.
 
-The Firecracker fork has to be rebuilt for mapping protocol version 9. The crate is vendored into the VMM by path. So a cached qualification build
+The Firecracker fork has to be rebuilt for mapping protocol version 10. Its
+seccomp policy lets the memory thread read frames with `recvmsg` and check a
+file it is handed mid-session with `fstat`, `fstatfs` and `fcntl(F_GETFL)`. It
+lets the VMM thread check a file's access mode and map a read-only file's runs
+`MAP_PRIVATE | MAP_NORESERVE`. The crate is vendored into the VMM by path. So a cached qualification build
 keeps speaking an older version, and every session it opens fails with
 `invalid managed-memory hello` before a guest starts. That failure is the
 version check working as intended. It is also the first thing to check when a
@@ -1817,7 +1878,15 @@ The pager suite covers:
 - what the isolated arena needs of read-only files, in
   `readonly_linux_test.go`. The test plays both the pager and the VMM, without
   the Rust client. See step 1 of
-  [the plan](../plans/arena-by-trust-2026-09-25.md#steps).
+  [the plan](../plans/isolated-arena-2026-09-25.md#steps).
+- the same through the Rust client, in `files_linux_test.go`. The fixture puts
+  the pages it shares in a second file that the client receives read-only, and
+  the sharing, eviction, spill and KVM cases run over both layouts. A page of
+  the read-only file is the pager's own page in the client, its private mapping
+  reserves no HugeTLB pool page, and a store from a thread or from KVM traps to
+  the pager and leaves the file unchanged. The client refuses a writable MAP of
+  the file, a MAP of a file it was never given and a MAP past the file, and a
+  DROP_FILE closes its descriptor.
 
 The simulated pager tests also require the following of seals:
 

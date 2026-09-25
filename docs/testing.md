@@ -1397,7 +1397,9 @@ The ignored `tests::protocol` tests exercise `Session::connect` and
 - immediate retries;
 - ordered disjoint batches;
 - the 1024-run boundary;
-- budget rejection acknowledgements.
+- budget rejection acknowledgements;
+- files: a read-only file mapped private, grown and dropped, a span of runs
+  from two files, and every file, drop and descriptor the client refuses.
 
 The peer drains UFFD remap events independently of control acknowledgements, as
 the real pager does. Malformed batch headers must be rejected before a body is
