@@ -71,9 +71,16 @@ def main():
     parser.add_argument("--seeds", type=int, default=3)
     parser.add_argument("--mutant", action="append", help="select an ID; repeat to select several")
     parser.add_argument("--timeout", type=int, default=180, help="seconds per test process")
+    parser.add_argument("--go-test-exec", type=Path,
+                        help="run each test binary through this launcher, for example in a Linux VM; "
+                             "GOOS and GOARCH in the environment build the binaries for it")
     args = parser.parse_args()
     if args.seeds < 1 or args.timeout < 1:
         parser.error("seeds and timeout must be positive")
+    launcher = args.go_test_exec.resolve() if args.go_test_exec else None
+    if launcher and (not launcher.is_file() or not os.access(launcher, os.X_OK)):
+        parser.error("go-test-exec must name an executable file")
+    prefix = [str(launcher)] if launcher else []
     root = Path(__file__).resolve().parents[1]
     catalogue = json.loads((root / "scripts/mutation/simulation.json").read_text())
     guards = json.loads((root / "scripts/mutation/guards.json").read_text())
@@ -100,6 +107,11 @@ def main():
               "go": subprocess.check_output(["go", "version"], text=True).strip(),
               "revision": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip(),
               "source_manifest": "source-sha256.json", "baseline": [], "mutants": []}
+    if launcher:
+        shutil.copyfile(launcher, output / "go-test-exec")
+        (output / "go-test-exec").chmod(0o755)
+        report["go_test_exec"] = {"path": str(launcher),
+                                  "sha256": hashlib.sha256(launcher.read_bytes()).hexdigest()}
 
     def save():
         report["summary"] = dict(collections.Counter(
@@ -117,7 +129,7 @@ def main():
             pattern = "^" + SCHEDULED[package] + "$" if phase == "scheduled" else "."
         environment = env if bug is None else {**env, "SPROUTFS_SIM_BUG": bug}
         name = f"{package.replace('/', '-')}.{phase}" + (f".{bug}" if bug else "")
-        result = command([str(binary), "-test.run=" + pattern, "-test.count=1",
+        result = command(prefix + [str(binary), "-test.run=" + pattern, "-test.count=1",
                           "-test.v", "-test.failfast", f"-test.timeout={args.timeout}s"],
                          source / package, environment, directory / f"{name}.log",
                          args.timeout + 5)

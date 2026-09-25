@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+
+	"github.com/semistrict/sproutfs/platform/sim"
 )
 
 // Starter runs the VMM process of one VM. This package does not start a VMM:
@@ -92,7 +94,9 @@ func (l *Launch) Prepare(ctx context.Context, placement Placement) (*Memory, err
 		return nil, errors.New("vmmachine: a launch is prepared once")
 	}
 	prepare := l.prepare
-	l.prepare = nil
+	if !sim.Bug(ctx, "vmmachine-prepare-twice") {
+		l.prepare = nil
+	}
 	return prepare(ctx, placement)
 }
 

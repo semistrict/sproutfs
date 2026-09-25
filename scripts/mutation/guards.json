@@ -76,5 +76,35 @@
     "package": "internal/simtest",
     "run": "^TestScheduledWorldReproduces$",
     "purpose": "Reclaim the checkpoints the selected one still reads from."
+  },
+  {
+    "id": "vmmachine-accept-reserved-load",
+    "package": "vmmachine",
+    "run": "^TestAdversarialStarters$",
+    "purpose": "Accept a Starter's snapshot load request that names a key this package loads. Linux only, as root."
+  },
+  {
+    "id": "vmmachine-skip-owner",
+    "package": "vmmachine",
+    "run": "^TestAdversarialStarters$",
+    "purpose": "Leave the prepared directory and its sockets to this process instead of the placement's Owner. Linux only, as root."
+  },
+  {
+    "id": "vmmachine-give-host-path",
+    "package": "vmmachine",
+    "run": "^TestAdversarialStarters$",
+    "purpose": "Give the VMM host paths instead of the placement's Within. Linux only, as root."
+  },
+  {
+    "id": "vmmachine-prepare-twice",
+    "package": "vmmachine",
+    "run": "^TestAdversarialStarters$",
+    "purpose": "Let a Starter prepare one launch twice. Linux only, as root."
+  },
+  {
+    "id": "vmmachine-skip-peer-check",
+    "package": "vmmachine",
+    "run": "^TestAdversarialStarters$",
+    "purpose": "Admit a memory session from a process other than the VMM its Starter reported. Linux only, as root."
   }
 ]

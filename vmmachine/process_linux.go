@@ -26,6 +26,7 @@ import (
 	"unsafe"
 
 	"github.com/semistrict/sproutfs/internal/ctxsync"
+	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/vmmemory"
 	"github.com/semistrict/sproutfs/volume"
 )
@@ -398,8 +399,11 @@ func (p *Process) prepareMemory(ctx context.Context, c Config, layout plan, plac
 		return nil, err
 	}
 	p.dir, p.within, p.owner = dir, placement.Within, placement.Owner
-	if p.within == "" {
+	if p.within == "" || sim.Bug(ctx, "vmmachine-give-host-path") {
 		p.within = dir
+	}
+	if sim.Bug(ctx, "vmmachine-skip-owner") {
+		p.owner = nil
 	}
 	if err := p.own(dir); err != nil {
 		return nil, err
@@ -520,7 +524,7 @@ func (p *Process) attach(ctx, lifetime context.Context, c Config) chan error {
 				connectErrors <- errAbandoned
 				return
 			}
-			if err == nil {
+			if err == nil && !sim.Bug(ctx, "vmmachine-skip-peer-check") {
 				err = checkPeer(socket, p.vmm.PID())
 			}
 			if err == nil {
@@ -634,7 +638,9 @@ func (p *Process) restore(ctx context.Context, c Config, memory *Memory) error {
 	for key, value := range memory.Load {
 		switch key {
 		case "snapshot_path", "mem_file_path", "mem_backend", "pmem_overrides", "resume_vm":
-			return fmt.Errorf("vmmachine: the Starter's load request names %q, which this package loads", key)
+			if !sim.Bug(ctx, "vmmachine-accept-reserved-load") {
+				return fmt.Errorf("vmmachine: the Starter's load request names %q, which this package loads", key)
+			}
 		}
 		load[key] = value
 	}

@@ -1181,6 +1181,25 @@ not to the recorded scenario, because they break a fault's own path:
 These three show that the per-site injection and the ambient faults are worth
 their cost.
 
+Five guards break the host's side of the Starter contract in `vmmachine`:
+
+```sh
+SPROUTFS_SIM_BUG=vmmachine-accept-reserved-load \
+  go test ./vmmachine -run '^TestAdversarialStarters$' -count=1
+SPROUTFS_SIM_BUG=vmmachine-skip-owner \
+  go test ./vmmachine -run '^TestAdversarialStarters$' -count=1
+SPROUTFS_SIM_BUG=vmmachine-give-host-path \
+  go test ./vmmachine -run '^TestAdversarialStarters$' -count=1
+SPROUTFS_SIM_BUG=vmmachine-prepare-twice \
+  go test ./vmmachine -run '^TestAdversarialStarters$' -count=1
+SPROUTFS_SIM_BUG=vmmachine-skip-peer-check \
+  go test ./vmmachine -run '^TestAdversarialStarters$' -count=1
+```
+
+`TestAdversarialStarters` runs a fake VMM, not Firecracker, but it runs only on
+Linux and as root, because it gives the process's directory to another user.
+On a Mac, run these through the Lima instance, as the next section shows.
+
 A guard acts only where the context carries a runtime. So a test that kills a
 guard must use a harness that carries a runtime. Nothing outside these
 invocations sets `SPROUTFS_SIM_BUG`, and the mutation runner clears every other
@@ -1209,6 +1228,23 @@ that those scenarios miss, it also runs the full affected package suites. Each
 mutation is restored before the next one starts, and the working checkout is
 never mutated. The retained directory contains source hashes, the exact
 catalogue, build and test logs, and `report.json`.
+
+`--go-test-exec` runs each test binary through a launcher, and `GOOS` and
+`GOARCH` in the environment build the binaries for it. The `vmmachine` guards
+need Linux and root, so from a Mac they run in the Lima instance:
+
+```sh
+GOOS=linux GOARCH=arm64 CGO_ENABLED=0 python3 scripts/mutate-simulation.py \
+  --go-test-exec scripts/mutation/lima-go-test-exec.sh \
+  --output "$HOME/.cache/vmmachine-mutations" \
+  --mutant vmmachine-accept-reserved-load --mutant vmmachine-skip-owner \
+  --mutant vmmachine-give-host-path --mutant vmmachine-prepare-twice \
+  --mutant vmmachine-skip-peer-check
+```
+
+The output directory must be one the instance mounts. The baseline then runs
+the whole `vmmachine` suite there. Its Firecracker tests skip, because the
+runner clears the `SPROUTFS_*` settings that name the Firecracker assets.
 
 `killed-guard` means the invocation that `guards.json` names failed with the
 guard enabled. `killed-scheduled` means a scheduled test failed with the source
