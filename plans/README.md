@@ -5,6 +5,11 @@ across all of them is in the [backlog](../backlog/tasks), one task per file.
 
 ## Designs under way
 
+- [2026-09-25 splitting the arena by trust](arena-by-trust-2026-09-25.md) — a
+  private file per memory region that only its VMM gets, and read-only shared
+  and fork files per tenant and fork point, so a compromised VMM reaches no
+  other VM's private pages and writes no shared page. **Planned; waits for the
+  owner's decision on TASK-2.**
 - [2026-09-19 RAM and PMEM page geometry](ram-pmem-page-geometry-2026-09-19.md)
   — separate arenas and volume geometry; 4 KiB RAM ownership and writes with
   2 MiB read-only mapping batches; PMEM stays 2 MiB on HugeTLB, unchanged. No
