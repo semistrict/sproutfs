@@ -792,6 +792,11 @@ the child. A fork that ends before its first checkpoint never touches the
 store. `Close` does not publish a root, so such a fork leaves only the control
 record it was given.
 
+A child need not ever run. `Host.CaptureInto` creates a child on the parent's
+host and publishes its root straight from the fork point, with the VMM state
+the point saved, and then closes it. See
+[hosting](hosting.md#capturing-a-vm-into-a-new-vm).
+
 Creating or starting a fork never loads a full disk or memory image. A fork's
 reads share its parent's objects and, within the same pager, its parent's
 resident pages.
