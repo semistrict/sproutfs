@@ -683,6 +683,12 @@ Every hop in the campaigns makes the same checks:
   `TestAMigrationWhoseSourceIsCutOffEndsAtItsHold` runs it with a hold shorter
   than the harness's patience, set by `Config.Hold`, so the clock shows which
   one ended the wait.
+- A fork's child is received on the same rule, watched against its parent's
+  host under the hold that host keeps the point for it.
+  `TestARemoteForkWhoseParentIsCutOffEndsAtItsHold` cuts that host off during
+  the child's post-copy. The receive ends at the hold, the fork does not
+  happen, and the parent's host retires the point when its own clock gets
+  there.
 
 The recorded scenario adds the layout refusal. A handoff that would truncate a
 memory region or map beyond its volume is refused before any guest starts.
@@ -1293,7 +1299,7 @@ SPROUTFS_SIM_BUG=migration-skip-resume \
 SPROUTFS_SIM_BUG=migration-give-up-first-receive \
   go test ./internal/simtest -run '^TestTwoWritersOfOneVMNeverMixAcrossASwizzle$' -count=1
 SPROUTFS_SIM_BUG=migration-ignore-source-hold \
-  go test ./internal/simtest -run '^TestAMigrationWhoseSourceIsCutOffEndsAtItsHold$' -count=1
+  go test ./internal/simtest -run '^(TestAMigrationWhoseSourceIsCutOffEndsAtItsHold|TestARemoteForkWhoseParentIsCutOffEndsAtItsHold)$' -count=1
 SPROUTFS_SIM_BUG=migration-strip-published-pages \
   go test ./internal/simtest -run '^TestADestinationPublishesWhatItReceivedWhileItsSourceStillServes$' -count=1
 SPROUTFS_SIM_BUG=migration-strip-published-holes \
@@ -1321,11 +1327,13 @@ their cost. `migration-give-up-first-receive` belongs to the two-writer
 campaign. It gives a handoff up after its first failed receive. The campaign's
 separated links fail a first receive on every one of its sixteen seeds, and it
 requires the guest to be handed over, not taken over.
-`migration-ignore-source-hold` belongs to its own scenario. It keeps a
-migration waiting on a listed source that nothing can reach after the source's
-hold is over. No campaign cuts a source off while it stays listed, so the
-scenario is the only place where the hold is the one evidence left. With the
-guard on, the migration ends at the harness's patience instead of at the hold.
+`migration-ignore-source-hold` belongs to two scenarios of its own. It keeps a
+receive waiting on a listed source that nothing can reach after the source's
+hold is over: a migration's source in one, a fork's parent's host in the
+other. No campaign cuts a source off while it stays listed, so these scenarios
+are the only place where the hold is the one evidence left. With the guard on,
+each receive ends at the harness's patience instead of at the hold, and each
+scenario fails on its own.
 
 The `migration-strip-published-pages`, `migration-strip-published-holes` and
 `migration-ask-for-published-pages` guards need a destination that publishes

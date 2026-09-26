@@ -1847,6 +1847,10 @@ func (w *World) FanOutWith(ctx context.Context, parent string, children []VMSpec
 	if len(handoffs) != len(ids) {
 		return fmt.Errorf("%s: a fork of %d children handed over %d", parent, len(ids), len(handoffs))
 	}
+	// The parent's host holds the point for every child under the hold it
+	// reports with the fork, counted from the moment the handoffs arrived, as
+	// a migration's source does.
+	hold := handover.Held(time.Now(), sourceHost.HoldTimeout())
 	var taken []string
 	for index, handoff := range handoffs {
 		spec := children[index]
@@ -1858,7 +1862,7 @@ func (w *World) FanOutWith(ctx context.Context, parent string, children []VMSpec
 				return err
 			}
 		}
-		started, err := w.forked(ctx, source, destination, spec, handoff, at, terms)
+		started, err := w.forked(ctx, source, destination, spec, handoff, hold, at, terms)
 		if err != nil {
 			return err
 		}
@@ -1885,13 +1889,13 @@ func (w *World) FanOutWith(ctx context.Context, parent string, children []VMSpec
 // whether it started. A child that did not is one the destination gave up: its
 // identity goes with it and the hold the point took for it is given up on the
 // source, because nothing will ever fetch what that hold keeps.
+//
+// The child's receive is watched as a migration's is, under the hold the
+// parent's host keeps the point for it.
 func (w *World) forked(ctx context.Context, source, destination *hostState, spec VMSpec,
-	handoff vmmigrate.Handoff, at map[string][]byte, terms Handover) (bool, error) {
+	handoff vmmigrate.Handoff, hold handover.Hold, at map[string][]byte, terms Handover) (bool, error) {
 	incarnation := w.incarnationOf(spec.Host)
-	// Nothing in the deployment ends a fork's receive on its parent's hold, so
-	// the child's is carried under none: it ends when the parent's host is
-	// lost, or at the harness's patience.
-	received, err := w.receive(ctx, w.indexOf(source), destination, handover.Hold{}, handoff)
+	received, err := w.receive(ctx, w.indexOf(source), destination, hold, handoff)
 	if err != nil {
 		// The child could not get the pages only its parent had, or its root
 		// would not publish: either way the destination gave the guest up. The

@@ -62,8 +62,8 @@
   {
     "id": "migration-ignore-source-hold",
     "package": "internal/simtest",
-    "run": "^TestAMigrationWhoseSourceIsCutOffEndsAtItsHold$",
-    "purpose": "Keep waiting on a listed source nothing can reach after its hold is over. Only a source cut off while still listed leaves the hold as the one evidence, and no campaign draws that fault, so the scenario is its entry."
+    "run": "^(TestAMigrationWhoseSourceIsCutOffEndsAtItsHold|TestARemoteForkWhoseParentIsCutOffEndsAtItsHold)$",
+    "purpose": "Keep waiting on a listed source nothing can reach after its hold is over, a migration's source or a fork's parent's host. Only a source cut off while still listed leaves the hold as the one evidence, and no campaign draws that fault, so the two scenarios are its entry. Each fails alone."
   },
   {
     "id": "migration-strip-published-pages",

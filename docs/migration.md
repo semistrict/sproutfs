@@ -394,6 +394,16 @@ restart, so it cannot be tied to the process that handed the VM over. The one
 rule is `handover.Hold.Gone` in `internal/handover`. The receive in flight and
 the retries below both apply it, so a migration and a drain end the same way.
 
+A fork's child is received under the same watch, wherever it lands. The
+parent's host reports its hold with the fork (`hold_seconds`), and the
+orchestrator counts it from that answer. The watched host is the parent's, and
+it holds the fork point for the child, so `Serving` lists the child until it is
+released. A child on another host fetches the pages no checkpoint holds from
+that host. If that host is cut off while its pod is still listed, the child's
+receive ends at the hold. Its destination gives up what it received, and the
+fork fails as it does when a destination refuses a child. The parent keeps
+running.
+
 ## A failed receive is tried again
 
 The source gives its volumes up before any destination is asked to take the
@@ -519,7 +529,15 @@ already selects. The orchestrator reconciles from the other side. Every survey
 compares each host's `Serving` set with the orchestrator's table and releases
 every entry that has no operation in flight. So if the orchestrator restarted
 between the handoff and the release, it makes the release on its first survey.
-A migration or fork that is still running is left alone. The `Serving` set
+A migration or fork that is still running is left alone.
+
+The table believes a row in flight for two minutes. That bounds how long a row
+outlives the orchestrator that wrote it, not how long an operation may take. A
+fan-out receives its children one after another, so the last child can start
+long after the fork wrote its row. So the fork writes each child's row again
+every thirty seconds until that child's receive has finished or the fork has
+failed. A reconcile therefore never gives up the hold of a child that is still
+waiting for its turn. The `Serving` set
 includes every handover the host holds, including a child taken in on its
 parent's own host. Such a child is served nothing over the wire, but its hold on
 the point keeps the parent sealed. If the host reported that child as holding
@@ -725,7 +743,10 @@ source is still up and still serving. The source then gives the pages up when
 its own clock reaches the deadline. The orchestrator's tests state the same
 rule: a quiet listed source ends the migration at its hold and not before, the
 VM is recovered past the source's silence, and any other quiet host still
-refuses that recovery.
+refuses that recovery. A third scenario and an orchestrator test cut a fork's
+parent's host off while its child on another host is in the post-copy. The
+child's receive ends at the parent's hold, the fork does not happen, and the
+parent runs on.
 
 Retried receives are tested at three levels:
 
