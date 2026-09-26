@@ -491,6 +491,7 @@ func (s *supervisor) pagerReport(ctx context.Context, slot pagerSlot, free int) 
 		SharedPages: stats.IdentityHits, Faults: stats.Faults,
 		Evictions: stats.Evictions, Spills: stats.Spills,
 		IdlePages:   stats.IdlePages,
+		LoadedPages: stats.LoadedPages, CopyOnWrites: stats.CopyOnWrites,
 		Revocations: stats.Revocations, RevokedPages: stats.RevokedPages,
 		MovedPages: stats.MovedPages, ForkCopies: stats.ForkCopies, Tampered: stats.Tampered,
 	}, nil

@@ -232,6 +232,10 @@ type PagerKind struct {
 	// pages kept under their identity for the next memory region that
 	// inherits them. It is a gauge.
 	IdlePages int `json:"idle_pages"`
+	// LoadedPages counts the pages this pager read from its backing, and
+	// CopyOnWrites the stores it gave a private copy of a page.
+	LoadedPages  uint64 `json:"loaded_pages"`
+	CopyOnWrites uint64 `json:"copy_on_writes"`
 	// Revocations counts the commands that took mappings away from a VMM, and
 	// RevokedPages the pages they took.
 	Revocations  uint64 `json:"revocations"`

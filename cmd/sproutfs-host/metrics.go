@@ -94,6 +94,10 @@ func metrics(status hostapi.Status) string {
 	byKind("sproutfs_pager_idle_pages", "gauge",
 		"Resident pages no memory region maps, kept for the next one that inherits them.",
 		func(p hostapi.PagerKind) any { return p.IdlePages })
+	byKind("sproutfs_pager_loaded_pages_total", "counter", "Pages the pager read from its backing.",
+		func(p hostapi.PagerKind) any { return p.LoadedPages })
+	byKind("sproutfs_pager_copy_on_writes_total", "counter", "Stores the pager gave a private copy of a page.",
+		func(p hostapi.PagerKind) any { return p.CopyOnWrites })
 	byKind("sproutfs_pager_revocations_total", "counter", "Commands that took mappings away from a VMM.",
 		func(p hostapi.PagerKind) any { return p.Revocations })
 	byKind("sproutfs_pager_revoked_pages_total", "counter", "Pages those commands took away.",
