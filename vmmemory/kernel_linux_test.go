@@ -190,6 +190,18 @@ type nativeProcess struct {
 	connections [2]*vmmemory.Connection
 	bases       [2]uint64
 	backing     []*kernelBacking
+	reapOnce    sync.Once
+}
+
+// reap stops the client process and waits for it, so the pipes the test process
+// held to it are closed. It is safe to call more than once: a test that tears a
+// process down early and the fixture's cleanup both call it.
+func (p *nativeProcess) reap() {
+	p.reapOnce.Do(func() {
+		_ = p.input.Close()
+		_ = p.cmd.Process.Kill()
+		<-p.done
+	})
 }
 
 // memory region is the memory of one of the process's memory regions.
@@ -440,9 +452,31 @@ func startNativeWithConfig(t testing.TB, h *vmmemory.Host, pages int, config vmm
 	return startNativeIn(t, h, "", pages, config, provided...)
 }
 
+// clientOptions tune how a client process attaches. A test that plays a
+// compromised VMM interposes a proxy on one memory region's control socket.
+type clientOptions struct {
+	// proxy wraps the socket the pager is given for one memory region. It
+	// receives the memory region's index and the socket the client connected,
+	// and returns the socket to hand the pager instead, which may forward the
+	// two and misbehave between them. A nil result leaves the socket as it is.
+	proxy func(region int, client *net.UnixConn) *net.UnixConn
+}
+
+type clientOption func(*clientOptions)
+
+// withProxy interposes a proxy on the client's control sockets.
+func withProxy(proxy func(region int, client *net.UnixConn) *net.UnixConn) clientOption {
+	return func(o *clientOptions) { o.proxy = proxy }
+}
+
 // startNativeIn starts a client process whose VM belongs to tenant, empty for
 // none.
 func startNativeIn(t testing.TB, h *vmmemory.Host, tenant string, pages int, config vmmemory.ConnectionConfig, provided ...vmmemory.Backing) *nativeProcess {
+	return startNativeOptions(t, h, tenant, pages, config, clientOptions{}, provided...)
+}
+
+// startNativeOptions is startNativeIn with the options a proxied client needs.
+func startNativeOptions(t testing.TB, h *vmmemory.Host, tenant string, pages int, config vmmemory.ConnectionConfig, opts clientOptions, provided ...vmmemory.Backing) *nativeProcess {
 	t.Helper()
 	if len(provided) != 0 && len(provided) != 2 {
 		t.Fatal("two memory region backings are required")
@@ -484,9 +518,7 @@ func startNativeIn(t testing.TB, h *vmmemory.Host, tenant string, pages int, con
 	}()
 	go func() { p.done <- p.cmd.Wait() }()
 	t.Cleanup(func() {
-		_ = p.input.Close()
-		_ = p.cmd.Process.Kill()
-		<-p.done
+		p.reap()
 		for _, c := range p.connections {
 			if c == nil {
 				continue
@@ -518,7 +550,13 @@ func startNativeIn(t testing.TB, h *vmmemory.Host, tenant string, pages int, con
 		if err != nil {
 			t.Fatal(err)
 		}
-		p.connections[i], err = vmmemory.Connect(t.Context(), h, socket,
+		pagerSide := socket
+		if opts.proxy != nil {
+			if wrapped := opts.proxy(i, socket); wrapped != nil {
+				pagerSide = wrapped
+			}
+		}
+		p.connections[i], err = vmmemory.Connect(t.Context(), h, pagerSide,
 			vmmemory.MemoryRegionBacking{Kind: kind, Backing: b, Tenant: tenant}, config)
 		if err != nil {
 			t.Fatal(err)
