@@ -551,12 +551,16 @@ func (s *Store) resolveRun(ctx context.Context, index *Index, volume string, off
 // so a fork hits its parent's entries and compaction moving the bytes costs
 // neither a refetch nor a second entry.
 func (s *Store) loadPage(ctx context.Context, geometry Geometry, volume string, number uint64, at location) ([]byte, func(), error) {
+	key := pageKey(identityOf(volume, number, at))
 	fetch := func(ctx context.Context) ([]byte, error) {
+		if data, found := s.fromDisk(ctx, key, int(geometry.PageSize), validPage); found {
+			return data, nil
+		}
 		data, err := s.readMember(ctx, at, int64(geometry.PageSize))
 		if err != nil {
 			return nil, err
 		}
-		if len(data) == 0 || len(data)%SectorSize != 0 {
+		if !validPage(data) {
 			return nil, ErrCorrupt
 		}
 		return data, nil
@@ -565,7 +569,7 @@ func (s *Store) loadPage(ctx context.Context, geometry Geometry, volume string, 
 		data, err := fetch(ctx)
 		return data, func() {}, err
 	}
-	return s.cache.get(ctx, pageKey(identityOf(volume, number, at)), fetch)
+	return s.cache.get(ctx, key, fetch)
 }
 
 // loadSegment fetches one segment's encoded page table out of the index object
@@ -575,16 +579,13 @@ func (s *Store) loadPage(ctx context.Context, geometry Geometry, volume string, 
 // copy however each of them found it. The caller decodes the bytes it borrows
 // and releases them.
 func (s *Store) loadSegment(ctx context.Context, volume string, number uint64, at segmentAddress) ([]byte, func(), error) {
+	key := segmentCacheKey(volume, number, at.ref)
 	fetch := func(ctx context.Context) ([]byte, error) {
-		key, err := s.indexKey(at.ref)
-		if err != nil {
-			return nil, err
+		if data, found := s.fromDisk(ctx, key, maximumSegmentSize, anySegment); found {
+			return data, nil
 		}
-		encoded, err := s.readRange(ctx, key, at.offset, at.length, maximumSegmentExtent)
+		encoded, err := s.readSegment(ctx, at)
 		if err != nil {
-			if errors.Is(err, platform.ErrNotFound) || errors.Is(err, platform.ErrInvalidRange) {
-				return nil, errors.Join(ErrCorrupt, err)
-			}
 			return nil, err
 		}
 		data, err := s.codecs.Decode(ctx, encoded, maximumSegmentSize)
@@ -597,7 +598,54 @@ func (s *Store) loadSegment(ctx context.Context, volume string, number uint64, a
 		data, err := fetch(ctx)
 		return data, func() {}, err
 	}
-	return s.cache.get(ctx, segmentCacheKey(volume, number, at.ref), fetch)
+	return s.cache.get(ctx, key, fetch)
+}
+
+// anySegment accepts every decoded segment: what a segment says is checked when
+// it is parsed against the root that addressed it.
+func anySegment([]byte) bool { return true }
+
+// readSegment fetches one segment's envelope out of the index object of the
+// checkpoint that wrote it.
+func (s *Store) readSegment(ctx context.Context, at segmentAddress) ([]byte, error) {
+	key, err := s.indexKey(at.ref)
+	if err != nil {
+		return nil, err
+	}
+	encoded, err := s.readRange(ctx, key, at.offset, at.length, maximumSegmentExtent)
+	if err != nil {
+		if errors.Is(err, platform.ErrNotFound) || errors.Is(err, platform.ErrInvalidRange) {
+			return nil, errors.Join(ErrCorrupt, err)
+		}
+		return nil, err
+	}
+	return encoded, nil
+}
+
+// fromDisk returns the decoded bytes the page cache's disk holds under key, and
+// nothing where it holds none. A copy that does not decode, or that valid
+// refuses, is one the disk damaged: it is forgotten, and the caller reads the
+// store, which still holds what was copied.
+func (s *Store) fromDisk(ctx context.Context, key cacheKey, maximum int, valid func([]byte) bool) ([]byte, bool) {
+	if s.cache == nil || s.cache.disk == nil {
+		return nil, false
+	}
+	encoded, found := s.cache.disk.read(ctx, key)
+	if !found {
+		return nil, false
+	}
+	data, err := s.codecs.Decode(ctx, encoded, maximum)
+	if err == nil && !valid(data) {
+		err = ErrCorrupt
+	}
+	if err != nil {
+		if context.Cause(ctx) == nil {
+			s.cache.disk.lose(ctx, key, err)
+		}
+		return nil, false
+	}
+	s.cache.disk.served()
+	return data, true
 }
 
 // readMember fetches one member of a part by range and decodes its envelope,

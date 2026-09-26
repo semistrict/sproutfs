@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/semistrict/sproutfs/control"
+	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/resource"
 )
 
@@ -15,6 +16,12 @@ import (
 type CacheConfig struct {
 	// MaxConcurrentLoads bounds the fetches in flight. Default 16.
 	MaxConcurrentLoads int
+	// Disk is the file on the host's own disk the cache keeps the pages a pull
+	// copies in, and DiskBytes how much of it the cache may fill. The file
+	// starts empty and is the caller's to close after the cache. A nil Disk
+	// or a zero DiskBytes keeps nothing on disk, and every pull is refused.
+	Disk      platform.File
+	DiskBytes int64
 }
 
 // Cache shares immutable decoded pages among the stores and
@@ -24,8 +31,10 @@ type CacheConfig struct {
 // state, and a cached object is never evidence that a publication landed.
 // Construct it with NewCache; it must not be copied after first use.
 type Cache struct {
-	mu         sync.Mutex
-	resources  *resource.Budget
+	mu        sync.Mutex
+	resources *resource.Budget
+	// disk is the second tier, nil where the host keeps nothing on disk.
+	disk       *cacheDisk
 	unregister func()
 	closed     bool
 	limit      int
@@ -131,6 +140,8 @@ type CacheStats struct {
 	CoalescedLoads uint64
 	// Evictions counts entries dropped by local or shared pressure and clearing.
 	Evictions uint64
+	// Disk is the disk tier's, zero where the host keeps nothing on disk.
+	Disk DiskStats
 }
 
 // NewCache registers the cache with the host resource owner. Close it when
@@ -139,21 +150,48 @@ func NewCache(resources *resource.Budget, config CacheConfig) (*Cache, error) {
 	if config.MaxConcurrentLoads == 0 {
 		config.MaxConcurrentLoads = 16
 	}
-	if resources == nil || config.MaxConcurrentLoads < 1 || config.MaxConcurrentLoads > 1024 {
+	if resources == nil || config.MaxConcurrentLoads < 1 || config.MaxConcurrentLoads > 1024 || config.DiskBytes < 0 {
 		return nil, ErrInvalidConfig
 	}
 	cache := &Cache{resources: resources, limit: config.MaxConcurrentLoads,
 		entries: make(map[cacheKey]*list.Element), flights: make(map[cacheKey]*cacheFlight), changed: make(chan struct{})}
+	if config.Disk != nil && config.DiskBytes >= diskBlock {
+		cache.disk = newCacheDisk(config.Disk, config.DiskBytes)
+	}
 	cache.unregister = resources.RegisterCache(cache.reclaim)
 	return cache, nil
 }
 
 // Stats reports the cache's current occupancy and cumulative counters.
 func (c *Cache) Stats() CacheStats {
+	var disk DiskStats
+	if c.disk != nil {
+		disk = c.disk.stats()
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return CacheStats{ResidentBytes: c.used, Entries: len(c.entries), ActiveLoads: c.active,
-		PeakLoads: c.peak, Hits: c.hits, Misses: c.misses, CoalescedLoads: c.coalesced, Evictions: c.evictions}
+		PeakLoads: c.peak, Hits: c.hits, Misses: c.misses, CoalescedLoads: c.coalesced, Evictions: c.evictions,
+		Disk: disk}
+}
+
+// quiet returns once no load of the cache's own is in flight: no fault, and no
+// other read, is waiting on the store. A pull waits here before each fetch, which
+// is what puts it behind every fault rather than beside them.
+func (c *Cache) quiet(ctx context.Context) error {
+	for {
+		c.mu.Lock()
+		active, changed := c.active, c.changed
+		c.mu.Unlock()
+		if active == 0 {
+			return context.Cause(ctx)
+		}
+		select {
+		case <-changed:
+		case <-ctx.Done():
+			return context.Cause(ctx)
+		}
+	}
 }
 
 // Clear discards retained entries. Already-running loads can still satisfy

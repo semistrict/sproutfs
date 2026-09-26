@@ -91,24 +91,24 @@ type readExtent struct {
 // every page the run fetched is retained under its own identity and a later
 // reader of any of them finds it there.
 func (s *Store) readRun(ctx context.Context, geometry Geometry, volume string, run []pageRead) error {
+	keys := make([]cacheKey, len(run))
+	for at, page := range run {
+		keys[at] = pageKey(identityOf(volume, page.number, page.at))
+	}
 	if s.cache == nil {
 		wanted := make([]int, len(run))
 		for at := range wanted {
 			wanted[at] = at
 		}
-		data, err := s.fetchMembers(ctx, geometry, run, wanted)
+		data, err := s.fetchMembers(ctx, geometry, run, keys, wanted)
 		if err != nil {
 			return err
 		}
 		fillPages(run, data)
 		return nil
 	}
-	keys := make([]cacheKey, len(run))
-	for at, page := range run {
-		keys[at] = pageKey(identityOf(volume, page.number, page.at))
-	}
 	data, release, err := s.cache.getAll(ctx, keys, func(ctx context.Context, wanted []int) ([][]byte, error) {
-		return s.fetchMembers(ctx, geometry, run, wanted)
+		return s.fetchMembers(ctx, geometry, run, keys, wanted)
 	})
 	if err != nil {
 		return err
@@ -131,31 +131,51 @@ func fillPages(run []pageRead, data [][]byte) {
 	}
 }
 
-// fetchMembers fetches and decodes the members at the given positions of a run,
-// grouped into as few requests as the layout allows. The result holds one
-// decoded page per position, in the order the positions were given.
-func (s *Store) fetchMembers(ctx context.Context, geometry Geometry, run []pageRead, wanted []int) ([][]byte, error) {
+// fetchMembers fetches and decodes the members at the given positions of a run.
+// The ones the page cache's disk holds are read from it, and the rest from the
+// store, grouped into as few requests as the layout allows. keys names every
+// page of the run. The result holds one decoded page per position, in the order
+// the positions were given.
+func (s *Store) fetchMembers(ctx context.Context, geometry Geometry, run []pageRead, keys []cacheKey,
+	wanted []int) ([][]byte, error) {
 	data := make([][]byte, len(wanted))
+	// remote is the positions within wanted the disk did not have, and
+	// positions the pages of the run they are.
+	var remote, positions []int
+	for at, position := range wanted {
+		if page, found := s.fromDisk(ctx, keys[position], int(geometry.PageSize), validPage); found {
+			data[at] = page
+			continue
+		}
+		remote, positions = append(remote, at), append(positions, position)
+	}
+	if len(remote) == 0 {
+		return data, context.Cause(ctx)
+	}
 	serve := func(ctx context.Context, held readExtent, encoded []byte) error {
 		for _, at := range held.members {
-			member := run[wanted[at]].at
+			member := run[positions[at]].at
 			page, err := s.codecs.Decode(ctx,
 				encoded[member.offset-held.offset:][:member.length], int(geometry.PageSize))
 			if err != nil {
 				return errors.Join(ErrCorrupt, err)
 			}
-			if len(page) == 0 || len(page)%SectorSize != 0 {
+			if !validPage(page) {
 				return ErrCorrupt
 			}
-			data[at] = page
+			data[remote[at]] = page
 		}
 		return nil
 	}
-	if err := s.readExtents(ctx, groupMembers(run, wanted), serve); err != nil {
+	if err := s.readExtents(ctx, groupMembers(run, positions), serve); err != nil {
 		return nil, err
 	}
 	return data, nil
 }
+
+// validPage reports whether a decoded member is a page a volume can hold: whole
+// sectors, and at least one of them.
+func validPage(page []byte) bool { return len(page) != 0 && len(page)%SectorSize == 0 }
 
 // groupMembers groups the members a run needs into the extents that fetch them:
 // one per part, split wherever the gap between two of them is larger than
