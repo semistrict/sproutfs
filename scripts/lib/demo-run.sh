@@ -41,9 +41,14 @@ fail() { printf '\nFAIL: %s\n' "$*" >&2; exit 1; }
 # The marker is written with a quote in the middle of it, so that the line the
 # serial terminal echoes back does not match what the guest prints: a flow that
 # looks for the marker is then reading the guest's answer and not its own input.
+#
+# The line goes to kubectl directly: ctl reads /dev/null, so that no command in
+# a loop takes the script's own input, and through it the console was sent
+# nothing at all.
 say() {
     local vm=$1 line=$2
-    printf '%s\n' "$line" | ctl console "$vm" --for "$answer"
+    printf '%s\n' "$line" |
+        kubectl exec -n "$namespace" -i deploy/sproutfs-orchestrator -- sproutfsctl console "$vm" --for "$answer"
 }
 
 # answered runs one line in a guest's shell and says whether the console came
