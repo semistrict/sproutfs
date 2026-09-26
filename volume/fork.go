@@ -469,7 +469,9 @@ func (m *Manager) Fork(ctx context.Context, id string, point *ForkPoint, added .
 		return nil, err
 	}
 	if err := point.Hold(); err != nil {
-		return nil, err
+		// The record is this call's alone, and one left behind is an identity
+		// nothing can use again, exactly as below.
+		return nil, errors.Join(err, m.config.Control.Delete(context.WithoutCancel(ctx), id))
 	}
 	vm, err := m.attach(ctx, id, handle, point.index, nil, point, added)
 	if err != nil {

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"testing/synctest"
 
+	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/volume"
 )
 
@@ -89,6 +90,34 @@ func TestAPointOverAPublishedCheckpointOutlivesItsChildren(t *testing.T) {
 			if err := child.Close(t.Context()); err != nil {
 				t.Fatal(err)
 			}
+		}
+	})
+}
+
+// A fork refused by a retired point leaves no child behind. The child's record
+// is written before its hold is taken, and a record whose root nothing will
+// ever publish is an identity nothing can use again: creating it reports that
+// it exists, and a deployment lists it as a stopped VM for ever.
+func TestAForkARetiredPointRefusesLeavesNoChildRecord(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		h := newHarness(t)
+		defer h.close(t.Context())
+		manager := h.manager(t, h.config())
+		defer manager.Close(t.Context())
+		vm, _ := createVM(t, manager, "vm")
+		defer vm.Close(t.Context())
+		point, err := vm.ForkPoint(t.Context(), volume.Prepared(nil, nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := point.Retire(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := manager.Fork(t.Context(), "child", point); !errors.Is(err, volume.ErrRetired) {
+			t.Fatalf("forking from a retired point = %v, want ErrRetired", err)
+		}
+		if _, err := h.controlClient(t, h.objects).Read(t.Context(), "child"); !errors.Is(err, platform.ErrNotFound) {
+			t.Fatalf("the refused fork left the child's record behind: %v", err)
 		}
 	})
 }
