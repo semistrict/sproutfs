@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-09-26 01:37'
-updated_date: '2026-09-26 16:07'
+updated_date: '2026-09-26 16:31'
 labels:
   - embedder
   - performance
@@ -25,13 +25,13 @@ Today a started VM reads each page from object storage the first time the guest 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A start option, in the host API and the CLI, marks a VM to pull its whole memory to local disk
-- [ ] #2 With the option set, every page of the selected checkpoint is fetched onto local disk in the background after the start, and the guest runs while the fetch runs
-- [ ] #3 Once the fetch completes, a fault on a page that is not resident, including one evicted earlier, reads local disk and makes no object-store request
-- [ ] #4 A guest fault on a page the fetch has not reached yet is served at once, not queued behind the fetch
-- [ ] #5 The local copy never counts as durable: losing the disk or the host loses nothing a checkpoint holds, and a newer checkpoint's pages supersede the cached ones
-- [ ] #6 The local disk space is bounded and configured, and a VM that does not fit falls back to reading from object storage
-- [ ] #7 Tests prove the zero object-store reads after the fetch, the fault priority and the fallback; docs/vm-memory.md and docs/hosting.md describe the option
+- [x] #1 A start option, in the host API and the CLI, marks a VM to pull its whole memory to local disk
+- [x] #2 With the option set, every page of the selected checkpoint is fetched onto local disk in the background after the start, and the guest runs while the fetch runs
+- [x] #3 Once the fetch completes, a fault on a page that is not resident, including one evicted earlier, reads local disk and makes no object-store request
+- [x] #4 A guest fault on a page the fetch has not reached yet is served at once, not queued behind the fetch
+- [x] #5 The local copy never counts as durable: losing the disk or the host loses nothing a checkpoint holds, and a newer checkpoint's pages supersede the cached ones
+- [x] #6 The local disk space is bounded and configured, and a VM that does not fit falls back to reading from object storage
+- [x] #7 Tests prove the zero object-store reads after the fetch, the fault priority and the fallback; docs/vm-memory.md and docs/hosting.md describe the option
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -45,3 +45,17 @@ Today a started VM reads each page from object storage the first time the guest 
 6. Tests: checkpoint-level (zero GETs after pull including evicted pages, fault served while the pull's fetch is blocked, capacity fallback, lost disk falls back, newer checkpoint supersedes), host-level pager eviction with counted GETs, CLI parse.
 7. Docs: volumes.md page cache, vm-memory.md, hosting.md budgets and the option.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Design: the page cache (checkpoint.Cache) gains a disk tier (CacheConfig.Disk/DiskBytes; SPROUTFS_CACHE_DISK_BYTES, off by default, 4 GiB in deploy/10-host.yaml with the emptyDir raised to 24Gi). It stores each member's and segment's encoded envelope keyed by page/segment identity, so a disk read is checked by the same envelope and a damaged or lost copy falls back to the store and is forgotten. A pull reserves one region sized exactly from the root's recorded bytes (segment lengths + per-checkpoint read bytes) or is refused whole (ErrDiskFull/ErrNoDisk); pages another pull copied are shared by reference; regions go when the last pull releases them. Priority: the pull uses none of the cache's load slots, joins no flight, waits for no fault load in flight (Cache.quiet) and all pulls share 2 requests. Host: AddPullingMachine marks the registration; the pull runs as a third goroutine of the machine's run loop and is released when the machine ends. Receive pulls the opened checkpoint only; pages no checkpoint holds arrive through post-copy into the pager. Migration carries Handoff.Pull; fork sets it on children. Not covered: the orchestrator does not remember the mark for a recover after host loss; pages a later checkpoint publishes are not pulled; the Linux supervisor wiring (boot/Create/Open/Fork) is compiled and vetted but not run on Firecracker.
+
+Validation: just check passed (gofmt, build and vet for linux and darwin, go test ./..., buf lint, shellcheck, shell suites, rust). New tests: checkpoint/pull_test.go (zero store requests after a pull, reads not queued behind a held pull fetch, pull waits while a fault reads the store, refusal when full or no disk, damaged and failed disk fall back, newer checkpoint supersedes, pulls share one copy); host/pull_test.go (pager evicting 10 of 12 faults with zero object GETs after the pull, fallback when it does not fit, migration carries the mark); orchestrator pull_test.go; sproutfsctl and sproutfs-host config tests. Mutation checks: disabling the disk read fails the host AC3 test with 13 GETs; removing the fault yield fails the priority test.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Added a disk tier to the page cache that a pull fills with every page and segment of a VM's starting checkpoint, keyed by identity, sized exactly from the root and refused whole when it does not fit. Faults read memory, then the disk, then the store; damaged copies fall back. The pull runs behind faults with no shared slots or flights. Pull is a start option on host create/open/fork, carried by migration handoffs, exposed in the orchestrator and sproutfsctl --pull, configured by SPROUTFS_CACHE_DISK_BYTES. Verified by checkpoint, host, orchestrator and CLI tests and just check; docs in hosting.md, volumes.md, vm-memory.md, migration.md, context.md.
+<!-- SECTION:FINAL_SUMMARY:END -->
