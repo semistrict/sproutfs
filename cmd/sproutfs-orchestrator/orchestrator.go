@@ -96,10 +96,10 @@ var (
 	// guest whose writes can never be published, and nothing here can say which,
 	// so no request that must name a VM's host is acted on until it is one.
 	errContested = errors.New("two hosts claim the VM")
-	// errLostSource reports the pages of a migrated VM that no checkpoint has
-	// being gone from the host that was holding them, while its destination
-	// was still fetching them or about to be asked to. They exist nowhere
-	// else, so the migration is ended rather than waited on.
+	// errLostSource reports the pages of a migrated VM or a fork's child that
+	// no checkpoint has being gone from the host that was holding them, while
+	// its destination was still fetching them or about to be asked to. They
+	// exist nowhere else, so the handover is ended rather than waited on.
 	errLostSource = errors.New("the host holding the VM's pages no longer has them")
 )
 
@@ -412,7 +412,7 @@ func (o *orchestrator) release(ctx context.Context, hosts []liveHost, existing [
 					"vm", id, "host", h.report.Name, "error", err)
 				continue
 			}
-			if found && stillInFlight(row) {
+			if found && o.table.stillInFlight(row) {
 				continue
 			}
 			if forsaken(hosts, id, found, existing) {
@@ -901,26 +901,26 @@ func (o *orchestrator) Fork(ctx context.Context, id string, request orch.ForkReq
 		return orch.ForkResult{}, err
 	}
 	children := make([]string, 0, count)
+	rows := make([]vmRecord, 0, count)
 	for range count {
-		children = append(children, o.identify())
-	}
-	// The children are in the table before their parent is paused, with the
-	// host they are going to and the parent they come from.
-	for _, child := range children {
-		o.note(ctx, vmRecord{ID: child, Host: target.report.Name, State: stateCreating,
+		child := o.identify()
+		children = append(children, child)
+		rows = append(rows, vmRecord{ID: child, Host: target.report.Name, State: stateCreating,
 			Parent: id, Template: parent.Template, Memory: need})
 	}
+	// The children are in the table before their parent is paused, with the
+	// host they are going to and the parent they come from. Each stays in
+	// flight until its own receive has finished, however long the ones before
+	// it take.
+	flying := o.fly(ctx, rows)
 	result := orch.ForkResult{Host: source.report.Name, To: target.report.Name, Children: children}
-	forked, err := o.fork(ctx, source, target, id, children, request.Pull)
+	forked, err := o.fork(ctx, source, target, id, children, flying, request.Pull)
+	flying.end()
 	if err != nil {
 		for _, child := range children {
 			o.forget(ctx, child)
 		}
 		return orch.ForkResult{}, err
-	}
-	for _, child := range children {
-		o.note(ctx, vmRecord{ID: child, Host: target.report.Name, State: stateRunning,
-			Parent: id, Template: parent.Template, Memory: need})
 	}
 	result.Capture, result.Start = forked.Capture, forked.Boot
 	result.Total = host.Since(began)
@@ -936,8 +936,14 @@ func (o *orchestrator) Fork(ctx context.Context, id string, request orch.ForkReq
 // pages themselves on the parent's own — and only when the last child has them
 // does the parent take its pages back. pull marks every child to pull its
 // whole memory, which each child's handoff carries to its destination.
+//
+// Each child is received as a migrated VM is, watched against the parent's
+// host by the one rule handover.Hold.Gone keeps. That host holds the point for
+// every child under the hold it reported, counted from its answer, and a child
+// whose parent's host no longer has the pages can never get them. Each child
+// lands in flying as its receive finishes.
 func (o *orchestrator) fork(ctx context.Context, source, target liveHost, parent string,
-	children []string, pull bool) (host.ForkResult, error) {
+	children []string, flying *flight, pull bool) (host.ForkResult, error) {
 	// A child of the parent's own host is handed over without an address: its
 	// inherited pages never reach the wire.
 	destination := target.report.Page
@@ -959,6 +965,7 @@ func (o *orchestrator) fork(ctx context.Context, source, target liveHost, parent
 		return host.ForkResult{}, fmt.Errorf("%w: %s returned %d handoffs for %d children",
 			errRequest, source.report.Name, len(handed.Handoffs), len(children))
 	}
+	hold := handover.Held(time.Now(), handed.Hold.Duration())
 	started := time.Now()
 	var failure error
 	var running []string
@@ -969,7 +976,7 @@ func (o *orchestrator) fork(ctx context.Context, source, target liveHost, parent
 			o.giveUp(ctx, source, handoff.VMID)
 			continue
 		}
-		if _, err := target.client.Receive(ctx, handoff); err != nil {
+		if _, err := o.receive(ctx, source, target, handoff.VMID, hold, handoff); err != nil {
 			failure = fmt.Errorf("starting %s on %s: %w", handoff.VMID, target.report.Name, err)
 			// A child no destination took has none of the pages its hold keeps
 			// and never will, so the source can only refuse to release them:
@@ -979,6 +986,7 @@ func (o *orchestrator) fork(ctx context.Context, source, target liveHost, parent
 			continue
 		}
 		running = append(running, handoff.VMID)
+		flying.land(ctx, handoff.VMID)
 		// Released is the child's word that it holds every page it inherited,
 		// which is what gives the parent its pages back; the parent itself
 		// never stopped.
@@ -1296,10 +1304,10 @@ func (o *orchestrator) watchInterval() time.Duration {
 }
 
 // receive carries the destination's half of a handoff while watching the host
-// that still holds the VM's pages. The destination returns when it has every
-// page no checkpoint has, and waits for as long as that takes; the pages being
-// gone from that host is what ends the wait, and this is the only thing that
-// sees it.
+// that still holds the VM's pages: a migration's source, or a fork's parent's
+// host. The destination returns when it has every page no checkpoint has, and
+// waits for as long as that takes; the pages being gone from that host is what
+// ends the wait, and this is the only thing that sees it.
 func (o *orchestrator) receive(ctx context.Context, source, target liveHost, id string,
 	hold handover.Hold, handoff host.Handoff) (host.ReceiveResult, error) {
 	receiving, lose := context.WithCancelCause(ctx)
@@ -1309,7 +1317,7 @@ func (o *orchestrator) receive(ctx context.Context, source, target liveHost, id 
 	go o.watchSource(receiving, source.report.Name, id, hold, watched, lose)
 	result, err := target.client.Receive(receiving, handoff)
 	if err != nil && ctx.Err() == nil && receiving.Err() != nil {
-		// The migration was ended here rather than by the caller or the
+		// The receive was ended here rather than by the caller or the
 		// destination, so what ended it is what this reports.
 		return host.ReceiveResult{}, context.Cause(receiving)
 	}
@@ -1339,7 +1347,7 @@ func (o *orchestrator) watchSource(ctx context.Context, from, id string, hold ha
 		hosts, err := o.survey(ctx)
 		if err != nil {
 			// A survey that failed is no evidence of anything.
-			slog.WarnContext(ctx, "sproutfs-orchestrator: surveying the source of a migration failed",
+			slog.WarnContext(ctx, "sproutfs-orchestrator: surveying the source of a receive failed",
 				"vm", id, "host", from, "error", err)
 			continue
 		}
@@ -1347,7 +1355,7 @@ func (o *orchestrator) watchSource(ctx context.Context, from, id string, hold ha
 		if evidence == nil {
 			continue
 		}
-		slog.WarnContext(ctx, "sproutfs-orchestrator: the host holding a migrated VM's pages no longer has them",
+		slog.WarnContext(ctx, "sproutfs-orchestrator: the host holding a handed-over VM's pages no longer has them",
 			"vm", id, "host", from, "evidence", evidence)
 		lose(lost(from, id, evidence))
 		return
@@ -1542,7 +1550,7 @@ func (o *orchestrator) reopen(ctx context.Context, id string, terms reopening) (
 		if err != nil {
 			return orch.RecoverResult{}, fmt.Errorf("reading the table row of %s: %w", id, err)
 		}
-		if found && stillInFlight(row) {
+		if found && o.table.stillInFlight(row) {
 			return orch.RecoverResult{}, fmt.Errorf("%w: %s is %s, on %s",
 				errRunning, id, row.State, row.Host)
 		}

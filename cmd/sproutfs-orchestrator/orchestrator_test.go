@@ -133,7 +133,11 @@ type fakeHostClient struct {
 	// server refuses one: those pages exist nowhere else.
 	outstanding map[string]bool
 	fetched     map[string]bool
-	log         *[]string
+	// retired, shared like fetched, names the fork children whose hold was
+	// given up or ran out. Such a child has nothing left to be taken in over,
+	// so a receive of it is refused.
+	retired map[string]bool
+	log     *[]string
 	// holdReceive makes this host's receive wait until release, which is a
 	// post-copy whose remaining pages are on a host that is not answering;
 	// onReceive runs as it begins, which is where a test takes that host away.
@@ -146,6 +150,14 @@ type fakeHostClient struct {
 // release lets a held receive finish, which is the source's pages arriving
 // after all.
 func (f *fakeHostClient) release() { f.heldOnce.Do(func() { close(f.held) }) }
+
+// cutOff makes this host stop answering while an operation is under way,
+// which is down set from inside one: a survey may be reading it at that moment.
+func (f *fakeHostClient) cutOff() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.down = true
+}
 
 // arena sets how full this host's page store is, and promises the same amount
 // of guest RAM, which is the ordinary case: a host whose arena is taken by the
@@ -269,7 +281,7 @@ func (f *fakeHostClient) Fork(_ context.Context, parent string, request host.For
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("fork %s %s", parent, strings.Join(request.IDs, ","))
-	result := host.ForkResult{Capture: 0.01}
+	result := host.ForkResult{Capture: 0.01, Hold: f.hold}
 	for index, id := range request.IDs {
 		if f.forks > 0 && index >= f.forks {
 			// Some of them were handed over and the rest never will be, which is
@@ -286,6 +298,15 @@ func (f *fakeHostClient) Fork(_ context.Context, parent string, request host.For
 		// this host reports it as the handover it is.
 		f.serving = append(f.serving, id)
 		f.outstanding[id] = true
+		if f.hold > 0 {
+			// Every hold ends on its own at the end of the hold this host
+			// reports, whether or not anything can reach it.
+			time.AfterFunc(f.hold.Duration(), func() {
+				f.mu.Lock()
+				defer f.mu.Unlock()
+				f.retire(id)
+			})
+		}
 		result.Handoffs = append(result.Handoffs, host.Handoff{VMID: id, Parent: parent, Source: source,
 			Pull: request.Pull})
 	}
@@ -357,6 +378,10 @@ func (f *fakeHostClient) Receive(ctx context.Context, handoff host.Handoff) (hos
 	} else {
 		f.record("receive %s %s", handoff.VMID, handoff.Source)
 	}
+	if handoff.Parent != "" && f.retired[handoff.VMID] {
+		f.mu.Unlock()
+		return host.ReceiveResult{}, errors.New("the fork point the child inherits is retired")
+	}
 	if f.refusesEveryReceive || f.refusedReceives > 0 || (f.receives > 0 && len(f.received) >= f.receives) {
 		f.refusedReceives = max(f.refusedReceives-1, 0)
 		f.quiet = f.quietAfterRefusal
@@ -420,9 +445,16 @@ func (f *fakeHostClient) Abandoned(_ context.Context, id string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("abandoned %s", id)
-	delete(f.outstanding, id)
-	f.serving = slices.DeleteFunc(f.serving, func(value string) bool { return value == id })
+	f.retire(id)
 	return nil
+}
+
+// retire ends a hold this host keeps: it serves nothing for the VM any more,
+// and a fork's child can no longer be taken in over it.
+func (f *fakeHostClient) retire(id string) {
+	delete(f.outstanding, id)
+	f.retired[id] = true
+	f.serving = slices.DeleteFunc(f.serving, func(value string) bool { return value == id })
 }
 
 // Stop closes the guest and leaves the VM: this host stops running it, and
@@ -489,15 +521,16 @@ func newDeployment(t *testing.T, running map[string][]string) *deployment {
 	t.Helper()
 	mu := new(sync.Mutex)
 	// fetched is the deployment's own: what one host holds for a handover is
-	// released by what another host fetched.
-	fetched := map[string]bool{}
+	// released by what another host fetched. So is retired: a child whose hold
+	// one host gave up cannot be taken in by another.
+	fetched, retired := map[string]bool{}, map[string]bool{}
 	d := &deployment{pods: &fakePods{mu: mu}, records: &fakeRecords{}, hosts: map[string]*fakeHostClient{}}
 	for _, name := range slices.Sorted(maps.Keys(running)) {
 		address := "10.0.0." + strconv.Itoa(len(d.hosts)+1)
 		d.pods.pods = append(d.pods.pods, pod{Name: name, IP: address, Ready: true})
 		d.hosts[name] = &fakeHostClient{mu: mu, name: name, running: slices.Clone(running[name]),
 			serving: []string{}, page: address + ":8081", log: &d.log, held: make(chan struct{}),
-			outstanding: map[string]bool{}, fetched: fetched}
+			outstanding: map[string]bool{}, fetched: fetched, retired: retired}
 		d.records.ids = append(d.records.ids, running[name]...)
 	}
 	d.orchestrator = &orchestrator{pods: d.pods, records: d.records,

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/semistrict/sproutfs/api/orch"
 	"github.com/semistrict/sproutfs/internal/handover"
 )
 
@@ -27,7 +28,7 @@ func TestLosingTheSourceOfAMigrationEndsItAndRecoversTheVM(t *testing.T) {
 	// waiting for are on a host that stops existing while it waits.
 	destination.holdReceive = true
 	destination.onReceive = func() {
-		d.hosts["host-0"].down = true
+		d.hosts["host-0"].cutOff()
 		if err := d.pods.Delete(t.Context(), "host-0"); err != nil {
 			t.Error(err)
 		}
@@ -67,7 +68,7 @@ func TestAQuietSourceDoesNotEndAMigration(t *testing.T) {
 	d.hosts["host-0"].hold = holdForAMinute
 	destination := d.hosts["host-1"]
 	destination.holdReceive = true
-	destination.onReceive = func() { d.hosts["host-0"].down = true }
+	destination.onReceive = func() { d.hosts["host-0"].cutOff() }
 	go func() {
 		// Long enough for several watches of the source, and then the pages
 		// arrive after all.
@@ -101,7 +102,7 @@ func TestAListedSourceNothingCanReachEndsAMigrationAtItsHold(t *testing.T) {
 	d.hosts["host-0"].hold = hold
 	destination := d.hosts["host-1"]
 	destination.holdReceive = true
-	destination.onReceive = func() { d.hosts["host-0"].down = true }
+	destination.onReceive = func() { d.hosts["host-0"].cutOff() }
 	began := time.Now()
 	_, err := d.orchestrator.Migrate(t.Context(), "vm-a", "host-1")
 	if !errors.Is(err, errLostSource) || !errors.Is(err, handover.ErrHoldOver) {
@@ -128,6 +129,48 @@ func TestAListedSourceNothingCanReachEndsAMigrationAtItsHold(t *testing.T) {
 	}
 }
 
+// A fork's child on another host fetches the pages its parent sealed from the
+// parent's host, as a migration's destination does from its source, and the
+// same rule ends its wait. A parent's host whose pod is still listed and that
+// nothing can reach says nothing until the hold it reported with the fork is
+// over. The child's receive ends then: its destination gives up what it
+// received, the fan-out fails and takes its children back, and the parent
+// keeps running where it was.
+func TestAForkWhoseListedParentHostNothingCanReachEndsAtItsHold(t *testing.T) {
+	d := newDeployment(t, map[string][]string{"host-0": {"vm-a"}, "host-1": {}})
+	const hold = 0.2
+	d.hosts["host-0"].hold = hold
+	destination := d.hosts["host-1"]
+	destination.holdReceive = true
+	destination.onReceive = func() { d.hosts["host-0"].cutOff() }
+	began := time.Now()
+	_, err := d.orchestrator.Fork(t.Context(), "vm-a", orch.ForkRequest{Count: 2, To: "host-1"})
+	if !errors.Is(err, errLostSource) || !errors.Is(err, handover.ErrHoldOver) {
+		t.Fatalf("a fork whose listed parent host went quiet = %v, want errLostSource at the end of its hold", err)
+	}
+	if waited := time.Since(began); waited < time.Duration(hold*float64(time.Second)) {
+		t.Fatalf("the fork ended %s in, inside the parent host's hold of %gs", waited, hold)
+	}
+	want := []string{
+		"host-0 fork vm-a vm-new-1,vm-new-2",
+		"host-1 receive vm-new-1 10.0.0.1:8081",
+		"host-1 receive-discarded vm-new-1",
+		"host-0 abandoned vm-new-1",
+		"host-0 abandoned vm-new-2",
+	}
+	if !slices.Equal(d.log, want) {
+		t.Fatalf("the deployment did %v, want %v", d.log, want)
+	}
+	for _, child := range []string{"vm-new-1", "vm-new-2"} {
+		if _, found, err := d.orchestrator.table.VM(t.Context(), child); err != nil || found {
+			t.Fatalf("the table still has %s after its fork failed (err %v)", child, err)
+		}
+	}
+	if running := d.hosts["host-0"].running; !slices.Equal(running, []string{"vm-a"}) {
+		t.Fatalf("host-0 runs %v, want the parent where it was", running)
+	}
+}
+
 // Only the source's silence is excused. Any other host that does not answer
 // could be running the VM, so the recovery after the hold is refused while one
 // is quiet, exactly as an operator's would be.
@@ -137,8 +180,8 @@ func TestAnotherQuietHostHoldsTheRecoveryBack(t *testing.T) {
 	destination := d.hosts["host-1"]
 	destination.holdReceive = true
 	destination.onReceive = func() {
-		d.hosts["host-0"].down = true
-		d.hosts["host-2"].down = true
+		d.hosts["host-0"].cutOff()
+		d.hosts["host-2"].cutOff()
 	}
 	_, err := d.orchestrator.Migrate(t.Context(), "vm-a", "host-1")
 	if !errors.Is(err, errLostSource) || !errors.Is(err, errRunning) {

@@ -91,6 +91,9 @@ DROP TABLE IF EXISTS hosts;`
 // in flight is visible while it is happening.
 type table struct {
 	db *sql.DB
+	// aging is how long a row is taken at its word, inFlightFor unless a test
+	// shortens it.
+	aging time.Duration
 }
 
 // openTable opens the table at path, creating it if this is a fresh node. The
@@ -275,14 +278,23 @@ var inFlight = map[string]bool{stateCreating: true, stateRecovering: true, state
 //
 // It is under the bound a host puts on one handover of its own, four checkpoint
 // intervals, so a row stops holding a handover open before the host holding
-// those pages gives them up by itself. An operation that is genuinely slower
-// than this is one nothing was going to finish.
+// those pages gives them up by itself. It bounds how long a row outlives the
+// process that wrote it, not how long an operation may take: one that runs
+// longer writes its rows again while it runs, which is what a flight is.
 const inFlightFor = 2 * time.Minute
 
 // stillInFlight reports a row whose operation may yet finish: one in an
 // in-flight state that is young enough to believe.
-func stillInFlight(row vmRecord) bool {
-	return inFlight[row.State] && time.Since(row.Updated) < inFlightFor
+func (t *table) stillInFlight(row vmRecord) bool {
+	return inFlight[row.State] && time.Since(row.Updated) < t.believed()
+}
+
+// believed is how long this table takes a row at its word.
+func (t *table) believed() time.Duration {
+	if t.aging > 0 {
+		return t.aging
+	}
+	return inFlightFor
 }
 
 func (t *table) reconcile(ctx context.Context, found surveyed,
@@ -314,7 +326,7 @@ func (t *table) reconcile(ctx context.Context, found surveyed,
 	// A VM whose own host accounted for itself without naming it has no host
 	// running it.
 	for id, row := range known {
-		if settled[id] || stillInFlight(row) || row.Host == "" || !found.accounted(row.Host) {
+		if settled[id] || t.stillInFlight(row) || row.Host == "" || !found.accounted(row.Host) {
 			continue
 		}
 		settled[id] = true
@@ -325,7 +337,7 @@ func (t *table) reconcile(ctx context.Context, found surveyed,
 	}
 	if fromBucket {
 		for _, id := range inBucket {
-			if settled[id] || stillInFlight(known[id]) {
+			if settled[id] || t.stillInFlight(known[id]) {
 				continue
 			}
 			settled[id] = true
@@ -338,7 +350,7 @@ func (t *table) reconcile(ctx context.Context, found surveyed,
 		// Nothing runs it and the bucket has no record of it: it is deleted,
 		// by this orchestrator or by another.
 		for id, row := range known {
-			if settled[id] || stillInFlight(row) {
+			if settled[id] || t.stillInFlight(row) {
 				continue
 			}
 			if _, err := transaction.ExecContext(ctx, `DELETE FROM vms WHERE id = ?`, id); err != nil {

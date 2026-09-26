@@ -217,7 +217,7 @@ func (s *supervisor) Fork(ctx context.Context, parent string, request hostapi.Fo
 		wire = append(wire, apiHandoff(handed))
 	}
 	return hostapi.ForkResult{Handoffs: wire, Capture: s.since(captured),
-		Total: s.since(began)}, nil
+		Total: s.since(began), Hold: hostapi.Of(s.host.HoldTimeout())}, nil
 }
 
 func (s *supervisor) Capture(ctx context.Context, id string, request hostapi.CaptureRequest) (hostapi.CaptureResult, error) {

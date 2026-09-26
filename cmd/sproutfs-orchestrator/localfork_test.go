@@ -1,9 +1,13 @@
 package main
 
 import (
+	"context"
 	"slices"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/semistrict/sproutfs/api/orch"
 )
 
 // A child forked onto its parent's own host is served nothing, but its host
@@ -97,5 +101,63 @@ func TestAReconcileLeavesALocalForkHoldWhoseForkIsInFlight(t *testing.T) {
 	}
 	if !slices.Equal(source.serving, []string{"vm-a-child"}) {
 		t.Fatalf("host-0 holds %v, want the in-flight fork's hold left alone", source.serving)
+	}
+}
+
+// TestAFanOutKeepsItsChildrenInFlightWhileTheyAreReceived: a fan-out takes its
+// children in one after another, so the last of them can begin long after the
+// fork wrote its row. The table takes a row in flight at its word only for its
+// aging bound, and a reconcile gives up the hold of a child whose row aged out
+// and that does not exist yet. That is right for a fork whose orchestrator
+// died, and wrong for one still running: the child's hold would be given up
+// under it and the fork would fail for nothing. The fork writes each child's
+// row again until the child's own receive has finished, so the last child is
+// still in flight when its turn comes, and is taken in.
+func TestAFanOutKeepsItsChildrenInFlightWhileTheyAreReceived(t *testing.T) {
+	d := newDeployment(t, map[string][]string{"host-0": {"vm-a"}})
+	const aging = 200 * time.Millisecond
+	d.orchestrator.table.aging = aging
+	source := d.hosts["host-0"]
+	// The reconcile runs on its own timer while the fan-out runs, as in a
+	// deployment, and until the last child's receive begins.
+	reconciling, stop := context.WithCancel(t.Context())
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		d.orchestrator.Reconciling(reconciling, aging/10)
+	}()
+	// The first child's receive takes three times as long as the table
+	// believes a row.
+	source.holdReceive = true
+	began := 0
+	source.onReceive = func() {
+		began++
+		if began == 1 {
+			time.AfterFunc(3*aging, source.release)
+			return
+		}
+		stop()
+		<-stopped
+	}
+	result, err := d.orchestrator.Fork(t.Context(), "vm-a", orch.ForkRequest{Count: 2})
+	if err != nil {
+		t.Fatalf("a fan-out whose last child was received after the aging bound: %v", err)
+	}
+	for _, line := range d.log {
+		if strings.Contains(line, "abandoned") {
+			t.Fatalf("a hold was given up while its fan-out was running: %v", d.log)
+		}
+	}
+	if running := source.running; !slices.Equal(running, []string{"vm-a", "vm-new-1", "vm-new-2"}) {
+		t.Fatalf("host-0 runs %v, want the parent and both children", running)
+	}
+	for _, child := range result.Children {
+		row, found, err := d.orchestrator.table.VM(t.Context(), child)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !found || row.State != stateRunning || row.Host != "host-0" || row.Parent != "vm-a" {
+			t.Fatalf("the row of %s after the fan-out: %+v", child, row)
+		}
 	}
 }

@@ -546,11 +546,15 @@ type ForkRequest struct {
 // The handoffs are what the control plane gives each child's destination — this
 // host included — and it tells this one to release each child when that child
 // has every page it inherited.
+//
+// Hold is how long this host holds the fork point for each child if nothing
+// releases it, as a migration's is. A child's receive is watched against it.
 type ForkResult struct {
 	Handoffs []Handoff `json:"handoffs,omitempty"`
 	Capture  Seconds   `json:"capture_seconds"`
 	Boot     Seconds   `json:"boot_seconds"`
 	Total    Seconds   `json:"total_seconds"`
+	Hold     Seconds   `json:"hold_seconds,omitempty"`
 }
 
 // CaptureRequest is an explicit checkpoint of a running VM. Into captures the
