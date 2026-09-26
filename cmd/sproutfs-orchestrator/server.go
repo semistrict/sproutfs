@@ -70,7 +70,7 @@ func newServer(o *orchestrator, token string) http.Handler {
 			jsonhttp.Fail(r.Context(), w, http.StatusBadRequest, "fork", err)
 			return
 		}
-		forked, err := o.Fork(r.Context(), r.PathValue("id"), request.Count, request.To)
+		forked, err := o.Fork(r.Context(), r.PathValue("id"), request)
 		reply(w, r, "fork", forked, err)
 	})
 	mux.HandleFunc("POST /vms/{id}/capture", func(w http.ResponseWriter, r *http.Request) {

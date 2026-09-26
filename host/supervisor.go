@@ -206,6 +206,10 @@ type SupervisorConfig struct {
 	// other needs, so there is no ledger between them.
 	CacheBytes int64
 	SpillBytes KindBytes
+	// CacheDiskBytes caps the page cache's disk, a file on Disk that holds the
+	// pages of the VMs marked to pull their whole memory. Zero keeps none, and
+	// such a VM reads its memory from the object store like any other.
+	CacheDiskBytes int64
 	// LogicalPages bounds per-memory-region metadata and DirtyPages the volatile
 	// private state on RAM and spill together, each in the pages of the pager it
 	// belongs to. DirtyPages is what fills a spill file, so SpillBytes is its

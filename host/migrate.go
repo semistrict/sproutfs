@@ -163,6 +163,8 @@ func (h *Host) Migrate(ctx context.Context, vmID string, destination platform.Ad
 		h.run(vmID, entry)
 		return vmmigrate.Handoff{}, err
 	}
+	// A VM marked to pull its memory stays marked wherever it runs.
+	handoff.Pull = entry.pull
 	// The VM runs on the destination from here; this host only holds its pages,
 	// under the deadline that gives them up when nothing reports the destination
 	// has them.
@@ -311,7 +313,11 @@ func (h *Host) Receive(ctx context.Context, handoff vmmigrate.Handoff) (*vmmigra
 		// release of the hold kept for it states.
 		h.took(handoff.VMID)
 	}
-	if err := h.AddMachine(handoff.VMID, started); err != nil {
+	// A VM marked to pull pulls the checkpoint it opened here, the one the
+	// store holds. The pages no checkpoint holds are not the pull's: they
+	// arrive from the source, on a fault or in the stream behind the guest, and
+	// stay in this host's pager until its next checkpoint publishes them.
+	if err := h.addMachine(handoff.VMID, started, handoff.Pull); err != nil {
 		// The same VM in the same state as one whose stream never completed: a
 		// guest this host started from the source's captured state and cannot
 		// account for. It is given up the same way, rather than closed — which

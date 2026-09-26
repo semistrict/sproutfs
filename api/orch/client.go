@@ -65,9 +65,9 @@ func (c *Client) ImportTemplate(ctx context.Context, image io.Reader,
 	return jsonhttp.Upload[host.ImportTemplateResult](ctx, c.http, http.MethodPost, target, image)
 }
 
-func (c *Client) Fork(ctx context.Context, id string, count int, to string) (ForkResult, error) {
+func (c *Client) Fork(ctx context.Context, id string, request ForkRequest) (ForkResult, error) {
 	return jsonhttp.Call[ForkResult](ctx, c.http, http.MethodPost,
-		c.path("/vms/%s/fork", url.PathEscape(id)), ForkRequest{Count: count, To: to})
+		c.path("/vms/%s/fork", url.PathEscape(id)), request)
 }
 
 // Migrate moves one VM. An empty destination lets the orchestrator pick a host

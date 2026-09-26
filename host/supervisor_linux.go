@@ -20,6 +20,7 @@ import (
 
 	hostapi "github.com/semistrict/sproutfs/api/host"
 	"github.com/semistrict/sproutfs/api/orch"
+	"github.com/semistrict/sproutfs/checkpoint"
 	"github.com/semistrict/sproutfs/internal/ctxsync"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/resource"
@@ -90,6 +91,9 @@ type supervisor struct {
 	// its own, and the pagers of a host share neither.
 	arenas map[pagerSlot]*vmmemory.LinuxArena
 	spills map[pagerSlot]platform.File
+	// cacheDisk is the file the page cache keeps what pulls copy in, nil where
+	// the deployment gave it no space.
+	cacheDisk platform.File
 	// connection is what every session this host opens is configured with: the
 	// node's fault-worker and mapping-count bounds, which no VM varies.
 	connection vmmemory.ConnectionConfig
@@ -200,6 +204,15 @@ func Start(ctx context.Context, config SupervisorConfig) (Service, error) {
 	if err != nil {
 		return nil, fmt.Errorf("vmm scratch: %w", err)
 	}
+	// The page cache's disk is scratch too: a restart is a host loss, so it
+	// starts empty, and nothing on it is ever durable.
+	if config.CacheDiskBytes > 0 {
+		s.cacheDisk, err = config.Disk.Open(ctx, "cache",
+			platform.OpenOptions{Create: true, Truncate: true, Permissions: 0o600})
+		if err != nil {
+			return nil, fmt.Errorf("the page cache's disk: %w", err)
+		}
+	}
 	s.host, err = StartHost(ctx, Config{
 		// The deployment's prefix is the object store's own, so nothing below
 		// it carries the prefix a second time.
@@ -210,6 +223,7 @@ func Start(ctx context.Context, config SupervisorConfig) (Service, error) {
 		Clock:              s.clock,
 		Entropy:            config.Entropy,
 		CacheBytes:         config.CacheBytes,
+		Cache:              checkpoint.CacheConfig{Disk: s.cacheDisk, DiskBytes: config.CacheDiskBytes},
 		CheckpointInterval: config.CheckpointInterval,
 		LossWindow:         config.LossWindow,
 		FlushBound:         config.FlushBound,
@@ -352,7 +366,8 @@ func (s *supervisor) Status(ctx context.Context) (hostapi.Status, error) {
 		Pages: hostapi.Pages{Requests: status.Pages.Requests, Served: status.Pages.Served,
 			Absent: status.Pages.Absent, Refused: status.Pages.Refused},
 		Resources: hostapi.Resources{MemoryLimit: resources.Limit, MemoryUsed: resources.Used,
-			CacheLimit: status.CacheLimit, CacheUsed: status.Cache.ResidentBytes},
+			CacheLimit: status.CacheLimit, CacheUsed: status.Cache.ResidentBytes,
+			CacheDiskLimit: status.Cache.Disk.LimitBytes, CacheDiskUsed: status.Cache.Disk.UsedBytes},
 		Store: apiStore(s.objects.Traffic()),
 	}
 	if report.Running == nil {
@@ -555,6 +570,12 @@ func (s *supervisor) Close(ctx context.Context) error {
 			errs = append(errs, fmt.Errorf("closing the VMM scratch: %w", err))
 		}
 	}
+	// The host closed the page cache, and every pull with the VMs it ran.
+	if s.cacheDisk != nil {
+		if err := s.cacheDisk.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("closing the page cache's disk: %w", err))
+		}
+	}
 	// Every pager closes, each before its own arena and spill file. A pager that
 	// would not close keeps its arena: unproven allocations stay charged, and an
 	// arena must never be closed under a pager that may still hold it. The other
@@ -638,8 +659,15 @@ func (s *supervisor) forget(id string) {
 
 func (s *supervisor) record(m *machine) hostapi.VM {
 	status := m.vm.Status()
-	return hostapi.VM{ID: m.vm.ID(), Template: m.template, Host: s.config.PodName, VCPUs: m.vm.VCPUs(),
+	record := hostapi.VM{ID: m.vm.ID(), Template: m.template, Host: s.config.PodName, VCPUs: m.vm.VCPUs(),
 		Checkpoint: status.Checkpoint.Sequence, Epoch: status.Epoch, DirtyBytes: status.DirtyBytes}
+	if pulled, marked := s.host.Pulled(m.vm.ID()); marked {
+		record.Pull = &hostapi.Pull{Bytes: pulled.Bytes, Pulled: pulled.Pulled, Done: pulled.Done}
+		if pulled.Err != nil {
+			record.Pull.Error = pulled.Err.Error()
+		}
+	}
+	return record
 }
 
 // since is how long ago this supervisor's clock says t was, as the API reports

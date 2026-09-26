@@ -57,6 +57,9 @@ type invocation struct {
 	// Checkpoint is the kept checkpoint release gives up, named with its VM
 	// as VM@CHECKPOINT.
 	Checkpoint uint64
+	// Pull marks the VM a create or a start runs, or every child a fork
+	// takes, to pull its whole memory onto its host's disk.
+	Pull bool
 }
 
 // errUsage reports a command line this CLI will not run. Its message is what
@@ -65,13 +68,16 @@ var errUsage = errors.New("usage")
 
 const usage = `sproutfsctl drives a sproutfs demo deployment through its orchestrator.
 
-  sproutfsctl create [--template NAME] [--memory 1G] [--disk 4G] [--vcpus 2] [--ephemeral 8G]
+  sproutfsctl create [--template NAME] [--memory 1G] [--disk 4G] [--vcpus 2] [--ephemeral 8G] [--pull]
                                            create a VM at a shape and boot it; --ephemeral
-                                           gives it a second disk no checkpoint holds
+                                           gives it a second disk no checkpoint holds;
+                                           --pull copies its whole memory onto its
+                                           host's disk behind the running guest, so a
+                                           fault never waits on the object store again
   sproutfsctl import-template FILE [--memory 1G]
                                            import a guest image into a template, and
                                            print the identity create --template takes
-  sproutfsctl create --from VM[@CHECKPOINT] [--memory 1G] [--disk 4G] [--vcpus 2]
+  sproutfsctl create --from VM[@CHECKPOINT] [--memory 1G] [--disk 4G] [--vcpus 2] [--pull]
                                            create a VM from another VM's published
                                            checkpoint, which that VM's record selects
                                            unless one is named; it resumes where that
@@ -84,7 +90,7 @@ const usage = `sproutfsctl drives a sproutfs demo deployment through its orchest
   sproutfsctl console VM [--for 10s]       attach to a VM's serial console
   sproutfsctl exec VM [--timeout 30s] -- CMD
                                            run a shell command in a VM's guest
-  sproutfsctl fork VM [--count N] [--to HOST]
+  sproutfsctl fork VM [--count N] [--to HOST] [--pull]
                                            fork a running VM, here or on another host
   sproutfsctl migrate VM [--to HOST]       move a VM to another host
   sproutfsctl capture VM [--new] [--keep]  take a checkpoint now; --new captures
@@ -100,7 +106,7 @@ const usage = `sproutfsctl drives a sproutfs demo deployment through its orchest
   sproutfsctl kept VM                      list a VM's kept checkpoints
   sproutfsctl release VM@CHECKPOINT        give up a kept checkpoint no VM was
                                            created from, and what only it held
-  sproutfsctl start VM [--to HOST] [--cold] [--memory 1G] [--disk 4G] [--vcpus 2]
+  sproutfsctl start VM [--to HOST] [--cold] [--memory 1G] [--disk 4G] [--vcpus 2] [--pull]
                                            open a stopped VM on a host again;
                                            --cold discards its memory and boots
                                            its kernel, and only a cold start may
@@ -124,14 +130,14 @@ var commands = map[string]struct {
 	// keeps a guest's own flags and quoting out of this CLI's parser.
 	trailing bool
 }{
-	"create":          {flags: []string{"template", "from", "memory", "disk", "vcpus", "ephemeral"}},
+	"create":          {flags: []string{"template", "from", "memory", "disk", "vcpus", "ephemeral"}, switches: []string{"pull"}},
 	"import-template": {target: "file", flags: []string{"memory"}},
 	"list":            {},
 	"hosts":           {},
 	"store":           {},
 	"console":         {target: "vm", flags: []string{"for"}},
 	"exec":            {target: "vm", flags: []string{"timeout"}, trailing: true},
-	"fork":            {target: "vm", flags: []string{"count", "to"}},
+	"fork":            {target: "vm", flags: []string{"count", "to"}, switches: []string{"pull"}},
 	"migrate":         {target: "vm", flags: []string{"to"}},
 	"capture":         {target: "vm", switches: []string{"new", "keep"}},
 	"kill-host":       {target: "host"},
@@ -139,7 +145,7 @@ var commands = map[string]struct {
 	"stop":            {target: "vm", switches: []string{"suspend", "keep"}},
 	"kept":            {target: "vm"},
 	"release":         {target: "checkpoint"},
-	"start":           {target: "vm", flags: []string{"to", "memory", "disk", "vcpus"}, switches: []string{"cold"}},
+	"start":           {target: "vm", flags: []string{"to", "memory", "disk", "vcpus"}, switches: []string{"cold", "pull"}},
 	"delete":          {target: "vm"},
 	"check":           {},
 }
@@ -203,6 +209,8 @@ func parse(args []string) (invocation, error) {
 				result.New = true
 			case "keep":
 				result.Keep = true
+			case "pull":
+				result.Pull = true
 			}
 			continue
 		}

@@ -60,7 +60,7 @@ func TestLocalForkIsAdmittedAgainstTheParentsHost(t *testing.T) {
 		Template: "workload"})
 	// The arena is 2 GiB and the guests on it are promised half of it, so three
 	// more children of 512 MiB do not fit and two do.
-	if _, err := d.orchestrator.Fork(t.Context(), "vm-a", 3, ""); !errors.Is(err, errNoHost) {
+	if _, err := d.orchestrator.Fork(t.Context(), "vm-a", orch.ForkRequest{Count: 3}); !errors.Is(err, errNoHost) {
 		t.Fatalf("a fan-out larger than its own host = %v, want errNoHost", err)
 	}
 	for _, line := range d.log {
@@ -69,7 +69,7 @@ func TestLocalForkIsAdmittedAgainstTheParentsHost(t *testing.T) {
 		}
 	}
 	// Two fit, and the parent is paused once for both.
-	if _, err := d.orchestrator.Fork(t.Context(), "vm-a", 2, ""); err != nil {
+	if _, err := d.orchestrator.Fork(t.Context(), "vm-a", orch.ForkRequest{Count: 2}); err != nil {
 		t.Fatalf("a fan-out its host has room for: %v", err)
 	}
 }

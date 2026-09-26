@@ -104,6 +104,10 @@ func metrics(status hostapi.Status) string {
 	write("sproutfs_cache_limit_bytes", "gauge", "The page cache's own cap, which nothing else draws on.",
 		status.Resources.CacheLimit)
 	write("sproutfs_cache_used_bytes", "gauge", "How much of the page cache is resident.", status.Resources.CacheUsed)
+	write("sproutfs_cache_disk_limit_bytes", "gauge", "The page cache's disk, which holds what pulls copy.",
+		status.Resources.CacheDiskLimit)
+	write("sproutfs_cache_disk_used_bytes", "gauge", "How much of the page cache's disk the pulls hold.",
+		status.Resources.CacheDiskUsed)
 
 	// The store counters carry the operation as a label: five operations, one
 	// series each, which is what makes a rate by operation a query rather than

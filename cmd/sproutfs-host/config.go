@@ -198,6 +198,10 @@ func loadConfig(lookup func(string) string) (config, error) {
 	c.MemoryBytes = number("SPROUTFS_MEMORY_BYTES", arenaBytes+c.Ephemeral.ArenaBytes+(1<<30))
 	c.CacheBytes = number("SPROUTFS_CACHE_BYTES", 1<<30)
 	spillBytes := number("SPROUTFS_SPILL_BYTES", 16<<30)
+	// The page cache's disk holds the memory of the VMs marked to pull it. It
+	// is off unless a deployment gives it space, because that space comes out
+	// of the same node disk the spill file does.
+	c.CacheDiskBytes = number("SPROUTFS_CACHE_DISK_BYTES", 0)
 	c.VMMemoryBytes = uint64(number("SPROUTFS_VM_MEMORY_BYTES", 512<<20))
 
 	// A host runs one pager per kind of memory region, each with an arena and a spill

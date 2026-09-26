@@ -774,7 +774,7 @@ func (o *orchestrator) Create(ctx context.Context, request orch.CreateRequest) (
 		Template: template, Parent: parent, Memory: need})
 	result, err := target.client.Create(ctx, host.CreateRequest{ID: id, Template: request.Template,
 		From: request.From, Memory: request.Memory, Disk: request.Disk, VCPUs: request.VCPUs,
-		Ephemeral: request.Ephemeral})
+		Ephemeral: request.Ephemeral, Pull: request.Pull})
 	if err != nil {
 		o.forget(ctx, id)
 		return orch.CreateResult{}, fmt.Errorf("creating %s on %s: %w", id, target.report.Name, err)
@@ -859,8 +859,9 @@ func (o *orchestrator) ImportTemplate(ctx context.Context, image io.Reader,
 // the pages no checkpoint holds out of the parent's page server, exactly as a
 // migration's destination does. The parent holds the point until every child
 // has them all.
-func (o *orchestrator) Fork(ctx context.Context, id string, count int, to string) (orch.ForkResult, error) {
+func (o *orchestrator) Fork(ctx context.Context, id string, request orch.ForkRequest) (orch.ForkResult, error) {
 	began := time.Now()
+	count, to := request.Count, request.To
 	if count <= 0 {
 		count = 1
 	}
@@ -909,7 +910,7 @@ func (o *orchestrator) Fork(ctx context.Context, id string, count int, to string
 			Parent: id, Template: parent.Template, Memory: need})
 	}
 	result := orch.ForkResult{Host: source.report.Name, To: target.report.Name, Children: children}
-	forked, err := o.fork(ctx, source, target, id, children)
+	forked, err := o.fork(ctx, source, target, id, children, request.Pull)
 	if err != nil {
 		for _, child := range children {
 			o.forget(ctx, child)
@@ -932,9 +933,10 @@ func (o *orchestrator) Fork(ctx context.Context, id string, count int, to string
 // each of them, every destination creates its child and binds the pages no
 // checkpoint holds — off the parent's page server on another host, off the
 // pages themselves on the parent's own — and only when the last child has them
-// does the parent take its pages back.
+// does the parent take its pages back. pull marks every child to pull its
+// whole memory, which each child's handoff carries to its destination.
 func (o *orchestrator) fork(ctx context.Context, source, target liveHost, parent string,
-	children []string) (host.ForkResult, error) {
+	children []string, pull bool) (host.ForkResult, error) {
 	// A child of the parent's own host is handed over without an address: its
 	// inherited pages never reach the wire.
 	destination := target.report.Page
@@ -942,7 +944,7 @@ func (o *orchestrator) fork(ctx context.Context, source, target liveHost, parent
 		destination = ""
 	}
 	handed, err := source.client.Fork(ctx, parent, host.ForkRequest{IDs: children,
-		Destination: destination})
+		Destination: destination, Pull: pull})
 	if err != nil {
 		// One request forked one parent into a set of children, and the set did
 		// not happen. Whichever of them exist are identities only this request
@@ -1447,7 +1449,7 @@ func (o *orchestrator) Start(ctx context.Context, id string, request orch.StartR
 	}
 	return o.reopen(ctx, id, reopening{to: request.To, state: stateStarting, what: "started",
 		open: host.OpenRequest{Cold: request.Cold, Memory: request.Memory, Disk: request.Disk,
-			VCPUs: request.VCPUs}})
+			VCPUs: request.VCPUs, Pull: request.Pull}})
 }
 
 // reopening is the terms one reopen runs under: where the VM is to go, the

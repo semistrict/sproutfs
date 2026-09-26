@@ -117,12 +117,16 @@ spec:
               value: "5368709120"
             - name: SPROUTFS_MEMORY_BYTES
               value: "12884901888"
-            # Disk is capped per concern, out of the 20 GiB emptyDir: the page
-            # cache's own allotment, and the pager's spill file.
+            # Disk is capped per concern, out of the 24 GiB emptyDir: the
+            # pager's spill file, and the page cache's disk, which holds the
+            # memory of the VMs started with --pull. The page cache's own
+            # allotment is memory.
             - name: SPROUTFS_CACHE_BYTES
               value: "1073741824"
             - name: SPROUTFS_SPILL_BYTES
               value: "17179869184"
+            - name: SPROUTFS_CACHE_DISK_BYTES
+              value: "4294967296"
             # The volatile private state each pager may hold in its arena and
             # its spill file together, counted in that pager's own page, which
             # is 2 MiB for both. Each defaults to its share of the arena, which is what a
@@ -269,10 +273,11 @@ spec:
         - name: hugepages
           emptyDir:
             medium: HugePages-2Mi
-        # Spill and scratch on the node's own disk, discarded with the pod.
+        # Spill, the page cache's disk and scratch on the node's own disk,
+        # discarded with the pod.
         - name: scratch
           emptyDir:
-            sizeLimit: 20Gi
+            sizeLimit: 24Gi
         # The guest image is built on the node by scripts/lib/demo-image.sh, not
         # baked into the container image, so the pods read it from the node.
         # DirectoryOrCreate so that a pod still starts before the build has run.

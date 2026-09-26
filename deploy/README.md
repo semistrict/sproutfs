@@ -321,7 +321,8 @@ durations.
 | `SPROUTFS_CACHE_BYTES` | literal | `1073741824` | the page cache's own cap, which nothing else draws on |
 | `SPROUTFS_EPHEMERAL_BYTES` | unset | unset | the ephemeral pager's spill file: every ephemeral disk this host admits, in whole 2 MiB pages. Unset, the host runs no ephemeral pager and refuses a VM with an ephemeral disk (docs/volumes.md#ephemeral-disks). A deployment that creates ephemeral disks sets it on every host, because such a VM may be opened, received or recovered on any of them |
 | `SPROUTFS_EPHEMERAL_ARENA_BYTES` | unset | `268435456` | the ephemeral pager's share of the HugeTLB pool, in whole 2 MiB pages, read only where `SPROUTFS_EPHEMERAL_BYTES` is set. It bounds how much of the ephemeral disks is resident, and the default memory allotment grows by it |
-| `SPROUTFS_SPILL_BYTES` | literal | `17179869184` | the host's spill store, out of the 20 GiB `emptyDir`, divided by the same share into one file per pager. Each file's share is what bounds that pager's dirty pages |
+| `SPROUTFS_SPILL_BYTES` | literal | `17179869184` | the host's spill store, out of the 24 GiB `emptyDir`, divided by the same share into one file per pager. Each file's share is what bounds that pager's dirty pages |
+| `SPROUTFS_CACHE_DISK_BYTES` | literal | `4294967296` | the page cache's disk, out of the same `emptyDir`: the memory of the VMs started with `--pull`, each copied whole or not at all ([hosting](../docs/hosting.md#pulling-a-vms-memory)). Unset, the host keeps none, and such a VM reads its memory from the object store like any other |
 | `SPROUTFS_RAM_LOGICAL_PAGES`, `SPROUTFS_PMEM_LOGICAL_PAGES` | unset | that pager's arena pages × 32 | bounds each pager's per-memory-region metadata, including never-faulted pages, and so bounds the VMs a host will start at all — see the arithmetic below. Each is counted in its own pager's page, which is why they are two numbers and never a sum |
 | `SPROUTFS_RAM_DIRTY_PAGES`, `SPROUTFS_PMEM_DIRTY_PAGES` | unset | the smaller of that pager's arena pages and its spill share | bounds volatile private state on RAM and spill together, per pager; each is at most its own logical cap and at most what its spill share holds. The defaults are what a workload guest writing hundreds of megabytes between checkpoints outruns |
 | `SPROUTFS_TEMPLATES` | literal | `alpine=…/guest.ext4,workload=…/workload.ext4:2147483648` | the guest images a VM can be created from, as `name=path` pairs, or `none` for a host that creates only from templates imported on request. A pair may name the RAM its VMs get after a colon, `name=path:bytes`, which is what an image needing more than the default uses. A create request that names none takes the only one |
@@ -449,7 +450,7 @@ flow, and not enough to touch anything outside the namespace.
 | `hugepages-2Mi` | 6Gi request = limit | none |
 | `memory` | 8Gi request = limit | 256Mi / 512Mi |
 | `cpu` | 2 request, 3 limit | 200m / 1 |
-| `emptyDir` | 20Gi on the node disk | none |
+| `emptyDir` | 24Gi on the node disk | none |
 | privileged | yes, plus a `hostPath` `CharDevice` on `/dev/kvm` and the node's read-only guest-image directory | no, one `hostPath` directory for its table |
 
 Huge pages are not counted against the container's `memory` limit, so a host

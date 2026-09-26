@@ -218,6 +218,8 @@ func (f *fakeHostClient) Create(_ context.Context, request host.CreateRequest) (
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	switch {
+	case request.Pull:
+		f.record("create %s %s pull", request.ID, request.Template)
 	case request.From != nil:
 		f.record("create %s from %s@%d memory=%d", request.ID, request.From.VM, request.From.Checkpoint,
 			request.Memory)
@@ -250,6 +252,8 @@ func (f *fakeHostClient) Open(_ context.Context, id string, request host.OpenReq
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	switch {
+	case request.Pull:
+		f.record("open %s pull", id)
 	case request.Cold && (request.Memory != 0 || request.Disk != 0):
 		f.record("open %s cold memory=%d disk=%d", id, request.Memory, request.Disk)
 	case request.Cold:
@@ -282,7 +286,8 @@ func (f *fakeHostClient) Fork(_ context.Context, parent string, request host.For
 		// this host reports it as the handover it is.
 		f.serving = append(f.serving, id)
 		f.outstanding[id] = true
-		result.Handoffs = append(result.Handoffs, host.Handoff{VMID: id, Parent: parent, Source: source})
+		result.Handoffs = append(result.Handoffs, host.Handoff{VMID: id, Parent: parent, Source: source,
+			Pull: request.Pull})
 	}
 	return result, nil
 }
@@ -338,7 +343,11 @@ func (f *fakeHostClient) Migrate(_ context.Context, id string, request host.Migr
 
 func (f *fakeHostClient) Receive(ctx context.Context, handoff host.Handoff) (host.ReceiveResult, error) {
 	f.mu.Lock()
-	f.record("receive %s %s", handoff.VMID, handoff.Source)
+	if handoff.Pull {
+		f.record("receive %s %s pull", handoff.VMID, handoff.Source)
+	} else {
+		f.record("receive %s %s", handoff.VMID, handoff.Source)
+	}
 	if f.refusesEveryReceive || f.refusedReceives > 0 || (f.receives > 0 && len(f.received) >= f.receives) {
 		f.refusedReceives = max(f.refusedReceives-1, 0)
 		f.quiet = f.quietAfterRefusal
@@ -595,7 +604,7 @@ func TestCreateWithoutAnyLiveHostIsRefused(t *testing.T) {
 
 func TestForkRunsOnTheVMsOwnHost(t *testing.T) {
 	d := newDeployment(t, map[string][]string{"host-0": {"vm-a"}, "host-1": {}})
-	result, err := d.orchestrator.Fork(t.Context(), "vm-a", 3, "")
+	result, err := d.orchestrator.Fork(t.Context(), "vm-a", orch.ForkRequest{Count: 3})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -622,7 +631,7 @@ func TestForkRunsOnTheVMsOwnHost(t *testing.T) {
 // and the parent takes its pages back only once every child has them.
 func TestForkOnAnotherHostCarriesTheHandoff(t *testing.T) {
 	d := newDeployment(t, map[string][]string{"host-0": {"vm-a"}, "host-1": {}})
-	result, err := d.orchestrator.Fork(t.Context(), "vm-a", 2, "host-1")
+	result, err := d.orchestrator.Fork(t.Context(), "vm-a", orch.ForkRequest{Count: 2, To: "host-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -641,7 +650,7 @@ func TestForkOnAnotherHostCarriesTheHandoff(t *testing.T) {
 
 func TestForkOfAVMNoHostRunsIsNotFound(t *testing.T) {
 	d := newDeployment(t, map[string][]string{"host-0": {"vm-a"}})
-	_, err := d.orchestrator.Fork(t.Context(), "vm-z", 1, "")
+	_, err := d.orchestrator.Fork(t.Context(), "vm-z", orch.ForkRequest{Count: 1})
 	if !errors.Is(err, errNotFound) {
 		t.Fatalf("error %v, want not found", err)
 	}
@@ -707,7 +716,7 @@ func TestTwoHostsClaimingOneVMStopsTheDeploymentActingOnIt(t *testing.T) {
 			return err
 		},
 		"forking": func() error {
-			_, err := d.orchestrator.Fork(t.Context(), "vm-a", 1, "")
+			_, err := d.orchestrator.Fork(t.Context(), "vm-a", orch.ForkRequest{Count: 1})
 			return err
 		},
 		"capturing": func() error {
@@ -1284,7 +1293,7 @@ func TestForkOntoAHostWithNoRoomIsRefused(t *testing.T) {
 	}
 	d.orchestrator.note(t.Context(), vmRecord{ID: "vm-a", Host: "host-0", State: stateRunning,
 		Template: "workload"})
-	if _, err := d.orchestrator.Fork(t.Context(), "vm-a", 1, "host-1"); !errors.Is(err, errNoHost) {
+	if _, err := d.orchestrator.Fork(t.Context(), "vm-a", orch.ForkRequest{Count: 1, To: "host-1"}); !errors.Is(err, errNoHost) {
 		t.Fatalf("a fork onto a host with no room = %v, want errNoHost", err)
 	}
 	for _, line := range d.log {
@@ -1303,7 +1312,7 @@ func TestAPartialCrossHostForkTakesBackTheChildrenItStarted(t *testing.T) {
 	d := newDeployment(t, map[string][]string{"host-0": {"vm-a"}, "host-1": {}})
 	// The destination takes the first child and refuses the second.
 	d.hosts["host-1"].receives = 1
-	if _, err := d.orchestrator.Fork(t.Context(), "vm-a", 2, "host-1"); err == nil {
+	if _, err := d.orchestrator.Fork(t.Context(), "vm-a", orch.ForkRequest{Count: 2, To: "host-1"}); err == nil {
 		t.Fatal("a fork whose destination refused a child reported success")
 	}
 	started, deleted := "", ""

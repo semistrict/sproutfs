@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/semistrict/sproutfs/api/host"
+	"github.com/semistrict/sproutfs/api/orch"
 )
 
 // TestAPartialForkTakesBackTheChildrenItStarted: one request forks one parent
@@ -19,7 +20,7 @@ func TestAPartialForkTakesBackTheChildrenItStarted(t *testing.T) {
 	d.hosts["host-0"].templates = []host.Template{{Name: "workload", MemoryBytes: 512 << 20, Imported: true}}
 	// The host hands the first child over and then cannot hand over the second.
 	d.hosts["host-0"].forks = 1
-	if _, err := d.orchestrator.Fork(t.Context(), "vm-a", 2, ""); err == nil {
+	if _, err := d.orchestrator.Fork(t.Context(), "vm-a", orch.ForkRequest{Count: 2}); err == nil {
 		t.Fatal("a fan-out whose host could not hand every child over reported success")
 	}
 	var deleted []string
@@ -45,7 +46,7 @@ func TestAPartialForkOnTheParentsOwnHostTakesItsChildrenBack(t *testing.T) {
 	d := newDeployment(t, map[string][]string{"host-0": {"vm-a"}})
 	// The host takes the first child in and refuses the second.
 	d.hosts["host-0"].receives = 1
-	if _, err := d.orchestrator.Fork(t.Context(), "vm-a", 2, ""); err == nil {
+	if _, err := d.orchestrator.Fork(t.Context(), "vm-a", orch.ForkRequest{Count: 2}); err == nil {
 		t.Fatal("a fan-out whose host refused a child reported success")
 	}
 	started, deleted := "", ""
@@ -104,7 +105,7 @@ func TestAForkWhoseFirstChildIsRefusedGivesUpTheRestOnTheSource(t *testing.T) {
 	d.hosts["host-1"].arena(1024, 100)
 	// The destination refuses every child, starting with the first.
 	d.hosts["host-1"].refusesEveryReceive = true
-	if _, err := d.orchestrator.Fork(t.Context(), "vm-a", 3, "host-1"); err == nil {
+	if _, err := d.orchestrator.Fork(t.Context(), "vm-a", orch.ForkRequest{Count: 3, To: "host-1"}); err == nil {
 		t.Fatal("a fan-out whose destination refused every child reported success")
 	}
 	var released, abandoned []string

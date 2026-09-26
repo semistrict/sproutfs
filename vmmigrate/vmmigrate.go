@@ -142,6 +142,11 @@ type Handoff struct {
 	// PausedAt is when the guest stopped, which with the destination's resume
 	// bounds the pause the migration cost.
 	PausedAt time.Time
+	// Pull marks a VM that pulls its whole memory onto the disk of each host it
+	// runs on. A migration carries the mark from the source, and a fork gives
+	// it to the children it was asked to. This package does not read it: the
+	// host that receives the VM does.
+	Pull bool `json:",omitempty"`
 }
 
 // IsFork reports a handoff whose VM is a child of a parent that keeps running,

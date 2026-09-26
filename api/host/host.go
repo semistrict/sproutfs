@@ -74,6 +74,10 @@ type Handoff struct {
 	// PausedAt is when the guest stopped, which with the destination's resume
 	// bounds the pause the migration cost.
 	PausedAt time.Time
+	// Pull marks a VM that pulls its whole memory onto the disk of each host it
+	// runs on: a migration carries it from the source, and a fork sets it on
+	// the children it was asked to.
+	Pull bool `json:",omitempty"`
 }
 
 // HandoffMemoryRegion names one memory region of a handed-over VM and the size of the volume
@@ -147,6 +151,28 @@ type VM struct {
 	// spilled or held by a checkpoint that has not landed. It is the part of
 	// this VM's memory its host could share with nothing.
 	PrivateBytes uint64 `json:"private_bytes"`
+	// Pull is how far this VM's pull of its whole memory onto its host's disk
+	// has come, nil for a VM that is not marked to pull.
+	Pull *Pull `json:"pull,omitempty"`
+}
+
+// Pull is how far a VM marked to pull its whole memory has come. Such a VM has
+// every page of the checkpoint it started from copied onto its host's disk, in
+// the background while the guest runs, and held there for as long as it runs
+// on that host. Once the copy is complete, a fault on a page of that checkpoint
+// that is not resident reads the disk and makes no request of the object store.
+// The copy is not durable: losing the disk loses nothing a checkpoint holds.
+//
+// Bytes is what the checkpoint holds and Pulled how much of it is on the disk.
+// Done reports a pull that has stopped, complete unless Error says why not. A
+// pull the host refused — its disk keeps nothing, or the checkpoint does not
+// fit in what the disk has left — is Done with the refusal as its Error, and
+// the VM reads its memory from the object store like any other.
+type Pull struct {
+	Bytes  int64  `json:"bytes"`
+	Pulled int64  `json:"pulled"`
+	Done   bool   `json:"done,omitempty"`
+	Error  string `json:"error,omitempty"`
 }
 
 // Sharing is how much memory sharing a host's pager is retaining for one kind
@@ -258,12 +284,15 @@ type Pages struct {
 
 // Resources is what a host has: the RAM allotment its pager takes pages from,
 // and the page cache's own separate cap. Disk is not shared or accounted —
-// each concern that writes to the node's disk has a fixed cap of its own.
+// each concern that writes to the node's disk has a fixed cap of its own, and
+// the page cache's disk, which holds what pulls copy, is one of them.
 type Resources struct {
-	MemoryLimit int64 `json:"memory_limit"`
-	MemoryUsed  int64 `json:"memory_used"`
-	CacheLimit  int64 `json:"cache_limit"`
-	CacheUsed   int64 `json:"cache_used"`
+	MemoryLimit    int64 `json:"memory_limit"`
+	MemoryUsed     int64 `json:"memory_used"`
+	CacheLimit     int64 `json:"cache_limit"`
+	CacheUsed      int64 `json:"cache_used"`
+	CacheDiskLimit int64 `json:"cache_disk_limit"`
+	CacheDiskUsed  int64 `json:"cache_disk_used"`
 }
 
 // TemplatePrefix is the reserved identity namespace of the VMs that hold
@@ -408,6 +437,9 @@ type Stored struct {
 // VM is opened after a stop or the loss of its host, and in every fork; a
 // migration carries it. Zero gives none, or keeps the one a checkpoint the VM
 // is created from has. A host that runs no ephemeral pager refuses it.
+//
+// Pull marks the VM to pull its whole memory onto the disk of the host it runs
+// on; see Pull.
 type CreateRequest struct {
 	ID        string         `json:"id"`
 	Template  string         `json:"template,omitempty"`
@@ -416,6 +448,7 @@ type CreateRequest struct {
 	Disk      uint64         `json:"disk,omitempty"`
 	VCPUs     int            `json:"vcpus,omitempty"`
 	Ephemeral uint64         `json:"ephemeral,omitempty"`
+	Pull      bool           `json:"pull,omitempty"`
 }
 
 // CheckpointRef names one checkpoint of a VM. A zero Checkpoint is the one the
@@ -471,6 +504,9 @@ type OpenRequest struct {
 	Memory uint64 `json:"memory,omitempty"`
 	Disk   uint64 `json:"disk,omitempty"`
 	VCPUs  int    `json:"vcpus,omitempty"`
+	// Pull marks the VM to pull its whole memory onto the disk of the host it
+	// runs on; see Pull.
+	Pull bool `json:"pull,omitempty"`
 }
 
 // OpenResult reports a VM opened from its last checkpoint, which is what a host
@@ -494,9 +530,13 @@ type OpenResult struct {
 //
 // Every child named here starts from one pause of the parent, so a fan-out
 // costs the parent one pause however many are asked for.
+//
+// Pull marks every child to pull its whole memory onto the disk of the host it
+// runs on; see Pull. The children's handoffs carry the mark.
 type ForkRequest struct {
 	IDs         []string `json:"ids"`
 	Destination string   `json:"destination,omitempty"`
+	Pull        bool     `json:"pull,omitempty"`
 }
 
 // ForkResult reports one fork point and the handoff of every child taken from

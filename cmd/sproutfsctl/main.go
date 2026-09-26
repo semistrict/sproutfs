@@ -62,7 +62,8 @@ func execute(ctx context.Context, client *orch.Client, command invocation,
 		return err
 	case "create":
 		request := orch.CreateRequest{Template: command.Template,
-			Memory: command.Memory, Disk: command.Disk, VCPUs: command.VCPUs, Ephemeral: command.Ephemeral}
+			Memory: command.Memory, Disk: command.Disk, VCPUs: command.VCPUs, Ephemeral: command.Ephemeral,
+			Pull: command.Pull}
 		if command.From != "" {
 			request.From = &host.CheckpointRef{VM: command.From, Checkpoint: command.FromCheckpoint}
 		}
@@ -161,7 +162,8 @@ func execute(ctx context.Context, client *orch.Client, command invocation,
 		}
 		return table.Flush()
 	case "fork":
-		result, err := client.Fork(ctx, command.Target, command.Count, command.To)
+		result, err := client.Fork(ctx, command.Target,
+			orch.ForkRequest{Count: command.Count, To: command.To, Pull: command.Pull})
 		if err != nil {
 			return err
 		}
@@ -247,7 +249,8 @@ func execute(ctx context.Context, client *orch.Client, command invocation,
 		return err
 	case "start":
 		result, err := client.Start(ctx, command.Target, orch.StartRequest{To: command.To,
-			Cold: command.Cold, Memory: command.Memory, Disk: command.Disk, VCPUs: command.VCPUs})
+			Cold: command.Cold, Memory: command.Memory, Disk: command.Disk, VCPUs: command.VCPUs,
+			Pull: command.Pull})
 		if err != nil {
 			return err
 		}

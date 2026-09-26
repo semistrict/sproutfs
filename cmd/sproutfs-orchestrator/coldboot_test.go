@@ -199,7 +199,7 @@ func TestAForkInheritsTheParentsMemory(t *testing.T) {
 	d.orchestrator.note(t.Context(), vmRecord{ID: "vm-a", Host: "host-0", State: stateRunning,
 		Template: "workload", Memory: 2 << 30})
 
-	forked, err := d.orchestrator.Fork(t.Context(), "vm-a", 1, "")
+	forked, err := d.orchestrator.Fork(t.Context(), "vm-a", orch.ForkRequest{Count: 1})
 	if err != nil {
 		t.Fatal(err)
 	}

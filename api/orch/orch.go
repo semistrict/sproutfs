@@ -128,6 +128,9 @@ type DrainReport struct {
 //
 // Ephemeral gives the VM an ephemeral disk of that many bytes, which no
 // checkpoint holds; see host.CreateRequest.
+//
+// Pull marks the VM to pull its whole memory onto the disk of the host it runs
+// on; see host.Pull. A migration keeps the mark.
 type CreateRequest struct {
 	Template  string              `json:"template,omitempty"`
 	From      *host.CheckpointRef `json:"from,omitempty"`
@@ -135,6 +138,7 @@ type CreateRequest struct {
 	Disk      uint64              `json:"disk,omitempty"`
 	VCPUs     int                 `json:"vcpus,omitempty"`
 	Ephemeral uint64              `json:"ephemeral,omitempty"`
+	Pull      bool                `json:"pull,omitempty"`
 }
 
 // CreateResult is where the VM went and what its creation cost.
@@ -146,9 +150,12 @@ type CreateResult struct {
 // ForkRequest asks for Count forks of one running VM. Zero means one. To is the
 // host the children run on, by pod name; empty is the parent's own host, where
 // a child shares its parent's pages rather than pulling them over the network.
+// Pull marks every child to pull its whole memory onto the disk of the host it
+// runs on; see host.Pull.
 type ForkRequest struct {
 	Count int    `json:"count,omitempty"`
 	To    string `json:"to,omitempty"`
+	Pull  bool   `json:"pull,omitempty"`
 }
 
 // ForkResult reports one fork: the children it created, in the order they were
@@ -264,6 +271,9 @@ type StartRequest struct {
 	Memory uint64 `json:"memory,omitempty"`
 	Disk   uint64 `json:"disk,omitempty"`
 	VCPUs  int    `json:"vcpus,omitempty"`
+	// Pull marks the VM to pull its whole memory onto the disk of the host it
+	// runs on; see host.Pull.
+	Pull bool `json:"pull,omitempty"`
 }
 
 // StartResult reports a stopped VM running again: where it went and the

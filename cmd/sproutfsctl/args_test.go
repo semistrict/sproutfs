@@ -50,6 +50,12 @@ func TestParseReadsEachCommand(t *testing.T) {
 			want: invocation{Command: "start", Target: "vm-1", Count: 1}},
 		{name: "start on a named host", args: []string{"start", "vm-1", "--to", "sproutfs-host-b"},
 			want: invocation{Command: "start", Target: "vm-1", To: "sproutfs-host-b", Count: 1}},
+		{name: "create pulling its memory", args: []string{"create", "--pull"},
+			want: invocation{Command: "create", Count: 1, Pull: true}},
+		{name: "start pulling its memory", args: []string{"start", "vm-1", "--pull"},
+			want: invocation{Command: "start", Target: "vm-1", Count: 1, Pull: true}},
+		{name: "fork children pulling their memory", args: []string{"fork", "vm-1", "--count", "2", "--pull"},
+			want: invocation{Command: "fork", Target: "vm-1", Count: 2, Pull: true}},
 		{name: "check", args: []string{"check"}, want: invocation{Command: "check", Count: 1}},
 		{name: "help", args: []string{"--help"}, want: invocation{Command: "help"}},
 	} {
@@ -90,6 +96,10 @@ func TestParseRefusesWhatItCannotRun(t *testing.T) {
 			want: `usage: fork takes no argument "twice"`},
 		{name: "a second target", args: []string{"list", "vm-1"},
 			want: `usage: list takes no argument "vm-1"`},
+		{name: "a pull of a VM that is already running", args: []string{"migrate", "vm-1", "--pull"},
+			want: "usage: migrate takes no --pull"},
+		{name: "a pull with a value", args: []string{"create", "--pull=yes"},
+			want: "usage: --pull takes no value"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := parse(tc.args)

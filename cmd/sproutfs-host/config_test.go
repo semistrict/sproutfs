@@ -62,6 +62,10 @@ func TestConfigTakesTheDocumentedDefaults(t *testing.T) {
 	if config.ArenaBytes.Total() != 2<<30 || config.SpillBytes.Total() != 16<<30 {
 		t.Fatalf("the shares come to %d of arena and %d of spill", config.ArenaBytes.Total(), config.SpillBytes.Total())
 	}
+	// The page cache keeps no disk unless it is given one.
+	if config.CacheDiskBytes != 0 {
+		t.Fatalf("the page cache's disk is %d bytes, want none", config.CacheDiskBytes)
+	}
 	// Each pager's resident pages are its own arena, and its other two bounds
 	// are derived from that — each counted in that pager's own page, which is
 	// why a RAM page other than the default would make them nothing alike: at
@@ -139,6 +143,18 @@ func TestConfigReadsTheEphemeralBudget(t *testing.T) {
 }
 
 // Each pager is bounded in its own pages, so each is refused on its own.
+func TestConfigReadsThePageCacheDisk(t *testing.T) {
+	values := minimal()
+	values["SPROUTFS_CACHE_DISK_BYTES"] = "4294967296"
+	config, err := loadConfig(environ(values))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.CacheDiskBytes != 4<<30 {
+		t.Fatalf("the page cache's disk is %d bytes, want 4 GiB", config.CacheDiskBytes)
+	}
+}
+
 func TestConfigRefusesADirtyBoundAboveTheLogicalOne(t *testing.T) {
 	values := minimal()
 	values["SPROUTFS_RAM_LOGICAL_PAGES"] = "2048"

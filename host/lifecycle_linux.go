@@ -91,7 +91,7 @@ func (s *supervisor) Create(ctx context.Context, request hostapi.CreateRequest) 
 	rootSeconds := s.since(rooted)
 
 	booted := s.clock.Now()
-	m, err := s.boot(ctx, vm, state, name)
+	m, err := s.boot(ctx, vm, state, name, request.Pull)
 	if err != nil {
 		return hostapi.CreateResult{}, err
 	}
@@ -133,7 +133,7 @@ func (s *supervisor) Open(ctx context.Context, id string, request hostapi.OpenRe
 		return hostapi.OpenResult{}, err
 	}
 	restored := s.clock.Now()
-	m, err := s.boot(ctx, vm, state, "")
+	m, err := s.boot(ctx, vm, state, "", request.Pull)
 	if err != nil {
 		return hostapi.OpenResult{}, err
 	}
@@ -213,6 +213,7 @@ func (s *supervisor) Fork(ctx context.Context, parent string, request hostapi.Fo
 	}
 	wire := make([]hostapi.Handoff, 0, len(handoffs))
 	for _, handed := range handoffs {
+		handed.Pull = request.Pull
 		wire = append(wire, apiHandoff(handed))
 	}
 	return hostapi.ForkResult{Handoffs: wire, Capture: s.since(captured),
@@ -255,9 +256,11 @@ func (s *supervisor) Capture(ctx context.Context, id string, request hostapi.Cap
 }
 
 // boot starts one VM's VMM and registers it, which is what begins its interval
-// checkpoint loop. A machine that cannot be registered is closed rather than
-// left running unaccounted for.
-func (s *supervisor) boot(ctx context.Context, vm *volume.VM, state []byte, template string) (*machine, error) {
+// checkpoint loop, and its pull when pull marks it to pull its whole memory. A
+// machine that cannot be registered is closed rather than left running
+// unaccounted for.
+func (s *supervisor) boot(ctx context.Context, vm *volume.VM, state []byte, template string,
+	pull bool) (*machine, error) {
 	// A VM's memory regions are its volumes, and the pager's logical cap is what says
 	// whether it can map them all. Asking here is what makes a create, an open
 	// or a fork that could never run a refusal rather than a VMM that is
@@ -286,7 +289,11 @@ func (s *supervisor) boot(ctx context.Context, vm *volume.VM, state []byte, temp
 	if err := s.remember(m); err != nil {
 		return nil, errors.Join(err, process.Close(), closing(ctx, vm))
 	}
-	if err := s.host.AddMachine(vm.ID(), process); err != nil {
+	register := s.host.AddMachine
+	if pull {
+		register = s.host.AddPullingMachine
+	}
+	if err := register(vm.ID(), process); err != nil {
 		s.forget(vm.ID())
 		return nil, errors.Join(fmt.Errorf("registering %s", vm.ID()), err, process.Close(),
 			closing(ctx, vm))

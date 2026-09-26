@@ -11,6 +11,7 @@ import (
 	"time"
 
 	hostapi "github.com/semistrict/sproutfs/api/host"
+	"github.com/semistrict/sproutfs/checkpoint"
 	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/vmmemory"
 	"github.com/semistrict/sproutfs/vmmigrate"
@@ -99,6 +100,13 @@ type registration struct {
 	// migrating is set while a handover of this VM is in flight and is guarded
 	// by the machines lock, not mu: it is what admits one of them at a time.
 	migrating bool
+	// pull marks a VM that pulls its whole memory to this host's disk while it
+	// runs here. It is set when the machine is registered and never changes.
+	// pulled is the pull its loop holds and refused why this host would not
+	// start one, both guarded by mu.
+	pull    bool
+	pulled  *checkpoint.Pull
+	refused error
 }
 
 // machines is what this host runs: the VMM process of every VM its manager
@@ -127,6 +135,17 @@ type machines struct {
 // checkpoints. The supervisor keeps ownership: this only records which
 // process belongs to which VM and starts that VM's checkpoint loop.
 func (h *Host) AddMachine(vmID string, runtime Machine) error {
+	return h.addMachine(vmID, runtime, false)
+}
+
+// AddPullingMachine is AddMachine for a VM marked to pull its whole memory: for
+// as long as this host runs it, every page of the checkpoint it started from is
+// copied onto this host's disk and held there. See pulling.
+func (h *Host) AddPullingMachine(vmID string, runtime Machine) error {
+	return h.addMachine(vmID, runtime, true)
+}
+
+func (h *Host) addMachine(vmID string, runtime Machine, pull bool) error {
 	if vmID == "" {
 		return ErrInvalidConfig
 	}
@@ -143,7 +162,7 @@ func (h *Host) AddMachine(vmID string, runtime Machine) error {
 	if existing != nil {
 		existing.end()
 	}
-	entry := &registration{runtime: runtime}
+	entry := &registration{runtime: runtime, pull: pull}
 	h.machines.mu.Lock()
 	defer h.machines.mu.Unlock()
 	// This identity is being run again — received back, or created anew after a
@@ -155,10 +174,11 @@ func (h *Host) AddMachine(vmID string, runtime Machine) error {
 }
 
 // run starts what this host runs for one registered VM: the watcher on its VMM
-// process, and the interval checkpoint loop, which a host with no interval
-// configured does not have. done closes once both have returned, so ending the
-// machine waits for the pair; a machine with no loop has no out-of-turn
-// checkpoint to ask for either, so now stays nil for it.
+// process, the interval checkpoint loop, which a host with no interval
+// configured does not have, and the pull of a VM marked to pull its memory.
+// done closes once all of them have returned, so ending the machine waits for
+// them; a machine with no loop has no out-of-turn checkpoint to ask for
+// either, so now stays nil for it.
 func (h *Host) run(vmID string, entry *registration) {
 	ctx, cancel := context.WithCancel(h.ctx)
 	done := make(chan struct{})
@@ -172,6 +192,9 @@ func (h *Host) run(vmID string, entry *registration) {
 	running.Go(func() { h.awaitingExit(ctx, cancel, vmID, entry) })
 	if h.checkpointInterval > 0 {
 		running.Go(func() { h.checkpointing(ctx, vmID, entry) })
+	}
+	if entry.pull {
+		running.Go(func() { h.pulling(ctx, vmID, entry) })
 	}
 	go func() { running.Wait(); close(done) }()
 }

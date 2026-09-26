@@ -40,7 +40,7 @@ func TestAForksChildrenCarryTheTemplateTheyWereForkedFrom(t *testing.T) {
 	d.orchestrator.note(t.Context(), vmRecord{ID: "vm-a", Host: "host-0", State: stateRunning,
 		Template: "alpine"})
 
-	forked, err := d.orchestrator.Fork(t.Context(), "vm-a", 2, "host-1")
+	forked, err := d.orchestrator.Fork(t.Context(), "vm-a", orch.ForkRequest{Count: 2, To: "host-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestAForksChildrenCarryTheTemplateTheyWereForkedFrom(t *testing.T) {
 	// its arena left, which is one more 512 MiB guest and not three.
 	child := forked.Children[0]
 	d.hosts["host-1"].commit(1536 << 20)
-	if _, err := d.orchestrator.Fork(t.Context(), child, 3, "host-1"); !errors.Is(err, errNoHost) {
+	if _, err := d.orchestrator.Fork(t.Context(), child, orch.ForkRequest{Count: 3, To: "host-1"}); !errors.Is(err, errNoHost) {
 		t.Fatalf("a fan-out of a child larger than its host = %v, want errNoHost", err)
 	}
 }
@@ -76,7 +76,7 @@ func TestStartingAForkedChildIsAdmittedAgainstItsTemplate(t *testing.T) {
 	}
 	d.orchestrator.note(t.Context(), vmRecord{ID: "vm-a", Host: "host-0", State: stateRunning,
 		Template: "alpine"})
-	forked, err := d.orchestrator.Fork(t.Context(), "vm-a", 1, "")
+	forked, err := d.orchestrator.Fork(t.Context(), "vm-a", orch.ForkRequest{Count: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
