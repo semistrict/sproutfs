@@ -5,7 +5,7 @@ set -euo pipefail
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 instance=${SPROUTFS_LIMA_INSTANCE:-default}
 toolchain=${SPROUTFS_RUST_TOOLCHAIN:-stable}
-if (($# != 0)); then echo "Usage: $0 (SPROUTFS_FIRECRACKER_RUN selects tests by -test.run)" >&2; exit 2; fi
+if (($# != 0)); then echo "Usage: $0 (SPROUTFS_FIRECRACKER_RUN selects tests by -test.run, SPROUTFS_ARENA the arena mode)" >&2; exit 2; fi
 arch=$(limactl shell "$instance" uname -m)
 if [[ "$arch" != aarch64 ]]; then
     echo 'This full-guest qualification pins an aarch64 kernel. Use the memory suite for x86_64.' >&2

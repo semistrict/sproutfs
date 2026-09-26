@@ -10,7 +10,8 @@ repeat=${SPROUTFS_VM_MEMORY_REPEAT:-1}
 # SPROUTFS_VM_MEMORY_FUZZ names a fuzz target of the vmmemory suite to run for
 # SPROUTFS_VM_MEMORY_FUZZTIME instead of either suite. A failing input it finds
 # is copied back into vmmemory/testdata/fuzz. SPROUTFS_VM_MEMORY_TAGS builds the
-# vmmemory suite with those build tags, such as sproutfsprobe.
+# vmmemory suite with those build tags, such as sproutfsprobe. SPROUTFS_ARENA is
+# the arena mode both suites build their pagers in, shared when unset.
 run=${SPROUTFS_VM_MEMORY_RUN:-}
 fuzz=${SPROUTFS_VM_MEMORY_FUZZ:-}
 fuzztime=${SPROUTFS_VM_MEMORY_FUZZTIME:-60s}

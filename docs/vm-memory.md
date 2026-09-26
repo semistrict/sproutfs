@@ -216,13 +216,17 @@ contain the same two sizes.
 
 ### An arena's offsets and its pages
 
-An arena is a set of files, and a resident page is one slot of one file. The
-pager makes file 0 when it starts, of `Config.ArenaOffsets` slots, and every
-page is in it. Each file reads, writes, zeroes, compares and releases its own
-slots, and keeps its own set of held offsets. `Config.Arena` (the host's
-`SPROUTFS_ARENA`) is `shared`, which is this arena, or `isolated`, which will
-give each memory region a private file. `isolated` is being built, and until it
-is it runs exactly as `shared` does.
+An arena is a set of files, and a resident page is one slot of one file. Each
+file reads, writes, zeroes, compares and releases its own slots, and keeps its
+own set of held offsets. The pager's capacity, `Config.ResidentPages`, is one
+count across all of its files. `Config.Arena` (the host's `SPROUTFS_ARENA`)
+picks how pages are divided between files:
+
+- `shared`, the default, keeps every page in one file. The pager makes it when
+  it starts, of `Config.ArenaOffsets` slots. Every VMM receives it read-write.
+  The rest of this section describes this arena.
+- `isolated` splits the pages by who may read them. See
+  [the isolated arena](#the-isolated-arena).
 
 An offset is an address in the arena. A page is memory. They are counted
 separately. `Config.ArenaOffsets` is the number of addresses the arena has.
@@ -344,6 +348,86 @@ where they happen (`vmmemory/placement.go`):
 - A page that a migration destination loads privately from the source arrives
   in its own run, like any other load. So a post-copy destination's private
   pages are not placed at all until the guest stores into them.
+
+### The isolated arena
+
+A VMM may be compromised, and it holds every descriptor its sessions are
+given. In a shared arena that descriptor reaches every page of the pager. The
+isolated arena (`SPROUTFS_ARENA=isolated`) splits the pages by who may read
+them, so a VMM's descriptors reach its own VM's memory and the pages its tenant
+may read, and nothing else. The design and its threat model are in
+[the plan](../plans/isolated-arena-2026-09-25.md). Every VM is in one tenant
+until TASK-2.5.
+
+There are three kinds of file:
+
+- **A private file per memory region.** It holds the region's private pages:
+  dirty, sealed, written ahead, spilled back in, and loaded privately. Only that
+  region's VMM receives it, read-write, as file 0. It has twice the region's
+  pages. A page's own offset is its index, so private pages that are adjacent
+  in the guest are adjacent in the file, in any write order. The second half is
+  each page's other place. A store that cannot use the page's own offset,
+  because a checkpoint's copy or the page it copies from is there, takes the
+  other place. When both are taken, one holds a clean page nothing maps, and
+  the store gives that page up. A range's extent is that range of the file, so
+  the gap rule and the half-private rule work as in a shared arena, and nothing
+  is carved out of an offset space.
+- **The shared file.** It holds the pages another memory region may map: pages
+  loaded by identity, and published pages once another region inherits them.
+  Every VMM receives it read-only, as file 1.
+- **A fork file per fork point.** It holds the pages a fork point lends to
+  children on this host. A child's populate or fault copies a lent page there,
+  once, at the page's own index. Later children map the same copy. The children
+  receive the file read-only, as file 2 or up, just before they first map from
+  it. The parent keeps its page and is never remapped. When the seal ends, the
+  children's mappings of the copies are revoked, each child is sent DROP_FILE,
+  and the file goes back to the arena.
+
+Each file is a memfd of the pager's kind, with mode 0600. A read-only file is
+sent as a new open of the memfd with `O_RDONLY`. So the kernel refuses a VMM a
+writable mapping of it, a write, a punch, a resize and a new seal.
+
+A page whose bytes no other region may inherit is loaded into the region's own
+file, not the shared one. That is a page with no identity, a page a fork point
+lends, and a page another host still holds. A clean one of these goes to its
+other place, so its own offset stays free for the copy a store makes.
+
+**A published page moves once another region inherits it.** A checkpoint that
+publishes a page leaves it where it is, in its region's private file, and the
+guest keeps mapping it. Most published pages are never inherited on this host,
+so most are never copied. `MemoryRegionCheckpoint.ReadDirty` hashes each page
+it reads with BLAKE3. The retire keeps that digest with the page while the page
+is in a private file. A page without one is not named by its identity. When
+another region wants the identity, the pager copies the page into a free slot
+of the shared file and compares the copy's digest with the upload's:
+
+- If they match, the copy is what the identity names. The owner's mapping of its
+  private page is revoked, the owner's next fault maps the copy, and the private
+  slot goes back. `Stats.MovedPages` counts these.
+- If they differ, the owner's VMM wrote a page it holds read-only. Its own
+  stores, including device writes, go through its registered mapping and copy,
+  so only a compromised VMM does this. Its session ends with `ErrTampered`,
+  `Stats.Tampered` counts it, and the identity is no longer named. The region
+  that wanted the page reads it from its own volume.
+
+A move that finds no free slot of the shared file does not wait. The page stops
+being named by its identity, and the region that wanted it reads its volume.
+`Stats.ForkCopies` counts the copies into fork files. They need no digest:
+nothing read those pages before the copy.
+
+**A private file outlives its region while it holds idle pages.** A region that
+detaches leaves the published pages of its private file idle, for the next
+region that inherits them. Such a page moves with the check like any other. The
+file goes back to the arena with its last page.
+
+**The files are counted.** A VMM can allocate pages in its own private file, and
+a VMM that reads a hole of a shared memfd through a mapping makes the kernel
+allocate a page there. So every verification of a session compares the private
+file's allocated blocks with the pages the pager put there, under the lock the
+pager takes and gives slots under. A file that holds more ends the session with
+`ErrUncounted`. The same check on the shared file punches every offset that
+holds no page, because such memory is nobody's. A detach does both for the
+region's files.
 
 ## Sharing by identity
 
@@ -1102,7 +1186,8 @@ A reclaim for a private page releases the memory region while it looks for an ar
 
 The Go pager owns:
 
-- The shared memfd and its slots, page identities and alias references.
+- The arena's memfds and their slots, page identities and alias references,
+  and which file each session may read.
 - Fault resolution, copy-on-write decisions and private page allocation.
 - Spill, reload, and the decision to evict a page.
 - Punching the arena and reusing a slot, only after accounting for every alias.
@@ -1377,10 +1462,14 @@ could not start must name the end that did not answer.
 
 File 0 is the memory region's private file. It is the only file whose
 descriptor is read-write, and the only one a writable MAP may name. Every other
-file is read-only. The plan is that file 1 is the tenant's shared file and fork
-files are 2 and up (see the [isolated arena](../plans/isolated-arena-2026-09-25.md)).
-Today the pager sends one file: the arena, as file 0, read-write. It maps every
-page from it. A MAP of file 0 encodes as MAP did in version 9.
+file is read-only. A shared arena sends one file: the arena, as file 0,
+read-write, and maps every page from it. A MAP of file 0 encodes as MAP did in
+version 9. An [isolated arena](#the-isolated-arena) sends the region's private
+file as file 0 and the shared file as file 1 when the session attaches. It
+sends a fork point's file as file 2 or up in the middle of a session, just
+before the first MAP that names it, and DROP_FILE when the point's seal ends.
+Numbers are the session's own: another session may name the same fork file by
+another number.
 
 A session attaches with HELLO, MEMORY_REGION, ATTACH, FILE 0, any other files,
 the populate's MAP_BATCH frames and READY. The client refuses READY before it
@@ -1496,8 +1585,9 @@ pager, and the host process keeps no descriptor of it.
 `vmmemory/hostile_linux_test.go` plays each of these against a real pager,
 beside a well-behaved process on the same pager, and `FuzzHostileSession` plays
 arbitrary sequences of them. The pager does not bound how much work a VMM can
-cause by faulting its own memory over and over. And the arena's descriptor
-gives a VMM more than the protocol does: see TASK-2 in the
+cause by faulting its own memory over and over. In a shared arena the arena's
+descriptor gives a VMM more than the protocol does. The
+[isolated arena](#the-isolated-arena) closes that: see TASK-2 in the
 [backlog](../backlog/tasks).
 
 So a rejected command is the only failure known to have changed nothing. The
@@ -1840,6 +1930,16 @@ SPROUTFS_VM_MEMORY_REPEAT=20 scripts/test-vm-memory-lima.sh
 scripts/test-firecracker-lima.sh
 ```
 
+Every suite builds its pagers in the arena mode `SPROUTFS_ARENA` names, `shared`
+when it is unset, and is run in both: the ordinary Go suites
+(`SPROUTFS_ARENA=isolated go test ./...`) and both Lima scripts, which pass it
+through. A test of what one mode does pins that mode. In the isolated mode the
+simulated arena (`internal/testpager`) holds the pager to who may read each
+file: a file given writable is given to one memory region only, as its file 0,
+and to nobody read-only, and every map names a file its session holds, writable
+only for file 0. So every campaign checks the split under forks, migrations,
+eviction and spill.
+
 Use `SPROUTFS_LIMA_INSTANCE` to select an existing instance. The host needs Go,
 Cargo and `limactl`, plus Python 3 for the full-guest suite. The guest needs
 Cargo, Clippy, a source mount, KVM and kernel-fault UFFD support. For the
@@ -1916,6 +2016,23 @@ The pager suite covers:
   the pager and leaves the file unchanged. The client refuses a writable MAP of
   the file, a MAP of a file it was never given and a MAP past the file, and a
   DROP_FILE closes its descriptor.
+
+The simulated pager tests require the following of an isolated arena, in
+`vmmemory/isolation_test.go`:
+
+- A page two regions inherit is in the shared file, which each maps as file 1.
+  A store copies it into the storing region's file 0, at its own offset.
+- A published page moves into the shared file when another region inherits it.
+  The inheritor reads nothing from its volume, the owner's mapping of its
+  private page is revoked, and the private slot goes back.
+- A published page whose VMM changed it through its private file ends that
+  session with `ErrTampered`. The inheritor reads the page from its volume.
+- A fork point's page is copied into the point's file once, and two children
+  map that copy as file 2. Ending the seal revokes their mappings, drops the
+  file from both and gives it back.
+- A detached region's private file lasts as long as its idle pages.
+- Verification ends a region whose private file holds a page the pager never
+  put there, and punches such a page out of the shared file.
 
 The simulated pager tests also require the following of seals:
 
