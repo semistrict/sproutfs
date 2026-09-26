@@ -63,9 +63,10 @@ of RAM rather than the deployment's 512 MiB default.
 
 ## Generated configuration
 
-`deploy/` carries the topology, which is the same everywhere. The one thing
-that is not is which bucket the demo writes to, so `scripts/demo-gce.sh`
-generates a ConfigMap next to these files in the copy it applies on the VM:
+`deploy/` carries the topology, which is the same everywhere. What is not is
+which bucket the demo writes to and which arena mode its hosts run, so
+`scripts/demo-gce.sh` generates a ConfigMap next to these files in the copy it
+applies on the VM:
 
 ```yaml
 apiVersion: v1
@@ -76,7 +77,13 @@ metadata:
 data:
   bucket: sproutfs-demo-<project>
   prefix: demo
+  arena: shared
 ```
+
+`arena` is `SPROUTFS_DEMO_ARENA`, `shared` unless that names `isolated`, and
+`scripts/demo-gce.sh redeploy` with it set is how the demo changes mode. The
+host reads it as `SPROUTFS_ARENA`, and a ConfigMap without the key leaves the
+host's own default, `shared`.
 
 Applying `deploy/` on its own leaves the pods in `CreateContainerConfigError`
 until that ConfigMap exists. Create it by hand for a cluster the script did not
@@ -318,10 +325,10 @@ durations.
 | `SPROUTFS_ARENA_BYTES` | literal | `5368709120` | the host's whole resident page store. It is divided between the two pagers by `SPROUTFS_RAM_SHARE_PERCENT`; the two arenas are separate memfds and their capacities come to exactly this. The RAM share comes out of the pod's `memory` request and the PMEM share out of its HugeTLB allotment, so a node provisions the two separately |
 | `SPROUTFS_RAM_PAGE_BYTES` | unset | `2097152` | the RAM pager's page: `2097152` on the HugeTLB pool, where the RAM share of the arena comes out of the pod's HugeTLB allotment as PMEM's does, or `4096` on ordinary memory, which holds a tenth of the memory for forks that write little and scattered and is slower at everything else (docs/vm-memory.md). Every RAM budget, template memory and `SPROUTFS_VM_MEMORY_BYTES` is counted in this page |
 | `SPROUTFS_RAM_SHARE_PERCENT` | unset | `75` | how much of the arena, the spill file and the page budgets goes to the RAM pager; PMEM takes the rest. Three quarters, because RAM is where a guest's memory diverges and the root is mostly read: the 2026-09-19 fan-out measured a fork holding about 114 MB of RAM privately against 10 MB of root, and one shared root stands behind every fork's own RAM. A share that cannot divide the arena or the spill file into whole pages of both pagers is refused rather than rounded away |
-| `SPROUTFS_ARENA` | unset | `shared` | how each pager divides its resident pages between the files of its arena: `shared` keeps them in one file that every VMM maps read-write, and `isolated` gives each memory region a private file and every VMM read-only files for the pages another memory region may map. `isolated` also sends a fork point's lent pages to its children on the host in a read-only file of its own, and checks a published page against the digest of its upload before another memory region shares it. A deployment that runs `isolated` must run its VMMs as another user, not root. Any other value is refused |
+| `SPROUTFS_ARENA` | ConfigMap `sproutfs-demo` key `arena`, optional | `shared` | how each pager divides its resident pages between the files of its arena: `shared` keeps them in one file that every VMM maps read-write, and `isolated` gives each memory region a private file and every VMM read-only files for the pages another memory region may map. `isolated` also sends a fork point's lent pages to its children on the host in a read-only file of its own, and checks a published page against the digest of its upload before another memory region shares it. A deployment that runs `isolated` must run its VMMs as another user, not root. Any other value is refused |
 | `SPROUTFS_MEMORY_BYTES` | literal | `12884901888` | the RAM allotment both pagers take their pages from. It is one budget because it is one machine's memory, and because bytes are the only unit the two pagers' pages add up in. Defaults to the arena plus 1 GiB |
 | `SPROUTFS_CACHE_BYTES` | literal | `1073741824` | the page cache's own cap, which nothing else draws on |
-| `SPROUTFS_EPHEMERAL_BYTES` | unset | unset | the ephemeral pager's spill file: every ephemeral disk this host admits, in whole 2 MiB pages. Unset, the host runs no ephemeral pager and refuses a VM with an ephemeral disk (docs/volumes.md#ephemeral-disks). A deployment that creates ephemeral disks sets it on every host, because such a VM may be opened, received or recovered on any of them |
+| `SPROUTFS_EPHEMERAL_BYTES` | literal | `2147483648` | the ephemeral pager's spill file: every ephemeral disk this host admits, in whole 2 MiB pages. Unset, the host runs no ephemeral pager and refuses a VM with an ephemeral disk (docs/volumes.md#ephemeral-disks). A deployment that creates ephemeral disks sets it on every host, because such a VM may be opened, received or recovered on any of them |
 | `SPROUTFS_EPHEMERAL_ARENA_BYTES` | unset | `268435456` | the ephemeral pager's share of the HugeTLB pool, in whole 2 MiB pages, read only where `SPROUTFS_EPHEMERAL_BYTES` is set. It bounds how much of the ephemeral disks is resident, and the default memory allotment grows by it |
 | `SPROUTFS_SPILL_BYTES` | literal | `17179869184` | the host's spill store, out of the 24 GiB `emptyDir`, divided by the same share into one file per pager. Each file's share is what bounds that pager's dirty pages |
 | `SPROUTFS_CACHE_DISK_BYTES` | literal | `4294967296` | the page cache's disk, out of the same `emptyDir`: the memory of the VMs started with `--pull`, each copied whole or not at all ([hosting](../docs/hosting.md#pulling-a-vms-memory)). Unset, the host keeps none, and such a VM reads its memory from the object store like any other |

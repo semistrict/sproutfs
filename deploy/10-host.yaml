@@ -115,6 +115,17 @@ spec:
             # resident rather than reading one another out of the spill file.
             - name: SPROUTFS_ARENA_BYTES
               value: "5368709120"
+            # How each pager divides its resident pages between files: shared,
+            # or isolated, which gives each VMM only its own VM's memory and its
+            # tenant's shared pages. scripts/demo-gce.sh writes it into the
+            # ConfigMap from SPROUTFS_DEMO_ARENA; a cluster without the key runs
+            # the host's default, shared.
+            - name: SPROUTFS_ARENA
+              valueFrom:
+                configMapKeyRef:
+                  name: sproutfs-demo
+                  key: arena
+                  optional: true
             - name: SPROUTFS_MEMORY_BYTES
               value: "12884901888"
             # Disk is capped per concern, out of the 24 GiB emptyDir: the
@@ -127,6 +138,13 @@ spec:
               value: "17179869184"
             - name: SPROUTFS_CACHE_DISK_BYTES
               value: "4294967296"
+            # The ephemeral disks this host admits, as a spill file of their
+            # own out of the same emptyDir: every host sets it, because a VM
+            # with one may be opened, received or recovered on either. Its
+            # resident pages take 256 MiB of the HugeTLB allotment, beside the
+            # 5 GiB arena.
+            - name: SPROUTFS_EPHEMERAL_BYTES
+              value: "2147483648"
             # The volatile private state each pager may hold in its arena and
             # its spill file together, counted in that pager's own page, which
             # is 2 MiB for both. Each defaults to its share of the arena, which is what a
