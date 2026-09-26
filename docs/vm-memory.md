@@ -1446,6 +1446,66 @@ ordinary CPU accesses and the tested KVM accesses. No Rust lock surrounds each
 load. Upstream's UFFD restore copies pages into each VM's anonymous memory and
 cannot share a page between VMs. This integration replaces it.
 
+### Writers that bypass the page tables
+
+The seal, the settle, a copy-on-write, an eviction and the
+[give-back](#giving-back-an-unchanged-copy) all rely on one fact. Every write
+into guest RAM goes through the VMM's page tables, where a write-protection or a
+revocation stops it. A writer that pinned a page earlier and writes it later
+through its physical address bypasses both. Its write lands in the page it
+pinned. If the pager has since frozen that page in a checkpoint, moved the
+guest to a copy, or freed the page, the write is lost.
+
+These are the writers of guest RAM. They were checked on 2026-09-26 against the
+Firecracker fork and mainline Linux.
+
+- **Firecracker's block device.** With managed RAM the fork refuses the
+  io_uring engine and vhost-user drives at boot (`allocate_memory_regions` in
+  `resources.rs`). The sync engine opens its file without `O_DIRECT` and reads
+  into guest memory with `pread`. The kernel copies with `copy_to_user`,
+  through the page tables, so a write-protected page traps. The restore path
+  does not repeat the check. A managed restore only loads state that a managed
+  boot captured, so no restored drive is asynchronous either.
+- **The embedder's drives.** A Starter gives them to Firecracker as ordinary
+  drives, so the same rule applies. A writable one also makes every managed
+  capture fail.
+- **Firecracker's other devices.** Network, vsock, entropy, MMDS and the
+  vmclock device are emulated in Firecracker's own threads. They write guest
+  memory with ordinary stores or `readv`. Firecracker has no vhost-net and no
+  vhost-vsock. Ballooning and memory hotplug are refused with managed RAM.
+- **KVM on its own behalf.** Steal time, the async page fault token, PV EOI
+  and the SMM state save area are written through the userspace address, with
+  `copy_to_user`. kvmclock is written through a `gfn_to_pfn_cache`. The MMU
+  notifier invalidates that cache, and `UFFDIO_WRITEPROTECT` and every remap
+  call the notifier. The cache refills with a GUP that asks for the page
+  writable, which takes the userfaultfd fault. The CPU's own writes, the
+  accessed and dirty bits of the guest's page tables included, go through the
+  second-level page tables, which the same notifier write-protects.
+- **KVM for a nested guest.** This is the one writer that bypasses both. When
+  the guest runs a hypervisor of its own, KVM maps pages of the guest's memory
+  with `kvm_vcpu_map` and gives their physical addresses to the CPU. On Intel
+  these are the virtual-APIC page, the posted-interrupt descriptor and the
+  APIC-access page of the nested guest (`nested_get_vmcs12_pages`). They stay
+  mapped while it runs. On AMD they are `vmcb12` and the host save area, for
+  the length of one VMRUN or one exit. The MMU notifier does not reach these
+  maps. A guest can do this whenever it sees VMX or SVM. Firecracker passes the
+  host's VMX through when no CPU template is set, and the host's KVM reports it
+  while `kvm_intel.nested` is on, which is the default. aarch64 is not exposed,
+  because Firecracker never asks KVM for a vCPU with EL2.
+- **Debuggers.** `process_vm_writev` and `/proc/<pid>/mem` pin a page and copy
+  into it at once. Only a process allowed to ptrace the VMM can do this.
+
+**So the seal and the settle are exposed to one writer: KVM's maps for a nested
+guest.** So is every copy-on-write and every eviction. The harm stays inside the
+guest that ran the nested hypervisor. A freed slot is punched, so KVM's
+reference keeps an orphaned page alive, and no other page is written. The
+nested guest loses the APIC state that the CPU wrote after the page moved.
+Firecracker does not save nested state either: it never calls
+`KVM_GET_NESTED_STATE`, so such a guest already breaks at every capture. The
+fix is to hide VMX and SVM from a guest with managed RAM. It is not done yet.
+The give-back adds no exposure of its own. It replaces a mapping as a
+copy-on-write does, and it frees a page as an eviction does.
+
 ## Control protocol, version 10
 
 Version 9 peers are rejected because the arena moved off ATTACH and into files.

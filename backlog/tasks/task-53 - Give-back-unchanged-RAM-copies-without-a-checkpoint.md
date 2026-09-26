@@ -1,9 +1,11 @@
 ---
 id: TASK-53
 title: Give back unchanged RAM copies without a checkpoint
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-09-26 23:18'
+updated_date: '2026-09-26 23:35'
 labels:
   - performance
 dependencies: []
@@ -24,3 +26,9 @@ RAM is never settled on the interval: OnInterval is true only for PMEM (vmmemory
 - [ ] #3 The guest is pointed at the original in place, so the next read makes no new copy even when a cold read arrives as a write
 - [ ] #4 Tests prove an unchanged copy is given back, a copy written during the compare is kept, and the Lima suites pass in both arena modes
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Step 1 finding (2026-09-26, Firecracker fork 12be3bbb + mainline Linux): every writer of guest RAM goes through the VMM's page tables except KVM's kvm_vcpu_map maps for a nested guest. Checked: Firecracker block sync engine (no O_DIRECT, pread -> copy_to_user; io_uring engine and vhost-user refused with managed RAM at boot; restore does not repeat the check but only loads state a managed boot captured); the embedder's drives (ordinary Firecracker drives, same rule; writable ones fail capture); net/vsock/entropy/MMDS/vmclock (userspace stores/readv; no vhost-net/vsock; balloon and hotplug refused); KVM's own writes (steal time, APF token, PV EOI, SMM via copy_to_user; kvmclock via gfn_to_pfn_cache invalidated by the MMU notifier that UFFDIO_WRITEPROTECT calls and refilled by a FOLL_WRITE GUP that takes the uffd fault; CPU A/D bits via EPT/stage-2). Bypass: nested virt. Intel virtual-APIC page, posted-interrupt descriptor, APIC-access page (nested_get_vmcs12_pages, held while L2 runs); AMD vmcb12/hsave (kvm_vcpu_map_local, one VMRUN/exit). Reachable when the guest sees VMX/SVM: Firecracker passes host VMX through without a CPU template and kvm_intel.nested defaults on. aarch64 not exposed (no EL2 vCPU). Debuggers (process_vm_writev, /proc/pid/mem) excluded. DEFECT: seal, settle, every COW and eviction are exposed to the nested writer. Harm is confined to the nested-virt guest (freed slots are punched, KVM's ref keeps an orphan page), and Firecracker never saves nested state so such a guest already breaks at capture. Fix (not done, needs owner approval as follow-up): hide VMX/SVM from guests with managed RAM. The give-back adds no new exposure. Written into docs/vm-memory.md 'Writers that bypass the page tables'.
+<!-- SECTION:NOTES:END -->
