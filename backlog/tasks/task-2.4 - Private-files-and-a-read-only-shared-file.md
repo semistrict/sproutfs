@@ -1,11 +1,11 @@
 ---
 id: TASK-2.4
 title: Private files and a read-only shared file
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-25 23:02'
-updated_date: '2026-09-26 14:16'
+updated_date: '2026-09-26 14:54'
 labels:
   - security
 dependencies: []
@@ -24,7 +24,7 @@ Step 4 of plans/isolated-arena-2026-09-25.md, in the isolated mode only: a priva
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [x] #1 TestAHostileVMMReachesNoOtherVMsBytes passes in isolated mode and fails in shared mode
-- [ ] #2 Every suite passes in both modes
+- [x] #2 Every suite passes in both modes
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -53,4 +53,6 @@ Isolated mode implemented in the worktree (uncommitted; git blocked by the Xcode
 Rebased onto main (TASK-19 ephemeral pager, TASK-12, TASK-38). The simtest pagers keyed by vmmemory.Host use testpager arenas and SPROUTFS_ARENA for all three pagers, the ephemeral one included. Commits 138baa2a (the isolated arena) and 22c58d11 (docs). Proven: go test ./... passes with SPROUTFS_ARENA=shared and with isolated. just check passes. Lima has no 2 MiB hugepages, so only the 4 KiB Linux tests ran: small-page, hostile session, refused fault, refused command, transparent-page and arena-offset tests. They pass in isolated mode. Shared mode failed once: in the hostile no-descriptor case the host held 18 descriptors after the session and 19 before. It passed 3 of 3 on repeat. Not run: the 2 MiB Linux pager suite, internal/vmtest, the Firecracker suite. The main session is writing the reach test. AC 1 stays unchecked. AC 2 stays unchecked until the Lima suites run.
 
 Reach test written and run in Lima (4 KiB): TestAHostileVMMReachesNoOtherVMsBytes passes isolated; TestASharedArenaHandsEveryVMMItsNeighboursBytes proves the shared arena hands the neighbour's pages over. A mutation sharing one private file between regions is killed. Not covered yet: the /proc/self/fd reopen and fchmod by a jailed helper user. AC2 waits on 2 MiB hugepages in Lima for the 2 MiB, vmtest and Firecracker suites.
+
+Lima, both SPROUTFS_ARENA modes: vm-memory suite 789 passed, Firecracker suite 114 passed; skips are opt-in measurements only.
 <!-- SECTION:NOTES:END -->
