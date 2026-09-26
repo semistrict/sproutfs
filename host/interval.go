@@ -271,7 +271,7 @@ func (h *Host) checkpointNow(memoryRegion *vmmemory.MemoryRegion) bool {
 	// The checkpoint this asks for is of the VM's disks, which relieves no
 	// RAM page: a RAM pager whose dirty budget is full is one no checkpoint
 	// can help, and the store it holds is a stall.
-	if memoryRegion.Kind() == vmmemory.Ram {
+	if !memoryRegion.OnInterval() {
 		return false
 	}
 	vmID, entry := h.machineFor(memoryRegion)

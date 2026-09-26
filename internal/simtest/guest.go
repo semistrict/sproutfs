@@ -461,7 +461,7 @@ func (g *guest) SealDisks(ctx context.Context) (map[string]volume.DirtySource, e
 	g.mu.Unlock()
 	sources := map[string]volume.DirtySource{}
 	for _, name := range g.names {
-		if g.memoryRegions[name].Kind() != vmmemory.Pmem {
+		if !g.memoryRegions[name].OnInterval() {
 			continue
 		}
 		if err := g.memoryRegions[name].Seal(ctx); err != nil {

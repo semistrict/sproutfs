@@ -331,7 +331,7 @@ func (m *machine) Prepare(ctx context.Context) ([]byte, map[string]volume.DirtyS
 func (m *machine) SealDisks(ctx context.Context) (map[string]volume.DirtySource, error) {
 	sources := map[string]volume.DirtySource{}
 	for _, name := range slices.Sorted(maps.Keys(m.memoryRegions)) {
-		if m.memoryRegions[name].Kind() != vmmemory.Pmem {
+		if !m.memoryRegions[name].OnInterval() {
 			continue
 		}
 		if err := m.memoryRegions[name].Seal(ctx); err != nil {

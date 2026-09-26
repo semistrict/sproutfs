@@ -830,7 +830,7 @@ func (p *Process) SealDisks(ctx context.Context) (map[string]volume.DirtySource,
 	}
 	sources := map[string]volume.DirtySource{}
 	for name, memoryRegion := range p.namedMemoryRegions() {
-		if memoryRegion.Kind() != vmmemory.Pmem {
+		if !memoryRegion.OnInterval() {
 			continue
 		}
 		if err := memoryRegion.Seal(ctx); err != nil {

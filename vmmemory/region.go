@@ -219,6 +219,12 @@ func (r *MemoryRegion) PageSize() uint64 { return r.host.pageSize }
 // stated.
 func (r *MemoryRegion) Kind() MemoryRegionKind { return r.kind }
 
+// OnInterval reports a memory region the host's interval checkpoints: a disk. It
+// is what the loss window measures, what a flush waits on and what a
+// checkpoint out of the interval's turn relieves. RAM is published only by a
+// capture, so none of the three applies to it.
+func (r *MemoryRegion) OnInterval() bool { return r.kind == Pmem }
+
 func (r *MemoryRegion) ready() error {
 	if err := r.serving(); err != nil {
 		return err

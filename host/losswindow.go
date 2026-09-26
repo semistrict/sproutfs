@@ -51,7 +51,7 @@ func (h *Host) oldestUnpublished(memoryRegion *vmmemory.MemoryRegion) time.Time 
 func oldestOf(memoryRegions map[string]*vmmemory.MemoryRegion) time.Time {
 	var oldest time.Time
 	for _, memoryRegion := range memoryRegions {
-		if memoryRegion.Kind() == vmmemory.Ram {
+		if !memoryRegion.OnInterval() {
 			continue
 		}
 		since := memoryRegion.OldestUnpublished()
