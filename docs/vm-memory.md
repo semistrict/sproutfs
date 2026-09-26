@@ -1585,10 +1585,18 @@ pager, and the host process keeps no descriptor of it.
 `vmmemory/hostile_linux_test.go` plays each of these against a real pager,
 beside a well-behaved process on the same pager, and `FuzzHostileSession` plays
 arbitrary sequences of them. The pager does not bound how much work a VMM can
-cause by faulting its own memory over and over. In a shared arena the arena's
-descriptor gives a VMM more than the protocol does. The
-[isolated arena](#the-isolated-arena) closes that: see TASK-2 in the
-[backlog](../backlog/tasks).
+cause by faulting its own memory over and over.
+
+In a shared arena the arena's descriptor gives a VMM more than the protocol
+does. `vmmemory/reach_linux_test.go` plays a VMM that uses every descriptor it
+is given. In a shared arena it reads another VM's dirty and published pages
+through the one file it holds. The [isolated arena](#the-isolated-arena)
+closes that. There the VMM finds none of another VM's private pages, before or
+after that VM stores and publishes more. Every way to write its read-only
+files fails. When it allocates memory in its own private file, verification
+ends its session with `ErrUncounted`. Pages loaded by identity sit in the shared
+file, which every VMM on the pager can read, until the arena has a shared file
+per tenant (TASK-2.5 in the [backlog](../backlog/tasks)).
 
 So a rejected command is the only failure known to have changed nothing. The
 pager treats it as a failed operation, not a failed session. In practice, the

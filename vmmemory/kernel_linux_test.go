@@ -271,11 +271,18 @@ func kernelHostConfigured(t testing.TB, cfg vmmemory.Config) *vmmemory.Host {
 // that counts the memory the arena holds.
 func kernelHostArena(t testing.TB, cfg vmmemory.Config) (*vmmemory.Host, *vmmemory.LinuxArena) {
 	t.Helper()
-	if cfg.PageSize == 0 {
-		cfg.PageSize = hugePageSize
-	}
 	if cfg.Arena == vmmemory.ArenaShared {
 		cfg.Arena = suiteArena
+	}
+	return kernelHostArenaIn(t, cfg)
+}
+
+// kernelHostArenaIn is kernelHostArena in the arena mode cfg names, whatever
+// mode the suite runs in, for a test about one mode.
+func kernelHostArenaIn(t testing.TB, cfg vmmemory.Config) (*vmmemory.Host, *vmmemory.LinuxArena) {
+	t.Helper()
+	if cfg.PageSize == 0 {
+		cfg.PageSize = hugePageSize
 	}
 	if os.Getenv("SPROUTFS_VM_MEMORY_CLIENT") == "" {
 		t.Skip("run scripts/test-vm-memory-lima.sh for Linux/KVM qualification")

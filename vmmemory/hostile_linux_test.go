@@ -41,9 +41,9 @@ import (
 //
 // A panic anywhere in the host process fails the test by itself.
 //
-// The protocol is not all a VMM is given. The attachment hands it the arena's
-// descriptor, and a VMM can write through that to any page of the arena. These
-// tests do not cover that. See TASK-2 in backlog/tasks.
+// The protocol is not all a VMM is given. The attachment hands it files, and a
+// VMM can map, read and write through those as far as the kernel lets it.
+// reach_linux_test.go plays a VMM that does.
 
 const (
 	// hostilePage is the page every memory region here runs: RAM's, over an
@@ -315,9 +315,17 @@ type pagerAccount struct {
 
 func newHostileFixture(t testing.TB) *hostileFixture {
 	t.Helper()
+	return newHostileFixtureIn(t, suiteArena)
+}
+
+// newHostileFixtureIn is a hostile fixture whose pager runs the arena mode
+// given, whatever mode the suite runs in.
+func newHostileFixtureIn(t testing.TB, mode vmmemory.ArenaMode) *hostileFixture {
+	t.Helper()
 	cfg := vmmemory.Config{PageSize: hostilePage, ResidentPages: 4 * hostilePages,
-		LogicalPages: 4 * hostilePages, DirtyPages: 4 * hostilePages, ReadAheadPages: 4, WriteAheadPages: 1}
-	h, arena := kernelHostArena(t, cfg)
+		LogicalPages: 4 * hostilePages, DirtyPages: 4 * hostilePages, ReadAheadPages: 4, WriteAheadPages: 1,
+		Arena: mode}
+	h, arena := kernelHostArenaIn(t, cfg)
 	fx := &hostileFixture{h: h, arena: arena}
 	var provided []vmmemory.Backing
 	for region := range fx.backings {
@@ -334,6 +342,14 @@ func newHostileFixture(t testing.TB) *hostileFixture {
 	if err := fx.check(); err != nil {
 		t.Fatal(err)
 	}
+	fx.baseline(t)
+	return fx
+}
+
+// baseline records what the pager holds and the host's descriptors, which is
+// what every hostile session must leave behind it.
+func (fx *hostileFixture) baseline(t testing.TB) {
+	t.Helper()
 	var err error
 	if fx.before, err = fx.account(t.Context()); err != nil {
 		t.Fatal(err)
@@ -341,7 +357,6 @@ func newHostileFixture(t testing.TB) *hostileFixture {
 	if fx.descriptors, err = openDescriptors(); err != nil {
 		t.Fatal(err)
 	}
-	return fx
 }
 
 // volume is the well-behaved process's volume of one memory region as it was
@@ -454,8 +469,20 @@ func (fx *hostileFixture) round(t *testing.T, s hostileScript) hostileEnd {
 		t.Fatalf("a store of the well-behaved process did not complete within %s", hostileBound)
 	}
 	fx.values[1][page] = value
+	// The fixture lives through many sessions, so the one before this one is
+	// named too.
+	fx.requireWhole(t, fmt.Sprintf("hostile session %d, %+v, after %+v", fx.stores, s, fx.previous))
+	fx.previous = s
+	return end
+}
+
+// requireWhole holds the pager to the rules at the top of this file once a
+// hostile session has ended: the well-behaved process reads what it wrote, and
+// the pager and the host hold what they held before the session.
+func (fx *hostileFixture) requireWhole(t *testing.T, session string) {
+	t.Helper()
 	if err := fx.check(); err != nil {
-		t.Fatalf("after a hostile session: %v", err)
+		t.Fatalf("after %s: %v", session, err)
 	}
 	after, err := fx.account(t.Context())
 	if err != nil {
@@ -463,8 +490,6 @@ func (fx *hostileFixture) round(t *testing.T, s hostileScript) hostileEnd {
 	}
 	if after != fx.before {
 		// What the well-behaved process holds says whose the difference is.
-		// The fixture lives through many sessions, so the one before this one
-		// is named too.
 		var held []vmmemory.MemoryRegionStats
 		for region := range fx.backings {
 			s, err := fx.good.memoryRegion(region).Stats(t.Context())
@@ -473,16 +498,14 @@ func (fx *hostileFixture) round(t *testing.T, s hostileScript) hostileEnd {
 			}
 			held = append(held, s)
 		}
-		t.Fatalf("after hostile session %d the pager holds %+v, want what it held before it, %+v; "+
-			"the well-behaved process holds %+v; nothing reaches %q; this session was %+v and the one before it %+v",
-			fx.stores, after, fx.before, held, fx.h.Unreachable(), s, fx.previous)
+		t.Fatalf("after %s the pager holds %+v, want what it held before it, %+v; "+
+			"the well-behaved process holds %+v; nothing reaches %q",
+			session, after, fx.before, held, fx.h.Unreachable())
 	}
 	if descriptors, err := openDescriptors(); err != nil || descriptors != fx.descriptors {
-		t.Fatalf("after a hostile session the host holds %d descriptors, want the %d it held before: %v",
-			descriptors, fx.descriptors, err)
+		t.Fatalf("after %s the host holds %d descriptors, want the %d it held before: %v",
+			session, descriptors, fx.descriptors, err)
 	}
-	fx.previous = s
-	return end
 }
 
 // play runs one hostile session to its end and closes it.
@@ -816,8 +839,8 @@ func (p *hostilePeer) respond() {
 	if err != nil {
 		return
 	}
-	// A compromised VMM would keep this descriptor, and could write any page
-	// of the arena through it. This one gives it up: see the top of the file.
+	// A compromised VMM would keep this descriptor and use it. This one gives
+	// it up, and reach_linux_test.go plays one that does not.
 	_ = arena.Close()
 	for {
 		f, err := vmwire.ReadCommand(p.conn)
