@@ -1,0 +1,26 @@
+---
+id: TASK-2.7
+title: Prove a jailed VMM cannot reopen or chmod its read-only files
+status: To Do
+assignee: []
+created_date: '2026-09-26 15:26'
+labels:
+  - security
+dependencies: []
+parent_task_id: TASK-2
+priority: medium
+ordinal: 46000
+---
+
+## Description
+
+<!-- SECTION:DESCRIPTION:BEGIN -->
+The reach test plays a VMM in the pager's own user, so it cannot show what only a jailed VMM is held to. A VMM in the embedder's jailer runs as another user. Through /proc/self/fd it could try to reopen a read-only descriptor for writing, or fchmod it, and either would undo the isolated arena's read-only shared files. The plan (plans/isolated-arena-2026-09-25.md, the reach test section) calls for a helper process that runs as another user.
+<!-- SECTION:DESCRIPTION:END -->
+
+## Acceptance Criteria
+<!-- AC:BEGIN -->
+- [ ] #1 A helper process running as another user holds the files a session gives it, and each attempt to reopen a read-only file for writing through /proc/self/fd fails
+- [ ] #2 Each fchmod of a file it was given fails
+- [ ] #3 It runs in the Lima suite in isolated mode
+<!-- AC:END -->
