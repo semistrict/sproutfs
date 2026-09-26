@@ -416,13 +416,32 @@ another region wants the identity, the pager copies the page into a free slot
 of its tenant's shared file and compares the copy's digest with the upload's:
 
 - If they match, the copy is what the identity names. The owner's mapping of its
-  private page is revoked, the owner's next fault maps the copy, and the private
-  slot goes back. `Stats.MovedPages` counts these.
+  private page is replaced with the copy, read-only, and the copy is installed
+  in the owner's page tables. The private slot goes back.
+  `Stats.MovedPages` counts these.
 - If they differ, the owner's VMM wrote a page it holds read-only. Its own
   stores, including device writes, go through its registered mapping and copy,
   so only a compromised VMM does this. Its session ends with `ErrTampered`,
   `Stats.Tampered` counts it, and the identity is no longer named. The region
   that wanted the page reads it from its own volume.
+
+**A move replaces the owner's mapping; it does not revoke it.** Until
+2026-09-26 a move revoked the owner's mapping, and the owner's next access
+faulted and mapped the copy. On x86-64 that fault is a store trap whatever the
+guest's access: KVM finishes a fault that waited for the pager from a worker
+that asks for the page writable. So the owner copied every page that moved, and
+the move saved no memory. A GCE run of the first-inheritance case at 2 MiB
+recorded 403 copies for 428 moves (TASK-49). The owner's mapping is now
+replaced in one MAP, and the copy is installed in its page tables before the
+move ends, so the owner reads the page without a fault. This is safe although
+the move holds neither the owner's memory region nor its window, unlike the
+settle's rule below. The owner maps the page read-only, so no store of its guest
+can be in flight into it. The bytes are the ones the digest checked. The move
+holds the page's lock, and every path of the owner that maps or resolves that
+page holds it too. A store that has let the page go before it maps its copy
+finds the owner's binding on the shared copy, and its MAP replaces that. Where
+the owner's client refuses the MAP for want of mapping budget, the move revokes
+the mapping instead, which frees budget.
 
 A move that finds no free slot of the shared file does not wait. The page stops
 being named by its identity, and the region that wanted it reads its volume.

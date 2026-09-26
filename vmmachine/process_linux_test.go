@@ -88,6 +88,9 @@ type hostPagersConfig struct {
 	// a wait on it. RAM has none, as on a host: no checkpoint the loop takes
 	// would ever end a RAM page's window.
 	LossWindow time.Duration
+	// Isolated builds both pagers in the isolated arena whatever mode the
+	// suite runs in, for a test whose subject is what that arena does.
+	Isolated bool
 }
 
 // ramPageBytes is the page the RAM pager of these suites runs. It is 2 MiB,
@@ -181,6 +184,9 @@ func newConfiguredHostPagers(t testing.TB, ctx context.Context, cfg hostPagersCo
 			WriteAheadPages: max(budgets.WriteAhead, 1),
 			MeasureChanges:  kind == vmmemory.Pmem && cfg.MeasurePMEM,
 			Arena:           testarena.Mode(t)}
+		if cfg.Isolated {
+			pagerConfig.Arena = vmmemory.ArenaIsolated
+		}
 		if kind == vmmemory.Pmem {
 			pagerConfig.LossWindow = cfg.LossWindow
 		}

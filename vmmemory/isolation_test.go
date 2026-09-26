@@ -77,6 +77,12 @@ func TestAnIsolatedArenaPutsAPrivatePageInItsRegionsOwnFile(t *testing.T) {
 // and its guest goes on mapping it there. When another memory region inherits
 // it, the page is copied into the shared file, the copy is what both map, and
 // the private slot goes back. The inheritor reads nothing from its volume.
+//
+// The owner's mapping is replaced with the copy, read-only and in its page
+// tables, rather than taken away. So its next read needs no fault: on x86-64 a
+// fault for a page not in the page tables is a store trap whatever the guest's
+// access, and it would copy the page the move shares. A store of the owner's
+// still copies it.
 func TestAPublishedPageMovesIntoTheSharedFileWhenAnotherRegionInheritsIt(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := isolatedFixture(t, vmmemory.Config{ResidentPages: 8, LogicalPages: 16, DirtyPages: 8, ReadAheadPages: 1})
@@ -93,19 +99,60 @@ func TestAPublishedPageMovesIntoTheSharedFileWhenAnotherRegionInheritsIt(t *test
 		if got := access(t, b, bm, 0, false)[0]; got != 77 {
 			t.Fatalf("the inheritor reads %d, want the 77 the checkpoint published", got)
 		}
-		after := hostStats(t, f)
-		if moved := after.MovedPages - before.MovedPages; moved != 1 || bb.loads != 0 || bm.number(0) != 1 {
+		moved := hostStats(t, f)
+		if n := moved.MovedPages - before.MovedPages; n != 1 || bb.loads != 0 || bm.number(0) != 1 {
 			t.Fatalf("moved %d pages, read the volume %d times, mapped file %d; want 1, 0 and the shared file 1",
-				moved, bb.loads, bm.number(0))
+				n, bb.loads, bm.number(0))
 		}
-		if _, mapped := am.pages[0]; mapped {
-			t.Fatal("the owner still maps the page in its private file after the move")
-		}
-		if got := access(t, a, am, 0, false)[0]; got != 77 || am.pages[0].place != bm.pages[0].place {
-			t.Fatalf("the owner reads %d from %+v, want 77 from the shared copy %+v", got, am.pages[0], bm.pages[0])
+		if p, mapped := am.pages[0]; !mapped || p.place != bm.pages[0].place || p.writable || am.number(0) != 1 || am.revokes != 0 {
+			t.Fatalf("the owner maps %+v (mapped %t) as file %d after %d revocations, "+
+				"want the shared copy %+v, read-only, as file 1, and none", p, mapped, am.number(0), am.revokes, bm.pages[0].place)
 		}
 		if f.a.page(private) != nil {
 			t.Fatalf("the private slot %+v still holds the page after the move", private)
+		}
+		if got := access(t, a, am, 0, false)[0]; got != 77 {
+			t.Fatalf("the owner reads %d, want 77", got)
+		}
+		read := hostStats(t, f)
+		if read.Faults != moved.Faults || read.CopyOnWrites != moved.CopyOnWrites {
+			t.Fatalf("the owner's read of the moved page took %d faults and %d copies, want none",
+				read.Faults-moved.Faults, read.CopyOnWrites-moved.CopyOnWrites)
+		}
+		access(t, a, am, 0, true)[0] = 78
+		stored := hostStats(t, f)
+		if n := stored.CopyOnWrites - read.CopyOnWrites; n != 1 || am.number(0) != 0 || !am.pages[0].writable {
+			t.Fatalf("the owner's store made %d copies and maps file %d writable=%t, want 1 copy in its own file 0, writable",
+				n, am.number(0), am.pages[0].writable)
+		}
+		if got := access(t, b, bm, 0, false)[0]; got != 77 {
+			t.Fatalf("the inheritor reads %d after the owner's store, want 77", got)
+		}
+	})
+}
+
+// A client out of mapping budget refuses to map the copy in the owner's place.
+// The owner's mapping is taken away instead, which frees budget, and its next
+// fault maps the copy. The move still gives the private page back.
+func TestAMoveTheOwnersClientRefusesToMapTakesTheMappingAway(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := isolatedFixture(t, vmmemory.Config{ResidentPages: 8, LogicalPages: 16, DirtyPages: 8, ReadAheadPages: 1})
+		a, am, ab := f.memoryRegion(4)
+		access(t, a, am, 0, true)[0] = 77
+		f.mustCheckpoint(a, ab)
+		private := am.pages[0].place
+		am.refuseMap = true
+		b, bm := f.attach(f.inheritor(ab))
+		if got := access(t, b, bm, 0, false)[0]; got != 77 {
+			t.Fatalf("the inheritor reads %d, want 77", got)
+		}
+		if _, mapped := am.pages[0]; mapped || am.revokes != 1 || f.a.page(private) != nil {
+			t.Fatalf("the refused owner still maps the page (%t) after %d revocations, private slot held %t; "+
+				"want unmapped, 1 and given back", mapped, am.revokes, f.a.page(private) != nil)
+		}
+		am.refuseMap = false
+		if got := access(t, a, am, 0, false)[0]; got != 77 || am.pages[0].place != bm.pages[0].place {
+			t.Fatalf("the owner reads %d from %+v, want 77 from the shared copy %+v", got, am.pages[0], bm.pages[0])
 		}
 	})
 }

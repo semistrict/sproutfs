@@ -464,7 +464,8 @@ func (r *MemoryRegion) forkCopy(ctx context.Context, pg *resident, key pageKey) 
 // tenant inherits it. The copy is checked against the digest of the bytes the
 // page's upload read: the owner's VMM holds the page read-only, so a copy that
 // differs is a VMM that wrote where it may not, and its session ends. The
-// owner's mapping of the page is taken away, and its next fault maps the copy.
+// owner's mapping of the page is replaced by one of the copy, so the owner
+// reads on without a fault and the private slot goes back.
 //
 // A page that cannot be moved at once — there is no free slot of the shared
 // file, or no digest — stops being named by its identity, and the region that
@@ -530,19 +531,18 @@ func (r *MemoryRegion) move(ctx context.Context, pg *resident, key pageKey) (*re
 	return copied, nil
 }
 
-// rebind takes every mapping of from away and binds each of its aliases to to,
-// which holds the same bytes, and then gives from up. It is what moving a page
-// does to the memory region that mapped it: a revocation, which the next fault
-// of that region answers with the copy. A region that cannot take its mapping
-// away keeps the page it has, which is then its alone. Caller holds both pages'
-// locks.
+// rebind puts to in place of every mapping of from and binds each of from's
+// aliases to to, which holds the same bytes, and then gives from up. It is
+// what moving a page does to the memory region that mapped it. A region that
+// can neither be given to nor have its mapping taken away keeps the page it
+// has, which is then its alone. Caller holds both pages' locks.
 func (h *Host) rebind(ctx context.Context, from, to *resident) error {
 	byRegion := make(map[*MemoryRegion][]*binding)
 	for _, b := range h.aliases(from) {
 		byRegion[b.memoryRegion] = append(byRegion[b.memoryRegion], b)
 	}
 	for q, bindings := range byRegion {
-		if err := q.revokeBindings(ctx, bindings); err != nil {
+		if err := q.remap(ctx, bindings, to); err != nil {
 			q.heldPages(ctx, err)
 			continue
 		}
@@ -563,6 +563,44 @@ func (h *Host) rebind(ctx context.Context, from, to *resident) error {
 	h.mu.Unlock()
 	if idle {
 		return h.release(ctx, from)
+	}
+	return nil
+}
+
+// remap maps to, read-only, wherever this memory region maps one of bindings,
+// and installs it in the region's page tables, so its guest reads the page on
+// without a fault. A revocation would leave the next read to a fault, and on
+// x86-64 that fault is a store trap whatever the guest's access, because KVM
+// asks for a page it waited for writable: the fault would copy the page the
+// move shares (see Stats.StoreTraps). Where the client refuses the mapping for
+// want of budget, the mappings are taken away instead, which frees it.
+func (r *MemoryRegion) remap(ctx context.Context, bindings []*binding, to *resident) error {
+	h := r.host
+	for _, b := range bindings {
+		err := r.underProtection(ctx, func() error {
+			if !r.isMapped(b) {
+				return nil
+			}
+			if err := r.mapPages(ctx, r.runAt(b.index, to.fileSlot, 1), false); err != nil {
+				return r.mappingFailed(err, func() {})
+			}
+			note(r, b.index, "remap", to.slot, -1)
+			h.mu.Lock()
+			h.stats.Mappings++
+			h.stats.MappingRuns++
+			h.stats.MappedPages++
+			h.mu.Unlock()
+			if err := r.resolvePages(ctx, b.index, 1, false); err != nil {
+				return r.fail(err)
+			}
+			return nil
+		})
+		if errors.Is(err, ErrMappingRefused) {
+			return r.revokeBindings(ctx, bindings)
+		}
+		if err != nil {
+			return err
+		}
 	}
 	return nil
 }
