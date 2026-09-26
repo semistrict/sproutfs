@@ -56,7 +56,7 @@ func TestAnEphemeralVolumeIsNeverWrittenOrPublished(t *testing.T) {
 		}
 		sealed := map[string]volume.DirtySource{
 			"scratch": sealedPages{size: checkpoint.PageSize2MiB, pages: []uint64{1}, fill: 0x5a}}
-		if _, err := vm.Snapshot(t.Context(), volume.Prepared(nil, sealed)); !errors.Is(err, volume.ErrEphemeral) {
+		if _, err := vm.Snapshot(t.Context(), volume.Prepared(nil, sealed), volume.Terms{}); !errors.Is(err, volume.ErrEphemeral) {
 			t.Fatalf("a snapshot of the ephemeral disk's pages returned %v, want ErrEphemeral", err)
 		}
 		if err := vm.Volume("root").Write(t.Context(), 0, []byte("durable")); err != nil {
