@@ -1,11 +1,11 @@
 ---
 id: TASK-21
 title: Test a hostile VMM with a real userfaultfd
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-25 18:17'
-updated_date: '2026-09-26 17:54'
+updated_date: '2026-09-26 17:57'
 labels:
   - security
   - testing

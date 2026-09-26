@@ -1,11 +1,11 @@
 ---
 id: TASK-2.7
 title: Prove a jailed VMM cannot reopen or chmod its read-only files
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-26 15:26'
-updated_date: '2026-09-26 17:54'
+updated_date: '2026-09-26 17:57'
 labels:
   - security
 dependencies: []
