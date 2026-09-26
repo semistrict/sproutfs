@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-09-25 18:17'
-updated_date: '2026-09-26 16:08'
+updated_date: '2026-09-26 16:26'
 labels:
   - embedder
   - correctness
@@ -39,3 +39,12 @@ Evidence: the source's own hold. A source that reported a hold of H with its han
 5. Docs: migration.md, architecture.md, testing.md, guards.json.
 6. Verify: go test ./..., just check, just soak 1 200, mutation guard kills the scenario.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Evidence: the source's own hold (MigrateResult.Hold), counted by the orchestrator from the moment the handoff arrived; the source armed its deadline before answering, so its promise has ended by then. One rule, handover.Hold.Gone(look): unlisted pod, answered without the VM, or hold over. Silence never counts; a zero hold proves nothing. Kubernetes status beyond listing is not used (NotReady and deletion timestamps say nothing about the process; restart counts lag the process they count).
+Orchestrator: watchSource (receive in flight) and retry both apply the rule; the retry's last wait ends with the hold, so a handover that no destination took now ends on the rule and the VM is recovered (TASK-14 left it stopped; docs and the simulated world already recovered it). recoverLost excuses only the source's silence (it handed the VM over); any other quiet host still refuses the recovery.
+Simulation: Config.Hold, IsolatedHost fault (process runs, listed, links and control plane cut), World.reach for everything the deployment does to a host, world receive and retry use the same rule. Scenario TestAMigrationWhoseSourceIsCutOffEndsAtItsHold; mutation guard migration-ignore-source-hold kills it (ends at the 30 s harness patience instead of the 10 s hold).
+Found: a fork onto another host does not watch its parent's host at all in the orchestrator (o.fork calls Receive with no watch), so a cut-off parent leaves the child's receive waiting for the HTTP client's 10-minute timeout. Not in scope; the simulated world carries fork receives under no hold to match.
+<!-- SECTION:NOTES:END -->

@@ -370,7 +370,12 @@ It armed that deadline before it answered, so the orchestrator counts the hold
 from the moment the handoff arrived, and the source's own deadline has passed
 by the time that count ends. From then on the pages are gone whether the source
 is alive or not: a live source gave them up at its deadline, and a dead one
-took them with it. No timeout of the orchestrator's own is involved. A source
+took them with it. This assumes that the two clocks run at nearly the same
+rate. Over four minutes, a drift of a few parts per million is a few
+milliseconds. A source whose process stalled past its deadline may still serve
+for a moment after it. Its promise is over all the same, and no destination is
+asked to take the handoff after that. No timeout of the orchestrator's own is
+involved. A source
 that reports no hold promises nothing, so its silence is never evidence.
 
 The recovery that follows accepts the source's silence. The source stopped the
