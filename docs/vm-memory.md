@@ -1624,6 +1624,17 @@ beside a well-behaved process on the same pager, and `FuzzHostileSession` plays
 arbitrary sequences of them. A VMM that faults its own memory over and over is
 paced: see [repeated faults](#repeated-faults).
 
+Those sessions send a made-up descriptor, so the pager cannot resolve a fault
+and the session ends at the first one: seal, retire and settle never run under
+them. `vmmemory/hostile_client_linux_test.go` closes that gap. A proxy sits on a
+real client's control socket. It forwards the whole session, so the client's
+guest faults its memory in on a real registered userfaultfd, and the test seals,
+settles and retires that memory region as a capture does. Then the proxy sends
+the pager one frame the honest client never would. The pager ends that session
+and leaves its neighbour whole, as it does one that never resolved a fault.
+`TestAHostileClientWithARealUFFDIsEndedThroughACapture` plays a frame each, and
+`FuzzHostileClient` varies the number of captures and the frame.
+
 In a shared arena the arena's descriptor gives a VMM more than the protocol
 does. `vmmemory/reach_linux_test.go` plays a VMM that uses every descriptor it
 is given. In a shared arena it reads another VM's dirty and published pages
@@ -1634,8 +1645,12 @@ nothing at all: not the pages it loaded by identity, and not the page another
 region of that tenant inherits. It does find the page its own tenant published
 and another region of the tenant inherits. That is the one thing the design
 concedes, and the test asserts it. Every way to write its read-only files
-fails. When it allocates memory in its own private file, verification ends its
-session with `ErrUncounted`.
+fails. A read-only descriptor refuses a write, but a file's mode is checked
+again when it is opened, so the test also runs a helper as another user, as the
+embedder's jailer runs a VMM. Holding the same files, the helper cannot reopen a
+read-only one for writing through `/proc/self/fd`, and cannot fchmod any of
+them: the pager makes every file with mode 0600. When the VMM allocates memory
+in its own private file, verification ends its session with `ErrUncounted`.
 
 So a rejected command is the only failure known to have changed nothing. The
 pager treats it as a failed operation, not a failed session. In practice, the
