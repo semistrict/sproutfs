@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-09-25 23:02'
-updated_date: '2026-09-26 14:08'
+updated_date: '2026-09-26 14:16'
 labels:
   - security
 dependencies: []
@@ -23,7 +23,7 @@ Step 4 of plans/isolated-arena-2026-09-25.md, in the isolated mode only: a priva
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 TestAHostileVMMReachesNoOtherVMsBytes passes in isolated mode and fails in shared mode
+- [x] #1 TestAHostileVMMReachesNoOtherVMsBytes passes in isolated mode and fails in shared mode
 - [ ] #2 Every suite passes in both modes
 <!-- AC:END -->
 
@@ -51,4 +51,6 @@ Isolated mode code in progress, uncommitted: git on this Mac now fails because t
 Isolated mode implemented in the worktree (uncommitted; git blocked by the Xcode license). Mac: go test ./... passes in both modes except cmd/sproutfs-host TestOnlyTheCommandsChooseAnAdapter, which fails on the same git/Xcode error; race detector clean in isolated mode for vmmemory, simtest, host, vmmigrate. New vmmemory/isolation_test.go covers private files, the checked move, a tampered page (ErrTampered, Stats.Tampered), fork files, detached private files and the allocated-blocks check. Tests of shared-mode placement are pinned to shared. The reach test TestAHostileVMMReachesNoOtherVMsBytes is NOT written: an automated safety check stopped the session while it was being written, so it needs a human decision.
 
 Rebased onto main (TASK-19 ephemeral pager, TASK-12, TASK-38). The simtest pagers keyed by vmmemory.Host use testpager arenas and SPROUTFS_ARENA for all three pagers, the ephemeral one included. Commits 138baa2a (the isolated arena) and 22c58d11 (docs). Proven: go test ./... passes with SPROUTFS_ARENA=shared and with isolated. just check passes. Lima has no 2 MiB hugepages, so only the 4 KiB Linux tests ran: small-page, hostile session, refused fault, refused command, transparent-page and arena-offset tests. They pass in isolated mode. Shared mode failed once: in the hostile no-descriptor case the host held 18 descriptors after the session and 19 before. It passed 3 of 3 on repeat. Not run: the 2 MiB Linux pager suite, internal/vmtest, the Firecracker suite. The main session is writing the reach test. AC 1 stays unchecked. AC 2 stays unchecked until the Lima suites run.
+
+Reach test written and run in Lima (4 KiB): TestAHostileVMMReachesNoOtherVMsBytes passes isolated; TestASharedArenaHandsEveryVMMItsNeighboursBytes proves the shared arena hands the neighbour's pages over. A mutation sharing one private file between regions is killed. Not covered yet: the /proc/self/fd reopen and fchmod by a jailed helper user. AC2 waits on 2 MiB hugepages in Lima for the 2 MiB, vmtest and Firecracker suites.
 <!-- SECTION:NOTES:END -->
