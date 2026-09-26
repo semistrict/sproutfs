@@ -468,3 +468,32 @@ func TestAnotherHostOpensATemplateByItsIdentity(t *testing.T) {
 		t.Fatalf("opening an identity outside the template namespace gave %v, want ErrRequest", err)
 	}
 }
+
+// TestATenantsTemplateIsItsOwn: a template imported for a tenant lives in that
+// tenant's namespace, and only that tenant's VMs fork it. Another tenant that
+// wants the same image imports it for itself.
+func TestATenantsTemplateIsItsOwn(t *testing.T) {
+	h := newHostHarness(t)
+	h.start(t)
+	request := templateImport("builder-output", 0x51)
+	request.Tenant = "acme"
+	imported := templateOn(t, h, 0, request)
+	if want := "acme/" + templateIDOf(guestImage(0x51)); imported.ID() != want {
+		t.Fatalf("the tenant's template is %s, want %s", imported.ID(), want)
+	}
+	opened, err := h.hosts[1].Template(t.Context(), imported.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := forkReads(t, h, 1, "acme/vm-1", opened); !bytes.Equal(got, guestImage(0x51)) {
+		t.Fatalf("a VM of the tenant reads %x..., want the image", got[:4])
+	}
+	if _, err := h.hosts[1].Volumes().Fork(t.Context(), "zeta/vm-1", opened.Point); !errors.Is(err, volume.ErrOtherTenant) {
+		t.Fatalf("another tenant forking the template gave %v, want ErrOtherTenant", err)
+	}
+	request = templateImport("builder-output", 0x51)
+	request.Tenant = "Not A Tenant"
+	if _, err := h.hosts[0].TemplateOf(t.Context(), request); !errors.Is(err, host.ErrRequest) {
+		t.Fatalf("importing for an invalid tenant gave %v, want ErrRequest", err)
+	}
+}
