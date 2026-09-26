@@ -145,7 +145,8 @@ mapped. From the start to the end of the read, the isolated arena is about
   memory. The saved memory at the end is 812 MiB against 1248 MiB in the shared
   arena. At 4 KiB the host pod reached 7985 MiB of its 8 GiB. The guest only
   reads here, and the shared arena's owner takes 11 copy-on-writes in the same
-  read. This run did not find why the refault arrives as a store.
+  read. This run did not find why the refault arrives as a store. Two later
+  runs of the same case did, and it is fixed (TASK-49): see below.
 - **A local fork of unpublished pages shares nothing, in both modes.** Each
   child uploads the pages it inherited as its own first checkpoint, inside the
   fork: 1114 MiB for three children of 357 MiB. When the parent's seal ends,
@@ -164,6 +165,49 @@ guest stored, and every fault, verification and status request of that pager
 waited. The kubelet killed the pod for its liveness probe. This is not specific
 to either arena. The scan now takes the host lock first, and
 `TestAScanOfTheBindingsWaitingForTheHostLockHoldsNoBindingLock` holds it.
+
+## Why the owner copied, and the fix
+
+Two later runs measured case 2 at 2 MiB with new counters: each fault by what
+the kernel reported (a read, a store into a page not in the page tables, a
+store into a write-protected page), the copies of pages the guest did not map,
+KVM's asynchronous faults on the node (the `kvm_try_async_get_page`
+tracepoint), and a capture after the owner's reread, whose settle counts the
+copies the guest never stored into. Each cell is the median of the runs.
+
+| owner's reread | isolated, before (n=2) | isolated, fixed (n=3) | shared (n=3) |
+| --- | --- | --- | --- |
+| moved pages before it | 429 | 425 | 0 |
+| faults | 408.5 | 16 | 17 |
+| store traps | 404 | 4 | 5 |
+| read traps | 2.5 | 1 | 1 |
+| protect traps | 2 | 10 | 12 |
+| copies of unmapped pages | 401.5 | 0 | 0 |
+| copy-on-writes | 403.5 | 10 | 12 |
+| KVM asynchronous faults | 517.5 | 17 | 17 |
+| copies the capture found unchanged | 394 | 0 | 0 |
+| time | 2.39 s | 1.60 s | 1.61 s |
+| saved memory at the end | 872 MiB | 1656 MiB | 1658 MiB |
+
+A move revoked the owner's mapping, so each reread of a moved page was a cold
+fault. On x86-64 KVM finishes such a fault from its asynchronous worker, which
+asks for the page writable (`async_pf_execute`, `FOLL_WRITE`), so the pager saw
+a store trap and copied the page. The capture found 394 of the copies unchanged,
+so the guest did not store into them. Lima's aarch64 KVM has no asynchronous
+faults: there the same reread took 23 read traps and no copy of a moved page.
+
+A move now maps the shared copy in place of the owner's page and installs it in
+the owner's page tables, so the owner does not fault at all. The fixed isolated
+arena's reread matches the shared arena's.
+
+Booting the guests with `no-kvmapf` does not help. With it, the unfixed run's
+reread took 401.5 store traps, 397.5 copies of unmapped pages and 522 KVM
+asynchronous faults. KVM still finishes the fault from its worker and halts the
+vCPU when it cannot tell the guest. With the fix, the same option changed no
+timing measurably: the children's reads took 1.59 s either way and the owner's
+reread 1.66 s against 1.60 s.
+
+These runs did not measure 4 KiB.
 
 ## What this does not show
 
