@@ -1,11 +1,11 @@
 ---
 id: TASK-15
 title: Give liveness evidence for an unreachable but listed migration source
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-25 18:17'
-updated_date: '2026-09-26 16:32'
+updated_date: '2026-09-26 16:40'
 labels:
   - embedder
   - correctness
