@@ -239,7 +239,7 @@ func TestIntervalCheckpointSerializesWithAnExplicitCapture(t *testing.T) {
 	// two checkpoints of one guest in flight, which the publication lock is what
 	// prevents.
 	for range 8 {
-		checkpoint, err := host.Capture(t.Context(), vm, counting, nil)
+		checkpoint, err := host.Capture(t.Context(), vm, counting, nil, volume.Terms{})
 		if err != nil {
 			t.Fatalf("an explicit capture during the interval loop: %v", err)
 		}

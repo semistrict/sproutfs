@@ -643,7 +643,7 @@ func TestClosingAHandleFinishesTheSweepBehindItsLastCheckpoint(t *testing.T) {
 		// the publication behind this snapshot sweeps it.
 		write(0, 3)
 		write(checkpoint.PageSize2MiB, 4)
-		ckpt, err := vm.Snapshot(t.Context(), volume.Prepared(nil, nil))
+		ckpt, err := vm.Snapshot(t.Context(), volume.Prepared(nil, nil), volume.Terms{})
 		if err != nil {
 			t.Fatal(err)
 		}

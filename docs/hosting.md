@@ -132,7 +132,7 @@ process its own scratch directory.
 `sproutfs-host` reads its whole configuration from the environment. It reports
 every configuration problem it finds, not only the first. It serves the host
 API over HTTP: status, create, open, fork, capture, console, exec, migrate,
-receive, released, drain and delete. Each handler is one call on the supervisor
+receive, released, drain, stop, kept, release and delete. Each handler is one call on the supervisor
 plus the shared JSON failure shape. The API's types live in `api/host`
 and do not link the runtime. So the host converts a handoff at its boundary
 instead of putting a pager on the wire. The GCS store that the command builds is
@@ -531,6 +531,9 @@ store refuses the publication, the VM stays as it was: running, registered and
 checkpointed on the interval. The alternative would be a stop that reported a
 failure and lost the guest's last writes anyway.
 
+A stop can keep the checkpoint it publishes (`StopRequest.Keep`), as a capture
+can (`CaptureRequest.Keep`). See [kept checkpoints](#kept-checkpoints).
+
 A stop of a VM that something still holds sealed is refused, as a delete of
 such a VM is. A fork point holds the pages of the process that a stop would
 close. A child on another host reads the pages that no checkpoint holds from
@@ -604,12 +607,25 @@ control plane's record of the VM tracks this; see
 ## Creating a VM from a checkpoint
 
 A create can start from another VM's published checkpoint instead of a
-template (`CreateRequest.From`). That VM need not run anywhere. A stopped VM's
-last checkpoint is its whole state, and this is how a new VM starts from it.
-The create is the same path as a create from a template: a fork of a published
-checkpoint, the new VM's own root at the shape asked for, and a boot. So the
-new VM copies no byte, discards the memory it inherits, and boots cold over the
-disk it inherits. A shape that names no size keeps the checkpoint's.
+template (`CreateRequest.From`). That VM belongs to the same tenant and need not
+run anywhere. A stopped VM's last checkpoint is its whole state, and this is how
+a new VM starts from it. The create is the same path as a create from a
+template: a fork of a published checkpoint, the new VM's own root, and a start.
+The new VM copies no byte.
+
+How it starts depends on what the checkpoint holds (`Host.CreateRoot`):
+
+- A checkpoint with VMM state resumes. The new VM's root names that state and
+  the memory the checkpoint holds, and the guest is restored where the
+  checkpoint's pause left it, as a fork of a running VM is.
+- A checkpoint without state boots cold. Its memory is discarded in the root,
+  and the guest boots its kernel over the disk it inherits.
+- A create that names a shape boots cold whatever the checkpoint holds,
+  because a shape can change only at a cold boot. A shape that names no size
+  keeps the checkpoint's.
+
+`CreateResult.Resumed` says which happened, and `sproutfsctl create` prints
+"resumed" for a VM that resumed.
 
 The checkpoint must be pinned in the other VM's control record before the fork,
 as every fork's is. A stopped VM has no writer to pin with. Taking its epoch to
@@ -621,16 +637,46 @@ is conditional on the record as it was read. See
 
 This limits which checkpoint a create may name. By default it is the one the
 VM's record selects, and that one must be published. A create may also name a
-checkpoint that a pin already keeps, such as an earlier fork point. Any other
-checkpoint is refused with `control.ErrNotPublished`, because the VM's writer
-may be reclaiming it. A pending fork, whose root has not landed, is refused the
-same way. So is an identity that already exists. The API answers these with
-409.
+kept checkpoint, or one that a pin already holds, such as an earlier fork
+point. Any other checkpoint is refused with `control.ErrNotPublished`, because
+the VM's writer may be reclaiming it. A pending fork, whose root has not
+landed, is refused the same way. So is an identity that already exists. The
+API answers these with 409.
 
 If the other VM is in fact running, nothing breaks. The new VM inherits its
 last published checkpoint, which for a running VM is its last interval
 checkpoint of the disks. The running VM's writer adopts the pin at its next
 selection and spares the pinned checkpoint from then on.
+
+### Kept checkpoints
+
+A VM moves past each checkpoint as soon as it publishes the next one, and
+reclamation deletes the older one. To go back to an earlier point later, a
+checkpoint request asks to keep its checkpoint: a capture
+(`CaptureRequest.Keep`, `sproutfsctl capture --keep`), a stop or a suspending
+stop (`StopRequest.Keep`, `sproutfsctl stop --keep`), or the host's own
+`Capture` and `CaptureDisks` (`volume.Terms.Keep`). The checkpoint is kept in
+the write that selects it. From then on reclamation spares it and everything
+it reads, however many checkpoints the VM publishes after it. Only kept
+checkpoints cost storage beyond what the VM's selected checkpoint reads. A
+capture into a new VM takes no keep, because its root is the checkpoint the new
+VM's record selects.
+
+`GET /vms/{id}/kept` (`sproutfsctl kept VM`) lists a VM's kept checkpoints:
+each one's sequence, when it was selected, whether it holds VMM state, and
+whether a VM was created from it. Any host answers for any VM, because the
+list is the VM's control record.
+
+A create from a kept checkpoint works whether or not its VM runs, and whatever
+the VM has published since. It pins the checkpoint, like every fork. A kept
+checkpoint that no VM was created from can be released
+(`POST /vms/{id}/kept/{checkpoint}/release`,
+`sproutfsctl release VM@CHECKPOINT`). The release deletes what only that
+checkpoint held. A kept checkpoint that a VM was created from is pinned, and
+its release is refused with `control.ErrForked` (409): the pin is permanent,
+because a descendant may read through it. Deleting a VM deletes its kept
+checkpoints that no VM was created from. See
+[metadata](metadata.md#kept-checkpoints) for the record and the sweep.
 
 ## Capturing a VM into a new VM
 

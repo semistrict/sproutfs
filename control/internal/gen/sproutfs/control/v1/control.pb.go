@@ -22,7 +22,8 @@ const (
 
 // Record is the one mutable durable object a VM owns. It selects the checkpoint
 // the VM's state is, names the writer that may replace it, and lists the
-// checkpoints of it that have been forked, which may not be reclaimed.
+// checkpoints of it that have been forked and the ones a checkpoint request
+// kept, none of which may be reclaimed.
 type Record struct {
 	state                    protoimpl.MessageState `protogen:"opaque.v1"`
 	xxx_hidden_FormatVersion uint32                 `protobuf:"varint,1,opt,name=format_version,json=formatVersion"`
@@ -32,6 +33,7 @@ type Record struct {
 	xxx_hidden_Selected      uint64                 `protobuf:"varint,5,opt,name=selected"`
 	xxx_hidden_Created       bool                   `protobuf:"varint,7,opt,name=created"`
 	xxx_hidden_Pinned        []uint64               `protobuf:"varint,12,rep,packed,name=pinned"`
+	xxx_hidden_Kept          *[]*Kept               `protobuf:"bytes,13,rep,name=kept"`
 	XXX_raceDetectHookData   protoimpl.RaceDetectHookData
 	XXX_presence             [1]uint32
 	unknownFields            protoimpl.UnknownFields
@@ -115,19 +117,28 @@ func (x *Record) GetPinned() []uint64 {
 	return nil
 }
 
+func (x *Record) GetKept() []*Kept {
+	if x != nil {
+		if x.xxx_hidden_Kept != nil {
+			return *x.xxx_hidden_Kept
+		}
+	}
+	return nil
+}
+
 func (x *Record) SetFormatVersion(v uint32) {
 	x.xxx_hidden_FormatVersion = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 7)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 8)
 }
 
 func (x *Record) SetVmId(v string) {
 	x.xxx_hidden_VmId = &v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 1, 7)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 1, 8)
 }
 
 func (x *Record) SetEpoch(v uint64) {
 	x.xxx_hidden_Epoch = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 2, 7)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 2, 8)
 }
 
 func (x *Record) SetWriterNonce(v []byte) {
@@ -135,21 +146,25 @@ func (x *Record) SetWriterNonce(v []byte) {
 		v = []byte{}
 	}
 	x.xxx_hidden_WriterNonce = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 3, 7)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 3, 8)
 }
 
 func (x *Record) SetSelected(v uint64) {
 	x.xxx_hidden_Selected = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 4, 7)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 4, 8)
 }
 
 func (x *Record) SetCreated(v bool) {
 	x.xxx_hidden_Created = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 5, 7)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 5, 8)
 }
 
 func (x *Record) SetPinned(v []uint64) {
 	x.xxx_hidden_Pinned = v
+}
+
+func (x *Record) SetKept(v []*Kept) {
+	x.xxx_hidden_Kept = &v
 }
 
 func (x *Record) HasFormatVersion() bool {
@@ -246,6 +261,10 @@ type Record_builder struct {
 	// nothing here unpins one: a pin is what a collector releases once it has
 	// established that no descendant reads through it.
 	Pinned []uint64
+	// kept lists the checkpoints of this VM a checkpoint request kept, in
+	// ascending order of sequence. A kept checkpoint's objects are never
+	// reclaimed. A kept checkpoint no fork was taken from may be released.
+	Kept []*Kept
 }
 
 func (b0 Record_builder) Build() *Record {
@@ -253,30 +272,172 @@ func (b0 Record_builder) Build() *Record {
 	b, x := &b0, m0
 	_, _ = b, x
 	if b.FormatVersion != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 7)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 8)
 		x.xxx_hidden_FormatVersion = *b.FormatVersion
 	}
 	if b.VmId != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 1, 7)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 1, 8)
 		x.xxx_hidden_VmId = b.VmId
 	}
 	if b.Epoch != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 2, 7)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 2, 8)
 		x.xxx_hidden_Epoch = *b.Epoch
 	}
 	if b.WriterNonce != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 3, 7)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 3, 8)
 		x.xxx_hidden_WriterNonce = b.WriterNonce
 	}
 	if b.Selected != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 4, 7)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 4, 8)
 		x.xxx_hidden_Selected = *b.Selected
 	}
 	if b.Created != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 5, 7)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 5, 8)
 		x.xxx_hidden_Created = *b.Created
 	}
 	x.xxx_hidden_Pinned = b.Pinned
+	x.xxx_hidden_Kept = &b.Kept
+	return m0
+}
+
+// Kept is one checkpoint a checkpoint request kept: its sequence, when it was
+// selected, and whether it holds VMM state.
+type Kept struct {
+	state                  protoimpl.MessageState `protogen:"opaque.v1"`
+	xxx_hidden_Sequence    uint64                 `protobuf:"varint,1,opt,name=sequence"`
+	xxx_hidden_Time        int64                  `protobuf:"varint,2,opt,name=time"`
+	xxx_hidden_State       bool                   `protobuf:"varint,3,opt,name=state"`
+	XXX_raceDetectHookData protoimpl.RaceDetectHookData
+	XXX_presence           [1]uint32
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
+}
+
+func (x *Kept) Reset() {
+	*x = Kept{}
+	mi := &file_sproutfs_control_v1_control_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Kept) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Kept) ProtoMessage() {}
+
+func (x *Kept) ProtoReflect() protoreflect.Message {
+	mi := &file_sproutfs_control_v1_control_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+func (x *Kept) GetSequence() uint64 {
+	if x != nil {
+		return x.xxx_hidden_Sequence
+	}
+	return 0
+}
+
+func (x *Kept) GetTime() int64 {
+	if x != nil {
+		return x.xxx_hidden_Time
+	}
+	return 0
+}
+
+func (x *Kept) GetState() bool {
+	if x != nil {
+		return x.xxx_hidden_State
+	}
+	return false
+}
+
+func (x *Kept) SetSequence(v uint64) {
+	x.xxx_hidden_Sequence = v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 3)
+}
+
+func (x *Kept) SetTime(v int64) {
+	x.xxx_hidden_Time = v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 1, 3)
+}
+
+func (x *Kept) SetState(v bool) {
+	x.xxx_hidden_State = v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 2, 3)
+}
+
+func (x *Kept) HasSequence() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 0)
+}
+
+func (x *Kept) HasTime() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 1)
+}
+
+func (x *Kept) HasState() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 2)
+}
+
+func (x *Kept) ClearSequence() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 0)
+	x.xxx_hidden_Sequence = 0
+}
+
+func (x *Kept) ClearTime() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 1)
+	x.xxx_hidden_Time = 0
+}
+
+func (x *Kept) ClearState() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 2)
+	x.xxx_hidden_State = false
+}
+
+type Kept_builder struct {
+	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
+
+	Sequence *uint64
+	// time is when the checkpoint was selected, in nanoseconds since the Unix
+	// epoch.
+	Time *int64
+	// state reports that the checkpoint holds VMM state, so a fork of it resumes
+	// the guest rather than booting it.
+	State *bool
+}
+
+func (b0 Kept_builder) Build() *Kept {
+	m0 := &Kept{}
+	b, x := &b0, m0
+	_, _ = b, x
+	if b.Sequence != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 3)
+		x.xxx_hidden_Sequence = *b.Sequence
+	}
+	if b.Time != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 1, 3)
+		x.xxx_hidden_Time = *b.Time
+	}
+	if b.State != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 2, 3)
+		x.xxx_hidden_State = *b.State
+	}
 	return m0
 }
 
@@ -284,7 +445,7 @@ var File_sproutfs_control_v1_control_proto protoreflect.FileDescriptor
 
 const file_sproutfs_control_v1_control_proto_rawDesc = "" +
 	"\n" +
-	"!sproutfs/control/v1/control.proto\x12\x13sproutfs.control.v1\"\xe9\x01\n" +
+	"!sproutfs/control/v1/control.proto\x12\x13sproutfs.control.v1\"\x98\x02\n" +
 	"\x06Record\x12%\n" +
 	"\x0eformat_version\x18\x01 \x01(\rR\rformatVersion\x12\x13\n" +
 	"\x05vm_id\x18\x02 \x01(\tR\x04vmId\x12\x14\n" +
@@ -292,20 +453,27 @@ const file_sproutfs_control_v1_control_proto_rawDesc = "" +
 	"\fwriter_nonce\x18\x04 \x01(\fR\vwriterNonce\x12\x1a\n" +
 	"\bselected\x18\x05 \x01(\x04R\bselected\x12\x18\n" +
 	"\acreated\x18\a \x01(\bR\acreated\x12\x16\n" +
-	"\x06pinned\x18\f \x03(\x04R\x06pinnedJ\x04\b\x06\x10\aJ\x04\b\b\x10\tJ\x04\b\t\x10\n" +
+	"\x06pinned\x18\f \x03(\x04R\x06pinned\x12-\n" +
+	"\x04kept\x18\r \x03(\v2\x19.sproutfs.control.v1.KeptR\x04keptJ\x04\b\x06\x10\aJ\x04\b\b\x10\tJ\x04\b\t\x10\n" +
 	"J\x04\b\n" +
-	"\x10\vJ\x04\b\v\x10\fBSZQgithub.com/semistrict/sproutfs/control/internal/gen/sproutfs/control/v1;controlv1b\beditionsp\xe9\a"
+	"\x10\vJ\x04\b\v\x10\f\"L\n" +
+	"\x04Kept\x12\x1a\n" +
+	"\bsequence\x18\x01 \x01(\x04R\bsequence\x12\x12\n" +
+	"\x04time\x18\x02 \x01(\x03R\x04time\x12\x14\n" +
+	"\x05state\x18\x03 \x01(\bR\x05stateBSZQgithub.com/semistrict/sproutfs/control/internal/gen/sproutfs/control/v1;controlv1b\beditionsp\xe9\a"
 
-var file_sproutfs_control_v1_control_proto_msgTypes = make([]protoimpl.MessageInfo, 1)
+var file_sproutfs_control_v1_control_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
 var file_sproutfs_control_v1_control_proto_goTypes = []any{
 	(*Record)(nil), // 0: sproutfs.control.v1.Record
+	(*Kept)(nil),   // 1: sproutfs.control.v1.Kept
 }
 var file_sproutfs_control_v1_control_proto_depIdxs = []int32{
-	0, // [0:0] is the sub-list for method output_type
-	0, // [0:0] is the sub-list for method input_type
-	0, // [0:0] is the sub-list for extension type_name
-	0, // [0:0] is the sub-list for extension extendee
-	0, // [0:0] is the sub-list for field type_name
+	1, // 0: sproutfs.control.v1.Record.kept:type_name -> sproutfs.control.v1.Kept
+	1, // [1:1] is the sub-list for method output_type
+	1, // [1:1] is the sub-list for method input_type
+	1, // [1:1] is the sub-list for extension type_name
+	1, // [1:1] is the sub-list for extension extendee
+	0, // [0:1] is the sub-list for field type_name
 }
 
 func init() { file_sproutfs_control_v1_control_proto_init() }
@@ -319,7 +487,7 @@ func file_sproutfs_control_v1_control_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_sproutfs_control_v1_control_proto_rawDesc), len(file_sproutfs_control_v1_control_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   1,
+			NumMessages:   2,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

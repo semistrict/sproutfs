@@ -54,15 +54,19 @@ func (s *supervisor) Create(ctx context.Context, request hostapi.CreateRequest) 
 	// record's selection of it. Taking it after the boot instead would pause a
 	// guest that has not yet done anything, to seal the little it had.
 	//
-	// It is also where the VM takes the shape the request asks for: its RAM,
-	// its disk and its processors. The root is a cold boot's publication, so
-	// it is the one moment the shape may change. A template never ran, so there
-	// is no memory to lose by discarding it. Another VM's checkpoint loses its
-	// memory here too: the new VM boots its kernel over the disk it inherits.
+	// It is also where the VM either resumes or takes the shape the request
+	// asks for: its RAM, its disk and its processors. Another VM's checkpoint
+	// with VMM state resumes, and its root names that state and that memory. A
+	// template never ran, so there is no memory to lose by discarding it, and a
+	// checkpoint without state has memory no registers describe: their root is
+	// a cold boot's publication, the one moment the shape may change, and the
+	// new VM boots its kernel over the disk it inherits. A shape asks for that
+	// cold boot whatever the checkpoint holds.
 	rooted := s.clock.Now()
 	shape := ColdShape{Memory: vmmachine.RAMVolume, Root: rootVolume,
 		MemoryBytes: request.Memory, RootBytes: request.Disk, VCPUs: request.VCPUs}
-	if err := s.host.Reshape(ctx, vm, shape); err != nil {
+	state, err := s.host.CreateRoot(ctx, vm, point, shape)
+	if err != nil {
 		// A VM whose root never published is one nothing else can ever act on,
 		// so it is given up rather than left behind as an unopenable record.
 		return hostapi.CreateResult{}, errors.Join(
@@ -72,12 +76,12 @@ func (s *supervisor) Create(ctx context.Context, request hostapi.CreateRequest) 
 	rootSeconds := s.since(rooted)
 
 	booted := s.clock.Now()
-	m, err := s.boot(ctx, vm, nil, name)
+	m, err := s.boot(ctx, vm, state, name)
 	if err != nil {
 		return hostapi.CreateResult{}, err
 	}
 	return hostapi.CreateResult{VM: s.record(m), Template: templateSeconds, Fork: forkSeconds,
-		Boot: s.since(booted), Root: rootSeconds, Total: s.since(began)}, nil
+		Boot: s.since(booted), Root: rootSeconds, Total: s.since(began), Resumed: len(state) > 0}, nil
 }
 
 // createPoint is the published checkpoint a create forks, and what the create
@@ -206,6 +210,10 @@ func (s *supervisor) Capture(ctx context.Context, id string, request hostapi.Cap
 		return hostapi.CaptureResult{}, err
 	}
 	if request.Into != "" {
+		if request.Keep {
+			return hostapi.CaptureResult{}, fmt.Errorf("%w: a capture into a new VM publishes that VM's root, "+
+				"which its record selects, so there is nothing to keep", ErrRequest)
+		}
 		// The new VM never boots here, so this host keeps nothing of it.
 		if err := s.absent(request.Into); err != nil {
 			return hostapi.CaptureResult{}, err
@@ -218,7 +226,7 @@ func (s *supervisor) Capture(ctx context.Context, id string, request hostapi.Cap
 		return hostapi.CaptureResult{VM: request.Into, Checkpoint: root.Sequence, Publish: s.since(began)}, nil
 	}
 	paused := s.clock.Now()
-	ckpt, err := Capture(ctx, m.vm, m.process, s.clock)
+	ckpt, err := Capture(ctx, m.vm, m.process, s.clock, volume.Terms{Keep: request.Keep})
 	if err != nil {
 		return hostapi.CaptureResult{}, fmt.Errorf("capturing %s: %w", id, err)
 	}
@@ -315,7 +323,7 @@ func (s *supervisor) Delete(ctx context.Context, id string) error {
 // said the stop happened. A refused stop leaves the VM running and reported.
 func (s *supervisor) Stop(ctx context.Context, id string, request hostapi.StopRequest) (hostapi.StopResult, error) {
 	began := s.clock.Now()
-	checkpoint, err := s.host.Stop(ctx, id, request.Suspend)
+	checkpoint, err := s.host.Stop(ctx, id, request)
 	if err != nil {
 		return hostapi.StopResult{}, err
 	}

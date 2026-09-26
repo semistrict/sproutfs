@@ -34,7 +34,7 @@ func TestSnapshotIsConsistentWhileWritesContinue(t *testing.T) {
 		random := rand.New(rand.NewPCG(11, 19))
 		workload(t, vm, want, random, 20)
 
-		checkpoint, err := vm.Snapshot(t.Context(), volume.Prepared([]byte("vmm state"), nil))
+		checkpoint, err := vm.Snapshot(t.Context(), volume.Prepared([]byte("vmm state"), nil), volume.Terms{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -287,7 +287,7 @@ func TestForkPointRefusesASecondSeal(t *testing.T) {
 			t.Fatal("a capture paused a guest whose pages a fork point holds")
 			return nil, nil, nil
 		}
-		if _, err := vm.Snapshot(t.Context(), sealed); !errors.Is(err, volume.ErrSealed) {
+		if _, err := vm.Snapshot(t.Context(), sealed, volume.Terms{}); !errors.Is(err, volume.ErrSealed) {
 			t.Fatalf("a capture of a sealed VM = %v, want ErrSealed", err)
 		}
 		if err := point.Retire(t.Context()); err != nil {

@@ -78,6 +78,22 @@ func newServer(h host.VMs, token string) http.Handler {
 		stored, err := h.Stored(r.Context(), r.URL.Query().Get("tenant"))
 		reply(w, r, "stored", stored, err)
 	})
+	// A VM's kept checkpoints are its control record's, so any host answers for
+	// any VM, and releases one whether or not anything runs it.
+	mux.HandleFunc("GET /vms/{id}/kept", func(w http.ResponseWriter, r *http.Request) {
+		kept, err := h.Kept(r.Context(), r.PathValue("id"))
+		reply(w, r, "kept", kept, err)
+	})
+	mux.HandleFunc("POST /vms/{id}/kept/{checkpoint}/release", func(w http.ResponseWriter, r *http.Request) {
+		checkpoint, err := strconv.ParseUint(r.PathValue("checkpoint"), 10, 64)
+		if err != nil || checkpoint == 0 {
+			jsonhttp.Fail(r.Context(), w, http.StatusBadRequest, "release",
+				fmt.Errorf("%w: checkpoint is %q, want a checkpoint sequence", host.ErrRequest,
+					r.PathValue("checkpoint")))
+			return
+		}
+		act(w, r, "release", h.Release(r.Context(), r.PathValue("id"), checkpoint))
+	})
 	mux.HandleFunc("POST /vms", func(w http.ResponseWriter, r *http.Request) {
 		var request hostapi.CreateRequest
 		if err := jsonhttp.Read(r, &request); err != nil {
@@ -303,6 +319,9 @@ func statusOf(err error) int {
 		// A checkpoint that is not published, or that its VM's writer may be
 		// reclaiming, is one to create from once its VM has published again.
 		errors.Is(err, control.ErrNotPublished),
+		// A release of a checkpoint nothing keeps, or of one a VM was created
+		// from, which nothing releases.
+		errors.Is(err, control.ErrNotKept), errors.Is(err, control.ErrForked),
 		// A release refused because the destination has not fetched every page
 		// this host holds for it is a request that is merely early: the pages
 		// exist nowhere else, and the caller asks again once they are there.

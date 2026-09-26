@@ -78,11 +78,11 @@ func TestACheckpointCountsItsOwnPublication(t *testing.T) {
 
 		// Both publications are in flight together, which is exactly the case a
 		// per-checkpoint tally has to survive.
-		firstCheckpoint, err := first.Snapshot(t.Context(), volume.Prepared(nil, nil))
+		firstCheckpoint, err := first.Snapshot(t.Context(), volume.Prepared(nil, nil), volume.Terms{})
 		if err != nil {
 			t.Fatal(err)
 		}
-		secondCheckpoint, err := second.Snapshot(t.Context(), volume.Prepared(nil, nil))
+		secondCheckpoint, err := second.Snapshot(t.Context(), volume.Prepared(nil, nil), volume.Terms{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -129,7 +129,7 @@ func TestACheckpointReportsTheDirtySetItSealed(t *testing.T) {
 
 		sealed := sealedPages{size: checkpoint.PageSize2MiB, pages: []uint64{0, 2}, fill: 0x5a}
 		ckpt, err := vm.Snapshot(t.Context(), volume.Prepared(nil,
-			map[string]volume.DirtySource{"root": sealed}))
+			map[string]volume.DirtySource{"root": sealed}), volume.Terms{})
 		if err != nil {
 			t.Fatal(err)
 		}

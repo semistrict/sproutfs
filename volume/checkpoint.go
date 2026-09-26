@@ -60,10 +60,12 @@ type Checkpoint struct {
 	// vcpus is the processor count a cold boot gave this checkpoint, zero to
 	// keep the one its parent records.
 	vcpus int
-	// retry is asked after a failed publication, and protected is the pins its
-	// first attempt compacted around, which every retry uses again.
+	// retry is asked after a failed publication, and protected is the pinned
+	// and kept checkpoints its first attempt compacted around, which every
+	// retry uses again. keep selects this checkpoint kept.
 	retry     Retry
 	protected []uint64
+	keep      bool
 
 	// meter counts the object-store calls this checkpoint's publication makes,
 	// which is what one checkpoint cost in traffic. It is attributed by context,

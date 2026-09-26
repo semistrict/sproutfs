@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	hostapi "github.com/semistrict/sproutfs/api/host"
 	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/volume"
 )
@@ -55,7 +56,7 @@ func TestStoppingAParentWhoseFanOutLandedOnItsOwnHostIsRefused(t *testing.T) {
 		t.Fatalf("the host reports holding %v, want the point it holds for its own child", serving)
 	}
 
-	if _, err := h.hosts[0].Stop(t.Context(), "parent", true); !errors.Is(err, volume.ErrSealed) {
+	if _, err := h.hosts[0].Stop(t.Context(), "parent", hostapi.StopRequest{Suspend: true}); !errors.Is(err, volume.ErrSealed) {
 		t.Fatalf("stopping a parent a local fork point holds = %v, want ErrSealed", err)
 	}
 	if running := h.hosts[0].Machines(); len(running) != 2 {
@@ -71,7 +72,7 @@ func TestStoppingAParentWhoseFanOutLandedOnItsOwnHostIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	guest.store("ram0", 1, 22)
-	stopped, err := h.hosts[0].Stop(t.Context(), "parent", true)
+	stopped, err := h.hosts[0].Stop(t.Context(), "parent", hostapi.StopRequest{Suspend: true})
 	if err != nil {
 		t.Fatalf("stopping a parent whose children have been released: %v", err)
 	}
@@ -132,14 +133,14 @@ func TestAParentIsStoppableOnceItsForkHoldOutlivesItsDeadline(t *testing.T) {
 	if _, err := h.hosts[0].Fork(t.Context(), "parent", []string{"child"}, h.pages[1]); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.hosts[0].Stop(t.Context(), "parent", true); !errors.Is(err, volume.ErrSealed) {
+	if _, err := h.hosts[0].Stop(t.Context(), "parent", hostapi.StopRequest{Suspend: true}); !errors.Is(err, volume.ErrSealed) {
 		t.Fatalf("stopping a sealed parent = %v, want ErrSealed", err)
 	}
 	// Nothing releases it, so the deadline does.
 	awaitReleased(t, h.hosts[0])
 
 	guest.store("ram0", 1, 32)
-	stopped, err := h.hosts[0].Stop(t.Context(), "parent", true)
+	stopped, err := h.hosts[0].Stop(t.Context(), "parent", hostapi.StopRequest{Suspend: true})
 	if err != nil {
 		t.Fatalf("stopping a parent whose point outlived its deadline: %v", err)
 	}
@@ -194,7 +195,7 @@ func TestStoppingAndStartingOneVMOverAndOverLeavesNothingBehind(t *testing.T) {
 	for turn := range 8 {
 		value := byte(40 + turn)
 		guest.store("ram0", uint64(turn%4), value)
-		stopped, err := h.hosts[at].Stop(t.Context(), "vm-1", true)
+		stopped, err := h.hosts[at].Stop(t.Context(), "vm-1", hostapi.StopRequest{Suspend: true})
 		if err != nil {
 			t.Fatalf("turn %d: stopping the VM: %v", turn, err)
 		}
@@ -230,7 +231,7 @@ func TestStoppingAndStartingOneVMOverAndOverLeavesNothingBehind(t *testing.T) {
 			t.Fatalf("turn %d: registering the started VM: %v", turn, err)
 		}
 	}
-	if _, err := h.hosts[at].Stop(t.Context(), "vm-1", true); err != nil {
+	if _, err := h.hosts[at].Stop(t.Context(), "vm-1", hostapi.StopRequest{Suspend: true}); err != nil {
 		t.Fatal(err)
 	}
 	// Whatever a turn took, it gave back: both hosts are as empty as they were.
@@ -276,7 +277,7 @@ func TestAStopReportsTheCheckpointTheVMComesBackAt(t *testing.T) {
 	if err := h.hosts[0].AddMachine("vm-1", guest); err != nil {
 		t.Fatal(err)
 	}
-	stopped, err := h.hosts[0].Stop(t.Context(), "vm-1", true)
+	stopped, err := h.hosts[0].Stop(t.Context(), "vm-1", hostapi.StopRequest{Suspend: true})
 	if err != nil {
 		t.Fatal(err)
 	}

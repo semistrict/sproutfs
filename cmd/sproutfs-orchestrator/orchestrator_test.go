@@ -269,7 +269,11 @@ func (f *fakeHostClient) Capture(_ context.Context, id string, request host.Capt
 		f.record("capture %s into %s", id, request.Into)
 		return host.CaptureResult{VM: request.Into, Checkpoint: 12}, nil
 	}
-	f.record("capture %s", id)
+	if request.Keep {
+		f.record("capture %s kept", id)
+	} else {
+		f.record("capture %s", id)
+	}
 	return host.CaptureResult{VM: id, Checkpoint: 11}, nil
 }
 
@@ -373,9 +377,14 @@ func (f *fakeHostClient) Abandoned(_ context.Context, id string) error {
 func (f *fakeHostClient) Stop(_ context.Context, id string, request host.StopRequest) (host.StopResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if request.Suspend {
+	switch {
+	case request.Suspend && request.Keep:
+		f.record("suspend %s kept", id)
+	case request.Suspend:
 		f.record("suspend %s", id)
-	} else {
+	case request.Keep:
+		f.record("stop %s kept", id)
+	default:
 		f.record("stop %s", id)
 	}
 	if f.refuse != nil {
@@ -394,6 +403,21 @@ func (f *fakeHostClient) Delete(_ context.Context, id string) error {
 	}
 	f.running = slices.DeleteFunc(f.running, func(value string) bool { return value == id })
 	return nil
+}
+
+// Kept answers from the one kept checkpoint every VM of this fake has.
+func (f *fakeHostClient) Kept(_ context.Context, id string) (host.KeptResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("kept %s", id)
+	return host.KeptResult{VM: id, Kept: []host.Kept{{Checkpoint: 7, State: true}}}, nil
+}
+
+func (f *fakeHostClient) Release(_ context.Context, id string, checkpoint uint64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("release %s@%d", id, checkpoint)
+	return f.refuse
 }
 
 // deployment is an orchestrator over fakes: the pods, the bucket and the hosts.

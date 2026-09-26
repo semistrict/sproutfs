@@ -541,7 +541,7 @@ func TestKVMVolumeCheckpointWithSpillRequiresAuthority(t *testing.T) {
 		p.seal(memoryRegion)
 		sources[v.Name()] = p.memoryRegion(memoryRegion).Checkpoint()
 	}
-	ckpt, err := vm.Snapshot(t.Context(), volume.Prepared([]byte("kvm"), sources))
+	ckpt, err := vm.Snapshot(t.Context(), volume.Prepared([]byte("kvm"), sources), volume.Terms{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -567,7 +567,7 @@ func TestKVMVolumeCheckpointWithSpillRequiresAuthority(t *testing.T) {
 	memoryRegion := p.memoryRegion(0)
 	p.seal(0)
 	c.runtime.ObjectStore().Fail()
-	publication, err := vm.Snapshot(t.Context(), volume.Prepared(nil, map[string]volume.DirtySource{"pmem0": memoryRegion.Checkpoint()}))
+	publication, err := vm.Snapshot(t.Context(), volume.Prepared(nil, map[string]volume.DirtySource{"pmem0": memoryRegion.Checkpoint()}), volume.Terms{})
 	if err != nil {
 		t.Fatal(err)
 	}

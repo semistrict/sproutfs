@@ -37,7 +37,7 @@ func coldVM(t *testing.T, manager *volume.Manager, id string) (*volume.VM, model
 		}
 		copy(want[name], data)
 	}
-	ckpt, err := vm.Snapshot(t.Context(), volume.Prepared([]byte("registers and devices"), nil))
+	ckpt, err := vm.Snapshot(t.Context(), volume.Prepared([]byte("registers and devices"), nil), volume.Terms{})
 	if err != nil {
 		t.Fatal(err)
 	}

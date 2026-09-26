@@ -46,7 +46,7 @@ func TestCaptureReturnsBeforeItsPublication(t *testing.T) {
 		state := vmmState(3)
 		runtime := &fakeRuntime{state: state}
 		release := hold.hold(indexKey(control.Ref{VM: "vm", Sequence: secondSeq(vm)}))
-		ckpt, err := host.Capture(t.Context(), vm, runtime, nil)
+		ckpt, err := host.Capture(t.Context(), vm, runtime, nil, volume.Terms{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -105,7 +105,7 @@ func TestPrepareFailureReleasesAndCapturesNothing(t *testing.T) {
 		workload(t, vm, want, rand.New(rand.NewPCG(2, 3)), 10)
 
 		runtime := &fakeRuntime{state: vmmState(1), prepareErr: errRuntime}
-		ckpt, err := host.Capture(t.Context(), vm, runtime, nil)
+		ckpt, err := host.Capture(t.Context(), vm, runtime, nil, volume.Terms{})
 		if !errors.Is(err, errRuntime) {
 			t.Fatalf("Capture with a failing Prepare = %v, want errRuntime", err)
 		}
@@ -137,7 +137,7 @@ func TestResumeFailureCapturesNothingAndReleases(t *testing.T) {
 		workload(t, vm, want, rand.New(rand.NewPCG(4, 5)), 10)
 
 		runtime := &fakeRuntime{state: vmmState(1), resumeErr: errRuntime}
-		ckpt, err := host.Capture(t.Context(), vm, runtime, nil)
+		ckpt, err := host.Capture(t.Context(), vm, runtime, nil, volume.Terms{})
 		if !errors.Is(err, errRuntime) {
 			t.Fatalf("Capture with a failing Resume = %v, want errRuntime", err)
 		}
@@ -178,7 +178,7 @@ func TestCapturePublishesSealedPagesAndRetiresThem(t *testing.T) {
 
 		release := hold.hold(indexKey(control.Ref{VM: "vm", Sequence: secondSeq(vm)}))
 		runtime := &fakeRuntime{state: vmmState(8), sources: map[string]volume.DirtySource{"ram": source}}
-		ckpt, err := host.Capture(t.Context(), vm, runtime, nil)
+		ckpt, err := host.Capture(t.Context(), vm, runtime, nil, volume.Terms{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -232,7 +232,7 @@ func TestFailedPublicationReturnsTheSealedPagesToTheGuest(t *testing.T) {
 		defer h.runtime.ObjectStore().Recover()
 
 		runtime := &fakeRuntime{state: vmmState(4), sources: map[string]volume.DirtySource{"ram": source}}
-		ckpt, err := host.Capture(t.Context(), vm, runtime, nil)
+		ckpt, err := host.Capture(t.Context(), vm, runtime, nil, volume.Terms{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -329,7 +329,7 @@ func TestForkAfterPublicationOnASecondHost(t *testing.T) {
 		workload(t, vm, want, rand.New(rand.NewPCG(13, 29)), 25)
 
 		state := vmmState(2)
-		ckpt, err := host.Capture(t.Context(), vm, &fakeRuntime{state: state}, nil)
+		ckpt, err := host.Capture(t.Context(), vm, &fakeRuntime{state: state}, nil, volume.Terms{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -537,7 +537,7 @@ func TestForkOfAFork(t *testing.T) {
 		if _, err := host.Seal(t.Context(), child, &fakeRuntime{state: childState}); !errors.Is(err, volume.ErrForkPending) {
 			t.Fatalf("sealing a fork before its root = %v, want ErrForkPending", err)
 		}
-		childCheckpoint, err := host.Capture(t.Context(), child, &fakeRuntime{state: childState}, nil)
+		childCheckpoint, err := host.Capture(t.Context(), child, &fakeRuntime{state: childState}, nil, volume.Terms{})
 		if err != nil {
 			t.Fatal(err)
 		}

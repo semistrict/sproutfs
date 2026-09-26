@@ -248,7 +248,7 @@ func TestAStarterPlacesTheVMMAndItsDevices(t *testing.T) {
 	waitLine(t, ctx, p, fmt.Sprintf("sproutfs-guest-agent: serving on vsock port %d", guest.Port), 0)
 	checkToolsDevice(t, ctx, p)
 
-	ckpt, err := vm.Snapshot(ctx, prepareAndResume(p))
+	ckpt, err := vm.Snapshot(ctx, prepareAndResume(p), volume.Terms{})
 	if err != nil {
 		t.Fatalf("capture: %v\n%s", err, consoleText(p))
 	}

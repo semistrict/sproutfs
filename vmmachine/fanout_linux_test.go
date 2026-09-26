@@ -124,7 +124,7 @@ func forkPointFixture(t *testing.T, ctx context.Context, binaryPath string) (
 		fmt.Sprintf("SPROUTFS_PRESSURE bytes=%d", forkFanOutTouched<<20))
 	command(t, ctx, p, "ram 73\n", "SPROUTFS_RAM ram=73")
 	command(t, ctx, p, "write 41\n", "SPROUTFS_FLUSH disk=41")
-	published, err := parent.Snapshot(ctx, prepareAndResume(p))
+	published, err := parent.Snapshot(ctx, prepareAndResume(p), volume.Terms{})
 	if err != nil {
 		t.Fatalf("publishing the checkpoint %s's children inherit: %v\n%s", parent.ID(), err, consoleText(p))
 	}
@@ -462,7 +462,7 @@ func checkpointEvery(t *testing.T, ctx context.Context, child *forkedChild, inte
 				return
 			case <-time.After(interval):
 			}
-			ckpt, err := child.vm.Snapshot(ticking, prepareAndResume(child.process))
+			ckpt, err := child.vm.Snapshot(ticking, prepareAndResume(child.process), volume.Terms{})
 			if err != nil {
 				if ticking.Err() == nil {
 					t.Errorf("checkpointing %s while it reads: %v", child.id, err)
@@ -529,7 +529,7 @@ func receiveChild(t *testing.T, ctx context.Context, c *migrationCluster, pager 
 	// destination publishes it as soon as the child holds every page it
 	// inherited — a capture like any other, over a guest that is running.
 	child := received.VM()
-	ckpt, err := child.Snapshot(ctx, prepareAndResume(process))
+	ckpt, err := child.Snapshot(ctx, prepareAndResume(process), volume.Terms{})
 	if err != nil {
 		t.Fatalf("publishing the root index of %s: %v\n%s", handoff.VMID, err, consoleText(process))
 	}

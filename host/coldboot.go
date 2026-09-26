@@ -29,6 +29,12 @@ type ColdShape struct {
 	VCPUs int
 }
 
+// changes reports a shape that changes anything about the VM, which only a
+// cold boot may.
+func (s ColdShape) changes() bool {
+	return s.MemoryBytes != 0 || s.RootBytes != 0 || s.VCPUs != 0
+}
+
 // sizes is the shape as the volume manager takes it: the volumes whose size is
 // being set, by name. A shape that names no size resizes nothing.
 func (s ColdShape) sizes() (map[string]uint64, error) {
@@ -144,4 +150,31 @@ func (h *Host) Starting(ctx context.Context, vm *volume.VM, memory string) ([]by
 	slog.InfoContext(ctx, "host: a VM with no VMM state is cold booted", "vm", vm.ID(),
 		"opened", opened, "checkpoint", vm.Status().Checkpoint.Sequence)
 	return nil, nil
+}
+
+// CreateRoot publishes the first checkpoint of a VM just forked from a
+// published checkpoint (volume.Manager.InheritPublished, or a template's
+// point), and reports the VMM state its guest starts from.
+//
+// A point with VMM state, and a shape that changes nothing, resumes: the root
+// names the state and the memory the point's checkpoint holds, and the guest
+// is restored from them where that checkpoint's pause left it, as a fork of a
+// running VM is. Anything else boots cold: a point without state has memory no
+// registers describe, and a shape is a cold boot's alone, because nothing in
+// memory must describe the VM's shape when it changes. The root is then the
+// cold boot's publication at that shape (Reshape), and the state is nil.
+//
+// The handle stays the caller's either way.
+func (h *Host) CreateRoot(ctx context.Context, vm *volume.VM, point *volume.ForkPoint, shape ColdShape) ([]byte, error) {
+	if !point.HasState() || shape.changes() {
+		return nil, h.Reshape(ctx, vm, shape)
+	}
+	if err := vm.Checkpoint(ctx); err != nil {
+		return nil, fmt.Errorf("publishing the root of %s: %w", vm.ID(), err)
+	}
+	state, err := State(ctx, h.Checkpoints(), vm.Status().Checkpoint)
+	if err != nil {
+		return nil, fmt.Errorf("reading the VMM state of %s: %w", vm.ID(), err)
+	}
+	return state, nil
 }

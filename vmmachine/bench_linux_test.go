@@ -972,7 +972,7 @@ func (b *benchmark) capture(ctx context.Context, p *vmmachine.Process, vm *volum
 		resumed = time.Now()
 		atResumeRAM, atResumePMEM = b.pagerStats(ctx)
 		return captured, sources, nil
-	})
+	}, volume.Terms{})
 	if err != nil {
 		b.t.Fatalf("capture: %v", err)
 	}

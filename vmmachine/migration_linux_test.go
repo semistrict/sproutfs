@@ -302,6 +302,9 @@ func TestFirecrackerLiveMigration(t *testing.T) {
 type migrationCluster struct {
 	network             *testnet.Network
 	source, destination *volume.Manager
+	// store is the one both managers publish into, which a test reads a
+	// checkpoint out of directly.
+	store *checkpoint.Store
 }
 
 func newMigrationCluster(t *testing.T, ctx context.Context) *migrationCluster {
@@ -310,7 +313,11 @@ func newMigrationCluster(t *testing.T, ctx context.Context) *migrationCluster {
 	runtime := sim.New(sim.Config{ObjectStore: sim.ObjectStoreConfig{HeadLatency: time.Nanosecond,
 		GetLatency: time.Nanosecond, PutLatency: time.Nanosecond, ListLatency: time.Nanosecond,
 		DeleteLatency: time.Nanosecond, BytesPerSecond: 1 << 50}})
-	c := &migrationCluster{network: network}
+	store, err := checkpoint.NewStore(checkpoint.Config{ObjectStore: runtime.ObjectStore()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &migrationCluster{network: network, store: store}
 	manager := func(host string) *volume.Manager {
 		client, err := control.NewClient(control.Config{ObjectStore: runtime.ObjectStore()})
 		if err != nil {

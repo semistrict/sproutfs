@@ -41,8 +41,9 @@ records, the pagers, the page servers and the migration coordinator are the real
 implementations.
 
 Every campaign drives the world with the same short list of operations:
-`Store`, `Checkpoint`, `Migrate`, `Fork`, `Delete`, `Takeover`, `Kill`,
-`Restart`, `Shutdown` and `Settle`, plus `KillDuring`. `KillDuring` runs one
+`Store`, `Checkpoint`, `Keep`, `Migrate`, `Fork`, `CreateFromKept`, `Release`,
+`Delete`, `Takeover`, `Kill`, `Restart`, `Shutdown` and `Settle`, plus
+`KillDuring`. `KillDuring` runs one
 operation on a separate goroutine and removes a host in the middle of it.
 
 One access in four that `Store` draws is a write fault through which the guest
@@ -59,7 +60,18 @@ Every campaign also checks the same list of requirements:
 - `VerifyDurable`: the same bytes, read back through the volume.
 - `CheckSelected`: every record selects a checkpoint that some writer of that VM
   published.
+- `VerifyKept`: every checkpoint a record keeps reads, straight from the store,
+  as the pause it was kept at: every page of its disks, and its memory and the
+  store counter in its VMM state when it has state. So nothing a kept
+  checkpoint reads is reclaimed while it is kept.
 - `CheckDeployment`, at the end.
+
+A VM created from a kept checkpoint must read, through its own fault path and
+before it stores anything, exactly the pause that checkpoint was kept at. It
+reads the memory too and continues at that pause's store counter when it
+resumed, and zeroes where the memory was when it booted cold. So it never reads
+a byte its parent wrote after the pause. A release must be refused exactly when
+the record pins the checkpoint.
 
 When a VM's host is lost, the VM comes back at one of the checkpoints it may
 have come back at. These are the last checkpoint that landed, plus every later
@@ -418,7 +430,15 @@ Reclamation is tested directly. Selecting a checkpoint:
 - deletes, whole, every earlier checkpoint that the new root no longer names;
 - keeps a checkpoint from which the root still reads a single page;
 - spares a sequence that a fork pinned;
+- spares a kept sequence and every checkpoint its root names, and a VM created
+  from it reads its bytes after the VM has moved past it;
 - never touches the checkpoint that the handle opened on.
+
+Releasing a kept checkpoint deletes it and the checkpoints only it read from,
+and leaves nothing the deployment check reports. A release of a kept
+checkpoint a VM was created from is refused. A released checkpoint that is
+still selected stays until the next selection. A VM's delete takes its kept
+checkpoints that no VM was created from.
 
 Tests show that the pin comes before the fork. A fork whose control record
 cannot be written still leaves pinned what it would inherit. So does a fork
@@ -574,8 +594,8 @@ It requires:
 
 - every control record and every part to parse at the format version that this
   build writes;
-- every checkpoint that a selected or pinned root names to exist, with the part
-  count and the member bytes that the root recorded;
+- every checkpoint that a selected, pinned or kept root names to exist, with
+  the part count and the member bytes that the root recorded;
 - every member of those parts to be a page or a state that the part's own VM
   published. Its bytes are billed to the VM whose key holds them, so this is
   what keeps a page billed to the VM that published it when compaction moves
@@ -586,8 +606,8 @@ It requires:
   check verifies that what a pin protects is whole: the checkpoint and every
   checkpoint its root names. A grandchild that reads through the pin needs this;
 - every object under `vm/<id>/ckpt/` to be reached by one of: some record's
-  selected checkpoint, a pinned checkpoint, or a checkpoint that a compaction
-  emptied, which is spared for one checkpoint of grace. Naming a checkpoint
+  selected checkpoint, a pinned or kept checkpoint, or a checkpoint that a
+  compaction emptied, which is spared for one checkpoint of grace. Naming a checkpoint
   spares all of it. Its index object holds the segments that some root still
   addresses in it, and its parts hold the pages that some root still reads;
 - the bill to be the store. `volume.StoredBytes` for each tenant, and for the
@@ -675,7 +695,8 @@ runs.
 - two to four hosts;
 - two to four VMs;
 - one or two volumes of one to three pages each;
-- which VMs are forks of which;
+- which VMs are forks of which, and which of those forks are creates from one
+  of the parent's kept checkpoints;
 - the host each VM starts on.
 
 A fork's host may be the same as its parent's. That decides whether the child
@@ -692,11 +713,15 @@ seeded offsets. One to three faults are active at a time, for a seeded number
 of steps. Each step runs a few of every guest's stores, and then one operation:
 
 - a checkpoint;
+- a checkpoint that is kept, of the disks alone or with the memory and the VMM
+  state;
 - a migration;
-- a fork;
-- a stop;
+- a fork, or a create from one of the parent's kept checkpoints, warm or cold,
+  whether or not the parent runs;
+- a stop, which may suspend and may keep;
 - a start;
 - a delete;
+- the release of a kept checkpoint;
 - a host lost and started again.
 
 Stops and starts are drawn independently, not as pairs. So a stopped VM sits
@@ -817,7 +842,10 @@ in the system, and then several problems in the simulated world.
   as an unreferenced checkpoint of the record's own epoch. The campaign gives
   its sweeps a moment to run before it closes, as a draining host would. So the
   allowance it keeps for that class covers only the sweeps that its
-  store-outage faults actually refused.
+  store-outage faults actually refused. Each checkpoint the world takes also
+  waits for its sweep. A sweep left running into the next step raced that
+  step's faults: a fault that failed the store took some of its deletes on one
+  run of a seed and none on the next, so the seed did not reproduce its work.
 - A frame dropped by `Network.DropNext` on a page-server link hangs the guest
   permanently, and no other outcome is possible. The connection stays open and
   the sender believes it sent the frame, so the reply never comes. A guest's
@@ -1160,6 +1188,8 @@ SPROUTFS_SIM_BUG=checkpoint-part-member-offset \
   go test ./internal/simtest -run '^TestScheduledWorldReproduces$' -count=1
 SPROUTFS_SIM_BUG=checkpoint-reclaim-live-checkpoint \
   go test ./internal/simtest -run '^TestScheduledWorldReproduces$' -count=1
+SPROUTFS_SIM_BUG=volume-reclaim-kept \
+  go test ./internal/simtest -run '^TestACreateFromAKeptCheckpointReadsThatCheckpoint$' -count=1
 SPROUTFS_SIM_BUG=checkpoint-compact-another-vm \
   go test ./volume -run '^TestEachPageIsBilledToTheVMThatPublishedIt$' -count=1
 SPROUTFS_SIM_BUG=migration-accept-wrong-size \
@@ -1577,8 +1607,8 @@ store is not migrated. Committed fixtures enforce that contract:
 
 | Fixture | What it holds |
 | --- | --- |
-| `volume/testdata/deployment-record-4-index-7-part-4`, `deployment-record-4-part-3`, `deployment-record-4-index-6-part-2`, `deployment-record-4-index-5-part-1`, `deployment-record-3-index-5-part-1` | The whole object namespace of a small deployment: a VM with a history of checkpoints and VMM state whose record pins the point it was forked at, and a fork of it whose root names that point's checkpoints. The four older dumps are what the builds before the parts and the index object were split, before the root moved into the last part, before the segmented index and before the pin bump wrote, and their test requires that opening each is refused with the version that moved named — the part layout's for the first, the index object's for the next two, the record's for the last. |
-| `control/testdata/record-4`, `record-3`, `record-2` | Two records with pins, at this build's version and at each version committed before it. |
+| `volume/testdata/deployment-record-5-index-8-part-4`, `deployment-record-4-index-8-part-4`, `deployment-record-4-index-7-part-4`, `deployment-record-4-part-3`, `deployment-record-4-index-6-part-2`, `deployment-record-4-index-5-part-1`, `deployment-record-3-index-5-part-1` | The whole object namespace of a small deployment: a VM with a history of checkpoints and VMM state whose record keeps its first capture and pins the point it was forked at, and a fork of it whose root names that point's checkpoints. The older dumps are what the builds before kept checkpoints, before the page size in the root, before the parts and the index object were split, before the root moved into the last part, before the segmented index and before the pin bump wrote. Opening a VM reads its control record first, and every older dump's record is below format 5, so their test requires that opening each is refused with its record's version named. |
+| `control/testdata/record-5`, `record-4`, `record-3`, `record-2` | Two records with pins, one of which keeps two checkpoints, at this build's version and at each version committed before it. |
 | `checkpoint/testdata/index-7-part-4`, `part-3`, `index-6-part-2`, `index-5-part-1`, `index-4` | The objects of a published checkpoint at this build's formats — its index object and its parts — the objects of the three format sets before it, each refused by the version that moved, and one index table restamped with a version older still. |
 | `checkpoint/internal/part/testdata/part-4`, `part-3`, `part-2`, `part-1`, `part-0` | One sealed part holding the VMM state and pages of two volumes, which is everything a part holds; the layout-3 part before it, which also held a segment and the root; the layout-2 part before that, which has a tombstone and no root; the layout-1 part before that, which has no segment member; and a part and table restamped with a version older still. |
 

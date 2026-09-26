@@ -67,7 +67,7 @@ func TestACheckpointDoesNotInterruptACommandRunningInTheGuest(t *testing.T) {
 	awaitGuestMarker(t, ctx, p)
 
 	// The checkpoint the interval takes, on the guest that is running it.
-	published, err := vm.Snapshot(ctx, prepareAndResume(p))
+	published, err := vm.Snapshot(ctx, prepareAndResume(p), volume.Terms{})
 	if err != nil {
 		t.Fatalf("checkpointing %s while it ran a command: %v\n%s", vm.ID(), err, consoleText(p))
 	}
@@ -169,7 +169,12 @@ func startGuestWithAgent(t *testing.T, ctx context.Context, binaryPath, name str
 // checkpointed, with nothing running over it yet.
 func newGuestVM(t *testing.T, ctx context.Context, name string) *volume.VM {
 	t.Helper()
-	c := newMigrationCluster(t, ctx)
+	return newGuestVMIn(t, ctx, newMigrationCluster(t, ctx), name)
+}
+
+// newGuestVMIn is newGuestVM on the source host of a cluster the caller holds.
+func newGuestVMIn(t *testing.T, ctx context.Context, c *migrationCluster, name string) *volume.VM {
+	t.Helper()
 	vm, err := c.source.Create(ctx, name, []volume.VolumeSpec{
 		{Name: vmmachine.RAMVolume, Size: 128 << 20, PageSize: ramPageBytes(t)},
 		{Name: "root", Size: guestRootBytes, PageSize: checkpoint.PageSize2MiB},

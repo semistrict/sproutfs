@@ -48,6 +48,12 @@ type invocation struct {
 	// New captures a running VM into a new VM that never boots, rather than
 	// taking a checkpoint of the VM itself.
 	New bool
+	// Keep keeps the checkpoint a capture or a stop publishes, so a create can
+	// start from it however far the VM has moved on.
+	Keep bool
+	// Checkpoint is the kept checkpoint release gives up, named with its VM
+	// as VM@CHECKPOINT.
+	Checkpoint uint64
 }
 
 // errUsage reports a command line this CLI will not run. Its message is what
@@ -64,7 +70,10 @@ const usage = `sproutfsctl drives a sproutfs demo deployment through its orchest
   sproutfsctl create --from VM[@CHECKPOINT] [--memory 1G] [--disk 4G] [--vcpus 2]
                                            create a VM from another VM's published
                                            checkpoint, which that VM's record selects
-                                           unless one is named, and boot it cold
+                                           unless one is named; it resumes where that
+                                           checkpoint's pause left the guest when the
+                                           checkpoint holds VMM state and no shape is
+                                           named, and boots cold otherwise
   sproutfsctl list                         list the VMs, their hosts and their states
   sproutfsctl hosts                        list the host pods
   sproutfsctl store                        what each host's object store has served
@@ -74,14 +83,19 @@ const usage = `sproutfsctl drives a sproutfs demo deployment through its orchest
   sproutfsctl fork VM [--count N] [--to HOST]
                                            fork a running VM, here or on another host
   sproutfsctl migrate VM [--to HOST]       move a VM to another host
-  sproutfsctl capture VM [--new]           take a checkpoint now; --new captures
+  sproutfsctl capture VM [--new] [--keep]  take a checkpoint now; --new captures
                                            the VM into a new, stopped VM instead,
-                                           and the VM keeps running
+                                           and the VM keeps running; --keep keeps
+                                           the checkpoint for later creates
   sproutfsctl kill-host HOST               delete a host pod, losing its unpublished writes
   sproutfsctl recover VM [--force]         reopen a VM whose host is gone
-  sproutfsctl stop VM [--suspend]          checkpoint a VM's disks and close it, keeping
+  sproutfsctl stop VM [--suspend] [--keep] checkpoint a VM's disks and close it, keeping
                                            the VM; --suspend keeps its memory too,
-                                           so a start resumes it rather than booting it
+                                           so a start resumes it rather than booting it;
+                                           --keep keeps the checkpoint for later creates
+  sproutfsctl kept VM                      list a VM's kept checkpoints
+  sproutfsctl release VM@CHECKPOINT        give up a kept checkpoint no VM was
+                                           created from, and what only it held
   sproutfsctl start VM [--to HOST] [--cold] [--memory 1G] [--disk 4G] [--vcpus 2]
                                            open a stopped VM on a host again;
                                            --cold discards its memory and boots
@@ -97,7 +111,7 @@ deployment's shared token every request carries.`
 // commands is what each command takes: whether it names a VM or a host, and
 // which flags it accepts.
 var commands = map[string]struct {
-	target string // "vm", "host", "file" or "" for none
+	target string // "vm", "checkpoint", "host", "file" or "" for none
 	flags  []string
 	// switches are the flags that stand alone: they carry no value and mean
 	// themselves.
@@ -115,10 +129,12 @@ var commands = map[string]struct {
 	"exec":            {target: "vm", flags: []string{"timeout"}, trailing: true},
 	"fork":            {target: "vm", flags: []string{"count", "to"}},
 	"migrate":         {target: "vm", flags: []string{"to"}},
-	"capture":         {target: "vm", switches: []string{"new"}},
+	"capture":         {target: "vm", switches: []string{"new", "keep"}},
 	"kill-host":       {target: "host"},
 	"recover":         {target: "vm", switches: []string{"force"}},
-	"stop":            {target: "vm", switches: []string{"suspend"}},
+	"stop":            {target: "vm", switches: []string{"suspend", "keep"}},
+	"kept":            {target: "vm"},
+	"release":         {target: "checkpoint"},
 	"start":           {target: "vm", flags: []string{"to", "memory", "disk", "vcpus"}, switches: []string{"cold"}},
 	"delete":          {target: "vm"},
 	"check":           {},
@@ -145,6 +161,14 @@ func parse(args []string) (invocation, error) {
 			return invocation{}, fmt.Errorf("%w: %s needs the name of a %s", errUsage, name, spec.target)
 		}
 		result.Target, rest = rest[0], rest[1:]
+		if spec.target == "checkpoint" {
+			vm, sequence, named := strings.Cut(result.Target, "@")
+			checkpoint, err := strconv.ParseUint(sequence, 10, 64)
+			if vm == "" || !named || err != nil || checkpoint == 0 {
+				return invocation{}, fmt.Errorf("%w: %s names VM@CHECKPOINT, not %q", errUsage, name, result.Target)
+			}
+			result.Target, result.Checkpoint = vm, checkpoint
+		}
 	}
 	for len(rest) > 0 {
 		argument := rest[0]
@@ -173,6 +197,8 @@ func parse(args []string) (invocation, error) {
 				result.Suspend = true
 			case "new":
 				result.New = true
+			case "keep":
+				result.Keep = true
 			}
 			continue
 		}
@@ -249,6 +275,10 @@ func parse(args []string) (invocation, error) {
 	if name == "start" && !result.Cold && (result.Memory != 0 || result.Disk != 0 || result.VCPUs != 0) {
 		return invocation{}, fmt.Errorf(
 			"%w: --memory, --disk and --vcpus need --cold, which is the one moment a VM's shape can change",
+			errUsage)
+	}
+	if result.New && result.Keep {
+		return invocation{}, fmt.Errorf("%w: --new captures into a new VM, whose root it selects, so there is nothing to --keep",
 			errUsage)
 	}
 	if result.From != "" && result.Template != "" {

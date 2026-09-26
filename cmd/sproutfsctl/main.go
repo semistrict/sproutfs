@@ -70,9 +70,15 @@ func execute(ctx context.Context, client *orch.Client, command invocation,
 		if err != nil {
 			return err
 		}
+		// A VM created from a checkpoint with VMM state resumes where that
+		// checkpoint's pause left the guest, and says so; every other VM booted.
+		how := ""
+		if result.Result.Resumed {
+			how = " resumed"
+		}
 		_, err = fmt.Fprintf(out,
-			"%s on %s (template %.2fs, fork %.2fs, boot %.2fs, root %.2fs, total %.2fs)\n",
-			result.Result.VM.ID, result.Host, float64(result.Result.Template),
+			"%s%s on %s (template %.2fs, fork %.2fs, boot %.2fs, root %.2fs, total %.2fs)\n",
+			result.Result.VM.ID, how, result.Host, float64(result.Result.Template),
 			float64(result.Result.Fork), float64(result.Result.Boot),
 			float64(result.Result.Root), float64(result.Result.Total))
 		return err
@@ -177,7 +183,7 @@ func execute(ctx context.Context, client *orch.Client, command invocation,
 			result.PeerPages, result.Unpublished)
 		return err
 	case "capture":
-		result, err := client.Capture(ctx, command.Target, orch.CaptureRequest{New: command.New})
+		result, err := client.Capture(ctx, command.Target, orch.CaptureRequest{New: command.New, Keep: command.Keep})
 		if err != nil {
 			return err
 		}
@@ -187,8 +193,8 @@ func execute(ctx context.Context, client *orch.Client, command invocation,
 				float64(result.Result.Publish))
 			return err
 		}
-		_, err = fmt.Fprintf(out, "%s checkpoint %d on %s: pause %.3fs, publish %.3fs\n",
-			result.Result.VM, result.Result.Checkpoint, result.Host,
+		_, err = fmt.Fprintf(out, "%s checkpoint %d%s on %s: pause %.3fs, publish %.3fs\n",
+			result.Result.VM, result.Result.Checkpoint, keptNote(command.Keep), result.Host,
 			float64(result.Result.Pause), float64(result.Result.Publish))
 		return err
 	case "kill-host":
@@ -207,7 +213,7 @@ func execute(ctx context.Context, client *orch.Client, command invocation,
 			result.Result.VM.ID, result.Host, result.Result.VM.Checkpoint, float64(result.Result.Total))
 		return err
 	case "stop":
-		result, err := client.Stop(ctx, command.Target, orch.StopRequest{Suspend: command.Suspend})
+		result, err := client.Stop(ctx, command.Target, orch.StopRequest{Suspend: command.Suspend, Keep: command.Keep})
 		if err != nil {
 			return err
 		}
@@ -215,8 +221,29 @@ func execute(ctx context.Context, client *orch.Client, command invocation,
 		if command.Suspend {
 			verb = "suspended"
 		}
-		_, err = fmt.Fprintf(out, "%s %s on %s at checkpoint %d in %.3fs\n",
-			verb, result.VM, result.Host, result.Checkpoint, float64(result.Total))
+		_, err = fmt.Fprintf(out, "%s %s on %s at checkpoint %d%s in %.3fs\n",
+			verb, result.VM, result.Host, result.Checkpoint, keptNote(command.Keep), float64(result.Total))
+		return err
+	case "kept":
+		result, err := client.Kept(ctx, command.Target)
+		if err != nil {
+			return err
+		}
+		// STATE says whether a create from the checkpoint resumes the guest,
+		// and FORKED whether a VM was created from it, which is the one a
+		// release refuses.
+		table := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(table, "CHECKPOINT\tTIME\tSTATE\tFORKED")
+		for _, kept := range result.Kept {
+			fmt.Fprintf(table, "%d\t%s\t%t\t%t\n", kept.Checkpoint, kept.Time.UTC().Format(time.RFC3339),
+				kept.State, kept.Forked)
+		}
+		return table.Flush()
+	case "release":
+		if err := client.Release(ctx, command.Target, command.Checkpoint); err != nil {
+			return err
+		}
+		_, err := fmt.Fprintf(out, "released checkpoint %d of %s\n", command.Checkpoint, command.Target)
 		return err
 	case "start":
 		result, err := client.Start(ctx, command.Target, orch.StartRequest{To: command.To,
@@ -388,4 +415,13 @@ func send(ctx context.Context, client *orch.Client, vm string, in io.Reader) err
 		}
 	}
 	return reader.Err()
+}
+
+// keptNote is what a capture or a stop that kept its checkpoint adds to the
+// checkpoint it names.
+func keptNote(kept bool) string {
+	if kept {
+		return " (kept)"
+	}
+	return ""
 }

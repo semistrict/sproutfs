@@ -120,9 +120,11 @@ type DrainReport struct {
 // template's RAM and disk and the host's processor count.
 //
 // From creates the VM from another VM's published checkpoint instead of a
-// template: the checkpoint its record selects, or the one named. That VM need
-// not run anywhere, which is what a stopped VM is. The new VM boots cold over
-// the disk it inherits, and takes that VM's memory where it names none.
+// template: the checkpoint its record selects, or the one named, such as one
+// it keeps. That VM need not run anywhere, which is what a stopped VM is. The
+// new VM resumes the guest when the checkpoint holds VMM state and the request
+// names no shape, and boots cold over the disk it inherits otherwise. It takes
+// that VM's memory where it names none.
 type CreateRequest struct {
 	Template string              `json:"template,omitempty"`
 	From     *host.CheckpointRef `json:"from,omitempty"`
@@ -188,8 +190,12 @@ type MigrateResult struct {
 // publishes its root and never boots, and the source keeps running. The table
 // records the new VM as stopped, so a start opens it where the capture's pause
 // left the source, and a create can start from it.
+//
+// Keep keeps the checkpoint the capture publishes, so a create can start from
+// it however far the VM has moved on. It does not apply with New.
 type CaptureRequest struct {
-	New bool `json:"new,omitempty"`
+	New  bool `json:"new,omitempty"`
+	Keep bool `json:"keep,omitempty"`
 }
 
 // CaptureResult reports one explicit checkpoint taken on the host running the
@@ -216,9 +222,11 @@ type RecoverResult struct {
 
 // StopRequest is how a VM is stopped: a plain stop keeps its disks and a start
 // boots it over them, and Suspend keeps its memory and its VMM state as well, so
-// a start resumes the guest where it was.
+// a start resumes the guest where it was. Keep keeps the checkpoint the stop
+// publishes, as a capture's Keep does.
 type StopRequest struct {
 	Suspend bool `json:"suspend,omitempty"`
+	Keep    bool `json:"keep,omitempty"`
 }
 
 // StopResult reports one VM stopped: the host that published its last writes

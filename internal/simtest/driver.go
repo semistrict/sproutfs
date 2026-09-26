@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 
+	hostapi "github.com/semistrict/sproutfs/api/host"
 	"github.com/semistrict/sproutfs/platform/sim"
 )
 
@@ -43,9 +44,10 @@ const (
 //
 // What it asserts as it goes is the campaign's first invariant — no guest reads
 // bytes it never wrote — plus, at every takeover, that the checkpoint the new
-// writer inherits is one a writer of that VM published. The other two are
-// asserted at the end, where they mean something: what each fault had to leave
-// true, and that what the store holds is still a deployment.
+// writer inherits is one a writer of that VM published, and, after every step,
+// that every kept checkpoint still reads as the pause it was kept at. The other
+// two are asserted at the end, where they mean something: what each fault had
+// to leave true, and that what the store holds is still a deployment.
 type Driver struct {
 	world  *World
 	random sim.Random
@@ -167,6 +169,11 @@ func (d *Driver) Run(ctx context.Context) error {
 		if err := d.world.Verify(ctx, ReadsMayFail); err != nil {
 			return fmt.Errorf("step %d: %w", step, err)
 		}
+		// Nothing a later checkpoint, a fault or a release of another
+		// checkpoint did may take a byte a kept checkpoint reads.
+		if err := d.world.VerifyKept(ctx, ReadsMayFail); err != nil {
+			return fmt.Errorf("step %d: %w", step, err)
+		}
 	}
 	for _, w := range windows {
 		if live[w.fault] {
@@ -188,7 +195,8 @@ func (d *Driver) Run(ctx context.Context) error {
 	// Every fault has ended, so every page has to read now: a VM whose memory
 	// is still unreachable in a world with nothing wrong with it was lost
 	// rather than rewound.
-	errs = append(errs, d.world.Verify(ctx, ReadsMustSucceed), d.world.CheckSelected(ctx))
+	errs = append(errs, d.world.Verify(ctx, ReadsMustSucceed), d.world.VerifyKept(ctx, ReadsMustSucceed),
+		d.world.CheckSelected(ctx))
 	return errors.Join(errs...)
 }
 
@@ -254,8 +262,21 @@ func (d *Driver) step(ctx context.Context, step int) error {
 		if !ok {
 			return nil
 		}
+		if spec.Kept {
+			return d.createFromKept(ctx, step, spec, choose)
+		}
 		d.log("step %d: fork %s from %s onto host-%d", step, spec.ID, spec.Parent, spec.Host)
 		return d.world.Fork(ctx, spec)
+	case "keep":
+		// Half of what is kept is a checkpoint of the disks alone, which a
+		// create boots cold over; the other half resumes.
+		disks := choose(2) == 0
+		d.log("step %d: keep a checkpoint of %s, disks only=%t", step, id, disks)
+		if err := d.world.Keep(ctx, id, disks); err != nil {
+			d.log("step %d: %s could not publish the checkpoint to keep: %v", step, id, err)
+		}
+	case "release":
+		return d.release(ctx, step, choose)
 	case "delete":
 		// Two VMs have to be left running: a campaign that deleted its way
 		// down to one would assert nothing about two writers for the rest of
@@ -274,12 +295,9 @@ func (d *Driver) step(ctx context.Context, step int) error {
 			return nil
 		}
 		stopping := started[choose(len(started))]
-		if choose(2) == 0 {
-			d.log("step %d: stop %s", step, stopping)
-			return d.world.Stop(ctx, stopping)
-		}
-		d.log("step %d: suspend %s", step, stopping)
-		return d.world.Suspend(ctx, stopping)
+		request := hostapi.StopRequest{Suspend: choose(2) == 0, Keep: choose(2) == 0}
+		d.log("step %d: stop %s, suspend=%t keep=%t", step, stopping, request.Suspend, request.Keep)
+		return d.world.StopWith(ctx, stopping, request)
 	case "start":
 		// Only a stopped VM can be started, and nothing else will bring one
 		// back, so a schedule with none is a step that does nothing.
@@ -325,20 +343,59 @@ func (d *Driver) step(ctx context.Context, step int) error {
 // host that comes back without it has to leave it alone.
 func (d *Driver) operation(choose func(int) int) string {
 	weighted := []string{"checkpoint-disks", "checkpoint-disks", "checkpoint", "migrate", "migrate",
-		"fork", "stop", "start", "delete", "restart"}
+		"fork", "stop", "start", "delete", "restart", "keep", "release"}
 	return weighted[choose(len(weighted))]
 }
 
+// createFromKept creates a VM of the topology from one of the checkpoints its
+// parent keeps, whether or not the parent is running. A quarter of them ask for
+// a shape, which boots even a checkpoint with VMM state cold.
+func (d *Driver) createFromKept(ctx context.Context, step int, spec VMSpec, choose func(int) int) error {
+	kept, _ := d.world.KeptOf(ctx, spec.Parent)
+	if len(kept) == 0 {
+		return nil
+	}
+	sequence := kept[choose(len(kept))]
+	cold := choose(4) == 0
+	d.log("step %d: create %s from %s/%d onto host-%d, cold=%t", step, spec.ID, spec.Parent, sequence,
+		spec.Host, cold)
+	return d.world.CreateFromKept(ctx, spec, sequence, cold)
+}
+
+// release gives up one checkpoint some VM keeps. One a VM was created from is
+// refused, and the world holds the release to that.
+func (d *Driver) release(ctx context.Context, step int, choose func(int) int) error {
+	type candidate struct {
+		vm       string
+		sequence uint64
+	}
+	var candidates []candidate
+	for _, id := range d.world.Running() {
+		kept, _ := d.world.KeptOf(ctx, id)
+		for _, sequence := range kept {
+			candidates = append(candidates, candidate{vm: id, sequence: sequence})
+		}
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
+	chosen := candidates[choose(len(candidates))]
+	d.log("step %d: release %s/%d", step, chosen.vm, chosen.sequence)
+	return d.world.Release(ctx, chosen.vm, chosen.sequence)
+}
+
 // pending is a fork of the topology that has not happened yet and whose parent
-// exists. Nothing else can be forked: a child whose parent was deleted is a
-// child of nothing.
+// can give it one: a running parent for a fork, and a parent that exists for a
+// create from what it keeps. Nothing else can be forked: a child whose parent
+// was deleted is a child of nothing.
 func (d *Driver) pending(choose func(int) int) (VMSpec, bool) {
 	var ready []VMSpec
 	for _, spec := range d.world.Topology().VMs {
 		if !spec.IsFork() {
 			continue
 		}
-		if d.world.Exists(spec.ID) || d.world.HostOf(spec.Parent) < 0 {
+		if d.world.Exists(spec.ID) || !d.world.Exists(spec.Parent) ||
+			(!spec.Kept && d.world.HostOf(spec.Parent) < 0) {
 			continue
 		}
 		ready = append(ready, spec)

@@ -350,7 +350,7 @@ func (m *machine) Stop(context.Context) ([]byte, error) { return []byte("vmm-sta
 // publication of the sealed pages, which is the only thing that makes its
 // guest's memory durable.
 func (m *machine) checkpoint(ctx context.Context, vm *volume.VM) error {
-	checkpoint, err := host.Capture(ctx, vm, m, nil)
+	checkpoint, err := host.Capture(ctx, vm, m, nil, volume.Terms{})
 	if err != nil {
 		return err
 	}

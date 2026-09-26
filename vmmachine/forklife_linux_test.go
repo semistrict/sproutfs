@@ -433,7 +433,7 @@ func takeBriefly(t *testing.T, ctx context.Context, c *migrationCluster, pager *
 	// second, and — unless this arm waits — over a stream still fetching the
 	// pages it is sealing.
 	child := received.VM()
-	ckpt, err := child.Snapshot(ctx, prepareAndResume(process))
+	ckpt, err := child.Snapshot(ctx, prepareAndResume(process), volume.Terms{})
 	if err != nil {
 		release()
 		t.Fatalf("publishing the root index of %s: %v\n%s", handoff.VMID, err, consoleText(process))

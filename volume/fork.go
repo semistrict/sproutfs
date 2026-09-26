@@ -71,6 +71,17 @@ func (f *ForkPoint) State() []byte {
 	return f.checkpoint.state
 }
 
+// HasState reports whether a child of this point has VMM state to resume its
+// guest from: the state the pause captured, or, for a point over a published
+// checkpoint, the state that checkpoint holds. A child of a point without it
+// boots cold over its disks.
+func (f *ForkPoint) HasState() bool {
+	if f.checkpoint != nil {
+		return f.checkpoint.hasState
+	}
+	return f.index.HasState()
+}
+
 // Volumes reports the volumes a child of this point has, in ascending name
 // order.
 func (f *ForkPoint) Volumes() []string { return slices.Clone(f.index.Volumes()) }

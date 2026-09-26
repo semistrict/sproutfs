@@ -163,7 +163,7 @@ func TestHandoffPublishesNothing(t *testing.T) {
 		if err := vm.Checkpoint(t.Context()); !errors.Is(err, volume.ErrHandedOff) {
 			t.Fatalf("checkpointing a handed-off VM returned %v, want ErrHandedOff", err)
 		}
-		if _, err := vm.Snapshot(t.Context(), volume.Prepared([]byte("state"), nil)); !errors.Is(err, volume.ErrHandedOff) {
+		if _, err := vm.Snapshot(t.Context(), volume.Prepared([]byte("state"), nil), volume.Terms{}); !errors.Is(err, volume.ErrHandedOff) {
 			t.Fatalf("snapshotting a handed-off VM returned %v, want ErrHandedOff", err)
 		}
 		if err := vm.Handoff(t.Context()); !errors.Is(err, volume.ErrHandedOff) {
@@ -280,7 +280,7 @@ func TestOpenDoesNotWaitForAPublicationInFlight(t *testing.T) {
 		if err := vm.Volume("state").Write(t.Context(), 0, []byte("unpublished")); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := vm.Snapshot(t.Context(), volume.Prepared([]byte("vmm"), nil)); err != nil {
+		if _, err := vm.Snapshot(t.Context(), volume.Prepared([]byte("vmm"), nil), volume.Terms{}); err != nil {
 			t.Fatal(err)
 		}
 		synctest.Wait()

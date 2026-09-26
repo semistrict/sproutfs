@@ -363,6 +363,14 @@ func (s *supervisor) Stored(ctx context.Context, tenant string) (hostapi.Stored,
 	return hostapi.Stored{Tenant: tenant, VMs: vms}, nil
 }
 
+func (s *supervisor) Kept(ctx context.Context, id string) (hostapi.KeptResult, error) {
+	return s.host.Kept(ctx, id)
+}
+
+func (s *supervisor) Release(ctx context.Context, id string, checkpoint uint64) error {
+	return s.host.Volumes().Release(ctx, id, checkpoint)
+}
+
 // committed is the guest RAM the VMs this host runs have between them, which is
 // what a placement measures this host by. It is each VM's RAM volume, which is
 // the size its template fixed and which a fork inherits, whether or not a byte

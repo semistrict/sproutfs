@@ -366,12 +366,14 @@ type Stored struct {
 // VM is created from an image imported on request, on any host. An empty
 // Template selects the host's only configured one.
 //
-// From creates the VM from a published checkpoint of another VM instead, and
-// names no template. That VM need not run anywhere: a stopped VM's last
-// checkpoint is its whole state. The checkpoint is pinned in that VM's control
-// record without its epoch, so only the published checkpoint its record
-// selects, or one a pin already keeps, can be named. The new VM copies no
-// byte, and boots cold over the disk it inherits.
+// From creates the VM from a published checkpoint of another VM of the same
+// tenant instead, and names no template. That VM need not run anywhere: a
+// stopped VM's last checkpoint is its whole state. The checkpoint is pinned in
+// that VM's control record without its epoch, so only the published checkpoint
+// its record selects, a kept one, or one a pin already keeps can be named. The
+// new VM copies no byte. A checkpoint with VMM state resumes the guest where
+// it was, with its memory; one without boots cold over the disk it inherits,
+// and so does any create that names a shape, because a shape is a cold boot's.
 //
 // Memory, Disk and VCPUs are the VM's shape: its RAM, the size its root volume
 // grows to, and its processors. Zero keeps what the template or the checkpoint
@@ -404,6 +406,11 @@ type CheckpointRef struct {
 // nothing could fork it. Nothing has run at that point, so the root seals no
 // pages and uploads none — it writes its own index and the control record's
 // selection of it.
+//
+// Resumed reports a VM that resumed the guest of the checkpoint it was created
+// from, from that checkpoint's VMM state and memory. Every other VM booted its
+// kernel: one created from a template, and one created from a checkpoint
+// without VMM state or at a shape of its own.
 type CreateResult struct {
 	VM       VM      `json:"vm"`
 	Template Seconds `json:"template_seconds"`
@@ -411,6 +418,7 @@ type CreateResult struct {
 	Boot     Seconds `json:"boot_seconds"`
 	Root     Seconds `json:"root_seconds"`
 	Total    Seconds `json:"total_seconds"`
+	Resumed  bool    `json:"resumed,omitempty"`
 }
 
 // OpenRequest opens a VM on this host. An empty one is the ordinary open: the
@@ -482,8 +490,14 @@ type ForkResult struct {
 // root and never boots. The source pauses once and keeps running. The new VM
 // is then like a stopped one: any host can open it, and it resumes where the
 // pause left the source, or a create can start from it.
+//
+// Keep keeps the checkpoint the capture publishes: reclamation spares it, and
+// a create can start from it however far the VM has moved on. It does not
+// apply to a capture into a new VM, whose root is the checkpoint that VM's
+// record selects.
 type CaptureRequest struct {
 	Into string `json:"into,omitempty"`
+	Keep bool   `json:"keep,omitempty"`
 }
 
 // CaptureResult reports one explicit checkpoint: the guest's pause, and how
@@ -500,8 +514,29 @@ type CaptureResult struct {
 // StopRequest is how a VM is stopped. A plain stop publishes the VM's disks and
 // discards its memory, so a start boots it over them; Suspend publishes its
 // memory and its VMM state too, so a start resumes the guest where it was.
+// Keep keeps the checkpoint the stop publishes, as a capture's Keep does.
 type StopRequest struct {
 	Suspend bool `json:"suspend,omitempty"`
+	Keep    bool `json:"keep,omitempty"`
+}
+
+// Kept is one checkpoint of a VM a checkpoint request kept. Time is when it
+// was selected. State reports that it holds VMM state, so a create from it
+// resumes the guest rather than booting it. Forked reports that a VM was
+// created from it, which makes it a checkpoint nothing releases.
+type Kept struct {
+	Checkpoint uint64    `json:"checkpoint"`
+	Time       time.Time `json:"time"`
+	State      bool      `json:"state"`
+	Forked     bool      `json:"forked"`
+}
+
+// KeptResult lists one VM's kept checkpoints, in ascending order. It is read
+// from the VM's control record, so any host answers for any VM, running or
+// not.
+type KeptResult struct {
+	VM   string `json:"vm"`
+	Kept []Kept `json:"kept"`
 }
 
 // StopResult reports one VM stopped: the checkpoint its last writes were

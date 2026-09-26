@@ -146,7 +146,7 @@ func TestSealedPagesAreRetiredBeforeTheReclamationSweep(t *testing.T) {
 		}
 		defer vm.Close(t.Context())
 
-		first, err := vm.Snapshot(t.Context(), volume.Prepared(nil, seal(objects.log, 0x11)))
+		first, err := vm.Snapshot(t.Context(), volume.Prepared(nil, seal(objects.log, 0x11)), volume.Terms{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -162,7 +162,7 @@ func TestSealedPagesAreRetiredBeforeTheReclamationSweep(t *testing.T) {
 		// and then drops everything it left in the window.
 		<-objects.deleted
 		objects.forget()
-		second, err := vm.Snapshot(t.Context(), volume.Prepared(nil, seal(objects.log, 0x22)))
+		second, err := vm.Snapshot(t.Context(), volume.Prepared(nil, seal(objects.log, 0x22)), volume.Terms{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -197,7 +197,7 @@ func TestTheReclamationSweepRunsOffThePublicationLock(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer vm.Close(t.Context())
-		first, err := vm.Snapshot(t.Context(), volume.Prepared(nil, seal(objects.log, 0x11)))
+		first, err := vm.Snapshot(t.Context(), volume.Prepared(nil, seal(objects.log, 0x11)), volume.Terms{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -214,7 +214,7 @@ func TestTheReclamationSweepRunsOffThePublicationLock(t *testing.T) {
 		// The second checkpoint's sweep is caught in the middle: every delete it
 		// makes is held until this test lets it go.
 		release := objects.hold()
-		second, err := vm.Snapshot(t.Context(), volume.Prepared(nil, seal(objects.log, 0x22)))
+		second, err := vm.Snapshot(t.Context(), volume.Prepared(nil, seal(objects.log, 0x22)), volume.Terms{})
 		if err != nil {
 			release()
 			t.Fatal(err)
@@ -223,7 +223,7 @@ func TestTheReclamationSweepRunsOffThePublicationLock(t *testing.T) {
 		// frozen its overlays, which is everything that lock is for.
 		captured := make(chan *volume.Checkpoint, 1)
 		go func() {
-			third, err := vm.Snapshot(t.Context(), volume.Prepared(nil, seal(objects.log, 0x33)))
+			third, err := vm.Snapshot(t.Context(), volume.Prepared(nil, seal(objects.log, 0x33)), volume.Terms{})
 			if err != nil {
 				t.Error(err)
 			}

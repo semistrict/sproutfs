@@ -69,7 +69,7 @@ func TestAHeldPublicationIsPublishedAgainUnderItsOwnReference(t *testing.T) {
 			return true
 		}
 		ckpt, err := vm.SnapshotDisks(t.Context(),
-			volume.Prepared(nil, map[string]volume.DirtySource{"root": source}), retry)
+			volume.Prepared(nil, map[string]volume.DirtySource{"root": source}), volume.Terms{Retry: retry})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -109,10 +109,10 @@ func TestAPublicationItsRetryDeclinesGivesItsPagesBack(t *testing.T) {
 		asked := 0
 		ckpt, err := vm.SnapshotDisks(t.Context(),
 			volume.Prepared(nil, map[string]volume.DirtySource{"root": source}),
-			func(context.Context, int, error) bool {
+			volume.Terms{Retry: func(context.Context, int, error) bool {
 				asked++
 				return false
-			})
+			}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -153,10 +153,10 @@ func TestAFencedPublicationIsNotRetried(t *testing.T) {
 
 		ckpt, err := vm.SnapshotDisks(t.Context(),
 			volume.Prepared(nil, map[string]volume.DirtySource{"root": source}),
-			func(context.Context, int, error) bool {
+			volume.Terms{Retry: func(context.Context, int, error) bool {
 				t.Error("a fenced publication asked whether to try again")
 				return true
-			})
+			}})
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	hostapi "github.com/semistrict/sproutfs/api/host"
 	"github.com/semistrict/sproutfs/checkpoint"
 	"github.com/semistrict/sproutfs/host"
 	"github.com/semistrict/sproutfs/volume"
@@ -41,7 +42,7 @@ func stoppedVM(t *testing.T, h *hostHarness, id string) {
 	if err := h.hosts[0].AddMachine(id, guest); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.hosts[0].Stop(t.Context(), id, true); err != nil {
+	if _, err := h.hosts[0].Stop(t.Context(), id, hostapi.StopRequest{Suspend: true}); err != nil {
 		t.Fatalf("stopping %s: %v", id, err)
 	}
 }

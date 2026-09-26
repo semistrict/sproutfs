@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	hostapi "github.com/semistrict/sproutfs/api/host"
 	"github.com/semistrict/sproutfs/checkpoint"
 	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/host"
@@ -90,6 +91,11 @@ type World struct {
 	// published. A control record selecting anything else is a VM whose state
 	// nobody wrote.
 	published map[string]map[uint64]bool
+	// kept is the pause every checkpoint a writer of the VM asked to keep
+	// stands for, by sequence: the bytes it published, and the VMM state it
+	// carries or not. Whether it is still kept is the control record's to say;
+	// what a checkpoint the record keeps must read as is this.
+	kept map[string]map[uint64]durableState
 	// ctx is the world's own context, which every host process is started from.
 	ctx context.Context
 	// orphans are the identities a fork could not give back: a child whose root
@@ -275,7 +281,8 @@ func start(ctx context.Context, config Config) (*World, error) {
 		config.Log = func(string, ...any) {}
 	}
 	w := &World{config: config, runtime: config.Runtime, ctx: ctx,
-		instances: map[string]*instance{}, published: map[string]map[uint64]bool{}}
+		instances: map[string]*instance{}, published: map[string]map[uint64]bool{},
+		kept: map[string]map[uint64]durableState{}}
 	for index := range config.Topology.Hosts {
 		id := config.Namespace + config.Topology.Hosts[index]
 		h := &hostState{name: id, address: platform.Address(id),
@@ -963,6 +970,13 @@ func (w *World) StorePages(id, name string, pages []uint64, value byte) error {
 // Under a fault that has taken the store away it fails, as Checkpoint does, and
 // the pause it sealed stays one the VM may come back at.
 func (w *World) CheckpointDisks(ctx context.Context, id string) error {
+	return w.checkpointDisks(ctx, id, volume.Terms{})
+}
+
+// checkpointDisks is CheckpointDisks on terms: a checkpoint that is kept is
+// noted as the pause it stands for, whether or not its publication reported
+// landing, because the write that keeps it is the one that selects it.
+func (w *World) checkpointDisks(ctx context.Context, id string, terms volume.Terms) error {
 	in, g := w.runningVM(id)
 	if in == nil {
 		return nil
@@ -972,15 +986,18 @@ func (w *World) CheckpointDisks(ctx context.Context, id string) error {
 		return nil
 	}
 	at := durableState{model: g.snapshot(), writes: g.stored(), stateless: true}
-	ckpt, err := host.CaptureDisks(ctx, vm, g, w.hosts[in.host].clock, nil)
+	ckpt, err := host.CaptureDisks(ctx, vm, g, w.hosts[in.host].clock, terms)
 	if err != nil {
 		return fmt.Errorf("%s: disk capture: %w", id, err)
 	}
 	at.sequence = ckpt.Ref().Sequence
+	if terms.Keep {
+		w.noteKept(id, at)
+	}
 	sealed, _ := ckpt.Sealed()
 	w.noteSealed(in, sealed, ckpt.Unchanged())
 	w.notePublished(id, at.sequence)
-	if err := ckpt.Wait(ctx); err != nil {
+	if err := ckpt.Swept(ctx); err != nil {
 		w.offer(in, at)
 		return fmt.Errorf("%s: publication: %w", id, err)
 	}
@@ -998,6 +1015,12 @@ func (w *World) CheckpointDisks(ctx context.Context, id string) error {
 // fails, which is a checkpoint that did not happen rather than an error: the
 // VM goes on running and the bytes it could not publish stay in its pages.
 func (w *World) Checkpoint(ctx context.Context, id string) error {
+	return w.checkpoint(ctx, id, volume.Terms{})
+}
+
+// checkpoint is Checkpoint on terms, and notes a kept one as checkpointDisks
+// does.
+func (w *World) checkpoint(ctx context.Context, id string, terms volume.Terms) error {
 	in, g := w.runningVM(id)
 	if in == nil {
 		return nil
@@ -1011,18 +1034,27 @@ func (w *World) Checkpoint(ctx context.Context, id string) error {
 	// only thing that stores at all — so the snapshot taken here is exactly
 	// what the seal froze.
 	at := durableState{model: g.snapshot(), writes: g.stored()}
-	ckpt, err := host.Capture(ctx, vm, g, w.hosts[in.host].clock)
+	ckpt, err := host.Capture(ctx, vm, g, w.hosts[in.host].clock, terms)
 	if err != nil {
 		return fmt.Errorf("%s: capture: %w", id, err)
 	}
 	at.sequence = ckpt.Ref().Sequence
+	if terms.Keep {
+		w.noteKept(id, at)
+	}
 	sealed, _ := ckpt.Sealed()
 	w.noteSealed(in, sealed, ckpt.Unchanged())
 	// The sequence is a writer's whatever the publication does with it: a VM
 	// that comes back at it came back at state this writer sealed, and one that
 	// comes back at a sequence nobody sealed came back at state nobody wrote.
 	w.notePublished(id, at.sequence)
-	if err := ckpt.Wait(ctx); err != nil {
+	// The sweep behind the publication runs on a goroutine of its own. A step
+	// that returned before it would leave its deletes racing whatever the next
+	// step does to the store: a fault that fails the store would take some of
+	// them on one run and none on the next, and a seed would not reproduce its
+	// work. So the checkpoint is waited for until its sweep has run too, and
+	// Swept reports the publication's own outcome.
+	if err := ckpt.Swept(ctx); err != nil {
 		// A publication that did not report landing may have landed anyway: the
 		// store may have taken every object and lost the reply, and the host may
 		// have died between the parts and the index. The pause it sealed is
@@ -1835,16 +1867,18 @@ func (w *World) Delete(ctx context.Context, id string) error {
 // the store refused is a stop that did not happen: the guest goes on running out
 // of its own pages and the VM is worth what its last checkpoint was.
 func (w *World) Stop(ctx context.Context, id string) error {
-	return w.stop(ctx, id, false)
+	return w.StopWith(ctx, id, hostapi.StopRequest{})
 }
 
 // Suspend is Stop with the guest's memory and VMM state published beside its
 // disks, so a start resumes it where it was.
 func (w *World) Suspend(ctx context.Context, id string) error {
-	return w.stop(ctx, id, true)
+	return w.StopWith(ctx, id, hostapi.StopRequest{Suspend: true})
 }
 
-func (w *World) stop(ctx context.Context, id string, suspend bool) error {
+// StopWith is Stop as a request asks: suspending the guest, keeping the
+// checkpoint the stop publishes, or both.
+func (w *World) StopWith(ctx context.Context, id string, request hostapi.StopRequest) error {
 	in, g := w.runningVM(id)
 	if in == nil {
 		return nil
@@ -1856,13 +1890,16 @@ func (w *World) stop(ctx context.Context, id string, suspend bool) error {
 	// The model at the pause is what this publishes. Nothing stores into this
 	// guest while the stop runs — the driver is the only thing that stores at
 	// all — so the snapshot taken here is exactly what the seal froze.
-	at := durableState{model: g.snapshot(), writes: g.stored(), stateless: !suspend}
-	stopped, err := running.Stop(ctx, id, suspend)
+	at := durableState{model: g.snapshot(), writes: g.stored(), stateless: !request.Suspend}
+	stopped, err := running.Stop(ctx, id, request)
 	if err != nil {
 		w.logf("%s: the stop was refused: %v", id, err)
 		return nil
 	}
 	at.sequence = stopped.Sequence
+	if request.Keep {
+		w.noteKept(id, at)
+	}
 	// The sequence is a writer's whatever the publication did with it: a VM that
 	// comes back at it came back at state this writer sealed.
 	w.notePublished(id, at.sequence)
@@ -1875,7 +1912,7 @@ func (w *World) stop(ctx context.Context, id string, suspend bool) error {
 	w.mu.Lock()
 	in.guest, in.present, in.stopped = nil, false, true
 	w.mu.Unlock()
-	w.logf("%s: stopped at %s, suspended=%t", id, stopped, suspend)
+	w.logf("%s: stopped at %s, suspended=%t, kept=%t", id, stopped, request.Suspend, request.Keep)
 	return nil
 }
 

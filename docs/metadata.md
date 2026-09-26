@@ -25,12 +25,16 @@ A VM's control record is the only mutable object the VM owns. It contains:
   keys;
 - the **pins**, the checkpoints of this VM that have been forked, in ascending
   sequence order;
+- the **kept checkpoints**, the checkpoints of this VM that a checkpoint
+  request kept, in ascending sequence order. Each one has its sequence, the
+  time it was selected, and whether it holds VMM state;
 - the **created flag**, which says that the selected checkpoint has been
   published. This means its index object, which holds its root, exists.
 
-This is format 4. Format 3 marked a tombstone. Format 2 named each pin's
-holders, and the parent checkpoint that a record held a pin on. Format 1 stored
-pins as bare sequences. None of these formats parses.
+This is format 5. Format 4 had no kept checkpoints. Format 3 marked a
+tombstone. Format 2 named each pin's holders, and the parent checkpoint that a
+record held a pin on. Format 1 stored pins as bare sequences. None of these
+formats parses.
 
 A pin is permanent. It records that a fork was taken at that checkpoint. It does
 not record that a fork still reads the checkpoint. Nothing in a deployment
@@ -47,32 +51,37 @@ nothing. So a fan-out of any size costs one pin. But a VM forked at many
 distinct checkpoints accumulates one pin per checkpoint, permanently.
 `MaximumPins` (4096) is the limit on that count until a collector releases some.
 
-The holder of the record's epoch writes everything in the record. A pin is the
-one exception. A VM that nobody runs has no writer, and it can still be forked:
-a create can start from its published checkpoint (see
-[hosting](hosting.md#creating-a-vm-from-a-checkpoint)). Taking the epoch to pin
+The holder of the record's epoch writes everything in the record. A pin is one
+exception, and the release of a kept checkpoint is the other (see
+[kept checkpoints](#kept-checkpoints)). A VM that nobody runs has no writer,
+and it can still be forked: a create can start from its published checkpoint
+(see [hosting](hosting.md#creating-a-vm-from-a-checkpoint)). Taking the epoch to pin
 would fence a host that turns out to run the VM after all. So `Client.Pin` adds
 a pin without the epoch. It reads the record and writes it back with the pin
 added, under `IfMatch` against the version it read. It keeps the epoch and the
 nonce. A record that moved in between is read again.
 
-Such a pin may name only two checkpoints:
+Such a pin may name only three kinds of checkpoint:
 
 - the published checkpoint the record selects. A writer's sweep never deletes
   the checkpoint its own selection selected, nor anything that checkpoint's
   index names. A selection that lands between the read and the write moves the
   record, so the pin reads again and names the new selection.
+- a kept checkpoint. Every sweep that could reach it read a record that keeps
+  it, because the keep was written with its selection. A release is
+  conditional on the record, as the pin is, so the two cannot both land.
 - a checkpoint that a pin already keeps. That costs no write.
 
-Any other checkpoint may be in the middle of a sweep that read the pins before
-this pin landed. So it is refused, not pinned too late.
+Any other checkpoint may be in the middle of a sweep that read the record
+before this pin landed. So it is refused, not pinned too late.
 
 If a writer does hold the epoch, the pin moves the record under it. Its next
 write is refused. It reads the record back, finds its own epoch and nonce, and
 adopts that record with the pin. It then makes its change again over it. So its
 next selection reports the pin, and its reclamation spares the pinned
-checkpoint from then on. Only a later open that takes the VM over fences a
-writer.
+checkpoint from then on. A release moves the record in the same way, and the
+writer adopts it in the same way. Only a later open that takes the VM over
+fences a writer.
 
 The record allocates and selects sequences, so the names built on sequences are
 defined with it:
@@ -117,6 +126,41 @@ publication has not written yet, so its created flag is false. Opening that VM
 on any host reports that the fork is still pending. The epoch is left unchanged,
 so an open that could never succeed does not fence the host that holds the
 fork.
+
+### Kept checkpoints
+
+Reclamation deletes a VM's older checkpoints as soon as a newer one replaces
+them. A checkpoint request can ask to keep its checkpoint instead
+(`Handle.SelectKept`). The write that selects the checkpoint also records it as
+kept, so no sweep can see it selected and replaced without seeing it kept.
+Reclamation and compaction then spare it, and every checkpoint its root names,
+as they spare a pinned one. Only kept checkpoints cost storage beyond what the
+selected checkpoint reads.
+
+Keeping is not forking. A kept checkpoint records that someone may fork it
+later. A pin records that someone did. So the two are separate lists, and the
+record can tell a kept checkpoint from a forked one. A fork of a kept
+checkpoint pins it, and the checkpoint is then in both lists.
+
+`Client.Release` gives a kept checkpoint up. It is refused with `ErrForked` for
+a checkpoint that a pin also holds, because the pin is permanent. It is refused
+with `ErrNotKept` for a checkpoint the record does not keep. A release needs no
+epoch, like a pin without the writer. It keeps the epoch and the nonce, and it
+is conditional on the record as it was read. So a pin and a release of one
+checkpoint are ordered by the record: whichever lands first makes the other
+read again and be refused. `MaximumKept` (4096) bounds the list.
+
+The release is followed by a sweep of what only the released checkpoint held.
+It is reclamation with the released checkpoint in place of the replaced one.
+The candidates are the released checkpoint and the checkpoints of this VM that
+its root names. The sweep spares everything the selected root names and
+everything that stays pinned or kept. Nothing newer than the selected
+checkpoint names anything the selected root does not, so a writer that keeps
+publishing loses nothing to the sweep. A released checkpoint that is still
+selected stays until a later selection replaces it.
+
+Deleting a VM spares only its pins. A kept checkpoint that no fork was taken
+from goes with the VM.
 
 ## Conditional publication
 
@@ -173,12 +217,12 @@ carries that epoch's nonce.
 One case remains. The writer may find a record with its own epoch and nonce that
 is neither of those two records. This happens in two ways. A reply is lost and
 the read-back also fails, so the writer tracks a version that the store has
-moved past. Or a pin was added without the epoch. Either way the store refuses
+moved past. Or a pin or a release was written without the epoch. Either way the store refuses
 the writer's next write against its stale version. That refusal is not a
 takeover. The writer adopts the record it finds and makes its change again over
 it. A change that had already landed then writes nothing. Only a foreign epoch
 or nonce fences the writer. A refusal whose record cannot be read fences
-nothing either, because a pin refuses a write as a takeover does. The writer's
+nothing either, because a pin or a release refuses a write as a takeover does. The writer's
 next write reads what happened. This behaviour lets each of these be finished
 by repeating it: an interrupted creation, an interrupted takeover, and an
 interrupted checkpoint selection.

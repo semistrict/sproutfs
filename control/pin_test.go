@@ -266,7 +266,10 @@ func TestALostPinReplyIsReconciledByThePin(t *testing.T) {
 
 func equalRecords(a, b control.Record) bool {
 	return a.VM == b.VM && a.Epoch == b.Epoch && bytes.Equal(a.Nonce, b.Nonce) &&
-		a.Selected == b.Selected && a.Created == b.Created && slices.Equal(a.Pinned, b.Pinned)
+		a.Selected == b.Selected && a.Created == b.Created && slices.Equal(a.Pinned, b.Pinned) &&
+		slices.EqualFunc(a.Kept, b.Kept, func(x, y control.Kept) bool {
+			return x.Sequence == y.Sequence && x.Time.Equal(y.Time) && x.State == y.State
+		})
 }
 
 // A pin added without the epoch refuses the writer's next write just as a

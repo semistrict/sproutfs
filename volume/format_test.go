@@ -34,7 +34,7 @@ var update = flag.Bool("update", false, "rewrite the format fixtures under testd
 // it, and supersededDeployments are the dumps committed before this one, each
 // with the version it was written under — the bytes an older build actually
 // wrote, which is the only thing that makes them worth keeping.
-const fixtureDeployment = "testdata/deployment-record-4-index-8-part-4"
+const fixtureDeployment = "testdata/deployment-record-5-index-8-part-4"
 
 var supersededDeployments = []struct {
 	dir string
@@ -44,18 +44,21 @@ var supersededDeployments = []struct {
 	sentinel error
 	want     string
 }{
+	// Opening a VM reads its control record before anything the record names,
+	// so every dump written before record format 5 is refused by its record.
 	{dir: "testdata/deployment-record-3-index-5-part-1", sentinel: control.ErrCorrupt,
-		want: "record format version 3, want 4"},
-	{dir: "testdata/deployment-record-4-index-5-part-1", sentinel: checkpoint.ErrCorrupt,
-		want: "checkpoint index format version 5"},
-	{dir: "testdata/deployment-record-4-index-6-part-2", sentinel: checkpoint.ErrCorrupt,
-		want: "checkpoint index format version 6"},
-	{dir: "testdata/deployment-record-4-part-3", sentinel: checkpoint.ErrCorrupt,
-		want: "checkpoint part format version 3"},
-	// The set before this one: its roots state no volume's page size, so every
-	// page number in them is a 2 MiB page and nothing else may read them.
-	{dir: "testdata/deployment-record-4-index-7-part-4", sentinel: checkpoint.ErrCorrupt,
-		want: "checkpoint index format version 7"},
+		want: "record format version 3, want 5"},
+	{dir: "testdata/deployment-record-4-index-5-part-1", sentinel: control.ErrCorrupt,
+		want: "record format version 4, want 5"},
+	{dir: "testdata/deployment-record-4-index-6-part-2", sentinel: control.ErrCorrupt,
+		want: "record format version 4, want 5"},
+	{dir: "testdata/deployment-record-4-part-3", sentinel: control.ErrCorrupt,
+		want: "record format version 4, want 5"},
+	{dir: "testdata/deployment-record-4-index-7-part-4", sentinel: control.ErrCorrupt,
+		want: "record format version 4, want 5"},
+	// The set before this one: its records keep no checkpoint.
+	{dir: "testdata/deployment-record-4-index-8-part-4", sentinel: control.ErrCorrupt,
+		want: "record format version 4, want 5"},
 }
 
 // objectsDir and manifestFile are the two halves of a fixture: the store's
@@ -150,9 +153,9 @@ func readState(t *testing.T, h *harness, vm *volume.VM) []byte {
 }
 
 // writeDeploymentFixture builds the deployment the fixture holds and writes it
-// out: a VM with a history of checkpoints and VMM state, whose record pins the
-// point it was forked at, and a fork of it whose first checkpoint names that
-// point's checkpoints. Between them they exercise every object the formats
+// out: a VM with a history of checkpoints and VMM state, whose record keeps its
+// first capture and pins the point it was forked at, and a fork of it whose
+// first checkpoint names that point's checkpoints. Between them they exercise every object the formats
 // describe. It writes only the current set: a superseded dump is worth keeping
 // only as the bytes the build of that version wrote.
 func writeDeploymentFixture(t *testing.T) {
@@ -177,7 +180,7 @@ func writeDeploymentFixture(t *testing.T) {
 		}
 		fill(alpha, want, "disk", 0, 0x11)
 		fill(alpha, want, "ram", 0, 0x22)
-		capture, err := alpha.Snapshot(t.Context(), volume.Prepared([]byte(fixtureState), nil))
+		capture, err := alpha.Snapshot(t.Context(), volume.Prepared([]byte(fixtureState), nil), volume.Terms{Keep: true})
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -107,6 +107,20 @@ func (c *Client) Start(ctx context.Context, id string, request StartRequest) (St
 		c.path("/vms/%s/start", url.PathEscape(id)), request)
 }
 
+// Kept lists a VM's kept checkpoints, whether or not anything runs it.
+func (c *Client) Kept(ctx context.Context, id string) (host.KeptResult, error) {
+	return jsonhttp.Call[host.KeptResult](ctx, c.http, http.MethodGet,
+		c.path("/vms/%s/kept", url.PathEscape(id)), nil)
+}
+
+// Release gives up one of a VM's kept checkpoints, and the objects only it
+// held. A checkpoint a VM was created from is refused.
+func (c *Client) Release(ctx context.Context, id string, checkpoint uint64) error {
+	_, err := jsonhttp.Call[struct{}](ctx, c.http, http.MethodPost,
+		c.path("/vms/%s/kept/%d/release", url.PathEscape(id), checkpoint), nil)
+	return err
+}
+
 // Check runs the deployment check over the bucket and reports every violation
 // it found, which is what a run asks for once it has deleted every VM.
 func (c *Client) Check(ctx context.Context) (CheckResult, error) {

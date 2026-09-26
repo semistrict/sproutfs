@@ -151,3 +151,18 @@ func (c *Client) Delete(ctx context.Context, id string) error {
 	_, err := jsonhttp.Call[struct{}](ctx, c.http, http.MethodDelete, c.path("/vms/%s", url.PathEscape(id)), nil)
 	return err
 }
+
+// Kept lists a VM's kept checkpoints. Any host answers for any VM, because the
+// answer is the VM's control record.
+func (c *Client) Kept(ctx context.Context, id string) (KeptResult, error) {
+	return jsonhttp.Call[KeptResult](ctx, c.http, http.MethodGet, c.path("/vms/%s/kept", url.PathEscape(id)), nil)
+}
+
+// Release gives up one of a VM's kept checkpoints, and deletes what only it
+// held. A checkpoint a VM was created from is refused. Any host does this for
+// any VM.
+func (c *Client) Release(ctx context.Context, id string, checkpoint uint64) error {
+	_, err := jsonhttp.Call[struct{}](ctx, c.http, http.MethodPost,
+		c.path("/vms/%s/kept/%d/release", url.PathEscape(id), checkpoint), nil)
+	return err
+}

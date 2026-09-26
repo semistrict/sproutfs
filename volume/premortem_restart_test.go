@@ -174,7 +174,7 @@ func TestPremortemAStopSerialisesBehindAPublicationInFlight(t *testing.T) {
 		release := faults.hold(func(key platform.ObjectKey) bool {
 			return bytes.HasSuffix([]byte(key.String()), []byte("/index"))
 		})
-		interval, err := vm.Snapshot(t.Context(), volume.Prepared([]byte("interval"), nil))
+		interval, err := vm.Snapshot(t.Context(), volume.Prepared([]byte("interval"), nil), volume.Terms{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -189,7 +189,7 @@ func TestPremortemAStopSerialisesBehindAPublicationInFlight(t *testing.T) {
 		var once sync.Once
 		go func() {
 			ckpt, err := vm.Snapshot(context.WithoutCancel(t.Context()),
-				volume.Prepared([]byte("stop"), nil))
+				volume.Prepared([]byte("stop"), nil), volume.Terms{})
 			once.Do(func() { final = ckpt })
 			stopped <- err
 		}()

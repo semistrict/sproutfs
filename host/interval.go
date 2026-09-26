@@ -50,7 +50,8 @@ func (h *Host) checkpointing(ctx context.Context, vmID string, entry *registrati
 		}
 		// An explicit capture, a fork's, holds the VM's publication lock, so the
 		// two serialize rather than checkpointing the same guest twice.
-		checkpoint, err := CaptureDisks(ctx, vm, entry.runtime, h.clock, h.retryPastWindow(ctx, vmID, entry))
+		checkpoint, err := CaptureDisks(ctx, vm, entry.runtime, h.clock,
+			volume.Terms{Retry: h.retryPastWindow(ctx, vmID, entry)})
 		if err != nil {
 			if ctx.Err() != nil {
 				return

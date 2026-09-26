@@ -430,7 +430,7 @@ func TestFirecrackerDAXCaptureRestoreForkAndFence(t *testing.T) {
 			return nil, nil, err
 		}
 		return state, sources, nil
-	})
+	}, volume.Terms{})
 	if err != nil {
 		raw := consoleText(p)
 		t.Fatalf("capture: %v\n%s", err, raw)
@@ -478,7 +478,7 @@ func TestFirecrackerDAXCaptureRestoreForkAndFence(t *testing.T) {
 	// paused, and with the checkpoint that pause sealed already published.
 	quiet, err := source.Snapshot(ctx, func(ctx context.Context) ([]byte, map[string]volume.DirtySource, error) {
 		return p.Prepare(ctx)
-	})
+	}, volume.Terms{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -622,7 +622,7 @@ func TestFirecrackerDAXCaptureRestoreForkAndFence(t *testing.T) {
 			return nil, nil, err
 		}
 		return state, sources, fp.Resume(ctx)
-	})
+	}, volume.Terms{})
 	if err != nil {
 		raw := consoleText(fp)
 		t.Fatalf("the fenced host could not take its checkpoint: %v\n%s", err, raw)

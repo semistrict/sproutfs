@@ -88,11 +88,11 @@ func (s *Store) Begin(parent *Index, ref control.Ref) *Publication {
 	return p
 }
 
-// Protect names the sequences of this VM a fork pinned, which compaction must
-// leave alone: their objects are the fork's as much as this VM's. A pinned
-// checkpoint protects every checkpoint its index names, not only
-// itself: the fork reads its whole view through them, so rewriting one copies
-// bytes reclamation can never free.
+// Protect names the sequences of this VM a fork pinned or a checkpoint request
+// kept, which compaction must leave alone: their objects are the fork's as much
+// as this VM's, or will be. A protected checkpoint protects every checkpoint
+// its index names, not only itself: a fork reads its whole view through them,
+// so rewriting one copies bytes reclamation cannot free while it is protected.
 func (p *Publication) Protect(sequences []uint64) {
 	for _, sequence := range sequences {
 		p.protected[control.Ref{VM: p.ref.VM, Sequence: sequence}] = true
@@ -698,18 +698,18 @@ func (w *partWriter) record(err error) { w.once.Do(func() { w.failure = err; w.c
 // built. Parts are raw bytes rather than an envelope, so equality is exact.
 func equalParts(existing, data []byte) bool { return string(existing) == string(data) }
 
-// protectedCheckpoints expands the pinned sequences Protect named into the
-// checkpoints compaction must leave alone: each pinned checkpoint and every one
-// its index names. The store memoises the expansion, because an index is
+// protectedCheckpoints expands the sequences Protect named into the
+// checkpoints compaction must leave alone: each protected checkpoint and every
+// one its index names. The store memoises the expansion, because an index is
 // immutable.
 func (p *Publication) protectedCheckpoints(ctx context.Context) (map[control.Ref]bool, error) {
 	protected := make(map[control.Ref]bool, len(p.protected))
 	for ref := range p.protected {
 		refs, err := p.store.protectedBy(ctx, ref)
 		if err != nil {
-			// A pinned checkpoint whose index cannot be read protects
+			// A protected checkpoint whose index cannot be read protects
 			// everything a compaction might otherwise rewrite.
-			return nil, errors.Join(err, errors.New("checkpoint: pinned checkpoint unreadable"))
+			return nil, errors.Join(err, errors.New("checkpoint: protected checkpoint unreadable"))
 		}
 		for _, spared := range refs {
 			protected[spared] = true

@@ -236,7 +236,7 @@ func scheduledVolumeWorkload(t *testing.T, ctx context.Context, world *simtest.W
 	check("initial", vm, want)
 	checkpointModel := want.clone()
 	state := []byte("captured VMM registers")
-	ckpt, err := vm.Snapshot(ctx, volume.Prepared(state, nil))
+	ckpt, err := vm.Snapshot(ctx, volume.Prepared(state, nil), volume.Terms{})
 	if err != nil {
 		t.Fatal(err)
 	}

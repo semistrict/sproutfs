@@ -35,7 +35,7 @@ const (
 	// names those parts and nothing ever will.
 	AllowUnpublishedIndex
 	// AllowUnreferencedCheckpoint admits a whole published checkpoint of the
-	// record's own epoch that nothing selects and nothing pins. A VM's first
+	// record's own epoch that nothing selects, keeps or pins. A VM's first
 	// checkpoint is one: the handle that created it publishes that checkpoint
 	// before it owns anything, so it has nothing to reclaim.
 	AllowUnreferencedCheckpoint
@@ -100,14 +100,15 @@ func (e *InconsistentError) Error() string {
 // left in the store must still be a deployment.
 //
 // It checks that every control record and every part parses at the format
-// version this build writes; that every pinned sequence is a published
-// checkpoint of the VM whose record pins it, since a pin is written on a
-// checkpoint that is already selected and nothing ever deletes one; that every
-// checkpoint a selected or pinned root names exists with the part count and the
-// member bytes that root recorded, and holds only pages its own VM published;
-// that every object under a VM's checkpoint namespace is reached by some
-// record's selected checkpoint, by a pinned one, or by the one checkpoint of
-// grace a compaction's emptied checkpoint is spared for; and that the bill is
+// version this build writes; that every pinned or kept sequence is a published
+// checkpoint of the VM whose record names it, since a pin or a keep is written
+// on a checkpoint that is already published and nothing deletes one while it
+// stands; that every checkpoint a selected, pinned or kept root names exists
+// with the part count and the member bytes that root recorded, and holds only
+// pages its own VM published; that every object under a VM's checkpoint
+// namespace is reached by some record's selected checkpoint, by a pinned or
+// kept one, or by the one checkpoint of grace a compaction's emptied checkpoint
+// is spared for; and that the bill is
 // the store: what StoredBytes reports for each tenant, summed over every VM, is
 // every byte the store holds, each billed to the VM it is stored under.
 //
@@ -159,7 +160,7 @@ type audit struct {
 	base        string
 	allowed     map[Allowance]bool
 	// reached is every object key some record's selected checkpoint, a pinned
-	// one or a compaction's grace names.
+	// or kept one, or a compaction's grace names.
 	reached    map[string]bool
 	violations []Violation
 }
@@ -307,7 +308,9 @@ func (a *audit) checkBill(ctx context.Context, stored map[string]uint64) error {
 // fills the reached set. A pin is what keeps readable what forks this deployment
 // cannot enumerate inherit, so a pinned checkpoint that does not open is durable state
 // disagreeing with itself: the pin was written on a checkpoint that was already
-// published, and nothing after that deletes a pinned one.
+// published, and nothing after that deletes a pinned one. A kept checkpoint is
+// the same: it is kept by the write that selects it, and no sweep deletes it
+// until a release gives it up.
 func (a *audit) checkRecord(ctx context.Context, record control.Record) {
 	key := a.base + control.RecordName(record.VM)
 	if record.Created {
@@ -315,6 +318,9 @@ func (a *audit) checkRecord(ctx context.Context, record control.Record) {
 	}
 	for _, sequence := range record.Pinned {
 		a.reach(ctx, key, control.Ref{VM: record.VM, Sequence: sequence}, "a pinned checkpoint")
+	}
+	for _, kept := range record.Kept {
+		a.reach(ctx, key, control.Ref{VM: record.VM, Sequence: kept.Sequence}, "a kept checkpoint")
 	}
 }
 
@@ -337,8 +343,8 @@ func (a *audit) reach(ctx context.Context, key string, ref control.Ref, what str
 }
 
 // checkReachability reports every checkpoint object no record's selected root,
-// no pinned root and no compaction's grace names, grouped into the class of
-// host loss that could have left it.
+// no pinned or kept root and no compaction's grace names, grouped into the
+// class of host loss that could have left it.
 func (a *audit) checkReachability(objects []object, held map[string]control.Record) {
 	// A checkpoint is classified whole: its index object says whether a
 	// publication finished, and its sequence says which epoch wrote it.
@@ -367,7 +373,7 @@ func (a *audit) checkReachability(objects []object, held map[string]control.Reco
 					ref, control.EpochOf(found.sequence), record.Epoch))
 		default:
 			a.report(found.key, AllowUnreferencedCheckpoint,
-				fmt.Errorf("%s is neither selected nor pinned", ref))
+				fmt.Errorf("%s is neither selected, kept nor pinned", ref))
 		}
 	}
 }

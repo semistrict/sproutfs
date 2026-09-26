@@ -359,10 +359,11 @@ func StartHost(ctx context.Context, config Config) (*Host, error) {
 		return nil, err
 	}
 	// The records this host writes draw their writer nonces and the epoch a
-	// creation takes from the host's own entropy, which is what makes a
-	// simulated deployment's object keys reproducible.
+	// creation takes from the host's own entropy, and date what they keep by
+	// the host's own clock, which is what makes a simulated deployment's
+	// object keys and records reproducible.
 	h.control, err = control.NewClient(control.Config{ObjectStore: config.ObjectStore,
-		ObjectPrefix: config.ObjectPrefix, Entropy: h.entropy})
+		ObjectPrefix: config.ObjectPrefix, Entropy: h.entropy, Clock: h.clock})
 	if err != nil {
 		return nil, err
 	}

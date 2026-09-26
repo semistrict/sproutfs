@@ -155,7 +155,9 @@ This layer has no automatic trigger:
   always has something to publish.
 - `Snapshot` takes the publication lock, has its caller seal the guest, and
   publishes in the background with VMM state and sealed pages attached. It does
-  this even when nothing is dirty.
+  this even when nothing is dirty. `SnapshotDisks` does the same for the disks
+  alone. Both take `Terms`: `Keep` keeps the checkpoint in the write that
+  selects it, and `Retry` decides what a failed publication does.
 - `Close` publishes a final checkpoint.
 - `Handoff` and `ForkPoint` publish nothing.
 
@@ -357,7 +359,7 @@ wait. Two sweeps of one VM never contend. Each sweep's candidates come from the
 root it replaced, and the next sweep starts from the root this sweep made
 current.
 
-Reclamation spares four things:
+Reclamation spares five things:
 
 1. A checkpoint emptied by the current checkpoint's compaction is kept for that
    one checkpoint. A reader that holds the replaced view still reads through
@@ -374,9 +376,15 @@ Reclamation spares four things:
    the checkpoint just replaced like any other. A selection over a pinned
    checkpoint sweeps as usual and finds nothing the pin protects to delete. The
    replaced checkpoints that no pin and no new root names are still deleted.
-3. Another VM's checkpoints are never touched. A fork's inherited entries name
+3. A sequence a checkpoint request kept is spared the same way, with every
+   checkpoint its root names, so a VM can be created from it later. Unlike a
+   pin, a keep can be released while no fork was taken from it. The release
+   sweeps the released checkpoint as if it had just been replaced: its own
+   checkpoints that the selected root does not name and nothing else protects
+   are deleted. See [metadata](metadata.md#kept-checkpoints).
+4. Another VM's checkpoints are never touched. A fork's inherited entries name
    such checkpoints.
-4. A handle reclaims only checkpoints it published itself. So it leaves behind
+5. A handle reclaims only checkpoints it published itself. So it leaves behind
    the checkpoint it opened on, because a handle cannot account for what the
    previous writer was doing. Those checkpoints belong to a collector, and no
    collector exists. The delete sweeps a deleted VM's own checkpoints, except
@@ -427,8 +435,8 @@ segment needs no separate origin.
 
 None of this runs during the vCPU pause. A checkpoint's reads happen after the
 guest has resumed. Another VM's checkpoints are never rewritten, and a pinned
-checkpoint is never rewritten. A pinned sequence protects every checkpoint that
-its root names, not only itself. The fork reads its whole view through those
+or kept checkpoint is never rewritten. A pinned or kept sequence protects every
+checkpoint that its root names, not only itself. The fork reads its whole view through those
 checkpoints, and rewriting one would copy bytes that reclamation can never
 free.
 
@@ -787,10 +795,15 @@ fork point gives those pages the same identity. On another host,
 child's pager then pulls those pages from the parent's page server, post-copy.
 
 `Manager.InheritPublished` builds the same point over a published checkpoint of
-a VM that nothing runs, such as a stopped VM. There is no writer to pin with, so
-it pins the checkpoint first without the epoch. It may name only the published
-checkpoint the record selects, or one a pin already keeps. See
-[metadata](metadata.md#the-control-record).
+a VM that nothing need run, such as a stopped VM. There is no writer to pin
+with, so it pins the checkpoint first without the epoch. It may name only the
+published checkpoint the record selects, a kept one, or one a pin already
+holds. See [metadata](metadata.md#the-control-record). A child of such a point
+resumes from the checkpoint's VMM state when it has one
+([hosting](hosting.md#creating-a-vm-from-a-checkpoint)).
+
+`Manager.Release` gives up a kept checkpoint that no fork was taken from and
+sweeps what only it held.
 
 The child's first checkpoint is its own root. It publishes the pages the child
 inherited as the child's own. Only after that can any host open the child.
@@ -818,7 +831,8 @@ steps:
    record that moved is read again, so a pin added without the writer in
    between is spared. After this, nothing can open the VM.
 3. Delete what the VM published: every object under its checkpoint prefix that
-   no pin of the VM covers. Each checkpoint's index object is deleted first.
+   no pin of the VM covers. Each checkpoint's index object is deleted first. A
+   kept checkpoint no fork was taken from is deleted with the rest.
 
 Removing the identity's only mutable object makes the identity usable again.
 Deleting the objects keeps it usable. A create is refused while anything is

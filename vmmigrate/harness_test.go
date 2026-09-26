@@ -461,7 +461,7 @@ func (m *machine) MemoryRegions() map[string]*vmmemory.MemoryRegion {
 // memory region seals, the guest resumes, and the checkpoint publishes the sealed
 // pages. It is the only thing that makes a running VM's memory durable.
 func (m *machine) checkpoint(ctx context.Context, vm *volume.VM) error {
-	ckpt, err := host.Capture(ctx, vm, m, nil)
+	ckpt, err := host.Capture(ctx, vm, m, nil, volume.Terms{})
 	if err != nil {
 		return err
 	}

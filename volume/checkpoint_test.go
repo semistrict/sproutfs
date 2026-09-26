@@ -249,7 +249,7 @@ func TestFailedPublicationBurnsItsSequence(t *testing.T) {
 		})
 
 		ckpt, err := vm.Snapshot(t.Context(), volume.Prepared(nil,
-			map[string]volume.DirtySource{"root": sealedPages{size: checkpoint.PageSize2MiB, pages: []uint64{0}, fill: 0xa1}}))
+			map[string]volume.DirtySource{"root": sealedPages{size: checkpoint.PageSize2MiB, pages: []uint64{0}, fill: 0xa1}}), volume.Terms{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -271,7 +271,7 @@ func TestFailedPublicationBurnsItsSequence(t *testing.T) {
 			{size: checkpoint.PageSize2MiB, pages: []uint64{0, 1}, fill: 0xa4},
 		} {
 			want := control.Ref{VM: "vm", Sequence: counted(vm, uint64(3+offset))}
-			next, err := vm.Snapshot(t.Context(), volume.Prepared(nil, map[string]volume.DirtySource{"root": sealed}))
+			next, err := vm.Snapshot(t.Context(), volume.Prepared(nil, map[string]volume.DirtySource{"root": sealed}), volume.Terms{})
 			if err != nil {
 				t.Fatalf("checkpoint %d after the failure: %v", offset, err)
 			}
@@ -312,7 +312,7 @@ func TestSnapshotDisksNamesNoState(t *testing.T) {
 		defer vm.Close(t.Context())
 		store := h.imageStore(t, h.objects)
 
-		full, err := vm.Snapshot(t.Context(), volume.Prepared([]byte("registers"), nil))
+		full, err := vm.Snapshot(t.Context(), volume.Prepared([]byte("registers"), nil), volume.Terms{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -323,7 +323,7 @@ func TestSnapshotDisksNamesNoState(t *testing.T) {
 			t.Fatal(err)
 		}
 		copy(want["root"], []byte("disk only"))
-		disks, err := vm.SnapshotDisks(t.Context(), volume.Prepared(nil, nil), nil)
+		disks, err := vm.SnapshotDisks(t.Context(), volume.Prepared(nil, nil), volume.Terms{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -339,7 +339,7 @@ func TestSnapshotDisksNamesNoState(t *testing.T) {
 		}
 		want.checkCheckpoint(t, disks, "the checkpoint of the disks")
 
-		if _, err := vm.SnapshotDisks(t.Context(), volume.Prepared([]byte("registers"), nil), nil); !errors.Is(err, volume.ErrInvalidConfig) {
+		if _, err := vm.SnapshotDisks(t.Context(), volume.Prepared([]byte("registers"), nil), volume.Terms{}); !errors.Is(err, volume.ErrInvalidConfig) {
 			t.Fatalf("a checkpoint of the disks that captured state gave %v, want ErrInvalidConfig", err)
 		}
 	})

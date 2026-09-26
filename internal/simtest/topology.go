@@ -87,6 +87,11 @@ type VMSpec struct {
 	// Parent is the VM this one is forked from, or empty for a VM created from
 	// nothing. A fork starts the point its parent was sealed at.
 	Parent string
+	// Kept makes this VM a create from one of its parent's kept checkpoints
+	// rather than a fork of the running parent. The parent need not be running,
+	// and the checkpoint is one it kept however long ago: the child reads
+	// exactly that checkpoint's bytes.
+	Kept bool
 	// Host is the index into Topology.Hosts of the host this VM starts on. For
 	// a fork it may be its parent's host or another one, which are the two
 	// halves of the fork path: sharing the parent's pages, and pulling them
@@ -115,7 +120,10 @@ func (t Topology) String() string {
 	line := fmt.Sprintf("%d hosts", len(t.Hosts))
 	for _, vm := range t.VMs {
 		line += fmt.Sprintf(" %s@host-%d", vm.ID, vm.Host)
-		if vm.IsFork() {
+		switch {
+		case vm.Kept:
+			line += "<=" + vm.Parent
+		case vm.IsFork():
 			line += "<-" + vm.Parent
 		}
 		line += fmt.Sprintf("(%dp)", vm.Pages())
@@ -141,6 +149,9 @@ const (
 	// rather than a VM created from nothing. Half, so a seed's forks are
 	// neither always flat nor always a chain.
 	forkChance = 0.5
+	// keptChance is how often a fork is a create from one of its parent's kept
+	// checkpoints instead.
+	keptChance = 1.0 / 3
 )
 
 // NewTopology draws one deployment from r. Every choice is keyed on a stable
@@ -160,6 +171,7 @@ func NewTopology(r sim.Random) Topology {
 		// anything can be forked from it.
 		if i > 0 && r.Chance(id+"/fork", forkChance) {
 			spec.Parent = t.VMs[r.Intn(id+"/parent", i)].ID
+			spec.Kept = r.Chance(id+"/kept", keptChance)
 		}
 		// ram0 is every VM's memory. A PMEM disk is there half the time, so a
 		// migration has to name and move more than one memory region on some seeds and

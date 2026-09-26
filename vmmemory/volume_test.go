@@ -18,7 +18,7 @@ func checkpointVolume(t *testing.T, vm *volume.VM, name string, r *vmmemory.Memo
 	if err := r.Seal(t.Context()); err != nil {
 		return err
 	}
-	checkpoint, err := vm.Snapshot(t.Context(), volume.Prepared(nil, map[string]volume.DirtySource{name: r.Checkpoint()}))
+	checkpoint, err := vm.Snapshot(t.Context(), volume.Prepared(nil, map[string]volume.DirtySource{name: r.Checkpoint()}), volume.Terms{})
 	if err != nil {
 		return errors.Join(err, r.Unseal(t.Context()))
 	}

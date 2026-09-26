@@ -34,6 +34,7 @@ type fakeHost struct {
 
 	status   hostapi.Status
 	stored   hostapi.Stored
+	kept     hostapi.KeptResult
 	created  hostapi.CreateResult
 	imported hostapi.ImportTemplateResult
 	opened   hostapi.OpenResult
@@ -66,6 +67,14 @@ func (f *fakeHost) Status(context.Context) (hostapi.Status, error) {
 
 func (f *fakeHost) Stored(_ context.Context, tenant string) (hostapi.Stored, error) {
 	return f.stored, f.record("stored %q", tenant)
+}
+
+func (f *fakeHost) Kept(_ context.Context, id string) (hostapi.KeptResult, error) {
+	return f.kept, f.record("kept %s", id)
+}
+
+func (f *fakeHost) Release(_ context.Context, id string, checkpoint uint64) error {
+	return f.record("release %s@%d", id, checkpoint)
 }
 
 func (f *fakeHost) Create(_ context.Context, request hostapi.CreateRequest) (hostapi.CreateResult, error) {
@@ -112,6 +121,9 @@ func (f *fakeHost) Capture(_ context.Context, id string, request hostapi.Capture
 	if request.Into != "" {
 		return f.captured, f.record("capture %s into %s", id, request.Into)
 	}
+	if request.Keep {
+		return f.captured, f.record("capture %s kept", id)
+	}
 	return f.captured, f.record("capture %s", id)
 }
 
@@ -147,10 +159,14 @@ func (f *fakeHost) Drain(context.Context) (hostapi.DrainResult, error) {
 }
 
 func (f *fakeHost) Stop(_ context.Context, id string, request hostapi.StopRequest) (hostapi.StopResult, error) {
-	if request.Suspend {
-		return f.stopped, f.record("suspend %s", id)
+	kept := ""
+	if request.Keep {
+		kept = " kept"
 	}
-	return f.stopped, f.record("stop %s", id)
+	if request.Suspend {
+		return f.stopped, f.record("suspend %s%s", id, kept)
+	}
+	return f.stopped, f.record("stop %s%s", id, kept)
 }
 
 func (f *fakeHost) Delete(_ context.Context, id string) error { return f.record("delete %s", id) }

@@ -14,7 +14,7 @@ import (
 
 // Reclaim deletes the checkpoints the current one no longer names: every
 // checkpoint the previous root named, and the previous checkpoint itself, that
-// the current root does not name and no pin protects. A dead checkpoint goes
+// the current root does not name and nothing protects. A dead checkpoint goes
 // whole, its index object first, because a root names every checkpoint it reads
 // a page from and every one it addresses a segment in: a checkpoint nothing
 // names holds nothing anyone can reach.
@@ -23,14 +23,19 @@ import (
 // checkpoint that is now selected. Only this VM's own checkpoints are deleted:
 // a fork's index names its parent's checkpoints, and those belong to the parent.
 //
-// pinned names the sequences of this VM that have been forked. Each one is
-// spared, along with every checkpoint its index names — which is what makes a
-// grandchild safe, because its own index names those checkpoints directly and
-// no record here says so. Each expansion is read once and memoised, because
-// indexes are immutable. Deletion is idempotent: an object already gone is not
+// protected names the sequences of this VM that have been forked or kept. Each
+// one is spared, along with every checkpoint its index names — which is what
+// makes a grandchild safe, because its own index names those checkpoints
+// directly and no record here says so, and what keeps a kept checkpoint
+// forkable. Each expansion is read once and memoised, because indexes are
+// immutable.
+//
+// The previous index need not be one the current one replaced. A released kept
+// checkpoint is swept this way too: what it named, less what the selected
+// index names and what stays protected, is what only it held. Deletion is idempotent: an object already gone is not
 // an error. Failures are joined and returned rather than stopping the sweep,
 // because every object reclamation misses is merely unreferenced.
-func (s *Store) Reclaim(ctx context.Context, previous, current *Index, pinned []uint64) error {
+func (s *Store) Reclaim(ctx context.Context, previous, current *Index, protected []uint64) error {
 	if previous == nil || current == nil || previous.ref.VM != current.ref.VM ||
 		previous.ref == current.ref || previous.ref.IsZero() {
 		return ErrInvalidConfig
@@ -49,7 +54,7 @@ func (s *Store) Reclaim(ctx context.Context, previous, current *Index, pinned []
 			delete(dead, ref)
 		}
 	}
-	if err := s.sparePinned(ctx, previous.ref.VM, pinned, dead); err != nil {
+	if err := s.spareProtected(ctx, previous.ref.VM, protected, dead); err != nil {
 		return err
 	}
 	var errs []error
@@ -62,15 +67,15 @@ func (s *Store) Reclaim(ctx context.Context, previous, current *Index, pinned []
 	return errors.Join(errs...)
 }
 
-// sparePinned takes every checkpoint a pin protects out of a sweep's dead set:
-// the pinned checkpoint itself and every checkpoint its index names. A pin
-// whose index cannot be read protects everything, because nothing a sweep could
-// free is worth what a fork still reads.
-func (s *Store) sparePinned(ctx context.Context, vm string, pinned []uint64, dead map[control.Ref]bool) error {
-	for _, sequence := range pinned {
+// spareProtected takes every checkpoint a pin or a keep protects out of a
+// sweep's dead set: the protected checkpoint itself and every checkpoint its
+// index names. A protected checkpoint whose index cannot be read protects
+// everything, because nothing a sweep could free is worth what a fork reads.
+func (s *Store) spareProtected(ctx context.Context, vm string, sequences []uint64, dead map[control.Ref]bool) error {
+	for _, sequence := range sequences {
 		protected, err := s.protectedBy(ctx, control.Ref{VM: vm, Sequence: sequence})
 		if err != nil {
-			return errors.Join(err, errors.New("checkpoint: pinned checkpoint unreadable"))
+			return errors.Join(err, errors.New("checkpoint: protected checkpoint unreadable"))
 		}
 		for _, spared := range protected {
 			delete(dead, spared)
@@ -79,17 +84,16 @@ func (s *Store) sparePinned(ctx context.Context, vm string, pinned []uint64, dea
 	return nil
 }
 
-// protectedBy reports the checkpoints a pinned one keeps alive: itself and
-// every checkpoint its index names. Indexes are immutable and pins are
-// permanent, so the answer is memoised for the life of this store and never
-// goes stale.
+// protectedBy reports the checkpoints a pinned or kept one keeps alive: itself
+// and every checkpoint its index names. Indexes are immutable, so the answer is
+// memoised for the life of this store and never goes stale.
 //
 // Named rather than read, as for the index a sweep is publishing: a checkpoint
-// a pinned index no longer reads is one its own compaction emptied, and the pin
-// says nothing under that checkpoint may be taken until a collector that can
-// see every fork says so. A sweep that spared only what the pinned index reads
-// leaves it naming a checkpoint nothing can fetch, which is a hole in what a
-// fork inherits however few pages it holds.
+// a protected index no longer reads is one its own compaction emptied, and the
+// pin says nothing under that checkpoint may be taken until a collector that
+// can see every fork says so. A sweep that spared only what the protected
+// index reads leaves it naming a checkpoint nothing can fetch, which is a hole
+// in what a fork inherits however few pages it holds.
 func (s *Store) protectedBy(ctx context.Context, ref control.Ref) ([]control.Ref, error) {
 	s.protectedMu.Lock()
 	cached, found := s.protected[ref]

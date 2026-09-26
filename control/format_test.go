@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // update rewrites the committed fixtures from what this build writes. A format
@@ -19,8 +20,9 @@ import (
 var update = flag.Bool("update", false, "rewrite the record fixtures under testdata")
 
 // fixtureRecords are the records the committed fixtures hold: one VM forked at
-// two of its own checkpoints, in two different writer epochs, and one forked at
-// the checkpoint it still selects.
+// two of its own checkpoints, in two different writer epochs, that keeps one of
+// them and one it was not forked at, and one forked at the checkpoint it still
+// selects.
 var fixtureRecords = []Record{
 	{
 		VM:    "alpha",
@@ -30,6 +32,10 @@ var fixtureRecords = []Record{
 		Selected: Sequence(3, 2),
 		Created:  true,
 		Pinned:   []uint64{Sequence(1, 4), Sequence(3, 1)},
+		Kept: []Kept{
+			{Sequence: Sequence(1, 4), Time: time.Unix(1790000000, 123456789).UTC(), State: true},
+			{Sequence: Sequence(3, 2), Time: time.Unix(1790000600, 0).UTC()},
+		},
 	},
 	{
 		VM:    "ghost",
@@ -47,12 +53,13 @@ var fixtureRecords = []Record{
 // build of that version actually wrote: a bump adds a directory and rewrites
 // none of them, because bytes this build produced and restamped would prove
 // nothing about what an older build wrote.
-const currentRecords = "testdata/record-4"
+const currentRecords = "testdata/record-5"
 
 var supersededRecords = []struct {
 	dir     string
 	version uint32
 }{
+	{dir: "testdata/record-4", version: 4},
 	{dir: "testdata/record-3", version: 3},
 	{dir: "testdata/record-2", version: 2},
 }

@@ -82,6 +82,20 @@ func newServer(o *orchestrator, token string) http.Handler {
 		captured, err := o.Capture(r.Context(), r.PathValue("id"), request)
 		reply(w, r, "capture", captured, err)
 	})
+	mux.HandleFunc("GET /vms/{id}/kept", func(w http.ResponseWriter, r *http.Request) {
+		kept, err := o.Kept(r.Context(), r.PathValue("id"))
+		reply(w, r, "kept", kept, err)
+	})
+	mux.HandleFunc("POST /vms/{id}/kept/{checkpoint}/release", func(w http.ResponseWriter, r *http.Request) {
+		checkpoint, err := strconv.ParseUint(r.PathValue("checkpoint"), 10, 64)
+		if err != nil || checkpoint == 0 {
+			jsonhttp.Fail(r.Context(), w, http.StatusBadRequest, "release",
+				fmt.Errorf("%w: checkpoint is %q, want a checkpoint sequence", errRequest,
+					r.PathValue("checkpoint")))
+			return
+		}
+		act(w, r, "release", o.Release(r.Context(), r.PathValue("id"), checkpoint))
+	})
 	mux.HandleFunc("POST /vms/{id}/migrate", func(w http.ResponseWriter, r *http.Request) {
 		var request orch.MigrateRequest
 		if err := jsonhttp.Read(r, &request); err != nil {

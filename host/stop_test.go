@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	hostapi "github.com/semistrict/sproutfs/api/host"
 	"github.com/semistrict/sproutfs/checkpoint"
 	"github.com/semistrict/sproutfs/host"
 	"github.com/semistrict/sproutfs/volume"
@@ -40,7 +41,7 @@ func TestStoppingAVMPublishesWhatItHeldAndGivesThePagesBack(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	stopped, err := h.hosts[0].Stop(t.Context(), "vm-1", true)
+	stopped, err := h.hosts[0].Stop(t.Context(), "vm-1", hostapi.StopRequest{Suspend: true})
 	if err != nil {
 		t.Fatalf("stopping a running VM: %v", err)
 	}
@@ -104,7 +105,7 @@ func TestAPlainStopKeepsTheDisksAndBootsCold(t *testing.T) {
 	if err := h.hosts[0].AddMachine("vm-1", guest); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.hosts[0].Stop(t.Context(), "vm-1", false); err != nil {
+	if _, err := h.hosts[0].Stop(t.Context(), "vm-1", hostapi.StopRequest{}); err != nil {
 		t.Fatalf("stopping a running VM: %v", err)
 	}
 
@@ -164,7 +165,7 @@ func TestStoppingAVMAForkPointHoldsIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := h.hosts[0].Stop(t.Context(), "parent", true); !errors.Is(err, volume.ErrSealed) {
+	if _, err := h.hosts[0].Stop(t.Context(), "parent", hostapi.StopRequest{Suspend: true}); !errors.Is(err, volume.ErrSealed) {
 		t.Fatalf("stopping a VM a fork point holds = %v, want ErrSealed", err)
 	}
 	if running := h.hosts[0].Machines(); len(running) != 1 || running[0] != "parent" {
@@ -187,7 +188,7 @@ func TestStoppingAVMAForkPointHoldsIsRefused(t *testing.T) {
 func TestStoppingAVMThisHostDoesNotRunIsNotFound(t *testing.T) {
 	h := newHostHarness(t)
 	h.start(t)
-	if _, err := h.hosts[0].Stop(t.Context(), "vm-nobody-runs", true); !errors.Is(err, host.ErrNotRunning) {
+	if _, err := h.hosts[0].Stop(t.Context(), "vm-nobody-runs", hostapi.StopRequest{Suspend: true}); !errors.Is(err, host.ErrNotRunning) {
 		t.Fatalf("stopping a VM this host does not run = %v, want ErrNotRunning", err)
 	}
 }

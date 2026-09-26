@@ -6,7 +6,8 @@ option go_package = "github.com/semistrict/sproutfs/control/internal/gen/sproutf
 
 // Record is the one mutable durable object a VM owns. It selects the checkpoint
 // the VM's state is, names the writer that may replace it, and lists the
-// checkpoints of it that have been forked, which may not be reclaimed.
+// checkpoints of it that have been forked and the ones a checkpoint request
+// kept, none of which may be reclaimed.
 message Record {
   uint32 format_version = 1;
   string vm_id = 2;
@@ -31,4 +32,20 @@ message Record {
   // nothing here unpins one: a pin is what a collector releases once it has
   // established that no descendant reads through it.
   repeated uint64 pinned = 12;
+  // kept lists the checkpoints of this VM a checkpoint request kept, in
+  // ascending order of sequence. A kept checkpoint's objects are never
+  // reclaimed. A kept checkpoint no fork was taken from may be released.
+  repeated Kept kept = 13;
+}
+
+// Kept is one checkpoint a checkpoint request kept: its sequence, when it was
+// selected, and whether it holds VMM state.
+message Kept {
+  uint64 sequence = 1;
+  // time is when the checkpoint was selected, in nanoseconds since the Unix
+  // epoch.
+  int64 time = 2;
+  // state reports that the checkpoint holds VMM state, so a fork of it resumes
+  // the guest rather than booting it.
+  bool state = 3;
 }

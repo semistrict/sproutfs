@@ -52,6 +52,8 @@ type hostClient interface {
 	Abandoned(ctx context.Context, id string) error
 	Stop(ctx context.Context, id string, request host.StopRequest) (host.StopResult, error)
 	Delete(ctx context.Context, id string) error
+	Kept(ctx context.Context, id string) (host.KeptResult, error)
+	Release(ctx context.Context, id string, checkpoint uint64) error
 }
 
 // records is where the VMs are: the control records of the deployment's object
@@ -754,6 +756,41 @@ func (o *orchestrator) Create(ctx context.Context, request orch.CreateRequest) (
 	return orch.CreateResult{Host: target.report.Name, Result: result}, nil
 }
 
+// Kept lists a VM's kept checkpoints. They are its control record's, so any
+// ready host answers, whether or not anything runs the VM.
+func (o *orchestrator) Kept(ctx context.Context, id string) (host.KeptResult, error) {
+	hosts, err := o.recent(ctx)
+	if err != nil {
+		return host.KeptResult{}, err
+	}
+	target, err := place(hosts, "", 0)
+	if err != nil {
+		return host.KeptResult{}, err
+	}
+	return target.client.Kept(ctx, id)
+}
+
+// Release gives up one of a VM's kept checkpoints through any ready host: the
+// release is a conditional write of the VM's control record, and the sweep
+// behind it deletes only what the checkpoint alone held, so no host needs to
+// run the VM.
+func (o *orchestrator) Release(ctx context.Context, id string, checkpoint uint64) error {
+	hosts, err := o.recent(ctx)
+	if err != nil {
+		return err
+	}
+	target, err := place(hosts, "", 0)
+	if err != nil {
+		return err
+	}
+	if err := target.client.Release(ctx, id, checkpoint); err != nil {
+		return fmt.Errorf("releasing checkpoint %d of %s on %s: %w", checkpoint, id, target.report.Name, err)
+	}
+	slog.InfoContext(ctx, "sproutfs-orchestrator: released a kept checkpoint", "vm", id,
+		"checkpoint", checkpoint, "host", target.report.Name)
+	return nil
+}
+
 // ImportTemplate hands a guest image to one ready host, which imports it into
 // the template its bytes name. The template is the deployment's from then on:
 // any host creates from it by the identity this reports. The host is the ready
@@ -975,8 +1012,12 @@ func (o *orchestrator) Capture(ctx context.Context, id string, request orch.Capt
 	if err != nil {
 		return orch.CaptureResult{}, err
 	}
+	if request.New && request.Keep {
+		return orch.CaptureResult{}, fmt.Errorf("%w: a capture into a new VM publishes that VM's root, "+
+			"which its record selects, so there is nothing to keep", errRequest)
+	}
 	if !request.New {
-		result, err := source.client.Capture(ctx, id, host.CaptureRequest{})
+		result, err := source.client.Capture(ctx, id, host.CaptureRequest{Keep: request.Keep})
 		if err != nil {
 			return orch.CaptureResult{}, fmt.Errorf("capturing %s on %s: %w", id, source.report.Name, err)
 		}
@@ -1221,13 +1262,13 @@ func (o *orchestrator) Stop(ctx context.Context, id string, request orch.StopReq
 	if err != nil {
 		return orch.StopResult{}, err
 	}
-	stopped, err := source.client.Stop(ctx, id, host.StopRequest{Suspend: request.Suspend})
+	stopped, err := source.client.Stop(ctx, id, host.StopRequest{Suspend: request.Suspend, Keep: request.Keep})
 	if err != nil {
 		return orch.StopResult{}, fmt.Errorf("stopping %s on %s: %w", id, source.report.Name, err)
 	}
 	o.note(ctx, vmRecord{ID: id, State: stateStopped})
 	slog.InfoContext(ctx, "sproutfs-orchestrator: stopped a VM", "vm", id, "host", source.report.Name,
-		"checkpoint", stopped.Checkpoint, "suspended", request.Suspend)
+		"checkpoint", stopped.Checkpoint, "suspended", request.Suspend, "kept", request.Keep)
 	return orch.StopResult{VM: id, Host: source.report.Name, Checkpoint: stopped.Checkpoint,
 		Total: host.Since(began)}, nil
 }

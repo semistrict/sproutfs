@@ -58,11 +58,14 @@ var ErrInvalidCapture = errors.New("host: invalid capture argument")
 // publication has the checkpoints it owns them, so nothing here unseals
 // anything: it retires each of them when it lands, and hands their pages back
 // to the guest when it does not.
-func Capture(ctx context.Context, vm *volume.VM, machine Machine, clock platform.Clock) (*volume.Checkpoint, error) {
+//
+// terms says whether the checkpoint is kept and what a failed publication
+// does; see volume.Terms.
+func Capture(ctx context.Context, vm *volume.VM, machine Machine, clock platform.Clock, terms volume.Terms) (*volume.Checkpoint, error) {
 	if machine == nil {
 		return nil, ErrInvalidCapture
 	}
-	return capture(ctx, vm, machine, clock, vm.Snapshot, machine.Prepare)
+	return capture(ctx, vm, machine, clock, vm.Snapshot, terms, machine.Prepare)
 }
 
 // CaptureDisks is the checkpoint the interval takes: Capture of the VM's disks
@@ -78,31 +81,25 @@ func Capture(ctx context.Context, vm *volume.VM, machine Machine, clock platform
 // the checkpoint is a single point in time across all of them: nothing a guest
 // stored after a flush is in it without everything it stored before.
 //
-// retry decides whether a publication that fails keeps the disks sealed and
-// publishes again; see volume.Retry. Nil gives the pages back at once.
-func CaptureDisks(ctx context.Context, vm *volume.VM, machine Machine, clock platform.Clock, retry volume.Retry) (*volume.Checkpoint, error) {
+// terms says whether the checkpoint is kept, and whether a publication that
+// fails keeps the disks sealed and publishes again; see volume.Terms.
+func CaptureDisks(ctx context.Context, vm *volume.VM, machine Machine, clock platform.Clock, terms volume.Terms) (*volume.Checkpoint, error) {
 	if machine == nil {
 		return nil, ErrInvalidCapture
 	}
-	if vm == nil {
-		return nil, ErrInvalidCapture
-	}
-	snapshot := func(ctx context.Context, prepare volume.PrepareFunc) (*volume.Checkpoint, error) {
-		return vm.SnapshotDisks(ctx, prepare, retry)
-	}
-	return capture(ctx, vm, machine, clock, snapshot,
+	return capture(ctx, vm, machine, clock, vm.SnapshotDisks, terms,
 		func(ctx context.Context) ([]byte, map[string]volume.DirtySource, error) {
 			sources, err := machine.SealDisks(ctx)
 			return nil, sources, err
 		})
 }
 
-// capture is Capture with the pause's own step: snapshot takes the checkpoint,
-// prepare seals what it seals, the guest resumes, and the checkpoint publishes
-// behind the running guest.
+// capture is Capture with the pause's own step: snapshot takes the checkpoint
+// on terms, prepare seals what it seals, the guest resumes, and the checkpoint
+// publishes behind the running guest.
 func capture(ctx context.Context, vm *volume.VM, machine Machine, clock platform.Clock,
-	snapshot func(context.Context, volume.PrepareFunc) (*volume.Checkpoint, error),
-	prepare volume.PrepareFunc) (*volume.Checkpoint, error) {
+	snapshot func(context.Context, volume.PrepareFunc, volume.Terms) (*volume.Checkpoint, error),
+	terms volume.Terms, prepare volume.PrepareFunc) (*volume.Checkpoint, error) {
 	if vm == nil {
 		return nil, ErrInvalidCapture
 	}
@@ -123,7 +120,7 @@ func capture(ctx context.Context, vm *volume.VM, machine Machine, clock platform
 		}
 		pause = clock.Since(began)
 		return state, sources, nil
-	})
+	}, terms)
 	if err != nil {
 		if !paused {
 			return nil, err

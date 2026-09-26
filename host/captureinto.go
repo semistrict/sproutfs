@@ -58,7 +58,7 @@ func (h *Host) captureRoot(ctx context.Context, child string, point *volume.Fork
 	if err != nil {
 		return control.Ref{}, err
 	}
-	ckpt, err := vm.Snapshot(ctx, volume.Prepared(point.State(), nil))
+	ckpt, err := vm.Snapshot(ctx, volume.Prepared(point.State(), nil), volume.Terms{})
 	if err == nil {
 		err = ckpt.Wait(ctx)
 	}

@@ -41,9 +41,17 @@ durable anywhere: losing that host loses it.
 
 **Control record**: The only mutable object a VM owns in the store. It selects
 the writer epoch and the checkpoint. It lists the checkpoints of this VM that
-have been forked. These are the pins. Reclamation spares pinned checkpoints,
-and nothing releases a pin. The record changes only by conditional write. See
-[Metadata authority](metadata.md).
+have been forked. These are the pins. It also lists the kept checkpoints.
+Reclamation spares pinned and kept checkpoints, and nothing releases a pin. The
+record changes only by conditional write. See [Metadata authority](metadata.md).
+
+**Kept checkpoint**: A checkpoint a checkpoint request asked to keep: a
+capture, a stop or a suspending stop with keep. It is kept in the write that
+selects it, and reclamation spares it and everything it reads, so a VM can be
+created from it however far its VM has moved on. A create from one with VMM
+state resumes the guest where its pause left it; one without boots cold. A kept
+checkpoint no VM was created from can be released. One a VM was created from
+is pinned too, and the pin is permanent.
 
 **Checkpoint**: Both the operation that makes a running VM durable and the
 objects that operation leaves in the store. The operation has these steps:

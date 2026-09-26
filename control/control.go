@@ -4,8 +4,9 @@
 // A VM's durable state is exactly one checkpoint — an index, the page objects
 // it references and an optional VMM state object — and the control record says
 // which. Nothing is durable between checkpoints. The record also carries the
-// writer epoch that fences a superseded host, and the sequences a fork
-// inherited, which reclamation must not delete.
+// writer epoch that fences a superseded host, the sequences a fork
+// inherited, and the checkpoints a checkpoint request kept, none of which
+// reclamation may delete.
 //
 // Every change is a conditional write against object storage. Creating a record
 // uses a create-if-absent condition; replacing one reads its validator and
@@ -54,17 +55,28 @@ var (
 	ErrTooManyPins = errors.New("control: too many pinned checkpoints")
 	// ErrNotPublished reports a checkpoint a pin without the VM's writer may
 	// not name: one whose index was never published, or one the record no
-	// longer selects and no pin keeps, which a writer may be reclaiming.
+	// longer selects and neither keeps nor pins, which a writer may be
+	// reclaiming.
 	ErrNotPublished = errors.New("control: checkpoint not published")
+	// ErrTooManyKept reports a VM with as many kept checkpoints as one record
+	// can carry.
+	ErrTooManyKept = errors.New("control: too many kept checkpoints")
+	// ErrNotKept reports a release of a checkpoint the record does not keep.
+	ErrNotKept = errors.New("control: checkpoint not kept")
+	// ErrForked reports a release of a kept checkpoint a fork was taken from.
+	// The fork's pin is what nothing releases, because a descendant may read
+	// through it.
+	ErrForked = errors.New("control: checkpoint was forked")
 )
 
 const (
-	// formatVersion is the control record's wire format. Version 4's pins are
-	// the checkpoints of this VM that have been forked, and nothing releases
-	// one. Version 3 marked a tombstone, version 2 named each pin's holders and
-	// the parent checkpoint a record held a pin on, and version 1's pins were
-	// bare sequences; none of them parses.
-	formatVersion = uint32(4)
+	// formatVersion is the control record's wire format. Version 5 adds the
+	// checkpoints a checkpoint request kept beside the pins. Version 4's pins
+	// are the checkpoints of this VM that have been forked, and nothing
+	// releases one. Version 3 marked a tombstone, version 2 named each pin's
+	// holders and the parent checkpoint a record held a pin on, and version 1's
+	// pins were bare sequences; none of them parses.
+	formatVersion = uint32(5)
 	// nonceSize is the writer nonce, large enough that two writers never
 	// choose the same one.
 	nonceSize = 16
@@ -77,6 +89,9 @@ const (
 	// may have, which is unbounded: a fan-out of any size from one fork point is
 	// one pin.
 	MaximumPins = 4096
+	// MaximumKept bounds the checkpoints one record may keep. A kept
+	// checkpoint no fork was taken from may be released, which makes room.
+	MaximumKept = 4096
 	// MinimumEpoch is the lowest epoch a record may carry. Epoch zero is not
 	// one, so a sequence is never zero.
 	MinimumEpoch = uint64(1)
@@ -147,6 +162,8 @@ type Config struct {
 	// keyed to its seed instead, so a run that reconciles a lost reply
 	// reconciles the same nonce on every replay.
 	Entropy platform.Entropy
+	// Clock is what dates a kept checkpoint. Nil is the wall clock.
+	Clock platform.Clock
 }
 
 // The names of the simulation probes this package marks. A campaign that never

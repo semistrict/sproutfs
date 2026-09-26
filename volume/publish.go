@@ -207,8 +207,11 @@ func Prepared(state []byte, sources map[string]DirtySource) PrepareFunc {
 // Unlike Close and Handoff, Snapshot gives nothing up: the handle keeps the VM
 // and goes on serving writes into a new overlay generation while the
 // publication runs.
-func (vm *VM) Snapshot(ctx context.Context, prepare PrepareFunc) (*Checkpoint, error) {
-	return vm.snapshot(ctx, prepare, false)
+//
+// terms says whether the checkpoint is kept and what a failed publication
+// does; see Terms.
+func (vm *VM) Snapshot(ctx context.Context, prepare PrepareFunc, terms Terms) (*Checkpoint, error) {
+	return vm.snapshot(ctx, prepare, false, terms)
 }
 
 // SnapshotDisks is Snapshot of a VM's disks alone, which is the checkpoint a
@@ -223,20 +226,32 @@ func (vm *VM) Snapshot(ctx context.Context, prepare PrepareFunc) (*Checkpoint, e
 // A prepare that captured state anyway is refused, leaving the sources to the
 // caller to release as any failed prepare does.
 //
-// retry decides what a failed publication does; nil gives its pages back at
-// once. See Retry.
-func (vm *VM) SnapshotDisks(ctx context.Context, prepare PrepareFunc, retry Retry) (*Checkpoint, error) {
+// terms says whether the checkpoint is kept and what a failed publication
+// does; see Terms.
+func (vm *VM) SnapshotDisks(ctx context.Context, prepare PrepareFunc, terms Terms) (*Checkpoint, error) {
 	if prepare == nil {
 		return nil, ErrInvalidConfig
 	}
-	return vm.snapshotRetrying(ctx, func(ctx context.Context) ([]byte, map[string]DirtySource, error) {
+	return vm.snapshot(ctx, func(ctx context.Context) ([]byte, map[string]DirtySource, error) {
 		state, sources, err := prepare(ctx)
 		if err == nil && state != nil {
 			err = fmt.Errorf("%w: a checkpoint of the disks captured %d bytes of VMM state",
 				ErrInvalidConfig, len(state))
 		}
 		return nil, sources, err
-	}, true, retry)
+	}, true, terms)
+}
+
+// Terms is what a capture asks of the checkpoint it publishes beyond its pages.
+//
+// Keep marks the checkpoint kept, in the same control-record write that
+// selects it (control.Handle.SelectKept). Reclamation then spares it and
+// everything its index names, and a new VM can be created from it after this
+// one has moved past it. Retry decides what a failed publication does; nil
+// gives its pages back at once.
+type Terms struct {
+	Keep  bool
+	Retry Retry
 }
 
 // Retry decides whether a checkpoint whose publication failed keeps its pages
@@ -256,12 +271,7 @@ type Retry func(ctx context.Context, attempt int, err error) bool
 
 // snapshot is Snapshot and SnapshotDisks: dropState is a checkpoint that names
 // no VMM state at all.
-func (vm *VM) snapshot(ctx context.Context, prepare PrepareFunc, dropState bool) (*Checkpoint, error) {
-	return vm.snapshotRetrying(ctx, prepare, dropState, nil)
-}
-
-// snapshotRetrying is snapshot whose failed publication asks retry.
-func (vm *VM) snapshotRetrying(ctx context.Context, prepare PrepareFunc, dropState bool, retry Retry) (*Checkpoint, error) {
+func (vm *VM) snapshot(ctx context.Context, prepare PrepareFunc, dropState bool, terms Terms) (*Checkpoint, error) {
 	if prepare == nil {
 		return nil, ErrInvalidConfig
 	}
@@ -298,7 +308,7 @@ func (vm *VM) snapshotRetrying(ctx context.Context, prepare PrepareFunc, dropSta
 		vm.pubMu.Unlock()
 		return nil, err
 	}
-	ckpt.unchanged, ckpt.dropState, ckpt.retry = unchanged, dropState, retry
+	ckpt.unchanged, ckpt.dropState, ckpt.retry, ckpt.keep = unchanged, dropState, terms.Retry, terms.Keep
 	go func() {
 		if err := vm.complete(vm.ctx, ckpt); err != nil {
 			report(vm.ctx, "volume: snapshot publication failed", vm.id, err)
@@ -476,16 +486,17 @@ func (vm *VM) complete(ctx context.Context, ckpt *Checkpoint) error {
 // immutable view — the overlay for what was written through this package, and
 // the sealed pages for what a pager holds — never from the VM's live state, so
 // writes accepted after the checkpoint cannot reach it. It returns the control
-// record the selection produced, whose pins are what reclamation must spare.
+// record the selection produced, whose pins and kept checkpoints are what
+// reclamation must spare.
 func (vm *VM) publish(ctx context.Context, ckpt *Checkpoint) (*checkpoint.Index, control.Record, error) {
 	publication := vm.manager.config.Store.Begin(ckpt.parentIndex, ckpt.ref)
-	// The pins this handle knows of are what compaction must leave alone; the
-	// selection below reports any a fork took while this publication ran, and
-	// reclamation spares those. They are read once: a retry of this
-	// publication compacts exactly as its first attempt did, so it writes the
-	// same bytes under the same reference.
+	// The checkpoints this handle knows are pinned or kept are what compaction
+	// must leave alone; the selection below reports any a fork pinned while
+	// this publication ran, and reclamation spares those. They are read once: a
+	// retry of this publication compacts exactly as its first attempt did, so it
+	// writes the same bytes under the same reference.
 	if ckpt.protected == nil {
-		ckpt.protected = append([]uint64{}, vm.control.Record().Pinned...)
+		ckpt.protected = append([]uint64{}, vm.control.Record().Protected()...)
 	}
 	publication.Protect(ckpt.protected)
 	// The shape comes before the pages: a volume that shrank drops the pages
@@ -512,11 +523,21 @@ func (vm *VM) publish(ctx context.Context, ckpt *Checkpoint) (*checkpoint.Index,
 	if err != nil {
 		return nil, control.Record{}, err
 	}
-	record, err := vm.control.Select(ctx, ckpt.ref.Sequence)
+	record, err := vm.selecting(ctx, ckpt, index)
 	if err != nil {
 		return nil, control.Record{}, err
 	}
 	return index, record, nil
+}
+
+// selecting selects a published checkpoint in the control record, and keeps it
+// in the same write when its capture asked for that, so no sweep can see it
+// selected and replaced without seeing it kept.
+func (vm *VM) selecting(ctx context.Context, ckpt *Checkpoint, index *checkpoint.Index) (control.Record, error) {
+	if ckpt.keep {
+		return vm.control.SelectKept(ctx, ckpt.ref.Sequence, index.HasState())
+	}
+	return vm.control.Select(ctx, ckpt.ref.Sequence)
 }
 
 // publishedPages reports every page one volume of a checkpoint publishes: what
@@ -613,7 +634,8 @@ func (vm *VM) install(ckpt *Checkpoint, index *checkpoint.Index) *checkpoint.Ind
 // this handle published before it, and every checkpoint that one named which this one
 // does not. A sequence a fork was taken at is pinned in the control record the
 // selection returned and is left whole — its index object, its parts, and every checkpoint
-// that index names — because forks this VM cannot see read through it.
+// that index names — because forks this VM cannot see read through it. A kept
+// sequence is left whole the same way, because a fork may yet be taken of it.
 //
 // Only the checkpoints this handle published are reclaimed. The one it opened
 // on was published by a writer whose publications this handle cannot account
@@ -629,7 +651,13 @@ func (vm *VM) reclaim(ctx context.Context, replaced, current *checkpoint.Index, 
 	if replaced == nil {
 		return
 	}
-	if err := vm.manager.config.Store.Reclaim(ctx, replaced, current, record.Pinned); err != nil {
+	protected := record.Protected()
+	if sim.Bug(ctx, "volume-reclaim-kept") {
+		// The sweep spares what forks pinned and forgets what is kept, so a
+		// kept checkpoint no fork was taken from goes with the next sweep.
+		protected = record.Pinned
+	}
+	if err := vm.manager.config.Store.Reclaim(ctx, replaced, current, protected); err != nil {
 		report(ctx, "volume: reclaiming the replaced checkpoint's objects failed", vm.id, err)
 	}
 }

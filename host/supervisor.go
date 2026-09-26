@@ -70,6 +70,13 @@ type VMs interface {
 	// tenant for the VMs of none: volume.StoredBytes over the deployment's
 	// namespace. It is not part of Status because it lists the store.
 	Stored(ctx context.Context, tenant string) (hostapi.Stored, error)
+	// Kept lists one VM's kept checkpoints, from its control record, whether
+	// or not any host runs it.
+	Kept(ctx context.Context, id string) (hostapi.KeptResult, error)
+	// Release gives up one of a VM's kept checkpoints and deletes what only it
+	// held, whether or not any host runs the VM. A checkpoint a VM was created
+	// from is refused with control.ErrForked.
+	Release(ctx context.Context, id string, checkpoint uint64) error
 	Create(ctx context.Context, request hostapi.CreateRequest) (hostapi.CreateResult, error)
 	// ImportTemplate imports a guest image into the template its bytes name,
 	// which any host can then create VMs from by that identity. An image that

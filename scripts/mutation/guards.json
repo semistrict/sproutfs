@@ -78,6 +78,12 @@
     "purpose": "Reclaim the checkpoints the selected one still reads from."
   },
   {
+    "id": "volume-reclaim-kept",
+    "package": "internal/simtest",
+    "run": "^TestACreateFromAKeptCheckpointReadsThatCheckpoint$",
+    "purpose": "Reclaim a kept checkpoint no fork was taken from, as if only pins protected anything."
+  },
+  {
     "id": "checkpoint-compact-another-vm",
     "package": "volume",
     "run": "^TestEachPageIsBilledToTheVMThatPublishedIt$",

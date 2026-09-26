@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
+	hostapi "github.com/semistrict/sproutfs/api/host"
 	"github.com/semistrict/sproutfs/control"
-	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/vmmemory"
 	"github.com/semistrict/sproutfs/vmmigrate"
 	"github.com/semistrict/sproutfs/volume"
@@ -287,7 +287,7 @@ func (h *Host) stopped(vmID string, entry *registration, cause error) {
 	// nothing of what it could still have kept.
 	errs := h.retireForks(vmID)
 	if vm := h.vm(vmID); vm != nil {
-		if checkpoint, err := CaptureDisks(ctx, vm, entry.runtime, h.clock, nil); err != nil {
+		if checkpoint, err := CaptureDisks(ctx, vm, entry.runtime, h.clock, volume.Terms{}); err != nil {
 			errs = append(errs, err)
 		} else {
 			errs = append(errs, checkpoint.Wait(ctx))
@@ -413,12 +413,14 @@ func (h *Host) Delete(ctx context.Context, vmID string) error {
 // the whole difference between a stop and losing the host, where the writes
 // since the last checkpoint go with it.
 //
-// The checkpoint is of the disks alone, as the interval's is, unless suspend
-// asks for the guest's memory and VMM state as well: a VM stopped plainly is
-// cold booted over its disks when it starts again, and a suspended one resumes
-// where it was. Uploading a guest's memory is the one thing a stop does not do
-// unless asked, because it is the part that is expensive and that most
-// software never expected to survive.
+// The checkpoint is of the disks alone, as the interval's is, unless the
+// request suspends the guest, which publishes its memory and VMM state as
+// well: a VM stopped plainly is cold booted over its disks when it starts
+// again, and a suspended one resumes where it was. Uploading a guest's memory
+// is the one thing a stop does not do unless asked, because it is the part
+// that is expensive and that most software never expected to survive. A
+// request that keeps the checkpoint keeps it in the write that selects it, so
+// a new VM can be created from it after this one has moved on.
 //
 // It is refused for a VM something still holds sealed, as a delete is. A fork
 // point holds the pages of the VMM process this would close, and a child
@@ -435,7 +437,7 @@ func (h *Host) Delete(ctx context.Context, vmID string) error {
 // The checkpoint it published is what it reports, because that is the pause
 // the VM comes back at and nothing else records it: the handle that knew is
 // released by the time this answers.
-func (h *Host) Stop(ctx context.Context, vmID string, suspend bool) (control.Ref, error) {
+func (h *Host) Stop(ctx context.Context, vmID string, request hostapi.StopRequest) (control.Ref, error) {
 	vm := h.vm(vmID)
 	h.machines.mu.Lock()
 	entry := h.machines.running[vmID]
@@ -458,13 +460,11 @@ func (h *Host) Stop(ctx context.Context, vmID string, suspend bool) (control.Ref
 	// pages, and what a checkpoint that did not land costs is only how far a
 	// host loss would rewind it.
 	entry.end()
-	capture := func(ctx context.Context, vm *volume.VM, machine Machine, clock platform.Clock) (*volume.Checkpoint, error) {
-		return CaptureDisks(ctx, vm, machine, clock, nil)
-	}
-	if suspend {
+	capture := CaptureDisks
+	if request.Suspend {
 		capture = Capture
 	}
-	checkpoint, err := capture(ctx, vm, entry.runtime, h.clock)
+	checkpoint, err := capture(ctx, vm, entry.runtime, h.clock, volume.Terms{Keep: request.Keep})
 	if err != nil {
 		h.run(vmID, entry)
 		return control.Ref{}, fmt.Errorf("the last checkpoint of %s: %w", vmID, err)
@@ -489,7 +489,7 @@ func (h *Host) Stop(ctx context.Context, vmID string, suspend bool) (control.Ref
 		return control.Ref{}, err
 	}
 	slog.InfoContext(ctx, "host: stopped a VM", "vm", vmID,
-		"checkpoint", checkpoint.Ref().Sequence, "suspended", suspend)
+		"checkpoint", checkpoint.Ref().Sequence, "suspended", request.Suspend, "kept", request.Keep)
 	return checkpoint.Ref(), nil
 }
 

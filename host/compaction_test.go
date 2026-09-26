@@ -82,7 +82,7 @@ func TestCompactionLeavesTheGuestsResidentPagesAlone(t *testing.T) {
 // reclamation runs, and reports the sequence it published.
 func capture(t *testing.T, vm *volume.VM, guest *machine) uint64 {
 	t.Helper()
-	ckpt, err := host.Capture(t.Context(), vm, guest, nil)
+	ckpt, err := host.Capture(t.Context(), vm, guest, nil, volume.Terms{})
 	if err != nil {
 		t.Fatal(err)
 	}
