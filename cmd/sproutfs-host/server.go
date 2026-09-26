@@ -95,7 +95,7 @@ func newServer(h host.VMs, token string) http.Handler {
 	// builder's image is gigabytes. The RAM a VM of it starts with is a query
 	// parameter, because the body is the image.
 	mux.HandleFunc("POST /templates", func(w http.ResponseWriter, r *http.Request) {
-		var request hostapi.ImportTemplateRequest
+		request := hostapi.ImportTemplateRequest{Tenant: r.URL.Query().Get("tenant")}
 		if text := r.URL.Query().Get("memory"); text != "" {
 			memory, err := strconv.ParseUint(text, 10, 64)
 			if err != nil || memory == 0 {
@@ -280,7 +280,9 @@ func statusOf(err error) int {
 		return http.StatusOK
 	case errors.Is(err, host.ErrRequest), errors.Is(err, host.ErrInvalidConfig),
 		errors.Is(err, volume.ErrInvalidConfig), errors.Is(err, control.ErrInvalidConfig),
-		errors.Is(err, platform.ErrInvalidObjectKey):
+		errors.Is(err, platform.ErrInvalidObjectKey),
+		// A fork or a create across tenants is a request no host would act on.
+		errors.Is(err, volume.ErrOtherTenant):
 		return http.StatusBadRequest
 	case errors.Is(err, platform.ErrNotFound), errors.Is(err, host.ErrNotRunning):
 		return http.StatusNotFound

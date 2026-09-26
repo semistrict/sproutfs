@@ -156,7 +156,14 @@ func NewStore(config Config) (*Store, error) {
 
 // checkpointPrefix is the key prefix every object of one checkpoint shares.
 func (s *Store) checkpointPrefix(ref control.Ref) string {
-	return s.prefix + "vm/" + ref.VM + "/ckpt/" + strconv.FormatUint(ref.Sequence, 10) + "/"
+	return s.vmPrefix(ref.VM) + "ckpt/" + strconv.FormatUint(ref.Sequence, 10) + "/"
+}
+
+// vmPrefix is the key prefix every object of one VM shares: vm/<name>/, under
+// its tenant's namespace when it has one.
+func (s *Store) vmPrefix(vm string) string {
+	_, name := control.SplitID(vm)
+	return s.prefix + control.Namespace(vm) + "vm/" + name + "/"
 }
 
 // indexKey names one checkpoint's index object: the object holding the
@@ -164,7 +171,7 @@ func (s *Store) checkpointPrefix(ref control.Ref) string {
 // the publication's commit, so while it is there the checkpoint is published,
 // and until it is there the checkpoint is absent.
 func (s *Store) indexKey(ref control.Ref) (platform.ObjectKey, error) {
-	if !validName(ref.VM) {
+	if !control.ValidID(ref.VM) {
 		return platform.ObjectKey{}, ErrInvalidConfig
 	}
 	return platform.NewObjectKey(s.checkpointPrefix(ref) + "index")
@@ -173,7 +180,7 @@ func (s *Store) indexKey(ref control.Ref) (platform.ObjectKey, error) {
 // partKey names one part of a checkpoint's data, numbered from zero. How
 // many there are is what the root says.
 func (s *Store) partKey(ref control.Ref, number uint32) (platform.ObjectKey, error) {
-	if !validName(ref.VM) {
+	if !control.ValidID(ref.VM) {
 		return platform.ObjectKey{}, ErrInvalidConfig
 	}
 	return platform.NewObjectKey(s.checkpointPrefix(ref) + "part/" + strconv.FormatUint(uint64(number), 10))
@@ -184,7 +191,7 @@ func (s *Store) partKey(ref control.Ref, number uint32) (platform.ObjectKey, err
 // deployment holding them is refused with the layout version that part carries
 // named, which is what Open does when it finds no index object.
 func (s *Store) supersededPartKey(ref control.Ref) (platform.ObjectKey, error) {
-	if !validName(ref.VM) {
+	if !control.ValidID(ref.VM) {
 		return platform.ObjectKey{}, ErrInvalidConfig
 	}
 	return platform.NewObjectKey(s.checkpointPrefix(ref) + "pack/last")
@@ -295,7 +302,7 @@ func (s *Store) refuseSupersededIndex(ctx context.Context, key platform.ObjectKe
 // this is where a volume's geometry is chosen and it is fixed from here on. It
 // is an index object holding a root and no segments, and no parts at all.
 func (s *Store) Root(ctx context.Context, ref control.Ref, volumes map[string]VolumeSpec) (*Index, error) {
-	if !validName(ref.VM) || ref.Sequence == 0 {
+	if !control.ValidID(ref.VM) || ref.Sequence == 0 {
 		return nil, ErrInvalidConfig
 	}
 	index := newIndex(s, ref)

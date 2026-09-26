@@ -281,7 +281,16 @@ func TemplateID(digest [sha256.Size]byte) string {
 
 // IsTemplate reports an identity in the template namespace, which is what a
 // listing of the deployment's VMs leaves out.
-func IsTemplate(id string) bool { return strings.HasPrefix(id, TemplatePrefix) }
+//
+// A tenant's template is <tenant>/template-<digest>: a VM of a tenant forks only
+// its own tenant's templates, so each tenant imports an image for itself.
+func IsTemplate(id string) bool {
+	_, name, found := strings.Cut(id, "/")
+	if !found {
+		name = id
+	}
+	return strings.HasPrefix(name, TemplatePrefix)
+}
 
 // Template is one guest image this host can create VMs from: the name a create
 // request selects, the RAM every VM forked from it gets, and whether this host
@@ -302,6 +311,9 @@ type Template struct {
 // another size.
 type ImportTemplateRequest struct {
 	Memory uint64 `json:"memory,omitempty"`
+	// Tenant is the tenant the template is imported for, empty for none. Only
+	// that tenant's VMs can be created from it.
+	Tenant string `json:"tenant,omitempty"`
 }
 
 // ImportTemplateResult reports the template an image is now: its identity, which

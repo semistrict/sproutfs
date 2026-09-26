@@ -570,7 +570,7 @@ func decodeRefs(entries []*checkpointv1.Ref) ([]control.Ref, error) {
 	refs := make([]control.Ref, 0, len(entries))
 	for _, entry := range entries {
 		at := control.Ref{VM: entry.GetVm(), Sequence: entry.GetSequence()}
-		if !validName(at.VM) || at.Sequence == 0 {
+		if !control.ValidID(at.VM) || at.Sequence == 0 {
 			return nil, ErrCorrupt
 		}
 		refs = append(refs, at)
@@ -693,7 +693,7 @@ func decodeRoot(store *Store, ref control.Ref, data []byte) (*Index, error) {
 	refs := make([]control.Ref, 0, len(message.GetCheckpoints()))
 	for _, entry := range message.GetCheckpoints() {
 		at := control.Ref{VM: entry.GetVm(), Sequence: entry.GetSequence()}
-		if !validName(at.VM) || at.Sequence == 0 {
+		if !control.ValidID(at.VM) || at.Sequence == 0 {
 			return nil, ErrCorrupt
 		}
 		if _, duplicate := index.checkpoints[at]; duplicate {
@@ -801,7 +801,7 @@ func (i *Index) checkLocation(at location) error {
 		at.offset > maximumPartSize || at.length > maximumPartSize-at.offset {
 		return ErrCorrupt
 	}
-	if !validName(at.origin.VM) || at.origin.Sequence == 0 {
+	if !control.ValidID(at.origin.VM) || at.origin.Sequence == 0 {
 		return ErrCorrupt
 	}
 	return nil

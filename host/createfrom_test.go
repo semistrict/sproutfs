@@ -17,7 +17,7 @@ import (
 // writer, the fork, and the root published at the shape asked for.
 func createFrom(t *testing.T, h *host.Host, id string, parent control.Ref, shape host.ColdShape) (*volume.VM, error) {
 	t.Helper()
-	point, err := h.Volumes().InheritPublished(t.Context(), parent)
+	point, err := h.Volumes().InheritPublished(t.Context(), "child", parent)
 	if err != nil {
 		return nil, err
 	}

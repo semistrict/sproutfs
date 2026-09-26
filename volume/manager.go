@@ -86,7 +86,7 @@ func (m *Manager) create(ctx context.Context, id string, volumes []VolumeSpec, t
 	slices.SortFunc(specs, func(a, b VolumeSpec) int { return strings.Compare(a.Name, b.Name) })
 	shape := make(map[string]checkpoint.VolumeSpec, len(specs))
 	for index, spec := range specs {
-		if !validID(spec.Name) || spec.Size == 0 || spec.Size%checkpoint.SectorSize != 0 {
+		if !validVolumeName(spec.Name) || spec.Size == 0 || spec.Size%checkpoint.SectorSize != 0 {
 			return nil, ErrInvalidConfig
 		}
 		if index > 0 && specs[index-1].Name == spec.Name {

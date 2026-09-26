@@ -164,10 +164,10 @@ func (s *Store) deleteCheckpoint(ctx context.Context, ref control.Ref) error {
 // which does mean a deleted VM that was ever forked leaves objects behind, and
 // the identity is free while they stand. They are a collector's to reclaim.
 func (s *Store) DeleteVM(ctx context.Context, vm string, pinned []uint64) error {
-	if !validName(vm) {
+	if !control.ValidID(vm) {
 		return ErrInvalidConfig
 	}
-	prefix, err := platform.NewObjectPrefix(s.prefix + "vm/" + vm + "/ckpt/")
+	prefix, err := platform.NewObjectPrefix(s.vmPrefix(vm) + "ckpt/")
 	if err != nil {
 		return err
 	}
@@ -268,10 +268,10 @@ func (s *Store) deleteObject(ctx context.Context, key platform.ObjectKey) error 
 // It costs one listing of at most a page, because the answer is whether there
 // is anything rather than what there is.
 func (s *Store) Used(ctx context.Context, vm string) (bool, error) {
-	if !validName(vm) {
+	if !control.ValidID(vm) {
 		return false, ErrInvalidConfig
 	}
-	prefix, err := platform.NewObjectPrefix(s.prefix + "vm/" + vm + "/")
+	prefix, err := platform.NewObjectPrefix(s.vmPrefix(vm))
 	if err != nil {
 		return false, err
 	}
@@ -285,7 +285,7 @@ func (s *Store) Used(ctx context.Context, vm string) (bool, error) {
 // ObjectPrefix reports the key prefix every object of one checkpoint shares,
 // which is what an operator or a collector lists a checkpoint under.
 func (s *Store) ObjectPrefix(ref control.Ref) (platform.ObjectPrefix, error) {
-	if !validName(ref.VM) {
+	if !control.ValidID(ref.VM) {
 		return platform.ObjectPrefix{}, ErrInvalidConfig
 	}
 	return platform.NewObjectPrefix(strings.Clone(s.checkpointPrefix(ref)))

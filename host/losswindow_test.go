@@ -16,10 +16,13 @@ import (
 func TestAHostReportsEachVMsLossWindow(t *testing.T) {
 	h := newSizedHostHarness(t, 1)
 	h.configs[0].CheckpointInterval = -1
-	h.configs[0].LossWindow = 50 * time.Millisecond
+	// The first reading below comes right after a store and must be inside the
+	// window, so the window is longer than a loaded machine takes between them.
+	const window = 500 * time.Millisecond
+	h.configs[0].LossWindow = window
 	pagers := newPagerWithConfig(t, h.configs[0].Resources, vmmemory.Config{
 		ResidentPages: 16, LogicalPages: 32, DirtyPages: 8, ReadAheadPages: 1,
-		LossWindow: 50 * time.Millisecond})
+		LossWindow: window})
 	h.configs[0].Pagers = pagers.pagers
 	h.start(t)
 

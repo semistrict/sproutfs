@@ -37,6 +37,9 @@ var (
 	ErrUnknownVolume = errors.New("volume: unknown volume")
 	// ErrExists reports a VM identity whose control record already exists.
 	ErrExists = errors.New("volume: VM already exists")
+	// ErrOtherTenant refuses a fork whose child belongs to another tenant than
+	// its parent.
+	ErrOtherTenant = errors.New("volume: a VM cannot inherit from another tenant's VM")
 	// ErrRetired reports a fork point whose last holder has given it up: its
 	// seal has ended and the parent owns those pages again, so nothing may take
 	// a hold on it or start a child from it.
@@ -247,13 +250,17 @@ func (m *Manager) release(vm *VM) {
 	vm.control.Close()
 }
 
-// validID reports whether an identity or volume name can be part of an object
-// key. It is the same rule the checkpoint and control packages apply.
-func validID(id string) bool {
-	if id == "" || len(id) > 256 || id == "." || id == ".." || !utf8.ValidString(id) {
+// validID reports whether a VM identity can be part of an object key: a name,
+// or <tenant>/<name>. It is the control package's rule.
+func validID(id string) bool { return control.ValidID(id) }
+
+// validVolumeName reports whether a volume's name can be part of an object key:
+// a path element of its own, with no separator in it.
+func validVolumeName(name string) bool {
+	if name == "" || len(name) > 256 || name == "." || name == ".." || !utf8.ValidString(name) {
 		return false
 	}
-	return !strings.ContainsFunc(id, func(r rune) bool {
+	return !strings.ContainsFunc(name, func(r rune) bool {
 		return r == '/' || r < 0x20 || r == 0x7f
 	})
 }

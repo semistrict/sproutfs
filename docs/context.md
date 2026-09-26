@@ -9,6 +9,14 @@ supporting documents.
 durability. Each VM has one identity, one control record and one series of
 checkpoints.
 
+**Tenant**: The owner a VM belongs to, when it belongs to one. The tenant is
+part of the VM's identity, `<tenant>/<name>`, and so part of every object key
+the VM has: they all live under `tenants/<tenant>/`. Deleting that prefix
+removes the tenant and nothing else. No page crosses between tenants: a fork's
+child belongs to its parent's tenant, and each tenant imports its own
+templates. A VM whose identity names no tenant belongs to none, and its keys
+are where every VM's were before tenants existed.
+
 **Volume**: One named, byte-addressed image of a VM: its memory (`ram0`) or one
 of its PMEM disks. A volume's size is fixed for the VM's lifetime.
 

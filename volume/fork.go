@@ -383,9 +383,15 @@ func (m *Manager) Inherit(ctx context.Context, parent control.Ref) (*ForkPoint, 
 // keeps, can be pinned this way; any other is refused with
 // control.ErrNotPublished. A parent that turns out to be running goes on
 // running, and its writer carries the pin on.
-func (m *Manager) InheritPublished(ctx context.Context, parent control.Ref) (*ForkPoint, error) {
-	if !validID(parent.VM) {
+//
+// child is the VM the point is for. A child of another tenant is refused before
+// anything is pinned, because no page crosses between tenants.
+func (m *Manager) InheritPublished(ctx context.Context, child string, parent control.Ref) (*ForkPoint, error) {
+	if !validID(parent.VM) || !validID(child) {
 		return nil, ErrInvalidConfig
+	}
+	if err := sameTenant(child, parent.VM); err != nil {
+		return nil, err
 	}
 	pinned, err := m.config.Control.Pin(ctx, parent.VM, parent.Sequence)
 	if err != nil {
@@ -411,6 +417,9 @@ func (m *Manager) InheritPublished(ctx context.Context, parent control.Ref) (*Fo
 func (m *Manager) Fork(ctx context.Context, id string, point *ForkPoint) (*VM, error) {
 	if !validID(id) || point == nil || point.index == nil {
 		return nil, ErrInvalidConfig
+	}
+	if err := sameTenant(id, point.ref.VM); err != nil {
+		return nil, err
 	}
 	if err := m.usable(); err != nil {
 		return nil, err
@@ -453,4 +462,15 @@ func (f *ForkPoint) inheritedPages() map[string][]uint64 {
 		return nil
 	}
 	return maps.Clone(f.unpublished)
+}
+
+// sameTenant refuses a child of a tenant other than its parent's. A fork
+// shares the parent's pages by their identity, in the store and in a host's
+// memory, so a fork across tenants is the one way a page could cross between
+// them.
+func sameTenant(child, parent string) error {
+	if control.TenantOf(child) != control.TenantOf(parent) {
+		return fmt.Errorf("%w: %s cannot inherit from %s", ErrOtherTenant, child, parent)
+	}
+	return nil
 }

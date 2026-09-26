@@ -447,6 +447,13 @@ vm/<id>/ckpt/<seq>/index                the index object: header, segments, root
 vm/<id>/ckpt/<seq>/part/<n>             the data: part n, from zero
 ```
 
+A VM of a tenant, `<tenant>/<name>`, has the same keys under that tenant's
+namespace: `tenants/<tenant>/control/<name>` and `tenants/<tenant>/vm/<name>/`.
+Every key a tenant has is under `tenants/<tenant>/`, so deleting that prefix
+removes the tenant and no other. A fork across tenants is refused before
+anything is written (`volume.ErrOtherTenant`), because a fork reads its
+parent's pages by their identity, which is the one way a page could cross.
+
 A checkpoint consists of its data and one **index object**. The index object
 holds the page table. It is small, rewritten in pieces every checkpoint, and
 read on every open. The **parts** hold the guest bytes. They are large and

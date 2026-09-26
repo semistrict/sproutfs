@@ -33,7 +33,7 @@ func TestAPointOverAStoppedVMPinsTheCheckpointItInherits(t *testing.T) {
 		}
 		before := pins(t, h, "vm")
 
-		point, err := manager.InheritPublished(t.Context(), control.Ref{VM: "vm"})
+		point, err := manager.InheritPublished(t.Context(), "child", control.Ref{VM: "vm"})
 		if err != nil {
 			t.Fatalf("a point over a stopped VM's checkpoint: %v", err)
 		}
@@ -86,7 +86,7 @@ func TestARunningVMPinnedWithoutItsWriterSparesThePin(t *testing.T) {
 			t.Fatal(err)
 		}
 		published := vm.Status().Checkpoint
-		point, err := manager.InheritPublished(t.Context(), control.Ref{VM: "vm", Sequence: published.Sequence})
+		point, err := manager.InheritPublished(t.Context(), "child", control.Ref{VM: "vm", Sequence: published.Sequence})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -135,7 +135,7 @@ func TestAPointWithoutTheWriterRefusesWhatItCannotPin(t *testing.T) {
 		if err := vm.Checkpoint(t.Context()); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := manager.InheritPublished(t.Context(), first); !errors.Is(err, control.ErrNotPublished) {
+		if _, err := manager.InheritPublished(t.Context(), "child", first); !errors.Is(err, control.ErrNotPublished) {
 			t.Fatalf("a point over a checkpoint the record no longer selects = %v, want ErrNotPublished", err)
 		}
 		point, err := vm.ForkPoint(t.Context(), volume.Prepared(nil, nil))
@@ -147,7 +147,7 @@ func TestAPointWithoutTheWriterRefusesWhatItCannotPin(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer fork.Close(t.Context())
-		if _, err := manager.InheritPublished(t.Context(), control.Ref{VM: "fork"}); !errors.Is(err, control.ErrNotPublished) {
+		if _, err := manager.InheritPublished(t.Context(), "child", control.Ref{VM: "fork"}); !errors.Is(err, control.ErrNotPublished) {
 			t.Fatalf("a point over a fork whose root never published = %v, want ErrNotPublished", err)
 		}
 	})

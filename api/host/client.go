@@ -56,9 +56,16 @@ func (c *Client) Create(ctx context.Context, request CreateRequest) (CreateResul
 // ImportTemplate sends a guest image to be imported into the template its bytes
 // name. The image is streamed as the request's body.
 func (c *Client) ImportTemplate(ctx context.Context, image io.Reader, request ImportTemplateRequest) (ImportTemplateResult, error) {
-	target := c.path("/templates")
+	query := url.Values{}
 	if request.Memory != 0 {
-		target += "?memory=" + strconv.FormatUint(request.Memory, 10)
+		query.Set("memory", strconv.FormatUint(request.Memory, 10))
+	}
+	if request.Tenant != "" {
+		query.Set("tenant", request.Tenant)
+	}
+	target := c.path("/templates")
+	if len(query) > 0 {
+		target += "?" + query.Encode()
 	}
 	return jsonhttp.Upload[ImportTemplateResult](ctx, c.http, http.MethodPost, target, image)
 }

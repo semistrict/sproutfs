@@ -751,8 +751,8 @@ func TestStoreRejectsUnusableConfigurationAndArguments(t *testing.T) {
 		if _, err := store.Root(t.Context(), control.Ref{Sequence: 1}, nil); !errors.Is(err, checkpoint.ErrInvalidConfig) {
 			t.Fatalf("root without a VM identity: %v", err)
 		}
-		if _, err := store.Root(t.Context(), control.Ref{VM: "a/b", Sequence: 1}, nil); !errors.Is(err, checkpoint.ErrInvalidConfig) {
-			t.Fatalf("root with a structured VM identity: %v", err)
+		if _, err := store.Root(t.Context(), control.Ref{VM: "a/b/c", Sequence: 1}, nil); !errors.Is(err, checkpoint.ErrInvalidConfig) {
+			t.Fatalf("root with an identity of two separators: %v", err)
 		}
 		sizes := map[string]uint64{"root": checkpoint.SectorSize + 1}
 		if _, err := store.Root(t.Context(), control.Ref{VM: "vm", Sequence: 1}, volumes2MiB(sizes)); !errors.Is(err, checkpoint.ErrInvalidConfig) {

@@ -192,7 +192,7 @@ func (a *audit) run(ctx context.Context) error {
 	for _, id := range identities {
 		record, err := a.records.Read(ctx, id)
 		if err != nil {
-			a.report(a.base+control.RecordPrefix+id, 0,
+			a.report(a.base+control.RecordName(id), 0,
 				fmt.Errorf("the control record does not parse: %w", err))
 			continue
 		}
@@ -245,7 +245,13 @@ func (a *audit) classify(keys []string) (identities []string, checkpoints []obje
 			a.report(key, 0, errors.New("the object lies outside the deployment's prefix"))
 			continue
 		}
-		if id, isRecord := strings.CutPrefix(rest, control.RecordPrefix); isRecord {
+		tenant, rest, ok := control.CutNamespace(rest)
+		if !ok {
+			a.report(key, 0, errors.New("the tenant namespace holds an object of no valid tenant"))
+			continue
+		}
+		if name, isRecord := strings.CutPrefix(rest, control.RecordPrefix); isRecord {
+			id := control.InTenant(tenant, name)
 			if !control.ValidID(id) {
 				a.report(key, 0, errors.New("the control namespace holds an object that is not a record"))
 				continue
@@ -253,7 +259,7 @@ func (a *audit) classify(keys []string) (identities []string, checkpoints []obje
 			identities = append(identities, id)
 			continue
 		}
-		found, ok := parseCheckpointKey(rest)
+		found, ok := parseCheckpointKey(tenant, rest)
 		if !ok {
 			a.report(key, 0, errors.New("the key names no record and no checkpoint object"))
 			continue
@@ -267,12 +273,13 @@ func (a *audit) classify(keys []string) (identities []string, checkpoints []obje
 // parseCheckpointKey takes apart "vm/<id>/ckpt/<sequence>/index" and
 // "vm/<id>/ckpt/<sequence>/part/<n>", which is every key the checkpoint store
 // writes.
-func parseCheckpointKey(rest string) (object, bool) {
+func parseCheckpointKey(tenant, rest string) (object, bool) {
 	tail, inside := strings.CutPrefix(rest, "vm/")
 	if !inside {
 		return object{}, false
 	}
-	id, tail, found := strings.Cut(tail, "/ckpt/")
+	name, tail, found := strings.Cut(tail, "/ckpt/")
+	id := control.InTenant(tenant, name)
 	if !found || !control.ValidID(id) {
 		return object{}, false
 	}
@@ -309,7 +316,7 @@ const indexObject = "index"
 // disagreeing with itself: the pin was written on a checkpoint that was already
 // published, and nothing after that deletes a pinned one.
 func (a *audit) checkRecord(ctx context.Context, record control.Record) {
-	key := a.base + control.RecordPrefix + record.VM
+	key := a.base + control.RecordName(record.VM)
 	if record.Created {
 		a.reach(ctx, key, control.Ref{VM: record.VM, Sequence: record.Selected}, "the selected checkpoint")
 	}

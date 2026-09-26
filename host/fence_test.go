@@ -64,6 +64,13 @@ func markerAt(t *testing.T, ctx context.Context, vm *volume.VM, page uint64) str
 // it, and not an object any selected index names.
 func TestNoTwoWritersOfOneVMEverMix(t *testing.T) {
 	h := newSizedHostHarness(t, 2)
+	// The publications are what fence the first writer here. The epoch timer
+	// is the other way a host finds a takeover, and a tick of it closes the
+	// first writer's handle outright, which the rounds below cannot write to;
+	// on a loaded machine the rounds outlast its interval.
+	for index := range h.configs {
+		h.configs[index].EpochInterval = -1
+	}
 	h.start(t)
 	ctx := t.Context()
 	first, err := h.hosts[0].Volumes().Create(ctx, "vm-1", fenceVolumes)

@@ -26,6 +26,10 @@ import (
 // whose root did not land is closed, and closing it removes its record. An
 // identity that exists is refused before anything is published.
 func (h *Host) CaptureInto(ctx context.Context, source, child string) (control.Ref, error) {
+	// A VM of another tenant is refused before the source is paused for it.
+	if control.TenantOf(child) != control.TenantOf(source) {
+		return control.Ref{}, fmt.Errorf("%w: %s cannot capture %s", volume.ErrOtherTenant, child, source)
+	}
 	point, err := h.seal(ctx, source)
 	if err != nil {
 		return control.Ref{}, err

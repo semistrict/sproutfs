@@ -120,15 +120,18 @@ func ValidCreateSequence(sequence uint64) bool {
 	return EpochOf(sequence) <= MaximumCreateEpoch && ValidSequence(EpochOf(sequence), sequence)
 }
 
-// ValidID reports whether an identity can be part of an object key. It is the
-// same rule the checkpoint package applies to a checkpoint reference.
+// ValidID reports whether an identity can be part of an object key: a name, or
+// <tenant>/<name>. The checkpoint package applies the same rule to a
+// checkpoint reference.
 func ValidID(id string) bool {
-	if id == "" || len(id) > 256 || id == "." || id == ".." || !utf8.ValidString(id) {
+	if len(id) > 256 || !utf8.ValidString(id) {
 		return false
 	}
-	return !strings.ContainsFunc(id, func(r rune) bool {
-		return r == '/' || r < 0x20 || r == 0x7f
-	})
+	tenant, name, found := strings.Cut(id, "/")
+	if !found {
+		return validName(id)
+	}
+	return ValidTenant(tenant) && validName(name)
 }
 
 // Config supplies the object store the records live in and the deployment's

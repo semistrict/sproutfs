@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/semistrict/sproutfs/control"
 	"log/slog"
 	"slices"
 
@@ -89,6 +90,12 @@ func (h *Host) Fork(ctx context.Context, parent string, children []string,
 	destination platform.Address) ([]vmmigrate.Handoff, error) {
 	if len(children) == 0 {
 		return nil, fmt.Errorf("%w: a fork of %s names no child", ErrInvalidConfig, parent)
+	}
+	// A child of another tenant is refused before the parent is paused for it.
+	for _, child := range children {
+		if control.TenantOf(child) != control.TenantOf(parent) {
+			return nil, fmt.Errorf("%w: %s cannot fork %s", volume.ErrOtherTenant, child, parent)
+		}
 	}
 	// Only a child that leaves this host needs an endpoint to leave through.
 	local := destination == "" || destination == h.migration.Address

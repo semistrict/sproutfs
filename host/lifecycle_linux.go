@@ -87,14 +87,14 @@ func (s *supervisor) Create(ctx context.Context, request hostapi.CreateRequest) 
 func (s *supervisor) createPoint(ctx context.Context, request hostapi.CreateRequest) (*volume.ForkPoint, string, string, error) {
 	from := request.From
 	if from == nil {
-		template, name, err := s.templateNamed(ctx, request.Template)
+		template, name, err := s.templateNamed(ctx, control.TenantOf(request.ID), request.Template)
 		if err != nil {
 			return nil, "", "", err
 		}
 		return template.Point, "template " + name, name, nil
 	}
 	parent := control.Ref{VM: from.VM, Sequence: from.Checkpoint}
-	point, err := s.host.Volumes().InheritPublished(ctx, parent)
+	point, err := s.host.Volumes().InheritPublished(ctx, request.ID, parent)
 	if err != nil {
 		return nil, "", "", fmt.Errorf("pinning the checkpoint of %s: %w", from.VM, err)
 	}

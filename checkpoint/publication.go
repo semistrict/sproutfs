@@ -82,7 +82,7 @@ func (s *Store) Begin(parent *Index, ref control.Ref) *Publication {
 			p.geometry[name] = parent.volumes[name].geometry
 		}
 	}
-	if !validName(ref.VM) || ref.Sequence == 0 {
+	if !control.ValidID(ref.VM) || ref.Sequence == 0 {
 		p.err = ErrInvalidConfig
 	}
 	return p

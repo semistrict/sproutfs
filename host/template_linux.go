@@ -14,6 +14,7 @@ import (
 	"time"
 
 	hostapi "github.com/semistrict/sproutfs/api/host"
+	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/vmmachine"
 	"github.com/semistrict/sproutfs/volume"
 )
@@ -28,7 +29,7 @@ func (s *supervisor) importing(ctx context.Context) {
 	for {
 		var failures []error
 		for _, name := range slices.Sorted(maps.Keys(s.config.Templates)) {
-			if _, err := s.templateOf(ctx, name, s.config.Templates[name]); err != nil {
+			if _, err := s.templateOf(ctx, "", name, s.config.Templates[name]); err != nil {
 				failures = append(failures, fmt.Errorf("importing %s: %w", name, err))
 			}
 		}
@@ -61,9 +62,15 @@ const importRetry = 5 * time.Second
 // cannot change while this process runs: the file behind the name is read once,
 // at startup, and a file that changed under a running host would be a template
 // nothing has asked for.
-func (s *supervisor) templateOf(ctx context.Context, name string, chosen Template) (*ImportedTemplate, error) {
+//
+// A tenant has its own template of a configured image, imported the first time
+// one of its VMs is created from it: a VM of a tenant forks only its own
+// tenant's templates. The images read at startup are the templates of no
+// tenant.
+func (s *supervisor) templateOf(ctx context.Context, tenant, name string, chosen Template) (*ImportedTemplate, error) {
+	key := control.InTenant(tenant, name)
 	s.mu.Lock()
-	cached := s.templates[name]
+	cached := s.templates[key]
 	s.mu.Unlock()
 	if cached != nil {
 		return cached, nil
@@ -73,12 +80,12 @@ func (s *supervisor) templateOf(ctx context.Context, name string, chosen Templat
 		return nil, fmt.Errorf("guest image %s: %w", chosen.Path, err)
 	}
 	defer file.Close()
-	prepared, err := s.importTemplate(ctx, file, chosen.MemoryBytes, name)
+	prepared, err := s.importTemplate(ctx, file, chosen.MemoryBytes, tenant, name)
 	if err != nil {
 		return nil, err
 	}
 	s.mu.Lock()
-	s.templates[name] = prepared
+	s.templates[key] = prepared
 	s.mu.Unlock()
 	return prepared, nil
 }
@@ -116,7 +123,7 @@ func (s *supervisor) ImportTemplate(ctx context.Context, image io.Reader,
 		}
 		source = staged
 	}
-	imported, err := s.importTemplate(ctx, source, memory, "requested")
+	imported, err := s.importTemplate(ctx, source, memory, request.Tenant, "requested")
 	if err != nil {
 		return hostapi.ImportTemplateResult{}, err
 	}
@@ -132,7 +139,7 @@ func (s *supervisor) ImportTemplate(ctx context.Context, image io.Reader,
 // image. One import runs at a time: two creations of the first VM would
 // otherwise both import the same image.
 func (s *supervisor) importTemplate(ctx context.Context, source io.ReadSeeker, memory uint64,
-	label string) (*ImportedTemplate, error) {
+	tenant, label string) (*ImportedTemplate, error) {
 	length, err := source.Seek(0, io.SeekEnd)
 	if err != nil {
 		return nil, fmt.Errorf("guest image %s: %w", label, err)
@@ -157,7 +164,7 @@ func (s *supervisor) importTemplate(ctx context.Context, source io.ReadSeeker, m
 			{Name: vmmachine.RAMVolume, Size: memory, PageSize: ramPage},
 			{Name: rootVolume, Size: size, PageSize: pmemPage},
 		},
-		Root: rootVolume, Source: source,
+		Root: rootVolume, Source: source, Tenant: tenant,
 	})
 	if err != nil {
 		return nil, err
@@ -175,7 +182,7 @@ func (s *supervisor) importTemplate(ctx context.Context, source io.ReadSeeker, m
 // identity, which is how a VM is created from an image imported on request on
 // whichever host. The time is what reaching it cost, which is an import only
 // for the first VM of a configured image.
-func (s *supervisor) templateNamed(ctx context.Context, selected string) (*ImportedTemplate, string, error) {
+func (s *supervisor) templateNamed(ctx context.Context, tenant, selected string) (*ImportedTemplate, string, error) {
 	if hostapi.IsTemplate(selected) {
 		s.mu.Lock()
 		cached := s.byID[selected]
@@ -199,7 +206,7 @@ func (s *supervisor) templateNamed(ctx context.Context, selected string) (*Impor
 	if err != nil {
 		return nil, "", fmt.Errorf("%w: %w", ErrRequest, err)
 	}
-	template, err := s.templateOf(ctx, name, chosen)
+	template, err := s.templateOf(ctx, tenant, name, chosen)
 	return template, name, err
 }
 

@@ -52,7 +52,7 @@ func (c *Client) key(vm string) (platform.ObjectKey, error) {
 	if !ValidID(vm) {
 		return platform.ObjectKey{}, ErrInvalidConfig
 	}
-	return platform.NewObjectKey(c.prefix + RecordPrefix + vm)
+	return platform.NewObjectKey(c.prefix + RecordName(vm))
 }
 
 // Read returns a VM's control record. A VM with no record reports

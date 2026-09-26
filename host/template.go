@@ -53,6 +53,10 @@ type TemplateImport struct {
 	// the template, and once more for the bytes that go into it, so the
 	// identity cannot disagree with what was imported under it.
 	Source io.ReadSeeker
+	// Tenant is the tenant the template belongs to, empty for none. A VM of a
+	// tenant forks only its own tenant's templates, so the same image is one
+	// template per tenant.
+	Tenant string
 	// Wait is how long this host waits for another host's import of this image
 	// to publish before it recovers it. Zero is DefaultTemplateWait; a negative
 	// wait recovers an unfinished import at once, which is what a test that has
@@ -112,7 +116,10 @@ func (h *Host) TemplateOf(ctx context.Context, request TemplateImport) (*Importe
 	if err != nil {
 		return nil, fmt.Errorf("reading the %s image: %w", request.Image, err)
 	}
-	id := hostapi.TemplateID(digest)
+	if request.Tenant != "" && !control.ValidTenant(request.Tenant) {
+		return nil, fmt.Errorf("%w: %q is not a tenant", ErrRequest, request.Tenant)
+	}
+	id := control.InTenant(request.Tenant, hostapi.TemplateID(digest))
 	wait := request.Wait
 	if wait == 0 {
 		wait = DefaultTemplateWait

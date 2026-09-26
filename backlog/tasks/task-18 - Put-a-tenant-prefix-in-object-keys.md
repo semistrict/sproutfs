@@ -1,9 +1,11 @@
 ---
 id: TASK-18
 title: Put a tenant prefix in object keys
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-09-25 18:17'
+updated_date: '2026-09-25 23:31'
 labels:
   - embedder
   - security

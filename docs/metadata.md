@@ -6,7 +6,7 @@ orchestrator's SQLite table records where each VM is running, but it is not the
 authority for anything. It is rebuilt by surveying hosts and listing the bucket.
 Hosts share one object store and one deployment prefix. Under that prefix, a
 VM's control record is at `control/<id>` and its checkpoint objects are under
-`vm/<id>/ckpt/`. The records have a separate namespace because listing them is
+`vm/<id>/ckpt/`, or under `tenants/<tenant>/` for a VM of a tenant. The records have a separate namespace because listing them is
 how the deployment's VMs are found. If that listing also had to walk the
 checkpoint objects, it would cost a request for every object ever written.
 
