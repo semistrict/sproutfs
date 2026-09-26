@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-09-25 23:02'
-updated_date: '2026-09-26 15:14'
+updated_date: '2026-09-26 15:23'
 labels:
   - security
 dependencies:
@@ -24,7 +24,7 @@ Step 5 of plans/isolated-arena-2026-09-25.md: MemoryRegionBacking.Tenant from TA
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 No resident page is shared across tenants in isolated mode
+- [x] #1 No resident page is shared across tenants in isolated mode
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -42,4 +42,12 @@ Step 5 of plans/isolated-arena-2026-09-25.md: MemoryRegionBacking.Tenant from TA
 
 <!-- SECTION:NOTES:BEGIN -->
 Built: MemoryRegionBacking.Tenant (vmmachine states control.TenantOf of the VM id); ErrOtherTenant for an identity or fork-point name of another tenant (both modes); per-tenant shared file in isolated mode (Host.shared map, made at the tenant's first attach, kept while a region is attached or it holds a page); New makes no file in isolated mode and Connect checks the arena. Test fixtures name VMs without a slash (vmName), since a subtest name's slash would name a tenant. testpager and the vmmemory fixture give a read-only file to one tenant only. Tests: vmmemory/tenant_test.go, internal/simtest/tenant_test.go (World.Sharing), reach test with an other-tenant process and the same-tenant concession. Mutation (one shared file for all tenants) is killed by the pager test, the campaign and the Lima reach test (hostile reads 33 other-tenant pages).
+
+Validation: go test ./... passes with SPROUTFS_ARENA=shared and isolated; just check passes; Lima (aarch64, 4 KiB and 2 MiB) pager suite passes in both modes (499/497 PASS); Firecracker suite passes in both modes (61 PASS each). Mutation of one shared file for all tenants fails the pager test, the campaign and the Lima reach test.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Commit 218d5d50. MemoryRegionBacking.Tenant (vmmachine states the VM's tenant); ErrOtherTenant for an identity or fork-point name of another tenant; one shared file per tenant in the isolated arena, kept while a region of the tenant is attached or it holds a page. No resident page crosses tenants: proven by vmmemory/tenant_test.go, the simtest campaign TestTwoTenantsForkingOneImageShareNoPage (World.Sharing plus the tenant check in testpager), and TestAHostileVMMReachesNoOtherVMsBytes in Lima with an other-tenant neighbour (unreachable) and the same-tenant concession (reachable, asserted). Shared mode unchanged: its suites pass.
+<!-- SECTION:FINAL_SUMMARY:END -->
