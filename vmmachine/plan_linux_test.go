@@ -134,6 +134,37 @@ func TestPlanRefusesAMachineItCannotBind(t *testing.T) {
 	}
 }
 
+// TestPlanMapsAnEphemeralDiskOnTheEphemeralPager: an ephemeral disk is a PMEM
+// device to the guest and attaches to the pager built for disks no checkpoint
+// holds, and a machine whose host runs no such pager is refused before anything
+// starts.
+func TestPlanMapsAnEphemeralDiskOnTheEphemeralPager(t *testing.T) {
+	vm, err := planManager(t).Create(t.Context(), "boxed", []volume.VolumeSpec{
+		{Name: RAMVolume, Size: 4 << 20, PageSize: checkpoint.PageSize2MiB},
+		{Name: "root", Size: 4 << 20, PageSize: checkpoint.PageSize2MiB},
+		{Name: "ephemeral", Size: 4 << 20, PageSize: checkpoint.PageSize2MiB, Ephemeral: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = vm.Close(context.WithoutCancel(t.Context())) })
+	c := planConfig(t, vm)
+	c.Pmem = append(c.Pmem, Pmem{ID: "ephemeral"})
+	if _, err := c.plan(); err == nil || err.Error() != `vmmachine: the ephemeral disk "ephemeral" needs an ephemeral pager` {
+		t.Fatalf("a plan with no ephemeral pager reported %v, want the refusal", err)
+	}
+	c.Pagers.Ephemeral = planPager(t, "spill-ephemeral", true)
+	layout, err := c.plan()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(layout.pmem) != 2 || layout.pmem[1].name != "ephemeral" ||
+		layout.pmem[1].backing.Kind != vmmemory.Pmem || layout.pmem[1].pager != c.Pagers.Ephemeral ||
+		layout.pmem[0].pager != c.Pagers.Pmem {
+		t.Fatalf("the plan maps %+v, want the root on the PMEM pager and the ephemeral disk on its own", layout.pmem)
+	}
+}
+
 // TestPlanRefusesAVMWithoutRAM is the one layout error a VM rather than a
 // configuration causes.
 func TestPlanRefusesAVMWithoutRAM(t *testing.T) {
@@ -210,22 +241,30 @@ func (planArena) Release(context.Context, int) error       { return nil }
 // which is what a memory region's size has to be a whole number of.
 func planPagers(t *testing.T) vmmemory.Pagers {
 	t.Helper()
+	return vmmemory.Pagers{Ram: planPager(t, "spill-ram", false), Pmem: planPager(t, "spill-pmem", false)}
+}
+
+// planPager is one pager a plan can name, over a spill file of its own; an
+// ephemeral one's dirty budget is its logical one, as a host builds it.
+func planPager(t *testing.T, name string, ephemeral bool) *vmmemory.Host {
+	t.Helper()
 	disk := sim.New(sim.Config{}).NewDisk("pager", sim.DiskConfig{})
-	build := func(name string) *vmmemory.Host {
-		spill, err := disk.Open(t.Context(), name, platform.OpenOptions{Create: true})
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { _ = spill.Close() })
-		h, err := vmmemory.New(t.Context(), testresource.New(), vmmemory.Config{
-			PageSize: checkpoint.PageSize2MiB, ResidentPages: 1, LogicalPages: 64, DirtyPages: 1},
-			planArena{}, spill)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return h
+	spill, err := disk.Open(t.Context(), name, platform.OpenOptions{Create: true})
+	if err != nil {
+		t.Fatal(err)
 	}
-	return vmmemory.Pagers{Ram: build("spill-ram"), Pmem: build("spill-pmem")}
+	t.Cleanup(func() { _ = spill.Close() })
+	dirty := 1
+	if ephemeral {
+		dirty = 64
+	}
+	h, err := vmmemory.New(t.Context(), testresource.New(), vmmemory.Config{
+		PageSize: checkpoint.PageSize2MiB, ResidentPages: 1, LogicalPages: 64, DirtyPages: dirty,
+		Ephemeral: ephemeral}, planArena{}, spill)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return h
 }
 
 // planVM is a VM with its RAM volume, a PMEM volume and two volumes no machine

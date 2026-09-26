@@ -122,6 +122,35 @@ whole VM once, because one pause seals every memory region the VM maps. A VM's l
 window is the oldest unpublished write across its memory regions in both pagers. If
 neither pager can admit a store, only that VM is stopped.
 
+### The ephemeral pager
+
+A host may run a third pager, for [ephemeral disks](volumes.md#ephemeral-disks)
+(`vmmemory.Config.Ephemeral`, `Pagers.Ephemeral`). An ephemeral disk is PMEM to
+the guest, and the session states PMEM on the wire. It is a pager of its own
+because its private pages are the disk's only copy. They must not take the
+dirty budget or the arena of the disks that checkpoints publish, and they must
+not bound a VM's loss window.
+
+It is an ordinary pager with three differences:
+
+- **Its dirty budget is its logical budget.** Both are the disk its spill file
+  may fill. The host admits an ephemeral disk against the logical budget by its
+  size, so every page of every admitted disk can be private at once, and a store
+  into one never waits.
+- **Its seal takes nothing.** A VMM asks every session to seal for a capture, so
+  the seal succeeds and records no checkpoint. No capture, fork point or
+  interval checkpoint reaches its pages.
+- **It keeps no loss window.** `MemoryRegion.OnInterval` is false for its
+  memory regions, as it is for RAM. The host leaves them out of the loss window,
+  a flush of one completes at once, and pressure on its budget asks for no
+  checkpoint.
+
+A backing that states `Ephemeral` (`vmmemory.EphemeralBacking`, which a volume
+and a peer backing implement) attaches only to the pager built for it, and that
+pager maps nothing else. Its resident pages are evicted to its spill file and
+read back from it like any other private page, so what stays in memory is
+bounded by its arena.
+
 **RAM's page is 4 KiB and PMEM's is 2 MiB**, on a real host and in the
 simulation. The page size determines the memory behind it. A 2 MiB page comes
 from the host's provisioned HugeTLB pool. A 4 KiB page comes from an ordinary

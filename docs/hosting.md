@@ -62,9 +62,21 @@ does `vmmachine`, which receives a `platform.Disks` for the staging directory
 each VMM gets.
 
 Every VM the host starts has one RAM volume, `ram0`, plus one volume per PMEM
-device. The supervisor gives each VM a single PMEM device, `root`, which the
-guest boots from. The supervisor opens a `vmmachine.Scratch` and passes it to
-each VMM configuration.
+device. The supervisor gives each VM a PMEM device, `root`, which the guest
+boots from. A VM created with an ephemeral disk has a second PMEM device,
+`ephemeral`, after the root. The supervisor opens a `vmmachine.Scratch` and
+passes it to each VMM configuration.
+
+A host given `SPROUTFS_EPHEMERAL_BYTES` runs a third pager for
+[ephemeral disks](volumes.md#ephemeral-disks). That setting is its spill file,
+which is every ephemeral disk the host admits, and
+`SPROUTFS_EPHEMERAL_ARENA_BYTES` (256 MiB by default) is its share of the
+HugeTLB pool. Both are whole 2 MiB pages, and the host's memory allotment
+grows by the arena. A host without the setting runs no ephemeral pager and
+refuses a VM with an ephemeral disk. A deployment that creates ephemeral disks
+gives every host one, because a VM with one may be opened, received or
+recovered on any host. The orchestrator places a create by memory alone, so a
+host without room for the disk refuses the create.
 
 `GET /stored?tenant=<tenant>` reports what one tenant's VMs hold in the object
 store, per VM, for an embedder's billing. It lists the store, so any host
@@ -221,6 +233,13 @@ first checkpoint at that shape, through the same publication a cold boot uses
 boot. A template never ran, so nothing is lost by discarding its memory. What a
 create does not name is the template's: its RAM and disk as imported, and the
 host's processor count.
+
+A create may also ask for an ephemeral disk (`CreateRequest.Ephemeral`,
+`sproutfsctl create --ephemeral 8G`), in whole 2 MiB pages. The fork that
+creates the VM adds it, zeroed, and the VM's first checkpoint records it.
+Admission charges it to the ephemeral pager by its size. A create from a
+checkpoint that already has one gives it the new size, or keeps its size when
+the request names none.
 
 Software in the guest is reached over the VM's vsock, which carries only exec.
 
@@ -714,7 +733,9 @@ disk has its own fixed cap:
 
 - the page cache's allotment;
 - the pager's spill file, `SPROUTFS_SPILL_BYTES`, which bounds the dirty pages
-  the pager admits.
+  the pager admits;
+- the ephemeral pager's spill file, `SPROUTFS_EPHEMERAL_BYTES`, which bounds
+  the ephemeral disks the host admits.
 
 So nothing has to be reclaimed across components, no ledger orders them, and a
 full disk is a configuration error, not a code path.

@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-09-25 18:17'
-updated_date: '2026-09-26 01:51'
+updated_date: '2026-09-26 02:04'
 labels:
   - embedder
 dependencies: []
@@ -22,23 +22,23 @@ An embedding program replaces JuiceFS with sproutfs in its sandbox host. This is
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A volume can be marked never checkpointed
-- [ ] #2 Simulation invariants: it is never published, it is lost with its host, and it never reaches a fork
+- [x] #1 A volume can be marked never checkpointed
+- [x] #2 Simulation invariants: it is never published, it is lost with its host, and it never reaches a fork
 <!-- AC:END -->
 
 ## Implementation Plan
 
 <!-- SECTION:PLAN:BEGIN -->
-Design: an ephemeral volume is a PMEM disk that no checkpoint holds.
-1. Refactor: give vmmemory.MemoryRegionKind predicates (sealed by a capture; checkpointed on the interval) and replace the scattered Ram/Pmem comparisons in host, vmmachine and simtest.
-2. checkpoint: VolumeSpec.Ephemeral; root Volume.ephemeral (the one marker: name, size, page size, no segments ever); Publication.Add creates a volume at a cold boot; Dirty on an ephemeral volume fails; decode and consistency refuse segments or members of one. Index format stays 8 (new optional field).
-3. volume: VolumeSpec.Ephemeral, Volume.Ephemeral; writes through the overlay and pager sources for it are refused, so it is never published and never in a fork point; Shape.Add adds one at a cold boot and resizes need no grow-only rule for it.
-4. vmmemory: third kind Ephemeral with a pager of its own (arena, spill file). Its dirty budget equals its logical budget, so admission by size means a store never waits; Seal of it takes nothing (Firecracker's snapshot seals every session). No loss window.
-5. host: kind from the volume, admission refuses an ephemeral disk with no ephemeral pager, checkpointNow/oldestOf/flush exclude it, pagerConfig and supervisor start a third pager when SPROUTFS_EPHEMERAL_BYTES is set; ColdShape adds the disk at create; vmmachine maps it as a PMEM device on that pager; Prepare skips it.
-6. Migration carries it (VM keeps running; its pages are served as unpublished). Fork and CaptureInto leave it out: the child gets it zeroed. Reopen after host loss: zeroed at the root's size.
-7. API/CLI: hostapi.CreateRequest.Ephemeral, orch.CreateRequest.Ephemeral, orchestrator forwarding, sproutfsctl create --ephemeral SIZE; status reports the ephemeral pager.
-8. simtest: third pager; guests' durable model zeroes ephemeral volumes; topologies draw an ephemeral disk; scenarios prove never published, lost with its host, never reaches a fork (local and remote), carried by migration; CheckDeployment refuses any published byte of one.
-9. Docs: volumes, hosting, vm-memory, migration, context, architecture. go test ./... and just check.
+Design: an ephemeral disk is a PMEM volume no checkpoint holds, served by a third pager.
+1. Refactor: MemoryRegion.OnInterval names the regions the interval checkpoints; the loss window, the pressure checkpoint, the flush and the disk seal ask it instead of comparing kinds.
+2. checkpoint: VolumeSpec.Ephemeral; root Volume.ephemeral (field 7) is the one marker: name, size, page size, never a segment. Publication.Add creates a volume; a page of an ephemeral one fails Commit with ErrEphemeral before any part; decode refuses a segment of one and CheckIndex a part member of one. Index format stays 8.
+3. volume: VolumeSpec.Ephemeral and Volume.Ephemeral. Writes, discards and pager sources for it are refused (ErrEphemeral); reads are zeroes. Manager.Fork(..., added) gives a child ephemeral disks; its root adds them. A cold boot may resize one either way.
+4. vmmemory: the kind stays the wire kind (PMEM). Config.Ephemeral builds a third pager: dirty budget equals logical budget, no loss window, Seal takes nothing. EphemeralBacking binds a volume to that pager only. Pagers.Ephemeral and Pagers.Of.
+5. host and vmmachine: SupervisorConfig.Ephemeral starts the third pager; admission charges it and refuses an ephemeral disk on a host without one; its flush completes at once; CreateRequest.Ephemeral adds the disk through the fork that creates the VM; vmmachine maps it as a second PMEM device on that pager; Prepare skips it; the handoff marks it.
+6. Migration carries it (every page is unpublished); forks and CaptureInto leave it out; reopen gets it zeroed.
+7. API, orchestrator, CLI (sproutfsctl create --ephemeral), host config (SPROUTFS_EPHEMERAL_BYTES, SPROUTFS_EPHEMERAL_ARENA_BYTES), metrics.
+8. simtest: third pager on every host, topologies draw an ephemeral disk, guest models zero it at checkpoints and forks, scenarios for never published, lost with host and at stop, no fork, migration.
+9. Docs: context, architecture, volumes, vm-memory, hosting, migration, testing, deploy README.
 <!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
@@ -53,4 +53,14 @@ Step 3 done: volume ephemeral disks (ErrEphemeral; reads zero; Manager.Fork(...,
 Step 4 done: vmmemory ephemeral pager (Config.Ephemeral, EphemeralBacking, Pagers.Ephemeral/Of, Seal no-op, OnInterval false). Next: host (pagerConfig, admission, flush, supervisor third pager, Create via Fork added), vmmachine plan.
 
 Step 5 done: host and vmmachine run ephemeral disks. Supervisor third pager via SupervisorConfig.Ephemeral (ArenaBytes, DiskBytes); CreateRequest.Ephemeral; handoff carries Ephemeral per region. Next: cmd config and metrics, orchestrator and CLI, then simtest.
+
+Step 6 done: orchestrator and CLI (sproutfsctl create --ephemeral; SPROUTFS_EPHEMERAL_BYTES and SPROUTFS_EPHEMERAL_ARENA_BYTES). Step 7 done in the worktree, not yet recorded in history: simtest third pager, topologies draw ephemeral disks, scenarios in internal/simtest/ephemeral_test.go pass, full simtest passes. Git refuses to run until the Xcode license is accepted (sudo xcodebuild -license) after an OS update.
+
+Validation: go test ./... passes (33 packages). go vet and build pass for linux and darwin (with -buildvcs=false), buf lint passes, just test-shell passes. just check stops at its file listing, because version control needs the Xcode license accepted after the OS update (sudo xcodebuild -license). Not run: Lima and real Firecracker (flock is not installed on this Mac, and the Firecracker submodule is not initialized in this worktree), and check-rust. The new vmmachine plan test cross-compiles for linux/arm64 but was not run.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Ephemeral disks: a PMEM volume no checkpoint holds, for the ephemeral upper layer of an embedder. The root records only its name, size, page size and a marker. Publications, pager seals and overlay writes of it are refused. A third pager (vmmemory.Config.Ephemeral) holds its pages in its own arena and spill file, with a dirty budget equal to its logical budget and no loss window, so it never waits on or counts toward the dirty budget, the loss window or a checkpoint. Given through CreateRequest.Ephemeral, orch.CreateRequest.Ephemeral and sproutfsctl create --ephemeral. Hosts opt in with SPROUTFS_EPHEMERAL_BYTES. Lost with its host and at a stop, zeroed in every fork, carried by a migration. Verified by checkpoint, volume, vmmemory, host and cmd tests, simtest scenarios (internal/simtest/ephemeral_test.go) and generated topologies that draw ephemeral disks. go test ./... passes.
+<!-- SECTION:FINAL_SUMMARY:END -->

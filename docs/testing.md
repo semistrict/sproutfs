@@ -694,10 +694,21 @@ runs.
 
 - two to four hosts;
 - two to four VMs;
-- one or two volumes of one to three pages each;
+- one to three volumes of one to three pages each: memory, and half the time a
+  disk and half the time an [ephemeral disk](volumes.md#ephemeral-disks);
 - which VMs are forks of which, and which of those forks are creates from one
   of the parent's kept checkpoints;
 - the host each VM starts on.
+
+Every simulated host runs an ephemeral pager beside its RAM and PMEM pagers. A
+guest's model zeroes its ephemeral disk in every state a checkpoint or a fork
+point holds, and keeps it in the state a migration carries. So every campaign
+that verifies a recovery, a fork or a migration also requires that no
+checkpoint held the disk, that a fork got it zeroed and that a migration moved
+it. The deployment check at a campaign's end refuses any root segment or part
+member of one. `internal/simtest/ephemeral_test.go` states the same four
+requirements as scenarios: never published, lost with its host and at a stop,
+reaching neither a local nor a remote fork, and carried by a migration.
 
 A fork's host may be the same as its parent's. That decides whether the child
 shares its parent's pages or pulls them from the parent's page server. A failing

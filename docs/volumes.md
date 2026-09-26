@@ -3,8 +3,9 @@
 A VM owns named volumes. The volume named `ram0` holds its RAM, and each PMEM
 device has one volume. The root disk is one of the PMEM devices. All of a VM's
 volumes are published together in one [checkpoint](#checkpoints). That
-checkpoint is the VM's entire durable state. The storage abstraction does not
-include a filesystem.
+checkpoint is the VM's entire durable state. The one exception is an
+[ephemeral disk](#ephemeral-disks), which no checkpoint holds. The storage
+abstraction does not include a filesystem.
 
 ## Geometry
 
@@ -119,6 +120,53 @@ pages the segment names. Every later range inside that segment is answered from
 data the handle already holds. A range inside a segment that no checkpoint has
 written costs nothing, because an absent segment reads as zeroes, like an
 absent page.
+
+## Ephemeral disks
+
+An ephemeral disk is a volume that no checkpoint holds
+(`VolumeSpec.Ephemeral`). It exists for a guest that keeps a writable upper
+layer it does not need back after a failure, such as a sandbox's scratch
+filesystem. Its only copy is in the pager of the host that runs the VM, in the
+arena or spilled to that pager's spill file.
+
+The volume package holds none of its bytes:
+
+- A write or a discard through this package is refused with `ErrEphemeral`.
+- A read through this package returns zeroes.
+- A pager's sealed pages for it are refused with `ErrEphemeral`, so a
+  checkpoint cannot publish a page of it.
+
+Every checkpoint records the disk in its root, with its name, size and page size
+and a marker (`ephemeral`), and with no segment. That is the only thing about it
+in the store. A publication that is offered a page of it fails before it writes
+any part (`checkpoint.ErrEphemeral`). The deployment check refuses a root that
+addresses a segment of one, and a part that holds a member of one.
+
+What happens to the disk follows from that:
+
+- **A host loss** loses it. The VM opens elsewhere with the disk zeroed at the
+  size its root records.
+- **A stop** publishes the other disks and loses this one. So does a suspend.
+- **A fork** leaves it out. The fork point holds no page of it, so every child
+  gets it zeroed, on the parent's host or another.
+- **A migration** carries it. The guest keeps running, and its filesystem on
+  the disk with it. The source reports every page of the disk it holds as
+  unpublished, so the destination fetches all of them before the source is
+  released.
+
+A guest restored over a zeroed disk — a fork's child, or a VM resumed from a
+capture — finds the disk empty under whatever it had mounted there. The guest
+must expect that: it asked for a disk that is not durable.
+
+A fork can give its child ephemeral disks of its own (`Manager.Fork` with added
+specs). A create uses this to give a new VM the disk it asked for. The child's
+root is where the disk is first recorded. A disk added under the name of one the
+parent has takes the new size. A cold boot may resize an ephemeral disk up or
+down, because it holds nothing then.
+
+Older roots carry no marker, so every volume in them is one checkpoints hold.
+The index format is still 8. A build that predates the marker refuses a root
+that carries it, because it refuses any root field it does not know.
 
 ## Checkpoints
 

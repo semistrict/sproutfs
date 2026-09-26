@@ -55,6 +55,14 @@ object-store latency.
 `Status.DirtyBytes` is an upper bound on what a VM would lose at this moment.
 The volume manager's `Stats` sums it over every VM the host runs.
 
+An [ephemeral disk](volumes.md#ephemeral-disks) is outside all of this. No
+checkpoint holds it, so everything on it is lost with its host, at a stop, and
+in every fork, and a VM opened anywhere gets it back zeroed. Its writes do not
+count toward the dirty budget or the loss window, and no checkpoint waits for
+them. Its pages live in a third pager, bounded by that pager's arena in memory
+and by its spill file on disk. A migration carries it, because the guest keeps
+running over it.
+
 The volume layer has no automatic trigger:
 
 - `Checkpoint` and `Snapshot` publish on demand.

@@ -20,6 +20,12 @@ are where every VM's were before tenants existed.
 **Volume**: One named, byte-addressed image of a VM: its memory (`ram0`) or one
 of its PMEM disks. A volume's size is fixed for the VM's lifetime.
 
+**Ephemeral disk**: A PMEM volume that no checkpoint holds. Its pages live only
+in the ephemeral pager of the host that runs the VM. A checkpoint records its
+name, size and page size, and none of its pages. It is lost with its host and
+at a stop, it reaches no fork, and a migration carries it. A VM opened anywhere
+gets it back zeroed at the recorded size.
+
 **Page**: The unit of publication, of faults and of resident ownership.
 
 **Geometry**: A volume's page size, and the number of its pages that one

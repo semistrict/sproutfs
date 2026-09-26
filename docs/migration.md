@@ -360,6 +360,21 @@ keeps waiting for it. A source that is alive but unreachable ends the wait from
 its own side. Its handover deadline of four checkpoint intervals makes it give
 those pages up, and its next answer then says that it no longer serves the VM.
 
+## Ephemeral disks move with the VM
+
+An [ephemeral disk](volumes.md#ephemeral-disks) is carried like any other
+memory region. The guest keeps running across the handoff, and so does its
+filesystem on that disk, so dropping the disk would corrupt a live filesystem.
+No checkpoint holds any page of it, so the source reports every page it holds
+as unpublished. The destination fetches all of them before the source is
+released, and maps the disk on its own ephemeral pager. The handoff marks the
+memory region `Ephemeral`, and a destination refuses a handoff whose marker
+disagrees with the volume it opened. A migration of a VM with a large
+ephemeral disk therefore streams that disk and holds the source until it has.
+
+A fork does not carry it. The fork point holds no page of an ephemeral disk, so
+the child's disk reads as zeroes wherever it lands.
+
 ## A fork is a handoff from a parent that keeps running
 
 A [fork](volumes.md#the-fork-point) uses the same mechanism, but the source
