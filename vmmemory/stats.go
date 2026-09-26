@@ -119,6 +119,19 @@ type Stats struct {
 	MovedPages, ForkCopies, Tampered uint64
 	// UFFDReads includes empty reads; RemapEvents counts drained handshakes.
 	UFFDReads, RemapEvents uint64
+	// ReadTraps, StoreTraps and ProtectTraps count the page faults the kernel
+	// reported to this pager's sessions, by what it said of each: an access
+	// that asked for the page readable, one that asked for it writable while
+	// the page was not in the page tables, and a store into a page mapped
+	// write-protected. A store trap is not always a store of the guest's: on
+	// x86-64 KVM asks for every page it waited for the pager on writable,
+	// whatever the guest's access was.
+	ReadTraps, StoreTraps, ProtectTraps uint64
+	// UnmappedCopyOnWrites counts the copy-on-writes of a page the storing
+	// memory region did not map, which a store trap and not a protect trap
+	// asked for. It is part of CopyOnWrites, and counts copies of a page's
+	// bytes only: a store into fresh zeros copies nothing.
+	UnmappedCopyOnWrites uint64
 	// Read-only latency histograms of the fault path. FaultQueue is the delay
 	// from the UFFD event read to the worker starting on that page, which is
 	// scheduling and queueing and no work at all. Fault is one served attempt
@@ -135,6 +148,17 @@ type Stats struct {
 	// is not in the pause and only a fault of that memory region waits for it.
 	FaultQueue, Fault, Mapping, Revoke, Protect, Resolve, Load, Seal, SealWalk Latency
 }
+
+// trapKind is what the kernel said of one page fault it reported: see
+// Stats.ReadTraps.
+type trapKind int
+
+const (
+	readTrap trapKind = iota
+	storeTrap
+	protectTrap
+	trapKinds
+)
 
 // Sharing is how much memory sharing this pager is retaining for one kind of
 // memory region, read at the moment it is asked for. It is a gauge and not a total:
@@ -217,6 +241,9 @@ func (h *Host) Stats(ctx context.Context) (Stats, error) {
 	stats.LogicalPages = h.logical
 	stats.UFFDReads = h.uffdReads.Load()
 	stats.RemapEvents = h.remapEvents.Load()
+	stats.ReadTraps = h.traps[readTrap].Load()
+	stats.StoreTraps = h.traps[storeTrap].Load()
+	stats.ProtectTraps = h.traps[protectTrap].Load()
 	stats.FaultQueue = h.faultQueueLatency.Snapshot()
 	stats.Fault = h.faultLatency.Snapshot()
 	stats.Mapping = h.mappingLatency.Snapshot()

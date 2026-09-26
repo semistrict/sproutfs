@@ -537,6 +537,8 @@ arena_worst() {
     remote "set -euo pipefail
         $kube
         WORST_BUDGET=${WORST_BUDGET:-1800} WORST_PAGES='${WORST_PAGES:-2097152 4096}' \
+            WORST_REPEATS='${WORST_REPEATS:-fork=3 inherit=3 capture=1 restore=3}' \
+            WORST_REPEATS_4K='${WORST_REPEATS_4K:-fork=1 inherit=1 capture=1}' \
             bash demo-arena-worst.sh 2>&1 | tee /tmp/demo-arena-worst.log"
     local into=${SPROUTFS_DEMO_ARENA_OUT:-$repo/.workload-runs} run
     run=$into/arena-worst-$(date -u +%Y%m%dT%H%M%SZ)

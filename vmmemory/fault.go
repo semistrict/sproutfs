@@ -116,6 +116,9 @@ func (r *MemoryRegion) fault(ctx context.Context, index uint64, write bool, spil
 	if fresh, err := r.storeFresh(ctx, index, spill); fresh || err != nil {
 		return false, err
 	}
+	// A store into a page the guest does not map came from a store trap, which
+	// is not always a store of the guest's: see Stats.StoreTraps.
+	unmapped := !r.isMapped(b)
 	pg, err := h.current(ctx, b)
 	if err != nil {
 		return false, err
@@ -224,6 +227,9 @@ func (r *MemoryRegion) fault(ctx context.Context, index uint64, write bool, spil
 	}
 	h.mu.Lock()
 	h.stats.CopyOnWrites++
+	if unmapped {
+		h.stats.UnmappedCopyOnWrites++
+	}
 	h.mu.Unlock()
 	h.touch(pg)
 	// The two rules: the shared pages between this store and a page its range

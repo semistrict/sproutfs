@@ -236,6 +236,19 @@ type PagerKind struct {
 	// CopyOnWrites the stores it gave a private copy of a page.
 	LoadedPages  uint64 `json:"loaded_pages"`
 	CopyOnWrites uint64 `json:"copy_on_writes"`
+	// UnmappedCopyOnWrites is the part of CopyOnWrites made for a page the
+	// storing guest did not map, and UnchangedPages counts the private copies
+	// a checkpoint found still holding the bytes they were copied from: a store
+	// fault the guest never stored through.
+	UnmappedCopyOnWrites uint64 `json:"unmapped_copy_on_writes"`
+	UnchangedPages       uint64 `json:"unchanged_pages"`
+	// ReadTraps, StoreTraps and ProtectTraps count the page faults the kernel
+	// reported, by what it said of each: a read, a store into a page not in
+	// the page tables, and a store into a page mapped write-protected. On
+	// x86-64 KVM reports every page it waited for as a store.
+	ReadTraps    uint64 `json:"read_traps"`
+	StoreTraps   uint64 `json:"store_traps"`
+	ProtectTraps uint64 `json:"protect_traps"`
 	// Revocations counts the commands that took mappings away from a VMM, and
 	// RevokedPages the pages they took.
 	Revocations  uint64 `json:"revocations"`

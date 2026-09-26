@@ -105,6 +105,8 @@ type Host struct {
 	// descriptor read must not contend with page transitions.
 	uffdReads   atomic.Uint64
 	remapEvents atomic.Uint64
+	// traps counts the page faults the UFFD reader read, by trapKind.
+	traps [trapKinds]atomic.Uint64
 	// Latency histograms of the fault path, also written outside the metadata
 	// lock. They are read-only instrumentation: nothing consults them and no
 	// decision depends on them.

@@ -98,6 +98,21 @@ func metrics(status hostapi.Status) string {
 		func(p hostapi.PagerKind) any { return p.LoadedPages })
 	byKind("sproutfs_pager_copy_on_writes_total", "counter", "Stores the pager gave a private copy of a page.",
 		func(p hostapi.PagerKind) any { return p.CopyOnWrites })
+	byKind("sproutfs_pager_unmapped_copy_on_writes_total", "counter",
+		"Copy-on-writes of a page the storing guest did not map.",
+		func(p hostapi.PagerKind) any { return p.UnmappedCopyOnWrites })
+	byKind("sproutfs_pager_unchanged_pages_total", "counter",
+		"Private copies a checkpoint found still holding the bytes they were copied from.",
+		func(p hostapi.PagerKind) any { return p.UnchangedPages })
+	// What the kernel said of each page fault it reported.
+	byKind("sproutfs_pager_read_traps_total", "counter", "Page faults the kernel reported as reads.",
+		func(p hostapi.PagerKind) any { return p.ReadTraps })
+	byKind("sproutfs_pager_store_traps_total", "counter",
+		"Page faults the kernel reported as stores into a page not in the page tables.",
+		func(p hostapi.PagerKind) any { return p.StoreTraps })
+	byKind("sproutfs_pager_protect_traps_total", "counter",
+		"Page faults the kernel reported as stores into a write-protected page.",
+		func(p hostapi.PagerKind) any { return p.ProtectTraps })
 	byKind("sproutfs_pager_revocations_total", "counter", "Commands that took mappings away from a VMM.",
 		func(p hostapi.PagerKind) any { return p.Revocations })
 	byKind("sproutfs_pager_revoked_pages_total", "counter", "Pages those commands took away.",

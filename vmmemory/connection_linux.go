@@ -695,12 +695,32 @@ func (c *Connection) readFaults() {
 			return
 		}
 		page := (address - c.memoryRegion.Address) / c.mapping.pageSize
-		if !c.faults.add(page, flags&3 != 0, c.host.clock.Now()) {
+		trap := trapOf(flags)
+		c.host.traps[trap].Add(1)
+		if !c.faults.add(page, trap != readTrap, c.host.clock.Now()) {
 			c.fail(ErrCapacity)
 			return
 		}
 		c.wake()
 	}
+}
+
+// The flags of a UFFD page fault.
+const (
+	uffdFaultWrite = 1 << 0
+	uffdFaultWP    = 1 << 1
+)
+
+// trapOf is what a UFFD page fault's flags say of it. Either flag makes it a
+// store for the pager.
+func trapOf(flags uint64) trapKind {
+	switch {
+	case flags&uffdFaultWP != 0:
+		return protectTrap
+	case flags&uffdFaultWrite != 0:
+		return storeTrap
+	}
+	return readTrap
 }
 
 // wake lets one idle fault worker take queued work.

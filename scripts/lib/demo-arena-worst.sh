@@ -22,7 +22,8 @@
 #            reads all of it.
 #   inherit  A 1 GiB parent writes nearly all of its RAM, is captured, and forks
 #            two children on its own host. Each child reads all of it, and then
-#            the parent reads it again.
+#            the parent reads it again and is captured, which counts the pages
+#            it copied without storing into them.
 #   capture  A 3.5 GiB guest, alone on its host, writes nearly all of its RAM
 #            and is captured. A host admits guests whose RAM adds up to its RAM
 #            arena, 3840 MiB, so this is the largest guest the demo runs.
@@ -33,7 +34,10 @@
 #
 # Every guest checks what it reads against what its writer read. Before and
 # after each step it saves the host's status: the pager's counters and sharing
-# gauges, the host pod's cgroup memory and the host process's CPU time.
+# gauges, the host pod's cgroup memory and the host process's CPU time. It also
+# counts, for the whole node, the faults KVM finished from its own worker (the
+# kvm_try_async_get_page tracepoint), which asks for every page writable: the
+# pager sees each as a store trap whatever the guest's access was.
 #
 # The run stops at WORST_BUDGET seconds, leaving time to put the deployment
 # back: a case that would not finish in time is skipped and says so. Each step
@@ -123,6 +127,9 @@ forwarding=''
 configured=false
 cleanup() {
     if [[ -n $forwarding ]]; then kill "$forwarding" 2> /dev/null || true; fi
+    if [[ -n $async_trigger ]]; then
+        echo "!$async_hist" | sudo tee "$async_trigger" > /dev/null || true
+    fi
     if "$configured"; then
         configured=false
         step 'putting the deployment back'
@@ -132,6 +139,26 @@ cleanup() {
     rm -rf -- "$work"
 }
 trap cleanup EXIT
+
+# KVM's asynchronous faults, counted by a histogram trigger on the tracepoint
+# for as long as the run lasts. A kernel without the tracepoint or histogram
+# triggers records -1.
+async_trigger=''
+async_hist='hist:keys=common_pid'
+tracepoint=/sys/kernel/tracing/events/kvm/kvm_try_async_get_page/trigger
+if sudo test -e "$tracepoint" && echo "$async_hist" | sudo tee "$tracepoint" > /dev/null; then
+    async_trigger=$tracepoint
+fi
+[[ -n $async_trigger ]] || printf 'KVM asynchronous faults are not counted on this kernel\n' >&2
+# async_faults prints how many faults KVM has finished asynchronously on this
+# node since the run began, -1 where they are not counted.
+async_faults() {
+    if [[ -z $async_trigger ]]; then
+        echo -1
+        return
+    fi
+    sudo cat "${async_trigger%/trigger}/hist" | awk '$1 == "Hits:" { print $2; found = 1; exit } END { if (!found) print 0 }'
+}
 
 # status_of saves one host's /status, through a port-forward from the node.
 status_of() {
@@ -170,12 +197,13 @@ snap() {
     status_of "$pod" "$work/status.json"
     cgroup=$(cgroup_of "$pod")
     ticks_used=$(kubectl exec -n "$namespace" "$pod" -- cat /proc/1/stat | awk '{ print $14 + $15 }')
-    python3 - "$work/status.json" "$cgroup" "$ticks_used" "$(getconf CLK_TCK)" "$pod" > "$dir/snap-$name.json" <<'PY'
+    python3 - "$work/status.json" "$cgroup" "$ticks_used" "$(getconf CLK_TCK)" "$pod" "$(async_faults)" \
+        > "$dir/snap-$name.json" <<'PY'
 import json, pathlib, sys
 status, cgroup, ticks, hz, pod = sys.argv[1], pathlib.Path(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4]), sys.argv[5]
 whole = json.load(open(status))
 pager = whole["pager"]
-snap = {"pod": pod, "cpu_s": ticks / hz}
+snap = {"pod": pod, "cpu_s": ticks / hz, "kvm_async_faults": int(sys.argv[6])}
 for op in ("get", "put"):
     count = whole.get("store", {}).get(op, {})
     snap["store_" + op + "_calls"] = count.get("calls", 0)
@@ -187,7 +215,8 @@ for kind in ("ram", "pmem"):
     for name in ("unique_bytes", "mapped_bytes", "saved_bytes"):
         snap[kind + "_" + name.replace("_bytes", "_mib")] = p["sharing"][name] / 2**20
     for name in ("faults", "evictions", "spills", "shared_pages", "idle_pages", "loaded_pages",
-                 "copy_on_writes", "revocations", "revoked_pages", "moved_pages", "fork_copies", "tampered"):
+                 "copy_on_writes", "unmapped_copy_on_writes", "unchanged_pages", "read_traps", "store_traps",
+                 "protect_traps", "revocations", "revoked_pages", "moved_pages", "fork_copies", "tampered"):
         snap[kind + "_" + name] = p.get(name, 0)
 stat = dict(line.split() for line in (cgroup / "memory.stat").read_text().splitlines())
 snap["pod_memory_mib"] = int((cgroup / "memory.current").read_text()) / 2**20
@@ -365,6 +394,8 @@ inherit_case() {
     [[ $(digest "$parent" f) == "$want" ]] || fail "$parent no longer reads what it wrote"
     reread=$(since "$began")
     snap "$host" "$i-after"
+    ctl capture "$parent" > /dev/null
+    snap "$host" "$i-settled"
     record i="$i" host="$host" fill_mib="$mib" \
         capture_publish="$(field publish <<< "$captured")" \
         pause="$(awk 'NR == 2 { print $3 }' <<< "$table")" fork_total="$(awk 'NR == 2 { print $5 }' <<< "$table")" \
@@ -475,7 +506,8 @@ def snaps(d, i):
 def delta(a, b, key):
     return b[key] - a[key]
 counters = ("ram_moved_pages", "ram_fork_copies", "ram_revoked_pages", "ram_faults", "ram_loaded_pages",
-            "ram_copy_on_writes", "ram_evictions", "store_get_mib", "store_put_mib", "cpu_s")
+            "ram_copy_on_writes", "ram_unmapped_copy_on_writes", "ram_read_traps", "ram_store_traps",
+            "ram_protect_traps", "kvm_async_faults", "ram_evictions", "store_get_mib", "store_put_mib", "cpu_s")
 configs = sorted(p.name for p in out.iterdir() if p.is_dir())
 for config in configs:
     for d in sorted((out / config).iterdir()):
@@ -500,10 +532,12 @@ for config in configs:
                 for key in counters:
                     add(config, case, key + " fork+read", delta(s["before"], s["read"], key))
                     add(config, case, key + " owner", delta(s["read"], s["after"], key))
+                add(config, case, "ram_unchanged_pages owner capture", delta(s["after"], s["settled"], "ram_unchanged_pages"))
                 for key in ("ram_resident_mib", "ram_saved_mib", "pod_memory_mib", "pod_hugetlb_mib"):
                     add(config, case, key + " before", s["before"][key])
                     add(config, case, key + " read", s["read"][key])
                     add(config, case, key + " after", s["after"][key])
+                    add(config, case, key + " settled", s["settled"][key])
             if case == "capture":
                 add(config, case, "cpu_s", delta(s["before"], s["after"], "cpu_s"))
                 for line in open(d / f"log-{int(r['i'])}.jsonl"):
