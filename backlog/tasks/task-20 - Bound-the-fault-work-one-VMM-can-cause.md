@@ -1,11 +1,11 @@
 ---
 id: TASK-20
 title: Bound the fault work one VMM can cause
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-25 18:17'
-updated_date: '2026-09-26 16:41'
+updated_date: '2026-09-26 16:58'
 labels:
   - security
 dependencies: []
