@@ -14,6 +14,8 @@
 #             runtime templates and tenants, each checked once
 #   arena     what the deployment's arena mode costs a fan-out, a checkpoint and
 #             a restore
+#   arena-worst  the isolated arena's worst cases beside the shared arena's, both
+#             modes in one run of at most half an hour
 #   redeploy  rebuild the image from the current source and restart the pods
 #   status    what exists, on the cloud side and on the node
 #   ssh       a shell on the VM, or a command on it
@@ -523,6 +525,27 @@ arena() {
     echo "Recorded under $run." >&2
 }
 
+# The isolated arena's worst cases beside the shared arena's, both modes in one
+# run of at most WORST_BUDGET seconds, run on the node by
+# scripts/lib/demo-arena-worst.sh. It sets the host deployment to each mode
+# itself, and puts it back when it ends. Everything the run records is copied
+# back here.
+arena_worst() {
+    check_instance_owner
+    wait_for_pods
+    "${cloud[@]}" compute scp --zone="$zone" "$repo/scripts/lib/demo-arena-worst.sh" "$instance:"
+    remote "set -euo pipefail
+        $kube
+        WORST_BUDGET=${WORST_BUDGET:-1800} WORST_PAGES='${WORST_PAGES:-2097152 4096}' \
+            bash demo-arena-worst.sh 2>&1 | tee /tmp/demo-arena-worst.log"
+    local into=${SPROUTFS_DEMO_ARENA_OUT:-$repo/.workload-runs} run
+    run=$into/arena-worst-$(date -u +%Y%m%dT%H%M%SZ)
+    mkdir -p "$into"
+    "${cloud[@]}" compute scp --recurse --zone="$zone" \
+        "$instance:/tmp/sproutfs-arena-worst" "$run"
+    echo "Recorded under $run." >&2
+}
+
 # Rebuild the image from the current source and restart the pods on it. The
 # Dockerfile copies the Rust sources before anything else, so a change to the Go
 # commands or the manifests reuses the cached VMM and kernel stages and the
@@ -591,6 +614,7 @@ case "$action" in
     soak) soak ;;
     features) features ;;
     arena) arena ;;
+    arena-worst) arena_worst ;;
     redeploy) redeploy ;;
     status) status ;;
     # ssh joins its arguments and hands them to a shell on the node, the way
@@ -606,5 +630,5 @@ case "$action" in
         ;;
     kubectl) remote "$kube; kubectl $(printf '%q ' "$@")" ;;
     delete) delete ;;
-    *) echo "Usage: $0 [create|run|fixes|bigguest|workload|soak|features|arena|redeploy|status|ssh|kubectl|delete] [arguments]" >&2; exit 2 ;;
+    *) echo "Usage: $0 [create|run|fixes|bigguest|workload|soak|features|arena|arena-worst|redeploy|status|ssh|kubectl|delete] [arguments]" >&2; exit 2 ;;
 esac

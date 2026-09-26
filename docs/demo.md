@@ -477,6 +477,12 @@ fan-out, three 1 GiB checkpoints with the host's CPU, and restores. A redeploy
 with `SPROUTFS_DEMO_ARENA` set changes the mode. The 2026-09-26 run compares
 [both modes](measurements/arena-modes-2026-09-26.md).
 
+`arena-worst` runs `scripts/lib/demo-arena-worst.sh`: the isolated arena's worst
+cases beside the shared arena's, both modes and both RAM pages in one run of at
+most half an hour. It sets the hosts to each mode itself and puts them back at
+the end. Its [2026-09-26 run](measurements/arena-worst-case-2026-09-26.md) took
+19 minutes.
+
 ## Looking around
 
 ```sh
