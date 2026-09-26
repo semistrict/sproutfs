@@ -1,11 +1,11 @@
 ---
 id: TASK-37
 title: Option to pull a VM's whole memory to local disk when it starts
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-26 01:37'
-updated_date: '2026-09-26 16:52'
+updated_date: '2026-09-26 16:53'
 labels:
   - embedder
   - performance
