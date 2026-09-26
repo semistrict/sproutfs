@@ -50,6 +50,9 @@ const (
 	// which is what a deployment does to a VM that is answering: the guest pauses
 	// for the state capture and the seal, and the pages upload behind it.
 	forkFanOutInterval = 250 * time.Millisecond
+	// forkFanOutGiveBack bounds one give-back of a child's RAM. It is the most
+	// pages one pass of a host's interval ever compares for a VM.
+	forkFanOutGiveBack = 4096
 	// forkFanOutRounds is how many times each child reads everything it has.
 	forkFanOutRounds = 2
 	// forkFanOutSweeps is how many times the image check reads every page of a
@@ -351,9 +354,10 @@ func TestFirecrackerForkFanOutServesBothChildrenAtOnce(t *testing.T) {
 	}
 	if stats, err := destinationPager.pagers.Ram.Stats(ctx); err == nil {
 		t.Logf("fan-out ram pager: private_extents=%d rule_copies=%d mapping_merges=%d"+
-			" copy_on_writes=%d resident_pages=%d",
+			" copy_on_writes=%d resident_pages=%d give_back_compares=%d given_back=%d unchanged=%d",
 			stats.PrivateExtents, stats.RuleCopies, stats.MappingMerges,
-			stats.CopyOnWrites, stats.ResidentPages)
+			stats.CopyOnWrites, stats.ResidentPages, stats.GiveBackCompares, stats.GivenBackPages,
+			stats.UnchangedPages)
 	}
 
 	for _, child := range taken {
@@ -447,9 +451,10 @@ func prepareAndResume(p *vmmachine.Process) volume.PrepareFunc {
 }
 
 // checkpointEvery checkpoints one child on an interval until the returned stop
-// is called, which is what a host does to every VM it runs. A capture that
-// fails fails the test: the guest is running and answering, so nothing here is
-// a checkpoint a host would be entitled to skip.
+// is called, which is what a host does to every VM it runs, and gives back its
+// unchanged RAM copies before each checkpoint, as a host's interval does too. A
+// capture or a give-back that fails fails the test: the guest is running and
+// answering, so nothing here is work a host would be entitled to skip.
 func checkpointEvery(t *testing.T, ctx context.Context, child *forkedChild, interval time.Duration) func() {
 	t.Helper()
 	ticking, stop := context.WithCancel(ctx)
@@ -461,6 +466,18 @@ func checkpointEvery(t *testing.T, ctx context.Context, child *forkedChild, inte
 			case <-ticking.Done():
 				return
 			case <-time.After(interval):
+			}
+			regions := child.process.MemoryRegions()
+			for _, name := range slices.Sorted(maps.Keys(regions)) {
+				if regions[name].Kind() != vmmemory.Ram {
+					continue
+				}
+				if _, err := regions[name].GiveBack(ticking, forkFanOutGiveBack); err != nil {
+					if ticking.Err() == nil {
+						t.Errorf("giving back %s's copies while it reads: %v", child.id, err)
+					}
+					return
+				}
 			}
 			ckpt, err := child.vm.Snapshot(ticking, prepareAndResume(child.process), volume.Terms{})
 			if err != nil {

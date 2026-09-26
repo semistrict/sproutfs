@@ -42,7 +42,7 @@ func giveBackPair(t *testing.T, size uint64) (*vmmemory.Host, *nativeProcess, *n
 // process running, points it at the page it shares with its sibling in place,
 // and installs that page. So the next read, by the process and through KVM,
 // is served by the page tables and reaches the pager not at all.
-func TestManagedPagerGivesBackAnUnchangedCopyInPlace(t *testing.T) {
+func TestManagedPagerGiveBackPointsTheGuestAtTheOriginInPlace(t *testing.T) {
 	for _, size := range []uint64{hugePageSize, checkpoint.PageSize4KiB} {
 		t.Run(fmt.Sprintf("%dKiB", size>>10), func(t *testing.T) {
 			h, a, b := giveBackPair(t, size)
@@ -81,7 +81,7 @@ func TestManagedPagerGivesBackAnUnchangedCopyInPlace(t *testing.T) {
 
 // A copy the guest changed is kept, and its write-protection comes off in
 // place: the next store lands through the page tables without a fault.
-func TestManagedPagerKeepsAChangedCopyWritable(t *testing.T) {
+func TestManagedPagerGiveBackKeepsAChangedCopyWritable(t *testing.T) {
 	for _, size := range []uint64{hugePageSize, checkpoint.PageSize4KiB} {
 		t.Run(fmt.Sprintf("%dKiB", size>>10), func(t *testing.T) {
 			h, a, b := giveBackPair(t, size)
