@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-09-26 01:37'
-updated_date: '2026-09-26 16:31'
+updated_date: '2026-09-26 16:52'
 labels:
   - embedder
   - performance
@@ -52,6 +52,8 @@ Today a started VM reads each page from object storage the first time the guest 
 Design: the page cache (checkpoint.Cache) gains a disk tier (CacheConfig.Disk/DiskBytes; SPROUTFS_CACHE_DISK_BYTES, off by default, 4 GiB in deploy/10-host.yaml with the emptyDir raised to 24Gi). It stores each member's and segment's encoded envelope keyed by page/segment identity, so a disk read is checked by the same envelope and a damaged or lost copy falls back to the store and is forgotten. A pull reserves one region sized exactly from the root's recorded bytes (segment lengths + per-checkpoint read bytes) or is refused whole (ErrDiskFull/ErrNoDisk); pages another pull copied are shared by reference; regions go when the last pull releases them. Priority: the pull uses none of the cache's load slots, joins no flight, waits for no fault load in flight (Cache.quiet) and all pulls share 2 requests. Host: AddPullingMachine marks the registration; the pull runs as a third goroutine of the machine's run loop and is released when the machine ends. Receive pulls the opened checkpoint only; pages no checkpoint holds arrive through post-copy into the pager. Migration carries Handoff.Pull; fork sets it on children. Not covered: the orchestrator does not remember the mark for a recover after host loss; pages a later checkpoint publishes are not pulled; the Linux supervisor wiring (boot/Create/Open/Fork) is compiled and vetted but not run on Firecracker.
 
 Validation: just check passed (gofmt, build and vet for linux and darwin, go test ./..., buf lint, shellcheck, shell suites, rust). New tests: checkpoint/pull_test.go (zero store requests after a pull, reads not queued behind a held pull fetch, pull waits while a fault reads the store, refusal when full or no disk, damaged and failed disk fall back, newer checkpoint supersedes, pulls share one copy); host/pull_test.go (pager evicting 10 of 12 faults with zero object GETs after the pull, fallback when it does not fit, migration carries the mark); orchestrator pull_test.go; sproutfsctl and sproutfs-host config tests. Mutation checks: disabling the disk read fails the host AC3 test with 13 GETs; removing the fault yield fails the priority test.
+
+Firecracker qualification (Lima aarch64, scripts/test-firecracker-lima.sh, SPROUTFS_FIRECRACKER_RUN=^TestPulledGuestsFaultWithoutTheObjectStore$): vmmachine/pull_linux_test.go runs the whole supervisor (host.Start) with a 24 MiB PMEM arena. Create with Pull; the guest writes 40 MiB of random data to its DAX root and stops; Open with Pull; the guest reads the fill twice, evicting at least 16 PMEM pages; zero checkpoint-object GETs. Fork with Pull; the child shares the parent's copy of the fill and reads it twice with zero GETs. Mutation: disabling disk reads gives 51 GETs. Two bugs found and fixed: the supervisor's status listing dropped VM.Pull, and a fork child pulled its parent's checkpoint instead of its own root, which left the parent's republished unpublished pages to the store. The child's pull now waits for volume.VM.Rooted.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
