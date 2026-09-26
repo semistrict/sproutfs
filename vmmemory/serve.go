@@ -265,15 +265,18 @@ func (r *MemoryRegion) eachBinding(visit func(*binding)) {
 	r.bindingsMu.Unlock()
 	sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
 	for _, key := range keys {
+		// The host lock first: a store applying the rules reads bindings while
+		// it holds the host lock, so taking the two the other way round waits
+		// on that store while it waits on this.
+		h.mu.Lock()
 		r.bindingsMu.Lock()
 		block := r.blocks[key]
-		h.mu.Lock()
 		for i := range block {
 			if b := &block[i]; b.index < uint64(r.pageCount) {
 				visit(b)
 			}
 		}
-		h.mu.Unlock()
 		r.bindingsMu.Unlock()
+		h.mu.Unlock()
 	}
 }

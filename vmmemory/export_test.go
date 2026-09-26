@@ -68,6 +68,23 @@ func SetSealWalkSeam(t *testing.T, seam func()) {
 	t.Cleanup(func() { sealWalkSeam = previous })
 }
 
+// HoldHostLock takes the host lock and reports what gives it back, so a test can
+// hold it the way a store applying the rules does while it reads a binding.
+func HoldHostLock(h *Host) (release func()) {
+	h.mu.Lock()
+	return h.mu.Unlock
+}
+
+// BindingsHeld reports whether something holds a memory region's binding map
+// lock at this moment.
+func BindingsHeld(r *MemoryRegion) bool {
+	if r.bindingsMu.TryLock() {
+		r.bindingsMu.Unlock()
+		return false
+	}
+	return true
+}
+
 // RepeatBurst and RepeatInterval are each session's budget of repeated faults.
 const (
 	RepeatBurst    = repeatBurst
