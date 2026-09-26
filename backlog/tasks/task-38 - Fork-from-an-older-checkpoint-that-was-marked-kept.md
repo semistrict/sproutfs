@@ -1,11 +1,11 @@
 ---
 id: TASK-38
 title: Fork from an older checkpoint that was marked kept
-status: Done
+status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-09-26 01:40'
-updated_date: '2026-09-26 13:59'
+updated_date: '2026-09-26 14:00'
 labels:
   - embedder
 dependencies: []
@@ -53,6 +53,8 @@ Progress: control record format 5 (Kept entries), SelectKept, Client.Release, Pi
 Progress: orchestrator and sproutfsctl (capture/stop --keep, kept, release VM@CHECKPOINT); simulation ops keep / create-from-kept / release with VerifyKept after every step; guard volume-reclaim-kept; docs. 100-seed TestSeededTopologySoak passed with 16 creates from kept checkpoints (9 resumed, 6 cold), 84 releases, 10 refused as forked. Lima: vmmachine TestAVMCreatedFromAKeptCheckpointResumesItsGuest written; the run failed before the guest booted because the Lima instance has no HugeTLB pool (HugePages_Total 0, pager fault: no space left on device).
 
 Determinism: the fingerprint test caught a background sweep racing the next step's store fault (the kept operations changed seed 1's schedule so it hit it). World.checkpoint and checkpointDisks now wait for Swept. The host's control client is also given the host clock, so kept times are simulated time. After that: go test ./internal/simtest passes; 100 seeds each of TestSeededTopologySoak and TestBuggifiedTopologySoak pass with 32 creates from kept checkpoints (18 resumed, 12 cold), 166 releases and 20 releases refused as forked. AC4 is proven in host tests and the simulation; the real-VMM Lima run is blocked until the instance has a 2 MiB HugeTLB pool.
+
+Merged to main. AC4 waits on the real-VMM run: SPROUTFS_FIRECRACKER_RUN=TestAVMCreatedFromAKeptCheckpointResumesItsGuest scripts/test-firecracker-lima.sh, which needs a 2 MiB HugeTLB pool in Lima.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
