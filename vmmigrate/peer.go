@@ -249,6 +249,10 @@ func (b *PeerBacking) Size() uint64 { return b.config.Volume.Size() }
 func (b *PeerBacking) PageSize() uint64                 { return b.config.Volume.PageSize() }
 func (b *PeerBacking) Verify(ctx context.Context) error { return b.config.Volume.Verify(ctx) }
 
+// Ephemeral is the volume's own, for the same reason: an ephemeral disk handed
+// over attaches to the destination's ephemeral pager and to no other.
+func (b *PeerBacking) Ephemeral() bool { return b.config.Volume.Ephemeral() }
+
 // Locate reports the volume's own identities everywhere except the pages whose
 // bytes no checkpoint of this VM holds. Those it reports as bytes of this memory region
 // alone — no reference, so no page of them is ever shared and none of them is

@@ -136,6 +136,10 @@ func New(ctx context.Context, resources *resource.Budget, cfg Config, arena Aren
 		(cfg.Arena != ArenaShared && cfg.Arena != ArenaIsolated) {
 		return nil, ErrConfig
 	}
+	if cfg.Ephemeral && (cfg.DirtyPages != cfg.LogicalPages || cfg.LossWindow != 0) {
+		return nil, fmt.Errorf("%w: an ephemeral pager's dirty budget must be its logical budget, and it keeps no loss window",
+			ErrConfig)
+	}
 	// A pager that places nothing has one address per page, which is what PMEM
 	// runs: its offsets and its pages are one number.
 	cfg.ArenaOffsets = cfg.Offsets()

@@ -162,6 +162,10 @@ func (c *MemoryRegionCheckpoint) Hold() { c.held.Store(true) }
 // protection fails partway captures nothing: the runs it protected have their
 // mappings taken away, so the guest faults and maps them writable again, and
 // sealing again takes a checkpoint of everything that is dirty then.
+//
+// An ephemeral disk's seal takes nothing and records no checkpoint: no
+// checkpoint holds its pages, and a VMM asks every memory region it maps to
+// seal for a capture, so it succeeds rather than failing the capture.
 func (r *MemoryRegion) Seal(ctx context.Context) error {
 	// A capture's pause is this call, so it is timed: the range write-protects
 	// are timed separately inside it, and the difference is what the pager
@@ -178,6 +182,9 @@ func (r *MemoryRegion) Seal(ctx context.Context) error {
 	}()
 	if err := r.ready(); err != nil {
 		return err
+	}
+	if r.Ephemeral() {
+		return nil
 	}
 	if r.currentCheckpoint() != nil {
 		return ErrSealed

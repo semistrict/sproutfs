@@ -162,6 +162,16 @@ func (h *Host) admit(ctx context.Context, memoryRegion MemoryRegionBacking, mapp
 		return nil, fmt.Errorf("%w: the volume is published in %d-byte pages, this pager's page is %d",
 			ErrConfig, paged.PageSize(), h.pageSize)
 	}
+	// An ephemeral disk's pages are its only copy, so it attaches to the pager
+	// built for them and to no other, and that pager maps nothing else: a disk
+	// some checkpoint holds would be sealed by nothing there.
+	if h.cfg.Ephemeral && memoryRegion.Kind != Pmem {
+		return nil, fmt.Errorf("%w: an ephemeral pager maps only PMEM, not %s", ErrConfig, memoryRegion.Kind)
+	}
+	if states, ok := backing.(EphemeralBacking); ok && states.Ephemeral() != h.cfg.Ephemeral {
+		return nil, fmt.Errorf("%w: the volume's ephemeral is %v and this pager's is %v",
+			ErrConfig, states.Ephemeral(), h.cfg.Ephemeral)
+	}
 	count := size / h.pageSize
 	h.mu.Lock()
 	if h.err != nil {
@@ -219,11 +229,16 @@ func (r *MemoryRegion) PageSize() uint64 { return r.host.pageSize }
 // stated.
 func (r *MemoryRegion) Kind() MemoryRegionKind { return r.kind }
 
-// OnInterval reports a memory region the host's interval checkpoints: a disk. It
-// is what the loss window measures, what a flush waits on and what a
-// checkpoint out of the interval's turn relieves. RAM is published only by a
-// capture, so none of the three applies to it.
-func (r *MemoryRegion) OnInterval() bool { return r.kind == Pmem }
+// OnInterval reports a memory region the host's interval checkpoints: a disk
+// some checkpoint holds. It is what the loss window measures, what a flush
+// waits on and what a checkpoint out of the interval's turn relieves. RAM is
+// published only by a capture and an ephemeral disk by nothing, so none of the
+// three applies to either.
+func (r *MemoryRegion) OnInterval() bool { return r.kind == Pmem && !r.Ephemeral() }
+
+// Ephemeral reports an ephemeral disk: a memory region no checkpoint holds,
+// whose seal takes nothing. See Config.Ephemeral.
+func (r *MemoryRegion) Ephemeral() bool { return r.host.cfg.Ephemeral }
 
 func (r *MemoryRegion) ready() error {
 	if err := r.serving(); err != nil {

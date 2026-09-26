@@ -43,12 +43,18 @@ func (k MemoryRegionKind) String() string {
 // Pagers is one host's pager per kind of memory region. Nothing adds their page counts
 // together — a RAM page and a PMEM page are different numbers of bytes — so
 // everything a host reports across the two is in bytes.
+//
+// Ephemeral is a third pager, for the ephemeral disks no checkpoint holds
+// (Config.Ephemeral). It is PMEM to the guest, and a pager of its own because
+// its pages are a disk's only copy: they must not take the dirty budget or the
+// arena of the disks checkpoints publish. A host that offers no ephemeral
+// disks runs none.
 type Pagers struct {
-	Ram, Pmem *Host
+	Ram, Pmem, Ephemeral *Host
 }
 
-// For reports the pager a memory region of this kind attaches to, nil where this host
-// runs none of that kind.
+// For reports the pager a memory region of this kind attaches to when some
+// checkpoint holds it, nil where this host runs none of that kind.
 func (p Pagers) For(kind MemoryRegionKind) *Host {
 	switch kind {
 	case Ram:
@@ -59,11 +65,24 @@ func (p Pagers) For(kind MemoryRegionKind) *Host {
 	return nil
 }
 
-// All reports both pagers, skipping either that is absent, so a caller that
-// must reach every pager of a host cannot forget one.
+// Of reports the pager a memory region attaches to: the ephemeral pager for an
+// ephemeral disk, and its kind's otherwise. It is nil where this host runs no
+// such pager, and for ephemeral RAM, which does not exist.
+func (p Pagers) Of(kind MemoryRegionKind, ephemeral bool) *Host {
+	if !ephemeral {
+		return p.For(kind)
+	}
+	if kind == Pmem {
+		return p.Ephemeral
+	}
+	return nil
+}
+
+// All reports every pager, skipping any that is absent, so a caller that must
+// reach every pager of a host cannot forget one.
 func (p Pagers) All() []*Host {
 	var all []*Host
-	for _, h := range []*Host{p.Ram, p.Pmem} {
+	for _, h := range []*Host{p.Ram, p.Pmem, p.Ephemeral} {
 		if h != nil {
 			all = append(all, h)
 		}
@@ -166,6 +185,16 @@ type Backing interface {
 // volume of this page are.
 type PagedBacking interface {
 	PageSize() uint64
+}
+
+// EphemeralBacking is a Backing that states whether its volume is an ephemeral
+// disk, one no checkpoint holds, which *volume.Volume does. Such a disk is
+// served by a pager built for it (Config.Ephemeral) and by no other, and that
+// pager serves nothing else, so a backing that disagrees with the pager is
+// refused when it is attached. A backing that states nothing is taken to be
+// what the pager serves, as it is for PagedBacking.
+type EphemeralBacking interface {
+	Ephemeral() bool
 }
 
 // SparseLoader is a Backing that can be asked for part of a range: the pages of
@@ -409,6 +438,16 @@ type Config struct {
 	LogicalPages int
 	// DirtyPages bounds volatile private state on RAM and spill combined.
 	DirtyPages int
+	// Ephemeral makes this the pager of ephemeral disks: PMEM memory regions no
+	// checkpoint holds. Their private pages are their only copy, in the arena
+	// or spilled, until the memory region detaches. A seal of one takes
+	// nothing, so no capture, fork or interval checkpoint reaches them; a
+	// migration hands them over as the source's unpublished pages. Nothing
+	// relieves the dirty budget here, so it must equal LogicalPages: a disk
+	// admitted by its size may then make every page of it private without a
+	// store ever waiting. LossWindow must be zero, because no checkpoint ends a
+	// window of these pages.
+	Ephemeral bool
 	// LossWindow bounds a VM's unpublished writes in time as DirtyPages bounds
 	// them in bytes. While the oldest unpublished write of a memory region's VM is
 	// older than this, the pager admits no further dirty page for it: every
