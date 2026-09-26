@@ -45,7 +45,12 @@
 # /tmp/sproutfs-arena-worst, which scripts/demo-gce.sh copies back, and the
 # summary gives each measure's median, minimum and maximum per mode.
 #
+# WORST_ARENAS names the arena modes to measure, in order. A mode may carry a
+# word for the guest kernel's command line after a plus, such as
+# isolated+no-kvmapf, which boots every guest of that mode with it.
+#
 # Overridable: WORST_BUDGET (1800), WORST_PAGES ("2097152 4096"),
+# WORST_ARENAS ("shared isolated"),
 # WORST_REPEATS ("fork=3 inherit=3 capture=1 restore=3"),
 # WORST_REPEATS_4K ("fork=1 inherit=1 capture=1"), SPROUTFS_DEMO_NAMESPACE.
 set -euo pipefail
@@ -54,6 +59,10 @@ export KUBECONFIG=${KUBECONFIG:-/etc/rancher/k3s/k3s.yaml}
 namespace=${SPROUTFS_DEMO_NAMESPACE:-sproutfs}
 budget=${WORST_BUDGET:-1800}
 pages=${WORST_PAGES:-2097152 4096}
+arenas=${WORST_ARENAS:-shared isolated}
+# The host's own cold-boot command line (cmd/sproutfs-host/config.go), which a
+# mode's word is added to where the deployment sets none.
+default_boot_args='console=ttyS0 reboot=k panic=1 i8042.noaux i8042.nomux i8042.nopnp i8042.dumbkbd init=/init rootfstype=ext4 rootflags=dax=always'
 repeats_2m=${WORST_REPEATS:-fork=3 inherit=3 capture=1 restore=3}
 repeats_4k=${WORST_REPEATS_4K:-fork=1 inherit=1 capture=1}
 out=/tmp/sproutfs-arena-worst
@@ -273,9 +282,9 @@ slowest() { sort -k2 -n "$1" | awk 'END { print $2 }'; }
 # left them. saved holds what each setting had before: NAME=value, or NAME-
 # where it was not set.
 changed=(SPROUTFS_RAM_PAGE_BYTES SPROUTFS_RAM_DIRTY_PAGES GOMEMLIMIT SPROUTFS_TEMPLATES
-    SPROUTFS_CHECKPOINT_INTERVAL SPROUTFS_LOSS_WINDOW SPROUTFS_FLUSH_BOUND)
+    SPROUTFS_CHECKPOINT_INTERVAL SPROUTFS_LOSS_WINDOW SPROUTFS_FLUSH_BOUND SPROUTFS_BOOT_ARGS)
 saved=()
-saved_arena='' saved_prefix=''
+saved_arena='' saved_prefix='' saved_boot_args=''
 
 # roll restarts the hosts, so that both pagers start empty, and then the
 # orchestrator, which reads the objects under the hosts' prefix. It returns
@@ -305,6 +314,7 @@ save() {
         if value=$(awk -v name="$name" '{ split($0, kv, "=") } kv[1] == name { sub(/^[^=]*=/, ""); print; found = 1 }
             END { exit !found }' <<< "$env"); then
             saved+=("$name=$value")
+            [[ $name != SPROUTFS_BOOT_ARGS ]] || saved_boot_args=$value
         else
             saved+=("$name-")
         fi
@@ -313,8 +323,8 @@ save() {
     saved_prefix=$(kubectl get configmap -n "$namespace" sproutfs-demo -o jsonpath='{.data.prefix}')
     configured=true
 }
-# configure sets the hosts to an arena and a RAM page, and restarts them onto
-# them. The dirty budget is counted in the RAM pager's own page: 9 GiB, as
+# configure sets the hosts to an arena and a RAM page, and a word added to the
+# guests' command line or none, and restarts them onto them. The dirty budget is counted in the RAM pager's own page: 9 GiB, as
 # deploy/ gives it at 2 MiB. At 4 KiB the RAM arena is ordinary memory in the
 # pod's 8 GiB, so Go's own ceiling comes down to leave room for it. A template
 # is published in the page of the host that imported it, and a VM's RAM keeps
@@ -322,7 +332,7 @@ save() {
 # the hosts import the template again at 4 KiB. Only the template the run uses
 # is imported.
 configure() {
-    local arena=$1 page=$2 dirty limit prefix
+    local arena=$1 page=$2 word=$3 dirty limit prefix
     case $page in
         2097152) dirty=4608 limit=6GiB prefix=$saved_prefix ;;
         4096) dirty=2359296 limit=3GiB prefix=$saved_prefix-ram4k ;;
@@ -332,7 +342,8 @@ configure() {
     kubectl set env -n "$namespace" deployment/sproutfs-host \
         SPROUTFS_RAM_PAGE_BYTES="$page" SPROUTFS_RAM_DIRTY_PAGES="$dirty" GOMEMLIMIT="$limit" \
         SPROUTFS_TEMPLATES=alpine=/usr/share/sproutfs/guest/guest.ext4 \
-        SPROUTFS_CHECKPOINT_INTERVAL=-1s SPROUTFS_LOSS_WINDOW=0 SPROUTFS_FLUSH_BOUND=0 > /dev/null
+        SPROUTFS_CHECKPOINT_INTERVAL=-1s SPROUTFS_LOSS_WINDOW=0 SPROUTFS_FLUSH_BOUND=0 \
+        SPROUTFS_BOOT_ARGS="${saved_boot_args:-$default_boot_args}${word:+ $word}" > /dev/null
     roll
 }
 # restore puts back what configure changed.
@@ -375,6 +386,8 @@ inherit_case() {
     parent=$(vm_of "$created")
     agent_ready "$parent" || fail "the agent in $parent never answered"
     host=$(host_of "$parent")
+    # What the guest kernel booted with, which a mode's word changes.
+    run_in "$parent" 'cat /proc/cmdline' > "$dir/cmdline-$i.txt"
     mib=$(fill "$parent" f)
     want=$(digest "$parent" f)
     captured=$(ctl capture "$parent")
@@ -464,25 +477,27 @@ save
 for page in $pages; do
     plan=$repeats_2m
     [[ $page == 4096 ]] && plan=$repeats_4k
-    for arena in shared isolated; do
+    for mode in $arenas; do
+        arena=${mode%%+*} word=''
+        [[ $mode == "$arena" ]] || word=${mode#*+}
         # A mode is started only where at least its first case fits after it.
         first=${plan%% *}
         if ! fits $((roll_seconds + ${cost[${first%%=*}-$page]})); then
-            step "no time left for the $arena arena at a $page-byte page"
+            step "no time left for the $mode arena at a $page-byte page"
             continue
         fi
-        step "the $arena arena at a $page-byte page"
-        configure "$arena" "$page"
+        step "the $mode arena at a $page-byte page"
+        configure "$arena" "$page" "$word"
         for entry in $plan; do
             name=${entry%%=*} count=${entry#*=}
-            dir=$out/$arena-$page/$name
+            dir=$out/$mode-$page/$name
             mkdir -p "$dir"
             for i in $(seq 1 "$count"); do
                 if ! fits "${cost[$name-$page]}"; then
                     step "no time left for $name $i of $count"
                     break
                 fi
-                step "$arena, $page, $name $i of $count"
+                step "$mode, $page, $name $i of $count"
                 "${name}_case" "$i"
             done
         done
