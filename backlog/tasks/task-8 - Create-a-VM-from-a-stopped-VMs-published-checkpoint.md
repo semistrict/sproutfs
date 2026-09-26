@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-25 18:17'
-updated_date: '2026-09-25 22:37'
+updated_date: '2026-09-26 00:32'
 labels:
   - embedder
 dependencies: []
@@ -24,7 +24,7 @@ An embedding program replaces JuiceFS with sproutfs in its sandbox host. This is
 <!-- AC:BEGIN -->
 - [x] #1 An API call creates a VM from another VM's published checkpoint
 - [x] #2 It works when no host runs the parent, and the checkpoint is pinned
-- [ ] #3 It refuses a checkpoint of another tenant
+- [x] #3 It refuses a checkpoint of another tenant
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -47,6 +47,8 @@ Pin design: control.Client.Pin adds a pin without the epoch. It reads the record
 API: host CreateRequest.From {vm, checkpoint?}; orchestrator CreateRequest.From; sproutfsctl create --from VM[@CHECKPOINT]. Same create path as a template: fork, root through Host.Reshape at the shape, cold boot. 409 for ErrNotPublished.
 Tests: control/pin_test.go (pin keeps epoch, refusals, writer adopts, race with a selection, lost reply, unreadable refusal does not fence, conditional removal), volume/inherit_test.go (stopped parent pinned and survives its delete; running parent spares the pin in its own sweeps; refusals), host/createfrom_test.go (create from a stopped VM at a shape on another host; ErrExists; ErrNotPublished), server, orchestrator and CLI tests. Each new test was seen failing without its change. go build, GOOS=linux go vet and go test ./... pass. No Lima run: the supervisor path is a thin caller of tested Host and volume methods.
 AC #3 (refuse another tenant's checkpoint) is not implementable yet: there is no tenant in the system. TASK-18 AC #3 (no fork, inherit or page sharing crosses tenants) covers it.
+
+AC3 done with TASK-18: InheritPublished refuses a checkpoint of another tenant before pinning (volume/tenant_test.go).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
