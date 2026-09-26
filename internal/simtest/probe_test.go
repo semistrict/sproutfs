@@ -22,6 +22,7 @@ import (
 var registeredProbes = []string{
 	control.ProbePublicationFenced,
 	control.ProbeReplyReconciled,
+	control.ProbeRecordAdopted,
 	checkpoint.ProbeCompactionRewrite,
 	vmmemory.ProbeEvictionDuringPublication,
 	vmmigrate.ProbeVolumeFallback,

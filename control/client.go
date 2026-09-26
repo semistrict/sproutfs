@@ -622,7 +622,7 @@ func (h *Handle) replace(ctx context.Context, next Record) (Record, error) {
 		h.settle(current, observedETag, false)
 		return Record{}, err
 	case observed.mine(h.epoch, next.Nonce):
-		sim.Probe(ctx, ProbeReplyReconciled)
+		sim.Probe(ctx, ProbeRecordAdopted)
 		// Either a write of this handle's own that it never saw land — its
 		// reply was lost and the read that would have reconciled it failed
 		// too — or a pin or a release made without the epoch. Either way the

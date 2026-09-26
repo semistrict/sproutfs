@@ -178,4 +178,8 @@ const (
 	// ProbeReplyReconciled marks a write whose reply was lost being settled
 	// against the record read back rather than guessed at.
 	ProbeReplyReconciled = "control/reply-reconciled"
+	// ProbeRecordAdopted marks a writer refused against a record that still
+	// carries its own epoch and nonce, which a pin or a release made without
+	// the epoch moved, and which the writer adopts rather than being fenced.
+	ProbeRecordAdopted = "control/record-adopted"
 )
