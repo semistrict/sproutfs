@@ -828,7 +828,8 @@ func TestMetricsExposeTheIsolatedArenaCopies(t *testing.T) {
 		Pager: hostapi.Pager{
 			RAM: hostapi.PagerKind{IdlePages: 11, LoadedPages: 70, CopyOnWrites: 9, Revocations: 5,
 				RevokedPages: 640, MovedPages: 512, ForkCopies: 300, Tampered: 1,
-				UnmappedCopyOnWrites: 7, UnchangedPages: 6, ReadTraps: 20, StoreTraps: 30, ProtectTraps: 8},
+				UnmappedCopyOnWrites: 7, UnchangedPages: 6, ReadTraps: 20, StoreTraps: 30, ProtectTraps: 8,
+				GivenBackPages: 5},
 			PMEM: hostapi.PagerKind{IdlePages: 2, Revocations: 1, RevokedPages: 3, MovedPages: 4},
 		},
 	}}
@@ -848,6 +849,7 @@ func TestMetricsExposeTheIsolatedArenaCopies(t *testing.T) {
 		`sproutfs_pager_read_traps_total{kind="ram"} 20`,
 		`sproutfs_pager_store_traps_total{kind="ram"} 30`,
 		`sproutfs_pager_protect_traps_total{kind="ram"} 8`,
+		`sproutfs_pager_given_back_pages_total{kind="ram"} 5`,
 		"# TYPE sproutfs_pager_revocations_total counter",
 		`sproutfs_pager_revocations_total{kind="ram"} 5`,
 		`sproutfs_pager_revoked_pages_total{kind="ram"} 640`,

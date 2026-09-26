@@ -113,6 +113,9 @@ func metrics(status hostapi.Status) string {
 	byKind("sproutfs_pager_protect_traps_total", "counter",
 		"Page faults the kernel reported as stores into a write-protected page.",
 		func(p hostapi.PagerKind) any { return p.ProtectTraps })
+	byKind("sproutfs_pager_given_back_pages_total", "counter",
+		"Unchanged copies given back to the page they were copied from without a checkpoint.",
+		func(p hostapi.PagerKind) any { return p.GivenBackPages })
 	byKind("sproutfs_pager_revocations_total", "counter", "Commands that took mappings away from a VMM.",
 		func(p hostapi.PagerKind) any { return p.Revocations })
 	byKind("sproutfs_pager_revoked_pages_total", "counter", "Pages those commands took away.",

@@ -249,6 +249,9 @@ type PagerKind struct {
 	ReadTraps    uint64 `json:"read_traps"`
 	StoreTraps   uint64 `json:"store_traps"`
 	ProtectTraps uint64 `json:"protect_traps"`
+	// GivenBackPages counts the copies the interval's give-back found unchanged
+	// and handed back to the page they were copied from, with no checkpoint.
+	GivenBackPages uint64 `json:"given_back_pages"`
 	// Revocations counts the commands that took mappings away from a VMM, and
 	// RevokedPages the pages they took.
 	Revocations  uint64 `json:"revocations"`
