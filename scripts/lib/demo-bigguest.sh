@@ -12,7 +12,7 @@
 # that mapping; the Lima instance this is otherwise developed against is
 # aarch64, so this run is the only thing that does.
 #
-# It boots a guest and cold starts it at 4 GiB, checks the guest's own e820 map
+# It boots a guest and cold starts it at 3.5 GiB, checks the guest's own e820 map
 # for the second usable range, writes 3200 MiB of a non-zero pattern — more than
 # fits below the gap — and reads the tail of it back in the parent, in a fork of
 # it, and again after a migration. The tail is the part that can only live above
@@ -36,9 +36,9 @@ set -euo pipefail
 
 export KUBECONFIG=${KUBECONFIG:-/etc/rancher/k3s/k3s.yaml}
 namespace=${SPROUTFS_DEMO_NAMESPACE:-sproutfs}
-# 4 GiB of guest RAM, which is more than the 3 GiB below the gap. It still fits
-# the host's 5 GiB arena, so the pager stays resident and nothing spills.
-big=${SPROUTFS_DEMO_BIG_BYTES:-4294967296}
+# 3.5 GiB of guest RAM, which is more than the 3 GiB below the gap. It fits the
+# host's 3.75 GiB RAM arena, so the pager stays resident and nothing spills.
+big=${SPROUTFS_DEMO_BIG_BYTES:-3758096384}
 # 3200 MiB of pattern cannot fit below the gap; the last 256 MiB of it is read
 # back, which is 2944 MiB into the file and unambiguously above it.
 pattern_mib=${SPROUTFS_DEMO_PATTERN_MIB:-3200}
@@ -66,7 +66,7 @@ other_host() { ctl hosts | awk -v host="$1" 'NR > 1 && $1 != host && $2 == "true
 
 ctl hosts
 
-step 'boot a guest and give it 4 GiB of RAM'
+step 'boot a guest and give it 3.5 GiB of RAM'
 created=$(ctl create --template alpine)
 printf '%s\n' "$created"
 vm=${created%% *}
@@ -120,7 +120,11 @@ printf 'the parent reads its own tail correctly\n'
 
 step 'a fork reads the same bytes above the gap'
 ctl capture "$vm" > /dev/null
-child=$(ctl fork "$vm" --count 1 | awk 'NR == 2 { print $1 }')
+# The child goes to the other host: a child is a guest of its own RAM, and the
+# parent's host has no room for a second guest this size.
+away=$(other_host "$(host_of "$vm")")
+[[ -n $away ]] || fail "no other host to fork $vm onto"
+child=$(ctl fork "$vm" --count 1 --to "$away" | awk 'NR == 2 { print $1 }')
 [[ $child == vm-* ]] || fail "forking $vm named no child"
 agent_ready "$child" || fail "the agent in the fork $child never answered"
 got=$(read_tail "$child")
