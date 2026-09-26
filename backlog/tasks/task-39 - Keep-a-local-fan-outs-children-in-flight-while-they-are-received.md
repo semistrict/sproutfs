@@ -1,11 +1,11 @@
 ---
 id: TASK-39
 title: Keep a local fan-out's children in flight while they are received
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-26 15:14'
-updated_date: '2026-09-26 17:46'
+updated_date: '2026-09-26 17:48'
 labels:
   - embedder
 dependencies: []

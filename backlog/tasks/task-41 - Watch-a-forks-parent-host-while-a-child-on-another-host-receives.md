@@ -1,11 +1,11 @@
 ---
 id: TASK-41
 title: Watch a fork's parent host while a child on another host receives
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-26 16:40'
-updated_date: '2026-09-26 17:46'
+updated_date: '2026-09-26 17:48'
 labels:
   - embedder
 dependencies: []
