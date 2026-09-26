@@ -24,10 +24,10 @@ import (
 
 // The whole supervisor on real Firecracker, with guests marked to pull their
 // memory. A create boots a guest whose checkpoint is pulled onto the host's
-// disk behind it. The guest fills its root with 40 MiB of random bytes and
+// disk behind it. The guest fills its root with 32 MiB of random bytes and
 // stops, and an open with the mark pulls the checkpoint that stop published. A
 // fork of the opened VM gives its child the mark, and the child pulls the
-// checkpoint it inherits. The PMEM arena holds twelve of the fill's twenty
+// checkpoint it inherits. The PMEM arena holds twelve of the fill's sixteen
 // pages, so a guest reading the fill twice evicts pages it read earlier and
 // faults them in again. Once a guest's pull is complete, none of that reads a
 // checkpoint object: every page comes from the arena or from the page cache's
@@ -40,8 +40,10 @@ const (
 	pullPMEMArena = 24 << 20
 	pullGuestRAM  = 128 << 20
 	// pullFillMiB is what the guest writes into its root before it stops, so
-	// the checkpoint an open pulls holds more pages than the arena.
-	pullFillMiB = 40
+	// the checkpoint an open pulls holds more pages than the arena. The
+	// qualification root is 64 MiB, and on x86_64 it has 39 MiB free once the
+	// init, the agent, the witness and busybox are in it.
+	pullFillMiB = 32
 )
 
 // checkpointGets counts the reads of checkpoint objects: parts and index
@@ -193,7 +195,7 @@ func readsFillWithoutTheStore(t *testing.T, ctx context.Context, service host.Se
 		t.Fatalf("%s read the fill twice after pulling %d bytes and made %d requests of checkpoint objects, want none",
 			id, pulled.Bytes, gets)
 	}
-	// Twenty pages through an arena of twelve: each pass faults at least eight
+	// Sixteen pages through an arena of twelve: each pass faults at least four
 	// of them in over pages it evicts, and those the second faults in are ones
 	// an earlier read evicted.
 	short := uint64(pullFillMiB<<20-pullPMEMArena) / (2 << 20)

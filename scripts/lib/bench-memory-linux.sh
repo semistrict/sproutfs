@@ -159,6 +159,12 @@ if [[ ${SPROUTFS_GCE_QUALIFY:-0} == 1 ]]; then
     for applet in sh sleep echo test touch cat df sync dd; do ln -sfn busybox "$fixture/bin/$applet"; done
     truncate -s 64M "$work/build/firecracker-root.ext4"
     mkfs.ext4 -q -F -b 4096 -d "$fixture" "$work/build/firecracker-root.ext4"
+    # The starter suite jails the VMM under a test directory in /tmp and makes
+    # /dev/kvm and /dev/userfaultfd there. Ubuntu mounts /tmp nodev, where a
+    # device node opens with EACCES. A directory elsewhere would lengthen the
+    # socket paths under it past what a Unix socket takes, so /tmp itself
+    # allows devices on this disposable host.
+    mount -o remount,dev /tmp
     qualify firecracker env SPROUTFS_FIRECRACKER="$work/build/firecracker" \
         SPROUTFS_FIRECRACKER_SECCOMP="$work/build/seccomp.bpf" \
         SPROUTFS_FIRECRACKER_KERNEL="$work/build/kernel" \
