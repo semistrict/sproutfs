@@ -490,6 +490,9 @@ func (s *supervisor) pagerReport(ctx context.Context, slot pagerSlot, free int) 
 			SavedBytes: gauge.SavedBytes},
 		SharedPages: stats.IdentityHits, Faults: stats.Faults,
 		Evictions: stats.Evictions, Spills: stats.Spills,
+		IdlePages:   stats.IdlePages,
+		Revocations: stats.Revocations, RevokedPages: stats.RevokedPages,
+		MovedPages: stats.MovedPages, ForkCopies: stats.ForkCopies, Tampered: stats.Tampered,
 	}, nil
 }
 

@@ -91,6 +91,24 @@ func metrics(status hostapi.Status) string {
 		func(p hostapi.PagerKind) any { return p.Evictions })
 	byKind("sproutfs_pager_spills_total", "counter", "Pages the pager has written to its spill file.",
 		func(p hostapi.PagerKind) any { return p.Spills })
+	byKind("sproutfs_pager_idle_pages", "gauge",
+		"Resident pages no memory region maps, kept for the next one that inherits them.",
+		func(p hostapi.PagerKind) any { return p.IdlePages })
+	byKind("sproutfs_pager_revocations_total", "counter", "Commands that took mappings away from a VMM.",
+		func(p hostapi.PagerKind) any { return p.Revocations })
+	byKind("sproutfs_pager_revoked_pages_total", "counter", "Pages those commands took away.",
+		func(p hostapi.PagerKind) any { return p.RevokedPages })
+	// What an isolated arena copies between its files, which a shared arena
+	// never does.
+	byKind("sproutfs_pager_moved_pages_total", "counter",
+		"Published pages copied into the tenant's shared file because another memory region inherited them.",
+		func(p hostapi.PagerKind) any { return p.MovedPages })
+	byKind("sproutfs_pager_fork_copies_total", "counter",
+		"Pages copied into a fork point's file for a child on this host.",
+		func(p hostapi.PagerKind) any { return p.ForkCopies })
+	byKind("sproutfs_pager_tampered_total", "counter",
+		"Moves whose copy did not hold the bytes the page's upload read.",
+		func(p hostapi.PagerKind) any { return p.Tampered })
 
 	write("sproutfs_pages_requests_total", "counter",
 		"Page requests this host's migration page server has answered.", status.Pages.Requests)

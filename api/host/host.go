@@ -228,6 +228,23 @@ type PagerKind struct {
 	Faults      uint64 `json:"faults"`
 	Evictions   uint64 `json:"evictions"`
 	Spills      uint64 `json:"spills"`
+	// IdlePages is how many resident pages no memory region maps: published
+	// pages kept under their identity for the next memory region that
+	// inherits them. It is a gauge.
+	IdlePages int `json:"idle_pages"`
+	// Revocations counts the commands that took mappings away from a VMM, and
+	// RevokedPages the pages they took.
+	Revocations  uint64 `json:"revocations"`
+	RevokedPages uint64 `json:"revoked_pages"`
+	// MovedPages, ForkCopies and Tampered are what an isolated arena copied
+	// between its files, and are zero in a shared one. MovedPages counts the
+	// published pages copied into the tenant's shared file because another
+	// memory region inherited them, ForkCopies the pages copied into a fork
+	// point's file for a child on this host, and Tampered the moves whose
+	// copy did not hold the bytes the upload read.
+	MovedPages uint64 `json:"moved_pages"`
+	ForkCopies uint64 `json:"fork_copies"`
+	Tampered   uint64 `json:"tampered"`
 }
 
 // ArenaBytes is what this pager's arena holds and ResidentBytes what is taken of

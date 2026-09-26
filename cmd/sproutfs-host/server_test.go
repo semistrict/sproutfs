@@ -820,6 +820,42 @@ func TestMetricsExposeTheSharingGauges(t *testing.T) {
 	}
 }
 
+// What an isolated arena copies between its files is what it costs over a
+// shared one, so each count is a series of its own beside the revocations the
+// moves send and the idle pages they draw on.
+func TestMetricsExposeTheIsolatedArenaCopies(t *testing.T) {
+	fake := &fakeHost{status: hostapi.Status{
+		Pager: hostapi.Pager{
+			RAM: hostapi.PagerKind{IdlePages: 11, Revocations: 5, RevokedPages: 640,
+				MovedPages: 512, ForkCopies: 300, Tampered: 1},
+			PMEM: hostapi.PagerKind{IdlePages: 2, Revocations: 1, RevokedPages: 3, MovedPages: 4},
+		},
+	}}
+	status, body := call(t, fake, http.MethodGet, "/metrics", "")
+	if status != http.StatusOK {
+		t.Fatalf("status %d: %s", status, body)
+	}
+	for _, want := range []string{
+		"# TYPE sproutfs_pager_idle_pages gauge",
+		`sproutfs_pager_idle_pages{kind="ram"} 11`,
+		`sproutfs_pager_idle_pages{kind="pmem"} 2`,
+		"# TYPE sproutfs_pager_revocations_total counter",
+		`sproutfs_pager_revocations_total{kind="ram"} 5`,
+		`sproutfs_pager_revoked_pages_total{kind="ram"} 640`,
+		`sproutfs_pager_revoked_pages_total{kind="pmem"} 3`,
+		"# TYPE sproutfs_pager_moved_pages_total counter",
+		`sproutfs_pager_moved_pages_total{kind="ram"} 512`,
+		`sproutfs_pager_moved_pages_total{kind="pmem"} 4`,
+		`sproutfs_pager_fork_copies_total{kind="ram"} 300`,
+		`sproutfs_pager_fork_copies_total{kind="ephemeral"} 0`,
+		`sproutfs_pager_tampered_total{kind="ram"} 1`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("the exposition has no %q in it:\n%s", want, body)
+		}
+	}
+}
+
 // What losing this host would cost its guests in time is a number an operator
 // has to be able to alert on: the widest loss window on the host, and how many
 // of its VMs are already past theirs and have their stores held back.
