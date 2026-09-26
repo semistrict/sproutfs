@@ -1,10 +1,10 @@
 ---
 id: TASK-17
 title: Run a cluster test that loses a host mid-migration
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-25 18:17'
-updated_date: '2026-09-26 19:18'
+updated_date: '2026-09-26 19:23'
 labels:
   - embedder
   - gce
