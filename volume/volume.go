@@ -77,6 +77,10 @@ var (
 	// which is when the child it was taken for has published or pulled every
 	// page it inherited.
 	ErrSealed = errors.New("volume: a fork point holds this VM's sealed pages")
+	// ErrEphemeral reports a write through this package, or a pager's sealed
+	// pages, offered for an ephemeral volume. No checkpoint holds one, so its
+	// bytes are only ever the pager's.
+	ErrEphemeral = errors.New("volume: an ephemeral volume is never published")
 )
 
 // Config supplies the control records and the object storage a manager serves

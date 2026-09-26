@@ -3,6 +3,7 @@ package volume
 import (
 	"bytes"
 	"context"
+	"fmt"
 
 	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/platform/sim"
@@ -22,6 +23,24 @@ type change struct {
 	data           []byte
 }
 
+// clearPages zeroes the pages of [offset, offset+len(dst)) that wanted marks,
+// one element per page of size the range touches, or all of dst for a nil mask.
+func clearPages(dst []byte, size, offset uint64, wanted []bool) {
+	if wanted == nil {
+		clear(dst)
+		return
+	}
+	first := offset / size
+	for index, want := range wanted {
+		if !want {
+			continue
+		}
+		start := max((first+uint64(index))*size, offset) - offset
+		end := min((first+uint64(index)+1)*size-offset, uint64(len(dst)))
+		clear(dst[start:end])
+	}
+}
+
 // Read fills dst from one consistent overlay-plus-checkpoint view. It is served
 // from the overlay and from the checkpoint objects the index names. On error dst
 // may be partially filled.
@@ -35,6 +54,10 @@ func (v *Volume) Read(ctx context.Context, offset uint64, dst []byte) error {
 	current := v.vm.current.Load()
 	if current.err != nil {
 		return current.err
+	}
+	if v.ephemeral {
+		clear(dst)
+		return nil
 	}
 	base := func(ctx context.Context, offset uint64, dst []byte) error {
 		return current.base.read(ctx, v.name, offset, dst)
@@ -75,6 +98,10 @@ func (v *Volume) LoadPages(ctx context.Context, offset uint64, dst []byte, wante
 	if current.err != nil {
 		return current.err
 	}
+	if v.ephemeral {
+		clearPages(dst, size, offset, wanted)
+		return nil
+	}
 	base := func(ctx context.Context, offset uint64, dst []byte, wanted []bool) error {
 		return current.base.readPages(ctx, v.name, offset, dst, wanted)
 	}
@@ -92,6 +119,9 @@ func (v *Volume) Write(ctx context.Context, offset uint64, data []byte) error {
 // holds all of them or none. Overlapping extents are applied in order. The
 // combined payload is bounded by Config.MaxWriteBytes.
 func (v *Volume) WriteBatch(ctx context.Context, extents []WriteExtent) error {
+	if v.ephemeral {
+		return fmt.Errorf("%w: a write to %s", ErrEphemeral, v.name)
+	}
 	total := 0
 	changes := make([]change, 0, len(extents))
 	for _, item := range extents {
@@ -128,6 +158,9 @@ func (v *Volume) Discard(ctx context.Context, offset, length uint64) error {
 	}
 	if length == 0 {
 		return nil
+	}
+	if v.ephemeral {
+		return fmt.Errorf("%w: a discard of %s", ErrEphemeral, v.name)
 	}
 	if err := context.Cause(ctx); err != nil {
 		return err
@@ -166,6 +199,9 @@ func (v *Volume) Locate(ctx context.Context, offset, length uint64) ([]control.E
 	current := v.vm.current.Load()
 	if current.err != nil {
 		return nil, current.err
+	}
+	if v.ephemeral {
+		return []control.Extent{{Offset: offset, Length: length, Identity: control.ZeroIdentity}}, nil
 	}
 	return locateOverlay(ctx, current.base, current.overlays[v.ordinal], current.owner,
 		v.geometry, v.name, offset, length)

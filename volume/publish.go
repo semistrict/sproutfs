@@ -54,9 +54,10 @@ func (vm *VM) checkpoint(ctx context.Context, force bool) error {
 //
 // shape is the shape the VM takes from here. A volume its sizes do not name
 // keeps the size it has. The memory may take any size, up or down — it is being
-// discarded anyway — and every other volume may only grow, because the end of a
-// filesystem is not this package's to cut. A grown volume's new pages read as
-// zeroes. A shape with no processor count keeps the one the VM has.
+// discarded anyway — and so may an ephemeral disk, which holds nothing. Every
+// other volume may only grow, because the end of a filesystem is not this
+// package's to cut. A grown volume's new pages read as zeroes. A shape with no
+// processor count keeps the one the VM has.
 //
 // It is called on a VM nothing is running: a cold start opens the VM, discards
 // its memory and only then boots it, and a create publishes its first
@@ -152,8 +153,9 @@ func (vm *VM) discarding(memory string, sizes map[string]uint64) (*Checkpoint, f
 
 // reshape reports the sizes this cold boot changes, having refused the ones it
 // will not make: a volume this VM does not have, a size that is not a whole
-// number of sectors, and a volume other than the memory that would shrink. A
-// size a volume already has is not a change and is left out.
+// number of sectors, and a volume other than the memory or an ephemeral disk
+// that would shrink. A size a volume already has is not a change and is left
+// out.
 func (vm *VM) reshape(sizes map[string]uint64, memory string) (map[string]uint64, error) {
 	if len(sizes) == 0 {
 		return nil, nil
@@ -167,7 +169,8 @@ func (vm *VM) reshape(sizes map[string]uint64, memory string) (map[string]uint64
 		if size == 0 || size%checkpoint.SectorSize != 0 {
 			return nil, ErrInvalidConfig
 		}
-		if size < held.size && name != memory {
+		// An ephemeral disk holds nothing at a cold boot, so it may shrink too.
+		if size < held.size && name != memory && !held.ephemeral {
 			return nil, fmt.Errorf("%w: %s is %d bytes and may not shrink to %d",
 				ErrInvalidRange, name, held.size, size)
 		}
@@ -384,8 +387,14 @@ func (vm *VM) captureLocked(state []byte, sources map[string]DirtySource, force 
 		return nil, ErrCorrupt
 	}
 	for name := range sources {
-		if vm.byName[name] == nil {
+		held := vm.byName[name]
+		if held == nil {
 			return nil, ErrUnknownVolume
+		}
+		// A pager seals nothing of an ephemeral disk, and a caller that offers
+		// its pages anyway is refused before they could reach a checkpoint.
+		if held.ephemeral {
+			return nil, fmt.Errorf("%w: sealed pages of %s", ErrEphemeral, name)
 		}
 	}
 	if !force && vm.dirty == 0 {
@@ -499,6 +508,18 @@ func (vm *VM) publish(ctx context.Context, ckpt *Checkpoint) (*checkpoint.Index,
 		ckpt.protected = append([]uint64{}, vm.control.Record().Protected()...)
 	}
 	publication.Protect(ckpt.protected)
+	// A fork's child may have ephemeral disks its parent's checkpoint does not,
+	// or at another size: its root is where they are first recorded.
+	for _, name := range vm.names {
+		held, size := vm.byName[name], ckpt.sizes[name]
+		switch {
+		case !slices.Contains(ckpt.parentIndex.Volumes(), name):
+			publication.Add(name, checkpoint.VolumeSpec{Size: size, PageSize: held.geometry.PageSize,
+				Ephemeral: held.ephemeral})
+		case ckpt.parentIndex.Size(name) != size:
+			publication.SetSize(name, size)
+		}
+	}
 	// The shape comes before the pages: a volume that shrank drops the pages
 	// past its new end rather than republishing them, and one that grew has
 	// somewhere for its new pages to be.

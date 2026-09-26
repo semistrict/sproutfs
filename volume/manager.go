@@ -97,7 +97,8 @@ func (m *Manager) create(ctx context.Context, id string, volumes []VolumeSpec, t
 		if _, err := checkpoint.GeometryFor(spec.PageSize); err != nil {
 			return nil, fmt.Errorf("%w: %s of %s: %w", ErrInvalidConfig, spec.Name, id, err)
 		}
-		shape[spec.Name] = checkpoint.VolumeSpec{Size: spec.Size, PageSize: spec.PageSize}
+		shape[spec.Name] = checkpoint.VolumeSpec{Size: spec.Size, PageSize: spec.PageSize,
+			Ephemeral: spec.Ephemeral}
 	}
 	// A record is what says an identity is a VM's, so it is read before
 	// anything is written: one that is there is opened, and one that is not
@@ -139,7 +140,7 @@ func (m *Manager) create(ctx context.Context, id string, volumes []VolumeSpec, t
 	// The root is this handle's own publication, so it is what the first
 	// checkpoint over it reclaims: leaving it behind would cost every VM ever
 	// created one checkpoint nothing reads.
-	return m.attach(ctx, id, handle, root, root, nil)
+	return m.attach(ctx, id, handle, root, root, nil, nil)
 }
 
 // Open takes the VM over and returns a handle on it: it advances the epoch in
@@ -181,7 +182,7 @@ func (m *Manager) Open(ctx context.Context, id string) (*VM, error) {
 		handle.Close()
 		return nil, err
 	}
-	return m.attach(ctx, id, handle, index, nil, nil)
+	return m.attach(ctx, id, handle, index, nil, nil, nil)
 }
 
 // openAs opens a VM whose identity the deployment already records — which is
@@ -207,6 +208,10 @@ func (m *Manager) openAs(ctx context.Context, id string, specs []VolumeSpec) (*V
 		if held.geometry.PageSize != spec.PageSize {
 			err = errors.Join(err, fmt.Errorf("%w: %s of %s is published in %d-byte pages, not %d",
 				ErrInvalidConfig, spec.Name, id, held.geometry.PageSize, spec.PageSize))
+		}
+		if held.ephemeral != spec.Ephemeral {
+			err = errors.Join(err, fmt.Errorf("%w: %s of %s is ephemeral %v, not %v",
+				ErrInvalidConfig, spec.Name, id, held.ephemeral, spec.Ephemeral))
 		}
 	}
 	if err != nil {
@@ -264,10 +269,11 @@ func (m *Manager) Delete(ctx context.Context, id string) error {
 // attach builds and starts a handle over the control record it holds. selected is
 // the index of the checkpoint the record selects — the parent's, for a fork —
 // owned that same index when this handle is the one that published it, and
-// point the fork point a fork reads through until it publishes its own root.
+// point the fork point a fork reads through until it publishes its own root, and
+// added the ephemeral disks a fork gives its child beyond its parent's volumes.
 func (m *Manager) attach(ctx context.Context, id string, handle *control.Handle,
-	selected, owned *checkpoint.Index, point *ForkPoint) (*VM, error) {
-	base, specs, err := resolve(m.config.Store, selected, point)
+	selected, owned *checkpoint.Index, point *ForkPoint, added []VolumeSpec) (*VM, error) {
+	base, specs, err := resolve(m.config.Store, selected, point, added)
 	if err == nil {
 		var vm *VM
 		if vm, err = newVM(m, id, handle, base, selected, owned, specs, point); err == nil {
@@ -286,20 +292,65 @@ func (m *Manager) attach(ctx context.Context, id string, handle *control.Handle,
 // record selects, or, for a fork, the parent's checkpoint with the point the
 // fork was taken at over it. A fork's volumes are its parent's, geometry
 // included: a page size is the volume's for its life, so a handle takes it from
-// the checkpoint rather than being told it.
-func resolve(store *checkpoint.Store, selected *checkpoint.Index, point *ForkPoint) (source, []VolumeSpec, error) {
+// the checkpoint rather than being told it. The one exception is the ephemeral
+// disks added gives a fork's child, which its root publishes as new volumes.
+func resolve(store *checkpoint.Store, selected *checkpoint.Index, point *ForkPoint,
+	added []VolumeSpec) (source, []VolumeSpec, error) {
 	if selected == nil {
 		return nil, nil, ErrCorrupt
 	}
-	specs := make([]VolumeSpec, 0, len(selected.Volumes()))
-	for _, name := range selected.Volumes() {
-		specs = append(specs, VolumeSpec{Name: name, Size: selected.Size(name),
-			PageSize: selected.Geometry(name).PageSize})
+	specs, err := extend(specsOf(selected), added)
+	if err != nil {
+		return nil, nil, err
 	}
 	if point != nil && point.checkpoint != nil {
 		return point.checkpoint, specs, nil
 	}
 	return indexSource{store: store, index: selected}, specs, nil
+}
+
+// specsOf is every volume one checkpoint records, in ascending name order.
+func specsOf(index *checkpoint.Index) []VolumeSpec {
+	specs := make([]VolumeSpec, 0, len(index.Volumes()))
+	for _, name := range index.Volumes() {
+		specs = append(specs, VolumeSpec{Name: name, Size: index.Size(name),
+			PageSize: index.Geometry(name).PageSize, Ephemeral: index.Ephemeral(name)})
+	}
+	return specs
+}
+
+// extend gives a VM the ephemeral disks added names, in ascending name order. A
+// disk it already has as an ephemeral one of the same page size takes the new
+// size: it holds nothing, so resizing it either way loses nothing. Anything
+// else is refused. Only an ephemeral disk is added, because only one is empty
+// wherever the VM opens.
+func extend(specs, added []VolumeSpec) ([]VolumeSpec, error) {
+	if len(added) == 0 {
+		return specs, nil
+	}
+	specs = slices.Clone(specs)
+	for _, spec := range added {
+		if !spec.Ephemeral || !validVolumeName(spec.Name) || spec.Size == 0 ||
+			spec.Size%checkpoint.SectorSize != 0 {
+			return nil, fmt.Errorf("%w: %s is not an ephemeral disk a VM can be given",
+				ErrInvalidConfig, spec.Name)
+		}
+		if _, err := checkpoint.GeometryFor(spec.PageSize); err != nil {
+			return nil, fmt.Errorf("%w: %s: %w", ErrInvalidConfig, spec.Name, err)
+		}
+		at := slices.IndexFunc(specs, func(held VolumeSpec) bool { return held.Name == spec.Name })
+		if at < 0 {
+			specs = append(specs, spec)
+			continue
+		}
+		if !specs[at].Ephemeral || specs[at].PageSize != spec.PageSize {
+			return nil, fmt.Errorf("%w: the volume %s is not an ephemeral disk of %d-byte pages",
+				ErrInvalidConfig, spec.Name, spec.PageSize)
+		}
+		specs[at].Size = spec.Size
+	}
+	slices.SortFunc(specs, func(a, b VolumeSpec) int { return strings.Compare(a.Name, b.Name) })
+	return specs, nil
 }
 
 // index reads the root of one selected checkpoint. The record said that

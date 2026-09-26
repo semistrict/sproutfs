@@ -20,10 +20,17 @@ import (
 // [checkpoint.GeometryFor] accepts, whoever creates the VM chooses it, and it
 // is fixed for the volume's life: a volume opened later takes the page size its
 // checkpoint records rather than stating one.
+//
+// Ephemeral makes it a disk no checkpoint holds, which is fixed for its life
+// too. Its bytes live only in the pager of the host that runs the VM: no write
+// through this package reaches it, every read through this package sees
+// zeroes, and every checkpoint records it with its size and no page. A VM
+// opened anywhere, and every fork, gets it back zeroed.
 type VolumeSpec struct {
-	Name     string
-	Size     uint64
-	PageSize uint64
+	Name      string
+	Size      uint64
+	PageSize  uint64
+	Ephemeral bool
 }
 
 // generation orders the writes one handle has applied. It is local and starts
@@ -153,7 +160,9 @@ type Volume struct {
 	// table covers. Every page number of this volume — what a checkpoint
 	// publishes, what Locate reports, what a pager faults — is in that unit.
 	geometry checkpoint.Geometry
-	ordinal  int
+	// ephemeral marks a disk no checkpoint holds; see VolumeSpec.
+	ephemeral bool
+	ordinal   int
 }
 
 // Name reports the volume's name, which is its identity within its VM.
@@ -161,6 +170,10 @@ func (v *Volume) Name() string { return v.name }
 
 // Size reports the volume's size in bytes.
 func (v *Volume) Size() uint64 { return v.size }
+
+// Ephemeral reports a disk no checkpoint holds. It reads as zeroes here, and a
+// pager is the only thing that holds its bytes.
+func (v *Volume) Ephemeral() bool { return v.ephemeral }
 
 // PageSize reports the unit this volume is published and faulted in, which is
 // what its page numbers count. A pager whose own page is a different size
@@ -203,7 +216,8 @@ func newVM(m *Manager, id string, handle *control.Handle, base source, index, ow
 		if err != nil {
 			return nil, fmt.Errorf("%w: %s of %s: %w", ErrInvalidConfig, spec.Name, id, err)
 		}
-		volume := &Volume{vm: vm, name: spec.Name, size: spec.Size, geometry: geometry, ordinal: ordinal}
+		volume := &Volume{vm: vm, name: spec.Name, size: spec.Size, geometry: geometry,
+			ephemeral: spec.Ephemeral, ordinal: ordinal}
 		vm.names = append(vm.names, spec.Name)
 		vm.volumes = append(vm.volumes, volume)
 		vm.byName[spec.Name] = volume

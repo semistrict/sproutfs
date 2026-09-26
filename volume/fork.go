@@ -425,9 +425,18 @@ func (m *Manager) InheritPublished(ctx context.Context, child string, parent con
 // Nothing is uploaded here. The child's first checkpoint is its root index: it
 // publishes the pages it inherited as its own, and only then is the child a VM
 // any host can open. A fork that ends before that leaves no object behind.
-func (m *Manager) Fork(ctx context.Context, id string, point *ForkPoint) (*VM, error) {
+//
+// added gives the child ephemeral disks: a create names the one its VM asked
+// for here. The parent's own ephemeral disks reach the child zeroed, as they
+// reach every fork, and one added under the same name takes the size added
+// gives it.
+func (m *Manager) Fork(ctx context.Context, id string, point *ForkPoint, added ...VolumeSpec) (*VM, error) {
 	if !validID(id) || point == nil || point.index == nil {
 		return nil, ErrInvalidConfig
+	}
+	// What the child is made of is settled before its record exists.
+	if _, err := extend(specsOf(point.index), added); err != nil {
+		return nil, err
 	}
 	if err := sameTenant(id, point.ref.VM); err != nil {
 		return nil, err
@@ -451,7 +460,7 @@ func (m *Manager) Fork(ctx context.Context, id string, point *ForkPoint) (*VM, e
 	if err := point.Hold(); err != nil {
 		return nil, err
 	}
-	vm, err := m.attach(ctx, id, handle, point.index, nil, point)
+	vm, err := m.attach(ctx, id, handle, point.index, nil, point, added)
 	if err != nil {
 		// The record is written before the handle exists, and a child's record
 		// selects a root only that child's first checkpoint publishes: one left
