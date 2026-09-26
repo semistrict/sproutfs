@@ -575,26 +575,8 @@ func (h *Host) rebind(ctx context.Context, from, to *resident) error {
 // move shares (see Stats.StoreTraps). Where the client refuses the mapping for
 // want of budget, the mappings are taken away instead, which frees it.
 func (r *MemoryRegion) remap(ctx context.Context, bindings []*binding, to *resident) error {
-	h := r.host
 	for _, b := range bindings {
-		err := r.underProtection(ctx, func() error {
-			if !r.isMapped(b) {
-				return nil
-			}
-			if err := r.mapPages(ctx, r.runAt(b.index, to.fileSlot, 1), false); err != nil {
-				return r.mappingFailed(err, func() {})
-			}
-			note(r, b.index, "remap", to.slot, -1)
-			h.mu.Lock()
-			h.stats.Mappings++
-			h.stats.MappingRuns++
-			h.stats.MappedPages++
-			h.mu.Unlock()
-			if err := r.resolvePages(ctx, b.index, 1, false); err != nil {
-				return r.fail(err)
-			}
-			return nil
-		})
+		err := r.mapInPlace(ctx, b, to)
 		if errors.Is(err, ErrMappingRefused) {
 			return r.revokeBindings(ctx, bindings)
 		}
@@ -603,6 +585,33 @@ func (r *MemoryRegion) remap(ctx context.Context, bindings []*binding, to *resid
 		}
 	}
 	return nil
+}
+
+// mapInPlace maps to, read-only, where this memory region maps b, in one MAP,
+// and installs it in the region's page tables. A move and a give-back both use
+// it to put a page holding the same bytes under the guest without a fault. It
+// reports ErrMappingRefused where the client refused the MAP for want of
+// budget, having changed nothing. Caller holds b's page and to.
+func (r *MemoryRegion) mapInPlace(ctx context.Context, b *binding, to *resident) error {
+	h := r.host
+	return r.underProtection(ctx, func() error {
+		if !r.isMapped(b) {
+			return nil
+		}
+		if err := r.mapPages(ctx, r.runAt(b.index, to.fileSlot, 1), false); err != nil {
+			return r.mappingFailed(err, func() {})
+		}
+		note(r, b.index, "remap", to.slot, -1)
+		h.mu.Lock()
+		h.stats.Mappings++
+		h.stats.MappingRuns++
+		h.stats.MappedPages++
+		h.mu.Unlock()
+		if err := r.resolvePages(ctx, b.index, 1, false); err != nil {
+			return r.fail(err)
+		}
+		return nil
+	})
 }
 
 // unindexLocked stops a page being named by its identity. It stays the page of

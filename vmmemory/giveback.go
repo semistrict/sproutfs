@@ -31,7 +31,7 @@ import (
 //
 // The guest is pointed at the origin in place, with the mapping command a
 // store uses to replace the page it copied from, and the page is installed
-// read-only at once. It is not revoked. A revoked page is missing, so on x86-64
+// read-only at once: mapInPlace, which a move uses for the same reason. It is not revoked. A revoked page is missing, so on x86-64
 // the next cold read would arrive as a write again and copy again, and the
 // give-back would undo its own work at every pass. An installed page is present,
 // so KVM maps it for a read without asking the pager.
@@ -165,22 +165,21 @@ func (r *MemoryRegion) giveBack(ctx context.Context, index uint64, buffers *sett
 		}
 		return false, errors.Join(err, r.liftProtection(ctx, index))
 	}
-	if err := r.mapPages(ctx, r.runAt(index, origin.fileSlot, 1), false); err != nil {
-		if err := r.mappingFailed(err, func() {}); !errors.Is(err, ErrMappingRefused) {
+	// Mapped and installed read-only, as a move maps the owner's page, so the
+	// guest's next read maps it without a fault. That read is what would
+	// otherwise come back as a write.
+	if err := r.mapInPlace(ctx, b, origin); err != nil {
+		if !errors.Is(err, ErrMappingRefused) {
 			return false, err
 		}
 		// The client is out of mapping budget and changed nothing, so the
 		// guest still maps its copy. It takes stores again, and a later pass
-		// tries again.
+		// tries again. Revoking instead would free budget, but it would leave
+		// the next read to a cold fault, which copies again.
 		return false, r.liftProtection(ctx, index)
 	}
 	if err := r.shareOrigin(ctx, b, pg, origin); err != nil {
 		return false, err
-	}
-	// Installed now, read-only, so the guest's next read maps it without a
-	// fault. That read is what would otherwise come back as a write.
-	if err := r.resolvePages(ctx, index, 1, false); err != nil {
-		return true, r.fail(err)
 	}
 	return true, nil
 }

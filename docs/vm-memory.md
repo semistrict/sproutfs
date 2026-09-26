@@ -1223,7 +1223,12 @@ region shared, so its MAP is the same command, under the same locks, as the one
 a store issues to replace the page it copied from. Revoking would also defeat it. A
 revoked page is missing, and on x86-64 the next cold read of a missing page
 arrives as a write, which copies the page again. An installed page is present,
-so KVM maps it for a read without asking the pager.
+so KVM maps it for a read without asking the pager. The MAP and the install are
+the ones a [move](#the-isolated-arena) uses, `mapInPlace`. A client that refuses
+the MAP for want of budget changed nothing, so the guest keeps its copy, the
+write-protection comes off, and a later pass tries again. It is not revoked to
+free the budget, as a move does, because that too would leave the next read to
+a cold fault.
 
 A copy the pager has spilled, one in a range the rules made one whole mapping,
 and one the guest does not map are left for a later pass. A copy whose origin
