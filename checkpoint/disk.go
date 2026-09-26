@@ -119,7 +119,7 @@ type cacheDisk struct {
 
 	mu      sync.Mutex
 	free    []blockRun // ascending and coalesced
-	used    int64      // blocks the regions hold, given back or not
+	used    int64      // blocks the regions hold, until they are given back
 	entries map[cacheKey]diskEntry
 	hits    uint64
 	lost    uint64
