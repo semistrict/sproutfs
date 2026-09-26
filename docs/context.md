@@ -195,6 +195,15 @@ everything a host reports across both pagers is in bytes. An arena's memory
 matches its page size: the HugeTLB pool for 2 MiB, and an ordinary shared memfd
 for 4 KiB.
 
+**Pull**: Copying every page of the checkpoint a VM started from onto the disk
+of the host that runs it, in the background while the guest runs. A start
+marks a VM to pull; a migration carries the mark. The copy lives in the page
+cache's disk, keyed by page identity, and is held while the VM runs on that
+host. Once it is complete, a fault on a page that is not resident makes no
+request of the object store. The copy is never durable. A VM whose checkpoint
+does not fit on the disk is not pulled, and reads the store as any VM does. See
+[hosting](hosting.md#pulling-a-vms-memory).
+
 ## Cluster
 
 **Host**: A machine that runs VMs and serves their pages to migration

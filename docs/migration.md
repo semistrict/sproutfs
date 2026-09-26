@@ -39,7 +39,10 @@ the destination reports that it has fetched every one of those pages.
    - the unpublished page runs;
    - the address of the source's page server;
    - the sequence that the source's control record selected when the source
-     gave up the VM.
+     gave up the VM;
+   - whether the VM is marked to [pull its memory](hosting.md#pulling-a-vms-memory).
+     A marked VM's destination pulls the checkpoint it opens. It asks the
+     source for nothing more than post-copy does.
 3. **Resume on the destination.** The destination opens the VM. It reads the
    control record and advances its epoch, which fences the source permanently.
    It then reads the selected checkpoint's root. That is two objects and no

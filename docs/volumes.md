@@ -763,6 +763,43 @@ the cache prevents in-flight loads from repopulating it. A cached object is
 never evidence that a publication landed. An ambiguous publication is
 reconciled against object storage.
 
+### The page cache's disk
+
+The page cache has a second tier on the host's own disk
+(`CacheConfig.Disk`, `DiskBytes`). It holds the pages a **pull** copied: every
+page of one checkpoint, and the segments that locate them, fetched for a VM
+[marked to pull its memory](hosting.md#pulling-a-vms-memory). A read that
+misses in memory looks on the disk before it asks the store, so a checkpoint
+that is pulled whole is read without a request, however often the pager evicts
+its pages.
+
+The disk holds what the store holds: each member's and each segment's encoded
+envelope, byte for byte, keyed by the same identity as the memory tier. So a
+read from it is the same read as one from the store, checked by the same
+envelope. A copy that fails the check, or that the disk cannot give back, is
+forgotten and read from the store. Nothing is published from the disk, and the
+file starts empty when the host starts. A newer checkpoint's page has a new
+identity, so the copy of the page it replaced is never read for it.
+
+`Store.Pull` takes the space one pull needs before it fetches anything. What a
+checkpoint holds is in its root: each segment entry records what its pages
+read from each checkpoint, so the sum of those bytes and of the segments'
+lengths is exactly what the pull will copy. The pull takes one region of that
+many bytes, in 4 KiB blocks, or it is refused whole with `ErrDiskFull`. A
+region is filled in the order the pull fetches, and a member may straddle two
+runs of blocks. A page another pull already copied is held rather than copied
+again, and the pull gives back the part of its region it did not fill. A
+region stays while any pull holds a page in it. When the last lets go, its
+entries go at once, and its blocks return once the reads in flight from it
+have finished.
+
+A pull runs behind every fault. It fetches the segments one at a time and the
+members of each in the extents described above. It takes none of the cache's
+load slots and joins none of its flights, so a fault for a page the pull has
+not reached fetches it at once, as it would without a pull. Before each
+request the pull waits until no load of the cache is in flight, and all the
+pulls on a host share two requests.
+
 ## Captures and forks
 
 A capture pauses the guest, saves VMM state, seals memory, and resumes the

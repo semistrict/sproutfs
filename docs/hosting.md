@@ -732,6 +732,61 @@ The new VM is then like a stopped VM. Any host can open it, and it resumes the
 guest where the pause left the source. A create can also start from it (see
 [creating a VM from a checkpoint](#creating-a-vm-from-a-checkpoint)).
 
+## Pulling a VM's memory
+
+A VM's pages load from object storage the first time the guest touches them. A
+clean page the pager evicts is read from object storage again. So every cold
+fault pays the store's latency, for the life of the VM. A VM can instead pay
+that cost once, up front, in the background: its start marks it to **pull**
+its whole memory. The mark is `Pull` on the host API's create, open and fork,
+and `--pull` on `sproutfsctl create`, `start` and `fork`.
+
+While this host runs a marked VM, every page of the checkpoint it started from
+is copied onto this host's disk and held there. The pages need not become
+resident in memory. The copy lives in the [page cache's
+disk](volumes.md#the-page-caches-disk), keyed by page identity. Once it is
+complete, a fault on a page that is not resident reads the disk and makes no
+request of the object store. That holds for a page the guest never touched and
+for one the pager evicted since.
+
+- **The guest runs while the copy is made.** The pull starts when the machine
+  is registered, after its VMM runs. A fault is never queued behind it: the
+  pull takes none of the page cache's load slots, joins no fault's fetch, and
+  makes no request while a fault's read of the store is in flight. Every pull
+  on the host shares two requests in flight.
+- **It is bounded and falls back whole.** `SPROUTFS_CACHE_DISK_BYTES` caps the
+  disk, which is off by default. A pull takes its space before it fetches
+  anything, sized exactly from what the checkpoint's root records it holds. A
+  VM that does not fit is not pulled at all, and its faults read the store as
+  any other VM's do. So does a VM on a host that keeps no disk. A pull that
+  fails part way keeps what it copied, and the store serves the rest.
+- **Nothing on the disk is durable.** The file starts empty when the host
+  starts. A copy the disk lost or damaged fails its envelope check and is read
+  from the store. A newer checkpoint's page has a new identity, so the copy of
+  the page it replaced is never read for it.
+- **Forks share one copy.** A page another pull on the host already copied is
+  held, not copied again, and it stays while any pull holds it.
+
+What the pull covers is the checkpoint a VM's volumes sit on. For a create,
+that is the root the create published, which names the template's or the
+parent's pages. For an open, it is the checkpoint the control record selects.
+For a fork's child, it is the parent's checkpoint the child inherits. For a
+migration's receive, it is the checkpoint the destination opened. The pages no
+checkpoint holds are not the pull's. On a receive they come from the source's
+pager, on a fault or in the stream behind the guest, and on a child of this
+host's own parent they are the parent's sealed pages. Either way they are this
+host's own dirty pages from then on, resident or spilled, until the next
+checkpoint publishes them. So a pull never asks the source for anything. The
+pages a later checkpoint publishes are not pulled either: they are the guest's
+own, and they are read from the store when the pager evicts them.
+
+The mark lasts as long as the VM runs on the host. A migration carries it in
+the handoff, so the destination pulls too, and a stop or a migration away gives
+the copy up. A recovery on another host after a host loss opens the VM without
+the mark; the control plane does not remember it. A host reports each marked
+VM's progress in its status (`hostapi.VM.Pull`), and the disk's use beside the
+page cache's (`Resources.CacheDiskUsed`).
+
 ## Budgets
 
 The host takes one `Resources` owner, which accounts only RAM: the pager's
@@ -740,11 +795,13 @@ pages. `Status().Resources` reports its reservations and configured total.
 Disk is not shared and not accounted. Each component that writes to the node's
 disk has its own fixed cap:
 
-- the page cache's allotment;
 - the pager's spill file, `SPROUTFS_SPILL_BYTES`, which bounds the dirty pages
   the pager admits;
 - the ephemeral pager's spill file, `SPROUTFS_EPHEMERAL_BYTES`, which bounds
-  the ephemeral disks the host admits.
+  the ephemeral disks the host admits;
+- the page cache's disk, `SPROUTFS_CACHE_DISK_BYTES`, which bounds the memory
+  of the VMs that [pull](#pulling-a-vms-memory) it. A VM that does not fit is
+  not pulled.
 
 So nothing has to be reclaimed across components, no ledger orders them, and a
 full disk is a configuration error, not a code path.
@@ -800,7 +857,7 @@ full disk is a configuration error, not a code path.
 
 The host's status reports:
 
-- cache usage and its cap;
+- cache usage and its cap, in memory and on disk;
 - the volume manager's totals;
 - the pager's counters, including the free space in the logical cap, which is
   what admits a VM;

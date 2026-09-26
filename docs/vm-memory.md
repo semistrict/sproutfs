@@ -807,6 +807,29 @@ store. The settle cannot do this. It would duplicate the publication's own
 zero-page test. Also, a settle compares a copy with the page it was copied from,
 and a page made from zeros has no origin.
 
+### A pulled VM's faults
+
+A VM can be marked to [pull its whole memory](hosting.md#pulling-a-vms-memory)
+onto its host's disk. The pager does nothing different for it. A fault asks
+the volume for its window as always, and the volume reads a run through the
+page cache. A run's pages that the cache holds in memory come from there, the
+ones on its disk come from there, and only the rest are requests of the store
+([the page cache's disk](volumes.md#the-page-caches-disk)). So once a pull is
+complete, a cold fault costs a local read and a decode instead of a round trip.
+
+This is also what an eviction costs such a VM. The pager drops a clean page
+rather than spilling it: its volume holds its bytes. For a pulled VM those bytes
+are on the local disk, so the refault reads them there. The spill file is not
+the copy. It holds only private pages, and it bounds the dirty pages the pager
+admits, not what a VM may read.
+
+A migration's destination attaches through the peer backing. A page the source
+still holds, and every page no checkpoint holds, comes from the source as
+before. Every other page the peer backing reads from the destination's own
+volume, which is what the pull fills. The pull never reads the source: the
+pages only the source has become this host's own dirty pages when they arrive,
+resident or spilled, and the next checkpoint publishes them.
+
 ## What the sharing is worth
 
 `Stats` counts what the pager has done:
