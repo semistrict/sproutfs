@@ -10,7 +10,6 @@ import (
 	"sync"
 
 	"github.com/semistrict/sproutfs/internal/testbacking"
-	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/vmmemory"
 	"github.com/semistrict/sproutfs/volume"
@@ -284,6 +283,9 @@ type guest struct {
 	// the page of the pager holding that memory region. A VM's memory and its disks are
 	// two pagers of two pages, so every byte offset here is per volume.
 	pageBytes map[string]int
+	// ephemeral names the volumes that are ephemeral disks: mapped on the
+	// ephemeral pager, and held by no checkpoint.
+	ephemeral map[string]bool
 
 	mu sync.Mutex
 	// model is the byte the guest last stored into every page of every volume,
@@ -313,8 +315,8 @@ func (w *World) newGuest(h *hostState, p *pager, vm *volume.VM, backings map[str
 	ctx := w.ctx
 	g := &guest{instance: vm.ID(), ctx: ctx, pages: map[string]int{},
 		memoryRegions: map[string]*vmmemory.MemoryRegion{}, mappings: map[string]*mapping{},
-		pageBytes: map[string]int{},
-		model:     map[string][]byte{}, admit: w.config.Admit, reverse: w.config.ReverseMemoryRegions,
+		pageBytes: map[string]int{}, ephemeral: map[string]bool{},
+		model: map[string][]byte{}, admit: w.config.Admit, reverse: w.config.ReverseMemoryRegions,
 		id: fmt.Sprintf("%s/%s/%d/%d", vm.ID(), h.name, h.incarnation, w.nextGuest())}
 	for _, v := range vm.Volumes() {
 		name := v.Name()
@@ -324,13 +326,14 @@ func (w *World) newGuest(h *hostState, p *pager, vm *volume.VM, backings map[str
 		}
 		// The simulated machine binds the same shapes the real one does: one
 		// RAM volume, and every other volume a PMEM disk. Each attaches to the
-		// pager of its own kind, over that pager's own arena.
+		// pager of its own kind, over that pager's own arena, and an ephemeral
+		// disk to the ephemeral pager.
 		kind := vmmemory.Pmem
 		if name == MemoryVolume {
 			kind = vmmemory.Ram
 		}
-		pager := p.pagers.For(kind)
-		mp := newMapping(p.arenaOf(kind))
+		pager := p.pagers.Of(kind, v.Ephemeral())
+		mp := newMapping(p.arenaOf(pager))
 		admitted, _ := testbacking.New(backing, p.runtime, g.id+"/"+name)
 		memoryRegion, err := pager.Attach(ctx, vmmemory.MemoryRegionBacking{Kind: kind, Backing: admitted}, mp)
 		if err != nil {
@@ -340,6 +343,7 @@ func (w *World) newGuest(h *hostState, p *pager, vm *volume.VM, backings map[str
 		g.memoryRegions[name] = memoryRegion
 		g.mappings[name] = mp
 		g.pageBytes[name] = int(pager.PageSize())
+		g.ephemeral[name] = v.Ephemeral()
 		g.pages[name] = int(v.Size() / pager.PageSize())
 		g.model[name] = make([]byte, v.Size())
 	}
@@ -384,7 +388,11 @@ func (g *guest) Prepare(ctx context.Context) ([]byte, map[string]volume.DirtySou
 			if err := g.memoryRegions[name].Seal(ctx); err != nil {
 				return nil, nil, err
 			}
-			sources[name] = g.memoryRegions[name].Checkpoint()
+			// A VMM seals every memory region it maps. An ephemeral disk's
+			// seal takes nothing, and no checkpoint is given its pages.
+			if !g.ephemeral[name] {
+				sources[name] = g.memoryRegions[name].Checkpoint()
+			}
 		}
 		return state, sources, nil
 	}
@@ -405,7 +413,7 @@ func (g *guest) Prepare(ctx context.Context) ([]byte, map[string]volume.DirtySou
 			}
 			mu.Lock()
 			defer mu.Unlock()
-			if err == nil {
+			if err == nil && !g.ephemeral[name] {
 				sources[name] = g.memoryRegions[name].Checkpoint()
 			}
 			result = errors.Join(result, err)
@@ -696,6 +704,19 @@ func (g *guest) snapshot() map[string][]byte {
 	return result
 }
 
+// checkpointed is what a checkpoint of this guest holds, and what a fork of it
+// starts from: the bytes it believes it has, with every ephemeral disk zeroed,
+// because no checkpoint and no fork point holds a page of one.
+func (g *guest) checkpointed() map[string][]byte {
+	model := g.snapshot()
+	for name := range model {
+		if g.ephemeral[name] {
+			clear(model[name])
+		}
+	}
+	return model
+}
+
 // adopt takes bytes a migration, a fork or a restart handed this guest as its
 // own model: memory it did not write itself.
 func (g *guest) adopt(model map[string][]byte) {
@@ -741,23 +762,15 @@ func (g *guest) verify(ctx context.Context, model map[string][]byte) error {
 	return unreadable
 }
 
-// pager is one host's pagers and the arena and spill file each of them owns.
-// The two share nothing: a RAM page and a PMEM page are different numbers of
-// bytes, so a slot of one arena could not hold a page of the other.
+// pager is one host's pagers and the arena and spill file each of them owns:
+// RAM's, PMEM's and the ephemeral disks'. They share nothing: a RAM page and a
+// PMEM page are different numbers of bytes, so a slot of one arena could not
+// hold a page of the other, and an ephemeral disk's pages are budgeted apart.
 type pager struct {
 	pagers  vmmemory.Pagers
-	arenas  map[vmmemory.MemoryRegionKind]*arena
-	spills  map[vmmemory.MemoryRegionKind]platform.File
+	arenas  map[*vmmemory.Host]*arena
 	runtime *sim.Runtime
 }
 
-// arenaOf is the shared page store the memory regions of one kind map through.
-func (p *pager) arenaOf(kind vmmemory.MemoryRegionKind) *arena { return p.arenas[kind] }
-
-func (p *pager) close(ctx context.Context) error {
-	var errs []error
-	for _, kind := range []vmmemory.MemoryRegionKind{vmmemory.Ram, vmmemory.Pmem} {
-		errs = append(errs, p.pagers.For(kind).Close(ctx), p.spills[kind].Close())
-	}
-	return errors.Join(errs...)
-}
+// arenaOf is the shared page store the memory regions of one pager map through.
+func (p *pager) arenaOf(pager *vmmemory.Host) *arena { return p.arenas[pager] }

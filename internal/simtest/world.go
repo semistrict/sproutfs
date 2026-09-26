@@ -554,59 +554,64 @@ func (w *World) launch(h *hostState) error {
 	return <-ready
 }
 
-// newPager builds one incarnation's two pagers over that host's own disk, one
-// per kind of memory region: RAM at its page and PMEM at its own, each with an arena
-// and a spill file of its own. The knobs describe one pager, so each is given
-// what they say — a campaign that wants a tight arena gets a tight arena of
-// each kind. The spill files are the only local state a host keeps, and they
+// newPager builds one incarnation's three pagers over that host's own disk: RAM
+// at its page, PMEM at its own, and the ephemeral disks' at PMEM's, each with an
+// arena and a spill file of its own. The knobs describe one pager, so each is
+// given what they say — a campaign that wants a tight arena gets a tight arena
+// of each. The ephemeral pager's dirty budget is its logical one, as a real
+// host's is. The spill files are the only local state a host keeps, and they
 // are scratch by construction: a pager truncates its own at every start, so a
 // restart reads none of what its crash left in it.
 func (w *World) newPager(ctx context.Context, h *hostState) (*pager, func(), error) {
 	k := w.config.Knobs
-	p := &pager{arenas: map[vmmemory.MemoryRegionKind]*arena{},
-		spills: map[vmmemory.MemoryRegionKind]platform.File{}, runtime: w.runtime}
-	// The two are released in a fixed order, because what they do on the way out
+	p := &pager{arenas: map[*vmmemory.Host]*arena{}, runtime: w.runtime}
+	// RAM places a private page at the offset it has within its 2 MiB range, so
+	// its arena has an address per logical page — one 512-offset extent per
+	// range any memory region may write into — beside the pages it may hold at
+	// once. PMEM places nothing, so its offsets and its pages are one number.
+	// The arena is sparse either way: an offset costs nothing until a page is
+	// put there.
+	pagers := []struct {
+		name      string
+		into      **vmmemory.Host
+		pageSize  uint64
+		offsets   int
+		dirty     int
+		window    time.Duration
+		ephemeral bool
+	}{
+		{"ram", &p.pagers.Ram, RAMPage, k.LogicalPages + k.ResidentPages, k.DirtyPages,
+			lossWindowOf(vmmemory.Ram, k.LossWindow), false},
+		{"pmem", &p.pagers.Pmem, PMEMPage, k.ResidentPages, k.DirtyPages,
+			lossWindowOf(vmmemory.Pmem, k.LossWindow), false},
+		{"ephemeral", &p.pagers.Ephemeral, PMEMPage, k.ResidentPages, k.LogicalPages, 0, true},
+	}
+	var spills []platform.File
+	// They are released in a fixed order, because what they do on the way out
 	// reaches this host's simulated disk: a release that walked a map would give
 	// one seed two runs.
 	release := func() {
-		for _, kind := range []vmmemory.MemoryRegionKind{vmmemory.Ram, vmmemory.Pmem} {
-			if memory := p.pagers.For(kind); memory != nil {
+		for index, spill := range spills {
+			if memory := *pagers[index].into; memory != nil {
 				_ = memory.Close(context.Background())
 			}
-			if spill := p.spills[kind]; spill != nil {
-				_ = spill.Close()
-			}
+			_ = spill.Close()
 		}
 	}
-	for _, kind := range []vmmemory.MemoryRegionKind{vmmemory.Ram, vmmemory.Pmem} {
-		pageSize := uint64(PMEMPage)
-		if kind == vmmemory.Ram {
-			pageSize = RAMPage
-		}
-		spill, err := h.disk.Open(ctx, "spill-"+kind.String(), platform.OpenOptions{Create: true})
+	for _, kind := range pagers {
+		spill, err := h.disk.Open(ctx, "spill-"+kind.name, platform.OpenOptions{Create: true})
 		if err != nil {
 			release()
 			return nil, nil, err
 		}
-		p.spills[kind] = spill
-		// RAM places a private page at the offset it has within its 2 MiB range,
-		// so its arena has an address per logical page — one 512-offset extent
-		// per range any memory region may write into — beside the pages it may hold at
-		// once. PMEM places nothing, so its offsets and its pages are one
-		// number. The arena is sparse either way: an offset costs nothing until
-		// a page is put there.
-		offsets := k.ResidentPages
-		if kind == vmmemory.Ram {
-			offsets = k.LogicalPages + k.ResidentPages
-		}
+		spills = append(spills, spill)
 		a := newArena()
-		p.arenas[kind] = a
 		memory, err := vmmemory.New(ctx, h.config.Resources, vmmemory.Config{
-			PageSize:      pageSize,
-			ResidentPages: k.ResidentPages, ArenaOffsets: offsets,
-			LogicalPages: k.LogicalPages, DirtyPages: k.DirtyPages,
+			PageSize:      kind.pageSize,
+			ResidentPages: k.ResidentPages, ArenaOffsets: kind.offsets,
+			LogicalPages: k.LogicalPages, DirtyPages: kind.dirty,
 			ReadAheadPages: k.ReadAheadPages, WriteAheadPages: k.WriteAheadPages,
-			ConcurrentIO: k.ConcurrentIO, LossWindow: lossWindowOf(kind, k.LossWindow),
+			ConcurrentIO: k.ConcurrentIO, LossWindow: kind.window, Ephemeral: kind.ephemeral,
 			// The window is measured on this host's own clock, which the
 			// simulation moves itself: a pager reading the wall clock would
 			// measure a bound written in checkpoint intervals against a
@@ -616,11 +621,8 @@ func (w *World) newPager(ctx context.Context, h *hostState) (*pager, func(), err
 			release()
 			return nil, nil, err
 		}
-		if kind == vmmemory.Ram {
-			p.pagers.Ram = memory
-		} else {
-			p.pagers.Pmem = memory
-		}
+		*kind.into = memory
+		p.arenas[memory] = a
 	}
 	return p, release, nil
 }
@@ -985,7 +987,7 @@ func (w *World) checkpointDisks(ctx context.Context, id string, terms volume.Ter
 	if vm == nil {
 		return nil
 	}
-	at := durableState{model: g.snapshot(), writes: g.stored(), stateless: true}
+	at := durableState{model: g.checkpointed(), writes: g.stored(), stateless: true}
 	ckpt, err := host.CaptureDisks(ctx, vm, g, w.hosts[in.host].clock, terms)
 	if err != nil {
 		return fmt.Errorf("%s: disk capture: %w", id, err)
@@ -1033,7 +1035,7 @@ func (w *World) checkpoint(ctx context.Context, id string, terms volume.Terms) e
 	// stores into this guest while the publication runs — the driver is the
 	// only thing that stores at all — so the snapshot taken here is exactly
 	// what the seal froze.
-	at := durableState{model: g.snapshot(), writes: g.stored()}
+	at := durableState{model: g.checkpointed(), writes: g.stored()}
 	ckpt, err := host.Capture(ctx, vm, g, w.hosts[in.host].clock, terms)
 	if err != nil {
 		return fmt.Errorf("%s: capture: %w", id, err)
@@ -1103,6 +1105,20 @@ func (w *World) PrivateExtents(index int) int {
 		return 0
 	}
 	return stats.PrivateExtents
+}
+
+// ReadPage reads one page of one volume through the named VM's own guest, which
+// is the only place the bytes of an ephemeral disk are: its volume reads as
+// zeroes whatever the guest wrote. It is an error for a VM running nowhere.
+func (w *World) ReadPage(ctx context.Context, id, name string, page uint64) ([]byte, error) {
+	_, g := w.runningVM(id)
+	if g == nil {
+		return nil, fmt.Errorf("%s is running nowhere", id)
+	}
+	if g.memoryRegions[name] == nil {
+		return nil, fmt.Errorf("%s has no volume %s", id, name)
+	}
+	return g.read(ctx, name, page)
 }
 
 // Mappings is how many mappings one volume's memory region is to the VMM of the named
@@ -1644,7 +1660,9 @@ func (w *World) FanOut(ctx context.Context, parent string, children []VMSpec) er
 	if landing == in.host {
 		pages = ""
 	}
-	at := parentGuest.snapshot()
+	// A child starts from what the parent's fork point holds, which is its
+	// memory with every ephemeral disk zeroed.
+	at := parentGuest.checkpointed()
 	handoffs, err := sourceHost.Fork(ctx, parent, ids, pages)
 	if err != nil {
 		w.logf("%s: the fork of %s was refused: %v", strings.Join(ids, ","), parent, err)
@@ -1890,7 +1908,7 @@ func (w *World) StopWith(ctx context.Context, id string, request hostapi.StopReq
 	// The model at the pause is what this publishes. Nothing stores into this
 	// guest while the stop runs — the driver is the only thing that stores at
 	// all — so the snapshot taken here is exactly what the seal froze.
-	at := durableState{model: g.snapshot(), writes: g.stored(), stateless: !request.Suspend}
+	at := durableState{model: g.checkpointed(), writes: g.stored(), stateless: !request.Suspend}
 	stopped, err := running.Stop(ctx, id, request)
 	if err != nil {
 		w.logf("%s: the stop was refused: %v", id, err)

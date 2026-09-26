@@ -52,6 +52,10 @@ const MemoryVolume = "ram0"
 // interval checkpoints and the loss window bounds.
 const DiskVolume = "disk"
 
+// EphemeralVolume is the ephemeral disk a VM with one has: a PMEM disk no
+// checkpoint holds, which the supervisor names the same way.
+const EphemeralVolume = "ephemeral"
+
 // PageSizeOf is the page one volume of a simulated VM is created with, which is
 // the page of the pager that maps it. It is the naming convention the host
 // itself uses to decide which pager a memory region belongs to, and nothing about a
@@ -184,6 +188,14 @@ func NewTopology(r sim.Random) Topology {
 		if r.Chance(id+"/disk", 0.5) {
 			spec.Volumes = append(spec.Volumes, volume.VolumeSpec{Name: DiskVolume, PageSize: PMEMPage,
 				Size: uint64(minVolumePages+r.Intn(id+"/disk-pages", maxVolumePages-minVolumePages+1)) * PMEMPage})
+		}
+		// An ephemeral disk is there half the time too, so every campaign
+		// requires of some seeds that one is never published, is lost with its
+		// host, reaches no fork and moves with a migration.
+		if r.Chance(id+"/ephemeral", 0.5) {
+			spec.Volumes = append(spec.Volumes, volume.VolumeSpec{Name: EphemeralVolume, PageSize: PMEMPage,
+				Size:      uint64(minVolumePages+r.Intn(id+"/ephemeral-pages", maxVolumePages-minVolumePages+1)) * PMEMPage,
+				Ephemeral: true})
 		}
 		t.VMs = append(t.VMs, spec)
 	}
