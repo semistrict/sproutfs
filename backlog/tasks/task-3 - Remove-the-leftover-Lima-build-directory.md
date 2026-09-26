@@ -1,10 +1,10 @@
 ---
 id: TASK-3
 title: Remove the leftover Lima build directory
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-25 18:17'
-updated_date: '2026-09-26 01:46'
+updated_date: '2026-09-26 17:21'
 labels:
   - needs-owner
   - chore
@@ -22,5 +22,11 @@ A killed test run left /tmp/sproutfs-firecracker.XkXxbi in the Lima instance "de
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The owner has allowed it, and the directory is gone
+- [x] #1 The owner has allowed it, and the directory is gone
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+The directory was already gone by 2026-09-26 (Lima restarted after the Mac upgrade; /tmp does not survive).
+<!-- SECTION:NOTES:END -->
