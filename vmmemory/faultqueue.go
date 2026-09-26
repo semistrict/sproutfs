@@ -58,9 +58,9 @@ func (q *faultQueue) add(page uint64, write bool, now time.Time) bool {
 	return true
 }
 
-// take claims a queued fault that no worker is serving. It reports whether the
-// fault is a repeated fault the session is charged for, which repeated decides
-// for every fault that is not a twin.
+// take gives a worker a queued fault that no worker is serving. It reports
+// whether the fault is a repeated fault the session is charged for, which
+// repeated decides for every fault that is not a twin.
 func (q *faultQueue) take(repeated func(page uint64, write bool) bool) (page uint64, entry queuedFault, repeat, ok bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
