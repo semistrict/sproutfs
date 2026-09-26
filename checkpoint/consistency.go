@@ -29,8 +29,9 @@ func (v IndexViolation) Unwrap() error { return v.Err }
 // reachable — the index object and every part of every checkpoint it names, its
 // own included and the ones its compaction emptied too — and one violation for
 // each part that is missing or does not parse at the layout version this build
-// writes, for each checkpoint whose parts do not hold the part count and the
-// member bytes the root recorded, and for each segment the root addresses that
+// writes, for each member of a part that another VM published, for each
+// checkpoint whose parts do not hold the part count and the member bytes the
+// root recorded, and for each segment the root addresses that
 // does not read back or whose entries do not read from the checkpoints, and for
 // the bytes, the root says they do.
 //
@@ -93,6 +94,18 @@ func (s *Store) CheckIndex(ctx context.Context, index *Index) ([]platform.Object
 						ref, index.ref, err)})
 				unread = true
 				continue
+			}
+			// A member's bytes are billed to the VM whose key holds them, so a
+			// part may hold only what its own VM published. Compaction moves a
+			// page only within the VM that published it, which is what keeps
+			// the bill with that VM.
+			for _, member := range table.members {
+				if member.OriginVM != "" && member.OriginVM != ref.VM {
+					violations = append(violations, IndexViolation{Key: partKey,
+						Err: fmt.Errorf("part %d of checkpoint %s holds a member %s published, "+
+							"which would bill %s for it: %w", number, ref,
+							control.Ref{VM: member.OriginVM, Sequence: member.OriginSequence}, ref.VM, ErrCorrupt)})
+				}
 			}
 			body += table.body
 			if table.parts != 0 {

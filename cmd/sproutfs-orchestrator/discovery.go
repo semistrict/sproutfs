@@ -107,26 +107,19 @@ func (b *bucketRecords) keys(ctx context.Context) ([]string, error) {
 		return nil, err
 	}
 	var ids []string
-	token := ""
-	for {
-		result, err := b.objects.List(ctx, platform.ListRequest{Prefix: prefix, ContinuationToken: token})
-		if err != nil {
-			return nil, err
-		}
-		for _, object := range result.Objects {
-			id := strings.TrimPrefix(object.Key.String(), control.RecordPrefix)
-			if !control.ValidID(id) {
-				// Not a control record: the namespace is the records' own, so
-				// anything else under it is something nobody here wrote.
-				continue
-			}
+	err = platform.ListAll(ctx, b.objects, prefix, func(object platform.ObjectMetadata) error {
+		id := strings.TrimPrefix(object.Key.String(), control.RecordPrefix)
+		if control.ValidID(id) {
 			ids = append(ids, id)
 		}
-		if result.NextContinuationToken == "" {
-			return ids, nil
-		}
-		token = result.NextContinuationToken
+		// Anything else is not a control record: the namespace is the
+		// records' own, so it is something nobody here wrote.
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
+	return ids, nil
 }
 
 // dialHost reaches one host pod's API. It is the only way the orchestrator ever

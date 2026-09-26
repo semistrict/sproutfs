@@ -51,8 +51,12 @@ func InTenant(tenant, name string) string {
 // Namespace is the key prefix, within a deployment's own, that a VM's objects
 // live under: tenants/<tenant>/ for a VM of a tenant, and nothing for a VM
 // with none. The VM's name follows it.
-func Namespace(id string) string {
-	tenant := TenantOf(id)
+func Namespace(id string) string { return TenantNamespace(TenantOf(id)) }
+
+// TenantNamespace is the key prefix, within a deployment's own, that every
+// object of one tenant's VMs lives under: tenants/<tenant>/, and nothing for
+// the VMs of no tenant.
+func TenantNamespace(tenant string) string {
 	if tenant == "" {
 		return ""
 	}

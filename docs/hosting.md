@@ -66,6 +66,11 @@ device. The supervisor gives each VM a single PMEM device, `root`, which the
 guest boots from. The supervisor opens a `vmmachine.Scratch` and passes it to
 each VMM configuration.
 
+`GET /stored?tenant=<tenant>` reports what one tenant's VMs hold in the object
+store, per VM, for an embedder's billing. It lists the store, so any host
+answers for every VM of the tenant, including VMs no host runs and deleted VMs
+whose pinned checkpoints remain. See [billing](volumes.md#billing).
+
 ## Running the VMM
 
 The host prepares a VM's memory and drives its VMM. It does not start the VMM

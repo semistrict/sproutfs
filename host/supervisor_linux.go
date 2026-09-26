@@ -352,6 +352,17 @@ func (s *supervisor) Status(ctx context.Context) (hostapi.Status, error) {
 	return report, nil
 }
 
+// Stored lists what one tenant's VMs hold in the object store. The store is
+// already scoped to the deployment's prefix, so the report is given none of its
+// own, and the listing counts in this host's store traffic like any other call.
+func (s *supervisor) Stored(ctx context.Context, tenant string) (hostapi.Stored, error) {
+	vms, err := volume.StoredBytes(ctx, s.objects, platform.ObjectPrefix{}, tenant)
+	if err != nil {
+		return hostapi.Stored{}, err
+	}
+	return hostapi.Stored{Tenant: tenant, VMs: vms}, nil
+}
+
 // committed is the guest RAM the VMs this host runs have between them, which is
 // what a placement measures this host by. It is each VM's RAM volume, which is
 // the size its template fixed and which a fork inherits, whether or not a byte

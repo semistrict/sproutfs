@@ -766,8 +766,13 @@ func (p *Publication) compact(ctx context.Context, writer *partWriter, index *In
 	}
 	// Another VM's parts belong to that VM: a fork rewrites its parent's pages
 	// into its own parts only when it writes them, never to tidy the parent up.
+	// A page's bytes are billed to the VM whose key holds them, so rewriting a
+	// parent's page into a child would also bill the child for it.
+	own := func(ref control.Ref) bool {
+		return ref.VM == p.ref.VM || sim.Bug(ctx, "checkpoint-compact-another-vm")
+	}
 	eligible := func(ref control.Ref, entry checkpointCost) bool {
-		return ref.VM == p.ref.VM && ref != p.ref && !protected[ref] &&
+		return own(ref) && ref != p.ref && !protected[ref] &&
 			entry.bytes != 0 && entry.emptied == 0
 	}
 	any := false

@@ -178,6 +178,28 @@ type ObjectStore interface {
 	List(context.Context, ListRequest) (ListResult, error)
 }
 
+// ListAll visits every object under prefix, in the order the store lists them,
+// one page of the listing at a time: a request per page, and nothing else. It
+// stops at the first error a page or a visit returns.
+func ListAll(ctx context.Context, store ObjectStore, prefix ObjectPrefix, visit func(ObjectMetadata) error) error {
+	token := ""
+	for {
+		page, err := store.List(ctx, ListRequest{Prefix: prefix, ContinuationToken: token})
+		if err != nil {
+			return err
+		}
+		for _, object := range page.Objects {
+			if err := visit(object); err != nil {
+				return err
+			}
+		}
+		if page.NextContinuationToken == "" {
+			return nil
+		}
+		token = page.NextContinuationToken
+	}
+}
+
 // ReadObjectBody consumes and closes a whole-object Get result. It first
 // certifies the response describes the object that was asked for — the echoed
 // key, a non-empty validator, a size agreeing with the content length, and a

@@ -351,6 +351,16 @@ type Status struct {
 	Store     Store      `json:"store"`
 }
 
+// Stored is what one tenant's VMs hold in the object store, which is what an
+// embedder bills them for. Tenant is empty for the VMs of no tenant. VMs is the
+// bytes stored under each VM identity: its control record and every object of
+// every checkpoint it published that the store still holds. A deleted VM whose
+// checkpoints a fork still reads through is in it, with no record.
+type Stored struct {
+	Tenant string            `json:"tenant,omitempty"`
+	VMs    map[string]uint64 `json:"vms"`
+}
+
 // CreateRequest creates one VM from a guest image. Template is a configured
 // image's name, or any template's identity (template-<digest>), which is how a
 // VM is created from an image imported on request, on any host. An empty

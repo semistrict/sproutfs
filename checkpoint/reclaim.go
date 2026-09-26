@@ -127,21 +127,11 @@ func (s *Store) deleteCheckpoint(ctx context.Context, ref control.Ref) error {
 		return err
 	}
 	var errs []error
-	token := ""
-	for {
-		page, err := s.objects.List(ctx, platform.ListRequest{Prefix: prefix, ContinuationToken: token})
-		if err != nil {
-			return errors.Join(append(errs, err)...)
-		}
-		for _, object := range page.Objects {
-			errs = append(errs, s.deleteObject(ctx, object.Key))
-		}
-		if page.NextContinuationToken == "" {
-			break
-		}
-		token = page.NextContinuationToken
-	}
-	return errors.Join(errs...)
+	err = platform.ListAll(ctx, s.objects, prefix, func(object platform.ObjectMetadata) error {
+		errs = append(errs, s.deleteObject(ctx, object.Key))
+		return nil
+	})
+	return errors.Join(append(errs, err)...)
 }
 
 // DeleteVM removes the checkpoint objects one VM published that no pin of it
@@ -177,28 +167,21 @@ func (s *Store) DeleteVM(ctx context.Context, vm string, pinned []uint64) error 
 	}
 	var errs []error
 	var rest []platform.ObjectKey
-	token := ""
-	for {
-		page, err := s.objects.List(ctx, platform.ListRequest{Prefix: prefix, ContinuationToken: token})
-		if err != nil {
-			return errors.Join(append(errs, err)...)
+	err = platform.ListAll(ctx, s.objects, prefix, func(object platform.ObjectMetadata) error {
+		sequence, ok := sequenceOf(prefix, object.Key)
+		if !ok || spared[sequence] {
+			// Not one of this VM's checkpoint objects, or one a pin keeps.
+			return nil
 		}
-		for _, object := range page.Objects {
-			sequence, ok := sequenceOf(prefix, object.Key)
-			if !ok || spared[sequence] {
-				// Not one of this VM's checkpoint objects, or one a pin keeps.
-				continue
-			}
-			if !strings.HasSuffix(object.Key.String(), "/index") {
-				rest = append(rest, object.Key)
-				continue
-			}
-			errs = append(errs, s.deleteObject(ctx, object.Key))
+		if !strings.HasSuffix(object.Key.String(), "/index") {
+			rest = append(rest, object.Key)
+			return nil
 		}
-		if page.NextContinuationToken == "" {
-			break
-		}
-		token = page.NextContinuationToken
+		errs = append(errs, s.deleteObject(ctx, object.Key))
+		return nil
+	})
+	if err != nil {
+		return errors.Join(append(errs, err)...)
 	}
 	for _, key := range rest {
 		errs = append(errs, s.deleteObject(ctx, key))

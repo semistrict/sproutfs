@@ -576,6 +576,10 @@ It requires:
   build writes;
 - every checkpoint that a selected or pinned root names to exist, with the part
   count and the member bytes that the root recorded;
+- every member of those parts to be a page or a state that the part's own VM
+  published. Its bytes are billed to the VM whose key holds them, so this is
+  what keeps a page billed to the VM that published it when compaction moves
+  it;
 - every pinned sequence to be a published checkpoint of the VM whose record pins
   it. This is the only thing a pin must agree with. A pin names no holder, and
   no descendant's record names the pin, because nothing releases a pin. So the
@@ -585,7 +589,11 @@ It requires:
   selected checkpoint, a pinned checkpoint, or a checkpoint that a compaction
   emptied, which is spared for one checkpoint of grace. Naming a checkpoint
   spares all of it. Its index object holds the segments that some root still
-  addresses in it, and its parts hold the pages that some root still reads.
+  addresses in it, and its parts hold the pages that some root still reads;
+- the bill to be the store. `volume.StoredBytes` for each tenant, and for the
+  VMs of no tenant, must report exactly what the listing holds under each VM.
+  Every key is under some VM, so the bills summed over VMs are every byte in
+  the store, each billed once.
 
 Each caller names the classes of leftover it expects, and only those classes go
 unreported. Each class is something that a host lost at a particular moment
@@ -1152,6 +1160,8 @@ SPROUTFS_SIM_BUG=checkpoint-part-member-offset \
   go test ./internal/simtest -run '^TestScheduledWorldReproduces$' -count=1
 SPROUTFS_SIM_BUG=checkpoint-reclaim-live-checkpoint \
   go test ./internal/simtest -run '^TestScheduledWorldReproduces$' -count=1
+SPROUTFS_SIM_BUG=checkpoint-compact-another-vm \
+  go test ./volume -run '^TestEachPageIsBilledToTheVMThatPublishedIt$' -count=1
 SPROUTFS_SIM_BUG=migration-accept-wrong-size \
   go test ./internal/simtest -run '^TestScheduledWorldReproduces$' -count=1
 SPROUTFS_SIM_BUG=migration-accept-missing-memoryRegion \

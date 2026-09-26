@@ -859,6 +859,42 @@ A collector is therefore left with:
 See [the architecture](architecture.md#identities-and-reclamation) for the
 layout that the collector is built for.
 
+## Billing
+
+An embedder bills each page to the VM that published it.
+`volume.StoredBytes(ctx, store, prefix, tenant)` reports what one tenant's VMs
+hold, per VM. A VM's bytes are its control record and every object under
+`vm/<id>/`. The empty tenant reports the VMs of no tenant. The host API serves
+the same report at `GET /stored?tenant=<tenant>`.
+
+The number is what the store lists, not a count kept beside it. So it is
+exact. It includes whatever a crash, a fence or an interrupted sweep left
+behind, and it excludes whatever reclamation deleted.
+
+Every object is stored under the VM that published it, and so is every page:
+
+- A fork reads its parent's pages where the parent published them. Those
+  bytes stay the parent's. A pin keeps them after the parent is deleted, so a
+  deleted VM that was ever forked stays in the report, with no record, until a
+  collector frees what it pinned.
+- Compaction rewrites a page only into a later checkpoint of the VM that
+  published it, never into another VM's. The page keeps its origin. So the
+  bill moves with the bytes only within that VM. For one checkpoint the VM pays
+  for both copies. The sweep after the next checkpoint deletes the old copy.
+- Reclamation deletes a VM's own checkpoints, so it reduces only that VM's
+  bill, by exactly the bytes it deleted.
+
+The report costs one listing of the tenant's control records and one of its
+checkpoint objects. That is a LIST request per thousand keys, and no GET or
+HEAD. A VM has one record. A checkpoint has its index object and one part per
+64 MiB it wrote. So a tenant of a thousand VMs with ten checkpoints each costs
+about twenty-one requests. The report is for a billing run, not for polling,
+so it is not part of `/status`.
+
+The [deployment check](testing.md#the-deployment-check) holds the bill to the
+store. Each tenant's report must match what a listing of the whole deployment
+holds under each VM. Every part must hold only members its own VM published.
+
 ## VM integration
 
 The [Firecracker integration](vm-memory.md) maps the single `ram0` volume and

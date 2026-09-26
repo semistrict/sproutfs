@@ -66,6 +66,10 @@ type VMs interface {
 	// reason these are two questions.
 	Live(ctx context.Context) error
 	Status(ctx context.Context) (hostapi.Status, error)
+	// Stored reports what one tenant's VMs hold in the object store, the empty
+	// tenant for the VMs of none: volume.StoredBytes over the deployment's
+	// namespace. It is not part of Status because it lists the store.
+	Stored(ctx context.Context, tenant string) (hostapi.Stored, error)
 	Create(ctx context.Context, request hostapi.CreateRequest) (hostapi.CreateResult, error)
 	// ImportTemplate imports a guest image into the template its bytes name,
 	// which any host can then create VMs from by that identity. An image that

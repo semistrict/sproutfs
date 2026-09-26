@@ -33,6 +33,7 @@ type fakeHost struct {
 	notLive  error
 
 	status   hostapi.Status
+	stored   hostapi.Stored
 	created  hostapi.CreateResult
 	imported hostapi.ImportTemplateResult
 	opened   hostapi.OpenResult
@@ -61,6 +62,10 @@ func (f *fakeHost) Live(context.Context) error { return f.notLive }
 
 func (f *fakeHost) Status(context.Context) (hostapi.Status, error) {
 	return f.status, f.record("status")
+}
+
+func (f *fakeHost) Stored(_ context.Context, tenant string) (hostapi.Stored, error) {
+	return f.stored, f.record("stored %q", tenant)
 }
 
 func (f *fakeHost) Create(_ context.Context, request hostapi.CreateRequest) (hostapi.CreateResult, error) {
@@ -613,6 +618,36 @@ func TestStatusIsTheWholeHostReport(t *testing.T) {
 		len(report.Serving) != 1 || report.Serving[0] != "vm-2" ||
 		report.Pager.SharedPages() != 5 {
 		t.Fatalf("report %+v", report)
+	}
+}
+
+// TestStoredCarriesTheTenantAndTheBill: an embedder's billing run asks a host
+// for one tenant's report through the client, the tenant of none included, and
+// reads back the bytes stored under each VM. A tenant no key can hold is the
+// caller's mistake.
+func TestStoredCarriesTheTenantAndTheBill(t *testing.T) {
+	fake := &fakeHost{stored: hostapi.Stored{Tenant: "acme",
+		VMs: map[string]uint64{"acme/parent": 4096, "acme/child": 512}}}
+	server := httptest.NewServer(newServer(fake, ""))
+	defer server.Close()
+	client := hostapi.NewClient(server.URL, server.Client(), "")
+	stored, err := client.Stored(t.Context(), "acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Tenant != "acme" || len(stored.VMs) != 2 ||
+		stored.VMs["acme/parent"] != 4096 || stored.VMs["acme/child"] != 512 {
+		t.Fatalf("the report came back as %+v", stored)
+	}
+	if _, err := client.Stored(t.Context(), ""); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{`stored "acme"`, `stored ""`}; !slices.Equal(fake.calls, want) {
+		t.Fatalf("the host was asked %q, want %q", fake.calls, want)
+	}
+	fake.err = volume.ErrInvalidConfig
+	if status, body := call(t, fake, http.MethodGet, "/stored?tenant=No%2FTenant", ""); status != http.StatusBadRequest {
+		t.Fatalf("status %d, want 400: %s", status, body)
 	}
 }
 

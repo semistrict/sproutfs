@@ -71,6 +71,13 @@ func newServer(h host.VMs, token string) http.Handler {
 		status, err := h.Status(r.Context())
 		reply(w, r, "status", status, err)
 	})
+	// What one tenant's VMs hold in the object store, for an embedder's
+	// billing. It lists the store rather than reading this host's state, so it
+	// answers for VMs no host runs and VMs deleted with their pins standing.
+	mux.HandleFunc("GET /stored", func(w http.ResponseWriter, r *http.Request) {
+		stored, err := h.Stored(r.Context(), r.URL.Query().Get("tenant"))
+		reply(w, r, "stored", stored, err)
+	})
 	mux.HandleFunc("POST /vms", func(w http.ResponseWriter, r *http.Request) {
 		var request hostapi.CreateRequest
 		if err := jsonhttp.Read(r, &request); err != nil {

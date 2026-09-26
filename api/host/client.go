@@ -49,6 +49,14 @@ func (c *Client) Status(ctx context.Context) (Status, error) {
 	return jsonhttp.Call[Status](ctx, c.http, http.MethodGet, c.path("/status"), nil)
 }
 
+// Stored reports what one tenant's VMs hold in the object store, the empty
+// tenant for the VMs of none. It lists the store, so it costs a request per
+// thousand of the tenant's keys; it is for a billing run, not for polling.
+func (c *Client) Stored(ctx context.Context, tenant string) (Stored, error) {
+	return jsonhttp.Call[Stored](ctx, c.http, http.MethodGet,
+		c.path("/stored?%s", url.Values{"tenant": {tenant}}.Encode()), nil)
+}
+
 func (c *Client) Create(ctx context.Context, request CreateRequest) (CreateResult, error) {
 	return jsonhttp.Call[CreateResult](ctx, c.http, http.MethodPost, c.path("/vms"), request)
 }

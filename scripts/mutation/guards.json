@@ -78,6 +78,12 @@
     "purpose": "Reclaim the checkpoints the selected one still reads from."
   },
   {
+    "id": "checkpoint-compact-another-vm",
+    "package": "volume",
+    "run": "^TestEachPageIsBilledToTheVMThatPublishedIt$",
+    "purpose": "Compact a parent's checkpoint into its child, which bills the child for the parent's page."
+  },
+  {
     "id": "vmmachine-accept-reserved-load",
     "package": "vmmachine",
     "run": "^TestAdversarialStarters$",
