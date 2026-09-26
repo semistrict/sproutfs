@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-09-25 18:17'
-updated_date: '2026-09-26 01:37'
+updated_date: '2026-09-26 01:42'
 labels:
   - embedder
 dependencies: []
@@ -47,4 +47,6 @@ Design: an ephemeral volume is a PMEM disk that no checkpoint holds.
 Step 1 done (commit: MemoryRegion.OnInterval refactor). Design change: ephemeral is not a MemoryRegionKind, because the kind is on the wire (vmwire MemoryRegion frame Flags) and Firecracker sends PMEM. It is a property of a third pager (vmmemory.Config.Ephemeral) and of the volume. Run go test packages one at a time (-p 1): running several at once was killed.
 
 Step 2 done: checkpoint records ephemeral volumes (root field 7, Publication.Add, ErrEphemeral, CheckIndex refusal). Index format stays 8: older builds refuse the new field as unknown, which is the safe direction.
+
+Step 3 done: volume ephemeral disks (ErrEphemeral; reads zero; Manager.Fork(..., added) adds ephemeral disks, which is how a create gives one). Next: vmmemory Config.Ephemeral pager, Pagers.Ephemeral, Seal no-op.
 <!-- SECTION:NOTES:END -->
