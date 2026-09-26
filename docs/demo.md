@@ -441,8 +441,8 @@ the VM, including its forks' children, is admitted against that value.
 scripts/demo-gce.sh fixes
 ```
 
-`run` shows the five flows working. This command shows four behaviours when
-they fail. Only a live cluster can show them:
+`run` shows the five flows working. This command shows what happens when they
+fail. Only a live cluster can show it:
 
 - A cross-host fork whose destination pod is deleted leaves the parent running
   and checkpointing, not sealed indefinitely.
@@ -450,8 +450,32 @@ they fail. Only a live cluster can show them:
 - A recovery is taken once that pod is gone.
 - A VMM killed underneath its host leaves a diagnostic that names the VM, the
   cause and the console tail. The host then forgets the VM.
+- A rollout of the hosts migrates every VM rather than losing it.
+- A same-host fan-out that fails part way takes back the children it started,
+  and the parent checkpoints again.
+- A host lost in the middle of a migration leaves every VM running or
+  reopenable. A lost destination is retried on the pod that replaces it, and a
+  lost source ends the receive.
 
 `scripts/lib/demo-fixes.sh` is the script it runs on the node.
+
+## The merged features, and the arena mode
+
+```sh
+scripts/demo-gce.sh features
+scripts/demo-gce.sh arena
+SPROUTFS_DEMO_ARENA=isolated scripts/demo-gce.sh redeploy
+```
+
+`features` runs `scripts/lib/demo-features.sh`. It exercises kept checkpoints,
+creates from a kept, a stopped and a captured VM, ephemeral disks, pulls, a
+template imported at runtime, and a tenant's template, VM and stored bytes. It
+checks what each one did.
+
+`arena` runs `scripts/lib/demo-arena.sh` against the mode the hosts run: a
+fan-out, three 1 GiB checkpoints with the host's CPU, and restores. A redeploy
+with `SPROUTFS_DEMO_ARENA` set changes the mode. The 2026-09-26 run compares
+[both modes](measurements/arena-modes-2026-09-26.md).
 
 ## Looking around
 
@@ -553,21 +577,18 @@ scripts/demo-gce.sh bigguest
 
 It does the following:
 
-1. Raises the deployment's VM RAM to 4 GiB and boots a guest.
+1. Boots a guest and cold starts it with 3.5 GiB of RAM. That fits a host's
+   3.75 GiB RAM arena.
 2. Checks the guest's e820 map for a second usable range at 4 GiB.
 3. Writes 3200 MiB of a non-zero pattern, which is more than fits below the
    gap.
-4. Reads the tail of the data back in the parent, in a fork of it, and again
-   after a migration. Each read is compared with an md5 that the node computes
-   over the same pipeline.
+4. Reads the tail of the data back in the parent, in a fork of it on the
+   other host, and again after a migration. The fork goes to the other host
+   because the parent's host has no room for a second guest of this size. Each
+   read is compared with an md5 that the node computes over the same pipeline.
 
-On exit it restores the VM RAM setting it found, whether the run passed or
-failed.
-
-**This has not been run since the rename and the store rewrite.** The
-2026-09-14 end-to-end validation ran out of time before it.
-`scripts/lib/demo-bigguest.sh` is written and reviewed but has not been run.
-Until someone runs it, only the unit tests cover the x86 gap mapping.
+The deployment is not changed. The 2026-09-26 run passed:
+[the measurements](measurements/gce-2026-09-26.md).
 
 To do it by hand:
 
@@ -576,14 +597,14 @@ ctl() { scripts/demo-gce.sh kubectl exec -n sproutfs \
     deploy/sproutfs-orchestrator -- sproutfsctl "$@"; }
 vm=$(ctl create --template alpine | cut -d' ' -f1)
 
-# 4 GiB of guest RAM, which is more than the 3 GiB below the gap. It still fits
-# the host's 5 GiB arena, so the pager stays resident and nothing spills. It
+# 3.5 GiB of guest RAM, which is more than the 3 GiB below the gap. It fits
+# the host's 3.75 GiB RAM arena, so the pager stays resident. It
 # comes from a cold boot, which is the one moment a VM's shape can change: the
 # deployment's own SPROUTFS_VM_MEMORY_BYTES is the size a guest image is
 # imported into a template at, and a template is named by the image's bytes, so
 # changing it gives no new memory to a VM created from an image already there.
 ctl stop "$vm"
-ctl start "$vm" --cold --memory 4294967296
+ctl start "$vm" --cold --memory 3758096384
 
 # Two usable e820 ranges, the second starting at 4 GiB.
 ctl exec "$vm" -- 'head -1 /proc/meminfo; dmesg | grep -i usable'
@@ -598,7 +619,7 @@ scripts/demo-gce.sh ssh 'dd if=/dev/zero bs=1M count=3200 2>/dev/null |
     tr "\0" "Z" | md5sum'
 
 ctl capture "$vm"
-fork=$(ctl fork "$vm" --count 1 | awk 'NR==2 {print $1}')
+fork=$(ctl fork "$vm" --count 1 --to <the other host> | awk 'NR==2 {print $1}')
 ctl exec "$fork" --timeout 300s -- \
     'dd if=/mnt/big/f bs=1M skip=2944 count=256 2>/dev/null | md5sum'
 ctl migrate "$vm" --to <the other host>

@@ -242,8 +242,8 @@ func loadConfig(lookup func(string) string) (config, error) {
 			arenaBytes, ramShare, ramPageSize, pmemPageSize)
 	}
 	// The arena mode is how each pager divides its resident pages between the
-	// files of its arena. Isolated is being built, and until it is it runs
-	// exactly as shared does.
+	// files of its arena: one shared file, or a private file per memory region
+	// beside read-only files of what another region may map.
 	arena := text("SPROUTFS_ARENA", vmmemory.ArenaShared.String())
 	if c.Arena, err = vmmemory.ParseArenaMode(arena); err != nil {
 		fail("SPROUTFS_ARENA is %q, want shared or isolated", arena)
