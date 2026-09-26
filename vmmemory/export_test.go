@@ -68,6 +68,16 @@ func SetSealWalkSeam(t *testing.T, seam func()) {
 	t.Cleanup(func() { sealWalkSeam = previous })
 }
 
+// RepeatBurst and RepeatInterval are each session's budget of repeated faults.
+const (
+	RepeatBurst    = repeatBurst
+	RepeatInterval = repeatInterval
+)
+
+// Repeated reports whether a fault on page for this access would be a repeated
+// fault, which the Linux transport paces.
+func Repeated(r *MemoryRegion, page uint64, write bool) bool { return r.repeated(page, write) }
+
 // Signal wakes every store waiting on the host, as any change to a page does.
 func Signal(h *Host) {
 	h.mu.Lock()

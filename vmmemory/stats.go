@@ -101,6 +101,12 @@ type Stats struct {
 	// host that refuses is a host whose client's mapping budget is too small
 	// for the mappings its guest's access pattern fragments into.
 	RefusedMappings uint64
+	// RepeatedFaults counts the faults sessions took on pages their memory
+	// region already mapped for the access, each of which changed nothing;
+	// PacedFaults counts those that waited for their session's budget of them.
+	// See repeats.go. A host that paces is running a VMM that drops its own
+	// page tables, or a kernel that moves its guests' pages very often.
+	RepeatedFaults, PacedFaults uint64
 	// Protections counts the range write-protect commands seals issued;
 	// ProtectedPages the pages those ranges covered.
 	Protections, ProtectedPages uint64

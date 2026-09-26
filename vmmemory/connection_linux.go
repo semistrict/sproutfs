@@ -72,9 +72,7 @@ type Connection struct {
 	// handed, in the order they came. See maxQueuedFlushes.
 	flushes  chan vmwire.Frame
 	sequence uint64
-	queueMu  sync.Mutex
-	queue    map[uint64]queuedFault
-	inflight map[uint64]struct{}
+	faults   *faultQueue
 	notify   chan struct{}
 	workers  sync.WaitGroup
 	closeMu  *ctxsync.Mutex
@@ -104,13 +102,6 @@ func (c *Connection) Attach() AttachStats {
 	return stats
 }
 
-// queuedFault is one page waiting for a worker: whether any of its trapped
-// accesses was a store, and when the first of them was read from the UFFD,
-// which is what the queue-delay histogram measures against.
-type queuedFault struct {
-	write bool
-	at    time.Time
-}
 type remoteMapping struct {
 	connection *Connection
 	address    uint64
@@ -180,7 +171,7 @@ func Connect(ctx context.Context, h *Host, socket *net.UnixConn, backing MemoryR
 		return nil, errors.Join(err, context.Cause(ctx))
 	}
 	sessionCtx, cancel := context.WithCancelCause(ctx)
-	c := &Connection{host: h, socket: socket, uffd: fd, cfg: cfg, ctx: sessionCtx, cancel: cancel, commandMu: ctxsync.NewMutex(), writeMu: ctxsync.NewMutex(), acks: make(chan vmwire.Frame, 1), requests: make(chan vmwire.Frame, 1), flushes: make(chan vmwire.Frame, maxQueuedFlushes), closeMu: ctxsync.NewMutex(), queue: make(map[uint64]queuedFault), inflight: make(map[uint64]struct{}), notify: make(chan struct{}, cfg.FaultWorkers)}
+	c := &Connection{host: h, socket: socket, uffd: fd, cfg: cfg, ctx: sessionCtx, cancel: cancel, commandMu: ctxsync.NewMutex(), writeMu: ctxsync.NewMutex(), acks: make(chan vmwire.Frame, 1), requests: make(chan vmwire.Frame, 1), flushes: make(chan vmwire.Frame, maxQueuedFlushes), closeMu: ctxsync.NewMutex(), faults: newFaultQueue(cfg.QueuePages), notify: make(chan struct{}, cfg.FaultWorkers)}
 	attached := false
 	fail := func(err error) (*Connection, error) {
 		err = errors.Join(err, context.Cause(ctx))
@@ -704,21 +695,10 @@ func (c *Connection) readFaults() {
 			return
 		}
 		page := (address - c.memoryRegion.Address) / c.mapping.pageSize
-		c.queueMu.Lock()
-		entry, exists := c.queue[page]
-		if !exists {
-			if len(c.queue) >= c.cfg.QueuePages {
-				c.queueMu.Unlock()
-				c.fail(ErrCapacity)
-				return
-			}
-			// A page that faults again while queued keeps the first reading, so
-			// the delay is measured against the access that has waited longest.
-			entry.at = c.host.clock.Now()
+		if !c.faults.add(page, flags&3 != 0, c.host.clock.Now()) {
+			c.fail(ErrCapacity)
+			return
 		}
-		entry.write = entry.write || flags&3 != 0
-		c.queue[page] = entry
-		c.queueMu.Unlock()
 		c.wake()
 	}
 }
@@ -729,23 +709,6 @@ func (c *Connection) wake() {
 	case c.notify <- struct{}{}:
 	default:
 	}
-}
-
-// takeFault claims a queued fault that no worker is serving. A page that faults
-// again while in flight stays queued and is served after, which upgrades a read
-// fault that became a write.
-func (c *Connection) takeFault() (page uint64, entry queuedFault, ok bool) {
-	c.queueMu.Lock()
-	defer c.queueMu.Unlock()
-	for p, e := range c.queue {
-		if _, busy := c.inflight[p]; busy {
-			continue
-		}
-		delete(c.queue, p)
-		c.inflight[p] = struct{}{}
-		return p, e, true
-	}
-	return 0, queuedFault{}, false
 }
 
 // deferFault holds a fault the client refused a mapping command for until the
@@ -769,25 +732,13 @@ func (c *Connection) deferFault(page uint64, entry queuedFault) bool {
 		return false
 	case <-revoked:
 	}
-	c.queueMu.Lock()
-	if existing, ok := c.queue[page]; ok {
-		entry.write = entry.write || existing.write
-		if existing.at.Before(entry.at) {
-			entry.at = existing.at
-		}
-	}
-	c.queue[page] = entry
-	c.queueMu.Unlock()
+	c.faults.requeue(page, entry)
 	c.wake()
 	return true
 }
 
 func (c *Connection) finishFault(page uint64) {
-	c.queueMu.Lock()
-	delete(c.inflight, page)
-	_, again := c.queue[page]
-	c.queueMu.Unlock()
-	if again {
+	if c.faults.finish(page) {
 		c.wake()
 	}
 }
@@ -875,13 +826,23 @@ func (c *Connection) serveFaults() {
 		case <-c.notify:
 		}
 		for {
-			page, entry, ok := c.takeFault()
+			page, entry, repeated, ok := c.faults.take(c.memoryRegion.Memory.repeated)
 			if !ok {
 				break
 			}
 			// The delay between reading the event and starting on it is queueing
 			// and scheduling only, so it is recorded apart from the service time.
 			c.host.faultQueueLatency.Observe(c.host.clock.Since(entry.at))
+			if repeated {
+				// A repeated fault past the session's budget waits here, in
+				// this session's own worker, and costs no other session
+				// anything. Its page stays in flight meanwhile, so accesses
+				// trapped on it wait for this one serve.
+				if err := c.host.clock.Sleep(c.ctx, c.memoryRegion.Memory.paceRepeat()); err != nil {
+					c.finishFault(page)
+					return
+				}
+			}
 			// A fault is served for as long as the session lives. It is not a
 			// command and it has no deadline of its own: the round trips inside
 			// it are each bounded by the command timeout, and the one thing

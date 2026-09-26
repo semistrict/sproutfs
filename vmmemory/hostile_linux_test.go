@@ -1044,6 +1044,163 @@ func TestARefusedFaultWaitsForARevocation(t *testing.T) {
 	}
 }
 
+const (
+	// repeatingPages is the size of each memory region of a VMM that repeats
+	// its faults, in pages.
+	repeatingPages = 256
+	// repeatingWorkers is its fault workers, the most a session may have. It
+	// runs twice as many threads, so every worker always has a fault to serve.
+	repeatingWorkers = 64
+	// storeRounds is how many stores storeLatency times, each one fault.
+	storeRounds = 400
+)
+
+// A VMM can drop the page tables of its own memory and read it back as fast as
+// it likes. Every read is a fault the pager serves again, though it changes
+// nothing: a repeated fault. Unpaced, one such VMM took three and a half of
+// the Lima instance's eight processors at up to 90,000 faults a second. The
+// well-behaved process's median store beside it took two to four times as
+// long, and in one run its slowest took a quarter of a second. Paced, the VMM
+// is held to its budget of repeated faults, and the well-behaved process keeps
+// the latency it has alone.
+func TestAVMMRepeatingItsFaultsIsPacedAndItsNeighbourKeepsItsLatency(t *testing.T) {
+	fx := newHostileFixtureFor(t, suiteArena, 4+2*repeatingPages/hostilePages)
+	vmm := fx.repeatingVMM(t)
+	alone := fx.storeLatency(t)
+	var beside latencies
+	cost := fx.repeat(t, vmm, "apart", func() { beside = fx.storeLatency(t) })
+	t.Logf("the neighbour's stores alone: %v; beside the VMM: %v", alone, beside)
+	cost.requireWithinBudget(t)
+	if cost.repeated <= vmmemory.RepeatBurst {
+		t.Fatalf("the VMM repeated %d faults, within its burst of %d, so none was paced", cost.repeated, vmmemory.RepeatBurst)
+	}
+	// The bounds are the neighbour's own latency alone, measured in the same
+	// run, so a slower machine moves both. Unpaced, the median store took more
+	// than twice as long beside the VMM in every run; paced, in ten runs, at
+	// most a seventh longer. The slowest stores are the scheduler's as much as
+	// the pager's, so the 90th percentile is held only to twice its latency
+	// alone and a millisecond.
+	if bound := alone.median*3/2 + 100*time.Microsecond; beside.median > bound {
+		t.Fatalf("beside the VMM the neighbour's median store took %s, past %s: half as long again as the %s it took alone, and 100µs",
+			beside.median, bound, alone.median)
+	}
+	if bound := 2*alone.p90 + time.Millisecond; beside.p90 > bound {
+		t.Fatalf("beside the VMM the neighbour's stores took %s at the 90th percentile, past %s: twice the %s they took alone, and a millisecond",
+			beside.p90, bound, alone.p90)
+	}
+}
+
+// Two vCPUs that fault one page at once are two faults the pager serves, and
+// the second finds the page mapped. That is no repeated fault of the
+// session's, but only the twin of a fault that changed something is free. So
+// threads that keep meeting on the pages they drop are paced like any other,
+// and the pager serves them no more faults than their budget and the first
+// read of each page with its twin.
+//
+// The neighbour's latency is not held to a bound here: these threads spin on
+// pages other threads have just mapped, so they burn the processors of the VMM
+// itself, which its jail bounds and not the pager.
+func TestThreadsMeetingOnAPageRepeatNoFaultFree(t *testing.T) {
+	fx := newHostileFixtureFor(t, suiteArena, 4+2*repeatingPages/hostilePages)
+	vmm := fx.repeatingVMM(t)
+	cost := fx.repeat(t, vmm, "together", func() { fx.storeLatency(t) })
+	cost.requireWithinBudget(t)
+	// Each of the neighbour's stores is one fault.
+	if served, most := cost.faults-storeRounds, cost.repeated+2*repeatingPages; served > most {
+		t.Fatalf("the pager served the VMM %d faults, past the %d repeated faults it was charged for and the first read of each of its %d pages with its twin",
+			served, cost.repeated, repeatingPages)
+	}
+}
+
+// repeatingVMM starts the client process of a VMM that repeats its faults. Its
+// RAM is repeatingPages pages, and its session has repeatingWorkers fault
+// workers.
+func (fx *hostileFixture) repeatingVMM(t *testing.T) *nativeProcess {
+	t.Helper()
+	var provided []vmmemory.Backing
+	for region := range 2 {
+		b := newPagedKernelBacking(byte(20+region), repeatingPages*hostilePage, hostilePage)
+		for i := range b.data {
+			b.data[i] = byte(50 + i/hostilePage)
+		}
+		provided = append(provided, b)
+	}
+	return startNativeWithConfig(t, fx.h, repeatingPages, vmmemory.ConnectionConfig{Name: "repeating",
+		QueuePages: repeatingPages, FaultWorkers: repeatingWorkers, CommandTimeout: 5 * time.Second,
+		VerifyInterval: time.Hour}, provided...)
+}
+
+// repeatCost is what one run of a VMM repeating its faults cost the pager: the
+// repeated faults it was charged for, those of them that waited for its budget,
+// and every fault the pager served in that time, over how long it ran.
+type repeatCost struct {
+	repeated, paced, faults uint64
+	elapsed                 time.Duration
+}
+
+// repeat runs the VMM's threads over its RAM, spread as the client's
+// start-refault says, while during runs, and reports what they cost the pager.
+func (fx *hostileFixture) repeat(t *testing.T, vmm *nativeProcess, spread string, during func()) repeatCost {
+	t.Helper()
+	before := kernelStats(t, fx.h)
+	started := time.Now()
+	vmm.request(fmt.Sprintf("start-refault 1 0 %d %d %s", repeatingPages*hostilePage, 2*repeatingWorkers, spread),
+		"refault-started")
+	during()
+	if _, err := fmt.Fprintln(vmm.input, "stop-refault"); err != nil {
+		t.Fatal(err)
+	}
+	stopped := vmm.line()
+	elapsed := time.Since(started)
+	after := kernelStats(t, fx.h)
+	cost := repeatCost{repeated: after.RepeatedFaults - before.RepeatedFaults, paced: after.PacedFaults - before.PacedFaults,
+		faults: after.Faults - before.Faults, elapsed: elapsed}
+	t.Logf("the VMM %s in %s: %d repeated faults, %d of them paced, of %d faults the pager served",
+		stopped, elapsed, cost.repeated, cost.paced, cost.faults)
+	return cost
+}
+
+// requireWithinBudget holds the VMM to its budget of repeated faults: one an
+// interval once its burst is spent. Each was served before the thread that
+// trapped it went on, except those a worker still held when the threads
+// stopped, at most one a worker.
+func (c repeatCost) requireWithinBudget(t *testing.T) {
+	t.Helper()
+	if budget := uint64(vmmemory.RepeatBurst+repeatingWorkers) + uint64(c.elapsed/vmmemory.RepeatInterval); c.repeated > budget {
+		t.Fatalf("the VMM was served %d repeated faults in %s, past its budget of %d", c.repeated, c.elapsed, budget)
+	}
+}
+
+// latencies is how long a run of stores took.
+type latencies struct{ median, p90, max time.Duration }
+
+func (l latencies) String() string {
+	return fmt.Sprintf("median %s, 90th percentile %s, slowest %s", l.median, l.p90, l.max)
+}
+
+// storeLatency is how long the well-behaved process's stores take: each one
+// faults, because a checkpoint of its RAM follows it.
+func (fx *hostileFixture) storeLatency(t *testing.T) latencies {
+	t.Helper()
+	var took []time.Duration
+	for round := range storeRounds {
+		page := hostilePages/2 + round%(hostilePages/2)
+		fx.stores++
+		value := byte(100 + fx.stores%100)
+		started := time.Now()
+		if err := fx.good.ask(fmt.Sprintf("fill 1 %d %d %d", page*hostilePage, hostilePage, value), "filled"); err != nil {
+			t.Fatal(err)
+		}
+		took = append(took, time.Since(started))
+		if err := publishRAM(t.Context(), fx.good, fx.backings[1]); err != nil {
+			t.Fatal(err)
+		}
+		fx.values[1][page] = value
+	}
+	slices.Sort(took)
+	return latencies{took[len(took)/2], took[len(took)*9/10], took[len(took)-1]}
+}
+
 // FuzzHostileSession plays arbitrary hostile sessions against one pager beside
 // one well-behaved process, which lives through all of them.
 func FuzzHostileSession(f *testing.F) {

@@ -90,6 +90,8 @@ type MemoryRegion struct {
 	// refused for want of mapping budget, and closes gaps from then on; see
 	// rules.go.
 	pressed atomic.Bool
+	// repeats paces this memory region's repeated faults; see repeats.go.
+	repeats repeatBudget
 	// heldReported marks the one line this memory region's unreclaimable pages are
 	// worth; see heldPages.
 	heldReported atomic.Bool

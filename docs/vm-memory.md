@@ -1621,8 +1621,8 @@ A session that ends this way is closed like any other. Its pages go back to the
 pager, and the host process keeps no descriptor of it.
 `vmmemory/hostile_linux_test.go` plays each of these against a real pager,
 beside a well-behaved process on the same pager, and `FuzzHostileSession` plays
-arbitrary sequences of them. The pager does not bound how much work a VMM can
-cause by faulting its own memory over and over.
+arbitrary sequences of them. A VMM that faults its own memory over and over is
+paced: see [repeated faults](#repeated-faults).
 
 In a shared arena the arena's descriptor gives a VMM more than the protocol
 does. `vmmemory/reach_linux_test.go` plays a VMM that uses every descriptor it
@@ -1673,6 +1673,59 @@ a refusal after that is as ambiguous as a lost acknowledgement, and terminal in
 the same way. `Stats.RefusedMappings` counts the deferred faults. A host that
 refuses has given its client a budget too small for the number of mappings its
 guest's access pattern creates.
+
+### Repeated faults
+
+A VMM can drop the page tables of its own memory with `MADV_DONTNEED` and read
+the memory back. Each read traps, and the pager serves it again. That fault
+changes nothing: the pager finds the page mapped and installs the same page
+tables again. This is a repeated fault. A fault is repeated when its memory
+region already maps the page for the access: mapped or zero-mapped for a read,
+and mapped writable for a store.
+
+Every other fault loads a page, maps it or copies it, and the resident, dirty
+and mapping budgets bound those. A guest under memory pressure faults again
+through loads after evictions, so its faults are not repeated. A guest meets a
+repeated fault only when something outside the pager took its page tables
+away, such as the kernel moving a page. A VMM can make repeated faults as fast
+as it can drop page tables.
+
+So each session's repeated faults are paced. A session may take 1,024 of them
+at once, and 1,024 a second after that. A repeated fault past that budget
+waits in its session's fault worker before it is served. The wait costs the
+pager no work and holds up no other session. The page stays in flight while
+the fault waits, so the VMM's threads that trap on it wait too. Pacing only
+slows a session and never ends one, because a well-behaved guest can meet
+repeated faults too.
+
+Two vCPUs that fault one page at once raise two faults. The second is served
+after the first and finds the page mapped. It is the first fault's twin, and
+the session is not charged for it. Only a fault that changes something has a
+free twin. The twin of a twin or of a repeated fault is charged, so twins
+cannot follow each other for free.
+
+`vmmemory/repeats.go` holds the budget and `vmmemory/faultqueue.go` the twins.
+`Stats.RepeatedFaults` counts the repeated faults, and `Stats.PacedFaults`
+those that waited for the budget.
+
+Measured on the aarch64 Lima instance on 2026-09-26, one run each. A VMM with
+64 fault workers and 128 threads dropped and read back 256 pages of 4 KiB over
+and over, beside the hostile tests' well-behaved process, which stored into a
+page and checkpointed it 400 times:
+
+| pacing | the VMM's repeated faults | neighbour's median store, alone and beside | 90th percentile, alone and beside |
+| --- | --- | --- | --- |
+| off | 76,000 a second | 0.33 ms, 0.76 ms | 0.47 ms, 1.78 ms |
+| on | 1,427 in 0.4 s | 0.28 ms, 0.28 ms | 0.37 ms, 0.41 ms |
+
+Unpaced, such a VMM took three and a half of the instance's eight processors,
+and in one run the neighbour's slowest store took 289 ms.
+`TestAVMMRepeatingItsFaultsIsPacedAndItsNeighbourKeepsItsLatency` holds the
+VMM to its budget and the neighbour's median store to half as long again as
+it takes alone. `TestThreadsMeetingOnAPageRepeatNoFaultFree` runs threads that
+race for the same pages and holds the pager to the budget and one free twin per
+page brought in. The fuzzing cannot play this: its descriptors are not real
+userfaultfds, so its session ends at the first page it resolves.
 
 ## Idle pages
 

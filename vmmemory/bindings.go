@@ -243,6 +243,22 @@ func (r *MemoryRegion) zeroMapped(index uint64) bool {
 	defer r.bindingsMu.Unlock()
 	return r.zeroRanges.Get(index).Zero
 }
+
+// repeated reports whether a fault on index for this access would be a repeated
+// fault: this memory region already maps the page for it. See repeats.go.
+func (r *MemoryRegion) repeated(index uint64, write bool) bool {
+	r.bindingsMu.Lock()
+	defer r.bindingsMu.Unlock()
+	if r.zeroRanges.Get(index).Zero {
+		return !write
+	}
+	block := r.blocks[index/bindingBlockPages]
+	if block == nil {
+		return false
+	}
+	b := &block[index%bindingBlockPages]
+	return b.mapped && (!write || b.writable())
+}
 func (r *MemoryRegion) mapped(index uint64) bool {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()

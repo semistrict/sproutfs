@@ -64,6 +64,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let controls: Vec<_> = sessions.iter().map(Session::control).collect();
     let mut machine = None;
     let mut counter = None;
+    let mut refault: Option<(Arc<AtomicBool>, Vec<thread::JoinHandle<u64>>)> = None;
     let services: Vec<_> = sessions
         .into_iter()
         .map(|mut session| {
@@ -261,8 +262,66 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
                 done.store(true, Ordering::Relaxed);
                 println!("counter-stopped {}", worker.join().unwrap());
             }
+            Some("start-refault") => {
+                // start-refault MEMORY_REGION OFFSET LEN THREADS SPREAD is a
+                // VMM faulting its own memory over and over, as fast as it
+                // can: each thread throws away page tables and reads every
+                // page under them back, so every read is a fault the pager
+                // serves again. SPREAD "apart" gives each thread a share of
+                // the range of its own; "together" gives each the whole range
+                // from a page of its own, so threads keep meeting on a page.
+                let (address, len) = range(&memory_regions, &words);
+                let threads: usize = words[4].parse()?;
+                let together = match words[5] {
+                    "apart" => false,
+                    "together" => true,
+                    spread => return Err(format!("unknown spread {spread}").into()),
+                };
+                let pages = len / page_size;
+                assert!(threads > 0 && len % page_size == 0 && pages % threads == 0);
+                assert!(refault.is_none());
+                let done = Arc::new(AtomicBool::new(false));
+                let workers: Vec<_> = (0..threads)
+                    .map(|thread| {
+                        let done = done.clone();
+                        let share = pages / threads;
+                        let (start, span, first) = if together {
+                            (address, pages, thread * share)
+                        } else {
+                            (address + thread * share * page_size, share, 0)
+                        };
+                        thread::spawn(move || {
+                            let mut reads = 0u64;
+                            while !done.load(Ordering::Relaxed) {
+                                let dropped = unsafe {
+                                    libc::madvise(
+                                        start as *mut _,
+                                        span * page_size,
+                                        libc::MADV_DONTNEED,
+                                    )
+                                };
+                                assert_eq!(dropped, 0, "madvise: {}", io::Error::last_os_error());
+                                for page in 0..span {
+                                    load(start + (first + page) % span * page_size);
+                                    reads += 1;
+                                }
+                            }
+                            reads
+                        })
+                    })
+                    .collect();
+                refault = Some((done, workers));
+                println!("refault-started");
+            }
+            Some("stop-refault") => {
+                let (done, workers) = refault.take().unwrap();
+                done.store(true, Ordering::Relaxed);
+                let reads: u64 = workers.into_iter().map(|w| w.join().unwrap()).sum();
+                println!("refault-stopped {reads}");
+            }
             Some("quit") => {
                 assert!(counter.is_none(), "stop memory workers before shutdown");
+                assert!(refault.is_none(), "stop memory workers before shutdown");
                 drop(machine.take()); // unregister KVM slots before session teardown
                 // No users remain. The test now sends STOP on every control socket.
                 println!("quiescent");
