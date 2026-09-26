@@ -298,12 +298,13 @@ func (r *MemoryRegion) fault(ctx context.Context, index uint64, write bool, spil
 // bytes are not the volume's at all. The store reads its own copy from the
 // backing then, exactly as it always did, and remembers no origin.
 //
-// Which of those a page is has two answers on a post-copy destination, and they
-// come from different places: the extents report the set its handoff fixed, and
-// a load reports what the source said when it answered. The load's is the one
-// that saw the bytes, so it decides — the extents only save the read. That
-// second answer is per page and only a load can give it, so a peer backing's
-// store reads its page alone, as every store did before.
+// Which of those a page is has two answers on a post-copy destination: the
+// extents, and a load, which reports the pages the source served as its own.
+// A peer backing gives both by one rule, so they agree; where a backing's did
+// not, the load is the one that saw the bytes, and nothing is shared under a
+// name those bytes may not be. That second answer is per page and only a load
+// can give it, so a peer backing's store reads its page alone, as every store
+// did before.
 func (r *MemoryRegion) readIn(ctx context.Context, index uint64) (*resident, error) {
 	if !r.peer {
 		for range loadAttempts {
@@ -442,13 +443,12 @@ func (r *MemoryRegion) readInPage(ctx context.Context, index uint64) (*resident,
 		}
 		if len(unpublished) > 0 && unpublished[0] {
 			// The extents named this page the volume's and the load found the
-			// source still holding it. The two answers come from different
-			// places — the set the handoff fixed, and what the source said when
-			// it answered — and the one that saw the bytes is the load's. They
-			// are not this identity's bytes, so nothing may be shared under it:
-			// the store reads its own copy from the backing and tells the
-			// backing it took the page, exactly as for a page the extents
-			// themselves call unpublished.
+			// source still holding it: a backing whose two answers disagree.
+			// The one that saw the bytes is the load's, and they are not this
+			// identity's bytes, so nothing may be shared under it: the store
+			// reads its own copy from the backing and tells the backing it took
+			// the page, exactly as for a page the extents themselves call
+			// unpublished.
 			return nil, h.abandonSlots(ctx, at, 1, nil)
 		}
 		h.mu.Lock()

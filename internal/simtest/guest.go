@@ -63,6 +63,9 @@ type guest struct {
 	// ephemeral names the volumes that are ephemeral disks: mapped on the
 	// ephemeral pager, and held by no checkpoint.
 	ephemeral map[string]bool
+	// backings is what each memory region attached through, which is where a
+	// peer backing whose two answers disagreed says so.
+	backings map[string]*testbacking.Admitting
 
 	mu sync.Mutex
 	// model is the byte the guest last stored into every page of every volume,
@@ -92,7 +95,7 @@ func (w *World) newGuest(h *hostState, p *pager, vm *volume.VM, backings map[str
 	ctx := w.ctx
 	g := &guest{instance: vm.ID(), ctx: ctx, pages: map[string]int{},
 		memoryRegions: map[string]*vmmemory.MemoryRegion{}, mappings: map[string]*testpager.Mapping{},
-		pageBytes: map[string]int{}, ephemeral: map[string]bool{},
+		pageBytes: map[string]int{}, ephemeral: map[string]bool{}, backings: map[string]*testbacking.Admitting{},
 		model: map[string][]byte{}, admit: w.config.Admit, reverse: w.config.ReverseMemoryRegions,
 		id: fmt.Sprintf("%s/%s/%d/%d", vm.ID(), h.name, h.incarnation, w.nextGuest())}
 	for _, v := range vm.Volumes() {
@@ -112,7 +115,8 @@ func (w *World) newGuest(h *hostState, p *pager, vm *volume.VM, backings map[str
 		pager := p.pagers.Of(kind, v.Ephemeral())
 		tenant := control.TenantOf(vm.ID())
 		mp := testpager.NewMapping(p.arenaOf(pager), tenant)
-		admitted, _ := testbacking.New(backing, p.runtime, g.id+"/"+name)
+		admitted, admitting := testbacking.New(backing, p.runtime, g.id+"/"+name)
+		g.backings[name] = admitting
 		memoryRegion, err := pager.Attach(ctx, vmmemory.MemoryRegionBacking{Kind: kind, Backing: admitted, Tenant: tenant}, mp)
 		if err != nil {
 			return nil, err
@@ -507,7 +511,16 @@ var errUnreadable = errors.New("the page could not be read")
 // nothing further to learn from a guest whose memory is already wrong. A page
 // that cannot be read at all does not: every other page is still checked, and
 // the caller decides whether a fault was on that excuses it.
+//
+// A backing that told this guest's pager two different things about where a
+// page's bytes are ends it too, whatever the pages read: no fault excuses it,
+// and the page it was about may not be one this run reads again.
 func (g *guest) verify(ctx context.Context, model map[string][]byte) error {
+	for _, name := range g.names {
+		if err := g.backings[name].Disagreement(); err != nil {
+			return fmt.Errorf("%s: its backing's two answers disagree: %w", g.instance, err)
+		}
+	}
 	var unreadable error
 	for _, name := range g.names {
 		want, found := model[name]

@@ -26,6 +26,7 @@ var registeredProbes = []string{
 	checkpoint.ProbeCompactionRewrite,
 	vmmemory.ProbeEvictionDuringPublication,
 	vmmigrate.ProbeVolumeFallback,
+	vmmigrate.ProbePublishedSinceHandoff,
 	handover.ProbeRetried,
 }
 

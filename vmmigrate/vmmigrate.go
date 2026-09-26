@@ -348,3 +348,10 @@ func resume(ctx context.Context, process Runtime, cause error) error {
 // because every page no checkpoint holds is refused rather than substituted,
 // which is exactly what a run that never falls back never checks.
 const ProbeVolumeFallback = "vmmigrate/volume-fallback"
+
+// ProbePublishedSinceHandoff marks a destination loading a page it has itself
+// published since the handoff while it still asks the source for pages. The
+// source holds at best the version before of such a page, so it is read from
+// the volume, which is exactly what a run whose destination publishes nothing
+// before its source is released never checks.
+const ProbePublishedSinceHandoff = "vmmigrate/published-since-handoff"

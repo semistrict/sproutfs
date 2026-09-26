@@ -13,21 +13,24 @@ import (
 // peerBacking stands in for a migration destination's peer backing: some pages
 // are served by the source out of pages no checkpoint has, and the volume's own
 // bytes are wrong for exactly those pages.
+//
+// Its answers are where each page's bytes really are, as far as this backing
+// can see: a page of the source's is the source's until the pager says it took
+// it, and the volume's from then on. It keeps no rule of a real peer backing's
+// about checkpoints: a double that restated that rule would carry the rule's
+// mistakes into every test of the pager, which is how a pager test once agreed
+// with a backing that stripped a page's identity for ever.
 type peerBacking struct {
 	*backing
 	// unpublished names the pages the source holds, and served their bytes.
 	unpublished map[uint64]bool
 	served      map[uint64]byte
-	// selected is the sequence this backing's handoff was taken against: this
-	// VM's own checkpoints up to it predate the pages the handoff named. Zero is
-	// a fork's child, which has published nothing of its own.
-	selected uint64
 	// hidden names pages the source serves out of its own dirty pages that the
-	// handoff's set did not list, and the bytes it serves for them. The two
-	// answers a real peer backing gives come from different places — Locate
-	// reports the set the handoff fixed, while a load reports what the source
-	// says at the moment it answers — so a page can be located as the volume's
-	// and loaded as the source's own, which is what these pages are.
+	// handoff's set did not list, and the bytes it serves for them. A real peer
+	// backing asks one rule for both of its answers, and no source's set grows
+	// once its handoff is taken, so it never locates a page as the volume's and
+	// loads it as the source's own. These pages are a backing that does, which
+	// the pager must survive without sharing what it read.
 	hidden map[uint64]byte
 	loads  int
 	// installedMu guards installed, which is every page this backing was told
@@ -36,6 +39,12 @@ type peerBacking struct {
 	// that host goes on holding for a destination that already has it.
 	installedMu sync.Mutex
 	installed   map[uint64]bool
+}
+
+// sources reports a page whose only copy is the source's: one of its set the
+// pager has not taken.
+func (b *peerBacking) sources(page uint64) bool {
+	return b.unpublished[page] && !b.holds(page)
 }
 
 var _ vmmemory.UnpublishedInstaller = (*peerBacking)(nil)
@@ -71,7 +80,7 @@ func (b *peerBacking) LoadUnpublished(ctx context.Context, offset uint64, dst []
 	result := make([]bool, pages)
 	for index := range pages {
 		page := offset/size + index
-		served, own := b.served[page], b.unpublished[page]
+		served, own := b.served[page], b.sources(page)
 		if hidden, only := b.hidden[page]; only {
 			served, own = hidden, true
 		}
@@ -85,9 +94,11 @@ func (b *peerBacking) LoadUnpublished(ctx context.Context, offset uint64, dst []
 	return result, nil
 }
 
-// Locate reports the pages the source holds as bytes of this memory region alone, which
-// is what the peer backing does so the pager never resolves them against a
-// checkpoint that does not have them.
+// Locate reports the pages only the source holds as bytes of this memory region
+// alone, which is what the peer backing does so the pager never resolves them
+// against a checkpoint that does not have them. Every other page is whatever
+// the volume names, which for a page the pager took and published is that
+// publication.
 func (b *peerBacking) Locate(ctx context.Context, offset, length uint64) ([]control.Extent, error) {
 	extents, err := b.backing.Locate(ctx, offset, length)
 	if err != nil {
@@ -101,15 +112,7 @@ func (b *peerBacking) Locate(ctx context.Context, offset, length uint64) ([]cont
 			page := cursor / size
 			stop := min(end, (page+1)*size)
 			next := control.Extent{Offset: cursor, Length: stop - cursor}
-			// A page of the handoff's set is reported as this memory region's own for
-			// exactly as long as the checkpoint the volume names for it
-			// predates the handoff: another VM's, or this one's own up to the
-			// sequence the handoff selected. Anything this VM publishes after
-			// receiving is newer, and stripping that would tell the pager a
-			// page it has just published has no object. See
-			// vmmigrate.PeerBacking.Locate, whose rule this mirrors.
-			ref := extent.Identity.Ref
-			if !b.unpublished[page] || !(ref.VM != b.owner || ref.Sequence <= b.selected) {
+			if !b.sources(page) {
 				next.Identity = extent.Identity
 			}
 			if n := len(result); n > 0 && result[n-1].Identity == next.Identity && result[n-1].Offset+result[n-1].Length == next.Offset {
@@ -167,7 +170,6 @@ func TestUnpublishedLoadBecomesDirtyAndReachesTheNextCheckpoint(t *testing.T) {
 			t.Fatalf("the checkpoint left %d dirty pages: %v", s.DirtyPages, err)
 		}
 		// Nothing asks the source again for a page the checkpoint published.
-		peer.unpublished, peer.served = nil, nil
 		for page, want := range map[uint64]byte{1: 99, 2: 72} {
 			if got := access(t, r, m, page, false)[0]; got != want {
 				t.Fatalf("page %d reads %d after the checkpoint, want %d", page, got, want)
@@ -311,14 +313,14 @@ func TestAStoreOnAMigrationDestinationReadsItsOwnPageAlone(t *testing.T) {
 // identity maps the page instead of reading it again. That is only sound while
 // the bytes it read are that identity's bytes.
 //
-// A post-copy destination gets two answers about where a page's bytes are, and
-// they come from different places: the extents report the set the handoff
-// fixed, while the load reports what the source said when it answered. A page
-// the source serves out of its own dirty pages that the handoff did not list is
-// located as the volume's and loaded as the source's own — and the load's
-// answer is the one that saw the bytes. Publishing them under the volume's
+// A post-copy destination gets two answers about where a page's bytes are: the
+// extents, and a load, which reports the pages the source served as its own. A
+// peer backing gives both by one rule. A backing whose two answers disagree —
+// a page located as the volume's and loaded as the source's own — is one whose
+// load is the answer that saw the bytes. Publishing them under the volume's
 // identity gives every sibling that inherits it the other machine's private
-// memory in place of its own page.
+// memory in place of its own page. The simulation fails a run whose backing
+// ever answers this way; this is what the pager does if one does.
 func TestASourceServedPageTheExtentsCallPublishedIsNotSharedUnderItsIdentity(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newFixture(t, 8, 16, 8)

@@ -59,7 +59,9 @@ the destination reports that it has fetched every one of those pages.
 4. **Post-copy.** When the guest touches a page, the page faults in from the
    source host's pager first, over plain TCP to the handoff's page-server
    address. If the source cannot supply it, the page comes from the
-   destination's own checkpoint. A page that the source served from its dirty
+   destination's own checkpoint. A page that the destination has published
+   since the handoff comes from its volume without asking: the source holds at
+   best the version before it. A page that the source served from its dirty
    pages is also dirty on the destination. The destination's volume would report
    those pages as the checkpoint's bytes or as holes, which would silently
    rewind the guest. So the peer backing reports them as its own bytes, and the
@@ -640,12 +642,29 @@ A post-copy child was once told that its own published pages had no object. The 
 
 A destination reports no identity for the pages its handoff named. So the pager loads those pages through the peer backing, where the source answers. It does not resolve them against a checkpoint, because no checkpoint holds them. That set was fixed for the backing's lifetime. So the backing kept reporting no identity for those pages after the child's own checkpoint had published them. The pager trusted the answer. A retire gives up a page when the volume holds no object for it, because a publication writes an all-zero page as a sparse hole, and the volume can reproduce such a page without an object. Here the answer was wrong. The retire revoked the guest's mapping and released the only copy of bytes the guest had written. The guest's next read of that page returned the fork point's version. The failure rate scaled with the page count: the fan-out fixture's handoff set is about 8300 pages at 4 KiB, against about 16 at 2 MiB. That is why the defect appeared with the page-geometry plan's fourth step, although that step did not cause it.
 
-`PeerBacking.Locate` now removes a page from that set only while the checkpoint the volume names for the page predates the handoff. That covers another VM's checkpoint, and this VM's own checkpoints up to the sequence the handoff selected. Both conditions are required, and each has a test that fails without it. Both are needed because a migration keeps the same VM, and its unpublished pages are written after its own last checkpoint.
+The first fix removed a page from that set only while the checkpoint the volume named for it predated the handoff. That was not enough, and no simulation reached why until one ran a destination that publishes before its source is released. See [The source's copy after the destination publishes](#the-sources-copy-after-the-destination-publishes).
 
 Three safeguards were deliberately left in place:
 - `vmmemory.ErrUndroppable` refuses the retire instead of trusting the answer. A page that is given up because the volume holds no object for it must be a page the volume can reproduce without an object, so it must be zeros. Any other page fails the retire. The checkpoint stays durable, the page stays sealed, and the guest keeps its memory.
 - `volume.ErrRetired` refuses a hold on a fork point that its last holder retired. It caught a second defect when it was added. Forking two children through the manager one after the other, with each child's hold released as the child closed, took the second child from a fork point whose seal had ended.
 - `TestFirecrackerForkChildrenSurviveTheirFirstSeconds` reproduces the whole failure in about a hundred seconds per run instead of ten minutes. It keeps the arms that isolated the defect (`SPROUTFS_FORK_ARM`: the whole checkpoint, the capture without the settle, the bare pause, one child, no interval). The sequence of runs that found the defect was 0/8 with no interval, 0/8 for a bare pause, 0/8 for a capture and seal, 5–8/8 for the whole checkpoint, and 0/16 after the fix.
+
+### The source's copy after the destination publishes
+
+A destination runs its guest from the receive on. Its memory regions keep asking the source until the orchestrator releases the source and the bulk stream ends. In that window the guest stores, and a checkpoint of it publishes and retires what it received. A fork's child publishes its root inside the receive, so every remote fork has this window.
+
+Neither source changes during it. A fork's parent keeps running and storing, but its page server serves the fork point, which is frozen. The parent is not checkpointed while the point is held. A migration's source stops its guest and hands its volumes off before it takes the handoff's set, so nothing stores into those pages again. What changes is the destination's own volume. Once the destination publishes a page, the source holds at best the version before it.
+
+Two rules got this wrong, and both are fixed:
+
+- A load asked the source for every page. A page the destination had published and the arena had given back was read again from the source. The source answered with the version before, and marked it as its own if the page was in the handoff's set. The guest read a page it had written past.
+- `Locate` stripped a page of the handoff's set while the checkpoint the volume named for it predated the handoff. A hole names no checkpoint, so it always seemed to predate it. A page of zeros the destination published was a hole. Its retire gave the page back, and the next read asked the source, which answered with the bytes from before the guest zeroed them.
+
+One rule now decides both answers. A page of the handoff's set is the source's until this host takes it, and the volume's from then on. A page this host took is here, and nothing loads it again until a checkpoint of this VM has published it. `Locate` strips exactly the pages not yet taken. A load asks the source only for those, and for pages outside the set that the volume names by a checkpoint from before the handoff or by a hole. The source may hold those too, and it serves them faster than object storage. A page this VM has published since the handoff is read from the volume.
+
+So the two answers the pager gets are one answer. The pager's check in `readIn`, which refuses to share a page the load calls the source's own, is no longer reachable from a peer backing. It stays in place as a check.
+
+`TestADestinationPublishesWhatItReceivedWhileItsSourceStillServes` in `internal/simtest` is the scenario. Half of the generated campaigns' migrations and forks run it too. Three guards put the old rules back: `migration-strip-published-pages`, `migration-strip-published-holes` and `migration-ask-for-published-pages`. The scenario fails under each. See [Negative tests in the tree](testing.md#negative-tests-in-the-tree).
 
 ## Qualification
 

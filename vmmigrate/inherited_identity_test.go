@@ -7,24 +7,26 @@ import (
 	"github.com/semistrict/sproutfs/vmmigrate"
 )
 
-// A post-copy destination reports no identity for the pages its handoff named,
-// so the pager loads them through this backing — where the source answers —
-// rather than resolving them against a checkpoint that does not hold them.
+// A post-copy destination reports no identity for the pages whose only copy is
+// its source's, so the pager loads them through this backing — where the source
+// answers — rather than resolving them against a checkpoint that does not hold
+// them.
 //
-// The two handoffs put opposite demands on that. A migration's unpublished pages
-// are the guest's writes since its OWN last checkpoint, and the volume names
-// that very checkpoint for them: resolving one would hand the guest bytes from
-// before its own write. A fork child's are its parent's, and the child publishes
-// them itself within a second of starting: going on stripping them tells the
-// pager a page it has just published has no object, and the pager's retire then
-// gives up the guest's only copy of those bytes.
+// Until this host takes such a page, whatever the volume names for it is what
+// the guest wrote past: a migration's own checkpoint from before the handoff,
+// the parent's checkpoint a fork's child inherited, or a hole where either had
+// nothing. Once this host has taken it, the page is here, and the next thing the
+// volume names for it is this VM's own publication of it: a checkpoint, or a
+// hole for a page of zeros. Going on stripping it tells the pager a page it has
+// just published has no object, and the pager's retire then gives up the
+// guest's only copy of those bytes; a load that goes on asking the source for
+// it hands the guest the version it wrote past.
 //
-// One rule serves both, and it is about which checkpoint rather than which VM:
-// strip while the checkpoint the volume names predates the handoff.
+// One rule serves every case: the source's until this host takes it.
 
 // A migration keeps the same VM, so the checkpoint its volume names for an
 // unpublished page is this VM's own — and it is older than the page. It stays
-// stripped.
+// stripped until this host has the page.
 func TestLocateStripsThisVMsOwnCheckpointFromBeforeTheHandoff(t *testing.T) {
 	s := newServed(t, nil, 4)
 	// The checkpoint a migration's source selected when it gave the VM up. Its
@@ -44,22 +46,24 @@ func TestLocateStripsThisVMsOwnCheckpointFromBeforeTheHandoff(t *testing.T) {
 	}
 }
 
-// A fork child's handoff selected nothing of its own, so every checkpoint that
-// names its pages afterwards is one it published itself, and those identities
-// are the truth about where the bytes are.
+// A fork's child takes every page it inherited from its parent and publishes
+// them itself within a second of starting, and from then on the identities the
+// volume names for them are the truth about where the bytes are.
 func TestLocateReportsAPageThisVMHasPublishedItself(t *testing.T) {
 	s := newServed(t, nil, 4)
 	backing := s.unpublishedBacking(t, nil, "ram0", []vmmigrate.PageRun{{First: 0, Count: 4}})
 
-	// Before any checkpoint of this VM: every page the handoff named is the
-	// source's alone, and none of them may be resolved by identity.
+	// Before this host takes them: every page the handoff named is the source's
+	// alone, and none of them may be resolved by identity.
 	for _, extent := range locateRAM(t, backing, 4) {
 		if !extent.Identity.Ref.IsZero() {
 			t.Fatalf("a page only the source holds reports identity %+v", extent.Identity)
 		}
 	}
 
-	// This VM publishes them itself, which is what a child's root index does.
+	// This host takes them, and this VM publishes them itself, which is what a
+	// child's root index does.
+	backing.InstalledUnpublished(0, []bool{true, true, true, true})
 	if err := s.machine.checkpoint(t.Context(), s.vm); err != nil {
 		t.Fatal(err)
 	}
@@ -80,6 +84,51 @@ func TestLocateReportsAPageThisVMHasPublishedItself(t *testing.T) {
 	}
 }
 
+// A hole says nothing about when it was written: it is what the volume names
+// for a page no checkpoint had, and it is what this VM's own checkpoint writes
+// for a page of zeros. So its age cannot be what decides. A page this host has
+// taken is reported as whatever the volume names, a hole included, and the
+// pager maps it as zeros rather than asking a source that holds the version
+// the guest zeroed.
+func TestLocateReportsTheHoleOfAPageThisHostTook(t *testing.T) {
+	s := newServed(t, nil, 4)
+	// Pages 4 to 7 were never written, so the volume names holes for them.
+	backing := s.unpublishedBacking(t, nil, "ram0", []vmmigrate.PageRun{{First: 4, Count: 4}})
+	for _, extent := range locateRange(t, backing, 4, 4) {
+		if !extent.Identity.Ref.IsZero() || extent.Identity.Zero {
+			t.Fatalf("a page only the source holds reports %+v, want no identity at all", extent.Identity)
+		}
+	}
+	backing.InstalledUnpublished(4*pageSize, []bool{true, true, true, true})
+	for _, extent := range locateRange(t, backing, 4, 4) {
+		if extent.Identity != control.ZeroIdentity {
+			t.Fatalf("a page this host took reports %+v, want the hole the volume names", extent.Identity)
+		}
+	}
+}
+
+// A load of a page this VM has published since the handoff is the volume's to
+// answer. The source holds at best the version before it — a fork's parent the
+// pause it was sealed at, a migration's source the page it stopped with — and
+// answering from there hands the guest a page it has written past. So the
+// source is not asked at all.
+func TestALoadOfAPageThisVMPublishedIsTheVolumes(t *testing.T) {
+	s := newServed(t, nil, 4)
+	backing := s.unpublishedBacking(t, nil, "ram0", []vmmigrate.PageRun{{First: 0, Count: 4}})
+	backing.InstalledUnpublished(0, []bool{true, true, true, true})
+	if err := s.machine.checkpoint(t.Context(), s.vm); err != nil {
+		t.Fatal(err)
+	}
+	data := make([]byte, 4*pageSize)
+	if err := backing.Load(t.Context(), 0, data); err != nil {
+		t.Fatal(err)
+	}
+	if stats := backing.Stats(); stats.Requests != 0 || stats.PeerPages != 0 || stats.VolumePages != 4 {
+		t.Fatalf("a load of pages this VM published made %d requests for %d peer pages and read "+
+			"%d from the volume, want none, none and 4", stats.Requests, stats.PeerPages, stats.VolumePages)
+	}
+}
+
 // selectedSequence is the checkpoint the volume itself names for these pages,
 // which for a migration is what the handoff selected.
 func selectedSequence(t *testing.T, s *served, pages uint64) uint64 {
@@ -96,7 +145,12 @@ func selectedSequence(t *testing.T, s *served, pages uint64) uint64 {
 
 func locateRAM(t *testing.T, backing *vmmigrate.PeerBacking, pages uint64) []control.Extent {
 	t.Helper()
-	extents, err := backing.Locate(t.Context(), 0, pages*pageSize)
+	return locateRange(t, backing, 0, pages)
+}
+
+func locateRange(t *testing.T, backing *vmmigrate.PeerBacking, first, pages uint64) []control.Extent {
+	t.Helper()
+	extents, err := backing.Locate(t.Context(), first*pageSize, pages*pageSize)
 	if err != nil {
 		t.Fatal(err)
 	}

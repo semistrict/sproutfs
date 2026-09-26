@@ -246,22 +246,19 @@ func (d *Driver) step(ctx context.Context, step int) error {
 	id := running[choose(len(running))]
 	switch operation := d.operation(choose); operation {
 	case "checkpoint":
-		d.log("step %d: checkpoint %s", step, id)
-		if err := d.world.Checkpoint(ctx, id); err != nil {
-			// A checkpoint the store would not take is a checkpoint that did
-			// not happen: the VM goes on running out of its own pages, and
-			// what it is worth is still its last one.
-			d.log("step %d: %s could not publish: %v", step, id, err)
-		}
+		return d.checkpoint(ctx, step, id)
 	case "checkpoint-disks":
 		d.log("step %d: checkpoint the disks of %s", step, id)
 		if err := d.world.CheckpointDisks(ctx, id); err != nil {
+			if refused(err) {
+				return err
+			}
 			d.log("step %d: %s could not publish its disks: %v", step, id, err)
 		}
 	case "migrate":
 		to := choose(d.world.Hosts())
 		d.log("step %d: migrate %s to host-%d", step, id, to)
-		return d.world.Migrate(ctx, id, to)
+		return d.world.MigrateWith(ctx, id, to, d.meanwhile(step, choose))
 	case "fork":
 		spec, ok := d.pending(choose)
 		if !ok {
@@ -271,13 +268,16 @@ func (d *Driver) step(ctx context.Context, step int) error {
 			return d.createFromKept(ctx, step, spec, choose)
 		}
 		d.log("step %d: fork %s from %s onto host-%d", step, spec.ID, spec.Parent, spec.Host)
-		return d.world.Fork(ctx, spec)
+		return d.world.ForkWith(ctx, spec, d.meanwhile(step, choose))
 	case "keep":
 		// Half of what is kept is a checkpoint of the disks alone, which a
 		// create boots cold over; the other half resumes.
 		disks := choose(2) == 0
 		d.log("step %d: keep a checkpoint of %s, disks only=%t", step, id, disks)
 		if err := d.world.Keep(ctx, id, disks); err != nil {
+			if refused(err) {
+				return err
+			}
 			d.log("step %d: %s could not publish the checkpoint to keep: %v", step, id, err)
 		}
 	case "release":
@@ -333,6 +333,49 @@ func (d *Driver) step(ctx context.Context, step int) error {
 		return fmt.Errorf("unknown operation %q", operation)
 	}
 	return nil
+}
+
+// checkpoint publishes what one VM's guest has written. A checkpoint the store
+// would not take is a checkpoint that did not happen: the VM goes on running
+// out of its own pages, and what it is worth is still its last one. A retire
+// that refused is not that.
+func (d *Driver) checkpoint(ctx context.Context, step int, id string) error {
+	d.log("step %d: checkpoint %s", step, id)
+	if err := d.world.Checkpoint(ctx, id); err != nil {
+		if refused(err) {
+			return err
+		}
+		d.log("step %d: %s could not publish: %v", step, id, err)
+	}
+	return nil
+}
+
+// meanwhile is the terms of half the handovers the schedule draws: the
+// destination runs before its source is released, as a deployment's does for
+// as long as the orchestrator takes to release it and the bulk stream runs.
+// Every guest goes on storing, a fork's parent among them. The destination is
+// checkpointed, which publishes what it received and retires it, stores again
+// into pages it has published, and every guest is read back — all while its
+// memory regions still ask the source for what they fault.
+func (d *Driver) meanwhile(step int, choose func(int) int) Handover {
+	if choose(2) != 0 {
+		return Handover{}
+	}
+	return Handover{Meanwhile: func(ctx context.Context, id string) error {
+		d.log("step %d: %s runs before its source is released", step, id)
+		for _, running := range d.world.Running() {
+			if err := d.world.Store(ctx, running, 1+choose(maxStoresPerStep), choose); err != nil {
+				return err
+			}
+		}
+		if err := d.checkpoint(ctx, step, id); err != nil {
+			return err
+		}
+		if err := d.world.Store(ctx, id, 1+choose(maxStoresPerStep), choose); err != nil {
+			return err
+		}
+		return d.world.Verify(ctx, ReadsMayFail)
+	}}
 }
 
 // operation draws what this step does. Checkpoints and migrations are the

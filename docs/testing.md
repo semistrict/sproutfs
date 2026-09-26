@@ -53,6 +53,11 @@ kernel's first execution of a page. The model records nothing for such an
 access. So the page must read what the guest last wrote, whether the pager
 publishes the copy it made or settles it back onto the page it was copied from.
 
+One access in eight stores a page of zeros, which is what a guest kernel does
+to memory it frees. A checkpoint publishes such a page as a hole, and its
+retire gives the page back. So the next read of it is answered by what the
+volume says about a hole.
+
 Every campaign also checks the same list of requirements:
 
 - `Verify`: no guest reads bytes it never wrote, read through that guest's own
@@ -682,6 +687,41 @@ Every hop in the campaigns makes the same checks:
 The recorded scenario adds the layout refusal. A handoff that would truncate a
 memory region or map beyond its volume is refused before any guest starts.
 
+A destination runs its guest from the receive on, and its memory regions ask
+the source for what they fault until the source is released. `Handover.Meanwhile`
+is that window: it runs after the receive and before the release and the close
+of the post-copy. Half of the migrations and forks the schedule draws use it.
+Every guest stores, a fork's parent among them. The destination is checkpointed,
+which publishes and retires what it received. It stores again, and every guest
+is read back. A checkpoint whose retire refused to give up a page of the
+guest's (`vmmemory.ErrUndroppable`) fails the run, there and everywhere else.
+The pager refuses such a retire and keeps the guest's memory, so nothing else
+would ever notice it.
+
+`TestADestinationPublishesWhatItReceivedWhileItsSourceStillServes` is the
+scenario on its own, for a fork and for a migration. Every page is the
+source's at the handoff. The destination stores into all of them, half of
+them zeros, and is checkpointed. Its arena is smaller than one guest, so
+reading the guest back gives up every page it published and reads it again
+while the source still serves. It requires the destination to have read a
+page it published (`vmmigrate.ProbePublishedSinceHandoff`), every page to
+read the guest's bytes before and after the release, and the volume to hold
+the last checkpoint. A fork's parent keeps storing throughout, and none of it
+reaches the child. A checkpoint of the parent in the window is refused with
+`volume.ErrSealed`, so what its page server serves stays the pause.
+[The migration notes](migration.md#the-sources-copy-after-the-destination-publishes)
+record what it found.
+
+The scenario checks the peer backing's two answers against each other rather
+than against a rule of its own. `testbacking` records a load whose answer
+about which pages are the source's own differs from what `Locate` reports for
+them, and `Verify` fails the run on it. The pager believes both answers, so a
+backing whose answers disagree hands some guest the wrong bytes, whether or
+not the run goes on to read that page. The pager's own test double answers
+from what the pager told it it took, not from the backing's rule, for the same
+reason: it once stripped a page's identity for ever because the backing did,
+and so it agreed with the defect instead of catching it.
+
 `vmmigrate`'s own suite keeps the tests that are about the package and
 not about a deployment:
 
@@ -749,9 +789,11 @@ of steps. Each step runs a few of every guest's stores, and then one operation:
 - a checkpoint;
 - a checkpoint that is kept, of the disks alone or with the memory and the VMM
   state;
-- a migration;
+- a migration, half of them with the destination checkpointed before its
+  source is released (see [Handovers](#handovers));
 - a fork, or a create from one of the parent's kept checkpoints, warm or cold,
-  whether or not the parent runs;
+  whether or not the parent runs, and half of the forks with the child
+  checkpointed before its parent is released;
 - a stop, which may suspend and may keep;
 - a start;
 - a delete;
@@ -1157,6 +1199,7 @@ what it did not reach. The registered probes are:
 - a compaction rewrite;
 - an eviction during a publication;
 - a volume fallback;
+- a destination loading a page it published while it still asks its source;
 - a receive tried again.
 
 `Runtime.Fingerprint` digests everything the simulated dependencies did: the
@@ -1251,6 +1294,12 @@ SPROUTFS_SIM_BUG=migration-give-up-first-receive \
   go test ./internal/simtest -run '^TestTwoWritersOfOneVMNeverMixAcrossASwizzle$' -count=1
 SPROUTFS_SIM_BUG=migration-ignore-source-hold \
   go test ./internal/simtest -run '^TestAMigrationWhoseSourceIsCutOffEndsAtItsHold$' -count=1
+SPROUTFS_SIM_BUG=migration-strip-published-pages \
+  go test ./internal/simtest -run '^TestADestinationPublishesWhatItReceivedWhileItsSourceStillServes$' -count=1
+SPROUTFS_SIM_BUG=migration-strip-published-holes \
+  go test ./internal/simtest -run '^TestADestinationPublishesWhatItReceivedWhileItsSourceStillServes$' -count=1
+SPROUTFS_SIM_BUG=migration-ask-for-published-pages \
+  go test ./internal/simtest -run '^TestADestinationPublishesWhatItReceivedWhileItsSourceStillServes$' -count=1
 SPROUTFS_SIM_BUG=pager-zero-new-page \
   go test ./internal/simtest -run '^TestScheduledWorldReproduces$' -count=1
 SPROUTFS_SIM_BUG=pager-forget-spill \
@@ -1277,6 +1326,27 @@ migration waiting on a listed source that nothing can reach after the source's
 hold is over. No campaign cuts a source off while it stays listed, so the
 scenario is the only place where the hold is the one evidence left. With the
 guard on, the migration ends at the harness's patience instead of at the hold.
+
+The `migration-strip-published-pages`, `migration-strip-published-holes` and
+`migration-ask-for-published-pages` guards need a destination that publishes
+and retires before its source is released, which no scenario had before
+`TestADestinationPublishesWhatItReceivedWhileItsSourceStillServes`. They put
+back the peer backing's old rules one at a time. The first is the one that
+killed a fan-out's children, and the retire that refuses catches it. The other
+two are caught by the backing's two answers disagreeing. Together they are the
+rules this scenario replaced, which read a page of zeros back as the bytes the
+guest zeroed. The generated schedule catches all three as well. Over seeds 1 to
+60 of `TestSeededTopologySoak` and `TestBuggifiedTopologySoak`, 120 runs, the
+first fails 88 runs and the second 49. The third fails 3, all buggified,
+because it needs a pager that evicts a page the destination published.
+
+The fix to `readIn` that the scenario was also meant to reach is not a guard.
+It refuses to share a page whose load calls it the source's own while the
+extents name it the volume's. Once a peer backing gives both answers by one
+rule, no load says that, so disabling it changes nothing a run can see. Under
+the old rules the scenario fails with it and without it, because the load path
+hands the guest the same bytes. `TestASourceServedPageTheExtentsCallPublishedIsNotSharedUnderItsIdentity`
+in `vmmemory` keeps it tested against a backing that disagrees.
 
 Five guards break the host's side of the Starter contract in `vmmachine`:
 

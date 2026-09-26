@@ -9,6 +9,9 @@ package testbacking
 
 import (
 	"context"
+	"fmt"
+	"log/slog"
+	"sync"
 
 	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/vmmemory"
@@ -32,6 +35,19 @@ type Admitting struct {
 	// forwarded, named by the call. It is where a harness counts what a volume
 	// was asked to do.
 	Admitted func(call string)
+
+	// mu guards disagreement, the first load whose two answers were not one.
+	mu           sync.Mutex
+	disagreement error
+}
+
+// Disagreement reports the first load of a backing whose pages can come from
+// another host that answered where a page's bytes are differently from its
+// Locate, nil while there has been none. See peerAdmitting.agree.
+func (b *Admitting) Disagreement() error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.disagreement
 }
 
 // New wraps backing and reports the value to attach beside the wrapper itself,
@@ -110,7 +126,55 @@ func (b peerAdmitting) LoadUnpublished(ctx context.Context, offset uint64, dst [
 	if err != nil {
 		return nil, err
 	}
-	return b.Backing.(vmmemory.UnpublishedLoader).LoadUnpublished(ctx, offset, dst)
+	unpublished, err := b.Backing.(vmmemory.UnpublishedLoader).LoadUnpublished(ctx, offset, dst)
+	if err == nil {
+		b.agree(ctx, offset, uint64(len(dst)), unpublished)
+	}
+	return unpublished, err
+}
+
+// agree requires the two answers such a backing gives about where a page's
+// bytes are to be one answer. Locate reports no identity for exactly the pages
+// whose only copy is the source's, and a load that succeeded reports exactly
+// those pages as the source's own. The pager believes both: the first decides
+// what it shares under a name and what its retire may give up, the second what
+// it keeps as the guest's own. Where the two disagree, one of those decisions
+// is made on the wrong answer, and some guest reads bytes that are not its
+// page's — whether or not this run goes on to read them.
+//
+// The check is the answers against each other rather than either against a
+// rule of its own, so it holds whatever rule the backing keeps. It is recorded
+// rather than returned: a failed load is something the pager and the harness
+// both know how to excuse.
+func (b peerAdmitting) agree(ctx context.Context, offset, length uint64, unpublished []bool) {
+	paged, ok := b.Backing.(vmmemory.PagedBacking)
+	if !ok {
+		return
+	}
+	size := paged.PageSize()
+	extents, err := b.Backing.Locate(ctx, offset, length)
+	if err != nil {
+		// A fault on the volume's metadata says nothing about the two answers,
+		// so this load goes unchecked rather than counted against the backing.
+		slog.WarnContext(ctx, "testbacking: locating a load to check it", "task", b.task, "error", err)
+		return
+	}
+	for _, extent := range extents {
+		for page := max(extent.Offset, offset) / size; page*size < min(extent.Offset+extent.Length, offset+length); page++ {
+			index := page - offset/size
+			own := index < uint64(len(unpublished)) && unpublished[index]
+			stripped := extent.Identity.Ref.IsZero() && !extent.Identity.Zero
+			if own == stripped {
+				continue
+			}
+			b.mu.Lock()
+			if b.disagreement == nil {
+				b.disagreement = fmt.Errorf("%s: page %d loads as the source's own = %t, and Locate reports %+v",
+					b.task, page, own, extent.Identity)
+			}
+			b.mu.Unlock()
+		}
+	}
 }
 
 // InstalledUnpublished forwards the pager's report of which of those pages the

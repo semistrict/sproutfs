@@ -934,10 +934,18 @@ func (w *World) Store(ctx context.Context, id string, writes int, choose func(li
 		// through, which is what a cold read and a cache maintenance reach the
 		// pager as. The page is copied all the same, and the settle behind the
 		// next checkpoint's pause is what decides it was never dirty.
+		//
+		// One in eight stores a page of zeros, which is what a guest kernel
+		// does to memory it frees. A checkpoint publishes that page as a hole,
+		// its retire hands the page back, and the next read of it is answered
+		// by what the volume says about a hole rather than by any page.
 		var err error
-		if choose(4) == 0 {
+		switch choose(8) {
+		case 0, 1:
 			err = g.takeWritable(ctx, name, page)
-		} else {
+		case 2:
+			err = g.storeValue(name, page, 0)
+		default:
 			err = g.store(name, page)
 		}
 		switch {
@@ -963,6 +971,15 @@ func excused(err error) bool {
 	return errors.Is(err, platform.ErrUnavailable) || errors.Is(err, context.DeadlineExceeded) ||
 		errors.Is(err, context.Canceled)
 }
+
+// refused reports a checkpoint no fault explains: its retire would have given
+// up a page of the guest's that the volume says it holds no object for, and
+// the pager refused rather than believe it. The checkpoint is durable either
+// way, the page stays sealed and the guest keeps its memory, so nothing else
+// in the run would ever notice. It is a backing that told the pager something
+// untrue about its own volume, so it fails the run wherever a checkpoint that
+// did not happen would otherwise be let go.
+func refused(err error) bool { return errors.Is(err, vmmemory.ErrUndroppable) }
 
 // StoreAll writes one whole generation into every page of one VM's memory,
 // which is what a campaign that reads a recovered VM back as one generation
@@ -1347,13 +1364,21 @@ func (w *World) Migrate(ctx context.Context, id string, to int) error {
 	return w.MigrateWith(ctx, id, to, Handover{})
 }
 
-// Handover is one migration's terms. The zero value is what a schedule's
-// migration is: the deployment's own.
+// Handover is one migration's or one fork's terms. The zero value is what a
+// schedule's handover is by default: the deployment's own.
 type Handover struct {
 	// Inspect is one look at the handoff before the destination is given it,
 	// which is where a scenario asks what a destination does with a layout it
 	// must refuse.
 	Inspect func(vmmigrate.Handoff) error
+	// Meanwhile runs once the destination has taken the VM in and before its
+	// source is released, with the id of the VM the destination now runs. A
+	// deployment's destination runs its guest from the receive on: it stores,
+	// it is checkpointed and it retires what it published, while every memory
+	// region it has still asks the source for the pages it faults. The source
+	// is released only when the orchestrator says so, and its bulk stream runs
+	// on until then.
+	Meanwhile func(ctx context.Context, id string) error
 }
 
 // MigrateWith is Migrate on the caller's terms.
@@ -1429,6 +1454,10 @@ func (w *World) MigrateWith(ctx context.Context, id string, to int, terms Handov
 		w.place(in, from, nil)
 		return w.recover(ctx, in, to, "a receive that failed")
 	}
+	// The post-copy ends when this does, after the release and the bulk stream
+	// or at a requirement broken on the way: a stream left running would
+	// outlive the world it streams into.
+	defer received.Close()
 	next := destination.guestFor(id)
 	if next == nil {
 		// The destination took the VM in and is gone: its process died between
@@ -1445,7 +1474,19 @@ func (w *World) MigrateWith(ctx context.Context, id string, to int, terms Handov
 	if got := next.stored(); got != writes {
 		return fmt.Errorf("%s: the destination restored %d stores, want the source's %d", id, got, writes)
 	}
-	// The source is released as soon as the destination reports the pages no
+	next.adopt(at)
+	w.place(in, to, next)
+	// Nothing was published at the handoff, so what the destination must read
+	// back is the source's last checkpoint plus the pages it served. This is
+	// checked through the destination's own mappings before it writes anything
+	// of its own.
+	if err := w.check(ctx, next, at, ReadsMayFail); err != nil {
+		return fmt.Errorf("the destination's first read after a migration: %w", err)
+	}
+	if err := w.meanwhile(ctx, terms, id); err != nil {
+		return err
+	}
+	// The source is released once the destination reports the pages no
 	// checkpoint holds, which is when a deployment releases it: every page left
 	// is in object storage as well. The bulk stream behind the running guest
 	// then meets a source that has given the VM up and reads the rest from
@@ -1459,26 +1500,19 @@ func (w *World) MigrateWith(ctx context.Context, id string, to int, terms Handov
 			_ = released.Abandon(id)
 		}
 	}
-	arrived := w.streamed(ctx, received)
-	received.Close()
-	if arrived != nil {
-		// The destination is running a guest whose memory is part its own and
-		// part missing. There is nothing to publish and nothing to keep: it
-		// gives the VM back, and the next host to open it starts from the
-		// checkpoint the record still selects.
-		w.logf("%s: the post-copy into %s did not finish: %v", id, destination.name, arrived)
-		w.abandonSource(ctx, source, id)
-		w.place(in, from, nil)
-		return w.recover(ctx, in, to, "a post-copy that did not finish")
+	w.streamed(ctx, received)
+	return nil
+}
+
+// meanwhile runs what a handover's terms have the deployment do between a
+// receive and the release of its source: the destination's guest is running,
+// and every memory region of it still asks the source for what it faults.
+func (w *World) meanwhile(ctx context.Context, terms Handover, id string) error {
+	if terms.Meanwhile == nil || w.live(id) == nil {
+		return nil
 	}
-	next.adopt(at)
-	w.place(in, to, next)
-	// Nothing was published at the handoff, so what the destination must read
-	// back is the source's last checkpoint plus the pages it served. This is
-	// checked through the destination's own mappings before it writes anything
-	// of its own.
-	if err := w.check(ctx, next, at, ReadsMayFail); err != nil {
-		return fmt.Errorf("the destination's first read after a migration: %w", err)
+	if err := terms.Meanwhile(ctx, id); err != nil {
+		return fmt.Errorf("%s, before its source was released: %w", id, err)
 	}
 	return nil
 }
@@ -1685,13 +1719,12 @@ func (h *hostState) stillRunning(id string) bool {
 //
 // Every wait is bounded, because a fault that holds a page holds it until
 // somebody gives up. Giving up is what a real destination does too.
-func (w *World) streamed(ctx context.Context, received *vmmigrate.Received) error {
+func (w *World) streamed(ctx context.Context, received *vmmigrate.Received) {
 	stream, cancel := context.WithTimeout(ctx, Deadline)
 	defer cancel()
 	if err := received.Streamed(stream); err != nil {
 		w.logf("the bulk stream ended early: %v", err)
 	}
-	return nil
 }
 
 // discardChild takes back the identity of a child its destination could not
@@ -1744,7 +1777,12 @@ func (w *World) indexOf(h *hostState) int {
 // behind: the child is closed, which deletes its record, and the topology's
 // fork simply did not happen on this seed.
 func (w *World) Fork(ctx context.Context, spec VMSpec) error {
-	return w.FanOut(ctx, spec.Parent, []VMSpec{spec})
+	return w.ForkWith(ctx, spec, Handover{})
+}
+
+// ForkWith is Fork on the caller's terms.
+func (w *World) ForkWith(ctx context.Context, spec VMSpec, terms Handover) error {
+	return w.FanOutWith(ctx, spec.Parent, []VMSpec{spec}, terms)
 }
 
 // FanOut forks one parent into every child of one fork point, which is what the
@@ -1760,6 +1798,11 @@ func (w *World) Fork(ctx context.Context, spec VMSpec) error {
 // runs, and the reason a fan-out that half happened leaves the parent exactly as
 // a fork that never happened does.
 func (w *World) FanOut(ctx context.Context, parent string, children []VMSpec) error {
+	return w.FanOutWith(ctx, parent, children, Handover{})
+}
+
+// FanOutWith is FanOut on the caller's terms, which apply to every child.
+func (w *World) FanOutWith(ctx context.Context, parent string, children []VMSpec, terms Handover) error {
 	if len(children) == 0 {
 		return nil
 	}
@@ -1810,7 +1853,12 @@ func (w *World) FanOut(ctx context.Context, parent string, children []VMSpec) er
 		if handoff.VMID != spec.ID {
 			return fmt.Errorf("%s: the %s handoff names %s", parent, spec.ID, handoff.VMID)
 		}
-		started, err := w.forked(ctx, source, destination, spec, handoff, at)
+		if terms.Inspect != nil {
+			if err := terms.Inspect(handoff); err != nil {
+				return err
+			}
+		}
+		started, err := w.forked(ctx, source, destination, spec, handoff, at, terms)
 		if err != nil {
 			return err
 		}
@@ -1838,7 +1886,7 @@ func (w *World) FanOut(ctx context.Context, parent string, children []VMSpec) er
 // identity goes with it and the hold the point took for it is given up on the
 // source, because nothing will ever fetch what that hold keeps.
 func (w *World) forked(ctx context.Context, source, destination *hostState, spec VMSpec,
-	handoff vmmigrate.Handoff, at map[string][]byte) (bool, error) {
+	handoff vmmigrate.Handoff, at map[string][]byte, terms Handover) (bool, error) {
 	incarnation := w.incarnationOf(spec.Host)
 	// Nothing in the deployment ends a fork's receive on its parent's hold, so
 	// the child's is carried under none: it ends when the parent's host is
@@ -1849,6 +1897,11 @@ func (w *World) forked(ctx context.Context, source, destination *hostState, spec
 		// would not publish: either way the destination gave the guest up. The
 		// identity goes with it, and the parent takes its pages back here.
 		w.logf("%s: %s could not receive the child: %v", spec.ID, destination.name, err)
+		if refused(err) {
+			// The receive publishes the child's root, and its retire is what
+			// refused: the fork not happening is not what that means.
+			return false, fmt.Errorf("%s: the root of the child: %w", spec.ID, err)
+		}
 		if w.leftRunning(spec.Host, incarnation, spec.ID) {
 			// A guest the destination could not account for is one whose
 			// stores nothing can ever publish, whatever stopped the receive: a
@@ -1860,6 +1913,10 @@ func (w *World) forked(ctx context.Context, source, destination *hostState, spec
 		w.abandonSource(ctx, source, spec.ID)
 		return false, nil
 	}
+	// The post-copy ends when this does, after the release and the bulk stream
+	// or at a requirement broken on the way: a stream left running would
+	// outlive the world it streams into.
+	defer received.Close()
 	child := destination.guestFor(spec.ID)
 	if child == nil {
 		received.Close()
@@ -1867,8 +1924,6 @@ func (w *World) forked(ctx context.Context, source, destination *hostState, spec
 		return false, fmt.Errorf("%s: %s started no guest for the child", spec.ID, destination.name)
 	}
 	root := received.VM().Status().Checkpoint
-	_ = w.streamed(ctx, received)
-	received.Close()
 	child.adopt(at)
 	in := &instance{spec: spec}
 	w.adopt(in)
@@ -1882,6 +1937,9 @@ func (w *World) forked(ctx context.Context, source, destination *hostState, spec
 	if err := w.check(ctx, child, at, ReadsMayFail); err != nil {
 		return false, fmt.Errorf("the child's first read: %w", err)
 	}
+	if err := w.meanwhile(ctx, terms, spec.ID); err != nil {
+		return false, err
+	}
 	// The child has every page it inherited and a root of its own, so the parent
 	// takes its sealed pages back here. A release that is refused or never made
 	// leaves the point where it is, and the survey at the next step ends it: a
@@ -1893,6 +1951,7 @@ func (w *World) forked(ctx context.Context, source, destination *hostState, spec
 			w.logf("%s: the fork point could not be retired: %v", spec.Parent, err)
 		}
 	}
+	w.streamed(ctx, received)
 	return true, nil
 }
 

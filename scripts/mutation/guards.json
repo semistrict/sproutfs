@@ -66,6 +66,24 @@
     "purpose": "Keep waiting on a listed source nothing can reach after its hold is over. Only a source cut off while still listed leaves the hold as the one evidence, and no campaign draws that fault, so the scenario is its entry."
   },
   {
+    "id": "migration-strip-published-pages",
+    "package": "internal/simtest",
+    "run": "^TestADestinationPublishesWhatItReceivedWhileItsSourceStillServes$",
+    "purpose": "Report every page of a handoff's set as the source's for the peer backing's whole life, which told a fork's child that pages it had published had no object. Only a destination checkpointed while its source still serves retires one of them, which is why this is that scenario's entry."
+  },
+  {
+    "id": "migration-strip-published-holes",
+    "package": "internal/simtest",
+    "run": "^TestADestinationPublishesWhatItReceivedWhileItsSourceStillServes$",
+    "purpose": "Report a page of a handoff's set as the source's while the volume names a checkpoint from before the handoff, which a hole always seems to be, so a page of zeros the destination published and retired is loaded as the source's own."
+  },
+  {
+    "id": "migration-ask-for-published-pages",
+    "package": "internal/simtest",
+    "run": "^TestADestinationPublishesWhatItReceivedWhileItsSourceStillServes$",
+    "purpose": "Ask the source for every page a destination loads, including one it published since the handoff, which answers with the version the guest wrote past. Only a destination whose arena gives back a page it published while its source still serves loads one."
+  },
+  {
     "id": "pager-forget-spill",
     "package": "internal/simtest",
     "run": "^TestSeededTopologyUnderBuggify$",

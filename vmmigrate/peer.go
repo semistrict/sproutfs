@@ -147,8 +147,8 @@ type PeerBacking struct {
 	config PeerConfig
 	// unpublished is the handoff's set as a lookup, fixed for this backing's
 	// life: the guest was stopped when it was taken. What it decides is not
-	// fixed — a page of it stops being reported as this memory region's own once a
-	// checkpoint of this VM holds it, which Locate reads off the volume.
+	// fixed — a page of it is the source's until this host takes it, which
+	// unfetched records, and the volume's from then on.
 	unpublished map[uint64]bool
 
 	// source is the host that still holds these pages, and the connections this
@@ -254,26 +254,23 @@ func (b *PeerBacking) Verify(ctx context.Context) error { return b.config.Volume
 func (b *PeerBacking) Ephemeral() bool { return b.config.Volume.Ephemeral() }
 
 // Locate reports the volume's own identities everywhere except the pages whose
-// bytes no checkpoint of this VM holds. Those it reports as bytes of this memory region
-// alone — no reference, so no page of them is ever shared and none of them is
-// taken for a hole — which is what makes the pager load them through Load, where
-// the source answers, rather than resolve them against a checkpoint that does
-// not have them.
+// only copy is still the source's. Those it reports as bytes of this memory
+// region alone — no reference, so no page of them is ever shared and none of
+// them is taken for a hole — which is what makes the pager load them through
+// Load, where the source answers, rather than resolve them against a checkpoint
+// that does not have them.
 //
-// One rule decides it, and it is about which checkpoint rather than about time
-// or about whose VM it is: a page of the handoff's set is stripped for exactly
-// as long as the checkpoint the volume names for it predates the handoff. That
-// is any checkpoint of another VM — what a fork child inherits from its parent —
-// and any checkpoint of this VM's own up to the one the handoff selected, which
-// is what a migration's unpublished pages were written past.
-//
-// Both halves are load-bearing, in opposite directions. A migration keeps the
-// same VM, and its volume names that VM's own pre-handoff checkpoint for exactly
-// these pages: resolving one would hand the guest bytes from before its own
-// write. A fork child publishes its inherited pages itself within a second of
-// starting, under a sequence of its own above the selected one: going on
-// stripping those tells the pager a page it has just published has no object,
-// and the pager's retire then gives up the guest's only copy of those bytes.
+// One rule decides it: a page of the handoff's set is the source's until this
+// host takes it, and the volume's from then on, like every other page. Until
+// then the volume can only name what the guest wrote past: the checkpoint a
+// migration's handoff selected, the parent's checkpoint a fork's child
+// inherited, or a hole where either had nothing. From then on this host holds
+// the page, and nothing here loads it again until a checkpoint of this VM has
+// published it; the volume then names that checkpoint, or the hole it wrote
+// for a page of zeros, and that is the truth about where the page's bytes are.
+// Going on stripping it tells the pager a page it has just published has no
+// object: its retire gives up the only copy of what the guest wrote, and its
+// next read asks a source that holds the version the guest wrote past.
 func (b *PeerBacking) Locate(ctx context.Context, offset, length uint64) ([]control.Extent, error) {
 	extents, err := b.config.Volume.Locate(ctx, offset, length)
 	if err != nil || len(b.unpublished) == 0 {
@@ -288,12 +285,14 @@ func (b *PeerBacking) Locate(ctx context.Context, offset, length uint64) ([]cont
 		}
 		result = append(result, next)
 	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	for _, extent := range extents {
 		end := extent.Offset + extent.Length
 		for cursor := extent.Offset; cursor < end; {
 			page := cursor / size
 			stop := min(end, (page+1)*size)
-			if b.unpublished[page] && b.predatesHandoff(extent.Identity.Ref) {
+			if b.stripped(ctx, page, extent.Identity.Ref) {
 				add(control.Extent{Offset: cursor, Length: stop - cursor})
 			} else {
 				add(control.Extent{Offset: cursor, Length: stop - cursor, Identity: extent.Identity})
@@ -304,10 +303,70 @@ func (b *PeerBacking) Locate(ctx context.Context, offset, length uint64) ([]cont
 	return result, nil
 }
 
+// stripped reports a page Locate names no identity for: one whose only copy is
+// the source's. Caller holds b.mu.
+func (b *PeerBacking) stripped(ctx context.Context, page uint64, ref control.Ref) bool {
+	if _, only := b.unfetched[page]; only {
+		return true
+	}
+	// The two rules Locate had before this one, as the in-tree bugs that put
+	// them back: the handoff's set stripped for this backing's whole life,
+	// which told a fork's child that the pages it had published had no object;
+	// and the set stripped while the volume names a checkpoint from before the
+	// handoff, which a hole always seems to be, so a page of zeros this VM had
+	// published was still the source's.
+	return b.unpublished[page] && (sim.Bug(ctx, "migration-strip-published-pages") ||
+		(b.predatesHandoff(ref) && sim.Bug(ctx, "migration-strip-published-holes")))
+}
+
+// sourced reports, for each of count pages from first, whether the source is
+// asked for it. See sources.
+func (b *PeerBacking) sourced(ctx context.Context, first uint64, count int) ([]bool, error) {
+	size := uint64(b.config.PageSize)
+	extents, err := b.config.Volume.Locate(ctx, first*size, uint64(count)*size)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]bool, count)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, extent := range extents {
+		from := max(extent.Offset/size, first)
+		to := min((extent.Offset+extent.Length+size-1)/size, first+uint64(count))
+		for page := from; page < to; page++ {
+			result[page-first] = b.sources(ctx, page, extent.Identity.Ref)
+		}
+	}
+	return result, nil
+}
+
+// sources reports whether the source may hold a page's current bytes, which is
+// the only case in which it is asked for them. A page only the source holds
+// is. So is a page outside the handoff's set that the volume names by a
+// checkpoint from before the handoff, or by a hole, which says nothing about
+// when it was written: the source may hold those bytes as well and serves them
+// faster than object storage. Nothing else is. A page of the set this host has
+// taken is here or in a checkpoint of this VM, and a page this VM has
+// published since is one the source holds at best the version before of:
+// answering from there hands the guest a page it has written past. Caller
+// holds b.mu.
+func (b *PeerBacking) sources(ctx context.Context, page uint64, ref control.Ref) bool {
+	if _, only := b.unfetched[page]; only {
+		return true
+	}
+	if !b.unpublished[page] && b.predatesHandoff(ref) {
+		return true
+	}
+	sim.Probe(ctx, ProbePublishedSinceHandoff)
+	// Every page asked for, as every load did before: a page this VM has
+	// published since the handoff is answered with the version before it.
+	return sim.Bug(ctx, "migration-ask-for-published-pages")
+}
+
 // predatesHandoff reports a checkpoint reference older than the pages this
 // backing's handoff named: another VM's, or this VM's own from at or before the
-// checkpoint the handoff selected. A page the volume names by one of those is a
-// page the guest has already written past. See Locate.
+// checkpoint the handoff selected. A page the volume names by one of those, or
+// by none, is a page whose bytes the source may hold too. See sourced.
 func (b *PeerBacking) predatesHandoff(ref control.Ref) bool {
 	return ref.VM != b.config.VM || ref.Sequence <= b.config.Selected
 }
@@ -414,6 +473,9 @@ func (b *PeerBacking) Load(ctx context.Context, offset uint64, dst []byte) error
 // holds each of them privately until this host's next checkpoint publishes it.
 // Everything read from this host's own volume, and every page the source served
 // out of a checkpoint it shares with this host, is reported clean.
+//
+// Only the pages the source may hold the current bytes of are asked for; every
+// other page is read from the volume. See sourced.
 func (b *PeerBacking) LoadUnpublished(ctx context.Context, offset uint64, dst []byte) ([]bool, error) {
 	size := uint64(b.config.PageSize)
 	if b.gone() || offset%size != 0 || uint64(len(dst))%size != 0 || len(dst) == 0 {
@@ -421,9 +483,27 @@ func (b *PeerBacking) LoadUnpublished(ctx context.Context, offset uint64, dst []
 	}
 	first := offset / size
 	pages := uint64(len(dst)) / size
+	sourced, err := b.sourced(ctx, first, int(pages))
+	if err != nil {
+		return nil, err
+	}
 	unpublished := make([]bool, pages)
 	for done := uint64(0); done < pages; {
-		count := min(pages-done, uint64(b.config.MaxPagesPerRequest))
+		if !sourced[done] {
+			run := done + 1
+			for run < pages && !sourced[run] {
+				run++
+			}
+			if err := b.fromVolume(ctx, offset+done*size, dst[done*size:run*size]); err != nil {
+				return nil, err
+			}
+			done = run
+			continue
+		}
+		count := uint64(1)
+		for count < min(pages-done, uint64(b.config.MaxPagesPerRequest)) && sourced[done+count] {
+			count++
+		}
 		window := dst[done*size : (done+count)*size]
 		reply, err := b.ask(ctx, first+done, int(count))
 		if err != nil {

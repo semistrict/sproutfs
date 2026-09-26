@@ -174,7 +174,8 @@ func TestMigrationMovesARunningGuestWithoutObjectStorage(t *testing.T) {
 // migration: the destination fetches every page no checkpoint has, publishes
 // them in its own next checkpoint, and from then on reads everything from its
 // own volume and never asks the peer again. That is what lets the source host
-// exit.
+// exit. A source that is released answers that it no longer serves the VM,
+// which TestUnknownVolumeFallsBackForGood covers; here nothing even asks it.
 func TestReleasedSourceSendsTheDestinationToItsVolume(t *testing.T) {
 	m := newMigration(t)
 	m.machine.start(4)
@@ -216,7 +217,7 @@ func TestReleasedSourceSendsTheDestinationToItsVolume(t *testing.T) {
 	for _, memoryRegion := range handoff.MemoryRegions {
 		backing, err := vmmigrate.NewPeerBacking(vmmigrate.PeerConfig{
 			Volume: received.VM().Volume(memoryRegion.Name), Peer: handoff.Source, VM: handoff.VMID,
-			PageSize: pageSize, Dial: m.cluster.dialer("dest")})
+			Selected: handoff.Checkpoint, PageSize: pageSize, Dial: m.cluster.dialer("dest")})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -229,15 +230,15 @@ func TestReleasedSourceSendsTheDestinationToItsVolume(t *testing.T) {
 	if err := restarted.verify(t.Context(), model); err != nil {
 		t.Fatal(err)
 	}
+	// Every page is one the destination's own checkpoint published after the
+	// handoff, so the source holds at best the version before of each and is not
+	// asked for any of them: not even to hear that it no longer serves the VM.
 	for name, backing := range backings {
 		stats := backing.Stats()
-		if stats.PeerPages != 0 || stats.VolumePages == 0 || !stats.FellBack {
-			t.Fatalf("%s read %d peer and %d volume pages, fell back %v", name, stats.PeerPages, stats.VolumePages, stats.FellBack)
-		}
-		// One refusal is enough: nothing retries a source that said it no longer
-		// serves the VM.
-		if stats.Requests != 1 {
-			t.Fatalf("%s asked the released source %d times", name, stats.Requests)
+		if stats.PeerPages != 0 || stats.VolumePages == 0 || stats.Requests != 0 || stats.FellBack {
+			t.Fatalf("%s read %d peer and %d volume pages in %d requests, fell back %v, "+
+				"want every page from the volume and no request", name, stats.PeerPages, stats.VolumePages,
+				stats.Requests, stats.FellBack)
 		}
 	}
 }
