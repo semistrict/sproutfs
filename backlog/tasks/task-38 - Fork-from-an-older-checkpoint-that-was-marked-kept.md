@@ -1,11 +1,11 @@
 ---
 id: TASK-38
 title: Fork from an older checkpoint that was marked kept
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-26 01:40'
-updated_date: '2026-09-26 14:00'
+updated_date: '2026-09-26 14:46'
 labels:
   - embedder
 dependencies: []
@@ -27,7 +27,7 @@ A fork can start only from a VM's newest checkpoint or from one a pin already ke
 - [x] #1 A checkpoint request (suspend, capture and the host's checkpoint call, through the host API and the CLI) can mark the checkpoint it publishes kept; a kept checkpoint survives every later reclamation
 - [x] #2 A VM's kept checkpoints can be listed, with each one's sequence, time and whether it holds VMM state
 - [x] #3 A create from a kept checkpoint of any VM of the same tenant succeeds whether or not that VM runs, and whatever checkpoints it has published since
-- [ ] #4 A fork from a kept checkpoint that holds VMM state resumes the guest from that state with its memory; one without state boots cold over its disks, and the result says which
+- [x] #4 A fork from a kept checkpoint that holds VMM state resumes the guest from that state with its memory; one without state boots cold over its disks, and the result says which
 - [x] #5 A kept checkpoint that no fork was taken from can be released, and reclamation then deletes what only it held; releasing one that was forked is refused
 - [x] #6 Simulation invariants: a kept checkpoint's pages are never reclaimed while it is kept; a child started from it reads exactly that checkpoint's bytes, never a later one's
 - [x] #7 docs/hosting.md and docs/metadata.md describe kept checkpoints
@@ -55,6 +55,8 @@ Progress: orchestrator and sproutfsctl (capture/stop --keep, kept, release VM@CH
 Determinism: the fingerprint test caught a background sweep racing the next step's store fault (the kept operations changed seed 1's schedule so it hit it). World.checkpoint and checkpointDisks now wait for Swept. The host's control client is also given the host clock, so kept times are simulated time. After that: go test ./internal/simtest passes; 100 seeds each of TestSeededTopologySoak and TestBuggifiedTopologySoak pass with 32 creates from kept checkpoints (18 resumed, 12 cold), 166 releases and 20 releases refused as forked. AC4 is proven in host tests and the simulation; the real-VMM Lima run is blocked until the instance has a 2 MiB HugeTLB pool.
 
 Merged to main. AC4 waits on the real-VMM run: SPROUTFS_FIRECRACKER_RUN=TestAVMCreatedFromAKeptCheckpointResumesItsGuest scripts/test-firecracker-lima.sh, which needs a 2 MiB HugeTLB pool in Lima.
+
+AC4 proven in Lima: TestAVMCreatedFromAKeptCheckpointResumesItsGuest passes on real Firecracker.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
