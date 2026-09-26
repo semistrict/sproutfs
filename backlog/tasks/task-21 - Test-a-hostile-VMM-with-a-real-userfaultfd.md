@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-09-25 18:17'
-updated_date: '2026-09-26 17:28'
+updated_date: '2026-09-26 17:54'
 labels:
   - security
   - testing
@@ -23,7 +23,7 @@ The hostile-session fuzzing uses fake descriptors, so its sessions end at the fi
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A fuzz target drives a real registered userfaultfd through seal, retire and settle
+- [x] #1 A fuzz target drives a real registered userfaultfd through seal, retire and settle
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -34,3 +34,15 @@ The hostile-session fuzzing uses fake descriptors, so its sessions end at the fi
 3. After each round the fixture's rules hold: the session ends and never hangs, the neighbour keeps its bytes, the pager and host get back what they held.
 4. Run in Lima; fuzz for a while; fix what it finds.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+vmmemory/hostile_client_linux_test.go adds a proxy (hostileProxy) on a real client's RAM control socket. It forwards every frame both ways with its descriptors, so the client's guest faults its RAM in on a real registered userfaultfd. hc.capture drives fill -> wire seal -> Checkpoint().Settle -> publish -> Retire, exercising seal, settle and retire on a live session. The proxy then injects one frame the honest client never sends (unexpected/duplicate ACK, seal id 0, RAM flush, unknown kind, cut-short frame, hang up) and the pager ends the session with its own error while the neighbour keeps its bytes and the pager/host reclaim what the session held. startNativeIn grew a proxy option; nativeProcess grew a reap() so the client's pipe fds are closed before the descriptor-count invariant. Verified in Lima: 7 concrete cases (TestAHostileClientWithARealUFFDIsEndedThroughACapture) PASS in shared and isolated at 4KiB and 2MiB; FuzzHostileClient ran ~45s clean after fixing a proxy fd leak and an unreaped-process fd leak that the fuzzer found.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A proxy in front of the real Rust client forwards a whole session over a real userfaultfd, so the test seals, settles and retires the guest's memory region, then sends the pager a frame the honest client never would. The pager ends the session and leaves its neighbour whole. FuzzHostileClient drives this with a varying number of captures and frames, so seal, retire and settle run under a hostile session, which the made-up descriptors of the existing hostile fuzzing could not reach. Verified in the Lima suite in both arena modes at 4KiB and 2MiB (AC1).
+<!-- SECTION:FINAL_SUMMARY:END -->
