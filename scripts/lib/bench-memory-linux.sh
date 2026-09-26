@@ -156,7 +156,7 @@ if [[ ${SPROUTFS_GCE_QUALIFY:-0} == 1 ]]; then
     CGO_ENABLED=0 go build -o "$fixture/agent" ./cmd/sproutfs-guest-agent
     CGO_ENABLED=0 go build -o "$fixture/bin/sproutfs-guest-witness" ./cmd/sproutfs-guest-witness
     cp /usr/bin/busybox "$fixture/bin/busybox"
-    for applet in sh sleep echo test touch cat df; do ln -sfn busybox "$fixture/bin/$applet"; done
+    for applet in sh sleep echo test touch cat df sync dd; do ln -sfn busybox "$fixture/bin/$applet"; done
     truncate -s 64M "$work/build/firecracker-root.ext4"
     mkfs.ext4 -q -F -b 4096 -d "$fixture" "$work/build/firecracker-root.ext4"
     qualify firecracker env SPROUTFS_FIRECRACKER="$work/build/firecracker" \
