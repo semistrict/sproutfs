@@ -17,7 +17,9 @@ import (
 	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/host"
 	"github.com/semistrict/sproutfs/internal/knobs"
+	"github.com/semistrict/sproutfs/internal/testarena"
 	"github.com/semistrict/sproutfs/internal/testbacking"
+	"github.com/semistrict/sproutfs/internal/testpager"
 	"github.com/semistrict/sproutfs/internal/testresource"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/sim"
@@ -152,134 +154,10 @@ func (s *countingStore) Get(ctx context.Context, request platform.GetRequest) (p
 	return s.ObjectStore.Get(ctx, request)
 }
 
-// arena is the simulated shared page store: one byte slice per resident slot.
-type arena struct {
-	mu    sync.Mutex
-	slots [][]byte
-}
-
-// File is the one file this arena is. A pager makes exactly one.
-func (a *arena) File(context.Context, int) (vmmemory.ArenaFile, error) { return a, nil }
-
-func (a *arena) Read(_ context.Context, slot int, dst []byte) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	copy(dst, a.slots[slot])
-	return nil
-}
-
-func (a *arena) Write(_ context.Context, slot int, src []byte) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.slots[slot] != nil {
-		return fmt.Errorf("write into allocated slot %d", slot)
-	}
-	a.slots[slot] = bytes.Clone(src)
-	return nil
-}
-
-func (a *arena) Release(_ context.Context, slot int) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.slots[slot] = nil
-	return nil
-}
-
-type mapped struct {
-	slot     int
-	writable bool
-}
-
-// mapping is one simulated process memory region. Every lookup takes the arena lock,
-// because a guest storing into a page races the seal that write-protects it:
-// the store and the writability check must be one step, exactly as the hardware
-// makes them.
-type mapping struct {
-	arena *arena
-	mu    sync.Mutex
-	pages map[uint64]mapped
-}
-
-func newMapping(a *arena) *mapping { return &mapping{arena: a, pages: make(map[uint64]mapped)} }
-
-func (m *mapping) Map(_ context.Context, page uint64, file, slot, count int, writable bool) error {
-	if file != 0 {
-		return fmt.Errorf("map of file %d, and this arena has only file 0", file)
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for i := range count {
-		m.pages[page+uint64(i)] = mapped{slot + i, writable}
-	}
-	return nil
-}
-
-func (m *mapping) MapZero(_ context.Context, page uint64, count int) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for i := range count {
-		m.pages[page+uint64(i)] = mapped{-1, false}
-	}
-	return nil
-}
-
-func (m *mapping) Protect(_ context.Context, page uint64, count int) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for i := range count {
-		p, ok := m.pages[page+uint64(i)]
-		if !ok {
-			return fmt.Errorf("protect of unmapped page %d", page+uint64(i))
-		}
-		p.writable = false
-		m.pages[page+uint64(i)] = p
-	}
-	return nil
-}
-
-func (m *mapping) Revoke(_ context.Context, page uint64) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	delete(m.pages, page)
-	return nil
-}
-
-func (m *mapping) Resolve(_ context.Context, page uint64, count int, writable bool) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for i := range count {
-		p, ok := m.pages[page+uint64(i)]
-		if !ok || p.writable != writable {
-			return errors.New("invalid resolution")
-		}
-	}
-	return nil
-}
-
-// store writes one page's bytes the way a guest does: it takes the mapping lock,
-// and only a mapping that is writable right now accepts the store. A page a seal
-// has write-protected reports false, which is the trap the caller answers with a
-// write fault.
-func (m *mapping) store(page uint64, value byte) bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	p, ok := m.pages[page]
-	if !ok || !p.writable || p.slot < 0 {
-		return false
-	}
-	m.arena.mu.Lock()
-	defer m.arena.mu.Unlock()
-	slot := m.arena.slots[p.slot]
-	for i := range slot {
-		slot[i] = value
-	}
-	return true
-}
-
 // pager is one host's shared page store and its pager Host.
 type pager struct {
 	host    *vmmemory.Host
-	arena   *arena
+	arena   *testpager.Arena
 	cleanup func(func())
 	runtime *sim.Runtime
 }
@@ -292,9 +170,10 @@ func newPager(t *testing.T, c *cluster, name string) *pager {
 		t.Fatal(err)
 	}
 	c.cleanup(func() { _ = spill.Close() })
-	a := &arena{slots: make([][]byte, c.knobs.ResidentPages)}
+	mode := testarena.Mode(t)
+	a := testpager.NewArena(mode)
 	host, err := vmmemory.New(t.Context(), testresource.New(), vmmemory.Config{
-		PageSize:      pageSize,
+		PageSize: pageSize, Arena: mode,
 		ResidentPages: c.knobs.ResidentPages, LogicalPages: c.knobs.LogicalPages,
 		DirtyPages: c.knobs.DirtyPages, ReadAheadPages: c.knobs.ReadAheadPages,
 		WriteAheadPages: c.knobs.WriteAheadPages, ConcurrentIO: c.knobs.ConcurrentIO}, a, spill)
@@ -335,7 +214,7 @@ type machine struct {
 	t             *testing.T
 	pager         *pager
 	memoryRegions map[string]*vmmemory.MemoryRegion
-	mappings      map[string]*mapping
+	mappings      map[string]*testpager.Mapping
 	backings      map[string]*countingBacking
 	names         []string
 	pages         map[string]int
@@ -395,7 +274,7 @@ func memoryRegionKind(volume string) vmmemory.MemoryRegionKind {
 // newMachine attaches one memory region per volume of vm through backing, which is the
 // volume itself on a source and a peer-backed volume on a destination.
 func newMachine(t *testing.T, p *pager, vm *volume.VM, backings map[string]vmmemory.Backing, state []byte) (*machine, error) {
-	m := &machine{t: t, pager: p, memoryRegions: map[string]*vmmemory.MemoryRegion{}, mappings: map[string]*mapping{},
+	m := &machine{t: t, pager: p, memoryRegions: map[string]*vmmemory.MemoryRegion{}, mappings: map[string]*testpager.Mapping{},
 		backings: map[string]*countingBacking{}, pages: map[string]int{}, model: map[string][]byte{}}
 	for _, v := range vm.Volumes() {
 		name := v.Name()
@@ -404,7 +283,7 @@ func newMachine(t *testing.T, p *pager, vm *volume.VM, backings map[string]vmmem
 			backing = supplied
 		}
 		counted := newCountingBacking(backing, p.runtime, vm.ID()+"/"+name)
-		mp := newMapping(p.arena)
+		mp := testpager.NewMapping(p.arena)
 		memoryRegion, err := p.host.Attach(sim.WithRuntime(t.Context(), p.runtime),
 			vmmemory.MemoryRegionBacking{Kind: memoryRegionKind(name), Backing: counted.attached}, mp)
 		if err != nil {
@@ -562,7 +441,7 @@ func (m *machine) close() {
 	}
 	m.closed = true
 	for _, name := range m.names {
-		clear(m.mappings[name].pages)
+		m.mappings[name].Forget()
 		if err := m.memoryRegions[name].Detach(context.Background()); err != nil {
 			m.t.Error(err)
 		}
@@ -632,10 +511,10 @@ func (m *machine) write(name string, page uint64) {
 	m.t.Errorf("guest store on %s page %d never resolved", name, page)
 }
 
-func (m *machine) storeModel(name string, mp *mapping, page uint64, value byte) bool {
+func (m *machine) storeModel(name string, mp *testpager.Mapping, page uint64, value byte) bool {
 	m.modelMu.Lock()
 	defer m.modelMu.Unlock()
-	if !mp.store(page, value) {
+	if !mp.Store(page, value) {
 		return false
 	}
 	for i := range pageSize {
@@ -702,26 +581,19 @@ func (m *machine) snapshot() map[string][]byte {
 // destination's guest would see.
 func (m *machine) read(ctx context.Context, name string, page uint64) ([]byte, error) {
 	mp := m.mappings[name]
-	mp.mu.Lock()
-	p, ok := mp.pages[page]
-	mp.mu.Unlock()
+	data, ok := mp.Read(page)
 	if !ok {
 		if err := m.memoryRegions[name].Fault(ctx, page, false); err != nil {
 			return nil, err
 		}
-		mp.mu.Lock()
-		p, ok = mp.pages[page]
-		mp.mu.Unlock()
-		if !ok {
+		if data, ok = mp.Read(page); !ok {
 			return nil, fmt.Errorf("%s page %d unmapped after a fault", name, page)
 		}
 	}
-	if p.slot < 0 {
+	if data == nil {
 		return make([]byte, pageSize), nil
 	}
-	mp.arena.mu.Lock()
-	defer mp.arena.mu.Unlock()
-	return bytes.Clone(mp.arena.slots[p.slot]), nil
+	return data, nil
 }
 
 // verify reads every page of every memory region and requires it to equal the model

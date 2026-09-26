@@ -13,13 +13,19 @@ import (
 
 type partialPublicationArena struct{ *arena }
 
-// File is this arena itself, so that the pager's one file loses the response.
-func (a partialPublicationArena) File(context.Context, int) (vmmemory.ArenaFile, error) {
-	return a, nil
+// File is a file of this arena whose writes of slot 2 lose their response.
+func (a partialPublicationArena) File(ctx context.Context, offsets int) (vmmemory.ArenaFile, error) {
+	f, err := a.arena.File(ctx, offsets)
+	if err != nil {
+		return nil, err
+	}
+	return partialPublicationFile{f.(*arenaFile)}, nil
 }
 
-func (a partialPublicationArena) Write(ctx context.Context, slot int, data []byte) error {
-	if err := a.arena.Write(ctx, slot, data); err != nil {
+type partialPublicationFile struct{ *arenaFile }
+
+func (f partialPublicationFile) Write(ctx context.Context, slot int, data []byte) error {
+	if err := f.arenaFile.Write(ctx, slot, data); err != nil {
 		return err
 	}
 	if slot == 2 {

@@ -185,7 +185,7 @@ func zeroAheadBatchMemoryRegion(t *testing.T, pages, run int) (*fixture, *vmmemo
 	for page := range uint64(pages) {
 		b.zero[page] = true
 	}
-	base := &mapping{arena: f.a, pages: make(map[uint64]mapped)}
+	base := newMapping(f.a)
 	m := &revokeBatchMapping{mapping: base}
 	f.a.mappings = append(f.a.mappings, base)
 	r, err := f.h.Attach(t.Context(), ram(b), m)

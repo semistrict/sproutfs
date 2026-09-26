@@ -19,7 +19,9 @@ const residentHeapPages = 1 << 16
 // residentHeapBytes bounds what one resident page costs the host's heap. It
 // measured 923 bytes with a map of aliases and a list element per page, and 731
 // with one alias inline and the lists' links in the page: the rest is the page
-// struct, its lock, its entry in the sharing index and its binding.
+// struct, its lock, its entry in the sharing index and its binding. Both counted
+// the fixture's record of its mapping too, which is about fifty bytes a page;
+// without it the page costs 678.
 const residentHeapBytes = 768
 
 // What the pager's own heap costs per page it holds resident, beyond the page
@@ -39,7 +41,9 @@ func TestAResidentPageCostsLittleHeap(t *testing.T) {
 	for page := uint64(0); page < residentHeapPages; page += 512 {
 		access(t, r, m, page, false)
 	}
-	clear(m.pages) // the fixture's own record of the mapping is not the pager's
+	// The fixture's own record of the mapping is not the pager's, and a map
+	// cleared keeps its capacity, so the record is dropped whole.
+	m.pages = make(map[uint64]mapped)
 	runtime.GC()
 	runtime.ReadMemStats(&after)
 	stats, err := f.h.Stats(t.Context())

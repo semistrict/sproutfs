@@ -76,7 +76,7 @@ func TestConcurrentPopulationsOfHeldPagesDoNotDeadlock(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
 		defer cancel()
 		attach := func(backing vmmemory.Backing) (*mapping, <-chan error) {
-			m := &mapping{arena: f.a, pages: make(map[uint64]mapped)}
+			m := newMapping(f.a)
 			f.a.mu.Lock()
 			f.a.mappings = append(f.a.mappings, m)
 			f.a.mu.Unlock()
@@ -130,7 +130,7 @@ func TestConcurrentPopulationsOfHeldPagesDoNotDeadlock(t *testing.T) {
 		for page := range uint64(2) {
 			firstPage, firstOK := first.pages[page]
 			secondPage, secondOK := second.pages[page]
-			if !firstOK || !secondOK || firstPage.slot != sm.pages[page].slot || secondPage.slot != sm.pages[page].slot {
+			if !firstOK || !secondOK || firstPage.place != sm.pages[page].place || secondPage.place != sm.pages[page].place {
 				t.Fatalf("page %d did not inherit the source page", page)
 			}
 		}
@@ -330,7 +330,8 @@ func TestPopulationTakesAForkPointsPagesWhateverTheirRun(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		c := newPagerCluster(t)
 		source := c.create(t, "source", 8)
-		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 16, LogicalPages: 48, DirtyPages: 8, ReadAheadPages: 8})
+		// The child maps the parent's own page, which is what a shared arena does.
+		f := newPinnedFixture(t, vmmemory.Config{ResidentPages: 16, LogicalPages: 48, DirtyPages: 8, ReadAheadPages: 8})
 		r, m := f.attach(source.Volume("ram0"))
 		for _, page := range []uint64{1, 2} {
 			access(t, r, m, page, true)[0] = 44
@@ -354,7 +355,7 @@ func TestPopulationTakesAForkPointsPagesWhateverTheirRun(t *testing.T) {
 		before, _ := f.h.Stats(t.Context())
 		child, cm := f.attach(vm.Volume("ram0"))
 		for _, page := range []uint64{1, 2} {
-			if cm.pages[page].slot != m.pages[page].slot {
+			if cm.pages[page].place != m.pages[page].place {
 				t.Fatalf("page %d mapped slot %d at attach, want the parent's own %d",
 					page, cm.pages[page].slot, m.pages[page].slot)
 			}
@@ -510,7 +511,7 @@ func TestStalledMetadataDoesNotDelayUnrelatedWarmAttachment(t *testing.T) {
 		slow := &delayedLocate{Backing: f.newUnrelatedBacking(4), entered: make(chan struct{}), release: make(chan struct{})}
 		defer close(slow.release)
 		attach := func(backing vmmemory.Backing) (*mapping, <-chan struct{}, *error) {
-			m := &mapping{arena: f.a, pages: make(map[uint64]mapped)}
+			m := newMapping(f.a)
 			f.a.mu.Lock()
 			f.a.mappings = append(f.a.mappings, m)
 			f.a.mu.Unlock()
@@ -545,7 +546,7 @@ func TestStalledMetadataDoesNotDelayUnrelatedWarmAttachment(t *testing.T) {
 		}
 		for page := range uint64(4) {
 			got, ok := warm.pages[page]
-			if !ok || got.slot != sm.pages[page].slot {
+			if !ok || got.place != sm.pages[page].place {
 				t.Fatalf("resident page %d missing at attachment completion", page)
 			}
 		}
@@ -562,7 +563,7 @@ func TestAttachmentIncludesPagesLoadedDuringMetadataLookup(t *testing.T) {
 		seed, seedMapping := f.attach(f.newUnrelatedBacking(1))
 		access(t, seed, seedMapping, 0, false)
 		slow := &delayedLocate{Backing: f.newBacking(4), entered: make(chan struct{}), release: make(chan struct{})}
-		m := &mapping{arena: f.a, pages: make(map[uint64]mapped)}
+		m := newMapping(f.a)
 		f.a.mappings = append(f.a.mappings, m)
 		ctx, cancel := context.WithCancel(t.Context())
 		defer cancel()
@@ -588,7 +589,7 @@ func TestAttachmentIncludesPagesLoadedDuringMetadataLookup(t *testing.T) {
 		}
 		for page := range uint64(4) {
 			got, ok := m.pages[page]
-			if !ok || got.slot != sm.pages[page].slot {
+			if !ok || got.place != sm.pages[page].place {
 				t.Fatalf("page %d was resident before metadata returned but was not populated", page)
 			}
 		}

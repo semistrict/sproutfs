@@ -241,7 +241,7 @@ func (r *MemoryRegion) fault(ctx context.Context, index uint64, write bool, spil
 	// One command for the run, and it replaces what the guest had: the copies go
 	// where the pages they were made from were mapped, so nothing was taken away
 	// first and nothing is left without a mapping in between.
-	if err := r.mapPages(ctx, runAt(first, pg.plus(-int(index-first)), count), true); err != nil {
+	if err := r.mapPages(ctx, r.runAt(first, pg.plus(-int(index-first)), count), true); err != nil {
 		// It did not land, so the guest goes on mapping the pages this store
 		// copied from while their memory is about to go back. Taking those
 		// mappings away is the one revocation a store ever issues.
@@ -338,7 +338,7 @@ func (r *MemoryRegion) readInWindow(ctx context.Context, index uint64) (pg *resi
 	// and maps nothing for it; every other page of the window is this memory region's
 	// to hold and to map.
 	plan.store = index
-	if id, named := plan.identity(index); !named || id.zero() {
+	if id, named := plan.identity(index); !named || id.zero() || plan.own(index) {
 		return nil, false, nil
 	}
 	// The faulting page comes first, waiting for its identity's resident while
@@ -349,17 +349,17 @@ func (r *MemoryRegion) readInWindow(ctx context.Context, index uint64) (pg *resi
 	}
 	if plan.pages[index-start] == nil {
 		plan.reserveAround(index)
-		if plan.reserved[index-start] < 0 {
+		if plan.reserved[index-start].slot < 0 {
 			at, err := r.reclaim(ctx, plan.file)
 			if err != nil {
 				return nil, false, err
 			}
-			plan.reserve(index, at.slot)
+			plan.reserve(index, at)
 		}
 	}
 	for page := start; page < end; page++ {
 		i := page - start
-		if plan.pages[i] != nil || plan.zeros[i] || plan.reserved[i] >= 0 || !plan.eligible(page) {
+		if plan.pages[i] != nil || plan.zeros[i] || plan.reserved[i].slot >= 0 || !plan.eligible(page) {
 			continue
 		}
 		if err := plan.bindShared(ctx, page, false); err != nil {
@@ -421,6 +421,13 @@ func (r *MemoryRegion) readInPage(ctx context.Context, index uint64) (*resident,
 				h.unlock(pg)
 				continue
 			}
+			reached, err := r.reach(ctx, pg, id)
+			if err != nil || reached == nil {
+				// It is in another memory region's file and could not be
+				// brought out, so this store reads its own copy.
+				return nil, err
+			}
+			pg = reached
 			h.touch(pg)
 			return pg, nil
 		}
@@ -675,7 +682,12 @@ func (r *MemoryRegion) allocateRun(ctx context.Context, index, first, last uint6
 		return 0, nil, err
 	}
 	h.mu.Lock()
-	noExtent := h.placing(f) && f.slots.FreeExtents() == 0 && h.extents[extentKey{r, index / uint64(h.extentPages)}] == nil
+	noExtent := h.carving(f) && f.slots.FreeExtents() == 0 && h.extents[extentKey{r, index / uint64(h.extentPages)}] == nil
+	if f.owner != nil {
+		// Every page of a private file's run is placed at once, so the run is
+		// what the pager has room for, and never less than the faulting page.
+		first, last = around(index, first, last, max(h.freeLocked(f), 1))
+	}
 	h.mu.Unlock()
 	if noExtent {
 		if _, err := h.reclaimExtent(ctx, f); err != nil {
@@ -685,7 +697,10 @@ func (r *MemoryRegion) allocateRun(ctx context.Context, index, first, last uint6
 	if start, runs := h.placeRun(r, index, first, last); len(runs) > 0 {
 		return start, runs, nil
 	}
-	if last-first > 1 {
+	// A private file has no ordinary offsets: every offset of it is some page's
+	// own, so a run the placement rule could not take is the faulting page
+	// alone.
+	if last-first > 1 && f.owner == nil {
 		prefer := fileSlot{f, -1}
 		if first > 0 {
 			if b := r.lookupBinding(first - 1); b != nil {
@@ -698,14 +713,14 @@ func (r *MemoryRegion) allocateRun(ctx context.Context, index, first, last uint6
 		}
 		if at, count := h.allocateFreeFrom(prefer, int(last-first)); count > 0 {
 			start, _ := around(index, first, last, count)
-			return start, []MapRun{runAt(start, at, count)}, nil
+			return start, []MapRun{r.runAt(start, at, count)}, nil
 		}
 	}
 	at, err := r.reclaimPrivate(ctx, index)
 	if err != nil {
 		return 0, nil, err
 	}
-	return index, []MapRun{runAt(index, at, 1)}, nil
+	return index, []MapRun{r.runAt(index, at, 1)}, nil
 }
 
 // loadAttempts bounds how often a fault retries after losing a publication race
@@ -756,7 +771,7 @@ func (r *MemoryRegion) loadOnce(ctx context.Context, index uint64, spill *int) (
 		h.touch(pg)
 		if !b.mapped {
 			r.setMapped(b, true)
-			if err := r.mapPages(ctx, runAt(index, pg.fileSlot, 1), b.writable()); err != nil {
+			if err := r.mapPages(ctx, r.runAt(index, pg.fileSlot, 1), b.writable()); err != nil {
 				return false, r.mappingFailed(err, func() { r.setMapped(b, false) })
 			}
 		}
@@ -811,7 +826,7 @@ func (r *MemoryRegion) loadOnce(ctx context.Context, index uint64, spill *int) (
 		h.probe.granted(b, pg, nil)
 		h.touch(pg)
 		r.setMapped(b, true)
-		if err := r.mapPages(ctx, runAt(index, pg.fileSlot, 1), b.writable()); err != nil {
+		if err := r.mapPages(ctx, r.runAt(index, pg.fileSlot, 1), b.writable()); err != nil {
 			return false, r.mappingFailed(err, func() { r.setMapped(b, false) })
 		}
 		if err := r.resolvePages(ctx, index, 1, b.writable()); err != nil {
@@ -842,17 +857,27 @@ func (r *MemoryRegion) loadOnce(ctx context.Context, index uint64, spill *int) (
 		return false, err
 	}
 	if plan.pages[index-start] == nil && !plan.zeros[index-start] {
-		plan.reserveAround(index)
+		if plan.own(index) {
+			// Its bytes go in this memory region's own file, where it has a
+			// place of its own, and only it may evict for it.
+			at, err := r.reclaimOwn(ctx, index, !plan.unpublished(index))
+			if err != nil {
+				return false, err
+			}
+			plan.reserve(index, at)
+		} else {
+			plan.reserveAround(index)
+		}
 	}
-	if plan.pages[index-start] == nil && !plan.zeros[index-start] && plan.reserved[index-start] < 0 {
+	if plan.pages[index-start] == nil && !plan.zeros[index-start] && plan.reserved[index-start].slot < 0 {
 		at, err := r.reclaim(ctx, plan.file)
 		if err != nil {
 			return false, err
 		}
-		plan.reserve(index, at.slot)
+		plan.reserve(index, at)
 	}
 	for p := start; p < end; p++ {
-		if plan.pages[p-start] != nil || plan.zeros[p-start] || plan.reserved[p-start] >= 0 || !plan.eligible(p) {
+		if plan.pages[p-start] != nil || plan.zeros[p-start] || plan.reserved[p-start].slot >= 0 || !plan.eligible(p) {
 			continue
 		}
 		if err := plan.bindShared(ctx, p, false); err != nil {
@@ -862,6 +887,7 @@ func (r *MemoryRegion) loadOnce(ctx context.Context, index uint64, spill *int) (
 	if err := plan.reserveRuns(ctx, index); err != nil {
 		return false, err
 	}
+	plan.reserveOwn()
 	if err := plan.loadReserved(ctx); err != nil {
 		return false, err
 	}

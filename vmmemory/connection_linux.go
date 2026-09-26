@@ -240,8 +240,7 @@ func Connect(ctx context.Context, h *Host, socket *net.UnixConn, backing MemoryR
 	if err := vmwire.Write(socket, vmwire.AttachFrame(h.pageSize, a.backing, uint64(cfg.MaxVMAs))); err != nil {
 		return fail(err)
 	}
-	private := vmwire.FileFrame(vmwire.PrivateFile, uint64(a.offsets)*uint64(a.pageSize), a.backing, true)
-	if err := vmwire.SendFD(socket, private, a.file); err != nil {
+	if err := r.giveFiles(ctx); err != nil {
 		return fail(err)
 	}
 	attached = true
@@ -508,6 +507,33 @@ func (m *remoteMapping) change(ctx context.Context, run MapRun, writable bool, k
 	_, _, err = m.commit(ctx, frames)
 	return err
 }
+
+// GiveFile sends the client one file with its descriptor. The private file's
+// descriptor is the pager's own, read-write; every other file goes as a
+// read-only open of it, which is what keeps a VMM from writing a page another
+// memory region may map. It is written under the lock commands are written
+// under, so it reaches the client before any map that names it.
+func (m *remoteMapping) GiveFile(ctx context.Context, number int, file ArenaFile, writable bool) error {
+	f, ok := file.(*LinuxFile)
+	if !ok || number < 0 || writable != (number == vmwire.PrivateFile) {
+		return fmt.Errorf("%w: file %d writable=%t of %T", ErrConfig, number, writable, file)
+	}
+	descriptor := f.file
+	if !writable {
+		var err error
+		if descriptor, err = f.readOnly(); err != nil {
+			return err
+		}
+	}
+	frame := vmwire.FileFrame(uint64(number), uint64(f.offsets)*uint64(f.pageSize), f.backing, writable)
+	return m.connection.write(ctx, func() error { return vmwire.SendFD(m.connection.socket, frame, descriptor) })
+}
+
+// DropFile tells the client to close one file's descriptor.
+func (m *remoteMapping) DropFile(ctx context.Context, number int) error {
+	return m.connection.send(ctx, vmwire.DropFileFrame(uint64(number)))
+}
+
 func (m *remoteMapping) Map(ctx context.Context, page uint64, file, slot, count int, writable bool) error {
 	return m.change(ctx, MapRun{Page: page, File: file, Slot: slot, Count: count}, writable, vmwire.MapRange)
 }
@@ -955,6 +981,17 @@ func (c *Connection) send(ctx context.Context, f vmwire.Frame) error {
 }
 
 func (c *Connection) sendFrames(ctx context.Context, frames []vmwire.Frame) error {
+	var data []byte
+	for _, f := range frames {
+		data = append(data, f.Bytes()...)
+	}
+	return c.write(ctx, func() error { return vmwire.WriteBytes(c.socket, data) })
+}
+
+// write runs one write to the socket under the write lock and a deadline, so
+// that what one command sends is never interleaved with another's and a client
+// that stops reading fails the write rather than holding it.
+func (c *Connection) write(ctx context.Context, send func() error) error {
 	if err := c.writeMu.Lock(ctx); err != nil {
 		return err
 	}
@@ -971,11 +1008,7 @@ func (c *Connection) sendFrames(ctx context.Context, frames []vmwire.Frame) erro
 		return err
 	}
 	defer c.socket.SetWriteDeadline(time.Time{})
-	var data []byte
-	for _, f := range frames {
-		data = append(data, f.Bytes()...)
-	}
-	return vmwire.WriteBytes(c.socket, data)
+	return send()
 }
 
 func (c *Connection) verify() {
@@ -985,6 +1018,11 @@ func (c *Connection) verify() {
 	for {
 		select {
 		case <-c.ctx.Done():
+			return
+		case <-c.memoryRegion.Memory.ended:
+			// Another memory region's fault found this one's VMM writing a page
+			// it holds read-only.
+			c.fail(c.memoryRegion.Memory.serving())
 			return
 		case <-timer.C():
 		}

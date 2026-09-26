@@ -76,6 +76,7 @@ if [[ -n "$fuzz" ]]; then
     fi
     status=0
     limactl shell --workdir "$guest_work/vmmemory" "$instance" sudo -n env \
+        SPROUTFS_ARENA="${SPROUTFS_ARENA:-}" \
         SPROUTFS_VM_MEMORY_CLIENT="$target/debug/examples/client" \
         "$host_work/managed.test" -test.run='^$' -test.fuzz="^$fuzz\$" -test.fuzztime="$fuzztime" \
         -test.fuzzcachedir="$guest_work/fuzzcache" -test.parallel="${SPROUTFS_VM_MEMORY_FUZZ_PARALLEL:-4}" \
@@ -91,10 +92,12 @@ fi
 
 GOOS=linux GOARCH="$arch" CGO_ENABLED=0 go test -c ./internal/vmtest -o "$host_work/memory.test"
 limactl shell "$instance" sudo -n env \
+    SPROUTFS_ARENA="${SPROUTFS_ARENA:-}" \
     SPROUTFS_VM_MEMORY_CLIENT="$target/debug/examples/client" \
     "$host_work/memory.test" -test.v -test.count="$repeat" -test.timeout=3m ${selection[@]+"${selection[@]}"}
 
 limactl shell "$instance" sudo -n env \
+    SPROUTFS_ARENA="${SPROUTFS_ARENA:-}" \
     SPROUTFS_VM_MEMORY_CLIENT="$target/debug/examples/client" \
     SPROUTFS_PAGER_MEASURE="${SPROUTFS_PAGER_MEASURE:-}" \
     SPROUTFS_FRAGMENT_MIB="${SPROUTFS_FRAGMENT_MIB:-}" \

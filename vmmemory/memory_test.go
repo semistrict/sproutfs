@@ -14,6 +14,7 @@ import (
 
 	"github.com/semistrict/sproutfs/checkpoint"
 	"github.com/semistrict/sproutfs/control"
+	"github.com/semistrict/sproutfs/internal/testarena"
 	"github.com/semistrict/sproutfs/internal/testresource"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/sim"
@@ -35,13 +36,18 @@ var pageSize = checkpoint.PageSize2MiB
 // list and not a second one.
 var pageSizes = []int{checkpoint.PageSize4KiB, checkpoint.PageSize2MiB}
 
-// TestMain runs the whole suite once per page. A failure names the page it
-// happened at, because the test names cannot.
+// suiteArena is the arena mode the fixtures build their pagers in, which
+// SPROUTFS_ARENA names. The suite is run once in each.
+var suiteArena vmmemory.ArenaMode
+
+// TestMain runs the whole suite once per page. A failure names the page and the
+// arena mode it happened at, because the test names cannot.
 func TestMain(m *testing.M) {
+	suiteArena = testarena.MustMode()
 	for _, size := range pageSizes {
 		pageSize = size
 		if code := m.Run(); code != 0 {
-			fmt.Fprintf(os.Stderr, "vmmemory: the suite failed with the pager's page at %d bytes\n", size)
+			fmt.Fprintf(os.Stderr, "vmmemory: the suite failed with the pager's page at %d bytes in a %s arena\n", size, suiteArena)
 			os.Exit(code)
 		}
 	}
@@ -51,20 +57,28 @@ func TestMain(m *testing.M) {
 // errInjected is the failure a test makes a backing or an arena report.
 var errInjected = errors.New("injected failure")
 
-// arena is the fixture's page store. Its slots are a map and not one entry per
-// offset, because a real arena is a sparse file: it has more addresses than it
-// may hold pages at once, an offset costs nothing until a page is put there,
-// and releasing one punches that memory back out. held is how many offsets hold
-// a page — the memory the arena is really holding, which is what the pager's
-// budget bounds and what an offset space larger than that budget must not
-// change.
+// arena is the fixture's page store: every file the pager makes of it. Its
+// slots are a map and not one entry per offset, because a real arena is a
+// sparse file: it has more addresses than it may hold pages at once, an offset
+// costs nothing until a page is put there, and releasing one punches that
+// memory back out. held is how many offsets hold a page, in every file — the
+// memory the arena is really holding, which is what the pager's budget bounds
+// and what an offset space larger than that budget must not change.
+//
+// It also holds the pager to who may read what. A file given writable is one
+// memory region's private file: it is given to that one mapping only, as its
+// file 0, and never to anyone read-only. Every other file is only ever given
+// read-only. A map names a file its mapping holds, and a writable map names
+// file 0.
 type arena struct {
 	mu       sync.Mutex
 	pageSize int
-	offsets  int
+	// isolated is an arena of a pager that splits it by who may read each
+	// page, which is the one whose readers the arena holds it to.
+	isolated bool
+	files    []*arenaFile
 	held     int
 	peak     int
-	slots    map[int][]byte
 	mappings []*mapping
 	// onRead runs before a slot is read, which is where an eviction holds its
 	// victims' page locks. A test uses it to stop an eviction mid-transition.
@@ -79,63 +93,110 @@ type arena struct {
 	writes, zeroed int
 }
 
-func newArena(pageSize, offsets int) *arena {
-	return &arena{pageSize: pageSize, offsets: offsets, slots: make(map[int][]byte)}
+// place is one slot of one file of the arena, the file by the order the pager
+// made it in.
+type place struct{ file, slot int }
+
+// next is the slot after this one, in the same file.
+func (p place) next() place { return place{p.file, p.slot + 1} }
+
+// arenaFile is one file of the fixture's arena.
+type arenaFile struct {
+	arena   *arena
+	id      int
+	offsets int
+	slots   map[int][]byte
+	// writer is the one mapping this file was given to writable, and readers
+	// how many were given it read-only. closed marks a file the pager gave back.
+	writer  *mapping
+	readers int
+	closed  bool
 }
 
-// File is the one file this arena is. A pager makes exactly one.
-func (a *arena) File(context.Context, int) (vmmemory.ArenaFile, error) { return a, nil }
+func newArena(pageSize int) *arena { return &arena{pageSize: pageSize} }
 
-// at refuses an address this arena does not have.
-func (a *arena) at(slot int) error {
-	if slot < 0 || slot >= a.offsets {
-		return fmt.Errorf("arena offset %d is outside its %d", slot, a.offsets)
+// File makes a file of offsets slots, every one of them a hole.
+func (a *arena) File(_ context.Context, offsets int) (vmmemory.ArenaFile, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	f := &arenaFile{arena: a, id: len(a.files), offsets: offsets, slots: make(map[int][]byte)}
+	a.files = append(a.files, f)
+	return f, nil
+}
+
+// addresses is how many offsets of every file hold a page.
+func (a *arena) addresses() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	count := 0
+	for _, f := range a.files {
+		count += len(f.slots)
 	}
-	return nil
+	return count
+}
+
+// page is the bytes one place holds, nil for a hole.
+func (a *arena) page(at place) []byte { return a.files[at.file].slots[at.slot] }
+
+// fixture is this file, which is what a file a test wraps is too.
+func (f *arenaFile) fixture() *arenaFile { return f }
+
+// at refuses an address this file does not have, and a file the pager has
+// given back.
+func (f *arenaFile) at(slot int) (place, error) {
+	if slot < 0 || slot >= f.offsets {
+		return place{}, fmt.Errorf("arena offset %d is outside its %d", slot, f.offsets)
+	}
+	if f.closed {
+		return place{}, fmt.Errorf("arena file %d was closed", f.id)
+	}
+	return place{f.id, slot}, nil
 }
 
 // put and drop keep the count of offsets holding a page, which is the memory.
-func (a *arena) put(slot int, data []byte) {
-	if a.slots[slot] == nil {
-		a.held++
-		a.peak = max(a.peak, a.held)
+func (f *arenaFile) put(slot int, data []byte) {
+	if f.slots[slot] == nil {
+		f.arena.held++
+		f.arena.peak = max(f.arena.peak, f.arena.held)
 	}
-	a.slots[slot] = data
+	f.slots[slot] = data
 }
-func (a *arena) drop(slot int) {
-	if a.slots[slot] != nil {
-		a.held--
+func (f *arenaFile) drop(slot int) {
+	if f.slots[slot] != nil {
+		f.arena.held--
 	}
-	delete(a.slots, slot)
+	delete(f.slots, slot)
 }
 
-func (a *arena) Read(_ context.Context, slot int, dst []byte) error {
+func (f *arenaFile) Read(_ context.Context, slot int, dst []byte) error {
+	a := f.arena
 	if a.onRead != nil {
 		a.onRead(slot)
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if err := a.at(slot); err != nil {
+	if _, err := f.at(slot); err != nil {
 		return err
 	}
 	// An offset no page has been put at is a hole, and a hole reads as zeros.
 	clear(dst)
-	copy(dst, a.slots[slot])
+	copy(dst, f.slots[slot])
 	return nil
 }
-func (a *arena) Write(_ context.Context, slot int, src []byte) error {
+func (f *arenaFile) Write(_ context.Context, slot int, src []byte) error {
+	a := f.arena
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if err := a.at(slot); err != nil {
+	if _, err := f.at(slot); err != nil {
 		return err
 	}
 	if a.failWrite {
 		return errInjected
 	}
-	if a.slots[slot] != nil {
-		return fmt.Errorf("write into allocated slot %d", slot)
+	if f.slots[slot] != nil {
+		return fmt.Errorf("write into allocated slot %d of file %d", slot, f.id)
 	}
-	a.put(slot, bytes.Clone(src))
+	f.put(slot, bytes.Clone(src))
 	a.writes++
 	if onWrite := a.onWrite; onWrite != nil {
 		a.mu.Unlock()
@@ -147,45 +208,84 @@ func (a *arena) Write(_ context.Context, slot int, src []byte) error {
 
 // Zero models the Linux arena allocating punched slots: nothing is copied in,
 // and from then on the slots hold zeros a mapping can install.
-func (a *arena) Zero(_ context.Context, slot, count int) error {
+func (f *arenaFile) Zero(_ context.Context, slot, count int) error {
+	a := f.arena
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	for s := slot; s < slot+count; s++ {
-		if err := a.at(s); err != nil {
+		if _, err := f.at(s); err != nil {
 			return err
 		}
-		if a.slots[s] != nil {
-			return fmt.Errorf("zero of allocated slot %d", s)
+		if f.slots[s] != nil {
+			return fmt.Errorf("zero of allocated slot %d of file %d", s, f.id)
 		}
-		a.put(s, make([]byte, a.pageSize))
+		f.put(s, make([]byte, a.pageSize))
 	}
 	a.zeroed++
 	return nil
 }
-func (a *arena) Release(_ context.Context, slot int) error {
+func (f *arenaFile) Release(_ context.Context, slot int) error {
+	a := f.arena
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if err := a.at(slot); err != nil {
+	at, err := f.at(slot)
+	if err != nil {
 		return err
 	}
 	for _, m := range a.mappings {
 		for _, p := range m.pages {
-			if p.slot == slot {
-				return fmt.Errorf("release of mapped slot %d", slot)
+			if p.place == at {
+				return fmt.Errorf("release of mapped slot %d of file %d", slot, f.id)
 			}
 		}
 	}
-	a.drop(slot)
+	f.drop(slot)
+	return nil
+}
+
+// AllocatedBytes is the memory the file holds, every page put at it whoever
+// put it there.
+func (f *arenaFile) AllocatedBytes() (uint64, error) {
+	f.arena.mu.Lock()
+	defer f.arena.mu.Unlock()
+	return uint64(len(f.slots) * f.arena.pageSize), nil
+}
+
+// Punch gives back every page at a slot held says holds none.
+func (f *arenaFile) Punch(held func(slot int) bool) error {
+	f.arena.mu.Lock()
+	defer f.arena.mu.Unlock()
+	for slot := range f.slots {
+		if !held(slot) {
+			f.drop(slot)
+		}
+	}
+	return nil
+}
+
+// Close gives the file back, which the pager does only once nothing of it is
+// held.
+func (f *arenaFile) Close() error {
+	a := f.arena
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(f.slots) != 0 {
+		return fmt.Errorf("arena file %d closed holding %d slots", f.id, len(f.slots))
+	}
+	f.closed = true
 	return nil
 }
 
 type mapped struct {
-	slot     int
+	place
 	writable bool
 }
 type mapping struct {
-	arena                            *arena
-	pages                            map[uint64]mapped
+	arena *arena
+	pages map[uint64]mapped
+	// files is every file this mapping was given, by the number its maps name
+	// it by.
+	files                            map[int]*arenaFile
 	maps, protects, revokes          int
 	failRevoke, failMap, failProtect bool
 	// refuseMap and refuseRevoke answer a command the way a client out of
@@ -199,15 +299,70 @@ type mapping struct {
 	onMap func(page uint64, count int)
 }
 
+func newMapping(a *arena) *mapping {
+	return &mapping{arena: a, pages: make(map[uint64]mapped), files: make(map[int]*arenaFile)}
+}
+
+// GiveFile holds the pager to who may read a file: a file given writable is
+// one memory region's own, as its file 0, and nobody else's in any way.
+func (m *mapping) GiveFile(_ context.Context, number int, file vmmemory.ArenaFile, writable bool) error {
+	m.arena.mu.Lock()
+	defer m.arena.mu.Unlock()
+	fixture, ok := file.(interface{ fixture() *arenaFile })
+	if !ok {
+		return fmt.Errorf("file %d is a %T, not this arena's", number, file)
+	}
+	f := fixture.fixture()
+	switch {
+	case m.files[number] != nil:
+		return fmt.Errorf("file %d given twice", number)
+	case writable != (number == 0):
+		return fmt.Errorf("file %d given writable=%t, and only file 0 is writable", number, writable)
+	case !m.arena.isolated:
+		// A shared arena is one file, and every memory region's.
+	case writable && (f.writer != nil || f.readers > 0):
+		return fmt.Errorf("file %d given writable to a second memory region", f.id)
+	case !writable && f.writer != nil:
+		return fmt.Errorf("the private file %d given read-only to another memory region", f.id)
+	}
+	if writable {
+		f.writer = m
+	} else {
+		f.readers++
+	}
+	m.files[number] = f
+	return nil
+}
+
+func (m *mapping) DropFile(_ context.Context, number int) error {
+	m.arena.mu.Lock()
+	defer m.arena.mu.Unlock()
+	f := m.files[number]
+	if f == nil {
+		return fmt.Errorf("drop of file %d, which was never given", number)
+	}
+	for page, p := range m.pages {
+		if p.file == f.id && p.slot >= 0 {
+			return fmt.Errorf("drop of file %d while page %d maps it", number, page)
+		}
+	}
+	delete(m.files, number)
+	return nil
+}
+
 // Map replaces whatever the pages had with the slots, atomically, as the
 // client's mremap does. A slot must hold contents: Linux cannot install a
-// punched one. This arena is one file, file 0, which holds every page.
+// punched one. The file must be one this mapping was given, and only its
+// private file may be mapped writable.
 func (m *mapping) Map(_ context.Context, page uint64, file, slot, count int, writable bool) error {
 	if m.onMap != nil {
 		m.onMap(page, count)
 	}
-	if file != 0 {
-		return fmt.Errorf("map of file %d, and this arena has only file 0", file)
+	m.arena.mu.Lock()
+	f := m.files[file]
+	m.arena.mu.Unlock()
+	if f == nil || (writable && file != 0) {
+		return fmt.Errorf("map of file %d writable=%t, which this memory region may not map so", file, writable)
 	}
 	if m.refuseMap {
 		return vmmemory.ErrMappingRefused
@@ -215,12 +370,12 @@ func (m *mapping) Map(_ context.Context, page uint64, file, slot, count int, wri
 	m.arena.mu.Lock()
 	defer m.arena.mu.Unlock()
 	for i := range count {
-		if m.arena.slots[slot+i] == nil {
-			return fmt.Errorf("map of punched slot %d", slot+i)
+		if f.slots[slot+i] == nil {
+			return fmt.Errorf("map of punched slot %d of file %d", slot+i, f.id)
 		}
 	}
 	for i := range count {
-		m.pages[page+uint64(i)] = mapped{slot + i, writable}
+		m.pages[page+uint64(i)] = mapped{place{f.id, slot + i}, writable}
 	}
 	m.maps++
 	if m.failMap {
@@ -235,7 +390,7 @@ func (m *mapping) MapZero(_ context.Context, page uint64, count int) error {
 	m.arena.mu.Lock()
 	defer m.arena.mu.Unlock()
 	for i := range count {
-		m.pages[page+uint64(i)] = mapped{-1, false}
+		m.pages[page+uint64(i)] = mapped{place{-1, -1}, false}
 	}
 	m.maps++
 	if m.failMap {
@@ -549,8 +704,19 @@ func newFixture(t *testing.T, resident, logical, dirty int) *fixture {
 
 // newConfiguredFixture builds a host exactly as configured. A configuration
 // that names no page takes the one the suite is running at, so a test that does
-// not care about the geometry is exercised at both.
+// not care about the geometry is exercised at both, and one that names no
+// arena mode takes the suite's.
 func newConfiguredFixture(t *testing.T, cfg vmmemory.Config, shared ...*resource.Budget) *fixture {
+	t.Helper()
+	if cfg.Arena == vmmemory.ArenaShared {
+		cfg.Arena = suiteArena
+	}
+	return newPinnedFixture(t, cfg, shared...)
+}
+
+// newPinnedFixture is newConfiguredFixture in the arena mode the configuration
+// names, whatever the suite's: a test of what one mode does.
+func newPinnedFixture(t *testing.T, cfg vmmemory.Config, shared ...*resource.Budget) *fixture {
 	t.Helper()
 	if cfg.PageSize == 0 {
 		cfg.PageSize = uint64(pageSize)
@@ -572,11 +738,8 @@ func newBrokenFixture(t *testing.T, cfg vmmemory.Config, shared ...*resource.Bud
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = spill.Close() })
-	offsets := cfg.ArenaOffsets
-	if offsets == 0 {
-		offsets = cfg.ResidentPages
-	}
-	a := newArena(int(cfg.PageSize), offsets)
+	a := newArena(int(cfg.PageSize))
+	a.isolated = cfg.Arena == vmmemory.ArenaIsolated
 	resources := testresource.New()
 	if len(shared) != 0 {
 		resources = shared[0]
@@ -639,7 +802,7 @@ func (f *fixture) attach(b vmmemory.Backing) (*vmmemory.MemoryRegion, *mapping) 
 }
 func (f *fixture) attachKind(kind vmmemory.MemoryRegionKind, b vmmemory.Backing) (*vmmemory.MemoryRegion, *mapping) {
 	f.t.Helper()
-	m := &mapping{arena: f.a, pages: make(map[uint64]mapped)}
+	m := newMapping(f.a)
 	f.a.mappings = append(f.a.mappings, m)
 	r, err := f.h.Attach(f.t.Context(), vmmemory.MemoryRegionBacking{Kind: kind, Backing: b}, m)
 	if err != nil {
@@ -665,7 +828,7 @@ func access(t *testing.T, r *vmmemory.MemoryRegion, m *mapping, page uint64, wri
 	if p.slot == -1 {
 		return make([]byte, m.arena.pageSize)
 	}
-	return m.arena.slots[p.slot]
+	return m.arena.page(p.place)
 }
 
 func TestSharingCOWReclaimAndDurability(t *testing.T) {
@@ -675,7 +838,7 @@ func TestSharingCOWReclaimAndDurability(t *testing.T) {
 		b, bm, _ := f.memoryRegion(4)
 		access(t, a, am, 0, false)
 		access(t, b, bm, 0, false)
-		if am.pages[0].slot != bm.pages[0].slot {
+		if am.pages[0].place != bm.pages[0].place {
 			t.Fatal("equal inherited identities must share")
 		}
 		access(t, a, am, 0, true)[0] = 99
@@ -838,7 +1001,7 @@ func TestASharedPageStillChecksWriterAuthority(t *testing.T) {
 		b, bm, _ := f.memoryRegion(1)
 		access(t, a, am, 0, false)
 		access(t, b, bm, 0, false)
-		if am.pages[0].slot != bm.pages[0].slot {
+		if am.pages[0].place != bm.pages[0].place {
 			t.Fatal("matching identities did not share a resident page")
 		}
 		ab.failVerify = true
@@ -956,7 +1119,7 @@ func memoryByte(ctx context.Context, r *vmmemory.MemoryRegion, m *mapping, page 
 		if ok && (value == nil || p.writable) {
 			result := byte(0)
 			if p.slot >= 0 {
-				data := m.arena.slots[p.slot]
+				data := m.arena.page(p.place)
 				if value != nil {
 					data[0] = *value
 				}

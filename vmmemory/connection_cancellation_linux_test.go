@@ -28,6 +28,10 @@ type stalledAttachmentBacking struct {
 // seedMapping retains a resident page without any kernel memory users.
 type seedMapping struct{}
 
+func (seedMapping) GiveFile(context.Context, int, vmmemory.ArenaFile, bool) error {
+	return nil
+}
+func (seedMapping) DropFile(context.Context, int) error                    { return nil }
 func (seedMapping) Map(context.Context, uint64, int, int, int, bool) error { return nil }
 func (seedMapping) MapZero(context.Context, uint64, int) error             { return nil }
 func (seedMapping) Revoke(context.Context, uint64) error                   { return nil }
@@ -72,7 +76,7 @@ func TestConnectionCancellationDuringAttachment(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer spill.Close()
-			h, err := vmmemory.New(t.Context(), testresource.New(), vmmemory.Config{PageSize: hugePageSize, ResidentPages: 1, LogicalPages: 2, DirtyPages: 1}, a, spill)
+			h, err := vmmemory.New(t.Context(), testresource.New(), vmmemory.Config{PageSize: hugePageSize, ResidentPages: 1, LogicalPages: 2, DirtyPages: 1, Arena: suiteArena}, a, spill)
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -2,7 +2,6 @@ package host_test
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -16,7 +15,6 @@ import (
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/adapters"
 	"github.com/semistrict/sproutfs/platform/sim"
-	"github.com/semistrict/sproutfs/vmmemory"
 	"github.com/semistrict/sproutfs/volume"
 )
 
@@ -257,26 +255,6 @@ func (h *hostHarness) stop(t *testing.T, n int) {
 		t.Fatal(err)
 	}
 	h.hosts[n] = nil
-}
-
-// simPager builds one incarnation's pager over that host's own disk. The spill
-// file is the only local state a host keeps, and it is scratch by construction:
-// the pager truncates it at every start, so a restart reads none of what its
-// own crash left in it.
-func (h *hostHarness) simPager(ctx context.Context, n int, config vmmemory.Config) (*vmmemory.Host, *pageArena, func(), error) {
-	spill, err := h.disks[n].Open(ctx, "spill", platform.OpenOptions{Create: true})
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	arena := &pageArena{slots: make([][]byte, config.ResidentPages)}
-	pager, err := vmmemory.New(ctx, h.configs[n].Resources, config, arena, spill)
-	if err != nil {
-		return nil, nil, nil, errors.Join(err, spill.Close())
-	}
-	return pager, arena, func() {
-		_ = pager.Close(context.Background())
-		_ = spill.Close()
-	}, nil
 }
 
 func freeAddress(t *testing.T) platform.Address {

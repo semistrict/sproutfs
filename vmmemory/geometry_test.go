@@ -34,7 +34,7 @@ func TestAttachRefusesAVolumeOfAnotherPageSize(t *testing.T) {
 		if stated == own {
 			continue
 		}
-		m := &mapping{arena: f.a, pages: make(map[uint64]mapped)}
+		m := newMapping(f.a)
 		_, err := f.h.Attach(t.Context(), ram(publishedIn{Backing: f.newBacking(2), pageSize: stated}), m)
 		if !errors.Is(err, vmmemory.ErrConfig) {
 			t.Fatalf("attaching a volume of %d-byte pages to a %d-byte pager: %v", stated, own, err)

@@ -762,7 +762,7 @@ func TestARefaultWhoseCheckpointRetiresWhileItReclaimsGivesThePageToTheVolume(t 
 		if err != nil {
 			t.Fatal(err)
 		}
-		if sm.pages[0].slot != m.pages[0].slot {
+		if sm.pages[0].place != m.pages[0].place {
 			t.Errorf("the second memory region maps slot %d for page 0 and the first slot %d; the retired page was kept private",
 				sm.pages[0].slot, m.pages[0].slot)
 		}

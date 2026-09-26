@@ -41,7 +41,7 @@ func TestAbandonedCheckpointRevokesItsMappingsInBoundedBatches(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 256, LogicalPages: 256, DirtyPages: 128, ReadAheadPages: 1})
 		b := f.newBacking(256)
-		base := &mapping{arena: f.a, pages: make(map[uint64]mapped)}
+		base := newMapping(f.a)
 		m := &revokeBatchMapping{mapping: base}
 		f.a.mappings = append(f.a.mappings, base)
 		r, err := f.h.Attach(t.Context(), ram(b), m)
@@ -71,7 +71,7 @@ func TestAbandonedCheckpointRevokesItsMappingsInBoundedBatches(t *testing.T) {
 func TestAmbiguousRevokeBatchPinsAllVictimsUntilDetach(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 4, LogicalPages: 4, DirtyPages: 4, ReadAheadPages: 1})
-		base := &mapping{arena: f.a, pages: make(map[uint64]mapped)}
+		base := newMapping(f.a)
 		m := &revokeBatchMapping{mapping: base}
 		f.a.mappings = append(f.a.mappings, base)
 		r, err := f.h.Attach(t.Context(), ram(f.newBacking(4)), m)
@@ -120,7 +120,7 @@ func TestPrivateAllocationExtendsAdjacentArenaRun(t *testing.T) {
 			t.Fatal(err)
 		}
 		access(t, r, m, 1, true)[0] = 72
-		if m.pages[1].slot != m.pages[0].slot+1 {
+		if m.pages[1].place != m.pages[0].place.next() {
 			t.Fatalf("adjacent private pages were scattered into slots %d and %d", m.pages[0].slot, m.pages[1].slot)
 		}
 	})

@@ -820,13 +820,13 @@ func (p *hostilePeer) respond() {
 	// of the arena through it. This one gives it up: see the top of the file.
 	_ = arena.Close()
 	for {
-		f, err := vmwire.Read(p.conn)
+		f, err := vmwire.ReadCommand(p.conn)
 		if err != nil {
 			return
 		}
 		if f.Kind == vmwire.MapBatch {
 			for range min(f.Length, vmwire.MaxBatchRuns) {
-				if _, err := vmwire.Read(p.conn); err != nil {
+				if _, err := vmwire.ReadCommand(p.conn); err != nil {
 					return
 				}
 			}

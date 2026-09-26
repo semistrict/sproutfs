@@ -53,6 +53,21 @@ type Space struct {
 	// that places nothing, and then there are no extents at all.
 	extent int
 	free   []int
+	// taken is the offsets holding a page of a sparse space, which keeps a
+	// record per page rather than a bit per offset. It is nil for any other.
+	taken map[int]struct{}
+}
+
+// NewSparse returns a space of offsets addresses, of which at most pages may
+// hold memory at once, that costs a record per page it holds rather than a bit
+// per address. Every offset of it is an ordinary one, and a caller takes the
+// offset it wants rather than searching for a run: it is the space of a file
+// in which a page's offset is decided by the page.
+func NewSparse(offsets, pages int) *Space {
+	if pages > offsets {
+		panic("slots: more pages than offsets")
+	}
+	return &Space{offsets: offsets, pages: pages, ordinary: offsets, taken: make(map[int]struct{})}
 }
 
 // New returns a space of offsets addresses, of which at most pages may hold
@@ -154,13 +169,23 @@ func (s *Space) Empty() { s.held-- }
 // IsFree reports whether one offset may be given a page on its own: an
 // ordinary offset holding none. An offset of an extent is never one, taken or
 // free, because only the placement rule may put a page there.
-func (s *Space) IsFree(slot int) bool { return s.words[slot/64]&(1<<(slot%64)) != 0 }
+func (s *Space) IsFree(slot int) bool {
+	if s.taken != nil {
+		_, taken := s.taken[slot]
+		return !taken
+	}
+	return s.words[slot/64]&(1<<(slot%64)) != 0
+}
 
 // Take puts count pages at count consecutive unoccupied ordinary offsets
 // starting at slot. The caller has already found room for them: Free bounds
 // what may be taken and it is the host that checks it.
 func (s *Space) Take(slot, count int) {
 	for i := slot; i < slot+count; i++ {
+		if s.taken != nil {
+			s.taken[i] = struct{}{}
+			continue
+		}
 		s.words[i/64] &^= 1 << (i % 64)
 	}
 	s.held += count
@@ -169,8 +194,12 @@ func (s *Space) Take(slot, count int) {
 // Put takes the page at one ordinary offset away, leaving the offset
 // unoccupied.
 func (s *Space) Put(slot int) {
-	s.words[slot/64] |= 1 << (slot % 64)
 	s.held--
+	if s.taken != nil {
+		delete(s.taken, slot)
+		return
+	}
+	s.words[slot/64] |= 1 << (slot % 64)
 	s.hint = min(s.hint, slot)
 }
 
@@ -178,7 +207,7 @@ func (s *Space) Put(slot int) {
 // -1. A space with no page left has none, however many of its addresses are
 // unoccupied.
 func (s *Space) First() int {
-	if s.Free() == 0 {
+	if s.Free() == 0 || s.taken != nil {
 		return -1
 	}
 	for word := s.hint / 64; word < len(s.words); word++ {
@@ -201,7 +230,7 @@ func (s *Space) First() int {
 // it reports a length of zero.
 func (s *Space) LongestRun(want int) (start, length int) {
 	want = min(want, s.Free())
-	if want < 1 {
+	if want < 1 || s.taken != nil {
 		return -1, 0
 	}
 	first := s.First()

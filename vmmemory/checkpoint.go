@@ -66,8 +66,13 @@ type MemoryRegionCheckpoint struct {
 	// the children of that fork point have the pages they inherited, which is no
 	// bound a waiting store may wait under, so it counts as no relief at all.
 	held atomic.Bool
-	done chan struct{}
-	err  error // read only after done is closed
+	// digests is what each page's bytes hashed to when the publication read
+	// them, in an isolated arena, and fork the file this checkpoint lends its
+	// pages to children on this host in. Both are guarded by mu.
+	digests map[uint64]digest
+	fork    *arenaFile
+	done    chan struct{}
+	err     error // read only after done is closed
 }
 
 func (c *MemoryRegionCheckpoint) finish(err error) {
@@ -430,6 +435,13 @@ func (c *MemoryRegionCheckpoint) UnpublishedAge() time.Duration {
 func (c *MemoryRegionCheckpoint) Share(ctx context.Context, ref control.Ref, volume string) error {
 	h := c.memoryRegion.host
 	c.held.Store(true)
+	if h.isolated() {
+		// A child on this host maps these pages from a file of this point's own,
+		// which is made the first time one does.
+		h.mu.Lock()
+		h.lent[lentKey{ref, volume}] = c
+		h.mu.Unlock()
+	}
 	for _, held := range c.sealedPages() {
 		key := pageKey{id: control.Identity{Ref: ref, Volume: volume, Page: held.index}}
 		if err := h.locked(ctx, held, func(pg *resident) error {
@@ -482,6 +494,18 @@ func (c *MemoryRegionCheckpoint) ReadDirty(ctx context.Context, page uint64, dst
 	}
 	if err := h.read(ctx, held, pg, dst); err != nil {
 		return err
+	}
+	if h.isolated() {
+		// The digest is of exactly what the upload is given. A published page
+		// that another memory region inherits is copied out of this region's
+		// private file and checked against it.
+		sum := digestOf(dst)
+		c.mu.Lock()
+		if c.digests == nil {
+			c.digests = make(map[uint64]digest)
+		}
+		c.digests[page] = sum
+		c.mu.Unlock()
 	}
 	if held.ahead && allZero(dst) {
 		h.mu.Lock()
@@ -559,7 +583,7 @@ func (r *MemoryRegion) endSeal(ctx context.Context, checkpoint *MemoryRegionChec
 		err := func() error {
 			defer r.mu.Unlock()
 			if published {
-				return r.finalizeCheckpoint(ctx, batch, identities)
+				return r.finalizeCheckpoint(ctx, current, batch, identities)
 			}
 			return r.abandonPages(ctx, batch)
 		}()
@@ -578,6 +602,9 @@ func (r *MemoryRegion) endSeal(ctx context.Context, checkpoint *MemoryRegionChec
 		// bound nothing: the host that cannot publish is exactly the host whose
 		// publications keep failing.
 		r.restoreDirtySince(current.since())
+	}
+	if err := current.endFork(ctx); err != nil {
+		return err
 	}
 	r.setCheckpoint(nil)
 	current.finish(nil)
@@ -606,7 +633,7 @@ func (r *MemoryRegion) endSeal(ctx context.Context, checkpoint *MemoryRegionChec
 //
 // The pages this retire hands back have their mappings taken away first, all of
 // them together: see revokeHandedBack.
-func (r *MemoryRegion) finalizeCheckpoint(ctx context.Context, held []*binding, identities map[uint64]storedPage) error {
+func (r *MemoryRegion) finalizeCheckpoint(ctx context.Context, c *MemoryRegionCheckpoint, held []*binding, identities map[uint64]storedPage) error {
 	h := r.host
 	if err := r.revokeHandedBack(ctx, held, identities); err != nil {
 		return err
@@ -635,7 +662,7 @@ func (r *MemoryRegion) finalizeCheckpoint(ctx context.Context, held []*binding, 
 		if pg != nil {
 			err = h.unlink(ctx, checkpoint, pg)
 			if err == nil && shared {
-				err = r.publishLocked(ctx, b, pg, id, stored)
+				err = r.publishLocked(ctx, b, pg, id, stored, c.digestOf(checkpoint.index))
 			}
 			h.unlock(pg)
 			if err != nil {
@@ -795,6 +822,9 @@ func (r *MemoryRegion) discardCheckpoint(ctx context.Context, checkpoint *Memory
 			h.releaseSpill(held.spillSlot)
 			held.spillSlot, held.dirty = -1, false
 		}
+	}
+	if err := checkpoint.endFork(ctx); err != nil {
+		return err
 	}
 	checkpoint.finish(ErrClosed)
 	return nil

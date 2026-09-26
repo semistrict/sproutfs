@@ -25,6 +25,12 @@ import "context"
 // takes an ordinary one until that checkpoint retires. And a page a migration
 // destination loads privately from the host that still holds it arrives in a
 // run of its own, like any other load, rather than in its range's extent.
+//
+// An isolated arena gives each memory region a private file of its own, so no
+// extent has to be carved out of anything: a page's offset in its region's
+// private file is its index, and a range's extent is that range of the file.
+// The second half of the file is each page's other place, which is where the
+// first departure goes; see isolation.go.
 
 // rangeBytes is what one extent covers: the 2 MiB-aligned range of a memory region
 // whose private pages are placed together. It is the largest page a volume may
@@ -52,14 +58,27 @@ type extent struct {
 	// settle handing one of its pages back would break it up again for a page
 	// the guest is about to write anyway. It goes with the extent.
 	whole bool
+	// fixed marks the extent of a private file, which is that range of the
+	// file and is carved out of nothing: its offsets are taken and given back
+	// one page at a time, and the extent itself is never handed back.
+	fixed bool
 }
 
 // placing reports whether this pager places anything in f. A pager whose page
 // is the whole range has one page per range, so placement has nothing to
 // decide and its offsets and its pages are one number; so has a file whose
 // offsets are no more than its capacity, which is a file with no extents to
-// give out.
-func (h *Host) placing(f *arenaFile) bool { return h.extentPages > 1 && f.slots.Extents() > 0 }
+// give out. A private file is placed in whatever the page: a page's offset
+// in it is its index.
+func (h *Host) placing(f *arenaFile) bool {
+	return f.owner != nil || h.carving(f)
+}
+
+// carving reports whether f's extents are carved out of its offset space, and
+// so can run out.
+func (h *Host) carving(f *arenaFile) bool {
+	return f.owner == nil && h.extentPages > 1 && f.slots.Extents() > 0
+}
 
 // slotIn is the slot the placement rule gives page within extent e.
 func (h *Host) slotIn(e *extent, page uint64) fileSlot {
@@ -84,14 +103,30 @@ func (h *Host) place(r *MemoryRegion, index uint64) (at fileSlot, placeable bool
 	if !h.placing(f) {
 		return none, false
 	}
+	if f.owner != nil && h.extentPages == 1 {
+		// A page that is the whole range is its range's only page: its offset
+		// is its own, and there is no run for an extent to keep together.
+		at = fileSlot{f, int(index)}
+		if _, taken := f.leases[at.slot]; taken {
+			return none, false
+		}
+		if !h.takeFree(at, 1) {
+			return none, true
+		}
+		return at, true
+	}
 	key := extentKey{r, index / uint64(h.extentPages)}
 	e := h.extents[key]
 	if e == nil {
-		base := f.slots.TakeExtent()
-		if base < 0 {
-			return none, false
+		if f.owner != nil {
+			e = &extent{key: key, file: f, base: int(key.rng) * h.extentPages, fixed: true}
+		} else {
+			base := f.slots.TakeExtent()
+			if base < 0 {
+				return none, false
+			}
+			e = &extent{key: key, file: f, base: base}
 		}
-		e = &extent{key: key, file: f, base: base}
 		h.extents[key] = e
 	}
 	at = h.slotIn(e, index)
@@ -102,7 +137,7 @@ func (h *Host) place(r *MemoryRegion, index uint64) (at fileSlot, placeable bool
 		h.dropExtent(e)
 		return none, false
 	}
-	if f.slots.Free() == 0 {
+	if h.freeLocked(f) == 0 {
 		h.dropExtent(e)
 		return none, true
 	}
@@ -111,7 +146,12 @@ func (h *Host) place(r *MemoryRegion, index uint64) (at fileSlot, placeable bool
 		h.dropExtent(e)
 		return none, true
 	}
-	f.slots.Fill()
+	if e.fixed {
+		f.slots.Take(at.slot, 1)
+	} else {
+		f.slots.Fill()
+	}
+	h.held++
 	e.held++
 	f.leases[at.slot] = residentSlot{lease: lease, extent: e}
 	h.stats.PeakResidentPages = max(h.stats.PeakResidentPages, h.heldLocked())
@@ -128,7 +168,9 @@ func (h *Host) dropExtent(e *extent) {
 	if h.extents[e.key] == e {
 		delete(h.extents, e.key)
 	}
-	e.file.slots.PutExtent(e.base)
+	if !e.fixed {
+		e.file.slots.PutExtent(e.base)
+	}
 }
 
 // forgetExtents takes a detached memory region's extents out of the table. The offsets
@@ -139,7 +181,7 @@ func (h *Host) forgetExtents(r *MemoryRegion) {
 	for key, e := range h.extents {
 		if key.memoryRegion == r {
 			delete(h.extents, key)
-			if e.held == 0 {
+			if e.held == 0 && !e.fixed {
 				e.file.slots.PutExtent(e.base)
 			}
 		}
@@ -166,14 +208,14 @@ func (h *Host) placeRun(r *MemoryRegion, index, first, last uint64) (uint64, []M
 	if !ok {
 		return 0, nil
 	}
-	runs := []MapRun{runAt(from, base, int(to-from))}
+	runs := []MapRun{r.runAt(from, base, int(to-from))}
 	for to < last {
 		end := min(last, to+span)
 		base, ok := h.placePages(r, to, end)
 		if !ok {
 			break
 		}
-		runs = append(runs, runAt(to, base, int(end-to)))
+		runs = append(runs, r.runAt(to, base, int(end-to)))
 		to = end
 	}
 	for from > first {
@@ -182,7 +224,7 @@ func (h *Host) placeRun(r *MemoryRegion, index, first, last uint64) (uint64, []M
 		if !ok {
 			break
 		}
-		runs = append([]MapRun{runAt(start, base, int(from-start))}, runs...)
+		runs = append([]MapRun{r.runAt(start, base, int(from-start))}, runs...)
 		from = start
 	}
 	return from, mergeRuns(runs)

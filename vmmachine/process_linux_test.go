@@ -20,6 +20,7 @@ import (
 
 	"github.com/semistrict/sproutfs/checkpoint"
 	"github.com/semistrict/sproutfs/control"
+	"github.com/semistrict/sproutfs/internal/testarena"
 	"github.com/semistrict/sproutfs/internal/testresource"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/adapters"
@@ -178,7 +179,8 @@ func newConfiguredHostPagers(t testing.TB, ctx context.Context, cfg hostPagersCo
 			// suites have always given PMEM.
 			ReadAheadPages:  int(checkpoint.PageSize2MiB / page),
 			WriteAheadPages: max(budgets.WriteAhead, 1),
-			MeasureChanges:  kind == vmmemory.Pmem && cfg.MeasurePMEM}
+			MeasureChanges:  kind == vmmemory.Pmem && cfg.MeasurePMEM,
+			Arena:           testarena.Mode(t)}
 		if kind == vmmemory.Pmem {
 			pagerConfig.LossWindow = cfg.LossWindow
 		}

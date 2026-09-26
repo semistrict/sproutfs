@@ -119,7 +119,7 @@ func spillFixture(t *testing.T, seed uint64) (*fixture, *vmmemory.MemoryRegion, 
 	t.Helper()
 	disk := sim.New(sim.Config{Seed: seed}).NewDisk("pager", sim.DiskConfig{PowerLossFaults: true})
 	spill := openSurvivingSpill(t, disk, "spill")
-	a := newArena(pageSize, 2)
+	a := newArena(pageSize)
 	cfg := vmmemory.Config{PageSize: uint64(pageSize), ResidentPages: 2, LogicalPages: 4, DirtyPages: 2}
 	h, err := vmmemory.New(t.Context(), testresource.New(), cfg, a, spill)
 	if err != nil {
@@ -167,7 +167,7 @@ func TestSpilledPageLostToAPowerLossIsRefusedRatherThanServed(t *testing.T) {
 			}
 			err := r.Fault(t.Context(), 0, false)
 			if err == nil {
-				if got := m.arena.slots[m.pages[0].slot][0]; got != 77 {
+				if got := m.arena.page(m.pages[0].place)[0]; got != 77 {
 					t.Fatalf("seed %d served byte %d as the guest's own store of 77", seed, got)
 				}
 				served++
@@ -204,7 +204,7 @@ func TestSpilledPageThatSurvivesAPowerLossStillReadsBack(t *testing.T) {
 		if err := r.Fault(t.Context(), 0, false); err != nil {
 			t.Fatalf("a spilled page the device kept was refused: %v", err)
 		}
-		if got := m.arena.slots[m.pages[0].slot][0]; got != 77 {
+		if got := m.arena.page(m.pages[0].place)[0]; got != 77 {
 			t.Fatalf("read back %d, want the guest's own store of 77", got)
 		}
 	})
@@ -222,7 +222,7 @@ func TestSpillChecksumFollowsTheReservationItIsReused(t *testing.T) {
 			if err := r.Fault(t.Context(), 0, false); err != nil {
 				t.Fatal(err)
 			}
-			if got := m.arena.slots[m.pages[0].slot][0]; got != value {
+			if got := m.arena.page(m.pages[0].place)[0]; got != value {
 				t.Fatalf("read back %d after storing %d", got, value)
 			}
 		}

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/semistrict/sproutfs/checkpoint"
+	"github.com/semistrict/sproutfs/internal/testpager"
 	"github.com/semistrict/sproutfs/vmmemory"
 )
 
@@ -320,18 +321,15 @@ func TestClosingAHostClosesBothPagers(t *testing.T) {
 	if err := pagers.close(context.Background()); err != nil {
 		t.Fatalf("closing both pagers: %v", err)
 	}
-	for kind, arena := range map[vmmemory.MemoryRegionKind]*pageArena{
-		vmmemory.Ram: pagers.arenas[vmmemory.Ram], vmmemory.Pmem: pagers.arenas[vmmemory.Pmem]} {
-		for slot, held := range arena.slots {
-			if held != nil {
-				t.Fatalf("the %s arena still holds slot %d after its pager closed", kind, slot)
-			}
+	for kind, arena := range pagers.arenas {
+		if held := arena.Held(); held != 0 {
+			t.Fatalf("the %s arena still holds %d pages after its pager closed", kind, held)
 		}
 	}
 	// A closed pager admits nothing, which is the other half of closing both.
 	for _, kind := range []vmmemory.MemoryRegionKind{vmmemory.Ram, vmmemory.Pmem} {
 		if _, err := pagers.pagers.For(kind).Attach(t.Context(),
-			vmmemory.MemoryRegionBacking{Kind: kind, Backing: vm.Volume("ram0")}, newPageMapping(pagers.arenas[kind])); err == nil {
+			vmmemory.MemoryRegionBacking{Kind: kind, Backing: vm.Volume("ram0")}, testpager.NewMapping(pagers.arenas[kind])); err == nil {
 			t.Fatalf("the %s pager attached a memory region after it closed", kind)
 		}
 	}

@@ -274,6 +274,9 @@ func kernelHostArena(t testing.TB, cfg vmmemory.Config) (*vmmemory.Host, *vmmemo
 	if cfg.PageSize == 0 {
 		cfg.PageSize = hugePageSize
 	}
+	if cfg.Arena == vmmemory.ArenaShared {
+		cfg.Arena = suiteArena
+	}
 	if os.Getenv("SPROUTFS_VM_MEMORY_CLIENT") == "" {
 		t.Skip("run scripts/test-vm-memory-lima.sh for Linux/KVM qualification")
 	}

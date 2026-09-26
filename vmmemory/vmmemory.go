@@ -127,6 +127,15 @@ var (
 	// their checkpoints drain, this one that a guest's writes cannot be made
 	// durable at all — and it ends the same way, with a deliberate stop.
 	ErrWindowStalled = errors.New("managed-memory loss window stalled")
+	// ErrTampered ends the session of a VMM that changed a page it holds
+	// read-only: a page a checkpoint published, which another memory region
+	// was about to inherit, no longer holds the bytes its upload read. A VMM
+	// whose own stores went through its mapping never does this, because a
+	// store into such a page traps and copies it.
+	ErrTampered = errors.New("managed-memory page changed behind the pager")
+	// ErrUncounted ends the session of a VMM whose private file holds more
+	// memory than the pager put there: the VMM allocated it itself.
+	ErrUncounted = errors.New("managed-memory file holds memory the pager did not put there")
 )
 
 // Pressure is how the pager pushes a full dirty budget back to whoever owns its
@@ -286,6 +295,26 @@ type EqualFile interface {
 	Equal(ctx context.Context, first, second int) (bool, error)
 }
 
+// CountedFile is an ArenaFile that can say how much memory it really holds and
+// give back what the pager did not put there. A process given a file can
+// allocate pages in it behind the pager's back: in its private file by writing
+// a hole, and in a file it may only read by reading one through a mapping of
+// its own. An isolated arena counts both.
+type CountedFile interface {
+	// AllocatedBytes is the memory the file holds.
+	AllocatedBytes() (uint64, error)
+	// Punch gives back every page of the file at a slot held reports false for.
+	Punch(held func(slot int) bool) error
+}
+
+// ClosableFile is an ArenaFile the pager gives back to its arena once no page
+// is left in it: the private file of a memory region that has gone, and a fork
+// point's file once its seal ends. A file without it is kept until the arena
+// itself is closed.
+type ClosableFile interface {
+	Close() error
+}
+
 // ArenaMode is how a pager divides its resident pages between the files of its
 // arena.
 type ArenaMode int
@@ -294,10 +323,11 @@ const (
 	// ArenaShared keeps every resident page in file 0, which every VMM that
 	// attaches a memory region receives read-write. It is the default.
 	ArenaShared ArenaMode = iota
-	// ArenaIsolated splits the arena by who may read each page: a private file
-	// per memory region, and read-only files for the pages another memory
-	// region may map. It is being built. Until it is, it behaves exactly like
-	// ArenaShared: every page is in file 0.
+	// ArenaIsolated splits the arena by who may read each page. Each memory
+	// region has a private file, which only its VMM receives read-write. The
+	// pages another memory region may map are in the shared file, which every
+	// VMM receives read-only, and the pages a fork point lends to the children
+	// on this host are in a fork file, which those children receive read-only.
 	ArenaIsolated
 )
 
@@ -324,7 +354,7 @@ func ParseArenaMode(name string) (ArenaMode, error) {
 
 // Mapping controls one process memory region. Map installs already armed mappings for
 // count consecutive pages backed by count consecutive slots of one arena file,
-// which it names by number; Revoke
+// which it names by the number it was given under; Revoke
 // installs a missing-fault trap. Both wait for acknowledgement and drain
 // transient kernel users before returning. Long-lived external pins are not
 // permitted. Errors can be ambiguous, so Host retains all possibly mapped slots
@@ -332,6 +362,13 @@ func ParseArenaMode(name string) (ArenaMode, error) {
 // count consecutive mapped pages and completes any trapped access to them.
 // Callbacks must not call Host or MemoryRegion methods recursively.
 type Mapping interface {
+	// GiveFile hands the process one file of the arena under the number its
+	// maps name it by, before any map names it. File 0 is the memory region's
+	// private file, which is the only one given writable and the only one a
+	// writable map may name. Every other file is given read-only.
+	GiveFile(ctx context.Context, number int, file ArenaFile, writable bool) error
+	// DropFile takes a file back once nothing of it is mapped any more.
+	DropFile(ctx context.Context, number int) error
 	Map(ctx context.Context, page uint64, file, slot, count int, writable bool) error
 	// MapZero installs read-only, first-write-trapped zeros without arena slots.
 	MapZero(ctx context.Context, page uint64, count int) error
@@ -353,12 +390,6 @@ type MapRun struct {
 	File        int
 	Slot, Count int
 	Zero        bool // explicit sparse/discarded zero backing, never inferred from bytes
-}
-
-// runAt is the run of count pages from page that count slots of one file
-// from at back.
-func runAt(page uint64, at fileSlot, count int) MapRun {
-	return MapRun{Page: page, File: at.file.number, Slot: at.slot, Count: count}
 }
 
 // BatchMapping installs disjoint read-only runs with bounded command overhead.

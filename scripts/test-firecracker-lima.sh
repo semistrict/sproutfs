@@ -68,6 +68,7 @@ mkfs.ext4 -q -F -b 4096 -d "$work/root" "$work/root.ext4"
 GUEST
 GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go test -c ./vmmachine -o "$host_work/firecracker.test"
 limactl shell "$instance" sudo -n env \
+    SPROUTFS_ARENA="${SPROUTFS_ARENA:-}" \
     SPROUTFS_FIRECRACKER="$guest_work/firecracker" \
     SPROUTFS_FIRECRACKER_SECCOMP="$guest_work/seccomp.bpf" \
     SPROUTFS_FIRECRACKER_KERNEL="$guest_work/kernel" \

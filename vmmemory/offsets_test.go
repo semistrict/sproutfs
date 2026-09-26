@@ -44,9 +44,9 @@ func TestAnArenaWithMoreOffsetsThanPagesHoldsTheSamePages(t *testing.T) {
 			// Nothing was put at an address the budget does not cover: the arena
 			// refuses an offset it does not have, and the pager never asked for
 			// one it could not hold.
-			if len(f.a.slots) != pages {
+			if f.a.addresses() != pages {
 				t.Fatalf("offsets=%d: the arena has pages at %d addresses, want %d",
-					offsets, len(f.a.slots), pages)
+					offsets, f.a.addresses(), pages)
 			}
 		})
 	}
@@ -70,9 +70,9 @@ func TestReleasingAPageGivesTheArenasMemoryBack(t *testing.T) {
 		// One page was stored into and published; the other three of the run
 		// read back as zeros, so the volume holds no object for them and the
 		// retire released each one.
-		if f.a.held != 1 || len(f.a.slots) != 1 {
+		if f.a.held != 1 || f.a.addresses() != 1 {
 			t.Fatalf("the arena holds %d pages at %d addresses after the checkpoint, want 1 of each",
-				f.a.held, len(f.a.slots))
+				f.a.held, f.a.addresses())
 		}
 		if s := hostStats(t, f); s.ResidentPages != 1 || s.PeakResidentPages != run {
 			t.Fatalf("the pager reports %d resident pages and a peak of %d, want 1 and %d",

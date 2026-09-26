@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/semistrict/sproutfs/checkpoint"
+	"github.com/semistrict/sproutfs/internal/testpager"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/vmmemory"
 	"github.com/semistrict/sproutfs/volume"
@@ -77,7 +78,7 @@ func readAheadContents(dst []byte) {
 // object reads that host makes, its pagers, the mapping the memory region installs
 // into, the memory region and the bytes that were published, with the read count reset
 // to the moment before the first fault.
-func coldRun(t *testing.T) (*countedObjects, *hostPagers, *pageMapping, *vmmemory.MemoryRegion, []byte) {
+func coldRun(t *testing.T) (*countedObjects, *hostPagers, *testpager.Mapping, *vmmemory.MemoryRegion, []byte) {
 	t.Helper()
 	h := newSizedHostHarness(t, 2)
 	counted := &countedObjects{ObjectStore: h.configs[1].ObjectStore}
@@ -118,7 +119,7 @@ func coldRun(t *testing.T) (*countedObjects, *hostPagers, *pageMapping, *vmmemor
 			t.Error(err)
 		}
 	})
-	mapping := newPageMapping(pagers.arenas[vmmemory.Ram])
+	mapping := testpager.NewMapping(pagers.arenas[vmmemory.Ram])
 	memoryRegion, err := pagers.pagers.For(vmmemory.Ram).Attach(t.Context(),
 		vmmemory.MemoryRegionBacking{Kind: vmmemory.Ram, Backing: opened.Volume("ram0")}, mapping)
 	if err != nil {
@@ -136,7 +137,7 @@ func coldRun(t *testing.T) (*countedObjects, *hostPagers, *pageMapping, *vmmemor
 // One cold read-ahead run of 512 RAM pages costs two object-store requests: the
 // page table segment that locates them, and the one extent their members lie in.
 func TestAColdReadAheadRunOfRAMPagesIsTwoRequests(t *testing.T) {
-	counted, pagers, mapping, memoryRegion, want := coldRun(t)
+	counted, _, mapping, memoryRegion, want := coldRun(t)
 	if err := memoryRegion.Fault(t.Context(), 0, false); err != nil {
 		t.Fatal(err)
 	}
@@ -146,17 +147,11 @@ func TestAColdReadAheadRunOfRAMPagesIsTwoRequests(t *testing.T) {
 	}
 	// The whole run is resident and holds what was published: one fault, one
 	// run, and the bytes of every page of it.
-	arena := pagers.arenas[vmmemory.Ram]
 	for page := range uint64(readAheadPages) {
-		mapping.mu.Lock()
-		slot, mapped := mapping.pages[page]
-		mapping.mu.Unlock()
+		got, mapped := mapping.Read(page)
 		if !mapped {
 			t.Fatalf("page %d of the run was not mapped by the fault", page)
 		}
-		arena.mu.Lock()
-		got := bytes.Clone(arena.slots[slot])
-		arena.mu.Unlock()
 		at := page * checkpoint.PageSize4KiB
 		if !bytes.Equal(got, want[at:at+checkpoint.PageSize4KiB]) {
 			t.Fatalf("page %d of the run holds %#x..., want %#x...", page, got[:8], want[at:at+8])
@@ -203,22 +198,16 @@ func TestAColdStoreBringsInTheRunAndCopiesOnePage(t *testing.T) {
 	if got := after.Revocations - before.Revocations; got != 0 {
 		t.Fatalf("the store revoked %d mappings, want none: its own page was never mapped read-only first", got)
 	}
-	arena := pagers.arenas[vmmemory.Ram]
 	for page := range uint64(readAheadPages) {
-		mapping.mu.Lock()
-		slot, mapped := mapping.pages[page]
-		writable := mapping.write[page]
-		mapping.mu.Unlock()
-		if !mapped {
+		mapped, ok := mapping.Page(page)
+		if !ok {
 			t.Fatalf("page %d of the run was not mapped by the store", page)
 		}
-		if writable != (page == 0) {
+		if mapped.Writable != (page == 0) {
 			t.Fatalf("page %d is writable = %t, want %t: only the page stored into is private",
-				page, writable, page == 0)
+				page, mapped.Writable, page == 0)
 		}
-		arena.mu.Lock()
-		got := bytes.Clone(arena.slots[slot])
-		arena.mu.Unlock()
+		got, _ := mapping.Read(page)
 		at := page * checkpoint.PageSize4KiB
 		if !bytes.Equal(got, want[at:at+checkpoint.PageSize4KiB]) {
 			t.Fatalf("page %d of the run holds %#x..., want %#x...", page, got[:8], want[at:at+8])

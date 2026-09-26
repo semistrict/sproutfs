@@ -24,7 +24,7 @@ func TestAPageASiblingWillNotGiveUpDoesNotFailTheVMEvictingIt(t *testing.T) {
 		// One resident page, two children of one parent reachable from it.
 		access(t, a, am, 0, false)
 		access(t, b, bm, 0, false)
-		if am.pages[0].slot != bm.pages[0].slot {
+		if am.pages[0].place != bm.pages[0].place {
 			t.Fatal("the two memory regions did not share the resident page of one stored identity")
 		}
 		// The second machine stops answering. Its memory region has taken no failure of

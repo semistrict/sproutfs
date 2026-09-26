@@ -101,6 +101,66 @@ func ReceiveFD(c *net.UnixConn) (Frame, *os.File, error) {
 	return Decode(b), f, nil
 }
 
+// Receive reads one frame the way a client must once a pager may send files:
+// with the descriptor a FILE frame carries, which a plain read would have the
+// kernel close. It reports the descriptor, nil for a frame that carries none,
+// and refuses a frame that carries more than one.
+func Receive(c *net.UnixConn) (Frame, *os.File, error) {
+	b, oob := make([]byte, FrameBytes), make([]byte, syscall.CmsgSpace(4)*4)
+	n, on, flags, _, err := c.ReadMsgUnix(b, oob)
+	if err != nil {
+		return Frame{}, nil, err
+	}
+	if n == 0 {
+		return Frame{}, nil, io.EOF
+	}
+	messages, err := syscall.ParseSocketControlMessage(oob[:on])
+	if err != nil {
+		return Frame{}, nil, err
+	}
+	var fds []int
+	for _, msg := range messages {
+		rights, err := syscall.ParseUnixRights(&msg)
+		if err != nil {
+			return Frame{}, nil, err
+		}
+		fds = append(fds, rights...)
+	}
+	var file *os.File
+	switch {
+	case flags&syscall.MSG_CTRUNC != 0 || len(fds) > 1:
+		for _, fd := range fds {
+			_ = syscall.Close(fd)
+		}
+		return Frame{}, nil, errors.New("a frame carried more than one descriptor")
+	case len(fds) == 1:
+		syscall.CloseOnExec(fds[0])
+		file = os.NewFile(uintptr(fds[0]), "managed-memory file")
+	}
+	if _, err = io.ReadFull(c, b[n:]); err != nil {
+		if file != nil {
+			_ = file.Close()
+		}
+		return Frame{}, nil, err
+	}
+	return Decode(b), file, nil
+}
+
+// ReadCommand reads the next frame that is not a FILE or a DROP_FILE, and
+// closes the descriptor of every file it passes. It is for a process that
+// stands in for a client and maps nothing, which a file changes nothing for.
+func ReadCommand(c *net.UnixConn) (Frame, error) {
+	for {
+		f, file, err := Receive(c)
+		if file != nil {
+			_ = file.Close()
+		}
+		if err != nil || (f.Kind != File && f.Kind != DropFile) {
+			return f, err
+		}
+	}
+}
+
 // SendFD writes a frame together with one descriptor.
 func SendFD(c *net.UnixConn, f Frame, file *os.File) error {
 	b := f.Bytes()

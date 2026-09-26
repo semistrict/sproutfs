@@ -30,7 +30,7 @@ func TestHugePageIsSharedWholeAndCopiesWholePage(t *testing.T) {
 		siblingBacking := f.newBacking(1)
 		copy(siblingBacking.data, want)
 		sibling, sm := f.attach(siblingBacking)
-		if len(sm.pages) != 1 || sm.pages[0].slot != m.pages[0].slot {
+		if len(sm.pages) != 1 || sm.pages[0].place != m.pages[0].place {
 			t.Fatal("inherited huge page was not eagerly shared")
 		}
 		copy := access(t, sibling, sm, 0, true)

@@ -14,6 +14,8 @@ import (
 
 	"github.com/semistrict/sproutfs/checkpoint"
 	"github.com/semistrict/sproutfs/host"
+	"github.com/semistrict/sproutfs/internal/testarena"
+	"github.com/semistrict/sproutfs/internal/testpager"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/adapters"
 	"github.com/semistrict/sproutfs/platform/sim"
@@ -28,108 +30,12 @@ const migrationPageSize = checkpoint.PageSize2MiB
 // all the host wiring needs to move.
 var migrationVolumes = []volume.VolumeSpec{{Name: "ram0", Size: 8 * migrationPageSize, PageSize: migrationPageSize}}
 
-// pageArena is the simulated page store of one host's pager.
-type pageArena struct {
-	mu    sync.Mutex
-	slots [][]byte
-}
-
-// File is the one file this arena is. A pager makes exactly one.
-func (a *pageArena) File(context.Context, int) (vmmemory.ArenaFile, error) { return a, nil }
-
-func (a *pageArena) Read(_ context.Context, slot int, dst []byte) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	copy(dst, a.slots[slot])
-	return nil
-}
-
-func (a *pageArena) Write(_ context.Context, slot int, src []byte) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.slots[slot] != nil {
-		return fmt.Errorf("write into allocated slot %d", slot)
-	}
-	a.slots[slot] = bytes.Clone(src)
-	return nil
-}
-
-func (a *pageArena) Release(_ context.Context, slot int) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.slots[slot] = nil
-	return nil
-}
-
-type pageMapping struct {
-	arena *pageArena
-	mu    sync.Mutex
-	pages map[uint64]int // page to slot, -1 for an explicit zero
-	write map[uint64]bool
-}
-
-func newPageMapping(a *pageArena) *pageMapping {
-	return &pageMapping{arena: a, pages: map[uint64]int{}, write: map[uint64]bool{}}
-}
-
-func (m *pageMapping) Map(_ context.Context, page uint64, file, slot, count int, writable bool) error {
-	if file != 0 {
-		return fmt.Errorf("map of file %d, and this arena has only file 0", file)
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for i := range count {
-		m.pages[page+uint64(i)], m.write[page+uint64(i)] = slot+i, writable
-	}
-	return nil
-}
-
-func (m *pageMapping) MapZero(_ context.Context, page uint64, count int) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for i := range count {
-		m.pages[page+uint64(i)], m.write[page+uint64(i)] = -1, false
-	}
-	return nil
-}
-
-func (m *pageMapping) Protect(_ context.Context, page uint64, count int) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for i := range count {
-		if _, ok := m.pages[page+uint64(i)]; !ok {
-			return fmt.Errorf("protect of unmapped page %d", page+uint64(i))
-		}
-		m.write[page+uint64(i)] = false
-	}
-	return nil
-}
-
-func (m *pageMapping) Revoke(_ context.Context, page uint64) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	delete(m.pages, page)
-	delete(m.write, page)
-	return nil
-}
-
-func (m *pageMapping) Resolve(_ context.Context, page uint64, count int, writable bool) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for i := range count {
-		if _, ok := m.pages[page+uint64(i)]; !ok || m.write[page+uint64(i)] != writable {
-			return errors.New("invalid resolution")
-		}
-	}
-	return nil
-}
-
 // machine is the VMM process one host runs for a VM: the migration Runtime over
 // one memory region, and the stores a test makes through its mapping.
 type machine struct {
 	t             *testing.T
 	memoryRegions map[string]*vmmemory.MemoryRegion
-	maps          map[string]*pageMapping
+	maps          map[string]*testpager.Mapping
 	// closed says this machine's memory regions have been detached, and closing admits
 	// the first Close: a hold this host expires closes the machine on its own
 	// goroutine and the test's cleanup closes it too, so a test reads the flag
@@ -148,7 +54,7 @@ type machine struct {
 // pager of its kind or to none.
 type hostPagers struct {
 	pagers vmmemory.Pagers
-	arenas map[vmmemory.MemoryRegionKind]*pageArena
+	arenas map[vmmemory.MemoryRegionKind]*testpager.Arena
 }
 
 func (p *hostPagers) ram() *vmmemory.Host  { return p.pagers.Ram }
@@ -183,10 +89,10 @@ func newMixedPagers(t *testing.T, resources *resource.Budget, budget func(*vmmem
 	if err != nil {
 		t.Fatal(err)
 	}
-	built := &hostPagers{arenas: map[vmmemory.MemoryRegionKind]*pageArena{}}
+	built := &hostPagers{arenas: map[vmmemory.MemoryRegionKind]*testpager.Arena{}}
 	for _, kind := range []vmmemory.MemoryRegionKind{vmmemory.Ram, vmmemory.Pmem} {
 		cfg := vmmemory.Config{PageSize: checkpoint.PageSize2MiB,
-			ResidentPages: 32, LogicalPages: 64, DirtyPages: 32, ReadAheadPages: 1}
+			ResidentPages: 32, LogicalPages: 64, DirtyPages: 32, ReadAheadPages: 1, Arena: testarena.Mode(t)}
 		if kind == vmmemory.Ram {
 			cfg.PageSize = checkpoint.PageSize4KiB
 		}
@@ -198,7 +104,7 @@ func newMixedPagers(t *testing.T, resources *resource.Budget, budget func(*vmmem
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = spill.Close() })
-		arena := &pageArena{slots: make([][]byte, cfg.ResidentPages)}
+		arena := testpager.NewArena(cfg.Arena)
 		built.arenas[kind] = arena
 		pager, err := vmmemory.New(t.Context(), resources, cfg, arena, spill)
 		if err != nil {
@@ -238,14 +144,17 @@ func newPagerWithConfig(t *testing.T, resources *resource.Budget, cfg vmmemory.C
 	if cfg.PageSize == 0 {
 		cfg.PageSize = migrationPageSize
 	}
-	built := &hostPagers{arenas: map[vmmemory.MemoryRegionKind]*pageArena{}}
+	if cfg.Arena == vmmemory.ArenaShared {
+		cfg.Arena = testarena.Mode(t)
+	}
+	built := &hostPagers{arenas: map[vmmemory.MemoryRegionKind]*testpager.Arena{}}
 	for _, kind := range []vmmemory.MemoryRegionKind{vmmemory.Ram, vmmemory.Pmem} {
 		spill, err := disk.Open(t.Context(), "spill-"+kind.String(), platform.OpenOptions{Create: true})
 		if err != nil {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = spill.Close() })
-		arena := &pageArena{slots: make([][]byte, cfg.ResidentPages)}
+		arena := testpager.NewArena(cfg.Arena)
 		built.arenas[kind] = arena
 		pager, err := vmmemory.New(t.Context(), resources, cfg, arena, spill)
 		if err != nil {
@@ -267,7 +176,7 @@ func newPagerWithConfig(t *testing.T, resources *resource.Budget, cfg vmmemory.C
 
 func newMachine(t *testing.T, p *hostPagers, vm *volume.VM,
 	backings map[string]vmmemory.Backing) (*machine, error) {
-	m := &machine{t: t, memoryRegions: map[string]*vmmemory.MemoryRegion{}, maps: map[string]*pageMapping{},
+	m := &machine{t: t, memoryRegions: map[string]*vmmemory.MemoryRegion{}, maps: map[string]*testpager.Mapping{},
 		exit: make(chan struct{})}
 	for _, v := range vm.Volumes() {
 		var backing vmmemory.Backing = v
@@ -281,7 +190,7 @@ func newMachine(t *testing.T, p *hostPagers, vm *volume.VM,
 		if v.Name() == "ram0" {
 			kind = vmmemory.Ram
 		}
-		mapping := newPageMapping(p.arenas[kind])
+		mapping := testpager.NewMapping(p.arenas[kind])
 		memoryRegion, err := p.pagers.For(kind).Attach(t.Context(),
 			vmmemory.MemoryRegionBacking{Kind: kind, Backing: backing}, mapping)
 		if err != nil {
@@ -382,11 +291,7 @@ func (m *machine) Close() error {
 			// afterwards is what a VMM process's address space going away is,
 			// and it is done under the mapping's own lock for the same reason.
 			errs = append(errs, memoryRegion.Detach(context.Background()))
-			mapping := m.maps[name]
-			mapping.mu.Lock()
-			clear(mapping.pages)
-			clear(mapping.write)
-			mapping.mu.Unlock()
+			m.maps[name].Forget()
 		}
 	})
 	return errors.Join(errs...)
@@ -397,19 +302,9 @@ func (m *machine) store(name string, page uint64, value byte) {
 	m.t.Helper()
 	mapping := m.maps[name]
 	for range 8 {
-		mapping.mu.Lock()
-		slot, mapped := mapping.pages[page]
-		writable := mapping.write[page]
-		if mapped && writable && slot >= 0 {
-			mapping.arena.mu.Lock()
-			for i := range mapping.arena.slots[slot] {
-				mapping.arena.slots[slot][i] = value
-			}
-			mapping.arena.mu.Unlock()
-			mapping.mu.Unlock()
+		if mapping.Store(page, value) {
 			return
 		}
-		mapping.mu.Unlock()
 		if err := m.memoryRegions[name].Fault(m.t.Context(), page, true); err != nil {
 			m.t.Fatal(err)
 		}
@@ -422,26 +317,19 @@ func (m *machine) store(name string, page uint64, value byte) {
 func (m *machine) load(name string, page uint64) []byte {
 	m.t.Helper()
 	mapping := m.maps[name]
-	mapping.mu.Lock()
-	slot, mapped := mapping.pages[page]
-	mapping.mu.Unlock()
+	data, mapped := mapping.Read(page)
 	if !mapped {
 		if err := m.memoryRegions[name].Fault(m.t.Context(), page, false); err != nil {
 			m.t.Fatal(err)
 		}
-		mapping.mu.Lock()
-		slot, mapped = mapping.pages[page]
-		mapping.mu.Unlock()
-		if !mapped {
+		if data, mapped = mapping.Read(page); !mapped {
 			m.t.Fatalf("%s page %d unmapped after a fault", name, page)
 		}
 	}
-	if slot < 0 {
+	if data == nil {
 		return make([]byte, migrationPageSize)
 	}
-	mapping.arena.mu.Lock()
-	defer mapping.arena.mu.Unlock()
-	return bytes.Clone(mapping.arena.slots[slot])
+	return data
 }
 
 // startMigrationHosts starts two hosts that can migrate to one another, each

@@ -261,6 +261,9 @@ func (h *Host) adopt(at fileSlot, key pageKey, private bool, kind MemoryRegionKi
 	pg := &resident{mu: ctxsync.NewMutex(), fileSlot: at, key: key, private: private, kind: kind}
 	_ = pg.mu.Lock(context.Background())
 	h.mu.Lock()
+	if at.file.pages != nil {
+		at.file.pages[at.slot] = pg
+	}
 	h.lru.pushBack(pg)
 	h.signal()
 	h.mu.Unlock()
@@ -280,6 +283,9 @@ func (h *Host) adoptRun(at fileSlot, count int, kind MemoryRegionKind) []*reside
 	}
 	h.mu.Lock()
 	for _, pg := range pages {
+		if at.file.pages != nil {
+			at.file.pages[pg.slot] = pg
+		}
 		h.lru.pushBack(pg)
 	}
 	h.signal()
@@ -298,6 +304,10 @@ func (h *Host) release(ctx context.Context, pg *resident) error {
 	}
 	h.mu.Lock()
 	note(nil, 0, "release", pg.slot, -1)
+	if pg.file.pages != nil {
+		delete(pg.file.pages, pg.slot)
+		delete(pg.file.digests, pg.slot)
+	}
 	h.putFree(pg.fileSlot)
 	pg.slot = -1
 	h.lru.remove(pg)
@@ -472,17 +482,28 @@ func (r *MemoryRegion) storedIdentities(ctx context.Context, held []*binding) (m
 // publishLocked is publishClean with the page already locked, which is
 // what retiring a page of a checkpoint needs: it must not be reachable
 // from an unreserved binding for even a moment.
-func (r *MemoryRegion) publishLocked(ctx context.Context, b *binding, pg *resident, id pageKey, stored bool) error {
+//
+// sum is what the publication's read of the page hashed to, nil where it has
+// none. A page that stays in its memory region's private file keeps it, and is
+// named by its identity only with it: another memory region inherits the page
+// by a copy, which is checked against it.
+func (r *MemoryRegion) publishLocked(ctx context.Context, b *binding, pg *resident, id pageKey, stored bool, sum *digest) error {
 	h := r.host
 	drop := !stored || id.zero()
 	if !drop {
 		key := id
 		h.mu.Lock()
 		existing := h.clean[key]
+		checked := pg.file.owner == nil || sum != nil
 		if existing == nil {
 			pg.private, pg.key = false, key
-			h.clean[key] = pg
-			h.cleanVersion++
+			if checked {
+				h.clean[key] = pg
+				h.cleanVersion++
+			}
+			if pg.file.owner != nil && sum != nil {
+				pg.file.digests[pg.slot] = *sum
+			}
 		}
 		h.mu.Unlock()
 		drop = existing != nil && existing != pg

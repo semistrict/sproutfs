@@ -93,7 +93,7 @@ func TestAStoreIntoASealedPageWaitsForTheWalkBehindThePause(t *testing.T) {
 		if err := <-stored; err != nil {
 			t.Fatal(err)
 		}
-		m.pages[5] = mapped{m.pages[5].slot, true}
+		m.pages[5] = mapped{m.pages[5].place, true}
 		access(t, r, m, 5, true)[1] = 9
 		if got := len(r.Checkpoint().DirtyPages()); got != pages {
 			t.Fatalf("the checkpoint holds %d pages, want the %d the seal froze", got, pages)

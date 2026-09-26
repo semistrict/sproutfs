@@ -74,7 +74,7 @@ func TestASealedPageThatNeverChangedIsNotPublished(t *testing.T) {
 		if after := hostStats(t, f).Faults; after != before+1 {
 			t.Fatalf("reading the re-shared page took %d faults, want exactly one", after-before)
 		}
-		if am.pages[0].slot != bm.pages[0].slot {
+		if am.pages[0].place != bm.pages[0].place {
 			t.Fatal("the re-shared page does not share its sibling's resident page again")
 		}
 		if err := a.Checkpoint().Retire(t.Context(), true); err != nil {
@@ -256,7 +256,8 @@ func TestAPageOnlyAnotherHostHoldsIsNeverCompared(t *testing.T) {
 // and publishes it as its own.
 func TestAPageCopiedFromAForkPointsNameIsNeverCompared(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		f := newFixture(t, 8, 32, 8)
+		// The child maps the parent's own page, which is what a shared arena does.
+		f := newPinnedFixture(t, vmmemory.Config{ResidentPages: 8, LogicalPages: 32, DirtyPages: 8})
 		parent, pm, _ := f.memoryRegion(4)
 		access(t, parent, pm, 0, true)[0] = 44
 		if err := parent.Seal(t.Context()); err != nil {
@@ -274,7 +275,7 @@ func TestAPageCopiedFromAForkPointsNameIsNeverCompared(t *testing.T) {
 		if access(t, child, cm, 0, false)[0] != 44 {
 			t.Fatal("the child did not inherit the page the fork point named")
 		}
-		if cm.pages[0].slot != pm.pages[0].slot {
+		if cm.pages[0].place != pm.pages[0].place {
 			t.Fatal("the child did not map the parent's own page")
 		}
 		access(t, child, cm, 0, true)
@@ -402,7 +403,7 @@ func TestASettleRevokesUnchangedPagesInRuns(t *testing.T) {
 			access(t, sibling, siblingMap, page, false)
 		}
 		b := f.newBacking(pages)
-		base := &mapping{arena: f.a, pages: make(map[uint64]mapped)}
+		base := newMapping(f.a)
 		m := &revokeBatchMapping{mapping: base}
 		f.a.mappings = append(f.a.mappings, base)
 		r, err := f.h.Attach(t.Context(), ram(b), m)

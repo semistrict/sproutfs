@@ -10,6 +10,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -62,6 +63,12 @@ type LinuxFile struct {
 	offsets  int
 	pageSize int
 	backing  uint64
+	// arena is the arena that made this file, which a file closed on its own
+	// leaves. reopened is the file's read-only open, which a session that may
+	// only read the file is given, made the first time one is.
+	arena    *LinuxArena
+	mu       sync.Mutex
+	reopened *os.File
 }
 
 // hugeBytes is the transparent huge page an ordinary memfd's 2 MiB block is
@@ -117,7 +124,14 @@ func (a *LinuxArena) NewFile(offsets int) (*LinuxFile, error) {
 	if err != nil {
 		return nil, err
 	}
-	f := &LinuxFile{file: memfd, offsets: offsets, pageSize: size, backing: a.backing}
+	// A memfd is made with mode 0777, and a process of another user that holds
+	// a read-only descriptor of it could open it again for writing through
+	// /proc/self/fd. Only this process's user may do that at 0600, which is why
+	// a VMM runs as another.
+	if err := memfd.Chmod(0o600); err != nil {
+		return nil, errors.Join(err, memfd.Close())
+	}
+	f := &LinuxFile{file: memfd, offsets: offsets, pageSize: size, backing: a.backing, arena: a}
 	f.mapping, err = syscall.Mmap(int(memfd.Fd()), 0, offsets*size, syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED|syscall.MAP_NORESERVE)
 	if err != nil {
 		_ = memfd.Close()
@@ -371,12 +385,82 @@ func (f *LinuxFile) fallocate(ctx context.Context, mode uint32, offset, length i
 	}
 }
 
+// readOnly is this file opened again for reading only, through /proc/self/fd.
+// A process given it cannot map the file writable, write it, punch it, grow it
+// or seal it, which is what a session that may only read the file gets.
+func (f *LinuxFile) readOnly() (*os.File, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.reopened == nil {
+		reopened, err := os.OpenFile(fmt.Sprintf("/proc/self/fd/%d", f.file.Fd()), os.O_RDONLY|syscall.O_CLOEXEC, 0)
+		if err != nil {
+			return nil, fmt.Errorf("opening an arena file read-only: %w", err)
+		}
+		f.reopened = reopened
+	}
+	return f.reopened, nil
+}
+
+// Close gives the file back: the pager no longer keeps a page in it. It leaves
+// the arena that made it, so closing the arena does not close it twice.
+func (f *LinuxFile) Close() error {
+	a := f.arena
+	a.mu.Lock()
+	a.files = slices.DeleteFunc(a.files, func(other *LinuxFile) bool { return other == f })
+	a.mu.Unlock()
+	return f.close()
+}
+
 func (f *LinuxFile) close() error {
-	var huge error
+	var huge, reopened error
 	if f.huge != nil {
 		huge = unix.MunmapPtr(unsafe.Pointer(&f.huge[0]), uintptr(len(f.huge)))
 	}
-	return errors.Join(syscall.Munmap(f.mapping), huge, f.file.Close())
+	f.mu.Lock()
+	if f.reopened != nil {
+		reopened = f.reopened.Close()
+		f.reopened = nil
+	}
+	f.mu.Unlock()
+	return errors.Join(syscall.Munmap(f.mapping), huge, reopened, f.file.Close())
+}
+
+// Punch gives back the memory of every slot held reports false for. It walks
+// the file's allocated ranges rather than its slots, so a sparse file costs
+// what it holds; a file whose kernel cannot say where its data is is walked
+// slot by slot.
+func (f *LinuxFile) Punch(held func(slot int) bool) error {
+	fd := int(f.file.Fd())
+	size := int64(f.offsets) * int64(f.pageSize)
+	punch := func(first, last int) error {
+		for slot := first; slot < last; slot++ {
+			if held(slot) {
+				continue
+			}
+			if err := f.fallocate(context.Background(), 3, int64(slot)*int64(f.pageSize), int64(f.pageSize)); err != nil {
+				return fmt.Errorf("punching slot %d an arena file held for no page: %w", slot, err)
+			}
+		}
+		return nil
+	}
+	for offset := int64(0); offset < size; {
+		data, err := unix.Seek(fd, offset, unix.SEEK_DATA)
+		if errors.Is(err, unix.ENXIO) {
+			return nil
+		}
+		if err != nil {
+			return punch(int(offset/int64(f.pageSize)), f.offsets)
+		}
+		hole, err := unix.Seek(fd, data, unix.SEEK_HOLE)
+		if err != nil {
+			return punch(int(data/int64(f.pageSize)), f.offsets)
+		}
+		if err := punch(int(data/int64(f.pageSize)), int((hole+int64(f.pageSize)-1)/int64(f.pageSize))); err != nil {
+			return err
+		}
+		offset = hole
+	}
+	return nil
 }
 
 // AllocatedBytes reports physically allocated memfd blocks, including slots

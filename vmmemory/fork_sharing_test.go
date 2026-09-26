@@ -73,7 +73,7 @@ func TestSameHostForkSharesSealedPagesAndPublishesNothing(t *testing.T) {
 		atSibling, _ := f.h.Stats(t.Context())
 		_, b, bm := fork("b")
 		for _, page := range []uint64{1, 2} {
-			if access(t, b, bm, page, false)[0] != 44 || am.pages[page].slot != bm.pages[page].slot {
+			if access(t, b, bm, page, false)[0] != 44 || am.pages[page].place != bm.pages[page].place {
 				t.Errorf("sealed page %d did not share its resident page between siblings", page)
 			}
 		}

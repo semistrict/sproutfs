@@ -19,6 +19,7 @@ import (
 
 	"github.com/semistrict/sproutfs/checkpoint"
 	"github.com/semistrict/sproutfs/control"
+	"github.com/semistrict/sproutfs/internal/testarena"
 	"github.com/semistrict/sproutfs/internal/testresource"
 	"github.com/semistrict/sproutfs/internal/vmwire"
 	"github.com/semistrict/sproutfs/platform"
@@ -196,7 +197,7 @@ func attachChild(socket string) error {
 		defer c.Close()
 		defer arena.Close()
 		for {
-			f, err := vmwire.Read(c)
+			f, err := vmwire.ReadCommand(c)
 			if err != nil {
 				return
 			}
@@ -276,7 +277,7 @@ func startupFixture(t *testing.T) (vmmachine.Config, *admissionBacking, *vmmemor
 	}
 	t.Cleanup(func() { _ = spill.Close() })
 	resources := testresource.New()
-	h, err := vmmemory.New(t.Context(), resources, vmmemory.Config{PageSize: checkpoint.PageSize2MiB, ResidentPages: 4, LogicalPages: 256, DirtyPages: 4}, a, spill)
+	h, err := vmmemory.New(t.Context(), resources, vmmemory.Config{PageSize: checkpoint.PageSize2MiB, ResidentPages: 4, LogicalPages: 256, DirtyPages: 4, Arena: testarena.Mode(t)}, a, spill)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -89,7 +89,7 @@ func TestSharedPageIsChargedOnceUntilLastAliasDetaches(t *testing.T) {
 		if got := access(t, second, sm, 0, false)[0]; got != 1 {
 			t.Fatal(got)
 		}
-		if fm.pages[0].slot != sm.pages[0].slot || b.Stats().Used != int64(pageSize) {
+		if fm.pages[0].place != sm.pages[0].place || b.Stats().Used != int64(pageSize) {
 			t.Fatal("shared page was duplicated or charged twice")
 		}
 		clear(fm.pages)
@@ -151,20 +151,31 @@ type failedResourceArena struct {
 	failPunch bool
 }
 
-// File is this arena itself, so that the pager's one file fails as it does.
-func (a *failedResourceArena) File(context.Context, int) (vmmemory.ArenaFile, error) { return a, nil }
+// File is a file of this arena that fails as the arena says.
+func (a *failedResourceArena) File(ctx context.Context, offsets int) (vmmemory.ArenaFile, error) {
+	f, err := a.arena.File(ctx, offsets)
+	if err != nil {
+		return nil, err
+	}
+	return failedResourceFile{f.(*arenaFile), a}, nil
+}
 
-func (a *failedResourceArena) Write(ctx context.Context, slot int, data []byte) error {
-	if err := a.arena.Write(ctx, slot, data); err != nil {
+type failedResourceFile struct {
+	*arenaFile
+	arena *failedResourceArena
+}
+
+func (f failedResourceFile) Write(ctx context.Context, slot int, data []byte) error {
+	if err := f.arenaFile.Write(ctx, slot, data); err != nil {
 		return err
 	}
 	return errInjected
 }
-func (a *failedResourceArena) Release(ctx context.Context, slot int) error {
-	if a.failPunch {
+func (f failedResourceFile) Release(ctx context.Context, slot int) error {
+	if f.arena.failPunch {
 		return errInjected
 	}
-	return a.arena.Release(ctx, slot)
+	return f.arenaFile.Release(ctx, slot)
 }
 
 func TestFailedPhysicalCleanupRetainsRAMUntilRetry(t *testing.T) {
@@ -199,7 +210,7 @@ func TestFailedPhysicalCleanupRetainsRAMUntilRetry(t *testing.T) {
 		if err := f.h.Close(t.Context()); err != nil {
 			t.Fatal(err)
 		}
-		if b.Stats().Used != 0 || f.a.slots[0] != nil {
+		if b.Stats().Used != 0 || f.a.held != 0 {
 			t.Fatal("successful cleanup did not return physical memory and reservation")
 		}
 	})

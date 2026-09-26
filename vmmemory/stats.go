@@ -104,6 +104,13 @@ type Stats struct {
 	// Protections counts the range write-protect commands seals issued;
 	// ProtectedPages the pages those ranges covered.
 	Protections, ProtectedPages uint64
+	// MovedPages counts the published pages an isolated arena copied from the
+	// private file they were published in into the shared file, because
+	// another memory region inherited them. ForkCopies counts the pages it
+	// copied into a fork point's file for a child on this host. Tampered counts
+	// the moves whose copy did not hold the bytes the page's upload read, each
+	// of which ended the session of the VMM that held the page.
+	MovedPages, ForkCopies, Tampered uint64
 	// UFFDReads includes empty reads; RemapEvents counts drained handshakes.
 	UFFDReads, RemapEvents uint64
 	// Read-only latency histograms of the fault path. FaultQueue is the delay

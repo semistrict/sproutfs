@@ -371,7 +371,7 @@ func (r *MemoryRegion) makeWhole(ctx context.Context, index uint64) (bool, error
 	for page := first; page < last; page++ {
 		r.setMapped(r.binding(page), true)
 	}
-	if err := r.mapPages(ctx, runAt(first, at, count), true); err != nil {
+	if err := r.mapPages(ctx, r.runAt(first, at, count), true); err != nil {
 		if revoked := replaced.revoke(ctx); revoked != nil {
 			return false, errors.Join(r.fail(err), revoked)
 		}

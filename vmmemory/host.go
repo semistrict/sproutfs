@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"hash/maphash"
 	"math"
+	"slices"
 	"sync"
 	"sync/atomic"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/semistrict/sproutfs/internal/latency"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/resource"
+	"github.com/semistrict/sproutfs/vmmemory/internal/slots"
 )
 
 // Host accounts for shared backing under a short metadata lock. Each MemoryRegion
@@ -40,9 +42,22 @@ type Host struct {
 	cfg          Config
 	// clock times the fault path. It is Config.Clock, or the wall clock.
 	clock platform.Clock
-	// files is every file this pager has made of its arena, by number. It
-	// makes file 0 when it starts, and every page is in it.
-	files        []*arenaFile
+	// arena is what this pager makes its files of, and files every file it
+	// has made and not yet given back, in the order it made them. A shared
+	// arena is one file, made when the pager starts, and every page is in it.
+	// held is how many pages all of them hold, and madeFiles how many files
+	// the pager has ever made.
+	arena     Arena
+	files     []*arenaFile
+	held      int
+	madeFiles int
+	// shared is the file of an isolated arena that holds the pages other memory
+	// regions may map, which every session is given read-only. It is nil in a
+	// shared arena.
+	shared *arenaFile
+	// lent is the checkpoint a fork point's name belongs to, for every fork
+	// point that lends its pages to children on this host. Guarded by mu.
+	lent         map[lentKey]*MemoryRegionCheckpoint
 	spill        platform.File
 	clean        map[pageKey]*resident
 	cleanVersion uint64
@@ -185,13 +200,22 @@ func New(ctx context.Context, resources *resource.Budget, cfg Config, arena Aren
 		return nil, fmt.Errorf("making file 0 of the arena: %w", err)
 	}
 	h := &Host{changeSeed: maphash.MakeSeed(), pageSize: pageSize, cfg: cfg, clock: platform.ClockOr(cfg.Clock), spill: spill, resources: resources, reservations: newReservations(cfg.DirtyPages),
-		files:       []*arenaFile{newArenaFile(file, 0, cfg.ArenaOffsets, cfg.ResidentPages, extentPages)},
+		arena:       arena,
 		extents:     make(map[extentKey]*extent),
 		extentPages: extentPages,
 		clean:       make(map[pageKey]*resident), changed: make(chan struct{}), revoked: make(chan struct{}),
 		lru: pageList{links: recentLinks}, idle: pageList{links: idleLinks},
 		memoryRegions: make(map[*MemoryRegion]struct{}), highWater: highWater(cfg.DirtyPages),
 		io: make(chan struct{}, cfg.ConcurrentIO), writeback: make(chan struct{}, 1)}
+	if cfg.Arena == ArenaIsolated {
+		// The first file is the shared file, whose pages any memory region may
+		// map read-only. Nothing is placed in it, so it has no extents.
+		h.shared = h.keepFile(file, slots.New(cfg.ArenaOffsets, cfg.ResidentPages))
+		h.files = []*arenaFile{h.shared}
+		h.lent = make(map[lentKey]*MemoryRegionCheckpoint)
+	} else {
+		h.files = []*arenaFile{h.keepFile(file, slots.New(cfg.ArenaOffsets, cfg.ResidentPages, extentPages))}
+	}
 	// Idle pages are the host budget's cache: any consumer short of memory
 	// takes them before it waits, as it takes the checkpoint cache's.
 	h.unregisterIdle = resources.RegisterCache(h.reclaimIdle)
@@ -233,7 +257,8 @@ func (h *Host) Close(ctx context.Context) error {
 	h.signal()
 	h.unregisterIdle()
 	var result error
-	for _, f := range h.files {
+	// Giving the last page of a file back can give the file back too.
+	for _, f := range slices.Clone(h.files) {
 		for slot, entry := range f.leases {
 			if entry.lease == nil {
 				continue

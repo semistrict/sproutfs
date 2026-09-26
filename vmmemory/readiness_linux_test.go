@@ -53,7 +53,7 @@ func pipeConnection(t testing.TB, kind vmmemory.MemoryRegionKind, backing vmmemo
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = spill.Close() })
-	h, err := vmmemory.New(t.Context(), testresource.New(), vmmemory.Config{PageSize: hugePageSize, ResidentPages: 1, LogicalPages: int(backing.Size() / hugePageSize), DirtyPages: 1}, a, spill)
+	h, err := vmmemory.New(t.Context(), testresource.New(), vmmemory.Config{PageSize: hugePageSize, ResidentPages: 1, LogicalPages: int(backing.Size() / hugePageSize), DirtyPages: 1, Arena: suiteArena}, a, spill)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +94,7 @@ func pipeConnection(t testing.TB, kind vmmemory.MemoryRegionKind, backing vmmemo
 		}
 		defer fd.Close()
 		for {
-			f, err := vmwire.Read(client)
+			f, err := vmwire.ReadCommand(client)
 			if err != nil {
 				return
 			}
@@ -104,7 +104,7 @@ func pipeConnection(t testing.TB, kind vmmemory.MemoryRegionKind, backing vmmemo
 			}
 			if f.Kind == vmwire.MapBatch {
 				for range f.Length {
-					if _, err := vmwire.Read(client); err != nil {
+					if _, err := vmwire.ReadCommand(client); err != nil {
 						return
 					}
 				}

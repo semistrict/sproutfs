@@ -129,16 +129,26 @@ func TestLargeLogicalMemoryRegionAllocatesMetadataOnlyWhenUsed(t *testing.T) {
 // Tracks real data mappings individually and zero runs without materializing a
 // fake per-page map. There are no actual memory users behind this adapter.
 type sparseZeroMapping struct {
-	data      map[uint64]int
+	files     map[int]*arenaFile
+	data      map[uint64]place
 	zeroPages uint64
 }
 
+func (m *sparseZeroMapping) GiveFile(_ context.Context, number int, file vmmemory.ArenaFile, _ bool) error {
+	m.files[number] = file.(interface{ fixture() *arenaFile }).fixture()
+	return nil
+}
+func (m *sparseZeroMapping) DropFile(_ context.Context, number int) error {
+	delete(m.files, number)
+	return nil
+}
 func (m *sparseZeroMapping) Map(_ context.Context, page uint64, file, slot, count int, _ bool) error {
-	if file != 0 {
-		return fmt.Errorf("map of file %d, and this arena has only file 0", file)
+	f := m.files[file]
+	if f == nil {
+		return fmt.Errorf("map of file %d, which was never given", file)
 	}
 	for i := range count {
-		m.data[page+uint64(i)] = slot + i
+		m.data[page+uint64(i)] = place{f.id, slot + i}
 	}
 	return nil
 }
@@ -160,7 +170,7 @@ func TestEagerZeroPopulationKeepsLargeLogicalMetadataSparse(t *testing.T) {
 		seed, mapping := f.attach(&sparseMemoryBacking{size: uint64(pageSize), vm: "seed", pages: make(map[uint64][]byte)})
 		access(t, seed, mapping, 0, false) // establishes known sparse backing in the pager
 		b := &sparseMemoryBacking{size: pages * uint64(pageSize), vm: "big", pages: make(map[uint64][]byte)}
-		m := &sparseZeroMapping{data: make(map[uint64]int)}
+		m := &sparseZeroMapping{files: make(map[int]*arenaFile), data: make(map[uint64]place)}
 		runtime.GC()
 		var before, after runtime.MemStats
 		runtime.ReadMemStats(&before)
@@ -183,15 +193,15 @@ func TestEagerZeroPopulationKeepsLargeLogicalMetadataSparse(t *testing.T) {
 		if err := r.Fault(t.Context(), pages-1, true); err != nil {
 			t.Fatal(err)
 		}
-		f.a.slots[m.data[pages-1]][0] = 42
+		f.a.page(m.data[pages-1])[0] = 42
 		if err := r.Fault(t.Context(), 0, true); err != nil {
 			t.Fatal(err)
 		}
-		f.a.slots[m.data[0]][0] = 17
+		f.a.page(m.data[0])[0] = 17
 		if err := r.Fault(t.Context(), pages-1, false); err != nil {
 			t.Fatal(err)
 		}
-		if got := f.a.slots[m.data[pages-1]][0]; got != 42 {
+		if got := f.a.page(m.data[pages-1])[0]; got != 42 {
 			t.Fatalf("far private page refaulted as zero: %d", got)
 		}
 		if err := r.Fault(t.Context(), pages-2, false); err != nil {

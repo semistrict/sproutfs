@@ -23,10 +23,11 @@ type windowPlan struct {
 	store   uint64
 	extents []control.Extent
 	pages   []*resident // locked, indexed by page-start
-	// file is the file this window's loads go in, and reserved the slot of it
-	// each page's load has, or -1.
+	// file is the file this window's loads by identity go in, and reserved the
+	// slot each page's load has, of that file or of this memory region's own,
+	// or slot -1.
 	file     *arenaFile
-	reserved []int
+	reserved []fileSlot
 	fresh    []bool // page tables not yet installed
 	zeros    []bool // explicit zeros, requiring no resident or reservation
 	// private marks pages loaded as this memory region's own dirty state, which a
@@ -65,9 +66,9 @@ func (r *MemoryRegion) plan(ctx context.Context, start, end, fault uint64) (*win
 		return nil, err
 	}
 	none := -1
-	p := &windowPlan{memoryRegion: r, start: start, end: end, fault: fault, store: end, extents: extents, pages: make([]*resident, end-start), file: r.sharedFile(), reserved: make([]int, end-start), fresh: make([]bool, end-start), zeros: make([]bool, end-start), private: make([]bool, end-start), locked: make(map[*resident]bool), spill: &none}
+	p := &windowPlan{memoryRegion: r, start: start, end: end, fault: fault, store: end, extents: extents, pages: make([]*resident, end-start), file: r.sharedFile(), reserved: make([]fileSlot, end-start), fresh: make([]bool, end-start), zeros: make([]bool, end-start), private: make([]bool, end-start), locked: make(map[*resident]bool), spill: &none}
 	for i := range p.reserved {
-		p.reserved[i] = -1
+		p.reserved[i] = fileSlot{slot: -1}
 	}
 	return p, nil
 }
@@ -75,12 +76,12 @@ func (r *MemoryRegion) plan(ctx context.Context, start, end, fault uint64) (*win
 func (p *windowPlan) unlock() {
 	h := p.memoryRegion.host
 	h.mu.Lock()
-	for i, slot := range p.reserved {
-		if slot >= 0 {
+	for i, at := range p.reserved {
+		if at.slot >= 0 {
 			// Publication takes ownership before touching the arena. These
 			// reservations have never held contents or mappings.
-			h.putFree(fileSlot{p.file, slot})
-			p.reserved[i] = -1
+			h.putFree(at)
+			p.reserved[i] = fileSlot{slot: -1}
 		}
 	}
 	pages := make([]*resident, 0, len(p.locked))
@@ -240,6 +241,11 @@ func (p *windowPlan) bindShared(ctx context.Context, page uint64, wait bool) err
 		if found := h.probe.stable(ctx, h, pg, "bindShared"); found != "" {
 			panic(found)
 		}
+		reached, err := p.memoryRegion.reach(ctx, pg, key)
+		if err != nil || reached == nil {
+			return err
+		}
+		pg = reached
 		if page != p.store {
 			h.bind(p.memoryRegion.binding(page), pg)
 		}
@@ -253,8 +259,8 @@ func (p *windowPlan) bindShared(ctx context.Context, page uint64, wait bool) err
 	}
 }
 
-func (p *windowPlan) reserve(page uint64, slot int) {
-	p.reserved[page-p.start] = slot
+func (p *windowPlan) reserve(page uint64, at fileSlot) {
+	p.reserved[page-p.start] = at
 	p.fresh[page-p.start] = true
 }
 
@@ -262,7 +268,7 @@ func (p *windowPlan) reserve(page uint64, slot int) {
 // yet and is not expected to bind to a resident identity.
 func (p *windowPlan) needsLoad(page uint64) bool {
 	i := page - p.start
-	if p.pages[i] != nil || p.reserved[i] >= 0 || !p.eligible(page) {
+	if p.pages[i] != nil || p.reserved[i].slot >= 0 || !p.eligible(page) || p.own(page) {
 		return false
 	}
 	id, ok := p.identity(page)
@@ -296,7 +302,7 @@ func (p *windowPlan) reserveAround(index uint64) {
 	}
 	start := max(first, min(index, last-uint64(count)))
 	for k := range count {
-		p.reserve(start+uint64(k), at.slot+k)
+		p.reserve(start+uint64(k), at.plus(k))
 	}
 }
 
@@ -320,7 +326,7 @@ func (p *windowPlan) reserveRuns(ctx context.Context, from uint64) error {
 	}
 	spans := [][2]uint64{{p.start, p.end}}
 	h.mu.Lock()
-	if p.file.slots.Free() < needed {
+	if h.freeLocked(p.file) < needed {
 		spans = [][2]uint64{{from, p.end}, {p.start, from}}
 	}
 	h.mu.Unlock()
@@ -336,7 +342,7 @@ func (p *windowPlan) reserveRuns(ctx context.Context, from uint64) error {
 			}
 			at, count := h.allocateFree(p.file, int(run))
 			for k := range count {
-				p.reserve(page+uint64(k), at.slot+k)
+				p.reserve(page+uint64(k), at.plus(k))
 			}
 			if count == 0 {
 				return nil
@@ -358,7 +364,7 @@ func (p *windowPlan) loadReserved(ctx context.Context) error {
 	first, last := p.end, p.start
 	loading := uint64(0)
 	for page := p.start; page < p.end; page++ {
-		if p.reserved[page-p.start] < 0 {
+		if p.reserved[page-p.start].slot < 0 {
 			continue
 		}
 		first, last = min(first, page), page+1
@@ -369,7 +375,7 @@ func (p *windowPlan) loadReserved(ctx context.Context) error {
 	}
 	wanted := make([]bool, last-first)
 	for page := first; page < last; page++ {
-		wanted[page-first] = p.reserved[page-p.start] >= 0
+		wanted[page-first] = p.reserved[page-p.start].slot >= 0
 	}
 	buffer := h.takeWindow(last - first)
 	defer h.putWindow(buffer)
@@ -417,8 +423,21 @@ func (p *windowPlan) loadReserved(ctx context.Context) error {
 func (p *windowPlan) publish(ctx context.Context, page uint64, data []byte, private bool) error {
 	h := p.memoryRegion.host
 	i := page - p.start
-	slot := p.reserved[i]
+	at := p.reserved[i]
 	if private {
+		if at.file != p.memoryRegion.privateFile() {
+			// The extents named this page the volume's, and the load found it
+			// another host's. Its bytes are this memory region's own, so they go
+			// in its own file and never in one another region may read.
+			var moved bool
+			if at, moved = p.ownInstead(page); !moved {
+				if page != p.fault {
+					p.fresh[i] = false
+					return nil
+				}
+				return errUnpublishedReservation
+			}
+		}
 		// The bytes are the guest's own and no checkpoint has them, so this page
 		// enters the memory region as dirty state: a private page under a dirty
 		// reservation, which the next checkpoint publishes. The faulting page
@@ -444,8 +463,8 @@ func (p *windowPlan) publish(ctx context.Context, page uint64, data []byte, priv
 				return errUnpublishedReservation
 			}
 		}
-		p.reserved[i] = -1
-		pg, err := h.create(ctx, fileSlot{p.file, slot}, data, pageKey{}, true, p.memoryRegion.kind)
+		p.reserved[i] = fileSlot{slot: -1}
+		pg, err := h.create(ctx, at, data, pageKey{}, true, p.memoryRegion.kind)
 		if err != nil {
 			h.releaseSpill(spill)
 			return err
@@ -461,13 +480,17 @@ func (p *windowPlan) publish(ctx context.Context, page uint64, data []byte, priv
 		p.locked[pg] = true
 		return nil
 	}
-	p.reserved[i] = -1
-	id, shared := p.identity(page)
+	p.reserved[i] = fileSlot{slot: -1}
+	id, named := p.identity(page)
+	// Only a page loaded into the file every memory region may read is shared
+	// under its identity. One loaded into this memory region's own file is its
+	// alone.
+	shared := named && at.file == p.file
 	key := pageKey{}
 	if shared {
 		key = id
 	}
-	pg, err := h.create(ctx, fileSlot{p.file, slot}, data, key, false, p.memoryRegion.kind)
+	pg, err := h.create(ctx, at, data, key, false, p.memoryRegion.kind)
 	if err != nil {
 		return err
 	}
@@ -542,7 +565,7 @@ func (p *windowPlan) install(ctx context.Context) (bool, error) {
 				h.touch(p.pages[i+k])
 				p.fresh[i+k] = false
 			}
-			writable = append(writable, runAt(page, pg.fileSlot, int(run)))
+			writable = append(writable, r.runAt(page, pg.fileSlot, int(run)))
 			h.mu.Lock()
 			h.stats.MappedPages += run
 			h.mu.Unlock()
@@ -580,7 +603,7 @@ func (p *windowPlan) install(ctx context.Context) (bool, error) {
 					h.touch(pg)
 				}
 			}
-			runs = append(runs, runAt(page, at, int(run)))
+			runs = append(runs, r.runAt(page, at, int(run)))
 		}
 		h.mu.Lock()
 		h.stats.MappedPages += run

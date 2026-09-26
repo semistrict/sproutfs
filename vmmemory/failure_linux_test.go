@@ -56,7 +56,7 @@ func TestARefusedCommandNamesTheFrameTheClientRefused(t *testing.T) {
 	t.Cleanup(func() { _ = spill.Close() })
 	h, err := vmmemory.New(t.Context(), testresource.New(), vmmemory.Config{PageSize: page,
 		ResidentPages: pages, ArenaOffsets: rangePages, LogicalPages: 4 * pages,
-		DirtyPages: pages, ReadAheadPages: pages}, arena, spill)
+		DirtyPages: pages, ReadAheadPages: pages, Arena: suiteArena}, arena, spill)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +110,7 @@ func TestARefusedCommandNamesTheFrameTheClientRefused(t *testing.T) {
 			defer fd.Close()
 		}
 		for {
-			f, err := vmwire.Read(client)
+			f, err := vmwire.ReadCommand(client)
 			if err != nil {
 				return
 			}
@@ -118,7 +118,7 @@ func TestARefusedCommandNamesTheFrameTheClientRefused(t *testing.T) {
 				if f.Kind != vmwire.MapBatch {
 					break
 				}
-				if _, err := vmwire.Read(client); err != nil {
+				if _, err := vmwire.ReadCommand(client); err != nil {
 					return
 				}
 			}

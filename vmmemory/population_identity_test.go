@@ -112,7 +112,7 @@ func populationOrder(t *testing.T, identities []control.Identity, held [2]uint64
 		<-entered[1]
 
 		attach := func(b vmmemory.Backing) (*mapping, <-chan error) {
-			m := &mapping{arena: f.a, pages: make(map[uint64]mapped)}
+			m := newMapping(f.a)
 			f.a.mu.Lock()
 			f.a.mappings = append(f.a.mappings, m)
 			f.a.mu.Unlock()
@@ -193,14 +193,14 @@ func populationOrder(t *testing.T, identities []control.Identity, held [2]uint64
 			}
 		}
 		for page := range uint64(count) {
-			if got, ok := complete.pages[page]; !ok || got.slot != seedMap.pages[page].slot {
+			if got, ok := complete.pages[page]; !ok || got.place != seedMap.pages[page].place {
 				t.Fatalf("complete population lost shared page %d", page)
 			}
 			if page != held[0] && page != held[1] {
 				if _, ok := partial.pages[page]; ok {
 					t.Fatal("population loaded or invented a cold identity")
 				}
-			} else if got, ok := partial.pages[page]; !ok || got.slot != seedMap.pages[page].slot {
+			} else if got, ok := partial.pages[page]; !ok || got.place != seedMap.pages[page].place {
 				t.Fatalf("partial population lost shared page %d", page)
 			}
 		}

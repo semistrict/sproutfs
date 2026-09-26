@@ -29,7 +29,7 @@ func TestStoredIdentitySharesWithoutLoadingOrComparingBytes(t *testing.T) {
 		if bb.loads != 0 {
 			t.Fatal("a page resident under the same stored identity was loaded again")
 		}
-		if am.pages[0].slot != bm.pages[0].slot {
+		if am.pages[0].place != bm.pages[0].place {
 			t.Fatal("equal stored identities did not share one slot")
 		}
 		// Equal bytes stored elsewhere are a different page: contents are never
@@ -37,14 +37,14 @@ func TestStoredIdentitySharesWithoutLoadingOrComparingBytes(t *testing.T) {
 		other := f.newUnrelatedBacking(4)
 		c, cm := f.attach(other)
 		access(t, c, cm, 0, false)
-		if other.loads != 1 || cm.pages[0].slot == am.pages[0].slot {
+		if other.loads != 1 || cm.pages[0].place == am.pages[0].place {
 			t.Fatal("equal bytes with a different stored identity were shared")
 		}
 		// A private (unpublished) page never shares, even with equal bytes.
 		bb.private[1] = true
 		access(t, a, am, 1, false)
 		access(t, b, bm, 1, false)
-		if bb.loads != 1 || am.pages[1].slot == bm.pages[1].slot {
+		if bb.loads != 1 || am.pages[1].place == bm.pages[1].place {
 			t.Fatal("an unpublished overlay page was shared")
 		}
 		stats, err := f.h.Stats(t.Context())
@@ -99,7 +99,7 @@ func TestReadAheadLoadsTheWindowContiguouslyAndNeverEvicts(t *testing.T) {
 			t.Fatalf("mapped %d pages with %d commands; want 8 pages in 1 command", len(m.pages), m.maps)
 		}
 		for page := uint64(1); page < 8; page++ {
-			if m.pages[page].slot != m.pages[page-1].slot+1 {
+			if m.pages[page].place != m.pages[page-1].place.next() {
 				t.Fatalf("page %d slot %d does not follow page %d slot %d", page, m.pages[page].slot, page-1, m.pages[page-1].slot)
 			}
 		}
@@ -197,7 +197,7 @@ func TestPopulateMapsEveryResidentRunWorthItsCommandBeforeTheMachineRuns(t *test
 			if !mapped {
 				continue
 			}
-			if shared := bm.pages[page].slot == am.pages[page].slot; shared == (page == 5) {
+			if shared := bm.pages[page].place == am.pages[page].place; shared == (page == 5) {
 				t.Fatalf("page %d populated from slot %d against the writer's %d",
 					page, bm.pages[page].slot, am.pages[page].slot)
 			}
@@ -269,7 +269,7 @@ func TestFaultsInDifferentWindowsProceedConcurrently(t *testing.T) {
 		if err := r.Unseal(t.Context()); err != nil {
 			t.Fatal(err)
 		}
-		if m.pages[0].slot == m.pages[1].slot {
+		if m.pages[0].place == m.pages[1].place {
 			t.Fatal("distinct pages shared a slot")
 		}
 	})
@@ -390,7 +390,7 @@ func TestForksShareTheirPointsResidentPages(t *testing.T) {
 		}
 		before, _ := f.h.Stats(t.Context())
 		for _, page := range []uint64{1, 2} {
-			if access(t, b, bm, page, false)[0] != 37 || am.pages[page].slot != bm.pages[page].slot {
+			if access(t, b, bm, page, false)[0] != 37 || am.pages[page].place != bm.pages[page].place {
 				t.Errorf("checkpoint page %d did not share its resident page", page)
 			}
 		}
@@ -425,7 +425,7 @@ func TestForksShareTheirPointsResidentPages(t *testing.T) {
 		if access(t, b, bm, 1, false)[0] != 81 || access(t, a, am, 1, false)[0] != 37 {
 			t.Fatal("private destination write changed the captured bytes")
 		}
-		if access(t, b, bm, 2, false)[0] != 37 || am.pages[2].slot != bm.pages[2].slot {
+		if access(t, b, bm, 2, false)[0] != 37 || am.pages[2].place != bm.pages[2].place {
 			t.Error("recovered inherited page lost its stable identity")
 		}
 		// A nested fork eagerly inherits its parent's and grandparent's pages.
@@ -439,7 +439,7 @@ func TestForksShareTheirPointsResidentPages(t *testing.T) {
 		if after.Loads != before.Loads || after.IdentityHits-before.IdentityHits != 2 {
 			t.Fatalf("nested attach: loads=%d hits=%d; want 0 and 2", after.Loads-before.Loads, after.IdentityHits-before.IdentityHits)
 		}
-		if cm.pages[1].slot != bm.pages[1].slot || cm.pages[2].slot != am.pages[2].slot {
+		if cm.pages[1].place != bm.pages[1].place || cm.pages[2].place != am.pages[2].place {
 			t.Fatal("nested fork did not eagerly inherit parent and grandparent pages")
 		}
 		if access(t, cr, cm, 1, false)[0] != 81 || access(t, cr, cm, 2, false)[0] != 37 {
@@ -450,7 +450,7 @@ func TestForksShareTheirPointsResidentPages(t *testing.T) {
 		_, d, dm := fork("materialized", point)
 		after, _ = f.h.Stats(t.Context())
 		if after.Loads != before.Loads || after.IdentityHits-before.IdentityHits != 2 ||
-			dm.pages[1].slot != am.pages[1].slot || dm.pages[2].slot != am.pages[2].slot {
+			dm.pages[1].place != am.pages[1].place || dm.pages[2].place != am.pages[2].place {
 			t.Fatalf("the fork point lost its resident pages: before=%+v after=%+v", before, after)
 		}
 		if access(t, d, dm, 1, false)[0] != 37 {
@@ -475,7 +475,8 @@ func TestForkPointSharesThePagesItSealed(t *testing.T) {
 		if err := parent.Checkpoint(t.Context()); err != nil {
 			t.Fatal(err)
 		}
-		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 8, LogicalPages: 32, DirtyPages: 8, ReadAheadPages: 1})
+		// The child maps the parent's own page, which is what a shared arena does.
+		f := newPinnedFixture(t, vmmemory.Config{ResidentPages: 8, LogicalPages: 32, DirtyPages: 8, ReadAheadPages: 1})
 		pr, pm := f.attach(parent.Volume("ram0"))
 		// The guest stores after that checkpoint, so page 1 is the parent's own
 		// dirty state: no volume holds those bytes, only the page does.
@@ -511,7 +512,7 @@ func TestForkPointSharesThePagesItSealed(t *testing.T) {
 			t.Fatal(err)
 		}
 		if after.Loads != before.Loads || after.IdentityHits-before.IdentityHits != 1 ||
-			cm.pages[1].slot != pm.pages[1].slot {
+			cm.pages[1].place != pm.pages[1].place {
 			t.Fatalf("the child read the sealed page instead of mapping the parent's copy: before=%+v after=%+v", before, after)
 		}
 		// The child's first checkpoint publishes the inherited page as its own
@@ -635,7 +636,7 @@ func TestWritesDuringPublicationNeverAliasTheCheckpoint(t *testing.T) {
 		if got := access(t, r, m, 0, false)[0]; got != 22 {
 			t.Fatalf("source lost its own write: %d", got)
 		}
-		if fm.pages[0].slot == m.pages[0].slot {
+		if fm.pages[0].place == m.pages[0].place {
 			t.Fatal("two different contents shared one page")
 		}
 	})

@@ -40,8 +40,21 @@ type MemoryRegion struct {
 	// peer marks a backing whose loads can return bytes no checkpoint holds, so
 	// a page it serves enters this memory region as private dirty state. It decides
 	// whether a fault has to reserve against the dirty budget before it loads.
-	peer       bool
-	mapping    Mapping
+	peer    bool
+	mapping Mapping
+	// private is this memory region's own file in an isolated arena, which
+	// only its process is given and only it may map writable. It is nil in a
+	// shared arena, whose one file is every memory region's. forks is the
+	// number each fork point's file it maps from was given under, guarded by
+	// Host.mu.
+	private *arenaFile
+	forks   map[*arenaFile]int
+	// filesMu admits one fork point's file at a time to the process, so that no
+	// map names a file before the process holds it.
+	filesMu *ctxsync.Mutex
+	// ended is closed when the memory region becomes terminal, which is how
+	// its session learns of an end another memory region's fault found.
+	ended      chan struct{}
 	pageCount  int
 	bindingsMu sync.Mutex
 	// changes is Config.MeasureChanges's state, empty unless it is on.
@@ -136,6 +149,9 @@ func (h *Host) Attach(ctx context.Context, backing MemoryRegionBacking, mapping 
 	if err != nil {
 		return nil, err
 	}
+	if err := r.giveFiles(ctx); err != nil {
+		return r, err
+	}
 	if err := r.Populate(ctx); err != nil {
 		// Return the retained memory region on ambiguous mapping failure. Its owner
 		// must stop memory users before detaching it.
@@ -192,7 +208,15 @@ func (h *Host) admit(ctx context.Context, memoryRegion MemoryRegionBacking, mapp
 		return nil, err
 	}
 	_, peer := backing.(UnpublishedLoader)
-	r := &MemoryRegion{live: ctxsync.NewRWMutex(), mu: ctxsync.NewRWMutex(), endMu: ctxsync.NewMutex(), protectMu: ctxsync.NewRWMutex(), host: h, backing: backing, kind: memoryRegion.Kind, peer: peer, mapping: mapping, pageCount: int(count), blocks: make(map[uint64]*bindingBlock), readAheadPages: h.cfg.ReadAheadPages}
+	r := &MemoryRegion{live: ctxsync.NewRWMutex(), mu: ctxsync.NewRWMutex(), endMu: ctxsync.NewMutex(), protectMu: ctxsync.NewRWMutex(), filesMu: ctxsync.NewMutex(), ended: make(chan struct{}), host: h, backing: backing, kind: memoryRegion.Kind, peer: peer, mapping: mapping, pageCount: int(count), blocks: make(map[uint64]*bindingBlock), readAheadPages: h.cfg.ReadAheadPages}
+	if h.isolated() {
+		if err := h.newPrivateFile(ctx, r); err != nil {
+			h.mu.Lock()
+			h.logical -= int(count)
+			h.mu.Unlock()
+			return nil, err
+		}
+	}
 
 	windows := (r.pageCount + r.readAheadPages - 1) / r.readAheadPages
 	r.stripes = make([]*ctxsync.Mutex, min(windows, 1024))
@@ -267,7 +291,9 @@ func (r *MemoryRegion) serving() error {
 // pages it still holds. The session that ends with it is what says so — see
 // heldPages for the part of it nothing else reports.
 func (r *MemoryRegion) fail(err error) error {
-	r.terminal.CompareAndSwap(nil, &failure{fmt.Errorf("managed mapping terminal: %w", err)})
+	if r.terminal.CompareAndSwap(nil, &failure{fmt.Errorf("managed mapping terminal: %w", err)}) {
+		close(r.ended)
+	}
 	return r.terminal.Load().err
 }
 
@@ -597,6 +623,9 @@ func (r *MemoryRegion) Verify(ctx context.Context) error {
 	if err := r.serving(); err != nil {
 		return err
 	}
+	if err := r.countAllocated(); err != nil {
+		return err
+	}
 	if r.handed {
 		// There is no authority left to observe: the volume is another host's,
 		// and this memory region only serves the pages it still holds.
@@ -659,6 +688,7 @@ func (r *MemoryRegion) Detach(ctx context.Context) error {
 	h.mu.Lock()
 	h.logical -= r.pageCount
 	h.forgetExtents(r)
+	h.forgetFilesLocked(r)
 	delete(h.memoryRegions, r)
 	if r.hasZeros {
 		h.zeroMemoryRegions--
