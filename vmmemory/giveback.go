@@ -26,8 +26,8 @@ import (
 // Write-protecting the copy stops the guest's stores, because every store then
 // traps and waits for the window. From then on the copy's bytes cannot change,
 // so comparing them with the origin's is exact. A store that trapped in the
-// meantime is served once the window is free: it copies again, from the origin
-// or from the copy it kept, and loses nothing.
+// meantime is served once the window is free. Against the origin it copies
+// again, and against a copy that was kept it lands. It loses nothing.
 //
 // The guest is pointed at the origin in place, with the mapping command a
 // store uses to replace the page it copied from, and the page is installed
@@ -42,9 +42,9 @@ import (
 // writes, which use the userspace address or a pfn cache that the MMU notifier
 // invalidates. A writer that pinned the copy before the write-protection would
 // write into a page this frees. Managed RAM refuses the io_uring block engine
-// and vhost-user for that reason, and Firecracker has no vhost. KVM's maps for
-// a nested guest are the one exception, and every seal and copy-on-write shares
-// it: see "Writers that bypass the page tables" in docs/vm-memory.md.
+// and vhost-user, and Firecracker has no vhost-net or vhost-vsock. KVM's maps
+// for a nested guest are the one exception, and every seal and copy-on-write
+// shares it: see "Writers that bypass the page tables" in docs/vm-memory.md.
 
 // GiveBack compares up to limit of this memory region's private copies with the
 // pages they were copied from, and gives back each one whose bytes are still
