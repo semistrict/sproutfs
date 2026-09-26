@@ -189,8 +189,10 @@ type Sharing struct {
 	// UniqueBytes is the host memory the arena actually holds: one resident
 	// page counted once, however many memory regions map it. MappedBytes is the sum
 	// over memory regions of the resident pages each maps, counting every alias, so a
-	// page three memory regions map counts three times. SavedBytes is the difference,
-	// which is the memory this host did not have to find.
+	// page three memory regions map counts three times. SavedBytes is every alias
+	// of a page past its first, which is the memory this host did not have to
+	// find: the difference while every resident page is mapped, since a page
+	// nothing maps saves nothing.
 	UniqueBytes uint64 `json:"unique_bytes"`
 	MappedBytes uint64 `json:"mapped_bytes"`
 	SavedBytes  uint64 `json:"saved_bytes"`

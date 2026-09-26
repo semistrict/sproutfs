@@ -128,3 +128,31 @@ func TestEvictingASharedPageLowersEveryGauge(t *testing.T) {
 		wantMemoryRegion(t, c, 1, 0, 0, "the memory region whose fault evicted it")
 	})
 }
+
+// A page nothing maps any more stays in the arena until something needs its
+// slot. It is memory the host holds and saves nothing, so it counts in the
+// unique bytes and in no saving: the saving is every alias of a page past its
+// first, which is mapped less unique only while every resident page is mapped.
+// Idle pages outnumbering the aliases once wrapped the saving round to 16 EiB.
+func TestAnIdlePageSavesNothing(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newFixture(t, 8, 32, 8)
+		a, am, _ := f.memoryRegion(2)
+		b, bm, _ := f.memoryRegion(2)
+		for page := uint64(0); page < 2; page++ {
+			access(t, a, am, page, false)
+			access(t, b, bm, page, false)
+		}
+		gone, gm := f.attach(f.newUnrelatedBacking(4))
+		for page := uint64(0); page < 4; page++ {
+			access(t, gone, gm, page, false)
+		}
+		if err := gone.Detach(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		want := vmmemory.Sharing{UniqueBytes: pageBytes(6), MappedBytes: pageBytes(4), SavedBytes: pageBytes(2)}
+		if got := sharing(t, f).Ram; got != want {
+			t.Errorf("two shared pages beside four idle ones: %+v, want %+v", got, want)
+		}
+	})
+}

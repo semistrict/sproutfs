@@ -156,8 +156,10 @@ type Sharing struct {
 	// shares with it: what it answers is how much memory this host would be
 	// holding if nothing shared anything.
 	MappedBytes uint64
-	// SavedBytes is MappedBytes less UniqueBytes: the memory this host did not
-	// have to find because its guests are reading the same pages.
+	// SavedBytes is every alias of a resident page past its first: the memory
+	// this host did not have to find because its guests are reading the same
+	// pages. It is MappedBytes less UniqueBytes while every resident page is
+	// mapped; a page nothing maps saves nothing.
 	SavedBytes uint64
 }
 
@@ -191,11 +193,13 @@ func (h *Host) Sharing(ctx context.Context) (SharingStats, error) {
 		if pg.kind == Ram {
 			gauge = &stats.Ram
 		}
+		aliases := uint64(pg.aliases.len())
 		gauge.UniqueBytes += h.pageSize
-		gauge.MappedBytes += uint64(pg.aliases.len()) * h.pageSize
+		gauge.MappedBytes += aliases * h.pageSize
+		if aliases > 1 {
+			gauge.SavedBytes += (aliases - 1) * h.pageSize
+		}
 	}
-	stats.Ram.SavedBytes = stats.Ram.MappedBytes - stats.Ram.UniqueBytes
-	stats.Pmem.SavedBytes = stats.Pmem.MappedBytes - stats.Pmem.UniqueBytes
 	return stats, h.err
 }
 
