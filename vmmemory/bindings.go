@@ -2,6 +2,7 @@ package vmmemory
 
 import (
 	"sort"
+	"time"
 
 	"github.com/semistrict/sproutfs/vmmemory/internal/pageranges"
 )
@@ -414,6 +415,35 @@ func (r *MemoryRegion) retireFromCheckpoint(b *binding) {
 	b.checkpoint, b.dirty, b.origin = nil, false, nil
 	delete(r.dirtyBindings, b.index)
 	r.noteSealableLocked(b)
+}
+
+// forgetOrigin stops comparing this page with the page it was copied from:
+// the guest changed it, or that page has gone. It is left alone where the page
+// has been copied again since, from something else.
+func (r *MemoryRegion) forgetOrigin(b *binding, origin *resident) {
+	r.bindingsMu.Lock()
+	defer r.bindingsMu.Unlock()
+	if b.origin == origin {
+		b.origin = nil
+	}
+}
+
+// endDirty ends a page's dirty epoch with no checkpoint, because its bytes are
+// the ones the page it now shares holds: see GiveBack. It reports the dirty
+// reservation the page was admitted under, for the caller to give back. A
+// memory region left with no dirty page holds no unpublished write, so its
+// loss window ends too.
+func (r *MemoryRegion) endDirty(b *binding) int {
+	r.bindingsMu.Lock()
+	defer r.bindingsMu.Unlock()
+	slot := b.spillSlot
+	b.spillSlot, b.dirty, b.ahead, b.origin = -1, false, false, nil
+	delete(r.dirtyBindings, b.index)
+	r.noteSealableLocked(b)
+	if len(r.dirtyBindings) == 0 {
+		r.dirtySince = time.Time{}
+	}
+	return slot
 }
 
 // heldBy reports whether the live page still shares the checkpoint's copy,

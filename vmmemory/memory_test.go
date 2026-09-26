@@ -279,9 +279,13 @@ func (f *arenaFile) Close() error {
 	return nil
 }
 
+// mapped is what one page of a mapping maps. writable is whether a store lands
+// without trapping, and mappedWritable whether the command that mapped it
+// allowed stores at all: a write-protection takes the first away and leaves
+// the second, and resolving the page writable gives the first back.
 type mapped struct {
 	place
-	writable bool
+	writable, mappedWritable bool
 }
 type mapping struct {
 	arena *arena
@@ -384,7 +388,7 @@ func (m *mapping) Map(_ context.Context, page uint64, file, slot, count int, wri
 		}
 	}
 	for i := range count {
-		m.pages[page+uint64(i)] = mapped{place{f.id, slot + i}, writable}
+		m.pages[page+uint64(i)] = mapped{place{f.id, slot + i}, writable, writable}
 	}
 	m.maps++
 	if m.failMap {
@@ -399,7 +403,7 @@ func (m *mapping) MapZero(_ context.Context, page uint64, count int) error {
 	m.arena.mu.Lock()
 	defer m.arena.mu.Unlock()
 	for i := range count {
-		m.pages[page+uint64(i)] = mapped{place{-1, -1}, false}
+		m.pages[page+uint64(i)] = mapped{place{-1, -1}, false, false}
 	}
 	m.maps++
 	if m.failMap {
@@ -448,6 +452,11 @@ func (m *mapping) Revoke(_ context.Context, page uint64) error {
 	delete(m.pages, page)
 	return nil
 }
+
+// Resolve installs a run's page tables. Resolving writable also takes off a
+// write-protection, as the real one's UFFDIO_WRITEPROTECT does, which only a
+// page mapped writable can have; resolving read-only is only valid for a page
+// a store would trap on.
 func (m *mapping) Resolve(_ context.Context, page uint64, count int, writable bool) error {
 	if m.onResolve != nil {
 		m.onResolve(page)
@@ -456,8 +465,15 @@ func (m *mapping) Resolve(_ context.Context, page uint64, count int, writable bo
 	defer m.arena.mu.Unlock()
 	for i := range count {
 		p, ok := m.pages[page+uint64(i)]
-		if !ok || p.writable != writable {
+		if !ok || (writable && !p.mappedWritable) || (!writable && p.writable) {
 			return errors.New("invalid resolution")
+		}
+	}
+	if writable {
+		for i := range count {
+			p := m.pages[page+uint64(i)]
+			p.writable = true
+			m.pages[page+uint64(i)] = p
 		}
 	}
 	return nil

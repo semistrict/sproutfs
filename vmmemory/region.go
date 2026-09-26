@@ -74,6 +74,9 @@ type MemoryRegion struct {
 	// changes whether a page is one the next seal would protect, all of which
 	// hold bindingsMu.
 	dirtyRuns pageranges.Map
+	// givenBackTo is the page the next give-back pass starts at, guarded by
+	// bindingsMu. See GiveBack.
+	givenBackTo uint64
 	// dirtySince is when the oldest write this memory region holds that no checkpoint
 	// covers landed, zero while it holds none. It is the loss window's own
 	// bookkeeping and is guarded by bindingsMu, because the transitions that

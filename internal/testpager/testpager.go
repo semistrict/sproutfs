@@ -155,7 +155,11 @@ func (f *File) Close() error {
 // or zeros where Slot is -1.
 type Page struct {
 	File, Slot int
-	Writable   bool
+	// Writable is whether a store lands without trapping. A write-protection
+	// takes it away and resolving the page writable gives it back, which only
+	// a page mapped writable can be.
+	Writable       bool
+	mappedWritable bool
 }
 
 // Mapping is one simulated process memory region's page table. Every lookup
@@ -236,7 +240,7 @@ func (m *Mapping) Map(_ context.Context, page uint64, file, slot, count int, wri
 		return fmt.Errorf("map of file %d writable=%t, which this memory region may not map so", file, writable)
 	}
 	for i := range count {
-		m.pages[page+uint64(i)] = Page{f.id, slot + i, writable}
+		m.pages[page+uint64(i)] = Page{f.id, slot + i, writable, writable}
 	}
 	return nil
 }
@@ -245,7 +249,7 @@ func (m *Mapping) MapZero(_ context.Context, page uint64, count int) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for i := range count {
-		m.pages[page+uint64(i)] = Page{-1, -1, false}
+		m.pages[page+uint64(i)] = Page{-1, -1, false, false}
 	}
 	return nil
 }
@@ -271,13 +275,22 @@ func (m *Mapping) Revoke(_ context.Context, page uint64) error {
 	return nil
 }
 
+// Resolve installs a run's page tables. Resolving writable also takes off a
+// write-protection, as the real one's UFFDIO_WRITEPROTECT does.
 func (m *Mapping) Resolve(_ context.Context, page uint64, count int, writable bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for i := range count {
 		p, ok := m.pages[page+uint64(i)]
-		if !ok || p.Writable != writable {
+		if !ok || (writable && !p.mappedWritable) || (!writable && p.Writable) {
 			return errors.New("invalid resolution")
+		}
+	}
+	if writable {
+		for i := range count {
+			p := m.pages[page+uint64(i)]
+			p.Writable = true
+			m.pages[page+uint64(i)] = p
 		}
 	}
 	return nil
