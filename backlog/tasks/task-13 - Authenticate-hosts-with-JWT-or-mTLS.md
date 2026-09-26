@@ -4,9 +4,11 @@ title: Authenticate hosts with JWT or mTLS
 status: To Do
 assignee: []
 created_date: '2026-09-25 18:17'
+updated_date: '2026-09-26 14:53'
 labels:
   - embedder
   - security
+  - deferred
 dependencies: []
 priority: high
 type: feature
