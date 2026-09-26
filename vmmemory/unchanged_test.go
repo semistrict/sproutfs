@@ -265,7 +265,7 @@ func TestAPageCopiedFromAForkPointsNameIsNeverCompared(t *testing.T) {
 		}
 		// The fork point takes a reference of its own and names the parent's
 		// sealed pages under it, so a child on this host maps them.
-		point := control.Ref{VM: t.Name() + "-point", Sequence: 7}
+		point := control.Ref{VM: f.source.VM + "-point", Sequence: 7}
 		if err := parent.Checkpoint().Share(t.Context(), point, "v"); err != nil {
 			t.Fatal(err)
 		}

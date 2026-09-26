@@ -22,9 +22,11 @@ import (
 //     receives it, read-write. A page's offset in it is its index, and the
 //     second half of the file is each page's other place, for a store that
 //     cannot use the page's own offset.
-//   - The shared file holds the pages another memory region may map: pages
-//     loaded by identity, and published pages once another region inherits
-//     them. Every VMM receives it read-only.
+//   - A tenant's shared file holds the pages another memory region of the
+//     tenant may map: pages loaded by identity, and published pages once
+//     another region inherits them. The tenant's VMMs receive it read-only.
+//     A page's identity names its tenant, and a memory region is refused an
+//     identity of another tenant, so no page is ever in two tenants' files.
 //   - A fork file holds the pages a fork point lends, copied there the first
 //     time a child on this host maps one. The children receive it read-only.
 //
@@ -46,6 +48,76 @@ type digest = [32]byte
 // digestOf is the digest of one page's bytes.
 func digestOf(data []byte) digest { return blake3.Sum256(data) }
 
+// newFiles gives a memory region the files an isolated arena keeps for it: a
+// private file of its own, and its tenant's shared file.
+func (h *Host) newFiles(ctx context.Context, r *MemoryRegion) error {
+	if err := h.joinTenant(ctx, r); err != nil {
+		return err
+	}
+	if err := h.newPrivateFile(ctx, r); err != nil {
+		h.mu.Lock()
+		h.leaveTenantLocked(r)
+		h.mu.Unlock()
+		return err
+	}
+	return nil
+}
+
+// joinTenant gives a memory region its tenant's shared file, and makes the
+// file where the tenant has none: no memory region of it is attached and no
+// page of it is resident.
+func (h *Host) joinTenant(ctx context.Context, r *MemoryRegion) error {
+	h.mu.Lock()
+	joined := h.joinTenantLocked(r)
+	h.mu.Unlock()
+	if joined {
+		return nil
+	}
+	file, err := h.arena.File(ctx, h.cfg.ArenaOffsets)
+	if err != nil {
+		return fmt.Errorf("making a tenant's shared file: %w", err)
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.joinTenantLocked(r) {
+		// Another memory region of the tenant made one first.
+		h.giveBack(file)
+		return nil
+	}
+	f := h.keepFile(file, slots.New(h.cfg.ArenaOffsets, h.cfg.ResidentPages))
+	f.shared, f.tenant, f.holders = true, r.tenant, make(map[*MemoryRegion]int)
+	h.shared[r.tenant] = f
+	h.files = append(h.files, f)
+	h.joinTenantLocked(r)
+	return nil
+}
+
+// joinTenantLocked gives r its tenant's shared file, where the tenant has one.
+// Caller holds h.mu.
+func (h *Host) joinTenantLocked(r *MemoryRegion) bool {
+	f := h.shared[r.tenant]
+	if f == nil {
+		return false
+	}
+	f.holders[r] = sharedFileNumber
+	f.orphaned = false
+	r.shared = f
+	return true
+}
+
+// leaveTenantLocked is what a memory region's detach does to its tenant's
+// shared file: the file outlives the tenant's last memory region while it
+// holds idle pages, and goes back with the last of them. Caller holds h.mu.
+func (h *Host) leaveTenantLocked(r *MemoryRegion) {
+	f := r.shared
+	if f == nil {
+		return
+	}
+	delete(f.holders, r)
+	f.orphaned = len(f.holders) == 0
+	h.emptiedLocked(f)
+}
+
 // newPrivateFile makes a memory region's private file: a place of its own for
 // each of its pages and a second one beside it. Only the pager and the
 // region's own VMM ever hold it.
@@ -64,9 +136,8 @@ func (h *Host) newPrivateFile(ctx context.Context, r *MemoryRegion) error {
 	return nil
 }
 
-// emptiedLocked gives a file back once it has nothing left to hold: a
-// detached memory region's private file whose last idle page has gone. Caller
-// holds h.mu.
+// emptiedLocked gives a file back once it has nothing left to hold: a file
+// nothing will be given again whose last page has gone. Caller holds h.mu.
 func (h *Host) emptiedLocked(f *arenaFile) {
 	if f.orphaned && f.slots.Held() == 0 {
 		h.dropFileLocked(f)
@@ -77,9 +148,17 @@ func (h *Host) emptiedLocked(f *arenaFile) {
 // holds h.mu, and nothing of the file is held.
 func (h *Host) dropFileLocked(f *arenaFile) {
 	h.files = slices.DeleteFunc(h.files, func(other *arenaFile) bool { return other == f })
-	if closing, ok := f.ArenaFile.(ClosableFile); ok {
+	if f.shared && h.shared[f.tenant] == f {
+		delete(h.shared, f.tenant)
+	}
+	h.giveBack(f.ArenaFile)
+}
+
+// giveBack gives a file the pager keeps nothing in back to its arena.
+func (h *Host) giveBack(file ArenaFile) {
+	if closing, ok := file.(ClosableFile); ok {
 		if err := closing.Close(); err != nil {
-			slog.Warn("vmmemory: an arena file could not be given back", "file", f.id, "error", err)
+			slog.Warn("vmmemory: an arena file could not be given back", "error", err)
 		}
 	}
 }
@@ -273,8 +352,14 @@ func (h *Host) lends(key pageKey) bool {
 func (r *MemoryRegion) reach(ctx context.Context, pg *resident, key pageKey) (*resident, error) {
 	h := r.host
 	f := pg.file
-	if !h.isolated() || f == r.private || f == h.shared {
+	if !h.isolated() || f == r.private || f == r.shared {
 		return pg, nil
+	}
+	if f.shared {
+		// Another tenant's page, which no identity this region is given names.
+		h.unlock(pg)
+		return nil, fmt.Errorf("%w: a %s memory region of tenant %q reached tenant %q's shared file",
+			ErrOtherTenant, r.kind, r.tenant, f.tenant)
 	}
 	if f.owner == nil {
 		// A fork point's file, which a child of that point may read.
@@ -375,15 +460,16 @@ func (r *MemoryRegion) forkCopy(ctx context.Context, pg *resident, key pageKey) 
 }
 
 // move copies a published page out of the private file it was published in
-// and into the shared file, because another memory region inherits it. The
-// copy is checked against the digest of the bytes the page's upload read: the
-// owner's VMM holds the page read-only, so a copy that differs is a VMM that
-// wrote where it may not, and its session ends. The owner's mapping of the
-// page is taken away, and its next fault maps the copy.
+// and into its tenant's shared file, because another memory region of the
+// tenant inherits it. The copy is checked against the digest of the bytes the
+// page's upload read: the owner's VMM holds the page read-only, so a copy that
+// differs is a VMM that wrote where it may not, and its session ends. The
+// owner's mapping of the page is taken away, and its next fault maps the copy.
 //
 // A page that cannot be moved at once — there is no free slot of the shared
 // file, or no digest — stops being named by its identity, and the region that
-// wants it reads it from its own volume.
+// wants it reads it from its own volume. The owner is of this region's tenant,
+// because the page's identity names that tenant.
 func (r *MemoryRegion) move(ctx context.Context, pg *resident, key pageKey) (*resident, error) {
 	h := r.host
 	owner := pg.file.owner
@@ -393,11 +479,11 @@ func (r *MemoryRegion) move(ctx context.Context, pg *resident, key pageKey) (*re
 	var at fileSlot
 	count := 0
 	if digested {
-		if err := h.makeRoom(ctx, h.shared, 1); err != nil {
+		if err := h.makeRoom(ctx, r.shared, 1); err != nil {
 			h.unlock(pg)
 			return nil, err
 		}
-		at, count = h.allocateFree(h.shared, 1)
+		at, count = h.allocateFree(r.shared, 1)
 	}
 	if count == 0 {
 		h.mu.Lock()
@@ -593,27 +679,29 @@ func (c *MemoryRegionCheckpoint) digestOf(page uint64) *digest {
 }
 
 // forgetFilesLocked is what detaching a memory region does to the files: its
-// private file is given back once its idle pages have gone, and what its reads
-// made it or the shared file allocate goes back now, and it holds no fork
-// point's file any more. Caller holds h.mu.
+// private file is given back once its idle pages have gone, and so is its
+// tenant's shared file once no memory region of the tenant is left; what its
+// reads made either allocate goes back now; and it holds no fork point's file
+// any more. Caller holds h.mu.
 func (h *Host) forgetFilesLocked(r *MemoryRegion) {
 	for f := range r.forks {
 		delete(f.holders, r)
 	}
 	r.forks = nil
 	if f := r.private; f != nil {
-		if err := errors.Join(h.punchUnheldLocked(f), h.punchUnheldLocked(h.shared)); err != nil {
+		if err := errors.Join(h.punchUnheldLocked(f), h.punchUnheldLocked(r.shared)); err != nil {
 			slog.Warn("vmmemory: memory a detached VMM allocated could not be given back", "error", err)
 		}
 		f.orphaned = true
 		h.emptiedLocked(f)
+		h.leaveTenantLocked(r)
 	}
 }
 
 // countAllocated ends this memory region's session where its private file
 // holds more memory than the pager put there, which only its VMM can have
-// done, and gives back whatever a VMM's reads made the shared file allocate.
-// It is part of every verification.
+// done, and gives back whatever a VMM's reads made its tenant's shared file
+// allocate. It is part of every verification.
 func (r *MemoryRegion) countAllocated() error {
 	h := r.host
 	if r.private == nil {
@@ -627,7 +715,7 @@ func (r *MemoryRegion) countAllocated() error {
 		}
 		return r.fail(err)
 	}
-	return h.punchUnheldLocked(h.shared)
+	return h.punchUnheldLocked(r.shared)
 }
 
 // overLocked reports a file that holds more memory than the pages the pager

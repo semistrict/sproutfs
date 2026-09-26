@@ -6,10 +6,11 @@
 // An isolated arena also holds its pager to who may read what, on every file it
 // hands a memory region and every map. A file given writable is one memory
 // region's private file: it is given to that one mapping only, as its file 0,
-// and to nobody read-only. Every other file is only ever given read-only. A map
-// names a file its mapping holds, and a writable map names file 0. So a guest's
-// stores reach only its own region's file, and no page two regions map is in a
-// private file, under everything a suite plays.
+// and to nobody read-only. Every other file is only ever given read-only, and
+// only to the mappings of one tenant. A map names a file its mapping holds, and
+// a writable map names file 0. So a guest's stores reach only its own region's
+// file, no page two regions map is in a private file, and no page one tenant
+// maps is in a file another tenant may read, under everything a suite plays.
 package testpager
 
 import (
@@ -37,6 +38,10 @@ func NewArena(mode vmmemory.ArenaMode) *Arena {
 	return &Arena{isolated: mode == vmmemory.ArenaIsolated}
 }
 
+// Isolated reports an arena of a pager that splits it by who may read each
+// page.
+func (a *Arena) Isolated() bool { return a.isolated }
+
 // File is one file of an arena: a byte slice at every offset a page has been
 // put at.
 //
@@ -50,9 +55,11 @@ type File struct {
 	offsets int
 	slots   map[int][]byte
 	// writer is the one mapping this file was given to writable, and readers
-	// how many were given it read-only. closed marks a file the pager gave back.
+	// how many were given it read-only, all of them of tenant. closed marks a
+	// file the pager gave back.
 	writer  *Mapping
 	readers int
+	tenant  string
 	closed  bool
 }
 
@@ -157,16 +164,19 @@ type Page struct {
 // step, exactly as the hardware makes them.
 type Mapping struct {
 	arena *Arena
-	mu    sync.Mutex
-	pages map[uint64]Page
+	// tenant is the tenant of the VM whose memory region this is.
+	tenant string
+	mu     sync.Mutex
+	pages  map[uint64]Page
 	// files is every file this mapping was given, by the number its maps name
 	// it by.
 	files map[int]*File
 }
 
-// NewMapping is an empty page table over the arena.
-func NewMapping(a *Arena) *Mapping {
-	return &Mapping{arena: a, pages: make(map[uint64]Page), files: make(map[int]*File)}
+// NewMapping is an empty page table over the arena, of a memory region of the
+// tenant given, empty for none.
+func NewMapping(a *Arena, tenant string) *Mapping {
+	return &Mapping{arena: a, tenant: tenant, pages: make(map[uint64]Page), files: make(map[int]*File)}
 }
 
 // GiveFile holds the pager to who may read a file.
@@ -189,11 +199,14 @@ func (m *Mapping) GiveFile(_ context.Context, number int, file vmmemory.ArenaFil
 		return fmt.Errorf("file %d given writable to a second memory region", f.id)
 	case !writable && f.writer != nil:
 		return fmt.Errorf("the private file %d given read-only to another memory region", f.id)
+	case !writable && f.readers > 0 && f.tenant != m.tenant:
+		return fmt.Errorf("file %d given read-only to tenant %q and to tenant %q", f.id, f.tenant, m.tenant)
 	}
 	if writable {
 		f.writer = m
 	} else {
 		f.readers++
+		f.tenant = m.tenant
 	}
 	m.files[number] = f
 	return nil
@@ -276,6 +289,26 @@ func (m *Mapping) Page(page uint64) (Page, bool) {
 	defer m.mu.Unlock()
 	p, ok := m.pages[page]
 	return p, ok
+}
+
+// Tenant is the tenant of the memory region this is the mapping of.
+func (m *Mapping) Tenant() string { return m.tenant }
+
+// Arena is the arena this mapping's files are of, which is what a file's
+// number in Page is a number within.
+func (m *Mapping) Arena() *Arena { return m.arena }
+
+// Mapped is every page this mapping maps from a file of its arena.
+func (m *Mapping) Mapped() map[uint64]Page {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	mapped := make(map[uint64]Page, len(m.pages))
+	for page, p := range m.pages {
+		if p.Slot >= 0 {
+			mapped[page] = p
+		}
+	}
+	return mapped
 }
 
 // Read is the bytes one page maps, nil for zeros, and whether it maps

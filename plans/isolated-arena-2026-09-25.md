@@ -1,11 +1,14 @@
 # An isolated arena — 2026-09-25
 
-**Status: steps 1 to 4 are built behind `SPROUTFS_ARENA=isolated` (TASK-2.1 to
-TASK-2.4). Tenants (step 5) and the measurement (step 6) are not. The owner's
-decisions are at the end. What was built is described in
+**Status: steps 1 to 5 are built behind `SPROUTFS_ARENA=isolated` (TASK-2.1 to
+TASK-2.5). The measurement (step 6) is not. The owner's decisions are at the
+end. What was built is described in
 [the isolated arena](../docs/vm-memory.md#the-isolated-arena). It differs from
-this plan in two places: the digest is BLAKE3, and a moved page's owner is
-revoked rather than remapped, so its next fault maps the shared copy.**
+this plan in four places. The digest is BLAKE3. A moved page's owner is revoked
+rather than remapped, so its next fault maps the shared copy. The sharing index
+stays keyed by identity: every identity names its tenant, and a region is
+refused one of another tenant. A tenant's shared file has the pager's offsets
+from the start rather than growing at each attach.**
 
 ## The hole
 

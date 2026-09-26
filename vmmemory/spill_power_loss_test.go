@@ -137,7 +137,7 @@ func spillFixture(t *testing.T, seed uint64) (*fixture, *vmmemory.MemoryRegion, 
 		t.Fatal(err)
 	}
 	f := &fixture{t: t, h: h, a: a, disk: disk, pageSize: pageSize,
-		source: control.Ref{VM: t.Name(), Sequence: 1}}
+		source: control.Ref{VM: vmName(t), Sequence: 1}}
 	r, m, _ := f.memoryRegion(3)
 	return f, r, m, spill
 }

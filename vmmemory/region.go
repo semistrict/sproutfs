@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/internal/ctxsync"
 	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/resource"
@@ -42,12 +43,16 @@ type MemoryRegion struct {
 	// whether a fault has to reserve against the dirty budget before it loads.
 	peer    bool
 	mapping Mapping
+	// tenant is the tenant the memory region's VM belongs to, as its host
+	// stated it. Every identity its backing reports names it.
+	tenant string
 	// private is this memory region's own file in an isolated arena, which
-	// only its process is given and only it may map writable. It is nil in a
-	// shared arena, whose one file is every memory region's. forks is the
-	// number each fork point's file it maps from was given under, guarded by
-	// Host.mu.
+	// only its process is given and only it may map writable, and shared its
+	// tenant's shared file, which it may only read. Both are nil in a shared
+	// arena, whose one file is every memory region's. forks is the number each
+	// fork point's file it maps from was given under, guarded by Host.mu.
 	private *arenaFile
+	shared  *arenaFile
 	forks   map[*arenaFile]int
 	// filesMu admits one fork point's file at a time to the process, so that no
 	// map names a file before the process holds it.
@@ -208,9 +213,9 @@ func (h *Host) admit(ctx context.Context, memoryRegion MemoryRegionBacking, mapp
 		return nil, err
 	}
 	_, peer := backing.(UnpublishedLoader)
-	r := &MemoryRegion{live: ctxsync.NewRWMutex(), mu: ctxsync.NewRWMutex(), endMu: ctxsync.NewMutex(), protectMu: ctxsync.NewRWMutex(), filesMu: ctxsync.NewMutex(), ended: make(chan struct{}), host: h, backing: backing, kind: memoryRegion.Kind, peer: peer, mapping: mapping, pageCount: int(count), blocks: make(map[uint64]*bindingBlock), readAheadPages: h.cfg.ReadAheadPages}
+	r := &MemoryRegion{live: ctxsync.NewRWMutex(), mu: ctxsync.NewRWMutex(), endMu: ctxsync.NewMutex(), protectMu: ctxsync.NewRWMutex(), filesMu: ctxsync.NewMutex(), ended: make(chan struct{}), host: h, backing: backing, kind: memoryRegion.Kind, peer: peer, mapping: mapping, tenant: memoryRegion.Tenant, pageCount: int(count), blocks: make(map[uint64]*bindingBlock), readAheadPages: h.cfg.ReadAheadPages}
 	if h.isolated() {
-		if err := h.newPrivateFile(ctx, r); err != nil {
+		if err := h.newFiles(ctx, r); err != nil {
 			h.mu.Lock()
 			h.logical -= int(count)
 			h.mu.Unlock()
@@ -229,6 +234,19 @@ func (h *Host) admit(ctx context.Context, memoryRegion MemoryRegionBacking, mapp
 	h.memoryRegions[r] = struct{}{}
 	h.mu.Unlock()
 	return r, nil
+}
+
+// inTenant refuses a checkpoint of a tenant other than this memory region's.
+// A page's identity is the checkpoint that published it, whose VM names the
+// tenant, and the sharing index is keyed by identity. So an identity of
+// another tenant is the one way a memory region could be handed a resident
+// page of that tenant, and the pager fails the fault rather than index it.
+func (r *MemoryRegion) inTenant(ref control.Ref) error {
+	if ref.IsZero() || control.TenantOf(ref.VM) == r.tenant {
+		return nil
+	}
+	return fmt.Errorf("%w: a %s memory region of tenant %q was given checkpoint %s",
+		ErrOtherTenant, r.kind, r.tenant, ref)
 }
 
 // ready reports whether this memory region may still use its volume. serving is the

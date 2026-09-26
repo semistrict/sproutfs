@@ -25,6 +25,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/internal/ctxsync"
 	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/vmmemory"
@@ -128,8 +129,11 @@ func (c Config) plan() (plan, error) {
 	if err != nil {
 		return plan{}, err
 	}
+	// Every memory region belongs to the VM's tenant, which the pager holds
+	// its pages to.
+	tenant := control.TenantOf(c.VM.ID())
 	result.ram = memoryRegion{name: RAMVolume, volume: ram, pager: c.Pagers.Ram,
-		backing: vmmemory.MemoryRegionBacking{Kind: vmmemory.Ram, Backing: ramBacking}}
+		backing: vmmemory.MemoryRegionBacking{Kind: vmmemory.Ram, Backing: ramBacking, Tenant: tenant}}
 	result.ramBytes = ram.Size()
 	mapped[RAMVolume] = true
 	roots := 0
@@ -156,7 +160,7 @@ func (c Config) plan() (plan, error) {
 			return plan{}, err
 		}
 		result.pmem = append(result.pmem, memoryRegion{name: d.ID, volume: v, root: d.Root, pager: pager,
-			backing: vmmemory.MemoryRegionBacking{Kind: vmmemory.Pmem, Backing: backing}})
+			backing: vmmemory.MemoryRegionBacking{Kind: vmmemory.Pmem, Backing: backing, Tenant: tenant}})
 		if d.Root {
 			roots++
 		}

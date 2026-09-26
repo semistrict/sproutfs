@@ -434,6 +434,9 @@ func (c *MemoryRegionCheckpoint) UnpublishedAge() time.Duration {
 // pages through the seal.
 func (c *MemoryRegionCheckpoint) Share(ctx context.Context, ref control.Ref, volume string) error {
 	h := c.memoryRegion.host
+	if err := c.memoryRegion.inTenant(ref); err != nil {
+		return err
+	}
 	c.held.Store(true)
 	if h.isolated() {
 		// A child on this host maps these pages from a file of this point's own,

@@ -322,9 +322,16 @@ func newHostileFixture(t testing.TB) *hostileFixture {
 // given, whatever mode the suite runs in.
 func newHostileFixtureIn(t testing.TB, mode vmmemory.ArenaMode) *hostileFixture {
 	t.Helper()
-	cfg := vmmemory.Config{PageSize: hostilePage, ResidentPages: 4 * hostilePages,
-		LogicalPages: 4 * hostilePages, DirtyPages: 4 * hostilePages, ReadAheadPages: 4, WriteAheadPages: 1,
-		Arena: mode}
+	return newHostileFixtureFor(t, mode, 4)
+}
+
+// newHostileFixtureFor is newHostileFixtureIn whose pager has room for regions
+// memory regions of hostilePages pages each.
+func newHostileFixtureFor(t testing.TB, mode vmmemory.ArenaMode, regions int) *hostileFixture {
+	t.Helper()
+	cfg := vmmemory.Config{PageSize: hostilePage, ResidentPages: regions * hostilePages,
+		LogicalPages: regions * hostilePages, DirtyPages: regions * hostilePages, ReadAheadPages: 4,
+		WriteAheadPages: 1, Arena: mode}
 	h, arena := kernelHostArenaIn(t, cfg)
 	fx := &hostileFixture{h: h, arena: arena}
 	var provided []vmmemory.Backing
@@ -408,11 +415,17 @@ func (fx *hostileFixture) store(ctx context.Context, page int, value byte) error
 	if took := time.Since(started); took > neighbourStore {
 		return fmt.Errorf("a store of the well-behaved process took %s, want at most %s", took, neighbourStore)
 	}
-	if err := fx.good.ask("seal 1", "sealed"); err != nil {
+	return publishRAM(ctx, fx.good, fx.backings[1])
+}
+
+// publishRAM takes a checkpoint of a process's RAM, whose volume is b, so its
+// next store into a page it held dirty faults again.
+func publishRAM(ctx context.Context, p *nativeProcess, b *kernelBacking) error {
+	if err := p.ask("seal 1", "sealed"); err != nil {
 		return err
 	}
-	r := fx.good.memoryRegion(1)
-	published, err := fx.backings[1].publish(ctx, r.Checkpoint())
+	r := p.memoryRegion(1)
+	published, err := b.publish(ctx, r.Checkpoint())
 	return errors.Join(err, r.Checkpoint().Retire(ctx, published))
 }
 

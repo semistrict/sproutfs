@@ -3,9 +3,11 @@
 package vmmemory_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"os"
 	"sort"
@@ -16,6 +18,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/internal/vmwire"
 	"github.com/semistrict/sproutfs/vmmemory"
 )
@@ -23,16 +26,29 @@ import (
 // A VMM is handed files, not only a protocol. A compromised one uses every
 // descriptor it is given as far as the kernel lets it: it maps each file
 // whole, reads every byte that holds data, and tries every way to write.
-// The tests here play such a VMM beside the well-behaved process of the
-// hostile fixture, whose pages carry markers the hostile VMM must never find.
+// The tests here play such a VMM beside two well-behaved processes: the hostile
+// fixture's, in the hostile VMM's own tenant, and one of another tenant. Their
+// pages carry markers the hostile VMM must never find, but for one.
 
 const (
-	// dirtyMarker fills the well-behaved process's pages that no checkpoint
+	// dirtyMarker fills the pages of the fixture's process that no checkpoint
 	// holds, and publishedMarker the ones a checkpoint published and nothing
-	// else inherited. Nothing else on the pager holds a page of either byte:
-	// the fixture's pages are pageByte's, and a hostile volume's are 200 on.
+	// else inherited. tenantMarker fills a page that process published and
+	// another memory region of its tenant inherits: the tenant's shared pages
+	// are the one thing the design lets a VMM of the tenant read. otherMarker
+	// fills every page of the process of another tenant. Nothing else on the
+	// pager holds a page of any of these bytes: the fixture's pages are
+	// pageByte's, and a hostile volume's are 200 on.
 	dirtyMarker     = 0xa5
 	publishedMarker = 0xc3
+	tenantMarker    = 0x5a
+	otherMarker     = 0x3c
+	// otherTenant is the tenant of the other process. The fixture's process
+	// and every hostile VMM are of none.
+	otherTenant = "other"
+	// inheritedPage is the RAM page each process publishes and another memory
+	// region of its tenant inherits.
+	inheritedPage = 4
 )
 
 // reacher is a hostile VMM that keeps every file its session is given and
@@ -253,7 +269,9 @@ func (v view) markers(t *testing.T) map[byte]int {
 // wholePageOf reports the marker a page holds in every byte, if it does.
 func wholePageOf(page []byte) (byte, bool) {
 	first := page[0]
-	if first != dirtyMarker && first != publishedMarker {
+	switch first {
+	case dirtyMarker, publishedMarker, tenantMarker, otherMarker:
+	default:
 		return 0, false
 	}
 	for _, b := range page {
@@ -276,20 +294,137 @@ func reachable(t *testing.T, views map[uint64]view) map[byte]int {
 	return found
 }
 
-// markNeighbour has the well-behaved process hold both markers: RAM page 3
-// published by a checkpoint and inherited by nothing, and RAM page 2 and PMEM
-// page 5 stored since, which no checkpoint holds.
-func (fx *hostileFixture) markNeighbour(t *testing.T) {
+// markNeighbours has the fixture's process hold its markers and starts the
+// process of another tenant. The fixture's process holds RAM page 3 published
+// by a checkpoint and inherited by nothing, RAM page 4 published and inherited
+// by another memory region of its tenant, and RAM page 2 and PMEM page 5
+// stored since, which no checkpoint holds.
+func (fx *hostileFixture) markNeighbours(t *testing.T) *otherProcess {
 	t.Helper()
-	if err := fx.store(t.Context(), 3, publishedMarker); err != nil {
-		t.Fatal(err)
+	for _, published := range []struct {
+		page   int
+		marker byte
+	}{{3, publishedMarker}, {inheritedPage, tenantMarker}} {
+		if err := fx.store(t.Context(), published.page, published.marker); err != nil {
+			t.Fatal(err)
+		}
+		fx.values[1][published.page] = published.marker
 	}
-	fx.values[1][3] = publishedMarker
+	fx.inherit(t, "", fx.backings[1], inheritedPage)
 	fx.markDirty(t, 1, 2)
 	fx.markDirty(t, 0, 5)
 	if err := fx.check(); err != nil {
 		t.Fatal(err)
 	}
+	return fx.startOther(t)
+}
+
+// inherit attaches a memory region of tenant that inherits what b's last
+// checkpoint published, and has it read one page of it. Nothing maps what the
+// pager gives the region, and it stays attached until the test ends.
+func (fx *hostileFixture) inherit(t *testing.T, tenant string, b *kernelBacking, page uint64) {
+	t.Helper()
+	r, err := fx.h.Attach(t.Context(), vmmemory.MemoryRegionBacking{Kind: vmmemory.Ram, Backing: b.fork(),
+		Tenant: tenant}, seedMapping{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := r.Detach(context.Background()); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := r.Fault(t.Context(), page, false); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// otherProcess is the well-behaved process of another tenant, and the volume
+// of its RAM. Every page of its PMEM and RAM holds otherMarker, always.
+type otherProcess struct {
+	process *nativeProcess
+	ram     *kernelBacking
+}
+
+// startOther starts the process of another tenant on the fixture's pager. It
+// reads every page, which loads them by identity. It publishes RAM page 4,
+// which another memory region of its tenant inherits, and stores into RAM page
+// 2 and PMEM page 5 since, which no checkpoint holds.
+func (fx *hostileFixture) startOther(t *testing.T) *otherProcess {
+	t.Helper()
+	var provided []vmmemory.Backing
+	var volumes [2]*kernelBacking
+	for region := range volumes {
+		b := newPagedKernelBacking(byte(5+region), hostilePages*hostilePage, hostilePage)
+		b.inTenant(otherTenant)
+		for i := range b.data {
+			b.data[i] = otherMarker
+		}
+		volumes[region] = b
+		provided = append(provided, b)
+	}
+	o := &otherProcess{ram: volumes[1], process: startNativeIn(t, fx.h, otherTenant, hostilePages,
+		vmmemory.ConnectionConfig{Name: "other", QueuePages: hostilePages, CommandTimeout: 5 * time.Second,
+			VerifyInterval: time.Hour}, provided...)}
+	if err := o.check(); err != nil {
+		t.Fatal(err)
+	}
+	if err := o.store(t.Context(), inheritedPage); err != nil {
+		t.Fatal(err)
+	}
+	fx.inherit(t, otherTenant, o.ram, inheritedPage)
+	for _, dirty := range []struct{ region, page int }{{1, 2}, {0, 5}} {
+		if err := o.fill(dirty.region, dirty.page); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := o.check(); err != nil {
+		t.Fatal(err)
+	}
+	return o
+}
+
+// fill has the process store its marker into one page.
+func (o *otherProcess) fill(region, page int) error {
+	return o.process.ask(fmt.Sprintf("fill %d %d %d %d", region, page*hostilePage, hostilePage, otherMarker), "filled")
+}
+
+// store has the process store its marker into one page of its RAM and then
+// publish its RAM.
+func (o *otherProcess) store(ctx context.Context, page int) error {
+	if err := o.fill(1, page); err != nil {
+		return err
+	}
+	return publishRAM(ctx, o.process, o.ram)
+}
+
+// check reports the first page of the process that does not hold its marker.
+func (o *otherProcess) check() error {
+	for region := range 2 {
+		for page := range hostilePages {
+			command := fmt.Sprintf("stridescan %d %d %d 1 %d", region, page*hostilePage, hostilePage, otherMarker)
+			if err := o.process.ask(command, "strided"); err != nil {
+				return fmt.Errorf("page %d of memory region %d of the other tenant's process: %w", page, region, err)
+			}
+		}
+	}
+	return nil
+}
+
+// inTenant makes b the volume of a VM of tenant, whose checkpoints are that
+// tenant's.
+func (b *kernelBacking) inTenant(tenant string) {
+	b.owner = control.InTenant(tenant, b.owner)
+	b.source.VM = control.InTenant(tenant, b.source.VM)
+}
+
+// fork is the volume of another VM of b's tenant, which inherits what b's last
+// checkpoint published.
+func (b *kernelBacking) fork() *kernelBacking {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return &kernelBacking{data: bytes.Clone(b.data), source: b.source, owner: b.owner + "-fork", page: b.page,
+		sequence: 1, private: map[uint64]bool{}, holes: maps.Clone(b.holes)}
 }
 
 // markDirty has the well-behaved process store the dirty marker into one page.
@@ -312,27 +447,38 @@ func requireErrno(t *testing.T, attempt string, number uint64, err, want error) 
 }
 
 // A compromised VMM that uses every descriptor its session gives it reaches
-// none of another VM's pages: not the ones no checkpoint holds, and not the
-// ones a checkpoint published that nothing else inherited. It cannot write a
-// file it was given read-only. It can allocate memory in its own private file,
-// and the pager ends its session for that. Mappings it keeps past every
-// revocation reach nothing more after the other VM goes on storing and
-// publishing. The other VM keeps its bytes, and the pager and the host get
-// back everything the session held.
+// none of another VM's pages. Of a VM of its own tenant, it reaches neither the
+// pages no checkpoint holds nor the ones a checkpoint published that nothing
+// else inherited. Of a VM of another tenant, it reaches nothing at all: not the
+// pages that VM loaded by identity, not the one another memory region of that
+// tenant inherits, and not its dirty pages. It does reach the page its own
+// tenant published and another region of the tenant inherits, which is the
+// one thing the design concedes.
+//
+// It cannot write a file it was given read-only. It can allocate memory in its
+// own private file, and the pager ends its session for that. Mappings it keeps
+// past every revocation reach nothing more after the other VMs go on storing
+// and publishing. The other VMs keep their bytes, and the pager and the host
+// get back everything the session held.
 func TestAHostileVMMReachesNoOtherVMsBytes(t *testing.T) {
-	fx := newHostileFixtureIn(t, vmmemory.ArenaIsolated)
-	fx.markNeighbour(t)
+	fx := newHostileFixtureFor(t, vmmemory.ArenaIsolated, 8)
+	other := fx.markNeighbours(t)
+	if s := kernelStats(t, fx.h); s.MovedPages != 2 {
+		t.Fatalf("%d published pages moved into a shared file, want the two another region inherits", s.MovedPages)
+	}
 	fx.baseline(t)
 	r, c := fx.reach(t)
 	numbers := r.held()
 	if len(numbers) != 2 || numbers[0] != vmwire.PrivateFile || numbers[1] != vmwire.SharedFile {
-		t.Fatalf("the hostile VMM's session holds files %v, want its private file and the shared file", numbers)
+		t.Fatalf("the hostile VMM's session holds files %v, want its private file and its tenant's shared file", numbers)
 	}
 
 	// 1. Every byte of every file it holds, through one mapping of each.
 	views := r.mapWhole(t)
-	if found := reachable(t, views); len(found) != 0 {
-		t.Fatalf("the hostile VMM reads %v whole pages of each marker, want none", found)
+	concession := map[byte]int{tenantMarker: 1}
+	if found := reachable(t, views); !maps.Equal(found, concession) {
+		t.Fatalf("the hostile VMM reads %v whole pages of each marker, want only its tenant's shared page, %v",
+			found, concession)
 	}
 
 	// 2. Every way to write a file it holds read-only.
@@ -358,12 +504,16 @@ func TestAHostileVMMReachesNoOtherVMsBytes(t *testing.T) {
 		t.FailNow()
 	}
 
-	// 3. The other VM goes on storing and publishing into every page of its
-	// RAM, which revokes and reuses what the pager holds of it, while the
-	// hostile VMM keeps every mapping it made. It ends as it began, with RAM
-	// page 2 stored since its last checkpoint.
+	// 3. The other VMs go on storing and publishing into every page of their
+	// RAM but the one another region inherits, which revokes and reuses what
+	// the pager holds of them, while the hostile VMM keeps every mapping it
+	// made. They end as they began, with RAM page 2 stored since their last
+	// checkpoint, and sharing the inherited page.
 	for round := range 2 * hostilePages {
 		page := round % hostilePages
+		if page == inheritedPage {
+			continue
+		}
 		value := byte(dirtyMarker)
 		if round%2 == 0 {
 			value = publishedMarker
@@ -372,11 +522,17 @@ func TestAHostileVMMReachesNoOtherVMsBytes(t *testing.T) {
 			t.Fatal(err)
 		}
 		fx.values[1][page] = value
+		if err := other.store(t.Context(), page); err != nil {
+			t.Fatal(err)
+		}
 	}
 	fx.markDirty(t, 1, 2)
-	if found := reachable(t, views); len(found) != 0 {
-		t.Fatalf("after the other VM stored and published, the hostile VMM's kept mappings read %v "+
-			"whole pages of each marker, want none", found)
+	if err := other.fill(1, 2); err != nil {
+		t.Fatal(err)
+	}
+	if found := reachable(t, views); !maps.Equal(found, concession) {
+		t.Fatalf("after the other VMs stored and published, the hostile VMM's kept mappings read %v "+
+			"whole pages of each marker, want only its tenant's shared page, %v", found, concession)
 	}
 
 	// 4. It writes, punches and allocates every offset of its private file.
@@ -407,14 +563,17 @@ func TestAHostileVMMReachesNoOtherVMsBytes(t *testing.T) {
 		t.Fatalf("closing the hostile VMM's session: %v", err)
 	}
 	fx.requireWhole(t, "a VMM that reached through its files")
+	if err := other.check(); err != nil {
+		t.Fatalf("after a VMM that reached through its files: %v", err)
+	}
 }
 
 // The hole the isolated arena closes: in a shared arena, the one file every
 // session is given is the whole arena, writable, so a VMM that maps it reads
-// every page of every other VM on the pager.
+// every page of every other VM on the pager, of every tenant.
 func TestASharedArenaHandsEveryVMMItsNeighboursBytes(t *testing.T) {
-	fx := newHostileFixtureIn(t, vmmemory.ArenaShared)
-	fx.markNeighbour(t)
+	fx := newHostileFixtureFor(t, vmmemory.ArenaShared, 8)
+	fx.markNeighbours(t)
 	r, c := fx.reach(t)
 	defer func() {
 		r.hangUp(t)
@@ -431,9 +590,11 @@ func TestASharedArenaHandsEveryVMMItsNeighboursBytes(t *testing.T) {
 	if _, writable := r.file(vmwire.PrivateFile); !writable {
 		t.Fatal("the shared arena was handed over read-only, want read-write")
 	}
+	// The other tenant's process holds the 32 pages it loaded and a copy of
+	// each of the three it stored into. The region that inherited its page 4
+	// read pages 5 to 7 ahead of it.
 	found := reachable(t, r.mapWhole(t))
-	if want := (map[byte]int{dirtyMarker: 2, publishedMarker: 1}); found[dirtyMarker] != want[dirtyMarker] ||
-		found[publishedMarker] != want[publishedMarker] || len(found) != len(want) {
+	if want := (map[byte]int{dirtyMarker: 2, publishedMarker: 1, tenantMarker: 1, otherMarker: 38}); !maps.Equal(found, want) {
 		t.Fatalf("the hostile VMM reads %v whole pages of each marker, want %v", found, want)
 	}
 }

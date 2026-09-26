@@ -146,11 +146,11 @@ func Connect(ctx context.Context, h *Host, socket *net.UnixConn, backing MemoryR
 		_ = socket.Close()
 		return nil, fmt.Errorf("%w: %w", ErrConfig, err)
 	}
-	a, ok := h.files[0].ArenaFile.(*LinuxFile)
+	a, ok := h.arena.(*LinuxArena)
 	if cfg.FaultWorkers == 0 {
 		cfg.FaultWorkers = 8
 	}
-	if !ok || h.cfg.ArenaOffsets != a.offsets || uint64(a.pageSize) != h.pageSize || backing.Backing == nil ||
+	if !ok || a.PageSize() != h.pageSize || backing.Backing == nil ||
 		(backing.Kind != Pmem && backing.Kind != Ram) || cfg.QueuePages < 1 || cfg.QueuePages > h.cfg.LogicalPages || cfg.FaultWorkers < 1 || cfg.FaultWorkers > 64 || cfg.MaxVMAs < 0 || (cfg.MaxVMAs > 0 && cfg.MaxVMAs < 128) || cfg.MaxVMAs > 1<<20 || cfg.CommandTimeout <= 0 || cfg.VerifyInterval <= 0 {
 		_ = socket.Close()
 		return nil, ErrConfig

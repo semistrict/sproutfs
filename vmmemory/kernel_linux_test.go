@@ -437,6 +437,13 @@ func startNative(t testing.TB, h *vmmemory.Host, pages int, provided ...vmmemory
 }
 func startNativeWithConfig(t testing.TB, h *vmmemory.Host, pages int, config vmmemory.ConnectionConfig, provided ...vmmemory.Backing) *nativeProcess {
 	t.Helper()
+	return startNativeIn(t, h, "", pages, config, provided...)
+}
+
+// startNativeIn starts a client process whose VM belongs to tenant, empty for
+// none.
+func startNativeIn(t testing.TB, h *vmmemory.Host, tenant string, pages int, config vmmemory.ConnectionConfig, provided ...vmmemory.Backing) *nativeProcess {
+	t.Helper()
 	if len(provided) != 0 && len(provided) != 2 {
 		t.Fatal("two memory region backings are required")
 	}
@@ -511,7 +518,8 @@ func startNativeWithConfig(t testing.TB, h *vmmemory.Host, pages int, config vmm
 		if err != nil {
 			t.Fatal(err)
 		}
-		p.connections[i], err = vmmemory.Connect(t.Context(), h, socket, vmmemory.MemoryRegionBacking{Kind: kind, Backing: b}, config)
+		p.connections[i], err = vmmemory.Connect(t.Context(), h, socket,
+			vmmemory.MemoryRegionBacking{Kind: kind, Backing: b, Tenant: tenant}, config)
 		if err != nil {
 			t.Fatal(err)
 		}

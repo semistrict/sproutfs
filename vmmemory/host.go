@@ -51,10 +51,12 @@ type Host struct {
 	files     []*arenaFile
 	held      int
 	madeFiles int
-	// shared is the file of an isolated arena that holds the pages other memory
-	// regions may map, which every session is given read-only. It is nil in a
-	// shared arena.
-	shared *arenaFile
+	// shared is each tenant's shared file in an isolated arena: the pages
+	// that other memory regions of the tenant may map, which each of the
+	// tenant's sessions is given read-only. A tenant has one while a memory
+	// region of it is attached or the file holds a page. It is nil in a shared
+	// arena. Guarded by mu.
+	shared map[string]*arenaFile
 	// lent is the checkpoint a fork point's name belongs to, for every fork
 	// point that lends its pages to children on this host. Guarded by mu.
 	lent         map[lentKey]*MemoryRegionCheckpoint
@@ -195,10 +197,6 @@ func New(ctx context.Context, resources *resource.Budget, cfg Config, arena Aren
 	// An extent is one 2 MiB-aligned range's worth of this pager's pages: 512 at
 	// 4 KiB, and one at 2 MiB, which is a pager with nothing to place.
 	extentPages := int(rangeBytes / pageSize)
-	file, err := arena.File(ctx, cfg.ArenaOffsets)
-	if err != nil {
-		return nil, fmt.Errorf("making file 0 of the arena: %w", err)
-	}
 	h := &Host{changeSeed: maphash.MakeSeed(), pageSize: pageSize, cfg: cfg, clock: platform.ClockOr(cfg.Clock), spill: spill, resources: resources, reservations: newReservations(cfg.DirtyPages),
 		arena:       arena,
 		extents:     make(map[extentKey]*extent),
@@ -208,12 +206,15 @@ func New(ctx context.Context, resources *resource.Budget, cfg Config, arena Aren
 		memoryRegions: make(map[*MemoryRegion]struct{}), highWater: highWater(cfg.DirtyPages),
 		io: make(chan struct{}, cfg.ConcurrentIO), writeback: make(chan struct{}, 1)}
 	if cfg.Arena == ArenaIsolated {
-		// The first file is the shared file, whose pages any memory region may
-		// map read-only. Nothing is placed in it, so it has no extents.
-		h.shared = h.keepFile(file, slots.New(cfg.ArenaOffsets, cfg.ResidentPages))
-		h.files = []*arenaFile{h.shared}
+		// Every file is made for a memory region or a tenant when the first one
+		// needs it.
+		h.shared = make(map[string]*arenaFile)
 		h.lent = make(map[lentKey]*MemoryRegionCheckpoint)
 	} else {
+		file, err := arena.File(ctx, cfg.ArenaOffsets)
+		if err != nil {
+			return nil, fmt.Errorf("making file 0 of the arena: %w", err)
+		}
 		h.files = []*arenaFile{h.keepFile(file, slots.New(cfg.ArenaOffsets, cfg.ResidentPages, extentPages))}
 	}
 	// Idle pages are the host budget's cache: any consumer short of memory

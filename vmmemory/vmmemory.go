@@ -90,11 +90,16 @@ func (p Pagers) All() []*Host {
 	return all
 }
 
-// MemoryRegionBacking is the one memory region a session maps: what it is to the guest and
-// the bytes it stands in front of.
+// MemoryRegionBacking is the one memory region a session maps: what it is to the guest,
+// the bytes it stands in front of, and the tenant its VM belongs to.
 type MemoryRegionBacking struct {
 	Kind    MemoryRegionKind
 	Backing Backing
+	// Tenant is the tenant of the memory region's VM, empty for a VM of none.
+	// The host states it and the pager never infers it. Every page identity
+	// the backing reports must name it, and in an isolated arena the region's
+	// process reads only its own tenant's shared pages.
+	Tenant string
 }
 
 var (
@@ -136,6 +141,10 @@ var (
 	// ErrUncounted ends the session of a VMM whose private file holds more
 	// memory than the pager put there: the VMM allocated it itself.
 	ErrUncounted = errors.New("managed-memory file holds memory the pager did not put there")
+	// ErrOtherTenant fails a fault whose backing names a page of a tenant other
+	// than its memory region's. No page crosses between tenants, so only a
+	// host or a store that broke that rule gives one.
+	ErrOtherTenant = errors.New("managed-memory page of another tenant")
 )
 
 // Pressure is how the pager pushes a full dirty budget back to whoever owns its
@@ -325,9 +334,10 @@ const (
 	ArenaShared ArenaMode = iota
 	// ArenaIsolated splits the arena by who may read each page. Each memory
 	// region has a private file, which only its VMM receives read-write. The
-	// pages another memory region may map are in the shared file, which every
-	// VMM receives read-only, and the pages a fork point lends to the children
-	// on this host are in a fork file, which those children receive read-only.
+	// pages another memory region may map are in its tenant's shared file,
+	// which the tenant's VMMs receive read-only, and the pages a fork point
+	// lends to the children on this host are in a fork file, which those
+	// children receive read-only.
 	ArenaIsolated
 )
 

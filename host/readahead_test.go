@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/semistrict/sproutfs/checkpoint"
+	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/internal/testpager"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/vmmemory"
@@ -119,9 +120,10 @@ func coldRun(t *testing.T) (*countedObjects, *hostPagers, *testpager.Mapping, *v
 			t.Error(err)
 		}
 	})
-	mapping := testpager.NewMapping(pagers.arenas[vmmemory.Ram])
+	tenant := control.TenantOf(opened.ID())
+	mapping := testpager.NewMapping(pagers.arenas[vmmemory.Ram], tenant)
 	memoryRegion, err := pagers.pagers.For(vmmemory.Ram).Attach(t.Context(),
-		vmmemory.MemoryRegionBacking{Kind: vmmemory.Ram, Backing: opened.Volume("ram0")}, mapping)
+		vmmemory.MemoryRegionBacking{Kind: vmmemory.Ram, Backing: opened.Volume("ram0"), Tenant: tenant}, mapping)
 	if err != nil {
 		t.Fatal(err)
 	}

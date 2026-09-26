@@ -65,6 +65,11 @@ func (r *MemoryRegion) plan(ctx context.Context, start, end, fault uint64) (*win
 	if err != nil {
 		return nil, err
 	}
+	for _, e := range extents {
+		if err := r.inTenant(e.Identity.Ref); err != nil {
+			return nil, err
+		}
+	}
 	none := -1
 	p := &windowPlan{memoryRegion: r, start: start, end: end, fault: fault, store: end, extents: extents, pages: make([]*resident, end-start), file: r.sharedFile(), reserved: make([]fileSlot, end-start), fresh: make([]bool, end-start), zeros: make([]bool, end-start), private: make([]bool, end-start), locked: make(map[*resident]bool), spill: &none}
 	for i := range p.reserved {

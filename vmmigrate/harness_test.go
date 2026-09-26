@@ -283,9 +283,10 @@ func newMachine(t *testing.T, p *pager, vm *volume.VM, backings map[string]vmmem
 			backing = supplied
 		}
 		counted := newCountingBacking(backing, p.runtime, vm.ID()+"/"+name)
-		mp := testpager.NewMapping(p.arena)
+		tenant := control.TenantOf(vm.ID())
+		mp := testpager.NewMapping(p.arena, tenant)
 		memoryRegion, err := p.host.Attach(sim.WithRuntime(t.Context(), p.runtime),
-			vmmemory.MemoryRegionBacking{Kind: memoryRegionKind(name), Backing: counted.attached}, mp)
+			vmmemory.MemoryRegionBacking{Kind: memoryRegionKind(name), Backing: counted.attached, Tenant: tenant}, mp)
 		if err != nil {
 			return nil, err
 		}

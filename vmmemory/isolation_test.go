@@ -153,7 +153,7 @@ func TestAForkPointLendsItsPagesThroughAFileOfItsOwn(t *testing.T) {
 		if err := parent.Seal(t.Context()); err != nil {
 			t.Fatal(err)
 		}
-		point := control.Ref{VM: t.Name() + "-point", Sequence: 7}
+		point := control.Ref{VM: f.source.VM + "-point", Sequence: 7}
 		if err := parent.Checkpoint().Share(t.Context(), point, "v"); err != nil {
 			t.Fatal(err)
 		}

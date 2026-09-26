@@ -356,8 +356,7 @@ given. In a shared arena that descriptor reaches every page of the pager. The
 isolated arena (`SPROUTFS_ARENA=isolated`) splits the pages by who may read
 them, so a VMM's descriptors reach its own VM's memory and the pages its tenant
 may read, and nothing else. The design and its threat model are in
-[the plan](../plans/isolated-arena-2026-09-25.md). Every VM is in one tenant
-until TASK-2.5.
+[the plan](../plans/isolated-arena-2026-09-25.md).
 
 There are three kinds of file:
 
@@ -372,9 +371,14 @@ There are three kinds of file:
   the store gives that page up. A range's extent is that range of the file, so
   the gap rule and the half-private rule work as in a shared arena, and nothing
   is carved out of an offset space.
-- **The shared file.** It holds the pages another memory region may map: pages
-  loaded by identity, and published pages once another region inherits them.
-  Every VMM receives it read-only, as file 1.
+- **A shared file per tenant.** It holds the pages another memory region of
+  the tenant may map: pages loaded by identity, and published pages once
+  another region inherits them. The tenant's VMMs receive it read-only, as
+  file 1. The pager makes it when the tenant's first memory region attaches.
+  It outlives the tenant's last region while it holds idle pages, and goes
+  back to the arena with the last of them. It has the pager's whole offset
+  space (`Config.ArenaOffsets`), so each tenant on a host costs the pager that
+  much address space, though only its pages cost memory.
 - **A fork file per fork point.** It holds the pages a fork point lends to
   children on this host. A child's populate or fault copies a lent page there,
   once, at the page's own index. Later children map the same copy. The children
@@ -386,6 +390,16 @@ There are three kinds of file:
 Each file is a memfd of the pager's kind, with mode 0600. A read-only file is
 sent as a new open of the memfd with `O_RDONLY`. So the kernel refuses a VMM a
 writable mapping of it, a write, a punch, a resize and a new seal.
+
+**The tenant is the host's to state.** It attaches each memory region with the
+tenant of its VM (`MemoryRegionBacking.Tenant`), which is the part of the VM's
+identity before the slash. A page's identity is the checkpoint that published
+it, and that checkpoint's VM names the tenant too. So a fault whose backing
+names a page of another tenant fails with `ErrOtherTenant`, in either arena,
+and so does a fork point that would name its pages under another tenant's
+checkpoint. The sharing index is keyed by identity, so it never hands one
+tenant's page to another. A page is only ever in its own tenant's shared file,
+and a VMM of one tenant is never given another tenant's.
 
 A page whose bytes no other region may inherit is loaded into the region's own
 file, not the shared one. That is a page with no identity, a page a fork point
@@ -399,7 +413,7 @@ so most are never copied. `MemoryRegionCheckpoint.ReadDirty` hashes each page
 it reads with BLAKE3. The retire keeps that digest with the page while the page
 is in a private file. A page without one is not named by its identity. When
 another region wants the identity, the pager copies the page into a free slot
-of the shared file and compares the copy's digest with the upload's:
+of its tenant's shared file and compares the copy's digest with the upload's:
 
 - If they match, the copy is what the identity names. The owner's mapping of its
   private page is revoked, the owner's next fault maps the copy, and the private
@@ -425,8 +439,8 @@ a VMM that reads a hole of a shared memfd through a mapping makes the kernel
 allocate a page there. So every verification of a session compares the private
 file's allocated blocks with the pages the pager put there, under the lock the
 pager takes and gives slots under. A file that holds more ends the session with
-`ErrUncounted`. The same check on the shared file punches every offset that
-holds no page, because such memory is nobody's. A detach does both for the
+`ErrUncounted`. The same check on the tenant's shared file punches every
+offset that holds no page, because such memory is nobody's. A detach does both for the
 region's files.
 
 ## Sharing by identity
@@ -1465,7 +1479,7 @@ descriptor is read-write, and the only one a writable MAP may name. Every other
 file is read-only. A shared arena sends one file: the arena, as file 0,
 read-write, and maps every page from it. A MAP of file 0 encodes as MAP did in
 version 9. An [isolated arena](#the-isolated-arena) sends the region's private
-file as file 0 and the shared file as file 1 when the session attaches. It
+file as file 0 and its tenant's shared file as file 1 when the session attaches. It
 sends a fork point's file as file 2 or up in the middle of a session, just
 before the first MAP that names it, and DROP_FILE when the point's seal ends.
 Numbers are the session's own: another session may name the same fork file by
@@ -1592,11 +1606,13 @@ does. `vmmemory/reach_linux_test.go` plays a VMM that uses every descriptor it
 is given. In a shared arena it reads another VM's dirty and published pages
 through the one file it holds. The [isolated arena](#the-isolated-arena)
 closes that. There the VMM finds none of another VM's private pages, before or
-after that VM stores and publishes more. Every way to write its read-only
-files fails. When it allocates memory in its own private file, verification
-ends its session with `ErrUncounted`. Pages loaded by identity sit in the shared
-file, which every VMM on the pager can read, until the arena has a shared file
-per tenant (TASK-2.5 in the [backlog](../backlog/tasks)).
+after that VM stores and publishes more. Of a VM of another tenant it finds
+nothing at all: not the pages it loaded by identity, and not the page another
+region of that tenant inherits. It does find the page its own tenant published
+and another region of the tenant inherits. That is the one thing the design
+concedes, and the test asserts it. Every way to write its read-only files
+fails. When it allocates memory in its own private file, verification ends its
+session with `ErrUncounted`.
 
 So a rejected command is the only failure known to have changed nothing. The
 pager treats it as a failed operation, not a failed session. In practice, the
@@ -2026,11 +2042,15 @@ The pager suite covers:
   DROP_FILE closes its descriptor.
 
 The simulated pager tests require the following of an isolated arena, in
-`vmmemory/isolation_test.go`:
+`vmmemory/isolation_test.go` and `vmmemory/tenant_test.go`:
 
-- A page two regions inherit is in the shared file, which each maps as file 1.
-  A store copies it into the storing region's file 0, at its own offset.
-- A published page moves into the shared file when another region inherits it.
+- A page two regions of a tenant inherit is in the tenant's shared file, which
+  each maps as file 1. A store copies it into the storing region's file 0, at
+  its own offset.
+- A region of another tenant reads the same bytes from a shared file of its
+  own, which the first tenant's regions are never given.
+- A published page moves into its tenant's shared file when another region
+  inherits it.
   The inheritor reads nothing from its volume, the owner's mapping of its
   private page is revoked, and the private slot goes back.
 - A published page whose VMM changed it through its private file ends that
@@ -2038,9 +2058,11 @@ The simulated pager tests require the following of an isolated arena, in
 - A fork point's page is copied into the point's file once, and two children
   map that copy as file 2. Ending the seal revokes their mappings, drops the
   file from both and gives it back.
-- A detached region's private file lasts as long as its idle pages.
+- A detached region's private file lasts as long as its idle pages, and so does
+  a tenant's shared file once the tenant's last region has detached.
+- A fault on a page of another tenant fails with `ErrOtherTenant`.
 - Verification ends a region whose private file holds a page the pager never
-  put there, and punches such a page out of the shared file.
+  put there, and punches such a page out of the tenant's shared file.
 
 The simulated pager tests also require the following of seals:
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -107,9 +108,11 @@ type arenaFile struct {
 	offsets int
 	slots   map[int][]byte
 	// writer is the one mapping this file was given to writable, and readers
-	// how many were given it read-only. closed marks a file the pager gave back.
+	// how many were given it read-only, all of them of tenant. closed marks a
+	// file the pager gave back.
 	writer  *mapping
 	readers int
+	tenant  string
 	closed  bool
 }
 
@@ -282,7 +285,9 @@ type mapped struct {
 }
 type mapping struct {
 	arena *arena
-	pages map[uint64]mapped
+	// tenant is the tenant of the memory region this is the mapping of.
+	tenant string
+	pages  map[uint64]mapped
 	// files is every file this mapping was given, by the number its maps name
 	// it by.
 	files                            map[int]*arenaFile
@@ -304,7 +309,8 @@ func newMapping(a *arena) *mapping {
 }
 
 // GiveFile holds the pager to who may read a file: a file given writable is
-// one memory region's own, as its file 0, and nobody else's in any way.
+// one memory region's own, as its file 0, and nobody else's in any way, and a
+// file given read-only is given to one tenant's memory regions only.
 func (m *mapping) GiveFile(_ context.Context, number int, file vmmemory.ArenaFile, writable bool) error {
 	m.arena.mu.Lock()
 	defer m.arena.mu.Unlock()
@@ -324,11 +330,14 @@ func (m *mapping) GiveFile(_ context.Context, number int, file vmmemory.ArenaFil
 		return fmt.Errorf("file %d given writable to a second memory region", f.id)
 	case !writable && f.writer != nil:
 		return fmt.Errorf("the private file %d given read-only to another memory region", f.id)
+	case !writable && f.readers > 0 && f.tenant != m.tenant:
+		return fmt.Errorf("file %d given read-only to tenant %q and to tenant %q", f.id, f.tenant, m.tenant)
 	}
 	if writable {
 		f.writer = m
 	} else {
 		f.readers++
+		f.tenant = m.tenant
 	}
 	m.files[number] = f
 	return nil
@@ -754,8 +763,12 @@ func newBrokenFixture(t *testing.T, cfg vmmemory.Config, shared ...*resource.Bud
 		}
 	})
 	return &fixture{t: t, h: h, a: a, disk: disk, spill: spill, pageSize: int(cfg.PageSize),
-		source: control.Ref{VM: t.Name(), Sequence: 1}}, nil
+		source: control.Ref{VM: vmName(t), Sequence: 1}}, nil
 }
+
+// vmName is the name of a VM of no tenant, after the test. A subtest's name
+// has slashes in it, and the first slash of a VM's identity ends its tenant.
+func vmName(t testing.TB) string { return strings.ReplaceAll(t.Name(), "/", "-") }
 
 // newBacking returns a backing whose pages are inherited from the fixture's
 // shared checkpoint, every byte of page i holding i+1, so memory regions of one
@@ -802,9 +815,16 @@ func (f *fixture) attach(b vmmemory.Backing) (*vmmemory.MemoryRegion, *mapping) 
 }
 func (f *fixture) attachKind(kind vmmemory.MemoryRegionKind, b vmmemory.Backing) (*vmmemory.MemoryRegion, *mapping) {
 	f.t.Helper()
+	return f.attachBacking(vmmemory.MemoryRegionBacking{Kind: kind, Backing: b})
+}
+
+// attachBacking maps one memory region as whoever attaches it states it.
+func (f *fixture) attachBacking(backing vmmemory.MemoryRegionBacking) (*vmmemory.MemoryRegion, *mapping) {
+	f.t.Helper()
 	m := newMapping(f.a)
+	m.tenant = backing.Tenant
 	f.a.mappings = append(f.a.mappings, m)
-	r, err := f.h.Attach(f.t.Context(), vmmemory.MemoryRegionBacking{Kind: kind, Backing: b}, m)
+	r, err := f.h.Attach(f.t.Context(), backing, m)
 	if err != nil {
 		f.t.Fatal(err)
 	}

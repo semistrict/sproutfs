@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/semistrict/sproutfs/checkpoint"
+	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/host"
 	"github.com/semistrict/sproutfs/internal/testarena"
 	"github.com/semistrict/sproutfs/internal/testpager"
@@ -190,9 +191,10 @@ func newMachine(t *testing.T, p *hostPagers, vm *volume.VM,
 		if v.Name() == "ram0" {
 			kind = vmmemory.Ram
 		}
-		mapping := testpager.NewMapping(p.arenas[kind])
+		tenant := control.TenantOf(vm.ID())
+		mapping := testpager.NewMapping(p.arenas[kind], tenant)
 		memoryRegion, err := p.pagers.For(kind).Attach(t.Context(),
-			vmmemory.MemoryRegionBacking{Kind: kind, Backing: backing}, mapping)
+			vmmemory.MemoryRegionBacking{Kind: kind, Backing: backing, Tenant: tenant}, mapping)
 		if err != nil {
 			return nil, err
 		}

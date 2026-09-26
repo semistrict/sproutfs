@@ -26,17 +26,21 @@ type arenaFile struct {
 	// by Host.mu.
 	leases map[int]residentSlot
 	// owner is the memory region whose private file this is, and nil for a
-	// file other memory regions may read: the one file of a shared arena, the
-	// shared file of an isolated one, and a fork point's file.
+	// file other memory regions may read: the one file of a shared arena, a
+	// tenant's shared file of an isolated one, and a fork point's file.
 	owner *MemoryRegion
 	// The rest belongs to an isolated arena and is guarded by Host.mu; see
-	// isolation.go. pages is the resident page at each held slot of a private
-	// or a fork file, which are the files the pager looks into by slot.
-	// digests is what the upload read of each published page of a private
-	// file hashed to. holders is every memory region a fork file was given
-	// to, by the number it was given under. orphaned marks a private file
-	// whose memory region has detached, which is given back with its last
-	// page.
+	// isolation.go. shared marks a tenant's shared file, and tenant names the
+	// tenant. pages is the resident page at each held slot of a private or a
+	// fork file, which are the files the pager looks into by slot. digests is
+	// what the upload read of each published page of a private file hashed
+	// to. holders is every memory region a shared or a fork file was given to,
+	// by the number it was given under. orphaned marks a file nothing will be
+	// given again: a private file whose memory region has detached, a shared
+	// file whose tenant has none attached, and a fork file whose seal has
+	// ended. Such a file is given back with its last page.
+	shared   bool
+	tenant   string
 	pages    map[int]*resident
 	digests  map[int][32]byte
 	holders  map[*MemoryRegion]int
@@ -63,9 +67,9 @@ type fileSlot struct {
 func (s fileSlot) plus(count int) fileSlot { return fileSlot{s.file, s.slot + count} }
 
 // The numbers a memory region's session names its files by. File 0 is its
-// private file, the only one it may map writable, and file 1 the shared file
-// of an isolated arena. A fork point's file takes the next number free when a
-// child of it first maps from it.
+// private file, the only one it may map writable, and file 1 its tenant's
+// shared file in an isolated arena. A fork point's file takes the next number
+// free when a child of it first maps from it.
 const (
 	privateFileNumber = 0
 	sharedFileNumber  = 1
@@ -82,10 +86,10 @@ func (r *MemoryRegion) privateFile() *arenaFile {
 }
 
 // sharedFile is the file a page this memory region loads by its identity goes
-// in. Other memory regions may map such a page too.
+// in. Other memory regions of its tenant may map such a page too.
 func (r *MemoryRegion) sharedFile() *arenaFile {
-	if r.host.shared != nil {
-		return r.host.shared
+	if r.shared != nil {
+		return r.shared
 	}
 	return r.host.files[0]
 }
@@ -96,7 +100,7 @@ func (r *MemoryRegion) fileNumber(f *arenaFile) int {
 	switch {
 	case f == r.privateFile():
 		return privateFileNumber
-	case f == r.host.shared:
+	case f == r.shared:
 		return sharedFileNumber
 	}
 	r.host.mu.Lock()
@@ -114,14 +118,14 @@ func (r *MemoryRegion) runAt(page uint64, at fileSlot, count int) MapRun {
 }
 
 // giveFiles hands the memory region's process the files every session holds:
-// its private file, writable, and in an isolated arena the shared file, which
-// it may only read. Nothing is mapped before they are.
+// its private file, writable, and in an isolated arena its tenant's shared
+// file, which it may only read. Nothing is mapped before they are.
 func (r *MemoryRegion) giveFiles(ctx context.Context) error {
 	if err := r.mapping.GiveFile(ctx, privateFileNumber, r.privateFile().ArenaFile, true); err != nil {
 		return err
 	}
-	if shared := r.host.shared; shared != nil {
-		return r.mapping.GiveFile(ctx, sharedFileNumber, shared.ArenaFile, false)
+	if r.shared != nil {
+		return r.mapping.GiveFile(ctx, sharedFileNumber, r.shared.ArenaFile, false)
 	}
 	return nil
 }

@@ -9,6 +9,7 @@ import (
 	"slices"
 	"sync"
 
+	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/internal/testbacking"
 	"github.com/semistrict/sproutfs/internal/testpager"
 	"github.com/semistrict/sproutfs/platform/sim"
@@ -109,9 +110,10 @@ func (w *World) newGuest(h *hostState, p *pager, vm *volume.VM, backings map[str
 			kind = vmmemory.Ram
 		}
 		pager := p.pagers.Of(kind, v.Ephemeral())
-		mp := testpager.NewMapping(p.arenaOf(pager))
+		tenant := control.TenantOf(vm.ID())
+		mp := testpager.NewMapping(p.arenaOf(pager), tenant)
 		admitted, _ := testbacking.New(backing, p.runtime, g.id+"/"+name)
-		memoryRegion, err := pager.Attach(ctx, vmmemory.MemoryRegionBacking{Kind: kind, Backing: admitted}, mp)
+		memoryRegion, err := pager.Attach(ctx, vmmemory.MemoryRegionBacking{Kind: kind, Backing: admitted, Tenant: tenant}, mp)
 		if err != nil {
 			return nil, err
 		}
