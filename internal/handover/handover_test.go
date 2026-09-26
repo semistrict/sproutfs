@@ -9,10 +9,10 @@ import (
 var start = time.Date(2026, 9, 26, 0, 0, 0, 0, time.UTC)
 
 // The waits double from the first pause to the largest, and stop at the
-// source's hold: a look that would come after the source has given the pages
-// up is not taken.
+// source's hold: the last one ends as the hold does, cut short when it would
+// run past it, and there is no wait after it.
 func TestWaitsDoubleUntilTheSourceStopsHolding(t *testing.T) {
-	attempts := Default.Begin(start, time.Minute, "host-1")
+	attempts := Default.Begin(Held(start, 50*time.Second), "host-1")
 	now := start
 	var waits []time.Duration
 	for {
@@ -25,7 +25,7 @@ func TestWaitsDoubleUntilTheSourceStopsHolding(t *testing.T) {
 		now = now.Add(wait)
 	}
 	want := []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second,
-		15 * time.Second, 15 * time.Second}
+		15 * time.Second, 15 * time.Second, 5 * time.Second}
 	if !slices.Equal(waits, want) {
 		t.Fatalf("waits %v, want %v", waits, want)
 	}
@@ -34,7 +34,7 @@ func TestWaitsDoubleUntilTheSourceStopsHolding(t *testing.T) {
 // A source that says nothing about how long it holds its pages promises
 // nothing, so its handoff is tried once.
 func TestAHandoffWithNoHoldIsTriedOnce(t *testing.T) {
-	attempts := Default.Begin(start, 0, "host-1")
+	attempts := Default.Begin(Held(start, 0), "host-1")
 	attempts.Failed()
 	if wait, ok := attempts.Wait(t.Context(), start); ok {
 		t.Fatalf("a handoff with no hold waits %s for another attempt", wait)
@@ -44,7 +44,7 @@ func TestAHandoffWithNoHoldIsTriedOnce(t *testing.T) {
 // One destination gets two attempts in a row. Then the next goes to the host
 // that has failed least, and back only when every other one has failed more.
 func TestADestinationThatKeepsFailingIsLeftForAnother(t *testing.T) {
-	attempts := Default.Begin(start, time.Hour, "host-1")
+	attempts := Default.Begin(Held(start, time.Hour), "host-1")
 	hosts := []string{"host-1", "host-2", "host-3"}
 	var tried []string
 	for range 7 {
@@ -67,7 +67,7 @@ func TestADestinationThatKeepsFailingIsLeftForAnother(t *testing.T) {
 // With nowhere else to go the same destination is tried again, and a
 // destination that can no longer take the VM is left at once.
 func TestTheOnlyDestinationIsKeptAndAnUnavailableOneLeft(t *testing.T) {
-	attempts := Default.Begin(start, time.Hour, "host-1")
+	attempts := Default.Begin(Held(start, time.Hour), "host-1")
 	for range 3 {
 		attempts.Failed()
 		if next, _ := attempts.Next(t.Context(), []string{"host-1"}); next != "host-1" {

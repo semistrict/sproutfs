@@ -337,6 +337,15 @@ func (f *fakeHostClient) Migrate(_ context.Context, id string, request host.Migr
 	f.record("migrate %s %s", id, request.Destination)
 	f.running = slices.DeleteFunc(f.running, func(value string) bool { return value == id })
 	f.serving = append(f.serving, id)
+	if f.hold > 0 {
+		// A host gives the pages up on its own at the end of the hold it
+		// reports, whether or not anything can reach it.
+		time.AfterFunc(f.hold.Duration(), func() {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			f.serving = slices.DeleteFunc(f.serving, func(value string) bool { return value == id })
+		})
+	}
 	return host.MigrateResult{Handoff: host.Handoff{VMID: id,
 		Source: f.page, PageSize: 2 << 20}, Hold: f.hold}, nil
 }

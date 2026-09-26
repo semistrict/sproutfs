@@ -62,6 +62,11 @@ type Config struct {
 	// pager's pressure turns it on, because a pager that asks for a checkpoint
 	// out of turn needs a loop to ask.
 	CheckpointInterval time.Duration
+	// Hold is how long every host holds what it handed over when nothing
+	// releases it. Zero is the host's own bound, four checkpoint intervals. A
+	// scenario about the end of a hold shortens it below the harness's
+	// patience, so that the hold rather than the patience is what ends a wait.
+	Hold time.Duration
 	// ReverseMemoryRegions seals a capture's memory regions in the opposite order. It is the
 	// creation order a recorded scenario reverses: the execution it produces
 	// must not change, because the order those goroutines are created in is not
@@ -171,6 +176,10 @@ type hostState struct {
 	// was a crash rather than a close.
 	down    bool
 	crashed bool
+	// isolated reports a host the deployment cannot reach while it runs: its
+	// pod is still listed, and nothing can ask it anything or be told anything
+	// by it. It is not a host that is gone, and nothing may treat it as one.
+	isolated bool
 	// gone closes when this incarnation of the host ends, however it ended. It
 	// is what the deployment knows and a destination cannot: a host that was
 	// holding the pages no checkpoint of a migrated VM has is a host whose loss
@@ -429,7 +438,7 @@ func (w *World) hostConfig(h *hostState) host.Config {
 		Entropy:      w.runtime.NewEntropy(h.name),
 		Volumes:      host.VolumeConfig{MaxWriteBytes: k.MaxWriteBytes, MaxOpenVMs: k.MaxOpenVMs},
 		Migration: host.MigrationConfig{Address: h.pages, PageSize: PMEMPage,
-			DrainConcurrency: k.DrainConcurrency, StartVM: w.starter(h)},
+			DrainConcurrency: k.DrainConcurrency, StartVM: w.starter(h), HoldTimeout: w.config.Hold},
 		// A campaign drives every checkpoint itself and reaches every hold
 		// deadline by advancing the clock, so neither loop arms anything of its
 		// own: what fires on one of these clocks is a hold. A scenario about the
@@ -845,6 +854,20 @@ func (w *World) up(index int) *host.Host {
 		return nil
 	}
 	return h.host
+}
+
+// reach is the host at an index while the deployment can ask it anything, and
+// nil while it cannot: a host that is not running, and one that is isolated.
+// What the deployment does to a host goes through here, and nil from it is no
+// evidence that the host is gone.
+func (w *World) reach(index int) *host.Host {
+	running := w.up(index)
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.hosts[index].isolated {
+		return nil
+	}
+	return running
 }
 
 // place records where a VM is and what is running it. It is the one write a
@@ -1336,11 +1359,11 @@ type Handover struct {
 // MigrateWith is Migrate on the caller's terms.
 func (w *World) MigrateWith(ctx context.Context, id string, to int, terms Handover) error {
 	in, g := w.runningVM(id)
-	if in == nil || in.host == to || w.up(to) == nil {
+	if in == nil || in.host == to || w.reach(to) == nil {
 		return nil
 	}
 	source, destination := w.hosts[in.host], w.hosts[to]
-	sourceHost := w.up(in.host)
+	sourceHost := w.reach(in.host)
 	if sourceHost == nil {
 		return nil
 	}
@@ -1430,7 +1453,7 @@ func (w *World) MigrateWith(ctx context.Context, id string, to int, terms Handov
 	// fault.
 	if w.forgetsReleases {
 		w.logf("%s: nothing released what %s handed over", id, source.name)
-	} else if released := w.up(from); released != nil {
+	} else if released := w.reach(from); released != nil {
 		if err := released.ReleaseMigrated(id); err != nil {
 			w.logf("%s: %s would not release what it handed over: %v", id, source.name, err)
 			_ = released.Abandon(id)
@@ -1474,16 +1497,18 @@ func (w *World) MigrateWith(ctx context.Context, id string, to int, terms Handov
 // stores nothing can ever publish.
 func (w *World) handOver(ctx context.Context, from, to int, handoff vmmigrate.Handoff) (
 	*vmmigrate.Received, int, error) {
-	source := w.hosts[from]
 	holding := w.up(from)
 	if holding == nil {
 		return nil, to, nil
 	}
-	attempts := handover.Default.Begin(time.Now(), holding.HoldTimeout(), w.hosts[to].name)
+	// The hold is what the source reports with its handoff, counted from the
+	// moment the handoff arrived.
+	hold := handover.Held(time.Now(), holding.HoldTimeout())
+	attempts := handover.Default.Begin(hold, w.hosts[to].name)
 	for {
 		destination := w.hosts[to]
 		incarnation := w.incarnationOf(to)
-		received, err := w.receive(ctx, source, destination, handoff)
+		received, err := w.receive(ctx, from, destination, hold, handoff)
 		if err == nil {
 			return received, to, nil
 		}
@@ -1496,7 +1521,7 @@ func (w *World) handOver(ctx context.Context, from, to int, handoff vmmigrate.Ha
 			return nil, to, nil
 		}
 		attempts.Failed()
-		next, ok, err := w.retry(ctx, attempts, from, handoff.VMID)
+		next, ok, err := w.retry(ctx, attempts, hold, from, handoff.VMID)
 		if err != nil || !ok {
 			return nil, to, err
 		}
@@ -1513,27 +1538,25 @@ func (w *World) leftRunning(index, incarnation int, id string) bool {
 }
 
 // retry waits under the handover policy until another receive of one handoff
-// is worth making, and reports the host it goes to: any host that is up, other
-// than the source, in the policy's choice. It reports false once the source no
-// longer holds the handoff — the policy's reading of its hold is over, or the
-// source is gone or does not serve the VM — which is the only time a handoff
-// is given up.
-func (w *World) retry(ctx context.Context, attempts *handover.Attempts, from int, id string) (int, bool, error) {
+// is worth making, and reports the host it goes to: any host the deployment
+// can reach, other than the source, in the policy's choice. It reports false
+// once the deployment's rule says the pages are gone from the source, which
+// the last look, at the end of the source's hold, always finds, or once the
+// policy has nothing left to wait for. That is the only time a handoff is given
+// up.
+func (w *World) retry(ctx context.Context, attempts *handover.Attempts, hold handover.Hold,
+	from int, id string) (int, bool, error) {
 	for {
-		wait, ok := attempts.Wait(ctx, time.Now())
-		if !ok {
-			return 0, false, nil
-		}
+		wait, more := attempts.Wait(ctx, time.Now())
 		if err := ctxsync.Sleep(ctx, wait); err != nil {
 			return 0, false, err
 		}
-		holding := w.up(from)
-		if holding == nil || !slices.Contains(holding.Status().Serving, id) {
+		if hold.Gone(ctx, w.look(from, id), time.Now()) != nil || !more {
 			return 0, false, nil
 		}
 		var names []string
 		for index, h := range w.hosts {
-			if index != from && w.up(index) != nil {
+			if index != from && w.reach(index) != nil {
 				names = append(names, h.name)
 			}
 		}
@@ -1555,29 +1578,31 @@ func (h *hostState) lose() {
 	}
 }
 
-// ErrLostSource reports the host that was holding a handed-over VM's pages
-// having gone while the destination was still fetching them. Those pages exist
-// nowhere else, so what the destination is waiting for is never coming; it has
-// no way to know that, and the deployment has, which is why ending the handover
-// is the deployment's to do.
-var ErrLostSource = errors.New("simtest: the host holding the VM's pages is gone")
+// ErrLostSource reports the pages of a handed-over VM that no checkpoint has
+// being gone from the host that was holding them, while the destination was
+// still fetching them. They exist nowhere else, so what the destination is
+// waiting for is never coming; it has no way to know that, and the deployment
+// has, which is why ending the handover is the deployment's to do.
+var ErrLostSource = errors.New("simtest: the host holding the VM's pages no longer has them")
 
 // receive runs a destination's half of a handoff, including the fault that
 // fails its start before the guest exists.
 //
-// It ends when the host that handed the VM over is lost. A destination asks
-// that host for the pages no checkpoint holds until they arrive — reading its
-// own volume for one would rewind the guest past its own write, and a source
-// that stumbled looks exactly like a source that died — so the deployment is
-// what says the pages are gone, exactly as the orchestrator does for a real
-// one. The deadline behind it is the harness's own patience and nothing the
-// rule rests on.
-func (w *World) receive(ctx context.Context, source, destination *hostState,
+// It ends when the pages are gone from the host that handed the VM over, by
+// the deployment's rule: that host is lost, or its hold is over. A destination
+// asks that host for the pages no checkpoint holds until they arrive — reading
+// its own volume for one would rewind the guest past its own write, and a
+// source that stumbled looks exactly like a source that died — so the
+// deployment is what says the pages are gone, exactly as the orchestrator does
+// for a real one. A source the deployment cannot reach says nothing until its
+// hold is over. The deadline behind it all is the harness's own patience and
+// nothing the rule rests on.
+func (w *World) receive(ctx context.Context, from int, destination *hostState, hold handover.Hold,
 	handoff vmmigrate.Handoff) (*vmmigrate.Received, error) {
 	destination.mu.Lock()
 	delete(destination.started, handoff.VMID)
 	destination.mu.Unlock()
-	taking := w.up(w.indexOf(destination))
+	taking := w.reach(w.indexOf(destination))
 	if taking == nil {
 		return nil, platform.ErrProcessStopped
 	}
@@ -1585,21 +1610,57 @@ func (w *World) receive(ctx context.Context, source, destination *hostState,
 	defer cancel()
 	ctx, lost := context.WithCancelCause(ctx)
 	defer lost(nil)
+	source := w.hosts[from]
 	w.mu.Lock()
 	gone := source.gone
 	w.mu.Unlock()
+	var over <-chan time.Time
+	if ends, ok := hold.Ends(); ok {
+		timer := time.NewTimer(time.Until(ends))
+		defer timer.Stop()
+		over = timer.C
+	}
 	watching := make(chan struct{})
 	defer close(watching)
 	go func() {
-		select {
-		case <-gone:
-			lost(fmt.Errorf("%w: %s was holding the pages of %s that no checkpoint has",
-				ErrLostSource, source.name, handoff.VMID))
-		case <-watching:
-		case <-ctx.Done():
+		for {
+			var evidence error
+			select {
+			case <-gone:
+				evidence = handover.ErrUnlisted
+			case <-over:
+				over = nil
+				evidence = hold.Gone(ctx, w.look(from, handoff.VMID), time.Now())
+			case <-watching:
+				return
+			case <-ctx.Done():
+				return
+			}
+			if evidence != nil {
+				lost(fmt.Errorf("%w: %s was holding the pages of %s that no checkpoint has, and %w",
+					ErrLostSource, source.name, handoff.VMID, evidence))
+				return
+			}
 		}
 	}()
 	return taking.Receive(ctx, handoff)
+}
+
+// look is what the deployment can see of the host that handed one VM over. A
+// host that is lost is one the deployment no longer lists, and one it cannot
+// reach is listed and says nothing.
+func (w *World) look(from int, id string) handover.Look {
+	w.mu.Lock()
+	h := w.hosts[from]
+	down, isolated, running := h.down || h.host == nil, h.isolated, h.host
+	w.mu.Unlock()
+	switch {
+	case down:
+		return handover.Look{}
+	case isolated:
+		return handover.Look{Listed: true}
+	}
+	return handover.Look{Listed: true, Answered: true, Holding: slices.Contains(running.Status().Serving, id)}
 }
 
 // guestFor is the guest this host started for a VM it took in.
@@ -1639,7 +1700,7 @@ func (w *World) streamed(ctx context.Context, received *vmmigrate.Received) erro
 // left under it is an identity nothing can open and nothing can publish under.
 // A delete the store refuses is retried by Settle, as an abandoned fork's is.
 func (w *World) discardChild(ctx context.Context, destination *hostState, id string) {
-	if running := w.up(w.indexOf(destination)); running != nil {
+	if running := w.reach(w.indexOf(destination)); running != nil {
 		if err := running.Delete(ctx, id); err == nil {
 			return
 		} else {
@@ -1656,7 +1717,7 @@ func (w *World) discardChild(ctx context.Context, destination *hostState, id str
 // there any more, and ends the guest that was holding them. The pages are going
 // either way, so a release the source would refuse is a discard.
 func (w *World) abandonSource(_ context.Context, source *hostState, id string) {
-	running := w.up(w.indexOf(source))
+	running := w.reach(w.indexOf(source))
 	if running == nil {
 		return
 	}
@@ -1718,11 +1779,11 @@ func (w *World) FanOut(ctx context.Context, parent string, children []VMSpec) er
 		}
 		ids = append(ids, spec.ID)
 	}
-	if w.up(landing) == nil {
+	if w.reach(landing) == nil {
 		return nil
 	}
 	source, destination := w.hosts[in.host], w.hosts[landing]
-	sourceHost := w.up(in.host)
+	sourceHost := w.reach(in.host)
 	if sourceHost == nil {
 		return nil
 	}
@@ -1779,7 +1840,10 @@ func (w *World) FanOut(ctx context.Context, parent string, children []VMSpec) er
 func (w *World) forked(ctx context.Context, source, destination *hostState, spec VMSpec,
 	handoff vmmigrate.Handoff, at map[string][]byte) (bool, error) {
 	incarnation := w.incarnationOf(spec.Host)
-	received, err := w.receive(ctx, source, destination, handoff)
+	// Nothing in the deployment ends a fork's receive on its parent's hold, so
+	// the child's is carried under none: it ends when the parent's host is
+	// lost, or at the harness's patience.
+	received, err := w.receive(ctx, w.indexOf(source), destination, handover.Hold{}, handoff)
 	if err != nil {
 		// The child could not get the pages only its parent had, or its root
 		// would not publish: either way the destination gave the guest up. The
@@ -1824,7 +1888,7 @@ func (w *World) forked(ctx context.Context, source, destination *hostState, spec
 	// parent that stays sealed can never checkpoint again.
 	if w.forgetsReleases {
 		w.logf("%s: nothing released the fork point %s holds for it", spec.ID, source.name)
-	} else if released := w.up(w.indexOf(source)); released != nil {
+	} else if released := w.reach(w.indexOf(source)); released != nil {
 		if err := released.ReleaseMigrated(spec.ID); err != nil {
 			w.logf("%s: the fork point could not be retired: %v", spec.Parent, err)
 		}
@@ -1842,7 +1906,7 @@ func (w *World) Settle(ctx context.Context) error {
 	// from the seed and not from where Go happened to put a key.
 	for _, id := range slices.Sorted(maps.Keys(w.orphans)) {
 		for index := range w.hosts {
-			running := w.up(index)
+			running := w.reach(index)
 			if running == nil {
 				continue
 			}
@@ -1869,7 +1933,7 @@ func (w *World) Settle(ctx context.Context) error {
 		}
 		for offset := range w.hosts {
 			index := (in.host + offset) % len(w.hosts)
-			if w.up(index) == nil {
+			if w.reach(index) == nil {
 				continue
 			}
 			errs = append(errs, w.recover(ctx, in, index, "the takeover before it was refused"))
@@ -1887,7 +1951,7 @@ func (w *World) Settle(ctx context.Context) error {
 // given up, because nothing will ever take what it holds.
 func (w *World) survey() {
 	for index, h := range w.hosts {
-		running := w.up(index)
+		running := w.reach(index)
 		if running == nil {
 			continue
 		}
@@ -2352,7 +2416,7 @@ func (w *World) reopen(ctx context.Context, in *instance, index int, why string)
 // its memory replaced by zeroes, under a checkpoint this writer published.
 func (w *World) reopenWith(ctx context.Context, in *instance, index int, why string, cold bool) (bool, error) {
 	h := w.hosts[index]
-	running := w.up(index)
+	running := w.reach(index)
 	if running == nil {
 		return false, nil
 	}

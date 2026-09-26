@@ -5,6 +5,7 @@ import (
 	"errors"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/semistrict/sproutfs/api/orch"
 )
@@ -83,16 +84,22 @@ func TestADestinationThatKeepsFailingIsLeftForAnotherWithRoom(t *testing.T) {
 }
 
 // The source's hold is what a handoff is good for. Once it is over the source
-// has given the pages up, so the retries stop: the VM is stopped, nothing is
-// released, and the failure is reported.
+// has given the pages up, so the retries stop: the last look, at the end of the
+// hold, finds the pages gone, nothing is released, and the VM is recovered from
+// its checkpoint, as when the source is lost.
 func TestRetriesStopWhenTheSourcesHoldIsOver(t *testing.T) {
 	d := newDeployment(t, map[string][]string{"host-0": {"vm-a"}, "host-1": {}})
 	// A fifth of a second is fifty looks at the policy of these tests.
-	d.hosts["host-0"].hold = 0.2
+	const hold = 0.2
+	d.hosts["host-0"].hold = hold
 	d.hosts["host-1"].refusesEveryReceive = true
+	began := time.Now()
 	_, err := d.orchestrator.Migrate(t.Context(), "vm-a", "host-1")
-	if err == nil {
-		t.Fatal("a migration to a destination that refuses every receive succeeded")
+	if !errors.Is(err, errLostSource) {
+		t.Fatalf("a migration to a destination that refuses every receive = %v, want errLostSource", err)
+	}
+	if waited := time.Since(began); waited < time.Duration(hold*float64(time.Second)) {
+		t.Fatalf("the handoff was given up %s in, inside the source's hold of %gs", waited, hold)
 	}
 	receives := 0
 	for _, line := range d.log {
@@ -106,12 +113,15 @@ func TestRetriesStopWhenTheSourcesHoldIsOver(t *testing.T) {
 	if receives < 3 {
 		t.Fatalf("the handoff was received %d times inside its hold, want it tried again: %v", receives, d.log)
 	}
+	if last := d.log[len(d.log)-1]; last != "host-0 open vm-a" {
+		t.Fatalf("the deployment ended with %q, want the VM recovered: %v", last, d.log)
+	}
 	row, _, err := d.orchestrator.table.VM(t.Context(), "vm-a")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if row.State != stateStopped {
-		t.Fatalf("row %+v, want vm-a stopped", row)
+	if row.State != stateRunning || row.Host != "host-0" {
+		t.Fatalf("row %+v, want vm-a running on host-0", row)
 	}
 }
 

@@ -104,6 +104,10 @@ func StalledStream(host int) Fault { return &stalledStream{host: host} }
 // LostHost takes a whole host away and starts it again when the fault ends.
 func LostHost(host int) Fault { return &lostHost{host: host} }
 
+// IsolatedHost cuts one host off from every other host and from the deployment
+// while its process goes on running.
+func IsolatedHost(host int) Fault { return &isolatedHost{host: host} }
+
 // RefusedStop fails every migration pause that begins while it is on, after the
 // guest has already stopped.
 func RefusedStop() Fault { return &refusedStop{} }
@@ -324,6 +328,64 @@ func (f *lostHost) End(ctx context.Context, w *World) error { return w.RestartHo
 func (f *lostHost) Holds(_ context.Context, w *World) error {
 	if w.hosts[f.host].down {
 		return fmt.Errorf("%s never came back", w.hosts[f.host].name)
+	}
+	return nil
+}
+
+// isolatedHost is a partition between one host's pod and the rest of the
+// deployment. The process runs, its pod is still listed and its page server
+// still holds whatever it handed over, but no other host reaches it and the
+// deployment can neither ask it anything nor learn that it is gone, because it
+// is not. It is the case the Kubernetes API's listing cannot settle: a
+// destination post-copying from such a host waits, and the deployment with it,
+// until the host's hold on the pages is over.
+type isolatedHost struct{ host int }
+
+func (f *isolatedHost) Name() string { return "isolated-host" }
+
+func (f *isolatedHost) Begin(_ context.Context, w *World) error {
+	f.isolate(w, true)
+	return nil
+}
+
+func (f *isolatedHost) End(_ context.Context, w *World) error {
+	f.isolate(w, false)
+	return nil
+}
+
+// isolate cuts the host's links to every other host, both ways, and hides it
+// from the deployment, or undoes both.
+func (f *isolatedHost) isolate(w *World, isolated bool) {
+	w.mu.Lock()
+	w.hosts[f.host].isolated = isolated
+	w.mu.Unlock()
+	cut := w.hosts[f.host]
+	for index, other := range w.hosts {
+		if index == f.host {
+			continue
+		}
+		if isolated {
+			w.runtime.Network().PartitionBoth(cut.address, other.pages)
+			w.runtime.Network().PartitionBoth(other.address, cut.pages)
+		} else {
+			w.runtime.Network().HealBoth(cut.address, other.pages)
+			w.runtime.Network().HealBoth(other.address, cut.pages)
+		}
+	}
+}
+
+func (f *isolatedHost) Holds(_ context.Context, w *World) error {
+	cut := w.hosts[f.host]
+	w.mu.Lock()
+	isolated := cut.isolated
+	w.mu.Unlock()
+	if isolated {
+		return fmt.Errorf("the deployment still cannot reach %s", cut.name)
+	}
+	for index, other := range w.hosts {
+		if index != f.host && w.runtime.Network().Clogged(other.address, cut.pages) {
+			return fmt.Errorf("%s still cannot reach %s", other.address, cut.pages)
+		}
 	}
 	return nil
 }

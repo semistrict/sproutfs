@@ -96,10 +96,11 @@ var (
 	// guest whose writes can never be published, and nothing here can say which,
 	// so no request that must name a VM's host is acted on until it is one.
 	errContested = errors.New("two hosts claim the VM")
-	// errLostSource reports the host that was holding a migrated VM's pages
-	// having gone while its destination was still fetching them. Those pages
-	// are gone with it, so the migration is ended rather than waited on.
-	errLostSource = errors.New("the host holding the VM's pages is gone")
+	// errLostSource reports the pages of a migrated VM that no checkpoint has
+	// being gone from the host that was holding them, while its destination
+	// was still fetching them or about to be asked to. They exist nowhere
+	// else, so the migration is ended rather than waited on.
+	errLostSource = errors.New("the host holding the VM's pages no longer has them")
 )
 
 // orchestrator places VMs on hosts and carries handoffs between them. It is
@@ -1139,7 +1140,7 @@ func (o *orchestrator) Migrate(ctx context.Context, id, to string) (orch.Migrate
 			// and are gone with it, so there is nothing left to wait for and
 			// nothing to publish: what a recovery opens is the checkpoint the
 			// control record still selects.
-			return orch.MigrateResult{}, errors.Join(err, o.recoverLost(ctx, id))
+			return orch.MigrateResult{}, errors.Join(err, o.recoverLost(ctx, id, source.report.Name))
 		}
 		return orch.MigrateResult{}, err
 	}
@@ -1165,11 +1166,15 @@ func (o *orchestrator) Migrate(ctx context.Context, id, to string) (orch.Migrate
 // checkpoint has. So the receive is tried again under the handover policy for
 // as long as the source holds those pages, each time on the evidence retry
 // waits for. Losing the source ends it, as it ends a receive.
+//
+// The source's hold is counted from here, where its handoff arrived: the
+// source armed its deadline before it answered.
 func (o *orchestrator) handOver(ctx context.Context, source, target liveHost, id string, need uint64,
 	handed host.MigrateResult) (liveHost, host.ReceiveResult, error) {
-	attempts := o.policy().Begin(time.Now(), handed.Hold.Duration(), target.report.Name)
+	hold := handover.Held(time.Now(), handed.Hold.Duration())
+	attempts := o.policy().Begin(hold, target.report.Name)
 	for {
-		received, err := o.receive(ctx, source, target, id, handed.Handoff)
+		received, err := o.receive(ctx, source, target, id, hold, handed.Handoff)
 		if err == nil {
 			return target, received, nil
 		}
@@ -1178,7 +1183,7 @@ func (o *orchestrator) handOver(ctx context.Context, source, target liveHost, id
 			return liveHost{}, host.ReceiveResult{}, err
 		}
 		attempts.Failed()
-		next, landed, err := o.retry(ctx, attempts, source, target.report.Name, id, need, err)
+		next, landed, err := o.retry(ctx, attempts, hold, source, target.report.Name, id, need, err)
 		if err != nil {
 			return liveHost{}, host.ReceiveResult{}, err
 		}
@@ -1198,21 +1203,23 @@ func (o *orchestrator) handOver(ctx context.Context, source, target liveHost, id
 //   - A host that runs the VM ends the handover there, which landed reports.
 //     A receive whose answer was lost on the way back may still have taken
 //     the VM, and a receive anywhere else would fence that host's guest.
-//   - A source that is gone, or that answers and no longer serves the VM, has
-//     given the pages up, and the handoff with them.
+//   - A source that no longer has the pages, by the rule handover.Hold.Gone
+//     keeps, has taken the handoff with them.
 //   - The destination that failed must answer before another is tried. A
 //     quiet one may still be finishing the receive whose caller gave up.
 //   - The next destination is the policy's choice among the hosts with room.
 //
-// It gives up when the policy says the source's hold is over.
-func (o *orchestrator) retry(ctx context.Context, attempts *handover.Attempts, source liveHost,
-	failed, id string, need uint64, cause error) (next liveHost, landed bool, err error) {
+// The last look comes as the source's hold ends, and what it finds then is the
+// pages gone by that same rule. A source that promised no hold has one look
+// and no retry, and when that look shows nothing the handoff is given up with
+// the VM left stopped.
+func (o *orchestrator) retry(ctx context.Context, attempts *handover.Attempts, hold handover.Hold,
+	source liveHost, failed, id string, need uint64, cause error) (next liveHost, landed bool, err error) {
+	givenUp := func() error {
+		return fmt.Errorf("%w; no destination took it while %s held its pages", cause, source.report.Name)
+	}
 	for {
-		wait, ok := attempts.Wait(ctx, time.Now())
-		if !ok {
-			return liveHost{}, false, fmt.Errorf("%w; no destination took it while %s held its pages",
-				cause, source.report.Name)
-		}
+		wait, more := attempts.Wait(ctx, time.Now())
 		if err := ctxsync.Sleep(ctx, wait); err != nil {
 			return liveHost{}, false, errors.Join(cause, err)
 		}
@@ -1225,6 +1232,9 @@ func (o *orchestrator) retry(ctx context.Context, attempts *handover.Attempts, s
 			// A survey that failed is no evidence of anything.
 			slog.WarnContext(ctx, "sproutfs-orchestrator: surveying for a handoff's next receive failed",
 				"vm", id, "error", err)
+			if !more {
+				return liveHost{}, false, givenUp()
+			}
 			continue
 		}
 		runs, err := runner(hosts, id)
@@ -1236,8 +1246,11 @@ func (o *orchestrator) retry(ctx context.Context, attempts *handover.Attempts, s
 		if !errors.Is(err, errNotFound) {
 			return liveHost{}, false, errors.Join(cause, err)
 		}
-		if lostSource(hosts, source.report.Name, id) {
-			return liveHost{}, false, errors.Join(cause, lost(source.report.Name, id))
+		if evidence := hold.Gone(ctx, look(hosts, source.report.Name, id), time.Now()); evidence != nil {
+			return liveHost{}, false, errors.Join(cause, lost(source.report.Name, id, evidence))
+		}
+		if !more {
+			return liveHost{}, false, givenUp()
 		}
 		if quiet, err := named(hosts, failed); err == nil && quiet.report.Error != "" {
 			continue
@@ -1284,15 +1297,16 @@ func (o *orchestrator) watchInterval() time.Duration {
 
 // receive carries the destination's half of a handoff while watching the host
 // that still holds the VM's pages. The destination returns when it has every
-// page no checkpoint has, and waits for as long as that takes; losing the host
-// holding them is what ends the wait, and this is the only thing that sees it.
+// page no checkpoint has, and waits for as long as that takes; the pages being
+// gone from that host is what ends the wait, and this is the only thing that
+// sees it.
 func (o *orchestrator) receive(ctx context.Context, source, target liveHost, id string,
-	handoff host.Handoff) (host.ReceiveResult, error) {
+	hold handover.Hold, handoff host.Handoff) (host.ReceiveResult, error) {
 	receiving, lose := context.WithCancelCause(ctx)
 	defer lose(nil)
 	watched := make(chan struct{})
 	defer close(watched)
-	go o.watchSource(receiving, source.report.Name, id, watched, lose)
+	go o.watchSource(receiving, source.report.Name, id, hold, watched, lose)
 	result, err := target.client.Receive(receiving, handoff)
 	if err != nil && ctx.Err() == nil && receiving.Err() != nil {
 		// The migration was ended here rather than by the caller or the
@@ -1302,14 +1316,15 @@ func (o *orchestrator) receive(ctx context.Context, source, target liveHost, id 
 	return result, err
 }
 
-// watchSource ends a receive whose source host is gone. It surveys on its own
-// interval until the receive is over, and acts only on positive evidence of the
-// loss, because the destination's guest is torn down by it: a pod the
-// Kubernetes API no longer lists, or a host that answers and neither runs the
-// VM nor serves its pages any more, which is a host that came back without the
-// pages it was holding. A host that is merely quiet is a host whose guest may
-// be perfectly well.
-func (o *orchestrator) watchSource(ctx context.Context, from, id string,
+// watchSource ends a receive whose source no longer has the pages it is
+// waiting for. It surveys on its own interval until the receive is over, and
+// acts only on the evidence handover.Hold.Gone accepts, because the
+// destination's guest is torn down by it: a pod the Kubernetes API no longer
+// lists, a host that answers and neither runs the VM nor serves its pages any
+// more, or a hold that is over. A host that is merely quiet may be serving
+// those pages perfectly well until its hold ends, so a listed host nothing can
+// reach ends the receive then and not sooner.
+func (o *orchestrator) watchSource(ctx context.Context, from, id string, hold handover.Hold,
 	until <-chan struct{}, lose context.CancelCauseFunc) {
 	ticker := time.NewTicker(o.watchInterval())
 	defer ticker.Stop()
@@ -1328,24 +1343,26 @@ func (o *orchestrator) watchSource(ctx context.Context, from, id string,
 				"vm", id, "host", from, "error", err)
 			continue
 		}
-		if !lostSource(hosts, from, id) {
+		evidence := hold.Gone(ctx, look(hosts, from, id), time.Now())
+		if evidence == nil {
 			continue
 		}
-		slog.WarnContext(ctx, "sproutfs-orchestrator: the host holding a migrated VM's pages is gone",
-			"vm", id, "host", from)
-		lose(lost(from, id))
+		slog.WarnContext(ctx, "sproutfs-orchestrator: the host holding a migrated VM's pages no longer has them",
+			"vm", id, "host", from, "evidence", evidence)
+		lose(lost(from, id, evidence))
 		return
 	}
 }
 
-// lost is the error of a handover whose source host is gone.
-func lost(from, id string) error {
-	return fmt.Errorf("%w: %s was holding the pages of %s that no checkpoint has", errLostSource, from, id)
+// lost is the error of a handover whose source no longer has the pages, and
+// what shows it.
+func lost(from, id string, evidence error) error {
+	return fmt.Errorf("%w: %s was holding the pages of %s that no checkpoint has, and %w",
+		errLostSource, from, id, evidence)
 }
 
-// lostSource reports the host that handed a VM over being gone, which is what
-// makes the pages it was still serving gone too.
-func lostSource(hosts []liveHost, from, id string) bool {
+// look is what one survey says of the host that handed a VM over.
+func look(hosts []liveHost, from, id string) handover.Look {
 	for _, h := range hosts {
 		if h.report.Name != from {
 			continue
@@ -1353,20 +1370,26 @@ func lostSource(hosts []liveHost, from, id string) bool {
 		if h.report.Error != "" {
 			// Quiet says nothing: this host may be serving those pages to the
 			// destination right now behind one dropped status request.
-			return false
+			return handover.Look{Listed: true}
 		}
-		return !slices.Contains(h.report.Serving, id) && !slices.Contains(h.report.Running, id)
+		return handover.Look{Listed: true, Answered: true,
+			Holding: slices.Contains(h.report.Serving, id) || slices.Contains(h.report.Running, id)}
 	}
 	// The Kubernetes API no longer lists the pod at all.
-	return true
+	return handover.Look{}
 }
 
-// recoverLost reopens a VM whose migration ended with the host holding its
-// pages. It is the ordinary recovery: the destination gave the half-received
-// guest up, nothing runs the VM, and what an open finds is the checkpoint its
-// control record selects, which is the source's last interval checkpoint.
-func (o *orchestrator) recoverLost(ctx context.Context, id string) error {
-	recovered, err := o.Recover(ctx, id, false)
+// recoverLost reopens a VM whose migration ended because the host holding its
+// pages no longer has them. It is the ordinary recovery: the destination gave
+// the half-received guest up, nothing runs the VM, and what an open finds is
+// the checkpoint its control record selects, which is the source's last
+// interval checkpoint. The one difference is the source itself, which may be a
+// listed pod nothing can reach: it handed the VM over, so its silence is not a
+// guest that may still be running there.
+func (o *orchestrator) recoverLost(ctx context.Context, id, from string) error {
+	terms := recovery(false)
+	terms.handedOver = from
+	recovered, err := o.reopen(ctx, id, terms)
 	if err != nil {
 		return fmt.Errorf("recovering %s after losing the host holding its pages: %w", id, err)
 	}
@@ -1389,11 +1412,16 @@ func (o *orchestrator) recoverLost(ctx context.Context, id string) error {
 // way to produce that evidence, and the one the demo uses, because a deleted pod
 // stops being listed.
 func (o *orchestrator) Recover(ctx context.Context, id string, force bool) (orch.RecoverResult, error) {
-	return o.reopen(ctx, id, reopening{state: stateRecovering, what: "recovered",
+	return o.reopen(ctx, id, recovery(force))
+}
+
+// recovery is the terms a recovery reopens a VM under.
+func recovery(force bool) reopening {
+	return reopening{state: stateRecovering, what: "recovered",
 		// A host that did not answer is not a host that is gone. Force is the
 		// operator's own evidence that it is.
 		requireAnswers: !force,
-		quietAdvice:    "kill that host, or recover by force"})
+		quietAdvice:    "kill that host, or recover by force"}
 }
 
 // Stop ends a VM the deployment is finished with for now. The host running it
@@ -1469,6 +1497,11 @@ type reopening struct {
 	// requireAnswers refuses while any listed pod is quiet, which is what a
 	// recovery's evidence of a loss is and what a stopped VM does not need.
 	requireAnswers bool
+	// handedOver is the host a migration took the VM from, empty for every
+	// other reopen. Its silence says nothing about the VM: it stopped the guest
+	// and gave its volumes up before any destination was asked to take it, and
+	// only an open made here could run the VM there again.
+	handedOver string
 }
 
 // reopen opens a VM nothing is running on a host that can take it, which is
@@ -1514,7 +1547,8 @@ func (o *orchestrator) reopen(ctx context.Context, id string, terms reopening) (
 				errRunning, id, row.State, row.Host)
 		}
 	}
-	if quiet := unanswered(hosts); len(quiet) > 0 && terms.requireAnswers {
+	quiet := slices.DeleteFunc(unanswered(hosts), func(name string) bool { return name == terms.handedOver })
+	if len(quiet) > 0 && terms.requireAnswers {
 		return orch.RecoverResult{}, fmt.Errorf(
 			"%w: %s did not answer, so %s may still be running there; %s",
 			errRunning, strings.Join(quiet, ", "), id, terms.quietAdvice)

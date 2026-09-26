@@ -60,6 +60,12 @@
     "purpose": "Give a handoff up after its first failed receive while the source still holds its pages. The swizzle campaign's separated links fail a first receive on every seed, so this is its entry."
   },
   {
+    "id": "migration-ignore-source-hold",
+    "package": "internal/simtest",
+    "run": "^TestAMigrationWhoseSourceIsCutOffEndsAtItsHold$",
+    "purpose": "Keep waiting on a listed source nothing can reach after its hold is over. Only a source cut off while still listed leaves the hold as the one evidence, and no campaign draws that fault, so the scenario is its entry."
+  },
+  {
     "id": "pager-forget-spill",
     "package": "internal/simtest",
     "run": "^TestSeededTopologyUnderBuggify$",

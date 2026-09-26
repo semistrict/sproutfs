@@ -12,9 +12,9 @@
 // source holds the pages. Giving up earlier loses the guest's writes since its
 // last checkpoint for nothing.
 //
-// This is the policy alone: when to try again, where, and when to stop. What
-// counts as evidence that another attempt is safe is the caller's, because
-// only the caller can see the deployment.
+// This is the policy, when to try again, where, and when to stop, and the rule
+// for when the source no longer has the pages. What the deployment looks like
+// is the caller's to find out, because only the caller can see it.
 package handover
 
 import (
@@ -49,7 +49,7 @@ var Default = Policy{Pause: time.Second, MaxPause: 15 * time.Second, PerDestinat
 // handoff is carried by one caller.
 type Attempts struct {
 	policy   Policy
-	deadline time.Time
+	hold     Hold
 	at       string
 	streak   int
 	failures map[string]int
@@ -57,10 +57,10 @@ type Attempts struct {
 }
 
 // Begin starts the receives of a handoff whose source holds its pages for
-// hold from now, at the destination first. A hold of zero is a source that
-// promises nothing, so its handoff is tried once.
-func (p Policy) Begin(now time.Time, hold time.Duration, first string) *Attempts {
-	return &Attempts{policy: p, deadline: now.Add(hold), at: first, failures: map[string]int{}}
+// hold, at the destination first. A source that promised nothing has its
+// handoff tried once.
+func (p Policy) Begin(hold Hold, first string) *Attempts {
+	return &Attempts{policy: p, hold: hold, at: first, failures: map[string]int{}}
 }
 
 // At is the destination the next receive goes to.
@@ -73,11 +73,16 @@ func (a *Attempts) Failed() {
 }
 
 // Wait is how long to wait before looking at the deployment again, and false
-// once the source's hold ends before then. The handoff is not worth another
-// attempt after that: the source gives the pages up on its own, and a receive
-// started then fails for want of them.
+// once there is nothing left to wait for: the source's hold is over, or it
+// promised none. The last wait ends with the hold, so the look after it is the
+// one that finds the pages gone by Hold.Gone. False asks for one last look now,
+// and no receive after it.
 func (a *Attempts) Wait(ctx context.Context, now time.Time) (time.Duration, bool) {
 	if sim.Bug(ctx, "migration-give-up-first-receive") {
+		return 0, false
+	}
+	ends, held := a.hold.Ends()
+	if !held || !now.Before(ends) {
 		return 0, false
 	}
 	switch {
@@ -86,10 +91,7 @@ func (a *Attempts) Wait(ctx context.Context, now time.Time) (time.Duration, bool
 	case a.pause < a.policy.MaxPause:
 		a.pause = min(2*a.pause, a.policy.MaxPause)
 	}
-	if !now.Add(a.pause).Before(a.deadline) {
-		return 0, false
-	}
-	return a.pause, true
+	return min(a.pause, ends.Sub(now)), true
 }
 
 // Next chooses the destination of the next receive from the hosts that could

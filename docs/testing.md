@@ -1242,6 +1242,8 @@ SPROUTFS_SIM_BUG=migration-skip-resume \
   go test ./internal/simtest -run '^TestSeededTopologyCampaign$' -count=1
 SPROUTFS_SIM_BUG=migration-give-up-first-receive \
   go test ./internal/simtest -run '^TestTwoWritersOfOneVMNeverMixAcrossASwizzle$' -count=1
+SPROUTFS_SIM_BUG=migration-ignore-source-hold \
+  go test ./internal/simtest -run '^TestAMigrationWhoseSourceIsCutOffEndsAtItsHold$' -count=1
 SPROUTFS_SIM_BUG=pager-zero-new-page \
   go test ./internal/simtest -run '^TestScheduledWorldReproduces$' -count=1
 SPROUTFS_SIM_BUG=pager-forget-spill \
@@ -1263,6 +1265,11 @@ their cost. `migration-give-up-first-receive` belongs to the two-writer
 campaign. It gives a handoff up after its first failed receive. The campaign's
 separated links fail a first receive on every one of its sixteen seeds, and it
 requires the guest to be handed over, not taken over.
+`migration-ignore-source-hold` belongs to its own scenario. It keeps a
+migration waiting on a listed source that nothing can reach after the source's
+hold is over. No campaign cuts a source off while it stays listed, so the
+scenario is the only place where the hold is the one evidence left. With the
+guard on, the migration ends at the harness's patience instead of at the hold.
 
 Five guards break the host's side of the Starter contract in `vmmachine`:
 
