@@ -55,6 +55,10 @@ type MigrationConfig struct {
 // VM it does not run.
 var ErrNotMigratable = errors.New("host: this host cannot migrate that VM")
 
+// ErrReceiving reports a receive of a VM this host is already receiving. The
+// receive in flight is left alone: nothing of the refused one was started.
+var ErrReceiving = fmt.Errorf("%w: that VM is already being received here", ErrNotMigratable)
+
 // migratedHold is one VM this host has handed to another host and still serves
 // the pages of: the VMM process whose pages those are, and the deadline that
 // releases them when nothing ever reports the destination has them.
@@ -78,9 +82,10 @@ type migratedHold struct {
 // whose child is gone is durable again within it.
 const handoffIntervals = 4
 
-// handoffTimeout is how long this host serves one handover's pages for before
-// it gives them up on its own.
-func (h *Host) handoffTimeout() time.Duration {
+// HoldTimeout is how long this host serves one handover's pages for before it
+// gives them up on its own. It is how long a handoff stays good: a destination
+// that could not take it may be tried again, here or elsewhere, until then.
+func (h *Host) HoldTimeout() time.Duration {
 	if h.holdTimeout > 0 {
 		return h.holdTimeout
 	}
@@ -164,7 +169,7 @@ func (h *Host) Migrate(ctx context.Context, vmID string, destination platform.Ad
 	h.machines.mu.Lock()
 	delete(h.machines.running, vmID)
 	hold := &migratedHold{runtime: entry.runtime}
-	hold.timer = h.clock.AfterFunc(h.handoffTimeout(), func() { h.expire(vmID) })
+	hold.timer = h.clock.AfterFunc(h.HoldTimeout(), func() { h.expire(vmID) })
 	h.machines.migrated[vmID] = hold
 	h.machines.mu.Unlock()
 	slog.InfoContext(ctx, "host: migrated a VM", "vm", vmID, "destination", destination,
@@ -267,6 +272,11 @@ func (h *Host) Receive(ctx context.Context, handoff vmmigrate.Handoff) (*vmmigra
 		return nil, fmt.Errorf("%w: the fork point %s inherits from %s is no longer held here",
 			ErrNotMigratable, handoff.VMID, handoff.Parent)
 	}
+	ended, err := h.beginReceive(handoff.VMID)
+	if err != nil {
+		return nil, err
+	}
+	defer ended()
 	// The handoff names every memory region and its size, so whether this host's pagers
 	// could map them is known before the VM is opened and its VMM started.
 	memoryRegions := make([]MemoryRegion, 0, len(handoff.MemoryRegions))
@@ -343,6 +353,27 @@ func (h *Host) Receive(ctx context.Context, handoff vmmigrate.Handoff) (*vmmigra
 		}
 	}
 	return received, nil
+}
+
+// beginReceive admits one receive of a VM at a time, and reports what ends it.
+// A handoff is retried when a receive of it fails, and a receive whose caller
+// hung up can still be running here: its open, its start and its post-copy do
+// not stop because nobody is waiting for the answer. A second receive of the
+// same VM beside it would open the VM again and fence the first, and whichever
+// registered its machine last would replace the other's. The second is told
+// instead, and fails like any other attempt.
+func (h *Host) beginReceive(vmID string) (func(), error) {
+	h.machines.mu.Lock()
+	defer h.machines.mu.Unlock()
+	if h.machines.receiving[vmID] {
+		return nil, fmt.Errorf("%w: %s", ErrReceiving, vmID)
+	}
+	h.machines.receiving[vmID] = true
+	return func() {
+		h.machines.mu.Lock()
+		defer h.machines.mu.Unlock()
+		delete(h.machines.receiving, vmID)
+	}, nil
 }
 
 // rooted publishes the root index of a fork's child, which is what makes it a
@@ -486,7 +517,7 @@ func (h *Host) expire(vmID string) {
 		return
 	}
 	slog.WarnContext(h.ctx, "host: a handover outlived its deadline and was released",
-		"vm", vmID, "deadline", h.handoffTimeout())
+		"vm", vmID, "deadline", h.HoldTimeout())
 	if err := h.Abandon(vmID); err != nil {
 		slog.ErrorContext(h.ctx, "host: releasing an expired handover failed",
 			"vm", vmID, "error", err)

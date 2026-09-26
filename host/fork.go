@@ -219,7 +219,7 @@ func (h *Host) hold(parent, child string, point *volume.ForkPoint, local bool) e
 		return err
 	}
 	hold := &forkHold{parent: parent, point: point, local: local}
-	hold.timer = h.clock.AfterFunc(h.handoffTimeout(), func() { h.expire(child) })
+	hold.timer = h.clock.AfterFunc(h.HoldTimeout(), func() { h.expire(child) })
 	h.machines.mu.Lock()
 	h.machines.forked[child] = hold
 	h.machines.mu.Unlock()

@@ -31,6 +31,9 @@ var checked = []string{
 	"vmmigrate",
 	"host",
 	"vmmemory",
+	// When a handoff is given up decides whether a stopped guest's writes
+	// since its last checkpoint survive.
+	"internal/handover",
 }
 
 // forbiddenImports are the packages that draw from a source no seed reaches.

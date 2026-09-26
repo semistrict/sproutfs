@@ -451,9 +451,10 @@ is planned work whose cost is one host's memory. Moving all of it at once would
 put all of that memory on the network at the same time. `Host.Drain` returns
 one handoff per VM that moved, and joins the errors of the VMs that did not
 move. Those VMs keep running here. A failure before the handoff leaves the VM
-running and checkpointing on the interval. A later failure can leave the guest
-stopped, and it must then be reopened at its last checkpoint, as described in
-[migration](migration.md).
+running and checkpointing on the interval. A receive that fails after the
+handoff is tried again while this host holds the pages. Only if no destination
+takes the VM in that time is the guest reopened at its last checkpoint, as
+described in [migration](migration.md#a-failed-receive-is-tried-again).
 
 The process's drain does not choose destinations. It asks the orchestrator to
 move each VM. The orchestrator drives both halves of the migration and is told
@@ -506,7 +507,10 @@ ends the pod is killed with everything it still holds. The bounds are:
 - Four VMs are handed over at once, each with its own 60-second deadline. This
   is shorter than the four intervals for which a source serves an unreleased
   handover's pages. It is also shorter than the two minutes for which the
-  orchestrator trusts its record of a handover.
+  orchestrator trusts its record of a handover. The deadline bounds the
+  request, not the handover. Once the source has stopped a guest, the
+  orchestrator carries the handover on until a destination takes the VM or the
+  hold is over, and the wait for `Serving` to empty waits for it.
 - The whole drain has 30 minutes, including the wait for `Serving` to empty. A
   host full of VMs needs that long at four at a time.
 - The orchestrator client has a timeout, so a connection that nobody answers

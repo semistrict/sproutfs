@@ -18,6 +18,7 @@ import (
 	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/host"
 	"github.com/semistrict/sproutfs/internal/ctxsync"
+	"github.com/semistrict/sproutfs/internal/handover"
 	"github.com/semistrict/sproutfs/internal/knobs"
 	"github.com/semistrict/sproutfs/internal/testarena"
 	"github.com/semistrict/sproutfs/internal/testpager"
@@ -1324,21 +1325,8 @@ func (w *World) Migrate(ctx context.Context, id string, to int) error {
 }
 
 // Handover is one migration's terms. The zero value is what a schedule's
-// migration is: one attempt at each half, and a destination that could not take
-// the VM leaves it to whoever opens it next.
+// migration is: the deployment's own.
 type Handover struct {
-	// Attempts is how many times the destination's half is tried before the VM
-	// is given up. The source has already stopped its guest and given its
-	// volumes up by then, so a retry is of the receive alone — the source keeps
-	// the pages the destination has not pulled until it is told it has them
-	// all, or until the handoff is given up. Zero is one attempt, which is what
-	// a deployment's orchestrator makes; more is a campaign's own retrying, and
-	// once they run out the source is told to give the handoff up and the VM is
-	// opened again from its checkpoint, which loses what those pages held.
-	Attempts int
-	// Pause is how long the world waits between those attempts. It is
-	// simulated time.
-	Pause time.Duration
 	// Inspect is one look at the handoff before the destination is given it,
 	// which is where a scenario asks what a destination does with a layout it
 	// must refuse.
@@ -1389,10 +1377,18 @@ func (w *World) MigrateWith(ctx context.Context, id string, to int, terms Handov
 		return nil
 	}
 	// The VM runs on the destination from here, so the handle the source kept
-	// may never write again.
+	// may never write again. An ephemeral disk refuses every write through its
+	// volume whatever the handle, so it says nothing about this one.
 	if vm != nil {
-		if err := vm.Volume(g.names[0]).Write(ctx, 0, []byte{255}); !errors.Is(err, volume.ErrHandedOff) {
-			return fmt.Errorf("%s: the source's handle accepted a store after the handoff: %v", id, err)
+		for _, name := range g.names {
+			written := vm.Volume(name)
+			if written.Ephemeral() {
+				continue
+			}
+			if err := written.Write(ctx, 0, []byte{255}); !errors.Is(err, volume.ErrHandedOff) {
+				return fmt.Errorf("%s: the source's handle accepted a store to %s after the handoff: %v",
+					id, name, err)
+			}
 		}
 	}
 	if terms.Inspect != nil {
@@ -1400,18 +1396,12 @@ func (w *World) MigrateWith(ctx context.Context, id string, to int, terms Handov
 			return err
 		}
 	}
-	received, err := w.receive(ctx, source, destination, handoff)
-	for attempt := 1; err != nil && attempt < terms.Attempts; attempt++ {
-		// The source still holds every page the destination did not pull, so
-		// the handoff is still good: what failed was this attempt at it.
-		w.logf("%s: attempt %d at %s: %v", id, attempt, destination.name, err)
-		if sleepErr := ctxsync.Sleep(ctx, terms.Pause); sleepErr != nil {
-			return sleepErr
-		}
-		received, err = w.receive(ctx, source, destination, handoff)
-	}
+	received, to, err := w.handOver(ctx, from, to, handoff)
 	if err != nil {
-		w.logf("%s: %s could not receive it: %v", id, destination.name, err)
+		return err
+	}
+	destination = w.hosts[to]
+	if received == nil {
 		w.abandonSource(ctx, source, id)
 		w.place(in, from, nil)
 		return w.recover(ctx, in, to, "a receive that failed")
@@ -1470,6 +1460,91 @@ func (w *World) MigrateWith(ctx context.Context, id string, to int, terms Handov
 	return nil
 }
 
+// handOver carries a handoff to a destination that takes it, as the
+// deployment's orchestrator does: a receive that failed is tried again under
+// the handover policy for as long as the source holds the pages, on the same
+// destination or another. It reports the receive and the host that took it,
+// or no receive once the source's hold is over, the source is gone, or it no
+// longer serves the VM. The error is a requirement broken, never a receive
+// that failed.
+//
+// A failed receive must leave nothing of the VM running on its destination,
+// because that is what makes the next attempt sound anywhere: a guest left
+// behind is a second writer the next destination's open fences, and one whose
+// stores nothing can ever publish.
+func (w *World) handOver(ctx context.Context, from, to int, handoff vmmigrate.Handoff) (
+	*vmmigrate.Received, int, error) {
+	source := w.hosts[from]
+	holding := w.up(from)
+	if holding == nil {
+		return nil, to, nil
+	}
+	attempts := handover.Default.Begin(time.Now(), holding.HoldTimeout(), w.hosts[to].name)
+	for {
+		destination := w.hosts[to]
+		incarnation := w.incarnationOf(to)
+		received, err := w.receive(ctx, source, destination, handoff)
+		if err == nil {
+			return received, to, nil
+		}
+		w.logf("%s: %s could not receive it: %v", handoff.VMID, destination.name, err)
+		if w.leftRunning(to, incarnation, handoff.VMID) {
+			return nil, to, fmt.Errorf("%s: a receive that failed left a guest running on %s: %v",
+				handoff.VMID, destination.name, err)
+		}
+		if errors.Is(err, ErrLostSource) {
+			return nil, to, nil
+		}
+		attempts.Failed()
+		next, ok, err := w.retry(ctx, attempts, from, handoff.VMID)
+		if err != nil || !ok {
+			return nil, to, err
+		}
+		to = next
+	}
+}
+
+// leftRunning reports a guest of one VM still running on a host after a
+// receive of it failed there, in the incarnation the receive began in. A host
+// lost in the meantime runs nothing: its guests went with its process, whatever
+// it had registered.
+func (w *World) leftRunning(index, incarnation int, id string) bool {
+	return w.up(index) != nil && w.incarnationOf(index) == incarnation && w.hosts[index].stillRunning(id)
+}
+
+// retry waits under the handover policy until another receive of one handoff
+// is worth making, and reports the host it goes to: any host that is up, other
+// than the source, in the policy's choice. It reports false once the source no
+// longer holds the handoff — the policy's reading of its hold is over, or the
+// source is gone or does not serve the VM — which is the only time a handoff
+// is given up.
+func (w *World) retry(ctx context.Context, attempts *handover.Attempts, from int, id string) (int, bool, error) {
+	for {
+		wait, ok := attempts.Wait(ctx, time.Now())
+		if !ok {
+			return 0, false, nil
+		}
+		if err := ctxsync.Sleep(ctx, wait); err != nil {
+			return 0, false, err
+		}
+		holding := w.up(from)
+		if holding == nil || !slices.Contains(holding.Status().Serving, id) {
+			return 0, false, nil
+		}
+		var names []string
+		for index, h := range w.hosts {
+			if index != from && w.up(index) != nil {
+				names = append(names, h.name)
+			}
+		}
+		chosen, ok := attempts.Next(ctx, names)
+		if !ok {
+			continue
+		}
+		return slices.IndexFunc(w.hosts, func(h *hostState) bool { return h.name == chosen }), true, nil
+	}
+}
+
 // lose ends this incarnation of a host for everything waiting on it. It is
 // called under the world's lock, and closing twice is a host taken away twice.
 func (h *hostState) lose() {
@@ -1524,21 +1599,7 @@ func (w *World) receive(ctx context.Context, source, destination *hostState,
 		case <-ctx.Done():
 		}
 	}()
-	received, err := taking.Receive(ctx, handoff)
-	if err != nil {
-		// A destination that could not read the control record must not be left
-		// running the guest: a VMM running over a VM this host has no authority
-		// for is one whose stores nothing can ever publish. A receive that got
-		// as far as starting one and then gave it up — a fork's child whose root
-		// the store refused — has closed it, which is the same thing said the
-		// other way.
-		if errors.Is(err, platform.ErrUnavailable) && destination.stillRunning(handoff.VMID) {
-			return nil, fmt.Errorf("%s left a guest running for %s without the control record",
-				destination.name, handoff.VMID)
-		}
-		return nil, err
-	}
-	return received, nil
+	return taking.Receive(ctx, handoff)
 }
 
 // guestFor is the guest this host started for a VM it took in.
@@ -1717,12 +1778,20 @@ func (w *World) FanOut(ctx context.Context, parent string, children []VMSpec) er
 // source, because nothing will ever fetch what that hold keeps.
 func (w *World) forked(ctx context.Context, source, destination *hostState, spec VMSpec,
 	handoff vmmigrate.Handoff, at map[string][]byte) (bool, error) {
+	incarnation := w.incarnationOf(spec.Host)
 	received, err := w.receive(ctx, source, destination, handoff)
 	if err != nil {
 		// The child could not get the pages only its parent had, or its root
 		// would not publish: either way the destination gave the guest up. The
 		// identity goes with it, and the parent takes its pages back here.
 		w.logf("%s: %s could not receive the child: %v", spec.ID, destination.name, err)
+		if w.leftRunning(spec.Host, incarnation, spec.ID) {
+			// A guest the destination could not account for is one whose
+			// stores nothing can ever publish, whatever stopped the receive: a
+			// control record it could not read, or a root the store refused.
+			return false, fmt.Errorf("%s: a receive that failed left a guest running on %s: %v",
+				spec.ID, destination.name, err)
+		}
 		w.discardChild(ctx, destination, spec.ID)
 		w.abandonSource(ctx, source, spec.ID)
 		return false, nil
@@ -2244,6 +2313,13 @@ func (w *World) Restart(ctx context.Context, index int) error {
 // Incarnation is how many times one host has been started, which is what says a
 // kill was followed by a restart rather than by the same process carrying on.
 func (w *World) Incarnation(index int) int { return w.hosts[index].incarnation }
+
+// incarnationOf is Incarnation for a caller a kill may race.
+func (w *World) incarnationOf(index int) int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.hosts[index].incarnation
+}
 
 // recover is reopen for a VM nobody meant to stop running: whatever was
 // running it went away, so opening it again somewhere else is a takeover and is

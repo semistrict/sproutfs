@@ -172,6 +172,11 @@ the checkpoint the VM inherits, the runs of unpublished pages, and the address
 of the page server that serves them. A migration hands off a VM that the source
 released. A fork hands off a child from a parent that keeps running.
 
+**Hold**: How long a source keeps what a handoff needs when nothing releases
+it: the pages of a VM it handed over, or the fork point of a child. It is four
+checkpoint intervals. A handoff is good for as long as its source holds it, so
+a receive that fails is tried again until then.
+
 **Page identity**: The name of the page whose bytes a range reads, reported as
 (checkpoint reference, volume, page). Sparse zeroes have a special identity.
 Every page has one name: the checkpoint that published it. A fork inherits its

@@ -144,8 +144,11 @@ the destination reports that it has fetched every one of those pages.
    - the handle is released through `Handoff`, so nothing dirty is published;
    - the supervisor is told to forget the VM.
 
-   A recovery then opens the checkpoint that the control record already
-   selects.
+   The handoff is still good while the source holds the pages, so the
+   orchestrator then tries the receive again
+   ([a failed receive is tried again](#a-failed-receive-is-tried-again)).
+   Only when no destination takes the VM in that time does a recovery open the
+   checkpoint that the control record already selects.
 
    Only `ErrUnpublishedLost` means a VM is in that state. No other error from
    `Done` is grounds for giving a VM up. The caller's own cancellation only
@@ -359,6 +362,55 @@ A host that is only quiet may still have a healthy guest, so the destination
 keeps waiting for it. A source that is alive but unreachable ends the wait from
 its own side. Its handover deadline of four checkpoint intervals makes it give
 those pages up, and its next answer then says that it no longer serves the VM.
+
+## A failed receive is tried again
+
+The source gives its volumes up before any destination is asked to take the
+VM. So a receive that fails cannot resume the guest where it was. It also
+changes nothing the handoff rests on. The destination published nothing, so
+the control record still selects the checkpoint that the handoff names. The
+source still serves every page that no checkpoint has. So the orchestrator
+tries the receive again for as long as the source holds those pages. Giving up
+earlier would lose the guest's writes since its last checkpoint for nothing.
+
+The policy is `handover.Default` in `internal/handover`:
+
+- The first retry waits one second. Each later wait doubles, up to fifteen
+  seconds.
+- One destination gets two attempts in a row. The next attempt goes to the
+  host with room that has failed least. The same host is tried again only when
+  no other host has room. A named destination is where the handover starts,
+  not where it must end.
+- The retries stop when the source's hold is over. The source reports its hold
+  with the handoff (`hold_seconds`), which is four checkpoint intervals by
+  default. A source that reports no hold is tried once.
+
+Before each retry, the orchestrator surveys the hosts. It acts only on
+positive evidence, as a recovery does:
+
+- A host that runs the VM ends the handover there. A receive whose answer was
+  lost may still have taken the VM, and a receive anywhere else would fence
+  that guest.
+- A source that is gone, or that answers and no longer serves the VM, has
+  given the pages up. The VM is then recovered from its checkpoint, as when the
+  source is lost during a receive.
+- The destination that failed must answer before another host is tried. A
+  quiet one may still be finishing the receive whose caller gave up.
+
+The epoch keeps two destinations from both holding the VM. Each open advances
+it, so a later open fences an earlier one. A destination whose record selects
+another checkpoint than the handoff names refuses it with `ErrStale`. A host
+admits one receive of a VM at a time, so a retry on the same host cannot run
+beside a receive whose caller hung up. On another host it can, if that receive
+outlives both the failed request and the survey that found its host running
+nothing. Then the later open fences the earlier one, and only one of them can
+ever publish.
+
+Once the source has stopped the guest, the handover no longer depends on the
+request that started it. A drain's request gives up after 60 seconds. The
+orchestrator goes on retrying until a destination takes the VM or the hold is
+over. The drain waits for `Serving` to be empty, so it waits for that handover
+too.
 
 ## Ephemeral disks move with the VM
 
@@ -615,6 +667,23 @@ The deployment's half is tested in the simulated deployment. The host that
 handed a VM over is lost while its destination is in the post-copy. The
 handover ends at the moment of the loss, not when some timeout expires. The VM
 comes back on the remaining host at the checkpoint its record selects.
+
+Retried receives are tested at three levels:
+
+- The simulated world retries a receive under the same policy as the
+  orchestrator. The swizzle campaign hands a guest over while every link
+  separates and heals, so a first receive fails on every one of its seeds. The
+  guest must be handed over, not taken over. Every campaign also requires that
+  a failed receive leaves no guest running on its destination. Three scenarios
+  state the policy directly: a destination cut off from the store takes the VM
+  once the link is back, a destination that keeps refusing is left for
+  another host, and a handoff nobody takes is given up only at the end of the
+  source's hold.
+- The orchestrator's tests cover each rule above: a retry on the same host, a
+  move to another host with room, the end of the hold, a source that no longer
+  serves the VM, a receive that took the VM but lost its answer, a quiet
+  destination, and a request that gave up before the handover ended.
+- The host suite refuses a second receive of a VM while one is in flight.
 
 The host suite runs the same migration between two hosts over loopback TCP,
 including a drain that moves every VM one host runs.

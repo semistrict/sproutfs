@@ -586,9 +586,15 @@ type MigrateRequest struct {
 
 // MigrateResult is the source half of a migration: the handoff the control
 // plane carries to the destination, and the pause the stop cost.
+//
+// Hold is how long the source serves the pages no checkpoint has if nothing
+// releases them. The handoff is good for that long: a destination that could
+// not take it may be tried again, or another one tried, until then. Zero is a
+// source that promises nothing, and its handoff is tried once.
 type MigrateResult struct {
 	Handoff Handoff `json:"handoff"`
 	Stop    Seconds `json:"stop_seconds"`
+	Hold    Seconds `json:"hold_seconds,omitempty"`
 }
 
 // ReceiveResult is the destination half: the VM is running again when this

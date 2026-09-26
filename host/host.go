@@ -334,7 +334,7 @@ func StartHost(ctx context.Context, config Config) (*Host, error) {
 		done: make(chan struct{}),
 		machines: machines{running: make(map[string]*registration), migrated: make(map[string]*migratedHold),
 			forked: make(map[string]*forkHold), fenced: make(map[string]bool),
-			stopping: make(map[*registration]string)}}
+			stopping: make(map[*registration]string), receiving: make(map[string]bool)}}
 	started := false
 	defer func() {
 		if !started {

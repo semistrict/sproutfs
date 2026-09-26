@@ -564,7 +564,10 @@ the swizzle does:
 - The selected root names only checkpoints that a writer holding the epoch
   published, and nothing past that epoch.
 - Every page the source held reaches the destination instead of being lost to a
-  takeover.
+  takeover. A first receive fails on every seed, so this is the deployment's
+  retry at work: the world retries a failed receive under the same policy as
+  the orchestrator, while the source holds the pages
+  ([migration](migration.md#a-failed-receive-is-tried-again)).
 - A fresh reader sees only the surviving writer's pages.
 
 Sixteen seeds run normally. `SPROUTFS_SWIZZLE_SEEDS` selects any other count,
@@ -577,9 +580,9 @@ guest has a demand fault against the peer that holds the only copy of an
 unpublished page. The only possible outcome is that the guest waits for a reply
 that never comes. Waiting is the right behavior for that page, because giving up
 on it loses the guest's memory. So the drop belongs in a campaign where every
-fetch is a bounded attempt that is retried. A drain of a host that is going away
-fetches this way. The generated schedule uses `simtest.DegradedLinks` instead,
-which is the same kit without the drop.
+receive is a bounded attempt that is retried, as the deployment retries one
+while the source holds the pages. The generated schedule uses
+`simtest.DegradedLinks` instead, which is the same kit without the drop.
 
 ```sh
 SPROUTFS_SWIZZLE_SEEDS=300 go test ./internal/simtest \
@@ -661,6 +664,13 @@ Every hop in the campaigns makes the same checks:
   the destination writes anything.
 - A refused migration leaves the guest running where it was, with every memory region
   unsealed, every page writable and its vCPUs running.
+- A receive that fails leaves no guest of the VM running on its destination,
+  for a migration and for a fork's child. That is what makes a retry sound on
+  any host.
+- A receive that fails is retried under the deployment's handover policy, on
+  the same host or another, until the source no longer holds the pages. Only
+  then is the VM given up and reopened at its checkpoint. So a fault that heals
+  while the source holds the pages costs the VM nothing.
 
 The recorded scenario adds the layout refusal. A handoff that would truncate a
 memory region or map beyond its volume is refused before any guest starts.
@@ -798,8 +808,9 @@ releases every handover a host still holds whose VM exists, and gives up the
 rest.
 
 A VM that nobody is running is opened again by a host that can run it. Such a
-VM can be a source that could not resume, a destination that could not take
-it, a post-copy that did not finish, or a host that was lost. The model then
+VM can be a source that could not resume, a handoff that no destination took
+while its source held the pages, a post-copy that did not finish, or a host
+that was lost. The model then
 rewinds to the bytes that were made durable by the checkpoint its record
 selects. That rewind is the post-copy exposure, not a defect. So the model
 follows it exactly instead of tolerating it.
@@ -1138,7 +1149,8 @@ what it did not reach. The registered probes are:
 - a reconciled lost reply;
 - a compaction rewrite;
 - an eviction during a publication;
-- a volume fallback.
+- a volume fallback;
+- a receive tried again.
 
 `Runtime.Fingerprint` digests everything the simulated dependencies did: the
 resource, the operation, the outcome, the number of bytes, the order on each
@@ -1176,7 +1188,7 @@ SPROUTFS_TEST_SOAK=1 go test ./internal/simtest \
 The probe campaign runs twenty-five seeds of the generated schedule with the
 sites on, plus four seeds of the two-writer campaign. It requires every probe
 that the campaigns are registered to cover to have fired. No campaign in this
-repository covers two of the five registered probes. `unreachedProbes` in
+repository covers two of the six registered probes. `unreachedProbes` in
 `internal/simtest/probe_test.go` names them. Here the store either answers or
 fails outright, so no conditional write ever loses its reply and is reconciled
 by its writer's nonce. The pagers evict, but never while the memory region that a page
@@ -1228,6 +1240,8 @@ SPROUTFS_SIM_BUG=migration-corrupt-fallback \
   go test ./internal/simtest -run '^TestSeededTopologyCampaign$' -count=1
 SPROUTFS_SIM_BUG=migration-skip-resume \
   go test ./internal/simtest -run '^TestSeededTopologyCampaign$' -count=1
+SPROUTFS_SIM_BUG=migration-give-up-first-receive \
+  go test ./internal/simtest -run '^TestTwoWritersOfOneVMNeverMixAcrossASwizzle$' -count=1
 SPROUTFS_SIM_BUG=pager-zero-new-page \
   go test ./internal/simtest -run '^TestScheduledWorldReproduces$' -count=1
 SPROUTFS_SIM_BUG=pager-forget-spill \
@@ -1245,7 +1259,10 @@ not to the recorded scenario, because they break a fault's own path:
   had already stopped.
 
 These three show that the per-site injection and the ambient faults are worth
-their cost.
+their cost. `migration-give-up-first-receive` belongs to the two-writer
+campaign. It gives a handoff up after its first failed receive. The campaign's
+separated links fail a first receive on every one of its sixteen seeds, and it
+requires the guest to be handed over, not taken over.
 
 Five guards break the host's side of the Starter contract in `vmmachine`:
 

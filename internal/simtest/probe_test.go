@@ -9,6 +9,7 @@ import (
 
 	"github.com/semistrict/sproutfs/checkpoint"
 	"github.com/semistrict/sproutfs/control"
+	"github.com/semistrict/sproutfs/internal/handover"
 	"github.com/semistrict/sproutfs/internal/testsoak"
 	"github.com/semistrict/sproutfs/vmmemory"
 	"github.com/semistrict/sproutfs/vmmigrate"
@@ -24,6 +25,7 @@ var registeredProbes = []string{
 	checkpoint.ProbeCompactionRewrite,
 	vmmemory.ProbeEvictionDuringPublication,
 	vmmigrate.ProbeVolumeFallback,
+	handover.ProbeRetried,
 }
 
 // unreachedProbes are the registered probes no campaign in this repository

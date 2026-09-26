@@ -128,16 +128,14 @@ func runSwizzleCampaign(t *testing.T, seed uint64) *sim.Runtime {
 	}
 
 	// The handoff runs inside the window, over links that are separated,
-	// healed, dropping, duplicating and delaying. The receive is retried for
-	// twice the window — the source keeps the pages the destination has not
-	// pulled until it is told the destination has them all, so every retry is
-	// of the same handoff — and it has to succeed before those retries run
-	// out, because a link the swizzle separated is a link that heals inside
-	// the window. The retrying is this campaign's: a deployment's drain tries
-	// the receive once, which TASK-14 in backlog/tasks records.
+	// healed, dropping, duplicating and delaying. A receive that fails is
+	// retried as the deployment retries it: the source keeps the pages the
+	// destination has not pulled until it is told the destination has them
+	// all, so every retry is of the same handoff, for as long as the source
+	// holds it. It has to succeed before the hold is over, because a link the
+	// swizzle separated is a link that heals inside the window.
 	took := world.Takeovers()
-	if err := world.MigrateWith(ctx, swizzleGuestID, 1,
-		simtest.Handover{Attempts: 64, Pause: swizzleWindow / 32}); err != nil {
+	if err := world.Migrate(ctx, swizzleGuestID, 1); err != nil {
 		t.Fatalf("the handoff reported %v", err)
 	}
 	if at := world.HostOf(swizzleGuestID); at != 1 {

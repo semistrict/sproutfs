@@ -219,8 +219,9 @@ runtime configuration.
    the source answers that it no longer serves the VM, or the orchestrator ends
    the migration. The orchestrator ends it when it has lost the source host. In
    that case the pages are lost with the host, and the VM is recovered from its
-   checkpoint, without the writes made since. See [migration](migration.md) for
-   failure handling.
+   checkpoint, without the writes made since. A receive that fails for any
+   other reason is tried again, on the same host or another, while the source
+   holds the pages. See [migration](migration.md) for failure handling.
 
 ## Identities and reclamation
 

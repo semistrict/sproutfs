@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/semistrict/sproutfs/host"
+	"github.com/semistrict/sproutfs/vmmemory"
 	"github.com/semistrict/sproutfs/volume"
 )
 
@@ -163,5 +164,92 @@ func TestMigratingAForkBeforeItsRootIsPublishedIsRefused(t *testing.T) {
 	}
 	if status := parent.Status(); status.Sealed {
 		t.Fatalf("the parent is still sealed after its child published: %+v", status)
+	}
+}
+
+// TestOneReceiveOfAVMAtATime: a failed receive is retried, and a receive whose
+// caller hung up can still be running on its destination. A second receive of
+// the same VM beside it would open the VM again, fence the first, and have
+// whichever registered last replace the other's machine. The destination admits
+// one receive of a VM at a time and tells the second caller so. Once the first
+// has ended, another is admitted.
+func TestOneReceiveOfAVMAtATime(t *testing.T) {
+	h, pagers := startMigrationHosts(t)
+	var received *machine
+	build := starter(t, pagers[1], &received)
+	entered, release := make(chan struct{}, 1), make(chan struct{})
+	h.configs[1].Migration.StartVM = func(ctx context.Context, vm *volume.VM,
+		backings map[string]vmmemory.Backing, state []byte) (host.Machine, error) {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		<-release
+		return build(ctx, vm, backings, state)
+	}
+	h.start(t)
+
+	vm, err := h.hosts[0].Volumes().Create(t.Context(), "received", migrationVolumes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := newMachine(t, pagers[0], vm, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source.store("ram0", 0, 5)
+	if err := h.hosts[0].AddMachine("received", source); err != nil {
+		t.Fatal(err)
+	}
+	handoff, err := h.hosts[0].Migrate(t.Context(), "received", h.pages[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first := make(chan error, 1)
+	go func() {
+		taken, err := h.hosts[1].Receive(context.WithoutCancel(t.Context()), handoff)
+		if err == nil {
+			taken.Close()
+		}
+		first <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the first receive never reached the start of its guest")
+	}
+	// The second caller is answered without waiting for the first to finish:
+	// it is refused, rather than let in to open the VM the first is starting.
+	second := make(chan error, 1)
+	go func() {
+		taken, err := h.hosts[1].Receive(context.WithoutCancel(t.Context()), handoff)
+		if err == nil {
+			taken.Close()
+		}
+		second <- err
+	}()
+	var secondErr error
+	answered := false
+	select {
+	case secondErr = <-second:
+		answered = true
+	case <-time.After(10 * time.Second):
+	}
+	close(release)
+	if !answered {
+		t.Fatal("the second receive was not refused: it is opening the VM the first is starting")
+	}
+	if !errors.Is(secondErr, host.ErrReceiving) {
+		t.Fatalf("a second receive of one VM = %v, want ErrReceiving", secondErr)
+	}
+	if err := <-first; err != nil {
+		t.Fatalf("the receive that got there first: %v", err)
+	}
+	if machines := h.hosts[1].Machines(); len(machines) != 1 || machines[0] != "received" {
+		t.Fatalf("the destination runs %v, want the VM the first receive took", machines)
+	}
+	if received.closed.Load() {
+		t.Fatal("the second receive closed the machine the first one started")
 	}
 }

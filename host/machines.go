@@ -118,6 +118,8 @@ type machines struct {
 	// Their memory regions still hold pages until then, and a pager asking to
 	// stop one of them again is told it will be.
 	stopping map[*registration]string
+	// receiving is the VMs a receive is in flight for.
+	receiving map[string]bool
 }
 
 // AddMachine registers the VMM process of a VM this host runs, which is what a

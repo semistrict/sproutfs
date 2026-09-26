@@ -17,6 +17,7 @@ import (
 
 	"github.com/semistrict/sproutfs/api/host"
 	"github.com/semistrict/sproutfs/api/orch"
+	"github.com/semistrict/sproutfs/internal/handover"
 )
 
 // fakePods is the Kubernetes API: the host pods the orchestrator finds, and the
@@ -108,7 +109,22 @@ type fakeHostClient struct {
 	forks    int
 	// refusesEveryReceive is a destination that takes no child at all, which is
 	// what a host that is full, fenced or being deleted looks like to a fan-out.
+	// refusedReceives is how many of the next receives it refuses before it
+	// takes one, which is a destination that is briefly unable to.
 	refusesEveryReceive bool
+	refusedReceives     int
+	// loseAnswer takes the next receive in and then reports it failed, which is
+	// a receive whose answer was lost on its way back.
+	loseAnswer bool
+	// quietAfterRefusal is how many surveys this host does not answer after it
+	// refuses a receive, which is a destination that failed because it went
+	// away for a while.
+	quietAfterRefusal, quiet int
+	// onRefusal runs as this host refuses a receive, which is where a test
+	// changes the deployment around a receive that failed.
+	onRefusal func()
+	// hold is what this host's migrations report it holds a handover for.
+	hold host.Seconds
 	// outstanding names the VMs this host still holds pages for that no
 	// destination has fetched — every child of a fork point it took, until
 	// that child is received somewhere — and fetched, shared by every host of
@@ -162,6 +178,13 @@ const wedgeGuard = 6 * time.Second
 func (f *fakeHostClient) Status(ctx context.Context) (host.Status, error) {
 	f.mu.Lock()
 	wedged, down := f.wedged, f.down
+	if f.quiet > 0 {
+		f.quiet--
+		down = true
+		if f.quiet == 0 {
+			f.record("answers again")
+		}
+	}
 	f.mu.Unlock()
 	if wedged {
 		select {
@@ -310,14 +333,20 @@ func (f *fakeHostClient) Migrate(_ context.Context, id string, request host.Migr
 	f.running = slices.DeleteFunc(f.running, func(value string) bool { return value == id })
 	f.serving = append(f.serving, id)
 	return host.MigrateResult{Handoff: host.Handoff{VMID: id,
-		Source: f.page, PageSize: 2 << 20}}, nil
+		Source: f.page, PageSize: 2 << 20}, Hold: f.hold}, nil
 }
 
 func (f *fakeHostClient) Receive(ctx context.Context, handoff host.Handoff) (host.ReceiveResult, error) {
 	f.mu.Lock()
 	f.record("receive %s %s", handoff.VMID, handoff.Source)
-	if f.refusesEveryReceive || (f.receives > 0 && len(f.received) >= f.receives) {
+	if f.refusesEveryReceive || f.refusedReceives > 0 || (f.receives > 0 && len(f.received) >= f.receives) {
+		f.refusedReceives = max(f.refusedReceives-1, 0)
+		f.quiet = f.quietAfterRefusal
+		refused := f.onRefusal
 		f.mu.Unlock()
+		if refused != nil {
+			refused()
+		}
 		return host.ReceiveResult{}, errors.New("the destination could not start it")
 	}
 	hold, began := f.holdReceive, f.onReceive
@@ -345,6 +374,10 @@ func (f *fakeHostClient) Receive(ctx context.Context, handoff host.Handoff) (hos
 	// The child holds every page it inherited, which is what lets the source
 	// release the hold it kept for it.
 	f.fetched[handoff.VMID] = true
+	if f.loseAnswer {
+		f.loseAnswer = false
+		return host.ReceiveResult{}, errors.New("the connection was reset")
+	}
 	return host.ReceiveResult{VM: host.VM{ID: handoff.VMID, Host: f.name},
 		Pause: 0.09, Stream: 1.5, PeerPages: 24, Unpublished: 6}, nil
 }
@@ -456,9 +489,10 @@ func newDeployment(t *testing.T, running map[string][]string) *deployment {
 			return "vm-new-" + strconv.Itoa(d.next)
 		},
 		apiPort: 8080, pagePort: 8081, table: testTable(t),
-		// A migration watches the host that holds its pages; a test does not
-		// wait seconds for that watch to come round.
-		sourceWatch: 10 * time.Millisecond}
+		// A migration watches the host that holds its pages, and retries a
+		// receive after a wait; a test waits seconds for neither.
+		sourceWatch: 10 * time.Millisecond,
+		handover:    handover.Policy{Pause: time.Millisecond, MaxPause: 4 * time.Millisecond, PerDestination: 2}}
 	return d
 }
 

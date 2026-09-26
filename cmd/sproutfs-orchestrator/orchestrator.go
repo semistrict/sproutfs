@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -15,6 +16,8 @@ import (
 
 	"github.com/semistrict/sproutfs/api/host"
 	"github.com/semistrict/sproutfs/api/orch"
+	"github.com/semistrict/sproutfs/internal/ctxsync"
+	"github.com/semistrict/sproutfs/internal/handover"
 	"github.com/semistrict/sproutfs/volume"
 )
 
@@ -129,6 +132,9 @@ type orchestrator struct {
 	// sourceWatch is how often a migration in flight asks whether the host
 	// holding its pages is still there. Zero selects SourceWatchInterval.
 	sourceWatch time.Duration
+	// handover is how a failed receive is retried. The zero value selects
+	// handover.Default.
+	handover handover.Policy
 
 	// recentHosts is the last survey and recentAt when it finished, which is
 	// what spares a console being polled at a few hertz a fan-out per frame.
@@ -637,27 +643,33 @@ func (o *orchestrator) identities(ctx context.Context) ([]listing, error) {
 // memory at all. A host that reports no arena measures as nothing free, so it
 // takes such a VM and nothing else.
 func place(hosts []liveHost, exclude string, need uint64) (liveHost, error) {
-	var best liveHost
-	found, answered := false, false
-	for _, h := range hosts {
-		if h.client == nil || h.report.Error != "" || !h.report.Ready || h.report.Name == exclude {
-			continue
-		}
-		answered = true
-		if h.free() < need {
-			continue
-		}
-		if !found || h.free() > best.free() {
-			best, found = h, true
-		}
+	if room := destinations(hosts, exclude, need); len(room) > 0 {
+		return room[0], nil
 	}
-	if !found && answered {
+	if slices.ContainsFunc(hosts, func(h liveHost) bool { return ready(h) && h.report.Name != exclude }) {
 		return liveHost{}, fmt.Errorf("%w: no host has %d bytes of memory free", errNoHost, need)
 	}
-	if !found {
-		return liveHost{}, fmt.Errorf("%w: no ready host answered", errNoHost)
+	return liveHost{}, fmt.Errorf("%w: no ready host answered", errNoHost)
+}
+
+// destinations is every host a VM of need bytes could be placed on, other than
+// the one named, with the most memory free first and in name order among
+// equals.
+func destinations(hosts []liveHost, exclude string, need uint64) []liveHost {
+	var room []liveHost
+	for _, h := range hosts {
+		if ready(h) && h.report.Name != exclude && h.free() >= need {
+			room = append(room, h)
+		}
 	}
-	return best, nil
+	slices.SortStableFunc(room, func(a, b liveHost) int { return cmp.Compare(b.free(), a.free()) })
+	return room
+}
+
+// ready reports a host that answered this survey and says it is ready, which
+// is every host a VM may be placed on.
+func ready(h liveHost) bool {
+	return h.client != nil && h.report.Error == "" && h.report.Ready
 }
 
 // admits reports whether one named host can hold a VM of need bytes, which is
@@ -1067,7 +1079,9 @@ func (o *orchestrator) Capture(ctx context.Context, id string, request orch.Capt
 // source release the pages it is still serving.
 //
 // An empty destination picks the least loaded host other than the source, which
-// is what a draining host asks for.
+// is what a draining host asks for. A named one is where the handover starts:
+// if it keeps failing to take the VM, the guest's writes outrank the placement
+// and the handoff goes on to another host.
 func (o *orchestrator) Migrate(ctx context.Context, id, to string) (orch.MigrateResult, error) {
 	began := time.Now()
 	hosts, err := o.survey(ctx)
@@ -1101,18 +1115,23 @@ func (o *orchestrator) Migrate(ctx context.Context, id, to string) (orch.Migrate
 	}
 	o.note(ctx, vmRecord{ID: id, Host: source.report.Name, State: stateMigrating,
 		From: source.report.Name, To: target.report.Name})
-	handoff, err := source.client.Migrate(ctx, id, host.MigrateRequest{Destination: target.report.Page})
+	handed, err := source.client.Migrate(ctx, id, host.MigrateRequest{Destination: target.report.Page})
 	if err != nil {
 		o.note(ctx, vmRecord{ID: id, Host: source.report.Name, State: stateRunning})
 		return orch.MigrateResult{}, fmt.Errorf("stopping %s on %s: %w", id, source.report.Name, err)
 	}
-	received, err := o.receive(ctx, source, target, id, handoff.Handoff)
+	// The guest is stopped and its volumes given up, so nothing can resume it
+	// where it was: it is owed a destination, whether or not whoever asked for
+	// the move is still waiting. A drain's request has a deadline of its own,
+	// and a receive it cut short would lose the guest's writes for nothing, so
+	// the handover runs to its own end from here.
+	ctx = context.WithoutCancel(ctx)
+	target, received, err := o.handOver(ctx, source, target, id, need, handed)
 	if err != nil {
-		// The guest is stopped and the source still holds its pages. Nothing
-		// here can resume it: its memory regions have given their volumes up, so the
-		// VM is reopened from its last checkpoint instead.
+		// No destination took the VM while the source held its pages. Nothing
+		// here can resume it: its memory regions have given their volumes up,
+		// so the VM is reopened from its last checkpoint instead.
 		o.note(ctx, vmRecord{ID: id, State: stateStopped})
-		err = fmt.Errorf("receiving %s on %s: %w", id, target.report.Name, err)
 		if errors.Is(err, errLostSource) {
 			// The pages the destination had not fetched were only on that host
 			// and are gone with it, so there is nothing left to wait for and
@@ -1135,6 +1154,116 @@ func (o *orchestrator) Migrate(ctx context.Context, id, to string) (orch.Migrate
 		Pause: received.Pause, Stream: received.Stream, PeerPages: received.PeerPages,
 		VolumePages: received.VolumePages, Unpublished: received.Unpublished,
 		Total: host.Since(began)}, nil
+}
+
+// handOver carries a handoff to a destination that takes it, and reports that
+// destination. A receive that failed changed nothing the handoff rests on: the
+// destination published nothing, so the control record still selects the
+// checkpoint the handoff names, and the source still serves every page no
+// checkpoint has. So the receive is tried again under the handover policy for
+// as long as the source holds those pages, each time on the evidence retry
+// waits for. Losing the source ends it, as it ends a receive.
+func (o *orchestrator) handOver(ctx context.Context, source, target liveHost, id string, need uint64,
+	handed host.MigrateResult) (liveHost, host.ReceiveResult, error) {
+	attempts := o.policy().Begin(time.Now(), handed.Hold.Duration(), target.report.Name)
+	for {
+		received, err := o.receive(ctx, source, target, id, handed.Handoff)
+		if err == nil {
+			return target, received, nil
+		}
+		err = fmt.Errorf("receiving %s on %s: %w", id, target.report.Name, err)
+		if errors.Is(err, errLostSource) {
+			return liveHost{}, host.ReceiveResult{}, err
+		}
+		attempts.Failed()
+		next, landed, err := o.retry(ctx, attempts, source, target.report.Name, id, need, err)
+		if err != nil {
+			return liveHost{}, host.ReceiveResult{}, err
+		}
+		if landed {
+			return next, host.ReceiveResult{}, nil
+		}
+		slog.WarnContext(ctx, "sproutfs-orchestrator: a receive failed, and the handoff is tried again",
+			"vm", id, "source", source.report.Name, "failed", target.report.Name, "next", next.report.Name)
+		target = next
+	}
+}
+
+// retry waits until the deployment shows that another receive of one handoff
+// is safe, and reports the host it goes to. It looks after each of the
+// policy's waits and acts only on positive evidence, as a recovery does:
+//
+//   - A host that runs the VM ends the handover there, which landed reports.
+//     A receive whose answer was lost on the way back may still have taken
+//     the VM, and a receive anywhere else would fence that host's guest.
+//   - A source that is gone, or that answers and no longer serves the VM, has
+//     given the pages up, and the handoff with them.
+//   - The destination that failed must answer before another is tried. A
+//     quiet one may still be finishing the receive whose caller gave up.
+//   - The next destination is the policy's choice among the hosts with room.
+//
+// It gives up when the policy says the source's hold is over.
+func (o *orchestrator) retry(ctx context.Context, attempts *handover.Attempts, source liveHost,
+	failed, id string, need uint64, cause error) (next liveHost, landed bool, err error) {
+	for {
+		wait, ok := attempts.Wait(ctx, time.Now())
+		if !ok {
+			return liveHost{}, false, fmt.Errorf("%w; no destination took it while %s held its pages",
+				cause, source.report.Name)
+		}
+		if err := ctxsync.Sleep(ctx, wait); err != nil {
+			return liveHost{}, false, errors.Join(cause, err)
+		}
+		// The row is kept fresh while the handover waits, so that nothing takes
+		// it for an operation that died.
+		o.note(ctx, vmRecord{ID: id, Host: source.report.Name, State: stateMigrating,
+			From: source.report.Name, To: failed})
+		hosts, err := o.survey(ctx)
+		if err != nil {
+			// A survey that failed is no evidence of anything.
+			slog.WarnContext(ctx, "sproutfs-orchestrator: surveying for a handoff's next receive failed",
+				"vm", id, "error", err)
+			continue
+		}
+		runs, err := runner(hosts, id)
+		if err == nil {
+			slog.WarnContext(ctx, "sproutfs-orchestrator: a receive reported failing, and its host runs the VM",
+				"vm", id, "host", runs.report.Name, "error", cause)
+			return runs, true, nil
+		}
+		if !errors.Is(err, errNotFound) {
+			return liveHost{}, false, errors.Join(cause, err)
+		}
+		if lostSource(hosts, source.report.Name, id) {
+			return liveHost{}, false, errors.Join(cause, lost(source.report.Name, id))
+		}
+		if quiet, err := named(hosts, failed); err == nil && quiet.report.Error != "" {
+			continue
+		}
+		room := destinations(hosts, source.report.Name, need)
+		names := make([]string, 0, len(room))
+		for _, h := range room {
+			names = append(names, h.report.Name)
+		}
+		chosen, ok := attempts.Next(ctx, names)
+		if !ok {
+			continue
+		}
+		if next, err = named(room, chosen); err != nil {
+			return liveHost{}, false, errors.Join(cause, err)
+		}
+		o.note(ctx, vmRecord{ID: id, Host: source.report.Name, State: stateMigrating,
+			From: source.report.Name, To: next.report.Name})
+		return next, false, nil
+	}
+}
+
+// policy is the handover policy this orchestrator retries a receive under.
+func (o *orchestrator) policy() handover.Policy {
+	if o.handover != (handover.Policy{}) {
+		return o.handover
+	}
+	return handover.Default
 }
 
 // SourceWatchInterval is how often a migration in flight asks whether the host
@@ -1202,9 +1331,14 @@ func (o *orchestrator) watchSource(ctx context.Context, from, id string,
 		}
 		slog.WarnContext(ctx, "sproutfs-orchestrator: the host holding a migrated VM's pages is gone",
 			"vm", id, "host", from)
-		lose(fmt.Errorf("%w: %s was holding the pages of %s that no checkpoint has", errLostSource, from, id))
+		lose(lost(from, id))
 		return
 	}
+}
+
+// lost is the error of a handover whose source host is gone.
+func lost(from, id string) error {
+	return fmt.Errorf("%w: %s was holding the pages of %s that no checkpoint has", errLostSource, from, id)
 }
 
 // lostSource reports the host that handed a VM over being gone, which is what
@@ -1594,12 +1728,15 @@ func (o *orchestrator) Drained(ctx context.Context, report orch.DrainReport) err
 			// refused to stop the guest, stopped when the destination could
 			// not take it in — the guest is stopped by then and its volumes
 			// given up, and a row saying running would describe a guest that
-			// is not. Only a row this drain left at "migrating" is one the
-			// migration never got to write, which is a request that never
-			// reached here: that guest was never stopped, and a row saying
-			// stopped would offer a recovery that fences the host still
-			// running it.
-			if row := o.rowOf(ctx, report.VM); row.State == stateMigrating && row.From == report.Host {
+			// is not. A row naming a destination is a migration still under
+			// way: the drain's request gave up on its deadline, and the
+			// handover goes on without it. Only a row this drain left at
+			// "migrating", with no destination, is one the migration never got
+			// to write, which is a request that never reached here: that guest
+			// was never stopped, and a row saying stopped would offer a
+			// recovery that fences the host still running it.
+			if row := o.rowOf(ctx, report.VM); row.State == stateMigrating && row.From == report.Host &&
+				row.To == "" {
 				o.note(ctx, vmRecord{ID: report.VM, Host: report.Host, State: stateRunning})
 			}
 			slog.ErrorContext(ctx, "sproutfs-orchestrator: a drain could not hand a VM over",

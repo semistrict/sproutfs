@@ -15,3 +15,10 @@ __pycache__/
 # Agent worktrees and session state, which are not this repository's source and
 # must not reach the demo node through scripts/demo-gce.sh's source staging.
 /.claude/
+
+# Binaries a bare `go build ./cmd/...` leaves at the repository root.
+/sproutfs-orchestrator
+/sproutfs-host
+/sproutfsctl
+/sproutfs-guest-agent
+/sproutfs-guest-witness

@@ -28,7 +28,8 @@ func (s *supervisor) Migrate(ctx context.Context, id string, destination platfor
 	// The VM runs on the destination from here. This host holds only its
 	// pages, which its page server serves until the destination has them all.
 	s.forget(id)
-	return hostapi.MigrateResult{Handoff: apiHandoff(handoff), Stop: s.since(stopped)}, nil
+	return hostapi.MigrateResult{Handoff: apiHandoff(handoff), Stop: s.since(stopped),
+		Hold: hostapi.Of(s.host.HoldTimeout())}, nil
 }
 
 func (s *supervisor) Receive(ctx context.Context, wire hostapi.Handoff) (hostapi.ReceiveResult, error) {
@@ -38,6 +39,11 @@ func (s *supervisor) Receive(ctx context.Context, wire hostapi.Handoff) (hostapi
 	// given the VM up, and one refused before it started never recorded a
 	// machine that outlived it, so either way nothing of it is left here.
 	received, err := s.host.Receive(ctx, handoff)
+	if errors.Is(err, ErrReceiving) {
+		// The machine of the receive already in flight is that receive's to
+		// keep or give up, not this one's.
+		return hostapi.ReceiveResult{}, fmt.Errorf("receiving %s from %s: %w", handoff.VMID, handoff.Source, err)
+	}
 	if err != nil {
 		s.forget(handoff.VMID)
 		return hostapi.ReceiveResult{}, fmt.Errorf("receiving %s from %s: %w", handoff.VMID, handoff.Source, err)
