@@ -208,7 +208,9 @@ func (w *World) Release(ctx context.Context, id string, sequence uint64) error {
 		return nil
 	}
 	switch {
-	case record.IsPinned(sequence) && !errors.Is(err, control.ErrForked):
+	case record.IsPinned(sequence) && !errors.Is(err, control.ErrForked) && !errors.Is(err, platform.ErrUnavailable):
+		// A host that cannot reach the store cannot read the record, so it
+		// cannot say why it did nothing; any other answer must be the refusal.
 		return fmt.Errorf("%s: releasing %d, which a VM was created from, reported %v", id, sequence, err)
 	case errors.Is(err, control.ErrForked) && !record.IsPinned(sequence):
 		return fmt.Errorf("%s: releasing %d was refused as forked, and the record pins %v", id, sequence, record.Pinned)
