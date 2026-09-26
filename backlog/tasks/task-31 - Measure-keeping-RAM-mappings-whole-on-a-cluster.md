@@ -4,9 +4,11 @@ title: Measure keeping RAM mappings whole on a cluster
 status: To Do
 assignee: []
 created_date: '2026-09-25 18:18'
+updated_date: '2026-09-26 01:50'
 labels:
   - measurement
   - gce
+  - deferred
 dependencies: []
 priority: low
 type: task

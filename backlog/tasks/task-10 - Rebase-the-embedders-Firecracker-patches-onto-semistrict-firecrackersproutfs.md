@@ -4,9 +4,11 @@ title: Rebase the embedder's Firecracker patches onto semistrict/firecracker@spr
 status: To Do
 assignee: []
 created_date: '2026-09-25 18:17'
+updated_date: '2026-09-26 01:50'
 labels:
   - embedder
   - blocked
+  - deferred
 dependencies: []
 priority: medium
 type: task

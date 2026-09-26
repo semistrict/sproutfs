@@ -4,8 +4,10 @@ title: Find where a managed restore spends its 1.7 to 3.3 s
 status: To Do
 assignee: []
 created_date: '2026-09-25 18:18'
+updated_date: '2026-09-26 01:50'
 labels:
   - measurement
+  - deferred
 dependencies: []
 priority: medium
 type: task

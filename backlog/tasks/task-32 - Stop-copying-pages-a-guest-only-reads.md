@@ -4,8 +4,10 @@ title: Stop copying pages a guest only reads
 status: To Do
 assignee: []
 created_date: '2026-09-25 18:18'
+updated_date: '2026-09-26 01:50'
 labels:
   - performance
+  - deferred
 dependencies: []
 priority: medium
 type: enhancement

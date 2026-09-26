@@ -4,6 +4,7 @@ title: Remove the leftover Lima build directory
 status: To Do
 assignee: []
 created_date: '2026-09-25 18:17'
+updated_date: '2026-09-26 01:46'
 labels:
   - needs-owner
   - chore

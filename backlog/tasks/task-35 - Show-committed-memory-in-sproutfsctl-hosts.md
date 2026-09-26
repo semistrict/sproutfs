@@ -4,8 +4,10 @@ title: Show committed memory in sproutfsctl hosts
 status: To Do
 assignee: []
 created_date: '2026-09-25 18:18'
+updated_date: '2026-09-26 01:50'
 labels:
   - chore
+  - deferred
 dependencies: []
 priority: low
 type: enhancement

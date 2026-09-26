@@ -4,9 +4,11 @@ title: Measure the store-replaces-mapping and walk-after-pause changes on a host
 status: To Do
 assignee: []
 created_date: '2026-09-25 18:18'
+updated_date: '2026-09-26 01:50'
 labels:
   - measurement
   - gce
+  - deferred
 dependencies: []
 priority: medium
 type: task
