@@ -35,7 +35,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -47,6 +46,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/semistrict/sproutfs/checkpoint"
+	"github.com/semistrict/sproutfs/internal/testjail"
 	"github.com/semistrict/sproutfs/internal/vmwire"
 )
 
@@ -62,9 +62,6 @@ const (
 	pagemapUffdWP  = 1 << 57
 	pagemapFrame   = 1<<55 - 1
 )
-
-// nobody is the user a jailed VMM runs as.
-var nobody = &syscall.Credential{Uid: 65534, Gid: 65534}
 
 // requireQualification skips a test outside the Lima and GCE qualification,
 // which runs it as root with KVM and a HugeTLB pool.
@@ -234,36 +231,6 @@ type readOnlyVMM struct {
 	err    error
 }
 
-// vmmExecutable is this test binary. A process that runs as another user gets
-// a copy it can read.
-func vmmExecutable(t *testing.T, owner *syscall.Credential) string {
-	t.Helper()
-	executable, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if owner == nil {
-		return executable
-	}
-	dir, err := os.MkdirTemp("", "sproutfs-vmtest-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
-	if err := os.Chmod(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	contents, err := os.ReadFile(executable)
-	if err != nil {
-		t.Fatal(err)
-	}
-	copied := filepath.Join(dir, "vmtest.test")
-	if err := os.WriteFile(copied, contents, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	return copied
-}
-
 // startReadOnlyVMM starts a VMM process with a memory region of pages. It runs
 // as owner, or as this process's user when owner is nil. It holds the file's
 // read-only descriptor, and its read-write one when readWrite is set.
@@ -285,14 +252,11 @@ func startReadOnlyVMM(t *testing.T, f *readOnlyFile, pages int, owner *syscall.C
 	if readWrite {
 		writable = f.file
 	}
-	executable := vmmExecutable(t, owner)
-	v.cmd = exec.Command(executable, "-test.run=^TestReadOnlyVMM$")
-	v.cmd.Dir = filepath.Dir(executable)
+	v.cmd = testjail.Command(t, owner, "TestReadOnlyVMM", vmmRole, fmt.Sprintf("%d %d", f.pageSize, pages))
 	// A preemption signal would make a thread blocked in a fault take it
 	// again, and the pager would read a second message for it.
-	v.cmd.Env = append(os.Environ(), fmt.Sprintf("%s=%d %d", vmmRole, f.pageSize, pages), "GODEBUG=asyncpreemptoff=1")
+	v.cmd.Env = append(v.cmd.Env, "GODEBUG=asyncpreemptoff=1")
 	v.cmd.ExtraFiles = []*os.File{theirs, f.readOnly, writable}
-	v.cmd.SysProcAttr = &syscall.SysProcAttr{Credential: owner}
 	v.cmd.Stderr = v.stderr
 	if v.input, err = v.cmd.StdinPipe(); err != nil {
 		t.Fatal(err)
@@ -588,7 +552,7 @@ func TestReadOnlyFileCannotBeReopenedForWritingByAnotherUser(t *testing.T) {
 		if err := f.file.Chmod(0o777); err != nil {
 			t.Fatal(err)
 		}
-		v := startReadOnlyVMM(t, f, 1, nobody, false)
+		v := startReadOnlyVMM(t, f, 1, testjail.Nobody, false)
 		own := fmt.Sprintf("reopen /proc/self/fd/%d", vmmReadOnly)
 		v.do(own, "ok")
 		v.do(fmt.Sprintf("reopen /proc/%d/fd/%d", os.Getpid(), f.file.Fd()), "refused EACCES")

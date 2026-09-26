@@ -455,7 +455,9 @@ func requireErrno(t *testing.T, attempt string, number uint64, err, want error) 
 // tenant published and another region of the tenant inherits, which is the
 // one thing the design concedes.
 //
-// It cannot write a file it was given read-only. It can allocate memory in its
+// It cannot write a file it was given read-only. Run as another user, as a
+// jailed VMM is, it can neither reopen such a file for writing nor change the
+// mode of any file it holds. It can allocate memory in its
 // own private file, and the pager ends its session for that. Mappings it keeps
 // past every revocation reach nothing more after the other VMs go on storing
 // and publishing. The other VMs keep their bytes, and the pager and the host
@@ -499,6 +501,29 @@ func TestAHostileVMMReachesNoOtherVMsBytes(t *testing.T) {
 		requireErrno(t, "a truncation", number, unix.Ftruncate(fd, 0), unix.EINVAL)
 		_, err = unix.FcntlInt(uintptr(fd), unix.F_ADD_SEALS, unix.F_SEAL_WRITE)
 		requireErrno(t, "a seal", number, err, unix.EPERM)
+	}
+	// A jailed VMM runs as another user, so it can neither open a file anew
+	// for writing through /proc/self/fd nor change a file's mode.
+	var files []*os.File
+	for _, number := range numbers {
+		f, _ := r.file(number)
+		files = append(files, f)
+	}
+	for i, attempt := range jailAttempts(t, files) {
+		f, writable := r.file(numbers[i])
+		if !writable {
+			requireErrno(t, "a jailed VMM's reopening for writing", numbers[i], attempt.reopen, unix.EACCES)
+		}
+		if attempt.fchmod != unix.EPERM {
+			t.Errorf("a jailed VMM's fchmod of file %d = %v, want %v", numbers[i], attempt.fchmod, unix.EPERM)
+		}
+		st, err := f.Stat()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if st.Mode().Perm() != 0o600 {
+			t.Errorf("file %d has mode %v after the jailed VMM's attempts, want 0600", numbers[i], st.Mode().Perm())
+		}
 	}
 	if t.Failed() {
 		t.FailNow()
