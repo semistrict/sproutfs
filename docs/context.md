@@ -175,7 +175,9 @@ released. A fork hands off a child from a parent that keeps running.
 **Hold**: How long a source keeps what a handoff needs when nothing releases
 it: the pages of a VM it handed over, or the fork point of a child. It is four
 checkpoint intervals. A handoff is good for as long as its source holds it, so
-a receive that fails is tried again until then.
+a receive that fails is tried again until then. After it, the pages are gone
+whether or not anything can reach the source, which is what ends a migration
+whose source is listed and unreachable.
 
 **Page identity**: The name of the page whose bytes a range reads, reported as
 (checkpoint reference, volume, page). Sparse zeroes have a special identity.

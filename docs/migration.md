@@ -351,20 +351,41 @@ emptiest other host. See [hosting](hosting.md#draining-a-host).
 
 The orchestrator enforces the other side of the post-copy rule. While a
 destination is receiving, the orchestrator checks the host that handed the VM
-over, every `SourceWatchInterval`. If that host is lost, the receive ends. This
-discards the destination's half-received VM. The VM is then recovered from the
-checkpoint its control record still selects, and the in-flight row is removed
-with it. The evidence must be positive, because it causes a guest to be torn
-down. Two things count as evidence:
+over, every `SourceWatchInterval`. If that host no longer has the pages, the
+receive ends. This discards the destination's half-received VM. The VM is then
+recovered from the checkpoint its control record still selects, and the
+in-flight row is removed with it. The evidence must be positive, because it
+causes a guest to be torn down. Three things count as evidence:
 
 - the Kubernetes API no longer lists the pod;
 - the host answers but neither runs the VM nor serves its pages, which means
-  the host came back without the pages it was holding.
+  it gave the pages up or came back without them;
+- the source's hold is over.
 
 A host that is only quiet may still have a healthy guest, so the destination
-keeps waiting for it. A source that is alive but unreachable ends the wait from
-its own side. Its handover deadline of four checkpoint intervals makes it give
-those pages up, and its next answer then says that it no longer serves the VM.
+keeps waiting for it while the hold lasts. The hold is what settles a source
+whose pod is still listed and that nothing can reach. The source reports its
+hold with the handoff (`hold_seconds`), four checkpoint intervals by default.
+It armed that deadline before it answered, so the orchestrator counts the hold
+from the moment the handoff arrived, and the source's own deadline has passed
+by the time that count ends. From then on the pages are gone whether the source
+is alive or not: a live source gave them up at its deadline, and a dead one
+took them with it. No timeout of the orchestrator's own is involved. A source
+that reports no hold promises nothing, so its silence is never evidence.
+
+The recovery that follows accepts the source's silence. The source stopped the
+guest and gave its volumes up before any destination was asked to take the VM,
+and only an open by the orchestrator could run the VM there again. Any other
+host that does not answer still refuses the recovery, as it refuses an
+operator's.
+
+The Kubernetes API reports more than whether a pod is listed, and none of it is
+used. A node that is `NotReady` and a pod that is being deleted say nothing
+about the process, which may be serving pages. A container's restart count
+does say that a process ended. But the count is reported some time after the
+restart, so it cannot be tied to the process that handed the VM over. The one
+rule is `handover.Hold.Gone` in `internal/handover`. The receive in flight and
+the retries below both apply it, so a migration and a drain end the same way.
 
 ## A failed receive is tried again
 
@@ -384,9 +405,8 @@ The policy is `handover.Default` in `internal/handover`:
   host with room that has failed least. The same host is tried again only when
   no other host has room. A named destination is where the handover starts,
   not where it must end.
-- The retries stop when the source's hold is over. The source reports its hold
-  with the handoff (`hold_seconds`), which is four checkpoint intervals by
-  default. A source that reports no hold is tried once.
+- The retries stop when the source's hold is over. The last wait ends with the
+  hold. A source that reports no hold is tried once.
 
 Before each retry, the orchestrator surveys the hosts. It acts only on
 positive evidence, as a recovery does:
@@ -394,11 +414,15 @@ positive evidence, as a recovery does:
 - A host that runs the VM ends the handover there. A receive whose answer was
   lost may still have taken the VM, and a receive anywhere else would fence
   that guest.
-- A source that is gone, or that answers and no longer serves the VM, has
-  given the pages up. The VM is then recovered from its checkpoint, as when the
-  source is lost during a receive.
+- A source that no longer has the pages, by the evidence above, has taken the
+  handoff with it. The VM is then recovered from its checkpoint, as when the
+  source is lost during a receive. The look at the end of the hold always
+  finds this.
 - The destination that failed must answer before another host is tried. A
   quiet one may still be finishing the receive whose caller gave up.
+
+A source that reported no hold gets one look after its one receive. If that
+look shows nothing, the VM is left stopped and the failure is reported.
 
 The epoch keeps two destinations from both holding the VM. Each open advances
 it, so a later open fences an earlier one. A destination whose record selects
@@ -669,7 +693,15 @@ running.
 The deployment's half is tested in the simulated deployment. The host that
 handed a VM over is lost while its destination is in the post-copy. The
 handover ends at the moment of the loss, not when some timeout expires. The VM
-comes back on the remaining host at the checkpoint its record selects.
+comes back on the remaining host at the checkpoint its record selects. A
+second scenario cuts the source off from every other host and from the
+deployment while its process runs and it stays listed. The handover ends when
+the source's hold does, well inside the harness's own patience, while the
+source is still up and still serving. The source then gives the pages up when
+its own clock reaches the deadline. The orchestrator's tests state the same
+rule: a quiet listed source ends the migration at its hold and not before, the
+VM is recovered past the source's silence, and any other quiet host still
+refuses that recovery.
 
 Retried receives are tested at three levels:
 

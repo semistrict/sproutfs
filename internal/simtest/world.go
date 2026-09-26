@@ -861,13 +861,13 @@ func (w *World) up(index int) *host.Host {
 // What the deployment does to a host goes through here, and nil from it is no
 // evidence that the host is gone.
 func (w *World) reach(index int) *host.Host {
-	running := w.up(index)
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.hosts[index].isolated {
+	h := w.hosts[index]
+	if h.down || h.host == nil || h.isolated {
 		return nil
 	}
-	return running
+	return h.host
 }
 
 // place records where a VM is and what is running it. It is the one write a
@@ -1623,20 +1623,20 @@ func (w *World) receive(ctx context.Context, from int, destination *hostState, h
 	watching := make(chan struct{})
 	defer close(watching)
 	go func() {
+		// The world looks when something changed: the host was lost, or its
+		// hold came to an end. Each is looked at once.
 		for {
-			var evidence error
 			select {
 			case <-gone:
-				evidence = handover.ErrUnlisted
+				gone = nil
 			case <-over:
 				over = nil
-				evidence = hold.Gone(ctx, w.look(from, handoff.VMID), time.Now())
 			case <-watching:
 				return
 			case <-ctx.Done():
 				return
 			}
-			if evidence != nil {
+			if evidence := hold.Gone(ctx, w.look(from, handoff.VMID), time.Now()); evidence != nil {
 				lost(fmt.Errorf("%w: %s was holding the pages of %s that no checkpoint has, and %w",
 					ErrLostSource, source.name, handoff.VMID, evidence))
 				return

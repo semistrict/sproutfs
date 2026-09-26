@@ -671,6 +671,13 @@ Every hop in the campaigns makes the same checks:
   the same host or another, until the source no longer holds the pages. Only
   then is the VM given up and reopened at its checkpoint. So a fault that heals
   while the source holds the pages costs the VM nothing.
+- A receive in flight and a retry end on the same rule as the orchestrator's,
+  `handover.Hold.Gone`. A source the world has lost is no longer listed. A
+  source cut off by `simtest.IsolatedHost` is listed and says nothing, so only
+  its hold ends the wait. No campaign draws that fault.
+  `TestAMigrationWhoseSourceIsCutOffEndsAtItsHold` runs it with a hold shorter
+  than the harness's patience, set by `Config.Hold`, so the clock shows which
+  one ended the wait.
 
 The recorded scenario adds the layout refusal. A handoff that would truncate a
 memory region or map beyond its volume is refused before any guest starts.

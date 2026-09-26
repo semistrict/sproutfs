@@ -217,9 +217,11 @@ runtime configuration.
    died. If it read the page from its own volume instead, it would roll the
    guest back past the guest's own write. The asking ends in one of two ways:
    the source answers that it no longer serves the VM, or the orchestrator ends
-   the migration. The orchestrator ends it when it has lost the source host. In
-   that case the pages are lost with the host, and the VM is recovered from its
-   checkpoint, without the writes made since. A receive that fails for any
+   the migration. The orchestrator ends it when it has evidence that the
+   source no longer has the pages: the source's pod is no longer listed, the
+   source answers without them, or the source's hold is over. In that case the
+   pages are lost, and the VM is recovered from its checkpoint, without the
+   writes made since. A receive that fails for any
    other reason is tried again, on the same host or another, while the source
    holds the pages. See [migration](migration.md) for failure handling.
 
