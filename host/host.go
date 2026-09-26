@@ -475,8 +475,10 @@ type Status struct {
 // KindPages is a page count per kind of memory region. The two are never summed: a RAM
 // page and a PMEM page are different numbers of bytes, so anything host-wide
 // converts to bytes first.
+//
+// Ephemeral is the ephemeral pager's count, in its own pages like the others.
 type KindPages struct {
-	RAM, PMEM int
+	RAM, PMEM, Ephemeral int
 }
 
 // KindBytes is a byte budget divided between the two pagers. Bytes do add up,
@@ -497,6 +499,9 @@ func (h *Host) Status() Status {
 	}
 	if h.pagers.Pmem != nil {
 		status.LogicalPagesFree.PMEM = h.pagers.Pmem.LogicalHeadroom()
+	}
+	if h.pagers.Ephemeral != nil {
+		status.LogicalPagesFree.Ephemeral = h.pagers.Ephemeral.LogicalHeadroom()
 	}
 	if h.cache != nil {
 		status.Cache = h.cache.Stats()
@@ -558,18 +563,22 @@ const RAMVolume = "ram0"
 // MemoryRegion is one memory region a VM would map: what it is to the guest, and the
 // size of the volume behind it. Which pager it is charged against is the kind,
 // because the two hold their own metadata caps in their own pages.
+//
+// Ephemeral marks an ephemeral disk, which is charged to the ephemeral pager
+// instead of its kind's.
 type MemoryRegion struct {
-	Kind vmmemory.MemoryRegionKind
-	Size uint64
+	Kind      vmmemory.MemoryRegionKind
+	Ephemeral bool
+	Size      uint64
 }
 
-// memory regionOf is one volume as a memory region this host would admit.
-func memoryRegionOf(name string, size uint64) MemoryRegion {
+// memoryRegionOf is one volume as a memory region this host would admit.
+func memoryRegionOf(name string, ephemeral bool, size uint64) MemoryRegion {
 	kind := vmmemory.Pmem
 	if name == RAMVolume {
 		kind = vmmemory.Ram
 	}
-	return MemoryRegion{Kind: kind, Size: size}
+	return MemoryRegion{Kind: kind, Ephemeral: ephemeral, Size: size}
 }
 
 // AdmitMemoryRegions refuses a VM whose memory regions this host's pagers could not
@@ -577,24 +586,35 @@ func memoryRegionOf(name string, size uint64) MemoryRegion {
 // pager checks it one attachment at a time, so a VM that overruns it dies with
 // its process already started and some of its memory regions already admitted — which
 // is a guest killed for a decision that could have been made before it existed.
-// Each memory region is charged to the pager of its kind, in that pager's pages. A host
-// with no pagers of its own admits everything; so does the race between this and
-// the attachments, which is why this is a refusal and not a reservation.
+// Each memory region is charged to the pager of its kind, in that pager's pages,
+// and an ephemeral disk to the ephemeral pager, whose logical cap is the disk it
+// may fill: that cap is what keeps its every store from waiting. A host with
+// pagers but no ephemeral pager refuses an ephemeral disk. A host with no
+// pagers of its own admits everything; so does the race between this and the
+// attachments, which is why this is a refusal and not a reservation.
 func (h *Host) AdmitMemoryRegions(memoryRegions []MemoryRegion) error {
-	needed := map[vmmemory.MemoryRegionKind]uint64{}
+	needed := map[*vmmemory.Host]uint64{}
+	var pagers []*vmmemory.Host
 	for _, memoryRegion := range memoryRegions {
-		pager := h.pagers.For(memoryRegion.Kind)
+		pager := h.pagers.Of(memoryRegion.Kind, memoryRegion.Ephemeral)
 		if pager == nil {
+			if memoryRegion.Ephemeral && len(h.pagers.All()) > 0 {
+				return fmt.Errorf("%w: this host runs no ephemeral pager, so it maps no ephemeral disk",
+					vmmemory.ErrCapacity)
+			}
 			continue
 		}
 		page := pager.PageSize()
-		needed[memoryRegion.Kind] += (memoryRegion.Size + page - 1) / page
+		if _, seen := needed[pager]; !seen {
+			pagers = append(pagers, pager)
+		}
+		needed[pager] += (memoryRegion.Size + page - 1) / page
 	}
-	for kind, pages := range needed {
-		free := h.pagers.For(kind).LogicalHeadroom()
-		if free < 0 || pages > uint64(free) {
-			return fmt.Errorf("%w: these %s memory regions need %d logical pages and that pager has %d left",
-				vmmemory.ErrCapacity, kind, pages, free)
+	for _, pager := range pagers {
+		free := pager.LogicalHeadroom()
+		if free < 0 || needed[pager] > uint64(free) {
+			return fmt.Errorf("%w: these memory regions need %d logical pages of %d bytes and that pager has %d left",
+				vmmemory.ErrCapacity, needed[pager], pager.PageSize(), free)
 		}
 	}
 	return nil

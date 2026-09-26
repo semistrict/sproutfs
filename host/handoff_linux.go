@@ -25,7 +25,7 @@ func apiHandoff(handoff vmmigrate.Handoff) hostapi.Handoff {
 			runs = append(runs, hostapi.HandoffPageRun{First: run.First, Count: run.Count})
 		}
 		memoryRegions = append(memoryRegions, hostapi.HandoffMemoryRegion{Name: memoryRegion.Name, Size: memoryRegion.Size,
-			Unpublished: runs, UnpublishedAge: memoryRegion.UnpublishedAge})
+			Ephemeral: memoryRegion.Ephemeral, Unpublished: runs, UnpublishedAge: memoryRegion.UnpublishedAge})
 	}
 	return hostapi.Handoff{VMID: handoff.VMID, State: handoff.State, Checkpoint: handoff.Checkpoint,
 		Parent: handoff.Parent, ParentCheckpoint: handoff.ParentCheckpoint,
@@ -43,7 +43,7 @@ func handoffOf(handoff hostapi.Handoff) vmmigrate.Handoff {
 			runs = append(runs, vmmigrate.PageRun{First: run.First, Count: run.Count})
 		}
 		memoryRegions = append(memoryRegions, vmmigrate.MemoryRegionInfo{Name: memoryRegion.Name, Size: memoryRegion.Size,
-			Unpublished: runs, UnpublishedAge: memoryRegion.UnpublishedAge})
+			Ephemeral: memoryRegion.Ephemeral, Unpublished: runs, UnpublishedAge: memoryRegion.UnpublishedAge})
 	}
 	return vmmigrate.Handoff{VMID: handoff.VMID, State: handoff.State, Checkpoint: handoff.Checkpoint,
 		Parent: handoff.Parent, ParentCheckpoint: handoff.ParentCheckpoint,

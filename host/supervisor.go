@@ -211,6 +211,10 @@ type SupervisorConfig struct {
 	// belongs to. DirtyPages is what fills a spill file, so SpillBytes is its
 	// bound, per pager.
 	LogicalPages, DirtyPages KindPages
+	// Ephemeral is the pager of ephemeral disks, the disks no checkpoint holds.
+	// A zero budget runs none, and a create that asks for an ephemeral disk is
+	// refused.
+	Ephemeral EphemeralBudget
 	// Starter runs every VMM process this host takes over: this host prepares
 	// a VM's memory and drives the process once it runs, and the Starter owns
 	// everything else about it — the binary, a jailer, the kernel, the devices
@@ -236,6 +240,16 @@ type SupervisorConfig struct {
 	// Zero selects twice the checkpoint interval and a negative value completes every
 	// flush at once.
 	FlushBound time.Duration
+}
+
+// EphemeralBudget is what a host gives the ephemeral pager. DiskBytes is its
+// spill file, which is every page of every ephemeral disk this host admits: a
+// disk's pages are its only copy, so the pager's logical and dirty budgets are
+// both this, and a store into one never waits. ArenaBytes is its share of the
+// HugeTLB pool, which bounds how much of those disks is resident. Both are whole
+// PMEM pages.
+type EphemeralBudget struct {
+	ArenaBytes, DiskBytes int64
 }
 
 // Template is one guest image a VM can be created from: the image on this

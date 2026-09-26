@@ -82,6 +82,10 @@ type Runtime interface {
 type MemoryRegionInfo struct {
 	Name string
 	Size uint64
+	// Ephemeral marks an ephemeral disk, one no checkpoint holds. Every page of
+	// it the source holds is in Unpublished. A fork's child is handed none of
+	// them: it gets the disk zeroed.
+	Ephemeral bool `json:",omitempty"`
 	// Unpublished names the pages of this memory region that no checkpoint of the VM has:
 	// the guest's writes since the source's last checkpoint. They exist only in
 	// the source's pages, so the destination must not read them from its own
@@ -199,7 +203,7 @@ func Migrate(ctx context.Context, vm *volume.VM, process Runtime, source *PageSo
 		if v == nil {
 			return Handoff{}, fmt.Errorf("%w: memory region %q maps no volume of %s", ErrInvalid, name, vm.ID())
 		}
-		layout = append(layout, MemoryRegionInfo{Name: name, Size: v.Size()})
+		layout = append(layout, MemoryRegionInfo{Name: name, Size: v.Size(), Ephemeral: v.Ephemeral()})
 	}
 	address := opts.Source
 	if address == "" {
@@ -287,6 +291,7 @@ func Fork(ctx context.Context, child string, point *volume.ForkPoint, source *Pa
 	layout := make([]MemoryRegionInfo, 0, len(names))
 	for _, name := range names {
 		layout = append(layout, MemoryRegionInfo{Name: name, Size: point.Size(name),
+			Ephemeral:   point.Ephemeral(name),
 			Unpublished: runsOf(point.Pages(name)), UnpublishedAge: point.UnpublishedAge(name)})
 	}
 	handoff := Handoff{VMID: child, State: point.State(),

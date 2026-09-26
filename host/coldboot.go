@@ -120,7 +120,7 @@ func coldMemoryRegions(vm *volume.VM, sizes map[string]uint64) []MemoryRegion {
 		if next, found := sizes[v.Name()]; found {
 			size = next
 		}
-		memoryRegions = append(memoryRegions, memoryRegionOf(v.Name(), size))
+		memoryRegions = append(memoryRegions, memoryRegionOf(v.Name(), v.Ephemeral(), size))
 	}
 	return memoryRegions
 }

@@ -89,6 +89,10 @@ func (f *ForkPoint) Volumes() []string { return slices.Clone(f.index.Volumes()) 
 // Size reports one volume's size, zero for a volume this point has no volume of.
 func (f *ForkPoint) Size(volume string) uint64 { return f.index.Size(volume) }
 
+// Ephemeral reports an ephemeral disk of the parent, which a child gets zeroed:
+// no page of it is in this point.
+func (f *ForkPoint) Ephemeral(volume string) bool { return f.index.Ephemeral(volume) }
+
 // PageSize reports the page one volume of this point is published in, which is
 // the unit its page numbers and ReadPage are counted in. Zero is a volume this
 // point does not describe. A VM's volumes need not agree about it, so anything

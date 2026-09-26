@@ -196,11 +196,12 @@ func Seal(ctx context.Context, vm *volume.VM, machine Machine) (*volume.ForkPoin
 //
 // The child exists only on this host until its first checkpoint publishes its
 // root index; using it anywhere else reports volume.ErrForkPending.
-func CreateFork(ctx context.Context, manager *volume.Manager, id string, point *volume.ForkPoint) (*volume.VM, []byte, error) {
+func CreateFork(ctx context.Context, manager *volume.Manager, id string, point *volume.ForkPoint,
+	added ...volume.VolumeSpec) (*volume.VM, []byte, error) {
 	if manager == nil || point == nil {
 		return nil, nil, ErrInvalidCapture
 	}
-	vm, err := manager.Fork(ctx, id, point)
+	vm, err := manager.Fork(ctx, id, point, added...)
 	if err != nil {
 		return nil, nil, err
 	}

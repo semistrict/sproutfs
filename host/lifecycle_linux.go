@@ -23,6 +23,10 @@ func (s *supervisor) Create(ctx context.Context, request hostapi.CreateRequest) 
 		return hostapi.CreateResult{}, fmt.Errorf("%w: a create names a template or a checkpoint, not both",
 			ErrRequest)
 	}
+	if request.Ephemeral%PMEMPageSize != 0 {
+		return hostapi.CreateResult{}, fmt.Errorf("%w: an ephemeral disk is whole %d-byte pages, not %d bytes",
+			ErrRequest, PMEMPageSize, request.Ephemeral)
+	}
 	if err := s.absent(id); err != nil {
 		return hostapi.CreateResult{}, err
 	}
@@ -34,7 +38,15 @@ func (s *supervisor) Create(ctx context.Context, request hostapi.CreateRequest) 
 	templateSeconds := s.since(prepared)
 
 	forked := s.clock.Now()
-	vm, _, err := CreateFork(ctx, s.host.Volumes(), id, point)
+	// An ephemeral disk is given to the new VM here, zeroed: it is what the
+	// fork adds beyond what it inherits, and its root is where it is first
+	// recorded. One the checkpoint it inherits already has takes this size.
+	var added []volume.VolumeSpec
+	if request.Ephemeral != 0 {
+		added = append(added, volume.VolumeSpec{Name: ephemeralVolume, Size: request.Ephemeral,
+			PageSize: PMEMPageSize, Ephemeral: true})
+	}
+	vm, _, err := CreateFork(ctx, s.host.Volumes(), id, point, added...)
 	if err != nil {
 		return hostapi.CreateResult{}, fmt.Errorf("forking %s from %s: %w", id, source, err)
 	}
@@ -249,7 +261,7 @@ func (s *supervisor) boot(ctx context.Context, vm *volume.VM, state []byte, temp
 	// started and then killed part way through attaching.
 	memoryRegions := make([]MemoryRegion, 0, len(vm.Volumes()))
 	for _, v := range vm.Volumes() {
-		memoryRegions = append(memoryRegions, memoryRegionOf(v.Name(), v.Size()))
+		memoryRegions = append(memoryRegions, memoryRegionOf(v.Name(), v.Ephemeral(), v.Size()))
 	}
 	if err := s.host.AdmitMemoryRegions(memoryRegions); err != nil {
 		return nil, errors.Join(fmt.Errorf("starting the VMM of %s", vm.ID()), err,
@@ -286,12 +298,20 @@ func (s *supervisor) boot(ctx context.Context, vm *volume.VM, state []byte, temp
 // destination attaches its memory regions through. Everything about the process
 // itself is the Starter's.
 func (s *supervisor) machineConfig(vm *volume.VM, state []byte, backings map[string]vmmemory.Backing) vmmachine.Config {
+	// The root is the device the guest boots from, and every ephemeral disk the
+	// VM has is a PMEM device after it, in name order.
+	pmem := []vmmachine.Pmem{{ID: rootVolume, Root: true}}
+	for _, v := range vm.Volumes() {
+		if v.Ephemeral() {
+			pmem = append(pmem, vmmachine.Pmem{ID: v.Name()})
+		}
+	}
 	return vmmachine.Config{
 		Starter: s.config.Starter, Scratch: s.scratch, Pagers: s.pagers, VM: vm,
 		// A VM that records a processor count boots with it, on any host: the
 		// count is in its checkpoint, not in this host's configuration.
 		VCPUs:        vm.VCPUs(),
-		Pmem:         []vmmachine.Pmem{{ID: rootVolume, Root: true}},
+		Pmem:         pmem,
 		Connection:   s.connection,
 		RestoreState: state,
 		Backings:     backings,

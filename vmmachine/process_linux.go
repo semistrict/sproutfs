@@ -54,7 +54,9 @@ type Config struct {
 	Scratch *Scratch
 	// Pagers is the host's pager per kind of memory region: RAM attaches to one and
 	// every PMEM device to the other, each with its own arena and its own page.
-	// A machine takes both, because one VM maps both kinds.
+	// A machine takes both, because one VM maps both kinds. A PMEM device whose
+	// volume is an ephemeral disk attaches to the third, which a machine needs
+	// only when it maps one.
 	Pagers vmmemory.Pagers
 	// VM owns every volume this machine maps. The pager is its only mutator
 	// while the machine runs.
@@ -87,6 +89,9 @@ type memoryRegion struct {
 	name    string
 	volume  *volume.Volume
 	backing vmmemory.MemoryRegionBacking
+	// pager is the one this memory region attaches to: its kind's, or the
+	// ephemeral pager for an ephemeral disk.
+	pager *vmmemory.Host
 	// root marks the PMEM device the guest boots from, which is what the VMM's
 	// configuration file calls root_device. It is never set on RAM.
 	root bool
@@ -123,17 +128,26 @@ func (c Config) plan() (plan, error) {
 	if err != nil {
 		return plan{}, err
 	}
-	result.ram = memoryRegion{name: RAMVolume, volume: ram,
+	result.ram = memoryRegion{name: RAMVolume, volume: ram, pager: c.Pagers.Ram,
 		backing: vmmemory.MemoryRegionBacking{Kind: vmmemory.Ram, Backing: ramBacking}}
 	result.ramBytes = ram.Size()
 	mapped[RAMVolume] = true
 	roots := 0
 	for _, d := range c.Pmem {
 		v := c.VM.Volume(d.ID)
+		if v == nil {
+			return plan{}, fmt.Errorf("vmmachine: invalid PMEM device %q", d.ID)
+		}
+		// An ephemeral disk is a PMEM device to the guest and attaches to the
+		// pager built for disks no checkpoint holds.
+		pager := c.Pagers.Of(vmmemory.Pmem, v.Ephemeral())
+		if pager == nil {
+			return plan{}, fmt.Errorf("vmmachine: the ephemeral disk %q needs an ephemeral pager", d.ID)
+		}
 		// Firecracker requires 2 MiB PMEM alignment whatever the pager's page
 		// is, so a device is checked against both.
-		if d.ID == "" || len(d.ID) > 64 || mapped[d.ID] || v == nil || v.Size()%(2<<20) != 0 ||
-			v.Size()%c.Pagers.Pmem.PageSize() != 0 {
+		if d.ID == "" || len(d.ID) > 64 || mapped[d.ID] || v.Size()%(2<<20) != 0 ||
+			v.Size()%pager.PageSize() != 0 {
 			return plan{}, fmt.Errorf("vmmachine: invalid PMEM device %q", d.ID)
 		}
 		mapped[d.ID] = true
@@ -141,7 +155,7 @@ func (c Config) plan() (plan, error) {
 		if err != nil {
 			return plan{}, err
 		}
-		result.pmem = append(result.pmem, memoryRegion{name: d.ID, volume: v, root: d.Root,
+		result.pmem = append(result.pmem, memoryRegion{name: d.ID, volume: v, root: d.Root, pager: pager,
 			backing: vmmemory.MemoryRegionBacking{Kind: vmmemory.Pmem, Backing: backing}})
 		if d.Root {
 			roots++
@@ -182,6 +196,7 @@ type endpoint struct {
 	listener *net.UnixListener
 	path     string
 	backing  vmmemory.MemoryRegionBacking
+	pager    *vmmemory.Host
 	// name is the volume the backing stands in front of, which is how a
 	// migration addresses this machine's memory regions.
 	name       string
@@ -477,7 +492,7 @@ func (p *Process) endpoint(socket string, r memoryRegion) (*endpoint, error) {
 	if err != nil {
 		return nil, err
 	}
-	e := &endpoint{listener: l, path: path, backing: r.backing, name: r.name}
+	e := &endpoint{listener: l, path: path, backing: r.backing, pager: r.pager, name: r.name}
 	p.endpoints = append(p.endpoints, e)
 	if err := p.own(path); err != nil {
 		return nil, err
@@ -542,9 +557,8 @@ func (p *Process) attach(ctx, lifetime context.Context, c Config) chan error {
 				// page too, so it is bounded by this memory region's own pages rather
 				// than by a number that would be a whole disk in one pager and
 				// a fraction of the guest's memory in the other.
-				pager := c.Pagers.For(e.backing.Kind)
-				cfg.QueuePages = min(cfg.QueuePages, int(e.backing.Backing.Size()/pager.PageSize()))
-				e.connection, err = vmmemory.Connect(lifetime, pager, socket, e.backing, cfg)
+				cfg.QueuePages = min(cfg.QueuePages, int(e.backing.Backing.Size()/e.pager.PageSize()))
+				e.connection, err = vmmemory.Connect(lifetime, e.pager, socket, e.backing, cfg)
 			} else if socket != nil {
 				_ = socket.Close()
 			}
@@ -796,6 +810,10 @@ func (p *Process) Prepare(ctx context.Context) ([]byte, map[string]volume.DirtyS
 	named := p.namedMemoryRegions()
 	sources := make(map[string]volume.DirtySource, len(named))
 	for name, memoryRegion := range named {
+		// An ephemeral disk's seal took nothing: no checkpoint holds it.
+		if memoryRegion.Ephemeral() {
+			continue
+		}
 		checkpoint := memoryRegion.Checkpoint()
 		if checkpoint == nil {
 			return nil, nil, fmt.Errorf("vmmachine: memory region %q was not sealed by the capture", name)

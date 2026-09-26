@@ -154,3 +154,29 @@ func TestBothPagersRunTheDeploymentsArenaMode(t *testing.T) {
 		}
 	}
 }
+
+// The ephemeral pager is a PMEM pager of its own, and only where the
+// deployment gave it a disk. Its dirty budget is its whole logical budget,
+// which is that disk in pages, so an ephemeral disk admitted by its size never
+// waits for a store; and it keeps no loss window, because no checkpoint ends
+// one.
+func TestTheEphemeralPagerIsTheDiskItMayFill(t *testing.T) {
+	config := deploymentConfig()
+	if cfg := ephemeralPagerConfig(config); cfg != nil {
+		t.Fatalf("a host given no ephemeral disk runs an ephemeral pager: %+v", cfg)
+	}
+	config.Ephemeral = EphemeralBudget{ArenaBytes: 256 << 20, DiskBytes: 8 << 30}
+	cfg := ephemeralPagerConfig(config)
+	if cfg == nil {
+		t.Fatal("a host given an ephemeral disk runs no ephemeral pager")
+	}
+	pages := int(config.Ephemeral.DiskBytes / PMEMPageSize)
+	if !cfg.Ephemeral || cfg.PageSize != PMEMPageSize || cfg.ResidentPages != 128 ||
+		cfg.LogicalPages != pages || cfg.DirtyPages != pages || cfg.LossWindow != 0 {
+		t.Fatalf("the ephemeral pager is %+v, want %d-byte pages, 128 resident and %d logical and dirty, no window",
+			cfg, PMEMPageSize, pages)
+	}
+	if pmem := pagerConfig(config, vmmemory.Pmem); pmem.LossWindow != DefaultLossWindow {
+		t.Fatalf("the PMEM pager's window is %v, want the default %v", pmem.LossWindow, DefaultLossWindow)
+	}
+}

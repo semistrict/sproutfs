@@ -271,7 +271,7 @@ func (h *Host) Receive(ctx context.Context, handoff vmmigrate.Handoff) (*vmmigra
 	// could map them is known before the VM is opened and its VMM started.
 	memoryRegions := make([]MemoryRegion, 0, len(handoff.MemoryRegions))
 	for _, memoryRegion := range handoff.MemoryRegions {
-		memoryRegions = append(memoryRegions, memoryRegionOf(memoryRegion.Name, memoryRegion.Size))
+		memoryRegions = append(memoryRegions, memoryRegionOf(memoryRegion.Name, memoryRegion.Ephemeral, memoryRegion.Size))
 	}
 	if err := h.AdmitMemoryRegions(memoryRegions); err != nil {
 		return nil, fmt.Errorf("receiving %s: %w", handoff.VMID, err)

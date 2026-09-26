@@ -3,6 +3,7 @@ package host
 import (
 	"fmt"
 	"runtime"
+	"time"
 
 	"github.com/semistrict/sproutfs/vmmemory"
 )
@@ -74,6 +75,33 @@ const (
 	maximumFaultWorkers = 64
 )
 
+// pagerSlot names one of a supervisor's pagers: RAM's, PMEM's and the
+// ephemeral pager. It names that pager's spill file and its line in the log,
+// and it is not a memory region's kind: an ephemeral disk is PMEM to the guest.
+type pagerSlot string
+
+const (
+	ramPager       pagerSlot = "ram"
+	pmemPager      pagerSlot = "pmem"
+	ephemeralPager pagerSlot = "ephemeral"
+)
+
+// pagerSlots is every pager a supervisor may run, in the order it closes them.
+var pagerSlots = []pagerSlot{ramPager, pmemPager, ephemeralPager}
+
+// of is the pager of this slot among a host's pagers, nil where it runs none.
+func (slot pagerSlot) of(pagers vmmemory.Pagers) *vmmemory.Host {
+	switch slot {
+	case ramPager:
+		return pagers.Ram
+	case pmemPager:
+		return pagers.Pmem
+	case ephemeralPager:
+		return pagers.Ephemeral
+	}
+	return nil
+}
+
 // pagerConfig is the configuration of one of a supervisor's two pagers: the
 // share of the budgets the deployment gave that kind, the page it runs, and the
 // read-ahead, write-ahead and I/O bounds that follow from the two. The
@@ -81,17 +109,38 @@ const (
 // pager of small pages gets a run of the same size rather than the same number
 // of pages.
 func pagerConfig(config SupervisorConfig, kind vmmemory.MemoryRegionKind) vmmemory.Config {
-	pageSize, arenaBytes, logical, dirty := uint64(PMEMPageSize), config.ArenaBytes.PMEM, config.LogicalPages.PMEM, config.DirtyPages.PMEM
 	if kind == vmmemory.Ram {
-		pageSize, arenaBytes, logical, dirty = ramPage(config), config.ArenaBytes.RAM, config.LogicalPages.RAM, config.DirtyPages.RAM
+		// RAM is outside the loss window: the interval checkpoints disks alone,
+		// so no checkpoint of it would ever end a RAM page's window.
+		return pagerBounds(config, ramPage(config), config.ArenaBytes.RAM,
+			config.LogicalPages.RAM, config.DirtyPages.RAM, 0)
 	}
+	return pagerBounds(config, PMEMPageSize, config.ArenaBytes.PMEM,
+		config.LogicalPages.PMEM, config.DirtyPages.PMEM, lossWindowOf(config.LossWindow))
+}
+
+// ephemeralPagerConfig is the configuration of a supervisor's ephemeral pager,
+// nil where the deployment gave it no disk. Its page is PMEM's, because an
+// ephemeral disk is a PMEM device to the guest. Its dirty budget is its whole
+// logical budget, which is the disk it may fill, and it keeps no loss window,
+// because no checkpoint ends one.
+func ephemeralPagerConfig(config SupervisorConfig) *vmmemory.Config {
+	budget := config.Ephemeral
+	if budget.DiskBytes <= 0 {
+		return nil
+	}
+	pages := int(budget.DiskBytes / PMEMPageSize)
+	cfg := pagerBounds(config, PMEMPageSize, budget.ArenaBytes, pages, pages, 0)
+	cfg.Ephemeral = true
+	return &cfg
+}
+
+// pagerBounds is one pager's configuration from the budgets it was given: the
+// page, the arena, the logical and dirty budgets and the loss window, with the
+// read-ahead, write-ahead and I/O bounds that follow from them and the node.
+func pagerBounds(config SupervisorConfig, pageSize uint64, arenaBytes int64, logical, dirty int,
+	lossWindow time.Duration) vmmemory.Config {
 	resident := int(uint64(arenaBytes) / pageSize)
-	// RAM is outside the loss window: the interval checkpoints disks alone, so
-	// no checkpoint of it would ever end a RAM page's window.
-	lossWindow := lossWindowOf(config.LossWindow)
-	if kind == vmmemory.Ram {
-		lossWindow = 0
-	}
 	readAhead := int(max(readAheadBytes/pageSize, 1))
 	writeAhead := int(max(writeAheadBytes/pageSize, 1))
 	if dirty < writeAhead*writeAheadDirtyShare {

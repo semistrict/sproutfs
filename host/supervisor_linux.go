@@ -32,6 +32,9 @@ const (
 	// rootVolume is the PMEM device the guest boots from, and ramVolume its
 	// RAM. A VM's memory regions bind to volumes by these names.
 	rootVolume = "root"
+	// ephemeralVolume is the ephemeral disk a create gives a VM that asks for
+	// one: a PMEM device no checkpoint holds, after the root.
+	ephemeralVolume = "ephemeral"
 	// consoleWindowBytes bounds one console read, which is a window on a
 	// disposable ring buffer rather than a stream.
 	consoleWindowBytes = 256 << 10
@@ -84,9 +87,9 @@ type supervisor struct {
 	resources *resource.Budget
 	objects   *platform.MeteredObjectStore
 	// arenas and spills are one per pager: a pager's arena and spill file are
-	// its own, and the two pagers of a host share neither.
-	arenas map[vmmemory.MemoryRegionKind]*vmmemory.LinuxArena
-	spills map[vmmemory.MemoryRegionKind]platform.File
+	// its own, and the pagers of a host share neither.
+	arenas map[pagerSlot]*vmmemory.LinuxArena
+	spills map[pagerSlot]platform.File
 	// connection is what every session this host opens is configured with: the
 	// node's fault-worker and mapping-count bounds, which no VM varies.
 	connection vmmemory.ConnectionConfig
@@ -124,8 +127,8 @@ func Start(ctx context.Context, config SupervisorConfig) (Service, error) {
 	s := &supervisor{config: config, clock: platform.ClockOr(config.Clock), templateMu: ctxsync.NewMutex(),
 		machines: map[string]*machine{}, templates: map[string]*ImportedTemplate{},
 		byID:   map[string]*ImportedTemplate{},
-		arenas: map[vmmemory.MemoryRegionKind]*vmmemory.LinuxArena{},
-		spills: map[vmmemory.MemoryRegionKind]platform.File{},
+		arenas: map[pagerSlot]*vmmemory.LinuxArena{},
+		spills: map[pagerSlot]platform.File{},
 		// The orchestrator's default client has no timeout of its own, and a
 		// drain's requests are the only ones this host makes: a connection that
 		// is never answered and never closed would hold one open past every
@@ -174,15 +177,22 @@ func Start(ctx context.Context, config SupervisorConfig) (Service, error) {
 	// One pager per kind of memory region, each over an arena and a spill file of its
 	// own. The two capacities sum to what the deployment gave this host, so
 	// nothing is counted twice and the arenas never compete for a slot.
-	ram, err := s.startPager(ctx, vmmemory.Ram, pagerConfig(config, vmmemory.Ram))
+	ram, err := s.startPager(ctx, ramPager, pagerConfig(config, vmmemory.Ram))
 	if err != nil {
 		return nil, err
 	}
-	pmem, err := s.startPager(ctx, vmmemory.Pmem, pagerConfig(config, vmmemory.Pmem))
+	pmem, err := s.startPager(ctx, pmemPager, pagerConfig(config, vmmemory.Pmem))
 	if err != nil {
 		return nil, err
 	}
 	s.pagers = vmmemory.Pagers{Ram: ram, Pmem: pmem}
+	// The ephemeral pager is the third, with an arena and a spill file of its
+	// own too, and only where the deployment gave it a disk.
+	if cfg := ephemeralPagerConfig(config); cfg != nil {
+		if s.pagers.Ephemeral, err = s.startPager(ctx, ephemeralPager, *cfg); err != nil {
+			return nil, err
+		}
+	}
 	// One session's bounds are the node's too: how many faults it serves at a
 	// time, and the mapping-count budget its replacements are admitted against.
 	s.connection = vmmemory.ConnectionConfig{MaxVMAs: vmaBudget(), FaultWorkers: faultWorkers()}
@@ -228,13 +238,13 @@ func Start(ctx context.Context, config SupervisorConfig) (Service, error) {
 	return s, nil
 }
 
-// startPager builds one of this host's two pagers: its own arena — the HugeTLB
-// pool's memory for PMEM's 2 MiB page, ordinary memory for RAM's 4 KiB one —
-// its own spill file and the configuration of its kind. A restart is a host
+// startPager builds one of this host's pagers: its own arena — the HugeTLB
+// pool's memory for a 2 MiB page, ordinary memory for RAM's 4 KiB one — its
+// own spill file and its own configuration. A restart is a host
 // loss, so the spill file starts empty; the pager sizes it to the dirty pages
 // its cap allows. Each is logged with the bounds the node chose for it, so what
 // a host gave each kind is on the record.
-func (s *supervisor) startPager(ctx context.Context, kind vmmemory.MemoryRegionKind, cfg vmmemory.Config) (*vmmemory.Host, error) {
+func (s *supervisor) startPager(ctx context.Context, kind pagerSlot, cfg vmmemory.Config) (*vmmemory.Host, error) {
 	// The pager makes the arena's files. Each is sized to its addresses, not to
 	// the memory it may hold: it is a sparse file, and a pager that places a
 	// private page at the offset it has within its range owns far more of the
@@ -244,7 +254,7 @@ func (s *supervisor) startPager(ctx context.Context, kind vmmemory.MemoryRegionK
 		return nil, fmt.Errorf("%s arena of %d-byte pages: %w", kind, cfg.PageSize, err)
 	}
 	s.arenas[kind] = arena
-	spill, err := s.config.Disk.Open(ctx, "spill-"+kind.String(),
+	spill, err := s.config.Disk.Open(ctx, "spill-"+string(kind),
 		platform.OpenOptions{Create: true, Truncate: true, Permissions: 0o600})
 	if err != nil {
 		return nil, fmt.Errorf("%s spill file: %w", kind, err)
@@ -255,7 +265,7 @@ func (s *supervisor) startPager(ctx context.Context, kind vmmemory.MemoryRegionK
 		return nil, fmt.Errorf("%s pager of %d offsets for %d pages of %d bytes: %w",
 			kind, cfg.Offsets(), cfg.ResidentPages, cfg.PageSize, err)
 	}
-	slog.InfoContext(ctx, "host: a pager was assembled", "kind", kind.String(),
+	slog.InfoContext(ctx, "host: a pager was assembled", "kind", string(kind),
 		"page_bytes", cfg.PageSize, "resident_pages", cfg.ResidentPages,
 		"arena", cfg.Arena.String(), "arena_offsets", cfg.Offsets(), "huge_pages", arena.HugePolicy(),
 		"logical_pages", cfg.LogicalPages, "dirty_pages", cfg.DirtyPages,
@@ -315,11 +325,15 @@ func (s *supervisor) pageAddress() platform.Address {
 
 func (s *supervisor) Status(ctx context.Context) (hostapi.Status, error) {
 	status := s.host.Status()
-	ram, err := s.pagerReport(ctx, vmmemory.Ram, status.LogicalPagesFree.RAM)
+	ram, err := s.pagerReport(ctx, ramPager, status.LogicalPagesFree.RAM)
 	if err != nil {
 		return hostapi.Status{}, err
 	}
-	pmem, err := s.pagerReport(ctx, vmmemory.Pmem, status.LogicalPagesFree.PMEM)
+	pmem, err := s.pagerReport(ctx, pmemPager, status.LogicalPagesFree.PMEM)
+	if err != nil {
+		return hostapi.Status{}, err
+	}
+	ephemeral, err := s.pagerReport(ctx, ephemeralPager, status.LogicalPagesFree.Ephemeral)
 	if err != nil {
 		return hostapi.Status{}, err
 	}
@@ -333,7 +347,8 @@ func (s *supervisor) Status(ctx context.Context) (hostapi.Status, error) {
 		Running: s.host.Machines(), Serving: status.Serving,
 		Outstanding: status.Outstanding, VMs: records,
 		Templates: s.templateReport(),
-		Pager:     hostapi.Pager{RAM: ram, PMEM: pmem, CommittedBytes: s.committed()},
+		Pager: hostapi.Pager{RAM: ram, PMEM: pmem, Ephemeral: ephemeral,
+			CommittedBytes: s.committed()},
 		Pages: hostapi.Pages{Requests: status.Pages.Requests, Served: status.Pages.Served,
 			Absent: status.Pages.Absent, Refused: status.Pages.Refused},
 		Resources: hostapi.Resources{MemoryLimit: resources.Limit, MemoryUsed: resources.Used,
@@ -426,8 +441,8 @@ func templateEntry(template *ImportedTemplate, name string) hostapi.Template {
 // and budgets, and the sharing it holds. The gauges come from that pager alone,
 // so the two halves are never a sum of readings taken at different moments of
 // one pager.
-func (s *supervisor) pagerReport(ctx context.Context, kind vmmemory.MemoryRegionKind, free int) (hostapi.PagerKind, error) {
-	pager := s.pagers.For(kind)
+func (s *supervisor) pagerReport(ctx context.Context, slot pagerSlot, free int) (hostapi.PagerKind, error) {
+	pager := slot.of(s.pagers)
 	if pager == nil {
 		return hostapi.PagerKind{}, nil
 	}
@@ -441,8 +456,11 @@ func (s *supervisor) pagerReport(ctx context.Context, kind vmmemory.MemoryRegion
 	}
 	gauge := sharing.Pmem
 	arena := s.config.ArenaBytes.PMEM
-	if kind == vmmemory.Ram {
+	switch slot {
+	case ramPager:
 		gauge, arena = sharing.Ram, s.config.ArenaBytes.RAM
+	case ephemeralPager:
+		arena = s.config.Ephemeral.ArenaBytes
 	}
 	return hostapi.PagerKind{
 		PageBytes:     int(pager.PageSize()),
@@ -537,13 +555,13 @@ func (s *supervisor) Close(ctx context.Context) error {
 			errs = append(errs, fmt.Errorf("closing the VMM scratch: %w", err))
 		}
 	}
-	// Both pagers close, each before its own arena and spill file. A pager that
+	// Every pager closes, each before its own arena and spill file. A pager that
 	// would not close keeps its arena: unproven allocations stay charged, and an
 	// arena must never be closed under a pager that may still hold it. The other
-	// pager is still released, because leaving it attached to a process that is
-	// exiting helps nothing.
-	for _, kind := range []vmmemory.MemoryRegionKind{vmmemory.Ram, vmmemory.Pmem} {
-		pager := s.pagers.For(kind)
+	// pagers are still released, because leaving them attached to a process that
+	// is exiting helps nothing.
+	for _, kind := range pagerSlots {
+		pager := kind.of(s.pagers)
 		if pager != nil {
 			if err := pager.Close(ctx); err != nil {
 				errs = append(errs, fmt.Errorf("closing the %s pager: %w", kind, err))

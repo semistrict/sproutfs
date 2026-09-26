@@ -69,8 +69,11 @@ type pendingFlush struct {
 // A flush the host cannot make durable completes at once: a memory region no VM this
 // host runs maps, and a VM with no checkpoint loop, have nothing that would ever
 // release it, and a guest must not hang on a flush for that.
+//
+// An ephemeral disk's flush completes at once too: no checkpoint would ever
+// cover it, and the guest that owns one asked for a disk that is not durable.
 func (h *Host) flushed(memoryRegion *vmmemory.MemoryRegion, done func(error)) {
-	if h.flushBound <= 0 {
+	if h.flushBound <= 0 || !memoryRegion.OnInterval() {
 		done(nil)
 		return
 	}

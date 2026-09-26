@@ -81,6 +81,9 @@ type Handoff struct {
 type HandoffMemoryRegion struct {
 	Name string
 	Size uint64
+	// Ephemeral marks an ephemeral disk, one no checkpoint holds, which the
+	// destination maps on its ephemeral pager.
+	Ephemeral bool `json:",omitempty"`
 	// Unpublished names the pages of this memory region that no checkpoint of the VM
 	// has: the guest's writes since the source's last checkpoint. They exist
 	// only in the source's pages, so the destination must fetch every one of
@@ -215,6 +218,11 @@ type Pager struct {
 	// deployment to plan for and because their page counts cannot be added.
 	RAM  PagerKind `json:"ram"`
 	PMEM PagerKind `json:"pmem"`
+	// Ephemeral is the pager of ephemeral disks, which no checkpoint holds:
+	// its logical pages are the disk it may fill, and LogicalPagesFree is how
+	// much ephemeral disk this host can still admit. It is zero where the host
+	// runs none.
+	Ephemeral PagerKind `json:"ephemeral"`
 	// CommittedBytes is the guest RAM the VMs this host runs have between them,
 	// resident or not: the size of each running VM's RAM volume. It is what a VM
 	// costs this host and what a placement measures it by, and the RAM arena
@@ -224,15 +232,21 @@ type Pager struct {
 
 // The byte totals across both pagers, which is the only unit the two can be
 // added in.
-func (p Pager) ArenaBytes() uint64    { return p.RAM.ArenaBytes() + p.PMEM.ArenaBytes() }
-func (p Pager) ResidentBytes() uint64 { return p.RAM.ResidentBytes() + p.PMEM.ResidentBytes() }
+func (p Pager) ArenaBytes() uint64 {
+	return p.RAM.ArenaBytes() + p.PMEM.ArenaBytes() + p.Ephemeral.ArenaBytes()
+}
+func (p Pager) ResidentBytes() uint64 {
+	return p.RAM.ResidentBytes() + p.PMEM.ResidentBytes() + p.Ephemeral.ResidentBytes()
+}
 
 // SharedPages, Faults, Evictions and Spills are counts of what the two pagers
 // have done rather than memory they hold, so they read together.
-func (p Pager) SharedPages() uint64 { return p.RAM.SharedPages + p.PMEM.SharedPages }
-func (p Pager) Faults() uint64      { return p.RAM.Faults + p.PMEM.Faults }
-func (p Pager) Evictions() uint64   { return p.RAM.Evictions + p.PMEM.Evictions }
-func (p Pager) Spills() uint64      { return p.RAM.Spills + p.PMEM.Spills }
+func (p Pager) SharedPages() uint64 {
+	return p.RAM.SharedPages + p.PMEM.SharedPages + p.Ephemeral.SharedPages
+}
+func (p Pager) Faults() uint64    { return p.RAM.Faults + p.PMEM.Faults + p.Ephemeral.Faults }
+func (p Pager) Evictions() uint64 { return p.RAM.Evictions + p.PMEM.Evictions + p.Ephemeral.Evictions }
+func (p Pager) Spills() uint64    { return p.RAM.Spills + p.PMEM.Spills + p.Ephemeral.Spills }
 
 // Pages is what this host's migration page server has answered.
 type Pages struct {
@@ -381,13 +395,22 @@ type Stored struct {
 // checkpoint's. The VM keeps its shape from then on, wherever it runs, until a
 // cold open changes it. A disk may only grow, and the guest grows its
 // filesystem over the new pages after its first boot.
+//
+// Ephemeral gives the VM an ephemeral disk of that many bytes, in whole 2 MiB
+// pages: a second PMEM device, after the root, that no checkpoint holds. Its
+// writes never count toward the dirty budget or the loss window, and no
+// checkpoint waits for them. It comes back zeroed at that size wherever the
+// VM is opened after a stop or the loss of its host, and in every fork; a
+// migration carries it. Zero gives none, or keeps the one a checkpoint the VM
+// is created from has. A host that runs no ephemeral pager refuses it.
 type CreateRequest struct {
-	ID       string         `json:"id"`
-	Template string         `json:"template,omitempty"`
-	From     *CheckpointRef `json:"from,omitempty"`
-	Memory   uint64         `json:"memory,omitempty"`
-	Disk     uint64         `json:"disk,omitempty"`
-	VCPUs    int            `json:"vcpus,omitempty"`
+	ID        string         `json:"id"`
+	Template  string         `json:"template,omitempty"`
+	From      *CheckpointRef `json:"from,omitempty"`
+	Memory    uint64         `json:"memory,omitempty"`
+	Disk      uint64         `json:"disk,omitempty"`
+	VCPUs     int            `json:"vcpus,omitempty"`
+	Ephemeral uint64         `json:"ephemeral,omitempty"`
 }
 
 // CheckpointRef names one checkpoint of a VM. A zero Checkpoint is the one the

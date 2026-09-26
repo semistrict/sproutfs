@@ -326,6 +326,10 @@ func attach(ctx context.Context, vm *volume.VM, handoff Handoff, dial Dialer, st
 			return nil, fmt.Errorf("%w: %s has no volume %s of %d bytes",
 				ErrInvalid, handoff.VMID, memoryRegion.Name, memoryRegion.Size)
 		}
+		if v.Ephemeral() != memoryRegion.Ephemeral {
+			return nil, fmt.Errorf("%w: %s's volume %s is ephemeral %v, the source's was %v",
+				ErrInvalid, handoff.VMID, memoryRegion.Name, v.Ephemeral(), memoryRegion.Ephemeral)
+		}
 		var backing inheritedBacking
 		if point != nil {
 			backing = localBacking{Volume: v, inherited: memoryRegion.Unpublished}
