@@ -1,11 +1,11 @@
 ---
 id: TASK-12
 title: Report stored bytes per VM for billing
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-25 18:17'
-updated_date: '2026-09-26 01:40'
+updated_date: '2026-09-26 01:43'
 labels:
   - embedder
 dependencies: []
