@@ -1,11 +1,11 @@
 ---
 id: TASK-14
 title: Retry a failed migration receive while the source holds the pages
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-25 18:17'
-updated_date: '2026-09-26 15:32'
+updated_date: '2026-09-26 15:40'
 labels:
   - embedder
   - correctness
