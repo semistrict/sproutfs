@@ -123,9 +123,13 @@ func (r *MemoryRegion) giveBack(ctx context.Context, index uint64, buffers *sett
 		return false, err
 	}
 	defer h.unlock(origin)
-	if !origin.published() || origin.slot < 0 || r.fileNumber(origin.file) < 0 {
-		// Evicted, or moved out of reach: there is nothing to compare with, and
-		// there never will be again.
+	h.mu.Lock()
+	going := origin.dropped
+	h.mu.Unlock()
+	if !origin.published() || origin.slot < 0 || going || r.fileNumber(origin.file) < 0 {
+		// Evicted, moved out of reach, or going back once a store's mapping
+		// command lands: there is nothing to compare with, and there never will
+		// be again.
 		r.forgetOrigin(b, origin)
 		return false, nil
 	}
