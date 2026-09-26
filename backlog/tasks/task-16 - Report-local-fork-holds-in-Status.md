@@ -1,11 +1,11 @@
 ---
 id: TASK-16
 title: Report local fork holds in Status
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-25 18:17'
-updated_date: '2026-09-26 15:11'
+updated_date: '2026-09-26 15:14'
 labels:
   - embedder
 dependencies: []
