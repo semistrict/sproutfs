@@ -463,6 +463,13 @@ type Status struct {
 	// pages rather than fetching them, so it owes every page the point holds
 	// for it until it is taken in, and none after.
 	Outstanding map[string]int
+	// Receiving is every VM a receive is in flight for here, in ascending
+	// identity order: from the moment this host admits the receive until it has
+	// taken the VM in or given it up. A receive whose caller hung up is in it
+	// all the same, because nothing on this host stops for want of a caller.
+	// It is what tells a deployment that a VM no host runs yet may be about to
+	// run here.
+	Receiving []string
 	// LogicalPagesFree is what each pager's per-memory-region metadata cap still has
 	// left, in that pager's own pages. It is what admits a VM: the memory regions of
 	// one that needs more than this cannot all be mapped, and a host that
@@ -515,7 +522,16 @@ func (h *Host) Status() Status {
 	}
 	status.Serving = h.serving()
 	status.Outstanding = h.outstanding(status.Serving)
+	status.Receiving = h.receiving()
 	return status
+}
+
+// receiving is every VM a receive is in flight for, in ascending identity
+// order.
+func (h *Host) receiving() []string {
+	h.machines.mu.Lock()
+	defer h.machines.mu.Unlock()
+	return slices.Sorted(maps.Keys(h.machines.receiving))
 }
 
 // outstanding is what each handover in serving still owes: what the page

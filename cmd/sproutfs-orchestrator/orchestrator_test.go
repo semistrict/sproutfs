@@ -123,8 +123,20 @@ type fakeHostClient struct {
 	// onRefusal runs as this host refuses a receive, which is where a test
 	// changes the deployment around a receive that failed.
 	onRefusal func()
+	// outlives, when positive, is how many surveys the next receive goes on
+	// for after its caller was told it failed: a receive whose caller hung up
+	// while this host went on with it. The host reports it in Receiving until
+	// the last of those surveys, and then takes the VM in, or gives it up when
+	// outlivedFails says so. receiving is what it reports, and lingering how
+	// many surveys are left.
+	outlives, lingering int
+	outlivedFails       bool
+	receiving           []string
 	// hold is what this host's migrations report it holds a handover for.
 	hold host.Seconds
+	// pulling is the VMs this host was asked to run marked to pull their whole
+	// memory, which it reports with each of them and carries in their handoffs.
+	pulling map[string]bool
 	// outstanding names the VMs this host still holds pages for that no
 	// destination has fetched — every child of a fork point it took, until
 	// that child is received somewhere — and fetched, shared by every host of
@@ -211,19 +223,46 @@ func (f *fakeHostClient) Status(ctx context.Context) (host.Status, error) {
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.linger()
 	records := make([]host.VM, 0, len(f.running))
 	for _, id := range f.running {
-		records = append(records, host.VM{ID: id, Host: f.name, Checkpoint: f.checkpoint})
+		record := host.VM{ID: id, Host: f.name, Checkpoint: f.checkpoint}
+		if f.pulling[id] {
+			record.Pull = &host.Pull{}
+		}
+		records = append(records, record)
 	}
 	return host.Status{Host: f.name, PageAddress: f.page,
 		Running: slices.Clone(f.running), Serving: slices.Clone(f.serving),
-		VMs: records, Templates: slices.Clone(f.templates),
+		Receiving: slices.Clone(f.receiving), VMs: records, Templates: slices.Clone(f.templates),
 		// A placement measures a host by the RAM arena against the guest RAM it
 		// has committed, so that is the pager this fake fills in.
 		Pager: host.Pager{
 			RAM: host.PagerKind{SharedPages: f.shared, PageBytes: 2 << 20,
 				ArenaPages: f.arenaPages, ResidentPages: f.residentPages},
 			CommittedBytes: f.committed}}, nil
+}
+
+// linger moves a receive that outlived its caller on by one survey, and ends
+// it at the last one: the VM taken in, or given up.
+func (f *fakeHostClient) linger() {
+	if f.lingering == 0 {
+		return
+	}
+	f.lingering--
+	if f.lingering > 0 {
+		return
+	}
+	for _, id := range f.receiving {
+		if f.outlivedFails {
+			f.record("gave %s up", id)
+			continue
+		}
+		f.record("took %s in", id)
+		f.running = append(f.running, id)
+		f.fetched[id] = true
+	}
+	f.receiving = nil
 }
 
 func (f *fakeHostClient) Create(_ context.Context, request host.CreateRequest) (host.CreateResult, error) {
@@ -244,6 +283,7 @@ func (f *fakeHostClient) Create(_ context.Context, request host.CreateRequest) (
 		f.record("create %s %s", request.ID, request.Template)
 	}
 	f.running = append(f.running, request.ID)
+	f.pulling[request.ID] = request.Pull
 	return host.CreateResult{VM: host.VM{ID: request.ID, Template: request.Template, Host: f.name}}, nil
 }
 
@@ -274,6 +314,7 @@ func (f *fakeHostClient) Open(_ context.Context, id string, request host.OpenReq
 		f.record("open %s", id)
 	}
 	f.running = append(f.running, id)
+	f.pulling[id] = request.Pull
 	return host.OpenResult{VM: host.VM{ID: id, Host: f.name, Checkpoint: 7}, Cold: request.Cold}, nil
 }
 
@@ -368,7 +409,7 @@ func (f *fakeHostClient) Migrate(_ context.Context, id string, request host.Migr
 		})
 	}
 	return host.MigrateResult{Handoff: host.Handoff{VMID: id,
-		Source: f.page, PageSize: 2 << 20}, Hold: f.hold}, nil
+		Source: f.page, PageSize: 2 << 20, Pull: f.pulling[id]}, Hold: f.hold}, nil
 }
 
 func (f *fakeHostClient) Receive(ctx context.Context, handoff host.Handoff) (host.ReceiveResult, error) {
@@ -381,6 +422,17 @@ func (f *fakeHostClient) Receive(ctx context.Context, handoff host.Handoff) (hos
 	if handoff.Parent != "" && f.retired[handoff.VMID] {
 		f.mu.Unlock()
 		return host.ReceiveResult{}, errors.New("the fork point the child inherits is retired")
+	}
+	if slices.Contains(f.receiving, handoff.VMID) {
+		// A host admits one receive of a VM at a time.
+		f.mu.Unlock()
+		return host.ReceiveResult{}, errors.New("that VM is already being received here")
+	}
+	if f.outlives > 0 {
+		f.receiving = append(f.receiving, handoff.VMID)
+		f.lingering, f.outlives = f.outlives, 0
+		f.mu.Unlock()
+		return host.ReceiveResult{}, errors.New("the connection was reset")
 	}
 	if f.refusesEveryReceive || f.refusedReceives > 0 || (f.receives > 0 && len(f.received) >= f.receives) {
 		f.refusedReceives = max(f.refusedReceives-1, 0)
@@ -414,6 +466,7 @@ func (f *fakeHostClient) Receive(ctx context.Context, handoff host.Handoff) (hos
 	defer f.mu.Unlock()
 	f.received = append(f.received, handoff.VMID)
 	f.running = append(f.running, handoff.VMID)
+	f.pulling[handoff.VMID] = handoff.Pull
 	// The child holds every page it inherited, which is what lets the source
 	// release the hold it kept for it.
 	f.fetched[handoff.VMID] = true
@@ -530,7 +583,8 @@ func newDeployment(t *testing.T, running map[string][]string) *deployment {
 		d.pods.pods = append(d.pods.pods, pod{Name: name, IP: address, Ready: true})
 		d.hosts[name] = &fakeHostClient{mu: mu, name: name, running: slices.Clone(running[name]),
 			serving: []string{}, page: address + ":8081", log: &d.log, held: make(chan struct{}),
-			outstanding: map[string]bool{}, fetched: fetched, retired: retired}
+			outstanding: map[string]bool{}, fetched: fetched, retired: retired,
+			pulling: map[string]bool{}}
 		d.records.ids = append(d.records.ids, running[name]...)
 	}
 	d.orchestrator = &orchestrator{pods: d.pods, records: d.records,

@@ -689,6 +689,14 @@ Every hop in the campaigns makes the same checks:
   the child's post-copy. The receive ends at the hold, the fork does not
   happen, and the parent's host retires the point when its own clock gets
   there.
+- A receive whose caller hung up goes on where it was sent, and no other is
+  made while a host reports it in flight. It takes the VM in, which ends the
+  handover there, or fails like any other receive. Once the handover is over,
+  no such receive may still take the VM in. `simtest.OutlivedReceive` makes the
+  caller of one receive hang up as its host begins to start the guest, and
+  makes that start slow. No campaign draws it.
+  `TestAReceiveThatOutlivesItsCallerStartsNoSecondGuest` requires one guest
+  started for the VM, on the host whose receive outlived its caller.
 
 The recorded scenario adds the layout refusal. A handoff that would truncate a
 memory region or map beyond its volume is refused before any guest starts.
@@ -1300,6 +1308,8 @@ SPROUTFS_SIM_BUG=migration-give-up-first-receive \
   go test ./internal/simtest -run '^TestTwoWritersOfOneVMNeverMixAcrossASwizzle$' -count=1
 SPROUTFS_SIM_BUG=migration-ignore-source-hold \
   go test ./internal/simtest -run '^(TestAMigrationWhoseSourceIsCutOffEndsAtItsHold|TestARemoteForkWhoseParentIsCutOffEndsAtItsHold)$' -count=1
+SPROUTFS_SIM_BUG=migration-retry-beside-a-receive \
+  go test ./internal/simtest -run '^TestAReceiveThatOutlivesItsCallerStartsNoSecondGuest$' -count=1
 SPROUTFS_SIM_BUG=migration-strip-published-pages \
   go test ./internal/simtest -run '^TestADestinationPublishesWhatItReceivedWhileItsSourceStillServes$' -count=1
 SPROUTFS_SIM_BUG=migration-strip-published-holes \
@@ -1334,6 +1344,12 @@ other. No campaign cuts a source off while it stays listed, so these scenarios
 are the only place where the hold is the one evidence left. With the guard on,
 each receive ends at the harness's patience instead of at the hold, and each
 scenario fails on its own.
+`migration-retry-beside-a-receive` belongs to its own scenario too. It sends a
+handoff's next receive while a host still reports an earlier one in flight.
+Only a receive whose caller hung up is in flight when a retry looks, and no
+campaign draws that fault. With the guard on, a second host starts a guest of
+the VM, and the receive that outlived its caller takes the VM in after the
+handover ended.
 
 The `migration-strip-published-pages`, `migration-strip-published-holes` and
 `migration-ask-for-published-pages` guards need a destination that publishes

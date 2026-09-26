@@ -121,6 +121,10 @@ type World struct {
 	// post-copy that did not finish. It is what a test asserts to say that its
 	// fault reached the takeover it is about rather than being absorbed.
 	takeovers int
+	// receivedGuests counts the guests hosts have started for each VM they
+	// were taking in, which is what says that a handover started one guest and
+	// not two.
+	receivedGuests map[string]int
 	// guestSeq numbers the VMM processes this world has started, which is what
 	// names one apart from the next: a VM handed back to a host it already ran
 	// on is a new process there, and a scheduler that saw the same identity
@@ -142,6 +146,14 @@ func (w *World) Takeovers() int {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.takeovers
+}
+
+// ReceivedGuests is how many guests hosts have started for one VM they were
+// taking in.
+func (w *World) ReceivedGuests(id string) int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.receivedGuests[id]
 }
 
 // hostState is one host of the deployment: the process it runs inside, the disk
@@ -195,6 +207,14 @@ type hostState struct {
 	// a destination that took the first child and then could take no more.
 	refuseStart         error
 	startsBeforeRefusal int
+	// hangsUp makes the caller of the next migration's receive here hang up
+	// as this host begins to start the guest, and slowStart is how long the
+	// start then takes. beginning is the signal that caller waits for, by VM,
+	// and outlived every receive that went on here after its caller hung up.
+	hangsUp   bool
+	slowStart time.Duration
+	beginning map[string]chan struct{}
+	outlived  map[string]*outliving
 	// started records the guest a receive built, so the world can adopt the
 	// model of a VM this host took in, and guests every VMM process this
 	// incarnation runs, which is what a kill ends: a machine whose host died is
@@ -299,12 +319,13 @@ func start(ctx context.Context, config Config) (*World, error) {
 	}
 	w := &World{config: config, runtime: config.Runtime, ctx: ctx,
 		instances: map[string]*instance{}, published: map[string]map[uint64]bool{},
-		kept: map[string]map[uint64]durableState{}}
+		kept: map[string]map[uint64]durableState{}, receivedGuests: map[string]int{}}
 	for index := range config.Topology.Hosts {
 		id := config.Namespace + config.Topology.Hosts[index]
 		h := &hostState{name: id, address: platform.Address(id),
 			pages: platform.Address(id + "/pages"), dead: new(atomic.Bool),
-			started: map[string]*guest{}}
+			started: map[string]*guest{}, beginning: map[string]chan struct{}{},
+			outlived: map[string]*outliving{}}
 		h.clock = w.runtime.NewClock(id)
 		h.disk = w.runtime.NewDisk(id,
 			// A killed host's disk comes back with its unsynced modifications
@@ -496,9 +517,18 @@ func (w *World) starter(h *hostState) host.StartFunc {
 			h.startsBeforeRefusal--
 			refused = nil
 		}
+		began, slow := h.beginning[vm.ID()], h.slowStart
+		delete(h.beginning, vm.ID())
 		h.mu.Unlock()
 		if refused != nil {
 			return nil, refused
+		}
+		if began != nil {
+			// The caller hangs up here, and the start goes on without it.
+			close(began)
+			if err := ctxsync.Sleep(ctx, slow); err != nil {
+				return nil, err
+			}
 		}
 		g, err := w.newGuest(h, p, vm, backings, state)
 		if err != nil {
@@ -508,6 +538,9 @@ func (w *World) starter(h *hostState) host.StartFunc {
 		h.started[vm.ID()] = g
 		h.guests = append(h.guests, g)
 		h.mu.Unlock()
+		w.mu.Lock()
+		w.receivedGuests[vm.ID()]++
+		w.mu.Unlock()
 		return g, nil
 	}
 }
@@ -1529,7 +1562,25 @@ func (w *World) meanwhile(ctx context.Context, terms Handover, id string) error 
 // because that is what makes the next attempt sound anywhere: a guest left
 // behind is a second writer the next destination's open fences, and one whose
 // stores nothing can ever publish.
+//
+// A receive whose caller hung up goes on where it was sent, and no other is
+// made while a host reports it in flight. It either takes the VM in, which ends
+// the handover there, or fails like any other. Once the handover is over, no
+// such receive may still take the VM in: that would be a second guest of one
+// VM.
 func (w *World) handOver(ctx context.Context, from, to int, handoff vmmigrate.Handoff) (
+	*vmmigrate.Received, int, error) {
+	received, to, err := w.carry(ctx, from, to, handoff)
+	err = errors.Join(err, w.outlasted(handoff.VMID))
+	if err != nil && received != nil {
+		received.Close()
+		received = nil
+	}
+	return received, to, err
+}
+
+// carry is handOver's receives and retries.
+func (w *World) carry(ctx context.Context, from, to int, handoff vmmigrate.Handoff) (
 	*vmmigrate.Received, int, error) {
 	holding := w.up(from)
 	if holding == nil {
@@ -1555,9 +1606,12 @@ func (w *World) handOver(ctx context.Context, from, to int, handoff vmmigrate.Ha
 			return nil, to, nil
 		}
 		attempts.Failed()
-		next, ok, err := w.retry(ctx, attempts, hold, from, handoff.VMID)
+		next, landed, ok, err := w.retry(ctx, attempts, hold, from, handoff.VMID)
 		if err != nil || !ok {
 			return nil, to, err
+		}
+		if landed != nil {
+			return landed, next, nil
 		}
 		to = next
 	}
@@ -1573,20 +1627,25 @@ func (w *World) leftRunning(index, incarnation int, id string) bool {
 
 // retry waits under the handover policy until another receive of one handoff
 // is worth making, and reports the host it goes to: any host the deployment
-// can reach, other than the source, in the policy's choice. It reports false
-// once the deployment's rule says the pages are gone from the source, which
-// the last look, at the end of the source's hold, always finds, or once the
-// policy has nothing left to wait for. That is the only time a handoff is given
-// up.
+// can reach, other than the source, in the policy's choice, and none while a
+// host reports a receive of it in flight. A receive whose caller hung up and
+// that took the VM in ends the handover where it landed, which landed reports.
+// It reports false once the deployment's rule says the pages are gone from the
+// source, which the last look, at the end of the source's hold, always finds,
+// or once the policy has nothing left to wait for. That is the only time a
+// handoff is given up.
 func (w *World) retry(ctx context.Context, attempts *handover.Attempts, hold handover.Hold,
-	from int, id string) (int, bool, error) {
+	from int, id string) (next int, landed *vmmigrate.Received, ok bool, err error) {
 	for {
 		wait, more := attempts.Wait(ctx, time.Now())
 		if err := ctxsync.Sleep(ctx, wait); err != nil {
-			return 0, false, err
+			return 0, nil, false, err
+		}
+		if at, landed, err := w.tookIn(id); err != nil || landed != nil {
+			return at, landed, err == nil, err
 		}
 		if hold.Gone(ctx, w.look(from, id), time.Now()) != nil || !more {
-			return 0, false, nil
+			return 0, nil, false, nil
 		}
 		var names []string
 		for index, h := range w.hosts {
@@ -1594,12 +1653,142 @@ func (w *World) retry(ctx context.Context, attempts *handover.Attempts, hold han
 				names = append(names, h.name)
 			}
 		}
-		chosen, ok := attempts.Next(ctx, names)
+		chosen, ok := attempts.Next(ctx, names, w.receiving(id))
 		if !ok {
 			continue
 		}
-		return slices.IndexFunc(w.hosts, func(h *hostState) bool { return h.name == chosen }), true, nil
+		return slices.IndexFunc(w.hosts, func(h *hostState) bool { return h.name == chosen }), nil, true, nil
 	}
+}
+
+// receiving is the hosts the deployment can reach that report a receive of one
+// VM in flight, which is what it can see of a receive whose caller hung up.
+func (w *World) receiving(id string) []string {
+	var found []string
+	for index, h := range w.hosts {
+		if reached := w.reach(index); reached != nil && slices.Contains(reached.Status().Receiving, id) {
+			found = append(found, h.name)
+		}
+	}
+	return found
+}
+
+// outliving is a receive that went on after its caller hung up, and what it
+// came to once done is closed.
+type outliving struct {
+	done     chan struct{}
+	received *vmmigrate.Received
+	err      error
+}
+
+// ended takes one host's receive of a VM that outlived its caller once it has
+// ended, and nil while there is none or it is still going on.
+func (h *hostState) ended(id string) *outliving {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	on := h.outlived[id]
+	if on == nil {
+		return nil
+	}
+	select {
+	case <-on.done:
+		delete(h.outlived, id)
+		return on
+	default:
+		return nil
+	}
+}
+
+// tookIn finds a receive of one VM that outlived its caller and has ended, and
+// reports the host it took the VM in on. One that failed must have left
+// nothing running, as every failed receive must.
+func (w *World) tookIn(id string) (int, *vmmigrate.Received, error) {
+	for index, h := range w.hosts {
+		on := h.ended(id)
+		if on == nil {
+			continue
+		}
+		if on.err == nil {
+			w.logf("%s: %s took it in after its caller hung up", id, h.name)
+			return index, on.received, nil
+		}
+		w.logf("%s: the receive on %s that outlived its caller failed: %v", id, h.name, on.err)
+		if w.up(index) != nil && h.stillRunning(id) {
+			return 0, nil, fmt.Errorf("%s: a receive that outlived its caller failed and left a guest running on %s: %v",
+				id, h.name, on.err)
+		}
+	}
+	return 0, nil, nil
+}
+
+// outlasted waits for every receive of one VM that outlived its caller and is
+// still going on after its handover ended, and requires that none of them took
+// the VM in.
+func (w *World) outlasted(id string) error {
+	var errs []error
+	for _, h := range w.hosts {
+		h.mu.Lock()
+		on := h.outlived[id]
+		delete(h.outlived, id)
+		h.mu.Unlock()
+		if on == nil {
+			continue
+		}
+		<-on.done
+		if on.err == nil {
+			on.received.Close()
+			errs = append(errs, fmt.Errorf("%s: a receive that outlived its caller took it in on %s after its handover ended",
+				id, h.name))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// hangUpOn arms the hang-up of one VM's receive when the next receive here is
+// to have it, and reports what its caller waits for before it hangs up.
+func (h *hostState) hangUpOn(id string) chan struct{} {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if !h.hangsUp {
+		return nil
+	}
+	h.hangsUp = false
+	began := make(chan struct{})
+	h.beginning[id] = began
+	return began
+}
+
+// outlive runs a receive whose caller hangs up as the destination begins to
+// start the guest, the way a caller whose connection broke does. The receive
+// goes on without it, on the harness's patience alone, until it has taken the
+// VM in or given it up, and the host reports it in flight until then. What it
+// came to is kept for the world to find.
+func (w *World) outlive(ctx context.Context, destination *hostState, taking *host.Host,
+	began chan struct{}, handoff vmmigrate.Handoff) (*vmmigrate.Received, error) {
+	on := &outliving{done: make(chan struct{})}
+	go func() {
+		defer close(on.done)
+		patience, cancel := context.WithTimeout(context.WithoutCancel(ctx), Deadline)
+		defer cancel()
+		on.received, on.err = taking.Receive(patience, handoff)
+	}()
+	select {
+	case <-began:
+	case <-on.done:
+	}
+	select {
+	case <-began:
+	default:
+		// It ended before its start, so its caller was there to hear how.
+		destination.mu.Lock()
+		delete(destination.beginning, handoff.VMID)
+		destination.mu.Unlock()
+		return on.received, on.err
+	}
+	destination.mu.Lock()
+	destination.outlived[handoff.VMID] = on
+	destination.mu.Unlock()
+	return nil, fmt.Errorf("%w: the caller of the receive on %s hung up", ErrInjected, destination.name)
 }
 
 // lose ends this incarnation of a host for everything waiting on it. It is
@@ -1639,6 +1828,11 @@ func (w *World) receive(ctx context.Context, from int, destination *hostState, h
 	taking := w.reach(w.indexOf(destination))
 	if taking == nil {
 		return nil, platform.ErrProcessStopped
+	}
+	if !handoff.IsFork() {
+		if began := destination.hangUpOn(handoff.VMID); began != nil {
+			return w.outlive(ctx, destination, taking, began, handoff)
+		}
 	}
 	ctx, cancel := context.WithTimeout(ctx, Deadline)
 	defer cancel()

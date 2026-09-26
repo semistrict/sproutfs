@@ -75,8 +75,9 @@ type Handoff struct {
 	// bounds the pause the migration cost.
 	PausedAt time.Time
 	// Pull marks a VM that pulls its whole memory onto the disk of each host it
-	// runs on: a migration carries it from the source, and a fork sets it on
-	// the children it was asked to.
+	// runs on: a migration carries it from the source, a fork sets it on the
+	// children it was asked to, and the control plane sets it for a VM it has
+	// recorded as marked.
 	Pull bool `json:",omitempty"`
 }
 
@@ -388,7 +389,12 @@ type Status struct {
 	// child on its parent's own host owes every page its fork point holds for
 	// it until this host has taken it in.
 	Outstanding map[string]int `json:"outstanding"`
-	VMs         []VM           `json:"vms"`
+	// Receiving is every VM a receive is in flight for on this host, from the
+	// moment it admits the receive until it has taken the VM in or given it up.
+	// A receive whose caller hung up is still in it. A VM here may be about to
+	// run on this host, so no other host is asked to take it meanwhile.
+	Receiving []string `json:"receiving"`
+	VMs       []VM     `json:"vms"`
 	// Templates are the guest images this host can create VMs from, in name
 	// order, which is what says how much memory a VM created here would need.
 	Templates []Template `json:"templates"`

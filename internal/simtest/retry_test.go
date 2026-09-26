@@ -140,6 +140,45 @@ func TestAHandoffADestinationKeepsRefusingGoesToAnother(t *testing.T) {
 	})
 }
 
+// A receive whose caller hung up goes on where it was sent, and its host
+// reports it in flight. No receive goes anywhere while it does, so the handover
+// ends where that receive takes the VM in, with one guest started for it.
+func TestAReceiveThatOutlivesItsCallerStartsNoSecondGuest(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		runtime := retryRuntime(11)
+		ctx := sim.WithRuntime(t.Context(), runtime)
+		world := retryWorld(t, ctx, runtime, 3)
+		// Longer than the policy's first waits put together, so a retry that did
+		// not wait for the receive reaches another host while it is starting.
+		const start = 20 * time.Second
+		outlived := simtest.OutlivedReceive(1, start)
+		if err := outlived.Begin(ctx, world); err != nil {
+			t.Fatal(err)
+		}
+		took := world.Takeovers()
+		began := time.Now()
+		if err := world.Migrate(ctx, "vm-1", 1); err != nil {
+			t.Fatal(err)
+		}
+		if err := outlived.End(ctx, world); err != nil {
+			t.Fatal(err)
+		}
+		if at := world.HostOf("vm-1"); at != 1 {
+			t.Fatalf("the VM is on host %d after the handover, want host-1, where the receive went on", at)
+		}
+		if started := world.ReceivedGuests("vm-1"); started != 1 {
+			t.Fatalf("the handover started %d guests of the VM, want one", started)
+		}
+		if world.Takeovers() != took {
+			t.Fatal("the VM was taken over rather than handed over")
+		}
+		if waited := time.Since(began); waited < start {
+			t.Fatalf("the handover finished %s in, before the receive that outlived its caller started its guest", waited)
+		}
+		requireIntact(t, ctx, world)
+	})
+}
+
 // A handoff no destination can take is given up only when the source stops
 // holding it. Until then every retry could still have kept the guest's writes.
 // After it the VM comes back at its checkpoint, which is all a handover that

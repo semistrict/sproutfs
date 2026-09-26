@@ -183,6 +183,61 @@ func TestAReceiveWhoseAnswerWasLostEndsWhereItLanded(t *testing.T) {
 	}
 }
 
+// A receive whose caller hung up goes on where it was sent, and its host
+// reports it in flight. No receive goes anywhere while it does, the same host
+// included, and when it takes the VM in the handover ends there with one guest.
+func TestNoReceiveIsSentWhileAnEarlierOneIsInFlight(t *testing.T) {
+	d := newDeployment(t, map[string][]string{"host-0": {"vm-a"}, "host-1": {}, "host-2": {}})
+	d.hosts["host-0"].hold = holdForAMinute
+	d.hosts["host-1"].outlives = 4
+	result, err := d.orchestrator.Migrate(t.Context(), "vm-a", "host-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.To != "host-1" {
+		t.Fatalf("the VM went to %s, want host-1, where the receive went on", result.To)
+	}
+	want := []string{
+		"host-0 migrate vm-a 10.0.0.2:8081",
+		"host-1 receive vm-a 10.0.0.1:8081",
+		"host-1 took vm-a in",
+		// The survey that found the VM on host-1 releases the handover, and
+		// the migration then releases it too.
+		"host-0 released vm-a",
+		"host-0 released vm-a",
+	}
+	if !slices.Equal(d.log, want) {
+		t.Fatalf("the deployment did %v, want %v", d.log, want)
+	}
+}
+
+// A receive in flight that ends without the VM holds the retries back only
+// until it ends. The handoff then goes on under the policy, and the destination
+// gets its second attempt.
+func TestTheRetriesGoOnOnceAReceiveInFlightGivesTheVMUp(t *testing.T) {
+	d := newDeployment(t, map[string][]string{"host-0": {"vm-a"}, "host-1": {}, "host-2": {}})
+	d.hosts["host-0"].hold = holdForAMinute
+	d.hosts["host-1"].outlives = 4
+	d.hosts["host-1"].outlivedFails = true
+	result, err := d.orchestrator.Migrate(t.Context(), "vm-a", "host-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.To != "host-1" {
+		t.Fatalf("the VM went to %s, want host-1's second attempt", result.To)
+	}
+	want := []string{
+		"host-0 migrate vm-a 10.0.0.2:8081",
+		"host-1 receive vm-a 10.0.0.1:8081",
+		"host-1 gave vm-a up",
+		"host-1 receive vm-a 10.0.0.1:8081",
+		"host-0 released vm-a",
+	}
+	if !slices.Equal(d.log, want) {
+		t.Fatalf("the deployment did %v, want %v", d.log, want)
+	}
+}
+
 // A destination that failed and went quiet may be finishing that receive, so
 // no other host is asked until it answers again. When it does, and runs
 // nothing of the VM, the handoff goes on.

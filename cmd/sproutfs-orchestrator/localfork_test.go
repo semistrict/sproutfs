@@ -79,6 +79,52 @@ func TestAReconcileGivesUpALocalForkHoldWhoseChildWasNeverTakenIn(t *testing.T) 
 	}
 }
 
+// TestAReconcileLeavesAForkHoldWhoseChildIsBeingReceived: the fork that
+// started the child died, and its row aged out, but the destination still
+// reports the child's receive in flight. That receive is taking the child in
+// over the pages the hold keeps, so the hold is not given up. Its release is
+// asked for and refused, as for any child that has not fetched its pages. Once
+// the receive has taken the child in, the release goes through.
+func TestAReconcileLeavesAForkHoldWhoseChildIsBeingReceived(t *testing.T) {
+	d := newDeployment(t, map[string][]string{"host-0": {"vm-a"}, "host-1": {}})
+	source := d.hosts["host-0"]
+	source.serving = []string{"vm-a-child"}
+	source.outstanding["vm-a-child"] = true
+	destination := d.hosts["host-1"]
+	destination.receiving = []string{"vm-a-child"}
+	destination.lingering = 3
+	if err := d.orchestrator.table.Record(t.Context(), vmRecord{ID: "vm-a-child", Host: "host-1",
+		State: stateCreating, Parent: "vm-a",
+		Updated: time.Now().Add(-inFlightFor - time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := d.orchestrator.Reconcile(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if slices.Contains(d.log, "host-0 abandoned vm-a-child") {
+		t.Fatalf("the reconcile gave up the hold of a child still being received: %v", d.log)
+	}
+	if err := d.orchestrator.Reconcile(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		// A release is asked for while the child is received, and refused:
+		// the child has not fetched the pages yet.
+		"host-0 released vm-a-child",
+		"host-0 released vm-a-child",
+		"host-1 took vm-a-child in",
+		"host-0 released vm-a-child",
+	}
+	if !slices.Equal(d.log, want) {
+		t.Fatalf("the deployment did %v, want %v", d.log, want)
+	}
+	if len(source.serving) != 0 {
+		t.Fatalf("host-0 still holds %v for a child that was taken in", source.serving)
+	}
+}
+
 // TestAReconcileLeavesALocalForkHoldWhoseForkIsInFlight: a fork still running
 // has noted its child and not yet taken it in. The child has no record and no
 // host runs it, as with a fork that died, but its row is in flight. Giving the

@@ -32,7 +32,10 @@ type Host struct {
 	Ready   bool     `json:"ready"`
 	Running []string `json:"running"`
 	Serving []string `json:"serving"`
-	Error   string   `json:"error,omitempty"`
+	// Receiving is every VM a receive is in flight for on the host, including
+	// one whose caller hung up.
+	Receiving []string `json:"receiving"`
+	Error     string   `json:"error,omitempty"`
 	// Pager is what the host's shared page store holds, as it reported it. Its
 	// SharedPages is the demo's sharing measure, which is what forking a running
 	// guest is visible in.
@@ -130,7 +133,8 @@ type DrainReport struct {
 // checkpoint holds; see host.CreateRequest.
 //
 // Pull marks the VM to pull its whole memory onto the disk of the host it runs
-// on; see host.Pull. A migration keeps the mark.
+// on; see host.Pull. The VM keeps the mark: every start, recovery and
+// migration of it pulls too.
 type CreateRequest struct {
 	Template  string              `json:"template,omitempty"`
 	From      *host.CheckpointRef `json:"from,omitempty"`
@@ -151,7 +155,7 @@ type CreateResult struct {
 // host the children run on, by pod name; empty is the parent's own host, where
 // a child shares its parent's pages rather than pulling them over the network.
 // Pull marks every child to pull its whole memory onto the disk of the host it
-// runs on; see host.Pull.
+// runs on; see host.Pull. Each child keeps the mark, as a created VM does.
 type ForkRequest struct {
 	Count int    `json:"count,omitempty"`
 	To    string `json:"to,omitempty"`
@@ -272,7 +276,8 @@ type StartRequest struct {
 	Disk   uint64 `json:"disk,omitempty"`
 	VCPUs  int    `json:"vcpus,omitempty"`
 	// Pull marks the VM to pull its whole memory onto the disk of the host it
-	// runs on; see host.Pull.
+	// runs on; see host.Pull. The VM keeps the mark from here, and a VM
+	// already marked pulls without asking again.
 	Pull bool `json:"pull,omitempty"`
 }
 

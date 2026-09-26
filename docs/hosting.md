@@ -485,7 +485,16 @@ That is the question to ask about a drain that is not finishing. A VM whose
 volumes cannot be listed reports `-1`, because the number of pages it still
 holds is unknown. A fork's child on its parent's own host fetches nothing. Its
 count is every page the fork point holds for it until the host takes it in, and
-zero after. Its release is refused until then. On the destination side, each receive logs a line when the
+zero after. Its release is refused until then.
+
+`/status` also reports `receiving`: every VM a receive is in flight for on this
+host. A VM is in it from the moment the host admits the receive until the host
+has taken the VM in or given it up. A receive whose caller hung up stays in it,
+because nothing on the host stops for want of a caller. The orchestrator asks
+no other host to take a VM while one reports it here
+([migration](migration.md#a-failed-receive-is-tried-again)).
+
+On the destination side, each receive logs a line when the
 post-copy finishes. The line carries the pages served, the requests that the
 source refused for its per-peer budget, and the duration. It also carries the
 latency of the guest's own faults to the source (p50, p99 and maximum, and the
@@ -784,10 +793,13 @@ parent's sealed pages or the parent's page server, as any child does. The pages
 a later checkpoint publishes are not pulled: they are the guest's own, and
 they are read from the store when the pager evicts them.
 
-The mark lasts as long as the VM runs on the host. A migration carries it in
-the handoff, so the destination pulls too, and a stop or a migration away gives
-the copy up. A recovery on another host after a host loss opens the VM without
-the mark; the control plane does not remember it. A host reports each marked
+The copy lasts as long as the VM runs on the host. A stop or a migration away
+gives it up. The mark stays with the VM. The orchestrator records it in its
+table, and every open it drives carries it: a start, a recovery after a host
+loss, and each receive of a migration, a drain's included. A migration's
+handoff also carries the mark the source's machine has. The table is the only
+record of the mark for a VM nothing runs. For a running VM its host reports the
+mark, and a survey writes it down again. A host reports each marked
 VM's progress in its status (`hostapi.VM.Pull`), and the disk's use beside the
 page cache's (`Resources.CacheDiskUsed`).
 

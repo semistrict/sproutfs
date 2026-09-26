@@ -437,6 +437,16 @@ positive evidence, as a recovery does:
   finds this.
 - The destination that failed must answer before another host is tried. A
   quiet one may still be finishing the receive whose caller gave up.
+- A host that reports a receive of the VM in flight holds every other receive
+  back, on that host and on any other. A receive whose caller gave up goes on
+  where it was sent. It either takes the VM in, which the first rule then
+  finds, or it ends and the retries go on.
+
+A host reports its receives in flight in `Status` (`receiving`). A receive is
+in it from the moment the host admits it until the host has taken the VM in or
+given it up. So this is evidence, not a timeout: the orchestrator waits for as
+long as the host says the receive is going on, and no longer than the source's
+hold.
 
 A source that reported no hold gets one look after its one receive. If that
 look shows nothing, the VM is left stopped and the failure is reported.
@@ -445,10 +455,11 @@ The epoch keeps two destinations from both holding the VM. Each open advances
 it, so a later open fences an earlier one. A destination whose record selects
 another checkpoint than the handoff names refuses it with `ErrStale`. A host
 admits one receive of a VM at a time, so a retry on the same host cannot run
-beside a receive whose caller hung up. On another host it can, if that receive
-outlives both the failed request and the survey that found its host running
-nothing. Then the later open fences the earlier one, and only one of them can
-ever publish.
+beside a receive whose caller hung up. The orchestrator sends no receive to
+another host while that one is reported in flight, so it cannot run there
+either. One case is left. A receive still in flight when the source's pages are
+gone waits for pages nobody has, and the recovery that follows opens the VM
+elsewhere. That open fences the receive, and only one of them can ever publish.
 
 Once the source has stopped the guest, the handover no longer depends on the
 request that started it. A drain's request gives up after 60 seconds. The
@@ -554,9 +565,13 @@ is taken in, it maps every page it inherited, the count is zero and the release
 is accepted.
 
 A handover is given up instead of released when its VM does not exist and
-nothing is creating it. No host runs the VM, no operation is in flight for it,
-and either the table has no row for it or the bucket has no control record of
-it. Every reconcile lists the bucket, so it finds the second case. Such a VM is
+nothing is creating it. No host runs the VM or reports a receive of it in
+flight, no operation is in flight for it, and either the table has no row for
+it or the bucket has no control record of it. Every reconcile lists the bucket,
+so it finds the second case. A receive in flight counts even when the fork that
+sent it has died. The child's record is published only as that receive ends,
+and giving the hold up under it would take away the pages it is being taken in
+over. Such a VM is
 the child of a fork that failed or was never taken in, for example because the
 orchestrator restarted between the handoff and the receive. A migrated VM always
 has a record, so a migration is never given up this way. Nothing holds the
@@ -758,12 +773,16 @@ Retried receives are tested at three levels:
   state the policy directly: a destination cut off from the store takes the VM
   once the link is back, a destination that keeps refusing is left for
   another host, and a handoff nobody takes is given up only at the end of the
-  source's hold.
+  source's hold. A fourth has a receive outlive its caller while its guest
+  starts slowly. The handover waits for it and ends where it lands, with one
+  guest started for the VM.
 - The orchestrator's tests cover each rule above: a retry on the same host, a
   move to another host with room, the end of the hold, a source that no longer
   serves the VM, a receive that took the VM but lost its answer, a quiet
-  destination, and a request that gave up before the handover ended.
-- The host suite refuses a second receive of a VM while one is in flight.
+  destination, a receive reported in flight that lands and one that fails, and
+  a request that gave up before the handover ended.
+- The host suite refuses a second receive of a VM while one is in flight, and
+  reports the first in `Status` until it ends.
 
 The host suite runs the same migration between two hosts over loopback TCP,
 including a drain that moves every VM one host runs.

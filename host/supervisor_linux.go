@@ -359,7 +359,7 @@ func (s *supervisor) Status(ctx context.Context) (hostapi.Status, error) {
 	report := hostapi.Status{
 		Host: s.config.PodName, PageAddress: string(s.pageAddress()),
 		Running: s.host.Machines(), Serving: status.Serving,
-		Outstanding: status.Outstanding, VMs: records,
+		Outstanding: status.Outstanding, Receiving: status.Receiving, VMs: records,
 		Templates: s.templateReport(),
 		Pager: hostapi.Pager{RAM: ram, PMEM: pmem, Ephemeral: ephemeral,
 			CommittedBytes: s.committed()},
@@ -378,6 +378,9 @@ func (s *supervisor) Status(ctx context.Context) (hostapi.Status, error) {
 	}
 	if report.Outstanding == nil {
 		report.Outstanding = map[string]int{}
+	}
+	if report.Receiving == nil {
+		report.Receiving = []string{}
 	}
 	return report, nil
 }

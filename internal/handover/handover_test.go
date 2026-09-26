@@ -50,7 +50,7 @@ func TestADestinationThatKeepsFailingIsLeftForAnother(t *testing.T) {
 	for range 7 {
 		tried = append(tried, attempts.At())
 		attempts.Failed()
-		next, ok := attempts.Next(t.Context(), hosts)
+		next, ok := attempts.Next(t.Context(), hosts, nil)
 		if !ok {
 			t.Fatal("three hosts could take the VM and none was chosen")
 		}
@@ -70,15 +70,32 @@ func TestTheOnlyDestinationIsKeptAndAnUnavailableOneLeft(t *testing.T) {
 	attempts := Default.Begin(Held(start, time.Hour), "host-1")
 	for range 3 {
 		attempts.Failed()
-		if next, _ := attempts.Next(t.Context(), []string{"host-1"}); next != "host-1" {
+		if next, _ := attempts.Next(t.Context(), []string{"host-1"}, nil); next != "host-1" {
 			t.Fatalf("the only destination was left for %q", next)
 		}
 	}
 	attempts.Failed()
-	if next, _ := attempts.Next(t.Context(), []string{"host-2"}); next != "host-2" {
+	if next, _ := attempts.Next(t.Context(), []string{"host-2"}, nil); next != "host-2" {
 		t.Fatalf("a destination that cannot take the VM was kept: next is %q", next)
 	}
-	if _, ok := attempts.Next(t.Context(), nil); ok {
+	if _, ok := attempts.Next(t.Context(), nil, nil); ok {
 		t.Fatal("a destination was chosen when no host can take the VM")
+	}
+}
+
+// A receive whose caller gave up can still be running where it was sent. While
+// any host reports one in flight no destination is chosen, the host running it
+// included, and once none does the policy goes on where it was.
+func TestNoDestinationIsChosenWhileAReceiveIsInFlight(t *testing.T) {
+	attempts := Default.Begin(Held(start, time.Hour), "host-1")
+	hosts := []string{"host-1", "host-2"}
+	attempts.Failed()
+	for _, receiving := range [][]string{{"host-1"}, {"host-2"}} {
+		if next, ok := attempts.Next(t.Context(), hosts, receiving); ok {
+			t.Fatalf("%s was chosen while %s reports the receive in flight", next, receiving[0])
+		}
+	}
+	if next, ok := attempts.Next(t.Context(), hosts, nil); !ok || next != "host-1" {
+		t.Fatalf("with no receive in flight Next chose %q, %v, want host-1's second attempt", next, ok)
 	}
 }

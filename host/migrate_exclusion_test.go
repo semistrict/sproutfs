@@ -3,6 +3,7 @@ package host_test
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -172,7 +173,9 @@ func TestMigratingAForkBeforeItsRootIsPublishedIsRefused(t *testing.T) {
 // the same VM beside it would open the VM again, fence the first, and have
 // whichever registered last replace the other's machine. The destination admits
 // one receive of a VM at a time and tells the second caller so. Once the first
-// has ended, another is admitted.
+// has ended, another is admitted. The host reports the receive in its Status
+// for as long as it is in flight, which is what keeps a deployment from asking
+// another host to take the VM meanwhile.
 func TestOneReceiveOfAVMAtATime(t *testing.T) {
 	h, pagers := startMigrationHosts(t)
 	var received *machine
@@ -219,6 +222,9 @@ func TestOneReceiveOfAVMAtATime(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the first receive never reached the start of its guest")
 	}
+	if receiving := h.hosts[1].Status().Receiving; !slices.Equal(receiving, []string{"received"}) {
+		t.Fatalf("the destination reports %v in flight, want the receive it is starting", receiving)
+	}
 	// The second caller is answered without waiting for the first to finish:
 	// it is refused, rather than let in to open the VM the first is starting.
 	second := make(chan error, 1)
@@ -245,6 +251,9 @@ func TestOneReceiveOfAVMAtATime(t *testing.T) {
 	}
 	if err := <-first; err != nil {
 		t.Fatalf("the receive that got there first: %v", err)
+	}
+	if receiving := h.hosts[1].Status().Receiving; len(receiving) != 0 {
+		t.Fatalf("the destination reports %v in flight after its receive ended", receiving)
 	}
 	if machines := h.hosts[1].Machines(); len(machines) != 1 || machines[0] != "received" {
 		t.Fatalf("the destination runs %v, want the VM the first receive took", machines)

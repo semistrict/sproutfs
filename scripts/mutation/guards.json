@@ -66,6 +66,12 @@
     "purpose": "Keep waiting on a listed source nothing can reach after its hold is over, a migration's source or a fork's parent's host. Only a source cut off while still listed leaves the hold as the one evidence, and no campaign draws that fault, so the two scenarios are its entry. Each fails alone."
   },
   {
+    "id": "migration-retry-beside-a-receive",
+    "package": "internal/simtest",
+    "run": "^TestAReceiveThatOutlivesItsCallerStartsNoSecondGuest$",
+    "purpose": "Send a handoff's next receive while a host still reports an earlier one in flight. Only a receive whose caller hung up is in flight when a retry looks, and no campaign draws that fault, so the scenario is its entry."
+  },
+  {
     "id": "migration-strip-published-pages",
     "package": "internal/simtest",
     "run": "^TestADestinationPublishesWhatItReceivedWhileItsSourceStillServes$",

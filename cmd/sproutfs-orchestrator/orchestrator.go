@@ -247,7 +247,11 @@ func memoryOf(hosts []liveHost, template string) uint64 {
 // all is admitted against nothing, wherever it is later forked, migrated or
 // started.
 func (o *orchestrator) memoryFor(ctx context.Context, hosts []liveHost, id string) uint64 {
-	row := o.rowOf(ctx, id)
+	return measured(hosts, o.rowOf(ctx, id))
+}
+
+// measured is the guest RAM one row says its VM has, as memoryFor reads it.
+func measured(hosts []liveHost, row vmRecord) uint64 {
 	if row.Memory != 0 {
 		return row.Memory
 	}
@@ -332,7 +336,8 @@ func (o *orchestrator) fanOut(ctx context.Context, remember bool) ([]liveHost, e
 	hosts := make([]liveHost, len(found))
 	var wg sync.WaitGroup
 	for index, p := range found {
-		report := orch.Host{Name: p.Name, Ready: p.Ready, Running: []string{}, Serving: []string{}}
+		report := orch.Host{Name: p.Name, Ready: p.Ready, Running: []string{}, Serving: []string{},
+			Receiving: []string{}}
 		if p.IP != "" {
 			report.API = "http://" + net.JoinHostPort(p.IP, strconv.Itoa(o.apiPort))
 			report.Page = net.JoinHostPort(p.IP, strconv.Itoa(o.pagePort))
@@ -354,6 +359,7 @@ func (o *orchestrator) fanOut(ctx context.Context, remember bool) ([]liveHost, e
 			}
 			hosts[index].report.Running = status.Running
 			hosts[index].report.Serving = status.Serving
+			hosts[index].report.Receiving = status.Receiving
 			hosts[index].report.Pager = status.Pager
 			hosts[index].report.Pages = status.Pages
 			hosts[index].report.Store = status.Store
@@ -432,12 +438,17 @@ func (o *orchestrator) release(ctx context.Context, hosts []liveHost, existing [
 
 // forsaken reports a handover whose VM does not exist, which nothing will ever
 // fetch from or take in over what its host holds. It is asked only of a VM with
-// no operation in flight. No host runs the VM, and no row names it or the
-// bucket has no record of it. A migrated VM always has a record, so this is a
-// fork's child that was never taken in, or one that was and has since been
-// deleted.
+// no operation in flight. No host runs the VM or reports a receive of it in
+// flight, and no row names it or the bucket has no record of it. A migrated VM
+// always has a record, so this is a fork's child that was never taken in, or
+// one that was and has since been deleted.
+//
+// A receive in flight is something creating the VM, whether or not its caller
+// is still waiting: the child's own record is published only as the receive
+// ends. Giving the hold up under it would take away the pages it is being
+// taken in over.
 func forsaken(hosts []liveHost, id string, found bool, existing []string) bool {
-	if runningSomewhere(hosts, id) {
+	if runningSomewhere(hosts, id) || len(receivers(hosts, id)) > 0 {
 		return false
 	}
 	return !found || (existing != nil && !slices.Contains(existing, id))
@@ -504,7 +515,7 @@ func (o *orchestrator) write(ctx context.Context, hosts []liveHost, apply func(s
 		return
 	}
 	found := surveyed{listed: make([]string, 0, len(hosts)),
-		answered: make([]string, 0, len(hosts)), running: map[string]string{}}
+		answered: make([]string, 0, len(hosts)), running: map[string]string{}, pulling: map[string]bool{}}
 	for _, h := range hosts {
 		found.listed = append(found.listed, h.report.Name)
 		if h.report.Error == "" {
@@ -512,6 +523,11 @@ func (o *orchestrator) write(ctx context.Context, hosts []liveHost, apply func(s
 		}
 		for _, id := range h.report.Running {
 			found.running[id] = h.report.Name
+		}
+		for _, vm := range h.vms {
+			if vm.Pull != nil {
+				found.pulling[vm.ID] = true
+			}
 		}
 	}
 	if err := apply(found); err != nil {
@@ -772,7 +788,7 @@ func (o *orchestrator) Create(ctx context.Context, request orch.CreateRequest) (
 	}
 	id := o.identify()
 	o.note(ctx, vmRecord{ID: id, Host: target.report.Name, State: stateCreating,
-		Template: template, Parent: parent, Memory: need})
+		Template: template, Parent: parent, Memory: need, Pull: request.Pull})
 	result, err := target.client.Create(ctx, host.CreateRequest{ID: id, Template: request.Template,
 		From: request.From, Memory: request.Memory, Disk: request.Disk, VCPUs: request.VCPUs,
 		Ephemeral: request.Ephemeral, Pull: request.Pull})
@@ -781,7 +797,7 @@ func (o *orchestrator) Create(ctx context.Context, request orch.CreateRequest) (
 		return orch.CreateResult{}, fmt.Errorf("creating %s on %s: %w", id, target.report.Name, err)
 	}
 	o.note(ctx, vmRecord{ID: id, Host: target.report.Name, State: stateRunning,
-		Template: template, Parent: parent, Memory: need})
+		Template: template, Parent: parent, Memory: need, Pull: request.Pull})
 	slog.InfoContext(ctx, "sproutfs-orchestrator: created a VM", "vm", id, "host", target.report.Name,
 		"template", template, "seconds", float64(result.Total))
 	return orch.CreateResult{Host: target.report.Name, Result: result}, nil
@@ -906,7 +922,7 @@ func (o *orchestrator) Fork(ctx context.Context, id string, request orch.ForkReq
 		child := o.identify()
 		children = append(children, child)
 		rows = append(rows, vmRecord{ID: child, Host: target.report.Name, State: stateCreating,
-			Parent: id, Template: parent.Template, Memory: need})
+			Parent: id, Template: parent.Template, Memory: need, Pull: request.Pull})
 	}
 	// The children are in the table before their parent is paused, with the
 	// host they are going to and the parent they come from. Each stays in
@@ -1103,7 +1119,8 @@ func (o *orchestrator) Migrate(ctx context.Context, id, to string) (orch.Migrate
 	if err != nil {
 		return orch.MigrateResult{}, err
 	}
-	need := o.memoryFor(ctx, hosts, id)
+	row := o.rowOf(ctx, id)
+	need := measured(hosts, row)
 	var target liveHost
 	if to == "" {
 		target, err = place(hosts, source.report.Name, need)
@@ -1131,6 +1148,10 @@ func (o *orchestrator) Migrate(ctx context.Context, id, to string) (orch.Migrate
 		o.note(ctx, vmRecord{ID: id, Host: source.report.Name, State: stateRunning})
 		return orch.MigrateResult{}, fmt.Errorf("stopping %s on %s: %w", id, source.report.Name, err)
 	}
+	// A receive opens the VM, so the handoff carries the VM's pull mark, as
+	// every open this orchestrator drives does. The source reports the mark
+	// its machine has, and the table's is the VM's own.
+	handed.Handoff.Pull = handed.Handoff.Pull || row.Pull
 	// The guest is stopped and its volumes given up, so nothing can resume it
 	// where it was: it is owed a destination, whether or not whoever asked for
 	// the move is still waiting. A drain's request has a deadline of its own,
@@ -1215,6 +1236,9 @@ func (o *orchestrator) handOver(ctx context.Context, source, target liveHost, id
 //     keeps, has taken the handoff with them.
 //   - The destination that failed must answer before another is tried. A
 //     quiet one may still be finishing the receive whose caller gave up.
+//   - A host that reports a receive of the VM in flight holds every other
+//     receive back. The receive whose caller gave up goes on there, and it
+//     either takes the VM in, which the first rule then finds, or ends.
 //   - The next destination is the policy's choice among the hosts with room.
 //
 // The last look comes as the source's hold ends, and what it finds then is the
@@ -1268,7 +1292,7 @@ func (o *orchestrator) retry(ctx context.Context, attempts *handover.Attempts, h
 		for _, h := range room {
 			names = append(names, h.report.Name)
 		}
-		chosen, ok := attempts.Next(ctx, names)
+		chosen, ok := attempts.Next(ctx, names, receivers(hosts, id))
 		if !ok {
 			continue
 		}
@@ -1496,7 +1520,8 @@ type reopening struct {
 	to string
 	// open is what the host is asked for. A recovery's is always the ordinary
 	// open — a VM whose host is gone comes back where it was — and a start's
-	// carries the cold flag and the shape.
+	// carries the cold flag and the shape. Either is sent with the VM's pull
+	// mark when the table has one.
 	open host.OpenRequest
 	// state is what the table says while the open is in flight and what says
 	// what this was, and quietAdvice what a refusal tells the operator to do
@@ -1545,9 +1570,10 @@ func (o *orchestrator) reopen(ctx context.Context, id string, terms reopening) (
 		return orch.RecoverResult{}, fmt.Errorf(
 			"%w: %s still serves the pages of %s that no checkpoint has", errRunning, holder, id)
 	}
+	var row vmRecord
 	if o.table != nil {
-		row, found, err := o.table.VM(ctx, id)
-		if err != nil {
+		var found bool
+		if row, found, err = o.table.VM(ctx, id); err != nil {
 			return orch.RecoverResult{}, fmt.Errorf("reading the table row of %s: %w", id, err)
 		}
 		if found && o.table.stillInFlight(row) {
@@ -1564,10 +1590,15 @@ func (o *orchestrator) reopen(ctx context.Context, id string, terms reopening) (
 	// A cold start that resizes the memory is admitted against the size it is
 	// asking for, because that is what the guest will hold once it is running
 	// there, and it is what the VM is from then on.
-	need := o.memoryFor(ctx, hosts, id)
+	need := measured(hosts, row)
 	if terms.open.Memory != 0 {
 		need = terms.open.Memory
 	}
+	// A VM marked to pull is opened pulling, whatever brings it back. A
+	// recovery after its host was lost knows nothing else about the VM, and a
+	// start need not ask again.
+	open := terms.open
+	open.Pull = open.Pull || row.Pull
 	var target liveHost
 	if terms.to == "" {
 		target, err = place(hosts, "", need)
@@ -1590,14 +1621,14 @@ func (o *orchestrator) reopen(ctx context.Context, id string, terms reopening) (
 	// resized it is the one thing that changes it, and from then on every
 	// placement measures the VM rather than its template.
 	o.note(ctx, vmRecord{ID: id, Host: target.report.Name, State: terms.state,
-		Memory: terms.open.Memory})
-	result, err := target.client.Open(ctx, id, terms.open)
+		Memory: open.Memory, Pull: open.Pull})
+	result, err := target.client.Open(ctx, id, open)
 	if err != nil {
 		o.note(ctx, vmRecord{ID: id, State: stateStopped})
 		return orch.RecoverResult{}, fmt.Errorf("opening %s on %s: %w", id, target.report.Name, err)
 	}
 	o.note(ctx, vmRecord{ID: id, Host: target.report.Name, State: stateRunning,
-		Memory: terms.open.Memory})
+		Memory: open.Memory, Pull: open.Pull})
 	slog.InfoContext(ctx, "sproutfs-orchestrator: "+terms.what+" a VM", "vm", id,
 		"host", target.report.Name, "checkpoint", result.VM.Checkpoint)
 	return orch.RecoverResult{Host: target.report.Name, Result: result}, nil
@@ -1647,6 +1678,19 @@ func holding(hosts []liveHost, id string) string {
 		}
 	}
 	return ""
+}
+
+// receivers reports the hosts that say a receive of one VM is in flight there,
+// in name order. Such a receive may yet take the VM in, whether or not anyone
+// is still waiting for its answer.
+func receivers(hosts []liveHost, id string) []string {
+	var found []string
+	for _, h := range hosts {
+		if slices.Contains(h.report.Receiving, id) {
+			found = append(found, h.report.Name)
+		}
+	}
+	return found
 }
 
 // unanswered reports the host pods this survey learned nothing from, in name

@@ -231,3 +231,32 @@ func TestTableSurvivesTheProcessThatWroteIt(t *testing.T) {
 		t.Fatalf("row %+v", row)
 	}
 }
+
+// TestTableKeepsThePullMark: a VM marked to pull keeps the mark through every
+// row written after it, a stop and a survey among them, because nothing but
+// the table remembers it while the VM runs nowhere. A survey also writes it
+// down again for a running VM whose host reports it.
+func TestTableKeepsThePullMark(t *testing.T) {
+	catalog := testTable(t)
+	if err := catalog.Record(t.Context(), vmRecord{ID: "vm-1", Host: "host-0",
+		State: stateRunning, Pull: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.Record(t.Context(), vmRecord{ID: "vm-1", State: stateStopped}); err != nil {
+		t.Fatal(err)
+	}
+	err := catalog.Observe(t.Context(), surveyed{listed: []string{"host-0"}, answered: []string{"host-0"},
+		running: map[string]string{"vm-2": "host-0"}, pulling: map[string]bool{"vm-2": true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"vm-1", "vm-2"} {
+		row, _, err := catalog.VM(t.Context(), id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !row.Pull {
+			t.Fatalf("row %+v lost the pull mark", row)
+		}
+	}
+}

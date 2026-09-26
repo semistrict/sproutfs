@@ -57,7 +57,14 @@ type vmRecord struct {
 	// VM's committed RAM is its own and not its template's. Zero is a VM
 	// nothing wrote one down for, which is admitted against its template as it
 	// was before, and against nothing when the table has no template either.
-	Memory  uint64    `json:"memory,omitempty"`
+	Memory uint64 `json:"memory,omitempty"`
+	// Pull marks a VM that pulls its whole memory onto the disk of each host
+	// it runs on. It is set by the create, fork or start that asked for it and
+	// never cleared, and every open the orchestrator drives carries it: a
+	// start, a recovery and a migration's receive. The table is the only
+	// record of it for a VM nothing runs. A running VM's host reports it, so a
+	// survey writes it down again for such a VM.
+	Pull    bool      `json:"pull,omitempty"`
 	Updated time.Time `json:"updated"`
 }
 
@@ -79,6 +86,7 @@ CREATE TABLE IF NOT EXISTS vms (
 	template  TEXT NOT NULL DEFAULT '',
 	parent    TEXT NOT NULL DEFAULT '',
 	memory    INTEGER NOT NULL DEFAULT 0,
+	pull      INTEGER NOT NULL DEFAULT 0,
 	updated   INTEGER NOT NULL
 );
 DROP TABLE IF EXISTS hosts;`
@@ -126,6 +134,7 @@ func openTable(ctx context.Context, path string) (*table, error) {
 func addColumns(ctx context.Context, db *sql.DB) error {
 	for _, statement := range []string{
 		`ALTER TABLE vms ADD COLUMN memory INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE vms ADD COLUMN pull INTEGER NOT NULL DEFAULT 0`,
 	} {
 		if _, err := db.ExecContext(ctx, statement); err != nil &&
 			!strings.Contains(err.Error(), "duplicate column name") {
@@ -145,8 +154,8 @@ func (t *table) Record(ctx context.Context, record vmRecord) error {
 		record.Updated = time.Now()
 	}
 	_, err := t.db.ExecContext(ctx, `
-		INSERT INTO vms (id, host, state, from_host, to_host, template, parent, memory, updated)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO vms (id, host, state, from_host, to_host, template, parent, memory, pull, updated)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			host = excluded.host, state = excluded.state,
 			from_host = excluded.from_host, to_host = excluded.to_host,
@@ -155,9 +164,11 @@ func (t *table) Record(ctx context.Context, record vmRecord) error {
 			template = CASE WHEN excluded.template = '' THEN vms.template ELSE excluded.template END,
 			parent = CASE WHEN excluded.parent = '' THEN vms.parent ELSE excluded.parent END,
 			memory = CASE WHEN excluded.memory = 0 THEN vms.memory ELSE excluded.memory END,
+			-- A mark once set is kept.
+			pull = MAX(vms.pull, excluded.pull),
 			updated = excluded.updated`,
 		record.ID, record.Host, record.State, record.From, record.To, record.Template,
-		record.Parent, record.Memory, record.Updated.UnixMilli())
+		record.Parent, record.Memory, record.Pull, record.Updated.UnixMilli())
 	if err != nil {
 		return fmt.Errorf("recording %s as %s: %w", record.ID, record.State, err)
 	}
@@ -175,7 +186,7 @@ func (t *table) Forget(ctx context.Context, id string) error {
 // VM reads one row. A VM the table has never heard of is not an error: the
 // caller surveys instead.
 func (t *table) VM(ctx context.Context, id string) (vmRecord, bool, error) {
-	rows, err := t.query(ctx, `SELECT id, host, state, from_host, to_host, template, parent, memory, updated
+	rows, err := t.query(ctx, `SELECT id, host, state, from_host, to_host, template, parent, memory, pull, updated
 		FROM vms WHERE id = ?`, id)
 	if err != nil || len(rows) == 0 {
 		return vmRecord{}, false, err
@@ -186,7 +197,7 @@ func (t *table) VM(ctx context.Context, id string) (vmRecord, bool, error) {
 // VMs reads the whole table, in identity order, which is creation order: the
 // identities are ULIDs.
 func (t *table) VMs(ctx context.Context) ([]vmRecord, error) {
-	return t.query(ctx, `SELECT id, host, state, from_host, to_host, template, parent, memory, updated
+	return t.query(ctx, `SELECT id, host, state, from_host, to_host, template, parent, memory, pull, updated
 		FROM vms ORDER BY id`)
 }
 
@@ -214,7 +225,7 @@ func query(ctx context.Context, from querier, statement string, args ...any) ([]
 		var updated int64
 		if err := rows.Scan(&record.ID, &record.Host, &record.State,
 			&record.From, &record.To, &record.Template, &record.Parent, &record.Memory,
-			&updated); err != nil {
+			&record.Pull, &updated); err != nil {
 			return nil, fmt.Errorf("reading the VM table: %w", err)
 		}
 		record.Updated = time.UnixMilli(updated)
@@ -227,8 +238,8 @@ func query(ctx context.Context, from querier, statement string, args ...any) ([]
 }
 
 // surveyed is what one survey of the deployment found: the host pods the
-// Kubernetes API listed, which of them said what they are running, and which
-// host reports each VM.
+// Kubernetes API listed, which of them said what they are running, which host
+// reports each VM, and which of those VMs their host says are marked to pull.
 //
 // The two lists of hosts are different evidence. A pod that is listed and did
 // not answer says nothing about what it runs — its guests may be perfectly well
@@ -240,6 +251,7 @@ type surveyed struct {
 	listed   []string
 	answered []string
 	running  map[string]string
+	pulling  map[string]bool
 }
 
 // accounted reports a host whose silence about a VM means the VM is not running
@@ -306,7 +318,7 @@ func (t *table) reconcile(ctx context.Context, found surveyed,
 	}
 	defer func() { _ = transaction.Rollback() }()
 
-	existing, err := query(ctx, transaction, `SELECT id, host, state, from_host, to_host, template, parent, memory, updated FROM vms`)
+	existing, err := query(ctx, transaction, `SELECT id, host, state, from_host, to_host, template, parent, memory, pull, updated FROM vms`)
 	if err != nil {
 		return err
 	}
@@ -319,7 +331,7 @@ func (t *table) reconcile(ctx context.Context, found surveyed,
 		settled[id] = true
 		if err := record(ctx, transaction, vmRecord{ID: id, Host: host, State: stateRunning,
 			Template: known[id].Template, Parent: known[id].Parent, Memory: known[id].Memory,
-			Updated: now}); err != nil {
+			Pull: known[id].Pull || found.pulling[id], Updated: now}); err != nil {
 			return err
 		}
 	}
@@ -331,7 +343,8 @@ func (t *table) reconcile(ctx context.Context, found surveyed,
 		}
 		settled[id] = true
 		if err := record(ctx, transaction, vmRecord{ID: id, State: stateStopped,
-			Template: row.Template, Parent: row.Parent, Memory: row.Memory, Updated: now}); err != nil {
+			Template: row.Template, Parent: row.Parent, Memory: row.Memory, Pull: row.Pull,
+			Updated: now}); err != nil {
 			return err
 		}
 	}
@@ -343,7 +356,7 @@ func (t *table) reconcile(ctx context.Context, found surveyed,
 			settled[id] = true
 			if err := record(ctx, transaction, vmRecord{ID: id, State: stateStopped,
 				Template: known[id].Template, Parent: known[id].Parent, Memory: known[id].Memory,
-				Updated: now}); err != nil {
+				Pull: known[id].Pull, Updated: now}); err != nil {
 				return err
 			}
 		}
@@ -367,16 +380,18 @@ func (t *table) reconcile(ctx context.Context, found surveyed,
 // record is Record inside a transaction.
 func record(ctx context.Context, tx *sql.Tx, row vmRecord) error {
 	_, err := tx.ExecContext(ctx, `
-		INSERT INTO vms (id, host, state, from_host, to_host, template, parent, memory, updated)
-		VALUES (?, ?, ?, '', '', ?, ?, ?, ?)
+		INSERT INTO vms (id, host, state, from_host, to_host, template, parent, memory, pull, updated)
+		VALUES (?, ?, ?, '', '', ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			host = excluded.host, state = excluded.state,
 			from_host = '', to_host = '',
 			template = CASE WHEN excluded.template = '' THEN vms.template ELSE excluded.template END,
 			parent = CASE WHEN excluded.parent = '' THEN vms.parent ELSE excluded.parent END,
 			memory = CASE WHEN excluded.memory = 0 THEN vms.memory ELSE excluded.memory END,
+			pull = MAX(vms.pull, excluded.pull),
 			updated = excluded.updated`,
-		row.ID, row.Host, row.State, row.Template, row.Parent, row.Memory, row.Updated.UnixMilli())
+		row.ID, row.Host, row.State, row.Template, row.Parent, row.Memory, row.Pull,
+		row.Updated.UnixMilli())
 	if err != nil {
 		return fmt.Errorf("recording %s as %s: %w", row.ID, row.State, err)
 	}

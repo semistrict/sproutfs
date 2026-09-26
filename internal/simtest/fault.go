@@ -120,6 +120,14 @@ func RefusedStart(host int) Fault { return &refusedStart{host: host} }
 // receive fails part way through meets.
 func RefusedStartAfter(host, after int) Fault { return &refusedStart{host: host, after: after} }
 
+// OutlivedReceive makes the caller of the next migration's receive on one host
+// hang up as that host begins to start the guest, and the start take start. It
+// is a receive that goes on after its caller gave up, as one does whose
+// connection broke while its host was still at work.
+func OutlivedReceive(host int, start time.Duration) Fault {
+	return &outlivedReceive{host: host, start: start}
+}
+
 // DegradedLinks duplicates, delays and slows what the page-server links
 // carry.
 func DegradedLinks() Fault { return &degradedLinks{} }
@@ -459,6 +467,42 @@ func (f *refusedStart) End(_ context.Context, w *World) error {
 func (f *refusedStart) Holds(_ context.Context, w *World) error {
 	if w.hosts[f.host].refuseStart != nil {
 		return fmt.Errorf("%s still refuses to start a guest", w.hosts[f.host].name)
+	}
+	return nil
+}
+
+// outlivedReceive is a receive whose caller hung up while its host went on
+// with it. Nothing on the host stops for want of a caller, so the host still
+// reports the receive in flight, and it may yet take the VM in.
+type outlivedReceive struct {
+	host  int
+	start time.Duration
+}
+
+func (f *outlivedReceive) Name() string { return "outlived-receive" }
+
+func (f *outlivedReceive) Begin(_ context.Context, w *World) error {
+	h := w.hosts[f.host]
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.hangsUp, h.slowStart = true, f.start
+	return nil
+}
+
+func (f *outlivedReceive) End(_ context.Context, w *World) error {
+	h := w.hosts[f.host]
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.hangsUp, h.slowStart = false, 0
+	return nil
+}
+
+func (f *outlivedReceive) Holds(_ context.Context, w *World) error {
+	h := w.hosts[f.host]
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.hangsUp {
+		return fmt.Errorf("the caller of a receive on %s still hangs up", h.name)
 	}
 	return nil
 }

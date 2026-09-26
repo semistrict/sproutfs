@@ -100,7 +100,16 @@ func (a *Attempts) Wait(ctx context.Context, now time.Time) (time.Duration, bool
 // attempts in a row. After that the next goes to the candidate that has failed
 // least, the earliest of them on a tie, and back to the same one only when
 // nothing else can take the VM.
-func (a *Attempts) Next(ctx context.Context, candidates []string) (string, bool) {
+//
+// receiving is the hosts that report a receive of this handoff in flight, and
+// while there is one Next chooses nothing. A receive whose caller gave up goes
+// on where it was sent, and it may yet take the VM in. A receive anywhere else
+// would open the VM again and fence it, and the host already receiving it
+// would refuse a second one.
+func (a *Attempts) Next(ctx context.Context, candidates, receiving []string) (string, bool) {
+	if len(receiving) > 0 && !sim.Bug(ctx, "migration-retry-beside-a-receive") {
+		return "", false
+	}
 	if len(candidates) == 0 {
 		return "", false
 	}

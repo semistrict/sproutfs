@@ -199,7 +199,8 @@ for 4 KiB.
 
 **Pull**: Copying every page of the checkpoint a VM started from onto the disk
 of the host that runs it, in the background while the guest runs. A start
-marks a VM to pull; a migration carries the mark. The copy lives in the page
+marks a VM to pull, and the VM keeps the mark: the orchestrator records it, and
+every start, recovery and migration of the VM carries it. The copy lives in the page
 cache's disk, keyed by page identity, and is held while the VM runs on that
 host. Once it is complete, a fault on a page that is not resident makes no
 request of the object store. The copy is never durable. A VM whose checkpoint
