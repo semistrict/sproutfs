@@ -36,9 +36,27 @@ const SectorSize = 4096
 // VolumeSpec is one volume as a checkpoint records it: how large it is, and the
 // page size its pages and its page-table segments follow. The page size must be
 // one [GeometryFor] accepts, and it is fixed for the volume's life.
+//
+// Ephemeral marks a volume no checkpoint holds. Its pages are never published:
+// every root records it with no segments, so a VM opened at any checkpoint gets
+// it back zeroed at the size the root records. It is fixed for the volume's life.
 type VolumeSpec struct {
-	Size     uint64
-	PageSize uint64
+	Size      uint64
+	PageSize  uint64
+	Ephemeral bool
+}
+
+// table is the empty page table of a volume created at this spec.
+func (s VolumeSpec) table(name string) (*volumeTable, error) {
+	if !validName(name) || s.Size%SectorSize != 0 {
+		return nil, ErrInvalidConfig
+	}
+	geometry, err := GeometryFor(s.PageSize)
+	if err != nil {
+		return nil, err
+	}
+	return &volumeTable{size: s.Size, geometry: geometry, ephemeral: s.Ephemeral,
+		segments: make(map[uint64]segmentEntry)}, nil
 }
 
 const (
@@ -136,6 +154,9 @@ var (
 	ErrConflict = errors.New("checkpoint: conflicting object under a reference")
 	// ErrNoState reports ReadState on a checkpoint published without VMM state.
 	ErrNoState = errors.New("checkpoint: no VMM state")
+	// ErrEphemeral reports a page of an ephemeral volume offered to a
+	// publication. No checkpoint holds such a volume's pages.
+	ErrEphemeral = errors.New("checkpoint: an ephemeral volume is never published")
 )
 
 // validName reports whether a VM identity or volume name can be part of an

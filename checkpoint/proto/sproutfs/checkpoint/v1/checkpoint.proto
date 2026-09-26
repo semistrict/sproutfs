@@ -60,6 +60,12 @@ message Volume {
   // divides page numbers by what is here, never by a constant of its own.
   uint64 page_size = 5;
   uint64 segment_pages = 6;
+  // Ephemeral marks a volume no checkpoint holds: an ephemeral disk. It has no
+  // segments in any root, and none of its pages is a member of any part. The
+  // root records only its name, its size and its page size, which is what a VM
+  // opened at this checkpoint recreates it from, zeroed. A root written before
+  // the field existed marks no volume ephemeral.
+  bool ephemeral = 7;
 }
 
 // SegmentEntry addresses one segment of a volume's page table. A segment is

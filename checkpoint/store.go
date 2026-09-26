@@ -297,7 +297,8 @@ func (s *Store) refuseSupersededIndex(ctx context.Context, key platform.ObjectKe
 }
 
 // Root publishes the first checkpoint of a new VM: every named volume exists at
-// its given size and page size, and reads as zeroes. Sizes must be whole
+// its given size and page size, and reads as zeroes. A volume the spec marks
+// ephemeral stays that way in every checkpoint after this one. Sizes must be whole
 // numbers of sectors and page sizes must be ones [GeometryFor] accepts, because
 // this is where a volume's geometry is chosen and it is fixed from here on. It
 // is an index object holding a root and no segments, and no parts at all.
@@ -307,15 +308,11 @@ func (s *Store) Root(ctx context.Context, ref control.Ref, volumes map[string]Vo
 	}
 	index := newIndex(s, ref)
 	for name, spec := range volumes {
-		if !validName(name) || spec.Size%SectorSize != 0 {
-			return nil, ErrInvalidConfig
-		}
-		geometry, err := GeometryFor(spec.PageSize)
+		table, err := spec.table(name)
 		if err != nil {
 			return nil, err
 		}
-		index.volumes[name] = &volumeTable{size: spec.Size, geometry: geometry,
-			segments: make(map[uint64]segmentEntry)}
+		index.volumes[name] = table
 		index.names = append(index.names, name)
 	}
 	slices.Sort(index.names)

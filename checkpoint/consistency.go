@@ -98,13 +98,19 @@ func (s *Store) CheckIndex(ctx context.Context, index *Index) ([]platform.Object
 			// A member's bytes are billed to the VM whose key holds them, so a
 			// part may hold only what its own VM published. Compaction moves a
 			// page only within the VM that published it, which is what keeps
-			// the bill with that VM.
+			// the bill with that VM. No checkpoint holds a page of an ephemeral
+			// volume, so a part holding one published what must stay on its host.
 			for _, member := range table.members {
 				if member.OriginVM != "" && member.OriginVM != ref.VM {
 					violations = append(violations, IndexViolation{Key: partKey,
 						Err: fmt.Errorf("part %d of checkpoint %s holds a member %s published, "+
 							"which would bill %s for it: %w", number, ref,
 							control.Ref{VM: member.OriginVM, Sequence: member.OriginSequence}, ref.VM, ErrCorrupt)})
+				}
+				if !member.State && index.Ephemeral(member.Volume) {
+					violations = append(violations, IndexViolation{Key: partKey,
+						Err: fmt.Errorf("part %d of checkpoint %s holds page %d of the ephemeral volume %s: %w",
+							number, ref, member.Page, member.Volume, ErrCorrupt)})
 				}
 			}
 			body += table.body

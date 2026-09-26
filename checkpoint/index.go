@@ -114,10 +114,13 @@ type segmentKey struct {
 // table. The geometry is what every page number of this volume is divided by,
 // here and in every reader: it is the volume's own and never a constant of this
 // package.
+//
+// An ephemeral volume has no segments, ever: no checkpoint holds its pages.
 type volumeTable struct {
-	size     uint64
-	geometry Geometry
-	segments map[uint64]segmentEntry
+	size      uint64
+	geometry  Geometry
+	ephemeral bool
+	segments  map[uint64]segmentEntry
 }
 
 // Index is the decoded root of one published checkpoint: where every volume's
@@ -178,6 +181,13 @@ func (i *Index) Geometry(volume string) Geometry {
 		return Geometry{}
 	}
 	return table.geometry
+}
+
+// Ephemeral reports a volume no checkpoint holds, whose pages this index
+// never locates: a VM opened here gets it back zeroed at its recorded size.
+func (i *Index) Ephemeral(volume string) bool {
+	table := i.volumes[volume]
+	return table != nil && table.ephemeral
 }
 
 // VCPUs is how many processors a boot of this checkpoint gives the guest, zero
@@ -423,7 +433,7 @@ func (i *Index) encode() ([]byte, error) {
 				Reads: reads,
 			}.Build())
 		}
-		volumes = append(volumes, checkpointv1.Volume_builder{
+		volume := checkpointv1.Volume_builder{
 			Name: proto.String(name), Size: proto.Uint64(table.size),
 			PageSize: proto.Uint64(table.geometry.PageSize),
 			// The pages one segment covers is recorded rather than derived: a
@@ -431,7 +441,13 @@ func (i *Index) encode() ([]byte, error) {
 			// constant of the build that happens to be reading.
 			SegmentPages: proto.Uint64(table.geometry.SegmentPages),
 			Segments:     segments,
-		}.Build())
+		}.Build()
+		// A volume every checkpoint holds leaves the field out, so every root
+		// written before the field existed decodes, and re-encodes, as it was.
+		if table.ephemeral {
+			volume.SetEphemeral(true)
+		}
+		volumes = append(volumes, volume)
 	}
 	originRefs := make([]*checkpointv1.Ref, 0, len(origins))
 	for _, ref := range origins {
@@ -737,7 +753,13 @@ func decodeRoot(store *Store, ref control.Ref, data []byte) (*Index, error) {
 			return nil, fmt.Errorf("%w: %s has %d-byte pages, %d to a segment, which this build does not read",
 				ErrCorrupt, name, geometry.PageSize, geometry.SegmentPages)
 		}
-		table := &volumeTable{size: volume.GetSize(), geometry: geometry,
+		// No checkpoint holds an ephemeral volume, so a root that addresses a
+		// segment of one disagrees with itself.
+		if volume.GetEphemeral() && len(volume.GetSegments()) != 0 {
+			return nil, fmt.Errorf("%w: the ephemeral volume %s has %d segments",
+				ErrCorrupt, name, len(volume.GetSegments()))
+		}
+		table := &volumeTable{size: volume.GetSize(), geometry: geometry, ephemeral: volume.GetEphemeral(),
 			segments: make(map[uint64]segmentEntry, len(volume.GetSegments()))}
 		count := geometry.SegmentCount(table.size)
 		for _, entry := range volume.GetSegments() {

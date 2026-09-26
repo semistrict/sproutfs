@@ -434,6 +434,7 @@ type Volume struct {
 	xxx_hidden_Segments     *[]*SegmentEntry       `protobuf:"bytes,4,rep,name=segments"`
 	xxx_hidden_PageSize     uint64                 `protobuf:"varint,5,opt,name=page_size,json=pageSize"`
 	xxx_hidden_SegmentPages uint64                 `protobuf:"varint,6,opt,name=segment_pages,json=segmentPages"`
+	xxx_hidden_Ephemeral    bool                   `protobuf:"varint,7,opt,name=ephemeral"`
 	XXX_raceDetectHookData  protoimpl.RaceDetectHookData
 	XXX_presence            [1]uint32
 	unknownFields           protoimpl.UnknownFields
@@ -505,14 +506,21 @@ func (x *Volume) GetSegmentPages() uint64 {
 	return 0
 }
 
+func (x *Volume) GetEphemeral() bool {
+	if x != nil {
+		return x.xxx_hidden_Ephemeral
+	}
+	return false
+}
+
 func (x *Volume) SetName(v string) {
 	x.xxx_hidden_Name = &v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 5)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 6)
 }
 
 func (x *Volume) SetSize(v uint64) {
 	x.xxx_hidden_Size = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 1, 5)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 1, 6)
 }
 
 func (x *Volume) SetSegments(v []*SegmentEntry) {
@@ -521,12 +529,17 @@ func (x *Volume) SetSegments(v []*SegmentEntry) {
 
 func (x *Volume) SetPageSize(v uint64) {
 	x.xxx_hidden_PageSize = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 3, 5)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 3, 6)
 }
 
 func (x *Volume) SetSegmentPages(v uint64) {
 	x.xxx_hidden_SegmentPages = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 4, 5)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 4, 6)
+}
+
+func (x *Volume) SetEphemeral(v bool) {
+	x.xxx_hidden_Ephemeral = v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 5, 6)
 }
 
 func (x *Volume) HasName() bool {
@@ -557,6 +570,13 @@ func (x *Volume) HasSegmentPages() bool {
 	return protoimpl.X.Present(&(x.XXX_presence[0]), 4)
 }
 
+func (x *Volume) HasEphemeral() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 5)
+}
+
 func (x *Volume) ClearName() {
 	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 0)
 	x.xxx_hidden_Name = nil
@@ -577,6 +597,11 @@ func (x *Volume) ClearSegmentPages() {
 	x.xxx_hidden_SegmentPages = 0
 }
 
+func (x *Volume) ClearEphemeral() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 5)
+	x.xxx_hidden_Ephemeral = false
+}
+
 type Volume_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
@@ -590,6 +615,12 @@ type Volume_builder struct {
 	// divides page numbers by what is here, never by a constant of its own.
 	PageSize     *uint64
 	SegmentPages *uint64
+	// Ephemeral marks a volume no checkpoint holds: an ephemeral disk. It has no
+	// segments in any root, and none of its pages is a member of any part. The
+	// root records only its name, its size and its page size, which is what a VM
+	// opened at this checkpoint recreates it from, zeroed. A root written before
+	// the field existed marks no volume ephemeral.
+	Ephemeral *bool
 }
 
 func (b0 Volume_builder) Build() *Volume {
@@ -597,21 +628,25 @@ func (b0 Volume_builder) Build() *Volume {
 	b, x := &b0, m0
 	_, _ = b, x
 	if b.Name != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 5)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 6)
 		x.xxx_hidden_Name = b.Name
 	}
 	if b.Size != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 1, 5)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 1, 6)
 		x.xxx_hidden_Size = *b.Size
 	}
 	x.xxx_hidden_Segments = &b.Segments
 	if b.PageSize != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 3, 5)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 3, 6)
 		x.xxx_hidden_PageSize = *b.PageSize
 	}
 	if b.SegmentPages != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 4, 5)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 4, 6)
 		x.xxx_hidden_SegmentPages = *b.SegmentPages
+	}
+	if b.Ephemeral != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 5, 6)
+		x.xxx_hidden_Ephemeral = *b.Ephemeral
 	}
 	return m0
 }
@@ -1836,13 +1871,14 @@ const file_sproutfs_checkpoint_v1_checkpoint_proto_rawDesc = "" +
 	" \x01(\rR\x05vcpusJ\x04\b\x01\x10\x02\"1\n" +
 	"\x03Ref\x12\x0e\n" +
 	"\x02vm\x18\x01 \x01(\tR\x02vm\x12\x1a\n" +
-	"\bsequence\x18\x02 \x01(\x04R\bsequence\"\xba\x01\n" +
+	"\bsequence\x18\x02 \x01(\x04R\bsequence\"\xd8\x01\n" +
 	"\x06Volume\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04size\x18\x02 \x01(\x04R\x04size\x12@\n" +
 	"\bsegments\x18\x04 \x03(\v2$.sproutfs.checkpoint.v1.SegmentEntryR\bsegments\x12\x1b\n" +
 	"\tpage_size\x18\x05 \x01(\x04R\bpageSize\x12#\n" +
-	"\rsegment_pages\x18\x06 \x01(\x04R\fsegmentPagesJ\x04\b\x03\x10\x04\"\xb9\x01\n" +
+	"\rsegment_pages\x18\x06 \x01(\x04R\fsegmentPages\x12\x1c\n" +
+	"\tephemeral\x18\a \x01(\bR\tephemeralJ\x04\b\x03\x10\x04\"\xb9\x01\n" +
 	"\fSegmentEntry\x12\x16\n" +
 	"\x06number\x18\x01 \x01(\x04R\x06number\x12\x1e\n" +
 	"\n" +

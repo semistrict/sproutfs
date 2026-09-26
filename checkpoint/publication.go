@@ -3,6 +3,7 @@ package checkpoint
 import (
 	"context"
 	"errors"
+	"fmt"
 	"maps"
 	"slices"
 	"sort"
@@ -40,8 +41,11 @@ type Publication struct {
 	// sizes is each volume's size as this checkpoint publishes it, and geometry
 	// the page geometry each was created with, inherited from the parent and
 	// never changed by a publication: a volume's page size is fixed for its life.
-	sizes     map[string]uint64
-	geometry  map[string]Geometry
+	sizes    map[string]uint64
+	geometry map[string]Geometry
+	// ephemeral is the volumes no checkpoint holds, inherited like the
+	// geometry and fixed for each volume's life.
+	ephemeral map[string]bool
 	edits     map[string]map[uint64]bool
 	protected map[control.Ref]bool
 	// dirty is the segments of each volume whose page table this publication
@@ -74,12 +78,13 @@ type Publication struct {
 func (s *Store) Begin(parent *Index, ref control.Ref) *Publication {
 	p := &Publication{store: s, parent: parent, ref: ref,
 		sizes: make(map[string]uint64), geometry: make(map[string]Geometry),
-		edits:     make(map[string]map[uint64]bool),
+		ephemeral: make(map[string]bool), edits: make(map[string]map[uint64]bool),
 		protected: make(map[control.Ref]bool), dirty: make(map[string]map[uint64]*segment)}
 	if parent != nil {
 		for _, name := range parent.names {
 			p.sizes[name] = parent.volumes[name].size
 			p.geometry[name] = parent.volumes[name].geometry
+			p.ephemeral[name] = parent.volumes[name].ephemeral
 		}
 	}
 	if !control.ValidID(ref.VM) || ref.Sequence == 0 {
@@ -119,9 +124,27 @@ func (p *Publication) SetSize(volume string, size uint64) {
 	p.sizes[volume] = size
 }
 
+// Add gives this checkpoint a volume its parent does not have, at spec's size
+// and page size, reading as zeroes. It is how a cold boot adds a disk: a create
+// gives its VM the ephemeral disk it asked for this way. A name the parent
+// already has is refused, because that volume's geometry is its own for life.
+func (p *Publication) Add(volume string, spec VolumeSpec) {
+	table, err := spec.table(volume)
+	if err != nil {
+		p.fail(err)
+		return
+	}
+	if _, known := p.geometry[volume]; known {
+		p.fail(ErrInvalidConfig)
+		return
+	}
+	p.sizes[volume], p.geometry[volume], p.ephemeral[volume] = table.size, table.geometry, table.ephemeral
+}
+
 // Dirty records that a page changed and must be republished whole. Commit reads
 // it from the Source; a page that reads as all zeroes then leaves the index
-// instead of being written.
+// instead of being written. A page of an ephemeral volume fails the Commit with
+// ErrEphemeral: no checkpoint holds one.
 func (p *Publication) Dirty(volume string, page uint64) {
 	if !validName(volume) {
 		p.fail(ErrInvalidConfig)
@@ -194,14 +217,18 @@ func (p *Publication) Commit(ctx context.Context, source Source) (*Index, error)
 		if !geometry.supported() {
 			return nil, ErrInvalidConfig
 		}
-		index.volumes[name] = &volumeTable{size: size, geometry: geometry,
+		index.volumes[name] = &volumeTable{size: size, geometry: geometry, ephemeral: p.ephemeral[name],
 			segments: p.inherit(name, size)}
 		index.names = append(index.names, name)
 	}
 	slices.Sort(index.names)
 	for name := range p.edits {
-		if index.volumes[name] == nil {
+		table := index.volumes[name]
+		if table == nil {
 			return nil, ErrUnknownVolume
+		}
+		if table.ephemeral {
+			return nil, fmt.Errorf("%w: %s", ErrEphemeral, name)
 		}
 	}
 	if p.parent != nil {
