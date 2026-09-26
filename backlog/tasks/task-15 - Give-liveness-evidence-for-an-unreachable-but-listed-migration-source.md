@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-09-25 18:17'
-updated_date: '2026-09-26 16:26'
+updated_date: '2026-09-26 16:32'
 labels:
   - embedder
   - correctness
@@ -25,7 +25,7 @@ An embedding program replaces JuiceFS with sproutfs in its sandbox host. This is
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A migration whose source is unreachable but listed ends on evidence, not a timeout
+- [x] #1 A migration whose source is unreachable but listed ends on evidence, not a timeout
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -47,4 +47,12 @@ Evidence: the source's own hold (MigrateResult.Hold), counted by the orchestrato
 Orchestrator: watchSource (receive in flight) and retry both apply the rule; the retry's last wait ends with the hold, so a handover that no destination took now ends on the rule and the VM is recovered (TASK-14 left it stopped; docs and the simulated world already recovered it). recoverLost excuses only the source's silence (it handed the VM over); any other quiet host still refuses the recovery.
 Simulation: Config.Hold, IsolatedHost fault (process runs, listed, links and control plane cut), World.reach for everything the deployment does to a host, world receive and retry use the same rule. Scenario TestAMigrationWhoseSourceIsCutOffEndsAtItsHold; mutation guard migration-ignore-source-hold kills it (ends at the 30 s harness patience instead of the 10 s hold).
 Found: a fork onto another host does not watch its parent's host at all in the orchestrator (o.fork calls Receive with no watch), so a cut-off parent leaves the child's receive waiting for the HTTP client's 10-minute timeout. Not in scope; the simulated world carries fork receives under no hold to match.
+
+Validation: go test ./... and just check pass; just soak 1 200 passes (scheduled, seeded topology, host crash, swizzle, buggified). go test -race on the orchestrator, handover and the sim migration scenarios passes; orchestrator suite x10 passes. Guards: migration-ignore-source-hold kills TestAMigrationWhoseSourceIsCutOffEndsAtItsHold; migration-give-up-first-receive still kills the swizzle campaign. Removing the source's excuse from the recovery fails TestAListedSourceNothingCanReachEndsAMigrationAtItsHold.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A migration whose source is listed but unreachable now ends on the source's own hold. internal/handover gains Hold (counted from the handoff's arrival) and one rule, Hold.Gone: unlisted pod, answered without the VM, or hold over; silence never counts, a zero hold proves nothing. The orchestrator's receive watch and retries both apply it (so migrations and drains share it); the retry's last wait ends with the hold, so a handover no destination took is recovered on that evidence. The recovery after a lost source excuses only the source's silence. The simulated world uses the same rule, with Config.Hold and an IsolatedHost fault. Verified by orchestrator tests (quiet listed source ends at its hold and is recovered; quiet source inside its hold waits; another quiet host refuses the recovery), handover unit tests, the sim scenario TestAMigrationWhoseSourceIsCutOffEndsAtItsHold with its mutation guard, go test ./..., just check and just soak 1 200.
+<!-- SECTION:FINAL_SUMMARY:END -->
