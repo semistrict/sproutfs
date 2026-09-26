@@ -1,11 +1,11 @@
 ---
 id: TASK-2.5
 title: Tenants in the split arena
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-25 23:02'
-updated_date: '2026-09-26 15:23'
+updated_date: '2026-09-26 15:26'
 labels:
   - security
 dependencies:
