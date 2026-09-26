@@ -133,6 +133,25 @@ func TestCreateRecordsTheTemplatesMemory(t *testing.T) {
 	}
 }
 
+// A create's ephemeral disk is the host's to map, so the orchestrator hands it
+// to the host with the rest of the request.
+func TestACreateHandsItsEphemeralDiskToTheHost(t *testing.T) {
+	d := newDeployment(t, map[string][]string{"host-0": {}})
+	host0 := d.hosts["host-0"]
+	host0.templates = []host.Template{{Name: "workload", MemoryBytes: 512 << 20, Imported: true}}
+	host0.arena(1024, 0)
+	host0.commit(0)
+	created, err := d.orchestrator.Create(t.Context(), orch.CreateRequest{Template: "workload",
+		Ephemeral: 8 << 30})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := fmt.Sprintf("host-0 create %s workload ephemeral=%d", created.Result.VM.ID, 8<<30)
+	if len(d.log) == 0 || d.log[len(d.log)-1] != want {
+		t.Fatalf("the deployment did %v, want %q last", d.log, want)
+	}
+}
+
 // TestACreateIsPlacedAndRecordedAtTheMemoryItAsksFor: a create that asks for
 // more RAM than its template has costs a host that much, so it is placed by
 // it, written down with it, and handed to the host with the rest of its shape.

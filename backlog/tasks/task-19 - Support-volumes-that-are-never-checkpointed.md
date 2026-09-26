@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-09-25 18:17'
-updated_date: '2026-09-26 01:45'
+updated_date: '2026-09-26 01:51'
 labels:
   - embedder
 dependencies: []
@@ -51,4 +51,6 @@ Step 2 done: checkpoint records ephemeral volumes (root field 7, Publication.Add
 Step 3 done: volume ephemeral disks (ErrEphemeral; reads zero; Manager.Fork(..., added) adds ephemeral disks, which is how a create gives one). Next: vmmemory Config.Ephemeral pager, Pagers.Ephemeral, Seal no-op.
 
 Step 4 done: vmmemory ephemeral pager (Config.Ephemeral, EphemeralBacking, Pagers.Ephemeral/Of, Seal no-op, OnInterval false). Next: host (pagerConfig, admission, flush, supervisor third pager, Create via Fork added), vmmachine plan.
+
+Step 5 done: host and vmmachine run ephemeral disks. Supervisor third pager via SupervisorConfig.Ephemeral (ArenaBytes, DiskBytes); CreateRequest.Ephemeral; handoff carries Ephemeral per region. Next: cmd config and metrics, orchestrator and CLI, then simtest.
 <!-- SECTION:NOTES:END -->

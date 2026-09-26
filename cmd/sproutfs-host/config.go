@@ -68,6 +68,12 @@ func mountsRootWithDAX(args string) bool {
 // value disables the loop, which is what a host driving its own captures wants.
 const minimumCheckpointInterval = time.Second
 
+// defaultEphemeralArenaBytes is the HugeTLB share the ephemeral pager takes
+// when a deployment gives it a disk and names no arena: enough to keep a
+// working set of an ephemeral disk resident, and small beside the disks it may
+// spill.
+const defaultEphemeralArenaBytes = 256 << 20
+
 // defaultTemplates is the one guest image the demo image carries.
 const defaultTemplates = "alpine=/usr/share/sproutfs/guest.ext4"
 
@@ -172,7 +178,24 @@ func loadConfig(lookup func(string) string) (config, error) {
 	// the orchestrator and the CLI do. It is not required: a host run by hand
 	// outside a cluster serves an API that admits anyone, and says so.
 	c.APIToken = jsonhttp.Token(text(jsonhttp.TokenEnv, ""))
-	c.MemoryBytes = number("SPROUTFS_MEMORY_BYTES", arenaBytes+(1<<30))
+	// An ephemeral disk's pages are its only copy, so the pager that holds them
+	// is budgeted apart from the other two. SPROUTFS_EPHEMERAL_BYTES is the disk
+	// its spill file may take, which is every ephemeral disk this host admits,
+	// and SPROUTFS_EPHEMERAL_ARENA_BYTES its share of the HugeTLB pool. A host
+	// without the first runs no ephemeral pager and refuses an ephemeral disk.
+	c.Ephemeral = host.EphemeralBudget{DiskBytes: number("SPROUTFS_EPHEMERAL_BYTES", 0)}
+	if c.Ephemeral.DiskBytes > 0 {
+		c.Ephemeral.ArenaBytes = number("SPROUTFS_EPHEMERAL_ARENA_BYTES", defaultEphemeralArenaBytes)
+		for _, budget := range []struct {
+			name  string
+			bytes int64
+		}{{"SPROUTFS_EPHEMERAL_BYTES", c.Ephemeral.DiskBytes}, {"SPROUTFS_EPHEMERAL_ARENA_BYTES", c.Ephemeral.ArenaBytes}} {
+			if budget.bytes%pmemPageSize != 0 {
+				fail("%s is %d, want whole %d-byte PMEM pages", budget.name, budget.bytes, pmemPageSize)
+			}
+		}
+	}
+	c.MemoryBytes = number("SPROUTFS_MEMORY_BYTES", arenaBytes+c.Ephemeral.ArenaBytes+(1<<30))
 	c.CacheBytes = number("SPROUTFS_CACHE_BYTES", 1<<30)
 	spillBytes := number("SPROUTFS_SPILL_BYTES", 16<<30)
 	c.VMMemoryBytes = uint64(number("SPROUTFS_VM_MEMORY_BYTES", 512<<20))

@@ -744,7 +744,8 @@ func (o *orchestrator) Create(ctx context.Context, request orch.CreateRequest) (
 	o.note(ctx, vmRecord{ID: id, Host: target.report.Name, State: stateCreating,
 		Template: template, Parent: parent, Memory: need})
 	result, err := target.client.Create(ctx, host.CreateRequest{ID: id, Template: request.Template,
-		From: request.From, Memory: request.Memory, Disk: request.Disk, VCPUs: request.VCPUs})
+		From: request.From, Memory: request.Memory, Disk: request.Disk, VCPUs: request.VCPUs,
+		Ephemeral: request.Ephemeral})
 	if err != nil {
 		o.forget(ctx, id)
 		return orch.CreateResult{}, fmt.Errorf("creating %s on %s: %w", id, target.report.Name, err)

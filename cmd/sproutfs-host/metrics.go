@@ -36,16 +36,17 @@ func metrics(status hostapi.Status) string {
 	write("sproutfs_vms_waiting", "gauge",
 		"VMs past their loss window, whose stores the pager is holding back until a checkpoint of them lands.", waiting)
 
-	// A host runs one pager per kind of memory region, so every pager series carries
-	// the kind as a label: two kinds, one series each, and comparing RAM against
-	// PMEM is a query rather than twice the metrics. Page counts have to be
-	// labelled — the two pagers run their own pages, so a sum of them would mean
-	// nothing — and the bytes are labelled beside them for the same reason a
-	// deployment plans for the two separately.
+	// A host runs one pager per kind of memory region, and one for ephemeral
+	// disks, so every pager series carries the pager as its kind label: one
+	// series each, and comparing RAM against PMEM is a query rather than twice
+	// the metrics. Page counts have to be labelled — the pagers run their own
+	// pages, so a sum of them would mean nothing — and the bytes are labelled
+	// beside them for the same reason a deployment plans for each separately. A
+	// host that runs no ephemeral pager reports zeroes for it.
 	kinds := []struct {
 		name  string
 		pager hostapi.PagerKind
-	}{{"ram", status.Pager.RAM}, {"pmem", status.Pager.PMEM}}
+	}{{"ram", status.Pager.RAM}, {"pmem", status.Pager.PMEM}, {"ephemeral", status.Pager.Ephemeral}}
 	byKind := func(name, metric, help string, value func(hostapi.PagerKind) any) {
 		fmt.Fprintf(&out, "# HELP %s %s\n# TYPE %s %s\n", name, help, name, metric)
 		for _, kind := range kinds {

@@ -198,6 +198,8 @@ func (f *fakeHostClient) Create(_ context.Context, request host.CreateRequest) (
 	case request.From != nil:
 		f.record("create %s from %s@%d memory=%d", request.ID, request.From.VM, request.From.Checkpoint,
 			request.Memory)
+	case request.Ephemeral != 0:
+		f.record("create %s %s ephemeral=%d", request.ID, request.Template, request.Ephemeral)
 	case request.Memory != 0 || request.Disk != 0 || request.VCPUs != 0:
 		f.record("create %s %s memory=%d disk=%d vcpus=%d", request.ID, request.Template,
 			request.Memory, request.Disk, request.VCPUs)

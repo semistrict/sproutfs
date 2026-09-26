@@ -62,7 +62,7 @@ func execute(ctx context.Context, client *orch.Client, command invocation,
 		return err
 	case "create":
 		request := orch.CreateRequest{Template: command.Template,
-			Memory: command.Memory, Disk: command.Disk, VCPUs: command.VCPUs}
+			Memory: command.Memory, Disk: command.Disk, VCPUs: command.VCPUs, Ephemeral: command.Ephemeral}
 		if command.From != "" {
 			request.From = &host.CheckpointRef{VM: command.From, Checkpoint: command.FromCheckpoint}
 		}

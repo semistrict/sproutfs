@@ -42,6 +42,9 @@ type invocation struct {
 	Cold         bool
 	Memory, Disk uint64
 	VCPUs        int
+	// Ephemeral is the size of the ephemeral disk a create gives the VM: a
+	// disk no checkpoint holds.
+	Ephemeral uint64
 	// Suspend stops a VM with its memory and its VMM state published beside
 	// its disks, so a start resumes it rather than booting it.
 	Suspend bool
@@ -62,8 +65,9 @@ var errUsage = errors.New("usage")
 
 const usage = `sproutfsctl drives a sproutfs demo deployment through its orchestrator.
 
-  sproutfsctl create [--template NAME] [--memory 1G] [--disk 4G] [--vcpus 2]
-                                           create a VM at a shape and boot it
+  sproutfsctl create [--template NAME] [--memory 1G] [--disk 4G] [--vcpus 2] [--ephemeral 8G]
+                                           create a VM at a shape and boot it; --ephemeral
+                                           gives it a second disk no checkpoint holds
   sproutfsctl import-template FILE [--memory 1G]
                                            import a guest image into a template, and
                                            print the identity create --template takes
@@ -120,7 +124,7 @@ var commands = map[string]struct {
 	// keeps a guest's own flags and quoting out of this CLI's parser.
 	trailing bool
 }{
-	"create":          {flags: []string{"template", "from", "memory", "disk", "vcpus"}},
+	"create":          {flags: []string{"template", "from", "memory", "disk", "vcpus", "ephemeral"}},
 	"import-template": {target: "file", flags: []string{"memory"}},
 	"list":            {},
 	"hosts":           {},
@@ -257,15 +261,18 @@ func parse(args []string) (invocation, error) {
 				return invocation{}, fmt.Errorf("%w: --vcpus is %q, want 1 to 32", errUsage, value)
 			}
 			result.VCPUs = vcpus
-		case "memory", "disk":
+		case "memory", "disk", "ephemeral":
 			size, err := parseBytes(value)
 			if err != nil {
 				return invocation{}, fmt.Errorf("%w: --%s is %q, want a size such as 1G", errUsage, flag, value)
 			}
-			if flag == "memory" {
+			switch flag {
+			case "memory":
 				result.Memory = size
-			} else {
+			case "disk":
 				result.Disk = size
+			default:
+				result.Ephemeral = size
 			}
 		}
 	}

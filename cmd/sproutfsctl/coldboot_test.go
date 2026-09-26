@@ -110,6 +110,33 @@ func TestColdStartPrintsThatTheVMCameBackWithoutItsMemory(t *testing.T) {
 	}
 }
 
+// A create asks for an ephemeral disk the way it asks for its other disk: by
+// size, carried to the orchestrator as it was given.
+func TestCreateAsksForAnEphemeralDisk(t *testing.T) {
+	command, err := parse([]string{"create", "--template", "alpine", "--ephemeral", "8G"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if command.Ephemeral != 8<<30 {
+		t.Fatalf("parsed %+v, want an 8 GiB ephemeral disk", command)
+	}
+	if _, err := parse([]string{"start", "vm-1", "--cold", "--ephemeral", "8G"}); !errors.Is(err, errUsage) {
+		t.Fatalf("a start given an ephemeral disk parsed with %v, want a usage error", err)
+	}
+	client, stub := serve(t, func(*http.Request) (int, any) {
+		return http.StatusOK, orch.CreateResult{Host: "sproutfs-host-a",
+			Result: host.CreateResult{VM: host.VM{ID: "vm-2"}, Total: 1.5}}
+	})
+	var out bytes.Buffer
+	if err := execute(t.Context(), client, command, nil, &out, &out); err != nil {
+		t.Fatal(err)
+	}
+	asked := `POST /vms {"template":"alpine","ephemeral":8589934592}`
+	if len(stub.requests) != 1 || stub.requests[0] != asked {
+		t.Fatalf("the CLI asked for %v, want %s", stub.requests, asked)
+	}
+}
+
 // A create carries the shape it asks for, which is the VM's from its first
 // checkpoint on.
 func TestCreateTakesAShape(t *testing.T) {

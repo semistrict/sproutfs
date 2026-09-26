@@ -125,12 +125,16 @@ type DrainReport struct {
 // new VM resumes the guest when the checkpoint holds VMM state and the request
 // names no shape, and boots cold over the disk it inherits otherwise. It takes
 // that VM's memory where it names none.
+//
+// Ephemeral gives the VM an ephemeral disk of that many bytes, which no
+// checkpoint holds; see host.CreateRequest.
 type CreateRequest struct {
-	Template string              `json:"template,omitempty"`
-	From     *host.CheckpointRef `json:"from,omitempty"`
-	Memory   uint64              `json:"memory,omitempty"`
-	Disk     uint64              `json:"disk,omitempty"`
-	VCPUs    int                 `json:"vcpus,omitempty"`
+	Template  string              `json:"template,omitempty"`
+	From      *host.CheckpointRef `json:"from,omitempty"`
+	Memory    uint64              `json:"memory,omitempty"`
+	Disk      uint64              `json:"disk,omitempty"`
+	VCPUs     int                 `json:"vcpus,omitempty"`
+	Ephemeral uint64              `json:"ephemeral,omitempty"`
 }
 
 // CreateResult is where the VM went and what its creation cost.

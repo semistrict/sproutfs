@@ -111,6 +111,33 @@ func TestConfigRefusesAnArenaThatIsNotWholePages(t *testing.T) {
 	}
 }
 
+// A host runs an ephemeral pager only where it is given a disk for one, and
+// that pager's arena comes out of the HugeTLB pool beside the others, so the
+// host's memory allotment grows by it. Both budgets are whole PMEM pages.
+func TestConfigReadsTheEphemeralBudget(t *testing.T) {
+	config, err := loadConfig(environ(minimal()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Ephemeral != (host.EphemeralBudget{}) {
+		t.Fatalf("a host given no ephemeral disk has an ephemeral budget %+v", config.Ephemeral)
+	}
+	values := minimal()
+	values["SPROUTFS_EPHEMERAL_BYTES"] = "34359738368"
+	if config, err = loadConfig(environ(values)); err != nil {
+		t.Fatal(err)
+	}
+	if config.Ephemeral != (host.EphemeralBudget{ArenaBytes: 256 << 20, DiskBytes: 32 << 30}) ||
+		config.MemoryBytes != (2<<30)+(256<<20)+(1<<30) {
+		t.Fatalf("ephemeral budget %+v and memory %d", config.Ephemeral, config.MemoryBytes)
+	}
+	values["SPROUTFS_EPHEMERAL_ARENA_BYTES"] = "3000000"
+	if _, err := loadConfig(environ(values)); err == nil ||
+		!strings.Contains(err.Error(), "SPROUTFS_EPHEMERAL_ARENA_BYTES is 3000000") {
+		t.Fatalf("an ephemeral arena of partial pages was configured with %v", err)
+	}
+}
+
 // Each pager is bounded in its own pages, so each is refused on its own.
 func TestConfigRefusesADirtyBoundAboveTheLogicalOne(t *testing.T) {
 	values := minimal()
