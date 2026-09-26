@@ -1,11 +1,11 @@
 ---
 id: TASK-38
 title: Fork from an older checkpoint that was marked kept
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-26 01:40'
-updated_date: '2026-09-26 02:35'
+updated_date: '2026-09-26 13:59'
 labels:
   - embedder
 dependencies: []

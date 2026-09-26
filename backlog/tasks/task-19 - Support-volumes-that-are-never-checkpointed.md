@@ -1,11 +1,11 @@
 ---
 id: TASK-19
 title: Support volumes that are never checkpointed
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-25 18:17'
-updated_date: '2026-09-26 02:04'
+updated_date: '2026-09-26 13:59'
 labels:
   - embedder
 dependencies: []
