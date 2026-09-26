@@ -73,10 +73,13 @@ func (s *supervisor) Create(ctx context.Context, request hostapi.CreateRequest) 
 	// checkpoint without state has memory no registers describe: their root is
 	// a cold boot's publication, the one moment the shape may change, and the
 	// new VM boots its kernel over the disk it inherits. A shape asks for that
-	// cold boot whatever the checkpoint holds.
+	// cold boot whatever the checkpoint holds, and so does an ephemeral disk the
+	// checkpoint does not already have at that size.
 	rooted := s.clock.Now()
 	shape := ColdShape{Memory: vmmachine.RAMVolume, Root: rootVolume,
-		MemoryBytes: request.Memory, RootBytes: request.Disk, VCPUs: request.VCPUs}
+		MemoryBytes: request.Memory, RootBytes: request.Disk, VCPUs: request.VCPUs,
+		Devices: request.Ephemeral != 0 && !(point.Ephemeral(ephemeralVolume) &&
+			point.Size(ephemeralVolume) == request.Ephemeral)}
 	state, err := s.host.CreateRoot(ctx, vm, point, shape)
 	if err != nil {
 		// A VM whose root never published is one nothing else can ever act on,

@@ -117,7 +117,9 @@ func TestACreateFromAKeptCheckpointResumesItsGuest(t *testing.T) {
 // TestACreateFromAKeptCheckpointWithoutStateBootsCold: a kept checkpoint of the
 // disks alone has memory no registers describe, so a VM created from it boots
 // cold: its disk is the kept checkpoint's and its memory is zeroes. A shape
-// asks for the same cold boot of a checkpoint that does hold state.
+// asks for the same cold boot of a checkpoint that does hold state, and so does
+// a device the state does not describe, such as an ephemeral disk the create
+// adds.
 func TestACreateFromAKeptCheckpointWithoutStateBootsCold(t *testing.T) {
 	for _, test := range []struct {
 		name    string
@@ -129,6 +131,10 @@ func TestACreateFromAKeptCheckpointWithoutStateBootsCold(t *testing.T) {
 				return host.CaptureDisks(t.Context(), vm, guest, nil, volume.Terms{Keep: true})
 			}},
 		{name: "shape", shape: host.ColdShape{Memory: "ram0", Root: "root", VCPUs: 2},
+			capture: func(vm *volume.VM, guest *machine) (*volume.Checkpoint, error) {
+				return host.Capture(t.Context(), vm, guest, nil, volume.Terms{Keep: true})
+			}},
+		{name: "device", shape: host.ColdShape{Memory: "ram0", Root: "root", Devices: true},
 			capture: func(vm *volume.VM, guest *machine) (*volume.Checkpoint, error) {
 				return host.Capture(t.Context(), vm, guest, nil, volume.Terms{Keep: true})
 			}},

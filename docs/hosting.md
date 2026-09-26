@@ -642,6 +642,9 @@ How it starts depends on what the checkpoint holds (`Host.CreateRoot`):
 - A create that names a shape boots cold whatever the checkpoint holds,
   because a shape can change only at a cold boot. A shape that names no size
   keeps the checkpoint's.
+- A create that adds an ephemeral disk the checkpoint does not have at that
+  size also boots cold. The VMM state does not describe that device, and a
+  guest cannot resume onto a device it never had.
 
 `CreateResult.Resumed` says which happened, and `sproutfsctl create` prints
 "resumed" for a VM that resumed.

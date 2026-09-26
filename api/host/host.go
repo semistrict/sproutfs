@@ -387,7 +387,8 @@ type Stored struct {
 // its record selects, a kept one, or one a pin already keeps can be named. The
 // new VM copies no byte. A checkpoint with VMM state resumes the guest where
 // it was, with its memory; one without boots cold over the disk it inherits,
-// and so does any create that names a shape, because a shape is a cold boot's.
+// and so does any create that names a shape, because a shape is a cold boot's,
+// or an ephemeral disk the checkpoint does not have at that size.
 //
 // Memory, Disk and VCPUs are the VM's shape: its RAM, the size its root volume
 // grows to, and its processors. Zero keeps what the template or the checkpoint

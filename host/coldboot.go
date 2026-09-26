@@ -27,12 +27,16 @@ type ColdShape struct {
 	// VCPUs is how many processors the guest boots with from here, zero to keep
 	// the count the VM has.
 	VCPUs int
+	// Devices says the VM has a device its checkpoint's VMM state does not
+	// describe, such as an ephemeral disk a create added or resized. No guest
+	// can resume onto a device it never had.
+	Devices bool
 }
 
 // changes reports a shape that changes anything about the VM, which only a
 // cold boot may.
 func (s ColdShape) changes() bool {
-	return s.MemoryBytes != 0 || s.RootBytes != 0 || s.VCPUs != 0
+	return s.MemoryBytes != 0 || s.RootBytes != 0 || s.VCPUs != 0 || s.Devices
 }
 
 // sizes is the shape as the volume manager takes it: the volumes whose size is
