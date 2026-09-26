@@ -1320,6 +1320,8 @@ SPROUTFS_SIM_BUG=pager-zero-new-page \
   go test ./internal/simtest -run '^TestScheduledWorldReproduces$' -count=1
 SPROUTFS_SIM_BUG=pager-forget-spill \
   go test ./internal/simtest -run '^TestSeededTopologyUnderBuggify$' -count=1
+SPROUTFS_SIM_BUG=pager-give-back-changed-copy \
+  go test ./internal/simtest -run '^TestSeededTopologyCampaign$' -count=1
 ```
 
 Each invocation must fail. Three of them belong to the generated schedule and
@@ -1333,7 +1335,11 @@ not to the recorded scenario, because they break a fault's own path:
   had already stopped.
 
 These three show that the per-site injection and the ambient faults are worth
-their cost. `migration-give-up-first-receive` belongs to the two-writer
+their cost. `pager-give-back-changed-copy` belongs to the generated schedule
+too. The recorded scenario runs no give-back. A campaign runs one at the end of
+one turn of its stores in four, as a host's interval would, and checks at once
+that every page its guest maps reads what the guest wrote. The guard gives back
+a copy the guest stored into, and seeds 1, 7 and 23 fail on that check. `migration-give-up-first-receive` belongs to the two-writer
 campaign. It gives a handoff up after its first failed receive. The campaign's
 separated links fail a first receive on every one of its sixteen seeds, and it
 requires the guest to be handed over, not taken over.

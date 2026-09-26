@@ -96,6 +96,12 @@
     "purpose": "Forget that evicted private bytes exist in scratch storage. Only the buggified campaign evicts enough to spill, so this is the entry the per-site injection made detectable."
   },
   {
+    "id": "pager-give-back-changed-copy",
+    "package": "internal/simtest",
+    "run": "^TestSeededTopologyCampaign$",
+    "purpose": "Give back a RAM copy the guest stored into, as though it still held its origin's bytes. The campaign's give-back checks every page the guest maps against what it wrote."
+  },
+  {
     "id": "pager-zero-new-page",
     "package": "internal/simtest",
     "run": "^TestScheduledWorldReproduces$",

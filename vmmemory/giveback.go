@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"slices"
+
+	"github.com/semistrict/sproutfs/platform/sim"
 )
 
 // Why a copy is given back without a checkpoint.
@@ -147,6 +149,11 @@ func (r *MemoryRegion) giveBack(ctx context.Context, index uint64, buffers *sett
 	h.stats.GiveBackCompares++
 	h.mu.Unlock()
 	same, err := buffers.equal(ctx, h, origin.fileSlot, pg.fileSlot)
+	if err == nil && !same && sim.Bug(ctx, "pager-give-back-changed-copy") {
+		// The copy goes back although the guest stored into it, which loses
+		// what it stored.
+		same = true
+	}
 	if err != nil || !same {
 		if !same && err == nil {
 			// The guest stored into it, so it is its own page for good.

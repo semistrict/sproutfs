@@ -1189,6 +1189,53 @@ the host holds the page twice. Preventing that needs a host kernel that passes
 the guest's access type through, or KVM userfault. Both are TASK-32 in the
 [backlog](../backlog/tasks).
 
+### Giving back an unchanged copy
+
+RAM is never checkpointed on the interval, so for RAM "the next checkpoint" may
+never come. A RAM page that a fork shares with its parent would then stay a
+private copy for as long as the VM lives. So the host gives such copies back on
+the interval, with no checkpoint and no pause: `MemoryRegion.GiveBack`, called
+once an interval for each VM's RAM (`host/giveback.go`). A disk's copies are
+settled by the checkpoint the interval takes of the disk instead.
+
+For each private copy that remembers its origin, the give-back:
+
+1. takes the page the way a store fault does: its read-ahead window, the memory
+   region shared, the origin's lock and then the copy's;
+2. write-protects the copy with `UFFDIO_WRITEPROTECT`;
+3. compares the copy with the origin, as the settle does;
+4. if they are equal, maps the origin in the copy's place with one MAP, frees
+   the copy and its dirty reservation, and installs the origin's page table
+   read-only;
+5. otherwise, takes the write-protection off again, and the copy forgets its
+   origin so that it is never compared again.
+
+No pause is needed. The window keeps every fault of the page out, and the memory
+region keeps a seal out. After the write-protection every store to the page
+traps and waits for the window, so the copy cannot change while it is compared.
+A store that trapped is served afterwards. It copies again, from the origin or
+from the copy that was kept, and loses nothing.
+
+**The guest is pointed at the origin in place, not revoked.** The settle revokes,
+because it does not hold the page's window, and a MAP without it could race a
+fault's mapping of the same page. The give-back holds the window and the memory
+region shared, so its MAP is the same command, under the same locks, as the one
+a store issues to replace the page it copied from. Revoking would also defeat it. A
+revoked page is missing, and on x86-64 the next cold read of a missing page
+arrives as a write, which copies the page again. An installed page is present,
+so KVM maps it for a read without asking the pager.
+
+A copy the pager has spilled, one in a range the rules made one whole mapping,
+and one the guest does not map are left for a later pass. A copy whose origin
+has been evicted forgets it. A sealed page is left to its checkpoint's settle.
+One pass compares at most 4,096 pages and 1 GiB for each VM, so 512 pages at
+2 MiB. Each pass starts where the last one stopped. `Stats.GiveBackCompares`
+counts the comparisons and `Stats.GivenBackPages` the pages given back.
+
+The give-back relies on every writer of guest RAM going through the VMM's page
+tables. See [writers that bypass the page
+tables](#writers-that-bypass-the-page-tables).
+
 The publication retires the seal. A sealed set whose checkpoint was selected
 retires as published:
 

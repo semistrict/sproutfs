@@ -120,3 +120,74 @@ func TestForksThatOnlyReadPublishNothingAndGoOnSharing(t *testing.T) {
 		}
 	})
 }
+
+// TestForksThatOnlyReadGiveTheirRAMBackWithoutACheckpoint is the same fan-out
+// with no checkpoint at all, which is what a RAM page gets: the interval never
+// checkpoints RAM. The give-back the interval runs instead hands every RAM copy
+// back to the page it was copied from, with the guests running, and leaves the
+// disk's copies to the disk's next checkpoint.
+func TestForksThatOnlyReadGiveTheirRAMBackWithoutACheckpoint(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		runtime := sim.New(sim.Config{Seed: 11,
+			Network: sim.NetworkConfig{Latency: time.Microsecond, Jitter: time.Nanosecond,
+				ConnectLatency: time.Microsecond},
+			ObjectStore: sim.ObjectStoreConfig{HeadLatency: time.Microsecond, GetLatency: time.Microsecond,
+				PutLatency: time.Microsecond, DeleteLatency: time.Microsecond, ListLatency: time.Microsecond,
+				BytesPerSecond: 1 << 40}})
+		prefix, err := platform.NewObjectPrefix("sproutfs/")
+		if err != nil {
+			t.Fatal(err)
+		}
+		const memoryPages, diskPages = 4, 2
+		volumes := []volume.VolumeSpec{
+			{Name: simtest.MemoryVolume, Size: memoryPages * simtest.RAMPage, PageSize: simtest.RAMPage},
+			{Name: "disk", Size: diskPages * simtest.PMEMPage, PageSize: simtest.PMEMPage}}
+		topology := simtest.Topology{Hosts: []string{"host-0"},
+			VMs: []simtest.VMSpec{{ID: "vm-1", Host: 0, Volumes: volumes}}}
+		k := knobs.Defaults()
+		k.ResidentPages, k.DirtyPages, k.LogicalPages = 64, 64, 256
+		k.ReadAheadPages, k.WriteAheadPages = 1, 1
+		if err := k.Validate(); err != nil {
+			t.Fatal(err)
+		}
+		ctx := sim.WithRuntime(t.Context(), runtime)
+		world := simtest.MustStart(t, ctx, simtest.Config{Runtime: runtime, Topology: topology,
+			Knobs: k, Prefix: prefix, Log: t.Logf})
+		if err := world.StoreAll("vm-1", 0x5c); err != nil {
+			t.Fatal(err)
+		}
+		if err := world.Checkpoint(ctx, "vm-1"); err != nil {
+			t.Fatal(err)
+		}
+		children := []simtest.VMSpec{
+			{ID: "vm-1-a", Parent: "vm-1", Host: 0, Volumes: volumes},
+			{ID: "vm-1-b", Parent: "vm-1", Host: 0, Volumes: volumes},
+		}
+		if err := world.FanOut(ctx, "vm-1", children); err != nil {
+			t.Fatal(err)
+		}
+		disk := uint64(diskPages) * simtest.PMEMPage
+		for _, child := range children {
+			if err := world.TakeWritable(ctx, child.ID); err != nil {
+				t.Fatalf("%s: taking every page writable: %v", child.ID, err)
+			}
+			if err := world.GiveBack(ctx, child.ID); err != nil {
+				t.Fatalf("%s: giving back: %v", child.ID, err)
+			}
+			held, err := world.Host(0).PrivateBytes(ctx, child.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if held != disk {
+				t.Fatalf("%s holds %d private bytes after the give-back, want the disk's %d alone",
+					child.ID, held, disk)
+			}
+		}
+		if err := world.Verify(ctx, simtest.ReadsMustSucceed); err != nil {
+			t.Error(err)
+		}
+		if err := world.Close(ctx); err != nil {
+			t.Error(err)
+		}
+	})
+}

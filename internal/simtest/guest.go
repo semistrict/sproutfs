@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"sync"
 
@@ -377,6 +378,56 @@ func (g *guest) takeWritable(ctx context.Context, name string, page uint64) erro
 	}
 	if err := g.memoryRegions[name].Fault(ctx, page, true); err != nil {
 		return fmt.Errorf("%s write fault on %s page %d: %w", g.instance, name, page, err)
+	}
+	return nil
+}
+
+// giveBackPages bounds one simulated give-back pass: every copy a campaign's
+// small memory can hold.
+const giveBackPages = 1 << 16
+
+// giveBack is the give-back a host runs on each VM's RAM once an interval,
+// which a campaign draws beside its stores because a campaign's hosts run no
+// interval of their own. It pauses nothing, so it runs while checkpoints,
+// forks and migrations of this VM are in flight.
+//
+// Its invariant is checked at once: every page the guest maps reads what the
+// guest last wrote. A copy given back maps the page it was copied from, which
+// is only right where the guest never changed it, and a wrong one would
+// otherwise surface only at the next read of that page.
+func (g *guest) giveBack(ctx context.Context) error {
+	for _, name := range g.names {
+		memoryRegion := g.memoryRegions[name]
+		if memoryRegion.Kind() != vmmemory.Ram {
+			continue
+		}
+		if _, err := memoryRegion.GiveBack(ctx, giveBackPages); err != nil {
+			return fmt.Errorf("%s give-back on %s: %w", g.instance, name, err)
+		}
+		if err := g.mapsWhatItWrote(name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// mapsWhatItWrote requires every page of one volume the guest maps from the
+// arena to hold the bytes the guest last wrote there.
+func (g *guest) mapsWhatItWrote(name string) error {
+	mp := g.mappings[name]
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	size := g.pageBytes[name]
+	for _, page := range slices.Sorted(maps.Keys(mp.Mapped())) {
+		got, mapped := mp.Read(page)
+		if !mapped || got == nil {
+			continue
+		}
+		want := g.model[name][int(page)*size : (int(page)+1)*size]
+		if !bytes.Equal(got, want) {
+			return fmt.Errorf("%s %s page %d maps %d after a give-back, want the %d the guest wrote",
+				g.instance, name, page, got[0], want[0])
+		}
 	}
 	return nil
 }

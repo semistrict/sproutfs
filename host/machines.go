@@ -176,8 +176,9 @@ func (h *Host) addMachine(vmID string, runtime Machine, pull bool) error {
 }
 
 // run starts what this host runs for one registered VM: the watcher on its VMM
-// process, the interval checkpoint loop, which a host with no interval
-// configured does not have, and the pull of a VM marked to pull its memory.
+// process, the interval checkpoint loop and the give-back of its unchanged RAM
+// copies, which a host with no interval configured does not have, and the pull
+// of a VM marked to pull its memory.
 // done closes once all of them have returned, so ending the machine waits for
 // them; a machine with no loop has no out-of-turn checkpoint to ask for
 // either, so now stays nil for it.
@@ -197,6 +198,7 @@ func (h *Host) run(vmID string, entry *registration) {
 	running.Go(func() { h.awaitingExit(ctx, cancel, vmID, entry) })
 	if h.checkpointInterval > 0 {
 		running.Go(func() { h.checkpointing(ctx, vmID, entry) })
+		running.Go(func() { h.givingBack(ctx, vmID, entry) })
 	}
 	if entry.pull {
 		running.Go(func() { h.pulling(ctx, vmID, entry) })
