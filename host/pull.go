@@ -37,6 +37,16 @@ func (h *Host) pulling(ctx context.Context, vmID string, entry *registration) {
 		close(fetched)
 		return
 	}
+	// A fork's child publishes its root right after it starts here, and that
+	// root is the checkpoint it runs on from then: the parent's pages and the
+	// ones the parent held that no checkpoint had, republished as the child's.
+	// Pulling the parent's alone would leave the second kind to the store.
+	select {
+	case <-vm.Rooted():
+	case <-ctx.Done():
+		close(fetched)
+		return
+	}
 	pull, err := vm.Pull(ctx)
 	entry.mu.Lock()
 	entry.pulled, entry.refused = pull, err

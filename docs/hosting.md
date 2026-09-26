@@ -770,15 +770,19 @@ for one the pager evicted since.
 What the pull covers is the checkpoint a VM's volumes sit on. For a create,
 that is the root the create published, which names the template's or the
 parent's pages. For an open, it is the checkpoint the control record selects.
-For a fork's child, it is the parent's checkpoint the child inherits. For a
-migration's receive, it is the checkpoint the destination opened. The pages no
-checkpoint holds are not the pull's. On a receive they come from the source's
-pager, on a fault or in the stream behind the guest, and on a child of this
-host's own parent they are the parent's sealed pages. Either way they are this
-host's own dirty pages from then on, resident or spilled, until the next
-checkpoint publishes them. So a pull never asks the source for anything. The
-pages a later checkpoint publishes are not pulled either: they are the guest's
-own, and they are read from the store when the pager evicts them.
+For a migration's receive, it is the checkpoint the destination opened. The
+pages no checkpoint holds are not the pull's: they come from the source's
+pager, on a fault or in the stream behind the guest, and they are this host's
+own dirty pages from then on, resident or spilled, until the next checkpoint
+publishes them. So a pull never asks the source for anything.
+
+A fork's child is pulled once its root has published. The child reads its
+parent's checkpoint and the pages the parent held that no checkpoint had, and
+its root republishes those pages as its own. The pull waits for that root, so
+it covers both kinds. Until then the child reads the second kind from the
+parent's sealed pages or the parent's page server, as any child does. The pages
+a later checkpoint publishes are not pulled: they are the guest's own, and
+they are read from the store when the pager evicts them.
 
 The mark lasts as long as the VM runs on the host. A migration carries it in
 the handoff, so the destination pulls too, and a stop or a migration away gives

@@ -62,7 +62,7 @@ if [[ ! -x "$busybox" ]]; then
     exit 1
 fi
 install -m 0755 "$busybox" "$work/root/bin/busybox"
-for applet in sh sleep echo test touch cat df sync; do ln -sf busybox "$work/root/bin/$applet"; done
+for applet in sh sleep echo test touch cat df sync dd; do ln -sf busybox "$work/root/bin/$applet"; done
 truncate -s 64M "$work/root.ext4"
 mkfs.ext4 -q -F -b 4096 -d "$work/root" "$work/root.ext4"
 GUEST

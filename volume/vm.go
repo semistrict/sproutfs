@@ -145,6 +145,9 @@ type VM struct {
 	root      bool
 	point     *ForkPoint
 	inherited map[string][]uint64
+	// rooted closes once this VM reads its own root: at once for any VM but a
+	// fork, and when a fork's root publication installs.
+	rooted chan struct{}
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -202,14 +205,17 @@ func newVM(m *Manager, id string, handle *control.Handle, base source, index, ow
 		byName: make(map[string]*Volume, len(specs)),
 		pubMu:  ctxsync.NewMutex(),
 		base:   base, baseIndex: index, owned: owned,
-		head: control.Ref{VM: id, Sequence: record.Selected},
-		next: nextSequence(handle.Epoch(), record.Selected),
+		head:   control.Ref{VM: id, Sequence: record.Selected},
+		next:   nextSequence(handle.Epoch(), record.Selected),
+		rooted: make(chan struct{}),
 	}
 	if point != nil {
 		// The root is the sequence the record already selects, and this fork
 		// publishes it rather than inheriting one that exists.
 		vm.root, vm.point, vm.inherited = true, point, point.inheritedPages()
 		vm.next = record.Selected
+	} else {
+		close(vm.rooted)
 	}
 	for ordinal, spec := range specs {
 		geometry, err := checkpoint.GeometryFor(spec.PageSize)

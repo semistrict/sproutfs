@@ -246,8 +246,24 @@ func TestForkBeforeItPublishesItsRoot(t *testing.T) {
 			t.Fatalf("opening the fork elsewhere = %v, want ErrForkPending", err)
 		}
 
+		// A pull waits for this: the fork reads its own root only once one lands.
+		select {
+		case <-fork.Rooted():
+			t.Fatal("a fork that has not published its root reports one")
+		default:
+		}
+		select {
+		case <-vm.Rooted():
+		default:
+			t.Fatal("a VM that is no fork waits for a root")
+		}
 		if err := fork.Checkpoint(t.Context()); err != nil {
 			t.Fatal(err)
+		}
+		select {
+		case <-fork.Rooted():
+		default:
+			t.Fatal("a fork that published its root still waits for one")
 		}
 		forked.check(t, fork, "the fork once it published its root")
 		if err := fork.Close(t.Context()); err != nil {

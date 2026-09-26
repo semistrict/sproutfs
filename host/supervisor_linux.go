@@ -496,22 +496,19 @@ func (s *supervisor) records(ctx context.Context) ([]hostapi.VM, error) {
 	defer s.mu.Unlock()
 	records := make([]hostapi.VM, 0, len(s.machines))
 	for _, id := range slices.Sorted(maps.Keys(s.machines)) {
-		m := s.machines[id]
-		status := m.vm.Status()
+		record := s.record(s.machines[id])
 		// What this host would cost the VM in time, beside what it would cost it
 		// in bytes: the host is the only thing that has both halves, since the
 		// window is measured across every memory region the VM maps.
-		window, waiting := s.host.LossWindow(id)
+		record.LossWindow, record.Waiting = s.host.LossWindow(id)
 		// The same is true of what the VM holds that nothing shares: its memory regions
 		// are the pager's and this host is what knows they are one VM's.
 		private, err := s.host.PrivateBytes(ctx, id)
 		if err != nil {
 			return nil, err
 		}
-		records = append(records, hostapi.VM{ID: id, Template: m.template, Host: s.config.PodName,
-			VCPUs:      m.vm.VCPUs(),
-			Checkpoint: status.Checkpoint.Sequence, Epoch: status.Epoch, DirtyBytes: status.DirtyBytes,
-			LossWindow: window, Waiting: waiting, PrivateBytes: private})
+		record.PrivateBytes = private
+		records = append(records, record)
 	}
 	return records, nil
 }

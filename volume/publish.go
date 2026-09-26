@@ -641,6 +641,7 @@ func (vm *VM) install(ckpt *Checkpoint, index *checkpoint.Index) *checkpoint.Ind
 		// enter it — a root publication that failed burnt its own, and the
 		// selection this one made is what the record now says the fork is.
 		vm.root, vm.inherited = false, nil
+		close(vm.rooted)
 	}
 	dirty := uint64(0)
 	for ordinal := range vm.overlays {
