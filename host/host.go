@@ -447,10 +447,11 @@ type Status struct {
 	//
 	// A child taken in on its parent's own host is served nothing, because it
 	// maps the pages the seal froze rather than fetching them, so the page
-	// server knows nothing about it. Its hold is a handover all the same: it
-	// holds the parent sealed, and a host reporting only what its page server
-	// holds would say a parent nothing can checkpoint is a parent nothing is
-	// waiting on.
+	// server knows nothing about it. Its hold is a handover all the same, and
+	// the same shape: it holds the parent sealed, it owes pages until the child
+	// is taken in, and its release is refused until then. A host reporting only
+	// what its page server holds would say a parent nothing can checkpoint is a
+	// parent nothing is waiting on.
 	Pages   vmmigrate.SourceStats
 	Serving []string
 	// Outstanding is, per VM in Serving, how many pages this host holds that no
@@ -458,9 +459,9 @@ type Status struct {
 	// handover whose pages are all on the other host and that only the
 	// orchestrator's word is keeping open; anything else is what a drain is
 	// actually waiting for. A VM whose volumes could not be listed reports -1,
-	// because what it still holds is unknown. A child taken in on this host maps
-	// the pages rather than fetching them, so it has nothing outstanding and
-	// reports zero.
+	// because what it still holds is unknown. A child on this host maps the
+	// pages rather than fetching them, so it owes every page the point holds
+	// for it until it is taken in, and none after.
 	Outstanding map[string]int
 	// LogicalPagesFree is what each pager's per-memory-region metadata cap still has
 	// left, in that pager's own pages. It is what admits a VM: the memory regions of
@@ -517,15 +518,20 @@ func (h *Host) Status() Status {
 	return status
 }
 
-// outstanding is what each handover in serving still owes, which for a child
-// this host took in itself is nothing: its pages were never fetched.
+// outstanding is what each handover in serving still owes: what the page
+// server has not answered for, and for a child this host takes in itself, what
+// it has yet to take from the point.
 func (h *Host) outstanding(serving []string) map[string]int {
 	left := make(map[string]int, len(serving))
 	if h.pages != nil {
 		left = h.pages.Outstanding()
 	}
+	h.machines.mu.Lock()
+	defer h.machines.mu.Unlock()
 	for _, vmID := range serving {
-		if _, found := left[vmID]; !found {
+		if hold := h.machines.forked[vmID]; hold != nil && hold.local {
+			left[vmID] = hold.owed()
+		} else if _, found := left[vmID]; !found {
 			left[vmID] = 0
 		}
 	}

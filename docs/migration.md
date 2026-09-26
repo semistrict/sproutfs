@@ -440,11 +440,26 @@ the point keeps the parent sealed. If the host reported that child as holding
 nothing, the deployment would see a parent that cannot be checkpointed as a
 parent that nothing is waiting on.
 
-A handover is given up instead of released when no host runs its VM and the
-table has no record of it. Such a VM is the child of a fan-out that failed.
-Nothing holds the pages the source kept for it, and nothing ever will. A release
-of those pages is the one request the source must refuse, because they are the
-only copy of the parent's writes since its last checkpoint.
+That local hold has the same shape as a served one. Until the host takes the
+child in, the hold's outstanding count is every page the point holds for it,
+and the host refuses its release. A release states that the child has every
+page it inherited, and a child not yet taken in has none of them. The host is
+the one thing that knows whether it took the child in, as the page server is
+the one thing that knows what a child on another host fetched. Once the child
+is taken in, it maps every page it inherited, the count is zero and the release
+is accepted.
+
+A handover is given up instead of released when its VM does not exist and
+nothing is creating it. No host runs the VM, no operation is in flight for it,
+and either the table has no row for it or the bucket has no control record of
+it. Every reconcile lists the bucket, so it finds the second case. Such a VM is
+the child of a fork that failed or was never taken in, for example because the
+orchestrator restarted between the handoff and the receive. A migrated VM always
+has a record, so a migration is never given up this way. Nothing holds the
+pages the source kept for such a child, and nothing ever will. A release of
+those pages is a request the source must refuse. On another host they are the
+only copy of the parent's writes since its last checkpoint. On the parent's own
+host they are what the child would be taken in over.
 `POST /vms/{id}/abandoned` is the request that gives them up, and it refuses
 nothing.
 

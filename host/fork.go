@@ -36,6 +36,12 @@ type forkHold struct {
 	// handoff over the fork point rather than over the page server. It is what
 	// says the point is the one that Receive binds the child's memory regions to.
 	local bool
+	// taken reports a local child that Receive has bound to the point. From
+	// then on the child maps every page it inherited and holds the point
+	// through its own handle. Until then it has none of those pages, so a
+	// release of this hold is refused, as the page server refuses one for a
+	// child elsewhere that has not fetched them.
+	taken bool
 	// timer retires the hold when nothing releases it. It is armed on the
 	// host's clock, so a simulation reaches the deadline by advancing to it
 	// rather than by waiting several checkpoint intervals for it.
@@ -68,6 +74,44 @@ func (h *Host) inherited(child string) *volume.ForkPoint {
 		return hold.point
 	}
 	return nil
+}
+
+// took records that a child this host takes in itself has been bound to the
+// fork point it inherits.
+func (h *Host) took(child string) {
+	h.machines.mu.Lock()
+	defer h.machines.mu.Unlock()
+	if hold := h.machines.forked[child]; hold != nil && hold.local {
+		hold.taken = true
+	}
+}
+
+// untaken refuses the release of a hold whose child this host has yet to take
+// in. Such a child has none of the pages it inherited, and the hold is what
+// Receive finds them through, so releasing it would leave nothing to take the
+// child in over.
+func (h *Host) untaken(child string) error {
+	h.machines.mu.Lock()
+	defer h.machines.mu.Unlock()
+	if hold := h.machines.forked[child]; hold != nil && hold.local && !hold.taken {
+		return fmt.Errorf("%w: %s has not been taken in over the fork point it inherits",
+			vmmigrate.ErrOutstanding, child)
+	}
+	return nil
+}
+
+// owed is how many pages a child this host takes in itself has yet to take:
+// every page the point holds for it until Receive binds it there, and none
+// after.
+func (hold *forkHold) owed() int {
+	if hold.taken {
+		return 0
+	}
+	owed := 0
+	for _, volume := range hold.point.Volumes() {
+		owed += len(hold.point.Pages(volume))
+	}
+	return owed
 }
 
 // Fork takes one fork point on a VM this host runs and hands every child of

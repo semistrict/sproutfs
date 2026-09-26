@@ -482,7 +482,9 @@ in:
 
 That is the question to ask about a drain that is not finishing. A VM whose
 volumes cannot be listed reports `-1`, because the number of pages it still
-holds is unknown. On the destination side, each receive logs a line when the
+holds is unknown. A fork's child on its parent's own host fetches nothing. Its
+count is every page the fork point holds for it until the host takes it in, and
+zero after. Its release is refused until then. On the destination side, each receive logs a line when the
 post-copy finishes. The line carries the pages served, the requests that the
 source refused for its per-peer budget, and the duration. It also carries the
 latency of the guest's own faults to the source (p50, p99 and maximum, and the

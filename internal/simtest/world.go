@@ -105,6 +105,11 @@ type World struct {
 	// deleted again at every step, because a record nothing can open and
 	// nothing can publish under is an identity burnt for good.
 	orphans map[string]bool
+	// forgetsReleases reports that nothing carries the word that a destination
+	// has every page it was handed: an orchestrator that restarted between a
+	// receive and its release. The source goes on holding what it handed over,
+	// and only the survey at the next step ends the hold.
+	forgetsReleases bool
 	// takeovers counts the VMs a host opened again because whatever was running
 	// them stopped: a lost host, a migration that could not be undone, a
 	// post-copy that did not finish. It is what a test asserts to say that its
@@ -1433,7 +1438,9 @@ func (w *World) MigrateWith(ctx context.Context, id string, to int, terms Handov
 	// then meets a source that has given the VM up and reads the rest from
 	// there, which is the ordinary end of a migration's stream rather than a
 	// fault.
-	if released := w.up(from); released != nil {
+	if w.forgetsReleases {
+		w.logf("%s: nothing released what %s handed over", id, source.name)
+	} else if released := w.up(from); released != nil {
 		if err := released.ReleaseMigrated(id); err != nil {
 			w.logf("%s: %s would not release what it handed over: %v", id, source.name, err)
 			_ = released.Abandon(id)
@@ -1743,10 +1750,12 @@ func (w *World) forked(ctx context.Context, source, destination *hostState, spec
 		return false, fmt.Errorf("the child's first read: %w", err)
 	}
 	// The child has every page it inherited and a root of its own, so the parent
-	// takes its sealed pages back here. A release the store refuses leaves the
-	// point where it is, and the next step tries again: a parent that stays
-	// sealed can never checkpoint again.
-	if released := w.up(w.indexOf(source)); released != nil {
+	// takes its sealed pages back here. A release that is refused or never made
+	// leaves the point where it is, and the survey at the next step ends it: a
+	// parent that stays sealed can never checkpoint again.
+	if w.forgetsReleases {
+		w.logf("%s: nothing released the fork point %s holds for it", spec.ID, source.name)
+	} else if released := w.up(w.indexOf(source)); released != nil {
 		if err := released.ReleaseMigrated(spec.ID); err != nil {
 			w.logf("%s: the fork point could not be retired: %v", spec.Parent, err)
 		}
@@ -1798,7 +1807,83 @@ func (w *World) Settle(ctx context.Context) error {
 			break
 		}
 	}
+	w.survey()
 	return errors.Join(errs...)
+}
+
+// survey is the orchestrator's end of every handover a host still holds that
+// nothing is waiting on. Between two steps nothing is in flight, so each one it
+// finds is stale. One whose VM exists is released, which its host refuses
+// while that VM has not taken what it holds. One whose VM does not exist is
+// given up, because nothing will ever take what it holds.
+func (w *World) survey() {
+	for index, h := range w.hosts {
+		running := w.up(index)
+		if running == nil {
+			continue
+		}
+		for _, id := range running.Status().Serving {
+			if !w.Exists(id) {
+				if err := running.Abandon(id); err != nil {
+					w.logf("%s: %s would not give up what it holds for it: %v", id, h.name, err)
+				}
+				continue
+			}
+			if err := running.ReleaseMigrated(id); err != nil {
+				w.logf("%s: %s would not release what it holds for it: %v", id, h.name, err)
+			}
+		}
+	}
+}
+
+// VerifyHandovers requires every VM a fork point holds sealed to be accounted
+// for by its host: a child of it is among the handovers that host reports. A
+// parent sealed by a hold its host does not report is one the deployment sees
+// waiting on nothing, and only the host's own deadline would ever end it.
+//
+// It also requires a hold whose child runs on the same host to owe nothing.
+// Such a child was taken in over the point and maps every page it inherited,
+// so its release is one the host would accept.
+func (w *World) VerifyHandovers() error {
+	var errs []error
+	for index, h := range w.hosts {
+		running := w.up(index)
+		if running == nil {
+			continue
+		}
+		status := running.Status()
+		for _, id := range status.Serving {
+			if w.HostOf(id) == index && status.Outstanding[id] != 0 {
+				errs = append(errs, fmt.Errorf("%s runs %s and reports it owes %d pages of its handover",
+					h.name, id, status.Outstanding[id]))
+			}
+		}
+		for _, id := range w.Started() {
+			if w.HostOf(id) != index {
+				continue
+			}
+			vm := w.VM(id)
+			if vm == nil || !vm.Status().Sealed {
+				continue
+			}
+			if !slices.ContainsFunc(status.Serving, func(child string) bool { return w.parentOf(child) == id }) {
+				errs = append(errs, fmt.Errorf("%s is sealed and %s reports no hold for a child of it: %v",
+					id, h.name, status.Serving))
+			}
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// parentOf is the VM one VM was forked from, empty for one that was created and
+// for one that does not exist.
+func (w *World) parentOf(id string) string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if in := w.instances[id]; in != nil {
+		return in.spec.Parent
+	}
+	return ""
 }
 
 // abandon takes a VM out of the world without publishing anything: the child of

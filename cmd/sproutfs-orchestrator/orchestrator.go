@@ -297,7 +297,7 @@ func (o *orchestrator) survey(ctx context.Context) ([]liveHost, error) {
 		return nil, err
 	}
 	o.observe(ctx, hosts)
-	o.release(ctx, hosts)
+	o.release(ctx, hosts, nil)
 	return hosts, nil
 }
 
@@ -381,13 +381,15 @@ func (o *orchestrator) fanOut(ctx context.Context, remember bool) ([]liveHost, e
 // the source's last checkpoint. Everything else is released, which is idempotent
 // and which a restarted orchestrator therefore does on its first survey.
 //
-// A handover of a VM no host runs and the table has never heard of is the
-// exception, and it is given up rather than released: it is the child of a
-// fan-out that failed, so nothing holds the pages the source kept for it and
-// nothing ever will. Asking to release those is asking for something the source
-// can only refuse — they are the only copy — so a survey that kept asking kept
-// a parent sealed until the host's own deadline retired the hold.
-func (o *orchestrator) release(ctx context.Context, hosts []liveHost) {
+// A handover of a VM that does not exist is the exception, and it is given up
+// rather than released: it is a fork's child that was never taken in, so
+// nothing holds the pages the source kept for it and nothing ever will. Asking
+// to release those is asking for something the source can only refuse — they
+// are the only copy, or the child has yet to be taken in over them — so a
+// survey that kept asking kept a parent sealed until the host's own deadline
+// retired the hold. existing is the bucket's list of records when the caller
+// read it, and nil when it did not.
+func (o *orchestrator) release(ctx context.Context, hosts []liveHost, existing []string) {
 	if o.table == nil {
 		return
 	}
@@ -406,9 +408,7 @@ func (o *orchestrator) release(ctx context.Context, hosts []liveHost) {
 			if found && stillInFlight(row) {
 				continue
 			}
-			if !found && !runningSomewhere(hosts, id) {
-				// Nothing knows this VM: no row names it and no host runs it, so
-				// nothing will ever fetch what this host holds for it.
+			if forsaken(hosts, id, found, existing) {
 				o.giveUp(ctx, h, id)
 				continue
 			}
@@ -421,6 +421,19 @@ func (o *orchestrator) release(ctx context.Context, hosts []liveHost) {
 				"vm", id, "host", h.report.Name, "state", row.State)
 		}
 	}
+}
+
+// forsaken reports a handover whose VM does not exist, which nothing will ever
+// fetch from or take in over what its host holds. It is asked only of a VM with
+// no operation in flight. No host runs the VM, and no row names it or the
+// bucket has no record of it. A migrated VM always has a record, so this is a
+// fork's child that was never taken in, or one that was and has since been
+// deleted.
+func forsaken(hosts []liveHost, id string, found bool, existing []string) bool {
+	if runningSomewhere(hosts, id) {
+		return false
+	}
+	return !found || (existing != nil && !slices.Contains(existing, id))
 }
 
 // ReconcileInterval is how often the orchestrator rebuilds its table from the
@@ -457,18 +470,22 @@ func (o *orchestrator) Reconciling(ctx context.Context, every time.Duration) {
 // bucket's own list of VMs, which is the only thing that tells a VM that was
 // deleted from one whose host is gone. It is also what releases a handover
 // nothing is waiting on, so an orchestrator that restarted mid-migration frees
-// the source's pages here.
+// the source's pages here. The bucket's list is also what shows a fork's child
+// that was never taken in no longer exists, so its hold is given up here.
 func (o *orchestrator) Reconcile(ctx context.Context) error {
 	identities, err := o.identities(ctx)
 	if err != nil {
 		return err
 	}
-	hosts, err := o.survey(ctx)
+	existing := live(identities)
+	hosts, err := o.fanOut(ctx, false)
 	if err != nil {
 		return err
 	}
+	o.observe(ctx, hosts)
+	o.release(ctx, hosts, existing)
 	o.write(ctx, hosts, func(found surveyed) error {
-		return o.table.Reconcile(ctx, found, live(identities))
+		return o.table.Reconcile(ctx, found, existing)
 	})
 	return nil
 }

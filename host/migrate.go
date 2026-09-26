@@ -296,6 +296,11 @@ func (h *Host) Receive(ctx context.Context, handoff vmmigrate.Handoff) (*vmmigra
 	if err != nil {
 		return nil, err
 	}
+	if point != nil {
+		// The child maps every page it inherited from here, which is what a
+		// release of the hold kept for it states.
+		h.took(handoff.VMID)
+	}
 	if err := h.AddMachine(handoff.VMID, started); err != nil {
 		// The same VM in the same state as one whose stream never completed: a
 		// guest this host started from the source's captured state and cannot
@@ -408,7 +413,10 @@ func (h *Host) discardReceived(ctx context.Context, vmID string, runtime Machine
 // checkpoint has and the destination has not fetched. What the control plane's
 // table says about the migration is not evidence of that: the page server
 // answered the fetches, so it is the one thing that knows, and a release it
-// refuses leaves the VM exactly as it was and still serving.
+// refuses leaves the VM exactly as it was and still serving. A child of a fork
+// this host takes in itself fetches nothing, and this host is the one thing that
+// knows whether it has been taken in: until it has, its release is refused the
+// same way.
 func (h *Host) ReleaseMigrated(vmID string) error { return h.release(vmID, false) }
 
 // Abandon is ReleaseMigrated for a VM this host is giving up rather than
@@ -419,8 +427,14 @@ func (h *Host) ReleaseMigrated(vmID string) error { return h.release(vmID, false
 func (h *Host) Abandon(vmID string) error { return h.release(vmID, true) }
 
 func (h *Host) release(vmID string, abandoning bool) error {
-	// The page server goes first, because it is what can refuse: nothing below
-	// may be undone for a release that does not happen.
+	// What can refuse goes first: nothing below may be undone for a release
+	// that does not happen. A child this host takes in itself is refused here
+	// until it has been, and one elsewhere by the page server.
+	if !abandoning {
+		if err := h.untaken(vmID); err != nil {
+			return fmt.Errorf("releasing %s: %w", vmID, err)
+		}
+	}
 	if h.pages != nil {
 		if abandoning {
 			h.pages.Discard(vmID)

@@ -174,6 +174,11 @@ func (d *Driver) Run(ctx context.Context) error {
 		if err := d.world.VerifyKept(ctx, ReadsMayFail); err != nil {
 			return fmt.Errorf("step %d: %w", step, err)
 		}
+		// Every hold a step leaves behind is one its host reports, so the
+		// survey at the next step can end it.
+		if err := d.world.VerifyHandovers(); err != nil {
+			return fmt.Errorf("step %d: %w", step, err)
+		}
 	}
 	for _, w := range windows {
 		if live[w.fault] {

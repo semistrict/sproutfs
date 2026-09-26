@@ -345,15 +345,19 @@ type Status struct {
 	// PageAddress is where this host serves the memory of a VM it has handed
 	// over, which is what another host's handoff names as its source.
 	PageAddress string `json:"page_address"`
-	// Running is what this host runs and Serving what it has migrated away and
-	// still holds pages for. A drain is finished when Serving is empty.
+	// Running is what this host runs and Serving every handover it still holds
+	// pages for: the VMs it migrated away and the children of every fork point
+	// it took, a child on this host's own pages among them. A drain is finished
+	// when Serving is empty.
 	Running []string `json:"running"`
 	Serving []string `json:"serving"`
 	// Outstanding is, per VM in Serving, how many pages this host still holds
 	// that no checkpoint has and that its destination has not fetched. It says
 	// which of two things a name in Serving is: a handover still pulling its
 	// pages across, or one that has them all and is only waiting for the word
-	// that releases it. A VM whose volumes could not be listed reports -1.
+	// that releases it. A VM whose volumes could not be listed reports -1. A
+	// child on its parent's own host owes every page its fork point holds for
+	// it until this host has taken it in.
 	Outstanding map[string]int `json:"outstanding"`
 	VMs         []VM           `json:"vms"`
 	// Templates are the guest images this host can create VMs from, in name

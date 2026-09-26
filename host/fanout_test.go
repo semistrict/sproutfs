@@ -1,11 +1,14 @@
 package host_test
 
 import (
+	"errors"
+	"maps"
 	"slices"
 	"testing"
 	"time"
 
 	"github.com/semistrict/sproutfs/platform/sim"
+	"github.com/semistrict/sproutfs/vmmigrate"
 )
 
 // TestAFanOutNothingReceivesExpiresEveryHold: a fan-out is one pause and one
@@ -74,13 +77,15 @@ func TestAFanOutNothingReceivesExpiresEveryHold(t *testing.T) {
 // fenced, migrated or stopped while it stands, and a host that exits with one
 // outstanding loses the parent's writes since its last checkpoint.
 //
-// A host that reported only what its page server holds reported such a parent
-// as holding nothing at all: the orchestrator's survey — the one thing that
-// releases a hold nothing is waiting on — could not see it, a drain called
-// itself finished with one standing, and the deadline was the only thing left
-// that could ever end it.
+// So it is reported as a served hold is. It is in Serving, it owes the pages
+// the point holds for it until the child is taken in, and its release is
+// refused until then, as the page server refuses one for a child elsewhere that
+// has not fetched them. A release that went through first would leave the child
+// nothing to be taken in over.
 func TestAHostReportsTheHoldsOfAFanOutOntoItself(t *testing.T) {
 	h, pagers := startMigrationHosts(t)
+	started := map[string]*machine{}
+	h.configs[0].Migration.StartVM = starters(t, pagers[0], started)
 	clock := sim.New(sim.Config{Seed: 1}).NewClock("source")
 	h.configs[0].Clock = clock
 	h.configs[0].EpochInterval = -1
@@ -95,17 +100,42 @@ func TestAHostReportsTheHoldsOfAFanOutOntoItself(t *testing.T) {
 		t.Fatal(err)
 	}
 	guest.store("ram0", 0, 7)
+	guest.store("ram0", 1, 8)
 	if err := h.hosts[0].AddMachine("parent", guest); err != nil {
 		t.Fatal(err)
 	}
 	children := []string{"child-a", "child-b"}
 	// No destination: the children are taken in here, over the point itself.
-	if _, err := h.hosts[0].Fork(t.Context(), "parent", children, ""); err != nil {
+	handoffs, err := h.hosts[0].Fork(t.Context(), "parent", children, "")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if serving := h.hosts[0].Status().Serving; !slices.Equal(serving, children) {
+	status := h.hosts[0].Status()
+	if !slices.Equal(status.Serving, children) {
 		t.Fatalf("a host holding a fan-out onto itself reports serving %v, want %v",
-			serving, children)
+			status.Serving, children)
+	}
+	// The parent wrote two pages since its checkpoint, and neither child has
+	// them yet.
+	if want := map[string]int{"child-a": 2, "child-b": 2}; !maps.Equal(status.Outstanding, want) {
+		t.Fatalf("the holds owe %v, want %v", status.Outstanding, want)
+	}
+	if err := h.hosts[0].ReleaseMigrated("child-a"); !errors.Is(err, vmmigrate.ErrOutstanding) {
+		t.Fatalf("releasing a child not yet taken in = %v, want ErrOutstanding", err)
+	}
+	if serving := h.hosts[0].Status().Serving; !slices.Equal(serving, children) {
+		t.Fatalf("a refused release left the host serving %v, want %v", serving, children)
+	}
+
+	received, err := h.hosts[0].Receive(t.Context(), handoffs[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer received.Close()
+	defer h.hosts[0].RemoveMachine("child-a")
+	if want := map[string]int{"child-a": 0, "child-b": 2}; !maps.Equal(h.hosts[0].Status().Outstanding, want) {
+		t.Fatalf("after child-a was taken in the holds owe %v, want %v",
+			h.hosts[0].Status().Outstanding, want)
 	}
 	if err := h.hosts[0].ReleaseMigrated("child-a"); err != nil {
 		t.Fatal(err)
@@ -113,7 +143,11 @@ func TestAHostReportsTheHoldsOfAFanOutOntoItself(t *testing.T) {
 	if serving := h.hosts[0].Status().Serving; !slices.Equal(serving, []string{"child-b"}) {
 		t.Fatalf("after one release the host reports serving %v, want the other child", serving)
 	}
-	if err := h.hosts[0].ReleaseMigrated("child-b"); err != nil {
+	if !vm.Status().Sealed {
+		t.Fatal("the parent lost its seal while child-b still holds the point")
+	}
+	// Nothing will take child-b in, so it is given up rather than released.
+	if err := h.hosts[0].Abandon("child-b"); err != nil {
 		t.Fatal(err)
 	}
 	if serving := h.hosts[0].Status().Serving; len(serving) != 0 {
@@ -121,5 +155,8 @@ func TestAHostReportsTheHoldsOfAFanOutOntoItself(t *testing.T) {
 	}
 	if vm.Status().Sealed {
 		t.Fatal("the parent is still sealed after every child of the fan-out was released")
+	}
+	if pending := clock.Pending(); pending != 0 {
+		t.Fatalf("the ended holds left %d deadlines armed", pending)
 	}
 }

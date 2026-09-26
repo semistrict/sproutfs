@@ -73,6 +73,7 @@ func Faults(r sim.Random, t Topology) []Fault {
 		RefusedStop(),
 		RefusedStart(pick("refused-start/host")),
 		DegradedLinks(),
+		ForgottenReleases(),
 	}
 }
 
@@ -118,6 +119,11 @@ func RefusedStartAfter(host, after int) Fault { return &refusedStart{host: host,
 // DegradedLinks duplicates, delays and slows what the page-server links
 // carry.
 func DegradedLinks() Fault { return &degradedLinks{} }
+
+// ForgottenReleases drops the release that follows every handover: the
+// orchestrator restarted between a destination taking a VM in and telling the
+// source it has.
+func ForgottenReleases() Fault { return &forgottenReleases{} }
 
 // ErrInjected is the failure a fault makes one phase report. It is this
 // package's own error, so a test can tell a fault it injected from a failure it
@@ -449,6 +455,44 @@ func (f *degradedLinks) Holds(_ context.Context, w *World) error {
 		}
 	}
 	return nil
+}
+
+// forgottenReleases leaves every handover of its window held after its
+// destination has what it was handed: a migration's source still serving, and a
+// fork's parent still sealed, wherever the child landed. Only the survey at the
+// next step ends those holds, so a hold the survey could not see would keep
+// its parent sealed until the host's own deadline.
+type forgottenReleases struct{}
+
+func (f *forgottenReleases) Name() string { return "forgotten-releases" }
+
+func (f *forgottenReleases) Begin(_ context.Context, w *World) error {
+	w.forgetsReleases = true
+	return nil
+}
+
+func (f *forgottenReleases) End(_ context.Context, w *World) error {
+	w.forgetsReleases = false
+	return nil
+}
+
+// Holds requires the survey to have ended every hold: no host holds anything
+// for a handover, and no VM is sealed.
+func (f *forgottenReleases) Holds(_ context.Context, w *World) error {
+	var errs []error
+	for index, h := range w.hosts {
+		if running := w.up(index); running != nil {
+			if serving := running.Status().Serving; len(serving) != 0 {
+				errs = append(errs, fmt.Errorf("%s still holds %v", h.name, serving))
+			}
+		}
+	}
+	for _, id := range w.Started() {
+		if vm := w.VM(id); vm != nil && vm.Status().Sealed {
+			errs = append(errs, fmt.Errorf("%s is still sealed", id))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // connFaults is what one host's connections to a page server do while a fault

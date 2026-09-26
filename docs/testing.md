@@ -759,6 +759,7 @@ plus the faults that only a generated topology can express:
 | `refused-stop` | One VM's migration pause fails after its guest has stopped and a memory region is sealed. |
 | `refused-start` | One host's half of a receive fails before the guest is started. |
 | `degraded-links` | The page-server links duplicate, delay and slow what they carry. |
+| `forgotten-releases` | The release after a receive is never made, as if the orchestrator restarted in between. The source keeps its hold until the survey at the next step ends it. |
 
 `dropped-page-server-frames` is the same kit plus `DropNext`, and the schedule
 does not draw it. See [Clogging and swizzling](#clogging-and-swizzling) for the
@@ -766,7 +767,7 @@ reason, and for the campaign that does draw it.
 
 An operation under a fault is not required to succeed. A migration may be
 refused, a checkpoint may not land, and a takeover may be unavailable. But none
-of these three things may ever happen:
+of these four things may ever happen:
 
 - **No guest reads bytes it never wrote.** After every step, every page of
   every running VM is read back through that guest's own mappings and compared
@@ -781,6 +782,14 @@ of these three things may ever happen:
   campaign's faults justify: what a host lost at a given moment leaves, what a
   VM deleted after it was forked leaves, and the checkpoint that a sweep could
   not delete because the store refused it.
+- **Every seal is reported.** After every step, a VM that a fork point holds
+  sealed must have a hold for one of its children in its host's `Serving`. A
+  hold whose child runs on that same host must owe nothing. A hold the host did
+  not report is one the survey could not end.
+
+The world's `Settle` runs the orchestrator's survey before every step. It
+releases every handover a host still holds whose VM exists, and gives up the
+rest.
 
 A VM that nobody is running is opened again by a host that can run it. Such a
 VM can be a source that could not resume, a destination that could not take
