@@ -1,11 +1,11 @@
 ---
 id: TASK-49
 title: Map a moved page read-only to its owner so a move saves memory
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-26 22:14'
-updated_date: '2026-09-26 23:51'
+updated_date: '2026-09-26 23:53'
 labels:
   - performance
   - security
