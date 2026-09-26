@@ -102,11 +102,13 @@ type registration struct {
 	migrating bool
 	// pull marks a VM that pulls its whole memory to this host's disk while it
 	// runs here. It is set when the machine is registered and never changes.
-	// pulled is the pull its loop holds and refused why this host would not
-	// start one, both guarded by mu.
+	// pulled is the pull its loop holds, refused why this host would not start
+	// one, and fetched closes once that pull has stopped fetching or was
+	// refused; all three are guarded by mu.
 	pull    bool
 	pulled  *checkpoint.Pull
 	refused error
+	fetched chan struct{}
 }
 
 // machines is what this host runs: the VMM process of every VM its manager
@@ -186,6 +188,9 @@ func (h *Host) run(vmID string, entry *registration) {
 	entry.stop, entry.done = cancel, done
 	if h.checkpointInterval > 0 {
 		entry.now = make(chan struct{}, 1)
+	}
+	if entry.pull {
+		entry.pulled, entry.refused, entry.fetched = nil, nil, make(chan struct{})
 	}
 	entry.mu.Unlock()
 	var running sync.WaitGroup
