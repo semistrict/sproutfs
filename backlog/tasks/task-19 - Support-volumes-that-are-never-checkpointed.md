@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-09-25 18:17'
-updated_date: '2026-09-26 01:42'
+updated_date: '2026-09-26 01:45'
 labels:
   - embedder
 dependencies: []
@@ -49,4 +49,6 @@ Step 1 done (commit: MemoryRegion.OnInterval refactor). Design change: ephemeral
 Step 2 done: checkpoint records ephemeral volumes (root field 7, Publication.Add, ErrEphemeral, CheckIndex refusal). Index format stays 8: older builds refuse the new field as unknown, which is the safe direction.
 
 Step 3 done: volume ephemeral disks (ErrEphemeral; reads zero; Manager.Fork(..., added) adds ephemeral disks, which is how a create gives one). Next: vmmemory Config.Ephemeral pager, Pagers.Ephemeral, Seal no-op.
+
+Step 4 done: vmmemory ephemeral pager (Config.Ephemeral, EphemeralBacking, Pagers.Ephemeral/Of, Seal no-op, OnInterval false). Next: host (pagerConfig, admission, flush, supervisor third pager, Create via Fork added), vmmachine plan.
 <!-- SECTION:NOTES:END -->
