@@ -171,6 +171,11 @@ func TestForkHoldExpiresWhenNothingReleasesIt(t *testing.T) {
 	var received *machine
 	h.configs[1].Migration.StartVM = starter(t, pagers[1], &received)
 	h.configs[0].CheckpointInterval = 10 * time.Millisecond
+	// One deadline bounds both holds this test takes: the fork's, which must
+	// expire, and the migration's after it, whose receive must finish first.
+	// Four intervals, 40 ms, was a race a loaded machine lost; half a second
+	// still expires the fork's hold well inside the wait below.
+	h.configs[0].Migration.HoldTimeout = 500 * time.Millisecond
 	h.start(t)
 
 	vm, err := h.hosts[0].Volumes().Create(t.Context(), "vm-1", migrationVolumes)

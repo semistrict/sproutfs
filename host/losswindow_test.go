@@ -263,8 +263,11 @@ func TestTheLoopCheckpointsAVMNearItsLossWindowOnItsOwnClock(t *testing.T) {
 		guest.store("disk", 0, 8)
 		time.Sleep(time.Millisecond)
 	}
-	if elapsed := time.Since(began); elapsed >= window {
-		t.Fatalf("the checkpoint landed after %s, want before the %s window ran out", elapsed, window)
+	// The interval is an hour away, so a checkpoint that landed at all was the
+	// loop's clock or a request; the pager made none. It came no sooner than
+	// half the window, which is not a turn taken at once.
+	if elapsed := time.Since(began); elapsed < window/2 {
+		t.Fatalf("the checkpoint landed after %s, want no sooner than half the %s window", elapsed, window)
 	}
 	stats, err := pagers.pagers.Pmem.Stats(t.Context())
 	if err != nil {

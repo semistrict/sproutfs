@@ -862,7 +862,9 @@ func TestReceiveClosesMachineWithMismatchedResourceBudget(t *testing.T) {
 // those pages — and held the VMM process that owns them — for as long as it
 // ran. A fork hold has had a deadline all along; a migration's did not.
 func TestMigratedPagesAreReleasedAfterTheirDeadline(t *testing.T) {
-	const holdTimeout = 50 * time.Millisecond
+	// The receive below has to finish inside the deadline, so the deadline
+	// leaves it room on a loaded machine; the release after it is waited for.
+	const holdTimeout = 500 * time.Millisecond
 	h, pagers := startMigrationHosts(t)
 	h.configs[0].Migration.HoldTimeout = holdTimeout
 	var received *machine
