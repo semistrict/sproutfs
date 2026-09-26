@@ -1,11 +1,11 @@
 ---
 id: TASK-40
 title: Stop a migration receive that outlives its caller on another host
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-26 15:52'
-updated_date: '2026-09-26 18:05'
+updated_date: '2026-09-26 18:06'
 labels:
   - embedder
 dependencies: []

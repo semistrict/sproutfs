@@ -1,11 +1,11 @@
 ---
 id: TASK-42
 title: Keep a VM's pull mark through a recovery
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-26 16:40'
-updated_date: '2026-09-26 18:05'
+updated_date: '2026-09-26 18:06'
 labels:
   - embedder
 dependencies: []
