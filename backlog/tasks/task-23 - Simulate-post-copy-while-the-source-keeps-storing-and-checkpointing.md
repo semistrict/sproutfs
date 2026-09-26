@@ -1,11 +1,11 @@
 ---
 id: TASK-23
 title: Simulate post-copy while the source keeps storing and checkpointing
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-25 18:17'
-updated_date: '2026-09-26 17:08'
+updated_date: '2026-09-26 17:15'
 labels:
   - testing
   - correctness
