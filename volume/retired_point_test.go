@@ -52,3 +52,43 @@ func TestARetiredForkPointRefusesAnotherHold(t *testing.T) {
 		}
 	})
 }
+
+// A point over a published checkpoint seals nothing: it is the checkpoint
+// itself, pinned, and no running guest owns its pages again when a hold goes.
+// So it outlives every child taken from it, one after another. A template's
+// point is this kind, and a host keeps it for every create of that template:
+// the first VM publishing its root gave up the last hold, and a point retired
+// by that refused every later create on the host.
+func TestAPointOverAPublishedCheckpointOutlivesItsChildren(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		h := newHarness(t)
+		defer h.close(t.Context())
+		manager := h.manager(t, h.config())
+		defer manager.Close(t.Context())
+		vm, _ := createVM(t, manager, "template")
+		if err := vm.Checkpoint(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		parent := vm.Status().Checkpoint
+		if err := vm.Close(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		point, err := manager.Inherit(t.Context(), parent)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, id := range []string{"first", "second"} {
+			child, err := manager.Fork(t.Context(), id, point)
+			if err != nil {
+				t.Fatalf("forking %s from a point over a published checkpoint: %v", id, err)
+			}
+			// Its root is what gives its hold on the point up.
+			if err := child.Checkpoint(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			if err := child.Close(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+		}
+	})
+}

@@ -204,6 +204,13 @@ func (f *ForkPoint) Retire(ctx context.Context) error {
 		f.mu.Unlock()
 		return err
 	}
+	// A point over a published checkpoint seals nothing, so its last hold
+	// going gives nothing back and it may be held again: a template's point is
+	// held by every create of it, one after another.
+	if f.checkpoint == nil {
+		f.mu.Unlock()
+		return nil
+	}
 	f.retired = true
 	f.mu.Unlock()
 	var errs []error
