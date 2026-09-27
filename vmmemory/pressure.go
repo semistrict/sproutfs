@@ -71,8 +71,19 @@ func (h *Host) takeSpill(ctx context.Context, r *MemoryRegion) (int, error) {
 			}
 		}
 		h.mu.Unlock()
-		if !over && !h.relief() && !h.takeBack(r) {
-			return 0, ErrDirtyStalled
+		if !over && !h.relief() {
+			// Nothing will relieve the budget as it stands now, but a checkpoint
+			// that ended after the take above gave its reservations back before
+			// relief looked: what this attempt found is out of date, and the next
+			// one takes what came back rather than stopping anybody for it.
+			select {
+			case <-changed:
+				continue
+			default:
+			}
+			if !h.takeBack(r) {
+				return 0, ErrDirtyStalled
+			}
 		}
 		h.mu.Lock()
 		if over {
