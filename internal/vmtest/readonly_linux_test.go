@@ -226,7 +226,9 @@ type readOnlyVMM struct {
 	socket int
 	uffd   int
 	faults chan uffdFault
-	remaps atomic.Int64
+	// remaps gets one value per REMAP event read. The VMM's mremap returns
+	// once the event is read, which can be before the reader has queued it.
+	remaps chan struct{}
 	mu     sync.Mutex
 	err    error
 }
@@ -241,7 +243,7 @@ func startReadOnlyVMM(t *testing.T, f *readOnlyFile, pages int, owner *syscall.C
 		t.Fatal(err)
 	}
 	v := &readOnlyVMM{t: t, file: f, socket: sockets[0], uffd: -1, lines: make(chan string, 16),
-		faults: make(chan uffdFault, 64), stderr: &lockedBuffer{}}
+		faults: make(chan uffdFault, 64), remaps: make(chan struct{}, 64), stderr: &lockedBuffer{}}
 	t.Cleanup(func() { unix.Close(v.socket) })
 	if err := unix.SetsockoptTimeval(v.socket, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &unix.Timeval{Sec: 10}); err != nil {
 		t.Fatal(err)
@@ -384,7 +386,7 @@ func (v *readOnlyVMM) readFaults(stop *atomic.Bool, done chan struct{}) {
 		case 0x12: // UFFD_EVENT_PAGEFAULT
 			v.faults <- uffdFault{address: binary.LittleEndian.Uint64(message[16:]), flags: binary.LittleEndian.Uint64(message[8:])}
 		case 0x14: // UFFD_EVENT_REMAP
-			v.remaps.Add(1)
+			v.remaps <- struct{}{}
 		default:
 			v.fail(fmt.Errorf("unexpected UFFD event %#x", message[0]))
 			return
@@ -424,6 +426,19 @@ func (v *readOnlyVMM) expectFault(page int, flags uint64) {
 		}
 	case <-time.After(15 * time.Second):
 		v.t.Fatalf("no fault, want %v: %s; pager: %v", want, v.stderr.String(), v.failure())
+	}
+}
+
+// expectRemap waits for the one REMAP event a move of a run into place sends.
+func (v *readOnlyVMM) expectRemap() {
+	v.t.Helper()
+	select {
+	case <-v.remaps:
+	case <-time.After(15 * time.Second):
+		v.t.Fatalf("moving the run into place sent no REMAP event: %s; pager: %v", v.stderr.String(), v.failure())
+	}
+	if extra := len(v.remaps); extra != 0 {
+		v.t.Fatalf("moving the run into place sent %d REMAP events, want 1", 1+extra)
 	}
 }
 
@@ -587,9 +602,7 @@ func TestReadOnlyPrivateMappingTrapsEveryFault(t *testing.T) {
 		v.attach()
 		v.do(fmt.Sprintf("map readonly-shared %d 0 1", pages), "failed UFFDIO_REGISTER EPERM")
 		v.mapRun("private", 0, 0, pages)
-		if got := v.remaps.Load(); got != 1 {
-			t.Fatalf("moving the run into place sent %d REMAP events, want 1", got)
-		}
+		v.expectRemap()
 
 		v.send("load 0")
 		v.expectFault(0, faultMinor)

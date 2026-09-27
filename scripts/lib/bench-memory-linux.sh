@@ -141,6 +141,14 @@ if [[ ${SPROUTFS_GCE_QUALIFY:-0} == 1 ]]; then
             status=1
         fi
     }
+    export SPROUTFS_VM_MEMORY_CLIENT="$CARGO_TARGET_DIR/debug/examples/client"
+    # A run narrowed to some tests of the UFFD suite runs them, as many times
+    # as it asks, and nothing else.
+    if [[ -n ${SPROUTFS_VMTEST_RUN:-} ]]; then
+        qualify vmtest "$work/build/vmtest.test" -test.v -test.timeout=60m \
+            -test.run "$SPROUTFS_VMTEST_RUN" -test.count "${SPROUTFS_VMTEST_COUNT:-1}"
+        exit "$status"
+    fi
     # A run narrowed to some Firecracker tests runs nothing else.
     selected=${SPROUTFS_FIRECRACKER_RUN:-}
     if [[ -z $selected ]]; then
@@ -151,7 +159,6 @@ if [[ ${SPROUTFS_GCE_QUALIFY:-0} == 1 ]]; then
         qualify crate-clippy cargo clippy --locked --manifest-path rust/sproutfs-vm-memory/Cargo.toml --all-targets -- -D warnings
         qualify crate-nextest cargo nextest run --locked --no-tests pass --manifest-path rust/sproutfs-vm-memory/Cargo.toml
     fi
-    export SPROUTFS_VM_MEMORY_CLIENT="$CARGO_TARGET_DIR/debug/examples/client"
     if [[ -z $selected ]]; then
         qualify vmtest "$work/build/vmtest.test" -test.v -test.timeout=10m
         qualify vmmemory "$work/build/vmmemory.test" -test.v -test.timeout=20m
