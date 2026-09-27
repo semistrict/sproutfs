@@ -3,7 +3,9 @@ package vmmemory
 import (
 	"context"
 	"errors"
+	"maps"
 	"slices"
+	"time"
 
 	"github.com/semistrict/sproutfs/platform/sim"
 )
@@ -46,6 +48,29 @@ import (
 // for a nested guest are the one exception, and every seal and copy-on-write
 // shares it: see "Writers that bypass the page tables" in docs/vm-memory.md.
 
+// Why a cold copy is given back soon after it is made.
+//
+// A copy made by a store trap — a write fault on a page the guest did not map —
+// is the kind async_pf_execute makes of a page the guest only read, and the
+// kind a guest reading what it inherited makes by the thousand. Left to the
+// interval, they fill the arena faster than it empties: the pager spills
+// them, and a spilled copy is never given back, so it is uploaded by the next
+// checkpoint of a disk or a fork and held for good in RAM. So each one is
+// recorded as it is made, and its session's worker gives it back as soon as it
+// can, for every kind of memory region: a disk's copy is no more the guest's
+// state than a RAM one's. A protect trap is a store into a page the guest
+// mapped, which KVM asks for only when the guest stores, so its copy is not
+// recorded.
+//
+// A copy is given back only once it is coldCopyAge old. KVM's worker takes the
+// page writable and only then does the vCPU retry its access, so a copy just
+// made holds the origin's bytes whether the guest meant to read or to store.
+// Compared at once, a store's copy would go back too, and the store would trap
+// on the origin and copy again: nothing lost, but every cold store copied
+// twice, and a fork's resume is mostly cold stores. By coldCopyAge the vCPU
+// has retried, so a store's copy differs and is kept, and a read's is given
+// back. A vCPU slower than that costs the second copy and nothing more.
+
 // GiveBack compares up to limit of this memory region's private copies with the
 // pages they were copied from, and gives back each one whose bytes are still
 // its origin's: the guest maps the origin again, and the copy and its dirty
@@ -58,6 +83,20 @@ import (
 // not the only one ever looked at. A sealed page is not a candidate: the settle
 // behind its checkpoint compares it.
 func (r *MemoryRegion) GiveBack(ctx context.Context, limit int) (int, error) {
+	return r.givingBack(ctx, func() []uint64 { return r.copies(limit) })
+}
+
+// GiveBackColdCopies gives back at once, as GiveBack does, the cold copies
+// recorded and not yet taken, and reports how many went back. A session takes
+// them itself, coldCopyAge after they are made; this is for a pager with no
+// session, and for a test.
+func (r *MemoryRegion) GiveBackColdCopies(ctx context.Context) (int, error) {
+	return r.givingBack(ctx, r.takeColdCopies)
+}
+
+// givingBack is one give-back pass over the pages that pages lists, which it
+// calls once the memory region is known to be live.
+func (r *MemoryRegion) givingBack(ctx context.Context, pages func() []uint64) (int, error) {
 	if err := r.live.RLock(ctx); err != nil {
 		return 0, err
 	}
@@ -73,7 +112,7 @@ func (r *MemoryRegion) GiveBack(ctx context.Context, limit int) (int, error) {
 	}
 	var buffers settler
 	given := 0
-	for _, index := range r.copies(limit) {
+	for _, index := range pages() {
 		back, err := r.giveBack(ctx, index, &buffers)
 		if back {
 			given++
@@ -83,6 +122,38 @@ func (r *MemoryRegion) GiveBack(ctx context.Context, limit int) (int, error) {
 		}
 	}
 	return given, nil
+}
+
+// coldCopyAge is how old a cold copy is before its session gives it back. See
+// "Why a cold copy is given back soon after it is made".
+const coldCopyAge = 10 * time.Millisecond
+
+// coldCopy records a copy a store trap made of a page the guest did not map,
+// and wakes the session's worker that gives it back.
+func (r *MemoryRegion) coldCopy(index uint64) {
+	if r.fixed {
+		return
+	}
+	r.bindingsMu.Lock()
+	if r.coldCopies == nil {
+		r.coldCopies = make(map[uint64]struct{})
+	}
+	r.coldCopies[index] = struct{}{}
+	r.bindingsMu.Unlock()
+	select {
+	case r.coldCopied <- struct{}{}:
+	default:
+	}
+}
+
+// takeColdCopies is the cold copies recorded since it was last called, in
+// page order.
+func (r *MemoryRegion) takeColdCopies() []uint64 {
+	r.bindingsMu.Lock()
+	defer r.bindingsMu.Unlock()
+	pages := slices.Sorted(maps.Keys(r.coldCopies))
+	clear(r.coldCopies)
+	return pages
 }
 
 // copies is up to limit pages of this memory region that hold a private copy

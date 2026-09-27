@@ -80,6 +80,11 @@ type MemoryRegion struct {
 	// givenBackTo is the page the next give-back pass starts at, guarded by
 	// bindingsMu. See GiveBack.
 	givenBackTo uint64
+	// coldCopies is the cold copies no give-back has taken yet, guarded by
+	// bindingsMu, and coldCopied wakes the session's worker that takes them.
+	// See coldCopy.
+	coldCopies map[uint64]struct{}
+	coldCopied chan struct{}
 	// dirtySince is when the oldest write this memory region holds that no checkpoint
 	// covers landed, zero while it holds none. It is the loss window's own
 	// bookkeeping and is guarded by bindingsMu, because the transitions that
@@ -234,7 +239,7 @@ func (h *Host) admit(ctx context.Context, memoryRegion MemoryRegionBacking, mapp
 		return nil, err
 	}
 	_, peer := backing.(UnpublishedLoader)
-	r := &MemoryRegion{live: ctxsync.NewRWMutex(), mu: ctxsync.NewRWMutex(), endMu: ctxsync.NewMutex(), protectMu: ctxsync.NewRWMutex(), filesMu: ctxsync.NewMutex(), ended: make(chan struct{}), host: h, backing: backing, kind: memoryRegion.Kind, peer: peer, mapping: mapping, tenant: memoryRegion.Tenant, pageCount: int(count), blocks: make(map[uint64]*bindingBlock), readAheadPages: h.cfg.ReadAheadPages}
+	r := &MemoryRegion{live: ctxsync.NewRWMutex(), mu: ctxsync.NewRWMutex(), endMu: ctxsync.NewMutex(), protectMu: ctxsync.NewRWMutex(), filesMu: ctxsync.NewMutex(), ended: make(chan struct{}), coldCopied: make(chan struct{}, 1), host: h, backing: backing, kind: memoryRegion.Kind, peer: peer, mapping: mapping, tenant: memoryRegion.Tenant, pageCount: int(count), blocks: make(map[uint64]*bindingBlock), readAheadPages: h.cfg.ReadAheadPages}
 	r.fixed = memoryRegion.Fixed
 	if h.isolated() {
 		if err := h.newFiles(ctx, r); err != nil {

@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"testing"
 	"unsafe"
 )
 
@@ -48,4 +49,14 @@ func (a *LinuxFile) HugePageBytes() (uint64, error) {
 		return 0, err
 	}
 	return 0, fmt.Errorf("no ShmemPmdMapped for the mapping at %s", want)
+}
+
+// ColdCopyPasses reports each pass of a session's cold-copy give-back on the
+// channel it returns, until the test ends. It is called before the sessions
+// start, so that they have ended before it is taken away again.
+func ColdCopyPasses(t *testing.T) <-chan struct{} {
+	passes := make(chan struct{}, 64)
+	coldCopiesSeam = func() { passes <- struct{}{} }
+	t.Cleanup(func() { coldCopiesSeam = nil })
+	return passes
 }

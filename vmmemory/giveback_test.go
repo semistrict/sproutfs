@@ -270,3 +270,102 @@ func TestAGiveBackPassIsBoundedAndTheNextOneGoesOn(t *testing.T) {
 		}
 	})
 }
+
+// coldCopy is two memory regions of kind mapping one checkpoint's four pages,
+// the second of which reads page 0 and the first of which then takes it
+// writable without having mapped it: the store trap KVM's async fault worker
+// makes of a guest's cold read.
+func coldCopy(t *testing.T, kind vmmemory.MemoryRegionKind) (f *fixture, a *vmmemory.MemoryRegion, am *mapping,
+	bm *mapping) {
+	t.Helper()
+	f = newFixture(t, 8, 32, 8)
+	a, am = f.attachKind(kind, f.newBacking(4))
+	b, bm := f.attachKind(kind, f.newBacking(4))
+	access(t, b, bm, 0, false)
+	access(t, a, am, 0, true)
+	if am.pages[0].place == bm.pages[0].place {
+		t.Fatal("the store trap left the guest on the page it shares")
+	}
+	if s := hostStats(t, f); s.UnmappedCopyOnWrites != 1 {
+		t.Fatalf("the store trap made %d copies of a page the guest did not map, want one", s.UnmappedCopyOnWrites)
+	}
+	return f, a, am, bm
+}
+
+// giveBackColdCopies gives back the cold copies one memory region recorded.
+func giveBackColdCopies(t *testing.T, r *vmmemory.MemoryRegion) int {
+	t.Helper()
+	given, err := r.GiveBackColdCopies(t.Context())
+	if err != nil {
+		t.Fatalf("giving back cold copies: %v", err)
+	}
+	return given
+}
+
+// A cold copy the guest never stored into goes back as soon as the session asks,
+// with no interval and no checkpoint, whatever kind of memory it is: a disk's
+// copy is no more the guest's state than a RAM one's.
+func TestAColdCopyIsGivenBackAtOnce(t *testing.T) {
+	for _, kind := range []vmmemory.MemoryRegionKind{vmmemory.Ram, vmmemory.Pmem} {
+		t.Run(kind.String(), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				f, a, am, bm := coldCopy(t, kind)
+				if given := giveBackColdCopies(t, a); given != 1 {
+					t.Fatalf("gave back %d cold copies, want exactly one", given)
+				}
+				if am.pages[0].place != bm.pages[0].place || am.pages[0].writable {
+					t.Fatalf("the guest maps %+v, want its sibling's page read-only", am.pages[0])
+				}
+				stats := hostStats(t, f)
+				if stats.GiveBackCompares != 1 || stats.GivenBackPages != 1 || stats.DirtyPages != 0 {
+					t.Fatalf("compared %d, gave back %d, holds %d dirty reservations; want 1, 1 and 0",
+						stats.GiveBackCompares, stats.GivenBackPages, stats.DirtyPages)
+				}
+				// Each cold copy is given back once: nothing is left to take.
+				if given := giveBackColdCopies(t, a); given != 0 || hostStats(t, f).GiveBackCompares != 1 {
+					t.Fatalf("a second call gave back %d and compared again", given)
+				}
+			})
+		})
+	}
+}
+
+// A cold copy that was a real store is compared once and kept, writable, with
+// what the guest stored in it.
+func TestAColdCopyTheGuestStoredIntoIsKept(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f, a, am, bm := coldCopy(t, vmmemory.Ram)
+		copied := am.pages[0].place
+		am.arena.page(copied)[0] = 77
+		if given := giveBackColdCopies(t, a); given != 0 {
+			t.Fatalf("gave back %d cold copies the guest stored into, want none", given)
+		}
+		if p := am.pages[0]; p.place != copied || !p.writable {
+			t.Fatalf("the guest maps %+v, want its own copy writable again", p)
+		}
+		if got := access(t, a, am, 0, false)[0]; got != 77 {
+			t.Fatalf("the guest reads %d, want the 77 it stored", got)
+		}
+		if got := bm.arena.page(bm.pages[0].place)[0]; got == 77 {
+			t.Fatal("the store reached the sibling's page")
+		}
+		if s := hostStats(t, f); s.GiveBackCompares != 1 || s.GivenBackPages != 0 {
+			t.Fatalf("compared %d and gave back %d, want 1 and 0", s.GiveBackCompares, s.GivenBackPages)
+		}
+	})
+}
+
+// A copy a protect trap made is a store into a page the guest mapped, which KVM
+// asks for only when the guest stores, so it is not a cold copy and is left to
+// the interval.
+func TestACopyOfAMappedPageIsNotAColdCopy(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f, a, _, _, _, _ := sharedCopy(t)
+		if given := giveBackColdCopies(t, a); given != 0 {
+			t.Fatalf("gave back %d copies of a page the guest mapped, want none", given)
+		}
+		if s := hostStats(t, f); s.GiveBackCompares != 0 {
+			t.Fatalf("compared %d copies, want none", s.GiveBackCompares)
+		}
+	})
+}

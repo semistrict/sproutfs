@@ -57,7 +57,9 @@ func TestLosingTheSourceOfAMigrationEndsIt(t *testing.T) {
 		if err := world.Checkpoint(ctx, "vm-1"); err != nil {
 			t.Fatal(err)
 		}
-		if err := world.Store(ctx, "vm-1", 2, choose); err != nil {
+		// A real store: a write fault that stores nothing leaves a copy the
+		// source gives back, and nothing the destination has to fetch.
+		if err := world.StorePages("vm-1", "disk", []uint64{0}, 7); err != nil {
 			t.Fatal(err)
 		}
 
@@ -160,7 +162,9 @@ func TestAMigrationWhoseSourceIsCutOffEndsAtItsHold(t *testing.T) {
 		if err := world.Checkpoint(ctx, "vm-1"); err != nil {
 			t.Fatal(err)
 		}
-		if err := world.Store(ctx, "vm-1", 2, choose); err != nil {
+		// A real store: a write fault that stores nothing leaves a copy the
+		// source gives back, and nothing the destination has to fetch.
+		if err := world.StorePages("vm-1", "disk", []uint64{0}, 7); err != nil {
 			t.Fatal(err)
 		}
 

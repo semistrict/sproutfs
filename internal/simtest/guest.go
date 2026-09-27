@@ -395,14 +395,19 @@ const giveBackPages = 1 << 16
 // guest last wrote. A copy given back maps the page it was copied from, which
 // is only right where the guest never changed it, and a wrong one would
 // otherwise surface only at the next read of that page.
+//
+// A session gives back every kind's cold copies soon after they are made, and
+// a campaign has no sessions, so those are given back here too.
 func (g *guest) giveBack(ctx context.Context) error {
 	for _, name := range g.names {
 		memoryRegion := g.memoryRegions[name]
-		if memoryRegion.Kind() != vmmemory.Ram {
-			continue
+		if _, err := memoryRegion.GiveBackColdCopies(ctx); err != nil {
+			return fmt.Errorf("%s cold-copy give-back on %s: %w", g.instance, name, err)
 		}
-		if _, err := memoryRegion.GiveBack(ctx, giveBackPages); err != nil {
-			return fmt.Errorf("%s give-back on %s: %w", g.instance, name, err)
+		if memoryRegion.Kind() == vmmemory.Ram {
+			if _, err := memoryRegion.GiveBack(ctx, giveBackPages); err != nil {
+				return fmt.Errorf("%s give-back on %s: %w", g.instance, name, err)
+			}
 		}
 		if err := g.mapsWhatItWrote(name); err != nil {
 			return err

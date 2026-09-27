@@ -239,8 +239,9 @@ func Connect(ctx context.Context, h *Host, socket *net.UnixConn, backing MemoryR
 		return fail(err)
 	}
 	context.AfterFunc(sessionCtx, func() { _ = socket.Close() })
-	c.workers.Add(5 + cfg.FaultWorkers)
+	c.workers.Add(6 + cfg.FaultWorkers)
 	go c.work()
+	go c.giveBackColdCopies()
 	go c.deliverFlushes()
 	go c.verify()
 	for range cfg.FaultWorkers {
@@ -785,6 +786,45 @@ func (c *Connection) work() {
 		}
 	}
 }
+
+// giveBackColdCopies gives back the memory region's cold copies as its faults
+// make them, beside the fault workers rather than in them, so that a guest's
+// faults never wait behind the comparisons: see coldCopy. It takes the copies
+// recorded so far and gives them back once coldCopyAge has passed, so every
+// copy it compares is at least that old.
+func (c *Connection) giveBackColdCopies() {
+	defer c.workers.Done()
+	r := c.memoryRegion.Memory
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		case <-r.coldCopied:
+		}
+		pages := r.takeColdCopies()
+		if err := c.host.clock.Sleep(c.ctx, coldCopyAge); err != nil {
+			return
+		}
+		_, err := r.givingBack(c.ctx, func() []uint64 { return pages })
+		if coldCopiesSeam != nil {
+			coldCopiesSeam()
+		}
+		if err != nil {
+			if c.ctx.Err() != nil {
+				return
+			}
+			// A failed write-protect or mapping has already ended the memory
+			// region, and so this session; anything else leaves the copies as
+			// they are, for the interval's give-back or a checkpoint's settle.
+			slog.Warn("vmmemory: giving back a memory region's cold copies failed",
+				"memory_region", c.cfg.Name, "error", err)
+		}
+	}
+}
+
+// coldCopiesSeam runs after each pass of a session's cold-copy give-back, so a
+// test can wait for one. Nil outside tests.
+var coldCopiesSeam func()
 
 // maxQueuedFlushes bounds the flush requests a session holds before the host
 // has been handed them. A guest has no more flushes outstanding than its

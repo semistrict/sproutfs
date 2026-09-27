@@ -131,6 +131,7 @@ func TestNativeRefusedMappingLeavesTheSessionServing(t *testing.T) {
 
 func TestNativeAbandonedCheckpointCoalescesRevokesAcrossGenerationBoundaries(t *testing.T) {
 	const pages = 128
+	passes := vmmemory.ColdCopyPasses(t)
 	h := kernelHost(t, 2*pages, 2*pages)
 	a := startNative(t, h, pages)
 	memoryRegion := a.memoryRegion(0)
@@ -140,10 +141,12 @@ func TestNativeAbandonedCheckpointCoalescesRevokesAcrossGenerationBoundaries(t *
 			t.Fatal(err)
 		}
 	}
-	for page := range uint64(pages) {
-		if err := memoryRegion.Fault(t.Context(), page, true); err != nil {
-			t.Fatal(err)
-		}
+	// A real store into each page, of a byte no page holds: the even ones are
+	// cold copies, which the session compares, finds changed and keeps, and it
+	// has done so before the checkpoint is counted.
+	a.request(fmt.Sprintf("stridefill 0 0 %d %d 200", pages*hugePageSize, hugePageSize), "strided")
+	for compared := uint64(0); compared < pages/2; compared = kernelStats(t, h).GiveBackCompares {
+		<-passes
 	}
 	before, _ := h.Stats(t.Context())
 	// An abandoned checkpoint is what revokes a whole dirty set: it takes the
@@ -161,8 +164,8 @@ func TestNativeAbandonedCheckpointCoalescesRevokesAcrossGenerationBoundaries(t *
 	}
 	// Read the actual native address after the checkpoint; mapping generations
 	// still distinguish the former clean and initially missing pages.
-	a.request("read 0 0 1", "data 01")
-	a.request("read 0 "+fmt.Sprint(hugePageSize)+" 1", "data 02")
+	a.request("read 0 0 1", "data c8")
+	a.request("read 0 "+fmt.Sprint(hugePageSize)+" 1", "data c8")
 }
 
 // Stores the exact workload sparsely: each write changes only the first byte

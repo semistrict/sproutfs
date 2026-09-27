@@ -25,7 +25,9 @@ const (
 // givingBack gives back, once an interval, the RAM copies of one VM whose
 // bytes its guest never changed: see vmmemory.MemoryRegion.GiveBack. RAM is
 // never checkpointed on the interval, so nothing else would. A disk's copies
-// are settled by the checkpoint the interval takes of it instead.
+// are settled by the checkpoint the interval takes of it instead. The cold
+// copies of either are given back sooner by their sessions, so what this finds
+// is the copies those left: see vmmemory.MemoryRegion.GiveBackColdCopies.
 //
 // It runs beside the checkpoint loop rather than inside it, because a
 // checkpoint that fails, or waits for its publication, is no reason to keep a

@@ -10,9 +10,9 @@ import (
 	"github.com/semistrict/sproutfs/vmmemory"
 )
 
-// giveBackPair is two client processes whose RAM inherits one checkpoint in
-// pages of size, both reading page 0 so that they map one physical page.
-func giveBackPair(t *testing.T, size uint64) (*vmmemory.Host, *nativeProcess, *nativeProcess) {
+// nativePair is two client processes whose RAM inherits one checkpoint in
+// pages of size, neither of which has touched a page yet.
+func nativePair(t *testing.T, size uint64) (*vmmemory.Host, *nativeProcess, *nativeProcess) {
 	t.Helper()
 	const pages = 2
 	h := kernelHostPaged(t, int(size), 8, 4*pages, 4*pages)
@@ -27,13 +27,78 @@ func giveBackPair(t *testing.T, size uint64) (*vmmemory.Host, *nativeProcess, *n
 		}
 		return result
 	}
-	a, b := startNative(t, h, pages, backings()...), startNative(t, h, pages, backings()...)
+	return h, startNative(t, h, pages, backings()...), startNative(t, h, pages, backings()...)
+}
+
+// giveBackPair is nativePair with both processes reading page 0, so that they
+// map one physical page.
+func giveBackPair(t *testing.T, size uint64) (*vmmemory.Host, *nativeProcess, *nativeProcess) {
+	t.Helper()
+	h, a, b := nativePair(t, size)
 	a.request("read 1 0 1", "data 21")
 	b.request("read 1 0 1", "data 21")
 	if a.pfn(1) != b.pfn(1) {
 		t.Fatal("the two processes do not share the page they both read")
 	}
 	return h, a, b
+}
+
+// A page the process has never mapped, faulted in writable with nothing stored,
+// is the store trap KVM's async fault worker makes of a guest's cold read, and
+// the pager copies. The session gives that copy back by itself, with no call
+// from the host and the process running, and points the process at the page
+// its sibling maps.
+func TestManagedPagerGivesBackAColdCopyAtOnce(t *testing.T) {
+	for _, size := range []uint64{hugePageSize, checkpoint.PageSize4KiB} {
+		t.Run(fmt.Sprintf("%dKiB", size>>10), func(t *testing.T) {
+			passes := vmmemory.ColdCopyPasses(t)
+			h, a, b := nativePair(t, size)
+			b.request("read 1 0 1", "data 21")
+			a.request("populatewrite 1 0 1", "populated")
+			<-passes
+			stats := kernelStats(t, h)
+			if stats.GivenBackPages != 1 {
+				t.Fatalf("the session gave back %d pages, want the one cold copy", stats.GivenBackPages)
+			}
+			if stats.CopyOnWrites != 1 || stats.UnmappedCopyOnWrites != 1 || stats.GiveBackCompares != 1 ||
+				stats.DirtyPages != 0 {
+				t.Fatalf("made %d copies, %d of them cold, compared %d, holds %d dirty reservations; want 1, 1, 1 and 0",
+					stats.CopyOnWrites, stats.UnmappedCopyOnWrites, stats.GiveBackCompares, stats.DirtyPages)
+			}
+			if a.pfn(1) != b.pfn(1) {
+				t.Fatal("the process does not map its sibling's physical page again")
+			}
+			a.request("read 1 0 1", "data 21")
+			a.request("kvmread 1 0", "kvm 33")
+			if after := kernelStats(t, h); after.Faults != stats.Faults || after.CopyOnWrites != stats.CopyOnWrites {
+				t.Fatalf("reading the page given back took %d faults and made %d copies, want none",
+					after.Faults-stats.Faults, after.CopyOnWrites-stats.CopyOnWrites)
+			}
+		})
+	}
+}
+
+// A real store into a page the process has never mapped is also a store trap,
+// and its copy is compared too, but only once the store has landed in it: the
+// session keeps it, and the store is copied once.
+func TestManagedPagerKeepsAColdCopyTheProcessStoredInto(t *testing.T) {
+	for _, size := range []uint64{hugePageSize, checkpoint.PageSize4KiB} {
+		t.Run(fmt.Sprintf("%dKiB", size>>10), func(t *testing.T) {
+			passes := vmmemory.ColdCopyPasses(t)
+			h, a, b := nativePair(t, size)
+			b.request("read 1 0 1", "data 21")
+			a.request("fill 1 0 1 70", "filled")
+			<-passes
+			stats := kernelStats(t, h)
+			if stats.CopyOnWrites != 1 || stats.GiveBackCompares != 1 || stats.GivenBackPages != 0 ||
+				stats.DirtyPages != 1 {
+				t.Fatalf("made %d copies, compared %d, gave back %d, holds %d dirty reservations; want 1, 1, 0 and 1",
+					stats.CopyOnWrites, stats.GiveBackCompares, stats.GivenBackPages, stats.DirtyPages)
+			}
+			a.request("read 1 0 1", "data 46")
+			b.request("read 1 0 1", "data 21")
+		})
+	}
 }
 
 // A store of the byte the page already holds is a write fault that changes

@@ -1196,7 +1196,9 @@ never come. A RAM page that a fork shares with its parent would then stay a
 private copy for as long as the VM lives. So the host gives such copies back on
 the interval, with no checkpoint and no pause: `MemoryRegion.GiveBack`, called
 once an interval for each VM's RAM (`host/giveback.go`). A disk's copies are
-settled by the checkpoint the interval takes of the disk instead.
+settled by the checkpoint the interval takes of the disk instead. Cold copies of
+either are given back sooner: see [giving back a cold
+copy](#giving-back-a-cold-copy).
 
 For each private copy that remembers its origin, the give-back:
 
@@ -1240,6 +1242,32 @@ counts the comparisons and `Stats.GivenBackPages` the pages given back.
 The give-back relies on every writer of guest RAM going through the VMM's page
 tables. See [writers that bypass the page
 tables](#writers-that-bypass-the-page-tables).
+
+### Giving back a cold copy
+
+The interval is too slow for the copies a guest's cold reads make. On x86-64
+KVM finishes a cold fault from `async_pf_execute`, which asks for the page
+writable, so every page a guest reads of what it inherited arrives as a store
+trap and is copied. A guest that reads a lot makes these copies faster than one
+pass an interval gives them back. The pager spills them, and a spilled copy is
+never given back or settled. A disk's copies are uploaded by its next
+checkpoint, and a fork's children fetch them from the parent.
+
+So a copy a store trap made of a published page is a cold copy: its fault
+records it, and the session's own worker gives it back, with the same five
+steps, soon after it is made (`MemoryRegion.coldCopy`,
+`Connection.giveBackColdCopies`). It does so for RAM and PMEM alike. A protect
+trap is a store into a page the guest maps, which KVM reports only for a real
+store, so its copy is not a cold copy.
+
+The worker waits until each copy is 10 ms old. KVM's worker takes the page
+writable first, and the vCPU retries its access only afterwards, so a copy just
+made holds its origin's bytes whether the guest meant to read or to store.
+Compared at once, a store's copy would go back too, and the store would copy
+again. Nothing would be lost, but every cold store would be copied twice, and a
+fork's resume is mostly cold stores. By 10 ms the vCPU has retried: a store's
+copy differs and is kept, and a read's copy goes back. A fixed region's copies
+are never recorded.
 
 The publication retires the seal. A sealed set whose checkpoint was selected
 retires as published:

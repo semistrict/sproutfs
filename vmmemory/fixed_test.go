@@ -57,6 +57,9 @@ func TestAFixedRegionIsNeverSealed(t *testing.T) {
 		if given, err := fixed.GiveBack(t.Context(), 16); given != 0 || err != nil {
 			t.Fatalf("a give-back of a fixed region gave back %d pages (%v), want none", given, err)
 		}
+		if given, err := fixed.GiveBackColdCopies(t.Context()); given != 0 || err != nil {
+			t.Fatalf("a give-back of a fixed region's cold copies gave back %d pages (%v), want none", given, err)
+		}
 		if s := hostStats(t, f); s.GiveBackCompares != 0 {
 			t.Fatalf("a give-back compared %d pages of a fixed region, want none", s.GiveBackCompares)
 		}

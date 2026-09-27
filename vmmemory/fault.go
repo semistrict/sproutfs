@@ -276,6 +276,11 @@ func (r *MemoryRegion) fault(ctx context.Context, index uint64, write bool, spil
 	if err := r.resolvePages(ctx, first, int(last-first), true); err != nil {
 		return false, r.fail(err)
 	}
+	if unmapped && origin != nil {
+		// A store trap's copy of bytes a checkpoint published, which is often a
+		// read KVM asked for writable: see coldCopy.
+		r.coldCopy(index)
+	}
 	return false, nil
 }
 

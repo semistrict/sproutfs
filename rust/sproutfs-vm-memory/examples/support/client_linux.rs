@@ -144,6 +144,24 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 println!();
             }
+            Some("populatewrite") => {
+                // populatewrite MEMORY_REGION OFFSET LEN faults the range in
+                // writable and stores nothing, as KVM's async fault worker
+                // does for a guest's cold read: a write fault with no store.
+                let (address, len) = range(&memory_regions, &words);
+                // MADV_POPULATE_WRITE, Linux 5.14, the same on every
+                // architecture.
+                const MADV_POPULATE_WRITE: libc::c_int = 23;
+                let result =
+                    unsafe { libc::madvise(address as *mut _, len, MADV_POPULATE_WRITE) };
+                assert_eq!(
+                    result,
+                    0,
+                    "populating writable failed: {}",
+                    io::Error::last_os_error()
+                );
+                println!("populated");
+            }
             Some("fill") => {
                 let (address, len) = range(&memory_regions, &words);
                 let value: u8 = words[4].parse()?;
