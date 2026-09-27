@@ -1,9 +1,10 @@
 ---
 id: TASK-61
 title: Make the tamper test pass under the sproutfsprobe build
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-27 19:14'
+updated_date: '2026-09-27 23:07'
 labels:
   - flaky
 dependencies: []
@@ -19,5 +20,11 @@ go test -tags sproutfsprobe ./vmmemory/ fails TestAPublishedPageItsVMMChangedEnd
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The probe build of vmmemory passes, with the tamper test proving the pager reports ErrTampered
+- [x] #1 The probe build of vmmemory passes, with the tamper test proving the pager reports ErrTampered
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The probe's stable audit now skips pages in a memory region's private file, which its VMM can write; the pager's digest check (ErrTampered) is the defence there. Verified: go test -tags sproutfsprobe ./vmmemory/ passes 3 times in a row, TestAPublishedPageItsVMMChangedEndsThatVMMsSession included (ErrTampered asserted).
+<!-- SECTION:FINAL_SUMMARY:END -->
