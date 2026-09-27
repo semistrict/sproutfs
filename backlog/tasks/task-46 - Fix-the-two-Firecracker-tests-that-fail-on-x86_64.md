@@ -4,7 +4,7 @@ title: Fix the two Firecracker tests that fail on x86_64
 status: To Do
 assignee: []
 created_date: '2026-09-26 19:23'
-updated_date: '2026-09-27 23:13'
+updated_date: '2026-09-27 23:17'
 labels:
   - embedder
 dependencies:
@@ -33,4 +33,6 @@ GCE x86 rerun 2026-09-27: both still fail. Both look like the x86 async page fau
 GCE x86 2026-09-27, after TASK-59's cold copies (cold state, seal leaves unchanged cold copies out, eviction give-back after 200 ms, volume comparison when a pinned origin must go): TestPulledGuestsFaultWithoutTheObjectStore PASSES in both arenas. TestAGuestTouchingAllItsRAMLeavesItsNeighbourItsWorkingSet still fails, and it is not reads-as-writes: after boot both guests' RAM is wholly dirty (dirty 64 of 64), and the hog's RAM pager made 100 copies, none cold. In its 120 s the RAM pager served 4228 faults (4131 evictions/spills, 4079 refaults) in 9.7 s of fault time, max 4.5 ms per fault, fault-queue max 3 ms: the guest spent ~110 s of the 120 s elsewhere. Next: where a guest waits outside the pager on x86 (async page fault completion, KVM EPT at 4 KiB against 2 MiB pages, the VMM), e.g. kvm tracepoints kvm_async_pf_* and kvm_page_fault during the hog.
 
 2026-09-27 GCE: the hog of 80 MiB exceeded the x86 guest's MemAvailable (~74 MiB of 128) and stalled in guest reclaim after 64 MiB (it wrote 64 MiB in 139 ms). Fixed by sizing it from MemAvailable (hog ram 0, less 8 MiB). Now the first pass completes in both arenas and the calm working set faults back in in 281/381 ms, but calm's agent exec does not answer within 30 s: 34903 RAM faults, 34549 evictions, fault time 89.6 s (max 5 ms). A booted x86 guest has 32 pages (64 MiB) resident, above the 24-page share the test assumes. Rerunning with per-guest residency and the KVM trace.
+
+GCE rerun with per-guest residency (bf835675): at the agent timeout calm holds exactly its share (resident 24) but has 36 private pages; hostile resident 24, private 60. RAM 28623 faults, 28320 evictions, 76 s fault time. A booted x86 guest touches 32 pages at 2 MiB (64 MiB of its 128), so the 24-page share the test gives each guest (3/8 of mapped RAM) is below the neighbour's own working set at 2 MiB: calm thrashes on its own pages, and an agent exec takes past 30 s. Fair share works as designed; the test's premise that the share holds the working set holds on aarch64 and not on x86. Needs the owner's call: resize the test's arena for x86, run it at 4 KiB RAM pages, or change the product.
 <!-- SECTION:NOTES:END -->
