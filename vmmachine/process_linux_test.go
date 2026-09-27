@@ -506,7 +506,14 @@ func TestFirecrackerDAXCaptureRestoreForkAndFence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mapped, commands := attached.MappedPages-beforeAttach.MappedPages, attached.Mappings-beforeAttach.Mappings
+	// The restore's own populate, and not the host's commands: the source's
+	// session goes on giving back its cold copies while the source is paused,
+	// and each is a mapping command of the source's.
+	var mapped, commands uint64
+	for _, region := range fp.MemoryRegions() {
+		populated := region.Populated()
+		mapped, commands = mapped+populated.Pages, commands+populated.Commands
+	}
 	if mapped < 64 || commands >= mapped/8 {
 		t.Fatalf("restore did not batch resident pages before resume: mapped=%d commands=%d", mapped, commands)
 	}
