@@ -5,6 +5,14 @@ import (
 	"testing"
 )
 
+// SetGiveBackVictims turns an eviction's give-back of a cold victim on or off,
+// so a test can have a cold copy spilled. It is restored when the test ends.
+func SetGiveBackVictims(t *testing.T, on bool) {
+	previous := giveBackVictims
+	giveBackVictims = on
+	t.Cleanup(func() { giveBackVictims = previous })
+}
+
 // SetCheckpointBatchPages bounds the pages one seal or retire transition holds
 // the memory region for, so a test can observe a batch boundary without a dirty set of
 // production size. It is restored when the test ends.

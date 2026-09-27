@@ -156,6 +156,9 @@ func sealThroughAReclaim(t *testing.T, write bool) {
 	t.Helper()
 	f := newFixture(t, 2, 8, 4)
 	r, m, b := f.memoryRegion(4)
+	// Read first, so the store is a protect trap and its copy is not cold: an
+	// eviction gives a cold copy back rather than spilling it. See cold.go.
+	access(t, r, m, 0, false)
 	access(t, r, m, 0, true)[0] = 41
 	access(t, r, m, 1, false)
 	// Page 0 is the least recently used page and the whole dirty set, so the

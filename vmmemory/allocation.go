@@ -457,7 +457,17 @@ func (h *Host) allocate(ctx context.Context, r *MemoryRegion, f *arenaFile, plac
 		h.mu.Unlock()
 		if len(candidates) > 0 {
 			preferEviction = false
-			err := h.evictBatch(ctx, candidates)
+			// A cold copy the guest did not change goes back to the page it was
+			// copied from rather than to the spill: see cold.go.
+			given, err := h.giveBackVictim(ctx, candidates[0])
+			if given || err != nil {
+				h.unlockAll(candidates)
+				if err != nil {
+					return fileSlot{}, err
+				}
+				continue
+			}
+			err = h.evictBatch(ctx, candidates)
 			h.unlockAll(candidates)
 			// A victim another memory region will not give up is not this allocation's
 			// failure: the next pass skips it, because that memory region is terminal

@@ -49,12 +49,39 @@ func TestASealLeavesOutAColdCopyTheGuestDidNotChange(t *testing.T) {
 	}
 }
 
+// An eviction that takes a cold copy the guest did not change gives it back to
+// the page it was copied from instead of spilling it: the guest maps that page
+// read-only again, and nothing goes to the spill or stays in a reservation.
+func TestAnEvictionGivesBackAColdCopyInsteadOfSpillingIt(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newFixture(t, 2, 32, 8)
+		b := f.newBacking(4)
+		r, m := f.attach(b)
+		access(t, r, m, 0, true)
+		access(t, r, m, 1, false)
+		s := hostStats(t, f)
+		if s.Spills != 0 || s.GivenBackPages != 1 || s.DirtyPages != 0 {
+			t.Fatalf("spilled %d, gave back %d, holds %d dirty reservations; want 0, 1 and 0",
+				s.Spills, s.GivenBackPages, s.DirtyPages)
+		}
+		if p, mapped := m.pages[0]; !mapped || p.writable {
+			t.Fatalf("the guest maps page 0 as %+v (mapped %t), want its origin read-only", p, mapped)
+		}
+		if got := access(t, r, m, 0, false)[0]; got != 1 {
+			t.Fatalf("page 0 reads %d, want the 1 the volume holds", got)
+		}
+	})
+}
+
 // A cold copy the pager spilled is compared too, read back from where the spill
 // put it, so a guest under memory pressure does not upload what it only read.
 // The page it was copied from is pinned, so the comparison has it: the
-// eviction took the copy instead.
+// eviction took the copy instead. An eviction spills a cold copy only while a
+// lock its give-back needs is held, which the test stands in for by turning
+// that give-back off.
 func TestASealComparesASpilledColdCopy(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
+		vmmemory.SetGiveBackVictims(t, false)
 		f := newFixture(t, 2, 32, 8)
 		b := f.newBacking(4)
 		r, m := f.attach(b)

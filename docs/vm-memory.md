@@ -1261,7 +1261,13 @@ cold:
 
 - **Its origin is pinned.** An eviction takes any other page first. It takes a
   pinned page only when nothing else can go, as in a one-page arena, and that
-  ends the copies of it being cold. The copy itself may be spilled.
+  ends the copies of it being cold.
+- **An eviction gives it back rather than spill it.** A reclaim that picks a
+  cold copy runs the give-back on it instead, taking each lock the give-back
+  needs without waiting (`Host.giveBackVictim`). An unchanged copy goes back to
+  its origin and frees its slot with nothing written to the spill; a changed
+  one stops being cold and is spilled. A copy whose give-back could not take a
+  lock is spilled cold.
 - **Its session gives it back soon after it is made,** with the five steps of
   the give-back (`Connection.giveBackColdCopies`), for RAM and PMEM alike.
 - **Every seal compares it.** The walk behind the pause compares each cold copy

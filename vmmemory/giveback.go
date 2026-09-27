@@ -135,10 +135,7 @@ func (r *MemoryRegion) giveBack(ctx context.Context, index uint64, buffers *sett
 		return false, err
 	}
 	defer h.unlock(origin)
-	h.mu.Lock()
-	going := origin.dropped
-	h.mu.Unlock()
-	if !origin.published() || origin.slot < 0 || going || r.fileNumber(origin.file) < 0 {
+	if !r.comparable(origin) {
 		// Evicted, moved out of reach, or going back once a store's mapping
 		// command lands: there is nothing to compare with, and there never will
 		// be again.
@@ -152,6 +149,27 @@ func (r *MemoryRegion) giveBack(ctx context.Context, index uint64, buffers *sett
 		return false, err
 	}
 	defer h.unlock(pg)
+	return r.giveBackCopy(ctx, b, origin, pg, buffers)
+}
+
+// comparable reports whether a copy can still be compared with origin: it is
+// resident, still holds its identity, is not going back once a store's mapping
+// command lands, and is in a file this memory region's session was given.
+// Caller holds origin's lock.
+func (r *MemoryRegion) comparable(origin *resident) bool {
+	h := r.host
+	h.mu.Lock()
+	going := origin.dropped
+	h.mu.Unlock()
+	return origin.published() && origin.slot >= 0 && !going && r.fileNumber(origin.file) >= 0
+}
+
+// giveBackCopy is one page of a give-back once its locks are held: the page's
+// window, the memory region shared, the origin and then the copy pg. It reports
+// whether the copy went back.
+func (r *MemoryRegion) giveBackCopy(ctx context.Context, b *binding, origin, pg *resident, buffers *settler) (bool, error) {
+	h := r.host
+	index := b.index
 	if !r.isMapped(b) {
 		return false, nil
 	}

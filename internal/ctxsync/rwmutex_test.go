@@ -97,3 +97,37 @@ func TestRWMutexLockReturnsContextCauseAndReleasesWaitingSlot(t *testing.T) {
 		m.RUnlock()
 	})
 }
+
+// TryRLock shares with readers and fails, without waiting, while a writer holds
+// the lock or waits for it.
+func TestRWMutexTryRLockNeverWaits(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m := ctxsync.NewRWMutex()
+		if !m.TryRLock() || !m.TryRLock() {
+			t.Fatal("TryRLock of a lock only readers hold failed")
+		}
+		locked := make(chan struct{})
+		go func() {
+			if err := m.Lock(t.Context()); err != nil {
+				t.Error(err)
+				return
+			}
+			close(locked)
+		}()
+		synctest.Wait()
+		if m.TryRLock() {
+			t.Fatal("TryRLock succeeded while a writer waited")
+		}
+		m.RUnlock()
+		m.RUnlock()
+		<-locked
+		if m.TryRLock() {
+			t.Fatal("TryRLock succeeded while a writer held the lock")
+		}
+		m.Unlock()
+		if !m.TryRLock() {
+			t.Fatal("TryRLock of a free lock failed")
+		}
+		m.RUnlock()
+	})
+}

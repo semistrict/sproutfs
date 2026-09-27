@@ -24,9 +24,13 @@ import (
 // dirty page only when a comparison with the page it was copied from finds the
 // guest changed it. Until then:
 //
-//   - Its origin is pinned. No eviction and no idle drop takes the page a cold
-//     copy was made from, so there is always something to compare it with. The
-//     copy itself may be spilled; a comparison reads it back.
+//   - Its origin is pinned. An eviction takes the page a cold copy was made
+//     from only when nothing else can go, so there is almost always something
+//     to compare it with.
+//   - An eviction that picks the copy itself gives it back rather than spill
+//     it, where it can take the locks for that without waiting: see
+//     giveBackVictim. A copy it could not give back is spilled, and a
+//     comparison reads it back.
 //   - Its session gives it back soon after it is made: see giveBackColdCopies.
 //   - A seal compares every cold copy in the set it took and leaves out each one
 //     that still holds its origin's bytes: see leaveOutColdCopies. So no
@@ -311,4 +315,73 @@ func (r *MemoryRegion) unprotectMapped(ctx context.Context, bindings []*binding)
 		}
 	}
 	return nil
+}
+
+// giveBackVictim gives an eviction's victim back to its origin instead of
+// spilling it, where the victim is a cold copy the guest has not changed: its
+// slot is freed, and nothing is written to the spill or kept in a reservation.
+// It reports whether it did; a victim it did not give back is spilled as
+// usual. A copy it finds changed stops being cold.
+//
+// A reclaim holds its victim's lock and none of the locks a give-back takes
+// before it: the page's window, the memory region, the origin. So it takes
+// each of those without waiting, and gives up where one is held: the copy is
+// then spilled, and the seal compares it from there. Caller holds pg's lock.
+func (h *Host) giveBackVictim(ctx context.Context, pg *resident) (bool, error) {
+	if !giveBackVictims {
+		return false, nil
+	}
+	h.mu.Lock()
+	var b *binding
+	if pg.private && pg.aliases.len() == 1 {
+		for alias := range pg.aliases.all() {
+			b = alias
+		}
+	}
+	h.mu.Unlock()
+	if b == nil {
+		return false, nil
+	}
+	r := b.memoryRegion
+	if !r.isCold(b) || !r.live.TryRLock() {
+		return false, nil
+	}
+	defer r.live.RUnlock()
+	stripe := r.stripe(b.index)
+	if !stripe.TryLock() {
+		return false, nil
+	}
+	defer stripe.Unlock()
+	if !r.mu.TryRLock() {
+		return false, nil
+	}
+	defer r.mu.RUnlock()
+	if r.ready() != nil || !r.isCold(b) {
+		return false, nil
+	}
+	origin := r.originOf(b)
+	if !origin.mu.TryLock() {
+		return false, nil
+	}
+	defer h.unlock(origin)
+	h.mu.Lock()
+	current := b.resident == pg
+	h.mu.Unlock()
+	if !current || !r.comparable(origin) {
+		return false, nil
+	}
+	var buffers settler
+	return r.giveBackCopy(ctx, b, origin, pg, &buffers)
+}
+
+// giveBackVictims is whether an eviction gives a cold victim back. A test turns
+// it off to have a cold copy spilled, which otherwise happens only while a lock
+// the give-back needs is held.
+var giveBackVictims = true
+
+// isCold reports whether b's copy is cold and still its own dirty state.
+func (r *MemoryRegion) isCold(b *binding) bool {
+	r.bindingsMu.Lock()
+	defer r.bindingsMu.Unlock()
+	return b.cold && b.dirty && b.checkpoint == nil
 }

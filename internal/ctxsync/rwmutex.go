@@ -56,6 +56,18 @@ func (m *RWMutex) RLock(ctx context.Context) error {
 	}
 }
 
+// TryRLock acquires a shared lock without waiting and reports whether it did.
+// Like RLock, it defers to a writer that is waiting.
+func (m *RWMutex) TryRLock() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.writer || m.waiting > 0 {
+		return false
+	}
+	m.readers++
+	return true
+}
+
 func (m *RWMutex) RUnlock() {
 	m.mu.Lock()
 	if m.readers == 0 {
