@@ -152,8 +152,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // MADV_POPULATE_WRITE, Linux 5.14, the same on every
                 // architecture.
                 const MADV_POPULATE_WRITE: libc::c_int = 23;
-                let result =
-                    unsafe { libc::madvise(address as *mut _, len, MADV_POPULATE_WRITE) };
+                let result = unsafe { libc::madvise(address as *mut _, len, MADV_POPULATE_WRITE) };
                 assert_eq!(
                     result,
                     0,
