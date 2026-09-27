@@ -143,10 +143,18 @@ func (r *MemoryRegion) giveBack(ctx context.Context, index uint64, buffers *sett
 		return false, nil
 	}
 	pg, err := h.current(ctx, b)
-	if err != nil || pg == nil {
+	if err != nil {
+		return false, err
+	}
+	if pg == nil {
+		if r.isCold(b) {
+			// A cold copy the pager spilled is read back: it pins its
+			// origin until it is compared, so it is not left for the seal.
+			return r.giveBackSpilled(ctx, b, origin, buffers)
+		}
 		// Spilled. Reading it back is I/O this does not do; a later pass may
 		// find it resident again.
-		return false, err
+		return false, nil
 	}
 	defer h.unlock(pg)
 	return r.giveBackCopy(ctx, b, origin, pg, buffers)

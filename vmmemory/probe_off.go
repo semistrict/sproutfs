@@ -16,6 +16,9 @@ func (probeState) bind(*Host, *binding, *resident) string                       
 func (probeState) granted(*binding, *resident, *resident)                       {}
 func (probeState) retired(*binding)                                             {}
 func (probeState) reshared(context.Context, *Host, *resident, *resident) string { return "" }
+func (probeState) resharedSpilled(context.Context, *Host, *binding, []byte, *resident) string {
+	return ""
+}
 
 // note and Ring are nothing in an ordinary build: the pager records no history
 // of what it did to a page. See probe_on.go.

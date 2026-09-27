@@ -28,9 +28,9 @@ import (
 //     from only when nothing else can go, so there is almost always something
 //     to compare it with.
 //   - An eviction that picks the copy itself gives it back rather than spill
-//     it, where it can take the locks for that without waiting: see
-//     giveBackVictim. A copy it could not give back is spilled, and a
-//     comparison reads it back.
+//     it, once it is coldCopyAge old and where it can take the locks for that
+//     without waiting: see giveBackVictim. A copy it could not give back is
+//     spilled, and its session and the seal read it back to compare it.
 //   - Its session gives it back soon after it is made: see giveBackColdCopies.
 //   - A seal compares every cold copy in the set it took and leaves out each one
 //     that still holds its origin's bytes: see leaveOutColdCopies. So no
@@ -97,7 +97,7 @@ func (r *MemoryRegion) markCold(b *binding, origin *resident) bool {
 		r.bindingsMu.Unlock()
 		return false
 	}
-	b.cold = true
+	b.cold, b.coldAt = true, h.clock.Now()
 	if r.coldPages == nil {
 		r.coldPages = make(map[uint64]*binding)
 	}
@@ -328,9 +328,6 @@ func (r *MemoryRegion) unprotectMapped(ctx context.Context, bindings []*binding)
 // each of those without waiting, and gives up where one is held: the copy is
 // then spilled, and the seal compares it from there. Caller holds pg's lock.
 func (h *Host) giveBackVictim(ctx context.Context, pg *resident) (bool, error) {
-	if !giveBackVictims {
-		return false, nil
-	}
 	h.mu.Lock()
 	var b *binding
 	if pg.private && pg.aliases.len() == 1 {
@@ -343,7 +340,11 @@ func (h *Host) giveBackVictim(ctx context.Context, pg *resident) (bool, error) {
 		return false, nil
 	}
 	r := b.memoryRegion
-	if !r.isCold(b) || !r.live.TryRLock() {
+	// A younger copy may be one the vCPU whose fault made it has not stored
+	// into yet: given back, that store would copy again, and in an arena short
+	// enough to evict it at once, again and again. It is spilled cold instead,
+	// and its session compares it from there.
+	if !r.isCold(b) || h.clock.Since(r.coldSince(b)) < coldCopyAge || !r.live.TryRLock() {
 		return false, nil
 	}
 	defer r.live.RUnlock()
@@ -374,14 +375,59 @@ func (h *Host) giveBackVictim(ctx context.Context, pg *resident) (bool, error) {
 	return r.giveBackCopy(ctx, b, origin, pg, &buffers)
 }
 
-// giveBackVictims is whether an eviction gives a cold victim back. A test turns
-// it off to have a cold copy spilled, which otherwise happens only while a lock
-// the give-back needs is held.
-var giveBackVictims = true
+// coldSince reports when b's copy became cold.
+func (r *MemoryRegion) coldSince(b *binding) time.Time {
+	r.bindingsMu.Lock()
+	defer r.bindingsMu.Unlock()
+	return b.coldAt
+}
 
 // isCold reports whether b's copy is cold and still its own dirty state.
 func (r *MemoryRegion) isCold(b *binding) bool {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
 	return b.cold && b.dirty && b.checkpoint == nil
+}
+
+// giveBackSpilled compares a spilled cold copy, read back from the spill, with
+// its origin. An unchanged one goes back to the origin, unmapped, and its
+// reservation is freed; a changed one stops being cold. The guest maps
+// neither, and the page's window keeps its faults out, so the copy cannot
+// change while it is compared. Caller holds the page's window, the memory
+// region shared and the origin.
+func (r *MemoryRegion) giveBackSpilled(ctx context.Context, b *binding, origin *resident, buffers *settler) (bool, error) {
+	h := r.host
+	if buffers.first == nil {
+		buffers.first, buffers.second = make([]byte, h.pageSize), make([]byte, h.pageSize)
+	}
+	if err := origin.file.Read(ctx, origin.slot, buffers.first); err != nil {
+		return false, err
+	}
+	if err := h.read(ctx, b, nil, buffers.second); err != nil {
+		return false, err
+	}
+	h.mu.Lock()
+	h.stats.GiveBackCompares++
+	h.mu.Unlock()
+	if !slices.Equal(buffers.first, buffers.second) {
+		r.forgetOrigin(b, origin)
+		return false, nil
+	}
+	note(r, b.index, "give-back-spilled", -1, origin.slot)
+	// The pager hands the guest back an older page on purpose here, as a
+	// give-back does, so the audit compares the bytes itself. See probe_on.go.
+	if found := h.probe.resharedSpilled(ctx, h, b, buffers.second, origin); found != "" {
+		panic(found)
+	}
+	h.bind(b, origin)
+	if slot := r.endDirty(b); slot >= 0 {
+		h.releaseSpill(slot)
+	}
+	h.probe.retired(b)
+	h.touch(origin)
+	h.mu.Lock()
+	h.stats.GivenBackPages++
+	h.signal()
+	h.mu.Unlock()
+	return true, nil
 }

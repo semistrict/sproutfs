@@ -229,6 +229,29 @@ func (p *probeState) reshared(ctx context.Context, h *Host, copied, origin *resi
 	return ""
 }
 
+// resharedSpilled is reshared for a copy the pager spilled, whose bytes were
+// read back from the spill rather than from a page: once they are the origin's,
+// the origin inherits the generation b was last given writable.
+func (p *probeState) resharedSpilled(ctx context.Context, h *Host, b *binding, copied []byte, origin *resident) string {
+	if origin == nil || origin.slot < 0 {
+		return ""
+	}
+	now := make([]byte, h.pageSize)
+	if err := origin.file.Read(ctx, origin.slot, now); err != nil {
+		return ""
+	}
+	if !bytes.Equal(copied, now) {
+		return fmt.Sprintf("probe reshared: a spilled copy of page %d is going back to origin %+v in slot %d, "+
+			"but they differ — a lost write", b.index, origin.key.id, origin.slot)
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.generation != nil && p.writable[b] > p.generation[origin] {
+		p.generation[origin] = p.writable[b]
+	}
+	return ""
+}
+
 // The ring is what the pager did to one page, in order. A guest that dies on a
 // page it wrote leaves a kernel address in its oops, which is a page number of
 // its RAM memory region; this answers what happened to that page and the pages beside

@@ -3,15 +3,12 @@ package vmmemory
 import (
 	"fmt"
 	"testing"
+	"time"
 )
 
-// SetGiveBackVictims turns an eviction's give-back of a cold victim on or off,
-// so a test can have a cold copy spilled. It is restored when the test ends.
-func SetGiveBackVictims(t *testing.T, on bool) {
-	previous := giveBackVictims
-	giveBackVictims = on
-	t.Cleanup(func() { giveBackVictims = previous })
-}
+// ColdCopyAge is how old a cold copy is before its session gives it back and
+// before an eviction may.
+func ColdCopyAge() time.Duration { return coldCopyAge }
 
 // SetCheckpointBatchPages bounds the pages one seal or retire transition holds
 // the memory region for, so a test can observe a batch boundary without a dirty set of

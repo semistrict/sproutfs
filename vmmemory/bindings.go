@@ -45,6 +45,10 @@ type binding struct {
 	// cold marks a copy a store trap made of origin, which is not yet known to
 	// be the guest's state and pins origin until it is: see cold.go.
 	cold bool
+	// coldAt is when the copy became cold, which is how an eviction tells a
+	// copy the guest may still be about to store into from one it has had
+	// time to. See coldCopyAge.
+	coldAt time.Time
 }
 
 // writable reports whether the guest may store into this page where it is,
