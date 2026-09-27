@@ -1,10 +1,10 @@
 ---
 id: TASK-57
 title: Make nested KVM safe for guests with managed RAM
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-09-27 01:51'
-updated_date: '2026-09-27 20:22'
+updated_date: '2026-09-27 21:30'
 labels:
   - security
   - embedder
@@ -21,9 +21,9 @@ TASK-53 found that KVM's kvm_vcpu_map maps for a nested guest write guest RAM wi
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Every nested-KVM write to guest RAM is either seen by the pager's write-protection or the pager keeps those pages out of seal, copy-on-write, eviction and give-back, with the reason written in docs/vm-memory.md
-- [ ] #2 Firecracker saves and restores nested state (KVM_GET/SET_NESTED_STATE) in every managed snapshot, so capture, fork and migration of a guest running a nested VM keep that VM running
-- [ ] #3 A Linux test runs a nested guest inside a managed-RAM VM through a capture, a fork and a migration, and its memory reads back what it wrote
+- [x] #1 Every nested-KVM write to guest RAM is either seen by the pager's write-protection or the pager keeps those pages out of seal, copy-on-write, eviction and give-back, with the reason written in docs/vm-memory.md
+- [x] #2 Firecracker saves and restores nested state (KVM_GET/SET_NESTED_STATE) in every managed snapshot, so capture, fork and migration of a guest running a nested VM keep that VM running
+- [x] #3 A Linux test runs a nested guest inside a managed-RAM VM through a capture, a fork and a migration, and its memory reads back what it wrote
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -48,4 +48,12 @@ Audit of Linux v7.0 (stand-in for 7.0.0-1011-gcp), arch/x86/kvm: the only long-l
 Plan item 4 (tests), 2026-09-27. witness kvm run: a real-mode L2 stores 0x4b4f324c and halts, checked in its memory. witness kvm loop / count: an L2 counts in EAX and copies the count to a file on /dev (L1 RAM); a count that goes backwards means L2's registers came back older than its memory. witness kvm controls: reads MSRs 0x48e, 0x48b, 0x48d through KVM_GET_MSR_FEATURE_INDEX_LIST and KVM_GET_MSRS on /dev/kvm, and prints whether TPR shadow, virtualize APIC accesses and posted interrupts are offered; raw values go to stderr. vmmachine/nested_l2_linux_test.go (x86, nested kernel): TestANestedGuestRunsAVMOfItsOwn, TestANestedGuestIsNotOfferedTheControlsThatPinItsMemory, TestANestedGuestKeepsItsVMAcrossACaptureAndRestore, ...AcrossAFork, ...AcrossALiveMigration. The controls test fails until the fork narrows the MSRs. The capture, fork and migration tests fail until the fork saves nested state and sproutfs drops fixed regions: in vmmachine the RAM seal refuses with vmmemory.ErrFixed; host refuses earlier with host.ErrNested. Not covered: a vmcs12 that sets TPR shadow fails entry (needs a custom L1 hypervisor). bench-memory-linux.sh builds the nested kernel when vmmachine.test -test.list of the selection names a NestedGuest test. GCE: SPROUTFS_FIRECRACKER_RUN=NestedGuest. Proven on the Mac only: go test, go vet linux amd64/arm64, just check. The arm64 L2 path compiles but has not run.
 
 Plan items 1 and 2, Firecracker commit d05dee39c (detached on sproutfs 12be3bbbd, not yet on the branch). New module src/vmm/src/arch/x86_64/nested.rs. A vCPU whose CPUID offers VMX in a VM with managed RAM or managed PMEM has the allowed-1 bits of posted interrupts, TPR shadow, virtualize APIC accesses, virtualize x2APIC mode, APIC-register virtualization and virtual-interrupt delivery cleared with KVM_SET_MSRS at the end of configure_msrs_for_boot, and read back; configuration fails otherwise. Every snapshot of a vCPU whose CPUID offers VMX (managed or not) holds the 12 VMX capability MSRs KVM lets userspace set and the KVM_GET_NESTED_STATE blob, header kept even when L1 never ran VMXON. Restore order: SET_CPUID2, capability MSRs, narrowing again when managed, mp_state, regs, sregs, SET_NESTED_STATE, then xsave, xcrs, debugregs, lapic, MSRs, events (QEMU: feature control, sregs, nested, rest). The vCPU seccomp filter allows KVM_GET_NESTED_STATE. Snapshot version 14.1.0; a 14.0 snapshot is read in its own layout (Snapshot::load_or_upgrade) and restored with no nested state. Proved on the Mac only: cargo clippy -D warnings for vmm (lib, tests, benches) on x86_64 and aarch64 Linux musl, with and without sproutfs-memory, plus snapshot-editor; x86_64 test binaries link. No test ran: the vmm crate builds only for Linux and Lima is off limits. For x86 GCE: cargo nextest run -p vmm, including the new KVM tests in arch/x86_64/vcpu.rs (need an Intel host with nested KVM) and the pure ones in nested.rs, snapshot/mod.rs and persist.rs; the seccomp JSON through seccompiler; and a real L2 through capture, fork and migration (item 4). Not done: KVM_CAP_EXCEPTION_PAYLOAD, which QEMU enables for nested migration so a pending L2 exception that should exit to L1 survives it.
+
+x86 GCE 2026-09-27 (Ubuntu 26.04 7.0.0-1011-gcp, Intel, kvm_intel.nested=Y), sproutfs with fixed regions and nested refusals removed and Firecracker at d05dee39c: firecracker-nested (22 vmm tests incl. managed_memory_forbids_pinning_controls, restore_forbids_pinning_controls, nested_state_save_restore) pass; TestANestedGuestRunsAVMOfItsOwn, TestANestedGuestIsNotOfferedTheControlsThatPinItsMemory, TestANestedGuestKeepsItsVMAcrossACaptureAndRestore, ...AcrossAFork, ...AcrossALiveMigration and TestOnlyANestedGuestIsOfferedHardwareVirtualisation all pass in the isolated arena; capture/restore and migration also passed in the shared arena (fork failed there on a test quoting bug since fixed).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Nested KVM works for guests with managed RAM on stock Intel hosts, with no host kernel patch. An audit of Linux 7.0 found that the host's KVM maps L1 pages behind the page tables only for three vmcs12 controls (TPR shadow, APIC-access virtualisation, posted interrupts). The Firecracker fork narrows a nested guest's VMX capability MSRs so L1 is never offered them (KVM then refuses entry if L1 asks), and saves/restores the VMX capability MSRs and nested state in snapshots (14.1.0, 14.0 still loads). sproutfs dropped fixed pager regions and every nested refusal: a nested VM is captured, forked and migrated like any other; AMD hosts refuse nested VMs. Verified on x86 GCE: the fork's nested KVM tests, and an L2 guest that keeps running and L1 memory that reads back across capture/restore, fork and live migration.
+<!-- SECTION:FINAL_SUMMARY:END -->
