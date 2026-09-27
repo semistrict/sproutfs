@@ -1260,8 +1260,13 @@ KVM reports only for a real store, so its copy is never cold. While a copy is
 cold:
 
 - **Its origin is pinned.** An eviction takes any other page first. It takes a
-  pinned page only when nothing else can go, as in a one-page arena, and that
-  ends the copies of it being cold.
+  pinned page only when nothing else can go, as in a one-page arena. Its copies
+  stay cold, and are compared with the bytes their volume holds for their page
+  instead, which are what the origin held: a copy is cold only while no
+  checkpoint has taken it. That comparison is a backing read, from the page
+  cache or the object store, which is why the origin is kept while it can be
+  (`MemoryRegion.volumeHolds`). An unchanged copy whose origin went is dropped,
+  and the guest's next access reads the page again.
 - **An eviction gives it back rather than spill it,** once it is 200 ms old. A
   reclaim that picks such a copy runs the give-back on it instead, taking each
   lock the give-back needs without waiting (`Host.giveBackVictim`). An

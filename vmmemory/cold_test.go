@@ -155,3 +155,43 @@ func TestAColdCopyLeftOutIsPublishedOnceTheGuestStoresIntoIt(t *testing.T) {
 		}
 	})
 }
+
+// A one-page arena has room for the copy only by evicting the page it was made
+// from, pinned or not. The copy stays cold: the seal compares it with the
+// bytes its volume holds for the page and leaves it out, and its session gives
+// it back by dropping it, so the guest reads the volume's page again.
+func TestAColdCopyWhoseOriginWasEvictedIsComparedWithItsVolume(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newFixture(t, 1, 32, 8)
+		b := f.newBacking(4)
+		r, m := f.attach(b)
+		access(t, r, m, 0, true)
+		if s := hostStats(t, f); s.Evictions != 1 || s.UnmappedCopyOnWrites != 1 {
+			t.Fatalf("evicted %d and made %d cold copies, want the origin evicted for the one copy",
+				s.Evictions, s.UnmappedCopyOnWrites)
+		}
+		if err := r.Seal(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if got := r.Checkpoint().DirtyPages(); len(got) != 0 {
+			t.Fatalf("the checkpoint holds pages %v, want none", got)
+		}
+		f.finishCheckpoint(r, b)
+		if given := giveBackColdCopies(t, r); given != 1 {
+			t.Fatalf("the session gave back %d cold copies, want the one whose origin went", given)
+		}
+		if s := hostStats(t, f); s.DirtyPages != 0 {
+			t.Fatalf("holds %d dirty reservations, want none", s.DirtyPages)
+		}
+		if got := access(t, r, m, 0, false)[0]; got != 1 {
+			t.Fatalf("page 0 reads %d, want the 1 the volume holds", got)
+		}
+		// A store after all that is the guest's, and the next checkpoint
+		// publishes it.
+		access(t, r, m, 0, true)[0] = 9
+		f.mustCheckpoint(r, b)
+		if b.data[0] != 9 {
+			t.Fatalf("the volume holds %d, want the 9 the guest stored", b.data[0])
+		}
+	})
+}

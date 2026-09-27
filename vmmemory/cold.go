@@ -25,8 +25,9 @@ import (
 // guest changed it. Until then:
 //
 //   - Its origin is pinned. An eviction takes the page a cold copy was made
-//     from only when nothing else can go, so there is almost always something
-//     to compare it with.
+//     from only when nothing else can go. Without it, the copy is compared
+//     with the bytes its volume holds for the page, which is a backing read:
+//     see volumeHolds.
 //   - An eviction that picks the copy itself gives it back rather than spill
 //     it, once it is coldCopyAge old and where it can take the locks for that
 //     without waiting: see giveBackVictim. A copy it could not give back is
@@ -38,9 +39,9 @@ import (
 //     point, holds a cold copy the guest did not change, and none is uploaded
 //     or fetched.
 //
-// An origin that goes anyway, because its identity was dropped or a move put
-// its bytes elsewhere, ends the copies it pinned being cold: they are ordinary
-// dirty pages from then on. A protect trap is a store into a page the guest
+// A move of the origin moves its pins with it. An origin that goes anyway
+// leaves its copies cold, compared with their volume from then on. A protect
+// trap is a store into a page the guest
 // maps, which KVM reports only for a real store, so its copy is never cold.
 //
 // A cold copy is given back only once it is coldCopyAge old. KVM's worker takes
@@ -84,20 +85,25 @@ func (h *Host) pinned(pg *resident) bool {
 
 // markCold makes b's copy of origin cold, and records it for its session to
 // give back. It reports whether it did: a copy that no longer remembers origin
-// is not one. pin has kept origin for it. Caller holds the page's window.
+// is not one. pin kept origin for it, unless an eviction took it anyway.
+// Caller holds the page's window.
 func (r *MemoryRegion) markCold(b *binding, origin *resident) bool {
 	r.bindingsMu.Lock()
 	h := r.host
 	h.pinMu.Lock()
 	_, pinned := origin.coldCopies[b]
 	h.pinMu.Unlock()
-	if !pinned || b.origin != origin || !b.dirty || b.checkpoint != nil {
-		// An eviction with nothing else to take took origin, or the copy is
-		// no longer the one made from it.
+	if b.origin != origin || !b.dirty || b.checkpoint != nil {
+		// The copy is no longer the one made from origin.
 		r.bindingsMu.Unlock()
 		return false
 	}
-	b.cold, b.coldAt = true, h.clock.Now()
+	if !pinned {
+		// An eviction with nothing else to take took origin while the copy
+		// was being made: the copy is compared with its volume instead.
+		b.origin = nil
+	}
+	b.cold, b.coldAt = true, h.clock.Now().UnixNano()
 	if r.coldPages == nil {
 		r.coldPages = make(map[uint64]*binding)
 	}
@@ -124,12 +130,16 @@ func (r *MemoryRegion) uncoldLocked(b *binding) {
 	}
 	b.cold = false
 	delete(r.coldPages, b.index)
-	r.host.unpin(b.origin, b)
+	if b.origin != nil {
+		r.host.unpin(b.origin, b)
+	}
 }
 
-// dropCold ends every cold copy compared with pg, which is going although it
-// is pinned: its identity was dropped, or a move put its bytes elsewhere. They
-// become ordinary dirty pages that remember no origin. Caller holds pg's lock.
+// dropCold lets every cold copy compared with pg go on without it: pg is
+// going although it is pinned, because an eviction had nothing else to take,
+// its identity was dropped, or a move put its bytes elsewhere. The copies stay
+// cold, and are compared with the bytes their volume holds for their page
+// instead, which are what pg held: see volumeHolds. Caller holds pg's lock.
 func (h *Host) dropCold(pg *resident) {
 	h.pinMu.Lock()
 	copies := slices.Collect(maps.Keys(pg.coldCopies))
@@ -139,8 +149,7 @@ func (h *Host) dropCold(pg *resident) {
 		r := b.memoryRegion
 		r.bindingsMu.Lock()
 		if b.cold && b.origin == pg {
-			b.cold, b.origin = false, nil
-			delete(r.coldPages, b.index)
+			b.origin = nil
 		}
 		r.bindingsMu.Unlock()
 	}
@@ -259,7 +268,7 @@ func (r *MemoryRegion) stillOrigins(ctx context.Context, b *binding, buffers *se
 	h := r.host
 	origin := r.originOf(b)
 	if origin == nil {
-		return false, nil
+		return r.volumeHolds(ctx, b, buffers)
 	}
 	// Origin first, as every comparison takes them: clean before private.
 	if err := origin.mu.Lock(ctx); err != nil {
@@ -361,7 +370,9 @@ func (h *Host) giveBackVictim(ctx context.Context, pg *resident) (bool, error) {
 		return false, nil
 	}
 	origin := r.originOf(b)
-	if !origin.mu.TryLock() {
+	if origin == nil || !origin.mu.TryLock() {
+		// A copy whose origin has gone is compared with its volume's bytes,
+		// which is I/O a reclaim does not wait for: it is spilled cold.
 		return false, nil
 	}
 	defer h.unlock(origin)
@@ -379,7 +390,7 @@ func (h *Host) giveBackVictim(ctx context.Context, pg *resident) (bool, error) {
 func (r *MemoryRegion) coldSince(b *binding) time.Time {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
-	return b.coldAt
+	return time.Unix(0, b.coldAt)
 }
 
 // isCold reports whether b's copy is cold and still its own dirty state.
@@ -425,6 +436,85 @@ func (r *MemoryRegion) giveBackSpilled(ctx context.Context, b *binding, origin *
 	}
 	h.probe.retired(b)
 	h.touch(origin)
+	h.mu.Lock()
+	h.stats.GivenBackPages++
+	h.signal()
+	h.mu.Unlock()
+	return true, nil
+}
+
+// volumeHolds reports whether a cold copy whose origin has gone holds exactly
+// the bytes its volume holds for its page. A copy is cold only while no
+// checkpoint has taken it, so those are the bytes of the page it was copied
+// from. Reading them is a backing read: the page cache's, or the object
+// store's, which is why a pinned origin goes only when nothing else can. A
+// backing that may answer with another host's bytes has no such guarantee, and
+// the copy is reported changed. Caller holds the page's window or the
+// exclusive memory region lock, so the copy cannot change while it is read.
+func (r *MemoryRegion) volumeHolds(ctx context.Context, b *binding, buffers *settler) (bool, error) {
+	h := r.host
+	if r.peer {
+		return false, nil
+	}
+	if buffers.first == nil {
+		buffers.first, buffers.second = make([]byte, h.pageSize), make([]byte, h.pageSize)
+	}
+	if _, err := r.loadBacking(ctx, b.index*h.pageSize, buffers.first); err != nil {
+		return false, err
+	}
+	pg, err := h.current(ctx, b)
+	if err != nil {
+		return false, err
+	}
+	if pg != nil {
+		defer h.unlock(pg)
+	}
+	if err := h.read(ctx, b, pg, buffers.second); err != nil {
+		return false, err
+	}
+	return slices.Equal(buffers.first, buffers.second), nil
+}
+
+// giveBackToVolume is a give-back of a cold copy whose origin has gone: it is
+// compared with its volume's bytes, and an unchanged one is dropped rather
+// than pointed at a page, so the guest's next access reads the page again as
+// any first access does. A changed one stops being cold. Caller holds the
+// page's window and the memory region shared.
+func (r *MemoryRegion) giveBackToVolume(ctx context.Context, b *binding, buffers *settler) (bool, error) {
+	h := r.host
+	// The guest's mapping goes first, so nothing it stores can land in the copy
+	// while it is compared: a store traps and waits for the page's window.
+	if err := r.revokeBindings(ctx, []*binding{b}); err != nil {
+		return false, err
+	}
+	same, err := r.volumeHolds(ctx, b, buffers)
+	h.mu.Lock()
+	h.stats.GiveBackCompares++
+	h.mu.Unlock()
+	if err != nil || !same {
+		if err == nil {
+			r.bindingsMu.Lock()
+			r.uncoldLocked(b)
+			r.bindingsMu.Unlock()
+		}
+		return false, err
+	}
+	pg, err := h.current(ctx, b)
+	if err != nil {
+		return false, err
+	}
+	note(r, b.index, "give-back-to-volume", -1, -1)
+	if pg != nil {
+		err = h.unlink(ctx, b, pg)
+		h.unlock(pg)
+		if err != nil {
+			return false, err
+		}
+	}
+	if slot := r.endDirty(b); slot >= 0 {
+		h.releaseSpill(slot)
+	}
+	h.probe.retired(b)
 	h.mu.Lock()
 	h.stats.GivenBackPages++
 	h.signal()

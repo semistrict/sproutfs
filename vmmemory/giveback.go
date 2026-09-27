@@ -119,6 +119,9 @@ func (r *MemoryRegion) giveBack(ctx context.Context, index uint64, buffers *sett
 	defer r.mu.RUnlock()
 	b := r.lookupBinding(index)
 	origin := r.originOf(b)
+	if origin == nil && r.isCold(b) && !h.wholeRange(r, index) {
+		return r.giveBackToVolume(ctx, b, buffers)
+	}
 	if dirty, held := r.privateEpoch(b); origin == nil || !dirty || held != nil || h.wholeRange(r, index) {
 		// Stored into and compared since the list was made, or a range the
 		// rules made one mapping, which a page given back would break in three.

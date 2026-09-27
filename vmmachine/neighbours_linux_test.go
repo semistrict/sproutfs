@@ -63,6 +63,8 @@ type neighbour struct {
 	id      string
 	vm      *volume.VM
 	process *vmmachine.Process
+	// pagers is the host's pagers, which a load that stalls reports.
+	pagers vmmemory.Pagers
 
 	rounds  int
 	slowest time.Duration
@@ -142,7 +144,7 @@ func (n *neighbourhood) boot(t *testing.T, ctx context.Context, binaryPath, name
 	if err := n.host.AddMachine(name, p); err != nil {
 		t.Fatal(err)
 	}
-	return &neighbour{id: name, vm: vm, process: p}
+	return &neighbour{id: name, vm: vm, process: p, pagers: n.pagers.pagers}
 }
 
 // hog starts one hostile load in a guest and returns once the load has been
@@ -160,7 +162,8 @@ func (g *neighbour) hog(t *testing.T, ctx context.Context, kind string, mib int)
 	defer cancel()
 	for _, want := range []string{"SPROUTFS_HOG kind=" + kind, "SPROUTFS_HOG_PASS kind=" + kind} {
 		if _, err := reader.wait(started, want); err != nil {
-			t.Fatalf("%s's %s load: %v\n%s", g.id, kind, err, consoleText(g.process))
+			t.Fatalf("%s's %s load: %v\nRAM %s\nPMEM %s\n%s", g.id, kind, err,
+				stalled(t, ctx, g.pagers.Ram), stalled(t, ctx, g.pagers.Pmem), consoleText(g.process))
 		}
 	}
 }
@@ -248,6 +251,18 @@ func (n *neighbourhood) noneClosed(t *testing.T) {
 		t.Fatalf("the host stopped %s", id)
 	default:
 	}
+}
+
+// stalled is what one pager has done, for a load that did not finish: the
+// counters brief reports, and where its faults went.
+func stalled(t *testing.T, ctx context.Context, pager *vmmemory.Host) string {
+	t.Helper()
+	s := statsOf(t, context.WithoutCancel(ctx), pager)
+	return fmt.Sprintf("%s; faults %d (repeated %d, paced %d), copies %d (cold %d), given back %d of %d compared, "+
+		"store traps %d, protect traps %d, fault time %v (max %v), fault queue max %v, revocations %d, refused mappings %d",
+		brief(s), s.Faults, s.RepeatedFaults, s.PacedFaults, s.CopyOnWrites, s.UnmappedCopyOnWrites, s.GivenBackPages,
+		s.GiveBackCompares, s.StoreTraps, s.ProtectTraps, time.Duration(s.Fault.TotalNS), time.Duration(s.Fault.MaxNS),
+		time.Duration(s.FaultQueue.MaxNS), s.Revocations, s.RefusedMappings)
 }
 
 // statsOf is one pager's counters, for a test to report or check.
