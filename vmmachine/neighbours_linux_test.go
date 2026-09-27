@@ -48,6 +48,9 @@ type neighbourhood struct {
 	pagers *hostPagers
 	logs   *records
 	closed chan string
+	// guests is every guest booted here, in order, which a load that stalls
+	// reports the residency of.
+	guests []*neighbour
 }
 
 // neighbourhoodConfig is what a suite sets of the host: its pagers' budgets and
@@ -63,8 +66,9 @@ type neighbour struct {
 	id      string
 	vm      *volume.VM
 	process *vmmachine.Process
-	// pagers is the host's pagers, which a load that stalls reports.
-	pagers vmmemory.Pagers
+	// hood is the host it runs on, whose pagers and guests a load that stalls
+	// reports.
+	hood *neighbourhood
 
 	rounds  int
 	slowest time.Duration
@@ -144,7 +148,9 @@ func (n *neighbourhood) boot(t *testing.T, ctx context.Context, binaryPath, name
 	if err := n.host.AddMachine(name, p); err != nil {
 		t.Fatal(err)
 	}
-	return &neighbour{id: name, vm: vm, process: p, pagers: n.pagers.pagers}
+	g := &neighbour{id: name, vm: vm, process: p, hood: n}
+	n.guests = append(n.guests, g)
+	return g
 }
 
 // hog starts one hostile load in a guest and returns once the load has been
@@ -162,8 +168,7 @@ func (g *neighbour) hog(t *testing.T, ctx context.Context, kind string, mib int)
 	defer cancel()
 	for _, want := range []string{"SPROUTFS_HOG kind=" + kind, "SPROUTFS_HOG_PASS kind=" + kind} {
 		if _, err := reader.wait(started, want); err != nil {
-			t.Fatalf("%s's %s load: %v\nRAM %s\nPMEM %s\n%s", g.id, kind, err,
-				stalled(t, ctx, g.pagers.Ram), stalled(t, ctx, g.pagers.Pmem), consoleText(g.process))
+			t.Fatalf("%s's %s load: %v\n%s", g.id, kind, err, g.stalled(t, ctx))
 		}
 	}
 }
@@ -186,9 +191,8 @@ func (g *neighbour) answers(t *testing.T, ctx context.Context, round uint64) {
 		err := guestCommand(bounded, g.process, exchange.line, exchange.want)
 		cancel()
 		if err != nil {
-			t.Fatalf("%s did not answer %q within %s while its neighbour ran: %v\nRAM %s\nPMEM %s\n%s",
-				g.id, exchange.line, neighbourAnswer, err, stalled(t, ctx, g.pagers.Ram),
-				stalled(t, ctx, g.pagers.Pmem), consoleText(g.process))
+			t.Fatalf("%s did not answer %q within %s while its neighbour ran: %v\n%s",
+				g.id, exchange.line, neighbourAnswer, err, g.stalled(t, ctx))
 		}
 		took = append(took, fmt.Sprintf("%s %s", strings.Fields(exchange.line)[0], time.Since(began).Round(time.Millisecond)))
 	}
@@ -197,9 +201,8 @@ func (g *neighbour) answers(t *testing.T, ctx context.Context, round uint64) {
 	began := time.Now()
 	result, err := guestExec(bounded, g.process, guest.ExecRequest{Cmd: fmt.Sprintf("echo %d", round)})
 	if err != nil {
-		t.Fatalf("%s's agent did not answer within %s while its neighbour ran: %v\nRAM %s\nPMEM %s\n%s",
-			g.id, neighbourAnswer, err, stalled(t, ctx, g.pagers.Ram), stalled(t, ctx, g.pagers.Pmem),
-			consoleText(g.process))
+		t.Fatalf("%s's agent did not answer within %s while its neighbour ran: %v\n%s",
+			g.id, neighbourAnswer, err, g.stalled(t, ctx))
 	}
 	if result.Exit != 0 || result.Stdout != fmt.Sprintf("%d\n", round) {
 		t.Fatalf("%s's agent answered %+v, want %d", g.id, result, round)
@@ -253,6 +256,27 @@ func (n *neighbourhood) noneClosed(t *testing.T) {
 		t.Fatalf("the host stopped %s", id)
 	default:
 	}
+}
+
+// stalled is what the host's pagers have done, for a request of this guest's
+// that did not finish, how much of each pager every guest holds, and what
+// this guest's console says.
+func (g *neighbour) stalled(t *testing.T, ctx context.Context) string {
+	t.Helper()
+	pagers := g.hood.pagers.pagers
+	report := fmt.Sprintf("RAM %s\nPMEM %s", stalled(t, ctx, pagers.Ram), stalled(t, ctx, pagers.Pmem))
+	for _, other := range g.hood.guests {
+		for name, region := range other.process.MemoryRegions() {
+			stats, err := region.Stats(context.WithoutCancel(ctx))
+			if err != nil {
+				report += fmt.Sprintf("\n%s %s: %v", other.id, name, err)
+				continue
+			}
+			report += fmt.Sprintf("\n%s %s: resident %d, private %d, shared %d",
+				other.id, name, stats.ResidentPages, stats.PrivatePages, stats.SharedPages)
+		}
+	}
+	return report + "\n" + string(consoleText(g.process))
 }
 
 // stalled is what one pager has done, for a load that did not finish: the
@@ -309,7 +333,10 @@ func TestAGuestTouchingAllItsRAMLeavesItsNeighbourItsWorkingSet(t *testing.T) {
 	command(t, ctx, calm.process, fmt.Sprintf("pressure %d\n", workingSet),
 		fmt.Sprintf("SPROUTFS_PRESSURE bytes=%d", workingSet<<20))
 	before := statsOf(t, ctx, n.pagers.pagers.Ram)
-	hostile.hog(t, ctx, "ram", 80)
+	// All the RAM the hog's guest has available, which is less than the 128
+	// MiB it maps by what its kernel holds: a hog of more than that stops in
+	// the guest's own reclaim, with no swap to go to.
+	hostile.hog(t, ctx, "ram", 0)
 	t.Logf("after the hog's first pass: RAM %s", brief(statsOf(t, ctx, n.pagers.pagers.Ram)))
 
 	for round := uint64(1); round <= 4; round++ {

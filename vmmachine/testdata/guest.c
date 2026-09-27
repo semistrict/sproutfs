@@ -124,14 +124,37 @@ static void start_agent(void) {
 // hog runs one hostile load in a child until the VM ends, so the console loop
 // goes on answering. It stands in for untrusted code that uses as much of the
 // host as its guest can reach:
-//   ram N    stores into every 4 KiB page of N MiB of RAM, over and over;
+//   ram N    stores into every 4 KiB page of N MiB of RAM, over and over, and
+//            ram 0 into all the RAM the guest has available, less hogSpare;
 //   disk N   does the same over an N MiB file on the DAX root;
 //   sync N   writes one 4 KiB block of an N MiB file on the root and fsyncs it,
 //            over and over, which is a virtio-pmem flush each time;
 //   vsock N  connects to the host over the vsock, where nothing listens, over
 //            and over, N connections to a pass.
 // The child says when it has been over the whole of it once.
+// hogSpare is the RAM, in MiB, a hog of all the guest has leaves it: the
+// console loop, the agent and the page tables the hog's own mapping needs. A
+// guest has no swap, so one that stores into more than it has stops in reclaim.
+enum { hogSpare = 8 };
+
+// available is the guest's MemAvailable in MiB, 0 when it cannot say.
+static unsigned long available(void) {
+    FILE *meminfo = fopen("/proc/meminfo", "r");
+    char line[128];
+    unsigned long kib = 0;
+    while (meminfo && fgets(line, sizeof line, meminfo)) {
+        if (sscanf(line, "MemAvailable: %lu kB", &kib) == 1) break;
+    }
+    if (meminfo) fclose(meminfo);
+    return kib >> 10;
+}
+
 static void hog(const char *kind, unsigned long size) {
+    if (!strcmp(kind, "ram") && !size) {
+        unsigned long mib = available();
+        if (mib <= hogSpare) { errno = ENOMEM; fail("hog ram available"); }
+        size = mib - hogSpare;
+    }
     if (!size || (strcmp(kind, "vsock") && size > 1024)) { errno = EINVAL; fail("hog size"); }
     pid_t child = fork();
     if (child < 0) fail("fork hog");
@@ -171,12 +194,7 @@ static void hog(const char *kind, unsigned long size) {
     // The first pass says how far it has got every 16 MiB, and how much memory
     // the guest had when it began, so a pass that never ends shows whether it
     // is slow or stopped.
-    FILE *meminfo = fopen("/proc/meminfo", "r");
-    char line[128];
-    while (meminfo && fgets(line, sizeof line, meminfo)) {
-        if (!strncmp(line, "MemAvailable:", 13)) printf("SPROUTFS_HOG_MEM %s", line + 13);
-    }
-    if (meminfo) fclose(meminfo);
+    printf("SPROUTFS_HOG_MEM available_mib=%lu\n", available());
     uint64_t began = monotonic();
     for (unsigned long round = 1;; round++) {
         for (size_t at = 0; at < bytes; at += 4096) {
