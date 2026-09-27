@@ -194,6 +194,18 @@ if [[ ${SPROUTFS_GCE_QUALIFY:-0} == 1 ]]; then
             nested_kernel=(SPROUTFS_FIRECRACKER_NESTED_KERNEL="$work/build/kernel-nested")
         fi
     fi
+    # The fork's own tests of a nested guest's VMX controls and nested state
+    # need what only this host has: an Intel processor under KVM with nested
+    # virtualisation on. They run with the Firecracker suites of a nested
+    # guest, and with a whole qualification.
+    if [[ -z $selected || $selected_tests == *NestedGuest* ]]; then
+        if [[ ! -x "$CARGO_HOME/bin/cargo-nextest" ]]; then
+            cargo install --locked cargo-nextest
+        fi
+        qualify firecracker-nested cargo nextest run --locked \
+            --manifest-path third_party/firecracker/Cargo.toml -p vmm --features sproutfs-memory \
+            -E 'test(/nested|pinning|version_14_0|managed_memory/)'
+    fi
     qualify firecracker env "${nested_kernel[@]}" SPROUTFS_FIRECRACKER="$work/build/firecracker" \
         SPROUTFS_FIRECRACKER_SECCOMP="$work/build/seccomp.bpf" \
         SPROUTFS_FIRECRACKER_KERNEL="$work/build/kernel" \
