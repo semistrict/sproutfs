@@ -21,11 +21,55 @@ import (
 // publication, as a create that asks for one makes it.
 func newNestedGuestVM(t *testing.T, ctx context.Context, name string, nested bool) *volume.VM {
 	t.Helper()
-	vm := newGuestVM(t, ctx, name)
+	return newNestedGuestVMIn(t, ctx, newMigrationCluster(t, ctx), name, nested)
+}
+
+// newNestedGuestVMIn is newNestedGuestVM on the source host of a cluster the
+// caller holds.
+func newNestedGuestVMIn(t *testing.T, ctx context.Context, c *migrationCluster, name string, nested bool) *volume.VM {
+	t.Helper()
+	vm := newGuestVMIn(t, ctx, c, name)
 	if err := vm.DiscardMemory(ctx, vmmachine.RAMVolume, volume.Shape{Nested: &nested}); err != nil {
 		t.Fatal(err)
 	}
 	return vm
+}
+
+// nestedVCPUs is how many processors these suites give a guest: two, so that
+// one busy running an L2 of its own leaves the other to the guest's agent.
+const nestedVCPUs = 2
+
+// nestedPager is one host's pagers for these suites. A nested VM's RAM stays
+// resident, so its RAM arena holds the whole of it whatever the suite's own
+// resident budget is.
+func nestedPager(t *testing.T, ctx context.Context) *hostPagers {
+	t.Helper()
+	return newSizedMigrationPager(t, ctx, 128<<20, 128<<20, 384<<20, 384<<20)
+}
+
+// nestedConfig is migrationConfig for a guest of these suites: booted on
+// kernel, with its vsock, on nestedVCPUs processors.
+func nestedConfig(t *testing.T, binaryPath, kernel string, pager *hostPagers, vm *volume.VM) vmmachine.Config {
+	t.Helper()
+	config := migrationConfig(t, binaryPath, pager, vm)
+	starter := config.Starter.(*vmmachine.Firecracker)
+	starter.VsockCID = guestVsockCID
+	starter.Kernel = kernel
+	config.VCPUs = nestedVCPUs
+	return config
+}
+
+// bootNestedGuest starts config's VM and returns once its guest's agent is
+// serving on the vsock.
+func bootNestedGuest(t *testing.T, ctx context.Context, config vmmachine.Config) *vmmachine.Process {
+	t.Helper()
+	p, err := vmmachine.Start(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = p.Close() })
+	waitLine(t, ctx, p, fmt.Sprintf("sproutfs-guest-agent: serving on vsock port %d", guest.Port), 0)
+	return p
 }
 
 // virtualisation is what a guest shows of hardware virtualisation.
@@ -44,19 +88,7 @@ type virtualisation struct {
 // hardware virtualisation.
 func virtualisationOf(t *testing.T, ctx context.Context, binaryPath, kernel string, vm *volume.VM) virtualisation {
 	t.Helper()
-	// A nested VM's RAM stays resident, so its RAM arena holds the whole of it
-	// whatever the suite's own resident budget is.
-	pager := newSizedMigrationPager(t, ctx, 128<<20, 128<<20, 384<<20, 384<<20)
-	config := migrationConfig(t, binaryPath, pager, vm)
-	starter := config.Starter.(*vmmachine.Firecracker)
-	starter.VsockCID = guestVsockCID
-	starter.Kernel = kernel
-	p, err := vmmachine.Start(ctx, config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = p.Close() })
-	waitLine(t, ctx, p, fmt.Sprintf("sproutfs-guest-agent: serving on vsock port %d", guest.Port), 0)
+	p := bootNestedGuest(t, ctx, nestedConfig(t, binaryPath, kernel, nestedPager(t, ctx), vm))
 	// The guest's root has busybox's cat and little else, so the flags are
 	// read here.
 	cpuinfo, err := guestExec(ctx, p, guest.ExecRequest{Cmd: "cat /proc/cpuinfo"})
@@ -130,6 +162,29 @@ func hostVirtualisation(t *testing.T) string {
 	return ""
 }
 
+// nestedFirecracker is the VMM and the guest kernel a suite that boots a
+// nested VM's guest runs, or skips it where there are none. Every such suite
+// has NestedGuest in its name: that is how the GCE qualification
+// (scripts/lib/bench-memory-linux.sh) knows a run needs the kernel built.
+// TestOnlyANestedGuestIsOfferedHardwareVirtualisation says why the guest needs
+// a kernel of its own.
+func nestedFirecracker(t *testing.T) (binaryPath, kernel string) {
+	t.Helper()
+	binaryPath = os.Getenv("SPROUTFS_FIRECRACKER")
+	if binaryPath == "" {
+		t.Skip("run the Firecracker qualification script")
+	}
+	if runtime.GOARCH != "amd64" {
+		t.Skip("only an x86_64 host runs a nested VM; TestANestedVMIsRefusedOffX86 covers the rest")
+	}
+	kernel = os.Getenv("SPROUTFS_FIRECRACKER_NESTED_KERNEL")
+	if kernel == "" {
+		t.Skip("SPROUTFS_FIRECRACKER_NESTED_KERNEL names no guest kernel with KVM built in; " +
+			"the GCE qualification (scripts/bench-memory-gce.sh, SPROUTFS_GCE_QUALIFY=1) builds one")
+	}
+	return binaryPath, kernel
+}
+
 // TestOnlyANestedGuestIsOfferedHardwareVirtualisation: a nested VM's guest sees
 // the host's VMX or SVM and can create a VM of its own, and a guest that is not
 // nested sees neither and has no /dev/kvm, so it cannot start one. See
@@ -143,18 +198,7 @@ func hostVirtualisation(t *testing.T) string {
 // offered or not. Only a kernel that would take VMX if it were offered says,
 // by not taking it, that it was not.
 func TestOnlyANestedGuestIsOfferedHardwareVirtualisation(t *testing.T) {
-	binaryPath := os.Getenv("SPROUTFS_FIRECRACKER")
-	if binaryPath == "" {
-		t.Skip("run the Firecracker qualification script")
-	}
-	if runtime.GOARCH != "amd64" {
-		t.Skip("only an x86_64 host runs a nested VM; TestANestedVMIsRefusedOffX86 covers the rest")
-	}
-	kernel := os.Getenv("SPROUTFS_FIRECRACKER_NESTED_KERNEL")
-	if kernel == "" {
-		t.Skip("SPROUTFS_FIRECRACKER_NESTED_KERNEL names no guest kernel with KVM built in; " +
-			"the GCE qualification (scripts/bench-memory-gce.sh, SPROUTFS_GCE_QUALIFY=1) builds one")
-	}
+	binaryPath, kernel := nestedFirecracker(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 6*time.Minute)
 	defer cancel()
 	want := hostVirtualisation(t)

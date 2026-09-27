@@ -31,6 +31,18 @@
 //	    is what says whether this guest can run VMs of its own: only a nested
 //	    VM's guest can (see vmmachine's nested.go). The guest's root has no
 //	    other tool that issues an ioctl.
+//	witness kvm run
+//	    run a VM of this guest's own, L2, whose program stores a word into its
+//	    memory and stops, and check the word landed. See l2.go.
+//	witness kvm loop [--file /dev/sproutfs-l2] [--log /dev/sproutfs-l2.log]
+//	    leave an L2 running whose program counts, with its memory in that file,
+//	    and return once it has begun: whatever the host does to this guest,
+//	    that L2 should go on counting.
+//	witness kvm count [--file /dev/sproutfs-l2]
+//	    say what the counting L2 has counted to, read out of its memory.
+//	witness kvm controls
+//	    say whether this guest is offered the three VMX controls that make the
+//	    host's KVM write the guest's memory behind the host page tables.
 //
 // The pattern is a pure function of the seed, the step and the page, so the
 // expectation lives in the script that drives the soak and not in the guest:
@@ -66,6 +78,10 @@ const usage = `sproutfs-guest-witness says whether a guest's memory and disk are
   witness check --seed S --step K --disk-only --disk /var/witness
   witness grow MOUNTPOINT
   witness kvm
+  witness kvm run
+  witness kvm loop [--file PATH] [--log PATH]
+  witness kvm count [--file PATH]
+  witness kvm controls
   witness version
 
 The pattern is a pure function of (seed, step, page), so what a guest must hold
@@ -135,16 +151,10 @@ func run(args []string) error {
 		}
 		return growAt(rest[0])
 	}
+	// The KVM commands are a family of their own, with flags of their own; see
+	// l2.go.
 	if command == "kvm" {
-		if len(rest) != 0 {
-			return fmt.Errorf("kvm takes no arguments\n\n%s", usage)
-		}
-		said, err := createVM()
-		if err != nil {
-			return err
-		}
-		fmt.Println(said)
-		return nil
+		return kvm(rest)
 	}
 	parsed, err := parse(rest)
 	if err != nil {

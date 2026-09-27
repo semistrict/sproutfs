@@ -275,7 +275,9 @@ func TestFirecrackerForkFanOutServesBothChildrenAtOnce(t *testing.T) {
 	}
 	stopWatching := watchPoint(t, ctx, point, truth)
 	for _, handoff := range handoffs {
-		taken = append(taken, receiveChild(t, ctx, c, destinationPager, binaryPath, handoff, pages))
+		taken = append(taken, receiveChild(t, ctx, c, handoff, pages, func(vm *volume.VM) vmmachine.Config {
+			return migrationConfig(t, binaryPath, destinationPager, vm)
+		}))
 	}
 	stopWatching()
 	if err := point.Retire(ctx); err != nil {
@@ -502,13 +504,14 @@ func checkpointEvery(t *testing.T, ctx context.Context, child *forkedChild, inte
 // destination creates it and streams the pages no checkpoint holds out of the
 // parent's page server, publishes the child's root index once it has them all,
 // and only then does the parent's host release the hold that child kept.
-func receiveChild(t *testing.T, ctx context.Context, c *migrationCluster, pager *hostPagers,
-	binaryPath string, handoff vmmigrate.Handoff, source *vmmigrate.PageSource) *forkedChild {
+// configure is the child's VMM configuration before the restore is added to it.
+func receiveChild(t *testing.T, ctx context.Context, c *migrationCluster, handoff vmmigrate.Handoff,
+	source *vmmigrate.PageSource, configure func(*volume.VM) vmmachine.Config) *forkedChild {
 	t.Helper()
 	var process *vmmachine.Process
 	start := func(ctx context.Context, vm *volume.VM, backings map[string]vmmemory.Backing,
 		state []byte) (vmmigrate.Runtime, error) {
-		config := migrationConfig(t, binaryPath, pager, vm)
+		config := configure(vm)
 		config.RestoreState = state
 		config.Backings = backings
 		started, err := vmmachine.Start(ctx, config)

@@ -175,17 +175,19 @@ if [[ ${SPROUTFS_GCE_QUALIFY:-0} == 1 ]]; then
     # socket paths under it past what a Unix socket takes, so /tmp itself
     # allows devices on this disposable host.
     mount -o remount,dev /tmp
-    # The nested test boots a kernel of its own, the CI kernel's configuration
-    # with KVM built in (see scripts/lib/nested-kernel.sh for why). It takes
-    # minutes of this host's processors, so only a run that selects that test
-    # builds it; Go's -test.run and bash's =~ read a pattern of names, | and
-    # anchors alike. A kernel that did not build fails the run, and the test
-    # then skips rather than boot nothing. qualify always succeeds, so what
-    # says the kernel built is the kernel: the script writes it last, and one
-    # an earlier run left is removed first.
-    nested_test=TestOnlyANestedGuestIsOfferedHardwareVirtualisation
+    # The nested tests boot a kernel of their own, the CI kernel's
+    # configuration with KVM built in (see scripts/lib/nested-kernel.sh for
+    # why). It takes minutes of this host's processors, so only a run that
+    # selects one of them builds it. Every such test has NestedGuest in its
+    # name (vmmachine's nestedFirecracker), and the test binary itself lists
+    # what the selection runs, so the pattern is read by the matcher that
+    # runs it. A kernel that did not build fails the run, and the tests then
+    # skip rather than boot nothing. qualify always succeeds, so what says
+    # the kernel built is the kernel: the script writes it last, and one an
+    # earlier run left is removed first.
+    selected_tests=$("$work/build/vmmachine.test" -test.list "${selected:-.}")
     nested_kernel=()
-    if [[ -z $selected || $nested_test =~ $selected ]]; then
+    if [[ $selected_tests == *NestedGuest* ]]; then
         rm -f -- "$work/build/kernel-nested"
         qualify nested-kernel bash "$repo/scripts/lib/nested-kernel.sh" "$repo" "$work/tools" "$work/build/kernel-nested"
         if [[ -s $work/build/kernel-nested ]]; then

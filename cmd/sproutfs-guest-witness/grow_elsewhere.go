@@ -22,10 +22,6 @@ func resizeFilesystem(point string, blocks uint64) error {
 		point, blocks, runtime.GOOS)
 }
 
-func createVM() (string, error) {
-	return "", fmt.Errorf("creating a VM is a Linux ioctl on /dev/kvm, and this is %s", runtime.GOOS)
-}
-
 // deviceAndAttributes has nothing to report off Linux: there is no PMEM under a
 // developer's machine, and so nothing for a witness there to require.
 func deviceAndAttributes(*os.File) (string, uint64, error) { return "", 0, nil }
