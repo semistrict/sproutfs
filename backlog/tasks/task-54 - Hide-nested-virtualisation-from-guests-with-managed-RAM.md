@@ -4,6 +4,7 @@ title: Hide nested virtualisation from guests with managed RAM
 status: To Do
 assignee: []
 created_date: '2026-09-27 00:09'
+updated_date: '2026-09-27 01:51'
 labels:
   - security
 dependencies: []
@@ -22,3 +23,9 @@ Found by TASK-53: KVM's kvm_vcpu_map maps for a nested guest (Intel: the virtual
 - [ ] #1 The owner has decided whether guests with managed RAM may see VMX/SVM
 - [ ] #2 If hidden: a guest with managed RAM sees no VMX or SVM in CPUID on x86, proven by a Firecracker test
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Alternative to TASK-56 (make nested KVM safe). The owner prefers making it safe; this stays as the fallback.
+<!-- SECTION:NOTES:END -->
