@@ -168,8 +168,24 @@ static void hog(const char *kind, unsigned long size) {
         ? mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)
         : mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_SHARED, file, 0);
     if (region == MAP_FAILED) fail("hog mmap");
+    // The first pass says how far it has got every 16 MiB, and how much memory
+    // the guest had when it began, so a pass that never ends shows whether it
+    // is slow or stopped.
+    FILE *meminfo = fopen("/proc/meminfo", "r");
+    char line[128];
+    while (meminfo && fgets(line, sizeof line, meminfo)) {
+        if (!strncmp(line, "MemAvailable:", 13)) printf("SPROUTFS_HOG_MEM %s", line + 13);
+    }
+    if (meminfo) fclose(meminfo);
+    uint64_t began = monotonic();
     for (unsigned long round = 1;; round++) {
-        for (size_t at = 0; at < bytes; at += 4096) region[at] = (unsigned char)round;
+        for (size_t at = 0; at < bytes; at += 4096) {
+            region[at] = (unsigned char)round;
+            if (round == 1 && at && at % (16u << 20) == 0) {
+                printf("SPROUTFS_HOG_AT kind=%s mib=%zu ns=%llu\n", kind, at >> 20,
+                       (unsigned long long)(monotonic() - began));
+            }
+        }
         if (round == 1) printf("SPROUTFS_HOG_PASS kind=%s\n", kind);
     }
 }
