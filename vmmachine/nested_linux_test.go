@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -27,8 +28,10 @@ func newNestedGuestVM(t *testing.T, ctx context.Context, name string, nested boo
 	return vm
 }
 
-// virtualisationFlags is what a guest's /proc/cpuinfo offers of VMX and SVM.
-func virtualisationFlags(t *testing.T, ctx context.Context, binaryPath string, vm *volume.VM) string {
+// virtualisationFlags is what a guest's /proc/cpuinfo offers of VMX and SVM,
+// and what its kernel said about either as it booted, which is what explains a
+// flag that is missing.
+func virtualisationFlags(t *testing.T, ctx context.Context, binaryPath string, vm *volume.VM) (flags, boot string) {
 	t.Helper()
 	// A nested VM's RAM stays resident, so its RAM arena holds the whole of it
 	// whatever the suite's own resident budget is.
@@ -41,12 +44,39 @@ func virtualisationFlags(t *testing.T, ctx context.Context, binaryPath string, v
 	}
 	t.Cleanup(func() { _ = p.Close() })
 	waitLine(t, ctx, p, fmt.Sprintf("sproutfs-guest-agent: serving on vsock port %d", guest.Port), 0)
-	result, err := guestExec(ctx, p, guest.ExecRequest{
-		Cmd: "grep -ow -e vmx -e svm /proc/cpuinfo | sort -u | tr '\\n' ' '"})
-	if err != nil {
-		t.Fatalf("asking the guest for its CPU flags: %v\n%s", err, consoleText(p))
+	// The guest's root has busybox's cat and little else, so the flags are
+	// read here.
+	result, err := guestExec(ctx, p, guest.ExecRequest{Cmd: "cat /proc/cpuinfo"})
+	if err != nil || result.Exit != 0 {
+		t.Fatalf("reading the guest's /proc/cpuinfo: %v %+v\n%s", err, result, consoleText(p))
 	}
-	return strings.TrimSpace(result.Stdout)
+	var found []string
+	for _, flag := range []string{"vmx", "svm"} {
+		if slices.Contains(strings.Fields(result.Stdout), flag) {
+			found = append(found, flag)
+		}
+	}
+	var said []string
+	for _, line := range strings.Split(string(consoleText(p)), "\n") {
+		lower := strings.ToLower(line)
+		if strings.Contains(lower, "vmx") || strings.Contains(lower, "svm") || strings.Contains(lower, "virtuali") {
+			said = append(said, line)
+		}
+	}
+	return strings.Join(found, " "), strings.Join(said, "\n")
+}
+
+// hostNested is what this host's KVM says of nested virtualisation.
+func hostNested(t *testing.T) string {
+	t.Helper()
+	var said []string
+	for _, module := range []string{"kvm_intel", "kvm_amd"} {
+		value, err := os.ReadFile("/sys/module/" + module + "/parameters/nested")
+		if err == nil {
+			said = append(said, module+".nested="+strings.TrimSpace(string(value)))
+		}
+	}
+	return strings.Join(said, " ")
 }
 
 // hostVirtualisation is the one of VMX and SVM this host's processors offer.
@@ -79,11 +109,12 @@ func TestOnlyANestedGuestIsOfferedHardwareVirtualisation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 6*time.Minute)
 	defer cancel()
 	want := hostVirtualisation(t)
-	if got := virtualisationFlags(t, ctx, binaryPath, newNestedGuestVM(t, ctx, "plain", false)); got != "" {
-		t.Fatalf("a guest that is not nested sees %q, want neither VMX nor SVM", got)
+	if got, boot := virtualisationFlags(t, ctx, binaryPath, newNestedGuestVM(t, ctx, "plain", false)); got != "" {
+		t.Fatalf("a guest that is not nested sees %q, want neither VMX nor SVM; its kernel said:\n%s", got, boot)
 	}
-	if got := virtualisationFlags(t, ctx, binaryPath, newNestedGuestVM(t, ctx, "nested", true)); got != want {
-		t.Fatalf("a nested guest sees %q, want the host's %q", got, want)
+	if got, boot := virtualisationFlags(t, ctx, binaryPath, newNestedGuestVM(t, ctx, "nested", true)); got != want {
+		t.Fatalf("a nested guest sees %q, want the host's %q (%s); its kernel said:\n%s",
+			got, want, hostNested(t), boot)
 	}
 }
 
@@ -100,8 +131,8 @@ func TestANestedVMIsRefusedOffX86(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 6*time.Minute)
 	defer cancel()
-	if got := virtualisationFlags(t, ctx, binaryPath, newNestedGuestVM(t, ctx, "plain", false)); got != "" {
-		t.Fatalf("a guest that is not nested sees %q, want neither VMX nor SVM", got)
+	if got, boot := virtualisationFlags(t, ctx, binaryPath, newNestedGuestVM(t, ctx, "plain", false)); got != "" {
+		t.Fatalf("a guest that is not nested sees %q, want neither VMX nor SVM; its kernel said:\n%s", got, boot)
 	}
 	vm := newNestedGuestVM(t, ctx, "nested", true)
 	config := migrationConfig(t, binaryPath, newMigrationPager(t, ctx), vm)
