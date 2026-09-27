@@ -303,13 +303,15 @@ func statsOf(t *testing.T, ctx context.Context, pager *vmmemory.Host) vmmemory.S
 
 // TestAGuestTouchingAllItsRAMLeavesItsNeighbourItsWorkingSet: a guest that
 // stores into all of its RAM over and over faults on nearly every store. The
-// arena here is three eighths of the RAM the two guests map, a share of 24
-// pages each at 2 MiB. That holds the neighbour's working set and not the
-// hog's, so every pass of the hog evicts and spills. The neighbour's working
-// set, agent and all, must go on answering within a bound, and the arena must
-// never hold more than it has. At a quarter the share is below the working set
-// of a booted guest, and the neighbour thrashes on its own. The dirty budget
-// holds both guests' RAM, so this is residency and not the dirty budget.
+// arena here is half the RAM the two guests map, a share of 32 pages each at
+// 2 MiB. That holds the neighbour's working set and not the hog's, which
+// touches about 60 pages, so every pass of the hog evicts and spills. The
+// neighbour's working set, agent and all, must go on answering within a bound,
+// and the arena must never hold more than it has. A share below the working
+// set of a booted guest leaves the neighbour thrashing on its own pages,
+// whatever its neighbour does: an x86_64 guest touches 32 pages booting, so a
+// share of 24 is below it there. The dirty budget holds both guests' RAM, so
+// this is residency and not the dirty budget.
 func TestAGuestTouchingAllItsRAMLeavesItsNeighbourItsWorkingSet(t *testing.T) {
 	binaryPath := os.Getenv("SPROUTFS_FIRECRACKER")
 	if binaryPath == "" {
@@ -319,7 +321,7 @@ func TestAGuestTouchingAllItsRAMLeavesItsNeighbourItsWorkingSet(t *testing.T) {
 	defer cancel()
 	n := newNeighbourhood(t, ctx, neighbourhoodConfig{
 		pagers: hostPagersConfig{
-			RAM:  hostPagerBudgets{Arena: 3 * neighbourRAM / 4, Logical: 4 * neighbourRAM, Dirty: 2 * neighbourRAM},
+			RAM:  hostPagerBudgets{Arena: neighbourRAM, Logical: 4 * neighbourRAM, Dirty: 2 * neighbourRAM},
 			PMEM: hostPagerBudgets{Arena: 2 * guestRootBytes, Logical: 4 * guestRootBytes, Dirty: 2 * guestRootBytes},
 		},
 		interval: 2 * time.Second,
