@@ -186,8 +186,9 @@ func (g *neighbour) answers(t *testing.T, ctx context.Context, round uint64) {
 		err := guestCommand(bounded, g.process, exchange.line, exchange.want)
 		cancel()
 		if err != nil {
-			t.Fatalf("%s did not answer %q within %s while its neighbour ran: %v\n%s",
-				g.id, exchange.line, neighbourAnswer, err, consoleText(g.process))
+			t.Fatalf("%s did not answer %q within %s while its neighbour ran: %v\nRAM %s\nPMEM %s\n%s",
+				g.id, exchange.line, neighbourAnswer, err, stalled(t, ctx, g.pagers.Ram),
+				stalled(t, ctx, g.pagers.Pmem), consoleText(g.process))
 		}
 		took = append(took, fmt.Sprintf("%s %s", strings.Fields(exchange.line)[0], time.Since(began).Round(time.Millisecond)))
 	}
@@ -196,8 +197,9 @@ func (g *neighbour) answers(t *testing.T, ctx context.Context, round uint64) {
 	began := time.Now()
 	result, err := guestExec(bounded, g.process, guest.ExecRequest{Cmd: fmt.Sprintf("echo %d", round)})
 	if err != nil {
-		t.Fatalf("%s's agent did not answer within %s while its neighbour ran: %v\n%s",
-			g.id, neighbourAnswer, err, consoleText(g.process))
+		t.Fatalf("%s's agent did not answer within %s while its neighbour ran: %v\nRAM %s\nPMEM %s\n%s",
+			g.id, neighbourAnswer, err, stalled(t, ctx, g.pagers.Ram), stalled(t, ctx, g.pagers.Pmem),
+			consoleText(g.process))
 	}
 	if result.Exit != 0 || result.Stdout != fmt.Sprintf("%d\n", round) {
 		t.Fatalf("%s's agent answered %+v, want %d", g.id, result, round)
