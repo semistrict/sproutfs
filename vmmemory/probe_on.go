@@ -90,8 +90,13 @@ type probeState struct {
 
 // stable checks that a published page's bytes have not changed since the last
 // time anything held its lock. Caller holds that lock.
+//
+// A page in a memory region's private file is not checked. Its VMM holds that
+// file's descriptor, so its bytes can change without the pager writing them,
+// and the pager's own defence is what finds that: the digest of the upload's
+// read, compared when another region inherits the page (ErrTampered).
 func (p *probeState) stable(ctx context.Context, h *Host, pg *resident, where string) string {
-	if pg == nil || !pg.published() || pg.slot < 0 {
+	if pg == nil || !pg.published() || pg.slot < 0 || pg.file.owner != nil {
 		return ""
 	}
 	buf := make([]byte, h.pageSize)
