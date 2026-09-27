@@ -207,7 +207,8 @@ func (h *Host) admit(ctx context.Context, memoryRegion MemoryRegionBacking, mapp
 	count := size / h.pageSize
 	// A fixed region's pages are never evicted, so every one of them may be
 	// resident at once. The arena admits it only if what fixed regions may hold
-	// leaves at least one page any other region can be given by eviction.
+	// fits in the arena; the host admits no more guest RAM than the arena
+	// holds, so every other region still finds its pages.
 	fixed := 0
 	if memoryRegion.Fixed {
 		fixed = int(count)
@@ -218,7 +219,7 @@ func (h *Host) admit(ctx context.Context, memoryRegion MemoryRegionBacking, mapp
 		h.mu.Unlock()
 		return nil, err
 	}
-	if count > uint64(h.cfg.LogicalPages-h.logical) || h.fixed+fixed >= h.cfg.ResidentPages {
+	if count > uint64(h.cfg.LogicalPages-h.logical) || h.fixed+fixed > h.cfg.ResidentPages {
 		h.mu.Unlock()
 		return nil, ErrCapacity
 	}

@@ -104,7 +104,7 @@ type MemoryRegionBacking struct {
 	// detaches: it is never sealed, evicted, moved or given back. It is the RAM
 	// of a nested VM, whose guest's VMCS pages KVM writes behind the host page
 	// tables; see fixed.go for why. Only RAM may be fixed, and the pager admits
-	// it only while fixed regions leave the rest of the arena room to evict.
+	// it only while the fixed regions fit in the arena.
 	Fixed bool
 }
 

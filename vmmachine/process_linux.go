@@ -360,7 +360,10 @@ func Start(ctx context.Context, c Config) (*Process, error) {
 	}
 	connectErrors := p.attach(ctx, lifetime, c)
 	if err := p.awaitAPI(ctx); err != nil {
-		return nil, err
+		// A VMM that builds its guest from a configuration file attaches its
+		// memory before it binds its API socket, so a memory region the pager
+		// refused ends it here, and the reason is in the sessions.
+		return nil, p.withSessions(err, connectErrors)
 	}
 	// The limit goes on once the VMM is up and before any request that could
 	// make it write a state file. A VMM that exits at once is then reported by

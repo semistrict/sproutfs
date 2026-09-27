@@ -1570,8 +1570,8 @@ keeps every page resident, in the slot it was given, until it detaches:
 - no page it maps is ever an eviction victim, so nothing spills it;
 - the give-back skips it, and no page of it is moved to a shared file.
 
-The pager admits a fixed region only while fixed regions leave at least one
-page of the arena that eviction can give another region. `vmmemory/fixed.go`
+The pager admits a fixed region only while the fixed regions fit in the arena
+together. `vmmemory/fixed.go`
 says why each rule exists, next to the code. The host refuses the rest
 (`host/nested.go`): a capture, a suspend, a fork, a capture into a new VM and a
 live migration. See [nested VMs](hosting.md#nested-vms) for what a nested VM

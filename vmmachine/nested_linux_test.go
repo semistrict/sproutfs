@@ -30,7 +30,10 @@ func newNestedGuestVM(t *testing.T, ctx context.Context, name string, nested boo
 // virtualisationFlags is what a guest's /proc/cpuinfo offers of VMX and SVM.
 func virtualisationFlags(t *testing.T, ctx context.Context, binaryPath string, vm *volume.VM) string {
 	t.Helper()
-	config := migrationConfig(t, binaryPath, newMigrationPager(t, ctx), vm)
+	// A nested VM's RAM stays resident, so its RAM arena holds the whole of it
+	// whatever the suite's own resident budget is.
+	pager := newSizedMigrationPager(t, ctx, 128<<20, 128<<20, 384<<20, 384<<20)
+	config := migrationConfig(t, binaryPath, pager, vm)
 	config.Starter.(*vmmachine.Firecracker).VsockCID = guestVsockCID
 	p, err := vmmachine.Start(ctx, config)
 	if err != nil {
@@ -97,6 +100,9 @@ func TestANestedVMIsRefusedOffX86(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 6*time.Minute)
 	defer cancel()
+	if got := virtualisationFlags(t, ctx, binaryPath, newNestedGuestVM(t, ctx, "plain", false)); got != "" {
+		t.Fatalf("a guest that is not nested sees %q, want neither VMX nor SVM", got)
+	}
 	vm := newNestedGuestVM(t, ctx, "nested", true)
 	config := migrationConfig(t, binaryPath, newMigrationPager(t, ctx), vm)
 	p, err := vmmachine.Start(ctx, config)

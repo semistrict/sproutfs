@@ -63,18 +63,18 @@ func TestAFixedRegionIsNeverSealed(t *testing.T) {
 	})
 }
 
-// Fixed regions are admitted only while they leave the arena at least one page
-// another region can be given by eviction, and only RAM is ever fixed.
-func TestTheArenaAdmitsFixedRegionsOnlyWithRoomToEvict(t *testing.T) {
+// Fixed regions are admitted only while they fit in the arena together, and
+// only RAM is ever fixed.
+func TestTheArenaAdmitsFixedRegionsOnlyWhileTheyFit(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newFixture(t, 4, 16, 8)
 		f.attachFixed(f.newBacking(3))
 		m := newMapping(f.a)
 		f.a.mappings = append(f.a.mappings, m)
-		_, err := f.h.Attach(t.Context(), vmmemory.MemoryRegionBacking{Kind: vmmemory.Ram, Backing: f.newBacking(1),
+		_, err := f.h.Attach(t.Context(), vmmemory.MemoryRegionBacking{Kind: vmmemory.Ram, Backing: f.newBacking(2),
 			Fixed: true}, m)
 		if !errors.Is(err, vmmemory.ErrCapacity) {
-			t.Fatalf("a fixed region filling the last evictable page attached with %v, want ErrCapacity", err)
+			t.Fatalf("a fixed region past the arena attached with %v, want ErrCapacity", err)
 		}
 		_, err = f.h.Attach(t.Context(), vmmemory.MemoryRegionBacking{Kind: vmmemory.Pmem, Backing: f.newBacking(1),
 			Fixed: true}, m)
