@@ -63,6 +63,10 @@ type hostClient interface {
 // namespace, which exist whether or not any host is running the VM.
 type records interface {
 	List(ctx context.Context) ([]listing, error)
+	// Pending reports whether a VM's record selects a first checkpoint that
+	// has not landed: a fork's child whose root its host is still publishing.
+	// A VM with no record is not pending.
+	Pending(ctx context.Context, id string) (bool, error)
 }
 
 // listing is one control record as the bucket found it, which is the identity
@@ -104,6 +108,10 @@ var (
 	// errReceiving refuses to open a VM a receive of which is still in flight
 	// on some host. It is an errRunning: the VM is between hosts, not lost.
 	errReceiving = fmt.Errorf("%w: a receive of it is in flight", errRunning)
+	// errLost reports a fork's child that was lost with the host running it
+	// before its first checkpoint landed. Nothing of it was durable anywhere,
+	// so there is nothing to open, and its identity is freed.
+	errLost = errors.New("the VM was lost before its first checkpoint landed")
 )
 
 // orchestrator places VMs on hosts and carries handoffs between them. It is
@@ -612,8 +620,8 @@ func (o *orchestrator) VMs(ctx context.Context) ([]orch.VM, error) {
 		}
 		vms = append(vms, vm)
 	}
-	// A VM whose first checkpoint has not landed has no control record to list
-	// yet, and its host is the only place it exists. Report those too.
+	// A VM running on a host without a control record — one whose identity
+	// was deleted under it — is reported too: its host is where it is.
 	listed := live(identities)
 	for id, vm := range running {
 		if !slices.Contains(listed, id) {
@@ -1482,8 +1490,8 @@ func recovery(force bool) reopening {
 	return reopening{state: stateRecovering, what: "recovered",
 		// A host that did not answer is not a host that is gone. Force is the
 		// operator's own evidence that it is.
-		requireAnswers: !force,
-		quietAdvice:    "kill that host, or recover by force"}
+		requireAnswers: !force, force: force,
+		quietAdvice: "kill that host, or recover by force"}
 }
 
 // Stop ends a VM the deployment is finished with for now. The host running it
@@ -1559,7 +1567,8 @@ type reopening struct {
 	state, what, quietAdvice string
 	// requireAnswers refuses while any listed pod is quiet, which is what a
 	// recovery's evidence of a loss is and what a stopped VM does not need.
-	requireAnswers bool
+	// force is the operator's word that every quiet pod's process is gone.
+	requireAnswers, force bool
 	// handedOver is the host a migration took the VM from, empty for every
 	// other reopen. Its silence says nothing about the VM: it stopped the guest
 	// and gave its volumes up before any destination was asked to take it, and
@@ -1623,6 +1632,23 @@ func (o *orchestrator) reopen(ctx context.Context, id string, terms reopening) (
 		return orch.RecoverResult{}, fmt.Errorf(
 			"%w: %s did not answer, so %s may still be running there; %s",
 			errRunning, strings.Join(quiet, ", "), id, terms.quietAdvice)
+	}
+	// A fork's child whose root has not landed exists only on the host running
+	// it, so one no host runs was lost with its host and there is nothing to
+	// open. Freeing its identity destroys it, which needs the same evidence a
+	// recovery does whether this is one or a start: a quiet host may be running
+	// it still, publishing that root.
+	pending, err := o.records.Pending(ctx, id)
+	if err != nil {
+		return orch.RecoverResult{}, fmt.Errorf("reading the control record of %s: %w", id, err)
+	}
+	if pending {
+		if len(quiet) > 0 && !terms.force {
+			return orch.RecoverResult{}, fmt.Errorf(
+				"%w: %s did not answer, so %s may still be running there and publishing its first checkpoint; "+
+					"kill that host, or recover by force", errRunning, strings.Join(quiet, ", "), id)
+		}
+		return orch.RecoverResult{}, o.forgetLost(ctx, hosts, id)
 	}
 	// A cold start that resizes the memory is admitted against the size it is
 	// asking for, because that is what the guest will hold once it is running
@@ -1702,6 +1728,26 @@ func (o *orchestrator) Check(ctx context.Context) (orch.CheckResult, error) {
 	slog.WarnContext(ctx, "sproutfs-orchestrator: the deployment disagrees with itself",
 		"violations", len(result.Violations))
 	return result, nil
+}
+
+// forgetLost frees the identity of a fork's child lost with its host before
+// its first checkpoint landed, and reports it lost. Its control record and
+// whatever of its root reached the store are all that is left of it, and a host
+// deletes them as it deletes any VM; the table forgets it as it forgets a
+// deleted one.
+func (o *orchestrator) forgetLost(ctx context.Context, hosts []liveHost, id string) error {
+	through, err := place(hosts, "", 0)
+	if err != nil {
+		return err
+	}
+	if err := through.client.Delete(ctx, id); err != nil {
+		return fmt.Errorf("freeing the identity of %s: %w", id, err)
+	}
+	o.forget(ctx, id)
+	slog.WarnContext(ctx, "sproutfs-orchestrator: freed the identity of a fork lost before its first checkpoint landed",
+		"vm", id, "host", through.report.Name)
+	return fmt.Errorf("%w: %s was a fork whose host was lost before its first checkpoint landed, "+
+		"so nothing of it was durable; its identity is free again", errLost, id)
 }
 
 // holding reports the host that still serves one VM's pages, empty for a VM no

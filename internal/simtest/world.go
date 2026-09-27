@@ -125,6 +125,9 @@ type World struct {
 	// post-copy that did not finish. It is what a test asserts to say that its
 	// fault reached the takeover it is about rather than being absorbed.
 	takeovers int
+	// rootsCut counts the fork children whose host was lost while the world
+	// was waiting for their root to land.
+	rootsCut int
 	// receivedGuests counts the guests hosts have started for each VM they
 	// were taking in, which is what says that a handover started one guest and
 	// not two.
@@ -150,6 +153,18 @@ func (w *World) Takeovers() int {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.takeovers
+}
+
+// Orphans is the identities a fork could not give back that are still not
+// free.
+func (w *World) Orphans() []string { return slices.Sorted(maps.Keys(w.orphans)) }
+
+// RootsCut is how many fork children lost their host while their root was
+// still publishing, which is what says a campaign reached that moment.
+func (w *World) RootsCut() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.rootsCut
 }
 
 // ReceivedGuests is how many guests hosts have started for one VM they were
@@ -2147,6 +2162,11 @@ func (w *World) FanOutWith(ctx context.Context, parent string, children []VMSpec
 func (w *World) forked(ctx context.Context, source, destination *hostState, spec VMSpec,
 	handoff vmmigrate.Handoff, hold handover.Hold, at map[string][]byte, terms Handover) (bool, error) {
 	incarnation := w.incarnationOf(spec.Host)
+	// The incarnation of the destination the child is taken in by, whose end
+	// is the end of a child that is not durable yet.
+	w.mu.Lock()
+	gone := destination.gone
+	w.mu.Unlock()
 	received, err := w.receive(ctx, w.indexOf(source), destination, hold, handoff)
 	if err != nil {
 		// The child could not get the pages only its parent had, or its root
@@ -2181,9 +2201,12 @@ func (w *World) forked(ctx context.Context, source, destination *hostState, spec
 	}
 	// The host publishes the child's root behind the running child; this
 	// step of the world ends once it has landed, so what follows sees the
-	// child durable and the parent's hold on the point retired.
+	// child durable and the parent's hold on the point retired, or once the
+	// host running the child is lost.
 	select {
 	case <-received.VM().Rooted():
+	case <-gone:
+		return w.lostBeforeRoot(ctx, source, destination, spec, child, at)
 	case <-ctx.Done():
 		return false, context.Cause(ctx)
 	}
@@ -2217,6 +2240,43 @@ func (w *World) forked(ctx context.Context, source, destination *hostState, spec
 	}
 	w.streamed(ctx, received)
 	return true, nil
+}
+
+// lostBeforeRoot is a child whose host was lost while its root was still
+// publishing. Whether anything of it survived is what its control record says,
+// as it is to the orchestrator. A root that landed is the child durable at the
+// point it inherited, and a host brings it back as it does any VM whose host is
+// gone. A root that did not is a child that existed on that host alone: there
+// is nothing of it to open, and its identity is freed at the next step.
+func (w *World) lostBeforeRoot(ctx context.Context, source, destination *hostState, spec VMSpec,
+	child *guest, at map[string][]byte) (bool, error) {
+	w.mu.Lock()
+	w.rootsCut++
+	w.mu.Unlock()
+	records, err := w.records()
+	if err != nil {
+		return false, err
+	}
+	record, err := records.Read(ctx, spec.ID)
+	if err != nil {
+		return false, fmt.Errorf("%s: reading the record of a child whose host was lost: %w", spec.ID, err)
+	}
+	if record.Created {
+		in := &instance{spec: spec}
+		w.adopt(in)
+		w.place(in, w.indexOf(destination), nil)
+		w.notePublished(spec.ID, record.Selected)
+		w.landed(in, nil, durableState{model: at, writes: child.stored(), sequence: record.Selected})
+		w.logf("%s: its host was lost after its root landed at %d", spec.ID, record.Selected)
+		return true, nil
+	}
+	w.logf("%s: its host was lost before its root landed, so nothing of it was durable", spec.ID)
+	if w.orphans == nil {
+		w.orphans = map[string]bool{}
+	}
+	w.orphans[spec.ID] = true
+	w.abandonSource(ctx, source, spec.ID)
+	return false, nil
 }
 
 // Settle finishes what a fault left half done: a VM no host is running because

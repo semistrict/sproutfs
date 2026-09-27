@@ -524,7 +524,11 @@ returns without waiting for it, and a root the store refuses is tried again,
 from a quarter of a second doubling to thirty. Until it lands, nothing outside
 that host can open the child, and the host reports it (`VM.RootPending`). If
 the host is lost before then, the child is lost, as a running VM's writes since
-its last checkpoint are. Nothing can seal the child meanwhile, so it can be
+its last checkpoint are. Its control record still selects a root that was never
+published. The orchestrator frees that identity when a recovery or a start finds
+the child running nowhere, and reports it gone (HTTP 410). It needs the same
+evidence as a recovery first: a host that did not answer may still be running the
+child and publishing its root. Nothing can seal the child meanwhile, so it can be
 neither forked nor migrated (`ErrForkPending`). Publishing the root also
 releases the hold that the child's own handle has on the point. A child on the
 parent's host waits for the parent's publication of the point before its root,

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"net/http"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -57,6 +58,12 @@ func (f *fakePods) Delete(_ context.Context, name string) error {
 type fakeRecords struct {
 	ids []string
 	err error
+	// pending is the records whose first checkpoint has not landed.
+	pending map[string]bool
+}
+
+func (f *fakeRecords) Pending(_ context.Context, id string) (bool, error) {
+	return f.pending[id], f.err
 }
 
 func (f *fakeRecords) List(context.Context) ([]listing, error) {
@@ -946,6 +953,48 @@ func TestRecoverByForceTakesTheOperatorsWord(t *testing.T) {
 	}
 	if result.Host != "host-1" {
 		t.Fatalf("the VM was reopened on %s", result.Host)
+	}
+}
+
+// A fork's child exists only on its host until its first checkpoint lands, so
+// a host lost before then loses it: a recovery finds nothing to open, frees the
+// identity through a host that answered, forgets the row, and reports the VM
+// lost rather than leaving a VM no start could ever open.
+func TestRecoverFreesAForkLostBeforeItsFirstCheckpointLanded(t *testing.T) {
+	d := newDeployment(t, map[string][]string{"host-0": {"vm-a"}, "host-1": {}})
+	d.records.pending = map[string]bool{"vm-a": true}
+	d.pods.pods = d.pods.pods[1:]
+	delete(d.hosts, "host-0")
+	_, err := d.orchestrator.Recover(t.Context(), "vm-a", false)
+	if !errors.Is(err, errLost) {
+		t.Fatalf("recovering a fork lost before its root landed = %v, want errLost", err)
+	}
+	if status := statusOf(err); status != http.StatusGone {
+		t.Fatalf("a lost fork is reported as %d, want %d", status, http.StatusGone)
+	}
+	if want := []string{"host-1 delete vm-a"}; !slices.Equal(d.log, want) {
+		t.Fatalf("the deployment did %v, want %v", d.log, want)
+	}
+}
+
+// A start is as sure as a recovery before it frees a fork's identity: a host
+// that did not answer may be running the child still, publishing its root.
+func TestAForkWhoseHostIsQuietIsNotFreed(t *testing.T) {
+	d := newDeployment(t, map[string][]string{"host-0": {"vm-a"}, "host-1": {}})
+	d.records.pending = map[string]bool{"vm-a": true}
+	d.hosts["host-0"].down = true
+	_, err := d.orchestrator.Start(t.Context(), "vm-a", orch.StartRequest{})
+	if !errors.Is(err, errRunning) {
+		t.Fatalf("starting a fork whose host is quiet = %v, want errRunning", err)
+	}
+	if len(d.log) != 0 {
+		t.Fatalf("a refused start did %v", d.log)
+	}
+	if _, err := d.orchestrator.Recover(t.Context(), "vm-a", true); !errors.Is(err, errLost) {
+		t.Fatalf("recovering it by force = %v, want errLost", err)
+	}
+	if want := []string{"host-1 delete vm-a"}; !slices.Equal(d.log, want) {
+		t.Fatalf("the deployment did %v, want %v", d.log, want)
 	}
 }
 

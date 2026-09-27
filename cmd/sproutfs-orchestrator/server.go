@@ -224,6 +224,8 @@ func statusOf(err error) int {
 		return http.StatusBadRequest
 	case errors.Is(err, errNotFound):
 		return http.StatusNotFound
+	case errors.Is(err, errLost):
+		return http.StatusGone
 	case errors.Is(err, errRunning), errors.Is(err, errContested):
 		return http.StatusConflict
 	case errors.Is(err, errNoHost):

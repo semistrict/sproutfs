@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -98,6 +99,19 @@ func (b *bucketRecords) List(ctx context.Context) ([]listing, error) {
 		found = append(found, listing{ID: id})
 	}
 	return found, nil
+}
+
+// Pending reads one VM's record: a fork's child whose root has not landed
+// selects a first checkpoint that is not created yet.
+func (b *bucketRecords) Pending(ctx context.Context, id string) (bool, error) {
+	record, err := b.control.Read(ctx, id)
+	if errors.Is(err, platform.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return !record.Created, nil
 }
 
 // keys is every control record in the namespace, by the identity its key names.

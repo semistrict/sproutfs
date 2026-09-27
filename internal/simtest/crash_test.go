@@ -58,6 +58,7 @@ var crashScenarios = []struct {
 	{name: "holding-a-fork-point", stage: (*crashRun).killHoldingAForkPoint},
 	{name: "migration-source", stage: (*crashRun).killTheMigrationSource},
 	{name: "migration-destination", stage: (*crashRun).killTheMigrationDestination},
+	{name: "fork-destination", stage: (*crashRun).killTheForkDestination},
 }
 
 // TestAHostLostAtAnyOfItsHandoversLosesOnlyWhatNoCheckpointHeld is the kill
@@ -215,6 +216,11 @@ func runCrashScenario(t *testing.T, runtime *sim.Runtime, seed uint64, name stri
 	if err := world.Settle(ctx); err != nil {
 		t.Fatalf("%s: the deployment could not recover what the kill left: %v", name, err)
 	}
+	// A child lost before its root landed left an identity nothing can open,
+	// and with every host back nothing stops it being freed.
+	if left := world.Orphans(); len(left) != 0 {
+		t.Fatalf("%s: the identities %v are still not free", name, left)
+	}
 	// Every page of every VM still here reads as one checkpoint of it, through
 	// a guest's own fault path and again through its volume.
 	c.requireRecovered(name)
@@ -330,6 +336,19 @@ func (c *crashRun) killTheMigrationDestination() (int, bool) {
 		c.t.Fatalf("the source still serves %v past the deadline of its handover", left)
 	}
 	return victim, cut
+}
+
+// killTheForkDestination loses the host a child was forked onto. A fork
+// returns once its child runs, and the child's root is published behind it, so
+// a kill that lands before that root is a child that existed on that host
+// alone: nothing of it can be opened and its identity is freed. What cutting
+// into this scenario means is a kill that landed while the root was still
+// publishing, which is the moment a fork that does not wait makes possible.
+func (c *crashRun) killTheForkDestination() (int, bool) {
+	child := simtest.VMSpec{ID: crashChildID, Parent: crashVMID, Host: 1}
+	before := c.world.RootsCut()
+	victim, _ := c.kill(1, func(ctx context.Context) error { return c.world.Fork(ctx, child) })
+	return victim, c.world.RootsCut() > before
 }
 
 // kills is every host loss the run traced, in order. A host cannot be taken
