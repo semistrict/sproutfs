@@ -141,13 +141,19 @@ if [[ ${SPROUTFS_GCE_QUALIFY:-0} == 1 ]]; then
             status=1
         fi
     }
-    qualify crate-clippy cargo clippy --locked --manifest-path rust/sproutfs-vm-memory/Cargo.toml --all-targets -- -D warnings
-    qualify crate-nextest cargo nextest run --locked --no-tests pass --manifest-path rust/sproutfs-vm-memory/Cargo.toml
+    # A run narrowed to some Firecracker tests runs nothing else.
+    selected=${SPROUTFS_FIRECRACKER_RUN:-}
+    if [[ -z $selected ]]; then
+        qualify crate-clippy cargo clippy --locked --manifest-path rust/sproutfs-vm-memory/Cargo.toml --all-targets -- -D warnings
+        qualify crate-nextest cargo nextest run --locked --no-tests pass --manifest-path rust/sproutfs-vm-memory/Cargo.toml
+    fi
     export SPROUTFS_VM_MEMORY_CLIENT="$CARGO_TARGET_DIR/debug/examples/client"
-    qualify vmtest "$work/build/vmtest.test" -test.v -test.timeout=10m
-    qualify vmmemory "$work/build/vmmemory.test" -test.v -test.timeout=20m
-    qualify pool-exhaustion env SPROUTFS_HUGETLB_EXHAUSTION=1 "$work/build/vmmemory.test" -test.v \
-        -test.run '^TestLinuxArenaPoolExhaustionReturnsError$' -test.timeout=1m
+    if [[ -z $selected ]]; then
+        qualify vmtest "$work/build/vmtest.test" -test.v -test.timeout=10m
+        qualify vmmemory "$work/build/vmmemory.test" -test.v -test.timeout=20m
+        qualify pool-exhaustion env SPROUTFS_HUGETLB_EXHAUSTION=1 "$work/build/vmmemory.test" -test.v \
+            -test.run '^TestLinuxArenaPoolExhaustionReturnsError$' -test.timeout=1m
+    fi
     # The Firecracker suites' root: the init, the deployment's guest agent and
     # witness, and busybox for the shell the agent runs commands through.
     fixture="$work/build/firecracker-root"
@@ -170,7 +176,7 @@ if [[ ${SPROUTFS_GCE_QUALIFY:-0} == 1 ]]; then
         SPROUTFS_FIRECRACKER_KERNEL="$work/build/kernel" \
         SPROUTFS_FIRECRACKER_ROOT="$work/build/firecracker-root.ext4" \
         SPROUTFS_FIRECRACKER_RESIDENT_PAGES=48 \
-        "$work/build/vmmachine.test" -test.v -test.timeout=60m
+        "$work/build/vmmachine.test" -test.v -test.timeout=60m -test.run "${selected:-.}"
     exit "$status"
 fi
 
