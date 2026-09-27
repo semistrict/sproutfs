@@ -191,8 +191,12 @@ runtime configuration.
    pauses the guest, seals every dirty page of its disks by write protection,
    and resumes the guest. The sealed pages stream out as parts while the guest
    runs. The last part carries the root, and the control record selects it.
-5. A fork takes the same pause and publishes nothing. A fork is a handoff on
-   any host the child lands on. One `ForkPoint` serves any number of children.
+5. A fork takes the same pause and publishes nothing before it returns. A
+   fork is a handoff on any host the child lands on. One `ForkPoint` serves any
+   number of children. Behind the fork, the parent publishes the point once as
+   a checkpoint of its own, and a child on its host builds its first checkpoint
+   on it, so a fan-out uploads the parent's unpublished pages once rather than
+   once a child.
    The parent pins its last published sequence once and permanently, and keeps
    its handle. Each child gets a control record that selects a root over that
    sequence. The child's location changes only how it receives the pages that

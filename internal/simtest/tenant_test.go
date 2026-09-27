@@ -90,8 +90,10 @@ func TestTwoTenantsForkingOneImageShareNoPage(t *testing.T) {
 		if len(across) != 0 {
 			t.Fatalf("pages crossed between tenants:\n%v", across)
 		}
+		// Every page is shared, the one only the fork point held included: the
+		// template published the point once, and its children name it.
 		for _, tenant := range tenants {
-			if want := memoryPages - 1 + diskPages; within[tenant] != want {
+			if want := memoryPages + diskPages; within[tenant] != want {
 				t.Fatalf("%s's guests share %d pages, want the %d their template published", tenant, within[tenant], want)
 			}
 		}

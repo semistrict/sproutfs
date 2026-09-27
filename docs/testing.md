@@ -461,10 +461,13 @@ object of the checkpoint being emptied. So that checkpoint also stays.
 
 ### Forks
 
-A fork is a handoff from a running parent, so it publishes nothing. The tests
-assert this against the object store. Forking a running VM adds the child's
-control record and no other key. A fork closed before its first checkpoint adds
-nothing more. Forks are tested for:
+A fork is a handoff from a running parent, so it publishes nothing before it
+returns. The tests assert this against the object store: forking a running VM
+adds the child's control record, and behind it the parent publishes the point
+once. A child's first checkpoint uploads no part of what it inherited, a fan-out
+of three children uploads those pages once, and a child reads none of them back
+after the seal ends. A fork closed before its first checkpoint adds nothing of
+its own. Forks are tested for:
 
 - divergence from their parent;
 - use before their own first checkpoint is published;

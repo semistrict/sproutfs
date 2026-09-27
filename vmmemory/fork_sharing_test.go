@@ -12,11 +12,11 @@ import (
 	"github.com/semistrict/sproutfs/volume"
 )
 
-// A fork on the parent's own host inherits the pages the seal froze without
-// publishing anything: the children read the parent's sealed pages by page
-// identity, so the second maps the first's page without a load, and the whole
-// fork writes one object per child — its control record.
-func TestSameHostForkSharesSealedPagesAndPublishesNothing(t *testing.T) {
+// A fork on the parent's own host inherits the pages the seal froze by page
+// identity: the children read the parent's sealed pages, so the second maps the
+// first's page without a load. The fork writes one object per child, its
+// control record, and the parent publishes the point behind it once.
+func TestSameHostForkSharesSealedPagesAndPublishesThemOnce(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		c := newPagerCluster(t)
 		source := c.create(t, "source", 4)
@@ -82,11 +82,19 @@ func TestSameHostForkSharesSealedPagesAndPublishesNothing(t *testing.T) {
 			t.Errorf("sibling fork: identity hits=%d loads=%d; want 2 hits and 0 loads",
 				after.IdentityHits-atSibling.IdentityHits, after.Loads-atSibling.Loads)
 		}
-		// Two forks of a running guest and not one checkpoint object: the
-		// control record of each child is the whole of what reached the store.
+		// Two forks of a running guest: the control record of each child, and
+		// the parent's one publication of the point behind them. No child
+		// uploads what it inherited.
+		if landed, err := point.Published(t.Context()); err != nil || !landed {
+			t.Fatalf("the parent's publication of the point landed %t: %v", landed, err)
+		}
 		extra := addedKeys(before, c.objectKeys(t))
-		if len(extra) != 2 || extra[0] != "control/a" || extra[1] != "control/b" {
-			t.Fatalf("forking wrote %v, want only the children's control records", extra)
+		if !slices.Contains(extra, "control/a") || !slices.Contains(extra, "control/b") ||
+			!slices.ContainsFunc(extra, func(key string) bool { return strings.HasPrefix(key, "vm/source/ckpt/") }) ||
+			slices.ContainsFunc(extra, func(key string) bool {
+				return strings.HasPrefix(key, "vm/a/") || strings.HasPrefix(key, "vm/b/")
+			}) {
+			t.Fatalf("forking wrote %v, want the children's control records and the parent's point", extra)
 		}
 		if status := source.Status(); !status.Sealed {
 			t.Fatalf("the parent is not sealed while its children read the point: %+v", status)

@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"math/rand/v2"
+	"slices"
+	"strings"
 	"testing"
 	"testing/synctest"
 
@@ -133,10 +135,11 @@ func TestForkAndSourceDiverge(t *testing.T) {
 	})
 }
 
-// Nothing is published to take a fork. The parent's checkpoint is the one it
-// already had, and a fork that ends before its own first checkpoint leaves no
-// object behind at all.
-func TestForkPublishesNothingOnTheParent(t *testing.T) {
+// A fork point is published once, by the parent, behind the fork: the fork
+// returns with nothing written but the child's control record, and the
+// parent's next checkpoint is the point, holding the pages no checkpoint had.
+// A child's root builds on it and uploads nothing it did not write itself.
+func TestAForkPointIsPublishedOnceByTheParent(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		h := newHarness(t)
 		defer h.close(t.Context())
@@ -151,8 +154,8 @@ func TestForkPublishesNothingOnTheParent(t *testing.T) {
 		if err := vm.Checkpoint(t.Context()); err != nil {
 			t.Fatal(err)
 		}
-		// Everything after this checkpoint is the parent's alone until one side
-		// publishes it.
+		// Everything after this checkpoint is the parent's alone until the
+		// point publishes it.
 		if err := vm.Volume("state").Write(t.Context(), 0, []byte("unpublished")); err != nil {
 			t.Fatal(err)
 		}
@@ -175,28 +178,97 @@ func TestForkPublishesNothingOnTheParent(t *testing.T) {
 			t.Fatal(err)
 		}
 		want.check(t, fork, "the fork before it published anything")
-		if status := vm.Status(); status.Checkpoint != selected {
-			t.Fatalf("the parent published a checkpoint for the fork: %+v", status)
+
+		// Behind the fork, the parent publishes the point.
+		if landed, err := point.Published(t.Context()); err != nil || !landed {
+			t.Fatalf("the parent's publication of the point landed %t: %v", landed, err)
 		}
-		// The fork's control record is the only object a fork writes; no index
-		// and no checkpoint exists for either side.
-		after := h.objectKeys(t)
-		if extra := added(before, after); len(extra) != 1 || extra[0] != "control/fork" {
-			t.Fatalf("forking wrote %v, want only the fork's control record", extra)
+		published := vm.Status().Checkpoint
+		if published.Sequence <= selected.Sequence {
+			t.Fatalf("the parent selects %v after the fork, want the point it published after %v",
+				published, selected)
 		}
+		parent := added(before, h.objectKeys(t))
+		if !slices.Contains(parent, "control/fork") ||
+			!slices.ContainsFunc(parent, func(key string) bool { return strings.HasPrefix(key, "vm/vm/ckpt/") }) {
+			t.Fatalf("the fork and the point wrote %v, want the fork's record and the parent's checkpoint", parent)
+		}
+
+		// The fork's root names the parent's pages and uploads no part of
+		// its own, because it wrote nothing.
+		root := h.objectKeys(t)
+		if err := fork.Checkpoint(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		for _, key := range added(root, h.objectKeys(t)) {
+			if strings.Contains(key, "/part/") {
+				t.Fatalf("the fork's root uploaded %s, want only its index", key)
+			}
+		}
+		if err := fork.Close(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		reopened, err := manager.Open(t.Context(), "fork")
+		if err != nil {
+			t.Fatal(err)
+		}
+		want.check(t, reopened, "the fork reopened from its root over the parent's point")
+		if err := reopened.Close(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if status := vm.Status(); status.Sealed {
+			t.Fatalf("the parent kept its seal after its child published its root: %+v", status)
+		}
+		want.check(t, vm, "the parent after the fork")
+	})
+}
+
+// A fork that ends before its own first checkpoint leaves only what its parent
+// published behind, and gives its parent the seal back.
+func TestAForkAbandonedBeforeItsRootLeavesNothingOfItsOwn(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		h := newHarness(t)
+		defer h.close(t.Context())
+		manager := h.manager(t, h.config())
+		defer manager.Close(t.Context())
+		vm, want := createVM(t, manager, "vm")
+		defer vm.Close(t.Context())
+		if err := vm.Volume("state").Write(t.Context(), 0, []byte("unpublished")); err != nil {
+			t.Fatal(err)
+		}
+		copy(want["state"], []byte("unpublished"))
+		point, err := vm.ForkPoint(t.Context(), volume.Prepared(nil, nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		fork, err := manager.Fork(t.Context(), "fork", point)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := point.Retire(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := point.Published(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		before := h.objectKeys(t)
 		if err := fork.Close(t.Context()); err != nil {
 			t.Fatal(err)
 		}
 		// The record goes with the close: a fork that never published is an
 		// identity nothing could use again while it stood.
-		if extra := added(before, h.objectKeys(t)); len(extra) != 0 {
-			t.Fatalf("a fork that never checkpointed left %v", extra)
+		for _, key := range added(before, h.objectKeys(t)) {
+			if strings.HasPrefix(key, "vm/fork/") {
+				t.Fatalf("a fork that never checkpointed left %s", key)
+			}
+		}
+		if slices.Contains(h.objectKeys(t), "control/fork") {
+			t.Fatal("a fork that never checkpointed left its control record")
 		}
 		if status := vm.Status(); status.Sealed {
 			t.Fatalf("the parent kept its seal after the fork closed: %+v", status)
 		}
-		// The parent can be sealed again, and its own next checkpoint publishes
-		// the pages the fork never did.
+		// The parent can be sealed again.
 		if err := vm.Checkpoint(t.Context()); err != nil {
 			t.Fatal(err)
 		}
@@ -402,6 +474,60 @@ func TestAForkThatCannotAttachLeavesNoChildRecord(t *testing.T) {
 		}
 		if err := point.Retire(t.Context()); err != nil {
 			t.Fatal(err)
+		}
+	})
+}
+
+// A fan-out of children from one point uploads what the parent held unpublished
+// once, in the parent's publication of the point, and no child's root uploads
+// it again.
+func TestAFanOutUploadsTheParentsUnpublishedPagesOnce(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		h := newHarness(t)
+		defer h.close(t.Context())
+		manager := h.manager(t, h.config())
+		defer manager.Close(t.Context())
+		vm, want := createVM(t, manager, "vm")
+		defer vm.Close(t.Context())
+		if err := vm.Volume("state").Write(t.Context(), 0, []byte("unpublished")); err != nil {
+			t.Fatal(err)
+		}
+		copy(want["state"], []byte("unpublished"))
+		before := h.objectKeys(t)
+		point, err := vm.ForkPoint(t.Context(), volume.Prepared(nil, nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var children []*volume.VM
+		for _, id := range []string{"child-a", "child-b", "child-c"} {
+			child, err := manager.Fork(t.Context(), id, point)
+			if err != nil {
+				t.Fatal(err)
+			}
+			children = append(children, child)
+		}
+		if err := point.Retire(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		for _, child := range children {
+			if err := child.Checkpoint(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			want.check(t, child, child.ID()+" after its root")
+		}
+		parts := map[string]int{}
+		for _, key := range added(before, h.objectKeys(t)) {
+			if strings.Contains(key, "/part/") {
+				parts[strings.SplitN(key, "/", 3)[1]]++
+			}
+		}
+		if parts["vm"] == 0 || parts["child-a"]+parts["child-b"]+parts["child-c"] != 0 {
+			t.Fatalf("the fan-out uploaded parts %v, want the parent's point only", parts)
+		}
+		for _, child := range children {
+			if err := child.Close(t.Context()); err != nil {
+				t.Fatal(err)
+			}
 		}
 	})
 }

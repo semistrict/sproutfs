@@ -153,9 +153,12 @@ up to 64 MiB of live bytes, after the guest has resumed.
 
 **Fork point**: One pause of a running parent. It consists of the checkpoint
 the parent has published, the pages sealed since then, and the VMM state saved
-with them. Taking a fork point publishes nothing, and the parent keeps running.
-So a fork costs the pause and the child's boot, and one pause serves any number
-of children. The parent's pages stay sealed until every child has published or
+with them. Taking a fork point publishes nothing before it returns, and the
+parent keeps running. So a fork costs the pause and the child's boot, and one
+pause serves any number of children. Behind the fork, the parent publishes the
+point once, as a checkpoint of its own, and a child on its host builds its
+first checkpoint on that instead of uploading what it inherited. The parent's
+pages stay sealed until every child has published its first checkpoint or
 pulled the pages it inherited.
 
 **Fork**: A VM created from a parent's fork point without changing any bytes.

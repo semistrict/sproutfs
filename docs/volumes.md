@@ -857,10 +857,19 @@ A parent whose pages a fork point holds is `Status.Sealed`. Only one seal of a
 memory region can be outstanding at a time, so the parent cannot be captured or forked
 again. A capture request is refused before its guest is touched. The seal ends
 when the last child of that point has retired it. A child retires it when every
-page it inherited is either published by the child or fetched by it. The
-parent's next checkpoint then publishes those pages as its own. This is why one
-interval's dirty set is uploaded twice when both parent and child live that
-long.
+page it inherited is either published by the child or fetched by it.
+
+The parent publishes the point once, behind the fork (`publishPoint`), as a
+checkpoint of its own under the sequence the point took, and pins it. A child
+on the parent's host waits for that publication before its first checkpoint and
+builds it on the point, so it uploads only what it wrote itself; a fan-out of N
+children uploads the parent's unpublished pages once, not N times. When the
+last hold retires, the sealed pages become clean under the point's identity,
+which is the one they were lent under, so no child reads them back. A child on
+another host fetched those pages into its own pager and publishes them as its
+own. If the point's publication fails, its children publish what they
+inherited themselves, and the parent's next checkpoint publishes those pages
+again.
 
 ### The child
 

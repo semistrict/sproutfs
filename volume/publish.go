@@ -29,6 +29,9 @@ func (vm *VM) Checkpoint(ctx context.Context) error {
 // A close does not force, so a fork that ends before it was ever checkpointed
 // leaves no object at all.
 func (vm *VM) checkpoint(ctx context.Context, force bool) error {
+	if err := vm.awaitPoint(ctx); err != nil {
+		return err
+	}
 	if err := vm.pubMu.Lock(ctx); err != nil {
 		return err
 	}
@@ -290,6 +293,9 @@ func (vm *VM) snapshot(ctx context.Context, prepare PrepareFunc, dropState bool,
 	if prepare == nil {
 		return nil, ErrInvalidConfig
 	}
+	if err := vm.awaitPoint(ctx); err != nil {
+		return nil, err
+	}
 	if err := vm.pubMu.Lock(ctx); err != nil {
 		return nil, err
 	}
@@ -357,6 +363,21 @@ func settle(ctx context.Context, sources map[string]DirtySource) (int, error) {
 	return unchanged, errors.Join(failures...)
 }
 
+// awaitPoint waits, for a fork that has not published its root, for its
+// parent's publication of the point it was taken at, which its root builds on.
+// It waits before anything pauses the guest, so the guest runs on meanwhile.
+func (vm *VM) awaitPoint(ctx context.Context) error {
+	vm.mu.Lock()
+	point := vm.point
+	root := vm.root
+	vm.mu.Unlock()
+	if !root {
+		return nil
+	}
+	_, err := point.awaitPublished(ctx)
+	return err
+}
+
 // isRoot reports a fork that has not published its own root index yet.
 func (vm *VM) isRoot() bool {
 	vm.mu.Lock()
@@ -417,14 +438,22 @@ func (vm *VM) captureLocked(state []byte, sources map[string]DirtySource, force 
 	if !control.ValidSequence(vm.control.Epoch(), vm.next) {
 		return nil, ErrCapacity
 	}
+	parentIndex, inherited := vm.baseIndex, vm.inherited
+	if published := vm.point.publishedIndex(); vm.root && published != nil {
+		// The parent published the point this fork was taken at, so the root
+		// builds on that and uploads only what this fork wrote: the pages it
+		// inherited are the parent's published pages. It still reads them
+		// through the point, which holds the same bytes without a fetch.
+		parentIndex, inherited = published, nil
+	}
 	ckpt := &Checkpoint{
 		owner:       vm,
 		ref:         control.Ref{VM: vm.id, Sequence: vm.next},
 		parent:      vm.base,
-		parentIndex: vm.baseIndex,
+		parentIndex: parentIndex,
 		overlays:    make(map[string]*extentIndex, len(vm.names)),
 		sources:     sources,
-		inherited:   vm.inherited,
+		inherited:   inherited,
 		sizes:       make(map[string]uint64, len(vm.names)),
 		geometry:    vm.geometries(),
 		position:    vm.applied,

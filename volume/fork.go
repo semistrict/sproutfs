@@ -11,6 +11,7 @@ import (
 
 	"github.com/semistrict/sproutfs/checkpoint"
 	"github.com/semistrict/sproutfs/control"
+	"github.com/semistrict/sproutfs/platform"
 )
 
 // ForkPoint is one pause of a VM and what a child of it starts from: the
@@ -18,12 +19,20 @@ import (
 // so nothing reclaims the checkpoints the child inherits — the pages the parent
 // holds that no checkpoint has, and the VMM state captured with them.
 //
-// Making one publishes nothing. The parent keeps its handle, its volumes and
-// its pages: the sealed pages stay the parent's and the child reads them by
-// page identity — on this host through the point itself, on another host out
-// of the parent's page server. The child's first checkpoint publishes those
-// pages as its own, and so does the parent's next, which is why one interval's
-// dirty set is uploaded twice when both sides live that long.
+// Making one publishes nothing before it returns. The parent keeps its handle,
+// its volumes and its pages: the sealed pages stay the parent's and the child
+// reads them by page identity — on this host through the point itself, on
+// another host out of the parent's page server.
+//
+// Behind it, the parent publishes the point once, as a checkpoint of its own
+// under the sequence the point took: see publishPoint. A child on this host
+// builds its first checkpoint on that one rather than uploading what it
+// inherited, so a fan-out of N children uploads the parent's unpublished pages
+// once rather than N times, and once the seal ends the pages the point lent
+// keep the identity they were lent under, so no child reads them back. A child
+// on another host fetched those pages into its own pager, and publishes them as
+// its own. A point whose publication failed leaves its children to publish what
+// they inherited, as they would have without it.
 //
 // Any number of children may start from one point, which is what makes one
 // pause of the parent enough for a fan-out of forks: they share the one pin the
@@ -55,6 +64,62 @@ type ForkPoint struct {
 	holders int
 	retired bool
 	err     error
+
+	// landed is closed when the parent's publication of this point has ended,
+	// published is the index it produced, and publishErr why there is none.
+	// A point over a published checkpoint alone publishes nothing, and has
+	// neither.
+	landed     chan struct{}
+	published  *checkpoint.Index
+	publishErr error
+}
+
+// land records how the parent's publication of this point ended.
+func (f *ForkPoint) land(index *checkpoint.Index, err error) {
+	f.mu.Lock()
+	f.published, f.publishErr = index, err
+	f.mu.Unlock()
+	close(f.landed)
+}
+
+// awaitPublished waits for the parent's publication of this point and reports
+// the index it produced, nil where there is none: a point that seals nothing,
+// or a publication that failed.
+func (f *ForkPoint) awaitPublished(ctx context.Context) (*checkpoint.Index, error) {
+	if f == nil || f.landed == nil {
+		return nil, nil
+	}
+	select {
+	case <-ctx.Done():
+		return nil, context.Cause(ctx)
+	case <-f.landed:
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.published, nil
+}
+
+// Published waits for the parent's publication of this point to end, and
+// reports whether it landed: whether this point's children build their roots
+// on it rather than publishing what they inherited.
+func (f *ForkPoint) Published(ctx context.Context) (bool, error) {
+	index, err := f.awaitPublished(ctx)
+	return index != nil, err
+}
+
+// publishedIndex is awaitPublished for a caller that knows it has landed.
+func (f *ForkPoint) publishedIndex() *checkpoint.Index {
+	if f == nil || f.landed == nil {
+		return nil
+	}
+	select {
+	case <-f.landed:
+	default:
+		return nil
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.published
 }
 
 // Parent is the published checkpoint the child inherits, which is pinned in the
@@ -186,9 +251,13 @@ func (f *ForkPoint) Pin(ctx context.Context) error {
 }
 
 // Retire gives one hold up, and ends the seal on the parent once the last of
-// them has: every sealed page goes back to the parent's guest as ordinary dirty
-// state, because nothing was published under this point, so the parent's next
-// checkpoint takes those pages again. The parent may seal once more from there.
+// them has. Where the parent published this point, every sealed page becomes
+// clean under the identity it was published by, which is the one it was lent
+// under, so a child that maps it goes on mapping it. Where it did not, every
+// sealed page goes back to the parent's guest as ordinary dirty state, so the
+// parent's next checkpoint takes those pages again. The parent may seal once
+// more from there. The last hold waits for the publication to end, because
+// which of the two it is depends on it.
 //
 // The pin stays. A point no child was ever taken from leaves the parent pinning
 // a checkpoint nothing inherited, which costs that checkpoint's objects until a
@@ -216,12 +285,16 @@ func (f *ForkPoint) Retire(ctx context.Context) error {
 	}
 	f.retired = true
 	f.mu.Unlock()
+	published, err := f.awaitPublished(ctx)
+	if err != nil {
+		return err
+	}
 	var errs []error
 	if f.checkpoint != nil {
-		errs = append(errs, f.checkpoint.retire(ctx, false))
+		errs = append(errs, f.checkpoint.retire(ctx, published != nil))
 		f.checkpoint.owner.unseal()
 	}
-	err := errors.Join(errs...)
+	err = errors.Join(errs...)
 	f.mu.Lock()
 	f.err = err
 	f.mu.Unlock()
@@ -229,9 +302,10 @@ func (f *ForkPoint) Retire(ctx context.Context) error {
 }
 
 // ForkPoint pauses this VM through prepare, resumes it as soon as its memory is
-// sealed, and returns the point a child starts from. It publishes nothing:
-// the checkpoint the child inherits is the one this VM's control record already
-// selects, and everything written since it is in the pages prepare sealed.
+// sealed, and returns the point a child starts from. It publishes nothing
+// before it returns: the checkpoint the child inherits is the one this VM's
+// control record already selects, and everything written since it is in the
+// pages prepare sealed, which publishPoint publishes behind it.
 //
 // The pin comes before the point is returned and is this handle's own
 // conditional write, because a child that exists while what it inherits is
@@ -267,9 +341,55 @@ func (vm *VM) ForkPoint(ctx context.Context, prepare PrepareFunc) (*ForkPoint, e
 		// Nothing was published, so the sealed pages go straight back to the
 		// guest and this VM can be forked again once whatever fenced it is
 		// dealt with.
+		point.land(nil, err)
 		return nil, errors.Join(vm.observe(err), point.Retire(context.WithoutCancel(ctx)))
 	}
+	if len(point.unpublished) == 0 {
+		// Everything the point holds is in the checkpoint it inherits, so
+		// that is what its children build on, and there is nothing to publish.
+		point.land(point.index, nil)
+		return point, nil
+	}
+	// The children start now, and the point is published behind them.
+	go vm.publishPoint(vm.ctx, point)
 	return point, nil
+}
+
+// publishPoint publishes a fork point's sealed pages once, as this VM's own
+// checkpoint under the sequence the point took, and pins it, because a child's
+// first checkpoint names it. It is an ordinary publication — the parent selects
+// it and reads its own pages from it from then on — except that the seal it
+// publishes stays until the point's last holder retires it: the children are
+// reading those pages. A publication that fails leaves the point unpublished,
+// and its children publish what they inherited themselves.
+func (vm *VM) publishPoint(ctx context.Context, point *ForkPoint) {
+	ckpt := point.checkpoint
+	if err := vm.pubMu.Lock(ctx); err != nil {
+		point.land(nil, err)
+		return
+	}
+	metered := platform.WithObjectMeter(ctx, &ckpt.meter)
+	index, record, err := vm.publish(metered, ckpt)
+	if err == nil {
+		_, err = vm.control.Pin(ctx, ckpt.ref.Sequence)
+	}
+	var replaced *checkpoint.Index
+	if err == nil {
+		replaced = vm.install(ckpt, index)
+	}
+	err = vm.observe(err)
+	vm.record(err)
+	vm.pubMu.Unlock()
+	if err != nil {
+		report(ctx, "volume: publishing a fork point failed, and its children publish what they inherited", vm.id, err)
+		point.land(nil, err)
+		return
+	}
+	point.land(index, nil)
+	if told := vm.manager.config.PointPublished; told != nil {
+		told(vm.id, ckpt.ref.Sequence)
+	}
+	vm.reclaim(ctx, replaced, index, record)
 }
 
 // Share offers the parent's sealed pages to this host under the identity this
@@ -368,7 +488,8 @@ func (vm *VM) forkPoint(state []byte, sources map[string]DirtySource) (*ForkPoin
 	}
 	ckpt.base = newSealedSource(vm.base, ckpt.ref, sources, ckpt.geometry)
 	point := &ForkPoint{checkpoint: ckpt, ref: vm.baseIndex.Ref(), index: vm.baseIndex,
-		unpublished: make(map[string][]uint64, len(vm.names)), control: vm.control}
+		unpublished: make(map[string][]uint64, len(vm.names)), control: vm.control,
+		landed: make(chan struct{})}
 	for ordinal, name := range vm.names {
 		ckpt.overlays[name] = vm.overlays[ordinal]
 		ckpt.sizes[name] = vm.volumes[ordinal].size

@@ -457,6 +457,24 @@ func TestLocalForkReceivesTheForkPointOverThePages(t *testing.T) {
 	if status := vm.Status(); status.Sealed {
 		t.Fatalf("the parent kept its seal after the child was released: %+v", status)
 	}
+	// The parent published the point, so the pages it lent keep the identity
+	// they were lent under once its seal has ended: the child goes on reading
+	// them where they are and loads none of them back out of the store.
+	released, err := pagers[0].ram().Stats(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for page := range uint64(3) {
+		if got := child.load("ram0", page); got[0] != byte(page+1) {
+			t.Fatalf("after the seal the child reads page %d as %d, want the parent's %d", page, got[0], page+1)
+		}
+	}
+	if again, err := pagers[0].ram().Stats(t.Context()); err != nil {
+		t.Fatal(err)
+	} else if again.Loads != released.Loads {
+		t.Fatalf("after the seal the child loaded %d pages back out of the store",
+			again.LoadedPages-released.LoadedPages)
+	}
 	if err := guest.checkpoint(t.Context(), vm); err != nil {
 		t.Fatalf("the parent could not checkpoint after the fork: %v", err)
 	}

@@ -99,6 +99,10 @@ type World struct {
 	// published. A control record selecting anything else is a VM whose state
 	// nobody wrote.
 	published map[string]map[uint64]bool
+	// points is, by parent, the fork point a fork took whose publication has
+	// not been reported yet: what that parent held when it was forked, which
+	// is the checkpoint the publication makes durable. See pointPublished.
+	points map[string]pendingPoint
 	// kept is the pause every checkpoint a writer of the VM asked to keep
 	// stands for, by sequence: the bytes it published, and the VMM state it
 	// carries or not. Whether it is still kept is the control record's to say;
@@ -319,7 +323,8 @@ func start(ctx context.Context, config Config) (*World, error) {
 	}
 	w := &World{config: config, runtime: config.Runtime, ctx: ctx,
 		instances: map[string]*instance{}, published: map[string]map[uint64]bool{},
-		kept: map[string]map[uint64]durableState{}, receivedGuests: map[string]int{}}
+		points: map[string]pendingPoint{},
+		kept:   map[string]map[uint64]durableState{}, receivedGuests: map[string]int{}}
 	for index := range config.Topology.Hosts {
 		id := config.Namespace + config.Topology.Hosts[index]
 		h := &hostState{name: id, address: platform.Address(id),
@@ -457,7 +462,8 @@ func (w *World) hostConfig(h *hostState) host.Config {
 		ObjectPrefix: w.config.Prefix,
 		Clock:        h.clock,
 		Entropy:      w.runtime.NewEntropy(h.name),
-		Volumes:      host.VolumeConfig{MaxWriteBytes: k.MaxWriteBytes, MaxOpenVMs: k.MaxOpenVMs},
+		Volumes: host.VolumeConfig{MaxWriteBytes: k.MaxWriteBytes, MaxOpenVMs: k.MaxOpenVMs,
+			PointPublished: w.pointPublished},
 		Migration: host.MigrationConfig{Address: h.pages, PageSize: PMEMPage,
 			DrainConcurrency: k.DrainConcurrency, StartVM: w.starter(h), HoldTimeout: w.config.Hold},
 		// A campaign drives every checkpoint itself and reaches every hold
@@ -816,6 +822,37 @@ func (w *World) adopt(in *instance) {
 		w.order = append(w.order, in.spec.ID)
 	}
 	w.instances[in.spec.ID] = in
+}
+
+// pendingPoint is a fork point the world expects its parent to publish.
+type pendingPoint struct {
+	in *instance
+	g  *guest
+	at durableState
+}
+
+// expectPoint records what a fork point about to be taken of a parent holds.
+func (w *World) expectPoint(in *instance, g *guest, at durableState) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.points[in.spec.ID] = pendingPoint{in: in, g: g, at: at}
+}
+
+// pointPublished is told each fork point a host publishes behind a fork. The
+// sequence is a checkpoint of the parent from then on, and the pause it stands
+// for is the one expectPoint recorded: the parent comes back there if it is
+// lost before its next checkpoint.
+func (w *World) pointPublished(id string, sequence uint64) {
+	w.notePublished(id, sequence)
+	w.mu.Lock()
+	pending, found := w.points[id]
+	delete(w.points, id)
+	w.mu.Unlock()
+	if !found {
+		return
+	}
+	pending.at.sequence = sequence
+	w.landed(pending.in, pending.g, pending.at)
 }
 
 func (w *World) notePublished(id string, sequence uint64) {
@@ -2050,6 +2087,9 @@ func (w *World) FanOutWith(ctx context.Context, parent string, children []VMSpec
 	// A child starts from what the parent's fork point holds, which is its
 	// memory with every ephemeral disk zeroed.
 	at := parentGuest.checkpointed()
+	// The parent publishes the point behind the fork, and what it publishes is
+	// what it held at this pause.
+	w.expectPoint(in, parentGuest, durableState{model: at, writes: parentGuest.stored()})
 	handoffs, err := sourceHost.Fork(ctx, parent, ids, pages)
 	if err != nil {
 		w.logf("%s: the fork of %s was refused: %v", strings.Join(ids, ","), parent, err)

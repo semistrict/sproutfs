@@ -477,8 +477,10 @@ separate from resident sharing.
 A page that the parent held dirty at a fork point has no published identity.
 Without one, a child would have to read each such page back through the seal.
 Instead, the fork point names the pages it sealed. The point takes its own
-reference and publishes nothing under it. So the identity it gives each of those
-pages belongs only to the children of that point, permanently. The pager enters
+reference, and the parent publishes the point under it behind the fork. So the
+identity it gives each of those pages is the one they are published by, and it
+outlives the seal: when the point retires, the pages become clean under that
+identity and a child that maps them goes on mapping them. The pager enters
 the pages in the sharing index under that identity. A child on the parent's
 host then maps them like any inherited page. This includes the eager restore
 population, regardless of which run contains the pages. So a machine forked at a point maps
@@ -1179,8 +1181,9 @@ the order in which workers finish, and the simulation can run the same code. An
 arena that can compare two of its own slots does so in place. Every other arena
 is read into two buffers per worker.
 
-A fork point is not settled. It publishes nothing, and a child waits for its
-pause. Its children inherit an unchanged page as an unpublished page. That is
+A fork point is not settled: its children are reading its pages while the
+parent publishes it. Its children inherit an unchanged page as an unpublished
+page. That is
 correct, and no worse than not settling. Each child's next checkpoint settles
 the page. This is a pager rule, so it applies to RAM and PMEM.
 

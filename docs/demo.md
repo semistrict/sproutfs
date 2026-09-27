@@ -91,7 +91,7 @@ The steps and their expected results:
 2. **Fork.** `sproutfsctl fork <vm> --count 5` forks the running VM five times
    on its host. All five children come from one pause of the parent, so the
    parent pauses once. A fork is a migration handoff from a VM that keeps
-   running, and it publishes nothing. Each child must answer a question on its
+   running, and it waits for no upload. Each child must answer a question on its
    console. The host's shared page count must rise. This shows that the
    children inherited the parent's memory instead of copying it.
 
