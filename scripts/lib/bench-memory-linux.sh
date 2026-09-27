@@ -206,12 +206,32 @@ if [[ ${SPROUTFS_GCE_QUALIFY:-0} == 1 ]]; then
             --manifest-path third_party/firecracker/Cargo.toml -p vmm --features sproutfs-memory \
             -E 'test(/nested|pinning|version_14_0|managed_memory/)'
     fi
+    # Where a guest's time goes that the pager does not see: the host KVM's
+    # exits by reason, its async page faults, and the time its vCPUs wait to
+    # be woken, counted by histogram triggers on its tracepoints, which cost
+    # nothing to install and record no events.
+    tracing=/sys/kernel/tracing
+    kvm_hists=(kvm_exit:exit_reason kvm_async_pf_not_present:common_pid kvm_async_pf_ready:common_pid
+        kvm_vcpu_wakeup:ns.log2 kvm_page_fault:error_code)
+    if [[ ${SPROUTFS_KVM_TRACE:-0} == 1 ]]; then
+        for hist in "${kvm_hists[@]}"; do
+            if ! echo "hist:keys=${hist#*:}:sort=hitcount.descending" > "$tracing/events/kvm/${hist%%:*}/trigger"; then
+                echo "no histogram of ${hist%%:*} by ${hist#*:} on this kernel" >> "$results/kvm-trace-errors.txt"
+            fi
+        done
+    fi
     qualify firecracker env "${nested_kernel[@]}" SPROUTFS_FIRECRACKER="$work/build/firecracker" \
         SPROUTFS_FIRECRACKER_SECCOMP="$work/build/seccomp.bpf" \
         SPROUTFS_FIRECRACKER_KERNEL="$work/build/kernel" \
         SPROUTFS_FIRECRACKER_ROOT="$work/build/firecracker-root.ext4" \
         SPROUTFS_FIRECRACKER_RESIDENT_PAGES=48 \
         "$work/build/vmmachine.test" -test.v -test.timeout=60m -test.run "${selected:-.}"
+    if [[ ${SPROUTFS_KVM_TRACE:-0} == 1 ]]; then
+        for hist in "${kvm_hists[@]}"; do
+            echo "== ${hist%%:*}"
+            cat "$tracing/events/kvm/${hist%%:*}/hist" || true
+        done > "$results/kvm-trace.txt"
+    fi
     exit "$status"
 fi
 

@@ -46,6 +46,10 @@ case ${SPROUTFS_RAM_PAGE_BYTES:-} in ''|4096|2097152) ;; *) echo "SPROUTFS_RAM_P
 # default) or isolated. The qualification is run once in each, as the Lima
 # suites are.
 case ${SPROUTFS_ARENA:-} in ''|shared|isolated) ;; *) echo "SPROUTFS_ARENA must be shared or isolated" >&2; exit 2 ;; esac
+# SPROUTFS_KVM_TRACE=1 has the qualification count, while its Firecracker
+# suite runs, the host KVM's VM exits by reason, its async page faults and how
+# long its vCPUs wait to be woken, and keep the counts as kvm-trace.txt.
+case ${SPROUTFS_KVM_TRACE:-} in ''|0|1) ;; *) echo "SPROUTFS_KVM_TRACE must be 0 or 1" >&2; exit 2 ;; esac
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 project=${SPROUTFS_GCE_PROJECT:-$(gcloud config get-value project 2>/dev/null)}
 zone=${SPROUTFS_GCE_ZONE:-us-east4-a}
@@ -229,7 +233,7 @@ PY
         sudo systemctl is-active sproutfs-bench-expire.timer
         mkdir -p '"$run"'/source '"$run"'/results
         tar -xzf source.tar.gz -C '"$run"'/source
-        sudo env SPROUTFS_GCE_BUILD_ONLY='"${SPROUTFS_GCE_BUILD_ONLY:-0}"' SPROUTFS_GCE_FANOUT='"${SPROUTFS_GCE_FANOUT:-0}"' SPROUTFS_GCE_BOOTSURVEY='"${SPROUTFS_GCE_BOOTSURVEY:-0}"' SPROUTFS_GCE_QUALIFY='"${SPROUTFS_GCE_QUALIFY:-0}"' SPROUTFS_GCE_WORKLOAD='"${SPROUTFS_GCE_WORKLOAD:-0}"' SPROUTFS_GCE_SMOKE='"${SPROUTFS_GCE_SMOKE:-0}"' SPROUTFS_BENCH_SCENARIOS='"${SPROUTFS_BENCH_SCENARIOS:-}"' SPROUTFS_BENCH_FORKS='"${SPROUTFS_BENCH_FORKS:-}"' SPROUTFS_BENCH_RAM_BYTES='"${SPROUTFS_BENCH_RAM_BYTES:-}"' SPROUTFS_BENCH_ROOT_BYTES='"${SPROUTFS_BENCH_ROOT_BYTES:-}"' SPROUTFS_BENCH_RAM_RESIDENT_BYTES='"${SPROUTFS_BENCH_RAM_RESIDENT_BYTES:-}"' SPROUTFS_BENCH_PMEM_RESIDENT_BYTES='"${SPROUTFS_BENCH_PMEM_RESIDENT_BYTES:-}"' SPROUTFS_RAM_PAGE_BYTES='"${SPROUTFS_RAM_PAGE_BYTES:-}"' SPROUTFS_ARENA='"${SPROUTFS_ARENA:-}"' SPROUTFS_FIRECRACKER_RUN='"'${SPROUTFS_FIRECRACKER_RUN:-}'"' SPROUTFS_BENCH_PLAIN_HUGE_PAGES='"${SPROUTFS_BENCH_PLAIN_HUGE_PAGES:-}"' SPROUTFS_GCS_BUCKET='"${SPROUTFS_GCE_BUCKET:-}"' SPROUTFS_GCS_PREFIX='"$prefix"' timeout --signal=TERM --kill-after=30s '"$limit"' bash '"$run"'/source/scripts/lib/bench-memory-linux.sh "$PWD/'"$run"'/source" "$PWD/'"$run"'/results"' \
+        sudo env SPROUTFS_GCE_BUILD_ONLY='"${SPROUTFS_GCE_BUILD_ONLY:-0}"' SPROUTFS_GCE_FANOUT='"${SPROUTFS_GCE_FANOUT:-0}"' SPROUTFS_GCE_BOOTSURVEY='"${SPROUTFS_GCE_BOOTSURVEY:-0}"' SPROUTFS_GCE_QUALIFY='"${SPROUTFS_GCE_QUALIFY:-0}"' SPROUTFS_GCE_WORKLOAD='"${SPROUTFS_GCE_WORKLOAD:-0}"' SPROUTFS_GCE_SMOKE='"${SPROUTFS_GCE_SMOKE:-0}"' SPROUTFS_BENCH_SCENARIOS='"${SPROUTFS_BENCH_SCENARIOS:-}"' SPROUTFS_BENCH_FORKS='"${SPROUTFS_BENCH_FORKS:-}"' SPROUTFS_BENCH_RAM_BYTES='"${SPROUTFS_BENCH_RAM_BYTES:-}"' SPROUTFS_BENCH_ROOT_BYTES='"${SPROUTFS_BENCH_ROOT_BYTES:-}"' SPROUTFS_BENCH_RAM_RESIDENT_BYTES='"${SPROUTFS_BENCH_RAM_RESIDENT_BYTES:-}"' SPROUTFS_BENCH_PMEM_RESIDENT_BYTES='"${SPROUTFS_BENCH_PMEM_RESIDENT_BYTES:-}"' SPROUTFS_RAM_PAGE_BYTES='"${SPROUTFS_RAM_PAGE_BYTES:-}"' SPROUTFS_ARENA='"${SPROUTFS_ARENA:-}"' SPROUTFS_KVM_TRACE='"${SPROUTFS_KVM_TRACE:-0}"' SPROUTFS_FIRECRACKER_RUN='"'${SPROUTFS_FIRECRACKER_RUN:-}'"' SPROUTFS_BENCH_PLAIN_HUGE_PAGES='"${SPROUTFS_BENCH_PLAIN_HUGE_PAGES:-}"' SPROUTFS_GCS_BUCKET='"${SPROUTFS_GCE_BUCKET:-}"' SPROUTFS_GCS_PREFIX='"$prefix"' timeout --signal=TERM --kill-after=30s '"$limit"' bash '"$run"'/source/scripts/lib/bench-memory-linux.sh "$PWD/'"$run"'/source" "$PWD/'"$run"'/results"' \
         > "$results/remote.log" 2>&1 || status=$?
     "${cloud[@]}" compute scp --recurse --zone="$zone" "$instance:$run/results/." "$results/" || status=$?
     # The run's objects are the benchmark's scratch, and the bucket keeps none
