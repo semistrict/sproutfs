@@ -88,11 +88,12 @@ func (s *supervisor) Create(ctx context.Context, request hostapi.CreateRequest) 
 		MemoryBytes: request.Memory, RootBytes: request.Disk, VCPUs: request.VCPUs,
 		Devices: request.Ephemeral != 0 && !(point.Ephemeral(ephemeralVolume) &&
 			point.Size(ephemeralVolume) == request.Ephemeral)}
-	// A create says whether its VM is nested (see nested.go): it becomes one
-	// only when asked, and a VM created from a nested VM's checkpoint is one
-	// only when asked again. Either change is a cold boot, and a nested
-	// source is booted cold anyway, because nothing captures its RAM.
-	if request.Nested || point.Nested() {
+	// A create says whether its VM is nested (see vmmachine's nested.go): it
+	// becomes one only when asked, and a VM created from a nested VM's
+	// checkpoint is one only when asked again. A change either way is a cold
+	// boot, because the guest's CPU changes under it; one that keeps it
+	// resumes like any other.
+	if request.Nested != point.Nested() {
 		nested := request.Nested
 		shape.Nested = &nested
 	}

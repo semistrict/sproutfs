@@ -133,6 +133,8 @@ func TestAHostReportsTheHoldsOfAFanOutOntoItself(t *testing.T) {
 	}
 	defer received.Close()
 	defer h.hosts[0].RemoveMachine("child-a")
+	// Its root retires its hold on the point, and lands behind the receive.
+	awaitRooted(t, received.VM())
 	if want := map[string]int{"child-a": 0, "child-b": 2}; !maps.Equal(h.hosts[0].Status().Outstanding, want) {
 		t.Fatalf("after child-a was taken in the holds owe %v, want %v",
 			h.hosts[0].Status().Outstanding, want)

@@ -598,6 +598,8 @@ func (o *orchestrator) VMs(ctx context.Context) ([]orch.VM, error) {
 				// What a VM holds privately is its host's too: the pages are in
 				// that host's pager and nowhere else.
 				vm.PrivateBytes = record.PrivateBytes
+				// So is whether it is durable anywhere yet.
+				vm.RootPending = record.RootPending
 			}
 			running[id] = vm
 		}

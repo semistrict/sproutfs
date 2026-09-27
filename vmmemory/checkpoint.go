@@ -665,6 +665,16 @@ func (r *MemoryRegion) finalizeCheckpoint(ctx context.Context, c *MemoryRegionCh
 			// the volume reports now takes its place below.
 			h.unshare(pg)
 		}
+		if stored {
+			// A fork point's file holds a copy of this page under the same
+			// identity, for the children on this host of an isolated arena:
+			// the parent published the point, so the name the point lent is
+			// the one the page is published by. The copy goes with the point
+			// (endFork), so the parent's own page takes the name back here,
+			// and a child that faults on it next maps the parent's page moved
+			// into its tenant's shared file rather than reading it back.
+			c.unlendCopy(id)
+		}
 		if shared {
 			r.retireFromCheckpoint(b)
 			h.probe.retired(b)

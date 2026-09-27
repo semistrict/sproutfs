@@ -406,6 +406,26 @@ func (r *MemoryRegion) giveFork(ctx context.Context, f *arenaFile) error {
 	return nil
 }
 
+// unlendCopy takes id off the copy this checkpoint's fork file holds under it,
+// if one does, so that the page published by that identity may take it. The
+// copy stays in the file for the children that map it until endFork. Caller
+// holds nothing but the pages it is retiring.
+func (c *MemoryRegionCheckpoint) unlendCopy(id pageKey) {
+	h := c.memoryRegion.host
+	c.mu.Lock()
+	f := c.fork
+	c.mu.Unlock()
+	if f == nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if existing := h.clean[id]; existing != nil && existing.file == f {
+		delete(h.clean, id)
+		h.cleanVersion++
+	}
+}
+
 // forkCopy copies a page a fork point lends into that point's file, at the
 // page's own index, so that a child on this host maps the copy and never the
 // parent's private file. Every later child finds it there. The parent keeps

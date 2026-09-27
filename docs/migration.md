@@ -518,12 +518,17 @@ sealed pages to the pager under the identity the point gives them. So every
 inherited page is present as soon as the memory region attaches, `Done` reports
 immediately, no bytes are copied and nothing is dialed.
 
-The destination publishes the child's root index as soon as `Done` reports.
-Until then, nothing outside that host can open the child. If the host is lost
-before then, the child is lost. Nothing can seal the child, so it can be
-neither forked nor migrated. So a fork is not finished until the child has a
-root index. Publishing it also releases the hold that the child's own handle
-has on the point.
+The destination publishes the child's root index as soon as `Done` reports,
+behind the running child (`Host.rootBehind`): the receive, and so the fork,
+returns without waiting for it, and a root the store refuses is tried again,
+from a quarter of a second doubling to thirty. Until it lands, nothing outside
+that host can open the child, and the host reports it (`VM.RootPending`). If
+the host is lost before then, the child is lost, as a running VM's writes since
+its last checkpoint are. Nothing can seal the child meanwhile, so it can be
+neither forked nor migrated (`ErrForkPending`). Publishing the root also
+releases the hold that the child's own handle has on the point. A child on the
+parent's host waits for the parent's publication of the point before its root,
+which then uploads nothing it inherited.
 
 Releasing the parent is `ReleaseMigrated` under the child's identity. Unlike a
 migration, it closes no process. It stops serving those pages and retires the
@@ -684,7 +689,7 @@ Three safeguards were deliberately left in place:
 
 ### The source's copy after the destination publishes
 
-A destination runs its guest from the receive on. Its memory regions keep asking the source until the orchestrator releases the source and the bulk stream ends. In that window the guest stores, and a checkpoint of it publishes and retires what it received. A fork's child publishes its root inside the receive, so every remote fork has this window.
+A destination runs its guest from the receive on. Its memory regions keep asking the source until the orchestrator releases the source and the bulk stream ends. In that window the guest stores, and a checkpoint of it publishes and retires what it received. A fork's child publishes its root right after the receive, so every remote fork has this window.
 
 Neither source changes during it. A fork's parent keeps running and storing, but its page server serves the fork point, which is frozen. The parent is not checkpointed while the point is held. A migration's source stops its guest and hands its volumes off before it takes the handoff's set, so nothing stores into those pages again. What changes is the destination's own volume. Once the destination publishes a page, the source holds at best the version before it.
 
@@ -793,9 +798,10 @@ by identity, no page is loaded back, and no connection is dialed. The children
 of one fork point must map each other's pages, not their own copies. A fork
 onto another host must name and pull only the pages that no checkpoint of the
 parent holds. Neither side may see the other's later stores. In both cases the
-child's root is published when the child holds those pages, not at the next
-interval checkpoint. With the interval loop off on every host, a third host
-opens the child as soon as its handoff is done. If the parent's host is lost
+child's root is published when the child holds those pages, behind the running
+child, not at the next interval checkpoint. With the interval loop off on every
+host, a third host opens the child as soon as its root has landed. A receive
+returns before that, even with the store refusing every upload. If the parent's host is lost
 after that, the child can still be opened anywhere, and it reads back the point
 it was forked at. Before the child has published, opening it anywhere reports
 `ErrForkPending`. A parent that is deleted or left unreleased under a child is

@@ -146,6 +146,8 @@ type fakeHostClient struct {
 	// nested is the VMs this host runs that are nested VMs, which it reports
 	// with each of them.
 	nested map[string]bool
+	// rootPending is the forks this host runs whose root has not landed.
+	rootPending map[string]bool
 	// outstanding names the VMs this host still holds pages for that no
 	// destination has fetched — every child of a fork point it took, until
 	// that child is received somewhere — and fetched, shared by every host of
@@ -240,6 +242,7 @@ func (f *fakeHostClient) Status(ctx context.Context) (host.Status, error) {
 			record.Pull = &host.Pull{}
 		}
 		record.Nested = f.nested[id]
+		record.RootPending = f.rootPending[id]
 		records = append(records, record)
 	}
 	return host.Status{Host: f.name, PageAddress: f.page,
@@ -1003,6 +1006,20 @@ func TestVMsReportsWhatTheRunningHostSaysOfEachVM(t *testing.T) {
 	}
 	if len(vms) != 1 || vms[0].Checkpoint != 42 {
 		t.Fatalf("vms %+v", vms)
+	}
+}
+
+// A fork returns before its child's root lands, and a listing says which
+// children are not durable yet: what the host running one reports.
+func TestVMsReportsAForkWhoseRootHasNotLanded(t *testing.T) {
+	d := newDeployment(t, map[string][]string{"host-0": {"vm-a", "vm-b"}})
+	d.hosts["host-0"].rootPending = map[string]bool{"vm-b": true}
+	vms, err := d.orchestrator.VMs(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(vms) != 2 || vms[0].RootPending || !vms[1].RootPending {
+		t.Fatalf("vms %+v, want only vm-b's root pending", vms)
 	}
 }
 

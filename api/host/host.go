@@ -158,6 +158,11 @@ type VM struct {
 	// Nested is a VM whose guest may run VMs of its own; see
 	// CreateRequest.Nested. It is experimental.
 	Nested bool `json:"nested,omitempty"`
+	// RootPending is a fork whose first checkpoint, its root, has not landed
+	// yet. A fork returns before its children's roots do, so until then the
+	// child exists only on this host: a host lost meanwhile loses it, and it
+	// cannot be forked or migrated.
+	RootPending bool `json:"root_pending,omitempty"`
 }
 
 // Pull is how far a VM marked to pull its whole memory has come. Such a VM has

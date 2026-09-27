@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -89,8 +90,9 @@ func TestHostForksEveryChildFromOnePause(t *testing.T) {
 		forks = append(forks, received.VM())
 	}
 	// Every child has a root index of its own, published by the host that took
-	// it in as soon as it held every page it inherited.
+	// it in behind the running child.
 	for _, fork := range forks {
+		awaitRooted(t, fork)
 		if status := fork.Status(); status.Root {
 			t.Fatalf("%s has no root index of its own after the fork: %+v", fork.ID(), status)
 		}
@@ -420,7 +422,8 @@ func TestLocalForkReceivesTheForkPointOverThePages(t *testing.T) {
 	}
 	defer received.Close()
 	// Receive returns once the child holds every page only the parent had, and
-	// the root it publishes then is what makes it a VM anything can open.
+	// the root it publishes behind it is what makes it a VM anything can open.
+	awaitRooted(t, received.VM())
 	if status := received.VM().Status(); status.Root {
 		t.Fatalf("the child has no root index of its own after the handoff: %+v", status)
 	}
@@ -516,6 +519,7 @@ func TestForkPublishesTheChildRootWhenItsPostCopyIsDone(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer received.Close()
+	awaitRooted(t, received.VM())
 	if status := received.VM().Status(); status.Root {
 		t.Fatalf("the child has no root index of its own after its post-copy: %+v", status)
 	}
@@ -628,4 +632,129 @@ func TestALocalForkHoldExpiresWhenNothingReleasesIt(t *testing.T) {
 	if err := guest.checkpoint(t.Context(), vm); err != nil {
 		t.Fatalf("the parent could not checkpoint after the hold expired: %v", err)
 	}
+}
+
+// awaitRooted waits for a fork's root, which a host publishes behind the
+// running child rather than before the receive returns.
+func awaitRooted(t *testing.T, vm *volume.VM) {
+	t.Helper()
+	select {
+	case <-vm.Rooted():
+	case <-t.Context().Done():
+		t.Fatalf("%s never published its root", vm.ID())
+	}
+}
+
+// uploadGatedStore refuses every checkpoint object's write while unavailable
+// is set, and nothing else: a control record still reads and writes.
+type uploadGatedStore struct {
+	platform.ObjectStore
+	unavailable *atomic.Bool
+}
+
+func (s *uploadGatedStore) Put(ctx context.Context, request platform.PutRequest) (platform.PutResult, error) {
+	if s.unavailable.Load() && strings.Contains(request.Key.String(), "/ckpt/") {
+		return platform.PutResult{}, platform.ErrUnavailable
+	}
+	return s.ObjectStore.Put(ctx, request)
+}
+
+// A fork returns once its child runs, not once the child's root has landed:
+// with the object store refusing every checkpoint upload, the receive still returns, the
+// child reports its root pending, and it cannot be migrated. Once the store
+// answers, the host publishes the root behind the running child.
+func TestAForkReturnsBeforeItsChildsRootLands(t *testing.T) {
+	h, pagers := startMigrationHosts(t)
+	var unavailable atomic.Bool
+	h.configs[0].ObjectStore = &uploadGatedStore{ObjectStore: h.configs[0].ObjectStore, unavailable: &unavailable}
+	var child *machine
+	h.configs[0].Migration.StartVM = starter(t, pagers[0], &child)
+	h.start(t)
+
+	vm, err := h.hosts[0].Volumes().Create(t.Context(), "parent", migrationVolumes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guest, err := newMachine(t, pagers[0], vm, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guest.store("ram0", 0, 9)
+	if err := h.hosts[0].AddMachine("parent", guest); err != nil {
+		t.Fatal(err)
+	}
+	defer h.hosts[0].RemoveMachine("parent")
+	handoffs, err := h.hosts[0].Fork(t.Context(), "parent", []string{"child"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	unavailable.Store(true)
+	received, err := h.hosts[0].Receive(t.Context(), handoffs[0])
+	if err != nil {
+		t.Fatalf("a fork with the store refusing every upload: %v", err)
+	}
+	defer received.Close()
+	if status := received.VM().Status(); !status.Root {
+		t.Fatalf("the child's root landed with the store refusing every upload: %+v", status)
+	}
+	if got := child.load("ram0", 0); got[0] != 9 {
+		t.Fatalf("the child reads %d, want the parent's 9", got[0])
+	}
+	if _, err := h.hosts[0].Migrate(t.Context(), "child", h.pages[1]); !errors.Is(err, volume.ErrForkPending) {
+		t.Fatalf("migrating a child whose root has not landed = %v, want ErrForkPending", err)
+	}
+	unavailable.Store(false)
+	awaitRooted(t, received.VM())
+	if status := received.VM().Status(); status.Root {
+		t.Fatalf("the child has no root after the store answered: %+v", status)
+	}
+}
+
+// A child exists only on its host until its root lands, as the writes a running
+// VM has not checkpointed do: a host lost before then loses it, and no other
+// host can open it, because its control record selects a root nothing
+// published.
+func TestNoOtherHostCanOpenAChildBeforeItsRootLands(t *testing.T) {
+	h, pagers := startMigrationHosts(t)
+	var unavailable atomic.Bool
+	h.configs[0].ObjectStore = &uploadGatedStore{ObjectStore: h.configs[0].ObjectStore, unavailable: &unavailable}
+	var child *machine
+	h.configs[0].Migration.StartVM = starter(t, pagers[0], &child)
+	h.start(t)
+
+	vm, err := h.hosts[0].Volumes().Create(t.Context(), "parent", migrationVolumes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guest, err := newMachine(t, pagers[0], vm, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guest.store("ram0", 0, 9)
+	if err := h.hosts[0].AddMachine("parent", guest); err != nil {
+		t.Fatal(err)
+	}
+	handoffs, err := h.hosts[0].Fork(t.Context(), "parent", []string{"child"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	unavailable.Store(true)
+	received, err := h.hosts[0].Receive(t.Context(), handoffs[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status := received.VM().Status(); !status.Root {
+		t.Fatalf("the child's root landed with the store refusing every upload: %+v", status)
+	}
+	defer received.Close()
+	defer h.hosts[0].RemoveMachine("parent")
+	// Another host sees what the child's host being lost now would leave: a
+	// control record selecting a root nothing published, which no open can
+	// take over. (A graceful close deletes that record instead; a lost host
+	// closes nothing.)
+	if _, err := h.hosts[1].Volumes().Open(t.Context(), "child"); !errors.Is(err, volume.ErrForkPending) {
+		t.Fatalf("opening a child whose root never landed = %v, want ErrForkPending", err)
+	}
+	unavailable.Store(false)
+	awaitRooted(t, received.VM())
 }

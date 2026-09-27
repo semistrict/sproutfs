@@ -95,12 +95,13 @@ type Config struct {
 	MaxWriteBytes int
 	// MaxOpenVMs bounds the live handles one manager owns. Default 4096.
 	MaxOpenVMs int
-	// PointPublished, where it is set, is told each fork point a VM publishes
-	// behind its fork, once it is selected: the sequence it took is a
-	// checkpoint of that VM from then on, holding what the VM held when it was
-	// forked. A caller that keeps its own record of which checkpoints exist
-	// learns of these nowhere else.
-	PointPublished func(vm string, sequence uint64)
+	// PointPublishing, where it is set, is told each fork point a VM starts
+	// publishing behind its fork, before its upload begins: the sequence it
+	// took may be selected as a checkpoint of that VM from then on, holding
+	// what the VM held when it was forked, whether or not this host lives to
+	// see it land. A caller that keeps its own record of which checkpoints
+	// may exist learns of these nowhere else.
+	PointPublishing func(vm string, sequence uint64)
 }
 
 const (

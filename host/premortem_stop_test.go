@@ -49,6 +49,8 @@ func TestStoppingAParentWhoseFanOutLandedOnItsOwnHostIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer received.Close()
+	// Its root retires its hold on the point, and lands behind the receive.
+	awaitRooted(t, received.VM())
 	if handoffs[0].Source != "" {
 		t.Fatalf("a child of this host's own is given %q to fetch from", handoffs[0].Source)
 	}

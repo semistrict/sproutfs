@@ -352,13 +352,56 @@ func (h *Host) Receive(ctx context.Context, handoff vmmigrate.Handoff) (*vmmigra
 		"pause_seconds", post.ResumedAt.Sub(post.PausedAt).Seconds(),
 		"seconds", h.clock.Since(post.ResumedAt).Seconds())
 	if handoff.IsFork() {
-		if err := h.rooted(ctx, received.VM(), started); err != nil {
-			received.Close()
-			h.discardReceived(ctx, handoff.VMID, started, received.VM(), err)
-			return nil, fmt.Errorf("publishing the root index of %s: %w", handoff.VMID, err)
-		}
+		// The child runs from here, and its root is published behind it rather
+		// than before this returns: see rootBehind.
+		go h.rootBehind(handoff.VMID, received.VM(), started)
 	}
 	return received, nil
+}
+
+// rootBehind publishes a fork child's root index behind the running child, and
+// tries again until it lands, the child stops running here, or this host
+// closes. A fork returns once its children run, not once they are durable:
+// until the root lands a child exists only on this host, like the writes a
+// running VM has not checkpointed yet, and a host lost in the meantime loses
+// it. It cannot be forked or migrated meanwhile (ErrForkPending), and its
+// host reports it (hostapi.VM.RootPending). A root waits for nothing but its own
+// publication, and for a child on its parent's host the parent's publication
+// of the point it builds on, which is the upload a fork no longer waits for.
+func (h *Host) rootBehind(vmID string, vm *volume.VM, runtime Machine) {
+	wait := rootRetryFirst
+	for attempt := 1; ; attempt++ {
+		err := h.rooted(h.ctx, vm, runtime)
+		if err == nil {
+			return
+		}
+		if context.Cause(h.ctx) != nil || !h.runs(vmID, runtime) {
+			return
+		}
+		slog.WarnContext(h.ctx, "host: publishing a fork's root failed, and is tried again",
+			"vm", vmID, "attempt", attempt, "in", wait, "error", err)
+		if err := h.clock.Sleep(h.ctx, wait); err != nil {
+			return
+		}
+		wait = min(2*wait, rootRetryLast)
+	}
+}
+
+// rootRetryFirst is how long rootBehind waits before it tries a root again the
+// first time, doubling each time up to rootRetryLast: a store that was briefly
+// unavailable costs a child a fraction of a second of not being durable, and
+// one that stays down is not asked more than twice a minute.
+const (
+	rootRetryFirst = 250 * time.Millisecond
+	rootRetryLast  = 30 * time.Second
+)
+
+// runs reports whether runtime is still the machine this host runs vmID with.
+func (h *Host) runs(vmID string, runtime Machine) bool {
+	h.machines.mu.Lock()
+	defer h.machines.mu.Unlock()
+	entry := h.machines.running[vmID]
+	return entry != nil && entry.runtime == runtime
 }
 
 // beginReceive admits one receive of a VM at a time, and reports what ends it.

@@ -206,9 +206,10 @@ runtime configuration.
    - With `--to <host>`, the child's pager pulls them from the parent's page
      server, as a migration destination does.
 
-   The destination publishes the child's root as soon as it holds all of those
-   pages. After that, any host can open the child. A fork that ends before then
-   leaves no object behind.
+   The destination publishes the child's root behind the running child, as
+   soon as it holds all of those pages; the fork does not wait for it. After
+   that, any host can open the child. Until then the child exists only on its
+   host, and a fork that ends before then leaves no object behind.
 6. A live move is post-copy only. The source stops the guest, saves VMM state
    and hands the VM over without uploading anything. The destination opens the
    same identity, advances the epoch, and resumes from the supplied state. It

@@ -463,7 +463,7 @@ func (w *World) hostConfig(h *hostState) host.Config {
 		Clock:        h.clock,
 		Entropy:      w.runtime.NewEntropy(h.name),
 		Volumes: host.VolumeConfig{MaxWriteBytes: k.MaxWriteBytes, MaxOpenVMs: k.MaxOpenVMs,
-			PointPublished: w.pointPublished},
+			PointPublishing: w.pointPublishing},
 		Migration: host.MigrationConfig{Address: h.pages, PageSize: PMEMPage,
 			DrainConcurrency: k.DrainConcurrency, StartVM: w.starter(h), HoldTimeout: w.config.Hold},
 		// A campaign drives every checkpoint itself and reaches every hold
@@ -838,11 +838,12 @@ func (w *World) expectPoint(in *instance, g *guest, at durableState) {
 	w.points[in.spec.ID] = pendingPoint{in: in, g: g, at: at}
 }
 
-// pointPublished is told each fork point a host publishes behind a fork. The
-// sequence is a checkpoint of the parent from then on, and the pause it stands
-// for is the one expectPoint recorded: the parent comes back there if it is
-// lost before its next checkpoint.
-func (w *World) pointPublished(id string, sequence uint64) {
+// pointPublishing is told each fork point a host starts publishing behind a
+// fork, before its upload. The sequence may be a checkpoint of the parent from
+// then on, whether or not that host lives to see it land, and the pause it
+// stands for is the one expectPoint recorded: the parent may come back there if
+// it is lost before its next checkpoint.
+func (w *World) pointPublishing(id string, sequence uint64) {
 	w.notePublished(id, sequence)
 	w.mu.Lock()
 	pending, found := w.points[id]
@@ -852,7 +853,7 @@ func (w *World) pointPublished(id string, sequence uint64) {
 		return
 	}
 	pending.at.sequence = sequence
-	w.landed(pending.in, pending.g, pending.at)
+	w.offer(pending.in, pending.at)
 }
 
 func (w *World) notePublished(id string, sequence uint64) {
@@ -2177,6 +2178,14 @@ func (w *World) forked(ctx context.Context, source, destination *hostState, spec
 		received.Close()
 		w.abandonSource(ctx, source, spec.ID)
 		return false, fmt.Errorf("%s: %s started no guest for the child", spec.ID, destination.name)
+	}
+	// The host publishes the child's root behind the running child; this
+	// step of the world ends once it has landed, so what follows sees the
+	// child durable and the parent's hold on the point retired.
+	select {
+	case <-received.VM().Rooted():
+	case <-ctx.Done():
+		return false, context.Cause(ctx)
 	}
 	root := received.VM().Status().Checkpoint
 	child.adopt(at)

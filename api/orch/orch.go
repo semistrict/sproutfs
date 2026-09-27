@@ -82,6 +82,10 @@ type VM struct {
 	// of its memory its host could share with nothing. It is zero for a VM no
 	// live host reports, which holds nothing anywhere.
 	PrivateBytes uint64 `json:"private_bytes,omitempty"`
+	// RootPending is a fork whose first checkpoint has not landed: it exists
+	// only on its host until then, which losing loses it. See
+	// host.VM.RootPending.
+	RootPending bool `json:"root_pending,omitempty"`
 }
 
 // ExecRequest and ExecResult are the guest agent's own shapes, carried down to

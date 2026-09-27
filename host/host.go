@@ -51,8 +51,8 @@ type VolumeConfig struct {
 	// handles this host may hold at once.
 	MaxWriteBytes int
 	MaxOpenVMs    int
-	// PointPublished is volume.Config's.
-	PointPublished func(vm string, sequence uint64)
+	// PointPublishing is volume.Config's.
+	PointPublishing func(vm string, sequence uint64)
 }
 
 // Config supplies the deployment's object namespace. A host owns no durable
@@ -377,7 +377,7 @@ func StartHost(ctx context.Context, config Config) (*Host, error) {
 	}
 	v := config.Volumes
 	h.volumes, err = volume.NewManager(volume.Config{Control: h.control, Store: h.checkpoints,
-		MaxWriteBytes: v.MaxWriteBytes, MaxOpenVMs: v.MaxOpenVMs, PointPublished: v.PointPublished})
+		MaxWriteBytes: v.MaxWriteBytes, MaxOpenVMs: v.MaxOpenVMs, PointPublishing: v.PointPublishing})
 	if err != nil {
 		return nil, err
 	}

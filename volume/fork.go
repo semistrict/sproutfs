@@ -351,6 +351,9 @@ func (vm *VM) ForkPoint(ctx context.Context, prepare PrepareFunc) (*ForkPoint, e
 		return point, nil
 	}
 	// The children start now, and the point is published behind them.
+	if told := vm.manager.config.PointPublishing; told != nil {
+		told(vm.id, point.checkpoint.ref.Sequence)
+	}
 	go vm.publishPoint(vm.ctx, point)
 	return point, nil
 }
@@ -386,9 +389,6 @@ func (vm *VM) publishPoint(ctx context.Context, point *ForkPoint) {
 		return
 	}
 	point.land(index, nil)
-	if told := vm.manager.config.PointPublished; told != nil {
-		told(vm.id, ckpt.ref.Sequence)
-	}
 	vm.reclaim(ctx, replaced, index, record)
 }
 
