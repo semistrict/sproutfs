@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/semistrict/sproutfs/api/host"
 	"github.com/semistrict/sproutfs/api/orch"
 	"github.com/semistrict/sproutfs/internal/handover"
 )
@@ -204,5 +205,49 @@ func TestAnotherQuietHostHoldsTheRecoveryBack(t *testing.T) {
 	}
 	if row.State != stateStopped {
 		t.Fatalf("row %+v, want vm-a stopped", row)
+	}
+}
+
+// A destination goes on tearing a discarded receive down for a while after the
+// orchestrator has ended it: it reports the VM in Receiving, and the guest RAM
+// the receive committed still counts against its arena. A recovery that looked
+// then found no host with room for the VM and left it stopped (TASK-45). The
+// recovery waits for the destination to give the guest up, and then reopens
+// the VM there.
+func TestARecoveryAfterALostSourceWaitsForTheDestinationToGiveTheGuestUp(t *testing.T) {
+	d := newDeployment(t, map[string][]string{"host-0": {"vm-a"}, "host-1": {}})
+	for _, h := range d.hosts {
+		h.templates = []host.Template{{Name: "workload", MemoryBytes: 512 << 20, Imported: true}}
+	}
+	d.orchestrator.note(t.Context(), vmRecord{ID: "vm-a", Host: "host-0", State: stateRunning,
+		Template: "workload"})
+	d.hosts["host-0"].arena(1024, 256)
+	destination := d.hosts["host-1"]
+	// Room for the VM, and none for it twice.
+	destination.arena(1024, 600)
+	destination.receiveCommit = 512 << 20
+	destination.discardLingers = 3
+	destination.holdReceive = true
+	destination.onReceive = func() {
+		d.hosts["host-0"].cutOff()
+		if err := d.pods.Delete(t.Context(), "host-0"); err != nil {
+			t.Error(err)
+		}
+	}
+	_, err := d.orchestrator.Migrate(t.Context(), "vm-a", "host-1")
+	if !errors.Is(err, errLostSource) {
+		t.Fatalf("a migration whose source was lost = %v, want errLostSource", err)
+	}
+	gaveUp := slices.Index(d.log, "host-1 gave vm-a up")
+	opened := slices.Index(d.log, "host-1 open vm-a")
+	if gaveUp < 0 || opened < gaveUp {
+		t.Fatalf("the VM was not reopened on the destination once it gave the guest up: %v", d.log)
+	}
+	row, found, err := d.orchestrator.table.VM(t.Context(), "vm-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found || row.State != stateRunning || row.Host != "host-1" {
+		t.Fatalf("the table row after the recovery: %+v", row)
 	}
 }

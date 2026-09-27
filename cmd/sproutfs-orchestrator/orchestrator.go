@@ -101,6 +101,9 @@ var (
 	// its destination was still fetching them or about to be asked to. They
 	// exist nowhere else, so the handover is ended rather than waited on.
 	errLostSource = errors.New("the host holding the VM's pages no longer has them")
+	// errReceiving refuses to open a VM a receive of which is still in flight
+	// on some host. It is an errRunning: the VM is between hosts, not lost.
+	errReceiving = fmt.Errorf("%w: a receive of it is in flight", errRunning)
 )
 
 // orchestrator places VMs on hosts and carries handoffs between them. It is
@@ -1411,6 +1414,13 @@ func look(hosts []liveHost, from, id string) handover.Look {
 	return handover.Look{}
 }
 
+// lostRecoveryPatience bounds how long a recovery after a lost source waits
+// for the destination to end the receive the orchestrator gave up. That receive
+// ends once its caller's cancellation reaches it and the half-received guest is
+// torn down, which takes seconds; a destination still receiving after this is
+// one an operator has to look at, and the VM is left stopped for them.
+const lostRecoveryPatience = 2 * time.Minute
+
 // recoverLost reopens a VM whose migration ended because the host holding its
 // pages no longer has them. It is the ordinary recovery: the destination gave
 // the half-received guest up, nothing runs the VM, and what an open finds is
@@ -1418,12 +1428,30 @@ func look(hosts []liveHost, from, id string) handover.Look {
 // interval checkpoint. The one difference is the source itself, which may be a
 // listed pod nothing can reach: it handed the VM over, so its silence is not a
 // guest that may still be running there.
+//
+// The destination whose receive this orchestrator ended is still tearing it
+// down when this begins: it reports the VM in Receiving, and the guest RAM the
+// receive committed still counts against its arena until it has given the
+// guest up. Recovering then found no host with room and left the VM stopped
+// (TASK-45), so this waits for the receive to end, surveying on the watch
+// interval, for as long as lostRecoveryPatience.
 func (o *orchestrator) recoverLost(ctx context.Context, id, from string) error {
 	terms := recovery(false)
 	terms.handedOver = from
-	recovered, err := o.reopen(ctx, id, terms)
-	if err != nil {
-		return fmt.Errorf("recovering %s after losing the host holding its pages: %w", id, err)
+	deadline := time.Now().Add(lostRecoveryPatience)
+	var recovered orch.RecoverResult
+	for {
+		var err error
+		recovered, err = o.reopen(ctx, id, terms)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, errReceiving) || time.Now().After(deadline) {
+			return fmt.Errorf("recovering %s after losing the host holding its pages: %w", id, err)
+		}
+		if err := ctxsync.Sleep(ctx, o.watchInterval()); err != nil {
+			return fmt.Errorf("recovering %s after losing the host holding its pages: %w", id, err)
+		}
 	}
 	slog.InfoContext(ctx, "sproutfs-orchestrator: recovered a VM whose migration lost its source",
 		"vm", id, "host", recovered.Host, "checkpoint", recovered.Result.VM.Checkpoint)
@@ -1569,6 +1597,13 @@ func (o *orchestrator) reopen(ctx context.Context, id string, terms reopening) (
 	if holder := holding(hosts, id); holder != "" {
 		return orch.RecoverResult{}, fmt.Errorf(
 			"%w: %s still serves the pages of %s that no checkpoint has", errRunning, holder, id)
+	}
+	// Nor is a VM a receive of which is still in flight: that receive may yet
+	// take it in, and until it ends, the guest RAM it committed still counts
+	// against its host.
+	if receiving := receivers(hosts, id); len(receiving) > 0 {
+		return orch.RecoverResult{}, fmt.Errorf("%w: %s is still receiving %s",
+			errReceiving, strings.Join(receiving, ", "), id)
 	}
 	var row vmRecord
 	if o.table != nil {

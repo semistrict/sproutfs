@@ -132,6 +132,12 @@ type fakeHostClient struct {
 	outlives, lingering int
 	outlivedFails       bool
 	receiving           []string
+	// discardLingers is how many surveys a held receive the orchestrator ended
+	// goes on being torn down for, reported in Receiving and holding
+	// receiveCommit of guest RAM, as a host's does between the caller hanging
+	// up and the discard. The RAM is committed from the receive's start.
+	discardLingers int
+	receiveCommit  uint64
 	// hold is what this host's migrations report it holds a handover for.
 	hold host.Seconds
 	// pulling is the VMs this host was asked to run marked to pull their whole
@@ -260,6 +266,7 @@ func (f *fakeHostClient) linger() {
 	for _, id := range f.receiving {
 		if f.outlivedFails {
 			f.record("gave %s up", id)
+			f.committed -= f.receiveCommit
 			continue
 		}
 		f.record("took %s in", id)
@@ -452,6 +459,9 @@ func (f *fakeHostClient) Receive(ctx context.Context, handoff host.Handoff) (hos
 		return host.ReceiveResult{}, errors.New("the destination could not start it")
 	}
 	hold, began := f.holdReceive, f.onReceive
+	if f.discardLingers > 0 {
+		f.committed += f.receiveCommit
+	}
 	f.mu.Unlock()
 	if hold {
 		if began != nil {
@@ -465,6 +475,10 @@ func (f *fakeHostClient) Receive(ctx context.Context, handoff host.Handoff) (hos
 			// host that is gone, and nothing can publish that.
 			f.mu.Lock()
 			f.record("receive-discarded %s", handoff.VMID)
+			if f.discardLingers > 0 {
+				f.receiving = append(f.receiving, handoff.VMID)
+				f.lingering, f.outlivedFails = f.discardLingers, true
+			}
 			f.mu.Unlock()
 			return host.ReceiveResult{}, ctx.Err()
 		}
