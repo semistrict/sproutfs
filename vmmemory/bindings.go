@@ -42,6 +42,9 @@ type binding struct {
 	// from a checkpoint's held copy, from the name a fork point lent a private
 	// page, from another host's unpublished page or from zeros has none.
 	origin *resident
+	// cold marks a copy a store trap made of origin, which is not yet known to
+	// be the guest's state and pins origin until it is: see cold.go.
+	cold bool
 }
 
 // writable reports whether the guest may store into this page where it is,
@@ -335,6 +338,7 @@ func (r *MemoryRegion) needsPrivatePage(index uint64) bool {
 func (r *MemoryRegion) holdInCheckpoint(b, held *binding) {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
+	r.uncoldLocked(b)
 	b.checkpoint, b.spillSlot = held, -1
 	held.ahead, b.ahead = b.ahead, false
 	// The bytes the seal froze are the ones that were copied, so the page they
@@ -379,6 +383,7 @@ func (r *MemoryRegion) checkpointCopy(b *binding) *binding {
 func (r *MemoryRegion) takeFromCheckpoint(b *binding, slot int, origin *resident) {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
+	r.uncoldLocked(b)
 	b.checkpoint, b.spillSlot, b.dirty, b.zero = nil, slot, true, false
 	b.origin = origin
 	if r.dirtyBindings == nil {
@@ -398,6 +403,7 @@ func (r *MemoryRegion) takeFromCheckpoint(b *binding, slot int, origin *resident
 func (r *MemoryRegion) restoreFromCheckpoint(b, held *binding) {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
+	r.uncoldLocked(b)
 	b.checkpoint, b.spillSlot, b.dirty, b.ahead = nil, held.spillSlot, true, held.ahead
 	b.origin, held.origin = held.origin, nil
 	held.spillSlot, held.dirty, held.ahead = -1, false, false
@@ -410,6 +416,7 @@ func (r *MemoryRegion) restoreFromCheckpoint(b, held *binding) {
 func (r *MemoryRegion) retireFromCheckpoint(b *binding) {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
+	r.uncoldLocked(b)
 	// The page is the volume's again, so where it was copied from says nothing
 	// about it any more.
 	b.checkpoint, b.dirty, b.origin = nil, false, nil
@@ -424,6 +431,7 @@ func (r *MemoryRegion) forgetOrigin(b *binding, origin *resident) {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
 	if b.origin == origin {
+		r.uncoldLocked(b)
 		b.origin = nil
 	}
 }
@@ -436,6 +444,7 @@ func (r *MemoryRegion) forgetOrigin(b *binding, origin *resident) {
 func (r *MemoryRegion) endDirty(b *binding) int {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
+	r.uncoldLocked(b)
 	slot := b.spillSlot
 	b.spillSlot, b.dirty, b.ahead, b.origin = -1, false, false, nil
 	delete(r.dirtyBindings, b.index)
@@ -460,6 +469,9 @@ func (r *MemoryRegion) heldBy(index uint64, held *binding) bool {
 func (r *MemoryRegion) setDirty(b *binding, dirty bool) {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
+	if !dirty {
+		r.uncoldLocked(b)
+	}
 	b.dirty = dirty
 	if !dirty {
 		// The dirty epoch that write-ahead began has ended, and with it

@@ -80,9 +80,10 @@ type MemoryRegion struct {
 	// givenBackTo is the page the next give-back pass starts at, guarded by
 	// bindingsMu. See GiveBack.
 	givenBackTo uint64
-	// coldCopies is the cold copies no give-back has taken yet, guarded by
-	// bindingsMu, and coldCopied wakes the session's worker that takes them.
-	// See coldCopy.
+	// coldPages is every cold copy of this memory region, and coldCopies the
+	// ones its session's worker has not taken yet, both guarded by bindingsMu;
+	// coldCopied wakes that worker. See cold.go.
+	coldPages  map[uint64]*binding
 	coldCopies map[uint64]struct{}
 	coldCopied chan struct{}
 	// dirtySince is when the oldest write this memory region holds that no checkpoint
@@ -714,7 +715,10 @@ func (r *MemoryRegion) Detach(ctx context.Context) error {
 		// binding but this one, so this is where it goes: nothing else would
 		// ever release it, and detaching leaves no resident page behind.
 		if origin := b.origin; origin != nil {
+			r.bindingsMu.Lock()
+			r.uncoldLocked(b)
 			b.origin = nil
+			r.bindingsMu.Unlock()
 			if err := h.releaseOrigin(ctx, origin); err != nil {
 				return err
 			}

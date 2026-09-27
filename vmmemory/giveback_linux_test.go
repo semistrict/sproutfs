@@ -5,6 +5,7 @@ package vmmemory_test
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/semistrict/sproutfs/checkpoint"
 	"github.com/semistrict/sproutfs/vmmemory"
@@ -74,6 +75,40 @@ func TestManagedPagerGivesBackAColdCopyAtOnce(t *testing.T) {
 				t.Fatalf("reading the page given back took %d faults and made %d copies, want none",
 					after.Faults-stats.Faults, after.CopyOnWrites-stats.CopyOnWrites)
 			}
+		})
+	}
+}
+
+// A seal that comes before the session's worker has given the cold copies
+// back compares them itself: the checkpoint holds nothing for two pages the
+// process only faulted in writable, and the process goes on mapping both copies
+// writable. The two are consecutive pages the pager mapped one command each, so
+// the protection comes off each by a command of its own.
+func TestManagedPagerLeavesColdCopiesOutOfACheckpoint(t *testing.T) {
+	for _, size := range []uint64{hugePageSize, checkpoint.PageSize4KiB} {
+		t.Run(fmt.Sprintf("%dKiB", size>>10), func(t *testing.T) {
+			// The session's worker waits past the test, so the seal comes first.
+			vmmemory.SetColdCopyAge(t, time.Hour)
+			h, a, b := nativePair(t, size)
+			b.request("read 1 0 1", "data 21")
+			b.request(fmt.Sprintf("read 1 %d 1", size), "data 22")
+			a.request("populatewrite 1 0 1", "populated")
+			a.request(fmt.Sprintf("populatewrite 1 %d 1", size), "populated")
+			a.seal(1)
+			if got := a.memoryRegion(1).Checkpoint().DirtyPages(); len(got) != 0 {
+				t.Fatalf("the checkpoint holds pages %v, want none", got)
+			}
+			if s := kernelStats(t, h); s.UnchangedPages != 2 {
+				t.Fatalf("left out %d pages, want both cold copies", s.UnchangedPages)
+			}
+			faults := kernelStats(t, h).Faults
+			a.request("fill 1 0 1 71", "filled")
+			a.request(fmt.Sprintf("fill 1 %d 1 72", size), "filled")
+			if got := kernelStats(t, h).Faults; got != faults {
+				t.Fatalf("stores into the copies left out took %d faults, want none", got-faults)
+			}
+			a.request("read 1 0 1", "data 47")
+			a.request(fmt.Sprintf("read 1 %d 1", size), "data 48")
 		})
 	}
 }

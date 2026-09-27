@@ -251,6 +251,10 @@ func TestSealInsideAReclaimsAliasWalkKeepsThePagesOnlyCopy(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newFixture(t, 2, 8, 4)
 		r, m, b := f.memoryRegion(4)
+		// Read first, so the store is a protect trap and its copy is not cold:
+		// a cold copy pins the page it was copied from, and the reclaim this
+		// needs would come earlier. See cold.go.
+		access(t, r, m, 0, false)
 		access(t, r, m, 0, true)[0] = 41
 		access(t, r, m, 1, false)
 		// Page 0 is the least recently used page and the whole dirty set, so

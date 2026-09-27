@@ -50,6 +50,10 @@ type resident struct {
 	// protected by Host.mu. See replacement.
 	replacing int
 	dropped   bool
+	// coldCopies is every cold copy that will be compared with this page,
+	// which no eviction therefore takes. It is guarded by Host.pinMu. See
+	// cold.go.
+	coldCopies map[*binding]struct{}
 }
 
 // published reports a resident page holding a page identity some checkpoint
@@ -294,6 +298,10 @@ func (h *Host) adoptRun(at fileSlot, count int, kind MemoryRegionKind) []*reside
 }
 
 func (h *Host) release(ctx context.Context, pg *resident) error {
+	// Nothing the pager takes under pressure is pinned, so a page going here is
+	// going for a reason of its own, and a cold copy of it has nothing left to
+	// be compared with.
+	h.dropCold(pg)
 	if err := pg.file.Release(ctx, pg.slot); err != nil {
 		h.mu.Lock()
 		h.err = fmt.Errorf("managed arena terminal: %w", err)

@@ -540,6 +540,8 @@ func (r *MemoryRegion) move(ctx context.Context, pg *resident, key pageKey) (*re
 // can neither be given to nor have its mapping taken away keeps the page it
 // has, which is then its alone. Caller holds both pages' locks.
 func (h *Host) rebind(ctx context.Context, from, to *resident) error {
+	// A cold copy of from is a copy of to's bytes too.
+	h.moveCold(from, to)
 	byRegion := make(map[*MemoryRegion][]*binding)
 	for _, b := range h.aliases(from) {
 		byRegion[b.memoryRegion] = append(byRegion[b.memoryRegion], b)

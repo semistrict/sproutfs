@@ -39,7 +39,10 @@ type Host struct {
 	// holds. See reservations.go.
 	reservations *reservations
 	mu           sync.Mutex
-	cfg          Config
+	// pinMu guards every resident page's coldCopies. It is taken inside any
+	// other lock and never around one. See cold.go.
+	pinMu sync.Mutex
+	cfg   Config
 	// clock times the fault path. It is Config.Clock, or the wall clock.
 	clock platform.Clock
 	// arena is what this pager makes its files of, and files every file it

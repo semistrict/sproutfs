@@ -254,6 +254,13 @@ func (c *MemoryRegionCheckpoint) take(ctx context.Context, pending map[uint64]*b
 		sealWalkSeam()
 	}
 	defer func(start time.Time) { r.host.sealWalkLatency.Observe(r.host.clock.Since(start)) }(r.host.clock.Now())
+	// A cold copy the guest did not change is no part of any checkpoint: see
+	// cold.go. One that could not be compared is sealed as an ordinary page,
+	// which publishes what the guest maps and loses nothing.
+	if _, err := r.leaveOutColdCopies(ctx, pending); err != nil {
+		slog.ErrorContext(ctx, "vmmemory: a seal could not compare its cold copies",
+			"kind", r.kind, "error", err)
+	}
 	pages, err := r.takePages(ctx, pending)
 	c.mu.Lock()
 	c.pages = pages

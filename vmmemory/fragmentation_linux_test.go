@@ -81,7 +81,11 @@ func TestNativeRefusedMappingLeavesTheSessionServing(t *testing.T) {
 		t.Fatalf("faulting the refused page again = %v, want the refusal again", err)
 	}
 	// The session still serves: its control path answers a seal, which is
-	// page-table work and costs the client's budget nothing.
+	// page-table work and costs the client's budget nothing. The guest stores
+	// into every page it has first, through the mappings it holds: a write
+	// fault that stored nothing is a cold copy, which a seal leaves out, and
+	// abandoning this seal has to revoke every one of them.
+	a.request(fmt.Sprintf("stridefill 0 0 %d %d 7", refused*hugePageSize, 2*hugePageSize), "strided")
 	a.seal(0)
 	if s, err := h.Stats(t.Context()); err != nil {
 		t.Fatalf("the host after a refused mapping command: %v", err)

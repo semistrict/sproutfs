@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 	"unsafe"
 )
 
@@ -59,4 +60,13 @@ func ColdCopyPasses(t *testing.T) <-chan struct{} {
 	coldCopiesSeam = func() { passes <- struct{}{} }
 	t.Cleanup(func() { coldCopiesSeam = nil })
 	return passes
+}
+
+// SetColdCopyAge sets how old a cold copy is before its session gives it back,
+// so a test can have a seal come first. It is restored when the test ends, and
+// set before the sessions start.
+func SetColdCopyAge(t *testing.T, age time.Duration) {
+	previous := coldCopyAge
+	coldCopyAge = age
+	t.Cleanup(func() { coldCopyAge = previous })
 }

@@ -412,9 +412,14 @@ func (h *Host) allocate(ctx context.Context, r *MemoryRegion, f *arenaFile, plac
 		var candidates []*resident
 		busy := false
 		share := h.cfg.ResidentPages / max(len(h.memoryRegions), 1)
-		for _, fair := range []bool{true, false} {
+		// A page a cold copy will be compared with is spared while anything else
+		// can go, and taken last, which ends those copies being cold: an arena
+		// whose every page is one of those, or the one page a store is copying
+		// from, has nothing else to give. See cold.go.
+		passes := []struct{ fair, pinned bool }{{true, false}, {false, false}, {false, true}}
+		for _, pass := range passes {
 			for pg := h.lru.front(); pg != nil; pg = h.lru.next(pg) {
-				if fair && !h.fairLocked(pg, r, share) {
+				if pass.fair && !h.fairLocked(pg, r, share) {
 					continue
 				}
 				if !pg.mu.TryLock() {
@@ -425,7 +430,7 @@ func (h *Host) allocate(ctx context.Context, r *MemoryRegion, f *arenaFile, plac
 				// mapping that names this offset, and the command that stops it
 				// naming it has not landed. It is not this reclaim's to take; the
 				// store gives it up itself once its mapping is in.
-				usable := pg.replacing == 0 && !pg.heldInPlaceLocked()
+				usable := pg.replacing == 0 && !pg.heldInPlaceLocked() && (pass.pinned || !h.pinned(pg))
 				for b := range pg.aliases.all() {
 					if b.memoryRegion.terminal.Load() != nil {
 						usable = false
@@ -526,7 +531,7 @@ func (h *Host) takeIdleWhereLocked(want func(*resident) bool) *resident {
 		if !pg.mu.TryLock() {
 			continue
 		}
-		if pg.aliases.len() == 0 && pg.replacing == 0 {
+		if pg.aliases.len() == 0 && pg.replacing == 0 && !h.pinned(pg) {
 			return pg
 		}
 		pg.mu.Unlock()

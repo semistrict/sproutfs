@@ -167,6 +167,17 @@ func (r *MemoryRegion) fault(ctx context.Context, index uint64, write bool, spil
 	if pg.published() {
 		origin = pg
 	}
+	// A store trap's copy of a published page is cold, which pins the page it
+	// was copied from, here, while that page is still locked: see cold.go.
+	marked := false
+	if unmapped && origin != nil && !r.fixed {
+		h.pin(origin, b)
+		defer func() {
+			if !marked {
+				h.unpin(origin, b)
+			}
+		}()
+	}
 	data := make([]byte, h.pageSize)
 	unpublished, err := r.readForCopy(ctx, b, pg, data)
 	if err != nil {
@@ -276,10 +287,8 @@ func (r *MemoryRegion) fault(ctx context.Context, index uint64, write bool, spil
 	if err := r.resolvePages(ctx, first, int(last-first), true); err != nil {
 		return false, r.fail(err)
 	}
-	if unmapped && origin != nil {
-		// A store trap's copy of bytes a checkpoint published, which is often a
-		// read KVM asked for writable: see coldCopy.
-		r.coldCopy(index)
+	if unmapped && origin != nil && !r.fixed {
+		marked = r.markCold(b, origin)
 	}
 	return false, nil
 }
