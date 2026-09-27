@@ -27,5 +27,5 @@ Found by TASK-53: KVM's kvm_vcpu_map maps for a nested guest (Intel: the virtual
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
-Alternative to TASK-56 (make nested KVM safe). The owner prefers making it safe; this stays as the fallback.
+Alternative to TASK-57 (make nested KVM safe). The owner prefers making it safe; this stays as the fallback.
 <!-- SECTION:NOTES:END -->

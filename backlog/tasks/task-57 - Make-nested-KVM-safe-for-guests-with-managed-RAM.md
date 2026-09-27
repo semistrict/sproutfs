@@ -4,6 +4,7 @@ title: Make nested KVM safe for guests with managed RAM
 status: To Do
 assignee: []
 created_date: '2026-09-27 01:51'
+updated_date: '2026-09-27 01:51'
 labels:
   - security
   - embedder
@@ -24,3 +25,9 @@ TASK-53 found that KVM's kvm_vcpu_map maps for a nested guest write guest RAM wi
 - [ ] #2 Firecracker saves and restores nested state (KVM_GET/SET_NESTED_STATE) in every managed snapshot, so capture, fork and migration of a guest running a nested VM keep that VM running
 - [ ] #3 A Linux test runs a nested guest inside a managed-RAM VM through a capture, a fork and a migration, and its memory reads back what it wrote
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Fallback if this proves infeasible: TASK-54 (hide VMX/SVM).
+<!-- SECTION:NOTES:END -->
