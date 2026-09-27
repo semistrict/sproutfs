@@ -1,11 +1,11 @@
 ---
 id: TASK-50
 title: Share a fork's unpublished pages between its local children
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-26 22:14'
-updated_date: '2026-09-27 22:32'
+updated_date: '2026-09-27 22:49'
 labels:
   - performance
 dependencies: []
@@ -42,4 +42,12 @@ The GCE worst-case run of 2026-09-26 found, in both arena modes, that a local fo
 Implemented: volume.ForkPoint lands a point with no unpublished pages at once on the checkpoint it inherits, and otherwise publishes the point in the background (publishPoint: publish under the sequence the point took, pin it, install it; the seal stays until the last holder). A child's root waits for it (awaitPoint, before any pause) and builds on the published index with no inherited pages; the last holder retires the seal as published, so lent pages become clean under the identity they were lent under. A failed point publication leaves children to publish what they inherited (the old path). host.VolumeConfig.PointPublished feeds the simulation's durable-state model. Proven: volume TestAFanOutUploadsTheParentsUnpublishedPagesOnce (3 children upload no part; mutation-checked), TestAForkPointIsPublishedOnceByTheParent, host TestLocalForkReceivesTheForkPointOverThePages now checks no load after the seal ends (mutation-checked), simulation incl. crash campaigns, probe build. AC3 (GCE worst-case case 1 before/after) pending. TASK-62 takes the child's root off the fork's critical path.
 
 GCE worst-case case 1 (2026-09-27, demo cluster, 2 MiB, n=3 per mode; parent 357 MiB unpublished, 3 local children), against 2026-09-26's 1114 MiB uploaded and ~1 GiB read back: uploaded 384 MiB in both modes (once); read back 0 in the shared arena, 344 MiB in the isolated arena (516 page loads, 0 moves). The isolated read-back was the fork file's copy keeping the page's identity, so the parent's page was dropped at the published retire and the name vanished with endFork; fixed by unlendCopy (the parent's page takes the name back before the retire publishes it), proven by host TestLocalForkReceivesTheForkPointOverThePages under SPROUTFS_ARENA=isolated (fails without it). The simulation now learns a point's sequence when its publication starts (PointPublishing) and offers it, since a host may die between selection and any later report.
+
+GCE rerun (2026-09-27, main at 79aca2de, 2 MiB, n=3 per mode): uploaded 368 MiB in both modes (isolated 65 during the fork + 304 after, shared 0 + 368) for a parent that wrote 357 MiB; read back 0 in both (store_get 0.001 MiB, the guest's script); ram_loaded_pages after the fork 0 in both. fork_total 0.85 s shared, 1.12 s isolated (medians) now that the fork does not wait for the upload (TASK-62).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A fork point is published once, by the parent, in the background; children build their roots on it and keep the lent pages under its identity. Verified by volume/host tests (mutation-checked, both arenas) and the GCE worst-case case 1: uploads fell from 1114 MiB to 368 MiB for 3 children of a 357 MiB parent, and the read-back from about 1 GiB to 0 in both arenas.
+<!-- SECTION:FINAL_SUMMARY:END -->
