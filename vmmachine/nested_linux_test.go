@@ -28,16 +28,29 @@ func newNestedGuestVM(t *testing.T, ctx context.Context, name string, nested boo
 	return vm
 }
 
-// virtualisationFlags is what a guest's /proc/cpuinfo offers of VMX and SVM,
-// and what its kernel said about either as it booted, which is what explains a
-// flag that is missing.
-func virtualisationFlags(t *testing.T, ctx context.Context, binaryPath string, vm *volume.VM) (flags, boot string) {
+// virtualisation is what a guest shows of hardware virtualisation.
+type virtualisation struct {
+	// flags is what its /proc/cpuinfo offers of VMX and SVM.
+	flags string
+	// kvm is how `witness kvm` exits and what it says: whether the guest can
+	// open /dev/kvm and create a VM there, which is what a flag is for.
+	kvm string
+	// boot is what its kernel said of either as it booted, which is what
+	// explains a flag or a device that is missing.
+	boot string
+}
+
+// virtualisationOf boots vm on kernel and reports what its guest shows of
+// hardware virtualisation.
+func virtualisationOf(t *testing.T, ctx context.Context, binaryPath, kernel string, vm *volume.VM) virtualisation {
 	t.Helper()
 	// A nested VM's RAM stays resident, so its RAM arena holds the whole of it
 	// whatever the suite's own resident budget is.
 	pager := newSizedMigrationPager(t, ctx, 128<<20, 128<<20, 384<<20, 384<<20)
 	config := migrationConfig(t, binaryPath, pager, vm)
-	config.Starter.(*vmmachine.Firecracker).VsockCID = guestVsockCID
+	starter := config.Starter.(*vmmachine.Firecracker)
+	starter.VsockCID = guestVsockCID
+	starter.Kernel = kernel
 	p, err := vmmachine.Start(ctx, config)
 	if err != nil {
 		t.Fatal(err)
@@ -46,24 +59,46 @@ func virtualisationFlags(t *testing.T, ctx context.Context, binaryPath string, v
 	waitLine(t, ctx, p, fmt.Sprintf("sproutfs-guest-agent: serving on vsock port %d", guest.Port), 0)
 	// The guest's root has busybox's cat and little else, so the flags are
 	// read here.
-	result, err := guestExec(ctx, p, guest.ExecRequest{Cmd: "cat /proc/cpuinfo"})
-	if err != nil || result.Exit != 0 {
-		t.Fatalf("reading the guest's /proc/cpuinfo: %v %+v\n%s", err, result, consoleText(p))
+	cpuinfo, err := guestExec(ctx, p, guest.ExecRequest{Cmd: "cat /proc/cpuinfo"})
+	if err != nil || cpuinfo.Exit != 0 {
+		t.Fatalf("reading the guest's /proc/cpuinfo: %v %+v\n%s", err, cpuinfo, consoleText(p))
 	}
 	var found []string
 	for _, flag := range []string{"vmx", "svm"} {
-		if slices.Contains(strings.Fields(result.Stdout), flag) {
+		if slices.Contains(strings.Fields(cpuinfo.Stdout), flag) {
 			found = append(found, flag)
 		}
+	}
+	kvm, err := guestExec(ctx, p, guest.ExecRequest{Cmd: guestWitness + " kvm"})
+	if err != nil {
+		t.Fatalf("running `witness kvm` in the guest: %v\n%s", err, consoleText(p))
 	}
 	var said []string
 	for _, line := range strings.Split(string(consoleText(p)), "\n") {
 		lower := strings.ToLower(line)
-		if strings.Contains(lower, "vmx") || strings.Contains(lower, "svm") || strings.Contains(lower, "virtuali") {
+		if strings.Contains(lower, "vmx") || strings.Contains(lower, "svm") ||
+			strings.Contains(lower, "virtuali") || strings.Contains(lower, "kvm") {
 			said = append(said, line)
 		}
 	}
-	return strings.Join(found, " "), strings.Join(said, "\n")
+	return virtualisation{
+		flags: strings.Join(found, " "),
+		kvm:   fmt.Sprintf("exit %d: %s", kvm.Exit, strings.TrimSpace(kvm.Stdout+kvm.Stderr)),
+		boot:  strings.Join(said, "\n"),
+	}
+}
+
+// requireNone fails the test unless a guest that is not nested shows no
+// hardware virtualisation at all: neither flag, and no /dev/kvm to open.
+func requireNone(t *testing.T, got virtualisation) {
+	t.Helper()
+	if got.flags != "" {
+		t.Fatalf("a guest that is not nested sees %q, want neither VMX nor SVM; its kernel said:\n%s", got.flags, got.boot)
+	}
+	const none = "exit 1: sproutfs-guest-witness: open /dev/kvm: no such file or directory"
+	if got.kvm != none {
+		t.Fatalf("a guest that is not nested runs `witness kvm` to %q, want %q; its kernel said:\n%s", got.kvm, none, got.boot)
+	}
 }
 
 // hostNested is what this host's KVM says of nested virtualisation.
@@ -96,8 +131,17 @@ func hostVirtualisation(t *testing.T) string {
 }
 
 // TestOnlyANestedGuestIsOfferedHardwareVirtualisation: a nested VM's guest sees
-// the host's VMX or SVM, and a guest that is not nested sees neither, so it
-// cannot start a VM of its own. See vmmachine's nested.go for why.
+// the host's VMX or SVM and can create a VM of its own, and a guest that is not
+// nested sees neither and has no /dev/kvm, so it cannot start one. See
+// vmmachine's nested.go for why.
+//
+// Both guests boot SPROUTFS_FIRECRACKER_NESTED_KERNEL: the CI kernel's
+// configuration with KVM built in, which the GCE qualification builds. The CI
+// kernel itself cannot answer: built without KVM, it never enables VMX in
+// IA32_FEATURE_CONTROL and clears the vmx flag it was offered (Linux's
+// arch/x86/kernel/cpu/feat_ctl.c), so its guest shows no VMX whether it was
+// offered or not. Only a kernel that would take VMX if it were offered says,
+// by not taking it, that it was not.
 func TestOnlyANestedGuestIsOfferedHardwareVirtualisation(t *testing.T) {
 	binaryPath := os.Getenv("SPROUTFS_FIRECRACKER")
 	if binaryPath == "" {
@@ -106,15 +150,24 @@ func TestOnlyANestedGuestIsOfferedHardwareVirtualisation(t *testing.T) {
 	if runtime.GOARCH != "amd64" {
 		t.Skip("only an x86_64 host runs a nested VM; TestANestedVMIsRefusedOffX86 covers the rest")
 	}
+	kernel := os.Getenv("SPROUTFS_FIRECRACKER_NESTED_KERNEL")
+	if kernel == "" {
+		t.Skip("SPROUTFS_FIRECRACKER_NESTED_KERNEL names no guest kernel with KVM built in; " +
+			"the GCE qualification (scripts/bench-memory-gce.sh, SPROUTFS_GCE_QUALIFY=1) builds one")
+	}
 	ctx, cancel := context.WithTimeout(t.Context(), 6*time.Minute)
 	defer cancel()
 	want := hostVirtualisation(t)
-	if got, boot := virtualisationFlags(t, ctx, binaryPath, newNestedGuestVM(t, ctx, "plain", false)); got != "" {
-		t.Fatalf("a guest that is not nested sees %q, want neither VMX nor SVM; its kernel said:\n%s", got, boot)
-	}
-	if got, boot := virtualisationFlags(t, ctx, binaryPath, newNestedGuestVM(t, ctx, "nested", true)); got != want {
+	requireNone(t, virtualisationOf(t, ctx, binaryPath, kernel, newNestedGuestVM(t, ctx, "plain", false)))
+	got := virtualisationOf(t, ctx, binaryPath, kernel, newNestedGuestVM(t, ctx, "nested", true))
+	if got.flags != want {
 		t.Fatalf("a nested guest sees %q, want the host's %q (%s); its kernel said:\n%s",
-			got, want, hostNested(t), boot)
+			got.flags, want, hostNested(t), got.boot)
+	}
+	const created = "exit 0: created a VM on KVM API version 12"
+	if got.kvm != created {
+		t.Fatalf("a nested guest runs `witness kvm` to %q, want %q (%s); its kernel said:\n%s",
+			got.kvm, created, hostNested(t), got.boot)
 	}
 }
 
@@ -131,9 +184,8 @@ func TestANestedVMIsRefusedOffX86(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 6*time.Minute)
 	defer cancel()
-	if got, boot := virtualisationFlags(t, ctx, binaryPath, newNestedGuestVM(t, ctx, "plain", false)); got != "" {
-		t.Fatalf("a guest that is not nested sees %q, want neither VMX nor SVM; its kernel said:\n%s", got, boot)
-	}
+	requireNone(t, virtualisationOf(t, ctx, binaryPath, os.Getenv("SPROUTFS_FIRECRACKER_KERNEL"),
+		newNestedGuestVM(t, ctx, "plain", false)))
 	vm := newNestedGuestVM(t, ctx, "nested", true)
 	config := migrationConfig(t, binaryPath, newMigrationPager(t, ctx), vm)
 	p, err := vmmachine.Start(ctx, config)

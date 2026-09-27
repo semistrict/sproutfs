@@ -44,11 +44,15 @@ lease_pid=$!
 trap 'kill "$lease_pid" 2>/dev/null || true; wait "$lease_pid" 2>/dev/null || true' EXIT
 
 export DEBIAN_FRONTEND=noninteractive
-if [[ ! -f "$work/tools/packages-ready" ]]; then
+# flex through libssl-dev build the nested test's guest kernel. The marker names
+# the list, so a host that installed a shorter one installs again.
+packages=(build-essential libseccomp-dev pkg-config musl-tools busybox-static curl ca-certificates
+    python3 e2fsprogs flex bison bc libelf-dev libssl-dev)
+packages_ready="$work/tools/packages-$(printf '%s\n' "${packages[@]}" | sha256sum | cut -c1-16)"
+if [[ ! -f "$packages_ready" ]]; then
     apt-get update -qq
-    apt-get install -y -qq build-essential libseccomp-dev pkg-config musl-tools \
-        busybox-static curl ca-certificates python3 e2fsprogs
-    touch "$work/tools/packages-ready"
+    apt-get install -y -qq "${packages[@]}"
+    touch "$packages_ready"
 fi
 
 go_archive="$work/tools/go.tar.gz"
@@ -125,10 +129,6 @@ if [[ ${SPROUTFS_GCE_BUILD_ONLY:-0} == 1 ]]; then exit 0; fi
 # suite over a root holding the deployment's guest agent and witness. Each
 # suite's log is a result of its own and a failure fails the run.
 if [[ ${SPROUTFS_GCE_QUALIFY:-0} == 1 ]]; then
-    if [[ ! -x "$CARGO_HOME/bin/cargo-nextest" ]]; then
-        cargo install --locked cargo-nextest
-    fi
-    rustup component add clippy
     status=0
     qualify() {
         local name=$1
@@ -144,6 +144,10 @@ if [[ ${SPROUTFS_GCE_QUALIFY:-0} == 1 ]]; then
     # A run narrowed to some Firecracker tests runs nothing else.
     selected=${SPROUTFS_FIRECRACKER_RUN:-}
     if [[ -z $selected ]]; then
+        if [[ ! -x "$CARGO_HOME/bin/cargo-nextest" ]]; then
+            cargo install --locked cargo-nextest
+        fi
+        rustup component add clippy
         qualify crate-clippy cargo clippy --locked --manifest-path rust/sproutfs-vm-memory/Cargo.toml --all-targets -- -D warnings
         qualify crate-nextest cargo nextest run --locked --no-tests pass --manifest-path rust/sproutfs-vm-memory/Cargo.toml
     fi
@@ -171,7 +175,24 @@ if [[ ${SPROUTFS_GCE_QUALIFY:-0} == 1 ]]; then
     # socket paths under it past what a Unix socket takes, so /tmp itself
     # allows devices on this disposable host.
     mount -o remount,dev /tmp
-    qualify firecracker env SPROUTFS_FIRECRACKER="$work/build/firecracker" \
+    # The nested test boots a kernel of its own, the CI kernel's configuration
+    # with KVM built in (see scripts/lib/nested-kernel.sh for why). It takes
+    # minutes of this host's processors, so only a run that selects that test
+    # builds it; Go's -test.run and bash's =~ read a pattern of names, | and
+    # anchors alike. A kernel that did not build fails the run, and the test
+    # then skips rather than boot nothing. qualify always succeeds, so what
+    # says the kernel built is the kernel: the script writes it last, and one
+    # an earlier run left is removed first.
+    nested_test=TestOnlyANestedGuestIsOfferedHardwareVirtualisation
+    nested_kernel=()
+    if [[ -z $selected || $nested_test =~ $selected ]]; then
+        rm -f -- "$work/build/kernel-nested"
+        qualify nested-kernel bash "$repo/scripts/lib/nested-kernel.sh" "$repo" "$work/tools" "$work/build/kernel-nested"
+        if [[ -s $work/build/kernel-nested ]]; then
+            nested_kernel=(SPROUTFS_FIRECRACKER_NESTED_KERNEL="$work/build/kernel-nested")
+        fi
+    fi
+    qualify firecracker env "${nested_kernel[@]}" SPROUTFS_FIRECRACKER="$work/build/firecracker" \
         SPROUTFS_FIRECRACKER_SECCOMP="$work/build/seccomp.bpf" \
         SPROUTFS_FIRECRACKER_KERNEL="$work/build/kernel" \
         SPROUTFS_FIRECRACKER_ROOT="$work/build/firecracker-root.ext4" \

@@ -1591,6 +1591,15 @@ in the CPUID of the boot configuration (`vmmachine/nested.go`), because KVM lets
 a guest turn VMX or SVM on only when its CPUID offers it. Only x86_64 hosts run
 a nested VM.
 
+`TestOnlyANestedGuestIsOfferedHardwareVirtualisation` proves this on x86_64. The
+nested guest must see the host's VMX or SVM and create a VM on `/dev/kvm`. The
+plain guest must see neither flag and have no `/dev/kvm`. Both boot a kernel
+with KVM built in, named by `SPROUTFS_FIRECRACKER_NESTED_KERNEL`. The GCE
+qualification builds it from Firecracker's CI configuration
+(`scripts/lib/nested-kernel.sh`) when a run selects the test. The CI kernel
+itself has no KVM, so it clears the vmx flag it is offered, and its guest shows
+no VMX either way.
+
 A nested VM's RAM is attached with `MemoryRegionBacking.Fixed`. A fixed region
 keeps every page resident, in the slot it was given, until it detaches:
 

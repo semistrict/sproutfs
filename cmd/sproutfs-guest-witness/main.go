@@ -26,6 +26,11 @@
 //	    give the filesystem mounted there the pages its device gained, which is
 //	    what a guest cold started onto a larger root volume runs. See grow.go
 //	    for why it is this binary's job and not resize2fs's.
+//	witness kvm
+//	    open /dev/kvm, ask it for its API version and create a VM on it, which
+//	    is what says whether this guest can run VMs of its own: only a nested
+//	    VM's guest can (see vmmachine's nested.go). The guest's root has no
+//	    other tool that issues an ioctl.
 //
 // The pattern is a pure function of the seed, the step and the page, so the
 // expectation lives in the script that drives the soak and not in the guest:
@@ -60,6 +65,7 @@ const usage = `sproutfs-guest-witness says whether a guest's memory and disk are
   witness check --seed S --step K [--socket PATH]
   witness check --seed S --step K --disk-only --disk /var/witness
   witness grow MOUNTPOINT
+  witness kvm
   witness version
 
 The pattern is a pure function of (seed, step, page), so what a guest must hold
@@ -128,6 +134,17 @@ func run(args []string) error {
 			return fmt.Errorf("grow takes one argument, the mount point to grow\n\n%s", usage)
 		}
 		return growAt(rest[0])
+	}
+	if command == "kvm" {
+		if len(rest) != 0 {
+			return fmt.Errorf("kvm takes no arguments\n\n%s", usage)
+		}
+		said, err := createVM()
+		if err != nil {
+			return err
+		}
+		fmt.Println(said)
+		return nil
 	}
 	parsed, err := parse(rest)
 	if err != nil {
