@@ -60,6 +60,9 @@ type invocation struct {
 	// Pull marks the VM a create or a start runs, or every child a fork
 	// takes, to pull its whole memory onto its host's disk.
 	Pull bool
+	// Nested creates a VM whose guest may run VMs of its own, which is
+	// experimental.
+	Nested bool
 }
 
 // errUsage reports a command line this CLI will not run. Its message is what
@@ -69,11 +72,16 @@ var errUsage = errors.New("usage")
 const usage = `sproutfsctl drives a sproutfs demo deployment through its orchestrator.
 
   sproutfsctl create [--template NAME] [--memory 1G] [--disk 4G] [--vcpus 2] [--ephemeral 8G] [--pull]
+                     [--nested]
                                            create a VM at a shape and boot it; --ephemeral
                                            gives it a second disk no checkpoint holds;
                                            --pull copies its whole memory onto its
                                            host's disk behind the running guest, so a
-                                           fault never waits on the object store again
+                                           fault never waits on the object store again;
+                                           --nested (experimental, x86_64 only) lets its
+                                           guest run VMs of its own, and then it can
+                                           never be captured, suspended or forked, and a
+                                           migration of it is a reboot
   sproutfsctl import-template FILE [--memory 1G]
                                            import a guest image into a template, and
                                            print the identity create --template takes
@@ -130,7 +138,7 @@ var commands = map[string]struct {
 	// keeps a guest's own flags and quoting out of this CLI's parser.
 	trailing bool
 }{
-	"create":          {flags: []string{"template", "from", "memory", "disk", "vcpus", "ephemeral"}, switches: []string{"pull"}},
+	"create":          {flags: []string{"template", "from", "memory", "disk", "vcpus", "ephemeral"}, switches: []string{"pull", "nested"}},
 	"import-template": {target: "file", flags: []string{"memory"}},
 	"list":            {},
 	"hosts":           {},
@@ -211,6 +219,8 @@ func parse(args []string) (invocation, error) {
 				result.Keep = true
 			case "pull":
 				result.Pull = true
+			case "nested":
+				result.Nested = true
 			}
 			continue
 		}

@@ -93,6 +93,9 @@ func (f *ForkPoint) Size(volume string) uint64 { return f.index.Size(volume) }
 // no page of it is in this point.
 func (f *ForkPoint) Ephemeral(volume string) bool { return f.index.Ephemeral(volume) }
 
+// Nested reports a point of a nested VM (see checkpoint.Index.Nested).
+func (f *ForkPoint) Nested() bool { return f.index.Nested() }
+
 // PageSize reports the page one volume of this point is published in, which is
 // the unit its page numbers and ReadPage are counted in. Zero is a volume this
 // point does not describe. A VM's volumes need not agree about it, so anything

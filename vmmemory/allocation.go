@@ -425,7 +425,7 @@ func (h *Host) allocate(ctx context.Context, r *MemoryRegion, f *arenaFile, plac
 				// mapping that names this offset, and the command that stops it
 				// naming it has not landed. It is not this reclaim's to take; the
 				// store gives it up itself once its mapping is in.
-				usable := pg.replacing == 0
+				usable := pg.replacing == 0 && !pg.heldInPlaceLocked()
 				for b := range pg.aliases.all() {
 					if b.memoryRegion.terminal.Load() != nil {
 						usable = false

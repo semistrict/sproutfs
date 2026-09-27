@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"runtime"
 
 	hostapi "github.com/semistrict/sproutfs/api/host"
 	"github.com/semistrict/sproutfs/control"
@@ -26,6 +27,13 @@ func (s *supervisor) Create(ctx context.Context, request hostapi.CreateRequest) 
 	if request.Ephemeral%PMEMPageSize != 0 {
 		return hostapi.CreateResult{}, fmt.Errorf("%w: an ephemeral disk is whole %d-byte pages, not %d bytes",
 			ErrRequest, PMEMPageSize, request.Ephemeral)
+	}
+	// Only x86_64 offers a guest hardware virtualisation here (see
+	// vmmachine's nested.go), so a nested VM is refused elsewhere before
+	// anything is published for it.
+	if request.Nested && runtime.GOARCH != "amd64" {
+		return hostapi.CreateResult{}, fmt.Errorf("%w: a nested VM runs only on an x86_64 host, not %s",
+			ErrRequest, runtime.GOARCH)
 	}
 	if err := s.absent(id); err != nil {
 		return hostapi.CreateResult{}, err
@@ -80,6 +88,14 @@ func (s *supervisor) Create(ctx context.Context, request hostapi.CreateRequest) 
 		MemoryBytes: request.Memory, RootBytes: request.Disk, VCPUs: request.VCPUs,
 		Devices: request.Ephemeral != 0 && !(point.Ephemeral(ephemeralVolume) &&
 			point.Size(ephemeralVolume) == request.Ephemeral)}
+	// A create says whether its VM is nested (see nested.go): it becomes one
+	// only when asked, and a VM created from a nested VM's checkpoint is one
+	// only when asked again. Either change is a cold boot, and a nested
+	// source is booted cold anyway, because nothing captures its RAM.
+	if request.Nested || point.Nested() {
+		nested := request.Nested
+		shape.Nested = &nested
+	}
 	state, err := s.host.CreateRoot(ctx, vm, point, shape)
 	if err != nil {
 		// A VM whose root never published is one nothing else can ever act on,

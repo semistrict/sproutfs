@@ -142,6 +142,8 @@ type Index struct {
 	// vcpus is the processor count a boot of this checkpoint gives the guest,
 	// zero where none is recorded.
 	vcpus uint32
+	// nested marks a VM whose guest may run VMs of its own. See Nested.
+	nested bool
 	// store is what segments are read through. A root built without one — which
 	// nothing but a test does — can locate nothing it did not write itself.
 	store *Store
@@ -193,6 +195,13 @@ func (i *Index) Ephemeral(volume string) bool {
 // VCPUs is how many processors a boot of this checkpoint gives the guest, zero
 // where the checkpoint records none and the host's default applies.
 func (i *Index) VCPUs() int { return int(i.vcpus) }
+
+// Nested reports a VM whose guest may run VMs of its own. Such a guest is
+// offered VMX or SVM, and its RAM is never write-protected, evicted, moved or
+// captured: KVM writes the pages a nested guest names in its VMCS through a pin
+// that the host page tables do not govern, so any of those would miss a write.
+// It is experimental, and plans/nested-kvm-2026-09-27.md says why.
+func (i *Index) Nested() bool { return i.nested }
 
 // HasState reports whether VMM state was published with this checkpoint.
 func (i *Index) HasState() bool { return !i.state.isZero() }
@@ -467,6 +476,10 @@ func (i *Index) encode() ([]byte, error) {
 	// before the field existed decodes, and re-encodes, as it was.
 	if i.vcpus != 0 {
 		message.SetVcpus(i.vcpus)
+	}
+	// Likewise a root that is not nested leaves the field out.
+	if i.nested {
+		message.SetNested(true)
 	}
 	return proto.MarshalOptions{Deterministic: true}.Marshal(message)
 }
@@ -800,6 +813,7 @@ func decodeRoot(store *Store, ref control.Ref, data []byte) (*Index, error) {
 	}
 	slices.Sort(index.names)
 	index.vcpus = message.GetVcpus()
+	index.nested = message.GetNested()
 	if index.vcpus > maximumVCPUs {
 		return nil, ErrCorrupt
 	}

@@ -105,6 +105,11 @@ func (h *Host) HoldTimeout() time.Duration {
 //
 // A failure before the handoff leaves the VM running here.
 func (h *Host) Migrate(ctx context.Context, vmID string, destination platform.Address) (vmmigrate.Handoff, error) {
+	// A live migration hands the guest's RAM over page by page, which a
+	// nested VM's never is: a drain reboots it elsewhere instead. See nested.go.
+	if err := refuseNested(h.vm(vmID), "a live migration"); err != nil {
+		return vmmigrate.Handoff{}, err
+	}
 	if h.pages == nil {
 		return vmmigrate.Handoff{}, fmt.Errorf("%w: no migration endpoint is configured", ErrNotMigratable)
 	}

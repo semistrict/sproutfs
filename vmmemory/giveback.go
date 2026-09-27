@@ -65,6 +65,12 @@ func (r *MemoryRegion) GiveBack(ctx context.Context, limit int) (int, error) {
 	if err := r.serving(); err != nil {
 		return 0, err
 	}
+	if r.fixed {
+		// A fixed region's page may be one KVM writes behind the page tables,
+		// which the write-protect this compares under would not stop. See
+		// fixed.go.
+		return 0, nil
+	}
 	var buffers settler
 	given := 0
 	for _, index := range r.copies(limit) {

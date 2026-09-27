@@ -63,7 +63,7 @@ func execute(ctx context.Context, client *orch.Client, command invocation,
 	case "create":
 		request := orch.CreateRequest{Template: command.Template,
 			Memory: command.Memory, Disk: command.Disk, VCPUs: command.VCPUs, Ephemeral: command.Ephemeral,
-			Pull: command.Pull}
+			Pull: command.Pull, Nested: command.Nested}
 		if command.From != "" {
 			request.From = &host.CheckpointRef{VM: command.From, Checkpoint: command.FromCheckpoint}
 		}
@@ -177,6 +177,11 @@ func execute(ctx context.Context, client *orch.Client, command invocation,
 	case "migrate":
 		result, err := client.Migrate(ctx, command.Target, command.To)
 		if err != nil {
+			return err
+		}
+		if result.Rebooted {
+			_, err = fmt.Fprintf(out, "%s is a nested VM, so it was stopped on %s and rebooted on %s in %.3fs\n",
+				result.VM, result.From, result.To, float64(result.Total))
 			return err
 		}
 		_, err = fmt.Fprintf(out,

@@ -476,6 +476,9 @@ func (r *MemoryRegion) move(ctx context.Context, pg *resident, key pageKey) (*re
 	owner := pg.file.owner
 	h.mu.Lock()
 	sum, digested := pg.file.digests[pg.slot]
+	// A fixed owner's page stays where it is: moving it would point the owner
+	// at the copy while KVM goes on writing the page it pinned. See fixed.go.
+	digested = digested && !owner.fixed
 	h.mu.Unlock()
 	var at fileSlot
 	count := 0

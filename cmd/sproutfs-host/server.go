@@ -305,7 +305,9 @@ func statusOf(err error) int {
 		errors.Is(err, volume.ErrInvalidConfig), errors.Is(err, control.ErrInvalidConfig),
 		errors.Is(err, platform.ErrInvalidObjectKey),
 		// A fork or a create across tenants is a request no host would act on.
-		errors.Is(err, volume.ErrOtherTenant):
+		errors.Is(err, volume.ErrOtherTenant),
+		// Nor is a capture or a move of a nested VM's RAM.
+		errors.Is(err, host.ErrNested):
 		return http.StatusBadRequest
 	case errors.Is(err, platform.ErrNotFound), errors.Is(err, host.ErrNotRunning):
 		return http.StatusNotFound

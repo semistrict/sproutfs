@@ -135,6 +135,11 @@ type DrainReport struct {
 // Pull marks the VM to pull its whole memory onto the disk of the host it runs
 // on; see host.Pull. The VM keeps the mark: every start, recovery and
 // migration of it pulls too.
+//
+// Nested, which is experimental, makes a VM whose guest may run VMs of its own.
+// Its RAM is never captured or moved, so a capture, a suspend and a fork of it
+// are refused, and a migration of it, a drain's included, is a reboot on the
+// destination. See host.CreateRequest.
 type CreateRequest struct {
 	Template  string              `json:"template,omitempty"`
 	From      *host.CheckpointRef `json:"from,omitempty"`
@@ -143,6 +148,7 @@ type CreateRequest struct {
 	VCPUs     int                 `json:"vcpus,omitempty"`
 	Ephemeral uint64              `json:"ephemeral,omitempty"`
 	Pull      bool                `json:"pull,omitempty"`
+	Nested    bool                `json:"nested,omitempty"`
 }
 
 // CreateResult is where the VM went and what its creation cost.
@@ -198,6 +204,10 @@ type MigrateResult struct {
 	VolumePages int64   `json:"volume_pages"`
 	Unpublished int64   `json:"unpublished"`
 	Total       Seconds `json:"total_seconds"`
+	// Rebooted is a nested VM, which cannot move live: it was stopped cold on
+	// the source and booted on the destination, and nothing streamed. Nested
+	// VMs are experimental.
+	Rebooted bool `json:"rebooted,omitempty"`
 }
 
 // CaptureRequest is an explicit checkpoint of a running VM. New captures the VM

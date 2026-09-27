@@ -480,6 +480,14 @@ func (h *Host) Stop(ctx context.Context, vmID string, request hostapi.StopReques
 	if vm.Status().Sealed {
 		return control.Ref{}, fmt.Errorf("%w: %s", volume.ErrSealed, vmID)
 	}
+	// A suspend captures RAM, which a nested VM's never is; it is refused
+	// before the loop stops. A plain stop is a checkpoint of the disks, which
+	// a nested VM takes like any other. See nested.go.
+	if request.Suspend {
+		if err := refuseNested(vm, "a suspend"); err != nil {
+			return control.Ref{}, err
+		}
+	}
 	// The checkpoint loop stops first, as a migration's does, and the checkpoint
 	// it had in flight lands with it. The pause this publishes is the one the
 	// VM comes back at and this is the only account of it — the handle that knew

@@ -60,6 +60,9 @@ type Checkpoint struct {
 	// vcpus is the processor count a cold boot gave this checkpoint, zero to
 	// keep the one its parent records.
 	vcpus int
+	// nested is what a cold boot made this checkpoint of Index.Nested, nil to
+	// keep its parent's.
+	nested *bool
 	// retry is asked after a failed publication, and protected is the pinned
 	// and kept checkpoints its first attempt compacted around, which every
 	// retry uses again. keep selects this checkpoint kept.

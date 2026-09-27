@@ -791,7 +791,7 @@ func (o *orchestrator) Create(ctx context.Context, request orch.CreateRequest) (
 		Template: template, Parent: parent, Memory: need, Pull: request.Pull})
 	result, err := target.client.Create(ctx, host.CreateRequest{ID: id, Template: request.Template,
 		From: request.From, Memory: request.Memory, Disk: request.Disk, VCPUs: request.VCPUs,
-		Ephemeral: request.Ephemeral, Pull: request.Pull})
+		Ephemeral: request.Ephemeral, Pull: request.Pull, Nested: request.Nested})
 	if err != nil {
 		o.forget(ctx, id)
 		return orch.CreateResult{}, fmt.Errorf("creating %s on %s: %w", id, target.report.Name, err)
@@ -1140,6 +1140,9 @@ func (o *orchestrator) Migrate(ctx context.Context, id, to string) (orch.Migrate
 	// hold it, and the VM is already stopped by then.
 	if err := admits(target, need); err != nil {
 		return orch.MigrateResult{}, err
+	}
+	if nestedOn(source, id) {
+		return o.reboot(ctx, id, source, target, row, began)
 	}
 	o.note(ctx, vmRecord{ID: id, Host: source.report.Name, State: stateMigrating,
 		From: source.report.Name, To: target.report.Name})
@@ -1864,4 +1867,39 @@ func (o *orchestrator) WriteConsole(ctx context.Context, id, data string) error 
 		return err
 	}
 	return source.client.WriteConsole(ctx, id, data)
+}
+
+// nestedOn reports whether a host says the VM it runs is a nested VM.
+func nestedOn(h liveHost, id string) bool {
+	for _, vm := range h.vms {
+		if vm.ID == id {
+			return vm.Nested
+		}
+	}
+	return false
+}
+
+// reboot is what a migration of a nested VM is, a drain's included. Its RAM is
+// never handed over live, because KVM writes some of it behind the host page
+// tables (see host/nested.go), so it is stopped on the source with a checkpoint
+// of its disks and booted cold on the destination. For its guest that is a
+// reboot: whatever it had not written to its disks is gone, as after a power
+// cut. Nested VMs are experimental.
+func (o *orchestrator) reboot(ctx context.Context, id string, source, target liveHost, row vmRecord,
+	began time.Time) (orch.MigrateResult, error) {
+	stopped, err := source.client.Stop(ctx, id, host.StopRequest{})
+	if err != nil {
+		return orch.MigrateResult{}, fmt.Errorf("stopping the nested VM %s on %s: %w", id, source.report.Name, err)
+	}
+	o.note(ctx, vmRecord{ID: id, State: stateStopped})
+	slog.InfoContext(ctx, "sproutfs-orchestrator: stopped a nested VM to boot it elsewhere", "vm", id,
+		"from", source.report.Name, "to", target.report.Name, "checkpoint", stopped.Checkpoint)
+	// The guest is stopped, so it is owed a boot however the caller fares.
+	ctx = context.WithoutCancel(ctx)
+	if _, err := o.reopen(ctx, id, reopening{to: target.report.Name, state: stateStarting, what: "rebooted",
+		open: host.OpenRequest{Cold: true, Pull: row.Pull}}); err != nil {
+		return orch.MigrateResult{}, fmt.Errorf("booting the nested VM %s on %s: %w", id, target.report.Name, err)
+	}
+	return orch.MigrateResult{VM: id, From: source.report.Name, To: target.report.Name, Rebooted: true,
+		Total: host.Since(began)}, nil
 }

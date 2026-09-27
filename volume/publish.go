@@ -78,6 +78,7 @@ func (vm *VM) DiscardMemory(ctx context.Context, memory string, shape Shape) err
 		return err
 	}
 	ckpt.vcpus = shape.VCPUs
+	ckpt.nested = shape.Nested
 	if err := vm.complete(ctx, ckpt); err != nil {
 		undo()
 		return err
@@ -86,11 +87,14 @@ func (vm *VM) DiscardMemory(ctx context.Context, memory string, shape Shape) err
 }
 
 // Shape is what a cold boot gives a VM from here: the sizes of the volumes it
-// changes, by name, and how many processors the guest boots with, zero to keep
-// the count the VM has.
+// changes, by name, how many processors the guest boots with, zero to keep the
+// count the VM has, and whether it is a nested VM (see checkpoint.Index.Nested),
+// nil to keep what the VM is. Nested can change only at a cold boot, for the
+// same reason as the rest: nothing in memory describes the VM then.
 type Shape struct {
-	Sizes map[string]uint64
-	VCPUs int
+	Sizes  map[string]uint64
+	VCPUs  int
+	Nested *bool
 }
 
 // VCPUs is how many processors a boot of this VM's selected checkpoint gives
@@ -102,6 +106,14 @@ func (vm *VM) VCPUs() int {
 		return 0
 	}
 	return vm.baseIndex.VCPUs()
+}
+
+// Nested reports a VM whose guest may run VMs of its own, as its selected
+// checkpoint records it. See checkpoint.Index.Nested.
+func (vm *VM) Nested() bool {
+	vm.mu.Lock()
+	defer vm.mu.Unlock()
+	return vm.baseIndex != nil && vm.baseIndex.Nested()
 }
 
 // discarding zeroes the whole memory volume and captures the checkpoint that
@@ -539,6 +551,9 @@ func (vm *VM) publish(ctx context.Context, ckpt *Checkpoint) (*checkpoint.Index,
 	}
 	if ckpt.vcpus != 0 {
 		publication.SetVCPUs(ckpt.vcpus)
+	}
+	if ckpt.nested != nil {
+		publication.SetNested(*ckpt.nested)
 	}
 	index, err := publication.Commit(ctx, checkpointSource{checkpoint: ckpt})
 	if err != nil {

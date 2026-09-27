@@ -37,6 +37,12 @@ message Root {
   // and the host's default applies. A root carries its parent's, so a fork
   // and every later checkpoint of a VM keep the count it was created with.
   uint32 vcpus = 10;
+  // Nested marks a VM whose guest may run VMs of its own: it is offered VMX or
+  // SVM, and its RAM is never write-protected, evicted, moved or captured,
+  // because KVM writes the pages a nested guest names behind the host page
+  // tables. A root carries its parent's, like vcpus. False, and every root
+  // written before the field existed, is a VM that is offered neither.
+  bool nested = 11;
 }
 
 // Ref names one checkpoint: the VM that published it and its sequence.

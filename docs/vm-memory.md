@@ -1540,23 +1540,47 @@ Firecracker fork and mainline Linux.
   APIC-access page of the nested guest (`nested_get_vmcs12_pages`). They stay
   mapped while it runs. On AMD they are `vmcb12` and the host save area, for
   the length of one VMRUN or one exit. The MMU notifier does not reach these
-  maps. A guest can do this whenever it sees VMX or SVM. Firecracker passes the
-  host's VMX through when no CPU template is set, and the host's KVM reports it
-  while `kvm_intel.nested` is on, which is the default. aarch64 is not exposed,
-  because Firecracker never asks KVM for a vCPU with EL2.
+  maps. A guest can do this only when it sees VMX or SVM, and only a nested VM
+  sees either: see [fixed memory regions](#fixed-memory-regions). aarch64 is
+  not exposed, because Firecracker never asks KVM for a vCPU with EL2.
 - **Debuggers.** `process_vm_writev` and `/proc/<pid>/mem` pin a page and copy
   into it at once. Only a process allowed to ptrace the VMM can do this.
 
-**So the seal and the settle are exposed to one writer: KVM's maps for a nested
-guest.** So is every copy-on-write and every eviction. The harm stays inside the
-guest that ran the nested hypervisor. A freed slot is punched, so KVM's
-reference keeps an orphaned page alive, and no other page is written. The
-nested guest loses the APIC state that the CPU wrote after the page moved.
-Firecracker does not save nested state either: it never calls
-`KVM_GET_NESTED_STATE`, so such a guest already breaks at every capture. The
-fix is to hide VMX and SVM from a guest with managed RAM. It is not done yet.
-The give-back adds no exposure of its own. It replaces a mapping as a
-copy-on-write does, and it frees a page as an eviction does.
+**So the seal, the settle, an eviction, a move and the give-back are exposed to
+one writer: KVM's maps for a nested guest.** A copy-on-write is not, because
+KVM asks for a page writable before it maps it, and that fault is what makes
+the copy. The harm would stay inside the guest that ran the nested hypervisor:
+a freed slot is punched, so KVM's reference keeps an orphaned page alive, and no
+other page is written. Firecracker does not save nested state either. So a
+guest is offered VMX or SVM only when its VM is nested, and a nested VM's RAM
+is a fixed memory region, which none of those touch.
+
+### Fixed memory regions
+
+A nested VM is experimental. Its guest may run VMs of its own, so it is offered
+VMX or SVM, and every other guest is offered neither. `vmmachine` decides this
+in the CPUID of the boot configuration (`vmmachine/nested.go`), because KVM lets
+a guest turn VMX or SVM on only when its CPUID offers it. Only x86_64 hosts run
+a nested VM.
+
+A nested VM's RAM is attached with `MemoryRegionBacking.Fixed`. A fixed region
+keeps every page resident, in the slot it was given, until it detaches:
+
+- it is never sealed, so nothing captures its RAM;
+- no page it maps is ever an eviction victim, so nothing spills it;
+- the give-back skips it, and no page of it is moved to a shared file.
+
+The pager admits a fixed region only while fixed regions leave at least one
+page of the arena that eviction can give another region. `vmmemory/fixed.go`
+says why each rule exists, next to the code. The host refuses the rest
+(`host/nested.go`): a capture, a suspend, a fork, a capture into a new VM and a
+live migration. See [nested VMs](hosting.md#nested-vms) for what a nested VM
+can do.
+
+All of this is the kernel's limit, not the pager's. Once hosts run a KVM that
+puts those maps behind the MMU notifier, and Firecracker saves nested state, a
+nested VM can be sealed, evicted and moved like any other. See
+`plans/nested-kvm-2026-09-27.md` and TASK-57.
 
 ## Control protocol, version 10
 

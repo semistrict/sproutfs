@@ -100,6 +100,12 @@ type MemoryRegionBacking struct {
 	// the backing reports must name it, and in an isolated arena the region's
 	// process reads only its own tenant's shared pages.
 	Tenant string
+	// Fixed keeps every page of the memory region resident and in place until it
+	// detaches: it is never sealed, evicted, moved or given back. It is the RAM
+	// of a nested VM, whose guest's VMCS pages KVM writes behind the host page
+	// tables; see fixed.go for why. Only RAM may be fixed, and the pager admits
+	// it only while fixed regions leave the rest of the arena room to evict.
+	Fixed bool
 }
 
 var (

@@ -69,7 +69,10 @@ type Publication struct {
 	// vcpus is the processor count this checkpoint records, zero to keep the
 	// parent's.
 	vcpus uint32
-	err   error
+	// nested is what this checkpoint records of Index.Nested when setNested
+	// says it records anything; otherwise it keeps the parent's.
+	nested, setNested bool
+	err               error
 }
 
 // Begin starts a checkpoint that inherits parent, which may be nil for a VM
@@ -188,6 +191,12 @@ func (p *Publication) SetVCPUs(vcpus int) {
 	p.vcpus = uint32(vcpus)
 }
 
+// SetNested records whether a boot of this checkpoint is a nested VM (see
+// Index.Nested). A checkpoint that sets nothing keeps its parent's.
+func (p *Publication) SetNested(nested bool) {
+	p.nested, p.setNested = nested, true
+}
+
 // maximumVCPUs bounds the processor count a checkpoint records, which is the
 // most a Firecracker guest can have.
 const maximumVCPUs = 32
@@ -237,9 +246,13 @@ func (p *Publication) Commit(ctx context.Context, source Source) (*Index, error)
 		}
 		index.state = p.parent.state
 		index.vcpus = p.parent.vcpus
+		index.nested = p.parent.nested
 	}
 	if p.vcpus != 0 {
 		index.vcpus = p.vcpus
+	}
+	if p.setNested {
+		index.nested = p.nested
 	}
 	// A checkpoint with no state of its own keeps the parent's: only a capture
 	// pauses the guest for VMM state, and the VM stays restorable from the last

@@ -31,12 +31,15 @@ type ColdShape struct {
 	// describe, such as an ephemeral disk a create added or resized. No guest
 	// can resume onto a device it never had.
 	Devices bool
+	// Nested sets whether the VM is a nested VM from here (see nested.go), nil
+	// to keep what it is. It is experimental.
+	Nested *bool
 }
 
 // changes reports a shape that changes anything about the VM, which only a
 // cold boot may.
 func (s ColdShape) changes() bool {
-	return s.MemoryBytes != 0 || s.RootBytes != 0 || s.VCPUs != 0 || s.Devices
+	return s.MemoryBytes != 0 || s.RootBytes != 0 || s.VCPUs != 0 || s.Devices || s.Nested != nil
 }
 
 // sizes is the shape as the volume manager takes it: the volumes whose size is
@@ -109,7 +112,7 @@ func (h *Host) Reshape(ctx context.Context, vm *volume.VM, shape ColdShape) erro
 	if err := h.AdmitMemoryRegions(coldMemoryRegions(vm, sizes)); err != nil {
 		return err
 	}
-	if err := vm.DiscardMemory(ctx, shape.Memory, volume.Shape{Sizes: sizes, VCPUs: shape.VCPUs}); err != nil {
+	if err := vm.DiscardMemory(ctx, shape.Memory, volume.Shape{Sizes: sizes, VCPUs: shape.VCPUs, Nested: shape.Nested}); err != nil {
 		return fmt.Errorf("discarding the memory of %s: %w", vm.ID(), err)
 	}
 	return nil

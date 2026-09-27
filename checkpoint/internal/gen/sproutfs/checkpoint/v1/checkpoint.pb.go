@@ -37,6 +37,7 @@ type Root struct {
 	xxx_hidden_Origins         *[]*Ref                `protobuf:"bytes,8,rep,name=origins"`
 	xxx_hidden_StateOrigin     uint32                 `protobuf:"varint,9,opt,name=state_origin,json=stateOrigin"`
 	xxx_hidden_Vcpus           uint32                 `protobuf:"varint,10,opt,name=vcpus"`
+	xxx_hidden_Nested          bool                   `protobuf:"varint,11,opt,name=nested"`
 	XXX_raceDetectHookData     protoimpl.RaceDetectHookData
 	XXX_presence               [1]uint32
 	unknownFields              protoimpl.UnknownFields
@@ -137,6 +138,13 @@ func (x *Root) GetVcpus() uint32 {
 	return 0
 }
 
+func (x *Root) GetNested() bool {
+	if x != nil {
+		return x.xxx_hidden_Nested
+	}
+	return false
+}
+
 func (x *Root) SetVolumes(v []*Volume) {
 	x.xxx_hidden_Volumes = &v
 }
@@ -147,22 +155,22 @@ func (x *Root) SetCheckpoints(v []*Checkpoint) {
 
 func (x *Root) SetStateCheckpoint(v uint32) {
 	x.xxx_hidden_StateCheckpoint = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 2, 9)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 2, 10)
 }
 
 func (x *Root) SetStatePart(v uint32) {
 	x.xxx_hidden_StatePart = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 3, 9)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 3, 10)
 }
 
 func (x *Root) SetStateOffset(v uint64) {
 	x.xxx_hidden_StateOffset = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 4, 9)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 4, 10)
 }
 
 func (x *Root) SetStateLength(v uint64) {
 	x.xxx_hidden_StateLength = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 5, 9)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 5, 10)
 }
 
 func (x *Root) SetOrigins(v []*Ref) {
@@ -171,12 +179,17 @@ func (x *Root) SetOrigins(v []*Ref) {
 
 func (x *Root) SetStateOrigin(v uint32) {
 	x.xxx_hidden_StateOrigin = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 7, 9)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 7, 10)
 }
 
 func (x *Root) SetVcpus(v uint32) {
 	x.xxx_hidden_Vcpus = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 8, 9)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 8, 10)
+}
+
+func (x *Root) SetNested(v bool) {
+	x.xxx_hidden_Nested = v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 9, 10)
 }
 
 func (x *Root) HasStateCheckpoint() bool {
@@ -221,6 +234,13 @@ func (x *Root) HasVcpus() bool {
 	return protoimpl.X.Present(&(x.XXX_presence[0]), 8)
 }
 
+func (x *Root) HasNested() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 9)
+}
+
 func (x *Root) ClearStateCheckpoint() {
 	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 2)
 	x.xxx_hidden_StateCheckpoint = 0
@@ -251,6 +271,11 @@ func (x *Root) ClearVcpus() {
 	x.xxx_hidden_Vcpus = 0
 }
 
+func (x *Root) ClearNested() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 9)
+	x.xxx_hidden_Nested = false
+}
+
 type Root_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
@@ -279,6 +304,12 @@ type Root_builder struct {
 	// and the host's default applies. A root carries its parent's, so a fork
 	// and every later checkpoint of a VM keep the count it was created with.
 	Vcpus *uint32
+	// Nested marks a VM whose guest may run VMs of its own: it is offered VMX or
+	// SVM, and its RAM is never write-protected, evicted, moved or captured,
+	// because KVM writes the pages a nested guest names behind the host page
+	// tables. A root carries its parent's, like vcpus. False, and every root
+	// written before the field existed, is a VM that is offered neither.
+	Nested *bool
 }
 
 func (b0 Root_builder) Build() *Root {
@@ -288,29 +319,33 @@ func (b0 Root_builder) Build() *Root {
 	x.xxx_hidden_Volumes = &b.Volumes
 	x.xxx_hidden_Checkpoints = &b.Checkpoints
 	if b.StateCheckpoint != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 2, 9)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 2, 10)
 		x.xxx_hidden_StateCheckpoint = *b.StateCheckpoint
 	}
 	if b.StatePart != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 3, 9)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 3, 10)
 		x.xxx_hidden_StatePart = *b.StatePart
 	}
 	if b.StateOffset != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 4, 9)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 4, 10)
 		x.xxx_hidden_StateOffset = *b.StateOffset
 	}
 	if b.StateLength != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 5, 9)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 5, 10)
 		x.xxx_hidden_StateLength = *b.StateLength
 	}
 	x.xxx_hidden_Origins = &b.Origins
 	if b.StateOrigin != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 7, 9)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 7, 10)
 		x.xxx_hidden_StateOrigin = *b.StateOrigin
 	}
 	if b.Vcpus != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 8, 9)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 8, 10)
 		x.xxx_hidden_Vcpus = *b.Vcpus
+	}
+	if b.Nested != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 9, 10)
+		x.xxx_hidden_Nested = *b.Nested
 	}
 	return m0
 }
@@ -1856,7 +1891,7 @@ var File_sproutfs_checkpoint_v1_checkpoint_proto protoreflect.FileDescriptor
 
 const file_sproutfs_checkpoint_v1_checkpoint_proto_rawDesc = "" +
 	"\n" +
-	"'sproutfs/checkpoint/v1/checkpoint.proto\x12\x16sproutfs.checkpoint.v1\"\x8c\x03\n" +
+	"'sproutfs/checkpoint/v1/checkpoint.proto\x12\x16sproutfs.checkpoint.v1\"\xa4\x03\n" +
 	"\x04Root\x128\n" +
 	"\avolumes\x18\x02 \x03(\v2\x1e.sproutfs.checkpoint.v1.VolumeR\avolumes\x12D\n" +
 	"\vcheckpoints\x18\x03 \x03(\v2\".sproutfs.checkpoint.v1.CheckpointR\vcheckpoints\x12)\n" +
@@ -1868,7 +1903,8 @@ const file_sproutfs_checkpoint_v1_checkpoint_proto_rawDesc = "" +
 	"\aorigins\x18\b \x03(\v2\x1b.sproutfs.checkpoint.v1.RefR\aorigins\x12!\n" +
 	"\fstate_origin\x18\t \x01(\rR\vstateOrigin\x12\x14\n" +
 	"\x05vcpus\x18\n" +
-	" \x01(\rR\x05vcpusJ\x04\b\x01\x10\x02\"1\n" +
+	" \x01(\rR\x05vcpus\x12\x16\n" +
+	"\x06nested\x18\v \x01(\bR\x06nestedJ\x04\b\x01\x10\x02\"1\n" +
 	"\x03Ref\x12\x0e\n" +
 	"\x02vm\x18\x01 \x01(\tR\x02vm\x12\x1a\n" +
 	"\bsequence\x18\x02 \x01(\x04R\bsequence\"\xd8\x01\n" +

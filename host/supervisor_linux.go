@@ -666,7 +666,7 @@ func (s *supervisor) forget(id string) {
 
 func (s *supervisor) record(m *machine) hostapi.VM {
 	status := m.vm.Status()
-	record := hostapi.VM{ID: m.vm.ID(), Template: m.template, Host: s.config.PodName, VCPUs: m.vm.VCPUs(),
+	record := hostapi.VM{ID: m.vm.ID(), Template: m.template, Host: s.config.PodName, VCPUs: m.vm.VCPUs(), Nested: m.vm.Nested(),
 		Checkpoint: status.Checkpoint.Sequence, Epoch: status.Epoch, DirtyBytes: status.DirtyBytes}
 	if pulled, marked := s.host.Pulled(m.vm.ID()); marked {
 		record.Pull = &hostapi.Pull{Bytes: pulled.Bytes, Pulled: pulled.Pulled, Done: pulled.Done}

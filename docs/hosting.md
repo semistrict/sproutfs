@@ -803,6 +803,34 @@ mark, and a survey writes it down again. A host reports each marked
 VM's progress in its status (`hostapi.VM.Pull`), and the disk's use beside the
 page cache's (`Resources.CacheDiskUsed`).
 
+## Nested VMs
+
+A nested VM is experimental. It is a VM whose guest may run VMs of its own. A
+create asks for one with `nested` (`sproutfsctl create --nested`), and only an
+x86_64 host runs one. Every other guest is offered neither VMX nor SVM, so it
+cannot start a VM at all.
+
+A nested VM gives up everything that captures or moves its RAM. While its guest
+runs a VM, KVM writes some of that guest's pages behind the host page tables, so
+a seal, an eviction or a move would miss those writes. Firecracker also saves no
+nested state. So:
+
+- a capture, a suspend, a fork and a capture into a new VM are refused;
+- a migration, a drain's included, stops the VM with a checkpoint of its disks
+  and boots it cold on the destination. For the guest that is a reboot;
+- its RAM stays resident on its host, and is never evicted, spilled, moved or
+  given back.
+
+Everything that never touches its RAM works as for any VM: the interval's
+checkpoints of its disks, a plain stop and a cold start, a recovery after its
+host is lost, and a create from a checkpoint of its disks. The VM stays nested
+wherever it runs, because its checkpoints record it. A create from a nested VM's
+checkpoint makes a nested VM only if it asks for one again.
+
+`host/nested.go` and `vmmemory/fixed.go` say why, next to the code. The limits
+go away once hosts run a kernel whose KVM puts those pages behind the MMU
+notifier (`plans/nested-kvm-2026-09-27.md`, TASK-57).
+
 ## Budgets
 
 The host takes one `Resources` owner, which accounts only RAM: the pager's

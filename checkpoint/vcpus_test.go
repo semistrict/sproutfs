@@ -55,3 +55,49 @@ func TestACheckpointRecordsItsProcessorsAndItsChildrenKeepThem(t *testing.T) {
 		}
 	})
 }
+
+// A checkpoint records whether a boot of it is a nested VM, every checkpoint
+// after it keeps that until one sets it again, and a root is not nested.
+func TestACheckpointRecordsANestedVMAndItsChildrenKeepIt(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		objects := sim.New(sim.Config{}).ObjectStore()
+		store := mustStore(t, checkpoint.Config{ObjectStore: objects})
+		sizes := map[string]uint64{"root": checkpoint.PageSize2MiB}
+		root, err := store.Root(t.Context(), control.Ref{VM: "nested", Sequence: 1}, volumes2MiB(sizes))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if root.Nested() {
+			t.Fatal("a root is nested, want not")
+		}
+		m := newModel(volumes2MiB(sizes))
+		marked := store.Begin(root, control.Ref{VM: "nested", Sequence: 2})
+		marked.SetNested(true)
+		index, err := marked.Commit(t.Context(), m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		reopened, err := store.Open(t.Context(), index.Ref())
+		if err != nil {
+			t.Fatal(err)
+		}
+		next := store.Begin(reopened, control.Ref{VM: "nested", Sequence: 3})
+		m.dirty(next, "root", 0, 0, sectorData("nested", 0, 0))
+		later, err := next.Commit(t.Context(), m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reopened.Nested() || !later.Nested() {
+			t.Fatalf("reopened nested %v, the checkpoint after it %v; want both nested", reopened.Nested(), later.Nested())
+		}
+		cleared := store.Begin(later, control.Ref{VM: "nested", Sequence: 4})
+		cleared.SetNested(false)
+		plain, err := cleared.Commit(t.Context(), m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if plain.Nested() {
+			t.Fatal("a checkpoint that cleared nested is still nested")
+		}
+	})
+}

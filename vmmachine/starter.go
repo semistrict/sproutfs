@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"runtime"
 
 	"github.com/semistrict/sproutfs/platform/sim"
 )
@@ -76,8 +77,15 @@ type Launch struct {
 	vm      string
 	restore bool
 	vcpus   int
+	nested  bool
 	prepare func(context.Context, Placement) (*Memory, error)
 }
+
+// Nested reports a VM whose guest may run VMs of its own, which is
+// experimental. Memory.Configure offers it VMX or SVM, and withholds both from
+// every other guest; a Starter that writes its own configuration must not
+// undo either. See vmmemory/fixed.go for what such a VM gives up.
+func (l *Launch) Nested() bool { return l.nested }
 
 // VM is the identity of the VM the process runs.
 func (l *Launch) VM() string { return l.vm }
@@ -139,6 +147,8 @@ type Memory struct {
 	// Bytes is the guest's RAM and RAM the socket the VMM maps it through.
 	Bytes uint64
 	RAM   string
+	// Nested is Launch.Nested: whether Configure offers the guest VMX or SVM.
+	Nested bool
 	// Pmem are the PMEM devices this package manages, in the order the VM's
 	// configuration names them.
 	Pmem []ManagedPmem
@@ -186,6 +196,9 @@ func (m *Memory) Configure(document map[string]any) error {
 	if _, found := document["managed-memory"]; found {
 		return errors.New("vmmachine: the configuration already names its managed memory")
 	}
+	if err := checkNested(document, m.Nested, runtime.GOARCH); err != nil {
+		return err
+	}
 	machine := map[string]any{}
 	if existing, found := document["machine-config"]; found {
 		object, ok := existing.(map[string]any)
@@ -224,7 +237,8 @@ func (m *Memory) Configure(document map[string]any) error {
 			"managed": map[string]any{"socket_path": device.Socket, "length": device.Bytes}})
 	}
 	document["pmem"] = append(pmem, others...)
-	return nil
+	// Last, because it changes the document and nothing after it may refuse.
+	return configureNested(document, m.Nested, runtime.GOARCH)
 }
 
 // stateDirectory is the subdirectory of a process's directory that holds its

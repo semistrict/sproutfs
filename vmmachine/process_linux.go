@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -121,6 +122,12 @@ func (c Config) plan() (plan, error) {
 	if ram == nil {
 		return plan{}, fmt.Errorf("vmmachine: %s has no volume named %s", c.VM.ID(), RAMVolume)
 	}
+	// Nested virtualisation is offered only where this package knows how to
+	// offer it and how to withhold it: x86_64's VMX and SVM. See
+	// Memory.Configure.
+	if c.VM.Nested() && runtime.GOARCH != "amd64" {
+		return plan{}, fmt.Errorf("vmmachine: %s is a nested VM, which only x86_64 hosts run", c.VM.ID())
+	}
 	ramPage := c.Pagers.Ram.PageSize()
 	if ram.Size() == 0 || ram.Size()%ramPage != 0 || ram.Size() > 1<<40 {
 		return plan{}, fmt.Errorf("vmmachine: RAM must be whole %d-byte pages of at most 1 TiB", ramPage)
@@ -133,7 +140,10 @@ func (c Config) plan() (plan, error) {
 	// its pages to.
 	tenant := control.TenantOf(c.VM.ID())
 	result.ram = memoryRegion{name: RAMVolume, volume: ram, pager: c.Pagers.Ram,
-		backing: vmmemory.MemoryRegionBacking{Kind: vmmemory.Ram, Backing: ramBacking, Tenant: tenant}}
+		backing: vmmemory.MemoryRegionBacking{Kind: vmmemory.Ram, Backing: ramBacking, Tenant: tenant,
+			// A nested VM's RAM stays in place: KVM writes the pages its guest
+			// names in its VMCS behind the page tables. See vmmemory/fixed.go.
+			Fixed: c.VM.Nested()}}
 	result.ramBytes = ram.Size()
 	mapped[RAMVolume] = true
 	roots := 0
@@ -323,7 +333,7 @@ func Start(ctx context.Context, c Config) (*Process, error) {
 		}
 	}()
 	var memory *Memory
-	launch := &Launch{vm: c.VM.ID(), restore: len(c.RestoreState) > 0, vcpus: c.VCPUs,
+	launch := &Launch{vm: c.VM.ID(), restore: len(c.RestoreState) > 0, vcpus: c.VCPUs, nested: c.VM.Nested(),
 		prepare: func(ctx context.Context, placement Placement) (*Memory, error) {
 			prepared, err := p.prepareMemory(ctx, c, layout, placement)
 			if err != nil {
@@ -443,7 +453,7 @@ func (p *Process) prepareMemory(ctx context.Context, c Config, layout plan, plac
 		return nil, err
 	}
 	memory := &Memory{Directory: dir, Within: p.within, APISocket: p.view(p.api),
-		Bytes: layout.ramBytes, Load: map[string]any{}, write: p.files.write}
+		Bytes: layout.ramBytes, Nested: c.VM.Nested(), Load: map[string]any{}, write: p.files.write}
 	ram, err := p.endpoint("ram", layout.ram)
 	if err != nil {
 		return nil, err

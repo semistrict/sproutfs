@@ -137,6 +137,9 @@ type fakeHostClient struct {
 	// pulling is the VMs this host was asked to run marked to pull their whole
 	// memory, which it reports with each of them and carries in their handoffs.
 	pulling map[string]bool
+	// nested is the VMs this host runs that are nested VMs, which it reports
+	// with each of them.
+	nested map[string]bool
 	// outstanding names the VMs this host still holds pages for that no
 	// destination has fetched — every child of a fork point it took, until
 	// that child is received somewhere — and fetched, shared by every host of
@@ -230,6 +233,7 @@ func (f *fakeHostClient) Status(ctx context.Context) (host.Status, error) {
 		if f.pulling[id] {
 			record.Pull = &host.Pull{}
 		}
+		record.Nested = f.nested[id]
 		records = append(records, record)
 	}
 	return host.Status{Host: f.name, PageAddress: f.page,
@@ -271,6 +275,8 @@ func (f *fakeHostClient) Create(_ context.Context, request host.CreateRequest) (
 	switch {
 	case request.Pull:
 		f.record("create %s %s pull", request.ID, request.Template)
+	case request.Nested:
+		f.record("create %s %s nested", request.ID, request.Template)
 	case request.From != nil:
 		f.record("create %s from %s@%d memory=%d", request.ID, request.From.VM, request.From.Checkpoint,
 			request.Memory)
@@ -284,6 +290,7 @@ func (f *fakeHostClient) Create(_ context.Context, request host.CreateRequest) (
 	}
 	f.running = append(f.running, request.ID)
 	f.pulling[request.ID] = request.Pull
+	f.nested[request.ID] = request.Nested
 	return host.CreateResult{VM: host.VM{ID: request.ID, Template: request.Template, Host: f.name}}, nil
 }
 
@@ -584,7 +591,7 @@ func newDeployment(t *testing.T, running map[string][]string) *deployment {
 		d.hosts[name] = &fakeHostClient{mu: mu, name: name, running: slices.Clone(running[name]),
 			serving: []string{}, page: address + ":8081", log: &d.log, held: make(chan struct{}),
 			outstanding: map[string]bool{}, fetched: fetched, retired: retired,
-			pulling: map[string]bool{}}
+			pulling: map[string]bool{}, nested: map[string]bool{}}
 		d.records.ids = append(d.records.ids, running[name]...)
 	}
 	d.orchestrator = &orchestrator{pods: d.pods, records: d.records,

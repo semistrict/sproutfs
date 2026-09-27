@@ -155,6 +155,9 @@ type VM struct {
 	// Pull is how far this VM's pull of its whole memory onto its host's disk
 	// has come, nil for a VM that is not marked to pull.
 	Pull *Pull `json:"pull,omitempty"`
+	// Nested is a VM whose guest may run VMs of its own; see
+	// CreateRequest.Nested. It is experimental.
+	Nested bool `json:"nested,omitempty"`
 }
 
 // Pull is how far a VM marked to pull its whole memory has come. Such a VM has
@@ -485,6 +488,14 @@ type Stored struct {
 //
 // Pull marks the VM to pull its whole memory onto the disk of the host it runs
 // on; see Pull.
+//
+// Nested, which is experimental, makes a VM whose guest may run VMs of its own:
+// only it is offered VMX or SVM, and only on an x86_64 host. Its RAM is never
+// captured or moved, because KVM writes some of it behind the host page
+// tables: a capture, a suspending stop, a fork and a live migration of it are
+// refused, its RAM stays resident, and a drain reboots it on another host.
+// Everything else works, the interval's checkpoints of its disks included. It
+// is kept from then on, wherever the VM runs. See host/nested.go for why.
 type CreateRequest struct {
 	ID        string         `json:"id"`
 	Template  string         `json:"template,omitempty"`
@@ -494,6 +505,7 @@ type CreateRequest struct {
 	VCPUs     int            `json:"vcpus,omitempty"`
 	Ephemeral uint64         `json:"ephemeral,omitempty"`
 	Pull      bool           `json:"pull,omitempty"`
+	Nested    bool           `json:"nested,omitempty"`
 }
 
 // CheckpointRef names one checkpoint of a VM. A zero Checkpoint is the one the

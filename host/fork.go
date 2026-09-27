@@ -239,6 +239,10 @@ func (h *Host) seal(ctx context.Context, vmID string) (*volume.ForkPoint, error)
 	if vm == nil {
 		return nil, fmt.Errorf("%w: %s is not open here", ErrNotMigratable, vmID)
 	}
+	// A fork point seals RAM, which a nested VM's never is. See nested.go.
+	if err := refuseNested(vm, "a fork or a capture into a new VM"); err != nil {
+		return nil, err
+	}
 	if err := confirmHandoff(ctx, vm); err != nil {
 		return nil, err
 	}

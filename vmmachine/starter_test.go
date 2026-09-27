@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
+	"runtime"
 	"slices"
 	"testing"
 
@@ -77,6 +78,11 @@ func FuzzMemoryConfigure(f *testing.F) {
 			pmem = append(pmem, before["pmem"].([]any)...)
 		}
 		want["pmem"] = pmem
+		// The CPUID that withholds VMX and SVM is configureNested's, which its
+		// own test holds to what it must be.
+		if err := vmmachine.ConfigureNested(want, false, runtime.GOARCH); err != nil {
+			t.Fatal(err)
+		}
 		if !reflect.DeepEqual(document, want) {
 			t.Fatalf("configure %s gave %v, want %v", raw, document, want)
 		}
