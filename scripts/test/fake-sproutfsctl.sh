@@ -415,12 +415,14 @@ create)
     ;;
 list)
     {
-        row VM HOST STATE CHECKPOINT
+        row VM HOST STATE CHECKPOINT LOSS PRIVATE
         for vm in $(order); do
             load_vm "$vm"
             host=$vm_host
             [[ -n $host ]] || host=-
-            row "$vm" "$host" "$vm_state" "$vm_checkpoint"
+            # The model holds nothing unpublished, which the CLI prints as a
+            # dash in both columns.
+            row "$vm" "$host" "$vm_state" "$vm_checkpoint" - -
         done
     } | tabulate
     ;;

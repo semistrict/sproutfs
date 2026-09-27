@@ -57,9 +57,9 @@ want_printed 'create says where the VM went and what it cost' \
 # list is the table demo-soak.sh reads a VM's host out of the second column of.
 ctl create --template alpine > /dev/null
 want_printed 'list is the table of every VM and its host' \
-    'VM    HOST             STATE    CHECKPOINT
-vm-1  sproutfs-host-0  running  1
-vm-2  sproutfs-host-0  running  1' \
+    'VM    HOST             STATE    CHECKPOINT  LOSS  PRIVATE
+vm-1  sproutfs-host-0  running  1           -     -
+vm-2  sproutfs-host-0  running  1           -     -' \
     ctl list
 
 # A stopped VM keeps its row and its identity, and its host is a dash: that is
@@ -68,9 +68,9 @@ want_printed 'stop says which host closed the VM and at which checkpoint' \
     'stopped vm-2 on sproutfs-host-0 at checkpoint 2 in 0.420s' \
     ctl stop vm-2
 want_printed 'a stopped VM is listed with no host' \
-    'VM    HOST             STATE    CHECKPOINT
-vm-1  sproutfs-host-0  running  1
-vm-2  -                stopped  2' \
+    'VM    HOST             STATE    CHECKPOINT  LOSS  PRIVATE
+vm-1  sproutfs-host-0  running  1           -     -
+vm-2  -                stopped  2           -     -' \
     ctl list
 want_printed 'a suspend says so' \
     'suspended vm-1 on sproutfs-host-0 at checkpoint 2 in 0.420s' \
