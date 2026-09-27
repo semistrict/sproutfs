@@ -6,7 +6,7 @@ title: >-
 status: In Progress
 assignee: []
 created_date: '2026-09-27 02:21'
-updated_date: '2026-09-27 02:41'
+updated_date: '2026-09-27 18:09'
 labels:
   - embedder
   - security
@@ -34,4 +34,6 @@ Until the host kernel carries the nested pfn-cache work (TASK-57, plans/nested-k
 
 <!-- SECTION:NOTES:BEGIN -->
 Implemented 2026-09-27. Checkpoint root records nested (field 11, inherited like vcpus); create sets it (--nested, API nested); vmmachine offers VMX/SVM in CPUID only to nested VMs and hides both otherwise (vmmachine/nested.go, amd64 only, refused elsewhere); nested RAM attaches as a fixed region (vmmemory/fixed.go: never sealed, evicted, given back or moved; admitted only with room left to evict); host refuses capture, suspend, fork, capture-into and live migration (host/nested.go, 400); orchestrator migrate/drain of a nested VM stops it and boots it cold on the destination (rebooted). Proven: pager, host, orchestrator, CLI and configuration unit tests; Lima: a nested VM is refused on aarch64. AC2 (a nested x86 guest sees VMX/SVM, a plain one neither) waits on the x86 run of TestOnlyANestedGuestIsOfferedHardwareVirtualisation.
+
+x86 GCE run 2026-09-27 (3rd): a plain guest sees no vmx/svm (passes); the nested guest also sees none, and its kernel logs nothing about VMX; host kvm_intel.nested=Y. Cause: the test's guest kernel is Firecracker's CI 6.18 kernel, built with CONFIG_VIRTUALIZATION unset, so no CONFIG_KVM_INTEL. Linux's feat_ctl.c then leaves VMX disabled in IA32_FEATURE_CONTROL and clears X86_FEATURE_VMX silently (it prints only when KVM_INTEL is built). So /proc/cpuinfo cannot show the flag whatever CPUID offers. Next: the nested test boots a guest kernel with KVM (and KVM_INTEL/KVM_AMD) and proves the nested guest can open /dev/kvm and create a VM, and that a plain one has no vmx.
 <!-- SECTION:NOTES:END -->
