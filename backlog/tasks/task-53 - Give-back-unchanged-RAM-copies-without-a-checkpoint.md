@@ -1,11 +1,11 @@
 ---
 id: TASK-53
 title: Give back unchanged RAM copies without a checkpoint
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-26 23:18'
-updated_date: '2026-09-27 00:07'
+updated_date: '2026-09-27 00:09'
 labels:
   - performance
 dependencies: []
