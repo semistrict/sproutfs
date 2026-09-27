@@ -179,11 +179,6 @@ func execute(ctx context.Context, client *orch.Client, command invocation,
 		if err != nil {
 			return err
 		}
-		if result.Rebooted {
-			_, err = fmt.Fprintf(out, "%s is a nested VM, so it was stopped on %s and rebooted on %s in %.3fs\n",
-				result.VM, result.From, result.To, float64(result.Total))
-			return err
-		}
 		_, err = fmt.Fprintf(out,
 			"%s moved from %s to %s: pause %.3fs, stream %.3fs, %d pages from the source, %d unpublished\n",
 			result.VM, result.From, result.To, float64(result.Pause), float64(result.Stream),

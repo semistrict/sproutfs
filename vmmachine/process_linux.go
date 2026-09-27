@@ -18,7 +18,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -125,8 +124,10 @@ func (c Config) plan() (plan, error) {
 	// Nested virtualisation is offered only where this package knows how to
 	// offer it and how to withhold it: x86_64's VMX and SVM. See
 	// Memory.Configure.
-	if c.VM.Nested() && runtime.GOARCH != "amd64" {
-		return plan{}, fmt.Errorf("vmmachine: %s is a nested VM, which only x86_64 hosts run", c.VM.ID())
+	if c.VM.Nested() {
+		if err := nestedHost(); err != nil {
+			return plan{}, fmt.Errorf("vmmachine: %s is a nested VM: %w", c.VM.ID(), err)
+		}
 	}
 	ramPage := c.Pagers.Ram.PageSize()
 	if ram.Size() == 0 || ram.Size()%ramPage != 0 || ram.Size() > 1<<40 {
@@ -140,10 +141,7 @@ func (c Config) plan() (plan, error) {
 	// its pages to.
 	tenant := control.TenantOf(c.VM.ID())
 	result.ram = memoryRegion{name: RAMVolume, volume: ram, pager: c.Pagers.Ram,
-		backing: vmmemory.MemoryRegionBacking{Kind: vmmemory.Ram, Backing: ramBacking, Tenant: tenant,
-			// A nested VM's RAM stays in place: KVM writes the pages its guest
-			// names in its VMCS behind the page tables. See vmmemory/fixed.go.
-			Fixed: c.VM.Nested()}}
+		backing: vmmemory.MemoryRegionBacking{Kind: vmmemory.Ram, Backing: ramBacking, Tenant: tenant}}
 	result.ramBytes = ram.Size()
 	mapped[RAMVolume] = true
 	roots := 0

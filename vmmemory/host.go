@@ -88,10 +88,7 @@ type Host struct {
 	// which Close does before it gives their memory back.
 	unregisterIdle func()
 	logical        int
-	// fixed is how many pages fixed memory regions may hold resident, which
-	// eviction never gives back. See fixed.go.
-	fixed int
-	dirty int
+	dirty          int
 	// displaced counts the evictions of pages a memory region mapped, which is
 	// the clock a memory region's protection is measured on: see
 	// protectedLocked.

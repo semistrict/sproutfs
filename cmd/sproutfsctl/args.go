@@ -78,10 +78,8 @@ const usage = `sproutfsctl drives a sproutfs demo deployment through its orchest
                                            --pull copies its whole memory onto its
                                            host's disk behind the running guest, so a
                                            fault never waits on the object store again;
-                                           --nested (experimental, x86_64 only) lets its
-                                           guest run VMs of its own, and then it can
-                                           never be captured, suspended or forked, and a
-                                           migration of it is a reboot
+                                           --nested (experimental, Intel x86_64 only)
+                                           lets its guest run VMs of its own
   sproutfsctl import-template FILE [--memory 1G]
                                            import a guest image into a template, and
                                            print the identity create --template takes

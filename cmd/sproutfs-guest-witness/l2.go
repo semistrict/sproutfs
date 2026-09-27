@@ -180,8 +180,8 @@ func arm64Bne(by int) uint32 { return 0x54000001 | (uint32(by)&0x7ffff)<<5 }
 
 // vmxControl is one VMX control a nested VM's guest must not be offered: with
 // it L1 can name a page of its own that L0's KVM maps for good and writes
-// behind the host page tables, which is what keeps a nested VM's RAM fixed in
-// place (see vmmemory/fixed.go and TASK-57).
+// behind the host page tables, where the pager's write-protection cannot see
+// the writes (see vmmachine's nested.go and TASK-57).
 type vmxControl struct {
 	name string
 	// msr is the VMX capability MSR that offers it, and bit its bit in the

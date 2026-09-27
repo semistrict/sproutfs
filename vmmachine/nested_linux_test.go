@@ -237,7 +237,7 @@ func TestANestedVMIsRefusedOffX86(t *testing.T) {
 		_ = p.Close()
 		t.Fatal("a nested VM started off x86_64")
 	}
-	if !strings.Contains(err.Error(), "only x86_64 hosts run") {
-		t.Fatalf("starting a nested VM off x86_64 = %v, want the refusal that says only x86_64 runs one", err)
+	if !strings.Contains(err.Error(), "only Intel x86_64 hosts run one") {
+		t.Fatalf("starting a nested VM off x86_64 = %v, want the refusal that says only Intel x86_64 runs one", err)
 	}
 }

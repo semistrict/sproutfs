@@ -490,12 +490,9 @@ type Stored struct {
 // on; see Pull.
 //
 // Nested, which is experimental, makes a VM whose guest may run VMs of its own:
-// only it is offered VMX or SVM, and only on an x86_64 host. Its RAM is never
-// captured or moved, because KVM writes some of it behind the host page
-// tables: a capture, a suspending stop, a fork and a live migration of it are
-// refused, its RAM stays resident, and a drain reboots it on another host.
-// Everything else works, the interval's checkpoints of its disks included. It
-// is kept from then on, wherever the VM runs. See host/nested.go for why.
+// only it is offered VMX, and only on an Intel x86_64 host. It is captured,
+// forked and migrated like any other VM. It is kept from then on, wherever the
+// VM runs. See vmmachine's nested.go.
 type CreateRequest struct {
 	ID        string         `json:"id"`
 	Template  string         `json:"template,omitempty"`

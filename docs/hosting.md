@@ -807,29 +807,25 @@ page cache's (`Resources.CacheDiskUsed`).
 
 A nested VM is experimental. It is a VM whose guest may run VMs of its own. A
 create asks for one with `nested` (`sproutfsctl create --nested`), and only an
-x86_64 host runs one. Every other guest is offered neither VMX nor SVM, so it
-cannot start a VM at all.
+Intel x86_64 host runs one. Every other guest is offered neither VMX nor SVM, so
+it cannot start a VM at all.
 
-A nested VM gives up everything that captures or moves its RAM. While its guest
-runs a VM, KVM writes some of that guest's pages behind the host page tables, so
-a seal, an eviction or a move would miss those writes. Firecracker also saves no
-nested state. So:
+A nested VM is captured, suspended, forked and migrated like any other VM, and
+its RAM is paged like any other VM's. That rests on one thing the Firecracker
+fork does: it never offers a nested guest the three VMX controls that make the
+host's KVM map the guest's pages behind the host page tables (TPR shadow,
+APIC-access virtualisation and posted interrupts). The guest's own VMs run
+without them, with more exits for their interrupts. The fork also saves and
+restores the guest's nested state in every snapshot, so a VM its guest runs
+survives the capture, the fork or the migration. AMD's SVM has pins of its own
+that the fork does not remove, so an AMD host runs no nested VM.
+`vmmachine/nested.go` says why, next to the code, and
+[writers that bypass the page tables](vm-memory.md#writers-that-bypass-the-page-tables)
+says what the pager relies on.
 
-- a capture, a suspend, a fork and a capture into a new VM are refused;
-- a migration, a drain's included, stops the VM with a checkpoint of its disks
-  and boots it cold on the destination. For the guest that is a reboot;
-- its RAM stays resident on its host, and is never evicted, spilled, moved or
-  given back.
-
-Everything that never touches its RAM works as for any VM: the interval's
-checkpoints of its disks, a plain stop and a cold start, a recovery after its
-host is lost, and a create from a checkpoint of its disks. The VM stays nested
-wherever it runs, because its checkpoints record it. A create from a nested VM's
-checkpoint makes a nested VM only if it asks for one again.
-
-`host/nested.go` and `vmmemory/fixed.go` say why, next to the code. The limits
-go away once hosts run a kernel whose KVM puts those pages behind the MMU
-notifier (`plans/nested-kvm-2026-09-27.md`, TASK-57).
+The VM stays nested wherever it runs, because its checkpoints record it. A
+create from a nested VM's checkpoint makes a nested VM only if it asks for one
+again.
 
 ## Budgets
 

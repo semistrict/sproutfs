@@ -65,11 +65,6 @@ func Capture(ctx context.Context, vm *volume.VM, machine Machine, clock platform
 	if machine == nil {
 		return nil, ErrInvalidCapture
 	}
-	// A nested VM's RAM is never captured: KVM writes some of it behind the
-	// seal. See nested.go.
-	if err := refuseNested(vm, "a capture"); err != nil {
-		return nil, err
-	}
 	return capture(ctx, vm, machine, clock, vm.Snapshot, terms, machine.Prepare)
 }
 

@@ -5,14 +5,25 @@ import (
 	"strings"
 )
 
-// Nested virtualisation is offered to a guest only when its VM asks for it,
-// which is experimental (see Launch.Nested). A guest that may run VMs of its
-// own gets pages of its RAM written by KVM behind the host page tables, so its
-// RAM is kept in place and it can never be captured, forked or migrated: see
-// vmmemory/fixed.go and plans/nested-kvm-2026-09-27.md. Every other guest must
-// not be able to start a VM at all, or it would get those writes without those
-// limits. KVM lets a guest turn VMX or SVM on only when its CPUID offers it, so
-// the CPUID is where both are decided.
+// Nested virtualisation is offered to a guest only when its VM asks for it (see
+// Launch.Nested), and only on an Intel x86_64 host.
+//
+// Why only there. While a guest runs a VM of its own, the host's KVM maps
+// three of that guest's pages behind the host page tables whenever the guest
+// asks for them in the VMCS it hands KVM: the APIC-access page, the
+// virtual-APIC page and the posted-interrupt descriptor. The pager's
+// write-protection does not stop a write through such a map, so a checkpoint,
+// a copy or an eviction of the page could miss it. The Firecracker fork never
+// offers a nested guest the three VMX controls that ask for them (TPR shadow,
+// APIC-access virtualisation, posted interrupts), and KVM then refuses to
+// enter a nested VM that asks anyway, so every write reaches the pager and a
+// nested VM is captured, forked and migrated like any other. The narrowing is
+// Intel's: AMD's SVM has pins of its own that the fork does not remove, so an
+// AMD host runs no nested VM. See plans/nested-kvm-2026-09-27.md and TASK-57.
+//
+// Every other guest must not be able to start a VM at all. KVM lets a guest
+// turn VMX or SVM on only when its CPUID offers it, so the CPUID is where both
+// are decided.
 
 // virtualisationBit is one CPUID feature bit that offers a guest hardware
 // virtualisation.

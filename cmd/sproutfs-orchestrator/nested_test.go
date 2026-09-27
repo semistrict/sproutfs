@@ -7,10 +7,11 @@ import (
 	"github.com/semistrict/sproutfs/api/orch"
 )
 
-// A nested VM cannot move live, because its RAM is never handed over (see
-// host/nested.go). A migration of it, a drain's included, is a stop on the
-// source, which checkpoints its disks, and a cold boot on the destination.
-func TestAMigrationOfANestedVMRebootsItOnTheDestination(t *testing.T) {
+// A nested VM migrates live like any other VM, a drain's migration included:
+// the Firecracker fork never offers its guest the VMX controls that make KVM
+// write its RAM behind the page tables (see vmmachine's nested.go), so its RAM
+// is handed over page by page and its guest keeps running.
+func TestANestedVMMigratesLiveLikeAnyOther(t *testing.T) {
 	d := newDeployment(t, map[string][]string{"host-0": {}, "host-1": {}})
 	created, err := d.orchestrator.Create(t.Context(), orch.CreateRequest{Template: "alpine", Nested: true})
 	if err != nil {
@@ -27,10 +28,11 @@ func TestAMigrationOfANestedVMRebootsItOnTheDestination(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.Rebooted || result.From != from || result.To != to {
-		t.Fatalf("the migration reported %+v, want a reboot from %s to %s", result, from, to)
+	if result.From != from || result.To != to {
+		t.Fatalf("the migration reported %+v, want %s to %s", result, from, to)
 	}
-	want := []string{from + " stop " + id, to + " open " + id + " cold"}
+	want := []string{from + " migrate " + id + " " + d.hosts[to].page, to + " receive " + id + " " + d.hosts[from].page,
+		from + " released " + id}
 	if !slices.Equal(d.log, want) {
 		t.Fatalf("the deployment did %v, want %v", d.log, want)
 	}

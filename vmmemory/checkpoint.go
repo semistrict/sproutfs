@@ -172,11 +172,6 @@ func (c *MemoryRegionCheckpoint) Hold() { c.held.Store(true) }
 // checkpoint holds its pages, and a VMM asks every memory region it maps to
 // seal for a capture, so it succeeds rather than failing the capture.
 func (r *MemoryRegion) Seal(ctx context.Context) error {
-	if r.fixed {
-		// A seal is a write-protect, and KVM writes a nested guest's VMCS pages
-		// behind it. See fixed.go.
-		return ErrFixed
-	}
 	// A capture's pause is this call, so it is timed: the range write-protects
 	// are timed separately inside it, and the difference is what the pager
 	// spends on the pause beside its commands.

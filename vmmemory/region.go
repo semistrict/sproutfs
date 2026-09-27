@@ -38,9 +38,6 @@ type MemoryRegion struct {
 	// fault, a seal or a page depends on it: it is what the host's sharing
 	// gauges are split by, and it is immutable for the memory region's life.
 	kind MemoryRegionKind
-	// fixed keeps this memory region's pages resident and in place until it
-	// detaches. See fixed.go.
-	fixed bool
 	// peer marks a backing whose loads can return bytes no checkpoint holds, so
 	// a page it serves enters this memory region as private dirty state. It decides
 	// whether a fault has to reserve against the dirty budget before it loads.
@@ -207,46 +204,31 @@ func (h *Host) admit(ctx context.Context, memoryRegion MemoryRegionBacking, mapp
 		return nil, fmt.Errorf("%w: the volume's ephemeral is %v and this pager's is %v",
 			ErrConfig, states.Ephemeral(), h.cfg.Ephemeral)
 	}
-	if memoryRegion.Fixed && memoryRegion.Kind != Ram {
-		return nil, fmt.Errorf("%w: only RAM is fixed in place, not %s", ErrConfig, memoryRegion.Kind)
-	}
 	count := size / h.pageSize
-	// A fixed region's pages are never evicted, so every one of them may be
-	// resident at once. The arena admits it only if what fixed regions may hold
-	// fits in the arena; the host admits no more guest RAM than the arena
-	// holds, so every other region still finds its pages.
-	fixed := 0
-	if memoryRegion.Fixed {
-		fixed = int(count)
-	}
 	h.mu.Lock()
 	if h.err != nil {
 		err := h.err
 		h.mu.Unlock()
 		return nil, err
 	}
-	if count > uint64(h.cfg.LogicalPages-h.logical) || h.fixed+fixed > h.cfg.ResidentPages {
+	if count > uint64(h.cfg.LogicalPages-h.logical) {
 		h.mu.Unlock()
 		return nil, ErrCapacity
 	}
 	h.logical += int(count)
-	h.fixed += fixed
 	h.mu.Unlock()
 	if err := backing.Verify(ctx); err != nil {
 		h.mu.Lock()
 		h.logical -= int(count)
-		h.fixed -= fixed
 		h.mu.Unlock()
 		return nil, err
 	}
 	_, peer := backing.(UnpublishedLoader)
 	r := &MemoryRegion{live: ctxsync.NewRWMutex(), mu: ctxsync.NewRWMutex(), endMu: ctxsync.NewMutex(), protectMu: ctxsync.NewRWMutex(), filesMu: ctxsync.NewMutex(), ended: make(chan struct{}), coldCopied: make(chan struct{}, 1), host: h, backing: backing, kind: memoryRegion.Kind, peer: peer, mapping: mapping, tenant: memoryRegion.Tenant, pageCount: int(count), blocks: make(map[uint64]*bindingBlock), readAheadPages: h.cfg.ReadAheadPages}
-	r.fixed = memoryRegion.Fixed
 	if h.isolated() {
 		if err := h.newFiles(ctx, r); err != nil {
 			h.mu.Lock()
 			h.logical -= int(count)
-			h.fixed -= fixed
 			h.mu.Unlock()
 			return nil, err
 		}
@@ -737,9 +719,6 @@ func (r *MemoryRegion) Detach(ctx context.Context) error {
 	}
 	h.mu.Lock()
 	h.logical -= r.pageCount
-	if r.fixed {
-		h.fixed -= r.pageCount
-	}
 	h.forgetExtents(r)
 	h.forgetFilesLocked(r)
 	delete(h.memoryRegions, r)

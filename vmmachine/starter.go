@@ -81,10 +81,9 @@ type Launch struct {
 	prepare func(context.Context, Placement) (*Memory, error)
 }
 
-// Nested reports a VM whose guest may run VMs of its own, which is
-// experimental. Memory.Configure offers it VMX or SVM, and withholds both from
-// every other guest; a Starter that writes its own configuration must not
-// undo either. See vmmemory/fixed.go for what such a VM gives up.
+// Nested reports a VM whose guest may run VMs of its own. Memory.Configure
+// offers it VMX, and withholds VMX and SVM from every other guest; a Starter
+// that writes its own configuration must not undo either. See nested.go.
 func (l *Launch) Nested() bool { return l.nested }
 
 // VM is the identity of the VM the process runs.

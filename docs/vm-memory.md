@@ -1297,8 +1297,7 @@ because it has to.
 The give-back leaves a range the rules made whole alone, so a cold copy in one
 stays until it is changed or its origin is evicted; the seal still leaves it
 out. The pages the rules copy beside a store are not cold: pinning their
-origins would double such a range for as long as it stays whole. A fixed
-region's copies are never cold.
+origins would double such a range for as long as it stays whole.
 
 The publication retires the seal. A sealed set whose checkpoint was selected
 retires as published:
@@ -1592,63 +1591,48 @@ Firecracker fork and mainline Linux.
   writable, which takes the userfaultfd fault. The CPU's own writes, the
   accessed and dirty bits of the guest's page tables included, go through the
   second-level page tables, which the same notifier write-protects.
-- **KVM for a nested guest.** This is the one writer that bypasses both. When
-  the guest runs a hypervisor of its own, KVM maps pages of the guest's memory
-  with `kvm_vcpu_map` and gives their physical addresses to the CPU. On Intel
-  these are the virtual-APIC page, the posted-interrupt descriptor and the
-  APIC-access page of the nested guest (`nested_get_vmcs12_pages`). They stay
-  mapped while it runs. On AMD they are `vmcb12` and the host save area, for
-  the length of one VMRUN or one exit. The MMU notifier does not reach these
-  maps. A guest can do this only when it sees VMX or SVM, and only a nested VM
-  sees either: see [fixed memory regions](#fixed-memory-regions). aarch64 is
-  not exposed, because Firecracker never asks KVM for a vCPU with EL2.
+- **KVM for a nested guest.** When the guest runs a hypervisor of its own, KVM
+  maps pages of the guest's memory with `kvm_vcpu_map` and gives their
+  physical addresses to the CPU, which the MMU notifier does not reach. On
+  Intel these are the APIC-access page, the virtual-APIC page and the
+  posted-interrupt descriptor of the nested guest (`nested_get_vmcs12_pages`),
+  mapped only when the guest's VMCS turns on APIC-access virtualisation, TPR
+  shadow or posted interrupts. The Firecracker fork never offers a nested guest
+  those three controls, so KVM maps none of those pages, and refuses to enter
+  a nested VM whose VMCS asks for one anyway. Every other access KVM makes to a
+  nested guest's memory copies through the userspace address: the VMCS itself,
+  its bitmaps and lists. The MSR bitmap is mapped read-only, and only for the
+  length of one entry. This was checked against Linux 7.0's
+  `arch/x86/kvm/vmx/nested.c`; see TASK-57. On AMD, `vmcb12` and the host save
+  area are mapped for the length of one VMRUN or one exit, and nothing narrows
+  that, so only an Intel host runs a nested VM (`vmmachine/nested.go`). aarch64
+  is not exposed, because Firecracker never asks KVM for a vCPU with EL2.
 - **Debuggers.** `process_vm_writev` and `/proc/<pid>/mem` pin a page and copy
   into it at once. Only a process allowed to ptrace the VMM can do this.
 
-**So the seal, the settle, an eviction, a move and the give-back are exposed to
-one writer: KVM's maps for a nested guest.** A copy-on-write is not, because
-KVM asks for a page writable before it maps it, and that fault is what makes
-the copy. The harm would stay inside the guest that ran the nested hypervisor:
-a freed slot is punched, so KVM's reference keeps an orphaned page alive, and no
-other page is written. Firecracker does not save nested state either. So a
-guest is offered VMX or SVM only when its VM is nested, and a nested VM's RAM
-is a fixed memory region, which none of those touch.
+**So every writer of guest RAM goes through the page tables,** and the seal,
+the settle, an eviction, a move and the give-back see every write.
 
-### Fixed memory regions
+### Nested VMs
 
 A nested VM is experimental. Its guest may run VMs of its own, so it is offered
-VMX or SVM, and every other guest is offered neither. `vmmachine` decides this
-in the CPUID of the boot configuration (`vmmachine/nested.go`), because KVM lets
-a guest turn VMX or SVM on only when its CPUID offers it. Only x86_64 hosts run
-a nested VM.
+VMX, and every other guest is offered neither VMX nor SVM. `vmmachine` decides
+this in the CPUID of the boot configuration (`vmmachine/nested.go`), because
+KVM lets a guest turn VMX or SVM on only when its CPUID offers it. Only an Intel
+x86_64 host runs a nested VM, and its RAM is paged like any other VM's: see the
+writers above.
 
-`TestOnlyANestedGuestIsOfferedHardwareVirtualisation` proves this on x86_64. The
-nested guest must see the host's VMX or SVM and create a VM on `/dev/kvm`. The
-plain guest must see neither flag and have no `/dev/kvm`. Both boot a kernel
-with KVM built in, named by `SPROUTFS_FIRECRACKER_NESTED_KERNEL`. The GCE
-qualification builds it from Firecracker's CI configuration
-(`scripts/lib/nested-kernel.sh`) when a run selects the test. The CI kernel
-itself has no KVM, so it clears the vmx flag it is offered, and its guest shows
-no VMX either way.
-
-A nested VM's RAM is attached with `MemoryRegionBacking.Fixed`. A fixed region
-keeps every page resident, in the slot it was given, until it detaches:
-
-- it is never sealed, so nothing captures its RAM;
-- no page it maps is ever an eviction victim, so nothing spills it;
-- the give-back skips it, and no page of it is moved to a shared file.
-
-The pager admits a fixed region only while the fixed regions fit in the arena
-together. `vmmemory/fixed.go`
-says why each rule exists, next to the code. The host refuses the rest
-(`host/nested.go`): a capture, a suspend, a fork, a capture into a new VM and a
-live migration. See [nested VMs](hosting.md#nested-vms) for what a nested VM
-can do.
-
-All of this is the kernel's limit, not the pager's. Once hosts run a KVM that
-puts those maps behind the MMU notifier, and Firecracker saves nested state, a
-nested VM can be sealed, evicted and moved like any other. See
-`plans/nested-kvm-2026-09-27.md` and TASK-57.
+The x86_64 qualification proves it. `TestOnlyANestedGuestIsOfferedHardwareVirtualisation`:
+the nested guest sees VMX and creates a VM on `/dev/kvm`, and a plain guest sees
+neither flag and has no `/dev/kvm`. The `NestedGuest` tests in
+`vmmachine/nested_l2_linux_test.go` run a small L2 guest inside a nested VM
+(`sproutfs-guest-witness kvm`), check that L1 is not offered the three
+controls, and check that the L2 keeps running across a capture and restore, a
+fork and a live migration. The Firecracker fork's own tests of the narrowing and
+of nested state run beside them. The guests boot a kernel with KVM built in,
+named by `SPROUTFS_FIRECRACKER_NESTED_KERNEL`; the GCE qualification builds it
+from Firecracker's CI configuration (`scripts/lib/nested-kernel.sh`). The CI
+kernel itself has no KVM, so it clears the vmx flag it is offered.
 
 ## Control protocol, version 10
 

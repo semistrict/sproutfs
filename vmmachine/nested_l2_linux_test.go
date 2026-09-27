@@ -22,14 +22,8 @@ import (
 // VM can be what any other VM is: L2 runs; L1 is not offered the VMX controls
 // with which it could have L0 write its memory behind the host page tables;
 // and an L2 left running goes on running across a capture and restore, a
-// fork and a live migration of L1, with L1's memory intact.
-//
-// The last three fail until the Firecracker fork saves a nested VM's nested
-// state in its snapshots and sproutfs stops keeping a nested VM's RAM fixed.
-// In this package it is vmmemory that refuses them today: a capture, a fork
-// point and a migration's stop each seal the RAM, and a fixed region refuses
-// the seal with vmmemory.ErrFixed (vmmemory/fixed.go). A host refuses them
-// sooner, before the VM is touched, with host.ErrNested (host/nested.go).
+// fork and a live migration of L1, with L1's memory intact. See vmmachine's
+// nested.go for why that holds.
 
 // l2Log is where the resident witness running the counting L2 says why it
 // stopped: the guest's devtmpfs, which is guest memory.
