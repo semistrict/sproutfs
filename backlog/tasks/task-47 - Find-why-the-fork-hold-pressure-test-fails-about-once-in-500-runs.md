@@ -1,9 +1,10 @@
 ---
 id: TASK-47
 title: Find why the fork-hold pressure test fails about once in 500 runs
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-26 19:23'
+updated_date: '2026-09-27 23:49'
 labels:
   - bug
 dependencies: []
@@ -19,5 +20,11 @@ TestForkHoldDoesNotAnswerAnotherMemoryRegionsPressure (vmmemory/dirty_budget_tes
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The cause is found and fixed, and 5000 runs pass
+- [x] #1 The cause is found and fixed, and 5000 runs pass
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Cause: takeSpill's take failed, then a checkpoint gave its reservations back and ended before relief looked, so relief and takeBack found nothing and the store failed as stalled with reservations free. Fix: before stopping anybody, the store retries if the budget changed since the attempt began (vmmemory/pressure.go). Verified: 20000 runs of TestForkHoldDoesNotAnswerAnotherMemoryRegionsPressure pass (5 of 10000 failed before, reproduced with a state dump showing 2 free reservations); just check passes.
+<!-- SECTION:FINAL_SUMMARY:END -->
