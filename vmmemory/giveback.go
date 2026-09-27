@@ -126,7 +126,7 @@ func (r *MemoryRegion) givingBack(ctx context.Context, pages func() []uint64) (i
 
 // coldCopyAge is how old a cold copy is before its session gives it back. See
 // "Why a cold copy is given back soon after it is made".
-const coldCopyAge = 10 * time.Millisecond
+const coldCopyAge = 200 * time.Millisecond
 
 // coldCopy records a copy a store trap made of a page the guest did not map,
 // and wakes the session's worker that gives it back.

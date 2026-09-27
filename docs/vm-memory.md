@@ -1260,12 +1260,12 @@ steps, soon after it is made (`MemoryRegion.coldCopy`,
 trap is a store into a page the guest maps, which KVM reports only for a real
 store, so its copy is not a cold copy.
 
-The worker waits until each copy is 10 ms old. KVM's worker takes the page
+The worker waits until each copy is 200 ms old. KVM's worker takes the page
 writable first, and the vCPU retries its access only afterwards, so a copy just
 made holds its origin's bytes whether the guest meant to read or to store.
 Compared at once, a store's copy would go back too, and the store would copy
 again. Nothing would be lost, but every cold store would be copied twice, and a
-fork's resume is mostly cold stores. By 10 ms the vCPU has retried: a store's
+fork's resume is mostly cold stores. By 200 ms the vCPU has retried: a store's
 copy differs and is kept, and a read's copy goes back. A fixed region's copies
 are never recorded.
 
