@@ -181,7 +181,7 @@ func TestANestedGuestKeepsItsVMAcrossAFork(t *testing.T) {
 	}
 	// The parent runs on from the fork point, and its L2 with it.
 	awaitL2Past(t, ctx, p, before)
-	writeMarker(t, ctx, p, "the parent's")
+	writeMarker(t, ctx, p, "the parent after the fork")
 
 	childPager := nestedPager(t, ctx)
 	child := receiveChild(t, ctx, c, handoff, pages, func(vm *volume.VM) vmmachine.Config {
@@ -196,8 +196,8 @@ func TestANestedGuestKeepsItsVMAcrossAFork(t *testing.T) {
 	resumed := awaitL2Past(t, ctx, child.process, before)
 	awaitL2Past(t, ctx, child.process, resumed)
 	// And the parent is still itself, with an L2 still counting.
-	if got := readMarker(t, ctx, p); got != "the parent's\n" {
-		t.Fatalf("the parent's guest reads %q after the fork, want its own %q", got, "the parent's\n")
+	if got := readMarker(t, ctx, p); got != "the parent after the fork\n" {
+		t.Fatalf("the parent's guest reads %q after the fork, want its own %q", got, "the parent after the fork\n")
 	}
 	awaitL2Past(t, ctx, p, l2Count(t, ctx, p))
 }
