@@ -191,6 +191,22 @@ func (s *adversarialStarter) spawn(test, env string, args ...string) (vmmachine.
 	return s.vmm, nil
 }
 
+// passable is a directory of this test's own that the placement's user may
+// pass through, as a jailed VMM passes through nothing above its chroot: the
+// attachment child drops to that user before it binds or opens anything under
+// it. t.TempDir makes the directory and its parent for this process's user
+// alone.
+func passable(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, path := range []string{filepath.Dir(dir), dir} {
+		if err := os.Chmod(path, 0o711); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
 // adversarialPlacement is where each adversarial Starter puts its process:
 // under parent, named by the VMM as a chroot would name it, and given to
 // another user.
@@ -338,7 +354,7 @@ func TestAdversarialStarters(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			config, _, pager := startupFixture(t)
-			parent := t.TempDir()
+			parent := passable(t)
 			placement := adversarialPlacement(parent)
 			if c.within != "" {
 				placement.Within = c.within
@@ -390,7 +406,7 @@ func TestAFailedReleaseIsReportedOnce(t *testing.T) {
 		t.Skip("giving a directory to another user needs root; run the Firecracker Lima qualification script")
 	}
 	config, _, _ := startupFixture(t)
-	parent := t.TempDir()
+	parent := passable(t)
 	placement := adversarialPlacement(parent)
 	// This fake VMM has no chroot, so it names its directory as the host does.
 	placement.Within = ""

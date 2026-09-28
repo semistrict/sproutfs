@@ -1,11 +1,11 @@
 ---
 id: TASK-2
 title: Split the pager arena so a VMM reaches only its own VM's memory
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-25 18:17'
-updated_date: '2026-09-25 23:08'
+updated_date: '2026-09-28 03:59'
 labels:
   - security
 dependencies: []
@@ -38,3 +38,9 @@ Plan: plans/isolated-arena-2026-09-25.md. Waiting on the owner's five decisions 
 
 2026-09-25: owner said build it behind a switch (SPROUTFS_ARENA=shared|isolated), accepting the recommendations; BLAKE3 for the digest; one GCE run at the end measures both modes.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The isolated arena (TASK-2.1 to 2.7) is the default, and every VMM runs jailed as a user of its own (TASK-63), which is what holds a VMM to its own VM's memory.
+<!-- SECTION:FINAL_SUMMARY:END -->
