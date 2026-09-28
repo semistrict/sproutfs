@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-27 01:51'
-updated_date: '2026-09-28 00:48'
+updated_date: '2026-09-28 01:19'
 labels:
   - performance
 dependencies: []
@@ -34,6 +34,12 @@ TASK-53's give-back (vmmemory/giveback.go, host/giveback.go) runs once per check
 2. host: Config.GiveBackInterval (SPROUTFS_GIVE_BACK_INTERVAL, default independent of the checkpoint interval; documented in deploy/README.md). The give-back loop starts for every VM whatever the checkpoint interval, waits for its interval or the notification, and runs a pass only on regions with something pending.
 3. Tests: vmmemory (pending/backlog/notify), host (interval without checkpoints; notification before the interval; an idle VM makes no pass), docs.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-09-27: superseded the same day. Nothing showed the interval pass paying for itself once cold copies (TASK-59) gave back cold-read copies within 200 ms, and the owner chose to remove it rather than measure (a realistic workload run needs a 32 GiB image build past the 30-minute GCE cap). Removed in 2c4e0979: the host schedule, SPROUTFS_GIVE_BACK_INTERVAL, MemoryRegion.GiveBack; a refused cold copy is requeued to its session instead.
+<!-- SECTION:NOTES:END -->
 
 ## Final Summary
 
