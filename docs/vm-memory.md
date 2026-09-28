@@ -1196,19 +1196,17 @@ the guest's access type through, or KVM userfault. Both are TASK-32 in the
 
 RAM is never checkpointed on the interval, so for RAM "the next checkpoint" may
 never come. A RAM page that a fork shares with its parent would then stay a
-private copy for as long as the VM lives. So the host gives such copies back
-with no checkpoint and no pause: `MemoryRegion.GiveBack`, called for each VM's
-RAM on a schedule of its own (`host/giveback.go`). The give-back interval
-(`SPROUTFS_GIVE_BACK_INTERVAL`, 10 s by default) has nothing to do with the
-checkpoint interval, and a host that checkpoints nothing still keeps it. A VM
-that has made a pass's worth of copies with an origin since the last pass is
-given back at once (`MemoryRegion.NotifyCopies`), and a region with nothing
-pending costs no pass at all (`GiveBackPending`). Each pass is a callback of the
-host's clock, so a VM costs one timer between passes. A disk's copies are
-settled by the checkpoint the interval takes of the disk instead. Cold copies of
-either are given back sooner: see [cold copies](#cold-copies).
+private copy for as long as the VM lives. So the pager gives such copies back
+with no checkpoint and no pause. What it gives back is a
+[cold copy](#cold-copies): one a write fault made of a page the guest did not
+map, which is what a cold read looks like on x86-64. Its session gives it back
+200 ms after it was made, and an eviction or a seal sooner. A copy of a page the
+guest mapped is a store the guest really made. It is left to the settle behind
+the next checkpoint, even in the rare case where the store wrote the bytes the
+page already held: a pass that looked for those on an interval was removed,
+because nothing showed it found enough of them to pay for itself.
 
-For each private copy that remembers its origin, the give-back:
+For each cold copy, the give-back:
 
 1. takes the page the way a store fault does: its read-ahead window, the memory
    region shared, the origin's lock and then the copy's;
@@ -1236,15 +1234,12 @@ arrives as a write, which copies the page again. An installed page is present,
 so KVM maps it for a read without asking the pager. The MAP and the install are
 the ones a [move](#the-isolated-arena) uses, `mapInPlace`. A client that refuses
 the MAP for want of budget changed nothing, so the guest keeps its copy, the
-write-protection comes off, and a later pass tries again. It is not revoked to
+write-protection comes off, and its session tries again 200 ms later. It is not revoked to
 free the budget, as a move does, because that too would leave the next read to
 a cold fault.
 
-A copy the pager has spilled, one in a range the rules made one whole mapping,
-and one the guest does not map are left for a later pass. A copy whose origin
-has been evicted forgets it. A sealed page is left to its checkpoint's settle.
-One pass compares at most 4,096 pages and 1 GiB for each VM, so 512 pages at
-2 MiB. Each pass starts where the last one stopped. `Stats.GiveBackCompares`
+A spilled cold copy is read back and compared from the spill, and one whose
+origin was evicted is compared with its volume: see below. `Stats.GiveBackCompares`
 counts the comparisons and `Stats.GivenBackPages` the pages given back.
 
 The give-back relies on every writer of guest RAM going through the VMM's page
@@ -1253,13 +1248,11 @@ tables](#writers-that-bypass-the-page-tables).
 
 ### Cold copies
 
-The interval is too slow for the copies a guest's cold reads make. On x86-64
-KVM finishes a cold fault from `async_pf_execute`, which asks for the page
-writable, so every page a guest reads of what it inherited arrives as a store
-trap and is copied. A guest that reads a lot makes these copies faster than one
-pass an interval gives them back. Kept as ordinary dirty pages, they are
-spilled, a disk's are uploaded by its next checkpoint, and a fork's children
-fetch them from the parent.
+On x86-64 KVM finishes a cold fault from `async_pf_execute`, which asks for the
+page writable, so every page a guest reads of what it inherited arrives as a
+store trap and is copied. A guest that reads a lot makes many such copies.
+Kept as ordinary dirty pages, they would be spilled, a disk's uploaded by its
+next checkpoint, and fetched from the parent by a fork's children.
 
 So a copy a store trap makes of a published page is **cold**: private and
 writable, but not yet known to be the guest's state (`vmmemory/cold.go`). It

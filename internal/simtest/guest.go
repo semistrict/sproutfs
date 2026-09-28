@@ -382,32 +382,20 @@ func (g *guest) takeWritable(ctx context.Context, name string, page uint64) erro
 	return nil
 }
 
-// giveBackPages bounds one simulated give-back pass: every copy a campaign's
-// small memory can hold.
-const giveBackPages = 1 << 16
-
-// giveBack is the give-back a host runs on each VM's RAM once an interval,
-// which a campaign draws beside its stores because a campaign's hosts run no
-// interval of their own. It pauses nothing, so it runs while checkpoints,
-// forks and migrations of this VM are in flight.
+// giveBack is the give-back of a VM's cold copies, which a session runs soon
+// after each is made; a campaign has no sessions, so it draws this beside its
+// stores. It pauses nothing, so it runs while checkpoints, forks and
+// migrations of this VM are in flight.
 //
 // Its invariant is checked at once: every page the guest maps reads what the
 // guest last wrote. A copy given back maps the page it was copied from, which
 // is only right where the guest never changed it, and a wrong one would
 // otherwise surface only at the next read of that page.
-//
-// A session gives back every kind's cold copies soon after they are made, and
-// a campaign has no sessions, so those are given back here too.
 func (g *guest) giveBack(ctx context.Context) error {
 	for _, name := range g.names {
 		memoryRegion := g.memoryRegions[name]
 		if _, err := memoryRegion.GiveBackColdCopies(ctx); err != nil {
 			return fmt.Errorf("%s cold-copy give-back on %s: %w", g.instance, name, err)
-		}
-		if memoryRegion.Kind() == vmmemory.Ram {
-			if _, err := memoryRegion.GiveBack(ctx, giveBackPages); err != nil {
-				return fmt.Errorf("%s give-back on %s: %w", g.instance, name, err)
-			}
 		}
 		if err := g.mapsWhatItWrote(name); err != nil {
 			return err

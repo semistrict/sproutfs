@@ -391,9 +391,6 @@ func (r *MemoryRegion) takeFromCheckpoint(b *binding, slot int, origin *resident
 	r.uncoldLocked(b)
 	b.checkpoint, b.spillSlot, b.dirty, b.zero = nil, slot, true, false
 	b.origin = origin
-	if origin != nil {
-		r.copiedLocked()
-	}
 	if r.dirtyBindings == nil {
 		r.dirtyBindings = make(map[uint64]*binding)
 	}

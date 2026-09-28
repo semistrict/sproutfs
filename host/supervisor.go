@@ -232,8 +232,6 @@ type SupervisorConfig struct {
 	// CheckpointInterval is how often every VM this host runs is checkpointed,
 	// which bounds what losing this host rewinds a guest by.
 	CheckpointInterval time.Duration
-	// GiveBackInterval is Config.GiveBackInterval.
-	GiveBackInterval time.Duration
 	// LossWindow is how long a VM may hold a write no checkpoint covers before
 	// the pager stops admitting dirty pages for it, which bounds that rewind in
 	// time rather than only in bytes. Zero selects host.DefaultLossWindow and a

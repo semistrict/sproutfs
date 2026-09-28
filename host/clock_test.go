@@ -22,11 +22,10 @@ func TestForkHoldExpiresOnTheSimulatedClock(t *testing.T) {
 	h, pagers := startMigrationHosts(t)
 	clock := sim.New(sim.Config{Seed: 1}).NewClock("source")
 	h.configs[0].Clock = clock
-	// The epoch watch and the give-back wait on the same clock. Disabling them
-	// leaves the hold's deadline as the only thing an advance can reach, which
-	// is what makes the counts below assertions about the hold.
+	// The epoch watch sleeps on the same clock. Disabling it leaves the hold's
+	// deadline as the only thing an advance can reach, which is what makes the
+	// counts below assertions about the hold.
 	h.configs[0].EpochInterval = -1
-	h.configs[0].GiveBackInterval = -1
 	h.start(t)
 
 	vm, err := h.hosts[0].Volumes().Create(t.Context(), "parent", migrationVolumes)
@@ -91,7 +90,6 @@ func TestReleasingAForkHoldDisarmsItsDeadline(t *testing.T) {
 	clock := sim.New(sim.Config{Seed: 1}).NewClock("source")
 	h.configs[0].Clock = clock
 	h.configs[0].EpochInterval = -1
-	h.configs[0].GiveBackInterval = -1
 	h.start(t)
 
 	vm, err := h.hosts[0].Volumes().Create(t.Context(), "parent", migrationVolumes)

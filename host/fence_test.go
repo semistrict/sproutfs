@@ -70,7 +70,6 @@ func TestNoTwoWritersOfOneVMEverMix(t *testing.T) {
 	// on a loaded machine the rounds outlast its interval.
 	for index := range h.configs {
 		h.configs[index].EpochInterval = -1
-		h.configs[index].GiveBackInterval = -1
 	}
 	h.start(t)
 	ctx := t.Context()
@@ -310,7 +309,6 @@ func TestAHandoffConfirmsTheControlRecordFirst(t *testing.T) {
 	h, pagers := startMigrationHosts(t)
 	h.configs[0].CheckpointInterval = -1
 	h.configs[0].EpochInterval = -1
-	h.configs[0].GiveBackInterval = -1
 	var received *machine
 	h.configs[2].Migration.StartVM = starter(t, pagers[2], &received)
 	h.start(t)
@@ -367,7 +365,6 @@ func TestAHandoffRefusesWhenTheControlRecordCannotBeRead(t *testing.T) {
 	h, pagers := startMigrationHosts(t)
 	h.configs[0].CheckpointInterval = -1
 	h.configs[0].EpochInterval = -1
-	h.configs[0].GiveBackInterval = -1
 	h.start(t)
 
 	vm, err := h.hosts[0].Volumes().Create(t.Context(), "vm-1", migrationVolumes)

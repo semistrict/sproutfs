@@ -3,7 +3,6 @@ package vmmemory
 import (
 	"context"
 	"errors"
-	"slices"
 
 	"github.com/semistrict/sproutfs/platform/sim"
 )
@@ -18,6 +17,12 @@ import (
 // the interval: only captures, forks and migrations seal it. So without this, a
 // RAM page shared between VMs becomes a private copy for as long as the VM
 // lives, which at a 2 MiB page is 2 MiB the host holds twice.
+//
+// What is given back is a cold copy: one a write fault made of a page the
+// guest did not map, which is what such a read looks like. Its session gives it
+// back once it is coldCopyAge old, and a seal or an eviction sooner: see
+// cold.go. A copy of a page the guest had mapped is a store the guest really
+// made, and is left to the settle behind its next checkpoint.
 //
 // The give-back needs no pause. It works one page at a time, and it holds that
 // page the way a store fault holds it: the page's window, the memory region
@@ -46,64 +51,6 @@ import (
 // for a nested guest are the one exception, and every seal and copy-on-write
 // shares it: see "Writers that bypass the page tables" in docs/vm-memory.md.
 
-// GiveBack compares up to limit of this memory region's private copies with the
-// pages they were copied from, and gives back each one whose bytes are still
-// its origin's: the guest maps the origin again, and the copy and its dirty
-// reservation are freed. It reports how many it gave back.
-//
-// A copy found changed forgets its origin, so it is compared once and never
-// again. A copy that could not be compared yet keeps it: one the pager has
-// spilled, one whose range is a single whole mapping, one the guest does not map.
-// Successive calls start where the last one stopped, so a copy left behind is
-// not the only one ever looked at. A sealed page is not a candidate: the settle
-// behind its checkpoint compares it.
-func (r *MemoryRegion) GiveBack(ctx context.Context, limit int) (int, error) {
-	r.host.mu.Lock()
-	r.host.stats.GiveBackPasses++
-	r.host.mu.Unlock()
-	given, err := r.givingBack(ctx, func() []uint64 { return r.copies(limit) })
-	r.bindingsMu.Lock()
-	defer r.bindingsMu.Unlock()
-	r.backlog = false
-	for _, b := range r.dirtyBindings {
-		if b.origin != nil {
-			r.backlog = true
-			break
-		}
-	}
-	return given, err
-}
-
-// GiveBackPending reports whether a give-back pass has anything to look at:
-// a copy with an origin made since the last pass began, or one the last pass
-// left, because it reached its limit or could not compare it yet. A memory
-// region with neither needs no pass at all, which is what an idle guest costs.
-func (r *MemoryRegion) GiveBackPending() bool {
-	r.bindingsMu.Lock()
-	defer r.bindingsMu.Unlock()
-	return r.copiedSince > 0 || r.backlog
-}
-
-// NotifyCopies has due called once this memory region has made limit copies
-// with an origin since the last give-back pass began, so a guest that copies
-// many shared pages is given back without waiting for the next pass. It is
-// called once per pass at most, on the copying fault's goroutine and under the
-// region's binding lock, so it must only signal: never block, and never call
-// back into the region.
-func (r *MemoryRegion) NotifyCopies(limit int, due func()) {
-	r.bindingsMu.Lock()
-	defer r.bindingsMu.Unlock()
-	r.copiesLimit, r.copiesDue = limit, due
-}
-
-// copiedLocked counts one copy with an origin. Caller holds bindingsMu.
-func (r *MemoryRegion) copiedLocked() {
-	r.copiedSince++
-	if r.copiesDue != nil && r.copiedSince == r.copiesLimit {
-		r.copiesDue()
-	}
-}
-
 // givingBack is one give-back pass over the pages that pages lists, which it
 // calls once the memory region is known to be live.
 func (r *MemoryRegion) givingBack(ctx context.Context, pages func() []uint64) (int, error) {
@@ -126,28 +73,6 @@ func (r *MemoryRegion) givingBack(ctx context.Context, pages func() []uint64) (i
 		}
 	}
 	return given, nil
-}
-
-// copies is up to limit pages of this memory region that hold a private copy
-// with an origin, in page order from where the last pass stopped.
-func (r *MemoryRegion) copies(limit int) []uint64 {
-	r.bindingsMu.Lock()
-	defer r.bindingsMu.Unlock()
-	r.copiedSince = 0
-	var pages []uint64
-	for index, b := range r.dirtyBindings {
-		if b.origin != nil {
-			pages = append(pages, index)
-		}
-	}
-	slices.Sort(pages)
-	from, _ := slices.BinarySearch(pages, r.givenBackTo)
-	pages = append(pages[from:], pages[:from]...)
-	pages = pages[:min(len(pages), max(limit, 0))]
-	if len(pages) > 0 {
-		r.givenBackTo = pages[len(pages)-1] + 1
-	}
-	return pages
 }
 
 // giveBack is one page of a pass. It reports whether the copy went back.
@@ -193,8 +118,8 @@ func (r *MemoryRegion) giveBack(ctx context.Context, index uint64, buffers *sett
 			// origin until it is compared, so it is not left for the seal.
 			return r.giveBackSpilled(ctx, b, origin, buffers)
 		}
-		// Spilled. Reading it back is I/O this does not do; a later pass may
-		// find it resident again.
+		// Spilled, and no longer cold: an ordinary dirty page the next
+		// checkpoint's settle compares.
 		return false, nil
 	}
 	defer h.unlock(pg)
@@ -252,9 +177,10 @@ func (r *MemoryRegion) giveBackCopy(ctx context.Context, b *binding, origin, pg 
 			return false, err
 		}
 		// The client is out of mapping budget and changed nothing, so the
-		// guest still maps its copy. It takes stores again, and a later pass
+		// guest still maps its copy. It takes stores again, and its session
 		// tries again. Revoking instead would free budget, but it would leave
 		// the next read to a cold fault, which copies again.
+		r.requeueCold(b)
 		return false, r.liftProtection(ctx, index)
 	}
 	if err := r.shareOrigin(ctx, b, pg, origin); err != nil {

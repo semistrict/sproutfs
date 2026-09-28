@@ -50,9 +50,6 @@ const (
 	// which is what a deployment does to a VM that is answering: the guest pauses
 	// for the state capture and the seal, and the pages upload behind it.
 	forkFanOutInterval = 250 * time.Millisecond
-	// forkFanOutGiveBack bounds one give-back of a child's RAM. It is the most
-	// pages one pass of a host's interval ever compares for a VM.
-	forkFanOutGiveBack = 4096
 	// forkFanOutRounds is how many times each child reads everything it has.
 	forkFanOutRounds = 2
 	// forkFanOutSweeps is how many times the image check reads every page of a
@@ -454,9 +451,10 @@ func prepareAndResume(p *vmmachine.Process) volume.PrepareFunc {
 
 // checkpointEvery checkpoints one child on an interval until the returned stop
 // is called, which is what a host does to every VM it runs, and gives back its
-// unchanged RAM copies before each checkpoint, as a host's interval does too. A
-// capture or a give-back that fails fails the test: the guest is running and
-// answering, so nothing here is work a host would be entitled to skip.
+// cold RAM copies before each checkpoint, as its session does on its own, so
+// that the two race. A capture or a give-back that fails fails the test: the
+// guest is running and answering, so nothing here is work a host would be
+// entitled to skip.
 func checkpointEvery(t *testing.T, ctx context.Context, child *forkedChild, interval time.Duration) func() {
 	t.Helper()
 	ticking, stop := context.WithCancel(ctx)
@@ -474,7 +472,7 @@ func checkpointEvery(t *testing.T, ctx context.Context, child *forkedChild, inte
 				if regions[name].Kind() != vmmemory.Ram {
 					continue
 				}
-				if _, err := regions[name].GiveBack(ticking, forkFanOutGiveBack); err != nil {
+				if _, err := regions[name].GiveBackColdCopies(ticking); err != nil {
 					if ticking.Err() == nil {
 						t.Errorf("giving back %s's copies while it reads: %v", child.id, err)
 					}

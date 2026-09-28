@@ -593,7 +593,6 @@ func TestALocalForkHoldExpiresWhenNothingReleasesIt(t *testing.T) {
 	clock := sim.New(sim.Config{Seed: 1}).NewClock("source")
 	h.configs[0].Clock = clock
 	h.configs[0].EpochInterval = -1
-	h.configs[0].GiveBackInterval = -1
 	h.start(t)
 
 	vm, err := h.hosts[0].Volumes().Create(t.Context(), "parent", migrationVolumes)

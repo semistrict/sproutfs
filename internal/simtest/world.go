@@ -1046,8 +1046,8 @@ func (w *World) Store(ctx context.Context, id string, writes int, choose func(li
 			return err
 		}
 	}
-	// One turn in four ends with the give-back a host's interval would run,
-	// which gives back the copies those write faults made without storing.
+	// One turn in four ends with the give-back of the cold copies those write
+	// faults made, which a session runs on its own.
 	if choose(4) == 0 {
 		if err := g.giveBack(ctx); err != nil && !excused(err) {
 			return err
@@ -1305,16 +1305,6 @@ func (w *World) TakeWritable(ctx context.Context, id string) error {
 		}
 	}
 	return nil
-}
-
-// GiveBack runs the give-back a host's interval runs on the named VM's RAM:
-// every copy a write fault made that still holds its origin's bytes goes back.
-func (w *World) GiveBack(ctx context.Context, id string) error {
-	_, g := w.runningVM(id)
-	if g == nil {
-		return nil
-	}
-	return g.giveBack(ctx)
 }
 
 // landed is a checkpoint that reported durable: it supersedes every earlier

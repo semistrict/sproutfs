@@ -47,9 +47,6 @@ func TestConfigTakesTheDocumentedDefaults(t *testing.T) {
 	if config.LossWindow != 5*time.Minute {
 		t.Fatalf("loss window %s", config.LossWindow)
 	}
-	if config.GiveBackInterval != 10*time.Second {
-		t.Fatalf("give-back interval %s", config.GiveBackInterval)
-	}
 	// Unset, the flush bound is the host's default: twice the interval.
 	if config.FlushBound != 0 {
 		t.Fatalf("flush bound %s, want the host's default", config.FlushBound)
@@ -342,29 +339,6 @@ func TestConfigRefusesALossWindowBelowTheCheckpointInterval(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "SPROUTFS_LOSS_WINDOW is 10s") {
 		t.Fatalf("error %q", err)
-	}
-}
-
-// The give-back keeps its own schedule: a deployment that disables checkpoints
-// still gives its guests' unchanged copies back, and one that disables the
-// give-back says so with a negative interval rather than a zero.
-func TestConfigKeepsTheGiveBackIntervalApartFromCheckpoints(t *testing.T) {
-	values := minimal()
-	values["SPROUTFS_CHECKPOINT_INTERVAL"] = "-1s"
-	values["SPROUTFS_LOSS_WINDOW"] = "0"
-	values["SPROUTFS_GIVE_BACK_INTERVAL"] = "2s"
-	config, err := loadConfig(environ(values))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if config.GiveBackInterval != 2*time.Second || config.CheckpointInterval >= 0 {
-		t.Fatalf("give-back interval %s with checkpoint interval %s, want 2s and disabled",
-			config.GiveBackInterval, config.CheckpointInterval)
-	}
-	values["SPROUTFS_GIVE_BACK_INTERVAL"] = "0s"
-	if _, err := loadConfig(environ(values)); err == nil ||
-		!strings.Contains(err.Error(), `SPROUTFS_GIVE_BACK_INTERVAL is "0s"`) {
-		t.Fatalf("a zero give-back interval = %v, want it refused", err)
 	}
 }
 

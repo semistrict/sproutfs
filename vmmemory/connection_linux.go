@@ -815,7 +815,7 @@ func (c *Connection) giveBackColdCopies() {
 			}
 			// A failed write-protect or mapping has already ended the memory
 			// region, and so this session; anything else leaves the copies as
-			// they are, for the interval's give-back or a checkpoint's settle.
+			// they are, cold, for an eviction's give-back or a seal's comparison.
 			slog.Warn("vmmemory: giving back a memory region's cold copies failed",
 				"memory_region", c.cfg.Name, "error", err)
 		}

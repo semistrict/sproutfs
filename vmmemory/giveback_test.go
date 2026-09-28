@@ -8,8 +8,9 @@ import (
 )
 
 // sharedCopy is two memory regions of one checkpoint mapping four pages each,
-// the first of which has taken page 0 writable and stored nothing: the copy a
-// cold read makes where KVM asks for every page writable.
+// the first of which has taken page 0 writable, without having mapped it, and
+// stored nothing: the cold copy a cold read makes where KVM asks for every page
+// writable.
 func sharedCopy(t *testing.T) (f *fixture, a *vmmemory.MemoryRegion, am *mapping, ab *backing,
 	b *vmmemory.MemoryRegion, bm *mapping) {
 	t.Helper()
@@ -17,29 +18,34 @@ func sharedCopy(t *testing.T) (f *fixture, a *vmmemory.MemoryRegion, am *mapping
 	a, am, ab = f.memoryRegion(4)
 	b, bm, _ = f.memoryRegion(4)
 	for page := uint64(0); page < 4; page++ {
-		access(t, a, am, page, false)
+		if page != 0 {
+			access(t, a, am, page, false)
+		}
 		access(t, b, bm, page, false)
 	}
 	access(t, a, am, 0, true)
 	if am.pages[0].place == bm.pages[0].place {
 		t.Fatal("the write fault left the guest on the page it shares")
 	}
+	if s := hostStats(t, f); s.UnmappedCopyOnWrites != 1 {
+		t.Fatalf("the write fault made %d cold copies, want one", s.UnmappedCopyOnWrites)
+	}
 	return f, a, am, ab, b, bm
 }
 
-// giveBack is one pass over a memory region with room for every copy it holds.
+// giveBack is the session's give-back of a memory region's cold copies.
 func giveBack(t *testing.T, r *vmmemory.MemoryRegion) int {
 	t.Helper()
-	given, err := r.GiveBack(t.Context(), 64)
+	given, err := r.GiveBackColdCopies(t.Context())
 	if err != nil {
 		t.Fatalf("giving back: %v", err)
 	}
 	return given
 }
 
-// A copy the guest never stored into goes back with no checkpoint at all: the
-// guest maps the page it was copied from again, and the host holds the page
-// once.
+// A cold copy the guest never stored into goes back with no checkpoint at all:
+// the guest maps the page it was copied from again, and the host holds the
+// page once.
 func TestAnUnchangedCopyIsGivenBackWithoutACheckpoint(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f, a, am, _, _, bm := sharedCopy(t)
@@ -67,9 +73,9 @@ func TestAnUnchangedCopyIsGivenBackWithoutACheckpoint(t *testing.T) {
 		if stats, err := a.Stats(t.Context()); err != nil || !stats.DirtySince.IsZero() {
 			t.Fatalf("the memory region still holds a write since %v: %v", stats.DirtySince, err)
 		}
-		// Nothing is left to compare, so the next pass does nothing.
+		// Nothing is left to compare, so the next give-back does nothing.
 		if given := giveBack(t, a); given != 0 || hostStats(t, f).GiveBackCompares != 1 {
-			t.Fatalf("a second pass gave back %d and compared again", given)
+			t.Fatalf("a second give-back gave back %d and compared again", given)
 		}
 	})
 }
@@ -77,7 +83,7 @@ func TestAnUnchangedCopyIsGivenBackWithoutACheckpoint(t *testing.T) {
 // The guest is pointed at the origin in place and the page is installed, so its
 // next read maps it without a fault. That read is the one that arrives as a
 // write where KVM asks for every page writable, and a page that was revoked
-// instead would be copied again by it, and given back again, at every pass.
+// instead would be copied again by it, and given back again, every time.
 func TestAGuestReadAfterAGiveBackMakesNoNewCopy(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f, a, am, _, _, _ := sharedCopy(t)
@@ -121,7 +127,7 @@ func TestACopyWrittenDuringTheCompareIsKept(t *testing.T) {
 			t.Fatalf("the sibling reads %d, want the byte the volume holds", got[0])
 		}
 		if given := giveBack(t, a); given != 0 || hostStats(t, f).GiveBackCompares != 1 {
-			t.Fatalf("a second pass gave back %d and compared the changed copy again", given)
+			t.Fatalf("a second give-back gave back %d and compared the changed copy again", given)
 		}
 		f.mustCheckpoint(a, ab)
 		if ab.data[0] != 99 || ab.data[1] != 98 {
@@ -175,8 +181,8 @@ func TestAStoreThatTrapsDuringTheCompareIsNotLost(t *testing.T) {
 
 // A client out of mapping budget refuses the command that would point the
 // guest at the origin, and changes nothing. The guest keeps its copy, writable
-// again, and the next pass gives it back.
-func TestACopyWhoseMappingIsRefusedIsGivenBackByTheNextPass(t *testing.T) {
+// again, and its session is handed it back to try again.
+func TestACopyWhoseMappingIsRefusedIsGivenBackByTheNextTry(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f, a, am, _, _, bm := sharedCopy(t)
 		copied := am.pages[0].place
@@ -189,84 +195,13 @@ func TestACopyWhoseMappingIsRefusedIsGivenBackByTheNextPass(t *testing.T) {
 		}
 		am.refuseMap = false
 		if given := giveBack(t, a); given != 1 {
-			t.Fatalf("the next pass gave back %d pages, want exactly one", given)
+			t.Fatalf("the next try gave back %d pages, want exactly one", given)
 		}
 		if am.pages[0].place != bm.pages[0].place {
 			t.Fatal("the guest does not map its sibling's page again")
 		}
 		if got := hostStats(t, f).GiveBackCompares; got != 2 {
-			t.Fatalf("the two passes compared %d times, want 2", got)
-		}
-	})
-}
-
-// The origin is an ordinary resident page, and a pager short of slots takes
-// it. A copy whose origin has gone has nothing to be compared with, then or
-// ever, so it stays the guest's and is not looked at again.
-func TestACopyWhoseOriginWasEvictedIsNotGivenBack(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		f := newFixture(t, 2, 32, 8)
-		a, am, _ := f.memoryRegion(4)
-		access(t, a, am, 0, false)
-		access(t, a, am, 0, true)
-		c, cm := f.attach(f.newUnrelatedBacking(2))
-		access(t, c, cm, 0, false)
-		if given := giveBack(t, a); given != 0 {
-			t.Fatalf("the give-back gave back %d pages whose origin was evicted, want none", given)
-		}
-		if got := hostStats(t, f).GiveBackCompares; got != 0 {
-			t.Fatalf("the give-back compared %d pages, want none", got)
-		}
-		wantMemoryRegion(t, a, 1, 1, 0, "the memory region that keeps its copy")
-	})
-}
-
-// A sealed page belongs to the checkpoint that froze it, and the settle behind
-// that checkpoint is what compares it.
-func TestASealedCopyIsLeftToTheSettle(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		f, a, _, _, _, _ := sharedCopy(t)
-		if err := a.Seal(t.Context()); err != nil {
-			t.Fatal(err)
-		}
-		if given := giveBack(t, a); given != 0 || hostStats(t, f).GiveBackCompares != 0 {
-			t.Fatalf("the give-back gave back %d sealed pages and compared %d, want none",
-				given, hostStats(t, f).GiveBackCompares)
-		}
-		if unchanged := f.settle(a); unchanged != 1 {
-			t.Fatalf("the settle found %d unchanged pages, want exactly one", unchanged)
-		}
-		if err := a.Checkpoint().Retire(t.Context(), true); err != nil {
-			t.Fatal(err)
-		}
-	})
-}
-
-// A pass compares no more copies than it is allowed, and the next one starts
-// where it stopped rather than at the first page again.
-func TestAGiveBackPassIsBoundedAndTheNextOneGoesOn(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		f := newFixture(t, 16, 32, 8)
-		a, am, _ := f.memoryRegion(4)
-		b, bm, _ := f.memoryRegion(4)
-		for page := uint64(0); page < 4; page++ {
-			access(t, a, am, page, false)
-			access(t, b, bm, page, false)
-		}
-		for _, page := range []uint64{0, 2, 3} {
-			access(t, a, am, page, true)
-		}
-		for pass, want := range []uint64{0, 2, 3} {
-			given, err := a.GiveBack(t.Context(), 1)
-			if err != nil || given != 1 {
-				t.Fatalf("pass %d gave back %d pages: %v; want exactly one", pass, given, err)
-			}
-			if am.pages[want].place != bm.pages[want].place {
-				t.Fatalf("pass %d did not give back page %d", pass, want)
-			}
-		}
-		if s := hostStats(t, f); s.GivenBackPages != 3 || s.GiveBackCompares != 3 {
-			t.Fatalf("gave back %d and compared %d, want 3 and 3", s.GivenBackPages, s.GiveBackCompares)
+			t.Fatalf("the two tries compared %d times, want 2", got)
 		}
 	})
 }
@@ -357,84 +292,18 @@ func TestAColdCopyTheGuestStoredIntoIsKept(t *testing.T) {
 
 // A copy a protect trap made is a store into a page the guest mapped, which KVM
 // asks for only when the guest stores, so it is not a cold copy and is left to
-// the interval.
+// the settle behind the next checkpoint.
 func TestACopyOfAMappedPageIsNotAColdCopy(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		f, a, _, _, _, _ := sharedCopy(t)
+		f := newFixture(t, 8, 32, 8)
+		a, am, _ := f.memoryRegion(4)
+		access(t, a, am, 0, false)
+		access(t, a, am, 0, true)
 		if given := giveBackColdCopies(t, a); given != 0 {
 			t.Fatalf("gave back %d copies of a page the guest mapped, want none", given)
 		}
 		if s := hostStats(t, f); s.GiveBackCompares != 0 {
 			t.Fatalf("compared %d copies, want none", s.GiveBackCompares)
-		}
-	})
-}
-
-// A memory region says whether a give-back pass has anything to do. A copy with
-// an origin makes one pending, a pass that gave every copy back leaves nothing,
-// and a region with no copies needs no pass at all.
-func TestAGiveBackIsPendingOnlyWhileACopyWaitsForIt(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		_, a, _, _, b, _ := sharedCopy(t)
-		if !a.GiveBackPending() {
-			t.Fatal("a region holding a copy with an origin has no give-back pending")
-		}
-		if b.GiveBackPending() {
-			t.Fatal("a region that copied nothing has a give-back pending")
-		}
-		if given := giveBack(t, a); given != 1 {
-			t.Fatalf("the give-back gave back %d pages, want one", given)
-		}
-		if a.GiveBackPending() {
-			t.Fatal("a give-back is still pending after the pass gave every copy back")
-		}
-	})
-}
-
-// A pass bounded below the copies a region holds leaves the rest pending, and
-// the next pass takes them up.
-func TestABoundedPassLeavesTheRestPending(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		_, a, am, _, _, _ := sharedCopy(t)
-		access(t, a, am, 1, true)
-		if given, err := a.GiveBack(t.Context(), 1); err != nil || given != 1 {
-			t.Fatalf("a pass of one gave back %d: %v", given, err)
-		}
-		if !a.GiveBackPending() {
-			t.Fatal("the copy a bounded pass did not reach is not pending")
-		}
-		if given := giveBack(t, a); given != 1 || a.GiveBackPending() {
-			t.Fatalf("the next pass gave back %d and left pending %t, want 1 and nothing", given, a.GiveBackPending())
-		}
-	})
-}
-
-// A region that has made a pass's worth of copies with an origin says so at
-// once, rather than leaving them to the next interval. It says so once until a
-// pass begins.
-func TestARegionSaysWhenItHasMadeAPassWorthOfCopies(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		f := newFixture(t, 8, 32, 8)
-		a, am, _ := f.memoryRegion(4)
-		due := 0
-		a.NotifyCopies(2, func() { due++ })
-		for page := uint64(0); page < 4; page++ {
-			access(t, a, am, page, false)
-		}
-		access(t, a, am, 0, true)
-		if due != 0 {
-			t.Fatalf("one copy of a pass of two said the pass was due %d times", due)
-		}
-		access(t, a, am, 1, true)
-		access(t, a, am, 2, true)
-		if due != 1 {
-			t.Fatalf("three copies of a pass of two said the pass was due %d times, want once", due)
-		}
-		giveBack(t, a)
-		access(t, a, am, 3, true)
-		access(t, a, am, 0, true)
-		if due != 2 {
-			t.Fatalf("two copies after a pass said it was due %d times in all, want twice", due)
 		}
 	})
 }

@@ -120,6 +120,27 @@ func (r *MemoryRegion) markCold(b *binding, origin *resident) bool {
 	return true
 }
 
+// requeueCold hands a cold copy back to its session when a give-back could not
+// finish it, so the session tries it again after coldCopyAge. A copy that is
+// no longer cold is not handed back.
+func (r *MemoryRegion) requeueCold(b *binding) {
+	r.bindingsMu.Lock()
+	queued := b.cold && b.dirty && b.checkpoint == nil
+	if queued {
+		if r.coldCopies == nil {
+			r.coldCopies = make(map[uint64]struct{})
+		}
+		r.coldCopies[b.index] = struct{}{}
+	}
+	r.bindingsMu.Unlock()
+	if queued {
+		select {
+		case r.coldCopied <- struct{}{}:
+		default:
+		}
+	}
+}
+
 // uncoldLocked ends b's copy being cold, if it is: a comparison found it
 // changed, it was given back, or its dirty epoch or its origin ended some other
 // way. Every transition that changes a page's origin or ends its dirty epoch
@@ -189,8 +210,8 @@ func (r *MemoryRegion) takeColdCopies() []uint64 {
 	return pages
 }
 
-// GiveBackColdCopies gives back at once, as GiveBack does, the cold copies
-// recorded and not yet taken, and reports how many went back. A session takes
+// GiveBackColdCopies gives back at once the cold copies recorded and not yet
+// taken, and reports how many went back: see giveback.go. A session takes
 // them itself, coldCopyAge after they are made; this is for a pager with no
 // session, and for a test.
 func (r *MemoryRegion) GiveBackColdCopies(ctx context.Context) (int, error) {

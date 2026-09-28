@@ -102,13 +102,6 @@ type Config struct {
 	// in lockstep. Zero selects DefaultCheckpointInterval; a negative value disables
 	// the loop, which is what a test that drives its own captures wants.
 	CheckpointInterval time.Duration
-	// GiveBackInterval is how often each VM this host runs has the RAM copies
-	// its guest never changed given back (vmmemory.MemoryRegion.GiveBack). It
-	// has nothing to do with checkpoints: a pass reads no checkpoint and pauses
-	// nothing, and one runs sooner for a VM that has made a pass's worth of
-	// copies, and never for one that has made none. Zero selects
-	// DefaultGiveBackInterval; a negative value disables the loop.
-	GiveBackInterval time.Duration
 	// LossWindow is how long a VM this host runs may hold a write no checkpoint
 	// covers. It is the interval's companion: the interval says how often a VM is
 	// made durable when everything works, and this says what happens when it does
@@ -187,7 +180,6 @@ type Host struct {
 	// own rather than taking it from the checkpoint interval.
 	holdTimeout        time.Duration
 	checkpointInterval time.Duration
-	giveBackInterval   time.Duration
 	epochInterval      time.Duration
 	// lossWindow is how old a VM's oldest unpublished write may get before this
 	// host reports its stores as waiting and stops spacing its retries out by
@@ -242,12 +234,6 @@ const DefaultCacheBytes = int64(1) << 30
 // guest time, which the requirements accept in exchange for never blocking a
 // guest write on the object store.
 const DefaultCheckpointInterval = 60 * time.Second
-
-// DefaultGiveBackInterval is how often a host with no give-back interval
-// configured gives back each VM's unchanged RAM copies. A pass is bounded and
-// skipped for a VM with nothing to give back, so it can be much shorter than
-// the checkpoint interval: a page held twice is memory the host could use.
-const DefaultGiveBackInterval = 10 * time.Second
 
 // DefaultLossWindow is how long a host with no window configured lets a VM hold
 // a write no checkpoint covers. It is five checkpoint intervals: long enough
@@ -334,10 +320,6 @@ func StartHost(ctx context.Context, config Config) (*Host, error) {
 	if interval == 0 {
 		interval = DefaultCheckpointInterval
 	}
-	giveBack := config.GiveBackInterval
-	if giveBack == 0 {
-		giveBack = DefaultGiveBackInterval
-	}
 	epochs := config.EpochInterval
 	if epochs == 0 {
 		epochs = DefaultEpochInterval
@@ -349,7 +331,7 @@ func StartHost(ctx context.Context, config Config) (*Host, error) {
 		migration: config.Migration, closeMachine: config.MachineClosed, pagers: config.Pagers,
 		holdTimeout: config.Migration.HoldTimeout,
 		clock:       platform.ClockOr(config.Clock), entropy: platform.EntropyOr(config.Entropy),
-		cacheBytes: config.CacheBytes, checkpointInterval: interval, giveBackInterval: giveBack, epochInterval: epochs,
+		cacheBytes: config.CacheBytes, checkpointInterval: interval, epochInterval: epochs,
 		lossWindow: window, flushBound: flushBoundOf(config.FlushBound, interval),
 		done: make(chan struct{}),
 		machines: machines{running: make(map[string]*registration), migrated: make(map[string]*migratedHold),

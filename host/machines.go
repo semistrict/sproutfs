@@ -199,9 +199,6 @@ func (h *Host) run(vmID string, entry *registration) {
 	if h.checkpointInterval > 0 {
 		running.Go(func() { h.checkpointing(ctx, vmID, entry) })
 	}
-	if h.giveBackInterval > 0 {
-		running.Go(h.givingBack(ctx, vmID, entry))
-	}
 	if entry.pull {
 		running.Go(func() { h.pulling(ctx, vmID, entry) })
 	}
