@@ -58,7 +58,50 @@ import (
 // not the only one ever looked at. A sealed page is not a candidate: the settle
 // behind its checkpoint compares it.
 func (r *MemoryRegion) GiveBack(ctx context.Context, limit int) (int, error) {
-	return r.givingBack(ctx, func() []uint64 { return r.copies(limit) })
+	r.host.mu.Lock()
+	r.host.stats.GiveBackPasses++
+	r.host.mu.Unlock()
+	given, err := r.givingBack(ctx, func() []uint64 { return r.copies(limit) })
+	r.bindingsMu.Lock()
+	defer r.bindingsMu.Unlock()
+	r.backlog = false
+	for _, b := range r.dirtyBindings {
+		if b.origin != nil {
+			r.backlog = true
+			break
+		}
+	}
+	return given, err
+}
+
+// GiveBackPending reports whether a give-back pass has anything to look at:
+// a copy with an origin made since the last pass began, or one the last pass
+// left, because it reached its limit or could not compare it yet. A memory
+// region with neither needs no pass at all, which is what an idle guest costs.
+func (r *MemoryRegion) GiveBackPending() bool {
+	r.bindingsMu.Lock()
+	defer r.bindingsMu.Unlock()
+	return r.copiedSince > 0 || r.backlog
+}
+
+// NotifyCopies has due called once this memory region has made limit copies
+// with an origin since the last give-back pass began, so a guest that copies
+// many shared pages is given back without waiting for the next pass. It is
+// called once per pass at most, on the copying fault's goroutine and under the
+// region's binding lock, so it must only signal: never block, and never call
+// back into the region.
+func (r *MemoryRegion) NotifyCopies(limit int, due func()) {
+	r.bindingsMu.Lock()
+	defer r.bindingsMu.Unlock()
+	r.copiesLimit, r.copiesDue = limit, due
+}
+
+// copiedLocked counts one copy with an origin. Caller holds bindingsMu.
+func (r *MemoryRegion) copiedLocked() {
+	r.copiedSince++
+	if r.copiesDue != nil && r.copiedSince == r.copiesLimit {
+		r.copiesDue()
+	}
 }
 
 // givingBack is one give-back pass over the pages that pages lists, which it
@@ -90,6 +133,7 @@ func (r *MemoryRegion) givingBack(ctx context.Context, pages func() []uint64) (i
 func (r *MemoryRegion) copies(limit int) []uint64 {
 	r.bindingsMu.Lock()
 	defer r.bindingsMu.Unlock()
+	r.copiedSince = 0
 	var pages []uint64
 	for index, b := range r.dirtyBindings {
 		if b.origin != nil {

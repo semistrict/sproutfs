@@ -1196,9 +1196,15 @@ the guest's access type through, or KVM userfault. Both are TASK-32 in the
 
 RAM is never checkpointed on the interval, so for RAM "the next checkpoint" may
 never come. A RAM page that a fork shares with its parent would then stay a
-private copy for as long as the VM lives. So the host gives such copies back on
-the interval, with no checkpoint and no pause: `MemoryRegion.GiveBack`, called
-once an interval for each VM's RAM (`host/giveback.go`). A disk's copies are
+private copy for as long as the VM lives. So the host gives such copies back
+with no checkpoint and no pause: `MemoryRegion.GiveBack`, called for each VM's
+RAM on a schedule of its own (`host/giveback.go`). The give-back interval
+(`SPROUTFS_GIVE_BACK_INTERVAL`, 10 s by default) has nothing to do with the
+checkpoint interval, and a host that checkpoints nothing still keeps it. A VM
+that has made a pass's worth of copies with an origin since the last pass is
+given back at once (`MemoryRegion.NotifyCopies`), and a region with nothing
+pending costs no pass at all (`GiveBackPending`). Each pass is a callback of the
+host's clock, so a VM costs one timer between passes. A disk's copies are
 settled by the checkpoint the interval takes of the disk instead. Cold copies of
 either are given back sooner: see [cold copies](#cold-copies).
 

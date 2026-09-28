@@ -321,6 +321,13 @@ func loadConfig(lookup func(string) string) (config, error) {
 	}
 	c.CheckpointInterval = parsed
 
+	// The give-back is its own schedule: a pass reads no checkpoint, so a host
+	// that checkpoints nothing still gives its guests' unchanged copies back.
+	giveBack := text("SPROUTFS_GIVE_BACK_INTERVAL", "10s")
+	if c.GiveBackInterval, err = time.ParseDuration(giveBack); err != nil || c.GiveBackInterval == 0 {
+		fail("SPROUTFS_GIVE_BACK_INTERVAL is %q, want a duration such as 10s, or a negative value to disable it", giveBack)
+	}
+
 	// The window is what bounds a host loss in time, where the interval bounds
 	// it when everything works. Zero here is the deployment turning it off,
 	// which the host spells as a negative value — zero there is the default.

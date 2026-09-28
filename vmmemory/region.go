@@ -74,9 +74,16 @@ type MemoryRegion struct {
 	// changes whether a page is one the next seal would protect, all of which
 	// hold bindingsMu.
 	dirtyRuns pageranges.Map
-	// givenBackTo is the page the next give-back pass starts at, guarded by
-	// bindingsMu. See GiveBack.
+	// givenBackTo is the page the next give-back pass starts at, copiedSince
+	// how many copies with an origin this memory region made since that pass
+	// began, and backlog whether the last pass left copies with an origin it
+	// did not give back. copiesDue is called once copiedSince reaches
+	// copiesLimit. All are guarded by bindingsMu. See GiveBack.
 	givenBackTo uint64
+	copiedSince int
+	backlog     bool
+	copiesDue   func()
+	copiesLimit int
 	// coldPages is every cold copy of this memory region, and coldCopies the
 	// ones its session's worker has not taken yet, both guarded by bindingsMu;
 	// coldCopied wakes that worker. See cold.go.

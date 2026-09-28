@@ -369,3 +369,72 @@ func TestACopyOfAMappedPageIsNotAColdCopy(t *testing.T) {
 		}
 	})
 }
+
+// A memory region says whether a give-back pass has anything to do. A copy with
+// an origin makes one pending, a pass that gave every copy back leaves nothing,
+// and a region with no copies needs no pass at all.
+func TestAGiveBackIsPendingOnlyWhileACopyWaitsForIt(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		_, a, _, _, b, _ := sharedCopy(t)
+		if !a.GiveBackPending() {
+			t.Fatal("a region holding a copy with an origin has no give-back pending")
+		}
+		if b.GiveBackPending() {
+			t.Fatal("a region that copied nothing has a give-back pending")
+		}
+		if given := giveBack(t, a); given != 1 {
+			t.Fatalf("the give-back gave back %d pages, want one", given)
+		}
+		if a.GiveBackPending() {
+			t.Fatal("a give-back is still pending after the pass gave every copy back")
+		}
+	})
+}
+
+// A pass bounded below the copies a region holds leaves the rest pending, and
+// the next pass takes them up.
+func TestABoundedPassLeavesTheRestPending(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		_, a, am, _, _, _ := sharedCopy(t)
+		access(t, a, am, 1, true)
+		if given, err := a.GiveBack(t.Context(), 1); err != nil || given != 1 {
+			t.Fatalf("a pass of one gave back %d: %v", given, err)
+		}
+		if !a.GiveBackPending() {
+			t.Fatal("the copy a bounded pass did not reach is not pending")
+		}
+		if given := giveBack(t, a); given != 1 || a.GiveBackPending() {
+			t.Fatalf("the next pass gave back %d and left pending %t, want 1 and nothing", given, a.GiveBackPending())
+		}
+	})
+}
+
+// A region that has made a pass's worth of copies with an origin says so at
+// once, rather than leaving them to the next interval. It says so once until a
+// pass begins.
+func TestARegionSaysWhenItHasMadeAPassWorthOfCopies(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newFixture(t, 8, 32, 8)
+		a, am, _ := f.memoryRegion(4)
+		due := 0
+		a.NotifyCopies(2, func() { due++ })
+		for page := uint64(0); page < 4; page++ {
+			access(t, a, am, page, false)
+		}
+		access(t, a, am, 0, true)
+		if due != 0 {
+			t.Fatalf("one copy of a pass of two said the pass was due %d times", due)
+		}
+		access(t, a, am, 1, true)
+		access(t, a, am, 2, true)
+		if due != 1 {
+			t.Fatalf("three copies of a pass of two said the pass was due %d times, want once", due)
+		}
+		giveBack(t, a)
+		access(t, a, am, 3, true)
+		access(t, a, am, 0, true)
+		if due != 2 {
+			t.Fatalf("two copies after a pass said it was due %d times in all, want twice", due)
+		}
+	})
+}

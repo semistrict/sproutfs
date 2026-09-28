@@ -225,6 +225,7 @@ func Start(ctx context.Context, config SupervisorConfig) (Service, error) {
 		CacheBytes:         config.CacheBytes,
 		Cache:              checkpoint.CacheConfig{Disk: s.cacheDisk, DiskBytes: config.CacheDiskBytes},
 		CheckpointInterval: config.CheckpointInterval,
+		GiveBackInterval:   config.GiveBackInterval,
 		LossWindow:         config.LossWindow,
 		FlushBound:         config.FlushBound,
 		// The page server's budgets are sized against the largest page either

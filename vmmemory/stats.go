@@ -68,7 +68,8 @@ type Stats struct {
 	// GiveBackCompares counts the copies a give-back write-protected and
 	// compared with the page they were copied from, and GivenBackPages those
 	// it found unchanged and gave back without a checkpoint: see GiveBack.
-	GiveBackCompares, GivenBackPages uint64
+	// GiveBackPasses counts the calls of GiveBack.
+	GiveBackCompares, GivenBackPages, GiveBackPasses uint64
 	// ChangedBlocks counts, where Config.MeasureChanges is on, the 4 KiB
 	// blocks of the pages checkpoints settled whose bytes the guest changed
 	// since the page became private; MeasuredPages the pages that was known

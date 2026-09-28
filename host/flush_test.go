@@ -24,6 +24,7 @@ func flushHost(t *testing.T) (*hostHarness, *sim.Clock, *volume.VM, *machine) {
 	clock := sim.New(sim.Config{Seed: 1}).NewClock("host")
 	h.configs[0].Clock = clock
 	h.configs[0].EpochInterval = -1
+	h.configs[0].GiveBackInterval = -1
 	h.configs[0].CheckpointInterval = time.Hour
 	h.configs[0].FlushBound = flushBound
 	pagers := newMixedPagers(t, h.configs[0].Resources, func(cfg *vmmemory.Config) { cfg.Clock = clock })
@@ -149,6 +150,7 @@ func TestTheDefaultFlushBoundIsTwoIntervals(t *testing.T) {
 	clock := sim.New(sim.Config{Seed: 1}).NewClock("host")
 	h.configs[0].Clock = clock
 	h.configs[0].EpochInterval = -1
+	h.configs[0].GiveBackInterval = -1
 	h.configs[0].CheckpointInterval = time.Hour
 	pagers := newMixedPagers(t, h.configs[0].Resources, func(cfg *vmmemory.Config) { cfg.Clock = clock })
 	h.configs[0].Pagers = pagers.pagers
@@ -192,6 +194,7 @@ func TestAFlushWithNoBoundCompletesAtOnce(t *testing.T) {
 	clock := sim.New(sim.Config{Seed: 1}).NewClock("host")
 	h.configs[0].Clock = clock
 	h.configs[0].EpochInterval = -1
+	h.configs[0].GiveBackInterval = -1
 	h.configs[0].CheckpointInterval = time.Hour
 	h.configs[0].FlushBound = -1
 	pagers := newMixedPagers(t, h.configs[0].Resources, func(cfg *vmmemory.Config) { cfg.Clock = clock })
