@@ -48,7 +48,6 @@
   .host { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; min-height: 180px;
           transition: opacity .3s, filter .3s; position: relative; }
   .host.down { opacity: .45; filter: grayscale(1); }
-  .host.down::after { content: "lost"; position: absolute; top: 10px; right: 12px; color: var(--warn); font-weight: 700; }
   .host h3 { margin: 0 0 2px; font-size: 14px; }
   .host .sub { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
   .vm { border: 1px solid var(--line); border-radius: 8px; padding: 8px; margin-top: 8px; }
@@ -61,6 +60,7 @@
   .page { flex: 0 1 44px; min-width: 26px; height: 34px; border-radius: 5px; border: 2px solid transparent; display: grid;
           place-items: center; font-size: 11px; color: #1f1e1b; transition: background .5s, border-color .3s; position: relative; }
   .page.wide { flex-basis: 70px; }
+  .page.borrowed { flex-basis: 64px; font-size: 10px; }
   .page.unpublished { border-color: var(--warn);
     background-image: repeating-linear-gradient(135deg, transparent 0 5px, rgba(217,115,28,.28) 5px 7px); }
   .page.cold { opacity: .5; border-style: dashed; border-color: var(--muted); }
@@ -113,6 +113,7 @@
     <div class="legend">
       <span><span class="swatch" style="background:#cfe3d4"></span>a page, coloured by the checkpoint that published it</span>
       <span><span class="swatch" style="border:2px solid var(--warn)"></span>changed since: bytes no checkpoint has, only in that host's memory</span>
+      <span><span class="swatch" style="border:2px dashed var(--muted);opacity:.6"></span>not in this host's memory: read from the store when the guest touches it</span>
       <span><span class="swatch" style="background:var(--obj);border-radius:50%;width:10px;height:10px"></span>object-store request</span>
       <span><span class="swatch" style="background:var(--net);border-radius:50%;width:10px;height:10px"></span>host-to-host traffic</span>
     </div>
@@ -155,7 +156,8 @@ const CHAPTERS = [
       "write vm-1 ram0 [0]": "The guest writes page 0…",
       "checkpoint vm-1": "…a checkpoint saves it as #2…",
       "write vm-1 ram0 [1]": "…and then it writes page 1, which no checkpoint holds.",
-      "fork vm-1-a onto host-1": "vm-1 is forked into <b>vm-1-a</b> on host-1. The child's page 0 is still <b>vm-1 #2</b>: shared, not copied. Page 1 was only in host-0's memory, so the child fetched it over the network, then saved it in its own first checkpoint. vm-1's record now <b>pins</b> the checkpoints the child reads, so they are never deleted.",
+      "fork vm-1-a onto host-1": "vm-1 is forked into <b>vm-1-a</b> on host-1. The child's page 0 reads <b>vm-1 #2</b>: shared, not copied. Page 1 was only in host-0's memory, so host-1 pulled it over the network and saved it in the child's first checkpoint, <b>vm-1-a #1</b>. Behind the fork, vm-1 saves the fork point as <b>#3</b>, and its record <b>pins</b> #2 and #3 so they are never deleted.",
+      "fork vm-1-b onto host-0": "A second child, <b>vm-1-b</b>, on vm-1's own host. It uploads no page: page 0 reads <b>vm-1 #2</b> and page 1 reads <b>vm-1 #3</b>, the fork point. Three VMs now read the same saved pages.",
     } },
   { id: "migration", title: "5. A migration moves memory host to host",
     idea: "A migration uploads no pages. The VM runs on the new host at once, and its unsaved pages follow over the network.",
@@ -223,7 +225,7 @@ function drawState(state, previous) {
     box.className = "host" + (h.up ? "" : " down");
     box.dataset.host = h.name;
     const holding = h.holding.length ? ` · holding pages for ${h.holding.join(", ")}` : "";
-    box.innerHTML = `<h3>${h.name}</h3><div class="sub">${h.up ? "running" : "gone"}${holding}</div>`;
+    box.innerHTML = `<h3>${h.name}</h3><div class="sub">${h.up ? "running" : "its process and memory are gone"}${holding}</div>`;
     for (const v of h.vms) {
       const card = document.createElement("div");
       card.className = "vm";
@@ -243,7 +245,9 @@ function drawState(state, previous) {
           cell.className = "page" + (vol.page_bytes > 4096 ? " wide" : "") +
             (p.unpublished ? " unpublished" : "") + (p.resident ? "" : " cold");
           cell.style.background = p.vm ? names.colour(p.vm, p.checkpoint) : "transparent";
-          cell.textContent = p.vm ? names.label(p.vm, p.checkpoint).replace(/^.* /, "") : "0";
+          // A page of another VM's checkpoint says whose it is: that is a fork's sharing.
+          cell.textContent = !p.vm ? "0" : p.vm === v.id ? names.label(p.vm, p.checkpoint).replace(/^.* /, "") : names.label(p.vm, p.checkpoint);
+          if (p.vm && p.vm !== v.id) cell.classList.add("borrowed");
           cell.title = `${vol.name} page ${i}: ` + (p.vm ? `published by ${names.label(p.vm, p.checkpoint)}` : "zeroes") +
             (p.unpublished ? ", changed since: only in this host's memory" : "") +
             (p.resident ? "" : ", not in this host's memory yet");
@@ -331,16 +335,19 @@ async function animate(run, index) {
     flights.push({ from, to, kind });
   }
   const gap = Math.max(25, Math.min(140, 1600 / Math.max(1, flights.length)));
+  const landings = [];
   for (const f of flights) {
     const [x0, y0] = centre(f.from), [x1, y1] = centre(f.to);
     const dot = document.createElement("div");
     dot.className = `dot ${f.kind}`;
     $("stage").appendChild(dot);
-    dot.animate([{ transform: `translate(${x0}px, ${y0}px)`, opacity: 0.9 },
+    const flight = dot.animate([{ transform: `translate(${x0}px, ${y0}px)`, opacity: 0.9 },
                  { transform: `translate(${x1}px, ${y1}px)`, opacity: 0.9 }],
-                { duration: 650, easing: "ease-in-out" }).finished.then(() => dot.remove());
+                { duration: 650, easing: "ease-in-out" });
+    landings.push(flight.finished.then(() => dot.remove()));
     await new Promise((r) => setTimeout(r, gap));
   }
+  await Promise.all(landings);
 }
 
 function renderChapter() {

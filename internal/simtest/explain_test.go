@@ -243,9 +243,27 @@ func TestExplainAForkSharesInsteadOfCopying(t *testing.T) {
 		c.step("fork vm-1-a onto host-1", func() error {
 			return c.world.Fork(c.ctx, simtest.VMSpec{ID: "vm-1-a", Parent: "vm-1", Host: 1, Volumes: explainVolumes})
 		})
-		inherited, host := page(t, c.last(), "vm-1-a", simtest.MemoryVolume, 0)
-		if host != "host-1" || inherited.VM == "" {
-			t.Fatalf("the child's page 0 is %+v on %s, want a checkpoint's page on host-1", inherited, host)
+		c.step("fork vm-1-b onto host-0", func() error {
+			return c.world.Fork(c.ctx, simtest.VMSpec{ID: "vm-1-b", Parent: "vm-1", Host: 0, Volumes: explainVolumes})
+		})
+		parent, _ := page(t, c.last(), "vm-1", simtest.MemoryVolume, 0)
+		first, firstHost := page(t, c.last(), "vm-1-a", simtest.MemoryVolume, 0)
+		second, secondHost := page(t, c.last(), "vm-1-b", simtest.MemoryVolume, 0)
+		shared := simtest.PageView{VM: "vm-1", Checkpoint: parent.Checkpoint}
+		if firstHost != "host-1" || secondHost != "host-0" ||
+			first.VM != shared.VM || first.Checkpoint != shared.Checkpoint ||
+			second.VM != shared.VM || second.Checkpoint != shared.Checkpoint {
+			t.Fatalf("page 0 is %+v in vm-1, %+v in vm-1-a on %s and %+v in vm-1-b on %s; want both children on vm-1's checkpoint, on host-1 and host-0",
+				parent, first, firstHost, second, secondHost)
+		}
+		// The child on the parent's host reads the fork point the parent saved;
+		// the one on the other host saved the page in its own first checkpoint.
+		point, _ := page(t, c.last(), "vm-1", simtest.MemoryVolume, 1)
+		pulled, _ := page(t, c.last(), "vm-1-a", simtest.MemoryVolume, 1)
+		local, _ := page(t, c.last(), "vm-1-b", simtest.MemoryVolume, 1)
+		if point.VM != "vm-1" || point.Unpublished || local.VM != point.VM || local.Checkpoint != point.Checkpoint || pulled.VM != "vm-1-a" {
+			t.Fatalf("page 1 is %+v in vm-1, %+v in vm-1-a and %+v in vm-1-b; want vm-1's fork point in vm-1 and vm-1-b, and vm-1-a's own checkpoint in vm-1-a",
+				point, pulled, local)
 		}
 		c.finish()
 	})
