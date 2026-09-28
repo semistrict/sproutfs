@@ -1,10 +1,10 @@
 ---
 id: TASK-46
 title: Fix the two Firecracker tests that fail on x86_64
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-26 19:23'
-updated_date: '2026-09-27 23:17'
+updated_date: '2026-09-28 00:17'
 labels:
   - embedder
 dependencies:
@@ -21,8 +21,8 @@ The GCE run of 2026-09-26 (docs/measurements/firecracker-x86_64-2026-09-26.md) r
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Both tests pass on x86_64 GCE in both arena modes, or a product defect they found is fixed
-- [ ] #2 Both tests honour SPROUTFS_ARENA
+- [x] #1 Both tests pass on x86_64 GCE in both arena modes, or a product defect they found is fixed
+- [x] #2 Both tests honour SPROUTFS_ARENA
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -36,3 +36,9 @@ GCE x86 2026-09-27, after TASK-59's cold copies (cold state, seal leaves unchang
 
 GCE rerun with per-guest residency (bf835675): at the agent timeout calm holds exactly its share (resident 24) but has 36 private pages; hostile resident 24, private 60. RAM 28623 faults, 28320 evictions, 76 s fault time. A booted x86 guest touches 32 pages at 2 MiB (64 MiB of its 128), so the 24-page share the test gives each guest (3/8 of mapped RAM) is below the neighbour's own working set at 2 MiB: calm thrashes on its own pages, and an agent exec takes past 30 s. Fair share works as designed; the test's premise that the share holds the working set holds on aarch64 and not on x86. Needs the owner's call: resize the test's arena for x86, run it at 4 KiB RAM pages, or change the product.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+RAM hog: the 80 MiB hog exceeded an x86 guest's MemAvailable and stalled in guest reclaim; it now sizes itself from MemAvailable. The calm neighbour then thrashed because a booted x86 guest needs 32 pages at 2 MiB, above the 24-page share; the owner chose to give each guest a 32-page share (arena = half the mapped RAM). Pull test: its host now honours SPROUTFS_ARENA, which exposed (1) a seccomp kill of debug Firecracker's memory thread on F_GETFD (fixed on sproutfs) and (2) a pulled parent re-reading its fork point's pages from the store; pulled VMs now keep later publications on the disk (owner's choice). Verified on GCE x86_64: both tests pass in both arenas, the pull test 20 of 20 per arena.
+<!-- SECTION:FINAL_SUMMARY:END -->
