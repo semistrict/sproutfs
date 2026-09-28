@@ -17,7 +17,10 @@ import (
 // all of it. Each published page the child reaches is moved out of the parent's
 // private file into the tenant's shared file. The parent then reads its working
 // set again. Its mapping of each moved page is the shared copy, so that read
-// faults on none of them and copies none: a move saves the page's memory.
+// faults on none of them and copies none: a move saves the page's memory. The
+// guest's kernel goes on running meanwhile, and a store it makes into a moved
+// page traps on the write protection and copies it, as a store into any shared
+// page does; those are the only faults the reread may see.
 func TestFirecrackerOwnerRereadsMovedPages(t *testing.T) {
 	binary := os.Getenv("SPROUTFS_FIRECRACKER")
 	if binary == "" {
@@ -115,12 +118,13 @@ func TestFirecrackerOwnerRereadsMovedPages(t *testing.T) {
 		t.Fatal(err)
 	}
 	faults, copies := after.Faults-before.Faults, after.CopyOnWrites-before.CopyOnWrites
+	stores := after.ProtectTraps - before.ProtectTraps
 	t.Logf("moved=%d owner reread: faults=%d copy_on_writes=%d unmapped_copy_on_writes=%d read_traps=%d store_traps=%d protect_traps=%d revoked_pages=%d; saved=%d MiB",
 		moved, faults, copies, after.UnmappedCopyOnWrites-before.UnmappedCopyOnWrites,
 		after.ReadTraps-before.ReadTraps, after.StoreTraps-before.StoreTraps, after.ProtectTraps-before.ProtectTraps,
 		afterChild.RevokedPages-beforeChild.RevokedPages, sharing.Ram.SavedBytes>>20)
-	if faults != 0 || copies != 0 {
-		t.Fatalf("the parent's reread of %d moved pages faulted %d times and copied %d pages, want neither",
-			moved, faults, copies)
+	if faults != stores || copies != stores {
+		t.Fatalf("the parent's reread of %d moved pages faulted %d times and copied %d pages, want only the %d stores it made",
+			moved, faults, copies, stores)
 	}
 }

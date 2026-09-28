@@ -12,7 +12,8 @@
 #
 # SPROUTFS_FIRECRACKER_RUN narrows the qualification to the Firecracker tests
 # its -test.run pattern selects and skips every other suite, which is what a
-# run that checks a few tests on x86-64 needs. SPROUTFS_VMTEST_RUN does the same
+# run that checks a few tests on x86-64 needs, SPROUTFS_FIRECRACKER_COUNT times
+# (default 1). SPROUTFS_VMTEST_RUN does the same
 # for the pager's UFFD suite (internal/vmtest), running what it selects
 # SPROUTFS_VMTEST_COUNT times (default 1) and nothing else, which is what a
 # test suspected of flaking needs.
@@ -37,6 +38,7 @@ case ${SPROUTFS_GCE_SMOKE:-0} in 0|1) ;; *) echo "SPROUTFS_GCE_SMOKE must be 0 o
 [[ ${SPROUTFS_FIRECRACKER_RUN:-} =~ ^[A-Za-z0-9_|^$]*$ ]] || { echo "SPROUTFS_FIRECRACKER_RUN is a -test.run pattern of test names, | and anchors" >&2; exit 2; }
 [[ ${SPROUTFS_VMTEST_RUN:-} =~ ^[A-Za-z0-9_|^$/]*$ ]] || { echo "SPROUTFS_VMTEST_RUN is a -test.run pattern of test names, | / and anchors" >&2; exit 2; }
 [[ ${SPROUTFS_VMTEST_COUNT:-} =~ ^[0-9]*$ ]] || { echo "SPROUTFS_VMTEST_COUNT is a number" >&2; exit 2; }
+[[ ${SPROUTFS_FIRECRACKER_COUNT:-} =~ ^[0-9]*$ ]] || { echo "SPROUTFS_FIRECRACKER_COUNT is a number" >&2; exit 2; }
 case ${SPROUTFS_BENCH_PLAIN_HUGE_PAGES:-} in ''|None|Transparent|2M) ;; *) echo "SPROUTFS_BENCH_PLAIN_HUGE_PAGES must be None, Transparent or 2M" >&2; exit 2 ;; esac
 [[ ${SPROUTFS_GCE_BUCKET:-} =~ ^[a-z0-9._-]*$ ]] || { echo "SPROUTFS_GCE_BUCKET is a bucket name" >&2; exit 2; }
 [[ ${SPROUTFS_GCE_SERVICE_ACCOUNT:-} =~ ^[a-z0-9@._-]*$ ]] || { echo "SPROUTFS_GCE_SERVICE_ACCOUNT is a service account email" >&2; exit 2; }
@@ -238,7 +240,7 @@ PY
         sudo systemctl is-active sproutfs-bench-expire.timer
         mkdir -p '"$run"'/source '"$run"'/results
         tar -xzf source.tar.gz -C '"$run"'/source
-        sudo env SPROUTFS_GCE_BUILD_ONLY='"${SPROUTFS_GCE_BUILD_ONLY:-0}"' SPROUTFS_GCE_FANOUT='"${SPROUTFS_GCE_FANOUT:-0}"' SPROUTFS_GCE_BOOTSURVEY='"${SPROUTFS_GCE_BOOTSURVEY:-0}"' SPROUTFS_GCE_QUALIFY='"${SPROUTFS_GCE_QUALIFY:-0}"' SPROUTFS_GCE_WORKLOAD='"${SPROUTFS_GCE_WORKLOAD:-0}"' SPROUTFS_GCE_SMOKE='"${SPROUTFS_GCE_SMOKE:-0}"' SPROUTFS_BENCH_SCENARIOS='"${SPROUTFS_BENCH_SCENARIOS:-}"' SPROUTFS_BENCH_FORKS='"${SPROUTFS_BENCH_FORKS:-}"' SPROUTFS_BENCH_RAM_BYTES='"${SPROUTFS_BENCH_RAM_BYTES:-}"' SPROUTFS_BENCH_ROOT_BYTES='"${SPROUTFS_BENCH_ROOT_BYTES:-}"' SPROUTFS_BENCH_RAM_RESIDENT_BYTES='"${SPROUTFS_BENCH_RAM_RESIDENT_BYTES:-}"' SPROUTFS_BENCH_PMEM_RESIDENT_BYTES='"${SPROUTFS_BENCH_PMEM_RESIDENT_BYTES:-}"' SPROUTFS_RAM_PAGE_BYTES='"${SPROUTFS_RAM_PAGE_BYTES:-}"' SPROUTFS_ARENA='"${SPROUTFS_ARENA:-}"' SPROUTFS_KVM_TRACE='"${SPROUTFS_KVM_TRACE:-0}"' SPROUTFS_FIRECRACKER_RUN='"'${SPROUTFS_FIRECRACKER_RUN:-}'"' SPROUTFS_VMTEST_RUN='"'${SPROUTFS_VMTEST_RUN:-}'"' SPROUTFS_VMTEST_COUNT='"${SPROUTFS_VMTEST_COUNT:-1}"' SPROUTFS_BENCH_PLAIN_HUGE_PAGES='"${SPROUTFS_BENCH_PLAIN_HUGE_PAGES:-}"' SPROUTFS_GCS_BUCKET='"${SPROUTFS_GCE_BUCKET:-}"' SPROUTFS_GCS_PREFIX='"$prefix"' timeout --signal=TERM --kill-after=30s '"$limit"' bash '"$run"'/source/scripts/lib/bench-memory-linux.sh "$PWD/'"$run"'/source" "$PWD/'"$run"'/results"' \
+        sudo env SPROUTFS_GCE_BUILD_ONLY='"${SPROUTFS_GCE_BUILD_ONLY:-0}"' SPROUTFS_GCE_FANOUT='"${SPROUTFS_GCE_FANOUT:-0}"' SPROUTFS_GCE_BOOTSURVEY='"${SPROUTFS_GCE_BOOTSURVEY:-0}"' SPROUTFS_GCE_QUALIFY='"${SPROUTFS_GCE_QUALIFY:-0}"' SPROUTFS_GCE_WORKLOAD='"${SPROUTFS_GCE_WORKLOAD:-0}"' SPROUTFS_GCE_SMOKE='"${SPROUTFS_GCE_SMOKE:-0}"' SPROUTFS_BENCH_SCENARIOS='"${SPROUTFS_BENCH_SCENARIOS:-}"' SPROUTFS_BENCH_FORKS='"${SPROUTFS_BENCH_FORKS:-}"' SPROUTFS_BENCH_RAM_BYTES='"${SPROUTFS_BENCH_RAM_BYTES:-}"' SPROUTFS_BENCH_ROOT_BYTES='"${SPROUTFS_BENCH_ROOT_BYTES:-}"' SPROUTFS_BENCH_RAM_RESIDENT_BYTES='"${SPROUTFS_BENCH_RAM_RESIDENT_BYTES:-}"' SPROUTFS_BENCH_PMEM_RESIDENT_BYTES='"${SPROUTFS_BENCH_PMEM_RESIDENT_BYTES:-}"' SPROUTFS_RAM_PAGE_BYTES='"${SPROUTFS_RAM_PAGE_BYTES:-}"' SPROUTFS_ARENA='"${SPROUTFS_ARENA:-}"' SPROUTFS_KVM_TRACE='"${SPROUTFS_KVM_TRACE:-0}"' SPROUTFS_FIRECRACKER_RUN='"'${SPROUTFS_FIRECRACKER_RUN:-}'"' SPROUTFS_VMTEST_RUN='"'${SPROUTFS_VMTEST_RUN:-}'"' SPROUTFS_VMTEST_COUNT='"${SPROUTFS_VMTEST_COUNT:-1}"' SPROUTFS_FIRECRACKER_COUNT='"${SPROUTFS_FIRECRACKER_COUNT:-1}"' SPROUTFS_BENCH_PLAIN_HUGE_PAGES='"${SPROUTFS_BENCH_PLAIN_HUGE_PAGES:-}"' SPROUTFS_GCS_BUCKET='"${SPROUTFS_GCE_BUCKET:-}"' SPROUTFS_GCS_PREFIX='"$prefix"' timeout --signal=TERM --kill-after=30s '"$limit"' bash '"$run"'/source/scripts/lib/bench-memory-linux.sh "$PWD/'"$run"'/source" "$PWD/'"$run"'/results"' \
         > "$results/remote.log" 2>&1 || status=$?
     "${cloud[@]}" compute scp --recurse --zone="$zone" "$instance:$run/results/." "$results/" || status=$?
     # The run's objects are the benchmark's scratch, and the bucket keeps none
