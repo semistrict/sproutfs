@@ -3,111 +3,429 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>sproutfs explainer</title>
+<title>How sproutfs works</title>
 <style>
-  :root { --bg: #fbfbfa; --fg: #1d1d1b; --muted: #6b6b66; --line: #e2e1dc; --accent: #2f6f4e; }
-  @media (prefers-color-scheme: dark) {
-    :root { --bg: #161615; --fg: #ecebe6; --muted: #9a9993; --line: #2c2c2a; --accent: #7cc59b; }
+  :root {
+    --bg: #fbfaf7; --panel: #ffffff; --fg: #1f1e1b; --muted: #6d6b64; --line: #e4e1d8;
+    --accent: #2f6f4e; --warn: #d9731c; --down: #b8b4aa; --store: #f3f0e8;
+    --net: #3b6ea8; --obj: #2f6f4e;
   }
-  body { margin: 0; padding: 24px 16px; background: var(--bg); color: var(--fg);
-         font: 15px/1.5 system-ui, sans-serif; }
-  main { max-width: 860px; margin: 0 auto; }
-  h1 { font-size: 20px; margin: 0 0 4px; }
-  p { color: var(--muted); margin: 0 0 16px; }
-  #status { font-variant-numeric: tabular-nums; }
-  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
-  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
-  th { color: var(--muted); font-weight: 500; }
-  td.step { color: var(--accent); font-weight: 600; }
-  code { font: 13px ui-monospace, monospace; }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #151514; --panel: #1d1d1b; --fg: #ebe9e3; --muted: #9c9a92; --line: #2e2d2a;
+      --accent: #7cc59b; --warn: #f0a050; --down: #55534e; --store: #22211e;
+      --net: #7aa7dd; --obj: #7cc59b;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.55 system-ui, sans-serif; }
+  header { padding: 20px 16px 8px; max-width: 1180px; margin: 0 auto; }
+  header h1 { font-size: 22px; margin: 0; }
+  header p { margin: 4px 0 0; color: var(--muted); max-width: 70ch; }
+  nav { max-width: 1180px; margin: 12px auto 0; padding: 0 16px; display: flex; gap: 6px; flex-wrap: wrap; }
+  nav button { font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--fg);
+               border-radius: 999px; padding: 4px 12px; cursor: pointer; }
+  nav button[aria-current="true"] { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+  main { max-width: 1180px; margin: 12px auto 40px; padding: 0 16px; display: grid;
+         grid-template-columns: minmax(280px, 380px) 1fr; gap: 20px; }
+  main > * { min-width: 0; }
+  @media (max-width: 820px) { main { grid-template-columns: 1fr; } }
+  .story { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; align-self: start; }
+  .story h2 { font-size: 17px; margin: 0 0 4px; }
+  .story .idea { color: var(--muted); margin: 0 0 12px; }
+  .story ol { margin: 0; padding-left: 20px; }
+  .story li { margin: 0 0 10px; color: var(--muted); }
+  .story li.now { color: var(--fg); }
+  .story li.now::marker { color: var(--accent); font-weight: 700; }
+  .story li .facts { display: block; font-size: 13px; color: var(--muted); margin-top: 2px; }
+  .controls { display: flex; gap: 8px; margin-top: 12px; }
+  .controls button { font: inherit; padding: 6px 14px; border-radius: 8px; border: 1px solid var(--line);
+                     background: var(--panel); color: var(--fg); cursor: pointer; }
+  .controls button.primary { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+  .controls button:disabled { opacity: 0.4; cursor: default; }
+  .stage { position: relative; display: grid; gap: 14px; align-content: start; }
+  .hosts { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; }
+  .host { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; min-height: 180px;
+          transition: opacity .3s, filter .3s; position: relative; }
+  .host.down { opacity: .45; filter: grayscale(1); }
+  .host.down::after { content: "lost"; position: absolute; top: 10px; right: 12px; color: var(--warn); font-weight: 700; }
+  .host h3 { margin: 0 0 2px; font-size: 14px; }
+  .host .sub { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+  .vm { border: 1px solid var(--line); border-radius: 8px; padding: 8px; margin-top: 8px; }
+  .vm .title { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 8px; font-size: 13px; }
+  .vm .title b { font-weight: 600; }
+  .vm .title span { color: var(--muted); }
+  .volume { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 12px; color: var(--muted); }
+  .volume .label { width: 34px; }
+  .pages { display: flex; gap: 5px; flex: 1; min-width: 0; }
+  .page { flex: 0 1 44px; min-width: 26px; height: 34px; border-radius: 5px; border: 2px solid transparent; display: grid;
+          place-items: center; font-size: 11px; color: #1f1e1b; transition: background .5s, border-color .3s; position: relative; }
+  .page.wide { flex-basis: 70px; }
+  .page.unpublished { border-color: var(--warn);
+    background-image: repeating-linear-gradient(135deg, transparent 0 5px, rgba(217,115,28,.28) 5px 7px); }
+  .page.cold { opacity: .5; border-style: dashed; border-color: var(--muted); }
+  .badge { font-size: 11px; border-radius: 999px; padding: 0 7px; border: 1px solid var(--line); color: var(--muted); }
+  .badge.warn { border-color: var(--warn); color: var(--warn); }
+  .store { background: var(--store); border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
+  .store h3 { margin: 0 0 2px; font-size: 14px; }
+  .store .sub { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+  .record { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 13px; margin-top: 6px; }
+  .chip { border-radius: 5px; padding: 1px 8px; font-size: 12px; color: #1f1e1b; border: 2px solid transparent; }
+  .chip.selected { border-color: var(--fg); font-weight: 700; }
+  .chip.gone { opacity: .35; text-decoration: line-through; }
+  .legend { font-size: 12px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 14px; }
+  .legend .swatch { display: inline-block; width: 18px; height: 12px; border-radius: 3px; vertical-align: -1px; margin-right: 4px; }
+  .dot { position: absolute; width: 10px; height: 10px; border-radius: 50%; pointer-events: none; z-index: 5; }
+  .dot.obj { background: var(--obj); }
+  .dot.net { background: var(--net); }
+  #loading { color: var(--muted); }
+  code { font: 12px ui-monospace, monospace; }
+  /* After the rules it overrides: on a phone the hosts stack. */
+  @media (max-width: 560px) { .hosts { grid-template-columns: minmax(0, 1fr); } }
 </style>
 </head>
 <body>
+<header>
+  <h1>How sproutfs works</h1>
+  <p>Five short chapters, one idea each. Every picture on this page is the real state of sproutfs's own
+     code, which runs right here in your browser, compiled to WebAssembly, over a simulated network and object store.</p>
+</header>
+<nav id="chapters"></nav>
 <main>
-  <h1>The life of a VM, run by the real code</h1>
-  <p>This page runs sproutfs's own simulation, compiled to WebAssembly, and reads the
-     simulator's trace: every object-store request, network exchange, disk write and
-     process event, grouped by the step that caused it.</p>
-  <p id="status">Loading the simulation…</p>
-  <table>
-    <thead><tr><th>step</th><th>simulated ms</th><th>what it did</th></tr></thead>
-    <tbody id="steps"></tbody>
-  </table>
+  <section class="story" aria-live="polite">
+    <h2 id="title"></h2>
+    <p class="idea" id="idea"></p>
+    <ol id="steps"></ol>
+    <div class="controls">
+      <button id="back">Back</button>
+      <button id="next" class="primary">Next step</button>
+      <button id="replay">Replay</button>
+    </div>
+    <p id="loading">Running the real code…</p>
+  </section>
+  <section class="stage" id="stage">
+    <div class="hosts" id="hosts"></div>
+    <div class="store" id="store">
+      <h3>Object store</h3>
+      <div class="sub">What survives any host: each VM's control record and the checkpoints it can select.</div>
+      <div id="records"></div>
+    </div>
+    <div class="legend">
+      <span><span class="swatch" style="background:#cfe3d4"></span>a page, coloured by the checkpoint that published it</span>
+      <span><span class="swatch" style="border:2px solid var(--warn)"></span>changed since: bytes no checkpoint has, only in that host's memory</span>
+      <span><span class="swatch" style="background:var(--obj);border-radius:50%;width:10px;height:10px"></span>object-store request</span>
+      <span><span class="swatch" style="background:var(--net);border-radius:50%;width:10px;height:10px"></span>host-to-host traffic</span>
+    </div>
+  </section>
 </main>
-<script src="wasm_exec.js"></script>
 <script>
-// The Go runtime writes the process's stdout through globalThis.fs.writeSync.
-// The explainer's test prints its trace there, one "EXPLAIN {json}" a line.
-const events = [];
-let pending = "";
-const decoder = new TextDecoder();
-const write = globalThis.fs.writeSync.bind(globalThis.fs);
-globalThis.fs.writeSync = (fd, buffer) => {
-  if (fd === 1) {
-    pending += decoder.decode(buffer);
-    let newline;
-    while ((newline = pending.indexOf("\n")) >= 0) {
-      const line = pending.slice(0, newline);
-      pending = pending.slice(newline + 1);
-      if (line.startsWith("EXPLAIN ")) events.push(JSON.parse(line.slice(8)));
-    }
-    return buffer.length;
-  }
-  return write(fd, buffer);
-};
+// ---- The chapters: what each teaches, and what each step says. -------------
+// The state and traffic come from the real code; these words are the page's.
+const CHAPTERS = [
+  { id: "pages", title: "1. A VM is pages",
+    idea: "A VM's memory and disks are split into pages. A guest's writes land in its host's memory, and nowhere else.",
+    steps: {
+      "create vm-1": "<b>vm-1</b> is created on host-0. Each square is a page, coloured by the <b>checkpoint</b> that saved it. Creating the VM wrote checkpoint #1 to the object store, and its <b>control record</b>, which selects #1.",
+      "write vm-1 ram0 [0 2]": "The guest writes memory pages 0 and 2. The new bytes are only in host-0's memory: the orange ring.",
+      "write vm-1 disk [1]": "A disk write is the same: the disk is paged too. If host-0 died now, all three changes would be lost.",
+    } },
+  { id: "checkpoint", title: "2. A checkpoint makes pages durable",
+    idea: "A checkpoint uploads only the pages that changed, then points the control record at them.",
+    steps: {
+      "create vm-1": "vm-1 again, created at checkpoint #1.",
+      "write vm-1 ram0 [0 2]": "The guest writes memory pages 0 and 2…",
+      "write vm-1 disk [1]": "…and disk page 1. Three pages are now only in host-0's memory.",
+      "checkpoint vm-1": "A checkpoint: the guest pauses for a moment, the three changed pages upload, and the control record switches to <b>#2</b>. The unchanged pages are not uploaded again.",
+      "write vm-1 ram0 [2]": "The guest writes page 2 again, so it is ringed again. There is always a little a checkpoint does not hold yet.",
+    } },
+  { id: "lost-host", title: "3. A lost host costs only what no checkpoint held",
+    idea: "A VM's durable state is the checkpoint its control record selects. Any host can reopen it from there.",
+    steps: {
+      "create vm-1": "vm-1 on host-0, created at checkpoint #1.",
+      "write vm-1 ram0 [0]": "The guest writes page 0…",
+      "checkpoint vm-1": "…and a checkpoint saves it as #2.",
+      "write vm-1 ram0 [1]": "Then it writes page 1, which only host-0's memory holds.",
+      "lose host-0": "host-0 dies, and its memory with it.",
+      "recover vm-1": "vm-1 reopens on host-1 from #2. Page 0 survived; page 1 is back to its last saved copy. The loss cost exactly the one unsaved write.",
+    } },
+  { id: "fork", title: "4. A fork shares instead of copying",
+    idea: "Every page is named by the checkpoint that saved it. A child names its parent's pages instead of copying them.",
+    steps: {
+      "create vm-1": "vm-1 on host-0, created at checkpoint #1.",
+      "write vm-1 ram0 [0]": "The guest writes page 0…",
+      "checkpoint vm-1": "…a checkpoint saves it as #2…",
+      "write vm-1 ram0 [1]": "…and then it writes page 1, which no checkpoint holds.",
+      "fork vm-1-a onto host-1": "vm-1 is forked into <b>vm-1-a</b> on host-1. The child's page 0 is still <b>vm-1 #2</b>: shared, not copied. Page 1 was only in host-0's memory, so the child fetched it over the network, then saved it in its own first checkpoint. vm-1's record now <b>pins</b> the checkpoints the child reads, so they are never deleted.",
+    } },
+  { id: "migration", title: "5. A migration moves memory host to host",
+    idea: "A migration uploads no pages. The VM runs on the new host at once, and its unsaved pages follow over the network.",
+    steps: {
+      "create vm-1": "vm-1 on host-0, created at checkpoint #1.",
+      "write vm-1 ram0 [0]": "The guest writes page 0…",
+      "checkpoint vm-1": "…a checkpoint saves it as #2…",
+      "write vm-1 ram0 [1]": "…and then it writes page 1, which no checkpoint holds.",
+      "migrate vm-1 to host-1": "vm-1 moves to host-1 and runs there straight away. The one store write is its control record changing hands. Page 1 comes over the network from host-0, which kept it until host-1 had it. It is still unsaved, now in host-1's memory.",
+    } },
+];
 
-// The glue's own write answers its callback before it returns, which re-enters
-// Go on the goroutine that is writing. That goroutine is inside the simulation's
-// synctest bubble, and a callback run on it panics. Node answers on a later
-// tick, and so does this: a microtask, which a browser never throttles as it
-// does a timer in a tab that is not showing.
-globalThis.fs.write = (fd, buffer, offset, length, position, callback) => {
-  if (offset !== 0 || length !== buffer.length || position !== null) {
-    queueMicrotask(() => callback(new Error("the explainer writes whole buffers only")));
-    return;
-  }
-  const written = globalThis.fs.writeSync(fd, buffer);
-  queueMicrotask(() => callback(null, written));
-};
+// ---- Running the real code. --------------------------------------------------
+// run.js runs the test binary in a worker; each chapter arrives as one run.
+// The worker ends with the binary, and its memory with it.
+const runs = {};
+function runRealCode() {
+  const worker = new Worker("run.js");
+  return new Promise((resolve) => {
+    worker.onmessage = ({ data }) => {
+      if (data.run) { runs[data.run.chapter] = data.run; return; }
+      worker.terminate();
+      resolve(data.error ?? data.exit);
+    };
+    worker.onerror = (event) => { worker.terminate(); resolve(event.message); };
+  });
+}
 
-function render() {
-  const rows = document.getElementById("steps");
-  let current = null, began = null;
-  const start = events.length ? events[0].at_ns : 0;
-  for (const event of events) {
-    if (event.kind === "step" && event.outcome === "begin") {
-      current = { name: event.op, at: event.at_ns, counts: {} };
-      continue;
+// ---- Naming checkpoints the way a reader can follow. -------------------------
+// A sequence is a large number; within a chapter each VM's checkpoints are
+// numbered #1, #2, … in the order they first appear.
+const HUES = [140, 210, 45, 290, 350, 95, 180, 20];
+function namer(run) {
+  const order = new Map();
+  const vms = [];
+  const note = (vm, seq) => {
+    if (!vm || !seq) return;
+    if (!order.has(vm)) { order.set(vm, []); vms.push(vm); }
+    const list = order.get(vm);
+    if (!list.includes(seq)) list.push(seq);
+  };
+  for (const step of run.steps) {
+    for (const r of step.state.records) note(r.vm, r.selected);
+    for (const h of step.state.hosts) for (const v of h.vms) for (const vol of v.volumes)
+      for (const p of vol.pages) note(p.vm, p.checkpoint);
+  }
+  const label = (vm, seq) => `${vm} #${order.get(vm).indexOf(seq) + 1}`;
+  // Every checkpoint in the chapter has a hue of its own, in the order they
+  // appear, so a page's colour says which checkpoint saved it at a glance.
+  const all = [];
+  for (const vm of vms) for (const seq of order.get(vm)) all.push(`${vm}@${seq}`);
+  const colour = (vm, seq) => `hsl(${HUES[all.indexOf(`${vm}@${seq}`) % HUES.length]} 55% 78%)`;
+  return { label, colour, known: (vm, seq) => order.has(vm) && order.get(vm).includes(seq) };
+}
+
+// ---- Drawing one step. -------------------------------------------------------
+const $ = (id) => document.getElementById(id);
+let chapterIndex = 0, stepIndex = 0, names = null;
+
+function drawState(state, previous) {
+  const hosts = $("hosts");
+  hosts.innerHTML = "";
+  for (const h of state.hosts) {
+    const box = document.createElement("div");
+    box.className = "host" + (h.up ? "" : " down");
+    box.dataset.host = h.name;
+    const holding = h.holding.length ? ` · holding pages for ${h.holding.join(", ")}` : "";
+    box.innerHTML = `<h3>${h.name}</h3><div class="sub">${h.up ? "running" : "gone"}${holding}</div>`;
+    for (const v of h.vms) {
+      const card = document.createElement("div");
+      card.className = "vm";
+      const tags = [];
+      if (v.parent) tags.push(`<span class="badge">fork of ${v.parent}</span>`);
+      if (v.sealed) tags.push(`<span class="badge warn">sealed for a fork</span>`);
+      if (v.root_pending) tags.push(`<span class="badge warn">first checkpoint pending</span>`);
+      card.innerHTML = `<div class="title"><b>${v.id}</b><span>${tags.join(" ")}</span></div>`;
+      for (const vol of v.volumes) {
+        const row = document.createElement("div");
+        row.className = "volume";
+        row.innerHTML = `<span class="label">${vol.name}</span>`;
+        const pages = document.createElement("div");
+        pages.className = "pages";
+        vol.pages.forEach((p, i) => {
+          const cell = document.createElement("div");
+          cell.className = "page" + (vol.page_bytes > 4096 ? " wide" : "") +
+            (p.unpublished ? " unpublished" : "") + (p.resident ? "" : " cold");
+          cell.style.background = p.vm ? names.colour(p.vm, p.checkpoint) : "transparent";
+          cell.textContent = p.vm ? names.label(p.vm, p.checkpoint).replace(/^.* /, "") : "0";
+          cell.title = `${vol.name} page ${i}: ` + (p.vm ? `published by ${names.label(p.vm, p.checkpoint)}` : "zeroes") +
+            (p.unpublished ? ", changed since: only in this host's memory" : "") +
+            (p.resident ? "" : ", not in this host's memory yet");
+          pages.appendChild(cell);
+        });
+        row.appendChild(pages);
+        card.appendChild(row);
+      }
+      box.appendChild(card);
     }
-    if (event.kind === "step" && event.outcome === "end") {
-      const row = rows.insertRow();
-      const name = row.insertCell(); name.className = "step"; name.textContent = current.name;
-      row.insertCell().textContent = ((current.at - start) / 1e6).toFixed(3);
-      const what = Object.entries(current.counts).map(([k, n]) => `${n} ${k}`).join(", ");
-      row.insertCell().innerHTML = `<code>${what || "nothing outside the guest"}</code>`;
-      current = null;
-      continue;
-    }
-    if (current) {
-      const key = `${event.kind} ${event.op}`;
-      current.counts[key] = (current.counts[key] || 0) + 1;
-    }
+    hosts.appendChild(box);
+  }
+  const records = $("records");
+  records.innerHTML = "";
+  for (const r of state.records) {
+    const row = document.createElement("div");
+    row.className = "record";
+    const pins = r.pinned && r.pinned.length ? ` · pins ${r.pinned.map((s) => names.label(r.vm, s).replace(/^.* /, "")).join(", ")}` : "";
+    row.innerHTML = `<b>${r.vm}</b> control record selects`;
+    const chip = document.createElement("span");
+    chip.className = "chip selected";
+    chip.style.background = names.colour(r.vm, r.selected);
+    chip.textContent = names.label(r.vm, r.selected) + (r.created ? "" : " (not landed yet)");
+    row.appendChild(chip);
+    row.insertAdjacentHTML("beforeend", `<span style="color:var(--muted)">${pins}</span>`);
+    records.appendChild(row);
   }
 }
 
+// What one step did outside the guest, counted from the trace.
+function facts(events) {
+  let puts = 0, gets = 0, deletes = 0, up = 0, sends = 0, sent = 0, crashes = 0;
+  for (const e of events) {
+    if (e.kind === "object_store" && e.op === "put") { puts++; up += e.bytes; }
+    if (e.kind === "object_store" && e.op === "get") gets++;
+    if (e.kind === "object_store" && e.op === "delete") deletes++;
+    if (e.kind === "network" && e.op === "send") { sends++; sent += e.bytes; }
+    if (e.kind === "process" && e.op === "crash") crashes++;
+  }
+  const out = [];
+  if (puts) out.push(`${puts} write${puts > 1 ? "s" : ""} to the store (${up} bytes)`);
+  if (gets) out.push(`${gets} read${gets > 1 ? "s" : ""}`);
+  if (deletes) out.push(`${deletes} old object${deletes > 1 ? "s" : ""} deleted`);
+  if (sends) out.push(`${sends} messages between hosts (${sent} bytes)`);
+  if (crashes) out.push("a host process ended");
+  return out.length ? out.join(" · ") : "nothing left the host";
+}
+
+// What one step caused: the events between its two markers.
+function stepEvents(run, index) {
+  const { from_seq: from, until_seq: until } = run.steps[index];
+  return run.events.filter((e) => e.seq > from && e.seq < until && e.kind !== "step");
+}
+
+// Which host made an object-store request: the host running the VM its key
+// names, before the step or after it.
+function hostOf(state, vm) {
+  for (const h of state.hosts) if (h.vms.some((v) => v.id === vm)) return h.name;
+  return null;
+}
+
+async function animate(run, index) {
+  const events = stepEvents(run, index);
+  const before = index > 0 ? run.steps[index - 1].state : run.steps[index].state;
+  const after = run.steps[index].state;
+  const stage = $("stage").getBoundingClientRect();
+  const centre = (el) => { const r = el.getBoundingClientRect(); return [r.left - stage.left + r.width / 2, r.top - stage.top + r.height / 2]; };
+  const hostEl = (name) => document.querySelector(`.host[data-host="${name}"]`);
+  const store = $("store");
+  const flights = [];
+  for (const e of events) {
+    let from = null, to = null, kind = null;
+    if (e.kind === "object_store") {
+      const match = e.resource.match(/(?:control|vm)\/([^/]+)/);
+      const host = match && (hostOf(before, match[1]) || hostOf(after, match[1]));
+      if (!host || !hostEl(host)) continue;
+      kind = "obj";
+      [from, to] = e.op === "put" || e.op === "delete" ? [hostEl(host), store] : [store, hostEl(host)];
+    } else if (e.kind === "network" && e.op === "send") {
+      const [a, b] = e.resource.split("->").map((s) => s.replace(/\/pages$/, ""));
+      if (!hostEl(a) || !hostEl(b)) continue;
+      kind = "net";
+      [from, to] = [hostEl(a), hostEl(b)];
+    } else continue;
+    flights.push({ from, to, kind });
+  }
+  const gap = Math.max(25, Math.min(140, 1600 / Math.max(1, flights.length)));
+  for (const f of flights) {
+    const [x0, y0] = centre(f.from), [x1, y1] = centre(f.to);
+    const dot = document.createElement("div");
+    dot.className = `dot ${f.kind}`;
+    $("stage").appendChild(dot);
+    dot.animate([{ transform: `translate(${x0}px, ${y0}px)`, opacity: 0.9 },
+                 { transform: `translate(${x1}px, ${y1}px)`, opacity: 0.9 }],
+                { duration: 650, easing: "ease-in-out" }).finished.then(() => dot.remove());
+    await new Promise((r) => setTimeout(r, gap));
+  }
+}
+
+function renderChapter() {
+  const chapter = CHAPTERS[chapterIndex];
+  const run = runs[chapter.id];
+  names = namer(run);
+  document.querySelectorAll("#chapters button").forEach((b, i) => b.setAttribute("aria-current", String(i === chapterIndex)));
+  $("title").textContent = chapter.title;
+  $("idea").textContent = chapter.idea;
+  const list = $("steps");
+  list.innerHTML = "";
+  run.steps.forEach((step, i) => {
+    const item = document.createElement("li");
+    item.className = i === stepIndex ? "now" : "";
+    item.hidden = i > stepIndex;
+    item.innerHTML = `${chapter.steps[step.step] || step.step}` +
+      (i > 0 ? `<span class="facts">${facts(stepEvents(run, i))}</span>` : "");
+    list.appendChild(item);
+  });
+  $("back").disabled = stepIndex === 0 && chapterIndex === 0;
+  $("replay").disabled = false;
+  const last = stepIndex === run.steps.length - 1;
+  $("next").textContent = last ? (chapterIndex < CHAPTERS.length - 1 ? "Next chapter" : "The end") : "Next step";
+  $("next").disabled = last && chapterIndex === CHAPTERS.length - 1;
+  drawState(run.steps[stepIndex].state);
+}
+
+let busy = false;
+async function show(step, withMotion) {
+  if (busy) return;
+  const run = runs[CHAPTERS[chapterIndex].id];
+  stepIndex = step;
+  if (withMotion) {
+    // The traffic plays over the state before the step, then the state turns.
+    busy = true;
+    for (const id of ["back", "next", "replay"]) $(id).disabled = true;
+    drawStateOnly(step > 0 ? run.steps[step - 1].state : empty(run.steps[0].state));
+    try { await animate(run, step); } finally { busy = false; }
+  }
+  renderChapter();
+}
+
+// The deployment before anything was created: the hosts, with nothing on them.
+function empty(state) {
+  return { hosts: state.hosts.map((h) => ({ ...h, vms: [], holding: [], receiving: [] })), records: [] };
+}
+
+function drawStateOnly(state) { names = names || namer(runs[CHAPTERS[chapterIndex].id]); drawState(state); }
+
+$("next").onclick = () => {
+  if (busy) return;
+  const run = runs[CHAPTERS[chapterIndex].id];
+  if (stepIndex < run.steps.length - 1) return show(stepIndex + 1, true);
+  if (chapterIndex < CHAPTERS.length - 1) { chapterIndex++; enter(); }
+};
+$("back").onclick = () => {
+  if (busy) return;
+  if (stepIndex > 0) return show(stepIndex - 1, false);
+  if (chapterIndex > 0) { chapterIndex--; stepIndex = runs[CHAPTERS[chapterIndex].id].steps.length - 1; renderChapter(); }
+};
+$("replay").onclick = () => show(stepIndex, true);
+
+// Entering a chapter plays its first step, the VM's creation.
+function enter() {
+  stepIndex = 0;
+  names = namer(runs[CHAPTERS[chapterIndex].id]);
+  renderChapter();
+  show(0, true);
+}
+
 (async () => {
-  const status = document.getElementById("status");
-  const go = new Go();
-  go.argv = ["simtest.wasm", "-test.run=^TestExplainTheLifeOfAVM$"];
-  go.env = { SPROUTFS_EXPLAIN: "1" };
   const began = performance.now();
-  const { instance } = await WebAssembly.instantiateStreaming(fetch("simtest.wasm"), go.importObject);
-  const exited = new Promise((resolve) => { go.exit = (code) => resolve(code); });
-  go.run(instance);
-  const code = await exited;
-  status.textContent = `The scenario ${code === 0 ? "passed" : "failed"} in ` +
-    `${Math.round(performance.now() - began)} ms of your browser's time, with ${events.length} trace events.`;
-  render();
+  const code = await runRealCode();
+  const nav = $("chapters");
+  CHAPTERS.forEach((c, i) => {
+    const b = document.createElement("button");
+    b.textContent = c.title;
+    b.onclick = () => { if (!busy) { chapterIndex = i; enter(); } };
+    nav.appendChild(b);
+  });
+  const missing = CHAPTERS.filter((c) => !runs[c.id]).map((c) => c.id);
+  $("loading").textContent = missing.length || code !== 0
+    ? `The real code did not finish every chapter (${missing.join(", ") || "exit " + code}).`
+    : `The real code ran all ${CHAPTERS.length} chapters in ${Math.round(performance.now() - began)} ms of your browser's time.`;
+  if (!missing.length) enter();
 })();
 </script>
 </body>

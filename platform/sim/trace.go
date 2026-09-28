@@ -27,13 +27,14 @@ type Trace struct {
 
 func newTrace() *Trace { return &Trace{} }
 
-func (t *Trace) record(event Event) {
+func (t *Trace) record(event Event) uint64 {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.next++
 	event.Sequence = t.next
 	event.At = time.Now()
 	t.events = append(t.events, event)
+	return event.Sequence
 }
 
 // Record adds one event of a harness's own to the trace, so that what a
@@ -44,8 +45,9 @@ func (t *Trace) record(event Event) {
 //
 // Nothing in production code records: every event a recording compares comes
 // from an adapter, so a campaign that traces its faults changes no recording
-// but its own.
-func (t *Trace) Record(event Event) { t.record(event) }
+// but its own. It reports the sequence the event was given, which is where a
+// harness's marker falls among events other goroutines record beside it.
+func (t *Trace) Record(event Event) uint64 { return t.record(event) }
 
 func (t *Trace) Events() []Event {
 	t.mu.Lock()
