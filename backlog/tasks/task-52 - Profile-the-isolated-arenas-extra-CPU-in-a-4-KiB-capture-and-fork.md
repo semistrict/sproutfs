@@ -4,8 +4,10 @@ title: Profile the isolated arena's extra CPU in a 4 KiB capture and fork
 status: To Do
 assignee: []
 created_date: '2026-09-26 22:14'
+updated_date: '2026-09-28 00:31'
 labels:
   - performance
+  - deferred
 dependencies: []
 priority: medium
 ordinal: 59000
@@ -22,3 +24,9 @@ In the GCE worst-case run of 2026-09-26, a 4 KiB capture in isolated mode took t
 - [ ] #1 A CPU profile of each names where the extra time goes
 - [ ] #2 The cause is fixed or a task is filed for it
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Deferred by the owner on 2026-09-27.
+<!-- SECTION:NOTES:END -->
