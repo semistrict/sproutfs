@@ -1,10 +1,10 @@
 ---
 id: TASK-2.6
 title: Measure both arena modes on GCE
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-25 23:02'
-updated_date: '2026-09-26 22:14'
+updated_date: '2026-09-28 01:30'
 labels:
   - measurement
   - gce
@@ -24,7 +24,7 @@ Step 6 of plans/isolated-arena-2026-09-25.md: one GCE run comparing shared and i
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [x] #1 Fan-out first output, checkpoint pause, upload time and CPU, restore time, mappings per guest and saved memory are recorded for both modes
-- [ ] #2 The owner decides the default from the numbers
+- [x] #2 The owner decides the default from the numbers
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -36,3 +36,9 @@ Worst-case run 2026-09-26, recorded in docs/measurements/arena-worst-case-2026-0
 
 Worst-case run 2026-09-26: docs/measurements/arena-worst-case-2026-09-26.md. Follow-ups: move copies (high), local fork sharing (high, both modes), batched moves, 4 KiB CPU profile.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Both modes measured on GCE (docs/measurements/arena-modes-2026-09-26.md, arena-worst-case-2026-09-26.md). The owner chose isolated as the default on 2026-09-27: ArenaIsolated is the zero value, SPROUTFS_ARENA defaults to isolated, and just check runs the mode-sensitive packages in shared too (032a8e9c). Isolated's extra CPU at 4 KiB is TASK-51/52, deferred.
+<!-- SECTION:FINAL_SUMMARY:END -->
