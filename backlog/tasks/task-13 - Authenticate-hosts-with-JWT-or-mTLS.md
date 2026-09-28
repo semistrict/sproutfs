@@ -4,7 +4,7 @@ title: Authenticate hosts with JWT or mTLS
 status: To Do
 assignee: []
 created_date: '2026-09-25 18:17'
-updated_date: '2026-09-26 14:53'
+updated_date: '2026-09-28 02:01'
 labels:
   - embedder
   - security
@@ -26,3 +26,9 @@ An embedding program replaces JuiceFS with sproutfs in its sandbox host. This is
 - [ ] #1 Host API, page server and peer dialer take pluggable credentials
 - [ ] #2 Adversarial tests: forged and replayed credentials are refused, and a handoff whose source is not an authenticated host is refused
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Deferred by the owner on 2026-09-27.
+<!-- SECTION:NOTES:END -->
