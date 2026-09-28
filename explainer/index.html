@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sproutfs explainer</title>
+<style>
+  :root { --bg: #fbfbfa; --fg: #1d1d1b; --muted: #6b6b66; --line: #e2e1dc; --accent: #2f6f4e; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #161615; --fg: #ecebe6; --muted: #9a9993; --line: #2c2c2a; --accent: #7cc59b; }
+  }
+  body { margin: 0; padding: 24px 16px; background: var(--bg); color: var(--fg);
+         font: 15px/1.5 system-ui, sans-serif; }
+  main { max-width: 860px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  p { color: var(--muted); margin: 0 0 16px; }
+  #status { font-variant-numeric: tabular-nums; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; }
+  td.step { color: var(--accent); font-weight: 600; }
+  code { font: 13px ui-monospace, monospace; }
+</style>
+</head>
+<body>
+<main>
+  <h1>The life of a VM, run by the real code</h1>
+  <p>This page runs sproutfs's own simulation, compiled to WebAssembly, and reads the
+     simulator's trace: every object-store request, network exchange, disk write and
+     process event, grouped by the step that caused it.</p>
+  <p id="status">Loading the simulation…</p>
+  <table>
+    <thead><tr><th>step</th><th>simulated ms</th><th>what it did</th></tr></thead>
+    <tbody id="steps"></tbody>
+  </table>
+</main>
+<script src="wasm_exec.js"></script>
+<script>
+// The Go runtime writes the process's stdout through globalThis.fs.writeSync.
+// The explainer's test prints its trace there, one "EXPLAIN {json}" a line.
+const events = [];
+let pending = "";
+const decoder = new TextDecoder();
+const write = globalThis.fs.writeSync.bind(globalThis.fs);
+globalThis.fs.writeSync = (fd, buffer) => {
+  if (fd === 1) {
+    pending += decoder.decode(buffer);
+    let newline;
+    while ((newline = pending.indexOf("\n")) >= 0) {
+      const line = pending.slice(0, newline);
+      pending = pending.slice(newline + 1);
+      if (line.startsWith("EXPLAIN ")) events.push(JSON.parse(line.slice(8)));
+    }
+    return buffer.length;
+  }
+  return write(fd, buffer);
+};
+
+// The glue's own write answers its callback before it returns, which re-enters
+// Go on the goroutine that is writing. That goroutine is inside the simulation's
+// synctest bubble, and a callback run on it panics. Node answers on a later
+// tick, and so does this: a microtask, which a browser never throttles as it
+// does a timer in a tab that is not showing.
+globalThis.fs.write = (fd, buffer, offset, length, position, callback) => {
+  if (offset !== 0 || length !== buffer.length || position !== null) {
+    queueMicrotask(() => callback(new Error("the explainer writes whole buffers only")));
+    return;
+  }
+  const written = globalThis.fs.writeSync(fd, buffer);
+  queueMicrotask(() => callback(null, written));
+};
+
+function render() {
+  const rows = document.getElementById("steps");
+  let current = null, began = null;
+  const start = events.length ? events[0].at_ns : 0;
+  for (const event of events) {
+    if (event.kind === "step" && event.outcome === "begin") {
+      current = { name: event.op, at: event.at_ns, counts: {} };
+      continue;
+    }
+    if (event.kind === "step" && event.outcome === "end") {
+      const row = rows.insertRow();
+      const name = row.insertCell(); name.className = "step"; name.textContent = current.name;
+      row.insertCell().textContent = ((current.at - start) / 1e6).toFixed(3);
+      const what = Object.entries(current.counts).map(([k, n]) => `${n} ${k}`).join(", ");
+      row.insertCell().innerHTML = `<code>${what || "nothing outside the guest"}</code>`;
+      current = null;
+      continue;
+    }
+    if (current) {
+      const key = `${event.kind} ${event.op}`;
+      current.counts[key] = (current.counts[key] || 0) + 1;
+    }
+  }
+}
+
+(async () => {
+  const status = document.getElementById("status");
+  const go = new Go();
+  go.argv = ["simtest.wasm", "-test.run=^TestExplainTheLifeOfAVM$"];
+  go.env = { SPROUTFS_EXPLAIN: "1" };
+  const began = performance.now();
+  const { instance } = await WebAssembly.instantiateStreaming(fetch("simtest.wasm"), go.importObject);
+  const exited = new Promise((resolve) => { go.exit = (code) => resolve(code); });
+  go.run(instance);
+  const code = await exited;
+  status.textContent = `The scenario ${code === 0 ? "passed" : "failed"} in ` +
+    `${Math.round(performance.now() - began)} ms of your browser's time, with ${events.length} trace events.`;
+  render();
+})();
+</script>
+</body>
+</html>

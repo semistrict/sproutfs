@@ -1,9 +1,11 @@
 ---
 id: TASK-65
 title: 'Explain the system interactively, running the real code in the browser'
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-09-28 04:31'
+updated_date: '2026-09-28 04:40'
 labels:
   - docs
 dependencies: []

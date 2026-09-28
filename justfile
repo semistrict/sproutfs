@@ -69,6 +69,12 @@ soak base="1" count="100":
     SPROUTFS_TEST_SOAK=1 SPROUTFS_SOAK_SEED_BASE={{ base }} SPROUTFS_SOAK_SEED_COUNT={{ count }} \
         go test -count=1 -timeout=80m -v ./internal/simtest -run 'Soak$'
 
+# The interactive explainer's simulation (TASK-65): the real code's simulation
+# test binary compiled to WebAssembly, beside the Go runtime glue that loads it.
+explainer:
+    GOOS=js GOARCH=wasm go test -c -o explainer/simtest.wasm ./internal/simtest
+    cp "$(go env GOROOT)/lib/wasm/wasm_exec.js" explainer/wasm_exec.js
+
 # One block under the race detector, for a seed a sweep has already flagged.
 soak-race base="1" count="4":
     SPROUTFS_TEST_SOAK=1 SPROUTFS_SOAK_SEED_BASE={{ base }} SPROUTFS_SOAK_SEED_COUNT={{ count }} \

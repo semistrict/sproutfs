@@ -1,0 +1,4 @@
+# Built by `just explainer`: the simulation compiled to WebAssembly, and the Go
+# runtime glue that loads it. Never committed.
+/simtest.wasm
+/wasm_exec.js
