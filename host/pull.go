@@ -23,7 +23,8 @@ var ErrNotPulling = errors.New("host: the VM is not pulling its memory here")
 // never loaded, or evicted since — reads this host's disk and makes no request
 // of the object store. What the guest wrote since that checkpoint is not in it
 // and needs no copy: it is this host's already, in the pager, and a later
-// checkpoint's pages go to the store and are read from it when evicted.
+// checkpoint keeps its pages in the same copy as it uploads them, so they are
+// read from the disk too once evicted (volume.VM.Pull).
 //
 // A VM whose checkpoint does not fit in what the disk has left, or a host that
 // keeps no disk, starts no pull. The VM runs all the same, and its faults read

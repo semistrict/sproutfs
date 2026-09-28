@@ -155,6 +155,19 @@ func (d *cacheDisk) reserve(bytes int64) (*diskRegion, error) {
 	return region, nil
 }
 
+// reserveHeld is reserve for a region a pull holds from the start, beside the
+// ones it already does.
+func (d *cacheDisk) reserveHeld(held map[*diskRegion]bool, bytes int64) (*diskRegion, error) {
+	region, err := d.reserve(bytes)
+	if err != nil {
+		return nil, err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	held[region] = true
+	return region, nil
+}
+
 // trim gives back the blocks of a region its pull did not write into, which is
 // what it took for pages another pull already held, and everything past where
 // a pull that stopped early got to.

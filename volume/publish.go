@@ -540,6 +540,9 @@ func (vm *VM) complete(ctx context.Context, ckpt *Checkpoint) error {
 // reclamation must spare.
 func (vm *VM) publish(ctx context.Context, ckpt *Checkpoint) (*checkpoint.Index, control.Record, error) {
 	publication := vm.manager.config.Store.Begin(ckpt.parentIndex, ckpt.ref)
+	if pull := vm.pulling(); pull != nil {
+		publication.Keep(pull)
+	}
 	// The checkpoints this handle knows are pinned or kept are what compaction
 	// must leave alone; the selection below reports any a fork pinned while
 	// this publication ran, and reclamation spares those. They are read once: a

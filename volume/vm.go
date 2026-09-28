@@ -148,6 +148,10 @@ type VM struct {
 	// rooted closes once this VM reads its own root: at once for any VM but a
 	// fork, and when a fork's root publication installs.
 	rooted chan struct{}
+	// pull is the copy of this VM's memory on the host's disk that Pull
+	// began, which every publication of it keeps its pages in; nil for a VM not
+	// pulling. Guarded by mu.
+	pull *checkpoint.Pull
 
 	ctx    context.Context
 	cancel context.CancelFunc

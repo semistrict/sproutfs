@@ -8,13 +8,14 @@ import (
 	"os"
 	"slices"
 	"strings"
-	"sync/atomic"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/semistrict/sproutfs/api/guest"
 	hostapi "github.com/semistrict/sproutfs/api/host"
 	"github.com/semistrict/sproutfs/host"
+	"github.com/semistrict/sproutfs/internal/testarena"
 	"github.com/semistrict/sproutfs/internal/testnet"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/adapters"
@@ -51,14 +52,29 @@ const (
 // are left out, because the host re-reads them on a timer of its own.
 type checkpointGets struct {
 	platform.ObjectStore
-	gets atomic.Int64
+	mu   sync.Mutex
+	keys []string
 }
 
 func (s *checkpointGets) Get(ctx context.Context, request platform.GetRequest) (platform.GetResult, error) {
-	if strings.Contains(request.Key.String(), "/ckpt/") {
-		s.gets.Add(1)
+	if key := request.Key.String(); strings.Contains(key, "/ckpt/") {
+		if request.Range != nil {
+			key = fmt.Sprintf("%s@%d+%d", key, request.Range.Offset, request.Range.Length)
+		}
+		s.mu.Lock()
+		s.keys = append(s.keys, key)
+		s.mu.Unlock()
 	}
 	return s.ObjectStore.Get(ctx, request)
+}
+
+// take returns the checkpoint objects read since it was last called.
+func (s *checkpointGets) take() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	keys := s.keys
+	s.keys = nil
+	return keys
 }
 
 func TestPulledGuestsFaultWithoutTheObjectStore(t *testing.T) {
@@ -82,6 +98,7 @@ func TestPulledGuestsFaultWithoutTheObjectStore(t *testing.T) {
 		PodIP: "127.0.0.1", PagePort: 1, PodName: "pull-host", Orchestrator: "http://127.0.0.1:1",
 		HugepageDir: t.TempDir(), ScratchDir: t.TempDir(), RAMPageSize: ramPageBytes(t),
 		ArenaBytes:  host.KindBytes{RAM: pullRAMArena, PMEM: pullPMEMArena},
+		Arena:       testarena.Mode(t),
 		MemoryBytes: pullRAMArena + pullPMEMArena,
 		// The memory tier keeps no page, so a page the arena let go of is read
 		// from the disk or from the store and nowhere else.
@@ -163,6 +180,10 @@ func TestPulledGuestsFaultWithoutTheObjectStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	child := awaitPull(t, ctx, service, "pull-child")
+	forkedPMEM := pmemPager(t, ctx, service)
+	t.Logf("PMEM once the child pulled: copies %d (unmapped %d), unchanged %d, dirty %d, resident %d",
+		forkedPMEM.CopyOnWrites, forkedPMEM.UnmappedCopyOnWrites, forkedPMEM.UnchangedPages,
+		forkedPMEM.DirtyPages, forkedPMEM.ResidentPages)
 	// The child's root names the pages of the parent's checkpoint, among them
 	// the fill, which the parent's pull has already copied: the child holds
 	// the parent's copy of those rather than making another.
@@ -183,7 +204,7 @@ func readsFillWithoutTheStore(t *testing.T, ctx context.Context, service host.Se
 	id string, pulled hostapi.Pull) {
 	t.Helper()
 	before := pmemPager(t, ctx, service)
-	objects.gets.Store(0)
+	objects.take()
 	for range 2 {
 		result, err := service.Exec(ctx, id, guest.ExecRequest{Cmd: "cat /fill > /dev/null", Timeout: 120})
 		if err != nil || result.Exit != 0 {
@@ -191,9 +212,13 @@ func readsFillWithoutTheStore(t *testing.T, ctx context.Context, service host.Se
 		}
 	}
 	after := pmemPager(t, ctx, service)
-	if gets := objects.gets.Load(); gets != 0 {
-		t.Fatalf("%s read the fill twice after pulling %d bytes and made %d requests of checkpoint objects, want none",
-			id, pulled.Bytes, gets)
+	t.Logf("%s's PMEM pager across the reads: loaded %d, copies %d (unmapped %d), unchanged %d, evictions %d",
+		id, after.LoadedPages-before.LoadedPages, after.CopyOnWrites-before.CopyOnWrites,
+		after.UnmappedCopyOnWrites-before.UnmappedCopyOnWrites, after.UnchangedPages-before.UnchangedPages,
+		after.Evictions-before.Evictions)
+	if read := objects.take(); len(read) != 0 {
+		t.Fatalf("%s read the fill twice after pulling %d bytes and read %d checkpoint objects, want none: %v",
+			id, pulled.Bytes, len(read), read)
 	}
 	// Sixteen pages through an arena of twelve: each pass faults at least four
 	// of them in over pages it evicts, and those the second faults in are ones

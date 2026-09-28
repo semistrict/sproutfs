@@ -789,9 +789,16 @@ A fork's child is pulled once its root has published. The child reads its
 parent's checkpoint and the pages the parent held that no checkpoint had, and
 its root republishes those pages as its own. The pull waits for that root, so
 it covers both kinds. Until then the child reads the second kind from the
-parent's sealed pages or the parent's page server, as any child does. The pages
-a later checkpoint publishes are not pulled: they are the guest's own, and
-they are read from the store when the pager evicts them.
+parent's sealed pages or the parent's page server, as any child does.
+
+A checkpoint the VM publishes later adds its pages to the same copy as it
+uploads them (`Publication.Keep`): each part once it is durable, and the
+segments once the index object is. So a page the guest wrote after the pull
+began, and that a later checkpoint published, is read from the disk too when
+the pager evicts it. That covers every publication: an interval checkpoint, a
+stop, and the fork point a fork publishes behind its children. A publication
+that does not fit in what the disk has left keeps nothing, and its pages are
+read from the store.
 
 The copy lasts as long as the VM runs on the host. A stop or a migration away
 gives it up. The mark stays with the VM. The orchestrator records it in its

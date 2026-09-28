@@ -41,8 +41,8 @@ func pullPage(page uint64) []byte {
 // reads are counted, a page cache disk of diskBytes and a memory tier no page
 // fits in: every page the disk does not serve is a request of the store. The
 // second host opens the VM and registers its machine marked to pull. It reports
-// the counted reads, the pagers, the running guest and the host.
-func pulledRun(t *testing.T, diskBytes int64) (*countedObjects, *hostPagers, *machine, *hostHarness) {
+// the counted reads, the pagers, the running guest, its handle and the host.
+func pulledRun(t *testing.T, diskBytes int64) (*countedObjects, *hostPagers, *machine, *volume.VM, *hostHarness) {
 	t.Helper()
 	h := newSizedHostHarness(t, 2)
 	counted := &countedObjects{ObjectStore: h.configs[1].ObjectStore}
@@ -86,7 +86,7 @@ func pulledRun(t *testing.T, diskBytes int64) (*countedObjects, *hostPagers, *ma
 	if err := h.hosts[1].AddPullingMachine("vm-1", guest); err != nil {
 		t.Fatal(err)
 	}
-	return counted, pagers, guest, h
+	return counted, pagers, guest, opened, h
 }
 
 // readPulled reads every page of the pulled VM's disk through its guest and
@@ -105,7 +105,7 @@ func readPulled(t *testing.T, guest *machine) {
 // complete its faults make no request of the object store: not a page's first
 // fault, and not the fault of a page its pager has evicted since.
 func TestAPulledVMFaultsWithoutTheObjectStore(t *testing.T) {
-	counted, pagers, guest, h := pulledRun(t, 64<<20)
+	counted, pagers, guest, _, h := pulledRun(t, 64<<20)
 	stats, err := h.hosts[1].WaitPulled(t.Context(), "vm-1")
 	if err != nil {
 		t.Fatal(err)
@@ -141,10 +141,48 @@ func TestAPulledVMFaultsWithoutTheObjectStore(t *testing.T) {
 	}
 }
 
+// A pulled VM keeps what it publishes later on its host's disk too. Its guest
+// stores into two pages and a checkpoint publishes them; then every page,
+// those two among them, faults in twice through two resident slots, and makes
+// no request of the object store.
+func TestAPulledVMKeepsItsLaterCheckpointsOnTheDisk(t *testing.T) {
+	counted, _, guest, vm, h := pulledRun(t, 64<<20)
+	if _, err := h.hosts[1].WaitPulled(t.Context(), "vm-1"); err != nil {
+		t.Fatal(err)
+	}
+	stored := map[uint64]byte{1: 77, 4: 78}
+	for page, value := range stored {
+		guest.store("disk", page, value)
+	}
+	if err := guest.checkpoint(t.Context(), vm); err != nil {
+		t.Fatal(err)
+	}
+	if kept := h.hosts[1].Status().Cache.Disk; kept.Entries <= pullPages+1 {
+		t.Fatalf("the page cache's disk holds %d entries after the checkpoint, want the pull's %d and the checkpoint's",
+			kept.Entries, pullPages+1)
+	}
+	counted.reset()
+	for range 2 {
+		for page := range uint64(pullPages) {
+			want := pullPage(page)[0]
+			if value, wrote := stored[page]; wrote {
+				want = value
+			}
+			if got := guest.load("disk", page); got[0] != want {
+				t.Fatalf("page %d holds %d, want %d", page, got[0], want)
+			}
+		}
+	}
+	if gets := counted.count(); gets != 0 {
+		t.Fatalf("faulting a pulled VM's pages in after a later checkpoint made %d requests of the object store, want none",
+			gets)
+	}
+}
+
 // A VM whose checkpoint does not fit in what the page cache's disk has left is
 // not pulled at all. It runs all the same, and its faults read the store.
 func TestAVMThatDoesNotFitReadsTheObjectStore(t *testing.T) {
-	counted, _, guest, h := pulledRun(t, 8<<20)
+	counted, _, guest, _, h := pulledRun(t, 8<<20)
 	stats, err := h.hosts[1].WaitPulled(t.Context(), "vm-1")
 	if err != nil {
 		t.Fatal(err)

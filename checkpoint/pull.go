@@ -25,6 +25,13 @@ import (
 //
 // Close gives the copy up. A page another pull on the host also holds stays
 // for that pull.
+//
+// A pull also keeps what its VM publishes later. A publication given the pull
+// (Publication.Keep) writes the members and segments it uploads into the copy as
+// each lands, so a page the VM wrote after the checkpoint it started from, once
+// published and then evicted, is read from this host's disk too rather than
+// from the store. A publication that does not fit in what the disk has left
+// keeps nothing, and the store serves its pages.
 type Pull struct {
 	store *Store
 	disk  *cacheDisk
@@ -37,6 +44,12 @@ type Pull struct {
 	// how much of it is on the disk so far.
 	bytes  int64
 	pulled atomic.Int64
+	// kept is what later publications added to the copy.
+	kept atomic.Int64
+
+	// mu orders keep against Close, so nothing is added to a copy given up.
+	mu     sync.Mutex
+	closed bool
 
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -48,8 +61,9 @@ type Pull struct {
 type PullStats struct {
 	// Bytes is what the checkpoint holds and Pulled how much of it is on the
 	// disk: the members and segments this pull copied and the ones it found
-	// another pull had already copied.
-	Bytes, Pulled int64
+	// another pull had already copied. Kept is what the VM's later publications
+	// added to the copy.
+	Bytes, Pulled, Kept int64
 	// Done reports a pull that has stopped fetching: complete when Err is nil,
 	// and stopped short by Err otherwise. A pull that stopped short keeps what
 	// it copied, and the store serves the rest.
@@ -106,7 +120,7 @@ func (p *Pull) Wait(ctx context.Context) error {
 
 // Stats reports how far the pull has come.
 func (p *Pull) Stats() PullStats {
-	stats := PullStats{Bytes: p.bytes, Pulled: p.pulled.Load()}
+	stats := PullStats{Bytes: p.bytes, Pulled: p.pulled.Load(), Kept: p.kept.Load()}
 	select {
 	case <-p.done:
 		stats.Done, stats.Err = true, p.err
@@ -120,8 +134,57 @@ func (p *Pull) Close() {
 	p.close.Do(func() {
 		p.cancel()
 		<-p.done
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		p.closed = true
 		p.disk.release(context.Background(), p.held)
 	})
+}
+
+// envelope is one object's bytes as the store holds them, and the key the page
+// cache names them by.
+type envelope struct {
+	key  cacheKey
+	data []byte
+}
+
+// keep adds envelopes a publication of this pull's VM has just uploaded to the
+// copy, in a region of their own, skipping any the disk already holds. It is
+// best effort: a disk without room, or one that fails a write, leaves the
+// store serving those pages, and the publication goes on regardless.
+func (p *Pull) keep(ctx context.Context, envelopes []envelope) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return
+	}
+	var fresh []envelope
+	var bytes int64
+	for _, e := range envelopes {
+		if p.hold(e.key) {
+			continue
+		}
+		fresh = append(fresh, e)
+		bytes += int64(len(e.data))
+	}
+	if len(fresh) == 0 {
+		return
+	}
+	region, err := p.disk.reserveHeld(p.held, bytes)
+	if err != nil {
+		slog.WarnContext(ctx, "checkpoint: a pulled VM's publication does not fit on the disk; the store serves it",
+			"checkpoint", p.index.Ref().String(), "bytes", bytes, "error", err)
+		return
+	}
+	defer p.disk.trim(context.WithoutCancel(ctx), region)
+	for _, e := range fresh {
+		if err := p.disk.write(ctx, region, p.held, e.key, e.data); err != nil {
+			slog.WarnContext(ctx, "checkpoint: keeping a pulled VM's publication on the disk failed; the store serves the rest",
+				"checkpoint", p.index.Ref().String(), "error", err)
+			return
+		}
+		p.kept.Add(int64(len(e.data)))
+	}
 }
 
 // run copies the checkpoint one segment at a time, in volume and segment

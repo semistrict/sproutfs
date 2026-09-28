@@ -72,7 +72,10 @@ type Publication struct {
 	// nested is what this checkpoint records of Index.Nested when setNested
 	// says it records anything; otherwise it keeps the parent's.
 	nested, setNested bool
-	err               error
+	// keep is the pull of the VM publishing, which keeps what this
+	// publication uploads; nil for a VM not pulling its memory.
+	keep *Pull
+	err  error
 }
 
 // Begin starts a checkpoint that inherits parent, which may be nil for a VM
@@ -201,6 +204,13 @@ func (p *Publication) SetNested(nested bool) {
 // most a Firecracker guest can have.
 const maximumVCPUs = 32
 
+// Keep has every member and segment this publication uploads kept in pull's
+// copy as it lands, so the VM pulling its memory reads them from this host's
+// disk once they are evicted, as it reads the checkpoint it started from. A
+// publication that fails leaves envelopes no index names, which cost the copy
+// their space and are never read.
+func (p *Publication) Keep(pull *Pull) { p.keep = pull }
+
 func (p *Publication) fail(err error) {
 	if p.err == nil {
 		p.err = err
@@ -261,7 +271,7 @@ func (p *Publication) Commit(ctx context.Context, source Source) (*Index, error)
 	if p.dropState {
 		index.state = location{}
 	}
-	writer := &partWriter{store: p.store, ref: p.ref, cancel: cancel}
+	writer := &partWriter{store: p.store, ref: p.ref, cancel: cancel, keep: p.keep}
 	if err := p.trim(ctx, index); err != nil {
 		return nil, writer.abandon(err)
 	}
@@ -295,7 +305,29 @@ func (p *Publication) Commit(ctx context.Context, source Source) (*Index, error)
 	if err := p.store.putIndexObject(ctx, p.ref, data); err != nil {
 		return nil, writer.abandon(err)
 	}
+	p.keepSegments(ctx, index, data)
 	return index, nil
+}
+
+// keepSegments hands the segments this publication wrote into its index object
+// to the pull that keeps them, once the object is durable.
+func (p *Publication) keepSegments(ctx context.Context, index *Index, object []byte) {
+	if p.keep == nil {
+		return
+	}
+	var envelopes []envelope
+	for _, name := range index.names {
+		table := index.volumes[name]
+		for _, number := range slices.Sorted(maps.Keys(p.dirty[name])) {
+			entry, written := table.segments[number]
+			if !written || entry.at.ref != p.ref {
+				continue
+			}
+			envelopes = append(envelopes, envelope{key: segmentCacheKey(name, number, entry.at.ref),
+				data: object[entry.at.offset:][:entry.at.length]})
+		}
+	}
+	p.keep.keep(ctx, envelopes)
 }
 
 // writeState writes the VMM state as this checkpoint's first member, so its
@@ -547,9 +579,13 @@ type partWriter struct {
 	admitted bool
 	next     uint32
 	bytes    uint64
-	wait     sync.WaitGroup
-	once     sync.Once
-	failure  error
+	// keep is the pull that keeps each part's pages once the part is durable,
+	// and members the pages of the part in hand, where they lie in it.
+	keep    *Pull
+	members []keptMember
+	wait    sync.WaitGroup
+	once    sync.Once
+	failure error
 }
 
 // admit takes this writer's slot of the store's builder budget, once. A
@@ -602,7 +638,28 @@ func (w *partWriter) add(ctx context.Context, volume string, page uint64, kind m
 	}
 	at := location{ref: w.ref, origin: origin, part: w.next, offset: offset, length: length}
 	w.bytes += at.length
+	if w.keep != nil && kind == memberPage {
+		w.members = append(w.members, keptMember{volume: volume, page: page, at: at})
+	}
 	return at, nil
+}
+
+// keptMember is one page of a part in hand and where it lies in the part.
+type keptMember struct {
+	volume string
+	page   uint64
+	at     location
+}
+
+// kept is what a durable part's pages are for the pull that keeps them: each
+// member's envelope, named by the page's identity.
+func (w *partWriter) kept(data []byte, members []keptMember) []envelope {
+	envelopes := make([]envelope, 0, len(members))
+	for _, m := range members {
+		envelopes = append(envelopes, envelope{key: pageKey(identityOf(m.volume, m.page, m.at)),
+			data: data[m.at.offset:][:m.at.length]})
+	}
+	return envelopes
 }
 
 // partBytes is the encoded member size a part fills to before it is sealed and
@@ -658,7 +715,8 @@ func (w *partWriter) flush(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	w.part, w.next = nil, w.next+1
+	members := w.members
+	w.part, w.next, w.members = nil, w.next+1, nil
 	if err := w.store.acquire(ctx); err != nil {
 		return err
 	}
@@ -668,6 +726,10 @@ func (w *partWriter) flush(ctx context.Context) error {
 		defer w.store.release()
 		if err := w.put(ctx, key, data); err != nil {
 			w.record(err)
+			return
+		}
+		if w.keep != nil {
+			w.keep.keep(ctx, w.kept(data, members))
 		}
 	}()
 	return nil
@@ -705,7 +767,8 @@ func (w *partWriter) finish(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		w.part, w.next = nil, w.next+1
+		members := w.members
+		w.part, w.next, w.members = nil, w.next+1, nil
 		if err := w.store.acquire(ctx); err != nil {
 			return err
 		}
@@ -713,6 +776,9 @@ func (w *partWriter) finish(ctx context.Context) error {
 		w.store.release()
 		if err != nil {
 			return err
+		}
+		if w.keep != nil {
+			w.keep.keep(ctx, w.kept(sealed, members))
 		}
 	}
 	w.wait.Wait()

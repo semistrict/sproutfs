@@ -768,7 +768,9 @@ reconciled against object storage.
 The page cache has a second tier on the host's own disk
 (`CacheConfig.Disk`, `DiskBytes`). It holds the pages a **pull** copied: every
 page of one checkpoint, and the segments that locate them, fetched for a VM
-[marked to pull its memory](hosting.md#pulling-a-vms-memory). A read that
+[marked to pull its memory](hosting.md#pulling-a-vms-memory), and what that
+VM's later checkpoints published, which each publication writes to the disk as
+it uploads it. A read that
 misses in memory looks on the disk before it asks the store, so a checkpoint
 that is pulled whole is read without a request, however often the pager evicts
 its pages.
@@ -789,6 +791,8 @@ many bytes, in 4 KiB blocks, or it is refused whole with `ErrDiskFull`. A
 region is filled in the order the pull fetches, and a member may straddle two
 runs of blocks. A page another pull already copied is held rather than copied
 again, and the pull gives back the part of its region it did not fill. A
+publication the pull keeps takes a region of its own for what it uploaded, in
+the same way, once each part is durable. A
 region stays while any pull holds a page in it. When the last lets go, its
 entries go at once, and its blocks return once the reads in flight from it
 have finished.

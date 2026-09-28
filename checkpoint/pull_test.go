@@ -291,6 +291,51 @@ func TestANewerCheckpointSupersedesThePulledCopy(t *testing.T) {
 	}
 }
 
+// A pull keeps what its VM publishes later. A newer checkpoint published with
+// the pull's keep is read from the disk as the pulled one is: its segment and
+// the page it wrote as well as the pages it kept, with no request of the store.
+// Closing the pull gives the kept copy up with the rest.
+func TestAPullKeepsWhatItsVMPublishesLater(t *testing.T) {
+	f := newPullFixture(t, 64<<20)
+	pull, err := f.store.Pull(t.Context(), f.index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pull.Wait(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	next := f.model.clone()
+	p := f.store.Begin(f.index, control.Ref{VM: "pulled", Sequence: 3})
+	p.Keep(pull)
+	for sector := range uint32(sectorsPerPage) {
+		next.dirty(p, "root", 1, sector, sectorData("newer", 1, sector))
+	}
+	published, err := p.Commit(t.Context(), next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kept := pull.Stats().Kept; kept == 0 {
+		t.Fatal("the pull kept nothing of the newer checkpoint")
+	}
+	newer, err := f.store.Open(t.Context(), published.Ref())
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.objects.gets.Store(0)
+	for range 2 {
+		for page := range uint64(cachedPages) {
+			readCachedPage(t, f.store, newer, next, page)
+		}
+	}
+	if gets := f.objects.gets.Load(); gets != 0 {
+		t.Fatalf("reading a checkpoint the pull kept made %d requests of the store, want none", gets)
+	}
+	pull.Close()
+	if entries := f.cache.Stats().Disk.Entries; entries != 0 {
+		t.Fatalf("the disk holds %d entries once the pull is closed, want none", entries)
+	}
+}
+
 // Two pulls of one checkpoint share one copy: the second copies nothing and
 // gives back the space it took for it. The copy stays while either holds it and
 // goes with the last.
