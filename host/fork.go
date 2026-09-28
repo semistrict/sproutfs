@@ -76,14 +76,21 @@ func (h *Host) inherited(child string) *volume.ForkPoint {
 	return nil
 }
 
-// took records that a child this host takes in itself has been bound to the
-// fork point it inherits.
-func (h *Host) took(child string) {
+// took claims the hold of a child this host takes in itself, once Receive has
+// bound it to the fork point it inherits: it is the local half of a claim
+// (vmmigrate.Received.Claim). A hold that is no longer kept — the fan-out gave
+// it up, or it ran out — reports vmmigrate.ErrGivenUp, and the child is
+// discarded. It takes the lock Abandon takes, so of a claim and a give-up of
+// one child exactly one comes first.
+func (h *Host) took(child string) error {
 	h.machines.mu.Lock()
 	defer h.machines.mu.Unlock()
-	if hold := h.machines.forked[child]; hold != nil && hold.local {
-		hold.taken = true
+	hold := h.machines.forked[child]
+	if hold == nil || !hold.local {
+		return fmt.Errorf("%w: this host no longer holds the fork point %s inherits", vmmigrate.ErrGivenUp, child)
 	}
+	hold.taken = true
+	return nil
 }
 
 // untaken refuses the release of a hold whose child this host has yet to take

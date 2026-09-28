@@ -32,7 +32,10 @@ type fakeHost struct {
 	notReady error
 	notLive  error
 
-	status   hostapi.Status
+	status hostapi.Status
+	// claimed is the fork child whose destination had claimed its hold, which
+	// a give-up of it reports.
+	claimed  string
 	stored   hostapi.Stored
 	kept     hostapi.KeptResult
 	created  hostapi.CreateResult
@@ -150,8 +153,8 @@ func (f *fakeHost) Receive(_ context.Context, handoff hostapi.Handoff) (hostapi.
 
 func (f *fakeHost) Released(_ context.Context, id string) error { return f.record("released %s", id) }
 
-func (f *fakeHost) Abandoned(_ context.Context, id string) error {
-	return f.record("abandoned %s", id)
+func (f *fakeHost) Abandoned(_ context.Context, id string) (hostapi.AbandonedResult, error) {
+	return hostapi.AbandonedResult{Claimed: id == f.claimed}, f.record("abandoned %s", id)
 }
 
 func (f *fakeHost) Drain(context.Context) (hostapi.DrainResult, error) {
@@ -506,10 +509,17 @@ func TestDrainAndReleaseAreTheHandoverContract(t *testing.T) {
 	// And the other end of it: a handover the control plane has given up on,
 	// which the host stops holding whatever is outstanding on it.
 	status, body = call(t, fake, http.MethodPost, "/vms/vm-2/abandoned", "")
-	if status != http.StatusOK || body != `{"status":"ok"}` {
+	if status != http.StatusOK || body != `{}` {
 		t.Fatalf("status %d: %s", status, body)
 	}
-	if want := []string{"drain", "released vm-1", "abandoned vm-2"}; !slices.Equal(fake.calls, want) {
+	// A fork's child whose destination claimed its hold first runs there, and
+	// the give-up says so.
+	fake.claimed = "vm-3"
+	status, body = call(t, fake, http.MethodPost, "/vms/vm-3/abandoned", "")
+	if status != http.StatusOK || body != `{"claimed":true}` {
+		t.Fatalf("status %d: %s", status, body)
+	}
+	if want := []string{"drain", "released vm-1", "abandoned vm-2", "abandoned vm-3"}; !slices.Equal(fake.calls, want) {
 		t.Fatalf("the host was asked for %v, want %v", fake.calls, want)
 	}
 }

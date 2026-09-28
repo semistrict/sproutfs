@@ -56,6 +56,10 @@ var (
 	// pages on top would make one VM's memory out of two writers' pages, so the
 	// handoff is refused instead.
 	ErrStale = errors.New("vmmigrate: the VM's record has moved past this handoff")
+	// ErrGivenUp reports a fork child whose hold its parent's host no longer
+	// keeps: the fan-out gave it up, or it ran out, before the child claimed
+	// it. Nothing wants such a child, so its destination discards it.
+	ErrGivenUp = errors.New("vmmigrate: the fork this child was handed over by was given up")
 )
 
 // Runtime is one VMM process a migration drives, and is satisfied by

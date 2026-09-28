@@ -115,6 +115,11 @@ type World struct {
 	// deleted again at every step, because a record nothing can open and
 	// nothing can publish under is an identity burnt for good.
 	orphans map[string]bool
+	// givenUp are the children of fan-outs that failed while a receive of them
+	// went on after its caller hung up, by the host taking each in, whose hold
+	// was given up before they claimed it. Each such receive must end without
+	// its child: see givenUpEnded.
+	givenUp map[string]givenUpChild
 	// forgetsReleases reports that nothing carries the word that a destination
 	// has every page it was handed: an orchestrator that restarted between a
 	// receive and its release. The source goes on holding what it handed over,
@@ -226,14 +231,17 @@ type hostState struct {
 	// a destination that took the first child and then could take no more.
 	refuseStart         error
 	startsBeforeRefusal int
-	// hangsUp makes the caller of the next migration's receive here hang up
+	// hangsUp makes the caller of the next receive here hang up
 	// as this host begins to start the guest, and slowStart is how long the
 	// start then takes. beginning is the signal that caller waits for, by VM,
 	// and outlived every receive that went on here after its caller hung up.
 	hangsUp   bool
 	slowStart time.Duration
-	beginning map[string]chan struct{}
-	outlived  map[string]*outliving
+	// loseAnswer makes the next receive here run to its end and then tell its
+	// caller it failed.
+	loseAnswer bool
+	beginning  map[string]chan struct{}
+	outlived   map[string]*outliving
 	// started records the guest a receive built, so the world can adopt the
 	// model of a VM this host took in, and guests every VMM process this
 	// incarnation runs, which is what a kill ends: a machine whose host died is
@@ -1658,7 +1666,9 @@ func (w *World) carry(ctx context.Context, from, to int, handoff vmmigrate.Hando
 			return received, to, nil
 		}
 		w.logf("%s: %s could not receive it: %v", handoff.VMID, destination.name, err)
-		if w.leftRunning(to, incarnation, handoff.VMID) {
+		// A receive that went on after its caller, or whose answer was lost,
+		// is the retry's to find: its guest runs because it took the VM in.
+		if !destination.outliving(handoff.VMID) && w.leftRunning(to, incarnation, handoff.VMID) {
 			return nil, to, fmt.Errorf("%s: a receive that failed left a guest running on %s: %v",
 				handoff.VMID, destination.name, err)
 		}
@@ -1759,6 +1769,97 @@ func (h *hostState) ended(id string) *outliving {
 	}
 }
 
+// outliving reports a receive of one VM here that outlived its caller.
+func (h *hostState) outliving(id string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.outlived[id] != nil
+}
+
+// givenUpChild is a fork child whose hold was given up while a receive of it
+// went on: the host taking it in, and the parent it was forked from.
+type givenUpChild struct {
+	host   int
+	parent string
+}
+
+// giveUpOutlived gives up the hold of a fork child whose receive outlived its
+// fan-out. A child whose destination claimed the hold first runs there, and is
+// deleted: its identity was the failed fan-out's alone. One that had not is
+// one the receive must now give up itself, which Settle requires once it ends.
+func (w *World) giveUpOutlived(ctx context.Context, source, destination *hostState, id, parent string) {
+	if !w.abandonSource(ctx, source, id) {
+		if w.givenUp == nil {
+			w.givenUp = map[string]givenUpChild{}
+		}
+		w.givenUp[id] = givenUpChild{host: w.indexOf(destination), parent: parent}
+		return
+	}
+	destination.mu.Lock()
+	on := destination.outlived[id]
+	delete(destination.outlived, id)
+	destination.mu.Unlock()
+	<-on.done
+	w.logf("%s: %s claimed it before its fan-out gave it up", id, destination.name)
+	if on.err == nil {
+		on.received.Close()
+	}
+	w.discardChild(ctx, destination, id)
+}
+
+// AwaitGivenUp waits for every receive of a fork child whose hold its fan-out
+// gave up to end, and requires each to have ended without the child. It is what
+// a schedule does before its final Settle: until such a receive ends, its child
+// holds a record that selects a root nobody published and its parent sealed,
+// which the checks after it would take for state the world lost track of.
+func (w *World) AwaitGivenUp() error { return w.givenUpEnded(true) }
+
+// givenUpEnded requires every receive of a fork child whose hold was given up
+// before it claimed it to have ended without the child: the claim finds the
+// hold gone, and the destination discards the child rather than run it. One
+// still going on is left for a later step, or waited for when wait is set.
+func (w *World) givenUpEnded(wait bool) error {
+	var errs []error
+	for _, id := range slices.Sorted(maps.Keys(w.givenUp)) {
+		index := w.givenUp[id].host
+		h := w.hosts[index]
+		if wait {
+			h.mu.Lock()
+			on := h.outlived[id]
+			h.mu.Unlock()
+			if on != nil {
+				<-on.done
+			}
+		}
+		on := h.ended(id)
+		if on == nil {
+			if !h.outliving(id) {
+				delete(w.givenUp, id)
+			}
+			continue
+		}
+		delete(w.givenUp, id)
+		if on.err == nil {
+			on.received.Close()
+			errs = append(errs, fmt.Errorf("%s: %s took it in after its fan-out gave its hold up", id, h.name))
+			continue
+		}
+		w.logf("%s: the receive on %s that outlived its fan-out gave it up: %v", id, h.name, on.err)
+		if w.up(index) != nil && h.stillRunning(id) {
+			errs = append(errs, fmt.Errorf("%s: a receive that outlived its fan-out failed and left a guest running on %s: %v",
+				id, h.name, on.err))
+		}
+		// The discard deletes the child's record, which a store that was
+		// unavailable, or a host lost under it, may have left: its identity is
+		// freed again at every step, as an abandoned fork's is.
+		if w.orphans == nil {
+			w.orphans = map[string]bool{}
+		}
+		w.orphans[id] = true
+	}
+	return errors.Join(errs...)
+}
+
 // tookIn finds a receive of one VM that outlived its caller and has ended, and
 // reports the host it took the VM in on. One that failed must have left
 // nothing running, as every failed receive must.
@@ -1851,6 +1952,33 @@ func (w *World) outlive(ctx context.Context, destination *hostState, taking *hos
 	return nil, fmt.Errorf("%w: the caller of the receive on %s hung up", ErrInjected, destination.name)
 }
 
+// losesAnswer takes the one lost answer armed on this host, if there is one.
+func (h *hostState) losesAnswer() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	lost := h.loseAnswer
+	h.loseAnswer = false
+	return lost
+}
+
+// loseAnswer runs a receive to its end and then tells its caller it failed, as
+// a caller whose connection broke as the answer was on its way does. What the
+// receive came to is kept for the world to find, exactly as one that outlived
+// its caller is.
+func (w *World) loseAnswer(ctx context.Context, destination *hostState, taking *host.Host,
+	handoff vmmigrate.Handoff) (*vmmigrate.Received, error) {
+	on := &outliving{done: make(chan struct{})}
+	on.received, on.err = taking.Receive(ctx, handoff)
+	close(on.done)
+	if on.err != nil {
+		return nil, on.err
+	}
+	destination.mu.Lock()
+	destination.outlived[handoff.VMID] = on
+	destination.mu.Unlock()
+	return nil, fmt.Errorf("%w: the answer of the receive on %s was lost", ErrInjected, destination.name)
+}
+
 // lose ends this incarnation of a host for everything waiting on it. It is
 // called under the world's lock, and closing twice is a host taken away twice.
 func (h *hostState) lose() {
@@ -1889,10 +2017,11 @@ func (w *World) receive(ctx context.Context, from int, destination *hostState, h
 	if taking == nil {
 		return nil, platform.ErrProcessStopped
 	}
-	if !handoff.IsFork() {
-		if began := destination.hangUpOn(handoff.VMID); began != nil {
-			return w.outlive(ctx, destination, taking, began, handoff)
-		}
+	if began := destination.hangUpOn(handoff.VMID); began != nil {
+		return w.outlive(ctx, destination, taking, began, handoff)
+	}
+	if destination.losesAnswer() {
+		return w.loseAnswer(ctx, destination, taking, handoff)
 	}
 	ctx, cancel := context.WithTimeout(ctx, Deadline)
 	defer cancel()
@@ -2002,15 +2131,18 @@ func (w *World) discardChild(ctx context.Context, destination *hostState, id str
 
 // abandonSource gives a source's pages back once nothing can need them from
 // there any more, and ends the guest that was holding them. The pages are going
-// either way, so a release the source would refuse is a discard.
-func (w *World) abandonSource(_ context.Context, source *hostState, id string) {
+// either way, so a release the source would refuse is a discard. It reports a
+// fork child whose destination had claimed its hold first, which runs there.
+func (w *World) abandonSource(_ context.Context, source *hostState, id string) (claimed bool) {
 	running := w.reach(w.indexOf(source))
 	if running == nil {
-		return
+		return false
 	}
-	if err := running.Abandon(id); err != nil {
+	claimed, err := running.GiveUp(id)
+	if err != nil {
 		w.logf("%s: abandoning what %s handed over: %v", id, source.name, err)
 	}
+	return claimed
 }
 
 // indexOf is a host's place in the deployment.
@@ -2163,6 +2295,13 @@ func (w *World) forked(ctx context.Context, source, destination *hostState, spec
 		// would not publish: either way the destination gave the guest up. The
 		// identity goes with it, and the parent takes its pages back here.
 		w.logf("%s: %s could not receive the child: %v", spec.ID, destination.name, err)
+		if destination.outliving(spec.ID) {
+			// Its caller is gone and the receive went on, or ended with its
+			// answer lost. The fan-out is over all the same, so the hold is
+			// given up, as the orchestrator gives it up.
+			w.giveUpOutlived(ctx, source, destination, spec.ID, spec.Parent)
+			return false, nil
+		}
 		if refused(err) {
 			// The receive publishes the child's root, and its retire is what
 			// refused: the fork not happening is not what that means.
@@ -2185,6 +2324,13 @@ func (w *World) forked(ctx context.Context, source, destination *hostState, spec
 	defer received.Close()
 	child := destination.guestFor(spec.ID)
 	if child == nil {
+		select {
+		case <-gone:
+			// The destination was lost as its receive returned, and its guest
+			// with it: a child that existed there alone unless its root landed.
+			return w.lostBeforeRoot(ctx, source, destination, spec, nil, at)
+		default:
+		}
 		received.Close()
 		w.abandonSource(ctx, source, spec.ID)
 		return false, fmt.Errorf("%s: %s started no guest for the child", spec.ID, destination.name)
@@ -2256,7 +2402,12 @@ func (w *World) lostBeforeRoot(ctx context.Context, source, destination *hostSta
 		w.adopt(in)
 		w.place(in, w.indexOf(destination), nil)
 		w.notePublished(spec.ID, record.Selected)
-		w.landed(in, nil, durableState{model: at, writes: child.stored(), sequence: record.Selected})
+		// A guest lost as its receive returned had stored nothing yet.
+		var writes int64
+		if child != nil {
+			writes = child.stored()
+		}
+		w.landed(in, nil, durableState{model: at, writes: writes, sequence: record.Selected})
 		w.logf("%s: its host was lost after its root landed at %d", spec.ID, record.Selected)
 		return true, nil
 	}
@@ -2274,7 +2425,7 @@ func (w *World) lostBeforeRoot(ctx context.Context, source, destination *hostSta
 // fork could not give back. It runs at every step of the schedule, which is
 // what a host loop would do.
 func (w *World) Settle(ctx context.Context) error {
-	var errs []error
+	errs := []error{w.givenUpEnded(false)}
 	// In identity order rather than the map's: what this world does must come
 	// from the seed and not from where Go happened to put a key.
 	for _, id := range slices.Sorted(maps.Keys(w.orphans)) {
@@ -2347,6 +2498,10 @@ func (w *World) survey() {
 // parent sealed by a hold its host does not report is one the deployment sees
 // waiting on nothing, and only the host's own deadline would ever end it.
 //
+// A child whose hold its fan-out gave up while a receive of it went on holds
+// its parent sealed too, until that receive has discarded it, and its host
+// reports that receive in flight: that accounts for the seal as a hold does.
+//
 // It also requires a hold whose child runs on the same host to owe nothing.
 // Such a child was taken in over the point and maps every page it inherited,
 // so its release is one the host would accept.
@@ -2372,7 +2527,8 @@ func (w *World) VerifyHandovers() error {
 			if vm == nil || !vm.Status().Sealed {
 				continue
 			}
-			if !slices.ContainsFunc(status.Serving, func(child string) bool { return w.parentOf(child) == id }) {
+			if !slices.ContainsFunc(status.Serving, func(child string) bool { return w.parentOf(child) == id }) &&
+				!slices.ContainsFunc(status.Receiving, func(child string) bool { return w.givenUp[child].parent == id }) {
 				errs = append(errs, fmt.Errorf("%s is sealed and %s reports no hold for a child of it: %v",
 					id, h.name, status.Serving))
 			}
@@ -3021,11 +3177,13 @@ func (w *World) Close(ctx context.Context) error {
 		return nil
 	}
 	w.closed = true
+	// A receive of a child whose fan-out gave it up ends before anything
+	// closes under it.
+	errs := []error{w.givenUpEnded(true)}
 	// A checkpoint's sweep runs behind its publication, and closing a VM
 	// finishes it rather than cancelling it, so a world closed the moment
 	// after a checkpoint landed leaves nothing behind that a running host
 	// would have deleted.
-	var errs []error
 	for index, h := range w.hosts {
 		running := w.up(index)
 		if running == nil {

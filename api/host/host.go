@@ -700,6 +700,14 @@ type MigrateResult struct {
 	Hold    Seconds `json:"hold_seconds,omitempty"`
 }
 
+// AbandonedResult answers a give-up. Claimed reports a fork's child whose
+// destination had already claimed its hold: the child runs there, and the
+// give-up came too late to stop it, so whoever gave it up is the one that
+// deletes it.
+type AbandonedResult struct {
+	Claimed bool `json:"claimed,omitempty"`
+}
+
 // ReceiveResult is the destination half: the VM is running again when this
 // returns, and the stream of the source's unpublished pages has completed.
 type ReceiveResult struct {

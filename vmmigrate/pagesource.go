@@ -205,7 +205,10 @@ type PageSource struct {
 	// which is as good a reason to refuse a release as pages known to be
 	// outstanding: an unlistable memory region may hold anything.
 	unlisted map[string]error
-	peers    map[string]*peerBudget
+	// claimed are the fork children whose destination has taken them in over
+	// the hold this host keeps for them: see Claim.
+	claimed map[string]bool
+	peers   map[string]*peerBudget
 
 	requests, servedPages, absentPages, refused, listings atomic.Int64
 	closeOnce                                             sync.Once
@@ -252,6 +255,7 @@ func NewPageSource(ctx context.Context, config SourceConfig) (*PageSource, error
 		sending:     make(map[string]int),
 		settled:     make(chan struct{}),
 		unlisted:    make(map[string]error),
+		claimed:     make(map[string]bool),
 		peers:       make(map[string]*peerBudget)}
 	s.wg.Go(s.accept)
 	return s, nil
@@ -366,6 +370,7 @@ func (s *PageSource) Release(vmID string) error {
 	delete(s.served, vmID)
 	delete(s.outstanding, vmID)
 	delete(s.unlisted, vmID)
+	delete(s.claimed, vmID)
 	return nil
 }
 
@@ -373,16 +378,37 @@ func (s *PageSource) Release(vmID string) error {
 // this host is giving up rather than handing over — one whose fork hold
 // outlived its deadline, one whose fan-out failed, one this host has lost —
 // where the pages are going either way and refusing would only leave the
-// parent sealed and the VM half-released.
-func (s *PageSource) Discard(vmID string) {
+// parent sealed and the VM half-released. It reports a fork child whose
+// destination had already claimed it: that child runs, whatever the give-up
+// meant.
+func (s *PageSource) Discard(vmID string) (claimed bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	// A release waiting on a reply of this VM's pages has nothing left to
 	// decide about, which is what bounds that wait by the hold's own deadline.
 	defer s.wake()
+	claimed = s.claimed[vmID]
 	delete(s.served, vmID)
 	delete(s.outstanding, vmID)
 	delete(s.unlisted, vmID)
+	delete(s.claimed, vmID)
+	return claimed
+}
+
+// Claim is a fork child's destination taking the child in over the hold this
+// host keeps for it, once it has every page the child inherited. It reports
+// whether the hold still stood: one that did is marked claimed, and a later
+// Discard says so; one that was given up, released or ran out is not, and the
+// destination discards the child. Claim and Discard take the same lock, so of a
+// claim and a give-up of one child exactly one comes first.
+func (s *PageSource) Claim(vmID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, served := s.served[vmID]; !served {
+		return false
+	}
+	s.claimed[vmID] = true
+	return true
 }
 
 // outstandingPages counts what one VM's volumes still owe a destination.
@@ -601,6 +627,7 @@ func (s *PageSource) dispatch(conn platform.Conn, peer string, incoming wire.Inc
 		return err
 	}
 	pageRequest, residentRequest := new(migratev1.PageRequest), new(migratev1.ResidentRequest)
+	claimRequest := new(migratev1.ClaimRequest)
 	switch {
 	case incoming.Message.MessageIs(pageRequest):
 		if err := incoming.UnmarshalTo(pageRequest); err != nil {
@@ -634,6 +661,15 @@ func (s *PageSource) dispatch(conn platform.Conn, peer string, incoming wire.Inc
 			return err
 		}
 		return s.reply(conn, incoming.RequestID, s.resident(residentRequest), nil)
+	case incoming.Message.MessageIs(claimRequest):
+		if err := incoming.UnmarshalTo(claimRequest); err != nil {
+			return err
+		}
+		status := migratev1.Status_STATUS_UNKNOWN_VM
+		if s.Claim(claimRequest.GetVm()) {
+			status = migratev1.Status_STATUS_OK
+		}
+		return s.reply(conn, incoming.RequestID, migratev1.ClaimResponse_builder{Status: &status}.Build(), nil)
 	default:
 		return wire.ErrMalformedFrame
 	}

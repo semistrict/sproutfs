@@ -310,8 +310,12 @@ func (h *Host) Receive(ctx context.Context, handoff vmmigrate.Handoff) (*vmmigra
 	}
 	if point != nil {
 		// The child maps every page it inherited from here, which is what a
-		// release of the hold kept for it states.
-		h.took(handoff.VMID)
+		// release of the hold kept for it states, and it claims that hold.
+		if err := h.took(handoff.VMID); err != nil {
+			received.Close()
+			h.discardReceived(ctx, handoff.VMID, started, received.VM(), err)
+			return nil, err
+		}
 	}
 	// A VM marked to pull pulls the checkpoint it opened here, the one the
 	// store holds. The pages no checkpoint holds are not the pull's: they
@@ -330,6 +334,17 @@ func (h *Host) Receive(ctx context.Context, handoff vmmigrate.Handoff) (*vmmigra
 		received.Close()
 		h.discardReceived(ctx, handoff.VMID, started, received.VM(), err)
 		return nil, fmt.Errorf("streaming %s from %s: %w", handoff.VMID, handoff.Source, err)
+	}
+	if handoff.IsFork() && point == nil {
+		// The child has every page it inherited, and it runs only if its
+		// parent's host still holds it: a fan-out that gave it up meanwhile is
+		// one nothing wants it from. Past the hold's own deadline, counted on
+		// that host from before this receive began, the answer can only be no.
+		if err := h.claim(ctx, received); err != nil {
+			received.Close()
+			h.discardReceived(ctx, handoff.VMID, started, received.VM(), err)
+			return nil, fmt.Errorf("claiming %s from %s: %w", handoff.VMID, handoff.Source, err)
+		}
 	}
 	// The post-copy is the one part of a handover that runs behind a guest
 	// already answering, so nothing else on either host says when it ended or
@@ -357,6 +372,22 @@ func (h *Host) Receive(ctx context.Context, handoff vmmigrate.Handoff) (*vmmigra
 		go h.rootBehind(handoff.VMID, received.VM(), started)
 	}
 	return received, nil
+}
+
+// claim asks a fork child's parent's host to mark the child's hold claimed,
+// for no longer than that hold can still stand.
+func (h *Host) claim(ctx context.Context, received *vmmigrate.Received) error {
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	over := h.clock.AfterFunc(h.HoldTimeout(), func() {
+		cancel(fmt.Errorf("%w: the hold of %s is past its deadline", vmmigrate.ErrGivenUp, received.VM().ID()))
+	})
+	defer over.Stop()
+	err := received.Claim(ctx)
+	if cause := context.Cause(ctx); err != nil && errors.Is(cause, vmmigrate.ErrGivenUp) {
+		return cause
+	}
+	return err
 }
 
 // rootBehind publishes a fork child's root index behind the running child, and
@@ -497,29 +528,44 @@ func (h *Host) discardReceived(ctx context.Context, vmID string, runtime Machine
 // this host takes in itself fetches nothing, and this host is the one thing that
 // knows whether it has been taken in: until it has, its release is refused the
 // same way.
-func (h *Host) ReleaseMigrated(vmID string) error { return h.release(vmID, false) }
+func (h *Host) ReleaseMigrated(vmID string) error {
+	_, err := h.release(vmID, false)
+	return err
+}
 
 // Abandon is ReleaseMigrated for a VM this host is giving up rather than
 // handing over: a fork hold that outlived its deadline, a fan-out that failed,
 // a VM a later writer fenced this host out of, a parent being deleted, a host
 // that is exiting. The pages go either way, and refusing would only leave the
 // parent sealed and the VM half-released.
-func (h *Host) Abandon(vmID string) error { return h.release(vmID, true) }
+func (h *Host) Abandon(vmID string) error {
+	_, err := h.release(vmID, true)
+	return err
+}
 
-func (h *Host) release(vmID string, abandoning bool) error {
+// GiveUp is Abandon for the control plane's give-up of a fork's child, and
+// reports whether the child's destination had already claimed the hold. Such a
+// child runs there, whatever the give-up meant, and the control plane is the
+// one that knows nothing wants it: the claim and the give-up are decided here
+// one at a time, so this answer is the only word it gets that the child ran.
+func (h *Host) GiveUp(vmID string) (claimed bool, err error) {
+	return h.release(vmID, true)
+}
+
+func (h *Host) release(vmID string, abandoning bool) (claimed bool, err error) {
 	// What can refuse goes first: nothing below may be undone for a release
 	// that does not happen. A child this host takes in itself is refused here
 	// until it has been, and one elsewhere by the page server.
 	if !abandoning {
 		if err := h.untaken(vmID); err != nil {
-			return fmt.Errorf("releasing %s: %w", vmID, err)
+			return false, fmt.Errorf("releasing %s: %w", vmID, err)
 		}
 	}
 	if h.pages != nil {
 		if abandoning {
-			h.pages.Discard(vmID)
+			claimed = h.pages.Discard(vmID)
 		} else if err := h.pages.Release(vmID); err != nil {
-			return fmt.Errorf("releasing %s: %w", vmID, err)
+			return false, fmt.Errorf("releasing %s: %w", vmID, err)
 		}
 	}
 	h.machines.mu.Lock()
@@ -527,6 +573,8 @@ func (h *Host) release(vmID string, abandoning bool) error {
 	delete(h.machines.migrated, vmID)
 	hold := h.machines.forked[vmID]
 	delete(h.machines.forked, vmID)
+	// A child this host took in itself claimed its hold when it was taken.
+	claimed = claimed || (hold != nil && hold.local && hold.taken)
 	h.machines.mu.Unlock()
 	// The deadline this release beat has nothing left to do.
 	if migrated != nil {
@@ -538,14 +586,14 @@ func (h *Host) release(vmID string, abandoning bool) error {
 		// back and is checkpointed again; its VMM process is untouched, because
 		// the parent never stopped.
 		hold.timer.Stop()
-		return hold.point.Retire(context.Background())
+		return claimed, hold.point.Retire(context.Background())
 	}
 	// Its checkpoint loop stopped when it was migrated away; this only releases
 	// what that handoff left behind.
 	if migrated == nil {
-		return nil
+		return claimed, nil
 	}
-	return migrated.runtime.Close()
+	return claimed, migrated.runtime.Close()
 }
 
 // expire releases a handover whose deadline has passed: a fork hold nothing

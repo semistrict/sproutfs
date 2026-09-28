@@ -250,7 +250,8 @@ func newServer(h host.VMs, token string) http.Handler {
 	// and a fork's parent takes its sealed pages back. It refuses nothing,
 	// because a refusal would only leave that parent sealed for good.
 	mux.HandleFunc("POST /vms/{id}/abandoned", func(w http.ResponseWriter, r *http.Request) {
-		act(w, r, "abandoned", h.Abandoned(r.Context(), r.PathValue("id")))
+		abandoned, err := h.Abandoned(r.Context(), r.PathValue("id"))
+		reply(w, r, "abandoned", abandoned, err)
 	})
 	mux.HandleFunc("POST /drain", func(w http.ResponseWriter, r *http.Request) {
 		drained, err := h.Drain(r.Context())

@@ -969,6 +969,169 @@ func (b0 ResidentResponse_builder) Build() *ResidentResponse {
 	return m0
 }
 
+// ClaimRequest is a fork child's destination asking the parent's host whether
+// the child's hold still stands, once the child has every page it inherited.
+// A hold that stands is marked claimed, and the child runs; one that was given
+// up or ran out is not, and the destination discards the child. The parent's
+// host decides the claim and the give-up of one hold one at a time, so only
+// one of them wins.
+type ClaimRequest struct {
+	state                  protoimpl.MessageState `protogen:"opaque.v1"`
+	xxx_hidden_Vm          *string                `protobuf:"bytes,1,opt,name=vm"`
+	XXX_raceDetectHookData protoimpl.RaceDetectHookData
+	XXX_presence           [1]uint32
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
+}
+
+func (x *ClaimRequest) Reset() {
+	*x = ClaimRequest{}
+	mi := &file_sproutfs_migrate_v1_migrate_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ClaimRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ClaimRequest) ProtoMessage() {}
+
+func (x *ClaimRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_sproutfs_migrate_v1_migrate_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+func (x *ClaimRequest) GetVm() string {
+	if x != nil {
+		if x.xxx_hidden_Vm != nil {
+			return *x.xxx_hidden_Vm
+		}
+		return ""
+	}
+	return ""
+}
+
+func (x *ClaimRequest) SetVm(v string) {
+	x.xxx_hidden_Vm = &v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 1)
+}
+
+func (x *ClaimRequest) HasVm() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 0)
+}
+
+func (x *ClaimRequest) ClearVm() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 0)
+	x.xxx_hidden_Vm = nil
+}
+
+type ClaimRequest_builder struct {
+	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
+
+	Vm *string
+}
+
+func (b0 ClaimRequest_builder) Build() *ClaimRequest {
+	m0 := &ClaimRequest{}
+	b, x := &b0, m0
+	_, _ = b, x
+	if b.Vm != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 1)
+		x.xxx_hidden_Vm = b.Vm
+	}
+	return m0
+}
+
+// ClaimResponse answers a claim. STATUS_OK is a hold that stood and is now
+// claimed; STATUS_UNKNOWN_VM is one this host no longer holds.
+type ClaimResponse struct {
+	state                  protoimpl.MessageState `protogen:"opaque.v1"`
+	xxx_hidden_Status      Status                 `protobuf:"varint,1,opt,name=status,enum=sproutfs.migrate.v1.Status"`
+	XXX_raceDetectHookData protoimpl.RaceDetectHookData
+	XXX_presence           [1]uint32
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
+}
+
+func (x *ClaimResponse) Reset() {
+	*x = ClaimResponse{}
+	mi := &file_sproutfs_migrate_v1_migrate_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ClaimResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ClaimResponse) ProtoMessage() {}
+
+func (x *ClaimResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_sproutfs_migrate_v1_migrate_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+func (x *ClaimResponse) GetStatus() Status {
+	if x != nil {
+		if protoimpl.X.Present(&(x.XXX_presence[0]), 0) {
+			return x.xxx_hidden_Status
+		}
+	}
+	return Status_STATUS_UNSPECIFIED
+}
+
+func (x *ClaimResponse) SetStatus(v Status) {
+	x.xxx_hidden_Status = v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 1)
+}
+
+func (x *ClaimResponse) HasStatus() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 0)
+}
+
+func (x *ClaimResponse) ClearStatus() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 0)
+	x.xxx_hidden_Status = Status_STATUS_UNSPECIFIED
+}
+
+type ClaimResponse_builder struct {
+	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
+
+	Status *Status
+}
+
+func (b0 ClaimResponse_builder) Build() *ClaimResponse {
+	m0 := &ClaimResponse{}
+	b, x := &b0, m0
+	_, _ = b, x
+	if b.Status != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 1)
+		x.xxx_hidden_Status = *b.Status
+	}
+	return m0
+}
+
 var File_sproutfs_migrate_v1_migrate_proto protoreflect.FileDescriptor
 
 const file_sproutfs_migrate_v1_migrate_proto_rawDesc = "" +
@@ -1002,7 +1165,11 @@ const file_sproutfs_migrate_v1_migrate_proto_rawDesc = "" +
 	"\x06status\x18\x01 \x01(\x0e2\x1b.sproutfs.migrate.v1.StatusR\x06status\x120\n" +
 	"\x04runs\x18\x02 \x03(\v2\x1c.sproutfs.migrate.v1.PageRunR\x04runs\x12\x1b\n" +
 	"\tpage_size\x18\x03 \x01(\rR\bpageSize\x12\x12\n" +
-	"\x04more\x18\x04 \x01(\bR\x04more*\xa3\x01\n" +
+	"\x04more\x18\x04 \x01(\bR\x04more\"\x1e\n" +
+	"\fClaimRequest\x12\x0e\n" +
+	"\x02vm\x18\x01 \x01(\tR\x02vm\"D\n" +
+	"\rClaimResponse\x123\n" +
+	"\x06status\x18\x01 \x01(\x0e2\x1b.sproutfs.migrate.v1.StatusR\x06status*\xa3\x01\n" +
 	"\x06Status\x12\x16\n" +
 	"\x12STATUS_UNSPECIFIED\x10\x00\x12\r\n" +
 	"\tSTATUS_OK\x10\x01\x12\x15\n" +
@@ -1013,7 +1180,7 @@ const file_sproutfs_migrate_v1_migrate_proto_rawDesc = "" +
 	"\x0fSTATUS_INTERNAL\x10\x06BUZSgithub.com/semistrict/sproutfs/vmmigrate/internal/gen/sproutfs/migrate/v1;migratev1b\beditionsp\xe9\a"
 
 var file_sproutfs_migrate_v1_migrate_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_sproutfs_migrate_v1_migrate_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_sproutfs_migrate_v1_migrate_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
 var file_sproutfs_migrate_v1_migrate_proto_goTypes = []any{
 	(Status)(0),              // 0: sproutfs.migrate.v1.Status
 	(*PageRequest)(nil),      // 1: sproutfs.migrate.v1.PageRequest
@@ -1021,16 +1188,19 @@ var file_sproutfs_migrate_v1_migrate_proto_goTypes = []any{
 	(*PageRun)(nil),          // 3: sproutfs.migrate.v1.PageRun
 	(*ResidentRequest)(nil),  // 4: sproutfs.migrate.v1.ResidentRequest
 	(*ResidentResponse)(nil), // 5: sproutfs.migrate.v1.ResidentResponse
+	(*ClaimRequest)(nil),     // 6: sproutfs.migrate.v1.ClaimRequest
+	(*ClaimResponse)(nil),    // 7: sproutfs.migrate.v1.ClaimResponse
 }
 var file_sproutfs_migrate_v1_migrate_proto_depIdxs = []int32{
 	0, // 0: sproutfs.migrate.v1.PageResponse.status:type_name -> sproutfs.migrate.v1.Status
 	0, // 1: sproutfs.migrate.v1.ResidentResponse.status:type_name -> sproutfs.migrate.v1.Status
 	3, // 2: sproutfs.migrate.v1.ResidentResponse.runs:type_name -> sproutfs.migrate.v1.PageRun
-	3, // [3:3] is the sub-list for method output_type
-	3, // [3:3] is the sub-list for method input_type
-	3, // [3:3] is the sub-list for extension type_name
-	3, // [3:3] is the sub-list for extension extendee
-	0, // [0:3] is the sub-list for field type_name
+	0, // 3: sproutfs.migrate.v1.ClaimResponse.status:type_name -> sproutfs.migrate.v1.Status
+	4, // [4:4] is the sub-list for method output_type
+	4, // [4:4] is the sub-list for method input_type
+	4, // [4:4] is the sub-list for extension type_name
+	4, // [4:4] is the sub-list for extension extendee
+	0, // [0:4] is the sub-list for field type_name
 }
 
 func init() { file_sproutfs_migrate_v1_migrate_proto_init() }
@@ -1044,7 +1214,7 @@ func file_sproutfs_migrate_v1_migrate_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_sproutfs_migrate_v1_migrate_proto_rawDesc), len(file_sproutfs_migrate_v1_migrate_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   5,
+			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

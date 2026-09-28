@@ -108,8 +108,10 @@ type VMs interface {
 	//
 	// It refuses nothing, which is what parts it from Released: those pages are
 	// going either way — the VM they belong to is one nothing will ever ask for
-	// again — and a refusal would only leave a parent sealed for good.
-	Abandoned(ctx context.Context, id string) error
+	// again — and a refusal would only leave a parent sealed for good. A fork's
+	// child whose destination claimed the hold first runs there, and is
+	// reported as claimed.
+	Abandoned(ctx context.Context, id string) (hostapi.AbandonedResult, error)
 	Drain(ctx context.Context) (hostapi.DrainResult, error)
 	// Stop ends a VM this host runs and leaves it behind: a last checkpoint of
 	// its disks — of its memory and VMM state too, when the request suspends

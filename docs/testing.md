@@ -697,9 +697,21 @@ Every hop in the campaigns makes the same checks:
   handover there, or fails like any other receive. Once the handover is over,
   no such receive may still take the VM in. `simtest.OutlivedReceive` makes the
   caller of one receive hang up as its host begins to start the guest, and
-  makes that start slow. No campaign draws it.
+  makes that start slow. `simtest.LostReceiveAnswer` lets one receive run to
+  its end and then tells its caller it failed. The campaigns draw both, for a
+  migration's receive and a fork child's alike.
   `TestAReceiveThatOutlivesItsCallerStartsNoSecondGuest` requires one guest
   started for the VM, on the host whose receive outlived its caller.
+- A fork child's receive that fails for its caller fails its fan-out, which
+  gives up every hold. A child claims its hold before it runs, so one whose
+  receive went on finds the hold gone and is discarded by its destination, and
+  one whose answer was lost after its claim is reported claimed by the give-up
+  and deleted. `TestAForkChildWhoseReceiveOutlivesItsFanOutNeverRuns` and
+  `TestAForkChildWhoseAnswerWasLostIsDeleted` run the two, and `Settle`
+  requires every such receive to end without its child. The orchestrator tests
+  of the same names, and `TestAForkWhoseCallerHangsUpIsStillRolledBack`, cover
+  the orchestrator's side; the host tests in `host/claim_test.go` cover the
+  claim itself.
 
 The recorded scenario adds the layout refusal. A handoff that would truncate a
 memory region or map beyond its volume is refused before any guest starts.
@@ -840,6 +852,8 @@ plus the faults that only a generated topology can express:
 | `lost-host` | A whole host is taken away at a moment and started again when the fault ends. |
 | `refused-stop` | One VM's migration pause fails after its guest has stopped and a memory region is sealed. |
 | `refused-start` | One host's half of a receive fails before the guest is started. |
+| `outlived-receive` | The caller of one host's next receive, a migration's or a fork child's, hangs up as the guest starts, and the receive goes on. |
+| `lost-receive-answer` | One host's next receive runs to its end and its caller is told it failed. |
 | `degraded-links` | The page-server links duplicate, delay and slow what they carry. |
 | `forgotten-releases` | The release after a receive is never made, as if the orchestrator restarted in between. The source keeps its hold until the survey at the next step ends it. |
 

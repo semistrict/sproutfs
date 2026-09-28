@@ -79,3 +79,19 @@ message ResidentResponse {
   uint32 page_size = 3;
   bool more = 4;
 }
+
+// ClaimRequest is a fork child's destination asking the parent's host whether
+// the child's hold still stands, once the child has every page it inherited.
+// A hold that stands is marked claimed, and the child runs; one that was given
+// up or ran out is not, and the destination discards the child. The parent's
+// host decides the claim and the give-up of one hold one at a time, so only
+// one of them wins.
+message ClaimRequest {
+  string vm = 1;
+}
+
+// ClaimResponse answers a claim. STATUS_OK is a hold that stood and is now
+// claimed; STATUS_UNKNOWN_VM is one this host no longer holds.
+message ClaimResponse {
+  Status status = 1;
+}

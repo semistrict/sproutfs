@@ -695,6 +695,31 @@ func (b *PeerBacking) ask(caller context.Context, first uint64, count int) (peer
 	}
 }
 
+// claim asks the source to mark this fork child's hold claimed, until it
+// answers. Only its answer that it no longer holds the child ends the asking
+// with ErrGivenUp; a busy or broken connection is asked again, and the
+// caller's cancellation or this backing's close ends it with that.
+func (b *PeerBacking) claim(caller context.Context) error {
+	ctx, release := b.bounded(caller)
+	defer release()
+	delay := busyDelay
+	for {
+		err := b.source.Claim(ctx)
+		switch {
+		case err == nil:
+			return nil
+		case errors.Is(err, peer.ErrNotServed):
+			return fmt.Errorf("%w: %s no longer holds %s", ErrGivenUp, b.config.Peer, b.config.VM)
+		case cancelled(ctx, err) || unusable(err):
+			return b.ended(caller, err)
+		}
+		if err := b.wait(ctx, delay); err != nil {
+			return b.ended(caller, err)
+		}
+		delay = min(2*delay, busyDelayMax)
+	}
+}
+
 // unusable reports a source this destination cannot read at all: one serving
 // pages of another size, and a reply this host cannot decode. Neither is a
 // source that is gone and neither is one that stumbled, so neither the volume

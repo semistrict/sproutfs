@@ -52,7 +52,7 @@ type hostClient interface {
 	Migrate(ctx context.Context, id string, request host.MigrateRequest) (host.MigrateResult, error)
 	Receive(ctx context.Context, handoff host.Handoff) (host.ReceiveResult, error)
 	Released(ctx context.Context, id string) error
-	Abandoned(ctx context.Context, id string) error
+	Abandoned(ctx context.Context, id string) (host.AbandonedResult, error)
 	Stop(ctx context.Context, id string, request host.StopRequest) (host.StopResult, error)
 	Delete(ctx context.Context, id string) error
 	Kept(ctx context.Context, id string) (host.KeptResult, error)
@@ -947,7 +947,7 @@ func (o *orchestrator) Fork(ctx context.Context, id string, request orch.ForkReq
 	flying.end()
 	if err != nil {
 		for _, child := range children {
-			o.forget(ctx, child)
+			o.forget(context.WithoutCancel(ctx), child)
 		}
 		return orch.ForkResult{}, err
 	}
@@ -979,6 +979,11 @@ func (o *orchestrator) fork(ctx context.Context, source, target liveHost, parent
 	if target.report.Name == source.report.Name {
 		destination = ""
 	}
+	// The rollback of a fan-out that did not happen runs whether or not its
+	// caller is still there: a caller that hung up is the most common way a
+	// fan-out fails, and a hold nobody gives up keeps the parent sealed until
+	// the host's own deadline, while a child nobody deletes runs for good.
+	undo := context.WithoutCancel(ctx)
 	handed, err := source.client.Fork(ctx, parent, host.ForkRequest{IDs: children,
 		Destination: destination, Pull: pull})
 	if err != nil {
@@ -987,7 +992,7 @@ func (o *orchestrator) fork(ctx context.Context, source, target liveHost, parent
 		// ever knew, so they are taken back the way a destination's refusal
 		// takes its own back; deleting an identity that was never created
 		// removes nothing.
-		o.discardChildren(ctx, target, children)
+		o.discardChildren(undo, target, children)
 		return host.ForkResult{}, fmt.Errorf("forking %s: %w", parent, err)
 	}
 	if len(handed.Handoffs) != len(children) {
@@ -1002,7 +1007,7 @@ func (o *orchestrator) fork(ctx context.Context, source, target liveHost, parent
 		if failure != nil {
 			// The fan-out is over, so this child is never offered anywhere: its
 			// hold is given up rather than released.
-			o.giveUp(ctx, source, handoff.VMID)
+			o.giveUp(undo, source, handoff.VMID)
 			continue
 		}
 		if _, err := o.receive(ctx, source, target, handoff.VMID, hold, handoff); err != nil {
@@ -1010,8 +1015,13 @@ func (o *orchestrator) fork(ctx context.Context, source, target liveHost, parent
 			// A child no destination took has none of the pages its hold keeps
 			// and never will, so the source can only refuse to release them:
 			// they exist nowhere else. It gives them up instead, which is what
-			// takes the seal off the parent.
-			o.giveUp(ctx, source, handoff.VMID)
+			// takes the seal off the parent. A receive whose answer was lost
+			// may have taken the child in all the same: the destination claims
+			// the hold before the child runs, so the give-up is what says it
+			// did, and the child is deleted with the ones that started.
+			if o.giveUp(undo, source, handoff.VMID) {
+				running = append(running, handoff.VMID)
+			}
 			continue
 		}
 		running = append(running, handoff.VMID)
@@ -1029,7 +1039,7 @@ func (o *orchestrator) fork(ctx context.Context, source, target liveHost, parent
 		// not happen. The children that did start are guests nobody asked for,
 		// holding a host's memory under identities the caller was never told;
 		// they are deleted rather than left for an operator to find.
-		o.discardChildren(ctx, target, running)
+		o.discardChildren(undo, target, running)
 		return host.ForkResult{}, failure
 	}
 	handed.Boot = host.Since(started)
@@ -1038,24 +1048,28 @@ func (o *orchestrator) fork(ctx context.Context, source, target liveHost, parent
 
 // giveUp tells a host that one handover it holds will never be received, so
 // that it stops holding what it kept for it — for a fork that is the parent's
-// sealed pages, which is what lets the parent be checkpointed again.
+// sealed pages, which is what lets the parent be checkpointed again. It reports
+// a fork's child whose destination had claimed its hold first: that child runs
+// there, and the caller deletes it.
 //
 // It is the give-up rather than the release because nothing fetched those pages
 // and nothing ever will: a release of them is a request the host can only
 // refuse, for ever. A failure to say it is logged rather than reported — the
 // operation's own failure is what the caller needs, and the host's deadline
 // retires the hold in the end either way.
-func (o *orchestrator) giveUp(ctx context.Context, held liveHost, id string) {
+func (o *orchestrator) giveUp(ctx context.Context, held liveHost, id string) (claimed bool) {
 	if held.client == nil {
-		return
+		return false
 	}
-	if err := held.client.Abandoned(ctx, id); err != nil {
+	result, err := held.client.Abandoned(ctx, id)
+	if err != nil {
 		slog.ErrorContext(ctx, "sproutfs-orchestrator: giving up a handover failed",
 			"vm", id, "host", held.report.Name, "error", err)
-		return
+		return false
 	}
 	slog.InfoContext(ctx, "sproutfs-orchestrator: gave up a handover nothing will ever receive",
-		"vm", id, "host", held.report.Name)
+		"vm", id, "host", held.report.Name, "claimed", result.Claimed)
+	return result.Claimed
 }
 
 // discardChildren takes back the children of a fan-out that did not happen. They

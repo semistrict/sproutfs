@@ -100,12 +100,13 @@ func (s *supervisor) Released(ctx context.Context, id string) error {
 	return s.host.ReleaseMigrated(id)
 }
 
-func (s *supervisor) Abandoned(ctx context.Context, id string) error {
+func (s *supervisor) Abandoned(ctx context.Context, id string) (hostapi.AbandonedResult, error) {
 	if err := context.Cause(ctx); err != nil {
-		return err
+		return hostapi.AbandonedResult{}, err
 	}
-	slog.InfoContext(ctx, "host: a handover was given up by the control plane", "vm", id)
-	return s.host.Abandon(id)
+	claimed, err := s.host.GiveUp(id)
+	slog.InfoContext(ctx, "host: a handover was given up by the control plane", "vm", id, "claimed", claimed)
+	return hostapi.AbandonedResult{Claimed: claimed}, err
 }
 
 // Drain moves every VM this host runs and returns only when nothing is left to

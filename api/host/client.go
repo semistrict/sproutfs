@@ -129,10 +129,10 @@ func (c *Client) Released(ctx context.Context, id string) error {
 // It is refused by nothing, which is the whole difference from Released: those
 // pages are going either way, and refusing would only leave a parent sealed for
 // good. Nothing else may ever ask for that VM, so this is only ever said about
-// one the deployment has given up on.
-func (c *Client) Abandoned(ctx context.Context, id string) error {
-	_, err := jsonhttp.Call[struct{}](ctx, c.http, http.MethodPost, c.path("/vms/%s/abandoned", url.PathEscape(id)), nil)
-	return err
+// one the deployment has given up on. A fork's child whose destination had
+// already claimed its hold is reported as claimed.
+func (c *Client) Abandoned(ctx context.Context, id string) (AbandonedResult, error) {
+	return jsonhttp.Call[AbandonedResult](ctx, c.http, http.MethodPost, c.path("/vms/%s/abandoned", url.PathEscape(id)), nil)
 }
 
 func (c *Client) Drain(ctx context.Context) (DrainResult, error) {

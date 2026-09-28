@@ -236,6 +236,21 @@ func (s *Source) Resident(ctx context.Context) ([]Run, error) {
 	}
 }
 
+// Claim asks the source to mark this fork child's hold claimed. It reports
+// ErrNotServed when the source no longer holds it: given up, released or run
+// out.
+func (s *Source) Claim(ctx context.Context) error {
+	response := new(migratev1.ClaimResponse)
+	request := migratev1.ClaimRequest_builder{Vm: proto.String(s.config.VM)}.Build()
+	if _, err := s.call(ctx, request, response, 0); err != nil {
+		return err
+	}
+	if status := response.GetStatus(); status != migratev1.Status_STATUS_OK {
+		return statusError(status)
+	}
+	return nil
+}
+
 // Close drops every connection this memory region holds. A later request dials again:
 // stopping is the caller's decision, not this one's.
 func (s *Source) Close() {

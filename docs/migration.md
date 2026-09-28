@@ -640,9 +640,29 @@ going. One rollback covers every case:
   inherited, which is what a release states.
 - A child that never started is given up on the source instead, because
   nothing fetched the pages its hold keeps, and nothing ever will.
+- A child whose receive failed for its caller may still be on its way: the
+  receive goes on on its host, or it finished and its answer was lost. A child
+  runs only once it has claimed its hold. When its destination has every page
+  it inherited, it asks the parent's host, over the page-server connection,
+  whether the hold still stands. A hold that stands is marked claimed and the
+  child runs. One that was given up or ran out is not, and the destination
+  discards the child. The parent's host decides a claim and a give-up of one
+  hold one at a time, so exactly one of them wins. A give-up that comes after
+  the claim says so (`POST /vms/{id}/abandoned` answers `claimed`), and the
+  orchestrator deletes the child. A child on its parent's own host claims its
+  hold as it is bound to the fork point.
+- The rollback runs on the fork's context without its cancellation. A caller
+  that hangs up is the commonest way a fan-out fails, and a rollback that
+  stopped with it would leave the parent sealed until its host's deadline.
 
 The children of a failed request are guests that nobody asked for. They hold a
 host's memory under names that only that request knew.
+
+Two cases are not covered. An orchestrator that dies during a fork gives up no
+hold, so a child that lands runs, listed under its parent, as a VM whose
+create's caller never heard back does. And a give-up the parent's host cannot
+be reached for is logged and not retried, so a child that claimed its hold
+first is not learned of.
 
 ```go
 // volume

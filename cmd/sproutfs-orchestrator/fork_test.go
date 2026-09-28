@@ -1,6 +1,9 @@
 package main
 
 import (
+	"context"
+	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -126,5 +129,97 @@ func TestAForkWhoseFirstChildIsRefusedGivesUpTheRestOnTheSource(t *testing.T) {
 	}
 	if serving := d.hosts["host-0"].serving; len(serving) != 0 {
 		t.Fatalf("the parent's host still holds %v for children that never started", serving)
+	}
+}
+
+// TestAForkChildWhoseAnswerWasLostIsDeleted: the destination took the first
+// child in, claiming its hold, and the answer never came back, so the fan-out
+// failed there. The give-up on the parent's host comes after the claim, and
+// says so: the child runs on the destination under an identity only the failed
+// fork knew, and it is deleted with the children that started. The second
+// child is never offered, and its hold is given up unclaimed.
+func TestAForkChildWhoseAnswerWasLostIsDeleted(t *testing.T) {
+	d := newDeployment(t, map[string][]string{"host-0": {"vm-a"}, "host-1": {}})
+	d.hosts["host-1"].arena(1024, 100)
+	d.hosts["host-1"].loseAnswer = true
+	if _, err := d.orchestrator.Fork(t.Context(), "vm-a", orch.ForkRequest{Count: 2, To: "host-1"}); err == nil {
+		t.Fatal("a fan-out whose first child's answer was lost reported success")
+	}
+	want := []string{
+		"host-0 fork vm-a vm-new-1,vm-new-2",
+		"host-1 receive vm-new-1 10.0.0.1:8081",
+		"host-0 abandoned vm-new-1 claimed",
+		"host-0 abandoned vm-new-2",
+		"host-1 delete vm-new-1",
+	}
+	if !slices.Equal(d.log, want) {
+		t.Fatalf("the deployment did %v, want %v", d.log, want)
+	}
+	if running := d.hosts["host-1"].running; len(running) != 0 {
+		t.Fatalf("host-1 still runs %v", running)
+	}
+	if running := d.hosts["host-0"].running; !slices.Equal(running, []string{"vm-a"}) {
+		t.Fatalf("host-0 runs %v, want the parent alone", running)
+	}
+}
+
+// TestAChildWhoseReceiveOutlivesItsFanOutNeverRuns: the first child's receive
+// fails for its caller and goes on on its host, so the fan-out gives both
+// holds up. When that receive has the child's pages it claims the hold, which
+// is no longer kept, and the destination gives the child up rather than run
+// it. Nothing is left for anyone to delete.
+func TestAChildWhoseReceiveOutlivesItsFanOutNeverRuns(t *testing.T) {
+	d := newDeployment(t, map[string][]string{"host-0": {"vm-a"}, "host-1": {}})
+	d.hosts["host-1"].arena(1024, 100)
+	d.hosts["host-1"].outlives = 2
+	if _, err := d.orchestrator.Fork(t.Context(), "vm-a", orch.ForkRequest{Count: 2, To: "host-1"}); err == nil {
+		t.Fatal("a fan-out whose first child's receive failed reported success")
+	}
+	for range 2 {
+		if err := d.orchestrator.Reconcile(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := []string{
+		"host-0 fork vm-a vm-new-1,vm-new-2",
+		"host-1 receive vm-new-1 10.0.0.1:8081",
+		"host-0 abandoned vm-new-1",
+		"host-0 abandoned vm-new-2",
+		"host-1 gave vm-new-1 up",
+	}
+	if !slices.Equal(d.log, want) {
+		t.Fatalf("the deployment did %v, want %v", d.log, want)
+	}
+	if running := d.hosts["host-1"].running; len(running) != 0 {
+		t.Fatalf("host-1 runs %v", running)
+	}
+}
+
+// TestAForkWhoseCallerHangsUpIsStillRolledBack: the caller of a fan-out hangs
+// up while the first child is being received. The receive ends with it, and
+// the rollback runs all the same: both holds are given up on the parent's
+// host, which is what unseals the parent, rather than left to the host's own
+// deadline.
+func TestAForkWhoseCallerHangsUpIsStillRolledBack(t *testing.T) {
+	d := newDeployment(t, map[string][]string{"host-0": {"vm-a"}, "host-1": {}})
+	d.hosts["host-1"].arena(1024, 100)
+	ctx, hangUp := context.WithCancel(t.Context())
+	d.hosts["host-1"].holdReceive = true
+	d.hosts["host-1"].onReceive = hangUp
+	if _, err := d.orchestrator.Fork(ctx, "vm-a", orch.ForkRequest{Count: 2, To: "host-1"}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("a fan-out whose caller hung up = %v, want it cancelled", err)
+	}
+	want := []string{
+		"host-0 fork vm-a vm-new-1,vm-new-2",
+		"host-1 receive vm-new-1 10.0.0.1:8081",
+		"host-1 receive-discarded vm-new-1",
+		"host-0 abandoned vm-new-1",
+		"host-0 abandoned vm-new-2",
+	}
+	if !slices.Equal(d.log, want) {
+		t.Fatalf("the deployment did %v, want %v", d.log, want)
+	}
+	if serving := d.hosts["host-0"].serving; len(serving) != 0 {
+		t.Fatalf("the parent's host still holds %v", serving)
 	}
 }

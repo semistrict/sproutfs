@@ -72,6 +72,8 @@ func Faults(r sim.Random, t Topology) []Fault {
 		LostHost(pick("lost-host/host")),
 		RefusedStop(),
 		RefusedStart(pick("refused-start/host")),
+		OutlivedReceive(pick("outlived/host"), time.Duration(1+r.Intn("outlived/start", 20))*time.Second),
+		LostReceiveAnswer(pick("lost-answer/host")),
 		DegradedLinks(),
 		ForgottenReleases(),
 	}
@@ -120,13 +122,20 @@ func RefusedStart(host int) Fault { return &refusedStart{host: host} }
 // receive fails part way through meets.
 func RefusedStartAfter(host, after int) Fault { return &refusedStart{host: host, after: after} }
 
-// OutlivedReceive makes the caller of the next migration's receive on one host
-// hang up as that host begins to start the guest, and the start take start. It
-// is a receive that goes on after its caller gave up, as one does whose
-// connection broke while its host was still at work.
+// OutlivedReceive makes the caller of the next receive on one host, a
+// migration's or a fork child's, hang up as that host begins to start the
+// guest, and the start take start. It is a receive that goes on after its
+// caller gave up, as one does whose connection broke while its host was still
+// at work.
 func OutlivedReceive(host int, start time.Duration) Fault {
 	return &outlivedReceive{host: host, start: start}
 }
+
+// LostReceiveAnswer makes the next receive on one host run to its end and then
+// tell its caller it failed: the connection broke as the answer was on its
+// way. A migration's receive that did this took the VM in, and a fork child's
+// claimed its hold.
+func LostReceiveAnswer(host int) Fault { return &lostReceiveAnswer{host: host} }
 
 // DegradedLinks duplicates, delays and slows what the page-server links
 // carry.
@@ -503,6 +512,38 @@ func (f *outlivedReceive) Holds(_ context.Context, w *World) error {
 	defer h.mu.Unlock()
 	if h.hangsUp {
 		return fmt.Errorf("the caller of a receive on %s still hangs up", h.name)
+	}
+	return nil
+}
+
+// lostReceiveAnswer is a receive whose caller was told it failed after it had
+// taken its VM in.
+type lostReceiveAnswer struct{ host int }
+
+func (f *lostReceiveAnswer) Name() string { return "lost-receive-answer" }
+
+func (f *lostReceiveAnswer) Begin(_ context.Context, w *World) error {
+	h := w.hosts[f.host]
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.loseAnswer = true
+	return nil
+}
+
+func (f *lostReceiveAnswer) End(_ context.Context, w *World) error {
+	h := w.hosts[f.host]
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.loseAnswer = false
+	return nil
+}
+
+func (f *lostReceiveAnswer) Holds(_ context.Context, w *World) error {
+	h := w.hosts[f.host]
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.loseAnswer {
+		return fmt.Errorf("the answer of the next receive on %s is still lost", h.name)
 	}
 	return nil
 }

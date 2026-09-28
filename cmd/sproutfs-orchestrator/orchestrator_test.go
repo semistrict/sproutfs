@@ -274,7 +274,9 @@ func (f *fakeHostClient) linger() {
 		return
 	}
 	for _, id := range f.receiving {
-		if f.outlivedFails {
+		// A fork's child claims its hold before it runs, and one whose hold
+		// was given up meanwhile is discarded.
+		if f.outlivedFails || f.retired[id] {
 			f.record("gave %s up", id)
 			f.committed -= f.receiveCommit
 			continue
@@ -524,13 +526,24 @@ func (f *fakeHostClient) Released(_ context.Context, id string) error {
 }
 
 // Abandoned gives a handover up whatever is still outstanding on it: the VM it
-// belongs to is one nothing will ever ask for again.
-func (f *fakeHostClient) Abandoned(_ context.Context, id string) error {
+// belongs to is one nothing will ever ask for again. A child a destination took
+// in has claimed its hold, which the answer says.
+func (f *fakeHostClient) Abandoned(ctx context.Context, id string) (host.AbandonedResult, error) {
+	// A request on a context that has ended never leaves, as a real client's
+	// does not.
+	if err := ctx.Err(); err != nil {
+		return host.AbandonedResult{}, err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.record("abandoned %s", id)
+	claimed := f.fetched[id] && !f.retired[id]
+	if claimed {
+		f.record("abandoned %s claimed", id)
+	} else {
+		f.record("abandoned %s", id)
+	}
 	f.retire(id)
-	return nil
+	return host.AbandonedResult{Claimed: claimed}, nil
 }
 
 // retire ends a hold this host keeps: it serves nothing for the VM any more,
@@ -563,7 +576,10 @@ func (f *fakeHostClient) Stop(_ context.Context, id string, request host.StopReq
 	return host.StopResult{VM: id, Checkpoint: 13}, nil
 }
 
-func (f *fakeHostClient) Delete(_ context.Context, id string) error {
+func (f *fakeHostClient) Delete(ctx context.Context, id string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("delete %s", id)

@@ -187,7 +187,11 @@ func (d *Driver) Run(ctx context.Context) error {
 	}
 	// The world has to be given the chance to finish what the last faults
 	// interrupted before anything is required of it: a host that has just come
-	// back has VMs to take over.
+	// back has VMs to take over, and a receive a failed fan-out gave up has a
+	// child to discard.
+	if err := d.world.AwaitGivenUp(); err != nil {
+		return err
+	}
 	if err := d.world.Settle(ctx); err != nil {
 		return err
 	}

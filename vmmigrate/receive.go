@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -222,6 +224,30 @@ func (r *Received) Stats() ReceiveStats {
 		stats.Fetched += peer.Fetched
 	}
 	return stats
+}
+
+// Claim takes a fork's child in over the hold its parent's host keeps for it,
+// once Done has returned: the child has every page it inherited, and the
+// parent's host marks the hold claimed if it still stands. One that was given
+// up or ran out reports ErrGivenUp, and the caller discards the child: the
+// fan-out that made it is over, and nothing wants it. The parent's host decides
+// a claim and a give-up one at a time, so a child claimed here is one a later
+// give-up is told about.
+//
+// The parent's host is asked until it answers, as a page only it has is: a
+// source that stumbled is not one that gave the hold up. ctx bounds the
+// asking. A child taken in over its parent's own fork point has nobody to ask,
+// and its host claims the hold itself.
+func (r *Received) Claim(ctx context.Context) error {
+	if !r.handoff.IsFork() {
+		return nil
+	}
+	for _, name := range slices.Sorted(maps.Keys(r.backings)) {
+		if peer, ok := r.backings[name].(*PeerBacking); ok {
+			return peer.claim(ctx)
+		}
+	}
+	return nil
 }
 
 // Close stops the background stream and drops the connections to the source. The
