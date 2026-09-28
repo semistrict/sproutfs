@@ -476,7 +476,7 @@ func TestForkPointSharesThePagesItSealed(t *testing.T) {
 			t.Fatal(err)
 		}
 		// The child maps the parent's own page, which is what a shared arena does.
-		f := newPinnedFixture(t, vmmemory.Config{ResidentPages: 8, LogicalPages: 32, DirtyPages: 8, ReadAheadPages: 1})
+		f := newPinnedFixture(t, vmmemory.Config{Arena: vmmemory.ArenaShared, ResidentPages: 8, LogicalPages: 32, DirtyPages: 8, ReadAheadPages: 1})
 		pr, pm := f.attach(parent.Volume("ram0"))
 		// The guest stores after that checkpoint, so page 1 is the parent's own
 		// dirty state: no volume holds those bytes, only the page does.

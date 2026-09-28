@@ -124,7 +124,7 @@ mkdir -p "$out"
 modes=$(kubectl get pods -n "$namespace" -l app.kubernetes.io/name=sproutfs-host \
     -o jsonpath='{range .items[*]}{.metadata.name}={.spec.containers[0].env[?(@.name=="SPROUTFS_ARENA")]}{"\n"}{end}')
 arena=$(kubectl get configmap -n "$namespace" sproutfs-demo -o jsonpath='{.data.arena}')
-arena=${arena:-shared}
+arena=${arena:-isolated}
 printf 'sproutfs demo: the %s arena\n' "$arena" | tee "$out/mode.txt"
 printf '%s\n' "$modes" >> "$out/mode.txt"
 ctl hosts | tee "$out/hosts-before.txt"

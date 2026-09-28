@@ -139,18 +139,18 @@ func TestARAMPagerAtTwoMiBIsTheHugeTLBPager(t *testing.T) {
 }
 
 // The arena mode is the deployment's, and both pagers run the one it names.
-// Unset, it is the shared arena of today.
+// Unset, it is the isolated arena.
 func TestBothPagersRunTheDeploymentsArenaMode(t *testing.T) {
 	config := deploymentConfig()
 	for _, kind := range []vmmemory.MemoryRegionKind{vmmemory.Ram, vmmemory.Pmem} {
-		if got := pagerConfig(config, kind).Arena; got != vmmemory.ArenaShared {
-			t.Errorf("an unset mode gave the %s pager %s, want shared", kind, got)
+		if got := pagerConfig(config, kind).Arena; got != vmmemory.ArenaIsolated {
+			t.Errorf("an unset mode gave the %s pager %s, want isolated", kind, got)
 		}
 	}
-	config.Arena = vmmemory.ArenaIsolated
+	config.Arena = vmmemory.ArenaShared
 	for _, kind := range []vmmemory.MemoryRegionKind{vmmemory.Ram, vmmemory.Pmem} {
-		if got := pagerConfig(config, kind).Arena; got != vmmemory.ArenaIsolated {
-			t.Errorf("the %s pager runs %s, want isolated", kind, got)
+		if got := pagerConfig(config, kind).Arena; got != vmmemory.ArenaShared {
+			t.Errorf("the %s pager runs %s, want shared", kind, got)
 		}
 	}
 }

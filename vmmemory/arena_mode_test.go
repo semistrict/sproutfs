@@ -23,10 +23,10 @@ func TestArenaModesAreReadByTheirNames(t *testing.T) {
 	}
 }
 
-// A pager is built in one of the modes it has, and the zero value is shared.
+// A pager is built in one of the modes it has, and the zero value is isolated.
 func TestNewRefusesAnArenaModeItDoesNotHave(t *testing.T) {
-	if vmmemory.ArenaMode(0) != vmmemory.ArenaShared {
-		t.Fatalf("the zero mode is %s, want shared", vmmemory.ArenaMode(0))
+	if vmmemory.ArenaMode(0) != vmmemory.ArenaIsolated {
+		t.Fatalf("the zero mode is %s, want isolated", vmmemory.ArenaMode(0))
 	}
 	if _, err := newBrokenFixture(t, vmmemory.Config{PageSize: uint64(pageSize), ResidentPages: 2,
 		LogicalPages: 4, DirtyPages: 2, Arena: vmmemory.ArenaMode(2)}); !errors.Is(err, vmmemory.ErrConfig) {

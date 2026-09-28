@@ -222,11 +222,13 @@ own set of held offsets. The pager's capacity, `Config.ResidentPages`, is one
 count across all of its files. `Config.Arena` (the host's `SPROUTFS_ARENA`)
 picks how pages are divided between files:
 
-- `shared`, the default, keeps every page in one file. The pager makes it when
-  it starts, of `Config.ArenaOffsets` slots. Every VMM receives it read-write.
-  The rest of this section describes this arena.
-- `isolated` splits the pages by who may read them. See
-  [the isolated arena](#the-isolated-arena).
+- `isolated`, the default, splits the pages by who may read them, so a VMM
+  reaches no other VM's memory. See [the isolated arena](#the-isolated-arena).
+- `shared` keeps every page in one file. The pager makes it when it starts, of
+  `Config.ArenaOffsets` slots. Every VMM receives it read-write. It costs a
+  fork's children less at a 4 KiB page, and any VMM reaches every guest's
+  memory. The rest of this section describes this arena, whose file handling
+  the isolated arena builds on.
 
 An offset is an address in the arena. A page is memory. They are counted
 separately. `Config.ArenaOffsets` is the number of addresses the arena has.
@@ -353,7 +355,7 @@ where they happen (`vmmemory/placement.go`):
 
 A VMM may be compromised, and it holds every descriptor its sessions are
 given. In a shared arena that descriptor reaches every page of the pager. The
-isolated arena (`SPROUTFS_ARENA=isolated`) splits the pages by who may read
+isolated arena (`SPROUTFS_ARENA=isolated`, the default) splits the pages by who may read
 them, so a VMM's descriptors reach its own VM's memory and the pages its tenant
 may read, and nothing else. The design and its threat model are in
 [the plan](../plans/isolated-arena-2026-09-25.md).
@@ -2259,10 +2261,10 @@ SPROUTFS_VM_MEMORY_REPEAT=20 scripts/test-vm-memory-lima.sh
 scripts/test-firecracker-lima.sh
 ```
 
-Every suite builds its pagers in the arena mode `SPROUTFS_ARENA` names, `shared`
-when it is unset, and is run in both: the ordinary Go suites
-(`SPROUTFS_ARENA=isolated go test ./...`) and both Lima scripts, which pass it
-through. A test of what one mode does pins that mode. In the isolated mode the
+Every suite builds its pagers in the arena mode `SPROUTFS_ARENA` names,
+`isolated` when it is unset, and is run in both: `just check` runs the Go
+suites of the packages whose pagers take the mode again under
+`SPROUTFS_ARENA=shared`, and the qualification scripts pass it through. A test of what one mode does pins that mode. In the isolated mode the
 simulated arena (`internal/testpager`) holds the pager to who may read each
 file: a file given writable is given to one memory region only, as its file 0,
 and to nobody read-only, and every map names a file its session holds, writable

@@ -348,7 +348,7 @@ configure() {
 }
 # restore puts back what configure changed.
 restore() {
-    set_config "${saved_arena:-shared}" "$saved_prefix"
+    set_config "${saved_arena:-isolated}" "$saved_prefix"
     kubectl set env -n "$namespace" deployment/sproutfs-host "${saved[@]}" > /dev/null
     roll
 }

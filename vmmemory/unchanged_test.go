@@ -257,7 +257,7 @@ func TestAPageOnlyAnotherHostHoldsIsNeverCompared(t *testing.T) {
 func TestAPageCopiedFromAForkPointsNameIsNeverCompared(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		// The child maps the parent's own page, which is what a shared arena does.
-		f := newPinnedFixture(t, vmmemory.Config{ResidentPages: 8, LogicalPages: 32, DirtyPages: 8})
+		f := newPinnedFixture(t, vmmemory.Config{Arena: vmmemory.ArenaShared, ResidentPages: 8, LogicalPages: 32, DirtyPages: 8})
 		parent, pm, _ := f.memoryRegion(4)
 		access(t, parent, pm, 0, true)[0] = 44
 		if err := parent.Seal(t.Context()); err != nil {

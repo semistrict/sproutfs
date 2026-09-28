@@ -19,7 +19,7 @@ func TestSealProtectsRunsOfDirtyPagesWithoutReplacingTheirMappings(t *testing.T)
 	synctest.Test(t, func(t *testing.T) {
 		// A shared arena places these pages and an isolated one puts each at its
 		// own offset, so the fragments are a shared arena's.
-		f := newPinnedFixture(t, vmmemory.Config{ResidentPages: 8, LogicalPages: 16, DirtyPages: 8})
+		f := newPinnedFixture(t, vmmemory.Config{Arena: vmmemory.ArenaShared, ResidentPages: 8, LogicalPages: 16, DirtyPages: 8})
 		r, m, b := f.memoryRegion(8)
 		// Dirtying backwards gives consecutive pages descending slots, which is
 		// exactly the run a mapping command cannot cover but a range protection

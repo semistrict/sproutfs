@@ -24,7 +24,7 @@
 #
 # Overridable: SPROUTFS_DEMO_PROJECT, SPROUTFS_DEMO_ZONE, SPROUTFS_DEMO_INSTANCE,
 # SPROUTFS_DEMO_BUCKET, SPROUTFS_DEMO_VM_IMAGE, SPROUTFS_DEMO_ARENA (the hosts'
-# arena mode, shared or isolated, for create and redeploy).
+# arena mode, isolated or shared, for create and redeploy; isolated by default).
 set -euo pipefail
 
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -35,7 +35,7 @@ instance=${SPROUTFS_DEMO_INSTANCE:-sproutfs-demo-1}
 [[ -n "$project" && "$project" != '(unset)' ]] || { echo 'Set SPROUTFS_DEMO_PROJECT or a default gcloud project.' >&2; exit 2; }
 bucket=${SPROUTFS_DEMO_BUCKET:-sproutfs-demo-$project}
 prefix=${SPROUTFS_DEMO_PREFIX:-demo}
-arena=${SPROUTFS_DEMO_ARENA:-shared}
+arena=${SPROUTFS_DEMO_ARENA:-isolated}
 case $arena in shared|isolated) ;; *) echo 'SPROUTFS_DEMO_ARENA must be shared or isolated.' >&2; exit 2 ;; esac
 # Ubuntu 26.04 LTS, the same family the memory benchmark uses. If this pinned
 # image has been retired, take the family's current one:

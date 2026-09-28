@@ -331,7 +331,7 @@ func TestPopulationTakesAForkPointsPagesWhateverTheirRun(t *testing.T) {
 		c := newPagerCluster(t)
 		source := c.create(t, "source", 8)
 		// The child maps the parent's own page, which is what a shared arena does.
-		f := newPinnedFixture(t, vmmemory.Config{ResidentPages: 16, LogicalPages: 48, DirtyPages: 8, ReadAheadPages: 8})
+		f := newPinnedFixture(t, vmmemory.Config{Arena: vmmemory.ArenaShared, ResidentPages: 16, LogicalPages: 48, DirtyPages: 8, ReadAheadPages: 8})
 		r, m := f.attach(source.Volume("ram0"))
 		for _, page := range []uint64{1, 2} {
 			access(t, r, m, page, true)[0] = 44

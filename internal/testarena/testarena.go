@@ -1,6 +1,6 @@
 // Package testarena is the arena mode a test suite builds its pagers in. A
 // suite runs in one mode at a time, which SPROUTFS_ARENA names as a deployment
-// does: shared, the default, or isolated. Every suite is run in both.
+// does: isolated, the default, or shared. Every suite is run in both.
 package testarena
 
 import (
@@ -36,7 +36,7 @@ func MustMode() vmmemory.ArenaMode {
 func parse() (vmmemory.ArenaMode, error) {
 	name := os.Getenv(Var)
 	if name == "" {
-		return vmmemory.ArenaShared, nil
+		return vmmemory.ArenaIsolated, nil
 	}
 	return vmmemory.ParseArenaMode(name)
 }

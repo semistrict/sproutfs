@@ -119,7 +119,7 @@ spec:
             # or isolated, which gives each VMM only its own VM's memory and its
             # tenant's shared pages. scripts/demo-gce.sh writes it into the
             # ConfigMap from SPROUTFS_DEMO_ARENA; a cluster without the key runs
-            # the host's default, shared.
+            # the host's default, isolated.
             - name: SPROUTFS_ARENA
               valueFrom:
                 configMapKeyRef:

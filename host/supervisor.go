@@ -195,7 +195,7 @@ type SupervisorConfig struct {
 	// has a share to decide.
 	ArenaBytes KindBytes
 	// Arena is how both pagers divide their resident pages between the files
-	// of their arenas. The zero value is vmmemory.ArenaShared.
+	// of their arenas. The zero value is vmmemory.ArenaIsolated.
 	Arena vmmemory.ArenaMode
 	// MemoryBytes is the host-wide RAM allotment both pagers take their pages
 	// from. It is one budget because it is one machine's memory, and because

@@ -254,24 +254,24 @@ func TestConfigDividesTheBudgetsByTheShare(t *testing.T) {
 	}
 }
 
-// A pod that names no arena mode runs the one arena of today, and one that
-// names the isolated arena gets it.
+// A pod that names no arena mode runs the isolated arena, and one that names
+// the shared arena gets it.
 func TestConfigReadsTheArenaMode(t *testing.T) {
 	config, err := loadConfig(environ(minimal()))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.Arena != vmmemory.ArenaShared {
-		t.Fatalf("an unset arena mode configured %s, want shared", config.Arena)
+	if config.Arena != vmmemory.ArenaIsolated {
+		t.Fatalf("an unset arena mode configured %s, want isolated", config.Arena)
 	}
 	values := minimal()
-	values["SPROUTFS_ARENA"] = "isolated"
+	values["SPROUTFS_ARENA"] = "shared"
 	config, err = loadConfig(environ(values))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.Arena != vmmemory.ArenaIsolated {
-		t.Fatalf("SPROUTFS_ARENA=isolated configured %s, want isolated", config.Arena)
+	if config.Arena != vmmemory.ArenaShared {
+		t.Fatalf("SPROUTFS_ARENA=shared configured %s, want shared", config.Arena)
 	}
 }
 

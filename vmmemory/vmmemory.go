@@ -329,16 +329,18 @@ type ClosableFile interface {
 type ArenaMode int
 
 const (
-	// ArenaShared keeps every resident page in file 0, which every VMM that
-	// attaches a memory region receives read-write. It is the default.
-	ArenaShared ArenaMode = iota
 	// ArenaIsolated splits the arena by who may read each page. Each memory
 	// region has a private file, which only its VMM receives read-write. The
 	// pages another memory region may map are in its tenant's shared file,
 	// which the tenant's VMMs receive read-only, and the pages a fork point
 	// lends to the children on this host are in a fork file, which those
-	// children receive read-only.
-	ArenaIsolated
+	// children receive read-only. It is the default: a VMM reaches no other
+	// VM's memory.
+	ArenaIsolated ArenaMode = iota
+	// ArenaShared keeps every resident page in file 0, which every VMM that
+	// attaches a memory region receives read-write. It costs a fork's children
+	// less at a 4 KiB page, and any VMM can read or write every guest's memory.
+	ArenaShared
 )
 
 // String is the mode as a deployment names it.
@@ -473,7 +475,7 @@ type Config struct {
 	// addresses and pages are one number.
 	ArenaOffsets int
 	// Arena is how this pager divides its resident pages between the files of
-	// its arena. The zero value is ArenaShared.
+	// its arena. The zero value is ArenaIsolated.
 	Arena ArenaMode
 	// LogicalPages bounds all per-memory-region metadata, including never-faulted pages.
 	LogicalPages int

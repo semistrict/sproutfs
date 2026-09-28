@@ -49,8 +49,8 @@ done
 # SPROUTFS_RAM_PAGE_BYTES is the RAM pager's page: 2097152 (the default) on the
 # HugeTLB pool, or 4096 on ordinary memory.
 case ${SPROUTFS_RAM_PAGE_BYTES:-} in ''|4096|2097152) ;; *) echo "SPROUTFS_RAM_PAGE_BYTES must be 4096 or 2097152" >&2; exit 2 ;; esac
-# SPROUTFS_ARENA is the arena mode every suite builds its pagers in: shared (the
-# default) or isolated. The qualification is run once in each, as the Lima
+# SPROUTFS_ARENA is the arena mode every suite builds its pagers in: isolated (the
+# default) or shared. The qualification is run once in each, as the Lima
 # suites are.
 case ${SPROUTFS_ARENA:-} in ''|shared|isolated) ;; *) echo "SPROUTFS_ARENA must be shared or isolated" >&2; exit 2 ;; esac
 # SPROUTFS_KVM_TRACE=1 has the qualification count, while its Firecracker

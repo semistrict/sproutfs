@@ -733,7 +733,7 @@ func newFixture(t *testing.T, resident, logical, dirty int) *fixture {
 // arena mode takes the suite's.
 func newConfiguredFixture(t *testing.T, cfg vmmemory.Config, shared ...*resource.Budget) *fixture {
 	t.Helper()
-	if cfg.Arena == vmmemory.ArenaShared {
+	if cfg.Arena == vmmemory.ArenaIsolated {
 		cfg.Arena = suiteArena
 	}
 	return newPinnedFixture(t, cfg, shared...)
