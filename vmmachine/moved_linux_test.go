@@ -20,7 +20,12 @@ import (
 // faults on none of them and copies none: a move saves the page's memory. The
 // guest's kernel goes on running meanwhile, and a store it makes into a moved
 // page traps on the write protection and copies it, as a store into any shared
-// page does; those are the only faults the reread may see.
+// page does; those are the only faults the reread may see. A read that copied a
+// page would fault to do it, so a reread whose every fault is a store copied
+// nothing for its reads. The copies themselves are not counted against it: the
+// counters are the host's, and a fault that began before the reread, such as
+// the tail of an asynchronous one the command before it started, can land its
+// copy inside it.
 func TestFirecrackerOwnerRereadsMovedPages(t *testing.T) {
 	binary := os.Getenv("SPROUTFS_FIRECRACKER")
 	if binary == "" {
@@ -123,8 +128,8 @@ func TestFirecrackerOwnerRereadsMovedPages(t *testing.T) {
 		moved, faults, copies, after.UnmappedCopyOnWrites-before.UnmappedCopyOnWrites,
 		after.ReadTraps-before.ReadTraps, after.StoreTraps-before.StoreTraps, after.ProtectTraps-before.ProtectTraps,
 		afterChild.RevokedPages-beforeChild.RevokedPages, sharing.Ram.SavedBytes>>20)
-	if faults != stores || copies != stores {
-		t.Fatalf("the parent's reread of %d moved pages faulted %d times and copied %d pages, want only the %d stores it made",
-			moved, faults, copies, stores)
+	if faults != stores {
+		t.Fatalf("the parent's reread of %d moved pages faulted %d times, want only the %d stores it made",
+			moved, faults, stores)
 	}
 }
