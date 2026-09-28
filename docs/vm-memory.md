@@ -360,6 +360,16 @@ them, so a VMM's descriptors reach its own VM's memory and the pages its tenant
 may read, and nothing else. The design and its threat model are in
 [the plan](../plans/isolated-arena-2026-09-25.md).
 
+That holds only for a VMM that runs as neither root nor the pager's user: either
+could reopen a read-only descriptor for writing through `/proc/self/fd`. The
+host's own Starter therefore jails every VMM (`vmmachine.Jail`, the host's
+`SPROUTFS_VMM_JAIL`), as Firecracker's jailer does: chrooted into a directory
+holding the VMM, its policy, the kernel and a `/dev` of its own, with no `/proc`,
+as a user of its own out of a range, in a group that alone may open the jail's
+devices. A memory session whose peer is root, or not the user its placement
+names, is refused (`checkPeer`). An embedder's Starter names its VMM's user in
+`Placement.Owner` and is held to it the same way.
+
 There are three kinds of file:
 
 - **A private file per memory region.** It holds the region's private pages:

@@ -232,6 +232,7 @@ if [[ ${SPROUTFS_GCE_QUALIFY:-0} == 1 ]]; then
         SPROUTFS_FIRECRACKER_KERNEL="$work/build/kernel" \
         SPROUTFS_FIRECRACKER_ROOT="$work/build/firecracker-root.ext4" \
         SPROUTFS_FIRECRACKER_RESIDENT_PAGES=48 \
+        SPROUTFS_FIRECRACKER_JAIL="${SPROUTFS_FIRECRACKER_JAIL:-0}" \
         "$work/build/vmmachine.test" -test.v -test.timeout=60m -test.run "${selected:-.}" \
         -test.count "${SPROUTFS_FIRECRACKER_COUNT:-1}"
     if [[ ${SPROUTFS_KVM_TRACE:-0} == 1 ]]; then

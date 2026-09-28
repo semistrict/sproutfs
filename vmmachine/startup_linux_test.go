@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -39,6 +40,20 @@ const consoleBanner = "sproutfs startup child ready"
 func TestStartupAttachmentChild(t *testing.T) {
 	if os.Getenv("SPROUTFS_STARTUP_CHILD") != "1" {
 		return
+	}
+	// A VMM runs as the user its placement names, which a jailer drops it to
+	// before it runs: so does this one, before it binds or dials anything.
+	var owner vmmachine.Owner
+	if user := os.Getenv("SPROUTFS_STARTUP_CHILD_USER"); user != "" {
+		if _, err := fmt.Sscanf(user, "%d:%d", &owner.UID, &owner.GID); err != nil {
+			t.Fatal(err)
+		}
+		if err := syscall.Setgid(owner.GID); err != nil {
+			t.Fatal(err)
+		}
+		if err := syscall.Setuid(owner.UID); err != nil {
+			t.Fatal(err)
+		}
 	}
 	var configPath, apiPath string
 	for i, arg := range os.Args {

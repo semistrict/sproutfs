@@ -63,6 +63,20 @@ func TestStarterChild(t *testing.T) {
 		}
 		_ = connection.Close()
 		os.Exit(0)
+	case "root":
+		// The VMM itself, but still root rather than the user its placement
+		// names: a Starter that jailed nothing.
+		if _, err := net.Listen("unix", childArgument("--api-sock")); err != nil {
+			fmt.Println(err)
+			os.Exit(8)
+		}
+		connection, err := net.Dial("unix", childArgument("--ram"))
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(9)
+		}
+		defer connection.Close()
+		readConsole()
 	default:
 		t.Fatalf("unknown SPROUTFS_STARTER_CHILD %q", os.Getenv("SPROUTFS_STARTER_CHILD"))
 	}
@@ -164,6 +178,11 @@ func (s *adversarialStarter) spawn(test, env string, args ...string) (vmmachine.
 	}
 	command := exec.Command(executable, append([]string{"-test.run=^" + test + "$", "--"}, args...)...)
 	command.Env = append(os.Environ(), env)
+	if owner := s.placement.Owner; owner != nil {
+		// The attachment child drops to the placement's user, as a VMM its
+		// jailer started does; the others stay whoever they are told to be.
+		command.Env = append(command.Env, fmt.Sprintf("SPROUTFS_STARTUP_CHILD_USER=%d:%d", owner.UID, owner.GID))
+	}
 	child, err := vmmachine.Spawn(command, "")
 	if err != nil {
 		return nil, err
@@ -249,6 +268,21 @@ func TestAdversarialStarters(t *testing.T) {
 				return s.spawn("TestStarterChild", "SPROUTFS_STARTER_CHILD=jailer", "--api-sock", api, "--ram", ram)
 			},
 			want: "vmmachine: pager peer is not the supervised VMM",
+			vmm:  "ended by signal: killed, released 1, reaped true",
+		},
+		{
+			name: "a VMM that runs as root although its placement names a user",
+			start: func(s *adversarialStarter, ctx context.Context, launch *vmmachine.Launch) (vmmachine.VMM, error) {
+				memory, err := s.prepare(ctx, launch)
+				if err != nil {
+					return nil, err
+				}
+				// The fake VMM has no chroot, so it is given the host paths.
+				api, _ := memory.Path("api.sock")
+				ram, _ := memory.Path("ram.sock")
+				return s.spawn("TestStarterChild", "SPROUTFS_STARTER_CHILD=root", "--api-sock", api, "--ram", ram)
+			},
+			want: "vmmachine: pager peer runs as user 0, want the VMM's own user 65534",
 			vmm:  "ended by signal: killed, released 1, reaped true",
 		},
 		{

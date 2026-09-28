@@ -126,11 +126,11 @@ func TestManagedPagerKeepsAColdCopyTheProcessStoredInto(t *testing.T) {
 // coldPair is nativePair with the second process reading page 0 and the first
 // faulting it in writable without having mapped it and storing value, or
 // nothing where value is negative: the store trap KVM's async fault worker
-// makes of a guest's cold read, which the pager copies. The session's worker
-// waits past the test, so the test gives the copy back itself.
+// makes of a guest's cold read, which the pager copies. It returns once the
+// session's worker has compared that cold copy.
 func coldPair(t *testing.T, size uint64, value int) (*vmmemory.Host, *nativeProcess, *nativeProcess) {
 	t.Helper()
-	vmmemory.SetColdCopyAge(t, time.Hour)
+	passes := vmmemory.ColdCopyPasses(t)
 	h, a, b := nativePair(t, size)
 	b.request("read 1 0 1", "data 21")
 	if value < 0 {
@@ -138,24 +138,19 @@ func coldPair(t *testing.T, size uint64, value int) (*vmmemory.Host, *nativeProc
 	} else {
 		a.request(fmt.Sprintf("fill 1 0 1 %d", value), "filled")
 	}
-	if a.pfn(1) == b.pfn(1) {
-		t.Fatal("the store trap left the process on the page it shares")
-	}
+	<-passes
 	return h, a, b
 }
 
-// The give-back of a cold copy the process never stored into points it at the
-// page its sibling maps in place, and installs that page. So the next read, by
-// the process and through KVM, is served by the page tables and reaches the
-// pager not at all, and a real store after it copies again and is kept.
+// The session's give-back of a cold copy the process never stored into points
+// it at the page its sibling maps in place, and installs that page. So the next
+// read, by the process and through KVM, is served by the page tables and
+// reaches the pager not at all, and a real store after it copies again and is
+// kept.
 func TestManagedPagerGiveBackPointsTheGuestAtTheOriginInPlace(t *testing.T) {
 	for _, size := range []uint64{hugePageSize, checkpoint.PageSize4KiB} {
 		t.Run(fmt.Sprintf("%dKiB", size>>10), func(t *testing.T) {
 			h, a, b := coldPair(t, size, -1)
-			given, err := a.memoryRegion(1).GiveBackColdCopies(t.Context())
-			if err != nil || given != 1 {
-				t.Fatalf("the give-back gave back %d pages: %v; want exactly one", given, err)
-			}
 			// pfn fails on a page with no page table entry, so this is also the
 			// evidence that the page was installed rather than revoked.
 			if a.pfn(1) != b.pfn(1) {
@@ -189,11 +184,10 @@ func TestManagedPagerGiveBackKeepsAChangedCopyWritable(t *testing.T) {
 		t.Run(fmt.Sprintf("%dKiB", size>>10), func(t *testing.T) {
 			h, a, b := coldPair(t, size, 70)
 			copied := a.pfn(1)
-			given, err := a.memoryRegion(1).GiveBackColdCopies(t.Context())
-			if err != nil || given != 0 {
-				t.Fatalf("the give-back gave back %d pages the process stored into: %v; want none", given, err)
-			}
 			before := kernelStats(t, h)
+			if before.GiveBackCompares != 1 || before.GivenBackPages != 0 {
+				t.Fatalf("compared %d and gave back %d, want 1 and 0", before.GiveBackCompares, before.GivenBackPages)
+			}
 			a.request("fill 1 0 1 71", "filled")
 			a.request("kvmwrite 1 1 72", "kvm 72")
 			after := kernelStats(t, h)
@@ -202,9 +196,6 @@ func TestManagedPagerGiveBackKeepsAChangedCopyWritable(t *testing.T) {
 			}
 			if got := a.pfn(1); got != copied {
 				t.Fatalf("the process maps physical page %d, want the copy %d it kept", got, copied)
-			}
-			if after.GiveBackCompares != 1 || after.GivenBackPages != 0 {
-				t.Fatalf("compared %d and gave back %d, want 1 and 0", after.GiveBackCompares, after.GivenBackPages)
 			}
 			a.request("read 1 0 2", "data 4748")
 			b.request("read 1 0 2", "data 2121")

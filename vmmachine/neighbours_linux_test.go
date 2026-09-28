@@ -413,8 +413,10 @@ func TestAGuestDirtyingPastItsBudgetsIsCheckpointedThenStopped(t *testing.T) {
 	n := newNeighbourhood(t, ctx, neighbourhoodConfig{
 		pagers: hostPagersConfig{
 			// Room for both guests to boot and for the neighbour's work, and not
-			// for the hog: two booted guests hold about 42 of these 64 pages.
-			RAM: hostPagerBudgets{Arena: neighbourRAM, Logical: 4 * neighbourRAM, Dirty: neighbourRAM},
+			// for the hog: two booted guests hold 64 of these 80 pages on x86_64
+			// and about 42 on aarch64, and the hog takes its guest to all 64 of
+			// its own.
+			RAM: hostPagerBudgets{Arena: 5 * neighbourRAM / 4, Logical: 4 * neighbourRAM, Dirty: 5 * neighbourRAM / 4},
 			// Both roots stay resident, and the dirty budget is eight 2 MiB pages,
 			// a third of the file the hog writes over and over.
 			PMEM: hostPagerBudgets{Arena: 2 * guestRootBytes, Logical: 4 * guestRootBytes, Dirty: 16 << 20},
@@ -448,7 +450,9 @@ func TestAGuestDirtyingPastItsBudgetsIsCheckpointedThenStopped(t *testing.T) {
 
 	// Then RAM, which no checkpoint the host takes relieves. The hog is stopped;
 	// the neighbour goes on answering while it is, and after.
-	if err := hostile.process.WriteConsole(ctx, []byte("hog ram 80\n")); err != nil {
+	// All the RAM the hog's guest has: see the working-set test for why not
+	// more.
+	if err := hostile.process.WriteConsole(ctx, []byte("hog ram 0\n")); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(3 * time.Minute)

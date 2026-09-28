@@ -116,6 +116,10 @@ func run() error {
 	supervisor.ObjectStore, supervisor.Network = objects, adapters.NewNetwork()
 	supervisor.Disk, supervisor.Disks = disk, adapters.NewDisk
 	supervisor.Starter = &config.Firecracker
+	if config.Firecracker.Jail == nil {
+		slog.Warn("sproutfs-host: VMMs run unjailed as this process's user, so no VM's memory is isolated from another's VMM",
+			"set", "SPROUTFS_VMM_JAIL")
+	}
 
 	svc, err := host.Start(ctx, supervisor)
 	if err != nil {
@@ -128,6 +132,12 @@ func run() error {
 		defer cancel()
 		if err := svc.Close(closeCtx); err != nil {
 			slog.Error("sproutfs-host: shutdown failed", "error", err)
+		}
+		// The jail outlives every VMM in it, which the supervisor has ended.
+		if jail := config.Firecracker.Jail; jail != nil {
+			if err := jail.Close(); err != nil {
+				slog.Error("sproutfs-host: closing the VMMs' jail failed", "error", err)
+			}
 		}
 	}()
 

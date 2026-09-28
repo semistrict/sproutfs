@@ -9,13 +9,14 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"syscall"
 	"time"
 )
 
-// Start prepares the process under the scratch and runs Firecracker over it: a
-// boot from a configuration file that declares the kernel, the processors and
-// the vsock beside the managed memory, and a restore with no devices of its
-// own, told only where its vsock's socket moved to.
+// Start prepares the process under the scratch, or in its jail, and runs
+// Firecracker over it: a boot from a configuration file that declares the
+// kernel, the processors and the vsock beside the managed memory, and a restore
+// with no devices of its own, told only where its vsock's socket moved to.
 func (f *Firecracker) Start(ctx context.Context, launch *Launch) (VMM, error) {
 	if f.Binary == "" || f.SeccompFilter == "" || f.VCPUs < 1 || f.VCPUs > 32 {
 		return nil, errors.New("vmmachine: invalid Firecracker configuration")
@@ -28,11 +29,37 @@ func (f *Firecracker) Start(ctx context.Context, launch *Launch) (VMM, error) {
 	if f.VsockCID != 0 && f.VsockCID < 3 {
 		return nil, fmt.Errorf("vmmachine: vsock CID %d is reserved", f.VsockCID)
 	}
-	memory, err := launch.Prepare(ctx, Placement{})
+	binary, seccomp, kernel, initrd := f.Binary, f.SeccompFilter, f.Kernel, f.Initrd
+	var placement Placement
+	if f.Jail != nil {
+		var err error
+		if placement, err = f.Jail.place(f); err != nil {
+			return nil, err
+		}
+		binary, seccomp, kernel = jailedBinary, jailedSeccomp, jailedKernel
+		if initrd != "" {
+			initrd = jailedInitrd
+		}
+	}
+	memory, err := launch.Prepare(ctx, placement)
 	if err != nil {
+		if placement.Owner != nil {
+			f.Jail.give(placement.Owner.UID)
+		}
 		return nil, err
 	}
-	args := []string{"--api-sock", memory.APISocket, "--seccomp-filter", f.SeccompFilter}
+	vmm, err := f.spawn(ctx, memory, launch, binary, seccomp, kernel, initrd, placement.Owner)
+	if err != nil && placement.Owner != nil {
+		f.Jail.give(placement.Owner.UID)
+	}
+	return vmm, err
+}
+
+// spawn runs Firecracker over prepared memory, with the paths it is to use,
+// which are the jail's where it runs in one, as owner where that is set.
+func (f *Firecracker) spawn(ctx context.Context, memory *Memory, launch *Launch, binary, seccomp, kernel, initrd string,
+	owner *Owner) (VMM, error) {
+	args := []string{"--api-sock", memory.APISocket, "--seccomp-filter", seccomp}
 	var vsock, vsockWithin string
 	if f.VsockCID != 0 {
 		vsock, vsockWithin = memory.Path("vsock.sock")
@@ -44,9 +71,9 @@ func (f *Firecracker) Start(ctx context.Context, launch *Launch) (VMM, error) {
 			memory.Load["vsock_override"] = map[string]any{"uds_path": vsockWithin}
 		}
 	} else {
-		boot := map[string]any{"kernel_image_path": f.Kernel, "boot_args": f.BootArgs}
-		if f.Initrd != "" {
-			boot["initrd_path"] = f.Initrd
+		boot := map[string]any{"kernel_image_path": kernel, "boot_args": f.BootArgs}
+		if initrd != "" {
+			boot["initrd_path"] = initrd
 		}
 		vcpus := f.VCPUs
 		if launch.VCPUs() > 0 {
@@ -70,7 +97,21 @@ func (f *Firecracker) Start(ctx context.Context, launch *Launch) (VMM, error) {
 		}
 		args = append(args, "--config-file", path)
 	}
-	return Spawn(exec.Command(f.Binary, args...), vsock)
+	command := exec.Command(binary, args...)
+	if owner == nil {
+		return Spawn(command, vsock)
+	}
+	// The chroot and the change of user happen in the child before its exec,
+	// so the process started is the VMM itself, as a jailer that execs leaves
+	// it: a user other than root holds none of root's capabilities.
+	command.Dir = "/"
+	command.SysProcAttr = &syscall.SysProcAttr{Chroot: f.Jail.Root,
+		Credential: &syscall.Credential{Uid: uint32(owner.UID), Gid: uint32(owner.GID)}}
+	child, err := Spawn(command, vsock)
+	if err != nil {
+		return nil, err
+	}
+	return &jailedChild{Child: child, jail: f.Jail, uid: owner.UID}, nil
 }
 
 // Spawn starts a VMM as a child of this process, with its serial console kept

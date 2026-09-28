@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -261,6 +262,18 @@ func loadConfig(lookup func(string) string) (config, error) {
 	}
 	if c.Firecracker.VCPUs < 1 || c.Firecracker.VCPUs > 32 {
 		fail("SPROUTFS_VM_VCPUS is %d, want 1 to 32", c.Firecracker.VCPUs)
+	}
+	// Every VMM runs jailed, as a user of its own, unless the deployment says
+	// none: the isolated arena holds a VMM to its own VM's memory only while it
+	// runs as neither root nor this process's user.
+	if jail := text("SPROUTFS_VMM_JAIL", filepath.Join(c.ScratchDir, "jail")); jail != "none" {
+		c.Firecracker.Jail = &vmmachine.Jail{Root: jail,
+			FirstUID: int(number("SPROUTFS_VMM_FIRST_UID", 100000)),
+			UIDs:     int(number("SPROUTFS_VMM_USERS", 1024)),
+			GID:      int(number("SPROUTFS_VMM_GID", 100000))}
+		if !filepath.IsAbs(jail) {
+			fail("SPROUTFS_VMM_JAIL is %q, want an absolute directory or none", jail)
+		}
 	}
 	resident := host.KindPages{RAM: int(c.ArenaBytes.RAM / int64(ramPageSize)), PMEM: int(c.ArenaBytes.PMEM / pmemPageSize)}
 	spillable := host.KindPages{RAM: int(c.SpillBytes.RAM / int64(ramPageSize)), PMEM: int(c.SpillBytes.PMEM / pmemPageSize)}

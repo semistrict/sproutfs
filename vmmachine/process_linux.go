@@ -558,7 +558,7 @@ func (p *Process) attach(ctx, lifetime context.Context, c Config) chan error {
 				return
 			}
 			if err == nil && !sim.Bug(ctx, "vmmachine-skip-peer-check") {
-				err = checkPeer(socket, p.vmm.PID())
+				err = checkPeer(socket, p.vmm.PID(), p.owner)
 			}
 			if err == nil {
 				// Each session is named for the volume it stands in front of,
@@ -726,7 +726,12 @@ func (p *Process) watch() {
 // carries: enough for a guest panic, bounded so one death is one record.
 const consoleTailBytes = 8192
 
-func checkPeer(c *net.UnixConn, pid int) error {
+// checkPeer admits a memory session from the supervised VMM alone: its PID,
+// and where the placement names the user it runs as, that user, which is never
+// root nor this process's own. The isolated arena's descriptors hold a VMM only
+// as long as it can reopen none of them for writing, which root and this
+// process's user can (plans/isolated-arena-2026-09-25.md).
+func checkPeer(c *net.UnixConn, pid int, owner *Owner) error {
 	raw, err := c.SyscallConn()
 	if err != nil {
 		return err
@@ -743,6 +748,9 @@ func checkPeer(c *net.UnixConn, pid int) error {
 	}
 	if int(cred.Pid) != pid {
 		return errors.New("vmmachine: pager peer is not the supervised VMM")
+	}
+	if owner != nil && (int(cred.Uid) != owner.UID || cred.Uid == 0 || int(cred.Uid) == os.Getuid()) {
+		return fmt.Errorf("vmmachine: pager peer runs as user %d, want the VMM's own user %d", cred.Uid, owner.UID)
 	}
 	return nil
 }

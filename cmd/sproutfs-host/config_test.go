@@ -275,6 +275,30 @@ func TestConfigReadsTheArenaMode(t *testing.T) {
 	}
 }
 
+// Every VMM runs jailed as a user of its own unless the deployment says none:
+// the jail is under the scratch directory, and its users are a range of their
+// own with a group of their own.
+func TestConfigJailsEveryVMMByDefault(t *testing.T) {
+	config, err := loadConfig(environ(minimal()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	jail := config.Firecracker.Jail
+	if jail == nil || jail.Root != "/var/lib/sproutfs/jail" || jail.FirstUID != 100000 || jail.UIDs != 1024 ||
+		jail.GID != 100000 {
+		t.Fatalf("the default jail is %+v, want /var/lib/sproutfs/jail with users 100000+1024 in group 100000", jail)
+	}
+	values := minimal()
+	values["SPROUTFS_VMM_JAIL"] = "none"
+	if config, err = loadConfig(environ(values)); err != nil || config.Firecracker.Jail != nil {
+		t.Fatalf("SPROUTFS_VMM_JAIL=none configured %+v, %v, want no jail", config.Firecracker.Jail, err)
+	}
+	values["SPROUTFS_VMM_JAIL"] = "jail"
+	if _, err := loadConfig(environ(values)); err == nil || !strings.Contains(err.Error(), "SPROUTFS_VMM_JAIL") {
+		t.Fatalf("a relative jail = %v, want it refused", err)
+	}
+}
+
 // A mode the pager does not have is refused at startup rather than read as the
 // default.
 func TestConfigRefusesAnUnknownArenaMode(t *testing.T) {
