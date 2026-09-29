@@ -294,6 +294,35 @@ func runObjectStoreConformance(t *testing.T, newStore func(*testing.T) platform.
 		}
 	})
 
+	// Removing a control record is conditional on the record as it was read,
+	// so a delete conditioned on a validator the object has moved past leaves
+	// it where it is.
+	t.Run("if_match_deletes_only_the_current_validator", func(t *testing.T) {
+		store := newStore(t)
+		key := objectKey(t, "control")
+		first, err := store.Put(t.Context(), putRequest(key, "one", platform.PutConditions{IfNoneMatch: true}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		second, err := store.Put(t.Context(), putRequest(key, "two", platform.PutConditions{IfMatch: &first.Metadata.ETag}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = store.Delete(t.Context(), platform.DeleteRequest{Key: key, IfMatch: &first.Metadata.ETag})
+		if !errors.Is(err, platform.ErrPrecondition) {
+			t.Fatalf("stale delete error = %v, want ErrPrecondition", err)
+		}
+		if got := getBody(t, store, key); got != "two" {
+			t.Fatalf("object = %q, want \"two\"", got)
+		}
+		if err := store.Delete(t.Context(), platform.DeleteRequest{Key: key, IfMatch: &second.Metadata.ETag}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.Head(t.Context(), key); !errors.Is(err, platform.ErrNotFound) {
+			t.Fatalf("head after delete = %v, want ErrNotFound", err)
+		}
+	})
+
 	t.Run("head_and_get_report_a_missing_object", func(t *testing.T) {
 		store := newStore(t)
 		key := objectKey(t, "absent")

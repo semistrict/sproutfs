@@ -15,7 +15,10 @@ package adapters
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
+	"strings"
 
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/internal/real"
@@ -43,6 +46,72 @@ func NewGCS(ctx context.Context, endpoint, bucket, prefix string) (platform.Obje
 		return nil, nil, err
 	}
 	return store, client, nil
+}
+
+// NewS3 serves a bucket and prefix through Amazon S3, with the ambient AWS
+// configuration. A non-empty endpoint points the client at an S3-compatible
+// server instead. The returned closer releases nothing: an S3 client holds no
+// resources of its own. It is returned so a command closes every store alike.
+func NewS3(ctx context.Context, endpoint, bucket, prefix string) (platform.ObjectStore, io.Closer, error) {
+	client, err := real.NewS3Client(ctx, endpoint)
+	if err != nil {
+		return nil, nil, err
+	}
+	store, err := real.NewS3ObjectStore(client, bucket, prefix)
+	if err != nil {
+		return nil, nil, err
+	}
+	return store, noClose{}, nil
+}
+
+// noClose is a closer with nothing to release.
+type noClose struct{}
+
+func (noClose) Close() error { return nil }
+
+// ObjectStoreConfig names the object store a deployment runs on: its provider,
+// its bucket and prefix, and an emulator's endpoint where one stands in for
+// the provider.
+type ObjectStoreConfig struct {
+	// Provider is "gcs" or "s3". Empty is "gcs".
+	Provider                 string
+	Endpoint, Bucket, Prefix string
+}
+
+// ObjectStoreFromEnvironment reads the object store a command runs on:
+// SPROUTFS_OBJECT_STORE, which is gcs or s3 and gcs when unset;
+// SPROUTFS_BUCKET, which is required; SPROUTFS_PREFIX; and the provider's
+// emulator endpoint, SPROUTFS_GCS_ENDPOINT or SPROUTFS_S3_ENDPOINT. Every
+// command of a deployment reads the same names through here.
+func ObjectStoreFromEnvironment(lookup func(string) string) (ObjectStoreConfig, error) {
+	text := func(name string) string { return strings.TrimSpace(lookup(name)) }
+	config := ObjectStoreConfig{Provider: text("SPROUTFS_OBJECT_STORE"), Bucket: text("SPROUTFS_BUCKET"),
+		Prefix: text("SPROUTFS_PREFIX")}
+	var errs []error
+	switch config.Provider {
+	case "", "gcs":
+		config.Provider = "gcs"
+		config.Endpoint = text("SPROUTFS_GCS_ENDPOINT")
+	case "s3":
+		config.Endpoint = text("SPROUTFS_S3_ENDPOINT")
+	default:
+		errs = append(errs, fmt.Errorf("SPROUTFS_OBJECT_STORE is %q, want gcs or s3", config.Provider))
+	}
+	if config.Bucket == "" {
+		errs = append(errs, errors.New("SPROUTFS_BUCKET is required"))
+	}
+	return config, errors.Join(errs...)
+}
+
+// NewObjectStore opens the object store a configuration names.
+func NewObjectStore(ctx context.Context, config ObjectStoreConfig) (platform.ObjectStore, io.Closer, error) {
+	switch config.Provider {
+	case "", "gcs":
+		return NewGCS(ctx, config.Endpoint, config.Bucket, config.Prefix)
+	case "s3":
+		return NewS3(ctx, config.Endpoint, config.Bucket, config.Prefix)
+	}
+	return nil, nil, fmt.Errorf("object store provider %q: want gcs or s3", config.Provider)
 }
 
 // NewClock returns the operating system's clock: the one a deployment runs on.

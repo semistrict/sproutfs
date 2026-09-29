@@ -12,6 +12,7 @@ import (
 
 	"github.com/semistrict/sproutfs/host"
 	"github.com/semistrict/sproutfs/internal/jsonhttp"
+	"github.com/semistrict/sproutfs/platform/adapters"
 	"github.com/semistrict/sproutfs/vmmachine"
 	"github.com/semistrict/sproutfs/vmmemory"
 )
@@ -27,9 +28,8 @@ type config struct {
 	// Firecracker is how this command runs every VMM: Firecracker directly,
 	// as the host's Starter.
 	Firecracker vmmachine.Firecracker
-	// Bucket and Prefix are the deployment's object namespace, and Endpoint
-	// selects a GCS emulator instead of the ambient Google credentials.
-	Bucket, Prefix, Endpoint string
+	// Store is the object store the deployment's VMs live in.
+	Store adapters.ObjectStoreConfig
 	// APIPort serves this process's HTTP API.
 	APIPort int
 }
@@ -144,11 +144,13 @@ func loadConfig(lookup func(string) string) (config, error) {
 		return int(value)
 	}
 
+	store, err := adapters.ObjectStoreFromEnvironment(lookup)
+	if err != nil {
+		errs = append(errs, err)
+	}
 	c := config{
-		Bucket:   required("SPROUTFS_BUCKET"),
-		Prefix:   text("SPROUTFS_PREFIX", ""),
-		Endpoint: text("SPROUTFS_GCS_ENDPOINT", ""),
-		APIPort:  port("SPROUTFS_API_PORT", 8080),
+		Store:   store,
+		APIPort: port("SPROUTFS_API_PORT", 8080),
 		SupervisorConfig: host.SupervisorConfig{
 			PagePort:    port("SPROUTFS_PAGE_SERVER_PORT", 8081),
 			PodIP:       required("SPROUTFS_POD_IP"),

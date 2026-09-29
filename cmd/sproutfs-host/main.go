@@ -93,15 +93,15 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("configuration: %w", err)
 	}
-	slog.Info("sproutfs-host: starting", "version", version, "host", config.PodName, "bucket", config.Bucket,
-		"prefix", config.Prefix, "arena_bytes", config.ArenaBytes, "checkpoint_interval", config.CheckpointInterval.String())
+	slog.Info("sproutfs-host: starting", "version", version, "host", config.PodName, "store", config.Store.Provider, "bucket", config.Store.Bucket,
+		"prefix", config.Store.Prefix, "arena_bytes", config.ArenaBytes, "checkpoint_interval", config.CheckpointInterval.String())
 
 	// Which adapter stands behind each of the host's ports is this command's
 	// decision and nothing else's: the host is given the object store, the
 	// network and the node disk it runs over, never the names of any of them.
-	objects, client, err := adapters.NewGCS(ctx, config.Endpoint, config.Bucket, config.Prefix)
+	objects, client, err := adapters.NewObjectStore(ctx, config.Store)
 	if err != nil {
-		return fmt.Errorf("gcs object store: %w", err)
+		return fmt.Errorf("%s object store: %w", config.Store.Provider, err)
 	}
 	defer func() {
 		if err := client.Close(); err != nil {

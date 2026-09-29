@@ -45,11 +45,11 @@ func main() {
 
 // config is the orchestrator's whole configuration, which is its environment.
 type config struct {
-	Bucket, Prefix, Endpoint string
-	APIPort                  int
-	Namespace, Selector      string
-	HostAPIPort              int
-	HostPagePort             int
+	Store               adapters.ObjectStoreConfig
+	APIPort             int
+	Namespace, Selector string
+	HostAPIPort         int
+	HostPagePort        int
 	// TablePath is the SQLite file the VM and host tables live in, on a volume
 	// that outlives the pod. Nothing in it is authority: it is rebuilt from a
 	// survey and the bucket every time this process starts.
@@ -76,19 +76,18 @@ func loadConfig(lookup func(string) string) (config, error) {
 		}
 		return parsed
 	}
+	store, err := adapters.ObjectStoreFromEnvironment(lookup)
+	if err != nil {
+		errs = append(errs, err)
+	}
 	c := config{
-		Bucket:       text("SPROUTFS_BUCKET", ""),
-		Prefix:       text("SPROUTFS_PREFIX", ""),
-		Endpoint:     text("SPROUTFS_GCS_ENDPOINT", ""),
+		Store:        store,
 		APIPort:      port("SPROUTFS_API_PORT", 8080),
 		Namespace:    text("SPROUTFS_NAMESPACE", "sproutfs"),
 		Selector:     text("SPROUTFS_HOST_SELECTOR", "app.kubernetes.io/name=sproutfs-host"),
 		HostAPIPort:  port("SPROUTFS_HOST_API_PORT", 8080),
 		HostPagePort: port("SPROUTFS_HOST_PAGE_SERVER_PORT", 8081),
 		TablePath:    text("SPROUTFS_TABLE_PATH", "/var/lib/sproutfs/orchestrator.db"),
-	}
-	if c.Bucket == "" {
-		errs = append(errs, errors.New("SPROUTFS_BUCKET is required"))
 	}
 	if len(errs) > 0 {
 		return config{}, errors.Join(errs...)
@@ -104,9 +103,9 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("configuration: %w", err)
 	}
-	objects, client, err := adapters.NewGCS(ctx, config.Endpoint, config.Bucket, config.Prefix)
+	objects, client, err := adapters.NewObjectStore(ctx, config.Store)
 	if err != nil {
-		return fmt.Errorf("gcs object store: %w", err)
+		return fmt.Errorf("%s object store: %w", config.Store.Provider, err)
 	}
 	defer func() {
 		if err := client.Close(); err != nil {
@@ -172,7 +171,7 @@ func run() error {
 	failed := make(chan error, 1)
 	go func() {
 		slog.Info("sproutfs-orchestrator: serving", "version", version, "address", server.Addr,
-			"namespace", config.Namespace, "selector", config.Selector, "bucket", config.Bucket)
+			"namespace", config.Namespace, "selector", config.Selector, "store", config.Store.Provider, "bucket", config.Store.Bucket)
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			failed <- err
 			return

@@ -315,7 +315,7 @@ durations.
 
 | Variable | Source | Value | Meaning |
 | -------- | ------ | ----- | ------- |
-| `SPROUTFS_BUCKET` | ConfigMap `sproutfs-demo` key `bucket` | `sproutfs-demo-<project>` | the GCS bucket holding control records, checkpoints and pages |
+| `SPROUTFS_BUCKET` | ConfigMap `sproutfs-demo` key `bucket` | `sproutfs-demo-<project>` | the bucket holding control records, checkpoints and pages |
 | `SPROUTFS_PREFIX` | ConfigMap `sproutfs-demo` key `prefix` | `demo` | the deployment's prefix inside that bucket |
 | `SPROUTFS_API_PORT` | literal | `8080` | port for the host API |
 | `SPROUTFS_API_TOKEN` | Secret `sproutfs-api-token` key `token` | generated per deployment | the shared bearer token every request to either API carries. Without it the process serves an API that admits anyone and says so at startup |
@@ -350,6 +350,8 @@ durations.
 | `SPROUTFS_ORCHESTRATOR_URL` | literal | `http://sproutfs-orchestrator.sproutfs.svc:8080` | the orchestrator's Service: where a drain asks for somewhere to put its VMs and reports what it is doing with each of them |
 | `SPROUTFS_ORCHESTRATOR` | unset | the same, from `SPROUTFS_NAMESPACE` | the older name, for a host started by hand. `SPROUTFS_ORCHESTRATOR_URL` wins |
 | `SPROUTFS_GCS_ENDPOINT` | unset | | a GCS emulator to use instead of the ambient Google credentials, which is how the store is exercised outside GCE |
+| `SPROUTFS_OBJECT_STORE` | unset | `gcs` | the object store provider, `gcs` or `s3`. S3 uses the ambient AWS configuration |
+| `SPROUTFS_S3_ENDPOINT` | unset | | an S3-compatible server to use instead of S3, addressed by path |
 | `SPROUTFS_POD_IP` | downward API `status.podIP` | | the address the host advertises for its API and page server |
 | `SPROUTFS_POD_NAME` | downward API `metadata.name` | | the host's name to the orchestrator and to an operator. Nothing durable is named after it, which is why the hosts are a Deployment |
 | `SPROUTFS_NAMESPACE` | downward API `metadata.namespace` | `sproutfs` | |
@@ -449,6 +451,8 @@ read-only at `/usr/share/sproutfs/guest`.
 | `SPROUTFS_HOST_PAGE_SERVER_PORT` | literal | `8081` | port it names when it tells one host to migrate to another |
 | `SPROUTFS_TABLE_PATH` | literal | `/var/lib/sproutfs/orchestrator.db` | the SQLite file holding the VM table, on a `hostPath` under `/opt/sproutfs-demo/orchestrator` so that a restarted pod does not forget a migration that was in flight. It is rebuilt from a survey at startup. Losing it costs only what it alone keeps: a VM's RAM after a cold start resized it, and the pull mark of a VM nothing runs. The orchestrator Deployment uses `strategy: Recreate` and one replica: one process writes this file |
 | `SPROUTFS_GCS_ENDPOINT` | unset | | a GCS emulator to use instead of the ambient Google credentials |
+| `SPROUTFS_OBJECT_STORE` | unset | `gcs` | the object store provider, `gcs` or `s3` |
+| `SPROUTFS_S3_ENDPOINT` | unset | | an S3-compatible server to use instead of S3 |
 
 It authenticates to the Kubernetes API with its ServiceAccount token, mounted
 as usual. Its Role allows `get`, `list`, `watch` and `delete` on pods in

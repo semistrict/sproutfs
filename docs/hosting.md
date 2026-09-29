@@ -52,12 +52,15 @@ The host owns the following, all with the same lifetime:
 A host without a migration address can neither drain nor receive.
 
 Only the command chooses which adapter implements each of those ports.
-`sproutfs-host` builds the GCS object store, the plain TCP network and the node
-disk, and passes them in. GCS is the only object store adapter shipped, because
-it is the only one a deployment runs on. The port is the conditional-write
-contract that the conformance suite in `platform/internal/real`
-states. So an adapter for another store is a package-local addition plus a
-second `runObjectStoreConformance` caller. The host names no adapter. Neither
+`sproutfs-host` builds the object store, the plain TCP network and the node
+disk, and passes them in. `SPROUTFS_OBJECT_STORE` selects the object store:
+`gcs`, the default, or `s3`. The port is the conditional-write contract that
+the conformance suite in `platform/internal/real` states, and each adapter runs
+it against an emulator. The S3 suite also runs against a real bucket when
+`SPROUTFS_TEST_S3_BUCKET` names one. S3 names an object written in one PUT by
+the MD5 of its body, so two writes of the same bytes share an ETag. A
+compare-and-set there is a compare-and-set on the bytes, which is what every
+caller of the port means by one. The host names no adapter. Neither
 does `vmmachine`, which receives a `platform.Disks` for the staging directory
 each VMM gets.
 

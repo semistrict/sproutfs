@@ -1,8 +1,12 @@
 package real_test
 
 import (
+	"encoding/json"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"strconv"
+	"sync"
 	"testing"
 
 	"github.com/fsouza/fake-gcs-server/fakestorage"
@@ -14,10 +18,70 @@ const gcsTestBucket = "sproutfs-demo"
 
 func TestGCSObjectStoreConformance(t *testing.T) {
 	t.Parallel()
-	runObjectStoreConformance(t, func(t *testing.T) platform.ObjectStore {
-		_, store := newFakeGCS(t, fakestorage.Options{NoListener: true})
-		return store
+	runObjectStoreConformance(t, newConditionalFakeGCS)
+}
+
+// generationDeletes gives the GCS emulator the conditional delete GCS has and
+// it does not: a DELETE carrying ifGenerationMatch removes the object only
+// while its generation is that one, and fails with 412 otherwise. Every
+// request is served one at a time, so the check and the delete are one step.
+type generationDeletes struct {
+	mu   sync.Mutex
+	next http.Handler
+}
+
+func (g *generationDeletes) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if want := r.URL.Query().Get("ifGenerationMatch"); r.Method == http.MethodDelete && want != "" {
+		metadata := httptest.NewRecorder()
+		g.next.ServeHTTP(metadata, httptest.NewRequestWithContext(r.Context(), http.MethodGet, r.URL.Path, nil))
+		if metadata.Code == http.StatusNotFound {
+			http.Error(w, `{"error":{"code":404,"message":"No such object"}}`, http.StatusNotFound)
+			return
+		}
+		var object struct {
+			Generation string `json:"generation"`
+		}
+		if err := json.Unmarshal(metadata.Body.Bytes(), &object); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if object.Generation != want {
+			http.Error(w, `{"error":{"code":412,"message":"conditionNotMet"}}`, http.StatusPreconditionFailed)
+			return
+		}
+	}
+	g.next.ServeHTTP(w, r)
+}
+
+// newConditionalFakeGCS serves an empty bucket from the emulator, with the
+// conditional delete above, through the client a deployment opens for an
+// emulator endpoint.
+func newConditionalFakeGCS(t *testing.T) platform.ObjectStore {
+	t.Helper()
+	server, err := fakestorage.NewServerWithOptions(fakestorage.Options{NoListener: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(server.Stop)
+	server.CreateBucketWithOpts(fakestorage.CreateBucketOpts{Name: gcsTestBucket})
+	listener := httptest.NewServer(&generationDeletes{next: server.HTTPHandler()})
+	t.Cleanup(listener.Close)
+	client, err := real.NewGCSClient(t.Context(), listener.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if closeErr := client.Close(); closeErr != nil {
+			t.Error(closeErr)
+		}
 	})
+	store, err := real.NewGCSObjectStore(client, gcsTestBucket, "cluster")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store
 }
 
 func TestGCSObjectStoreUsesTheGenerationAsETag(t *testing.T) {
