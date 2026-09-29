@@ -204,6 +204,16 @@ the template's current state in the deployment:
   interrupted attempt stay in place, like a superseded epoch's checkpoints after
   any other takeover.
 
+**An import reads only the image's data.** A root image is usually a large
+sparse file. When the source is an `*os.File`, the host asks the kernel for
+its data extents with `SEEK_DATA` and `SEEK_HOLE`. A source that implements
+`host.SparseSource` reports its own extents. Both passes read only those
+extents: the digest hashes each hole as the zeroes it reads as, and the import
+writes nothing for it. So a sparse image and the same image written in full
+name one template. A filesystem that cannot report holes, such as a FUSE
+filesystem without `lseek`, is read in full. The digest still hashes every
+zero, which costs CPU and no reads.
+
 Two hosts that start at the same time race on the record's create-if-absent.
 The losing host's create is refused, and that host is then in the third case
 above.

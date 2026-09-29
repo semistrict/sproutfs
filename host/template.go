@@ -1,9 +1,7 @@
 package host
 
 import (
-	"bytes"
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -51,7 +49,9 @@ type TemplateImport struct {
 	Root    string
 	// Source is the image itself, read twice: once for the digest that names
 	// the template, and once more for the bytes that go into it, so the
-	// identity cannot disagree with what was imported under it.
+	// identity cannot disagree with what was imported under it. Only its data
+	// extents are read (see SparseSource); its holes are zeroes, and cost the
+	// digest CPU and no reads.
 	Source io.ReadSeeker
 	// Tenant is the tenant the template belongs to, empty for none. A VM of a
 	// tenant forks only its own tenant's templates, so the same image is one
@@ -112,7 +112,11 @@ func (h *Host) TemplateOf(ctx context.Context, request TemplateImport) (*Importe
 	if request.Source == nil || request.Root == "" || len(request.Volumes) == 0 {
 		return nil, fmt.Errorf("%w: %w", ErrRequest, ErrInvalidConfig)
 	}
-	digest, err := imageDigest(request.Source)
+	image, err := scanImage(request.Source)
+	if err != nil {
+		return nil, fmt.Errorf("finding the data of the %s image: %w", request.Image, err)
+	}
+	digest, err := image.digest()
 	if err != nil {
 		return nil, fmt.Errorf("reading the %s image: %w", request.Image, err)
 	}
@@ -130,7 +134,7 @@ func (h *Host) TemplateOf(ctx context.Context, request TemplateImport) (*Importe
 		record, err := h.control.Read(ctx, id)
 		switch {
 		case errors.Is(err, platform.ErrNotFound):
-			pinned, err := h.importTemplate(ctx, id, request)
+			pinned, err := h.importTemplate(ctx, id, request, image)
 			if errors.Is(err, volume.ErrExists) {
 				// Another host wrote the record between the read and the
 				// create. Its import is the one this host waits for.
@@ -149,7 +153,7 @@ func (h *Host) TemplateOf(ctx context.Context, request TemplateImport) (*Importe
 		case !now.Before(deadline):
 			slog.WarnContext(ctx, "host: recovering a template whose import never published",
 				"image", request.Image, "template", id, "epoch", record.Epoch, "waited", wait)
-			pinned, err := h.recoverTemplate(ctx, id, request)
+			pinned, err := h.recoverTemplate(ctx, id, request, image)
 			if err != nil {
 				return nil, err
 			}
@@ -192,23 +196,6 @@ func (h *Host) Template(ctx context.Context, id string) (*ImportedTemplate, erro
 	return h.templatePoint(ctx, id, record.Selected)
 }
 
-// imageDigest is the sha256 of a guest image, which is the whole of what names
-// its template. The file is left where the import wants it: at the front.
-func imageDigest(source io.ReadSeeker) ([sha256.Size]byte, error) {
-	var digest [sha256.Size]byte
-	if _, err := source.Seek(0, io.SeekStart); err != nil {
-		return digest, err
-	}
-	sum := sha256.New()
-	if _, err := io.CopyBuffer(sum, source, make([]byte, importBatchBytes)); err != nil {
-		return digest, err
-	}
-	if _, err := source.Seek(0, io.SeekStart); err != nil {
-		return digest, err
-	}
-	return [sha256.Size]byte(sum.Sum(nil)), nil
-}
-
 // templatePoint rebuilds the fork point a create forks from one published
 // checkpoint of a template. Nothing is opened: the pin on that checkpoint is
 // the template's own and permanent — nothing in this deployment gives a pin
@@ -225,7 +212,7 @@ func (h *Host) templatePoint(ctx context.Context, id string, sequence uint64) (*
 // importTemplate creates the template and imports the image into it, reporting
 // the checkpoint it pinned. It is refused with volume.ErrExists when another
 // host got the record first, which is the loser of the create-if-absent race.
-func (h *Host) importTemplate(ctx context.Context, id string, request TemplateImport) (uint64, error) {
+func (h *Host) importTemplate(ctx context.Context, id string, request TemplateImport, image guestImage) (uint64, error) {
 	vm, err := h.volumes.CreateIfAbsent(ctx, id, request.Volumes)
 	if err != nil {
 		if errors.Is(err, volume.ErrExists) {
@@ -233,7 +220,7 @@ func (h *Host) importTemplate(ctx context.Context, id string, request TemplateIm
 		}
 		return 0, fmt.Errorf("creating template %s: %w", id, err)
 	}
-	return h.fillTemplate(ctx, id, vm, request)
+	return h.fillTemplate(ctx, id, vm, request, image)
 }
 
 // recoverTemplate takes over a template whose import never published and
@@ -241,12 +228,12 @@ func (h *Host) importTemplate(ctx context.Context, id string, request TemplateIm
 // the host that wrote the record if it is still writing; what that host
 // published stays where it is, as a superseded epoch's checkpoints do wherever
 // a VM is taken over.
-func (h *Host) recoverTemplate(ctx context.Context, id string, request TemplateImport) (uint64, error) {
+func (h *Host) recoverTemplate(ctx context.Context, id string, request TemplateImport, image guestImage) (uint64, error) {
 	vm, err := h.volumes.Open(ctx, id)
 	if err != nil {
 		return 0, fmt.Errorf("recovering the unfinished template %s: %w", id, err)
 	}
-	return h.fillTemplate(ctx, id, vm, request)
+	return h.fillTemplate(ctx, id, vm, request, image)
 }
 
 // fillTemplate writes the image into a template, publishes it and pins the
@@ -256,12 +243,8 @@ func (h *Host) recoverTemplate(ctx context.Context, id string, request TemplateI
 // after: holding it open would keep one host's epoch on an identity every host
 // names, and the pin it leaves is what a fork of it reads through.
 func (h *Host) fillTemplate(ctx context.Context, id string, vm *volume.VM,
-	request TemplateImport) (uint64, error) {
-	if _, err := request.Source.Seek(0, io.SeekStart); err != nil {
-		return 0, errors.Join(fmt.Errorf("rereading the %s image", request.Image), err,
-			closing(ctx, vm))
-	}
-	if err := importImage(ctx, vm, request.Root, request.Source); err != nil {
+	request TemplateImport, image guestImage) (uint64, error) {
+	if err := image.importInto(ctx, vm, request.Root); err != nil {
 		return 0, errors.Join(fmt.Errorf("importing the %s image into template %s", request.Image, id), err,
 			closing(ctx, vm))
 	}
@@ -284,45 +267,4 @@ func (h *Host) fillTemplate(ctx context.Context, id string, vm *volume.VM,
 		return 0, fmt.Errorf("releasing template %s: %w", id, err)
 	}
 	return pinned, nil
-}
-
-// importImage writes a guest image into a volume, checkpointing as it goes so
-// that the import's cost is bounded by importCheckpointBytes rather than by the
-// image. Runs of zeroes are skipped: the volume already reads as zeroes, and a
-// page that is never written is a page no object is ever published for.
-func importImage(ctx context.Context, vm *volume.VM, name string, file io.Reader) error {
-	target := vm.Volume(name)
-	if target == nil {
-		return fmt.Errorf("%w: the template has no volume named %s", ErrRequest, name)
-	}
-	buffer := make([]byte, importBatchBytes)
-	zeroes := make([]byte, importBatchBytes)
-	var offset, pending uint64
-	for {
-		count, err := io.ReadFull(file, buffer)
-		if count > 0 {
-			if offset+uint64(count) > target.Size() {
-				return fmt.Errorf("the image is larger than the %d-byte volume", target.Size())
-			}
-			if !bytes.Equal(buffer[:count], zeroes[:count]) {
-				if err := target.Write(ctx, offset, buffer[:count]); err != nil {
-					return err
-				}
-				pending += uint64(count)
-			}
-			offset += uint64(count)
-		}
-		if pending >= importCheckpointBytes {
-			if err := vm.Checkpoint(ctx); err != nil {
-				return err
-			}
-			pending = 0
-		}
-		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-	}
 }

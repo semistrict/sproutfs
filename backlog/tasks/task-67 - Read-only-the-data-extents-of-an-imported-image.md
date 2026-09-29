@@ -1,9 +1,11 @@
 ---
 id: TASK-67
 title: Read only the data extents of an imported image
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-09-29 23:10'
+updated_date: '2026-09-29 23:34'
 labels:
   - embedder
 dependencies: []
@@ -25,8 +27,25 @@ A hole can be read as data: a FUSE filesystem without lseek support reports the 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 An import from a file with holes reads only its data extents, in both the hash pass and the write pass
-- [ ] #2 A sparse image and the same image written densely get the same template identity
-- [ ] #3 A source that is not a file, or a filesystem that reports no holes, imports as before
+- [x] #1 An import from a file with holes reads only its data extents, in both the hash pass and the write pass
+- [x] #2 A sparse image and the same image written densely get the same template identity
+- [x] #3 A source that is not a file, or a filesystem that reports no holes, imports as before
 - [ ] #4 Measured: import time of a 16 GiB sparse image on the embedder filesystem, before and after
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. scanImage finds the image's size and data extents once: a host.SparseSource reports its own, an *os.File asks SEEK_DATA/SEEK_HOLE (unix only; other GOOS and non-file sources are one whole extent). Extents are validated ascending, apart, within size.
+2. digest hashes extents read from the source and holes as generated zeroes, so identities are unchanged.
+3. importInto reads only extents, skips all-zero batches as before, checkpoints every importCheckpointBytes.
+4. Tests: a SparseSource that fails on any hole read; a real sparse file on the local filesystem; impossible extents refused; fileExtents leaves out a 3 MiB hole.
+5. Document in docs/hosting.md.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Verified on macOS APFS (TestFileExtentsLeaveOutTheHoles, TestASparseFileIsTheTemplateOfItsDenseImage). The fallback for a filesystem that reports no holes is the whole file; a FUSE filesystem without lseek reports the whole file as one data extent, which is the same fallback.
+AC 4 is the embedder's measurement: it needs their FUSE filesystem and a 16 GiB root image. It stays open.
+<!-- SECTION:NOTES:END -->
