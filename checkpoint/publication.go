@@ -9,6 +9,7 @@ import (
 	"sort"
 	"sync"
 
+	checkpointv1 "github.com/semistrict/sproutfs/checkpoint/internal/gen/sproutfs/checkpoint/v1"
 	"github.com/semistrict/sproutfs/checkpoint/internal/part"
 	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/platform"
@@ -75,6 +76,9 @@ type Publication struct {
 	// keep is the pull of the VM publishing, which keeps what this
 	// publication uploads; nil for a VM not pulling its memory.
 	keep *Pull
+	// removed is the pages of each volume this publication zeroed, ascending,
+	// which a checkpoint of the log layout records because no part says so.
+	removed map[string][]uint64
 	// owned is the segments this publication has copied from the ones its
 	// index shares with its parent, before changing them.
 	owned map[segmentKey]bool
@@ -89,7 +93,7 @@ func (s *Store) Begin(parent *Index, ref control.Ref) *Publication {
 		sizes: make(map[string]uint64), geometry: make(map[string]Geometry),
 		ephemeral: make(map[string]bool), edits: make(map[string]map[uint64]bool),
 		protected: make(map[control.Ref]bool), dirty: make(map[string]map[uint64]*segment),
-		owned: make(map[segmentKey]bool)}
+		removed: make(map[string][]uint64), owned: make(map[segmentKey]bool)}
 	if parent != nil {
 		for _, name := range parent.names {
 			p.sizes[name] = parent.volumes[name].size
@@ -98,6 +102,11 @@ func (s *Store) Begin(parent *Index, ref control.Ref) *Publication {
 		}
 	}
 	if !control.ValidID(ref.VM) || ref.Sequence == 0 {
+		p.err = ErrInvalidConfig
+	}
+	// The two layouts do not mix: a log checkpoint inherits a log index, whose
+	// segments are all in hand, and an index checkpoint inherits an index one.
+	if parent != nil && (s.log != nil) != (parent.mapSequence != 0) {
 		p.err = ErrInvalidConfig
 	}
 	return p
@@ -245,6 +254,12 @@ func (p *Publication) Commit(ctx context.Context, source Source) (*Index, error)
 		index.names = append(index.names, name)
 	}
 	slices.Sort(index.names)
+	if p.store.log != nil {
+		if p.keep != nil {
+			return nil, ErrInvalidConfig
+		}
+		index.mapSequence = p.mapSequence()
+	}
 	index.inheritLoaded(p.parent)
 	for name := range p.edits {
 		table := index.volumes[name]
@@ -291,10 +306,13 @@ func (p *Publication) Commit(ctx context.Context, source Source) (*Index, error)
 	if err := p.compact(ctx, writer, index); err != nil {
 		return nil, writer.abandon(err)
 	}
+	if p.store.log != nil {
+		return p.commitLog(ctx, writer, index)
+	}
 	// The parts are finished and durable before anything of the index object
 	// is written: what the parts cost is settled here, and a segment says
 	// where the pages of its range are, so it cannot be encoded before they are.
-	if err := writer.finish(ctx); err != nil {
+	if err := writer.finish(ctx, nil); err != nil {
 		return nil, writer.abandon(err)
 	}
 	index.checkpoints[p.ref] = checkpointCost{parts: writer.next, bytes: writer.bytes}
@@ -487,6 +505,7 @@ func (p *Publication) writeEdits(ctx context.Context, writer *partWriter, index 
 				// as the zeroes the guest wrote.
 				delete(held.pages, relative)
 				p.markDirty(name, geometry.SegmentOf(number), held)
+				p.removed[name] = append(p.removed[name], number)
 				continue
 			}
 			at, err := writer.add(ctx, name, number, memberPage, p.ref, data)
@@ -775,9 +794,23 @@ func (w *partWriter) put(ctx context.Context, key platform.ObjectKey, data []byt
 // every part is durable, which is what the index object may then
 // name. An upload that failed is what the caller is told about, not the
 // cancellation it caused in whatever was still running.
-func (w *partWriter) finish(ctx context.Context) error {
+//
+// record is nil for the index layout. For the log layout it is the checkpoint's
+// log record, given the checkpoint's part count and member bytes, and the last
+// part carries it: such a checkpoint always has one, holding no member if it
+// must.
+func (w *partWriter) finish(ctx context.Context, record func(parts uint32, bytes uint64) *checkpointv1.LogRecord) error {
 	defer w.discharge()
+	if record != nil && w.part == nil {
+		if err := w.admit(ctx); err != nil {
+			return err
+		}
+		w.part = part.NewBuilder(w.store.codecs)
+	}
 	if w.part != nil {
+		if record != nil {
+			w.part.SetLog(record(w.next+1, w.bytes))
+		}
 		sealed, err := w.part.Seal(w.next + 1)
 		if err != nil {
 			return err

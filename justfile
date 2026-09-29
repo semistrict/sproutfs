@@ -69,6 +69,12 @@ soak base="1" count="100":
     SPROUTFS_TEST_SOAK=1 SPROUTFS_SOAK_SEED_BASE={{ base }} SPROUTFS_SOAK_SEED_COUNT={{ count }} \
         go test -count=1 -timeout=80m -v ./internal/simtest -run 'Soak$'
 
+# The index layout against the experimental log layout (TASK-66) on the
+# simulated store: about two minutes, and docs/measurements/layouts-2026-09-28.md
+# quotes what it prints.
+compare-layouts:
+    SPROUTFS_COMPARE_LAYOUTS=1 go test ./checkpoint -run '^TestCompareLayouts$' -count=1 -v -timeout=10m
+
 # The interactive explainer's simulation (TASK-65): the real code's simulation
 # test binary compiled to WebAssembly, beside the Go runtime glue that loads it.
 explainer:

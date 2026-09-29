@@ -14,5 +14,6 @@ hosts, and they can be forked without copying. Start with the architecture.
 - [The explainer](../explainer/index.html): five chapters in one page, drawn from the simulation compiled to WebAssembly. Run `just explainer`, then `python3 -m http.server --directory explainer` and open http://localhost:8000.
 - [The demo](demo.md): the five flows on one disposable GCE VM, in three commands.
 - [What a checkpoint costs under a workload](measurements-2026-09-14-workload.md): object-store traffic per checkpoint under a guest that searches, installs and builds.
+- [The index layout against a log layout](measurements/layouts-2026-09-28.md): what an LSVD-style checkpoint format costs to publish, open, fork and store, on the simulated store.
 - [Measurement reports](measurements/README.md): the dated reports behind the numbers quoted elsewhere.
 - [Backlog](../backlog/tasks): the open work, one Backlog.md task per file. Run `backlog board` or `backlog task list --plain`.

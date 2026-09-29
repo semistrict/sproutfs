@@ -40,6 +40,9 @@ func (s *Store) Reclaim(ctx context.Context, previous, current *Index, protected
 		previous.ref == current.ref || previous.ref.IsZero() {
 		return ErrInvalidConfig
 	}
+	if s.log != nil {
+		return s.reclaimLog(ctx, previous, current, protected)
+	}
 	dead := make(map[control.Ref]bool, len(previous.checkpoints)+1)
 	dead[previous.ref] = true
 	for _, ref := range previous.named() {

@@ -11,3 +11,16 @@ func LiveBuilders(s *Store) int {
 	defer s.builderMu.Unlock()
 	return s.liveBuilders
 }
+
+// LoadedPages reports how many page entries an index holds decoded, which is
+// the page table it keeps in memory: the segments it has fetched in the index
+// layout, and every segment in the log layout.
+func LoadedPages(index *Index) int {
+	index.mu.Lock()
+	defer index.mu.Unlock()
+	var pages int
+	for _, held := range index.loaded {
+		pages += len(held.pages)
+	}
+	return pages
+}

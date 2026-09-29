@@ -76,6 +76,10 @@ type PullStats struct {
 // keeps nothing on disk or a checkpoint that does not fit in what the disk has
 // left; nothing is copied then, and reads go to the store as they always do.
 func (s *Store) Pull(ctx context.Context, index *Index) (*Pull, error) {
+	// A pull copies segments out of index objects, and the log layout has none.
+	if s.log != nil {
+		return nil, ErrInvalidConfig
+	}
 	if s.cache == nil || s.cache.disk == nil {
 		return nil, ErrNoDisk
 	}

@@ -1529,6 +1529,7 @@ type PartTable struct {
 	state                    protoimpl.MessageState `protogen:"opaque.v1"`
 	xxx_hidden_Members       *[]*Member             `protobuf:"bytes,1,rep,name=members"`
 	xxx_hidden_FormatVersion uint32                 `protobuf:"varint,2,opt,name=format_version,json=formatVersion"`
+	xxx_hidden_Log           *LogRecord             `protobuf:"bytes,3,opt,name=log"`
 	XXX_raceDetectHookData   protoimpl.RaceDetectHookData
 	XXX_presence             [1]uint32
 	unknownFields            protoimpl.UnknownFields
@@ -1576,13 +1577,24 @@ func (x *PartTable) GetFormatVersion() uint32 {
 	return 0
 }
 
+func (x *PartTable) GetLog() *LogRecord {
+	if x != nil {
+		return x.xxx_hidden_Log
+	}
+	return nil
+}
+
 func (x *PartTable) SetMembers(v []*Member) {
 	x.xxx_hidden_Members = &v
 }
 
 func (x *PartTable) SetFormatVersion(v uint32) {
 	x.xxx_hidden_FormatVersion = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 1, 2)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 1, 3)
+}
+
+func (x *PartTable) SetLog(v *LogRecord) {
+	x.xxx_hidden_Log = v
 }
 
 func (x *PartTable) HasFormatVersion() bool {
@@ -1592,9 +1604,20 @@ func (x *PartTable) HasFormatVersion() bool {
 	return protoimpl.X.Present(&(x.XXX_presence[0]), 1)
 }
 
+func (x *PartTable) HasLog() bool {
+	if x == nil {
+		return false
+	}
+	return x.xxx_hidden_Log != nil
+}
+
 func (x *PartTable) ClearFormatVersion() {
 	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 1)
 	x.xxx_hidden_FormatVersion = 0
+}
+
+func (x *PartTable) ClearLog() {
+	x.xxx_hidden_Log = nil
 }
 
 type PartTable_builder struct {
@@ -1605,6 +1628,10 @@ type PartTable_builder struct {
 	// reader implements. The trailer carries it too, so a part is refused before
 	// its table is parsed.
 	FormatVersion *uint32
+	// Log is what a checkpoint of the log layout says about itself. Only the
+	// last part of such a checkpoint carries it, and the index layout never
+	// writes it.
+	Log *LogRecord
 }
 
 func (b0 PartTable_builder) Build() *PartTable {
@@ -1613,9 +1640,256 @@ func (b0 PartTable_builder) Build() *PartTable {
 	_, _ = b, x
 	x.xxx_hidden_Members = &b.Members
 	if b.FormatVersion != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 1, 2)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 1, 3)
 		x.xxx_hidden_FormatVersion = *b.FormatVersion
 	}
+	x.xxx_hidden_Log = b.Log
+	return m0
+}
+
+// LogRecord is the log layout's replacement for an index object. A checkpoint
+// of that layout writes no page table: its parts' tables name the pages it
+// wrote, and this record, in the table of its last part, says the rest. An
+// open replays these records from the map object they name.
+type LogRecord struct {
+	state                  protoimpl.MessageState `protogen:"opaque.v1"`
+	xxx_hidden_Root        *Root                  `protobuf:"bytes,1,opt,name=root"`
+	xxx_hidden_Parent      *Ref                   `protobuf:"bytes,2,opt,name=parent"`
+	xxx_hidden_Map         uint64                 `protobuf:"varint,3,opt,name=map"`
+	xxx_hidden_Removed     *[]*RemovedPages       `protobuf:"bytes,4,rep,name=removed"`
+	XXX_raceDetectHookData protoimpl.RaceDetectHookData
+	XXX_presence           [1]uint32
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
+}
+
+func (x *LogRecord) Reset() {
+	*x = LogRecord{}
+	mi := &file_sproutfs_checkpoint_v1_checkpoint_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LogRecord) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LogRecord) ProtoMessage() {}
+
+func (x *LogRecord) ProtoReflect() protoreflect.Message {
+	mi := &file_sproutfs_checkpoint_v1_checkpoint_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+func (x *LogRecord) GetRoot() *Root {
+	if x != nil {
+		return x.xxx_hidden_Root
+	}
+	return nil
+}
+
+func (x *LogRecord) GetParent() *Ref {
+	if x != nil {
+		return x.xxx_hidden_Parent
+	}
+	return nil
+}
+
+func (x *LogRecord) GetMap() uint64 {
+	if x != nil {
+		return x.xxx_hidden_Map
+	}
+	return 0
+}
+
+func (x *LogRecord) GetRemoved() []*RemovedPages {
+	if x != nil {
+		if x.xxx_hidden_Removed != nil {
+			return *x.xxx_hidden_Removed
+		}
+	}
+	return nil
+}
+
+func (x *LogRecord) SetRoot(v *Root) {
+	x.xxx_hidden_Root = v
+}
+
+func (x *LogRecord) SetParent(v *Ref) {
+	x.xxx_hidden_Parent = v
+}
+
+func (x *LogRecord) SetMap(v uint64) {
+	x.xxx_hidden_Map = v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 2, 4)
+}
+
+func (x *LogRecord) SetRemoved(v []*RemovedPages) {
+	x.xxx_hidden_Removed = &v
+}
+
+func (x *LogRecord) HasRoot() bool {
+	if x == nil {
+		return false
+	}
+	return x.xxx_hidden_Root != nil
+}
+
+func (x *LogRecord) HasParent() bool {
+	if x == nil {
+		return false
+	}
+	return x.xxx_hidden_Parent != nil
+}
+
+func (x *LogRecord) HasMap() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 2)
+}
+
+func (x *LogRecord) ClearRoot() {
+	x.xxx_hidden_Root = nil
+}
+
+func (x *LogRecord) ClearParent() {
+	x.xxx_hidden_Parent = nil
+}
+
+func (x *LogRecord) ClearMap() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 2)
+	x.xxx_hidden_Map = 0
+}
+
+type LogRecord_builder struct {
+	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
+
+	// Root is the checkpoint's root with no segments: its volumes, the
+	// checkpoints it names, its VMM state, its processors and whether it is
+	// nested.
+	Root *Root
+	// Parent is the checkpoint this one inherits. It is absent from a VM's
+	// first checkpoint, which is always a map object.
+	Parent *Ref
+	// Map is the sequence of this VM's map object that replay starts from.
+	Map *uint64
+	// Removed is every page this checkpoint zeroed, by volume. A zeroed page
+	// leaves the map, and nothing in a part says so.
+	Removed []*RemovedPages
+}
+
+func (b0 LogRecord_builder) Build() *LogRecord {
+	m0 := &LogRecord{}
+	b, x := &b0, m0
+	_, _ = b, x
+	x.xxx_hidden_Root = b.Root
+	x.xxx_hidden_Parent = b.Parent
+	if b.Map != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 2, 4)
+		x.xxx_hidden_Map = *b.Map
+	}
+	x.xxx_hidden_Removed = &b.Removed
+	return m0
+}
+
+// RemovedPages is the pages of one volume a checkpoint zeroed, ascending.
+type RemovedPages struct {
+	state                  protoimpl.MessageState `protogen:"opaque.v1"`
+	xxx_hidden_Volume      *string                `protobuf:"bytes,1,opt,name=volume"`
+	xxx_hidden_Pages       []uint64               `protobuf:"varint,2,rep,packed,name=pages"`
+	XXX_raceDetectHookData protoimpl.RaceDetectHookData
+	XXX_presence           [1]uint32
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
+}
+
+func (x *RemovedPages) Reset() {
+	*x = RemovedPages{}
+	mi := &file_sproutfs_checkpoint_v1_checkpoint_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RemovedPages) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RemovedPages) ProtoMessage() {}
+
+func (x *RemovedPages) ProtoReflect() protoreflect.Message {
+	mi := &file_sproutfs_checkpoint_v1_checkpoint_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+func (x *RemovedPages) GetVolume() string {
+	if x != nil {
+		if x.xxx_hidden_Volume != nil {
+			return *x.xxx_hidden_Volume
+		}
+		return ""
+	}
+	return ""
+}
+
+func (x *RemovedPages) GetPages() []uint64 {
+	if x != nil {
+		return x.xxx_hidden_Pages
+	}
+	return nil
+}
+
+func (x *RemovedPages) SetVolume(v string) {
+	x.xxx_hidden_Volume = &v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 2)
+}
+
+func (x *RemovedPages) SetPages(v []uint64) {
+	x.xxx_hidden_Pages = v
+}
+
+func (x *RemovedPages) HasVolume() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 0)
+}
+
+func (x *RemovedPages) ClearVolume() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 0)
+	x.xxx_hidden_Volume = nil
+}
+
+type RemovedPages_builder struct {
+	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
+
+	Volume *string
+	Pages  []uint64
+}
+
+func (b0 RemovedPages_builder) Build() *RemovedPages {
+	m0 := &RemovedPages{}
+	b, x := &b0, m0
+	_, _ = b, x
+	if b.Volume != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 2)
+		x.xxx_hidden_Volume = b.Volume
+	}
+	x.xxx_hidden_Pages = b.Pages
 	return m0
 }
 
@@ -1639,7 +1913,7 @@ type Member struct {
 
 func (x *Member) Reset() {
 	*x = Member{}
-	mi := &file_sproutfs_checkpoint_v1_checkpoint_proto_msgTypes[9]
+	mi := &file_sproutfs_checkpoint_v1_checkpoint_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1651,7 +1925,7 @@ func (x *Member) String() string {
 func (*Member) ProtoMessage() {}
 
 func (x *Member) ProtoReflect() protoreflect.Message {
-	mi := &file_sproutfs_checkpoint_v1_checkpoint_proto_msgTypes[9]
+	mi := &file_sproutfs_checkpoint_v1_checkpoint_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1947,10 +2221,19 @@ const file_sproutfs_checkpoint_v1_checkpoint_proto_rawDesc = "" +
 	"\bsequence\x18\x02 \x01(\x04R\bsequence\x12\x14\n" +
 	"\x05parts\x18\x03 \x01(\rR\x05parts\x12\x14\n" +
 	"\x05bytes\x18\x04 \x01(\x04R\x05bytes\x12\x18\n" +
-	"\aemptied\x18\x05 \x01(\x04R\aemptied\"l\n" +
+	"\aemptied\x18\x05 \x01(\x04R\aemptied\"\xa1\x01\n" +
 	"\tPartTable\x128\n" +
 	"\amembers\x18\x01 \x03(\v2\x1e.sproutfs.checkpoint.v1.MemberR\amembers\x12%\n" +
-	"\x0eformat_version\x18\x02 \x01(\rR\rformatVersion\"\xd2\x01\n" +
+	"\x0eformat_version\x18\x02 \x01(\rR\rformatVersion\x123\n" +
+	"\x03log\x18\x03 \x01(\v2!.sproutfs.checkpoint.v1.LogRecordR\x03log\"\xc4\x01\n" +
+	"\tLogRecord\x120\n" +
+	"\x04root\x18\x01 \x01(\v2\x1c.sproutfs.checkpoint.v1.RootR\x04root\x123\n" +
+	"\x06parent\x18\x02 \x01(\v2\x1b.sproutfs.checkpoint.v1.RefR\x06parent\x12\x10\n" +
+	"\x03map\x18\x03 \x01(\x04R\x03map\x12>\n" +
+	"\aremoved\x18\x04 \x03(\v2$.sproutfs.checkpoint.v1.RemovedPagesR\aremoved\"<\n" +
+	"\fRemovedPages\x12\x16\n" +
+	"\x06volume\x18\x01 \x01(\tR\x06volume\x12\x14\n" +
+	"\x05pages\x18\x02 \x03(\x04R\x05pages\"\xd2\x01\n" +
 	"\x06Member\x12\x16\n" +
 	"\x06volume\x18\x01 \x01(\tR\x06volume\x12\x12\n" +
 	"\x04page\x18\x02 \x01(\x04R\x04page\x12\x16\n" +
@@ -1962,7 +2245,7 @@ const file_sproutfs_checkpoint_v1_checkpoint_proto_rawDesc = "" +
 	"J\x04\b\n" +
 	"\x10\vB\\ZZgithub.com/semistrict/sproutfs/checkpoint/internal/gen/sproutfs/checkpoint/v1;checkpointv1b\beditionsp\xe9\a"
 
-var file_sproutfs_checkpoint_v1_checkpoint_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
+var file_sproutfs_checkpoint_v1_checkpoint_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
 var file_sproutfs_checkpoint_v1_checkpoint_proto_goTypes = []any{
 	(*Root)(nil),          // 0: sproutfs.checkpoint.v1.Root
 	(*Ref)(nil),           // 1: sproutfs.checkpoint.v1.Ref
@@ -1973,23 +2256,29 @@ var file_sproutfs_checkpoint_v1_checkpoint_proto_goTypes = []any{
 	(*Page)(nil),          // 6: sproutfs.checkpoint.v1.Page
 	(*Checkpoint)(nil),    // 7: sproutfs.checkpoint.v1.Checkpoint
 	(*PartTable)(nil),     // 8: sproutfs.checkpoint.v1.PartTable
-	(*Member)(nil),        // 9: sproutfs.checkpoint.v1.Member
+	(*LogRecord)(nil),     // 9: sproutfs.checkpoint.v1.LogRecord
+	(*RemovedPages)(nil),  // 10: sproutfs.checkpoint.v1.RemovedPages
+	(*Member)(nil),        // 11: sproutfs.checkpoint.v1.Member
 }
 var file_sproutfs_checkpoint_v1_checkpoint_proto_depIdxs = []int32{
-	2, // 0: sproutfs.checkpoint.v1.Root.volumes:type_name -> sproutfs.checkpoint.v1.Volume
-	7, // 1: sproutfs.checkpoint.v1.Root.checkpoints:type_name -> sproutfs.checkpoint.v1.Checkpoint
-	1, // 2: sproutfs.checkpoint.v1.Root.origins:type_name -> sproutfs.checkpoint.v1.Ref
-	3, // 3: sproutfs.checkpoint.v1.Volume.segments:type_name -> sproutfs.checkpoint.v1.SegmentEntry
-	4, // 4: sproutfs.checkpoint.v1.SegmentEntry.reads:type_name -> sproutfs.checkpoint.v1.CheckpointUse
-	6, // 5: sproutfs.checkpoint.v1.Segment.pages:type_name -> sproutfs.checkpoint.v1.Page
-	1, // 6: sproutfs.checkpoint.v1.Segment.checkpoints:type_name -> sproutfs.checkpoint.v1.Ref
-	1, // 7: sproutfs.checkpoint.v1.Segment.origins:type_name -> sproutfs.checkpoint.v1.Ref
-	9, // 8: sproutfs.checkpoint.v1.PartTable.members:type_name -> sproutfs.checkpoint.v1.Member
-	9, // [9:9] is the sub-list for method output_type
-	9, // [9:9] is the sub-list for method input_type
-	9, // [9:9] is the sub-list for extension type_name
-	9, // [9:9] is the sub-list for extension extendee
-	0, // [0:9] is the sub-list for field type_name
+	2,  // 0: sproutfs.checkpoint.v1.Root.volumes:type_name -> sproutfs.checkpoint.v1.Volume
+	7,  // 1: sproutfs.checkpoint.v1.Root.checkpoints:type_name -> sproutfs.checkpoint.v1.Checkpoint
+	1,  // 2: sproutfs.checkpoint.v1.Root.origins:type_name -> sproutfs.checkpoint.v1.Ref
+	3,  // 3: sproutfs.checkpoint.v1.Volume.segments:type_name -> sproutfs.checkpoint.v1.SegmentEntry
+	4,  // 4: sproutfs.checkpoint.v1.SegmentEntry.reads:type_name -> sproutfs.checkpoint.v1.CheckpointUse
+	6,  // 5: sproutfs.checkpoint.v1.Segment.pages:type_name -> sproutfs.checkpoint.v1.Page
+	1,  // 6: sproutfs.checkpoint.v1.Segment.checkpoints:type_name -> sproutfs.checkpoint.v1.Ref
+	1,  // 7: sproutfs.checkpoint.v1.Segment.origins:type_name -> sproutfs.checkpoint.v1.Ref
+	11, // 8: sproutfs.checkpoint.v1.PartTable.members:type_name -> sproutfs.checkpoint.v1.Member
+	9,  // 9: sproutfs.checkpoint.v1.PartTable.log:type_name -> sproutfs.checkpoint.v1.LogRecord
+	0,  // 10: sproutfs.checkpoint.v1.LogRecord.root:type_name -> sproutfs.checkpoint.v1.Root
+	1,  // 11: sproutfs.checkpoint.v1.LogRecord.parent:type_name -> sproutfs.checkpoint.v1.Ref
+	10, // 12: sproutfs.checkpoint.v1.LogRecord.removed:type_name -> sproutfs.checkpoint.v1.RemovedPages
+	13, // [13:13] is the sub-list for method output_type
+	13, // [13:13] is the sub-list for method input_type
+	13, // [13:13] is the sub-list for extension type_name
+	13, // [13:13] is the sub-list for extension extendee
+	0,  // [0:13] is the sub-list for field type_name
 }
 
 func init() { file_sproutfs_checkpoint_v1_checkpoint_proto_init() }
@@ -2003,7 +2292,7 @@ func file_sproutfs_checkpoint_v1_checkpoint_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_sproutfs_checkpoint_v1_checkpoint_proto_rawDesc), len(file_sproutfs_checkpoint_v1_checkpoint_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   10,
+			NumMessages:   12,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

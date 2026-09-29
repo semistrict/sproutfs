@@ -92,6 +92,9 @@ type Builder struct {
 	// the part is full: a reader fetches a part's table as one bounded suffix,
 	// so the table is a size the writer must respect.
 	entries int
+	// log is the record a checkpoint of the log layout ends its last part with,
+	// nil in every other part.
+	log *checkpointv1.LogRecord
 }
 
 // NewBuilder returns a builder that encodes its members through codecs, which
@@ -139,8 +142,14 @@ func (b *Builder) hold(member Member) {
 	b.entries += EntryBytes(member)
 }
 
-// TableBytes is what this part's table would encode to if it were sealed now.
+// TableBytes is what this part's table would encode to if it were sealed now,
+// less the log record: that is set only on the part that is sealed next, and
+// it is bounded on its own.
 func (b *Builder) TableBytes() int { return emptyTableBytes + b.entries }
+
+// SetLog has the table this part is sealed with carry a log layout's record,
+// which is what makes it the last part of its checkpoint.
+func (b *Builder) SetLog(record *checkpointv1.LogRecord) { b.log = record }
 
 // Members reports how many members this part holds, which is what says whether
 // there is anything to seal at all.
@@ -201,7 +210,7 @@ func (b *Builder) Seal(parts uint32) ([]byte, error) {
 		entries = append(entries, tableEntry(item))
 	}
 	table, err := proto.MarshalOptions{Deterministic: true}.Marshal(checkpointv1.PartTable_builder{
-		Members: entries, FormatVersion: proto.Uint32(FormatVersion)}.Build())
+		Members: entries, FormatVersion: proto.Uint32(FormatVersion), Log: b.log}.Build())
 	if err != nil {
 		return nil, err
 	}
@@ -263,16 +272,24 @@ func TrailerVersion(trailer []byte) (uint32, bool) {
 // is where the table starts, which is one past the last member byte. Whether a
 // volume named here is one the checkpoint has is the store's to say.
 func DecodeTable(data []byte, body uint64) ([]Member, error) {
+	members, _, err := DecodeLogTable(data, body)
+	return members, err
+}
+
+// DecodeLogTable is DecodeTable that also returns the log record the table
+// carries, which is nil for every part but the last one of a checkpoint of the
+// log layout.
+func DecodeLogTable(data []byte, body uint64) ([]Member, *checkpointv1.LogRecord, error) {
 	message := new(checkpointv1.PartTable)
 	if err := proto.Unmarshal(data, message); err != nil {
-		return nil, errors.Join(ErrCorrupt, err)
+		return nil, nil, errors.Join(ErrCorrupt, err)
 	}
 	if message.GetFormatVersion() != FormatVersion {
-		return nil, fmt.Errorf("%w: part table format version %d, want %d",
+		return nil, nil, fmt.Errorf("%w: part table format version %d, want %d",
 			ErrCorrupt, message.GetFormatVersion(), FormatVersion)
 	}
 	if len(message.ProtoReflect().GetUnknown()) != 0 {
-		return nil, ErrCorrupt
+		return nil, nil, ErrCorrupt
 	}
 	members := make([]Member, 0, len(message.GetMembers()))
 	for _, entry := range message.GetMembers() {
@@ -280,20 +297,23 @@ func DecodeTable(data []byte, body uint64) ([]Member, error) {
 			Offset: entry.GetOffset(), Length: entry.GetLength(), State: entry.GetState(),
 			OriginVM: entry.GetOriginVm(), OriginSequence: entry.GetOriginSequence()}
 		if item.Length == 0 || item.Offset > body || item.Length > body-item.Offset {
-			return nil, ErrCorrupt
+			return nil, nil, ErrCorrupt
 		}
 		// The VMM state is the one member that names no volume, and a page is
 		// one that does.
 		if item.State != (item.Volume == "") {
-			return nil, ErrCorrupt
+			return nil, nil, ErrCorrupt
 		}
 		if item.State && item.Page != 0 {
-			return nil, ErrCorrupt
+			return nil, nil, ErrCorrupt
 		}
 		if (item.OriginVM == "") != (item.OriginSequence == 0) {
-			return nil, ErrCorrupt
+			return nil, nil, ErrCorrupt
 		}
 		members = append(members, item)
 	}
-	return members, nil
+	if !message.HasLog() {
+		return members, nil, nil
+	}
+	return members, message.GetLog(), nil
 }

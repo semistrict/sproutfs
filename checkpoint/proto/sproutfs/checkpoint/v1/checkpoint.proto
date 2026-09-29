@@ -156,6 +156,35 @@ message PartTable {
   // reader implements. The trailer carries it too, so a part is refused before
   // its table is parsed.
   uint32 format_version = 2;
+  // Log is what a checkpoint of the log layout says about itself. Only the
+  // last part of such a checkpoint carries it, and the index layout never
+  // writes it.
+  LogRecord log = 3;
+}
+
+// LogRecord is the log layout's replacement for an index object. A checkpoint
+// of that layout writes no page table: its parts' tables name the pages it
+// wrote, and this record, in the table of its last part, says the rest. An
+// open replays these records from the map object they name.
+message LogRecord {
+  // Root is the checkpoint's root with no segments: its volumes, the
+  // checkpoints it names, its VMM state, its processors and whether it is
+  // nested.
+  Root root = 1;
+  // Parent is the checkpoint this one inherits. It is absent from a VM's
+  // first checkpoint, which is always a map object.
+  Ref parent = 2;
+  // Map is the sequence of this VM's map object that replay starts from.
+  uint64 map = 3;
+  // Removed is every page this checkpoint zeroed, by volume. A zeroed page
+  // leaves the map, and nothing in a part says so.
+  repeated RemovedPages removed = 4;
+}
+
+// RemovedPages is the pages of one volume a checkpoint zeroed, ascending.
+message RemovedPages {
+  string volume = 1;
+  repeated uint64 pages = 2;
 }
 
 // Member is one entry of a part: the page or the VMM state it holds, and where

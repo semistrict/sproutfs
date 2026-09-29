@@ -150,6 +150,11 @@ type Index struct {
 	// store is what segments are read through. A root built without one — which
 	// nothing but a test does — can locate nothing it did not write itself.
 	store *Store
+	// mapSequence is, for a checkpoint of the log layout, the sequence of its
+	// VM's map object that an open of it replays from, and zero for the index
+	// layout. Such an index holds every segment decoded, because no object
+	// holds its page table: see log.go.
+	mapSequence uint64
 	// mu guards loaded, the decoded segments this index has already fetched.
 	mu     sync.Mutex
 	loaded map[segmentKey]*segment
@@ -306,7 +311,9 @@ func (i *Index) segmentAt(ctx context.Context, volume string, number uint64) (*s
 	}
 	loaded := newSegment()
 	if entry, addressed := table.segments[number]; addressed {
-		if i.store == nil {
+		// A log index holds every segment it addresses, so one it would have to
+		// fetch is one it lost.
+		if i.store == nil || i.mapSequence != 0 {
 			return nil, ErrCorrupt
 		}
 		data, release, err := i.store.loadSegment(ctx, volume, number, entry.at)
@@ -329,24 +336,6 @@ func (i *Index) segmentAt(ctx context.Context, volume string, number uint64) (*s
 	}
 	i.loaded[key] = loaded
 	return loaded, nil
-}
-
-// inheritLoaded shares the parent's decoded segments that this index still
-// addresses. They remain the parent's: a publication changes a copy
-// (segmentFor).
-func (i *Index) inheritLoaded(parent *Index) {
-	if parent == nil {
-		return
-	}
-	parent.mu.Lock()
-	defer parent.mu.Unlock()
-	for key, held := range parent.loaded {
-		if table := i.volumes[key.volume]; table != nil {
-			if _, addressed := table.segments[key.number]; addressed {
-				i.loaded[key] = held
-			}
-		}
-	}
 }
 
 // pageAt reports where one page's current bytes live, fetching the segment that
@@ -424,6 +413,13 @@ func (i *Index) Locate(ctx context.Context, volume string, offset, length uint64
 // one read back from the store, so an emptied checkpoint left out here loses the
 // checkpoint of grace it owes the view this index replaced.
 func (i *Index) encode() ([]byte, error) {
+	return proto.MarshalOptions{Deterministic: true}.Marshal(i.rootMessage(true))
+}
+
+// rootMessage is the root this index publishes. Without segments it is what a
+// checkpoint of the log layout records of itself: its page table is in its
+// parts' tables, and replay rebuilds the segments from them.
+func (i *Index) rootMessage(segments bool) *checkpointv1.Root {
 	refs := i.named()
 	position := make(map[control.Ref]uint32, len(refs))
 	entries := make([]*checkpointv1.Checkpoint, 0, len(refs))
@@ -444,8 +440,11 @@ func (i *Index) encode() ([]byte, error) {
 	volumes := make([]*checkpointv1.Volume, 0, len(i.names))
 	for _, name := range i.names {
 		table := i.volumes[name]
-		numbers := slices.Sorted(maps.Keys(table.segments))
-		segments := make([]*checkpointv1.SegmentEntry, 0, len(numbers))
+		var numbers []uint64
+		if segments {
+			numbers = slices.Sorted(maps.Keys(table.segments))
+		}
+		entries := make([]*checkpointv1.SegmentEntry, 0, len(numbers))
 		for _, number := range numbers {
 			entry := table.segments[number]
 			reads := make([]*checkpointv1.CheckpointUse, 0, len(entry.reads))
@@ -457,7 +456,7 @@ func (i *Index) encode() ([]byte, error) {
 			slices.SortFunc(reads, func(a, b *checkpointv1.CheckpointUse) int {
 				return int(a.GetCheckpoint()) - int(b.GetCheckpoint())
 			})
-			segments = append(segments, checkpointv1.SegmentEntry_builder{
+			entries = append(entries, checkpointv1.SegmentEntry_builder{
 				Number: proto.Uint64(number), Checkpoint: proto.Uint32(position[entry.at.ref]),
 				Offset: proto.Uint64(entry.at.offset), Length: proto.Uint64(entry.at.length),
 				Reads: reads,
@@ -470,7 +469,7 @@ func (i *Index) encode() ([]byte, error) {
 			// reader divides page numbers by what the root says, not by a
 			// constant of the build that happens to be reading.
 			SegmentPages: proto.Uint64(table.geometry.SegmentPages),
-			Segments:     segments,
+			Segments:     entries,
 		}.Build()
 		// A volume every checkpoint holds leaves the field out, so every root
 		// written before the field existed decodes, and re-encodes, as it was.
@@ -502,7 +501,7 @@ func (i *Index) encode() ([]byte, error) {
 	if i.nested {
 		message.SetNested(true)
 	}
-	return proto.MarshalOptions{Deterministic: true}.Marshal(message)
+	return message
 }
 
 func refMessage(ref control.Ref) *checkpointv1.Ref {
@@ -733,6 +732,12 @@ func decodeRoot(store *Store, ref control.Ref, data []byte) (*Index, error) {
 	if err := proto.Unmarshal(data, message); err != nil {
 		return nil, errors.Join(ErrCorrupt, err)
 	}
+	return decodeRootMessage(store, ref, message)
+}
+
+// decodeRootMessage is decodeRoot of a root already parsed, which is how a log
+// record carries one.
+func decodeRootMessage(store *Store, ref control.Ref, message *checkpointv1.Root) (*Index, error) {
 	if len(message.ProtoReflect().GetUnknown()) != 0 {
 		return nil, ErrCorrupt
 	}

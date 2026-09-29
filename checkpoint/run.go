@@ -106,10 +106,9 @@ func (s *Store) readRun(ctx context.Context, geometry Geometry, volume string, r
 // the checkpoint the page was first published under, which the index carries
 // as the member's origin — rather than by the checkpoint whose part holds it
 // now, so a fork hits its parent's entries and compaction moving the bytes
-// costs neither a refetch nor a second entry. A member is exactly what was
-// published, so one published while the volume was shorter is shorter than the
-// page. The caller releases the bytes when it is done with them; dst is not
-// used.
+// costs neither a refetch nor a second entry. A member is exactly what was published, so one
+// published while the volume was shorter is shorter than the page. The caller
+// releases the bytes when it is done with them; dst is not used.
 func (s *Store) loadPages(ctx context.Context, geometry Geometry, volume string, run []pageRead) ([][]byte, func(), error) {
 	keys := make([]cacheKey, len(run))
 	for at, page := range run {
@@ -228,11 +227,11 @@ func groupMembers(run []pageRead, wanted []int) []readExtent {
 
 // readExtents fetches every extent of a run, a few at a time, and hands each
 // one's bytes to serve. Independent parts are therefore read at once rather
-// than one after another. The first failure cancels the rest, and what the
-// caller is told is that failure rather than the cancellation it caused.
+// than one after another.
 func (s *Store) readExtents(ctx context.Context, extents []readExtent,
 	serve func(context.Context, readExtent, []byte) error) error {
-	read := func(ctx context.Context, held readExtent) error {
+	return concurrently(ctx, len(extents), readExtentConcurrency, func(ctx context.Context, at int) error {
+		held := extents[at]
 		key, err := s.partKey(held.ref, held.part)
 		if err != nil {
 			return err
@@ -245,9 +244,15 @@ func (s *Store) readExtents(ctx context.Context, extents []readExtent,
 			return err
 		}
 		return serve(ctx, held, encoded)
-	}
-	if len(extents) == 1 {
-		return read(ctx, extents[0])
+	})
+}
+
+// concurrently runs do for every position below count, at most limit at a
+// time. The first failure cancels the rest, and what the caller is told is that
+// failure rather than the cancellation it caused.
+func concurrently(ctx context.Context, count, limit int, do func(ctx context.Context, at int) error) error {
+	if count == 1 {
+		return do(ctx, 0)
 	}
 	running, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -255,16 +260,16 @@ func (s *Store) readExtents(ctx context.Context, extents []readExtent,
 	var wait sync.WaitGroup
 	var once sync.Once
 	var failure error
-	for range min(len(extents), readExtentConcurrency) {
+	for range min(count, limit) {
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
 			for running.Err() == nil {
 				at := int(next.Add(1)) - 1
-				if at >= len(extents) {
+				if at >= count {
 					return
 				}
-				if err := read(running, extents[at]); err != nil {
+				if err := do(running, at); err != nil {
 					once.Do(func() { failure = err; cancel() })
 					return
 				}

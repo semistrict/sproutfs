@@ -2,6 +2,7 @@ package checkpoint
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -62,6 +63,9 @@ type Config struct {
 	// the refusal above it is a path nothing reached while the only value was
 	// one no volume this design targets could produce.
 	MaxIndexBytes int
+	// Log selects the log layout in place of the index layout; nil keeps the
+	// index layout. It is an experiment: see log.go.
+	Log *LogLayout
 }
 
 const (
@@ -107,6 +111,8 @@ type Store struct {
 	// which MaximumPins bounds per VM.
 	protectedMu sync.Mutex
 	protected   map[control.Ref][]control.Ref
+	// log is Config.Log with its defaults taken, nil for the index layout.
+	log *LogLayout
 }
 
 // NewStore validates the configuration and returns a store over it.
@@ -140,6 +146,13 @@ func NewStore(config Config) (*Store, error) {
 	if config.Codecs == nil {
 		config.Codecs = blob.Default()
 	}
+	var log *LogLayout
+	if config.Log != nil {
+		if config.Log.MapEvery < 0 {
+			return nil, ErrInvalidConfig
+		}
+		log = &LogLayout{MapEvery: cmp.Or(config.Log.MapEvery, defaultMapEvery)}
+	}
 	store := &Store{objects: config.ObjectStore, prefix: prefix, cache: config.Cache,
 		partBytes: config.PartBytes, maxRootBytes: config.MaxIndexBytes,
 		indexTail: defaultIndexTail,
@@ -147,7 +160,8 @@ func NewStore(config Config) (*Store, error) {
 		builders:  make(chan struct{}, config.MaxBuilders),
 		deletes:   make(chan struct{}, config.MaxDeletes),
 		codecs:    config.Codecs,
-		protected: make(map[control.Ref][]control.Ref)}
+		protected: make(map[control.Ref][]control.Ref),
+		log:       log}
 	if _, err := store.indexKey(control.Ref{VM: "vm", Sequence: 1}); err != nil {
 		return nil, ErrInvalidConfig
 	}
@@ -208,6 +222,9 @@ func (s *Store) supersededPartKey(ref control.Ref) (platform.ObjectKey, error) {
 // deployment written when the root was a member of a part is refused with the
 // version it was written under named rather than reported absent.
 func (s *Store) Open(ctx context.Context, ref control.Ref) (*Index, error) {
+	if s.log != nil {
+		return s.openLog(ctx, ref)
+	}
 	key, err := s.indexKey(ref)
 	if err != nil {
 		return nil, err
@@ -317,6 +334,13 @@ func (s *Store) Root(ctx context.Context, ref control.Ref, volumes map[string]Vo
 	}
 	slices.Sort(index.names)
 	index.checkpoints[ref] = checkpointCost{}
+	if s.log != nil {
+		index.mapSequence = ref.Sequence
+		if err := s.putMap(ctx, index); err != nil {
+			return nil, err
+		}
+		return index, nil
+	}
 	data, err := newIndexObject(s).seal(ctx, index)
 	if err != nil {
 		return nil, err
