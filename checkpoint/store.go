@@ -544,34 +544,6 @@ func (s *Store) resolveRun(ctx context.Context, index *Index, volume string, off
 	return run, nil
 }
 
-// loadPage fetches one page's decoded bytes, through the shared cache when one
-// is configured. The cache is keyed by the page's identity — the
-// checkpoint the page was first published under, which the index carries as the
-// member's origin — rather than by the checkpoint whose part currently holds it,
-// so a fork hits its parent's entries and compaction moving the bytes costs
-// neither a refetch nor a second entry.
-func (s *Store) loadPage(ctx context.Context, geometry Geometry, volume string, number uint64, at location) ([]byte, func(), error) {
-	key := pageKey(identityOf(volume, number, at))
-	fetch := func(ctx context.Context) ([]byte, error) {
-		if data, found := s.fromDisk(ctx, key, int(geometry.PageSize), validPage); found {
-			return data, nil
-		}
-		data, err := s.readMember(ctx, at, int64(geometry.PageSize))
-		if err != nil {
-			return nil, err
-		}
-		if !validPage(data) {
-			return nil, ErrCorrupt
-		}
-		return data, nil
-	}
-	if s.cache == nil {
-		data, err := fetch(ctx)
-		return data, func() {}, err
-	}
-	return s.cache.get(ctx, key, fetch)
-}
-
 // loadSegment fetches one segment's encoded page table out of the index object
 // of the checkpoint that wrote it, through the shared cache when one is
 // configured. It is keyed by the segment's identity — that checkpoint, this

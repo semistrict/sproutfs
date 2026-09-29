@@ -846,6 +846,36 @@ func (p *Publication) protectedCheckpoints(ctx context.Context) (map[control.Ref
 	return protected, nil
 }
 
+// move rewrites some of one segment's pages into this checkpoint's parts, in
+// the order given. Their members are fetched the way a read fetches a run:
+// through the page cache, and in ranged extents of the parts they lie in for
+// the ones it does not hold, so a rescue of adjacent pages costs a request per
+// extent rather than one per page.
+func (p *Publication) move(ctx context.Context, writer *partWriter, volume string, geometry Geometry,
+	number uint64, held *segment, relatives []uint32) error {
+	run := make([]pageRead, len(relatives))
+	for at, relative := range relatives {
+		run[at] = pageRead{number: geometry.SegmentBase(number) + uint64(relative), at: held.pages[relative]}
+	}
+	data, release, err := p.store.loadPages(ctx, geometry, volume, run)
+	if err != nil {
+		return err
+	}
+	defer release()
+	for at, page := range run {
+		// The bytes move; the page does not. Carrying the origin forward is
+		// what keeps a fork of the older view and this index reporting one
+		// identity for one page.
+		moved, err := writer.add(ctx, volume, page.number, memberPage, page.at.origin, data[at])
+		if err != nil {
+			return err
+		}
+		held.pages[relatives[at]] = moved
+	}
+	p.markDirty(volume, number, held)
+	return nil
+}
+
 // liveBytes reports, per checkpoint, the encoded member bytes this index reads
 // from its parts: every page the segments' tables name, and the state. It opens
 // nothing, and it counts nothing of the index object — a segment is never a
@@ -986,26 +1016,22 @@ func (p *Publication) compact(ctx context.Context, writer *partWriter, index *In
 			if err != nil {
 				return err
 			}
+			var moving []uint32
 			for _, relative := range slices.Sorted(maps.Keys(held.pages)) {
-				at := held.pages[relative]
-				if !rewriting[at.ref] {
-					continue
+				if rewriting[held.pages[relative].ref] {
+					moving = append(moving, relative)
 				}
-				page := table.geometry.SegmentBase(number) + uint64(relative)
-				data, release, err := p.store.loadPage(ctx, table.geometry, name, page, at)
-				if err != nil {
+			}
+			// The pages are read a run's worth at a time, which is what bounds the
+			// decoded bytes held at once, and written in page order, which is
+			// what makes a retry write the same parts.
+			batch := max(1, int(maximumRunBytes/table.geometry.PageSize))
+			for len(moving) > 0 {
+				count := min(batch, len(moving))
+				if err := p.move(ctx, writer, name, table.geometry, number, held, moving[:count]); err != nil {
 					return err
 				}
-				// The bytes move; the page does not. Carrying the origin forward
-				// is what keeps a fork of the older view and this index reporting
-				// one identity for one page.
-				moved, err := writer.add(ctx, name, page, memberPage, at.origin, data)
-				release()
-				if err != nil {
-					return err
-				}
-				held.pages[relative] = moved
-				p.markDirty(name, number, held)
+				moving = moving[count:]
 			}
 		}
 	}

@@ -91,6 +91,26 @@ type readExtent struct {
 // every page the run fetched is retained under its own identity and a later
 // reader of any of them finds it there.
 func (s *Store) readRun(ctx context.Context, geometry Geometry, volume string, run []pageRead) error {
+	data, release, err := s.loadPages(ctx, geometry, volume, run)
+	if err != nil {
+		return err
+	}
+	defer release()
+	fillPages(run, data)
+	return nil
+}
+
+// loadPages returns the decoded member of every page of a run, one per page in
+// the run's order, as readRun fetches them: through the cache, and in extents
+// for the ones it does not hold. The cache is keyed by each page's identity —
+// the checkpoint the page was first published under, which the index carries
+// as the member's origin — rather than by the checkpoint whose part holds it
+// now, so a fork hits its parent's entries and compaction moving the bytes
+// costs neither a refetch nor a second entry. A member is exactly what was
+// published, so one published while the volume was shorter is shorter than the
+// page. The caller releases the bytes when it is done with them; dst is not
+// used.
+func (s *Store) loadPages(ctx context.Context, geometry Geometry, volume string, run []pageRead) ([][]byte, func(), error) {
 	keys := make([]cacheKey, len(run))
 	for at, page := range run {
 		keys[at] = pageKey(identityOf(volume, page.number, page.at))
@@ -101,21 +121,11 @@ func (s *Store) readRun(ctx context.Context, geometry Geometry, volume string, r
 			wanted[at] = at
 		}
 		data, err := s.fetchMembers(ctx, geometry, run, keys, wanted)
-		if err != nil {
-			return err
-		}
-		fillPages(run, data)
-		return nil
+		return data, func() {}, err
 	}
-	data, release, err := s.cache.getAll(ctx, keys, func(ctx context.Context, wanted []int) ([][]byte, error) {
+	return s.cache.getAll(ctx, keys, func(ctx context.Context, wanted []int) ([][]byte, error) {
 		return s.fetchMembers(ctx, geometry, run, keys, wanted)
 	})
-	if err != nil {
-		return err
-	}
-	defer release()
-	fillPages(run, data)
-	return nil
 }
 
 // fillPages copies each member's bytes into the part of the caller's buffer its
