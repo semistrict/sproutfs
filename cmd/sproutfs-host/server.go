@@ -63,7 +63,7 @@ func newServer(h host.VMs, token string) http.Handler {
 			return
 		}
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-		if _, err := io.WriteString(w, metrics(status)); err != nil {
+		if _, err := io.WriteString(w, hostapi.Metrics(status)); err != nil {
 			slog.WarnContext(r.Context(), "sproutfs-host: writing the metrics failed", "error", err)
 		}
 	})

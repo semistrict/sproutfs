@@ -902,3 +902,21 @@ func TestMetricsExposeTheLossWindow(t *testing.T) {
 		}
 	}
 }
+
+// The host serves the exposition an embedder builds from the same Status, byte
+// for byte, so a dashboard reads either the same way.
+func TestMetricsAreTheLibraryExposition(t *testing.T) {
+	fake := &fakeHost{status: hostapi.Status{
+		Running: []string{"vm-1"},
+		VMs:     []hostapi.VM{{ID: "vm-1", LossWindow: 12 * time.Second}},
+		Pager:   hostapi.Pager{RAM: hostapi.PagerKind{PageBytes: 4 << 10, ArenaPages: 64, Spills: 2}},
+	}}
+	status, body := call(t, fake, http.MethodGet, "/metrics", "")
+	if status != http.StatusOK {
+		t.Fatalf("status %d: %s", status, body)
+	}
+	// The helper trims the body, and so the exposition beside it.
+	if want := strings.TrimSpace(hostapi.Metrics(fake.status)); body != want {
+		t.Fatalf("/metrics served\n%s\nwant\n%s", body, want)
+	}
+}

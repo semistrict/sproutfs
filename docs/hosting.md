@@ -83,6 +83,11 @@ store, per VM, for an embedder's billing. It lists the store, so any host
 answers for every VM of the tenant, including VMs no host runs and deleted VMs
 whose pinned checkpoints remain. See [billing](volumes.md#billing).
 
+`GET /metrics` is `hostapi.Metrics` of the host's `Status`, in the Prometheus
+text format. A program that embeds a host serves the same text from its own
+endpoint: it reads `Status` from the supervisor and passes it to
+`hostapi.Metrics`.
+
 ## Running the VMM
 
 The host prepares a VM's memory and drives its VMM. It does not start the VMM
