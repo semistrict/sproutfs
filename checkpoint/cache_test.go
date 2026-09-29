@@ -143,16 +143,16 @@ func TestCacheSharesInheritedPagesAndAccountsHits(t *testing.T) {
 		for page := uint64(1); page < cachedPages; page++ {
 			readCachedPage(t, store, fork, forkModel, page)
 		}
-		// The fork's own publication read its parent's segment to edit it, which
-		// the reopened handle had already cached, so that is a hit too.
-		if stats := cache.Stats(); stats.Hits != 2*cachedPages-1+fixtureSegments ||
+		// The fork's own publication edits the segment its parent's handle had
+		// already decoded, so it fetches nothing, not even from the cache.
+		if stats := cache.Stats(); stats.Hits != 2*cachedPages-1 ||
 			objects.gets.Load() != cachedPages+fixtureSegments+opensOne {
 			t.Fatalf("untouched fork pages: %+v, gets=%d", stats, objects.gets.Load())
 		}
 		// The page the fork wrote is a new object of its own, one fetch and no
 		// inherited object to read beside it.
 		readCachedPage(t, store, fork, forkModel, 0)
-		if stats := cache.Stats(); stats.Hits != 2*cachedPages-1+fixtureSegments ||
+		if stats := cache.Stats(); stats.Hits != 2*cachedPages-1 ||
 			stats.Misses != cachedPages+fixtureSegments+1 ||
 			objects.gets.Load() != cachedPages+fixtureSegments+opensOne+1 {
 			t.Fatalf("forked page: %+v, gets=%d", stats, objects.gets.Load())

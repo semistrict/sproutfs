@@ -70,6 +70,9 @@ type segment struct {
 
 func newSegment() *segment { return &segment{pages: make(map[uint32]location)} }
 
+// clone is a copy of the segment a caller may change without changing this one.
+func (s *segment) clone() *segment { return &segment{pages: maps.Clone(s.pages)} }
+
 // checkpointUse is what one segment's page entries read from one checkpoint's
 // parts: the checkpoint, and the encoded member bytes they name in it.
 type checkpointUse struct {
@@ -326,6 +329,24 @@ func (i *Index) segmentAt(ctx context.Context, volume string, number uint64) (*s
 	}
 	i.loaded[key] = loaded
 	return loaded, nil
+}
+
+// inheritLoaded shares the parent's decoded segments that this index still
+// addresses. They remain the parent's: a publication changes a copy
+// (segmentFor).
+func (i *Index) inheritLoaded(parent *Index) {
+	if parent == nil {
+		return
+	}
+	parent.mu.Lock()
+	defer parent.mu.Unlock()
+	for key, held := range parent.loaded {
+		if table := i.volumes[key.volume]; table != nil {
+			if _, addressed := table.segments[key.number]; addressed {
+				i.loaded[key] = held
+			}
+		}
+	}
 }
 
 // pageAt reports where one page's current bytes live, fetching the segment that

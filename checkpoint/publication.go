@@ -75,7 +75,10 @@ type Publication struct {
 	// keep is the pull of the VM publishing, which keeps what this
 	// publication uploads; nil for a VM not pulling its memory.
 	keep *Pull
-	err  error
+	// owned is the segments this publication has copied from the ones its
+	// index shares with its parent, before changing them.
+	owned map[segmentKey]bool
+	err   error
 }
 
 // Begin starts a checkpoint that inherits parent, which may be nil for a VM
@@ -85,7 +88,8 @@ func (s *Store) Begin(parent *Index, ref control.Ref) *Publication {
 	p := &Publication{store: s, parent: parent, ref: ref,
 		sizes: make(map[string]uint64), geometry: make(map[string]Geometry),
 		ephemeral: make(map[string]bool), edits: make(map[string]map[uint64]bool),
-		protected: make(map[control.Ref]bool), dirty: make(map[string]map[uint64]*segment)}
+		protected: make(map[control.Ref]bool), dirty: make(map[string]map[uint64]*segment),
+		owned: make(map[segmentKey]bool)}
 	if parent != nil {
 		for _, name := range parent.names {
 			p.sizes[name] = parent.volumes[name].size
@@ -241,6 +245,7 @@ func (p *Publication) Commit(ctx context.Context, source Source) (*Index, error)
 		index.names = append(index.names, name)
 	}
 	slices.Sort(index.names)
+	index.inheritLoaded(p.parent)
 	for name := range p.edits {
 		table := index.volumes[name]
 		if table == nil {
@@ -345,8 +350,25 @@ func (p *Publication) writeState(ctx context.Context, writer *partWriter, index 
 // decoding the one the root addresses the first time it is touched. The copy
 // belongs to that index, so a reader of the published one finds the table this
 // publication left rather than fetching it again.
+//
+// The index shares the segments its parent had decoded (inheritLoaded), so the
+// working copy is a copy, taken the first time the segment is touched, and a
+// segment the parent already held costs no fetch.
 func (p *Publication) segmentFor(ctx context.Context, index *Index, volume string, number uint64) (*segment, error) {
-	return index.segmentAt(ctx, volume, number)
+	held, err := index.segmentAt(ctx, volume, number)
+	if err != nil {
+		return held, err
+	}
+	key := segmentKey{volume: volume, number: number}
+	if p.owned[key] {
+		return held, nil
+	}
+	held = held.clone()
+	index.mu.Lock()
+	index.loaded[key] = held
+	index.mu.Unlock()
+	p.owned[key] = true
+	return held, nil
 }
 
 // markDirty records that a segment's page table has changed, so that this

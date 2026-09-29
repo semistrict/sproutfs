@@ -152,6 +152,13 @@ func TestCompactionMeasuresLivenessFromTheRootAlone(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		// The last checkpoint starts from the middle one read back from the
+		// store, which holds no segment, so what it holds after is what it
+		// opened: a publication shares whatever its parent had decoded.
+		second, err = store.Open(t.Context(), second.Ref())
+		if err != nil {
+			t.Fatal(err)
+		}
 		last := store.Begin(second, control.Ref{VM: "live", Sequence: 4})
 		last.Dirty("disk", 0)
 		last.Dirty("disk", 1)
