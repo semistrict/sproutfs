@@ -31,6 +31,40 @@ type Starter interface {
 	// restore VMM state. A host refuses to discard a VM's memory for a cold
 	// start that its Starter could never boot.
 	Boots() bool
+	// APIRevision is the revision of the managed-memory API the VMM this
+	// Starter starts speaks. A host refuses to start unless it is
+	// APIRevision; see CheckAPI.
+	APIRevision(ctx context.Context) (int, error)
+}
+
+// APIRevision is the revision of the managed-memory API this package drives a
+// VMM with: the fields of the boot configuration, snapshot load and snapshot
+// create that upstream Firecracker lacks. semistrict/firecracker@sproutfs
+// prints the revision it speaks when run with --sproutfs-api-revision. The two
+// are raised together whenever this package starts sending a field, or relying
+// on a behaviour, that the previous revision lacks.
+const APIRevision = 1
+
+// ErrAPIRevision refuses a VMM that speaks another revision of the API than
+// APIRevision.
+var ErrAPIRevision = errors.New("vmmachine: the VMM does not speak this host's managed-memory API")
+
+// CheckAPI refuses a Starter whose VMM speaks another revision of the API. A
+// host checks before it runs any VM, because a VMM that lacks a field this
+// package sends still boots and restores guests: it fails first at a
+// checkpoint or a stop, and that VM loses every write since its last
+// checkpoint. The revisions must be equal, as the mapping protocol's versions
+// must: a host and its VMM are deployed together.
+func CheckAPI(ctx context.Context, starter Starter) error {
+	revision, err := starter.APIRevision(ctx)
+	if err != nil {
+		return fmt.Errorf("%w: asking its revision: %w", ErrAPIRevision, err)
+	}
+	if revision != APIRevision {
+		return fmt.Errorf("%w: it speaks revision %d, and this host revision %d",
+			ErrAPIRevision, revision, APIRevision)
+	}
+	return nil
 }
 
 // VMM is one running VMM process as its Starter started it.

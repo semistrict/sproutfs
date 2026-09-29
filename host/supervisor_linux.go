@@ -160,6 +160,9 @@ func Start(ctx context.Context, config SupervisorConfig) (Service, error) {
 	if config.Starter == nil {
 		return nil, fmt.Errorf("%w: a host needs a VMM starter", ErrInvalidConfig)
 	}
+	if err := vmmachine.CheckAPI(ctx, config.Starter); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInvalidConfig, err)
+	}
 	if _, err := os.Stat(config.HugepageDir); err != nil {
 		return nil, fmt.Errorf("hugepage mount %s: %w", config.HugepageDir, err)
 	}

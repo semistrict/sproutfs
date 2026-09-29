@@ -2195,6 +2195,16 @@ flushes. A managed capture is always a full snapshot with no memory file. A
 managed restore requires fixed RAM with no huge-page setting, in this
 architecture's own layout.
 
+The fork also has an API revision, `SPROUTFS_API_REVISION`, which it prints
+when run with `--sproutfs-api-revision`. It covers the fields of the boot
+configuration, snapshot load and snapshot create that upstream Firecracker
+lacks. `vmmachine.APIRevision` is the revision the host speaks, and a host
+refuses to start unless its Starter's VMM reports the same one. A VMM that
+lacks a field the host sends still boots and restores guests. It fails first
+at a checkpoint or a stop, and the VM loses every write since its last
+checkpoint. Raise both revisions together whenever the host starts sending a
+field, or relying on a behaviour, that the previous revision lacks.
+
 The Firecracker fork has to be rebuilt for mapping protocol version 10. Its
 seccomp policy lets the memory thread read frames with `recvmsg` and check a
 file it is handed mid-session with `fstat`, `fstatfs` and `fcntl(F_GETFL)`. It

@@ -141,6 +141,10 @@ type adversarialStarter struct {
 
 func (s *adversarialStarter) Boots() bool { return true }
 
+func (s *adversarialStarter) APIRevision(context.Context) (int, error) {
+	return vmmachine.APIRevision, nil
+}
+
 func (s *adversarialStarter) Start(ctx context.Context, launch *vmmachine.Launch) (vmmachine.VMM, error) {
 	return s.start(s, ctx, launch)
 }

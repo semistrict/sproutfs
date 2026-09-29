@@ -61,6 +61,8 @@ func (c *countedChild) Close() error {
 
 func (s *placedStarter) Boots() bool { return true }
 
+func (s *placedStarter) APIRevision(context.Context) (int, error) { return vmmachine.APIRevision, nil }
+
 func (s *placedStarter) Start(ctx context.Context, launch *vmmachine.Launch) (vmmachine.VMM, error) {
 	name := fmt.Sprintf("%s-%d", launch.VM(), len(s.launches))
 	host := filepath.Join(s.jail, "vms", name)

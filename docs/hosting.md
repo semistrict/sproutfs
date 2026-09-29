@@ -118,6 +118,10 @@ A start has three steps.
 The load stays with the host because the sessions attach during it, and a
 restored guest must not resume before every one of them is up.
 
+A Starter also reports the managed-memory API revision its VMM speaks. The host
+asks at start and refuses to start unless it is `vmmachine.APIRevision`. See
+[the Firecracker build](vm-memory.md#firecracker-build-and-process-lifecycle).
+
 The memory sessions admit only a connection from the PID the Starter reported.
 So a jailer must exec the VMM in the same process. It must not daemonize or
 fork into a new PID namespace.
