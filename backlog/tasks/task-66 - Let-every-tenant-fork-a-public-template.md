@@ -1,11 +1,11 @@
 ---
 id: TASK-66
 title: Let every tenant fork a public template
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-29 23:10'
-updated_date: '2026-09-30 00:02'
+updated_date: '2026-09-30 01:05'
 labels:
   - embedder
   - tenancy
@@ -42,7 +42,7 @@ Cost: tenants share physical pages, which opens a page-access timing channel. Th
 - [x] #4 In the isolated arena, public pages live in one read-only file mapped into every VMM, and no tenant's own page enters it
 - [x] #5 A child of a public template publishes its writes under its own tenant, and deleting a tenant leaves public objects in place
 - [x] #6 Stored bytes billed to a tenant count none of the public template's pages
-- [ ] #7 Adversarial tests: a VMM of one tenant reaches no page of another tenant through the public file
+- [x] #7 Adversarial tests: a VMM of one tenant reaches no page of another tenant through the public file
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -64,4 +64,12 @@ Public = a template of no tenant (control.Public); the template namespace is res
 Pager: every region of an isolated arena gets the public file as file 2 (fork files now start at 3). A page is loaded, or moved, into the file of its identity (loadFile/fileOf). The simulation found that move put a public page into the inheriting tenant's shared file; fixed, with TestAPublicPageMovesIntoThePublicFile failing before the fix.
 Evidence on the Mac: volume TestEveryTenantForksAPublicTemplate and TestOnlyATemplateOfNoTenantIsPublic; host TestEveryTenantCreatesFromAPublicTemplate and TestNoGuestRunsAsATemplate; vmmemory TestEveryTenantMapsAPublicPageFromThePublicFile, TestATenantsOwnPageNeverEntersThePublicFile, TestOnlyAPublicTemplatesPageCrossesTenants, TestAPublicPageMovesIntoThePublicFile; simtest TestTwoTenantsCreatingFromAPublicTemplateShareOnlyItsPages in both arena modes (World.Sharing now also fails on any non-public page in the public file); just check.
 AC 7 is open: the real-kernel hostile suite (vmmemory/hostile_linux_test.go, reach_linux_test.go) runs only on GCE. Every VMM there now holds the public file too; that suite has not been run.
+
+GCE 2026-09-30: the real-kernel hostile suite (7 tests) passes in both arena modes. Its first run failed one assertion that a hostile VMM holds files 0 and 1; it now also holds the public file (vmwire.PublicFile), which the test maps whole and finds no other VM's bytes in. Report: docs/measurements/gce-backlog-2026-09-30.md.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A template of no tenant is public: every tenant's VMs fork it and share its pages; configured images import once; the template namespace is reserved for imports; in the isolated arena every VMM holds one read-only public file with only public templates' pages. Verified by volume, host, pager and simulation tests on the Mac in both arena modes, and the real-kernel hostile suite on GCE.
+<!-- SECTION:FINAL_SUMMARY:END -->

@@ -471,8 +471,12 @@ func TestAHostileVMMReachesNoOtherVMsBytes(t *testing.T) {
 	fx.baseline(t)
 	r, c := fx.reach(t)
 	numbers := r.held()
-	if len(numbers) != 2 || numbers[0] != vmwire.PrivateFile || numbers[1] != vmwire.SharedFile {
-		t.Fatalf("the hostile VMM's session holds files %v, want its private file and its tenant's shared file", numbers)
+	// The public file is every session's, and holds only public templates'
+	// pages, of which this fixture has none, so mapping it whole below reads
+	// nothing of any other VM.
+	if len(numbers) != 3 || numbers[0] != vmwire.PrivateFile || numbers[1] != vmwire.SharedFile ||
+		numbers[2] != vmwire.PublicFile {
+		t.Fatalf("the hostile VMM's session holds files %v, want its private file, its tenant's shared file and the public file", numbers)
 	}
 
 	// 1. Every byte of every file it holds, through one mapping of each.

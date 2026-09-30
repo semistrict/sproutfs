@@ -128,10 +128,12 @@ const (
 
 // The files a session maps. File 0 is the region's private file, which the
 // client receives read-write. Every other file is read-only: file 1 is the
-// tenant's shared file, and fork files are 2 and up.
+// tenant's shared file, file 2 the public file of public templates' pages,
+// and fork files are 3 and up.
 const (
 	PrivateFile = 0
 	SharedFile  = 1
+	PublicFile  = 2
 )
 
 // FileWritable is the flag of a FILE frame whose descriptor is read-write.

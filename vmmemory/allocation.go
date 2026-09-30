@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/semistrict/sproutfs/control"
+	"github.com/semistrict/sproutfs/internal/vmwire"
 	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/resource"
 	"github.com/semistrict/sproutfs/vmmemory/internal/slots"
@@ -73,9 +74,9 @@ func (s fileSlot) plus(count int) fileSlot { return fileSlot{s.file, s.slot + co
 // pages of public templates. A fork point's file takes the next number free
 // when a child of it first maps from it.
 const (
-	privateFileNumber = 0
-	sharedFileNumber  = 1
-	publicFileNumber  = 2
+	privateFileNumber = vmwire.PrivateFile
+	sharedFileNumber  = vmwire.SharedFile
+	publicFileNumber  = vmwire.PublicFile
 )
 
 // privateFile is the file a private page of this memory region goes in: a

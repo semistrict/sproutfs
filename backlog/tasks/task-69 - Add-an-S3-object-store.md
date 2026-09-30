@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-29 23:10'
-updated_date: '2026-09-30 00:41'
+updated_date: '2026-09-30 01:05'
 labels:
   - embedder
   - platform
@@ -49,6 +49,8 @@ The conditional-delete conformance subtest is new, so it also covers the GCS ada
 AC 1 and 2 need a real bucket: the AWS SSO session here has expired, so TestS3ObjectStoreConformanceOnABucket has not run. Run: aws sso login, then SPROUTFS_TEST_S3_BUCKET=<bucket> go test ./platform/internal/real -run OnABucket.
 
 Ran TestS3ObjectStoreConformanceOnABucket against a new private bucket, sproutfs-conformance-181663857148 (us-east-1, account 181663857148, public access blocked). It found one difference from the emulator: S3 answers a PUT with If-Match on an absent key with 404, not 412; the adapter now reports ErrPrecondition for it. All 11 cases pass on the real bucket, and it is left empty. Rerun: AWS_REGION=us-east-1 SPROUTFS_TEST_S3_BUCKET=sproutfs-conformance-181663857148 go test ./platform/internal/real -run OnABucket
+
+The conformance bucket sproutfs-conformance-181663857148 was deleted on 2026-09-30 after the run. To rerun, create a private bucket and set SPROUTFS_TEST_S3_BUCKET to it.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

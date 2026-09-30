@@ -4,7 +4,7 @@ title: Profile the isolated arena's extra CPU in a 4 KiB capture and fork
 status: To Do
 assignee: []
 created_date: '2026-09-26 22:14'
-updated_date: '2026-09-28 00:31'
+updated_date: '2026-09-30 01:05'
 labels:
   - performance
   - deferred
@@ -29,4 +29,6 @@ In the GCE worst-case run of 2026-09-26, a 4 KiB capture in isolated mode took t
 
 <!-- SECTION:NOTES:BEGIN -->
 Deferred by the owner on 2026-09-27.
+
+GCE 2026-09-30 fan-out at 4 KiB: a fork child's fault costs about 60% more in the isolated arena (1.45-1.57 ms mean) than in the shared one (0.91-0.94 ms). docs/measurements/gce-backlog-2026-09-30.md.
 <!-- SECTION:NOTES:END -->
