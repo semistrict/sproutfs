@@ -164,7 +164,14 @@ func (s *S3ObjectStore) Put(ctx context.Context, request platform.PutRequest) (p
 	}
 	output, err := s.client.PutObject(ctx, input)
 	if err != nil {
-		return platform.PutResult{}, normalizeS3Error(err)
+		err = normalizeS3Error(err)
+		// S3 answers a replacement of an object that is not there with 404,
+		// not 412. The validator names no live object, so its condition
+		// cannot hold, as it cannot in every other store.
+		if input.IfMatch != nil && errors.Is(err, platform.ErrNotFound) {
+			err = errors.Join(platform.ErrPrecondition, err)
+		}
+		return platform.PutResult{}, err
 	}
 	return platform.PutResult{Metadata: platform.ObjectMetadata{
 		Key:        request.Key,
