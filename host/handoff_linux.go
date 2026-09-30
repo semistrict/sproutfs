@@ -60,6 +60,16 @@ func apiCheckpoints(c CheckpointActivity) hostapi.Checkpoints {
 		UploadedBytes: c.UploadedBytes, Pause: hostapi.LatencyOf(c.Pause), Upload: hostapi.LatencyOf(c.Upload)}
 }
 
+// apiLifecycle is the wire form of what this host did with its VMs.
+func apiLifecycle(a Activity) hostapi.Lifecycle {
+	outcomes := func(o Outcomes) hostapi.Outcomes {
+		return hostapi.Outcomes{Succeeded: o.Succeeded, Failed: o.Failed}
+	}
+	return hostapi.Lifecycle{Migrations: outcomes(a.Migrations), Forks: outcomes(a.Forks),
+		Receives: outcomes(a.Receives), MigrationPause: hostapi.LatencyOf(a.MigrationPause),
+		ForkPause: hostapi.LatencyOf(a.ForkPause), Deaths: a.Deaths, Fenced: a.Fenced, Stopped: a.Stopped}
+}
+
 // apiStore is the wire form of what this host's object store has served.
 func apiStore(traffic platform.ObjectTraffic) hostapi.Store {
 	count := func(c platform.ObjectCount) hostapi.StoreCount {

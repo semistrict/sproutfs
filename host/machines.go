@@ -230,6 +230,7 @@ func (h *Host) awaitingExit(ctx context.Context, cancel context.CancelFunc, vmID
 	if !h.forget(vmID, entry) || !h.claimFence(vmID) {
 		return
 	}
+	h.activity.deaths.Add(1)
 	h.discard(ctx, vmID, entry, "host: gave up a VM whose VMM process ended", err)
 }
 

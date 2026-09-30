@@ -13,7 +13,34 @@ import (
 // here is read by anything that decides what the host does.
 type activity struct {
 	checkpoints checkpointActivity
+	// migrations, forks and receives are the handovers this host began, as
+	// source or destination, by outcome. The pause of a received VM is what its
+	// guest paid from the source's pause to this host's resume.
+	migrations, forks, receives outcomes
+	migrationPause, forkPause   latency.Histogram
+	// deaths, fenced and stopped are the VMs this host gave up: their VMM
+	// ended on its own, a later writer took their record, or a pager ran out
+	// of a bound and had this host stop them.
+	deaths, fenced, stopped atomic.Uint64
 }
+
+// outcomes counts one kind of operation by how it ended.
+type outcomes struct{ succeeded, failed atomic.Uint64 }
+
+func (o *outcomes) ended(err error) {
+	if err == nil {
+		o.succeeded.Add(1)
+	} else {
+		o.failed.Add(1)
+	}
+}
+
+func (o *outcomes) snapshot() Outcomes {
+	return Outcomes{Succeeded: o.succeeded.Load(), Failed: o.failed.Load()}
+}
+
+// Outcomes is how many of one kind of operation succeeded and failed.
+type Outcomes struct{ Succeeded, Failed uint64 }
 
 // checkpointActivity is what the interval loop's checkpoints did.
 type checkpointActivity struct {
@@ -25,6 +52,16 @@ type checkpointActivity struct {
 // Activity is a snapshot of what this host has done since it started.
 type Activity struct {
 	Checkpoints CheckpointActivity
+	// Migrations and Forks are the handovers this host began as a source, and
+	// Receives the ones it took in as a destination. MigrationPause and
+	// ForkPause are what each received guest paid, from the source's pause
+	// to its resume here.
+	Migrations, Forks, Receives Outcomes
+	MigrationPause, ForkPause   latency.Snapshot
+	// Deaths, Fenced and Stopped are the VMs this host gave up: their VMM
+	// ended on its own, a later writer took their record, or a pager had this
+	// host stop them for a bound.
+	Deaths, Fenced, Stopped uint64
 }
 
 // CheckpointActivity is what the interval checkpoints did: every attempt, and
@@ -41,12 +78,17 @@ type CheckpointActivity struct {
 // Activity reports what this host has done since it started.
 func (h *Host) Activity() Activity {
 	c := &h.activity.checkpoints
+	a := &h.activity
 	return Activity{Checkpoints: CheckpointActivity{
 		Attempts: c.attempts.Load(), Published: c.published.Load(),
 		CaptureFailed: c.captureFailed.Load(), PublishFailed: c.publishFailed.Load(),
 		Fenced: c.fenced.Load(), UploadedBytes: c.uploadedBytes.Load(),
 		Pause: c.pause.Snapshot(), Upload: c.upload.Snapshot(),
-	}}
+	},
+		Migrations: a.migrations.snapshot(), Forks: a.forks.snapshot(), Receives: a.receives.snapshot(),
+		MigrationPause: a.migrationPause.Snapshot(), ForkPause: a.forkPause.Snapshot(),
+		Deaths: a.deaths.Load(), Fenced: a.fenced.Load(), Stopped: a.stopped.Load(),
+	}
 }
 
 // captured records an interval checkpoint whose pause has ended, well or not.

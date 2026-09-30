@@ -139,6 +139,13 @@ func (hold *forkHold) owed() int {
 // is released, and only then is the parent checkpointed again.
 func (h *Host) Fork(ctx context.Context, parent string, children []string,
 	destination platform.Address) ([]vmmigrate.Handoff, error) {
+	handoffs, err := h.fork(ctx, parent, children, destination)
+	h.activity.forks.ended(err)
+	return handoffs, err
+}
+
+func (h *Host) fork(ctx context.Context, parent string, children []string,
+	destination platform.Address) ([]vmmigrate.Handoff, error) {
 	if len(children) == 0 {
 		return nil, fmt.Errorf("%w: a fork of %s names no child", ErrInvalidConfig, parent)
 	}

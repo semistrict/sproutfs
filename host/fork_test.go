@@ -159,6 +159,15 @@ func TestHostForksEveryChildFromOnePause(t *testing.T) {
 		}
 		h.hosts[0].RemoveMachine(child)
 	}
+	// One fork took every child, and the one refused while the point held the
+	// parent failed. Each child taken in here is a receive whose guest paid a
+	// fork's pause.
+	a := h.hosts[0].Activity()
+	if a.Forks != (host.Outcomes{Succeeded: 1, Failed: 1}) || a.Receives.Succeeded != uint64(len(children)) ||
+		a.ForkPause.Count != uint64(len(children)) {
+		t.Fatalf("the host counts forks %+v, receives %+v and %d fork pauses, want one fork of each outcome and %d receives",
+			a.Forks, a.Receives, a.ForkPause.Count, len(children))
+	}
 }
 
 // A cross-host fork hold is the destination's, and the orchestrator releasing

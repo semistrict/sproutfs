@@ -345,6 +345,34 @@ type Checkpoints struct {
 	Upload        Latency `json:"upload"`
 }
 
+// Lifecycle is what a host did with its VMs since it started. Migrations and
+// Forks are the handovers it began as a source, and Receives the ones it took
+// in as a destination. MigrationPause and ForkPause are what each guest it
+// received paid, from the source's pause to its resume here. Deaths, Fenced
+// and Stopped are the VMs it gave up: their VMM ended on its own, a later
+// writer took their record, or a pager ran out of a bound and had the host
+// stop them.
+//
+// A drain migrates every VM just before its host exits, so the source's
+// Migrations of a drain are never scraped: the destinations' Receives are
+// where a drain is counted.
+type Lifecycle struct {
+	Migrations     Outcomes `json:"migrations"`
+	Forks          Outcomes `json:"forks"`
+	Receives       Outcomes `json:"receives"`
+	MigrationPause Latency  `json:"migration_pause"`
+	ForkPause      Latency  `json:"fork_pause"`
+	Deaths         uint64   `json:"deaths"`
+	Fenced         uint64   `json:"fenced"`
+	Stopped        uint64   `json:"stopped"`
+}
+
+// Outcomes is how many of one kind of operation succeeded and failed.
+type Outcomes struct {
+	Succeeded uint64 `json:"succeeded"`
+	Failed    uint64 `json:"failed"`
+}
+
 // Build is what a host is running: its binary's version, the revision of the
 // managed-memory API it drives its VMM with, and the arena mode of its pagers.
 type Build struct {
@@ -496,8 +524,9 @@ type Status struct {
 	// Build is what this host is running.
 	Build Build `json:"build"`
 	// Checkpoints is what this host's interval checkpoints did since it
-	// started.
+	// started, and Lifecycle what else it did with its VMs.
 	Checkpoints Checkpoints `json:"checkpoints"`
+	Lifecycle   Lifecycle   `json:"lifecycle"`
 	// PageAddress is where this host serves the memory of a VM it has handed
 	// over, which is what another host's handoff names as its source.
 	PageAddress string `json:"page_address"`

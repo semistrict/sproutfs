@@ -110,3 +110,36 @@ func TestMetricsExposeCheckpointOutcomes(t *testing.T) {
 		}
 	}
 }
+
+// What a host did with its VMs: handovers by outcome, what each received
+// guest paid, and the VMs it gave up, by why.
+func TestMetricsExposeTheLifecycle(t *testing.T) {
+	body := hostapi.Metrics(hostapi.Status{Lifecycle: hostapi.Lifecycle{
+		Migrations: hostapi.Outcomes{Succeeded: 2, Failed: 1}, Forks: hostapi.Outcomes{Succeeded: 3},
+		Receives:  hostapi.Outcomes{Succeeded: 4, Failed: 2},
+		ForkPause: hostapi.Latency{Count: 1, TotalNS: 5_000_000, Buckets: bucketAt(13)},
+		Deaths:    1, Fenced: 2, Stopped: 3}})
+	for _, want := range []string{
+		`sproutfs_migrations_total{outcome="succeeded"} 2`,
+		`sproutfs_migrations_total{outcome="failed"} 1`,
+		`sproutfs_forks_total{outcome="succeeded"} 3`,
+		`sproutfs_receives_total{outcome="failed"} 2`,
+		`sproutfs_received_pause_seconds_count{kind="migration"} 0`,
+		`sproutfs_received_pause_seconds_bucket{kind="fork",le="0.008192"} 1`,
+		`sproutfs_received_pause_seconds_sum{kind="fork"} 0.005`,
+		`sproutfs_vms_given_up_total{reason="vmm_ended"} 1`,
+		`sproutfs_vms_given_up_total{reason="fenced"} 2`,
+		`sproutfs_vms_given_up_total{reason="stopped_for_a_bound"} 3`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("the exposition has no %q in it:\n%s", want, body)
+		}
+	}
+}
+
+// bucketAt is a histogram's buckets with one observation in bucket i.
+func bucketAt(i int) []uint64 {
+	buckets := make([]uint64, hostapi.LatencyBuckets)
+	buckets[i] = 1
+	return buckets
+}

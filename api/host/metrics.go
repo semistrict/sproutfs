@@ -203,6 +203,32 @@ func Metrics(status Status) string {
 		"# TYPE sproutfs_checkpoint_upload_seconds histogram\n")
 	histogram(&out, "sproutfs_checkpoint_upload_seconds", "", status.Checkpoints.Upload)
 
+	// What the host did with its VMs. A drain's migrations happen just before
+	// its host exits and are never scraped there: its destinations' receives
+	// count them.
+	for _, handovers := range []struct {
+		name, help string
+		outcomes   Outcomes
+	}{
+		{"sproutfs_migrations_total", "Migrations this host began as the source, by outcome.", status.Lifecycle.Migrations},
+		{"sproutfs_forks_total", "Forks this host took of a VM it runs, by outcome.", status.Lifecycle.Forks},
+		{"sproutfs_receives_total", "Migrated and forked VMs this host took in, by outcome.", status.Lifecycle.Receives},
+	} {
+		fmt.Fprintf(&out, "# HELP %s %s\n# TYPE %s counter\n", handovers.name, handovers.help, handovers.name)
+		fmt.Fprintf(&out, "%s{outcome=\"succeeded\"} %d\n%s{outcome=\"failed\"} %d\n", handovers.name,
+			handovers.outcomes.Succeeded, handovers.name, handovers.outcomes.Failed)
+	}
+	fmt.Fprintf(&out, "# HELP sproutfs_received_pause_seconds What each guest this host took in paid, from the source's pause to its resume here.\n"+
+		"# TYPE sproutfs_received_pause_seconds histogram\n")
+	histogram(&out, "sproutfs_received_pause_seconds", `kind="migration"`, status.Lifecycle.MigrationPause)
+	histogram(&out, "sproutfs_received_pause_seconds", `kind="fork"`, status.Lifecycle.ForkPause)
+	fmt.Fprintf(&out, "# HELP sproutfs_vms_given_up_total VMs this host gave up, by why.\n"+
+		"# TYPE sproutfs_vms_given_up_total counter\n"+
+		"sproutfs_vms_given_up_total{reason=\"vmm_ended\"} %d\n"+
+		"sproutfs_vms_given_up_total{reason=\"fenced\"} %d\n"+
+		"sproutfs_vms_given_up_total{reason=\"stopped_for_a_bound\"} %d\n",
+		status.Lifecycle.Deaths, status.Lifecycle.Fenced, status.Lifecycle.Stopped)
+
 	write("sproutfs_pages_requests_total", "counter",
 		"Page requests this host's migration page server has answered.", status.Pages.Requests)
 	write("sproutfs_pages_served_total", "counter", "Pages served to a peer.", status.Pages.Served)

@@ -77,4 +77,7 @@ func TestStoppingAStalledVMGivesUpTheForkPointsTakenOnIt(t *testing.T) {
 		t.Fatalf("the host gave %s up a second time", again)
 	case <-time.After(250 * time.Millisecond):
 	}
+	if a := h.hosts[0].Activity(); a.Stopped != 1 || a.Deaths != 0 {
+		t.Fatalf("the host counts %d VMs stopped for a bound and %d deaths, want the one stop and no death", a.Stopped, a.Deaths)
+	}
 }

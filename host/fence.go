@@ -77,6 +77,7 @@ func (h *Host) fence(ctx context.Context, vmID string, cause error) {
 	if !h.claimFence(vmID) {
 		return
 	}
+	h.activity.fenced.Add(1)
 	h.discard(ctx, vmID, entry, fencedMessage, cause)
 }
 
@@ -89,6 +90,7 @@ func (h *Host) fenced(ctx context.Context, vmID string, entry *registration, cau
 	if !h.claimFence(vmID) {
 		return
 	}
+	h.activity.fenced.Add(1)
 	h.discard(ctx, vmID, entry, fencedMessage, cause)
 }
 

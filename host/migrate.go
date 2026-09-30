@@ -105,6 +105,12 @@ func (h *Host) HoldTimeout() time.Duration {
 //
 // A failure before the handoff leaves the VM running here.
 func (h *Host) Migrate(ctx context.Context, vmID string, destination platform.Address) (vmmigrate.Handoff, error) {
+	handoff, err := h.migrate(ctx, vmID, destination)
+	h.activity.migrations.ended(err)
+	return handoff, err
+}
+
+func (h *Host) migrate(ctx context.Context, vmID string, destination platform.Address) (vmmigrate.Handoff, error) {
 	if h.pages == nil {
 		return vmmigrate.Handoff{}, fmt.Errorf("%w: no migration endpoint is configured", ErrNotMigratable)
 	}
@@ -259,6 +265,12 @@ func confirmHandoff(ctx context.Context, vm *volume.VM) error {
 // released without publishing, and the supervisor told to forget it — so what a
 // recovery opens is the checkpoint the control record already selects.
 func (h *Host) Receive(ctx context.Context, handoff vmmigrate.Handoff) (*vmmigrate.Received, error) {
+	received, err := h.receive(ctx, handoff)
+	h.activity.receives.ended(err)
+	return received, err
+}
+
+func (h *Host) receive(ctx context.Context, handoff vmmigrate.Handoff) (*vmmigrate.Received, error) {
 	// The fork point is this host's own for a child of a fork it took: such a child
 	// is bound to the pages rather than to a peer, so it needs no page server
 	// of its own and dials none.
@@ -368,6 +380,11 @@ func (h *Host) Receive(ctx context.Context, handoff vmmigrate.Handoff) (*vmmigra
 		"stream_p99_seconds", seconds(post.Latency.Stream.QuantileUpperNS(0.99)),
 		"pause_seconds", post.ResumedAt.Sub(post.PausedAt).Seconds(),
 		"seconds", h.clock.Since(post.ResumedAt).Seconds())
+	pause := &h.activity.migrationPause
+	if handoff.IsFork() {
+		pause = &h.activity.forkPause
+	}
+	pause.Observe(post.ResumedAt.Sub(post.PausedAt))
 	if handoff.IsFork() {
 		// The child runs from here, and its root is published behind it rather
 		// than before this returns: see rootBehind.

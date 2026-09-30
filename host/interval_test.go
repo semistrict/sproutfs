@@ -353,6 +353,9 @@ func TestAFencedHostClosesTheVMItCanNoLongerPublish(t *testing.T) {
 			t.Fatal("the fenced host still holds the VM's volumes")
 		}
 	}
+	if a := h.hosts[0].Activity(); a.Fenced != 1 || a.Deaths != 0 {
+		t.Fatalf("the host counts %d fenced VMs and %d deaths, want the one fenced and none", a.Fenced, a.Deaths)
+	}
 }
 
 // dyingMachine is a VMM process a test can kill: it counts the captures its
@@ -429,6 +432,9 @@ func TestAHostGivesUpAVMWhoseVMMProcessDied(t *testing.T) {
 		if open.ID() == "vm-1" {
 			t.Fatal("the host still holds the volumes of a VM whose VMM process died")
 		}
+	}
+	if a := h.hosts[0].Activity(); a.Deaths != 1 || a.Fenced != 0 {
+		t.Fatalf("the host counts %d deaths and %d fenced VMs, want the one death and none", a.Deaths, a.Fenced)
 	}
 	// The checkpoint loop is what would go on failing against a dead VMM, so it
 	// stops with the machine: no capture is driven after the process ended.

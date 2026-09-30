@@ -359,12 +359,13 @@ func (s *supervisor) Status(ctx context.Context) (hostapi.Status, error) {
 		return hostapi.Status{}, err
 	}
 	resources := status.Resources
+	activity := s.host.Activity()
 	report := hostapi.Status{
 		Host: s.config.PodName, PageAddress: string(s.pageAddress()),
 		Build: hostapi.Build{Version: s.config.Version, APIRevision: vmmachine.APIRevision,
 			Arena: s.config.Arena.String()},
-		Checkpoints: apiCheckpoints(s.host.Activity().Checkpoints),
-		Running:     s.host.Machines(), Serving: status.Serving,
+		Checkpoints: apiCheckpoints(activity.Checkpoints), Lifecycle: apiLifecycle(activity),
+		Running: s.host.Machines(), Serving: status.Serving,
 		Outstanding: status.Outstanding, Receiving: status.Receiving, VMs: records,
 		Templates: s.templateReport(),
 		Pager: hostapi.Pager{RAM: ram, PMEM: pmem, Ephemeral: ephemeral,

@@ -346,6 +346,7 @@ func (h *Host) stopStalled(memoryRegion *vmmemory.MemoryRegion, cause error) boo
 	h.machines.mu.Lock()
 	h.machines.stopping[entry] = vmID
 	h.machines.mu.Unlock()
+	h.activity.stopped.Add(1)
 	go h.stopped(vmID, entry, cause)
 	return true
 }
