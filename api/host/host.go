@@ -15,6 +15,7 @@ import (
 	"github.com/semistrict/sproutfs/api/guest"
 	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/internal/jsonhttp"
+	"github.com/semistrict/sproutfs/internal/latency"
 )
 
 // StoreCount is what one object-store operation did: every call made, the ones
@@ -280,6 +281,59 @@ type PagerKind struct {
 	MovedPages uint64 `json:"moved_pages"`
 	ForkCopies uint64 `json:"fork_copies"`
 	Tampered   uint64 `json:"tampered"`
+	// DirtyWaits counts the stores that waited for the dirty budget,
+	// CheckpointRequests the checkpoints those waits asked for out of the
+	// interval's turn, and DirtyStalls the stores no checkpoint could admit,
+	// whose VM was stopped. WindowWaits and WindowStalls are the same for the
+	// loss window. These are why a guest stops making progress.
+	DirtyWaits         uint64 `json:"dirty_waits"`
+	CheckpointRequests uint64 `json:"checkpoint_requests"`
+	DirtyStalls        uint64 `json:"dirty_stalls"`
+	WindowWaits        uint64 `json:"window_waits"`
+	WindowStalls       uint64 `json:"window_stalls"`
+	// RefusedMappings counts the faults a VMM refused a mapping command for,
+	// which is a VMM out of mapping budget. RepeatedFaults counts the faults a
+	// VMM took again on pages the pager had already mapped for it, and
+	// PacedFaults those that waited for that VMM's budget of them: a VMM
+	// faulting in a loop.
+	RefusedMappings uint64 `json:"refused_mappings"`
+	RepeatedFaults  uint64 `json:"repeated_faults"`
+	PacedFaults     uint64 `json:"paced_faults"`
+	// Fault is how long each fault took from the kernel's report to the
+	// guest resuming, Load a read of pages from the backing, and Seal a
+	// checkpoint's write-protection of one memory region.
+	Fault Latency `json:"fault"`
+	Load  Latency `json:"load"`
+	Seal  Latency `json:"seal"`
+}
+
+// Latency is one latency histogram: how many observations fell in each bucket
+// of a fixed log scale (LatencyBucketUpperNS), and their sum. The scale is the
+// same everywhere, so histograms of different hosts and runs add up.
+type Latency struct {
+	Count   uint64   `json:"count"`
+	TotalNS uint64   `json:"total_ns"`
+	Buckets []uint64 `json:"buckets,omitempty"`
+}
+
+// LatencyBuckets is how many buckets a Latency has.
+const LatencyBuckets = latency.BucketCount
+
+// LatencyBucketUpperNS is the upper bound of bucket i in nanoseconds. The last
+// bucket has none: it holds everything from that value up.
+func LatencyBucketUpperNS(i int) uint64 { return latency.BucketUpperNS(i) }
+
+// LatencyOf is the wire form of one histogram's snapshot.
+func LatencyOf(snapshot latency.Snapshot) Latency {
+	return Latency{Count: snapshot.Count, TotalNS: snapshot.TotalNS, Buckets: snapshot.Buckets[:]}
+}
+
+// Build is what a host is running: its binary's version, the revision of the
+// managed-memory API it drives its VMM with, and the arena mode of its pagers.
+type Build struct {
+	Version     string `json:"version"`
+	APIRevision int    `json:"api_revision"`
+	Arena       string `json:"arena"`
 }
 
 // ArenaBytes is what this pager's arena holds and ResidentBytes what is taken of
@@ -422,6 +476,8 @@ type ImportTemplateResult struct {
 // Status is one host's whole report.
 type Status struct {
 	Host string `json:"host"`
+	// Build is what this host is running.
+	Build Build `json:"build"`
 	// PageAddress is where this host serves the memory of a VM it has handed
 	// over, which is what another host's handoff names as its source.
 	PageAddress string `json:"page_address"`

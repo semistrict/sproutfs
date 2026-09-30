@@ -152,6 +152,7 @@ func loadConfig(lookup func(string) string) (config, error) {
 		Store:   store,
 		APIPort: port("SPROUTFS_API_PORT", 8080),
 		SupervisorConfig: host.SupervisorConfig{
+			Version:     version,
 			PagePort:    port("SPROUTFS_PAGE_SERVER_PORT", 8081),
 			PodIP:       required("SPROUTFS_POD_IP"),
 			PodName:     required("SPROUTFS_POD_NAME"),

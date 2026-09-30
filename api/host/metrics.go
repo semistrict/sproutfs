@@ -2,6 +2,7 @@ package host
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -22,6 +23,11 @@ func Metrics(status Status) string {
 	write := func(name, kind, help string, value any) {
 		fmt.Fprintf(&out, "# HELP %s %s\n# TYPE %s %s\n%s %v\n", name, help, name, kind, name, value)
 	}
+	// What this host runs, as labels on a constant, which is how a dashboard
+	// tells hosts apart during a rollout.
+	fmt.Fprintf(&out, "# HELP sproutfs_build_info What this host is running.\n# TYPE sproutfs_build_info gauge\n"+
+		"sproutfs_build_info{version=%q,api_revision=\"%d\",arena=%q} 1\n",
+		status.Build.Version, status.Build.APIRevision, status.Build.Arena)
 	write("sproutfs_vms_running", "gauge",
 		"VMs this host runs.", len(status.Running))
 	write("sproutfs_vms_serving", "gauge",
@@ -132,6 +138,47 @@ func Metrics(status Status) string {
 		"Moves whose copy did not hold the bytes the page's upload read.",
 		func(p PagerKind) any { return p.Tampered })
 
+	// Why a guest stops making progress: a store held back for the dirty
+	// budget or the loss window, and a VMM out of mapping budget or faulting
+	// in a loop.
+	byKind("sproutfs_pager_dirty_waits_total", "counter", "Stores that waited for the dirty budget.",
+		func(p PagerKind) any { return p.DirtyWaits })
+	byKind("sproutfs_pager_checkpoint_requests_total", "counter",
+		"Checkpoints a store waiting for the dirty budget asked for out of the interval's turn.",
+		func(p PagerKind) any { return p.CheckpointRequests })
+	byKind("sproutfs_pager_dirty_stalls_total", "counter",
+		"Stores no checkpoint could admit, whose VM was stopped.",
+		func(p PagerKind) any { return p.DirtyStalls })
+	byKind("sproutfs_pager_window_waits_total", "counter",
+		"Stores that waited because their VM had held a write no checkpoint covers for longer than the loss window.",
+		func(p PagerKind) any { return p.WindowWaits })
+	byKind("sproutfs_pager_window_stalls_total", "counter",
+		"Stores past the loss window no checkpoint was ever going to cover, whose VM was stopped.",
+		func(p PagerKind) any { return p.WindowStalls })
+	byKind("sproutfs_pager_refused_mappings_total", "counter",
+		"Faults a VMM refused a mapping command for, which is a VMM out of mapping budget.",
+		func(p PagerKind) any { return p.RefusedMappings })
+	byKind("sproutfs_pager_repeated_faults_total", "counter",
+		"Faults a VMM took again on pages already mapped for it.",
+		func(p PagerKind) any { return p.RepeatedFaults })
+	byKind("sproutfs_pager_paced_faults_total", "counter",
+		"Repeated faults that waited for their VMM's budget of them.",
+		func(p PagerKind) any { return p.PacedFaults })
+	histogramByKind := func(name, help string, value func(PagerKind) Latency) {
+		fmt.Fprintf(&out, "# HELP %s %s\n# TYPE %s histogram\n", name, help, name)
+		for _, kind := range kinds {
+			histogram(&out, name, fmt.Sprintf("kind=%q", kind.name), value(kind.pager))
+		}
+	}
+	histogramByKind("sproutfs_pager_fault_seconds",
+		"How long each fault took, from the kernel's report to the guest resuming.",
+		func(p PagerKind) Latency { return p.Fault })
+	histogramByKind("sproutfs_pager_load_seconds", "How long each read of pages from the backing took.",
+		func(p PagerKind) Latency { return p.Load })
+	histogramByKind("sproutfs_pager_seal_seconds",
+		"How long each checkpoint's write-protection of one memory region took.",
+		func(p PagerKind) Latency { return p.Seal })
+
 	write("sproutfs_pages_requests_total", "counter",
 		"Page requests this host's migration page server has answered.", status.Pages.Requests)
 	write("sproutfs_pages_served_total", "counter", "Pages served to a peer.", status.Pages.Served)
@@ -184,4 +231,39 @@ func lossWindow(vms []VM) (widest time.Duration, waiting int) {
 		}
 	}
 	return widest, waiting
+}
+
+// histogram writes one Prometheus histogram series set: the cumulative count
+// at each bucket's upper bound, in seconds, then +Inf, the sum and the count.
+// labels are the series' own labels, empty for none.
+func histogram(out *strings.Builder, name, labels string, l Latency) {
+	with := func(label string) string {
+		if labels == "" {
+			return "{" + label + "}"
+		}
+		return "{" + labels + "," + label + "}"
+	}
+	plain := ""
+	if labels != "" {
+		plain = "{" + labels + "}"
+	}
+	var cumulative uint64
+	for i := range LatencyBuckets - 1 {
+		if i < len(l.Buckets) {
+			cumulative += l.Buckets[i]
+		}
+		upper := LatencyBucketUpperNS(i)
+		if i == 0 {
+			upper++ // the first bucket is every observation under a microsecond
+		}
+		fmt.Fprintf(out, "%s_bucket%s %d\n", name, with(fmt.Sprintf("le=%q", seconds(upper))), cumulative)
+	}
+	fmt.Fprintf(out, "%s_bucket%s %d\n", name, with(`le="+Inf"`), l.Count)
+	fmt.Fprintf(out, "%s_sum%s %s\n", name, plain, seconds(l.TotalNS))
+	fmt.Fprintf(out, "%s_count%s %d\n", name, plain, l.Count)
+}
+
+// seconds is a nanosecond count as Prometheus writes a duration.
+func seconds(ns uint64) string {
+	return strconv.FormatFloat(float64(ns)/1e9, 'g', -1, 64)
 }

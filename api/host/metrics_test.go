@@ -30,3 +30,57 @@ func TestMetricsAreWhatAnEmbedderServes(t *testing.T) {
 		}
 	}
 }
+
+// Why a guest stopped making progress, and how long faults take, per pager.
+// A histogram is cumulative, in seconds, and ends with +Inf, its sum and its
+// count, which is what a Prometheus histogram_quantile reads.
+func TestMetricsExposeStallsAndFaultLatency(t *testing.T) {
+	buckets := make([]uint64, hostapi.LatencyBuckets)
+	buckets[0], buckets[3], buckets[hostapi.LatencyBuckets-1] = 2, 1, 1
+	body := hostapi.Metrics(hostapi.Status{
+		Build: hostapi.Build{Version: "v1.2.3", APIRevision: 1, Arena: "isolated"},
+		Pager: hostapi.Pager{RAM: hostapi.PagerKind{DirtyWaits: 4, CheckpointRequests: 3, DirtyStalls: 1,
+			WindowWaits: 6, WindowStalls: 2, RefusedMappings: 5, RepeatedFaults: 9, PacedFaults: 7,
+			Fault: hostapi.Latency{Count: 4, TotalNS: 9_000_000_000, Buckets: buckets}}},
+	})
+	for _, want := range []string{
+		`sproutfs_build_info{version="v1.2.3",api_revision="1",arena="isolated"} 1`,
+		`sproutfs_pager_dirty_waits_total{kind="ram"} 4`,
+		`sproutfs_pager_checkpoint_requests_total{kind="ram"} 3`,
+		`sproutfs_pager_dirty_stalls_total{kind="ram"} 1`,
+		`sproutfs_pager_window_waits_total{kind="ram"} 6`,
+		`sproutfs_pager_window_stalls_total{kind="ram"} 2`,
+		`sproutfs_pager_refused_mappings_total{kind="ram"} 5`,
+		`sproutfs_pager_repeated_faults_total{kind="ram"} 9`,
+		`sproutfs_pager_paced_faults_total{kind="ram"} 7`,
+		"# TYPE sproutfs_pager_fault_seconds histogram",
+		`sproutfs_pager_fault_seconds_bucket{kind="ram",le="1e-06"} 2`,
+		`sproutfs_pager_fault_seconds_bucket{kind="ram",le="4e-06"} 2`,
+		`sproutfs_pager_fault_seconds_bucket{kind="ram",le="8e-06"} 3`,
+		`sproutfs_pager_fault_seconds_bucket{kind="ram",le="4.194304"} 3`,
+		`sproutfs_pager_fault_seconds_bucket{kind="ram",le="+Inf"} 4`,
+		`sproutfs_pager_fault_seconds_sum{kind="ram"} 9`,
+		`sproutfs_pager_fault_seconds_count{kind="ram"} 4`,
+		`sproutfs_pager_fault_seconds_count{kind="pmem"} 0`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("the exposition has no %q in it:\n%s", want, body)
+		}
+	}
+}
+
+// No series names a VM or a tenant: a host runs VMs of many tenants, and a
+// label per VM would put their identities into the scraper's label space and
+// a series per VM into its storage.
+func TestMetricsNameNoVMOrTenant(t *testing.T) {
+	body := hostapi.Metrics(hostapi.Status{
+		Running: []string{"acme/vm-secret"}, Serving: []string{"zeta/vm-moving"},
+		Outstanding: map[string]int{"zeta/vm-moving": 3}, Receiving: []string{"zeta/vm-coming"},
+		VMs: []hostapi.VM{{ID: "acme/vm-secret", LossWindow: time.Minute, CheckpointInterval: time.Second}},
+	})
+	for _, identity := range []string{"acme", "zeta", "vm-secret", "vm-moving", "vm-coming"} {
+		if strings.Contains(body, identity) {
+			t.Fatalf("the exposition names %q:\n%s", identity, body)
+		}
+	}
+}

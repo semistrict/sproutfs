@@ -361,6 +361,8 @@ func (s *supervisor) Status(ctx context.Context) (hostapi.Status, error) {
 	resources := status.Resources
 	report := hostapi.Status{
 		Host: s.config.PodName, PageAddress: string(s.pageAddress()),
+		Build: hostapi.Build{Version: s.config.Version, APIRevision: vmmachine.APIRevision,
+			Arena: s.config.Arena.String()},
 		Running: s.host.Machines(), Serving: status.Serving,
 		Outstanding: status.Outstanding, Receiving: status.Receiving, VMs: records,
 		Templates: s.templateReport(),
@@ -500,6 +502,12 @@ func (s *supervisor) pagerReport(ctx context.Context, slot pagerSlot, free int) 
 		GivenBackPages: stats.GivenBackPages,
 		Revocations:    stats.Revocations, RevokedPages: stats.RevokedPages,
 		MovedPages: stats.MovedPages, ForkCopies: stats.ForkCopies, Tampered: stats.Tampered,
+		DirtyWaits: stats.DirtyWaits, CheckpointRequests: stats.CheckpointRequests,
+		DirtyStalls: stats.DirtyStalls, WindowWaits: stats.WindowWaits, WindowStalls: stats.WindowStalls,
+		RefusedMappings: stats.RefusedMappings, RepeatedFaults: stats.RepeatedFaults,
+		PacedFaults: stats.PacedFaults,
+		Fault:       hostapi.LatencyOf(stats.Fault), Load: hostapi.LatencyOf(stats.Load),
+		Seal: hostapi.LatencyOf(stats.Seal),
 	}, nil
 }
 

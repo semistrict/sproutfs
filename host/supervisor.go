@@ -150,6 +150,9 @@ var (
 // remembered between process lifetimes: the object store holds every VM's
 // authority and its data.
 type SupervisorConfig struct {
+	// Version is what the binary running this host says it is, which Status
+	// reports.
+	Version string
 	// ObjectStore is the deployment's object namespace: every VM's authority
 	// and all of its data. Network carries migration pages between hosts, Disk
 	// is the node disk the pager spills to, and Disks opens the local storage
