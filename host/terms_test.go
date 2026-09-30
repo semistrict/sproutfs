@@ -73,11 +73,19 @@ func TestAVMIsCheckpointedOnAnIntervalOfItsOwn(t *testing.T) {
 			t.Fatalf("a VM asking for %s is checkpointed every %s, want %s", clamped.asked, got, clamped.want)
 		}
 	}
-	// Two minutes and an eighth either side of jitter is well inside three.
-	clock.Advance(3 * time.Minute)
-	tight.awaitTurns(t, 1)
+	// Each loop arms its timer on its own goroutine, so the clock moves a
+	// second at a time until the VM on two minutes has its turn. Two minutes
+	// and an eighth of jitter is well inside five, and the host's hour less an
+	// eighth is well past it.
+	for step := 0; tight.count() == 0; step++ {
+		if step == 300 {
+			t.Fatal("the VM on a two-minute interval had no turn in five minutes")
+		}
+		clock.Advance(time.Second)
+		time.Sleep(time.Millisecond)
+	}
 	if n := plain.count(); n != 0 {
-		t.Fatalf("the VM on the host's hour-long interval was checkpointed %d times in three minutes", n)
+		t.Fatalf("the VM on the host's hour-long interval was checkpointed %d times in five minutes", n)
 	}
 }
 

@@ -159,7 +159,7 @@ const (
 // checkpoint that ends it, so the pause comes while the guest still runs.
 func (h *Host) window(r *MemoryRegion) windowAnswer {
 	window := h.cfg.LossWindow
-	if window <= 0 {
+	if window <= 0 || r.unwindowed.Load() {
 		return windowAdmit
 	}
 	age := h.windowAge(r)

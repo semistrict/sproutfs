@@ -163,6 +163,11 @@ func (h *Host) AddMachineWith(vmID string, runtime Machine, terms MachineTerms) 
 		existing.end()
 	}
 	entry := &registration{runtime: runtime, terms: terms, cadence: h.cadenceOf(terms)}
+	if !entry.cadence.windowed {
+		for _, memoryRegion := range runtime.MemoryRegions() {
+			memoryRegion.HoldToNoWindow()
+		}
+	}
 	h.machines.mu.Lock()
 	defer h.machines.mu.Unlock()
 	// This identity is being run again — received back, or created anew after a

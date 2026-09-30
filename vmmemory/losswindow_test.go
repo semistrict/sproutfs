@@ -113,6 +113,28 @@ func TestADisabledLossWindowNeverWaits(t *testing.T) {
 	})
 }
 
+// A memory region its owner holds to no window never waits, stalls or asks for
+// a checkpoint, however old what it holds: the VM asked for no checkpoints.
+func TestAMemoryRegionHeldToNoWindowNeverWaits(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := windowFixture(t, lossWindow)
+		r, m, _ := f.memoryRegion(4)
+		r.HoldToNoWindow()
+		f.h.SetPressure(vmmemory.Pressure{Checkpoint: func(*vmmemory.MemoryRegion) bool {
+			t.Error("a memory region held to no window asked for a checkpoint")
+			return false
+		}})
+		access(t, r, m, 0, true)[0] = 11
+		time.Sleep(100 * lossWindow)
+		access(t, r, m, 1, true)[0] = 12
+		access(t, r, m, 2, true)[0] = 13
+		if s := hostStats(t, f); s.WindowWaits != 0 || s.WindowStalls != 0 {
+			t.Fatalf("a region held to no window waited %d times and stalled %d, want neither",
+				s.WindowWaits, s.WindowStalls)
+		}
+	})
+}
+
 // A store waiting on the window where no checkpoint of the VM can ever be taken
 // is a store waiting for something that will not happen. It ends the way a
 // budget stall ends: the memory region's owner is told, and it stops that VM

@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-29 23:10'
-updated_date: '2026-09-30 00:10'
+updated_date: '2026-09-30 00:22'
 labels:
   - embedder
 dependencies: []
@@ -50,6 +50,8 @@ The loss window and flush bound are derived from the interval, and the pager hol
 Criterion 2 changed: it said the loss window follows the VM's interval. That came from a wrong reading when the task was filed: the loss window is configured on its own, not derived from the interval. A tighter interval needs no tighter window, and a looser one is not allowed, so the window is never shorter than any VM's interval. The window changes only for a VM that asks for none.
 Verified: host TestAVMIsCheckpointedOnAnIntervalOfItsOwn (clamping both ways, own interval turns while the host's hour does not), TestAVMThatAsksForNoIntervalIsHeldToNoWindow, TestAVMsFlushBoundFollowsItsInterval, TestAMigrationCarriesTheVMsInterval; every existing host test (default terms behave as before); just check.
 Not wired: the orchestrator does not forward the interval, and sproutfsctl has no flag for it.
+
+CI on Linux caught two faults in the first commit. The pager checks a region's own age before asking the host, so a VM that asked for no interval was still held to the window; MemoryRegion.HoldToNoWindow, set by the host at registration, now exempts it (TestAMemoryRegionHeldToNoWindowNeverWaits fails without it). And the interval test advanced the simulated clock before the loop had armed its timer; it now steps the clock.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

@@ -103,7 +103,10 @@ type MemoryRegion struct {
 	// heldReported marks the one line this memory region's unreclaimable pages are
 	// worth; see heldPages.
 	heldReported atomic.Bool
-	closed       bool
+	// unwindowed marks a memory region its owner holds to no loss window; see
+	// HoldToNoWindow.
+	unwindowed atomic.Bool
+	closed     bool
 	// handed marks a memory region whose volume belongs to another host now. It is
 	// set and read under the memory region lock, like closed.
 	handed   bool
@@ -299,6 +302,12 @@ func (r *MemoryRegion) Kind() MemoryRegionKind { return r.kind }
 // published only by a capture and an ephemeral disk by nothing, so none of the
 // three applies to either.
 func (r *MemoryRegion) OnInterval() bool { return r.kind == Pmem && !r.Ephemeral() }
+
+// HoldToNoWindow exempts this memory region's stores from the loss window,
+// however old its oldest unpublished write. Its owner calls it for a VM that
+// asked for no interval checkpoints, whose writes only a stop, a move or the
+// dirty budget ever publishes.
+func (r *MemoryRegion) HoldToNoWindow() { r.unwindowed.Store(true) }
 
 // Ephemeral reports an ephemeral disk: a memory region no checkpoint holds,
 // whose seal takes nothing. See Config.Ephemeral.
