@@ -328,6 +328,23 @@ func LatencyOf(snapshot latency.Snapshot) Latency {
 	return Latency{Count: snapshot.Count, TotalNS: snapshot.TotalNS, Buckets: snapshot.Buckets[:]}
 }
 
+// Checkpoints is what a host's interval checkpoints did since it started:
+// every attempt, and how each ended. Published and the failures add up to the
+// attempts that have ended. CaptureFailed is a pause that took nothing,
+// PublishFailed a checkpoint the store did not take, and Fenced one a later
+// writer of the VM made impossible. Pause is what the guest paid for each
+// checkpoint and Upload what publishing it took, behind the running guest.
+type Checkpoints struct {
+	Attempts      uint64  `json:"attempts"`
+	Published     uint64  `json:"published"`
+	CaptureFailed uint64  `json:"capture_failed"`
+	PublishFailed uint64  `json:"publish_failed"`
+	Fenced        uint64  `json:"fenced"`
+	UploadedBytes uint64  `json:"uploaded_bytes"`
+	Pause         Latency `json:"pause"`
+	Upload        Latency `json:"upload"`
+}
+
 // Build is what a host is running: its binary's version, the revision of the
 // managed-memory API it drives its VMM with, and the arena mode of its pagers.
 type Build struct {
@@ -478,6 +495,9 @@ type Status struct {
 	Host string `json:"host"`
 	// Build is what this host is running.
 	Build Build `json:"build"`
+	// Checkpoints is what this host's interval checkpoints did since it
+	// started.
+	Checkpoints Checkpoints `json:"checkpoints"`
 	// PageAddress is where this host serves the memory of a VM it has handed
 	// over, which is what another host's handoff names as its source.
 	PageAddress string `json:"page_address"`

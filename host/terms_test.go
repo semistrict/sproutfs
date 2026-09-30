@@ -11,8 +11,9 @@ import (
 )
 
 // termsHost is one host on a simulated clock whose own interval is an hour and
-// whose loss window is ten minutes, in the host and in its pagers.
-func termsHost(t *testing.T) (*hostHarness, *sim.Clock, *hostPagers) {
+// whose loss window is ten minutes, in the host and in its pagers. configure
+// adjusts its configuration before it starts.
+func termsHost(t *testing.T, configure ...func(*host.Config)) (*hostHarness, *sim.Clock, *hostPagers) {
 	t.Helper()
 	h := newSizedHostHarness(t, 1)
 	clock := sim.New(sim.Config{Seed: 1}).NewClock("host")
@@ -25,6 +26,9 @@ func termsHost(t *testing.T) (*hostHarness, *sim.Clock, *hostPagers) {
 		cfg.LossWindow = 10 * time.Minute
 	})
 	h.configs[0].Pagers = pagers.pagers
+	for _, adjust := range configure {
+		adjust(&h.configs[0])
+	}
 	h.start(t)
 	return h, clock, pagers
 }

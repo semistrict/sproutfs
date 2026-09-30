@@ -84,3 +84,29 @@ func TestMetricsNameNoVMOrTenant(t *testing.T) {
 		}
 	}
 }
+
+// What the interval checkpoints did: every attempt, each ending by outcome,
+// what they uploaded and what they cost.
+func TestMetricsExposeCheckpointOutcomes(t *testing.T) {
+	buckets := make([]uint64, hostapi.LatencyBuckets)
+	buckets[10] = 3
+	body := hostapi.Metrics(hostapi.Status{Checkpoints: hostapi.Checkpoints{Attempts: 9, Published: 3,
+		CaptureFailed: 1, PublishFailed: 4, Fenced: 1, UploadedBytes: 4096,
+		Pause: hostapi.Latency{Count: 3, TotalNS: 3_000_000, Buckets: buckets}}})
+	for _, want := range []string{
+		"sproutfs_checkpoint_attempts_total 9",
+		`sproutfs_checkpoints_total{outcome="published"} 3`,
+		`sproutfs_checkpoints_total{outcome="capture_failed"} 1`,
+		`sproutfs_checkpoints_total{outcome="publish_failed"} 4`,
+		`sproutfs_checkpoints_total{outcome="fenced"} 1`,
+		"sproutfs_checkpoint_uploaded_bytes_total 4096",
+		`sproutfs_checkpoint_pause_seconds_bucket{le="0.001024"} 3`,
+		"sproutfs_checkpoint_pause_seconds_sum 0.003",
+		"sproutfs_checkpoint_pause_seconds_count 3",
+		"sproutfs_checkpoint_upload_seconds_count 0",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("the exposition has no %q in it:\n%s", want, body)
+		}
+	}
+}

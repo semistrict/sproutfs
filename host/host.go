@@ -197,9 +197,11 @@ type Host struct {
 	// minimumInterval is the shortest interval a VM may ask for.
 	minimumInterval time.Duration
 	machines        machines
-	closeOnce       sync.Once
-	done            chan struct{}
-	closeErr        error
+	// activity is what this host has done since it started; see Activity.
+	activity  activity
+	closeOnce sync.Once
+	done      chan struct{}
+	closeErr  error
 }
 
 // cleanupTimeout bounds the control-plane writes a failed operation makes on its

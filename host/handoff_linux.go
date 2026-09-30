@@ -53,6 +53,13 @@ func handoffOf(handoff hostapi.Handoff) vmmigrate.Handoff {
 		CheckpointInterval: handoff.CheckpointInterval}
 }
 
+// apiCheckpoints is the wire form of what the interval checkpoints did.
+func apiCheckpoints(c CheckpointActivity) hostapi.Checkpoints {
+	return hostapi.Checkpoints{Attempts: c.Attempts, Published: c.Published,
+		CaptureFailed: c.CaptureFailed, PublishFailed: c.PublishFailed, Fenced: c.Fenced,
+		UploadedBytes: c.UploadedBytes, Pause: hostapi.LatencyOf(c.Pause), Upload: hostapi.LatencyOf(c.Upload)}
+}
+
 // apiStore is the wire form of what this host's object store has served.
 func apiStore(traffic platform.ObjectTraffic) hostapi.Store {
 	count := func(c platform.ObjectCount) hostapi.StoreCount {

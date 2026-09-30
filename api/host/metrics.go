@@ -179,6 +179,30 @@ func Metrics(status Status) string {
 		"How long each checkpoint's write-protection of one memory region took.",
 		func(p PagerKind) Latency { return p.Seal })
 
+	// What the interval checkpoints did, which is what makes a running
+	// guest durable. The loss window says something is wrong; these say what.
+	write("sproutfs_checkpoint_attempts_total", "counter", "Interval checkpoints this host began.",
+		status.Checkpoints.Attempts)
+	fmt.Fprintf(&out, "# HELP sproutfs_checkpoints_total Interval checkpoints that ended, by how.\n"+
+		"# TYPE sproutfs_checkpoints_total counter\n")
+	for _, outcome := range []struct {
+		name  string
+		count uint64
+	}{
+		{"published", status.Checkpoints.Published}, {"capture_failed", status.Checkpoints.CaptureFailed},
+		{"publish_failed", status.Checkpoints.PublishFailed}, {"fenced", status.Checkpoints.Fenced},
+	} {
+		fmt.Fprintf(&out, "sproutfs_checkpoints_total{outcome=%q} %d\n", outcome.name, outcome.count)
+	}
+	write("sproutfs_checkpoint_uploaded_bytes_total", "counter",
+		"Bytes the published interval checkpoints uploaded.", status.Checkpoints.UploadedBytes)
+	fmt.Fprintf(&out, "# HELP sproutfs_checkpoint_pause_seconds How long each interval checkpoint paused its guest.\n"+
+		"# TYPE sproutfs_checkpoint_pause_seconds histogram\n")
+	histogram(&out, "sproutfs_checkpoint_pause_seconds", "", status.Checkpoints.Pause)
+	fmt.Fprintf(&out, "# HELP sproutfs_checkpoint_upload_seconds How long each interval checkpoint took to publish, behind the running guest.\n"+
+		"# TYPE sproutfs_checkpoint_upload_seconds histogram\n")
+	histogram(&out, "sproutfs_checkpoint_upload_seconds", "", status.Checkpoints.Upload)
+
 	write("sproutfs_pages_requests_total", "counter",
 		"Page requests this host's migration page server has answered.", status.Pages.Requests)
 	write("sproutfs_pages_served_total", "counter", "Pages served to a peer.", status.Pages.Served)

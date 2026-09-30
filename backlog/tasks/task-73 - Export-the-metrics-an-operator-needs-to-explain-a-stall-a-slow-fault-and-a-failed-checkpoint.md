@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-09-30 08:29'
-updated_date: '2026-09-30 08:34'
+updated_date: '2026-09-30 08:38'
 labels:
   - embedder
   - observability
@@ -43,7 +43,7 @@ Prometheus pulls. A metric set just before a process exits is never scraped, and
 <!-- AC:BEGIN -->
 - [x] #1 The stall counters in 1 and the build-info gauge in 6 are in the exposition, tested through hostapi.Metrics
 - [x] #2 Fault, load and seal latencies are exported as Prometheus histograms with _bucket, _sum and _count series
-- [ ] #3 Status carries interval checkpoint attempts, failures by reason, pause and upload durations, and they are exported
+- [x] #3 Status carries interval checkpoint attempts, failures by reason, pause and upload durations, and they are exported
 - [ ] #4 Migrations, forks, receives, VMM deaths, fenced VMs and pager-ordered stops are counted and exported, per outcome
 - [ ] #5 Object-store operations are exported with a latency histogram per operation
 - [ ] #6 Template imports are exported: count, duration and bytes read
@@ -67,4 +67,6 @@ Every metric aggregated per host; no VM or tenant labels (tested).
 
 <!-- SECTION:NOTES:BEGIN -->
 Step 1 done: stall counters, fault/load/seal histograms and sproutfs_build_info. TestMetricsNameNoVMOrTenant guards AC 8.
+
+Step 2 done: host.Activity counts the interval loop's attempts and outcomes (published, capture_failed, publish_failed, fenced), pause and upload histograms and uploaded bytes; Status.Checkpoints and sproutfs_checkpoint* export them. TestAHostCountsItsIntervalCheckpoints drives a store outage and recovery on a simulated clock.
 <!-- SECTION:NOTES:END -->

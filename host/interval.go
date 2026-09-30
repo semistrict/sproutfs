@@ -50,8 +50,13 @@ func (h *Host) checkpointing(ctx context.Context, vmID string, entry *registrati
 		}
 		// An explicit capture, a fork's, holds the VM's publication lock, so the
 		// two serialize rather than checkpointing the same guest twice.
+		began := h.clock.Now()
 		checkpoint, err := CaptureDisks(ctx, vm, entry.runtime, h.clock,
 			volume.Terms{Retry: h.retryPastWindow(ctx, vmID, entry)})
+		captured := h.clock.Now()
+		if ctx.Err() == nil || err == nil {
+			h.activity.checkpoints.captured(captured.Sub(began), err, errors.Is(err, volume.ErrNeedsRecovery))
+		}
 		if err != nil {
 			if ctx.Err() != nil {
 				return
@@ -71,7 +76,12 @@ func (h *Host) checkpointing(ctx context.Context, vmID string, entry *registrati
 		// sealed would have to give the migration up and resume the guest. Only
 		// the host closing cuts the wait short, and a host that is closing is
 		// migrating nothing.
-		if err := checkpoint.Wait(h.ctx); err != nil {
+		err = checkpoint.Wait(h.ctx)
+		if h.ctx.Err() == nil {
+			h.activity.checkpoints.ended(h.clock.Since(captured), checkpoint.Traffic().Put.Bytes, err,
+				errors.Is(err, volume.ErrNeedsRecovery))
+		}
+		if err != nil {
 			if h.ctx.Err() != nil {
 				return
 			}
