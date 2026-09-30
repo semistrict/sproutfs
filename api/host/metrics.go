@@ -229,6 +229,19 @@ func Metrics(status Status) string {
 		"sproutfs_vms_given_up_total{reason=\"stopped_for_a_bound\"} %d\n",
 		status.Lifecycle.Deaths, status.Lifecycle.Fenced, status.Lifecycle.Stopped)
 
+	// Template imports: the imports this host wrote, what each took, and every
+	// byte of guest image it read, which is what a host start costs.
+	fmt.Fprintf(&out, "# HELP sproutfs_template_imports_total Templates this host imported, by outcome.\n"+
+		"# TYPE sproutfs_template_imports_total counter\n"+
+		"sproutfs_template_imports_total{outcome=\"succeeded\"} %d\n"+
+		"sproutfs_template_imports_total{outcome=\"failed\"} %d\n",
+		status.Imports.Outcomes.Succeeded, status.Imports.Outcomes.Failed)
+	fmt.Fprintf(&out, "# HELP sproutfs_template_import_seconds How long each import took, from its image's digest to its pin.\n"+
+		"# TYPE sproutfs_template_import_seconds histogram\n")
+	histogram(&out, "sproutfs_template_import_seconds", "", status.Imports.Latency)
+	write("sproutfs_image_read_bytes_total", "counter",
+		"Guest image bytes this host read, for a digest or an import.", status.Imports.ImageBytes)
+
 	write("sproutfs_pages_requests_total", "counter",
 		"Page requests this host's migration page server has answered.", status.Pages.Requests)
 	write("sproutfs_pages_served_total", "counter", "Pages served to a peer.", status.Pages.Served)

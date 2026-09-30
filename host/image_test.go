@@ -145,3 +145,28 @@ func TestASparseSourceWithImpossibleExtentsIsRefused(t *testing.T) {
 		}
 	}
 }
+
+// A host counts the templates it writes and the image it reads: an import
+// reads the data twice, once for the digest and once for the template, and a
+// template another host already wrote costs only its digest.
+func TestAHostCountsItsImportsAndTheImageItReads(t *testing.T) {
+	h := newSizedHostHarness(t, 2)
+	h.start(t)
+	image := denseSparseImage()
+	request := func() host.TemplateImport {
+		return host.TemplateImport{Image: "sparse", Volumes: sparseVolumes, Root: "root",
+			Source: &holeReader{Reader: bytes.NewReader(image), t: t,
+				extents: []host.Extent{{Offset: 0, Length: 4096}, {Offset: sparseTail, Length: 4096}}}}
+	}
+	templateOn(t, h, 0, request())
+	templateOn(t, h, 1, request())
+	writer, reader := h.hosts[0].Activity(), h.hosts[1].Activity()
+	if writer.Imports != (host.Outcomes{Succeeded: 1}) || writer.ImportTime.Count != 1 || writer.ImageBytes != 2*2*4096 {
+		t.Fatalf("the importing host counts %+v, %d timings and %d image bytes, want one import of two data pages read twice",
+			writer.Imports, writer.ImportTime.Count, writer.ImageBytes)
+	}
+	if reader.Imports != (host.Outcomes{}) || reader.ImageBytes != 2*4096 {
+		t.Fatalf("the second host counts %+v and %d image bytes, want no import and one digest of two pages",
+			reader.Imports, reader.ImageBytes)
+	}
+}

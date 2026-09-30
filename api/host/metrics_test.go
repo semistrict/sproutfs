@@ -159,3 +159,23 @@ func TestMetricsExposeStoreLatency(t *testing.T) {
 		}
 	}
 }
+
+// What a host start costs: the templates a host imported, what each took, and
+// every byte of guest image it read.
+func TestMetricsExposeTemplateImports(t *testing.T) {
+	body := hostapi.Metrics(hostapi.Status{Imports: hostapi.Imports{Outcomes: hostapi.Outcomes{Succeeded: 1, Failed: 2},
+		Latency:    hostapi.Latency{Count: 1, TotalNS: 156_000_000_000, Buckets: bucketAt(hostapi.LatencyBuckets - 1)},
+		ImageBytes: 1 << 30}})
+	for _, want := range []string{
+		`sproutfs_template_imports_total{outcome="succeeded"} 1`,
+		`sproutfs_template_imports_total{outcome="failed"} 2`,
+		`sproutfs_template_import_seconds_bucket{le="4.194304"} 0`,
+		`sproutfs_template_import_seconds_bucket{le="+Inf"} 1`,
+		"sproutfs_template_import_seconds_sum 156",
+		"sproutfs_image_read_bytes_total 1073741824",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("the exposition has no %q in it:\n%s", want, body)
+		}
+	}
+}

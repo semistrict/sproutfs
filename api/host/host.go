@@ -369,6 +369,17 @@ type Lifecycle struct {
 	Stopped        uint64   `json:"stopped"`
 }
 
+// Imports is what a host's template imports did since it started. Outcomes are
+// the templates it wrote, and Latency what each took from the digest of its
+// image to its pin. ImageBytes is every byte of guest image the host read,
+// for a digest or an import: a template another host already imported costs
+// only its digest.
+type Imports struct {
+	Outcomes   Outcomes `json:"outcomes"`
+	Latency    Latency  `json:"latency"`
+	ImageBytes uint64   `json:"image_bytes"`
+}
+
 // Outcomes is how many of one kind of operation succeeded and failed.
 type Outcomes struct {
 	Succeeded uint64 `json:"succeeded"`
@@ -529,6 +540,8 @@ type Status struct {
 	// started, and Lifecycle what else it did with its VMs.
 	Checkpoints Checkpoints `json:"checkpoints"`
 	Lifecycle   Lifecycle   `json:"lifecycle"`
+	// Imports is what this host's template imports did since it started.
+	Imports Imports `json:"imports"`
 	// PageAddress is where this host serves the memory of a VM it has handed
 	// over, which is what another host's handoff names as its source.
 	PageAddress string `json:"page_address"`

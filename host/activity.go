@@ -22,6 +22,12 @@ type activity struct {
 	// ended on its own, a later writer took their record, or a pager ran out
 	// of a bound and had this host stop them.
 	deaths, fenced, stopped atomic.Uint64
+	// imports are the templates this host wrote, by outcome, and importTime
+	// what each took from its digest to its pin. imageBytes is every byte of
+	// guest image this host read, for a digest or an import.
+	imports    outcomes
+	importTime latency.Histogram
+	imageBytes atomic.Uint64
 }
 
 // outcomes counts one kind of operation by how it ended.
@@ -62,6 +68,11 @@ type Activity struct {
 	// ended on its own, a later writer took their record, or a pager had this
 	// host stop them for a bound.
 	Deaths, Fenced, Stopped uint64
+	// Imports are the templates this host wrote, ImportTime what each took,
+	// and ImageBytes every byte of guest image it read.
+	Imports    Outcomes
+	ImportTime latency.Snapshot
+	ImageBytes uint64
 }
 
 // CheckpointActivity is what the interval checkpoints did: every attempt, and
@@ -88,6 +99,7 @@ func (h *Host) Activity() Activity {
 		Migrations: a.migrations.snapshot(), Forks: a.forks.snapshot(), Receives: a.receives.snapshot(),
 		MigrationPause: a.migrationPause.Snapshot(), ForkPause: a.forkPause.Snapshot(),
 		Deaths: a.deaths.Load(), Fenced: a.fenced.Load(), Stopped: a.stopped.Load(),
+		Imports: a.imports.snapshot(), ImportTime: a.importTime.Snapshot(), ImageBytes: a.imageBytes.Load(),
 	}
 }
 

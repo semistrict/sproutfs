@@ -116,10 +116,12 @@ func (h *Host) TemplateOf(ctx context.Context, request TemplateImport) (*Importe
 	if err != nil {
 		return nil, fmt.Errorf("finding the data of the %s image: %w", request.Image, err)
 	}
+	began := h.clock.Now()
 	digest, err := image.digest()
 	if err != nil {
 		return nil, fmt.Errorf("reading the %s image: %w", request.Image, err)
 	}
+	h.activity.imageBytes.Add(uint64(image.dataBytes()))
 	if request.Tenant != "" && !control.ValidTenant(request.Tenant) {
 		return nil, fmt.Errorf("%w: %q is not a tenant", ErrRequest, request.Tenant)
 	}
@@ -140,6 +142,7 @@ func (h *Host) TemplateOf(ctx context.Context, request TemplateImport) (*Importe
 				// create. Its import is the one this host waits for.
 				continue
 			}
+			h.imported(began, image, err)
 			if err != nil {
 				return nil, err
 			}
@@ -154,6 +157,7 @@ func (h *Host) TemplateOf(ctx context.Context, request TemplateImport) (*Importe
 			slog.WarnContext(ctx, "host: recovering a template whose import never published",
 				"image", request.Image, "template", id, "epoch", record.Epoch, "waited", wait)
 			pinned, err := h.recoverTemplate(ctx, id, request, image)
+			h.imported(began, image, err)
 			if err != nil {
 				return nil, err
 			}
@@ -165,6 +169,18 @@ func (h *Host) TemplateOf(ctx context.Context, request TemplateImport) (*Importe
 				return nil, err
 			}
 		}
+	}
+}
+
+// imported records one import this host wrote, from the digest that began it:
+// how it ended, what it took, and the image's data it read a second time to
+// write it. A template another host imported costs this one only the digest,
+// which TemplateOf counts itself.
+func (h *Host) imported(began time.Time, image guestImage, err error) {
+	h.activity.imports.ended(err)
+	if err == nil {
+		h.activity.importTime.Observe(h.clock.Since(began))
+		h.activity.imageBytes.Add(uint64(image.dataBytes()))
 	}
 }
 

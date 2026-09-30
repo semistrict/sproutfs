@@ -70,6 +70,16 @@ func scanImage(source io.ReadSeeker) (guestImage, error) {
 	return guestImage{source: source, size: size, extents: extents}, nil
 }
 
+// dataBytes is how much of the image is data, which is what one pass over it
+// reads.
+func (g guestImage) dataBytes() int64 {
+	var total int64
+	for _, extent := range g.extents {
+		total += extent.Length
+	}
+	return total
+}
+
 // digest is the sha256 of the image, which is the whole of what names its
 // template. A hole is hashed as the zeroes it reads as, so a sparse image and
 // the same image written out in full name one template.
