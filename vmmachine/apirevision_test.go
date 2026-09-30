@@ -52,11 +52,12 @@ func fakeBinary(t *testing.T, script string) string {
 	return path
 }
 
-// The fork prints its revision for the flag. Upstream Firecracker refuses the
-// flag as an unknown argument, and that is an error, not revision zero.
+// The fork prints its revision for the flag, and then logs its own exit, as
+// the real binary does. Upstream Firecracker refuses the flag as an unknown
+// argument, and that is an error, not revision zero.
 func TestFirecrackerAPIRevisionAsksTheBinary(t *testing.T) {
 	speaking := &vmmachine.Firecracker{Binary: fakeBinary(t,
-		`[ "$1" = --sproutfs-api-revision ] || exit 2; echo 7`)}
+		`[ "$1" = --sproutfs-api-revision ] || exit 2; echo 7; echo "[main] Firecracker exiting successfully. exit_code=0"`)}
 	revision, err := speaking.APIRevision(t.Context())
 	if err != nil || revision != 7 {
 		t.Fatalf("got revision %d, %v; want 7", revision, err)

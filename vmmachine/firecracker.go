@@ -70,14 +70,18 @@ func (f *Firecracker) Boots() bool { return f.Kernel != "" }
 // argument.
 const apiRevisionFlag = "--sproutfs-api-revision"
 
-// APIRevision runs the binary with apiRevisionFlag. It needs nothing a guest
-// needs, so it runs outside the jail, as this process's user.
+// APIRevision runs the binary with apiRevisionFlag and reads the revision from
+// the first line it prints. It needs nothing a guest needs, so it runs outside
+// the jail, as this process's user.
 func (f *Firecracker) APIRevision(ctx context.Context) (int, error) {
 	output, err := exec.CommandContext(ctx, f.Binary, apiRevisionFlag).CombinedOutput()
 	if err != nil {
 		return 0, fmt.Errorf("%s %s: %w: %s", f.Binary, apiRevisionFlag, err, bytes.TrimSpace(output))
 	}
-	revision, err := strconv.Atoi(string(bytes.TrimSpace(output)))
+	// Firecracker logs its own exit after the revision, so the revision is
+	// the first line and only that.
+	first, _, _ := bytes.Cut(output, []byte("\n"))
+	revision, err := strconv.Atoi(string(bytes.TrimSpace(first)))
 	if err != nil {
 		return 0, fmt.Errorf("%s %s printed %q, which is not a revision", f.Binary, apiRevisionFlag, output)
 	}

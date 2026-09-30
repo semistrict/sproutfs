@@ -1,11 +1,11 @@
 ---
 id: TASK-68
 title: Refuse to start a host whose VMM lacks an API it will use
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-29 23:10'
-updated_date: '2026-09-30 00:02'
+updated_date: '2026-09-30 00:50'
 labels:
   - embedder
   - firecracker
@@ -48,4 +48,12 @@ The fork change (7fb5f8b62 on semistrict/firecracker@sproutfs) cannot compile on
 TestStartRefusesAnOlderVMM is linux-only; it runs in the CI go-linux job.
 
 CI go (linux) on 983d0360 passed the host package, which includes TestStartRefusesAnOlderVMM. Left In Progress until the fork builds: the Rust change (7fb5f8b62) has not been compiled; the next GCE build of the fork confirms it.
+
+GCE 2026-09-30 (sproutfs-memprobe-backlog-0930, n2-standard-8): the fork (7fb5f8b62) builds for x86_64 musl. The first run of TestPulledGuestsFaultWithoutTheObjectStore, which starts a supervisor against the real binary, found that Firecracker logs its own exit after the revision; APIRevision now reads the first line. The rerun passes (docs/measurements/gce-backlog-2026-09-30/qualify-start).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The fork prints its managed-memory API revision (--sproutfs-api-revision); every Starter reports it and host.Start refuses a VMM whose revision is not vmmachine.APIRevision, before anything is built. Verified by Mac unit tests, the Linux CI host suite, and a supervisor started against the real fork on GCE.
+<!-- SECTION:FINAL_SUMMARY:END -->
