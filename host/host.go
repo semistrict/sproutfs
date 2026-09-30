@@ -24,6 +24,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"runtime"
 	"slices"
@@ -705,5 +706,14 @@ func (h *Host) shutdown() {
 		h.cache.Close()
 	}
 	h.closeErr = errors.Join(errs...)
+	// This process is about to exit, so nothing it counts from here is ever
+	// scraped. What it did lasts in the log, and in the control records: each
+	// VM's selects the final checkpoint it published.
+	activity := h.Activity()
+	slog.Info("host: shut down", "vms", len(entries),
+		"checkpoints_published", activity.Checkpoints.Published,
+		"checkpoints_failed", activity.Checkpoints.CaptureFailed+activity.Checkpoints.PublishFailed,
+		"migrations", activity.Migrations.Succeeded, "migrations_failed", activity.Migrations.Failed,
+		"error", h.closeErr)
 	close(h.done)
 }

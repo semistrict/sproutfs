@@ -1,6 +1,11 @@
 package host_test
 
 import (
+	"bytes"
+	"encoding/json"
+	"log/slog"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -98,5 +103,49 @@ func TestAHostCountsItsMigrationsAndReceives(t *testing.T) {
 		destination.ForkPause.Count != 0 {
 		t.Fatalf("the destination counts receives %+v and %d migration pauses, want one of each",
 			destination.Receives, destination.MigrationPause.Count)
+	}
+}
+
+// lockedBuffer is a log sink many goroutines write to.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	out bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.out.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.out.String()
+}
+
+// A host that shuts down is about to exit, so nothing it counts is scraped
+// again. What it did in its life is in the one line it logs as it goes.
+func TestAHostThatShutsDownLogsWhatItDid(t *testing.T) {
+	logs := &lockedBuffer{}
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	h, clock, pagers := termsHost(t)
+	_, guest, _ := termsVM(t, h, pagers, "vm-1", host.MachineTerms{CheckpointInterval: time.Minute})
+	guest.store("disk", 0, 7)
+	awaitCheckpoints(t, h, clock, func(c host.CheckpointActivity) bool { return c.Published > 0 })
+	if err := h.hosts[0].Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	var shutdown map[string]any
+	for line := range strings.Lines(logs.String()) {
+		var record map[string]any
+		if json.Unmarshal([]byte(line), &record) == nil && record["msg"] == "host: shut down" {
+			shutdown = record
+		}
+	}
+	if shutdown == nil || shutdown["vms"] != float64(1) || shutdown["checkpoints_published"].(float64) < 1 {
+		t.Fatalf("the host logged %v as it shut down, want its one VM and the checkpoints it published", shutdown)
 	}
 }

@@ -3,11 +3,11 @@ id: TASK-73
 title: >-
   Export the metrics an operator needs to explain a stall, a slow fault and a
   failed checkpoint
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-30 08:29'
-updated_date: '2026-09-30 08:49'
+updated_date: '2026-09-30 08:52'
 labels:
   - embedder
   - observability
@@ -47,7 +47,7 @@ Prometheus pulls. A metric set just before a process exits is never scraped, and
 - [x] #4 Migrations, forks, receives, VMM deaths, fenced VMs and pager-ordered stops are counted and exported, per outcome
 - [x] #5 Object-store operations are exported with a latency histogram per operation
 - [x] #6 Template imports are exported: count, duration and bytes read
-- [ ] #7 Every event that can happen at or near process exit is also recorded where it outlives the process, and docs/hosting.md says which record to read for which event
+- [x] #7 Every event that can happen at or near process exit is also recorded where it outlives the process, and docs/hosting.md says which record to read for which event
 - [x] #8 No metric carries a VM or tenant identity as a label
 <!-- AC:END -->
 
@@ -75,4 +75,12 @@ Step 3 done: migrations, forks and receives by outcome, the pause each received 
 Step 4 done: the metered store times every call on the host's clock (NewMeteredObjectStore now takes one), failed calls included; exported as sproutfs_store_seconds{operation}. S3 conditional conflicts are not separated: the adapter reports a 409 as ErrUnavailable, and the task's criteria do not ask for it.
 
 Step 5 done: the templates a host writes by outcome, the time from digest to pin, and every byte of guest image read (digest and import); sproutfs_template_imports_total, sproutfs_template_import_seconds, sproutfs_image_read_bytes_total.
+
+Step 6 done: a host that shuts down logs one 'host: shut down' line with what it did (TestAHostThatShutsDownLogsWhatItDid). docs/hosting.md has a table of every near-exit event and the record that outlives the process: drain reports and destination receives, the control record's final checkpoint, the shutdown line, the serving-at-exit and fatal-error lines, and, for a killed process, the last scraped loss window.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The exposition now explains a stall (pager dirty and window waits and stalls, refused mappings, repeated faults), a slow fault (fault, load, seal and object-store latency histograms), and a failed checkpoint (interval checkpoint attempts and outcomes, pause and upload histograms, bytes), plus migrations, forks and receives by outcome, VMs given up by why, template imports, and sproutfs_build_info. No series names a VM or tenant. Events at or near exit are recorded in logs, drain reports or control records, documented in docs/hosting.md. Verified by api/host exposition tests, host and platform tests, and just check.
+<!-- SECTION:FINAL_SUMMARY:END -->

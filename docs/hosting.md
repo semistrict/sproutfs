@@ -89,7 +89,25 @@ whose pinned checkpoints remain. See [billing](volumes.md#billing).
 `GET /metrics` is `hostapi.Metrics` of the host's `Status`, in the Prometheus
 text format. A program that embeds a host serves the same text from its own
 endpoint: it reads `Status` from the supervisor and passes it to
-`hostapi.Metrics`.
+`hostapi.Metrics`. It covers why a guest stalls (the pager's dirty and window
+waits and stalls, refused mappings, repeated faults), how long faults, loads,
+seals and object-store calls take (histograms), what the interval checkpoints
+did, the migrations, forks and receives by outcome, the VMs a host gave up and
+why, template imports, and `sproutfs_build_info`. No series names a VM or a
+tenant.
+
+Prometheus pulls, and a host's counters start at zero when its process does.
+So anything a host counts just before it exits is never scraped. Each of those
+events is recorded somewhere that outlives the process:
+
+| Event | Where it lasts |
+| ----- | -------------- |
+| A drain moving a VM | the drain reports to the orchestrator for each VM, the `host: drained` log line, and the destination's `sproutfs_receives_total` and `sproutfs_received_pause_seconds` |
+| The final checkpoint of each VM at shutdown | the VM's control record, which selects it; `volume: final checkpoint on close failed` when it fails |
+| The whole shutdown | the `host: shut down` log line, with what the host did in its life |
+| Exiting while still serving migrated pages | the `host: exiting while still serving migrated pages` log line |
+| A fatal error | the `sproutfs-host: exiting` log line |
+| The process killed outright | nothing from the process. The last scrape's `sproutfs_loss_window_seconds` bounds what its VMs lost, and each VM reopens at the checkpoint its control record selects |
 
 ## Running the VMM
 
