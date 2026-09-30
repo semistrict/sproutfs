@@ -15,7 +15,9 @@ import (
 
 // This is the AsyncFileCorrectness/DiskDurability test shape from
 // FoundationDB: every successful operation updates an independent model, and
-// every power loss restores exactly the last acknowledged durable image.
+// every power loss restores exactly the last acknowledged durable image. Writes,
+// truncates and punches span several 4 KiB device pages, so they start, end and
+// cross page boundaries and leave holes the disk does not store.
 func TestDiskStateMachinePreservesAcknowledgedDurability(t *testing.T) {
 	for seed := int64(1); seed <= 10; seed++ {
 		t.Run(fmt.Sprintf("seed-%d", seed), func(t *testing.T) {
@@ -25,6 +27,9 @@ func TestDiskStateMachinePreservesAcknowledgedDurability(t *testing.T) {
 		})
 	}
 }
+
+// modelPageBytes is the disk's device page, which the model has to cross.
+const modelPageBytes = 4096
 
 func runDiskStateMachine(t *testing.T, seed int64, steps int) {
 	t.Helper()
@@ -42,14 +47,14 @@ func runDiskStateMachine(t *testing.T, seed int64, steps int) {
 	durableExists := false
 	commands := make([]string, 0, steps)
 	for step := range steps {
-		switch random.Intn(5) {
+		switch random.Intn(6) {
 		case 0, 1:
-			offset := random.Intn(48)
-			data := make([]byte, random.Intn(17))
+			offset := random.Intn(3 * modelPageBytes)
+			data := make([]byte, random.Intn(modelPageBytes+modelPageBytes/2))
 			for index := range data {
 				data[index] = byte(random.Intn(256))
 			}
-			commands = append(commands, fmt.Sprintf("write(%d,%x)", offset, data))
+			commands = append(commands, fmt.Sprintf("write(%d,%d)", offset, len(data)))
 			n, writeErr := file.WriteAt(t.Context(), data, int64(offset))
 			if writeErr != nil || n != len(data) {
 				failDiskModel(t, seed, step, commands, "WriteAt = (%d, %v), want (%d, nil)", n, writeErr, len(data))
@@ -62,7 +67,7 @@ func runDiskStateMachine(t *testing.T, seed int64, steps int) {
 				copy(volatile[offset:end], data)
 			}
 		case 2:
-			size := random.Intn(65)
+			size := random.Intn(4 * modelPageBytes)
 			commands = append(commands, fmt.Sprintf("truncate(%d)", size))
 			if err := file.Truncate(t.Context(), int64(size)); err != nil {
 				failDiskModel(t, seed, step, commands, "Truncate: %v", err)
@@ -73,13 +78,20 @@ func runDiskStateMachine(t *testing.T, seed int64, steps int) {
 				volatile = append(volatile, make([]byte, size-len(volatile))...)
 			}
 		case 3:
+			offset, length := random.Intn(4*modelPageBytes), 1+random.Intn(2*modelPageBytes)
+			commands = append(commands, fmt.Sprintf("punch(%d,%d)", offset, length))
+			if err := file.(platform.SparseFile).PunchHole(t.Context(), int64(offset), int64(length)); err != nil {
+				failDiskModel(t, seed, step, commands, "PunchHole: %v", err)
+			}
+			clear(volatile[min(offset, len(volatile)):min(offset+length, len(volatile))])
+		case 4:
 			commands = append(commands, "sync")
 			if err := file.Sync(t.Context()); err != nil {
 				failDiskModel(t, seed, step, commands, "Sync: %v", err)
 			}
 			durable = bytes.Clone(volatile)
 			durableExists = true
-		case 4:
+		case 5:
 			commands = append(commands, "power-loss")
 			stale := file
 			if err := disk.PowerLoss(t.Context()); err != nil {
@@ -136,8 +148,13 @@ func assertDiskImage(
 	if err != nil && !errors.Is(err, io.EOF) {
 		failDiskModel(t, seed, step, commands, "ReadAt: %v", err)
 	}
-	if n != len(got) || !bytes.Equal(got, want) {
-		failDiskModel(t, seed, step, commands, "ReadAt = (%d, %x), want (%d, %x)", n, got, len(want), want)
+	if n != len(got) {
+		failDiskModel(t, seed, step, commands, "ReadAt read %d bytes, want %d", n, len(want))
+	}
+	for offset := range want {
+		if got[offset] != want[offset] {
+			failDiskModel(t, seed, step, commands, "byte %d = %#x, want %#x", offset, got[offset], want[offset])
+		}
 	}
 }
 

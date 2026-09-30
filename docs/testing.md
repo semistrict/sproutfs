@@ -7,6 +7,10 @@ substitutes a simplified storage implementation. Simulation tests use virtual
 time. When a random workload fails, it reports its seed, the commands it ran and
 the recent simulator events.
 
+A simulated file is sparse, as a file on a real filesystem is. A pager truncates
+its spill file to hold every dirty page it may keep, and that hole costs the test
+process no memory.
+
 `internal/simtest` is the only way to build a simulated deployment. Every
 campaign is a schedule, a fault set and an invariant set over the deployment's
 `World`. See [One harness](#one-harness) below.

@@ -1,6 +1,7 @@
 package sim
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"encoding/binary"
@@ -137,8 +138,8 @@ type pendingOp struct {
 }
 
 type diskImage struct {
-	volatile      []byte
-	durable       []byte
+	volatile      fileBytes
+	durable       fileBytes
 	durableExists bool
 	// pending is every modification since the last successful Sync, in the
 	// order it reached volatile. It is retained only when the disk resolves
@@ -223,7 +224,7 @@ func (d *Disk) Open(ctx context.Context, name string, options platform.OpenOptio
 			fmt.Sprintf("%s/%s/open/%d/kill-mode", d.id, name, image.opens), 2))
 	}
 	if options.Truncate {
-		image.volatile = nil
+		image.volatile = fileBytes{}
 		d.recordPendingLocked(image, pendingOp{kind: pendingTruncate, id: id})
 	}
 	handle := &file{disk: d, image: image, name: name, epoch: d.epoch}
@@ -361,7 +362,7 @@ func (d *Disk) PowerLoss(ctx context.Context) error {
 			delete(d.files, name)
 			continue
 		}
-		image.volatile = append([]byte(nil), image.durable...)
+		image.volatile = image.durable.clone()
 		if d.config.PowerLossFaults {
 			d.resolvePendingLocked(name, image)
 		}
@@ -412,10 +413,9 @@ func (d *Disk) resolvePendingLocked(name string, image *diskImage) {
 			// non-durable truncate.
 			if r.Chance(key+"/apply", 0.5) {
 				if op.kind == pendingTruncate {
-					image.volatile = resizeImage(image.volatile, op.length)
+					image.volatile.resize(op.length)
 				} else {
-					size := int64(len(image.volatile))
-					clear(image.volatile[min(op.offset, size):min(op.offset+op.length, size)])
+					image.volatile.zero(op.offset, op.offset+op.length)
 				}
 				outcome = PowerLossApplied
 			} else {
@@ -447,7 +447,7 @@ func (d *Disk) resolveWriteLocked(r Random, key string, image *diskImage, op pen
 			data := op.data[at : at+sectorLength]
 			switch {
 			case pageKill == NoCorruption || (pageKill == FullCorruption && r.Chance(sector+"/intact", 0.25)):
-				image.volatile = writeInto(image.volatile, op.offset+at, data)
+				image.volatile.writeAt(op.offset+at, data)
 				applied = true
 			case pageKill == FullCorruption && r.Chance(sector+"/corrupt", 0.66667):
 				// The part that did not reach the device is the sector's tail
@@ -469,10 +469,10 @@ func (d *Disk) resolveWriteLocked(r Random, key string, image *diskImage, op pen
 				if garbage && badStart != badEnd {
 					bad := append([]byte(nil), data...)
 					fillGarbage(r, sector+"/bytes", bad[badStart:badEnd])
-					image.volatile = writeInto(image.volatile, op.offset+at, bad)
+					image.volatile.writeAt(op.offset+at, bad)
 					garbled = true
 				} else if goodStart != goodEnd {
-					image.volatile = writeInto(image.volatile, op.offset+at+goodStart, data[goodStart:goodEnd])
+					image.volatile.writeAt(op.offset+at+goodStart, data[goodStart:goodEnd])
 					applied = true
 					lost = true
 				} else {
@@ -507,22 +507,99 @@ func fillGarbage(r Random, id string, bad []byte) {
 	}
 }
 
-// writeInto applies one extent to an image, extending it with zeroes when the
-// extent starts past its end.
-func writeInto(image []byte, offset int64, data []byte) []byte {
-	end := int(offset) + len(data)
-	if end > len(image) {
-		image = append(image, make([]byte, end-len(image))...)
-	}
-	copy(image[int(offset):end], data)
-	return image
+// fileBytes is a file's contents: its size and the device pages that hold
+// data. A page the map lacks reads as zeroes, as a hole does in a sparse file,
+// so a file truncated to the size of a pager's whole spill costs nothing until
+// it is written. A stored page is never changed; a write stores a changed copy.
+// A Sync and a power loss therefore share pages between the volatile and the
+// durable image instead of copying the file.
+type fileBytes struct {
+	size  int64
+	pages map[int64][]byte
 }
 
-func resizeImage(image []byte, size int64) []byte {
-	if size <= int64(len(image)) {
-		return image[:size]
+func (b fileBytes) clone() fileBytes {
+	return fileBytes{size: b.size, pages: maps.Clone(b.pages)}
+}
+
+// readAt copies what the file holds from offset into destination and returns
+// how many bytes that was. The caller has checked that offset is before the end.
+func (b fileBytes) readAt(destination []byte, offset int64) int {
+	n := int(min(int64(len(destination)), b.size-offset))
+	for done := 0; done < n; {
+		at := offset + int64(done)
+		within := at % diskPageBytes
+		chunk := destination[done:min(n, done+int(diskPageBytes-within))]
+		if page, ok := b.pages[at/diskPageBytes]; ok {
+			copy(chunk, page[within:])
+		} else {
+			clear(chunk)
+		}
+		done += len(chunk)
 	}
-	return append(image, make([]byte, int(size)-len(image))...)
+	return n
+}
+
+// writeAt stores data at offset, extending the file with zeroes when offset is
+// past its end.
+func (b *fileBytes) writeAt(offset int64, data []byte) {
+	if b.pages == nil {
+		b.pages = make(map[int64][]byte)
+	}
+	b.size = max(b.size, offset+int64(len(data)))
+	for done := 0; done < len(data); {
+		at := offset + int64(done)
+		page := make([]byte, diskPageBytes)
+		copy(page, b.pages[at/diskPageBytes])
+		done += copy(page[at%diskPageBytes:], data[done:])
+		b.pages[at/diskPageBytes] = page
+	}
+}
+
+// resize sets the file's size. What a shrink cuts off is zeroed first, so a
+// later grow reads zeroes there rather than the old bytes.
+func (b *fileBytes) resize(size int64) {
+	b.zero(size, b.size)
+	b.size = size
+}
+
+// zero makes [start, end) of the file read as zeroes and drops every page the
+// range covers whole. It visits the range's pages or the stored ones, whichever
+// are fewer, so punching or truncating a large sparse file stays cheap.
+func (b *fileBytes) zero(start, end int64) {
+	end = min(end, b.size)
+	if start >= end {
+		return
+	}
+	first, last := start/diskPageBytes, (end-1)/diskPageBytes
+	if last-first >= int64(len(b.pages)) {
+		for index := range b.pages {
+			if index >= first && index <= last {
+				b.zeroPage(index, start, end)
+			}
+		}
+		return
+	}
+	for index := first; index <= last; index++ {
+		b.zeroPage(index, start, end)
+	}
+}
+
+// zeroPage clears the part of one stored page that [start, end) covers.
+func (b *fileBytes) zeroPage(index, start, end int64) {
+	page, ok := b.pages[index]
+	if !ok {
+		return
+	}
+	base := index * diskPageBytes
+	from, to := max(start, base)-base, min(end, base+diskPageBytes)-base
+	if from == 0 && to == diskPageBytes {
+		delete(b.pages, index)
+		return
+	}
+	page = bytes.Clone(page)
+	clear(page[from:to])
+	b.pages[index] = page
 }
 
 func (d *Disk) Destroy(ctx context.Context) error {
@@ -637,11 +714,11 @@ func (f *file) ReadAt(ctx context.Context, destination []byte, offset int64) (in
 	if err := f.validLocked(); err != nil {
 		return 0, err
 	}
-	if offset >= int64(len(f.image.volatile)) {
+	if offset >= f.image.volatile.size {
 		f.disk.trace(DiskRead, f.name, "eof", 0, id)
 		return 0, io.EOF
 	}
-	n := copy(destination, f.image.volatile[offset:])
+	n := f.image.volatile.readAt(destination, offset)
 	f.disk.trace(DiskRead, f.name, "ok", n, id)
 	if n < len(destination) {
 		return n, io.EOF
@@ -673,7 +750,7 @@ func (f *file) WriteAt(ctx context.Context, source []byte, offset int64) (int, e
 		torn = true
 	}
 	if len(write) > 0 {
-		f.image.volatile = writeInto(f.image.volatile, offset, write)
+		f.image.volatile.writeAt(offset, write)
 		f.disk.recordPendingLocked(f.image, pendingOp{kind: pendingWrite, offset: offset,
 			length: int64(len(write)), data: append([]byte(nil), write...), id: id})
 	}
@@ -699,11 +776,7 @@ func (f *file) Truncate(ctx context.Context, size int64) error {
 	if err := f.validLocked(); err != nil {
 		return err
 	}
-	if size <= int64(len(f.image.volatile)) {
-		f.image.volatile = f.image.volatile[:size]
-	} else {
-		f.image.volatile = append(f.image.volatile, make([]byte, int(size)-len(f.image.volatile))...)
-	}
+	f.image.volatile.resize(size)
 	f.disk.recordPendingLocked(f.image, pendingOp{kind: pendingTruncate, length: size, id: id})
 	f.disk.trace(DiskTruncate, f.name, "ok", 0, id)
 	return nil
@@ -723,8 +796,7 @@ func (f *file) PunchHole(ctx context.Context, offset, length int64) error {
 	if err := f.validLocked(); err != nil {
 		return err
 	}
-	size := int64(len(f.image.volatile))
-	clear(f.image.volatile[min(offset, size):min(offset+length, size)])
+	f.image.volatile.zero(offset, offset+length)
 	f.disk.recordPendingLocked(f.image, pendingOp{kind: pendingPunch, offset: offset, length: length, id: id})
 	f.disk.trace(DiskPunchHole, f.name, "ok", 0, id)
 	return nil
@@ -747,7 +819,7 @@ func (f *file) Sync(ctx context.Context) error {
 		f.disk.trace(DiskSync, f.name, "not_persisted", 0, id)
 		return nil
 	}
-	f.image.durable = append([]byte(nil), f.image.volatile...)
+	f.image.durable = f.image.volatile.clone()
 	f.image.durableExists = true
 	f.image.pending = nil
 	f.disk.trace(DiskSync, f.name, "ok", 0, id)
@@ -765,7 +837,7 @@ func (f *file) Size(ctx context.Context) (int64, error) {
 	if err := f.validLocked(); err != nil {
 		return 0, err
 	}
-	size := int64(len(f.image.volatile))
+	size := f.image.volatile.size
 	f.disk.trace(DiskSize, f.name, "ok", 0, id)
 	return size, nil
 }

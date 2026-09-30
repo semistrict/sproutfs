@@ -36,6 +36,63 @@ func TestDiskPowerLossPreservesOnlySyncedContent(t *testing.T) {
 	})
 }
 
+// A pager truncates its spill file to the size of every dirty page it may
+// hold, as a real filesystem makes a hole of. The simulated disk has to be as
+// sparse, or every simulated host holds its whole spill in memory.
+func TestDiskTruncateMakesAHole(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		runtime := sim.New(sim.Config{})
+		disk := runtime.NewDisk("node-1", sim.DiskConfig{})
+		file, err := disk.Open(t.Context(), "spill", platform.OpenOptions{Create: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		const size = 1 << 40
+		if err := file.Truncate(t.Context(), size); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := file.WriteAt(t.Context(), []byte("tail"), size-4); err != nil {
+			t.Fatal(err)
+		}
+		if err := file.Sync(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if err := disk.PowerLoss(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		file, err = disk.Open(t.Context(), "spill", platform.OpenOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := file.Size(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != size {
+			t.Fatalf("size = %d, want %d", got, size)
+		}
+		middle := make([]byte, 8192)
+		middle[0] = 1
+		if _, err := file.ReadAt(t.Context(), middle, size/2-4096); err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(middle, make([]byte, len(middle))) {
+			t.Fatal("the hole in the middle of the file holds data")
+		}
+		tail := make([]byte, 8)
+		n, err := file.ReadAt(t.Context(), tail, size-8)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n != 8 || string(tail) != "\x00\x00\x00\x00tail" {
+			t.Fatalf("tail = (%d, %q), want (8, %q)", n, tail, "\x00\x00\x00\x00tail")
+		}
+		if err := file.Truncate(t.Context(), 0); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
 func TestCanceledDiskOperationPreservesPendingFault(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		runtime := sim.New(sim.Config{})
