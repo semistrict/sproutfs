@@ -21,7 +21,9 @@ const residentHeapPages = 1 << 16
 // with one alias inline and the lists' links in the page: the rest is the page
 // struct, its lock, its entry in the sharing index and its binding. Both counted
 // the fixture's record of its mapping too, which is about fifty bytes a page;
-// without it the page costs 678.
+// without it the page costs 678. It is 674 on 2026-09-30, measured with the
+// read-ahead buffers the pager pools let go (see settle): before that, a run
+// read 706, 738 or 771 by how many of them the pool happened to hold.
 const residentHeapBytes = 768
 
 // What the pager's own heap costs per page it holds resident, beyond the page
@@ -36,7 +38,7 @@ func TestAResidentPageCostsLittleHeap(t *testing.T) {
 	r, m, _ := f.memoryRegion(residentHeapPages)
 	runtime.MemProfileRate = 64
 	var before, after runtime.MemStats
-	runtime.GC()
+	settle()
 	runtime.ReadMemStats(&before)
 	for page := uint64(0); page < residentHeapPages; page += 512 {
 		access(t, r, m, page, false)
@@ -44,7 +46,7 @@ func TestAResidentPageCostsLittleHeap(t *testing.T) {
 	// The fixture's own record of the mapping is not the pager's, and a map
 	// cleared keeps its capacity, so the record is dropped whole.
 	m.pages = make(map[uint64]mapped)
-	runtime.GC()
+	settle()
 	runtime.ReadMemStats(&after)
 	stats, err := f.h.Stats(t.Context())
 	if err != nil || stats.ResidentPages != residentHeapPages {
@@ -72,4 +74,15 @@ func TestAResidentPageCostsLittleHeap(t *testing.T) {
 		t.Fatalf("a resident page costs %d bytes of heap, want at most %d", perPage, residentHeapBytes)
 	}
 	runtime.KeepAlive(r)
+}
+
+// settle collects until the heap holds only what is reachable. The pager keeps
+// its read-ahead buffers, 2 MiB each here, in a sync.Pool, and how many a run
+// leaves there depends on which processor each fault ran on. One collection
+// only moves a pool's contents to its victim cache, where they still count;
+// the second frees them. The pool is a cache of scratch space, not what a
+// resident page costs.
+func settle() {
+	runtime.GC()
+	runtime.GC()
 }
