@@ -25,6 +25,8 @@ type StoreCount struct {
 	Calls    int64 `json:"calls"`
 	Failures int64 `json:"failures"`
 	Bytes    int64 `json:"bytes"`
+	// Latency is how long the calls took, failed ones included.
+	Latency Latency `json:"latency"`
 }
 
 // Store is what this host's object store has served since the process started,

@@ -177,7 +177,7 @@ func Start(ctx context.Context, config SupervisorConfig) (Service, error) {
 	// it here is the whole of the deployment's object traffic. One checkpoint's
 	// share of it is attributed separately, through the context its publication
 	// carries.
-	s.objects, err = platform.NewMeteredObjectStore(config.ObjectStore)
+	s.objects, err = platform.NewMeteredObjectStore(config.ObjectStore, s.clock)
 	if err != nil {
 		return nil, fmt.Errorf("metered object store: %w", err)
 	}
@@ -375,7 +375,7 @@ func (s *supervisor) Status(ctx context.Context) (hostapi.Status, error) {
 		Resources: hostapi.Resources{MemoryLimit: resources.Limit, MemoryUsed: resources.Used,
 			CacheLimit: status.CacheLimit, CacheUsed: status.Cache.ResidentBytes,
 			CacheDiskLimit: status.Cache.Disk.LimitBytes, CacheDiskUsed: status.Cache.Disk.UsedBytes},
-		Store: apiStore(s.objects.Traffic()),
+		Store: apiStore(s.objects.Traffic(), s.objects.Latency()),
 	}
 	if report.Running == nil {
 		report.Running = []string{}

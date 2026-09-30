@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"sync/atomic"
+	"time"
+
+	"github.com/semistrict/sproutfs/internal/latency"
 )
 
 // ErrNoObjectStore reports a metered store asked to wrap nothing.
@@ -158,54 +161,81 @@ func objectMeterOf(ctx context.Context) *ObjectMeter {
 type MeteredObjectStore struct {
 	store  ObjectStore
 	totals ObjectMeter
+	// clock times every call, and latencies holds how long each operation's
+	// calls took, failed ones included: a slow store is slow whether or not
+	// it then refuses.
+	clock     Clock
+	latencies [objectOperations]latency.Histogram
 }
 
 var _ ObjectStore = (*MeteredObjectStore)(nil)
 
-// NewMeteredObjectStore wraps store. A nil store is a programming error and is
-// reported rather than deferred to the first call.
-func NewMeteredObjectStore(store ObjectStore) (*MeteredObjectStore, error) {
+// NewMeteredObjectStore wraps store, timing its calls on clock; nil is the
+// wall clock. A nil store is a programming error and is reported rather than
+// deferred to the first call.
+func NewMeteredObjectStore(store ObjectStore, clock Clock) (*MeteredObjectStore, error) {
 	if store == nil {
 		return nil, ErrNoObjectStore
 	}
-	return &MeteredObjectStore{store: store}, nil
+	return &MeteredObjectStore{store: store, clock: ClockOr(clock)}, nil
+}
+
+// ObjectLatency is how long each operation's calls took, as histograms.
+type ObjectLatency struct {
+	Head, Get, Put, Delete, List latency.Snapshot
+}
+
+// Latency reports how long every call this store has served took, by
+// operation.
+func (s *MeteredObjectStore) Latency() ObjectLatency {
+	return ObjectLatency{
+		Head: s.latencies[HeadOperation].Snapshot(), Get: s.latencies[GetOperation].Snapshot(),
+		Put: s.latencies[PutOperation].Snapshot(), Delete: s.latencies[DeleteOperation].Snapshot(),
+		List: s.latencies[ListOperation].Snapshot(),
+	}
 }
 
 // Traffic reports everything this store has served since it was built.
 func (s *MeteredObjectStore) Traffic() ObjectTraffic { return s.totals.Traffic() }
 
 // record tallies one call against the totals and against the context's meter.
-func (s *MeteredObjectStore) record(ctx context.Context, operation ObjectOperation, bytes int64, err error) {
+func (s *MeteredObjectStore) record(ctx context.Context, operation ObjectOperation, began time.Time, bytes int64, err error) {
 	s.totals.record(operation, bytes, err)
 	objectMeterOf(ctx).record(operation, bytes, err)
+	s.latencies[operation].Observe(s.clock.Since(began))
 }
 
 func (s *MeteredObjectStore) Head(ctx context.Context, key ObjectKey) (ObjectMetadata, error) {
+	began := s.clock.Now()
 	metadata, err := s.store.Head(ctx, key)
-	s.record(ctx, HeadOperation, 0, err)
+	s.record(ctx, HeadOperation, began, 0, err)
 	return metadata, err
 }
 
 func (s *MeteredObjectStore) Get(ctx context.Context, request GetRequest) (GetResult, error) {
+	began := s.clock.Now()
 	result, err := s.store.Get(ctx, request)
-	s.record(ctx, GetOperation, result.ContentLength, err)
+	s.record(ctx, GetOperation, began, result.ContentLength, err)
 	return result, err
 }
 
 func (s *MeteredObjectStore) Put(ctx context.Context, request PutRequest) (PutResult, error) {
+	began := s.clock.Now()
 	result, err := s.store.Put(ctx, request)
-	s.record(ctx, PutOperation, request.Size, err)
+	s.record(ctx, PutOperation, began, request.Size, err)
 	return result, err
 }
 
 func (s *MeteredObjectStore) Delete(ctx context.Context, request DeleteRequest) error {
+	began := s.clock.Now()
 	err := s.store.Delete(ctx, request)
-	s.record(ctx, DeleteOperation, 0, err)
+	s.record(ctx, DeleteOperation, began, 0, err)
 	return err
 }
 
 func (s *MeteredObjectStore) List(ctx context.Context, request ListRequest) (ListResult, error) {
+	began := s.clock.Now()
 	result, err := s.store.List(ctx, request)
-	s.record(ctx, ListOperation, 0, err)
+	s.record(ctx, ListOperation, began, 0, err)
 	return result, err
 }

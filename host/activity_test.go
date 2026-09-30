@@ -34,7 +34,7 @@ func TestAHostCountsItsIntervalCheckpoints(t *testing.T) {
 	// A checkpoint's share of the store's traffic is counted by a metered
 	// store, as a supervisor's is.
 	h, clock, pagers := termsHost(t, func(config *host.Config) {
-		metered, err := platform.NewMeteredObjectStore(config.ObjectStore)
+		metered, err := platform.NewMeteredObjectStore(config.ObjectStore, config.Clock)
 		if err != nil {
 			t.Fatal(err)
 		}

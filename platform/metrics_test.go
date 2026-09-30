@@ -7,8 +7,10 @@ import (
 	"io"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/semistrict/sproutfs/platform"
+	"github.com/semistrict/sproutfs/platform/sim"
 )
 
 // countingStore answers every call the same way, so a test asserts what the
@@ -53,7 +55,7 @@ func key(t *testing.T, value string) platform.ObjectKey {
 }
 
 func TestAMeteredStoreCountsEveryOperation(t *testing.T) {
-	store, err := platform.NewMeteredObjectStore(countingStore{size: 4096})
+	store, err := platform.NewMeteredObjectStore(countingStore{size: 4096}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +101,7 @@ func TestAMeteredStoreCountsEveryOperation(t *testing.T) {
 }
 
 func TestAFailedCallCountsAsAFailureAndMovesNoBytes(t *testing.T) {
-	store, err := platform.NewMeteredObjectStore(countingStore{size: 4096, fail: platform.ErrNotFound})
+	store, err := platform.NewMeteredObjectStore(countingStore{size: 4096, fail: platform.ErrNotFound}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +124,7 @@ func TestAFailedCallCountsAsAFailureAndMovesNoBytes(t *testing.T) {
 // A meter on the context is what tells one unit of work's traffic from another's
 // when both go through the same store.
 func TestAContextMeterCountsOnlyItsOwnCalls(t *testing.T) {
-	store, err := platform.NewMeteredObjectStore(countingStore{size: 8})
+	store, err := platform.NewMeteredObjectStore(countingStore{size: 8}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +156,7 @@ func TestAContextMeterCountsOnlyItsOwnCalls(t *testing.T) {
 // One checkpoint's uploads run on many goroutines at once, so its meter has to
 // be safe for concurrent use.
 func TestAMeterCountsConcurrentCalls(t *testing.T) {
-	store, err := platform.NewMeteredObjectStore(countingStore{size: 8})
+	store, err := platform.NewMeteredObjectStore(countingStore{size: 8}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +178,52 @@ func TestAMeterCountsConcurrentCalls(t *testing.T) {
 }
 
 func TestAMeteredStoreNeedsAStore(t *testing.T) {
-	if _, err := platform.NewMeteredObjectStore(nil); !errors.Is(err, platform.ErrNoObjectStore) {
+	if _, err := platform.NewMeteredObjectStore(nil, nil); !errors.Is(err, platform.ErrNoObjectStore) {
 		t.Fatalf("wrapping nothing returned %v", err)
+	}
+}
+
+// slowStore takes a fixed time on the clock it is given for every call, and
+// fails every Head.
+type slowStore struct {
+	countingStore
+	clock *sim.Clock
+	takes time.Duration
+}
+
+func (s slowStore) Head(context.Context, platform.ObjectKey) (platform.ObjectMetadata, error) {
+	s.clock.Advance(s.takes)
+	return platform.ObjectMetadata{}, platform.ErrUnavailable
+}
+
+func (s slowStore) Get(ctx context.Context, request platform.GetRequest) (platform.GetResult, error) {
+	s.clock.Advance(s.takes)
+	return s.countingStore.Get(ctx, request)
+}
+
+// A metered store times every call on its clock, failed ones included, and
+// keeps the times by operation.
+func TestAMeteredStoreTimesEveryCallByOperation(t *testing.T) {
+	clock := sim.New(sim.Config{Seed: 1}).NewClock("store")
+	store, err := platform.NewMeteredObjectStore(slowStore{countingStore: countingStore{size: 8}, clock: clock,
+		takes: 3 * time.Millisecond}, clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		result, err := store.Get(t.Context(), platform.GetRequest{Key: key(t, "a")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		result.Body.Close()
+	}
+	if _, err := store.Head(t.Context(), key(t, "a")); !errors.Is(err, platform.ErrUnavailable) {
+		t.Fatalf("head = %v, want the store's failure", err)
+	}
+	took := store.Latency()
+	if took.Get.Count != 2 || took.Get.TotalNS != uint64(6*time.Millisecond) || took.Head.Count != 1 ||
+		took.Put.Count != 0 {
+		t.Fatalf("the store timed get %+v, head %+v and put %+v; want two gets of 3 ms, one head and no put",
+			took.Get, took.Head, took.Put)
 	}
 }

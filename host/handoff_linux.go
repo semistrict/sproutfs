@@ -4,6 +4,7 @@ package host
 
 import (
 	hostapi "github.com/semistrict/sproutfs/api/host"
+	"github.com/semistrict/sproutfs/internal/latency"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/vmmigrate"
 )
@@ -71,10 +72,11 @@ func apiLifecycle(a Activity) hostapi.Lifecycle {
 }
 
 // apiStore is the wire form of what this host's object store has served.
-func apiStore(traffic platform.ObjectTraffic) hostapi.Store {
-	count := func(c platform.ObjectCount) hostapi.StoreCount {
-		return hostapi.StoreCount{Calls: c.Calls, Failures: c.Failures, Bytes: c.Bytes}
+func apiStore(traffic platform.ObjectTraffic, took platform.ObjectLatency) hostapi.Store {
+	count := func(c platform.ObjectCount, l latency.Snapshot) hostapi.StoreCount {
+		return hostapi.StoreCount{Calls: c.Calls, Failures: c.Failures, Bytes: c.Bytes, Latency: hostapi.LatencyOf(l)}
 	}
-	return hostapi.Store{Head: count(traffic.Head), Get: count(traffic.Get), Put: count(traffic.Put),
-		Delete: count(traffic.Delete), List: count(traffic.List)}
+	return hostapi.Store{Head: count(traffic.Head, took.Head), Get: count(traffic.Get, took.Get),
+		Put: count(traffic.Put, took.Put), Delete: count(traffic.Delete, took.Delete),
+		List: count(traffic.List, took.List)}
 }

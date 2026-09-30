@@ -50,7 +50,7 @@ func (sealedPages) Retire(context.Context, bool) error { return nil }
 // both go through one metered store, which is how a host is assembled.
 func meteredManager(t *testing.T, h *harness) (*volume.Manager, *platform.MeteredObjectStore) {
 	t.Helper()
-	metered, err := platform.NewMeteredObjectStore(h.objects)
+	metered, err := platform.NewMeteredObjectStore(h.objects, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -143,3 +143,19 @@ func bucketAt(i int) []uint64 {
 	buckets[i] = 1
 	return buckets
 }
+
+// How long the object store takes, per operation, failed calls included.
+func TestMetricsExposeStoreLatency(t *testing.T) {
+	body := hostapi.Metrics(hostapi.Status{Store: hostapi.Store{
+		Put: hostapi.StoreCount{Calls: 1, Latency: hostapi.Latency{Count: 1, TotalNS: 20_000_000, Buckets: bucketAt(15)}}}})
+	for _, want := range []string{
+		"# TYPE sproutfs_store_seconds histogram",
+		`sproutfs_store_seconds_bucket{operation="put",le="0.032768"} 1`,
+		`sproutfs_store_seconds_sum{operation="put"} 0.02`,
+		`sproutfs_store_seconds_count{operation="get"} 0`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("the exposition has no %q in it:\n%s", want, body)
+		}
+	}
+}

@@ -268,6 +268,11 @@ func Metrics(status Status) string {
 		func(c StoreCount) int64 { return c.Failures })
 	labelled("sproutfs_store_bytes_total", "Object bytes moved, which only get and put move.",
 		func(c StoreCount) int64 { return c.Bytes })
+	fmt.Fprintf(&out, "# HELP sproutfs_store_seconds How long each object store call took, failed ones included.\n"+
+		"# TYPE sproutfs_store_seconds histogram\n")
+	for _, operation := range operations {
+		histogram(&out, "sproutfs_store_seconds", fmt.Sprintf("operation=%q", operation.name), operation.count.Latency)
+	}
 	return out.String()
 }
 
