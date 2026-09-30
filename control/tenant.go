@@ -11,10 +11,31 @@ import "strings"
 // A VM with no tenant lives where every VM lived before tenants existed, so a
 // deployment that has none keeps its keys.
 //
-// No page crosses between tenants. A fork's child belongs to its parent's
-// tenant, and a page's identity is the checkpoint that published it, which
-// names the tenant, so a pager never shares a resident page between two
-// tenants either.
+// No page crosses between tenants, except the pages of a public template (see
+// Public). A fork's child belongs to its parent's tenant, and a page's
+// identity is the checkpoint that published it, which names the tenant, so a
+// pager never shares a resident page between two tenants either.
+
+// TemplatePrefix is the reserved namespace of the identities of templates:
+// VMs that hold an imported guest image, which nothing runs and every VM
+// created from the image forks. No other VM is named in it.
+const TemplatePrefix = "template-"
+
+// IsTemplate reports an identity in the template namespace, of a tenant or of
+// none.
+func IsTemplate(id string) bool {
+	_, name := SplitID(id)
+	return strings.HasPrefix(name, TemplatePrefix)
+}
+
+// Public reports a template of no tenant. It is the one exception to the rule
+// that no page crosses between tenants: a VM of any tenant may be created from
+// it and map its pages. Nothing but an import writes it, so what crosses is an
+// image and never a guest. Every other VM of no tenant is still no tenant's
+// to share.
+func Public(id string) bool {
+	return TenantOf(id) == "" && IsTemplate(id)
+}
 
 // TenantPrefix is the namespace every tenant's objects live under.
 const TenantPrefix = "tenants/"

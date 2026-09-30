@@ -629,8 +629,11 @@ func (s *supervisor) running(id string) (*machine, error) {
 }
 
 // absent refuses an identity this host already runs, rather than replacing a
-// live guest with another.
+// live guest with another, and one no guest may run as.
 func (s *supervisor) absent(id string) error {
+	if err := guestless(id); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.machines[id] != nil {

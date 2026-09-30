@@ -123,7 +123,7 @@ func (s *supervisor) Create(ctx context.Context, request hostapi.CreateRequest) 
 func (s *supervisor) createPoint(ctx context.Context, request hostapi.CreateRequest) (*volume.ForkPoint, string, string, error) {
 	from := request.From
 	if from == nil {
-		template, name, err := s.templateNamed(ctx, control.TenantOf(request.ID), request.Template)
+		template, name, err := s.templateNamed(ctx, request.Template)
 		if err != nil {
 			return nil, "", "", err
 		}

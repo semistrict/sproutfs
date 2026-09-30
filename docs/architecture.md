@@ -24,7 +24,9 @@ The design rests on three decisions.
    same image, and the hosts import it once between them. The name identifies
    only the template. The checkpoints under that identity belong to the
    template, as any VM's checkpoints belong to that VM. Forks of the template
-   share pages by page identity.
+   share pages by page identity. A template of no tenant is public: a VM of any
+   tenant is created from it and shares its pages, and nothing else crosses
+   between tenants.
 3. A checkpoint has two steps: a pause and an upload. The pause stops the
    vCPUs, saves the VMM state, seals the dirty pages and resumes the vCPUs. Only
    the pause is on any latency path. A fork and a migration take the pause and

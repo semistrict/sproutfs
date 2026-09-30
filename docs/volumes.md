@@ -494,8 +494,11 @@ Every object is stored under the identity of the VM that published it. No
 object is named by its content, with one exception. The identity of a
 [template](hosting.md) is the sha256 of the guest image it holds. So every host
 uses the same template name for the same image, and the hosts import it only
-once between them. This names the VM, not its objects. A template's checkpoints
-use the same layout as any other VM's checkpoints:
+once between them. This names the VM, not its objects. A template of no
+tenant is public: a VM of any tenant forks it, and its objects lie outside
+every tenant's namespace, so no tenant is billed for them and deleting a
+tenant leaves them. A template's checkpoints use the same layout as any other
+VM's checkpoints:
 
 ```
 control/<id>                            control record

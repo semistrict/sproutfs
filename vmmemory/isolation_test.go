@@ -213,8 +213,10 @@ func TestAForkPointLendsItsPagesThroughAFileOfItsOwn(t *testing.T) {
 			if got := access(t, child, cm, 0, false)[0]; got != 44 {
 				t.Fatalf("the child reads %d, want the 44 the point lends", got)
 			}
-			if cm.number(0) != 2 || cm.pages[0].place == pm.pages[0].place || cb.loads != 0 {
-				t.Fatalf("the child maps %+v as file %d after %d volume reads, want a copy in file 2 and no read",
+			// Files 0, 1 and 2 are the private, the tenant's and the public
+			// file, so the first fork file is file 3.
+			if cm.number(0) != 3 || cm.pages[0].place == pm.pages[0].place || cb.loads != 0 {
+				t.Fatalf("the child maps %+v as file %d after %d volume reads, want a copy in file 3 and no read",
 					cm.pages[0], cm.number(0), cb.loads)
 			}
 			if lent != (place{}) && cm.pages[0].place != lent {
@@ -230,7 +232,7 @@ func TestAForkPointLendsItsPagesThroughAFileOfItsOwn(t *testing.T) {
 			t.Fatal(err)
 		}
 		for i, cm := range children {
-			if _, mapped := cm.pages[0]; mapped || cm.files[2] != nil {
+			if _, mapped := cm.pages[0]; mapped || cm.files[3] != nil {
 				t.Fatalf("child %d still maps the lent page or holds the point's file after the seal ended", i)
 			}
 		}

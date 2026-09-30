@@ -23,9 +23,9 @@ type windowPlan struct {
 	store   uint64
 	extents []control.Extent
 	pages   []*resident // locked, indexed by page-start
-	// file is the file this window's loads by identity go in, and reserved the
-	// slot each page's load has, of that file or of this memory region's own,
-	// or slot -1.
+	// file is the file this window's loads by identity go in, except a public
+	// page's (see fileOf), and reserved the slot each page's load has, of that
+	// file, of the public file or of this memory region's own, or slot -1.
 	file     *arenaFile
 	reserved []fileSlot
 	fresh    []bool // page tables not yet installed
@@ -66,7 +66,7 @@ func (r *MemoryRegion) plan(ctx context.Context, start, end, fault uint64) (*win
 		return nil, err
 	}
 	for _, e := range extents {
-		if err := r.inTenant(e.Identity.Ref); err != nil {
+		if err := r.mayRead(e.Identity.Ref); err != nil {
 			return nil, err
 		}
 	}
@@ -289,19 +289,43 @@ func (p *windowPlan) needsLoad(page uint64) bool {
 	return h.clean[id] == nil
 }
 
+// fileOf is the file a load of this page by its identity goes in: the public
+// file for a page of a public template, and the window's file for every other.
+// A public page is never in a tenant's file, and only a public page is in the
+// public file, so every VMM may be given it.
+func (p *windowPlan) fileOf(page uint64) *arenaFile {
+	if public := p.memoryRegion.public; public != nil {
+		if id, named := p.identity(page); named && control.Public(id.id.Ref.VM) {
+			return public
+		}
+	}
+	return p.file
+}
+
+// files is every file this window's loads by identity may go in.
+func (p *windowPlan) files() []*arenaFile {
+	if public := p.memoryRegion.public; public != nil {
+		return []*arenaFile{p.file, public}
+	}
+	return []*arenaFile{p.file}
+}
+
 // reserveAround reserves free slots for the run of pages that need loading
 // around the faulting page, so the run can become one mapping. When fewer
 // slots are free than the run needs, the pages from the faulting one forward
-// take them. Nothing is evicted; the page may remain unreserved.
+// take them. Nothing is evicted; the page may remain unreserved. The run is
+// of pages whose loads go in the faulting page's file.
 func (p *windowPlan) reserveAround(index uint64) {
+	file := p.fileOf(index)
+	needs := func(page uint64) bool { return p.needsLoad(page) && p.fileOf(page) == file }
 	first, last := index, index+1
-	for first > p.start && p.needsLoad(first-1) {
+	for first > p.start && needs(first-1) {
 		first--
 	}
-	for last < p.end && p.needsLoad(last) {
+	for last < p.end && needs(last) {
 		last++
 	}
-	at, count := p.memoryRegion.host.allocateFree(p.file, int(last-first))
+	at, count := p.memoryRegion.host.allocateFree(file, int(last-first))
 	if count == 0 {
 		return
 	}
@@ -318,20 +342,33 @@ func (p *windowPlan) reserveAround(index uint64) {
 // slots cannot cover the window even so, the pages after the faulting one come
 // first: access tends to continue forward.
 func (p *windowPlan) reserveRuns(ctx context.Context, from uint64) error {
+	for _, file := range p.files() {
+		if err := p.reserveRunsIn(ctx, from, file); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// reserveRunsIn is reserveRuns for the pages whose loads go in one file.
+func (p *windowPlan) reserveRunsIn(ctx context.Context, from uint64, file *arenaFile) error {
 	h := p.memoryRegion.host
-	needs := p.needsLoad
+	needs := func(page uint64) bool { return p.needsLoad(page) && p.fileOf(page) == file }
 	needed := 0
 	for page := p.start; page < p.end; page++ {
 		if needs(page) {
 			needed++
 		}
 	}
-	if err := h.makeRoom(ctx, p.file, needed); err != nil {
+	if needed == 0 {
+		return nil
+	}
+	if err := h.makeRoom(ctx, file, needed); err != nil {
 		return err
 	}
 	spans := [][2]uint64{{p.start, p.end}}
 	h.mu.Lock()
-	if h.freeLocked(p.file) < needed {
+	if h.freeLocked(file) < needed {
 		spans = [][2]uint64{{from, p.end}, {p.start, from}}
 	}
 	h.mu.Unlock()
@@ -345,7 +382,7 @@ func (p *windowPlan) reserveRuns(ctx context.Context, from uint64) error {
 			for page+run < span[1] && needs(page+run) {
 				run++
 			}
-			at, count := h.allocateFree(p.file, int(run))
+			at, count := h.allocateFree(file, int(run))
 			for k := range count {
 				p.reserve(page+uint64(k), at.plus(k))
 			}
@@ -487,10 +524,10 @@ func (p *windowPlan) publish(ctx context.Context, page uint64, data []byte, priv
 	}
 	p.reserved[i] = fileSlot{slot: -1}
 	id, named := p.identity(page)
-	// Only a page loaded into the file every memory region may read is shared
+	// Only a page loaded into a file other memory regions may read is shared
 	// under its identity. One loaded into this memory region's own file is its
 	// alone.
-	shared := named && at.file == p.file
+	shared := named && at.file == p.fileOf(page)
 	key := pageKey{}
 	if shared {
 		key = id

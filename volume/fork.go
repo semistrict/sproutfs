@@ -531,7 +531,8 @@ func (m *Manager) Inherit(ctx context.Context, parent control.Ref) (*ForkPoint, 
 // running, and its writer carries the pin on.
 //
 // child is the VM the point is for. A child of another tenant is refused before
-// anything is pinned, because no page crosses between tenants.
+// anything is pinned, because no page crosses between tenants, unless the
+// parent is a public template.
 func (m *Manager) InheritPublished(ctx context.Context, child string, parent control.Ref) (*ForkPoint, error) {
 	if !validID(parent.VM) || !validID(child) {
 		return nil, ErrInvalidConfig
@@ -624,9 +625,18 @@ func (f *ForkPoint) inheritedPages() map[string][]uint64 {
 // sameTenant refuses a child of a tenant other than its parent's. A fork
 // shares the parent's pages by their identity, in the store and in a host's
 // memory, so a fork across tenants is the one way a page could cross between
-// them.
+// them. A public template is the exception: its pages are an image every
+// tenant may read (control.Public).
+//
+// A child is never a template, of any tenant. A template is only ever
+// imported, and a fork named in the template namespace would be a guest
+// publishing under a name that other tenants read.
 func sameTenant(child, parent string) error {
-	if control.TenantOf(child) != control.TenantOf(parent) {
+	if control.IsTemplate(child) {
+		return fmt.Errorf("%w: %s is in the template namespace, which only an import creates",
+			ErrInvalidConfig, child)
+	}
+	if control.TenantOf(child) != control.TenantOf(parent) && !control.Public(parent) {
 		return fmt.Errorf("%w: %s cannot inherit from %s", ErrOtherTenant, child, parent)
 	}
 	return nil

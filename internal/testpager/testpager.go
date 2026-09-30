@@ -11,6 +11,8 @@
 // a writable map names file 0. So a guest's stores reach only its own region's
 // file, no page two regions map is in a private file, and no page one tenant
 // maps is in a file another tenant may read, under everything a suite plays.
+// The public file is the exception: it is every mapping's file 2, whatever its
+// tenant, and it is never given under another number.
 package testpager
 
 import (
@@ -55,12 +57,26 @@ type File struct {
 	offsets int
 	slots   map[int][]byte
 	// writer is the one mapping this file was given to writable, and readers
-	// how many were given it read-only, all of them of tenant. closed marks a
-	// file the pager gave back.
+	// how many were given it read-only, all of them of tenant unless public.
+	// public marks the public file, which holds the pages of public templates.
+	// closed marks a file the pager gave back.
 	writer  *Mapping
 	readers int
 	tenant  string
+	public  bool
 	closed  bool
+}
+
+// PublicFile is the number every memory region of an isolated arena is given
+// the public file under.
+const PublicFile = 2
+
+// Public reports the public file: the one every tenant's memory regions may
+// read, because it holds only the pages of public templates.
+func (a *Arena) Public(id int) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return id >= 0 && id < len(a.files) && a.files[id].public
 }
 
 // File makes a file of offsets slots, every one of them a hole.
@@ -203,7 +219,9 @@ func (m *Mapping) GiveFile(_ context.Context, number int, file vmmemory.ArenaFil
 		return fmt.Errorf("file %d given writable to a second memory region", f.id)
 	case !writable && f.writer != nil:
 		return fmt.Errorf("the private file %d given read-only to another memory region", f.id)
-	case !writable && f.readers > 0 && f.tenant != m.tenant:
+	case !writable && f.readers > 0 && f.public != (number == PublicFile):
+		return fmt.Errorf("file %d given as file %d, and as the public file elsewhere %t", f.id, number, f.public)
+	case !writable && f.readers > 0 && !f.public && f.tenant != m.tenant:
 		return fmt.Errorf("file %d given read-only to tenant %q and to tenant %q", f.id, f.tenant, m.tenant)
 	}
 	if writable {
@@ -211,6 +229,7 @@ func (m *Mapping) GiveFile(_ context.Context, number int, file vmmemory.ArenaFil
 	} else {
 		f.readers++
 		f.tenant = m.tenant
+		f.public = number == PublicFile
 	}
 	m.files[number] = f
 	return nil

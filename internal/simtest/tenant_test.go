@@ -86,9 +86,9 @@ func TestTwoTenantsForkingOneImageShareNoPage(t *testing.T) {
 		if err := world.Verify(ctx, simtest.ReadsMustSucceed); err != nil {
 			t.Fatal(err)
 		}
-		within, across := world.Sharing()
-		if len(across) != 0 {
-			t.Fatalf("pages crossed between tenants:\n%v", across)
+		within, public, across := world.Sharing()
+		if len(across) != 0 || public != 0 {
+			t.Fatalf("pages crossed between tenants, %d of them public:\n%v", public, across)
 		}
 		// Every page is shared, the one only the fork point held included: the
 		// template published the point once, and its children name it.
@@ -102,6 +102,97 @@ func TestTwoTenantsForkingOneImageShareNoPage(t *testing.T) {
 		}
 		if err := world.Close(ctx); err != nil {
 			t.Error(err)
+		}
+	})
+}
+
+// TestTwoTenantsCreatingFromAPublicTemplateShareOnlyItsPages: a template of no
+// tenant is public. It keeps a checkpoint of its memory and stops, and three
+// VMs of two tenants are created from that checkpoint on one host. Each reads
+// the template's image, and the guests of both tenants map one page of the
+// public file for every page the template published. They then write, and
+// what they write crosses no tenant: in an isolated arena no other file is
+// mapped by both tenants.
+func TestTwoTenantsCreatingFromAPublicTemplateShareOnlyItsPages(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		runtime := newCampaignRuntime(37, false)
+		ctx := sim.WithRuntime(t.Context(), runtime)
+		const memoryPages = 4
+		volumes := []volume.VolumeSpec{
+			{Name: simtest.MemoryVolume, Size: memoryPages * simtest.RAMPage, PageSize: simtest.RAMPage}}
+		topology := simtest.Topology{Hosts: []string{"host-0"}, VMs: []simtest.VMSpec{
+			{ID: "template-image", Host: 0, Volumes: volumes},
+			{ID: "alpha/child-a", Host: 0, Parent: "template-image", Kept: true, Volumes: volumes},
+			{ID: "alpha/child-b", Host: 0, Parent: "template-image", Kept: true, Volumes: volumes},
+			{ID: "beta/child-a", Host: 0, Parent: "template-image", Kept: true, Volumes: volumes},
+		}}
+		k := knobs.Defaults()
+		k.ResidentPages, k.DirtyPages, k.LogicalPages = 64, 64, 256
+		k.ReadAheadPages, k.WriteAheadPages = 1, 1
+		if err := k.Validate(); err != nil {
+			t.Fatal(err)
+		}
+		prefix := newPrefix(t, "public/")
+		world := simtest.MustStart(t, ctx, simtest.Config{Runtime: runtime, Topology: topology,
+			Knobs: k, Prefix: prefix, Log: t.Logf})
+
+		if err := world.StoreAll("template-image", 0x5c); err != nil {
+			t.Fatal(err)
+		}
+		if err := world.Keep(ctx, "template-image", false); err != nil {
+			t.Fatal(err)
+		}
+		if err := world.Stop(ctx, "template-image"); err != nil {
+			t.Fatal(err)
+		}
+		kept, _ := world.KeptOf(ctx, "template-image")
+		if len(kept) != 1 {
+			t.Fatalf("the template keeps %v, want the one checkpoint it asked to keep", kept)
+		}
+		for _, child := range topology.VMs[1:] {
+			if err := world.CreateFromKept(ctx, child, kept[0], false); err != nil {
+				t.Fatalf("creating %s from the public template: %v", child.ID, err)
+			}
+			if world.HostOf(child.ID) != 0 {
+				t.Fatalf("%s was not created", child.ID)
+			}
+		}
+		if err := world.Verify(ctx, simtest.ReadsMustSucceed); err != nil {
+			t.Fatal(err)
+		}
+		within, public, across := world.Sharing()
+		if len(across) != 0 {
+			t.Fatalf("pages other than the public template's crossed between tenants:\n%v", across)
+		}
+		// Every page the guests share is the template's, so all of it is counted
+		// as public and none as shared within alpha.
+		if public != memoryPages || within["alpha"] != 0 {
+			t.Fatalf("the tenants share %d public pages and alpha's guests %d other pages, want the template's %d and none",
+				public, within["alpha"], memoryPages)
+		}
+
+		for value, child := range topology.VMs[1:] {
+			if err := world.StorePages(child.ID, simtest.MemoryVolume, []uint64{1}, byte(0x70+value)); err != nil {
+				t.Fatal(err)
+			}
+			if err := world.Checkpoint(ctx, child.ID); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := world.Verify(ctx, simtest.ReadsMustSucceed); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, across := world.Sharing(); len(across) != 0 {
+			t.Fatalf("what the children wrote crossed between tenants:\n%v", across)
+		}
+		if err := world.CheckSelected(ctx); err != nil {
+			t.Error(err)
+		}
+		if err := world.Close(ctx); err != nil {
+			t.Error(err)
+		}
+		if err := volume.CheckDeployment(ctx, runtime.ObjectStore(), prefix); err != nil {
+			t.Fatal(err)
 		}
 	})
 }

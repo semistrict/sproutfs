@@ -497,3 +497,24 @@ func TestATenantsTemplateIsItsOwn(t *testing.T) {
 		t.Fatalf("importing for an invalid tenant gave %v, want ErrRequest", err)
 	}
 }
+
+// TestEveryTenantCreatesFromAPublicTemplate: a template of no tenant is public.
+// It is imported once, outside every tenant's namespace, and a VM of every
+// tenant forks it on any host and reads the image.
+func TestEveryTenantCreatesFromAPublicTemplate(t *testing.T) {
+	h := newHostHarness(t)
+	h.start(t)
+	imported := templateOn(t, h, 0, templateImport("base", 0x62))
+	if want := templateIDOf(guestImage(0x62)); imported.ID() != want {
+		t.Fatalf("the public template is %s, want %s", imported.ID(), want)
+	}
+	opened, err := h.hosts[1].Template(t.Context(), imported.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"acme/vm-1", "zeta/vm-1", "vm-1"} {
+		if got := forkReads(t, h, 1, id, opened); !bytes.Equal(got, guestImage(0x62)) {
+			t.Fatalf("%s reads %x..., want the image", id, got[:4])
+		}
+	}
+}

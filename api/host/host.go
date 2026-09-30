@@ -10,10 +10,10 @@ package host
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"strings"
 	"time"
 
 	"github.com/semistrict/sproutfs/api/guest"
+	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/internal/jsonhttp"
 )
 
@@ -350,7 +350,7 @@ type Resources struct {
 // asked for it, nothing runs it, and a listing that showed it would offer
 // operations on one host's own bookkeeping. The identities the deployment
 // allocates are ULIDs under "vm-", so the two namespaces cannot collide.
-const TemplatePrefix = "template-"
+const TemplatePrefix = control.TemplatePrefix
 
 // TemplateID is the identity of the template one guest image is imported into:
 // the sha256 of the image file, hex.
@@ -373,15 +373,10 @@ func TemplateID(digest [sha256.Size]byte) string {
 // IsTemplate reports an identity in the template namespace, which is what a
 // listing of the deployment's VMs leaves out.
 //
-// A tenant's template is <tenant>/template-<digest>: a VM of a tenant forks only
-// its own tenant's templates, so each tenant imports an image for itself.
-func IsTemplate(id string) bool {
-	_, name, found := strings.Cut(id, "/")
-	if !found {
-		name = id
-	}
-	return strings.HasPrefix(name, TemplatePrefix)
-}
+// A tenant's template is <tenant>/template-<digest>, and a VM of that tenant
+// alone is created from it. A template of no tenant is public: a VM of any
+// tenant is created from it (control.Public).
+func IsTemplate(id string) bool { return control.IsTemplate(id) }
 
 // Template is one guest image this host can create VMs from: the name a create
 // request selects, the RAM every VM forked from it gets, and whether this host
@@ -402,8 +397,9 @@ type Template struct {
 // another size.
 type ImportTemplateRequest struct {
 	Memory uint64 `json:"memory,omitempty"`
-	// Tenant is the tenant the template is imported for, empty for none. Only
-	// that tenant's VMs can be created from it.
+	// Tenant is the tenant the template is imported for, and only that
+	// tenant's VMs can be created from it. Empty imports a public template,
+	// which a VM of any tenant can be created from.
 	Tenant string `json:"tenant,omitempty"`
 }
 

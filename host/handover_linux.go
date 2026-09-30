@@ -34,6 +34,9 @@ func (s *supervisor) Migrate(ctx context.Context, id string, destination platfor
 
 func (s *supervisor) Receive(ctx context.Context, wire hostapi.Handoff) (hostapi.ReceiveResult, error) {
 	handoff := handoffOf(wire)
+	if err := guestless(handoff.VMID); err != nil {
+		return hostapi.ReceiveResult{}, err
+	}
 	// Receive returns only once every page no checkpoint has is here: those
 	// pages exist nowhere else. A receive that could not get them has already
 	// given the VM up, and one refused before it started never recorded a

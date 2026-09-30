@@ -370,7 +370,7 @@ devices. A memory session whose peer is root, or not the user its placement
 names, is refused (`checkPeer`). An embedder's Starter names its VMM's user in
 `Placement.Owner` and is held to it the same way.
 
-There are three kinds of file:
+There are four kinds of file:
 
 - **A private file per memory region.** It holds the region's private pages:
   dirty, sealed, written ahead, spilled back in, and loaded privately. Only that
@@ -391,10 +391,16 @@ There are three kinds of file:
   back to the arena with the last of them. It has the pager's whole offset
   space (`Config.ArenaOffsets`), so each tenant on a host costs the pager that
   much address space, though only its pages cost memory.
+- **One public file.** It holds the pages of public templates
+  (`control.Public`): pages loaded by an identity whose checkpoint is a
+  template of no tenant, and such pages moved out of the private file that
+  published them. Every VMM receives it read-only, as file 2, whatever its
+  tenant. No other page ever enters it. It lives as a tenant's shared file
+  does: made with the first region, kept while it holds idle pages.
 - **A fork file per fork point.** It holds the pages a fork point lends to
   children on this host. A child's populate or fault copies a lent page there,
   once, at the page's own index. Later children map the same copy. The children
-  receive the file read-only, as file 2 or up, just before they first map from
+  receive the file read-only, as file 3 or up, just before they first map from
   it. The parent keeps its page and is never remapped. When the seal ends, the
   children's mappings of the copies are revoked, each child is sent DROP_FILE,
   and the file goes back to the arena.
@@ -412,6 +418,14 @@ and so does a fork point that would name its pages under another tenant's
 checkpoint. The sharing index is keyed by identity, so it never hands one
 tenant's page to another. A page is only ever in its own tenant's shared file,
 and a VMM of one tenant is never given another tenant's.
+
+**A public template is the one exception.** A template of no tenant holds an
+image an operator chose, and a VM of any tenant may be created from it. A
+region may read a page of its checkpoints (`mayRead`), and the page goes in
+the public file, so tenants share it and nothing else. A fork point never
+names pages under a public checkpoint: no guest's writes become public. The
+cost is that tenants share physical pages, which is a timing channel between
+them. It reveals at most which pages of a public image another tenant reads.
 
 A page whose bytes no other region may inherit is loaded into the region's own
 file, not the shared one. That is a page with no identity, a page a fork point

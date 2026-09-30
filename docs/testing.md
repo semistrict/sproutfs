@@ -490,11 +490,16 @@ once:
 - the interval loop skips the sealed parent instead of failing on it;
 - the parent is checkpointed again only after the last child has published.
 
-No page crosses between tenants. The simulated arena gives a read-only file to
-the memory regions of one tenant only, in every suite and campaign. A campaign
-has two tenants each fork their own template of one image on one host.
-`World.Sharing` then finds the pages each tenant's guests share, and no page, or
-file of an isolated arena, that the guests of both tenants map.
+No page crosses between tenants, except a public template's. The simulated
+arena gives a read-only file to the memory regions of one tenant only, in
+every suite and campaign, except the public file, which every region is given
+as file 2. A campaign has two tenants each fork their own template of one
+image on one host. `World.Sharing` then finds the pages each tenant's guests
+share, and no page, or file of an isolated arena, that the guests of both
+tenants map. Another has two tenants create VMs from one public template.
+`World.Sharing` counts the public pages they share and requires every other
+page to be one tenant's, and every page of the public file to be a public
+template's.
 
 Capture is tested for:
 

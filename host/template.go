@@ -53,9 +53,9 @@ type TemplateImport struct {
 	// extents are read (see SparseSource); its holes are zeroes, and cost the
 	// digest CPU and no reads.
 	Source io.ReadSeeker
-	// Tenant is the tenant the template belongs to, empty for none. A VM of a
-	// tenant forks only its own tenant's templates, so the same image is one
-	// template per tenant.
+	// Tenant is the tenant the template belongs to, and a VM of a tenant forks
+	// only its own tenant's templates. Empty makes the template public: a VM of
+	// any tenant forks it (control.Public).
 	Tenant string
 	// Wait is how long this host waits for another host's import of this image
 	// to publish before it recovers it. Zero is DefaultTemplateWait; a negative
@@ -166,6 +166,16 @@ func (h *Host) TemplateOf(ctx context.Context, request TemplateImport) (*Importe
 			}
 		}
 	}
+}
+
+// guestless refuses a guest named in the template namespace. A template is
+// imported, never run: a guest running as a public one would publish pages
+// every tenant reads.
+func guestless(id string) error {
+	if control.IsTemplate(id) {
+		return fmt.Errorf("%w: %s is a template, which runs no guest", ErrRequest, id)
+	}
+	return nil
 }
 
 // ErrUnknownTemplate reports a template identity nothing has imported, and

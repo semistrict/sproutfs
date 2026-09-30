@@ -47,12 +47,14 @@ type MemoryRegion struct {
 	// stated it. Every identity its backing reports names it.
 	tenant string
 	// private is this memory region's own file in an isolated arena, which
-	// only its process is given and only it may map writable, and shared its
-	// tenant's shared file, which it may only read. Both are nil in a shared
+	// only its process is given and only it may map writable, shared its
+	// tenant's shared file, and public the file of the pages of public
+	// templates. It may only read the last two. All three are nil in a shared
 	// arena, whose one file is every memory region's. forks is the number each
 	// fork point's file it maps from was given under, guarded by Host.mu.
 	private *arenaFile
 	shared  *arenaFile
+	public  *arenaFile
 	forks   map[*arenaFile]int
 	// filesMu admits one fork point's file at a time to the process, so that no
 	// map names a file before the process holds it.
@@ -255,6 +257,18 @@ func (r *MemoryRegion) inTenant(ref control.Ref) error {
 	}
 	return fmt.Errorf("%w: a %s memory region of tenant %q was given checkpoint %s",
 		ErrOtherTenant, r.kind, r.tenant, ref)
+}
+
+// mayRead refuses a checkpoint this memory region may not read: one of another
+// tenant, unless it is a public template's (control.Public). A public page is
+// loaded into the public file, never a tenant's, so reading one hands no tenant
+// another's page. Naming pages is inTenant's alone: nothing of a memory region
+// is ever named under a public identity.
+func (r *MemoryRegion) mayRead(ref control.Ref) error {
+	if control.Public(ref.VM) {
+		return nil
+	}
+	return r.inTenant(ref)
 }
 
 // ready reports whether this memory region may still use its volume. serving is the

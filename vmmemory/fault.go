@@ -452,7 +452,7 @@ func (r *MemoryRegion) readInPage(ctx context.Context, index uint64) (*resident,
 			h.touch(pg)
 			return pg, nil
 		}
-		at, err := r.reclaimNear(ctx, r.sharedFile(), index)
+		at, err := r.reclaimNear(ctx, r.loadFile(id), index)
 		if err != nil {
 			return nil, err
 		}

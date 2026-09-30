@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/resource"
 	"github.com/semistrict/sproutfs/vmmemory/internal/slots"
@@ -67,12 +68,14 @@ type fileSlot struct {
 func (s fileSlot) plus(count int) fileSlot { return fileSlot{s.file, s.slot + count} }
 
 // The numbers a memory region's session names its files by. File 0 is its
-// private file, the only one it may map writable, and file 1 its tenant's
-// shared file in an isolated arena. A fork point's file takes the next number
-// free when a child of it first maps from it.
+// private file, the only one it may map writable. In an isolated arena file 1
+// is its tenant's shared file and file 2 the public file, which holds the
+// pages of public templates. A fork point's file takes the next number free
+// when a child of it first maps from it.
 const (
 	privateFileNumber = 0
 	sharedFileNumber  = 1
+	publicFileNumber  = 2
 )
 
 // privateFile is the file a private page of this memory region goes in: a
@@ -94,6 +97,16 @@ func (r *MemoryRegion) sharedFile() *arenaFile {
 	return r.host.files[0]
 }
 
+// loadFile is the file a page this memory region loads under key goes in: the
+// public file for a page of a public template, and its tenant's shared file
+// for every other.
+func (r *MemoryRegion) loadFile(key pageKey) *arenaFile {
+	if r.public != nil && control.Public(key.id.Ref.VM) {
+		return r.public
+	}
+	return r.sharedFile()
+}
+
 // fileNumber is the number this memory region's session names a file by, or
 // -1 for a file it was never given, which no map may name.
 func (r *MemoryRegion) fileNumber(f *arenaFile) int {
@@ -102,6 +115,8 @@ func (r *MemoryRegion) fileNumber(f *arenaFile) int {
 		return privateFileNumber
 	case f == r.shared:
 		return sharedFileNumber
+	case f == r.public:
+		return publicFileNumber
 	}
 	r.host.mu.Lock()
 	defer r.host.mu.Unlock()
@@ -119,13 +134,19 @@ func (r *MemoryRegion) runAt(page uint64, at fileSlot, count int) MapRun {
 
 // giveFiles hands the memory region's process the files every session holds:
 // its private file, writable, and in an isolated arena its tenant's shared
-// file, which it may only read. Nothing is mapped before they are.
+// file and the public file, which it may only read. Nothing is mapped before
+// they are.
 func (r *MemoryRegion) giveFiles(ctx context.Context) error {
 	if err := r.mapping.GiveFile(ctx, privateFileNumber, r.privateFile().ArenaFile, true); err != nil {
 		return err
 	}
 	if r.shared != nil {
-		return r.mapping.GiveFile(ctx, sharedFileNumber, r.shared.ArenaFile, false)
+		if err := r.mapping.GiveFile(ctx, sharedFileNumber, r.shared.ArenaFile, false); err != nil {
+			return err
+		}
+	}
+	if r.public != nil {
+		return r.mapping.GiveFile(ctx, publicFileNumber, r.public.ArenaFile, false)
 	}
 	return nil
 }

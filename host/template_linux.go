@@ -14,7 +14,6 @@ import (
 	"time"
 
 	hostapi "github.com/semistrict/sproutfs/api/host"
-	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/vmmachine"
 	"github.com/semistrict/sproutfs/volume"
 )
@@ -29,7 +28,7 @@ func (s *supervisor) importing(ctx context.Context) {
 	for {
 		var failures []error
 		for _, name := range slices.Sorted(maps.Keys(s.config.Templates)) {
-			if _, err := s.templateOf(ctx, "", name, s.config.Templates[name]); err != nil {
+			if _, err := s.templateOf(ctx, name, s.config.Templates[name]); err != nil {
 				failures = append(failures, fmt.Errorf("importing %s: %w", name, err))
 			}
 		}
@@ -63,14 +62,12 @@ const importRetry = 5 * time.Second
 // at startup, and a file that changed under a running host would be a template
 // nothing has asked for.
 //
-// A tenant has its own template of a configured image, imported the first time
-// one of its VMs is created from it: a VM of a tenant forks only its own
-// tenant's templates. The images read at startup are the templates of no
-// tenant.
-func (s *supervisor) templateOf(ctx context.Context, tenant, name string, chosen Template) (*ImportedTemplate, error) {
-	key := control.InTenant(tenant, name)
+// A configured image is a public template (control.Public): the operator chose
+// it, so every tenant's VMs are created from the one import of it and share its
+// pages, in the store and in this host's memory.
+func (s *supervisor) templateOf(ctx context.Context, name string, chosen Template) (*ImportedTemplate, error) {
 	s.mu.Lock()
-	cached := s.templates[key]
+	cached := s.templates[name]
 	s.mu.Unlock()
 	if cached != nil {
 		return cached, nil
@@ -80,12 +77,12 @@ func (s *supervisor) templateOf(ctx context.Context, tenant, name string, chosen
 		return nil, fmt.Errorf("guest image %s: %w", chosen.Path, err)
 	}
 	defer file.Close()
-	prepared, err := s.importTemplate(ctx, file, chosen.MemoryBytes, tenant, name)
+	prepared, err := s.importTemplate(ctx, file, chosen.MemoryBytes, "", name)
 	if err != nil {
 		return nil, err
 	}
 	s.mu.Lock()
-	s.templates[key] = prepared
+	s.templates[name] = prepared
 	s.mu.Unlock()
 	return prepared, nil
 }
@@ -182,7 +179,7 @@ func (s *supervisor) importTemplate(ctx context.Context, source io.ReadSeeker, m
 // identity, which is how a VM is created from an image imported on request on
 // whichever host. The time is what reaching it cost, which is an import only
 // for the first VM of a configured image.
-func (s *supervisor) templateNamed(ctx context.Context, tenant, selected string) (*ImportedTemplate, string, error) {
+func (s *supervisor) templateNamed(ctx context.Context, selected string) (*ImportedTemplate, string, error) {
 	if hostapi.IsTemplate(selected) {
 		s.mu.Lock()
 		cached := s.byID[selected]
@@ -206,7 +203,7 @@ func (s *supervisor) templateNamed(ctx context.Context, tenant, selected string)
 	if err != nil {
 		return nil, "", fmt.Errorf("%w: %w", ErrRequest, err)
 	}
-	template, err := s.templateOf(ctx, tenant, name, chosen)
+	template, err := s.templateOf(ctx, name, chosen)
 	return template, name, err
 }
 

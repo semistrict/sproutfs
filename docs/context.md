@@ -13,9 +13,15 @@ checkpoints.
 part of the VM's identity, `<tenant>/<name>`, and so part of every object key
 the VM has: they all live under `tenants/<tenant>/`. Deleting that prefix
 removes the tenant and nothing else. No page crosses between tenants: a fork's
-child belongs to its parent's tenant, and each tenant imports its own
-templates. A VM whose identity names no tenant belongs to none, and its keys
-are where every VM's were before tenants existed.
+child belongs to its parent's tenant, and a tenant's templates are its own.
+The exception is a public template. A VM whose identity names no tenant
+belongs to none, and its keys are where every VM's were before tenants
+existed.
+
+**Public template**: A template of no tenant, `template-<digest>`. A VM of any
+tenant is created from it and shares its pages. Its pages are the only ones
+that cross between tenants. A host imports its configured images as public
+templates.
 
 **Volume**: One named, byte-addressed image of a VM: its memory (`ram0`) or one
 of its PMEM disks. A volume's size is fixed for the VM's lifetime.

@@ -108,11 +108,14 @@ type arenaFile struct {
 	offsets int
 	slots   map[int][]byte
 	// writer is the one mapping this file was given to writable, and readers
-	// how many were given it read-only, all of them of tenant. closed marks a
-	// file the pager gave back.
+	// how many were given it read-only, all of them of tenant unless public.
+	// public marks the public file, which every tenant is given as file 2 and
+	// which is never given as anything else. closed marks a file the pager gave
+	// back.
 	writer  *mapping
 	readers int
 	tenant  string
+	public  bool
 	closed  bool
 }
 
@@ -287,6 +290,11 @@ type mapped struct {
 	place
 	writable, mappedWritable bool
 }
+
+// publicFile is the number every session of an isolated arena is given the
+// public file under.
+const publicFile = 2
+
 type mapping struct {
 	arena *arena
 	// tenant is the tenant of the memory region this is the mapping of.
@@ -314,7 +322,8 @@ func newMapping(a *arena) *mapping {
 
 // GiveFile holds the pager to who may read a file: a file given writable is
 // one memory region's own, as its file 0, and nobody else's in any way, and a
-// file given read-only is given to one tenant's memory regions only.
+// file given read-only is given to one tenant's memory regions only, except
+// the public file, which is every region's file 2 and nothing else.
 func (m *mapping) GiveFile(_ context.Context, number int, file vmmemory.ArenaFile, writable bool) error {
 	m.arena.mu.Lock()
 	defer m.arena.mu.Unlock()
@@ -334,7 +343,9 @@ func (m *mapping) GiveFile(_ context.Context, number int, file vmmemory.ArenaFil
 		return fmt.Errorf("file %d given writable to a second memory region", f.id)
 	case !writable && f.writer != nil:
 		return fmt.Errorf("the private file %d given read-only to another memory region", f.id)
-	case !writable && f.readers > 0 && f.tenant != m.tenant:
+	case !writable && f.readers > 0 && f.public != (number == publicFile):
+		return fmt.Errorf("file %d given as file %d, and as the public file elsewhere %t", f.id, number, f.public)
+	case !writable && f.readers > 0 && !f.public && f.tenant != m.tenant:
 		return fmt.Errorf("file %d given read-only to tenant %q and to tenant %q", f.id, f.tenant, m.tenant)
 	}
 	if writable {
@@ -342,6 +353,7 @@ func (m *mapping) GiveFile(_ context.Context, number int, file vmmemory.ArenaFil
 	} else {
 		f.readers++
 		f.tenant = m.tenant
+		f.public = number == publicFile
 	}
 	m.files[number] = f
 	return nil
@@ -486,12 +498,15 @@ func (m *mapping) Resolve(_ context.Context, page uint64, count int, writable bo
 // checkpoint until the test publishes it, which is when those bytes acquire an
 // identity of their own.
 type backing struct {
-	mu                   sync.Mutex
-	pageSize             int // the pager page; the unit of private, zero and every extent
-	data                 []byte
-	source               control.Ref // the checkpoint untouched pages are inherited from
-	owner                string      // this backing's VM identity, for private pages
-	sequence             uint64      // the checkpoint private pages will be published under
+	mu       sync.Mutex
+	pageSize int // the pager page; the unit of private, zero and every extent
+	data     []byte
+	source   control.Ref // the checkpoint untouched pages are inherited from
+	// sources names another checkpoint an untouched page is inherited from,
+	// which a volume forked from one checkpoint and then published has.
+	sources              map[uint64]control.Ref
+	owner                string // this backing's VM identity, for private pages
+	sequence             uint64 // the checkpoint private pages will be published under
 	private, zero        map[uint64]bool
 	loads, loadedBytes   int
 	onLoad               func(uint64, int)
@@ -538,6 +553,8 @@ func (b *backing) identity(page uint64) control.Identity {
 		return control.Identity{Zero: true}
 	case b.private[page]:
 		return control.Identity{Ref: control.Ref{VM: b.owner, Sequence: b.sequence}, Volume: "v", Page: number}
+	case b.sources[page] != (control.Ref{}):
+		return control.Identity{Ref: b.sources[page], Volume: "v", Page: number}
 	default:
 		return control.Identity{Ref: b.source, Volume: "v", Page: number}
 	}

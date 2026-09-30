@@ -207,6 +207,11 @@ the template's current state in the deployment:
   interrupted attempt stay in place, like a superseded epoch's checkpoints after
   any other takeover.
 
+A configured image is imported as a public template, of no tenant, so a VM of
+every tenant is created from the one import of it (`control.Public`). An image
+imported on request for a tenant is that tenant's alone. No guest runs as a
+template: a create, open, capture or receive that names one is refused.
+
 **An import reads only the image's data.** A root image is usually a large
 sparse file. When the source is an `*os.File`, the host asks the kernel for
 its data extents with `SEEK_DATA` and `SEEK_HOLE`. A source that implements
