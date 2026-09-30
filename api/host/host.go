@@ -79,6 +79,9 @@ type Handoff struct {
 	// children it was asked to, and the control plane sets it for a VM it has
 	// recorded as marked.
 	Pull bool `json:",omitempty"`
+	// CheckpointInterval is the interval the VM asked for, which a migration
+	// carries from the source; see CreateRequest.
+	CheckpointInterval time.Duration `json:",omitempty"`
 }
 
 // HandoffMemoryRegion names one memory region of a handed-over VM and the size of the volume
@@ -147,6 +150,10 @@ type VM struct {
 	// checkpoint of it lands.
 	LossWindow time.Duration `json:"loss_window"`
 	Waiting    bool          `json:"waiting"`
+	// CheckpointInterval is how often this host checkpoints the VM's disks,
+	// which is the host's interval unless the VM asked for its own. Zero is a
+	// VM that asked for none.
+	CheckpointInterval time.Duration `json:"checkpoint_interval"`
 	// PrivateBytes is the host memory this VM holds that its volumes do not:
 	// the pages its guest has written since its last checkpoint, resident,
 	// spilled or held by a checkpoint that has not landed. It is the part of
@@ -504,6 +511,13 @@ type CreateRequest struct {
 	Ephemeral uint64         `json:"ephemeral,omitempty"`
 	Pull      bool           `json:"pull,omitempty"`
 	Nested    bool           `json:"nested,omitempty"`
+	// CheckpointInterval is how often the VM's disks are checkpointed while it
+	// runs, in nanoseconds. Zero is the host's interval; a positive interval
+	// is clamped to between the host's minimum and its own interval; a
+	// negative one asks for no interval checkpoints at all, and no loss
+	// window. It lasts while the VM runs on this host and the hosts it
+	// migrates to; an open asks again.
+	CheckpointInterval time.Duration `json:"checkpoint_interval,omitempty"`
 }
 
 // CheckpointRef names one checkpoint of a VM. A zero Checkpoint is the one the
@@ -562,6 +576,8 @@ type OpenRequest struct {
 	// Pull marks the VM to pull its whole memory onto the disk of the host it
 	// runs on; see Pull.
 	Pull bool `json:"pull,omitempty"`
+	// CheckpointInterval is the VM's own interval; see CreateRequest.
+	CheckpointInterval time.Duration `json:"checkpoint_interval,omitempty"`
 }
 
 // OpenResult reports a VM opened from its last checkpoint, which is what a host

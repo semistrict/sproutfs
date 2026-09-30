@@ -100,12 +100,14 @@ type registration struct {
 	// migrating is set while a handover of this VM is in flight and is guarded
 	// by the machines lock, not mu: it is what admits one of them at a time.
 	migrating bool
-	// pull marks a VM that pulls its whole memory to this host's disk while it
-	// runs here. It is set when the machine is registered and never changes.
-	// pulled is the pull its loop holds, refused why this host would not start
-	// one, and fetched closes once that pull has stopped fetching or was
-	// refused; all three are guarded by mu.
-	pull    bool
+	// terms are what the VM asked of this host, and cadence how this host
+	// checkpoints it for them. Both are set when the machine is registered and
+	// never change. terms.Pull marks a VM that pulls its whole memory to this
+	// host's disk while it runs here. pulled is the pull its loop holds,
+	// refused why this host would not start one, and fetched closes once that
+	// pull has stopped fetching or was refused; all three are guarded by mu.
+	terms   MachineTerms
+	cadence cadence
 	pulled  *checkpoint.Pull
 	refused error
 	fetched chan struct{}
@@ -137,17 +139,13 @@ type machines struct {
 // checkpoints. The supervisor keeps ownership: this only records which
 // process belongs to which VM and starts that VM's checkpoint loop.
 func (h *Host) AddMachine(vmID string, runtime Machine) error {
-	return h.addMachine(vmID, runtime, false)
+	return h.AddMachineWith(vmID, runtime, MachineTerms{})
 }
 
-// AddPullingMachine is AddMachine for a VM marked to pull its whole memory: for
-// as long as this host runs it, every page of the checkpoint it started from is
-// copied onto this host's disk and held there. See pulling.
-func (h *Host) AddPullingMachine(vmID string, runtime Machine) error {
-	return h.addMachine(vmID, runtime, true)
-}
-
-func (h *Host) addMachine(vmID string, runtime Machine, pull bool) error {
+// AddMachineWith is AddMachine for a VM that asks this host for terms of its
+// own: to pull its whole memory onto this host's disk, or to be checkpointed
+// on an interval of its own.
+func (h *Host) AddMachineWith(vmID string, runtime Machine, terms MachineTerms) error {
 	if vmID == "" {
 		return ErrInvalidConfig
 	}
@@ -164,7 +162,7 @@ func (h *Host) addMachine(vmID string, runtime Machine, pull bool) error {
 	if existing != nil {
 		existing.end()
 	}
-	entry := &registration{runtime: runtime, pull: pull}
+	entry := &registration{runtime: runtime, terms: terms, cadence: h.cadenceOf(terms)}
 	h.machines.mu.Lock()
 	defer h.machines.mu.Unlock()
 	// This identity is being run again — received back, or created anew after a
@@ -190,7 +188,7 @@ func (h *Host) run(vmID string, entry *registration) {
 	if h.checkpointInterval > 0 {
 		entry.now = make(chan struct{}, 1)
 	}
-	if entry.pull {
+	if entry.terms.Pull {
 		entry.pulled, entry.refused, entry.fetched = nil, nil, make(chan struct{})
 	}
 	entry.mu.Unlock()
@@ -199,7 +197,7 @@ func (h *Host) run(vmID string, entry *registration) {
 	if h.checkpointInterval > 0 {
 		running.Go(func() { h.checkpointing(ctx, vmID, entry) })
 	}
-	if entry.pull {
+	if entry.terms.Pull {
 		running.Go(func() { h.pulling(ctx, vmID, entry) })
 	}
 	go func() { running.Wait(); close(done) }()

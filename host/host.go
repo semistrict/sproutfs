@@ -102,6 +102,10 @@ type Config struct {
 	// in lockstep. Zero selects DefaultCheckpointInterval; a negative value disables
 	// the loop, which is what a test that drives its own captures wants.
 	CheckpointInterval time.Duration
+	// MinimumCheckpointInterval is the shortest interval a VM may ask for in
+	// its terms (MachineTerms). Zero selects
+	// DefaultMinimumCheckpointInterval.
+	MinimumCheckpointInterval time.Duration
 	// LossWindow is how long a VM this host runs may hold a write no checkpoint
 	// covers. It is the interval's companion: the interval says how often a VM is
 	// made durable when everything works, and this says what happens when it does
@@ -187,11 +191,15 @@ type Host struct {
 	lossWindow time.Duration
 	// flushBound is how stale a VM's disks may be for a flush of them to
 	// complete at once. Zero or less completes every flush at once.
-	flushBound time.Duration
-	machines   machines
-	closeOnce  sync.Once
-	done       chan struct{}
-	closeErr   error
+	// flushBoundConfigured is what the configuration asked for, which a VM
+	// with an interval of its own resolves against that interval.
+	flushBound, flushBoundConfigured time.Duration
+	// minimumInterval is the shortest interval a VM may ask for.
+	minimumInterval time.Duration
+	machines        machines
+	closeOnce       sync.Once
+	done            chan struct{}
+	closeErr        error
 }
 
 // cleanupTimeout bounds the control-plane writes a failed operation makes on its
@@ -333,6 +341,7 @@ func StartHost(ctx context.Context, config Config) (*Host, error) {
 		clock:       platform.ClockOr(config.Clock), entropy: platform.EntropyOr(config.Entropy),
 		cacheBytes: config.CacheBytes, checkpointInterval: interval, epochInterval: epochs,
 		lossWindow: window, flushBound: flushBoundOf(config.FlushBound, interval),
+		flushBoundConfigured: config.FlushBound, minimumInterval: minimumIntervalOf(config.MinimumCheckpointInterval),
 		done: make(chan struct{}),
 		machines: machines{running: make(map[string]*registration), migrated: make(map[string]*migratedHold),
 			forked: make(map[string]*forkHold), fenced: make(map[string]bool),

@@ -68,21 +68,23 @@ type pendingFlush struct {
 //
 // A flush the host cannot make durable completes at once: a memory region no VM this
 // host runs maps, and a VM with no checkpoint loop, have nothing that would ever
-// release it, and a guest must not hang on a flush for that.
+// release it, and a guest must not hang on a flush for that. So does the flush
+// of a VM that asked for no checkpoints: it asked for disks that are not
+// durable. The bound is the VM's own (cadence).
 //
 // An ephemeral disk's flush completes at once too: no checkpoint would ever
 // cover it, and the guest that owns one asked for a disk that is not durable.
 func (h *Host) flushed(memoryRegion *vmmemory.MemoryRegion, done func(error)) {
-	if h.flushBound <= 0 || !memoryRegion.OnInterval() {
+	if !memoryRegion.OnInterval() {
 		done(nil)
 		return
 	}
 	_, entry := h.machineFor(memoryRegion)
-	if entry == nil || entry.now == nil {
+	if entry == nil || entry.now == nil || entry.cadence.flushBound <= 0 {
 		done(nil)
 		return
 	}
-	since := h.clock.Now().Add(-h.flushBound)
+	since := h.clock.Now().Add(-entry.cadence.flushBound)
 	entry.mu.Lock()
 	if covered(entry, since) {
 		entry.mu.Unlock()

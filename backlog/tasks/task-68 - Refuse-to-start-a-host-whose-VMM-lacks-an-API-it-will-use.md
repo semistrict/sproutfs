@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-09-29 23:10'
-updated_date: '2026-09-29 23:27'
+updated_date: '2026-09-30 00:02'
 labels:
   - embedder
   - firecracker
@@ -27,7 +27,7 @@ A Firecracker build without the `sync_snapshot_files` field booted VMs and faile
 <!-- AC:BEGIN -->
 - [x] #1 A host refuses to start, with an error naming what is missing, when its VMM lacks any managed-memory API field the host will send
 - [x] #2 The check runs at host start, before any VM is created or opened
-- [ ] #3 A test starts a host against a VMM that reports an older version and sees it refused
+- [x] #3 A test starts a host against a VMM that reports an older version and sees it refused
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -46,4 +46,6 @@ A Firecracker build without the `sync_snapshot_files` field booted VMs and faile
 Exact equality chosen: a host and its VMM already deploy in lockstep for the mapping protocol. Starter gains a required APIRevision method, so an embedder's own Starter must answer it — an optional method would let the check be skipped silently, which is the failure this task exists to stop.
 The fork change (7fb5f8b62 on semistrict/firecracker@sproutfs) cannot compile on macOS: its seccompiler build dependency needs Linux. It is a const and a println; it needs a GCE build to confirm.
 TestStartRefusesAnOlderVMM is linux-only; it runs in the CI go-linux job.
+
+CI go (linux) on 983d0360 passed the host package, which includes TestStartRefusesAnOlderVMM. Left In Progress until the fork builds: the Rust change (7fb5f8b62) has not been compiled; the next GCE build of the fork confirms it.
 <!-- SECTION:NOTES:END -->

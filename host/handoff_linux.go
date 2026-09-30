@@ -30,7 +30,8 @@ func apiHandoff(handoff vmmigrate.Handoff) hostapi.Handoff {
 	return hostapi.Handoff{VMID: handoff.VMID, State: handoff.State, Checkpoint: handoff.Checkpoint,
 		Parent: handoff.Parent, ParentCheckpoint: handoff.ParentCheckpoint,
 		Source: string(handoff.Source), PageSize: handoff.PageSize,
-		MemoryRegions: memoryRegions, PausedAt: handoff.PausedAt, Pull: handoff.Pull}
+		MemoryRegions: memoryRegions, PausedAt: handoff.PausedAt, Pull: handoff.Pull,
+		CheckpointInterval: handoff.CheckpointInterval}
 }
 
 // handoffOf is the wire form read back, which is what a destination takes a VM
@@ -48,7 +49,8 @@ func handoffOf(handoff hostapi.Handoff) vmmigrate.Handoff {
 	return vmmigrate.Handoff{VMID: handoff.VMID, State: handoff.State, Checkpoint: handoff.Checkpoint,
 		Parent: handoff.Parent, ParentCheckpoint: handoff.ParentCheckpoint,
 		Source: platform.Address(handoff.Source), PageSize: handoff.PageSize,
-		MemoryRegions: memoryRegions, PausedAt: handoff.PausedAt, Pull: handoff.Pull}
+		MemoryRegions: memoryRegions, PausedAt: handoff.PausedAt, Pull: handoff.Pull,
+		CheckpointInterval: handoff.CheckpointInterval}
 }
 
 // apiStore is the wire form of what this host's object store has served.

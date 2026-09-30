@@ -106,7 +106,7 @@ func (h *Host) WaitPulled(ctx context.Context, vmID string) (checkpoint.PullStat
 func (h *Host) pulls(vmID string) *registration {
 	h.machines.mu.Lock()
 	defer h.machines.mu.Unlock()
-	if entry := h.machines.running[vmID]; entry != nil && entry.pull {
+	if entry := h.machines.running[vmID]; entry != nil && entry.terms.Pull {
 		return entry
 	}
 	return nil

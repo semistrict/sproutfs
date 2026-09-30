@@ -83,7 +83,7 @@ func pulledRun(t *testing.T, diskBytes int64) (*countedObjects, *hostPagers, *ma
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := h.hosts[1].AddPullingMachine("vm-1", guest); err != nil {
+	if err := h.hosts[1].AddMachineWith("vm-1", guest, host.MachineTerms{Pull: true}); err != nil {
 		t.Fatal(err)
 	}
 	return counted, pagers, guest, opened, h
@@ -218,7 +218,7 @@ func TestAMigrationCarriesThePullMark(t *testing.T) {
 		t.Fatal(err)
 	}
 	source.store("ram0", 0, 1)
-	if err := h.hosts[0].AddPullingMachine("vm-1", source); err != nil {
+	if err := h.hosts[0].AddMachineWith("vm-1", source, host.MachineTerms{Pull: true}); err != nil {
 		t.Fatal(err)
 	}
 	if _, marked := h.hosts[0].Pulled("vm-1"); !marked {

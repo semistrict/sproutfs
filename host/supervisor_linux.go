@@ -514,6 +514,7 @@ func (s *supervisor) records(ctx context.Context) ([]hostapi.VM, error) {
 		// in bytes: the host is the only thing that has both halves, since the
 		// window is measured across every memory region the VM maps.
 		record.LossWindow, record.Waiting = s.host.LossWindow(id)
+		record.CheckpointInterval = s.host.CheckpointInterval(id)
 		// The same is true of what the VM holds that nothing shares: its memory regions
 		// are the pager's and this host is what knows they are one VM's.
 		private, err := s.host.PrivateBytes(ctx, id)

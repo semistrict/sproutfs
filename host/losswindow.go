@@ -42,6 +42,10 @@ func (h *Host) oldestUnpublished(memoryRegion *vmmemory.MemoryRegion) time.Time 
 	if entry == nil {
 		return memoryRegion.OldestUnpublished()
 	}
+	if !entry.cadence.windowed {
+		// A VM that asked for no checkpoints asked for no window either.
+		return time.Time{}
+	}
 	return oldestOf(entry.runtime.MemoryRegions())
 }
 
@@ -85,13 +89,13 @@ func (h *Host) LossWindow(vmID string) (age time.Duration, waiting bool) {
 		return 0, false
 	}
 	age = max(h.clock.Since(oldest), 0)
-	return age, h.lossWindow > 0 && age > h.lossWindow
+	return age, h.lossWindow > 0 && entry.cadence.windowed && age > h.lossWindow
 }
 
 // overLossWindow reports a VM whose oldest unpublished write is older than this
 // host's window, which is a VM whose guest the pager is already holding back.
 func (h *Host) overLossWindow(entry *registration) bool {
-	if h.lossWindow <= 0 || entry == nil {
+	if h.lossWindow <= 0 || entry == nil || !entry.cadence.windowed {
 		return false
 	}
 	oldest := oldestOf(entry.runtime.MemoryRegions())

@@ -114,7 +114,7 @@ func (h *Host) retryPastWindow(ctx context.Context, vmID string, entry *registra
 		if !h.overLossWindow(entry) {
 			return false
 		}
-		wait := backoff(h.checkpointInterval, attempt)
+		wait := backoff(entry.cadence.interval, attempt)
 		slog.WarnContext(ctx, "host: publishing a checkpoint past the loss window failed; it stays sealed and is published again",
 			"vm", vmID, "attempt", attempt, "wait", wait.String(), "error", err)
 		timer := h.clock.NewTimer(wait)
@@ -131,17 +131,23 @@ func (h *Host) retryPastWindow(ctx context.Context, vmID string, entry *registra
 }
 
 // nextAttempt is how long the loop waits for its next turn at one VM, and
-// whether a request out of turn may cut that wait short: the jittered interval,
-// which one may, or the backoff of a VM whose last attempt failed and whose
-// stores the loss window is already holding back, which one may not. The window
+// whether a request out of turn may cut that wait short: the VM's jittered
+// interval, which one may, or the backoff of a VM whose last attempt failed and
+// whose stores the loss window is already holding back, which one may not. A VM
+// that asked for no interval waits for requests alone, which a zero wait
+// says. The window
 // is read where the wait is chosen, because that is where the choice matters —
 // a VM that crossed it while the last publication was in flight is one to come
 // back to at once.
 func (h *Host) nextAttempt(entry *registration, failures int) (time.Duration, bool) {
-	if failures == 0 || !h.overLossWindow(entry) {
-		return jittered(h.entropy, h.checkpointInterval), true
+	interval := entry.cadence.interval
+	if interval <= 0 {
+		return 0, true
 	}
-	return backoff(h.checkpointInterval, failures), false
+	if failures == 0 || !h.overLossWindow(entry) {
+		return jittered(h.entropy, interval), true
+	}
+	return backoff(interval, failures), false
 }
 
 // waitForCheckpoint waits for this VM's next checkpoint and reports whether one
@@ -169,8 +175,13 @@ func (h *Host) nextAttempt(entry *registration, failures int) (time.Duration, bo
 // the channel and is answered by the attempt the backoff schedules.
 func (h *Host) waitForCheckpoint(ctx context.Context, entry *registration, interval time.Duration,
 	onRequest bool, failures int) bool {
-	timer := h.clock.NewTimer(interval)
-	defer timer.Stop()
+	// A zero wait is a VM that takes no turns: only a request is due.
+	var turn <-chan time.Time
+	if interval > 0 {
+		timer := h.clock.NewTimer(interval)
+		defer timer.Stop()
+		turn = timer.C()
+	}
 	requested := entry.now
 	if !onRequest {
 		requested = nil
@@ -202,7 +213,7 @@ func (h *Host) waitForCheckpoint(ctx context.Context, entry *registration, inter
 		case <-ctx.Done():
 			due = false
 		case <-requested:
-		case <-timer.C():
+		case <-turn:
 		case <-window:
 			waiting = true
 		}
@@ -221,7 +232,7 @@ func (h *Host) waitForCheckpoint(ctx context.Context, entry *registration, inter
 // because a store may start one at any moment and nothing tells the loop.
 func (h *Host) windowMark(entry *registration, failures int) (time.Duration, bool) {
 	window := h.lossWindow
-	if window <= 0 {
+	if window <= 0 || !entry.cadence.windowed {
 		return 0, false
 	}
 	oldest := oldestOf(entry.runtime.MemoryRegions())

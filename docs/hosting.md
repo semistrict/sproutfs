@@ -287,6 +287,21 @@ when the host closes. An interval is skipped when a fork point has sealed the
 VM, because the child takes those pages first. A negative interval disables the
 loop, for a caller that drives its own checkpoints.
 
+A VM may ask for an interval of its own (`MachineTerms.CheckpointInterval`,
+which `CreateRequest` and `OpenRequest` carry). A positive one is clamped to
+between `Config.MinimumCheckpointInterval`, one second by default, and the
+host's own interval: a VM may ask for a tighter bound on what a host loss
+costs it, never a looser one, so the loss window is never shorter than any
+VM's interval. Its flush bound, where the host configures none, is two of its
+own intervals. A negative interval asks for none at all. The VM takes no
+interval turns, is held to no loss window, and has every flush complete at
+once. It is still checkpointed when it stops, when it moves, and when the pager
+needs its dirty pages back. A host loss loses everything it wrote since it
+started. A migration carries the interval to the next host. A fork's children
+take the host's, and an open asks again. The orchestrator does not forward it:
+it is for an embedder that drives the hosts itself. `Status` reports each VM's
+resolved interval.
+
 The interval bounds that rewind only while publications succeed.
 `Config.LossWindow` bounds it when they fail. It is five minutes by default,
 zero disables it, and it is never shorter than the interval, because every VM
