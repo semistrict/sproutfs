@@ -95,7 +95,7 @@ func TestHostOutageStartupAndTakeoverAfterWriterShutdown(t *testing.T) {
 	if !status.Closed || status.Cache.ResidentBytes != 0 {
 		t.Fatalf("host retained owned resources: %+v", status)
 	}
-	assertPageServerReleased(t, h.configs[1].Migration.Address)
+	h.assertPageServerReleased(t, h.configs[1].Migration.Address)
 	// A new process takes the fork over. It owns no local state: everything it
 	// needs is the control record and the checkpoint that record selects.
 	restarted, err := host.StartHost(t.Context(), h.configs[1])
@@ -157,7 +157,7 @@ func TestHostStartupRejectsAnIncompleteConfigurationAndHonorsCancellation(t *tes
 	if started, err := host.StartHost(t.Context(), config); !errors.Is(err, host.ErrInvalidConfig) || started != nil {
 		t.Fatalf("host started without an object store: %v", err)
 	}
-	assertPageServerReleased(t, config.Migration.Address)
+	h.assertPageServerReleased(t, config.Migration.Address)
 	ctx, cancel := context.WithCancel(t.Context())
 	started, err := host.StartHost(ctx, h.configs[0])
 	if err != nil {
@@ -174,5 +174,5 @@ func TestHostStartupRejectsAnIncompleteConfigurationAndHonorsCancellation(t *tes
 	if status := started.Status(); !status.Closed {
 		t.Fatalf("parent cancellation left the host running: %+v", status)
 	}
-	assertPageServerReleased(t, h.configs[0].Migration.Address)
+	h.assertPageServerReleased(t, h.configs[0].Migration.Address)
 }

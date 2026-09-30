@@ -3,7 +3,6 @@ package host_test
 import (
 	"context"
 	"fmt"
-	"net"
 	"sync"
 	"testing"
 	"time"
@@ -11,9 +10,9 @@ import (
 	"github.com/semistrict/sproutfs/checkpoint"
 	"github.com/semistrict/sproutfs/host"
 	"github.com/semistrict/sproutfs/internal/knobs"
+	"github.com/semistrict/sproutfs/internal/testnet"
 	"github.com/semistrict/sproutfs/internal/testresource"
 	"github.com/semistrict/sproutfs/platform"
-	"github.com/semistrict/sproutfs/platform/adapters"
 	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/volume"
 )
@@ -31,6 +30,11 @@ func hostKnobs() knobs.Knobs {
 type hostHarness struct {
 	runtime *sim.Runtime
 	prefix  platform.ObjectPrefix
+	// network carries every host's page traffic over loopback TCP. A host's
+	// page address is a name that each start of that host binds to a fresh
+	// port, so no port is chosen before the host binds it and taken meanwhile
+	// by another test.
+	network *testnet.Network
 	// pages is where each host serves migration pages, which is the only
 	// address a host publishes and the only one another host ever dials.
 	pages   []platform.Address
@@ -129,7 +133,7 @@ func newSizedHostHarnessOn(t *testing.T, count int, store sim.ObjectStoreConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := &hostHarness{runtime: runtime, prefix: prefix}
+	h := &hostHarness{runtime: runtime, prefix: prefix, network: testnet.New()}
 	t.Cleanup(func() {
 		runtime.ObjectStore().Recover()
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -156,12 +160,12 @@ func newSizedHostHarnessOn(t *testing.T, count int, store sim.ObjectStoreConfig)
 			t.Error(err)
 		}
 	})
-	for range count {
-		address := freeAddress(t)
+	for n := range count {
+		address := platform.Address(h.hostID(n) + "-pages")
 		h.admit(host.Config{
 			// Plain TCP over the loopback: these hosts reach each other the
 			// way a deployment's do.
-			Network:     adapters.NewNetwork(),
+			Network:     h.network,
 			Resources:   testresource.New(),
 			ObjectStore: runtime.ObjectStore(), ObjectPrefix: prefix,
 			Cache:     checkpoint.CacheConfig{},
@@ -257,29 +261,12 @@ func (h *hostHarness) stop(t *testing.T, n int) {
 	h.hosts[n] = nil
 }
 
-func freeAddress(t *testing.T) platform.Address {
-	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer listener.Close()
-	return platform.Address(listener.Addr().String())
-}
-
 // assertPageServerReleased requires a closed host to have given its page
 // server's port back, which is what lets another process take the address.
-func assertPageServerReleased(t *testing.T, address platform.Address) {
+func (h *hostHarness) assertPageServerReleased(t *testing.T, address platform.Address) {
 	t.Helper()
-	if address == "" {
-		return
-	}
-	listener, err := net.Listen("tcp", string(address))
-	if err != nil {
-		t.Fatalf("host retained the page server listener at %s: %v", address, err)
-	}
-	if err := listener.Close(); err != nil {
-		t.Fatal(err)
+	if h.network.Listening(address) {
+		t.Fatalf("host retained the page server listener at %s", address)
 	}
 }
 

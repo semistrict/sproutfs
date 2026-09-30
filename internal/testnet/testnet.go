@@ -23,24 +23,46 @@ type Network struct {
 	dials atomic.Uint64
 
 	mu        sync.RWMutex
-	addresses map[platform.Address]platform.Address
+	listeners map[platform.Address]*listener
+}
+
+// listener is the port most recently bound for one logical address.
+type listener struct {
+	platform.Listener
+	closed atomic.Bool
+}
+
+func (l *listener) Close() error {
+	l.closed.Store(true)
+	return l.Listener.Close()
 }
 
 func New() *Network {
-	return &Network{base: adapters.NewNetwork(), addresses: make(map[platform.Address]platform.Address)}
+	return &Network{base: adapters.NewNetwork(), listeners: make(map[platform.Address]*listener)}
 }
 
 // Listen binds an ephemeral loopback port and records it as the current
 // location of the logical address.
 func (n *Network) Listen(address platform.Address) (platform.Listener, error) {
-	listener, err := n.base.Listen("127.0.0.1:0")
+	bound, err := n.base.Listen("127.0.0.1:0")
 	if err != nil {
 		return nil, err
 	}
+	l := &listener{Listener: bound}
 	n.mu.Lock()
-	n.addresses[address] = listener.Address()
+	n.listeners[address] = l
 	n.mu.Unlock()
-	return listener, nil
+	return l, nil
+}
+
+// Listening reports whether the port most recently bound for the logical
+// address is still open, which is how a test checks that a stopped node gave its
+// port back without binding a port of its own.
+func (n *Network) Listening(address platform.Address) bool {
+	n.mu.RLock()
+	l, found := n.listeners[address]
+	n.mu.RUnlock()
+	return found && !l.closed.Load()
 }
 
 // Dial reaches the port most recently bound for the logical address. An
@@ -48,13 +70,13 @@ func (n *Network) Listen(address platform.Address) (platform.Listener, error) {
 // dialed, so a stopped node behaves like an unreachable peer.
 func (n *Network) Dial(ctx context.Context, _, to platform.Address) (platform.Conn, error) {
 	n.mu.RLock()
-	actual, found := n.addresses[to]
+	l, found := n.listeners[to]
 	n.mu.RUnlock()
 	if !found {
 		return nil, platform.ErrUnavailable
 	}
 	n.dials.Add(1)
-	return n.base.Dial(ctx, "", actual)
+	return n.base.Dial(ctx, "", l.Address())
 }
 
 // Dials counts the connections opened through Dial, letting a test assert that
