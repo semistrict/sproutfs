@@ -1507,6 +1507,13 @@ models candidate designs for the pin collector (TASK-24). A collector that
 releases a pin no selected checkpoint reads deletes what a fork in flight is
 about to read. The constraints the passing design meets are on TASK-24.
 
+`spec/arena/Arena.tla` models the isolated arena's files: private, tenant
+shared, public and fork files, loads by identity, moves, and fork points
+lending pages. Its VMMs keep every descriptor they are given, as a compromised
+one that ignores `DROP_FILE` does. Its invariant, `Isolated`, is that no VMM
+holds a file with a page of another tenant's VM in it, unless the page is
+public.
+
 A spec is written from the code by hand, so the two can drift apart with
 nothing failing. The simulation ties them together. The simulated object store
 reports every change it applies, in its own order (`sim.ObjectStore.Observe`).
