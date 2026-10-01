@@ -1499,6 +1499,14 @@ hosts that may die. Its survey asks each host in turn, and it reads the row
 afterwards. Its invariant, `NoLiveFence`, is that a recovery never takes the
 epoch from a holder that is alive.
 
+`spec/lineage/Lineage.tla` models a root, its child and its grandchild: forks
+that pin and then create the child, roots that name the parent's checkpoints,
+sweeps of each VM, and deletes. Its invariant, `NoDanglingRead`, is that no VM,
+and no fork in flight, reads a checkpoint the store no longer has. It also
+models candidate designs for the pin collector (TASK-24). A collector that
+releases a pin no selected checkpoint reads deletes what a fork in flight is
+about to read. The constraints the passing design meets are on TASK-24.
+
 [`spec/bugs.md`](../spec/bugs.md) lists every real defect a spec has found.
 Each fixed one has a mutant that puts it back.
 

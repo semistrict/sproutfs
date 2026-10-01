@@ -4,6 +4,7 @@ title: Build the collector that releases pins
 status: To Do
 assignee: []
 created_date: '2026-09-25 18:18'
+updated_date: '2026-10-01 06:24'
 labels:
   - deferred
 dependencies: []
@@ -29,3 +30,14 @@ ordinal: 24000
 <!-- AC:BEGIN -->
 - [ ] #1 The owner has decided to build it
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Design constraints from spec/lineage (TASK-76, 2026-10-01). TLC checked a collector against the rule that no VM, and no fork in flight, reads a deleted checkpoint.
+1. Releasing a pin that no record's selected checkpoint reads is wrong. A fork pins before its child's record exists, so a scan that lands between the two deletes what the child is about to read (spec/lineage/mutants/naive-collector.cfg).
+2. A fork must name its child in the pin. A pin then stays while any holder may still create its child or publish its root. Telling a failed fork from a running one needs a bound on how long a fork runs, which is the hold.
+3. Judge each holder by what the collector's own scan saw, never by its state at release time. A root that lands between the scan and the release is in neither view (mutants/holders-judged-late.cfg).
+4. Make the release conditional on the record version the scan read. Every fork's pin then writes the record, even when the checkpoint is already pinned.
+spec/lineage/MCLineageCollector.cfg checks a design with 2-4 over a root, a child and a grandchild.
+<!-- SECTION:NOTES:END -->
