@@ -432,6 +432,16 @@ func (o *orchestrator) release(ctx context.Context, hosts []liveHost, existing [
 			if found && o.table.stillInFlight(row) {
 				continue
 			}
+			// A host still receiving the VM is still fetching its pages. The
+			// source's own book is no evidence it has them: it strikes a page
+			// off once a reply has left, and the reply can be lost on the
+			// way. Releasing the source under that receive would lose every
+			// page it has not installed, however old the row is.
+			if fetching := receivers(hosts, id); len(fetching) > 0 {
+				slog.InfoContext(ctx, "sproutfs-orchestrator: left a handover served under a receive in flight",
+					"vm", id, "host", h.report.Name, "receiving", fetching)
+				continue
+			}
 			if forsaken(hosts, id, found, existing) {
 				o.giveUp(ctx, h, id)
 				continue
@@ -1010,7 +1020,7 @@ func (o *orchestrator) fork(ctx context.Context, source, target liveHost, parent
 			o.giveUp(undo, source, handoff.VMID)
 			continue
 		}
-		if _, err := o.receive(ctx, source, target, handoff.VMID, hold, handoff); err != nil {
+		if _, err := o.receive(ctx, source, target, handoff.VMID, hold, handoff, nil); err != nil {
 			failure = fmt.Errorf("starting %s on %s: %w", handoff.VMID, target.report.Name, err)
 			// A child no destination took has none of the pages its hold keeps
 			// and never will, so the source can only refuse to release them:
@@ -1230,7 +1240,9 @@ func (o *orchestrator) handOver(ctx context.Context, source, target liveHost, id
 	hold := handover.Held(time.Now(), handed.Hold.Duration())
 	attempts := o.policy().Begin(hold, target.report.Name)
 	for {
-		received, err := o.receive(ctx, source, target, id, hold, handed.Handoff)
+		received, err := o.receive(ctx, source, target, id, hold, handed.Handoff,
+			&vmRecord{ID: id, Host: source.report.Name, State: stateMigrating,
+				From: source.report.Name, To: target.report.Name})
 		if err == nil {
 			return target, received, nil
 		}
@@ -1360,12 +1372,12 @@ func (o *orchestrator) watchInterval() time.Duration {
 // waits for as long as that takes; the pages being gone from that host is what
 // ends the wait, and this is the only thing that sees it.
 func (o *orchestrator) receive(ctx context.Context, source, target liveHost, id string,
-	hold handover.Hold, handoff host.Handoff) (host.ReceiveResult, error) {
+	hold handover.Hold, handoff host.Handoff, row *vmRecord) (host.ReceiveResult, error) {
 	receiving, lose := context.WithCancelCause(ctx)
 	defer lose(nil)
 	watched := make(chan struct{})
 	defer close(watched)
-	go o.watchSource(receiving, source.report.Name, id, hold, watched, lose)
+	go o.watchSource(receiving, source.report.Name, id, hold, row, watched, lose)
 	result, err := target.client.Receive(receiving, handoff)
 	if err != nil && ctx.Err() == nil && receiving.Err() != nil {
 		// The receive was ended here rather than by the caller or the
@@ -1376,7 +1388,9 @@ func (o *orchestrator) receive(ctx context.Context, source, target liveHost, id 
 }
 
 // watchSource ends a receive whose source no longer has the pages it is
-// waiting for. It surveys on its own interval until the receive is over, and
+// waiting for. It also writes row again on each look, when there is one: a
+// receive of a large VM outlasts inFlightFor, and a row left to age while it
+// runs is one a survey takes for an operation that died. It surveys on its own interval until the receive is over, and
 // acts only on the evidence handover.Hold.Gone accepts, because the
 // destination's guest is torn down by it: a pod the Kubernetes API no longer
 // lists, a host that answers and neither runs the VM nor serves its pages any
@@ -1384,7 +1398,7 @@ func (o *orchestrator) receive(ctx context.Context, source, target liveHost, id 
 // those pages perfectly well until its hold ends, so a listed host nothing can
 // reach ends the receive then and not sooner.
 func (o *orchestrator) watchSource(ctx context.Context, from, id string, hold handover.Hold,
-	until <-chan struct{}, lose context.CancelCauseFunc) {
+	row *vmRecord, until <-chan struct{}, lose context.CancelCauseFunc) {
 	ticker := time.NewTicker(o.watchInterval())
 	defer ticker.Stop()
 	for {
@@ -1394,6 +1408,9 @@ func (o *orchestrator) watchSource(ctx context.Context, from, id string, hold ha
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+		}
+		if row != nil {
+			o.note(ctx, *row)
 		}
 		hosts, err := o.survey(ctx)
 		if err != nil {

@@ -557,7 +557,16 @@ fan-out receives its children one after another, so the last child can start
 long after the fork wrote its row. So the fork writes each child's row again
 every thirty seconds until that child's receive has finished or the fork has
 failed. A reconcile therefore never gives up the hold of a child that is still
-waiting for its turn. The `Serving` set
+waiting for its turn. A migration's receive can also outlast two minutes, so a
+migration writes its row again on each look at its source while the receive
+runs.
+
+A survey also leaves a handover alone while any host reports a receive of its
+VM in flight, however old the row is. The source's count of what it still owes
+is no evidence that the destination has the pages. The source strikes a page
+off once a reply carrying it has left, and that reply can be lost on the way.
+A receive discarded after the source sent everything leaves the count at zero
+too. `spec/postcopy` found this; see [spec/bugs.md](../spec/bugs.md). The `Serving` set
 includes every handover the host holds, including a child taken in on its
 parent's own host. Such a child is served nothing over the wire, but its hold on
 the point keeps the parent sealed. If the host reported that child as holding

@@ -110,10 +110,8 @@ func TestAReconcileLeavesAForkHoldWhoseChildIsBeingReceived(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{
-		// A release is asked for while the child is received, and refused:
-		// the child has not fetched the pages yet.
-		"host-0 released vm-a-child",
-		"host-0 released vm-a-child",
+		// No release is asked for while the child is received: the host
+		// receiving it is still fetching the pages.
 		"host-1 took vm-a-child in",
 		"host-0 released vm-a-child",
 	}

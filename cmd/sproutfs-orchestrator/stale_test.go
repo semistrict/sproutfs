@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -39,6 +40,83 @@ func TestAnInFlightRowAgesOff(t *testing.T) {
 	}
 	if _, err := d.orchestrator.Recover(t.Context(), "vm-a", false); err != nil {
 		t.Fatalf("recovering a VM whose migration died: %v", err)
+	}
+}
+
+// TestAnAgedRowDoesNotReleaseASourceUnderAReceive: a row ages out of flight
+// while one receive runs, because nothing writes it again until the receive
+// returns, and a receive of a large VM takes longer than inFlightFor. The
+// source's book is no evidence that the destination has the pages: it strikes
+// a page off once a reply has left, and that reply can be lost on the wire. So
+// a host that reports the receive in flight is still fetching, and releasing
+// the source under it would lose every page it has not installed.
+// spec/postcopy found this.
+func TestAnAgedRowDoesNotReleaseASourceUnderAReceive(t *testing.T) {
+	d := newDeployment(t, map[string][]string{"host-0": {}, "host-1": {}})
+	d.records.ids = []string{"vm-a"}
+	d.hosts["host-0"].serving = []string{"vm-a"}
+	d.hosts["host-1"].receiving = []string{"vm-a"}
+	if err := d.orchestrator.table.Record(t.Context(), vmRecord{ID: "vm-a", Host: "host-0",
+		State: stateMigrating, From: "host-0", To: "host-1",
+		Updated: time.Now().Add(-inFlightFor - time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.orchestrator.Reconcile(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if serving := d.hosts["host-0"].serving; !slices.Equal(serving, []string{"vm-a"}) {
+		t.Fatalf("the source serves %v under a receive still in flight, want [vm-a]", serving)
+	}
+}
+
+// TestAReceiveKeepsItsRowInFlight: a migration writes its row again on each
+// look at its source, so a receive that outlasts inFlightFor still has a row a
+// survey takes at its word. One left to age would be released under the
+// destination the moment that destination stopped reporting the receive: a
+// receive discarded after the source had sent every page, retried a moment
+// later from a source that no longer serves them.
+func TestAReceiveKeepsItsRowInFlight(t *testing.T) {
+	d := newDeployment(t, map[string][]string{"host-0": {"vm-a"}, "host-1": {}})
+	destination := d.hosts["host-1"]
+	destination.holdReceive = true
+	began := make(chan struct{})
+	destination.onReceive = func() {
+		// The row is as old as a receive of a large VM leaves it.
+		if err := d.orchestrator.table.Record(t.Context(), vmRecord{ID: "vm-a", Host: "host-0",
+			State: stateMigrating, From: "host-0", To: "host-1",
+			Updated: time.Now().Add(-inFlightFor - time.Minute)}); err != nil {
+			t.Error(err)
+		}
+		close(began)
+	}
+	migrated := make(chan error, 1)
+	go func() {
+		_, err := d.orchestrator.Migrate(t.Context(), "vm-a", "host-1")
+		migrated <- err
+	}()
+	<-began
+	// The watch looks every interval, so a hundred of them is plenty for one
+	// look to have written the row again.
+	var row vmRecord
+	for look := 0; ; look++ {
+		var found bool
+		var err error
+		row, found, err = d.orchestrator.table.VM(t.Context(), "vm-a")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if found && d.orchestrator.table.stillInFlight(row) {
+			break
+		}
+		if look == 100 {
+			destination.release()
+			t.Fatalf("the row of a receive in flight stayed aged: %+v", row)
+		}
+		<-time.After(d.orchestrator.watchInterval())
+	}
+	destination.release()
+	if err := <-migrated; err != nil {
+		t.Fatal(err)
 	}
 }
 

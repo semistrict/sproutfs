@@ -1480,7 +1480,25 @@ checkpoint. `just check-spec-deep` runs the larger configurations under
 `scripts/tlc.sh` runs TLC from the TLA+ tools 1.7.4 (MIT licence). It fetches
 the jar once into `~/.cache/sproutfs` and checks its digest.
 
-The model leaves out:
+`spec/postcopy/PostCopy.tla` models a migration's post-copy:
+
+- the source's book of pages owed, its release and its hold;
+- receive attempts that fetch, install, report `Done` or are discarded;
+- replies lost after they left the source;
+- the orchestrator's retries, its row ageing out of flight, and its survey
+  releasing a handover;
+- host loss and orchestrator crashes.
+
+Its invariant, `NoSilentLoss`, is that every page no checkpoint holds is on
+the serving source, on its way to a live receive, installed on a destination
+that runs the VM, or published. Only a lost host or a hold that ran out may
+take one.
+
+[`spec/bugs.md`](../spec/bugs.md) lists every real defect a spec has found. A
+configuration lets an open defect pass only through the spec's `Tolerated`
+constant, and a mutant with nothing tolerated shows it is still there.
+
+The ownership model leaves out:
 
 - more than one VM, so the child a fork starts;
 - the pager and the post-copy;
