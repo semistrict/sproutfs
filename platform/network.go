@@ -3,6 +3,7 @@ package platform
 import (
 	"context"
 	"io"
+	"net"
 )
 
 // Address identifies one process endpoint. Simulated addresses may be logical
@@ -13,7 +14,24 @@ type Address string
 // duplication, delay, or disconnection beneath this interface.
 type Network interface {
 	Listen(Address) (Listener, error)
-	Dial(context.Context, Address, Address) (Conn, error)
+	// Dial connects from one endpoint to another. The simulator models a link
+	// between two named endpoints and needs both; a real network leaves the
+	// local end to its transport, and a host passes none.
+	Dial(ctx context.Context, from, to Address) (Conn, error)
+}
+
+// Transport carries the byte streams a real Network frames: the fabric one
+// host reaches another over. The default is plain TCP, which authenticates
+// nothing, so hosts on it must share a trusted network. A deployment that
+// authenticates its hosts supplies its own, over mutual TLS or its mesh, and
+// refuses there any peer it cannot authenticate: whatever a listener accepts is
+// served, and whatever a dial reaches is believed.
+type Transport interface {
+	// Listen opens a listener at address. An error from its Accept ends the
+	// serving, so a peer the listener turns away is closed, not returned.
+	Listen(address Address) (net.Listener, error)
+	// Dial opens one stream to address.
+	Dial(ctx context.Context, address Address) (net.Conn, error)
 }
 
 type Listener interface {

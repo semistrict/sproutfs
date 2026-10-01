@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"io"
 	"math"
 	"net"
@@ -25,92 +24,124 @@ const (
 var frameMagic = [4]byte{'B', 'T', 'R', 'F'}
 
 type NetworkConfig struct {
-	Dialer         *net.Dialer
-	ListenConfig   *net.ListenConfig
+	// Transport carries the streams this network frames. Nil is plain TCP.
+	Transport      platform.Transport
 	MaxHeaderSize  uint32
 	MaxPayloadSize uint64
 }
 
+// Network frames connections over a transport.
 type Network struct {
 	config NetworkConfig
 }
 
 func NewNetwork(config NetworkConfig) *Network {
-	if config.Dialer == nil {
-		config.Dialer = &net.Dialer{KeepAlive: 30 * time.Second}
-	}
-	if config.ListenConfig == nil {
-		config.ListenConfig = new(net.ListenConfig)
+	if config.Transport == nil {
+		config.Transport = TCP{}
 	}
 	config.MaxHeaderSize = cmp.Or(config.MaxHeaderSize, 1<<20)
 	config.MaxPayloadSize = cmp.Or(config.MaxPayloadSize, 1<<30)
 	return &Network{config: config}
 }
 
+// TCP is plain TCP. It authenticates nothing: every peer that reaches a
+// listener is accepted, and a dial believes whatever answers at the address.
+type TCP struct{}
+
+func (TCP) Listen(address platform.Address) (net.Listener, error) {
+	return new(net.ListenConfig).Listen(context.Background(), "tcp", string(address))
+}
+
+func (TCP) Dial(ctx context.Context, address platform.Address) (net.Conn, error) {
+	return (&net.Dialer{KeepAlive: 30 * time.Second}).DialContext(ctx, "tcp", string(address))
+}
+
 func (n *Network) Listen(address platform.Address) (platform.Listener, error) {
-	base, err := n.config.ListenConfig.Listen(context.Background(), "tcp", string(address))
+	base, err := n.config.Transport.Listen(address)
 	if err != nil {
 		return nil, err
 	}
-	tcpListener, ok := base.(*net.TCPListener)
-	if !ok {
-		_ = base.Close()
-		return nil, fmt.Errorf("listen %q did not create a TCP listener", address)
-	}
 	l := &listener{
-		tcp:     tcpListener,
-		address: platform.Address(tcpListener.Addr().String()),
-		config:  n.config,
-		accept:  make(chan struct{}, 1),
+		base:     base,
+		address:  platform.Address(base.Addr().String()),
+		config:   n.config,
+		accepted: make(chan accepted),
+		closed:   make(chan struct{}),
 	}
-	l.accept <- struct{}{}
+	go l.run()
 	return l, nil
 }
 
-func (n *Network) Dial(ctx context.Context, from, to platform.Address) (platform.Conn, error) {
-	dialer := *n.config.Dialer
-	if from != "" {
-		local, err := net.ResolveTCPAddr("tcp", string(from))
-		if err != nil {
-			return nil, err
-		}
-		dialer.LocalAddr = local
-	}
-	connection, err := dialer.DialContext(ctx, "tcp", string(to))
+// Dial leaves the local end to the transport, so from is not used.
+func (n *Network) Dial(ctx context.Context, _, to platform.Address) (platform.Conn, error) {
+	connection, err := n.config.Transport.Dial(ctx, to)
 	if err != nil {
 		return nil, normalizeNetworkError(err)
 	}
 	return newFrameConn(connection, n.config), nil
 }
 
+// listener accepts on its own goroutine, one connection at a time, and hands
+// each to the Accept waiting for it. A transport's listener need not take a
+// deadline, so this is how an Accept follows its context.
 type listener struct {
-	tcp     *net.TCPListener
-	address platform.Address
-	config  NetworkConfig
-	accept  chan struct{}
+	base      net.Listener
+	address   platform.Address
+	config    NetworkConfig
+	accepted  chan accepted
+	closed    chan struct{}
+	closeOnce sync.Once
+	closeErr  error
+}
+
+// accepted is what one Accept of the transport's listener returned.
+type accepted struct {
+	connection net.Conn
+	err        error
+}
+
+// run accepts until the listener is closed. A connection accepted after the
+// close has no Accept to go to, so it is closed here.
+func (l *listener) run() {
+	for {
+		connection, err := l.base.Accept()
+		select {
+		case l.accepted <- accepted{connection: connection, err: err}:
+		case <-l.closed:
+			if connection != nil {
+				_ = connection.Close()
+			}
+			return
+		}
+		if errors.Is(err, net.ErrClosed) {
+			return
+		}
+	}
 }
 
 func (l *listener) Accept(ctx context.Context) (platform.Conn, error) {
 	select {
 	case <-ctx.Done():
 		return nil, context.Cause(ctx)
-	case <-l.accept:
+	case <-l.closed:
+		return nil, normalizeNetworkError(net.ErrClosed)
+	case next := <-l.accepted:
+		if next.err != nil {
+			return nil, normalizeNetworkError(next.err)
+		}
+		return newFrameConn(next.connection, l.config), nil
 	}
-	defer func() { l.accept <- struct{}{} }()
-	var connection net.Conn
-	err := withDeadline(ctx, l.tcp.SetDeadline, func() error {
-		var acceptErr error
-		connection, acceptErr = l.tcp.Accept()
-		return acceptErr
-	})
-	if err != nil {
-		return nil, normalizeNetworkError(err)
-	}
-	return newFrameConn(connection, l.config), nil
 }
 
 func (l *listener) Address() platform.Address { return l.address }
-func (l *listener) Close() error              { return normalizeNetworkError(l.tcp.Close()) }
+
+func (l *listener) Close() error {
+	l.closeOnce.Do(func() {
+		close(l.closed)
+		l.closeErr = normalizeNetworkError(l.base.Close())
+	})
+	return l.closeErr
+}
 
 type frameConn struct {
 	connection net.Conn

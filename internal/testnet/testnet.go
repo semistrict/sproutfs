@@ -19,7 +19,13 @@ var _ platform.Network = (*Network)(nil)
 // Network maps logical addresses onto ephemeral loopback ports. Its zero value
 // is not usable; construct one with New.
 type Network struct {
-	base  platform.Network
+	base platform.Network
+	*addresses
+}
+
+// addresses is where each logical address is listening, shared by every view
+// of one cluster's network.
+type addresses struct {
 	dials atomic.Uint64
 
 	mu        sync.RWMutex
@@ -37,8 +43,16 @@ func (l *listener) Close() error {
 	return l.Listener.Close()
 }
 
+// New is a cluster network over plain TCP.
 func New() *Network {
-	return &Network{base: adapters.NewNetwork(), listeners: make(map[platform.Address]*listener)}
+	return &Network{base: adapters.NewNetwork(),
+		addresses: &addresses{listeners: make(map[platform.Address]*listener)}}
+}
+
+// Over is this cluster's addresses reached over another transport, which is
+// one host of the cluster presenting credentials of its own.
+func (n *Network) Over(transport platform.Transport) *Network {
+	return &Network{base: adapters.NewNetworkOver(transport), addresses: n.addresses}
 }
 
 // Listen binds an ephemeral loopback port and records it as the current

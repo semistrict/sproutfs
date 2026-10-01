@@ -13,11 +13,12 @@
 // images into the templates VMs are forked from, and reaches the agent inside a
 // guest.
 //
-// Hosts reach each other over plain TCP on a trusted cluster network. A host
-// holds no admitted identity and keeps no view of its peers: the only address
-// it ever dials is the page-server address a handoff carries, and the page
-// server serves whoever reaches it. Restricting that port to hosts is the
-// cluster's network policy, not this package's.
+// Hosts reach each other over Config.Network. A host holds no admitted identity
+// and keeps no view of its peers: the only address it ever dials is the
+// page-server address a handoff carries, and the page server serves whoever
+// that network's transport accepts. Over plain TCP that is anyone who reaches
+// the port, so restricting it to hosts is the cluster's network policy; a
+// deployment that authenticates its hosts does so in a transport of its own.
 package host
 
 import (
@@ -61,8 +62,8 @@ type VolumeConfig struct {
 // conditional writes in ObjectStore.
 type Config struct {
 	// Network carries migration pages between hosts. The process chooses the
-	// adapter: plain TCP on a trusted cluster network, and a simulation its
-	// own.
+	// adapter: plain TCP on a trusted cluster network, a transport of the
+	// deployment's own that authenticates its hosts, or a simulation.
 	Network platform.Network
 	// Resources is the RAM allotment this host's pager takes its pages from.
 	Resources *resource.Budget
@@ -394,8 +395,7 @@ func StartHost(ctx context.Context, config Config) (*Host, error) {
 		return nil, err
 	}
 	if config.Migration.Address != "" {
-		// The page server serves any peer that reaches it; restricting the port
-		// to hosts is the cluster's network policy.
+		// The page server serves any peer the network's transport accepts.
 		h.pages, err = vmmigrate.NewPageSource(hostCtx, vmmigrate.SourceConfig{Network: config.Network,
 			Address: config.Migration.Address, PageSize: config.Migration.PageSize})
 		if err != nil {

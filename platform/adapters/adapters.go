@@ -27,9 +27,19 @@ import (
 // NewDisk opens the host filesystem rooted at root. The root must exist.
 func NewDisk(root string) (platform.Disk, error) { return real.NewDisk(root) }
 
-// NewNetwork returns the TCP transport: framed connections between the
-// addresses a deployment's hosts listen on.
-func NewNetwork() platform.Network { return real.NewNetwork(real.NetworkConfig{}) }
+// NewNetwork returns framed connections over plain TCP between the addresses a
+// deployment's hosts listen on. It authenticates no peer.
+func NewNetwork() platform.Network { return NewNetworkOver(TCP()) }
+
+// NewNetworkOver returns framed connections over a transport a deployment
+// supplies: the fabric its hosts already authenticate one another on.
+func NewNetworkOver(transport platform.Transport) platform.Network {
+	return real.NewNetwork(real.NetworkConfig{Transport: transport})
+}
+
+// TCP is the default transport: plain TCP, which authenticates no peer. A
+// transport of a deployment's own can wrap it.
+func TCP() platform.Transport { return real.TCP{} }
 
 // NewGCS serves a bucket and prefix through Google Cloud Storage. An empty
 // endpoint uses the ambient Google credentials; a non-empty one points the

@@ -54,9 +54,9 @@ const (
 )
 
 // SourceConfig supplies the network one host serves migration pages on. Every
-// peer that reaches the listener is served: hosts share a trusted cluster
-// network, and restricting this port to them is the network policy's job. One
-// peer is one remote host, which is what the budgets below are counted per.
+// peer the listener accepts is served: refusing a peer that is not a host is
+// the transport's job, or over plain TCP the network policy's. One peer is one
+// remote host, which is what the budgets below are counted per.
 type SourceConfig struct {
 	// Network opens the listener at Address. A caller that has already opened
 	// one supplies it as Listener instead.

@@ -1,11 +1,12 @@
 # Hosting
 
-A host runs VMs. One process provides that role over one object store, one plain
-TCP network and one RAM allotment. The host has no durable local state. A VM's
+A host runs VMs. One process provides that role over one object store, one
+network and one RAM allotment. The host has no durable local state. A VM's
 authority is the epoch in its [control record](metadata.md), and its data is the
-checkpoint that record selects. The host also has no identity. Hosts run on a
-trusted cluster network, and the only address a host ever dials is the
-page-server address that a [handoff](migration.md) carries.
+checkpoint that record selects. The host also has no identity of its own. The
+only address a host ever dials is the page-server address that a
+[handoff](migration.md) carries. Who may reach that address is the
+[transport's](#transport) business.
 
 ## Assembly
 
@@ -51,9 +52,37 @@ The host owns the following, all with the same lifetime:
 
 A host without a migration address can neither drain nor receive.
 
+### Transport
+
+Hosts reach one another over one channel: a destination dials the source's page
+server. `platform.Network` frames that channel, and a `platform.Transport`
+carries the bytes underneath: a stream listener and a stream dialer.
+`adapters.NewNetwork` frames over `adapters.TCP`, the default. It is plain TCP
+and authenticates no peer, so hosts on it must share a trusted network, and a
+network policy must keep everything else off the page-server port.
+
+A deployment that authenticates its hosts passes `adapters.NewNetworkOver` its
+own transport, for example mutual TLS or its mesh's dialer. That transport
+decides who is a host. Its listener closes a peer it cannot authenticate, and
+its dialer fails on a source it cannot authenticate. Sproutfs never sees the
+credentials. `internal/testnet.MutualTLS` is such a transport, and the tests in
+`host/transport_test.go` migrate over it: two hosts that trust each other
+migrate a VM; a page server serves no stranger; a destination fetches nothing
+from a source it does not trust.
+
+A destination that cannot reach its source waits for the pages only the source
+holds until its caller gives up, whether the source is down or refused. A
+refused source is the same to it as an unreachable one. The receive then fails,
+and the VM is discarded, as with any receive whose stream does not complete.
+
+The host API is not on this channel. `api/host.NewClient` takes an
+`*http.Client`, so a caller can reach the API over the same fabric. An embedder
+that runs the host as a library serves its own API in front of it.
+
 Only the command chooses which adapter implements each of those ports.
 `sproutfs-host` builds the object store, the plain TCP network and the node
-disk, and passes them in. `SPROUTFS_OBJECT_STORE` selects the object store:
+disk, and passes them in. An embedder passes a network over its own
+[transport](#transport). `SPROUTFS_OBJECT_STORE` selects the object store:
 `gcs`, the default, or `s3`. The port is the conditional-write contract that
 the conformance suite in `platform/internal/real` states, and each adapter runs
 it against an emulator. The S3 suite also runs against a real bucket when
@@ -502,9 +531,10 @@ address: the page server. The page server holds the memory of every VM the host
 has handed to another host, and of every child it has forked onto another host.
 A child forked onto the same host is not there. That child maps the pages
 instead of fetching them, so none of it is ever served. The page server serves
-any peer that reaches it, bounded per remote address to eight connections and
-8 MiB of pages in flight. The cluster's network policy, not this process,
-restricts that port to this deployment's hosts.
+any peer its [transport](#transport) accepts, bounded per remote address to
+eight connections and 8 MiB of pages in flight. Over the default plain TCP,
+the cluster's network policy, not this process, restricts that port to this
+deployment's hosts.
 
 `Host.Drain` migrates every VM the host runs, four at a time by default. A drain
 is planned work whose cost is one host's memory. Moving all of it at once would

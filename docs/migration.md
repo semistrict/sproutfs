@@ -57,8 +57,8 @@ the destination reports that it has fetched every one of those pages.
    source host and to its own volume. It then starts the VMM with the captured
    state.
 4. **Post-copy.** When the guest touches a page, the page faults in from the
-   source host's pager first, over plain TCP to the handoff's page-server
-   address. If the source cannot supply it, the page comes from the
+   source host's pager first, over the hosts' [transport](hosting.md#transport)
+   to the handoff's page-server address. If the source cannot supply it, the page comes from the
    destination's own checkpoint. A page that the destination has published
    since the handoff comes from its volume without asking: the source holds at
    best the version before it. A page that the source served from its dirty
@@ -224,8 +224,8 @@ func (vm *VM) Handoff(ctx context.Context) error
 // network: a migrated VM's memory regions, or the fork point a fork was taken at. One per
 // host, registered under the identity of the VM that runs elsewhere. It opens a
 // listener on Network at Address, or takes one the caller already opened. Hosts
-// share a trusted network, so every peer that reaches it is served, bounded per
-// remote address.
+// is the host's network, so every peer its transport accepts is served, bounded
+// per remote address.
 type PageSource struct{ ... }
 func NewPageSource(ctx context.Context, config SourceConfig) (*PageSource, error)
 func (s *PageSource) Serve(vmID string, pages map[string]Pages)

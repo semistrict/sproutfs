@@ -654,8 +654,9 @@ func (h *Host) stopHolds() {
 	}
 }
 
-// dialPages reaches the page server named by a handoff. The cluster network is
-// trusted, so the address is the whole of what a destination needs.
+// dialPages reaches the page server named by a handoff. Whether what answers
+// there is a host is the network's transport to decide, so the address is the
+// whole of what a destination needs.
 func (h *Host) dialPages(ctx context.Context, peer platform.Address) (platform.Conn, error) {
 	return h.network.Dial(ctx, "", peer)
 }

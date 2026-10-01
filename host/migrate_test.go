@@ -472,8 +472,7 @@ func TestMigrationWaitsForTheIntervalCheckpointItInterrupts(t *testing.T) {
 }
 
 // TestHostMigratesAVMToAnotherHost is the host wiring end to end: two admitted
-// hosts over real TCP, one VM's pages fetched from the source's page server
-// under the deployment's own mutual authentication.
+// hosts over real TCP, one VM's pages fetched from the source's page server.
 func TestHostMigratesAVMToAnotherHost(t *testing.T) {
 	for _, tc := range []struct {
 		name            string

@@ -37,7 +37,7 @@ var (
 )
 
 // Dialer opens one connection to a peer's page source. A production dialer is
-// plain TCP on the deployment's trusted network.
+// the host network's, over whatever transport the deployment runs.
 type Dialer func(ctx context.Context, peer platform.Address) (platform.Conn, error)
 
 // Run is a run of consecutive pages the source holds.

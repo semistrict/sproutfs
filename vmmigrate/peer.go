@@ -20,7 +20,7 @@ import (
 )
 
 // Dialer opens one connection to a peer's page source. A production dialer is
-// plain TCP on the deployment's trusted network.
+// the host network's, over whatever transport the deployment runs.
 type Dialer = peer.Dialer
 
 // Admitter orders a destination's decision to ask its source for pages against

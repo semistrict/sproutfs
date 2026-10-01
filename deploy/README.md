@@ -428,10 +428,11 @@ Credentials are not in the environment: the pod reaches GCS through the VM's
 metadata server, whose service account has `roles/storage.objectAdmin` on that
 one bucket. No key file exists anywhere in the demo.
 
-Hosts do not authenticate one another. A page server serves any peer that
-reaches its port, and a destination dials the source's page-server address
-straight out of the handoff the orchestrator carried. Keeping that port to the
-host pods is the cluster's NetworkPolicy, not the process's.
+Hosts do not authenticate one another here: `sproutfs-host` uses the default
+plain TCP [transport](../docs/hosting.md#transport). A page server serves any
+peer that reaches its port, and a destination dials the source's page-server
+address straight out of the handoff the orchestrator carried. Keeping that
+port to the host pods is the cluster's NetworkPolicy, not the process's.
 
 Guest images are not in the container image. `scripts/lib/demo-image.sh` builds
 one on the node under `/opt/sproutfs-demo/guest`, which the host pod mounts
