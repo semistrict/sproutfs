@@ -80,6 +80,24 @@ jobs:
       # shellcheck is preinstalled on ubuntu-latest.
       - run: just check-shell
 
+  # The TLA+ specs under spec/, model-checked with TLC, and their mutants.
+  spec:
+    name: tla+
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: actions/cache@v6
+        with:
+          path: ~/.cache/sproutfs
+          key: tla2tools-${{ hashFiles('scripts/tlc.sh') }}
+      - uses: extractions/setup-just@v4
+      - run: just check-spec
+
   # The managed-memory crate is #![cfg(target_os = "linux")], so Linux is the
   # only host its unit tests run on. They need no KVM, no HugeTLB pool and no
   # elevated privileges; the #[ignore]d UFFD and protocol tests need permission

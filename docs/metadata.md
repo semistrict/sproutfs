@@ -10,6 +10,9 @@ VM's control record is at `control/<id>` and its checkpoint objects are under
 how the deployment's VMs are found. If that listing also had to walk the
 checkpoint objects, it would cost a request for every object ever written.
 
+TLC model-checks this protocol, with lost replies, against the invariants in
+[Model checking](testing.md#model-checking).
+
 ## The control record
 
 A VM's control record is the only mutable object the VM owns. It contains:

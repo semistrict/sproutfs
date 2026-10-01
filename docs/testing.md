@@ -21,7 +21,8 @@ campaign is a schedule, a fault set and an invariant set over the deployment's
 - `gofmt`, `go build` and `go vet` for Linux and macOS;
 - `go test ./...`;
 - `buf lint` and `shellcheck`;
-- the Rust crate's `fmt`, `clippy` and unit tests.
+- the Rust crate's `fmt`, `clippy` and unit tests;
+- the TLA+ specs, model-checked with TLC (see [Model checking](#model-checking)).
 
 `just test-race` adds the race detector. `just soak` runs one block of the
 extended seed sweep; see [Seed sweeps](#seed-sweeps) below. `just test-knobs`
@@ -1428,6 +1429,65 @@ guard must use a harness that carries a runtime. Nothing outside these
 invocations sets `SPROUTFS_SIM_BUG`, and the mutation runner clears every other
 `SPROUTFS_*` setting before it runs them.
 
+## Model checking
+
+Simulation explores the executions its seeds reach. A model checker explores
+every execution of a small configuration. `spec/ownership/Ownership.tla` is a
+TLA+ model of how one VM changes owner. TLC checks it.
+
+The model has one VM, its control record and its checkpoints. Its parties are
+the ones [Metadata authority](metadata.md) describes:
+
+- the writer at each epoch, which publishes, selects, keeps, pins fork points,
+  reclaims, confirms, hands off and closes;
+- opens that take the epoch over, as a recovery or as a migration destination;
+- pins and releases made without the epoch;
+- the release's sweep, reclamation, and deletion.
+
+Every record write is conditional. Any reply may be lost, and the read that
+settles it may fail too.
+
+The invariants are:
+
+- `SelectedReadable`: the selected checkpoint and everything it names are in the
+  store.
+- `PinnedReadable`: every checkpoint ever pinned stays readable, after its
+  record is gone too.
+- `KeptReadable`: a kept checkpoint stays readable while it is kept.
+- `NoCollision`: no sequence is committed twice.
+- `NoMixedGuest`: a migration destination runs a guest only over that guest's
+  own checkpoint.
+- `SelectionMoves`: only the epoch holder moves the selection, only forward,
+  and only to a checkpoint of its own epoch. Pins are only added.
+
+A checkpoint names itself and some of what the guest's state reads. A capture
+never reads an older checkpoint that the capture before it did not read. This
+is what the code guarantees: a publication that fails, or whose outcome the
+writer never learns, gives its sealed pages back to the guest as dirty, so the
+next capture republishes them. The release's sweep depends on it. Without it,
+TLC finds a release that deletes what a later selection reads.
+
+`just check-spec` runs the `MC*.cfg` configurations. Each takes seconds. It
+also runs the mutants under `spec/ownership/mutants`. A mutant puts one defect
+back through the `Bugs` constant and must fail with the invariant it names. So a
+spec that stops catching anything fails the check. The mutants are a sweep that
+forgets kept checkpoints, a sweep that takes what the selection names, a writer
+that adopts a record of another epoch, a destination that skips the stale
+check, a delete that spares no pin, and a pin without the epoch that names any
+checkpoint. `just check-spec-deep` runs the larger configurations under
+`spec/ownership/deep`, which take minutes each.
+
+`scripts/tlc.sh` runs TLC from the TLA+ tools 1.7.4 (MIT licence). It fetches
+the jar once into `~/.cache/sproutfs` and checks its digest.
+
+The model leaves out:
+
+- more than one VM, so the child a fork starts;
+- the pager and the post-copy;
+- creation, which is the model's initial state;
+- the orchestrator, which decides when an open, a migration or a delete may
+  happen. A delete starts only once no writer holds the record.
+
 ## Mutation testing
 
 The curated campaign checks whether the scenarios detect specific wrong
@@ -1690,7 +1750,8 @@ parallel:
 - the Go gate on Linux and on macOS;
 - `buf lint`;
 - `shellcheck`;
-- the Rust crate's `fmt`, `clippy` and unit tests.
+- the Rust crate's `fmt`, `clippy` and unit tests;
+- the TLA+ specs.
 
 Every job runs a `just` recipe, so a developer can run every CI step the same
 way locally.

@@ -17,7 +17,7 @@ test-race:
     go test -race ./...
 
 # Everything a push has to pass; .github/workflows/check.yml runs these recipes.
-check: determinism check-go check-proto check-shell test-shell check-rust
+check: determinism check-go check-proto check-shell test-shell check-rust check-spec
 
 # test-knobs runs the campaigns with a seed's own tunables rather than the
 # deployment's: part sizes, pager budgets, intervals and holds drawn per seed,
@@ -48,6 +48,16 @@ check-go:
 
 check-proto:
     buf lint
+
+# check-spec model-checks the TLA+ specs under spec/ with TLC, and checks that
+# each spec still catches the defects its mutants put back. It needs Java;
+# scripts/tlc.sh fetches the pinned TLA+ tools.
+check-spec:
+    scripts/check-spec.sh
+
+# check-spec-deep runs the larger configurations, minutes each.
+check-spec-deep:
+    scripts/check-spec.sh deep
 
 check-shell:
     shellcheck scripts/*.sh scripts/lib/*.sh scripts/test/*.sh
