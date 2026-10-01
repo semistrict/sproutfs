@@ -242,6 +242,10 @@ func newServer(h host.VMs, token string) http.Handler {
 		received, err := h.Receive(r.Context(), handoff)
 		reply(w, r, "receive", received, err)
 	})
+	mux.HandleFunc("GET /vms/{id}/handoff", func(w http.ResponseWriter, r *http.Request) {
+		handed, err := h.Handed(r.Context(), r.PathValue("id"))
+		reply(w, r, "handoff", handed, err)
+	})
 	mux.HandleFunc("POST /vms/{id}/released", func(w http.ResponseWriter, r *http.Request) {
 		act(w, r, "released", h.Released(r.Context(), r.PathValue("id")))
 	})

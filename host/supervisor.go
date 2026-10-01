@@ -101,6 +101,13 @@ type VMs interface {
 	Migrate(ctx context.Context, id string, destination platform.Address) (hostapi.MigrateResult, error)
 	Receive(ctx context.Context, handoff hostapi.Handoff) (hostapi.ReceiveResult, error)
 	Released(ctx context.Context, id string) error
+	// Handed reports the handoff of a VM this host migrated away and still
+	// holds the pages of, with what is left of its hold as Hold. A control
+	// plane that restarted while handing the VM over takes it from here: the
+	// handoff is good for as long as those pages are held, and it is the only
+	// thing a receive can be tried again with. A VM this host holds no handoff
+	// of is platform.ErrNotFound.
+	Handed(ctx context.Context, id string) (hostapi.MigrateResult, error)
 	// Abandoned gives one handover up rather than handing it over: a fork's
 	// child that will never be received, one whose destination refused it, one
 	// whose fan-out failed. Whatever this host still holds for that VM goes, and

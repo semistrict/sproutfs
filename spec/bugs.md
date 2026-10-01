@@ -27,26 +27,31 @@ a survey during the retry's wait, loses the pages the same way.
 The fix: a survey leaves a handover alone while any host reports a receive of
 its VM in flight, and a migration writes its row again on each look at its
 source. Tests: `TestAnAgedRowDoesNotReleaseASourceUnderAReceive` and
-`TestAReceiveKeepsItsRowInFlight` in `cmd/sproutfs-orchestrator`. Mutants:
-`spec/postcopy/mutants/release-under-receive.cfg` and
-`rows-age-while-driven.cfg`.
+`TestAReceiveKeepsItsRowInFlight` in `cmd/sproutfs-orchestrator`. Mutant:
+`spec/postcopy/mutants/b1.cfg`. Since B2's fix a survey releases only a
+handover a host runs, which covers this too; the row is still written again so
+that a survey never takes up a handover a live orchestrator is retrying.
 
 ## B2. An orchestrator crash during a migration loses the guest's writes
 
-Found by `spec/postcopy` (TASK-75) on 2026-10-01. Open.
+Found by `spec/postcopy` (TASK-75) on 2026-10-01. Fixed by TASK-80.
 
-The handoff — the VMM state and the memory layout a destination needs — lives
-only in the orchestrator's memory. If the orchestrator crashes while a
-migration is handing over, a receive that fails afterwards can never be tried
-again, though the source still holds every page no checkpoint has. Once the
-row ages, a survey releases the source, and the VM is recovered from its last
-checkpoint: every write since is lost, with no host lost and no hold run out.
+The handoff — the VMM state and the memory layout a destination needs — lived
+only in the orchestrator's memory. If the orchestrator crashed while a
+migration was handing over, a receive that failed afterwards could never be tried
+again, though the source still held every page no checkpoint has. Once the
+row aged, a survey released the source, and the VM was recovered from its last
+checkpoint: every write since was lost, with no host lost and no hold run out.
 
 The counterexample: a receive fetches every page and is then discarded; the
 orchestrator crashes; it restarts; the row has aged; a survey releases the
 source.
 
-`spec/postcopy/MCPostCopy.cfg` tolerates this loss (`Tolerated = {"B2"}`), and
-`spec/postcopy/mutants/b2-open.cfg` shows it is still there. A fix keeps the
-handoff where a restarted orchestrator can find it: in the table, or on the
-source, which could hand it out again while it holds the pages.
+The fix: the source keeps the handoff for as long as it holds the pages and
+hands it out again (`Host.Handed`, `GET /vms/{id}/handoff`). A survey
+releases a handover only once a host runs the VM. One that no host runs or
+receives it takes up again with the source's handoff, and carries it over as
+a migration's own retries would. Tests: `TestASourceKeepsItsHandoffWhileItHoldsThePages`
+in `host`, `TestAHostHandsOutTheHandoffItHolds` in `cmd/sproutfs-host`, and
+`TestASurveyTakesUpAHandoverNothingDrives` in `cmd/sproutfs-orchestrator`.
+Mutant: `spec/postcopy/mutants/b2.cfg`.

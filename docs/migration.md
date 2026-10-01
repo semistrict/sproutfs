@@ -465,7 +465,8 @@ Once the source has stopped the guest, the handover no longer depends on the
 request that started it. A drain's request gives up after 60 seconds. The
 orchestrator goes on retrying until a destination takes the VM or the hold is
 over. The drain waits for `Serving` to be empty, so it waits for that handover
-too.
+too. It does not depend on the orchestrator's process either: a restarted
+orchestrator takes the handover up again with the handoff the source keeps.
 
 ## Ephemeral disks move with the VM
 
@@ -560,6 +561,15 @@ failed. A reconcile therefore never gives up the hold of a child that is still
 waiting for its turn. A migration's receive can also outlast two minutes, so a
 migration writes its row again on each look at its source while the receive
 runs.
+
+A survey releases a migrated VM's source only once a host runs the VM. A
+handover that no host runs or receives, with no operation in flight, is one
+nothing is driving: the orchestrator that stopped the VM restarted, so the
+handoff it held is gone with it. The source keeps the handoff for as long as it
+holds the pages, and hands it out again (`GET /vms/{id}/handoff`). The survey
+takes it from there and carries the VM over, under the same retries and the
+same hold as the migration it replaces. Releasing the source instead would
+lose the guest's writes since its last checkpoint, with the source alive.
 
 A survey also leaves a handover alone while any host reports a receive of its
 VM in flight, however old the row is. The source's count of what it still owes

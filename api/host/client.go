@@ -2,6 +2,7 @@ package host
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -119,6 +120,23 @@ func (c *Client) Receive(ctx context.Context, handoff Handoff) (ReceiveResult, e
 func (c *Client) Released(ctx context.Context, id string) error {
 	_, err := jsonhttp.Call[struct{}](ctx, c.http, http.MethodPost, c.path("/vms/%s/released", url.PathEscape(id)), nil)
 	return err
+}
+
+// Handed asks a host for the handoff of a VM it migrated away and still holds
+// the pages of, with what is left of its hold as Hold. found is false for a VM
+// it holds no handoff of. A control plane that restarted while it was handing
+// a VM over has lost its own copy, and this is the one it tries a receive again
+// with.
+func (c *Client) Handed(ctx context.Context, id string) (handed MigrateResult, found bool, err error) {
+	handed, err = jsonhttp.Call[MigrateResult](ctx, c.http, http.MethodGet, c.path("/vms/%s/handoff", url.PathEscape(id)), nil)
+	var refused jsonhttp.Error
+	if errors.As(err, &refused) && refused.Status == http.StatusNotFound {
+		return MigrateResult{}, false, nil
+	}
+	if err != nil {
+		return MigrateResult{}, false, err
+	}
+	return handed, true, nil
 }
 
 // Abandoned gives one handover up rather than handing it over: a fork's child

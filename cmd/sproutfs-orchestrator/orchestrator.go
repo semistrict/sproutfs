@@ -52,6 +52,7 @@ type hostClient interface {
 	Migrate(ctx context.Context, id string, request host.MigrateRequest) (host.MigrateResult, error)
 	Receive(ctx context.Context, handoff host.Handoff) (host.ReceiveResult, error)
 	Released(ctx context.Context, id string) error
+	Handed(ctx context.Context, id string) (host.MigrateResult, bool, error)
 	Abandoned(ctx context.Context, id string) (host.AbandonedResult, error)
 	Stop(ctx context.Context, id string, request host.StopRequest) (host.StopResult, error)
 	Delete(ctx context.Context, id string) error
@@ -153,6 +154,12 @@ type orchestrator struct {
 	surveyMu    sync.Mutex
 	recentHosts []liveHost
 	recentAt    time.Time
+
+	// resuming is the migrations a survey took up again because nothing was
+	// driving them, each until it ends, and resumes is every one of them.
+	resumeMu sync.Mutex
+	resuming map[string]bool
+	resumes  sync.WaitGroup
 }
 
 const (
@@ -446,6 +453,20 @@ func (o *orchestrator) release(ctx context.Context, hosts []liveHost, existing [
 				o.giveUp(ctx, h, id)
 				continue
 			}
+			// A migrated VM no host runs is one whose handover nothing is
+			// driving: the orchestrator that stopped it restarted, or its
+			// receive failed under one that did. The source still holds every
+			// page no checkpoint has, and the handoff with them, so the
+			// handover is taken up again rather than given up to a release
+			// that would lose the guest's writes. A host that is not answering
+			// may be running it, which is no evidence either way.
+			if !runningSomewhere(hosts, id) {
+				if o.resume(ctx, hosts, h, id) {
+					continue
+				}
+			} else if quiet := unanswered(hosts); len(quiet) > 0 && !runsAnswering(hosts, id) {
+				continue
+			}
 			if err := h.client.Released(ctx, id); err != nil {
 				slog.ErrorContext(ctx, "sproutfs-orchestrator: releasing a stale handover failed",
 					"vm", id, "host", h.report.Name, "error", err)
@@ -455,6 +476,72 @@ func (o *orchestrator) release(ctx context.Context, hosts []liveHost, existing [
 				"vm", id, "host", h.report.Name, "state", row.State)
 		}
 	}
+}
+
+// runsAnswering reports whether an answering host runs a VM.
+func runsAnswering(hosts []liveHost, id string) bool {
+	for _, h := range hosts {
+		if h.report.Error == "" && slices.Contains(h.report.Running, id) {
+			return true
+		}
+	}
+	return false
+}
+
+// resume takes up a migration whose handover nothing is driving, with the
+// handoff its source still holds, and reports whether it did or one already
+// runs. A source that holds no handoff of the VM is not a migration's source —
+// a fork point it holds for a child, say — and resume leaves it to the release.
+func (o *orchestrator) resume(ctx context.Context, hosts []liveHost, source liveHost, id string) bool {
+	o.resumeMu.Lock()
+	if o.resuming[id] {
+		o.resumeMu.Unlock()
+		return true
+	}
+	if o.resuming == nil {
+		o.resuming = make(map[string]bool)
+	}
+	o.resuming[id] = true
+	o.resumeMu.Unlock()
+	done := func() {
+		o.resumeMu.Lock()
+		delete(o.resuming, id)
+		o.resumeMu.Unlock()
+	}
+	handed, found, err := source.client.Handed(ctx, id)
+	if err != nil || !found {
+		done()
+		if err != nil {
+			// A source that could not say is no evidence the handoff is gone:
+			// the next survey asks again, and nothing is released meanwhile.
+			slog.ErrorContext(ctx, "sproutfs-orchestrator: asking a source for its handoff failed",
+				"vm", id, "host", source.report.Name, "error", err)
+			return true
+		}
+		return false
+	}
+	row := o.rowOf(ctx, id)
+	need := measured(hosts, row)
+	handed.Handoff.Pull = handed.Handoff.Pull || row.Pull
+	target, err := place(hosts, source.report.Name, need)
+	if err != nil {
+		done()
+		slog.ErrorContext(ctx, "sproutfs-orchestrator: no host can take a handover nothing was driving",
+			"vm", id, "host", source.report.Name, "error", err)
+		return true
+	}
+	o.note(ctx, vmRecord{ID: id, Host: source.report.Name, State: stateMigrating,
+		From: source.report.Name, To: target.report.Name})
+	slog.WarnContext(ctx, "sproutfs-orchestrator: took up a handover nothing was driving",
+		"vm", id, "from", source.report.Name, "to", target.report.Name, "hold_seconds", float64(handed.Hold))
+	o.resumes.Go(func() {
+		defer done()
+		if _, err := o.carry(context.WithoutCancel(ctx), time.Now(), source, target, id, need, handed); err != nil {
+			slog.ErrorContext(ctx, "sproutfs-orchestrator: a handover taken up again failed",
+				"vm", id, "from", source.report.Name, "error", err)
+		}
+	})
+	return true
 }
 
 // forsaken reports a handover whose VM does not exist, which nothing will ever
@@ -1194,7 +1281,15 @@ func (o *orchestrator) Migrate(ctx context.Context, id, to string) (orch.Migrate
 	// the move is still waiting. A drain's request has a deadline of its own,
 	// and a receive it cut short would lose the guest's writes for nothing, so
 	// the handover runs to its own end from here.
-	ctx = context.WithoutCancel(ctx)
+	return o.carry(context.WithoutCancel(ctx), began, source, target, id, need, handed)
+}
+
+// carry hands a stopped VM over to target, and on to another host if it cannot
+// take it, for as long as the source holds the pages: the half of a migration
+// that follows the stop, whether the stop was this orchestrator's or one a
+// survey found nothing driving.
+func (o *orchestrator) carry(ctx context.Context, began time.Time, source, target liveHost, id string,
+	need uint64, handed host.MigrateResult) (orch.MigrateResult, error) {
 	target, received, err := o.handOver(ctx, source, target, id, need, handed)
 	if err != nil {
 		// No destination took the VM while the source held its pages. Nothing

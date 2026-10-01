@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/semistrict/sproutfs/api/host"
 )
 
 // TestAnInFlightRowAgesOff: a row says what the orchestrator last did with a VM,
@@ -117,6 +119,47 @@ func TestAReceiveKeepsItsRowInFlight(t *testing.T) {
 	destination.release()
 	if err := <-migrated; err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestASurveyTakesUpAHandoverNothingDrives: an orchestrator that stopped a VM
+// and then died took its copy of the handoff with it, and a receive that failed
+// meanwhile left no host running the VM or receiving it. The source still holds
+// every page no checkpoint has, and the handoff with them. A release would lose
+// the guest's writes since its last checkpoint, so the survey takes the handoff
+// from the source and carries the VM over. spec/postcopy found this.
+func TestASurveyTakesUpAHandoverNothingDrives(t *testing.T) {
+	d := newDeployment(t, map[string][]string{"host-0": {"vm-a"}, "host-1": {}})
+	d.records.ids = []string{"vm-a"}
+	// The orchestrator that died stopped the VM on host-0.
+	if _, err := d.hosts["host-0"].Migrate(t.Context(), "vm-a",
+		host.MigrateRequest{Destination: d.hosts["host-1"].page}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.orchestrator.table.Record(t.Context(), vmRecord{ID: "vm-a", Host: "host-0",
+		State: stateMigrating, From: "host-0", To: "host-1",
+		Updated: time.Now().Add(-inFlightFor - time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.orchestrator.Reconcile(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	d.orchestrator.resumes.Wait()
+	if !slices.Contains(d.hosts["host-1"].running, "vm-a") {
+		t.Fatalf("the handover nothing drove was not carried over: %v", d.log)
+	}
+	if slices.Contains(d.log, "host-1 open vm-a") {
+		t.Fatalf("the VM was recovered from its checkpoint instead of received: %v", d.log)
+	}
+	if serving := d.hosts["host-0"].serving; len(serving) != 0 {
+		t.Fatalf("host-0 still holds %v for a VM that was received", serving)
+	}
+	row, found, err := d.orchestrator.table.VM(t.Context(), "vm-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found || row.State != stateRunning || row.Host != "host-1" {
+		t.Fatalf("the row after the handover is %+v, want vm-a running on host-1", row)
 	}
 }
 

@@ -71,8 +71,14 @@ var ErrReceiving = fmt.Errorf("%w: that VM is already being received here", ErrN
 type migratedHold struct {
 	runtime Machine
 	// timer releases the pages when nothing reports the destination has
-	// them, armed on the host's clock exactly as a fork hold's is.
-	timer platform.Stopper
+	// them, armed on the host's clock exactly as a fork hold's is, and
+	// deadline is when it fires.
+	timer    platform.Stopper
+	deadline time.Time
+	// handoff is what this host handed out, kept for as long as the pages
+	// are: a control plane that lost it with its own process takes it again
+	// from here, rather than leaving the pages to the deadline.
+	handoff vmmigrate.Handoff
 }
 
 // handoffIntervals is how many checkpoint intervals a handover may be held for.
@@ -177,13 +183,30 @@ func (h *Host) migrate(ctx context.Context, vmID string, destination platform.Ad
 	// has them.
 	h.machines.mu.Lock()
 	delete(h.machines.running, vmID)
-	hold := &migratedHold{runtime: entry.runtime}
+	hold := &migratedHold{runtime: entry.runtime, handoff: handoff,
+		deadline: h.clock.Now().Add(h.HoldTimeout())}
 	hold.timer = h.clock.AfterFunc(h.HoldTimeout(), func() { h.expire(vmID) })
 	h.machines.migrated[vmID] = hold
 	h.machines.mu.Unlock()
 	slog.InfoContext(ctx, "host: migrated a VM", "vm", vmID, "destination", destination,
 		"pause_began", handoff.PausedAt)
 	return handoff, nil
+}
+
+// Handed reports the handoff of a VM this host migrated away and still holds
+// the pages of, and how much of its hold is left. The handoff is good for that
+// long, whoever carries it: a control plane that restarted while it was
+// handing the VM over has lost its own copy, and a receive that failed since
+// can be tried again only with this one. A VM this host does not hold, or holds
+// as a fork point, has none.
+func (h *Host) Handed(vmID string) (vmmigrate.Handoff, time.Duration, bool) {
+	h.machines.mu.Lock()
+	defer h.machines.mu.Unlock()
+	hold := h.machines.migrated[vmID]
+	if hold == nil {
+		return vmmigrate.Handoff{}, 0, false
+	}
+	return hold.handoff, max(hold.deadline.Sub(h.clock.Now()), 0), true
 }
 
 // beginMigration admits one handover of a VM at a time and reports the

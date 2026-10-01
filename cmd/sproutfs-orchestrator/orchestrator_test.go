@@ -155,6 +155,9 @@ type fakeHostClient struct {
 	nested map[string]bool
 	// rootPending is the forks this host runs whose root has not landed.
 	rootPending map[string]bool
+	// handed is the handoff of each VM this host migrated away, which it hands
+	// out again while it serves that VM's pages.
+	handed map[string]host.MigrateResult
 	// outstanding names the VMs this host still holds pages for that no
 	// destination has fetched — every child of a fork point it took, until
 	// that child is received somewhere — and fetched, shared by every host of
@@ -434,8 +437,25 @@ func (f *fakeHostClient) Migrate(_ context.Context, id string, request host.Migr
 			f.serving = slices.DeleteFunc(f.serving, func(value string) bool { return value == id })
 		})
 	}
-	return host.MigrateResult{Handoff: host.Handoff{VMID: id,
-		Source: f.page, PageSize: 2 << 20, Pull: f.pulling[id]}, Hold: f.hold}, nil
+	result := host.MigrateResult{Handoff: host.Handoff{VMID: id,
+		Source: f.page, PageSize: 2 << 20, Pull: f.pulling[id]}, Hold: f.hold}
+	if f.handed == nil {
+		f.handed = make(map[string]host.MigrateResult)
+	}
+	f.handed[id] = result
+	return result, nil
+}
+
+// Handed hands out again the handoff of a VM this host migrated away, for as
+// long as it still serves that VM's pages.
+func (f *fakeHostClient) Handed(_ context.Context, id string) (host.MigrateResult, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !slices.Contains(f.serving, id) {
+		return host.MigrateResult{}, false, nil
+	}
+	handed, found := f.handed[id]
+	return handed, found, nil
 }
 
 func (f *fakeHostClient) Receive(ctx context.Context, handoff host.Handoff) (host.ReceiveResult, error) {

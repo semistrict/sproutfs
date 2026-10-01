@@ -17,11 +17,11 @@
 (*    (Host.receive);                                                      *)
 (*  - the orchestrator, which releases the source once a receive reports   *)
 (*    Done, retries a failed receive while the source holds the pages,     *)
-(*    writes its row again while it drives the handover, and releases a    *)
-(*    handover whose row has aged out of flight unless a host still        *)
-(*    reports a receive of it (orchestrator.release,                       *)
-(*    table.stillInFlight). It may crash and come back. The handoff lives  *)
-(*    only in its memory, so a crash loses it: spec/bugs.md, B2.           *)
+(*    and writes its row again while it drives the handover. It may crash  *)
+(*    and come back. Its survey releases a handover whose row has aged out *)
+(*    of flight only once a host runs the VM; one that no host runs or     *)
+(*    receives it takes up again, with the handoff the source keeps        *)
+(*    (orchestrator.release, orchestrator.resume, Host.Handed).            *)
 (*                                                                         *)
 (* A host can be lost, and a hold can run out: either may lose the pages,  *)
 (* by design. Nothing else may.                                            *)
@@ -36,8 +36,7 @@ CONSTANTS
     Pages,        \* the pages no checkpoint holds, at the handoff
     MaxAttempts,  \* receive attempts the orchestrator may start
     MaxFaults,    \* lost replies, discards and crashes across a run
-    Bugs,         \* defects to put back, to show the invariant catches each one
-    Tolerated     \* open defects of spec/bugs.md the invariant lets pass
+    Bugs          \* defects to put back, to show the invariant catches each one
 
 VARIABLES
     src,       \* "serving", "released", "expired" or "lost"
@@ -51,7 +50,7 @@ VARIABLES
     row,       \* the orchestrator's row: "migrating" or "running"
     fresh,     \* whether the row is young enough to be taken at its word
     designed,  \* a host or a hold took the pages with it
-    handoff,   \* "known", or "lost" with the orchestrator that held it
+    handoff,   \* "known", or "lost" with an orchestrator that alone held it
     faults
 
 vars == <<src, book, wire, dst, has, attempts, durable, orch, row, fresh,
@@ -186,19 +185,19 @@ Reconcile ==
     /\ orch = "up" /\ src = "serving"
     /\ (row = "running" \/ ~fresh)
     /\ (dst # "receiving" \/ "release-under-receive" \in Bugs)
+    \* A handover no host runs and none receives is taken up again (Start),
+    \* not released. Before B2 was fixed it was released.
+    /\ (dst = "running" \/ "release-undriven" \in Bugs)
     /\ Released
-    \* B2: with the handoff gone, no failed receive can be tried again, so a
-    \* release with none in flight loses what no destination installed.
-    /\ designed' = (designed \/
-          (src' = "released" /\ handoff = "lost" /\ dst # "receiving"
-           /\ "B2" \in Tolerated /\ Unsaved))
-    /\ UNCHANGED <<book, wire, dst, has, attempts, durable, orch, row, fresh, handoff, faults>>
+    /\ UNCHANGED <<book, wire, dst, has, attempts, durable, orch, row, fresh, designed, handoff, faults>>
 
+\* The source keeps the handoff for as long as it holds the pages. Before B2
+\* was fixed it lived in the orchestrator alone, and went with it.
 Crash ==
     /\ orch = "up"
     /\ Fault
     /\ orch' = "down"
-    /\ handoff' = "lost"
+    /\ handoff' = IF "handoff-in-memory" \in Bugs THEN "lost" ELSE handoff
     /\ UNCHANGED <<src, book, wire, dst, has, attempts, durable, row, fresh, designed>>
 
 \* The row ages while nothing writes it: past inFlightFor, which is under the

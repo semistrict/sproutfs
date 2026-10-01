@@ -45,6 +45,8 @@ type fakeHost struct {
 	captured hostapi.CaptureResult
 	console  hostapi.Console
 	migrated hostapi.MigrateResult
+	// handed is the handoff of each VM this host still holds the pages of.
+	handed   map[string]hostapi.MigrateResult
 	received hostapi.ReceiveResult
 	drained  hostapi.DrainResult
 	stopped  hostapi.StopResult
@@ -152,6 +154,14 @@ func (f *fakeHost) Receive(_ context.Context, handoff hostapi.Handoff) (hostapi.
 }
 
 func (f *fakeHost) Released(_ context.Context, id string) error { return f.record("released %s", id) }
+
+func (f *fakeHost) Handed(_ context.Context, id string) (hostapi.MigrateResult, error) {
+	handed, found := f.handed[id]
+	if !found {
+		return hostapi.MigrateResult{}, fmt.Errorf("%w: no handoff of %s", platform.ErrNotFound, id)
+	}
+	return handed, f.record("handed %s", id)
+}
 
 func (f *fakeHost) Abandoned(_ context.Context, id string) (hostapi.AbandonedResult, error) {
 	return hostapi.AbandonedResult{Claimed: id == f.claimed}, f.record("abandoned %s", id)
@@ -521,6 +531,28 @@ func TestDrainAndReleaseAreTheHandoverContract(t *testing.T) {
 	}
 	if want := []string{"drain", "released vm-1", "abandoned vm-2", "abandoned vm-3"}; !slices.Equal(fake.calls, want) {
 		t.Fatalf("the host was asked for %v, want %v", fake.calls, want)
+	}
+}
+
+// A host hands out again the handoff of a VM it still holds the pages of, with
+// what is left of its hold, and says it has none for any other VM: that is
+// how a control plane that restarted mid-handover tries the receive again.
+func TestAHostHandsOutTheHandoffItHolds(t *testing.T) {
+	fake := &fakeHost{handed: map[string]hostapi.MigrateResult{"vm-1": {
+		Handoff: hostapi.Handoff{VMID: "vm-1", Source: "10.0.0.1:7000", Checkpoint: 7},
+		Hold:    90}}}
+	server := httptest.NewServer(newServer(fake, ""))
+	defer server.Close()
+	client := hostapi.NewClient(server.URL, server.Client(), "")
+	handed, found, err := client.Handed(t.Context(), "vm-1")
+	if err != nil || !found {
+		t.Fatalf("the handoff of vm-1 = %v, %v, want it found", found, err)
+	}
+	if handed.Handoff.VMID != "vm-1" || handed.Handoff.Checkpoint != 7 || handed.Hold != 90 {
+		t.Fatalf("the handoff of vm-1 is %+v", handed)
+	}
+	if _, found, err := client.Handed(t.Context(), "vm-2"); err != nil || found {
+		t.Fatalf("the handoff of a VM the host does not hold = %v, %v, want none", found, err)
 	}
 }
 

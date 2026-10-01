@@ -103,6 +103,17 @@ func (s *supervisor) Released(ctx context.Context, id string) error {
 	return s.host.ReleaseMigrated(id)
 }
 
+func (s *supervisor) Handed(ctx context.Context, id string) (hostapi.MigrateResult, error) {
+	if err := context.Cause(ctx); err != nil {
+		return hostapi.MigrateResult{}, err
+	}
+	handoff, left, held := s.host.Handed(id)
+	if !held {
+		return hostapi.MigrateResult{}, fmt.Errorf("%w: this host holds no handoff of %s", platform.ErrNotFound, id)
+	}
+	return hostapi.MigrateResult{Handoff: apiHandoff(handoff), Hold: hostapi.Of(left)}, nil
+}
+
 func (s *supervisor) Abandoned(ctx context.Context, id string) (hostapi.AbandonedResult, error) {
 	if err := context.Cause(ctx); err != nil {
 		return hostapi.AbandonedResult{}, err

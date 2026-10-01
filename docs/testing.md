@@ -1494,9 +1494,8 @@ the serving source, on its way to a live receive, installed on a destination
 that runs the VM, or published. Only a lost host or a hold that ran out may
 take one.
 
-[`spec/bugs.md`](../spec/bugs.md) lists every real defect a spec has found. A
-configuration lets an open defect pass only through the spec's `Tolerated`
-constant, and a mutant with nothing tolerated shows it is still there.
+[`spec/bugs.md`](../spec/bugs.md) lists every real defect a spec has found.
+Each fixed one has a mutant that puts it back.
 
 The ownership model leaves out:
 
