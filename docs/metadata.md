@@ -283,7 +283,18 @@ pause, and a failed read refuses the handoff.
 Taking a VM over fences a writer that may still be running a guest. So an epoch
 is taken only on positive evidence that the previous holder is gone. The
 orchestrator's recovery refuses while any host pod that it cannot account for
-might still be running the VM. The same reasoning applies in the other
+might still be running the VM.
+
+That evidence is a survey, and a survey asks each host at its own moment. So it
+can miss a host that opened the VM while it was asking. A migration can land
+between asking its destination and asking its source, and another reopen of the
+same VM can open it. So a recovery or a start reads the VM's epoch before it
+surveys, and the open takes the next epoch only from that one
+(`Client.OpenAfter`). Any open made since moved the epoch, so the host refuses
+the reopen with `ErrMoved` and fences nothing. `spec/recovery` found this; see
+[spec/bugs.md](../spec/bugs.md).
+
+The same reasoning applies in the other
 direction. If two hosts both report one VM, the deployment disagrees with
 itself, and one of those hosts holds a handle that can never publish. The
 orchestrator then refuses every request that must name the VM's host until the

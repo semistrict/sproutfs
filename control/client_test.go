@@ -182,6 +182,32 @@ func TestOpenFencesThePreviousWriter(t *testing.T) {
 	}
 }
 
+// An open conditional on the epoch its caller read takes the next one only
+// from that epoch. Once anything else has opened the VM, it is refused and
+// fences nothing: the host that opened since may be running the guest.
+func TestOpenAfterRefusesARecordThatMoved(t *testing.T) {
+	client, _ := newClient(t)
+	ctx := t.Context()
+	first, err := client.Create(ctx, "vm", root(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := first.Epoch()
+	second, err := client.OpenAfter(ctx, "vm", read)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Epoch() != read+1 {
+		t.Fatalf("the open holds epoch %d, want %d", second.Epoch(), read+1)
+	}
+	if _, err := client.OpenAfter(ctx, "vm", read); !errors.Is(err, control.ErrMoved) {
+		t.Fatalf("an open after epoch %d of a record at %d = %v, want ErrMoved", read, second.Epoch(), err)
+	}
+	if _, err := second.Select(ctx, control.Sequence(second.Epoch(), 1)); err != nil {
+		t.Fatalf("the refused open fenced the handle it found: %v", err)
+	}
+}
+
 // A selection must advance and must belong to the selecting handle's epoch.
 // Selecting the sequence already selected is idempotent.
 func TestSelectRequiresAnAdvancingSequenceOfThisEpoch(t *testing.T) {

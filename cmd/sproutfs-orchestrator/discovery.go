@@ -114,6 +114,18 @@ func (b *bucketRecords) Pending(ctx context.Context, id string) (bool, error) {
 	return !record.Created, nil
 }
 
+// Epoch reads one VM's writer epoch, zero for a VM with no record.
+func (b *bucketRecords) Epoch(ctx context.Context, id string) (uint64, error) {
+	record, err := b.control.Read(ctx, id)
+	if errors.Is(err, platform.ErrNotFound) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	return record.Epoch, nil
+}
+
 // keys is every control record in the namespace, by the identity its key names.
 func (b *bucketRecords) keys(ctx context.Context) ([]string, error) {
 	prefix, err := platform.NewObjectPrefix(control.RecordPrefix)

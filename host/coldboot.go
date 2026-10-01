@@ -79,10 +79,16 @@ func (s ColdShape) sizes() (map[string]uint64, error) {
 // The caller boots the returned handle. A VM whose boot then fails is an
 // ordinary failed open — its memory is gone, which is what was asked for.
 func (h *Host) OpenCold(ctx context.Context, vmID string, shape ColdShape) (*volume.VM, error) {
+	return h.OpenColdAfter(ctx, vmID, shape, 0)
+}
+
+// OpenColdAfter is OpenCold conditional on the epoch its caller read, as
+// volume.Manager.OpenAfter is: an open made since refuses it.
+func (h *Host) OpenColdAfter(ctx context.Context, vmID string, shape ColdShape, epoch uint64) (*volume.VM, error) {
 	if _, err := shape.sizes(); err != nil {
 		return nil, err
 	}
-	vm, err := h.volumes.Open(ctx, vmID)
+	vm, err := h.volumes.OpenAfter(ctx, vmID, epoch)
 	if err != nil {
 		return nil, err
 	}

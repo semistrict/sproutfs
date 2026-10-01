@@ -68,6 +68,8 @@ type records interface {
 	// has not landed: a fork's child whose root its host is still publishing.
 	// A VM with no record is not pending.
 	Pending(ctx context.Context, id string) (bool, error)
+	// Epoch reads a VM's writer epoch, zero for a VM with no record.
+	Epoch(ctx context.Context, id string) (uint64, error)
 }
 
 // listing is one control record as the bucket found it, which is the identity
@@ -1707,6 +1709,16 @@ type reopening struct {
 // question for both: is this VM really running nowhere, or is it between two
 // hosts and about to be somewhere?
 func (o *orchestrator) reopen(ctx context.Context, id string, terms reopening) (orch.RecoverResult, error) {
+	// The epoch is read before the survey, and the open takes the next one
+	// only from it. A survey asks each host at its own moment, so it can miss
+	// a host that opened the VM while it was asking — a migration that landed
+	// between asking its destination and asking its source, or another reopen
+	// of the same VM — and opening anyway would fence a guest that is running.
+	// Every such open moved the epoch, so the host refuses this one.
+	epoch, err := o.records.Epoch(ctx, id)
+	if err != nil {
+		return orch.RecoverResult{}, fmt.Errorf("reading the control record of %s: %w", id, err)
+	}
 	hosts, err := o.survey(ctx)
 	if err != nil {
 		return orch.RecoverResult{}, err
@@ -1788,6 +1800,7 @@ func (o *orchestrator) reopen(ctx context.Context, id string, terms reopening) (
 	// start need not ask again.
 	open := terms.open
 	open.Pull = open.Pull || row.Pull
+	open.Epoch = epoch
 	var target liveHost
 	if terms.to == "" {
 		target, err = place(hosts, "", need)

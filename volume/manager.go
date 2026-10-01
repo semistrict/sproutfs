@@ -158,6 +158,13 @@ func (m *Manager) create(ctx context.Context, id string, volumes []VolumeSpec, t
 // ErrForkPending, and the epoch is left alone so the host that holds that fork
 // is not fenced by an open that could never have succeeded.
 func (m *Manager) Open(ctx context.Context, id string) (*VM, error) {
+	return m.OpenAfter(ctx, id, 0)
+}
+
+// OpenAfter is Open conditional on the epoch its caller read before it decided
+// nothing runs the VM: an open made since is refused with control.ErrMoved,
+// and fences nothing. Zero opens whatever the epoch is, as Open does.
+func (m *Manager) OpenAfter(ctx context.Context, id string, epoch uint64) (*VM, error) {
 	if !validID(id) {
 		return nil, ErrInvalidConfig
 	}
@@ -173,7 +180,7 @@ func (m *Manager) Open(ctx context.Context, id string) (*VM, error) {
 	if !record.Created {
 		return nil, ErrForkPending
 	}
-	handle, err := m.config.Control.Open(ctx, id)
+	handle, err := m.config.Control.OpenAfter(ctx, id, epoch)
 	if err != nil {
 		return nil, err
 	}

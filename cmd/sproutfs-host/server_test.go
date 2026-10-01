@@ -368,6 +368,16 @@ func TestCreateFromACheckpointThatIsNotPublishedIsAConflict(t *testing.T) {
 	}
 }
 
+// An open conditional on an epoch something else has since opened past is
+// refused as a conflict: that host may be running the VM.
+func TestAnOpenPastItsEpochIsAConflict(t *testing.T) {
+	fake := &fakeHost{err: fmt.Errorf("opening vm-1: %w", control.ErrMoved)}
+	status, body := call(t, fake, http.MethodPost, "/vms/vm-1/open", `{"epoch":5}`)
+	if status != http.StatusConflict {
+		t.Fatalf("status %d: %s", status, body)
+	}
+}
+
 func TestCreateWithoutIdentityIsRefused(t *testing.T) {
 	fake := &fakeHost{}
 	status, body := call(t, fake, http.MethodPost, "/vms", `{"template":"alpine"}`)

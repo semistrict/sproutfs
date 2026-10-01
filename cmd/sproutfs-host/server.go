@@ -321,6 +321,9 @@ func statusOf(err error) int {
 		return http.StatusConflict
 	case errors.Is(err, host.ErrNotMigratable), errors.Is(err, volume.ErrHandedOff),
 		errors.Is(err, volume.ErrForkPending), errors.Is(err, control.ErrFenced),
+		// An open conditional on an epoch that something else has since opened
+		// past: that host may be running the VM.
+		errors.Is(err, control.ErrMoved),
 		// A checkpoint that is not published, or that its VM's writer may be
 		// reclaiming, is one to create from once its VM has published again.
 		errors.Is(err, control.ErrNotPublished),

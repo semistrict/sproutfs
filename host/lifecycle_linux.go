@@ -188,14 +188,14 @@ func (s *supervisor) coldRequest(request hostapi.OpenRequest) error {
 func (s *supervisor) opening(ctx context.Context, id string,
 	request hostapi.OpenRequest) (*volume.VM, []byte, error) {
 	if request.Cold {
-		vm, err := s.host.OpenCold(ctx, id, ColdShape{Memory: vmmachine.RAMVolume, Root: rootVolume,
-			MemoryBytes: request.Memory, RootBytes: request.Disk, VCPUs: request.VCPUs})
+		vm, err := s.host.OpenColdAfter(ctx, id, ColdShape{Memory: vmmachine.RAMVolume, Root: rootVolume,
+			MemoryBytes: request.Memory, RootBytes: request.Disk, VCPUs: request.VCPUs}, request.Epoch)
 		if err != nil {
 			return nil, nil, fmt.Errorf("cold starting %s: %w", id, err)
 		}
 		return vm, nil, nil
 	}
-	vm, err := s.host.Volumes().Open(ctx, id)
+	vm, err := s.host.Volumes().OpenAfter(ctx, id, request.Epoch)
 	if err != nil {
 		return nil, nil, fmt.Errorf("opening %s: %w", id, err)
 	}

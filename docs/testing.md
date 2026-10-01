@@ -1494,6 +1494,11 @@ the serving source, on its way to a live receive, installed on a destination
 that runs the VM, or published. Only a lost host or a hold that ran out may
 take one.
 
+`spec/recovery/Recovery.tla` models a recovery racing a migration across
+hosts that may die. Its survey asks each host in turn, and it reads the row
+afterwards. Its invariant, `NoLiveFence`, is that a recovery never takes the
+epoch from a holder that is alive.
+
 [`spec/bugs.md`](../spec/bugs.md) lists every real defect a spec has found.
 Each fixed one has a mutant that puts it back.
 

@@ -698,6 +698,11 @@ type OpenRequest struct {
 	Pull bool `json:"pull,omitempty"`
 	// CheckpointInterval is the VM's own interval; see CreateRequest.
 	CheckpointInterval time.Duration `json:"checkpoint_interval,omitempty"`
+	// Epoch is the VM's epoch as its caller read it before deciding that
+	// nothing runs the VM. The open takes the next epoch only from that one,
+	// and is refused as a conflict once anything else has opened the VM since:
+	// that host may be running it. Zero opens whatever the epoch is.
+	Epoch uint64 `json:"epoch,omitempty"`
 }
 
 // OpenResult reports a VM opened from its last checkpoint, which is what a host

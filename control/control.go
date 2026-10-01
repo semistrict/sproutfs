@@ -44,6 +44,10 @@ var (
 	ErrFenced = errors.New("control: fenced by a later writer")
 	// ErrClosed reports a handle its owner has released.
 	ErrClosed = errors.New("control: closed")
+	// ErrMoved reports an open refused because the VM's record is no longer at
+	// the epoch its caller read: something opened the VM since, and may be
+	// running it.
+	ErrMoved = errors.New("control: the record moved past the epoch the caller read")
 	// ErrEpochExhausted reports a VM that has been opened as many times as an
 	// epoch can count.
 	ErrEpochExhausted = errors.New("control: writer epochs exhausted")

@@ -55,3 +55,30 @@ a migration's own retries would. Tests: `TestASourceKeepsItsHandoffWhileItHoldsT
 in `host`, `TestAHostHandsOutTheHandoffItHolds` in `cmd/sproutfs-host`, and
 `TestASurveyTakesUpAHandoverNothingDrives` in `cmd/sproutfs-orchestrator`.
 Mutant: `spec/postcopy/mutants/b2.cfg`.
+
+## B3. A recovery could fence a guest its survey missed
+
+Found by `spec/recovery` (TASK-77) on 2026-10-01. Fixed.
+
+A recovery or a start reopens a VM once a survey shows no host running it,
+serving its pages or receiving it, and the table row is not in flight. A survey
+asks each host at its own moment, and the row is read after it, so the survey
+can miss a host that opened the VM while it was asking. The open then took the
+epoch from that host and fenced a guest that was running: its writes since its
+last checkpoint were lost, and the VM came back from that checkpoint elsewhere.
+
+The counterexample: a recovery begins while a migration from c to b is under
+way. The survey asks a and b, which hold nothing yet. The migration stops the
+guest on c, b opens it and runs it, the row says it is running on b, and c is
+released. The survey asks c, which holds nothing now. The row is not in flight,
+so the recovery opens the VM on a, and fences b. Two concurrent reopens of a
+stopped VM, such as a start a client retried, race the same way.
+
+The fix: a reopen reads the VM's epoch before it surveys, and the host's open
+takes the next epoch only from that one (`control.Client.OpenAfter`,
+`volume.Manager.OpenAfter`, `OpenRequest.Epoch`). An open made since is refused
+with `control.ErrMoved` and fences nothing. Tests:
+`TestOpenAfterRefusesARecordThatMoved` in `control`,
+`TestAnOpenPastItsEpochIsAConflict` in `cmd/sproutfs-host`, and
+`TestRecoverIsRefusedOnceTheVMWasOpenedBehindTheSurvey` in
+`cmd/sproutfs-orchestrator`. Mutant: `spec/recovery/mutants/b3.cfg`.

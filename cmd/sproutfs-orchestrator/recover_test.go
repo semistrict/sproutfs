@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"slices"
 	"testing"
 )
 
@@ -51,5 +52,37 @@ func TestRecoverIsRefusedWhileTheTableRowIsInFlight(t *testing.T) {
 	}
 	if _, err := d.orchestrator.Recover(t.Context(), "vm-a", false); err != nil {
 		t.Fatalf("recovering a VM nothing is doing anything with: %v", err)
+	}
+}
+
+// TestRecoverIsRefusedOnceTheVMWasOpenedBehindTheSurvey: a survey asks each
+// host at its own moment, so it can miss a host that opened the VM while it
+// was asking — a migration that landed between asking its destination and
+// asking its source, or another reopen of the same VM. The VM looked lost, and
+// a recovery opened it and fenced a guest that was running. The recovery now
+// reads the epoch before it surveys and opens only from that epoch, so the
+// host refuses it and nothing is fenced. spec/recovery found this.
+func TestRecoverIsRefusedOnceTheVMWasOpenedBehindTheSurvey(t *testing.T) {
+	d := newDeployment(t, map[string][]string{"host-0": {}, "host-1": {}})
+	d.records.ids = []string{"vm-a"}
+	d.records.epochs["vm-a"] = 5
+	// host-1 opens the VM after the recovery read its epoch, and the survey
+	// asked host-1 before it had.
+	d.records.afterEpoch = func() {
+		d.records.afterEpoch = nil
+		d.records.mu.Lock()
+		defer d.records.mu.Unlock()
+		d.records.epochs["vm-a"]++
+		d.hosts["host-1"].running = append(d.hosts["host-1"].running, "vm-a")
+		d.hosts["host-1"].unseen["vm-a"] = true
+	}
+	if _, err := d.orchestrator.Recover(t.Context(), "vm-a", false); err == nil {
+		t.Fatal("a recovery opened a VM that was opened behind its survey")
+	}
+	if want := []string{"host-0 open vm-a refused at epoch 6"}; !slices.Equal(d.log, want) {
+		t.Fatalf("the deployment did %v, want %v", d.log, want)
+	}
+	if d.records.epochs["vm-a"] != 6 {
+		t.Fatalf("the epoch is %d, want the 6 host-1 took", d.records.epochs["vm-a"])
 	}
 }

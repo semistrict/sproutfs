@@ -60,10 +60,27 @@ type fakeRecords struct {
 	err error
 	// pending is the records whose first checkpoint has not landed.
 	pending map[string]bool
+	// epochs is each record's epoch, which every host's open advances, and mu
+	// the lock the hosts take around it. afterEpoch runs once a caller has
+	// read an epoch, which is where a test opens the VM behind its back.
+	epochs     map[string]uint64
+	mu         *sync.Mutex
+	afterEpoch func()
 }
 
 func (f *fakeRecords) Pending(_ context.Context, id string) (bool, error) {
 	return f.pending[id], f.err
+}
+
+func (f *fakeRecords) Epoch(_ context.Context, id string) (uint64, error) {
+	f.mu.Lock()
+	epoch := f.epochs[id]
+	after := f.afterEpoch
+	f.mu.Unlock()
+	if after != nil {
+		after()
+	}
+	return epoch, f.err
 }
 
 func (f *fakeRecords) List(context.Context) ([]listing, error) {
@@ -155,6 +172,11 @@ type fakeHostClient struct {
 	nested map[string]bool
 	// rootPending is the forks this host runs whose root has not landed.
 	rootPending map[string]bool
+	// epochs is the deployment's record epochs, shared with fakeRecords, and
+	// unseen the VMs this host runs that a survey asked it about too early to
+	// see.
+	epochs map[string]uint64
+	unseen map[string]bool
 	// handed is the handoff of each VM this host migrated away, which it hands
 	// out again while it serves that VM's pages.
 	handed map[string]host.MigrateResult
@@ -245,8 +267,9 @@ func (f *fakeHostClient) Status(ctx context.Context) (host.Status, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.linger()
-	records := make([]host.VM, 0, len(f.running))
-	for _, id := range f.running {
+	running := slices.DeleteFunc(slices.Clone(f.running), func(id string) bool { return f.unseen[id] })
+	records := make([]host.VM, 0, len(running))
+	for _, id := range running {
 		record := host.VM{ID: id, Host: f.name, Checkpoint: f.checkpoint}
 		if f.pulling[id] {
 			record.Pull = &host.Pull{}
@@ -256,7 +279,7 @@ func (f *fakeHostClient) Status(ctx context.Context) (host.Status, error) {
 		records = append(records, record)
 	}
 	return host.Status{Host: f.name, PageAddress: f.page,
-		Running: slices.Clone(f.running), Serving: slices.Clone(f.serving),
+		Running: running, Serving: slices.Clone(f.serving),
 		Receiving: slices.Clone(f.receiving), VMs: records, Templates: slices.Clone(f.templates),
 		// A placement measures a host by the RAM arena against the guest RAM it
 		// has committed, so that is the pager this fake fills in.
@@ -332,6 +355,13 @@ func (f *fakeHostClient) ImportTemplate(_ context.Context, image io.Reader,
 func (f *fakeHostClient) Open(_ context.Context, id string, request host.OpenRequest) (host.OpenResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if request.Epoch != 0 && request.Epoch != f.epochs[id] {
+		// Something opened the VM since the caller read its epoch, and the
+		// open is refused, as control.Client.OpenAfter refuses it.
+		f.record("open %s refused at epoch %d", id, f.epochs[id])
+		return host.OpenResult{}, errors.New("the record moved past the epoch the caller read")
+	}
+	f.epochs[id]++
 	switch {
 	case request.Pull:
 		f.record("open %s pull", id)
@@ -519,6 +549,7 @@ func (f *fakeHostClient) Receive(ctx context.Context, handoff host.Handoff) (hos
 	defer f.mu.Unlock()
 	f.received = append(f.received, handoff.VMID)
 	f.running = append(f.running, handoff.VMID)
+	f.epochs[handoff.VMID]++
 	f.pulling[handoff.VMID] = handoff.Pull
 	// The child holds every page it inherited, which is what lets the source
 	// release the hold it kept for it.
@@ -644,13 +675,16 @@ func newDeployment(t *testing.T, running map[string][]string) *deployment {
 	// released by what another host fetched. So is retired: a child whose hold
 	// one host gave up cannot be taken in by another.
 	fetched, retired := map[string]bool{}, map[string]bool{}
-	d := &deployment{pods: &fakePods{mu: mu}, records: &fakeRecords{}, hosts: map[string]*fakeHostClient{}}
+	epochs := map[string]uint64{}
+	d := &deployment{pods: &fakePods{mu: mu}, records: &fakeRecords{epochs: epochs, mu: mu},
+		hosts: map[string]*fakeHostClient{}}
 	for _, name := range slices.Sorted(maps.Keys(running)) {
 		address := "10.0.0." + strconv.Itoa(len(d.hosts)+1)
 		d.pods.pods = append(d.pods.pods, pod{Name: name, IP: address, Ready: true})
 		d.hosts[name] = &fakeHostClient{mu: mu, name: name, running: slices.Clone(running[name]),
 			serving: []string{}, page: address + ":8081", log: &d.log, held: make(chan struct{}),
-			outstanding: map[string]bool{}, fetched: fetched, retired: retired,
+			outstanding: map[string]bool{}, fetched: fetched, retired: retired, epochs: epochs,
+			unseen:  map[string]bool{},
 			pulling: map[string]bool{}, nested: map[string]bool{}}
 		d.records.ids = append(d.records.ids, running[name]...)
 	}

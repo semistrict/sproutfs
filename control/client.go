@@ -178,6 +178,16 @@ func (c *Client) Create(ctx context.Context, vm string, selected uint64, publish
 // selected checkpoint's index exists — Record reports whether it was ever
 // published, and reading the index is the caller's.
 func (c *Client) Open(ctx context.Context, vm string) (*Handle, error) {
+	return c.OpenAfter(ctx, vm, 0)
+}
+
+// OpenAfter is Open that claims only the epoch after the one its caller read,
+// and refuses with ErrMoved once the record is past it. A caller that decided
+// from a survey that nothing runs the VM read the epoch before that survey: an
+// open made since, which the survey may have missed because it asked each host
+// at its own moment, moved the epoch, and the host that made it may be running
+// the VM. Zero claims whatever epoch comes next, as Open does.
+func (c *Client) OpenAfter(ctx context.Context, vm string, epoch uint64) (*Handle, error) {
 	if !ValidID(vm) {
 		return nil, ErrInvalidConfig
 	}
@@ -187,6 +197,9 @@ func (c *Client) Open(ctx context.Context, vm string) (*Handle, error) {
 		current, etag, err := c.read(ctx, vm)
 		if err != nil {
 			return nil, err
+		}
+		if epoch != 0 && current.Epoch != epoch {
+			return nil, fmt.Errorf("%w: %s is at epoch %d, read at %d", ErrMoved, vm, current.Epoch, epoch)
 		}
 		if current.Epoch >= MaximumEpoch {
 			return nil, ErrEpochExhausted
