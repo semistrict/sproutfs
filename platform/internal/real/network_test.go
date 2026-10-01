@@ -216,14 +216,14 @@ func TestNetworkReceivesNothingFromAPeerItsTransportRefuses(t *testing.T) {
 	// The stranger trusts the server, so only the server can refuse.
 	strangerTransport, _ := mutualTLS(t, "stranger", stranger, deployment)
 	address, first := serveOne(t, real.NewNetwork(real.NetworkConfig{Transport: serverTransport}))
+	// The stranger's own handshake finishes before the server has read its
+	// certificate, so the dial succeeds. The server refuses it on its first
+	// read, which is the receive.
 	client, err := real.NewNetwork(real.NetworkConfig{Transport: strangerTransport}).Dial(t.Context(), "", address)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer client.Close()
-	if err := client.Send(t.Context(), platform.Frame{Header: []byte("let me in")}); err != nil {
-		t.Fatal(err)
-	}
 	if got := <-first; got.err == nil {
 		t.Fatalf("the server received %q from a peer its transport cannot authenticate", got.header)
 	}

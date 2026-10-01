@@ -813,6 +813,18 @@ func awaitReleased(t *testing.T, host *host.Host, closed ...*machine) {
 	}
 }
 
+// awaitUnsealed waits until no fork point holds a VM's pages sealed.
+func awaitUnsealed(t *testing.T, vm *volume.VM) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for vm.Status().Sealed {
+		if time.Now().After(deadline) {
+			t.Fatal("a fork point still holds the VM's pages sealed")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 // TestReceivedGuestIsDiscardedWhenItsPostCopyFails: the pages no checkpoint
 // holds exist only on the source, so a post-copy that cannot fetch them leaves
 // a guest whose memory is part this host's and part missing — a torn image.

@@ -138,8 +138,10 @@ func TestAParentIsStoppableOnceItsForkHoldOutlivesItsDeadline(t *testing.T) {
 	if _, err := h.hosts[0].Stop(t.Context(), "parent", hostapi.StopRequest{Suspend: true}); !errors.Is(err, volume.ErrSealed) {
 		t.Fatalf("stopping a sealed parent = %v, want ErrSealed", err)
 	}
-	// Nothing releases it, so the deadline does.
+	// Nothing releases it, so the deadline does. A release stops serving the
+	// child before it retires the point, so the seal ends after that.
 	awaitReleased(t, h.hosts[0])
+	awaitUnsealed(t, vm)
 
 	guest.store("ram0", 1, 32)
 	stopped, err := h.hosts[0].Stop(t.Context(), "parent", hostapi.StopRequest{Suspend: true})
