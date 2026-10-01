@@ -218,6 +218,11 @@ func ascending(sequences []uint64) bool {
 // cannot have written: another format, an identity that is not the one it was
 // read under, an epoch below the first, a selection of nothing, or pins or kept
 // checkpoints that are not a sorted set of sequences.
+// ParseRecord reads one VM's control record from the bytes of its object, as
+// Client.Read does. It is for a reader that sees the object itself, such as a
+// simulation that watches every change its store applies.
+func ParseRecord(vm string, data []byte) (Record, error) { return unmarshalRecord(vm, data) }
+
 func unmarshalRecord(vm string, data []byte) (Record, error) {
 	message := new(controlv1.Record)
 	if err := proto.Unmarshal(data, message); err != nil {

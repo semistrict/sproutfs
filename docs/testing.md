@@ -1507,6 +1507,16 @@ models candidate designs for the pin collector (TASK-24). A collector that
 releases a pin no selected checkpoint reads deletes what a fork in flight is
 about to read. The constraints the passing design meets are on TASK-24.
 
+A spec is written from the code by hand, so the two can drift apart with
+nothing failing. The simulation ties them together. The simulated object store
+reports every change it applies, in its own order (`sim.ObjectStore.Observe`).
+Every simulated world checks each change to a control record or a checkpoint's
+index object against the ownership spec's properties, by their names:
+`SelectionMoves`, `SelectedReadable`, `PinnedReadable` and `KeptReadable`
+(`internal/simtest/ownership.go`). `World.CheckSelected` reports what it found,
+so every campaign that ends with it checks its whole trace. A check that saw no
+record change in a world with VMs fails, so it cannot pass by checking nothing.
+
 [`spec/bugs.md`](../spec/bugs.md) lists every real defect a spec has found.
 Each fixed one has a mutant that puts it back.
 

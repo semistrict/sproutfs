@@ -110,6 +110,9 @@ type World struct {
 	kept map[string]map[uint64]durableState
 	// ctx is the world's own context, which every host process is started from.
 	ctx context.Context
+	// ownership checks every change the store applies against
+	// spec/ownership; see CheckOwnership.
+	ownership *ownership
 	// orphans are the identities a fork could not give back: a child whose root
 	// never published and whose record the store would not let go of. They are
 	// deleted again at every step, because a record nothing can open and
@@ -347,7 +350,9 @@ func start(ctx context.Context, config Config) (*World, error) {
 	w := &World{config: config, runtime: config.Runtime, ctx: ctx,
 		instances: map[string]*instance{}, published: map[string]map[uint64]bool{},
 		points: map[string]pendingPoint{},
-		kept:   map[string]map[uint64]durableState{}, receivedGuests: map[string]int{}}
+		kept:   map[string]map[uint64]durableState{}, receivedGuests: map[string]int{},
+		ownership: newOwnership(config.Prefix.String())}
+	w.runtime.ObjectStore().Observe(w.ownership.observe)
 	for index := range config.Topology.Hosts {
 		id := config.Namespace + config.Topology.Hosts[index]
 		h := &hostState{name: id, address: platform.Address(id),
@@ -3227,12 +3232,13 @@ func (w *World) Close(ctx context.Context) error {
 // writer of that VM published. It is the campaign's second invariant, and the
 // one a takeover under a partition is most likely to break: a VM whose record
 // selects a sequence nobody ever published is a VM whose state was invented.
+// It also reports everything CheckOwnership found over the run.
 func (w *World) CheckSelected(ctx context.Context) error {
 	records, err := w.records()
 	if err != nil {
 		return err
 	}
-	var errs []error
+	errs := []error{w.CheckOwnership()}
 	for _, spec := range w.config.Topology.VMs {
 		record, err := records.Read(ctx, spec.ID)
 		if errors.Is(err, platform.ErrNotFound) {
@@ -3250,6 +3256,14 @@ func (w *World) CheckSelected(ctx context.Context) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// CheckOwnership reports every change to a control record or a checkpoint's
+// index object that spec/ownership/Ownership.tla forbids, over the whole run so
+// far: a selection that went back or was taken by another epoch, a pin taken
+// away, or the index of a selected, pinned or kept checkpoint deleted.
+func (w *World) CheckOwnership() error {
+	return w.ownership.failures(len(w.config.Topology.VMs) > 0)
 }
 
 // records reads the deployment's control records directly, outside any host, so

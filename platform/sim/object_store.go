@@ -62,6 +62,34 @@ type ObjectStore struct {
 	failNext       map[ObjectOperation]int
 	failAfterApply map[ObjectOperation]int
 	failed         bool
+	// observers see every change the store applies, in the order it applies
+	// them; see Observe.
+	observers []func(ObjectChange)
+}
+
+// ObjectChange is one change the store applied: an object written, or one
+// deleted.
+type ObjectChange struct {
+	Key     string
+	Value   []byte
+	Deleted bool
+}
+
+// Observe has the store tell observe of every change it applies from now on,
+// in the order it applies them, which is the order every reader sees. It is
+// called with the store locked, so it must not call the store, and it must not
+// keep Value past its return without copying it.
+func (s *ObjectStore) Observe(observe func(ObjectChange)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.observers = append(s.observers, observe)
+}
+
+// applied tells every observer of one change. Caller holds the lock.
+func (s *ObjectStore) applied(change ObjectChange) {
+	for _, observe := range s.observers {
+		observe(change)
+	}
 }
 
 func newObjectStore(runtime *Runtime, config ObjectStoreConfig) *ObjectStore {
@@ -175,6 +203,7 @@ func (s *ObjectStore) Put(ctx context.Context, request platform.PutRequest) (pla
 		return platform.PutResult{}, platform.ErrPrecondition
 	}
 	s.objects[request.Key.String()] = object
+	s.applied(ObjectChange{Key: request.Key.String(), Value: value})
 	s.mu.Unlock()
 	if s.takeFailAfterApply(ObjectPut) {
 		s.trace(ObjectPut, request.Key, "applied_injected_fault", len(value), id)
@@ -199,7 +228,10 @@ func (s *ObjectStore) Delete(ctx context.Context, request platform.DeleteRequest
 		s.trace(ObjectDelete, request.Key, "precondition_failed", 0, id)
 		return platform.ErrPrecondition
 	}
-	delete(s.objects, request.Key.String())
+	if exists {
+		delete(s.objects, request.Key.String())
+		s.applied(ObjectChange{Key: request.Key.String(), Deleted: true})
+	}
 	s.mu.Unlock()
 	if s.takeFailAfterApply(ObjectDelete) {
 		s.trace(ObjectDelete, request.Key, "applied_injected_fault", 0, id)
