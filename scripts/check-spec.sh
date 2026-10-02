@@ -10,6 +10,10 @@
 # fail: its "\* expect: <name>" line names the invariant or property TLC has to
 # report violated. That is how a check that has stopped catching anything is
 # caught itself.
+#
+# A configuration may carry a "\* tlc: <options>" line, which is passed to
+# TLC. A model too large to search whole uses it to run seeded simulation
+# instead, and says so in its comment.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -28,8 +32,13 @@ for directory in "$root"/spec/*/; do
     fi
     for config in "${configs[@]}"; do
         name=${config#"$root"/}
-        if "$root/scripts/tlc.sh" "$module" "$config" >"$log" 2>&1; then
-            echo "ok    $name: $(grep -o '[0-9]* distinct states found, 0' "$log" | cut -d' ' -f1) states"
+        read -r -a options <<<"$(sed -n 's/^\\\* tlc: //p' "$config")"
+        if "$root/scripts/tlc.sh" "$module" "$config" ${options[@]+"${options[@]}"} >"$log" 2>&1; then
+            if grep -q 'distinct states found, 0' "$log"; then
+                echo "ok    $name: $(grep -o '[0-9]* distinct states found, 0' "$log" | cut -d' ' -f1) states"
+            else
+                echo "ok    $name: $(grep -o '[0-9]* states checked' "$log" | tail -1), simulated"
+            fi
         else
             echo "FAIL  $name"
             cat "$log"

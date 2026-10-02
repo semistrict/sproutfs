@@ -1514,6 +1514,16 @@ one that ignores `DROP_FILE` does. Its invariant, `Isolated`, is that no VMM
 holds a file with a page of another tenant's VM in it, unless the page is
 public.
 
+`spec/stage/Stage.tla` models two-node staging, which no code implements yet
+([the plan](../plans/two-node-staging-2026-10-02.md)): cuts synced on the
+writer's disk and one peer's, checkpoints and drops, replacing the peer,
+and recovery with fencing, while a host is lost, every host loses power, or
+the old writer keeps running. Its invariant, `NoAckedLoss`, is that every
+recovery starts from a state that holds every flush an earlier instance
+acknowledged. The whole model is too large to search in a check, so
+`MCStage.cfg` runs seeded random behaviours (its `\* tlc:` line passes TLC
+the options). Its eight mutants are searched whole.
+
 A spec is written from the code by hand, so the two can drift apart with
 nothing failing. The simulation ties them together. The simulated object store
 reports every change it applies, in its own order (`sim.ObjectStore.Observe`).

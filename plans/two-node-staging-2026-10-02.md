@@ -1,7 +1,8 @@
 # Two-node staging: fsync durable without waiting on object storage
 
-**Status: design agreed, 2026-10-02; nothing implemented.** Written against
-`main` at `9eb0ab5`. The next step is the TLA+ spec of the stage protocol.
+**Status: design agreed and specified, 2026-10-02; nothing implemented.**
+Written against `main` at `9eb0ab5`. `spec/stage` models the protocol. The
+next step is a prototype of the stage cut in `vmmemory`.
 
 ## The ask
 
@@ -284,7 +285,10 @@ If the peer stops acknowledging, flushes stall. Two things run at once:
   1. The primary sends the candidate every page still unpublished, as DRBD
      resyncs from its bitmap. Flushes keep waiting.
   2. Once the candidate has synced all of it, the primary writes the record:
-     the new peer and the next stage epoch, as one conditional write.
+     the new peer and the next stage epoch, as one conditional write. Flushes
+     may still return through the old peer while the candidate catches up,
+     so the switch waits until the candidate holds every flush acknowledged
+     so far, and sends it the newer state if not (found by `spec/stage`).
   3. Only after that write lands does the primary acknowledge again, and only
      to the new peer.
 
@@ -301,16 +305,25 @@ gone, or an operator's force) with one more step:
 
 1. Open advances the epoch in the record as today.
 2. The opener sends FENCE(new epoch) to the peer. From then on the old primary
-   gets no ACK, so it can acknowledge no further flush.
-3. The opener reads the peer's entries above the checkpoint's stage position
-   and applies them over the checkpoint as unpublished dirty pages.
+   gets no ACK, so it can acknowledge no further flush. If the peer is lost,
+   the opener reads the old primary's own log instead, and fences that log
+   first: a primary's local append honours the fence as the peer's does.
+   Otherwise a stale ACK still in flight from the dead peer lets the old
+   primary acknowledge a cut the read missed (found by `spec/stage`).
+3. The opener reads the entries above the checkpoint's stage position, writes
+   them to its own log and syncs them, and only then applies them over the
+   checkpoint as unpublished dirty pages. Without the sync, the recovered
+   state sits only on the peer until the new instance's first cut, and losing
+   the peer then loses flushes acknowledged before the recovery (found by
+   `spec/stage`).
 4. The guest cold boots over those disks, as after any disk-only checkpoint.
    To the guest this is a power cut at its last acknowledged fsync instead of
    at the last checkpoint.
 5. The new host checkpoints promptly and sets up a fresh stage.
 
-Prefer recovering **on the peer's host**: the pages are already local. On any
-other host, the peer can serve them the way a migration source serves
+Recovering **on the peer's host** keeps the pages local, but leaves one disk
+where two are needed: that instance acknowledges nothing until it has caught
+up a new peer and named it in the record. On any other host, the peer can serve them the way a migration source serves
 post-copy pages, which reuses the existing fault path.
 
 If the peer is unreachable too, recovery must wait, or an operator forces it
@@ -357,11 +370,18 @@ file. I would leave the window as is in the first version.
 
 ## Verification
 
-- A TLA+ spec of the stage (`spec/stage`), with mutants in the repo's style.
-  Properties: an acknowledged flush survives the loss of any one host; a
-  fenced primary gets no acknowledgement; truncation never drops an entry no
-  selected checkpoint covers; recovery returns a state that contains every
-  acknowledged flush.
+- `spec/stage/Stage.tla` models the protocol: cuts, the peer, checkpoints and
+  drops, peer replacement, recovery with fencing, one host lost, one power
+  loss of every host, and a recovery while the old primary still runs. It
+  found the three rules marked "found by `spec/stage`" above. Its invariant:
+  every recovery starts from a state that holds every flush an earlier
+  instance acknowledged. Eight mutants in `spec/stage/mutants` each put back
+  one broken rule (acknowledging on one disk, acknowledging before the sync,
+  no fence, dropping ahead of the checkpoint, switching peers early or stale,
+  reading before fencing, recovering without the sync), and a whole search
+  catches each one. The clean model is too large to search whole in a check,
+  so `MCStage.cfg` runs 200,000 seeded random behaviours instead; that is
+  evidence, not proof.
 - A spec or extension of `spec/arena` for the cut against seal, settle,
   reclaim and copy-on-write.
 - Simulation: a stage peer on the simulated network and disks with
@@ -387,7 +407,8 @@ file. I would leave the window as is in the first version.
 
 ## Suggested first steps
 
-1. Spec the stage protocol and the cut, before code.
+1. ~~Spec the stage protocol~~ (done: `spec/stage`). The cut against seal,
+   settle and copy-on-write is still to spec.
 2. Prototype the cut in `vmmemory` and measure fsync latency and bytes per
    fsync on a WAL workload with 2 MiB pages.
 3. Then the stager, the peer protocol and the record change.
