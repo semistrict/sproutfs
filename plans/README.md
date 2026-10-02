@@ -5,6 +5,11 @@ across all of them is in the [backlog](../backlog/tasks), one task per file.
 
 ## Designs under way
 
+- [2026-10-02 two-node staging](two-node-staging-2026-10-02.md) — an
+  opt-in durable fsync: a flush returns once the pages it covers are synced on
+  the primary's disk and one peer's, with no object-store wait; checkpoints
+  still upload behind it, and the object store's compare-and-set stays the
+  only authority. **Design agreed; next is the TLA+ spec of the stage.**
 - [2026-09-25 an isolated arena](isolated-arena-2026-09-25.md) — a
   private file per memory region that only its VMM gets, and read-only shared
   and fork files per tenant and fork point, so a compromised VMM reaches no
