@@ -216,12 +216,22 @@ Options, cheapest first:
   HugeTLB and multiplies faults and metadata, and changes disk geometry for
   stored data.
 
-**Decided (Ramon, 2026-10-02): whole pages, compressed.** A diff needs a
-second copy of every page that is cut and then written again, and that is not
-worth it until a measurement says the bandwidth is. If it is, the known fix is
-RemusDB's: an XOR delta against a small, capped cache of pages last sent. 4 KiB
-PMEM does not exist today (`host/supervisor.go:31` fixes PMEM at 2 MiB), and
-existing disks and templates would need re-importing.
+**Decided (Ramon, 2026-10-02, confirmed after the measurement below): whole
+pages, compressed.** A diff needs a second copy of every page that is cut and
+then written again, and that is not worth it in the first version.
+
+The cost is known. A traced sandbox session
+(`perf-testing/2mib-pages-and-rollout-testing-2026-10-02.md` in the project
+files) found small sqlite transactions dirty 22 KiB of 4 KiB blocks but 3.4 MiB
+of 2 MiB pages per fsync, 159x; a log appender is about 240x. Bulk work is
+1.2–3.6x. So fsync-heavy guests pay most of the peer bandwidth. Two ways out if
+that matters in practice:
+
+- run such a deployment with `SPROUTFS_PMEM_PAGE_BYTES=4096` (merged in #1;
+  disks and templates are re-imported at that page size), or
+- add RemusDB's XOR delta against a small, capped cache of pages last sent. The
+  peer does not change (section 4), and the batch format already allows block
+  diffs (section 3).
 
 ### 3. The stage log and the stager (host)
 
@@ -397,7 +407,8 @@ file. I would leave the window as is in the first version.
 3. **Exact fsync?** With staging on, should every flush wait for its cut (flush
    bound zero)? Default: yes.
 4. ~~**2 MiB pages.**~~ **Decided (Ramon, 2026-10-02):** whole pages,
-   compressed; no diff in the first version.
+   compressed; no diff in the first version, kept after seeing the 159x
+   per-fsync measurement.
 5. **Who picks the peer?** Default: the orchestrator, at create and open,
    written to the record.
 6. **Loss window.** Keep it unchanged in the first version (default), or relax
