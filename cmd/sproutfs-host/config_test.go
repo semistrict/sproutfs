@@ -552,3 +552,31 @@ func TestConfigRunsRAMAtFourKiBWhenAsked(t *testing.T) {
 		t.Fatalf("an 8 KiB RAM page was accepted: %v", err)
 	}
 }
+
+// A deployment may run PMEM at 4 KiB too, and then every PMEM and ephemeral
+// budget is counted in 4 KiB pages. Any page but the two arenas there are is
+// refused.
+func TestConfigRunsPMEMAtFourKiBWhenAsked(t *testing.T) {
+	values := minimal()
+	values["SPROUTFS_PMEM_PAGE_BYTES"] = "4096"
+	values["SPROUTFS_EPHEMERAL_BYTES"] = "12288"
+	values["SPROUTFS_EPHEMERAL_ARENA_BYTES"] = "4096"
+	config, err := loadConfig(environ(values))
+	if err != nil {
+		t.Fatal(err)
+	}
+	two, err := loadConfig(environ(minimal()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.PMEMPageSize != 4<<10 || config.DirtyPages.PMEM != two.DirtyPages.PMEM*512 ||
+		config.DirtyPages.RAM != two.DirtyPages.RAM {
+		t.Fatalf("a 4 KiB PMEM page gave page %d and dirty budgets %v, against %v at 2 MiB",
+			config.PMEMPageSize, config.DirtyPages, two.DirtyPages)
+	}
+	values["SPROUTFS_PMEM_PAGE_BYTES"] = "8192"
+	if _, err := loadConfig(environ(values)); err == nil ||
+		!strings.Contains(err.Error(), "SPROUTFS_PMEM_PAGE_BYTES: a PMEM page of 8192 bytes: want 4096 or 2097152") {
+		t.Fatalf("an 8 KiB PMEM page was accepted: %v", err)
+	}
+}

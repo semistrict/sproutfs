@@ -14,34 +14,48 @@ import (
 	"github.com/semistrict/sproutfs/vmmemory"
 )
 
-// DefaultRAMPageSize and PMEMPageSize are the pages the two pagers run. RAM's
-// is a deployment's choice: 2 MiB on the HugeTLB pool by default, or 4 KiB on
-// an arena of ordinary memory, where a guest's store copies, owns and
-// publishes 4 KiB. 2 MiB is faster at every timing measured on 2026-09-23 —
-// boot 0.75 s against 4.4, a third more updates a second over a heap nothing
-// faults in — and costs about the same memory once forks do real work; 4 KiB
-// holds a tenth of the memory only for forks that write little and scattered,
-// such as a seeded database updated at random. PMEM's is
-// always 2 MiB, on the pool, which is also the alignment Firecracker requires
-// of a PMEM device. They are here rather than beside either pager so that the
-// byte budgets a deployment divides are checked against the pages they will
-// actually be counted in, and so that the statements cannot drift apart.
+// DefaultRAMPageSize and DefaultPMEMPageSize are the pages the two pagers run
+// where a deployment names none. Each is a deployment's choice: 2 MiB on the
+// HugeTLB pool by default, or 4 KiB on an arena of ordinary memory, where a
+// guest's store copies, owns and publishes 4 KiB. For RAM, 2 MiB is faster at
+// every timing measured on 2026-09-23 — boot 0.75 s against 4.4, a third more
+// updates a second over a heap nothing faults in — and costs about the same
+// memory once forks do real work; 4 KiB holds a tenth of the memory only for
+// forks that write little and scattered, such as a seeded database updated at
+// random. For PMEM, 4 KiB is there to measure the same trade on disks: a
+// checkpoint publishes a dirty page whole, so a guest that writes a few blocks
+// between checkpoints publishes 4 KiB pages rather than 2 MiB ones. Whatever
+// the page, Firecracker requires a PMEM device of whole 2 MiB, so a disk's size
+// stays a multiple of 2 MiB. They are here rather than beside either pager so
+// that the byte budgets a deployment divides are checked against the pages they
+// will actually be counted in, and so that the statements cannot drift apart.
 const (
-	DefaultRAMPageSize = checkpoint.PageSize2MiB
-	PMEMPageSize       = checkpoint.PageSize2MiB
+	DefaultRAMPageSize  = checkpoint.PageSize2MiB
+	DefaultPMEMPageSize = checkpoint.PageSize2MiB
 )
+
+// pmemDeviceAlignment is the multiple Firecracker requires of a PMEM device's
+// size, whatever page the pager that maps it runs.
+const pmemDeviceAlignment = checkpoint.PageSize2MiB
 
 // RAMPage is the RAM pager's page a configuration names: DefaultRAMPageSize
 // where it names none, and an error for anything but 4 KiB and 2 MiB, which are
 // the two arenas there are.
-func RAMPage(size uint64) (uint64, error) {
+func RAMPage(size uint64) (uint64, error) { return pagerPage("RAM", size, DefaultRAMPageSize) }
+
+// PMEMPage is the PMEM pager's page a configuration names, read as RAMPage
+// reads RAM's. The ephemeral pager runs the same page, because an ephemeral
+// disk is a PMEM device to the guest.
+func PMEMPage(size uint64) (uint64, error) { return pagerPage("PMEM", size, DefaultPMEMPageSize) }
+
+func pagerPage(kind string, size, fallback uint64) (uint64, error) {
 	switch size {
 	case 0:
-		return DefaultRAMPageSize, nil
+		return fallback, nil
 	case checkpoint.PageSize4KiB, checkpoint.PageSize2MiB:
 		return size, nil
 	}
-	return 0, fmt.Errorf("a RAM page of %d bytes: want %d or %d", size, checkpoint.PageSize4KiB, checkpoint.PageSize2MiB)
+	return 0, fmt.Errorf("a %s page of %d bytes: want %d or %d", kind, size, checkpoint.PageSize4KiB, checkpoint.PageSize2MiB)
 }
 
 // VMs is every operation this host's API offers, and nothing about how a VM is
@@ -195,6 +209,10 @@ type SupervisorConfig struct {
 	// default 4 KiB. At 2 MiB the RAM arena's share comes out of the pod's
 	// HugeTLB allotment as PMEM's does.
 	RAMPageSize uint64
+	// PMEMPageSize is the PMEM and ephemeral pagers' page, as PMEMPage reads
+	// it: zero is the default 2 MiB. At 4 KiB their arenas are ordinary memory
+	// charged to the pod, as RAM's is at 4 KiB.
+	PMEMPageSize uint64
 	// ScratchDir is the node-disk directory holding the pager's spill file and
 	// the VMM scratch. A starting host wipes it: a restart is a host loss, so
 	// nothing under it is authority for anything.

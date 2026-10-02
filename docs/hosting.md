@@ -28,6 +28,11 @@ write little and in scattered places, and it is slower at everything else. Such
 a node sets its shared memory's transparent huge pages to `advise`. This lets
 the RAM arena allocate a zero run's whole 2 MiB blocks as huge pages, and leaves
 all other shared memory on the node unchanged; see [the arena](vm-memory.md).
+A deployment may likewise run PMEM, and the ephemeral pager with it, at 4 KiB
+(`SPROUTFS_PMEM_PAGE_BYTES=4096`). This exists to measure whether publishing
+4 KiB pages saves enough checkpoint and fsync traffic on disks written a few
+blocks at a time to be worth the extra index entries and faults. A disk stays a
+whole number of 2 MiB, because Firecracker requires it of a PMEM device.
 The supervisor also drives the VMM processes, owns the templates that guest
 images are imported into, and reaches the agent in a guest. It does not start a
 VMM. A `vmmachine.Starter` does, as [running the VMM](#running-the-vmm)

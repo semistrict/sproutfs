@@ -6,7 +6,6 @@ import (
 	"os"
 	"testing"
 
-	"github.com/semistrict/sproutfs/checkpoint"
 	"github.com/semistrict/sproutfs/vmmachine"
 	"github.com/semistrict/sproutfs/volume"
 )
@@ -35,7 +34,7 @@ func TestFirecrackerOwnerRereadsMovedPages(t *testing.T) {
 	cluster := newMigrationCluster(t, ctx)
 	parent, err := cluster.source.Create(ctx, "owner", []volume.VolumeSpec{
 		{Name: vmmachine.RAMVolume, Size: 128 << 20, PageSize: ramPageBytes(t)},
-		{Name: "root", Size: 64 << 20, PageSize: checkpoint.PageSize2MiB},
+		{Name: "root", Size: 64 << 20, PageSize: pmemPageBytes(t)},
 	})
 	if err != nil {
 		t.Fatal(err)

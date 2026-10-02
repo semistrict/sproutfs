@@ -152,7 +152,8 @@ read back from it like any other private page, so what stays in memory is
 bounded by its arena.
 
 **RAM's page is 4 KiB and PMEM's is 2 MiB**, on a real host and in the
-simulation. The page size determines the memory behind it. A 2 MiB page comes
+simulation, unless a host's deployment names another
+(`SPROUTFS_RAM_PAGE_BYTES`, `SPROUTFS_PMEM_PAGE_BYTES`). The page size determines the memory behind it. A 2 MiB page comes
 from the host's provisioned HugeTLB pool. A 4 KiB page comes from an ordinary
 shared memfd in the pod's own memory, which a host with swap may swap. A session
 states its memory region's page size and its arena's kind when it attaches. Both ends

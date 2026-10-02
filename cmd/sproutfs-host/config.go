@@ -78,12 +78,6 @@ const defaultEphemeralArenaBytes = 256 << 20
 // defaultTemplates is the one guest image the demo image carries.
 const defaultTemplates = "alpine=/usr/share/sproutfs/guest.ext4"
 
-// pmemPageSize is the PMEM pager's page, which a deployment does not choose.
-// It is the supervisor's, and this command reads it from there so that the byte
-// budgets it divides are checked against the pages they will actually be
-// counted in. RAM's is SPROUTFS_RAM_PAGE_BYTES, checked the same way.
-const pmemPageSize = host.PMEMPageSize
-
 // defaultRAMSharePercent is how much of this host's arena, spill file and page
 // budgets goes to the RAM pager when a deployment names no share. Three
 // quarters, because RAM is where a guest's memory diverges and the root is
@@ -187,6 +181,15 @@ func loadConfig(lookup func(string) string) (config, error) {
 	// its spill file may take, which is every ephemeral disk this host admits,
 	// and SPROUTFS_EPHEMERAL_ARENA_BYTES its share of the HugeTLB pool. A host
 	// without the first runs no ephemeral pager and refuses an ephemeral disk.
+	// PMEM's page is 2 MiB on the HugeTLB pool unless the deployment runs it at
+	// 4 KiB on ordinary memory, and every PMEM and ephemeral budget below is
+	// counted in it.
+	pmemPageSize, err := host.PMEMPage(uint64(number("SPROUTFS_PMEM_PAGE_BYTES", int64(host.DefaultPMEMPageSize))))
+	if err != nil {
+		fail("SPROUTFS_PMEM_PAGE_BYTES: %v", err)
+		pmemPageSize = host.DefaultPMEMPageSize
+	}
+	c.PMEMPageSize = pmemPageSize
 	c.Ephemeral = host.EphemeralBudget{DiskBytes: number("SPROUTFS_EPHEMERAL_BYTES", 0)}
 	if c.Ephemeral.DiskBytes > 0 {
 		c.Ephemeral.ArenaBytes = number("SPROUTFS_EPHEMERAL_ARENA_BYTES", defaultEphemeralArenaBytes)
@@ -194,7 +197,7 @@ func loadConfig(lookup func(string) string) (config, error) {
 			name  string
 			bytes int64
 		}{{"SPROUTFS_EPHEMERAL_BYTES", c.Ephemeral.DiskBytes}, {"SPROUTFS_EPHEMERAL_ARENA_BYTES", c.Ephemeral.ArenaBytes}} {
-			if budget.bytes%pmemPageSize != 0 {
+			if budget.bytes%int64(pmemPageSize) != 0 {
 				fail("%s is %d, want whole %d-byte PMEM pages", budget.name, budget.bytes, pmemPageSize)
 			}
 		}
@@ -278,8 +281,8 @@ func loadConfig(lookup func(string) string) (config, error) {
 			fail("SPROUTFS_VMM_JAIL is %q, want an absolute directory or none", jail)
 		}
 	}
-	resident := host.KindPages{RAM: int(c.ArenaBytes.RAM / int64(ramPageSize)), PMEM: int(c.ArenaBytes.PMEM / pmemPageSize)}
-	spillable := host.KindPages{RAM: int(c.SpillBytes.RAM / int64(ramPageSize)), PMEM: int(c.SpillBytes.PMEM / pmemPageSize)}
+	resident := host.KindPages{RAM: int(c.ArenaBytes.RAM / int64(ramPageSize)), PMEM: int(c.ArenaBytes.PMEM / int64(pmemPageSize))}
+	spillable := host.KindPages{RAM: int(c.SpillBytes.RAM / int64(ramPageSize)), PMEM: int(c.SpillBytes.PMEM / int64(pmemPageSize))}
 	// The logical cap bounds per-memory-region metadata, which is the only thing it
 	// costs: it reserves nothing, and a page that is never touched has no
 	// metadata to bound. What it does decide is which VMs a host will run at

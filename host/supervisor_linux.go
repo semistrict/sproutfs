@@ -150,11 +150,14 @@ func Start(ctx context.Context, config SupervisorConfig) (Service, error) {
 		}
 	}()
 
-	// Huge pages are what the PMEM arena is made of; the RAM arena is ordinary
-	// memory charged to the pod unless its page is 2 MiB. The pod's mount is
+	// Huge pages are what a 2 MiB arena is made of; an arena of 4 KiB pages,
+	// RAM's or PMEM's, is ordinary memory charged to the pod. The pod's mount is
 	// what the kubelet grants its HugeTLB allotment through, so its absence
 	// means that arena cannot be allocated at all.
 	if _, err := RAMPage(config.RAMPageSize); err != nil {
+		return nil, err
+	}
+	if _, err := PMEMPage(config.PMEMPageSize); err != nil {
 		return nil, err
 	}
 	if config.Starter == nil {
@@ -256,7 +259,7 @@ func Start(ctx context.Context, config SupervisorConfig) (Service, error) {
 }
 
 // startPager builds one of this host's pagers: its own arena — the HugeTLB
-// pool's memory for a 2 MiB page, ordinary memory for RAM's 4 KiB one — its
+// pool's memory for a 2 MiB page, ordinary memory for a 4 KiB one — its
 // own spill file and its own configuration. A restart is a host
 // loss, so the spill file starts empty; the pager sizes it to the dirty pages
 // its cap allows. Each is logged with the bounds the node chose for it, so what

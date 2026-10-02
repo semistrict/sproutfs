@@ -5,6 +5,7 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/semistrict/sproutfs/checkpoint"
 	"github.com/semistrict/sproutfs/vmmemory"
 )
 
@@ -115,7 +116,7 @@ func pagerConfig(config SupervisorConfig, kind vmmemory.MemoryRegionKind) vmmemo
 		return pagerBounds(config, ramPage(config), config.ArenaBytes.RAM,
 			config.LogicalPages.RAM, config.DirtyPages.RAM, 0)
 	}
-	return pagerBounds(config, PMEMPageSize, config.ArenaBytes.PMEM,
+	return pagerBounds(config, pmemPage(config), config.ArenaBytes.PMEM,
 		config.LogicalPages.PMEM, config.DirtyPages.PMEM, lossWindowOf(config.LossWindow))
 }
 
@@ -129,8 +130,9 @@ func ephemeralPagerConfig(config SupervisorConfig) *vmmemory.Config {
 	if budget.DiskBytes <= 0 {
 		return nil
 	}
-	pages := int(budget.DiskBytes / PMEMPageSize)
-	cfg := pagerBounds(config, PMEMPageSize, budget.ArenaBytes, pages, pages, 0)
+	page := pmemPage(config)
+	pages := int(budget.DiskBytes / int64(page))
+	cfg := pagerBounds(config, page, budget.ArenaBytes, pages, pages, 0)
 	cfg.Ephemeral = true
 	return &cfg
 }
@@ -178,7 +180,7 @@ func pagerBounds(config SupervisorConfig, pageSize uint64, arenaBytes int64, log
 // bounded by what the arena can hold at once. A pager whose page is the whole
 // range places nothing, so its offsets and its pages are one number.
 func arenaOffsets(pageSize uint64, resident, logical int) int {
-	if pageSize >= PMEMPageSize {
+	if pageSize >= checkpoint.PageSize2MiB {
 		return resident
 	}
 	return logical + resident
@@ -187,6 +189,15 @@ func arenaOffsets(pageSize uint64, resident, logical int) int {
 // ramPage is the RAM page a validated configuration names.
 func ramPage(config SupervisorConfig) uint64 {
 	page, err := RAMPage(config.RAMPageSize)
+	if err != nil {
+		panic(fmt.Sprintf("host: pagerConfig of an unvalidated configuration: %v", err))
+	}
+	return page
+}
+
+// pmemPage is the PMEM page a validated configuration names.
+func pmemPage(config SupervisorConfig) uint64 {
+	page, err := PMEMPage(config.PMEMPageSize)
 	if err != nil {
 		panic(fmt.Sprintf("host: pagerConfig of an unvalidated configuration: %v", err))
 	}

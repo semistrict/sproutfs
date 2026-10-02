@@ -25,8 +25,8 @@ func TestBothPagersGetRunsOfTheSameSizeInTheirOwnPages(t *testing.T) {
 	config := deploymentConfig()
 	ram := pagerConfig(config, vmmemory.Ram)
 	pmem := pagerConfig(config, vmmemory.Pmem)
-	if ram.PageSize != DefaultRAMPageSize || pmem.PageSize != PMEMPageSize {
-		t.Fatalf("pages %d and %d, want %d and %d", ram.PageSize, pmem.PageSize, DefaultRAMPageSize, PMEMPageSize)
+	if ram.PageSize != DefaultRAMPageSize || pmem.PageSize != DefaultPMEMPageSize {
+		t.Fatalf("pages %d and %d, want %d and %d", ram.PageSize, pmem.PageSize, DefaultRAMPageSize, DefaultPMEMPageSize)
 	}
 	for _, tc := range []struct {
 		what string
@@ -34,9 +34,9 @@ func TestBothPagersGetRunsOfTheSameSizeInTheirOwnPages(t *testing.T) {
 		want int
 	}{
 		{"RAM read-ahead", ram.ReadAheadPages, readAheadBytes / DefaultRAMPageSize},
-		{"PMEM read-ahead", pmem.ReadAheadPages, readAheadBytes / PMEMPageSize},
+		{"PMEM read-ahead", pmem.ReadAheadPages, readAheadBytes / DefaultPMEMPageSize},
 		{"RAM write-ahead", ram.WriteAheadPages, writeAheadBytes / DefaultRAMPageSize},
-		{"PMEM write-ahead", pmem.WriteAheadPages, writeAheadBytes / PMEMPageSize},
+		{"PMEM write-ahead", pmem.WriteAheadPages, writeAheadBytes / DefaultPMEMPageSize},
 	} {
 		if tc.got != tc.want {
 			t.Errorf("%s is %d pages, want %d", tc.what, tc.got, tc.want)
@@ -79,7 +79,7 @@ func TestRAMsOffsetSpaceCoversAnExtentPerRangeItMayWriteInto(t *testing.T) {
 // the same reason PMEM does, because fresh zeros are shared with nobody.
 func TestASmallDirtyBudgetKeepsWriteAheadAtOnePage(t *testing.T) {
 	for _, kind := range []vmmemory.MemoryRegionKind{vmmemory.Ram, vmmemory.Pmem} {
-		pageSize := PMEMPageSize
+		pageSize := DefaultPMEMPageSize
 		if kind == vmmemory.Ram {
 			pageSize = int(DefaultRAMPageSize)
 		}
@@ -114,9 +114,9 @@ func TestTheDeploymentsBudgetsAffordBothWriteAheadRuns(t *testing.T) {
 		t.Errorf("the deployment's RAM dirty budget of %d pages writes %d ahead, want %d",
 			config.DirtyPages.RAM, got, writeAheadBytes/DefaultRAMPageSize)
 	}
-	if got := pagerConfig(config, vmmemory.Pmem).WriteAheadPages; got != writeAheadBytes/PMEMPageSize {
+	if got := pagerConfig(config, vmmemory.Pmem).WriteAheadPages; got != writeAheadBytes/DefaultPMEMPageSize {
 		t.Errorf("the deployment's PMEM dirty budget of %d pages writes %d ahead, want %d",
-			config.DirtyPages.PMEM, got, writeAheadBytes/PMEMPageSize)
+			config.DirtyPages.PMEM, got, writeAheadBytes/DefaultPMEMPageSize)
 	}
 }
 
@@ -126,15 +126,15 @@ func TestTheDeploymentsBudgetsAffordBothWriteAheadRuns(t *testing.T) {
 // same bytes as PMEM's, in the same pages.
 func TestARAMPagerAtTwoMiBIsTheHugeTLBPager(t *testing.T) {
 	config := deploymentConfig()
-	config.RAMPageSize = PMEMPageSize
+	config.RAMPageSize = DefaultPMEMPageSize
 	config.LogicalPages.RAM, config.DirtyPages.RAM = 1<<13, 4608
 	ram := pagerConfig(config, vmmemory.Ram)
-	if ram.PageSize != PMEMPageSize || ram.ArenaOffsets != ram.ResidentPages ||
-		ram.ReadAheadPages != readAheadBytes/PMEMPageSize || ram.WriteAheadPages != writeAheadBytes/PMEMPageSize {
+	if ram.PageSize != DefaultPMEMPageSize || ram.ArenaOffsets != ram.ResidentPages ||
+		ram.ReadAheadPages != readAheadBytes/DefaultPMEMPageSize || ram.WriteAheadPages != writeAheadBytes/DefaultPMEMPageSize {
 		t.Fatalf("a 2 MiB RAM pager has page %d, %d offsets for %d pages, read-ahead %d and write-ahead %d; "+
 			"want %d, as many offsets as pages, %d and %d",
-			ram.PageSize, ram.ArenaOffsets, ram.ResidentPages, ram.ReadAheadPages, ram.WriteAheadPages, PMEMPageSize,
-			readAheadBytes/PMEMPageSize, writeAheadBytes/PMEMPageSize)
+			ram.PageSize, ram.ArenaOffsets, ram.ResidentPages, ram.ReadAheadPages, ram.WriteAheadPages, DefaultPMEMPageSize,
+			readAheadBytes/DefaultPMEMPageSize, writeAheadBytes/DefaultPMEMPageSize)
 	}
 }
 
@@ -170,13 +170,45 @@ func TestTheEphemeralPagerIsTheDiskItMayFill(t *testing.T) {
 	if cfg == nil {
 		t.Fatal("a host given an ephemeral disk runs no ephemeral pager")
 	}
-	pages := int(config.Ephemeral.DiskBytes / PMEMPageSize)
-	if !cfg.Ephemeral || cfg.PageSize != PMEMPageSize || cfg.ResidentPages != 128 ||
+	pages := int(config.Ephemeral.DiskBytes / DefaultPMEMPageSize)
+	if !cfg.Ephemeral || cfg.PageSize != DefaultPMEMPageSize || cfg.ResidentPages != 128 ||
 		cfg.LogicalPages != pages || cfg.DirtyPages != pages || cfg.LossWindow != 0 {
 		t.Fatalf("the ephemeral pager is %+v, want %d-byte pages, 128 resident and %d logical and dirty, no window",
-			cfg, PMEMPageSize, pages)
+			cfg, DefaultPMEMPageSize, pages)
 	}
 	if pmem := pagerConfig(config, vmmemory.Pmem); pmem.LossWindow != DefaultLossWindow {
 		t.Fatalf("the PMEM pager's window is %v, want the default %v", pmem.LossWindow, DefaultLossWindow)
+	}
+}
+
+// A deployment may run PMEM at 4 KiB, to measure what publishing small pages
+// saves on disks that are written a few blocks at a time. Then the PMEM pager
+// and the ephemeral pager both run 4 KiB pages on ordinary memory, place each
+// private page at its offset within its range as a 4 KiB RAM pager does, and
+// convert their runs from the same bytes. Any other page is refused.
+func TestAPMEMPagerAtFourKiBPlacesItsPages(t *testing.T) {
+	config := deploymentConfig()
+	config.PMEMPageSize = 4 << 10
+	// The budgets are the deployment's, counted in the page they now name.
+	config.LogicalPages.PMEM *= 512
+	config.DirtyPages.PMEM *= 512
+	config.Ephemeral = EphemeralBudget{ArenaBytes: 256 << 20, DiskBytes: 8 << 30}
+	pmem := pagerConfig(config, vmmemory.Pmem)
+	if pmem.PageSize != 4<<10 || pmem.ArenaOffsets != pmem.LogicalPages+pmem.ResidentPages ||
+		pmem.ReadAheadPages != readAheadBytes/(4<<10) || pmem.WriteAheadPages != writeAheadBytes/(4<<10) {
+		t.Fatalf("a 4 KiB PMEM pager has page %d, %d offsets for %d logical and %d resident pages, "+
+			"read-ahead %d and write-ahead %d", pmem.PageSize, pmem.ArenaOffsets, pmem.LogicalPages,
+			pmem.ResidentPages, pmem.ReadAheadPages, pmem.WriteAheadPages)
+	}
+	ephemeral := ephemeralPagerConfig(config)
+	if ephemeral.PageSize != 4<<10 || ephemeral.LogicalPages != int(config.Ephemeral.DiskBytes/(4<<10)) {
+		t.Fatalf("the ephemeral pager of a 4 KiB PMEM host runs %d-byte pages and %d logical pages",
+			ephemeral.PageSize, ephemeral.LogicalPages)
+	}
+	if page, err := PMEMPage(0); err != nil || page != DefaultPMEMPageSize {
+		t.Fatalf("an unset PMEM page is %d, %v; want the default %d", page, err, DefaultPMEMPageSize)
+	}
+	if _, err := PMEMPage(64 << 10); err == nil {
+		t.Fatal("a 64 KiB PMEM page was accepted")
 	}
 }

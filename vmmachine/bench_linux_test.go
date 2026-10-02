@@ -764,7 +764,7 @@ func (b *benchmark) createVM(ctx context.Context, id string) *volume.VM {
 	// what a host does: the guest's memory at 4 KiB and its root at 2 MiB.
 	vm, err := b.manager.Create(ctx, id, []volume.VolumeSpec{
 		{Name: vmmachine.RAMVolume, Size: b.ramBytes, PageSize: ramPageBytes(b.t)},
-		{Name: "root", Size: b.rootBytes, PageSize: checkpoint.PageSize2MiB},
+		{Name: "root", Size: b.rootBytes, PageSize: pmemPageBytes(b.t)},
 	})
 	if err != nil {
 		b.t.Fatal(err)

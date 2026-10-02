@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/semistrict/sproutfs/api/guest"
-	"github.com/semistrict/sproutfs/checkpoint"
 	"github.com/semistrict/sproutfs/host"
 	"github.com/semistrict/sproutfs/internal/testnet"
 	"github.com/semistrict/sproutfs/internal/testresource"
@@ -122,7 +121,7 @@ func (n *neighbourhood) boot(t *testing.T, ctx context.Context, binaryPath, name
 	t.Helper()
 	vm, err := n.host.Volumes().Create(ctx, name, []volume.VolumeSpec{
 		{Name: vmmachine.RAMVolume, Size: neighbourRAM, PageSize: ramPageBytes(t)},
-		{Name: "root", Size: guestRootBytes, PageSize: checkpoint.PageSize2MiB},
+		{Name: "root", Size: guestRootBytes, PageSize: pmemPageBytes(t)},
 	})
 	if err != nil {
 		t.Fatal(err)

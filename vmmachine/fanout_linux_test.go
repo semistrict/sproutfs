@@ -98,7 +98,7 @@ func forkPointFixture(t *testing.T, ctx context.Context, binaryPath string) (
 
 	parent, err := c.source.Create(ctx, "parent", []volume.VolumeSpec{
 		{Name: vmmachine.RAMVolume, Size: forkFanOutRAM, PageSize: ramPageBytes(t)},
-		{Name: "root", Size: forkFanOutRoot, PageSize: checkpoint.PageSize2MiB},
+		{Name: "root", Size: forkFanOutRoot, PageSize: pmemPageBytes(t)},
 	})
 	if err != nil {
 		t.Fatal(err)

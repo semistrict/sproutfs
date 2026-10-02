@@ -41,8 +41,8 @@ every checkpoint of the volume and never changes. A page number is meaningless
 without the page size, so every reader divides by the page size the root
 recorded, not by a constant. A pager instance also has a page size, fixed when
 the pager is built. The pager refuses to attach a volume with any other page
-size. A host runs RAM and PMEM at 2 MiB by default and can run RAM at 4 KiB
-(`SPROUTFS_RAM_PAGE_BYTES`); the simulation runs RAM at 4 KiB. The mapping protocol carries each session's page size and the
+size. A host runs RAM and PMEM at 2 MiB by default and can run either at 4 KiB
+(`SPROUTFS_RAM_PAGE_BYTES`, `SPROUTFS_PMEM_PAGE_BYTES`); the simulation runs RAM at 4 KiB. The mapping protocol carries each session's page size and the
 kind of memory its arena uses. Both ends refuse a mismatch before any guest
 memory exists.
 

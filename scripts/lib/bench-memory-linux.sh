@@ -10,14 +10,17 @@ test -c /dev/kvm
 # The host is disposable and dedicated to qualification. Reserve the pool before
 # workloads fragment physical RAM; all of it disappears with the instance.
 #
-# The PMEM pager is on the pool, and so is the RAM one when its page is 2 MiB
-# (SPROUTFS_RAM_PAGE_BYTES=2097152); at its default 4 KiB page RAM is ordinary
-# memory. So the pool is the resident budgets on it and a tenth again for the
+# Each pager is on the pool when its page is 2 MiB (SPROUTFS_RAM_PAGE_BYTES,
+# SPROUTFS_PMEM_PAGE_BYTES) and on ordinary memory at 4 KiB.
+# So the pool is the resident budgets on it and a tenth again for the
 # arenas' own rounding and for anything else on the node that wants a huge
 # page. The budgets default to the benchmark's own.
 hugepages=4096
 if [[ ${SPROUTFS_GCE_WORKLOAD:-0} == 1 ]]; then
-    pooled=${SPROUTFS_BENCH_PMEM_RESIDENT_BYTES:-$((24 << 30))}
+    pooled=0
+    if [[ ${SPROUTFS_PMEM_PAGE_BYTES:-2097152} == 2097152 ]]; then
+        pooled=${SPROUTFS_BENCH_PMEM_RESIDENT_BYTES:-$((24 << 30))}
+    fi
     if [[ ${SPROUTFS_RAM_PAGE_BYTES:-2097152} == 2097152 ]]; then
         pooled=$((pooled + ${SPROUTFS_BENCH_RAM_RESIDENT_BYTES:-$((40 << 30))}))
     fi
@@ -289,6 +292,7 @@ if [[ ${SPROUTFS_GCE_WORKLOAD:-0} == 1 ]]; then
         SPROUTFS_BENCH_RAM_RESIDENT_BYTES="${SPROUTFS_BENCH_RAM_RESIDENT_BYTES:-}" \
         SPROUTFS_BENCH_PMEM_RESIDENT_BYTES="${SPROUTFS_BENCH_PMEM_RESIDENT_BYTES:-}" \
         SPROUTFS_RAM_PAGE_BYTES="${SPROUTFS_RAM_PAGE_BYTES:-}" \
+        SPROUTFS_PMEM_PAGE_BYTES="${SPROUTFS_PMEM_PAGE_BYTES:-}" \
         SPROUTFS_BENCH_PLAIN_HUGE_PAGES="${SPROUTFS_BENCH_PLAIN_HUGE_PAGES:-}" \
         SPROUTFS_BENCH_HEAP_DIR="$results/heap-$output" \
         GOMEMLIMIT="${SPROUTFS_BENCH_GOMEMLIMIT:-12GiB}" \
