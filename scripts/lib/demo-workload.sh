@@ -23,7 +23,14 @@
 #   summary.txt      the tables this prints
 #
 # Overridable: SPROUTFS_DEMO_NAMESPACE, FORKS_BASE, FORKS_PER_REPO,
-# SPROUTFS_DEMO_RUN_DIR, SPROUTFS_DEMO_IDLE_SECONDS, SPROUTFS_DEMO_EXEC_TIMEOUT.
+# SPROUTFS_DEMO_RUN_DIR, SPROUTFS_DEMO_IDLE_SECONDS, SPROUTFS_DEMO_EXEC_TIMEOUT,
+# SPROUTFS_DEMO_PMEM_PAGE_BYTES.
+#
+# SPROUTFS_DEMO_PMEM_PAGE_BYTES=4096 runs the hosts' disks at 4 KiB pages for
+# this run and puts them back after it, so two runs, one with it and one
+# without, compare the two pages under the same work. A volume keeps the page it
+# was published in, so the 4 KiB run keeps its objects under a prefix of its
+# own, where the hosts import the template again at 4 KiB.
 #
 # FORKS_BASE is how many forks come off the base image's checkpoint and
 # FORKS_PER_REPO how many come off each of those forks once it has installed its
@@ -56,6 +63,9 @@ repos=(h3 unstorage ofetch)
 # lands in the "between" row and is counted as this run's work.
 run_began=$(date -u +%FT%TZ)
 
+pmem_page=${SPROUTFS_DEMO_PMEM_PAGE_BYTES:-}
+case $pmem_page in ''|2097152|4096) ;; *) echo "SPROUTFS_DEMO_PMEM_PAGE_BYTES must be 4096 or 2097152" >&2; exit 2 ;; esac
+
 rm -rf -- "$run_dir"
 mkdir -p "$run_dir"
 : > "$run_dir/phases.tsv"
@@ -66,6 +76,58 @@ ctl() { kubectl exec -n "$namespace" -i deploy/sproutfs-orchestrator -- sproutfs
 now() { date -u +%s.%N; }
 step() { printf '\n=== %s ===\n' "$*"; }
 fail() { printf '\nFAIL: %s\n' "$*" >&2; exit 1; }
+
+# roll restarts the hosts, so that their pagers and counters start empty, and
+# then the orchestrator, which reads the objects under the hosts' prefix. It
+# returns once the orchestrator sees two ready hosts, which a host is only once
+# it has imported its templates.
+roll() {
+    kubectl rollout restart -n "$namespace" deployment/sproutfs-host > /dev/null
+    kubectl rollout status -n "$namespace" deployment/sproutfs-host --timeout=900s > /dev/null
+    kubectl rollout restart -n "$namespace" deployment/sproutfs-orchestrator > /dev/null
+    kubectl rollout status -n "$namespace" deployment/sproutfs-orchestrator --timeout=300s > /dev/null
+    local deadline=$(($(date +%s) + 600))
+    until (($(ctl hosts 2> /dev/null | awk 'NR > 1 && $2 == "true"' | wc -l) == 2)); do
+        (($(date +%s) < deadline)) || fail 'the orchestrator does not see two ready hosts'
+        sleep 2
+    done
+}
+
+# A 4 KiB run counts the PMEM dirty budget in 4 KiB pages, the same 3 GiB that
+# deploy/ gives it in 2 MiB ones. The PMEM arena is then ordinary memory in the
+# pod's 8 GiB rather than HugeTLB, so Go's own ceiling comes down by its 1.25 GiB.
+# What the run changed is put back when it ends, however it ends.
+pmem_saved=()
+pmem_prefix=
+restore_pmem() {
+    kubectl patch configmap -n "$namespace" sproutfs-demo --type merge \
+        -p "{\"data\":{\"prefix\":\"$pmem_prefix\"}}" > /dev/null
+    kubectl set env -n "$namespace" deployment/sproutfs-host "${pmem_saved[@]}" > /dev/null
+    roll
+}
+if [[ $pmem_page == 4096 ]]; then
+    env=$(kubectl get deployment -n "$namespace" sproutfs-host \
+        -o jsonpath='{range .spec.template.spec.containers[0].env[*]}{.name}{"="}{.value}{"\n"}{end}')
+    for name in SPROUTFS_PMEM_PAGE_BYTES SPROUTFS_PMEM_DIRTY_PAGES GOMEMLIMIT; do
+        if value=$(awk -v name="$name" '{ split($0, kv, "=") } kv[1] == name { sub(/^[^=]*=/, ""); print; found = 1 }
+            END { exit !found }' <<< "$env"); then
+            pmem_saved+=("$name=$value")
+        else
+            pmem_saved+=("$name-")
+        fi
+    done
+    pmem_prefix=$(kubectl get configmap -n "$namespace" sproutfs-demo -o jsonpath='{.data.prefix}')
+    trap restore_pmem EXIT
+    printf '\n=== running the disks at 4 KiB pages ===\n'
+    kubectl patch configmap -n "$namespace" sproutfs-demo --type merge \
+        -p "{\"data\":{\"prefix\":\"$pmem_prefix-pmem4k\"}}" > /dev/null
+    kubectl set env -n "$namespace" deployment/sproutfs-host \
+        SPROUTFS_PMEM_PAGE_BYTES=4096 SPROUTFS_PMEM_DIRTY_PAGES=$((1536 * 512)) GOMEMLIMIT=4608MiB > /dev/null
+    roll
+    # The restarted hosts' logs begin here, and the template's import at 4 KiB
+    # is not this run's work.
+    run_began=$(date -u +%FT%TZ)
+fi
 
 # run_in runs one command in a guest. Only the guest's stdout comes back, and a
 # command that exited non-zero fails this run.
@@ -359,7 +421,7 @@ for phase in order:
         )
 table(
     "per phase and VM",
-    ["phase", "vm", "checkpoints", "2MiB pages", "dirty MiB", "up MiB", "objects", "max pause s", "max upload s"],
+    ["phase", "vm", "checkpoints", "dirty pages", "dirty MiB", "up MiB", "objects", "max pause s", "max upload s"],
     lines,
 )
 
@@ -386,7 +448,7 @@ for phase in order:
     )
 table(
     "per phase",
-    ["phase", "checkpoints", "2MiB pages", "dirty MiB", "up MiB", "objects", "deletes", "mean pause s", "2MiB:4KiB"],
+    ["phase", "checkpoints", "dirty pages", "dirty MiB", "up MiB", "objects", "deletes", "mean pause s", "2MiB:4KiB"],
     lines,
 )
 

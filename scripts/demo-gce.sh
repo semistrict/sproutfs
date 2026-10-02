@@ -437,20 +437,25 @@ bigguest() {
 }
 
 # What the checkpoint model costs under a guest that is used, run on the node by
-# scripts/lib/demo-workload.sh. FORKS_BASE and FORKS_PER_REPO are passed through
-# so one invocation can ask what a different amount of forking costs; everything
+# scripts/lib/demo-workload.sh. FORKS_BASE, FORKS_PER_REPO and
+# SPROUTFS_DEMO_PMEM_PAGE_BYTES are passed through so one invocation can ask
+# what a different amount of forking or a 4 KiB disk page costs; everything
 # the run records is left on the node under /tmp/sproutfs-workload and copied
 # back here.
 workload() {
+    case ${SPROUTFS_DEMO_PMEM_PAGE_BYTES:-} in ''|2097152|4096) ;;
+        *) echo "SPROUTFS_DEMO_PMEM_PAGE_BYTES must be 4096 or 2097152" >&2; exit 2 ;; esac
     check_instance_owner
     wait_for_pods
     "${cloud[@]}" compute scp --zone="$zone" "$repo/scripts/lib/demo-workload.sh" "$instance:"
     remote "set -euo pipefail
         $kube
         FORKS_BASE=${FORKS_BASE:-2} FORKS_PER_REPO=${FORKS_PER_REPO:-1} \
+            SPROUTFS_DEMO_PMEM_PAGE_BYTES=${SPROUTFS_DEMO_PMEM_PAGE_BYTES:-} \
             bash demo-workload.sh 2>&1 | tee /tmp/demo-workload.log"
     local into=${SPROUTFS_DEMO_WORKLOAD_OUT:-$repo/.workload-runs}
     local run=$into/base${FORKS_BASE:-2}-repo${FORKS_PER_REPO:-1}
+    [[ ${SPROUTFS_DEMO_PMEM_PAGE_BYTES:-} != 4096 ]] || run=$run-pmem4k
     # scp --recurse nests the source inside an existing destination directory,
     # so a second run of one setting would land under the first one rather than
     # replace it.
