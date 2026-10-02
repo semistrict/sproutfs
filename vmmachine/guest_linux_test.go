@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/semistrict/sproutfs/api/guest"
-	"github.com/semistrict/sproutfs/checkpoint"
 	"github.com/semistrict/sproutfs/vmmachine"
 	"github.com/semistrict/sproutfs/volume"
 )
@@ -177,7 +176,7 @@ func newGuestVMIn(t *testing.T, ctx context.Context, c *migrationCluster, name s
 	t.Helper()
 	vm, err := c.source.Create(ctx, name, []volume.VolumeSpec{
 		{Name: vmmachine.RAMVolume, Size: 128 << 20, PageSize: ramPageBytes(t)},
-		{Name: "root", Size: guestRootBytes, PageSize: checkpoint.PageSize2MiB},
+		{Name: "root", Size: guestRootBytes, PageSize: pmemPageBytes(t)},
 	})
 	if err != nil {
 		t.Fatal(err)

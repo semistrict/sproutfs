@@ -24,9 +24,11 @@ func (s *supervisor) Create(ctx context.Context, request hostapi.CreateRequest) 
 		return hostapi.CreateResult{}, fmt.Errorf("%w: a create names a template or a checkpoint, not both",
 			ErrRequest)
 	}
-	if request.Ephemeral%PMEMPageSize != 0 {
-		return hostapi.CreateResult{}, fmt.Errorf("%w: an ephemeral disk is whole %d-byte pages, not %d bytes",
-			ErrRequest, PMEMPageSize, request.Ephemeral)
+	// An ephemeral disk is a PMEM device, which Firecracker requires in whole
+	// 2 MiB, and that is whole pages of either page its pager may run.
+	if request.Ephemeral%pmemDeviceAlignment != 0 {
+		return hostapi.CreateResult{}, fmt.Errorf("%w: an ephemeral disk is a whole number of %d bytes, not %d bytes",
+			ErrRequest, pmemDeviceAlignment, request.Ephemeral)
 	}
 	// Only x86_64 offers a guest hardware virtualisation here (see
 	// vmmachine's nested.go), so a nested VM is refused elsewhere before
@@ -52,7 +54,7 @@ func (s *supervisor) Create(ctx context.Context, request hostapi.CreateRequest) 
 	var added []volume.VolumeSpec
 	if request.Ephemeral != 0 {
 		added = append(added, volume.VolumeSpec{Name: ephemeralVolume, Size: request.Ephemeral,
-			PageSize: PMEMPageSize, Ephemeral: true})
+			PageSize: s.pagers.Pmem.PageSize(), Ephemeral: true})
 	}
 	vm, _, err := CreateFork(ctx, s.host.Volumes(), id, point, added...)
 	if err != nil {

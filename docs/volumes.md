@@ -34,7 +34,8 @@ segment. It also covers little enough that a segment encodes to at most a few
 hundred kilobytes. See [the layout](#objects) for the cost per GiB.
 
 A host creates each volume with the page size of the pager that will map it. A
-VM's `ram0` uses 4 KiB, and each of its PMEM devices uses 2 MiB. The pager, the
+VM's `ram0` and its PMEM devices each use 2 MiB unless the deployment runs that
+pager at 4 KiB (`SPROUTFS_RAM_PAGE_BYTES`, `SPROUTFS_PMEM_PAGE_BYTES`). The pager, the
 mapping protocol and the VMM carry that page size end to end. A session states
 the page size when it attaches. A pager refuses to attach a volume published in
 any other page size. This check also catches a memory region that reached the wrong

@@ -141,10 +141,11 @@ func (s *supervisor) importTemplate(ctx context.Context, source io.ReadSeeker, m
 	if err != nil {
 		return nil, fmt.Errorf("guest image %s: %w", label, err)
 	}
-	// A PMEM device is whole pages of the pager that maps it, and the image is
-	// written into the front of one.
+	// A PMEM device is whole pages of the pager that maps it, and whole 2 MiB
+	// whatever that page is, because Firecracker requires it. The image is
+	// written into the front of it.
 	ramPage, pmemPage := s.pagers.Ram.PageSize(), s.pagers.Pmem.PageSize()
-	size := (uint64(length) + pmemPage - 1) / pmemPage * pmemPage
+	size := (uint64(length) + pmemDeviceAlignment - 1) / pmemDeviceAlignment * pmemDeviceAlignment
 	if size == 0 {
 		return nil, fmt.Errorf("%w: guest image %s is empty", ErrRequest, label)
 	}

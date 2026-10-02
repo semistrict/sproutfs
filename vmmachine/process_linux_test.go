@@ -93,19 +93,23 @@ type hostPagersConfig struct {
 	Isolated bool
 }
 
-// ramPageBytes is the page the RAM pager of these suites runs. It is 2 MiB,
-// which is what a host runs by default; SPROUTFS_RAM_PAGE_BYTES asks for 4 KiB,
-// the page a deployment may choose instead.
-func ramPageBytes(t testing.TB) uint64 {
+// ramPageBytes and pmemPageBytes are the pages the two pagers of these suites
+// run. Each is 2 MiB, which is what a host runs by default;
+// SPROUTFS_RAM_PAGE_BYTES and SPROUTFS_PMEM_PAGE_BYTES ask for 4 KiB, the page
+// a deployment may choose instead.
+func ramPageBytes(t testing.TB) uint64  { return pageBytes(t, "SPROUTFS_RAM_PAGE_BYTES") }
+func pmemPageBytes(t testing.TB) uint64 { return pageBytes(t, "SPROUTFS_PMEM_PAGE_BYTES") }
+
+func pageBytes(t testing.TB, name string) uint64 {
 	t.Helper()
-	value := os.Getenv("SPROUTFS_RAM_PAGE_BYTES")
+	value := os.Getenv(name)
 	if value == "" {
 		return checkpoint.PageSize2MiB
 	}
 	page, err := strconv.ParseUint(value, 10, 64)
 	if err != nil || (page != checkpoint.PageSize4KiB && page != checkpoint.PageSize2MiB) {
-		t.Fatalf("SPROUTFS_RAM_PAGE_BYTES is %q, want %d or %d",
-			value, checkpoint.PageSize4KiB, checkpoint.PageSize2MiB)
+		t.Fatalf("%s is %q, want %d or %d",
+			name, value, checkpoint.PageSize4KiB, checkpoint.PageSize2MiB)
 	}
 	return page
 }
@@ -132,16 +136,17 @@ func newConfiguredHostPagers(t testing.TB, ctx context.Context, cfg hostPagersCo
 	for _, kind := range []vmmemory.MemoryRegionKind{vmmemory.Ram, vmmemory.Pmem} {
 		page, budgets := ramPageBytes(t), cfg.RAM
 		if kind == vmmemory.Pmem {
-			page, budgets = checkpoint.PageSize2MiB, cfg.PMEM
+			page, budgets = pmemPageBytes(t), cfg.PMEM
 		}
 		resident := int(budgets.Arena / page)
 		logical := int(budgets.Logical / page)
-		// RAM's arena has an address per logical page — one 512-offset extent
-		// per 2 MiB range any memory region may write into — beside the pages it may
-		// hold at once; PMEM's offsets and pages are one number. The file is
-		// sparse, so the extra addresses cost nothing until a page is put there.
+		// An arena of 4 KiB pages has an address per logical page — one
+		// 512-offset extent per 2 MiB range any memory region may write into —
+		// beside the pages it may hold at once; a 2 MiB arena's offsets and pages
+		// are one number. The file is sparse, so the extra addresses cost nothing
+		// until a page is put there.
 		offsets := resident
-		if kind == vmmemory.Ram {
+		if page < checkpoint.PageSize2MiB {
 			offsets = logical + resident
 		}
 		arena, err := vmmemory.NewLinuxArena(page)
@@ -319,7 +324,7 @@ func TestFirecrackerDAXCaptureRestoreForkAndFence(t *testing.T) {
 		// Each volume is published in the page of the pager that maps it, which
 		// is what a host creates them with.
 		{Name: vmmachine.RAMVolume, Size: 128 << 20, PageSize: ramPageBytes(t)},
-		{Name: "root", Size: 64 << 20, PageSize: checkpoint.PageSize2MiB},
+		{Name: "root", Size: 64 << 20, PageSize: pmemPageBytes(t)},
 	})
 	if err != nil {
 		t.Fatal(err)

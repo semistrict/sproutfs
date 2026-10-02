@@ -97,9 +97,10 @@ func TestPulledGuestsFaultWithoutTheObjectStore(t *testing.T) {
 		ObjectStore: objects, Network: testnet.New(), Disk: disk, Disks: adapters.NewDisk,
 		PodIP: "127.0.0.1", PagePort: 1, PodName: "pull-host", Orchestrator: "http://127.0.0.1:1",
 		HugepageDir: t.TempDir(), ScratchDir: t.TempDir(), RAMPageSize: ramPageBytes(t),
-		ArenaBytes:  host.KindBytes{RAM: pullRAMArena, PMEM: pullPMEMArena},
-		Arena:       testarena.Mode(t),
-		MemoryBytes: pullRAMArena + pullPMEMArena,
+		PMEMPageSize: pmemPageBytes(t),
+		ArenaBytes:   host.KindBytes{RAM: pullRAMArena, PMEM: pullPMEMArena},
+		Arena:        testarena.Mode(t),
+		MemoryBytes:  pullRAMArena + pullPMEMArena,
 		// The memory tier keeps no page, so a page the arena let go of is read
 		// from the disk or from the store and nowhere else.
 		CacheBytes:     4 << 10,
@@ -107,8 +108,8 @@ func TestPulledGuestsFaultWithoutTheObjectStore(t *testing.T) {
 		// The fill is dirty until the stop publishes it, and this host runs no
 		// checkpoint loop to relieve the budget sooner.
 		SpillBytes:   host.KindBytes{RAM: pullRAMArena, PMEM: 128 << 20},
-		LogicalPages: host.KindPages{RAM: int(4 * pullGuestRAM / ramPageBytes(t)), PMEM: 128},
-		DirtyPages:   host.KindPages{RAM: int(pullRAMArena / ramPageBytes(t)), PMEM: 64},
+		LogicalPages: host.KindPages{RAM: int(4 * pullGuestRAM / ramPageBytes(t)), PMEM: int((256 << 20) / pmemPageBytes(t))},
+		DirtyPages:   host.KindPages{RAM: int(pullRAMArena / ramPageBytes(t)), PMEM: int((128 << 20) / pmemPageBytes(t))},
 		Starter: &vmmachine.Firecracker{Binary: binaryPath,
 			SeccompFilter: os.Getenv("SPROUTFS_FIRECRACKER_SECCOMP"),
 			Kernel:        os.Getenv("SPROUTFS_FIRECRACKER_KERNEL"), BootArgs: guestPmemBootArgs,

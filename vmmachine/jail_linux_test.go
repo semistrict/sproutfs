@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/semistrict/sproutfs/checkpoint"
 	"github.com/semistrict/sproutfs/vmmachine"
 	"github.com/semistrict/sproutfs/volume"
 )
@@ -94,7 +93,7 @@ func TestJailedVMMsRunAsUsersOfTheirOwn(t *testing.T) {
 	start := func(name string) (*vmmachine.Process, error) {
 		vm, err := cluster.source.Create(ctx, name, []volume.VolumeSpec{
 			{Name: vmmachine.RAMVolume, Size: 128 << 20, PageSize: ramPageBytes(t)},
-			{Name: "root", Size: guestRootBytes, PageSize: checkpoint.PageSize2MiB},
+			{Name: "root", Size: guestRootBytes, PageSize: pmemPageBytes(t)},
 		})
 		if err != nil {
 			t.Fatal(err)

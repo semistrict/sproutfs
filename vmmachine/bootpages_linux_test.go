@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/semistrict/sproutfs/checkpoint"
 	"github.com/semistrict/sproutfs/vmmachine"
 	"github.com/semistrict/sproutfs/volume"
 )
@@ -91,7 +90,7 @@ func TestBootSurveyOfPrivateRAMPages(t *testing.T) {
 	c := newMigrationCluster(t, ctx)
 	vm, err := c.source.Create(ctx, "boot-survey", []volume.VolumeSpec{
 		{Name: vmmachine.RAMVolume, Size: uint64(ramBytes), PageSize: ramPageBytes(t)},
-		{Name: "root", Size: guestRootBytes, PageSize: checkpoint.PageSize2MiB},
+		{Name: "root", Size: guestRootBytes, PageSize: pmemPageBytes(t)},
 	})
 	if err != nil {
 		t.Fatal(err)
