@@ -101,10 +101,17 @@ func (s *segment) reads() []checkpointUse {
 // pages read from. The address is inside the index object of the checkpoint that
 // wrote the segment, which is this one for a segment this checkpoint changed and
 // an earlier one for every other.
+//
+// A segment a checkpoint that deferred its index object changed is pending: no
+// index object holds it yet, so it has no address, and the index holds it
+// decoded. The next index object of the VM writes it.
 type segmentEntry struct {
 	at    segmentAddress
 	reads []checkpointUse
 }
+
+// pending reports a segment no index object holds yet.
+func (e segmentEntry) pending() bool { return e.at.length == 0 }
 
 // segmentKey names one segment of one volume, which is what an index memoises
 // its decoded segments by.
@@ -147,6 +154,17 @@ type Index struct {
 	vcpus uint32
 	// nested marks a VM whose guest may run VMs of its own. See Nested.
 	nested bool
+	// replays is, for a checkpoint that deferred its index object, the base
+	// whose index object an open rebuilds it from and every checkpoint after
+	// the base that deferred its own, this one last: an open reads all of them,
+	// so this index names them. It is nil for a checkpoint that wrote an index
+	// object.
+	replays []control.Ref
+	// holds is, for a checkpoint that deferred its index object, every
+	// checkpoint whose index object holds a segment of the base: a replay
+	// rebuilds a segment it changes from the base's copy, so this index names
+	// them however little it reads of them.
+	holds []control.Ref
 	// store is what segments are read through. A root built without one — which
 	// nothing but a test does — can locate nothing it did not write itself.
 	store *Store
@@ -206,6 +224,9 @@ func (i *Index) VCPUs() int { return int(i.vcpus) }
 // It is experimental, and plans/nested-kvm-2026-09-27.md says why.
 func (i *Index) Nested() bool { return i.nested }
 
+// deferred reports a checkpoint that wrote no index object.
+func (i *Index) deferred() bool { return len(i.replays) != 0 }
+
 // HasState reports whether VMM state was published with this checkpoint.
 func (i *Index) HasState() bool { return !i.state.isZero() }
 
@@ -242,9 +263,17 @@ func (i *Index) parts(ref control.Ref) uint32 { return i.checkpoints[ref].parts 
 func (i *Index) readCheckpoints() map[control.Ref]bool {
 	read := make(map[control.Ref]bool, len(i.checkpoints))
 	read[i.ref] = true
+	for _, ref := range i.replays {
+		read[ref] = true
+	}
+	for _, ref := range i.holds {
+		read[ref] = true
+	}
 	for _, table := range i.volumes {
 		for _, entry := range table.segments {
-			read[entry.at.ref] = true
+			if !entry.pending() {
+				read[entry.at.ref] = true
+			}
 			for _, use := range entry.reads {
 				read[use.ref] = true
 			}
@@ -306,7 +335,9 @@ func (i *Index) segmentAt(ctx context.Context, volume string, number uint64) (*s
 	}
 	loaded := newSegment()
 	if entry, addressed := table.segments[number]; addressed {
-		if i.store == nil {
+		// A pending segment is held from the moment it is made, so one that
+		// is not is one this index lost.
+		if i.store == nil || entry.pending() {
 			return nil, ErrCorrupt
 		}
 		data, release, err := i.store.loadSegment(ctx, volume, number, entry.at)
@@ -424,6 +455,19 @@ func (i *Index) Locate(ctx context.Context, volume string, offset, length uint64
 // one read back from the store, so an emptied checkpoint left out here loses the
 // checkpoint of grace it owes the view this index replaced.
 func (i *Index) encode() ([]byte, error) {
+	message, err := i.rootMessage(true)
+	if err != nil {
+		return nil, err
+	}
+	return proto.MarshalOptions{Deterministic: true}.Marshal(message)
+}
+
+// rootMessage is the root this index publishes. Without segments it is what a
+// checkpoint that deferred its index object records of itself: an open
+// rebuilds the segments from the base's index object and the parts after it.
+// A root with segments addresses each one in an index object, so it refuses a
+// segment still pending.
+func (i *Index) rootMessage(segments bool) (*checkpointv1.Root, error) {
 	refs := i.named()
 	position := make(map[control.Ref]uint32, len(refs))
 	entries := make([]*checkpointv1.Checkpoint, 0, len(refs))
@@ -444,10 +488,16 @@ func (i *Index) encode() ([]byte, error) {
 	volumes := make([]*checkpointv1.Volume, 0, len(i.names))
 	for _, name := range i.names {
 		table := i.volumes[name]
-		numbers := slices.Sorted(maps.Keys(table.segments))
-		segments := make([]*checkpointv1.SegmentEntry, 0, len(numbers))
+		var numbers []uint64
+		if segments {
+			numbers = slices.Sorted(maps.Keys(table.segments))
+		}
+		entries := make([]*checkpointv1.SegmentEntry, 0, len(numbers))
 		for _, number := range numbers {
 			entry := table.segments[number]
+			if entry.pending() {
+				return nil, ErrCorrupt
+			}
 			reads := make([]*checkpointv1.CheckpointUse, 0, len(entry.reads))
 			for _, use := range entry.reads {
 				reads = append(reads, checkpointv1.CheckpointUse_builder{
@@ -457,7 +507,7 @@ func (i *Index) encode() ([]byte, error) {
 			slices.SortFunc(reads, func(a, b *checkpointv1.CheckpointUse) int {
 				return int(a.GetCheckpoint()) - int(b.GetCheckpoint())
 			})
-			segments = append(segments, checkpointv1.SegmentEntry_builder{
+			entries = append(entries, checkpointv1.SegmentEntry_builder{
 				Number: proto.Uint64(number), Checkpoint: proto.Uint32(position[entry.at.ref]),
 				Offset: proto.Uint64(entry.at.offset), Length: proto.Uint64(entry.at.length),
 				Reads: reads,
@@ -470,7 +520,7 @@ func (i *Index) encode() ([]byte, error) {
 			// reader divides page numbers by what the root says, not by a
 			// constant of the build that happens to be reading.
 			SegmentPages: proto.Uint64(table.geometry.SegmentPages),
-			Segments:     segments,
+			Segments:     entries,
 		}.Build()
 		// A volume every checkpoint holds leaves the field out, so every root
 		// written before the field existed decodes, and re-encodes, as it was.
@@ -502,7 +552,7 @@ func (i *Index) encode() ([]byte, error) {
 	if i.nested {
 		message.SetNested(true)
 	}
-	return proto.MarshalOptions{Deterministic: true}.Marshal(message)
+	return message, nil
 }
 
 func refMessage(ref control.Ref) *checkpointv1.Ref {
@@ -733,6 +783,12 @@ func decodeRoot(store *Store, ref control.Ref, data []byte) (*Index, error) {
 	if err := proto.Unmarshal(data, message); err != nil {
 		return nil, errors.Join(ErrCorrupt, err)
 	}
+	return decodeRootMessage(store, ref, message)
+}
+
+// decodeRootMessage is decodeRoot of a root already parsed, which is how a
+// deferred index carries one.
+func decodeRootMessage(store *Store, ref control.Ref, message *checkpointv1.Root) (*Index, error) {
 	if len(message.ProtoReflect().GetUnknown()) != 0 {
 		return nil, ErrCorrupt
 	}

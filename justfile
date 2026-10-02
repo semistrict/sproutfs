@@ -79,6 +79,12 @@ soak base="1" count="100":
     SPROUTFS_TEST_SOAK=1 SPROUTFS_SOAK_SEED_BASE={{ base }} SPROUTFS_SOAK_SEED_COUNT={{ count }} \
         go test -count=1 -timeout=80m -v ./internal/simtest -run 'Soak$'
 
+# An index object every checkpoint against deferred ones (TASK-81) on the
+# simulated store: a few minutes, and docs/measurements/deferred-index-2026-10-02.md
+# quotes what it prints.
+compare-index:
+    SPROUTFS_COMPARE_INDEX=1 go test ./checkpoint -run '^TestCompareIndexCadences$' -count=1 -v -timeout=20m
+
 # The interactive explainer's simulation (TASK-65): the real code's simulation
 # test binary compiled to WebAssembly, beside the Go runtime glue that loads it.
 explainer:

@@ -156,6 +156,35 @@ message PartTable {
   // reader implements. The trailer carries it too, so a part is refused before
   // its table is parsed.
   uint32 format_version = 2;
+  // Deferred is set on the last part of a checkpoint that wrote no index
+  // object, and on no other part. Its PUT is that checkpoint's commit.
+  DeferredIndex deferred = 3;
+}
+
+// DeferredIndex is what a checkpoint that deferred its index object says of
+// itself. Its parts' tables name the pages it wrote, so an open rebuilds its
+// page table from the newest index object before it, the base, by applying the
+// tables of every deferred checkpoint since then in order, this one last.
+message DeferredIndex {
+  // Root is the checkpoint's root with no segments: its volumes, the
+  // checkpoints it names, its VMM state, its processors and whether it is
+  // nested.
+  Root root = 1;
+  // Base is the sequence of this VM's checkpoint whose index object an open
+  // rebuilds from.
+  uint64 base = 2;
+  // Chain is the sequences of the checkpoints between the base and this one,
+  // ascending: each deferred its index object and inherits the one before it.
+  repeated uint64 chain = 3;
+  // Removed is every page this checkpoint zeroed, by volume. A zeroed page
+  // leaves the page table, and no part says so.
+  repeated RemovedPages removed = 4;
+}
+
+// RemovedPages is the pages of one volume a checkpoint zeroed, ascending.
+message RemovedPages {
+  string volume = 1;
+  repeated uint64 pages = 2;
 }
 
 // Member is one entry of a part: the page or the VMM state it holds, and where

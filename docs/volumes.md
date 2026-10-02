@@ -298,6 +298,62 @@ that is already selected is also idempotent. This is how a lost reply to a
 conditional write is reconciled. A different root under the same reference is a
 conflict.
 
+### Deferred index objects
+
+A checkpoint may defer its index object (TASK-81). This is off by default:
+`checkpoint.Config.IndexEvery` says how many checkpoints of a VM may pass
+between the ones that write an index object, and zero or one writes one at
+every checkpoint, as above. Nothing in the host sets it yet.
+
+An index object holds every segment its checkpoint changed, and a segment is
+rewritten whole. A checkpoint whose dirty pages are scattered touches most of
+a volume's segments, so at a short interval the index costs nearly as much to
+upload as the pages ([the comparison](measurements/deferred-index-2026-10-02.md)).
+The parts already say which pages they hold. So a checkpoint between two index
+objects writes none, and its last part carries a **deferred index** instead:
+
+- its root without segments;
+- its **base**, the newest checkpoint of this VM before it that wrote an index
+  object;
+- the checkpoints between the base and it, each of which deferred its own;
+- the pages it zeroed, which no part records.
+
+Publication order is then:
+
+1. Every part but the last, waited for until durable.
+2. The last part, carrying the deferred index. Its PUT is the commit.
+3. The selection.
+
+So such a checkpoint costs one round of PUTs rather than two. A publication that
+fails before the last part lands leaves parts that commit nothing, and an open
+reports the checkpoint absent.
+
+A segment such a checkpoint changed is **pending**. No object holds it, and the
+index holds it decoded. The next index object of the VM writes every pending
+segment beside the ones its own checkpoint changed. So an index object, its root
+and an open of it are what they are without deferral, and a root that addresses
+every segment still names no parent.
+
+Opening a checkpoint with no index object lists its parts and reads the last
+one's table. It then reads, all at once, the base's index object and every part
+table of the checkpoints between, and replays them forward over the base: each
+part's members relocate their pages, and each deferred index removes the pages
+it zeroed and trims a volume that shrank. The segments of the base a replay
+changes are fetched first, together. The rest stay addressed in index objects
+and load on demand. The segments one index object holds are read in one ranged
+GET. An open therefore costs a GET that finds no index object, a listing, and
+three rounds of reads.
+
+A deferred index names its base, every checkpoint between, and every
+checkpoint whose index object holds a segment of the base, because a replay
+rebuilds a segment it changes from the base's copy. A root names everything it
+reads the same way. So reclamation, pins, kept checkpoints and deletion spare
+them unchanged, and nothing before the base's index object is needed. Compaction
+leaves them alone while the checkpoint it publishes defers its own index object,
+because rewriting their pages frees nothing until the next index object stops
+naming them. A VM's first checkpoint and a fork's first always write an index
+object, so the chain an open replays never crosses into another VM's objects.
+
 Checkpoint sequences are epoch-major. The writer epoch is in the high 32 bits,
 and a counter starting at one is in the low 32 bits. Every checkpoint object is
 written create-if-absent. So a fenced writer that is still uploading objects

@@ -9,6 +9,7 @@ import (
 	"sort"
 	"sync"
 
+	checkpointv1 "github.com/semistrict/sproutfs/checkpoint/internal/gen/sproutfs/checkpoint/v1"
 	"github.com/semistrict/sproutfs/checkpoint/internal/part"
 	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/platform"
@@ -75,6 +76,10 @@ type Publication struct {
 	// keep is the pull of the VM publishing, which keeps what this
 	// publication uploads; nil for a VM not pulling its memory.
 	keep *Pull
+	// removed is the pages of each volume this publication zeroed, ascending,
+	// which a checkpoint that defers its index object records because no part
+	// says so.
+	removed map[string][]uint64
 	// owned is the segments this publication has copied from the ones its
 	// index shares with its parent, before changing them.
 	owned map[segmentKey]bool
@@ -89,7 +94,7 @@ func (s *Store) Begin(parent *Index, ref control.Ref) *Publication {
 		sizes: make(map[string]uint64), geometry: make(map[string]Geometry),
 		ephemeral: make(map[string]bool), edits: make(map[string]map[uint64]bool),
 		protected: make(map[control.Ref]bool), dirty: make(map[string]map[uint64]*segment),
-		owned: make(map[segmentKey]bool)}
+		removed: make(map[string][]uint64), owned: make(map[segmentKey]bool)}
 	if parent != nil {
 		for _, name := range parent.names {
 			p.sizes[name] = parent.volumes[name].size
@@ -277,6 +282,7 @@ func (p *Publication) Commit(ctx context.Context, source Source) (*Index, error)
 		index.state = location{}
 	}
 	writer := &partWriter{store: p.store, ref: p.ref, cancel: cancel, keep: p.keep}
+	deferring := p.defers()
 	if err := p.trim(ctx, index); err != nil {
 		return nil, writer.abandon(err)
 	}
@@ -288,16 +294,32 @@ func (p *Publication) Commit(ctx context.Context, source Source) (*Index, error)
 	if err := p.writeEdits(ctx, writer, index, source); err != nil {
 		return nil, writer.abandon(err)
 	}
-	if err := p.compact(ctx, writer, index); err != nil {
+	if err := p.compact(ctx, writer, index, deferring); err != nil {
 		return nil, writer.abandon(err)
+	}
+	var record func(parts uint32, bytes uint64) *checkpointv1.DeferredIndex
+	if deferring {
+		p.holdPending(index)
+		record = func(parts uint32, bytes uint64) *checkpointv1.DeferredIndex {
+			index.checkpoints[p.ref] = checkpointCost{parts: parts, bytes: bytes}
+			index.retainReferencedCheckpoints()
+			return p.deferredIndex(index)
+		}
 	}
 	// The parts are finished and durable before anything of the index object
 	// is written: what the parts cost is settled here, and a segment says
 	// where the pages of its range are, so it cannot be encoded before they are.
-	if err := writer.finish(ctx); err != nil {
+	deferred, err := writer.finish(ctx, record)
+	if err != nil {
 		return nil, writer.abandon(err)
 	}
 	index.checkpoints[p.ref] = checkpointCost{parts: writer.next, bytes: writer.bytes}
+	if deferred {
+		return index, nil
+	}
+	// A checkpoint that meant to defer its index object and could not writes
+	// one after all, holding every segment it left pending.
+	index.replays, index.holds = nil, nil
 	object := newIndexObject(p.store)
 	if err := p.writeSegments(ctx, object, index); err != nil {
 		return nil, writer.abandon(err)
@@ -314,6 +336,25 @@ func (p *Publication) Commit(ctx context.Context, source Source) (*Index, error)
 	return index, nil
 }
 
+// holdPending leaves every segment this publication changed pending rather
+// than written, because this checkpoint defers its index object: the index
+// holds each one decoded, and the next index object writes it. A segment left
+// with no pages loses its entry, as writeSegments would drop it.
+func (p *Publication) holdPending(index *Index) {
+	index.replays = append(p.parent.replayChain(), p.ref)
+	index.holds = p.parent.chainHolds()
+	for _, name := range index.names {
+		table := index.volumes[name]
+		for number, held := range p.dirty[name] {
+			if len(held.pages) == 0 {
+				delete(table.segments, number)
+				continue
+			}
+			table.segments[number] = segmentEntry{reads: held.reads()}
+		}
+	}
+}
+
 // keepSegments hands the segments this publication wrote into its index object
 // to the pull that keeps them, once the object is durable.
 func (p *Publication) keepSegments(ctx context.Context, index *Index, object []byte) {
@@ -323,9 +364,9 @@ func (p *Publication) keepSegments(ctx context.Context, index *Index, object []b
 	var envelopes []envelope
 	for _, name := range index.names {
 		table := index.volumes[name]
-		for _, number := range slices.Sorted(maps.Keys(p.dirty[name])) {
-			entry, written := table.segments[number]
-			if !written || entry.at.ref != p.ref {
+		for _, number := range slices.Sorted(maps.Keys(table.segments)) {
+			entry := table.segments[number]
+			if entry.at.ref != p.ref {
 				continue
 			}
 			envelopes = append(envelopes, envelope{key: segmentCacheKey(name, number, entry.at.ref),
@@ -421,15 +462,29 @@ func (p *Publication) trim(ctx context.Context, index *Index) error {
 }
 
 // writeSegments writes the page table of every segment this checkpoint changed
-// into its index object, in ascending volume-name and segment-number order so a
+// into its index object, and every segment the checkpoints since the last index
+// object left pending, in ascending volume-name and segment-number order so a
 // retry produces identical bytes, and addresses the root at what it wrote. A
 // segment left with no pages is not written at all and loses its entry: an
 // absent segment reads as zeroes, which is what the pages it held now do.
 func (p *Publication) writeSegments(ctx context.Context, object *indexObject, index *Index) error {
 	for _, name := range index.names {
 		table := index.volumes[name]
-		for _, number := range slices.Sorted(maps.Keys(p.dirty[name])) {
-			held := p.dirty[name][number]
+		writing := maps.Clone(p.dirty[name])
+		if writing == nil {
+			writing = make(map[uint64]*segment)
+		}
+		for number, entry := range table.segments {
+			if _, changed := writing[number]; !changed && entry.pending() {
+				held, err := index.segmentAt(ctx, name, number)
+				if err != nil {
+					return err
+				}
+				writing[number] = held
+			}
+		}
+		for _, number := range slices.Sorted(maps.Keys(writing)) {
+			held := writing[number]
 			if len(held.pages) == 0 {
 				delete(table.segments, number)
 				continue
@@ -487,6 +542,7 @@ func (p *Publication) writeEdits(ctx context.Context, writer *partWriter, index 
 				// as the zeroes the guest wrote.
 				delete(held.pages, relative)
 				p.markDirty(name, geometry.SegmentOf(number), held)
+				p.removed[name] = append(p.removed[name], number)
 				continue
 			}
 			at, err := writer.add(ctx, name, number, memberPage, p.ref, data)
@@ -775,36 +831,64 @@ func (w *partWriter) put(ctx context.Context, key platform.ObjectKey, data []byt
 // every part is durable, which is what the index object may then
 // name. An upload that failed is what the caller is told about, not the
 // cancellation it caused in whatever was still running.
-func (w *partWriter) finish(ctx context.Context) error {
+//
+// record is nil for a checkpoint that writes its index object. For one that
+// defers it, record is what the last part carries, given the checkpoint's part
+// count and member bytes, and that part's PUT is the commit: it waits for every
+// earlier part, and it is written even when it holds no member. A record the
+// part's table has no room for is not carried, and finish reports that the
+// checkpoint did not defer its index object after all.
+func (w *partWriter) finish(ctx context.Context, record func(parts uint32, bytes uint64) *checkpointv1.DeferredIndex) (bool, error) {
 	defer w.discharge()
+	deferred := false
+	if record != nil {
+		w.wait.Wait()
+		if w.failure != nil {
+			return false, w.failure
+		}
+		empty := w.part == nil
+		if empty {
+			if err := w.admit(ctx); err != nil {
+				return false, err
+			}
+			w.part = part.NewBuilder(w.store.codecs)
+		}
+		if held := record(w.next+1, w.bytes); held != nil &&
+			w.part.TableBytes()+part.DeferredBytes(held) <= maximumTableSize {
+			w.part.SetDeferred(held)
+			deferred = true
+		} else if empty {
+			w.part = nil
+		}
+	}
 	if w.part != nil {
 		sealed, err := w.part.Seal(w.next + 1)
 		if err != nil {
-			return err
+			return false, err
 		}
 		if len(sealed) > maximumPartSize {
-			return ErrInvalidRange
+			return false, ErrInvalidRange
 		}
 		key, err := w.store.partKey(w.ref, w.next)
 		if err != nil {
-			return err
+			return false, err
 		}
 		members := w.members
 		w.part, w.next, w.members = nil, w.next+1, nil
 		if err := w.store.acquire(ctx); err != nil {
-			return err
+			return false, err
 		}
 		err = w.put(ctx, key, sealed)
 		w.store.release()
 		if err != nil {
-			return err
+			return false, err
 		}
 		if w.keep != nil {
 			w.keep.keep(ctx, w.kept(sealed, members))
 		}
 	}
 	w.wait.Wait()
-	return w.failure
+	return deferred, w.failure
 }
 
 // abandon stops the uploads a failed publication started and reports why it
@@ -914,7 +998,11 @@ func (p *Publication) liveBytes(index *Index) map[control.Ref]uint64 {
 // wrote it, for as long as any root addresses it, and a compaction that moved
 // the pages of a segment writes that segment again anyway, because its entries
 // have changed.
-func (p *Publication) compact(ctx context.Context, writer *partWriter, index *Index) error {
+//
+// A checkpoint that defers its index object leaves alone the ones an open of
+// it replays: it names them until the next index object, so rewriting their
+// pages frees nothing.
+func (p *Publication) compact(ctx context.Context, writer *partWriter, index *Index, deferring bool) error {
 	if p.parent == nil {
 		return nil
 	}
@@ -929,8 +1017,14 @@ func (p *Publication) compact(ctx context.Context, writer *partWriter, index *In
 	own := func(ref control.Ref) bool {
 		return ref.VM == p.ref.VM || sim.Bug(ctx, "checkpoint-compact-another-vm")
 	}
+	replayed := make(map[control.Ref]bool)
+	if deferring {
+		for _, ref := range p.parent.replayChain() {
+			replayed[ref] = true
+		}
+	}
 	eligible := func(ref control.Ref, entry checkpointCost) bool {
-		return own(ref) && ref != p.ref && !protected[ref] &&
+		return own(ref) && ref != p.ref && !protected[ref] && !replayed[ref] &&
 			entry.bytes != 0 && entry.emptied == 0
 	}
 	any := false
