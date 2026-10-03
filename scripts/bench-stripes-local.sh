@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # The stripe benchmark on this machine: six servers on loopback ports and one
-# client, every code under every condition, in about a minute. It checks the
-# program end to end over real TCP before a GCE run; its numbers say nothing
-# about our hosts.
+# client, every code under every condition in both read modes, in about a
+# minute and a half. It checks the program end to end over real TCP before a
+# GCE run; its numbers say nothing about our hosts.
 #
 # Usage: scripts/bench-stripes-local.sh [results-directory]
 set -euo pipefail

@@ -14,13 +14,14 @@ import (
 )
 
 // caseResult is what one client saw in one case: one load, one medium, one
-// condition and one code.
+// condition, one code and one read mode.
 type caseResult struct {
 	Name      string    `json:"name"`
 	Load      string    `json:"load"`
 	Medium    string    `json:"medium"`
 	Condition string    `json:"condition"`
 	Code      string    `json:"code"`
+	Read      string    `json:"read"`
 	Started   time.Time `json:"started"`
 	// Elapsed runs from the first read due to the last read done.
 	Elapsed time.Duration `json:"elapsed_ns"`
@@ -31,6 +32,16 @@ type caseResult struct {
 	TimedOut uint64 `json:"timed_out"`
 	// Decoded counts the hits that had to rebuild a data stripe from parity.
 	Decoded uint64 `json:"decoded"`
+	// Requests counts the stripe requests the reads sent.
+	Requests uint64 `json:"requests"`
+	// Second counts the reads that asked the rest of the holders after the
+	// delay, and Refused those that would have but found the budget empty.
+	Second  uint64 `json:"second_requests"`
+	Refused uint64 `json:"refused"`
+	// SecondShare is Second over Issued, and SentPerRead the bytes the
+	// servers sent per read.
+	SecondShare float64 `json:"second_share"`
+	SentPerRead float64 `json:"sent_bytes_per_read"`
 
 	// Latency is the latency of the hits only.
 	Latency histogram     `json:"latency"`
@@ -55,6 +66,11 @@ func (r *caseResult) summarize() {
 	r.P999 = r.Latency.quantile(0.999)
 	r.Max = r.Latency.max
 	r.Shape = r.Latency.shape()
+	r.SecondShare, r.SentPerRead = 0, 0
+	if r.Issued > 0 {
+		r.SecondShare = float64(r.Second) / float64(r.Issued)
+		r.SentPerRead = float64(r.Servers.Sent) / float64(r.Issued)
+	}
 }
 
 // add merges another client's record of the same case.
@@ -68,6 +84,9 @@ func (r *caseResult) add(o caseResult) {
 	r.Misses += o.Misses
 	r.TimedOut += o.TimedOut
 	r.Decoded += o.Decoded
+	r.Requests += o.Requests
+	r.Second += o.Second
+	r.Refused += o.Refused
 	r.Latency.add(o.Latency)
 	r.Servers = serverStats{
 		CPU:     max(r.Servers.CPU, o.Servers.CPU),
@@ -90,6 +109,7 @@ type record struct {
 	Concurrency int           `json:"concurrency"`
 	Timeout     time.Duration `json:"timeout_ns"`
 	SlowDelay   time.Duration `json:"slow_delay_ns"`
+	HedgeMin    time.Duration `json:"hedge_min_ns"`
 	Drained     int           `json:"drained"`
 	Slow        int           `json:"slow"`
 	Cases       []caseResult  `json:"cases"`
@@ -99,6 +119,9 @@ func (r *record) merge(o record) error {
 	if !slices.Equal(r.Servers, o.Servers) || r.Objects != o.Objects || r.ObjectBytes != o.ObjectBytes ||
 		r.Seed != o.Seed {
 		return errors.New("the records read different object sets")
+	}
+	if r.HedgeMin != o.HedgeMin {
+		return errors.New("the records hedged with different floors")
 	}
 	r.Clients = append(r.Clients, o.Clients...)
 	for _, c := range o.Cases {
@@ -150,21 +173,24 @@ func readRecord(path string) (record, error) {
 func (r *record) table(w io.Writer) error {
 	fmt.Fprintf(w, "%d client(s), %d servers, %d objects of %d bytes, %.0f reads/s per client, slow server +%v\n",
 		len(r.Clients), len(r.Servers), r.Objects, r.ObjectBytes, r.Rate, r.SlowDelay)
-	fmt.Fprintf(w, "Latency in ms, of hits only. Server CPU in cores, summed over servers. Sent is server bytes per read.\n\n")
+	fmt.Fprintf(w, "Latency in ms, of hits only. Asks is stripe requests per read. 2nd is the reads that asked the rest\n"+
+		"of the holders after the delay, refused those the budget stopped (hedged reads only; delay at least %v).\n"+
+		"Server CPU in cores, summed over servers. Sent is server bytes per read.\n\n", r.HedgeMin)
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', tabwriter.AlignRight)
-	fmt.Fprintln(tw, "case\treads\tmiss\ttimeout\tdecoded\tp50\tp90\tp99\tp99.9\tmax\tserver CPU\tsent KB\t")
+	fmt.Fprintln(tw, "case\treads\tmiss\ttimeout\tdecoded\tasks\t2nd\trefused\tp50\tp90\tp99\tp99.9\tmax\tserver CPU\tsent KB\t")
 	for _, c := range r.Cases {
 		cores := 0.0
 		if c.Elapsed > 0 {
 			cores = c.Servers.CPU.Seconds() / c.Elapsed.Seconds()
 		}
-		sent := 0.0
+		asks := 0.0
 		if c.Issued > 0 {
-			sent = float64(c.Servers.Sent) / float64(c.Issued) / 1000
+			asks = float64(c.Requests) / float64(c.Issued)
 		}
-		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%.2f\t%.0f\t\n",
+		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%s\t%.2f\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%.2f\t%.0f\t\n",
 			c.Name, c.Issued, share(c.Misses, c.Issued), share(c.TimedOut, c.Issued), share(c.Decoded, c.Issued),
-			ms(c.P50), ms(c.P90), ms(c.P99), ms(c.P999), ms(c.Max), cores, sent)
+			asks, share(c.Second, c.Issued), share(c.Refused, c.Issued),
+			ms(c.P50), ms(c.P90), ms(c.P99), ms(c.P999), ms(c.Max), cores, c.SentPerRead/1000)
 	}
 	if err := tw.Flush(); err != nil {
 		return err

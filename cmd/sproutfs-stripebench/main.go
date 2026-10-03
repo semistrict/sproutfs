@@ -10,8 +10,10 @@
 //	    over TCP. A server holds, for each code, the stripes rendezvous hashing
 //	    ranks it for, and for each object the stripes it holds lie together.
 //	sproutfs-stripebench client -servers a:7400,b:7400,... -out results/idle
-//	    read objects at a fixed rate, every code under every condition, and
-//	    write a JSON record and a text table of each case's latency.
+//	    read objects at a fixed rate, every code under every condition, in
+//	    each read mode: ask-all asks every holder at once; hedged asks k+1
+//	    and the rest after a delay, under a budget. Write a JSON record and
+//	    a text table of each case's latency.
 //	sproutfs-stripebench report -out results/full results/full-*.json
 //	    merge the records of clients that ran the same cases at once.
 //

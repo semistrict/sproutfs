@@ -7,7 +7,7 @@
 # otherwise), each with one local NVMe SSD, each
 # serving its stripes of the same objects (cmd/sproutfs-stripebench). Four
 # passes, each of every code under every condition (healthy, slow, drained,
-# drained and slow, drained and stalled):
+# drained and slow, drained and stalled) in each read mode:
 #
 #   idle-memory  one host reads; the servers answer from the page cache
 #   full-memory  all six hosts read at once at the full rate
@@ -27,11 +27,21 @@
 # SPROUTFS_STRIPES_MACHINE is the hosts' machine type (default n2-standard-8).
 # A project with a small CPU quota runs n2-standard-4, at 10 Gbps rather
 # than 16.
+# SPROUTFS_STRIPES_PASSES is the passes to run, comma-separated, in the order
+# above whatever the order given (default all four).
+# SPROUTFS_STRIPES_READS is the read modes each pass runs, comma-separated:
+# ask-all asks every holder at once; hedged asks k+1 and the rest after a
+# delay, under a budget (default both).
 set -euo pipefail
 [[ ${SPROUTFS_STRIPES_DURATION:-} =~ ^([0-9]+(ms|s|m))?$ ]] || { echo "SPROUTFS_STRIPES_DURATION is a duration such as 20s" >&2; exit 2; }
 for knob in SPROUTFS_STRIPES_IDLE_RATE SPROUTFS_STRIPES_FULL_RATE SPROUTFS_STRIPES_DISK_RATE SPROUTFS_STRIPES_OBJECTS; do
     [[ ${!knob:-} =~ ^[0-9]*$ ]] || { echo "$knob is a number" >&2; exit 2; }
 done
+pass_re='(idle-memory|full-memory|idle-disk|full-disk)'
+passes=${SPROUTFS_STRIPES_PASSES:-idle-memory,full-memory,idle-disk,full-disk}
+[[ $passes =~ ^$pass_re(,$pass_re)*$ ]] || { echo "SPROUTFS_STRIPES_PASSES is a list of idle-memory, full-memory, idle-disk and full-disk" >&2; exit 2; }
+reads=${SPROUTFS_STRIPES_READS:-ask-all,hedged}
+[[ $reads =~ ^(ask-all|hedged|ask-all,hedged|hedged,ask-all)$ ]] || { echo "SPROUTFS_STRIPES_READS is ask-all, hedged or both" >&2; exit 2; }
 duration=${SPROUTFS_STRIPES_DURATION:-20s}
 idle_rate=${SPROUTFS_STRIPES_IDLE_RATE:-500}
 full_rate=${SPROUTFS_STRIPES_FULL_RATE:-1500}
@@ -150,11 +160,17 @@ remote() {
     "${cloud[@]}" compute ssh "$host" --zone="$zone" --ssh-flag='-o ConnectTimeout=10' --command="$*" < /dev/null
 }
 
-# pass runs one pass of the client: on the first host, or on every host at
-# once from a common start, and returns the first failure.
+# chosen says whether SPROUTFS_STRIPES_PASSES names a pass.
+chosen() {
+    [[ ,$passes, == *,$1,* ]]
+}
+
+# pass runs one pass of the client, if chosen: on the first host, or on every
+# host at once from a common start, and returns the first failure.
 pass() {
     local name=$1 together=$2 servers=$3 status=0 pid
     shift 3
+    chosen "$name" || return 0
     echo "Pass $name." >&2
     if [[ $together == one ]]; then
         remote "${hosts[0]}" "bash stripes-host.sh read $name $servers $*" >> "$results/remote.log" 2>&1 || status=$?
@@ -198,6 +214,7 @@ run() {
         git -C "$repo" status --porcelain=v1 -- cmd/sproutfs-stripebench scripts | sed 's/^/changed /'
         (cd "$staging" && shasum -a 256 sproutfs-stripebench)
         echo "objects $objects, duration $duration, idle $idle_rate/s, full $full_rate/s, disk $disk_rate/s"
+        echo "machine $machine, passes $passes, reads $reads"
     } > "$results/source.txt"
 
     servers=""
@@ -214,7 +231,7 @@ run() {
     rm -f -- "$staging/sproutfs-stripebench"
     rmdir -- "$staging"
 
-    local common=(-objects "$objects" -conditions "$conditions" -duration "$duration")
+    local common=(-objects "$objects" -conditions "$conditions" -duration "$duration" -reads "$reads")
     pass idle-memory one "$servers" -load idle -rate "$idle_rate" "${common[@]}" || status=$?
     pass full-memory all "$servers" -load full -rate "$full_rate" "${common[@]}" || status=$?
     pass idle-disk one "$servers" -load idle -disk -rate "$idle_rate" "${common[@]}" || status=$?
