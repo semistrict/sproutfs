@@ -1,6 +1,8 @@
 package checkpoint_test
 
 import (
+	"strings"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -21,8 +23,9 @@ var latencyRuntime = sim.Config{Seed: 1,
 
 // readLatency is how long the first host of a cluster of config takes to read
 // page 0 of a published checkpoint it has opened, with before done to the
-// cluster first, what the cluster's fills came to once they settled, and the
-// indices of the page's window the list puts on each host.
+// cluster as its read of the page's part from the store begins, what the
+// cluster's fills came to once they settled, and the indices of the page's
+// window the list puts on each host.
 func readLatency(t *testing.T, config fillConfig, before func(c *fillCluster)) (time.Duration, checkpoint.FillStats,
 	[][]int) {
 	t.Helper()
@@ -38,7 +41,13 @@ func readLatency(t *testing.T, config fillConfig, before func(c *fillCluster)) (
 			t.Fatal(err)
 		}
 		if before != nil {
-			before(c)
+			var once sync.Once
+			getting := func(key string) {
+				if strings.Contains(key, "/part/") {
+					once.Do(func() { before(c) })
+				}
+			}
+			reader.objects.getting.Store(&getting)
 		}
 		start := time.Now()
 		readCachedPage(t, reader.store, opened, m, 0)
@@ -49,11 +58,13 @@ func readLatency(t *testing.T, config fillConfig, before func(c *fillCluster)) (
 	return took, fills, ranked
 }
 
-// Nothing waits on a fill. A fault reads a page from the store in exactly the
-// time it takes with the cluster cache off, whether the fill behind it is slow
-// — every link from the reader to its peers held for a second, so the fill
-// right and the keeps wait for it — or dropped, the reader's rate of keeps
-// spent.
+// Nothing waits on a fill. A fault that misses the cluster reads a page from
+// the store in exactly the time it takes when its fill is quick, whether the
+// fill behind it is slow — every link from the reader to its peers held for a
+// second from the moment its read of the store begins, so the fill right and
+// the keeps wait for it — or dropped, the reader's rate of keeps spent. With
+// the cluster cache off the fault reads the store alone, and is quicker by
+// the cluster's miss and nothing else.
 func TestAFaultIsNotSlowedByItsFill(t *testing.T) {
 	config := fillConfig{hosts: 6, code: rank.Code{K: 4, M: 2}, runtime: latencyRuntime}
 	off, offFills, _ := readLatency(t, config, nil)
@@ -61,6 +72,10 @@ func TestAFaultIsNotSlowedByItsFill(t *testing.T) {
 		t.Fatalf("with the cluster cache off the fills came to %+v, want none", offFills)
 	}
 	config.share = 100
+	quick, quickFills, _ := readLatency(t, config, nil)
+	if quickFills.FromReads != 2 || quickFills.Kept != 12 || dropped(quickFills) != 0 {
+		t.Fatalf("the fills came to %+v, want both windows filled", quickFills)
+	}
 	held, heldFills, _ := readLatency(t, config, func(c *fillCluster) {
 		reader := platform.Address(c.hosts[0].name)
 		for _, h := range c.hosts[1:] {
@@ -83,8 +98,14 @@ func TestAFaultIsNotSlowedByItsFill(t *testing.T) {
 		t.Fatalf("with its rate spent the fills came to %+v, want every stripe for a peer dropped for the rate",
 			spentFills)
 	}
-	if held != off || spent != off {
-		t.Fatalf("a fault took %v with the cluster cache off, %v behind a slow fill and %v behind a dropped one; want the same",
-			off, held, spent)
+	if held != quick || spent != quick {
+		t.Fatalf("a fault took %v behind a quick fill, %v behind a slow one and %v behind a dropped one; want the same",
+			quick, held, spent)
+	}
+	// The cluster's miss costs the page's window and its segment's a round
+	// trip each to the hosts the reader asks, and the reader's own disk.
+	if miss := quick - off; miss <= 0 || miss > 10*time.Millisecond {
+		t.Fatalf("a fault took %v with the cluster cache off and %v on; want the cluster's two misses between", off,
+			quick)
 	}
 }

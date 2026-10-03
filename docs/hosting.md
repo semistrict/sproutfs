@@ -560,7 +560,7 @@ and of every child it has forked onto another host. A child forked onto the
 same host is not there. That child maps the pages instead of fetching them, so
 none of it is ever served. The peer server serves any peer its
 [transport](#transport) accepts. Each remote host's faults may hold 8 MiB
-there at once, and its bulk reads and its bulk writes 16 MiB each, over all its
+there at once, and its bulk reads, its bulk writes and its stripe reads 16 MiB each, over all its
 connections. A request past that is answered `BUSY`. Over the default plain
 TCP, the cluster's network policy, not this process, restricts that port to
 this deployment's hosts.
@@ -970,8 +970,9 @@ The hosts' disks are to become one cache for the cluster
 every cache, and which caches hold each window. The list and the ranks below
 are that. For the windows the cluster cache is turned on for, a host keeps on
 its own disk the stripes the list ranks its cache for ([the code](#the-code)),
-and fills its peers with theirs ([filling the cluster](#filling-the-cluster)).
-Nothing reads from a peer yet.
+fills its peers with theirs ([filling the cluster](#filling-the-cluster)), and
+reads a page from the hosts' disks before the store
+([reading from the cluster](#reading-from-the-cluster)).
 
 **A host's cache.** A host with a page cache disk reports its cache in
 `/status`, under `cache`:
@@ -1066,9 +1067,8 @@ of the window, so every host puts it on the same side, and raising the share
 only adds windows. A window outside the share is kept whole on the host that
 reads it, under 1+0, whatever the list says, exactly as before there were
 stripes; only the windows inside it are placed by the list's ranks and code.
-The deployment leaves it at 0 until hosts read stripes from each other, so
-that no deployment of three hosts or more, whose list holds other caches,
-reads from the store a pulled page it read from its own disk before.
+The manifest still sets it to 0. Hosts now read stripes from each other, so a
+deployment can raise it a share at a time once it has watched `cache_read`.
 
 **What a host keeps.** For each window inside the share, `List.Holders` puts
 stripe i on rank ((i − 1) mod n) + 1 of the window's n ranked caches. A host
@@ -1080,9 +1080,12 @@ hosts, any one host can still be lost. A host alone holds each envelope whole,
 under 1+0. Each stripe is stored as an item that names its index, its code and
 its envelope's length ([the page cache's disk](volumes.md#the-page-caches-disk)).
 
-**What a read takes.** A read asks the disk for every index it holds of the
-code the window is kept under, the list's inside the share and 1+0 outside, checks each item's key, index, code and checksum, and rebuilds the
-envelope from the first k that pass. It then checks the envelope's SHA-256 as a
+**What a read of the disk takes.** A read of a window outside the share asks
+the disk for the envelope whole, under 1+0. A read inside the share asks it
+for every index of the list's code it holds, and then the window's other
+ranks ([reading from the cluster](#reading-from-the-cluster)). Either way it
+checks each item's key, index, code and checksum, and rebuilds the envelope
+from the first k that pass. It then checks the envelope's SHA-256 as a
 read of the store does. If that fails with more than k stripes in hand, it
 rebuilds from other sets of k, at most 64 of them, and the stripes that do not
 match the envelope that passed are named wrong and forgotten. With exactly k,
@@ -1090,10 +1093,9 @@ which one is wrong cannot be told, and all are forgotten. A stripe of another
 code is a miss and never part of an envelope, so a deployment that changes
 its code refills from the store and reads no wrong bytes.
 
-Nothing is read from a peer yet. Inside the share, a host whose own stripes do
-not make k reads the page from the store. So under 1+1 every host reads its
-windows from its own disk, and under 2+1 and wider a host reads from its disk
-only the windows it holds k indices of. On a 2 MiB envelope, splitting the
+Under 1+1 every host holds each window whole, so it reads its windows from
+its own disk with no request. Under 2+1 and wider a host holds fewer than k
+indices of most windows, and asks its peers for the rest. On a 2 MiB envelope, splitting the
 stripes of 4+2 takes 0.17 ms and rebuilding from four stripes 0.07 ms, or
 0.19 ms with two of them parity; on a 4 KiB envelope, 1.0 µs, 0.6 µs and
 1.4 µs (Apple M5 Pro, `go test ./stripe -bench .`).
@@ -1153,8 +1155,8 @@ right to the first reader that asks, once per window per interval
 (`CacheConfig.FillRightInterval`, ten seconds by default), and only while it
 holds nothing of the pages asked for. Every other reader sends nothing. A rank
 1 that is down or cannot be asked gives no right. A publication and a pull need
-none. Until hosts read stripes from each other, a cache answers a stripe read
-with no stripes, only the right.
+none. A stripe read that wants bytes is a read of the cluster, and is never
+given a right.
 
 **What a cache takes.** A cache takes a keep only for a window inside the share
 that its own list ranks it for, under its own list's code. Its own fills are
@@ -1179,9 +1181,137 @@ as `sproutfs_cache_fills_total`, `sproutfs_cache_fill_*` and
 Under 1+1 every host holds each window whole. So a VM suspended on one host
 and opened on the other reads its pages from that host's own disk, where the
 first host's publication put them. Under a wider code a host holds fewer than
-k stripes of most windows, and reads those from the store until hosts read
-stripes from each other ([the plan](../plans/disk-cache-2026-10-02.md), step
-7).
+k stripes of most windows, and reads the rest from its peers.
+
+## Reading from the cluster
+
+Inside the share the cluster cache is turned on for, a page is read in this
+order:
+
+1. this host's memory tier, then the pager's arena, as before;
+2. the cluster: this host's own stripes of the window, then its peers';
+3. the object store.
+
+**Its own stripes first.** A read takes every stripe of the window this host's
+own disk holds, of any index. They cost no request. If they make k distinct
+indices of every page it wants, the read is done. This is every read under
+1+1, and any read whose window went round a short list onto this host.
+
+**Then k+1 of the ranks.** Otherwise the read asks k+1 of the window's first
+k+m ranks, counting this host when it is one of them and holds a stripe. A
+host marked down is not among them (see below). Which ones it asks first is a
+hash of this host's cache and the window (`rank.Pick`). So the readers of one
+window spread over all of its holders, and one reader always asks the same
+ones. One request asks a holder for every stripe of the run's pages in that
+window, of any index. A holder answers with every one it holds. A join or a
+leave near the top of a window's ranks moves every holder below it by one, so
+a holder seldom holds the index its rank would be given now, and a read
+rebuilds from any k distinct indices it is sent.
+
+**A miss is replaced at once.** A holder that answers with nothing, answers
+`BUSY`, or fails is replaced at once by the next rank not yet asked. That is a
+miss, not a hedge.
+
+**The rest after a delay.** If k stripes of every page have not arrived after
+a delay, the read asks every rank it has not asked. The delay is the 95th
+percentile of this host's recent times to k stripes, over its last 256 reads
+and updated every 32, and never less than `CacheConfig.ClusterHedgeFloor`
+(0.5 ms by default). These second requests come from a budget, as
+FoundationDB's do. A read that had its stripes within the delay adds a
+twentieth of a request, and a second request takes one; the budget holds five
+at most, and starts full. So when every holder is slow at once, the budget
+runs out, and reads wait rather than double every holder's load.
+
+**Rebuilt and checked.** Each stripe's key, index, code and checksum are
+checked as it arrives. A page is rebuilt from any k distinct indices
+(`stripe.Join`) and checked as a page from the store is: its envelope decodes
+and its SHA-256 holds. A stripe that fails its checks, or that a rebuild finds
+is not the envelope's, is not used, and its holder is sent a drop
+(`Peer.Drop`) behind the fills. With exactly k stripes that rebuild nothing,
+which is wrong cannot be told, so the read asks one more rank at once.
+
+**The store past the bound.** A read that has not rebuilt its pages within a
+bound reads the store for them as well, and takes whichever answers first.
+The bound is four delays, and never less than `CacheConfig.ClusterBound`
+(10 ms by default). These reads of the store come from a token bucket: every
+read of a window that asked the cluster adds a twentieth of one, the bucket
+holds five at most, and starts full. Past the bucket, the read waits for its
+stripes. So a slowdown of every host at once does not double the store's load.
+A page fewer than k stripes of which exist anywhere the read asked is read
+from the store, and that read fills the cluster behind it.
+
+**Nothing waits on a request.** A stripe request goes on until it is answered
+or times out (`CacheConfig.ClusterStripeTimeout`, one second), whether or not
+its read still needs it. Its stripes are released as they arrive. How it
+ended is what its holder's mark is kept by.
+
+**Hosts marked down.** A reader marks a host down on its own, as mcrouter
+does: after three of its stripe requests to it in a row time out, or after one
+refused connection. A refused connection is one the table of peers already
+marks down as a hard failure, and the reader takes the table's mark as its
+own. While a host is marked down, this reader does not ask it for stripes and
+sends it no fills (`down` in `cache_fill`). A probe goes after ten seconds,
+then at intervals half as long again, up to sixty seconds, spread by a hash of
+the host and the attempt. Only a probe that succeeds clears the mark. A miss,
+`BUSY`, an answer for another cache and a stripe that fails its checks are not
+failures of the host. A reader marks down at most a fifth of its list, and
+always at least one host, so a small cluster can still mark one. Past that it
+marks no more: so many failing at once more likely means its own network
+failed.
+
+**Repair.** A read that heard from every rank of the window knows what each
+holds. For each index of a page it rebuilt that no rank holds, it sends the
+stripe to a rank that holds fewer of the window's stripes than the code puts
+on it, in rank order. It never sends an index another rank holds, so a change
+of ranks never leaves one index on two ranks. A read that has its pages before
+every rank has answered hears the rest behind its caller. A repair is a keep
+at the repair priority: it goes behind the fills in the same queue, within the
+same rate, and within half the background budget. One that finds no room is
+dropped, never queued. So a window that is read heals itself, and a window
+that is not read ages out.
+
+**A sampled check of the store.** A warm cache hides a reclamation that
+deleted what a root still reads, until the cache turns over far from the
+cause. So one hit of the disk tier in `CacheConfig.HeadCheckEvery` (10,000)
+has the part it was served from, or the index object for a segment, checked
+with a HEAD behind the fills. A part found missing is logged as an error with
+the page's identity, and counted.
+
+**Stripe reads have their own class.** A stripe read goes over connections of
+its own, two per peer, and within a budget of its own at the holder, 16 MiB
+per peer. Replies leave a connection in the order their requests came, so a
+stripe on a connection that carries 2 MiB pages would wait for each page
+ahead of it ([the peer server's run](measurements/gce-peer-server-2026-10-03.md)
+measured 27 ms at p99 that way). The class's budget at a holder bounds the
+stripe bytes this host has in flight there, and the table bounds those at all
+its peers, 64 MiB.
+
+**Serving bandwidth.** A host serves its peers within a bandwidth,
+`SPROUTFS_CACHE_SERVE_BYTES_PER_SECOND` (500 MiB/s, with a burst of a tenth
+of a second of it). A read past it is answered `BUSY`, and its reader asks
+another holder. The tail of reads from the cluster follows the bytes each host
+serves well before its NIC's rate
+([measurement](measurements/gce-stripes-tail-2026-10-03.md)), so the default
+is about 40 % of a 10 Gb/s NIC until the deployment's machine type is
+measured.
+
+**A host's view.** `/status` reports under `cache_read` the envelopes read
+from the cluster and missed, those this host's own stripes rebuilt alone, the
+requests, the holders replaced, the second requests and those the budget
+refused, the reads of the store past the bound by outcome, the wrong stripes
+and the drops sent, the repairs, the timeouts, the marks made, refused for the
+fifth and cleared, the hosts down now, the HEAD checks and what they found
+missing, the delay and the bound now, and what the peer server served of the
+cache: reads, stripes, bytes, and reads answered `BUSY` for the bandwidth.
+`/metrics` carries the same as `sproutfs_cache_reads_total`,
+`sproutfs_cache_read_*` and `sproutfs_cache_serve_*`.
+
+**Measured.** On six `n2-standard-4` hosts under 4+2, an 8 GiB guest's pages
+read back on another host in 16.4 s from the cluster and 28.1 s from GCS. A
+page took 58 ms at the median and 136 ms at p99 from the cluster, 106 and
+218 ms from the store. With one host lost during the read, no page was read
+from the store and the time did not change
+([measurement](measurements/gce-cluster-reads-2026-10-03.md)).
 
 ## Nested VMs
 
@@ -1377,7 +1507,9 @@ The host's status reports:
   a release this host cannot talk to;
 - its cache's identity, weight and address, and the list of caches it holds;
 - what its fills of the cluster did, under `cache_fill`
-  ([filling the cluster](#filling-the-cluster));
+  ([filling the cluster](#filling-the-cluster)), and what its reads of it did
+  and its peer server served of it, under `cache_read`
+  ([reading from the cluster](#reading-from-the-cluster));
 - the page cache's disk under `cache_disk`: the file it claimed, its
   identity, the regions and entries it holds, the reads it served without the
   object store (`hits`), the copies it lost, the regions it gave back, and what

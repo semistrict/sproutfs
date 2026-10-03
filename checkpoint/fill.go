@@ -231,6 +231,10 @@ type filler struct {
 	rightInterval time.Duration
 	rate          tokenBucket
 
+	// down reports a holder the cache's reads have marked down, which is sent
+	// no fill. Nil marks none.
+	down func(rank.Identity) bool
+
 	// fills is the fills handed over, which one worker does one at a time:
 	// it asks the right, writes this host's stripes and sends the keeps of
 	// each before it takes the next. writes is the writes to this host's own
@@ -812,7 +816,7 @@ func (f *filler) write(ctx context.Context, kind WriteKind, stripes []keyedStrip
 // holder's disk stores it, header and checksum included.
 func (f *filler) send(ctx context.Context, kind WriteKind, window rank.Window, code rank.Code, holder rank.Cache,
 	stripes []keyedStripe) {
-	keep := peer.Keep{Window: window, Code: code, Publication: kind == WriteFillPublication}
+	keep := peer.Keep{Window: window, Code: code, Publication: kind == WriteFillPublication, Repair: kind == WriteRepair}
 	for _, s := range stripes {
 		item := encodeItem(s.key, s.stripe)
 		keep.Items = append(keep.Items, peer.StripeItem{Page: uint32(s.key.Page - window.Page(0)), Index: s.stripe.Index,
@@ -825,6 +829,11 @@ func (f *filler) send(ctx context.Context, kind WriteKind, window rank.Window, c
 	}
 	if f.peers == nil {
 		f.drop(ctx, DropFailed, len(stripes))
+		return
+	}
+	if f.down != nil && f.down(holder.Identity) && !f.bug("cluster-fill-marked-down") {
+		// A host this cache's reads have marked down is sent no fill.
+		f.drop(ctx, DropDown, len(stripes))
 		return
 	}
 	request := func(ctx context.Context) {
@@ -867,6 +876,9 @@ func (f *filler) sent(ctx context.Context, err error, stripes, bytes int) {
 	case errors.Is(err, peer.ErrDropped):
 		f.drop(ctx, DropPeer, stripes)
 	default:
+		// A keep that failed for a reason the others do not name is worth a
+		// line: it is a holder or a link this host cannot use.
+		slog.WarnContext(ctx, "checkpoint: a keep failed; its stripes are dropped", "stripes", stripes, "error", err)
 		f.drop(ctx, DropFailed, stripes)
 	}
 }
@@ -1036,5 +1048,71 @@ func (b *tokenBucket) take(bytes int64) bool {
 		return false
 	}
 	b.tokens -= float64(bytes)
+	return true
+}
+
+// repair hands over the stripes of a window a read rebuilt that holder lacks:
+// indices no rank holds, for a rank that holds fewer than the code puts on it.
+// A repair is a fill of the lowest priority. It takes room in the queue, goes
+// behind every fill handed over before it, and is sent within the rate and
+// the background budget at the repair priority, or written to this host's own
+// disk at it; one that finds any of them without room is dropped, never
+// queued.
+func (f *filler) repair(window rank.Window, code rank.Code, holder rank.Cache, stripes []keyedStripe) {
+	ctx := f.ctx
+	bytes := int64(0)
+	for _, s := range stripes {
+		bytes += int64(len(s.stripe.Bytes))
+	}
+	if !f.reserve(ctx, bytes) {
+		f.drop(ctx, DropQueue, len(stripes))
+		return
+	}
+	f.fills.push(ctx, func(ctx context.Context) {
+		defer f.release(bytes)
+		if ctx.Err() != nil {
+			f.drop(ctx, DropFailed, len(stripes))
+			return
+		}
+		if holder.Identity == f.disk.identity {
+			f.written(func(ctx context.Context) { f.writeOwn(ctx, WriteRepair, window, code, stripes) })
+			return
+		}
+		f.send(ctx, WriteRepair, window, code, holder, stripes)
+	})
+}
+
+// tell sends a holder a drop of a stripe a read found wrong, behind the fills,
+// and reports whether it was handed over. Nothing waits for its answer.
+func (f *filler) tell(holder rank.Cache, drop peer.Drop) bool {
+	if f.peers == nil {
+		return false
+	}
+	return f.behind(func(ctx context.Context) {
+		if err := f.peers.Peer(holder.Address).Drop(ctx, holder.Identity, drop); err != nil {
+			slog.DebugContext(ctx, "checkpoint: a holder could not be told to drop a wrong stripe", "cache",
+				holder.Identity, "window", drop.Window, "page", drop.Page, "index", drop.Index, "error", err)
+		}
+	})
+}
+
+// behind does work behind the fills handed over before it, by the worker of
+// fills, and reports whether it was handed over: none is once the fills have
+// closed. It takes no room in the queue; it is a small request nothing waits
+// on, and work left when the fills close is dropped.
+func (f *filler) behind(work func(context.Context)) bool {
+	f.mu.Lock()
+	held := f.hold()
+	f.mu.Unlock()
+	if !held {
+		return false
+	}
+	f.fills.push(f.ctx, func(ctx context.Context) {
+		defer f.done()
+		if ctx.Err() != nil {
+			return
+		}
+		work(ctx)
+	})
 	return true
 }

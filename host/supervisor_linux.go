@@ -266,8 +266,9 @@ func Start(ctx context.Context, config SupervisorConfig) (Service, error) {
 		// pager serves; what a reply is counted in is the page of the volume it
 		// answers for.
 		Migration: MigrationConfig{Address: s.pageAddress(),
-			PageSize: int(max(ram.PageSize(), pmem.PageSize())),
-			StartVM:  s.startReceived},
+			PageSize:                  int(max(ram.PageSize(), pmem.PageSize())),
+			StartVM:                   s.startReceived,
+			ServeStripeBytesPerSecond: config.CacheServeBytesPerSecond},
 		MachineClosed: s.forgetClosed,
 	})
 	if err != nil {
@@ -429,6 +430,7 @@ func (s *supervisor) Status(ctx context.Context) (hostapi.Status, error) {
 	report.Cache, report.Caches = cacheReport(status.Self, status.Caches)
 	report.CacheDisk = cacheDiskReport(s.cacheFile, status.Cache.Disk)
 	report.CacheFill = cacheFillReport(status.Cache.Disk, status.Cache.Fill)
+	report.CacheRead = cacheReadReport(status.Cache.Disk, status.Cache.Read, status.Pages)
 	if report.Running == nil {
 		report.Running = []string{}
 	}
@@ -763,7 +765,8 @@ func apiPeers(peers []peer.PeerStatus) []hostapi.Peer {
 	for _, known := range peers {
 		entry := hostapi.Peer{Address: string(known.Address), Version: known.Version,
 			FaultConnections: known.Connections.Fault, BulkReadConnections: known.Connections.BulkRead,
-			BulkWriteConnections: known.Connections.BulkWrite, Down: known.Down, Cause: known.Cause}
+			BulkWriteConnections: known.Connections.BulkWrite, StripeConnections: known.Connections.Stripe,
+			Down: known.Down, Cause: known.Cause}
 		if known.Incompatible != nil {
 			entry.Incompatible = fmt.Sprintf("%d-%d", known.Incompatible.Min, known.Incompatible.Max)
 		}

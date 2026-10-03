@@ -195,6 +195,14 @@ func (s *Server) answerReadStripes(session *session, request *peerv1.ReadStripes
 		return answer{message: peerv1.Stripes_builder{Status: notMe}.Build()}
 	}
 	maximum := int64(min(request.GetMaxBytes(), uint64(platform.MaxFrameBytes)))
+	if maximum > 0 {
+		// A read that wants bytes waits for none here: past this host's
+		// serving bandwidth its reader is better served by another holder.
+		if admitted, left := s.serving.admit(); !admitted && !s.bug("peer-serve-past-budget") {
+			s.stripesBusy.Add(1)
+			return answer{message: s.busy(session, maximum, -left)}
+		}
+	}
 	release, busy := s.reserve(session, maximum)
 	if busy != nil {
 		return answer{message: busy}
@@ -215,6 +223,12 @@ func (s *Server) answerReadStripes(session *session, request *peerv1.ReadStripes
 		}
 		slog.WarnContext(s.ctx, "peer: the cache could not answer a read", "peer", session.peer, "error", err)
 		return answer{message: peerv1.Stripes_builder{Status: cacheStatus(peerv1.CacheStatus_CACHE_STATUS_UNSPECIFIED)}.Build()}
+	}
+	if len(stripes.Items) > 0 {
+		s.serving.spend(stripes.Size)
+		s.stripeReads.Add(1)
+		s.stripes.Add(int64(len(stripes.Items)))
+		s.stripeBytes.Add(stripes.Size)
 	}
 	return answer{
 		message: peerv1.Stripes_builder{Status: cacheStatus(peerv1.CacheStatus_CACHE_STATUS_OK),
@@ -330,14 +344,22 @@ type StripesReply struct {
 func (r StripesReply) Release() { r.buffer.release() }
 
 // ReadStripes asks the peer's cache, which must be cache, for the stripes it
-// holds of read. It is a Fault unless ctx says otherwise. A peer marked down is
-// not asked: another holder has the stripes, or the store does. Every read of
-// this host's waits for room under its bound on stripe bytes in flight.
+// holds of read. It is of the Stripe class unless ctx says otherwise, so it
+// goes over connections no page reply holds up, and within that class's
+// budget at the peer, which bounds the stripe bytes this host has in flight
+// there. A peer marked down is not asked: another holder has the stripes, or
+// the store does. Every read of this host's also waits for room under its
+// bound on stripe bytes in flight at all its peers.
 func (p *Peer) ReadStripes(ctx context.Context, cache rank.Identity, read StripeRead) (StripesReply, error) {
 	if p.Down() {
 		p.table.probe(ProbeSkippedDown)
 		return StripesReply{}, ErrDown
 	}
+	class := Stripe
+	if p.table.bug("peer-stripes-in-fault-class") {
+		class = Fault
+	}
+	ctx = WithClass(ctx, classOr(ctx, class))
 	request := peerv1.ReadStripes_builder{Cache: cache[:], Window: windowToWire(read.Window),
 		Pages: pageBitmap(read.Pages), K: proto.Uint32(uint32(read.Code.K)), M: proto.Uint32(uint32(read.Code.M)),
 		MaxBytes: proto.Uint64(uint64(read.MaxBytes))}.Build()

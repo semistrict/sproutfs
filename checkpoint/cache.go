@@ -73,6 +73,21 @@ type CacheConfig struct {
 	// FillRightInterval is how long a window's fill right, once this cache
 	// gave it out, is not given again. Default DefaultFillRightInterval.
 	FillRightInterval time.Duration
+	// ClusterHedgeFloor is the least a read of the cluster waits for k
+	// stripes of a window before it asks the rest of the window's ranks.
+	// Default DefaultClusterHedgeFloor.
+	ClusterHedgeFloor time.Duration
+	// ClusterBound is the least a read of the cluster waits for its stripes
+	// before it reads the store as well. Default DefaultClusterBound.
+	ClusterBound time.Duration
+	// ClusterStripeTimeout is how long one stripe request waits for its
+	// answer before it counts as a timeout of the host it asked. Default
+	// DefaultClusterStripeTimeout.
+	ClusterStripeTimeout time.Duration
+	// HeadCheckEvery is how many hits of the disk tier go by between two
+	// checks, by a HEAD, that the part behind a hit still exists. Default
+	// DefaultHeadCheckEvery; negative checks none.
+	HeadCheckEvery int
 }
 
 // Cache shares immutable decoded pages among the stores and
@@ -85,10 +100,12 @@ type CacheConfig struct {
 type Cache struct {
 	mu        sync.Mutex
 	resources *resource.Budget
-	// disk is the second tier, nil where the host keeps nothing on disk, and
-	// filler what fills the cluster from it, nil with it.
+	// disk is the second tier, nil where the host keeps nothing on disk;
+	// filler what fills the cluster from it, and reader what reads the
+	// cluster through it, nil with it.
 	disk       *cacheDisk
 	filler     *filler
+	reader     *clusterReader
 	unregister func()
 	closed     bool
 	limit      int
@@ -194,10 +211,12 @@ type CacheStats struct {
 	CoalescedLoads uint64
 	// Evictions counts entries dropped by local or shared pressure and clearing.
 	Evictions uint64
-	// Disk is the disk tier's, zero where the host keeps nothing on disk, and
-	// Fill what its fills of the cluster did.
+	// Disk is the disk tier's, zero where the host keeps nothing on disk,
+	// Fill what its fills of the cluster did, and Read what its reads of the
+	// cluster did.
 	Disk DiskStats
 	Fill FillStats
+	Read ReadStats
 }
 
 // NewCache registers the cache with the host resource owner. Close it when
@@ -214,7 +233,12 @@ func NewCache(ctx context.Context, resources *resource.Budget, config CacheConfi
 	config.FillQueueBytes = cmp.Or(config.FillQueueBytes, DefaultFillQueueBytes)
 	config.FillBytesPerSecond = cmp.Or(config.FillBytesPerSecond, DefaultFillBytesPerSecond)
 	config.FillRightInterval = cmp.Or(config.FillRightInterval, DefaultFillRightInterval)
-	if config.FillQueueBytes < 0 || config.FillBytesPerSecond < 0 || config.FillRightInterval < 0 {
+	config.ClusterHedgeFloor = cmp.Or(config.ClusterHedgeFloor, DefaultClusterHedgeFloor)
+	config.ClusterBound = cmp.Or(config.ClusterBound, DefaultClusterBound)
+	config.ClusterStripeTimeout = cmp.Or(config.ClusterStripeTimeout, DefaultClusterStripeTimeout)
+	config.HeadCheckEvery = cmp.Or(config.HeadCheckEvery, DefaultHeadCheckEvery)
+	if config.FillQueueBytes < 0 || config.FillBytesPerSecond < 0 || config.FillRightInterval < 0 ||
+		config.ClusterHedgeFloor < 0 || config.ClusterBound < 0 || config.ClusterStripeTimeout <= 0 {
 		return nil, ErrInvalidConfig
 	}
 	if resources == nil || config.MaxConcurrentLoads < 1 || config.MaxConcurrentLoads > 1024 || config.DiskBytes < 0 ||
@@ -243,6 +267,9 @@ func NewCache(ctx context.Context, resources *resource.Budget, config CacheConfi
 		cache.filler = newFiller(ctx, disk, fillSettings{peers: config.Peers, clock: config.Clock,
 			queueBytes: config.FillQueueBytes, bytesPerSecond: config.FillBytesPerSecond,
 			rightInterval: config.FillRightInterval})
+		cache.reader = newClusterReader(ctx, disk, cache.filler, config.Peers, clusterSettings{
+			hedgeFloor: config.ClusterHedgeFloor, bound: config.ClusterBound, stripeTimeout: config.ClusterStripeTimeout,
+			probeFirst: DefaultProbeFirst, probeMax: DefaultProbeMax, headEvery: config.HeadCheckEvery})
 	}
 	cache.unregister = resources.RegisterCache(cache.reclaim)
 	return cache, nil
@@ -252,14 +279,15 @@ func NewCache(ctx context.Context, resources *resource.Budget, config CacheConfi
 func (c *Cache) Stats() CacheStats {
 	var disk DiskStats
 	var fill FillStats
+	var read ReadStats
 	if c.disk != nil {
-		disk, fill = c.disk.stats(), c.filler.statistics()
+		disk, fill, read = c.disk.stats(), c.filler.statistics(), c.reader.statistics()
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return CacheStats{ResidentBytes: c.used, Entries: len(c.entries), ActiveLoads: c.active,
 		PeakLoads: c.peak, Hits: c.hits, Misses: c.misses, CoalescedLoads: c.coalesced, Evictions: c.evictions,
-		Disk: disk, Fill: fill}
+		Disk: disk, Fill: fill, Read: read}
 }
 
 // FollowCaches has the cache's disk keep and read stripes by the list of
@@ -275,13 +303,16 @@ func (c *Cache) FollowCaches(caches func() rank.List) {
 }
 
 // SettleFills returns once every fill the cache was handed has been written
-// or dropped, and every keep and fill right it asked for has been answered.
-// Nothing waits on a fill; this is what a test, or a host about to say what
-// its disk holds, waits on. It returns at once for a cache that keeps no
-// disk.
+// or dropped, and every keep and fill right it asked for has been answered,
+// the repairs and drops of its reads among them. Nothing waits on a fill;
+// this is what a test, or a host about to say what its disk holds, waits on.
+// It returns at once for a cache that keeps no disk.
 func (c *Cache) SettleFills(ctx context.Context) error {
 	if c.disk == nil {
 		return nil
+	}
+	if err := c.reader.settle(ctx); err != nil {
+		return err
 	}
 	return c.filler.settle(ctx)
 }
@@ -367,7 +398,10 @@ func (c *Cache) Close() {
 	c.Clear()
 	c.unregister()
 	if c.disk != nil {
-		// What the fills had not done is dropped: nothing waits on a fill.
+		// The reads' requests and probes end first, since a read hands its
+		// drops and repairs to the fills. What the fills had not done is
+		// dropped: nothing waits on a fill.
+		c.reader.close()
 		c.filler.close()
 		c.disk.shutdown(context.Background())
 	}

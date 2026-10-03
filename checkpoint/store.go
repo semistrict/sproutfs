@@ -554,7 +554,19 @@ func (s *Store) loadSegment(ctx context.Context, volume string, number uint64, a
 	key := segmentCacheKey(volume, number, at.ref)
 	fetch := func(ctx context.Context) ([]byte, []envelope, error) {
 		disk := segmentDiskKey(volume, number, at.ref)
-		if data, found := s.fromDisk(ctx, disk, maximumSegmentSize, anySegment); found {
+		object := func() (platform.ObjectKey, error) { return s.indexKey(at.ref) }
+		if s.readsCluster(disk) {
+			got, err := s.cache.reader.read(ctx, s.codecs,
+				[]clusterWant{{key: disk, maximum: maximumSegmentSize, valid: anySegment}}, nil)
+			if err != nil {
+				return nil, nil, err
+			}
+			if got[0] != nil {
+				s.checkHit(ctx, disk, object)
+				return got[0], nil, nil
+			}
+		} else if data, found := s.fromDisk(ctx, disk, maximumSegmentSize, anySegment); found {
+			s.checkHit(ctx, disk, object)
 			return data, nil, nil
 		}
 		encoded, err := s.readSegment(ctx, at)

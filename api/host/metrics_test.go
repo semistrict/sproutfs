@@ -136,6 +136,55 @@ func TestMetricsExposeTheCachesFills(t *testing.T) {
 	}
 }
 
+// What a host's reads of the cluster's disk cache did: hits and misses, the
+// requests, the holders replaced, the second requests and those the budget
+// refused, the reads of the store past the bound by outcome, the wrong
+// stripes and the drops sent for them, the repairs, the timeouts and the marks
+// of hosts down, the sampled HEAD checks, the delay and the bound, and what
+// the host served its peers. A host that keeps no cache disk reports zeroes.
+func TestMetricsExposeTheCachesReads(t *testing.T) {
+	body := hostapi.Metrics(hostapi.Status{CacheRead: &hostapi.CacheRead{Hits: 1, OwnHits: 2, Misses: 3, Requests: 4,
+		Replaced: 5, SecondRequests: 6, RefusedByBudget: 7, StoreHedges: 9, StoreHedgesWon: 8, StoreHedgesRefused: 10,
+		WrongStripes: 11, DropsSent: 12, Repairs: 13, Timeouts: 14, MarkedDown: 15, MarkCapped: 16, MarkCleared: 17,
+		Down: 18, HeadChecks: 19, HeadMissing: 20, Delay: 1500 * time.Microsecond, Bound: 10 * time.Millisecond,
+		Served: 21, ServedStripes: 22, ServedBytes: 23, ServeBusy: 24}})
+	for _, want := range []string{
+		`sproutfs_cache_reads_total{outcome="hit"} 1`,
+		`sproutfs_cache_reads_total{outcome="miss"} 3`,
+		"sproutfs_cache_read_own_hits_total 2",
+		"sproutfs_cache_read_requests_total 4",
+		"sproutfs_cache_read_replaced_total 5",
+		"sproutfs_cache_read_second_requests_total 6",
+		"sproutfs_cache_read_refused_by_budget_total 7",
+		`sproutfs_cache_read_store_hedges_total{outcome="won"} 8`,
+		`sproutfs_cache_read_store_hedges_total{outcome="lost"} 1`,
+		`sproutfs_cache_read_store_hedges_total{outcome="refused"} 10`,
+		"sproutfs_cache_read_wrong_stripes_total 11",
+		"sproutfs_cache_read_drops_sent_total 12",
+		"sproutfs_cache_read_repairs_total 13",
+		"sproutfs_cache_read_timeouts_total 14",
+		"sproutfs_cache_read_marked_down_total 15",
+		"sproutfs_cache_read_mark_capped_total 16",
+		"sproutfs_cache_read_mark_cleared_total 17",
+		"sproutfs_cache_read_down_hosts 18",
+		"sproutfs_cache_read_head_checks_total 19",
+		"sproutfs_cache_read_head_missing_total 20",
+		"sproutfs_cache_read_delay_seconds 0.0015",
+		"sproutfs_cache_read_bound_seconds 0.01",
+		"sproutfs_cache_serve_reads_total 21",
+		"sproutfs_cache_serve_stripes_total 22",
+		"sproutfs_cache_serve_bytes_total 23",
+		"sproutfs_cache_serve_busy_total 24",
+	} {
+		if !strings.Contains(body, want+"\n") {
+			t.Fatalf("the exposition has no %q in it:\n%s", want, body)
+		}
+	}
+	if body := hostapi.Metrics(hostapi.Status{}); !strings.Contains(body, `sproutfs_cache_reads_total{outcome="hit"} 0`+"\n") {
+		t.Fatalf("a host with no cache disk reports no reads of the cluster:\n%s", body)
+	}
+}
+
 // Why a guest stopped making progress, and how long faults take, per pager.
 // A histogram is cumulative, in seconds, and ends with +Inf, its sum and its
 // count, which is what a Prometheus histogram_quantile reads.

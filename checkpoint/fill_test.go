@@ -30,27 +30,26 @@ type fillHost struct {
 	objects *cacheStore
 	clock   *sim.Clock
 	table   *peer.Table
+	server  *peer.Server
+	file    platform.File
 	// list is the list of caches this host holds.
 	list atomic.Pointer[rank.List]
+	// up says the host's server, table and cache are open.
+	up bool
 }
 
 // fillCluster is hosts that follow one list of caches over one simulated
 // network and object store, and a publisher that keeps no cache.
 type fillCluster struct {
 	runtime *sim.Runtime
+	config  fillConfig
 	hosts   []*fillHost
 	// list is the list the orchestrator serves, which each host holds once
 	// it has read it.
 	list      atomic.Pointer[rank.List]
 	publisher *checkpoint.Store
 	puts      *heldPuts
-	// servers, tables, caches and files are what close closes, in that
-	// order, as a host closes them; closed says it has.
-	servers []*peer.Server
-	tables  []*peer.Table
-	caches  []*checkpoint.Cache
-	files   []platform.File
-	closed  sync.Once
+	closed    sync.Once
 }
 
 // fillConfig is one cluster: its hosts, its code, the share the cluster cache
@@ -59,10 +58,11 @@ type fillConfig struct {
 	hosts int
 	code  rank.Code
 	share int
-	// cache has a last say over each host's cache, and table over its table
-	// of peers.
-	cache func(host int, config *checkpoint.CacheConfig)
-	table func(config *peer.TableConfig)
+	// cache has a last say over each host's cache, table over its table of
+	// peers and server over its peer server.
+	cache  func(host int, config *checkpoint.CacheConfig)
+	table  func(config *peer.TableConfig)
+	server func(host int, config *peer.ServerConfig)
 	// runtime is the simulation the cluster runs in, and disk each host's
 	// disk.
 	runtime sim.Config
@@ -73,7 +73,7 @@ type fillConfig struct {
 // closes them with the test.
 func newFillCluster(t *testing.T, config fillConfig) *fillCluster {
 	t.Helper()
-	c := &fillCluster{runtime: sim.New(config.runtime)}
+	c := &fillCluster{runtime: sim.New(config.runtime), config: config}
 	t.Cleanup(c.close)
 	ctx := c.ctx(t)
 	c.puts = &heldPuts{ObjectStore: c.runtime.ObjectStore()}
@@ -81,48 +81,14 @@ func newFillCluster(t *testing.T, config fillConfig) *fillCluster {
 	var caches []rank.Cache
 	for index := range config.hosts {
 		name := fmt.Sprintf("host-%d", index)
-		h := &fillHost{name: name, address: platform.Address(name + "/pages"), clock: c.runtime.NewClock(name)}
+		h := &fillHost{name: name, address: platform.Address(name + "/pages"), clock: c.runtime.NewClock(name),
+			objects: &cacheStore{ObjectStore: c.puts}}
 		file, err := c.runtime.NewDisk(name, config.disk).Open(ctx, "cache", platform.OpenOptions{Create: true})
 		if err != nil {
 			t.Fatal(err)
 		}
-		c.files = append(c.files, file)
-		tableConfig := peer.TableConfig{Dial: func(ctx context.Context, to platform.Address) (platform.Conn, error) {
-			return c.runtime.Network().Dial(ctx, platform.Address(name), to)
-		}}
-		if config.table != nil {
-			config.table(&tableConfig)
-		}
-		h.table, err = peer.NewTable(ctx, tableConfig)
-		if err != nil {
-			t.Fatal(err)
-		}
-		c.tables = append(c.tables, h.table)
-		budget, err := resource.New(4 << 10)
-		if err != nil {
-			t.Fatal(err)
-		}
-		// The cache's identity is drawn from the seed: it is what ranks the
-		// caches for every window, so drawn from the operating system it would
-		// place a seed's stripes on other hosts on every run.
-		cacheConfig := checkpoint.CacheConfig{Disk: file, DiskBytes: 256 << 20, DiskRegionBytes: pullRegionBytes,
-			ClusterPercent: config.share, Peers: h.table, Clock: h.clock, Entropy: c.runtime.NewEntropy(name)}
-		if config.cache != nil {
-			config.cache(index, &cacheConfig)
-		}
-		h.cache, err = checkpoint.NewCache(ctx, budget, cacheConfig)
-		if err != nil {
-			t.Fatal(err)
-		}
-		c.caches = append(c.caches, h.cache)
-		server, err := peer.NewServer(ctx, peer.ServerConfig{Network: c.runtime.Network(), Address: h.address,
-			PageSize: checkpoint.PageSize2MiB, Cache: h.cache})
-		if err != nil {
-			t.Fatal(err)
-		}
-		c.servers = append(c.servers, server)
-		h.objects = &cacheStore{ObjectStore: c.puts}
-		h.store = mustStore(t, checkpoint.Config{ObjectStore: h.objects, Cache: h.cache})
+		h.file = file
+		c.open(t, index, h)
 		c.hosts = append(c.hosts, h)
 		caches = append(caches, rank.Cache{Identity: h.cache.Identity(), Weight: 1, Address: h.address})
 	}
@@ -131,10 +97,74 @@ func newFillCluster(t *testing.T, config fillConfig) *fillCluster {
 		t.Fatal(err)
 	}
 	c.hold(list)
-	for _, h := range c.hosts {
-		h.cache.FollowCaches(func() rank.List { return *h.list.Load() })
-	}
 	return c
+}
+
+// open opens a host's table of peers, its cache over its file, its peer
+// server and its store, and has its cache follow the list the host holds.
+func (c *fillCluster) open(t *testing.T, index int, h *fillHost) {
+	t.Helper()
+	ctx := c.ctx(t)
+	tableConfig := peer.TableConfig{Dial: func(ctx context.Context, to platform.Address) (platform.Conn, error) {
+		return c.runtime.Network().Dial(ctx, platform.Address(h.name), to)
+	}}
+	if c.config.table != nil {
+		c.config.table(&tableConfig)
+	}
+	var err error
+	h.table, err = peer.NewTable(ctx, tableConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	budget, err := resource.New(4 << 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The cache's identity is drawn from the seed: it is what ranks the
+	// caches for every window, so drawn from the operating system it would
+	// place a seed's stripes on other hosts on every run.
+	cacheConfig := checkpoint.CacheConfig{Disk: h.file, DiskBytes: 256 << 20, DiskRegionBytes: pullRegionBytes,
+		ClusterPercent: c.config.share, Peers: h.table, Clock: h.clock, Entropy: c.runtime.NewEntropy(h.name)}
+	if c.config.cache != nil {
+		c.config.cache(index, &cacheConfig)
+	}
+	h.cache, err = checkpoint.NewCache(ctx, budget, cacheConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverConfig := peer.ServerConfig{Network: c.runtime.Network(), Address: h.address,
+		PageSize: checkpoint.PageSize2MiB, Cache: h.cache}
+	if c.config.server != nil {
+		c.config.server(index, &serverConfig)
+	}
+	h.server, err = peer.NewServer(ctx, serverConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.store = mustStore(t, checkpoint.Config{ObjectStore: h.objects, Cache: h.cache})
+	h.cache.FollowCaches(func() rank.List { return *h.list.Load() })
+	h.up = true
+}
+
+// shut closes a host as a host closes: its peer server, then its table of
+// peers, then its cache. Its file stays, as a host's cache file outlives it.
+func (h *fillHost) shut() {
+	if !h.up {
+		return
+	}
+	h.up = false
+	_ = h.server.Close()
+	_ = h.table.Close()
+	h.cache.Close()
+}
+
+// restart shuts a host and opens it again over the same file, at the same
+// address, under the list it held: a host process that restarted.
+func (c *fillCluster) restart(t *testing.T, index int) {
+	t.Helper()
+	h := c.hosts[index]
+	h.shut()
+	c.open(t, index, h)
 }
 
 // hold has the orchestrator serve list, and the hosts named, or every host
@@ -150,21 +180,15 @@ func (c *fillCluster) hold(list rank.List, hosts ...*fillHost) {
 	}
 }
 
-// close closes every host as a host closes: the peer servers first, then the
-// tables of peers, then the caches and their files. It is safe to call again.
+// close closes every host as a host closes, and then the cache files. It is
+// safe to call again.
 func (c *fillCluster) close() {
 	c.closed.Do(func() {
-		for _, server := range c.servers {
-			_ = server.Close()
+		for _, h := range c.hosts {
+			h.shut()
 		}
-		for _, table := range c.tables {
-			_ = table.Close()
-		}
-		for _, cache := range c.caches {
-			cache.Close()
-		}
-		for _, file := range c.files {
-			_ = file.Close()
+		for _, h := range c.hosts {
+			_ = h.file.Close()
 		}
 	})
 }

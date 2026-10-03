@@ -457,7 +457,8 @@ func StartHost(ctx context.Context, config Config) (*Host, error) {
 			cache = h.cache
 		}
 		h.pages, err = peer.NewServer(hostCtx, peer.ServerConfig{Network: config.Network,
-			Address: config.Migration.Address, PageSize: config.Migration.PageSize, Cache: cache})
+			Address: config.Migration.Address, PageSize: config.Migration.PageSize, Cache: cache,
+			StripeBytesPerSecond: config.Migration.ServeStripeBytesPerSecond})
 		if err != nil {
 			return nil, fmt.Errorf("migration address %q: %w", config.Migration.Address, err)
 		}

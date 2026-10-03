@@ -77,48 +77,58 @@ func (s *Server) serveConn(conn platform.Conn) {
 		if err := sim.BuggifyDelay(s.ctx, SiteStall, 0.01, 6*time.Second); err != nil {
 			return
 		}
-		incoming, err := s.receiveWithin(session, serverSilence)
-		if err != nil {
-			return
-		}
-		if incoming.Message.MessageIs(&peerv1.Ping{}) {
-			// A ping is answered as it is read, behind no request: what it
-			// asks is whether this side is there, not how busy it is.
-			if err := drain(incoming); err != nil {
-				return
-			}
-			if err := s.write(session, incoming.RequestID, answer{message: &peerv1.Pong{}}); err != nil {
-				return
-			}
-			continue
-		}
-		if incoming.Message.MessageIs(&peerv1.Hello{}) && !s.bug("peer-refuse-second-hello") {
-			// A hello after the first is what a duplicating link sends twice,
-			// as a dialer's reader drops a reply it already had. Closing the
-			// connection over it would race the dialer's first request, which
-			// it sent the moment the first hello was answered.
-			if err := drain(incoming); err != nil {
-				return
-			}
-			continue
-		}
-		if err := s.admit(session, incoming); err != nil {
+		if !s.serveOne(session) {
 			return
 		}
 	}
 }
 
+// serveOne reads one frame of a version 2 session and answers it or admits
+// it, and reports whether the connection goes on.
+func (s *Server) serveOne(session *session) bool {
+	// A frame's payload is read under the context its frame was received
+	// under, so that context lives until the payload is read: a socket's
+	// read deadline follows it.
+	incoming, done, err := s.receiveWithin(session, serverSilence)
+	defer done()
+	if err != nil {
+		return false
+	}
+	if incoming.Message.MessageIs(&peerv1.Ping{}) {
+		// A ping is answered as it is read, behind no request: what it
+		// asks is whether this side is there, not how busy it is.
+		if err := drain(incoming); err != nil {
+			return false
+		}
+		return s.write(session, incoming.RequestID, answer{message: &peerv1.Pong{}}) == nil
+	}
+	if incoming.Message.MessageIs(&peerv1.Hello{}) && !s.bug("peer-refuse-second-hello") {
+		// A hello after the first is what a duplicating link sends twice,
+		// as a dialer's reader drops a reply it already had. Closing the
+		// connection over it would race the dialer's first request, which
+		// it sent the moment the first hello was answered.
+		return drain(incoming) == nil
+	}
+	return s.admit(session, incoming) == nil
+}
+
 // receiveWithin is receive, ending the connection when its peer has sent
 // nothing for silence: a dialer of version 2 pings a connection it hears
-// nothing on, so one silent that long has gone.
-func (s *Server) receiveWithin(session *session, silence time.Duration) (wire.Incoming, error) {
+// nothing on, so one silent that long has gone. The context it receives under
+// ends when done is called, which must be once the frame's payload is read.
+func (s *Server) receiveWithin(session *session, silence time.Duration) (wire.Incoming, context.CancelFunc, error) {
 	ctx, cancel := context.WithTimeoutCause(s.ctx, silence, errDead)
-	defer cancel()
 	received, err := session.conn.Receive(ctx)
 	if err != nil {
-		return wire.Incoming{}, err
+		return wire.Incoming{}, cancel, err
 	}
-	return s.decode(session, received)
+	if s.bug("peer-payload-after-its-receive") {
+		// The guard ends the receive's context before the payload is read,
+		// as the server once did: a socket's read deadline then fails it.
+		cancel()
+	}
+	incoming, err := s.decode(session, received)
+	return incoming, cancel, err
 }
 
 // serveOneAtATime is version 1: each request is answered before the next is
@@ -441,6 +451,8 @@ func classToWire(class Class) peerv1.Class {
 		return peerv1.Class_CLASS_BULK_READ
 	case BulkWrite:
 		return peerv1.Class_CLASS_BULK_WRITE
+	case Stripe:
+		return peerv1.Class_CLASS_STRIPE
 	default:
 		return peerv1.Class_CLASS_FAULT
 	}
@@ -452,6 +464,8 @@ func classFromWire(class peerv1.Class) Class {
 		return BulkRead
 	case peerv1.Class_CLASS_BULK_WRITE:
 		return BulkWrite
+	case peerv1.Class_CLASS_STRIPE:
+		return Stripe
 	default:
 		return Fault
 	}

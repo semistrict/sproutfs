@@ -77,6 +77,11 @@ const (
 	Class_CLASS_FAULT       Class = 1
 	Class_CLASS_BULK_READ   Class = 2
 	Class_CLASS_BULK_WRITE  Class = 3
+	// CLASS_STRIPE is a read of the cluster's disk cache that a fault waits
+	// on. Its replies are small and many, so they never share a connection
+	// with the fault class's 2 MiB pages, whose replies they would wait
+	// behind. A server of a release before it reads it as CLASS_FAULT.
+	Class_CLASS_STRIPE Class = 4
 )
 
 // Enum value maps for Class.
@@ -86,12 +91,14 @@ var (
 		1: "CLASS_FAULT",
 		2: "CLASS_BULK_READ",
 		3: "CLASS_BULK_WRITE",
+		4: "CLASS_STRIPE",
 	}
 	Class_value = map[string]int32{
 		"CLASS_UNSPECIFIED": 0,
 		"CLASS_FAULT":       1,
 		"CLASS_BULK_READ":   2,
 		"CLASS_BULK_WRITE":  3,
+		"CLASS_STRIPE":      4,
 	}
 )
 
@@ -2725,12 +2732,13 @@ const file_sproutfs_peer_v1_peer_proto_rawDesc = "" +
 	"\x06Status\x12\x16\n" +
 	"\x12STATUS_UNSPECIFIED\x10\x00\x12\r\n" +
 	"\tSTATUS_OK\x10\x01\x12\x17\n" +
-	"\x13STATUS_INCOMPATIBLE\x10\x02*Z\n" +
+	"\x13STATUS_INCOMPATIBLE\x10\x02*l\n" +
 	"\x05Class\x12\x15\n" +
 	"\x11CLASS_UNSPECIFIED\x10\x00\x12\x0f\n" +
 	"\vCLASS_FAULT\x10\x01\x12\x13\n" +
 	"\x0fCLASS_BULK_READ\x10\x02\x12\x14\n" +
-	"\x10CLASS_BULK_WRITE\x10\x03*s\n" +
+	"\x10CLASS_BULK_WRITE\x10\x03\x12\x10\n" +
+	"\fCLASS_STRIPE\x10\x04*s\n" +
 	"\vCacheStatus\x12\x1c\n" +
 	"\x18CACHE_STATUS_UNSPECIFIED\x10\x00\x12\x13\n" +
 	"\x0fCACHE_STATUS_OK\x10\x01\x12\x17\n" +

@@ -444,6 +444,30 @@
     "purpose": "Close a connection over a hello a duplicating link delivered twice, racing the dialer's first request."
   },
   {
+    "id": "peer-stripes-in-fault-class",
+    "package": "peer",
+    "run": "^TestAStripeReadNeverWaitsBehindAPage$",
+    "purpose": "Send stripe reads over the fault class, where a stripe waits behind every 2 MiB page reply ahead of it on its connection."
+  },
+  {
+    "id": "peer-serve-past-budget",
+    "package": "peer",
+    "run": "^TestAServerAnswersBusyPastItsServingBandwidth$",
+    "purpose": "Serve stripes past the host's serving bandwidth instead of answering BUSY."
+  },
+  {
+    "id": "peer-answer-shares-buffer",
+    "package": "peer",
+    "run": "^TestAnAnswersPagesOutliveItsReplysBuffer$",
+    "purpose": "Hand back a raw page as a slice of its reply's pooled buffer, which the next reply is read into."
+  },
+  {
+    "id": "peer-payload-after-its-receive",
+    "package": "peer",
+    "run": "^TestAKeepIsKeptOverTCP$",
+    "purpose": "End a request's receive context before its payload is read, so a socket's read deadline fails every keep."
+  },
+  {
     "id": "fill-before-durable",
     "package": "checkpoint",
     "run": "^TestAPublicationFillsNothingBeforeItsPartIsDurable$",
@@ -484,6 +508,84 @@
     "package": "checkpoint",
     "run": "^TestAHostSendsItsKeepsOneAtATime$",
     "purpose": "Ask fill rights and send keeps on goroutines of their own, so the scheduler orders them on the link."
+  },
+  {
+    "id": "cluster-read-by-index",
+    "package": "checkpoint",
+    "run": "^TestAReaderRebuildsFromAnyIndicesAfterTheRanksShift$",
+    "purpose": "Take from each rank only the indices the list puts on it, which a change of ranks leaves few of (B5)."
+  },
+  {
+    "id": "cluster-ask-every-holder",
+    "package": "checkpoint",
+    "run": "^TestAHotPageSpreadsItsLoadOverEveryHolder$",
+    "purpose": "Ask every one of a window's first k+m ranks at once rather than k+1."
+  },
+  {
+    "id": "cluster-same-holders-for-every-reader",
+    "package": "checkpoint",
+    "run": "^TestAHotPageSpreadsItsLoadOverEveryHolder$",
+    "purpose": "Ask a window's ranks in rank order, so every reader asks the same k+1 and the rest are never asked."
+  },
+  {
+    "id": "cluster-no-second-request",
+    "package": "checkpoint",
+    "run": "^TestAStalledOrSlowHolderSlowsAReadByTheHedgeDelayAtMost$",
+    "purpose": "Never ask the rest of a window's ranks after the delay, so a read waits for its slowest holder."
+  },
+  {
+    "id": "cluster-hedge-unbudgeted",
+    "package": "checkpoint",
+    "run": "^TestSecondRequestsStayWithinTheirBudget$",
+    "purpose": "Ask the rest of a window's ranks after the delay whatever the budget holds."
+  },
+  {
+    "id": "cluster-keep-wrong-stripe",
+    "package": "checkpoint",
+    "run": "^TestAWrongStripeIsNeverReturnedAndItsHolderIsTold$",
+    "purpose": "Leave a stripe a rebuild found wrong with its holder rather than telling it to drop it."
+  },
+  {
+    "id": "cluster-store-unbounded",
+    "package": "checkpoint",
+    "run": "^TestStoreReadsPastTheBoundStayWithinTheirBucket$",
+    "purpose": "Read the store past the bound whatever the token bucket holds."
+  },
+  {
+    "id": "cluster-mark-on-miss",
+    "package": "checkpoint",
+    "run": "^TestAMissIsNotAFailureOfTheHost$",
+    "purpose": "Count a holder that holds nothing of a window as one that timed out."
+  },
+  {
+    "id": "cluster-mark-every-host",
+    "package": "checkpoint",
+    "run": "^TestAReaderMarksDownAtMostAFifthOfItsList$",
+    "purpose": "Mark down every host that times out, past a fifth of the list."
+  },
+  {
+    "id": "cluster-probe-at-once",
+    "package": "checkpoint",
+    "run": "^TestThreeTimeoutsMarkAHostDownAndOnlyAProbeClearsIt$",
+    "purpose": "Probe a host marked down every second rather than after ten seconds growing to sixty."
+  },
+  {
+    "id": "cluster-fill-marked-down",
+    "package": "checkpoint",
+    "run": "^TestThreeTimeoutsMarkAHostDownAndOnlyAProbeClearsIt$",
+    "purpose": "Send fills to a host the reads have marked down."
+  },
+  {
+    "id": "cluster-repair-held-index",
+    "package": "checkpoint",
+    "run": "^TestRepairAfterAJoinSendsTheIndexNoRankHolds$",
+    "purpose": "Repair a rank with the index the list puts on it, whether or not another rank holds it."
+  },
+  {
+    "id": "cluster-head-never",
+    "package": "checkpoint",
+    "run": "^TestASampledHitChecksItsPartStillExists$",
+    "purpose": "Never check, by a HEAD, that the part behind a sampled hit still exists."
   },
   {
     "id": "fill-parts-in-any-order",

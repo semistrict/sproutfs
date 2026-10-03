@@ -142,30 +142,100 @@ func fillPages(run []pageRead, data [][]byte) {
 }
 
 // fetchMembers fetches and decodes the members at the given positions of a run.
-// The ones the page cache's disk holds are read from it, and the rest from the
-// store, grouped into as few requests as the layout allows. keys names every
-// page of the run. The result holds one decoded page per position, in the order
-// the positions were given, and the envelopes the store served, which the
-// cache fills the cluster with once the run's callers have their pages.
+// A window inside the share the cluster cache is on for is read from the
+// cluster: this host's own stripes, then its peers'. Any other window the page
+// cache's disk holds whole is read from it. The rest come from the store,
+// grouped into as few requests as the layout allows. keys names every page of
+// the run. The result holds one decoded page per position, in the order the
+// positions were given, and the envelopes the store served, which the cache
+// fills the cluster with once the run's callers have their pages.
 func (s *Store) fetchMembers(ctx context.Context, geometry Geometry, run []pageRead, keys []cacheKey,
 	wanted []int) ([][]byte, []envelope, error) {
 	data := make([][]byte, len(wanted))
-	// remote is the positions within wanted the disk did not have, and
-	// positions the pages of the run they are.
-	var remote, positions []int
+	// remote is the positions within wanted the store is to serve, and
+	// cluster those the cluster is read for first.
+	var remote, cluster []int
 	for at, position := range wanted {
 		key := diskKey{cacheKey: keys[position], span: windowSpan(geometry)}
-		if page, found := s.fromDisk(ctx, key, int(geometry.PageSize), validPage); found {
-			data[at] = page
+		if s.readsCluster(key) {
+			cluster = append(cluster, at)
 			continue
 		}
-		remote, positions = append(remote, at), append(positions, position)
+		if page, found := s.fromDisk(ctx, key, int(geometry.PageSize), validPage); found {
+			data[at] = page
+			s.checkHit(ctx, key, s.memberObject(run[position].at))
+			continue
+		}
+		remote = append(remote, at)
+	}
+	if len(cluster) > 0 {
+		missed, err := s.fromCluster(ctx, geometry, run, keys, wanted, cluster, data)
+		if err != nil {
+			return nil, nil, err
+		}
+		remote = append(remote, missed...)
+		slices.Sort(remote)
 	}
 	if len(remote) == 0 {
 		return data, nil, context.Cause(ctx)
 	}
-	// What the store served, by position in remote, to fill the cluster with.
-	served := make([]envelope, len(remote))
+	positions := make([]int, len(remote))
+	for at, position := range remote {
+		positions[at] = wanted[position]
+	}
+	decoded, served, err := s.fromStore(ctx, geometry, run, keys, positions)
+	if err != nil {
+		return nil, nil, err
+	}
+	for at, position := range remote {
+		data[position] = decoded[at]
+	}
+	return data, served, nil
+}
+
+// fromCluster reads the members at the positions within wanted that cluster
+// names from the cluster, into data, and returns the positions it could not
+// rebuild, which the store serves. Past the cluster's bound, it may read the
+// store for the ones it is still waiting on as well, and take whichever
+// answers first.
+func (s *Store) fromCluster(ctx context.Context, geometry Geometry, run []pageRead, keys []cacheKey, wanted,
+	cluster []int, data [][]byte) ([]int, error) {
+	wants := make([]clusterWant, len(cluster))
+	for at, position := range cluster {
+		wants[at] = clusterWant{key: diskKey{cacheKey: keys[wanted[position]], span: windowSpan(geometry)},
+			maximum: int(geometry.PageSize), valid: validPage}
+	}
+	hedge := func(ctx context.Context, ats []int) ([][]byte, error) {
+		positions := make([]int, len(ats))
+		for at, want := range ats {
+			positions[at] = wanted[cluster[want]]
+		}
+		decoded, _, err := s.fromStore(ctx, geometry, run, keys, positions)
+		return decoded, err
+	}
+	got, err := s.cache.reader.read(ctx, s.codecs, wants, hedge)
+	if err != nil {
+		return nil, err
+	}
+	var missed []int
+	for at, position := range cluster {
+		if got[at] == nil {
+			missed = append(missed, position)
+			continue
+		}
+		data[position] = got[at]
+		s.checkHit(ctx, wants[at].key, s.memberObject(run[wanted[position]].at))
+	}
+	return missed, nil
+}
+
+// fromStore fetches the members at positions of a run from the store, grouped
+// into as few requests as the layout allows, and returns one decoded page per
+// position, in their order, and the envelopes the store served.
+func (s *Store) fromStore(ctx context.Context, geometry Geometry, run []pageRead, keys []cacheKey,
+	positions []int) ([][]byte, []envelope, error) {
+	data := make([][]byte, len(positions))
+	served := make([]envelope, len(positions))
 	serve := func(ctx context.Context, held readExtent, encoded []byte) error {
 		for _, at := range held.members {
 			member := run[positions[at]].at
@@ -177,7 +247,7 @@ func (s *Store) fetchMembers(ctx context.Context, geometry Geometry, run []pageR
 			if !validPage(page) {
 				return ErrCorrupt
 			}
-			data[remote[at]] = page
+			data[at] = page
 			served[at] = envelope{key: diskKey{cacheKey: keys[positions[at]], span: windowSpan(geometry)},
 				data: sealed}
 		}
@@ -187,6 +257,27 @@ func (s *Store) fetchMembers(ctx context.Context, geometry Geometry, run []pageR
 		return nil, nil, err
 	}
 	return data, served, nil
+}
+
+// readsCluster reports whether key is read from the cluster: the cache keeps
+// a disk that follows a list of caches, and the cluster cache is on for key's
+// window.
+func (s *Store) readsCluster(key diskKey) bool {
+	return s.cache != nil && s.cache.reader != nil && s.cache.reader.on(key)
+}
+
+// memberObject names the part a member lies in, for a check that it is still
+// there.
+func (s *Store) memberObject(at location) func() (platform.ObjectKey, error) {
+	return func() (platform.ObjectKey, error) { return s.partKey(at.ref, at.part) }
+}
+
+// checkHit samples one hit of the disk tier, local or cluster, and has the
+// object it was served for checked to still exist (clusterReader.checkHit).
+func (s *Store) checkHit(ctx context.Context, key diskKey, object func() (platform.ObjectKey, error)) {
+	if s.cache != nil && s.cache.reader != nil {
+		s.cache.reader.checkHit(ctx, key, s.objects, object)
+	}
 }
 
 // validPage reports whether a decoded member is a page a volume can hold: whole

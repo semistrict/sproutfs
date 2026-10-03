@@ -309,7 +309,12 @@ When ranks change, a window's stripes no longer sit one to each of its first
 k+m ranks. A reader that decodes an envelope rebuilds an index that no rank
 holds, and sends it to a rank that holds fewer of the window's stripes than the
 code puts on it. It never sends an index another rank already holds, so a
-change of ranks never leaves a holder with two stripes of one window. Repair is bounded by the same rate as fills, and it is the
+change of ranks never leaves a holder with two stripes of one window. Only a
+reader that heard from every rank knows what no rank holds, so only such a
+read repairs. A read that asked every rank and has its pages before the last
+has answered hears the rest behind its caller. A read of k+1 ranks that missed
+none leaves the window to a reader that asks the rest: the readers of a window
+pick different ranks, so one of them does. Repair is bounded by the same rate as fills, and it is the
 lowest priority of all writes. So a window that is read heals itself, and a
 window that is not read ages out.
 

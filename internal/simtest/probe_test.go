@@ -30,6 +30,9 @@ var registeredProbes = []string{
 	// is kept.
 	checkpoint.ProbeFillRightGranted,
 	checkpoint.ProbeKeepKept,
+	// And they read from each other: a page is rebuilt from stripes a peer
+	// sent.
+	checkpoint.ProbeClusterHit,
 	vmmemory.ProbeEvictionDuringPublication,
 	vmmigrate.ProbeVolumeFallback,
 	vmmigrate.ProbePublishedSinceHandoff,
@@ -65,10 +68,11 @@ func seedsThrough(last uint64) []uint64 {
 // elsewhere reports a probe another campaign is registered to cover, which
 // these campaigns reach too: the peer server's (TestThePeerServerCampaignNeverAnswersWrong),
 // the list of caches' (TestHostsAgreeOnceTheOrchestratorAnswersAgain), and
-// the page cache disk's, its stripes' and its fills' (the disk, stripe and
-// fill campaigns in checkpoint).
+// the page cache disk's, its stripes', its fills' and its reads of the
+// cluster (the disk, stripe, fill and read campaigns in checkpoint).
 func elsewhere(name string) bool {
-	for _, prefix := range []string{"peer/", "rank/", "checkpoint/disk-", "checkpoint/fill-", "checkpoint/keep-"} {
+	for _, prefix := range []string{"peer/", "rank/", "checkpoint/disk-", "checkpoint/fill-", "checkpoint/keep-",
+		"checkpoint/cluster-"} {
 		if strings.HasPrefix(name, prefix) && !slices.Contains(registeredProbes, name) {
 			return true
 		}

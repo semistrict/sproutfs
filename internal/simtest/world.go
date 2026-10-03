@@ -554,8 +554,16 @@ func (w *World) hostConfig(h *hostState) host.Config {
 		// Each incarnation opens the cache's file on the host's own disk, which
 		// it reads back after a restart. The list is read whenever a host
 		// starts, never on a timer the world's clocks would have to reach.
+		// A read of the cluster asks k+1 ranks and replaces a miss at once,
+		// which is a choice of the answers alone. Its delay, its bound and its
+		// timeouts are choices of time: whether a read crossed one turns on
+		// the jitter of each hop, which concurrent reads draw in whatever
+		// order the Go scheduler sends them, so the seed would not decide the
+		// work a run does. The world sets them out of reach; the campaign in
+		// checkpoint drives them under a scheduler.
 		config.Cache = checkpoint.CacheConfig{DiskBytes: clusterCacheBytes, DiskRegionBytes: clusterCacheRegion,
-			ClusterPercent: 100}
+			ClusterPercent: 100, ClusterHedgeFloor: time.Hour, ClusterBound: time.Hour,
+			ClusterStripeTimeout: time.Hour}
 		config.CacheList = host.CacheListConfig{Read: w.readCaches, Interval: -1}
 	}
 	return config
@@ -595,6 +603,23 @@ func (w *World) listCache(ctx context.Context, h *hostState) {
 	w.mu.Unlock()
 	for index, other := range w.hosts {
 		if running := w.up(index); running != nil {
+			if err := running.RefreshCaches(ctx); err != nil {
+				w.logf("%s: reading the list of caches: %v", other.name, err)
+			}
+		}
+	}
+}
+
+// Unlist takes one host's cache off the list of caches, as the orchestrator
+// does once that host's pod is no longer listed, which is what a drain ends
+// in. Every host that is up reads the list again. A host started again is
+// listed again.
+func (w *World) Unlist(ctx context.Context, index int) {
+	w.mu.Lock()
+	delete(w.caches, w.hosts[index].name)
+	w.mu.Unlock()
+	for at, other := range w.hosts {
+		if running := w.up(at); running != nil {
 			if err := running.RefreshCaches(ctx); err != nil {
 				w.logf("%s: reading the list of caches: %v", other.name, err)
 			}

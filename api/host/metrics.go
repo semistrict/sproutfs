@@ -276,6 +276,7 @@ func Metrics(status Status) string {
 		status.Resources.CacheDiskUsed)
 	cacheDiskMetrics(&out, status.CacheDisk)
 	cacheFillMetrics(&out, status.CacheFill)
+	cacheReadMetrics(&out, status.CacheRead)
 	diskMetrics(&out, status.Disk)
 
 	// The store counters carry the operation as a label: five operations, one
@@ -491,4 +492,61 @@ func histogram(out *strings.Builder, name, labels string, l Latency) {
 // seconds is a nanosecond count as Prometheus writes a duration.
 func seconds(ns uint64) string {
 	return strconv.FormatFloat(float64(ns)/1e9, 'g', -1, 64)
+}
+
+// cacheReadMetrics writes what this host's reads of the cluster's disk cache
+// did, and what its peer server served of its cache. A host that keeps no
+// cache disk reports zeroes.
+func cacheReadMetrics(out *strings.Builder, read *CacheRead) {
+	var did CacheRead
+	if read != nil {
+		did = *read
+	}
+	write := func(name, kind, help string, value any) {
+		fmt.Fprintf(out, "# HELP %s %s\n# TYPE %s %s\n%s %v\n", name, help, name, kind, name, value)
+	}
+	fmt.Fprintf(out, "# HELP sproutfs_cache_reads_total Envelopes this host read from the cluster's cache, by outcome.\n"+
+		"# TYPE sproutfs_cache_reads_total counter\n"+
+		"sproutfs_cache_reads_total{outcome=\"hit\"} %d\n"+
+		"sproutfs_cache_reads_total{outcome=\"miss\"} %d\n", did.Hits, did.Misses)
+	write("sproutfs_cache_read_own_hits_total", "counter",
+		"Envelopes this host's own stripes rebuilt alone, with no request.", did.OwnHits)
+	write("sproutfs_cache_read_requests_total", "counter", "Stripe requests this host sent its peers.", did.Requests)
+	write("sproutfs_cache_read_replaced_total", "counter",
+		"Holders replaced at once for answering with nothing, BUSY or an error.", did.Replaced)
+	write("sproutfs_cache_read_second_requests_total", "counter",
+		"Reads that asked the rest of a window's ranks after the delay.", did.SecondRequests)
+	write("sproutfs_cache_read_refused_by_budget_total", "counter",
+		"Reads whose second request the budget refused.", did.RefusedByBudget)
+	fmt.Fprintf(out, "# HELP sproutfs_cache_read_store_hedges_total Reads past the bound that read the store as well, by outcome.\n"+
+		"# TYPE sproutfs_cache_read_store_hedges_total counter\n"+
+		"sproutfs_cache_read_store_hedges_total{outcome=\"won\"} %d\n"+
+		"sproutfs_cache_read_store_hedges_total{outcome=\"lost\"} %d\n"+
+		"sproutfs_cache_read_store_hedges_total{outcome=\"refused\"} %d\n",
+		did.StoreHedgesWon, did.StoreHedges-did.StoreHedgesWon, did.StoreHedgesRefused)
+	write("sproutfs_cache_read_wrong_stripes_total", "counter", "Stripes found wrong.", did.WrongStripes)
+	write("sproutfs_cache_read_drops_sent_total", "counter",
+		"Drops sent to the holders of stripes found wrong.", did.DropsSent)
+	write("sproutfs_cache_read_repairs_total", "counter",
+		"Stripes sent to ranks that lacked them, of indices no rank held.", did.Repairs)
+	write("sproutfs_cache_read_timeouts_total", "counter", "Stripe requests that timed out.", did.Timeouts)
+	write("sproutfs_cache_read_marked_down_total", "counter", "Hosts this host's reads marked down.", did.MarkedDown)
+	write("sproutfs_cache_read_mark_capped_total", "counter",
+		"Marks refused because a fifth of the list was marked down already.", did.MarkCapped)
+	write("sproutfs_cache_read_mark_cleared_total", "counter", "Marks a probe cleared.", did.MarkCleared)
+	write("sproutfs_cache_read_down_hosts", "gauge", "Hosts this host's reads have marked down now.", did.Down)
+	write("sproutfs_cache_read_head_checks_total", "counter",
+		"Sampled hits whose part was checked with a HEAD.", did.HeadChecks)
+	write("sproutfs_cache_read_head_missing_total", "counter",
+		"Sampled hits whose part the store no longer had.", did.HeadMissing)
+	write("sproutfs_cache_read_delay_seconds", "gauge",
+		"The delay before a read asks the rest of a window's ranks.", did.Delay.Seconds())
+	write("sproutfs_cache_read_bound_seconds", "gauge",
+		"The bound before a read of the cluster reads the store too.", did.Bound.Seconds())
+	write("sproutfs_cache_serve_reads_total", "counter",
+		"Reads of this host's stripes its peer server answered with them.", did.Served)
+	write("sproutfs_cache_serve_stripes_total", "counter", "Stripes this host served its peers.", did.ServedStripes)
+	write("sproutfs_cache_serve_bytes_total", "counter", "Bytes of stripes this host served its peers.", did.ServedBytes)
+	write("sproutfs_cache_serve_busy_total", "counter",
+		"Reads this host answered BUSY because its serving bandwidth was spent.", did.ServeBusy)
 }

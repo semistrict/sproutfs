@@ -1,6 +1,7 @@
 package peer
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -112,6 +113,13 @@ func (p *Peer) Pages(ctx context.Context, asked PageRequest) (Answer, error) {
 	if err != nil || len(decoded) != served*asked.PageSize {
 		return Answer{}, errors.Join(wire.ErrMalformedFrame, err)
 	}
+	if raw := got.payload.bytes; len(decoded) > 0 && &decoded[0] == &raw[blob.HeaderSize] &&
+		!p.table.bug("peer-answer-shares-buffer") {
+		// A page no encoder shrank decodes to a slice of the reply's own
+		// buffer, which goes back to the pool as this returns and is read
+		// into by the next reply: the answer keeps a copy.
+		decoded = bytes.Clone(decoded)
+	}
 	return Answer{Present: bitmap, Dirty: unpublished, Payload: decoded, Waited: waited}, nil
 }
 
@@ -188,13 +196,13 @@ func (p *Peer) call(ctx context.Context, admitAs string, request, response proto
 	clock := p.table.clock
 	began := clock.Now()
 	class := ClassOf(ctx)
-	switch class {
-	case Fault:
-		// A fault waiting anywhere shrinks the background budget, so bulk work
-		// gives the links to it.
+	switch {
+	case class.waitedOn():
+		// A fault waiting anywhere, or a stripe read one waits on, shrinks
+		// the background budget, so bulk work gives the links to it.
 		p.table.background.faultStarted()
 		defer p.table.background.faultEnded()
-	case BulkRead:
+	case class == BulkRead:
 		if p.table.bug("peer-unbounded-background") {
 			break
 		}

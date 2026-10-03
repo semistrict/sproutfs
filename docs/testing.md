@@ -1258,6 +1258,11 @@ caller:
 | `checkpoint/fill-send-twice` | Sends a keep twice, as a sender that lost the first answer does |
 | `checkpoint/fill-refuse-write` | Has the write budget refuse a fill's write to the host's own disk |
 | `checkpoint/keep-drop` | Has a cache drop a keep, as one whose write budget is spent does |
+| `checkpoint/cluster-wrong-stripe` | Hands a read of the cluster a stripe whose checksum holds and whose bytes are wrong |
+| `checkpoint/cluster-damaged-item` | Damages an item a peer sent, so it fails its checksum |
+| `checkpoint/cluster-lose-answer` | Loses a holder's answer to a read of the cluster |
+| `checkpoint/cluster-store-hedge-now` | Has a read of the cluster reach its bound at once, and read the store too |
+| `checkpoint/cluster-false-timeout` | Counts a holder's answer as a timeout of its host |
 
 A simulated disk with `DiskConfig.ReadChaos` adds three sites of its own, as
 FoundationDB's `AsyncFileChaos` does. They are off on every other disk, because
@@ -1441,6 +1446,64 @@ had a host keep a stripe a peer sent it.
 a VM on one of two hosts under 1+1 and opens it on the other, which reads no
 part of the store but the VMM state.
 
+[Reads of the cluster](hosting.md#reading-from-the-cluster) mark nineteen
+more: an envelope rebuilt from a peer's stripes and one from this host's own
+alone, a miss, a rebuild from a parity stripe, a holder replaced at once, a
+second request and one the budget refused, a read of the store past the bound,
+one the store won and one the bucket refused, a wrong stripe found and a drop
+sent for it, a repair, a timeout, a host marked down, a mark refused for the
+fifth and one a probe cleared, and a sampled HEAD check and one that found
+the part gone. `TestClusterReadsSurviveTheirFaultsAndReachTheirProbes` in
+`checkpoint` drives them. Each of its twelve seeds draws a cluster of two to
+seven hosts and a code of the table, on a network with a heavy tail and slow
+pairs, every completion released by the scheduler and the sites on. Each of
+six rounds publishes from any host and has many hosts read the same pages at
+once, while the seed stalls one host's links to a reader, refuses them, slows
+them, loses a host, restarts one over its file, serves a list that lacks a
+cache, or deletes a checkpoint's parts behind the caches. Every read must be
+what was published, or fail only for a part that is gone, and at rest every
+stripe a host holds, repairs among them, must be of a window some list ranked
+it for. Every read site must fire and every read probe be reached across the
+seeds (about 4 s).
+
+The reads' properties are stated exactly beside it.
+`TestAPageInTheClusterIsReadWithNoStoreRead`: under 1+1, 2+2 round three and
+4+2, every host reads a published page and its segment from the cluster, with
+no request of the store but the open of the index object.
+`TestAPageSurvivesLosingDrainingOrRestartingAnyOneHost`: the same after any
+one host of six under 4+2, or of two under 1+1, is lost, drained from the list
+or restarted over its file. `TestAHotPageSpreadsItsLoadOverEveryHolder`: six
+readers of one page ask four holders each besides themselves, every holder is
+asked, and each sends one stripe, a quarter of the envelope, to each reader.
+`TestAStalledOrSlowHolderSlowsAReadByTheHedgeDelayAtMost`: on a network of
+fixed latency, a read with one of its first picks stalled takes exactly as long
+as a healthy one, and with one stalled and one slow it takes exactly the delay
+longer for each window that picked both. `TestAWrongStripeIsNeverReturnedAndItsHolderIsTold`:
+a stripe whose checksum holds and whose bytes are wrong is found among k+1, or
+among k and one more asked at once, the page reads right, and its holder
+forgets it. `TestTheStoreIsReadOnlyWhenFewerThanKStripesExist`: with six to
+zero stripes left, the store is read exactly when fewer than four remain.
+`TestSecondRequestsStayWithinTheirBudget` and
+`TestStoreReadsPastTheBoundStayWithinTheirBucket` hold the two budgets.
+`TestThreeTimeoutsMarkAHostDownAndOnlyAProbeClearsIt`,
+`TestAReaderMarksDownAtMostAFifthOfItsList`, `TestAMissIsNotAFailureOfTheHost`
+and `TestARefusedConnectionMarksAHostDown` hold the marks, and the first also
+that a marked host is sent no fills. `TestRepairSendsOnlyAnIndexNoRankHolds`, `TestRepairAfterAJoinSendsTheIndexNoRankHolds`,
+`TestAReaderRebuildsFromAnyIndicesAfterTheRanksShift` (B5) and
+`TestASampledHitChecksItsPartStillExists` hold the rest. In
+`internal/simtest`, `TestAVMOpensFromTheClusterAfterAnyOneHostIsLostDrainedOrRestarted`
+suspends a VM on one host of six under 4+2, or of two under 1+1, loses,
+drains or restarts any other host, the suspending host among them, and opens
+the VM on another: it reads no part of the store but the VMM state.
+
+A simulated world sets a read's delay, its bound and its stripe timeout out of
+reach (`simtest.Config.ClusterCache`). Whether a read crossed one of them
+turns on each hop's jitter, and concurrent reads draw it in the order the Go
+scheduler sends them, so the seed would not decide whether a second request,
+a read of the store or a timeout happened. The world's reads still ask k+1
+ranks, replace misses, rebuild from any k and repair, which the answers alone
+decide. The read campaign above drives the timed paths under a scheduler.
+
 ### The peer server's network
 
 The simulated network models what FoundationDB's simulator does to a link and
@@ -1596,9 +1659,10 @@ The probe campaign runs seeds 1 to 25 and seed 46 of the generated schedule
 with the sites on, each once with no cache disk and once with the cluster
 cache on, plus four seeds of the two-writer campaign. It requires every probe
 that the campaigns are registered to cover to have fired, a fill right given
-and a keep kept among them. The peer server's, the list of caches' and the
-page cache disk's, stripes' and fills' probes are reached here too, and each is
-asserted by its own campaign. No campaign in this
+and a keep kept among them, and a page rebuilt from a peer's stripes. The peer
+server's, the list of caches' and the page cache disk's, stripes', fills' and
+reads' probes are reached here too, and each is asserted by its own campaign.
+No campaign in this
 repository covers one of the registered probes, which `unreachedProbes` in
 `internal/simtest/probe_test.go` names. Here the store either answers or fails
 outright, so no conditional write ever loses its reply and is reconciled by its
@@ -1862,7 +1926,7 @@ the disk, and a VM opened on the same host again reads the pages it wrote last
 from the store. The GCE run of 2026-10-03 found this
 (docs/measurements/gce-deploy-cache-2026-10-03.md).
 
-Eleven guards break the peer server:
+Fifteen guards break the peer server:
 
 ```sh
 SPROUTFS_SIM_BUG=peer-mark-down-when-cancelled \
@@ -1887,6 +1951,14 @@ SPROUTFS_SIM_BUG=peer-unbounded-stripes \
   go test ./peer -run '^TestAReaderBoundsItsStripeBytesInFlight$' -count=1
 SPROUTFS_SIM_BUG=peer-refuse-second-hello \
   go test ./peer -run '^TestAHelloDeliveredTwiceLeavesTheConnectionServing$' -count=1
+SPROUTFS_SIM_BUG=peer-stripes-in-fault-class \
+  go test ./peer -run '^TestAStripeReadNeverWaitsBehindAPage$' -count=1
+SPROUTFS_SIM_BUG=peer-serve-past-budget \
+  go test ./peer -run '^TestAServerAnswersBusyPastItsServingBandwidth$' -count=1
+SPROUTFS_SIM_BUG=peer-answer-shares-buffer \
+  go test ./peer -run '^TestAnAnswersPagesOutliveItsReplysBuffer$' -count=1
+SPROUTFS_SIM_BUG=peer-payload-after-its-receive \
+  go test ./peer -run '^TestAKeepIsKeptOverTCP$' -count=1
 ```
 
 The first five break what each end promises the other. A caller giving up is
@@ -1901,7 +1973,17 @@ request that names another cache, a keep queued instead of dropped, and the
 bound on stripe bytes in flight. The last closes a connection over a second
 hello, which a duplicating link delivers. The dialer's first request goes the
 moment the first hello is answered, so whether that request is answered is the
-Go scheduler's choice, and a seed does not reproduce its run.
+Go scheduler's choice, and a seed does not reproduce its run. The next sends
+stripe reads over the fault class, where a stripe waits behind every page
+ahead of it on its connection. The next serves stripes past a host's serving
+bandwidth. The last hands back a page that no encoder shrank as a slice of
+its reply's pooled buffer, which the next reply is read into: the race
+detector found it in `TestAGuestFaultIsAnsweredWhileTheStreamSaturatesTheLink`.
+The last ends a request's receive context before its payload is read. Over
+TCP a payload is read under the socket's deadline, which that context sets,
+so every keep was reset; the simulated stream does not read under one, which
+is why only the GCE run of 2026-10-03 found it, and why its test runs over a
+loopback socket.
 
 Eight guards break the cluster's fills:
 
@@ -1944,6 +2026,51 @@ while the others land: with the order kept nothing is filled, and with the
 guard a later part's window is. The fill campaign
 (`TestFillsSurviveTheirFaultsAndReachTheirProbes`) kills `keep-unranked` and
 `no-fill-right` too.
+
+Thirteen guards break the reads of the cluster:
+
+```sh
+SPROUTFS_SIM_BUG=cluster-read-by-index \
+  go test ./checkpoint -run '^TestAReaderRebuildsFromAnyIndicesAfterTheRanksShift$' -count=1
+SPROUTFS_SIM_BUG=cluster-ask-every-holder \
+  go test ./checkpoint -run '^TestAHotPageSpreadsItsLoadOverEveryHolder$' -count=1
+SPROUTFS_SIM_BUG=cluster-same-holders-for-every-reader \
+  go test ./checkpoint -run '^TestAHotPageSpreadsItsLoadOverEveryHolder$' -count=1
+SPROUTFS_SIM_BUG=cluster-no-second-request \
+  go test ./checkpoint -run '^TestAStalledOrSlowHolderSlowsAReadByTheHedgeDelayAtMost$' -count=1
+SPROUTFS_SIM_BUG=cluster-hedge-unbudgeted \
+  go test ./checkpoint -run '^TestSecondRequestsStayWithinTheirBudget$' -count=1
+SPROUTFS_SIM_BUG=cluster-keep-wrong-stripe \
+  go test ./checkpoint -run '^TestAWrongStripeIsNeverReturnedAndItsHolderIsTold$' -count=1
+SPROUTFS_SIM_BUG=cluster-store-unbounded \
+  go test ./checkpoint -run '^TestStoreReadsPastTheBoundStayWithinTheirBucket$' -count=1
+SPROUTFS_SIM_BUG=cluster-mark-on-miss \
+  go test ./checkpoint -run '^TestAMissIsNotAFailureOfTheHost$' -count=1
+SPROUTFS_SIM_BUG=cluster-mark-every-host \
+  go test ./checkpoint -run '^TestAReaderMarksDownAtMostAFifthOfItsList$' -count=1
+SPROUTFS_SIM_BUG=cluster-probe-at-once \
+  go test ./checkpoint -run '^TestThreeTimeoutsMarkAHostDownAndOnlyAProbeClearsIt$' -count=1
+SPROUTFS_SIM_BUG=cluster-fill-marked-down \
+  go test ./checkpoint -run '^TestThreeTimeoutsMarkAHostDownAndOnlyAProbeClearsIt$' -count=1
+SPROUTFS_SIM_BUG=cluster-repair-held-index \
+  go test ./checkpoint -run '^TestRepairAfterAJoinSendsTheIndexNoRankHolds$' -count=1
+SPROUTFS_SIM_BUG=cluster-head-never \
+  go test ./checkpoint -run '^TestASampledHitChecksItsPartStillExists$' -count=1
+```
+
+The first takes from each rank only the index the list puts on it, which a
+change of ranks leaves few of (B5): after a seventh cache joins, the reads go
+to the store. The next two ask every rank at once, and ask every reader's
+first k+1 in rank order, so the last rank is never asked. The next two never
+ask the rest after the delay, so a read waits for its stalled holder, and ask
+it whatever the budget holds. The next leaves a wrong stripe with its holder.
+The next reads the store past the bound whatever the bucket holds. The next
+four break the marks: a miss counted as a timeout, a mark past a fifth of the
+list, a probe every second rather than from ten seconds on, and fills sent to
+a host marked down. The next offers a rank the index the list puts on it
+whether or not another rank holds it: after a join, the new cache is sent an
+index a holder below it still holds. The last never checks a sampled hit's
+part.
 
 Five guards break the list of caches:
 
@@ -2305,6 +2432,34 @@ delay, a bitmap one byte longer than it needs, a map entry left at zero, which
 of two connections with room takes a request, a bound whose zero means the
 default, and the checksum of a reply of version 2 whose every payload is
 checked anyway.
+
+The reads from the cluster are mutated the same way:
+
+```sh
+python3 scripts/mutate-gremlins.py --package checkpoint --suite full \
+  --file clusterread.go --file clusterdown.go --file peercache.go \
+  --run '^(TestAPageInTheCluster|TestAPageSurvives|TestAHotPage|TestAStalledOrSlow|TestAWrongStripe|TestTheStoreIsRead|TestSecondRequests|TestStoreReadsPast|TestThreeTimeouts|TestAReaderMarks|TestAMissIs|TestARefused|TestRepair|TestAReaderRebuilds|TestASampledHit|TestClusterReadsSurvive|TestAFaultIsNotSlowed|TestAColdBurst|TestAStoreReadFills|TestRankOneGives|TestACacheReports|TestTheHedgerFollows|TestProbesWait|TestAHostIsMarkedDown|TestOneRefused)' \
+  --gremlins /path/to/gremlins --output /tmp/cluster-read-mutations
+```
+
+On 2026-10-03 it first killed 129 of 196 mutants, with 54 alive and 13 not
+covered. Tests of what the survivors changed brought it to 154 killed, 29
+alive and 13 not covered: the hedger's window and budget, the store's bucket
+at exactly one read, the probe's growth and its cap, a mark on the third
+timeout and not the second, a refused connection, a reader's picks, and a
+repair that must skip the first rank short of its stripes. Writing them
+changed repair to offer each rank the index the list puts on it first. The
+rest change nothing a run can see. Eleven are conditions of a Buggify site or
+a guard, which are off in a test that asserts behaviour. Five flip a
+condition whose two branches differ only in a probe or a counter the tests do
+not read for that case, and Gremlins reports the probe-only `case` lines as
+not covered. Others are the defaults, which the tests set rather than repeat;
+the slack in a request's byte bound; a buffer released on a path where
+keeping it leaks nothing a test can see; the boundary of a timer of zero; the
+skip of a host the table has marked down, which fails at once if asked; the
+check that the reader is among a window's ranks, which only changes the asks
+of a reader holding stripes from an old placement; the spread of a probe's
+attempt count; and a repair's count of what is lacking when one index is.
 
 For test-only changes, select the production package whose behavior
 the tests exercise. `--package` includes subdirectories. Review the surviving

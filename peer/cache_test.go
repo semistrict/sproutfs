@@ -75,6 +75,10 @@ func (c *memoryCache) ReadStripes(ctx context.Context, read peer.StripeRead) (pe
 	var items []peer.StripeItem
 	for _, key := range keys {
 		stripe := c.stripes[key]
+		if read.MaxBytes == 0 {
+			// A read of no bytes asks only for the fill right.
+			break
+		}
 		items = append(items, peer.StripeItem{Page: key.page, Index: key.index, Length: 4 * len(stripe), Size: len(stripe)})
 		file.data = append(file.data, stripe...)
 	}

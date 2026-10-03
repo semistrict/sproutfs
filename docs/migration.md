@@ -473,7 +473,8 @@ The requests are:
 
 - pages, resident and claim, for handoffs;
 - ping, answered at once, behind no request;
-- read, keep, drop, presence and probe of stripes, for the disk cache.
+- read, keep, drop, presence and probe of stripes, for the disk cache. A read
+  of stripes that wants no bytes asks only for a window's fill right.
 
 A stripe request names the cache it expects. A server whose cache is another
 answers `NOT_ME`, as a host that took over a reused address would. The server
@@ -483,10 +484,19 @@ hands stripe requests to a `peer.Cache`, which the checkpoint cache implements.
 
 Each host keeps one table of peers. A peer is one remote host, whatever asks it
 for what. It has one pool of connections for each class: two for faults, two
-for bulk reads and one for bulk writes.
+for bulk reads, one for bulk writes and two for stripe reads. A stripe read is
+a read of the cluster's disk cache that a fault waits on. Replies leave a
+connection in the order their requests came, so a stripe on a fault connection
+waited for every 2 MiB page ahead of it: 27 ms at p99 on
+[GCE](measurements/gce-peer-server-2026-10-03.md). The stripe class has
+connections of its own for that reason. A server of the release before reads
+the class as faults.
 
 The server counts each class of each remote host against a budget of its own:
-8 MiB for faults, 16 MiB for bulk reads and 16 MiB for bulk writes. A host is
+8 MiB for faults, and 16 MiB each for bulk reads, bulk writes and stripe
+reads. A server also has a serving bandwidth for stripes
+(`ServerConfig.StripeBytesPerSecond`): a read of stripes past it is answered
+`BUSY`, and its reader asks another holder. A host is
 its address without the port, so all of a host's connections share its
 budgets. A request that would take its class past the budget is answered
 `BUSY`, with what the class holds, may hold, and asked for. The connection
@@ -503,7 +513,10 @@ Linux a `TCP_USER_TIMEOUT` of ten seconds, are a second line. A connection that
 carries nothing for thirty seconds is closed, and that marks nothing.
 
 A peer is marked down only by a hard failure: a dial or a hello that failed, a
-connect that took more than three seconds, or a dead connection. A caller
+connect that took more than three seconds, or a dead connection. A reader of
+the cluster's cache keeps marks of its own beside these: three of its stripe
+requests in a row timing out, or one refused connection, which is this mark
+([hosts marked down](hosting.md#reading-from-the-cluster)). A caller
 giving up is never one. A slow request is not one either, because its
 connection still answers pings. A request that can do without a down peer
 skips it: a page a checkpoint holds, a stripe another rank holds. The table
@@ -525,7 +538,8 @@ its bulk work at all its peers by one background budget, 16 MiB by default. A
 bulk read waits for room before it is sent. Unpublished pages go first, then
 the rest of the stream. Fills and repairs of the disk cache come last, and are
 dropped when there is no room, never queued. A repair has half the budget.
-While a guest fault waits on any peer, the budget shrinks to a quarter. The
+While a guest fault waits on any peer, or a stripe read for one, the budget
+shrinks to a quarter. The
 stream is paced by what the link carries, not by a fixed rate. A host also
 bounds the stripe bytes its reads have in flight, 64 MiB by default.
 
