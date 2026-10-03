@@ -1,0 +1,318 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/binary"
+	"fmt"
+	"slices"
+	"strings"
+	"testing"
+	"testing/synctest"
+	"time"
+
+	"github.com/semistrict/sproutfs/checkpoint"
+	"github.com/semistrict/sproutfs/platform"
+	"github.com/semistrict/sproutfs/platform/sim"
+)
+
+// faithful reads g's memory as it was published.
+func faithful(g *guest) reader {
+	return func(ctx context.Context, offset uint64, dst []byte) error {
+		for at := uint64(0); at < uint64(len(dst)); at += g.pageSize {
+			if err := g.ReadPage(ctx, volume, (offset+at)/g.pageSize, dst[at:at+g.pageSize]); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+}
+
+func mustGuest(t *testing.T, vm string, pageSize, pages uint64) *guest {
+	t.Helper()
+	g, err := newGuest(vm, pageSize, pages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return g
+}
+
+// Following the links from any page, or from any fault run, visits every one
+// of them once before it comes back.
+func TestEachLinkIsOneCycleThroughTheGuest(t *testing.T) {
+	g := mustGuest(t, "guest-4k", checkpoint.PageSize4KiB, 8192)
+	for name, links := range map[string][]uint32{"pages": g.nextPage, "runs": g.nextRun} {
+		seen := make([]bool, len(links))
+		at := uint32(5 % len(links))
+		for range links {
+			if seen[at] {
+				t.Fatalf("the %s' links come back to %d before visiting all %d", name, at, len(links))
+			}
+			seen[at] = true
+			at = links[at]
+		}
+		if at != uint32(5%len(links)) {
+			t.Fatalf("the %s' links end at %d after %d hops, not where they began", name, at, len(links))
+		}
+	}
+	if len(g.nextPage) != 8192 || len(g.nextRun) != 4 {
+		t.Fatalf("%d page links and %d run links, want 8192 and 4", len(g.nextPage), len(g.nextRun))
+	}
+}
+
+// A chain reads next the unit the bytes it read last name, whatever those
+// are, and a page whose bytes are not the guest's reads back wrong.
+func TestAChainReadsWhereTheBytesItReadLink(t *testing.T) {
+	g := mustGuest(t, "guest-4k", checkpoint.PageSize4KiB, 4096)
+	// Every page links seven pages on, and is otherwise zeros.
+	var offsets []uint64
+	sevenOn := func(_ context.Context, offset uint64, dst []byte) error {
+		offsets = append(offsets, offset)
+		clear(dst)
+		binary.LittleEndian.PutUint64(dst[pageLinkAt:], (offset/g.pageSize+7)%g.pages)
+		return nil
+	}
+	got, err := walk(t.Context(), g, access{Pattern: patternChain, Unit: unitPage, Concurrency: 1, Reads: 5, Seed: 3},
+		sevenOn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := got.Units[0]
+	want := []uint64{first, (first + 7) % 4096, (first + 14) % 4096, (first + 21) % 4096, (first + 28) % 4096}
+	if !slices.Equal(got.Units, want) {
+		t.Fatalf("the chain read units %v, want %v", got.Units, want)
+	}
+	for at, offset := range offsets {
+		if offset != want[at]*checkpoint.PageSize4KiB {
+			t.Fatalf("read %d was at %d, want %d", at, offset, want[at]*checkpoint.PageSize4KiB)
+		}
+	}
+	if got.Wrong != 5 || got.Failed != 0 || len(got.Latencies) != 5 {
+		t.Fatalf("wrong %d, failed %d and %d latencies, want 5, 0 and 5", got.Wrong, got.Failed, len(got.Latencies))
+	}
+}
+
+// A chain of fault runs reads each whole run, and goes on to the run its first
+// page links to.
+func TestAChainOfRunsFollowsTheRunLinks(t *testing.T) {
+	g := mustGuest(t, "guest-2m", checkpoint.PageSize2MiB, 64)
+	var offsets []uint64
+	read := faithful(g)
+	got, err := walk(t.Context(), g, access{Pattern: patternChain, Unit: unitRun, Concurrency: 1, Reads: 16, Seed: 9},
+		func(ctx context.Context, offset uint64, dst []byte) error {
+			if len(dst) != faultRunBytes {
+				return fmt.Errorf("a read of %d bytes, want a fault run's %d", len(dst), faultRunBytes)
+			}
+			offsets = append(offsets, offset)
+			return read(ctx, offset, dst)
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for at := 1; at < len(got.Units); at++ {
+		if want := uint64(g.nextRun[got.Units[at-1]]); got.Units[at] != want {
+			t.Fatalf("hop %d read run %d after run %d, want %d", at, got.Units[at], got.Units[at-1], want)
+		}
+	}
+	units := slices.Sorted(slices.Values(got.Units))
+	if !slices.Equal(units, []uint64{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}) {
+		t.Fatalf("the chain read runs %v, want each of the 16 once", units)
+	}
+	if offsets[3] != got.Units[3]*faultRunBytes || got.Wrong != 0 || got.Failed != 0 {
+		t.Fatalf("hop 3 at %d of run %d, wrong %d, failed %d", offsets[3], got.Units[3], got.Wrong, got.Failed)
+	}
+}
+
+// A random read reads the units it is asked for, none twice, in an order its
+// seed draws; a sequential read reads every unit in order.
+func TestRandomAndSequentialReadsReadEachUnitOnce(t *testing.T) {
+	g := mustGuest(t, "guest-4k", checkpoint.PageSize4KiB, 4096)
+	random, err := walk(t.Context(), g, access{Pattern: patternRandom, Unit: unitPage, Concurrency: 4, Reads: 4096,
+		Seed: 1}, faithful(g))
+	if err != nil {
+		t.Fatal(err)
+	}
+	every := make([]uint64, 4096)
+	for at := range every {
+		every[at] = uint64(at)
+	}
+	if !slices.Equal(slices.Sorted(slices.Values(random.Units)), every) || slices.Equal(random.Units, every) {
+		t.Fatalf("a random read of every page read %v..., want every page once, out of order", random.Units[:8])
+	}
+	again, err := walk(t.Context(), g, access{Pattern: patternRandom, Unit: unitPage, Concurrency: 1, Reads: 8,
+		Seed: 1}, faithful(g))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(again.Units, random.Units[:8]) {
+		t.Fatalf("a seed's first eight reads were %v, then %v", random.Units[:8], again.Units)
+	}
+	sequential, err := walk(t.Context(), g, access{Pattern: patternSequential, Unit: unitRun, Concurrency: 1},
+		faithful(g))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(sequential.Units, []uint64{0, 1}) || sequential.Wrong != 0 || random.Wrong != 0 {
+		t.Fatalf("a sequential read of runs read %v, wrong %d and %d", sequential.Units, sequential.Wrong, random.Wrong)
+	}
+	if _, err := walk(t.Context(), g, access{Pattern: patternRandom, Unit: unitRun, Concurrency: 1, Reads: 3},
+		faithful(g)); err == nil || err.Error() != "3 reads of 2 units: a random reads each unit at most once" {
+		t.Fatalf("three reads of two runs: %v", err)
+	}
+}
+
+// A profiled run is a gzipped CPU profile.
+func TestAProfiledRunIsAProfile(t *testing.T) {
+	profile, err := profiled(true, func() error {
+		_, err := calibrate(t.Context(), time.Millisecond)
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.HasPrefix(profile, []byte{0x1f, 0x8b}) {
+		t.Fatalf("a profile beginning %x, want gzip's 1f8b", profile[:min(len(profile), 2)])
+	}
+	none, err := profiled(false, func() error { return nil })
+	if err != nil || none != nil {
+		t.Fatalf("an unprofiled run gave %d bytes and %v", len(none), err)
+	}
+}
+
+// The cases parse, and only as their text says.
+func TestCasesParse(t *testing.T) {
+	specs, err := parseCases(defaultCases)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var texts []string
+	for _, spec := range specs {
+		texts = append(texts, spec.String())
+	}
+	want := "2MiB/chain/page/1,2MiB/chain/run/1,2MiB/random/page/1,2MiB/random/page/4,2MiB/random/page/16," +
+		"2MiB/sequential/page/16,4KiB/chain/page/1,4KiB/chain/run/1,4KiB/random/page/1,4KiB/random/page/4," +
+		"4KiB/random/page/16,4KiB/sequential/run/16"
+	if got := fmt.Sprint(texts); got != fmt.Sprint(strings.Split(want, ",")) {
+		t.Fatalf("the default cases are %s, want %s", got, want)
+	}
+	for text, problem := range map[string]string{
+		"2MiB/chain/page/4":   `a case "2MiB/chain/page/4": 4 reads at a time of a chain: want one or more, and one for a chain`,
+		"8KiB/chain/page/1":   `a case "8KiB/chain/page/1": its page size is 2MiB or 4KiB`,
+		"2MiB/strided/page/1": `a case "2MiB/strided/page/1": a pattern "strided": want sequential, random or chain`,
+	} {
+		if _, err := parseCase(text); err == nil || err.Error() != problem {
+			t.Fatalf("%s: %v, want %s", text, err, problem)
+		}
+	}
+}
+
+func splitComma(text string) func(func(string) bool) {
+	return func(yield func(string) bool) {
+		for len(text) > 0 {
+			field, rest, _ := bytes.Cut([]byte(text), []byte(","))
+			if !yield(string(field)) {
+				return
+			}
+			text = string(rest)
+		}
+	}
+}
+
+// simNodes is six nodes over one simulated network, object store and set of
+// disks, closed with the test.
+func simNodes(t *testing.T, ctx context.Context, runtime *sim.Runtime) []controller {
+	t.Helper()
+	var nodes []controller
+	for index := range 6 {
+		name := fmt.Sprintf("node-%d", index)
+		file, err := runtime.NewDisk(name, sim.DiskConfig{}).Open(ctx, "cache", platform.OpenOptions{Create: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		address := platform.Address(name + "/pages")
+		n, err := newNode(ctx, nodeConfig{address: address, listen: address, dialFrom: platform.Address(name),
+			network: runtime.Network(), objects: runtime.ObjectStore(), file: file, cacheBytes: 512 << 20,
+			deployment:  checkpoint.CacheDeployment{Store: "sim", Bucket: "bench", Prefix: "run"},
+			memoryBytes: 64 << 20, serveRate: 500 << 20, dropPageCache: func() error { return nil }})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			n.close()
+			_ = file.Close()
+		})
+		nodes = append(nodes, n)
+	}
+	return nodes
+}
+
+// Six nodes under 4+2 publish a guest of each page size and read every case
+// back, from the cluster and from the store. Every read reads the guest's
+// bytes and none is served by the memory tier. A read of the cluster asks the
+// store for the checkpoint's index, and for the fault runs of 4 KiB pages it
+// hedges: 2,048 pages take past the bound on the simulated network, and each
+// is three requests of at most 4 MiB. A read of the store asks it for the
+// index, the page table and every page, a 2 MiB page with its header being
+// past half of what one request may fetch.
+func TestEveryCaseReadsTheGuestBack(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		runtime := sim.New(sim.Config{})
+		ctx := sim.WithRuntime(t.Context(), runtime)
+		nodes := simNodes(t, ctx, runtime)
+		specs, err := parseCases(defaultCases)
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, profiles, err := drive(ctx, nodes, driveConfig{
+			pages: map[uint64]uint64{checkpoint.PageSize2MiB: 16, checkpoint.PageSize4KiB: 4096},
+			code:  "4+2", rounds: 1, cases: specs, sources: []string{sourceCluster, sourceStore}, reads: 8,
+			runReads: 4, lost: 3, loseAfter: time.Second, cleared: 20 * time.Second, seed: 1,
+			// Time stands still in the bubble, so the reader times one call of
+			// each step.
+			calibrate: 0})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(profiles) != 0 || len(result.Cases) != 24 {
+			t.Fatalf("%d profiles and %d cases, want none and 24", len(profiles), len(result.Cases))
+		}
+		var got []string
+		for _, c := range result.Cases {
+			got = append(got, fmt.Sprintf("%s %s: %d reads, %d gets, %d hedged, wrong %d, failed %d, %d memory hits",
+				c.Case, c.Source, c.Reads, c.StoreGets, c.Read.StoreHedges, c.Wrong, c.Failed, c.MemoryHits))
+		}
+		slices.Sort(got)
+		want := []string{
+			"2MiB/chain/page/1 cluster: 8 reads, 1 gets, 0 hedged, wrong 0, failed 0, 0 memory hits",
+			"2MiB/chain/page/1 store: 8 reads, 10 gets, 0 hedged, wrong 0, failed 0, 0 memory hits",
+			"2MiB/chain/run/1 cluster: 4 reads, 1 gets, 0 hedged, wrong 0, failed 0, 0 memory hits",
+			"2MiB/chain/run/1 store: 4 reads, 18 gets, 0 hedged, wrong 0, failed 0, 0 memory hits",
+			"2MiB/random/page/1 cluster: 8 reads, 1 gets, 0 hedged, wrong 0, failed 0, 0 memory hits",
+			"2MiB/random/page/1 store: 8 reads, 10 gets, 0 hedged, wrong 0, failed 0, 0 memory hits",
+			"2MiB/random/page/16 cluster: 8 reads, 1 gets, 0 hedged, wrong 0, failed 0, 0 memory hits",
+			"2MiB/random/page/16 store: 8 reads, 10 gets, 0 hedged, wrong 0, failed 0, 0 memory hits",
+			"2MiB/random/page/4 cluster: 8 reads, 1 gets, 0 hedged, wrong 0, failed 0, 0 memory hits",
+			"2MiB/random/page/4 store: 8 reads, 10 gets, 0 hedged, wrong 0, failed 0, 0 memory hits",
+			"2MiB/sequential/page/16 cluster: 16 reads, 1 gets, 0 hedged, wrong 0, failed 0, 0 memory hits",
+			"2MiB/sequential/page/16 store: 16 reads, 18 gets, 0 hedged, wrong 0, failed 0, 0 memory hits",
+			"4KiB/chain/page/1 cluster: 8 reads, 1 gets, 0 hedged, wrong 0, failed 0, 0 memory hits",
+			"4KiB/chain/page/1 store: 8 reads, 10 gets, 0 hedged, wrong 0, failed 0, 0 memory hits",
+			"4KiB/chain/run/1 cluster: 2 reads, 7 gets, 2 hedged, wrong 0, failed 0, 0 memory hits",
+			"4KiB/chain/run/1 store: 2 reads, 8 gets, 0 hedged, wrong 0, failed 0, 0 memory hits",
+			"4KiB/random/page/1 cluster: 8 reads, 1 gets, 0 hedged, wrong 0, failed 0, 0 memory hits",
+			"4KiB/random/page/1 store: 8 reads, 10 gets, 0 hedged, wrong 0, failed 0, 0 memory hits",
+			"4KiB/random/page/16 cluster: 8 reads, 1 gets, 0 hedged, wrong 0, failed 0, 0 memory hits",
+			"4KiB/random/page/16 store: 8 reads, 10 gets, 0 hedged, wrong 0, failed 0, 0 memory hits",
+			"4KiB/random/page/4 cluster: 8 reads, 1 gets, 0 hedged, wrong 0, failed 0, 0 memory hits",
+			"4KiB/random/page/4 store: 8 reads, 10 gets, 0 hedged, wrong 0, failed 0, 0 memory hits",
+			"4KiB/sequential/run/16 cluster: 2 reads, 7 gets, 2 hedged, wrong 0, failed 0, 0 memory hits",
+			"4KiB/sequential/run/16 store: 2 reads, 8 gets, 0 hedged, wrong 0, failed 0, 0 memory hits",
+		}
+		if !slices.Equal(got, want) {
+			t.Fatalf("the cases read\n%s\nwant\n%s", fmt.Sprint(got), fmt.Sprint(want))
+		}
+		if len(result.Calibration.Steps["2MiB"]) != len(calibrationSteps) {
+			t.Fatalf("the reader timed %v, want each of %v", result.Calibration.Steps["2MiB"], calibrationSteps)
+		}
+	})
+}

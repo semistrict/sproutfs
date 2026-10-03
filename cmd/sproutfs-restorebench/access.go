@@ -1,0 +1,167 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"hash/crc32"
+	"log/slog"
+	"math/rand/v2"
+	"sync"
+	"sync/atomic"
+	"time"
+)
+
+// The ways a read walks a guest's memory.
+const (
+	// patternSequential reads every unit in order, as a restore's post-copy
+	// stream does.
+	patternSequential = "sequential"
+	// patternRandom reads units in a random order, none twice, each read
+	// independent of the others: faults whose addresses the guest knew
+	// beforehand.
+	patternRandom = "random"
+	// patternChain reads one unit at a time, the next named by the bytes of
+	// the one before: a guest following pointers, each fault known only once
+	// the one before it is served.
+	patternChain = "chain"
+)
+
+// The units a read takes.
+const (
+	// unitPage is one page.
+	unitPage = "page"
+	// unitRun is the fault run the page is in, as a pager's fault reads it.
+	unitRun = "run"
+)
+
+// access is how one case reads a guest's memory.
+type access struct {
+	Pattern string `json:"pattern"`
+	Unit    string `json:"unit"`
+	// Concurrency is how many reads are in flight at once, always one for a
+	// chain.
+	Concurrency int `json:"concurrency"`
+	// Reads is how many units a random read or a chain reads. A sequential
+	// read reads every unit.
+	Reads int `json:"reads"`
+	// Seed orders a random read and chooses where a chain starts.
+	Seed uint64 `json:"seed"`
+}
+
+func (a access) check() error {
+	switch {
+	case a.Pattern != patternSequential && a.Pattern != patternRandom && a.Pattern != patternChain:
+		return fmt.Errorf("a pattern %q: want %s, %s or %s", a.Pattern, patternSequential, patternRandom, patternChain)
+	case a.Unit != unitPage && a.Unit != unitRun:
+		return fmt.Errorf("a unit %q: want %s or %s", a.Unit, unitPage, unitRun)
+	case a.Concurrency < 1 || a.Pattern == patternChain && a.Concurrency != 1:
+		return fmt.Errorf("%d reads at a time of a %s: want one or more, and one for a chain", a.Concurrency, a.Pattern)
+	case a.Pattern != patternSequential && a.Reads < 1:
+		return fmt.Errorf("%d reads of a %s: want one or more", a.Reads, a.Pattern)
+	}
+	return nil
+}
+
+// walked is what a walk read: the unit of each read in the order they began,
+// how long each took, and the pages that read back wrong.
+type walked struct {
+	Units     []uint64 `json:"units"`
+	Latencies []int64  `json:"latencies_ns"`
+	Seconds   float64  `json:"seconds"`
+	// Wrong is the pages whose bytes were not the guest's, and Failed the
+	// reads that returned an error.
+	Wrong  int `json:"wrong"`
+	Failed int `json:"failed"`
+}
+
+// reader reads dst from a guest's memory at offset.
+type reader func(ctx context.Context, offset uint64, dst []byte) error
+
+// walk reads g's memory through read as a says. It checks every page it read
+// against the guest's, after the reads, so what a read is timed by is the
+// read and a CRC-32C of what it read.
+func walk(ctx context.Context, g *guest, a access, read reader) (walked, error) {
+	if err := a.check(); err != nil {
+		return walked{}, err
+	}
+	units := g.units(a.Unit)
+	unitBytes := g.unitPages(a.Unit) * g.pageSize
+	reads := uint64(a.Reads)
+	if a.Pattern == patternSequential {
+		reads = units
+	}
+	if reads > units {
+		return walked{}, fmt.Errorf("%d reads of %d units: a %s reads each unit at most once", reads, units, a.Pattern)
+	}
+	// Each read's slot is its own, so workers never write the same entry.
+	out := walked{Units: make([]uint64, reads), Latencies: make([]int64, reads)}
+	sums := make([]uint32, g.pages)
+	readPages := make([]bool, g.pages)
+	var failed atomic.Int64
+	one := func(at, unit uint64, buffer []byte) error {
+		out.Units[at] = unit
+		start := time.Now()
+		err := read(ctx, unit*unitBytes, buffer)
+		out.Latencies[at] = int64(time.Since(start))
+		if err != nil {
+			failed.Add(1)
+			return err
+		}
+		first := unit * g.unitPages(a.Unit)
+		for page := range g.unitPages(a.Unit) {
+			sums[first+page] = crc32.Checksum(buffer[page*g.pageSize:][:g.pageSize], crc32c)
+			readPages[first+page] = true
+		}
+		return nil
+	}
+	began := time.Now()
+	switch a.Pattern {
+	case patternChain:
+		random := rand.New(rand.NewPCG(a.Seed, units))
+		unit := random.Uint64N(units)
+		buffer := make([]byte, unitBytes)
+		for at := range reads {
+			if err := one(at, unit, buffer); err != nil {
+				return walked{}, fmt.Errorf("hop %d of the chain, at unit %d: %w", at, unit, err)
+			}
+			unit = link(a.Unit, buffer)
+			if unit >= units {
+				return walked{}, fmt.Errorf("hop %d of the chain links to unit %d of %d", at, unit, units)
+			}
+		}
+	default:
+		order := make([]uint64, units)
+		for at := range order {
+			order[at] = uint64(at)
+		}
+		if a.Pattern == patternRandom {
+			random := rand.New(rand.NewPCG(a.Seed, units))
+			random.Shuffle(len(order), func(i, j int) { order[i], order[j] = order[j], order[i] })
+		}
+		var next atomic.Uint64
+		var workers sync.WaitGroup
+		for range a.Concurrency {
+			workers.Go(func() {
+				buffer := make([]byte, unitBytes)
+				for {
+					at := next.Add(1) - 1
+					if at >= reads {
+						return
+					}
+					if err := one(at, order[at], buffer); err != nil {
+						slog.WarnContext(ctx, "walk: a read failed", "unit", order[at], "error", err)
+					}
+				}
+			})
+		}
+		workers.Wait()
+	}
+	out.Seconds = time.Since(began).Seconds()
+	out.Failed = int(failed.Load())
+	for page, read := range readPages {
+		if read && sums[page] != g.sum(uint64(page)) {
+			out.Wrong++
+		}
+	}
+	return out, nil
+}

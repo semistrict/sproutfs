@@ -2,21 +2,22 @@
 // another host from the cluster's disk cache and from the object store
 // (plans/disk-cache-2026-10-02.md, "How it is proved", measurement 3).
 //
-//	sproutfs-restorebench node -index 0 -advertise 10.0.0.2:7500 -bucket b -prefix p
+//	sproutfs-restorebench node -advertise 10.0.0.2:7500 -bucket b -prefix p
 //	    run one host of the cluster: a page cache on a local disk, the peer
 //	    server that answers its peers from it, a table of peers, and the
 //	    object store, behind a control port.
 //	sproutfs-restorebench drive -nodes 10.0.0.2:7600,... -out results.json
-//	    publish a guest's memory from the first node, so its windows fill the
-//	    cluster, and read it all back on the second, round after round: from
-//	    the cluster, from the store, and from the cluster with a third node
-//	    lost part way through.
+//	    publish a guest of 2 MiB pages and one of 4 KiB pages from the first
+//	    node, so their windows fill the cluster, and read them back on the
+//	    second, round after round, from the cluster and from the store: in
+//	    order, at random, and as a chain whose every read is named by the
+//	    bytes of the one before, a page or a fault run at a time.
 //
 // A node runs the real checkpoint store, page cache, peer server and table of
 // peers a host runs, over TCP and the real bucket. No VMM runs: a restore is
-// every page of the guest's memory read through the store, a few at a time,
-// as a pager's faults read them. scripts/bench-restore-gce.sh runs it on six
-// GCE hosts.
+// the guest's memory read through the store as a pager's faults read it. The
+// reader times each step of a read on its processor, and profiles its CPU on
+// the cases asked for. scripts/bench-restore-gce.sh runs it on six GCE hosts.
 package main
 
 import (
