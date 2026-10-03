@@ -24,10 +24,14 @@ type tier struct {
 	whole   []byte
 }
 
-// readObject runs read, an operation over the object key, against the
-// regional bucket.
+// readObject runs read, an operation over the object key: against the hot
+// tier first where the store has one, and against the regional bucket where
+// it has none or the hot tier does not answer.
 func (s *Store) readObject(ctx context.Context, key platform.ObjectKey, read func(context.Context, *tier) error) error {
-	return read(ctx, s.regional())
+	if s.hot == nil {
+		return read(ctx, s.regional())
+	}
+	return s.hot.read(ctx, key, s.objects, read)
 }
 
 // regional is a tier of the regional bucket alone, for a read that must see

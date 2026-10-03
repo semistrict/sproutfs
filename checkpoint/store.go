@@ -29,6 +29,11 @@ type Config struct {
 	// Cache optionally shares decoded pages between the stores and checkpoints
 	// of one host. Nil leaves reads uncached.
 	Cache *Cache
+	// HotTier optionally reads checkpoint objects from a second bucket
+	// before ObjectStore, and fills it behind the reads and publications.
+	// It is an alternative to the cluster cache: a Cache whose disk fills the
+	// cluster beside one is refused. Nil reads ObjectStore alone.
+	HotTier *HotTier
 	// Codecs is the compression pool this store's publications encode through
 	// and its reads decode through. Its two halves are separate, so a guest's
 	// page fault does not queue behind a checkpoint's encoding. Nil takes the
@@ -77,6 +82,7 @@ type Store struct {
 	objects   platform.ObjectStore
 	prefix    string
 	cache     *Cache
+	hot       *HotTier
 	partBytes int
 	// maxRootBytes is Config.MaxIndexBytes, or the package maximum.
 	maxRootBytes int
@@ -117,6 +123,9 @@ func NewStore(config Config) (*Store, error) {
 		config.MaxIndexBytes < 0 || config.MaxIndexBytes > maximumRootSize {
 		return nil, ErrInvalidConfig
 	}
+	if config.HotTier != nil && config.Cache.fills() && !config.HotTier.bug("hot-tier-beside-cluster") {
+		return nil, ErrHotTierBesideClusterCache
+	}
 	if config.PartBytes == 0 {
 		config.PartBytes = partTargetBytes
 	}
@@ -139,7 +148,7 @@ func NewStore(config Config) (*Store, error) {
 	if config.Codecs == nil {
 		config.Codecs = blob.Default()
 	}
-	store := &Store{objects: config.ObjectStore, prefix: prefix, cache: config.Cache,
+	store := &Store{objects: config.ObjectStore, prefix: prefix, cache: config.Cache, hot: config.HotTier,
 		partBytes: config.PartBytes, maxRootBytes: config.MaxIndexBytes,
 		indexTail: defaultIndexTail,
 		slots:     make(chan struct{}, config.Concurrency),
@@ -231,8 +240,9 @@ func (s *Store) Open(ctx context.Context, ref control.Ref) (*Index, error) {
 }
 
 // errSupersededIndex is an index object that does not end in the record this
-// build writes.
-var errSupersededIndex = errors.New("checkpoint: the index object does not end in an index record")
+// build writes. Open names the version such an object was written under; a
+// read of a hot tier counts it as a corrupt copy.
+var errSupersededIndex = fmt.Errorf("%w: the index object does not end in an index record", ErrCorrupt)
 
 // readRoot reads one checkpoint's root out of its index object, from one tier.
 func (s *Store) readRoot(ctx context.Context, from *tier, ref control.Ref, key platform.ObjectKey) (*Index, error) {
@@ -754,10 +764,16 @@ func (s *Store) putIndexObject(ctx context.Context, ref control.Ref, data []byte
 		return err
 	}
 	defer s.release()
-	return s.putObject(ctx, key, data, digestOf(data), func(existing []byte) error {
+	err = s.putObject(ctx, key, data, digestOf(data), func(existing []byte) error {
 		if !equalParts(existing, data) {
 			return ErrConflict
 		}
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+	// Behind its regional PUT, never in front of it.
+	s.hot.published(ctx, key, data)
+	return nil
 }

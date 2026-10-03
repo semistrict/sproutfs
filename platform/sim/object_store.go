@@ -55,6 +55,10 @@ type storedObject struct {
 type ObjectStore struct {
 	runtime *Runtime
 	config  ObjectStoreConfig
+	// name tells a second bucket's requests apart from the deployment's in
+	// the trace and in what a scheduler is asked to admit: empty for the
+	// runtime's own store, whose events carry the bare key.
+	name string
 
 	mu             sync.Mutex
 	objects        map[string]storedObject
@@ -92,10 +96,11 @@ func (s *ObjectStore) applied(change ObjectChange) {
 	}
 }
 
-func newObjectStore(runtime *Runtime, config ObjectStoreConfig) *ObjectStore {
+func newObjectStore(runtime *Runtime, name string, config ObjectStoreConfig) *ObjectStore {
 	return &ObjectStore{
 		runtime:        runtime,
 		config:         config,
+		name:           name,
 		objects:        make(map[string]storedObject),
 		sequence:       make(map[string]uint64),
 		failNext:       make(map[ObjectOperation]int),
@@ -163,7 +168,7 @@ func (s *ObjectStore) Get(ctx context.Context, request platform.GetRequest) (pla
 		ContentLength: int64(len(value)),
 		Body: &objectReader{
 			runtime:        s.runtime,
-			id:             fmt.Sprintf("object/body/%q/%d", request.Key.String(), id),
+			id:             fmt.Sprintf("object/body/%q/%d", s.label(request.Key), id),
 			ctx:            ctx,
 			reader:         bytes.NewReader(value),
 			bytesPerSecond: s.config.BytesPerSecond,
@@ -312,7 +317,7 @@ func (s *ObjectStore) Recover() {
 }
 
 func (s *ObjectStore) before(ctx context.Context, operation ObjectOperation, key platform.ObjectKey, latency time.Duration) (uint64, error) {
-	if err := s.runtime.Admit(ctx, fmt.Sprintf("object/%s/%q", operation, key.String())); err != nil {
+	if err := s.runtime.Admit(ctx, fmt.Sprintf("object/%s/%q", operation, s.label(key))); err != nil {
 		return 0, err
 	}
 	s.mu.Lock()
@@ -330,7 +335,7 @@ func (s *ObjectStore) before(ctx context.Context, operation ObjectOperation, key
 		// answer of no time at all would reach its caller at the instant it
 		// asked, racing whatever the caller's other goroutines do at that
 		// instant, and the Go scheduler would decide which went first.
-		if err := s.runtime.ioDelay(ctx, fmt.Sprintf("object/%s/%q/%d", operation, key.String(), id), latency); err != nil {
+		if err := s.runtime.ioDelay(ctx, fmt.Sprintf("object/%s/%q/%d", operation, s.label(key), id), latency); err != nil {
 			s.trace(operation, key, "canceled", 0, id)
 			return 0, err
 		}
@@ -341,7 +346,7 @@ func (s *ObjectStore) before(ctx context.Context, operation ObjectOperation, key
 		s.trace(operation, key, "injected_fault", 0, id)
 		return 0, platform.ErrInjectedFault
 	}
-	if err := s.runtime.ioDelay(ctx, fmt.Sprintf("object/%s/%q/%d", operation, key.String(), id), latency); err != nil {
+	if err := s.runtime.ioDelay(ctx, fmt.Sprintf("object/%s/%q/%d", operation, s.label(key), id), latency); err != nil {
 		s.trace(operation, key, "canceled", 0, id)
 		return 0, err
 	}
@@ -361,12 +366,21 @@ func (s *ObjectStore) takeFailAfterApply(operation ObjectOperation) bool {
 func (s *ObjectStore) trace(operation ObjectOperation, key platform.ObjectKey, outcome string, bytes int, id uint64) {
 	s.runtime.trace.record(Event{
 		Kind:      "object_store",
-		Resource:  key.String(),
+		Resource:  s.label(key),
 		Operation: string(operation),
 		Outcome:   outcome,
 		Bytes:     bytes,
 		LocalID:   id,
 	})
+}
+
+// label is how key appears in the trace and to a scheduler: the bare key in
+// the runtime's own store, and the store's name before it in any other.
+func (s *ObjectStore) label(key platform.ObjectKey) string {
+	if s.name == "" {
+		return key.String()
+	}
+	return s.name + ":" + key.String()
 }
 
 func conditionsMatch(conditions platform.PutConditions, etag platform.ETag, exists bool) bool {
