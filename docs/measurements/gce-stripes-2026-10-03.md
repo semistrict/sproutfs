@@ -88,3 +88,7 @@ first, and the remaining ranks only after a short adaptive delay under a
 budget, as FoundationDB hedges. That keeps 4+2's protection against a drained
 and a slow host, at the bytes of 4+1. A second run of the full-memory pass
 with that read pattern checks it before step 7 is built.
+
+[The second run](gce-stripes-hedged-2026-10-03.md) found that bytes alone do
+not explain 4+2's tail at full load, and that the noise between runs is as
+large as the effect.
