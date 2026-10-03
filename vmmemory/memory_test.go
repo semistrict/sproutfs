@@ -774,8 +774,15 @@ func newPinnedFixture(t *testing.T, cfg vmmemory.Config, shared ...*resource.Bud
 // is what a test of a configuration the pager refuses needs.
 func newBrokenFixture(t *testing.T, cfg vmmemory.Config, shared ...*resource.Budget) (*fixture, error) {
 	t.Helper()
-	disk := sim.New(sim.Config{}).NewDisk("pager", sim.DiskConfig{})
-	spill, err := disk.Open(t.Context(), "spill", platform.OpenOptions{Create: true})
+	return newFixtureOn(t, t.Context(), sim.New(sim.Config{}).NewDisk("pager", sim.DiskConfig{}), cfg, shared...)
+}
+
+// newFixtureOn is newBrokenFixture with its spill file on disk, and its pager
+// built under ctx, which may carry the runtime whose guards the pager consults.
+func newFixtureOn(t *testing.T, ctx context.Context, disk *sim.Disk, cfg vmmemory.Config,
+	shared ...*resource.Budget) (*fixture, error) {
+	t.Helper()
+	spill, err := disk.Open(ctx, "spill", platform.OpenOptions{Create: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -786,7 +793,7 @@ func newBrokenFixture(t *testing.T, cfg vmmemory.Config, shared ...*resource.Bud
 	if len(shared) != 0 {
 		resources = shared[0]
 	}
-	h, err := vmmemory.New(t.Context(), resources, cfg, a, spill)
+	h, err := vmmemory.New(ctx, resources, cfg, a, spill)
 	if err != nil {
 		return nil, err
 	}

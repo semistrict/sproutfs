@@ -34,7 +34,8 @@ A deployment may likewise run PMEM, and the ephemeral pager with it, at 4 KiB
 blocks at a time to be worth the extra index entries and faults. A disk stays a
 whole number of 2 MiB, because Firecracker requires it of a PMEM device.
 The supervisor builds the host's [disk limiter](#budgets) once the spill files
-are open, and refuses to start when the disk cannot keep its promises.
+are open and hold their extents. It refuses to start when the disk cannot
+allocate a spill file, or cannot keep its promises under its goals.
 The supervisor also drives the VMM processes, owns the templates that guest
 images are imported into, and reaches the agent in a guest. It does not start a
 VMM. A `vmmachine.Starter` does, as [running the VMM](#running-the-vmm)
@@ -959,9 +960,14 @@ what they hold:
 - each running VMM's staging, at the largest state a capture may write, 64 MiB;
 - an image staged for an import, at what it holds.
 
-The spill files are sparse. A store must never fail for want of disk, so each
-is counted at its promise. The part of a promise a file does not hold yet is
-space the host promised and the filesystem still reports as free.
+A store must never fail for want of disk, so each spill file's whole extent is
+allocated (`fallocate`) when its pager starts, and each is counted at that
+promise. A sparse spill file would not be enough, however the limiter counted
+it: the space it had not used yet would be only free space on the filesystem,
+which another writer on the node can take. With the extent allocated, another
+writer finds the filesystem full, not the guest. A released spill slot keeps
+its blocks for the same reason. A disk that cannot allocate a spill file's
+extent refuses the host at start, with `ErrInvalidConfig`.
 
 The limiter keeps every goal it is given, and needs at least one:
 

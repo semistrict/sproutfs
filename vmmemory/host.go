@@ -136,11 +136,12 @@ var populationWindowBytes uint64 = 256 << 20
 
 // New uses a dedicated scratch spill file. It is not crash recovery metadata
 // and must not be shared with another Host, which includes the other pager of
-// the same host: each owns its arena and its spill file alone. The file's
-// maximum size is DirtyPages times this pager's page; acknowledged durability
-// always goes through Backing, never spill. The caller retains ownership of
-// Arena, and of every file it makes, and of spill until every MemoryRegion
-// detaches.
+// the same host: each owns its arena and its spill file alone. New allocates
+// the file's whole extent, DirtyPages times this pager's page, so the file must
+// be a platform.AllocatingFile on a filesystem with room for it. Acknowledged
+// durability always goes through Backing, never spill. The caller retains
+// ownership of Arena, and of every file it makes, and of spill until every
+// MemoryRegion detaches.
 func New(ctx context.Context, resources *resource.Budget, cfg Config, arena Arena, spill platform.File) (*Host, error) {
 	if resources == nil {
 		return nil, ErrConfig
@@ -193,10 +194,12 @@ func New(ctx context.Context, resources *resource.Budget, cfg Config, arena Aren
 		cfg.WriteAheadPages < 1 || cfg.WriteAheadPages > 4096 {
 		return nil, ErrConfig
 	}
+	// Whatever the file held is dropped first: the spill is scratch, and none of
+	// it is read back.
 	if err := spill.Truncate(ctx, 0); err != nil {
 		return nil, err
 	}
-	if err := spill.Truncate(ctx, int64(cfg.DirtyPages)*int64(pageSize)); err != nil {
+	if err := allocateSpill(ctx, spill, int64(cfg.DirtyPages)*int64(pageSize)); err != nil {
 		return nil, err
 	}
 	// An extent is one 2 MiB-aligned range's worth of this pager's pages: 512 at

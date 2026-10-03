@@ -363,8 +363,11 @@ func start(ctx context.Context, config Config) (*World, error) {
 		h.disk = w.runtime.NewDisk(id,
 			// A killed host's disk comes back with its unsynced modifications
 			// resolved rather than restored, so a restart that read across its
-			// own crash would read bytes nobody wrote.
-			sim.DiskConfig{PowerLossFaults: true})
+			// own crash would read bytes nobody wrote. Its filesystem is drawn
+			// with room for the spill files its pagers allocate, as a
+			// deployment sizes a node's disk for them.
+			sim.DiskConfig{PowerLossFaults: true,
+				Space: sim.SpaceConfig{ReservedBytes: spillBytes(config.Knobs)}})
 		h.process = w.runtime.NewProcess(sim.ProcessConfig{ID: id, Disk: h.disk})
 		h.objects = &hostStore{ObjectStore: w.runtime.ObjectStore(), network: w.runtime.Network(),
 			from: h.address, dead: h.dead}
@@ -636,6 +639,14 @@ func (w *World) launch(h *hostState) error {
 		return err
 	}
 	return <-ready
+}
+
+// spillBytes is what one incarnation's three pagers allocate for their spill
+// files: each pager's dirty budget in its own page, where the ephemeral
+// pager's dirty budget is its logical one. newPager gives them these budgets.
+func spillBytes(k knobs.Knobs) int64 {
+	return int64(k.DirtyPages)*int64(RAMPage) + int64(k.DirtyPages)*int64(PMEMPage) +
+		int64(k.LogicalPages)*int64(PMEMPage)
 }
 
 // newPager builds one incarnation's three pagers over that host's own disk: RAM

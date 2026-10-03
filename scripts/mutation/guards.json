@@ -96,6 +96,12 @@
     "purpose": "Forget that evicted private bytes exist in scratch storage. Only the buggified campaign evicts enough to spill, so this is the entry the per-site injection made detectable."
   },
   {
+    "id": "spill-sparse",
+    "package": "vmmemory",
+    "run": "^TestASpillSucceedsOnADiskFilledFromOutside$",
+    "purpose": "Leave a pager's spill file sparse instead of allocating its whole extent. Another writer then fills the filesystem, and the guest's next spill fails for want of space."
+  },
+  {
     "id": "pager-give-back-changed-copy",
     "package": "internal/simtest",
     "run": "^TestSeededTopologyCampaign$",

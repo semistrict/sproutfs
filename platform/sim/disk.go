@@ -51,6 +51,11 @@ type SpaceConfig struct {
 	// down, per simulated second between two readings of the space. One reading
 	// moves it by at most five seconds' worth. Zero holds it still.
 	DriftBytesPerSecond int64
+	// ReservedBytes is room the disk's own files are known to need, as a
+	// deployment sizes a node's disk for what its host allocates. It is added
+	// to a drawn filesystem, all of it free, so no draw leaves less than this
+	// for the host. It is read only when TotalBytes is zero.
+	ReservedBytes int64
 }
 
 // SpaceUsage is the true state of a simulated filesystem, which a test checks a
@@ -128,8 +133,8 @@ type DiskConfig struct {
 	// file as durable, so no consumer test drives this; it exists so that a
 	// campaign can.
 	SyncDurableProbability float64
-	// Space is the filesystem the disk is on. A write that needs more than is
-	// free fails with platform.ErrNoSpace.
+	// Space is the filesystem the disk is on. A write or an allocation that
+	// needs more than is free fails with platform.ErrNoSpace.
 	Space SpaceConfig
 	// ReadChaos puts this disk's reads under three Buggify sites, as
 	// FoundationDB's AsyncFileChaos does: a read that is slow, a read that
@@ -301,6 +306,7 @@ func newDisk(runtime *Runtime, id string, config DiskConfig) *Disk {
 		share := drawnFreeShare + r.Float64(id+"/free")*(1-drawnFreeShare)
 		free := min(d.total, max(drawnFreeMinimum, int64(share*float64(d.total))))
 		d.outside = d.total - free
+		d.total += max(config.Space.ReservedBytes, 0)
 	}
 	d.outside = min(max(d.outside, 0), d.total)
 	d.spaceRead = runtime.Now()
@@ -345,8 +351,9 @@ func (d *Disk) DeviceWritten() uint64 {
 	return d.written
 }
 
-// hostBytesLocked is what this disk's files hold: their stored pages. A hole
-// holds nothing, so a sparse spill file costs only what was written to it.
+// hostBytesLocked is what this disk's files hold: their stored pages, written
+// or allocated. A hole holds nothing, so a sparse file costs only what was
+// written to it.
 func (d *Disk) hostBytesLocked() int64 {
 	var pages int64
 	for _, image := range d.files {
@@ -656,7 +663,7 @@ func (d *Disk) resolvePendingLocked(name string, image *diskImage) {
 				case pendingTruncate:
 					image.volatile.resize(op.length)
 				case pendingAllocate:
-					image.volatile.resize(max(image.volatile.size, op.offset+op.length))
+					image.volatile.allocate(op.offset, op.length)
 				default:
 					image.volatile.zero(op.offset, op.offset+op.length)
 				}
@@ -750,12 +757,13 @@ func fillGarbage(r Random, id string, bad []byte) {
 	}
 }
 
-// fileBytes is a file's contents: its size and the device pages that hold
-// data. A page the map lacks reads as zeroes, as a hole does in a sparse file,
-// so a file truncated to the size of a pager's whole spill costs nothing until
-// it is written. A stored page is never changed; a write stores a changed copy.
-// A Sync and a power loss therefore share pages between the volatile and the
-// durable image instead of copying the file.
+// fileBytes is a file's contents: its size and the device pages it holds. A
+// page the map lacks reads as zeroes, as a hole does in a sparse file, so a file
+// truncated to a large size costs nothing until it is written. An allocated page
+// that was never written holds allocatedPage, which costs its space and reads as
+// zeroes. A stored page is never changed; a write stores a changed copy. A Sync
+// and a power loss therefore share pages between the volatile and the durable
+// image instead of copying the file.
 type fileBytes struct {
 	size  int64
 	pages map[int64][]byte
@@ -796,6 +804,24 @@ func (b *fileBytes) writeAt(offset int64, data []byte) {
 		copy(page, b.pages[at/diskPageBytes])
 		done += copy(page[at%diskPageBytes:], data[done:])
 		b.pages[at/diskPageBytes] = page
+	}
+}
+
+// allocatedPage is what every allocated page holds until it is written. It is
+// shared, which is safe because a stored page is never changed.
+var allocatedPage = make([]byte, diskPageBytes)
+
+// allocate grows the file to cover length bytes at offset and holds every page
+// of the range that it does not hold yet.
+func (b *fileBytes) allocate(offset, length int64) {
+	if b.pages == nil {
+		b.pages = make(map[int64][]byte)
+	}
+	b.size = max(b.size, offset+length)
+	for index := offset / diskPageBytes; index <= (offset+length-1)/diskPageBytes; index++ {
+		if _, ok := b.pages[index]; !ok {
+			b.pages[index] = allocatedPage
+		}
 	}
 }
 
@@ -1074,8 +1100,9 @@ func (f *file) PunchHole(ctx context.Context, offset, length int64) error {
 	return nil
 }
 
-// Allocate grows the file to cover the range. The simulated disk has no
-// physical blocks to reserve, so what it models is the size and the failures.
+// Allocate grows the file to cover the range and holds every page of it, as
+// fallocate does: the range costs its space now, and a later write into it
+// needs none. A range the filesystem has no room for is refused whole.
 func (f *file) Allocate(ctx context.Context, offset, length int64) error {
 	if offset < 0 || length <= 0 || offset > int64(maxInt())-length {
 		return platform.ErrInvalidRange
@@ -1090,7 +1117,12 @@ func (f *file) Allocate(ctx context.Context, offset, length int64) error {
 	if err := f.validLocked(); err != nil {
 		return err
 	}
-	f.image.volatile.resize(max(f.image.volatile.size, offset+length))
+	if needed := f.image.volatile.newPages(offset, length) * diskPageBytes; needed > 0 &&
+		needed > f.disk.total-f.disk.outside-f.disk.hostBytesLocked() {
+		f.disk.trace(DiskAllocate, f.name, "no_space", 0, id)
+		return platform.ErrNoSpace
+	}
+	f.image.volatile.allocate(offset, length)
 	f.disk.recordPendingLocked(f.image, pendingOp{kind: pendingAllocate, offset: offset, length: length, id: id})
 	f.disk.trace(DiskAllocate, f.name, "ok", 0, id)
 	return nil
@@ -1191,7 +1223,8 @@ func (f *file) Size(ctx context.Context) (int64, error) {
 	return size, nil
 }
 
-// Allocated is what the file holds: its stored pages, not its size.
+// Allocated is what the file holds: its stored pages, written or allocated,
+// not its size.
 func (f *file) Allocated(ctx context.Context) (int64, error) {
 	id, release, err := f.disk.begin(ctx, DiskAllocated, f.name, 0, f.disk.config.MetadataLatency)
 	if err != nil {

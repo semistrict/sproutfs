@@ -18,7 +18,6 @@ import (
 	"github.com/semistrict/sproutfs/internal/testarena"
 	"github.com/semistrict/sproutfs/internal/testpager"
 	"github.com/semistrict/sproutfs/platform"
-	"github.com/semistrict/sproutfs/platform/adapters"
 	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/resource"
 	"github.com/semistrict/sproutfs/vmmemory"
@@ -86,10 +85,7 @@ var mixedVolumes = []volume.VolumeSpec{
 // count of one says nothing about the other.
 func newMixedPagers(t *testing.T, resources *resource.Budget, budget func(*vmmemory.Config)) *hostPagers {
 	t.Helper()
-	disk, err := adapters.NewDisk(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	disk := pagerDisk()
 	built := &hostPagers{arenas: map[vmmemory.MemoryRegionKind]*testpager.Arena{}}
 	for _, kind := range []vmmemory.MemoryRegionKind{vmmemory.Ram, vmmemory.Pmem} {
 		cfg := vmmemory.Config{PageSize: checkpoint.PageSize2MiB,
@@ -125,6 +121,11 @@ func newMixedPagers(t *testing.T, resources *resource.Budget, budget func(*vmmem
 	return built
 }
 
+// pagerDisk is the node disk a test's pagers spill to. It is simulated because
+// a pager allocates its spill file's whole extent, which the Mac's filesystem
+// cannot do.
+func pagerDisk() *sim.Disk { return sim.New(sim.Config{}).NewDisk("pagers", sim.DiskConfig{}) }
+
 func newPagerWithWriteAhead(t *testing.T, resources *resource.Budget, writeAheadPages int) *hostPagers {
 	t.Helper()
 	return newPagerWithConfig(t, resources, vmmemory.Config{
@@ -138,10 +139,7 @@ func newPagerWithWriteAhead(t *testing.T, resources *resource.Budget, writeAhead
 // each kind.
 func newPagerWithConfig(t *testing.T, resources *resource.Budget, cfg vmmemory.Config) *hostPagers {
 	t.Helper()
-	disk, err := adapters.NewDisk(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	disk := pagerDisk()
 	if cfg.PageSize == 0 {
 		cfg.PageSize = migrationPageSize
 	}

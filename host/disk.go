@@ -33,8 +33,8 @@ type diskFiles struct {
 
 // diskUsers is every user of the host's disk that cannot give space back:
 //
-//   - each pager's spill file, at the dirty pages it may hold, which is what the
-//     pager sizes it to;
+//   - each pager's spill file, at the dirty pages it may hold, which is the
+//     extent the pager allocates when it starts;
 //   - each running VMM's staging, at the largest state a capture may write;
 //   - the images staged for an import, at what they hold.
 //
