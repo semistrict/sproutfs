@@ -19,6 +19,12 @@
 #             `pnpm install --offline --frozen-lockfile` in each of them and
 #             have it do real work. docs/measurements-2026-09-14-workload.md
 #             records which repositories and their licences.
+#   valkey    2 GiB, the minirootfs plus Alpine's Valkey (BSD-3-Clause), an
+#             in-memory key-value store whose data is a heap of linked
+#             objects, and cmd/sproutfs-guest-chase, which loads it with data
+#             whose reads depend on each other and walks it. The guest holds
+#             no data until it loads it, so the image stays small and the heap
+#             lives only in the guest's RAM.
 #
 # Neither guest ever needs a network; only this build does, and the workload
 # template needs it for Alpine's package index, npm and the clones.
@@ -38,13 +44,16 @@
 # scripts/lib/demo-image.sh takes both out of the container image it has just
 # built and passes them here.
 #
+# The valkey template also carries cmd/sproutfs-guest-chase, given the same
+# way, as a fourth argument or in SPROUTFS_GUEST_CHASE.
+#
 # Usage: scripts/build-guest-image.sh [--template NAME]
-#            [image-path [agent-binary [witness-binary]]]
+#            [image-path [agent-binary [witness-binary [chase-binary]]]]
 # The image path defaults to /var/lib/sproutfs/guest.ext4 and is printed on
 # stdout when the build succeeds; progress goes to stderr.
 set -euo pipefail
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-usage() { echo "Usage: $0 [--template alpine|workload] [image-path [agent-binary [witness-binary]]]" >&2; exit 2; }
+usage() { echo "Usage: $0 [--template alpine|workload|valkey] [image-path [agent-binary [witness-binary [chase-binary]]]]" >&2; exit 2; }
 template=alpine
 while [[ ${1:-} == --* ]]; do
     case $1 in
@@ -53,14 +62,15 @@ while [[ ${1:-} == --* ]]; do
         *) usage ;;
     esac
 done
-(($# <= 3)) || usage
+(($# <= 4)) || usage
 case $template in
-    alpine | workload) ;;
+    alpine | workload | valkey) ;;
     *) echo "No template named $template." >&2; usage ;;
 esac
 image=${1:-/var/lib/sproutfs/guest.ext4}
 agent=${2:-${SPROUTFS_GUEST_AGENT:-}}
 witness=${3:-${SPROUTFS_GUEST_WITNESS:-}}
+chase=${4:-${SPROUTFS_GUEST_CHASE:-}}
 
 alpine_branch=v3.24
 alpine_version=3.24.1
@@ -81,7 +91,7 @@ workload_repos=(
     "ofetch https://github.com/unjs/ofetch"
 )
 case $template in
-    alpine) image_size=2G ;;
+    alpine | valkey) image_size=2G ;;
     workload) image_size=5G ;;
 esac
 
@@ -162,17 +172,20 @@ install_guest_binary() {
 }
 install_guest_binary sproutfs-guest-agent "$agent"
 install_guest_binary sproutfs-guest-witness "$witness"
+if [[ $template == valkey ]]; then
+    install_guest_binary sproutfs-guest-chase "$chase"
+fi
 
 # The init mounts these itself; the directories have to exist in the image for
 # it to have anything to mount onto.
 sudo -n mkdir -p "$root/dev" "$root/proc" "$root/sys" "$root/run" "$root/root"
 printf 'sproutfs-demo\n' | sudo -n tee "$root/etc/hostname" >/dev/null
 
-# The workload template is the only part of this build that runs guest code: a
-# chroot into the tree, which is native x86_64 here and needs a network for
-# Alpine's index, npm and the clones. What it leaves behind needs none.
-if [[ $template == workload ]]; then
-    echo "building the workload tree: packages, pnpm and the repositories" >&2
+# The workload and valkey templates are the only part of this build that runs
+# guest code: a chroot into the tree, which is native x86_64 here and needs a
+# network for Alpine's index, and for the workload's npm and clones. What it
+# leaves behind needs none.
+enter_tree() {
     printf '%s/main\n%s/community\n' "$alpine_mirror" "$alpine_mirror" |
         sudo -n tee "$root/etc/apk/repositories" > /dev/null
     # A chroot shares this host's network stack, so the host's own resolver is
@@ -183,6 +196,23 @@ if [[ $template == workload ]]; then
     sudo -n mount --bind /dev "$root/dev"
     sudo -n mkdir -p "$root/dev/pts"
     sudo -n mount --bind /dev/pts "$root/dev/pts"
+}
+if [[ $template == valkey ]]; then
+    echo "building the valkey tree" >&2
+    enter_tree
+    # The server, and its CLI, whose ping is how a start knows the server is
+    # up. The package's version is written into the image, so a measurement
+    # names what it ran.
+    sudo -n chroot "$root" /bin/sh -c 'set -eu
+        apk add --no-cache valkey valkey-cli
+        apk info -v valkey | head -1 > /etc/sproutfs-valkey-version
+        valkey-server --version >&2
+        rm -rf /var/cache/apk/*'
+    unmount_tree
+fi
+if [[ $template == workload ]]; then
+    echo "building the workload tree: packages, pnpm and the repositories" >&2
+    enter_tree
     printf '%s\n' "${workload_repos[@]}" | sudo -n tee "$root/tmp/repos" > /dev/null
     printf 'pnpm_version=%s\n' "$pnpm_version" | sudo -n tee "$root/tmp/workload.env" > /dev/null
     sudo -n tee "$root/tmp/workload.sh" > /dev/null <<'WORKLOAD'

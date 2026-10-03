@@ -97,6 +97,25 @@ func TestMetricsExposeThePageCachesDisk(t *testing.T) {
 	}
 }
 
+// The page cache's memory tier: what it holds, what it served, what it sent to
+// the tiers below it and what it gave up. A restore's faults read through it
+// first, so without it the reads a fault made are not all accounted for.
+func TestMetricsExposeThePageCachesMemory(t *testing.T) {
+	body := hostapi.Metrics(hostapi.Status{CacheMemory: hostapi.CacheMemory{Entries: 40, Hits: 1200, Misses: 300,
+		Coalesced: 25, Evictions: 9}})
+	for _, want := range []string{
+		"sproutfs_cache_memory_entries 40",
+		`sproutfs_cache_memory_reads_total{outcome="hit"} 1200`,
+		`sproutfs_cache_memory_reads_total{outcome="miss"} 300`,
+		`sproutfs_cache_memory_reads_total{outcome="coalesced"} 25`,
+		"sproutfs_cache_memory_evictions_total 9",
+	} {
+		if !strings.Contains(body, want+"\n") {
+			t.Fatalf("the exposition has no %q in it:\n%s", want, body)
+		}
+	}
+}
+
 // What a host's fills of the cluster's disk cache did: the windows it filled
 // by what it read them for, the fill rights it was refused and gave out, the
 // stripes sent, kept, dropped by every reason, duplicated and refused, and its

@@ -297,24 +297,7 @@ roll_pods() {
 
 # Only versioned and non-ignored source, including the Firecracker submodule,
 # reaches the node: no credentials, Git internals or build caches.
-stage_source() {
-    python3 - "$repo" "$1" <<'PY'
-import pathlib, subprocess, sys, tarfile
-root = pathlib.Path(sys.argv[1])
-def files(directory):
-    return subprocess.check_output(['git', '-C', str(directory), 'ls-files',
-                                    '--cached', '--others', '--exclude-standard', '-z']).split(b'\0')
-names = {name.decode() for name in files(root) if name}
-submodule = root / 'third_party/firecracker'
-if (submodule / '.git').exists():
-    names.update('third_party/firecracker/' + name.decode() for name in files(submodule) if name)
-with tarfile.open(sys.argv[2], 'w:gz') as archive:
-    for name in sorted(names):
-        path = root / name
-        if path.is_file() or path.is_symlink():
-            archive.add(path, arcname='repo/' + name, recursive=False)
-PY
-}
+stage_source() { python3 "$repo/scripts/lib/stage-source.py" "$repo" "$1"; }
 
 # The container image and the guest image are scripts/lib/demo-image.sh's work.
 # It runs here, as root on the node, over a copy of this repository, and leaves

@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-03 03:41'
-updated_date: '2026-10-03 17:54'
+updated_date: '2026-10-03 20:27'
 labels:
   - performance
   - storage
@@ -146,4 +146,5 @@ Bugs found: Pages aliased its reply's pooled buffer (race); peer server read a p
 GCE (docs/measurements/gce-cluster-reads-2026-10-03.md): 8 GiB guest read on another host, 6 n2-standard-4 under 4+2, 3 rounds: cluster 16.4 s, p50 58 / p99 136 ms (p99 spread 3.3 ms); store 28.1 s, p50 106 / p99 218 ms (spread 51 ms); one host lost: same time, no page from the store. Holders served within 2.5 % of each other. Reader CPU-bound (3.9 of 4 CPUs). All VMs, disks and objects deleted.
 
 Decided 2026-10-03 (owner): replace step 4's list of caches with one membership object in the object store, not specific to the cache: generation, code, and per host identity, address, weight, state (joining/active/draining). Changed only by compare-and-set on the generation; correctness rests on CAS alone, any process may change it, usually the orchestrator as a controller stepping one change at a time. Host identity is written in the host's disk. Every routing-dependent request (stripe read, keep, drop, fill right) names the sender's generation: behind reads first; ahead answers stale and the sender re-reads. Property docs/properties/one-membership.md; plan section 'The membership'.
+Real application restore on GCE (docs/measurements/gce-real-app-restore-2026-10-03.md, commit 04708132 on worktree-agent-a90fc1de680c7a534): Valkey 9.0.4 (BSD-3) in an 8 GiB, 2-vCPU guest, 24M chained keys + 10M-member sorted set (4.0 GiB used, 5.1 GiB RSS), suspended and restored lazily; six n2-highmem-4 hosts with local SSDs under 4+2 on k3s, 3 rounds. 20,000 dependent GETs: cluster 22.4 s (p99 30 ms), store 55.6 s (p99 97 ms), same host 4.2 s. Scan 9.5 / 16.1 / 5.8 s. Per fault load (8 MiB read-ahead): 30 ms cluster vs 92 ms store (3.1x); end to end 2.5x vs the bulk read's 1.7x. About half a cluster load is SHA-256 + zstd (perf: ~15 ms CPU per 2 MiB window, no SHA-NI). Valkey writes every object it reads, so ~2,500 pages are copied on write at ~1.2 ms each (the whole same-host cost). Suspend fill queue dropped 2.5-7 % of stripes -> 76-177 windows read from the store, the cluster's tail. Suspend publishes at ~50 MB/s (57 s for 2.8 GB). Bug fixed: a remembered survey taken during a start (by a host's /caches read) answered exec after it with 'no host runs'; moves now forget the survey at their end too and an overlapping survey is not remembered; TestACommandRightAfterAStartFindsTheVM, guard orchestrator-remember-a-survey-across-a-move. Added /status cache_memory and sproutfs_cache_memory_*. All GCE nodes, disks and objects deleted.
 <!-- SECTION:NOTES:END -->

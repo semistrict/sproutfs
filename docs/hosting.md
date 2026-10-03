@@ -1306,14 +1306,24 @@ fifth and cleared, the hosts down now, the HEAD checks and what they found
 missing, the delay and the bound now, and what the peer server served of the
 cache: reads, stripes, bytes, and reads answered `BUSY` for the bandwidth.
 `/metrics` carries the same as `sproutfs_cache_reads_total`,
-`sproutfs_cache_read_*` and `sproutfs_cache_serve_*`.
+`sproutfs_cache_read_*` and `sproutfs_cache_serve_*`. The tier above them is
+reported too: `cache_memory` counts the pages and segments the memory tier
+holds, the reads it served, the reads it sent on to the disk, the cluster or
+the store, and the reads that joined a fetch in flight
+(`sproutfs_cache_memory_*`). With the pager's own fault and load counters,
+these say where each page a guest faulted on came from.
 
 **Measured.** On six `n2-standard-4` hosts under 4+2, an 8 GiB guest's pages
 read back on another host in 16.4 s from the cluster and 28.1 s from GCS. A
 page took 58 ms at the median and 136 ms at p99 from the cluster, 106 and
 218 ms from the store. With one host lost during the read, no page was read
 from the store and the time did not change
-([measurement](measurements/gce-cluster-reads-2026-10-03.md)).
+([measurement](measurements/gce-cluster-reads-2026-10-03.md)). A restored
+Valkey guest whose first requests each wait on the page the last one named
+walked its 5 GiB heap in 22 s from the cluster and 56 s from the store: a
+fault's read took 30 ms against 92 ms, about half of it SHA-256 and zstd on
+hosts without SHA instructions
+([measurement](measurements/gce-real-app-restore-2026-10-03.md)).
 
 ## Reading through a hot tier
 

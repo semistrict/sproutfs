@@ -274,6 +274,7 @@ func Metrics(status Status) string {
 		status.Resources.CacheDiskLimit)
 	write("sproutfs_cache_disk_used_bytes", "gauge", "How much of the page cache's disk the pulls hold.",
 		status.Resources.CacheDiskUsed)
+	cacheMemoryMetrics(&out, status.CacheMemory)
 	cacheDiskMetrics(&out, status.CacheDisk)
 	cacheFillMetrics(&out, status.CacheFill)
 	cacheReadMetrics(&out, status.CacheRead)
@@ -374,6 +375,22 @@ func diskMetrics(out *strings.Builder, disk Disk) {
 	for priority, refused := range disk.Writes.Refused {
 		fmt.Fprintf(out, "sproutfs_disk_cache_writes_refused_total{priority=\"%d\"} %d\n", priority, refused)
 	}
+}
+
+// cacheMemoryMetrics writes what the page cache's memory tier holds and what
+// it served, in pages and segments.
+func cacheMemoryMetrics(out *strings.Builder, memory CacheMemory) {
+	fmt.Fprintf(out, "# HELP sproutfs_cache_memory_entries The pages and segments the page cache holds in memory.\n"+
+		"# TYPE sproutfs_cache_memory_entries gauge\nsproutfs_cache_memory_entries %d\n", memory.Entries)
+	fmt.Fprintf(out, "# HELP sproutfs_cache_memory_reads_total Reads of the page cache's memory, by outcome: "+
+		"served from it, fetched from the disk, the cluster or the store, or joined to a fetch in flight.\n"+
+		"# TYPE sproutfs_cache_memory_reads_total counter\n"+
+		"sproutfs_cache_memory_reads_total{outcome=\"hit\"} %d\n"+
+		"sproutfs_cache_memory_reads_total{outcome=\"miss\"} %d\n"+
+		"sproutfs_cache_memory_reads_total{outcome=\"coalesced\"} %d\n", memory.Hits, memory.Misses, memory.Coalesced)
+	fmt.Fprintf(out, "# HELP sproutfs_cache_memory_evictions_total Entries the page cache's memory gave up.\n"+
+		"# TYPE sproutfs_cache_memory_evictions_total counter\nsproutfs_cache_memory_evictions_total %d\n",
+		memory.Evictions)
 }
 
 // cacheDiskMetrics writes what the page cache's disk holds, what it served

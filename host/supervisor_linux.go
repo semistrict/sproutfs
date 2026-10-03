@@ -429,6 +429,8 @@ func (s *supervisor) Status(ctx context.Context) (hostapi.Status, error) {
 		Disk:  diskReport(s.disk.Status()),
 	}
 	report.Cache, report.Caches = cacheReport(status.Self, status.Caches)
+	report.CacheMemory = hostapi.CacheMemory{Entries: status.Cache.Entries, Hits: status.Cache.Hits,
+		Misses: status.Cache.Misses, Coalesced: status.Cache.CoalescedLoads, Evictions: status.Cache.Evictions}
 	report.CacheDisk = cacheDiskReport(s.cacheFile, status.Cache.Disk)
 	report.CacheFill = cacheFillReport(status.Cache.Disk, status.Cache.Fill)
 	report.CacheRead = cacheReadReport(status.Cache.Disk, status.Cache.Read, status.Pages)
