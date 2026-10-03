@@ -30,16 +30,27 @@ type fillHost struct {
 	objects *cacheStore
 	clock   *sim.Clock
 	table   *peer.Table
+	// list is the list of caches this host holds.
+	list atomic.Pointer[rank.List]
 }
 
 // fillCluster is hosts that follow one list of caches over one simulated
 // network and object store, and a publisher that keeps no cache.
 type fillCluster struct {
-	runtime   *sim.Runtime
-	hosts     []*fillHost
+	runtime *sim.Runtime
+	hosts   []*fillHost
+	// list is the list the orchestrator serves, which each host holds once
+	// it has read it.
 	list      atomic.Pointer[rank.List]
 	publisher *checkpoint.Store
 	puts      *heldPuts
+	// servers, tables, caches and files are what close closes, in that
+	// order, as a host closes them; closed says it has.
+	servers []*peer.Server
+	tables  []*peer.Table
+	caches  []*checkpoint.Cache
+	files   []platform.File
+	closed  sync.Once
 }
 
 // fillConfig is one cluster: its hosts, its code, the share the cluster cache
@@ -48,8 +59,10 @@ type fillConfig struct {
 	hosts int
 	code  rank.Code
 	share int
-	// cache has a last say over each host's cache.
+	// cache has a last say over each host's cache, and table over its table
+	// of peers.
 	cache func(host int, config *checkpoint.CacheConfig)
+	table func(config *peer.TableConfig)
 	// runtime is the simulation the cluster runs in, and disk each host's
 	// disk.
 	runtime sim.Config
@@ -61,6 +74,7 @@ type fillConfig struct {
 func newFillCluster(t *testing.T, config fillConfig) *fillCluster {
 	t.Helper()
 	c := &fillCluster{runtime: sim.New(config.runtime)}
+	t.Cleanup(c.close)
 	ctx := c.ctx(t)
 	c.puts = &heldPuts{ObjectStore: c.runtime.ObjectStore()}
 	c.publisher = mustStore(t, checkpoint.Config{ObjectStore: c.puts})
@@ -72,13 +86,18 @@ func newFillCluster(t *testing.T, config fillConfig) *fillCluster {
 		if err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(func() { _ = file.Close() })
-		h.table, err = peer.NewTable(ctx, peer.TableConfig{Dial: func(ctx context.Context, to platform.Address) (platform.Conn, error) {
+		c.files = append(c.files, file)
+		tableConfig := peer.TableConfig{Dial: func(ctx context.Context, to platform.Address) (platform.Conn, error) {
 			return c.runtime.Network().Dial(ctx, platform.Address(name), to)
-		}})
+		}}
+		if config.table != nil {
+			config.table(&tableConfig)
+		}
+		h.table, err = peer.NewTable(ctx, tableConfig)
 		if err != nil {
 			t.Fatal(err)
 		}
+		c.tables = append(c.tables, h.table)
 		budget, err := resource.New(4 << 10)
 		if err != nil {
 			t.Fatal(err)
@@ -92,15 +111,13 @@ func newFillCluster(t *testing.T, config fillConfig) *fillCluster {
 		if err != nil {
 			t.Fatal(err)
 		}
+		c.caches = append(c.caches, h.cache)
 		server, err := peer.NewServer(ctx, peer.ServerConfig{Network: c.runtime.Network(), Address: h.address,
 			PageSize: checkpoint.PageSize2MiB, Cache: h.cache})
 		if err != nil {
 			t.Fatal(err)
 		}
-		// The server goes first and the cache last, as a host closes them.
-		t.Cleanup(h.cache.Close)
-		t.Cleanup(func() { _ = h.table.Close() })
-		t.Cleanup(func() { _ = server.Close() })
+		c.servers = append(c.servers, server)
 		h.objects = &cacheStore{ObjectStore: c.puts}
 		h.store = mustStore(t, checkpoint.Config{ObjectStore: h.objects, Cache: h.cache})
 		c.hosts = append(c.hosts, h)
@@ -110,11 +127,43 @@ func newFillCluster(t *testing.T, config fillConfig) *fillCluster {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c.list.Store(&list)
+	c.hold(list)
 	for _, h := range c.hosts {
-		h.cache.FollowCaches(func() rank.List { return *c.list.Load() })
+		h.cache.FollowCaches(func() rank.List { return *h.list.Load() })
 	}
 	return c
+}
+
+// hold has the orchestrator serve list, and the hosts named, or every host
+// when none is, read it. The rest hold the list they held, as hosts that have
+// not read it yet do.
+func (c *fillCluster) hold(list rank.List, hosts ...*fillHost) {
+	c.list.Store(&list)
+	if len(hosts) == 0 {
+		hosts = c.hosts
+	}
+	for _, h := range hosts {
+		h.list.Store(&list)
+	}
+}
+
+// close closes every host as a host closes: the peer servers first, then the
+// tables of peers, then the caches and their files. It is safe to call again.
+func (c *fillCluster) close() {
+	c.closed.Do(func() {
+		for _, server := range c.servers {
+			_ = server.Close()
+		}
+		for _, table := range c.tables {
+			_ = table.Close()
+		}
+		for _, cache := range c.caches {
+			cache.Close()
+		}
+		for _, file := range c.files {
+			_ = file.Close()
+		}
+	})
 }
 
 // ctx is the test's context carrying the cluster's runtime, which the sites

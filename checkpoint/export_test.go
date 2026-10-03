@@ -29,3 +29,8 @@ func (c *Cache) HeldIndices(window rank.Window, at uint32, code rank.Code) []int
 	}
 	return held
 }
+
+// FillSites are the fault-injection sites of fills, which the fill campaign
+// must fire.
+var FillSites = []string{buggifyFillQueueFull, buggifyFillLoseRight, buggifyFillRanksChange, buggifyFillSendTwice,
+	buggifyFillRefuseWrite, buggifyKeepDrop}

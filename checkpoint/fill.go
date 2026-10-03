@@ -666,16 +666,24 @@ func (f *filler) place(ctx context.Context, kind WriteKind, fill *windowFill) {
 	}
 	for _, holder := range order {
 		if holder.Identity == f.disk.identity {
-			f.writeOwn(ctx, kind, held[holder.Identity])
+			f.writeOwn(ctx, kind, fill.window, code, held[holder.Identity])
 			continue
 		}
 		f.send(ctx, kind, fill.window, code, holder, held[holder.Identity])
 	}
 }
 
-// writeOwn writes the stripes of a fill this host's own cache holds, leaving
-// out those it holds or is writing already.
-func (f *filler) writeOwn(ctx context.Context, kind WriteKind, stripes []keyedStripe) {
+// writeOwn writes the stripes of a fill of window this host's own cache
+// holds, leaving out those it holds or is writing already. The list it was
+// placed by may not be the one the cache holds now, which is the one a keep
+// is held to, and so is this.
+func (f *filler) writeOwn(ctx context.Context, kind WriteKind, window rank.Window, code rank.Code,
+	stripes []keyedStripe) {
+	if err := f.ranked(window, code); err != nil && !f.bug("keep-unranked") {
+		sim.Probe(ctx, ProbeKeepRefused)
+		f.count(func(stats *FillStats) { stats.Refused += uint64(len(stripes)) })
+		return
+	}
 	var missing []keyedStripe
 	for _, s := range stripes {
 		if f.held(stripeKey{key: s.key, code: codeOf(s.stripe)}) {
@@ -794,7 +802,7 @@ func (f *filler) sent(ctx context.Context, err error, stripes, bytes int) {
 func (f *filler) keep(ctx context.Context, keep peer.Keep) error {
 	stripes, err := f.parseKeep(keep)
 	if err == nil && !f.bug("keep-unranked") {
-		err = f.ranked(keep)
+		err = f.ranked(keep.Window, keep.Code)
 	}
 	if err != nil {
 		sim.Probe(ctx, ProbeKeepRefused)
@@ -905,16 +913,17 @@ func (f *filler) parseKeep(keep peer.Keep) ([]keyedStripe, error) {
 	return stripes, nil
 }
 
-// ranked checks that this cache's own list ranks it for the keep's window,
-// under the keep's code, and that the window is inside the share.
-func (f *filler) ranked(keep peer.Keep) error {
+// ranked checks that this cache's own list ranks it for window, under code,
+// and that the window is inside the share. Every stripe the cache writes for
+// the cluster, its own fills' and its peers' keeps, is held to it.
+func (f *filler) ranked(window rank.Window, code rank.Code) error {
 	list, ok := f.disk.list()
 	switch {
-	case !ok || !keep.Window.InShare(f.disk.clusterPercent):
+	case !ok || !window.InShare(f.disk.clusterPercent):
 		return fmt.Errorf("%w: the cluster cache is not on for the window", errKeepRefused)
-	case list.Code() != keep.Code:
-		return fmt.Errorf("%w: the list's code is %s, not %s", errKeepRefused, list.Code(), keep.Code)
-	case !slices.ContainsFunc(list.Ranks(keep.Window), func(cache rank.Cache) bool {
+	case list.Code() != code:
+		return fmt.Errorf("%w: the list's code is %s, not %s", errKeepRefused, list.Code(), code)
+	case !slices.ContainsFunc(list.Ranks(window), func(cache rank.Cache) bool {
 		return cache.Identity == f.disk.identity
 	}):
 		return fmt.Errorf("%w: the list does not rank this cache for the window", errKeepRefused)

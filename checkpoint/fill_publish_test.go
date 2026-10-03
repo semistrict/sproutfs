@@ -130,6 +130,13 @@ func TestAPartTheStoreRefusedReachesNoCache(t *testing.T) {
 func beginPublication(t *testing.T, store *checkpoint.Store, vm string, pages []uint64) (*checkpoint.Index, *model,
 	*checkpoint.Publication) {
 	t.Helper()
+	return beginPublicationOf(t, store, vm, pages, sectorData)
+}
+
+// beginPublicationOf is beginPublication of sectors data makes.
+func beginPublicationOf(t *testing.T, store *checkpoint.Store, vm string, pages []uint64,
+	data func(tag string, page uint64, sector uint32) []byte) (*checkpoint.Index, *model, *checkpoint.Publication) {
+	t.Helper()
 	sizes := map[string]uint64{"root": (slices.Max(pages) + 1) * checkpoint.PageSize2MiB}
 	root, err := store.Root(t.Context(), control.Ref{VM: vm, Sequence: 1}, volumes2MiB(sizes))
 	if err != nil {
@@ -139,7 +146,7 @@ func beginPublication(t *testing.T, store *checkpoint.Store, vm string, pages []
 	p := store.Begin(root, control.Ref{VM: vm, Sequence: 2})
 	for _, page := range pages {
 		for sector := range uint32(sectorsPerPage) {
-			m.dirty(p, "root", page, sector, sectorData(vm, page, sector))
+			m.dirty(p, "root", page, sector, data(vm, page, sector))
 		}
 	}
 	return root, m, p
@@ -148,7 +155,14 @@ func beginPublication(t *testing.T, store *checkpoint.Store, vm string, pages []
 // publishFrom is publish that reports a failure rather than failing the test.
 func publishFrom(t *testing.T, store *checkpoint.Store, vm string, pages []uint64) (*checkpoint.Index, *model, error) {
 	t.Helper()
-	_, m, p := beginPublication(t, store, vm, pages)
+	return publishFromOf(t, store, vm, pages, sectorData)
+}
+
+// publishFromOf is publishFrom of sectors data makes.
+func publishFromOf(t *testing.T, store *checkpoint.Store, vm string, pages []uint64,
+	data func(tag string, page uint64, sector uint32) []byte) (*checkpoint.Index, *model, error) {
+	t.Helper()
+	_, m, p := beginPublicationOf(t, store, vm, pages, data)
 	published, err := p.Commit(t.Context(), m)
 	return published, m, err
 }
