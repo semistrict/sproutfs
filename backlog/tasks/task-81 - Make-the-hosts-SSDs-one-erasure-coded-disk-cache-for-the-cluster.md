@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-03 03:41'
-updated_date: '2026-10-03 10:49'
+updated_date: '2026-10-03 13:13'
 labels:
   - performance
   - storage
@@ -107,4 +107,6 @@ Shared-SSD fixes. (1) A host refuses to start only promises the filesystem could
 Tests: platform lock tests (real, also run on Linux in golang:1.26; sim with power loss and removal); host TestAHostStartsUnreadyWhileAnotherWriterHoldsItsRoom, TestAHostClaimsACacheFileNoOtherHostHolds, TestACacheDirectoryOnAnotherFilesystemIsRefused; resource TestPromisesAreFeasibleWhileOnlyOtherWritersLeaveNoRoom, TestARestartedHostFindsRoomAnotherHostsCacheGivesBack (two limiters on one disk: restarted host ready after 14 readings, cache settles at floor+reserve, reserve promisable; without the reserve 111 readings and never promisable); config tests; cmd/sproutfs-host manifest tests strictly decode every deploy/*.yaml into typed k8s objects and run loadConfig over the host manifest's env. Guards disklimit-no-reserve, disklimit-capacity-from-free-space, host-refuse-start-while-the-disk-is-held, host-cache-share-a-file, host-cache-on-another-filesystem, each failing its named test. flock across two containers on one volume checked by hand in Docker. Not run on GCE: the demo path builds Firecracker and both images on the node.
 
 Step 10 deployment half on GCE (docs/measurements/gce-deploy-cache-2026-10-03.md, one n2-standard-8 demo node, deleted after). Checked: both host pods ready with the limiter's goals (free 20 %, used 56 GiB, share 42 GiB bound by used, reserve 1 GiB, band 4 GiB), cache weight 3, list of both caches under 1+1; cache-0 and cache-1 under /opt/sproutfs-demo/cache/sproutfs, each flocked by its pod; a deleted host pod's replacement took cache-0 back with its identity and read 5 regions from their tables; the device write counter /sys/dev/block/8:1/stat is readable in the pod. Bug found and fixed (305c7e87): a stop ended the machine, which closed the pull, before the stop published, so the stop's checkpoint was not kept on the disk and a pulled VM restarted on the node read 100 MB from the store; Pull.StopFetching now ends the copy with the machine and VM.Close ends the keeping; after the fix the restarted VM made 10 store gets (9 KB, records and indexes) and 82 disk hits. Guard host-pull-closed-with-the-machine. /status cache_disk and /metrics sproutfs_cache_disk_* added (b16e9b71). The disk is 200 GiB (193 GiB filesystem, no reserved blocks); everything else may hold about 37 GiB before the caches shrink, not 45; it held 21 GiB. Not checked: kill-host over a cache file, two caches filling against each other, Docker's store growing about 2 GB per redeploy.
+
+Step 7 must give stripe reads their own traffic class or connections on the peer server: TASK-82's GCE run measured stripe reads at 0.4 ms median but 27 ms p99 (63 ms beside a post-copy stream), because they share the fault class's connections with 2 MiB page replies and replies leave a connection in arrival order (docs/measurements/gce-peer-server-2026-10-03.md).
 <!-- SECTION:NOTES:END -->

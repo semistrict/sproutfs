@@ -1,11 +1,11 @@
 ---
 id: TASK-82
 title: 'Turn the page server into the peer server, and fix its transport'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-03 04:52'
-updated_date: '2026-10-03 13:08'
+updated_date: '2026-10-03 13:13'
 labels:
   - performance
   - network
@@ -81,6 +81,8 @@ Docs (61879c19): context.md defines peer server, peer, class, BUSY, background b
 Mutation tests (12963688): new tests for 40-odd survivors; found and fixed a server crash when a hello settled version 1. Gremlins final: 404 killed by tests / 61 lived / 12 timeouts / 4 build errors of 481 (before: 370/90/12/4 of 476); handoffs.go+session.go with --integration against vmmigrate tests: 95 of 119 killed. Survivors are equivalent or speed-only (pool size classes, buggify delay lengths, bitmap length, map cleanup, least-loaded choice, zero-means-default bounds, v2 reply checksum branch); internal/wire survivors include mutants peer tests kill (non-integration runs only the mutated package's tests). GCE (60b9fe4f, docs/measurements/gce-peer-server-2026-10-03.md, two n2-standard-4, 3 rounds, deleted and verified): beside the stream fault p99 612 -> 97 ms, p99.9 1640 -> 106 ms, max 2158 -> 118 ms, busy 214 -> 0, refused connections ~25k -> 0; median 48 -> 56 ms, stream 429 -> 300 MB/s (budget shrinks to a quarter while faults wait). Idle fault 31 -> 28 ms p50; both builds bound by the page codec's CPU (~14 ms source + 10 ms destination per 2 MiB page), not the link. Stripe reads over the peer server: p50 0.4 ms but p99 27 ms alone, p99 63 ms beside the stream, because they share fault connections with 2 MiB page faults (follow-up). Linux-only sendfile and TCP_USER_TIMEOUT tests and the peer suite passed on GCE.
 
 Kill campaign (2cc6eb8a, 323c65ed): under SPROUTFS_ARENA=shared the fork-destination scenario reached its span on no seed, because the hellos made the fork ~4 ms and the span (receive returned, root not landed) is a fraction of a millisecond. World.ChildReceived now signals the receive's return and the kill is drawn over 2 ms from it: 4 of 8 seeds cut the root in both arenas. just check passes at 323c65ed.
+
+Merged into main as 9d084d00 with doc conflicts resolved (peer server naming combined with step 10's cache-disk status). just check on main passed, exit 0, including TLC and the shared-arena run.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
