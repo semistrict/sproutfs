@@ -36,4 +36,11 @@ Which hosts are in the cluster, with their identity, peer-server address, weight
 - [ ] #6 The step-4 list of caches, the separate cache identity in /status and GET /caches are removed or folded into the membership; docs/context.md defines membership and generation, and docs/hosting.md, docs/volumes.md and the talk use the new terms
 - [ ] #7 spec/diskcache models the membership as one CAS-updated object with generations and checks that no stripe is placed or served under different memberships, with a mutant that drops the generation check; every TLC run ends within a couple of minutes
 - [ ] #8 Tests follow repo practice: synctest over platform/sim, Buggify sites with probes a campaign asserts (lost CAS replies, stale holders, store outages), sim.Bug guards in scripts/mutation/guards.json, Gremlins on the new code, and the fingerprint test stays stable under shake
+- [ ] #9 The membership also holds which network disk (cache shard) each member serves, with a state per disk (attaching, serving, releasing), changed only by compare-and-set on the generation: a disk is released before it is assigned again, a member serves a disk only under the generation that assigns it to that member, and replies name that generation so a member that lost a disk can never serve it again; tests cover two members both believing they hold a disk, lost replies and a stale server
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Owner, 2026-10-03: membership must include the assignment of remote disks to members, evolved linearizably by the same compare-and-set. Ranking stays over disk identities. The attach and detach themselves are TASK-86.
+<!-- SECTION:NOTES:END -->
