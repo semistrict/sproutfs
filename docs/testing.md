@@ -1624,7 +1624,7 @@ cache fills the disk to the floor, and a host beside it whose cache is empty
 has no room to promise a VM's staging. Judging promises by the space other
 writers leave now refuses a host that could wait for them.
 
-Three guards break how a host takes its disk:
+Four guards break how a host takes its disk:
 
 ```sh
 SPROUTFS_SIM_BUG=host-refuse-start-while-the-disk-is-held \
@@ -1633,13 +1633,19 @@ SPROUTFS_SIM_BUG=host-cache-share-a-file \
   go test ./host -run '^TestAHostClaimsACacheFileNoOtherHostHolds$' -count=1
 SPROUTFS_SIM_BUG=host-cache-on-another-filesystem \
   go test ./host -run '^TestACacheDirectoryOnAnotherFilesystemIsRefused$' -count=1
+SPROUTFS_SIM_BUG=host-pull-closed-with-the-machine \
+  go test ./host -run '^TestAPulledVMKeepsItsStopsCheckpointOnTheDisk$' -count=1
 ```
 
 The first refuses a host that another writer's space keeps from fitting now,
 which truncates its spill files as it exits, so the other writer never gives
 space back. The second opens the page cache's file without its lock, so two
 hosts on a node share it. The third accepts a cache directory the limiter does
-not measure.
+not measure. The fourth closes a pulled VM's pull when its machine ends. A stop
+ends the machine before it publishes, so the stop's checkpoint keeps nothing on
+the disk, and a VM opened on the same host again reads the pages it wrote last
+from the store. The GCE run of 2026-10-03 found this
+(docs/measurements/gce-deploy-cache-2026-10-03.md).
 
 Five guards break the list of caches:
 

@@ -19,8 +19,11 @@ func (vm *VM) Rooted() <-chan struct{} { return vm.rooted }
 // written since that checkpoint are not in it: they are this host's already, in
 // the overlay or in a pager. Every checkpoint this VM publishes from then on
 // keeps its pages in the same copy as it uploads them, so once published and
-// evicted they are read from the disk too. The caller closes the pull when the
-// VM stops running here. See checkpoint.Store.Pull.
+// evicted they are read from the disk too. The caller stops the pull's
+// fetching when the VM stops running here (checkpoint.Pull.StopFetching); the
+// keeping lasts until this handle closes, after its last publication, so the
+// checkpoint a stop or a host's shutdown publishes is kept too. A second Pull
+// replaces the first, which it closes. See checkpoint.Store.Pull.
 func (vm *VM) Pull(ctx context.Context) (*checkpoint.Pull, error) {
 	vm.mu.Lock()
 	index := vm.baseIndex
@@ -33,9 +36,25 @@ func (vm *VM) Pull(ctx context.Context) (*checkpoint.Pull, error) {
 		return nil, err
 	}
 	vm.mu.Lock()
+	replaced := vm.pull
 	vm.pull = pull
 	vm.mu.Unlock()
+	if replaced != nil {
+		replaced.Close()
+	}
 	return pull, nil
+}
+
+// closePull ends the keeping of this VM's pull, once nothing more of it will
+// be published.
+func (vm *VM) closePull() {
+	vm.mu.Lock()
+	pull := vm.pull
+	vm.pull = nil
+	vm.mu.Unlock()
+	if pull != nil {
+		pull.Close()
+	}
 }
 
 // pulling is the pull a publication of this VM keeps its pages in, nil for a

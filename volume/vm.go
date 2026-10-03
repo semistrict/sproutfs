@@ -316,6 +316,9 @@ func (vm *VM) Close(ctx context.Context) error {
 	vm.publishLocked()
 	vm.mu.Unlock()
 	err := vm.stop(ctx)
+	// The last publication has landed, or the wait for it was given up, so
+	// the pull keeps nothing more.
+	vm.closePull()
 	// The parent of a fork that never published gets its sealed pages back
 	// here: nothing inherited them in the end, so its next checkpoint takes
 	// them again. It does not get its pin back — nothing ever does — so a fork

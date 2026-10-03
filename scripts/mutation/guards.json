@@ -312,6 +312,12 @@
     "purpose": "Accept a cache directory on another filesystem than the scratch, which the one disk limiter does not measure."
   },
   {
+    "id": "host-pull-closed-with-the-machine",
+    "package": "host",
+    "run": "^TestAPulledVMKeepsItsStopsCheckpointOnTheDisk$",
+    "purpose": "Close a pulled VM's pull when its machine ends, so the checkpoint a stop publishes after that keeps nothing on the disk."
+  },
+  {
     "id": "orchestrator-code-follows-the-list",
     "package": "cmd/sproutfs-orchestrator",
     "run": "^TestADrainDoesNotChangeTheCode$",

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 
 	"github.com/semistrict/sproutfs/checkpoint"
+	"github.com/semistrict/sproutfs/platform/sim"
 )
 
 // ErrNotPulling reports a VM this host does not run, or runs without the mark
@@ -15,8 +16,10 @@ var ErrNotPulling = errors.New("host: the VM is not pulling its memory here")
 
 // pulling copies every page of the checkpoint a VM marked to pull started from
 // onto this host's disk. It runs beside the checkpoint loop and ends with it: a
-// stop, a migration away, a fence or the VMM's death ends the pull. The copy
-// stays on the disk, which gives it back only when it needs the space.
+// stop, a migration away, a fence or the VMM's death ends the copying. What
+// the VM publishes is kept on the disk until its handle closes, so the last
+// checkpoint of a stop or of the host's shutdown is kept too. The copy stays
+// on the disk, which gives it back only when it needs the space.
 //
 // The guest runs while the copy is made, and a fault never waits for it. Once
 // it is complete, a fault on a page of that checkpoint which is not resident —
@@ -59,7 +62,16 @@ func (h *Host) pulling(ctx context.Context, vmID string, entry *registration) {
 			"vm", vmID, "error", err)
 		return
 	}
-	defer pull.Close()
+	// The fetching ends with the machine, and the keeping with the VM's
+	// handle: a stop ends the machine before it publishes the VM's last
+	// checkpoint, and that checkpoint is kept on the disk like every other.
+	defer func() {
+		if sim.Bug(ctx, "host-pull-closed-with-the-machine") {
+			pull.Close()
+			return
+		}
+		pull.StopFetching()
+	}()
 	err = pull.Wait(ctx)
 	close(fetched)
 	if err == nil {
