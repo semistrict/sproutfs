@@ -5,7 +5,9 @@ import (
 	"cmp"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"hash/crc32"
 	"os"
@@ -47,6 +49,24 @@ var sink [sha256.Size]byte
 
 var calibrationSteps = []string{"sha256", "decode", "crc32c", "copy", "split 4+2", "join 4 data",
 	"join 2 data 2 parity", "noise", "compare"}
+
+func runCalibrate(ctx context.Context, args []string) error {
+	flags := flag.NewFlagSet("calibrate", flag.ContinueOnError)
+	each := flags.Duration("for", time.Second, "how long each step is timed")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	timed, err := calibrate(ctx, *each)
+	if err != nil {
+		return err
+	}
+	encoded, err := json.MarshalIndent(timed, "", "  ")
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Println(string(encoded))
+	return err
+}
 
 func (n *node) calibrate(ctx context.Context, request calibrateRequest) (calibration, error) {
 	return calibrate(ctx, time.Duration(request.Seconds*float64(time.Second)))

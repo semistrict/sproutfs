@@ -12,6 +12,9 @@
 //	    second, round after round, from the cluster and from the store: in
 //	    order, at random, and as a chain whose every read is named by the
 //	    bytes of the one before, a page or a fault run at a time.
+//	sproutfs-restorebench calibrate -for 1s
+//	    time each step of reading a page on this host's processor, and print
+//	    it as JSON.
 //
 // A node runs the real checkpoint store, page cache, peer server and table of
 // peers a host runs, over TCP and the real bucket. No VMM runs: a restore is
@@ -32,7 +35,7 @@ import (
 func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: sproutfs-restorebench node|drive [flags]")
+		fmt.Fprintln(os.Stderr, "usage: sproutfs-restorebench node|drive|calibrate [flags]")
 		os.Exit(2)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -43,8 +46,10 @@ func main() {
 		err = runNode(ctx, os.Args[2:])
 	case "drive":
 		err = runDrive(ctx, os.Args[2:])
+	case "calibrate":
+		err = runCalibrate(ctx, os.Args[2:])
 	default:
-		fmt.Fprintf(os.Stderr, "unknown mode %q: want node or drive\n", os.Args[1])
+		fmt.Fprintf(os.Stderr, "unknown mode %q: want node, drive or calibrate\n", os.Args[1])
 		os.Exit(2)
 	}
 	if err != nil {
