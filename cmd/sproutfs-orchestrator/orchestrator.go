@@ -18,6 +18,7 @@ import (
 	"github.com/semistrict/sproutfs/api/orch"
 	"github.com/semistrict/sproutfs/internal/ctxsync"
 	"github.com/semistrict/sproutfs/internal/handover"
+	"github.com/semistrict/sproutfs/rank"
 	"github.com/semistrict/sproutfs/volume"
 )
 
@@ -162,6 +163,15 @@ type orchestrator struct {
 	resumeMu sync.Mutex
 	resuming map[string]bool
 	resumes  sync.WaitGroup
+
+	// code is the deployment's code, as configured. The zero code is the
+	// table's for the most caches this orchestrator has listed.
+	code rank.Code
+	// caches is the cache each listed host pod last reported, by pod name,
+	// and mostCaches the most it has held at once since this process started.
+	cacheMu    sync.Mutex
+	caches     map[string]host.Cache
+	mostCaches int
 }
 
 const (
@@ -385,12 +395,14 @@ func (o *orchestrator) fanOut(ctx context.Context, remember bool) ([]liveHost, e
 			hosts[index].report.Store = status.Store
 			hosts[index].vms = status.VMs
 			hosts[index].templates = status.Templates
+			hosts[index].report.Cache = status.Cache
 			if status.PageAddress != "" {
 				hosts[index].report.Page = status.PageAddress
 			}
 		})
 	}
 	wg.Wait()
+	o.noteCaches(ctx, hosts)
 	o.surveyMu.Lock()
 	if remember {
 		o.recentHosts, o.recentAt = hosts, time.Now()

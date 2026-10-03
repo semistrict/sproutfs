@@ -47,6 +47,10 @@ type Host struct {
 	// Store is what that host's object store has served since it started, per
 	// operation. It is what a checkpoint model costs in object traffic.
 	Store host.Store `json:"store"`
+	// Cache is the host's disk cache as it last reported it, which is what
+	// the list of caches names it by. A host that did not answer this survey
+	// keeps the cache it reported before.
+	Cache *host.Cache `json:"cache,omitempty"`
 }
 
 // VM is one VM as the orchestrator assembled it: a control record in the

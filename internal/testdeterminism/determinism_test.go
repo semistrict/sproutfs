@@ -37,6 +37,8 @@ var checked = []string{
 	// The disk limiter decides when the cache gives space back and which of
 	// its writes are refused.
 	"resource",
+	// Which hosts hold a window, and when a host takes a new list of caches.
+	"rank",
 }
 
 // forbiddenImports are the packages that draw from a source no seed reaches.

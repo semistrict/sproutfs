@@ -24,6 +24,7 @@ import (
 	"github.com/semistrict/sproutfs/internal/jsonhttp"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/adapters"
+	"github.com/semistrict/sproutfs/rank"
 	"github.com/semistrict/sproutfs/volume"
 )
 
@@ -54,6 +55,10 @@ type config struct {
 	// that outlives the pod. Nothing in it is authority: it is rebuilt from a
 	// survey and the bucket every time this process starts.
 	TablePath string
+	// CacheCode is the deployment's code for the hosts' disk caches, set for
+	// the size the cluster usually runs at. Zero takes the table's code for the
+	// most caches this orchestrator has listed since it started.
+	CacheCode rank.Code
 }
 
 func loadConfig(lookup func(string) string) (config, error) {
@@ -88,6 +93,11 @@ func loadConfig(lookup func(string) string) (config, error) {
 		HostAPIPort:  port("SPROUTFS_HOST_API_PORT", 8080),
 		HostPagePort: port("SPROUTFS_HOST_PAGE_SERVER_PORT", 8081),
 		TablePath:    text("SPROUTFS_TABLE_PATH", "/var/lib/sproutfs/orchestrator.db"),
+	}
+	if code := text("SPROUTFS_CACHE_CODE", ""); code != "" {
+		if c.CacheCode, err = rank.ParseCode(code); err != nil {
+			errs = append(errs, fmt.Errorf("SPROUTFS_CACHE_CODE: %w", err))
+		}
 	}
 	if len(errs) > 0 {
 		return config{}, errors.Join(errs...)
@@ -148,7 +158,7 @@ func run() error {
 		pods: pods, records: &bucketRecords{objects: objects, control: records},
 		dial: dialHost(hosts, config.HostAPIPort, token), identify: newIdentity,
 		apiPort: config.HostAPIPort, pagePort: config.HostPagePort, table: catalog,
-		audit: auditing(objects),
+		audit: auditing(objects), code: config.CacheCode,
 	}
 	// The table is rebuilt from the deployment itself before anything is
 	// served — a file left by a previous process describes a cluster that has

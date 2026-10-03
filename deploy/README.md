@@ -221,7 +221,8 @@ by itself.
 | Method | Path | What it does |
 | ------ | ---- | ------------ |
 | GET | `/healthz` | readiness |
-| GET | `/hosts` | every host pod, what it runs, what it still serves, its pager's residency and sharing, and why it did not answer if it did not |
+| GET | `/hosts` | every host pod, what it runs, what it still serves, its pager's residency and sharing, its disk cache, and why it did not answer if it did not |
+| GET | `/caches` | the list of caches every host reads on a timer: the deployment's code and each host pod's disk cache as it last reported it. See [the list of caches](../docs/hosting.md#the-list-of-caches) |
 | GET | `/vms` | every VM, with the host running it or none when its host is gone. A VM exists exactly while its control record does, so a deleted VM is simply absent |
 | POST | `/templates` | the guest image as the body, `?memory=`: stream it to the ready host with the most memory free, which imports it; reports the template's identity, which any create then takes as its `template` |
 | POST | `/vms` | `{"template","memory"?,"disk"?,"vcpus"?,"ephemeral"?,"nested"?}`: allocate a ULID and create the VM at that shape on the host whose guests have promised the least of its arena, refusing with 503 when the VM's RAM — what it asks for, or else its template's — fits on none. `{"from":{"vm","checkpoint"?},...}` creates it from another VM's published checkpoint instead, such as a stopped VM's. Its RAM is then that VM's unless it asks for its own, and the table records that VM as its parent. A checkpoint with VMM state resumes the guest where its pause left it, unless the create names a shape, and `resumed` in the result says so; any other create boots cold. The checkpoint may be the one that VM's record selects, one it keeps, or one a fork already pinned. `nested` (experimental) makes a nested VM; a migration of one, a drain's included, stops it and boots it cold on the destination, and says `rebooted` |
@@ -457,6 +458,7 @@ read-only at `/usr/share/sproutfs/guest`.
 | `SPROUTFS_HOST_API_PORT` | literal | `8080` | port it calls on a host pod |
 | `SPROUTFS_HOST_PAGE_SERVER_PORT` | literal | `8081` | port it names when it tells one host to migrate to another |
 | `SPROUTFS_TABLE_PATH` | literal | `/var/lib/sproutfs/orchestrator.db` | the SQLite file holding the VM table, on a `hostPath` under `/opt/sproutfs-demo/orchestrator` so that a restarted pod does not forget a migration that was in flight. It is rebuilt from a survey at startup. Losing it costs only what it alone keeps: a VM's RAM after a cold start resized it, and the pull mark of a VM nothing runs. The orchestrator Deployment uses `strategy: Recreate` and one replica: one process writes this file |
+| `SPROUTFS_CACHE_CODE` | unset | | the code of the hosts' disk caches, `k+m` such as `4+2`, set for the size the cluster usually runs at. Unset, the code for the most caches the orchestrator has listed since it started |
 | `SPROUTFS_GCS_ENDPOINT` | unset | | a GCS emulator to use instead of the ambient Google credentials |
 | `SPROUTFS_OBJECT_STORE` | unset | `gcs` | the object store provider, `gcs` or `s3` |
 | `SPROUTFS_S3_ENDPOINT` | unset | | an S3-compatible server to use instead of S3 |

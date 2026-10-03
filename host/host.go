@@ -13,8 +13,9 @@
 // images into the templates VMs are forked from, and reaches the agent inside a
 // guest.
 //
-// Hosts reach each other over Config.Network. A host holds no admitted identity
-// and keeps no view of its peers: the only address it ever dials is the
+// Hosts reach each other over Config.Network. A host holds no admitted
+// identity. Its one view of its peers is the list of caches it reads from the
+// orchestrator, which nothing dials yet: the only address it ever dials is the
 // page-server address a handoff carries, and the page server serves whoever
 // that network's transport accepts. Over plain TCP that is anyone who reaches
 // the port, so restricting it to hosts is the cluster's network policy; a
@@ -36,6 +37,7 @@ import (
 	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/internal/blob"
 	"github.com/semistrict/sproutfs/platform"
+	"github.com/semistrict/sproutfs/rank"
 	"github.com/semistrict/sproutfs/resource"
 	"github.com/semistrict/sproutfs/vmmemory"
 	"github.com/semistrict/sproutfs/vmmigrate"
@@ -100,7 +102,10 @@ type Config struct {
 	// when it gives regions back. Without one, the disk's share is
 	// Cache.DiskBytes.
 	DiskLimiter *resource.DiskLimiter
-	Volumes     VolumeConfig
+	// CacheList is where this host reads the list of caches in the cluster,
+	// and how often. Without a reader the host holds its own cache alone.
+	CacheList CacheListConfig
+	Volumes   VolumeConfig
 	// CheckpointInterval is how often every VM this host runs is checkpointed: the
 	// vCPUs pause for the VMM state capture and the seal, the guest resumes, and
 	// the sealed pages upload behind it. It is the only thing that makes a
@@ -169,7 +174,11 @@ type Host struct {
 	cache     *checkpoint.Cache
 	// cacheFit shrinks the page cache's disk when the disk limiter asks, nil
 	// where the host has no limiter or the cache keeps no disk.
-	cacheFit    *cacheFitter
+	cacheFit *cacheFitter
+	// self is this host's cache as the list of caches names it, zero where
+	// the host keeps none, and caches the list of caches it holds.
+	self        rank.Cache
+	caches      *rank.Follower
 	control     *control.Client
 	checkpoints *checkpoint.Store
 	volumes     *volume.Manager
@@ -390,6 +399,11 @@ func StartHost(ctx context.Context, config Config) (*Host, error) {
 			return nil, err
 		}
 	}
+	// The host holds its own cache alone until it reads the list of caches,
+	// and keeps the last list it read whenever a read fails.
+	h.self = cacheOf(hostCtx, config, h.cache.Stats().Disk.Identity)
+	h.caches = rank.NewFollower(hostCtx, rank.FollowerConfig{Initial: rank.Alone(h.self),
+		Read: config.CacheList.Read, Interval: config.CacheList.Interval, Clock: h.clock})
 	// Publication encodes and the fault path decodes through pools of their
 	// own, so a guest's page fault never waits behind a checkpoint's encoding.
 	codecs, err := blob.NewCodecs(encodeWorkers(), decodeWorkers())
@@ -473,7 +487,11 @@ type Status struct {
 	// it fills, which is separate from Resources.
 	Cache      checkpoint.CacheStats
 	CacheLimit int64
-	Volumes    volume.Stats
+	// Self is this host's cache as the list of caches names it, zero where
+	// the host keeps none, and Caches the list it holds and how it read it.
+	Self    rank.Cache
+	Caches  rank.FollowerStatus
+	Volumes volume.Stats
 	// Pages is what this host's migration page server has answered, and Serving
 	// every handover this host still holds pages for: the VMs it migrated away
 	// and the children of every fork point it took, wherever those children
@@ -550,6 +568,10 @@ func (h *Host) Status() Status {
 	}
 	if h.cache != nil {
 		status.Cache = h.cache.Stats()
+	}
+	status.Self = h.self
+	if h.caches != nil {
+		status.Caches = h.caches.Status()
 	}
 	if h.volumes != nil {
 		status.Volumes = h.volumes.Stats()
@@ -727,6 +749,9 @@ func (h *Host) shutdown() {
 	}
 	if h.cacheFit != nil {
 		h.cacheFit.stop()
+	}
+	if h.caches != nil {
+		h.caches.Close()
 	}
 	if h.cache != nil {
 		h.cache.Close()

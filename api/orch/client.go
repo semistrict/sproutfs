@@ -44,6 +44,12 @@ func (c *Client) Hosts(ctx context.Context) ([]Host, error) {
 	return jsonhttp.Call[[]Host](ctx, c.http, http.MethodGet, c.path("/hosts"), nil)
 }
 
+// Caches reads the list of caches and the deployment's code, which every host
+// reads on a timer and ranks windows by.
+func (c *Client) Caches(ctx context.Context) (host.Caches, error) {
+	return jsonhttp.Call[host.Caches](ctx, c.http, http.MethodGet, c.path("/caches"), nil)
+}
+
 // VMs reports the deployment's VMs, which are the control records in the
 // deployment's bucket: a record exists exactly while its VM does.
 func (c *Client) VMs(ctx context.Context) ([]VM, error) {

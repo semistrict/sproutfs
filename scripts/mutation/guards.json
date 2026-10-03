@@ -262,5 +262,35 @@
     "package": "checkpoint",
     "run": "^TestDiskScansARegionWhoseTableIsTorn$",
     "purpose": "Give back a disk region whose table is torn without scanning its items."
+  },
+  {
+    "id": "rank-forget-list-on-failure",
+    "package": "rank",
+    "run": "^TestAHostKeepsItsListWhileTheOrchestratorIsDown$",
+    "purpose": "Go back to the host's own cache alone when a read of the list of caches fails, instead of keeping the last list read."
+  },
+  {
+    "id": "rank-keep-first-list",
+    "package": "rank",
+    "run": "^TestAHostReadsTheListAtOnceAndThenOnItsTimer$",
+    "purpose": "Keep the first list of caches read and ignore every later one."
+  },
+  {
+    "id": "host-weight-from-share",
+    "package": "host",
+    "run": "^TestACachesWeightIsItsDiskNotItsShare$",
+    "purpose": "Weigh the host's cache by the disk limiter's moving share instead of the disk it is given."
+  },
+  {
+    "id": "orchestrator-code-follows-the-list",
+    "package": "cmd/sproutfs-orchestrator",
+    "run": "^TestADrainDoesNotChangeTheCode$",
+    "purpose": "Take the code from the caches listed now, so a drain changes it and every stripe becomes a miss."
+  },
+  {
+    "id": "orchestrator-drop-quiet-cache",
+    "package": "cmd/sproutfs-orchestrator",
+    "run": "^TestAQuietHostStaysInTheListOfCaches$",
+    "purpose": "Drop the cache of a host pod that did not answer one survey from the list of caches."
   }
 ]

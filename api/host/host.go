@@ -16,6 +16,8 @@ import (
 	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/internal/jsonhttp"
 	"github.com/semistrict/sproutfs/internal/latency"
+	"github.com/semistrict/sproutfs/platform"
+	"github.com/semistrict/sproutfs/rank"
 )
 
 // StoreCount is what one object-store operation did: every call made, the ones
@@ -574,6 +576,84 @@ type Status struct {
 	Store     Store      `json:"store"`
 	// Disk is what the disk limiter chose.
 	Disk Disk `json:"disk"`
+	// Cache is this host's disk cache as the list of caches names it: its
+	// identity, its weight and its page-server address. It is absent on a
+	// host that keeps no cache disk.
+	Cache *Cache `json:"cache,omitempty"`
+	// Caches is the list of caches this host holds, and how it read it.
+	Caches CacheList `json:"caches"`
+}
+
+// Cache is one host's disk cache in the list of caches.
+type Cache struct {
+	// Identity is the cache's identity, in hex: a random value in its file's
+	// header, which a restart over the same file keeps.
+	Identity string `json:"identity"`
+	// Weight is the cache's share of windows against the others, from the
+	// size of the disk it is given in steps of 16 GiB.
+	Weight uint32 `json:"weight"`
+	// Address is where the cache's host serves pages.
+	Address string `json:"address"`
+}
+
+// Caches is the list of caches: the deployment's code, k data stripes and m
+// parity stripes, and every cache in identity order. The orchestrator serves
+// it at GET /caches.
+type Caches struct {
+	K      int     `json:"k"`
+	M      int     `json:"m"`
+	Caches []Cache `json:"caches"`
+}
+
+// CacheList is the list of caches a host holds and ranks windows by, and how
+// it read it. A host that has read none holds itself alone. A read that fails
+// keeps the list held.
+type CacheList struct {
+	Caches
+	// Read is when the last read that succeeded finished, absent before any.
+	Read *time.Time `json:"read,omitempty"`
+	// Reads counts the reads that succeeded and Failures those that did not.
+	// Error is why the last read failed, empty when it succeeded.
+	Reads    uint64 `json:"reads"`
+	Failures uint64 `json:"failures"`
+	Error    string `json:"error,omitempty"`
+}
+
+// CacheOf is a cache as the wire carries it.
+func CacheOf(cache rank.Cache) Cache {
+	return Cache{Identity: cache.Identity.String(), Weight: cache.Weight, Address: string(cache.Address)}
+}
+
+// Rank reads a cache off the wire.
+func (c Cache) Rank() (rank.Cache, error) {
+	identity, err := rank.ParseIdentity(c.Identity)
+	if err != nil {
+		return rank.Cache{}, err
+	}
+	return rank.Cache{Identity: identity, Weight: c.Weight, Address: platform.Address(c.Address)}, nil
+}
+
+// CachesOf is a list of caches as the wire carries it.
+func CachesOf(list rank.List) Caches {
+	caches := make([]Cache, 0, list.Len())
+	for _, cache := range list.Caches() {
+		caches = append(caches, CacheOf(cache))
+	}
+	return Caches{K: list.Code().K, M: list.Code().M, Caches: caches}
+}
+
+// List reads a list of caches off the wire, refusing one no host could rank
+// windows by.
+func (c Caches) List() (rank.List, error) {
+	caches := make([]rank.Cache, 0, len(c.Caches))
+	for _, cache := range c.Caches {
+		read, err := cache.Rank()
+		if err != nil {
+			return rank.List{}, err
+		}
+		caches = append(caches, read)
+	}
+	return rank.NewList(rank.Code{K: c.K, M: c.M}, caches)
 }
 
 // Disk is what the host's disk limiter chose at its last reading of the disk,

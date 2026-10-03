@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-03 03:41'
-updated_date: '2026-10-03 04:53'
+updated_date: '2026-10-03 06:11'
 labels:
   - performance
   - storage
@@ -60,6 +60,8 @@ Follows plans/disk-cache-2026-10-02.md, step by step; each step is its own commi
 10. Deployment and docs.
 Measurements on GCE: the 4+1/4+2 microbenchmark before step 5, the copy cost before step 8, the 8 GiB restore after step 7.
 Steps 0, 1 and 2 run in parallel in separate worktrees; the limiter and the log meet at one interface the cache defines.
+
+Step 4 (Ranks): a package rank holds the cache identity, the code (k, m) and its table for small clusters, the weight (configured disk rounded to a coarse step), windows (volume, aligned 2 MiB span, checkpoint; a segment its own), and List.Ranks/Holders by weighted rendezvous with an integer fixed-point -log2 so every host and architecture ranks alike; a rank.Follower keeps the last list a source gave on the host's clock and keeps it when the source fails. The host reports its identity, weight and page address in /status with the list it holds; the orchestrator's survey keeps each listed pod's last cache and serves GET /caches with the configured code or the table's for the most caches it has listed. Reads and fills do not change. Tests: property tests for ranks, synctest+sim.Scheduler campaign for followers with Buggify sites and probes, orchestrator tests, sim.Bug guards, Gremlins on rank.
 <!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
@@ -80,4 +82,10 @@ Research behind the plan: docs/research/*-2026-10-02.md.
 Step 1 done (fc2f6dd3, merged 0c331740): resource.DiskLimiter with combined goals, smoothing, the band, hysteresis, spill promises counted whole, write budget from platform.DeviceWrites; host wiring, /status and /metrics, settings SPROUTFS_DISK_FREE_BYTES/_FREE_PERCENT/_USED_BYTES/_BAND_BYTES and SPROUTFS_CACHE_WRITE_BYTES_PER_DAY/_BURST_BYTES (default keeps 10 % free). sim.Disk gained filesystem size, drifting outside writers and a device write counter. Six disklimit-* guards; Gremlins on resource: 167 to 198 killed, the rest judged equivalent. Not yet connected to the page cache; SPROUTFS_CACHE_DISK_BYTES still counted. deploy/10-host.yaml's per-concern comment is out of date until step 10.
 
 2026-10-03: the read path asks k+1 of the first k+m ranks, chosen by a hash of the reader and the window, and the rest only after an adaptive delay (about p95 of recent stripe latency) under a FoundationDB-style budget (+1/20 per read within the delay, -1 per second request). Holders return any index of the window they hold and readers decode from any k (B5 from spec/diskcache). Repair sends only an index no rank holds. Why: the stripe benchmark (docs/measurements/gce-stripes-2026-10-03.md) showed asking all k+m holders makes 4+2's tail worse than whole reads at 9,000 reads/s (p99 110 ms, p99.9 466 ms), while 4+2 is the only code that survives a drained and a slow host together. The benchmark gains this read pattern and its full-load pass runs again before step 7. The transport work is TASK-82.
+
+Step 4 done, Ranks: package rank (identity, code table, weight, windows, weighted rendezvous ranks in integer arithmetic), rank.Follower on each host, cache and caches in host /status, GET /caches on the orchestrator. Reads and fills unchanged.
+
+Step 4 details. The weight is DiskLimiter.Capacity read once at start, never the share. The orchestrator keeps a quiet pod's last cache, drops pods no longer listed, lists a duplicate identity once, and takes SPROUTFS_CACHE_CODE or the table's code for the most caches listed since it started, so a drain keeps the code.
+
+Step 4 testing. Guards rank-forget-list-on-failure, rank-keep-first-list, host-weight-from-share, orchestrator-code-follows-the-list and orchestrator-drop-quiet-cache, each killed by its named test. Mutation runs: rank 58 then 60 killed of 68, eight survivors equivalent; orchestrator caches.go 7 then 8 of 8, run with the integration flag because the tool names nested cmd packages wrongly; host caches.go 4 of 4.
 <!-- SECTION:NOTES:END -->
