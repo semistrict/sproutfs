@@ -95,7 +95,12 @@ type Config struct {
 	// DefaultCacheBytes.
 	CacheBytes int64
 	Cache      checkpoint.CacheConfig
-	Volumes    VolumeConfig
+	// DiskLimiter, where there is one, sets the page cache's disk: its share,
+	// under Cache.DiskBytes where that is set, which writes it may make, and
+	// when it gives regions back. Without one, the disk's share is
+	// Cache.DiskBytes.
+	DiskLimiter *resource.DiskLimiter
+	Volumes     VolumeConfig
 	// CheckpointInterval is how often every VM this host runs is checkpointed: the
 	// vCPUs pause for the VMM state capture and the seal, the guest resumes, and
 	// the sealed pages upload behind it. It is the only thing that makes a
@@ -157,11 +162,14 @@ type Config struct {
 // volume manager that opens VMs from their control records, and the migration
 // page server.
 type Host struct {
-	resources   *resource.Budget
-	ctx         context.Context
-	cancel      context.CancelCauseFunc
-	network     platform.Network
-	cache       *checkpoint.Cache
+	resources *resource.Budget
+	ctx       context.Context
+	cancel    context.CancelCauseFunc
+	network   platform.Network
+	cache     *checkpoint.Cache
+	// cacheFit shrinks the page cache's disk when the disk limiter asks, nil
+	// where the host has no limiter or the cache keeps no disk.
+	cacheFit    *cacheFitter
 	control     *control.Client
 	checkpoints *checkpoint.Store
 	volumes     *volume.Manager
@@ -363,9 +371,18 @@ func StartHost(ctx context.Context, config Config) (*Host, error) {
 	if err != nil {
 		return nil, err
 	}
-	h.cache, err = checkpoint.NewCache(cacheBudget, cacheSizing(config))
+	sizing := cacheSizing(config)
+	if config.DiskLimiter != nil {
+		sizing.Budget = cacheShare{limiter: config.DiskLimiter, cap: sizing.DiskBytes}
+	}
+	h.cache, err = checkpoint.NewCache(cacheBudget, sizing)
 	if err != nil {
 		return nil, err
+	}
+	if config.DiskLimiter != nil && sizing.Disk != nil {
+		if h.cacheFit, err = fitCacheDisk(h.ctx, config.DiskLimiter, h.cache); err != nil {
+			return nil, err
+		}
 	}
 	// Publication encodes and the fault path decodes through pools of their
 	// own, so a guest's page fault never waits behind a checkpoint's encoding.
@@ -701,6 +718,9 @@ func (h *Host) shutdown() {
 	}
 	if h.volumes != nil {
 		errs = append(errs, h.volumes.Close(context.Background()))
+	}
+	if h.cacheFit != nil {
+		h.cacheFit.stop()
 	}
 	if h.cache != nil {
 		h.cache.Close()

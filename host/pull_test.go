@@ -5,10 +5,13 @@ import (
 	"encoding/binary"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/semistrict/sproutfs/checkpoint"
 	"github.com/semistrict/sproutfs/host"
 	"github.com/semistrict/sproutfs/platform"
+	"github.com/semistrict/sproutfs/platform/sim"
+	"github.com/semistrict/sproutfs/resource"
 	"github.com/semistrict/sproutfs/vmmemory"
 	"github.com/semistrict/sproutfs/volume"
 )
@@ -44,6 +47,14 @@ func pullPage(page uint64) []byte {
 // the counted reads, the pagers, the running guest, its handle and the host.
 func pulledRun(t *testing.T, diskBytes int64) (*countedObjects, *hostPagers, *machine, *volume.VM, *hostHarness) {
 	t.Helper()
+	return pulledRunWith(t, diskBytes, nil)
+}
+
+// pulledRunWith is pulledRun with a last say over the second host's
+// configuration before it starts.
+func pulledRunWith(t *testing.T, diskBytes int64,
+	configure func(h *hostHarness)) (*countedObjects, *hostPagers, *machine, *volume.VM, *hostHarness) {
+	t.Helper()
 	h := newSizedHostHarness(t, 2)
 	counted := &countedObjects{ObjectStore: h.configs[1].ObjectStore}
 	h.configs[1].ObjectStore = counted
@@ -57,6 +68,9 @@ func pulledRun(t *testing.T, diskBytes int64) (*countedObjects, *hostPagers, *ma
 	pagers := newPagerWithConfig(t, h.configs[1].Resources, vmmemory.Config{
 		ResidentPages: pullResident, LogicalPages: 2 * pullPages, DirtyPages: pullResident, ReadAheadPages: 1})
 	h.configs[1].Pagers = pagers.pagers
+	if configure != nil {
+		configure(h)
+	}
 	h.start(t)
 
 	vm, err := h.hosts[0].Volumes().Create(t.Context(), "vm-1", pullVolumes)
@@ -265,5 +279,60 @@ func TestAMigrationCarriesThePullMark(t *testing.T) {
 	}
 	if _, err := h.hosts[1].WaitPulled(t.Context(), "vm-2"); !errors.Is(err, host.ErrNotPulling) {
 		t.Fatalf("waiting on the pull of a VM without the mark returned %v, want %v", err, host.ErrNotPulling)
+	}
+}
+
+// The disk limiter sets the page cache's disk and takes it back. A pulled VM's
+// pages are on its host's disk while the disk has room; once the disk fills
+// from outside the host, the limiter's share falls to nothing, the cache gives
+// every region back, and the VM's faults read the object store again.
+func TestTheDiskLimiterTakesThePageCachesDiskBack(t *testing.T) {
+	{
+		var limiter *resource.DiskLimiter
+		var clock *sim.Clock
+		counted, _, guest, _, h := pulledRunWith(t, 0, func(h *hostHarness) {
+			var err error
+			clock = h.runtime.NewClock("limiter")
+			limiter, err = resource.NewDiskLimiter(t.Context(), resource.DiskLimiterConfig{Space: h.disks[1],
+				Goal: resource.DiskGoal{FreeBytes: 64 << 20}, Region: 8 << 20, Clock: clock})
+			if err != nil {
+				t.Fatal(err)
+			}
+			h.configs[1].DiskLimiter = limiter
+		})
+		defer limiter.Close()
+		stats, err := h.hosts[1].WaitPulled(t.Context(), "vm-1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !stats.Done || stats.Err != nil || stats.Pulled != stats.Bytes {
+			t.Fatalf("the pull ended at %+v, want the whole checkpoint on the disk", stats)
+		}
+		// Six incompressible pages of 2 MiB take two regions of 8 MiB.
+		if disk := h.hosts[1].Status().Cache.Disk; disk.UsedBytes != 16<<20 || disk.LimitBytes != limiter.CacheShare() {
+			t.Fatalf("the page cache's disk holds %d bytes of a share of %d, want two regions of the limiter's %d",
+				disk.UsedBytes, disk.LimitBytes, limiter.CacheShare())
+		}
+
+		// The limiter acts on readings smoothed over a minute, so the disk stays
+		// full for ten minutes of the limiter's clock.
+		h.disks[1].SetOutsideBytes(limiter.Status().TotalBytes)
+		for range 10 {
+			clock.Advance(time.Minute)
+			clock.Settle()
+			if err := limiter.Refresh(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if disk := h.hosts[1].Status().Cache.Disk; disk.UsedBytes != 0 || disk.LimitBytes != 0 {
+			t.Fatalf("the page cache's disk holds %d bytes of a share of %d once the disk is full, want none of none",
+				disk.UsedBytes, disk.LimitBytes)
+		}
+		counted.reset()
+		readPulled(t, guest)
+		if gets := counted.count(); gets != pullPages+1 {
+			t.Fatalf("faulting the pages in after the disk was taken back made %d requests of the object store, "+
+				"want one a page and one for the segment, %d", gets, pullPages+1)
+		}
 	}
 }

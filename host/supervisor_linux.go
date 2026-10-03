@@ -215,19 +215,18 @@ func Start(ctx context.Context, config SupervisorConfig) (Service, error) {
 		return nil, fmt.Errorf("vmm scratch: %w", err)
 	}
 	// The page cache's disk is scratch too: a restart is a host loss, so it
-	// starts empty, and nothing on it is ever durable.
-	if config.CacheDiskBytes > 0 {
-		s.cacheDisk, err = config.Disk.Open(ctx, "cache",
-			platform.OpenOptions{Create: true, Truncate: true, Permissions: 0o600})
-		if err != nil {
-			return nil, fmt.Errorf("the page cache's disk: %w", err)
-		}
+	// starts empty, and nothing on it is ever durable. The disk limiter sets
+	// its share, under CacheDiskBytes where that is set.
+	s.cacheDisk, err = config.Disk.Open(ctx, "cache",
+		platform.OpenOptions{Create: true, Truncate: true, Permissions: 0o600})
+	if err != nil {
+		return nil, fmt.Errorf("the page cache's disk: %w", err)
 	}
 	// The disk limiter comes after every file it measures is open and before
 	// anything is written to them. A configuration whose promises the disk
 	// cannot keep is refused here, with nothing yet spilled.
 	s.disk, err = startDiskLimiter(ctx, config, diskUsers(config,
-		diskFiles{spills: s.spills, cacheDisk: s.cacheDisk}, s.runningVMMs, &s.staged))
+		diskFiles{spills: s.spills}, s.runningVMMs, &s.staged))
 	if err != nil {
 		return nil, err
 	}
@@ -242,6 +241,7 @@ func Start(ctx context.Context, config SupervisorConfig) (Service, error) {
 		Entropy:            config.Entropy,
 		CacheBytes:         config.CacheBytes,
 		Cache:              checkpoint.CacheConfig{Disk: s.cacheDisk, DiskBytes: config.CacheDiskBytes},
+		DiskLimiter:        s.disk,
 		CheckpointInterval: config.CheckpointInterval,
 		LossWindow:         config.LossWindow,
 		FlushBound:         config.FlushBound,

@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 
 	hostapi "github.com/semistrict/sproutfs/api/host"
+	"github.com/semistrict/sproutfs/checkpoint"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/resource"
 	"github.com/semistrict/sproutfs/vmmachine"
@@ -22,21 +23,18 @@ const stagingRegion = 64 << 20
 const (
 	promiseVMMStaging   = "vmm-staging"
 	promiseStagedImages = "staged-images"
-	promisePageCache    = "page-cache-disk"
 )
 
 // diskFiles are the files of the host's disk a promise is measured by: each
-// pager's spill file, and the page cache's disk where there is one.
+// pager's spill file.
 type diskFiles struct {
-	spills    map[pagerSlot]platform.File
-	cacheDisk platform.File
+	spills map[pagerSlot]platform.File
 }
 
 // diskUsers is every user of the host's disk that cannot give space back:
 //
 //   - each pager's spill file, at the dirty pages it may hold, which is what the
 //     pager sizes it to;
-//   - the page cache's disk, at its cap, until the limiter is connected to it;
 //   - each running VMM's staging, at the largest state a capture may write;
 //   - the images staged for an import, at what they hold.
 //
@@ -53,10 +51,6 @@ func diskUsers(config SupervisorConfig, files diskFiles, running func() int, sta
 	spill(pmemPager, pagerConfig(config, vmmemory.Pmem))
 	if cfg := ephemeralPagerConfig(config); cfg != nil {
 		spill(ephemeralPager, *cfg)
-	}
-	if limit := config.CacheDiskBytes; limit > 0 {
-		users = append(users, resource.DiskUser{Name: promisePageCache,
-			Promised: func() int64 { return limit }, Allocated: allocation(files.cacheDisk)})
 	}
 	users = append(users,
 		resource.DiskUser{Name: promiseVMMStaging,
@@ -84,7 +78,7 @@ func startDiskLimiter(ctx context.Context, config SupervisorConfig, users []reso
 		return nil, fmt.Errorf("%w: the host's disk does not report its space", ErrInvalidConfig)
 	}
 	limiter, err := resource.NewDiskLimiter(ctx, resource.DiskLimiterConfig{Space: space, Goal: config.DiskGoal,
-		Users: users, MaxBandBytes: config.DiskBandBytes, Writes: config.DiskWrites, Device: config.DeviceWrites,
+		Users: users, Region: checkpoint.DefaultDiskRegionBytes, MaxBandBytes: config.DiskBandBytes, Writes: config.DiskWrites, Device: config.DeviceWrites,
 		Clock: config.Clock})
 	if err != nil {
 		return nil, fmt.Errorf("%w: the disk limiter: %w", ErrInvalidConfig, err)
@@ -156,3 +150,61 @@ func (w *stagedWriter) Write(p []byte) (int, error) {
 
 // release gives back the promise once the staged image is removed.
 func (w *stagedWriter) release() { w.staged.Add(-w.written) }
+
+// cacheShare is the page cache's disk budget as the host's disk limiter sets
+// it. The share is the limiter's, under the configured cap where there is one.
+// A write is admitted by the limiter's write budget, at the priority of its
+// kind: the cache's kinds of write are numbered lowest first, as the
+// limiter's priorities are.
+type cacheShare struct {
+	limiter *resource.DiskLimiter
+	cap     int64
+}
+
+func (s cacheShare) Share() int64 {
+	share := s.limiter.CacheShare()
+	if s.cap > 0 {
+		share = min(share, s.cap)
+	}
+	return share
+}
+
+func (s cacheShare) Admit(n int64, kind checkpoint.WriteKind) bool {
+	return s.limiter.Admit(n, int(kind))
+}
+
+// cacheFitter is the page cache's disk as the limiter shrinks it. The cache
+// gives regions back, oldest first and with no second chance, until it holds
+// its share less one region, which is the target the limiter asks for, because
+// both count in the same regions. Giving a region back only closes and punches
+// it, so it is done in the limiter's own call: the limiter calls Shrink
+// outside its lock, and the cache reads the share without waiting on it.
+type cacheFitter struct {
+	ctx        context.Context
+	cache      *checkpoint.Cache
+	unregister func()
+}
+
+// fitCacheDisk registers the page cache's disk with the limiter.
+func fitCacheDisk(ctx context.Context, limiter *resource.DiskLimiter, cache *checkpoint.Cache) (*cacheFitter, error) {
+	f := &cacheFitter{ctx: ctx, cache: cache}
+	unregister, err := limiter.RegisterCache(f)
+	if err != nil {
+		return nil, err
+	}
+	f.unregister = unregister
+	return f, nil
+}
+
+func (f *cacheFitter) Held() int64 { return f.cache.Stats().Disk.UsedBytes }
+
+func (f *cacheFitter) Shrink(int64) {
+	if err := f.cache.FitDisk(f.ctx); err != nil && context.Cause(f.ctx) == nil {
+		slog.WarnContext(f.ctx, "host: giving the page cache's disk back to the limiter failed", "error", err)
+	}
+}
+
+// stop unregisters the cache, which must outlive any shrink the limiter has
+// already begun: the limiter holds no lock across Shrink, so the cache is
+// closed only after the host's context ends every fit in progress.
+func (f *cacheFitter) stop() { f.unregister() }

@@ -51,13 +51,15 @@ func openSpills(t *testing.T, ctx context.Context, config SupervisorConfig, disk
 	return files
 }
 
-// A host promises each spill file the dirty pages its pager may hold, the
-// page cache's disk its cap, each running VMM a state file as large as a
-// capture, and a staged image what it holds.
+// A host promises each spill file the dirty pages its pager may hold, each
+// running VMM a state file as large as a capture, and a staged image what it
+// holds. The page cache's disk is no promise: it is the cache, which the
+// limiter gives what is left.
 func TestAHostPromisesItsDiskToWhatCannotGiveItBack(t *testing.T) {
 	config := deploymentConfig()
 	config.Ephemeral = EphemeralBudget{ArenaBytes: 256 * mib, DiskBytes: 2048 * mib}
 	config.CacheDiskBytes = 4096 * mib
+	// The cap bounds the cache. It promises nothing.
 	var staged atomic.Int64
 	staged.Store(5 * mib)
 	running := 3
@@ -73,7 +75,6 @@ func TestAHostPromisesItsDiskToWhatCannotGiveItBack(t *testing.T) {
 		{"spill-ram", 4608 * 2 * mib},
 		{"spill-pmem", 1536 * 2 * mib},
 		{"spill-ephemeral", 2048 * mib},
-		{promisePageCache, 4096 * mib},
 		{promiseVMMStaging, 3 * 64 * mib},
 		{promiseStagedImages, 5 * mib},
 	}

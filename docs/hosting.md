@@ -956,9 +956,6 @@ what they hold:
 - each pager's spill file, at the dirty pages it may hold, which is its share
   of `SPROUTFS_SPILL_BYTES`;
 - the ephemeral pager's spill file, `SPROUTFS_EPHEMERAL_BYTES`;
-- the page cache's disk, `SPROUTFS_CACHE_DISK_BYTES`, until the limiter is
-  connected to it. It gives its oldest regions back when it needs room, and a
-  VM larger than it can hold is not pulled;
 - each running VMM's staging, at the largest state a capture may write, 64 MiB;
 - an image staged for an import, at what it holds.
 
@@ -1018,12 +1015,13 @@ the write. So as the budget runs down, repairs are refused first and fills from
 publications last. A refused write costs a store read later, never a wrong
 byte.
 
-**The page cache is not connected to the limiter yet.** Its disk is still
-capped by `SPROUTFS_CACHE_DISK_BYTES`, which the limiter counts as a promise,
-and nothing asks the write budget. A later step connects them: the cache
-registers with the limiter (`RegisterCache`), holds at most `CacheShare()`,
-gives regions back when the limiter calls its `Shrink`, and asks `Admit` before
-each write.
+The page cache's disk is the cache. It is no promise: it holds what the
+limiter leaves, `CacheShare()`, under `SPROUTFS_CACHE_DISK_BYTES` where that is
+set. Each write it makes asks `Admit`, at the priority of its kind. When the
+share falls below what it holds, the limiter calls its `Shrink`, and the disk
+gives regions back, oldest first and with no second chance, until it holds its
+share less one region. A pull that does not fit in the share is refused before
+it fetches anything.
 
 - **VMM staging files** live in each process's own directory under the scratch,
   and are removed with the process. Configuration and restore files are removed
