@@ -1323,7 +1323,12 @@ Valkey guest whose first requests each wait on the page the last one named
 walked its 5 GiB heap in 22 s from the cluster and 56 s from the store: a
 fault's read took 30 ms against 92 ms, about half of it SHA-256 and zstd on
 hosts without SHA instructions
-([measurement](measurements/gce-real-app-restore-2026-10-03.md)).
+([measurement](measurements/gce-real-app-restore-2026-10-03.md)). In the
+bench, a chain of 2 MiB pages took 10.3 ms a hop from the cluster and
+41.5 ms from GCS, and a chain of 4 KiB pages 0.65 ms and 24.6 ms; the guest
+in order was 1.6 times as fast. A 2 MiB read from the cluster is mostly the
+reader's SHA-256 and copies, and SHA instructions took the hop to 6.5 ms
+([measurement](measurements/gce-dependent-reads-2026-10-03.md)).
 
 ## Reading through a hot tier
 

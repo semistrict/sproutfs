@@ -16,6 +16,22 @@ import (
 	"github.com/semistrict/sproutfs/checkpoint"
 )
 
+// A walk is a chain of single pages (see access.go) read on the second node
+// from the regional bucket, from a hot tier and from the cluster, and the hot
+// tier's fills on a cold run. The hot tier's copy of each guest is published
+// under a name of its own with the same bytes, so each round reads the same
+// chain of pages from every source.
+
+// walkSource is one place a walk reads from: the name results give it, and
+// the source the reader reads.
+type walkSource struct{ label, source string }
+
+var (
+	walkRegional = walkSource{"regional", sourceStore}
+	walkHot      = walkSource{"hot", sourceHot}
+	walkCluster  = walkSource{"cluster", sourceCluster}
+)
+
 // walkCase is one walk of one round: dependent single reads of one guest
 // from one source.
 type walkCase struct {
@@ -50,18 +66,17 @@ type walkResult struct {
 	Publish  []publishReply `json:"publish"`
 	Cold     []walkCase     `json:"cold"`
 	Cases    []walkCase     `json:"cases"`
-	Settled  []float64      `json:"cold_settled_seconds"`
 	HotStats []statsReply   `json:"after"`
 }
 
-// guestOf is a guest the walk publishes: its name, the noise its pages are
-// drawn from, its pages and their size, and whether its publication writes the
-// hot tier rather than filling the cluster.
-type guestOf struct {
-	vm, noise string
-	pages     uint64
-	pageBytes uint64
-	hot       bool
+// walkConfig is one walk run: the guests' pages, the reads of each walk, the
+// rounds, the cluster's code and the seed that orders each round and chooses
+// where its chains start.
+type walkConfig struct {
+	pages, pages4K uint64
+	reads, rounds  int
+	code           string
+	seed           uint64
 }
 
 // runWalk measures dependent single reads from the regional bucket, from a
@@ -74,98 +89,21 @@ func runWalk(ctx context.Context, args []string) error {
 	reads := flags.Int("reads", 500, "reads of one walk")
 	rounds := flags.Int("rounds", 3, "rounds of every case")
 	code := flags.String("code", "4+2", "the cluster's code")
-	seed := flags.Uint64("seed", 1, "orders each round's cases and chooses each round's first page")
+	seed := flags.Uint64("seed", 1, "orders each round's cases and chooses where each round's chains start")
 	out := flags.String("out", "walk.json", "where the results go")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	nodes := strings.Split(*nodesFlag, ",")
-	if len(nodes) < 2 {
-		return errors.New("walk needs at least two nodes")
-	}
 	client := &http.Client{Timeout: time.Hour}
-	var caches []identityReply
-	for _, address := range nodes {
-		var identity identityReply
-		if err := call(ctx, client, address, "GET", "/identity", nil, &identity); err != nil {
-			return err
-		}
-		caches = append(caches, identity)
+	var nodes []controller
+	for address := range strings.SplitSeq(*nodesFlag, ",") {
+		nodes = append(nodes, remote{client: client, address: address})
 	}
-	for _, address := range nodes {
-		if err := call(ctx, client, address, "POST", "/list", listRequest{Code: *code, Caches: caches}, nil); err != nil {
-			return err
-		}
-	}
-	result := walkResult{Pages: *pages, Pages4K: *pages4K, Reads: *reads, Code: *code}
-	guests := []guestOf{{vm: "guest", noise: "guest", pages: *pages, pageBytes: checkpoint.PageSize2MiB},
-		{vm: "guest-hot", noise: "guest", pages: *pages, pageBytes: checkpoint.PageSize2MiB, hot: true}}
-	if *pages4K > 0 {
-		guests = append(guests,
-			guestOf{vm: "small", noise: "small", pages: *pages4K, pageBytes: checkpoint.PageSize4KiB},
-			guestOf{vm: "small-hot", noise: "small", pages: *pages4K, pageBytes: checkpoint.PageSize4KiB, hot: true})
-	}
-	for _, guest := range guests {
-		var published publishReply
-		slog.InfoContext(ctx, "walk: publishing", "vm", guest.vm, "pages", guest.pages, "page_bytes", guest.pageBytes)
-		if err := call(ctx, client, nodes[0], "POST", "/publish", publishRequest{VM: guest.vm, Noise: guest.noise,
-			Pages: guest.pages, PageBytes: guest.pageBytes, Hot: guest.hot}, &published); err != nil {
-			return err
-		}
-		slog.InfoContext(ctx, "walk: published", "vm", guest.vm, "seconds", published.Seconds,
-			"settled", published.Settled)
-		result.Publish = append(result.Publish, published)
-	}
-	random := rand.New(rand.NewPCG(*seed, 0))
-	reader := nodes[1]
-	// A cold hot tier: the guests whose publications filled the cluster are
-	// in the hot tier not at all, so the first walks through it miss and fill
-	// it behind them. Each round starts somewhere else, and the fills of each
-	// settle before the next.
-	for round := range *rounds {
-		for _, guest := range guests {
-			if guest.hot {
-				continue
-			}
-			one, err := walkOne(ctx, client, reader, round, "hot", guest, random.Uint64(), *reads)
-			if err != nil {
-				return err
-			}
-			result.Cold = append(result.Cold, one)
-		}
-	}
-	// Each round reads the same chain of pages from every source, in an
-	// order of its own: the hot tier's copy of each guest has the same bytes
-	// under another name, filled by its publication.
-	for round := range *rounds {
-		start := random.Uint64()
-		type walk struct {
-			source string
-			guest  guestOf
-		}
-		var walks []walk
-		for _, guest := range guests {
-			switch {
-			case guest.hot:
-				walks = append(walks, walk{"hot", guest})
-			default:
-				walks = append(walks, walk{"regional", guest}, walk{"cluster", guest})
-			}
-		}
-		random.Shuffle(len(walks), func(a, b int) { walks[a], walks[b] = walks[b], walks[a] })
-		for _, one := range walks {
-			measured, err := walkOne(ctx, client, reader, round, one.source, one.guest, start, *reads)
-			if err != nil {
-				return err
-			}
-			result.Cases = append(result.Cases, measured)
-		}
-	}
-	stats, err := statsOf(ctx, client, nodes)
+	result, err := walkRun(ctx, nodes, walkConfig{pages: *pages, pages4K: *pages4K, reads: *reads, rounds: *rounds,
+		code: *code, seed: *seed})
 	if err != nil {
 		return err
 	}
-	result.HotStats = stats
 	encoded, err := json.MarshalIndent(result, "", "  ")
 	if err != nil {
 		return err
@@ -173,45 +111,126 @@ func runWalk(ctx context.Context, args []string) error {
 	return os.WriteFile(*out, encoded, 0o644)
 }
 
-// walkOne runs one walk on the reader and what it cost, with the hot tier's
-// fills settled after it.
-func walkOne(ctx context.Context, client *http.Client, reader string, round int, source string, guest guestOf,
-	start uint64, reads int) (walkCase, error) {
-	// The reader's kernel page cache is dropped first, so a read of the
-	// cluster reads the cache's file from the SSD rather than from memory.
-	if err := call(ctx, client, reader, "POST", "/drop", nil, nil); err != nil {
+// walkRun publishes each guest from the first node, into the cluster and,
+// under another name, into the hot tier, then walks them on the second.
+func walkRun(ctx context.Context, nodes []controller, config walkConfig) (walkResult, error) {
+	if len(nodes) < 2 {
+		return walkResult{}, errors.New("walk needs at least two nodes")
+	}
+	if err := followAll(ctx, nodes, config.code); err != nil {
+		return walkResult{}, err
+	}
+	result := walkResult{Pages: config.pages, Pages4K: config.pages4K, Reads: config.reads, Code: config.code}
+	guests := []guestRequest{{VM: "guest", Noise: "guest", PageSize: checkpoint.PageSize2MiB, Pages: config.pages},
+		{VM: "guest-hot", Noise: "guest", PageSize: checkpoint.PageSize2MiB, Pages: config.pages, Hot: true}}
+	if config.pages4K > 0 {
+		guests = append(guests,
+			guestRequest{VM: "small", Noise: "small", PageSize: checkpoint.PageSize4KiB, Pages: config.pages4K},
+			guestRequest{VM: "small-hot", Noise: "small", PageSize: checkpoint.PageSize4KiB, Pages: config.pages4K,
+				Hot: true})
+	}
+	sequences := make(map[string]uint64)
+	for _, guest := range guests {
+		slog.InfoContext(ctx, "walk: publishing", "vm", guest.VM, "pages", guest.Pages, "page_bytes", guest.PageSize)
+		published, err := nodes[0].publish(ctx, guest)
+		if err != nil {
+			return walkResult{}, err
+		}
+		slog.InfoContext(ctx, "walk: published", "vm", guest.VM, "seconds", published.Seconds,
+			"settled", published.Settled)
+		result.Publish = append(result.Publish, published)
+		sequences[guest.VM] = published.Sequence
+	}
+	random := rand.New(rand.NewPCG(config.seed, 0))
+	reader := nodes[1]
+	one := func(round int, source walkSource, guest guestRequest, seed uint64) (walkCase, error) {
+		return walkOne(ctx, reader, round, source, guest, sequences[guest.VM], seed, config.reads)
+	}
+	// A cold hot tier: the guests whose publications filled the cluster are
+	// in the hot tier not at all, so the first walks through it miss and fill
+	// it behind them. Each round starts somewhere else, and the fills of each
+	// settle before the next.
+	for round := range config.rounds {
+		for _, guest := range guests {
+			if guest.Hot {
+				continue
+			}
+			walked, err := one(round, walkHot, guest, random.Uint64())
+			if err != nil {
+				return walkResult{}, err
+			}
+			result.Cold = append(result.Cold, walked)
+		}
+	}
+	// Each round reads the same chain of pages from every source, in an order
+	// of its own: the hot tier's copy of each guest has the same bytes under
+	// another name, so the same seed starts the same chain through it.
+	for round := range config.rounds {
+		seed := random.Uint64()
+		type planned struct {
+			source walkSource
+			guest  guestRequest
+		}
+		var walks []planned
+		for _, guest := range guests {
+			if guest.Hot {
+				walks = append(walks, planned{walkHot, guest})
+				continue
+			}
+			walks = append(walks, planned{walkRegional, guest}, planned{walkCluster, guest})
+		}
+		random.Shuffle(len(walks), func(a, b int) { walks[a], walks[b] = walks[b], walks[a] })
+		for _, planned := range walks {
+			walked, err := one(round, planned.source, planned.guest, seed)
+			if err != nil {
+				return walkResult{}, err
+			}
+			result.Cases = append(result.Cases, walked)
+		}
+	}
+	var err error
+	result.HotStats, err = statsOf(ctx, nodes)
+	return result, err
+}
+
+// walkOne runs one chain of reads on the reader, with every memory tier and
+// the kernel's page cache dropped first and the hot tier's fills settled
+// after, and what it cost.
+func walkOne(ctx context.Context, reader controller, round int, source walkSource, guest guestRequest,
+	sequence, seed uint64, reads int) (walkCase, error) {
+	if _, err := reader.drop(ctx, struct{}{}); err != nil {
 		return walkCase{}, err
 	}
-	var before, after statsReply
-	if err := call(ctx, client, reader, "GET", "/stats", nil, &before); err != nil {
+	before, err := reader.stats(ctx, struct{}{})
+	if err != nil {
 		return walkCase{}, err
 	}
-	var walked walkReply
-	if err := call(ctx, client, reader, "POST", "/walk", walkRequest{VM: guest.vm, Noise: guest.noise, Sequence: 2,
-		Pages: guest.pages, PageBytes: guest.pageBytes, Reads: reads, Start: start, Source: source},
-		&walked); err != nil {
+	walked, err := reader.read(ctx, readRequest{Guest: guest, Sequence: sequence, Source: source.source,
+		Access: access{Pattern: patternChain, Unit: unitPage, Concurrency: 1, Reads: reads, Seed: seed}})
+	if err != nil {
 		return walkCase{}, err
 	}
-	if err := call(ctx, client, reader, "POST", "/settle", nil, nil); err != nil {
+	if _, err := reader.settle(ctx, struct{}{}); err != nil {
 		return walkCase{}, err
 	}
-	if err := call(ctx, client, reader, "GET", "/stats", nil, &after); err != nil {
+	after, err := reader.stats(ctx, struct{}{})
+	if err != nil {
 		return walkCase{}, err
 	}
-	one := walkCase{Round: round, Source: source, PageBytes: guest.pageBytes, Reads: reads, Seconds: walked.Seconds,
-		HopsPerSecond: float64(reads) / walked.Seconds, Wrong: walked.Wrong,
+	one := walkCase{Round: round, Source: source.label, PageBytes: guest.PageSize, Reads: reads,
+		Seconds: walked.Seconds, HopsPerSecond: float64(reads) / walked.Seconds, Wrong: walked.Wrong,
 		StoreGets:  after.Store.Get.Calls - before.Store.Get.Calls,
 		StoreBytes: after.Store.Get.Bytes - before.Store.Get.Bytes,
 		HotGets:    after.HotStore.Get.Calls - before.HotStore.Get.Calls,
 		HotPuts:    after.HotStore.Put.Calls - before.HotStore.Put.Calls,
 		Hot:        hotDelta(before.Hot, after.Hot), Read: readDelta(before.Read, after.Read)}
 	one.Latency, one.Histogram = shape(walked.Latencies)
-	slog.InfoContext(ctx, "walk: walked", "round", round, "source", source, "vm", guest.vm,
+	slog.InfoContext(ctx, "walk: walked", "round", round, "source", source.label, "vm", guest.VM,
 		"hops_per_second", one.HopsPerSecond, "p50", one.Latency["p50"], "p90", one.Latency["p90"],
 		"p99", one.Latency["p99"], "max", one.Latency["max"], "wrong", one.Wrong,
 		"hot", fmt.Sprintf("%+v", one.Hot))
 	if walked.Wrong != 0 {
-		return one, fmt.Errorf("%s from %s read %d pages wrong", guest.vm, source, walked.Wrong)
+		return one, fmt.Errorf("%s from %s read %d pages wrong", guest.VM, source.label, walked.Wrong)
 	}
 	return one, nil
 }

@@ -1,31 +1,56 @@
 #!/usr/bin/env bash
 # The cluster's disk cache read back on six disposable GCE hosts against a
 # real bucket: a guest's memory published from one host, which fills the
-# cluster, and read back whole on another, from the cluster, from the store,
-# and from the cluster with a third host lost part way through
-# (docs/measurements/gce-cluster-reads-2026-10-03.md).
+# cluster, and read back on another, from the cluster and from the store, in
+# order, at random and as a chain of dependent reads
+# (docs/measurements/gce-cluster-reads-2026-10-03.md,
+# docs/measurements/gce-dependent-reads-2026-10-03.md).
 #
 # Every host runs `sproutfs-restorebench node`: the real checkpoint store,
 # page cache, peer server and table of peers, its cache on a local NVMe SSD.
-# The second host runs `sproutfs-restorebench drive`, which publishes from the
-# first, then runs SPROUTFS_RESTORE_ROUNDS rounds (three by default) of every
-# case, each round in its own order, dropping every host's page cache before
-# each restore.
+# The second host runs `sproutfs-restorebench drive`, which publishes a guest
+# of each page size from the first, then runs SPROUTFS_RESTORE_ROUNDS rounds
+# (three by default) of every case from every source, each round in its own
+# order, emptying every host's memory tiers and page cache before each read,
+# then reads the SPROUTFS_RESTORE_PROFILE cases once more with the reader's
+# CPU profiled.
 #
 # SPROUTFS_GCE_BUCKET names the bucket, and SPROUTFS_GCE_SERVICE_ACCOUNT the
 # account the hosts reach it as. The run's objects are removed afterwards.
-# SPROUTFS_RESTORE_PAGES is the guest's memory in 2 MiB pages (4096, 8 GiB, by
-# default).
+# SPROUTFS_RESTORE_PAGES is the 2 MiB guest's memory in pages (4096, 8 GiB, by
+# default) and SPROUTFS_RESTORE_SMALL_PAGES the 4 KiB guest's (1048576, 4 GiB).
+# SPROUTFS_RESTORE_CASES and SPROUTFS_RESTORE_SOURCES choose the cases and
+# sources (the drive's defaults when unset); SPROUTFS_RESTORE_PLATFORM is the
+# hosts' least processor (Intel Cascade Lake by default).
 #
 # `all` always deletes the hosts. `create`, `run` and `delete` expose the same
 # steps. Each host also deletes itself after three hours.
 set -euo pipefail
 [[ ${SPROUTFS_RESTORE_ROUNDS:-} =~ ^[0-9]*$ ]] || { echo "SPROUTFS_RESTORE_ROUNDS is a number" >&2; exit 2; }
 [[ ${SPROUTFS_RESTORE_PAGES:-} =~ ^[0-9]*$ ]] || { echo "SPROUTFS_RESTORE_PAGES is a number" >&2; exit 2; }
+[[ ${SPROUTFS_RESTORE_SMALL_PAGES:-} =~ ^[0-9]*$ ]] || { echo "SPROUTFS_RESTORE_SMALL_PAGES is a number" >&2; exit 2; }
 rounds=${SPROUTFS_RESTORE_ROUNDS:-3}
 pages=${SPROUTFS_RESTORE_PAGES:-4096}
+small_pages=${SPROUTFS_RESTORE_SMALL_PAGES:-1048576}
 machine=${SPROUTFS_RESTORE_MACHINE:-n2-standard-4}
-[[ $machine =~ ^n2-standard-[0-9]+$ ]] || { echo "SPROUTFS_RESTORE_MACHINE is an n2-standard machine type" >&2; exit 2; }
+[[ $machine =~ ^n2-(standard|highmem)-[0-9]+$ ]] ||
+    { echo "SPROUTFS_RESTORE_MACHINE is an n2-standard or n2-highmem machine type" >&2; exit 2; }
+platform=${SPROUTFS_RESTORE_PLATFORM:-Intel Cascade Lake}
+[[ $platform =~ ^Intel\ [A-Za-z\ ]+$ ]] || { echo "SPROUTFS_RESTORE_PLATFORM is an Intel CPU platform" >&2; exit 2; }
+# The drive's cases and sources, as its flags take them.
+drive_flags=""
+for setting in cases:SPROUTFS_RESTORE_CASES sources:SPROUTFS_RESTORE_SOURCES profile:SPROUTFS_RESTORE_PROFILE; do
+    name=${setting#*:}
+    value=${!name:-}
+    [[ $value =~ ^[A-Za-z0-9/,-]*$ ]] || { echo "$name is a comma-separated list of cases or sources" >&2; exit 2; }
+    if [[ -n $value ]]; then drive_flags+=" -${setting%%:*} $value"; fi
+done
+# The publisher holds the fills of the whole guest it publishes until they
+# are sent, so a host that publishes faster than its keeps go needs a queue as
+# large as what it is behind by: SPROUTFS_RESTORE_FILL_QUEUE_BYTES, 4 GiB by
+# default.
+fill_queue=${SPROUTFS_RESTORE_FILL_QUEUE_BYTES:-4294967296}
+[[ $fill_queue =~ ^[0-9]+$ ]] || { echo "SPROUTFS_RESTORE_FILL_QUEUE_BYTES is a number" >&2; exit 2; }
 bucket=${SPROUTFS_GCE_BUCKET:-}
 account=${SPROUTFS_GCE_SERVICE_ACCOUNT:-}
 [[ -n $bucket && -n $account ]] || { echo "Set SPROUTFS_GCE_BUCKET and SPROUTFS_GCE_SERVICE_ACCOUNT." >&2; exit 2; }
@@ -48,7 +73,7 @@ run_objects="$objects/$(date -u +%Y%m%dT%H%M%SZ)"
 
 create() {
     "${cloud[@]}" compute instances create "${hosts[@]}" --zone="$zone" \
-        --machine-type="$machine" --min-cpu-platform='Intel Cascade Lake' \
+        --machine-type="$machine" --min-cpu-platform="$platform" \
         --image=ubuntu-2604-resolute-amd64-v20260907 --image-project=ubuntu-os-cloud \
         --boot-disk-size=20GB --boot-disk-type=pd-balanced --boot-disk-auto-delete \
         --local-ssd=interface=NVME \
@@ -132,7 +157,8 @@ run() {
         echo "revision $(git -C "$repo" rev-parse HEAD)"
         git -C "$repo" status --porcelain=v1 -- cmd/sproutfs-restorebench checkpoint peer rank stripe | sed 's/^/changed /'
         (cd "$staging" && shasum -a 256 sproutfs-restorebench)
-        echo "machine $machine, pages $pages, rounds $rounds, objects gs://$bucket/$run_objects"
+        echo "machine $machine ($platform), pages $pages and $small_pages, rounds $rounds,$drive_flags," \
+            "objects gs://$bucket/$run_objects"
     } > "$results/source.txt"
     for index in "${!hosts[@]}"; do
         host=${hosts[$index]}
@@ -152,16 +178,36 @@ run() {
                 ssd=\$(ls /dev/disk/by-id/google-local-nvme-ssd-0); \
                 sudo mkfs.ext4 -q -F \$ssd; sudo mkdir -p /mnt/ssd; sudo mount \$ssd /mnt/ssd; \
                 sudo systemd-run --unit=sproutfs-node --property=LimitNOFILE=65536 \
-                \$HOME/sproutfs-restorebench node -advertise $ip:7500 -bucket $bucket -prefix $run_objects -dir /mnt/ssd"
+                \$HOME/sproutfs-restorebench node -advertise $ip:7500 -bucket $bucket -prefix $run_objects -dir /mnt/ssd \
+                -fill-queue-bytes $fill_queue"
         } >> "$results/remote.log" 2>&1
         nodes+="${nodes:+,}$ip:7600"
     done
     rm -rf -- "$staging"
     sleep 5
     echo "Driving from ${hosts[1]}." >&2
-    remote "${hosts[1]}" "./sproutfs-restorebench drive -nodes $nodes -pages $pages -rounds $rounds -out results.json" \
-        > "$results/drive.log" 2>&1 || status=$?
-    "${cloud[@]}" compute scp --zone="$zone" "${hosts[1]}:results.json" "$results/results.json" \
+    # The drive runs as a unit of its own, so a dropped SSH connection does not
+    # end an hour's run, and is polled until it ends.
+    drive_dir=/var/tmp/sproutfs-drive-${run_objects##*/}
+    remote "${hosts[1]}" "sudo systemctl reset-failed sproutfs-drive 2>/dev/null || true; \
+        sudo mkdir -p $drive_dir; sudo systemd-run --unit=sproutfs-drive --working-directory=$drive_dir \
+        \$HOME/sproutfs-restorebench drive -nodes $nodes -pages $pages -small-pages $small_pages \
+        -rounds $rounds$drive_flags -out results.json -profiles profiles" >> "$results/remote.log" 2>&1 || status=$?
+    local state=active unreachable=0
+    while [[ $state == active || $state == activating || $state == unknown ]] && ((status == 0)); do
+        sleep 30
+        if state=$(remote "${hosts[1]}" "systemctl is-active sproutfs-drive || true" 2>> "$results/remote.log"); then
+            unreachable=0
+        else
+            state=unknown
+            ((++unreachable < 10)) || { echo "${hosts[1]} did not answer ten times." >&2; status=1; }
+        fi
+    done
+    [[ $state == inactive ]] || { echo "The drive ended $state." >&2; status=1; }
+    remote "${hosts[1]}" "sudo journalctl -u sproutfs-drive --no-pager" > "$results/drive.log" 2>&1 || status=$?
+    "${cloud[@]}" compute scp --zone="$zone" "${hosts[1]}:$drive_dir/results.json" "$results/results.json" \
+        >> "$results/remote.log" 2>&1 || status=$?
+    "${cloud[@]}" compute scp --zone="$zone" --recurse "${hosts[1]}:$drive_dir/profiles" "$results/" \
         >> "$results/remote.log" 2>&1 || status=$?
     for host in "${hosts[@]}"; do
         remote "$host" "sudo journalctl -u sproutfs-node --no-pager" > "$results/node-$host.log" 2>&1 || status=$?
