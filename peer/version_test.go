@@ -219,6 +219,7 @@ func TestAHelloIsAnsweredWithTheNewestSharedVersionOrIncompatible(t *testing.T) 
 	}{
 		{"a later release that still speaks this one", 2, 5, peerv1.Status_STATUS_OK, 2, 1, 2},
 		{"this release", 1, 2, peerv1.Status_STATUS_OK, 2, 1, 2},
+		{"a release that says hello but speaks only version 1", 1, 1, peerv1.Status_STATUS_OK, 1, 1, 2},
 		{"a release two ahead", 3, 4, peerv1.Status_STATUS_INCOMPATIBLE, 0, 1, 2},
 		{"a range with nothing in it", 2, 1, peerv1.Status_STATUS_INCOMPATIBLE, 0, 1, 2},
 	} {
@@ -279,6 +280,34 @@ func TestADestinationTwoReleasesAheadIsToldItIsIncompatible(t *testing.T) {
 		}
 		if dials, requests := dialer.dials.Load(), server.Stats().Requests; dials != 1 || requests != 0 {
 			t.Fatalf("an incompatible destination dialed %d times and made %d requests, want 1 and 0", dials, requests)
+		}
+	})
+}
+
+// A server that speaks only version 1 but reads a hello answers it with version
+// 1, the oldest this release speaks, and is spoken to in it.
+func TestAServerOfVersionOneAloneIsSpokenToInIt(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		runtime := sim.New(sim.Config{Seed: 1})
+		server, err := peer.NewServer(t.Context(), peer.ServerConfig{Network: runtime.Network(), Address: "current",
+			PageSize: pageSize, Versions: peer.Versions{Min: 1, Max: 1}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer server.Close()
+		pages := memoryPages{count: 2, pageSize: pageSize}
+		server.Serve("vm", map[string]peer.Pages{"ram0": pages})
+		dialer := &countingDialer{network: runtime.Network()}
+		source := newTable(t, runtime, peer.TableConfig{Dial: dialer.dial}).Peer("current")
+		answer, err := askPages(t.Context(), source, 1, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(answer.Payload, pages.page(1)) {
+			t.Fatalf("page 1 came back as %d bytes", len(answer.Payload))
+		}
+		if status := source.Status(); status.Version != 1 || dialer.dials.Load() != 1 {
+			t.Fatalf("the peer speaks version %d after %d dials, want 1 after 1", status.Version, dialer.dials.Load())
 		}
 	})
 }

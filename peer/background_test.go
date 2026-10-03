@@ -44,6 +44,37 @@ func TestTheBackgroundBudgetAdmitsUnpublishedPagesFirst(t *testing.T) {
 	})
 }
 
+// Work that would fit does not pass work already waiting: a small request
+// behind a large one waits its turn, or the large one would wait for ever.
+func TestWorkThatFitsWaitsBehindWorkThatWaits(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		budget := NewBackground(4)
+		if err := budget.Acquire(t.Context(), Resident, 3); err != nil {
+			t.Fatal(err)
+		}
+		large := make(chan error, 1)
+		go func() { large <- budget.Acquire(t.Context(), Resident, 2) }()
+		synctest.Wait()
+		small := make(chan error, 1)
+		go func() { small <- budget.Acquire(t.Context(), Resident, 1) }()
+		synctest.Wait()
+		select {
+		case <-small:
+			t.Fatal("a request that fit passed one waiting in front of it")
+		default:
+		}
+		budget.Release(3)
+		for _, admitted := range []chan error{large, small} {
+			if err := <-admitted; err != nil {
+				t.Fatal(err)
+			}
+		}
+		if status := budget.Status(); status.Held != 3 || status.Waiting != 0 {
+			t.Fatalf("the budget is %+v", status)
+		}
+	})
+}
+
 // Fills and repairs over the budget are dropped, never queued; a repair has
 // half the budget, so fills keep the rest; and neither takes room while work
 // that waits is waiting.

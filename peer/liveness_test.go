@@ -1,6 +1,7 @@
 package peer_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"sync/atomic"
@@ -166,6 +167,62 @@ func TestAnIdleConnectionIsClosedAndMarksNothingDown(t *testing.T) {
 			t.Fatalf("after thirty idle seconds the table holds %+v, down %v", status.Connections, status.Down)
 		}
 		close(s.gate.open)
+	})
+}
+
+// A dial that hangs past the connect timeout is unavailable, and marks its peer
+// down, whatever the dialer says when it is cut short: a real dialer says only
+// that it was cancelled, which is what a caller giving up looks like too.
+func TestADialCutShortByTheConnectTimeoutIsUnavailable(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		table := newTable(t, sim.New(sim.Config{Seed: 1}), peer.TableConfig{
+			Dial: func(ctx context.Context, _ platform.Address) (platform.Conn, error) {
+				<-ctx.Done()
+				return nil, errors.Join(context.Canceled, errors.New("dial tcp: operation was canceled"))
+			}})
+		gone := table.Peer("gone")
+		if _, err := askPages(t.Context(), gone, 0, 1); !errors.Is(err, platform.ErrUnavailable) {
+			t.Fatalf("a dial cut short by the connect timeout = %v, want unavailable", err)
+		}
+		if !gone.Down() {
+			t.Fatal("a dial cut short by the connect timeout did not mark its peer down")
+		}
+	})
+}
+
+// A reply that takes longer than the dead allowance to arrive is not a dead
+// connection: its bytes are heard as they come, though the pongs queue behind
+// them on the link.
+func TestAReplyLongerThanTheDeadAllowanceIsHeardAsItComes(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		runtime := sim.New(sim.Config{Seed: 1, Network: sim.NetworkConfig{LinkBytesPerSecond: 32 << 10}})
+		network := runtime.Network().Framed()
+		pages := noisyPages{memoryPages{count: 64, pageSize: pageSize}}
+		server, err := peer.NewServer(sim.WithRuntime(t.Context(), runtime), peer.ServerConfig{Network: network,
+			Address: "source", PageSize: pageSize})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer server.Close()
+		server.Serve("vm", map[string]peer.Pages{"ram0": pages})
+		table := newTable(t, runtime, peer.TableConfig{Dial: func(ctx context.Context, to platform.Address) (platform.Conn, error) {
+			return network.Dial(ctx, "destination", to)
+		}})
+		source := table.Peer("source")
+		began := time.Now()
+		answer, err := askPages(peer.WithStream(t.Context()), source, 0, 64)
+		if err != nil {
+			t.Fatalf("a reply of a quarter of a megabyte at 32 KiB/s: %v", err)
+		}
+		if took := time.Since(began); took < 8*time.Second {
+			t.Fatalf("the reply took %v, want the eight seconds the link takes to carry it", took)
+		}
+		if len(answer.Payload) != 64*pageSize || !bytes.Equal(answer.Payload[63*pageSize:], pages.page(63)) {
+			t.Fatalf("the reply carried %d bytes", len(answer.Payload))
+		}
+		if source.Down() || runtime.Probes()[peer.ProbeDeadConnection] != 0 {
+			t.Fatalf("a slow reply was taken for a dead connection: probes %v", runtime.Probes())
+		}
 	})
 }
 

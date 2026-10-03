@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 
 	"github.com/semistrict/sproutfs/control"
 	peerv1 "github.com/semistrict/sproutfs/peer/internal/gen/sproutfs/peer/v1"
@@ -205,8 +206,8 @@ func (s *Server) answerReadStripes(session *session, request *peerv1.ReadStripes
 		if stripes.Release != nil {
 			stripes.Release()
 		}
-		return answer{message: peerv1.Stripes_builder{Status: cacheStatus(peerv1.CacheStatus_CACHE_STATUS_UNSPECIFIED)}.Build(),
-			sent: nil}
+		slog.WarnContext(s.ctx, "peer: the cache could not answer a read", "peer", session.peer, "error", err)
+		return answer{message: peerv1.Stripes_builder{Status: cacheStatus(peerv1.CacheStatus_CACHE_STATUS_UNSPECIFIED)}.Build()}
 	}
 	return answer{
 		message: peerv1.Stripes_builder{Status: cacheStatus(peerv1.CacheStatus_CACHE_STATUS_OK),

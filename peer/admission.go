@@ -21,7 +21,7 @@ type Admitter func(ctx context.Context, memoryRegion string) error
 
 type admissionKey struct{}
 
-// WithAdmission installs admit for every request made by a Source under ctx.
+// WithAdmission installs admit for every page request made to a Peer under ctx.
 // The stream a destination runs behind its guest inherits this context, so one
 // call at the top of a controlled workload covers the requests of every memory region
 // it receives.

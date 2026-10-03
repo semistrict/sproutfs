@@ -201,6 +201,31 @@ func TestStripesAreKeptAndReadBack(t *testing.T) {
 		if last.Checksummed() {
 			t.Fatal("a reply of stripes carried a checksum of its payload")
 		}
+		// A read of exactly what the cache holds is answered, and one of a
+		// byte less is not: the cache answering more than it was asked for is
+		// not passed on.
+		exact, err := holder.ReadStripes(t.Context(), cache.identity, peer.StripeRead{Window: window, Pages: []uint32{3},
+			Code: code, MaxBytes: 7})
+		if err != nil {
+			t.Fatalf("a read of exactly what the cache holds: %v", err)
+		}
+		exact.Release()
+		_, err = holder.ReadStripes(t.Context(), cache.identity, peer.StripeRead{Window: window, Pages: []uint32{3},
+			Code: code, MaxBytes: 6})
+		if want := "peer: the cache could not answer: CACHE_STATUS_UNSPECIFIED"; err == nil || err.Error() != want {
+			t.Fatalf("a cache that answered 7 bytes of a read of 6 = %v, want %q", err, want)
+		}
+		// A page past the first byte of the request's bitmap of pages.
+		ninth, err := holder.ReadStripes(t.Context(), cache.identity, peer.StripeRead{Window: window, Pages: []uint32{9},
+			Code: code, MaxBytes: 1 << 20})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ninth.Release()
+		if want := []peer.StripeItem{{Page: 9, Index: 1, Length: 8, Size: 2}}; !slices.Equal(ninth.Items, want) ||
+			string(ninth.Payload) != "hi" {
+			t.Fatalf("page 9 read back %+v %q", ninth.Items, ninth.Payload)
+		}
 		empty, err := holder.ReadStripes(t.Context(), cache.identity, peer.StripeRead{Window: rank.Window{Number: 1},
 			Code: code, MaxBytes: 1 << 20})
 		if err != nil {

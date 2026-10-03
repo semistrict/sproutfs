@@ -112,8 +112,17 @@ func (s *Server) receiveWithin(session *session, silence time.Duration) (wire.In
 }
 
 // serveOneAtATime is version 1: each request is answered before the next is
-// read, which is what the release before this one asks of a connection.
+// read, which is what the release before this one asks of a connection. first
+// is the request the connection opened with, or nil after a hello that settled
+// on version 1.
 func (s *Server) serveOneAtATime(session *session, first *wire.Incoming) {
+	if first == nil {
+		incoming, err := s.receive(session)
+		if err != nil {
+			return
+		}
+		first = &incoming
+	}
 	incoming := *first
 	for {
 		if err := drain(incoming); err != nil {

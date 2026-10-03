@@ -192,25 +192,13 @@ type PeerStatus struct {
 // Status reports every peer this table has asked anything of, in address order.
 func (t *Table) Status() []PeerStatus {
 	t.mu.Lock()
-	peers := slices.SortedFunc(maps.Values(t.peers), func(a, b *Peer) int {
-		return compareAddresses(a.address, b.address)
-	})
+	peers := slices.SortedFunc(maps.Values(t.peers), func(a, b *Peer) int { return cmp.Compare(a.address, b.address) })
 	t.mu.Unlock()
 	statuses := make([]PeerStatus, 0, len(peers))
 	for _, peer := range peers {
 		statuses = append(statuses, peer.status())
 	}
 	return statuses
-}
-
-func compareAddresses(a, b platform.Address) int {
-	switch {
-	case a < b:
-		return -1
-	case a > b:
-		return 1
-	}
-	return 0
 }
 
 // Peer is one remote host as this host sees it: a small pool of connections for

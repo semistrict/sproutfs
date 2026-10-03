@@ -112,6 +112,37 @@ func TestAFaultIsAnsweredWhileTheBulkClassIsAtItsBudget(t *testing.T) {
 	})
 }
 
+// Requests that come to exactly a class's budget all go at once: neither end
+// holds back the one that fills it.
+func TestRequestsThatFillTheBudgetExactlyAllGo(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := newServing(t, peer.ServerConfig{Budgets: peer.Budgets{Fault: 4 * pageSize, BulkRead: 4 * pageSize,
+			BulkWrite: 4 * pageSize}})
+		destination := s.table(t, "destination", peer.TableConfig{})
+		answered := make(chan peer.Answer, 2)
+		for first := range uint64(2) {
+			go func() {
+				answer, err := disk(t.Context(), destination, 2*first, 2)
+				if err != nil {
+					t.Error(err)
+				}
+				answered <- answer
+			}()
+		}
+		<-s.gate.entered
+		<-s.gate.entered
+		close(s.gate.open)
+		for range 2 {
+			if answer := <-answered; answer.Busy != nil {
+				t.Fatalf("a request that filled the budget exactly came back busy %+v", answer.Busy)
+			}
+		}
+		if waited := s.runtime.Probes()[peer.ProbeWaitedForBudget]; waited != 0 {
+			t.Fatalf("%d requests waited for a budget they fitted in", waited)
+		}
+	})
+}
+
 // A request that would take its peer's class past the budget is answered BUSY,
 // with what the class holds, what it may, and what was asked; the connection it
 // came on stays open and serves the next request.

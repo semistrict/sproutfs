@@ -210,6 +210,38 @@ func TestAnUnknownVMIsNotServed(t *testing.T) {
 	}
 }
 
+// A claim of a VM the peer no longer holds is ErrNotServed.
+func TestAClaimOfAnUnknownVMIsNotServed(t *testing.T) {
+	s := &script{answer: func(wire.Incoming) (proto.Message, []byte, error) {
+		status := migratev1.Status_STATUS_UNKNOWN_VM
+		return migratev1.ClaimResponse_builder{Status: &status}.Build(), nil, nil
+	}}
+	if err := s.peer(t).Claim(t.Context(), "vm"); !errors.Is(err, peer.ErrNotServed) {
+		t.Fatalf("a claim of a VM the peer dropped: %v", err)
+	}
+}
+
+// A peer that answers for fewer pages than were asked, as one whose replies
+// are capped does, leaves the rest clear: the caller reads them elsewhere or
+// asks again.
+func TestAnAnswerForFewerPagesLeavesTheRestClear(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := newServing(t, peer.ServerConfig{MaxPagesPerRequest: 2})
+		destination := s.table(t, "destination", peer.TableConfig{})
+		answer, err := askPages(t.Context(), destination, 0, 4)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pages := memoryPages{count: 64, pageSize: pageSize}
+		if !bytes.Equal(answer.Present, []byte{0b0011}) || !bytes.Equal(answer.Dirty, []byte{0b0001}) ||
+			!bytes.Equal(answer.Payload, append(pages.page(0), pages.page(1)...)) {
+			t.Fatalf("a reply capped at two pages of four: present %08b dirty %08b, %d bytes",
+				answer.Present, answer.Dirty, len(answer.Payload))
+		}
+		close(s.gate.open)
+	})
+}
+
 // A reply for more pages than were asked for is not this protocol's.
 func TestPagesRejectAReplyThatOverrunsTheRequest(t *testing.T) {
 	s := &script{answer: func(wire.Incoming) (proto.Message, []byte, error) {
@@ -225,7 +257,16 @@ func TestPagesRejectAReplyThatOverrunsTheRequest(t *testing.T) {
 // runs join the one the caller gets.
 func TestResidentWalksTheWholeListing(t *testing.T) {
 	var replies atomic.Int64
-	s := &script{answer: func(wire.Incoming) (proto.Message, []byte, error) {
+	var mu sync.Mutex
+	var asked []uint64
+	s := &script{answer: func(incoming wire.Incoming) (proto.Message, []byte, error) {
+		request := new(migratev1.ResidentRequest)
+		if err := incoming.UnmarshalTo(request); err != nil {
+			return nil, nil, err
+		}
+		mu.Lock()
+		asked = append(asked, request.GetFirstPage())
+		mu.Unlock()
 		status := migratev1.Status_STATUS_OK
 		more := replies.Add(1) == 1
 		run := migratev1.PageRun_builder{FirstPage: proto.Uint64(uint64(replies.Load()-1) * 4),
@@ -240,6 +281,10 @@ func TestResidentWalksTheWholeListing(t *testing.T) {
 	want := []peer.Run{{First: 0, Count: 4}, {First: 4, Count: 4}}
 	if !slices.Equal(runs, want) {
 		t.Fatalf("the listing is %+v, want %+v", runs, want)
+	}
+	// Each request after the first starts past the last run listed.
+	if !slices.Equal(asked, []uint64{0, 4}) {
+		t.Fatalf("the listing was asked from pages %v, want 0 then 4", asked)
 	}
 }
 
@@ -440,6 +485,94 @@ func TestAGuestFaultNeverWaitsBehindTheStream(t *testing.T) {
 // dial. A peer host is one budget at the server, so connections beyond it would
 // buy nothing.
 func TestABurstHoldsNoMoreConnectionsThanItsClassMay(t *testing.T) {
+	t.Run("answered", testABurstThatIsAnswered)
+	t.Run("while dials are slow", testABurstWhileDialsAreSlow)
+	t.Run("two a connection", testABurstOfTwoAConnection)
+}
+
+// A connection carries as many requests as its peer allows and no more: three
+// held requests where each connection may carry two take two connections.
+func testABurstOfTwoAConnection(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		hold := make(chan struct{})
+		s := &script{answer: func(wire.Incoming) (proto.Message, []byte, error) {
+			<-hold
+			message, payload := pageReply(t, 1, []byte{0b1}, []byte{0}, bytes.Repeat([]byte{1}, pageSize))
+			return message, payload, nil
+		}}
+		table, err := peer.NewTable(t.Context(), peer.TableConfig{Dial: s.dial, InFlight: 2})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer table.Close()
+		source := table.Peer("source")
+		var wg sync.WaitGroup
+		for page := range uint64(3) {
+			wg.Go(func() {
+				if _, err := askPages(t.Context(), source, page, 1); err != nil {
+					t.Errorf("page %d: %v", page, err)
+				}
+			})
+			synctest.Wait()
+		}
+		if dials := s.dials.Load(); dials != 2 {
+			t.Fatalf("three requests two a connection dialed %d connections, want 2", dials)
+		}
+		close(hold)
+		wg.Wait()
+	})
+}
+
+// A dial in progress counts against the class as a connection does: a burst
+// that finds every connection busy and one dial under way waits for it rather
+// than dialing past the class.
+func testABurstWhileDialsAreSlow(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		hold := make(chan struct{})
+		s := &script{answer: func(wire.Incoming) (proto.Message, []byte, error) {
+			<-hold
+			message, payload := pageReply(t, 1, []byte{0b1}, []byte{0}, bytes.Repeat([]byte{1}, pageSize))
+			return message, payload, nil
+		}}
+		slow := make(chan struct{})
+		var dials atomic.Int64
+		table, err := peer.NewTable(t.Context(), peer.TableConfig{InFlight: 1,
+			Dial: func(ctx context.Context, to platform.Address) (platform.Conn, error) {
+				if dials.Add(1) > 1 {
+					<-slow
+				}
+				return s.dial(ctx, to)
+			}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer table.Close()
+		source := table.Peer("source")
+		var wg sync.WaitGroup
+		wg.Go(func() {
+			if _, err := askPages(t.Context(), source, 0, 1); err != nil {
+				t.Error(err)
+			}
+		})
+		synctest.Wait()
+		for page := range uint64(4) {
+			wg.Go(func() {
+				if _, err := askPages(t.Context(), source, 1+page, 1); err != nil {
+					t.Errorf("page %d: %v", 1+page, err)
+				}
+			})
+		}
+		synctest.Wait()
+		if got := dials.Load(); got != int64(peer.DefaultConnections.Fault) {
+			t.Fatalf("a burst behind a slow dial dialed %d times, want the class's %d", got, peer.DefaultConnections.Fault)
+		}
+		close(slow)
+		close(hold)
+		wg.Wait()
+	})
+}
+
+func testABurstThatIsAnswered(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		var mu sync.Mutex
 		arrived := 0
