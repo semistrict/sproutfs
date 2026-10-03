@@ -40,8 +40,11 @@ var checked = []string{
 	// The disk limiter decides when the cache gives space back and which of
 	// its writes are refused.
 	"resource",
-	// Which hosts hold a window, and when a host takes a new list of caches.
+	// Which disks hold a window.
 	"rank",
+	// Which hosts and disks are in the cluster, the nonce a lost write is
+	// found by, and when a host reads the membership again.
+	"membership",
 	// Which stripes rebuild an envelope, and which are named wrong.
 	"stripe",
 }

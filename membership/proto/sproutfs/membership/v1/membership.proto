@@ -1,0 +1,69 @@
+edition = "2024";
+
+package sproutfs.membership.v1;
+
+option go_package = "github.com/semistrict/sproutfs/membership/internal/gen/sproutfs/membership/v1;membershipv1";
+
+// Membership is which hosts are in the cluster and which disk each serves.
+// It is one object in the object store, and it changes only by a write
+// conditional on the object as it was read, which raises the generation by
+// one.
+message Membership {
+  uint32 format_version = 1;
+  // generation counts the changes. Every request between hosts that routes
+  // by the membership names the generation its sender holds.
+  uint64 generation = 2;
+  // k and m are the deployment's erasure code.
+  uint32 k = 3;
+  uint32 m = 4;
+  // writer_nonce is drawn by the process that wrote this generation, so a
+  // writer whose reply was lost can read the object back and know its own.
+  bytes writer_nonce = 5;
+  // members and disks are each in identity order.
+  repeated Member members = 6;
+  repeated Disk disks = 7;
+}
+
+// Member is one host: its identity, the address its peer server answers at,
+// and its state.
+message Member {
+  bytes id = 1;
+  string address = 2;
+  MemberState state = 3;
+}
+
+enum MemberState {
+  MEMBER_STATE_UNSPECIFIED = 0;
+  // MEMBER_STATE_JOINING is a member none of whose disks serves yet.
+  MEMBER_STATE_JOINING = 1;
+  MEMBER_STATE_ACTIVE = 2;
+  // MEMBER_STATE_DRAINING is a member on its way out: its disks are being
+  // released, and no disk is assigned to it again.
+  MEMBER_STATE_DRAINING = 3;
+}
+
+// Disk is one cache disk: the identity in its file's header, which windows
+// are ranked by, the name the cloud or the cluster knows the volume by, its
+// weight, the member it is assigned to, and its state.
+message Disk {
+  bytes id = 1;
+  string volume = 2;
+  uint32 weight = 3;
+  // member is empty for a disk assigned to nobody.
+  bytes member = 4;
+  DiskState state = 5;
+  // assigned is the generation that assigned the disk to its member. Every
+  // reply its member sends for it names this generation.
+  uint64 assigned = 6;
+}
+
+enum DiskState {
+  DISK_STATE_UNSPECIFIED = 0;
+  // DISK_STATE_ATTACHING is assigned to a member that does not serve it yet.
+  DISK_STATE_ATTACHING = 1;
+  DISK_STATE_SERVING = 2;
+  // DISK_STATE_RELEASING is assigned to a member that must stop serving it.
+  DISK_STATE_RELEASING = 3;
+  // DISK_STATE_RELEASED is assigned to nobody.
+  DISK_STATE_RELEASED = 4;
+}
