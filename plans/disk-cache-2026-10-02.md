@@ -108,7 +108,11 @@ This is the choice Lambda's zone cache made, and its reasons are ours
   failure.
 
 The cost, at 4+2, is half again the disk of one copy, and six requests of
-about 90 KB where one copy would take one of about 350 KB.
+about 90 KB where one copy would take one of about 350 KB. And a drained host's
+share of the serving moves onto the others, a fifth more each on six hosts.
+Under 4+1 it does not: the host that stands in holds nothing. On GCE that move
+explained 4+2's extra tail at full load
+([measurement](../docs/measurements/gce-stripes-tail-2026-10-03.md)).
 
 There is no tier of whole local copies. A page read whole from the local disk
 would save about half a millisecond over a read from the cluster, and keeping
@@ -382,6 +386,16 @@ Lambda's cache servers fill 50 Gb/s links from user space, with no
 `sendfile`. So the cost of the copy is measured before this is built (see
 [the steps](#the-steps)). If a plain copy costs too little to matter, the
 property is met by the bounded buffer and step 8 is dropped.
+
+A host's serving bandwidth is a budget, and the tail meets it well before the
+NIC's rate. On six 10 Gb/s GCE hosts that each read as much as they served,
+p99 stayed under 2 ms in 14 of 15 rounds at 4.4 Gb/s served per host and rose
+past 89 ms at 6.3,
+with no host's CPU over half used
+([measurement](../docs/measurements/gce-stripes-tail-2026-10-03.md)). A
+deployment's expected read rate, after one drain has moved its share, keeps
+each host's serving under about 40 % of its NIC's rate until the deployment's
+own machine type is measured.
 
 ## On one host's disk
 
@@ -806,6 +820,10 @@ Each property has a test that states it in its own words.
   negative test removes the key check, and the campaign must fail.
 
 Then the measurements on GCE, against a real bucket, on six hosts in one zone.
+Each case runs in at least three rounds, each round in its own order, and the
+report gives the bytes each host served and the spread over the rounds: one
+slow host for a few seconds moves one window's p99 thirty times
+([measurement](../docs/measurements/gce-stripes-tail-2026-10-03.md)).
 
 1. First, before step 5 is built: one 350 KB read from one host against 4+1
    and 4+2 reads of 90 KB stripes, at the median and the tail. Each runs with

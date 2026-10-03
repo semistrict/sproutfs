@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math"
 	"time"
 )
 
@@ -80,21 +81,44 @@ func readRequest(r io.Reader) (request, error) {
 	}, nil
 }
 
-const replyHeaderBytes = 16
+const replyHeaderBytes = 28
 
 // replyHeader precedes a reply's payload: id u64, status u8, stripe u8, two
-// zero bytes, payload length u32.
+// zero bytes, payload length u32, then the server's time on a read in
+// nanoseconds, each a u32 capped at its largest value: queued, read and
+// waited.
 type replyHeader struct {
 	id     uint64
 	status byte
 	stripe byte
 	length uint32
+	serverTimes
+}
+
+// serverTimes is where a read's time went at the server, as its reply says.
+type serverTimes struct {
+	// queued runs from the server reading the request to starting to serve
+	// it, and includes a slow server's delay.
+	queued time.Duration
+	// read is reading the stripe from the store.
+	read time.Duration
+	// waited is waiting for the replies ahead of it on the connection to be
+	// written.
+	waited time.Duration
 }
 
 func (h replyHeader) put(b []byte) {
 	binary.LittleEndian.PutUint64(b[0:], h.id)
 	b[8], b[9], b[10], b[11] = h.status, h.stripe, 0, 0
 	binary.LittleEndian.PutUint32(b[12:], h.length)
+	binary.LittleEndian.PutUint32(b[16:], nanos32(h.queued))
+	binary.LittleEndian.PutUint32(b[20:], nanos32(h.read))
+	binary.LittleEndian.PutUint32(b[24:], nanos32(h.waited))
+}
+
+// nanos32 is d in nanoseconds, from zero to the largest u32, 4.29 s.
+func nanos32(d time.Duration) uint32 {
+	return uint32(min(max(d, 0), math.MaxUint32))
 }
 
 func readReplyHeader(r io.Reader) (replyHeader, error) {
@@ -107,6 +131,11 @@ func readReplyHeader(r io.Reader) (replyHeader, error) {
 		status: b[8],
 		stripe: b[9],
 		length: binary.LittleEndian.Uint32(b[12:]),
+		serverTimes: serverTimes{
+			queued: time.Duration(binary.LittleEndian.Uint32(b[16:])),
+			read:   time.Duration(binary.LittleEndian.Uint32(b[20:])),
+			waited: time.Duration(binary.LittleEndian.Uint32(b[24:])),
+		},
 	}, nil
 }
 

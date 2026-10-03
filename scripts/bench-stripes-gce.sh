@@ -15,7 +15,7 @@
 #   full-disk    all six read at once; every stripe read reads the SSD
 #
 # `all` always deletes the hosts. `create`, `run` and `delete` expose the
-# same steps for an interrupted run. Each host also deletes itself after a
+# same steps for an interrupted run, or for several runs on the same hosts. Each host also deletes itself after a
 # few hours, whatever this shell does.
 #
 # SPROUTFS_STRIPES_DURATION is each case's length (default 20s).
@@ -32,11 +32,20 @@
 # SPROUTFS_STRIPES_READS is the read modes each pass runs, comma-separated:
 # ask-all asks every holder at once; hedged asks k+1 and the rest after a
 # delay, under a budget (default both).
+# SPROUTFS_STRIPES_CONDITIONS is the conditions each pass runs, comma-separated
+# (default healthy,slow,drained,drained-slow,drained-stall).
+# SPROUTFS_STRIPES_REPEATS is how many rounds each pass runs (default 1). Each
+# round runs every case once, in its own order, so that the spread of a case
+# over the rounds measures the noise between runs.
 set -euo pipefail
 [[ ${SPROUTFS_STRIPES_DURATION:-} =~ ^([0-9]+(ms|s|m))?$ ]] || { echo "SPROUTFS_STRIPES_DURATION is a duration such as 20s" >&2; exit 2; }
-for knob in SPROUTFS_STRIPES_IDLE_RATE SPROUTFS_STRIPES_FULL_RATE SPROUTFS_STRIPES_DISK_RATE SPROUTFS_STRIPES_OBJECTS; do
+for knob in SPROUTFS_STRIPES_IDLE_RATE SPROUTFS_STRIPES_FULL_RATE SPROUTFS_STRIPES_DISK_RATE SPROUTFS_STRIPES_OBJECTS SPROUTFS_STRIPES_REPEATS; do
     [[ ${!knob:-} =~ ^[0-9]*$ ]] || { echo "$knob is a number" >&2; exit 2; }
 done
+condition_re='(healthy|slow|stall|drained|drained-slow|drained-stall)'
+conditions=${SPROUTFS_STRIPES_CONDITIONS:-healthy,slow,drained,drained-slow,drained-stall}
+[[ $conditions =~ ^$condition_re(,$condition_re)*$ ]] || { echo "SPROUTFS_STRIPES_CONDITIONS is a list of healthy, slow, stall, drained, drained-slow and drained-stall" >&2; exit 2; }
+repeats=${SPROUTFS_STRIPES_REPEATS:-1}
 pass_re='(idle-memory|full-memory|idle-disk|full-disk)'
 passes=${SPROUTFS_STRIPES_PASSES:-idle-memory,full-memory,idle-disk,full-disk}
 [[ $passes =~ ^$pass_re(,$pass_re)*$ ]] || { echo "SPROUTFS_STRIPES_PASSES is a list of idle-memory, full-memory, idle-disk and full-disk" >&2; exit 2; }
@@ -49,7 +58,6 @@ disk_rate=${SPROUTFS_STRIPES_DISK_RATE:-500}
 objects=${SPROUTFS_STRIPES_OBJECTS:-4096}
 machine=${SPROUTFS_STRIPES_MACHINE:-n2-standard-8}
 [[ $machine =~ ^n2-standard-[0-9]+$ ]] || { echo "SPROUTFS_STRIPES_MACHINE is an n2-standard machine type" >&2; exit 2; }
-conditions=healthy,slow,drained,drained-slow,drained-stall
 
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 project=${SPROUTFS_GCE_PROJECT:-$(gcloud config get-value project 2>/dev/null)}
@@ -214,7 +222,7 @@ run() {
         git -C "$repo" status --porcelain=v1 -- cmd/sproutfs-stripebench scripts | sed 's/^/changed /'
         (cd "$staging" && shasum -a 256 sproutfs-stripebench)
         echo "objects $objects, duration $duration, idle $idle_rate/s, full $full_rate/s, disk $disk_rate/s"
-        echo "machine $machine, passes $passes, reads $reads"
+        echo "machine $machine, passes $passes, reads $reads, conditions $conditions, repeats $repeats"
     } > "$results/source.txt"
 
     servers=""
@@ -224,14 +232,19 @@ run() {
             --format='json(name,zone,machineType,cpuPlatform,scheduling,disks[].interface,networkInterfaces[].networkIP)' \
             > "$results/instance-$i.json"
         servers+="${servers:+,}$("${cloud[@]}" compute instances describe "$host" --zone="$zone" --format='value(networkInterfaces[0].networkIP)'):$port"
-        "${cloud[@]}" compute scp --zone="$zone" "$staging/sproutfs-stripebench" "$repo/scripts/lib/stripes-host.sh" "$host:" \
-            >> "$results/remote.log" 2>&1
-        remote "$host" "bash stripes-host.sh serve $i $count $objects" >> "$results/remote.log" 2>&1
+        # A server an earlier run left on these hosts stops first, so its
+        # binary can be replaced.
+        {
+            "${cloud[@]}" compute scp --zone="$zone" "$repo/scripts/lib/stripes-host.sh" "$host:"
+            remote "$host" "bash stripes-host.sh stop"
+            "${cloud[@]}" compute scp --zone="$zone" "$staging/sproutfs-stripebench" "$host:"
+            remote "$host" "bash stripes-host.sh serve $i $count $objects"
+        } >> "$results/remote.log" 2>&1
     done
     rm -f -- "$staging/sproutfs-stripebench"
     rmdir -- "$staging"
 
-    local common=(-objects "$objects" -conditions "$conditions" -duration "$duration" -reads "$reads")
+    local common=(-objects "$objects" -conditions "$conditions" -duration "$duration" -reads "$reads" -repeats "$repeats")
     pass idle-memory one "$servers" -load idle -rate "$idle_rate" "${common[@]}" || status=$?
     pass full-memory all "$servers" -load full -rate "$full_rate" "${common[@]}" || status=$?
     pass idle-disk one "$servers" -load idle -disk -rate "$idle_rate" "${common[@]}" || status=$?

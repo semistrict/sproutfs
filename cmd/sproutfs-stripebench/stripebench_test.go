@@ -4,8 +4,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
+	"math"
 	"net"
+	"reflect"
+	"runtime/metrics"
 	"slices"
+	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -107,7 +112,7 @@ func newCluster(t *testing.T, servers int) *cluster {
 		s := &server{set: set, index: i, data: bytes.NewReader(store.Bytes()), held: held}
 		serverEnd, clientEnd := net.Pipe()
 		go s.serveConn(serverEnd)
-		c.peers = append(c.peers, newPeer(i, clientEnd, c.bufs))
+		c.peers = append(c.peers, newPeer(i, clientEnd, c.bufs, &c.log))
 	}
 	t.Cleanup(c.close)
 	if err := c.hello(); err != nil {
@@ -245,7 +250,7 @@ func TestACaseRecordsEveryRead(t *testing.T) {
 				codeIndex int
 				max       time.Duration
 			}{{fourPlusTwo, 0}, {fourPlusOne, 20 * time.Millisecond}} {
-				res, err := cl.client.runCase(t.Context(), s, cond, c.codeIndex, mode, time.Now(), want)
+				res, err := cl.client.runCase(t.Context(), s, caseKey{cond: cond, code: c.codeIndex, mode: mode}, time.Now(), want)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -266,6 +271,89 @@ func TestACaseRecordsEveryRead(t *testing.T) {
 				}
 				if want := float64(res.Servers.Sent) / float64(res.Issued); res.SentPerRead != want {
 					t.Fatalf("%s: %v bytes sent per read, want %v", res.Name, res.SentPerRead, want)
+				}
+			}
+		}
+	})
+}
+
+// count is n observations of a latency.
+type count struct {
+	at time.Duration
+	n  uint64
+}
+
+// buckets is the bucket counts of a histogram of the given counts.
+func buckets(counts ...count) map[int]uint64 {
+	out := map[int]uint64{}
+	for _, c := range counts {
+		if c.n > 0 {
+			out[bucketOf(c.at)] += c.n
+		}
+	}
+	return out
+}
+
+// Under a drained and a slow server, each case says where its time went.
+// Every read asks the five live servers once, and the servers' replies say
+// that the slow one queued every request for its delay and did nothing else
+// take time. A 4+1 read that needs the slow server's stripe takes the delay,
+// is in the tail, and its time is all that stripe's queue; a 4+2 read never
+// needs it, so the 4+2 cases have no tail.
+func TestACaseBreaksDownWhereItsTimeWent(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		cl := newCluster(t, 6)
+		want, err := newExpected(cl.set)
+		if err != nil {
+			t.Fatal(err)
+		}
+		const slow, delay = 4, 20 * time.Millisecond
+		s := schedule{load: "idle", rate: 200, concurrency: 64, duration: time.Second,
+			drained: 5, slow: slow, slowDelay: delay, seed: 1, tailFrom: 10 * time.Millisecond}
+		cond := condition{name: "drained-slow", drained: true, slow: true}
+		for _, mode := range []readMode{askAll, hedged} {
+			for _, codeIndex := range []int{fourPlusOne, fourPlusTwo} {
+				res, err := cl.client.runCase(t.Context(), s, caseKey{cond: cond, code: codeIndex, mode: mode}, time.Now(), want)
+				if err != nil {
+					t.Fatal(err)
+				}
+				n := res.Issued
+				if want := []uint64{n, n, n, n, n, 0}; !slices.Equal(res.Asked, want) {
+					t.Fatalf("%s: servers asked %v, want %v", res.Name, res.Asked, want)
+				}
+				for _, h := range []struct {
+					name string
+					got  histogram
+					want map[int]uint64
+				}{
+					{"queued", res.ServerQueued, buckets(count{0, 4 * n}, count{delay, n})},
+					{"read", res.ServerRead, buckets(count{0, 5 * n})},
+					{"waited", res.ServerWaited, buckets(count{0, 5 * n})},
+					{"network", res.Network, buckets(count{0, n})},
+					{"decode", res.Decode, buckets(count{0, n})},
+				} {
+					if !maps.Equal(h.got.counts, h.want) {
+						t.Fatalf("%s: %s %v, want %v", res.Name, h.name, h.got.counts, h.want)
+					}
+				}
+				// The 4+1 reads that need the slow server's stripe.
+				late := uint64(0)
+				tail := tailStats{From: s.tailFrom}
+				if codeIndex == fourPlusOne {
+					late = res.Latency.counts[bucketOf(delay)]
+					tail = tailStats{From: s.tailFrom, Reads: late, Sum: path{Queue: time.Duration(late) * delay},
+						ByServer: []uint64{0, 0, 0, 0, late}}
+				}
+				if want := buckets(count{0, n - late}, count{delay, late}); !maps.Equal(res.Latency.counts, want) {
+					t.Fatalf("%s: latencies %v, want %v", res.Name, res.Latency.counts, want)
+				}
+				if !reflect.DeepEqual(res.Tail, tail) {
+					t.Fatalf("%s: tail %+v, want %+v", res.Name, res.Tail, tail)
+				}
+				// Some 4+1 reads need the slow server and some do not; without
+				// both the test checks less than it says.
+				if codeIndex == fourPlusOne && (late == 0 || late == n) {
+					t.Fatalf("%s: %d of %d reads needed the slow server", res.Name, late, n)
 				}
 			}
 		}
@@ -298,8 +386,8 @@ type seen struct {
 
 // readExactly reads one object and checks the outcome, the exact latency on
 // the bubble's clock, the requests sent, whether it hedged or was refused
-// and, on a hit, the bytes.
-func (cl *cluster) readExactly(t *testing.T, mode readMode, codeIndex int, o uint32, live []int, want seen) {
+// and, on a hit, the bytes. It returns where the read's time went.
+func (cl *cluster) readExactly(t *testing.T, mode readMode, codeIndex int, o uint32, live []int, want seen) (path, int) {
 	t.Helper()
 	r, err := cl.client.read(mode, codeIndex, o, live, time.Now())
 	if err != nil {
@@ -314,6 +402,7 @@ func (cl *cluster) readExactly(t *testing.T, mode readMode, codeIndex int, o uin
 		t.Fatalf("object %d: rebuilt the wrong bytes", o)
 	}
 	cl.client.bufs.put(r.object)
+	return r.path, r.critical
 }
 
 // askedBy reads object o in hedged mode, checks it is a hit at once from
@@ -368,7 +457,8 @@ func TestAHealthyHedgedReadAsksKPlusOne(t *testing.T) {
 
 // One stalled holder among the five asked costs nothing: the other four
 // answer. With two stalled, the read asks the sixth holder after exactly the
-// hedge delay, which twenty reads within the delay have paid for.
+// hedge delay, which twenty reads within the delay have paid for. That read's
+// time is all hedge, and the sixth holder's stripe completed it.
 func TestAHedgedReadAsksTheRestAfterTheDelay(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		cl := newCluster(t, 6)
@@ -381,9 +471,145 @@ func TestAHedgedReadAsksTheRestAfterTheDelay(t *testing.T) {
 		cl.setMode(t, order[:1], 0, true)
 		cl.readExactly(t, hedged, fourPlusTwo, o, all, seen{outcome: hit, requests: 5})
 		cl.setMode(t, order[1:2], 0, true)
-		cl.readExactly(t, hedged, fourPlusTwo, o, all,
+		p, critical := cl.readExactly(t, hedged, fourPlusTwo, o, all,
 			seen{outcome: hit, latency: testHedgeMin, requests: 6, second: true})
+		if p != (path{Hedge: testHedgeMin}) || critical != order[5] {
+			t.Fatalf("the hedged read's time went %+v, completed by server %d; want all hedge, completed by server %d",
+				p, critical, order[5])
+		}
 	})
+}
+
+// A reply's header carries the server's time on the read, each part capped
+// at 4.29 s.
+func TestAReplySaysTheServersTime(t *testing.T) {
+	h := replyHeader{id: 7, status: statusHit, stripe: 3, length: 87_500, serverTimes: serverTimes{
+		queued: 3 * time.Millisecond, read: 41 * time.Microsecond, waited: 5 * time.Second}}
+	var b bytes.Buffer
+	frame := make([]byte, replyHeaderBytes)
+	h.put(frame)
+	b.Write(frame)
+	got, err := readReplyHeader(&b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := h
+	want.waited = 4_294_967_295 * time.Nanosecond
+	if got != want {
+		t.Fatalf("the header came back as %+v, want %+v", got, want)
+	}
+}
+
+// One round keeps the order of conditions, codes and read modes. Several
+// rounds each run every case once, each in its own order, the same for every
+// client given the same seed.
+func TestRoundsRunEveryCaseInTheirOwnOrder(t *testing.T) {
+	conds := []condition{conditions[0], conditions[3]}
+	modes := []readMode{askAll, hedged}
+	name := func(k caseKey) string { return fmt.Sprintf("%s/%d/%v/%d", k.cond.name, k.code, k.mode, k.repeat) }
+	names := func(keys []caseKey) []string {
+		var out []string
+		for _, k := range keys {
+			out = append(out, name(k))
+		}
+		return out
+	}
+	one := names(caseOrder(conds, 2, modes, 1, 1))
+	if want := []string{
+		"healthy/0/ask-all/0", "healthy/0/hedged/0", "healthy/1/ask-all/0", "healthy/1/hedged/0",
+		"drained/0/ask-all/0", "drained/0/hedged/0", "drained/1/ask-all/0", "drained/1/hedged/0",
+	}; !slices.Equal(one, want) {
+		t.Fatalf("one round ran %v, want %v", one, want)
+	}
+	two := names(caseOrder(conds, 2, modes, 2, 1))
+	if want := []string{
+		"healthy/1/ask-all/0", "drained/1/hedged/0", "healthy/0/hedged/0", "drained/0/hedged/0",
+		"drained/1/ask-all/0", "drained/0/ask-all/0", "healthy/0/ask-all/0", "healthy/1/hedged/0",
+		"healthy/1/hedged/1", "drained/1/ask-all/1", "healthy/1/ask-all/1", "healthy/0/hedged/1",
+		"drained/0/ask-all/1", "drained/0/hedged/1", "drained/1/hedged/1", "healthy/0/ask-all/1",
+	}; !slices.Equal(two, want) {
+		t.Fatalf("two rounds ran %v, want %v", two, want)
+	}
+	if again := names(caseOrder(conds, 2, modes, 2, 1)); !slices.Equal(again, two) {
+		t.Fatalf("the same seed ran %v, then %v", two, again)
+	}
+}
+
+// The p99 of each round, and of every round together, by case in the order
+// of conditions, codes and read modes, whatever order the rounds ran in. One
+// bad round of two shows in its own p99 and not in the p99 of both.
+func TestASpreadIsEachRoundsP99(t *testing.T) {
+	result := func(cond, read string, repeat int, latencies ...time.Duration) caseResult {
+		c := caseResult{Name: "full/memory/" + cond + "/4+2/" + read, Condition: cond, Code: "4+2", Read: read, Repeat: repeat}
+		for _, d := range latencies {
+			for range 100 {
+				c.Latency.observe(d)
+			}
+		}
+		c.summarize()
+		return c
+	}
+	// Healthy: 98 % of hits at 1 ms and 2 % at 40 ms in the first round, at
+	// 2 ms in the second. Drained: every hit at 1 ms.
+	r := record{Repeats: 2, Cases: []caseResult{
+		result("drained", "hedged", 0, slices.Repeat([]time.Duration{time.Millisecond}, 99)...),
+		result("healthy", "ask-all", 0, append(slices.Repeat([]time.Duration{time.Millisecond}, 98), 40*time.Millisecond, 40*time.Millisecond)...),
+		result("healthy", "ask-all", 1, append(slices.Repeat([]time.Duration{time.Millisecond}, 98), 2*time.Millisecond, 2*time.Millisecond)...),
+		result("drained", "hedged", 1, slices.Repeat([]time.Duration{time.Millisecond}, 99)...),
+	}}
+	var got []string
+	for _, s := range r.spreads() {
+		got = append(got, fmt.Sprintf("%s %v %v", s.name, s.p99, s.all.quantile(0.99)))
+	}
+	want := []string{
+		"full/memory/healthy/4+2/ask-all [40ms 2ms] 2.015232ms",
+		"full/memory/drained/4+2/hedged [1ms 1ms] 1ms",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("spreads %q, want %q", got, want)
+	}
+}
+
+// A runtime histogram's counts between two samples, each at its bucket's
+// middle, or at its finite bound.
+func TestRuntimeHistogramSince(t *testing.T) {
+	bounds := []float64{math.Inf(-1), 0, 1e-6, 2e-6, math.Inf(1)}
+	before := &metrics.Float64Histogram{Counts: []uint64{0, 1, 2, 0}, Buckets: bounds}
+	after := &metrics.Float64Histogram{Counts: []uint64{0, 1, 5, 1}, Buckets: bounds}
+	h := histogramSince(before, after)
+	if want := buckets(count{1500 * time.Nanosecond, 3}, count{2 * time.Microsecond, 1}); !maps.Equal(h.counts, want) ||
+		h.total != 4 || h.max != 2*time.Microsecond {
+		t.Fatalf("got %v, %d in all, max %v; want %v, 4 in all, max 2µs", h.counts, h.total, h.max, want)
+	}
+}
+
+// A host's counters from Linux's /proc, and what they counted between two
+// readings.
+func TestHostCounters(t *testing.T) {
+	const snmp = "Ip: Forwarding DefaultTTL\nIp: 1 64\n" +
+		"Tcp: RtoAlgorithm MaxConn OutSegs RetransSegs\nTcp: 1 -1 1000 7\n"
+	const netstat = "TcpExt: SyncookiesSent TCPTimeouts\nTcpExt: 0 2\n"
+	before, err := parseHost("cpu  100 5 30 900 10 1 20 4 0 0\ncpu0 1 2 3\n", snmp, netstat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := parseHost("cpu  300 5 50 1100 10 2 60 9 0 0\n",
+		strings.ReplaceAll(snmp, "1 -1 1000 7", "1 -1 5000 9"), strings.ReplaceAll(netstat, "0 2", "0 3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := hostStats{Hosts: 1, User: 1050 * time.Millisecond, System: 300 * time.Millisecond,
+		IRQ: 10 * time.Millisecond, SoftIRQ: 200 * time.Millisecond, Steal: 40 * time.Millisecond,
+		Idle: 9100 * time.Millisecond, TCPOut: 1000, TCPRetrans: 7, TCPTimeouts: 2}
+	if before != want {
+		t.Fatalf("read %+v, want %+v", before, want)
+	}
+	want = hostStats{Hosts: 1, User: 2 * time.Second, System: 200 * time.Millisecond, IRQ: 10 * time.Millisecond,
+		SoftIRQ: 400 * time.Millisecond, Steal: 50 * time.Millisecond, Idle: 2 * time.Second,
+		TCPOut: 4000, TCPRetrans: 2, TCPTimeouts: 1}
+	if got := after.since(before); got != want {
+		t.Fatalf("counted %+v, want %+v", got, want)
+	}
 }
 
 // When every holder is slower than the read's bound, each read spends one

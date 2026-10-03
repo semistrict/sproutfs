@@ -154,22 +154,8 @@ func (s *server) serveConn(conn net.Conn) {
 			slog.Warn("close a client connection", "error", err)
 		}
 	}()
-	var wmu sync.Mutex
-	send := func(b []byte) {
-		wmu.Lock()
-		defer wmu.Unlock()
-		n, err := conn.Write(b)
-		s.sent.Add(uint64(n))
-		if err != nil {
-			level := slog.LevelWarn
-			if closedConn(err) {
-				level = slog.LevelDebug
-			}
-			slog.Log(context.Background(), level, "send a reply", "server", s.index, "error", err)
-			return
-		}
-		s.replies.Add(1)
-	}
+	w := &replyWriter{s: s, conn: conn}
+	send := w.send
 	for {
 		req, err := readRequest(conn)
 		if err != nil {
@@ -178,6 +164,7 @@ func (s *server) serveConn(conn net.Conn) {
 			}
 			return
 		}
+		got := time.Now()
 		switch req.op {
 		case opRead:
 			s.reads.Add(1)
@@ -185,7 +172,7 @@ func (s *server) serveConn(conn net.Conn) {
 				// A stalled server never answers.
 				continue
 			}
-			wg.Go(func() { s.answer(req, send, hungUp) })
+			wg.Go(func() { s.answer(req, got, w, hungUp) })
 		case opMode:
 			if req.flags&modeCold != 0 && s.dropCache == nil {
 				send(refusal(req.id, "this server cannot drop its store from the page cache"))
@@ -218,7 +205,47 @@ func (s *server) serveConn(conn net.Conn) {
 	}
 }
 
-func (s *server) answer(req request, send func([]byte), hungUp <-chan struct{}) {
+// replyWriter writes one connection's replies, one at a time.
+type replyWriter struct {
+	s    *server
+	conn net.Conn
+	mu   sync.Mutex
+}
+
+// send writes a reply to a mode, stats or hello request, or a refusal.
+func (w *replyWriter) send(b []byte) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.write(b)
+}
+
+// sendRead writes a read's reply, b, whose header is h. The header goes out
+// with how long the reply waited for the replies ahead of it.
+func (w *replyWriter) sendRead(h replyHeader, b []byte) {
+	asked := time.Now()
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	h.waited = time.Since(asked)
+	h.put(b)
+	w.write(b)
+}
+
+func (w *replyWriter) write(b []byte) {
+	n, err := w.conn.Write(b)
+	w.s.sent.Add(uint64(n))
+	if err != nil {
+		level := slog.LevelWarn
+		if closedConn(err) {
+			level = slog.LevelDebug
+		}
+		slog.Log(context.Background(), level, "send a reply", "server", w.s.index, "error", err)
+		return
+	}
+	w.s.replies.Add(1)
+}
+
+// answer answers a read the server took off the connection at got.
+func (s *server) answer(req request, got time.Time, w *replyWriter, hungUp <-chan struct{}) {
 	if d := time.Duration(s.delay.Load()); d > 0 {
 		timer := time.NewTimer(d)
 		select {
@@ -228,18 +255,20 @@ func (s *server) answer(req request, send func([]byte), hungUp <-chan struct{}) 
 			return
 		}
 	}
+	h := replyHeader{id: req.id, status: statusMiss}
+	h.queued = time.Since(got)
 	p, ok := s.held[pieceKey{req.code, req.object}]
 	if !ok {
 		var b [replyHeaderBytes]byte
-		replyHeader{id: req.id, status: statusMiss}.put(b[:])
-		send(b[:])
+		w.sendRead(h, b[:])
 		return
 	}
 	buf := s.bufs.get(replyHeaderBytes + p.length)
 	defer s.bufs.put(buf)
+	began := time.Now()
 	if _, err := s.data.ReadAt(buf[replyHeaderBytes:], p.off); err != nil {
 		slog.Error("read a stripe from the store", "server", s.index, "offset", p.off, "error", err)
-		send(refusal(req.id, err.Error()))
+		w.send(refusal(req.id, err.Error()))
 		return
 	}
 	if byte(s.flags.Load())&modeCold != 0 {
@@ -247,8 +276,9 @@ func (s *server) answer(req request, send func([]byte), hungUp <-chan struct{}) 
 			slog.Error("drop a stripe from the page cache", "server", s.index, "error", err)
 		}
 	}
-	replyHeader{id: req.id, status: statusHit, stripe: p.stripe, length: uint32(p.length)}.put(buf)
-	send(buf)
+	h.read = time.Since(began)
+	h.status, h.stripe, h.length = statusHit, p.stripe, uint32(p.length)
+	w.sendRead(h, buf)
 }
 
 func ok(id uint64, payload []byte) []byte {
