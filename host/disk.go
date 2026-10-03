@@ -242,6 +242,27 @@ func cacheFillReport(disk checkpoint.DiskStats, fill checkpoint.FillStats) *host
 		Refused: fill.Refused, QueuedBytes: fill.Queued, QueueBytes: fill.QueueBytes}
 }
 
+// hotTierReport is what the host's reads through its hot tier and its fills
+// of it did, as /status reports them: nothing for a host with no hot tier.
+func hotTierReport(stats *checkpoint.HotTierStats) *hostapi.HotTier {
+	if stats == nil {
+		return nil
+	}
+	failed := make(map[string]uint64, len(stats.Failed))
+	for _, reason := range checkpoint.HotFailures() {
+		failed[reason.String()] = stats.Failed[reason]
+	}
+	dropped := make(map[string]uint64, len(stats.Dropped))
+	for _, reason := range checkpoint.HotDrops() {
+		dropped[reason.String()] = stats.Dropped[reason]
+	}
+	return &hostapi.HotTier{Hits: stats.Hits, Misses: stats.Misses, Failed: failed, Skipped: stats.Skipped,
+		MarkedDown: stats.MarkedDown, Down: stats.Down, FromReads: stats.FromReads,
+		FromPublications: stats.FromPublications, Duplicates: stats.Duplicates, Sent: stats.Sent,
+		SentBytes: stats.SentBytes, Present: stats.Present, Dropped: dropped, HeadChecks: stats.HeadChecks,
+		HeadMissing: stats.HeadMissing, QueuedBytes: stats.Queued, QueueBytes: stats.QueueBytes}
+}
+
 // cacheReadReport is what the host's reads of the cluster's disk cache did,
 // and what its peer server served of its cache, as /status reports them:
 // nothing for a host that keeps no cache disk.

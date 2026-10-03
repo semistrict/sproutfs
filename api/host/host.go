@@ -614,6 +614,49 @@ type Status struct {
 	// and what it served its peers. It is absent on a host that keeps no
 	// cache disk.
 	CacheRead *CacheRead `json:"cache_read,omitempty"`
+	// HotTier is what this host's reads through the hot tier, and its fills
+	// of it, did. It is absent on a host that has no hot tier.
+	HotTier *HotTier `json:"hot_tier,omitempty"`
+}
+
+// HotTier is what one host's reads of checkpoint objects through the hot
+// tier did, and its fills of the hot tier. A read tries the hot tier first;
+// a miss or a failure reads the regional bucket, and a miss is filled behind
+// the read. Publications fill it too.
+type HotTier struct {
+	// Hits counts the reads the hot tier answered and Misses the reads of an
+	// object it did not hold. Failed counts the rest, by why: error, slow or
+	// corrupt.
+	Hits   uint64            `json:"hits"`
+	Misses uint64            `json:"misses"`
+	Failed map[string]uint64 `json:"failed"`
+	// Skipped counts the reads that went to the regional bucket while the
+	// hot tier was marked down, MarkedDown the times it was marked, and Down
+	// whether it is now.
+	Skipped    uint64 `json:"skipped"`
+	MarkedDown uint64 `json:"marked_down"`
+	Down       bool   `json:"down"`
+	// FromReads and FromPublications count the fills handed over and held,
+	// and Duplicates the misses of an object a fill was already held for.
+	FromReads        uint64 `json:"from_reads"`
+	FromPublications uint64 `json:"from_publications"`
+	Duplicates       uint64 `json:"duplicates"`
+	// Sent counts the fills the hot tier took and SentBytes their bytes, and
+	// Present the fills that found the object there already.
+	Sent      uint64 `json:"sent"`
+	SentBytes uint64 `json:"sent_bytes"`
+	Present   uint64 `json:"present"`
+	// Dropped is the fills dropped, by why: queue, rate, read, write or
+	// closed.
+	Dropped map[string]uint64 `json:"dropped"`
+	// HeadChecks counts the sampled hits whose regional object was checked,
+	// and HeadMissing those the regional bucket no longer held.
+	HeadChecks  uint64 `json:"head_checks"`
+	HeadMissing uint64 `json:"head_missing"`
+	// QueuedBytes is what the fills held now come to, and QueueBytes their
+	// bound.
+	QueuedBytes int64 `json:"queued_bytes"`
+	QueueBytes  int64 `json:"queue_bytes"`
 }
 
 // CacheRead is what one host's reads of the cluster's disk cache did, in

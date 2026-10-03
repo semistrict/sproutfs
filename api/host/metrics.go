@@ -277,6 +277,7 @@ func Metrics(status Status) string {
 	cacheDiskMetrics(&out, status.CacheDisk)
 	cacheFillMetrics(&out, status.CacheFill)
 	cacheReadMetrics(&out, status.CacheRead)
+	hotTierMetrics(&out, status.HotTier)
 	diskMetrics(&out, status.Disk)
 
 	// The store counters carry the operation as a label: five operations, one
@@ -447,6 +448,66 @@ func cacheFillMetrics(out *strings.Builder, fill *CacheFill) {
 		"What the queue of writes to this host's disk holds now.", did.QueuedBytes)
 	write("sproutfs_cache_fill_queue_limit_bytes", "gauge",
 		"The bound of the queue of writes to this host's disk.", did.QueueBytes)
+}
+
+// HotTierFailures is every reason a read of the hot tier fails for, and
+// HotTierDropReasons every reason a fill of it is dropped for, in the order
+// /metrics lists them.
+var (
+	HotTierFailures    = []string{"error", "slow", "corrupt"}
+	HotTierDropReasons = []string{"queue", "rate", "read", "write", "closed"}
+)
+
+// hotTierMetrics writes what this host's reads through the hot tier and its
+// fills of it did. A host with no hot tier reports zeroes.
+func hotTierMetrics(out *strings.Builder, hot *HotTier) {
+	var did HotTier
+	if hot != nil {
+		did = *hot
+	}
+	write := func(name, kind, help string, value any) {
+		fmt.Fprintf(out, "# HELP %s %s\n# TYPE %s %s\n%s %v\n", name, help, name, kind, name, value)
+	}
+	fmt.Fprintf(out, "# HELP sproutfs_hot_tier_reads_total Reads of checkpoint objects through the hot tier, by how they ended.\n"+
+		"# TYPE sproutfs_hot_tier_reads_total counter\n"+
+		"sproutfs_hot_tier_reads_total{result=\"hit\"} %d\n"+
+		"sproutfs_hot_tier_reads_total{result=\"miss\"} %d\n"+
+		"sproutfs_hot_tier_reads_total{result=\"skipped\"} %d\n", did.Hits, did.Misses, did.Skipped)
+	fmt.Fprintf(out, "# HELP sproutfs_hot_tier_failures_total Reads the hot tier failed, which the regional bucket served, by why.\n"+
+		"# TYPE sproutfs_hot_tier_failures_total counter\n")
+	for _, reason := range HotTierFailures {
+		fmt.Fprintf(out, "sproutfs_hot_tier_failures_total{reason=%q} %d\n", reason, did.Failed[reason])
+	}
+	write("sproutfs_hot_tier_marked_down_total", "counter",
+		"Times the hot tier failed three reads in a row and reads skipped it for a while.", did.MarkedDown)
+	down := 0
+	if did.Down {
+		down = 1
+	}
+	write("sproutfs_hot_tier_down", "gauge", "Whether reads skip the hot tier now.", down)
+	fmt.Fprintf(out, "# HELP sproutfs_hot_tier_fills_total Fills of the hot tier handed over and held, by what handed them over.\n"+
+		"# TYPE sproutfs_hot_tier_fills_total counter\n"+
+		"sproutfs_hot_tier_fills_total{from=\"read\"} %d\n"+
+		"sproutfs_hot_tier_fills_total{from=\"publication\"} %d\n", did.FromReads, did.FromPublications)
+	write("sproutfs_hot_tier_fills_sent_total", "counter", "Fills the hot tier took.", did.Sent)
+	write("sproutfs_hot_tier_fill_bytes_sent_total", "counter", "Bytes of the fills the hot tier took.", did.SentBytes)
+	write("sproutfs_hot_tier_fills_present_total", "counter",
+		"Fills that found the object in the hot tier already.", did.Present)
+	write("sproutfs_hot_tier_fills_duplicate_total", "counter",
+		"Misses of an object a fill was already held for.", did.Duplicates)
+	fmt.Fprintf(out, "# HELP sproutfs_hot_tier_fills_dropped_total Fills of the hot tier dropped, by why.\n"+
+		"# TYPE sproutfs_hot_tier_fills_dropped_total counter\n")
+	for _, reason := range HotTierDropReasons {
+		fmt.Fprintf(out, "sproutfs_hot_tier_fills_dropped_total{reason=%q} %d\n", reason, did.Dropped[reason])
+	}
+	write("sproutfs_hot_tier_head_checks_total", "counter",
+		"Sampled hits whose regional object was checked with a HEAD.", did.HeadChecks)
+	write("sproutfs_hot_tier_head_missing_total", "counter",
+		"Sampled hits whose regional object the regional bucket no longer held.", did.HeadMissing)
+	write("sproutfs_hot_tier_fill_queued_bytes", "gauge", "What the fills of the hot tier held now come to.",
+		did.QueuedBytes)
+	write("sproutfs_hot_tier_fill_queue_limit_bytes", "gauge", "The bound of the fills of the hot tier held.",
+		did.QueueBytes)
 }
 
 func lossWindow(vms []VM) (widest time.Duration, waiting int) {

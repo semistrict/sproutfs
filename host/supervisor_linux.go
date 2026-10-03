@@ -257,6 +257,7 @@ func Start(ctx context.Context, config SupervisorConfig) (Service, error) {
 		CacheBytes: config.CacheBytes,
 		Cache: checkpoint.CacheConfig{Disk: s.cacheDisk, Deployment: config.Deployment,
 			ClusterPercent: config.CacheClusterPercent},
+		HotTier:            checkpoint.HotTierConfig{Store: config.HotTier},
 		DiskLimiter:        s.disk,
 		CacheList:          CacheListConfig{Read: s.readCaches},
 		CheckpointInterval: config.CheckpointInterval,
@@ -431,6 +432,7 @@ func (s *supervisor) Status(ctx context.Context) (hostapi.Status, error) {
 	report.CacheDisk = cacheDiskReport(s.cacheFile, status.Cache.Disk)
 	report.CacheFill = cacheFillReport(status.Cache.Disk, status.Cache.Fill)
 	report.CacheRead = cacheReadReport(status.Cache.Disk, status.Cache.Read, status.Pages)
+	report.HotTier = hotTierReport(status.HotTier)
 	if report.Running == nil {
 		report.Running = []string{}
 	}
