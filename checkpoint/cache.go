@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/semistrict/sproutfs/control"
+	"github.com/semistrict/sproutfs/peer"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/rank"
 	"github.com/semistrict/sproutfs/resource"
@@ -52,6 +54,24 @@ type CacheConfig struct {
 	// the list's code, and every other window whole, under 1+0, whatever the
 	// list says. Zero, the default, keeps every window whole.
 	ClusterPercent int
+	// Peers is the host's table of peers, which the cache sends the keeps
+	// that fill the cluster through and asks for fill rights. Nil reaches no
+	// peer: a window inside the share is kept only where this cache holds it.
+	Peers *peer.Table
+	// Clock is what the rate of keeps and the interval of fill rights are
+	// measured by. Nil is the wall clock.
+	Clock platform.Clock
+	// FillQueueBytes bounds the host's queue of writes to its own disk, which
+	// every fill and every keep a peer sends goes through; a fill that finds
+	// it full is dropped. Default DefaultFillQueueBytes.
+	FillQueueBytes int64
+	// FillBytesPerSecond is the rate of keeps this host sends its peers, with
+	// a burst of one second of it; a keep past it is dropped. Default
+	// DefaultFillBytesPerSecond.
+	FillBytesPerSecond int64
+	// FillRightInterval is how long a window's fill right, once this cache
+	// gave it out, is not given again. Default DefaultFillRightInterval.
+	FillRightInterval time.Duration
 }
 
 // Cache shares immutable decoded pages among the stores and
@@ -64,8 +84,10 @@ type CacheConfig struct {
 type Cache struct {
 	mu        sync.Mutex
 	resources *resource.Budget
-	// disk is the second tier, nil where the host keeps nothing on disk.
+	// disk is the second tier, nil where the host keeps nothing on disk, and
+	// filler what fills the cluster from it, nil with it.
 	disk       *cacheDisk
+	filler     *filler
 	unregister func()
 	closed     bool
 	limit      int
@@ -171,8 +193,10 @@ type CacheStats struct {
 	CoalescedLoads uint64
 	// Evictions counts entries dropped by local or shared pressure and clearing.
 	Evictions uint64
-	// Disk is the disk tier's, zero where the host keeps nothing on disk.
+	// Disk is the disk tier's, zero where the host keeps nothing on disk, and
+	// Fill what its fills of the cluster did.
 	Disk DiskStats
+	Fill FillStats
 }
 
 // NewCache registers the cache with the host resource owner. Close it when
@@ -186,6 +210,12 @@ func NewCache(ctx context.Context, resources *resource.Budget, config CacheConfi
 	config.DiskRegionBytes = cmp.Or(config.DiskRegionBytes, DefaultDiskRegionBytes)
 	config.DiskIndexBytes = cmp.Or(config.DiskIndexBytes, DefaultDiskIndexBytes)
 	config.DiskSecondChanceReads = cmp.Or(config.DiskSecondChanceReads, 1)
+	config.FillQueueBytes = cmp.Or(config.FillQueueBytes, DefaultFillQueueBytes)
+	config.FillBytesPerSecond = cmp.Or(config.FillBytesPerSecond, DefaultFillBytesPerSecond)
+	config.FillRightInterval = cmp.Or(config.FillRightInterval, DefaultFillRightInterval)
+	if config.FillQueueBytes < 0 || config.FillBytesPerSecond < 0 || config.FillRightInterval < 0 {
+		return nil, ErrInvalidConfig
+	}
 	if resources == nil || config.MaxConcurrentLoads < 1 || config.MaxConcurrentLoads > 1024 || config.DiskBytes < 0 ||
 		config.DiskRegionBytes < minimumDiskRegionBytes || config.DiskRegionBytes > maximumDiskRegionBytes ||
 		config.DiskRegionBytes%diskBlock != 0 || config.DiskIndexBytes < 0 || config.DiskSecondChanceReads < 0 ||
@@ -209,6 +239,9 @@ func NewCache(ctx context.Context, resources *resource.Budget, config CacheConfi
 			return nil, fmt.Errorf("the page cache's disk: %w", err)
 		}
 		cache.disk = disk
+		cache.filler = newFiller(ctx, disk, fillSettings{peers: config.Peers, clock: config.Clock,
+			queueBytes: config.FillQueueBytes, bytesPerSecond: config.FillBytesPerSecond,
+			rightInterval: config.FillRightInterval})
 	}
 	cache.unregister = resources.RegisterCache(cache.reclaim)
 	return cache, nil
@@ -217,14 +250,15 @@ func NewCache(ctx context.Context, resources *resource.Budget, config CacheConfi
 // Stats reports the cache's current occupancy and cumulative counters.
 func (c *Cache) Stats() CacheStats {
 	var disk DiskStats
+	var fill FillStats
 	if c.disk != nil {
-		disk = c.disk.stats()
+		disk, fill = c.disk.stats(), c.filler.statistics()
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return CacheStats{ResidentBytes: c.used, Entries: len(c.entries), ActiveLoads: c.active,
 		PeakLoads: c.peak, Hits: c.hits, Misses: c.misses, CoalescedLoads: c.coalesced, Evictions: c.evictions,
-		Disk: disk}
+		Disk: disk, Fill: fill}
 }
 
 // FollowCaches has the cache's disk keep and read stripes by the list of
@@ -238,6 +272,36 @@ func (c *Cache) FollowCaches(caches func() rank.List) {
 		c.disk.follow(caches)
 	}
 }
+
+// SettleFills returns once every fill the cache was handed has been written
+// or dropped, and every keep and fill right it asked for has been answered.
+// Nothing waits on a fill; this is what a test, or a host about to say what
+// its disk holds, waits on. It returns at once for a cache that keeps no
+// disk.
+func (c *Cache) SettleFills(ctx context.Context) error {
+	if c.disk == nil {
+		return nil
+	}
+	return c.filler.settle(ctx)
+}
+
+// fill hands envelopes of kind to the cluster, each window inside the
+// cluster share to its ranks, and returns at once. It does nothing for a
+// cache that keeps no disk, and leaves every window outside the share alone.
+func (c *Cache) fill(kind WriteKind, envelopes []envelope) {
+	if c == nil || c.disk == nil || len(envelopes) == 0 {
+		return
+	}
+	c.filler.fill(kind, envelopes)
+}
+
+// bug reports whether the in-tree bug id is on for the cache's run, as its
+// fills see it.
+func (c *Cache) bug(id string) bool { return c != nil && c.disk != nil && c.filler.bug(id) }
+
+// fills reports whether the cache fills the cluster with any window: it keeps
+// a disk, and the cluster cache is on for some share of windows.
+func (c *Cache) fills() bool { return c != nil && c.disk != nil && c.disk.clusterPercent > 0 }
 
 // FitDisk is what the host's disk limiter calls when the cache's share has
 // fallen: the disk gives regions back, oldest first and with no second chance,
@@ -302,6 +366,8 @@ func (c *Cache) Close() {
 	c.Clear()
 	c.unregister()
 	if c.disk != nil {
+		// What the fills had not done is dropped: nothing waits on a fill.
+		c.filler.close()
 		c.disk.shutdown(context.Background())
 	}
 }
@@ -319,7 +385,9 @@ type cacheAdmission struct {
 // fetcher fills one buffer per key of a load. It is given the positions within
 // keys that this load owns, and returns their bytes in that order; the cache
 // copies what it keeps, so a fetcher may hand back slices of its own buffers.
-type fetcher func(ctx context.Context, wanted []int) ([][]byte, error)
+// It also returns the envelopes it read from the store, which the load fills
+// the cluster with once its callers have their bytes.
+type fetcher func(ctx context.Context, wanted []int) ([][]byte, []envelope, error)
 
 func (c *Cache) admit(ctx context.Context, keys []cacheKey, fetch fetcher) cacheAdmission {
 	c.mu.Lock()
@@ -378,14 +446,16 @@ func (c *Cache) admit(ctx context.Context, keys []cacheKey, fetch fetcher) cache
 	return found
 }
 
-// get reads one object, fetching it where the cache does not hold it.
-func (c *Cache) get(ctx context.Context, key cacheKey, load func(context.Context) ([]byte, error)) ([]byte, func(), error) {
-	data, release, err := c.getAll(ctx, []cacheKey{key}, func(ctx context.Context, _ []int) ([][]byte, error) {
-		found, err := load(ctx)
+// get reads one object, fetching it where the cache does not hold it. load
+// returns the object's bytes, and its envelope where the store served it.
+func (c *Cache) get(ctx context.Context, key cacheKey,
+	load func(context.Context) ([]byte, []envelope, error)) ([]byte, func(), error) {
+	data, release, err := c.getAll(ctx, []cacheKey{key}, func(ctx context.Context, _ []int) ([][]byte, []envelope, error) {
+		found, served, err := load(ctx)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		return [][]byte{found}, nil
+		return [][]byte{found}, served, nil
 	})
 	if err != nil {
 		return nil, nil, err
@@ -494,7 +564,7 @@ func (c *Cache) leave(key cacheKey, flight *cacheFlight) {
 
 func (c *Cache) run(ctx context.Context, load *cacheLoad, wanted []int, fetch fetcher) {
 	defer load.cancel()
-	fetched, err := fetch(ctx, wanted)
+	fetched, served, err := fetch(ctx, wanted)
 	if err == nil && len(fetched) != len(load.flights) {
 		err = ErrCorrupt
 	}
@@ -529,7 +599,21 @@ func (c *Cache) run(ctx context.Context, load *cacheLoad, wanted []int, fetch fe
 		}
 		clear(entries)
 	}
+	if err != nil {
+		served = nil
+	}
+	if c.bug("fill-blocks-read") {
+		// The bug fills in front of the read: its callers wait for the fill
+		// right, the split and the writes before they have their bytes.
+		c.fill(WriteFillRead, served)
+		if c.disk != nil {
+			_ = c.filler.settle(ctx)
+		}
+		served = nil
+	}
 	c.finish(load, entries, err)
+	// Behind the read, never in front of it: the callers have their bytes.
+	c.fill(WriteFillRead, served)
 }
 
 func (c *Cache) finish(load *cacheLoad, entries []*cacheEntry, err error) {

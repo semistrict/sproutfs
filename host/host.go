@@ -14,9 +14,9 @@
 // guest.
 //
 // Hosts reach each other over Config.Network. A host holds no admitted
-// identity. Its one view of its peers is the list of caches it reads from the
-// orchestrator, which nothing dials yet: the only address it ever dials is the
-// peer-server address a handoff carries, and the peer server serves whoever
+// identity. It dials two kinds of address: the peer-server address a handoff
+// carries, and the addresses of the caches in the list of caches it reads
+// from the orchestrator, which its cache fills. The peer server serves whoever
 // that network's transport accepts. Over plain TCP that is anyone who reaches
 // the port, so restricting it to hosts is the cluster's network policy; a
 // deployment that authenticates its hosts does so in a transport of its own.
@@ -384,7 +384,16 @@ func StartHost(ctx context.Context, config Config) (*Host, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Liveness is kept on the clock a connection's own bytes arrive by, which
+	// is the wall clock: a host's own clock keeps the deadlines of its VMs.
+	h.peers, err = peer.NewTable(hostCtx, peer.TableConfig{Dial: h.dialPages})
+	if err != nil {
+		return nil, err
+	}
 	sizing := cacheSizing(config)
+	// The cache fills the cluster through this host's peers, at a rate and
+	// with fill rights kept on its clock.
+	sizing.Peers, sizing.Clock = h.peers, h.clock
 	if config.DiskLimiter != nil {
 		sizing.Budget = cacheShare{limiter: config.DiskLimiter}
 	}
@@ -439,16 +448,16 @@ func StartHost(ctx context.Context, config Config) (*Host, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Liveness is kept on the clock a connection's own bytes arrive by, which
-	// is the wall clock: a host's own clock keeps the deadlines of its VMs.
-	h.peers, err = peer.NewTable(hostCtx, peer.TableConfig{Dial: h.dialPages})
-	if err != nil {
-		return nil, err
-	}
 	if config.Migration.Address != "" {
-		// The peer server serves any peer the network's transport accepts.
+		// The peer server serves any peer the network's transport accepts,
+		// and answers the cache's requests from this host's cache, where it
+		// keeps one.
+		var cache peer.Cache
+		if !h.self.Identity.IsZero() {
+			cache = h.cache
+		}
 		h.pages, err = peer.NewServer(hostCtx, peer.ServerConfig{Network: config.Network,
-			Address: config.Migration.Address, PageSize: config.Migration.PageSize})
+			Address: config.Migration.Address, PageSize: config.Migration.PageSize, Cache: cache})
 		if err != nil {
 			return nil, fmt.Errorf("migration address %q: %w", config.Migration.Address, err)
 		}

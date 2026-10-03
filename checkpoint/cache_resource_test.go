@@ -27,7 +27,7 @@ func sharedCache(t *testing.T, limit int64) (*Cache, *resource.Budget) {
 
 func cacheRead(t *testing.T, cache *Cache, key cacheKey) ([]byte, func()) {
 	t.Helper()
-	data, release, err := cache.get(t.Context(), key, func(context.Context) ([]byte, error) { return bytes.Repeat([]byte("r"), 128), nil })
+	data, release, err := cache.get(t.Context(), key, unfilled(func(context.Context) ([]byte, error) { return bytes.Repeat([]byte("r"), 128), nil }))
 	if err != nil {
 		t.Fatal(err)
 	}

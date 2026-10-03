@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"testing"
 	"testing/synctest"
 
@@ -24,6 +25,11 @@ var registeredProbes = []string{
 	control.ProbeReplyReconciled,
 	control.ProbeRecordAdopted,
 	checkpoint.ProbeCompactionRewrite,
+	// Hosts whose disks are one cache fill each other: a read of the store
+	// is given its window's fill right, and a stripe one host sends another
+	// is kept.
+	checkpoint.ProbeFillRightGranted,
+	checkpoint.ProbeKeepKept,
 	vmmemory.ProbeEvictionDuringPublication,
 	vmmigrate.ProbeVolumeFallback,
 	vmmigrate.ProbePublishedSinceHandoff,
@@ -32,16 +38,37 @@ var registeredProbes = []string{
 
 // unreachedProbes are the registered probes no campaign in this repository
 // reaches. The store either answers or fails outright here, so no conditional
-// write ever loses its reply and is reconciled by its writer's nonce; and the
-// pagers evict, but never while the memory region an eviction takes a page from is
-// sealed.
+// write ever loses its reply and is reconciled by its writer's nonce.
 //
 // The list is asserted in both directions. A probe on it that starts firing is
 // a campaign that grew coverage and a line to delete here; a probe off it that
 // stops firing is coverage lost.
 var unreachedProbes = []string{
 	control.ProbeReplyReconciled,
+}
+
+// unsteadyProbes are the registered probes a campaign reaches on some runs of
+// its seeds and not on others, which is asserted neither way. An eviction
+// during a publication was reached by seed 2 with the cluster cache on in one
+// run of three, and by no run with no cache disk: the fills add disk and
+// network work beside a publication, and where it lands is the Go
+// scheduler's choice, not the seed's.
+var unsteadyProbes = []string{
 	vmmemory.ProbeEvictionDuringPublication,
+}
+
+// elsewhere reports a probe another campaign is registered to cover, which
+// these campaigns reach too: the peer server's (TestThePeerServerCampaignNeverAnswersWrong),
+// the list of caches' (TestHostsAgreeOnceTheOrchestratorAnswersAgain), and
+// the page cache disk's, its stripes' and its fills' (the disk, stripe and
+// fill campaigns in checkpoint).
+func elsewhere(name string) bool {
+	for _, prefix := range []string{"peer/", "rank/", "checkpoint/disk-", "checkpoint/fill-", "checkpoint/keep-"} {
+		if strings.HasPrefix(name, prefix) && !slices.Contains(registeredProbes, name) {
+			return true
+		}
+	}
+	return false
 }
 
 // A probe nobody reaches is the failure mode the whole harness exists to rule
@@ -54,14 +81,18 @@ func TestTheCampaignsReachTheirProbes(t *testing.T) {
 		t.Skipf("set %s=1 for the probe coverage campaign", testsoak.EnableVar)
 	}
 	reached := map[string]uint64{}
+	// Every seed runs with the hosts' disks one cache and with no cache
+	// disk, so the paths each takes are both covered whatever a seed draws.
 	for seed := uint64(1); seed <= 25; seed++ {
-		t.Run(fmt.Sprintf("seed-%d", seed), func(t *testing.T) {
-			synctest.Test(t, func(t *testing.T) {
-				for name, count := range runTopologyCampaign(t, seed, true).Probes() {
-					reached[name] += count
-				}
+		for _, cache := range []campaignCache{cacheOff, cacheOn} {
+			t.Run(fmt.Sprintf("seed-%d/cache-%v", seed, cache == cacheOn), func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					for name, count := range runTopologyCampaign(t, seed, true, cache).Probes() {
+						reached[name] += count
+					}
+				})
 			})
-		})
+		}
 	}
 	// The two-writer campaign is where a publication is fenced by a later open
 	// rather than by the loss of its host, which is the one probe the generated
@@ -78,7 +109,9 @@ func TestTheCampaignsReachTheirProbes(t *testing.T) {
 	t.Logf("reached=%v", reached)
 	expected := map[string]bool{}
 	for _, name := range registeredProbes {
-		expected[name] = !slices.Contains(unreachedProbes, name)
+		if !slices.Contains(unsteadyProbes, name) {
+			expected[name] = !slices.Contains(unreachedProbes, name)
+		}
 	}
 	for _, name := range slices.Sorted(maps.Keys(expected)) {
 		switch {
@@ -89,7 +122,7 @@ func TestTheCampaignsReachTheirProbes(t *testing.T) {
 		}
 	}
 	for _, name := range slices.Sorted(maps.Keys(reached)) {
-		if !slices.Contains(registeredProbes, name) {
+		if !slices.Contains(registeredProbes, name) && !elsewhere(name) {
 			t.Errorf("%s is marked in the code but not registered here", name)
 		}
 	}

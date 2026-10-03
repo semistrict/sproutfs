@@ -25,19 +25,28 @@ type Window struct {
 	// start of the volume.
 	Segment bool
 	Number  uint64
+	// Pages is how many pages of its volume the window spans: one for a
+	// segment and at a 2 MiB page, 512 at 4 KiB. It is what turns a page of
+	// the window into a page of the volume. It is not part of what ranks the
+	// window: a volume has one page size, so no two windows differ in it
+	// alone.
+	Pages uint32
 }
 
 // PageWindow is the window that holds page, a page of pageSize bytes.
 func PageWindow(page control.Identity, pageSize uint64) Window {
 	span := max(WindowBytes/max(pageSize, 1), 1)
-	return Window{Ref: page.Ref, Volume: page.Volume, Number: page.Page / span}
+	return Window{Ref: page.Ref, Volume: page.Volume, Number: page.Page / span, Pages: uint32(span)}
 }
 
 // SegmentWindow is the window of one segment of volume's page table, which
 // the checkpoint ref wrote.
 func SegmentWindow(ref control.Ref, volume string, number uint64) Window {
-	return Window{Ref: ref, Volume: volume, Segment: true, Number: number}
+	return Window{Ref: ref, Volume: volume, Segment: true, Number: number, Pages: 1}
 }
+
+// Page is the page of the volume that is page at of the window.
+func (w Window) Page(at uint32) uint64 { return w.Number*uint64(max(w.Pages, 1)) + uint64(at) }
 
 // digest is the window's 64-bit hash, which every cache's score of it starts
 // from. Each field is length-prefixed, so no two windows encode alike.

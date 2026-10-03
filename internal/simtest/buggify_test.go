@@ -38,7 +38,7 @@ func TestSeededTopologyUnderBuggify(t *testing.T) {
 	for _, seed := range []uint64{1, 16} {
 		t.Run(fmt.Sprintf("seed-%d", seed), func(t *testing.T) {
 			testsoak.Measure(t, buggifiedCampaignName, seed, func(t *testing.T) *sim.Runtime {
-				runtime := runTopologyCampaign(t, seed, true)
+				runtime := runTopologyCampaign(t, seed, true, cacheDrawn)
 				for site, on := range runtime.BuggifySites() {
 					reached[site] = true
 					if on {

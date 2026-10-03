@@ -52,6 +52,17 @@ func (h *Host) Cache() (rank.Cache, bool) { return h.self, !h.self.Identity.IsZe
 // Caches is the list of caches this host holds now, which it ranks windows by.
 func (h *Host) Caches() rank.List { return h.caches.List() }
 
+// RefreshCaches reads the list of caches now rather than at the next turn of
+// its timer: what a host that has just learned of a cache, or a test that
+// starts from the list a host read, does.
+func (h *Host) RefreshCaches(ctx context.Context) error { return h.caches.Refresh(ctx) }
+
+// SettleFills returns once every fill of the cluster's cache this host's
+// cache was handed has been written or dropped, and every keep and fill right
+// it asked a peer for has been answered. Nothing waits on a fill; a test that
+// says what the cluster's disks hold waits on this.
+func (h *Host) SettleFills(ctx context.Context) error { return h.cache.SettleFills(ctx) }
+
 // cacheReport is this host's cache and the list of caches it holds, as
 // /status reports them.
 func cacheReport(self rank.Cache, caches rank.FollowerStatus) (*hostapi.Cache, hostapi.CacheList) {

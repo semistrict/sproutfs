@@ -33,13 +33,17 @@ var (
 	// already, or its budget for writes is spent, or this host's background
 	// budget was. Nothing waits on a keep, so it is dropped, not queued.
 	ErrDropped = errors.New("peer: the keep was dropped")
+	// ErrNoRoom reports a keep dropped before it was sent, because this
+	// host's background budget had no room for it. It is an ErrDropped too.
+	ErrNoRoom = errors.New("peer: the background budget has no room")
 )
 
 // StripeItem is one stripe a payload carries: the page of the window it belongs
-// to, its index in the code, the length of the envelope it was cut from, and its
-// size in the payload, where the items lie in order. Its bytes are stored as
-// they go on the wire and carry a checksum of their own, so a frame of stripes
-// carries no checksum of its payload.
+// to, counted from the window's first, its index in the code, the length of
+// the envelope it was split from, and its size in the payload, where the items
+// lie in order. Its bytes are stored as they go on the wire and carry a
+// checksum of their own, so a frame of stripes carries no checksum of its
+// payload.
 type StripeItem struct {
 	Page   uint32
 	Index  int
@@ -70,13 +74,16 @@ type Stripes struct {
 	Release   func()
 }
 
-// Keep asks a cache to write stripes. Payload holds the items in order.
+// Keep asks a cache to write stripes. Payload holds the items in order. A
+// repair is the lowest of every write, and a fill from a publication the
+// highest: a cache whose write budget runs low drops the rest first.
 type Keep struct {
-	Window  rank.Window
-	Code    rank.Code
-	Items   []StripeItem
-	Payload []byte
-	Repair  bool
+	Window      rank.Window
+	Code        rank.Code
+	Items       []StripeItem
+	Payload     []byte
+	Repair      bool
+	Publication bool
 }
 
 // Drop tells a cache to forget one stripe a reader found wrong.
@@ -109,12 +116,12 @@ type Cache interface {
 func windowToWire(window rank.Window) *peerv1.Window {
 	return peerv1.Window_builder{Vm: proto.String(window.Ref.VM), Sequence: proto.Uint64(window.Ref.Sequence),
 		Volume: proto.String(window.Volume), Segment: proto.Bool(window.Segment),
-		Number: proto.Uint64(window.Number)}.Build()
+		Number: proto.Uint64(window.Number), Pages: proto.Uint32(window.Pages)}.Build()
 }
 
 func windowFromWire(window *peerv1.Window) rank.Window {
 	return rank.Window{Ref: control.Ref{VM: window.GetVm(), Sequence: window.GetSequence()},
-		Volume: window.GetVolume(), Segment: window.GetSegment(), Number: window.GetNumber()}
+		Volume: window.GetVolume(), Segment: window.GetSegment(), Number: window.GetNumber(), Pages: window.GetPages()}
 }
 
 func itemsToWire(items []StripeItem) []*peerv1.StripeItem {
@@ -241,7 +248,7 @@ func (s *Server) answerKeep(session *session, request *peerv1.Keep, payload *pay
 	defer release()
 	err = s.config.Cache.Keep(s.ctx, Keep{Window: windowFromWire(request.GetWindow()),
 		Code: codeFromWire(request.GetK(), request.GetM()), Items: items, Payload: payload.bytes,
-		Repair: request.GetRepair()})
+		Repair: request.GetRepair(), Publication: request.GetPublication()})
 	status := peerv1.CacheStatus_CACHE_STATUS_OK
 	if err != nil {
 		status = peerv1.CacheStatus_CACHE_STATUS_DROPPED
@@ -376,12 +383,12 @@ func (p *Peer) Keep(ctx context.Context, cache rank.Identity, keep Keep) error {
 			return err
 		}
 	} else if !p.table.background.TryAcquire(priority, size) {
-		return ErrDropped
+		return fmt.Errorf("%w: %w", ErrDropped, ErrNoRoom)
 	}
 	defer p.table.background.Release(size)
 	request := peerv1.Keep_builder{Cache: cache[:], Window: windowToWire(keep.Window),
 		K: proto.Uint32(uint32(keep.Code.K)), M: proto.Uint32(uint32(keep.Code.M)), Items: itemsToWire(keep.Items),
-		Repair: proto.Bool(keep.Repair)}.Build()
+		Repair: proto.Bool(keep.Repair), Publication: proto.Bool(keep.Publication)}.Build()
 	response := new(peerv1.Kept)
 	got, _, err := p.call(WithClass(ctx, BulkWrite), "", request, response, size, 0, keep.Payload)
 	if errors.Is(err, ErrBusy) {

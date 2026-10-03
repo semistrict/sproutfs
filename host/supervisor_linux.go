@@ -428,6 +428,7 @@ func (s *supervisor) Status(ctx context.Context) (hostapi.Status, error) {
 	}
 	report.Cache, report.Caches = cacheReport(status.Self, status.Caches)
 	report.CacheDisk = cacheDiskReport(s.cacheFile, status.Cache.Disk)
+	report.CacheFill = cacheFillReport(status.Cache.Disk, status.Cache.Fill)
 	if report.Running == nil {
 		report.Running = []string{}
 	}

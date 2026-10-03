@@ -41,10 +41,12 @@ type Pull struct {
 	disk  *cacheDisk
 	index *Index
 	// bytes is what the checkpoint holds, as its root records it, and pulled
-	// how much of it this pull found on the disk or wrote there.
+	// how much of it this pull found on the disk, wrote there, or handed to
+	// the cluster's fills.
 	bytes  int64
 	pulled atomic.Int64
-	// kept is what later publications added to the disk.
+	// kept is what later publications added to the disk, or filled the
+	// cluster with.
 	kept atomic.Int64
 	// base is the context the pull began under, without its cancellation.
 	base context.Context
@@ -62,9 +64,11 @@ type Pull struct {
 // PullStats is how far one pull has come.
 type PullStats struct {
 	// Bytes is what the checkpoint holds and Pulled how much of it the pull
-	// found on the disk or wrote there. Kept is what the VM's later
-	// publications added. The disk gives its oldest regions back under
-	// pressure, so these say what the pull did, not what the disk still holds.
+	// found on the disk or wrote there, or, for a window inside the cluster
+	// share, handed to the cluster's fills, which may drop it. Kept is what
+	// the VM's later publications added. The disk gives its oldest regions
+	// back under pressure, so these say what the pull did, not what the disk
+	// still holds.
 	Bytes, Pulled, Kept int64
 	// Done reports a pull that has stopped fetching: complete when Err is nil,
 	// and stopped short by Err otherwise. A pull that stopped short keeps what
@@ -164,7 +168,8 @@ type envelope struct {
 // keep writes envelopes a publication of this pull's VM has just uploaded to
 // the disk, skipping any the disk already holds. It is best effort: a write
 // the disk refuses leaves the store serving the rest, and the publication goes
-// on regardless.
+// on regardless. A window inside the cluster share is the publication's own
+// fill, which puts it on its ranks, this host's among them.
 func (p *Pull) keep(ctx context.Context, envelopes []envelope) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -172,6 +177,10 @@ func (p *Pull) keep(ctx context.Context, envelopes []envelope) {
 		return
 	}
 	for _, e := range envelopes {
+		if p.store.cache.filler.inShare(e.key) {
+			p.kept.Add(int64(len(e.data)))
+			continue
+		}
 		if p.disk.has(ctx, e.key) {
 			continue
 		}
@@ -291,8 +300,16 @@ func (p *Pull) fetch(ctx context.Context, read func(context.Context) ([]byte, er
 }
 
 // write copies one envelope to the disk. A write the disk refuses stops the
-// pull; one the disk failed is the disk's to log, and the pull goes on.
+// pull; one the disk failed is the disk's to log, and the pull goes on. A
+// window inside the cluster share is handed to the cluster as a fill instead,
+// which the pull does not wait for: its stripes go to its ranks, this host's
+// among them, or are dropped, and the store serves what was dropped.
 func (p *Pull) write(ctx context.Context, key diskKey, data []byte) error {
+	if p.store.cache.filler.inShare(key) {
+		p.store.cache.fill(WriteFillPublication, []envelope{{key: key, data: data}})
+		p.pulled.Add(int64(len(data)))
+		return nil
+	}
 	if err := p.disk.write(ctx, key, data, WriteFillPublication); err != nil {
 		return err
 	}

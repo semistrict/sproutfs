@@ -552,23 +552,23 @@ func (s *Store) resolveRun(ctx context.Context, index *Index, volume string, off
 // and releases them.
 func (s *Store) loadSegment(ctx context.Context, volume string, number uint64, at segmentAddress) ([]byte, func(), error) {
 	key := segmentCacheKey(volume, number, at.ref)
-	fetch := func(ctx context.Context) ([]byte, error) {
-		if data, found := s.fromDisk(ctx, segmentDiskKey(volume, number, at.ref), maximumSegmentSize,
-			anySegment); found {
-			return data, nil
+	fetch := func(ctx context.Context) ([]byte, []envelope, error) {
+		disk := segmentDiskKey(volume, number, at.ref)
+		if data, found := s.fromDisk(ctx, disk, maximumSegmentSize, anySegment); found {
+			return data, nil, nil
 		}
 		encoded, err := s.readSegment(ctx, at)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		data, err := s.codecs.Decode(ctx, encoded, maximumSegmentSize)
 		if err != nil {
-			return nil, errors.Join(ErrCorrupt, err)
+			return nil, nil, errors.Join(ErrCorrupt, err)
 		}
-		return data, nil
+		return data, []envelope{{key: disk, data: encoded}}, nil
 	}
 	if s.cache == nil {
-		data, err := fetch(ctx)
+		data, _, err := fetch(ctx)
 		return data, func() {}, err
 	}
 	return s.cache.get(ctx, key, fetch)

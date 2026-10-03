@@ -315,9 +315,9 @@ func (p *Publication) Commit(ctx context.Context, source Source) (*Index, error)
 }
 
 // keepSegments hands the segments this publication wrote into its index object
-// to the pull that keeps them, once the object is durable.
+// to the pull that keeps them, and to the cluster, once the object is durable.
 func (p *Publication) keepSegments(ctx context.Context, index *Index, object []byte) {
-	if p.keep == nil {
+	if p.keep == nil && !p.store.cache.fills() {
 		return
 	}
 	var envelopes []envelope
@@ -332,7 +332,10 @@ func (p *Publication) keepSegments(ctx context.Context, index *Index, object []b
 				data: object[entry.at.offset:][:entry.at.length]})
 		}
 	}
-	p.keep.keep(ctx, envelopes)
+	if p.keep != nil {
+		p.keep.keep(ctx, envelopes)
+	}
+	p.store.cache.fill(WriteFillPublication, envelopes)
 }
 
 // writeState writes the VMM state as this checkpoint's first member, so its
@@ -662,7 +665,7 @@ func (w *partWriter) add(ctx context.Context, volume string, page uint64, kind m
 	}
 	at := location{ref: w.ref, origin: origin, part: w.next, offset: offset, length: length}
 	w.bytes += at.length
-	if w.keep != nil && kind == memberPage {
+	if (w.keep != nil || w.store.cache.fills()) && kind == memberPage {
 		w.members = append(w.members, keptMember{volume: volume, page: page, at: at})
 	}
 	return at, nil
@@ -675,8 +678,8 @@ type keptMember struct {
 	at     location
 }
 
-// kept is what a durable part's pages are for the pull that keeps them: each
-// member's envelope, named by the page's identity.
+// kept is what a durable part's pages are for the pull that keeps them and
+// the cluster they fill: each member's envelope, named by the page's identity.
 func (w *partWriter) kept(data []byte, members []keptMember) []envelope {
 	envelopes := make([]envelope, 0, len(members))
 	for _, m := range members {
@@ -748,15 +751,41 @@ func (w *partWriter) flush(ctx context.Context) error {
 	go func() {
 		defer w.wait.Done()
 		defer w.store.release()
+		early := w.fillEarly(ctx, data, members)
 		if err := w.put(ctx, key, data); err != nil {
 			w.record(err)
 			return
 		}
-		if w.keep != nil {
-			w.keep.keep(ctx, w.kept(data, members))
-		}
+		w.durable(ctx, data, members, early)
 	}()
 	return nil
+}
+
+// durable hands a part whose PUT has succeeded to the pull that keeps its
+// pages and to the cluster, which takes only the windows inside its share.
+// Nothing is filled before then: a part the store refused must reach no
+// cache. early says the bug already filled it.
+func (w *partWriter) durable(ctx context.Context, data []byte, members []keptMember, early bool) {
+	if len(members) == 0 {
+		return
+	}
+	envelopes := w.kept(data, members)
+	if w.keep != nil {
+		w.keep.keep(ctx, envelopes)
+	}
+	if !early {
+		w.store.cache.fill(WriteFillPublication, envelopes)
+	}
+}
+
+// fillEarly is the bug that fills the cluster with a part before its PUT
+// has succeeded, and reports whether it did.
+func (w *partWriter) fillEarly(ctx context.Context, data []byte, members []keptMember) bool {
+	if len(members) == 0 || !w.store.cache.bug("fill-before-durable") {
+		return false
+	}
+	w.store.cache.fill(WriteFillPublication, w.kept(data, members))
+	return true
 }
 
 // put writes one part create-if-absent. A part a retry of this publication
@@ -796,14 +825,13 @@ func (w *partWriter) finish(ctx context.Context) error {
 		if err := w.store.acquire(ctx); err != nil {
 			return err
 		}
+		early := w.fillEarly(ctx, sealed, members)
 		err = w.put(ctx, key, sealed)
 		w.store.release()
 		if err != nil {
 			return err
 		}
-		if w.keep != nil {
-			w.keep.keep(ctx, w.kept(sealed, members))
-		}
+		w.durable(ctx, sealed, members, early)
 	}
 	w.wait.Wait()
 	return w.failure

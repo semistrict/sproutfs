@@ -19,7 +19,7 @@ func TestSeededTopologySoak(t *testing.T) {
 	for seed := range testsoak.Require(t, 100).Seeds {
 		t.Run(fmt.Sprintf("seed-%d", seed), func(t *testing.T) {
 			testsoak.Measure(t, campaignName, seed, func(t *testing.T) *sim.Runtime {
-				return runTopologyCampaign(t, seed, false)
+				return runTopologyCampaign(t, seed, false, cacheDrawn)
 			})
 		})
 	}
@@ -65,7 +65,7 @@ func TestBuggifiedTopologySoak(t *testing.T) {
 	for seed := range testsoak.Require(t, 50).Seeds {
 		t.Run(fmt.Sprintf("seed-%d", seed), func(t *testing.T) {
 			testsoak.Measure(t, buggifiedCampaignName, seed, func(t *testing.T) *sim.Runtime {
-				return runTopologyCampaign(t, seed, true)
+				return runTopologyCampaign(t, seed, true, cacheDrawn)
 			})
 		})
 	}

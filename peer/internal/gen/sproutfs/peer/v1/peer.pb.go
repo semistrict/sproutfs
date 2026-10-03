@@ -819,6 +819,7 @@ type Window struct {
 	xxx_hidden_Volume      *string                `protobuf:"bytes,3,opt,name=volume"`
 	xxx_hidden_Segment     bool                   `protobuf:"varint,4,opt,name=segment"`
 	xxx_hidden_Number      uint64                 `protobuf:"varint,5,opt,name=number"`
+	xxx_hidden_Pages       uint32                 `protobuf:"varint,6,opt,name=pages"`
 	XXX_raceDetectHookData protoimpl.RaceDetectHookData
 	XXX_presence           [1]uint32
 	unknownFields          protoimpl.UnknownFields
@@ -891,29 +892,41 @@ func (x *Window) GetNumber() uint64 {
 	return 0
 }
 
+func (x *Window) GetPages() uint32 {
+	if x != nil {
+		return x.xxx_hidden_Pages
+	}
+	return 0
+}
+
 func (x *Window) SetVm(v string) {
 	x.xxx_hidden_Vm = &v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 5)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 6)
 }
 
 func (x *Window) SetSequence(v uint64) {
 	x.xxx_hidden_Sequence = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 1, 5)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 1, 6)
 }
 
 func (x *Window) SetVolume(v string) {
 	x.xxx_hidden_Volume = &v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 2, 5)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 2, 6)
 }
 
 func (x *Window) SetSegment(v bool) {
 	x.xxx_hidden_Segment = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 3, 5)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 3, 6)
 }
 
 func (x *Window) SetNumber(v uint64) {
 	x.xxx_hidden_Number = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 4, 5)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 4, 6)
+}
+
+func (x *Window) SetPages(v uint32) {
+	x.xxx_hidden_Pages = v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 5, 6)
 }
 
 func (x *Window) HasVm() bool {
@@ -951,6 +964,13 @@ func (x *Window) HasNumber() bool {
 	return protoimpl.X.Present(&(x.XXX_presence[0]), 4)
 }
 
+func (x *Window) HasPages() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 5)
+}
+
 func (x *Window) ClearVm() {
 	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 0)
 	x.xxx_hidden_Vm = nil
@@ -976,6 +996,11 @@ func (x *Window) ClearNumber() {
 	x.xxx_hidden_Number = 0
 }
 
+func (x *Window) ClearPages() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 5)
+	x.xxx_hidden_Pages = 0
+}
+
 type Window_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
@@ -984,6 +1009,10 @@ type Window_builder struct {
 	Volume   *string
 	Segment  *bool
 	Number   *uint64
+	// pages is how many pages of its volume the window spans: one for a
+	// segment and at a 2 MiB page, 512 at 4 KiB. A window's pages are counted
+	// from its first.
+	Pages *uint32
 }
 
 func (b0 Window_builder) Build() *Window {
@@ -991,24 +1020,28 @@ func (b0 Window_builder) Build() *Window {
 	b, x := &b0, m0
 	_, _ = b, x
 	if b.Vm != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 5)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 6)
 		x.xxx_hidden_Vm = b.Vm
 	}
 	if b.Sequence != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 1, 5)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 1, 6)
 		x.xxx_hidden_Sequence = *b.Sequence
 	}
 	if b.Volume != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 2, 5)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 2, 6)
 		x.xxx_hidden_Volume = b.Volume
 	}
 	if b.Segment != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 3, 5)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 3, 6)
 		x.xxx_hidden_Segment = *b.Segment
 	}
 	if b.Number != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 4, 5)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 4, 6)
 		x.xxx_hidden_Number = *b.Number
+	}
+	if b.Pages != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 5, 6)
+		x.xxx_hidden_Pages = *b.Pages
 	}
 	return m0
 }
@@ -1541,7 +1574,8 @@ func (b0 Stripes_builder) Build() *Stripes {
 }
 
 // Keep asks a cache to write the stripes its payload carries. A repair is the
-// lowest of every write.
+// lowest of every write; a fill from a publication is kept longest when the
+// cache's write budget runs low, and one from a read of the store before it.
 type Keep struct {
 	state                  protoimpl.MessageState `protogen:"opaque.v1"`
 	xxx_hidden_Cache       []byte                 `protobuf:"bytes,1,opt,name=cache"`
@@ -1550,6 +1584,7 @@ type Keep struct {
 	xxx_hidden_M           uint32                 `protobuf:"varint,4,opt,name=m"`
 	xxx_hidden_Items       *[]*StripeItem         `protobuf:"bytes,5,rep,name=items"`
 	xxx_hidden_Repair      bool                   `protobuf:"varint,6,opt,name=repair"`
+	xxx_hidden_Publication bool                   `protobuf:"varint,7,opt,name=publication"`
 	XXX_raceDetectHookData protoimpl.RaceDetectHookData
 	XXX_presence           [1]uint32
 	unknownFields          protoimpl.UnknownFields
@@ -1625,12 +1660,19 @@ func (x *Keep) GetRepair() bool {
 	return false
 }
 
+func (x *Keep) GetPublication() bool {
+	if x != nil {
+		return x.xxx_hidden_Publication
+	}
+	return false
+}
+
 func (x *Keep) SetCache(v []byte) {
 	if v == nil {
 		v = []byte{}
 	}
 	x.xxx_hidden_Cache = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 6)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 7)
 }
 
 func (x *Keep) SetWindow(v *Window) {
@@ -1639,12 +1681,12 @@ func (x *Keep) SetWindow(v *Window) {
 
 func (x *Keep) SetK(v uint32) {
 	x.xxx_hidden_K = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 2, 6)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 2, 7)
 }
 
 func (x *Keep) SetM(v uint32) {
 	x.xxx_hidden_M = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 3, 6)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 3, 7)
 }
 
 func (x *Keep) SetItems(v []*StripeItem) {
@@ -1653,7 +1695,12 @@ func (x *Keep) SetItems(v []*StripeItem) {
 
 func (x *Keep) SetRepair(v bool) {
 	x.xxx_hidden_Repair = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 5, 6)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 5, 7)
+}
+
+func (x *Keep) SetPublication(v bool) {
+	x.xxx_hidden_Publication = v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 6, 7)
 }
 
 func (x *Keep) HasCache() bool {
@@ -1691,6 +1738,13 @@ func (x *Keep) HasRepair() bool {
 	return protoimpl.X.Present(&(x.XXX_presence[0]), 5)
 }
 
+func (x *Keep) HasPublication() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 6)
+}
+
 func (x *Keep) ClearCache() {
 	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 0)
 	x.xxx_hidden_Cache = nil
@@ -1715,15 +1769,21 @@ func (x *Keep) ClearRepair() {
 	x.xxx_hidden_Repair = false
 }
 
+func (x *Keep) ClearPublication() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 6)
+	x.xxx_hidden_Publication = false
+}
+
 type Keep_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	Cache  []byte
-	Window *Window
-	K      *uint32
-	M      *uint32
-	Items  []*StripeItem
-	Repair *bool
+	Cache       []byte
+	Window      *Window
+	K           *uint32
+	M           *uint32
+	Items       []*StripeItem
+	Repair      *bool
+	Publication *bool
 }
 
 func (b0 Keep_builder) Build() *Keep {
@@ -1731,22 +1791,26 @@ func (b0 Keep_builder) Build() *Keep {
 	b, x := &b0, m0
 	_, _ = b, x
 	if b.Cache != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 6)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 7)
 		x.xxx_hidden_Cache = b.Cache
 	}
 	x.xxx_hidden_Window = b.Window
 	if b.K != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 2, 6)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 2, 7)
 		x.xxx_hidden_K = *b.K
 	}
 	if b.M != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 3, 6)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 3, 7)
 		x.xxx_hidden_M = *b.M
 	}
 	x.xxx_hidden_Items = &b.Items
 	if b.Repair != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 5, 6)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 5, 7)
 		x.xxx_hidden_Repair = *b.Repair
+	}
+	if b.Publication != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 6, 7)
+		x.xxx_hidden_Publication = *b.Publication
 	}
 	return m0
 }
@@ -2600,13 +2664,14 @@ const file_sproutfs_peer_v1_peer_proto_rawDesc = "" +
 	"\vasked_bytes\x18\x04 \x01(\x04R\n" +
 	"askedBytes\"\x06\n" +
 	"\x04Ping\"\x06\n" +
-	"\x04Pong\"~\n" +
+	"\x04Pong\"\x94\x01\n" +
 	"\x06Window\x12\x0e\n" +
 	"\x02vm\x18\x01 \x01(\tR\x02vm\x12\x1a\n" +
 	"\bsequence\x18\x02 \x01(\x04R\bsequence\x12\x16\n" +
 	"\x06volume\x18\x03 \x01(\tR\x06volume\x12\x18\n" +
 	"\asegment\x18\x04 \x01(\bR\asegment\x12\x16\n" +
-	"\x06number\x18\x05 \x01(\x04R\x06number\"b\n" +
+	"\x06number\x18\x05 \x01(\x04R\x06number\x12\x14\n" +
+	"\x05pages\x18\x06 \x01(\rR\x05pages\"b\n" +
 	"\n" +
 	"StripeItem\x12\x12\n" +
 	"\x04page\x18\x01 \x01(\rR\x04page\x12\x14\n" +
@@ -2624,14 +2689,15 @@ const file_sproutfs_peer_v1_peer_proto_rawDesc = "" +
 	"\x06status\x18\x01 \x01(\x0e2\x1d.sproutfs.peer.v1.CacheStatusR\x06status\x122\n" +
 	"\x05items\x18\x02 \x03(\v2\x1c.sproutfs.peer.v1.StripeItemR\x05items\x12\x1d\n" +
 	"\n" +
-	"fill_right\x18\x03 \x01(\bR\tfillRight\"\xb6\x01\n" +
+	"fill_right\x18\x03 \x01(\bR\tfillRight\"\xd8\x01\n" +
 	"\x04Keep\x12\x14\n" +
 	"\x05cache\x18\x01 \x01(\fR\x05cache\x120\n" +
 	"\x06window\x18\x02 \x01(\v2\x18.sproutfs.peer.v1.WindowR\x06window\x12\f\n" +
 	"\x01k\x18\x03 \x01(\rR\x01k\x12\f\n" +
 	"\x01m\x18\x04 \x01(\rR\x01m\x122\n" +
 	"\x05items\x18\x05 \x03(\v2\x1c.sproutfs.peer.v1.StripeItemR\x05items\x12\x16\n" +
-	"\x06repair\x18\x06 \x01(\bR\x06repair\"=\n" +
+	"\x06repair\x18\x06 \x01(\bR\x06repair\x12 \n" +
+	"\vpublication\x18\a \x01(\bR\vpublication\"=\n" +
 	"\x04Kept\x125\n" +
 	"\x06status\x18\x01 \x01(\x0e2\x1d.sproutfs.peer.v1.CacheStatusR\x06status\"\x94\x01\n" +
 	"\x04Drop\x12\x14\n" +

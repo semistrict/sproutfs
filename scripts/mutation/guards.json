@@ -430,5 +430,41 @@
     "package": "peer",
     "run": "^TestAReaderBoundsItsStripeBytesInFlight$",
     "purpose": "Send stripe reads without the bound on stripe bytes in flight."
+  },
+  {
+    "id": "fill-before-durable",
+    "package": "checkpoint",
+    "run": "^TestAPublicationFillsNothingBeforeItsPartIsDurable$",
+    "purpose": "Fill the cluster with a part before its PUT has succeeded."
+  },
+  {
+    "id": "keep-unranked",
+    "package": "checkpoint",
+    "run": "^TestACacheRefusesAKeepItsListDoesNotRankItFor$",
+    "purpose": "Take a keep for a window the cache's own list does not rank it for."
+  },
+  {
+    "id": "fill-blocks-read",
+    "package": "checkpoint",
+    "run": "^TestAFaultIsNotSlowedByItsFill$",
+    "purpose": "Fill in front of a read of the store: its callers wait for the right, the split and the keeps."
+  },
+  {
+    "id": "no-fill-right",
+    "package": "checkpoint",
+    "run": "^TestAColdBurstFillsAWindowOnce$",
+    "purpose": "Fill from every read of the store, with no fill right asked of rank 1."
+  },
+  {
+    "id": "fill-queue-waits",
+    "package": "checkpoint",
+    "run": "^TestAPublicationNeverWaitsForItsFill$",
+    "purpose": "Wait for room in the queue of writes to the host's disk rather than drop the fill."
+  },
+  {
+    "id": "keep-while-writing",
+    "package": "checkpoint",
+    "run": "^TestACacheDropsAKeepItHoldsOrIsWriting$",
+    "purpose": "Queue a keep for stripes the cache is already writing rather than drop it."
   }
 ]

@@ -76,7 +76,9 @@ func (k diskKey) window() (uint64, uint16) {
 
 // rankWindow is the window the list of caches places key's stripes by.
 func (k diskKey) rankWindow() rank.Window {
-	return rank.Window{Ref: k.Ref, Volume: k.Volume, Segment: k.segment, Number: k.Page / uint64(max(k.span, 1))}
+	span := max(k.span, 1)
+	return rank.Window{Ref: k.Ref, Volume: k.Volume, Segment: k.segment, Number: k.Page / uint64(span),
+		Pages: uint32(span)}
 }
 
 // itemWord is what the index keeps of one item: its length in 24 bits, a

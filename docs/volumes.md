@@ -778,6 +778,17 @@ the disk as it uploads it. A read that misses in memory looks on the disk
 before it asks the store. So a pulled checkpoint is read without a request
 while the disk holds it, however often the pager evicts its pages.
 
+Inside the share the cluster cache is turned on for, the disk is one part of
+the cluster's cache, and **fills** put windows on it
+([filling the cluster](hosting.md#filling-the-cluster)). A read of the store,
+once its callers have their pages, and a publication, once each part and then
+the index object is durable, split each window they have in hand under the
+list's code. This host's own stripes go to its disk through one bounded queue
+of writes, and the rest go to the caches that hold them as keeps. The disk
+takes a keep only for a window its own list ranks it for, and drops a stripe
+it holds or is writing already. A fill that finds the queue full is dropped:
+nothing waits on one, and the store serves what it did not put there.
+
 The disk holds what the store holds: each member's and each segment's encoded
 envelope, byte for byte, keyed by the same identity as the memory tier. So a
 read from it is the same read as one from the store, checked by the same

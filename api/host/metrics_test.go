@@ -97,6 +97,45 @@ func TestMetricsExposeThePageCachesDisk(t *testing.T) {
 	}
 }
 
+// What a host's fills of the cluster's disk cache did: the windows it filled
+// by what it read them for, the fill rights it was refused and gave out, the
+// stripes sent, kept, dropped by every reason, duplicated and refused, and its
+// queue. A host that keeps no cache disk reports zeroes for every reason.
+func TestMetricsExposeTheCachesFills(t *testing.T) {
+	body := hostapi.Metrics(hostapi.Status{CacheFill: &hostapi.CacheFill{FromReads: 11, FromPublications: 12,
+		WithoutRight: 13, RightsGranted: 14, Sent: 15, SentBytes: 16, Kept: 17,
+		Dropped: map[string]uint64{"queue": 1, "rate": 2, "budget": 3, "peer": 4}, Duplicates: 18, Refused: 19,
+		QueuedBytes: 20, QueueBytes: 21}})
+	for _, want := range []string{
+		`sproutfs_cache_fills_total{from="read"} 11`,
+		`sproutfs_cache_fills_total{from="publication"} 12`,
+		"sproutfs_cache_fills_without_right_total 13",
+		"sproutfs_cache_fill_rights_granted_total 14",
+		"sproutfs_cache_fill_stripes_sent_total 15",
+		"sproutfs_cache_fill_bytes_sent_total 16",
+		"sproutfs_cache_fill_stripes_kept_total 17",
+		`sproutfs_cache_fill_stripes_dropped_total{reason="queue"} 1`,
+		`sproutfs_cache_fill_stripes_dropped_total{reason="rate"} 2`,
+		`sproutfs_cache_fill_stripes_dropped_total{reason="budget"} 3`,
+		`sproutfs_cache_fill_stripes_dropped_total{reason="peer"} 4`,
+		`sproutfs_cache_fill_stripes_dropped_total{reason="down"} 0`,
+		"sproutfs_cache_fill_stripes_duplicate_total 18",
+		"sproutfs_cache_keep_stripes_refused_total 19",
+		"sproutfs_cache_fill_queued_bytes 20",
+		"sproutfs_cache_fill_queue_limit_bytes 21",
+	} {
+		if !strings.Contains(body, want+"\n") {
+			t.Fatalf("the exposition has no %q in it:\n%s", want, body)
+		}
+	}
+	body = hostapi.Metrics(hostapi.Status{})
+	for _, reason := range hostapi.FillDropReasons {
+		if want := `sproutfs_cache_fill_stripes_dropped_total{reason="` + reason + `"} 0`; !strings.Contains(body, want+"\n") {
+			t.Fatalf("a host with no cache disk has no %q in its exposition:\n%s", want, body)
+		}
+	}
+}
+
 // Why a guest stopped making progress, and how long faults take, per pager.
 // A histogram is cumulative, in seconds, and ends with +Inf, its sum and its
 // count, which is what a Prometheus histogram_quantile reads.

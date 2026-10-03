@@ -35,7 +35,7 @@ func TestSeededTopologyFingerprintIsStable(t *testing.T) {
 			var memoryRegions int
 			for run := range work {
 				synctest.Test(t, func(t *testing.T) {
-					runtime := runTopologyCampaign(t, seed, false)
+					runtime := runTopologyCampaign(t, seed, false, cacheDrawn)
 					trace := runtime.Trace()
 					work[run] = trace.WorkFingerprint(func(e sim.Event) bool { return !connectionAttempt(e) })
 					strict[run] = trace.Fingerprint()
