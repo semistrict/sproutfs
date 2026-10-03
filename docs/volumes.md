@@ -789,6 +789,15 @@ takes a keep only for a window its own list ranks it for, and drops a stripe
 it holds or is writing already. A fill that finds the queue full is dropped:
 nothing waits on one, and the store serves what it did not put there.
 
+Inside the share a read is a read of the cluster. A run's pages that miss in
+memory are grouped by window. For each window the read takes this host's own
+stripes, then asks k+1 of the window's ranks for theirs, and rebuilds each
+page from any k distinct indices. Only a page the cluster cannot rebuild is
+read from the store, and that read fills the cluster behind it
+([reading from the cluster](hosting.md#reading-from-the-cluster)). A stripe a
+peer sends is checked as an item read from this disk is: its key, its index,
+its code and its checksum, and then the page by its envelope.
+
 The disk holds what the store holds: each member's and each segment's encoded
 envelope, byte for byte, keyed by the same identity as the memory tier. So a
 read from it is the same read as one from the store, checked by the same
@@ -867,9 +876,18 @@ any of them is a miss, and the index forgets it. The read rebuilds the envelope 
 the items that pass, and checks it by its own SHA-256. If it holds more than k
 stripes and the first k fail that check, it rebuilds from other sets of k, and
 forgets the stripe that does not belong. If none pass, it forgets them all.
-Either way the page is read from the store. So a damaged item, a torn write,
-a wrong stripe, or an index that points at the wrong place costs a request,
-never wrong bytes.
+Either way the page is read from the store, or, inside the share, from the
+other ranks of its window. So a damaged item, a torn write, a wrong stripe, or
+an index that points at the wrong place costs a request, never wrong bytes. A
+stripe a peer's read finds wrong is forgotten when that peer says so
+(`Cache.Drop`).
+
+**Serving peers.** A peer's read of a window is answered with every item the
+disk holds of the pages it names under the read's code, of any index, as they
+lie on the disk, header and checksum included, up to what the read may hold.
+Nothing is decoded or checked on the way out: the reader checks each item. An
+item served counts as a read of it, so a page that peers read gets its second
+chance as one this host reads does.
 
 **The index.** The index in memory is kept per **window**: the pages of one
 volume, in one aligned 2 MiB span, that one checkpoint published. A segment is

@@ -228,7 +228,8 @@ destinations and to forks on other hosts.
 **Peer server**: The one channel between hosts. Each host runs one, on one
 port, and every other host reaches it there. It serves the pages a handoff left
 on the host and, for the cluster's disk cache, reads, keeps, drops and presence
-checks of stripes. It speaks a framed protocol over TCP, not gRPC or HTTP. See
+checks of stripes. It serves stripes within a serving bandwidth, and answers a
+read past it busy. It speaks a framed protocol over TCP, not gRPC or HTTP. See
 [the transport](migration.md#the-peer-server).
 
 **Peer**: Another host, as this host's table of peers sees it. There is one
@@ -238,9 +239,11 @@ whether the remote host is down.
 
 **Class**: What a request is for, which decides the connections it goes over
 and the budget it counts against at the server. A guest fault is the fault
-class. The post-copy stream and stripe reads that nothing waits on are bulk
-reads. Keeps are bulk writes. A bulk request never shares a connection with a
-fault, and never takes a fault's budget.
+class. A read of the cluster's disk cache, which a fault waits on, is the
+stripe class: its replies never wait behind a 2 MiB page on a connection. The
+post-copy stream and a request for a fill right, which nothing waits on, are
+bulk reads. Keeps are bulk writes. A bulk request never shares a connection
+with a fault, and never takes a fault's budget.
 
 **Busy**: A peer server's answer to a request that would take its peer's class
 past the class's budget. It says how much the class holds, may hold, and asked
@@ -256,6 +259,13 @@ stream yields the link to the fault.
 connection that heard nothing for four seconds. A caller giving up is never a
 hard failure. A request that can do without a down peer skips it. The table
 probes the peer back, first after about a second and then up to every ten.
+
+**Marked down**: A host a reader of the cluster's disk cache does not ask for
+stripes and sends no fills, after three of its stripe requests to it in a row
+timed out or one connection to it was refused. Each reader keeps its own
+marks, of at most a fifth of its list and at least one host. It probes a
+marked host after ten seconds, then up to every sixty, and only a probe that
+answers clears the mark. A miss is not a failure of the host.
 
 **Writer**: The single process allowed to publish a VM's checkpoints. The epoch
 in the control record establishes the writer. Every open advances that epoch,
@@ -311,6 +321,24 @@ time. Nothing waits on a fill. See [hosting](hosting.md#filling-the-cluster).
 the cache holds, each as its disk stores it, with its own checksum. A cache
 takes a keep only for a window its own list ranks it for, under its list's
 code. It drops every stripe it holds or is writing already.
+
+**Read from the cluster**: A read of a page inside the share that misses in
+memory. It takes this host's own stripes of the window, then asks k+1 of the
+window's ranks, chosen by a hash of the reader and the window, for every
+stripe they hold of it, and rebuilds the page from any k distinct indices. A
+rank that answers with nothing is replaced at once. The store is read only for
+a page fewer than k stripes of which exist, or past the read's bound within a
+token bucket.
+
+**Second request**: Asking the rest of a window's ranks once k stripes have
+not arrived after a delay, about the 95th percentile of the reader's recent
+reads. A reader earns a twentieth of one with each read that did not need one,
+so when every holder is slow the reader waits rather than doubling their load.
+
+**Repair**: A stripe a reader sends a rank that holds fewer of a window's
+stripes than the code puts on it: an index no rank holds, of a page it
+rebuilt having heard from every rank. It is a keep of the lowest priority,
+dropped rather than queued.
 
 **Fill right**: The right to fill a window from a read of the store. The
 window's rank 1 gives it to the first reader that asks, once per window per

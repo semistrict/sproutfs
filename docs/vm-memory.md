@@ -859,6 +859,20 @@ store. The settle cannot do this. It would duplicate the publication's own
 zero-page test. Also, a settle compares a copy with the page it was copied from,
 and a page made from zeros has no origin.
 
+### Faults read the cluster before the store
+
+A cold fault, and a refault of a page the pager evicted, asks the volume for
+its window, and the volume reads a run through the page cache. The pages the
+cache holds in memory come from there. Inside the share the cluster cache is
+turned on for, the rest come from the hosts' disks: this host's own stripes of
+each window, then k+1 of the window's ranks, and the store only for a page
+fewer than k stripes of which exist
+([reading from the cluster](hosting.md#reading-from-the-cluster)). The pager
+does nothing different for any of this. A fault waits for the cluster's read
+as it waits for the store's, and the cluster's read reads the store as well
+once it has waited past its bound. A page rebuilt from stripes is checked by
+its envelope's SHA-256, as a page from the store is.
+
 ### A pulled VM's faults
 
 A VM can be marked to [pull its whole memory](hosting.md#pulling-a-vms-memory)

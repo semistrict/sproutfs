@@ -8,3 +8,7 @@ summary: A page any host's disk cache holds is served to every other host before
 **then** it reads the page from another host's disk cache if any host's cache
 can serve it, and from the object store only if none can. Together the hosts'
 caches behave as one cache whose size is the sum of their disks.
+
+**Status, 2026-10-03.** Holds inside the share. `TestAPageInTheClusterIsReadWithNoStoreRead` reads
+every page any host's publication filled from the cluster on every host, and
+`TestAColdBurstFillsAWindowOnce` fills a window once for a burst of readers.
