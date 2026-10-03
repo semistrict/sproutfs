@@ -31,6 +31,42 @@ func TestMetricsAreWhatAnEmbedderServes(t *testing.T) {
 	}
 }
 
+// The disk limiter's choice: the goal that binds, what each user is promised
+// and holds, the cache's share, whether the promises fit, and the write budget.
+func TestMetricsExposeTheDiskLimiter(t *testing.T) {
+	body := hostapi.Metrics(hostapi.Status{Disk: hostapi.Disk{
+		Binding: "free-percent", TotalBytes: 1000, AvailableBytes: 600, SmoothFreeBytes: 610,
+		FloorBytes: 100, BandBytes: 20,
+		Promises:       []hostapi.DiskPromise{{Name: "spill-ram", PromisedBytes: 300, AllocatedBytes: 40}},
+		CacheHeldBytes: 50, CacheShareBytes: 400, Unready: "too much promised",
+		Writes: hostapi.DiskWrites{WrittenBytes: 7000, AdmittedBytes: 3000, LeftBytes: -5,
+			Refused: []uint64{4, 3, 0, 0}},
+	}})
+	for _, want := range []string{
+		"sproutfs_disk_total_bytes 1000",
+		"sproutfs_disk_available_bytes 600",
+		"sproutfs_disk_smooth_free_bytes 610",
+		"sproutfs_disk_floor_bytes 100",
+		"sproutfs_disk_band_bytes 20",
+		`sproutfs_disk_promised_bytes{user="spill-ram"} 300`,
+		`sproutfs_disk_allocated_bytes{user="spill-ram"} 40`,
+		"sproutfs_disk_cache_share_bytes 400",
+		"sproutfs_disk_cache_held_bytes 50",
+		`sproutfs_disk_binding{goal="free-percent"} 1`,
+		`sproutfs_disk_binding{goal="free-bytes"} 0`,
+		"sproutfs_disk_promises_fit 0",
+		"sproutfs_disk_device_written_bytes_total 7000",
+		"sproutfs_disk_cache_admitted_bytes_total 3000",
+		"sproutfs_disk_write_budget_left_bytes -5",
+		`sproutfs_disk_cache_writes_refused_total{priority="0"} 4`,
+		`sproutfs_disk_cache_writes_refused_total{priority="1"} 3`,
+	} {
+		if !strings.Contains(body, want+"\n") {
+			t.Fatalf("the exposition has no %q in it:\n%s", want, body)
+		}
+	}
+}
+
 // Why a guest stopped making progress, and how long faults take, per pager.
 // A histogram is cumulative, in seconds, and ends with +Inf, its sum and its
 // count, which is what a Prometheus histogram_quantile reads.

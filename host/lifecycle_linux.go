@@ -294,6 +294,12 @@ func (s *supervisor) boot(ctx context.Context, vm *volume.VM, state []byte, temp
 		return nil, errors.Join(fmt.Errorf("starting the VMM of %s", vm.ID()), err,
 			closing(ctx, vm))
 	}
+	// A VMM may stage a state file as large as a capture, which the disk
+	// must be able to keep.
+	if err := s.disk.Fits(ctx, vmmachine.MaxStateBytes); err != nil {
+		return nil, errors.Join(fmt.Errorf("starting the VMM of %s", vm.ID()), err,
+			closing(ctx, vm))
+	}
 	process, err := vmmachine.Start(ctx, s.machineConfig(vm, state, nil))
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("starting the VMM of %s", vm.ID()), err,

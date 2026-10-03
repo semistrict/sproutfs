@@ -110,12 +110,16 @@ func (s *supervisor) ImportTemplate(ctx context.Context, image io.Reader,
 		if err != nil {
 			return hostapi.ImportTemplateResult{}, fmt.Errorf("staging a guest image: %w", err)
 		}
+		// The staged image is a promise to the disk limiter until it is
+		// removed.
+		writer := &stagedWriter{ctx: ctx, to: staged, limiter: s.disk, staged: &s.staged}
 		defer func() {
 			if err := errors.Join(staged.Close(), os.Remove(staged.Name())); err != nil {
 				slog.WarnContext(ctx, "host: removing a staged guest image failed", "path", staged.Name(), "error", err)
 			}
+			writer.release()
 		}()
-		if _, err := io.Copy(staged, image); err != nil {
+		if _, err := io.Copy(writer, image); err != nil {
 			return hostapi.ImportTemplateResult{}, fmt.Errorf("staging a guest image: %w", err)
 		}
 		source = staged

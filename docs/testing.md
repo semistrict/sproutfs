@@ -236,7 +236,7 @@ byte afterwards. Every page it touched must be the parent's page again.
 `crypto/rand`, and bare `time.Now`, `time.Since`, `time.After`, `time.Sleep`,
 `time.NewTimer`, `time.NewTicker`, `time.Tick`, `time.AfterFunc` and
 `ctxsync.Sleep` in the non-test code of
-`{volume,checkpoint,control,vmmigrate,host,vmmemory}`. This includes
+`{volume,checkpoint,control,vmmigrate,host,vmmemory,internal/handover,resource}`. This includes
 the Linux-only files that this machine does not build. A stray wall-clock read
 decides how long a hold lives. A stray `math/rand` call decides which VM
 checkpoints first. If a run cannot reproduce either, its seed reports nothing
@@ -1228,6 +1228,33 @@ caller:
 | `vmmemory/evict-past-a-free-slot` | Takes a victim although the arena has a free slot |
 | `vmmigrate/source-busy` | Answers BUSY as a source at its per-peer budget does |
 
+The simulated disk has sites of its own, in what a disk limiter reads. A
+reading the limiter refuses is reported, so the limiter may report these. It
+must stay safe whatever they do: the cache holds no more than its share, every
+promise is counted whole, and the cache writes no more than its budget allows.
+
+| Site | What it does |
+| --- | --- |
+| `sim/disk/space-fails` | Fails a reading of the filesystem's space |
+| `sim/disk/space-inconsistent` | Reports more space available than the filesystem has |
+| `sim/disk/space-low` | Reports less space available than is free, once |
+| `sim/disk/outside-fills` | Has another writer take a share of what is free, for good |
+| `sim/disk/drift-fast` | Has other writers drift ten times as fast |
+| `sim/disk/device-writes-fail` | Fails a reading of the device's write counter |
+| `sim/disk/device-writes-jump` | Moves the device's counter forward by up to 64 GiB |
+| `sim/disk/device-writes-reset` | Starts the device's counter again at zero, as a replaced device does |
+
+A simulated disk is on a filesystem of a size the test names, or of one the seed
+draws between 5 GB and 105 GB with at least 5 GB or 7.5 % of it free, as
+FoundationDB's simulator draws one. Other writers on it hold space the test
+sets, and drift by up to `DriftBytesPerSecond` for each second between two
+readings. A write that needs more than is free fails with `ErrNoSpace`.
+`TestTheDiskLimiterStaysSafeUnderFaults` in `resource` runs the limiter over
+such a disk for 24 seeds with the sites on, under a cache that fills whenever it
+may and spill files that fill as guests spill. It requires every site to fire
+and every disk limiter probe to be reached. When the faults stop and the disk
+stands still, the share must be exactly what the disk as it is implies.
+
 `sim.Probe(ctx, name)` marks a place that execution reached, as FoundationDB's
 `CODE_PROBE` does. A fault is useful only if it makes code run. The harness
 exists to rule out faults that no execution ever reached. Probes are counted on
@@ -1241,7 +1268,12 @@ what it did not reach. The registered probes are:
 - an eviction during a publication;
 - a volume fallback;
 - a destination loading a page it published while it still asks its source;
-- a receive tried again.
+- a receive tried again;
+- a disk cache told that its share fell;
+- a disk cache inside its share and above its stop mark, left alone;
+- a disk limiter whose promises do not fit;
+- a cache write refused for its priority that a publication's fill would have
+  been admitted for.
 
 `Runtime.Fingerprint` digests everything the simulated dependencies did: the
 resource, the operation, the outcome, the number of bytes, the order on each
@@ -1418,6 +1450,23 @@ SPROUTFS_SIM_BUG=vmmachine-prepare-twice \
   go test ./vmmachine -run '^TestAdversarialStarters$' -count=1
 SPROUTFS_SIM_BUG=vmmachine-skip-peer-check \
   go test ./vmmachine -run '^TestAdversarialStarters$' -count=1
+```
+
+Six guards break the disk limiter in `resource`:
+
+```sh
+SPROUTFS_SIM_BUG=disklimit-count-spill-by-allocation \
+  go test ./resource -run '^TestASpillFileCountsAtItsPromiseWhileSparse$' -count=1
+SPROUTFS_SIM_BUG=disklimit-ignore-other-writers \
+  go test ./resource -run '^TestTheShareFollowsTheDiskFilledFromOutside$' -count=1
+SPROUTFS_SIM_BUG=disklimit-no-hysteresis \
+  go test ./resource -run '^TestTheCacheStopsOneRegionBelowItsShare$' -count=1
+SPROUTFS_SIM_BUG=disklimit-admit-past-budget \
+  go test ./resource -run '^TestTheWriteBudgetRefusesLowPrioritiesFirst$' -count=1
+SPROUTFS_SIM_BUG=disklimit-refuse-high-before-low \
+  go test ./resource -run '^TestTheWriteBudgetRefusesLowPrioritiesFirst$' -count=1
+SPROUTFS_SIM_BUG=disklimit-take-from-spill \
+  go test ./resource -run '^TestPromisesThatDoNotFitMakeTheHostUnready$' -count=1
 ```
 
 `TestAdversarialStarters` runs a fake VMM, not Firecracker, but it runs only on

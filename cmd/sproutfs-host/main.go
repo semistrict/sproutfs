@@ -25,6 +25,7 @@ import (
 	"github.com/semistrict/sproutfs/host"
 	"github.com/semistrict/sproutfs/internal/jsonhttp"
 	"github.com/semistrict/sproutfs/platform/adapters"
+	"github.com/semistrict/sproutfs/resource"
 )
 
 // shutdownTimeout bounds each half of the orderly close: stopping the API, and
@@ -115,6 +116,14 @@ func run() error {
 	supervisor := config.SupervisorConfig
 	supervisor.ObjectStore, supervisor.Network = objects, adapters.NewNetwork()
 	supervisor.Disk, supervisor.Disks = disk, adapters.NewDisk
+	// The write budget is measured by the counter of the device under the
+	// scratch directory, so a budget on a host that cannot read one is
+	// refused rather than kept blind.
+	if supervisor.DiskWrites != (resource.WriteBudget{}) {
+		if supervisor.DeviceWrites, err = adapters.NewDeviceWrites(ctx, config.ScratchDir); err != nil {
+			return fmt.Errorf("SPROUTFS_CACHE_WRITE_BYTES_PER_DAY needs the device's write counter: %w", err)
+		}
+	}
 	supervisor.Starter = &config.Firecracker
 	if config.Firecracker.Jail == nil {
 		slog.Warn("sproutfs-host: VMMs run unjailed as this process's user, so no VM's memory is isolated from another's VMM",

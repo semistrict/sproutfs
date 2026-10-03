@@ -160,5 +160,41 @@
     "package": "vmmachine",
     "run": "^TestAdversarialStarters$",
     "purpose": "Admit a memory session from a process other than the VMM its Starter reported. Linux only, as root."
+  },
+  {
+    "id": "disklimit-count-spill-by-allocation",
+    "package": "resource",
+    "run": "^TestASpillFileCountsAtItsPromiseWhileSparse$",
+    "purpose": "Count a sparse spill file at what it holds rather than at its promise."
+  },
+  {
+    "id": "disklimit-ignore-other-writers",
+    "package": "resource",
+    "run": "^TestTheShareFollowsTheDiskFilledFromOutside$",
+    "purpose": "Take the filesystem's size as the host's room, ignoring what other writers hold."
+  },
+  {
+    "id": "disklimit-no-hysteresis",
+    "package": "resource",
+    "run": "^TestTheCacheStopsOneRegionBelowItsShare$",
+    "purpose": "Tell a cache over its share to stop at its share rather than one region below it."
+  },
+  {
+    "id": "disklimit-admit-past-budget",
+    "package": "resource",
+    "run": "^TestTheWriteBudgetRefusesLowPrioritiesFirst$",
+    "purpose": "Admit a cache write the write budget cannot afford."
+  },
+  {
+    "id": "disklimit-refuse-high-before-low",
+    "package": "resource",
+    "run": "^TestTheWriteBudgetRefusesLowPrioritiesFirst$",
+    "purpose": "Keep the write budget's reserves for the lowest priorities instead of the highest."
+  },
+  {
+    "id": "disklimit-take-from-spill",
+    "package": "resource",
+    "run": "^TestPromisesThatDoNotFitMakeTheHostUnready$",
+    "purpose": "Count spill promises at what they hold when the promises do not fit, so the host reports ready."
   }
 ]

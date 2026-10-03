@@ -20,6 +20,7 @@ import (
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/adapters"
 	"github.com/semistrict/sproutfs/platform/sim"
+	"github.com/semistrict/sproutfs/resource"
 	"github.com/semistrict/sproutfs/vmmachine"
 )
 
@@ -118,6 +119,7 @@ func TestPulledGuestsFaultWithoutTheObjectStore(t *testing.T) {
 			MemoryBytes: pullGuestRAM}},
 		VMMemoryBytes:      pullGuestRAM,
 		CheckpointInterval: -1,
+		DiskGoal:           resource.DiskGoal{FreePercent: 1},
 	})
 	if err != nil {
 		t.Fatal(err)

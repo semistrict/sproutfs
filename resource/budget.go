@@ -5,10 +5,10 @@
 // overhead or physical usage. Ordinary heap and runtime overhead use the
 // deployment's container headroom; large retained allocations use this owner.
 //
-// Disk is not accounted here. Each concern that writes to the node's disk has a
-// fixed cap in its own directory — the pager's spill is bounded by the dirty
-// pages its geometry allows, and a starting process wipes what it finds — so
-// there is no shared ledger to order or reclaim across.
+// Disk has a limiter of its own, DiskLimiter. It is not a ledger of
+// reservations: the users that cannot give space back are counted at their
+// promises, and the one cache takes what the filesystem has left under the
+// host's goals.
 package resource
 
 import (

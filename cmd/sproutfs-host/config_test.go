@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/semistrict/sproutfs/host"
+	"github.com/semistrict/sproutfs/resource"
 	"github.com/semistrict/sproutfs/vmmemory"
 )
 
@@ -152,6 +153,90 @@ func TestConfigReadsThePageCacheDisk(t *testing.T) {
 	}
 	if config.CacheDiskBytes != 4<<30 {
 		t.Fatalf("the page cache's disk is %d bytes, want 4 GiB", config.CacheDiskBytes)
+	}
+}
+
+// A host given no disk goal keeps a tenth of its filesystem free and has no
+// write budget. Each goal it is given is kept, together.
+func TestConfigReadsTheDiskGoals(t *testing.T) {
+	config, err := loadConfig(environ(minimal()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.DiskGoal != (resource.DiskGoal{FreePercent: 10}) || config.DiskBandBytes != 0 ||
+		config.DiskWrites != (resource.WriteBudget{}) {
+		t.Fatalf("the default disk goal is %+v, band %d and budget %+v, want 10%% free, the default band and none",
+			config.DiskGoal, config.DiskBandBytes, config.DiskWrites)
+	}
+	for _, test := range []struct {
+		values map[string]string
+		want   resource.DiskGoal
+	}{
+		{map[string]string{"SPROUTFS_DISK_FREE_BYTES": "1073741824"}, resource.DiskGoal{FreeBytes: 1 << 30}},
+		{map[string]string{"SPROUTFS_DISK_FREE_PERCENT": "15"}, resource.DiskGoal{FreePercent: 15}},
+		{map[string]string{"SPROUTFS_DISK_USED_BYTES": "25769803776"}, resource.DiskGoal{UsedBytes: 24 << 30}},
+		{map[string]string{"SPROUTFS_DISK_FREE_BYTES": "1073741824", "SPROUTFS_DISK_FREE_PERCENT": "5",
+			"SPROUTFS_DISK_USED_BYTES": "25769803776"},
+			resource.DiskGoal{FreeBytes: 1 << 30, FreePercent: 5, UsedBytes: 24 << 30}},
+	} {
+		values := minimal()
+		for name, value := range test.values {
+			values[name] = value
+		}
+		config, err := loadConfig(environ(values))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if config.DiskGoal != test.want {
+			t.Fatalf("%v configured the goal %+v, want %+v", test.values, config.DiskGoal, test.want)
+		}
+	}
+}
+
+// A write budget is an average a day, with a burst of an hour's average unless
+// the deployment names one.
+func TestConfigReadsTheCacheWriteBudget(t *testing.T) {
+	values := minimal()
+	values["SPROUTFS_CACHE_WRITE_BYTES_PER_DAY"] = "2400000000000"
+	values["SPROUTFS_DISK_BAND_BYTES"] = "8589934592"
+	config, err := loadConfig(environ(values))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.DiskWrites != (resource.WriteBudget{BytesPerDay: 2_400_000_000_000, BurstBytes: 100_000_000_000}) ||
+		config.DiskBandBytes != 8<<30 {
+		t.Fatalf("the budget is %+v and the band %d, want 2.4 TB a day, a burst of 100 GB and 8 GiB",
+			config.DiskWrites, config.DiskBandBytes)
+	}
+	values["SPROUTFS_CACHE_WRITE_BURST_BYTES"] = "5000000000"
+	if config, err = loadConfig(environ(values)); err != nil {
+		t.Fatal(err)
+	}
+	if config.DiskWrites.BurstBytes != 5_000_000_000 {
+		t.Fatalf("the burst is %d, want 5 GB", config.DiskWrites.BurstBytes)
+	}
+}
+
+// Every disk setting that cannot be kept is reported, with the others.
+func TestConfigRefusesDiskSettingsItCannotKeep(t *testing.T) {
+	values := minimal()
+	values["SPROUTFS_DISK_FREE_PERCENT"] = "100"
+	values["SPROUTFS_DISK_USED_BYTES"] = "-1"
+	values["SPROUTFS_CACHE_WRITE_BURST_BYTES"] = "1000"
+	values["SPROUTFS_DISK_BAND_BYTES"] = "lots"
+	_, err := loadConfig(environ(values))
+	if err == nil {
+		t.Fatal("impossible disk settings configured a host")
+	}
+	for _, want := range []string{
+		"SPROUTFS_DISK_FREE_PERCENT is 100, want 1 to 99",
+		`SPROUTFS_DISK_USED_BYTES is "-1", want a positive number`,
+		"SPROUTFS_CACHE_WRITE_BURST_BYTES is set without SPROUTFS_CACHE_WRITE_BYTES_PER_DAY",
+		`SPROUTFS_DISK_BAND_BYTES is "lots", want a positive number`,
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q does not report %q", err, want)
+		}
 	}
 }
 

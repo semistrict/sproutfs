@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"github.com/semistrict/sproutfs/host"
 	"github.com/semistrict/sproutfs/internal/jsonhttp"
 	"github.com/semistrict/sproutfs/platform/adapters"
+	"github.com/semistrict/sproutfs/resource"
 	"github.com/semistrict/sproutfs/vmmachine"
 	"github.com/semistrict/sproutfs/vmmemory"
 )
@@ -74,6 +76,10 @@ const minimumCheckpointInterval = time.Second
 // working set of an ephemeral disk resident, and small beside the disks it may
 // spill.
 const defaultEphemeralArenaBytes = 256 << 20
+
+// defaultDiskFreePercent is the share of the filesystem a host keeps free when
+// a deployment names no disk goal.
+const defaultDiskFreePercent = 10
 
 // defaultTemplates is the one guest image the demo image carries.
 const defaultTemplates = "alpine=/usr/share/sproutfs/guest.ext4"
@@ -210,6 +216,37 @@ func loadConfig(lookup func(string) string) (config, error) {
 	// of the same node disk the spill file does.
 	c.CacheDiskBytes = number("SPROUTFS_CACHE_DISK_BYTES", 0)
 	c.VMMemoryBytes = uint64(number("SPROUTFS_VM_MEMORY_BYTES", 512<<20))
+
+	// The disk limiter keeps every goal it is given: a floor of free bytes, a
+	// floor of the filesystem's share kept free, and a cap on what the host
+	// holds. Each is optional, and a host given none keeps a tenth of the
+	// filesystem free. Its promises are checked against them at startup.
+	c.DiskGoal = resource.DiskGoal{FreeBytes: number("SPROUTFS_DISK_FREE_BYTES", 0),
+		FreePercent: number("SPROUTFS_DISK_FREE_PERCENT", 0), UsedBytes: number("SPROUTFS_DISK_USED_BYTES", 0)}
+	if c.DiskGoal == (resource.DiskGoal{}) {
+		c.DiskGoal.FreePercent = defaultDiskFreePercent
+	}
+	c.DiskBandBytes = number("SPROUTFS_DISK_BAND_BYTES", 0)
+	// The disk cache's write budget is an average a day and a burst ahead of
+	// it, a share of the device's rated endurance that the deployment works
+	// out. Unset, the cache's writes are not limited. The burst defaults to an
+	// hour's average.
+	perDay := number("SPROUTFS_CACHE_WRITE_BYTES_PER_DAY", 0)
+	burst := number("SPROUTFS_CACHE_WRITE_BURST_BYTES", 0)
+	switch {
+	case perDay == 0 && burst > 0:
+		fail("SPROUTFS_CACHE_WRITE_BURST_BYTES is set without SPROUTFS_CACHE_WRITE_BYTES_PER_DAY")
+	case perDay > 0:
+		c.DiskWrites = resource.WriteBudget{BytesPerDay: perDay, BurstBytes: cmp.Or(burst, max(perDay/24, 1))}
+	}
+	if c.DiskGoal.FreePercent > 99 {
+		fail("SPROUTFS_DISK_FREE_PERCENT is %d, want 1 to 99", c.DiskGoal.FreePercent)
+	} else if err := c.DiskGoal.Validate(); err != nil {
+		fail("the disk goal: %v", err)
+	}
+	if err := c.DiskWrites.Validate(); err != nil {
+		fail("the cache's write budget: %v", err)
+	}
 
 	// A host runs one pager per kind of memory region, each with an arena and a spill
 	// file of its own, so the byte budgets the deployment gives this host are

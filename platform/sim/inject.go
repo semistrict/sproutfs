@@ -58,6 +58,12 @@ func Buggify(ctx context.Context, id string, p float64) bool {
 	return r.buggifySite(id, p)
 }
 
+// buggifyHere is Buggify for a site inside a simulated dependency, which holds
+// its runtime itself rather than finding it in a context.
+func (r *Runtime) buggifyHere(id string, p float64) bool {
+	return r.buggify.Load() && r.buggifySite(id, p)
+}
+
 // BuggifyDelay waits a seeded duration of up to maximum when the site fires,
 // and returns at once otherwise. It is how a site says "this step can take much
 // longer than it usually does" without a caller inventing a clock.

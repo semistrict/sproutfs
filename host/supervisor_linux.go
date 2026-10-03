@@ -94,6 +94,10 @@ type supervisor struct {
 	// cacheDisk is the file the page cache keeps what pulls copy in, nil where
 	// the deployment gave it no space.
 	cacheDisk platform.File
+	// disk is the limiter of everything this host writes to its disk, and
+	// staged what the images staged for an import hold.
+	disk   *resource.DiskLimiter
+	staged atomic.Int64
 	// connection is what every session this host opens is configured with: the
 	// node's fault-worker and mapping-count bounds, which no VM varies.
 	connection vmmemory.ConnectionConfig
@@ -170,8 +174,8 @@ func Start(ctx context.Context, config SupervisorConfig) (Service, error) {
 		return nil, fmt.Errorf("hugepage mount %s: %w", config.HugepageDir, err)
 	}
 	var err error
-	// The allotment is RAM: the pager's resident pages. Disk is capped per concern, so
-	// the spill file and the VMM scratch answer to their own bounds instead.
+	// The allotment is RAM: the pager's resident pages. Disk answers to the
+	// disk limiter instead.
 	s.resources, err = resource.New(config.MemoryBytes)
 	if err != nil {
 		return nil, fmt.Errorf("resource budget: %w", err)
@@ -218,6 +222,14 @@ func Start(ctx context.Context, config SupervisorConfig) (Service, error) {
 		if err != nil {
 			return nil, fmt.Errorf("the page cache's disk: %w", err)
 		}
+	}
+	// The disk limiter comes after every file it measures is open and before
+	// anything is written to them. A configuration whose promises the disk
+	// cannot keep is refused here, with nothing yet spilled.
+	s.disk, err = startDiskLimiter(ctx, config, diskUsers(config,
+		diskFiles{spills: s.spills, cacheDisk: s.cacheDisk}, s.runningVMMs, &s.staged))
+	if err != nil {
+		return nil, err
 	}
 	s.host, err = StartHost(ctx, Config{
 		// The deployment's prefix is the object store's own, so nothing below
@@ -311,7 +323,17 @@ func (s *supervisor) Ready(ctx context.Context) error {
 	if cause := s.importErr.Load(); cause != nil {
 		return *cause
 	}
-	return nil
+	// A host whose promises the disk can no longer keep takes no more VMs:
+	// each would promise more.
+	return s.disk.Ready()
+}
+
+// runningVMMs counts the VMM processes this host runs, each of which may stage
+// a state file.
+func (s *supervisor) runningVMMs() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.machines)
 }
 
 // Live reports whether this process can still serve: it has not closed, and
@@ -382,6 +404,7 @@ func (s *supervisor) Status(ctx context.Context) (hostapi.Status, error) {
 			CacheLimit: status.CacheLimit, CacheUsed: status.Cache.ResidentBytes,
 			CacheDiskLimit: status.Cache.Disk.LimitBytes, CacheDiskUsed: status.Cache.Disk.UsedBytes},
 		Store: apiStore(s.objects.Traffic(), s.objects.Latency()),
+		Disk:  diskReport(s.disk.Status()),
 	}
 	if report.Running == nil {
 		report.Running = []string{}
@@ -602,6 +625,10 @@ func (s *supervisor) Close(ctx context.Context) error {
 		if err := s.cacheDisk.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("closing the page cache's disk: %w", err))
 		}
+	}
+	// The limiter reads the spill files, so it stops before they close.
+	if s.disk != nil {
+		s.disk.Close()
 	}
 	// Every pager closes, each before its own arena and spill file. A pager that
 	// would not close keeps its arena: unproven allocations stay charged, and an
