@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -49,8 +50,12 @@ type node struct {
 	clustered, direct, hot *checkpoint.Store
 	directCache, hotCache  *checkpoint.Cache
 	hotTier                *checkpoint.HotTier
-	hotObjects             *platform.MeteredObjectStore
-	serveRate              int64
+	// hotPublisher publishes through a hot tier with room for a whole
+	// guest, and settleHot settles both hot tiers' fills.
+	hotPublisher *checkpoint.Store
+	settleHot    []func(context.Context) error
+	hotObjects   *platform.MeteredObjectStore
+	serveRate    int64
 
 	mu     sync.Mutex
 	server *peer.Server
@@ -175,48 +180,60 @@ func runNode(ctx context.Context, args []string) error {
 	return nil
 }
 
-// openHotTier opens the hot tier over bucket, under the run's prefix, and
-// the store that reads through it and a cache that keeps nothing on disk. The
-// returned function closes them.
+// openHotTier opens the hot tier over bucket, under the run's prefix, with
+// its defaults, the store that reads through it and a cache that keeps
+// nothing on disk. It also opens a second hot tier over the same bucket, with
+// room for a whole guest in its queue and its rate, and the store whose
+// publications write through it: what a hot tier holds once its publication
+// is written, whatever the defaults would have dropped. The returned function
+// closes them.
 func (n *node) openHotTier(ctx context.Context, regional platform.ObjectStore, bucket, prefix string) (func(), error) {
+	var closers []func()
+	closeAll := func() {
+		for _, closeOne := range slices.Backward(closers) {
+			closeOne()
+		}
+	}
+	fail := func(err error) (func(), error) {
+		closeAll()
+		return nil, err
+	}
 	store, closer, err := adapters.NewGCS(ctx, "", bucket, prefix)
 	if err != nil {
 		return nil, err
 	}
-	n.hotObjects, err = platform.NewMeteredObjectStore(store, nil)
-	if err != nil {
-		_ = closer.Close()
-		return nil, err
+	closers = append(closers, func() { _ = closer.Close() })
+	if n.hotObjects, err = platform.NewMeteredObjectStore(store, nil); err != nil {
+		return fail(err)
 	}
-	n.hotTier, err = checkpoint.NewHotTier(ctx, checkpoint.HotTierConfig{Store: n.hotObjects})
-	if err != nil {
-		_ = closer.Close()
-		return nil, err
+	if n.hotTier, err = checkpoint.NewHotTier(ctx, checkpoint.HotTierConfig{Store: n.hotObjects}); err != nil {
+		return fail(err)
 	}
+	closers = append(closers, n.hotTier.Close)
+	publisher, err := checkpoint.NewHotTier(ctx, checkpoint.HotTierConfig{Store: n.hotObjects,
+		QueueBytes: 4 << 30, BytesPerSecond: 4 << 30})
+	if err != nil {
+		return fail(err)
+	}
+	closers = append(closers, publisher.Close)
+	n.settleHot = []func(context.Context) error{n.hotTier.Settle, publisher.Settle}
 	memory, err := resource.New(64 << 20)
 	if err != nil {
-		n.hotTier.Close()
-		_ = closer.Close()
-		return nil, err
+		return fail(err)
 	}
-	n.hotCache, err = checkpoint.NewCache(ctx, memory, checkpoint.CacheConfig{})
-	if err != nil {
-		n.hotTier.Close()
-		_ = closer.Close()
-		return nil, err
+	if n.hotCache, err = checkpoint.NewCache(ctx, memory, checkpoint.CacheConfig{}); err != nil {
+		return fail(err)
 	}
-	n.hot, err = checkpoint.NewStore(checkpoint.Config{ObjectStore: regional, Cache: n.hotCache, HotTier: n.hotTier})
-	if err != nil {
-		n.hotCache.Close()
-		n.hotTier.Close()
-		_ = closer.Close()
-		return nil, err
+	closers = append(closers, n.hotCache.Close)
+	if n.hot, err = checkpoint.NewStore(checkpoint.Config{ObjectStore: regional, Cache: n.hotCache,
+		HotTier: n.hotTier}); err != nil {
+		return fail(err)
 	}
-	return func() {
-		n.hotCache.Close()
-		n.hotTier.Close()
-		_ = closer.Close()
-	}, nil
+	if n.hotPublisher, err = checkpoint.NewStore(checkpoint.Config{ObjectStore: regional,
+		HotTier: publisher}); err != nil {
+		return fail(err)
+	}
+	return closeAll, nil
 }
 
 // serve starts the peer server.
@@ -334,7 +351,7 @@ func (n *node) handlePublish(w http.ResponseWriter, r *http.Request) {
 			fail(w, errors.New("this node has no hot tier"))
 			return
 		}
-		store, settle = n.hot, n.hotTier.Settle
+		store, settle = n.hotPublisher, n.settleHotTiers
 	}
 	pageBytes := cmp.Or(request.PageBytes, checkpoint.PageSize2MiB)
 	root, err := store.Root(ctx, control.Ref{VM: request.VM, Sequence: 1},
@@ -530,13 +547,21 @@ func (n *node) handleSettle(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
-	if n.hotTier != nil {
-		if err := n.hotTier.Settle(r.Context()); err != nil {
-			fail(w, err)
-			return
-		}
+	if err := n.settleHotTiers(r.Context()); err != nil {
+		fail(w, err)
+		return
 	}
 	reply(w, struct{}{})
+}
+
+// settleHotTiers returns once both hot tiers' fills are done or dropped.
+func (n *node) settleHotTiers(ctx context.Context) error {
+	for _, settle := range n.settleHot {
+		if err := settle(ctx); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // nextPage is the page a walk reads after the one whose bytes are page, at
