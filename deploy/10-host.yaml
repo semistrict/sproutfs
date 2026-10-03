@@ -148,7 +148,9 @@ spec:
             # above the kubelet's eviction and image collection marks. Each
             # host holds at most 56 GiB, so the two pods on this node split
             # the disk rather than the first cache taking all of it. The
-            # node's 200 GB disk leaves about 45 GiB for everything else.
+            # node's 200 GiB disk is a 193 GiB filesystem: 38.6 GiB kept
+            # free and 112 GiB for the two hosts leave about 37 GiB for
+            # everything else before the caches shrink below their goal.
             - name: SPROUTFS_DISK_FREE_PERCENT
               value: "20"
             - name: SPROUTFS_DISK_USED_BYTES
