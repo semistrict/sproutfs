@@ -176,7 +176,9 @@ the cluster. For each window, weighted rendezvous hashing ranks every cache:
 each cache scores the window by `w / -ln(u)`, where `u` is a 64-bit hash of the
 cache's identity and the window, mapped into (0, 1), and `w` is the cache's
 weight. Ties go to the lower cache identity. The caches ranked 1 to k+m hold
-the window's stripes, stripe i on rank i.
+the window's stripes. A fill puts stripe i on rank i, but a reader never relies
+on that: once ranks shift, a holder may hold any index (see
+[reading a page](#reading-a-page)).
 
 A cache's weight comes from the size of its configured disk, rounded to a
 coarse step, so a host with twice the disk holds about twice the windows. It
@@ -187,8 +189,9 @@ virtual nodes because it ranks the next cache exactly, which repair depends on
 
 When a cache joins or leaves, the ranks of a window change only if that cache
 is among its first k+m. A join pushes one holder out of the first k+m, and a
-leave pulls a cache in that holds nothing yet. Either way the window loses one
-stripe from where readers will ask, and still decodes.
+leave pulls a cache in that holds nothing yet. Either way the window's first
+k+m ranks lose at most one of its stripes, and a reader that takes any index
+still decodes.
 
 A cache's identity is not its pod's. It is a random value written in the cache
 file's header when the file is made. A pod that restarts on the same node, over
@@ -228,10 +231,45 @@ correctness argument.
 A read looks in this order:
 
 1. this host's memory tier, then the pager's arena, as today;
-2. the window's ranks 1 to k+m, all at once, one request each, for the stripes
-   of the envelopes the run wants. A rank this host holds is read from its own
-   disk. A rank marked down is not asked;
-3. the object store.
+2. k+1 of the window's first k+m ranks, one request each, for every stripe of
+   the window they hold. A rank this host holds is read from its own disk. A
+   rank marked down is not asked;
+3. the rest of those ranks, only if k stripes have not arrived after a short
+   delay, under a budget;
+4. the object store.
+
+A reader asks k+1 holders, not all k+m. The stripe benchmark showed why
+([measurement](../docs/measurements/gce-stripes-2026-10-03.md)): with every
+holder asked, every holder sends its stripe whether or not the reader still
+needs it, and at 9,000 reads a second across six hosts 4+2's tail grew to
+110 ms at p99, worse than whole reads. One spare request already covers one
+slow or lost holder. The second spare is asked only when the first k+1 have
+not answered, which is FoundationDB's second request
+([research](../docs/research/foundationdb-transport-2026-10-03.md)). So 4+2
+keeps its protection against a drained host and a slow one together, at
+about the bytes of 4+1.
+
+Which k+1 of the ranks a reader asks is chosen by a hash of the reader's own
+identity and the window. So the readers of one window spread their requests
+over all of its holders, and one reader always asks the same ones. A holder
+that answers that it holds nothing of the window is replaced at once by the
+next rank not yet asked; that is a miss, not a hedge.
+
+The delay before the rest are asked follows the reader's own recent stripe
+latencies: about their 95th percentile, so about one read in twenty sends a
+second request. The second requests draw on a budget, as FoundationDB's do.
+Each read that completes within the delay adds a twentieth of a request to it,
+and each second request takes one away. So when every holder is slow at once,
+the budget runs out and the reader waits, rather than doubling the load on
+every holder.
+
+A holder answers with every stripe of the window it holds, of any index.
+Ranks shift when a cache joins or leaves: a join near the top of a window's
+ranks moves every holder below it down by one, so a holder seldom holds the
+stripe whose index matches its rank. A reader that asked rank i for stripe i
+would decode nothing though k stripes are there. So a reader decodes from any
+k distinct indices it receives. `spec/diskcache` found this (B5 in
+[spec/bugs.md](../spec/bugs.md)).
 
 A reader takes the first k stripes of each envelope. It checks each stripe's
 own checksum, decodes, and then checks the envelope's SHA-256 and the key
@@ -258,9 +296,11 @@ any filler does.
 
 ### Repair
 
-When ranks change, a window has a holder among its first k+m that lacks its
-stripe. A reader that decodes an envelope and finds such a rank sends that
-rank its stripe. Repair is bounded by the same rate as fills, and it is the
+When ranks change, a window's stripes no longer sit one to each of its first
+k+m ranks. A reader that decodes an envelope rebuilds an index that no rank
+holds, and sends it to a rank that holds fewer of the window's stripes than the
+code puts on it. It never sends an index another rank already holds, so a
+change of ranks never leaves a holder with two stripes of one window. Repair is bounded by the same rate as fills, and it is the
 lowest priority of all writes. So a window that is read heals itself, and a
 window that is not read ages out.
 
@@ -597,7 +637,7 @@ go round the hosts:
 - fills from reads and from publications, including publications that never
   commit and are retried under the same reference;
 - ranks, stripes on ranks 1 to k+m and round the hosts when there are fewer,
-  fill rights, repair, and reads of all ranks;
+  fill rights, repair, and reads of k+1 ranks with a hedge to the rest;
 - hosts that hold different lists of caches, hosts marked down, and a host that
   restarts, joins or leaves;
 - a peer that answers with a wrong stripe;
@@ -669,10 +709,13 @@ Each step is its own commit, with its tests and its docs.
 6. **Filling the cluster.** Every store read and every publication sends its
    stripes to their ranks, with fill rights, the dropping of duplicate keeps,
    and the bounded rate.
-7. **Reading from the cluster.** The stripe read on the page server, asking all
-   ranks, the bound and its token bucket, marking hosts down, telling a host to
-   drop a wrong stripe, repair, the per-peer bounds, and the sampled HEAD
-   check.
+7. **Reading from the cluster.** The stripe read on the peer server (TASK-82),
+   asking k+1 ranks chosen by the reader's hash and the rest after the
+   adaptive delay under its budget, taking any k indices, the bound and its
+   token bucket, marking hosts down, telling a host to drop a wrong stripe,
+   repair of indices no rank holds, the per-peer bounds, and the sampled HEAD
+   check. Before it is built, the stripe benchmark gains this read pattern and
+   its full-load pass runs again on GCE.
 8. **Serving without a copy.** First, measure on GCE what a plain copy through
    a bounded buffer costs a host serving stripes at full rate. If it matters:
    buffered I/O with dropped reads, the transport's file-range send,
@@ -714,9 +757,11 @@ Each property has a test that states it in its own words.
   Its code stays 4+2, its stripes go round five hosts, and every window still
   decodes with one more host lost.
 - **A hot page spreads its load.** All six hosts read one window at once. Each
-  holder sends one stripe to each reader, and no holder sends a whole window.
+  holder sends at most one stripe to each reader, no holder sends a whole
+  window, and the requests spread over all six holders.
 - **A slow host does not slow reads.** One holder stops answering. Reads take
-  the time of the other holders. After three timeouts every reader marks it
+  the time of the other holders, or the hedge delay where the stalled holder
+  was among the first k+1 asked. Second requests stay within their budget. After three timeouts every reader marks it
   down and stops asking it. A probe clears the mark when it answers again.
 - **Serving a peer copies nothing into memory.** On Linux, a host serves a run
   of stripes over TCP. The cache file is read by `sendfile` alone, and no read

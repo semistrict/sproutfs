@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-03 03:41'
-updated_date: '2026-10-03 04:32'
+updated_date: '2026-10-03 04:53'
 labels:
   - performance
   - storage
@@ -78,4 +78,6 @@ Decisions with the owner, 2026-10-02 and 2026-10-03:
 Research behind the plan: docs/research/*-2026-10-02.md.
 
 Step 1 done (fc2f6dd3, merged 0c331740): resource.DiskLimiter with combined goals, smoothing, the band, hysteresis, spill promises counted whole, write budget from platform.DeviceWrites; host wiring, /status and /metrics, settings SPROUTFS_DISK_FREE_BYTES/_FREE_PERCENT/_USED_BYTES/_BAND_BYTES and SPROUTFS_CACHE_WRITE_BYTES_PER_DAY/_BURST_BYTES (default keeps 10 % free). sim.Disk gained filesystem size, drifting outside writers and a device write counter. Six disklimit-* guards; Gremlins on resource: 167 to 198 killed, the rest judged equivalent. Not yet connected to the page cache; SPROUTFS_CACHE_DISK_BYTES still counted. deploy/10-host.yaml's per-concern comment is out of date until step 10.
+
+2026-10-03: the read path asks k+1 of the first k+m ranks, chosen by a hash of the reader and the window, and the rest only after an adaptive delay (about p95 of recent stripe latency) under a FoundationDB-style budget (+1/20 per read within the delay, -1 per second request). Holders return any index of the window they hold and readers decode from any k (B5 from spec/diskcache). Repair sends only an index no rank holds. Why: the stripe benchmark (docs/measurements/gce-stripes-2026-10-03.md) showed asking all k+m holders makes 4+2's tail worse than whole reads at 9,000 reads/s (p99 110 ms, p99.9 466 ms), while 4+2 is the only code that survives a drained and a slow host together. The benchmark gains this read pattern and its full-load pass runs again before step 7. The transport work is TASK-82.
 <!-- SECTION:NOTES:END -->
