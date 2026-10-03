@@ -177,6 +177,11 @@ func runWalk(ctx context.Context, args []string) error {
 // fills settled after it.
 func walkOne(ctx context.Context, client *http.Client, reader string, round int, source string, guest guestOf,
 	start uint64, reads int) (walkCase, error) {
+	// The reader's kernel page cache is dropped first, so a read of the
+	// cluster reads the cache's file from the SSD rather than from memory.
+	if err := call(ctx, client, reader, "POST", "/drop", nil, nil); err != nil {
+		return walkCase{}, err
+	}
 	var before, after statsReply
 	if err := call(ctx, client, reader, "GET", "/stats", nil, &before); err != nil {
 		return walkCase{}, err

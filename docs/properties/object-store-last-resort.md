@@ -14,3 +14,15 @@ when fewer than k stripes of a page remain. A read that waits past its bound
 reads the store as well, within a token bucket of a twentieth of reads
 (`TestStoreReadsPastTheBoundStayWithinTheirBucket`). Another host's memory is
 never asked: memory is each host's own tier.
+
+**With a hot tier, 2026-10-03.** A deployment that reads through a
+[hot tier](../hosting.md#reading-through-a-hot-tier) instead of the cluster
+cache reads the regional bucket only for an object the hot tier does not
+hold, or when the hot tier fails or is slower than its bound. A miss fills
+the hot tier behind the read, and a publication writes it once the regional
+PUT has succeeded, so a VM opened on another host reads its checkpoint from
+the hot tier alone. `TestAMissIsFilledBehindTheReadAndTheNextReadHits` sends
+the regional bucket no GET on the second read, and
+`TestAVMOpenedOnAnotherHostReadsItsCheckpointFromTheHotTier` opens a VM on a
+second host with three hits and no miss. The hot tier is itself an object
+store, so "last resort" then means the regional bucket, not every bucket.
