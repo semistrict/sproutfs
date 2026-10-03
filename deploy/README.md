@@ -55,6 +55,7 @@ can rely on without configuration:
 | `/usr/share/sproutfs/vmlinux` | the pinned guest kernel |
 | `/usr/local/bin/sproutfs-guest-agent` | the agent that runs inside a guest, carried here to be copied into the guest image rather than run from this one |
 | `/usr/local/bin/sproutfs-guest-witness` | the witness that says whether a guest's memory and disk are what it wrote, carried here for the same reason and copied into both guest images |
+| `/usr/local/bin/sproutfs-guest-chase` | the client that loads Valkey with data whose reads depend on each other and walks it, carried here for the same reason and copied into the valkey guest image that `scripts/bench-app-restore-gce.sh` builds |
 
 The guest root images are not in the container image: they are built on the node
 by `scripts/lib/demo-image.sh` at `/opt/sproutfs-demo/guest/guest.ext4` and

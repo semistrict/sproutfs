@@ -198,6 +198,9 @@ type fakeHostClient struct {
 	// onReceive runs as it begins, which is where a test takes that host away.
 	holdReceive bool
 	onReceive   func()
+	// onOpen runs as an open begins, before the host runs the VM, which is
+	// where a test puts what the deployment does while a start is under way.
+	onOpen func()
 	// cache is the disk cache this host reports, nil for a host that keeps
 	// none.
 	cache    *host.Cache
@@ -356,6 +359,9 @@ func (f *fakeHostClient) ImportTemplate(_ context.Context, image io.Reader,
 }
 
 func (f *fakeHostClient) Open(_ context.Context, id string, request host.OpenRequest) (host.OpenResult, error) {
+	if f.onOpen != nil {
+		f.onOpen()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if request.Epoch != 0 && request.Epoch != f.epochs[id] {
