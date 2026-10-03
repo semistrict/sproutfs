@@ -519,10 +519,11 @@ func subtractRuns(runs, remove []PageRun) []PageRun {
 
 // fetch faults in one memory region's runs, as many at once as that memory
 // region's backing asks for: one page at a time would pay the round trip to the
-// source for every page and leave the link idle in between. The first page
-// that will not load stops this memory region — the failure is the source's, so the
-// pages behind it would fail the same way — and the fault that took it is what
-// this reports.
+// source for every page and leave the link idle in between. The faults take
+// turns in page order until each one's read is under way: see turns. The first
+// page that will not load stops this memory region — the failure is the
+// source's, so the pages behind it would fail the same way — and the fault that
+// took it is what this reports.
 func (r *Received) fetch(ctx context.Context, memoryRegion *vmmemory.MemoryRegion, backing inheritedBacking, name string, runs []PageRun) error {
 	if len(runs) == 0 {
 		return nil
@@ -532,14 +533,27 @@ func (r *Received) fetch(ctx context.Context, memoryRegion *vmmemory.MemoryRegio
 	// guest's own faults never queue behind them.
 	fetchCtx, stop := context.WithCancel(peer.WithStream(ctx))
 	defer stop()
-	pages := make(chan uint64)
+	type turnPage struct{ turn, page uint64 }
+	pages := make(chan turnPage)
+	order := newTurns()
+	if sim.Bug(ctx, "migration-stream-in-any-order") {
+		// The faults as they were before they took turns: each decides what
+		// its read needs whenever the Go scheduler runs it.
+		order = nil
+	}
 	var once sync.Once
 	var failure error
 	var wg sync.WaitGroup
 	for range max(1, backing.Concurrency()) {
 		wg.Go(func() {
-			for page := range pages {
-				if err := memoryRegion.Fault(fetchCtx, page, false); err != nil {
+			for next := range pages {
+				page := next.page
+				// Each page's fault is a caller of its own, apart from the
+				// guest's faults and the stream's others, so a controlled run
+				// orders what they ask of the simulated dependencies by who
+				// asks rather than by who got there first.
+				faultCtx := sim.WithTask(fetchCtx, fmt.Sprintf("stream/%s/%s/%d", r.handoff.VMID, name, page))
+				if err := faultInTurn(faultCtx, memoryRegion, order, next.turn, page); err != nil {
 					if fetchCtx.Err() == nil {
 						slog.WarnContext(ctx, "vmmigrate: streaming a page from the source failed",
 							"vm", r.handoff.VMID, "volume", name, "page", page, "error", err)
@@ -551,11 +565,13 @@ func (r *Received) fetch(ctx context.Context, memoryRegion *vmmemory.MemoryRegio
 			}
 		})
 	}
+	turn := uint64(0)
 feed:
 	for _, run := range runs {
 		for page := run.First; page < run.First+uint64(run.Count); page++ {
 			select {
-			case pages <- page:
+			case pages <- turnPage{turn, page}:
+				turn++
 			case <-fetchCtx.Done():
 				break feed
 			}
@@ -568,4 +584,25 @@ feed:
 	}
 	// The context this pass was given, rather than a fault, is what stopped it.
 	return ctx.Err()
+}
+
+// faultInTurn faults page in once every fault of the stream before it has its
+// read under way, and holds its turn until its own read is. A stream with no
+// order faults it at once.
+func faultInTurn(ctx context.Context, memoryRegion *vmmemory.MemoryRegion, order *turns, turn, page uint64) error {
+	if order == nil {
+		return memoryRegion.Fault(ctx, page, false)
+	}
+	give, err := order.take(ctx, turn)
+	defer give()
+	if err != nil {
+		return err
+	}
+	// The turn comes free as the fault before has its request on the wire,
+	// which frees that connection to whoever waits for it too. In a
+	// controlled run this fault goes on when the run chooses, not beside them.
+	if err := sim.Admit(ctx, "vmmigrate/stream-turn"); err != nil {
+		return err
+	}
+	return memoryRegion.Fault(withTurn(ctx, give), page, false)
 }

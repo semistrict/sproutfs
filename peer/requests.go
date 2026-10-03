@@ -174,9 +174,12 @@ func (p *Peer) Claim(ctx context.Context, vm string) error {
 // payload its reply may carry.
 //
 // Making the request is admitted before it takes room or a connection: see
-// Admitter.
+// Admitter. Its sent hook is called once it is on the wire, or once it fails
+// before it is: see WithSent.
 func (p *Peer) call(ctx context.Context, admitAs string, request, response proto.Message, reserve, maxPayload int64,
 	payload []byte) (result, time.Duration, error) {
+	sent := sentHook(ctx)
+	defer sent()
 	if admitAs != "" {
 		if err := admit(ctx, admitAs); err != nil {
 			return result{}, 0, err
@@ -206,7 +209,7 @@ func (p *Peer) call(ctx context.Context, admitAs string, request, response proto
 	if err != nil {
 		return result{}, waited, err
 	}
-	got, err := c.roundTrip(ctx, request, payload, reserve, maxPayload)
+	got, err := c.roundTrip(ctx, request, payload, reserve, maxPayload, sent)
 	if err != nil {
 		return result{}, waited, err
 	}

@@ -102,8 +102,11 @@ func newFillCluster(t *testing.T, config fillConfig) *fillCluster {
 		if err != nil {
 			t.Fatal(err)
 		}
+		// The cache's identity is drawn from the seed: it is what ranks the
+		// caches for every window, so drawn from the operating system it would
+		// place a seed's stripes on other hosts on every run.
 		cacheConfig := checkpoint.CacheConfig{Disk: file, DiskBytes: 256 << 20, DiskRegionBytes: pullRegionBytes,
-			ClusterPercent: config.share, Peers: h.table, Clock: h.clock}
+			ClusterPercent: config.share, Peers: h.table, Clock: h.clock, Entropy: c.runtime.NewEntropy(name)}
 		if config.cache != nil {
 			config.cache(index, &cacheConfig)
 		}
