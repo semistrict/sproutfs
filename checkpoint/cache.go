@@ -31,8 +31,10 @@ type CacheConfig struct {
 	Deployment CacheDeployment
 	Entropy    platform.Entropy
 	// Budget is the host's disk limiter: the cache's share of the disk, and
-	// which writes it may make. Without one, the share is DiskBytes and
-	// every write is admitted; a zero DiskBytes then keeps nothing on disk.
+	// which writes it may make. The share is the budget's alone, so a
+	// DiskBytes beside one is refused. Without one, the share is DiskBytes
+	// and every write is admitted; a zero DiskBytes then keeps nothing on
+	// disk.
 	Budget    DiskBudget
 	DiskBytes int64
 	// DiskRegionBytes is the size of one disk region, a multiple of 4 KiB.
@@ -188,6 +190,7 @@ func NewCache(ctx context.Context, resources *resource.Budget, config CacheConfi
 		config.DiskRegionBytes < minimumDiskRegionBytes || config.DiskRegionBytes > maximumDiskRegionBytes ||
 		config.DiskRegionBytes%diskBlock != 0 || config.DiskIndexBytes < 0 || config.DiskSecondChanceReads < 0 ||
 		config.DiskSecondChanceReads > wordReadsMax || config.ClusterPercent < 0 || config.ClusterPercent > 100 ||
+		config.Budget != nil && config.DiskBytes != 0 ||
 		!config.Deployment.storable() ||
 		diskHeaderBytes(config.Deployment) > config.DiskRegionBytes {
 		return nil, ErrInvalidConfig

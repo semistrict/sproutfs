@@ -11,9 +11,11 @@ var (
 	ErrInvalidObjectKey = errors.New("invalid object key")
 	ErrInvalidPath      = errors.New("invalid path")
 	ErrInvalidRange     = errors.New("invalid range")
-	ErrMessageTooLarge  = errors.New("message too large")
-	ErrNotFound         = errors.New("not found")
-	ErrNoSpace          = errors.New("filesystem space exhausted")
+	// ErrLocked reports a file another open handle holds the lock of.
+	ErrLocked          = errors.New("locked")
+	ErrMessageTooLarge = errors.New("message too large")
+	ErrNotFound        = errors.New("not found")
+	ErrNoSpace         = errors.New("filesystem space exhausted")
 	// ErrFileUnchanged qualifies a namespace failure: target file identities
 	// and contents did not change. Ancestor directories may have been created.
 	ErrFileUnchanged  = errors.New("target files unchanged")

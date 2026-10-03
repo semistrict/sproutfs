@@ -98,9 +98,9 @@ type Config struct {
 	CacheBytes int64
 	Cache      checkpoint.CacheConfig
 	// DiskLimiter, where there is one, sets the page cache's disk: its share,
-	// under Cache.DiskBytes where that is set, which writes it may make, and
-	// when it gives regions back. Without one, the disk's share is
-	// Cache.DiskBytes.
+	// which writes it may make, and when it gives regions back. Nothing else
+	// caps the disk then, and a Cache.DiskBytes beside it is refused. Without
+	// one, the disk's share is Cache.DiskBytes.
 	DiskLimiter *resource.DiskLimiter
 	// CacheList is where this host reads the list of caches in the cluster,
 	// and how often. Without a reader the host holds its own cache alone.
@@ -382,7 +382,7 @@ func StartHost(ctx context.Context, config Config) (*Host, error) {
 	}
 	sizing := cacheSizing(config)
 	if config.DiskLimiter != nil {
-		sizing.Budget = cacheShare{limiter: config.DiskLimiter, cap: sizing.DiskBytes}
+		sizing.Budget = cacheShare{limiter: config.DiskLimiter}
 	}
 	// A cache disk made new draws its identity from the host's entropy. One
 	// this deployment made before is read back, and fitted to the limiter's

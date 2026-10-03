@@ -63,9 +63,10 @@ func TestConfigTakesTheDocumentedDefaults(t *testing.T) {
 	if config.ArenaBytes.Total() != 2<<30 || config.SpillBytes.Total() != 16<<30 {
 		t.Fatalf("the shares come to %d of arena and %d of spill", config.ArenaBytes.Total(), config.SpillBytes.Total())
 	}
-	// The page cache keeps no disk unless it is given one.
-	if config.CacheDiskBytes != 0 {
-		t.Fatalf("the page cache's disk is %d bytes, want none", config.CacheDiskBytes)
+	// The page cache's disk is kept in the scratch directory unless the
+	// deployment names a directory of its own.
+	if config.CacheDir != "" {
+		t.Fatalf("the page cache's directory is %q, want the scratch directory", config.CacheDir)
 	}
 	// Each pager's resident pages are its own arena, and its other two bounds
 	// are derived from that — each counted in that pager's own page, which is
@@ -143,16 +144,30 @@ func TestConfigReadsTheEphemeralBudget(t *testing.T) {
 	}
 }
 
-// Each pager is bounded in its own pages, so each is refused on its own.
-func TestConfigReadsThePageCacheDisk(t *testing.T) {
+// The page cache's disk is kept in the directory a deployment names, which
+// must be absolute. Its size is the disk limiter's alone: the cap it once had
+// is refused by name rather than read and ignored.
+func TestConfigReadsThePageCacheDirectory(t *testing.T) {
 	values := minimal()
-	values["SPROUTFS_CACHE_DISK_BYTES"] = "4294967296"
+	values["SPROUTFS_CACHE_DIR"] = "/var/cache/sproutfs"
 	config, err := loadConfig(environ(values))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.CacheDiskBytes != 4<<30 {
-		t.Fatalf("the page cache's disk is %d bytes, want 4 GiB", config.CacheDiskBytes)
+	if config.CacheDir != "/var/cache/sproutfs" {
+		t.Fatalf("the page cache's directory is %q, want /var/cache/sproutfs", config.CacheDir)
+	}
+	values["SPROUTFS_CACHE_DIR"] = "cache"
+	want := `SPROUTFS_CACHE_DIR is "cache", want an absolute directory`
+	if _, err := loadConfig(environ(values)); err == nil || err.Error() != want {
+		t.Fatalf("a relative cache directory was configured with %v, want %q", err, want)
+	}
+	values = minimal()
+	values["SPROUTFS_CACHE_DISK_BYTES"] = "4294967296"
+	want = "SPROUTFS_CACHE_DISK_BYTES is no longer read: the disk limiter alone sets the page cache's disk; " +
+		"set SPROUTFS_DISK_FREE_PERCENT, SPROUTFS_DISK_FREE_BYTES or SPROUTFS_DISK_USED_BYTES"
+	if _, err := loadConfig(environ(values)); err == nil || err.Error() != want {
+		t.Fatalf("a cap on the page cache's disk was configured with %v, want %q", err, want)
 	}
 }
 
@@ -194,9 +209,18 @@ func TestConfigReadsTheDiskGoals(t *testing.T) {
 		t.Fatal(err)
 	}
 	if config.DiskGoal != (resource.DiskGoal{FreePercent: 10}) || config.DiskBandBytes != 0 ||
-		config.DiskWrites != (resource.WriteBudget{}) {
-		t.Fatalf("the default disk goal is %+v, band %d and budget %+v, want 10%% free, the default band and none",
-			config.DiskGoal, config.DiskBandBytes, config.DiskWrites)
+		config.DiskReserveBytes != 1<<30 || config.DiskWrites != (resource.WriteBudget{}) {
+		t.Fatalf("the default disk goal is %+v, band %d, reserve %d and budget %+v, "+
+			"want 10%% free, the default band, 1 GiB and none",
+			config.DiskGoal, config.DiskBandBytes, config.DiskReserveBytes, config.DiskWrites)
+	}
+	reserved := minimal()
+	reserved["SPROUTFS_DISK_RESERVE_BYTES"] = "4294967296"
+	if config, err = loadConfig(environ(reserved)); err != nil {
+		t.Fatal(err)
+	}
+	if config.DiskReserveBytes != 4<<30 {
+		t.Fatalf("the reserve is %d, want 4 GiB", config.DiskReserveBytes)
 	}
 	for _, test := range []struct {
 		values map[string]string

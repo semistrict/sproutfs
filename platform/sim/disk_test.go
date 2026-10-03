@@ -36,6 +36,58 @@ func TestDiskPowerLossPreservesOnlySyncedContent(t *testing.T) {
 	})
 }
 
+// A locked file refuses a second lock until the handle holding it closes, or
+// until a power loss ends the process that held it. A handle that asks for no
+// lock is not refused, a file removed and made again is a new file with no
+// lock, and a lock does not combine with a truncation.
+func TestDiskLocksAFileWhileItsHandleIsOpen(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		runtime := sim.New(sim.Config{})
+		disk := runtime.NewDisk("node-1", sim.DiskConfig{})
+		locked := platform.OpenOptions{Create: true, Lock: true}
+		held, err := disk.Open(t.Context(), "cache-0", locked)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := disk.Open(t.Context(), "cache-0", locked); !errors.Is(err, platform.ErrLocked) {
+			t.Fatalf("a second lock of a held file returned %v, want %v", err, platform.ErrLocked)
+		}
+		if _, err := disk.Open(t.Context(), "cache-0", platform.OpenOptions{}); err != nil {
+			t.Fatalf("a handle that asks for no lock was refused: %v", err)
+		}
+		if err := held.Close(); err != nil {
+			t.Fatal(err)
+		}
+		held, err = disk.Open(t.Context(), "cache-0", locked)
+		if err != nil {
+			t.Fatalf("the lock of a closed handle was not given up: %v", err)
+		}
+		if err := held.Sync(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if err := disk.PowerLoss(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		held, err = disk.Open(t.Context(), "cache-0", locked)
+		if err != nil {
+			t.Fatalf("a lock held before a power loss outlived it: %v", err)
+		}
+		if err := disk.Remove(t.Context(), "cache-0"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := disk.Open(t.Context(), "cache-0", locked); err != nil {
+			t.Fatalf("a file made again after a removal kept the old file's lock: %v", err)
+		}
+		if err := held.Close(); err != nil {
+			t.Fatal(err)
+		}
+		truncating := platform.OpenOptions{Create: true, Lock: true, Truncate: true}
+		if _, err := disk.Open(t.Context(), "cache-1", truncating); !errors.Is(err, platform.ErrInvalidPath) {
+			t.Fatalf("a lock with a truncation returned %v, want %v", err, platform.ErrInvalidPath)
+		}
+	})
+}
+
 // A pager truncates its spill file to the size of every dirty page it may
 // hold, as a real filesystem makes a hole of. The simulated disk has to be as
 // sparse, or every simulated host holds its whole spill in memory.

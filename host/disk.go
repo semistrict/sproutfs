@@ -2,6 +2,7 @@ package host
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -10,6 +11,7 @@ import (
 	hostapi "github.com/semistrict/sproutfs/api/host"
 	"github.com/semistrict/sproutfs/checkpoint"
 	"github.com/semistrict/sproutfs/platform"
+	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/resource"
 	"github.com/semistrict/sproutfs/vmmachine"
 	"github.com/semistrict/sproutfs/vmmemory"
@@ -70,6 +72,75 @@ func allocation(file platform.File) func(context.Context) (int64, error) {
 	return allocated.Allocated
 }
 
+// cacheSlots is how many hosts may keep a page cache's disk in one directory
+// at once: one file each, cache-0 to cache-63.
+const cacheSlots = 64
+
+// openCacheFile claims the page cache's disk: the first file of the cache
+// directory, cache-0, cache-1 and so on, whose lock no other host holds. The
+// file is locked while it is open, and the lock ends with the process, so two
+// hosts on one node never share a file, and a host started after another
+// exited takes the lowest file free, with what that host kept in it. It
+// returns the file and its name. The cache directory must be on the
+// filesystem the scratch is on, because the one disk limiter measures one
+// filesystem.
+func openCacheFile(ctx context.Context, config SupervisorConfig) (platform.File, string, error) {
+	directory := config.Disk
+	if config.CacheDisk != nil {
+		if err := sameFilesystem(ctx, config.Disk, config.CacheDisk); err != nil {
+			return nil, "", err
+		}
+		directory = config.CacheDisk
+	}
+	for slot := range cacheSlots {
+		name := fmt.Sprintf("cache-%d", slot)
+		options := platform.OpenOptions{Create: true, Lock: true, Permissions: 0o600}
+		if sim.Bug(ctx, "host-cache-share-a-file") {
+			options.Lock = false
+		}
+		file, err := directory.Open(ctx, name, options)
+		if errors.Is(err, platform.ErrLocked) {
+			continue
+		}
+		if err != nil {
+			return nil, "", fmt.Errorf("the page cache's disk %s: %w", name, err)
+		}
+		return file, name, nil
+	}
+	return nil, "", fmt.Errorf("%w: other hosts hold every one of the %d page cache files in the cache directory",
+		ErrInvalidConfig, cacheSlots)
+}
+
+// sameFilesystem refuses a cache directory on another filesystem than the
+// scratch.
+func sameFilesystem(ctx context.Context, scratch, cache platform.Disk) error {
+	read := func(disk platform.Disk, what string) (platform.FilesystemSpace, error) {
+		space, ok := disk.(platform.DiskSpace)
+		if !ok {
+			return platform.FilesystemSpace{}, fmt.Errorf("%w: the %s does not report its filesystem", ErrInvalidConfig, what)
+		}
+		reading, err := space.Space(ctx)
+		if err != nil {
+			return platform.FilesystemSpace{}, fmt.Errorf("the %s's filesystem: %w", what, err)
+		}
+		return reading, nil
+	}
+	scratchSpace, err := read(scratch, "scratch directory")
+	if err != nil {
+		return err
+	}
+	cacheSpace, err := read(cache, "cache directory")
+	if err != nil {
+		return err
+	}
+	if scratchSpace.ID != cacheSpace.ID && !sim.Bug(ctx, "host-cache-on-another-filesystem") {
+		return fmt.Errorf("%w: the cache directory is on filesystem %s and the scratch directory on %s; "+
+			"the disk limiter measures one filesystem, so both must be on it", ErrInvalidConfig,
+			cacheSpace.ID, scratchSpace.ID)
+	}
+	return nil
+}
+
 // startDiskLimiter builds the host's disk limiter over Disk, and refuses a
 // configuration whose promises the disk cannot keep under its goals. cache is
 // the page cache's file: what a restart left in it is the cache's, before the
@@ -81,14 +152,30 @@ func startDiskLimiter(ctx context.Context, config SupervisorConfig, users []reso
 		return nil, fmt.Errorf("%w: the host's disk does not report its space", ErrInvalidConfig)
 	}
 	limiter, err := resource.NewDiskLimiter(ctx, resource.DiskLimiterConfig{Space: space, Goal: config.DiskGoal,
-		Users: users, CacheFile: allocation(cache), Region: checkpoint.DefaultDiskRegionBytes, MaxBandBytes: config.DiskBandBytes, Writes: config.DiskWrites, Device: config.DeviceWrites,
+		Users: users, CacheFile: allocation(cache), Region: checkpoint.DefaultDiskRegionBytes, MaxBandBytes: config.DiskBandBytes,
+		ReserveBytes: config.DiskReserveBytes, Writes: config.DiskWrites, Device: config.DeviceWrites,
 		Clock: config.Clock})
 	if err != nil {
 		return nil, fmt.Errorf("%w: the disk limiter: %w", ErrInvalidConfig, err)
 	}
-	if err := limiter.Ready(); err != nil {
+	// Only promises this filesystem could never keep are a configuration to
+	// refuse. Space another writer holds now — the cache of another host on
+	// the node, an image being pulled — is given back as that writer's own
+	// goals push it, so the host starts and reports itself unready until it
+	// is. A host that refused would truncate its spill files as it exited,
+	// and the other writer would never see the pressure that makes it give
+	// space back.
+	if err := limiter.Feasible(); err != nil {
 		limiter.Close()
 		return nil, fmt.Errorf("%w: %w", ErrInvalidConfig, err)
+	}
+	if err := limiter.Ready(); err != nil {
+		if sim.Bug(ctx, "host-refuse-start-while-the-disk-is-held") {
+			limiter.Close()
+			return nil, fmt.Errorf("%w: %w", ErrInvalidConfig, err)
+		}
+		slog.WarnContext(ctx, "host: the disk cannot keep the host's promises until other writers give space back",
+			"error", err)
 	}
 	status := limiter.Status()
 	promises := make([]any, 0, 2*len(status.Promises))
@@ -97,7 +184,7 @@ func startDiskLimiter(ctx context.Context, config SupervisorConfig, users []reso
 	}
 	slog.InfoContext(ctx, "host: the disk limiter was assembled", "goal", status.Goal.String(),
 		"binding", string(status.Binding), "total_bytes", status.TotalBytes, "available_bytes", status.AvailableBytes,
-		"floor_bytes", status.FloorBytes, "promised_bytes", status.PromisedBytes, slog.Group("promises", promises...),
+		"floor_bytes", status.FloorBytes, "reserve_bytes", status.ReserveBytes, "promised_bytes", status.PromisedBytes, slog.Group("promises", promises...),
 		"cache_share_bytes", status.CacheShareBytes, "write_bytes_per_day", status.Writes.BytesPerDay,
 		"write_burst_bytes", status.Writes.BurstBytes)
 	return limiter, nil
@@ -115,7 +202,7 @@ func diskReport(status resource.DiskStatus) hostapi.Disk {
 			UsedBytes: status.Goal.UsedBytes},
 		Binding: string(status.Binding), TotalBytes: status.TotalBytes, AvailableBytes: status.AvailableBytes,
 		SmoothTotalBytes: status.SmoothTotalBytes, SmoothFreeBytes: status.SmoothFreeBytes,
-		FloorBytes: status.FloorBytes, BandBytes: status.BandBytes, Promises: promises,
+		FloorBytes: status.FloorBytes, ReserveBytes: status.ReserveBytes, BandBytes: status.BandBytes, Promises: promises,
 		PromisedBytes: status.PromisedBytes, CacheHeldBytes: status.CacheHeldBytes,
 		CacheShareBytes: status.CacheShareBytes, Unready: status.Unready, ReadError: status.ReadError,
 		Writes: hostapi.DiskWrites{BytesPerDay: status.Writes.BytesPerDay, BurstBytes: status.Writes.BurstBytes,
@@ -155,22 +242,14 @@ func (w *stagedWriter) Write(p []byte) (int, error) {
 func (w *stagedWriter) release() { w.staged.Add(-w.written) }
 
 // cacheShare is the page cache's disk budget as the host's disk limiter sets
-// it. The share is the limiter's, under the configured cap where there is one.
-// A write is admitted by the limiter's write budget, at the priority of its
-// kind: the cache's kinds of write are numbered lowest first, as the
-// limiter's priorities are.
+// it: the share is the limiter's alone. A write is admitted by the limiter's
+// write budget, at the priority of its kind: the cache's kinds of write are
+// numbered lowest first, as the limiter's priorities are.
 type cacheShare struct {
 	limiter *resource.DiskLimiter
-	cap     int64
 }
 
-func (s cacheShare) Share() int64 {
-	share := s.limiter.CacheShare()
-	if s.cap > 0 {
-		share = min(share, s.cap)
-	}
-	return share
-}
+func (s cacheShare) Share() int64 { return s.limiter.CacheShare() }
 
 func (s cacheShare) Admit(n int64, kind checkpoint.WriteKind) bool {
 	return s.limiter.Admit(n, int(kind))

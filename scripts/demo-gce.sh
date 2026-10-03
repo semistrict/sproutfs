@@ -118,7 +118,7 @@ create_instance() {
         --machine-type="${SPROUTFS_DEMO_MACHINE_TYPE:-n2-standard-8}" \
         --min-cpu-platform='Intel Cascade Lake' --enable-nested-virtualization \
         --image="$vm_image" --image-project=ubuntu-os-cloud \
-        --boot-disk-size=100GB --boot-disk-type=pd-balanced --boot-disk-auto-delete \
+        --boot-disk-size=200GB --boot-disk-type=pd-balanced --boot-disk-auto-delete \
         --network="${SPROUTFS_DEMO_NETWORK:-default}" \
         --service-account="$(service_account)" \
         --scopes=https://www.googleapis.com/auth/devstorage.read_write \

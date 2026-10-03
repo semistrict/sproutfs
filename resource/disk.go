@@ -197,6 +197,14 @@ type DiskLimiterConfig struct {
 	// headroom between the floor and what is free, at most MaxBandBytes. Zero
 	// is the default for each.
 	BandPercent, MaxBandBytes int64
+	// ReserveBytes is what the cache leaves free above the floor for
+	// promises not yet made: this host's, and those of another host on the
+	// same filesystem, which only the filesystem's free space shows. Without
+	// it a cache that has filled the disk to the floor leaves another host
+	// whose cache is empty no room to promise anything, and its own goals
+	// never tell it to give space back. A promise may take the reserve; the
+	// cache then gives back what restores it. Zero leaves none.
+	ReserveBytes int64
 	// Interval is how often the limiter reads the disk on its own, and
 	// Smoothing how slowly its smoothed readings follow. Zero is the default
 	// for each.
@@ -237,9 +245,12 @@ type DiskStatus struct {
 	TotalBytes, AvailableBytes        int64
 	SmoothTotalBytes, SmoothFreeBytes int64
 	FloorBytes, BandBytes             int64
-	Promises                          []DiskPromise
-	PromisedBytes                     int64
-	CacheHeldBytes, CacheShareBytes   int64
+	// ReserveBytes is what the cache leaves free above the floor for
+	// promises.
+	ReserveBytes                    int64
+	Promises                        []DiskPromise
+	PromisedBytes                   int64
+	CacheHeldBytes, CacheShareBytes int64
 	// Unready is why the host's promises do not fit, empty when they do.
 	Unready string
 	// ReadError is why the last reading was refused, empty when it was not.
@@ -304,8 +315,8 @@ func NewDiskLimiter(ctx context.Context, config DiskLimiterConfig) (*DiskLimiter
 		}
 	}
 	if config.Region < 0 || config.BandPercent < 0 || config.BandPercent > 100 || config.MaxBandBytes < 0 ||
-		config.Interval < 0 || config.Smoothing < 0 {
-		return nil, fmt.Errorf("%w: a disk limiter's region, band, interval and smoothing are not negative, "+
+		config.ReserveBytes < 0 || config.ReserveBytes > maxDiskBytes || config.Interval < 0 || config.Smoothing < 0 {
+		return nil, fmt.Errorf("%w: a disk limiter's region, band, reserve, interval and smoothing are not negative, "+
 			"and its band is at most 100%%", ErrInvalid)
 	}
 	config.Region = orDefault(config.Region, DefaultDiskRegion)
@@ -387,21 +398,51 @@ func (l *DiskLimiter) CacheShare() int64 {
 }
 
 // Capacity is what the cache could hold on this filesystem if nothing else
-// wrote to it: the filesystem's size less the free-space floor and the
-// promises, under the used-space goal. It reads the goals, the size and the
-// promises at the last reading, and never the space other writers take or the
-// band, so it does not move as the disk fills. A host weighs its cache in the
-// list of caches by it.
+// wrote to it: the filesystem's size less the free-space floor, the reserve
+// and the promises, under the used-space goal. It reads the goals, the size
+// and the promises at the last reading, and never the space other writers take
+// or the band, so it does not move as the disk fills. A host weighs its cache
+// in the list of caches by it.
 func (l *DiskLimiter) Capacity() int64 {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	return max(l.capacityLocked(l.config.ReserveBytes), 0)
+}
+
+// Feasible is nil while the host's promises would fit under the goals on this
+// filesystem with nothing else on it, and why they would not otherwise. Unlike
+// Ready it ignores the space other writers hold, which they may give back: a
+// host that is not ready can wait for them, and one that is not feasible
+// cannot keep its promises on this filesystem at all.
+func (l *DiskLimiter) Feasible() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	// A promise may take the reserve, so it is not counted here.
+	if capacity := l.capacityLocked(0); capacity < 0 {
+		return fmt.Errorf("%w: the host promises %d bytes, and the goals (%s) leave it %d of a filesystem of %d",
+			ErrDiskPromises, l.status.PromisedBytes, l.config.Goal, l.status.PromisedBytes+capacity,
+			l.status.TotalBytes)
+	}
+	return nil
+}
+
+// capacityLocked is what the goals leave the cache on this filesystem if
+// nothing else wrote to it and it left reserve free above the floor, below
+// zero when they do not leave the promises.
+func (l *DiskLimiter) capacityLocked(reserve int64) int64 {
 	goal := l.config.Goal
 	total := l.status.TotalBytes
-	capacity := total - max(goal.FreeBytes, fraction(total, goal.FreePercent, 100))
+	if sim.Bug(l.ctx, "disklimit-capacity-from-free-space") {
+		total = l.status.SmoothFreeBytes + l.status.CacheHeldBytes
+		for _, promise := range l.status.Promises {
+			total += promise.AllocatedBytes
+		}
+	}
+	capacity := total - max(goal.FreeBytes, fraction(total, goal.FreePercent, 100)) - reserve
 	if goal.UsedBytes > 0 {
 		capacity = min(capacity, goal.UsedBytes)
 	}
-	return max(capacity-l.status.PromisedBytes, 0)
+	return capacity - l.status.PromisedBytes
 }
 
 // Ready is nil while the host's promises fit under the goals with an empty
@@ -576,9 +617,10 @@ func (l *DiskLimiter) readUsers(ctx context.Context) ([]DiskPromise, int64, erro
 // The room is the space the host could hold: what is free and what it holds.
 // The free-space goals leave the floor free, so the promises and the cache
 // share the room less the floor. The used-space goal caps the promises and the
-// cache together. The band keeps the cache back from the floor by a share of
-// the headroom it has left, so as the disk fills the cache's share falls a
-// little at each reading rather than all at once at the floor.
+// cache together. The cache leaves the reserve free above the floor, for
+// promises not yet made. The band keeps the cache back from that by a share
+// of the headroom it has left, so as the disk fills the cache's share falls a
+// little at each reading rather than all at once.
 func (l *DiskLimiter) computeLocked(now time.Time, promises []DiskPromise, allocated, held int64) {
 	goal := l.config.Goal
 	room := int64(math.Round(l.room.get(now)))
@@ -603,9 +645,13 @@ func (l *DiskLimiter) computeLocked(now time.Time, promises []DiskPromise, alloc
 	if hard < 0 && sim.Bug(l.ctx, "disklimit-take-from-spill") {
 		hard = room - floor - allocated
 	}
-	headroom := max(hard-held, 0)
+	reserve := l.config.ReserveBytes
+	if sim.Bug(l.ctx, "disklimit-no-reserve") {
+		reserve = 0
+	}
+	headroom := max(hard-reserve-held, 0)
 	band := min(fraction(headroom, l.config.BandPercent, 100), l.config.MaxBandBytes)
-	share := hard - band
+	share := hard - reserve - band
 	if goal.UsedBytes > 0 && goal.UsedBytes-promised < share {
 		share, binding = goal.UsedBytes-promised, BindingUsedBytes
 	}
@@ -617,7 +663,7 @@ func (l *DiskLimiter) computeLocked(now time.Time, promises []DiskPromise, alloc
 	l.status.Binding = binding
 	l.status.SmoothTotalBytes = total
 	l.status.SmoothFreeBytes = room - held - allocated
-	l.status.FloorBytes, l.status.BandBytes = floor, band
+	l.status.FloorBytes, l.status.BandBytes, l.status.ReserveBytes = floor, band, reserve
 	l.status.Promises, l.status.PromisedBytes = promises, promised
 	l.status.CacheHeldBytes, l.status.CacheShareBytes = held, share
 	l.status.Unready = ""

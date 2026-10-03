@@ -1598,7 +1598,7 @@ SPROUTFS_SIM_BUG=vmmachine-skip-peer-check \
   go test ./vmmachine -run '^TestAdversarialStarters$' -count=1
 ```
 
-Six guards break the disk limiter in `resource`:
+Eight guards break the disk limiter in `resource`:
 
 ```sh
 SPROUTFS_SIM_BUG=disklimit-count-spill-by-allocation \
@@ -1613,7 +1613,33 @@ SPROUTFS_SIM_BUG=disklimit-refuse-high-before-low \
   go test ./resource -run '^TestTheWriteBudgetRefusesLowPrioritiesFirst$' -count=1
 SPROUTFS_SIM_BUG=disklimit-take-from-spill \
   go test ./resource -run '^TestPromisesThatDoNotFitMakeTheHostUnready$' -count=1
+SPROUTFS_SIM_BUG=disklimit-no-reserve \
+  go test ./resource -run '^TestARestartedHostFindsRoomAnotherHostsCacheGivesBack$' -count=1
+SPROUTFS_SIM_BUG=disklimit-capacity-from-free-space \
+  go test ./resource -run '^TestPromisesAreFeasibleWhileOnlyOtherWritersLeaveNoRoom$' -count=1
 ```
+
+The last two are about hosts that share a filesystem. Without the reserve, a
+cache fills the disk to the floor, and a host beside it whose cache is empty
+has no room to promise a VM's staging. Judging promises by the space other
+writers leave now refuses a host that could wait for them.
+
+Three guards break how a host takes its disk:
+
+```sh
+SPROUTFS_SIM_BUG=host-refuse-start-while-the-disk-is-held \
+  go test ./host -run '^TestAHostStartsUnreadyWhileAnotherWriterHoldsItsRoom$' -count=1
+SPROUTFS_SIM_BUG=host-cache-share-a-file \
+  go test ./host -run '^TestAHostClaimsACacheFileNoOtherHostHolds$' -count=1
+SPROUTFS_SIM_BUG=host-cache-on-another-filesystem \
+  go test ./host -run '^TestACacheDirectoryOnAnotherFilesystemIsRefused$' -count=1
+```
+
+The first refuses a host that another writer's space keeps from fitting now,
+which truncates its spill files as it exits, so the other writer never gives
+space back. The second opens the page cache's file without its lock, so two
+hosts on a node share it. The third accepts a cache directory the limiter does
+not measure.
 
 Five guards break the list of caches:
 
