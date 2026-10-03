@@ -416,6 +416,38 @@ func TestTheRealFramerReassemblesFragmentedStreams(t *testing.T) {
 	})
 }
 
+// A write whose pieces are still on the wire when its connection closes ends
+// then, with the connection closed, rather than once they would have arrived.
+func TestAWriteOnTheWireEndsWhenItsConnectionCloses(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		runtime := sim.New(sim.Config{Network: quiet(sim.NetworkConfig{LinkBytesPerSecond: 1 << 20})})
+		network := runtime.Network().Framed()
+		listener, err := network.Listen("server")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer listener.Close()
+		client, err := network.Dial(t.Context(), "client", "server")
+		if err != nil {
+			t.Fatal(err)
+		}
+		began := time.Now()
+		sent := make(chan error, 1)
+		go func() {
+			sent <- client.Send(t.Context(), platform.Frame{Header: []byte("big"),
+				Payload: platform.Bytes(make([]byte, 8<<20)), PayloadSize: 8 << 20})
+		}()
+		time.Sleep(time.Second)
+		_ = client.Close()
+		if err := <-sent; !errors.Is(err, platform.ErrDisconnected) {
+			t.Fatalf("a send whose connection closed under it = %v, want disconnected", err)
+		}
+		if took := time.Since(began); took != time.Second {
+			t.Fatalf("the send ended after %v, want the second at which its connection closed", took)
+		}
+	})
+}
+
 // A stream that stops being read stalls its writer at its buffer, and a write
 // deadline ends the wait, as the framer's cancelled send sets one.
 func TestAStreamWriteStallsAtItsBufferUntilItsDeadline(t *testing.T) {

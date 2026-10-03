@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/semistrict/sproutfs/internal/testsoak"
+	"github.com/semistrict/sproutfs/peer"
 	"github.com/semistrict/sproutfs/platform/sim"
 )
 
@@ -17,7 +18,8 @@ const buggifiedCampaignName = "seeded-topology-buggify"
 // TestSeededTopologyUnderBuggify is the same campaign with the per-site fault
 // injection turned on. Every fault it adds is one the code is required to
 // survive without telling its caller: a part that fills at one page, a
-// source that answers BUSY because it is at its budget for this peer, a pager
+// source that answers BUSY because it is at its budget for this peer, or that
+// stalls a reply or a whole connection for seconds, a pager
 // that evicts while an arena slot is free, a control-record write that takes
 // seconds. The guests' bytes are checked exactly as they are without it, so a
 // site that breaks a VM fails here.
@@ -56,7 +58,9 @@ func TestSeededTopologyUnderBuggify(t *testing.T) {
 		"checkpoint/one-page-parts",
 		"control/slow-write",
 		"vmmemory/evict-past-a-free-slot",
-		"peer/busy",
+		peer.SiteBusy,
+		peer.SiteSlowAnswer,
+		peer.SiteStall,
 	} {
 		if !reached[site] {
 			t.Errorf("the campaign never reached the %s site", site)

@@ -336,7 +336,7 @@ func (p *pool) acquire(ctx context.Context, bytes int64) (*conn, error) {
 			}
 		} else if heard && !overBudget {
 			overBudget = true
-			probeWaitedForBudget(ctx)
+			p.peer.table.probe(ProbeWaitedForBudget)
 		}
 		changed := p.changed
 		p.mu.Unlock()
@@ -388,7 +388,8 @@ func (p *pool) signal() {
 // nothing of the peer. One that met a peer of another release marks it
 // incompatible. Anything else is a hard failure, which marks it down.
 func (p *pool) failedToDial(ctx context.Context, err error) {
-	if ctx.Err() != nil || errors.Is(err, ErrClosed) {
+	table := p.peer.table
+	if (ctx.Err() != nil && !table.bug("peer-mark-down-when-cancelled")) || errors.Is(err, ErrClosed) {
 		return
 	}
 	var incompatible *IncompatibleError
@@ -396,7 +397,7 @@ func (p *pool) failedToDial(ctx context.Context, err error) {
 		p.peer.markIncompatible(incompatible)
 		return
 	}
-	p.peer.markDown(p.peer.table.ctx, err)
+	p.peer.markDown(err)
 }
 
 // dial opens one connection of this class and settles what it may carry.
@@ -425,11 +426,7 @@ func (p *pool) dial(ctx context.Context) (*conn, error) {
 	closed := table.closed
 	if !closed {
 		table.wg.Go(c.read)
-		if c.version >= 2 {
-			// The release before answers nothing it does not know, a ping
-			// among them: its connections have only TCP's own liveness.
-			table.wg.Go(c.monitor)
-		}
+		table.wg.Go(c.monitor)
 	}
 	table.mu.Unlock()
 	if closed {
@@ -463,7 +460,8 @@ type dialed struct {
 // version 2 says hello. A server that closes the connection in answer is one of
 // the release before this one, which speaks only version 1 and cannot read a
 // hello, so a dialer that still speaks version 1 dials again without one.
-func dialPeer(ctx context.Context, dial Dialer, address platform.Address, speaks Versions, class Class) (*dialed, error) {
+func (t *Table) dialPeer(ctx context.Context, address platform.Address, class Class) (*dialed, error) {
+	dial, speaks := t.config.Dial, t.config.Versions
 	conn, err := dial(ctx, address)
 	if err != nil {
 		return nil, err
@@ -477,10 +475,10 @@ func dialPeer(ctx context.Context, dial Dialer, address platform.Address, speaks
 			maxInFlight: int(answer.GetMaxInFlight())}, nil
 	}
 	_ = conn.Close()
-	if !errors.Is(err, errNoHello) || speaks.Min > 1 {
+	if !errors.Is(err, errNoHello) || speaks.Min > 1 || t.bug("peer-no-fallback") {
 		return nil, err
 	}
-	probeFellBack(ctx)
+	t.probe(ProbeFellBackToVersionOne)
 	conn, err = dial(ctx, address)
 	if err != nil {
 		return nil, err

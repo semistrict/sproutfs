@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/semistrict/sproutfs/peer"
+	"github.com/semistrict/sproutfs/peer/internal/previous"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/sim"
 )
@@ -88,6 +89,9 @@ func TestACancelledRequestMarksNothingDown(t *testing.T) {
 			t.Fatalf("a request whose caller gave up mid-dial = %v", err)
 		}
 		cancel()
+		if destination.Down() {
+			t.Fatal("a caller giving up on a dial marked its peer down")
+		}
 		s.runtime.Network().HealBoth("destination", "source")
 		// ...and a request it gives up on mid-answer.
 		ctx, cancel = context.WithTimeout(t.Context(), 2*time.Second)
@@ -162,5 +166,79 @@ func TestAnIdleConnectionIsClosedAndMarksNothingDown(t *testing.T) {
 			t.Fatalf("after thirty idle seconds the table holds %+v, down %v", status.Connections, status.Down)
 		}
 		close(s.gate.open)
+	})
+}
+
+// A connection of version 1 cannot be pinged: the release before closes a
+// connection on any frame it does not know. It is found dead when it has owed
+// a reply and heard nothing for longer than that release takes to give up on a
+// request, thirty seconds, and the dead allowance after that. Silence while it
+// owes nothing is not death.
+func TestASilentPreviousReleaseIsFoundDeadAfterItsRequestTimeout(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		runtime := sim.New(sim.Config{Seed: 1})
+		listener, err := runtime.Network().Listen("previous")
+		if err != nil {
+			t.Fatal(err)
+		}
+		server := &previous.Server{Served: map[string]map[string]previous.Pages{
+			"vm": {"ram0": memoryPages{count: 4, pageSize: pageSize}}}}
+		ctx, stop := context.WithCancel(t.Context())
+		defer stop()
+		go server.Serve(ctx, listener)
+		defer listener.Close()
+		dialer := &countingDialer{network: runtime.Network()}
+		source := newTable(t, runtime, peer.TableConfig{Dial: dialer.dial}).Peer("previous")
+		if _, err := askPages(t.Context(), source, 0, 1); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(20 * time.Second)
+		began := time.Now()
+		runtime.Network().Hold("previous", "destination", began.Add(2*time.Minute))
+		if _, err := askPages(t.Context(), source, 1, 1); !errors.Is(err, platform.ErrUnavailable) {
+			t.Fatalf("a request to a silent previous release = %v, want unavailable", err)
+		}
+		if took := time.Since(began); took < 34*time.Second || took > 35*time.Second {
+			t.Fatalf("the silent connection was found dead after %v, want 34 to 35 seconds", took)
+		}
+		if !source.Down() {
+			t.Fatal("a previous release whose connection died is not marked down")
+		}
+	})
+}
+
+// A down peer whose probe is answered INCOMPATIBLE is up: it is there, of a
+// release this host cannot speak to, and probing it again would change nothing.
+func TestAProbeAnsweredIncompatibleEndsTheProbing(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		runtime := sim.New(sim.Config{Seed: 1})
+		server, err := peer.NewServer(sim.WithRuntime(t.Context(), runtime), peer.ServerConfig{
+			Network: runtime.Network(), Address: "current", PageSize: pageSize})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer server.Close()
+		dialer := &countingDialer{network: runtime.Network()}
+		source := newTable(t, runtime, peer.TableConfig{Dial: dialer.dial, Versions: peer.Versions{Min: 3, Max: 4}}).Peer("current")
+		// The first dial waits out its connect timeout behind a hold, which
+		// marks the peer down.
+		runtime.Network().HoldBoth("destination", "current", time.Now().Add(5*time.Second))
+		if _, err := askPages(t.Context(), source, 0, 1); !errors.Is(err, platform.ErrUnavailable) {
+			t.Fatalf("a request behind a hold = %v, want unavailable", err)
+		}
+		if !source.Down() {
+			t.Fatal("a dial that timed out did not mark its peer down")
+		}
+		time.Sleep(time.Minute)
+		status := source.Status()
+		want := peer.IncompatibleError{Min: 1, Max: 2}
+		if status.Down || status.Incompatible == nil || *status.Incompatible != want {
+			t.Fatalf("a peer whose probe was answered incompatible reports %+v", status)
+		}
+		// The request's dial, and the probe's a second after it, which
+		// waited out the rest of the hold and was answered.
+		if dials := dialer.dials.Load(); dials != 2 {
+			t.Fatalf("a minute of probing dialed %d times, want 2", dials)
+		}
 	})
 }

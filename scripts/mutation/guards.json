@@ -334,5 +334,65 @@
     "package": "checkpoint",
     "run": "^TestAPulledCheckpointIsKeptWholeOutsideTheClusterShare$",
     "purpose": "Place every window by the list of caches, ignoring the share the cluster cache is turned on for, so a host with others in its list keeps a pulled VM as stripes it cannot rebuild alone."
+  },
+  {
+    "id": "peer-mark-down-when-cancelled",
+    "package": "peer",
+    "run": "^TestACancelledRequestMarksNothingDown$",
+    "purpose": "Mark a peer down when a dial failed because its own caller gave up."
+  },
+  {
+    "id": "peer-close-when-busy",
+    "package": "peer",
+    "run": "^TestARequestOverItsBudgetIsAnsweredBusyAndTheConnectionStays$",
+    "purpose": "Close the connection of a request over its peer's budget instead of answering BUSY on it."
+  },
+  {
+    "id": "peer-one-budget-for-every-class",
+    "package": "peer",
+    "run": "^TestAFaultIsAnsweredWhileTheBulkClassIsAtItsBudget$",
+    "purpose": "Count every class of a peer's requests against one budget, so a stream at its budget makes faults busy."
+  },
+  {
+    "id": "peer-reply-out-of-order",
+    "package": "peer",
+    "run": "^TestRepliesLeaveInTheOrderTheirRequestsCame$",
+    "purpose": "Send each reply as soon as it is built rather than after the replies to the requests before it."
+  },
+  {
+    "id": "peer-no-fallback",
+    "package": "peer",
+    "run": "^TestThisReleaseFetchesPagesFromThePreviousRelease$",
+    "purpose": "Give up on a peer that closes a hello unanswered instead of speaking version 1 to it."
+  },
+  {
+    "id": "peer-ignore-silence",
+    "package": "peer",
+    "run": "^(TestASilentPeerIsFoundDeadAndProbedBack|TestASilentPreviousReleaseIsFoundDeadAfterItsRequestTimeout)$",
+    "purpose": "Never close a connection that hears nothing, so a request over a partition waits until it heals."
+  },
+  {
+    "id": "peer-unbounded-background",
+    "package": "peer",
+    "run": "^TestAGuestFaultIsAnsweredWhileTheStreamSaturatesTheLink$",
+    "purpose": "Send bulk reads without the host's background budget, so a fault's reply waits behind all the stream's bytes."
+  },
+  {
+    "id": "peer-answer-for-another-cache",
+    "package": "peer",
+    "run": "^TestAReusedAddressAnswersNotMe$",
+    "purpose": "Answer a cache request that names another cache, as a reused address would."
+  },
+  {
+    "id": "peer-queue-keeps",
+    "package": "peer",
+    "run": "^TestAKeepOverTheBackgroundBudgetIsDropped$",
+    "purpose": "Queue a keep over the background budget instead of dropping it."
+  },
+  {
+    "id": "peer-unbounded-stripes",
+    "package": "peer",
+    "run": "^TestAReaderBoundsItsStripeBytesInFlight$",
+    "purpose": "Send stripe reads without the bound on stripe bytes in flight."
   }
 ]

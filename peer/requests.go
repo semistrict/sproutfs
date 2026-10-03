@@ -192,6 +192,9 @@ func (p *Peer) call(ctx context.Context, admitAs string, request, response proto
 		p.table.background.faultStarted()
 		defer p.table.background.faultEnded()
 	case BulkRead:
+		if p.table.bug("peer-unbounded-background") {
+			break
+		}
 		if err := p.table.background.Acquire(ctx, PriorityOf(ctx), reserve); err != nil {
 			return result{}, clock.Since(began), err
 		}

@@ -1,10 +1,6 @@
 package peer
 
-import (
-	"context"
-
-	"github.com/semistrict/sproutfs/platform/sim"
-)
+import "github.com/semistrict/sproutfs/platform/sim"
 
 // The places in this package a campaign must reach, as sim.Probe marks them. A
 // fault is worth injecting only where it makes code run, so a campaign over
@@ -38,6 +34,32 @@ const (
 var Probes = []string{ProbeBusy, ProbeIncompatible, ProbeWaitedForBudget, ProbeLateReply,
 	ProbeFellBackToVersionOne, ProbeDeadConnection, ProbeMarkedDown, ProbeProbed, ProbeSkippedDown}
 
-func probeWaitedForBudget(ctx context.Context) { sim.Probe(ctx, ProbeWaitedForBudget) }
-func probeLateReply(ctx context.Context)       { sim.Probe(ctx, ProbeLateReply) }
-func probeFellBack(ctx context.Context)        { sim.Probe(ctx, ProbeFellBackToVersionOne) }
+// The fault-injection sites in this package. Each is a fault the peer server
+// must survive without its callers seeing more than a slower answer or an
+// error they retry.
+const (
+	// SiteBusy answers BUSY as a server whose peer is at its budget does: a
+	// campaign with one migration at a time never makes a server busy on its
+	// own.
+	SiteBusy = "peer/busy"
+	// SiteSlowAnswer delays building one reply by up to two seconds, as a
+	// disk that stalls does: the replies behind it on its connection wait,
+	// and its caller may give up on it.
+	SiteSlowAnswer = "peer/slow-answer"
+	// SiteStall stops a server reading one connection for up to six seconds,
+	// as a process paused by its host does: its pings go unanswered, and a
+	// stall past DeadAfter is a dead connection to its dialer.
+	SiteStall = "peer/stall"
+)
+
+// Sites is every fault-injection site this package registers.
+var Sites = []string{SiteBusy, SiteSlowAnswer, SiteStall}
+
+// probe marks name reached on the table's runtime, whoever's request reached
+// it, and bug reports an in-tree bug guard enabled there.
+func (t *Table) probe(name string)  { sim.Probe(t.ctx, name) }
+func (t *Table) bug(id string) bool { return sim.Bug(t.ctx, id) }
+
+// probe and bug are the same on the server's runtime.
+func (s *Server) probe(name string)  { sim.Probe(s.ctx, name) }
+func (s *Server) bug(id string) bool { return sim.Bug(s.ctx, id) }

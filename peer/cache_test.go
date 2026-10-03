@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 	"testing/synctest"
+	"time"
 
 	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/peer"
@@ -131,7 +132,7 @@ func cacheServing(t *testing.T, cache peer.Cache) (*peer.Peer, *[]*peertest.Fram
 func cacheServingWith(t *testing.T, cache peer.Cache, config peer.TableConfig) (*peer.Peer, *[]*peertest.Frame) {
 	t.Helper()
 	runtime := sim.New(sim.Config{Seed: 1})
-	server, err := peer.NewServer(t.Context(), peer.ServerConfig{Network: runtime.Network(), Address: "holder",
+	server, err := peer.NewServer(sim.WithRuntime(t.Context(), runtime), peer.ServerConfig{Network: runtime.Network(), Address: "holder",
 		PageSize: pageSize, Cache: cache})
 	if err != nil {
 		t.Fatal(err)
@@ -150,7 +151,7 @@ func cacheServingWith(t *testing.T, cache peer.Cache, config peer.TableConfig) (
 			*frames = append(*frames, frame)
 		}}, nil
 	}
-	table := newTable(t, config)
+	table := newTable(t, runtime, config)
 	return table.Peer("holder"), frames
 }
 
@@ -278,6 +279,35 @@ func TestAKeepTheCacheDoesNotWriteIsDropped(t *testing.T) {
 	})
 }
 
+// A keep over this host's background budget is dropped before it is sent,
+// never queued: a fill nobody waits for is worth less than the stream's place
+// on the link. A repair has half the budget, so fills keep the rest.
+func TestAKeepOverTheBackgroundBudgetIsDropped(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		cache := newMemoryCache(1)
+		holder, _ := cacheServingWith(t, cache, peer.TableConfig{BackgroundBytes: 8})
+		keep := func(payload string, repair bool) error {
+			return holder.Keep(t.Context(), cache.identity, peer.Keep{Window: window, Code: rank.Code{K: 1, M: 1},
+				Items: []peer.StripeItem{{Page: 1, Length: 4, Size: len(payload)}}, Payload: []byte(payload), Repair: repair})
+		}
+		if err := keep("abcdefghi", false); !errors.Is(err, peer.ErrDropped) {
+			t.Fatalf("a fill over the budget = %v, want ErrDropped", err)
+		}
+		if err := keep("abcde", true); !errors.Is(err, peer.ErrDropped) {
+			t.Fatalf("a repair over half the budget = %v, want ErrDropped", err)
+		}
+		if err := keep("abcd", true); err != nil {
+			t.Fatalf("a repair within half the budget: %v", err)
+		}
+		if err := keep("abcdefgh", false); err != nil {
+			t.Fatalf("a fill within the budget: %v", err)
+		}
+		if got := string(cache.stripes[stripeKey{window, 1, 0}]); got != "abcdefgh" {
+			t.Fatalf("the cache holds %q, want the last keep sent", got)
+		}
+	})
+}
+
 // A drop reaches the cache with the stripe it names, and a presence check says
 // which pages of each window the cache holds a stripe of.
 func TestDropAndPresenceReachTheCache(t *testing.T) {
@@ -326,7 +356,9 @@ func TestAReaderBoundsItsStripeBytesInFlight(t *testing.T) {
 			}()
 		}
 		<-cache.reads
-		synctest.Wait()
+		// A second of simulated time is a thousand round trips: a read let
+		// past the bound would have reached the holder.
+		time.Sleep(time.Second)
 		if len(cache.reads) != 0 {
 			t.Fatal("a read past the bound on stripe bytes in flight reached the holder")
 		}

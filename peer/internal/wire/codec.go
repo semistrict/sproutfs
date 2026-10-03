@@ -212,11 +212,18 @@ func Decode(frame platform.ReceivedFrame) (Incoming, error) {
 		_ = frame.Payload.Close()
 		return Incoming{}, ErrMalformedFrame
 	}
+	// The header says what the sender meant. A frame whose prefix disagrees
+	// with a header that carried a checksum, and passed it, had its prefix
+	// damaged on the way, which asking again repairs.
+	mismatch := ErrMalformedFrame
+	if envelope.HasHeaderChecksum() {
+		mismatch = ErrCorrupt
+	}
 	descriptor := envelope.GetPayload()
 	if descriptor == nil {
 		if frame.PayloadSize != 0 {
 			_ = frame.Payload.Close()
-			return Incoming{}, ErrMalformedFrame
+			return Incoming{}, mismatch
 		}
 		return Incoming{
 			Version:   envelope.GetWireVersion(),
@@ -226,9 +233,13 @@ func Decode(frame platform.ReceivedFrame) (Incoming, error) {
 			Payload:   frame.Payload,
 		}, nil
 	}
-	if !descriptor.HasLength() || !descriptor.HasChecksumAlgorithm() || descriptor.GetLength() != uint64(frame.PayloadSize) {
+	if !descriptor.HasLength() || !descriptor.HasChecksumAlgorithm() {
 		_ = frame.Payload.Close()
 		return Incoming{}, ErrMalformedFrame
+	}
+	if descriptor.GetLength() != uint64(frame.PayloadSize) {
+		_ = frame.Payload.Close()
+		return Incoming{}, mismatch
 	}
 	algorithm, err := fromProtoAlgorithm(descriptor.GetChecksumAlgorithm())
 	if err != nil {

@@ -94,8 +94,14 @@ func (c *conn) roundTrip(ctx context.Context, request proto.Message, payload []b
 		c.pool.release(c, bytes)
 		return result{}, c.failed
 	}
+	now := c.pool.peer.table.clock.Now()
+	if c.version < 2 && len(c.pending) == 0 {
+		// A connection of version 1 hears nothing while it owes nothing, so
+		// its silence counts from the first reply it is owed.
+		c.lastHeard = now
+	}
 	c.pending[id] = waiting
-	c.lastUsed = c.pool.peer.table.clock.Now()
+	c.lastUsed = now
 	c.mu.Unlock()
 	frame, err := wire.Encode(wire.Outgoing{Version: c.version, RequestID: id, Message: request,
 		Payload: wire.Payload{Body: platform.Bytes(payload), Size: int64(len(payload))}})
@@ -207,7 +213,7 @@ func (c *conn) read() {
 		abandoned := waiting.abandoned
 		c.mu.Unlock()
 		if abandoned {
-			probeLateReply(ctx)
+			c.pool.peer.table.probe(ProbeLateReply)
 			payload.release()
 			continue
 		}

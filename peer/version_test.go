@@ -58,9 +58,9 @@ func (p memoryPages) Unpublished() ([]uint64, error) {
 func (p memoryPages) PageSize() uint64 { return uint64(p.pageSize) }
 
 // newTable is a table of this end's peers, closed when the test ends.
-func newTable(t *testing.T, config peer.TableConfig) *peer.Table {
+func newTable(t *testing.T, runtime *sim.Runtime, config peer.TableConfig) *peer.Table {
 	t.Helper()
-	table, err := peer.NewTable(t.Context(), config)
+	table, err := peer.NewTable(sim.WithRuntime(t.Context(), runtime), config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +99,7 @@ func TestThisReleaseFetchesPagesFromThePreviousRelease(t *testing.T) {
 		defer listener.Close()
 
 		dialer := &countingDialer{network: runtime.Network()}
-		source := newTable(t, peer.TableConfig{Dial: dialer.dial}).Peer("previous")
+		source := newTable(t, runtime, peer.TableConfig{Dial: dialer.dial}).Peer("previous")
 		answer, err := askPages(t.Context(), source, 0, 4)
 		if err != nil {
 			t.Fatal(err)
@@ -271,7 +271,7 @@ func TestADestinationTwoReleasesAheadIsToldItIsIncompatible(t *testing.T) {
 		defer server.Close()
 		server.Serve("vm", map[string]peer.Pages{"ram0": memoryPages{count: 1, pageSize: pageSize}})
 		dialer := &countingDialer{network: runtime.Network()}
-		source := newTable(t, peer.TableConfig{Dial: dialer.dial, Versions: peer.Versions{Min: 3, Max: 4}}).Peer("current")
+		source := newTable(t, runtime, peer.TableConfig{Dial: dialer.dial, Versions: peer.Versions{Min: 3, Max: 4}}).Peer("current")
 		_, err = askPages(t.Context(), source, 0, 1)
 		var incompatible *peer.IncompatibleError
 		if !errors.As(err, &incompatible) || *incompatible != (peer.IncompatibleError{Min: 1, Max: 2}) {
@@ -298,7 +298,7 @@ func TestADestinationPastVersionOneDoesNotFallBack(t *testing.T) {
 		go server.Serve(ctx, listener)
 		defer listener.Close()
 		dialer := &countingDialer{network: runtime.Network()}
-		source := newTable(t, peer.TableConfig{Dial: dialer.dial, Versions: peer.Versions{Min: 2, Max: 3}}).Peer("previous")
+		source := newTable(t, runtime, peer.TableConfig{Dial: dialer.dial, Versions: peer.Versions{Min: 2, Max: 3}}).Peer("previous")
 		if _, err := askPages(t.Context(), source, 0, 1); !errors.Is(err, platform.ErrDisconnected) {
 			t.Fatalf("a destination past version 1 asking the previous release = %v, want the closed hello", err)
 		}

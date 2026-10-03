@@ -1615,6 +1615,42 @@ SPROUTFS_SIM_BUG=disklimit-take-from-spill \
   go test ./resource -run '^TestPromisesThatDoNotFitMakeTheHostUnready$' -count=1
 ```
 
+Ten guards break the peer server:
+
+```sh
+SPROUTFS_SIM_BUG=peer-mark-down-when-cancelled \
+  go test ./peer -run '^TestACancelledRequestMarksNothingDown$' -count=1
+SPROUTFS_SIM_BUG=peer-close-when-busy \
+  go test ./peer -run '^TestARequestOverItsBudgetIsAnsweredBusyAndTheConnectionStays$' -count=1
+SPROUTFS_SIM_BUG=peer-one-budget-for-every-class \
+  go test ./peer -run '^TestAFaultIsAnsweredWhileTheBulkClassIsAtItsBudget$' -count=1
+SPROUTFS_SIM_BUG=peer-reply-out-of-order \
+  go test ./peer -run '^TestRepliesLeaveInTheOrderTheirRequestsCame$' -count=1
+SPROUTFS_SIM_BUG=peer-no-fallback \
+  go test ./peer -run '^TestThisReleaseFetchesPagesFromThePreviousRelease$' -count=1
+SPROUTFS_SIM_BUG=peer-ignore-silence \
+  go test ./peer -run '^(TestASilentPeerIsFoundDeadAndProbedBack|TestASilentPreviousReleaseIsFoundDeadAfterItsRequestTimeout)$' -count=1
+SPROUTFS_SIM_BUG=peer-unbounded-background \
+  go test ./peer -run '^TestAGuestFaultIsAnsweredWhileTheStreamSaturatesTheLink$' -count=1
+SPROUTFS_SIM_BUG=peer-answer-for-another-cache \
+  go test ./peer -run '^TestAReusedAddressAnswersNotMe$' -count=1
+SPROUTFS_SIM_BUG=peer-queue-keeps \
+  go test ./peer -run '^TestAKeepOverTheBackgroundBudgetIsDropped$' -count=1
+SPROUTFS_SIM_BUG=peer-unbounded-stripes \
+  go test ./peer -run '^TestAReaderBoundsItsStripeBytesInFlight$' -count=1
+```
+
+The first five break what each end promises the other. A caller giving up is
+read as the peer failing. A peer at its budget loses its connection instead of
+hearing that it is busy. One class's requests count against another's budget.
+Replies leave a connection in the order they were built rather than the order
+their requests came. A dialer stops talking to the release before. The sixth
+leaves a connection that hears nothing open, version 1's as well as version
+2's. The last four break the budgets that keep bulk work behind faults: the
+background budget a guest fault's reply would otherwise wait behind, a cache
+request that names another cache, a keep queued instead of dropped, and the
+bound on stripe bytes in flight.
+
 Five guards break the list of caches:
 
 ```sh

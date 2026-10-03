@@ -175,7 +175,7 @@ func (s *Server) named(cache []byte) bool {
 		return false
 	}
 	identity := s.config.Cache.Identity()
-	return string(cache) == string(identity[:])
+	return string(cache) == string(identity[:]) || s.bug("peer-answer-for-another-cache")
 }
 
 var notMe = cacheStatus(peerv1.CacheStatus_CACHE_STATUS_NOT_ME)
@@ -327,16 +327,19 @@ func (r StripesReply) Release() { r.buffer.release() }
 // this host's waits for room under its bound on stripe bytes in flight.
 func (p *Peer) ReadStripes(ctx context.Context, cache rank.Identity, read StripeRead) (StripesReply, error) {
 	if p.Down() {
+		p.table.probe(ProbeSkippedDown)
 		return StripesReply{}, ErrDown
 	}
 	request := peerv1.ReadStripes_builder{Cache: cache[:], Window: windowToWire(read.Window),
 		Pages: pageBitmap(read.Pages), K: proto.Uint32(uint32(read.Code.K)), M: proto.Uint32(uint32(read.Code.M)),
 		MaxBytes: proto.Uint64(uint64(read.MaxBytes))}.Build()
 	response := new(peerv1.Stripes)
-	if err := p.table.stripes.Acquire(ctx, Resident, read.MaxBytes); err != nil {
-		return StripesReply{}, err
+	if !p.table.bug("peer-unbounded-stripes") {
+		if err := p.table.stripes.Acquire(ctx, Resident, read.MaxBytes); err != nil {
+			return StripesReply{}, err
+		}
+		defer p.table.stripes.Release(read.MaxBytes)
 	}
-	defer p.table.stripes.Release(read.MaxBytes)
 	got, _, err := p.call(ctx, "", request, response, read.MaxBytes, read.MaxBytes, nil)
 	if err != nil {
 		return StripesReply{}, err
@@ -359,6 +362,7 @@ func (p *Peer) ReadStripes(ctx context.Context, cache rank.Identity, read Stripe
 // or one the cache does not write, is ErrDropped, never queued.
 func (p *Peer) Keep(ctx context.Context, cache rank.Identity, keep Keep) error {
 	if p.Down() {
+		p.table.probe(ProbeSkippedDown)
 		return ErrDown
 	}
 	size := int64(len(keep.Payload))
@@ -366,7 +370,11 @@ func (p *Peer) Keep(ctx context.Context, cache rank.Identity, keep Keep) error {
 	if keep.Repair {
 		priority = Repair
 	}
-	if !p.table.background.TryAcquire(priority, size) {
+	if p.table.bug("peer-queue-keeps") {
+		if err := p.table.background.Acquire(ctx, Resident, size); err != nil {
+			return err
+		}
+	} else if !p.table.background.TryAcquire(priority, size) {
 		return ErrDropped
 	}
 	defer p.table.background.Release(size)

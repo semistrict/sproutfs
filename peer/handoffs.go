@@ -12,7 +12,6 @@ import (
 
 	"github.com/semistrict/sproutfs/internal/blob"
 	migratev1 "github.com/semistrict/sproutfs/peer/internal/gen/sproutfs/migrate/v1"
-	"github.com/semistrict/sproutfs/platform/sim"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -506,11 +505,3 @@ func pageRuns(pages []uint64, first uint64, maxRuns int) (runs []*migratev1.Page
 	}
 	return runs, false
 }
-
-// busySite is the fault-injection site that answers BUSY as a server whose
-// peer is at its budget does: a campaign with one migration at a time never
-// makes a server busy on its own.
-const busySite = "peer/busy"
-
-// probeBusy is reached when a request is answered BUSY.
-func (s *Server) probeBusy() { sim.Probe(s.ctx, ProbeBusy) }

@@ -74,6 +74,9 @@ func (s *Server) serveConn(conn platform.Conn) {
 		return
 	}
 	for {
+		if err := sim.BuggifyDelay(s.ctx, SiteStall, 0.01, 6*time.Second); err != nil {
+			return
+		}
 		incoming, err := s.receiveWithin(session, serverSilence)
 		if err != nil {
 			return
@@ -175,7 +178,7 @@ func (s *Server) open(conn platform.Conn) (*session, *wire.Incoming, error) {
 	}
 	if !ok {
 		s.incompatible.Add(1)
-		sim.Probe(s.ctx, ProbeIncompatible)
+		s.probe(ProbeIncompatible)
 		slog.WarnContext(s.ctx, "peer: a peer speaks no version this server speaks", "peer", opened.peer,
 			"min_version", hello.GetMinVersion(), "max_version", hello.GetMaxVersion())
 		return nil, nil, &IncompatibleError{Min: hello.GetMinVersion(), Max: hello.GetMaxVersion()}
@@ -235,6 +238,10 @@ func (s *Server) admit(session *session, incoming wire.Incoming) error {
 			reply = answer{message: s.busy(session, 0, 0)}
 		} else {
 			defer func() { <-session.inflight }()
+			if err := sim.BuggifyDelay(s.ctx, SiteSlowAnswer, 0.05, 2*time.Second); err != nil {
+				payload.release()
+				return
+			}
 			var err error
 			if reply, err = s.answer(session, incoming, payload); err != nil {
 				slog.WarnContext(s.ctx, "peer: a request this server cannot answer", "peer", session.peer, "error", err)
@@ -242,13 +249,15 @@ func (s *Server) admit(session *session, incoming wire.Incoming) error {
 				return
 			}
 		}
-		select {
-		case <-previous:
-		case <-s.ctx.Done():
-			if reply.sent != nil {
-				reply.sent(false)
+		if !s.bug("peer-reply-out-of-order") {
+			select {
+			case <-previous:
+			case <-s.ctx.Done():
+				if reply.sent != nil {
+					reply.sent(false)
+				}
+				return
 			}
-			return
 		}
 		if err := s.reply(session, incoming.RequestID, reply); err != nil {
 			_ = session.conn.Close()
@@ -369,11 +378,17 @@ func (s *Server) write(session *session, requestID uint64, reply answer) error {
 // Busy it is answered with instead.
 func (s *Server) reserve(session *session, bytes int64) (func(), *peerv1.Busy) {
 	key := budgetKey{peer: session.peer, class: session.class}
+	if s.bug("peer-one-budget-for-every-class") {
+		key.class = BulkRead
+	}
 	budget := s.config.Budgets.Of(session.class)
-	if sim.Buggify(s.ctx, busySite, 0.5) {
+	if sim.Buggify(s.ctx, SiteBusy, 0.5) {
 		return nil, s.busy(session, bytes, budget)
 	}
 	if held, ok := s.budgets.reserve(key, bytes, budget); !ok {
+		if s.bug("peer-close-when-busy") {
+			_ = session.conn.Close()
+		}
 		return nil, s.busy(session, bytes, held)
 	}
 	return func() { s.budgets.release(key, bytes) }, nil
@@ -383,7 +398,7 @@ func (s *Server) reserve(session *session, bytes int64) (func(), *peerv1.Busy) {
 // budget: how much that class holds and may hold, and what was asked.
 func (s *Server) busy(session *session, asked, held int64) *peerv1.Busy {
 	s.refused.Add(1)
-	s.probeBusy()
+	s.probe(ProbeBusy)
 	class := classToWire(session.class)
 	return peerv1.Busy_builder{Class: &class, HeldBytes: proto.Uint64(uint64(held)),
 		BudgetBytes: proto.Uint64(uint64(s.config.Budgets.Of(session.class))),

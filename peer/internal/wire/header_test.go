@@ -59,6 +59,26 @@ func TestEveryBitFlipOfAVersionTwoHeaderIsCaught(t *testing.T) {
 	}
 }
 
+// A frame's prefix is not checksummed, its header is. A payload length in the
+// prefix that disagrees with a header whose checksum held is the prefix damaged
+// on the way, which asking again repairs; without a header checksum, nothing
+// says which of the two is wrong, and the frame is malformed.
+func TestAPrefixThatDisagreesWithACheckedHeaderIsDamage(t *testing.T) {
+	t.Parallel()
+	for _, version := range []uint32{1, 2} {
+		frame, payload := pageLikeFrame(t, version)
+		if err := decodeHeader(frame.Header, append(payload, 0)); !errors.Is(err, wire.ErrCorrupt) {
+			t.Fatalf("version %d, a payload longer than its header says: Decode = %v, want ErrCorrupt", version, err)
+		}
+	}
+	frame, payload := pageLikeFrame(t, 1)
+	// The checksum is the last five bytes: its tag and its value.
+	unchecked := frame.Header[:len(frame.Header)-5]
+	if err := decodeHeader(unchecked, append(payload, 0)); !errors.Is(err, wire.ErrMalformedFrame) {
+		t.Fatalf("an unchecked header, a payload longer than it says: Decode = %v, want ErrMalformedFrame", err)
+	}
+}
+
 // A version 1 header carries the checksum too, and is held to it: every flip
 // outside the checksum field's own tag is caught. A flip of that tag leaves a
 // header whose other fields are as they were sent, which a release before this

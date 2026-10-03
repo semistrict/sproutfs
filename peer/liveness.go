@@ -10,7 +10,6 @@ import (
 	peerv1 "github.com/semistrict/sproutfs/peer/internal/gen/sproutfs/peer/v1"
 	"github.com/semistrict/sproutfs/peer/internal/wire"
 	"github.com/semistrict/sproutfs/platform"
-	"github.com/semistrict/sproutfs/platform/sim"
 )
 
 // Liveness is how a host decides that a peer is there, and how long it waits
@@ -57,7 +56,7 @@ var (
 
 // markDown marks the peer down after a hard failure, and starts probing it
 // back. A peer already down stays down; its probe goes on as it was.
-func (p *Peer) markDown(ctx context.Context, cause error) {
+func (p *Peer) markDown(cause error) {
 	p.mu.Lock()
 	if p.down {
 		p.mu.Unlock()
@@ -65,8 +64,8 @@ func (p *Peer) markDown(ctx context.Context, cause error) {
 	}
 	p.down, p.downCause = true, cause
 	p.mu.Unlock()
-	sim.Probe(ctx, ProbeMarkedDown)
 	table := p.table
+	table.probe(ProbeMarkedDown)
 	table.mu.Lock()
 	if !table.closed {
 		table.wg.Go(p.probe)
@@ -130,7 +129,7 @@ func (p *Peer) probe() {
 			return
 		case <-timer.C():
 		}
-		sim.Probe(ctx, ProbeProbed)
+		table.probe(ProbeProbed)
 		opened, err := table.connect(ctx, p.address, Fault)
 		if err == nil {
 			_ = opened.Close()
@@ -139,7 +138,11 @@ func (p *Peer) probe() {
 		}
 		var incompatible *IncompatibleError
 		if errors.As(err, &incompatible) {
+			// The peer answered: it is up, of a release this host cannot
+			// speak to, and probing it again changes nothing.
+			p.markUp()
 			p.markIncompatible(incompatible)
+			return
 		}
 		wait = min(wait*3/2, table.config.ProbeMax)
 	}
@@ -165,7 +168,7 @@ func (t *Table) connect(ctx context.Context, address platform.Address, class Cla
 	defer cancel(nil)
 	over := t.clock.AfterFunc(t.config.ConnectTimeout, func() { cancel(errConnectTimeout) })
 	defer over.Stop()
-	opened, err := dialPeer(dialCtx, t.config.Dial, address, t.config.Versions, class)
+	opened, err := t.dialPeer(dialCtx, address, class)
 	if err != nil && ctx.Err() == nil {
 		if cause := context.Cause(dialCtx); cause != nil {
 			err = cause
@@ -197,14 +200,23 @@ func (c *conn) silence() (heard, used time.Duration, pinging bool) {
 	return clock.Since(c.lastHeard), used, c.pinging
 }
 
-// monitor watches one connection of protocol 2 or later: it pings a quiet
-// connection, closes a dead one and marks its peer down, and closes one that
-// has carried nothing for IdleTimeout.
+// monitor watches one connection: it pings a quiet one of protocol 2 or later,
+// closes a dead one and marks its peer down, and closes one that has carried
+// nothing for IdleTimeout.
 func (c *conn) monitor() {
 	table := c.pool.peer.table
 	ticker := table.clock.NewTicker(table.config.PingInterval)
 	defer ticker.Stop()
 	ctx := table.ctx
+	deadAfter := table.config.DeadAfter
+	if c.version < 2 {
+		// The release before answers no ping, so a connection of version 1
+		// is silent whenever it owes nothing. It is dead when it has owed a
+		// reply, and heard nothing, for longer than that release takes to
+		// give up on a request: what TCP's keepalive would find, and a
+		// process that hangs while its kernel still acknowledges.
+		deadAfter += requestTimeout
+	}
 	for {
 		select {
 		case <-c.done:
@@ -215,15 +227,15 @@ func (c *conn) monitor() {
 		}
 		heard, used, pinging := c.silence()
 		switch {
-		case heard >= table.config.DeadAfter:
-			sim.Probe(ctx, ProbeDeadConnection)
+		case heard >= deadAfter && (c.version >= 2 || used == 0) && !table.bug("peer-ignore-silence"):
+			table.probe(ProbeDeadConnection)
 			c.fail(errDead)
-			c.pool.peer.markDown(ctx, errDead)
+			c.pool.peer.markDown(errDead)
 			return
 		case used >= table.config.IdleTimeout:
 			c.fail(errIdle)
 			return
-		case heard >= table.config.PingInterval && !pinging:
+		case c.version >= 2 && heard >= table.config.PingInterval && !pinging:
 			c.mu.Lock()
 			c.pinging = true
 			c.mu.Unlock()

@@ -350,6 +350,12 @@ func (c *streamConn) cross(delay time.Duration, chunk []byte) error {
 		if !now.Before(arrive) {
 			break
 		}
+		select {
+		case <-c.pipe.done:
+			// A piece on the wire when the connection closes never arrives.
+			return net.ErrClosed
+		default:
+		}
 		c.mu.Lock()
 		changed, deadline := c.changed, c.writeDeadline
 		c.mu.Unlock()
