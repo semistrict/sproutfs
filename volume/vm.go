@@ -146,7 +146,8 @@ type VM struct {
 	point     *ForkPoint
 	inherited map[string][]uint64
 	// rooted closes once this VM reads its own root: at once for any VM but a
-	// fork, and when a fork's root publication installs.
+	// fork, and for a fork once its root publication has installed and given
+	// back its hold on the point it was forked at.
 	rooted chan struct{}
 	// pull is the copy of this VM's memory on the host's disk that Pull
 	// began, which every publication of it keeps its pages in; nil for a VM not

@@ -491,8 +491,13 @@ func (vm *VM) complete(ctx context.Context, ckpt *Checkpoint) error {
 		index, record, err = vm.publish(ctx, ckpt)
 	}
 	var replaced *checkpoint.Index
+	rooted := false
 	if err == nil {
-		replaced = vm.install(ckpt, index)
+		replaced, rooted = vm.install(ckpt, index)
+		if rooted && sim.Bug(ctx, "volume-rooted-before-its-hold-goes") {
+			close(vm.rooted)
+			rooted = false
+		}
 	} else {
 		vm.release(ckpt)
 	}
@@ -518,6 +523,13 @@ func (vm *VM) complete(ctx context.Context, ckpt *Checkpoint) error {
 		if point := vm.takePoint(); point != nil {
 			err = point.Retire(context.WithoutCancel(ctx))
 		}
+	}
+	// A fork is rooted only once its hold on the point it was forked at is
+	// given back. Whoever waits for the root goes on to release the child's
+	// other holds, and a parent still held by this one would stay sealed after
+	// the last of them.
+	if rooted {
+		close(vm.rooted)
 	}
 	ckpt.finish(err)
 	vm.record(err)
@@ -663,11 +675,11 @@ func changedPages(overlay *extentIndex, source DirtySource, geometry checkpoint.
 // continued during the publication and stay in the overlay. It returns the
 // index this handle published before this one, which is what the checkpoint
 // just selected has replaced.
-func (vm *VM) install(ckpt *Checkpoint, index *checkpoint.Index) *checkpoint.Index {
+func (vm *VM) install(ckpt *Checkpoint, index *checkpoint.Index) (replaced *checkpoint.Index, rooted bool) {
 	vm.mu.Lock()
 	defer vm.mu.Unlock()
 	defer vm.publishLocked()
-	replaced := vm.owned
+	replaced = vm.owned
 	vm.owned = index
 	vm.base = indexSource{store: vm.manager.config.Store, index: index}
 	vm.baseIndex = index
@@ -688,7 +700,7 @@ func (vm *VM) install(ckpt *Checkpoint, index *checkpoint.Index) *checkpoint.Ind
 		// enter it — a root publication that failed burnt its own, and the
 		// selection this one made is what the record now says the fork is.
 		vm.root, vm.inherited = false, nil
-		close(vm.rooted)
+		rooted = true
 	}
 	dirty := uint64(0)
 	for ordinal := range vm.overlays {
@@ -696,7 +708,7 @@ func (vm *VM) install(ckpt *Checkpoint, index *checkpoint.Index) *checkpoint.Ind
 		dirty += dirtySectorCount(vm.overlays[ordinal]) * checkpoint.SectorSize
 	}
 	vm.dirty = dirty
-	return replaced
+	return replaced, rooted
 }
 
 // reclaim deletes the checkpoints the new index no longer reads from: the one

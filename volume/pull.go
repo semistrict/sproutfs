@@ -7,8 +7,8 @@ import (
 )
 
 // Rooted returns a channel that closes once this VM reads a root of its own:
-// at once for every VM but a fork, and for a fork when its root publication
-// installs. Until then a fork reads its parent's checkpoint and the pages its
+// at once for every VM but a fork, and for a fork once its root publication
+// has installed and given back its hold on the point it was forked at. Until then a fork reads its parent's checkpoint and the pages its
 // parent held that no checkpoint has.
 func (vm *VM) Rooted() <-chan struct{} { return vm.rooted }
 

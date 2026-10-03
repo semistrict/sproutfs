@@ -378,7 +378,9 @@ func (vm *VM) publishPoint(ctx context.Context, point *ForkPoint) {
 	}
 	var replaced *checkpoint.Index
 	if err == nil {
-		replaced = vm.install(ckpt, index)
+		// A VM with a fork point sealed is never a fork still waiting for its
+		// root (beginFork refuses one), so this installs no root.
+		replaced, _ = vm.install(ckpt, index)
 	}
 	err = vm.observe(err)
 	vm.record(err)
