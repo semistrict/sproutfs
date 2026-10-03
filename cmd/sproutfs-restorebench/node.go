@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"cmp"
 	"context"
 	"encoding/binary"
 	"encoding/hex"
@@ -41,9 +43,14 @@ type node struct {
 	cache   *checkpoint.Cache
 	// clustered reads through the cache, its disk and the cluster; direct
 	// reads through a cache that keeps nothing on disk, so every page it
-	// misses in memory is read from the store.
-	clustered, direct *checkpoint.Store
-	serveRate         int64
+	// misses in memory is read from the store; hot reads through such a
+	// cache and the hot tier, where the node has one. directCache and
+	// hotCache are those two caches.
+	clustered, direct, hot *checkpoint.Store
+	directCache, hotCache  *checkpoint.Cache
+	hotTier                *checkpoint.HotTier
+	hotObjects             *platform.MeteredObjectStore
+	serveRate              int64
 
 	mu     sync.Mutex
 	server *peer.Server
@@ -63,6 +70,7 @@ func runNode(ctx context.Context, args []string) error {
 	bucket := flags.String("bucket", "", "Cloud Storage bucket")
 	prefix := flags.String("prefix", "", "prefix of this run's objects in the bucket")
 	serveRate := flags.Int64("serve-bytes-per-second", 500<<20, "the peer server's serving bandwidth for stripes")
+	hotBucket := flags.String("hot-bucket", "", "Cloud Storage bucket of the hot tier, none when empty")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -123,14 +131,21 @@ func runNode(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	directCache, err := checkpoint.NewCache(ctx, directMemory, checkpoint.CacheConfig{})
+	n.directCache, err = checkpoint.NewCache(ctx, directMemory, checkpoint.CacheConfig{})
 	if err != nil {
 		return err
 	}
-	defer directCache.Close()
-	n.direct, err = checkpoint.NewStore(checkpoint.Config{ObjectStore: metered, Cache: directCache})
+	defer n.directCache.Close()
+	n.direct, err = checkpoint.NewStore(checkpoint.Config{ObjectStore: metered, Cache: n.directCache})
 	if err != nil {
 		return err
+	}
+	if *hotBucket != "" {
+		closeHot, err := n.openHotTier(ctx, metered, *hotBucket, *prefix)
+		if err != nil {
+			return err
+		}
+		defer closeHot()
 	}
 	if err := n.serve(ctx); err != nil {
 		return err
@@ -141,6 +156,8 @@ func runNode(ctx context.Context, args []string) error {
 	mux.HandleFunc("POST /list", n.handleList)
 	mux.HandleFunc("POST /publish", n.handlePublish)
 	mux.HandleFunc("POST /restore", n.handleRestore)
+	mux.HandleFunc("POST /walk", n.handleWalk)
+	mux.HandleFunc("POST /settle", n.handleSettle)
 	mux.HandleFunc("POST /lose", n.handleLose)
 	mux.HandleFunc("POST /back", n.handleBack)
 	mux.HandleFunc("POST /drop", n.handleDrop)
@@ -156,6 +173,50 @@ func runNode(ctx context.Context, args []string) error {
 		return err
 	}
 	return nil
+}
+
+// openHotTier opens the hot tier over bucket, under the run's prefix, and
+// the store that reads through it and a cache that keeps nothing on disk. The
+// returned function closes them.
+func (n *node) openHotTier(ctx context.Context, regional platform.ObjectStore, bucket, prefix string) (func(), error) {
+	store, closer, err := adapters.NewGCS(ctx, "", bucket, prefix)
+	if err != nil {
+		return nil, err
+	}
+	n.hotObjects, err = platform.NewMeteredObjectStore(store, nil)
+	if err != nil {
+		_ = closer.Close()
+		return nil, err
+	}
+	n.hotTier, err = checkpoint.NewHotTier(ctx, checkpoint.HotTierConfig{Store: n.hotObjects})
+	if err != nil {
+		_ = closer.Close()
+		return nil, err
+	}
+	memory, err := resource.New(64 << 20)
+	if err != nil {
+		n.hotTier.Close()
+		_ = closer.Close()
+		return nil, err
+	}
+	n.hotCache, err = checkpoint.NewCache(ctx, memory, checkpoint.CacheConfig{})
+	if err != nil {
+		n.hotTier.Close()
+		_ = closer.Close()
+		return nil, err
+	}
+	n.hot, err = checkpoint.NewStore(checkpoint.Config{ObjectStore: regional, Cache: n.hotCache, HotTier: n.hotTier})
+	if err != nil {
+		n.hotCache.Close()
+		n.hotTier.Close()
+		_ = closer.Close()
+		return nil, err
+	}
+	return func() {
+		n.hotCache.Close()
+		n.hotTier.Close()
+		_ = closer.Close()
+	}, nil
 }
 
 // serve starts the peer server.
@@ -237,10 +298,18 @@ func (n *node) handleList(w http.ResponseWriter, r *http.Request) {
 	reply(w, struct{}{})
 }
 
-// publishRequest publishes a guest of pages pages of noise under vm.
+// publishRequest publishes a guest of pages pages of noise under vm, each
+// page_bytes long (2 MiB when zero), through the clustered store, whose
+// publication fills the cluster, or with hot set through the hot tier's
+// store, whose publication writes the hot tier.
 type publishRequest struct {
-	VM    string `json:"vm"`
-	Pages uint64 `json:"pages"`
+	VM        string `json:"vm"`
+	Pages     uint64 `json:"pages"`
+	PageBytes uint64 `json:"page_bytes,omitempty"`
+	Hot       bool   `json:"hot,omitempty"`
+	// Noise names what the pages are drawn from, the VM's own name when
+	// empty, so two guests may hold the same bytes.
+	Noise string `json:"noise,omitempty"`
 }
 
 // publishReply is what the publication took and what its fills did.
@@ -259,24 +328,32 @@ func (n *node) handlePublish(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	began := time.Now()
-	root, err := n.clustered.Root(ctx, control.Ref{VM: request.VM, Sequence: 1},
-		map[string]checkpoint.VolumeSpec{volume: {Size: request.Pages * checkpoint.PageSize2MiB,
-			PageSize: checkpoint.PageSize2MiB}})
+	store, settle := n.clustered, n.cache.SettleFills
+	if request.Hot {
+		if n.hot == nil {
+			fail(w, errors.New("this node has no hot tier"))
+			return
+		}
+		store, settle = n.hot, n.hotTier.Settle
+	}
+	pageBytes := cmp.Or(request.PageBytes, checkpoint.PageSize2MiB)
+	root, err := store.Root(ctx, control.Ref{VM: request.VM, Sequence: 1},
+		map[string]checkpoint.VolumeSpec{volume: {Size: request.Pages * pageBytes, PageSize: pageBytes}})
 	if err != nil {
 		fail(w, err)
 		return
 	}
-	publication := n.clustered.Begin(root, control.Ref{VM: request.VM, Sequence: 2})
+	publication := store.Begin(root, control.Ref{VM: request.VM, Sequence: 2})
 	for page := range request.Pages {
 		publication.Dirty(volume, page)
 	}
-	index, err := publication.Commit(ctx, noise{vm: request.VM})
+	index, err := publication.Commit(ctx, noise{vm: cmp.Or(request.Noise, request.VM)})
 	if err != nil {
 		fail(w, err)
 		return
 	}
 	committed := time.Since(began)
-	if err := n.cache.SettleFills(ctx); err != nil {
+	if err := settle(ctx); err != nil {
 		fail(w, err)
 		return
 	}
@@ -371,6 +448,104 @@ func (n *node) handleRestore(w http.ResponseWriter, r *http.Request) {
 		Failed: int(failed.Load())})
 }
 
+// walkRequest reads one page at a time of a published guest of pages pages,
+// each page_bytes long, reads times, each next page chosen from the bytes of
+// the one before: dependent reads, as a guest chasing pointers makes them. It
+// starts at page start. Source is "regional", "hot" or "cluster". Every
+// cache's memory is cleared first, so each read is of where the page is
+// kept.
+type walkRequest struct {
+	VM        string `json:"vm"`
+	Sequence  uint64 `json:"sequence"`
+	Pages     uint64 `json:"pages"`
+	PageBytes uint64 `json:"page_bytes"`
+	Reads     int    `json:"reads"`
+	Start     uint64 `json:"start"`
+	Source    string `json:"source"`
+	Noise     string `json:"noise,omitempty"`
+}
+
+// walkReply is how long the walk took and each of its reads.
+type walkReply struct {
+	Seconds   float64 `json:"seconds"`
+	Latencies []int64 `json:"latencies_ns"`
+	Wrong     int     `json:"wrong"`
+	Failed    int     `json:"failed"`
+}
+
+func (n *node) handleWalk(w http.ResponseWriter, r *http.Request) {
+	var request walkRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		fail(w, err)
+		return
+	}
+	stores := map[string]*checkpoint.Store{"regional": n.direct, "hot": n.hot, "cluster": n.clustered}
+	store := stores[request.Source]
+	if store == nil || request.Pages == 0 || request.PageBytes == 0 {
+		fail(w, fmt.Errorf("a walk of %q over %d pages of %d bytes: no such source here", request.Source,
+			request.Pages, request.PageBytes))
+		return
+	}
+	ctx := r.Context()
+	for _, cache := range []*checkpoint.Cache{n.cache, n.directCache, n.hotCache} {
+		if cache != nil {
+			cache.Clear()
+		}
+	}
+	index, err := store.Open(ctx, control.Ref{VM: request.VM, Sequence: request.Sequence})
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	got := make([]byte, request.PageBytes)
+	want := make([]byte, request.PageBytes)
+	source := noise{vm: cmp.Or(request.Noise, request.VM)}
+	walked := walkReply{Latencies: make([]int64, request.Reads)}
+	page := request.Start % request.Pages
+	began := time.Now()
+	for at := range request.Reads {
+		start := time.Now()
+		err := store.Read(ctx, index, volume, page*request.PageBytes, got)
+		walked.Latencies[at] = int64(time.Since(start))
+		if err != nil {
+			slog.WarnContext(ctx, "node: a page did not read", "page", page, "error", err)
+			walked.Failed++
+			fail(w, err)
+			return
+		}
+		_ = source.ReadPage(ctx, volume, page, want)
+		if !bytes.Equal(got, want) {
+			walked.Wrong++
+		}
+		page = nextPage(got, at, request.Pages)
+	}
+	walked.Seconds = time.Since(began).Seconds()
+	reply(w, walked)
+}
+
+// handleSettle returns once the fills of the cluster and of the hot tier
+// handed over so far are done or dropped.
+func (n *node) handleSettle(w http.ResponseWriter, r *http.Request) {
+	if err := n.cache.SettleFills(r.Context()); err != nil {
+		fail(w, err)
+		return
+	}
+	if n.hotTier != nil {
+		if err := n.hotTier.Settle(r.Context()); err != nil {
+			fail(w, err)
+			return
+		}
+	}
+	reply(w, struct{}{})
+}
+
+// nextPage is the page a walk reads after the one whose bytes are page, at
+// step at: chosen from the bytes, so no read can begin before the one before
+// it has ended.
+func nextPage(page []byte, at int, pages uint64) uint64 {
+	return (binary.LittleEndian.Uint64(page) ^ uint64(at)*0x9e3779b97f4a7c15) % pages
+}
+
 func (n *node) handleLose(w http.ResponseWriter, _ *http.Request) {
 	n.stopServing()
 	reply(w, struct{}{})
@@ -397,15 +572,17 @@ func (n *node) handleDrop(w http.ResponseWriter, _ *http.Request) {
 
 // statsReply is what a node has done since it started.
 type statsReply struct {
-	CPUSeconds  float64                `json:"cpu_seconds"`
-	StripeReads int64                  `json:"stripe_reads"`
-	Stripes     int64                  `json:"stripes"`
-	StripeBytes int64                  `json:"stripe_bytes"`
-	StripesBusy int64                  `json:"stripes_busy"`
-	Read        checkpoint.ReadStats   `json:"read"`
-	Fill        checkpoint.FillStats   `json:"fill"`
-	Disk        checkpoint.DiskStats   `json:"disk"`
-	Store       platform.ObjectTraffic `json:"store"`
+	CPUSeconds  float64                 `json:"cpu_seconds"`
+	StripeReads int64                   `json:"stripe_reads"`
+	Stripes     int64                   `json:"stripes"`
+	StripeBytes int64                   `json:"stripe_bytes"`
+	StripesBusy int64                   `json:"stripes_busy"`
+	Read        checkpoint.ReadStats    `json:"read"`
+	Fill        checkpoint.FillStats    `json:"fill"`
+	Disk        checkpoint.DiskStats    `json:"disk"`
+	Store       platform.ObjectTraffic  `json:"store"`
+	Hot         checkpoint.HotTierStats `json:"hot"`
+	HotStore    platform.ObjectTraffic  `json:"hot_store"`
 }
 
 func (n *node) handleStats(w http.ResponseWriter, _ *http.Request) {
@@ -425,7 +602,12 @@ func (n *node) handleStats(w http.ResponseWriter, _ *http.Request) {
 	}
 	n.mu.Unlock()
 	stats := n.cache.Stats()
-	reply(w, statsReply{CPUSeconds: time.Duration(usage.Utime.Nano() + usage.Stime.Nano()).Seconds(),
+	var hot checkpoint.HotTierStats
+	var hotStore platform.ObjectTraffic
+	if n.hotTier != nil {
+		hot, hotStore = n.hotTier.Stats(), n.hotObjects.Traffic()
+	}
+	reply(w, statsReply{Hot: hot, HotStore: hotStore, CPUSeconds: time.Duration(usage.Utime.Nano() + usage.Stime.Nano()).Seconds(),
 		StripeReads: served.StripeReads, Stripes: served.Stripes, StripeBytes: served.StripeBytes,
 		StripesBusy: served.StripesBusy, Read: stats.Read, Fill: stats.Fill, Disk: stats.Disk,
 		Store: n.objects.Traffic()})
