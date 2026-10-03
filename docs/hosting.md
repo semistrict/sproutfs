@@ -1264,7 +1264,13 @@ The host's status reports:
   what admits a VM;
 - the object traffic;
 - what the page server has served;
-- its cache's identity, weight and address, and the list of caches it holds.
+- its cache's identity, weight and address, and the list of caches it holds;
+- the page cache's disk under `cache_disk`: the file it claimed, its
+  identity, the regions and entries it holds, the reads it served without the
+  object store (`hits`), the copies it lost, the regions it gave back, and what
+  the host did with the regions it found in the file when it started
+  (`opened`: read back from their tables, scanned, or given back). `/metrics`
+  carries the same counters as `sproutfs_cache_disk_*`.
 
 ### The cache's file
 

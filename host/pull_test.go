@@ -466,4 +466,21 @@ func TestAPulledVMsPagesOutliveItsHostsRestart(t *testing.T) {
 		t.Fatalf("faulting a pulled VM's pages in after its host restarted made %d requests of the object store, "+
 			"want none", gets)
 	}
+	// /status says the same: the file the host claimed, the identity it kept,
+	// the regions it read back from their tables, and a disk hit for every
+	// read the store did not serve.
+	report := host.CacheDiskReport("cache-0", h.hosts[1].Status().Cache.Disk)
+	want := hostapi.CacheDisk{File: "cache-0", Identity: before.Identity.String(), Regions: 2,
+		Entries: after.Entries, IndexBytes: after.IndexBytes, Hits: pullPages + 1,
+		Opened: hostapi.CacheDiskOpened{FromTables: 2}}
+	if report == nil || *report != want {
+		t.Fatalf("the restarted host reports its cache's disk as %+v, want %+v", report, want)
+	}
+}
+
+// A host whose cache keeps no disk reports none.
+func TestAHostWithNoCacheDiskReportsNone(t *testing.T) {
+	if report := host.CacheDiskReport("", checkpoint.DiskStats{}); report != nil {
+		t.Fatalf("a cache with no disk is reported as %+v, want none", report)
+	}
 }

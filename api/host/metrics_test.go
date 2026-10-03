@@ -67,6 +67,36 @@ func TestMetricsExposeTheDiskLimiter(t *testing.T) {
 	}
 }
 
+// The page cache's disk: what it holds, the reads it served without the
+// object store, and what the host read back from its file when it started. A
+// host that keeps no cache disk reports zeroes.
+func TestMetricsExposeThePageCachesDisk(t *testing.T) {
+	body := hostapi.Metrics(hostapi.Status{CacheDisk: &hostapi.CacheDisk{File: "cache-1", Regions: 12, Entries: 900,
+		Hits: 4321, Lost: 2, Evicted: 5, Refused: 7, Opened: hostapi.CacheDiskOpened{FromTables: 11, Scanned: 1,
+			GivenBack: 3}}})
+	for _, want := range []string{
+		"sproutfs_cache_disk_regions 12",
+		"sproutfs_cache_disk_entries 900",
+		"sproutfs_cache_disk_hits_total 4321",
+		"sproutfs_cache_disk_lost_total 2",
+		"sproutfs_cache_disk_evicted_regions_total 5",
+		"sproutfs_cache_disk_writes_refused_total 7",
+		`sproutfs_cache_disk_opened_regions{how="tables"} 11`,
+		`sproutfs_cache_disk_opened_regions{how="scanned"} 1`,
+		`sproutfs_cache_disk_opened_regions{how="given-back"} 3`,
+	} {
+		if !strings.Contains(body, want+"\n") {
+			t.Fatalf("the exposition has no %q in it:\n%s", want, body)
+		}
+	}
+	body = hostapi.Metrics(hostapi.Status{})
+	for _, want := range []string{"sproutfs_cache_disk_hits_total 0", `sproutfs_cache_disk_opened_regions{how="tables"} 0`} {
+		if !strings.Contains(body, want+"\n") {
+			t.Fatalf("a host with no cache disk has no %q in its exposition:\n%s", want, body)
+		}
+	}
+}
+
 // Why a guest stopped making progress, and how long faults take, per pager.
 // A histogram is cumulative, in seconds, and ends with +Inf, its sum and its
 // count, which is what a Prometheus histogram_quantile reads.

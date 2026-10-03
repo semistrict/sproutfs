@@ -582,6 +582,48 @@ type Status struct {
 	Cache *Cache `json:"cache,omitempty"`
 	// Caches is the list of caches this host holds, and how it read it.
 	Caches CacheList `json:"caches"`
+	// CacheDisk is what the page cache keeps on this host's disk, and what it
+	// found there when the host started. It is absent on a host that keeps no
+	// cache disk.
+	CacheDisk *CacheDisk `json:"cache_disk,omitempty"`
+}
+
+// CacheDisk is the page cache's disk on one host: the file it claimed, what
+// the file holds, what it served, and what the host read back from it when it
+// started. Resources reports the bytes it holds and its share.
+type CacheDisk struct {
+	// File is the file of the cache directory the host claimed: cache-0,
+	// cache-1 and so on.
+	File string `json:"file"`
+	// Identity is the identity in the file's header, in hex, which the list
+	// of caches names it by.
+	Identity string `json:"identity"`
+	// Regions is the regions it holds, Entries the stripes of pages and
+	// segments in them, and IndexBytes what its index costs in memory.
+	Regions    int   `json:"regions"`
+	Entries    int   `json:"entries"`
+	IndexBytes int64 `json:"index_bytes"`
+	// Hits counts the reads it served, which made no request of the object
+	// store, and Lost the copies it could not give back intact, which the
+	// store served instead.
+	Hits uint64 `json:"hits"`
+	Lost uint64 `json:"lost"`
+	// Evicted counts the regions it gave back, Rewritten the items a second
+	// chance wrote again, and Refused the writes it refused.
+	Evicted   uint64 `json:"evicted"`
+	Rewritten uint64 `json:"rewritten"`
+	Refused   uint64 `json:"refused"`
+	// Opened is what the host found in the file when it started.
+	Opened CacheDiskOpened `json:"opened"`
+}
+
+// CacheDiskOpened is what a host did with the regions it found in its cache's
+// file when it started: read back from their tables, read back by scanning
+// their items, or given back.
+type CacheDiskOpened struct {
+	FromTables uint64 `json:"from_tables"`
+	Scanned    uint64 `json:"scanned"`
+	GivenBack  uint64 `json:"given_back"`
 }
 
 // Cache is one host's disk cache in the list of caches.
