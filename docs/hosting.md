@@ -1069,6 +1069,8 @@ reads it, under 1+0, whatever the list says, exactly as before there were
 stripes; only the windows inside it are placed by the list's ranks and code.
 The manifest still sets it to 0. Hosts now read stripes from each other, so a
 deployment can raise it a share at a time once it has watched `cache_read`.
+The cluster cache and the [hot tier](#reading-through-a-hot-tier) are
+alternatives. A host given a hot tier and a share above 0 refuses to start.
 
 **What a host keeps.** For each window inside the share, `List.Holders` puts
 stripe i on rank ((i − 1) mod n) + 1 of the window's n ranked caches. A host
@@ -1312,6 +1314,103 @@ page took 58 ms at the median and 136 ms at p99 from the cluster, 106 and
 218 ms from the store. With one host lost during the read, no page was read
 from the store and the time did not change
 ([measurement](measurements/gce-cluster-reads-2026-10-03.md)).
+
+## Reading through a hot tier
+
+A hot tier is a second bucket that holds copies of checkpoint objects under
+their own names. It is an alternative to the cluster cache on the hosts'
+disks. A deployment runs one or the other, never both. A host given a hot
+tier (`SPROUTFS_HOT_TIER`) and a cluster share above 0
+(`SPROUTFS_CACHE_CLUSTER_PERCENT`) refuses to start, and names both settings.
+`host.StartHost` refuses `Config.HotTier` beside `Config.Cache.ClusterPercent`
+in the same way, and `checkpoint.NewStore` refuses a hot tier beside a cache
+that fills the cluster.
+
+**Configured by a URL.** `SPROUTFS_HOT_TIER` is `gs://bucket/prefix` or
+`s3://bucket/prefix`. An `endpoint` query parameter points the client at an
+emulator or an S3-compatible server. The hot tier is reached through the same
+object store interface and adapters as the deployment's own bucket. No code
+path uses a feature of one cloud: a read is a ranged GET, a fill is a
+create-if-absent PUT, and a check is a HEAD. The intended hot tier is a bucket
+close to the hosts, such as a zonal bucket in their zone. On Google Cloud the
+zonal bucket is Rapid Bucket, which takes writes only through a gRPC API of
+its own, so it cannot be a hot tier
+([measurement](measurements/gce-hot-tier-2026-10-03.md)).
+
+**The read order.** A read of a checkpoint object goes:
+
+1. this host's memory tier, then the pager's arena, as before;
+2. the page cache's disk, where it holds what a pull copied;
+3. the hot tier;
+4. the regional bucket.
+
+A read runs against the hot tier under a bound, 500 ms by default
+(`HotTierConfig.Bound`). A hit is the answer. A miss is an object the hot tier
+does not hold. Then the regional bucket serves the read, and the object is
+filled behind it. Any other failure also goes to the regional bucket, with no
+fill: a request that fails, a read past the bound, or bytes that do not make
+what the read wanted, such as a reply cut short or an object shorter than the
+read. So a hot tier that is down, slow, lost with its zone or emptied costs
+reads of the regional bucket, and never fails a read. Three failures in a row
+mark the hot tier down. Reads then skip it for ten seconds, and the first read
+after that tries it again.
+
+**Filling.** Two things fill the hot tier:
+
+- **A miss.** Once the regional bucket has answered the read, the object is
+  handed to the fills. A fill GETs the whole object from the regional bucket,
+  unless the read already holds it all, as the open of a small index object
+  does. A miss of a 4 KiB page therefore copies its whole part, up to 64 MiB.
+- **A publication.** Each part is handed over once its regional PUT has
+  succeeded, in part order, and the index object once its PUT has. Never
+  before: the hot tier never holds an object the regional bucket refused.
+  `HotTierConfig.SkipPublications` turns this off.
+
+A fill is a create-if-absent PUT of the same bytes under the same name. Page
+objects are immutable and named by the checkpoint that wrote them, and a VM's
+starting epoch is drawn, so a name never stands for two contents. So there is
+no version to check. Two hosts that fill one object at once write the same
+bytes: one PUT lands and the other finds the object there. No copy is ever
+stale.
+
+**Nothing waits on a fill.** One worker does the fills one at a time, in the
+order they were handed over. The fills held are bounded in bytes,
+`HotTierConfig.QueueBytes` (256 MiB by default), and the fills sent within a
+rate, `HotTierConfig.BytesPerSecond` (128 MiB/s, with a burst of one second of
+it). A fill that finds either spent is dropped, and the object is read from
+the regional bucket next time too. A miss of an object a fill is already held
+for is not filled twice. A fault, a publication and a pull never wait for a
+fill.
+
+**The regional bucket stays the only durable copy.** Nothing reads the hot
+tier to decide what is published, and reclamation deletes from the regional
+bucket alone. What reclamation deletes stays in the hot tier until something
+expires it. Expiry is not written yet. A warm hot tier could hide a
+reclamation that deleted an object some root still reads. So one hit in
+`HotTierConfig.HeadCheckEvery` (10,000 by default) has its regional object
+checked with a HEAD behind the fills, and one found gone is logged as an
+error. The hot tier's bucket should hold this deployment alone, under the
+same prefix rules as the regional bucket.
+
+**A host's view.** `/status` reports under `hot_tier` the reads the hot tier
+answered and missed, the reads it failed by why (`error`, `slow`,
+`corrupt`), the reads that skipped it while it was marked down, the times it
+was marked and whether it is now, the fills handed over from reads and from
+publications, the misses of an object already held for a fill, the fills it
+took and their bytes, the fills that found the object there, the fills
+dropped by why (`queue`, `rate`, `read`, `write`, `closed`), the sampled
+checks and what they found missing, and the queue. `/metrics` carries the same
+as `sproutfs_hot_tier_*`.
+
+**Measured.** On two `n2-standard-4` hosts, with a second regional bucket
+in the hosts' region as the hot tier, a warm hot tier answered every
+dependent read and sent the regional bucket nothing, but was no faster: 55 ms
+at the median for a 2 MiB page against 46 ms from the regional bucket, and
+29 against 27 ms for a 4 KiB page. The cluster cache, under 1+1 read from the
+host's own SSD, took 9.4 ms and 0.2 ms. A cold hot tier filled in about one
+walk of 500 reads, copying a whole part for each miss
+([measurement](measurements/gce-hot-tier-2026-10-03.md)). A zonal bucket
+reachable through the standard API was not available to measure.
 
 ## Nested VMs
 
