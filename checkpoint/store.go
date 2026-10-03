@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"slices"
 	"strconv"
 	"strings"
@@ -212,17 +211,37 @@ func (s *Store) Open(ctx context.Context, ref control.Ref) (*Index, error) {
 	if err != nil {
 		return nil, err
 	}
-	tail, size, err := s.readSuffix(ctx, key, s.indexTail)
-	if err != nil {
-		if errors.Is(err, platform.ErrNotFound) {
-			return nil, s.refuseSupersededParts(ctx, ref, err)
-		}
-		return nil, err
-	}
-	if len(tail) < indexRecordSize || !isIndexRecord(tail[len(tail)-indexRecordSize:]) {
+	var index *Index
+	err = s.readObject(ctx, key, func(ctx context.Context, from *tier) error {
+		var err error
+		index, err = s.readRoot(ctx, from, ref, key)
+		return err
+	})
+	switch {
+	case errors.Is(err, platform.ErrNotFound):
+		return nil, s.refuseSupersededParts(ctx, ref, err)
+	case errors.Is(err, errSupersededIndex):
 		// An object at this key that does not end as one of these does is one
 		// an older build wrote, and what this read owes is the version to name.
 		return nil, s.refuseSupersededIndex(ctx, key)
+	case err != nil:
+		return nil, err
+	}
+	return index, nil
+}
+
+// errSupersededIndex is an index object that does not end in the record this
+// build writes.
+var errSupersededIndex = errors.New("checkpoint: the index object does not end in an index record")
+
+// readRoot reads one checkpoint's root out of its index object, from one tier.
+func (s *Store) readRoot(ctx context.Context, from *tier, ref control.Ref, key platform.ObjectKey) (*Index, error) {
+	tail, size, err := from.readSuffix(ctx, key, s.indexTail)
+	if err != nil {
+		return nil, err
+	}
+	if len(tail) < indexRecordSize || !isIndexRecord(tail[len(tail)-indexRecordSize:]) {
+		return nil, errSupersededIndex
 	}
 	offset, length, err := decodeIndexRecord(tail[len(tail)-indexRecordSize:], size)
 	if err != nil {
@@ -235,7 +254,7 @@ func (s *Store) Open(ctx context.Context, ref control.Ref) (*Index, error) {
 	if length <= uint64(len(held)) {
 		encoded = held[uint64(len(held))-length:]
 	} else {
-		head, err := s.readRange(ctx, key, offset, length-uint64(len(held)), maximumRootExtent)
+		head, err := from.readRange(ctx, key, offset, length-uint64(len(held)), maximumRootExtent)
 		if err != nil {
 			return nil, err
 		}
@@ -258,7 +277,7 @@ func (s *Store) refuseSupersededParts(ctx context.Context, ref control.Ref, abse
 	if err != nil {
 		return absent
 	}
-	tail, _, err := s.readSuffix(ctx, key, part.TrailerSize)
+	tail, _, err := s.regional().readSuffix(ctx, key, part.TrailerSize)
 	if err != nil {
 		return absent
 	}
@@ -569,13 +588,9 @@ func (s *Store) loadSegment(ctx context.Context, volume string, number uint64, a
 			s.checkHit(ctx, disk, object)
 			return data, nil, nil
 		}
-		encoded, err := s.readSegment(ctx, at)
+		data, encoded, err := s.readSegment(ctx, at)
 		if err != nil {
 			return nil, nil, err
-		}
-		data, err := s.codecs.Decode(ctx, encoded, maximumSegmentSize)
-		if err != nil {
-			return nil, nil, errors.Join(ErrCorrupt, err)
 		}
 		return data, []envelope{{key: disk, data: encoded}}, nil
 	}
@@ -591,20 +606,40 @@ func (s *Store) loadSegment(ctx context.Context, volume string, number uint64, a
 func anySegment([]byte) bool { return true }
 
 // readSegment fetches one segment's envelope out of the index object of the
-// checkpoint that wrote it.
-func (s *Store) readSegment(ctx context.Context, at segmentAddress) ([]byte, error) {
+// checkpoint that wrote it, and decodes it. It returns the decoded segment and
+// its envelope.
+func (s *Store) readSegment(ctx context.Context, at segmentAddress) ([]byte, []byte, error) {
 	key, err := s.indexKey(at.ref)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	encoded, err := s.readRange(ctx, key, at.offset, at.length, maximumSegmentExtent)
-	if err != nil {
-		if errors.Is(err, platform.ErrNotFound) || errors.Is(err, platform.ErrInvalidRange) {
-			return nil, errors.Join(ErrCorrupt, err)
+	var data, encoded []byte
+	err = s.readObject(ctx, key, func(ctx context.Context, from *tier) error {
+		var err error
+		encoded, err = from.readRange(ctx, key, at.offset, at.length, maximumSegmentExtent)
+		if err != nil {
+			return missingIsCorrupt(err)
 		}
-		return nil, err
+		data, err = s.codecs.Decode(ctx, encoded, maximumSegmentSize)
+		if err != nil {
+			return errors.Join(ErrCorrupt, err)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, nil, err
 	}
-	return encoded, nil
+	return data, encoded, nil
+}
+
+// missingIsCorrupt is what a read of an object a root names makes of the
+// object being absent, or shorter than the root says: the checkpoint is
+// corrupt. The cause stays in the chain.
+func missingIsCorrupt(err error) error {
+	if errors.Is(err, platform.ErrNotFound) || errors.Is(err, platform.ErrInvalidRange) {
+		return errors.Join(ErrCorrupt, err)
+	}
+	return err
 }
 
 // fromDisk returns the decoded bytes the page cache's disk holds under key, and
@@ -632,70 +667,22 @@ func (s *Store) readMember(ctx context.Context, at location, maximum int64) ([]b
 	if err != nil {
 		return nil, err
 	}
-	encoded, err := s.readRange(ctx, key, at.offset, at.length, int64(maximum)+blob.HeaderSize)
-	if err != nil {
-		if errors.Is(err, platform.ErrNotFound) || errors.Is(err, platform.ErrInvalidRange) {
-			return nil, errors.Join(ErrCorrupt, err)
+	var data []byte
+	err = s.readObject(ctx, key, func(ctx context.Context, from *tier) error {
+		encoded, err := from.readRange(ctx, key, at.offset, at.length, int64(maximum)+blob.HeaderSize)
+		if err != nil {
+			return missingIsCorrupt(err)
 		}
-		return nil, err
-	}
-	data, err := s.codecs.Decode(ctx, encoded, int(maximum))
+		data, err = s.codecs.Decode(ctx, encoded, int(maximum))
+		if err != nil {
+			return errors.Join(ErrCorrupt, err)
+		}
+		return nil
+	})
 	if err != nil {
-		return nil, errors.Join(ErrCorrupt, err)
+		return nil, err
 	}
 	return data, nil
-}
-
-// readRange reads exactly length bytes at offset of one object. The response
-// must echo the key and return exactly the bytes asked for; anything else is a
-// corrupt read rather than a short one.
-func (s *Store) readRange(ctx context.Context, key platform.ObjectKey, offset, length uint64, maximum int64) ([]byte, error) {
-	if length == 0 || length > uint64(maximum) {
-		return nil, ErrCorrupt
-	}
-	result, err := s.objects.Get(ctx, platform.GetRequest{
-		Key: key, Range: &platform.ByteRange{Offset: int64(offset), Length: int64(length)}})
-	if err != nil {
-		return nil, err
-	}
-	defer result.Body.Close()
-	if result.Metadata.Key != key || result.Metadata.ETag == "" || result.ContentLength != int64(length) {
-		return nil, ErrCorrupt
-	}
-	data, err := io.ReadAll(io.LimitReader(result.Body, int64(length)+1))
-	if err != nil {
-		return nil, err
-	}
-	if uint64(len(data)) != length {
-		return nil, ErrCorrupt
-	}
-	return data, nil
-}
-
-// readSuffix reads the last suffix bytes of one object and reports the size of
-// the whole object with them; an object shorter than the suffix comes back
-// whole. The response must echo the key and return exactly as many bytes as its
-// own size says a suffix that long holds; anything else is a corrupt read
-// rather than a short one.
-func (s *Store) readSuffix(ctx context.Context, key platform.ObjectKey, suffix int64) ([]byte, uint64, error) {
-	result, err := s.objects.Get(ctx, platform.GetRequest{
-		Key: key, Range: &platform.ByteRange{Suffix: suffix}})
-	if err != nil {
-		return nil, 0, err
-	}
-	defer result.Body.Close()
-	if result.Metadata.Key != key || result.Metadata.ETag == "" || result.Metadata.Size < 0 ||
-		result.ContentLength != min(result.Metadata.Size, suffix) {
-		return nil, 0, ErrCorrupt
-	}
-	data, err := io.ReadAll(io.LimitReader(result.Body, result.ContentLength+1))
-	if err != nil {
-		return nil, 0, err
-	}
-	if int64(len(data)) != result.ContentLength {
-		return nil, 0, ErrCorrupt
-	}
-	return data, uint64(result.Metadata.Size), nil
 }
 
 // partTable is what one part says about itself: the members it names, the size
@@ -721,7 +708,9 @@ func (s *Store) readPartTable(ctx context.Context, ref control.Ref, number uint3
 	if err != nil {
 		return partTable{}, err
 	}
-	tail, size, err := s.readSuffix(ctx, key, partTailSize)
+	// A part's table is read from the regional bucket alone: what reads it is
+	// the deployment's check of what the store holds.
+	tail, size, err := s.regional().readSuffix(ctx, key, partTailSize)
 	if err != nil {
 		return partTable{}, err
 	}
