@@ -279,6 +279,11 @@ func (f *file) Size(ctx context.Context) (int64, error) {
 
 func (f *file) Close() error { return normalizeFileError(f.handle.Close()) }
 
+// SyscallConn is the open file as the kernel names it, which is how a
+// platform.FileRange of it reaches sendfile without a byte of it being read
+// into this process.
+func (f *file) SyscallConn() (syscall.RawConn, error) { return f.handle.SyscallConn() }
+
 func syncDirectory(path string) error {
 	directory, err := os.Open(path)
 	if err != nil {

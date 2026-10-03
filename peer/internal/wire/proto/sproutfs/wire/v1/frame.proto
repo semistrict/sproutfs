@@ -14,6 +14,11 @@ message Envelope {
   fixed64 in_reply_to = 3;
   google.protobuf.Any message = 4;
   PayloadDescriptor payload = 5;
+  // header_checksum is the CRC32C of every byte of the encoded envelope before
+  // it, and it is always the last field: the encoder appends it to what it
+  // encoded. A frame of wire version 2 carries it; version 1 frames may. A
+  // decoder of version 1 that predates it skips it as an unknown field.
+  fixed32 header_checksum = 6;
 }
 
 message PayloadDescriptor {

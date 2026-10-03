@@ -1,5 +1,10 @@
 // Package wire encodes typed protobuf control messages and keeps optional bulk
-// bulk data in a separate raw payload frame.
+// data in a separate raw payload frame.
+//
+// Every header this package encodes ends in a CRC32C of the bytes in front of
+// it, so a header damaged on the way is never read as the one that was sent. A
+// payload's checksum is optional: a payload whose own format is checked, as a
+// cache's stripes are, goes without one.
 package wire
 
 import (
@@ -8,6 +13,7 @@ import (
 	"crypto/subtle"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"hash"
 	"hash/crc32"
 	"io"
@@ -18,13 +24,35 @@ import (
 	"google.golang.org/protobuf/types/known/anypb"
 )
 
-const Version uint32 = 1
+// The wire versions this codec reads. Version 1 is what the release before
+// this one wrote, which may carry a header checksum and need not. Version 2
+// must carry one.
+const (
+	Oldest uint32 = 1
+	Newest uint32 = 2
+)
 
 var (
 	ErrChecksumMismatch   = errors.New("payload checksum mismatch")
 	ErrMalformedFrame     = errors.New("malformed frame")
 	ErrUnsupportedVersion = errors.New("unsupported wire version")
+	// ErrCorrupt reports a header that does not parse or whose checksum does
+	// not match its bytes. It is not a malformed frame: what the peer sent was
+	// damaged on the way, so the connection is dropped and what it carried is
+	// asked for again, as on a connection that broke. Nothing in a damaged
+	// header can be trusted, not even which request it answers.
+	ErrCorrupt = errors.New("frame header damaged")
 )
+
+// headerTrailer is the encoded tag of Envelope.header_checksum — field 6, wire
+// type fixed32 — followed by its four bytes. The encoder appends it last, so
+// the checksum covers every byte in front of it.
+const (
+	headerChecksumTag = 6<<3 | 5
+	headerTrailer     = 5
+)
+
+var headerTable = crc32.MakeTable(crc32.Castagnoli)
 
 type ChecksumAlgorithm uint8
 
@@ -69,6 +97,8 @@ func validateChecksum(algorithm ChecksumAlgorithm, checksum []byte) error {
 }
 
 type Outgoing struct {
+	// Version is the wire version to encode at. Zero is Oldest.
+	Version   uint32
 	RequestID uint64
 	InReplyTo uint64
 	Message   proto.Message
@@ -82,12 +112,19 @@ func Encode(outgoing Outgoing) (platform.Frame, error) {
 	if err := outgoing.Payload.Validate(); err != nil {
 		return platform.Frame{}, err
 	}
+	version := outgoing.Version
+	if version == 0 {
+		version = Oldest
+	}
+	if version > Newest {
+		return platform.Frame{}, ErrUnsupportedVersion
+	}
 	message, err := anypb.New(outgoing.Message)
 	if err != nil {
 		return platform.Frame{}, err
 	}
 	builder := wirev1.Envelope_builder{
-		WireVersion: proto.Uint32(Version),
+		WireVersion: proto.Uint32(version),
 		RequestId:   proto.Uint64(outgoing.RequestID),
 		InReplyTo:   proto.Uint64(outgoing.InReplyTo),
 		Message:     message,
@@ -105,6 +142,7 @@ func Encode(outgoing Outgoing) (platform.Frame, error) {
 	if err != nil {
 		return platform.Frame{}, err
 	}
+	header = appendHeaderChecksum(header)
 	return platform.Frame{
 		Header:      header,
 		Payload:     outgoing.Payload.Body,
@@ -112,7 +150,35 @@ func Encode(outgoing Outgoing) (platform.Frame, error) {
 	}, nil
 }
 
+// appendHeaderChecksum appends Envelope.header_checksum over header, as the
+// last field of the envelope.
+func appendHeaderChecksum(header []byte) []byte {
+	sum := crc32.Checksum(header, headerTable)
+	return binary.LittleEndian.AppendUint32(append(header, headerChecksumTag), sum)
+}
+
+// checkHeader requires an envelope's header checksum to be the last field of
+// header and to match every byte before it. An envelope without one is
+// accepted only at a version that did not require it.
+func checkHeader(header []byte, envelope *wirev1.Envelope) error {
+	if !envelope.HasHeaderChecksum() {
+		if envelope.GetWireVersion() >= 2 {
+			return fmt.Errorf("%w: a version %d header carries no checksum", ErrCorrupt, envelope.GetWireVersion())
+		}
+		return nil
+	}
+	body := len(header) - headerTrailer
+	if body < 0 || header[body] != headerChecksumTag ||
+		binary.LittleEndian.Uint32(header[body+1:]) != envelope.GetHeaderChecksum() ||
+		crc32.Checksum(header[:body], headerTable) != envelope.GetHeaderChecksum() {
+		return ErrCorrupt
+	}
+	return nil
+}
+
 type Incoming struct {
+	// Version is the wire version the frame was encoded at.
+	Version     uint32
 	RequestID   uint64
 	InReplyTo   uint64
 	Message     *anypb.Any
@@ -127,9 +193,16 @@ func Decode(frame platform.ReceivedFrame) (Incoming, error) {
 	envelope := new(wirev1.Envelope)
 	if err := proto.Unmarshal(frame.Header, envelope); err != nil {
 		_ = frame.Payload.Close()
-		return Incoming{}, errors.Join(ErrMalformedFrame, err)
+		// A header that does not parse is one that was damaged on the way far
+		// more often than one a peer meant: asking again costs a connection,
+		// and calling the peer unusable costs whatever was waiting on it.
+		return Incoming{}, errors.Join(ErrCorrupt, err)
 	}
-	if !envelope.HasWireVersion() || envelope.GetWireVersion() != Version {
+	if err := checkHeader(frame.Header, envelope); err != nil {
+		_ = frame.Payload.Close()
+		return Incoming{}, err
+	}
+	if version := envelope.GetWireVersion(); !envelope.HasWireVersion() || version < Oldest || version > Newest {
 		_ = frame.Payload.Close()
 		return Incoming{}, ErrUnsupportedVersion
 	}
@@ -144,6 +217,7 @@ func Decode(frame platform.ReceivedFrame) (Incoming, error) {
 			return Incoming{}, ErrMalformedFrame
 		}
 		return Incoming{
+			Version:   envelope.GetWireVersion(),
 			RequestID: envelope.GetRequestId(),
 			InReplyTo: envelope.GetInReplyTo(),
 			Message:   envelope.GetMessage(),
@@ -168,6 +242,7 @@ func Decode(frame platform.ReceivedFrame) (Incoming, error) {
 		body = newVerifyingReader(frame.Payload, algorithm, descriptor.GetChecksum())
 	}
 	return Incoming{
+		Version:     envelope.GetWireVersion(),
 		RequestID:   envelope.GetRequestId(),
 		InReplyTo:   envelope.GetInReplyTo(),
 		Message:     envelope.GetMessage(),
@@ -244,6 +319,10 @@ type verifyingReader struct {
 	hasher   hash.Hash
 	expected []byte
 	verified bool
+	// failed is the mismatch once found, which every later read reports too:
+	// a reader that read exactly the payload's length may only learn of it on
+	// the read after, and must not be told EOF there.
+	failed error
 }
 
 func newVerifyingReader(reader io.ReadCloser, algorithm ChecksumAlgorithm, expected []byte) io.ReadCloser {
@@ -252,6 +331,9 @@ func newVerifyingReader(reader io.ReadCloser, algorithm ChecksumAlgorithm, expec
 }
 
 func (r *verifyingReader) Read(destination []byte) (int, error) {
+	if r.failed != nil {
+		return 0, r.failed
+	}
 	n, err := r.reader.Read(destination)
 	if n > 0 {
 		_, _ = r.hasher.Write(destination[:n])
@@ -259,7 +341,8 @@ func (r *verifyingReader) Read(destination []byte) (int, error) {
 	if err == io.EOF && !r.verified {
 		r.verified = true
 		if !bytesEqual(r.hasher.Sum(nil), r.expected) {
-			return n, ErrChecksumMismatch
+			r.failed = ErrChecksumMismatch
+			return n, r.failed
 		}
 	}
 	return n, err

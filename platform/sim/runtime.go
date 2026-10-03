@@ -10,6 +10,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/semistrict/sproutfs/platform"
 )
 
 type Config struct {
@@ -42,7 +44,7 @@ func DefaultConfig() Config {
 			ConnectLatency: 500 * time.Microsecond,
 			InboxSize:      256,
 			MaxHeaderSize:  1 << 20,
-			MaxPayloadSize: 1 << 30,
+			MaxPayloadSize: platform.MaxFrameBytes,
 			BytesPerSecond: 10 << 30,
 		},
 		ObjectStore: ObjectStoreConfig{

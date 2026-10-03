@@ -161,6 +161,7 @@ func (s *Source) Pages(ctx context.Context, first uint64, count int) (Answer, er
 	if err != nil {
 		return Answer{}, err
 	}
+	defer payload.release()
 	switch status := response.GetStatus(); {
 	case status == migratev1.Status_STATUS_OK:
 	case status == migratev1.Status_STATUS_BUSY:
@@ -195,7 +196,7 @@ func (s *Source) Pages(ctx context.Context, first uint64, count int) (Answer, er
 		unpublished[position] &= bitsInByte
 		served += bits.OnesCount8(bitsInByte)
 	}
-	decoded, err := blob.Decode(ctx, payload, served*s.config.PageSize)
+	decoded, err := blob.Decode(ctx, payload.bytes, served*s.config.PageSize)
 	if err != nil || len(decoded) != served*s.config.PageSize {
 		return Answer{}, errors.Join(wire.ErrMalformedFrame, err)
 	}
@@ -213,9 +214,11 @@ func (s *Source) Resident(ctx context.Context) ([]Run, error) {
 		request := migratev1.ResidentRequest_builder{Vm: proto.String(s.config.VM),
 			Volume: proto.String(s.config.Volume), FirstPage: proto.Uint64(first),
 			MaxRuns: proto.Uint32(uint32(s.config.MaxRuns))}.Build()
-		if _, err := s.call(ctx, request, response, 0); err != nil {
+		payload, err := s.call(ctx, request, response, 0)
+		if err != nil {
 			return nil, err
 		}
+		payload.release()
 		if status := response.GetStatus(); status != migratev1.Status_STATUS_OK {
 			return nil, statusError(status)
 		}
@@ -242,9 +245,11 @@ func (s *Source) Resident(ctx context.Context) ([]Run, error) {
 func (s *Source) Claim(ctx context.Context) error {
 	response := new(migratev1.ClaimResponse)
 	request := migratev1.ClaimRequest_builder{Vm: proto.String(s.config.VM)}.Build()
-	if _, err := s.call(ctx, request, response, 0); err != nil {
+	payload, err := s.call(ctx, request, response, 0)
+	if err != nil {
 		return err
 	}
+	payload.release()
 	if status := response.GetStatus(); status != migratev1.Status_STATUS_OK {
 		return statusError(status)
 	}
@@ -277,7 +282,7 @@ func (s *Source) Close() {
 // the rest is what makes the bound a queue rather than a deadlock, while a
 // memory region asking one page at a time still pays one socket rather than one per
 // page.
-func (s *Source) call(ctx context.Context, request, response proto.Message, maxPayload int64) ([]byte, error) {
+func (s *Source) call(ctx context.Context, request, response proto.Message, maxPayload int64) (*payloadBuffer, error) {
 	if err := admit(ctx, s.config.VM+"/"+s.config.Volume); err != nil {
 		return nil, err
 	}
@@ -408,7 +413,7 @@ func statusError(status migratev1.Status) error {
 }
 
 // exchange sends one request and reads the reply that answers it.
-func exchange(ctx context.Context, conn platform.Conn, id uint64, request, response proto.Message, maxPayload int64) ([]byte, error) {
+func exchange(ctx context.Context, conn platform.Conn, id uint64, request, response proto.Message, maxPayload int64) (*payloadBuffer, error) {
 	frame, err := wire.Encode(wire.Outgoing{RequestID: id, Message: request})
 	if err != nil {
 		return nil, err
@@ -433,22 +438,32 @@ func exchange(ctx context.Context, conn platform.Conn, id uint64, request, respo
 		return nil, err
 	}
 	if err := incoming.UnmarshalTo(response); err != nil {
+		payload.release()
 		return nil, err
 	}
 	return payload, nil
 }
 
-func readPayload(incoming wire.Incoming, maximum int64) ([]byte, error) {
+// readPayload reads a reply's payload into a pooled buffer of the length its
+// frame states, and checks it against what the reply may carry.
+func readPayload(incoming wire.Incoming, maximum int64) (*payloadBuffer, error) {
 	defer incoming.Payload.Close()
 	if incoming.PayloadSize < 0 || incoming.PayloadSize > maximum {
 		return nil, platform.ErrMessageTooLarge
 	}
-	payload, err := io.ReadAll(io.LimitReader(incoming.Payload, maximum+1))
-	if err != nil {
+	payload := takeBuffer(int(incoming.PayloadSize))
+	if _, err := io.ReadFull(incoming.Payload, payload.bytes); err != nil {
+		payload.release()
 		return nil, err
 	}
-	if int64(len(payload)) != incoming.PayloadSize {
-		return nil, io.ErrUnexpectedEOF
+	// The reader checks a payload's checksum when it reaches the end, which a
+	// read of exactly its length need not: one more read says.
+	if n, err := incoming.Payload.Read(make([]byte, 1)); n != 0 || (err != nil && !errors.Is(err, io.EOF)) {
+		payload.release()
+		if err == nil {
+			err = io.ErrUnexpectedEOF
+		}
+		return nil, err
 	}
 	return payload, nil
 }

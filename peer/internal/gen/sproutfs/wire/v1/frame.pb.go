@@ -68,16 +68,17 @@ func (x ChecksumAlgorithm) Number() protoreflect.EnumNumber {
 // Envelope is the protobuf portion of an internode frame. Large bulk data is
 // carried in the adjacent raw payload described by payload.
 type Envelope struct {
-	state                  protoimpl.MessageState `protogen:"opaque.v1"`
-	xxx_hidden_WireVersion uint32                 `protobuf:"varint,1,opt,name=wire_version,json=wireVersion"`
-	xxx_hidden_RequestId   uint64                 `protobuf:"fixed64,2,opt,name=request_id,json=requestId"`
-	xxx_hidden_InReplyTo   uint64                 `protobuf:"fixed64,3,opt,name=in_reply_to,json=inReplyTo"`
-	xxx_hidden_Message     *anypb.Any             `protobuf:"bytes,4,opt,name=message"`
-	xxx_hidden_Payload     *PayloadDescriptor     `protobuf:"bytes,5,opt,name=payload"`
-	XXX_raceDetectHookData protoimpl.RaceDetectHookData
-	XXX_presence           [1]uint32
-	unknownFields          protoimpl.UnknownFields
-	sizeCache              protoimpl.SizeCache
+	state                     protoimpl.MessageState `protogen:"opaque.v1"`
+	xxx_hidden_WireVersion    uint32                 `protobuf:"varint,1,opt,name=wire_version,json=wireVersion"`
+	xxx_hidden_RequestId      uint64                 `protobuf:"fixed64,2,opt,name=request_id,json=requestId"`
+	xxx_hidden_InReplyTo      uint64                 `protobuf:"fixed64,3,opt,name=in_reply_to,json=inReplyTo"`
+	xxx_hidden_Message        *anypb.Any             `protobuf:"bytes,4,opt,name=message"`
+	xxx_hidden_Payload        *PayloadDescriptor     `protobuf:"bytes,5,opt,name=payload"`
+	xxx_hidden_HeaderChecksum uint32                 `protobuf:"fixed32,6,opt,name=header_checksum,json=headerChecksum"`
+	XXX_raceDetectHookData    protoimpl.RaceDetectHookData
+	XXX_presence              [1]uint32
+	unknownFields             protoimpl.UnknownFields
+	sizeCache                 protoimpl.SizeCache
 }
 
 func (x *Envelope) Reset() {
@@ -140,19 +141,26 @@ func (x *Envelope) GetPayload() *PayloadDescriptor {
 	return nil
 }
 
+func (x *Envelope) GetHeaderChecksum() uint32 {
+	if x != nil {
+		return x.xxx_hidden_HeaderChecksum
+	}
+	return 0
+}
+
 func (x *Envelope) SetWireVersion(v uint32) {
 	x.xxx_hidden_WireVersion = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 5)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 6)
 }
 
 func (x *Envelope) SetRequestId(v uint64) {
 	x.xxx_hidden_RequestId = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 1, 5)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 1, 6)
 }
 
 func (x *Envelope) SetInReplyTo(v uint64) {
 	x.xxx_hidden_InReplyTo = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 2, 5)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 2, 6)
 }
 
 func (x *Envelope) SetMessage(v *anypb.Any) {
@@ -161,6 +169,11 @@ func (x *Envelope) SetMessage(v *anypb.Any) {
 
 func (x *Envelope) SetPayload(v *PayloadDescriptor) {
 	x.xxx_hidden_Payload = v
+}
+
+func (x *Envelope) SetHeaderChecksum(v uint32) {
+	x.xxx_hidden_HeaderChecksum = v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 5, 6)
 }
 
 func (x *Envelope) HasWireVersion() bool {
@@ -198,6 +211,13 @@ func (x *Envelope) HasPayload() bool {
 	return x.xxx_hidden_Payload != nil
 }
 
+func (x *Envelope) HasHeaderChecksum() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 5)
+}
+
 func (x *Envelope) ClearWireVersion() {
 	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 0)
 	x.xxx_hidden_WireVersion = 0
@@ -221,6 +241,11 @@ func (x *Envelope) ClearPayload() {
 	x.xxx_hidden_Payload = nil
 }
 
+func (x *Envelope) ClearHeaderChecksum() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 5)
+	x.xxx_hidden_HeaderChecksum = 0
+}
+
 type Envelope_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
@@ -229,6 +254,11 @@ type Envelope_builder struct {
 	InReplyTo   *uint64
 	Message     *anypb.Any
 	Payload     *PayloadDescriptor
+	// header_checksum is the CRC32C of every byte of the encoded envelope before
+	// it, and it is always the last field: the encoder appends it to what it
+	// encoded. A frame of wire version 2 carries it; version 1 frames may. A
+	// decoder of version 1 that predates it skips it as an unknown field.
+	HeaderChecksum *uint32
 }
 
 func (b0 Envelope_builder) Build() *Envelope {
@@ -236,19 +266,23 @@ func (b0 Envelope_builder) Build() *Envelope {
 	b, x := &b0, m0
 	_, _ = b, x
 	if b.WireVersion != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 5)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 6)
 		x.xxx_hidden_WireVersion = *b.WireVersion
 	}
 	if b.RequestId != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 1, 5)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 1, 6)
 		x.xxx_hidden_RequestId = *b.RequestId
 	}
 	if b.InReplyTo != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 2, 5)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 2, 6)
 		x.xxx_hidden_InReplyTo = *b.InReplyTo
 	}
 	x.xxx_hidden_Message = b.Message
 	x.xxx_hidden_Payload = b.Payload
+	if b.HeaderChecksum != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 5, 6)
+		x.xxx_hidden_HeaderChecksum = *b.HeaderChecksum
+	}
 	return m0
 }
 
@@ -396,14 +430,15 @@ var File_sproutfs_wire_v1_frame_proto protoreflect.FileDescriptor
 
 const file_sproutfs_wire_v1_frame_proto_rawDesc = "" +
 	"\n" +
-	"\x1csproutfs/wire/v1/frame.proto\x12\x10sproutfs.wire.v1\x1a\x19google/protobuf/any.proto\"\xdb\x01\n" +
+	"\x1csproutfs/wire/v1/frame.proto\x12\x10sproutfs.wire.v1\x1a\x19google/protobuf/any.proto\"\x84\x02\n" +
 	"\bEnvelope\x12!\n" +
 	"\fwire_version\x18\x01 \x01(\rR\vwireVersion\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x02 \x01(\x06R\trequestId\x12\x1e\n" +
 	"\vin_reply_to\x18\x03 \x01(\x06R\tinReplyTo\x12.\n" +
 	"\amessage\x18\x04 \x01(\v2\x14.google.protobuf.AnyR\amessage\x12=\n" +
-	"\apayload\x18\x05 \x01(\v2#.sproutfs.wire.v1.PayloadDescriptorR\apayload\"\x9b\x01\n" +
+	"\apayload\x18\x05 \x01(\v2#.sproutfs.wire.v1.PayloadDescriptorR\apayload\x12'\n" +
+	"\x0fheader_checksum\x18\x06 \x01(\aR\x0eheaderChecksum\"\x9b\x01\n" +
 	"\x11PayloadDescriptor\x12\x16\n" +
 	"\x06length\x18\x01 \x01(\x04R\x06length\x12R\n" +
 	"\x12checksum_algorithm\x18\x02 \x01(\x0e2#.sproutfs.wire.v1.ChecksumAlgorithmR\x11checksumAlgorithm\x12\x1a\n" +

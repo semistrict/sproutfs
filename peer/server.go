@@ -1,7 +1,6 @@
 package peer
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -761,7 +760,7 @@ func (s *Server) reply(conn platform.Conn, requestID uint64, message proto.Messa
 		InReplyTo: requestID,
 		RequestID: requestID,
 		Message:   message,
-		Payload: wire.Payload{Body: bytes.NewReader(payload), Size: int64(len(payload)),
+		Payload: wire.Payload{Body: platform.Bytes(payload), Size: int64(len(payload)),
 			Algorithm: wire.ChecksumCRC32C, Checksum: wire.EncodeCRC32C(crc32.Checksum(payload, pageCRCTable))},
 	})
 	if err != nil {
