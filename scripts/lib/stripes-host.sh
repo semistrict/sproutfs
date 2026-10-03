@@ -38,6 +38,8 @@ case ${1:-} in
             echo "a server is already running here" >&2
             exit 1
         fi
+        # An earlier run's records must not be merged into this run's.
+        rm -f results/*
         setsid nohup "$bench" server -index "$2" -servers "$3" -objects "$4" \
             -file /mnt/stripes/store > results/server.log 2>&1 < /dev/null &
         ;;

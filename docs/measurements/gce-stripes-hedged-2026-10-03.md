@@ -75,3 +75,7 @@ Step 7 reads hedged, as the plan already says. Before step 7 is measured
 again, the benchmark should repeat each case to measure the noise, and report
 client CPU, Go GC pauses and time queued at each server, so that a tail can be
 traced to a cause.
+
+[The third run](gce-stripes-tail-2026-10-03.md) did that. It traced the tail to
+the bytes each host serves, not the bytes per read: 4+2 drained serves 6.3 Gb/s
+per host where 4+1 healthy serves 5.2.
