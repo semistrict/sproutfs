@@ -566,8 +566,8 @@
   {
     "id": "cluster-repair-held-index",
     "package": "checkpoint",
-    "run": "^TestRepairSendsOnlyAnIndexNoRankHolds$",
-    "purpose": "Repair a rank with the lowest index it lacks, whether or not another rank holds it."
+    "run": "^TestRepairAfterAJoinSendsTheIndexNoRankHolds$",
+    "purpose": "Repair a rank with the index the list puts on it, whether or not another rank holds it."
   },
   {
     "id": "cluster-head-never",

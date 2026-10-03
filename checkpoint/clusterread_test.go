@@ -198,6 +198,9 @@ func TestAHotPageSpreadsItsLoadOverEveryHolder(t *testing.T) {
 			}
 		}
 		for at, h := range c.hosts {
+			if requests := h.cache.Stats().Read.Requests; requests != 2*4 {
+				t.Fatalf("host %d sent %d requests for a page and its segment, want four for each", at, requests)
+			}
 			stats := h.server.Stats()
 			if stats.Stripes != stats.StripeReads {
 				t.Fatalf("host %d sent %d stripes in %d replies, want one a reply", at, stats.Stripes, stats.StripeReads)
@@ -331,11 +334,12 @@ func TestAStalledOrSlowHolderSlowsAReadByTheHedgeDelayAtMost(t *testing.T) {
 // holds and whose bytes are wrong. The reader reads the page right, finds the
 // stripe among the k+1 it has, and the holder forgets it. With another of its
 // first picks stalled, the reader has only k stripes, which rebuild nothing,
-// and asks one more holder at once to tell which is wrong.
+// and asks one more holder at once to tell which is wrong. A wrong stripe on
+// the reader's own disk is forgotten there, and no drop is sent.
 func TestAWrongStripeIsNeverReturnedAndItsHolderIsTold(t *testing.T) {
 	code := rank.Code{K: 4, M: 2}
-	for _, stalled := range []bool{false, true} {
-		t.Run(fmt.Sprintf("stalled-%v", stalled), func(t *testing.T) {
+	for _, variant := range []string{"peer", "peer-stalled", "own"} {
+		t.Run(variant, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				c := newFillCluster(t, fillConfig{hosts: 6, code: code, share: 100,
 					cache: func(_ int, cache *checkpoint.CacheConfig) { cache.ClusterBound = time.Hour }})
@@ -344,11 +348,14 @@ func TestAWrongStripeIsNeverReturnedAndItsHolderIsTold(t *testing.T) {
 				window := pageWindow(ref, 0)
 				first, _ := picks(*c.list.Load(), reader.cache.Identity(), window, true)
 				wrong := c.hostOf(first[0])
+				if variant == "own" {
+					wrong = reader
+				}
 				index := wrong.cache.HeldIndices(window, 0, code)[0]
 				if err := wrong.cache.SpoilStripe(c.ctx(t), window, 0, code, index); err != nil {
 					t.Fatal(err)
 				}
-				if stalled {
+				if variant == "peer-stalled" {
 					c.degrade(reader, []*fillHost{c.hostOf(first[1])}, nil)
 				}
 				c.read(t, reader, ref, m, 0)
@@ -356,8 +363,13 @@ func TestAWrongStripeIsNeverReturnedAndItsHolderIsTold(t *testing.T) {
 				if held := wrong.cache.HeldIndices(window, 0, code); slices.Contains(held, index) {
 					t.Fatalf("the holder of the wrong stripe %d still holds %v", index, held)
 				}
-				if stats := reader.cache.Stats().Read; stats.WrongStripes != 1 || stats.DropsSent != 1 || stats.Hits != 2 {
-					t.Fatalf("the reader's reads came to %+v, want one wrong stripe found and dropped and two hits", stats)
+				drops := uint64(1)
+				if variant == "own" {
+					drops = 0
+				}
+				if stats := reader.cache.Stats().Read; stats.WrongStripes != 1 || stats.DropsSent != drops || stats.Hits != 2 {
+					t.Fatalf("the reader's reads came to %+v, want one wrong stripe found, %d drops sent and two hits",
+						stats, drops)
 				}
 			})
 		})
@@ -398,6 +410,9 @@ func TestTheStoreIsReadOnlyWhenFewerThanKStripesExist(t *testing.T) {
 				if got := gets.Load(); got != want {
 					t.Fatalf("with %d stripes left the reader read %d parts from the store, want %d", remaining, got, want)
 				}
+				if stats := reader.cache.Stats().Read; stats.Misses != uint64(want) || stats.Hits != 2-uint64(want) {
+					t.Fatalf("with %d stripes left the reads came to %+v, want %d misses", remaining, stats, want)
+				}
 			})
 		})
 	}
@@ -408,16 +423,23 @@ func TestTheStoreIsReadOnlyWhenFewerThanKStripesExist(t *testing.T) {
 // the delay and asks the rest, which is a second request, while its budget
 // holds one: it starts with five and earns a twentieth of one with each read
 // that had its stripes within the delay. Past it, a read waits for the slow
-// holders instead.
+// holders instead. The reads come out exactly as that budget says, read by
+// read.
 func TestSecondRequestsStayWithinTheirBudget(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		c := newFillCluster(t, fillConfig{hosts: 6, code: rank.Code{K: 4, M: 2}, share: 100, runtime: latencyRuntime,
 			cache: func(_ int, cache *checkpoint.CacheConfig) {
-				cache.ClusterHedgeFloor = 3 * time.Millisecond
+				// A floor past a read that dials its connections, and short of a
+				// slow link's round trip.
+				cache.ClusterHedgeFloor = 20 * time.Millisecond
 				cache.ClusterBound = time.Hour
+				// A stripe over a slow link takes several of its round trips;
+				// none times out, so no host is marked down.
+				cache.ClusterStripeTimeout = time.Hour
 			}})
+		// Fewer than 32 reads of windows, so the delay stays at its floor.
 		var pages []uint64
-		for page := range uint64(40) {
+		for page := range uint64(15) {
 			pages = append(pages, page)
 		}
 		ref, m := c.filled(t, 1, "vm", pages)
@@ -444,12 +466,37 @@ func TestSecondRequestsStayWithinTheirBudget(t *testing.T) {
 			slow = append(slow, c.hostOf(rank.Cache{Identity: identity}))
 		}
 		c.degrade(reader, nil, slow)
+		// The budget, read by read: each page's read reads its segment's
+		// window, which the memory tier does not keep, and then its own.
+		var windows []rank.Window
+		for _, page := range pages {
+			windows = append(windows, segmentWindow(ref), pageWindow(ref, page))
+		}
+		budget, second, refused := 100, uint64(0), uint64(0)
+		for _, window := range windows {
+			first, _ := picks(list, reader.cache.Identity(), window, true)
+			both := 0
+			for _, cache := range first {
+				if cache.Identity == slowest[0] || cache.Identity == slowest[1] {
+					both++
+				}
+			}
+			switch {
+			case both < 2:
+				budget = min(budget+1, 100)
+			case budget >= 20:
+				second, budget = second+1, budget-20
+			default:
+				refused++
+			}
+		}
+		if refused == 0 {
+			t.Fatal("the slow pair leaves the budget something to refuse")
+		}
 		c.readEvery(t, reader, ref, m, pages)
-		stats := reader.cache.Stats().Read
-		fast := 2*uint64(len(pages)) - stats.SecondRequests - stats.Refused
-		if limit := 5 + fast/20; stats.SecondRequests > limit || stats.Refused == 0 {
-			t.Fatalf("the reader made %d second requests and was refused %d after %d fast reads, want at most %d and some refused",
-				stats.SecondRequests, stats.Refused, fast, limit)
+		if stats := reader.cache.Stats().Read; stats.SecondRequests != second || stats.Refused != refused {
+			t.Fatalf("the reader made %d second requests and was refused %d, want %d and %d",
+				stats.SecondRequests, stats.Refused, second, refused)
 		}
 	})
 }
@@ -469,8 +516,10 @@ func TestStoreReadsPastTheBoundStayWithinTheirBucket(t *testing.T) {
 				cache.ClusterBound = 10 * time.Millisecond
 				cache.ClusterStripeTimeout = time.Hour
 			}})
+		// Fewer than 32 reads of windows, so the delay, and the bound four
+		// times it, stay where the floor puts them.
 		var pages []uint64
-		for page := range uint64(40) {
+		for page := range uint64(15) {
 			pages = append(pages, page)
 		}
 		ref, m := c.filled(t, 1, "vm", pages)
@@ -481,12 +530,22 @@ func TestStoreReadsPastTheBoundStayWithinTheirBucket(t *testing.T) {
 		}
 		gets := reader.partGets()
 		c.readEvery(t, reader, ref, m, pages)
+		// The bucket, read by read: each page's read reads its segment's
+		// window, which reads no store past its bound, and then its own.
+		tokens, hedges, refused := 100, uint64(0), uint64(0)
+		for range pages {
+			tokens = min(tokens+2, 100)
+			if tokens >= 20 {
+				hedges, tokens = hedges+1, tokens-20
+			} else {
+				refused++
+			}
+		}
 		stats := reader.cache.Stats().Read
-		earned := uint64(2*len(pages)) / 20
-		if stats.StoreHedges > 5+earned || stats.StoreHedgesRefused == 0 || stats.StoreHedgesWon != stats.StoreHedges ||
-			gets.Load() != int64(stats.StoreHedges) {
-			t.Fatalf("past the bound the reader read the store %d times (%+v), want at most %d and the rest refused",
-				gets.Load(), stats, 5+earned)
+		if stats.StoreHedges != hedges || stats.StoreHedgesRefused != refused || stats.StoreHedgesWon != hedges ||
+			gets.Load() != int64(hedges) || stats.Bound != 200*time.Millisecond {
+			t.Fatalf("past the bound the reader read the store %d times (%+v), want %d with %d refused and a bound of four delays",
+				gets.Load(), stats, hedges, refused)
 		}
 	})
 }
@@ -494,8 +553,9 @@ func TestStoreReadsPastTheBoundStayWithinTheirBucket(t *testing.T) {
 // Three timeouts in a row mark a host down, and only a probe clears the mark.
 // A holder stalls for a reader, whose requests to it time out; after the third
 // the reader marks it down and asks it nothing more, and reads without it. The
-// holder answers again a second later, but the mark stays until the probe
-// about ten seconds after it, which clears it.
+// holder answers again twelve seconds after the mark. The probe about ten
+// seconds after the mark finds it still stalled, and the next, half as long
+// again later, clears the mark.
 func TestThreeTimeoutsMarkAHostDownAndOnlyAProbeClearsIt(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		c := newFillCluster(t, fillConfig{hosts: 6, code: rank.Code{K: 4, M: 2}, share: 100,
@@ -555,15 +615,22 @@ func TestThreeTimeoutsMarkAHostDownAndOnlyAProbeClearsIt(t *testing.T) {
 			t.Fatalf("a publication dropped %d stripes for a host marked down, want the %d the list puts on it",
 				down, ranked)
 		}
-		// Released now, it answers, but the mark stays until the probe.
-		c.runtime.Network().HoldBoth(platform.Address(reader.name), stalled.address, time.Now())
 		time.Sleep(time.Until(marked.Add(8 * time.Second)))
 		if stats := reader.cache.Stats().Read; stats.Down != 1 || stats.Cleared != 0 {
 			t.Fatalf("eight seconds after the mark the reads came to %+v, want the host still down", stats)
 		}
+		// Released twelve seconds after the mark, it answers, but the mark
+		// stays until the next probe.
 		time.Sleep(time.Until(marked.Add(12 * time.Second)))
+		c.runtime.Network().HoldBoth(platform.Address(reader.name), stalled.address, time.Now())
+		time.Sleep(time.Until(marked.Add(20 * time.Second)))
+		if stats := reader.cache.Stats().Read; stats.Down != 1 || stats.Cleared != 0 {
+			t.Fatalf("twenty seconds after the mark the reads came to %+v, want the host still down", stats)
+		}
+		time.Sleep(time.Until(marked.Add(30 * time.Second)))
 		if stats := reader.cache.Stats().Read; stats.Down != 0 || stats.Cleared != 1 {
-			t.Fatalf("twelve seconds after the mark the reads came to %+v, want the probe to have cleared it", stats)
+			t.Fatalf("thirty seconds after the mark the reads came to %+v, want the second probe to have cleared it",
+				stats)
 		}
 	})
 }
@@ -655,27 +722,21 @@ func TestARefusedConnectionMarksAHostDown(t *testing.T) {
 
 // Repair sends only an index no rank holds, to a rank that holds fewer than the
 // code puts on it. One holder of a 4+2 window has lost its stripe. A reader
-// that asks it hears nothing, asks the rest at once, and so hears from every
-// rank: it rebuilds the page and sends the holder the one index nobody holds,
-// which is the index the list puts on it. Every index is then on exactly the
-// rank the list puts it on.
+// that asks it hears nothing, asks the next rank at once, and so hears from
+// every rank: it rebuilds the page and sends the holder the one index nobody
+// holds, which is the index the list puts on it. Every index is then on
+// exactly the rank the list puts it on.
 func TestRepairSendsOnlyAnIndexNoRankHolds(t *testing.T) {
 	code := rank.Code{K: 4, M: 2}
 	synctest.Test(t, func(t *testing.T) {
-		c := newFillCluster(t, fillConfig{hosts: 6, code: code, share: 100})
+		// A delay past every round trip: the rest are asked only for a miss.
+		c := newFillCluster(t, fillConfig{hosts: 6, code: code, share: 100,
+			cache: func(_ int, cache *checkpoint.CacheConfig) { cache.ClusterHedgeFloor = time.Second }})
 		ref, m := c.filled(t, 1, "vm", []uint64{0})
 		reader := c.hosts[0]
 		window := pageWindow(ref, 0)
 		first, _ := picks(*c.list.Load(), reader.cache.Identity(), window, true)
-		// The lost stripe is not index 0, so a repair that sent the lowest
-		// index the holder lacks would send one another rank holds.
-		var lost *fillHost
-		for _, cache := range first {
-			if h := c.hostOf(cache); h.cache.HeldIndices(window, 0, code)[0] != 0 {
-				lost = h
-				break
-			}
-		}
+		lost := c.hostOf(first[0])
 		index := lost.cache.HeldIndices(window, 0, code)[0]
 		if err := lost.cache.Drop(c.ctx(t), peer.Drop{Window: window, Index: index, Code: code}); err != nil {
 			t.Fatal(err)
@@ -685,8 +746,79 @@ func TestRepairSendsOnlyAnIndexNoRankHolds(t *testing.T) {
 		if got, want := c.placed(window), c.ranked(window); !slices.EqualFunc(got, want, slices.Equal) {
 			t.Fatalf("after the repair the stripes are on %v, want %v", got, want)
 		}
-		if stats := reader.cache.Stats().Read; stats.Repairs != 1 {
-			t.Fatalf("the reader's reads came to %+v, want one stripe repaired", stats)
+		if stats := reader.cache.Stats().Read; stats.Repairs != 1 || stats.Replaced != 1 || stats.SecondRequests != 0 {
+			t.Fatalf("the reader's reads came to %+v, want one holder replaced and one stripe repaired", stats)
+		}
+	})
+}
+
+// Repair after a join sends the index the join pushed out of the ranks. A
+// seventh cache joins a 4+2 cluster and ranks among a window's first six,
+// holding nothing; the holder it pushed out takes its index with it. A reader
+// that asks the new cache hears nothing, asks the rest, and sends the new
+// cache the index no rank holds, not the one the list would put on it, which
+// a holder below it still holds. The window's six ranks then hold six
+// distinct indices.
+func TestRepairAfterAJoinSendsTheIndexNoRankHolds(t *testing.T) {
+	code := rank.Code{K: 4, M: 2}
+	synctest.Test(t, func(t *testing.T) {
+		c := newFillCluster(t, fillConfig{hosts: 7, code: code, share: 100,
+			cache: func(_ int, cache *checkpoint.CacheConfig) { cache.ClusterHedgeFloor = time.Second }})
+		joining := c.hosts[6]
+		c.hold(c.list.Load().Without(joining.cache.Identity()))
+		var pages []uint64
+		for page := range uint64(16) {
+			pages = append(pages, page)
+		}
+		ref, m := c.filled(t, 1, "vm", pages)
+		var caches []rank.Cache
+		for _, h := range c.hosts {
+			caches = append(caches, rank.Cache{Identity: h.cache.Identity(), Weight: 1, Address: h.address})
+		}
+		joined, err := rank.NewList(code, caches)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.hold(joined)
+		reader := c.hosts[0]
+		// A page whose window the new cache ranks for, among the reader's
+		// first picks, and whose index the list puts on it another rank holds.
+		var window rank.Window
+		page := uint64(0)
+		found := false
+		for _, at := range pages {
+			candidate := pageWindow(ref, at)
+			first, _ := picks(joined, reader.cache.Identity(), candidate,
+				len(reader.cache.HeldIndices(candidate, 0, code)) > 0)
+			if !slices.ContainsFunc(first, func(cache rank.Cache) bool { return cache.Identity == joining.cache.Identity() }) {
+				continue
+			}
+			for index, holder := range joined.Holders(candidate) {
+				if holder.Identity != joining.cache.Identity() {
+					continue
+				}
+				for _, h := range c.hosts {
+					if slices.Contains(h.cache.HeldIndices(candidate, 0, code), index) {
+						window, page, found = candidate, at, true
+					}
+				}
+			}
+			if found {
+				break
+			}
+		}
+		if !found {
+			t.Fatal("no window has the joining cache among the reader's first picks with its index held elsewhere")
+		}
+		c.read(t, reader, ref, m, page)
+		c.settle(t)
+		var held []int
+		for _, cache := range joined.Ranks(window) {
+			held = append(held, c.hostOf(cache).cache.HeldIndices(window, 0, code)...)
+		}
+		slices.Sort(held)
+		if !slices.Equal(held, []int{0, 1, 2, 3, 4, 5}) {
+			t.Fatalf("after the repair the window's ranks hold indices %v, want each of the six once", held)
 		}
 	})
 }
@@ -737,19 +869,25 @@ func TestAReaderRebuildsFromAnyIndicesAfterTheRanksShift(t *testing.T) {
 }
 
 // One hit of the disk tier in HeadCheckEvery has the part it was served from
-// checked with a HEAD. With every hit checked, a read finds its page's part
-// there; once the part is deleted behind the cache's back, as a reclamation
-// bug would, the next hit reports it missing.
+// checked with a HEAD. With every third hit checked, a read of a page and its
+// segment checks nothing, and the next read checks its segment's index object,
+// which is there. Once the parts are deleted behind the cache's back, as a
+// reclamation bug would, the sixth hit, a page's, reports its part missing.
 func TestASampledHitChecksItsPartStillExists(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		c := newFillCluster(t, fillConfig{hosts: 3, code: rank.Code{K: 2, M: 1}, share: 100,
-			cache: func(_ int, cache *checkpoint.CacheConfig) { cache.HeadCheckEvery = 1 }})
+			cache: func(_ int, cache *checkpoint.CacheConfig) { cache.HeadCheckEvery = 3 }})
 		ref, m := c.filled(t, 1, "vm", []uint64{0, 1})
 		reader := c.hosts[0]
 		c.read(t, reader, ref, m, 0)
 		c.settle(t)
-		if stats := reader.cache.Stats().Read; stats.HeadChecks != 2 || stats.HeadMissing != 0 {
-			t.Fatalf("a read of a page and its segment checked %+v, want two checks and nothing missing", stats)
+		if stats := reader.cache.Stats().Read; stats.HeadChecks != 0 {
+			t.Fatalf("two hits checked %+v, want none", stats)
+		}
+		c.read(t, reader, ref, m, 1)
+		c.settle(t)
+		if stats := reader.cache.Stats().Read; stats.HeadChecks != 1 || stats.HeadMissing != 0 {
+			t.Fatalf("three hits checked %+v, want one check and nothing missing", stats)
 		}
 		deleted := 0
 		if err := platform.ListAll(c.ctx(t), c.runtime.ObjectStore(), platform.ObjectPrefix{}, func(object platform.ObjectMetadata) error {
@@ -764,10 +902,15 @@ func TestASampledHitChecksItsPartStillExists(t *testing.T) {
 		if deleted == 0 {
 			t.Fatal("the checkpoint has no part to delete")
 		}
-		c.read(t, reader, ref, m, 1)
+		for _, page := range []uint64{0, 1, 0} {
+			c.read(t, reader, ref, m, page)
+		}
 		c.settle(t)
-		if stats := reader.cache.Stats().Read; stats.HeadChecks != 4 || stats.HeadMissing != 1 {
-			t.Fatalf("a hit whose part is gone checked %+v, want it reported missing", stats)
+		// Hits five to ten are a segment and a page each: the sixth is page
+		// 0's, whose part is gone, and the ninth a segment, whose index
+		// object is there.
+		if stats := reader.cache.Stats().Read; stats.HeadChecks != 3 || stats.HeadMissing != 1 {
+			t.Fatalf("a sixth hit whose part is gone checked %+v, want it reported missing", stats)
 		}
 	})
 }

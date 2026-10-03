@@ -1476,7 +1476,7 @@ zero stripes left, the store is read exactly when fewer than four remain.
 `TestThreeTimeoutsMarkAHostDownAndOnlyAProbeClearsIt`,
 `TestAReaderMarksDownAtMostAFifthOfItsList`, `TestAMissIsNotAFailureOfTheHost`
 and `TestARefusedConnectionMarksAHostDown` hold the marks, and the first also
-that a marked host is sent no fills. `TestRepairSendsOnlyAnIndexNoRankHolds`,
+that a marked host is sent no fills. `TestRepairSendsOnlyAnIndexNoRankHolds`, `TestRepairAfterAJoinSendsTheIndexNoRankHolds`,
 `TestAReaderRebuildsFromAnyIndicesAfterTheRanksShift` (B5) and
 `TestASampledHitChecksItsPartStillExists` hold the rest. In
 `internal/simtest`, `TestAVMOpensFromTheClusterAfterAnyOneHostIsLostDrainedOrRestarted`
@@ -1980,7 +1980,7 @@ SPROUTFS_SIM_BUG=cluster-probe-at-once \
 SPROUTFS_SIM_BUG=cluster-fill-marked-down \
   go test ./checkpoint -run '^TestThreeTimeoutsMarkAHostDownAndOnlyAProbeClearsIt$' -count=1
 SPROUTFS_SIM_BUG=cluster-repair-held-index \
-  go test ./checkpoint -run '^TestRepairSendsOnlyAnIndexNoRankHolds$' -count=1
+  go test ./checkpoint -run '^TestRepairAfterAJoinSendsTheIndexNoRankHolds$' -count=1
 SPROUTFS_SIM_BUG=cluster-head-never \
   go test ./checkpoint -run '^TestASampledHitChecksItsPartStillExists$' -count=1
 ```
@@ -1994,8 +1994,10 @@ it whatever the budget holds. The next leaves a wrong stripe with its holder.
 The next reads the store past the bound whatever the bucket holds. The next
 four break the marks: a miss counted as a timeout, a mark past a fifth of the
 list, a probe every second rather than from ten seconds on, and fills sent to
-a host marked down. The next repairs a rank with the lowest index it lacks,
-which another rank holds. The last never checks a sampled hit's part.
+a host marked down. The next offers a rank the index the list puts on it
+whether or not another rank holds it: after a join, the new cache is sent an
+index a holder below it still holds. The last never checks a sampled hit's
+part.
 
 Five guards break the list of caches:
 

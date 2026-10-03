@@ -567,7 +567,7 @@ func (r *clusterReader) readWindow(ctx context.Context, codecs *blob.Codecs, g w
 		held: make([][]heldStripe, len(g.wants)), tried: make([]int, len(g.wants)), out: make([][]byte, len(g.wants)),
 		envelopes: make([][]byte, len(g.wants)), answered: make(map[rank.Identity][][]int),
 		askedOf: make(map[rank.Identity]bool),
-		events:  make(chan stripeAnswer, len(ranks)+1)}
+		events:  make(chan stripeAnswer, len(ranks))}
 	for _, want := range g.wants {
 		w.pages = append(w.pages, uint32(want.key.Page-g.window.Page(0)))
 	}
@@ -1045,7 +1045,7 @@ func (w *windowRead) counted(ctx context.Context, own bool) {
 
 // repair sends each index of a rebuilt envelope that no rank holds to a rank
 // that holds fewer of the window's stripes than the code puts on it, in rank
-// order. Only a read that heard from every rank knows what no rank holds, so
+// order, offering each rank first the indices the list puts on it. Only a read that heard from every rank knows what no rank holds, so
 // only such a read repairs; one that did not ask every rank leaves the window
 // to a reader that does. It never sends an index another rank holds, so a
 // change of ranks never leaves one index on two ranks.
@@ -1071,7 +1071,7 @@ func (w *windowRead) repair(ctx context.Context) {
 		var stripes []stripe.Stripe
 		for _, cache := range w.ranks {
 			lacking := share[cache.Identity] - len(w.answered[cache.Identity][at])
-			for index := range w.code.Width() {
+			for _, index := range w.preferred(cache.Identity) {
 				if lacking <= 0 {
 					break
 				}
@@ -1100,6 +1100,21 @@ func (w *windowRead) repair(ctx context.Context) {
 			w.r.filler.repair(w.window, w.code, cache, repairs)
 		}
 	}
+}
+
+// preferred is the indices of the code in the order a repair offers them to
+// the cache of identity: those the list puts on it first, so a window that
+// lost a stripe gets back the placement a fill gives it, then the rest.
+func (w *windowRead) preferred(identity rank.Identity) []int {
+	var first, rest []int
+	for index, holder := range w.holders {
+		if holder.Identity == identity {
+			first = append(first, index)
+		} else {
+			rest = append(rest, index)
+		}
+	}
+	return append(first, rest...)
 }
 
 // hedger is one reader's delay before it asks the rest of a window's ranks,

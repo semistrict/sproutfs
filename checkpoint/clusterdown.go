@@ -207,10 +207,13 @@ func (m *downMarks) probeBack(ctx context.Context, cache rank.Cache) {
 			}
 		}
 		if !r.bug("cluster-probe-at-once") {
-			wait = min(wait*3/2, r.settings.probeMax)
+			wait = nextProbeWait(wait, r.settings.probeMax)
 		}
 	}
 }
+
+// nextProbeWait is the wait after one of wait: half as long again, up to most.
+func nextProbeWait(wait, most time.Duration) time.Duration { return min(wait*3/2, most) }
 
 // spreadProbe is wait moved by up to a tenth either way, by a hash of the host
 // and the attempt.
