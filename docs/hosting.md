@@ -6,7 +6,7 @@ authority is the epoch in its [control record](metadata.md), and its data is the
 checkpoint that record selects. The host also has no identity of its own. Its
 page cache's disk has one, which names it in
 [the list of caches](#the-list-of-caches). The only address a host ever dials
-is the page-server address that a [handoff](migration.md) carries. Who may
+is the peer-server address that a [handoff](migration.md) carries. Who may
 reach that address is the [transport's](#transport) business.
 
 ## Assembly
@@ -17,7 +17,7 @@ machine. It contains:
 - the object namespace;
 - the shared page cache;
 - the volume manager;
-- the migration page server;
+- the peer server, and the table of peers it reaches other hosts through;
 - the loops that keep its VMs durable and fenced.
 
 The supervisor around it is `host.Start`, which returns the `host.Service` that
@@ -47,7 +47,7 @@ wiring between them.
 Starting a `Host` requires:
 
 - a resource owner with a positive RAM allotment;
-- the network that its page server and its handoffs run over;
+- the network that its peer server and its handoffs run over;
 - the object store with the deployment's prefix.
 
 The host owns the following, all with the same lifetime:
@@ -57,18 +57,31 @@ The host owns the following, all with the same lifetime:
   [page cache](volumes.md#page-cache), which has its own cap and does not use
   the host allotment;
 - the volume manager that opens this host's VMs;
-- the page server, when a migration address is configured.
+- the peer server, when a migration address is configured;
+- the table of peers, one for the host, which every receive dials through.
 
 A host without a migration address can neither drain nor receive.
 
 ### Transport
 
-Hosts reach one another over one channel: a destination dials the source's page
-server. `platform.Network` frames that channel, and a `platform.Transport`
-carries the bytes underneath: a stream listener and a stream dialer.
-`adapters.NewNetwork` frames over `adapters.TCP`, the default. It is plain TCP
-and authenticates no peer, so hosts on it must share a trusted network, and a
-network policy must keep everything else off the page-server port.
+Hosts reach one another over one channel, the
+[peer server](migration.md#the-peer-server). Each host serves its own on one
+port, and dials the others through its table of peers. `platform.Network`
+frames that channel, and a `platform.Transport` carries the bytes underneath: a
+stream listener and a stream dialer. `adapters.NewNetwork` frames over
+`adapters.TCP`, the default. It is plain TCP and authenticates no peer, so
+hosts on it must share a trusted network, and a network policy must keep
+everything else off the peer server's port. That port is
+`SPROUTFS_PAGE_SERVER_PORT`, which keeps the name it had.
+
+The framer sends each frame in one vectored write, and refuses one over
+16 MiB. A payload that is a range of a file goes behind the header with
+`sendfile` when the stream is a TCP socket on Linux, so its bytes never pass
+through the process. `adapters.TCP` turns keepalive on, probing after five idle
+seconds every two seconds three times, and on Linux sets `TCP_USER_TIMEOUT` to
+ten seconds, so the kernel gives up on a peer that stops acknowledging. The
+peer server's own pings find a dead peer sooner; see
+[liveness](migration.md#liveness).
 
 A deployment that authenticates its hosts passes `adapters.NewNetworkOver` its
 own transport, for example mutual TLS or its mesh's dialer. That transport
@@ -76,7 +89,7 @@ decides who is a host. Its listener closes a peer it cannot authenticate, and
 its dialer fails on a source it cannot authenticate. Sproutfs never sees the
 credentials. `internal/testnet.MutualTLS` is such a transport, and the tests in
 `host/transport_test.go` migrate over it: two hosts that trust each other
-migrate a VM; a page server serves no stranger; a destination fetches nothing
+migrate a VM; a peer server serves no stranger; a destination fetches nothing
 from a source it does not trust.
 
 A destination that cannot reach its source waits for the pages only the source
@@ -131,8 +144,10 @@ endpoint: it reads `Status` from the supervisor and passes it to
 waits and stalls, refused mappings, repeated faults), how long faults, loads,
 seals and object-store calls take (histograms), what the interval checkpoints
 did, the migrations, forks and receives by outcome, the VMs a host gave up and
-why, template imports, and `sproutfs_build_info`. No series names a VM or a
-tenant.
+why, template imports, the peers a host has asked anything of by whether they
+are up, down or incompatible (`sproutfs_peers`), and `sproutfs_build_info`. The
+peer server's series keep the names the peer server had. No series names a VM
+or a tenant.
 
 Prometheus pulls, and a host's counters start at zero when its process does.
 So anything a host counts just before it exits is never scraped. Each of those
@@ -504,7 +519,7 @@ next attempt, or the epoch timer if the takeover was real, resolves it.
 Only one handover of a VM runs at a time. It is reserved under the same lock
 that protects the registration. Without this, two callers that each found the
 registration would both stop the guest, give up every memory region's volume and
-register the pages with the page server. The loser, whose memory regions had already
+register the pages with the peer server. The loser, whose memory regions had already
 given up their volumes, would then give up the VM and close the process that
 the winner's destination was about to fault pages from. Instead, the second
 caller is told, and the VM is left as the first caller left it. A VM that a
@@ -538,15 +553,16 @@ it.
 
 ## Draining a host
 
-A host configured with a migration address serves a second protocol at that
-address: the page server. The page server holds the memory of every VM the host
-has handed to another host, and of every child it has forked onto another host.
-A child forked onto the same host is not there. That child maps the pages
-instead of fetching them, so none of it is ever served. The page server serves
-any peer its [transport](#transport) accepts, bounded per remote address to
-eight connections and 8 MiB of pages in flight. Over the default plain TCP,
-the cluster's network policy, not this process, restricts that port to this
-deployment's hosts.
+A host configured with a migration address serves the peer server at that
+address. It holds the memory of every VM the host has handed to another host,
+and of every child it has forked onto another host. A child forked onto the
+same host is not there. That child maps the pages instead of fetching them, so
+none of it is ever served. The peer server serves any peer its
+[transport](#transport) accepts. Each remote host's faults may hold 8 MiB
+there at once, and its bulk reads and its bulk writes 16 MiB each, over all its
+connections. A request past that is answered `BUSY`. Over the default plain
+TCP, the cluster's network policy, not this process, restricts that port to
+this deployment's hosts.
 
 `Host.Drain` migrates every VM the host runs, four at a time by default. A drain
 is planned work whose cost is one host's memory. Moving all of it at once would
@@ -915,7 +931,7 @@ A fork's child is pulled once its root has published. The child reads its
 parent's checkpoint and the pages the parent held that no checkpoint had, and
 its root republishes those pages as its own. The pull waits for that root, so
 it covers both kinds. Until then the child reads the second kind from the
-parent's sealed pages or the parent's page server, as any child does.
+parent's sealed pages or the parent's peer server, as any child does.
 
 A checkpoint the VM publishes later adds its pages to the same copy as it
 uploads them (`Publication.Keep`): each part once it is durable, and the
@@ -957,7 +973,8 @@ Nothing reads from a peer or fills one yet.
   `SPROUTFS_CACHE_DISK_BYTES` where that is set. The host reads it once, when it
   starts. It never follows the limiter's share, which moves as the disk fills,
   because every change of a weight moves windows between hosts.
-- `address`: the page-server address, which `page_address` also reports.
+- `address`: the peer-server address, which `page_address` also reports
+  under the name it had.
 
 A host that keeps no cache disk, or gives it no space, reports no `cache` and is
 in no list.
@@ -1245,13 +1262,17 @@ The host's status reports:
 - the pager's counters, including the free space in the logical cap, which is
   what admits a VM;
 - the object traffic;
-- what the page server has served;
+- what the peer server has served;
+- under `peers`, each host this host has asked anything of: the version it
+  speaks, its connections of each class, and whether it is down, and why, or of
+  a release this host cannot talk to;
 - its cache's identity, weight and address, and the list of caches it holds.
 
 ## Shutdown
 
 Quiesce caller operations first. Closing the host stops the checkpoint loops,
-then the page server, then the VM handles, and then closes the cache. Each VM
+then the peer server and the table of peers, then the VM handles, and then
+closes the cache. Each VM
 publishes a final checkpoint if anything is dirty, so an orderly shutdown loses
 nothing. A failure there is logged and does not block the release, and the
 bytes it could not publish are lost. Cancelling the wait stops only the wait.

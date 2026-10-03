@@ -261,9 +261,9 @@ func (h *hostHarness) stop(t *testing.T, n int) {
 	h.hosts[n] = nil
 }
 
-// assertPageServerReleased requires a closed host to have given its page
+// assertPeerServerReleased requires a closed host to have given its peer
 // server's port back, which is what lets another process take the address.
-func (h *hostHarness) assertPageServerReleased(t *testing.T, address platform.Address) {
+func (h *hostHarness) assertPeerServerReleased(t *testing.T, address platform.Address) {
 	t.Helper()
 	if h.network.Listening(address) {
 		t.Fatalf("host retained the peer server listener at %s", address)

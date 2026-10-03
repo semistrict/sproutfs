@@ -5,9 +5,9 @@ import { useStep } from './Steps'
 // Post-copy migration.
 // 0 source runs the guest; selected (7,2); pages 1,3 unpublished (dirty since)
 // 1 quiesce + stop: vCPUs pause, VMM state captured; nothing sealed, nothing uploaded
-// 2 hand off: memory regions give volumes up, keep frames; handoff = state, layout, unpublished runs, page-server address, sequence
+// 2 hand off: memory regions give volumes up, keep frames; handoff = state, layout, unpublished runs, peer-server address, sequence
 // 3 destination opens: record read, epoch 7→8 (fence), root of (7,2) read: two objects, no page
-// 4 resume: guest runs on destination; faults pull pages from source's page server first, own volume otherwise
+// 4 resume: guest runs on destination; faults pull pages from source's peer server first, own volume otherwise
 // 5 stream: unpublished pages first, to completion; then the rest of the resident set
 // 6 release: source told the destination has every unpublished page; source frees its frames
 // 7 destination's next checkpoint publishes them under (8,1)
@@ -17,7 +17,7 @@ const caption = computed(() => [
   'stop: quiesce the loop, pause the vCPUs, capture the VMM state. Nothing sealed, nothing uploaded.',
   'hand off: memory regions give their volumes up, keep their pages, report which pages no checkpoint has',
   'the destination opens the VM: reads the record, increments the epoch 7→8, reads the root. It reads two objects and no pages, and refuses any other sequence as stale.',
-  'resume: faults ask the source\'s page server first, the destination\'s own volume otherwise',
+  'resume: faults ask the source\'s peer server first, the destination\'s own volume otherwise',
   'a stream fetches the unpublished pages first, to completion, then the rest of the resident set',
   'the destination has every unpublished page; the source is released and may exit',
   'the destination\'s next checkpoint publishes them under (8,1). The migration uploaded nothing.',
@@ -42,7 +42,7 @@ const caption = computed(() => [
       <text x="40" y="240" class="tiny left">{{ step >= 6 ? 'pages freed' : 'pages 1, 3: no checkpoint has them' }}</text>
       <g :class="{ hidden: step < 2 || step >= 6 }" class="fade">
         <rect x="40" y="255" width="340" height="40" rx="6" class="srv" />
-        <text x="210" y="280" class="small">page server: serves 1, 3 and the rest</text>
+        <text x="210" y="280" class="small">peer server: serves 1, 3 and the rest</text>
       </g>
 
       <!-- handoff -->

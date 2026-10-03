@@ -541,7 +541,7 @@ clicks: 7
 # The handoff
 
 ```text
-Handoff { VMID, Sequence, VMMState, MemoryRegions[] (unpublished runs, age), PageServer }
+Handoff { VMID, Sequence, VMMState, MemoryRegions[] (unpublished runs, age), PeerServer }
 ```
 
 <v-clicks>
@@ -669,7 +669,7 @@ layout: section
 <div class="grid grid-cols-2 gap-10 mt-4 text-xl">
 <div class="space-y-5">
 
-a **real** deployment in one process: real hosts, pagers, page servers, store code
+a **real** deployment in one process: real hosts, pagers, peer servers, store code
 
 simulated: process · disk · clock · network · object store
 
@@ -688,7 +688,7 @@ simulated: process · disk · clock · network · object store
 </div>
 
 <!--
-A simtest World is one running deployment. Each host is a real host inside a simulated process, with a simulated disk that can lose power, a simulated clock, seeded randomness, and a simulated object store. The components under test are not mocked: the volume managers, the checkpoint store, the control records, the pagers, the page servers and the migration coordinator are the production code. Go's synctest makes simulated time free, so a test that waits through a 60 s interval takes microseconds.
+A simtest World is one running deployment. Each host is a real host inside a simulated process, with a simulated disk that can lose power, a simulated clock, seeded randomness, and a simulated object store. The components under test are not mocked: the volume managers, the checkpoint store, the control records, the pagers, the peer servers and the migration coordinator are the production code. Go's synctest makes simulated time free, so a test that waits through a 60 s interval takes microseconds.
 
 Tests run a list of operations and check a list of properties: no guest reads data it never wrote; the volume returns the same data; every record selects a checkpoint that some writer published; the store is internally consistent; and a lost host loses at most the loss window of a VM's data.
 
@@ -828,7 +828,8 @@ checkpoint          the store: parts, index objects, roots, reclamation
 control             control records
 volume              volumes, publication, forks, handoffs
 vmmemory            the pager
-vmmigrate           page server and peer backing
+peer                the peer server: frames, peers, classes, liveness
+vmmigrate           handoffs and the peer backing
 host                one host: checkpoint loop, drain, fork, migration, templates
 internal/simtest             the simulation harness and its campaigns
 platform/sim        simulated processes, disks, clocks, networks, faults

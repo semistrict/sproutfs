@@ -8,7 +8,7 @@
 (* on the source until a destination installs them and its next           *)
 (* checkpoint publishes them. The parties are:                             *)
 (*                                                                         *)
-(*  - the source's page server, which serves those pages, strikes a page   *)
+(*  - the source's peer server, which serves those pages, strikes a page   *)
 (*    off its book once a reply carrying it has left, refuses a release    *)
 (*    while its book holds a page, and gives everything up when its hold   *)
 (*    runs out (PageSource.Release, Host.expire);                          *)

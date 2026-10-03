@@ -6,14 +6,14 @@ import { useStep } from './Steps'
 // 0 parent runs on host 1 with pages dirty since its last checkpoint (7,2)
 // 1 the fork point: pause, save state, seal, resume — the parent keeps running; sequence (7,2) is pinned
 // 2 a child on the same host: a control record selecting (7,2); it maps the sealed pages through the pager
-// 3 one remote child: its pager pulls the sealed frames from the parent's page server
+// 3 one remote child: its pager pulls the sealed frames from the parent's peer server
 // 4 each child publishes its root once it holds its inherited pages; the last hold retires the seal
 const step = useStep()
 const caption = computed(() => [
   'the parent runs on host 1 at (7,2); four pages dirty since',
   'the fork point: pause, save, seal, resume — nothing uploaded. The parent\'s record pins (7,2).',
   'a child on the same host: a record selecting a root over (7,2); it maps the sealed pages through the shared pager',
-  'a child on another host pulls them from the parent\'s page server, as a migration destination does',
+  'a child on another host pulls them from the parent\'s peer server, as a migration destination does',
   'the child publishes its root once it holds every inherited page. The seal ends when the hold retires, or at the deadline.',
 ][step.value])
 </script>
@@ -57,7 +57,7 @@ const caption = computed(() => [
         <text x="740" y="117" class="small">{{ step >= 4 ? 'root published: open anywhere' : 'record → root over (7,2)' }}</text>
         <text x="740" y="200" class="tiny">pager pulls sealed pages</text>
         <path d="M 560 232 H 640 L 640 140" class="map remote" marker-end="url(#fo)" />
-        <text x="740" y="220" class="tiny">from host 1's page server</text>
+        <text x="740" y="220" class="tiny">from host 1's peer server</text>
         <text x="740" y="250" class="tiny">everything else: its own volume</text>
       </g>
       <defs>

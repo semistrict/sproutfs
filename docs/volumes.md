@@ -988,7 +988,7 @@ through the point. So those pages cost no copy. After a sibling has faulted a
 page, the page also costs no second page, because every child of one
 fork point gives those pages the same identity. On another host,
 `Manager.Inherit` rebuilds the point from the pinned checkpoint alone. The
-child's pager then pulls those pages from the parent's page server, post-copy.
+child's pager then pulls those pages from the parent's peer server, post-copy.
 
 `Manager.InheritPublished` builds the same point over a published checkpoint of
 a VM that nothing need run, such as a stopped VM. There is no writer to pin

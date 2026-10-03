@@ -115,7 +115,7 @@ func receiveRefused(t *testing.T, h *hostHarness, handoff vmmigrate.Handoff, ref
 // destination's certificate comes from an authority the source does not
 // trust, so the source refuses it and serves none of the pages it holds; the
 // receive fails once its caller stops waiting for them.
-func TestAPageServerServesNoPeerItCannotAuthenticate(t *testing.T) {
+func TestAPeerServerServesNoPeerItCannotAuthenticate(t *testing.T) {
 	h, pagers := startMigrationHosts(t)
 	deployment, stranger := newAuthority(t, "deployment"), newAuthority(t, "stranger")
 	sourceRefusals := h.authenticated(t, 0, deployment, deployment)

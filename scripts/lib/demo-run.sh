@@ -159,7 +159,7 @@ printf 'witness set in the guest shell\n'
 # A fork is a migration handoff from a parent that keeps running: the parent
 # pauses for its VMM state capture and the seal and publishes nothing. On its
 # own host the child shares the sealed pages through the pager; on another the
-# child pulls the pages no checkpoint holds out of the parent's page server.
+# child pulls the pages no checkpoint holds out of the parent's peer server.
 step "fork $vm $forks times on its own host"
 parent_host=$(host_of "$vm")
 [[ -n $parent_host ]] || fail "no host reports running $vm"

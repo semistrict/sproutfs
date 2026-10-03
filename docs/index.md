@@ -9,7 +9,7 @@ hosts, and they can be forked without copying. Start with the architecture.
 - [Metadata authority](metadata.md): the control record, conditional writes and the latency boundary.
 - [Hosting](hosting.md): host assembly, budgets and shutdown.
 - [Managed VM memory](vm-memory.md): the pager, the mapping protocol, Firecracker and qualification.
-- [Live migration](migration.md): the handoff, the pause, the page server and the drain.
+- [Live migration](migration.md): the handoff, the pause, the peer server and the drain.
 - [Desired properties](properties/README.md): what the system should do, one property per file.
 - [Research](research/): what other systems do about a problem we face, with sources. The disk cache plan's four notes are dated 2026-10-02.
 - [Testing](testing.md): deterministic simulation, byte models and injected failures.
