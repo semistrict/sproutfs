@@ -456,6 +456,12 @@
     "purpose": "Hand back a raw page as a slice of its reply's pooled buffer, which the next reply is read into."
   },
   {
+    "id": "peer-payload-after-its-receive",
+    "package": "peer",
+    "run": "^TestAKeepIsKeptOverTCP$",
+    "purpose": "End a request's receive context before its payload is read, so a socket's read deadline fails every keep."
+  },
+  {
     "id": "fill-before-durable",
     "package": "checkpoint",
     "run": "^TestAPublicationFillsNothingBeforeItsPartIsDurable$",

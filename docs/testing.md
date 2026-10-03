@@ -1865,7 +1865,7 @@ the disk, and a VM opened on the same host again reads the pages it wrote last
 from the store. The GCE run of 2026-10-03 found this
 (docs/measurements/gce-deploy-cache-2026-10-03.md).
 
-Fourteen guards break the peer server:
+Fifteen guards break the peer server:
 
 ```sh
 SPROUTFS_SIM_BUG=peer-mark-down-when-cancelled \
@@ -1896,6 +1896,8 @@ SPROUTFS_SIM_BUG=peer-serve-past-budget \
   go test ./peer -run '^TestAServerAnswersBusyPastItsServingBandwidth$' -count=1
 SPROUTFS_SIM_BUG=peer-answer-shares-buffer \
   go test ./peer -run '^TestAnAnswersPagesOutliveItsReplysBuffer$' -count=1
+SPROUTFS_SIM_BUG=peer-payload-after-its-receive \
+  go test ./peer -run '^TestAKeepIsKeptOverTCP$' -count=1
 ```
 
 The first five break what each end promises the other. A caller giving up is
@@ -1916,6 +1918,11 @@ ahead of it on its connection. The next serves stripes past a host's serving
 bandwidth. The last hands back a page that no encoder shrank as a slice of
 its reply's pooled buffer, which the next reply is read into: the race
 detector found it in `TestAGuestFaultIsAnsweredWhileTheStreamSaturatesTheLink`.
+The last ends a request's receive context before its payload is read. Over
+TCP a payload is read under the socket's deadline, which that context sets,
+so every keep was reset; the simulated stream does not read under one, which
+is why only the GCE run of 2026-10-03 found it, and why its test runs over a
+loopback socket.
 
 Seven guards break the cluster's fills:
 

@@ -876,6 +876,9 @@ func (f *filler) sent(ctx context.Context, err error, stripes, bytes int) {
 	case errors.Is(err, peer.ErrDropped):
 		f.drop(ctx, DropPeer, stripes)
 	default:
+		// A keep that failed for a reason the others do not name is worth a
+		// line: it is a holder or a link this host cannot use.
+		slog.WarnContext(ctx, "checkpoint: a keep failed; its stripes are dropped", "stripes", stripes, "error", err)
 		f.drop(ctx, DropFailed, stripes)
 	}
 }
