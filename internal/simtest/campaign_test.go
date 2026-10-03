@@ -109,13 +109,14 @@ func runShakenTopologyCampaign(t *testing.T, seed uint64, buggify bool, cache ca
 	prefix := newPrefix(t, "sproutfs/")
 	topology := simtest.NewTopology(runtime.Random("simtest/topology"))
 	clusterCache := cache.on(runtime)
-	t.Logf("seed=%d topology: %s, cluster cache %v", seed, topology, clusterCache)
+	t.Logf("seed=%d topology: %s, cluster cache %v, hot tier %v", seed, topology, clusterCache, cache == cacheHot)
 	// Everything below runs under the simulator's own context, which is what
 	// the probes and the buggified sites inside the real host, volume,
 	// checkpoint, control, pager and migration code consult.
 	ctx := sim.WithRuntime(t.Context(), runtime)
 	world := simtest.MustStart(t, ctx, simtest.Config{Runtime: runtime, Topology: topology,
-		Knobs: campaignKnobs(t, runtime, topology), Prefix: prefix, Log: t.Logf, ClusterCache: clusterCache})
+		Knobs: campaignKnobs(t, runtime, topology), Prefix: prefix, Log: t.Logf, ClusterCache: clusterCache,
+		HotTier: cache == cacheHot})
 	driver := simtest.NewDriver(world, runtime.Random("simtest/schedule"),
 		simtest.Faults(runtime.Random("simtest/faults"), topology), t.Logf)
 	runErr := driver.Run(ctx)
@@ -146,6 +147,12 @@ func runShakenTopologyCampaign(t *testing.T, seed uint64, buggify bool, cache ca
 	if kept := runtime.Probes()[checkpoint.ProbeKeepKept]; clusterCache && kept == 0 {
 		t.Errorf("seed=%d: the hosts' caches kept no stripe a peer sent them", seed)
 	}
+	// Hosts that read through a hot tier fill it and read from it.
+	if probes := runtime.Probes(); cache == cacheHot &&
+		(probes[checkpoint.ProbeHotFillSent] == 0 || probes[checkpoint.ProbeHotHit] == 0) {
+		t.Errorf("seed=%d: the hosts filled the hot tier %d times and read from it %d times, want both",
+			seed, probes[checkpoint.ProbeHotFillSent], probes[checkpoint.ProbeHotHit])
+	}
 	if t.Failed() {
 		reportTrace(t, runtime)
 	}
@@ -155,20 +162,28 @@ func runShakenTopologyCampaign(t *testing.T, seed uint64, buggify bool, cache ca
 
 // campaignCache is whether a campaign's hosts keep one cluster cache, on for
 // every window, or keep no cache disk, as a deployment that has not turned it
-// on runs. Both are what a deployment may run.
+// on runs, or read through a hot tier instead. Each is what a deployment may
+// run.
 type campaignCache int
 
 const (
-	// cacheDrawn is the seed's choice: half the seeds run each.
+	// cacheDrawn is the seed's choice between the first two: half the seeds
+	// run each.
 	cacheDrawn campaignCache = iota
 	cacheOff
 	cacheOn
+	// cacheHot keeps no cache disk and reads through a hot tier.
+	cacheHot
 )
+
+func (c campaignCache) String() string {
+	return [...]string{"drawn", "off", "on", "hot"}[c]
+}
 
 // on reports whether the hosts of a run keep the cluster cache.
 func (c campaignCache) on(runtime *sim.Runtime) bool {
 	switch c {
-	case cacheOff:
+	case cacheOff, cacheHot:
 		return false
 	case cacheOn:
 		return true

@@ -78,6 +78,11 @@ type Config struct {
 	// each reads a list of every host's cache, under the code of the table
 	// for the world's hosts, whenever a host starts.
 	ClusterCache bool
+	// HotTier gives every host a hot tier over one second bucket of the
+	// runtime, which every read of a checkpoint object tries first and every
+	// read and publication fills. It is an alternative to ClusterCache, and a
+	// world given both refuses to start.
+	HotTier bool
 }
 
 // World is a running deployment of one topology: every host is a real
@@ -161,6 +166,9 @@ type World struct {
 	// code the code it lists them under.
 	caches map[string]rank.Cache
 	code   rank.Code
+	// hot is the hot tier's bucket every host reads through, nil in a world
+	// without one.
+	hot *sim.ObjectStore
 	// mu guards what a kill and the operation it interrupts both touch: which
 	// host runs which VM, the guest running it, and the checkpoints it may have
 	// come back at. Everything else here is single-threaded — the driver runs
@@ -239,6 +247,9 @@ type hostState struct {
 	// kill takes away before the process ends so that nothing it had in flight
 	// can still land.
 	objects *hostStore
+	// hot is this host's own view of the hot tier's bucket, nil in a world
+	// without one. A kill takes it away with the store.
+	hot *hostStore
 	// dead is this host's own end: a process that is gone reaches the store no
 	// more, so its shutdown publishes nothing.
 	dead *atomic.Bool
@@ -380,6 +391,9 @@ func start(ctx context.Context, config Config) (*World, error) {
 	if config.Runtime == nil || len(config.Topology.Hosts) == 0 {
 		return nil, errors.New("simtest: a world needs a runtime and a topology")
 	}
+	if config.HotTier && config.ClusterCache {
+		return nil, errors.New("simtest: the hot tier and the cluster cache are alternatives")
+	}
 	if config.Log == nil {
 		config.Log = func(string, ...any) {}
 	}
@@ -390,6 +404,9 @@ func start(ctx context.Context, config Config) (*World, error) {
 		ownership: newOwnership(config.Prefix.String()), caches: map[string]rank.Cache{},
 		code: rank.CodeFor(len(config.Topology.Hosts))}
 	w.runtime.ObjectStore().Observe(w.ownership.observe)
+	if config.HotTier {
+		w.hot = w.runtime.NewObjectStore(config.Namespace+"hot", sim.ObjectStoreConfig{})
+	}
 	for index := range config.Topology.Hosts {
 		id := config.Namespace + config.Topology.Hosts[index]
 		h := &hostState{name: id, address: platform.Address(id),
@@ -408,6 +425,9 @@ func start(ctx context.Context, config Config) (*World, error) {
 		h.process = w.runtime.NewProcess(sim.ProcessConfig{ID: id, Disk: h.disk})
 		h.objects = &hostStore{ObjectStore: w.runtime.ObjectStore(), network: w.runtime.Network(),
 			from: h.address, dead: h.dead}
+		if w.hot != nil {
+			h.hot = &hostStore{ObjectStore: w.hot, network: w.runtime.Network(), from: h.address, dead: h.dead}
+		}
 		w.hosts = append(w.hosts, h)
 		h.config = w.hostConfig(h)
 		if err := w.launch(h); err != nil {
@@ -565,6 +585,17 @@ func (w *World) hostConfig(h *hostState) host.Config {
 			ClusterPercent: 100, ClusterHedgeFloor: time.Hour, ClusterBound: time.Hour,
 			ClusterStripeTimeout: time.Hour}
 		config.CacheList = host.CacheListConfig{Read: w.readCaches, Interval: -1}
+	}
+	if w.config.HotTier {
+		// A read of the hot tier's bound, a mark of it down and the rate of
+		// its fills are choices of time, and whether a burst of fills found
+		// the queue full is a choice of the order concurrent reads handed
+		// them over in. The world sets them out of reach, as it does the
+		// cluster's, and leaves a hit, a miss and a fill to the answers alone.
+		// It checks no hit's regional object: which hit is sampled is the
+		// order the hits arrived in.
+		config.HotTier = checkpoint.HotTierConfig{Store: h.hot, Bound: time.Hour, QueueBytes: 1 << 40,
+			BytesPerSecond: 1 << 40, HeadCheckEvery: -1}
 	}
 	return config
 }
