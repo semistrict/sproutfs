@@ -247,7 +247,7 @@ func (s *Server) admit(session *session, incoming wire.Incoming) error {
 			reply = answer{message: s.busy(session, 0, 0)}
 		} else {
 			defer func() { <-session.inflight }()
-			if err := sim.BuggifyDelay(s.ctx, SiteSlowAnswer, 0.01, time.Second); err != nil {
+			if err := sim.BuggifyDelay(s.ctx, SiteSlowAnswer, 0.05, 2*time.Second); err != nil {
 				payload.release()
 				return
 			}

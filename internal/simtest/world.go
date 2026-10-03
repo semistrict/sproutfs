@@ -136,6 +136,9 @@ type World struct {
 	// rootsCut counts the fork children whose host was lost while the world
 	// was waiting for their root to land.
 	rootsCut int
+	// childReceived is closed, per fork child, once its destination's receive
+	// has returned and the world waits for the child's root.
+	childReceived map[string]chan struct{}
 	// receivedGuests counts the guests hosts have started for each VM they
 	// were taking in, which is what says that a handover started one guest and
 	// not two.
@@ -173,6 +176,28 @@ func (w *World) RootsCut() int {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.rootsCut
+}
+
+// ChildReceived is closed once the fork child id has been received and the
+// world is waiting for its root to land: the span a kill must fall in to cut
+// a root. It is never closed for a child whose receive failed.
+func (w *World) ChildReceived(id string) <-chan struct{} {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.childReceivedLocked(id)
+}
+
+// childReceivedLocked is ChildReceived's channel. Caller holds w.mu.
+func (w *World) childReceivedLocked(id string) chan struct{} {
+	if w.childReceived == nil {
+		w.childReceived = make(map[string]chan struct{})
+	}
+	signal, ok := w.childReceived[id]
+	if !ok {
+		signal = make(chan struct{})
+		w.childReceived[id] = signal
+	}
+	return signal
 }
 
 // ReceivedGuests is how many guests hosts have started for one VM they were
@@ -2338,6 +2363,10 @@ func (w *World) forked(ctx context.Context, source, destination *hostState, spec
 	// or at a requirement broken on the way: a stream left running would
 	// outlive the world it streams into.
 	defer received.Close()
+	w.mu.Lock()
+	close(w.childReceivedLocked(spec.ID))
+	delete(w.childReceived, spec.ID)
+	w.mu.Unlock()
 	child := destination.guestFor(spec.ID)
 	if child == nil {
 		select {
