@@ -304,4 +304,3 @@ func TestHotTierSurvivesItsFaultsAndReachesItsProbes(t *testing.T) {
 		t.Fatalf("the campaign never reached %v; it reached probes %v and fired %v", missed, probes, fired)
 	}
 }
-

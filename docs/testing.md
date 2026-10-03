@@ -2072,6 +2072,31 @@ whether or not another rank holds it: after a join, the new cache is sent an
 index a holder below it still holds. The last never checks a sampled hit's
 part.
 
+Five guards break the hot tier:
+
+```sh
+SPROUTFS_SIM_BUG=hot-tier-fill-before-durable \
+  go test ./checkpoint -run '^TestAPublicationWritesTheHotTierOnlyOnceItsRegionalPutSucceeded$' -count=1
+SPROUTFS_SIM_BUG=hot-tier-read-fails \
+  go test ./checkpoint -run '^TestAHotTierThatFailsNeverFailsARead$' -count=1
+SPROUTFS_SIM_BUG=hot-tier-beside-cluster \
+  go test ./checkpoint -run '^TestAStoreRefusesAHotTierBesideTheClusterCache$' -count=1
+SPROUTFS_SIM_BUG=hot-tier-fill-waits \
+  go test ./checkpoint -run '^TestAReadIsNotSlowedByItsHotTierFill$' -count=1
+SPROUTFS_SIM_BUG=hot-tier-unbounded-queue \
+  go test ./checkpoint -run '^TestTheHotTierDropsFillsPastItsQueueOrItsRate$' -count=1
+```
+
+The first writes a part to the hot tier before its regional PUT has
+succeeded: the hot tier holds the part while that PUT is still in flight. The
+second fails a read whose hot tier failed, rather than read the regional
+bucket: a hot tier that is down, slow or holds other bytes fails the read.
+The third gives a store a hot tier beside a cache that fills the cluster. The
+fourth copies a missed object in front of the read, which then waits ten
+seconds for a slow PUT. The fifth holds every fill whatever the queue's
+bound. The hot tier campaign (`TestHotTierSurvivesItsFaultsAndReachesItsProbes`)
+kills `hot-tier-read-fails` too.
+
 Five guards break the list of caches:
 
 ```sh

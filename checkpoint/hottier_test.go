@@ -83,7 +83,9 @@ func newHotFixture(t *testing.T, latency sim.ObjectStoreConfig, config checkpoin
 	return f
 }
 
-func (f *hotFixture) ctx(t *testing.T) context.Context { return sim.WithRuntime(t.Context(), f.runtime) }
+func (f *hotFixture) ctx(t *testing.T) context.Context {
+	return sim.WithRuntime(t.Context(), f.runtime)
+}
 
 func (f *hotFixture) settle(t *testing.T) {
 	t.Helper()
