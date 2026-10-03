@@ -1,6 +1,7 @@
 package sim_test
 
 import (
+	"bytes"
 	"errors"
 	"testing"
 	"testing/synctest"
@@ -98,6 +99,65 @@ func TestAWriteThatDoesNotFitIsRefused(t *testing.T) {
 	})
 }
 
+// An allocated range holds its space before it is written, as fallocate does:
+// another writer that fills the filesystem afterwards cannot take it, and a
+// write into it needs nothing more. A range that does not fit is refused whole,
+// and punching a range gives its space back.
+func TestAnAllocatedRangeHoldsItsSpace(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		runtime := sim.New(sim.Config{})
+		disk := runtime.NewDisk("node-1", sim.DiskConfig{
+			Space: sim.SpaceConfig{TotalBytes: 64 << 10, OutsideBytes: 16 << 10}})
+		file, err := disk.Open(t.Context(), "spill", platform.OpenOptions{Create: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		allocating := file.(platform.AllocatingFile)
+		if err := allocating.Allocate(t.Context(), 0, 52<<10); !errors.Is(err, platform.ErrNoSpace) {
+			t.Fatalf("allocating 52 KiB of 48 free returned %v, want %v", err, platform.ErrNoSpace)
+		}
+		if got := disk.Usage().HostBytes; got != 0 {
+			t.Fatalf("the refused allocation left the files holding %d bytes, want 0", got)
+		}
+		if err := allocating.Allocate(t.Context(), 0, 32<<10); err != nil {
+			t.Fatal(err)
+		}
+		if got := space(t, disk).Available; got != 16<<10 {
+			t.Fatalf("32 KiB allocated left %d available, want %d", got, 16<<10)
+		}
+		allocated, err := file.(platform.FileAllocation).Allocated(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if allocated != 32<<10 {
+			t.Fatalf("the file holds %d bytes, want 32 KiB", allocated)
+		}
+		// Another writer takes everything that is free.
+		disk.SetOutsideBytes(32 << 10)
+		page := bytes.Repeat([]byte{7}, 4096)
+		if _, err := file.WriteAt(t.Context(), page, 28<<10); err != nil {
+			t.Fatalf("a write into an allocated page of a full filesystem returned %v, want none", err)
+		}
+		if _, err := file.WriteAt(t.Context(), page, 32<<10); !errors.Is(err, platform.ErrNoSpace) {
+			t.Fatalf("a write past the allocation returned %v, want %v", err, platform.ErrNoSpace)
+		}
+		got := make([]byte, 8192)
+		if _, err := file.ReadAt(t.Context(), got, 24<<10); err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got, append(make([]byte, 4096), page...)) {
+			t.Fatal("the allocated file does not read as zeroes and what was written")
+		}
+		if err := file.(platform.SparseFile).PunchHole(t.Context(), 0, 8<<10); err != nil {
+			t.Fatal(err)
+		}
+		want := sim.SpaceUsage{TotalBytes: 64 << 10, OutsideBytes: 32 << 10, HostBytes: 24 << 10}
+		if got := disk.Usage(); got != want {
+			t.Fatalf("after punching 8 KiB the disk's usage is %+v, want %+v", got, want)
+		}
+	})
+}
+
 // The device counts every byte written to it, by this disk's files and by
 // other writers.
 func TestADeviceCountsTheBytesWrittenToIt(t *testing.T) {
@@ -175,6 +235,21 @@ func TestADiskWithNoSizeIsDrawnFromTheSeed(t *testing.T) {
 			if free := usage.FreeBytes(); free < 5_000_000_000 || float64(free) < 0.075*float64(usage.TotalBytes) {
 				t.Fatalf("%s drew %d free of %d, want at least 5 GB and 7.5 %%", id, free, usage.TotalBytes)
 			}
+		}
+	})
+}
+
+// Room reserved for a disk's own files is added to what is drawn, all of it
+// free, and moves nothing else the seed draws.
+func TestADrawnDiskKeepsTheRoomReservedForItsFiles(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const reserved = 8 << 30
+		drawn := sim.New(sim.Config{Seed: 3}).NewDisk("node-1", sim.DiskConfig{}).Usage()
+		got := sim.New(sim.Config{Seed: 3}).NewDisk("node-1",
+			sim.DiskConfig{Space: sim.SpaceConfig{ReservedBytes: reserved}}).Usage()
+		want := sim.SpaceUsage{TotalBytes: drawn.TotalBytes + reserved, OutsideBytes: drawn.OutsideBytes}
+		if got != want {
+			t.Fatalf("a disk with 8 GiB reserved drew %+v, want %+v", got, want)
 		}
 	})
 }

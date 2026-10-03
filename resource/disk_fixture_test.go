@@ -85,8 +85,10 @@ func (f *diskFixture) settle() {
 // minutes is forty smoothing times, which leaves no byte of difference.
 func (f *diskFixture) converge() { f.tick(240) }
 
-// sparse opens a file and sizes it to bytes without writing any of it, as a
-// pager sizes its spill file.
+// sparse opens a file and sizes it to bytes without writing any of it: a user
+// that holds less than it promised. A pager allocates its spill file whole, so
+// this tests the limiter's rule on its own: a promise counts whole, whatever
+// the file holds.
 func (f *diskFixture) sparse(name string, bytes int64) platform.File {
 	f.t.Helper()
 	file, err := f.disk.Open(f.ctx, name, platform.OpenOptions{Create: true})

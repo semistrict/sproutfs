@@ -99,9 +99,9 @@ func (s *survivingSpill) Size(ctx context.Context) (int64, error) {
 	return size, err
 }
 
-func (s *survivingSpill) PunchHole(ctx context.Context, offset, length int64) error {
+func (s *survivingSpill) Allocate(ctx context.Context, offset, length int64) error {
 	return s.retry(ctx, func(file platform.File) error {
-		return file.(platform.SparseFile).PunchHole(ctx, offset, length)
+		return file.(platform.AllocatingFile).Allocate(ctx, offset, length)
 	})
 }
 
@@ -111,7 +111,7 @@ func (s *survivingSpill) Close() error {
 	return s.file.Close()
 }
 
-var _ platform.SparseFile = (*survivingSpill)(nil)
+var _ platform.AllocatingFile = (*survivingSpill)(nil)
 
 // spillFixture is a one-memory-region pager whose scratch spill lives on a device that
 // resolves unsynced writes at a power loss.

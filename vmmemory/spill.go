@@ -3,6 +3,7 @@ package vmmemory
 import (
 	"context"
 	"errors"
+	"fmt"
 	"hash/crc32"
 	"io"
 	"sort"
@@ -48,17 +49,12 @@ var ErrSpillCorrupt = errors.New("vmmemory: spilled page does not match its chec
 
 // releaseSpill returns a dirty page's spill slot to the host and wakes waiters.
 func (h *Host) releaseSpill(slot int) {
-	h.mu.Lock()
-	written := h.reservations.holds(slot)
-	h.mu.Unlock()
-	if written {
-		// Returning the slot's blocks is a courtesy to the node's filesystem,
-		// not accounting: the spill file's whole extent is already this pager's
-		// fixed cap, so a failed or unsupported punch costs nothing.
-		if file, ok := h.spill.(platform.SparseFile); ok {
-			_ = file.PunchHole(context.Background(), int64(slot)*int64(h.pageSize), int64(h.pageSize))
-		}
-	}
+	// The slot keeps its blocks. Punching them would give them back to the
+	// filesystem, where another writer on the node can take them, and the next
+	// page spilled to this slot would then have nowhere to go. Allocating the
+	// slot again before that write would not help: the allocation is itself the
+	// write that finds the disk full. The stale bytes are never read, because
+	// the slot is not recorded as holding any until it is written again.
 	h.mu.Lock()
 	h.reservations.put(slot)
 	h.dirty--
@@ -68,6 +64,26 @@ func (h *Host) releaseSpill(slot int) {
 	}
 	h.signal()
 	h.mu.Unlock()
+}
+
+// allocateSpill sizes a new pager's spill file to its dirty budget and
+// allocates that whole extent. A spilled dirty page is the only copy of what
+// the guest wrote, so a spill must never fail for want of disk. A sparse file
+// would not do: the space it has not used yet is only free space on the
+// filesystem, which another writer on the node can take. The extent is this
+// pager's fixed cap on the disk, held from start to close.
+func allocateSpill(ctx context.Context, spill platform.File, size int64) error {
+	if sim.Bug(ctx, "spill-sparse") {
+		return spill.Truncate(ctx, size)
+	}
+	file, ok := spill.(platform.AllocatingFile)
+	if !ok {
+		return fmt.Errorf("%w: a spill file must allocate its extent", ErrConfig)
+	}
+	if err := file.Allocate(ctx, 0, size); err != nil {
+		return fmt.Errorf("allocating the spill file's %d bytes: %w", size, err)
+	}
+	return nil
 }
 
 // tryTakeSpill admits one more private page to the dirty budget without

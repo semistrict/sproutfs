@@ -168,10 +168,14 @@ every attached memory region, including pages never touched. Every private page 
 a spill slot before a write can resume. The spill slot covers resident and
 spilled dirty state together. The dirty budget sets the size of the spill file.
 So the file's whole extent is the pager's fixed disk cap, and a store never
-needs room from anywhere else. Concurrent page I/O has a separate limit. Each
-permit covers one read-ahead or spill buffer. One extra permit is reserved so
-that a checkpoint's read of a sealed set makes progress while cold faults use
-all the others.
+needs room from anywhere else. `New` allocates that extent (`fallocate` on
+Linux) before the pager takes any work, and a filesystem that cannot hold it
+refuses the pager. A sparse file would not be enough: the space it had not used
+yet would be only free space, which another writer on the node can take, and a
+spilled dirty page is the only copy of what the guest wrote. Concurrent page
+I/O has a separate limit. Each permit covers one read-ahead or spill buffer.
+One extra permit is reserved so that a checkpoint's read of a sealed set makes
+progress while cold faults use all the others.
 
 `LossWindow` bounds the same private state in time. For each memory region, the pager
 records the age of the oldest page that no landed checkpoint covers. While that
@@ -1363,8 +1367,11 @@ that never completes still reports the work that walk did.
 The spill file is scratch storage. It is never an acknowledged crash-recovery
 image. A starting process truncates it, because a restart is a host loss and
 nothing in the file is valid afterwards. For the same reason, it is written but
-not synced. Returning a released slot's blocks to the filesystem is optional and
-not part of accounting. So a failed or unsupported hole punch costs nothing.
+not synced. A released slot keeps its blocks. Punching them would give them back
+to the filesystem, and the next page spilled to that slot could find them
+taken. Allocating the slot again before that write would not help, because the
+allocation is itself the write that finds the disk full. A released slot's old
+bytes are never read: the slot holds nothing until it is written again.
 
 Verification checks writer authority even when cached accesses never fault. The
 Linux connection runs it per volume on a timer with bounded deadlines. A failure

@@ -7,9 +7,11 @@ substitutes a simplified storage implementation. Simulation tests use virtual
 time. When a random workload fails, it reports its seed, the commands it ran and
 the recent simulator events.
 
-A simulated file is sparse, as a file on a real filesystem is. A pager truncates
-its spill file to hold every dirty page it may keep, and that hole costs the test
-process no memory.
+A simulated file is sparse, as a file on a real filesystem is. A hole costs the
+test process no memory. A pager allocates its spill file to hold every dirty
+page it may keep. The simulated filesystem counts that space against its
+total, but every allocated page that was never written shares one zero page,
+so it costs the test process almost no memory either.
 
 `internal/simtest` is the only way to build a simulated deployment. Every
 campaign is a schedule, a fault set and an invariant set over the deployment's
@@ -1410,6 +1412,8 @@ SPROUTFS_SIM_BUG=pager-forget-spill \
   go test ./internal/simtest -run '^TestSeededTopologyUnderBuggify$' -count=1
 SPROUTFS_SIM_BUG=pager-give-back-changed-copy \
   go test ./internal/simtest -run '^TestSeededTopologyCampaign$' -count=1
+SPROUTFS_SIM_BUG=spill-sparse \
+  go test ./vmmemory -run '^TestASpillSucceedsOnADiskFilledFromOutside$' -count=1
 SPROUTFS_SIM_BUG=diskcache-skip-key-check \
   go test ./checkpoint -run '^TestDiskReadChecksKeyAndChecksum$' -count=1
 SPROUTFS_SIM_BUG=diskcache-skip-checksum \
@@ -1438,6 +1442,10 @@ not to the recorded scenario, because they break a fault's own path:
 
 These three show that the per-site injection and the ambient faults are worth
 their cost.
+
+`spill-sparse` leaves a pager's spill file sparse. Its test fills the
+simulated filesystem from outside once the pager has started, and the guest's
+next spill then fails for want of space.
 
 The seven `diskcache-` guards break the page cache's disk. Each is killed by a
 test of the one property it breaks. `diskcache-table-before-sync` is killed

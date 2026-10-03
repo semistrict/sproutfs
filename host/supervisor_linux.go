@@ -222,9 +222,10 @@ func Start(ctx context.Context, config SupervisorConfig) (Service, error) {
 	if err != nil {
 		return nil, fmt.Errorf("the page cache's disk: %w", err)
 	}
-	// The disk limiter comes after every file it measures is open and before
-	// anything is written to them. A configuration whose promises the disk
-	// cannot keep is refused here, with nothing yet spilled.
+	// The disk limiter comes after every file it measures is open, and after
+	// the spill files hold their extents, but before anything is spilled. A
+	// configuration whose promises the disk cannot keep under its goals is
+	// refused here.
 	s.disk, err = startDiskLimiter(ctx, config, diskUsers(config,
 		diskFiles{spills: s.spills}, s.runningVMMs, &s.staged))
 	if err != nil {
@@ -272,10 +273,9 @@ func Start(ctx context.Context, config SupervisorConfig) (Service, error) {
 
 // startPager builds one of this host's pagers: its own arena — the HugeTLB
 // pool's memory for a 2 MiB page, ordinary memory for a 4 KiB one — its
-// own spill file and its own configuration. A restart is a host
-// loss, so the spill file starts empty; the pager sizes it to the dirty pages
-// its cap allows. Each is logged with the bounds the node chose for it, so what
-// a host gave each kind is on the record.
+// own spill file and its own configuration, through newPager. Each is logged
+// with the bounds the node chose for it, so what a host gave each kind is on
+// the record.
 func (s *supervisor) startPager(ctx context.Context, kind pagerSlot, cfg vmmemory.Config) (*vmmemory.Host, error) {
 	// The pager makes the arena's files. Each is sized to its addresses, not to
 	// the memory it may hold: it is a sparse file, and a pager that places a
@@ -286,17 +286,11 @@ func (s *supervisor) startPager(ctx context.Context, kind pagerSlot, cfg vmmemor
 		return nil, fmt.Errorf("%s arena of %d-byte pages: %w", kind, cfg.PageSize, err)
 	}
 	s.arenas[kind] = arena
-	spill, err := s.config.Disk.Open(ctx, "spill-"+string(kind),
-		platform.OpenOptions{Create: true, Truncate: true, Permissions: 0o600})
+	pager, spill, err := newPager(ctx, s.config.Disk, s.resources, kind, cfg, arena)
 	if err != nil {
-		return nil, fmt.Errorf("%s spill file: %w", kind, err)
+		return nil, err
 	}
 	s.spills[kind] = spill
-	pager, err := vmmemory.New(ctx, s.resources, cfg, arena, spill)
-	if err != nil {
-		return nil, fmt.Errorf("%s pager of %d offsets for %d pages of %d bytes: %w",
-			kind, cfg.Offsets(), cfg.ResidentPages, cfg.PageSize, err)
-	}
 	slog.InfoContext(ctx, "host: a pager was assembled", "kind", string(kind),
 		"page_bytes", cfg.PageSize, "resident_pages", cfg.ResidentPages,
 		"arena", cfg.Arena.String(), "arena_offsets", cfg.Offsets(), "huge_pages", arena.HugePolicy(),

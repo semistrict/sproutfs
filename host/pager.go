@@ -1,11 +1,15 @@
 package host
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"runtime"
 	"time"
 
 	"github.com/semistrict/sproutfs/checkpoint"
+	"github.com/semistrict/sproutfs/platform"
+	"github.com/semistrict/sproutfs/resource"
 	"github.com/semistrict/sproutfs/vmmemory"
 )
 
@@ -101,6 +105,36 @@ func (slot pagerSlot) of(pagers vmmemory.Pagers) *vmmemory.Host {
 		return pagers.Ephemeral
 	}
 	return nil
+}
+
+// newPager builds one of a supervisor's pagers over its arena and a spill file
+// it opens on the host's disk. A restart is a host loss, so the spill file
+// starts empty. The pager allocates the file's whole extent, the dirty pages
+// its cap allows, so another writer on the node cannot take that space later.
+// A disk that cannot hold the extent is a configuration this host cannot keep:
+// it is refused here, and not when a guest's page has nowhere to go. The caller
+// closes the spill file after the pager. A pager that is not built closes it
+// here.
+func newPager(ctx context.Context, disk platform.Disk, resources *resource.Budget, kind pagerSlot,
+	cfg vmmemory.Config, arena vmmemory.Arena) (*vmmemory.Host, platform.File, error) {
+	spill, err := disk.Open(ctx, "spill-"+string(kind),
+		platform.OpenOptions{Create: true, Truncate: true, Permissions: 0o600})
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s spill file: %w", kind, err)
+	}
+	pager, err := vmmemory.New(ctx, resources, cfg, arena, spill)
+	if err == nil {
+		return pager, spill, nil
+	}
+	if closeErr := spill.Close(); closeErr != nil {
+		err = errors.Join(err, fmt.Errorf("closing the %s spill file: %w", kind, closeErr))
+	}
+	if errors.Is(err, platform.ErrNoSpace) || errors.Is(err, errors.ErrUnsupported) {
+		return nil, nil, fmt.Errorf("%w: the disk cannot allocate the %s spill file's %d bytes: %w",
+			ErrInvalidConfig, kind, int64(cfg.DirtyPages)*int64(cfg.PageSize), err)
+	}
+	return nil, nil, fmt.Errorf("%s pager of %d offsets for %d pages of %d bytes: %w",
+		kind, cfg.Offsets(), cfg.ResidentPages, cfg.PageSize, err)
 }
 
 // pagerConfig is the configuration of one of a supervisor's two pagers: the
