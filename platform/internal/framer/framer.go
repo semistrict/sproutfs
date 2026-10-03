@@ -25,6 +25,7 @@ import (
 	"io"
 	"math"
 	"net"
+	"os"
 	"sync"
 	"syscall"
 	"time"
@@ -472,6 +473,11 @@ func withDeadline(ctx context.Context, setDeadline func(time.Time) error, operat
 	_ = setDeadline(time.Time{})
 	if cause := context.Cause(ctx); cause != nil {
 		return cause
+	}
+	// The stream's deadline was the context's, and it can pass a moment before
+	// the context says so: the caller's own deadline is what ended this.
+	if deadline, ok := ctx.Deadline(); ok && errors.Is(err, os.ErrDeadlineExceeded) && !time.Now().Before(deadline) {
+		return context.DeadlineExceeded
 	}
 	return err
 }

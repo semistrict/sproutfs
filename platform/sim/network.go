@@ -21,6 +21,38 @@ type NetworkConfig struct {
 	MaxHeaderSize  int
 	MaxPayloadSize int64
 	BytesPerSecond int64
+
+	// The faults below are what FoundationDB's simulator models and this one
+	// once did not. Each is off at its zero value, so a world that asks for
+	// none of them runs exactly as it always did.
+
+	// TailEvery and TailLatency are a heavy latency tail: about one hop in
+	// TailEvery takes up to TailLatency longer than its link's own latency.
+	TailEvery   int
+	TailLatency time.Duration
+	// SlowPairPerMille and SlowPairLatency are links that stay slow: when two
+	// hosts first connect, that many pairs in a thousand are given an extra
+	// latency of up to SlowPairLatency, which every hop between them pays for
+	// the rest of the run.
+	SlowPairPerMille int
+	SlowPairLatency  time.Duration
+	// LinkBytesPerSecond is the bandwidth of each direction between two hosts,
+	// shared by every connection between them: a frame is transmitted behind
+	// the bytes sent before it on that pair. Zero charges each frame
+	// BytesPerSecond on its own instead.
+	LinkBytesPerSecond int64
+	// SendBufferBytes bounds what one direction of a connection holds that its
+	// reader has not taken, so a sender whose peer stops reading stalls rather
+	// than growing memory. Each connection draws its own bound between half
+	// this and this. Zero bounds only by InboxSize frames.
+	SendBufferBytes int64
+	// HangDeadDials makes a dial to an address nobody listens at wait until its
+	// caller gives up, as a dial to a machine that is gone waits out its SYN
+	// retries, instead of being refused at once.
+	HangDeadDials bool
+	// HostOf names the host an address belongs to, which slow pairs and shared
+	// bandwidth are counted per. Nil makes every address a host of its own.
+	HostOf func(platform.Address) string
 }
 
 func (c NetworkConfig) withDefaults(defaults NetworkConfig) NetworkConfig {
@@ -57,6 +89,24 @@ type linkState struct {
 	// schedule and not a set of goroutines waiting to undo themselves.
 	clogFrom  time.Time
 	clogUntil time.Time
+	// holdFrom and holdUntil are the interval this link holds what is sent
+	// over it: a clog that delays rather than refuses, as a real partition
+	// does. What is sent arrives once the hold ends.
+	holdFrom  time.Time
+	holdUntil time.Time
+}
+
+// pairKey is one direction between two hosts.
+type pairKey struct {
+	from, to string
+}
+
+// pairState is what one direction between two hosts carries for the whole run:
+// its lasting extra latency, and when the bytes already sent over it will
+// have been transmitted.
+type pairState struct {
+	slow time.Duration
+	free time.Time
 }
 
 // Network is an in-memory, message-framed network. Link controls are
@@ -69,6 +119,8 @@ type Network struct {
 	listeners map[platform.Address]*listener
 	links     map[linkKey]*linkState
 	dials     map[linkKey]uint64
+	pairs     map[pairKey]*pairState
+	streams   streamListeners
 }
 
 func newNetwork(runtime *Runtime, config NetworkConfig) *Network {
@@ -78,6 +130,8 @@ func newNetwork(runtime *Runtime, config NetworkConfig) *Network {
 		listeners: make(map[platform.Address]*listener),
 		links:     make(map[linkKey]*linkState),
 		dials:     make(map[linkKey]uint64),
+		pairs:     make(map[pairKey]*pairState),
+		streams:   make(streamListeners),
 	}
 }
 
@@ -125,10 +179,20 @@ func (n *Network) Dial(ctx context.Context, from, to platform.Address) (platform
 			return nil, err
 		}
 	}
+	if err := n.waitOutHold(ctx, key); err != nil {
+		n.traceNetwork(key, "dial", "canceled", 0, dialID)
+		return nil, err
+	}
 	n.mu.Lock()
 	l := n.listeners[to]
 	blocked := n.linkLocked(key).blocked(n.config, n.runtime.Now())
 	n.mu.Unlock()
+	if l == nil && n.config.HangDeadDials {
+		// Nothing answers, and nothing says so: the dial waits for its caller.
+		n.traceNetwork(key, "dial", "hanging", 0, dialID)
+		<-ctx.Done()
+		return nil, context.Cause(ctx)
+	}
 	if l == nil {
 		n.traceNetwork(key, "dial", "not_found", 0, dialID)
 		return nil, platform.ErrNotFound
@@ -143,8 +207,8 @@ func (n *Network) Dial(ctx context.Context, from, to platform.Address) (platform
 	}
 
 	pipe := &connectionPipe{done: make(chan struct{})}
-	client := newConn(n, pipe, from, to)
-	server := newConn(n, pipe, to, from)
+	client := newConn(n, pipe, from, to, n.sendBuffer(key, dialID, "client"))
+	server := newConn(n, pipe, to, from, n.sendBuffer(key, dialID, "server"))
 	client.id = fmt.Sprintf("%q/%q/%d", from, to, dialID)
 	server.id = client.id
 	client.peer = server
@@ -226,10 +290,96 @@ func (n *Network) Heal(from, to platform.Address) {
 	config := state.effective(n.config)
 	config.Blocked = false
 	state.config = &config
-	// Healing a link ends whatever is blocking it, a clog included: a caller
-	// that has decided this link works again should not have to know why it
-	// did not.
+	// Healing a link ends whatever is blocking it, a clog or a hold included:
+	// a caller that has decided this link works again should not have to know
+	// why it did not.
 	state.clogFrom, state.clogUntil = time.Time{}, time.Time{}
+	state.holdFrom, state.holdUntil = time.Time{}, time.Time{}
+}
+
+// Hold clogs the link from -> to the way a real partition does: what is sent
+// over it is held rather than refused, and arrives once the hold ends at until,
+// and a dial over it waits for the end as well. Nothing tells the sender
+// anything, which is what makes the receiver's own check of whether bytes are
+// arriving the thing under test. Clog, which refuses, stays as it was.
+func (n *Network) Hold(from, to platform.Address, until time.Time) {
+	n.holdBetween(from, to, n.runtime.Now(), until)
+}
+
+// HoldBoth holds both directions between two addresses until the same instant.
+func (n *Network) HoldBoth(a, b platform.Address, until time.Time) {
+	n.Hold(a, b, until)
+	n.Hold(b, a, until)
+}
+
+func (n *Network) holdBetween(from, to platform.Address, start, until time.Time) {
+	n.mu.Lock()
+	state := n.linkLocked(linkKey{from: from, to: to})
+	state.holdFrom, state.holdUntil = start, until
+	n.mu.Unlock()
+	n.runtime.trace.record(Event{Kind: "network", Resource: string(from) + "->" + string(to),
+		Operation: "hold", Outcome: "ok", Bytes: int(until.Sub(start))})
+}
+
+// heldUntil is when a hold on the link ends, zero when none holds it now.
+// Caller holds n.mu.
+func (s *linkState) heldUntil(now time.Time) time.Time {
+	if s.holdUntil.IsZero() || now.Before(s.holdFrom) || !now.Before(s.holdUntil) {
+		return time.Time{}
+	}
+	return s.holdUntil
+}
+
+// waitOutHold waits for a hold on the link to end, as a dial over a silent link
+// does.
+func (n *Network) waitOutHold(ctx context.Context, key linkKey) error {
+	n.mu.Lock()
+	until := n.linkLocked(key).heldUntil(n.runtime.Now())
+	n.mu.Unlock()
+	if until.IsZero() {
+		return nil
+	}
+	return sleep(ctx, until.Sub(n.runtime.Now()))
+}
+
+// hostOf names the host an address belongs to.
+func (n *Network) hostOf(address platform.Address) string {
+	if n.config.HostOf == nil {
+		return string(address)
+	}
+	return n.config.HostOf(address)
+}
+
+// pairLocked is one direction between the hosts of a link, made the first time
+// they talk. Its lasting extra latency is drawn then, from the seed and the
+// two hosts alone, the same in both directions. Caller holds n.mu.
+func (n *Network) pairLocked(key linkKey) *pairState {
+	from, to := n.hostOf(key.from), n.hostOf(key.to)
+	pair := pairKey{from: from, to: to}
+	state := n.pairs[pair]
+	if state != nil {
+		return state
+	}
+	state = &pairState{}
+	if n.config.SlowPairPerMille > 0 && n.config.SlowPairLatency > 0 {
+		low, high := min(from, to), max(from, to)
+		r := n.runtime.Random("network/slow-pair")
+		if r.Intn(low+"\x00"+high+"/slow", 1000) < n.config.SlowPairPerMille {
+			state.slow = r.Duration(low+"\x00"+high+"/latency", n.config.SlowPairLatency)
+		}
+	}
+	n.pairs[pair] = state
+	return state
+}
+
+// sendBuffer draws one direction of a connection's buffer, zero for none.
+func (n *Network) sendBuffer(key linkKey, dialID uint64, side string) int64 {
+	if n.config.SendBufferBytes <= 0 {
+		return 0
+	}
+	half := max(n.config.SendBufferBytes/2, 1)
+	id := fmt.Sprintf("%s/%s/%d/%s", key.from, key.to, dialID, side)
+	return half + int64(n.runtime.Random("network/send-buffer").Uint64(id)%uint64(half))
 }
 
 // Clog blocks the link from -> to until the simulated instant until, after
@@ -277,6 +427,21 @@ func (n *Network) Swizzle(addrs []platform.Address, window time.Duration, r Rand
 	if window <= 0 || len(addrs) < 2 {
 		return
 	}
+	n.swizzle(addrs, window, r, n.clogBetween)
+}
+
+// SwizzleHolding is Swizzle with holds: every link among addrs holds what is
+// sent over it for an interval of its own instead of refusing it, as FoundationDB's
+// clogs do.
+func (n *Network) SwizzleHolding(addrs []platform.Address, window time.Duration, r Random) {
+	if window <= 0 || len(addrs) < 2 {
+		return
+	}
+	n.swizzle(addrs, window, r, n.holdBetween)
+}
+
+func (n *Network) swizzle(addrs []platform.Address, window time.Duration, r Random,
+	block func(from, to platform.Address, start, until time.Time)) {
 	base := n.runtime.Now()
 	half := window / 2
 	for _, from := range addrs {
@@ -287,7 +452,7 @@ func (n *Network) Swizzle(addrs []platform.Address, window time.Duration, r Rand
 			id := string(from) + "->" + string(to)
 			start := base.Add(r.Duration(id+"/clog", half))
 			until := base.Add(half + r.Duration(id+"/heal", half))
-			n.clogBetween(from, to, start, until)
+			block(from, to, start, until)
 		}
 	}
 }
@@ -356,13 +521,14 @@ type sendPlan struct {
 	blocked          bool
 }
 
-func (n *Network) planSend(key linkKey) sendPlan {
+func (n *Network) planSend(key linkKey, bytes int) sendPlan {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	state := n.linkLocked(key)
 	state.sequence++
 	config := state.effective(n.config)
-	plan := sendPlan{sequence: state.sequence, blocked: state.blocked(n.config, n.runtime.Now())}
+	now := n.runtime.Now()
+	plan := sendPlan{sequence: state.sequence, blocked: state.blocked(n.config, now)}
 	plan.minimum = max(0, config.Latency-config.Jitter)
 	plan.maximum = max(0, config.Latency+config.Jitter)
 	plan.delay = config.Latency + jitter(n.runtime.sample(fmt.Sprintf("network/%s/%s/%d", key.from, key.to, plan.sequence)), config.Jitter)
@@ -387,7 +553,46 @@ func (n *Network) planSend(key linkKey) sendPlan {
 		state.corruptNext--
 		plan.corrupt = true
 	}
+	// What the faults of this run add to the hop: a hold the frame waits out,
+	// a lasting slow pair, a rare long hop, and the bytes ahead of it on the
+	// link between the two hosts.
+	extra := n.extraLocked(key, state, plan.sequence, bytes, now)
+	plan.minimum += extra
+	plan.maximum += extra
+	plan.delay += extra
 	return plan
+}
+
+// extraLocked is what this run's faults add to one hop. Caller holds n.mu.
+func (n *Network) extraLocked(key linkKey, state *linkState, sequence uint64, bytes int, now time.Time) time.Duration {
+	var extra time.Duration
+	if until := state.heldUntil(now); !until.IsZero() {
+		extra += until.Sub(now)
+	}
+	if n.config.TailEvery > 0 && n.config.TailLatency > 0 {
+		r := n.runtime.Random("network/tail")
+		id := fmt.Sprintf("%s/%s/%d", key.from, key.to, sequence)
+		if r.Intn(id, n.config.TailEvery) == 0 {
+			extra += r.Duration(id+"/latency", n.config.TailLatency)
+		}
+	}
+	if n.config.SlowPairPerMille == 0 && n.config.LinkBytesPerSecond == 0 {
+		return extra
+	}
+	pair := n.pairLocked(key)
+	extra += pair.slow
+	if n.config.LinkBytesPerSecond > 0 {
+		// The frame is transmitted once the bytes ahead of it on this pair
+		// have been, and takes its own share of the link after them.
+		start := now.Add(extra)
+		if pair.free.After(start) {
+			start = pair.free
+		}
+		transmit := time.Duration(int64(bytes) * int64(time.Second) / n.config.LinkBytesPerSecond)
+		pair.free = start.Add(transmit)
+		extra = pair.free.Sub(now)
+	}
+	return extra
 }
 
 func (n *Network) traceNetwork(key linkKey, operation, outcome string, bytes int, localID uint64) {
@@ -474,9 +679,16 @@ type conn struct {
 	peer         *conn
 	inbox        chan receivedFrameData
 	send         chan struct{}
+	// buffer bounds the bytes this end's inbox holds that it has not received,
+	// zero for no bound beyond InboxSize frames; queued is what it holds, and
+	// room is closed and replaced whenever a receive makes room.
+	buffer int64
+	bufMu  sync.Mutex
+	queued int64
+	room   chan struct{}
 }
 
-func newConn(network *Network, pipe *connectionPipe, local, remote platform.Address) *conn {
+func newConn(network *Network, pipe *connectionPipe, local, remote platform.Address, buffer int64) *conn {
 	c := &conn{
 		network: network,
 		pipe:    pipe,
@@ -484,9 +696,49 @@ func newConn(network *Network, pipe *connectionPipe, local, remote platform.Addr
 		remote:  remote,
 		inbox:   make(chan receivedFrameData, network.config.InboxSize),
 		send:    make(chan struct{}, 1),
+		buffer:  buffer,
+		room:    make(chan struct{}),
 	}
 	c.send <- struct{}{}
 	return c
+}
+
+// reserve waits for room for size bytes in this end's inbox, which is the
+// sender's buffer filling: a frame larger than the whole buffer goes when the
+// inbox is empty.
+func (c *conn) reserve(ctx context.Context, size int64) error {
+	if c.buffer <= 0 {
+		return nil
+	}
+	for {
+		c.bufMu.Lock()
+		if c.queued == 0 || c.queued+size <= c.buffer {
+			c.queued += size
+			c.bufMu.Unlock()
+			return nil
+		}
+		room := c.room
+		c.bufMu.Unlock()
+		select {
+		case <-ctx.Done():
+			return context.Cause(ctx)
+		case <-c.pipe.done:
+			return platform.ErrDisconnected
+		case <-room:
+		}
+	}
+}
+
+// taken gives back what a received frame held of this end's buffer.
+func (c *conn) taken(size int64) {
+	if c.buffer <= 0 {
+		return
+	}
+	c.bufMu.Lock()
+	c.queued -= size
+	close(c.room)
+	c.room = make(chan struct{})
+	c.bufMu.Unlock()
 }
 
 type receivedFrameData struct {
@@ -528,7 +780,7 @@ func (c *conn) Send(ctx context.Context, frame platform.Frame) error {
 		}
 	}
 	key := linkKey{from: c.local, to: c.remote}
-	plan := c.network.planSend(key)
+	plan := c.network.planSend(key, totalBytes)
 	if plan.blocked {
 		c.network.traceNetwork(key, "send", "blocked", totalBytes, plan.sequence)
 		return platform.ErrUnavailable
@@ -540,10 +792,15 @@ func (c *conn) Send(ctx context.Context, frame platform.Frame) error {
 			return fmt.Errorf("read frame payload: %w", err)
 		}
 	}
+	bytesPerSecond := c.network.config.BytesPerSecond
+	if c.network.config.LinkBytesPerSecond > 0 {
+		// The link between the two hosts already charged this frame its share.
+		bytesPerSecond = 0
+	}
 	if err := c.network.runtime.delay(ctx, fmt.Sprintf("network/send/%q/%q/%d", key.from, key.to, plan.sequence),
-		operationLatency(plan.minimum, totalBytes, c.network.config.BytesPerSecond),
-		operationLatency(plan.maximum, totalBytes, c.network.config.BytesPerSecond),
-		operationLatency(plan.delay, totalBytes, c.network.config.BytesPerSecond)); err != nil {
+		operationLatency(plan.minimum, totalBytes, bytesPerSecond),
+		operationLatency(plan.maximum, totalBytes, bytesPerSecond),
+		operationLatency(plan.delay, totalBytes, bytesPerSecond)); err != nil {
 		c.network.traceNetwork(key, "send", "canceled", totalBytes, plan.sequence)
 		return err
 	}
@@ -558,7 +815,28 @@ func (c *conn) Send(ctx context.Context, frame platform.Frame) error {
 		c.network.traceNetwork(key, "send", "dropped", totalBytes, plan.sequence)
 		return nil
 	}
+	if c.network.runtime.buggifyHere(SiteRandomClose, 0.01) {
+		// A connection closes under a frame, as FoundationDB's do at random:
+		// half the time once the frame has arrived, half the time before.
+		delivered := c.network.runtime.Random("network/random-close").Chance(
+			fmt.Sprintf("%s/%s/%d", key.from, key.to, plan.sequence), 0.5)
+		c.network.traceNetwork(key, "send", "closed", totalBytes, plan.sequence)
+		if delivered {
+			defer c.Close()
+		} else {
+			_ = c.Close()
+			return platform.ErrDisconnected
+		}
+	}
 	header := append([]byte(nil), frame.Header...)
+	if len(header) > 0 && c.network.runtime.buggifyHere(SiteHeaderBitFlip, 0.01) {
+		// One bit of the header flipped on the way, which only a checksum of
+		// the header catches.
+		bit := c.network.runtime.Random("network/header-bit-flip").Intn(
+			fmt.Sprintf("%s/%s/%d", key.from, key.to, plan.sequence), len(header)*8)
+		header[bit/8] ^= 1 << (bit % 8)
+		c.network.traceNetwork(key, "send", "header_flipped", totalBytes, plan.sequence)
+	}
 	if plan.corrupt && totalBytes > 0 {
 		index := c.network.runtime.sample(fmt.Sprintf("network-corrupt/%s/%s/%d", key.from, key.to, plan.sequence)) % uint64(totalBytes)
 		if index < uint64(len(header)) {
@@ -579,6 +857,10 @@ func (c *conn) Send(ctx context.Context, frame platform.Frame) error {
 		clone := receivedFrameData{
 			header:  append([]byte(nil), header...),
 			payload: append([]byte(nil), payload...),
+		}
+		if err := c.peer.reserve(ctx, int64(totalBytes)); err != nil {
+			c.network.traceNetwork(key, "send", connectionOutcome(err), totalBytes, plan.sequence)
+			return err
 		}
 		select {
 		case <-ctx.Done():
@@ -626,6 +908,7 @@ func (c *conn) Receive(ctx context.Context) (platform.ReceivedFrame, error) {
 	case <-c.pipe.done:
 		return platform.ReceivedFrame{}, platform.ErrDisconnected
 	case frame := <-c.inbox:
+		c.taken(int64(len(frame.header) + len(frame.payload)))
 		if c.network.runtime.wait != nil {
 			if err := c.network.runtime.delay(ctx, fmt.Sprintf("network/receive/%s/%q/%d", c.id, c.local, c.receives.Add(1)), 0, 0, 0); err != nil {
 				return platform.ReceivedFrame{}, err

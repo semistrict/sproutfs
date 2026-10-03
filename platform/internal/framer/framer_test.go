@@ -155,11 +155,14 @@ func TestAFrameInMemoryIsOneWrite(t *testing.T) {
 	t.Parallel()
 	client, server, stream := pipe(t, 1<<20)
 	payload := patterned(4096)
+	received := make(chan struct{})
 	go func() {
+		defer close(received)
 		for range 3 {
 			_, _ = receiveAll(t, server)
 		}
 	}()
+	defer func() { <-received }()
 	for range 3 {
 		if err := client.Send(t.Context(), platform.Frame{Header: []byte("page"), Payload: platform.Bytes(payload),
 			PayloadSize: int64(len(payload))}); err != nil {
