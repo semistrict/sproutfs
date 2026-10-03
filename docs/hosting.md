@@ -848,30 +848,38 @@ its whole memory. The mark is `Pull` on the host API's create, open and fork,
 and `--pull` on `sproutfsctl create`, `start` and `fork`.
 
 While this host runs a marked VM, every page of the checkpoint it started from
-is copied onto this host's disk and held there. The pages need not become
-resident in memory. The copy lives in the [page cache's
-disk](volumes.md#the-page-caches-disk), keyed by page identity. Once it is
-complete, a fault on a page that is not resident reads the disk and makes no
-request of the object store. That holds for a page the guest never touched and
-for one the pager evicted since.
+is copied onto this host's disk. The pages need not become resident in memory.
+The copy lives in the [page cache's disk](volumes.md#the-page-caches-disk),
+keyed by page identity. Once it is complete, a fault on a page that is not
+resident reads the disk and makes no request of the object store, while the
+disk holds that page. That holds for a page the guest never touched and for
+one the pager evicted since.
 
 - **The guest runs while the copy is made.** The pull starts when the machine
   is registered, after its VMM runs. A fault is never queued behind it: the
   pull takes none of the page cache's load slots, joins no fault's fetch, and
   makes no request while a fault's read of the store is in flight. Every pull
   on the host shares two requests in flight.
-- **It is bounded and falls back whole.** `SPROUTFS_CACHE_DISK_BYTES` caps the
-  disk, which is off by default. A pull takes its space before it fetches
-  anything, sized exactly from what the checkpoint's root records it holds. A
-  VM that does not fit is not pulled at all, and its faults read the store as
-  any other VM's do. So does a VM on a host that keeps no disk. A pull that
-  fails part way keeps what it copied, and the store serves the rest.
+- **It is bounded and falls back whole.** `SPROUTFS_CACHE_DISK_BYTES` is the
+  disk's share, which is off by default. The disk is a log of 64 MiB regions,
+  and every region of the share but one may be filled. A pull is refused
+  before it fetches anything if the checkpoint, as its root records it, is
+  larger than those regions hold. A VM that does not fit is not pulled at all,
+  and its faults read the store as any other VM's do. So does a VM on a host
+  that keeps no disk. A pull that fails part way keeps what it copied, and the
+  store serves the rest.
+- **It holds nothing.** The pages a pull copies are ordinary entries of the
+  disk. When the disk needs room, it gives back its oldest region, and the
+  pages in it that were read since they were written get a second chance. A
+  pulled page goes the same way as any other. So the pages of a VM that runs
+  long, and of the VMs pulled after it, can push its first pages out, and those
+  are read from the store again.
 - **Nothing on the disk is durable.** The file starts empty when the host
   starts. A copy the disk lost or damaged fails its envelope check and is read
   from the store. A newer checkpoint's page has a new identity, so the copy of
   the page it replaced is never read for it.
-- **Forks share one copy.** A page another pull on the host already copied is
-  held, not copied again, and it stays while any pull holds it.
+- **Forks share one copy.** A page the disk already holds, from another pull or
+  a publication, is not copied again.
 
 What the pull covers is the checkpoint a VM's volumes sit on. For a create,
 that is the root the create published, which names the template's or the
@@ -893,12 +901,13 @@ uploads them (`Publication.Keep`): each part once it is durable, and the
 segments once the index object is. So a page the guest wrote after the pull
 began, and that a later checkpoint published, is read from the disk too when
 the pager evicts it. That covers every publication: an interval checkpoint, a
-stop, and the fork point a fork publishes behind its children. A publication
-that does not fit in what the disk has left keeps nothing, and its pages are
-read from the store.
+stop, and the fork point a fork publishes behind its children. A write the disk
+refuses keeps nothing more of that publication, and its pages are read from
+the store.
 
-The copy lasts as long as the VM runs on the host. A stop or a migration away
-gives it up. The mark stays with the VM. The orchestrator records it in its
+A stop or a migration away gives nothing up. The pages stay on the disk until
+it needs their space, so a VM opened on this host again reads them there. The
+mark stays with the VM. The orchestrator records it in its
 table, and every open it drives carries it: a start, a recovery after a host
 loss, and each receive of a migration, a drain's included. A migration's
 handoff also carries the mark the source's machine has. The table is the only
@@ -947,7 +956,9 @@ what they hold:
 - each pager's spill file, at the dirty pages it may hold, which is its share
   of `SPROUTFS_SPILL_BYTES`;
 - the ephemeral pager's spill file, `SPROUTFS_EPHEMERAL_BYTES`;
-- the page cache's disk, `SPROUTFS_CACHE_DISK_BYTES`;
+- the page cache's disk, `SPROUTFS_CACHE_DISK_BYTES`, until the limiter is
+  connected to it. It gives its oldest regions back when it needs room, and a
+  VM larger than it can hold is not pulled;
 - each running VMM's staging, at the largest state a capture may write, 64 MiB;
 - an image staged for an import, at what it holds.
 

@@ -236,11 +236,13 @@ type SupervisorConfig struct {
 	// The disk limiter counts each spill file at its promise.
 	CacheBytes int64
 	SpillBytes KindBytes
-	// CacheDiskBytes caps the page cache's disk, a file on Disk that holds the
-	// pages of the VMs marked to pull their whole memory. Zero keeps none, and
-	// such a VM reads its memory from the object store like any other. Until
-	// the disk limiter is connected to it, the limiter counts this cap as a
-	// promise.
+	// CacheDiskBytes is the page cache's disk's share, a file on Disk that
+	// holds the pages of the VMs marked to pull their whole memory and what
+	// they publish, in regions given back oldest first when it needs room.
+	// Zero keeps none, and such a VM reads its memory from the object store
+	// like any other.
+	// Until the disk limiter is connected to it, the limiter counts this cap
+	// as a promise.
 	CacheDiskBytes int64
 	// DiskGoal is what the host's disk limiter keeps on the filesystem Disk
 	// is on, and DiskBandBytes the cap on its band, zero for the limiter's

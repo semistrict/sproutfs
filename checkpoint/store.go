@@ -553,7 +553,8 @@ func (s *Store) resolveRun(ctx context.Context, index *Index, volume string, off
 func (s *Store) loadSegment(ctx context.Context, volume string, number uint64, at segmentAddress) ([]byte, func(), error) {
 	key := segmentCacheKey(volume, number, at.ref)
 	fetch := func(ctx context.Context) ([]byte, error) {
-		if data, found := s.fromDisk(ctx, key, maximumSegmentSize, anySegment); found {
+		if data, found := s.fromDisk(ctx, segmentDiskKey(volume, number, at.ref), maximumSegmentSize,
+			anySegment); found {
 			return data, nil
 		}
 		encoded, err := s.readSegment(ctx, at)
@@ -598,12 +599,12 @@ func (s *Store) readSegment(ctx context.Context, at segmentAddress) ([]byte, err
 // nothing where it holds none. A copy that does not decode, or that valid
 // refuses, is one the disk damaged: it is forgotten, and the caller reads the
 // store, which still holds what was copied.
-func (s *Store) fromDisk(ctx context.Context, key cacheKey, maximum int, valid func([]byte) bool) ([]byte, bool) {
+func (s *Store) fromDisk(ctx context.Context, key diskKey, maximum int, valid func([]byte) bool) ([]byte, bool) {
 	if s.cache == nil || s.cache.disk == nil {
 		return nil, false
 	}
-	encoded, found := s.cache.disk.read(ctx, key)
-	if !found {
+	encoded, outcome := s.cache.disk.read(ctx, key)
+	if outcome != diskHit {
 		return nil, false
 	}
 	data, err := s.codecs.Decode(ctx, encoded, maximum)
@@ -616,7 +617,7 @@ func (s *Store) fromDisk(ctx context.Context, key cacheKey, maximum int, valid f
 		}
 		return nil, false
 	}
-	s.cache.disk.served()
+	s.cache.disk.served(key)
 	return data, true
 }
 

@@ -153,7 +153,8 @@ func (s *Store) fetchMembers(ctx context.Context, geometry Geometry, run []pageR
 	// positions the pages of the run they are.
 	var remote, positions []int
 	for at, position := range wanted {
-		if page, found := s.fromDisk(ctx, keys[position], int(geometry.PageSize), validPage); found {
+		key := diskKey{cacheKey: keys[position], span: windowSpan(geometry)}
+		if page, found := s.fromDisk(ctx, key, int(geometry.PageSize), validPage); found {
 			data[at] = page
 			continue
 		}

@@ -196,5 +196,47 @@
     "package": "resource",
     "run": "^TestPromisesThatDoNotFitMakeTheHostUnready$",
     "purpose": "Count spill promises at what they hold when the promises do not fit, so the host reports ready."
+  },
+  {
+    "id": "diskcache-skip-key-check",
+    "package": "checkpoint",
+    "run": "^TestDiskReadChecksKeyAndChecksum$",
+    "purpose": "Serve a page cache disk item that names another key."
+  },
+  {
+    "id": "diskcache-skip-checksum",
+    "package": "checkpoint",
+    "run": "^TestDiskReadChecksKeyAndChecksum$",
+    "purpose": "Serve a page cache disk item without checking its checksum."
+  },
+  {
+    "id": "diskcache-unbounded-second-chance",
+    "package": "checkpoint",
+    "run": "^TestDiskSecondChanceIsBoundedAtHalfARegion$",
+    "purpose": "Write every read item of an evicted disk region again, past half a region."
+  },
+  {
+    "id": "diskcache-no-free-region",
+    "package": "checkpoint",
+    "run": "^TestDiskEvictsTheOldestRegionFirst$",
+    "purpose": "Let fills take the disk region kept free for the second chance."
+  },
+  {
+    "id": "diskcache-evict-under-reader",
+    "package": "checkpoint",
+    "run": "^TestDiskReadInFlightKeepsItsRegion$",
+    "purpose": "Give an evicted disk region back while a read is still in flight from it."
+  },
+  {
+    "id": "diskcache-table-before-sync",
+    "package": "checkpoint",
+    "run": "^(TestDiskRegionsFillInOrderAndCloseWithATable|TestDiskPowerLossAroundClosingARegion)$",
+    "purpose": "Write a closed disk region's table before its items are synced."
+  },
+  {
+    "id": "diskcache-pull-frees-on-close",
+    "package": "checkpoint",
+    "run": "^TestPullsShareOneCopyAndClosingFreesNothing$",
+    "purpose": "Have a closed pull free what it copied, as pulls held regions before."
   }
 ]

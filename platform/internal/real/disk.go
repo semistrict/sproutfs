@@ -324,6 +324,26 @@ func (f *file) PunchHole(ctx context.Context, offset, length int64) error {
 	}
 }
 
+func (f *file) Allocate(ctx context.Context, offset, length int64) error {
+	if offset < 0 || length <= 0 || offset > int64(^uint64(0)>>1)-length {
+		return platform.ErrInvalidRange
+	}
+	for {
+		if err := context.Cause(ctx); err != nil {
+			return err
+		}
+		err := allocate(f.handle.Fd(), offset, length)
+		if errors.Is(err, errors.ErrUnsupported) || errors.Is(err, syscall.EOPNOTSUPP) {
+			return errors.ErrUnsupported
+		}
+		if !errors.Is(err, syscall.EINTR) {
+			return normalizeFileError(err)
+		}
+	}
+}
+
+var _ platform.AllocatingFile = (*file)(nil)
+
 // Only failures before the target operation may carry this guarantee. Never
 // apply it to a directory-sync failure after create, unlink or rename.
 func unchangedSpaceError(err error) error {

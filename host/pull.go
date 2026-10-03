@@ -14,20 +14,21 @@ import (
 var ErrNotPulling = errors.New("host: the VM is not pulling its memory here")
 
 // pulling copies every page of the checkpoint a VM marked to pull started from
-// onto this host's disk, and holds the copy for as long as this host runs the
-// VM. It runs beside the checkpoint loop and ends with it: a stop, a migration
-// away, a fence or the VMM's death gives the copy up.
+// onto this host's disk. It runs beside the checkpoint loop and ends with it: a
+// stop, a migration away, a fence or the VMM's death ends the pull. The copy
+// stays on the disk, which gives it back only when it needs the space.
 //
 // The guest runs while the copy is made, and a fault never waits for it. Once
 // it is complete, a fault on a page of that checkpoint which is not resident —
 // never loaded, or evicted since — reads this host's disk and makes no request
-// of the object store. What the guest wrote since that checkpoint is not in it
-// and needs no copy: it is this host's already, in the pager, and a later
-// checkpoint keeps its pages in the same copy as it uploads them, so they are
-// read from the disk too once evicted (volume.VM.Pull).
+// of the object store, while the disk holds the page. What the guest wrote
+// since that checkpoint is not in it and needs no copy: it is this host's
+// already, in the pager, and a later checkpoint keeps its pages on the same
+// disk as it uploads them, so they are read from there too once evicted
+// (volume.VM.Pull).
 //
-// A VM whose checkpoint does not fit in what the disk has left, or a host that
-// keeps no disk, starts no pull. The VM runs all the same, and its faults read
+// A VM whose checkpoint is larger than the disk can hold, or a host that keeps
+// no disk, starts no pull. The VM runs all the same, and its faults read
 // the store as any other VM's do.
 func (h *Host) pulling(ctx context.Context, vmID string, entry *registration) {
 	entry.mu.Lock()

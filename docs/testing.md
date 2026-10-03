@@ -1227,6 +1227,22 @@ caller:
 | `control/slow-write` | Makes one control-record write take seconds |
 | `vmmemory/evict-past-a-free-slot` | Takes a victim although the arena has a free slot |
 | `vmmigrate/source-busy` | Answers BUSY as a source at its per-peer budget does |
+| `checkpoint/disk-failed-write` | Fails the write of a page cache disk item |
+| `checkpoint/disk-short-write` | Writes half of a page cache disk item, then fails |
+| `checkpoint/disk-failed-sync` | Fails a sync while a disk region closes |
+| `checkpoint/disk-torn-table` | Writes half of a closed disk region's table |
+| `checkpoint/disk-failed-punch` | Fails the punch that gives a disk region back |
+| `checkpoint/disk-failed-allocate` | Fails the allocation of a disk region as it opens |
+
+A simulated disk with `DiskConfig.ReadChaos` adds three sites of its own, as
+FoundationDB's `AsyncFileChaos` does. They are off on every other disk, because
+most of what a host keeps on its disk has no checksum of its own:
+
+| Site | What it does |
+| --- | --- |
+| `sim/disk-slow-read` | Holds a read for a seeded time |
+| `sim/disk-read-bit-flip` | Flips one bit of what a read returns |
+| `sim/disk-misdirected-read` | Returns the bytes at the start of another recent write |
 
 The simulated disk has sites of its own, in what a disk limiter reads. A
 reading the limiter refuses is reported, so the limiter may report these. It
@@ -1274,6 +1290,19 @@ what it did not reach. The registered probes are:
 - a disk limiter whose promises do not fit;
 - a cache write refused for its priority that a publication's fill would have
   been admitted for.
+
+The page cache's disk marks six more: an item written again by a second
+chance, a second chance stopped at half a region, a second chance opening the
+region kept free for it, an eviction waiting for a read in flight, and a read
+that finds another key's item or a damaged one. No topology campaign keeps a
+cache disk, so `TestDiskSurvivesItsFaultsAndReachesItsProbes` in `checkpoint`
+drives them. It runs eight seeds of a writer, two readers and a limiter over a
+disk with read chaos, with every completion released by the scheduler and the
+sites on. It requires every disk site to fire and every disk probe to be
+reached across the seeds. A test-only file under the cache, like FoundationDB's
+`AsyncFileWriteChecker`, keeps a copy of every byte written. So the test tells a
+disk that lied from a cache that misread: an item the cache refuses must be one
+the disk lied about to that read.
 
 `Runtime.Fingerprint` digests everything the simulated dependencies did: the
 resource, the operation, the outcome, the number of bytes, the order on each
@@ -1381,6 +1410,20 @@ SPROUTFS_SIM_BUG=pager-forget-spill \
   go test ./internal/simtest -run '^TestSeededTopologyUnderBuggify$' -count=1
 SPROUTFS_SIM_BUG=pager-give-back-changed-copy \
   go test ./internal/simtest -run '^TestSeededTopologyCampaign$' -count=1
+SPROUTFS_SIM_BUG=diskcache-skip-key-check \
+  go test ./checkpoint -run '^TestDiskReadChecksKeyAndChecksum$' -count=1
+SPROUTFS_SIM_BUG=diskcache-skip-checksum \
+  go test ./checkpoint -run '^TestDiskReadChecksKeyAndChecksum$' -count=1
+SPROUTFS_SIM_BUG=diskcache-unbounded-second-chance \
+  go test ./checkpoint -run '^TestDiskSecondChanceIsBoundedAtHalfARegion$' -count=1
+SPROUTFS_SIM_BUG=diskcache-no-free-region \
+  go test ./checkpoint -run '^TestDiskEvictsTheOldestRegionFirst$' -count=1
+SPROUTFS_SIM_BUG=diskcache-evict-under-reader \
+  go test ./checkpoint -run '^TestDiskReadInFlightKeepsItsRegion$' -count=1
+SPROUTFS_SIM_BUG=diskcache-table-before-sync \
+  go test ./checkpoint -run '^(TestDiskRegionsFillInOrderAndCloseWithATable|TestDiskPowerLossAroundClosingARegion)$' -count=1
+SPROUTFS_SIM_BUG=diskcache-pull-frees-on-close \
+  go test ./checkpoint -run '^TestPullsShareOneCopyAndClosingFreesNothing$' -count=1
 ```
 
 Each invocation must fail. Three of them belong to the generated schedule and
@@ -1394,7 +1437,12 @@ not to the recorded scenario, because they break a fault's own path:
   had already stopped.
 
 These three show that the per-site injection and the ambient faults are worth
-their cost. `pager-give-back-changed-copy` belongs to the generated schedule
+their cost.
+
+The seven `diskcache-` guards break the page cache's disk. Each is killed by a
+test of the one property it breaks. `diskcache-table-before-sync` is killed
+twice. The close's operations are checked in order, and a power loss around
+the table write leaves a table naming items the device did not keep. `pager-give-back-changed-copy` belongs to the generated schedule
 too. The recorded scenario runs no give-back. A campaign runs one at the end of
 one turn of its stores in four, as a host's interval would, and checks at once
 that every page its guest maps reads what the guest wrote. The guard gives back
@@ -1691,7 +1739,16 @@ python3 scripts/mutate-gremlins.py --package checkpoint --suite full \
 ```
 
 Choose a new output directory for every run. Repeat for each changed production
-package. For test-only changes, select the production package whose behavior
+package. `--file` limits the mutations to some production files of the package,
+named relative to it, and `--run` selects the tests each mutation runs in a full
+suite. The page cache's disk is mutated this way:
+
+```sh
+python3 scripts/mutate-gremlins.py --package checkpoint --suite full \
+  --file disk.go --file diskformat.go --file diskindex.go --file pull.go \
+  --run '^(TestDisk|TestPull|TestAPull|TestAReadIsNot|TestALost|TestANewer)' \
+  --gremlins /path/to/gremlins --output /tmp/disk-mutations
+``` For test-only changes, select the production package whose behavior
 the tests exercise. `--package` includes subdirectories. Review the surviving
 diffs and the audited outcomes. Prioritize changes to data integrity, fencing,
 authorization, cancellation and resource ownership over incidental boundary or

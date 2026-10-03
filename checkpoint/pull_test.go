@@ -2,6 +2,7 @@ package checkpoint_test
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"testing"
 	"testing/synctest"
@@ -12,6 +13,10 @@ import (
 	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/resource"
 )
+
+// pullRegionBytes is the disk region the pull fixtures use: room for three of
+// their 2 MiB pages, so a 64 MiB share holds eight regions.
+const pullRegionBytes = 8 << 20
 
 // pullFixture is one published checkpoint of four 2 MiB pages, read through a
 // store whose page cache keeps a disk of diskBytes. Its memory holds 4 KiB,
@@ -26,9 +31,25 @@ type pullFixture struct {
 	objects *cacheStore
 	disk    *sim.Disk
 	file    platform.File
+	runtime *sim.Runtime
+	// pages is the pages the checkpoint published.
+	pages []uint64
+}
+
+// ctx is the test's context carrying the fixture's runtime, so the in-tree bug
+// guards a negative test enables reach the pull.
+func (f *pullFixture) ctx(t *testing.T) context.Context {
+	return sim.WithRuntime(t.Context(), f.runtime)
 }
 
 func newPullFixture(t *testing.T, diskBytes int64) *pullFixture {
+	t.Helper()
+	return newPullFixtureOf(t, diskBytes, cachedPages, []uint64{0, 1, 2, 3})
+}
+
+// newPullFixtureOf is a pull fixture whose volume is volumePages 2 MiB pages,
+// of which the checkpoint publishes pages.
+func newPullFixtureOf(t *testing.T, diskBytes int64, volumePages uint64, pages []uint64) *pullFixture {
 	t.Helper()
 	runtime := sim.New(sim.Config{})
 	disk := runtime.NewDisk("host", sim.DiskConfig{})
@@ -40,7 +61,8 @@ func newPullFixture(t *testing.T, diskBytes int64) *pullFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cache, err := checkpoint.NewCache(budget, checkpoint.CacheConfig{Disk: file, DiskBytes: diskBytes})
+	cache, err := checkpoint.NewCache(budget, checkpoint.CacheConfig{Disk: file, DiskBytes: diskBytes,
+		DiskRegionBytes: pullRegionBytes})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,14 +70,14 @@ func newPullFixture(t *testing.T, diskBytes int64) *pullFixture {
 	objects := &cacheStore{ObjectStore: runtime.ObjectStore(), suspended: "/part/",
 		entered: make(chan struct{}, 64), release: make(chan struct{})}
 	store := mustStore(t, checkpoint.Config{ObjectStore: objects, Cache: cache})
-	sizes := map[string]uint64{"root": cachedPages * checkpoint.PageSize2MiB}
+	sizes := map[string]uint64{"root": volumePages * checkpoint.PageSize2MiB}
 	root, err := store.Root(t.Context(), control.Ref{VM: "pulled", Sequence: 1}, volumes2MiB(sizes))
 	if err != nil {
 		t.Fatal(err)
 	}
 	m := newModel(volumes2MiB(sizes))
 	p := store.Begin(root, control.Ref{VM: "pulled", Sequence: 2})
-	for page := range uint64(cachedPages) {
+	for _, page := range pages {
 		for sector := range uint32(sectorsPerPage) {
 			m.dirty(p, "root", page, sector, sectorData("pulled", page, sector))
 		}
@@ -69,13 +91,14 @@ func newPullFixture(t *testing.T, diskBytes int64) *pullFixture {
 		t.Fatal(err)
 	}
 	objects.gets.Store(0)
-	return &pullFixture{store: store, index: index, model: m, cache: cache, objects: objects, disk: disk, file: file}
+	return &pullFixture{store: store, index: index, model: m, cache: cache, objects: objects, disk: disk, file: file,
+		runtime: runtime, pages: pages}
 }
 
 // pull begins a pull of the fixture's checkpoint, closed with the test.
 func (f *pullFixture) pull(t *testing.T) *checkpoint.Pull {
 	t.Helper()
-	pull, err := f.store.Pull(t.Context(), f.index)
+	pull, err := f.store.Pull(f.ctx(t), f.index)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +110,7 @@ func (f *pullFixture) pull(t *testing.T) *checkpoint.Pull {
 // the model.
 func (f *pullFixture) readAll(t *testing.T) {
 	t.Helper()
-	for page := range uint64(cachedPages) {
+	for _, page := range f.pages {
 		readCachedPage(t, f.store, f.index, f.model, page)
 	}
 }
@@ -294,13 +317,10 @@ func TestANewerCheckpointSupersedesThePulledCopy(t *testing.T) {
 // A pull keeps what its VM publishes later. A newer checkpoint published with
 // the pull's keep is read from the disk as the pulled one is: its segment and
 // the page it wrote as well as the pages it kept, with no request of the store.
-// Closing the pull gives the kept copy up with the rest.
+// Closing the pull frees nothing of either.
 func TestAPullKeepsWhatItsVMPublishesLater(t *testing.T) {
 	f := newPullFixture(t, 64<<20)
-	pull, err := f.store.Pull(t.Context(), f.index)
-	if err != nil {
-		t.Fatal(err)
-	}
+	pull := f.pull(t)
 	if err := pull.Wait(t.Context()); err != nil {
 		t.Fatal(err)
 	}
@@ -331,29 +351,30 @@ func TestAPullKeepsWhatItsVMPublishesLater(t *testing.T) {
 		t.Fatalf("reading a checkpoint the pull kept made %d requests of the store, want none", gets)
 	}
 	pull.Close()
-	if entries := f.cache.Stats().Disk.Entries; entries != 0 {
-		t.Fatalf("the disk holds %d entries once the pull is closed, want none", entries)
+	// The pulled segment and four pages, and the newer segment and page 1.
+	if entries := f.cache.Stats().Disk.Entries; entries != cachedPages+3 {
+		t.Fatalf("the disk holds %d entries once the pull is closed, want %d", entries, cachedPages+3)
+	}
+	for page := range uint64(cachedPages) {
+		readCachedPage(t, f.store, newer, next, page)
+	}
+	if gets := f.objects.gets.Load(); gets != 0 {
+		t.Fatalf("reading after the pull closed made %d requests of the store, want none", gets)
 	}
 }
 
-// Two pulls of one checkpoint share one copy: the second copies nothing and
-// gives back the space it took for it. The copy stays while either holds it and
-// goes with the last.
-func TestPullsShareOneCopyUntilTheLastLetsGo(t *testing.T) {
+// Two pulls of one checkpoint share one copy: the second copies nothing. A
+// pull holds nothing, so closing both frees nothing: the copy is ordinary disk
+// entries, which leave only under pressure.
+func TestPullsShareOneCopyAndClosingFreesNothing(t *testing.T) {
 	f := newPullFixture(t, 64<<20)
-	first, err := f.store.Pull(t.Context(), f.index)
-	if err != nil {
-		t.Fatal(err)
-	}
+	first := f.pull(t)
 	if err := first.Wait(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	one := f.cache.Stats().Disk
 	f.objects.gets.Store(0)
-	second, err := f.store.Pull(t.Context(), f.index)
-	if err != nil {
-		t.Fatal(err)
-	}
+	second := f.pull(t)
 	if err := second.Wait(t.Context()); err != nil {
 		t.Fatal(err)
 	}
@@ -367,16 +388,35 @@ func TestPullsShareOneCopyUntilTheLastLetsGo(t *testing.T) {
 		t.Fatalf("two pulls hold %+v and one held %+v, want the same copy", two, one)
 	}
 	first.Close()
+	second.Close()
+	if closed := f.cache.Stats().Disk; closed.UsedBytes != one.UsedBytes || closed.Entries != one.Entries {
+		t.Fatalf("with both pulls closed the disk holds %+v, want what one pull left, %+v", closed, one)
+	}
 	f.readAll(t)
 	if gets := f.objects.gets.Load(); gets != 0 {
-		t.Fatalf("with the second pull still holding the copy, reading made %d requests, want none", gets)
+		t.Fatalf("with both pulls closed, reading made %d requests, want none", gets)
 	}
-	second.Close()
-	if disk := f.cache.Stats().Disk; disk.UsedBytes != 0 || disk.Entries != 0 {
-		t.Fatalf("with both pulls closed the disk holds %+v, want nothing", disk)
+}
+
+// A pull copies every segment of its checkpoint, not only the first. Pages 0
+// and 256 of a volume of 2 MiB pages lie in two segments, and once the pull is
+// complete both read without a request of the store.
+func TestAPullCopiesEverySegment(t *testing.T) {
+	f := newPullFixtureOf(t, 64<<20, 257, []uint64{0, 256})
+	pull := f.pull(t)
+	if err := pull.Wait(t.Context()); err != nil {
+		t.Fatal(err)
 	}
+	if stats := pull.Stats(); stats.Pulled != stats.Bytes || stats.Bytes == 0 {
+		t.Fatalf("the pull ended at %+v, want every byte of both segments", stats)
+	}
+	// Two segments and two pages.
+	if entries := f.cache.Stats().Disk.Entries; entries != 4 {
+		t.Fatalf("the disk holds %d entries, want two segments and two pages", entries)
+	}
+	f.objects.gets.Store(0)
 	f.readAll(t)
-	if gets := f.objects.gets.Load(); gets != cachedPages {
-		t.Fatalf("with no pull left, reading made %d requests, want one per page", gets)
+	if gets := f.objects.gets.Load(); gets != 0 {
+		t.Fatalf("reading both segments' pages made %d requests of the store, want none", gets)
 	}
 }

@@ -9,13 +9,15 @@ import (
 	"slices"
 	"sync"
 	"sync/atomic"
+
+	"github.com/semistrict/sproutfs/platform/sim"
 )
 
-// Pull is a copy of every page one checkpoint holds, and of the segments that
-// locate them, on the host's own disk. It is what a VM marked to pull its whole
-// memory holds while it runs: once the copy is complete, a read of any page of
-// that checkpoint that the page cache's memory does not hold is served from the
-// disk and makes no request of the object store.
+// Pull copies every page one checkpoint holds, and the segments that locate
+// them, onto the host's own disk. It is what a VM marked to pull its whole
+// memory starts while it runs: a read of a page of that checkpoint that the
+// page cache's memory does not hold is served from the disk while the disk
+// holds it, and makes no request of the object store.
 //
 // The copy is fetched in the background, behind every fault. It takes none of
 // the cache's load slots and joins none of a fault's fetches, so a fault for a
@@ -23,31 +25,31 @@ import (
 // without a pull. Before each fetch the pull waits until no load of the cache is
 // in flight, and every pull on the host shares pullConcurrency fetches.
 //
-// Close gives the copy up. A page another pull on the host also holds stays
-// for that pull.
+// What a pull copies is ordinary disk entries. A pull holds none of them, and
+// closing it frees nothing: they leave the disk only as its regions are given
+// back under pressure, like everything else on it. A page the disk already
+// holds, from another pull or anything else, is not copied again.
 //
 // A pull also keeps what its VM publishes later. A publication given the pull
-// (Publication.Keep) writes the members and segments it uploads into the copy as
+// (Publication.Keep) writes the members and segments it uploads to the disk as
 // each lands, so a page the VM wrote after the checkpoint it started from, once
 // published and then evicted, is read from this host's disk too rather than
-// from the store. A publication that does not fit in what the disk has left
-// keeps nothing, and the store serves its pages.
+// from the store. A write the disk refuses keeps nothing, and the store serves
+// those pages.
 type Pull struct {
 	store *Store
 	disk  *cacheDisk
 	index *Index
-	// region is the space the pull took, and held every region it holds a page
-	// in, its own among them. held is guarded by the disk's lock.
-	region *diskRegion
-	held   map[*diskRegion]bool
 	// bytes is what the checkpoint holds, as its root records it, and pulled
-	// how much of it is on the disk so far.
+	// how much of it this pull found on the disk or wrote there.
 	bytes  int64
 	pulled atomic.Int64
-	// kept is what later publications added to the copy.
+	// kept is what later publications added to the disk.
 	kept atomic.Int64
+	// base is the context the pull began under, without its cancellation.
+	base context.Context
 
-	// mu orders keep against Close, so nothing is added to a copy given up.
+	// mu orders keep against Close, so nothing is kept for a pull given up.
 	mu     sync.Mutex
 	closed bool
 
@@ -59,10 +61,10 @@ type Pull struct {
 
 // PullStats is how far one pull has come.
 type PullStats struct {
-	// Bytes is what the checkpoint holds and Pulled how much of it is on the
-	// disk: the members and segments this pull copied and the ones it found
-	// another pull had already copied. Kept is what the VM's later publications
-	// added to the copy.
+	// Bytes is what the checkpoint holds and Pulled how much of it the pull
+	// found on the disk or wrote there. Kept is what the VM's later
+	// publications added. The disk gives its oldest regions back under
+	// pressure, so these say what the pull did, not what the disk still holds.
 	Bytes, Pulled, Kept int64
 	// Done reports a pull that has stopped fetching: complete when Err is nil,
 	// and stopped short by Err otherwise. A pull that stopped short keeps what
@@ -73,22 +75,21 @@ type PullStats struct {
 
 // Pull begins copying every page of index onto the page cache's disk and
 // returns at once. It refuses, with ErrNoDisk or ErrDiskFull, a host that
-// keeps nothing on disk or a checkpoint that does not fit in what the disk has
-// left; nothing is copied then, and reads go to the store as they always do.
+// keeps no disk or a checkpoint larger than all the disk's share could hold;
+// nothing is fetched then, and reads go to the store as they always do.
 func (s *Store) Pull(ctx context.Context, index *Index) (*Pull, error) {
 	if s.cache == nil || s.cache.disk == nil {
 		return nil, ErrNoDisk
 	}
 	bytes := index.heldBytes()
-	region, err := s.cache.disk.reserve(bytes)
-	if err != nil {
-		stats := s.cache.disk.stats()
-		return nil, fmt.Errorf("%w: %s holds %d bytes and %d of %d are free", err, index.Ref(), bytes,
-			stats.LimitBytes-stats.UsedBytes, stats.LimitBytes)
+	if !s.cache.disk.holds(bytes) {
+		return nil, fmt.Errorf("%w: %s holds %d bytes and the disk's share keeps at most %d", ErrDiskFull,
+			index.Ref(), bytes, s.cache.disk.capacity())
 	}
-	running, cancel := context.WithCancel(context.WithoutCancel(ctx))
-	p := &Pull{store: s, disk: s.cache.disk, index: index, region: region,
-		held: map[*diskRegion]bool{region: true}, bytes: bytes, cancel: cancel, done: make(chan struct{})}
+	base := context.WithoutCancel(ctx)
+	running, cancel := context.WithCancel(base)
+	p := &Pull{store: s, disk: s.cache.disk, index: index, bytes: bytes, base: base, cancel: cancel,
+		done: make(chan struct{})}
 	go p.run(running)
 	return p, nil
 }
@@ -129,7 +130,8 @@ func (p *Pull) Stats() PullStats {
 	return stats
 }
 
-// Close stops the pull and gives its copy up. Calling it again does nothing.
+// Close stops the pull and its keeping. What it copied stays on the disk.
+// Calling it again does nothing.
 func (p *Pull) Close() {
 	p.close.Do(func() {
 		p.cancel()
@@ -137,61 +139,48 @@ func (p *Pull) Close() {
 		p.mu.Lock()
 		defer p.mu.Unlock()
 		p.closed = true
-		p.disk.release(context.Background(), p.held)
+		if sim.Bug(p.base, "diskcache-pull-frees-on-close") {
+			p.disk.forgetAll()
+		}
 	})
 }
 
-// envelope is one object's bytes as the store holds them, and the key the page
-// cache names them by.
+// envelope is one object's bytes as the store holds them, and the key the disk
+// names them by.
 type envelope struct {
-	key  cacheKey
+	key  diskKey
 	data []byte
 }
 
-// keep adds envelopes a publication of this pull's VM has just uploaded to the
-// copy, in a region of their own, skipping any the disk already holds. It is
-// best effort: a disk without room, or one that fails a write, leaves the
-// store serving those pages, and the publication goes on regardless.
+// keep writes envelopes a publication of this pull's VM has just uploaded to
+// the disk, skipping any the disk already holds. It is best effort: a write
+// the disk refuses leaves the store serving the rest, and the publication goes
+// on regardless.
 func (p *Pull) keep(ctx context.Context, envelopes []envelope) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.closed {
 		return
 	}
-	var fresh []envelope
-	var bytes int64
 	for _, e := range envelopes {
-		if p.hold(e.key) {
+		if p.disk.has(e.key) {
 			continue
 		}
-		fresh = append(fresh, e)
-		bytes += int64(len(e.data))
-	}
-	if len(fresh) == 0 {
-		return
-	}
-	region, err := p.disk.reserveHeld(p.held, bytes)
-	if err != nil {
-		slog.WarnContext(ctx, "checkpoint: a pulled VM's publication does not fit on the disk; the store serves it",
-			"checkpoint", p.index.Ref().String(), "bytes", bytes, "error", err)
-		return
-	}
-	defer p.disk.trim(context.WithoutCancel(ctx), region)
-	for _, e := range fresh {
-		if err := p.disk.write(ctx, region, p.held, e.key, e.data); err != nil {
-			slog.WarnContext(ctx, "checkpoint: keeping a pulled VM's publication on the disk failed; the store serves the rest",
+		if err := p.disk.write(ctx, e.key, e.data, WriteFillPublication); err != nil {
+			slog.WarnContext(ctx, "checkpoint: the disk keeps no more of a pulled VM's publication; the store serves it",
 				"checkpoint", p.index.Ref().String(), "error", err)
 			return
 		}
-		p.kept.Add(int64(len(e.data)))
+		if p.disk.has(e.key) {
+			p.kept.Add(int64(len(e.data)))
+		}
 	}
 }
 
 // run copies the checkpoint one segment at a time, in volume and segment
-// order, and gives back whatever of its region it did not write.
+// order.
 func (p *Pull) run(ctx context.Context) {
 	defer close(p.done)
-	defer p.disk.trim(context.WithoutCancel(ctx), p.region)
 	for _, name := range p.index.names {
 		table := p.index.volumes[name]
 		for _, number := range slices.Sorted(maps.Keys(table.segments)) {
@@ -210,7 +199,7 @@ func (p *Pull) run(ctx context.Context) {
 // segment copies one segment and every member it locates that the disk does not
 // already hold.
 func (p *Pull) segment(ctx context.Context, volume string, number uint64, entry segmentEntry) error {
-	key := segmentCacheKey(volume, number, entry.at.ref)
+	key := segmentDiskKey(volume, number, entry.at.ref)
 	encoded, err := p.segmentBytes(ctx, key, entry.at)
 	if err != nil {
 		return err
@@ -226,15 +215,15 @@ func (p *Pull) segment(ctx context.Context, volume string, number uint64, entry 
 	geometry := p.index.volumes[volume].geometry
 	first := number * geometry.SegmentPages
 	var run []pageRead
-	var keys []cacheKey
+	var keys []diskKey
 	for _, relative := range slices.Sorted(maps.Keys(located.pages)) {
-		at := located.pages[relative]
-		page := pageKey(identityOf(volume, first+uint64(relative), at))
-		if p.hold(page) {
+		at, number := located.pages[relative], first+uint64(relative)
+		page := pageDiskKey(identityOf(volume, number, at), geometry)
+		if p.disk.has(page) {
 			p.pulled.Add(int64(at.length))
 			continue
 		}
-		run = append(run, pageRead{number: first + uint64(relative), at: at})
+		run = append(run, pageRead{number: number, at: at})
 		keys = append(keys, page)
 	}
 	wanted := make([]int, len(run))
@@ -262,14 +251,12 @@ func (p *Pull) segment(ctx context.Context, volume string, number uint64, entry 
 	return nil
 }
 
-// segmentBytes is one segment's envelope: the disk's copy where another pull
-// already made one, and the store's otherwise, which this pull then copies.
-func (p *Pull) segmentBytes(ctx context.Context, key cacheKey, at segmentAddress) ([]byte, error) {
-	if p.hold(key) {
-		if encoded, found := p.disk.read(ctx, key); found {
-			p.pulled.Add(int64(at.length))
-			return encoded, nil
-		}
+// segmentBytes is one segment's envelope: the disk's copy where it holds one,
+// and the store's otherwise, which this pull then copies.
+func (p *Pull) segmentBytes(ctx context.Context, key diskKey, at segmentAddress) ([]byte, error) {
+	if encoded, outcome := p.disk.read(ctx, key); outcome == diskHit {
+		p.pulled.Add(int64(at.length))
+		return encoded, nil
 	}
 	encoded, err := p.fetch(ctx, func(ctx context.Context) ([]byte, error) { return p.store.readSegment(ctx, at) })
 	if err != nil {
@@ -291,15 +278,14 @@ func (p *Pull) fetch(ctx context.Context, read func(context.Context) ([]byte, er
 	return read(ctx)
 }
 
-// hold makes this pull a holder of a copy another pull made, and reports
-// whether there is one.
-func (p *Pull) hold(key cacheKey) bool { return p.disk.hold(p.held, key) }
-
-// write copies one envelope into this pull's region.
-func (p *Pull) write(ctx context.Context, key cacheKey, data []byte) error {
-	if err := p.disk.write(ctx, p.region, p.held, key, data); err != nil {
+// write copies one envelope to the disk. A write the disk refuses stops the
+// pull; one the disk failed is the disk's to log, and the pull goes on.
+func (p *Pull) write(ctx context.Context, key diskKey, data []byte) error {
+	if err := p.disk.write(ctx, key, data, WriteFillPublication); err != nil {
 		return err
 	}
-	p.pulled.Add(int64(len(data)))
+	if p.disk.has(key) {
+		p.pulled.Add(int64(len(data)))
+	}
 	return nil
 }

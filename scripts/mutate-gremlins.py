@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -27,6 +28,9 @@ def main():
                         help="explicit Go test launcher, for example a prepared Linux VM environment")
     parser.add_argument("--timeout-coefficient", type=int,
                         help="Gremlins baseline time multiplier (default: 3 full, 10 scheduled)")
+    parser.add_argument("--file", action="append", default=[],
+                        help="mutate only this file of the package, named relative to it; repeatable")
+    parser.add_argument("--run", help="Go test name pattern each mutation runs, for a full suite")
     parser.add_argument("--seeds", type=int, default=3)
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--dry-run", action="store_true")
@@ -41,6 +45,13 @@ def main():
     coefficient = args.timeout_coefficient if args.timeout_coefficient is not None else (10 if suite == "scheduled" else 3)
     if args.seeds < 1 or args.workers < 1 or coefficient < 1:
         parser.error("seeds, workers and timeout coefficient must be positive")
+    if args.file and args.all:
+        parser.error("--file names files of one --package")
+    for name in args.file:
+        if not (root / package / name).is_file() or not name.endswith(".go") or name.endswith("_test.go"):
+            parser.error(f"--file {name} is not a production Go file of {package}")
+    if args.run and suite == "scheduled":
+        parser.error("--run selects tests of a full suite")
     launcher = args.go_test_exec.resolve() if args.go_test_exec else None
     if launcher and (not launcher.is_file() or not os.access(launcher, os.X_OK)
                      or any(char.isspace() for char in str(launcher))):
@@ -68,6 +79,8 @@ def main():
         flags += " -exec=" + str(launcher)
     if suite == "scheduled":
         flags += " -run=^TestScheduled.*Reproduces$"
+    elif args.run:
+        flags += " -run=" + args.run
     env.update(GOFLAGS=flags, GOMAXPROCS="4",
                GOWORK="off", SPROUTFS_OVERLAP_TRACE_SEEDS=str(args.seeds))
     real_go = shutil.which("go")
@@ -85,7 +98,15 @@ def main():
                GREMLINS_AUDIT_MANIFEST=str(output / "source-sha256.json"))
     # Gremlins takes a directory, not a Go package pattern: ./... silently
     # produces no mutations. The module root recursively includes all packages.
-    command = [tool, "unleash", str(package), "--exclude-files=internal/gen/",
+    # Gremlins can only exclude files, so a run scoped to some files excludes
+    # every other production file of the package.
+    excluded = ["internal/gen/"]
+    if args.file:
+        for other in sorted((root / package).rglob("*.go")):
+            name = other.relative_to(root / package).as_posix()
+            if not name.endswith("_test.go") and name not in args.file:
+                excluded.append("(^|/)" + re.escape(name) + "$")
+    command = [tool, "unleash", str(package), *("--exclude-files=" + pattern for pattern in excluded),
                f"--workers={args.workers}", f"--timeout-coefficient={coefficient}",
                "--output=" + str(output / "results.json")]
     if integration:

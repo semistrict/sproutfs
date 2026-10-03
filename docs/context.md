@@ -210,10 +210,12 @@ for 4 KiB.
 of the host that runs it, in the background while the guest runs. A start
 marks a VM to pull, and the VM keeps the mark: the orchestrator records it, and
 every start, recovery and migration of the VM carries it. The copy lives in the page
-cache's disk, keyed by page identity, and is held while the VM runs on that
-host. Once it is complete, a fault on a page that is not resident makes no
-request of the object store. The copy is never durable. A VM whose checkpoint
-does not fit on the disk is not pulled, and reads the store as any VM does. See
+cache's disk, keyed by page identity. A pull holds none of it: the pages leave
+the disk only when it needs their space. Once the copy is complete, a fault on
+a page that is not resident makes no request of the object store while the
+disk holds that page. The copy is never durable. A VM whose checkpoint is
+larger than the disk can hold is not pulled, and reads the store as any VM
+does. See
 [hosting](hosting.md#pulling-a-vms-memory).
 
 ## Cluster

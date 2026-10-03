@@ -1,6 +1,7 @@
 package checkpoint
 
 import (
+	"cmp"
 	"container/list"
 	"context"
 	"errors"
@@ -16,12 +17,25 @@ import (
 type CacheConfig struct {
 	// MaxConcurrentLoads bounds the fetches in flight. Default 16.
 	MaxConcurrentLoads int
-	// Disk is the file on the host's own disk the cache keeps the pages a pull
-	// copies in, and DiskBytes how much of it the cache may fill. The file
+	// Disk is the file on the host's own disk the cache keeps envelopes in:
+	// what a pull copies and what that VM's publications upload. The file
 	// starts empty and is the caller's to close after the cache. A nil Disk
-	// or a zero DiskBytes keeps nothing on disk, and every pull is refused.
-	Disk      platform.File
+	// keeps nothing on disk, and every pull is refused.
+	Disk platform.File
+	// Budget is the host's disk limiter: the cache's share of the disk, and
+	// which writes it may make. Without one, the share is DiskBytes and
+	// every write is admitted; a zero DiskBytes then keeps nothing on disk.
+	Budget    DiskBudget
 	DiskBytes int64
+	// DiskRegionBytes is the size of one disk region, a multiple of 4 KiB.
+	// Default DefaultDiskRegionBytes.
+	DiskRegionBytes int64
+	// DiskIndexBytes bounds the memory the disk's index may use; past it the
+	// disk refuses writes rather than grow. Default DefaultDiskIndexBytes.
+	DiskIndexBytes int64
+	// DiskSecondChanceReads is how many reads since it was written give an
+	// item a second chance before its region is given back. Default 1.
+	DiskSecondChanceReads int
 }
 
 // Cache shares immutable decoded pages among the stores and
@@ -150,13 +164,24 @@ func NewCache(resources *resource.Budget, config CacheConfig) (*Cache, error) {
 	if config.MaxConcurrentLoads == 0 {
 		config.MaxConcurrentLoads = 16
 	}
-	if resources == nil || config.MaxConcurrentLoads < 1 || config.MaxConcurrentLoads > 1024 || config.DiskBytes < 0 {
+	config.DiskRegionBytes = cmp.Or(config.DiskRegionBytes, DefaultDiskRegionBytes)
+	config.DiskIndexBytes = cmp.Or(config.DiskIndexBytes, DefaultDiskIndexBytes)
+	config.DiskSecondChanceReads = cmp.Or(config.DiskSecondChanceReads, 1)
+	if resources == nil || config.MaxConcurrentLoads < 1 || config.MaxConcurrentLoads > 1024 || config.DiskBytes < 0 ||
+		config.DiskRegionBytes < minimumDiskRegionBytes || config.DiskRegionBytes > maximumDiskRegionBytes ||
+		config.DiskRegionBytes%diskBlock != 0 || config.DiskIndexBytes < 0 || config.DiskSecondChanceReads < 0 ||
+		config.DiskSecondChanceReads > wordReadsMax {
 		return nil, ErrInvalidConfig
 	}
 	cache := &Cache{resources: resources, limit: config.MaxConcurrentLoads,
 		entries: make(map[cacheKey]*list.Element), flights: make(map[cacheKey]*cacheFlight), changed: make(chan struct{})}
-	if config.Disk != nil && config.DiskBytes >= diskBlock {
-		cache.disk = newCacheDisk(config.Disk, config.DiskBytes)
+	budget := config.Budget
+	if budget == nil && config.DiskBytes > 0 {
+		budget = fixedShare(config.DiskBytes)
+	}
+	if config.Disk != nil && budget != nil {
+		cache.disk = newCacheDisk(config.Disk, budget, config.DiskRegionBytes, config.DiskIndexBytes,
+			config.DiskSecondChanceReads)
 	}
 	cache.unregister = resources.RegisterCache(cache.reclaim)
 	return cache, nil
@@ -173,6 +198,17 @@ func (c *Cache) Stats() CacheStats {
 	return CacheStats{ResidentBytes: c.used, Entries: len(c.entries), ActiveLoads: c.active,
 		PeakLoads: c.peak, Hits: c.hits, Misses: c.misses, CoalescedLoads: c.coalesced, Evictions: c.evictions,
 		Disk: disk}
+}
+
+// FitDisk is what the host's disk limiter calls when the cache's share has
+// fallen: the disk gives regions back, oldest first and with no second chance,
+// until it holds no more than its share less one region. It does nothing for a
+// cache that keeps no disk.
+func (c *Cache) FitDisk(ctx context.Context) error {
+	if c.disk == nil {
+		return nil
+	}
+	return c.disk.fit(ctx)
 }
 
 // quiet returns once no load of the cache's own is in flight: no fault, and no
