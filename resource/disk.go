@@ -386,6 +386,24 @@ func (l *DiskLimiter) CacheShare() int64 {
 	return max(l.status.CacheShareBytes, 0)
 }
 
+// Capacity is what the cache could hold on this filesystem if nothing else
+// wrote to it: the filesystem's size less the free-space floor and the
+// promises, under the used-space goal. It reads the goals, the size and the
+// promises at the last reading, and never the space other writers take or the
+// band, so it does not move as the disk fills. A host weighs its cache in the
+// list of caches by it.
+func (l *DiskLimiter) Capacity() int64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	goal := l.config.Goal
+	total := l.status.TotalBytes
+	capacity := total - max(goal.FreeBytes, fraction(total, goal.FreePercent, 100))
+	if goal.UsedBytes > 0 {
+		capacity = min(capacity, goal.UsedBytes)
+	}
+	return max(capacity-l.status.PromisedBytes, 0)
+}
+
 // Ready is nil while the host's promises fit under the goals with an empty
 // cache, and why they do not otherwise.
 func (l *DiskLimiter) Ready() error {

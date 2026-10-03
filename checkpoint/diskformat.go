@@ -3,7 +3,6 @@ package checkpoint
 import (
 	"context"
 	"encoding/binary"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"hash/crc32"
@@ -12,6 +11,7 @@ import (
 	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/sim"
+	"github.com/semistrict/sproutfs/rank"
 )
 
 // The page cache's disk is a log of fixed-size disk regions. Each item in a
@@ -369,10 +369,8 @@ func scanRegion(ctx context.Context, file platform.File, base, regionBytes int64
 
 // CacheIdentity names one page cache's disk. It is drawn when the cache's
 // file is made, and kept for as long as the file is, across every restart of
-// the host over it.
-type CacheIdentity [16]byte
-
-func (i CacheIdentity) String() string { return hex.EncodeToString(i[:]) }
+// the host over it. It is the identity the list of caches ranks the cache by.
+type CacheIdentity = rank.Identity
 
 // CacheDeployment is the deployment a page cache's disk belongs to: the kind
 // of object store, its bucket and the prefix of the deployment's objects, as

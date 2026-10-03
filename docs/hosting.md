@@ -3,10 +3,11 @@
 A host runs VMs. One process provides that role over one object store, one
 network and one RAM allotment. The host has no durable local state. A VM's
 authority is the epoch in its [control record](metadata.md), and its data is the
-checkpoint that record selects. The host also has no identity of its own. The
-only address a host ever dials is the page-server address that a
-[handoff](migration.md) carries. Who may reach that address is the
-[transport's](#transport) business.
+checkpoint that record selects. The host also has no identity of its own. Its
+page cache's disk has one, which names it in
+[the list of caches](#the-list-of-caches). The only address a host ever dials
+is the page-server address that a [handoff](migration.md) carries. Who may
+reach that address is the [transport's](#transport) business.
 
 ## Assembly
 
@@ -933,6 +934,77 @@ mark, and a survey writes it down again. A host reports each marked
 VM's progress in its status (`hostapi.VM.Pull`), and the disk's use beside the
 page cache's (`Resources.CacheDiskUsed`).
 
+## The list of caches
+
+The hosts' disks are to become one cache for the cluster
+([the plan](../plans/disk-cache-2026-10-02.md)). For that, every host must know
+every cache, and which caches hold each window. The list and the ranks below
+are that. Nothing reads from a peer yet, and no host stores anything it did not
+store before.
+
+**A host's cache.** A host with a page cache disk reports its cache in
+`/status`, under `cache`:
+
+- `identity`: the identity in the cache file's header, in hex. It is drawn when
+  the file is made, so a host restarted over the same file keeps it.
+- `weight`: the size of the disk the cache is given, in steps of 16 GiB,
+  rounded to the nearest, and at least one. The size is the filesystem less the
+  free-space floor and the promises, under the used goal, and under
+  `SPROUTFS_CACHE_DISK_BYTES` where that is set. The host reads it once, when it
+  starts. It never follows the limiter's share, which moves as the disk fills,
+  because every change of a weight moves windows between hosts.
+- `address`: the page-server address, which `page_address` also reports.
+
+A host that keeps no cache disk, or gives it no space, reports no `cache` and is
+in no list.
+
+**The orchestrator's list.** Every survey asks each host pod for its status.
+The orchestrator keeps the cache each pod last reported. A pod that answered
+without one has none. A pod that did not answer keeps the cache it reported
+before. A quiet host may be serving its windows perfectly well, and a list
+that dropped it would move every window it holds. A pod the Kubernetes API no
+longer lists leaves the list. Two pods that report one identity are a copied
+disk, and the list holds it once, as the first pod by name reported it.
+`GET /hosts` shows each pod's cache.
+
+`GET /caches` serves the list: `k`, `m`, and the caches in identity order. The
+code is the orchestrator's `SPROUTFS_CACHE_CODE`, written as `4+2`. Unset, it is
+the code for the most caches the orchestrator has listed since it started:
+
+| Caches | Code |
+| --- | --- |
+| 1 | 1+0 |
+| 2 | 1+1 |
+| 3 | 2+1 |
+| 4 or 5 | 2+2 |
+| 6 or more | 4+2 |
+
+So a drain does not change the code. A code that followed the list would make
+every stripe in the cluster a miss. An orchestrator that restarts while hosts
+are drained can choose a smaller code, which costs a refill from the store. A
+deployment sets the code for the size it usually runs at.
+
+**Each host's copy.** A host reads the list as it starts, and then every ten
+seconds on its own clock. It keeps the last list it read. A read that fails
+leaves the list as it was, so an orchestrator that is down changes nothing.
+Until a read succeeds, a host holds its own cache alone, under the code 1+0.
+`/status` reports the list it holds under `caches`: `k`, `m`, the caches, when
+the last read that succeeded finished (`read`), the reads, the failures, and
+why the last read failed (`error`). The host logs when its reads start failing
+and when they recover. Two hosts that hold different lists disagree only about
+whom to ask, and the worst a stale list costs is a miss.
+
+**Ranks.** The package `rank` places windows. A window is the pages of one
+volume, in one aligned 2 MiB span, that one checkpoint published, and a segment
+is a window of its own. Each cache scores a window by its weight over -ln(u),
+where u is a 64-bit hash of the cache's identity and the window, mapped into
+(0, 1). Equal scores go to the lower identity. `List.Ranks` is the caches
+ranked 1 to k+m. `List.Holders` puts stripe i on rank ((i − 1) mod n) + 1, so a
+list shorter than k+m takes the stripes round its caches. The scores are
+compared in integer arithmetic, with a fixed-point logarithm, so hosts of
+different architectures rank alike. A host alone ranks first for every window,
+and its one stripe is the envelope whole, which is what every host does today.
+
 ## Nested VMs
 
 A nested VM is experimental. It is a VM whose guest may run VMs of its own. A
@@ -1107,7 +1179,8 @@ The host's status reports:
 - the pager's counters, including the free space in the logical cap, which is
   what admits a VM;
 - the object traffic;
-- what the page server has served.
+- what the page server has served;
+- its cache's identity, weight and address, and the list of caches it holds.
 
 ## Shutdown
 

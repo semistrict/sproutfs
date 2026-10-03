@@ -139,7 +139,9 @@ and checks.
 
 The code is not derived from the live list. A drain takes a six-host cluster to
 five for a while, and a code that followed the list would change, and every
-stripe in the cluster would become a miss. Instead, while the list holds fewer
+stripe in the cluster would become a miss. An operator who sets no code gets
+the table's code for the most caches the orchestrator has listed since it
+started, which a drain does not lower. Instead, while the list holds fewer
 hosts than k+m, a window's stripes go round the hosts it has: stripe i on rank
 ((i − 1) mod n) + 1. A host then holds two stripes of some windows, and losing
 it costs both. With 4+2 on five hosts, any one host can still be lost. With
@@ -203,9 +205,11 @@ Today a host dials only the page-server address a handoff carries, and has no
 identity of its own. The cluster cache needs every host to know every cache.
 Each host reports its cache identity, its weight and its page-server address
 in `/status`. The orchestrator already surveys every host, and it serves the
-list it found (`GET /caches`), with the deployment's code. Each host reads that
-list on a timer and keeps the last one it got. An orchestrator that is down
-leaves the list as it was.
+list it found (`GET /caches`), with the deployment's code. A host that did not
+answer one survey keeps its place in the list, as a crashed host keeps its
+place in the model; only a host the cluster no longer has leaves it. Each host
+reads that list on a timer and keeps the last one it got. An orchestrator that
+is down leaves the list as it was.
 
 Two hosts that hold different lists disagree only about whom to ask. The worst
 a stale list costs is a miss, and a miss is a read of the object store.

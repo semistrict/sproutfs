@@ -232,3 +232,26 @@ every checkpoint sequence that writer allocates.
 
 **Drain**: Migrating every VM on a host to other hosts, so that the host
 process can exit without rewinding any of its VMs.
+
+**Window**: The pages of one volume, in one aligned 2 MiB span, that one
+checkpoint published. It is what the cluster's disk cache places. At a 2 MiB
+page it is one envelope, and at a 4 KiB page up to 512. A segment of a page
+table is a window of its own.
+
+**List of caches**: Every host's page cache disk that the orchestrator found,
+and the deployment's code. A cache is named by its identity, a random value in
+its file's header that a restart over the same file keeps. It has a weight,
+from the size of the disk it is given, and its host's page-server address. The
+orchestrator serves the list at `GET /caches`. Each host reads it on a timer
+and keeps the last list it read. A host that has read none holds its own cache
+alone. See [hosting](hosting.md#the-list-of-caches).
+
+**Rank**: A cache's place in one window's order. Each cache scores the window
+by its weight over -ln(u), where u is a hash of the cache's identity and the
+window. The highest score ranks first, and equal scores go to the lower
+identity. The caches ranked 1 to k+m hold the window's stripes. Two hosts with
+the same list rank every window alike.
+
+**Code**: The deployment's erasure code: k data stripes and m parity stripes
+of each envelope, any k of which rebuild it. A code with k = 1 is whole copies.
+A host alone in its list uses 1+0, so it holds each envelope whole.

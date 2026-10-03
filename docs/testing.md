@@ -240,7 +240,7 @@ byte afterwards. Every page it touched must be the parent's page again.
 `crypto/rand`, and bare `time.Now`, `time.Since`, `time.After`, `time.Sleep`,
 `time.NewTimer`, `time.NewTicker`, `time.Tick`, `time.AfterFunc` and
 `ctxsync.Sleep` in the non-test code of
-`{volume,checkpoint,control,vmmigrate,host,vmmemory,internal/handover,resource}`. This includes
+`{volume,checkpoint,control,vmmigrate,host,vmmemory,internal/handover,resource,rank}`. This includes
 the Linux-only files that this machine does not build. A stray wall-clock read
 decides how long a hold lives. A stray `math/rand` call decides which VM
 checkpoints first. If a run cannot reproduce either, its seed reports nothing
@@ -1277,6 +1277,29 @@ may and spill files that fill as guests spill. It requires every site to fire
 and every disk limiter probe to be reached. When the faults stop and the disk
 stands still, the share must be exactly what the disk as it is implies.
 
+Each host reads [the list of caches](hosting.md#the-list-of-caches) on a
+timer, and `rank` has two sites in that read. The host must keep a list it
+read, or stay alone, whatever they do.
+
+| Site | What it does |
+| --- | --- |
+| `rank/list-read-fails` | Fails a read of the list, as an orchestrator that is down does |
+| `rank/list-lags-a-cache` | Takes the list read without its last cache, as a host that has not heard of that cache yet holds it |
+
+`TestHostsAgreeOnceTheOrchestratorAnswersAgain` in `rank` drives them. Four
+hosts follow one orchestrator for twelve seeds. Caches join and leave, and the
+orchestrator goes down and comes back. A `sim.Scheduler` releases the hosts'
+reads and the orchestrator's changes in the seed's order. At every step, each
+host must hold its own cache alone, a list the orchestrator served, or such a
+list less its last cache. Once the orchestrator answers and the sites are off,
+every host must hold the orchestrator's list and rank 256 windows alike. Every
+site must fire and every list probe must be reached across the seeds. Ranking
+itself is a pure function, so `rank`'s property tests state it: a join or a
+leave changes a window's first k+m by at most one cache, weights spread windows
+in proportion within half a point over 100,000 windows, equal scores go to the
+lower identity, and the ranks of a few windows are written out, so a host of
+any architecture must agree with them.
+
 `sim.Probe(ctx, name)` marks a place that execution reached, as FoundationDB's
 `CODE_PROBE` does. A fault is useful only if it makes code run. The harness
 exists to rule out faults that no execution ever reached. Probes are counted on
@@ -1295,7 +1318,9 @@ what it did not reach. The registered probes are:
 - a disk cache inside its share and above its stop mark, left alone;
 - a disk limiter whose promises do not fit;
 - a cache write refused for its priority that a publication's fill would have
-  been admitted for.
+  been admitted for;
+- a read of the list of caches that failed while the host was still alone,
+  one that failed and kept the list held, and one that replaced the list.
 
 The page cache's disk marks ten more: an item written again by a second
 chance, a second chance stopped at half a region, a second chance opening the
@@ -1542,6 +1567,28 @@ SPROUTFS_SIM_BUG=disklimit-refuse-high-before-low \
 SPROUTFS_SIM_BUG=disklimit-take-from-spill \
   go test ./resource -run '^TestPromisesThatDoNotFitMakeTheHostUnready$' -count=1
 ```
+
+Five guards break the list of caches:
+
+```sh
+SPROUTFS_SIM_BUG=rank-forget-list-on-failure \
+  go test ./rank -run '^TestAHostKeepsItsListWhileTheOrchestratorIsDown$' -count=1
+SPROUTFS_SIM_BUG=rank-keep-first-list \
+  go test ./rank -run '^TestAHostReadsTheListAtOnceAndThenOnItsTimer$' -count=1
+SPROUTFS_SIM_BUG=host-weight-from-share \
+  go test ./host -run '^TestACachesWeightIsItsDiskNotItsShare$' -count=1
+SPROUTFS_SIM_BUG=orchestrator-code-follows-the-list \
+  go test ./cmd/sproutfs-orchestrator -run '^TestADrainDoesNotChangeTheCode$' -count=1
+SPROUTFS_SIM_BUG=orchestrator-drop-quiet-cache \
+  go test ./cmd/sproutfs-orchestrator -run '^TestAQuietHostStaysInTheListOfCaches$' -count=1
+```
+
+The first sends a host back to being alone when a read fails, and the second
+keeps the first list a host read. The third weighs a cache by the limiter's
+share, which other writers move. The last two are the orchestrator's: a code
+taken from the caches listed now, which a drain changes, and a quiet host
+dropped from the list. Ranking takes no context, so no guard reaches it, and
+Gremlins mutates it instead.
 
 `TestAdversarialStarters` runs a fake VMM, not Firecracker, but it runs only on
 Linux and as root, because it gives the process's directory to another user.
@@ -1811,7 +1858,22 @@ python3 scripts/mutate-gremlins.py --package checkpoint --suite full \
   --file disk.go --file diskformat.go --file diskindex.go --file diskrestart.go --file pull.go \
   --run '^(TestDisk|TestPull|TestAPull|TestAReadIsNot|TestALost|TestANewer)' \
   --gremlins /path/to/gremlins --output /tmp/disk-mutations
-``` For test-only changes, select the production package whose behavior
+```
+
+The list of caches is mutated the same way. The orchestrator is a package
+below `cmd`, which Gremlins names wrongly on its own, so its run adds
+`--integration`:
+
+```sh
+python3 scripts/mutate-gremlins.py --package rank --suite full \
+  --file rank.go --file window.go --file follower.go \
+  --gremlins /path/to/gremlins --output /tmp/rank-mutations
+python3 scripts/mutate-gremlins.py --package cmd/sproutfs-orchestrator --suite full --integration \
+  --file caches.go --run '^(TestTheListOfCaches|TestAConfiguredCode|TestADrainDoesNot|TestAQuietHostStays|TestTheListFollows|TestTheListHolds|TestTheCodeIs)' \
+  --gremlins /path/to/gremlins --output /tmp/orchestrator-cache-mutations
+```
+
+For test-only changes, select the production package whose behavior
 the tests exercise. `--package` includes subdirectories. Review the surviving
 diffs and the audited outcomes. Prioritize changes to data integrity, fencing,
 authorization, cancellation and resource ownership over incidental boundary or

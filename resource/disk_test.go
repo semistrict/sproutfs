@@ -130,6 +130,50 @@ func TestTheShareFollowsTheDiskFilledFromOutside(t *testing.T) {
 	}
 }
 
+// The capacity a host weighs its cache by is the filesystem less the floor
+// and the promises, under the used goal: 250 - 25 - 25 under a floor of 25
+// units, 250 - 50 - 25 under a fifth kept free, and 100 - 25 under a cap of
+// 100 used. Another writer filling the disk moves the cache's share and not
+// the capacity, because every change of a weight moves windows between hosts.
+func TestTheCapacityDoesNotMoveAsTheDiskFills(t *testing.T) {
+	for _, test := range []struct {
+		name                  string
+		goal                  resource.DiskGoal
+		capacity, share, full int64
+	}{
+		{"free bytes", resource.DiskGoal{FreeBytes: 25 * unit}, 200 * unit, 120 * unit, 40 * unit},
+		{"free percent", resource.DiskGoal{FreePercent: 20}, 175 * unit, 100 * unit, 20 * unit},
+		{"used bytes", resource.DiskGoal{UsedBytes: 100 * unit}, 75 * unit, 75 * unit, 60 * unit},
+		{"all three", resource.DiskGoal{FreeBytes: 25 * unit, FreePercent: 20, UsedBytes: 100 * unit},
+			75 * unit, 75 * unit, 20 * unit},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				f := defaultDisk(t)
+				l := f.limiter(resource.DiskLimiterConfig{Goal: test.goal,
+					Users: []resource.DiskUser{spill("spill", 25*unit, f.sparse("spill", 25*unit))}})
+				defer l.Close()
+				if got := l.CacheShare(); got != test.share {
+					t.Fatalf("the share is %d units, want %d", got/unit, test.share/unit)
+				}
+				if got := l.Capacity(); got != test.capacity {
+					t.Fatalf("the capacity is %d units, want %d", got/unit, test.capacity/unit)
+				}
+				f.disk.SetOutsideBytes(150 * unit)
+				f.converge()
+				if got := l.CacheShare(); got != test.full {
+					t.Fatalf("with the disk filled from outside the share is %d units, want %d",
+						got/unit, test.full/unit)
+				}
+				if got := l.Capacity(); got != test.capacity {
+					t.Fatalf("with the disk filled from outside the capacity is %d units, want %d",
+						got/unit, test.capacity/unit)
+				}
+			})
+		})
+	}
+}
+
 // A spill file is counted at its promise while it is sparse, and writing into
 // it changes nothing: what it takes from the free space it adds to what the
 // host holds.

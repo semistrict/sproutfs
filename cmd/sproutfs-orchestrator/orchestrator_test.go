@@ -198,8 +198,11 @@ type fakeHostClient struct {
 	// onReceive runs as it begins, which is where a test takes that host away.
 	holdReceive bool
 	onReceive   func()
-	held        chan struct{}
-	heldOnce    sync.Once
+	// cache is the disk cache this host reports, nil for a host that keeps
+	// none.
+	cache    *host.Cache
+	held     chan struct{}
+	heldOnce sync.Once
 }
 
 // release lets a held receive finish, which is the source's pages arriving
@@ -278,7 +281,7 @@ func (f *fakeHostClient) Status(ctx context.Context) (host.Status, error) {
 		record.RootPending = f.rootPending[id]
 		records = append(records, record)
 	}
-	return host.Status{Host: f.name, PageAddress: f.page,
+	return host.Status{Host: f.name, PageAddress: f.page, Cache: f.cache,
 		Running: running, Serving: slices.Clone(f.serving),
 		Receiving: slices.Clone(f.receiving), VMs: records, Templates: slices.Clone(f.templates),
 		// A placement measures a host by the RAM arena against the guest RAM it
