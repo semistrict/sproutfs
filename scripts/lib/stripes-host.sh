@@ -2,6 +2,9 @@
 # What scripts/bench-stripes-gce.sh runs on each host, beside the benchmark's
 # binary in the home directory. Everything it writes goes to ~/results.
 #
+#   stripes-host.sh stop
+#       stop a server an earlier run left here, so its binary can be
+#       replaced.
 #   stripes-host.sh serve INDEX SERVERS OBJECTS
 #       put the store on the host's local SSD and serve this host's stripes
 #       in the background.
@@ -13,6 +16,15 @@ mkdir -p results
 bench=$HOME/sproutfs-stripebench
 
 case ${1:-} in
+    stop)
+        pkill -f "^$bench server" || true
+        for _ in {1..100}; do
+            pgrep -f "^$bench server" > /dev/null || exit 0
+            sleep 0.2
+        done
+        echo "the old server did not stop" >&2
+        exit 1
+        ;;
     serve)
         [[ $# == 4 ]] || { echo "usage: $0 serve INDEX SERVERS OBJECTS" >&2; exit 2; }
         # The host's one local NVMe SSD, as a deployment's cache disk is.
@@ -38,7 +50,7 @@ case ${1:-} in
             > /dev/null 2> "results/$name.log"
         ;;
     *)
-        echo "usage: $0 serve|read ..." >&2
+        echo "usage: $0 stop|serve|read ..." >&2
         exit 2
         ;;
 esac

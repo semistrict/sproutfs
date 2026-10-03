@@ -232,14 +232,14 @@ run() {
             --format='json(name,zone,machineType,cpuPlatform,scheduling,disks[].interface,networkInterfaces[].networkIP)' \
             > "$results/instance-$i.json"
         servers+="${servers:+,}$("${cloud[@]}" compute instances describe "$host" --zone="$zone" --format='value(networkInterfaces[0].networkIP)'):$port"
-        # A server an earlier run left on these hosts gives way, so its binary
-        # can be replaced.
-        remote "$host" 'pkill -f "^$HOME/sproutfs-stripebench server" || true
-            for _ in {1..100}; do pgrep -f "^$HOME/sproutfs-stripebench server" > /dev/null || exit 0; sleep 0.2; done
-            echo "the old server did not stop" >&2; exit 1' >> "$results/remote.log" 2>&1
-        "${cloud[@]}" compute scp --zone="$zone" "$staging/sproutfs-stripebench" "$repo/scripts/lib/stripes-host.sh" "$host:" \
-            >> "$results/remote.log" 2>&1
-        remote "$host" "bash stripes-host.sh serve $i $count $objects" >> "$results/remote.log" 2>&1
+        # A server an earlier run left on these hosts stops first, so its
+        # binary can be replaced.
+        {
+            "${cloud[@]}" compute scp --zone="$zone" "$repo/scripts/lib/stripes-host.sh" "$host:"
+            remote "$host" "bash stripes-host.sh stop"
+            "${cloud[@]}" compute scp --zone="$zone" "$staging/sproutfs-stripebench" "$host:"
+            remote "$host" "bash stripes-host.sh serve $i $count $objects"
+        } >> "$results/remote.log" 2>&1
     done
     rm -f -- "$staging/sproutfs-stripebench"
     rmdir -- "$staging"
