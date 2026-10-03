@@ -1306,6 +1306,13 @@ cache: reads, stripes, bytes, and reads answered `BUSY` for the bandwidth.
 `/metrics` carries the same as `sproutfs_cache_reads_total`,
 `sproutfs_cache_read_*` and `sproutfs_cache_serve_*`.
 
+**Measured.** On six `n2-standard-4` hosts under 4+2, an 8 GiB guest's pages
+read back on another host in 16.4 s from the cluster and 28.1 s from GCS. A
+page took 58 ms at the median and 136 ms at p99 from the cluster, 106 and
+218 ms from the store. With one host lost during the read, no page was read
+from the store and the time did not change
+([measurement](measurements/gce-cluster-reads-2026-10-03.md)).
+
 ## Nested VMs
 
 A nested VM is experimental. It is a VM whose guest may run VMs of its own. A

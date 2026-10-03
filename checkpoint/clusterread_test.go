@@ -517,9 +517,10 @@ func TestStoreReadsPastTheBoundStayWithinTheirBucket(t *testing.T) {
 				cache.ClusterStripeTimeout = time.Hour
 			}})
 		// Fewer than 32 reads of windows, so the delay, and the bound four
-		// times it, stay where the floor puts them.
+		// times it, stay where the floor puts them. The eleventh read finds
+		// the bucket holding exactly one read of the store.
 		var pages []uint64
-		for page := range uint64(15) {
+		for page := range uint64(11) {
 			pages = append(pages, page)
 		}
 		ref, m := c.filled(t, 1, "vm", pages)
@@ -736,7 +737,13 @@ func TestRepairSendsOnlyAnIndexNoRankHolds(t *testing.T) {
 		reader := c.hosts[0]
 		window := pageWindow(ref, 0)
 		first, _ := picks(*c.list.Load(), reader.cache.Identity(), window, true)
-		lost := c.hostOf(first[0])
+		// The holder that lost its stripe is the lowest ranked of the reader's
+		// first picks, so a repair that went to the first rank short of
+		// anything would go elsewhere.
+		ranks := c.list.Load().Ranks(window)
+		lost := c.hostOf(slices.MaxFunc(first, func(a, b rank.Cache) int {
+			return slices.Index(ranks, a) - slices.Index(ranks, b)
+		}))
 		index := lost.cache.HeldIndices(window, 0, code)[0]
 		if err := lost.cache.Drop(c.ctx(t), peer.Drop{Window: window, Index: index, Code: code}); err != nil {
 			t.Fatal(err)

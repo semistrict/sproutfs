@@ -2433,6 +2433,34 @@ of two connections with room takes a request, a bound whose zero means the
 default, and the checksum of a reply of version 2 whose every payload is
 checked anyway.
 
+The reads from the cluster are mutated the same way:
+
+```sh
+python3 scripts/mutate-gremlins.py --package checkpoint --suite full \
+  --file clusterread.go --file clusterdown.go --file peercache.go \
+  --run '^(TestAPageInTheCluster|TestAPageSurvives|TestAHotPage|TestAStalledOrSlow|TestAWrongStripe|TestTheStoreIsRead|TestSecondRequests|TestStoreReadsPast|TestThreeTimeouts|TestAReaderMarks|TestAMissIs|TestARefused|TestRepair|TestAReaderRebuilds|TestASampledHit|TestClusterReadsSurvive|TestAFaultIsNotSlowed|TestAColdBurst|TestAStoreReadFills|TestRankOneGives|TestACacheReports|TestTheHedgerFollows|TestProbesWait|TestAHostIsMarkedDown|TestOneRefused)' \
+  --gremlins /path/to/gremlins --output /tmp/cluster-read-mutations
+```
+
+On 2026-10-03 it first killed 129 of 196 mutants, with 54 alive and 13 not
+covered. Tests of what the survivors changed brought it to 154 killed, 29
+alive and 13 not covered: the hedger's window and budget, the store's bucket
+at exactly one read, the probe's growth and its cap, a mark on the third
+timeout and not the second, a refused connection, a reader's picks, and a
+repair that must skip the first rank short of its stripes. Writing them
+changed repair to offer each rank the index the list puts on it first. The
+rest change nothing a run can see. Eleven are conditions of a Buggify site or
+a guard, which are off in a test that asserts behaviour. Five flip a
+condition whose two branches differ only in a probe or a counter the tests do
+not read for that case, and Gremlins reports the probe-only `case` lines as
+not covered. Others are the defaults, which the tests set rather than repeat;
+the slack in a request's byte bound; a buffer released on a path where
+keeping it leaks nothing a test can see; the boundary of a timer of zero; the
+skip of a host the table has marked down, which fails at once if asked; the
+check that the reader is among a window's ranks, which only changes the asks
+of a reader holding stripes from an old placement; the spread of a probe's
+attempt count; and a repair's count of what is lacking when one index is.
+
 For test-only changes, select the production package whose behavior
 the tests exercise. `--package` includes subdirectories. Review the surviving
 diffs and the audited outcomes. Prioritize changes to data integrity, fencing,

@@ -14,4 +14,6 @@ restarts any one host of six under 4+2, or of two under 1+1, and every host
 still reads every page from the cluster.
 `TestAVMOpensFromTheClusterAfterAnyOneHostIsLostDrainedOrRestarted` does the
 same to a whole VM in a simulated deployment, and
-`TestAReaderRebuildsFromAnyIndicesAfterTheRanksShift` adds a host.
+`TestAReaderRebuildsFromAnyIndicesAfterTheRanksShift` adds a host. On GCE,
+an 8 GiB guest read with one of six hosts lost part way read no page from
+the store ([measurement](../measurements/gce-cluster-reads-2026-10-03.md)).
