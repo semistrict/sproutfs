@@ -258,6 +258,7 @@ func Metrics(status Status) string {
 		status.Resources.CacheDiskLimit)
 	write("sproutfs_cache_disk_used_bytes", "gauge", "How much of the page cache's disk the pulls hold.",
 		status.Resources.CacheDiskUsed)
+	cacheDiskMetrics(&out, status.CacheDisk)
 	diskMetrics(&out, status.Disk)
 
 	// The store counters carry the operation as a label: five operations, one
@@ -353,6 +354,37 @@ func diskMetrics(out *strings.Builder, disk Disk) {
 		"# TYPE sproutfs_disk_cache_writes_refused_total counter\n")
 	for priority, refused := range disk.Writes.Refused {
 		fmt.Fprintf(out, "sproutfs_disk_cache_writes_refused_total{priority=\"%d\"} %d\n", priority, refused)
+	}
+}
+
+// cacheDiskMetrics writes what the page cache's disk holds, what it served
+// and what the host read back from it when it started. A host that keeps no
+// cache disk reports zeroes.
+func cacheDiskMetrics(out *strings.Builder, disk *CacheDisk) {
+	var held CacheDisk
+	if disk != nil {
+		held = *disk
+	}
+	write := func(name, kind, help string, value any) {
+		fmt.Fprintf(out, "# HELP %s %s\n# TYPE %s %s\n%s %v\n", name, help, name, kind, name, value)
+	}
+	write("sproutfs_cache_disk_regions", "gauge", "The regions the page cache's disk holds.", held.Regions)
+	write("sproutfs_cache_disk_entries", "gauge", "The stripes of pages and segments the page cache's disk holds.",
+		held.Entries)
+	write("sproutfs_cache_disk_hits_total", "counter",
+		"Reads the page cache's disk served, which made no request of the object store.", held.Hits)
+	write("sproutfs_cache_disk_lost_total", "counter",
+		"Copies the page cache's disk could not give back intact, which the object store served instead.", held.Lost)
+	write("sproutfs_cache_disk_evicted_regions_total", "counter", "Regions the page cache's disk gave back.",
+		held.Evicted)
+	write("sproutfs_cache_disk_writes_refused_total", "counter", "Writes the page cache's disk refused.", held.Refused)
+	fmt.Fprintf(out, "# HELP sproutfs_cache_disk_opened_regions What the host did with the regions it found in its cache's file when it started.\n"+
+		"# TYPE sproutfs_cache_disk_opened_regions gauge\n")
+	for _, opened := range []struct {
+		how     string
+		regions uint64
+	}{{"tables", held.Opened.FromTables}, {"scanned", held.Opened.Scanned}, {"given-back", held.Opened.GivenBack}} {
+		fmt.Fprintf(out, "sproutfs_cache_disk_opened_regions{how=%q} %d\n", opened.how, opened.regions)
 	}
 }
 

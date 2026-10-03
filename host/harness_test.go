@@ -215,7 +215,9 @@ func (h *hostHarness) start(t *testing.T) {
 // host's pages go with it.
 func (h *hostHarness) launch(t *testing.T, n int) {
 	t.Helper()
-	parent := t.Context()
+	// The host runs under the harness's runtime, so the guards SPROUTFS_SIM_BUG
+	// names reach the sites that read them from the host's own context.
+	parent := sim.WithRuntime(t.Context(), h.runtime)
 	ready := make(chan error, 1)
 	err := h.processes[n].Start(parent, func(ctx context.Context) {
 		h.incarnations[n]++

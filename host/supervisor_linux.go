@@ -97,6 +97,8 @@ type supervisor struct {
 	// cacheDisk is the file the page cache keeps what pulls copy in, nil where
 	// the deployment gave it no space.
 	cacheDisk platform.File
+	// cacheFile is the name of that file in the cache directory.
+	cacheFile string
 	// disk is the limiter of everything this host writes to its disk, and
 	// staged what the images staged for an import hold.
 	disk   *resource.DiskLimiter
@@ -226,12 +228,11 @@ func Start(ctx context.Context, config SupervisorConfig) (Service, error) {
 	// of this deployment holds, and empties any other. The host takes the
 	// first file of the cache directory no other host holds, and the disk
 	// limiter alone sets its share.
-	var cacheFile string
-	s.cacheDisk, cacheFile, err = openCacheFile(ctx, config)
+	s.cacheDisk, s.cacheFile, err = openCacheFile(ctx, config)
 	if err != nil {
 		return nil, err
 	}
-	slog.InfoContext(ctx, "host: the page cache's disk was claimed", "file", cacheFile,
+	slog.InfoContext(ctx, "host: the page cache's disk was claimed", "file", s.cacheFile,
 		"own_directory", config.CacheDisk != nil)
 	// The disk limiter comes after every file it measures is open, and after
 	// the spill files hold their extents, but before anything is spilled. A
@@ -424,6 +425,7 @@ func (s *supervisor) Status(ctx context.Context) (hostapi.Status, error) {
 		Disk:  diskReport(s.disk.Status()),
 	}
 	report.Cache, report.Caches = cacheReport(status.Self, status.Caches)
+	report.CacheDisk = cacheDiskReport(s.cacheFile, status.Cache.Disk)
 	if report.Running == nil {
 		report.Running = []string{}
 	}

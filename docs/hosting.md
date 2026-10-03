@@ -923,7 +923,12 @@ uploads them (`Publication.Keep`): each part once it is durable, and the
 segments once the index object is. So a page the guest wrote after the pull
 began, and that a later checkpoint published, is read from the disk too when
 the pager evicts it. That covers every publication: an interval checkpoint, a
-stop, and the fork point a fork publishes behind its children. A write the disk
+stop, and the fork point a fork publishes behind its children. The copying ends
+when the VM stops running here, and the keeping only when the VM's handle
+closes, after its last publication. A stop ends the VM's machine before it
+publishes, so a pull that closed with the machine would keep nothing of the
+stop's checkpoint; the GCE run of 2026-10-03 found that, and a reopened VM read
+the pages it wrote last from the store. A write the disk
 refuses keeps nothing more of that publication, and its pages are read from
 the store.
 
@@ -1259,7 +1264,13 @@ The host's status reports:
   what admits a VM;
 - the object traffic;
 - what the page server has served;
-- its cache's identity, weight and address, and the list of caches it holds.
+- its cache's identity, weight and address, and the list of caches it holds;
+- the page cache's disk under `cache_disk`: the file it claimed, its
+  identity, the regions and entries it holds, the reads it served without the
+  object store (`hits`), the copies it lost, the regions it gave back, and what
+  the host did with the regions it found in the file when it started
+  (`opened`: read back from their tables, scanned, or given back). `/metrics`
+  carries the same counters as `sproutfs_cache_disk_*`.
 
 ### The cache's file
 

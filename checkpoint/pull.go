@@ -130,6 +130,15 @@ func (p *Pull) Stats() PullStats {
 	return stats
 }
 
+// StopFetching stops copying the checkpoint and waits for the copy in flight,
+// and leaves the keeping on: a publication of the VM after it still keeps
+// its pages. It is what a VM that stops running here calls before its last
+// publication, which Close then follows. Calling it again does nothing.
+func (p *Pull) StopFetching() {
+	p.cancel()
+	<-p.done
+}
+
 // Close stops the pull and its keeping. What it copied stays on the disk.
 // Calling it again does nothing.
 func (p *Pull) Close() {

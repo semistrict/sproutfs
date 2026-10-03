@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	hostapi "github.com/semistrict/sproutfs/api/host"
 	"github.com/semistrict/sproutfs/checkpoint"
 	"github.com/semistrict/sproutfs/host"
 	"github.com/semistrict/sproutfs/platform"
@@ -196,6 +197,48 @@ func TestAPulledVMKeepsItsLaterCheckpointsOnTheDisk(t *testing.T) {
 	}
 	if gets := counted.count(); gets != 0 {
 		t.Fatalf("faulting a pulled VM's pages in after a later checkpoint made %d requests of the object store, want none",
+			gets)
+	}
+}
+
+// A pulled VM's stop keeps the checkpoint it publishes on its host's disk, as
+// every other publication of it does. The guest stores into two pages and the
+// VM stops; opened on the same host again, every page faults in from the disk,
+// those two among them, and makes no request of the object store. A stop ends
+// the pull's fetching before it publishes, so a pull closed with its fetching
+// would keep nothing of the stop, and the two pages would come from the store.
+func TestAPulledVMKeepsItsStopsCheckpointOnTheDisk(t *testing.T) {
+	counted, pagers, guest, _, h := pulledRun(t, 64<<20)
+	if _, err := h.hosts[1].WaitPulled(t.Context(), "vm-1"); err != nil {
+		t.Fatal(err)
+	}
+	stored := map[uint64]byte{1: 77, 4: 78}
+	for page, value := range stored {
+		guest.store("disk", page, value)
+	}
+	if _, err := h.hosts[1].Stop(t.Context(), "vm-1", hostapi.StopRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	opened, err := h.hosts[1].Volumes().Open(t.Context(), "vm-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := newMachine(t, pagers, opened, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	counted.reset()
+	for page := range uint64(pullPages) {
+		want := pullPage(page)[0]
+		if value, wrote := stored[page]; wrote {
+			want = value
+		}
+		if got := reopened.load("disk", page); got[0] != want {
+			t.Fatalf("page %d holds %d, want %d", page, got[0], want)
+		}
+	}
+	if gets := counted.count(); gets != 0 {
+		t.Fatalf("faulting a pulled VM's pages in after it stopped made %d requests of the object store, want none",
 			gets)
 	}
 }
@@ -422,5 +465,22 @@ func TestAPulledVMsPagesOutliveItsHostsRestart(t *testing.T) {
 	if gets := counted.count(); gets != 0 {
 		t.Fatalf("faulting a pulled VM's pages in after its host restarted made %d requests of the object store, "+
 			"want none", gets)
+	}
+	// /status says the same: the file the host claimed, the identity it kept,
+	// the regions it read back from their tables, and a disk hit for every
+	// read the store did not serve.
+	report := host.CacheDiskReport("cache-0", h.hosts[1].Status().Cache.Disk)
+	want := hostapi.CacheDisk{File: "cache-0", Identity: before.Identity.String(), Regions: 2,
+		Entries: after.Entries, IndexBytes: after.IndexBytes, Hits: pullPages + 1,
+		Opened: hostapi.CacheDiskOpened{FromTables: 2}}
+	if report == nil || *report != want {
+		t.Fatalf("the restarted host reports its cache's disk as %+v, want %+v", report, want)
+	}
+}
+
+// A host whose cache keeps no disk reports none.
+func TestAHostWithNoCacheDiskReportsNone(t *testing.T) {
+	if report := host.CacheDiskReport("", checkpoint.DiskStats{}); report != nil {
+		t.Fatalf("a cache with no disk is reported as %+v, want none", report)
 	}
 }

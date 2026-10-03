@@ -211,6 +211,20 @@ func diskReport(status resource.DiskStatus) hostapi.Disk {
 	}
 }
 
+// cacheDiskReport is the page cache's disk as /status reports it: the file the
+// host claimed and the disk's own counters. A cache that keeps no disk has no
+// identity, and is reported as none.
+func cacheDiskReport(file string, disk checkpoint.DiskStats) *hostapi.CacheDisk {
+	if disk.Identity.IsZero() {
+		return nil
+	}
+	return &hostapi.CacheDisk{File: file, Identity: disk.Identity.String(), Regions: disk.Regions,
+		Entries: disk.Entries, IndexBytes: disk.IndexBytes, Hits: disk.Hits, Lost: disk.Lost,
+		Evicted: disk.Evicted, Rewritten: disk.Rewritten, Refused: disk.Refused,
+		Opened: hostapi.CacheDiskOpened{FromTables: disk.FromTables, Scanned: disk.Scanned,
+			GivenBack: disk.GivenBackOnOpen}}
+}
+
 // stagedWriter stages an image on the host's disk. It counts what the image
 // holds as a promise, and before each region it asks the limiter whether the
 // disk can keep one more, so an import the disk cannot hold is refused rather
