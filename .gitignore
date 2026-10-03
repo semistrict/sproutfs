@@ -22,3 +22,4 @@ __pycache__/
 /sproutfsctl
 /sproutfs-guest-agent
 /sproutfs-guest-witness
+/sproutfs-stripebench
