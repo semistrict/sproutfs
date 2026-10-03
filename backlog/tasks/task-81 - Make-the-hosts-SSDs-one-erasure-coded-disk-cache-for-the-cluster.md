@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-03 03:41'
-updated_date: '2026-10-03 06:11'
+updated_date: '2026-10-03 06:34'
 labels:
   - performance
   - storage
@@ -88,4 +88,6 @@ Step 4 done, Ranks: package rank (identity, code table, weight, windows, weighte
 Step 4 details. The weight is DiskLimiter.Capacity read once at start, never the share. The orchestrator keeps a quiet pod's last cache, drops pods no longer listed, lists a duplicate identity once, and takes SPROUTFS_CACHE_CODE or the table's code for the most caches listed since it started, so a drain keeps the code.
 
 Step 4 testing. Guards rank-forget-list-on-failure, rank-keep-first-list, host-weight-from-share, orchestrator-code-follows-the-list and orchestrator-drop-quiet-cache, each killed by its named test. Mutation runs: rank 58 then 60 killed of 68, eight survivors equivalent; orchestrator caches.go 7 then 8 of 8, run with the integration flag because the tool names nested cmd packages wrongly; host caches.go 4 of 4.
+
+2026-10-03, tail attribution (40c15ef0, 1fe929b6, 911c3cdf): the stripe benchmark now records per case client CPU, Go GC pauses and scheduler latency (runtime/metrics), host CPU by kind and TCP retransmits (/proc), the servers' queued/read/wait time on every reply (in the reply header), decode time and network time per hit, a breakdown of hits >= -tail (10 ms) with the server that completed each, and -repeats rounds in shuffled order with p99 by round. Three GCE runs on six n2-standard-4 hosts (docs/measurements/gce-stripes-tail-2026-10-03.md): the tail is not CPU (<=1.7 of 4 cores per host), GC (pause p99 <=1.7 ms), decode (p99 <=1 ms) or server queueing (p99 <=0.28 ms); it is network time plus replies waiting behind earlier replies on the same connection, and it follows bytes served per host: p99 <2 ms in 14/15 rounds at 4.4 Gb/s, 1.9-79 ms at 5.2-5.3, >=89 ms at 6.3. 4+2 drained moves the drained host's share onto the other five (6.3 vs 5.2 Gb/s for 4+1); at 1250 reads/s 4+2 drained matches 4+1 healthy at 1500. One reader taking in 6.4 Gb/s alone: p99 1.75-1.95 ms in every round. Run-to-run noise is one slow host at a time for seconds. Plan updated: serving bandwidth is a budget (about 40 % of NIC rate after a drain, until measured on the deployment's machine type); GCE measurements run >=3 rounds and report bytes per host. Unexplained: why the network slows at ~half the 10 Gb/s rating with no drops (virtio TX ring full 10-13k times per host in run A), and whether n2-standard-8 moves the limit.
 <!-- SECTION:NOTES:END -->
