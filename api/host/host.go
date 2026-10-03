@@ -610,6 +610,67 @@ type Status struct {
 	// CacheFill is what this host's fills of the cluster's disk cache did.
 	// It is absent on a host that keeps no cache disk.
 	CacheFill *CacheFill `json:"cache_fill,omitempty"`
+	// CacheRead is what this host's reads of the cluster's disk cache did,
+	// and what it served its peers. It is absent on a host that keeps no
+	// cache disk.
+	CacheRead *CacheRead `json:"cache_read,omitempty"`
+}
+
+// CacheRead is what one host's reads of the cluster's disk cache did, in
+// envelopes unless it says otherwise, and what its peer server served of its
+// own cache. A read takes this host's own stripes of a window, asks k+1 of the
+// window's ranks for theirs, asks the rest after a delay within a budget, and
+// past a bound reads the store too within a token bucket.
+type CacheRead struct {
+	// Hits counts the envelopes rebuilt from the cluster, and OwnHits those
+	// this host's own stripes rebuilt alone. Misses counts the envelopes the
+	// cluster could not rebuild, which the store served.
+	Hits    uint64 `json:"hits"`
+	OwnHits uint64 `json:"own_hits"`
+	Misses  uint64 `json:"misses"`
+	// Requests counts the stripe requests sent; Replaced the holders replaced
+	// at once for answering with nothing, BUSY or an error; SecondRequests
+	// the reads that asked the rest of the ranks after the delay; and
+	// RefusedByBudget the reads whose second request the budget refused.
+	Requests        uint64 `json:"requests"`
+	Replaced        uint64 `json:"replaced"`
+	SecondRequests  uint64 `json:"second_requests"`
+	RefusedByBudget uint64 `json:"refused_by_budget"`
+	// StoreHedges counts the reads past the bound that read the store as
+	// well, StoreHedgesWon those the store answered first, and
+	// StoreHedgesRefused those the token bucket refused.
+	StoreHedges        uint64 `json:"store_hedges"`
+	StoreHedgesWon     uint64 `json:"store_hedges_won"`
+	StoreHedgesRefused uint64 `json:"store_hedges_refused"`
+	// WrongStripes counts the stripes found wrong, DropsSent the drops sent to
+	// their holders, and Repairs the stripes sent to ranks that lacked them.
+	WrongStripes uint64 `json:"wrong_stripes"`
+	DropsSent    uint64 `json:"drops_sent"`
+	Repairs      uint64 `json:"repairs"`
+	// Timeouts counts the stripe requests that timed out; MarkedDown the
+	// hosts marked down, MarkCapped the marks refused for the bound on how
+	// many may be, MarkCleared the marks a probe cleared, and Down the hosts
+	// marked down now.
+	Timeouts    uint64 `json:"timeouts"`
+	MarkedDown  uint64 `json:"marked_down"`
+	MarkCapped  uint64 `json:"mark_capped"`
+	MarkCleared uint64 `json:"mark_cleared"`
+	Down        int    `json:"down"`
+	// HeadChecks counts the sampled hits whose part was checked, and
+	// HeadMissing those whose part the store no longer had.
+	HeadChecks  uint64 `json:"head_checks"`
+	HeadMissing uint64 `json:"head_missing"`
+	// Delay and Bound are the reader's delay before a second request and its
+	// bound before a read of the store, now.
+	Delay time.Duration `json:"delay"`
+	Bound time.Duration `json:"bound"`
+	// Served is the reads of this host's stripes its peer server answered,
+	// ServedStripes and ServedBytes what they carried, and ServeBusy the reads
+	// it answered BUSY because its serving bandwidth was spent.
+	Served        int64 `json:"served"`
+	ServedStripes int64 `json:"served_stripes"`
+	ServedBytes   int64 `json:"served_bytes"`
+	ServeBusy     int64 `json:"serve_busy"`
 }
 
 // CacheFill is what one host's fills of the cluster's disk cache did, in

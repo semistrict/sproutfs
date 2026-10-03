@@ -255,6 +255,10 @@ type SupervisorConfig struct {
 	// stripes its list of caches ranks it for, and every other window whole.
 	// Zero keeps every window whole.
 	CacheClusterPercent int
+	// CacheServeBytesPerSecond is this host's serving bandwidth for stripes
+	// of the cluster's disk cache, past which its peer server answers a read
+	// BUSY. Zero leaves it unbounded.
+	CacheServeBytesPerSecond int64
 	// DiskGoal is what the host's disk limiter keeps on the filesystem Disk
 	// is on, DiskBandBytes the cap on its band, zero for the limiter's
 	// default, and DiskReserveBytes what the cache leaves free above the

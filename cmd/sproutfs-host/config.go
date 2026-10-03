@@ -91,6 +91,10 @@ const defaultDiskFreePercent = 10
 // space back.
 const defaultDiskReserveBytes = 1 << 30
 
+// defaultCacheServeBytesPerSecond is a host's serving bandwidth for stripes
+// of the cluster's cache: 500 MiB a second, about 40 % of a 10 Gb/s NIC.
+const defaultCacheServeBytesPerSecond = 500 << 20
+
 // defaultTemplates is the one guest image the demo image carries.
 const defaultTemplates = "alpine=/usr/share/sproutfs/guest.ext4"
 
@@ -245,6 +249,12 @@ func loadConfig(lookup func(string) string) (config, error) {
 			c.CacheClusterPercent = percent
 		}
 	}
+	// A host serves stripes of the cluster's cache within a bandwidth, and
+	// answers a read BUSY past it. The tail of reads from the cluster follows
+	// the bytes each host serves well before its NIC's rate, so the default is
+	// about 40 % of a 10 Gb/s NIC until the machine type is measured
+	// (docs/measurements/gce-stripes-tail-2026-10-03.md).
+	c.CacheServeBytesPerSecond = number("SPROUTFS_CACHE_SERVE_BYTES_PER_SECOND", defaultCacheServeBytesPerSecond)
 	c.VMMemoryBytes = uint64(number("SPROUTFS_VM_MEMORY_BYTES", 512<<20))
 
 	// The disk limiter keeps every goal it is given: a floor of free bytes, a

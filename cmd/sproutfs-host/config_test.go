@@ -719,3 +719,33 @@ func TestConfigRunsPMEMAtFourKiBWhenAsked(t *testing.T) {
 		t.Fatalf("an 8 KiB PMEM page was accepted: %v", err)
 	}
 }
+
+// A host serves stripes of the cluster's cache within a bandwidth: 500 MiB a
+// second unless the deployment names another, and never none or less.
+func TestConfigReadsTheServingBandwidth(t *testing.T) {
+	for _, test := range []struct {
+		value string
+		want  int64
+	}{{"", 500 << 20}, {"1073741824", 1 << 30}} {
+		values := minimal()
+		if test.value != "" {
+			values["SPROUTFS_CACHE_SERVE_BYTES_PER_SECOND"] = test.value
+		}
+		config, err := loadConfig(environ(values))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if config.CacheServeBytesPerSecond != test.want {
+			t.Fatalf("SPROUTFS_CACHE_SERVE_BYTES_PER_SECOND %q configured %d, want %d", test.value,
+				config.CacheServeBytesPerSecond, test.want)
+		}
+	}
+	for _, value := range []string{"0", "-1", "fast"} {
+		values := minimal()
+		values["SPROUTFS_CACHE_SERVE_BYTES_PER_SECOND"] = value
+		want := `SPROUTFS_CACHE_SERVE_BYTES_PER_SECOND is "` + value + `", want a positive number`
+		if _, err := loadConfig(environ(values)); err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("a serving bandwidth of %q configured a host: %v", value, err)
+		}
+	}
+}

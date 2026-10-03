@@ -1,6 +1,7 @@
 package checkpoint
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -26,18 +27,26 @@ func (c *Cache) Identity() rank.Identity {
 	return c.disk.identity
 }
 
-// ReadStripes answers a peer's read of a window's stripes. It answers with no
-// stripes yet: no host reads stripes from its peers until the cluster is read
-// from (plans/disk-cache-2026-10-02.md, step 7), and a read with nothing in it
-// is a miss. What it answers already is the fill right, which this cache gives
-// the first reader that asks while it ranks first for the window, holds nothing
-// of the pages asked for, and has not given the window's right out this
-// interval.
+// ReadStripes answers a peer's read of a window's stripes with every stripe
+// the disk holds of the pages asked for under the read's code, of any index,
+// each as the disk stores it: its header and its own checksum, which the
+// reader checks. A holder never forwards a read and never reads the store for
+// a reader: what it does not hold, it says nothing of. A read that wants no
+// bytes asks only for the fill right, which this cache gives the first reader
+// that asks while it ranks first for the window, holds nothing of the pages
+// asked for, and has not given the window's right out this interval.
 func (c *Cache) ReadStripes(ctx context.Context, read peer.StripeRead) (peer.Stripes, error) {
 	if c.disk == nil {
 		return peer.Stripes{}, errNoDisk
 	}
-	return peer.Stripes{FillRight: c.filler.grant(ctx, read.Window, read.Pages, read.Code)}, nil
+	if read.MaxBytes == 0 {
+		return peer.Stripes{FillRight: c.filler.grant(ctx, read.Window, read.Pages, read.Code)}, nil
+	}
+	if !validWindow(read.Window, read.Pages) || read.Code.Validate() != nil || read.MaxBytes < 0 {
+		return peer.Stripes{}, fmt.Errorf("%w: a read of %+v under %s", errKeepRefused, read.Window, read.Code)
+	}
+	items, payload := c.disk.serveStripes(ctx, read.Window, read.Pages, read.Code, read.MaxBytes)
+	return peer.Stripes{Items: items, Payload: bytes.NewReader(payload), Size: int64(len(payload))}, nil
 }
 
 // Keep writes the stripes a peer's keep carries, where this cache's own list

@@ -24,7 +24,8 @@
 (* mixes envelopes fails the envelope's SHA-256. On a miss it reads the    *)
 (* store, and fills if rank 1 gave it the fill right, which rank 1 gives   *)
 (* once an interval while it holds nothing of the window. A reader that    *)
-(* decoded may send a rank that lacks its stripe that stripe. A cache      *)
+(* decoded, and heard from every rank, may send an index no rank holds to  *)
+(* a rank that holds fewer stripes than the code puts on it. A cache       *)
 (* takes a keep only for a window its own list ranks it for, and drops one *)
 (* for a stripe it holds. The filler is held to its own list as well.      *)
 (*                                                                         *)
@@ -286,13 +287,17 @@ Read(h, x) ==
            silent == {p \in RankSet(list[h], x) \ marked[h] : ~up[p]}
        IN /\ faults' = IF answers = Named(h, x) THEN faults ELSE faults + 1
           /\ \/ \E c \in decodes :
-                   \* A hit. One rank that lacks its stripe may be sent it.
+                   \* A hit. A reader that heard from every rank of the
+                   \* window may send an index no rank holds to a rank that
+                   \* holds fewer stripes than the code puts on it.
                    /\ wrong' = (wrong \/ c # <<x, want[x]>>)
                    /\ \/ UNCHANGED <<disk, misplaced>>
-                      \/ \E p \in Asked(h, x), i \in Idx :
-                            /\ Holder(list[h], x, i) = p
-                            /\ ~Holds(p, x, i)
-                            /\ Deliver({p}, LAMBDA q : {Stripe(c, i)})
+                      \/ /\ RankSet(list[h], x) \subseteq Asked(h, x)
+                         /\ \E p \in RankSet(list[h], x), i \in Idx :
+                               /\ ~\E q \in RankSet(list[h], x) : Holds(q, x, i)
+                               /\ Cardinality({j \in Idx : Holds(p, x, j)})
+                                     < Cardinality(Mine(list[h], x, p))
+                               /\ Deliver({p}, LAMBDA q : {Stripe(c, i)})
                    /\ UNCHANGED rights
              \/ /\ decodes = {}
                 /\ store[x] # NoBytes

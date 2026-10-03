@@ -39,6 +39,11 @@ type MigrationConfig struct {
 	// checkpoint and never asks the host still holding its pages, which is a
 	// post-copy in name only.
 	StartVM StartFunc
+	// ServeStripeBytesPerSecond is this host's serving bandwidth for the
+	// cluster's disk cache: the bytes of stripes its peer server sends all
+	// its peers a second, past which a read is answered BUSY and its reader
+	// asks another holder. Zero leaves it unbounded.
+	ServeStripeBytesPerSecond int64
 	// DrainConcurrency bounds how many VMs a drain moves at once. Zero selects
 	// four: a drain is planned work whose cost is one host's pages, and moving
 	// every VM at once would put all of them on the network together.

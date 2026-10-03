@@ -10,6 +10,7 @@ import (
 
 	hostapi "github.com/semistrict/sproutfs/api/host"
 	"github.com/semistrict/sproutfs/checkpoint"
+	"github.com/semistrict/sproutfs/peer"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/resource"
@@ -239,6 +240,23 @@ func cacheFillReport(disk checkpoint.DiskStats, fill checkpoint.FillStats) *host
 		WithoutRight: fill.WithoutRight, RightsGranted: fill.RightsGranted, Sent: fill.Sent,
 		SentBytes: fill.SentBytes, Kept: fill.Kept, Dropped: dropped, Duplicates: fill.Duplicates,
 		Refused: fill.Refused, QueuedBytes: fill.Queued, QueueBytes: fill.QueueBytes}
+}
+
+// cacheReadReport is what the host's reads of the cluster's disk cache did,
+// and what its peer server served of its cache, as /status reports them:
+// nothing for a host that keeps no cache disk.
+func cacheReadReport(disk checkpoint.DiskStats, read checkpoint.ReadStats, served peer.ServerStats) *hostapi.CacheRead {
+	if disk.Identity.IsZero() {
+		return nil
+	}
+	return &hostapi.CacheRead{Hits: read.Hits, OwnHits: read.OwnHits, Misses: read.Misses, Requests: read.Requests,
+		Replaced: read.Replaced, SecondRequests: read.SecondRequests, RefusedByBudget: read.Refused,
+		StoreHedges: read.StoreHedges, StoreHedgesWon: read.StoreHedgesWon, StoreHedgesRefused: read.StoreHedgesRefused,
+		WrongStripes: read.WrongStripes, DropsSent: read.DropsSent, Repairs: read.Repairs, Timeouts: read.Timeouts,
+		MarkedDown: read.MarkedDown, MarkCapped: read.Capped, MarkCleared: read.Cleared, Down: read.Down,
+		HeadChecks: read.HeadChecks, HeadMissing: read.HeadMissing, Delay: read.Delay, Bound: read.Bound,
+		Served: served.StripeReads, ServedStripes: served.Stripes, ServedBytes: served.StripeBytes,
+		ServeBusy: served.StripesBusy}
 }
 
 // stagedWriter stages an image on the host's disk. It counts what the image

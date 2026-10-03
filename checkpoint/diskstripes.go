@@ -2,11 +2,13 @@ package checkpoint
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 
 	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/internal/blob"
+	"github.com/semistrict/sproutfs/peer"
 	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/rank"
 	"github.com/semistrict/sproutfs/stripe"
@@ -330,6 +332,27 @@ func (d *cacheDisk) lookupStripes(ctx context.Context, key diskKey, code rank.Co
 	return locations, codes
 }
 
+// ownStripes is every stripe of key's envelope under code the disk holds, of
+// any index, read back and checked, where each lies, and the last outcome of
+// a read that failed: diskHit when none did. An item that fails its key or
+// its checksum is forgotten, and is not among them.
+func (d *cacheDisk) ownStripes(ctx context.Context, key diskKey, code rank.Code) ([]stripe.Stripe, []diskLocation,
+	diskReadOutcome) {
+	locations, codes := d.lookupStripes(ctx, key, code)
+	var stripes []stripe.Stripe
+	var read []diskLocation
+	outcome := diskHit
+	for at, location := range locations {
+		s, found := d.readItem(ctx, key, codes[at], location)
+		if found != diskHit {
+			outcome = found
+			continue
+		}
+		stripes, read = append(stripes, s), append(read, location)
+	}
+	return stripes, read, outcome
+}
+
 // readStripe reads back stripe index of key's envelope under code. Anything
 // but a hit is a miss.
 func (d *cacheDisk) readStripe(ctx context.Context, key diskKey, code rank.Code, index int) (stripe.Stripe, diskReadOutcome) {
@@ -353,18 +376,7 @@ func (d *cacheDisk) readStripe(ctx context.Context, key diskKey, code rank.Code,
 // because a copy that failed once is not asked for again.
 func (d *cacheDisk) read(ctx context.Context, key diskKey, check func([]byte) error) ([]byte, diskReadOutcome) {
 	code := d.code(ctx, key)
-	locations, codes := d.lookupStripes(ctx, key, code)
-	var stripes []stripe.Stripe
-	var read []diskLocation
-	outcome := diskHit
-	for at, location := range locations {
-		s, found := d.readItem(ctx, key, codes[at], location)
-		if found != diskHit {
-			outcome = found
-			continue
-		}
-		stripes, read = append(stripes, s), append(read, location)
-	}
+	stripes, read, outcome := d.ownStripes(ctx, key, code)
 	if len(stripes) < code.K {
 		switch {
 		case outcome != diskHit:
@@ -449,4 +461,57 @@ func (d *cacheDisk) served(key diskKey) {
 			d.index.read(location)
 		}
 	}
+}
+
+// serveStripes is every stripe the disk holds of pages of window under code,
+// of any index, in page and index order, as items as the disk stores them:
+// what a peer's read is answered with. pages nil asks for every page. It stops
+// before the item that would take the reply past maxBytes. Nothing is checked
+// here: the reader checks each item's key and checksum, and tells this cache
+// to drop one that fails. Each item served counts as a read of it, as a read
+// of this host's own does.
+func (d *cacheDisk) serveStripes(ctx context.Context, window rank.Window, pages []uint32, code rank.Code,
+	maxBytes int64) ([]peer.StripeItem, []byte) {
+	if pages == nil {
+		pages = make([]uint32, max(window.Pages, 1))
+		for at := range pages {
+			pages[at] = uint32(at)
+		}
+	}
+	var items []peer.StripeItem
+	var payload []byte
+	for _, page := range pages {
+		key := windowKey(window, page)
+		for index := range code.Width() {
+			want := indexOf(code, index)
+			d.mu.Lock()
+			location, found := d.index.lookup(key, want, false, false)
+			if found && int64(len(payload))+location.size() > maxBytes {
+				d.mu.Unlock()
+				return items, payload
+			}
+			if found {
+				location.entry.region.readers++
+			}
+			d.mu.Unlock()
+			if !found {
+				continue
+			}
+			item := make([]byte, location.size())
+			err := readFull(ctx, d.file, item, location.offset)
+			d.finishRead(ctx, location.entry.region)
+			if err != nil || len(item) < diskItemFixed {
+				// The reader asks another holder for what this one could not
+				// read back.
+				continue
+			}
+			d.mu.Lock()
+			d.index.read(location)
+			d.mu.Unlock()
+			items = append(items, peer.StripeItem{Page: page, Index: index,
+				Length: int(binary.LittleEndian.Uint32(item[36:])), Size: len(item)})
+			payload = append(payload, item...)
+		}
+	}
+	return items, payload
 }

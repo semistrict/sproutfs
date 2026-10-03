@@ -28,10 +28,15 @@ type cacheStore struct {
 	entered   chan struct{}
 	release   chan struct{}
 	suspended string
+	// getting, when set, is told of every read's key as it begins.
+	getting atomic.Pointer[func(key string)]
 }
 
 func (s *cacheStore) Get(ctx context.Context, request platform.GetRequest) (platform.GetResult, error) {
 	s.gets.Add(1)
+	if getting := s.getting.Load(); getting != nil {
+		(*getting)(request.Key.String())
+	}
 	if strings.Contains(request.Key.String(), s.suspended) {
 		if s.block.Load() {
 			s.entered <- struct{}{}

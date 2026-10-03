@@ -1,0 +1,1190 @@
+package checkpoint
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"slices"
+	"sync"
+	"time"
+
+	"github.com/semistrict/sproutfs/internal/blob"
+	"github.com/semistrict/sproutfs/peer"
+	"github.com/semistrict/sproutfs/platform"
+	"github.com/semistrict/sproutfs/platform/sim"
+	"github.com/semistrict/sproutfs/rank"
+	"github.com/semistrict/sproutfs/stripe"
+)
+
+// Reading from the cluster. Inside the share the cluster cache is turned on
+// for, a page this host holds in neither its memory tier nor its pager's arena
+// is read from the caches the list ranks for its window before the store
+// (plans/disk-cache-2026-10-02.md, "Reading a page").
+//
+// A read takes the stripes of the window this host's own disk holds, which
+// cost no request. If they do not make k distinct indices of each page, it
+// asks k+1 of the window's first k+m ranks, less its own, for every stripe of
+// the pages they hold, of any index: a join or a leave near the top of a
+// window's ranks moves every holder below it, so a holder seldom holds the
+// index its rank puts on it. Which ranks it asks first is chosen by a hash of
+// the reader and the window (rank.Pick), so the readers of one window spread
+// over all its holders. A holder that answers with nothing, BUSY, or not at
+// all is replaced at once by the next rank not yet asked: that is a miss, not
+// a hedge. If k stripes of every page have not arrived after a delay, about
+// the 95th percentile of this reader's recent times to k stripes and no less
+// than a floor, it asks the rest, paid from a budget as FoundationDB's load
+// balancer pays for its second requests: a read that had its stripes within
+// the delay adds a twentieth of a request, and a second request takes one. So
+// when every holder is slow at once the budget runs out, and the reader waits
+// rather than doubling every holder's load.
+//
+// Each stripe's key and checksum are checked as it arrives, and a page is
+// rebuilt from any k distinct indices (stripe.Join) and checked as a page
+// from the store is. A stripe that fails a check, or that Join finds is not
+// the envelope's, is not used, and its holder is told to drop it. A read that
+// waits past a bound, set from the reader's own latencies and a few
+// milliseconds at least, reads the store as well and takes whichever answers
+// first, within a token bucket of a twentieth of the reads that asked the
+// cluster; past the bucket it waits for the stripes. A page fewer than k
+// stripes of which exist anywhere it asked is read from the store, and that
+// read fills the cluster behind it.
+//
+// Nothing a read sends waits on the read: a request goes on until it is
+// answered or times out, whether or not the read still needs it, and how it
+// ended is what marks a host down (clusterdown.go). Drops and repairs are
+// background work, done one at a time behind the fills (fill.go).
+
+// Defaults of a cache's reads of the cluster.
+const (
+	// DefaultClusterHedgeFloor is the least a read waits for k stripes of a
+	// window before it asks the rest of the window's ranks.
+	DefaultClusterHedgeFloor = 500 * time.Microsecond
+	// DefaultClusterBound is the least a read waits for stripes before it
+	// reads the store as well.
+	DefaultClusterBound = 10 * time.Millisecond
+	// DefaultClusterStripeTimeout is how long one stripe request waits for
+	// its answer before it is a timeout of the host it asked.
+	DefaultClusterStripeTimeout = time.Second
+	// DefaultHeadCheckEvery is how many hits of the disk tier go by between
+	// two checks that the part behind a hit still exists.
+	DefaultHeadCheckEvery = 10000
+)
+
+const (
+	// hedgeWindow is how many recent reads the delay is drawn from, and
+	// hedgeEvery how many pass between two updates of it.
+	hedgeWindow = 256
+	hedgeEvery  = 32
+	// hedgeEarn: a read that had its stripes within the delay earns
+	// 1/hedgeEarn of a second request; hedgeMax is the most the budget holds.
+	hedgeEarn = 20
+	hedgeMax  = 5
+	// boundFactor is the bound in delays: a read that has waited this many
+	// times its usual 95th percentile is in a tail the store may be quicker
+	// than.
+	boundFactor = 4
+	// storeHedgeEarn: a read that asked the cluster earns 1/storeHedgeEarn
+	// of a read of the store; storeHedgeMax is the most the bucket holds.
+	storeHedgeEarn = 20
+	storeHedgeMax  = 5
+)
+
+// ReadStats is what a cache's reads of the cluster did, in envelopes unless
+// they say otherwise.
+type ReadStats struct {
+	// Hits counts the envelopes rebuilt from the cluster, and OwnHits those
+	// among them this host's own disk rebuilt alone, with no request.
+	// Misses counts the envelopes the cluster could not rebuild, which the
+	// store served.
+	Hits, OwnHits, Misses uint64
+	// Requests counts the stripe requests sent, Replaced the holders replaced
+	// at once for answering with nothing, BUSY or an error, SecondRequests
+	// the reads that asked the rest of the ranks after the delay, and
+	// Refused the reads whose second request the budget refused.
+	Requests, Replaced, SecondRequests, Refused uint64
+	// StoreHedges counts the reads past the bound that read the store as
+	// well, StoreHedgesWon those the store answered first, and
+	// StoreHedgesRefused those the token bucket refused.
+	StoreHedges, StoreHedgesWon, StoreHedgesRefused uint64
+	// WrongStripes counts the stripes found wrong, by their checks or by
+	// rebuilding, and DropsSent the drops sent to their holders for them.
+	WrongStripes, DropsSent uint64
+	// Repairs counts the stripes handed over to repair a window: indices no
+	// rank held, for ranks that held fewer than the code puts on them.
+	Repairs uint64
+	// Timeouts counts the stripe requests that timed out. MarkedDown counts
+	// the hosts marked down, Capped the marks refused for the bound on how
+	// many may be down, Cleared the marks a probe cleared, and Down the hosts
+	// marked down now.
+	Timeouts, MarkedDown, Capped, Cleared uint64
+	Down                                  int
+	// HeadChecks counts the hits whose part was checked with a HEAD, and
+	// HeadMissing those whose part the store no longer had.
+	HeadChecks, HeadMissing uint64
+	// Delay and Bound are the reader's delay before a second request and its
+	// bound before a read of the store, now.
+	Delay, Bound time.Duration
+}
+
+// The probes reads of the cluster mark.
+const (
+	// ProbeClusterHit is an envelope rebuilt from stripes some peer sent.
+	ProbeClusterHit = "checkpoint/cluster-hit"
+	// ProbeClusterOwnHit is an envelope this host's own stripes rebuilt.
+	ProbeClusterOwnHit = "checkpoint/cluster-own-hit"
+	// ProbeClusterMiss is an envelope the cluster could not rebuild.
+	ProbeClusterMiss = "checkpoint/cluster-miss"
+	// ProbeClusterParity is an envelope rebuilt with a data stripe missing.
+	ProbeClusterParity = "checkpoint/cluster-rebuilt-from-parity"
+	// ProbeClusterReplaced is a holder replaced at once for its answer.
+	ProbeClusterReplaced = "checkpoint/cluster-holder-replaced"
+	// ProbeClusterSecondRequest is a read that asked the rest after the
+	// delay, and ProbeClusterRefused one the budget refused.
+	ProbeClusterSecondRequest = "checkpoint/cluster-second-request"
+	ProbeClusterRefused       = "checkpoint/cluster-second-request-refused"
+	// ProbeClusterStoreHedge is a read past the bound that read the store as
+	// well, ProbeClusterStoreHedgeWon one the store answered first, and
+	// ProbeClusterStoreHedgeRefused one the token bucket refused.
+	ProbeClusterStoreHedge        = "checkpoint/cluster-store-hedge"
+	ProbeClusterStoreHedgeWon     = "checkpoint/cluster-store-hedge-won"
+	ProbeClusterStoreHedgeRefused = "checkpoint/cluster-store-hedge-refused"
+	// ProbeClusterWrongStripe is a stripe found wrong, and ProbeClusterDrop
+	// a drop sent to its holder.
+	ProbeClusterWrongStripe = "checkpoint/cluster-wrong-stripe-found"
+	ProbeClusterDrop        = "checkpoint/cluster-drop-sent"
+	// ProbeClusterRepair is a repair handed over.
+	ProbeClusterRepair = "checkpoint/cluster-repair"
+	// ProbeClusterTimeout is a stripe request that timed out.
+	ProbeClusterTimeout = "checkpoint/cluster-timeout"
+	// ProbeClusterMarkedDown is a host marked down, ProbeClusterCapped a mark
+	// the bound refused, and ProbeClusterCleared a mark a probe cleared.
+	ProbeClusterMarkedDown = "checkpoint/cluster-marked-down"
+	ProbeClusterCapped     = "checkpoint/cluster-mark-capped"
+	ProbeClusterCleared    = "checkpoint/cluster-mark-cleared"
+	// ProbeClusterHeadCheck is a hit whose part was checked, and
+	// ProbeClusterHeadMissing one whose part was gone.
+	ProbeClusterHeadCheck   = "checkpoint/cluster-head-check"
+	ProbeClusterHeadMissing = "checkpoint/cluster-head-missing"
+)
+
+// The fault-injection sites of reads of the cluster.
+const (
+	// buggifyClusterWrongStripe hands a read a stripe whose checksum held and
+	// whose bytes are not the envelope's, as a peer that answers with a wrong
+	// stripe does.
+	buggifyClusterWrongStripe = "checkpoint/cluster-wrong-stripe"
+	// buggifyClusterDamagedItem damages an item a peer sent, so it fails its
+	// checksum.
+	buggifyClusterDamagedItem = "checkpoint/cluster-damaged-item"
+	// buggifyClusterLoseAnswer loses a holder's answer, as a reply that never
+	// came does.
+	buggifyClusterLoseAnswer = "checkpoint/cluster-lose-answer"
+	// buggifyClusterStoreHedgeNow has a read reach its bound at once.
+	buggifyClusterStoreHedgeNow = "checkpoint/cluster-store-hedge-now"
+	// buggifyClusterFalseTimeout counts an answer as a timeout of its host.
+	buggifyClusterFalseTimeout = "checkpoint/cluster-false-timeout"
+)
+
+var (
+	// errStripeTimeout ends a stripe request that went unanswered too long.
+	errStripeTimeout = fmt.Errorf("%w: a stripe request timed out", platform.ErrUnavailable)
+	// errNoPeers answers a request of a cache that reaches no peer.
+	errNoPeers = errors.New("checkpoint: the cache reaches no peer")
+	// errAnswerLost is an answer the lose-answer site took.
+	errAnswerLost = errors.New("checkpoint: the answer was lost")
+)
+
+// clusterSettings is how a cache reads the cluster.
+type clusterSettings struct {
+	hedgeFloor, bound, stripeTimeout time.Duration
+	// probeFirst and probeMax are how a host marked down is probed back.
+	probeFirst, probeMax time.Duration
+	// headEvery is the hits between two HEAD checks, none when not positive.
+	headEvery int
+}
+
+// clusterReader is one cache's reads of the cluster: its delay and budget for
+// second requests, its bucket of reads of the store, the hosts it has marked
+// down, and the requests it has in flight.
+type clusterReader struct {
+	disk     *cacheDisk
+	filler   *filler
+	peers    *peer.Table
+	clock    platform.Clock
+	settings clusterSettings
+
+	// ctx is the reads' life: every request and every probe runs under it,
+	// and close ends it.
+	ctx    context.Context
+	cancel context.CancelFunc
+	group  sync.WaitGroup
+
+	hedge hedger
+	marks downMarks
+
+	mu     sync.Mutex
+	closed bool
+	// lingering counts the reads that hear their last answers behind their
+	// callers, and quiet is closed and replaced each time it falls to zero.
+	lingering int
+	quiet     chan struct{}
+	stats     ReadStats
+	// tokens is the store hedge's bucket, in twentieths of a read.
+	tokens int
+	// hits counts the disk tier's hits, which the HEAD check samples.
+	hits uint64
+}
+
+// newClusterReader starts a cache's reads of the cluster under ctx. Its waits
+// are on the clock of the table of peers, which is the network's; with no
+// table, the wall clock's.
+func newClusterReader(ctx context.Context, disk *cacheDisk, filler *filler, peers *peer.Table,
+	settings clusterSettings) *clusterReader {
+	ctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	clock := platform.ClockOr(nil)
+	if peers != nil {
+		clock = peers.Clock()
+	}
+	r := &clusterReader{disk: disk, filler: filler, peers: peers, clock: clock, settings: settings, ctx: ctx,
+		cancel: cancel, tokens: storeHedgeMax * storeHedgeEarn,
+		// Both budgets start full, as a bucket does: a reader with no history
+		// may still hedge its first reads.
+		hedge: hedger{floor: settings.hedgeFloor, wait: settings.hedgeFloor, budget: hedgeMax * hedgeEarn}}
+	r.quiet = make(chan struct{})
+	r.marks = downMarks{reader: r, marks: make(map[rank.Identity]*downMark)}
+	filler.down = r.marks.isDown
+	return r
+}
+
+// close ends every request and probe, and waits for them.
+func (r *clusterReader) close() {
+	r.mu.Lock()
+	r.closed = true
+	r.mu.Unlock()
+	r.cancel()
+	r.group.Wait()
+}
+
+// spawn runs work under the reads' life, counted until it returns. It reports
+// false once the reads have closed, and runs nothing.
+func (r *clusterReader) spawn(work func(context.Context)) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return false
+	}
+	r.group.Go(func() { work(r.ctx) })
+	return true
+}
+
+// behind counts reads that go on hearing answers behind their callers.
+func (r *clusterReader) behind(change int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.lingering += change
+	if r.lingering == 0 {
+		close(r.quiet)
+		r.quiet = make(chan struct{})
+	}
+}
+
+// settle returns once no read is hearing answers behind its caller, and so
+// every repair a read will make has been handed to the fills.
+func (r *clusterReader) settle(ctx context.Context) error {
+	for {
+		r.mu.Lock()
+		lingering, quiet := r.lingering, r.quiet
+		r.mu.Unlock()
+		if lingering == 0 {
+			return nil
+		}
+		select {
+		case <-quiet:
+		case <-ctx.Done():
+			return context.Cause(ctx)
+		}
+	}
+}
+
+// count changes the stats under the lock.
+func (r *clusterReader) count(change func(stats *ReadStats)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	change(&r.stats)
+}
+
+// statistics is what the reads did.
+func (r *clusterReader) statistics() ReadStats {
+	r.mu.Lock()
+	stats := r.stats
+	r.mu.Unlock()
+	stats.Down = r.marks.down()
+	stats.Delay = r.hedge.delay()
+	stats.Bound = r.bound()
+	return stats
+}
+
+// bug reports whether the in-tree bug id is on for the cache's run, probe
+// marks name reached on it, and buggify fires the site id there. Each asks
+// the context the cache was made under, which carries the run, whatever
+// context the read that reaches it carries.
+func (r *clusterReader) bug(id string) bool                { return sim.Bug(r.ctx, id) }
+func (r *clusterReader) probe(name string)                 { sim.Probe(r.ctx, name) }
+func (r *clusterReader) buggify(id string, p float64) bool { return sim.Buggify(r.ctx, id, p) }
+
+// on reports whether key is read from the cluster: its window is inside the
+// share, on a disk that follows a list.
+func (r *clusterReader) on(key diskKey) bool {
+	_, ok := r.disk.listFor(key, false)
+	return ok
+}
+
+// bound is how long a read waits for stripes before it reads the store as
+// well: boundFactor delays, and no less than the configured bound.
+func (r *clusterReader) bound() time.Duration {
+	return max(r.settings.bound, boundFactor*r.hedge.delay())
+}
+
+// earn adds one read that asked the cluster to the store hedge's bucket.
+func (r *clusterReader) earn() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.tokens = min(r.tokens+1, storeHedgeMax*storeHedgeEarn)
+}
+
+// takeStoreHedge spends one read of the store from the bucket, if it holds
+// one.
+func (r *clusterReader) takeStoreHedge() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.tokens < storeHedgeEarn && !r.bug("cluster-store-unbounded") {
+		r.stats.StoreHedgesRefused++
+		r.probe(ProbeClusterStoreHedgeRefused)
+		return false
+	}
+	r.tokens = max(r.tokens-storeHedgeEarn, 0)
+	r.stats.StoreHedges++
+	r.probe(ProbeClusterStoreHedge)
+	return true
+}
+
+// sampleHit counts one hit of the disk tier, and reports whether it is the one
+// in headEvery whose part is checked.
+func (r *clusterReader) sampleHit() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.hits++
+	return r.settings.headEvery > 0 && r.hits%uint64(r.settings.headEvery) == 0
+}
+
+// clusterWant is one envelope a read wants of the cluster: its key, the most
+// its decoded bytes may hold, and what they must be.
+type clusterWant struct {
+	key     diskKey
+	maximum int
+	valid   func([]byte) bool
+}
+
+// storeHedge reads the wants at the given positions from the store, decoded.
+type storeHedge func(ctx context.Context, ats []int) ([][]byte, error)
+
+// read reads wants from the cluster, each window's at once, and returns the
+// decoded bytes of each, nil for one the cluster could not rebuild. Every want
+// must be one the cluster is on for. Past the bound, hedge, when not nil,
+// reads the wants still waited on from the store, at most once and within the
+// bucket, and whichever of the two answers first is taken.
+func (r *clusterReader) read(ctx context.Context, codecs *blob.Codecs, wants []clusterWant,
+	hedge storeHedge) ([][]byte, error) {
+	out := make([][]byte, len(wants))
+	groups := r.byWindow(wants)
+	results := make(chan windowResult, len(groups))
+	finished := make([]bool, len(groups))
+	for at, g := range groups {
+		if !r.spawn(func(context.Context) { results <- windowResult{group: at, out: r.readWindow(ctx, codecs, g)} }) {
+			results <- windowResult{group: at, out: make([][]byte, len(g.wants))}
+		}
+	}
+	wait := r.bound()
+	if r.buggify(buggifyClusterStoreHedgeNow, 0.1) {
+		wait = 0
+	}
+	bound := r.clock.NewTimer(wait)
+	defer bound.Stop()
+	hedgeCtx, cancelHedge := context.WithCancel(ctx)
+	defer cancelHedge()
+	var hedged chan hedgeResult
+	var hedging []int
+	for pending := len(groups); pending > 0; {
+		select {
+		case result := <-results:
+			pending--
+			finished[result.group] = true
+			for at, data := range result.out {
+				if position := groups[result.group].ats[at]; out[position] == nil {
+					out[position] = data
+				}
+			}
+		case <-bound.C():
+			if hedge == nil {
+				continue
+			}
+			for g, group := range groups {
+				if !finished[g] {
+					hedging = append(hedging, group.ats...)
+				}
+			}
+			if len(hedging) == 0 || !r.takeStoreHedge() {
+				hedging = nil
+				continue
+			}
+			hedged = make(chan hedgeResult, 1)
+			ats := slices.Clone(hedging)
+			go func() {
+				data, err := hedge(hedgeCtx, ats)
+				hedged <- hedgeResult{data: data, err: err}
+			}()
+		case result := <-hedged:
+			hedged = nil
+			if result.err != nil {
+				slog.DebugContext(ctx, "checkpoint: a read of the store past the bound failed; waiting for stripes",
+					"error", result.err)
+				continue
+			}
+			for at, position := range hedging {
+				if out[position] == nil {
+					out[position] = result.data[at]
+				}
+			}
+			r.count(func(stats *ReadStats) { stats.StoreHedgesWon++ })
+			r.probe(ProbeClusterStoreHedgeWon)
+			return out, nil
+		case <-ctx.Done():
+			return nil, context.Cause(ctx)
+		}
+	}
+	return out, nil
+}
+
+// windowResult is what the read of one group of wants rebuilt.
+type windowResult struct {
+	group int
+	out   [][]byte
+}
+
+// hedgeResult is what a read of the store past the bound read.
+type hedgeResult struct {
+	data [][]byte
+	err  error
+}
+
+// windowGroup is the wants of one window, and where they are among a read's.
+type windowGroup struct {
+	window rank.Window
+	list   rank.List
+	ats    []int
+	wants  []clusterWant
+}
+
+// byWindow puts wants together by window, in the order their windows first
+// come, each placed by the list the disk follows now.
+func (r *clusterReader) byWindow(wants []clusterWant) []windowGroup {
+	var groups []windowGroup
+	at := make(map[rank.Window]int)
+	for position, want := range wants {
+		window := want.key.rankWindow()
+		index, seen := at[window]
+		if !seen {
+			list, _ := r.disk.listFor(want.key, false)
+			index = len(groups)
+			at[window] = index
+			groups = append(groups, windowGroup{window: window, list: list})
+		}
+		groups[index].ats = append(groups[index].ats, position)
+		groups[index].wants = append(groups[index].wants, want)
+	}
+	return groups
+}
+
+// heldStripe is one stripe a read has in hand, and the cache it came from.
+type heldStripe struct {
+	stripe stripe.Stripe
+	from   rank.Cache
+	// own is where this host's disk holds it, for a stripe of its own.
+	own *diskLocation
+}
+
+// stripeAnswer is one holder's answer to a stripe request.
+type stripeAnswer struct {
+	cache rank.Cache
+	reply peer.StripesReply
+	err   error
+}
+
+// windowRead is one read of the cluster for the wants of one window.
+type windowRead struct {
+	r      *clusterReader
+	codecs *blob.Codecs
+	window rank.Window
+	code   rank.Code
+	wants  []clusterWant
+	// pages is each want's page of the window.
+	pages []uint32
+	// ranks is the window's first k+m ranks, and holders the cache each index
+	// of the code goes on.
+	ranks, holders []rank.Cache
+	self           rank.Cache
+
+	// held is the stripes in hand of each want, tried how many were in hand
+	// at its last rebuild that failed, out what each rebuilt to and envelopes
+	// the envelope it was rebuilt from.
+	held      [][]heldStripe
+	tried     []int
+	out       [][]byte
+	envelopes [][]byte
+	// answered is, for each rank that answered, the indices of each want it
+	// holds.
+	answered map[rank.Identity][][]int
+	// spares is the ranks not yet asked, in the order they are asked,
+	// askedOf the ranks asked, and pending the requests not yet answered.
+	spares  []rank.Cache
+	askedOf map[rank.Identity]bool
+	pending int
+
+	events   chan stripeAnswer
+	mu       sync.Mutex
+	finished bool
+}
+
+// readWindow reads the wants of one window from the cluster, and returns what
+// each rebuilt to, nil for one it could not rebuild.
+func (r *clusterReader) readWindow(ctx context.Context, codecs *blob.Codecs, g windowGroup) [][]byte {
+	code := g.list.Code()
+	ranks := g.list.Ranks(g.window)
+	w := &windowRead{r: r, codecs: codecs, window: g.window, code: code, wants: g.wants, ranks: ranks,
+		holders: g.list.Holders(g.window), self: rank.Cache{Identity: r.disk.identity},
+		held: make([][]heldStripe, len(g.wants)), tried: make([]int, len(g.wants)), out: make([][]byte, len(g.wants)),
+		envelopes: make([][]byte, len(g.wants)), answered: make(map[rank.Identity][][]int),
+		askedOf: make(map[rank.Identity]bool),
+		events:  make(chan stripeAnswer, len(ranks)+1)}
+	for _, want := range g.wants {
+		w.pages = append(w.pages, uint32(want.key.Page-g.window.Page(0)))
+	}
+	w.run(ctx)
+	return w.out
+}
+
+// run is the read: this host's own stripes, then k+1 of the ranks, then the
+// rest after the delay, until every want is rebuilt or nothing is left to ask.
+func (w *windowRead) run(ctx context.Context) {
+	handedOver := false
+	defer func() {
+		if !handedOver {
+			w.finish()
+		}
+	}()
+	r := w.r
+	began := r.clock.Now()
+	own := w.readOwn(ctx)
+	w.join(ctx)
+	if w.complete() {
+		w.counted(ctx, true)
+		w.repair(ctx)
+		return
+	}
+	r.earn()
+	var others []rank.Cache
+	for _, cache := range w.ranks {
+		if cache.Identity != w.self.Identity && !r.marks.isDown(cache.Identity) && !w.tableDown(cache) {
+			others = append(others, cache)
+		}
+	}
+	want := w.code.K + 1
+	if own && w.ranked(w.self.Identity) {
+		// This host is one of the k+1, and its stripes are in hand.
+		want--
+	}
+	order := rank.Pick(others, w.self.Identity, w.window, want)
+	switch {
+	case r.bug("cluster-ask-every-holder"):
+		want = len(others)
+	case r.bug("cluster-same-holders-for-every-reader"):
+		order = others
+	}
+	first := min(want, len(order))
+	w.spares = order[first:]
+	for _, cache := range order[:first] {
+		w.ask(ctx, cache)
+	}
+	var delay <-chan time.Time
+	if len(w.spares) > 0 && !r.bug("cluster-no-second-request") {
+		timer := r.clock.NewTimer(r.hedge.delay())
+		defer timer.Stop()
+		delay = timer.C()
+	}
+	waited := false
+	for !w.complete() {
+		if w.pending == 0 {
+			if !w.askNext(ctx) {
+				break
+			}
+			continue
+		}
+		select {
+		case answer := <-w.events:
+			w.pending--
+			if w.take(ctx, answer) {
+				w.replace(ctx)
+			}
+			if w.join(ctx) {
+				// k stripes that rebuild nothing: one more tells which is
+				// wrong.
+				w.replace(ctx)
+			}
+		case <-delay:
+			delay, waited = nil, true
+			if len(w.spares) == 0 {
+				continue
+			}
+			if !r.hedge.take() && !r.bug("cluster-hedge-unbudgeted") {
+				r.count(func(stats *ReadStats) { stats.Refused++ })
+				w.r.probe(ProbeClusterRefused)
+				continue
+			}
+			r.count(func(stats *ReadStats) { stats.SecondRequests++ })
+			w.r.probe(ProbeClusterSecondRequest)
+			for w.askNext(ctx) {
+			}
+		case <-ctx.Done():
+			return
+		}
+	}
+	if w.complete() {
+		r.hedge.done(r.clock.Since(began), waited)
+	}
+	w.counted(ctx, false)
+	if w.complete() && w.pending > 0 && w.mayRepair() {
+		// The read has its pages. Whether a rank lacks a stripe no rank
+		// holds is known only once every rank has answered, and the rest
+		// answer behind the read rather than in front of it.
+		r.behind(1)
+		handedOver = r.spawn(func(life context.Context) {
+			defer r.behind(-1)
+			defer w.finish()
+			w.hearRest(life)
+			w.repair(life)
+		})
+		if handedOver {
+			return
+		}
+		r.behind(-1)
+	}
+	w.repair(ctx)
+}
+
+// mayRepair reports whether the read could still learn what each rank of the
+// window holds: every rank has been asked, so once the requests in flight are
+// answered, an index no rank holds is known.
+func (w *windowRead) mayRepair() bool {
+	if len(w.spares) > 0 {
+		return false
+	}
+	for _, cache := range w.ranks {
+		if _, heard := w.answered[cache.Identity]; !heard && !w.askedOf[cache.Identity] {
+			return false
+		}
+	}
+	return true
+}
+
+// hearRest takes the answers of every request still in flight.
+func (w *windowRead) hearRest(ctx context.Context) {
+	for w.pending > 0 {
+		select {
+		case answer := <-w.events:
+			w.pending--
+			w.take(ctx, answer)
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+// ranked reports whether the cache of identity is among the window's ranks.
+func (w *windowRead) ranked(identity rank.Identity) bool {
+	return slices.ContainsFunc(w.ranks, func(cache rank.Cache) bool { return cache.Identity == identity })
+}
+
+// tableDown reports a host the table of peers has marked down for a hard
+// failure, which a read that can do without it does not ask.
+func (w *windowRead) tableDown(cache rank.Cache) bool {
+	return w.r.peers != nil && w.r.peers.Peer(cache.Address).Down()
+}
+
+// complete reports every want rebuilt.
+func (w *windowRead) complete() bool {
+	return !slices.ContainsFunc(w.out, func(data []byte) bool { return data == nil })
+}
+
+// readOwn takes the stripes of the window this host's own disk holds, of any
+// index, and reports whether there were any. Where this cache is ranked for
+// the window, they are its answer.
+func (w *windowRead) readOwn(ctx context.Context) bool {
+	indices := make([][]int, len(w.wants))
+	found := false
+	for at, want := range w.wants {
+		stripes, locations, _ := w.r.disk.ownStripes(ctx, want.key, w.code)
+		for index, s := range stripes {
+			w.held[at] = append(w.held[at], heldStripe{stripe: s, from: w.self, own: &locations[index]})
+			indices[at] = append(indices[at], s.Index)
+			found = true
+		}
+	}
+	if w.ranked(w.self.Identity) {
+		w.answered[w.self.Identity] = indices
+	}
+	return found
+}
+
+// maxBytes is the most a reply of cache may hold: for each want, a stripe of
+// the largest envelope it may be, as an item, for each index the code puts on
+// cache and one more.
+func (w *windowRead) maxBytes(cache rank.Cache) int64 {
+	indices := 1
+	for _, holder := range w.holders {
+		if holder.Identity == cache.Identity {
+			indices++
+		}
+	}
+	indices = min(indices, w.code.Width())
+	total := int64(0)
+	for _, want := range w.wants {
+		item := itemHeaderBytes(want.key) + int64(stripe.Size(w.code, want.maximum+blob.HeaderSize))
+		total += int64(indices) * item
+	}
+	return min(total, int64(platform.MaxFrameBytes))
+}
+
+// ask sends one rank a request for its stripes of the window's wants. The
+// request runs under the reads' life, not the read's: it goes on until it is
+// answered or times out, and how it ended is what the rank's mark is kept by.
+func (w *windowRead) ask(ctx context.Context, cache rank.Cache) {
+	r := w.r
+	w.pending++
+	w.askedOf[cache.Identity] = true
+	r.count(func(stats *ReadStats) { stats.Requests++ })
+	read := peer.StripeRead{Window: w.window, Pages: w.pages, Code: w.code, MaxBytes: w.maxBytes(cache)}
+	if !r.spawn(func(life context.Context) {
+		answer := stripeAnswer{cache: cache}
+		if r.peers == nil {
+			answer.err = errNoPeers
+		} else {
+			requestCtx, cancel := context.WithCancelCause(life)
+			timer := r.clock.AfterFunc(r.settings.stripeTimeout, func() { cancel(errStripeTimeout) })
+			answer.reply, answer.err = r.peers.Peer(cache.Address).ReadStripes(requestCtx, cache.Identity, read)
+			timer.Stop()
+			cancel(nil)
+		}
+		if answer.err == nil && w.r.buggify(buggifyClusterLoseAnswer, 0.05) {
+			answer.reply.Release()
+			answer.reply, answer.err = peer.StripesReply{}, errAnswerLost
+		}
+		r.marks.observe(ctx, cache, answer.err, answer.err == nil && len(answer.reply.Items) == 0)
+		w.deliver(answer)
+	}) {
+		w.deliver(stripeAnswer{cache: cache, err: peer.ErrClosed})
+	}
+}
+
+// askNext asks the next rank not yet asked that is not marked down, and
+// reports whether there was one.
+func (w *windowRead) askNext(ctx context.Context) bool {
+	for len(w.spares) > 0 {
+		next := w.spares[0]
+		w.spares = w.spares[1:]
+		if w.r.marks.isDown(next.Identity) || w.tableDown(next) {
+			continue
+		}
+		w.ask(ctx, next)
+		return true
+	}
+	return false
+}
+
+// replace asks the next rank at once in place of one that gave nothing.
+func (w *windowRead) replace(ctx context.Context) {
+	if w.askNext(ctx) {
+		w.r.count(func(stats *ReadStats) { stats.Replaced++ })
+		w.r.probe(ProbeClusterReplaced)
+	}
+}
+
+// deliver hands an answer to the read, or gives its buffer back once the read
+// has finished.
+func (w *windowRead) deliver(answer stripeAnswer) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.finished {
+		if answer.err == nil {
+			answer.reply.Release()
+		}
+		return
+	}
+	w.events <- answer
+}
+
+// finish ends the read: what is still to arrive is given back as it comes.
+func (w *windowRead) finish() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.finished = true
+	for {
+		select {
+		case answer := <-w.events:
+			if answer.err == nil {
+				answer.reply.Release()
+			}
+		default:
+			return
+		}
+	}
+}
+
+// take takes the stripes of one answer, and reports whether it gave nothing:
+// an error, BUSY, or no stripe that passed its checks.
+func (w *windowRead) take(ctx context.Context, answer stripeAnswer) bool {
+	if answer.err != nil {
+		return true
+	}
+	defer answer.reply.Release()
+	indices := make([][]int, len(w.wants))
+	took := false
+	offset := 0
+	for _, item := range answer.reply.Items {
+		raw := answer.reply.Payload[offset : offset+item.Size]
+		offset += item.Size
+		at := slices.Index(w.pages, item.Page)
+		s, err := w.parse(ctx, at, item, raw)
+		if err != nil {
+			slog.WarnContext(ctx, "checkpoint: a peer sent a stripe that fails its checks; it is told to drop it",
+				"cache", answer.cache.Identity, "window", w.window, "page", item.Page, "index", item.Index, "error", err)
+			w.dropAt(ctx, answer.cache, item.Page, item.Index)
+			continue
+		}
+		if w.r.bug("cluster-read-by-index") && w.holders[s.Index].Identity != answer.cache.Identity {
+			// The guard takes from each rank only the indices the list puts
+			// on it, which a change of ranks leaves few of (B5).
+			continue
+		}
+		w.held[at] = append(w.held[at], heldStripe{stripe: s, from: answer.cache})
+		indices[at] = append(indices[at], s.Index)
+		took = true
+	}
+	w.answered[answer.cache.Identity] = indices
+	return !took
+}
+
+// parse checks one item a peer sent as the stripe of want at it says it is: a
+// page asked for, a header that names the want's key, the read's code and the
+// index the reply gives, and a checksum that holds. Its bytes are copied out
+// of the reply's buffer.
+func (w *windowRead) parse(ctx context.Context, at int, item peer.StripeItem, raw []byte) (stripe.Stripe, error) {
+	if at < 0 {
+		return stripe.Stripe{}, fmt.Errorf("page %d was not asked for", item.Page)
+	}
+	raw = bytes.Clone(raw)
+	if len(raw) > diskItemFixed && w.r.buggify(buggifyClusterDamagedItem, 0.02) {
+		raw[len(raw)-1] ^= 0x10
+	}
+	parsed, err := parseItem(raw, false)
+	if err != nil {
+		return stripe.Stripe{}, err
+	}
+	s := parsed.stripe()
+	if parsed.key != w.wants[at].key || s.Code != w.code || s.Index != item.Index || s.Length != item.Length ||
+		!storableStripe(s) {
+		return stripe.Stripe{}, fmt.Errorf("%w: stripe %d of %s of %+v", errItemKey, s.Index, s.Code, parsed.key)
+	}
+	if len(s.Bytes) > 0 && w.r.buggify(buggifyClusterWrongStripe, 0.02) {
+		// A stripe whose own checksum holds and whose bytes are not the
+		// envelope's.
+		s.Bytes[len(s.Bytes)/2] ^= 0x40
+	}
+	return s, nil
+}
+
+// join rebuilds every want not yet rebuilt that has k distinct indices in hand
+// and more stripes than at its last try, and tells the holders of the stripes
+// that rebuilding finds wrong to drop them. It reports whether some want has k
+// stripes in hand that rebuild nothing, so which is wrong cannot be told
+// without one more.
+func (w *windowRead) join(ctx context.Context) bool {
+	short := false
+	for at, want := range w.wants {
+		if w.out[at] != nil || distinct(w.held[at]) < w.code.K || len(w.held[at]) == w.tried[at] {
+			continue
+		}
+		stripes := make([]stripe.Stripe, len(w.held[at]))
+		for position, held := range w.held[at] {
+			stripes[position] = held.stripe
+		}
+		var decoded []byte
+		joined, err := stripe.Join(ctx, w.code, stripes, func(envelope []byte) error {
+			data, err := w.codecs.Decode(ctx, envelope, want.maximum)
+			if err != nil {
+				return err
+			}
+			if !want.valid(data) {
+				return ErrCorrupt
+			}
+			// What a read rebuilt is never nil, which is what a miss is.
+			decoded = append([]byte{}, data...)
+			return nil
+		})
+		if context.Cause(ctx) != nil {
+			// A rebuild the caller gave up on says nothing about the stripes.
+			return false
+		}
+		if len(joined.Wrong) > 0 && !w.r.bug("cluster-keep-wrong-stripe") {
+			kept := w.held[at][:0:0]
+			for position, held := range w.held[at] {
+				if slices.Contains(joined.Wrong, position) {
+					w.wrongStripe(ctx, at, held)
+					continue
+				}
+				kept = append(kept, held)
+			}
+			w.held[at] = kept
+		}
+		if err != nil {
+			w.tried[at] = len(w.held[at])
+			short = short || errors.Is(err, stripe.ErrWrong)
+			continue
+		}
+		w.out[at], w.envelopes[at] = decoded, bytes.Clone(joined.Envelope)
+		for _, position := range joined.Used {
+			if stripes[position].Index >= w.code.K {
+				w.r.probe(ProbeClusterParity)
+				break
+			}
+		}
+	}
+	return short
+}
+
+// distinct is how many distinct indices held holds.
+func distinct(held []heldStripe) int {
+	var seen []int
+	for _, h := range held {
+		if !slices.Contains(seen, h.stripe.Index) {
+			seen = append(seen, h.stripe.Index)
+		}
+	}
+	return len(seen)
+}
+
+// wrongStripe tells the holder of a stripe a rebuild found wrong to drop it:
+// this host's own disk forgets it at once, and a peer is sent a drop.
+func (w *windowRead) wrongStripe(ctx context.Context, at int, held heldStripe) {
+	if held.own != nil {
+		w.r.count(func(stats *ReadStats) { stats.WrongStripes++ })
+		w.r.probe(ProbeClusterWrongStripe)
+		w.r.disk.forget(ctx, *held.own, w.wants[at].key, fmt.Errorf("stripe %d of %s rebuilt no envelope that passes its check",
+			held.stripe.Index, w.code))
+		return
+	}
+	w.dropAt(ctx, held.from, w.pages[at], held.stripe.Index)
+}
+
+// dropAt counts a stripe of a peer's found wrong, and tells the peer to drop
+// it, behind the fills.
+func (w *windowRead) dropAt(ctx context.Context, cache rank.Cache, page uint32, index int) {
+	w.r.count(func(stats *ReadStats) { stats.WrongStripes++ })
+	w.r.probe(ProbeClusterWrongStripe)
+	if cache.Identity == w.self.Identity {
+		return
+	}
+	if w.r.filler.tell(cache, peer.Drop{Window: w.window, Page: page, Index: index, Code: w.code}) {
+		w.r.count(func(stats *ReadStats) { stats.DropsSent++ })
+		w.r.probe(ProbeClusterDrop)
+	}
+}
+
+// counted counts what the read rebuilt and missed. own says this host's disk
+// rebuilt everything alone, which counts as a hit of the disk too.
+func (w *windowRead) counted(ctx context.Context, own bool) {
+	hits, misses := uint64(0), uint64(0)
+	for at, data := range w.out {
+		if data == nil {
+			misses++
+			continue
+		}
+		hits++
+		if own {
+			w.r.disk.served(w.wants[at].key)
+		}
+	}
+	w.r.count(func(stats *ReadStats) {
+		stats.Hits += hits
+		stats.Misses += misses
+		if own {
+			stats.OwnHits += hits
+		}
+	})
+	switch {
+	case hits > 0 && own:
+		w.r.probe(ProbeClusterOwnHit)
+	case hits > 0:
+		w.r.probe(ProbeClusterHit)
+	}
+	if misses > 0 {
+		w.r.probe(ProbeClusterMiss)
+	}
+}
+
+// repair sends each index of a rebuilt envelope that no rank holds to a rank
+// that holds fewer of the window's stripes than the code puts on it, in rank
+// order. Only a read that heard from every rank knows what no rank holds, so
+// only such a read repairs; one that did not ask every rank leaves the window
+// to a reader that does. It never sends an index another rank holds, so a
+// change of ranks never leaves one index on two ranks.
+func (w *windowRead) repair(ctx context.Context) {
+	for _, cache := range w.ranks {
+		if _, heard := w.answered[cache.Identity]; !heard {
+			return
+		}
+	}
+	share := make(map[rank.Identity]int)
+	for _, holder := range w.holders {
+		share[holder.Identity]++
+	}
+	sending := make(map[rank.Identity][]keyedStripe)
+	for at, envelope := range w.envelopes {
+		if envelope == nil {
+			continue
+		}
+		var held []int
+		for _, cache := range w.ranks {
+			held = append(held, w.answered[cache.Identity][at]...)
+		}
+		var stripes []stripe.Stripe
+		for _, cache := range w.ranks {
+			lacking := share[cache.Identity] - len(w.answered[cache.Identity][at])
+			for index := range w.code.Width() {
+				if lacking <= 0 {
+					break
+				}
+				if slices.Contains(held, index) && !w.r.bug("cluster-repair-held-index") ||
+					slices.Contains(w.answered[cache.Identity][at], index) {
+					continue
+				}
+				if stripes == nil {
+					split, err := stripe.Split(w.code, envelope)
+					if err != nil {
+						return
+					}
+					stripes = split
+				}
+				held = append(held, index)
+				lacking--
+				sending[cache.Identity] = append(sending[cache.Identity], keyedStripe{key: w.wants[at].key,
+					stripe: stripes[index]})
+			}
+		}
+	}
+	for _, cache := range w.ranks {
+		if repairs := sending[cache.Identity]; len(repairs) > 0 {
+			w.r.count(func(stats *ReadStats) { stats.Repairs += uint64(len(repairs)) })
+			w.r.probe(ProbeClusterRepair)
+			w.r.filler.repair(w.window, w.code, cache, repairs)
+		}
+	}
+}
+
+// hedger is one reader's delay before it asks the rest of a window's ranks,
+// and its budget for doing so, as FoundationDB's load balancer keeps them.
+// The delay is the 95th percentile of the reader's recent times to k stripes,
+// and no less than a floor. The budget counts twentieths of a request: a read
+// that had its stripes within the delay adds one, and a second request takes
+// twenty.
+type hedger struct {
+	floor time.Duration
+
+	mu     sync.Mutex
+	wait   time.Duration
+	budget int
+	seen   int
+	recent [hedgeWindow]time.Duration
+	sorted [hedgeWindow]time.Duration
+}
+
+func (h *hedger) delay() time.Duration {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.wait
+}
+
+// take spends one second request, if the budget holds one.
+func (h *hedger) take() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.budget < hedgeEarn {
+		return false
+	}
+	h.budget -= hedgeEarn
+	return true
+}
+
+// done records a read that had k stripes of every page in took. waited says
+// the delay passed before they came.
+func (h *hedger) done(took time.Duration, waited bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if !waited {
+		h.budget = min(h.budget+1, hedgeMax*hedgeEarn)
+	}
+	h.recent[h.seen%hedgeWindow] = took
+	h.seen++
+	if h.seen%hedgeEvery != 0 {
+		return
+	}
+	n := min(h.seen, hedgeWindow)
+	s := h.sorted[:n]
+	copy(s, h.recent[:n])
+	slices.Sort(s)
+	h.wait = max(s[(n*95+99)/100-1], h.floor)
+}
+
+// checkHit has the part an envelope of key was served from checked with a
+// HEAD, for one hit of the disk tier in headEvery, behind the fills. A warm
+// cache hides a reclamation that deleted a part some root still reads, until
+// the cache turns over far from the cause; a part found missing is logged as
+// an error with the page's identity, and counted. object names the part, or
+// the index object for a segment.
+func (r *clusterReader) checkHit(ctx context.Context, key diskKey, objects platform.ObjectStore,
+	object func() (platform.ObjectKey, error)) {
+	if !r.sampleHit() || r.bug("cluster-head-never") {
+		return
+	}
+	named, err := object()
+	if err != nil {
+		return
+	}
+	r.filler.behind(func(ctx context.Context) {
+		r.count(func(stats *ReadStats) { stats.HeadChecks++ })
+		r.probe(ProbeClusterHeadCheck)
+		_, err := objects.Head(ctx, named)
+		switch {
+		case errors.Is(err, platform.ErrNotFound):
+			r.count(func(stats *ReadStats) { stats.HeadMissing++ })
+			r.probe(ProbeClusterHeadMissing)
+			slog.ErrorContext(ctx, "checkpoint: the cache served a page whose part the store no longer holds",
+				"object", named.String(), "checkpoint", key.Ref.String(), "volume", key.Volume, "page", key.Page,
+				"segment", key.segment)
+		case err != nil:
+			slog.DebugContext(ctx, "checkpoint: a sampled check of a cached page's part failed", "object",
+				named.String(), "error", err)
+		}
+	})
+}
