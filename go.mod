@@ -6,6 +6,7 @@ require (
 	cloud.google.com/go/storage v1.67.1
 	github.com/fsouza/fake-gcs-server v1.56.1
 	github.com/klauspost/compress v1.20.0
+	github.com/klauspost/reedsolomon v1.14.2
 	github.com/oklog/ulid/v2 v2.1.2
 	golang.org/x/sys v0.48.0
 	google.golang.org/api v0.293.0

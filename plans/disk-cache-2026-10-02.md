@@ -748,6 +748,7 @@ Then the measurements on GCE, against a real bucket, on six hosts in one zone.
    host drained and another slow. This checks Lambda's result on our hosts,
    which also run guests. If 4+2 does not cut the tail of the drained-and-slow
    case against 4+1, the default becomes 4+1.
+   `scripts/bench-stripes-gce.sh` runs it with `cmd/sproutfs-stripebench`.
 2. Before step 8: the cost of serving stripes by a plain copy, in CPU and
    memory bandwidth.
 3. After step 7: an 8 GiB guest suspended and restored with its pages in
