@@ -16,6 +16,7 @@ import (
 
 	"github.com/semistrict/sproutfs/internal/blob"
 	migratev1 "github.com/semistrict/sproutfs/peer/internal/gen/sproutfs/migrate/v1"
+	peerv1 "github.com/semistrict/sproutfs/peer/internal/gen/sproutfs/peer/v1"
 	"github.com/semistrict/sproutfs/peer/internal/wire"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/sim"
@@ -63,6 +64,9 @@ type ServerConfig struct {
 	MaxPagesPerRequest      int
 	MaxConnectionsPerPeer   int
 	MaxBytesInFlightPerPeer int64
+	// Versions is the range of protocol versions this server speaks. Zero is
+	// this release's; a test that stands in for another release narrows it.
+	Versions Versions
 }
 
 // ServerStats reports what this host has served.
@@ -76,6 +80,9 @@ type ServerStats struct {
 	Refused int64
 	// Listings is every resident listing answered.
 	Listings int64
+	// Incompatible counts the hellos answered INCOMPATIBLE: peers of a release
+	// that shares no protocol version with this one.
+	Incompatible int64
 }
 
 // Pages is one volume's worth of pages a host still holds for another: a
@@ -139,9 +146,9 @@ type Server struct {
 	claimed map[string]bool
 	peers   map[string]*peerBudget
 
-	requests, servedPages, absentPages, refused, listings atomic.Int64
-	closeOnce                                             sync.Once
-	closeErr                                              error
+	requests, servedPages, absentPages, refused, listings, incompatible atomic.Int64
+	closeOnce                                                           sync.Once
+	closeErr                                                            error
 }
 
 // peerBudget is what one peer may hold here at once.
@@ -164,6 +171,10 @@ func NewServer(ctx context.Context, config ServerConfig) (*Server, error) {
 	}
 	if config.MaxBytesInFlightPerPeer == 0 {
 		config.MaxBytesInFlightPerPeer = defaultBytesInFlight
+	}
+	config.Versions = config.Versions.orDefault()
+	if !config.Versions.valid() {
+		return nil, fmt.Errorf("%w: protocol versions %d to %d", ErrInvalid, config.Versions.Min, config.Versions.Max)
 	}
 	if config.PageSize < 512 || config.PageSize > blob.MaxSize || config.MaxPagesPerRequest < 0 || config.MaxPagesPerRequest > blob.MaxSize/config.PageSize || config.MaxConnectionsPerPeer < 1 ||
 		config.MaxBytesInFlightPerPeer < int64(config.PageSize) {
@@ -418,7 +429,8 @@ func (s *Server) Outstanding() map[string]int {
 
 func (s *Server) Stats() ServerStats {
 	return ServerStats{Requests: s.requests.Load(), Served: s.servedPages.Load(),
-		Absent: s.absentPages.Load(), Refused: s.refused.Load(), Listings: s.listings.Load()}
+		Absent: s.absentPages.Load(), Refused: s.refused.Load(), Listings: s.listings.Load(),
+		Incompatible: s.incompatible.Load()}
 }
 
 // Close stops accepting and drops every connection. It does not release the
@@ -460,6 +472,14 @@ func peerKey(address platform.Address) string {
 	return host
 }
 
+// session is one connection a peer opened, and the protocol version it speaks.
+// Every reply on it is encoded at that version.
+type session struct {
+	conn    platform.Conn
+	peer    string
+	version uint32
+}
+
 func (s *Server) serveConn(conn platform.Conn) {
 	defer conn.Close()
 	peer := peerKey(conn.RemoteAddress())
@@ -469,22 +489,90 @@ func (s *Server) serveConn(conn platform.Conn) {
 		return
 	}
 	defer s.releaseConnection(peer)
+	session, first, err := s.open(conn, peer)
+	if err != nil {
+		return
+	}
+	if first != nil {
+		if err := s.dispatch(session, *first); err != nil {
+			return
+		}
+	}
 	// The connection stays open for as many requests as the destination sends;
 	// each is answered before the next is read, which is what makes one
 	// connection one request in flight.
 	for {
-		received, err := conn.Receive(s.ctx)
+		incoming, err := s.receive(session)
 		if err != nil {
 			return
 		}
-		incoming, err := wire.Decode(received)
-		if err != nil {
-			return
-		}
-		if err := s.dispatch(conn, peer, incoming); err != nil {
+		if err := s.dispatch(session, incoming); err != nil {
 			return
 		}
 	}
+}
+
+// open reads a connection's first frame and settles the version it speaks. A
+// hello is answered with the version both ends share, or with INCOMPATIBLE and
+// this server's range, after which the connection closes. Any other first frame
+// is a dialer of the release before this one, which sent no hello: if this
+// server still speaks version 1, that frame is its first request.
+func (s *Server) open(conn platform.Conn, peer string) (*session, *wire.Incoming, error) {
+	received, err := conn.Receive(s.ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	incoming, err := wire.Decode(received)
+	if err != nil {
+		return nil, nil, err
+	}
+	hello := new(peerv1.Hello)
+	if !incoming.Message.MessageIs(hello) {
+		if incoming.Version != 1 || s.config.Versions.Min > 1 {
+			_ = incoming.Payload.Close()
+			return nil, nil, fmt.Errorf("%w: a first frame of version %d that is not a hello", wire.ErrMalformedFrame, incoming.Version)
+		}
+		return &session{conn: conn, peer: peer, version: 1}, &incoming, nil
+	}
+	if err := drain(incoming); err != nil {
+		return nil, nil, err
+	}
+	if err := incoming.UnmarshalTo(hello); err != nil {
+		return nil, nil, err
+	}
+	answer, version, ok := answerHello(s.config.Versions, hello)
+	opened := &session{conn: conn, peer: peer, version: helloVersion}
+	if err := s.reply(opened, incoming.RequestID, answer, nil); err != nil {
+		return nil, nil, err
+	}
+	if !ok {
+		s.incompatible.Add(1)
+		slog.WarnContext(s.ctx, "peer: a peer speaks no version this server speaks", "peer", peer,
+			"min_version", hello.GetMinVersion(), "max_version", hello.GetMaxVersion())
+		return nil, nil, &IncompatibleError{Min: hello.GetMinVersion(), Max: hello.GetMaxVersion()}
+	}
+	opened.version = version
+	return opened, nil, nil
+}
+
+// receive reads the next request of a session. A frame of another version than
+// the one the session settled on is a dialer that does not keep to its own
+// hello, and ends the connection.
+func (s *Server) receive(session *session) (wire.Incoming, error) {
+	received, err := session.conn.Receive(s.ctx)
+	if err != nil {
+		return wire.Incoming{}, err
+	}
+	incoming, err := wire.Decode(received)
+	if err != nil {
+		return wire.Incoming{}, err
+	}
+	if incoming.Version != session.version {
+		_ = incoming.Payload.Close()
+		return wire.Incoming{}, fmt.Errorf("%w: a frame of version %d on a connection of version %d",
+			wire.ErrMalformedFrame, incoming.Version, session.version)
+	}
+	return incoming, nil
 }
 
 func (s *Server) acquireConnection(peer string) bool {
@@ -551,7 +639,8 @@ func (s *Server) pagesOf(vmID, name string) (Pages, migratev1.Status) {
 	return pages, migratev1.Status_STATUS_OK
 }
 
-func (s *Server) dispatch(conn platform.Conn, peer string, incoming wire.Incoming) error {
+func (s *Server) dispatch(session *session, incoming wire.Incoming) error {
+	peer := session.peer
 	if err := drain(incoming); err != nil {
 		return err
 	}
@@ -574,7 +663,7 @@ func (s *Server) dispatch(conn platform.Conn, peer string, incoming wire.Incomin
 			s.sendingPages(pageRequest.GetVm(), 1)
 			defer s.sendingPages(pageRequest.GetVm(), -1)
 		}
-		if err := s.reply(conn, incoming.RequestID, response, payload); err != nil {
+		if err := s.reply(session, incoming.RequestID, response, payload); err != nil {
 			return err
 		}
 		// The reply is on the wire. Until it is, this host has no evidence at
@@ -589,7 +678,7 @@ func (s *Server) dispatch(conn platform.Conn, peer string, incoming wire.Incomin
 		if err := incoming.UnmarshalTo(residentRequest); err != nil {
 			return err
 		}
-		return s.reply(conn, incoming.RequestID, s.resident(residentRequest), nil)
+		return s.reply(session, incoming.RequestID, s.resident(residentRequest), nil)
 	case incoming.Message.MessageIs(claimRequest):
 		if err := incoming.UnmarshalTo(claimRequest); err != nil {
 			return err
@@ -598,7 +687,7 @@ func (s *Server) dispatch(conn platform.Conn, peer string, incoming wire.Incomin
 		if s.Claim(claimRequest.GetVm()) {
 			status = migratev1.Status_STATUS_OK
 		}
-		return s.reply(conn, incoming.RequestID, migratev1.ClaimResponse_builder{Status: &status}.Build(), nil)
+		return s.reply(session, incoming.RequestID, migratev1.ClaimResponse_builder{Status: &status}.Build(), nil)
 	default:
 		return wire.ErrMalformedFrame
 	}
@@ -755,8 +844,9 @@ func pageRuns(pages []uint64, first uint64, maxRuns int) (runs []*migratev1.Page
 	return runs, false
 }
 
-func (s *Server) reply(conn platform.Conn, requestID uint64, message proto.Message, payload []byte) error {
+func (s *Server) reply(session *session, requestID uint64, message proto.Message, payload []byte) error {
 	frame, err := wire.Encode(wire.Outgoing{
+		Version:   session.version,
 		InReplyTo: requestID,
 		RequestID: requestID,
 		Message:   message,
@@ -766,5 +856,5 @@ func (s *Server) reply(conn platform.Conn, requestID uint64, message proto.Messa
 	if err != nil {
 		return err
 	}
-	return conn.Send(s.ctx, frame)
+	return session.conn.Send(s.ctx, frame)
 }

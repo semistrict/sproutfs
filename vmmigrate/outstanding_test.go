@@ -8,11 +8,13 @@ import (
 	"testing/synctest"
 
 	"github.com/semistrict/sproutfs/peer"
+	"github.com/semistrict/sproutfs/peer/peertest"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/vmmigrate"
 )
 
-// droppingListener hands out connections whose replies never leave this host.
+// droppingListener hands out connections whose page replies never leave this
+// host.
 // The destination therefore receives nothing, which is what a source that dies
 // between reading a request and answering it looks like from the outside.
 type droppingListener struct {
@@ -33,7 +35,12 @@ type droppingConn struct {
 	err error
 }
 
-func (c droppingConn) Send(context.Context, platform.Frame) error { return c.err }
+func (c droppingConn) Send(ctx context.Context, frame platform.Frame) error {
+	if !peertest.IsPageReply(frame) {
+		return c.Conn.Send(ctx, frame)
+	}
+	return c.err
+}
 
 // TestAReleaseWaitsForAReplyItsDestinationHasAlreadyActedOn is the order the two
 // halves of a handover actually run in. A destination acts on a reply the
@@ -250,20 +257,29 @@ func TestALoadIsNotAnInstall(t *testing.T) {
 	}
 }
 
-// brokenOnce breaks the first reply it is asked for and then behaves, which is
-// what a reset, a source host restarting its listener, or a connection the
-// source dropped under its own budget looks like from the destination.
+// brokenOnce breaks the connection the first page reply arrives on and then
+// behaves, which is what a reset, a source host restarting its listener, or a
+// connection the source dropped looks like from the destination.
 type brokenOnce struct {
 	platform.Conn
 	broken *bool
 }
 
 func (c brokenOnce) Receive(ctx context.Context) (platform.ReceivedFrame, error) {
-	if !*c.broken {
-		*c.broken = true
-		return platform.ReceivedFrame{}, platform.ErrDisconnected
+	received, err := c.Conn.Receive(ctx)
+	if err != nil || *c.broken {
+		return received, err
 	}
-	return c.Conn.Receive(ctx)
+	frame, err := peertest.Read(received)
+	if err != nil {
+		return platform.ReceivedFrame{}, err
+	}
+	if _, ok := frame.PageReply(); !ok {
+		return frame.Pass(), nil
+	}
+	*c.broken = true
+	_ = c.Conn.Close()
+	return platform.ReceivedFrame{}, platform.ErrDisconnected
 }
 
 // TestOneBrokenReplyIsNotAPermanentFallback separates a source that is gone

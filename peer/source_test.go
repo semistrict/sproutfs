@@ -14,6 +14,7 @@ import (
 	"github.com/semistrict/sproutfs/internal/blob"
 	"github.com/semistrict/sproutfs/peer"
 	migratev1 "github.com/semistrict/sproutfs/peer/internal/gen/sproutfs/migrate/v1"
+	peerv1 "github.com/semistrict/sproutfs/peer/internal/gen/sproutfs/peer/v1"
 	"github.com/semistrict/sproutfs/peer/internal/wire"
 	"github.com/semistrict/sproutfs/platform"
 	"google.golang.org/protobuf/proto"
@@ -59,11 +60,19 @@ func (c *scriptedConn) Send(_ context.Context, frame platform.Frame) error {
 	if c.script.fail.Load() {
 		return errors.New("the connection broke")
 	}
-	message, payload, err := c.script.answer(incoming)
-	if err != nil {
+	var message proto.Message
+	var payload []byte
+	if incoming.Message.MessageIs(new(peerv1.Hello)) {
+		// The script is a server of this release: every connection opens with
+		// a hello it answers at the newest version both speak.
+		status := peerv1.Status_STATUS_OK
+		message = peerv1.HelloReply_builder{Status: &status, Version: proto.Uint32(peer.NewestVersion),
+			MinVersion: proto.Uint32(peer.OldestVersion), MaxVersion: proto.Uint32(peer.NewestVersion)}.Build()
+	} else if message, payload, err = c.script.answer(incoming); err != nil {
 		return err
 	}
-	outgoing := wire.Outgoing{RequestID: incoming.RequestID, InReplyTo: incoming.RequestID, Message: message}
+	outgoing := wire.Outgoing{Version: incoming.Version, RequestID: incoming.RequestID,
+		InReplyTo: incoming.RequestID, Message: message}
 	if len(payload) > 0 {
 		outgoing.Payload = wire.Payload{Body: bytes.NewReader(payload), Size: int64(len(payload)),
 			Algorithm: wire.ChecksumCRC32C,

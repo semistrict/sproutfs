@@ -8,11 +8,12 @@ import (
 	"testing"
 
 	"github.com/semistrict/sproutfs/peer"
+	"github.com/semistrict/sproutfs/peer/peertest"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/vmmigrate"
 )
 
-// heldListener hands out connections whose replies wait for release, so a test
+// heldListener hands out connections whose page replies wait for release, so a test
 // can have a request on the wire and no answer to it at a moment of its
 // choosing. sending reports the first reply reaching that point.
 type heldListener struct {
@@ -49,6 +50,9 @@ type heldConn struct {
 }
 
 func (c heldConn) Send(ctx context.Context, frame platform.Frame) error {
+	if !peertest.IsPageReply(frame) {
+		return c.Conn.Send(ctx, frame)
+	}
 	c.listener.once.Do(func() { close(c.listener.sending) })
 	deliver := c.listener.deliver && c.listener.err == nil
 	if deliver {

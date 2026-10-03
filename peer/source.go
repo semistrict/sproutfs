@@ -76,6 +76,9 @@ type SourceConfig struct {
 	// Clock times the requests for their latency histograms. Nil is the wall
 	// clock.
 	Clock platform.Clock
+	// Versions is the range of protocol versions this end speaks. Zero is this
+	// release's; a test that stands in for another release narrows it.
+	Versions Versions
 }
 
 // Latency is how long this memory region's requests took, by kind: a guest fault's,
@@ -99,7 +102,7 @@ type Source struct {
 	// idle holds connections to reuse and slots bounds how many exist at once,
 	// so a destination's concurrent faults pipeline without opening a socket per
 	// page.
-	idle  chan platform.Conn
+	idle  chan *clientConn
 	slots chan struct{}
 	// stream bounds the stream's requests in flight to one fewer than the
 	// connections, so a guest fault never queues behind the stream.
@@ -118,8 +121,9 @@ type Source struct {
 
 // New opens nothing: the first request dials the first connection.
 func NewSource(config SourceConfig) *Source {
+	config.Versions = config.Versions.orDefault()
 	s := &Source{config: config,
-		idle:   make(chan platform.Conn, config.MaxConnections),
+		idle:   make(chan *clientConn, config.MaxConnections),
 		slots:  make(chan struct{}, config.MaxConnections),
 		stream: make(chan struct{}, streamConnections(config.MaxConnections)),
 		clock:  platform.ClockOr(config.Clock)}
@@ -322,8 +326,15 @@ func (s *Source) call(ctx context.Context, request, response proto.Message, maxP
 	return payload, nil
 }
 
+// clientConn is one connection to the peer and the protocol version it settled
+// on, which every request on it is encoded at.
+type clientConn struct {
+	platform.Conn
+	version uint32
+}
+
 // connection takes an idle connection or dials one under this memory region's bound.
-func (s *Source) connection(ctx context.Context) (platform.Conn, error) {
+func (s *Source) connection(ctx context.Context) (*clientConn, error) {
 	select {
 	case conn := <-s.idle:
 		return conn, nil
@@ -343,7 +354,7 @@ func (s *Source) connection(ctx context.Context) (platform.Conn, error) {
 		s.slots <- struct{}{}
 		return nil, err
 	}
-	conn, err := s.config.Dial(ctx, s.config.Peer)
+	conn, err := dialPeer(ctx, s.config.Dial, s.config.Peer, s.config.Versions)
 	if err != nil {
 		s.slots <- struct{}{}
 		return nil, err
@@ -351,9 +362,36 @@ func (s *Source) connection(ctx context.Context) (platform.Conn, error) {
 	return conn, nil
 }
 
+// dialPeer opens a connection and settles its version. A dialer that speaks
+// version 2 says hello. A server that closes the connection in answer is one of
+// the release before this one, which speaks only version 1 and cannot read a
+// hello, so a dialer that still speaks version 1 dials again without one.
+func dialPeer(ctx context.Context, dial Dialer, address platform.Address, speaks Versions) (*clientConn, error) {
+	conn, err := dial(ctx, address)
+	if err != nil {
+		return nil, err
+	}
+	if speaks.Max < 2 {
+		return &clientConn{Conn: conn, version: 1}, nil
+	}
+	version, err := sayHello(ctx, conn, speaks)
+	if err == nil {
+		return &clientConn{Conn: conn, version: version}, nil
+	}
+	_ = conn.Close()
+	if !errors.Is(err, errNoHello) || speaks.Min > 1 {
+		return nil, err
+	}
+	conn, err = dial(ctx, address)
+	if err != nil {
+		return nil, err
+	}
+	return &clientConn{Conn: conn, version: 1}, nil
+}
+
 // recycle returns a usable connection, closing it when this memory region has stopped
 // asking or already holds its share of idle connections.
-func (s *Source) recycle(conn platform.Conn) {
+func (s *Source) recycle(conn *clientConn) {
 	if s.closed.Load() {
 		s.discard(conn)
 		return
@@ -366,7 +404,7 @@ func (s *Source) recycle(conn platform.Conn) {
 }
 
 // discard closes one connection and returns the slot it held.
-func (s *Source) discard(conn platform.Conn) {
+func (s *Source) discard(conn *clientConn) {
 	_ = conn.Close()
 	s.slots <- struct{}{}
 }
@@ -413,8 +451,8 @@ func statusError(status migratev1.Status) error {
 }
 
 // exchange sends one request and reads the reply that answers it.
-func exchange(ctx context.Context, conn platform.Conn, id uint64, request, response proto.Message, maxPayload int64) (*payloadBuffer, error) {
-	frame, err := wire.Encode(wire.Outgoing{RequestID: id, Message: request})
+func exchange(ctx context.Context, conn *clientConn, id uint64, request, response proto.Message, maxPayload int64) (*payloadBuffer, error) {
+	frame, err := wire.Encode(wire.Outgoing{Version: conn.version, RequestID: id, Message: request})
 	if err != nil {
 		return nil, err
 	}
@@ -429,7 +467,7 @@ func exchange(ctx context.Context, conn platform.Conn, id uint64, request, respo
 	if err != nil {
 		return nil, err
 	}
-	if incoming.InReplyTo != id {
+	if incoming.InReplyTo != id || incoming.Version != conn.version {
 		_ = incoming.Payload.Close()
 		return nil, wire.ErrMalformedFrame
 	}

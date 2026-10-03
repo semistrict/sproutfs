@@ -6,10 +6,12 @@ package peertest
 
 import (
 	"bytes"
+	"context"
 	"hash/crc32"
 	"io"
 
 	migratev1 "github.com/semistrict/sproutfs/peer/internal/gen/sproutfs/migrate/v1"
+	"github.com/semistrict/sproutfs/peer/internal/previous"
 	"github.com/semistrict/sproutfs/peer/internal/wire"
 	"github.com/semistrict/sproutfs/platform"
 	"google.golang.org/protobuf/proto"
@@ -37,6 +39,18 @@ func Read(frame platform.ReceivedFrame) (*Frame, error) {
 		return nil, err
 	}
 	return &Frame{header: frame.Header, incoming: incoming, payload: payload}, nil
+}
+
+// IsPageReply reports a frame this host is about to send that answers a page
+// request, which is what a test that holds or drops a source's replies holds or
+// drops: a hello's answer, a listing or a claim's is something else.
+func IsPageReply(frame platform.Frame) bool {
+	incoming, err := wire.Decode(platform.ReceivedFrame{Header: frame.Header,
+		Payload: io.NopCloser(bytes.NewReader(nil)), PayloadSize: frame.PayloadSize})
+	if err != nil {
+		return false
+	}
+	return incoming.Message.MessageIs(new(migratev1.PageResponse))
 }
 
 // Pass is the frame as it arrived.
@@ -89,7 +103,8 @@ func (f *Frame) Busy(pageSize int) (platform.ReceivedFrame, error) {
 }
 
 func (f *Frame) encode(message proto.Message, payload []byte) (platform.ReceivedFrame, error) {
-	outgoing := wire.Outgoing{RequestID: f.incoming.RequestID, InReplyTo: f.incoming.InReplyTo, Message: message}
+	outgoing := wire.Outgoing{Version: f.incoming.Version, RequestID: f.incoming.RequestID,
+		InReplyTo: f.incoming.InReplyTo, Message: message}
 	if len(payload) > 0 {
 		outgoing.Payload = wire.Payload{Body: bytes.NewReader(payload), Size: int64(len(payload)),
 			Algorithm: wire.ChecksumCRC32C, Checksum: wire.EncodeCRC32C(crc32.Checksum(payload, crcTable))}
@@ -100,4 +115,24 @@ func (f *Frame) encode(message proto.Message, payload []byte) (platform.Received
 	}
 	return platform.ReceivedFrame{Header: encoded.Header, Payload: io.NopCloser(bytes.NewReader(payload)),
 		PayloadSize: int64(len(payload))}, nil
+}
+
+// PreviousPages is one volume a server of the release before this one serves.
+type PreviousPages = previous.Pages
+
+// PreviousServer is a server of the release before this one: protocol version
+// 1, no hello, one request at a time. A test hands a VM from it to a host of
+// this release, as a rolling upgrade does.
+type PreviousServer = previous.Server
+
+// ServePrevious serves pages the way the release before this one did, on
+// listener until ctx ends, and reports when it has stopped.
+func ServePrevious(ctx context.Context, listener platform.Listener, served map[string]map[string]PreviousPages) (*PreviousServer, <-chan struct{}) {
+	server := &previous.Server{Served: served}
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		server.Serve(ctx, listener)
+	}()
+	return server, stopped
 }

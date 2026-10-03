@@ -1,0 +1,35 @@
+edition = "2024";
+
+package sproutfs.peer.v1;
+
+option go_package = "github.com/semistrict/sproutfs/peer/internal/gen/sproutfs/peer/v1;peerv1";
+
+// Status is how a peer server answered a request of this package. The page
+// requests of sproutfs.migrate.v1 keep their own.
+enum Status {
+  STATUS_UNSPECIFIED = 0;
+  STATUS_OK = 1;
+  // STATUS_INCOMPATIBLE answers a hello whose range shares no version with
+  // the server's. It is its own outcome: the peer is neither down nor gone.
+  STATUS_INCOMPATIBLE = 2;
+}
+
+// Hello is the first frame a dialer sends on a connection of protocol 2 or
+// later, encoded at wire version 2 whatever range it states, so a server of
+// any later release reads it. A connection whose first frame is not a hello
+// speaks protocol 1, which the release before this one spoke.
+message Hello {
+  // min_version and max_version are the protocol versions the dialer speaks.
+  uint32 min_version = 1;
+  uint32 max_version = 2;
+}
+
+// HelloReply answers a hello with the version both ends use from here on, or
+// with STATUS_INCOMPATIBLE and the server's own range. Every later frame on
+// the connection is encoded at the chosen version.
+message HelloReply {
+  Status status = 1;
+  uint32 version = 2;
+  uint32 min_version = 3;
+  uint32 max_version = 4;
+}
