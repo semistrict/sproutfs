@@ -209,7 +209,7 @@ func TestForkSurvivesTheParentHostOnceItHasPublished(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		// The parent's host is lost: its page server, its pages and its VM
+		// The parent's host is lost: its peer server, its pages and its VM
 		// handle all go with it, and the fork point is never retired.
 		if err := m.pages.Release("vm-2"); err != nil {
 			t.Fatalf("releasing a child that published its own root: %v", err)

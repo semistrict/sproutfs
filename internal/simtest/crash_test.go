@@ -37,7 +37,12 @@ const crashPages = 4
 // time, and it is wider than any of these operations takes, so some seeds kill
 // before the operation began, some in the middle of it and some after it
 // finished. The requirements do not move between those.
-const crashWindow = 2 * time.Millisecond
+const crashWindow = 4 * time.Millisecond
+
+// rootWindow is the span a kill of a fork's destination is drawn from after
+// the child's receive returned: about half of it falls while the root
+// publishes, and the rest after the root landed.
+const rootWindow = 2 * time.Millisecond
 
 // handoffIntervals is how many checkpoint intervals a handover is served for
 // before the host gives it up on its own, which is the host package's own
@@ -283,12 +288,17 @@ func (c *crashRun) requireRecovered(name string) {
 // kill is the mode and moment this seed takes a host away at.
 func (c *crashRun) kill(victim int, operation func(context.Context) error) (int, bool) {
 	c.t.Helper()
+	return c.killWithin(victim, crashWindow, operation)
+}
+
+// killWithin is kill with the moment drawn from within window.
+func (c *crashRun) killWithin(victim int, window time.Duration, operation func(context.Context) error) (int, bool) {
+	c.t.Helper()
 	mode := sim.CrashProcess
 	if c.random.Chance("kill/power-loss", 0.5) {
 		mode = sim.PowerLoss
 	}
-	cut, err := c.world.KillDuring(c.ctx, victim, mode,
-		c.random.Duration("kill/at", crashWindow), operation)
+	cut, err := c.world.KillDuring(c.ctx, victim, mode, c.random.Duration("kill/at", window), operation)
 	c.t.Logf("what the kill interrupted ended with %v", err)
 	return victim, cut
 }
@@ -344,10 +354,23 @@ func (c *crashRun) killTheMigrationDestination() (int, bool) {
 // alone: nothing of it can be opened and its identity is freed. What cutting
 // into this scenario means is a kill that landed while the root was still
 // publishing, which is the moment a fork that does not wait makes possible.
+//
+// That span is a fraction of a millisecond at the end of a fork of several, so
+// a moment drawn from the fork's start almost never falls in it. The moment is
+// drawn from when the child's receive returned instead, over rootWindow; a
+// fork whose receive failed is killed as it ends.
 func (c *crashRun) killTheForkDestination() (int, bool) {
 	child := simtest.VMSpec{ID: crashChildID, Parent: crashVMID, Host: 1}
 	before := c.world.RootsCut()
-	victim, _ := c.kill(1, func(ctx context.Context) error { return c.world.Fork(ctx, child) })
+	received := c.world.ChildReceived(child.ID)
+	forked := make(chan error, 1)
+	go func() { forked <- c.world.Fork(c.ctx, child) }()
+	select {
+	case <-received:
+	case err := <-forked:
+		forked <- err
+	}
+	victim, _ := c.killWithin(1, rootWindow, func(context.Context) error { return <-forked })
 	return victim, c.world.RootsCut() > before
 }
 

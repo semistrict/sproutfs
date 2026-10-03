@@ -35,7 +35,7 @@ TASK-24 in the [backlog](backlog/tasks).
   Taking the fork point publishes nothing.
 - Shares resident memory pages of the same identity within a pager.
 - Moves a running VM between hosts post-copy. The destination resumes first and
-  pulls the pages that no checkpoint holds from the source's page server.
+  pulls the pages that no checkpoint holds from the source's peer server.
 
 A VM's durable state is one checkpoint, which the VM's control record in the
 object store selects. A guest write never waits on object-store latency.

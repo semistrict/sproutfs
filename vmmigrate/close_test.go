@@ -7,11 +7,13 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/semistrict/sproutfs/peer"
+	"github.com/semistrict/sproutfs/peer/peertest"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/vmmigrate"
 )
 
-// heldListener hands out connections whose replies wait for release, so a test
+// heldListener hands out connections whose page replies wait for release, so a test
 // can have a request on the wire and no answer to it at a moment of its
 // choosing. sending reports the first reply reaching that point.
 type heldListener struct {
@@ -48,6 +50,9 @@ type heldConn struct {
 }
 
 func (c heldConn) Send(ctx context.Context, frame platform.Frame) error {
+	if !peertest.IsPageReply(frame) {
+		return c.Conn.Send(ctx, frame)
+	}
 	c.listener.once.Do(func() { close(c.listener.sending) })
 	deliver := c.listener.deliver && c.listener.err == nil
 	if deliver {
@@ -69,7 +74,7 @@ func (c heldConn) Send(ctx context.Context, frame platform.Frame) error {
 	return c.Conn.Send(ctx, frame)
 }
 
-// heldSource is a page source serving this VM whose every reply waits for the
+// heldSource is a peer server serving this VM whose every reply waits for the
 // listener to be released.
 func (s *served) heldSource(t *testing.T, address platform.Address) *heldListener {
 	t.Helper()
@@ -88,8 +93,8 @@ func (s *served) heldSourceHolding(t *testing.T, address platform.Address,
 	}
 	held := newHeldListener(listener)
 	held.deliver, held.err = deliver, sendErr
-	source, err := vmmigrate.NewPageSource(t.Context(), vmmigrate.SourceConfig{PageSize: pageSize,
-		MaxPagesPerRequest: 8, MaxBytesInFlightPerPeer: 32 << 20, Address: address, Listener: held})
+	source, err := peer.NewServer(t.Context(), peer.ServerConfig{PageSize: pageSize,
+		MaxPagesPerRequest: 8, Budgets: budgets(32 << 20), Address: address, Listener: held})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +165,7 @@ func TestClosingAPostCopyStillRefusesAPageOnlyTheSourceHad(t *testing.T) {
 	backing, err := vmmigrate.NewPeerBacking(vmmigrate.PeerConfig{Volume: s.vm.Volume("ram0"),
 		Peer: s.source.Address(), VM: "vm-2", PageSize: pageSize, MaxPagesPerRequest: 8,
 		Unpublished: []vmmigrate.PageRun{{First: 0, Count: 4}},
-		Dial:        s.migration.cluster.dialer("dest")})
+		Peers:       s.migration.cluster.peers(t, s.migration.cluster.dialer("dest"))})
 	if err != nil {
 		t.Fatal(err)
 	}

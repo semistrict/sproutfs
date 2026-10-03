@@ -12,7 +12,7 @@ import (
 )
 
 // TestStoppingAParentWhoseFanOutLandedOnItsOwnHostIsRefused: a child taken in
-// here attaches over the point itself rather than over the page server, so no
+// here attaches over the point itself rather than over the peer server, so no
 // page of it ever reaches the wire. What the pages the child reads are is the
 // same either way — the parent's VMM process's — so a stop that closed it would
 // take the point out from under a child that is faulting for it, and the

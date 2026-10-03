@@ -4,8 +4,8 @@ inputs:
   - directory: checkpoint/proto
   - directory: control/proto
   - directory: platform/proto
-  - directory: vmmigrate/proto
-  - directory: vmmigrate/internal/wire/proto
+  - directory: peer/proto
+  - directory: peer/internal/wire/proto
 
 plugins:
   - local:

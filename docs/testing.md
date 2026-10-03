@@ -44,7 +44,7 @@ A `simtest.World` is one running deployment. Each host in it:
 Every VM in the world has a simulated VMM process that stores into it, and a
 record of the bytes its guest believes it holds. Nothing in the world is a mock
 of the code under test. The volume managers, the checkpoint store, the control
-records, the pagers, the page servers and the migration coordinator are the real
+records, the pagers, the peer servers and the migration coordinator are the real
 implementations.
 
 Every campaign drives the world with the same short list of operations:
@@ -362,9 +362,17 @@ and not only land after it finished. A kill that always arrives late tests
 nothing that an orderly close does not test. The campaign runs with `Buggify` on
 and its runtime on the context. So the kills land around production code that
 is also misbehaving. `checkpoint/one-page-parts`, `control/slow-write` and
-`vmmigrate/source-busy` fire during it. Eight seeds run in the ordinary suite.
+`peer/busy` fire during it. Eight seeds run in the ordinary suite.
 `SPROUTFS_CRASH_SEEDS` selects any other count, and `TestHostCrashSoak` runs a
 block of the seed range.
+
+The fork destination's scenario is the narrow one. A kill is inside it only
+when it lands after the child's receive returned and before its root landed,
+a fraction of a millisecond at the end of a fork of about 4 ms. A moment drawn
+from the fork's start reached that span on one seed in a dozen or fewer, and
+which one moved with the scheduler. So that kill is drawn from
+`World.ChildReceived`, the moment the receive returned, over 2 ms: about half
+the seeds kill while the root publishes, and the rest after it landed.
 
 The campaign found three problems:
 
@@ -577,7 +585,7 @@ store as an endpoint in this state can still take the store away.
 `TestTwoWritersOfOneVMNeverMixAcrossASwizzle` in `internal/simtest` is the
 campaign. It swizzles two hosts and the store while one VM is handed over and a
 second VM is taken over. The handoff pulls the source's unpublished pages over a
-page-server link. That link is separated, healed, dropping, duplicating,
+peer-server link. That link is separated, healed, dropping, duplicating,
 delaying and given new latency. The takeover advances the epoch while either
 writer may be unable to reach the store. The requirements are the same whatever
 the swizzle does:
@@ -596,7 +604,7 @@ Sixteen seeds run normally. `SPROUTFS_SWIZZLE_SEEDS` selects any other count,
 and `TestSwizzleSoak` runs a block of the seed range.
 
 `DropNext`, `DuplicateNext`, `DelayNext` and `SetLink` make up the
-`simtest.DroppedPageServerFrames` fault. It is the only fault that the generated
+`simtest.DroppedPeerFrames` fault. It is the only fault that the generated
 schedule does not draw. Suppose a frame is dropped on an open connection, and a
 guest has a demand fault against the peer that holds the only copy of an
 unpublished page. The only possible outcome is that the guest waits for a reply
@@ -751,7 +759,7 @@ page it published (`vmmigrate.ProbePublishedSinceHandoff`), every page to
 read the guest's bytes before and after the release, and the volume to hold
 the last checkpoint. A fork's parent keeps storing throughout, and none of it
 reaches the child. A checkpoint of the parent in the window is refused with
-`volume.ErrSealed`, so what its page server serves stays the pause.
+`volume.ErrSealed`, so what its peer server serves stays the pause.
 [The migration notes](migration.md#the-sources-copy-after-the-destination-publishes)
 record what it found.
 
@@ -771,7 +779,7 @@ not about a deployment:
 - `Done` returns only after every unpublished page is on the destination, and
   never while a page is still only on the source.
 - The destination's next checkpoint publishes those pages.
-- The source's page server can then be removed entirely.
+- The source's peer server can then be removed entirely.
 - Failure to resume.
 - Cancellation before a handoff.
 - A handoff that waits for a publication that another call already had in
@@ -817,7 +825,7 @@ requirements as scenarios: never published, lost with its host and at a stop,
 reaching neither a local nor a remote fork, and carried by a migration.
 
 A fork's host may be the same as its parent's. That decides whether the child
-shares its parent's pages or pulls them from the parent's page server. A failing
+shares its parent's pages or pulls them from the parent's peer server. A failing
 seed prints its topology, and a printed topology can be reproduced.
 
 `simtest.Fault` is one thing that goes wrong. It has `Begin`, `End` and
@@ -859,8 +867,8 @@ plus the faults that only a generated topology can express:
 | --- | --- |
 | `store-unavailable` | Object storage answers nobody. |
 | `host-loses-store` | One host cannot reach object storage while every other host can. |
-| `partitioned-pages` | Two hosts cannot reach each other's page servers. |
-| `swizzled-links` | Every link among the hosts, their page servers and the store is blocked at its own seeded moment and healed at another. |
+| `partitioned-pages` | Two hosts cannot reach each other's peer servers. |
+| `swizzled-links` | Every link among the hosts, their peer servers and the store is blocked at its own seeded moment and healed at another. |
 | `lost-page-replies` | One host's page reply is dropped after the source has already answered it. |
 | `stalled-stream` | The first frame one host receives is held until whatever asked for it gives up. |
 | `lost-host` | A whole host is taken away at a moment and started again when the fault ends. |
@@ -868,10 +876,10 @@ plus the faults that only a generated topology can express:
 | `refused-start` | One host's half of a receive fails before the guest is started. |
 | `outlived-receive` | The caller of one host's next receive, a migration's or a fork child's, hangs up as the guest starts, and the receive goes on. |
 | `lost-receive-answer` | One host's next receive runs to its end and its caller is told it failed. |
-| `degraded-links` | The page-server links duplicate, delay and slow what they carry. |
+| `degraded-links` | The peer-server links duplicate, delay and slow what they carry. |
 | `forgotten-releases` | The release after a receive is never made, as if the orchestrator restarted in between. The source keeps its hold until the survey at the next step ends it. |
 
-`dropped-page-server-frames` is the same kit plus `DropNext`, and the schedule
+`dropped-peer-frames` is the same kit plus `DropNext`, and the schedule
 does not draw it. See [Clogging and swizzling](#clogging-and-swizzling) for the
 reason, and for the campaign that does draw it.
 
@@ -977,7 +985,7 @@ in the system, and then several problems in the simulated world.
   waits for its sweep. A sweep left running into the next step raced that
   step's faults: a fault that failed the store took some of its deletes on one
   run of a seed and none on the next, so the seed did not reproduce its work.
-- A frame dropped by `Network.DropNext` on a page-server link hangs the guest
+- A frame dropped by `Network.DropNext` on a peer-server link hangs the guest
   permanently, and no other outcome is possible. The connection stays open and
   the sender believes it sent the frame, so the reply never comes. A guest's
   demand fault against the peer that holds the only copy of an unpublished page
@@ -1230,7 +1238,9 @@ caller:
 | `checkpoint/give-up-on-existing-part` | Gives up on a part a retry of the same publication finds already written |
 | `control/slow-write` | Makes one control-record write take seconds |
 | `vmmemory/evict-past-a-free-slot` | Takes a victim although the arena has a free slot |
-| `vmmigrate/source-busy` | Answers BUSY as a source at its per-peer budget does |
+| `peer/busy` | Answers BUSY as a peer server at a peer's budget does |
+| `peer/slow-answer` | Holds one reply for up to two seconds, as a disk that stalls does |
+| `peer/stall` | Stops reading one connection for up to six seconds, as a paused process does |
 | `checkpoint/disk-failed-write` | Fails the write of a page cache disk item |
 | `checkpoint/disk-short-write` | Writes half of a page cache disk item, then fails |
 | `checkpoint/disk-failed-sync` | Fails a sync while a disk region closes |
@@ -1363,6 +1373,72 @@ k+m stripes, in any order, under 1+0, 1+1, 2+1, 2+2 and 4+2; one wrong stripe
 among k+1 is found wherever it falls among the first k; a stripe of another
 code is never used, though a stripe of 2+1 and one of 2+2 of one envelope are
 the same length; and the search for k that pass is bounded at 64 sets.
+
+### The peer server's network
+
+The simulated network models what FoundationDB's simulator does to a link and
+this one once did not. Each fault is off at its zero value, so a world that
+asks for none runs exactly as it did:
+
+- a heavy latency tail, in which about one hop in `TailEvery` takes up to
+  `TailLatency` longer;
+- pairs of hosts that stay slow for the whole run once they first connect;
+- one link's bandwidth, `LinkBytesPerSecond`, shared by every connection
+  between two hosts, so a frame is sent behind the bytes sent before it;
+- bounded send buffers, so a sender whose reader stops reading stalls;
+- holds: `Network.Hold` and `HoldBoth` keep every byte a link carries until a
+  moment, and refuse nothing, as a partition does to TCP, and
+  `SwizzleHolding` swizzles with holds instead of refusals;
+- dials to an address nobody listens at that hang until their caller gives
+  up, as a dial to a machine that is gone does;
+- connections closed at random under a frame (`sim/network/random-close`);
+- a flipped bit in a frame's header (`sim/network/header-bit-flip`).
+
+`Network.Framed` is the network as a host's real one is: byte streams over
+the simulated links, framed by the same framer the TCP adapter runs. Each write
+is split into pieces of seeded lengths, down to a byte, and each read returns a
+seeded part of what has arrived. So every frame crosses in pieces, and the real
+framer puts it back together. Its site `sim/network/stream-bit-flip` flips a
+bit in the first bytes of a write, where a frame's prefix and header are.
+
+`TestThePeerServerCampaignNeverAnswersWrong` in `peer` drives all of it. One
+destination host asks a source of this release, a source of the release
+before, a release two ahead and a machine that is gone, for pages and stripes,
+for thirty simulated seconds, while the link to the source is held for up to
+six seconds at a time. Half the seeds run over framed links and half over byte
+streams. No answer may be wrong, and no damage on the way may make a sound peer
+look broken. The release before checks no header, so its answers are checked
+only once the faults stop. Then, after a minute, every peer must answer at
+once and right, none may still be marked down but the one that is gone, and
+the release two ahead must still be incompatible. Three seeds run normally,
+the cheapest set that between them activates every site of the peer server and
+the network and reaches every probe of `peer.Probes`. The soak runs
+sixty-four.
+
+The peer server's probes are a request answered BUSY, a hello answered
+INCOMPATIBLE, a request that waited here for its class's budget, a reply to a
+request its caller gave up on, a dialer that fell back to version 1, a
+connection found dead, a peer marked down, a down peer probed, and a request
+that skipped a down peer.
+
+The campaign found three bugs. A write on a stream whose connection closed
+spun until its pieces would have arrived. A connection of version 1 that owed
+a reply it would never get was never found dead, because the release before
+answers no ping. And a down peer whose probe was answered INCOMPATIBLE stayed
+down and was probed for ever.
+
+`TestAGuestFaultIsAnsweredWhileTheStreamSaturatesTheLink` is the
+small-behind-large problem. Sixteen streams fill a link of 256 MiB/s, and a
+guest fault asks for one page every 50 ms. The fault waits behind what the
+stream has on the link, which the background budget of 4 MiB bounds: about
+5 ms. With `peer-unbounded-background` it waits behind what the source allows,
+64 MiB, about 100 ms, and the test fails. The stream still runs at nine
+tenths of the link or more.
+
+```sh
+go test ./peer -run '^TestThePeerServerCampaignNeverAnswersWrong$' -count=1
+SPROUTFS_TEST_SOAK=1 go test ./peer -run '^TestThePeerServerCampaignNeverAnswersWrong$' -count=1
+```
 
 `Runtime.Fingerprint` digests everything the simulated dependencies did: the
 resource, the operation, the outcome, the number of bytes, the order on each
@@ -1646,6 +1722,42 @@ ends the machine before it publishes, so the stop's checkpoint keeps nothing on
 the disk, and a VM opened on the same host again reads the pages it wrote last
 from the store. The GCE run of 2026-10-03 found this
 (docs/measurements/gce-deploy-cache-2026-10-03.md).
+
+Ten guards break the peer server:
+
+```sh
+SPROUTFS_SIM_BUG=peer-mark-down-when-cancelled \
+  go test ./peer -run '^TestACancelledRequestMarksNothingDown$' -count=1
+SPROUTFS_SIM_BUG=peer-close-when-busy \
+  go test ./peer -run '^TestARequestOverItsBudgetIsAnsweredBusyAndTheConnectionStays$' -count=1
+SPROUTFS_SIM_BUG=peer-one-budget-for-every-class \
+  go test ./peer -run '^TestAFaultIsAnsweredWhileTheBulkClassIsAtItsBudget$' -count=1
+SPROUTFS_SIM_BUG=peer-reply-out-of-order \
+  go test ./peer -run '^TestRepliesLeaveInTheOrderTheirRequestsCame$' -count=1
+SPROUTFS_SIM_BUG=peer-no-fallback \
+  go test ./peer -run '^TestThisReleaseFetchesPagesFromThePreviousRelease$' -count=1
+SPROUTFS_SIM_BUG=peer-ignore-silence \
+  go test ./peer -run '^(TestASilentPeerIsFoundDeadAndProbedBack|TestASilentPreviousReleaseIsFoundDeadAfterItsRequestTimeout)$' -count=1
+SPROUTFS_SIM_BUG=peer-unbounded-background \
+  go test ./peer -run '^TestAGuestFaultIsAnsweredWhileTheStreamSaturatesTheLink$' -count=1
+SPROUTFS_SIM_BUG=peer-answer-for-another-cache \
+  go test ./peer -run '^TestAReusedAddressAnswersNotMe$' -count=1
+SPROUTFS_SIM_BUG=peer-queue-keeps \
+  go test ./peer -run '^TestAKeepOverTheBackgroundBudgetIsDropped$' -count=1
+SPROUTFS_SIM_BUG=peer-unbounded-stripes \
+  go test ./peer -run '^TestAReaderBoundsItsStripeBytesInFlight$' -count=1
+```
+
+The first five break what each end promises the other. A caller giving up is
+read as the peer failing. A peer at its budget loses its connection instead of
+hearing that it is busy. One class's requests count against another's budget.
+Replies leave a connection in the order they were built rather than the order
+their requests came. A dialer stops talking to the release before. The sixth
+leaves a connection that hears nothing open, version 1's as well as version
+2's. The last four break the budgets that keep bulk work behind faults: the
+background budget a guest fault's reply would otherwise wait behind, a cache
+request that names another cache, a keep queued instead of dropped, and the
+bound on stripe bytes in flight.
 
 Five guards break the list of caches:
 
@@ -1955,6 +2067,35 @@ python3 scripts/mutate-gremlins.py --package cmd/sproutfs-orchestrator --suite f
   --gremlins /path/to/gremlins --output /tmp/orchestrator-cache-mutations
 ```
 
+The peer server is mutated the same way. Its page serving moved from
+`vmmigrate`, whose tests still drive most of it, so that part runs with
+`--integration` and those tests:
+
+```sh
+python3 scripts/mutate-gremlins.py --package peer --suite full \
+  --file background.go --file cache.go --file class.go --file conn.go --file handoffs.go \
+  --file liveness.go --file requests.go --file server.go --file session.go --file table.go \
+  --file version.go --file buffers.go --file internal/wire/codec.go \
+  --gremlins /path/to/gremlins --output /tmp/peer-mutations
+python3 scripts/mutate-gremlins.py --package peer --suite full --integration \
+  --file handoffs.go --file session.go \
+  --run '^Test(PeerServer|ResidentListing|BusySource|UnknownVolume|AnUnreachableSource|AVMHandedOverByThePreviousRelease|PeerBudgets|Premortem|PageReplies|ReleaseRefuses|UnreachableSource|DoneReturns|AGuestStoreCounts|ForkAcrossHosts|MigrationMoves|ReleasedSource|APageIsFetched|ARelease|AReplyThatNever|ALoadIsNot|OneBrokenReply|Pages|Resident|AnUnknownVM|Replies|ARequest|AFault|ALateReply|ThisRelease|ThePreviousRelease|AHello|ADestination|AServer)' \
+  --gremlins /path/to/gremlins --output /tmp/peer-handoff-mutations
+```
+
+On 2026-10-03 the first command left 90 of 476 mutants alive: 370 killed, 12
+timed out and 4 did not build. Tests of what the survivors changed left 61 of
+481 alive, with 404 killed. Writing them found a server that crashed when a
+hello settled on version 1. The second command killed 95 of 119. A run without
+`--integration` runs only the tests of the mutated file's own package, so a
+mutant of `internal/wire` that `peer`'s tests kill counts as alive there; the
+one that marks every payload checksummed is such a mutant. The rest cost speed
+or nothing: the size classes of the buffer pool, the length of a buggified
+delay, a bitmap one byte longer than it needs, a map entry left at zero, which
+of two connections with room takes a request, a bound whose zero means the
+default, and the checksum of a reply of version 2 whose every payload is
+checked anyway.
+
 For test-only changes, select the production package whose behavior
 the tests exercise. `--package` includes subdirectories. Review the surviving
 diffs and the audited outcomes. Prioritize changes to data integrity, fencing,
@@ -2092,7 +2233,7 @@ Host serving tests use real TCP over a fault-injectable simulated object store.
 A host that cannot reach object storage creates nothing. A host that can reach
 it creates a VM, checkpoints it, and forks it from a fork point over the running
 parent. A second host then takes the VM over by advancing the control record's
-epoch, which fences the first host. A closed host gives its page-server port
+epoch, which fences the first host. A closed host gives its peer-server port
 back. The process that replaces it opens the VM from the control record and the
 checkpoint that the record selects, and owns no local state.
 

@@ -28,7 +28,7 @@ import (
 // The scheduled scenario is the one workload recording, replay and byte-exact
 // cross-process reproduction run over. Everything it drives is a real
 // deployment — the volume managers, the checkpoint store, the control records,
-// the pagers, the page servers and the migration coordinator, on the simulated
+// the pagers, the peer servers and the migration coordinator, on the simulated
 // network, object store, disks and clocks of platform/sim — and the
 // shared controller chooses every completion order, so two runs of one seed
 // must produce byte-identical execution and adapter traces however the Go

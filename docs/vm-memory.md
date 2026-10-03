@@ -2137,7 +2137,7 @@ once. So a fan-out costs the parent one pause. The parent stays sealed, and is
 not checkpointed, until the last hold retires and hands every page back to its
 guest. On the parent's host, a child reads the sealed pages through the point
 and shares them in the same pager. On another host, the child's pager pulls
-those pages from the parent's page server, as a migration destination does. The
+those pages from the parent's peer server, as a migration destination does. The
 child's first checkpoint publishes them as the child's own. Until that
 checkpoint lands, opening the child on any host reports `volume.ErrForkPending`.
 
@@ -2163,7 +2163,7 @@ uploaded during the pause.
 `MemoryRegion.ReadResident` copies one page for a peer. If this host does not hold the
 page, it says so, and the destination reads from the volume instead. It also
 reports whether the served page is this memory region's own state and not the volume's.
-It never loads. A page server that loaded would turn a destination's fault into
+It never loads. A peer server that loaded would turn a destination's fault into
 a volume read on the source. "Held" means the page is in host memory or is
 private state of this host. "Unpublished" means the page is dirty here, so no
 checkpoint has it. `Resident` lists the pages this host holds.
@@ -2453,7 +2453,7 @@ They require the following of the settle:
 
 For migration, the simulated tests require that a seal issues one range
 protection per run and no mapping command, and keeps every page where it was.
-They require the following of the page server:
+They require the following of the peer server:
 
 - It returns a held page's current bytes: the sealed copy for a page still
   sharing one, and the guest's own copy for a page stored into since the seal.
@@ -2491,13 +2491,13 @@ dirty and resident pages, and zero memfd blocks.
 
 The suite also runs the fan-out. Neither the simulated campaigns nor the other
 suites test this shape. It uses one fork point and two children. Both children
-are received onto a second pager and page server one after the other, in the
+are received onto a second pager and peer server one after the other, in the
 same way as the orchestrator does it. Each child's root index is published and
 its hold on the parent is released before the next child starts. Both guests
 then read every page of their memory and their whole root volume at the same
 time, while both are checkpointed on an interval.
 
-The page server runs at a deployment's budgets. One peer is one destination
+The peer server runs at a deployment's budgets. One peer is one destination
 host, and both children are on that host, so their memory regions share every budget
 counted per peer. The destination's RAM arena is a quarter of the memory the two
 children map. So every one of those reads involves eviction, spill and refault.

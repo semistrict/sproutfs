@@ -8,6 +8,7 @@ import (
 	"testing"
 	"testing/synctest"
 
+	"github.com/semistrict/sproutfs/peer"
 	"github.com/semistrict/sproutfs/vmmemory"
 	"github.com/semistrict/sproutfs/vmmigrate"
 )
@@ -41,7 +42,7 @@ func TestSourceLostAfterHandoffRewindsToTheLastCheckpoint(t *testing.T) {
 				// pages until the destination fetches it or the next checkpoint lands.
 				durable, selected := guest.snapshot(), vm.Status().Checkpoint
 				stores(random, guest)
-				source, err := vmmigrate.NewPageSource(t.Context(), vmmigrate.SourceConfig{PageSize: pageSize,
+				source, err := peer.NewServer(t.Context(), peer.ServerConfig{PageSize: pageSize,
 					Network: c.runtime.Network(), Address: sourceAddress})
 				if err != nil {
 					t.Fatal(err)

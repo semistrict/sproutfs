@@ -14,7 +14,7 @@
 // from. Nothing is published on the parent's side: the child inherits the
 // checkpoint the parent's control record already selects, and the pages written
 // since it come out of the parent's sealed pages, over the fork point itself on
-// this host and over the parent's page server on another. The destination
+// this host and over the parent's peer server on another. The destination
 // publishes the child's root as soon as it holds them all, and that root is
 // what publishes them as the child's own.
 

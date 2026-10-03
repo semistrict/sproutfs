@@ -37,7 +37,7 @@ the destination reports that it has fetched every one of those pages.
    - the VMM state;
    - the memory region layout;
    - the unpublished page runs;
-   - the address of the source's page server;
+   - the address of the source's peer server;
    - the sequence that the source's control record selected when the source
      gave up the VM;
    - whether the VM is marked to [pull its memory](hosting.md#pulling-a-vms-memory).
@@ -57,8 +57,8 @@ the destination reports that it has fetched every one of those pages.
    source host and to its own volume. It then starts the VMM with the captured
    state.
 4. **Post-copy.** When the guest touches a page, the page faults in from the
-   source host's pager first, over the hosts' [transport](hosting.md#transport)
-   to the handoff's page-server address. If the source cannot supply it, the page comes from the
+   source host's pager first, over the [peer server](#the-peer-server) at the
+   handoff's address. If the source cannot supply it, the page comes from the
    destination's own checkpoint. A page that the destination has published
    since the handoff comes from its volume without asking: the source holds at
    best the version before it. A page that the source served from its dirty
@@ -85,7 +85,7 @@ the destination reports that it has fetched every one of those pages.
    - a reset connection;
    - a timeout;
    - a listener restarting;
-   - a connection dropped by a budget.
+   - a connection found dead, or a peer marked down.
 
    There is no attempt count and no failure threshold. Two things stop the
    retries:
@@ -219,22 +219,29 @@ func (p *Process) Stop(ctx context.Context) ([]byte, error)
 // left half-selected.
 func (vm *VM) Handoff(ctx context.Context) error
 
-// vmmigrate
-// PageSource serves the pages one host holds for another to peers over the host
-// network: a migrated VM's memory regions, or the fork point a fork was taken at. One per
-// host, registered under the identity of the VM that runs elsewhere. It opens a
-// listener on Network at Address, or takes one the caller already opened. Hosts
-// is the host's network, so every peer its transport accepts is served, bounded
-// per remote address.
-type PageSource struct{ ... }
-func NewPageSource(ctx context.Context, config SourceConfig) (*PageSource, error)
-func (s *PageSource) Serve(vmID string, pages map[string]Pages)
+// peer
+// Server is a host's peer server: the pages it holds for other hosts — a
+// migrated VM's memory regions, or the fork point a fork was taken at — and,
+// when Cache is set, the disk cache's stripe requests. One per host. It opens
+// a listener on Network at Address, or takes one the caller already opened.
+type Server struct{ ... }
+func NewServer(ctx context.Context, config ServerConfig) (*Server, error)
+func (s *Server) Serve(vmID string, pages map[string]Pages)
 // Release stops serving a VM once every page it holds has been fetched, and
 // refuses while any is outstanding. Discard stops serving one whose pages are
 // going either way, which is what a VM the host is giving up rather than
 // handing over takes.
-func (s *PageSource) Release(vmID string) error
-func (s *PageSource) Discard(vmID string)
+func (s *Server) Release(vmID string) error
+func (s *Server) Discard(vmID string) (claimed bool)
+// Table is a host's view of every other host: one Peer per address, with a
+// pool of connections per class and the budgets each server gave.
+func NewTable(ctx context.Context, config TableConfig) (*Table, error)
+func (t *Table) Peer(address platform.Address) *Peer
+func (p *Peer) Pages(ctx context.Context, asked PageRequest) (Answer, error)
+func (p *Peer) Resident(ctx context.Context, vm, volume string, pageSize, maxRuns int) ([]Run, error)
+func (p *Peer) Claim(ctx context.Context, vm string) error
+
+// vmmigrate
 // PeerBacking wraps a volume as a pager Backing whose Load asks the source
 // host first and reads the volume for every page a checkpoint holds, and which
 // reports the pages the source served out of its own dirty memory so the pager
@@ -254,12 +261,12 @@ func (b *PeerBacking) Close() error
 // memory regions' volumes up, record which of their pages no checkpoint has, release
 // the VM without publishing, and serve the pages from there on. It returns the
 // VMM state the destination restores.
-func Migrate(ctx context.Context, vm *volume.VM, process Runtime, source *PageSource, opts Options) (Handoff, error)
+func Migrate(ctx context.Context, vm *volume.VM, process Runtime, source *peer.Server, opts Options) (Handoff, error)
 // Receive runs phases 3 and 4 on the destination: open the VM, attach
 // memory regions through PeerBacking, start the VMM from the state, and stream the
 // resident set in the background. It reports when the stream has finished so
 // the source may release.
-func Receive(ctx context.Context, manager *volume.Manager, handoff Handoff, dial Dialer, start StartFunc) (*Received, error)
+func Receive(ctx context.Context, manager *volume.Manager, handoff Handoff, peers *peer.Table, start StartFunc, opts Options) (*Received, error)
 // StartFunc is the supervisor the destination host supplies: one backing per
 // memory region, keyed by the volume that memory region maps, and every one of them must be
 // what the machine attaches with — vmmachine.Config.Backings for a Firecracker
@@ -270,45 +277,28 @@ func Receive(ctx context.Context, manager *volume.Manager, handoff Handoff, dial
 type StartFunc func(ctx context.Context, vm *volume.VM, backings map[string]vmmemory.Backing, state []byte) (Runtime, error)
 ```
 
-The page protocol has two requests over the framed host codec.
+Pages cross the [peer server](#the-peer-server). A page request names the VM,
+the volume and a run of pages. The reply carries a bitmap with one bit per
+requested page, and the payload carries only the pages whose bit is set, in
+ascending order. A second bitmap marks which of those pages are the source's
+own state that no checkpoint has. A clear present bit is not an error. It means
+this host does not hold that page, and the destination reads it from its own
+volume.
 
-A page request names the VM, the volume and a run of pages. The reply carries a
-bitmap with one bit per requested page. The payload frame carries only the
-pages whose bit is set, in ascending order. A second bitmap marks which of those pages
-are the source's own state that no checkpoint has. A clear present bit is not an
-error. It means this host does not hold that page, and the destination reads it
-from its own volume.
+A resident request lists the pages a memory region holds, in runs, bounded per
+reply. A destination's bulk stream walks this list and then faults those pages
+in through the pager's ordinary load path. Streamed bytes are never written into
+a memory region directly, because the load path is what keeps a page shared by
+identity with the other VMs on that host.
 
-A resident request lists the pages a memory region holds, in runs, bounded per reply. A
-destination's bulk stream walks this list and then faults those pages in
-through the pager's ordinary load path. Streamed bytes are never written into a
-memory region directly, because the load path is what keeps a page shared by identity
-with the other VMs on that host.
-
-Both requests are bounded per peer. A peer is the destination host, not one of
-its connections. A destination opens a connection per memory region and dials again
-whenever one breaks, each time with a new ephemeral port. If each connection
-counted separately, neither budget would bind, and the peer table would grow
-with every reconnect. A connection over the budget is closed. A request over
-the bytes-in-flight budget is answered `BUSY`. The destination then reads the
-run from its volume this time. If the run holds a page no checkpoint has, the
-destination instead retries with backoff until the source serves it.
-
-For this reason a memory region returns its connections as soon as it has no request
-in flight, and keeps one. The connection budget bounds what one destination
-host holds at once, across every memory region of every VM it is receiving.
-Connections that a memory region pooled for a finished burst count against the memory regions
-that are still asking. Those memory regions ask for pages no checkpoint has, and they
-keep asking indefinitely. If a memory region kept a whole burst's connections for the
-life of its receive, the bound would become a deadlock instead of a queue.
-
-A memory region has four connections by default. The post-copy stream may use at most
-three of them, so one is always left for the guest's own faults. Each
-connection carries one request at a time, so without this a fault could wait
-behind the stream's requests while a vCPU is stopped on it. A memory region with one
-connection shares it between the two. The destination records how long each
-kind of request took, in total and waiting for a connection, and logs both
-when the post-copy finishes.
+A guest's fault is the fault class, and the stream is bulk reads, so they go
+over different connections and count against different budgets at the source.
+A fault never waits for a connection behind the stream. A request over its
+class's budget is answered `BUSY`. For a run that every checkpoint holds, the
+destination then reads the volume this time. For a run with a page no
+checkpoint has, it asks again with backoff until the source serves it. The
+destination records how long each kind of request took, in total and waiting
+for room, and logs both when the post-copy finishes.
 
 If the source says it does not serve the VM, the memory region reads from its volume
 permanently, and this is logged once. The exception is pages that no checkpoint
@@ -403,6 +393,123 @@ that host. If that host is cut off while its pod is still listed, the child's
 receive ends at the hold. Its destination gives up what it received, and the
 fork fails as it does when a destination refuses a child. The parent keeps
 running.
+
+## The peer server
+
+Every host runs one peer server, on one port. It is the only channel between
+hosts. It carries the pages a handoff left on a host, and the disk cache's
+stripe requests. The code is in `peer`. It was the page server in `vmmigrate`,
+and its metrics keep the page server's names.
+
+The design follows what FoundationDB and CockroachDB do between their nodes.
+The [FoundationDB notes](research/foundationdb-transport-2026-10-03.md) and the
+[CockroachDB notes](research/cockroachdb-rpc-2026-10-03.md) give the reasons.
+
+### Frames
+
+The protocol is framed over TCP. It is not gRPC or HTTP. A frame is a 20-byte
+prefix, a protobuf header and a payload. The prefix holds a magic number, its
+own version, and the lengths of the header and the payload. A frame is at most
+16 MiB.
+
+A frame leaves in one vectored write of its prefix, its header and a payload in
+memory. A payload that is a range of a file goes behind them with `sendfile` on
+Linux, so its bytes never pass through the process. The receiver reads a
+payload into a pooled buffer of the length the prefix gave.
+
+A header of version 2 ends with a CRC32C of the rest of it. A header that fails
+it was damaged on the way, not sent wrong: the connection closes and the
+caller asks again. A prefix whose payload length disagrees with a header that
+passed is damage too. A page reply's payload carries a CRC32C of its own. A
+stripe's carries none, because each stripe holds a checksum of its own.
+
+### Versions
+
+A dialer opens every connection with a hello. The hello names the oldest and
+newest version the dialer speaks, and the class the connection carries. The
+server answers with the newest version both speak, the class's budget, and how
+many requests the connection may have in flight. A dialer whose range shares
+nothing with the server's is answered `INCOMPATIBLE` with the server's range,
+and the connection closes. That peer is not down. It is of a release this host
+cannot talk to, and asking again changes nothing.
+
+This release speaks versions 1 and 2. Version 1 is the release before: no
+hello, one request at a time on a connection, and no header checksum. Its
+server closes a connection whose first frame is a hello. The dialer then dials
+again without one and speaks version 1. This release's server reads a first
+frame that is not a hello as a request of version 1. Tests run this release
+against a frozen copy of the release before, both ways, and a whole migration
+from it.
+
+### Requests
+
+Version 2 carries several requests on a connection at once. Each request has an
+id, and its reply names it. The server reads the next request while earlier
+ones are answered, but replies leave in the order their requests came. A
+request that must not wait behind another goes on another connection.
+
+The requests are:
+
+- pages, resident and claim, for handoffs;
+- ping, answered at once, behind no request;
+- read, keep, drop, presence and probe of stripes, for the disk cache.
+
+A stripe request names the cache it expects. A server whose cache is another
+answers `NOT_ME`, as a host that took over a reused address would. The server
+hands stripe requests to a `peer.Cache`, which the checkpoint cache implements.
+
+### Peers and classes
+
+Each host keeps one table of peers. A peer is one remote host, whatever asks it
+for what. It has one pool of connections for each class: two for faults, two
+for bulk reads and one for bulk writes.
+
+The server counts each class of each remote host against a budget of its own:
+8 MiB for faults, 16 MiB for bulk reads and 16 MiB for bulk writes. A host is
+its address without the port, so all of a host's connections share its
+budgets. A request that would take its class past the budget is answered
+`BUSY`, with what the class holds, may hold, and asked for. The connection
+stays open. The dialer knows each budget from the hello, so it waits for room
+before it sends, and `BUSY` is for what it could not see, such as another
+process of its host.
+
+### Liveness
+
+A connection that hears nothing for a second is pinged. One that hears
+nothing for four seconds is dead: it is closed and its peer is marked down. A
+reply that arrives slowly is heard as its bytes come. TCP keepalive, and on
+Linux a `TCP_USER_TIMEOUT` of ten seconds, are a second line. A connection that
+carries nothing for thirty seconds is closed, and that marks nothing.
+
+A peer is marked down only by a hard failure: a dial or a hello that failed, a
+connect that took more than three seconds, or a dead connection. A caller
+giving up is never one. A slow request is not one either, because its
+connection still answers pings. A request that can do without a down peer
+skips it: a page a checkpoint holds, a stripe another rank holds. The table
+probes a down peer about a second after the mark, then half as long again each
+time, up to every ten seconds.
+
+The release before answers no ping. A connection of version 1 is dead when it
+has owed a reply, and heard nothing, for thirty-four seconds: the thirty that
+release takes to give up on a request, and four more.
+
+A server closes a connection of version 2 that sends it nothing for thirty
+seconds.
+
+### The background budget
+
+A link carries bytes in the order they were sent, so a fault's reply waits
+behind every stream byte the source sent before it. Each host therefore bounds
+its bulk work at all its peers by one background budget, 16 MiB by default. A
+bulk read waits for room before it is sent. Unpublished pages go first, then
+the rest of the stream. Fills and repairs of the disk cache come last, and are
+dropped when there is no room, never queued. A repair has half the budget.
+While a guest fault waits on any peer, the budget shrinks to a quarter. The
+stream is paced by what the link carries, not by a fixed rate. A host also
+bounds the stripe bytes its reads have in flight, 64 MiB by default.
+
+The [GCE run](measurements/gce-peer-server-2026-10-03.md) measures a fault's
+latency while a post-copy stream fills the link.
 
 ## A failed receive is tried again
 
@@ -587,7 +694,7 @@ That local hold has the same shape as a served one. Until the host takes the
 child in, the hold's outstanding count is every page the point holds for it,
 and the host refuses its release. A release states that the child has every
 page it inherited, and a child not yet taken in has none of them. The host is
-the one thing that knows whether it took the child in, as the page server is
+the one thing that knows whether it took the child in, as the peer server is
 the one thing that knows what a child on another host fetched. Once the child
 is taken in, it maps every page it inherited, the count is zero and the release
 is accepted.
@@ -618,7 +725,7 @@ outstanding, because a memory region can have only one seal at a time.
 Deleting the parent ends every hold on it in the same way. `Host.Delete` retires
 the points taken on that VM before it closes the process that holds their
 pages. A child holds a point in this host's memory, not an object. If the
-parent were deleted while a child held a point, the page server would offer a
+parent were deleted while a child held a point, the peer server would offer a
 point whose pages are gone. Every page the child had not yet fetched would come
 back absent and be read from the checkpoint instead. Because the point is
 retired first, the child's next fault for one of those pages fails and reports
@@ -662,7 +769,7 @@ going. One rollback covers every case:
 - A child whose receive failed for its caller may still be on its way: the
   receive goes on on its host, or it finished and its answer was lost. A child
   runs only once it has claimed its hold. When its destination has every page
-  it inherited, it asks the parent's host, over the page-server connection,
+  it inherited, it asks the parent's host, over the peer server,
   whether the hold still stands. A hold that stands is marked claimed and the
   child runs. One that was given up or ran out is not, and the destination
   discards the child. The parent's host decides a claim and a give-up of one
@@ -705,7 +812,7 @@ type Pages interface { ... }
 // Fork registers a fork point under the child's identity and describes it. The
 // pause already happened; nothing is stopped and nothing is released. A nil
 // source is a child the parent's own host takes in: it is served nothing.
-func Fork(ctx context.Context, child string, point *volume.ForkPoint, source *PageSource, opts Options) (Handoff, error)
+func Fork(ctx context.Context, child string, point *volume.ForkPoint, source *peer.Server, opts Options) (Handoff, error)
 // Options.Point is the fork point a child whose parent runs here is received over.
 // Receive creates the child from it and binds its memory regions to a local backing.
 
@@ -734,7 +841,7 @@ Three safeguards were deliberately left in place:
 
 A destination runs its guest from the receive on. Its memory regions keep asking the source until the orchestrator releases the source and the bulk stream ends. In that window the guest stores, and a checkpoint of it publishes and retires what it received. A fork's child publishes its root right after the receive, so every remote fork has this window.
 
-Neither source changes during it. A fork's parent keeps running and storing, but its page server serves the fork point, which is frozen. The parent is not checkpointed while the point is held. A migration's source stops its guest and hands its volumes off before it takes the handoff's set, so nothing stores into those pages again. What changes is the destination's own volume. Once the destination publishes a page, the source holds at best the version before it.
+Neither source changes during it. A fork's parent keeps running and storing, but its peer server serves the fork point, which is frozen. The parent is not checkpointed while the point is held. A migration's source stops its guest and hands its volumes off before it takes the handoff's set, so nothing stores into those pages again. What changes is the destination's own volume. Once the destination publishes a page, the source holds at best the version before it.
 
 Two rules got this wrong, and both are fixed:
 
@@ -772,8 +879,10 @@ page protocol has its own tests:
 - an unserved volume stops the retries on the one answer that says so;
 - an unreachable source costs each load one round trip and no more for the
   pages a checkpoint holds;
-- a connection over the per-peer budget is refused;
-- a busy source is not mistaken for a gone one.
+- a request over the per-peer budget is answered `BUSY`, and its connection
+  stays open;
+- a busy source is not mistaken for a gone one;
+- a VM handed over by the release before arrives whole.
 
 Failure during post-copy has four requirements, tested under the simulated
 clock and network:
@@ -857,7 +966,7 @@ handled the same way wherever the child is:
 The full-guest suite migrates a real Firecracker guest between two pagers and
 two managers in one process, over loopback TCP. The guest stores into its RAM
 and its DAX disk until the vCPUs stop. Every memory region of the destination is
-started through a `PeerBacking`, so the source's page server is on the VMM's own
+started through a `PeerBacking`, so the source's peer server is on the VMM's own
 fault path, not beside it. The guest comes back with its counters intact, read
 back through the console. `PeerStats` shows that the pages those faults touched
 came from the source. A fault on a page that the guest has not reached and that

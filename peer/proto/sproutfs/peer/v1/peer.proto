@@ -1,0 +1,196 @@
+edition = "2024";
+
+package sproutfs.peer.v1;
+
+option go_package = "github.com/semistrict/sproutfs/peer/internal/gen/sproutfs/peer/v1;peerv1";
+
+// Status is how a peer server answered a request of this package. The page
+// requests of sproutfs.migrate.v1 keep their own.
+enum Status {
+  STATUS_UNSPECIFIED = 0;
+  STATUS_OK = 1;
+  // STATUS_INCOMPATIBLE answers a hello whose range shares no version with
+  // the server's. It is its own outcome: the peer is neither down nor gone.
+  STATUS_INCOMPATIBLE = 2;
+}
+
+// Class is the kind of traffic a connection carries. A server keeps a budget
+// of bytes per peer and class, so bulk work never takes what a fault needs.
+enum Class {
+  CLASS_UNSPECIFIED = 0;
+  CLASS_FAULT = 1;
+  CLASS_BULK_READ = 2;
+  CLASS_BULK_WRITE = 3;
+}
+
+// Hello is the first frame a dialer sends on a connection of protocol 2 or
+// later, encoded at wire version 2 whatever range it states, so a server of
+// any later release reads it. A connection whose first frame is not a hello
+// speaks protocol 1, which the release before this one spoke.
+message Hello {
+  // min_version and max_version are the protocol versions the dialer speaks.
+  uint32 min_version = 1;
+  uint32 max_version = 2;
+  // class is the traffic every request on this connection is counted as.
+  Class class = 3;
+}
+
+// HelloReply answers a hello with the version both ends use from here on, or
+// with STATUS_INCOMPATIBLE and the server's own range. Every later frame on
+// the connection is encoded at the chosen version.
+message HelloReply {
+  Status status = 1;
+  uint32 version = 2;
+  uint32 min_version = 3;
+  uint32 max_version = 4;
+  // budget_bytes is what this connection's class of this peer may hold at the
+  // server at once, over every connection of that class. A peer that asks for
+  // no more is answered BUSY only when the server is short itself.
+  uint64 budget_bytes = 5;
+  // max_in_flight is how many requests this connection may carry at once.
+  uint32 max_in_flight = 6;
+}
+
+// Busy answers a request the server would have to hold more than its budget
+// for. Nothing is wrong with either end, and nothing was done: the request may
+// be made again. It says how busy the server is for this peer and class, so a
+// peer that has nowhere else to go waits about as long as that takes.
+message Busy {
+  Class class = 1;
+  // held_bytes is what this peer's requests of the class hold now, and
+  // budget_bytes what they may; asked_bytes is what the refused request needed.
+  uint64 held_bytes = 2;
+  uint64 budget_bytes = 3;
+  uint64 asked_bytes = 4;
+}
+
+// Ping asks the server to show it is there. It is answered with a Pong as soon
+// as it is read, never queued behind a request, so a connection busy with large
+// replies or slow ones still shows its peer is alive.
+message Ping {}
+
+// Pong answers a Ping.
+message Pong {}
+
+// The requests of the cluster's disk cache. Every one names the cache it
+// expects to reach, by the identity in the list of caches: an address can
+// come to belong to another cache — a pod that took the address of one that
+// left — and a cache that is not the one named answers CACHE_STATUS_NOT_ME,
+// which is a stale list rather than a down host.
+
+// CacheStatus is how a cache answered.
+enum CacheStatus {
+  CACHE_STATUS_UNSPECIFIED = 0;
+  CACHE_STATUS_OK = 1;
+  // CACHE_STATUS_NOT_ME answers a request naming another cache than this
+  // host's, or a host that keeps no cache.
+  CACHE_STATUS_NOT_ME = 2;
+  // CACHE_STATUS_DROPPED answers a keep the cache did not write: it holds the
+  // stripe already, or its budget for writes is spent. Nothing waits on a
+  // keep, so it is dropped rather than queued.
+  CACHE_STATUS_DROPPED = 3;
+}
+
+// Window is the unit of placement: the pages of one volume, in one aligned
+// 2 MiB span, that one checkpoint published, or one segment of its page table.
+message Window {
+  string vm = 1;
+  uint64 sequence = 2;
+  string volume = 3;
+  bool segment = 4;
+  uint64 number = 5;
+}
+
+// StripeItem is one stripe a frame's payload carries: the page of the window
+// it belongs to, its index in the code, the length of the envelope it was cut
+// from, and its size in the payload. The items lie in the payload in order.
+// A stripe is stored as it goes on the wire, with a checksum of its own, so a
+// frame that carries stripes carries no checksum of its payload.
+message StripeItem {
+  uint32 page = 1;
+  uint32 index = 2;
+  uint32 length = 3;
+  uint32 size = 4;
+}
+
+// ReadStripes asks a cache for every stripe it holds of the pages of one
+// window, of any index of the code.
+message ReadStripes {
+  bytes cache = 1;
+  Window window = 2;
+  // pages is a bitmap of the pages of the window wanted, least significant
+  // bit of byte 0 first; empty asks for every page.
+  bytes pages = 3;
+  uint32 k = 4;
+  uint32 m = 5;
+  // max_bytes is the most the reply may carry.
+  uint64 max_bytes = 6;
+}
+
+// Stripes answers ReadStripes with the stripes the cache holds, which may be
+// none. fill_right gives the reader the right to fill a window this cache
+// ranks first for and holds nothing of.
+message Stripes {
+  CacheStatus status = 1;
+  repeated StripeItem items = 2;
+  bool fill_right = 3;
+}
+
+// Keep asks a cache to write the stripes its payload carries. A repair is the
+// lowest of every write.
+message Keep {
+  bytes cache = 1;
+  Window window = 2;
+  uint32 k = 3;
+  uint32 m = 4;
+  repeated StripeItem items = 5;
+  bool repair = 6;
+}
+
+// Kept answers a Keep: written, or dropped.
+message Kept {
+  CacheStatus status = 1;
+}
+
+// Drop tells a cache to forget one stripe a reader found wrong.
+message Drop {
+  bytes cache = 1;
+  Window window = 2;
+  uint32 page = 3;
+  uint32 index = 4;
+  uint32 k = 5;
+  uint32 m = 6;
+}
+
+// Dropped answers a Drop.
+message Dropped {
+  CacheStatus status = 1;
+}
+
+// Presence asks which pages of some windows a cache holds a stripe of.
+message Presence {
+  bytes cache = 1;
+  repeated Window windows = 2;
+  uint32 k = 3;
+  uint32 m = 4;
+}
+
+// Present answers Presence with a bitmap of pages per window, in the order the
+// windows were asked.
+message Present {
+  CacheStatus status = 1;
+  repeated bytes pages = 2;
+}
+
+// Probe asks whether this host is there and keeps the cache named. An empty
+// cache asks only whether the host is there.
+message Probe {
+  bytes cache = 1;
+}
+
+// Probed answers a Probe with this host's cache identity, empty for a host
+// that keeps none.
+message Probed {
+  CacheStatus status = 1;
+  bytes cache = 2;
+}

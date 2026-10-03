@@ -71,7 +71,7 @@ func migrateFourPages(t *testing.T, h *hostHarness, pagers []*hostPagers) (vmmig
 
 // Hosts that authenticate one another on a transport of their own migrate a
 // VM as hosts on plain TCP do: the destination fetches the pages only the
-// source holds from the source's page server.
+// source holds from the source's peer server.
 func TestHostsMigrateOverATransportOfTheirOwn(t *testing.T) {
 	h, pagers := startMigrationHosts(t)
 	deployment := newAuthority(t, "deployment")
@@ -111,11 +111,11 @@ func receiveRefused(t *testing.T, h *hostHarness, handoff vmmigrate.Handoff, ref
 	return refusal, <-received
 }
 
-// A page server serves no peer its transport cannot authenticate. The
+// A peer server serves no peer its transport cannot authenticate. The
 // destination's certificate comes from an authority the source does not
 // trust, so the source refuses it and serves none of the pages it holds; the
 // receive fails once its caller stops waiting for them.
-func TestAPageServerServesNoPeerItCannotAuthenticate(t *testing.T) {
+func TestAPeerServerServesNoPeerItCannotAuthenticate(t *testing.T) {
 	h, pagers := startMigrationHosts(t)
 	deployment, stranger := newAuthority(t, "deployment"), newAuthority(t, "stranger")
 	sourceRefusals := h.authenticated(t, 0, deployment, deployment)

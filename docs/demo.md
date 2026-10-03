@@ -97,9 +97,9 @@ The steps and their expected results:
 
    The run then repeats the fork with `--to <the other host>`. The child starts
    on the other host. It pulls the pages that no checkpoint of the parent holds
-   from the parent's page server, as a migration destination does. The parent
+   from the parent's peer server, as a migration destination does. The parent
    keeps running on its host. The `SERVED` column of `sproutfsctl hosts` counts
-   the pages the parent host's page server has handed over, and it must rise.
+   the pages the parent host's peer server has handed over, and it must rise.
    The run then closes the forks, so the later flows run on a host with free
    room.
 3. **Migrate.** `sproutfsctl migrate <vm> --to <the other host>` moves the VM.

@@ -7,11 +7,14 @@ import (
 	"testing"
 	"testing/synctest"
 
+	"github.com/semistrict/sproutfs/peer"
+	"github.com/semistrict/sproutfs/peer/peertest"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/vmmigrate"
 )
 
-// droppingListener hands out connections whose replies never leave this host.
+// droppingListener hands out connections whose page replies never leave this
+// host.
 // The destination therefore receives nothing, which is what a source that dies
 // between reading a request and answering it looks like from the outside.
 type droppingListener struct {
@@ -32,7 +35,12 @@ type droppingConn struct {
 	err error
 }
 
-func (c droppingConn) Send(context.Context, platform.Frame) error { return c.err }
+func (c droppingConn) Send(ctx context.Context, frame platform.Frame) error {
+	if !peertest.IsPageReply(frame) {
+		return c.Conn.Send(ctx, frame)
+	}
+	return c.err
+}
 
 // TestAReleaseWaitsForAReplyItsDestinationHasAlreadyActedOn is the order the two
 // halves of a handover actually run in. A destination acts on a reply the
@@ -147,8 +155,8 @@ func TestAReplyThatNeverLeavesKeepsItsPagesOutstanding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	source, err := vmmigrate.NewPageSource(t.Context(), vmmigrate.SourceConfig{PageSize: pageSize,
-		MaxPagesPerRequest: 8, MaxBytesInFlightPerPeer: 32 << 20, Address: address,
+	source, err := peer.NewServer(t.Context(), peer.ServerConfig{PageSize: pageSize,
+		MaxPagesPerRequest: 8, Budgets: budgets(32 << 20), Address: address,
 		Listener: droppingListener{Listener: listener, err: errors.New("the reply never left the source")}})
 	if err != nil {
 		t.Fatal(err)
@@ -171,7 +179,7 @@ func TestAReplyThatNeverLeavesKeepsItsPagesOutstanding(t *testing.T) {
 
 // unpublishedBacking binds a destination to a source holding runs the handoff
 // named as its own, which is what a real migration's backing carries.
-func (s *served) unpublishedBacking(t *testing.T, source *vmmigrate.PageSource, name string, runs []vmmigrate.PageRun) *vmmigrate.PeerBacking {
+func (s *served) unpublishedBacking(t *testing.T, source *peer.Server, name string, runs []vmmigrate.PageRun) *vmmigrate.PeerBacking {
 	t.Helper()
 	address := sourceAddress
 	if source != nil {
@@ -205,7 +213,7 @@ func (s *served) unpublishedAt(t *testing.T, address platform.Address, name stri
 	}
 	backing, err := vmmigrate.NewPeerBacking(vmmigrate.PeerConfig{Volume: s.vm.Volume(name),
 		Peer: address, VM: "vm-2", PageSize: pageSize, MaxPagesPerRequest: 8,
-		Unpublished: runs, Selected: chosen, Dial: dial})
+		Unpublished: runs, Selected: chosen, Peers: s.migration.cluster.peers(t, dial)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -249,20 +257,29 @@ func TestALoadIsNotAnInstall(t *testing.T) {
 	}
 }
 
-// brokenOnce breaks the first reply it is asked for and then behaves, which is
-// what a reset, a source host restarting its listener, or a connection the
-// source dropped under its own budget looks like from the destination.
+// brokenOnce breaks the connection the first page reply arrives on and then
+// behaves, which is what a reset, a source host restarting its listener, or a
+// connection the source dropped looks like from the destination.
 type brokenOnce struct {
 	platform.Conn
 	broken *bool
 }
 
 func (c brokenOnce) Receive(ctx context.Context) (platform.ReceivedFrame, error) {
-	if !*c.broken {
-		*c.broken = true
-		return platform.ReceivedFrame{}, platform.ErrDisconnected
+	received, err := c.Conn.Receive(ctx)
+	if err != nil || *c.broken {
+		return received, err
 	}
-	return c.Conn.Receive(ctx)
+	frame, err := peertest.Read(received)
+	if err != nil {
+		return platform.ReceivedFrame{}, err
+	}
+	if _, ok := frame.PageReply(); !ok {
+		return frame.Pass(), nil
+	}
+	*c.broken = true
+	_ = c.Conn.Close()
+	return platform.ReceivedFrame{}, platform.ErrDisconnected
 }
 
 // TestOneBrokenReplyIsNotAPermanentFallback separates a source that is gone

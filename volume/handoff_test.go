@@ -94,7 +94,7 @@ func (h *harness) observedManager(t *testing.T) (*volume.Manager, *observingStor
 
 // Handoff publishes nothing. It releases the VM to another host, which opens the
 // checkpoint the control record already selects; everything written since it
-// lives in the source's pager and reaches the destination over the page server,
+// lives in the source's pager and reaches the destination over the peer server,
 // so uploading it inside the pause would be the one cost a post-copy migration
 // exists to avoid.
 func TestHandoffPublishesNothing(t *testing.T) {

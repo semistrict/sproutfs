@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/semistrict/sproutfs/host"
+	"github.com/semistrict/sproutfs/peer"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/vmmigrate"
 )
@@ -17,7 +18,7 @@ import (
 // onto the other host twice in a round and then, as soon as each child's agent
 // answers, reads every byte of that child's memory and its disk back. That is a
 // check running while the source is still streaming the rest of what it holds,
-// with several memory regions pulling from one page source at the same time, over a
+// with several memory regions pulling from one peer server at the same time, over a
 // per-peer budget a busy host spends its life at.
 
 // premortemStreamDeadline bounds a post-copy that should finish. It is
@@ -26,13 +27,13 @@ import (
 // much simulated time and then says so instead of hanging.
 const premortemStreamDeadline = 2 * time.Minute
 
-// premortemSource is a page source with a per-peer connection budget of the
-// caller's choosing, which is what decides whether every memory region of a received
-// VM can be served at once.
-func premortemSource(t *testing.T, m *migration, connections int) *vmmigrate.PageSource {
+// premortemSource is a peer server with a per-peer budget of the caller's
+// choosing, in pages, which is what decides whether every memory region of a
+// received VM can be served at once.
+func premortemSource(t *testing.T, m *migration, budget int) *peer.Server {
 	t.Helper()
-	source, err := vmmigrate.NewPageSource(t.Context(), vmmigrate.SourceConfig{
-		PageSize: pageSize, MaxPagesPerRequest: 2, MaxConnectionsPerPeer: connections,
+	source, err := peer.NewServer(t.Context(), peer.ServerConfig{
+		PageSize: pageSize, MaxPagesPerRequest: 2, Budgets: budgets(int64(budget) * pageSize),
 		Network: m.cluster.runtime.Network(), Address: platform.Address("busy-source")})
 	if err != nil {
 		t.Fatal(err)
@@ -41,16 +42,17 @@ func premortemSource(t *testing.T, m *migration, connections int) *vmmigrate.Pag
 	return source
 }
 
-// TestPremortemAPostCopyFinishesUnderAPerPeerConnectionBudget: a source at its
-// per-peer connection budget must slow a destination down, never stop it.
+// TestPremortemAPostCopyFinishesUnderAPerPeerBudget: a source at its per-peer
+// budget must slow a destination down, never stop it.
 //
-// The pages no checkpoint holds exist nowhere else, so a memory region that cannot get
-// a connection asks for one for ever. What it is waiting for is held by the
-// memory regions that were served first: a memory region pools every connection it dialled
-// and gives none of them back until the whole receive is over. A budget below
-// what the earlier memory regions pool is therefore a post-copy that never finishes, a
-// fork call that never returns and a parent sealed for good.
-func TestPremortemAPostCopyFinishesUnderAPerPeerConnectionBudget(t *testing.T) {
+// The pages no checkpoint holds exist nowhere else, so a memory region that is
+// answered BUSY asks again for ever. What it is waiting for is held by the
+// requests that were served first, and it was once held by connections the
+// memory regions served first kept: a budget below what they kept was a
+// post-copy that never finished, a fork call that never returned and a parent
+// sealed for good. A budget now counts bytes held while a request is answered,
+// and nothing else.
+func TestPremortemAPostCopyFinishesUnderAPerPeerBudget(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		m := newMigration(t)
 		if err := m.machine.checkpoint(t.Context(), m.vm); err != nil {
@@ -63,9 +65,9 @@ func TestPremortemAPostCopyFinishesUnderAPerPeerConnectionBudget(t *testing.T) {
 			m.machine.write("disk", page)
 		}
 		at := m.machine.snapshot()
-		// Fewer connections than the first memory region alone can pool, which is what
-		// a host receiving a second VM from the same source has left.
-		pages := premortemSource(t, m, 4)
+		// Room for two pages' requests at once, fewer than the stream and the
+		// faults of both memory regions ask for together.
+		pages := premortemSource(t, m, 2)
 
 		point, err := host.Seal(t.Context(), m.vm, m.machine)
 		if err != nil {

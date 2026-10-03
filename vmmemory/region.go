@@ -275,7 +275,7 @@ func (r *MemoryRegion) mayRead(ref control.Ref) error {
 }
 
 // ready reports whether this memory region may still use its volume. serving is the
-// weaker question a page server asks: a handed-off memory region answers for its own
+// weaker question a peer server asks: a handed-off memory region answers for its own
 // pages long after its volume became another host's.
 // Resources identifies the host allotment backing this memory region. Supervisors use
 // it to verify that every mapped memory region shares the storage host's budget.

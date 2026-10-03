@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/semistrict/sproutfs/peer"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/vmmachine"
 	"github.com/semistrict/sproutfs/vmmemory"
@@ -215,7 +216,7 @@ func TestFirecrackerForkChildrenSurviveTheirFirstSeconds(t *testing.T) {
 // it counts: anything else fails the test, because a receive that cannot be
 // completed is not a measurement of anything.
 func forkLifeTrial(t *testing.T, ctx context.Context, c *migrationCluster, pager *hostPagers,
-	binaryPath string, source *vmmigrate.PageSource, point *volume.ForkPoint,
+	binaryPath string, source *peer.Server, point *volume.ForkPoint,
 	shape forkLifeShape, trial int) int {
 	t.Helper()
 	handoffs := make([]vmmigrate.Handoff, 0, shape.siblings)
@@ -386,7 +387,7 @@ func panicSignature(console string) string {
 // own receive, with the two things a trial varies — when the root index is
 // published and whether the background stream runs at all.
 func takeBriefly(t *testing.T, ctx context.Context, c *migrationCluster, pager *hostPagers,
-	binaryPath string, handoff vmmigrate.Handoff, source *vmmigrate.PageSource,
+	binaryPath string, handoff vmmigrate.Handoff, source *peer.Server,
 	shape forkLifeShape) (*forkedChild, func()) {
 	t.Helper()
 	var process *vmmachine.Process
@@ -407,7 +408,7 @@ func takeBriefly(t *testing.T, ctx context.Context, c *migrationCluster, pager *
 	dial := func(ctx context.Context, peer platform.Address) (platform.Conn, error) {
 		return c.network.Dial(ctx, "destination-host", peer)
 	}
-	received, err := vmmigrate.Receive(ctx, c.destination, handoff, dial, start, vmmigrate.Options{})
+	received, err := vmmigrate.Receive(ctx, c.destination, handoff, destinationPeers(t, ctx, dial), start, vmmigrate.Options{})
 	if err != nil {
 		t.Fatalf("receiving %s: %v", handoff.VMID, err)
 	}

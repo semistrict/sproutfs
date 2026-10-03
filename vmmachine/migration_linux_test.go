@@ -15,6 +15,7 @@ import (
 	"github.com/semistrict/sproutfs/checkpoint"
 	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/internal/testnet"
+	"github.com/semistrict/sproutfs/peer"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/vmmachine"
@@ -28,7 +29,7 @@ import (
 // keeps storing into its RAM and its DAX disk
 // until the vCPUs stop, and comes back on the destination with its counters
 // intact. Those stores are the source's pages alone — a migration publishes
-// nothing — so what the destination fetches from the source's page server is
+// nothing — so what the destination fetches from the source's peer server is
 // what makes it whole.
 func TestFirecrackerLiveMigration(t *testing.T) {
 	binaryPath := os.Getenv("SPROUTFS_FIRECRACKER")
@@ -62,9 +63,9 @@ func TestFirecrackerLiveMigration(t *testing.T) {
 
 	// Both hosts are one process, so every memory region's connections and the
 	// comparison's come from the same peer address and share one budget.
-	pages, err := vmmigrate.NewPageSource(ctx, vmmigrate.SourceConfig{Network: c.network,
+	pages, err := peer.NewServer(ctx, peer.ServerConfig{Network: c.network,
 		Address: "source-pages", PageSize: pagerPageBytes(t),
-		MaxConnectionsPerPeer: 32, MaxBytesInFlightPerPeer: 64 << 20})
+		Budgets: peer.Budgets{Fault: 64 << 20, BulkRead: 64 << 20, BulkWrite: 64 << 20}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +108,7 @@ func TestFirecrackerLiveMigration(t *testing.T) {
 		t.Fatalf("the destination opened at %v, want the handed-off %v", got, final)
 	}
 	// Every memory region of the destination attaches through the host that still holds
-	// its pages, which is what puts the source's page server on the VMM's own
+	// its pages, which is what puts the source's peer server on the VMM's own
 	// fault path rather than beside it. The volumes stay the memory regions' identity.
 	destinationPager := newMigrationPager(t, ctx)
 	peers := make(map[string]*vmmigrate.PeerBacking, len(handoff.MemoryRegions))
@@ -153,7 +154,7 @@ func TestFirecrackerLiveMigration(t *testing.T) {
 
 	// A store is as likely as a read to be this host's first touch of a page
 	// only the source holds, and it takes that page by a path of its own: the
-	// copy-on-write read, which asks the same page server for the same bytes
+	// copy-on-write read, which asks the same peer server for the same bytes
 	// and leaves them here as this host's own dirty state. The source no longer
 	// holds the only copy of that page, and the account below is what has to
 	// know it — a source told otherwise never stops serving, and the
@@ -266,7 +267,7 @@ func TestFirecrackerLiveMigration(t *testing.T) {
 			time.Duration(latency.FaultWait.QuantileUpperNS(0.99)), latency.Stream.Count,
 			time.Duration(latency.Stream.QuantileUpperNS(0.99)), time.Duration(latency.StreamWait.QuantileUpperNS(0.99)))
 	}
-	t.Logf("migration page server: served=%d absent=%d requests=%d compared_peer_pages=%d compared_volume_pages=%d source_resident=%d",
+	t.Logf("peer server: served=%d absent=%d requests=%d compared_peer_pages=%d compared_volume_pages=%d source_resident=%d",
 		served.Served, served.Absent, served.Requests, comparedPeer, comparedVolume, stats.ResidentPages)
 
 	if err := p.Close(); err != nil {
@@ -539,14 +540,26 @@ func peerBacking(t *testing.T, c *migrationCluster, handoff vmmigrate.Handoff, v
 	// what a mixed VM shows: its RAM is 4 KiB and its root 2 MiB.
 	backing, err := vmmigrate.NewPeerBacking(vmmigrate.PeerConfig{Volume: v, Peer: handoff.Source,
 		VM: handoff.VMID, Unpublished: unpublishedOf(t, handoff, v.Name()),
-		Dial: func(ctx context.Context, peer platform.Address) (platform.Conn, error) {
+		Peers: destinationPeers(t, t.Context(), func(ctx context.Context, peer platform.Address) (platform.Conn, error) {
 			return c.network.Dial(ctx, "destination-host", peer)
-		}})
+		})})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = backing.Close() })
 	return backing
+}
+
+// destinationPeers is the destination host's table of peers over dial, closed
+// when the test ends.
+func destinationPeers(t *testing.T, ctx context.Context, dial vmmigrate.Dialer) *peer.Table {
+	t.Helper()
+	table, err := peer.NewTable(ctx, peer.TableConfig{Dial: dial})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = table.Close() })
+	return table
 }
 
 // unpublishedOf reports the pages of one memory region that the handoff says exist
@@ -648,7 +661,7 @@ func absentPage(t *testing.T, ctx context.Context, runs []vmmigrate.PageRun, mem
 }
 
 // comparePeerAndVolume fetches a window of the migrated RAM from the source's
-// page server. A migration publishes nothing, so the pages the handoff calls
+// peer server. A migration publishes nothing, so the pages the handoff calls
 // unpublished are the guest's writes since the source's last checkpoint and no
 // log holds them; every other page the source serves must be exactly what the
 // destination's own log holds. The destination is still paused, so nothing is

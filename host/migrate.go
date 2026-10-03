@@ -211,7 +211,7 @@ func (h *Host) Handed(vmID string) (vmmigrate.Handoff, time.Duration, bool) {
 
 // beginMigration admits one handover of a VM at a time and reports the
 // registration it claimed. A migration stops the guest, gives every memory region's
-// volume up and hands the pages to a page server: two callers that found one
+// volume up and hands the pages to a peer server: two callers that found one
 // registration each did all of that to one VMM process, and the loser — whose
 // memory regions had already given their volumes up — gave the VM up, closing the
 // process whose pages the winner's destination was about to fault out of.
@@ -270,7 +270,7 @@ func confirmHandoff(ctx context.Context, vm *volume.VM) error {
 // caller closes the returned Received.
 //
 // Where the child of a fork lands changes only that backing. A child whose
-// parent runs elsewhere streams the pages out of that host's page server. A
+// parent runs elsewhere streams the pages out of that host's peer server. A
 // child whose parent runs here attaches over the fork point itself: the pager
 // shares the parent's sealed pages with it by identity, so every inherited
 // page is present the moment the memory region attaches and nothing is fetched.
@@ -295,7 +295,7 @@ func (h *Host) Receive(ctx context.Context, handoff vmmigrate.Handoff) (*vmmigra
 
 func (h *Host) receive(ctx context.Context, handoff vmmigrate.Handoff) (*vmmigrate.Received, error) {
 	// The fork point is this host's own for a child of a fork it took: such a child
-	// is bound to the pages rather than to a peer, so it needs no page server
+	// is bound to the pages rather than to a peer, so it needs no peer server
 	// of its own and dials none.
 	point := h.inherited(handoff.VMID)
 	if h.migration.StartVM == nil || (h.pages == nil && point == nil) {
@@ -339,7 +339,7 @@ func (h *Host) receive(ctx context.Context, handoff vmmigrate.Handoff) (*vmmigra
 		started = runtime
 		return runtime, nil
 	}
-	received, err := vmmigrate.Receive(ctx, h.volumes, handoff, h.dialPages, start,
+	received, err := vmmigrate.Receive(ctx, h.volumes, handoff, h.peers, start,
 		vmmigrate.Options{Point: point})
 	if err != nil {
 		return nil, err
@@ -528,7 +528,7 @@ func (h *Host) rooted(ctx context.Context, vm *volume.VM, runtime Machine) error
 // capture already in flight would otherwise publish the torn image this is
 // discarding.
 //
-// Nothing is done to this host's own page server: the pages of a VM being
+// Nothing is done to this host's own peer server: the pages of a VM being
 // received are the source's, and this host serves none of them.
 //
 // The handle is then handed off rather than closed, because a close publishes
@@ -562,9 +562,9 @@ func (h *Host) discardReceived(ctx context.Context, vmID string, runtime Machine
 // since this host's last checkpoint. Once every migrated VM is released,
 // Status().Serving is empty and this host may exit. A VM this host never
 // migrated away is not touched.
-// It is refused while the page server still holds pages of that VM that no
+// It is refused while the peer server still holds pages of that VM that no
 // checkpoint has and the destination has not fetched. What the control plane's
-// table says about the migration is not evidence of that: the page server
+// table says about the migration is not evidence of that: the peer server
 // answered the fetches, so it is the one thing that knows, and a release it
 // refuses leaves the VM exactly as it was and still serving. A child of a fork
 // this host takes in itself fetches nothing, and this host is the one thing that
@@ -597,7 +597,7 @@ func (h *Host) GiveUp(vmID string) (claimed bool, err error) {
 func (h *Host) release(vmID string, abandoning bool) (claimed bool, err error) {
 	// What can refuse goes first: nothing below may be undone for a release
 	// that does not happen. A child this host takes in itself is refused here
-	// until it has been, and one elsewhere by the page server.
+	// until it has been, and one elsewhere by the peer server.
 	if !abandoning {
 		if err := h.untaken(vmID); err != nil {
 			return false, fmt.Errorf("releasing %s: %w", vmID, err)
@@ -677,7 +677,7 @@ func (h *Host) stopHolds() {
 	}
 }
 
-// dialPages reaches the page server named by a handoff. Whether what answers
+// dialPages reaches the peer server named by a handoff. Whether what answers
 // there is a host is the network's transport to decide, so the address is the
 // whole of what a destination needs.
 func (h *Host) dialPages(ctx context.Context, peer platform.Address) (platform.Conn, error) {

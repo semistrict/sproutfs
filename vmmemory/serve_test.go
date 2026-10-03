@@ -17,9 +17,9 @@ func servingFixture(t *testing.T, resident, logical, dirty int) *fixture {
 		DirtyPages: dirty, ReadAheadPages: 1})
 }
 
-// The page server hands a peer the bytes this host holds and tells it plainly
+// The peer server hands a peer the bytes this host holds and tells it plainly
 // when it holds none, so the peer reads that page from the volume instead. It
-// never loads: a page server that could load would turn a destination's fault
+// never loads: a peer server that could load would turn a destination's fault
 // into a source-side volume read.
 func TestReadResidentServesHeldPagesAndNeverLoads(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
@@ -54,7 +54,7 @@ func TestReadResidentServesHeldPagesAndNeverLoads(t *testing.T) {
 			}
 		}
 		if b.loads != loads {
-			t.Fatalf("the page server read the volume %d times, want none", b.loads-loads)
+			t.Fatalf("the peer server read the volume %d times, want none", b.loads-loads)
 		}
 		if _, _, err := r.ReadResident(t.Context(), 8, dst); !errors.Is(err, vmmemory.ErrRange) {
 			t.Fatalf("ReadResident past the memory region = %v, want ErrRange", err)
@@ -183,7 +183,7 @@ func TestReadResidentReportsAPageEvictedSinceItWasListed(t *testing.T) {
 			t.Fatalf("ReadResident of an evicted page = %t, %v; want false", ok, err)
 		}
 		if b.loads != loads {
-			t.Fatalf("the page server loaded the evicted page %d times, want none", b.loads-loads)
+			t.Fatalf("the peer server loaded the evicted page %d times, want none", b.loads-loads)
 		}
 	})
 }

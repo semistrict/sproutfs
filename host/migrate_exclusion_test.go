@@ -39,7 +39,7 @@ func (g *gatedMachine) Stop(ctx context.Context) ([]byte, error) {
 }
 
 // TestOneHandoverOfAVMAtATime: a migration stops the guest, gives every memory region's
-// volume up and registers the pages with the page server. Two callers that
+// volume up and registers the pages with the peer server. Two callers that
 // found the same registration each did all of that to one VMM process: the
 // second stopped a guest the first had already handed over, failed, and gave the
 // VM up — closing the process whose pages the winner's destination was about to

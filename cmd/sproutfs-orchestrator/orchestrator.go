@@ -997,7 +997,7 @@ func (o *orchestrator) ImportTemplate(ctx context.Context, image io.Reader,
 // handshake is the same wherever they land: the default is the parent's own
 // host, which takes its children in over the pages the seal froze so that
 // nothing crosses the network, and naming another host makes each child pull
-// the pages no checkpoint holds out of the parent's page server, exactly as a
+// the pages no checkpoint holds out of the parent's peer server, exactly as a
 // migration's destination does. The parent holds the point until every child
 // has them all.
 func (o *orchestrator) Fork(ctx context.Context, id string, request orch.ForkRequest) (orch.ForkResult, error) {
@@ -1072,7 +1072,7 @@ func (o *orchestrator) Fork(ctx context.Context, id string, request orch.ForkReq
 // fork carries one fork through: the migration handshake, wherever the children
 // land. The parent's host builds a handoff per child and holds the point for
 // each of them, every destination creates its child and binds the pages no
-// checkpoint holds — off the parent's page server on another host, off the
+// checkpoint holds — off the parent's peer server on another host, off the
 // pages themselves on the parent's own — and only when the last child has them
 // does the parent take its pages back. pull marks every child to pull its
 // whole memory, which each child's handoff carries to its destination.

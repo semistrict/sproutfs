@@ -11,16 +11,17 @@ import (
 
 	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/internal/blob"
+	"github.com/semistrict/sproutfs/internal/latency"
+	"github.com/semistrict/sproutfs/peer"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/vmmemory"
-	"github.com/semistrict/sproutfs/vmmigrate/internal/peer"
-	"github.com/semistrict/sproutfs/vmmigrate/internal/wire"
 	"github.com/semistrict/sproutfs/volume"
 )
 
-// Dialer opens one connection to a peer's page source. A production dialer is
-// the host network's, over whatever transport the deployment runs.
+// Dialer opens one connection to another host's peer server. A production dialer is
+// the host network's, over whatever transport the deployment runs; a host
+// builds its table of peers over it.
 type Dialer = peer.Dialer
 
 // Admitter orders a destination's decision to ask its source for pages against
@@ -47,9 +48,14 @@ type PeerConfig struct {
 	// Volume is the destination's own handle on the volume, which answers
 	// everything the peer cannot.
 	Volume *volume.Volume
-	// Peer is the source host's page source and VM the migrated VM's identity.
+	// Peer is the source host's peer server and VM the migrated VM's identity.
 	Peer platform.Address
 	VM   string
+	// Peers is this host's table of peers, which every request to the source
+	// goes through: its connections and its budget are shared with every other
+	// memory region and every other kind of request this host makes of that
+	// host.
+	Peers *peer.Table
 	// Unpublished names the pages the source holds that no checkpoint has, from
 	// the handoff. They are the guest's writes since the source's last checkpoint:
 	// the volume reports them as the checkpoint's bytes or as holes, and reading
@@ -68,10 +74,10 @@ type PeerConfig struct {
 	// same durable geometry. Zero takes it from Volume, which is what every
 	// caller but a scaled-model test wants.
 	PageSize int
-	Dial     Dialer
-	// MaxConnections bounds this memory region's requests in flight, four by default.
-	// The post-copy stream uses all but one, which is kept for guest faults.
-	MaxConnections int
+	// Concurrency is how many requests the post-copy stream makes at once for
+	// this memory region, four by default. The stream's requests go over the
+	// source's bulk connections, never over the ones its guest faults use.
+	Concurrency int
 	// MaxPagesPerRequest bounds one request: one 2 MiB production page by
 	// default, or at most 256 smaller model pages within 2 MiB.
 	MaxPagesPerRequest int
@@ -107,9 +113,17 @@ type PeerStats struct {
 }
 
 // RequestLatency is how long requests to a migration's source took: a guest
-// fault's and the post-copy stream's, each in total and waiting for a
-// connection.
-type RequestLatency = peer.Latency
+// fault's and the post-copy stream's, each in total and waiting for room in its
+// class's budget and on a connection.
+type RequestLatency struct {
+	Fault, FaultWait, Stream, StreamWait latency.Snapshot
+}
+
+// Merge adds another memory region's latencies to these.
+func (l RequestLatency) Merge(other RequestLatency) RequestLatency {
+	return RequestLatency{Fault: l.Fault.Merge(other.Fault), FaultWait: l.FaultWait.Merge(other.FaultWait),
+		Stream: l.Stream.Merge(other.Stream), StreamWait: l.StreamWait.Merge(other.StreamWait)}
+}
 
 // PeerBacking is a pager backing whose loads ask the source host of a migration
 // first and read the destination's own volume for everything it does not hold.
@@ -122,7 +136,7 @@ type RequestLatency = peer.Latency
 // VM, which it does only after a release it agreed to; and the orchestrator,
 // ending the migration by discarding the received VM, which closes this backing.
 // Everything else — a reset connection, a timeout, a listener restarting, a
-// connection dropped by a budget, a BUSY reply — is retried with the same
+// connection found dead, a BUSY reply — is retried with the same
 // backoff for as long as this backing lives. Nothing here can tell a source that
 // stumbled from one that died, and the two answers are opposite: the volume
 // holds the checkpoint's bytes, which the guest has already written past.
@@ -151,9 +165,12 @@ type PeerBacking struct {
 	// unfetched records, and the volume's from then on.
 	unpublished map[uint64]bool
 
-	// source is the host that still holds these pages, and the connections this
-	// memory region asks it over.
-	source *peer.Source
+	// source is the host that still holds these pages, as this host's table of
+	// peers holds it.
+	source *peer.Peer
+	// The latency of this memory region's requests to the source, a guest
+	// fault's and the stream's apart, each whole and waiting for room.
+	fault, faultWait, streamed, streamWait latency.Histogram
 
 	// mu guards unfetched, which is the part of unpublished the source has not
 	// served yet. It only ever shrinks, and empties when the source may stop
@@ -163,6 +180,7 @@ type PeerBacking struct {
 
 	fallen   atomic.Bool
 	once     sync.Once
+	requests atomic.Int64
 	served   atomic.Int64
 	fromDisk atomic.Int64
 	refusals atomic.Int64
@@ -206,20 +224,20 @@ const (
 
 // NewPeerBacking binds one volume to the source host that still holds its pages.
 func NewPeerBacking(config PeerConfig) (*PeerBacking, error) {
-	if config.Volume == nil || config.Peer == "" || config.VM == "" || config.Dial == nil {
-		return nil, fmt.Errorf("%w: a peer backing needs a volume, a peer, a VM and a dialer", ErrInvalid)
+	if config.Volume == nil || config.Peer == "" || config.VM == "" || config.Peers == nil {
+		return nil, fmt.Errorf("%w: a peer backing needs a volume, a peer, a VM and a table of peers", ErrInvalid)
 	}
 	if config.PageSize == 0 {
 		config.PageSize = int(config.Volume.PageSize())
 	}
-	if config.MaxConnections == 0 {
-		config.MaxConnections = 4
+	if config.Concurrency == 0 {
+		config.Concurrency = 4
 	}
 	if config.MaxPagesPerRequest == 0 {
-		config.MaxPagesPerRequest = max(1, min(defaultMaxPages, requestBytes/config.PageSize))
+		config.MaxPagesPerRequest = max(1, min(peer.DefaultMaxPages, peer.RequestBytes/config.PageSize))
 	}
 	config.Clock = platform.ClockOr(config.Clock)
-	if config.PageSize < 512 || config.PageSize > blob.MaxSize || config.MaxConnections < 1 || config.MaxPagesPerRequest < 1 || config.MaxPagesPerRequest > blob.MaxSize/config.PageSize {
+	if config.PageSize < 512 || config.PageSize > blob.MaxSize || config.Concurrency < 1 || config.MaxPagesPerRequest < 1 || config.MaxPagesPerRequest > blob.MaxSize/config.PageSize {
 		return nil, fmt.Errorf("%w: invalid peer backing budgets", ErrInvalid)
 	}
 	life, endLife := context.WithCancelCause(context.Background())
@@ -227,10 +245,7 @@ func NewPeerBacking(config PeerConfig) (*PeerBacking, error) {
 		unpublished: make(map[uint64]bool),
 		unfetched:   make(map[uint64]struct{}),
 		life:        life, endLife: endLife,
-		source: peer.New(peer.Config{Peer: config.Peer, VM: config.VM,
-			Volume: config.Volume.Name(), PageSize: config.PageSize,
-			MaxConnections: config.MaxConnections, MaxRuns: defaultMaxRuns, Dial: config.Dial,
-			Clock: config.Clock})}
+		source: config.Peers.Peer(config.Peer)}
 	for _, run := range config.Unpublished {
 		for page := run.First; page < run.First+uint64(run.Count); page++ {
 			b.unpublished[page] = true
@@ -373,9 +388,10 @@ func (b *PeerBacking) predatesHandoff(ref control.Ref) bool {
 
 func (b *PeerBacking) Stats() PeerStats {
 	return PeerStats{PeerPages: b.served.Load(), VolumePages: b.fromDisk.Load(),
-		Requests: b.source.Requests(), Refusals: b.refusals.Load(), Stalls: b.stalls.Load(),
+		Requests: b.requests.Load(), Refusals: b.refusals.Load(), Stalls: b.stalls.Load(),
 		Unfetched: b.Unfetched(), Fetched: b.fetched.Load(), FellBack: b.gone(),
-		Latency: b.source.Latency()}
+		Latency: RequestLatency{Fault: b.fault.Snapshot(), FaultWait: b.faultWait.Snapshot(),
+			Stream: b.streamed.Snapshot(), StreamWait: b.streamWait.Snapshot()}}
 }
 
 // Unfetched reports how many pages no checkpoint holds are still only on the
@@ -387,8 +403,8 @@ func (b *PeerBacking) Unfetched() int {
 }
 
 // Concurrency is how many requests the post-copy stream may have in flight for
-// this memory region at once: every connection but the one kept for guest faults.
-func (b *PeerBacking) Concurrency() int { return b.source.Concurrency() }
+// this memory region at once.
+func (b *PeerBacking) Concurrency() int { return b.config.Concurrency }
 
 // onlyOnSource reports the first page of a run whose bytes are still only on the
 // source, which is a page no fallback may answer for.
@@ -568,7 +584,7 @@ func (b *PeerBacking) fill(ctx context.Context, first uint64, dst []byte, presen
 	for index := 0; index < count; {
 		if present[index/8]&(1<<(index%8)) != 0 {
 			if (served+1)*size > len(payload) {
-				return fmt.Errorf("%w: the source served fewer pages than it reported", wire.ErrMalformedFrame)
+				return fmt.Errorf("%w: the source served fewer pages than it reported", peer.ErrMalformed)
 			}
 			if sim.Bug(ctx, "migration-corrupt-peer-page") {
 				clear(dst[index*size : (index+1)*size])
@@ -615,7 +631,7 @@ func (b *PeerBacking) Resident(ctx context.Context) ([]PageRun, error) {
 	if b.gone() {
 		return nil, nil
 	}
-	runs, err := b.source.Resident(ctx)
+	runs, err := b.source.Resident(ctx, b.config.VM, b.config.Volume.Name(), b.config.PageSize, peer.DefaultMaxRuns)
 	if err != nil {
 		if errors.Is(err, peer.ErrNotServed) {
 			b.fallBack(ctx, err)
@@ -660,17 +676,28 @@ func (b *PeerBacking) ask(caller context.Context, first uint64, count int) (peer
 	}()
 	delay := busyDelay
 	for {
-		reply, err := b.source.Pages(ctx, first, count)
+		if _, only := b.onlyOnSource(first, count); !only && b.source.Down() {
+			// The source is marked down, and the volume holds every page of
+			// this run: it is not worth a round trip to a host that has just
+			// failed to answer. A page only the source holds ignores the mark,
+			// because a down mark is a hint and never says the source is gone.
+			sim.Probe(ctx, peer.ProbeSkippedDown)
+			return peer.Answer{}, peer.ErrDown
+		}
+		reply, err := b.pages(ctx, first, count)
 		_, only := b.onlyOnSource(first, count)
 		switch {
-		case err == nil && !reply.Busy:
+		case err == nil && reply.Busy == nil:
 			return reply, nil
 		case err == nil:
-			// The source is at its budget for this peer and served nothing.
+			// The source is at its budget for this host and served nothing.
 			b.refusals.Add(1)
 			if !only {
 				return reply, nil
 			}
+			// It said how busy: a wait of about the requests ahead of this
+			// one, rather than a doubling from the shortest.
+			delay = max(delay, busyHint(reply.Busy))
 		case cancelled(ctx, err) || unusable(err) || errors.Is(err, peer.ErrNotServed):
 			return peer.Answer{}, b.ended(caller, err)
 		case !only:
@@ -704,13 +731,14 @@ func (b *PeerBacking) claim(caller context.Context) error {
 	defer release()
 	delay := busyDelay
 	for {
-		err := b.source.Claim(ctx)
+		b.requests.Add(1)
+		err := b.source.Claim(ctx, b.config.VM)
 		switch {
 		case err == nil:
 			return nil
 		case errors.Is(err, peer.ErrNotServed):
 			return fmt.Errorf("%w: %s no longer holds %s", ErrGivenUp, b.config.Peer, b.config.VM)
-		case cancelled(ctx, err) || unusable(err):
+		case cancelled(ctx, err) || unusable(err) || stopped(err):
 			return b.ended(caller, err)
 		}
 		if err := b.wait(ctx, delay); err != nil {
@@ -726,12 +754,40 @@ func (b *PeerBacking) claim(caller context.Context) error {
 // nor another attempt answers it: the fault fails with it and the received VM
 // is torn.
 func unusable(err error) bool {
-	return errors.Is(err, peer.ErrPageSize) || errors.Is(err, wire.ErrMalformedFrame)
+	return errors.Is(err, peer.ErrPageSize) || errors.Is(err, peer.ErrMalformed) || errors.Is(err, peer.ErrIncompatible)
+}
+
+// pages asks the source for one run, and times the asking: a guest fault's and
+// the stream's apart.
+func (b *PeerBacking) pages(ctx context.Context, first uint64, count int) (peer.Answer, error) {
+	b.requests.Add(1)
+	began := b.config.Clock.Now()
+	total, wait := &b.fault, &b.faultWait
+	if peer.ClassOf(ctx) != peer.Fault {
+		total, wait = &b.streamed, &b.streamWait
+	}
+	reply, err := b.source.Pages(ctx, peer.PageRequest{VM: b.config.VM, Volume: b.config.Volume.Name(),
+		First: first, Count: count, PageSize: b.config.PageSize})
+	wait.Observe(reply.Waited)
+	total.Observe(b.config.Clock.Since(began))
+	return reply, err
+}
+
+// busyHint is how long to wait before asking a busy source again: a busy
+// delay for every request of this size it already holds for this host, and no
+// longer than the longest wait. A source of the release before says nothing.
+func busyHint(busy *peer.BusyError) time.Duration {
+	if busy == nil || busy.Asked <= 0 || busy.Held <= 0 {
+		return busyDelay
+	}
+	ahead := (busy.Held + busy.Asked - 1) / busy.Asked
+	return min(busyDelayMax, time.Duration(ahead)*busyDelay)
 }
 
 // stopped reports this backing's own end, which is the migration's: the
-// orchestrator discarded the received VM, or the destination closed the stream.
-func stopped(err error) bool { return errors.Is(err, ErrClosed) }
+// orchestrator discarded the received VM, or the destination closed the stream,
+// or this host closed its table of peers, which it does only as it stops.
+func stopped(err error) bool { return errors.Is(err, ErrClosed) || errors.Is(err, peer.ErrClosed) }
 
 // cancelled reports the caller having given up. It asks the context, because a
 // cancellation carries whatever cause the canceller installed — a stream this
@@ -794,12 +850,13 @@ func (b *PeerBacking) fallBack(ctx context.Context, cause error) {
 		slog.InfoContext(ctx, "vmmigrate: reading the rest of this volume from the log rather than the migration source",
 			"vm", b.config.VM, "volume", b.config.Volume.Name(), "source", b.config.Peer, "reason", cause)
 	})
-	b.source.Close()
 }
 
-// Close ends this memory region's half of the migration: every connection it holds is
-// dropped, every fault waiting for a source that never answered is given that
-// end as its cause, and nothing is asked of the source again. The volume keeps
+// Close ends this memory region's half of the migration: every request it has
+// in flight is given that end as its cause, every fault waiting for a source
+// that never answered with it, and nothing is asked of the source again. The
+// connections are the host's, shared with everything else it asks that host,
+// and stay open. The volume keeps
 // working, which is every page a checkpoint holds; a page only the source held
 // is lost from here, exactly as it is when the source says it has gone.
 //
@@ -808,7 +865,6 @@ func (b *PeerBacking) fallBack(ctx context.Context, cause error) {
 func (b *PeerBacking) Close() error {
 	b.endLife(fmt.Errorf("%w: %s stopped asking %s for %s", ErrClosed,
 		b.config.VM, b.config.Peer, b.config.Volume.Name()))
-	b.source.Close()
 	return nil
 }
 

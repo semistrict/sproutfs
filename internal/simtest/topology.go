@@ -99,7 +99,7 @@ type VMSpec struct {
 	// Host is the index into Topology.Hosts of the host this VM starts on. For
 	// a fork it may be its parent's host or another one, which are the two
 	// halves of the fork path: sharing the parent's pages, and pulling them
-	// out of the parent's page server.
+	// out of the parent's peer server.
 	Host int
 	// Volumes is the VM's memory and its PMEM disks, in the order a create
 	// takes them.

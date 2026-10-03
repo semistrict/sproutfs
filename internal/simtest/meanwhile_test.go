@@ -97,7 +97,7 @@ func runMeanwhile(t *testing.T, fork bool) {
 				return err
 			}
 			// And it is not checkpointed while the point holds its pages,
-			// which is what keeps what its page server serves the pause.
+			// which is what keeps what its peer server serves the pause.
 			if err := world.Checkpoint(ctx, "vm-1"); !errors.Is(err, volume.ErrSealed) {
 				return fmt.Errorf("a checkpoint of the parent while its child runs = %v, want ErrSealed", err)
 			}

@@ -258,7 +258,7 @@ func TestAFencedHostSealedByAForkPointStopsServing(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The parent is sealed from here: a child of this point runs on another
-	// host and pulls the parent's unpublished pages out of its page server.
+	// host and pulls the parent's unpublished pages out of its peer server.
 	guest.store("ram0", 1, 6)
 	if _, err := h.hosts[0].Fork(t.Context(), "vm-1", []string{"child-1"}, h.pages[1]); err != nil {
 		t.Fatal(err)

@@ -21,6 +21,7 @@ import (
 	"github.com/semistrict/sproutfs/internal/testbacking"
 	"github.com/semistrict/sproutfs/internal/testpager"
 	"github.com/semistrict/sproutfs/internal/testresource"
+	"github.com/semistrict/sproutfs/peer"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/vmmemory"
@@ -658,9 +659,26 @@ func classify(keys []string) (records, indexes, pages int) {
 	return records, indexes, pages
 }
 
-// dialer dials the page source over the simulated network from one host.
+// dialer dials the peer server over the simulated network from one host.
 func (c *cluster) dialer(from platform.Address) vmmigrate.Dialer {
 	return func(ctx context.Context, peer platform.Address) (platform.Conn, error) {
 		return c.runtime.Network().Dial(ctx, from, peer)
 	}
+}
+
+// peers is a destination host's table of peers over dial, closed when the test
+// ends.
+func (c *cluster) peers(t *testing.T, dial vmmigrate.Dialer) *peer.Table {
+	t.Helper()
+	table, err := peer.NewTable(t.Context(), peer.TableConfig{Dial: dial})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.cleanup(func() { _ = table.Close() })
+	return table
+}
+
+// budgets is a server's budget of bytes for every class alike.
+func budgets(bytes int64) peer.Budgets {
+	return peer.Budgets{Fault: bytes, BulkRead: bytes, BulkWrite: bytes}
 }

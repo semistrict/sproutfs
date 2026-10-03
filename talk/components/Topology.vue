@@ -28,7 +28,7 @@ const caption = computed(() => [
       <g v-for="h in 3" :key="h">
         <rect :x="60 + (h - 1) * 280" y="150" width="220" height="100" rx="8" class="host" :class="{ lit: step === 1 }" />
         <text :x="170 + (h - 1) * 280" y="175" class="label">host {{ h }}</text>
-        <text :x="170 + (h - 1) * 280" y="198" class="tiny">pager · VMMs · page server</text>
+        <text :x="170 + (h - 1) * 280" y="198" class="tiny">pager · VMMs · peer server</text>
         <text :x="170 + (h - 1) * 280" y="218" class="tiny">checkpoint loop · epoch timer</text>
         <text :x="170 + (h - 1) * 280" y="238" class="tiny">fork · migrate · drain</text>
         <path :d="`M ${170 + (h - 1) * 280} 150 V 100 H 450 V 82`" class="link" />

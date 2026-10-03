@@ -174,11 +174,11 @@ from deleting the checkpoint the child inherits and every checkpoint that
 checkpoint's root names. The pin is permanent. Only a collector, which can see
 every fork, may release a pin. A child runs either on the parent's host,
 sharing the sealed pages, or on another host, pulling them from the parent's
-page server.
+peer server.
 
 **Handoff**: The plain data that starts a VM on another host: the VMM state,
 the checkpoint the VM inherits, the runs of unpublished pages, and the address
-of the page server that serves them. A migration hands off a VM that the source
+of the peer server that serves them. A migration hands off a VM that the source
 released. A fork hands off a child from a parent that keeps running.
 
 **Hold**: How long a source keeps what a handoff needs when nothing releases
@@ -223,6 +223,38 @@ does. See
 **Host**: A machine that runs VMs and serves their pages to migration
 destinations and to forks on other hosts.
 
+**Peer server**: The one channel between hosts. Each host runs one, on one
+port, and every other host reaches it there. It serves the pages a handoff left
+on the host and, for the cluster's disk cache, reads, keeps, drops and presence
+checks of stripes. It speaks a framed protocol over TCP, not gRPC or HTTP. See
+[the transport](migration.md#the-peer-server).
+
+**Peer**: Another host, as this host's table of peers sees it. There is one
+peer per remote host, whatever asks it for what. It holds a pool of
+connections for each class, the budget the remote host gave each class, and
+whether the remote host is down.
+
+**Class**: What a request is for, which decides the connections it goes over
+and the budget it counts against at the server. A guest fault is the fault
+class. The post-copy stream and stripe reads that nothing waits on are bulk
+reads. Keeps are bulk writes. A bulk request never shares a connection with a
+fault, and never takes a fault's budget.
+
+**Busy**: A peer server's answer to a request that would take its peer's class
+past the class's budget. It says how much the class holds, may hold, and asked
+for. The connection stays open, and the asker tries again or asks elsewhere.
+
+**Background budget**: The bytes one host's bulk work may have in flight at all
+its peers at once. It admits unpublished post-copy pages first, then the rest
+of the stream, then fills, then repairs. Fills and repairs over it are dropped,
+not queued. While a guest fault is waiting it shrinks to a quarter, so the
+stream yields the link to the fault.
+
+**Down**: A peer that failed hard: a dial or a hello that failed, or a
+connection that heard nothing for four seconds. A caller giving up is never a
+hard failure. A request that can do without a down peer skips it. The table
+probes the peer back, first after about a second and then up to every ten.
+
 **Writer**: The single process allowed to publish a VM's checkpoints. The epoch
 in the control record establishes the writer. Every open advances that epoch,
 which fences the previous writer.
@@ -241,7 +273,7 @@ table is a window of its own.
 **List of caches**: Every host's page cache disk that the orchestrator found,
 and the deployment's code. A cache is named by its identity, a random value in
 its file's header that a restart over the same file keeps. It has a weight,
-from the size of the disk it is given, and its host's page-server address. The
+from the size of the disk it is given, and its host's peer-server address. The
 orchestrator serves the list at `GET /caches`. Each host reads it on a timer
 and keeps the last list it read. A host that has read none holds its own cache
 alone. See [hosting](hosting.md#the-list-of-caches).

@@ -135,7 +135,7 @@ type machines struct {
 }
 
 // AddMachine registers the VMM process of a VM this host runs, which is what a
-// drain migrates, what a page server serves from, and what the interval loop
+// drain migrates, what a peer server serves from, and what the interval loop
 // checkpoints. The supervisor keeps ownership: this only records which
 // process belongs to which VM and starts that VM's checkpoint loop.
 func (h *Host) AddMachine(vmID string, runtime Machine) error {
@@ -259,7 +259,7 @@ func (m *registration) end() {
 //
 // The fork points taken on this VM go first: retiring them stops the children
 // this host serves that point's pages to and gives the memory regions back before the
-// process that maps them is closed. Then the page server drops the VM, the VMM
+// process that maps them is closed. Then the peer server drops the VM, the VMM
 // process is stopped, the VM handle is released — a fenced handle publishes
 // nothing on close — and the supervisor that owns them both is told.
 //

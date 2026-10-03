@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/semistrict/sproutfs/peer"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/vmmemory"
@@ -16,7 +17,7 @@ import (
 const sourceAddress platform.Address = "source-pages"
 
 // migration is one prepared migration: a cluster, both hosts' managers and
-// pagers, a VM running on the source, and the page server the destination
+// pagers, a VM running on the source, and the peer server the destination
 // fetches from.
 type migration struct {
 	cluster     *cluster
@@ -26,7 +27,7 @@ type migration struct {
 	destPager   *pager
 	vm          *volume.VM
 	machine     *machine
-	pages       *vmmigrate.PageSource
+	pages       *peer.Server
 }
 
 // newMigration creates a VM, writes and publishes a checkpoint so some of its
@@ -57,8 +58,8 @@ func newMigration(t *testing.T) *migration {
 		t.Fatal(err)
 	}
 	// Eight pages per request, so a test can watch one request cover a run.
-	m.pages, err = vmmigrate.NewPageSource(t.Context(), vmmigrate.SourceConfig{PageSize: pageSize,
-		MaxPagesPerRequest: 8, MaxBytesInFlightPerPeer: 32 << 20, Network: c.runtime.Network(), Address: sourceAddress})
+	m.pages, err = peer.NewServer(t.Context(), peer.ServerConfig{PageSize: pageSize,
+		MaxPagesPerRequest: 8, Budgets: budgets(32 << 20), Network: c.runtime.Network(), Address: sourceAddress})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +72,7 @@ func newMigration(t *testing.T) *migration {
 func (m *migration) receive(t *testing.T, handoff vmmigrate.Handoff) (*vmmigrate.Received, *machine) {
 	t.Helper()
 	var destination *machine
-	received, err := vmmigrate.Receive(t.Context(), m.destination, handoff, m.cluster.dialer("dest"),
+	received, err := vmmigrate.Receive(t.Context(), m.destination, handoff, m.cluster.peers(t, m.cluster.dialer("dest")),
 		func(ctx context.Context, vm *volume.VM, backings map[string]vmmemory.Backing, state []byte) (vmmigrate.Runtime, error) {
 			built, err := newMachine(t, m.destPager, vm, backings, state)
 			if err != nil {
@@ -217,7 +218,7 @@ func TestReleasedSourceSendsTheDestinationToItsVolume(t *testing.T) {
 	for _, memoryRegion := range handoff.MemoryRegions {
 		backing, err := vmmigrate.NewPeerBacking(vmmigrate.PeerConfig{
 			Volume: received.VM().Volume(memoryRegion.Name), Peer: handoff.Source, VM: handoff.VMID,
-			Selected: handoff.Checkpoint, PageSize: pageSize, Dial: m.cluster.dialer("dest")})
+			Selected: handoff.Checkpoint, PageSize: pageSize, Peers: m.cluster.peers(t, m.cluster.dialer("dest"))})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -323,7 +324,7 @@ func TestReceiveRefusesAMachineMissingAMemoryRegion(t *testing.T) {
 	}
 	model := m.machine.snapshot()
 	var started *partialMachine
-	_, err = vmmigrate.Receive(ctx, m.destination, handoff, m.cluster.dialer("dest"),
+	_, err = vmmigrate.Receive(ctx, m.destination, handoff, m.cluster.peers(t, m.cluster.dialer("dest")),
 		func(ctx context.Context, vm *volume.VM, backings map[string]vmmemory.Backing, state []byte) (vmmigrate.Runtime, error) {
 			built, err := newMachine(t, m.destPager, vm, backings, state)
 			if err != nil {

@@ -4,19 +4,17 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"hash/crc32"
-	"io"
 	"testing"
 	"testing/synctest"
 
+	"github.com/semistrict/sproutfs/peer"
+	"github.com/semistrict/sproutfs/peer/peertest"
 	"github.com/semistrict/sproutfs/platform"
-	migratev1 "github.com/semistrict/sproutfs/vmmigrate/internal/gen/sproutfs/migrate/v1"
-	"github.com/semistrict/sproutfs/vmmigrate/internal/wire"
 )
 
 type inspectingPageConn struct {
 	platform.Conn
-	inspect func(*migratev1.PageResponse, []byte)
+	inspect func(*peertest.PageReply)
 }
 
 func (c *inspectingPageConn) Receive(ctx context.Context) (platform.ReceivedFrame, error) {
@@ -24,29 +22,18 @@ func (c *inspectingPageConn) Receive(ctx context.Context) (platform.ReceivedFram
 	if err != nil {
 		return f, err
 	}
-	in, err := wire.Decode(f)
+	frame, err := peertest.Read(f)
 	if err != nil {
 		return platform.ReceivedFrame{}, err
 	}
-	defer in.Payload.Close()
-	message := new(migratev1.PageResponse)
-	if err := in.UnmarshalTo(message); err != nil {
-		return platform.ReceivedFrame{}, err
+	reply, ok := frame.PageReply()
+	if !ok {
+		return frame.Pass(), nil
 	}
-	data, err := io.ReadAll(in.Payload)
-	if err != nil {
-		return platform.ReceivedFrame{}, err
-	}
-	c.inspect(message, data)
-	// Recompute the transport checksum: corrupt-blob tests must reach the
-	// decompressor rather than only testing the existing wire CRC.
-	encoded, err := wire.Encode(wire.Outgoing{RequestID: in.RequestID, InReplyTo: in.InReplyTo,
-		Message: message, Payload: wire.Payload{Body: bytes.NewReader(data), Size: int64(len(data)),
-			Algorithm: wire.ChecksumCRC32C, Checksum: wire.EncodeCRC32C(crc32.Checksum(data, crc32.MakeTable(crc32.Castagnoli)))}})
-	if err != nil {
-		return platform.ReceivedFrame{}, err
-	}
-	return platform.ReceivedFrame{Header: encoded.Header, PayloadSize: int64(len(data)), Payload: io.NopCloser(bytes.NewReader(data))}, nil
+	c.inspect(reply)
+	// The rewrite recomputes the transport checksum: corrupt-blob tests must
+	// reach the decompressor rather than only testing the wire CRC.
+	return frame.Rewrite(reply)
 }
 
 func TestPageRepliesCompressAndRejectInvalidDecodedPages(t *testing.T) {
@@ -61,18 +48,18 @@ func TestPageRepliesCompressAndRejectInvalidDecodedPages(t *testing.T) {
 					if err != nil {
 						return nil, err
 					}
-					return &inspectingPageConn{Conn: conn, inspect: func(response *migratev1.PageResponse, data []byte) {
+					return &inspectingPageConn{Conn: conn, inspect: func(reply *peertest.PageReply) {
 						seen = true
-						if len(data) >= pageSize/2 {
-							t.Errorf("repetitive page transferred %d bytes", len(data))
+						if len(reply.Payload) >= pageSize/2 {
+							t.Errorf("repetitive page transferred %d bytes", len(reply.Payload))
 						}
 						switch mode {
 						case "checksum":
-							data[16] ^= 1
+							reply.Payload[16] ^= 1
 						case "version":
-							response.SetPayloadFormat(0)
+							reply.PayloadFormat = 0
 						case "bitmap":
-							response.SetPresent([]byte{0x80})
+							reply.Present = []byte{0x80}
 						}
 					}}, nil
 				})
@@ -99,7 +86,7 @@ func TestPageRepliesCompressAndRejectInvalidDecodedPages(t *testing.T) {
 				// use at all, so the fault fails with that cause and the received
 				// VM is torn, rather than reading a volume whose bytes may predate
 				// the guest's own write.
-				if !errors.Is(err, wire.ErrMalformedFrame) {
+				if !errors.Is(err, peer.ErrMalformed) {
 					t.Fatalf("a %s reply = %v, want a malformed frame", mode, err)
 				}
 				if !bytes.Equal(got, make([]byte, pageSize)) || backing.Stats().PeerPages != 0 {

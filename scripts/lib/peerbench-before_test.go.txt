@@ -1,0 +1,177 @@
+package vmmigrate
+
+// The release before's side of cmd/sproutfs-peerbench. scripts/bench-peer-gce.sh
+// copies it, and the bench's workload.go, into vmmigrate of a checkout of
+// main at 6af0d3de, and builds them as that package's test binary: the page
+// server and its client there are internal to vmmigrate. It is configured by
+// environment, because a test binary takes only its own flags.
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/signal"
+	"strconv"
+	"syscall"
+	"testing"
+	"time"
+
+	"github.com/semistrict/sproutfs/platform"
+	"github.com/semistrict/sproutfs/platform/adapters"
+	"github.com/semistrict/sproutfs/vmmigrate/internal/peer"
+)
+
+const benchPageBytes = 2 << 20
+
+func TestPeerBench(t *testing.T) {
+	mode := os.Getenv("PEERBENCH_MODE")
+	if mode == "" {
+		t.Skip("set PEERBENCH_MODE to server or client")
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	regions := envInt(t, "PEERBENCH_REGIONS", 4)
+	pages := uint64(envInt(t, "PEERBENCH_PAGES", 1024))
+	switch mode {
+	case "server":
+		pool := noisePages(16, benchPageBytes)
+		source, err := NewPageSource(ctx, SourceConfig{Network: adapters.NewNetwork(),
+			Address: platform.Address(os.Getenv("PEERBENCH_LISTEN")), PageSize: benchPageBytes})
+		if err != nil {
+			t.Fatal(err)
+		}
+		served := make(map[string]Pages, regions)
+		for region := range regions {
+			served[fmt.Sprintf("region%d", region)] = beforePages{pool: pool, count: pages}
+		}
+		source.Serve("vm", served)
+		t.Logf("serving at %s", source.Address())
+		<-ctx.Done()
+		stats := source.Stats()
+		t.Logf("served %+v", stats)
+		if err := source.Close(); err != nil {
+			t.Fatal(err)
+		}
+	case "client":
+		duration, err := time.ParseDuration(os.Getenv("PEERBENCH_DURATION"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		faultEvery, err := time.ParseDuration(os.Getenv("PEERBENCH_FAULT_EVERY"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		config := benchConfig{Case: os.Getenv("PEERBENCH_CASE"), Regions: regions, Pages: pages,
+			PageBytes: benchPageBytes, Duration: duration, FaultEvery: faultEvery}
+		switch config.Case {
+		case "idle":
+		case "stream":
+			config.Stream = true
+		default:
+			t.Fatalf("the release before runs idle and stream, not %q", config.Case)
+		}
+		network := adapters.NewNetwork()
+		dial := func(ctx context.Context, to platform.Address) (platform.Conn, error) {
+			return network.Dial(ctx, "", to)
+		}
+		client := beforeClient{sources: make([]*peer.Source, regions)}
+		for region := range regions {
+			// One handle a memory region, as a PeerBacking makes, with its
+			// default four connections.
+			client.sources[region] = peer.New(peer.Config{Peer: platform.Address(os.Getenv("PEERBENCH_SERVER")),
+				VM: "vm", Volume: fmt.Sprintf("region%d", region), PageSize: benchPageBytes, MaxConnections: 4,
+				MaxRuns: defaultMaxRuns, Dial: dial})
+		}
+		defer func() {
+			for _, source := range client.sources {
+				source.Close()
+			}
+		}()
+		result, err := runCase(ctx, client, nil, config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		line, err := json.Marshal(result)
+		if err != nil {
+			t.Fatal(err)
+		}
+		file, err := os.OpenFile(os.Getenv("PEERBENCH_OUT"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer file.Close()
+		if _, err := file.Write(append(line, '\n')); err != nil {
+			t.Fatal(err)
+		}
+		fmt.Println(string(line))
+	default:
+		t.Fatalf("unknown mode %q", mode)
+	}
+}
+
+func envInt(t *testing.T, name string, fallback int) int {
+	t.Helper()
+	value := os.Getenv(name)
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		t.Fatalf("%s: %v", name, err)
+	}
+	return parsed
+}
+
+type beforePages struct {
+	pool  [][]byte
+	count uint64
+}
+
+func (p beforePages) ReadResident(_ context.Context, page uint64, dst []byte) (bool, bool, error) {
+	if page >= p.count {
+		return false, false, fmt.Errorf("page %d past %d", page, p.count)
+	}
+	copy(dst, p.pool[page%uint64(len(p.pool))])
+	return true, true, nil
+}
+
+func (p beforePages) Resident() ([]uint64, error) { return p.Unpublished() }
+
+func (p beforePages) Unpublished() ([]uint64, error) {
+	pages := make([]uint64, p.count)
+	for i := range pages {
+		pages[i] = uint64(i)
+	}
+	return pages, nil
+}
+
+func (p beforePages) PageSize() uint64 { return benchPageBytes }
+
+// beforeClient is the release before's destination: one Source a memory
+// region, the stream on all but one of its connections.
+type beforeClient struct{ sources []*peer.Source }
+
+func (c beforeClient) streamConcurrency() int { return c.sources[0].Concurrency() }
+
+func (c beforeClient) fault(ctx context.Context, region int, page uint64) (bool, error) {
+	return c.ask(ctx, region, page)
+}
+
+func (c beforeClient) stream(ctx context.Context, region int, page uint64) (bool, error) {
+	return c.ask(peer.WithStream(ctx), region, page)
+}
+
+func (c beforeClient) ask(ctx context.Context, region int, page uint64) (bool, error) {
+	answer, err := c.sources[region].Pages(ctx, page, 1)
+	if err != nil {
+		return false, err
+	}
+	if answer.Busy {
+		return true, nil
+	}
+	if len(answer.Payload) != benchPageBytes {
+		return false, fmt.Errorf("page %d came back as %d bytes", page, len(answer.Payload))
+	}
+	return false, nil
+}

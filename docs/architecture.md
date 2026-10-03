@@ -215,7 +215,7 @@ runtime configuration.
 6. A live move is post-copy only. The source stops the guest, saves VMM state
    and hands the VM over without uploading anything. The destination opens the
    same identity, advances the epoch, and resumes from the supplied state. It
-   faults in the pages the source holds from the source's page server, and the
+   faults in the pages the source holds from the source's peer server, and the
    bulk stream runs while the guest runs. The destination's next checkpoint
    makes those pages durable. The source is released once every unpublished
    page has reached the destination. A page that no checkpoint holds exists
