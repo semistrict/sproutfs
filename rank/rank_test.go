@@ -429,3 +429,76 @@ func TestAnIdentityReadsBackFromItsHex(t *testing.T) {
 		}
 	}
 }
+
+// A reader of a window picks want of its ranks to ask first. Over 60,000
+// readers of one window, every rank is picked by want in every six of them,
+// within a point, so a hot window's readers spread over all its holders; over
+// 60,000 windows read by one reader, the same. A reader picks the same ranks
+// every time it reads a window, the picks come first and the rest after, each
+// part in rank order, and a want of every rank or more leaves the ranks as
+// they are.
+func TestReadersPickRanksEvenlyAndAlwaysTheSame(t *testing.T) {
+	var caches []Cache
+	for n := range byte(6) {
+		caches = append(caches, cacheOf(n+1, 1))
+	}
+	list := listOf(t, Code{K: 4, M: 2}, caches...)
+	const draws, want = 60000, 5
+	random := rand.New(rand.NewPCG(7, 11))
+	spread := func(name string, draw func(at int) (Identity, Window)) {
+		counts := make(map[Identity]int)
+		for at := range draws {
+			reader, window := draw(at)
+			ranks := list.Ranks(window)
+			order := Pick(ranks, reader, window, want)
+			if again := Pick(ranks, reader, window, want); !slices.Equal(order, again) {
+				t.Fatalf("%s: a reader picked %v and then %v", name, identities(order), identities(again))
+			}
+			if !slices.Equal(sorted(order), sorted(ranks)) {
+				t.Fatalf("%s: picked %v of the ranks %v", name, identities(order), identities(ranks))
+			}
+			for _, part := range [][]Cache{order[:want], order[want:]} {
+				if !slices.IsSortedFunc(part, func(a, b Cache) int {
+					return slices.Index(ranks, a) - slices.Index(ranks, b)
+				}) {
+					t.Fatalf("%s: a part of the picks %v is not in rank order %v", name, identities(part), identities(ranks))
+				}
+			}
+			for _, cache := range order[:want] {
+				counts[cache.Identity]++
+			}
+		}
+		for _, cache := range caches {
+			if got, expected := counts[cache.Identity], draws*want/len(caches); math.Abs(float64(got-expected)) > draws/100 {
+				t.Fatalf("%s: cache %s was picked %d times of %d reads, want about %d", name, cache.Identity, got,
+					draws, expected)
+			}
+		}
+	}
+	hot := windowOf("vm-hot", 3, 9)
+	spread("readers of one window", func(int) (Identity, Window) {
+		var reader Identity
+		for at := range reader {
+			reader[at] = byte(random.Uint32())
+		}
+		return reader, hot
+	})
+	reader := cacheOf(9, 1).Identity
+	spread("one reader of many windows", func(at int) (Identity, Window) {
+		return reader, windowOf("vm-many", uint64(at/512+1), uint64(at))
+	})
+	ranks := list.Ranks(hot)
+	if got := Pick(ranks, reader, hot, len(ranks)); !slices.Equal(got, ranks) {
+		t.Fatalf("a want of every rank picked %v of %v", identities(got), identities(ranks))
+	}
+	if got := Pick(ranks, reader, hot, 0); !slices.Equal(got, ranks) {
+		t.Fatalf("a want of none picked %v of %v", identities(got), identities(ranks))
+	}
+}
+
+// sorted is caches in identity order.
+func sorted(caches []Cache) []Cache {
+	sorted := slices.Clone(caches)
+	slices.SortFunc(sorted, func(a, b Cache) int { return slices.Compare(a.Identity[:], b.Identity[:]) })
+	return sorted
+}

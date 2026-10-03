@@ -19,13 +19,14 @@ type Dialer func(ctx context.Context, peer platform.Address) (platform.Conn, err
 
 // Connections is how many connections each class may hold to one peer.
 type Connections struct {
-	Fault, BulkRead, BulkWrite int
+	Fault, BulkRead, BulkWrite, Stripe int
 }
 
 // DefaultConnections keeps two connections for faults, so one that waits on a
 // slow request leaves another; two for bulk reads, which keep a link busy
-// between them; and one for bulk writes, which are dropped rather than queued.
-var DefaultConnections = Connections{Fault: 2, BulkRead: 2, BulkWrite: 1}
+// between them; one for bulk writes, which are dropped rather than queued; and
+// two for stripe reads, as for faults.
+var DefaultConnections = Connections{Fault: 2, BulkRead: 2, BulkWrite: 1, Stripe: 2}
 
 // Of is the connections of class.
 func (c Connections) Of(class Class) int {
@@ -34,6 +35,8 @@ func (c Connections) Of(class Class) int {
 		return c.BulkRead
 	case BulkWrite:
 		return c.BulkWrite
+	case Stripe:
+		return c.Stripe
 	default:
 		return c.Fault
 	}
@@ -106,6 +109,10 @@ type Table struct {
 // Background is this host's background budget.
 func (t *Table) Background() *Background { return t.background }
 
+// Clock is what the table times its requests by: the clock of the network,
+// which a reader of the cluster's cache times its own waits by too.
+func (t *Table) Clock() platform.Clock { return t.clock }
+
 // NewTable starts a host's table of peers. It dials nothing until a request is
 // made. ctx is what its connections live under; Close ends them.
 func NewTable(ctx context.Context, config TableConfig) (*Table, error) {
@@ -117,6 +124,9 @@ func NewTable(ctx context.Context, config TableConfig) (*Table, error) {
 	if config.Connections == (Connections{}) {
 		config.Connections = DefaultConnections
 	}
+	// A configuration written before stripe reads had a class of their own
+	// gives them what it gives faults.
+	config.Connections.Stripe = cmp.Or(config.Connections.Stripe, config.Connections.Fault)
 	if config.InFlight == 0 {
 		config.InFlight = defaultClientInFlight
 	}
@@ -130,6 +140,7 @@ func NewTable(ctx context.Context, config TableConfig) (*Table, error) {
 	config.StripeBytes = cmp.Or(config.StripeBytes, defaultStripeBytes)
 	if !config.Versions.valid() || config.InFlight < 1 || !config.Budgets.valid(1) ||
 		config.Connections.Fault < 1 || config.Connections.BulkRead < 1 || config.Connections.BulkWrite < 1 ||
+		config.Connections.Stripe < 1 ||
 		config.PingInterval < 0 || config.DeadAfter <= config.PingInterval || config.ConnectTimeout < 0 ||
 		config.ProbeFirst < 0 || config.ProbeMax < config.ProbeFirst {
 		return nil, fmt.Errorf("%w: invalid table of peers", ErrInvalid)
@@ -246,6 +257,8 @@ func (p *Peer) status() PeerStatus {
 			status.Connections.BulkRead = count
 		case BulkWrite:
 			status.Connections.BulkWrite = count
+		case Stripe:
+			status.Connections.Stripe = count
 		}
 	}
 	return status

@@ -21,6 +21,11 @@ enum Class {
   CLASS_FAULT = 1;
   CLASS_BULK_READ = 2;
   CLASS_BULK_WRITE = 3;
+  // CLASS_STRIPE is a read of the cluster's disk cache that a fault waits
+  // on. Its replies are small and many, so they never share a connection
+  // with the fault class's 2 MiB pages, whose replies they would wait
+  // behind. A server of a release before it reads it as CLASS_FAULT.
+  CLASS_STRIPE = 4;
 }
 
 // Hello is the first frame a dialer sends on a connection of protocol 2 or

@@ -282,3 +282,45 @@ func mix(z uint64) uint64 {
 	z ^= z >> 31
 	return z
 }
+
+// Pick orders a window's ranks for one reader: the want caches that score
+// highest for this reader and window first, then the rest, each part in rank
+// order. The readers of one window so spread their requests over every cache
+// ranked for it, and one reader always asks the same ones first. A reader of
+// a window does not count itself: ranks is the caches it may ask.
+func Pick(ranks []Cache, reader Identity, window Window, want int) []Cache {
+	if want >= len(ranks) {
+		return slices.Clone(ranks)
+	}
+	scored := make([]picked, len(ranks))
+	seed := mix(window.digest() ^ seedOf(reader))
+	for at, cache := range ranks {
+		scored[at] = picked{at: at, score: mix(seed ^ seedOf(cache.Identity)), identity: cache.Identity}
+	}
+	slices.SortFunc(scored, func(a, b picked) int {
+		if a.score != b.score {
+			return descending(a.score, b.score)
+		}
+		return bytes.Compare(a.identity[:], b.identity[:])
+	})
+	chosen := make([]bool, len(ranks))
+	for _, choice := range scored[:max(want, 0)] {
+		chosen[choice.at] = true
+	}
+	order := make([]Cache, 0, len(ranks))
+	for _, first := range []bool{true, false} {
+		for at, cache := range ranks {
+			if chosen[at] == first {
+				order = append(order, cache)
+			}
+		}
+	}
+	return order
+}
+
+// picked is one rank's score for one reader of a window.
+type picked struct {
+	at       int
+	score    uint64
+	identity Identity
+}

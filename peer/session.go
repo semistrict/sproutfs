@@ -441,6 +441,8 @@ func classToWire(class Class) peerv1.Class {
 		return peerv1.Class_CLASS_BULK_READ
 	case BulkWrite:
 		return peerv1.Class_CLASS_BULK_WRITE
+	case Stripe:
+		return peerv1.Class_CLASS_STRIPE
 	default:
 		return peerv1.Class_CLASS_FAULT
 	}
@@ -452,6 +454,8 @@ func classFromWire(class peerv1.Class) Class {
 		return BulkRead
 	case peerv1.Class_CLASS_BULK_WRITE:
 		return BulkWrite
+	case peerv1.Class_CLASS_STRIPE:
+		return Stripe
 	default:
 		return Fault
 	}

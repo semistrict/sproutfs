@@ -763,7 +763,8 @@ func apiPeers(peers []peer.PeerStatus) []hostapi.Peer {
 	for _, known := range peers {
 		entry := hostapi.Peer{Address: string(known.Address), Version: known.Version,
 			FaultConnections: known.Connections.Fault, BulkReadConnections: known.Connections.BulkRead,
-			BulkWriteConnections: known.Connections.BulkWrite, Down: known.Down, Cause: known.Cause}
+			BulkWriteConnections: known.Connections.BulkWrite, StripeConnections: known.Connections.Stripe,
+			Down: known.Down, Cause: known.Cause}
 		if known.Incompatible != nil {
 			entry.Incompatible = fmt.Sprintf("%d-%d", known.Incompatible.Min, known.Incompatible.Max)
 		}

@@ -453,6 +453,7 @@ type Peer struct {
 	FaultConnections     int `json:"fault_connections"`
 	BulkReadConnections  int `json:"bulk_read_connections"`
 	BulkWriteConnections int `json:"bulk_write_connections"`
+	StripeConnections    int `json:"stripe_connections"`
 	// Down reports it marked down by a hard failure, and Cause which.
 	Down  bool   `json:"down,omitempty"`
 	Cause string `json:"cause,omitempty"`

@@ -185,13 +185,13 @@ func (p *Peer) call(ctx context.Context, admitAs string, request, response proto
 	clock := p.table.clock
 	began := clock.Now()
 	class := ClassOf(ctx)
-	switch class {
-	case Fault:
-		// A fault waiting anywhere shrinks the background budget, so bulk work
-		// gives the links to it.
+	switch {
+	case class.waitedOn():
+		// A fault waiting anywhere, or a stripe read one waits on, shrinks
+		// the background budget, so bulk work gives the links to it.
 		p.table.background.faultStarted()
 		defer p.table.background.faultEnded()
-	case BulkRead:
+	case class == BulkRead:
 		if p.table.bug("peer-unbounded-background") {
 			break
 		}

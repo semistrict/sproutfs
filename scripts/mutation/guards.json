@@ -438,6 +438,18 @@
     "purpose": "Close a connection over a hello a duplicating link delivered twice, racing the dialer's first request."
   },
   {
+    "id": "peer-stripes-in-fault-class",
+    "package": "peer",
+    "run": "^TestAStripeReadNeverWaitsBehindAPage$",
+    "purpose": "Send stripe reads over the fault class, where a stripe waits behind every 2 MiB page reply ahead of it on its connection."
+  },
+  {
+    "id": "peer-serve-past-budget",
+    "package": "peer",
+    "run": "^TestAServerAnswersBusyPastItsServingBandwidth$",
+    "purpose": "Serve stripes past the host's serving bandwidth instead of answering BUSY."
+  },
+  {
     "id": "fill-before-durable",
     "package": "checkpoint",
     "run": "^TestAPublicationFillsNothingBeforeItsPartIsDurable$",

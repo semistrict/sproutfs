@@ -7,6 +7,7 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/semistrict/sproutfs/internal/blob"
 	"github.com/semistrict/sproutfs/platform"
@@ -48,6 +49,16 @@ type ServerConfig struct {
 	// Cache is this host's disk cache, which answers the cache's requests. Nil
 	// is a host that keeps none: every cache request is answered not me.
 	Cache Cache
+	// StripeBytesPerSecond is this host's serving bandwidth for stripes: the
+	// bytes of stripe replies it sends all its peers each second, with a burst
+	// of a tenth of a second of it. A read that finds it spent is answered
+	// BUSY, and its reader asks another holder. The tail of reads from the
+	// cluster follows the bytes each host serves well before a link's rate
+	// (docs/measurements/gce-stripes-tail-2026-10-03.md), so a deployment
+	// keeps it under about 40 % of its NIC's. Zero leaves it unbounded.
+	StripeBytesPerSecond int64
+	// Clock measures the serving bandwidth. Nil is the wall clock.
+	Clock platform.Clock
 }
 
 // ServerStats reports what this host has served.
@@ -64,6 +75,11 @@ type ServerStats struct {
 	// Incompatible counts the hellos answered INCOMPATIBLE: peers of a release
 	// that shares no protocol version with this one.
 	Incompatible int64
+	// StripeReads is every read of the cache's stripes answered with them,
+	// Stripes and StripeBytes the stripes and bytes those replies carried, and
+	// StripesBusy the reads answered BUSY because the serving bandwidth was
+	// spent.
+	StripeReads, Stripes, StripeBytes, StripesBusy int64
 }
 
 // Server is a host's peer server. It answers every other host: the pages of the
@@ -81,8 +97,11 @@ type Server struct {
 
 	handoffs handoffs
 	budgets  serverBudgets
+	// serving is the bandwidth stripe replies may take.
+	serving *servingBudget
 
 	requests, servedPages, absentPages, refused, listings, incompatible atomic.Int64
+	stripeReads, stripes, stripeBytes, stripesBusy                      atomic.Int64
 	closeOnce                                                           sync.Once
 	closeErr                                                            error
 }
@@ -104,7 +123,7 @@ func NewServer(ctx context.Context, config ServerConfig) (*Server, error) {
 	if !config.Versions.valid() {
 		return nil, fmt.Errorf("%w: protocol versions %d to %d", ErrInvalid, config.Versions.Min, config.Versions.Max)
 	}
-	if config.PageSize < 512 || config.PageSize > blob.MaxSize || config.MaxPagesPerRequest < 0 ||
+	if config.StripeBytesPerSecond < 0 || config.PageSize < 512 || config.PageSize > blob.MaxSize || config.MaxPagesPerRequest < 0 ||
 		config.MaxPagesPerRequest > blob.MaxSize/config.PageSize || config.MaxInFlight < 1 ||
 		!config.Budgets.valid(int64(config.PageSize)) {
 		return nil, fmt.Errorf("%w: invalid peer server budgets", ErrInvalid)
@@ -119,7 +138,8 @@ func NewServer(ctx context.Context, config ServerConfig) (*Server, error) {
 	}
 	serverCtx, cancel := context.WithCancelCause(ctx)
 	s := &Server{config: config, listener: listener, ctx: serverCtx, cancel: cancel,
-		handoffs: newHandoffs(), budgets: serverBudgets{held: make(map[budgetKey]int64)}}
+		handoffs: newHandoffs(), budgets: serverBudgets{held: make(map[budgetKey]int64)},
+		serving: newServingBudget(platform.ClockOr(config.Clock), config.StripeBytesPerSecond)}
 	s.wg.Go(s.accept)
 	return s, nil
 }
@@ -135,7 +155,8 @@ func (s *Server) PageSize() int { return s.config.PageSize }
 func (s *Server) Stats() ServerStats {
 	return ServerStats{Requests: s.requests.Load(), Served: s.servedPages.Load(),
 		Absent: s.absentPages.Load(), Refused: s.refused.Load(), Listings: s.listings.Load(),
-		Incompatible: s.incompatible.Load()}
+		Incompatible: s.incompatible.Load(), StripeReads: s.stripeReads.Load(), Stripes: s.stripes.Load(),
+		StripeBytes: s.stripeBytes.Load(), StripesBusy: s.stripesBusy.Load()}
 }
 
 // Close stops accepting and drops every connection. It does not release the
@@ -210,4 +231,59 @@ func (b *serverBudgets) release(key budgetKey, bytes int64) {
 	if b.held[key] <= 0 {
 		delete(b.held, key)
 	}
+}
+
+// servingBudget is a host's serving bandwidth for stripes: a token bucket of
+// bytes a second, with a burst of a tenth of a second of it. A reply is
+// admitted while the bucket is not in debt, and its bytes are taken once the
+// cache has said how many it holds, so a reply larger than what is left
+// leaves the bucket in debt rather than being refused for ever.
+type servingBudget struct {
+	clock platform.Clock
+	rate  float64
+	burst float64
+
+	mu     sync.Mutex
+	tokens float64
+	last   time.Time
+}
+
+// newServingBudget is a budget of bytesPerSecond, nil for none.
+func newServingBudget(clock platform.Clock, bytesPerSecond int64) *servingBudget {
+	if bytesPerSecond <= 0 {
+		return nil
+	}
+	rate := float64(bytesPerSecond)
+	return &servingBudget{clock: clock, rate: rate, burst: rate / 10, tokens: rate / 10, last: clock.Now()}
+}
+
+// refill adds what the time since the last refill earned. Caller holds b.mu.
+func (b *servingBudget) refill() {
+	now := b.clock.Now()
+	if elapsed := now.Sub(b.last); elapsed > 0 {
+		b.tokens = min(b.burst, b.tokens+b.rate*elapsed.Seconds())
+		b.last = now
+	}
+}
+
+// admit reports whether a reply may be sent now, and what the bucket holds.
+func (b *servingBudget) admit() (bool, int64) {
+	if b == nil {
+		return true, 0
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.refill()
+	return b.tokens > 0, int64(b.tokens)
+}
+
+// spend takes the bytes of a reply admitted.
+func (b *servingBudget) spend(bytes int64) {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.refill()
+	b.tokens -= float64(bytes)
 }
