@@ -10,6 +10,7 @@ import (
 	hostapi "github.com/semistrict/sproutfs/api/host"
 	"github.com/semistrict/sproutfs/checkpoint"
 	"github.com/semistrict/sproutfs/platform"
+	"github.com/semistrict/sproutfs/resource"
 	"github.com/semistrict/sproutfs/vmmachine"
 	"github.com/semistrict/sproutfs/vmmemory"
 )
@@ -232,14 +233,25 @@ type SupervisorConfig struct {
 	// bytes are the only unit the two pagers' pages can be added in.
 	MemoryBytes int64
 	// CacheBytes caps the page cache and SpillBytes each pager's own spill file.
-	// Disk is capped per concern rather than shared: neither can take what the
-	// other needs, so there is no ledger between them.
+	// The disk limiter counts each spill file at its promise.
 	CacheBytes int64
 	SpillBytes KindBytes
 	// CacheDiskBytes caps the page cache's disk, a file on Disk that holds the
 	// pages of the VMs marked to pull their whole memory. Zero keeps none, and
-	// such a VM reads its memory from the object store like any other.
+	// such a VM reads its memory from the object store like any other. Until
+	// the disk limiter is connected to it, the limiter counts this cap as a
+	// promise.
 	CacheDiskBytes int64
+	// DiskGoal is what the host's disk limiter keeps on the filesystem Disk
+	// is on, and DiskBandBytes the cap on its band, zero for the limiter's
+	// default. Disk must report its space.
+	DiskGoal      resource.DiskGoal
+	DiskBandBytes int64
+	// DiskWrites is the disk cache's write budget, zero for none, and
+	// DeviceWrites the device's counter it is measured by. The command builds
+	// the counter only for a budget.
+	DiskWrites   resource.WriteBudget
+	DeviceWrites platform.DeviceWrites
 	// LogicalPages bounds per-memory-region metadata and DirtyPages the volatile
 	// private state on RAM and spill together, each in the pages of the pager it
 	// belongs to. DirtyPages is what fills a spill file, so SpillBytes is its

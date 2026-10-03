@@ -50,5 +50,22 @@ func filesystemSpace(stat syscall.Statfs_t, err error) (platform.FilesystemSpace
 	return platform.FilesystemSpace{ID: fmt.Sprint(stat.Fsid), Total: stat.Blocks * block, Available: stat.Bavail * block, AllocationUnit: int64(block)}, nil
 }
 
+// Allocated is the file's blocks as fstat counts them. Both Linux and Darwin
+// count st_blocks in 512-byte units, whatever the filesystem's block size.
+func (f *file) Allocated(ctx context.Context) (int64, error) {
+	if err := context.Cause(ctx); err != nil {
+		return 0, err
+	}
+	var stat syscall.Stat_t
+	if err := syscall.Fstat(int(f.handle.Fd()), &stat); err != nil {
+		return 0, err
+	}
+	if stat.Blocks < 0 || stat.Blocks > math.MaxInt64/512 {
+		return 0, platform.ErrInvalidRange
+	}
+	return stat.Blocks * 512, nil
+}
+
 var _ platform.DiskSpace = (*Disk)(nil)
 var _ platform.DiskSpace = (*file)(nil)
+var _ platform.FileAllocation = (*file)(nil)

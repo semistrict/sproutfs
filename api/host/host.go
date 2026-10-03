@@ -450,9 +450,9 @@ type Pages struct {
 }
 
 // Resources is what a host has: the RAM allotment its pager takes pages from,
-// and the page cache's own separate cap. Disk is not shared or accounted —
-// each concern that writes to the node's disk has a fixed cap of its own, and
-// the page cache's disk, which holds what pulls copy, is one of them.
+// and the page cache's own separate cap, and the page cache's disk, which holds
+// what pulls copy. The disk as a whole is the disk limiter's, which Disk
+// reports.
 type Resources struct {
 	MemoryLimit    int64 `json:"memory_limit"`
 	MemoryUsed     int64 `json:"memory_used"`
@@ -572,6 +572,70 @@ type Status struct {
 	Pages     Pages      `json:"pages"`
 	Resources Resources  `json:"resources"`
 	Store     Store      `json:"store"`
+	// Disk is what the disk limiter chose.
+	Disk Disk `json:"disk"`
+}
+
+// Disk is what the host's disk limiter chose at its last reading of the disk,
+// and why.
+type Disk struct {
+	// Goal is what the limiter keeps, and Binding the goal that sets the
+	// cache's share: free-bytes, free-percent, used-bytes, or filesystem when
+	// no free-space goal is set and the disk's own size binds.
+	Goal    DiskGoal `json:"goal"`
+	Binding string   `json:"binding"`
+	// TotalBytes and AvailableBytes are the last raw reading of the
+	// filesystem. The smoothed ones are what the limiter acts on.
+	TotalBytes       int64 `json:"total_bytes"`
+	AvailableBytes   int64 `json:"available_bytes"`
+	SmoothTotalBytes int64 `json:"smooth_total_bytes"`
+	SmoothFreeBytes  int64 `json:"smooth_free_bytes"`
+	// FloorBytes is what the free-space goals keep free, and BandBytes how
+	// far above it the cache is kept.
+	FloorBytes int64 `json:"floor_bytes"`
+	BandBytes  int64 `json:"band_bytes"`
+	// Promises are the users that cannot give space back, each counted at
+	// its promise, and PromisedBytes their sum.
+	Promises      []DiskPromise `json:"promises"`
+	PromisedBytes int64         `json:"promised_bytes"`
+	// CacheShareBytes is what the cache may hold, below zero when the
+	// promises do not fit, and CacheHeldBytes what it holds.
+	CacheHeldBytes  int64 `json:"cache_held_bytes"`
+	CacheShareBytes int64 `json:"cache_share_bytes"`
+	// Unready is why the promises do not fit under the goals, and ReadError
+	// why the last reading was refused. Each is empty when there is nothing
+	// to say.
+	Unready   string     `json:"unready,omitempty"`
+	ReadError string     `json:"read_error,omitempty"`
+	Writes    DiskWrites `json:"writes"`
+}
+
+// DiskGoal is a disk limiter's goals. Zero is a goal not set.
+type DiskGoal struct {
+	FreeBytes   int64 `json:"free_bytes,omitempty"`
+	FreePercent int64 `json:"free_percent,omitempty"`
+	UsedBytes   int64 `json:"used_bytes,omitempty"`
+}
+
+// DiskPromise is one user of the disk that cannot give space back.
+type DiskPromise struct {
+	Name           string `json:"name"`
+	PromisedBytes  int64  `json:"promised_bytes"`
+	AllocatedBytes int64  `json:"allocated_bytes"`
+}
+
+// DiskWrites is the cache's write budget. WrittenBytes is what the device
+// wrote since the host started, by every writer, and AdmittedBytes what the
+// cache was admitted to write. LeftBytes is below zero when the device wrote
+// more than the budget allowed. Refused counts the cache's refused writes by
+// priority, the lowest first.
+type DiskWrites struct {
+	BytesPerDay   int64    `json:"bytes_per_day"`
+	BurstBytes    int64    `json:"burst_bytes"`
+	WrittenBytes  uint64   `json:"written_bytes"`
+	AdmittedBytes uint64   `json:"admitted_bytes"`
+	LeftBytes     int64    `json:"left_bytes"`
+	Refused       []uint64 `json:"refused"`
 }
 
 // Stored is what one tenant's VMs hold in the object store, which is what an

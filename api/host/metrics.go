@@ -258,6 +258,7 @@ func Metrics(status Status) string {
 		status.Resources.CacheDiskLimit)
 	write("sproutfs_cache_disk_used_bytes", "gauge", "How much of the page cache's disk the pulls hold.",
 		status.Resources.CacheDiskUsed)
+	diskMetrics(&out, status.Disk)
 
 	// The store counters carry the operation as a label: five operations, one
 	// series each, which is what makes a rate by operation a query rather than
@@ -291,6 +292,67 @@ func Metrics(status Status) string {
 
 // lossWindow reduces the per-VM report to the two numbers a scrape carries: the
 // widest window on this host, and how many VMs are past theirs.
+// diskBindings are the goals a disk limiter can report as binding, each a
+// series of its own so that a dashboard can show which one sets the cache's
+// share.
+var diskBindings = []string{"free-bytes", "free-percent", "used-bytes", "filesystem"}
+
+// diskMetrics writes what the disk limiter chose: the filesystem as it read
+// it, the floor and band it keeps, what the host promised, the cache's share
+// and the goal that set it, and the cache's write budget.
+func diskMetrics(out *strings.Builder, disk Disk) {
+	write := func(name, kind, help string, value any) {
+		fmt.Fprintf(out, "# HELP %s %s\n# TYPE %s %s\n%s %v\n", name, help, name, kind, name, value)
+	}
+	write("sproutfs_disk_total_bytes", "gauge", "The size of the filesystem the host writes to, as last read.",
+		disk.TotalBytes)
+	write("sproutfs_disk_available_bytes", "gauge", "What the filesystem had available, as last read.",
+		disk.AvailableBytes)
+	write("sproutfs_disk_smooth_free_bytes", "gauge", "What the filesystem has free, smoothed, as the limiter acts on it.",
+		disk.SmoothFreeBytes)
+	write("sproutfs_disk_floor_bytes", "gauge", "What the free-space goals keep free.", disk.FloorBytes)
+	write("sproutfs_disk_band_bytes", "gauge", "How far above the floor the cache is kept.", disk.BandBytes)
+	fmt.Fprintf(out, "# HELP sproutfs_disk_promised_bytes What each user that cannot give space back is promised.\n"+
+		"# TYPE sproutfs_disk_promised_bytes gauge\n")
+	for _, promise := range disk.Promises {
+		fmt.Fprintf(out, "sproutfs_disk_promised_bytes{user=%q} %d\n", promise.Name, promise.PromisedBytes)
+	}
+	fmt.Fprintf(out, "# HELP sproutfs_disk_allocated_bytes What each user that cannot give space back holds.\n"+
+		"# TYPE sproutfs_disk_allocated_bytes gauge\n")
+	for _, promise := range disk.Promises {
+		fmt.Fprintf(out, "sproutfs_disk_allocated_bytes{user=%q} %d\n", promise.Name, promise.AllocatedBytes)
+	}
+	write("sproutfs_disk_cache_share_bytes", "gauge",
+		"What the cache may hold, below zero when the promises do not fit.", disk.CacheShareBytes)
+	write("sproutfs_disk_cache_held_bytes", "gauge", "What the cache holds.", disk.CacheHeldBytes)
+	fmt.Fprintf(out, "# HELP sproutfs_disk_binding The goal that sets the cache's share.\n"+
+		"# TYPE sproutfs_disk_binding gauge\n")
+	for _, binding := range diskBindings {
+		value := 0
+		if binding == disk.Binding {
+			value = 1
+		}
+		fmt.Fprintf(out, "sproutfs_disk_binding{goal=%q} %d\n", binding, value)
+	}
+	ready := 1
+	if disk.Unready != "" {
+		ready = 0
+	}
+	write("sproutfs_disk_promises_fit", "gauge",
+		"One while the host's promises fit under its goals with an empty cache, and zero when they do not.", ready)
+	write("sproutfs_disk_device_written_bytes_total", "counter",
+		"What the device wrote since the host started, by every writer.", disk.Writes.WrittenBytes)
+	write("sproutfs_disk_cache_admitted_bytes_total", "counter",
+		"What the cache was admitted to write.", disk.Writes.AdmittedBytes)
+	write("sproutfs_disk_write_budget_left_bytes", "gauge",
+		"What the cache's write budget has left, below zero when the device wrote past it.", disk.Writes.LeftBytes)
+	fmt.Fprintf(out, "# HELP sproutfs_disk_cache_writes_refused_total The cache's writes the budget refused, by priority.\n"+
+		"# TYPE sproutfs_disk_cache_writes_refused_total counter\n")
+	for priority, refused := range disk.Writes.Refused {
+		fmt.Fprintf(out, "sproutfs_disk_cache_writes_refused_total{priority=\"%d\"} %d\n", priority, refused)
+	}
+}
+
 func lossWindow(vms []VM) (widest time.Duration, waiting int) {
 	for _, vm := range vms {
 		widest = max(widest, vm.LossWindow)

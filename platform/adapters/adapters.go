@@ -27,6 +27,12 @@ import (
 // NewDisk opens the host filesystem rooted at root. The root must exist.
 func NewDisk(root string) (platform.Disk, error) { return real.NewDisk(root) }
 
+// NewDeviceWrites reads the bytes written by the block device that holds dir.
+// Only Linux has it, and only for a directory on a block device.
+func NewDeviceWrites(ctx context.Context, dir string) (platform.DeviceWrites, error) {
+	return real.NewDeviceWrites(ctx, dir)
+}
+
 // NewNetwork returns framed connections over plain TCP between the addresses a
 // deployment's hosts listen on. It authenticates no peer.
 func NewNetwork() platform.Network { return NewNetworkOver(TCP()) }

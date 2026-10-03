@@ -60,6 +60,20 @@ type FilesystemSpace struct {
 	AllocationUnit int64
 }
 
+// FileAllocation reports the bytes the filesystem holds for one file. A sparse
+// file holds less than its size. Adapters without a physical filesystem may
+// omit this optional interface.
+type FileAllocation interface {
+	Allocated(context.Context) (int64, error)
+}
+
+// DeviceWrites reports the bytes the device under a directory has written, as
+// the device counts them. The count covers every writer on the device, not only
+// this process. It can go backwards when the device is replaced.
+type DeviceWrites interface {
+	BytesWritten(context.Context) (uint64, error)
+}
+
 type File interface {
 	ReadAt(context.Context, []byte, int64) (int, error)
 	WriteAt(context.Context, []byte, int64) (int, error)

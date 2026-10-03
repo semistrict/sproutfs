@@ -34,6 +34,9 @@ var checked = []string{
 	// When a handoff is given up decides whether a stopped guest's writes
 	// since its last checkpoint survive.
 	"internal/handover",
+	// The disk limiter decides when the cache gives space back and which of
+	// its writes are refused.
+	"resource",
 }
 
 // forbiddenImports are the packages that draw from a source no seed reaches.

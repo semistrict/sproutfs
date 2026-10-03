@@ -30,6 +30,78 @@ const (
 	DiskRename        DiskOperation = "rename"
 	DiskList          DiskOperation = "list"
 	DiskSyncNamespace DiskOperation = "sync_namespace"
+	DiskSpace         DiskOperation = "space"
+	DiskAllocated     DiskOperation = "allocated"
+	DiskDeviceWrites  DiskOperation = "device_writes"
+)
+
+// SpaceConfig is the filesystem a simulated disk is on: how large it is, what
+// other writers on it hold, and how fast they change that.
+type SpaceConfig struct {
+	// TotalBytes is the filesystem's size. Zero draws it from the seed, between
+	// 5 GB and 105 GB, and draws what other writers hold with it: they leave at
+	// least 5 GB or 7.5 % of it free, whichever is more, as FoundationDB's
+	// simulator does.
+	TotalBytes int64
+	// OutsideBytes is what other writers hold when the disk is made. It is read
+	// only when TotalBytes is set.
+	OutsideBytes int64
+	// DriftBytesPerSecond is how far other writers move what they hold, up or
+	// down, per simulated second between two readings of the space. One reading
+	// moves it by at most five seconds' worth. Zero holds it still.
+	DriftBytesPerSecond int64
+}
+
+// SpaceUsage is the true state of a simulated filesystem, which a test checks a
+// limiter's readings against.
+type SpaceUsage struct {
+	// TotalBytes is the filesystem's size, OutsideBytes what other writers
+	// hold, and HostBytes what the files of this disk hold.
+	TotalBytes, OutsideBytes, HostBytes int64
+}
+
+// FreeBytes is the space neither this disk's files nor other writers hold.
+func (u SpaceUsage) FreeBytes() int64 { return max(u.TotalBytes-u.OutsideBytes-u.HostBytes, 0) }
+
+// The space a filesystem is drawn with when a test names none, and the longest
+// gap between two readings that other writers' drift is measured over.
+const (
+	drawnTotalMinimum   = 5_000_000_000
+	drawnTotalRange     = 100_000_000_000
+	drawnFreeMinimum    = 5_000_000_000
+	drawnFreeShare      = 0.075
+	maximumDriftSeconds = 5
+	// fastDrift is how much faster other writers move when the fast drift
+	// fault fires.
+	fastDrift = 10
+	// deviceWritesJump bounds how far the jump fault moves the device's counter.
+	deviceWritesJump = 64 << 30
+)
+
+// The fault-injection sites of the space a disk reports and of its device's
+// write counter. They are the inputs a disk limiter reads, and it must stay
+// safe whatever they do.
+const (
+	// BuggifySpaceFails fails a reading of the space.
+	BuggifySpaceFails = "sim/disk/space-fails"
+	// BuggifySpaceInconsistent reports more space available than the
+	// filesystem has.
+	BuggifySpaceInconsistent = "sim/disk/space-inconsistent"
+	// BuggifySpaceLow reports less space available than is free, once.
+	BuggifySpaceLow = "sim/disk/space-low"
+	// BuggifyOutsideFills has another writer take a share of what is free, for
+	// good.
+	BuggifyOutsideFills = "sim/disk/outside-fills"
+	// BuggifyDriftFast has other writers drift ten times as fast.
+	BuggifyDriftFast = "sim/disk/drift-fast"
+	// BuggifyDeviceWritesFail fails a reading of the device's write counter.
+	BuggifyDeviceWritesFail = "sim/disk/device-writes-fail"
+	// BuggifyDeviceWritesJump moves the device's counter forward by up to
+	// 64 GiB, for good.
+	BuggifyDeviceWritesJump = "sim/disk/device-writes-jump"
+	// BuggifyDeviceWritesReset starts the device's counter again at zero, as a
+	// replaced device does.
+	BuggifyDeviceWritesReset = "sim/disk/device-writes-reset"
 )
 
 type DiskConfig struct {
@@ -55,6 +127,9 @@ type DiskConfig struct {
 	// file as durable, so no consumer test drives this; it exists so that a
 	// campaign can.
 	SyncDurableProbability float64
+	// Space is the filesystem the disk is on. A write that needs more than is
+	// free fails with platform.ErrNoSpace.
+	Space SpaceConfig
 }
 
 func DefaultDiskConfig() DiskConfig {
@@ -169,6 +244,16 @@ type Disk struct {
 	sequence map[string]uint64
 	failNext map[DiskOperation]int
 	tearNext int
+	// total is the filesystem's size and outside what other writers hold on
+	// it. spaceRead is when the space was last read, which other writers'
+	// drift is measured from, and spaceReads counts the readings, which key
+	// its draws.
+	total, outside int64
+	spaceRead      time.Time
+	spaceReads     uint64
+	// written is the device's write counter: every byte this disk's files
+	// wrote, and every byte AddDeviceWrites added for other writers.
+	written uint64
 }
 
 func newDisk(runtime *Runtime, id string, config DiskConfig) *Disk {
@@ -181,9 +266,140 @@ func newDisk(runtime *Runtime, id string, config DiskConfig) *Disk {
 		sequence: make(map[string]uint64),
 		failNext: make(map[DiskOperation]int),
 		tearNext: -1,
+		total:    config.Space.TotalBytes,
+		outside:  config.Space.OutsideBytes,
 	}
+	if d.total <= 0 {
+		// FoundationDB's simulator draws each machine's disk the same way: a
+		// size, and free space of at least 5 GB or 7.5 % of it.
+		r := runtime.Random("sim/disk-space")
+		d.total = drawnTotalMinimum + int64(r.Float64(id+"/total")*drawnTotalRange)
+		share := drawnFreeShare + r.Float64(id+"/free")*(1-drawnFreeShare)
+		free := min(d.total, max(drawnFreeMinimum, int64(share*float64(d.total))))
+		d.outside = d.total - free
+	}
+	d.outside = min(max(d.outside, 0), d.total)
+	d.spaceRead = runtime.Now()
 	d.queue <- struct{}{}
 	return d
+}
+
+// SetOutsideBytes sets what other writers on the filesystem hold. It is how a
+// test fills the disk from outside the host, and empties it again.
+func (d *Disk) SetOutsideBytes(bytes int64) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.outside = min(max(bytes, 0), d.total)
+}
+
+// SetSpaceDrift sets how fast other writers drift, in bytes per simulated
+// second. Zero holds them still from the next reading on.
+func (d *Disk) SetSpaceDrift(bytesPerSecond int64) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.config.Space.DriftBytesPerSecond = max(bytesPerSecond, 0)
+}
+
+// AddDeviceWrites counts bytes another writer wrote to the device.
+func (d *Disk) AddDeviceWrites(bytes uint64) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.written += bytes
+}
+
+// Usage is the filesystem's true state, without drift or faults.
+func (d *Disk) Usage() SpaceUsage {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return SpaceUsage{TotalBytes: d.total, OutsideBytes: d.outside, HostBytes: d.hostBytesLocked()}
+}
+
+// DeviceWritten is the device's write counter, without faults.
+func (d *Disk) DeviceWritten() uint64 {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.written
+}
+
+// hostBytesLocked is what this disk's files hold: their stored pages. A hole
+// holds nothing, so a sparse spill file costs only what was written to it.
+func (d *Disk) hostBytesLocked() int64 {
+	var pages int64
+	for _, image := range d.files {
+		pages += int64(len(image.volatile.pages))
+	}
+	return pages * diskPageBytes
+}
+
+// Space reports the filesystem. Each reading first lets other writers drift by
+// a seeded amount, bounded by the time since the last reading, as
+// FoundationDB's simulator moves free space for external processes. They never
+// hold less than nothing nor take space this disk's files hold.
+func (d *Disk) Space(ctx context.Context) (platform.FilesystemSpace, error) {
+	id, release, err := d.begin(ctx, DiskSpace, "", 0, d.config.MetadataLatency)
+	if err != nil {
+		return platform.FilesystemSpace{}, err
+	}
+	defer release()
+	r := d.runtime
+	if r.buggifyHere(BuggifySpaceFails, 0.2) {
+		d.trace(DiskSpace, "", "injected_fault", 0, id)
+		return platform.FilesystemSpace{}, platform.ErrInjectedFault
+	}
+	random := r.Random("sim/disk-space")
+	key := fmt.Sprintf("%s/%d", d.id, id)
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	host := d.hostBytesLocked()
+	now := r.Now()
+	elapsed := min(max(now.Sub(d.spaceRead), 0), maximumDriftSeconds*time.Second)
+	d.spaceRead = now
+	drift := float64(d.config.Space.DriftBytesPerSecond) * elapsed.Seconds()
+	if drift > 0 && r.buggifyHere(BuggifyDriftFast, 0.25) {
+		drift *= fastDrift
+	}
+	if drift > 0 {
+		d.outside += int64((random.Float64(key+"/drift")*2 - 1) * drift)
+	}
+	if r.buggifyHere(BuggifyOutsideFills, 0.1) {
+		d.outside += int64(random.Float64(key+"/fill") * float64(max(d.total-d.outside-host, 0)))
+	}
+	d.outside = min(max(d.outside, 0), max(d.total-host, 0))
+	free := max(d.total-d.outside-host, 0)
+	reported := free
+	switch {
+	case r.buggifyHere(BuggifySpaceInconsistent, 0.1):
+		reported = d.total + 1 + int64(random.Float64(key+"/inconsistent")*float64(d.total))
+	case r.buggifyHere(BuggifySpaceLow, 0.2):
+		reported = int64(random.Float64(key+"/low") * float64(free))
+	}
+	d.trace(DiskSpace, "", "ok", 0, id)
+	return platform.FilesystemSpace{ID: d.id, Total: uint64(d.total), Available: uint64(reported),
+		AllocationUnit: diskPageBytes}, nil
+}
+
+// BytesWritten is the device's write counter.
+func (d *Disk) BytesWritten(ctx context.Context) (uint64, error) {
+	id, release, err := d.begin(ctx, DiskDeviceWrites, "", 0, d.config.MetadataLatency)
+	if err != nil {
+		return 0, err
+	}
+	defer release()
+	r := d.runtime
+	if r.buggifyHere(BuggifyDeviceWritesFail, 0.2) {
+		d.trace(DiskDeviceWrites, "", "injected_fault", 0, id)
+		return 0, platform.ErrInjectedFault
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	switch {
+	case r.buggifyHere(BuggifyDeviceWritesReset, 0.05):
+		d.written = 0
+	case r.buggifyHere(BuggifyDeviceWritesJump, 0.05):
+		d.written += r.Random("sim/disk-space").Uint64(fmt.Sprintf("%s/%d/jump", d.id, id)) % deviceWritesJump
+	}
+	d.trace(DiskDeviceWrites, "", "ok", 0, id)
+	return d.written, nil
 }
 
 func (d *Disk) Open(ctx context.Context, name string, options platform.OpenOptions) (platform.File, error) {
@@ -556,6 +772,21 @@ func (b *fileBytes) writeAt(offset int64, data []byte) {
 	}
 }
 
+// newPages counts the device pages a write of length bytes at offset would
+// store that the file does not hold yet.
+func (b fileBytes) newPages(offset, length int64) int64 {
+	if length <= 0 {
+		return 0
+	}
+	var count int64
+	for index := offset / diskPageBytes; index <= (offset+length-1)/diskPageBytes; index++ {
+		if _, ok := b.pages[index]; !ok {
+			count++
+		}
+	}
+	return count
+}
+
 // resize sets the file's size. What a shrink cuts off is zeroed first, so a
 // later grow reads zeroes there rather than the old bytes.
 func (b *fileBytes) resize(size int64) {
@@ -741,6 +972,11 @@ func (f *file) WriteAt(ctx context.Context, source []byte, offset int64) (int, e
 	if err := f.validLocked(); err != nil {
 		return 0, err
 	}
+	if needed := f.image.volatile.newPages(offset, int64(len(source))) * diskPageBytes; needed > 0 &&
+		needed > f.disk.total-f.disk.outside-f.disk.hostBytesLocked() {
+		f.disk.trace(DiskWrite, f.name, "no_space", 0, id)
+		return 0, platform.ErrNoSpace
+	}
 	write := source
 	torn := false
 	if f.disk.tearNext >= 0 {
@@ -750,6 +986,7 @@ func (f *file) WriteAt(ctx context.Context, source []byte, offset int64) (int, e
 		torn = true
 	}
 	if len(write) > 0 {
+		f.disk.written += uint64(len(write))
 		f.image.volatile.writeAt(offset, write)
 		f.disk.recordPendingLocked(f.image, pendingOp{kind: pendingWrite, offset: offset,
 			length: int64(len(write)), data: append([]byte(nil), write...), id: id})
@@ -842,6 +1079,23 @@ func (f *file) Size(ctx context.Context) (int64, error) {
 	return size, nil
 }
 
+// Allocated is what the file holds: its stored pages, not its size.
+func (f *file) Allocated(ctx context.Context) (int64, error) {
+	id, release, err := f.disk.begin(ctx, DiskAllocated, f.name, 0, f.disk.config.MetadataLatency)
+	if err != nil {
+		return 0, err
+	}
+	defer release()
+	f.disk.mu.Lock()
+	defer f.disk.mu.Unlock()
+	if err := f.validLocked(); err != nil {
+		return 0, err
+	}
+	allocated := int64(len(f.image.volatile.pages)) * diskPageBytes
+	f.disk.trace(DiskAllocated, f.name, "ok", 0, id)
+	return allocated, nil
+}
+
 func (f *file) Close() error {
 	f.disk.mu.Lock()
 	defer f.disk.mu.Unlock()
@@ -863,4 +1117,7 @@ func (f *file) validLocked() error {
 }
 
 var _ platform.Disk = (*Disk)(nil)
+var _ platform.DiskSpace = (*Disk)(nil)
+var _ platform.DeviceWrites = (*Disk)(nil)
 var _ platform.File = (*file)(nil)
+var _ platform.FileAllocation = (*file)(nil)

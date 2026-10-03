@@ -33,6 +33,8 @@ A deployment may likewise run PMEM, and the ephemeral pager with it, at 4 KiB
 4 KiB pages saves enough checkpoint and fsync traffic on disks written a few
 blocks at a time to be worth the extra index entries and faults. A disk stays a
 whole number of 2 MiB, because Firecracker requires it of a PMEM device.
+The supervisor builds the host's [disk limiter](#budgets) once the spill files
+are open, and refuses to start when the disk cannot keep its promises.
 The supervisor also drives the VMM processes, owns the templates that guest
 images are imported into, and reaches the agent in a guest. It does not start a
 VMM. A `vmmachine.Starter` does, as [running the VMM](#running-the-vmm)
@@ -934,19 +936,83 @@ again.
 The host takes one `Resources` owner, which accounts only RAM: the pager's
 pages. `Status().Resources` reports its reservations and configured total.
 
-Disk is not shared and not accounted. Each component that writes to the node's
-disk has its own fixed cap:
+One disk limiter, `resource.DiskLimiter`, decides how much of the node's disk
+the host may use, for everything the host writes. It reads the filesystem
+under the scratch directory (`platform.DiskSpace`) every ten seconds on the
+host's clock, and whenever it is asked.
 
-- the pager's spill file, `SPROUTFS_SPILL_BYTES`, which bounds the dirty pages
-  the pager admits;
-- the ephemeral pager's spill file, `SPROUTFS_EPHEMERAL_BYTES`, which bounds
-  the ephemeral disks the host admits;
-- the page cache's disk, `SPROUTFS_CACHE_DISK_BYTES`, which bounds the memory
-  of the VMs that [pull](#pulling-a-vms-memory) it. A VM that does not fit is
-  not pulled.
+The users that cannot give space back are counted at their promises, not at
+what they hold:
 
-So nothing has to be reclaimed across components, no ledger orders them, and a
-full disk is a configuration error, not a code path.
+- each pager's spill file, at the dirty pages it may hold, which is its share
+  of `SPROUTFS_SPILL_BYTES`;
+- the ephemeral pager's spill file, `SPROUTFS_EPHEMERAL_BYTES`;
+- the page cache's disk, `SPROUTFS_CACHE_DISK_BYTES`;
+- each running VMM's staging, at the largest state a capture may write, 64 MiB;
+- an image staged for an import, at what it holds.
+
+The spill files are sparse. A store must never fail for want of disk, so each
+is counted at its promise. The part of a promise a file does not hold yet is
+space the host promised and the filesystem still reports as free.
+
+The limiter keeps every goal it is given, and needs at least one:
+
+- `SPROUTFS_DISK_FREE_BYTES`, the least the filesystem keeps free;
+- `SPROUTFS_DISK_FREE_PERCENT`, the least share of it kept free;
+- `SPROUTFS_DISK_USED_BYTES`, the most the host holds.
+
+A host given none keeps a tenth of the filesystem free. The floor is the larger
+of the two free-space goals. The room is what the filesystem has free plus what
+the host holds. The cache's share is the room less the floor and the promises,
+less a band. The used goal caps the promises and the cache together. The
+smaller share binds, and `/status` and `/metrics` name the goal that binds.
+
+The band keeps the cache back from the floor by a fifth of the headroom it has
+left, at most `SPROUTFS_DISK_BAND_BYTES` (4 GiB by default). As the disk fills,
+the share falls a little at each reading, so the cache gives back a few regions
+at a time rather than all of them at the floor. At or below the floor there is
+no band, and the share is what keeps the floor.
+
+The limiter acts on readings smoothed over a minute, as FoundationDB's
+Ratekeeper smooths free space. One odd reading moves them about a seventh of
+the way, so it cannot empty the cache. A reading that fails, or that says more
+is available than the filesystem holds, changes nothing and is reported.
+`/status` shows the last raw reading beside the smoothed one.
+
+A cache over its share is told to give regions back until it holds one region,
+64 MiB, less than its share. A cache within that region of its share is left
+alone, so a share at a region's edge does not evict and refill.
+
+When even an empty cache does not fit, the host has promised more than the
+disk can keep. At startup, the host refuses to start and says which promises
+did not fit. Later, when the disk fills from outside, the host reports itself
+unready with the reason, and refuses to start a VMM or stage an image that
+would promise more. It never takes space back from a spill file.
+
+The limiter also keeps the disk cache's write budget:
+`SPROUTFS_CACHE_WRITE_BYTES_PER_DAY` on average, at most
+`SPROUTFS_CACHE_WRITE_BURST_BYTES` ahead of it (an hour's average by default).
+It is measured by the device's own count of bytes written
+(`platform.DeviceWrites`). On Linux that is the `stat` file of the block device
+under the scratch directory, and a host that cannot read one refuses a budget.
+The device counts every writer, so others' writes are charged too. The cache's
+own writes are charged when they are admitted, and not again when the device
+counts them. A count that goes backwards is a replaced device, and is counted
+from there. A count that jumps charges at most a burst of debt.
+
+The cache asks before each write, with a priority: 0 for a repair, 1 for a
+second chance, 2 for a fill from a store read, 3 for a fill from a publication.
+Priority p is admitted only while (3 - p) quarters of a burst are left after
+the write. So as the budget runs down, repairs are refused first and fills from
+publications last. A refused write costs a store read later, never a wrong
+byte.
+
+**The page cache is not connected to the limiter yet.** Its disk is still
+capped by `SPROUTFS_CACHE_DISK_BYTES`, which the limiter counts as a promise,
+and nothing asks the write budget. A later step connects them: the cache
+registers with the limiter (`RegisterCache`), holds at most `CacheShare()`,
+gives regions back when the limiter calls its `Shrink`, and asks `Admit` before
+each write.
 
 - **VMM staging files** live in each process's own directory under the scratch,
   and are removed with the process. Configuration and restore files are removed
@@ -1000,6 +1066,9 @@ full disk is a configuration error, not a code path.
 The host's status reports:
 
 - cache usage and its cap, in memory and on disk;
+- what the disk limiter chose: the goals and the one that binds, the raw and
+  smoothed readings, the floor and band, each promise and what it holds, the
+  cache's share, the write budget, and why the host is unready;
 - the volume manager's totals;
 - the pager's counters, including the free space in the logical cap, which is
   what admits a VM;

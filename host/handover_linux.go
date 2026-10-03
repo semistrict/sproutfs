@@ -83,6 +83,9 @@ func (s *supervisor) Receive(ctx context.Context, wire hostapi.Handoff) (hostapi
 // guest's last writes.
 func (s *supervisor) startReceived(ctx context.Context, vm *volume.VM,
 	backings map[string]vmmemory.Backing, state []byte) (Machine, error) {
+	if err := s.disk.Fits(ctx, vmmachine.MaxStateBytes); err != nil {
+		return nil, fmt.Errorf("starting the VMM of %s: %w", vm.ID(), err)
+	}
 	process, err := vmmachine.Start(ctx, s.machineConfig(vm, state, backings))
 	if err != nil {
 		return nil, err
