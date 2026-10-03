@@ -17,4 +17,4 @@ observe it. Some hold today and some do not yet.
 - [Two hosts are enough](two-hosts-are-enough.md)
 - [Serving a peer copies nothing into memory](serving-a-peer-copies-nothing.md)
 - [One disk limiter](one-disk-limiter.md)
-- [The disk limiter follows a goal](disk-limiter-goals.md)
+- [The disk limiter follows its goals](disk-limiter-goals.md)

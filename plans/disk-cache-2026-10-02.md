@@ -33,7 +33,7 @@ This plan makes the hosts' SSDs one cache for the cluster. It serves these
 - [Two hosts are enough](../docs/properties/two-hosts-are-enough.md)
 - [Serving a peer copies nothing into memory](../docs/properties/serving-a-peer-copies-nothing.md)
 - [One disk limiter](../docs/properties/one-disk-limiter.md)
-- [The disk limiter follows a goal](../docs/properties/disk-limiter-goals.md)
+- [The disk limiter follows its goals](../docs/properties/disk-limiter-goals.md)
 
 One property is left to a later plan: placing a restarted VM on the host that
 still holds its pages in memory.
@@ -447,31 +447,43 @@ the filesystem still reports as free.
 
 ### Goals
 
-The limiter is given one goal for space:
+The limiter is given any combination of three goals, as FoundationDB's
+Ratekeeper takes its free-space floor:
 
 - a minimum percentage of the filesystem left free;
 - a minimum number of bytes left free;
 - a maximum number of bytes the host may use.
 
-The first two measure the whole filesystem, so they account for anything else
-on the node that writes to it. The limiter reads the filesystem's free space
-(`platform.DiskSpace`) on a timer and before each region it opens. From the
-goal it computes what the host may hold:
+At least one is set. The strictest wins. The two free-space goals give one
+floor, the larger of the bytes and the percentage of the total. The
+maximum-used goal caps what the host may hold. `/status` and `/metrics` report
+which goal binds, as Ratekeeper reports its limit reason.
+
+The free-space goals measure the whole filesystem, so they account for
+anything else on the node that writes to it. The limiter reads the
+filesystem's free space (`platform.DiskSpace`) on a timer and before each
+region it opens, and smooths the readings over time before it acts on them, so
+one odd reading cannot make the cache give space back. From the goals it
+computes what the host may hold:
 
 ```
-free goal:  allowed = held + available - promised_not_allocated - goal_free
-use goal:   allowed = goal_used
+floor       = max(goal_free_bytes, goal_free_ratio × smoothed total)
+allowed     = min(held + smoothed available - promised_not_allocated - floor,
+                  goal_used)
 cache       = allowed - (spill promises + ephemeral promises + staging)
 ```
 
-When the cache holds more than its share, it evicts regions until it fits.
+The cache's share does not drop in one step at a mark. It falls gradually as
+free space nears the floor, across a band above it: by default a fifth of the
+headroom between the floor and the current free space, capped at a configured
+number of bytes. This is Ratekeeper's "spring". So the cache gives back a few
+regions at a time as the disk fills, not a burst at one moment. One region of
+hysteresis keeps a share that hovers at a region's boundary from evicting and
+refilling.
+
 When the cache is empty and the rest still does not fit, the host has promised
 more than the disk can keep. It then reports itself unready, admits no VM that
 would promise more, and says why. It never takes space back from a spill file.
-
-The limiter acts between two marks, so a filesystem near its goal does not make
-the cache evict and refill one region at a time. The cache starts evicting when
-it is over its share and stops one region below it.
 
 The kernel's page cache that `sendfile` uses is memory, not disk, so the
 limiter does not count it.
@@ -708,8 +720,11 @@ Each property has a test that states it in its own words.
   of stripes over TCP. The cache file is read by `sendfile` alone, and no read
   of it reaches user space. Under TLS, the same run is served through the
   bounded buffer.
-- **The disk limiter follows a goal.** A simulated filesystem is filled from
-  outside the host. The cache gives regions back until the goal holds. A spill
+- **The disk limiter follows its goals.** A simulated filesystem whose free
+  space drifts on its own, as FoundationDB's simulator drifts it, is filled
+  from outside the host. Under each combination of goals, the strictest binds
+  and is reported, and the cache gives regions back gradually across the band
+  until the floor holds. A spill
   file's promise is never taken back. A write budget that runs out drops
   repairs and second chances first.
 - **Restarts.** A host is restarted. Its cache answers reads from before the
