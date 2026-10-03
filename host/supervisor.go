@@ -255,6 +255,11 @@ type SupervisorConfig struct {
 	// stripes its list of caches ranks it for, and every other window whole.
 	// Zero keeps every window whole.
 	CacheClusterPercent int
+	// HotTier is a second bucket under the deployment's names that reads of
+	// checkpoint objects try first and that reads and publications fill. Nil
+	// is none. It is an alternative to the cluster cache: a host given both
+	// it and a CacheClusterPercent above zero refuses to start.
+	HotTier platform.ObjectStore
 	// CacheServeBytesPerSecond is this host's serving bandwidth for stripes
 	// of the cluster's disk cache, past which its peer server answers a read
 	// BUSY. Zero leaves it unbounded.

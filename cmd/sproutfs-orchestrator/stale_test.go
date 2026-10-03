@@ -8,7 +8,42 @@ import (
 	"time"
 
 	"github.com/semistrict/sproutfs/api/host"
+	"github.com/semistrict/sproutfs/api/orch"
 )
+
+// TestACommandRightAfterAStartFindsTheVM: a read routed to the host running a
+// VM — a command, a console — answers from a survey up to a second old. Every
+// host reads the list of caches every ten seconds, and each of those reads
+// surveys the hosts and remembers the survey. One that ran while a start was
+// opening the VM saw no host running it, and was remembered after the start's
+// own survey had dropped the last one, so a command sent as the start returned
+// was told no host ran the VM. On GCE that ended a restored guest's walk
+// before its first request.
+func TestACommandRightAfterAStartFindsTheVM(t *testing.T) {
+	ctx := simulated(t)
+	d := newDeployment(t, map[string][]string{"host-0": {}, "host-1": {}})
+	d.records.ids = []string{"vm-a"}
+	for _, h := range d.hosts {
+		h.arena(1024, 0)
+		h.templates = []host.Template{{Name: "workload", MemoryBytes: 512 << 20, Imported: true}}
+	}
+	d.orchestrator.note(ctx, vmRecord{ID: "vm-a", State: stateStopped, Template: "workload"})
+	d.hosts["host-1"].onOpen = func() {
+		if _, err := d.orchestrator.Caches(ctx); err != nil {
+			t.Errorf("a host's read of the list of caches during the start: %v", err)
+		}
+	}
+	if _, err := d.orchestrator.Start(ctx, "vm-a", orch.StartRequest{To: "host-1"}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := d.orchestrator.Exec(ctx, "vm-a", host.ExecRequest{Cmd: "true"})
+	if err != nil {
+		t.Fatalf("a command sent as the start returned: %v", err)
+	}
+	if result.Host != "host-1" {
+		t.Fatalf("the command ran on %s, want host-1, which the VM started on", result.Host)
+	}
+}
 
 // TestAnInFlightRowAgesOff: a row says what the orchestrator last did with a VM,
 // and while it says an operation is in flight nothing touches that VM — the

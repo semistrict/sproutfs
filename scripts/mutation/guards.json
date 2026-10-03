@@ -592,5 +592,41 @@
     "package": "checkpoint",
     "run": "^TestAPublicationHandsItsPartsOverInTheirOrder$",
     "purpose": "Hand each part of a publication to the fills as its PUT ends, so the scheduler orders a host's fills."
+  },
+  {
+    "id": "hot-tier-fill-before-durable",
+    "package": "checkpoint",
+    "run": "^TestAPublicationWritesTheHotTierOnlyOnceItsRegionalPutSucceeded$",
+    "purpose": "Write a publication's part to the hot tier before its regional PUT has succeeded."
+  },
+  {
+    "id": "hot-tier-read-fails",
+    "package": "checkpoint",
+    "run": "^TestAHotTierThatFailsNeverFailsARead$",
+    "purpose": "Fail a read whose hot tier failed rather than read the regional bucket."
+  },
+  {
+    "id": "hot-tier-beside-cluster",
+    "package": "checkpoint",
+    "run": "^TestAStoreRefusesAHotTierBesideTheClusterCache$",
+    "purpose": "Give a store a hot tier beside a cache that fills the cluster."
+  },
+  {
+    "id": "hot-tier-fill-waits",
+    "package": "checkpoint",
+    "run": "^(TestAReadIsNotSlowedByItsHotTierFill|TestAPublicationIsNotSlowedByItsHotTierFill)$",
+    "purpose": "Copy a missed object, or write a published one, to the hot tier in front of the read or the publication."
+  },
+  {
+    "id": "hot-tier-unbounded-queue",
+    "package": "checkpoint",
+    "run": "^TestTheHotTierDropsFillsPastItsQueueOrItsRate$",
+    "purpose": "Hold every fill of the hot tier, whatever the queue's bound."
+  },
+  {
+    "id": "orchestrator-remember-a-survey-across-a-move",
+    "package": "cmd/sproutfs-orchestrator",
+    "run": "^TestACommandRightAfterAStartFindsTheVM$",
+    "purpose": "Drop the remembered survey only when a move begins, so a survey a host's read of the list of caches took during a start answers the command sent after it."
   }
 ]

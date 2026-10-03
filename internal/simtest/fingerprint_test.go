@@ -43,8 +43,8 @@ const fingerprintShake = 0x9e3779b97f4a7c15
 // differently by itself.
 func TestSeededTopologyFingerprintIsStable(t *testing.T) {
 	for _, seed := range []uint64{1, 23} {
-		for _, cache := range []campaignCache{cacheOff, cacheOn} {
-			t.Run(fmt.Sprintf("seed-%d/cache-%v", seed, cache == cacheOn), func(t *testing.T) {
+		for _, cache := range []campaignCache{cacheOff, cacheOn, cacheHot} {
+			t.Run(fmt.Sprintf("seed-%d/cache-%s", seed, cache), func(t *testing.T) {
 				var work, strict [2]uint64
 				var dials [2]int
 				var events [2][]sim.Event

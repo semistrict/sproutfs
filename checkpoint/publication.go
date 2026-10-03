@@ -757,16 +757,27 @@ func (w *partWriter) flush(ctx context.Context) error {
 	go func() {
 		defer w.wait.Done()
 		defer close(handed)
-		early := w.fillEarly(ctx, data, members)
+		sealed := sealedPart{key: key, data: data, members: members}
+		w.fillEarly(ctx, &sealed)
 		err := w.put(ctx, key, data)
 		w.store.release()
 		if err != nil {
 			w.record(err)
 			return
 		}
-		w.handOver(ctx, before, data, members, early)
+		w.handOver(ctx, before, sealed)
 	}()
 	return nil
+}
+
+// sealedPart is one part a publication uploads: its key and bytes, the
+// members it holds, and whether a bug handed it to the cluster or to the hot
+// tier before its PUT.
+type sealedPart struct {
+	key                    platform.ObjectKey
+	data                   []byte
+	members                []keptMember
+	earlyCluster, earlyHot bool
 }
 
 // handOver hands a durable part over once the part before it has been, so
@@ -775,38 +786,44 @@ func (w *partWriter) flush(ctx context.Context) error {
 // the order the Go scheduler runs them, and a fill the queue or the rate
 // drops would be a different one on every run of a seed. before is the part
 // before's, nil for the first part.
-func (w *partWriter) handOver(ctx context.Context, before <-chan struct{}, data []byte, members []keptMember, early bool) {
+func (w *partWriter) handOver(ctx context.Context, before <-chan struct{}, sealed sealedPart) {
 	if before != nil && !w.store.cache.bug("fill-parts-in-any-order") {
 		<-before
 	}
-	w.durable(ctx, data, members, early)
+	w.durable(ctx, sealed)
 }
 
-// durable hands a part whose PUT has succeeded to the pull that keeps its
-// pages and to the cluster, which takes only the windows inside its share.
-// Nothing is filled before then: a part the store refused must reach no
-// cache. early says the bug already filled it.
-func (w *partWriter) durable(ctx context.Context, data []byte, members []keptMember, early bool) {
-	if len(members) == 0 {
+// durable hands a part whose PUT has succeeded to the hot tier, to the pull
+// that keeps its pages and to the cluster, which takes only the windows
+// inside its share. Nothing is filled before then: a part the store refused
+// must reach no cache.
+func (w *partWriter) durable(ctx context.Context, sealed sealedPart) {
+	if !sealed.earlyHot {
+		w.store.hot.published(ctx, sealed.key, sealed.data)
+	}
+	if len(sealed.members) == 0 {
 		return
 	}
-	envelopes := w.kept(data, members)
+	envelopes := w.kept(sealed.data, sealed.members)
 	if w.keep != nil {
 		w.keep.keep(ctx, envelopes)
 	}
-	if !early {
+	if !sealed.earlyCluster {
 		w.store.cache.fill(WriteFillPublication, envelopes)
 	}
 }
 
-// fillEarly is the bug that fills the cluster with a part before its PUT
-// has succeeded, and reports whether it did.
-func (w *partWriter) fillEarly(ctx context.Context, data []byte, members []keptMember) bool {
-	if len(members) == 0 || !w.store.cache.bug("fill-before-durable") {
-		return false
+// fillEarly is the bugs that fill the cluster, or the hot tier, with a part
+// before its PUT has succeeded. It notes which did.
+func (w *partWriter) fillEarly(ctx context.Context, sealed *sealedPart) {
+	if len(sealed.members) > 0 && w.store.cache.bug("fill-before-durable") {
+		w.store.cache.fill(WriteFillPublication, w.kept(sealed.data, sealed.members))
+		sealed.earlyCluster = true
 	}
-	w.store.cache.fill(WriteFillPublication, w.kept(data, members))
-	return true
+	if w.store.hot.bug("hot-tier-fill-before-durable") {
+		w.store.hot.published(ctx, sealed.key, sealed.data)
+		sealed.earlyHot = true
+	}
 }
 
 // put writes one part create-if-absent. A part a retry of this publication
@@ -846,13 +863,14 @@ func (w *partWriter) finish(ctx context.Context) error {
 		if err := w.store.acquire(ctx); err != nil {
 			return err
 		}
-		early := w.fillEarly(ctx, sealed, members)
+		part := sealedPart{key: key, data: sealed, members: members}
+		w.fillEarly(ctx, &part)
 		err = w.put(ctx, key, sealed)
 		w.store.release()
 		if err != nil {
 			return err
 		}
-		w.handOver(ctx, w.handed, sealed, members, early)
+		w.handOver(ctx, w.handed, part)
 	}
 	w.wait.Wait()
 	return w.failure

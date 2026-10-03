@@ -603,6 +603,11 @@ type Status struct {
 	Cache *Cache `json:"cache,omitempty"`
 	// Caches is the list of caches this host holds, and how it read it.
 	Caches CacheList `json:"caches"`
+	// CacheMemory is the page cache's memory tier: the decoded pages and
+	// segments it keeps, and what it served of them. It is the first place a
+	// read of a page that no arena holds looks, before this host's disk, the
+	// cluster and the store.
+	CacheMemory CacheMemory `json:"cache_memory"`
 	// CacheDisk is what the page cache keeps on this host's disk, and what it
 	// found there when the host started. It is absent on a host that keeps no
 	// cache disk.
@@ -614,6 +619,64 @@ type Status struct {
 	// and what it served its peers. It is absent on a host that keeps no
 	// cache disk.
 	CacheRead *CacheRead `json:"cache_read,omitempty"`
+	// HotTier is what this host's reads through the hot tier, and its fills
+	// of it, did. It is absent on a host that has no hot tier.
+	HotTier *HotTier `json:"hot_tier,omitempty"`
+}
+
+// HotTier is what one host's reads of checkpoint objects through the hot
+// tier did, and its fills of the hot tier. A read tries the hot tier first;
+// a miss or a failure reads the regional bucket, and a miss is filled behind
+// the read. Publications fill it too.
+type HotTier struct {
+	// Hits counts the reads the hot tier answered and Misses the reads of an
+	// object it did not hold. Failed counts the rest, by why: error, slow or
+	// corrupt.
+	Hits   uint64            `json:"hits"`
+	Misses uint64            `json:"misses"`
+	Failed map[string]uint64 `json:"failed"`
+	// Skipped counts the reads that went to the regional bucket while the
+	// hot tier was marked down, MarkedDown the times it was marked, and Down
+	// whether it is now.
+	Skipped    uint64 `json:"skipped"`
+	MarkedDown uint64 `json:"marked_down"`
+	Down       bool   `json:"down"`
+	// FromReads and FromPublications count the fills handed over and held,
+	// and Duplicates the misses of an object a fill was already held for.
+	FromReads        uint64 `json:"from_reads"`
+	FromPublications uint64 `json:"from_publications"`
+	Duplicates       uint64 `json:"duplicates"`
+	// Sent counts the fills the hot tier took and SentBytes their bytes, and
+	// Present the fills that found the object there already.
+	Sent      uint64 `json:"sent"`
+	SentBytes uint64 `json:"sent_bytes"`
+	Present   uint64 `json:"present"`
+	// Dropped is the fills dropped, by why: queue, rate, read, write or
+	// closed.
+	Dropped map[string]uint64 `json:"dropped"`
+	// HeadChecks counts the sampled hits whose regional object was checked,
+	// and HeadMissing those the regional bucket no longer held.
+	HeadChecks  uint64 `json:"head_checks"`
+	HeadMissing uint64 `json:"head_missing"`
+	// QueuedBytes is what the fills held now come to, and QueueBytes their
+	// bound.
+	QueuedBytes int64 `json:"queued_bytes"`
+	QueueBytes  int64 `json:"queue_bytes"`
+}
+
+// CacheMemory is the page cache's memory tier, counted in pages and segments.
+// Resources reports the bytes it holds and its cap.
+type CacheMemory struct {
+	// Entries is the pages and segments it holds now.
+	Entries int `json:"entries"`
+	// Hits counts the reads it served from what it holds; Misses the reads
+	// that started a fetch from the tiers below it, the disk, the cluster or
+	// the store; and Coalesced the reads that joined a fetch another read had
+	// started. Evictions counts the entries it gave up.
+	Hits      uint64 `json:"hits"`
+	Misses    uint64 `json:"misses"`
+	Coalesced uint64 `json:"coalesced"`
+	Evictions uint64 `json:"evictions"`
 }
 
 // CacheRead is what one host's reads of the cluster's disk cache did, in

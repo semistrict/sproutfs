@@ -24,6 +24,7 @@ package checkpoint
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/semistrict/sproutfs/checkpoint/internal/part"
 	"github.com/semistrict/sproutfs/internal/blob"
@@ -141,6 +142,10 @@ var (
 	// checkpoint: an empty VM identity, an unusable volume name, a size that is
 	// not a whole number of sectors, or a page size no volume may have.
 	ErrInvalidConfig = errors.New("checkpoint: invalid configuration")
+	// ErrHotTierBesideClusterCache is a store given both a hot tier and a
+	// cache that fills the cluster: the two are alternatives.
+	ErrHotTierBesideClusterCache = fmt.Errorf("%w: a hot tier and the cluster cache are alternatives, "+
+		"and a store may have only one of them", ErrInvalidConfig)
 	// ErrInvalidRange reports a read or locate outside a volume's size.
 	ErrInvalidRange = errors.New("checkpoint: invalid range")
 	// ErrUnknownVolume reports a volume the index does not describe.

@@ -220,6 +220,17 @@ fill, which puts each window on its ranks and which the pull does not wait
 for. See
 [hosting](hosting.md#pulling-a-vms-memory).
 
+**Hot tier**: A second bucket that holds copies of checkpoint objects under
+their own names, closer to the hosts than the regional bucket, such as a
+zonal bucket in their zone. Every read of a checkpoint object tries it first,
+under a bound, and a miss or a failure reads the regional bucket. A miss is
+filled behind the read with a create-if-absent PUT of the same object, and a
+publication writes each part and index object to it once the regional PUT
+has succeeded. Nothing waits on a fill. The regional bucket stays the only
+durable copy. The hot tier and the cluster's disk cache are alternatives: a
+host refuses to start with both. See
+[hosting](hosting.md#reading-through-a-hot-tier).
+
 ## Cluster
 
 **Host**: A machine that runs VMs and serves their pages to migration

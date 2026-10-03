@@ -2,7 +2,6 @@ package checkpoint
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -250,7 +249,13 @@ func (p *Pull) segment(ctx context.Context, volume string, number uint64, entry 
 			if err != nil {
 				return nil, err
 			}
-			return p.store.readRange(ctx, key, extent.offset, extent.length, maximumReadExtent)
+			var held []byte
+			err = p.store.readObject(ctx, key, func(ctx context.Context, from *tier) error {
+				var err error
+				held, err = from.readRange(ctx, key, extent.offset, extent.length, maximumReadExtent)
+				return err
+			})
+			return held, err
 		})
 		if err != nil {
 			return err
@@ -272,13 +277,14 @@ func (p *Pull) segmentBytes(ctx context.Context, key diskKey, at segmentAddress)
 		p.pulled.Add(int64(at.length))
 		return data, nil
 	}
-	encoded, err := p.fetch(ctx, func(ctx context.Context) ([]byte, error) { return p.store.readSegment(ctx, at) })
+	var data []byte
+	encoded, err := p.fetch(ctx, func(ctx context.Context) ([]byte, error) {
+		decoded, encoded, err := p.store.readSegment(ctx, at)
+		data = decoded
+		return encoded, err
+	})
 	if err != nil {
 		return nil, err
-	}
-	data, err := p.store.codecs.Decode(ctx, encoded, maximumSegmentSize)
-	if err != nil {
-		return nil, errors.Join(ErrCorrupt, err)
 	}
 	return data, p.write(ctx, key, encoded)
 }

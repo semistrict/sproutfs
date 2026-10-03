@@ -16,7 +16,8 @@
 #   - the tagged image in k3s's containerd under the k8s.io namespace, which is
 #     the one kubelet reads, so the pods run it with imagePullPolicy: Never;
 #   - the x86_64 guest images at <demo directory>/guest/guest.ext4 and
-#     <demo directory>/guest/workload.ext4, the second of which carries git,
+#     <demo directory>/guest/workload.ext4, or those SPROUTFS_DEMO_GUEST_IMAGES
+#     names, valkey.ext4 among them; workload.ext4 carries git,
 #     ripgrep, Node, pnpm and three repositories with their dependencies.
 # Any failing step fails the script: there is no partial success to act on.
 #
@@ -104,17 +105,20 @@ if ! k3s ctr -n k8s.io images list --quiet | grep -q -- "$tag"; then
 fi
 
 # The guest images carry the agent the host reaches its guests through and the
-# witness the soak asks a guest with. The container image already holds a static
-# build of each and this node has no Go toolchain, so they are taken out of the
-# image rather than built again.
+# witness the soak asks a guest with, and the valkey image the chase that loads
+# and walks its database. The container image already holds a static build of
+# each and this node has no Go toolchain, so they are taken out of the image
+# rather than built again.
 agent=$demo/sproutfs-guest-agent
 witness=$demo/sproutfs-guest-witness
+chase=$demo/sproutfs-guest-chase
 echo "taking the guest binaries out of $tag" >&2
 case $engine in
 docker)
     container=$(docker create "$tag")
     docker cp "$container:/usr/local/bin/sproutfs-guest-agent" "$agent"
     docker cp "$container:/usr/local/bin/sproutfs-guest-witness" "$witness"
+    docker cp "$container:/usr/local/bin/sproutfs-guest-chase" "$chase"
     docker rm --force "$container" > /dev/null
     ;;
 buildah)
@@ -122,23 +126,43 @@ buildah)
     mount=$(buildah mount "$working")
     cp "$mount/usr/local/bin/sproutfs-guest-agent" "$agent"
     cp "$mount/usr/local/bin/sproutfs-guest-witness" "$witness"
+    cp "$mount/usr/local/bin/sproutfs-guest-chase" "$chase"
     buildah umount "$working" > /dev/null
     buildah rm "$working" > /dev/null
     ;;
 esac
 [[ -s $agent ]] || { echo "The image holds no guest agent at /usr/local/bin." >&2; exit 1; }
 [[ -s $witness ]] || { echo "The image holds no guest witness at /usr/local/bin." >&2; exit 1; }
+[[ -s $chase ]] || { echo "The image holds no guest chase at /usr/local/bin." >&2; exit 1; }
 
+# SPROUTFS_DEMO_GUEST_IMAGES names the guest images to build, alpine and
+# workload by default; the application restore bench builds valkey alone.
 install -d -m 0755 "$demo/guest"
-bash "$repo/scripts/build-guest-image.sh" "$demo/guest/guest.ext4" "$agent" "$witness"
-
-# The workload image carries Node, pnpm and three repositories with their
-# dependencies, so building it takes minutes and downloads a few hundred
-# megabytes. It does not change when the Go code does, so a redeploy keeps the
-# one already on the node; SPROUTFS_DEMO_REBUILD_WORKLOAD=1 builds it again.
-workload=$demo/guest/workload.ext4
-if [[ -s $workload && ${SPROUTFS_DEMO_REBUILD_WORKLOAD:-0} != 1 ]]; then
-    echo "keeping the workload guest image already at $workload" >&2
-else
-    bash "$repo/scripts/build-guest-image.sh" --template workload "$workload" "$agent" "$witness"
-fi
+for image in ${SPROUTFS_DEMO_GUEST_IMAGES:-alpine workload}; do
+    case $image in
+    alpine)
+        bash "$repo/scripts/build-guest-image.sh" "$demo/guest/guest.ext4" "$agent" "$witness"
+        ;;
+    workload)
+        # The workload image carries Node, pnpm and three repositories with
+        # their dependencies, so building it takes minutes and downloads a few
+        # hundred megabytes. It does not change when the Go code does, so a
+        # redeploy keeps the one already on the node;
+        # SPROUTFS_DEMO_REBUILD_WORKLOAD=1 builds it again.
+        workload=$demo/guest/workload.ext4
+        if [[ -s $workload && ${SPROUTFS_DEMO_REBUILD_WORKLOAD:-0} != 1 ]]; then
+            echo "keeping the workload guest image already at $workload" >&2
+        else
+            bash "$repo/scripts/build-guest-image.sh" --template workload "$workload" "$agent" "$witness"
+        fi
+        ;;
+    valkey)
+        bash "$repo/scripts/build-guest-image.sh" --template valkey "$demo/guest/valkey.ext4" \
+            "$agent" "$witness" "$chase"
+        ;;
+    *)
+        echo "No guest image named $image: SPROUTFS_DEMO_GUEST_IMAGES names alpine, workload or valkey." >&2
+        exit 2
+        ;;
+    esac
+done

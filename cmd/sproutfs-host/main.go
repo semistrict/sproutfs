@@ -115,6 +115,20 @@ func run() error {
 		return fmt.Errorf("scratch directory %s: %w", config.ScratchDir, err)
 	}
 	supervisor := config.SupervisorConfig
+	if config.HotTier != nil {
+		hot, client, err := adapters.NewObjectStore(ctx, *config.HotTier)
+		if err != nil {
+			return fmt.Errorf("the hot tier, %s bucket %s: %w", config.HotTier.Provider, config.HotTier.Bucket, err)
+		}
+		defer func() {
+			if err := client.Close(); err != nil {
+				slog.Error("sproutfs-host: closing the hot tier's client failed", "error", err)
+			}
+		}()
+		supervisor.HotTier = hot
+		slog.Info("sproutfs-host: reading through a hot tier", "store", config.HotTier.Provider,
+			"bucket", config.HotTier.Bucket, "prefix", config.HotTier.Prefix)
+	}
 	supervisor.ObjectStore, supervisor.Network = objects, adapters.NewNetwork()
 	supervisor.Disk, supervisor.Disks = disk, adapters.NewDisk
 	if config.CacheDir != "" {

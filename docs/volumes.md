@@ -940,6 +940,22 @@ not reached fetches it at once, as it would without a pull. Before each
 request the pull waits until no load of the cache is in flight, and all the
 pulls on a host share two requests.
 
+### The hot tier
+
+A store may read through a hot tier instead (`Config.HotTier`): a second
+bucket with copies of checkpoint objects under the same names. It and the
+cluster cache are alternatives, and a store refuses to have both. Every read
+of a checkpoint object is one operation over one object: the tail of an
+index object and the rest of its root, a segment, a member, an extent of a
+part. The operation runs against the hot tier first and, on a miss or any
+failure, again against the regional bucket, so a hot tier never fails a read.
+A miss is filled behind the read with a create-if-absent PUT of the whole
+object, and a publication writes each part and its index object once the
+regional PUT has succeeded. The deployment's check and a part's table read the
+regional bucket alone. Reclamation deletes from the regional bucket alone, so
+what it deletes stays in the hot tier until something expires it
+([hosting](hosting.md#reading-through-a-hot-tier)).
+
 ## Captures and forks
 
 A capture pauses the guest, saves VMM state, seals memory, and resumes the

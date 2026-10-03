@@ -18,6 +18,7 @@ import (
 	"github.com/semistrict/sproutfs/api/orch"
 	"github.com/semistrict/sproutfs/internal/ctxsync"
 	"github.com/semistrict/sproutfs/internal/handover"
+	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/rank"
 	"github.com/semistrict/sproutfs/volume"
 )
@@ -154,9 +155,12 @@ type orchestrator struct {
 
 	// recentHosts is the last survey and recentAt when it finished, which is
 	// what spares a console being polled at a few hertz a fan-out per frame.
+	// moves counts the beginnings and ends of the operations that move a VM:
+	// a survey is remembered only if none began or ended while it ran.
 	surveyMu    sync.Mutex
 	recentHosts []liveHost
 	recentAt    time.Time
+	moves       uint64
 
 	// resuming is the migrations a survey took up again because nothing was
 	// driving them, each until it ends, and resumes is every one of them.
@@ -183,9 +187,10 @@ const (
 	// beyond this survey: it is reported with its failure and asked again.
 	hostStatusTimeout = 2 * time.Second
 	// surveyInterval is how long one survey answers the deployment's read
-	// requests for. Anything that moves a VM surveys afresh and drops what it
-	// finds, so the only staleness this admits is a host that changed on its
-	// own within the last second.
+	// requests for. Anything that moves a VM drops the remembered survey when
+	// it begins and again when it ends, and a survey that overlapped either is
+	// not remembered, so the only staleness this admits is a host that changed
+	// on its own within the last second.
 	surveyInterval = time.Second
 )
 
@@ -323,6 +328,26 @@ func (o *orchestrator) recent(ctx context.Context) ([]liveHost, error) {
 	return o.fanOut(ctx, true)
 }
 
+// moving marks an operation that moves a VM, from its call to the call of the
+// function it returns. Both drop the remembered survey. Dropping it only when
+// the operation began was not enough: every host reads the list of caches
+// every ten seconds, and each read surveys and remembers. A survey taken while
+// a start was opening the VM, before the host ran it, answered the command
+// sent as the start returned, and said no host ran the VM.
+func (o *orchestrator) moving(ctx context.Context) (done func()) {
+	forget := func() {
+		o.surveyMu.Lock()
+		defer o.surveyMu.Unlock()
+		o.moves++
+		o.recentHosts, o.recentAt = nil, time.Time{}
+	}
+	forget()
+	if sim.Bug(ctx, "orchestrator-remember-a-survey-across-a-move") {
+		return func() {}
+	}
+	return forget
+}
+
 // survey asks every host pod what it is running, now. Everything that creates,
 // moves or removes a VM goes through here, and what it finds answers only that
 // operation: the remembered survey is dropped, because the operation is about
@@ -363,6 +388,9 @@ func (o *orchestrator) fanOut(ctx context.Context, remember bool) ([]liveHost, e
 		return nil, fmt.Errorf("listing host pods: %w", err)
 	}
 	slices.SortFunc(found, func(a, b pod) int { return strings.Compare(a.Name, b.Name) })
+	o.surveyMu.Lock()
+	moves := o.moves
+	o.surveyMu.Unlock()
 	hosts := make([]liveHost, len(found))
 	var wg sync.WaitGroup
 	for index, p := range found {
@@ -404,9 +432,9 @@ func (o *orchestrator) fanOut(ctx context.Context, remember bool) ([]liveHost, e
 	wg.Wait()
 	o.noteCaches(ctx, hosts)
 	o.surveyMu.Lock()
-	if remember {
+	if remember && moves == o.moves {
 		o.recentHosts, o.recentAt = hosts, time.Now()
-	} else {
+	} else if !remember {
 		o.recentHosts, o.recentAt = nil, time.Time{}
 	}
 	o.surveyMu.Unlock()
@@ -882,6 +910,7 @@ func named(hosts []liveHost, name string) (liveHost, error) {
 
 // Create allocates an identity and creates the VM on the least loaded host.
 func (o *orchestrator) Create(ctx context.Context, request orch.CreateRequest) (orch.CreateResult, error) {
+	defer o.moving(ctx)()
 	if request.From != nil && (request.From.VM == "" || request.Template != "") {
 		return orch.CreateResult{}, fmt.Errorf("%w: a create from a checkpoint names the VM it is of, and no template",
 			errRequest)
@@ -969,6 +998,7 @@ func (o *orchestrator) Release(ctx context.Context, id string, checkpoint uint64
 // spreads the work of reading images.
 func (o *orchestrator) ImportTemplate(ctx context.Context, image io.Reader,
 	request host.ImportTemplateRequest) (host.ImportTemplateResult, error) {
+	defer o.moving(ctx)()
 	hosts, err := o.survey(ctx)
 	if err != nil {
 		return host.ImportTemplateResult{}, err
@@ -1001,6 +1031,7 @@ func (o *orchestrator) ImportTemplate(ctx context.Context, image io.Reader,
 // migration's destination does. The parent holds the point until every child
 // has them all.
 func (o *orchestrator) Fork(ctx context.Context, id string, request orch.ForkRequest) (orch.ForkResult, error) {
+	defer o.moving(ctx)()
 	began := time.Now()
 	count, to := request.Count, request.To
 	if count <= 0 {
@@ -1199,6 +1230,7 @@ func (o *orchestrator) discardChildren(ctx context.Context, target liveHost, chi
 
 // Capture takes one explicit checkpoint on the host running the VM.
 func (o *orchestrator) Capture(ctx context.Context, id string, request orch.CaptureRequest) (orch.CaptureResult, error) {
+	defer o.moving(ctx)()
 	hosts, err := o.recent(ctx)
 	if err != nil {
 		return orch.CaptureResult{}, err
@@ -1248,6 +1280,7 @@ func (o *orchestrator) Capture(ctx context.Context, id string, request orch.Capt
 // if it keeps failing to take the VM, the guest's writes outrank the placement
 // and the handoff goes on to another host.
 func (o *orchestrator) Migrate(ctx context.Context, id, to string) (orch.MigrateResult, error) {
+	defer o.moving(ctx)()
 	began := time.Now()
 	hosts, err := o.survey(ctx)
 	if err != nil {
@@ -1645,6 +1678,7 @@ func recovery(force bool) reopening {
 // them is a writer whose stores can never be published, and nothing here can
 // say which.
 func (o *orchestrator) Stop(ctx context.Context, id string, request orch.StopRequest) (orch.StopResult, error) {
+	defer o.moving(ctx)()
 	began := time.Now()
 	hosts, err := o.survey(ctx)
 	if err != nil {
@@ -1721,6 +1755,7 @@ type reopening struct {
 // question for both: is this VM really running nowhere, or is it between two
 // hosts and about to be somewhere?
 func (o *orchestrator) reopen(ctx context.Context, id string, terms reopening) (orch.RecoverResult, error) {
+	defer o.moving(ctx)()
 	// The epoch is read before the survey, and the open takes the next one
 	// only from it. A survey asks each host at its own moment, so it can miss
 	// a host that opened the VM while it was asking — a migration that landed
@@ -1945,6 +1980,7 @@ func unanswered(hosts []liveHost) []string {
 // since their last interval checkpoint go with it, and the rest is in the
 // bucket.
 func (o *orchestrator) Kill(ctx context.Context, name string) (orch.KillResult, error) {
+	defer o.moving(ctx)()
 	if name == "" {
 		return orch.KillResult{}, fmt.Errorf("%w: a host to kill needs a name", errRequest)
 	}
@@ -1965,6 +2001,7 @@ func (o *orchestrator) Kill(ctx context.Context, name string) (orch.KillResult, 
 // no host to route to, and its record and objects stayed in the bucket for good
 // — which is exactly the VM an operator most wants to be rid of.
 func (o *orchestrator) Delete(ctx context.Context, id string) error {
+	defer o.moving(ctx)()
 	hosts, err := o.survey(ctx)
 	if err != nil {
 		return err

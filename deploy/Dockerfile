@@ -69,10 +69,11 @@ RUN curl --fail --location --silent --show-error "$KERNEL_URL" --output /vmlinux
 # Stage 3: the Go binaries, static so the runtime stage needs no Go runtime and
 # no cgo resolver: the host, the orchestrator and the sproutfsctl CLI, which is
 # in the image so that `kubectl exec` can drive the demo from inside the
-# cluster as well as through a port-forward. The guest agent and the guest
-# witness are built here too and carried in this image, not to be run from it:
-# scripts/lib/demo-image.sh takes them out and installs them into the guest
-# images, which spares the demo node a Go toolchain of its own.
+# cluster as well as through a port-forward. The guest agent, the guest
+# witness and the guest chase are built here too and carried in this image,
+# not to be run from it: scripts/lib/demo-image.sh takes them out and installs
+# them into the guest images, which spares the demo node a Go toolchain of its
+# own.
 FROM golang:1.26-bookworm AS commands
 # SPROUTFS_VERSION is what every binary here reports at /version and logs at
 # startup: the build's `git describe`. It is an argument rather than a `git`
@@ -96,5 +97,5 @@ COPY --from=vmm /seccomp.bpf /usr/share/sproutfs/seccomp.bpf
 COPY --from=kernel /vmlinux /usr/share/sproutfs/vmlinux
 COPY --from=commands /commands/sproutfs-host /commands/sproutfs-orchestrator \
      /commands/sproutfsctl /commands/sproutfs-guest-agent \
-     /commands/sproutfs-guest-witness /usr/local/bin/
+     /commands/sproutfs-guest-witness /commands/sproutfs-guest-chase /usr/local/bin/
 CMD ["/usr/local/bin/sproutfs-host"]

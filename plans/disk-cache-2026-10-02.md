@@ -203,20 +203,41 @@ A cache's identity is not its pod's. It is a random value written in the cache
 file's header when the file is made. A pod that restarts on the same node, over
 the same persistent volume, keeps its identity and its windows.
 
-### The list of caches
+### The membership
 
-Today a host dials only the page-server address a handoff carries, and has no
-identity of its own. The cluster cache needs every host to know every cache.
-Each host reports its cache identity, its weight and its page-server address
-in `/status`. The orchestrator already surveys every host, and it serves the
-list it found (`GET /caches`), with the deployment's code. A host that did not
-answer one survey keeps its place in the list, as a crashed host keeps its
-place in the model; only a host the cluster no longer has leaves it. Each host
-reads that list on a timer and keeps the last one it got. An orchestrator that
-is down leaves the list as it was.
+Which hosts are in the cluster is one object in the object store, the
+**membership**. It is not the cache's own: anything that routes between hosts
+reads it, and the disk cache is the first. It holds a **generation**, the
+deployment's code, and for each host its identity, its peer-server address,
+its weight and its state: joining, active or draining.
 
-Two hosts that hold different lists disagree only about whom to ask. The worst
-a stale list costs is a miss, and a miss is a read of the object store.
+It changes only by compare-and-set. A change reads the object, changes it, and
+writes it back conditional on the generation it read, raising the generation
+by one; a write that lost is retried from a fresh read. That primitive is all
+correctness rests on. Any process may make a change. Usually the orchestrator
+does, as a controller: it observes the pods and what each host reports, and
+moves the membership towards what it should be one step at a time. A host
+drains before it leaves, and a join, a leave or a change of weight is one
+step, so the data each change moves is bounded. But nothing depends on there
+being one writer.
+
+A host's identity is written in its disk, so a pod replaced on the same node
+keeps the identity and its place.
+
+Each host reads the membership when it starts, and holds it and its
+generation. Every request that depends on it, a stripe read, a keep, a drop or
+a fill right, names the generation its sender holds. A holder behind the sender
+reads the object before it answers. A holder ahead of the sender answers that
+the sender is stale, with its own generation, and the sender reads the object
+and asks again. So no stripe is placed, served or repaired under a membership
+the two sides do not both hold. A host also reads the object on a slow timer,
+to learn of a change while it is idle. An object store that is down leaves
+every host with the membership it holds.
+
+Decided on 2026-10-03. Step 4 first built a list of caches that the
+orchestrator assembled from its survey and served at `GET /caches`, which each
+host read every 10 s. It had no source of truth, and two hosts could hold
+different lists for that long. The membership replaces it.
 
 ### Hosts marked down
 

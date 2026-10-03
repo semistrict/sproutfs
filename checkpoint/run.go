@@ -334,14 +334,13 @@ func (s *Store) readExtents(ctx context.Context, extents []readExtent,
 		if err != nil {
 			return err
 		}
-		encoded, err := s.readRange(ctx, key, held.offset, held.length, maximumReadExtent)
-		if err != nil {
-			if errors.Is(err, platform.ErrNotFound) || errors.Is(err, platform.ErrInvalidRange) {
-				return errors.Join(ErrCorrupt, err)
+		return s.readObject(ctx, key, func(ctx context.Context, from *tier) error {
+			encoded, err := from.readRange(ctx, key, held.offset, held.length, maximumReadExtent)
+			if err != nil {
+				return missingIsCorrupt(err)
 			}
-			return err
-		}
-		return serve(ctx, held, encoded)
+			return serve(ctx, held, encoded)
+		})
 	}
 	if len(extents) == 1 {
 		return read(ctx, extents[0])

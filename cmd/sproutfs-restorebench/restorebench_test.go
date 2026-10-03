@@ -219,8 +219,9 @@ func splitComma(text string) func(func(string) bool) {
 }
 
 // simNodes is six nodes over one simulated network, object store and set of
-// disks, closed with the test.
-func simNodes(t *testing.T, ctx context.Context, runtime *sim.Runtime) []controller {
+// disks, each reading through a hot tier in hot where it is not nil, closed
+// with the test.
+func simNodes(t *testing.T, ctx context.Context, runtime *sim.Runtime, hot platform.ObjectStore) []controller {
 	t.Helper()
 	var nodes []controller
 	for index := range 6 {
@@ -234,7 +235,7 @@ func simNodes(t *testing.T, ctx context.Context, runtime *sim.Runtime) []control
 			network: runtime.Network(), objects: runtime.ObjectStore(), file: file, cacheBytes: 512 << 20,
 			deployment:  checkpoint.CacheDeployment{Store: "sim", Bucket: "bench", Prefix: "run"},
 			memoryBytes: 64 << 20, fillQueueBytes: 1 << 30, serveRate: 500 << 20,
-			dropPageCache: func() error { return nil }})
+			dropPageCache: func() error { return nil }, hotObjects: hot})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -259,7 +260,7 @@ func TestEveryCaseReadsTheGuestBack(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		runtime := sim.New(sim.Config{})
 		ctx := sim.WithRuntime(t.Context(), runtime)
-		nodes := simNodes(t, ctx, runtime)
+		nodes := simNodes(t, ctx, runtime, nil)
 		specs, err := parseCases(defaultCases)
 		if err != nil {
 			t.Fatal(err)
@@ -314,6 +315,47 @@ func TestEveryCaseReadsTheGuestBack(t *testing.T) {
 		}
 		if len(result.Calibration.Steps["2MiB"]) != len(calibrationSteps) {
 			t.Fatalf("the reader timed %v, want each of %v", result.Calibration.Steps["2MiB"], calibrationSteps)
+		}
+	})
+}
+
+// A walk reads the same chain of pages from the regional bucket, the cluster
+// and a hot tier its publication filled, and reads a cold hot tier, which
+// fills it.
+func TestAWalkReadsEachSourceAndFillsAColdHotTier(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		runtime := sim.New(sim.Config{})
+		ctx := sim.WithRuntime(t.Context(), runtime)
+		hot := runtime.NewObjectStore("hot", sim.ObjectStoreConfig{GetLatency: time.Millisecond,
+			HeadLatency: time.Millisecond / 2, PutLatency: 2 * time.Millisecond})
+		nodes := simNodes(t, ctx, runtime, hot)
+		result, err := walkRun(ctx, nodes, walkConfig{pages: 16, pages4K: 4096, reads: 8, rounds: 1, code: "4+2",
+			seed: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for _, c := range slices.Concat(result.Cold, result.Cases) {
+			got = append(got, fmt.Sprintf("%d %s: %d gets, %d hot gets, %d hot puts, %d hits, %d misses, wrong %d",
+				c.PageBytes, c.Source, c.StoreGets, c.HotGets, c.HotPuts, c.Hot.Hits, c.Hot.Misses, c.Wrong))
+		}
+		// A cold hot tier misses the index, the page table and each of the
+		// eight pages, reads them from the regional bucket, and puts three
+		// objects in the hot tier behind them, which takes two more reads of
+		// the regional bucket. A warm one serves all ten. The cluster asks the
+		// regional bucket for the index alone.
+		want := []string{
+			"2097152 hot: 12 gets, 10 hot gets, 3 hot puts, 0 hits, 10 misses, wrong 0",
+			"4096 hot: 12 gets, 10 hot gets, 3 hot puts, 0 hits, 10 misses, wrong 0",
+			"2097152 cluster: 1 gets, 0 hot gets, 0 hot puts, 0 hits, 0 misses, wrong 0",
+			"4096 cluster: 1 gets, 0 hot gets, 0 hot puts, 0 hits, 0 misses, wrong 0",
+			"2097152 hot: 0 gets, 10 hot gets, 0 hot puts, 10 hits, 0 misses, wrong 0",
+			"4096 hot: 0 gets, 10 hot gets, 0 hot puts, 10 hits, 0 misses, wrong 0",
+			"4096 regional: 10 gets, 0 hot gets, 0 hot puts, 0 hits, 0 misses, wrong 0",
+			"2097152 regional: 10 gets, 0 hot gets, 0 hot puts, 0 hits, 0 misses, wrong 0",
+		}
+		if !slices.Equal(got, want) {
+			t.Fatalf("the walks read\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 		}
 	})
 }

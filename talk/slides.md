@@ -573,6 +573,224 @@ A page that only the source has is requested until it arrives, with backoff and 
 layout: section
 ---
 
+# The cluster's disk cache
+
+---
+
+# Where a restored page comes from
+
+<div class="text-xl mt-6 space-y-5">
+
+1. **this host's memory** — if it was not evicted
+2. **the hosts' disks** — every host's local SSD, as **one cache**
+3. **the object store** — only when no host holds it
+
+</div>
+
+<v-click>
+
+<div class="mt-10 text-xl">
+
+| | one read, GCE |
+| --- | --- |
+| a 350 KB object from the hosts' disks, 4+2 | **0.96 ms** median |
+| a 2 MiB page from Cloud Storage, 16 in flight | **106 ms** median |
+
+</div>
+
+</v-click>
+
+<!--
+A VM stopped hours ago starts again. Each page it touches should come from the closest tier that still has it: this host's memory, then the disks of all the hosts, then the object store. The object store is the last resort.
+
+The hosts run on large, fast local SSDs that were not used for this. A read from another host's disk takes about a millisecond; a GET from the store about a hundred. A guest's faults after a restore are often dependent: the next page is known only when the last one arrives, so each one pays that latency in turn.
+
+The numbers are from two GCE runs on n2-standard-4 hosts: the stripe benchmark, idle, and the restore benchmark's store case.
+-->
+
+---
+
+# One cache, not one per host
+
+<div class="grid grid-cols-2 gap-10 mt-4 text-xl">
+<div class="space-y-5">
+
+**shared** — every VM on a host reads through one cache, whatever its tenant
+
+**distributed first** — no tier of whole local copies
+
+**window** — one volume, one aligned 2 MiB span, one checkpoint
+
+</div>
+<div class="space-y-5">
+
+<div v-click><b>ranks</b> — weighted rendezvous: each cache scores a window <code>w / −ln(u)</code></div>
+
+<div v-click><b>weight</b> — the cache's disk, in 16 GiB steps, never its moving share</div>
+
+<div v-click>a join or a leave moves <b>at most one</b> holder of a window</div>
+
+</div>
+</div>
+
+<!--
+The cache is per host, not per VM or tenant. A page is cached once and every VM that names it reads that copy.
+
+There is no tier of whole local copies. A page read whole from the local disk would save about half a millisecond over a read from the cluster, and keeping it whole on every host that reads it would cost the cluster most of its capacity. So the hosts' disks behave as one cache whose size is the sum of their disks.
+
+The unit of placement is the window: the pages of one volume in one aligned 2 MiB span that one checkpoint published. A read-ahead run asks the same hosts for all its pages in one request each.
+
+Placement is computed, not recorded. Every host holds the list of caches, which the orchestrator serves. Each cache scores a window by w over minus ln u, where u is a hash of the cache's identity and the window, and w is its weight. Rendezvous ranks the next cache exactly, which repair depends on. The comparison is done in integers, so hosts of different architectures rank alike.
+-->
+
+---
+clicks: 7
+---
+
+# Reed-Solomon stripes
+
+<ErasureCode />
+
+<!--
+A window's envelopes are split with Reed-Solomon, klauspost/reedsolomon, into k data stripes and m parity stripes. Any k of the k+m rebuild the envelope. At 4+2 that is 1.5 times the bytes of one copy, and survives two hosts lost or slow.
+
+A fill puts stripe i on rank i, but no reader relies on that. Ranks shift when hosts join and leave, so a holder may hold any index. A reader asks k+1 holders, picked by a hash of reader and window so the readers of a hot page spread over every holder, and rebuilds from the first k distinct indices that arrive. A miss is replaced at once. If k have not arrived after the 95th percentile of recent reads, it asks the rest, within a budget that grows a twentieth of a request per fast read.
+
+Every stripe carries its key, index, code and CRC32C, and the rebuilt envelope carries its SHA-256. A wrong stripe is never returned: another set of k is tried, and its holder is told to drop it.
+-->
+
+---
+
+# Which code
+
+| hosts | code | extra disk | survives |
+| --- | --- | --- | --- |
+| 1 | 1+0 | none | nothing |
+| 2 | 1+1 | 100 % | one host lost or slow |
+| 3 | 2+1 | 50 % | one host lost or slow |
+| 4 or 5 | 2+2 | 100 % | two hosts lost or slow |
+| 6 or more | **4+2** | 50 % | two hosts lost or slow |
+
+<v-click>
+
+<div class="mt-6 text-lg">
+
+GCE, one host drained and one stalled: **4+2** p99.9 1.95 ms · **4+1** 67 % of reads timed out · **whole copies** 14 % misses, 19 % timed out
+
+</div>
+
+</v-click>
+
+<!--
+The code is a deployment setting, not derived from the live list. A drain takes six hosts to five for a while, and a code that followed the list would turn every stripe into a miss. While the list is shorter than k+m, stripes go round the hosts it has.
+
+k = 1 is whole copies: 1+1 keeps each envelope whole on two hosts, so two hosts are enough. Replication is not a second mechanism; it is the code at k = 1.
+
+On six GCE hosts, the stripe benchmark drained one host and stalled another, as a rolling restart with one bad host does. Only 4+2 kept every read fast. 4+1 survives one or the other. Whole copies survive neither.
+-->
+
+---
+
+# The bandwidth budget
+
+<div class="text-base opacity-70 mb-3">six GCE n2-standard-4 hosts, 10 Gbps · every host reading and serving at once · p99 per round</div>
+
+| served per host | p99 |
+| --- | --- |
+| 4.4 Gb/s | under 2 ms in 14 of 15 rounds |
+| 5.2–5.3 Gb/s | 1.9 to 79 ms |
+| 6.3 Gb/s | never under 89 ms |
+
+<v-clicks>
+
+<div class="text-xl mt-6 space-y-3">
+
+- the tail follows **bytes served per host** — not CPU, GC, decoding or queueing
+- under 4+2 every host holds a stripe of every object, so a **drain moves load** onto the rest
+- a host serves at most **500 MiB/s** of stripes, and answers **BUSY** past it
+
+</div>
+
+</v-clicks>
+
+<!--
+The first full-load run made 4+2 look worse than whole copies. Tracing it showed the cause was bytes served per host, not the code: no host used more than 1.7 of its 4 CPUs, GC pauses were under 2 ms, and server queueing under 0.3 ms. Past about half the NIC's rate, replies waited in the network.
+
+Under 4+2 every host holds a stripe of every window, so a drained host's share moves onto the other five. Under 4+1 the host that stands in holds nothing to send. So serving is a budget: a deployment keeps each host under about 40 % of its NIC after a drain, until its own machine type is measured.
+-->
+
+---
+
+# Filling the cluster
+
+<div class="grid grid-cols-2 gap-10 mt-4 text-xl">
+<div class="space-y-5">
+
+**a store read** — split and sent to the ranks *behind* the read
+
+**a publication** — each part once its PUT succeeded
+
+**a pull** — what it copies
+
+</div>
+<div class="space-y-5">
+
+<div v-click><b>keep</b> — a peer-server request; a holder takes only what its own list ranks it for</div>
+
+<div v-click><b>fill right</b> — rank 1 gives one per window per 10 s, so a cold burst fills once</div>
+
+<div v-click><b>nothing waits on a fill</b> — a full queue or a spent rate drops it</div>
+
+</div>
+</div>
+
+<!--
+Three things bring a window to the cluster. A store read splits what the store served and sends each stripe to its rank once the read's callers have their pages. A publication fills each part once its PUT has succeeded, so no cache holds bytes the store refused; an interval checkpoint, a capture, a stop, a fork point and a template import all fill. A pull's copies are fills too.
+
+A keep carries a holder's stripes as its disk stores them. A holder refuses a window its own list does not rank it for, and drops stripes it already holds or is writing.
+
+A cold burst would fill one window many times. So a read's fill needs the window's fill right, which rank 1 gives to the first reader that asks, once per window per ten seconds, as Memcache's leases do.
+
+A fault, a publication and a pull never wait for a fill. Fills go through one 64 MiB queue per host, within 128 MiB/s and the host's background budget; anything over is dropped, and the window is read from the store next time.
+-->
+
+---
+
+# On one host's disk
+
+<div class="grid grid-cols-2 gap-10 mt-4 text-xl">
+<div class="space-y-5">
+
+**a log of 64 MiB regions** — each item has its key and CRC32C
+
+**a table** at each region's end — sync the items, write the table, sync
+
+**FIFO eviction** — a second chance for what was read, at most half a region
+
+</div>
+<div class="space-y-5">
+
+<div v-click><b>restart</b> — tables read back in order; the open region given back; a torn table scanned</div>
+
+<div v-click><b>one disk limiter</b> — goals: % free, bytes free, bytes used; the strictest wins</div>
+
+<div v-click><b>outlives the pod</b> — a <code>hostPath</code> file per host, held by <code>flock</code></div>
+
+</div>
+</div>
+
+<!--
+Each host's cache is one file, written as a log of 64 MiB regions, allocated whole when they open. Each item has a header with its key, stripe index, code and CRC32C. When a region fills, its items are synced, a table is written at its end, and that is synced too. Eviction takes the oldest region; the stripes in it that were read most get a second chance in the open region, at most half a region, and none when the cache is over its share. One region is always kept free for that.
+
+On restart, the host reads every region's table back in sequence order. The region that was open at a crash is given back. A region whose table is torn is scanned by item headers. A file of another deployment is emptied.
+
+One limiter bounds everything the host writes: spill files, ephemeral disks, staging and the cache. It follows any combination of goals, the strictest winning, and gives space back gradually as the disk nears them. The cache lives in a hostPath directory that outlives the pod, one locked file per host.
+-->
+
+---
+layout: section
+---
+
 # The deployment
 
 ---
@@ -781,6 +999,64 @@ Small scattered writes, as from a package manager, seal about a hundred times th
 
 ---
 
+# The model found two bugs in the plan
+
+<div class="text-base opacity-70 mb-3">TLA+, before any code: <code>spec/diskcache</code> · <code>spec/disklog</code> · <code>spec/disklimit</code> · every run under a couple of minutes</div>
+
+<v-clicks>
+
+<div class="text-xl space-y-6 mt-4">
+
+<div><b>B4</b> — a sparse spill file's promised space is only free space. Another writer takes it, the cache gives everything back, and a guest's dirty page still cannot spill. <span class="opacity-70">Fix: allocate spill files whole.</span></div>
+
+<div><b>B5</b> — a join moves every later stripe off its rank. A reader that asks rank i for stripe i cannot decode, though k stripes exist. <span class="opacity-70">Fix: take any index; repair only an index no rank holds.</span></div>
+
+</div>
+
+</v-clicks>
+
+<!--
+The disk cache was modelled before it was built, in three specs, one per concern, so that every TLC run ends in a couple of minutes: the cluster, one host's log, and the limiter. Each has mutants that must fail its invariants.
+
+B4: the limiter counted each spill file at its full promise, but a sparse file's unused promise is just free filesystem space. Anything else on the node could take it, and then a guest's store would need to spill and could not, with the cache already empty. Spill files are now allocated whole when their pager starts, and slots are not punched when released.
+
+B5: the plan put stripe i on rank i and had readers ask rank i for it. A host joining near the top of a window's ranks shifts every holder below it, so the reader would find the wrong index everywhere and fall back to the store, and repair would write duplicates. Readers now take any index, and repair sends only an index no rank holds.
+-->
+
+---
+
+# Reading a guest from the cluster
+
+<div class="text-base opacity-70 mb-3">six GCE n2-standard-4 hosts · 4+2 · Cloud Storage · 8 GiB of 2 MiB pages read back on another host, 16 in flight · 3 rounds</div>
+
+| | total | p50 | p99 | p99 spread | slowest page |
+| --- | --- | --- | --- | --- | --- |
+| from the cluster | 16.4 s | 58 ms | 136 ms | 3.3 ms | 202 ms |
+| one host lost mid-read | 16.4 s | 57 ms | 134 ms | 4.5 ms | 200 ms |
+| from the store | 28.1 s | 106 ms | 218 ms | 51 ms | 845 ms |
+
+<v-clicks>
+
+<div class="text-xl mt-6 space-y-3">
+
+- losing a host cost **nothing**, and no page came from the store
+- each holder served ~1.7 GB, within **2.5 %** of the others
+- from the cluster the reader was **CPU-bound**: 3.9 of its 4 CPUs
+
+</div>
+
+</v-clicks>
+
+<!--
+Host 0 published 8 GiB of incompressible pages, and the publication's fills put each window's stripes on its six ranks. Host 1 read every page back, 16 at a time, through the cluster, through the store, and through the cluster with host 3's peer server closed two seconds in.
+
+The cluster was 1.7 times as fast with a tight tail; the store's tail moved by 51 ms between rounds. A lost host changed nothing: its requests were replaced at once and it was marked down on the refused connection.
+
+This is a bulk sequential read, and both paths were limited by the reader's CPU per page, not by where the page came from. The cluster's real advantage is a dependent fault, which pays one read's latency at a time; that is measured next.
+-->
+
+---
+
 # Open issues
 
 ---
@@ -797,6 +1073,8 @@ Small scattered writes, as from a package manager, seal about a hundred times th
 - **a local fork's hold is not visible** to the orchestrator; only the deadline ends it
 - **recovery after a real host loss** — tested in simulation, not yet on a cluster
 - **disk checkpoints and the flush bound** — not yet tested on GCE
+- **the cluster cache is off in the deployment** — its share of windows is 0 until the rollout raises it
+- **serving copies through memory** — not yet `sendfile`
 
 </div>
 
@@ -814,6 +1092,10 @@ A child forked onto its parent's own host holds the fork point without the orche
 Recovery after a real host loss is tested in simulation and with fakes, not yet on a cluster. The one soak test's kill hit a host that was running nothing. The next run should use a seed whose kill hits a loaded host.
 
 Disk-only checkpoints, cold boot from a checkpoint without VMM state, and blocking flushes are tested in the simulation, the host test suite and Lima. They have not yet been tested together on GCE.
+
+The cluster cache is built and measured, but the deployment turns it on for none of its windows yet. A setting raises the share of windows gradually, as mcrouter's shadowing does, once the pull asks the cluster first.
+
+A host serving stripes still reads them into memory and writes them out. Sending them from the disk with sendfile is the next step, if a plain copy turns out to cost enough to matter.
 -->
 
 ---
@@ -824,7 +1106,10 @@ Disk-only checkpoints, cold boot from a checkpoint without VMM state, and blocki
 cmd/sproutfs-host            the host process
 cmd/sproutfs-orchestrator    ids, placement, migrations, forks
 cmd/sproutfs-guest-witness   fill / mutate / check / grow, in the guest
-checkpoint          the store: parts, index objects, roots, reclamation
+checkpoint          the store, and the page cache: memory, disk log, fills, cluster reads
+rank                windows, the list of caches, rendezvous ranking
+stripe              Reed-Solomon split and join, finding a wrong stripe
+resource            budgets and the disk limiter
 control             control records
 volume              volumes, publication, forks, handoffs
 vmmemory            the pager
@@ -851,6 +1136,7 @@ Cost scales with what the VM changed, not with what it inherited or its size.
 | disk checkpoint | 3–14 ms | about the disk data changed since the last one |
 | fork | 0.1 s | none: the child maps the parent's pages by name |
 | migration | 0.6–0.75 s | pages no checkpoint has, while the guest runs |
+| restore from the cluster | — | pages from the hosts' disks; a lost host costs nothing |
 | host loss | — | disk writes since the last checkpoint (at most the loss window), and RAM |
 
 <v-click>

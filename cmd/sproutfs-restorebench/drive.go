@@ -23,6 +23,8 @@ import (
 const (
 	sourceCluster = "cluster"
 	sourceStore   = "store"
+	// sourceHot is the hot tier in front of the store, on a node given one.
+	sourceHot = "hot"
 	// sourceClusterLost is the cluster with one node's peer server closed part
 	// way through the read and started again after it.
 	sourceClusterLost = "cluster-lost"
@@ -177,7 +179,7 @@ func runDrive(ctx context.Context, args []string) error {
 	rounds := flags.Int("rounds", 3, "rounds of every case")
 	cases := flags.String("cases", defaultCases, "cases each round reads from each source")
 	sources := flags.String("sources", sourceCluster+","+sourceStore, "what each case reads from: "+
-		sourceCluster+", "+sourceStore+" or "+sourceClusterLost)
+		sourceCluster+", "+sourceStore+", "+sourceHot+" or "+sourceClusterLost)
 	profiled := flags.String("profile", defaultProfiled, "cases read once more from each source with the reader profiled")
 	reads := flags.Int("reads", 2000, "pages a chain or a random read of pages reads")
 	runReads := flags.Int("run-reads", 400, "fault runs a chain or a random read of runs reads, at most every one")
@@ -202,8 +204,9 @@ func runDrive(ctx context.Context, args []string) error {
 		return err
 	}
 	for source := range strings.SplitSeq(*sources, ",") {
-		if source != sourceCluster && source != sourceStore && source != sourceClusterLost {
-			return fmt.Errorf("a source %q: want %s, %s or %s", source, sourceCluster, sourceStore, sourceClusterLost)
+		if source != sourceCluster && source != sourceStore && source != sourceHot && source != sourceClusterLost {
+			return fmt.Errorf("a source %q: want %s, %s, %s or %s", source, sourceCluster, sourceStore, sourceHot,
+				sourceClusterLost)
 		}
 		config.sources = append(config.sources, source)
 	}
@@ -240,18 +243,8 @@ func drive(ctx context.Context, nodes []controller, config driveConfig) (driveRe
 		return driveResult{}, nil, errors.New(
 			"drive needs at least three nodes, and a lost node other than the publisher and the reader")
 	}
-	var caches []identityReply
-	for _, n := range nodes {
-		identity, err := n.identity(ctx, struct{}{})
-		if err != nil {
-			return driveResult{}, nil, err
-		}
-		caches = append(caches, identity)
-	}
-	for _, n := range nodes {
-		if _, err := n.follow(ctx, listRequest{Code: config.code, Caches: caches}); err != nil {
-			return driveResult{}, nil, err
-		}
+	if err := followAll(ctx, nodes, config.code); err != nil {
+		return driveResult{}, nil, err
 	}
 	result := driveResult{Code: config.code, Publish: make(map[string]publishReply)}
 	guests := make(map[uint64]guestRequest)
@@ -316,7 +309,7 @@ func drive(ctx context.Context, nodes []controller, config driveConfig) (driveRe
 			a.Reads = int(units)
 		}
 		got, err := readCase(ctx, nodes, config, readRequest{Guest: g, Sequence: sequences[p.spec.pageSize],
-			Store: p.source == sourceStore, Access: a, Profile: profile}, p.source == sourceClusterLost)
+			Source: nodeSource(p.source), Access: a, Profile: profile}, p.source == sourceClusterLost)
 		if err != nil {
 			return fmt.Errorf("round %d, %s from %s: %w", round, p.spec, p.source, err)
 		}
@@ -351,6 +344,33 @@ func drive(ctx context.Context, nodes []controller, config driveConfig) (driveRe
 		}
 	}
 	return result, profiles, nil
+}
+
+// nodeSource is what the reader reads from for source: the lost case reads
+// the cluster.
+func nodeSource(source string) string {
+	if source == sourceClusterLost {
+		return sourceCluster
+	}
+	return source
+}
+
+// followAll has every node follow the list of all their caches under code.
+func followAll(ctx context.Context, nodes []controller, code string) error {
+	var caches []identityReply
+	for _, n := range nodes {
+		identity, err := n.identity(ctx, struct{}{})
+		if err != nil {
+			return err
+		}
+		caches = append(caches, identity)
+	}
+	for _, n := range nodes {
+		if _, err := n.follow(ctx, listRequest{Code: code, Caches: caches}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // readResult is one case's result and the CPU profile it took.

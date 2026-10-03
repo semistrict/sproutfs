@@ -1263,6 +1263,11 @@ caller:
 | `checkpoint/cluster-lose-answer` | Loses a holder's answer to a read of the cluster |
 | `checkpoint/cluster-store-hedge-now` | Has a read of the cluster reach its bound at once, and read the store too |
 | `checkpoint/cluster-false-timeout` | Counts a holder's answer as a timeout of its host |
+| `checkpoint/hot-tier-down` | Fails a read of the hot tier after its round trip, as a bucket that is down does |
+| `checkpoint/hot-tier-slow` | Holds a read of the hot tier for up to twice its bound |
+| `checkpoint/hot-tier-refuse` | Refuses a fill's PUT, as a bucket out of quota or permission does |
+| `checkpoint/hot-tier-lose-reply` | Loses the reply to a read or a fill the hot tier carried out |
+| `checkpoint/hot-tier-partial` | Cuts a reply of the hot tier short, or has it keep only the first half of a fill |
 
 A simulated disk with `DiskConfig.ReadChaos` adds three sites of its own, as
 FoundationDB's `AsyncFileChaos` does. They are off on every other disk, because
@@ -1465,6 +1470,57 @@ what was published, or fail only for a part that is gone, and at rest every
 stripe a host holds, repairs among them, must be of a window some list ranked
 it for. Every read site must fire and every read probe be reached across the
 seeds (about 4 s).
+
+A [hot tier](hosting.md#reading-through-a-hot-tier) marks sixteen more: a
+hit, a miss, a read failed by error, past the bound and by corrupt bytes, the
+hot tier marked down and a read that skipped it, a fill sent, one that found
+the object there, a miss of an object already held for a fill, a fill dropped
+for the queue, for the rate, for a regional GET that failed and for a PUT the
+hot tier failed, and a sampled HEAD check and one that found the regional
+object gone. `TestHotTierSurvivesItsFaultsAndReachesItsProbes` in
+`checkpoint` drives them. Each of its twelve seeds runs three to five hosts
+over one regional bucket and one hot bucket, every completion released by the
+scheduler and the sites on. The first host's queue holds an index object and
+no part beside it, and the second's rate has no room for a part, so both
+drops happen; half the hosts write their publications to the hot tier. Each
+of six rounds publishes from any host and has many hosts read the same pages
+at once, while the seed takes the hot bucket down for the round, fails a
+fill's regional GET, or deletes a checkpoint's parts from the regional bucket.
+Every read must be what was published, or fail only for a part that is gone,
+and at rest every object in the hot bucket must be what a publication wrote
+under its name, or its first half. Every site must fire and every probe be
+reached across the seeds (about 2 s).
+
+The hot tier's properties are stated exactly beside it, over a simulated
+regional bucket and a simulated hot bucket.
+`TestAMissIsFilledBehindTheReadAndTheNextReadHits`: a cold read misses the
+index object and the part, sends the regional bucket three GETs, the part
+once more by its fill, and the next read sends it none.
+`TestAPublicationWritesTheHotTierOnlyOnceItsRegionalPutSucceeded`: while a
+part's PUT is held for a second, the hot tier holds nothing of it, and a part
+the regional bucket refused never reaches it. `TestAHotTierThatFailsNeverFailsARead`:
+a hot bucket that is down, slower than the bound, holding other bytes, or
+holding half a part, costs only reads of the regional bucket, each failure
+counted by why. `TestAHotTierMarkedDownIsSkippedAndTriedAgain`,
+`TestAReadIsNotSlowedByItsHotTierFill` (a read behind a PUT of ten seconds
+takes exactly as long as behind one of a millisecond),
+`TestAPublicationIsNotSlowedByItsHotTierFill` (so does a publication, and as
+long as one that writes no hot tier),
+`TestTheHotTierDropsFillsPastItsQueueOrItsRate`,
+`TestAFillThatCannotReadOrWriteIsDroppedByWhy`,
+`TestTwoHostsFillingOneObjectWriteItOnce`, `TestASampledHotHitChecksItsRegionalObject`
+and `TestAStoreRefusesAHotTierBesideTheClusterCache` hold the rest.
+`TestAHotTierReadsAndFillsThroughEveryProvidersAdapter` in
+`platform/internal/real` misses, fills and hits a hot tier through the Cloud
+Storage and S3 adapters over their emulators. In `host`,
+`TestAVMOpenedOnAnotherHostReadsItsCheckpointFromTheHotTier` writes a VM on
+one host and reads it on another with three hits and no miss, and
+`TestAHostRefusesAHotTierBesideTheClusterCache` refuses both.
+`TestSeededTopologyFingerprintIsStable` runs each seed a third time with every
+host reading through a hot tier, and requires the hosts to have filled it and
+read from it. The world sets the hot tier's bound, rate, queue and sampled
+checks out of reach, as it does the cluster's timing. Seeds 1 to 25 of that
+arm did the same work under the shake (2026-10-03).
 
 The reads' properties are stated exactly beside it.
 `TestAPageInTheClusterIsReadWithNoStoreRead`: under 1+1, 2+2 round three and
@@ -2072,6 +2128,32 @@ whether or not another rank holds it: after a join, the new cache is sent an
 index a holder below it still holds. The last never checks a sampled hit's
 part.
 
+Five guards break the hot tier:
+
+```sh
+SPROUTFS_SIM_BUG=hot-tier-fill-before-durable \
+  go test ./checkpoint -run '^TestAPublicationWritesTheHotTierOnlyOnceItsRegionalPutSucceeded$' -count=1
+SPROUTFS_SIM_BUG=hot-tier-read-fails \
+  go test ./checkpoint -run '^TestAHotTierThatFailsNeverFailsARead$' -count=1
+SPROUTFS_SIM_BUG=hot-tier-beside-cluster \
+  go test ./checkpoint -run '^TestAStoreRefusesAHotTierBesideTheClusterCache$' -count=1
+SPROUTFS_SIM_BUG=hot-tier-fill-waits \
+  go test ./checkpoint -run '^(TestAReadIsNotSlowedByItsHotTierFill|TestAPublicationIsNotSlowedByItsHotTierFill)$' -count=1
+SPROUTFS_SIM_BUG=hot-tier-unbounded-queue \
+  go test ./checkpoint -run '^TestTheHotTierDropsFillsPastItsQueueOrItsRate$' -count=1
+```
+
+The first writes a part to the hot tier before its regional PUT has
+succeeded: the hot tier holds the part while that PUT is still in flight. The
+second fails a read whose hot tier failed, rather than read the regional
+bucket: a hot tier that is down, slow or holds other bytes fails the read.
+The third gives a store a hot tier beside a cache that fills the cluster. The
+fourth copies a missed object in front of the read, and writes a published
+one in front of the publication, which then wait ten seconds for a slow
+PUT. The fifth holds every fill whatever the queue's
+bound. The hot tier campaign (`TestHotTierSurvivesItsFaultsAndReachesItsProbes`)
+kills `hot-tier-read-fails` too.
+
 Five guards break the list of caches:
 
 ```sh
@@ -2460,6 +2542,34 @@ skip of a host the table has marked down, which fails at once if asked; the
 check that the reader is among a window's ranks, which only changes the asks
 of a reader holding stripes from an old placement; the spread of a probe's
 attempt count; and a repair's count of what is lacking when one index is.
+
+The hot tier is mutated the same way, and the tiers its reads run against
+with the whole package:
+
+```sh
+python3 scripts/mutate-gremlins.py --package checkpoint --suite full --file hottier.go \
+  --run '^(TestAMissIsFilled|TestAPublicationWritesTheHot|TestAHotTier|TestAReadIsNotSlowedByItsHotTierFill|TestTheHotTierDrops|TestTwoHostsFilling|TestASampledHotHit|TestAStoreRefusesAHotTier|TestHotTierSurvives|TestAFillThatCannot|TestAClosedHotTier|TestAPublicationIsNotSlowed)' \
+  --gremlins /path/to/gremlins --output /tmp/hot-tier-mutations
+python3 scripts/mutate-gremlins.py --package checkpoint --suite full --file tier.go \
+  --gremlins /path/to/gremlins --output /tmp/tier-mutations
+```
+
+On 2026-10-03 the first command first killed 49 of 77 mutants, with 8 alive,
+19 not covered and 1 timed out. A test of the fills dropped for a regional
+GET that failed and for a PUT the hot tier refused, whose counts no test
+read, and a test of the fills handed to a closed hot tier brought it to 51
+killed, 7 alive, 18 not covered and 1 timed out. Five of the survivors and
+the timeout are in the fault-injection sites and the short body one of them
+returns, which are off in a test that asserts behaviour. One makes `bug` read
+`h == nil`: every publication of a store with no hot tier then dereferences
+nil, which the rest of the package's tests catch and the selected tests do
+not run. One is the sampled check's `headEvery > 0` at zero, which the
+default never leaves. Of the 18 not covered, two are the defaults' constants,
+and the rest are `case` lines of `switch` statements the selected tests run:
+the queue's bound among them, which `hot-tier-unbounded-queue` shows a test
+holds. The second command killed 22 of 24. The two alive are bounds moved
+from the store unchanged: a read of exactly the largest extent, and an object
+of size zero.
 
 For test-only changes, select the production package whose behavior
 the tests exercise. `--package` includes subdirectories. Review the surviving
