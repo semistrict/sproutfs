@@ -2146,6 +2146,27 @@ python3 scripts/mutate-gremlins.py --package stripe --suite full --file stripe.g
   --gremlins /path/to/gremlins --output /tmp/stripe-mutations
 ```
 
+The fills are mutated the same way:
+
+```sh
+python3 scripts/mutate-gremlins.py --package checkpoint --suite full --file fill.go --file peercache.go \
+  --run '^(TestAStoreReadFills|TestAColdBurst|TestAFaultIsNot|TestAPublication|TestAPartTheStore|TestACacheKeeps|TestACacheRefuses|TestACacheDrops|TestRankOneGives|TestACacheReports|TestFillsSurvive|TestAPull|TestOnTwoHosts|TestAPulled|TestTheQueue|TestClosingTheCache|TestTheRateOfKeeps|TestAKeepIsWritten|TestAFillKeeps)' \
+  --gremlins /path/to/gremlins --output /tmp/fill-mutations
+```
+
+On 2026-10-03 it first killed 83 of 106 mutants, with 16 alive and 7 not
+covered. Tests of what the survivors changed brought it to 95 killed, 7 alive
+and 4 not covered: the queue's bound at exactly two windows, a cache closed
+under its fills, the rate's refill, items that do not fill a keep's payload,
+a fill of several pages of one window, a fill right for the last page of a
+window, and a keep written at its fill's priority. They also found that a
+write the disk failed was counted nowhere; it now counts as dropped. The rest
+change nothing a run can see: the default interval, which the tests name
+rather than repeat, the bug's own wait, which cache the ranks-change site
+takes off the list, a slice's capacity, a zero-sized item that fails its
+header anyway, an error message's arithmetic, and a refill of no time. Two
+`case` lines Gremlins reports uncovered are run by the refusal tests.
+
 The list of caches is mutated the same way. The orchestrator is a package
 below `cmd`, which Gremlins names wrongly on its own, so its run adds
 `--integration`:

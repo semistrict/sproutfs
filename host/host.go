@@ -14,9 +14,9 @@
 // guest.
 //
 // Hosts reach each other over Config.Network. A host holds no admitted
-// identity. Its one view of its peers is the list of caches it reads from the
-// orchestrator, which nothing dials yet: the only address it ever dials is the
-// peer-server address a handoff carries, and the peer server serves whoever
+// identity. It dials two kinds of address: the peer-server address a handoff
+// carries, and the addresses of the caches in the list of caches it reads
+// from the orchestrator, which its cache fills. The peer server serves whoever
 // that network's transport accepts. Over plain TCP that is anyone who reaches
 // the port, so restricting it to hosts is the cluster's network policy; a
 // deployment that authenticates its hosts does so in a transport of its own.

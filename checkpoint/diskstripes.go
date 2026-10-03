@@ -177,13 +177,21 @@ func (d *cacheDisk) write(ctx context.Context, key diskKey, envelope []byte, kin
 		sim.Probe(ctx, ProbeDiskSeveralStripes)
 	}
 	_, err = d.writeStripes(ctx, key, kept, kind)
+	if errors.Is(err, errDiskFailed) {
+		// The disk logged it; the store still holds the bytes.
+		return nil
+	}
 	return err
 }
+
+// errDiskFailed reports a write the disk failed, which it has logged and
+// forgotten: the store still holds what it would have kept.
+var errDiskFailed = errors.New("checkpoint: the page cache's disk failed a write")
 
 // writeStripes keeps stripes of key's envelope, as items next to each other
 // in one write, leaving out those the disk already holds, and reports how
 // many it wrote. A write the disk refuses reports ErrDiskRefused. A write the
-// disk fails is logged and forgotten, and reports nothing.
+// disk fails is logged and forgotten, and reports errDiskFailed.
 func (d *cacheDisk) writeStripes(ctx context.Context, key diskKey, stripes []stripe.Stripe, kind WriteKind) (int, error) {
 	for _, s := range stripes {
 		if !storableStripe(s) {
@@ -221,10 +229,13 @@ func (d *cacheDisk) writeStripes(ctx context.Context, key diskKey, stripes []str
 		return 0, d.refuse("the write budget refused %d bytes", size)
 	}
 	stored, err := d.append(ctx, key, missing, kind)
-	if !stored {
+	switch {
+	case err != nil:
 		return 0, err
+	case !stored:
+		return 0, errDiskFailed
 	}
-	return len(missing), err
+	return len(missing), nil
 }
 
 // holdsStripe reports whether the index holds the stripe code names of key's

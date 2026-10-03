@@ -5,9 +5,10 @@ network and one RAM allotment. The host has no durable local state. A VM's
 authority is the epoch in its [control record](metadata.md), and its data is the
 checkpoint that record selects. The host also has no identity of its own. Its
 page cache's disk has one, which names it in
-[the list of caches](#the-list-of-caches). The only address a host ever dials
-is the peer-server address that a [handoff](migration.md) carries. Who may
-reach that address is the [transport's](#transport) business.
+[the list of caches](#the-list-of-caches). A host dials the peer-server
+address that a [handoff](migration.md) carries, and the addresses of the
+caches in that list, which its cache [fills](#filling-the-cluster). Who may
+reach those addresses is the [transport's](#transport) business.
 
 ## Assembly
 

@@ -71,14 +71,16 @@ func TestRankOneGivesOneFillRightPerWindowPerInterval(t *testing.T) {
 		first := func(want bool) func(ranks []rank.Cache) bool {
 			return func(ranks []rank.Cache) bool { return (ranks[0].Identity == self) == want }
 		}
-		var mine, theirs diskKey
+		var mine, fresh, theirs diskKey
 		for at := range 4096 {
 			key := keyOf("vm", uint64(at)*512)
 			ranks := f.list.Ranks(key.rankWindow())
-			if first(true)(ranks) && mine == (diskKey{}) {
+			switch {
+			case first(true)(ranks) && mine == (diskKey{}):
 				mine = key
-			}
-			if first(false)(ranks) && theirs == (diskKey{}) {
+			case first(true)(ranks) && fresh == (diskKey{}):
+				fresh = key
+			case first(false)(ranks) && theirs == (diskKey{}):
 				theirs = key
 			}
 		}
@@ -109,8 +111,11 @@ func TestRankOneGivesOneFillRightPerWindowPerInterval(t *testing.T) {
 		if !right(mine, page, code) {
 			t.Fatal("rank 1 gave no right once the interval was over")
 		}
-		if right(theirs, page, code) || right(mine, page, rank.Code{K: 1, M: 1}) || right(mine, []uint32{512}, code) {
+		if right(theirs, page, code) || right(fresh, page, rank.Code{K: 1, M: 1}) || right(fresh, []uint32{512}, code) {
 			t.Fatal("a cache gave a right for a window it does not rank first, another code, or a page past the window")
+		}
+		if !right(fresh, []uint32{511}, code) {
+			t.Fatal("rank 1 gave no right for the last page of a window")
 		}
 		// Once it holds a stripe of the page asked for, it gives none.
 		if err := f.cache.Keep(t.Context(), keepOf(t, mine, code, []int{0})); err != nil {
@@ -120,8 +125,8 @@ func TestRankOneGivesOneFillRightPerWindowPerInterval(t *testing.T) {
 		if right(mine, page, code) {
 			t.Fatal("rank 1 gave the right to fill a page it holds")
 		}
-		if fill := f.cache.Stats().Fill; fill.RightsGranted != 2 {
-			t.Fatalf("rank 1 reports %d rights given, want 2", fill.RightsGranted)
+		if fill := f.cache.Stats().Fill; fill.RightsGranted != 3 {
+			t.Fatalf("rank 1 reports %d rights given, want 3", fill.RightsGranted)
 		}
 	})
 }
@@ -152,6 +157,12 @@ func TestACacheReportsItsPagesAndDropsAWrongStripe(t *testing.T) {
 		}
 		if got := f.held(third, code); !slices.Equal(got, []int{0}) {
 			t.Fatalf("after a drop of stripe 1 the cache holds %v, want stripe 0", got)
+		}
+		if err := f.cache.Drop(t.Context(), peer.Drop{Window: window, Page: 3, Index: 0, Code: code}); err != nil {
+			t.Fatal(err)
+		}
+		if got := f.held(third, code); len(got) != 0 {
+			t.Fatalf("after a drop of both stripes the cache holds %v", got)
 		}
 		if err := f.cache.Drop(t.Context(), peer.Drop{Window: window, Page: 3, Index: 2, Code: code}); err == nil {
 			t.Fatal("a drop of an index past the code was taken")

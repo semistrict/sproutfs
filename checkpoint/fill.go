@@ -85,7 +85,8 @@ const (
 	// DropDisk is this host's own disk refusing the write: its share, its
 	// write budget or its index.
 	DropDisk
-	// DropFailed is a keep that failed on its way.
+	// DropFailed is a fill that failed on its way: a keep whose request
+	// failed, a write the disk failed, or work the cache closed under.
 	DropFailed
 	dropReasons
 )
@@ -275,7 +276,7 @@ func (f *filler) close() {
 	f.group.Wait()
 }
 
-// stats is what the fills did.
+// statistics is what the fills did.
 func (f *filler) statistics() FillStats {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -379,9 +380,16 @@ func (f *filler) release(bytes int64) {
 	f.done()
 }
 
-// submit hands work reserve took room for to the worker.
+// submit hands work reserve took room for to the worker. Once the fills have
+// closed there is no worker, and the work runs here under their ended
+// context, which drops it and gives its room back.
 func (f *filler) submit(work func(context.Context)) {
 	f.mu.Lock()
+	if f.closed {
+		f.mu.Unlock()
+		work(f.ctx)
+		return
+	}
 	f.ready = append(f.ready, work)
 	f.mu.Unlock()
 	select {
