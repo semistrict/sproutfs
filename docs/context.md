@@ -254,4 +254,10 @@ the same list rank every window alike.
 
 **Code**: The deployment's erasure code: k data stripes and m parity stripes
 of each envelope, any k of which rebuild it. A code with k = 1 is whole copies.
-A host alone in its list uses 1+0, so it holds each envelope whole.
+A host alone in its list uses 1+0, so it holds each envelope whole. See
+[hosting](hosting.md#the-code).
+
+**Stripe**: One of the k+m pieces an envelope is cut into under the code. It
+names its index, its code and its envelope's length. Stripe i of a window's
+envelopes goes on rank ((i − 1) mod n) + 1 of its n ranked caches, so a cache
+may hold several indices of a window. A stripe of another code is a miss.

@@ -1,0 +1,95 @@
+package host_test
+
+import (
+	"context"
+	"testing"
+
+	"github.com/semistrict/sproutfs/checkpoint"
+	"github.com/semistrict/sproutfs/host"
+	"github.com/semistrict/sproutfs/rank"
+	"github.com/semistrict/sproutfs/resource"
+)
+
+// listedPull has the pulling host follow a list of caches under code: its
+// own cache, where withSelf says, and five others, with the cluster cache on
+// for percent of windows. The host's cache identity is read from its cache
+// file before it starts, which is the identity the host then reads back.
+func listedPull(t *testing.T, code rank.Code, withSelf bool, percent int) func(h *hostHarness) {
+	return func(h *hostHarness) {
+		h.configs[1].Cache.ClusterPercent = percent
+		budget, err := resource.New(4 << 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cache, err := checkpoint.NewCache(t.Context(), budget, h.configs[1].Cache)
+		if err != nil {
+			t.Fatal(err)
+		}
+		self := cache.Stats().Disk.Identity
+		cache.Close()
+		var caches []rank.Cache
+		if withSelf {
+			caches = append(caches, rank.Cache{Identity: self, Weight: 1, Address: "host-1-pages"})
+		}
+		for other := range byte(5) {
+			caches = append(caches, rank.Cache{Identity: rank.Identity{0xee, other + 1}, Weight: 1})
+		}
+		list, err := rank.NewList(code, caches)
+		if err != nil {
+			t.Fatal(err)
+		}
+		h.configs[1].CacheList = host.CacheListConfig{
+			Read: func(context.Context) (rank.List, error) { return list, nil }}
+	}
+}
+
+// With the cluster cache turned on for no window, which is what a deployment
+// runs until it rolls it out, a host in a list of six caches of 4+2 keeps a
+// pulled VM whole on its own disk, as it did before there were stripes: its
+// faults, and the faults of pages its pager evicted since, make no request of
+// the object store.
+func TestOutsideTheClusterShareAPulledVMIsKeptWhole(t *testing.T) {
+	counted, _, guest, _, h := pulledRunWith(t, 64<<20, listedPull(t, rank.Code{K: 4, M: 2}, true, 0))
+	if caches := h.hosts[1].Caches(); caches.Len() != 6 || caches.Code() != (rank.Code{K: 4, M: 2}) {
+		t.Fatalf("the host holds %d caches under %s, want six under 4+2", caches.Len(), caches.Code())
+	}
+	stats, err := h.hosts[1].WaitPulled(t.Context(), "vm-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stats.Done || stats.Err != nil || stats.Bytes == 0 || stats.Pulled != stats.Bytes {
+		t.Fatalf("the pull ended at %+v, want the whole checkpoint on the disk", stats)
+	}
+	counted.reset()
+	readPulled(t, guest)
+	readPulled(t, guest)
+	if gets := counted.count(); gets != 0 {
+		t.Fatalf("faulting a pulled VM's pages in twice made %d requests of the object store, want none", gets)
+	}
+	if disk := h.hosts[1].Status().Cache.Disk; disk.Hits != 2*pullPages+1 || disk.Lost != 0 ||
+		disk.Entries != pullPages+1 {
+		t.Fatalf("the page cache's disk reports %+v, want every page and the segment whole", disk)
+	}
+}
+
+// With the cluster cache on for every window, the host's disk places a
+// pulled VM by the list of caches the host reads: a list that does not rank
+// this host's cache keeps nothing of it here, and its faults read the store.
+func TestInsideTheClusterShareAPulledVMIsPlacedByTheHostsList(t *testing.T) {
+	counted, _, guest, _, h := pulledRunWith(t, 64<<20, listedPull(t, rank.Code{K: 4, M: 2}, false, 100))
+	stats, err := h.hosts[1].WaitPulled(t.Context(), "vm-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stats.Done || stats.Err != nil || stats.Bytes == 0 || stats.Pulled != 0 {
+		t.Fatalf("the pull ended at %+v, want it done with nothing kept", stats)
+	}
+	counted.reset()
+	readPulled(t, guest)
+	if gets := counted.count(); gets == 0 {
+		t.Fatal("a host that keeps nothing of a pulled VM read its pages with no request of the object store")
+	}
+	if disk := h.hosts[1].Status().Cache.Disk; disk.Entries != 0 || disk.Hits != 0 {
+		t.Fatalf("the page cache's disk reports %+v, want nothing kept and nothing served", disk)
+	}
+}

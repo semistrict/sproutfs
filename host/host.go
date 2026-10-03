@@ -404,6 +404,10 @@ func StartHost(ctx context.Context, config Config) (*Host, error) {
 	h.self = cacheOf(hostCtx, config, h.cache.Stats().Disk.Identity)
 	h.caches = rank.NewFollower(hostCtx, rank.FollowerConfig{Initial: rank.Alone(h.self),
 		Read: config.CacheList.Read, Interval: config.CacheList.Interval, Clock: h.clock})
+	// For the windows inside the cluster share, the disk keeps the stripes the
+	// list ranks this cache for, under the list's code; alone, that is every
+	// envelope whole. Every other window it keeps whole.
+	h.cache.FollowCaches(h.caches.List)
 	// Publication encodes and the fault path decodes through pools of their
 	// own, so a guest's page fault never waits behind a checkpoint's encoding.
 	codecs, err := blob.NewCodecs(encodeWorkers(), decodeWorkers())

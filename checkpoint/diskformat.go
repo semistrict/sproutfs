@@ -12,14 +12,15 @@ import (
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/rank"
+	"github.com/semistrict/sproutfs/stripe"
 )
 
 // The page cache's disk is a log of fixed-size disk regions. Each item in a
-// region is one envelope, stored with a header that names it:
+// region is one stripe of one envelope, stored with a header that names it:
 //
 //	offset size
 //	0      4    magic "SFCI"
-//	4      1    format version, 1
+//	4      1    format version, 2
 //	5      1    kind: 0 a page, 1 a segment
 //	6      1    the item's stripe index in its code
 //	7      1    k, the code's data stripes
@@ -31,11 +32,14 @@ import (
 //	16     8    the checkpoint's sequence
 //	24     8    the page, or the segment's number
 //	32     4    the length of the bytes that follow the names
-//	36     4    CRC32C of the header with this field zero, the names and the bytes
-//	40          the VM identity, the volume's name, then the bytes
+//	36     4    the length of the envelope the stripe is of
+//	40     4    CRC32C of the header with this field zero, the names and the bytes
+//	44          the VM identity, the volume's name, then the bytes
 //
-// A whole envelope is stripe 0 of the code 1+0. Striping changes the code and
-// the index, and nothing else of the format.
+// A whole envelope is stripe 0 of the code 1+0, and its bytes are the
+// envelope. The stripes are cut by package stripe; each is stored as it goes
+// on the wire, with what a reader needs to rebuild the envelope from any k.
+// Version 1 had no envelope length, and held whole envelopes only.
 //
 // A closed region ends with its table, then a fixed trailer:
 //
@@ -45,7 +49,7 @@ import (
 //
 //	trailer, the region's last 40 bytes:
 //	0  4 magic "SFCT"
-//	4  1 format version, 1
+//	4  1 format version, 2
 //	5  3 zero
 //	8  8 the region's sequence number
 //	16 8 the file's generation
@@ -63,7 +67,7 @@ import (
 // span, so every region starts on a region boundary:
 //
 //	0  4  magic "SFCH"
-//	4  1  format version, 1
+//	4  1  format version, 2
 //	5  3  zero
 //	8  8  the region size
 //	16 16 the cache's identity
@@ -80,15 +84,17 @@ import (
 // takes a new generation, so a table the old file left behind is never read
 // as one of the new file's, even where the device kept it.
 const (
-	diskFormatVersion = 1
-	diskItemFixed     = 40
+	diskFormatVersion = 2
+	diskItemFixed     = 44
 	diskTableFixed    = 34
 	diskTrailerSize   = 40
 	diskHeaderFixed   = 48
-	// maximumDiskItem is the longest envelope an item holds: what its length
+	// maximumDiskItem is the longest stripe an item holds: what its length
 	// field and the index's 24 bits of length both carry. A segment's or a
 	// 2 MiB page's envelope is far shorter.
 	maximumDiskItem = 1<<24 - 1
+	// itemChecksumAt is where an item's checksum lies in its header.
+	itemChecksumAt = 40
 )
 
 var (
@@ -106,6 +112,26 @@ type diskCode struct {
 
 // wholeEnvelope is the code of an item that is its envelope whole.
 var wholeEnvelope = diskCode{stripe: 0, k: 1, m: 0}
+
+// codeOf is where s sits in its code, as an item's header says it.
+func codeOf(s stripe.Stripe) diskCode {
+	return diskCode{stripe: uint8(s.Index), k: uint8(s.Code.K), m: uint8(s.Code.M)}
+}
+
+// indexOf is the item of index under code.
+func indexOf(code rank.Code, index int) diskCode {
+	return codeOf(stripe.Stripe{Code: code, Index: index})
+}
+
+// code is the erasure code an item's header names.
+func (c diskCode) code() rank.Code { return rank.Code{K: int(c.k), M: int(c.m)} }
+
+// storableStripe reports whether s is a stripe of its code an item holds: its
+// index and code fit a byte each, and its bytes an item, so its envelope, at
+// most k times as long, fits the header's 32 bits.
+func storableStripe(s stripe.Stripe) bool {
+	return s.Valid() && len(s.Bytes) <= maximumDiskItem
+}
 
 // errItemKey and errItemDamaged are the two ways an item read back fails its
 // checks: it names another key, or it is not what was written.
@@ -136,40 +162,61 @@ func kindOf(key diskKey) uint8 {
 	return 0
 }
 
-// encodeItem is one item as it lies on the disk: its header, then data.
-func encodeItem(key diskKey, code diskCode, data []byte) []byte {
+// encodeItem is one item as it lies on the disk: its header, then the
+// stripe's bytes. The stripe must be storable.
+func encodeItem(key diskKey, s stripe.Stripe) []byte {
+	return appendItem(nil, key, s)
+}
+
+// appendItem appends one item to items, as encodeItem lays it out.
+func appendItem(items []byte, key diskKey, s stripe.Stripe) []byte {
 	header := itemHeaderBytes(key)
-	item := make([]byte, header+int64(len(data)))
+	base := len(items)
+	items = append(items, make([]byte, header+int64(len(s.Bytes)))...)
+	item := items[base:]
 	copy(item[0:4], diskItemMagic[:])
 	item[4] = diskFormatVersion
 	item[5] = kindOf(key)
+	code := codeOf(s)
 	item[6], item[7], item[8] = code.stripe, code.k, code.m
 	binary.LittleEndian.PutUint16(item[10:], key.span)
 	binary.LittleEndian.PutUint16(item[12:], uint16(len(key.Ref.VM)))
 	binary.LittleEndian.PutUint16(item[14:], uint16(len(key.Volume)))
 	binary.LittleEndian.PutUint64(item[16:], key.Ref.Sequence)
 	binary.LittleEndian.PutUint64(item[24:], key.Page)
-	binary.LittleEndian.PutUint32(item[32:], uint32(len(data)))
+	binary.LittleEndian.PutUint32(item[32:], uint32(len(s.Bytes)))
+	binary.LittleEndian.PutUint32(item[36:], uint32(s.Length))
 	at := copy(item[diskItemFixed:], key.Ref.VM)
 	at += copy(item[diskItemFixed+at:], key.Volume)
-	copy(item[diskItemFixed+at:], data)
-	binary.LittleEndian.PutUint32(item[36:], crc32.Checksum(item, diskChecksum))
-	return item
+	copy(item[diskItemFixed+at:], s.Bytes)
+	binary.LittleEndian.PutUint32(item[itemChecksumAt:], crc32.Checksum(item, diskChecksum))
+	return items
 }
 
-// parsedItem is what an item read back says of itself.
+// parsedItem is what an item read back says of itself: its key, where it sits
+// in its code, the length of the envelope it is a stripe of, and its bytes.
 type parsedItem struct {
-	key  diskKey
-	code diskCode
-	data []byte
+	key      diskKey
+	code     diskCode
+	envelope int
+	data     []byte
+}
+
+// stripe is the stripe the item holds.
+func (p parsedItem) stripe() stripe.Stripe {
+	return stripe.Stripe{Code: p.code.code(), Index: int(p.code.stripe), Length: p.envelope, Bytes: p.data}
 }
 
 // itemLength is the whole length of the item whose header begins with fixed,
 // by what the header says. It reports false for a header that does not hold
-// together.
+// together, a stripe of no code among them.
 func itemLength(fixed []byte) (int64, bool) {
 	if len(fixed) < diskItemFixed || [4]byte(fixed[0:4]) != diskItemMagic || fixed[4] != diskFormatVersion ||
 		fixed[5] > 1 || fixed[9] != 0 {
+		return 0, false
+	}
+	if code := (diskCode{stripe: fixed[6], k: fixed[7], m: fixed[8]}); code.code().Validate() != nil ||
+		int(code.stripe) >= code.code().Width() {
 		return 0, false
 	}
 	return diskItemFixed + int64(binary.LittleEndian.Uint16(fixed[12:])) +
@@ -209,14 +256,15 @@ func parseItem(item []byte, skipChecksum bool) (parsedItem, error) {
 		return parsedItem{}, errItemDamaged
 	}
 	if !skipChecksum {
-		stored := binary.LittleEndian.Uint32(item[36:])
-		sum := crc32.Update(0, diskChecksum, item[:36])
+		stored := binary.LittleEndian.Uint32(item[itemChecksumAt:])
+		sum := crc32.Update(0, diskChecksum, item[:itemChecksumAt])
 		sum = crc32.Update(sum, diskChecksum, []byte{0, 0, 0, 0})
 		if crc32.Update(sum, diskChecksum, item[diskItemFixed:]) != stored {
 			return parsedItem{}, errItemDamaged
 		}
 	}
-	return parsedItem{key: key, code: diskCode{stripe: item[6], k: item[7], m: item[8]}, data: item[header:]}, nil
+	return parsedItem{key: key, code: diskCode{stripe: item[6], k: item[7], m: item[8]},
+		envelope: int(binary.LittleEndian.Uint32(item[36:])), data: item[header:]}, nil
 }
 
 // tableItem is one item a region's table names: its key, code, and where it
@@ -326,7 +374,8 @@ func readRegionTable(ctx context.Context, file platform.File, base, regionBytes 
 				span: binary.LittleEndian.Uint16(entry[4:])},
 			code:   diskCode{stripe: entry[1], k: entry[2], m: entry[3]},
 			offset: binary.LittleEndian.Uint32(entry[26:]), length: binary.LittleEndian.Uint32(entry[30:])}
-		if item.length > maximumDiskItem {
+		if item.length > maximumDiskItem || item.code.code().Validate() != nil ||
+			int(item.code.stripe) >= item.code.code().Width() {
 			return regionTable{}, errTornTable
 		}
 		items = append(items, item)

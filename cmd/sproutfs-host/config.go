@@ -215,6 +215,17 @@ func loadConfig(lookup func(string) string) (config, error) {
 	// is off unless a deployment gives it space, because that space comes out
 	// of the same node disk the spill file does.
 	c.CacheDiskBytes = number("SPROUTFS_CACHE_DISK_BYTES", 0)
+	// The cluster cache is rolled out a share of windows at a time. Outside
+	// the share, a window is kept whole on this host, whatever the list of
+	// caches says. Unset, no window is in it.
+	if value := text("SPROUTFS_CACHE_CLUSTER_PERCENT", ""); value != "" {
+		percent, err := strconv.Atoi(value)
+		if err != nil || percent < 0 || percent > 100 {
+			fail("SPROUTFS_CACHE_CLUSTER_PERCENT is %q, want 0 to 100", value)
+		} else {
+			c.CacheClusterPercent = percent
+		}
+	}
 	c.VMMemoryBytes = uint64(number("SPROUTFS_VM_MEMORY_BYTES", 512<<20))
 
 	// The disk limiter keeps every goal it is given: a floor of free bytes, a

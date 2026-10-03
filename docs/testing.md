@@ -1239,6 +1239,9 @@ caller:
 | `checkpoint/disk-failed-allocate` | Fails the allocation of a disk region as it opens |
 | `checkpoint/disk-torn-header` | Tears the page cache disk's header as the disk opens |
 | `checkpoint/disk-torn-table-on-open` | Tears a disk region's table as the disk opens and reads it back |
+| `checkpoint/disk-wrong-stripe` | Hands a read a stripe whose checksum holds and whose bytes are wrong, as a peer that answers with a wrong stripe does |
+| `checkpoint/disk-code-changed` | Reads under another code of the table than the list's, as after the deployment's code changed |
+| `checkpoint/disk-short-list` | Places a window by the list less every other cache, a list shorter than the code is wide |
 
 A simulated disk with `DiskConfig.ReadChaos` adds three sites of its own, as
 FoundationDB's `AsyncFileChaos` does. They are off on every other disk, because
@@ -1337,7 +1340,29 @@ requires every disk site to fire and every disk probe to be reached across
 the seeds. A test-only file under the cache, like FoundationDB's
 `AsyncFileWriteChecker`, keeps a copy of every byte written. So the test tells a
 disk that lied from a cache that misread: an item the cache refuses must be one
-the disk lied about to that read.
+the disk lied about to that read. Each test envelope ends in the SHA-256 of
+what comes before it, and a read checks that as an envelope's own check does,
+so another page's envelope passes it and only the key check refuses it.
+
+The disk's stripes mark five more: a write that kept several indices of one
+envelope, a read that rebuilt an envelope from a parity stripe, a read that
+found fewer than k stripes, a read that found the page only under another
+code, and a wrong stripe found and forgotten.
+`TestDiskStripesSurviveTheirFaultsAndReachTheirProbes` runs the same workload
+over a disk that follows a list of its own cache and one other, with the
+cluster cache on for every window, under a code of the table that changes
+with the seed (under 4+2 its cache is alone in the list, and holds all six
+indices). With the stripe sites on beside the others,
+every hit must be what was written, whichever k stripes rebuilt it, and the
+reads that rebuilt an envelope that failed its check must number no more than
+the stripes handed over wrong and the lies of the disk. Every stripe site must
+fire and every stripe probe be reached across its eight seeds. Splitting and
+joining are pure functions, so `stripe`'s property tests state them: every
+envelope of 0, 1 and up to 4,097 bytes rebuilds from every set of k of its
+k+m stripes, in any order, under 1+0, 1+1, 2+1, 2+2 and 4+2; one wrong stripe
+among k+1 is found wherever it falls among the first k; a stripe of another
+code is never used, though a stripe of 2+1 and one of 2+2 of one envelope are
+the same length; and the search for k that pass is bounded at 64 sets.
 
 `Runtime.Fingerprint` digests everything the simulated dependencies did: the
 resource, the operation, the outcome, the number of bytes, the order on each
@@ -1467,6 +1492,20 @@ SPROUTFS_SIM_BUG=diskcache-restart-ignores-deployment \
   go test ./checkpoint -run '^TestDiskEmptiesAFileThatIsNotItsOwn$' -count=1
 SPROUTFS_SIM_BUG=diskcache-restart-skips-scan \
   go test ./checkpoint -run '^TestDiskScansARegionWhoseTableIsTorn$' -count=1
+SPROUTFS_SIM_BUG=diskcache-mix-codes \
+  go test ./checkpoint -run '^TestDiskReadsNoStripeOfAnotherCode$' -count=1
+SPROUTFS_SIM_BUG=diskcache-one-stripe-a-page \
+  go test ./checkpoint -run '^TestDiskHoldsEveryIndexOfAPageRoundAShortList$' -count=1
+SPROUTFS_SIM_BUG=diskcache-stripes-not-round \
+  go test ./checkpoint -run '^TestDiskHoldsEveryIndexOfAPageRoundAShortList$' -count=1
+SPROUTFS_SIM_BUG=diskcache-keep-wrong-stripe \
+  go test ./checkpoint -run '^TestDiskFindsAndForgetsAWrongStripe$' -count=1
+SPROUTFS_SIM_BUG=diskcache-share-ignored \
+  go test ./checkpoint -run '^TestAPulledCheckpointIsKeptWholeOutsideTheClusterShare$' -count=1
+SPROUTFS_SIM_BUG=stripe-mix-codes \
+  go test ./stripe -run '^TestAStripeOfAnotherCodeIsNeverMixedIn$' -count=1
+SPROUTFS_SIM_BUG=stripe-stop-at-first-failure \
+  go test ./stripe -run '^TestOneWrongStripeAmongKPlusOneIsFound$' -count=1
 ```
 
 Each invocation must fail. Three of them belong to the generated schedule and
@@ -1486,14 +1525,22 @@ their cost.
 simulated filesystem from outside once the pager has started, and the guest's
 next spill then fails for want of space.
 
-The ten `diskcache-` guards break the page cache's disk. Each is killed by a
+The fifteen `diskcache-` guards break the page cache's disk. Each is killed by a
 test of the one property it breaks. `diskcache-table-before-sync` is killed
 twice. The close's operations are checked in order, and a power loss around
 the table write leaves a table naming items the device did not keep. The three
 `diskcache-restart-` guards break the disk's open after a restart: one indexes
 the region that was open, which has no table; one keeps a file of another
 deployment; and one gives back a region whose table is torn without scanning
-it. `pager-give-back-changed-copy` belongs to the generated schedule
+it. The four guards of the disk's stripes look a stripe up under any code,
+find a page's first item whatever index was asked for, put stripe i on rank
+i alone so a short list drops indices, and keep a stripe found wrong.
+`diskcache-share-ignored` places every window by the list of caches whatever
+share the cluster cache is on for, so a host whose list holds others keeps a
+pulled checkpoint as stripes it cannot rebuild alone. The two
+`stripe-` guards rebuild from a stripe of another code whose length fits, and
+give up when the first k fail instead of trying other sets.
+`pager-give-back-changed-copy` belongs to the generated schedule
 too. The recorded scenario runs no give-back. A campaign runs one at the end of
 one turn of its stores in four, as a host's interval would, and checks at once
 that every page its guest maps reads what the guest wrote. The guard gives back
@@ -1855,9 +1902,12 @@ suite. The page cache's disk is mutated this way:
 
 ```sh
 python3 scripts/mutate-gremlins.py --package checkpoint --suite full \
-  --file disk.go --file diskformat.go --file diskindex.go --file diskrestart.go --file pull.go \
-  --run '^(TestDisk|TestPull|TestAPull|TestAReadIsNot|TestALost|TestANewer)' \
+  --file disk.go --file diskformat.go --file diskindex.go --file diskrestart.go --file diskstripes.go \
+  --file pull.go \
+  --run '^(TestDisk|TestPull|TestAPull|TestOnTwoHosts|TestAReadIsNot|TestALost|TestANewer|TestADiskKeys)' \
   --gremlins /path/to/gremlins --output /tmp/disk-mutations
+python3 scripts/mutate-gremlins.py --package stripe --suite full --file stripe.go \
+  --gremlins /path/to/gremlins --output /tmp/stripe-mutations
 ```
 
 The list of caches is mutated the same way. The orchestrator is a package

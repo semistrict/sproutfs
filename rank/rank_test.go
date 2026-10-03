@@ -27,6 +27,39 @@ func listOf(t *testing.T, code Code, caches ...Cache) List {
 	return list
 }
 
+// The cluster cache is turned on for a share of windows by a hash of the
+// window: none at 0, every one at 100, and about the share in between, within
+// half a point over 100,000 windows. Raising the share only adds windows, so a
+// rollout never moves a window back out of the cluster.
+func TestTheClusterShareIsAShareOfWindows(t *testing.T) {
+	const windows = 100000
+	counts := make(map[int]int)
+	percents := []int{-5, 0, 1, 25, 50, 99, 100, 150}
+	for at := range uint64(windows) {
+		window := windowOf("vm-share", at/97+1, at)
+		previous := true
+		for _, percent := range slices.Backward(percents) {
+			in := window.InShare(percent)
+			if in && !previous {
+				t.Fatalf("window %d is in the share of %d percent and not in a larger one", at, percent)
+			}
+			previous = in
+			if in {
+				counts[percent]++
+			}
+		}
+	}
+	for _, percent := range percents {
+		want := min(max(percent, 0), 100) * windows / 100
+		if got := counts[percent]; math.Abs(float64(got-want)) > windows/200 {
+			t.Fatalf("a share of %d percent holds %d of %d windows, want %d", percent, got, windows, want)
+		}
+	}
+	if counts[0] != 0 || counts[-5] != 0 || counts[100] != windows || counts[150] != windows {
+		t.Fatalf("shares of 0 and 100 percent hold %d and %d windows, want none and all", counts[0], counts[100])
+	}
+}
+
 // windowOf is the window of one 2 MiB span of a VM's disk.
 func windowOf(vm string, sequence, span uint64) Window {
 	return Window{Ref: control.Ref{VM: vm, Sequence: sequence}, Volume: "disk", Number: span}

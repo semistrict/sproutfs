@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/semistrict/sproutfs/platform/sim"
+	"github.com/semistrict/sproutfs/rank"
 )
 
 // diskWorkload is a writer filling the disk with the pages of two VMs in turn,
@@ -111,23 +112,13 @@ func (w diskWorkload) run(t *testing.T, ctx context.Context, f *diskFixture) dis
 					back = int64(1 + random.Intn("oldest/"+id, int(written)))
 				}
 				key := keyOf(writers[which], uint64(written-back))
-				witnessCtx, witness := witnessed(ctx)
-				data, outcome := f.disk.read(witnessCtx, key)
+				outcome := readAndCheck(t, ctx, f, key, model[key], "")
+				if outcome == diskHit {
+					f.disk.served(key)
+				}
 				mu.Lock()
 				result.outcomes[outcome]++
 				mu.Unlock()
-				switch outcome {
-				case diskHit:
-					if !bytes.Equal(data, model[key]) {
-						t.Errorf("page %d of %s read back %d other bytes", key.Page, key.Ref.VM, len(data))
-					}
-					f.disk.served(key)
-				case diskKeyMismatch, diskDamaged:
-					if !witness.lied.Load() {
-						t.Errorf("the disk returned page %d of %s as written, and the cache refused it as %d",
-							key.Page, key.Ref.VM, outcome)
-					}
-				}
 			}
 		})
 	}
@@ -148,7 +139,35 @@ func (w diskWorkload) run(t *testing.T, ctx context.Context, f *diskFixture) dis
 	if w.restarts {
 		w.restart(t, ctx, f, model, &result)
 	}
+	// Stripes that pass their own checks rebuild an envelope that fails its
+	// check only where a stripe was handed over wrong, or the disk lied.
+	if wrong, caused := uint64(result.outcomes[diskWrongStripe]),
+		f.runtime.FiredSites()[buggifyDiskWrongStripe]+uint64(f.file.lied()); wrong > caused {
+		t.Errorf("%d reads rebuilt envelopes that failed their check, and only %d stripes were wrong", wrong, caused)
+	}
 	return result
+}
+
+// readAndCheck reads key as a reader does, under the check an envelope's
+// SHA-256 makes, and checks what it found: a hit is what was written, and an
+// item refused for its key or its checksum is one the disk lied about to that
+// read.
+func readAndCheck(t *testing.T, ctx context.Context, f *diskFixture, key diskKey, want []byte,
+	when string) diskReadOutcome {
+	witnessCtx, witness := witnessed(ctx)
+	data, outcome := f.disk.read(witnessCtx, key, selfChecked)
+	switch outcome {
+	case diskHit:
+		if !bytes.Equal(data, want) {
+			t.Errorf("%spage %d of %s read back %d other bytes", when, key.Page, key.Ref.VM, len(data))
+		}
+	case diskKeyMismatch, diskDamaged:
+		if !witness.lied.Load() {
+			t.Errorf("%sthe disk returned page %d of %s as written, and the cache refused it as %d", when,
+				key.Page, key.Ref.VM, outcome)
+		}
+	}
+	return outcome
 }
 
 // restart opens the disk again after a clean close, then fills a region of a
@@ -173,20 +192,7 @@ func (w diskWorkload) restart(t *testing.T, ctx context.Context, f *diskFixture,
 			return
 		}
 		for _, key := range keysOf(model) {
-			witnessCtx, witness := witnessed(ctx)
-			data, outcome := f.disk.read(witnessCtx, key)
-			result.outcomes[outcome]++
-			switch outcome {
-			case diskHit:
-				if !bytes.Equal(data, model[key]) {
-					t.Errorf("after a restart page %d of %s read back %d other bytes", key.Page, key.Ref.VM, len(data))
-				}
-			case diskKeyMismatch, diskDamaged:
-				if !witness.lied.Load() {
-					t.Errorf("after a restart the disk returned page %d of %s as written, and the cache refused it as %d",
-						key.Page, key.Ref.VM, outcome)
-				}
-			}
+			result.outcomes[readAndCheck(t, ctx, f, key, model[key], "after a restart ")]++
 		}
 		f.disk.checkInvariants(t)
 	}
@@ -280,16 +286,24 @@ var diskCampaignSeeds = []uint64{1, 2, 3, 4, 5, 6, 7, 8}
 // from one the cache misread. Across the seeds every site fires and every
 // probe is reached, because a fault nothing drives proves nothing.
 func TestDiskSurvivesItsFaultsAndReachesItsProbes(t *testing.T) {
+	diskCampaign(t, diskCampaignSeeds, func(uint64) diskFixtureConfig {
+		return diskFixtureConfig{regions: 6, disk: sim.DiskConfig{ReadChaos: true, ReadLatency: 2 * time.Millisecond}}
+	}, slices.Concat(diskSites, diskProbes))
+}
+
+// diskCampaign runs the campaign's workload over the disk config gives each
+// seed, with the sites on and every completion released by the seed's
+// scheduler, and requires every site and probe of reached to be reached
+// across the seeds.
+func diskCampaign(t *testing.T, seeds []uint64, config func(seed uint64) diskFixtureConfig, reached []string) {
 	workload := diskWorkload{writes: 200, reads: 200, fits: 4,
 		length: func(page uint64) int { return 1500 + int(page*97%1500) }, restarts: true}
 	probes := make(map[string]uint64)
 	fired := make(map[string]uint64)
-	for _, seed := range diskCampaignSeeds {
+	for _, seed := range seeds {
 		t.Run(fmt.Sprintf("seed-%d", seed), func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				f, result := scheduledDisk(t, seed, true,
-					diskFixtureConfig{regions: 6, disk: sim.DiskConfig{ReadChaos: true, ReadLatency: 2 * time.Millisecond}},
-					workload)
+				f, result := scheduledDisk(t, seed, true, config(seed), workload)
 				if result.outcomes[diskHit] == 0 {
 					t.Fatalf("the campaign served %v, want hits", result.outcomes)
 				}
@@ -300,7 +314,7 @@ func TestDiskSurvivesItsFaultsAndReachesItsProbes(t *testing.T) {
 		})
 	}
 	var missed []string
-	for _, name := range slices.Concat(diskSites, diskProbes) {
+	for _, name := range reached {
 		if probes[name]+fired[name] == 0 {
 			missed = append(missed, name)
 		}
@@ -308,6 +322,41 @@ func TestDiskSurvivesItsFaultsAndReachesItsProbes(t *testing.T) {
 	if len(missed) != 0 {
 		t.Fatalf("the campaign never reached %v; it reached probes %v and fired %v", missed, probes, fired)
 	}
+}
+
+// stripeSites are the fault-injection sites the stripe campaign must fire.
+var stripeSites = []string{buggifyDiskWrongStripe, buggifyDiskCodeChanged, buggifyDiskShortList}
+
+// stripeProbes are the probes the stripe campaign must reach.
+var stripeProbes = []string{
+	ProbeDiskSeveralStripes, ProbeDiskStripesDecoded, ProbeDiskTooFewStripes, ProbeDiskStripeOfAnotherCode,
+	ProbeDiskWrongStripe,
+}
+
+// stripeCampaignSeeds are the seeds the stripe campaign runs, which between
+// them activate every stripe site.
+var stripeCampaignSeeds = []uint64{1, 2, 3, 4, 5, 6, 7, 8}
+
+// The same campaign over a disk that keeps stripes. Its list holds its own
+// cache and one other under a code of the table, a different one each seed,
+// so the disk holds one or two indices of a window, sometimes fewer than k.
+// Under 4+2 its own cache is alone in the list, and holds all six. The stripe
+// sites hand a read a stripe whose checksum holds and
+// whose bytes are wrong, read under another code than the fill wrote, and
+// place a window by a list shorter than the code is wide, so the disk holds
+// every index. Every hit is what was written, whichever k stripes rebuilt
+// it, and a read that rebuilt an envelope that failed its check counts
+// against a stripe handed over wrong or a lie of the disk.
+func TestDiskStripesSurviveTheirFaultsAndReachTheirProbes(t *testing.T) {
+	diskCampaign(t, stripeCampaignSeeds, func(seed uint64) diskFixtureConfig {
+		code := stripeCodes[seed%uint64(len(stripeCodes))]
+		others := []CacheIdentity{otherCache}
+		if code.K > 2 {
+			others = nil
+		}
+		return diskFixtureConfig{regions: 6, disk: sim.DiskConfig{ReadChaos: true, ReadLatency: 2 * time.Millisecond},
+			clusterPercent: 100, caches: func(self CacheIdentity) rank.List { return listOf(code, self, others...) }}
+	}, slices.Concat(stripeSites, stripeProbes))
 }
 
 func addCounts(into, from map[string]uint64) map[string]uint64 {
@@ -339,7 +388,7 @@ func TestDiskPowerLossAroundClosingARegion(t *testing.T) {
 					}
 					for _, key := range keys {
 						witnessCtx, _ := witnessed(f.ctx(t))
-						if data, outcome := f.disk.read(witnessCtx, key); outcome == diskHit &&
+						if data, outcome := f.disk.read(witnessCtx, key, nil); outcome == diskHit &&
 							!bytes.Equal(data, f.model[key]) {
 							t.Fatalf("page %d read back other bytes after the power loss", key.Page)
 						}

@@ -276,10 +276,10 @@ func (r *recovery) keep(ctx context.Context, slot int64, sequence uint64, items 
 	d := r.d
 	region := &diskRegion{slot: slot, base: d.base(slot), sequence: sequence}
 	for _, item := range items {
-		if _, found := d.index.lookup(item.key); found {
+		if _, found := d.index.lookup(item.key, item.code, false, false); found {
 			continue
 		}
-		d.index.insert(item.key, region, region.base+int64(item.offset), int64(item.length))
+		d.index.insert(item.key, item.code, region, region.base+int64(item.offset), int64(item.length))
 	}
 	if d.index.used > d.indexLimit {
 		d.index.dropRegion(region)

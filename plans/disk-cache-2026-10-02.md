@@ -440,7 +440,10 @@ keyed by an 8-byte hash of its identity. The key check on every read catches a
 collision. An entry holds the region, the window's first offset, which pages
 are present and each present stripe's length, about 4 bytes a page. A window
 with few pages present holds a short list of (page, length) instead, so a
-guest that faults scattered pages does not pay a whole entry per page. Each
+guest that faults scattered pages does not pay a whole entry per page. A host
+that holds several indices of a window, round a list shorter than k+m, writes
+them next to each other in index order, so the window still costs one entry.
+Each
 stripe also has a small read counter (see below), which the index's budget
 counts. A window filled at two different times has an entry for each region it
 is in. The index is charged to the host's memory budget, and the cache refuses
@@ -758,7 +761,9 @@ Each step is its own commit, with its tests and its docs.
     volume on the node's SSD, and sets a space goal and a write budget instead
     of a cap. A setting turns the cluster cache on for a share of windows, by
     a hash of the window, so it can be rolled out gradually, as mcrouter's
-    shadowing does. `docs/architecture.md`, `docs/hosting.md`,
+    shadowing does. The setting was built with step 5
+    (`SPROUTFS_CACHE_CLUSTER_PERCENT`), off by default, so that no deployment
+    reads less from its own disk before step 7; this step raises it. `docs/architecture.md`, `docs/hosting.md`,
     `docs/volumes.md`, `docs/vm-memory.md`, `docs/migration.md` and
     `docs/context.md` describe the cache as it is.
 

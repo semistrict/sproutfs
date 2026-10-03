@@ -51,6 +51,14 @@ func newPullFixture(t *testing.T, diskBytes int64) *pullFixture {
 // of which the checkpoint publishes pages.
 func newPullFixtureOf(t *testing.T, diskBytes int64, volumePages uint64, pages []uint64) *pullFixture {
 	t.Helper()
+	return newPullFixtureWith(t, diskBytes, volumePages, pages, nil)
+}
+
+// newPullFixtureWith is newPullFixtureOf with a last say over its cache's
+// configuration.
+func newPullFixtureWith(t *testing.T, diskBytes int64, volumePages uint64, pages []uint64,
+	configure func(config *checkpoint.CacheConfig)) *pullFixture {
+	t.Helper()
 	runtime := sim.New(sim.Config{})
 	disk := runtime.NewDisk("host", sim.DiskConfig{})
 	file, err := disk.Open(t.Context(), "cache", platform.OpenOptions{Create: true, Truncate: true})
@@ -61,8 +69,11 @@ func newPullFixtureOf(t *testing.T, diskBytes int64, volumePages uint64, pages [
 	if err != nil {
 		t.Fatal(err)
 	}
-	cache, err := checkpoint.NewCache(t.Context(), budget, checkpoint.CacheConfig{Disk: file, DiskBytes: diskBytes,
-		DiskRegionBytes: pullRegionBytes})
+	config := checkpoint.CacheConfig{Disk: file, DiskBytes: diskBytes, DiskRegionBytes: pullRegionBytes}
+	if configure != nil {
+		configure(&config)
+	}
+	cache, err := checkpoint.NewCache(t.Context(), budget, config)
 	if err != nil {
 		t.Fatal(err)
 	}

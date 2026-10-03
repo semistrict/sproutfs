@@ -29,7 +29,7 @@ func (f *diskFixture) fill(t *testing.T, keys []diskKey) {
 // requireHeld requires the disk to hold exactly the keys of want among keys.
 func (f *diskFixture) requireHeld(t *testing.T, keys []diskKey, want func(diskKey) bool) {
 	t.Helper()
-	for at, held := range f.held(keys) {
+	for at, held := range f.held(f.ctx(t), keys) {
 		if held != want(keys[at]) {
 			t.Errorf("the disk holds page %d of %s: %v, want %v", keys[at].Page, keys[at].Ref.VM, held,
 				want(keys[at]))
@@ -68,12 +68,12 @@ func TestDiskRegionsFillInOrderAndCloseWithATable(t *testing.T) {
 				table.sequence, table.generation, len(table.items), f.disk.generation, testItemsPerRegion)
 		}
 		for at, item := range table.items {
-			wantItem := tableItem{key: keys[at], code: wholeEnvelope, offset: uint32(at * 3046),
+			wantItem := tableItem{key: keys[at], code: wholeEnvelope, offset: uint32(at * 3050),
 				length: testItemBytes}
 			if item != wantItem {
 				t.Fatalf("the table's item %d is %+v, want %+v", at, item, wantItem)
 			}
-			buffer := make([]byte, 3046)
+			buffer := make([]byte, 3050)
 			if err := readFull(t.Context(), f.file, buffer, regionBase(0)+int64(item.offset)); err != nil {
 				t.Fatal(err)
 			}
@@ -91,10 +91,10 @@ func TestDiskRegionsFillInOrderAndCloseWithATable(t *testing.T) {
 		wantOps := []string{fmt.Sprintf("write 0+%d", diskHeaderBytes(testDeployment)), "sync",
 			"allocate 65536+65536"}
 		for at := range testItemsPerRegion {
-			wantOps = append(wantOps, fmt.Sprintf("write %d+3046", 65536+at*3046))
+			wantOps = append(wantOps, fmt.Sprintf("write %d+3050", 65536+at*3050))
 		}
 		// The table is 21 entries of 40 bytes and the trailer of 40.
-		wantOps = append(wantOps, "sync", "write 130192+880", "sync", "allocate 131072+65536", "write 131072+3046")
+		wantOps = append(wantOps, "sync", "write 130192+880", "sync", "allocate 131072+65536", "write 131072+3050")
 		if ops := f.file.operations(); !slices.Equal(ops[:len(wantOps)], wantOps) {
 			t.Fatalf("the disk saw %q, want %q", ops, wantOps)
 		}
@@ -109,17 +109,17 @@ func TestDiskReadChecksKeyAndChecksum(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			f := newDiskFixture(t, diskFixtureConfig{regions: 8})
 			f.fill(t, pages("va", 0, 2))
-			// One byte of the second item's envelope, past its 46-byte header.
-			if _, err := f.file.file().WriteAt(t.Context(), []byte{0xff}, regionBase(0)+3046+46+10); err != nil {
+			// One byte of the second item's envelope, past its 50-byte header.
+			if _, err := f.file.file().WriteAt(t.Context(), []byte{0xff}, regionBase(0)+3050+50+10); err != nil {
 				t.Fatal(err)
 			}
-			if data, outcome := f.disk.read(f.ctx(t), keyOf("va", 1)); outcome != diskDamaged || data != nil {
+			if data, outcome := f.disk.read(f.ctx(t), keyOf("va", 1), nil); outcome != diskDamaged || data != nil {
 				t.Fatalf("reading the damaged item found %d and %d bytes, want it damaged", outcome, len(data))
 			}
 			if stats := f.disk.stats(); stats.Lost != 1 || stats.Entries != 1 {
 				t.Fatalf("the disk reports %+v, want one copy lost and one held", stats)
 			}
-			if _, outcome := f.disk.read(f.ctx(t), keyOf("va", 1)); outcome != diskAbsent {
+			if _, outcome := f.disk.read(f.ctx(t), keyOf("va", 1), nil); outcome != diskAbsent {
 				t.Fatalf("reading the forgotten item again found %d, want it absent", outcome)
 			}
 			f.read(t, keyOf("va", 0))
@@ -133,18 +133,18 @@ func TestDiskReadChecksKeyAndChecksum(t *testing.T) {
 			// The index sends a read of va's page to vb's item, of the same
 			// length under a header of the same length.
 			f.disk.mu.Lock()
-			misdirected, _ := f.disk.index.lookup(keyOf("va", 0))
-			other, _ := f.disk.index.lookup(keyOf("vb", 0))
+			misdirected, _ := f.disk.index.lookup(keyOf("va", 0), wholeEnvelope, false, false)
+			other, _ := f.disk.index.lookup(keyOf("vb", 0), wholeEnvelope, false, false)
 			misdirected.entry.first = other.offset
 			f.disk.mu.Unlock()
-			if data, outcome := f.disk.read(f.ctx(t), keyOf("va", 0)); outcome != diskKeyMismatch || data != nil {
+			if data, outcome := f.disk.read(f.ctx(t), keyOf("va", 0), nil); outcome != diskKeyMismatch || data != nil {
 				t.Fatalf("a misdirected read found %d and %d bytes, want another key's item refused", outcome,
 					len(data))
 			}
 			if stats := f.disk.stats(); stats.Lost != 1 || stats.Entries != 1 {
 				t.Fatalf("the disk reports %+v, want one copy lost and one held", stats)
 			}
-			if f.disk.has(keyOf("va", 0)) {
+			if f.disk.has(f.ctx(t), keyOf("va", 0)) {
 				t.Fatal("the disk still names the misdirected item")
 			}
 			f.read(t, keyOf("vb", 0))
@@ -220,7 +220,7 @@ func TestDiskSecondChanceIsBoundedAtHalfARegion(t *testing.T) {
 			f.read(t, key)
 		}
 		f.fill(t, keys[63:])
-		// Ten items of 3,046 bytes are 30,460 of the half region's 32,768.
+		// Ten items of 3,050 bytes are 30,500 of the half region's 32,768.
 		if stats := f.disk.stats(); stats.Rewritten != 10 || stats.Evicted != 1 || stats.Regions != 3 {
 			t.Fatalf("the eviction left %+v, want ten items written again and one region evicted", stats)
 		}
@@ -324,7 +324,7 @@ func TestDiskEvictionAlwaysGivesSpaceBack(t *testing.T) {
 				for op := range 1500 {
 					if len(written) > 0 && random.Chance(fmt.Sprintf("read/%d", op), 0.3) {
 						key := written[random.Intn(fmt.Sprintf("which/%d", op), len(written))]
-						if data, outcome := f.disk.read(f.ctx(t), key); outcome == diskHit {
+						if data, outcome := f.disk.read(f.ctx(t), key, nil); outcome == diskHit {
 							if !bytes.Equal(data, f.model[key]) {
 								t.Fatalf("page %d read back other bytes", key.Page)
 							}
@@ -337,7 +337,7 @@ func TestDiskEvictionAlwaysGivesSpaceBack(t *testing.T) {
 					size := itemHeaderBytes(key) + int64(length)
 					f.disk.mu.Lock()
 					full := f.disk.open == nil || !f.disk.open.fits(size, tableEntryBytes(key), testRegionBytes)
-					_, present := f.disk.index.lookup(key)
+					_, present := f.disk.index.lookup(key, wholeEnvelope, false, false)
 					f.disk.mu.Unlock()
 					before := f.disk.stats()
 					f.write(t, key, length)
@@ -356,7 +356,7 @@ func TestDiskEvictionAlwaysGivesSpaceBack(t *testing.T) {
 				}
 				// Each write under pressure gave back exactly the one region
 				// its second chance left room for.
-				want := map[uint64]int{1: 53, 2: 53, 3: 55, 4: 57}[seed]
+				want := map[uint64]int{1: 54, 2: 53, 3: 55, 4: 57}[seed]
 				if evicted := f.disk.stats().Evicted; pressured != want || evicted != uint64(want) {
 					t.Fatalf("%d writes found the disk under pressure and %d regions went, want %d of each",
 						pressured, evicted, want)
@@ -382,7 +382,7 @@ func TestDiskReadInFlightKeepsItsRegion(t *testing.T) {
 		}
 		done := make(chan result, 1)
 		go func() {
-			data, outcome := f.disk.read(f.ctx(t), keys[5])
+			data, outcome := f.disk.read(f.ctx(t), keys[5], nil)
 			done <- result{data, outcome}
 		}()
 		<-gate.entered
@@ -393,7 +393,7 @@ func TestDiskReadInFlightKeepsItsRegion(t *testing.T) {
 		if stats := f.disk.stats(); stats.Evicted != 1 || stats.Regions != 3 || stats.Entries != 22 {
 			t.Fatalf("with a read in flight the eviction left %+v, want the region held and unnamed", stats)
 		}
-		if f.disk.has(keys[5]) {
+		if f.disk.has(f.ctx(t), keys[5]) {
 			t.Fatal("the index still names an evicted region's item")
 		}
 		if probes := f.runtime.Probes(); probes[ProbeDiskEvictionWaitsForReader] != 1 {

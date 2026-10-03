@@ -858,7 +858,10 @@ The copy lives in the [page cache's disk](volumes.md#the-page-caches-disk),
 keyed by page identity. Once it is complete, a fault on a page that is not
 resident reads the disk and makes no request of the object store, while the
 disk holds that page. That holds for a page the guest never touched and for
-one the pager evicted since.
+one the pager evicted since. With the cluster cache off, as a deployment
+runs it today, every page is kept whole on this disk. A window inside the
+share the cluster cache is turned on for keeps only the stripes the list of
+caches ranks this host for ([the code](#the-code)).
 
 - **The guest runs while the copy is made.** The pull starts when the machine
   is registered, after its VMM runs. A fault is never queued behind it: the
@@ -939,8 +942,9 @@ page cache's (`Resources.CacheDiskUsed`).
 The hosts' disks are to become one cache for the cluster
 ([the plan](../plans/disk-cache-2026-10-02.md)). For that, every host must know
 every cache, and which caches hold each window. The list and the ranks below
-are that. Nothing reads from a peer yet, and no host stores anything it did not
-store before.
+are that. For the windows the cluster cache is turned on for, a host keeps on
+its own disk the stripes the list ranks its cache for ([the code](#the-code)).
+Nothing reads from a peer or fills one yet.
 
 **A host's cache.** A host with a page cache disk reports its cache in
 `/status`, under `cache`:
@@ -1003,7 +1007,69 @@ ranked 1 to k+m. `List.Holders` puts stripe i on rank ((i − 1) mod n) + 1, so 
 list shorter than k+m takes the stripes round its caches. The scores are
 compared in integer arithmetic, with a fixed-point logarithm, so hosts of
 different architectures rank alike. A host alone ranks first for every window,
-and its one stripe is the envelope whole, which is what every host does today.
+and its one stripe is the envelope whole.
+
+## The code
+
+Each envelope in the cluster cache is cut into the stripes of an erasure code,
+by Reed-Solomon (package `stripe`, over `github.com/klauspost/reedsolomon`,
+MIT). Under the code k+m, the envelope is split into k data stripes of equal
+length, the last padded with zeros, and m parity stripes are computed from
+them. Any k distinct indices rebuild it. The code is systematic: stripes 0 to
+k − 1 are the envelope itself, so a reader that has them does no decoding. A
+code with k = 1 is whole copies: every stripe is the envelope, so 1+1 is two
+copies, with no second mechanism for replication.
+
+The code is a deployment setting, the orchestrator's `SPROUTFS_CACHE_CODE`
+([the list of caches](#the-list-of-caches)), and every host reads it with the
+list. An operator sets it for the size the cluster usually runs at:
+
+| Hosts | Code | Extra disk | Survives |
+| --- | --- | --- | --- |
+| 1 | 1+0 | none | nothing: a single host has no peer |
+| 2 | 1+1 | 100 % | one host lost or slow |
+| 3 | 2+1 | 50 % | one host lost or slow |
+| 4 or 5 | 2+2 | 100 % | two hosts lost or slow |
+| 6 or more | 4+2 | 50 % | two hosts lost or slow |
+
+**The share it is on for.** The cluster cache is rolled out a share of
+windows at a time: `SPROUTFS_CACHE_CLUSTER_PERCENT`, 0 to 100, and 0 when
+unset (`CacheConfig.ClusterPercent`). A window is inside the share by a hash
+of the window, so every host puts it on the same side, and raising the share
+only adds windows. A window outside the share is kept whole on the host that
+reads it, under 1+0, whatever the list says, exactly as before there were
+stripes; only the windows inside it are placed by the list's ranks and code.
+The deployment leaves it at 0 until hosts read stripes from each other, so
+that no deployment of three hosts or more, whose list holds other caches,
+reads from the store a pulled page it read from its own disk before.
+
+**What a host keeps.** For each window inside the share, `List.Holders` puts
+stripe i on rank ((i − 1) mod n) + 1 of the window's n ranked caches. A host
+keeps every index
+whose holder is its own cache, under the list's code, and nothing of a window
+the list does not rank it for. A list shorter than k+m takes the stripes round
+its caches, so a host may hold several indices of one window; with 4+2 on five
+hosts, any one host can still be lost. A host alone holds each envelope whole,
+under 1+0. Each stripe is stored as an item that names its index, its code and
+its envelope's length ([the page cache's disk](volumes.md#the-page-caches-disk)).
+
+**What a read takes.** A read asks the disk for every index it holds of the
+code the window is kept under, the list's inside the share and 1+0 outside, checks each item's key, index, code and checksum, and rebuilds the
+envelope from the first k that pass. It then checks the envelope's SHA-256 as a
+read of the store does. If that fails with more than k stripes in hand, it
+rebuilds from other sets of k, at most 64 of them, and the stripes that do not
+match the envelope that passed are named wrong and forgotten. With exactly k,
+which one is wrong cannot be told, and all are forgotten. A stripe of another
+code is a miss and never part of an envelope, so a deployment that changes
+its code refills from the store and reads no wrong bytes.
+
+Nothing is read from a peer or sent to one yet. Inside the share, a host whose
+own stripes do not make k reads the page from the store. So under 1+1 every
+host reads its windows from its own disk, and under 2+1 and wider a host reads
+from its disk only the windows it holds k indices of. On a 2 MiB envelope, cutting the
+stripes of 4+2 takes 0.17 ms and rebuilding from four stripes 0.07 ms, or
+0.19 ms with two of them parity; on a 4 KiB envelope, 1.0 µs, 0.6 µs and
+1.4 µs (Apple M5 Pro, `go test ./stripe -bench .`).
 
 ## Nested VMs
 

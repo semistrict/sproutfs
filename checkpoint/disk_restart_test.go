@@ -9,6 +9,7 @@ import (
 	"testing/synctest"
 
 	"github.com/semistrict/sproutfs/platform/sim"
+	"github.com/semistrict/sproutfs/stripe"
 )
 
 // reopen opens a new cache disk over the fixture's file, as a host that
@@ -143,7 +144,7 @@ func (f *diskFixture) tearTable(t *testing.T, slot int64) {
 // testItemBytes items in slot.
 func (f *diskFixture) damageItem(t *testing.T, slot int64, at int) {
 	t.Helper()
-	offset := regionBase(slot) + int64(at)*(46+testItemBytes) + 46 + 7
+	offset := regionBase(slot) + int64(at)*(50+testItemBytes) + 50 + 7
 	buffer := make([]byte, 1)
 	if err := readFull(t.Context(), f.file, buffer, offset); err != nil {
 		t.Fatal(err)
@@ -384,7 +385,7 @@ func TestDiskRestartKeepsTheNewerCopy(t *testing.T) {
 		// The first region's first item is written again into the third,
 		// as a second chance does, and the host stops before the first is
 		// given back.
-		if _, err := f.disk.append(f.ctx(t), keys[0], f.model[keys[0]], WriteSecondChance); err != nil {
+		if _, err := f.disk.append(f.ctx(t), keys[0], []stripe.Stripe{whole(f.model[keys[0]])}, WriteSecondChance); err != nil {
 			t.Fatal(err)
 		}
 		f.disk.shutdown(f.ctx(t))
@@ -393,7 +394,7 @@ func TestDiskRestartKeepsTheNewerCopy(t *testing.T) {
 			t.Fatalf("the restart read back %+v, want three regions and each item once", got)
 		}
 		f.disk.mu.Lock()
-		location, _ := f.disk.index.lookup(keys[0])
+		location, _ := f.disk.index.lookup(keys[0], wholeEnvelope, false, false)
 		slot := location.entry.region.slot
 		f.disk.mu.Unlock()
 		if slot != 2 {
@@ -435,14 +436,14 @@ func powerLossRestart(t *testing.T, seed uint64, moment func(*sim.Runtime) int) 
 	var open []diskKey
 	f.disk.mu.Lock()
 	for _, key := range written {
-		if location, found := f.disk.index.lookup(key); found && location.entry.region == f.disk.open {
+		if location, found := f.disk.index.lookup(key, wholeEnvelope, false, false); found && location.entry.region == f.disk.open {
 			open = append(open, key)
 		}
 	}
 	f.disk.mu.Unlock()
 	f.reopen(t)
 	for _, key := range open {
-		if f.disk.has(key) {
+		if f.disk.has(f.ctx(t), key) {
 			t.Errorf("page %d of the region open at the loss is still held", key.Page)
 		}
 	}
@@ -452,14 +453,14 @@ func powerLossRestart(t *testing.T, seed uint64, moment func(*sim.Runtime) int) 
 			continue
 		}
 		for _, item := range table.items {
-			if data, outcome := f.disk.read(f.ctx(t), item.key); outcome != diskHit ||
+			if data, outcome := f.disk.read(f.ctx(t), item.key, nil); outcome != diskHit ||
 				!bytes.Equal(data, f.model[item.key]) {
 				t.Errorf("page %d, named by an intact table, read back as %d", item.key.Page, outcome)
 			}
 		}
 	}
 	for _, key := range written {
-		if data, outcome := f.disk.read(f.ctx(t), key); outcome == diskHit && !bytes.Equal(data, f.model[key]) {
+		if data, outcome := f.disk.read(f.ctx(t), key, nil); outcome == diskHit && !bytes.Equal(data, f.model[key]) {
 			t.Errorf("page %d read back other bytes", key.Page)
 		}
 	}
@@ -532,7 +533,7 @@ func TestDiskRestartsAfterPowerLossBeforeATablesSync(t *testing.T) {
 func TestDiskScanStopsAtTheTrailer(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		limit := int64(testRegionBytes - diskTrailerSize)
-		empty := encodeItem(diskKey{}, wholeEnvelope, nil)
+		empty := encodeItem(diskKey{}, whole(nil))
 		key := keyOf("va", 0)
 		for _, test := range []struct {
 			name  string
@@ -540,11 +541,11 @@ func TestDiskScanStopsAtTheTrailer(t *testing.T) {
 			want  []tableItem
 		}{
 			{"two items that end at the trailer", [][]byte{
-				encodeItem(key, wholeEnvelope, payloadOf(key, int(limit-diskItemFixed-46))), empty},
-				[]tableItem{{key: key, code: wholeEnvelope, offset: 0, length: uint32(limit - diskItemFixed - 46)},
+				encodeItem(key, whole(payloadOf(key, int(limit-diskItemFixed-50)))), empty},
+				[]tableItem{{key: key, code: wholeEnvelope, offset: 0, length: uint32(limit - diskItemFixed - 50)},
 					{code: wholeEnvelope, offset: uint32(limit - diskItemFixed)}}},
 			{"an item one byte into the trailer", [][]byte{
-				encodeItem(key, wholeEnvelope, payloadOf(key, int(limit-46+1)))}, nil},
+				encodeItem(key, whole(payloadOf(key, int(limit-50+1))))}, nil},
 		} {
 			file := diskTableFile(t, nil)
 			at := int64(0)

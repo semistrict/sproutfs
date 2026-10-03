@@ -20,7 +20,7 @@ func TestDiskRegionFillsToItsLastByte(t *testing.T) {
 		f := newDiskFixture(t, diskFixtureConfig{regions: 8})
 		keys := pages("va", 0, 33)
 		// Every sixteenth item is eight bytes shorter.
-		length := func(at int) int { return 4008 - 8*(at%16/15) }
+		length := func(at int) int { return 4004 - 8*(at%16/15) }
 		for at, key := range keys[:16] {
 			f.write(t, key, length(at))
 		}
@@ -60,13 +60,13 @@ func TestDiskAnItemNeverReachesItsRegionsTable(t *testing.T) {
 		f := newDiskFixture(t, diskFixtureConfig{regions: 8})
 		keys := pages("va", 0, 17)
 		for _, key := range keys[:15] {
-			f.write(t, key, 4008)
+			f.write(t, key, 4004)
 		}
-		f.write(t, keys[15], 4048)
+		f.write(t, keys[15], 4044)
 		if regions := f.disk.stats().Regions; regions != 2 {
 			t.Fatalf("an item reaching into the table took %d regions, want it in the second", regions)
 		}
-		f.write(t, keys[16], 4008)
+		f.write(t, keys[16], 4004)
 		f.disk.mu.Lock()
 		open := f.disk.open
 		f.disk.mu.Unlock()
@@ -84,12 +84,12 @@ func TestDiskAnItemNeverReachesItsRegionsTable(t *testing.T) {
 func TestDiskRefusesAnItemLargerThanARegion(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newDiskFixture(t, diskFixtureConfig{regions: 8})
-		f.write(t, keyOf("va", 0), testRegionBytes-46-40-diskTrailerSize)
+		f.write(t, keyOf("va", 0), testRegionBytes-50-40-diskTrailerSize)
 		if stats := f.disk.stats(); stats.Regions != 1 || stats.Entries != 1 {
 			t.Fatalf("an item that fills a region left %+v", stats)
 		}
 		key := keyOf("va", 1)
-		err := f.disk.write(f.ctx(t), key, payloadOf(key, testRegionBytes-46-40-diskTrailerSize+1), WriteFillPublication)
+		err := f.disk.write(f.ctx(t), key, payloadOf(key, testRegionBytes-50-40-diskTrailerSize+1), WriteFillPublication)
 		if !errors.Is(err, ErrDiskRefused) {
 			t.Fatalf("an item a byte larger than a region returned %v, want %v", err, ErrDiskRefused)
 		}
@@ -112,7 +112,7 @@ func TestDiskRefusesAnItemLargerThanARegion(t *testing.T) {
 		if err := disk.write(t.Context(), keyOf("va", 0), largest, WriteFillPublication); err != nil {
 			t.Fatal(err)
 		}
-		if data, outcome := disk.read(t.Context(), keyOf("va", 0)); outcome != diskHit || !bytes.Equal(data, largest) {
+		if data, outcome := disk.read(t.Context(), keyOf("va", 0), nil); outcome != diskHit || !bytes.Equal(data, largest) {
 			t.Fatalf("the largest item read back as %d and %d bytes", outcome, len(data))
 		}
 		err = disk.write(t.Context(), keyOf("va", 1), make([]byte, maximumDiskItem+1), WriteFillPublication)
@@ -188,12 +188,12 @@ func TestDiskSecondChanceFillsHalfARegionExactly(t *testing.T) {
 		// Fifteen items of 4,096 bytes and their table entries fill a region.
 		keys := pages("va", 0, 46)
 		for _, key := range keys[:45] {
-			f.write(t, key, 4050)
+			f.write(t, key, 4046)
 		}
 		for _, key := range keys[:15] {
 			f.read(t, key)
 		}
-		f.write(t, keys[45], 4050)
+		f.write(t, keys[45], 4046)
 		if stats := f.disk.stats(); stats.Rewritten != 8 || stats.Evicted != 1 {
 			t.Fatalf("the eviction left %+v, want eight items written again", stats)
 		}
@@ -234,7 +234,7 @@ func TestDiskFitCountsARegionWaitingForItsReaderAsGone(t *testing.T) {
 		gate := f.file.hold(regionBase(0), regionBase(1))
 		done := make(chan diskReadOutcome, 1)
 		go func() {
-			_, outcome := f.disk.read(f.ctx(t), keys[0])
+			_, outcome := f.disk.read(f.ctx(t), keys[0], nil)
 			done <- outcome
 		}()
 		<-gate.entered
