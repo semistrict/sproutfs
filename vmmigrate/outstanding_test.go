@@ -7,6 +7,7 @@ import (
 	"testing"
 	"testing/synctest"
 
+	"github.com/semistrict/sproutfs/peer"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/vmmigrate"
 )
@@ -147,7 +148,7 @@ func TestAReplyThatNeverLeavesKeepsItsPagesOutstanding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	source, err := vmmigrate.NewPageSource(t.Context(), vmmigrate.SourceConfig{PageSize: pageSize,
+	source, err := peer.NewServer(t.Context(), peer.ServerConfig{PageSize: pageSize,
 		MaxPagesPerRequest: 8, MaxBytesInFlightPerPeer: 32 << 20, Address: address,
 		Listener: droppingListener{Listener: listener, err: errors.New("the reply never left the source")}})
 	if err != nil {
@@ -171,7 +172,7 @@ func TestAReplyThatNeverLeavesKeepsItsPagesOutstanding(t *testing.T) {
 
 // unpublishedBacking binds a destination to a source holding runs the handoff
 // named as its own, which is what a real migration's backing carries.
-func (s *served) unpublishedBacking(t *testing.T, source *vmmigrate.PageSource, name string, runs []vmmigrate.PageRun) *vmmigrate.PeerBacking {
+func (s *served) unpublishedBacking(t *testing.T, source *peer.Server, name string, runs []vmmigrate.PageRun) *vmmigrate.PeerBacking {
 	t.Helper()
 	address := sourceAddress
 	if source != nil {

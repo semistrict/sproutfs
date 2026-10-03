@@ -77,7 +77,7 @@ func certificateTemplate(name string) *x509.Certificate {
 // dialed. refused is called with every peer it turns away, and why.
 //
 // It checks the chain and nothing else, which is a host of the deployment and
-// all a page server needs: which VM a peer may read is the handoff's business.
+// all a peer server needs: which VM a peer may read is the handoff's business.
 func MutualTLS(name string, identity, trusted *Authority, refused func(error)) (platform.Transport, error) {
 	certificate, err := identity.issue(name)
 	if err != nil {

@@ -2,9 +2,9 @@ edition = "2024";
 
 package sproutfs.migrate.v1;
 
-option go_package = "github.com/semistrict/sproutfs/vmmigrate/internal/gen/sproutfs/migrate/v1;migratev1";
+option go_package = "github.com/semistrict/sproutfs/peer/internal/gen/sproutfs/migrate/v1;migratev1";
 
-// Status is why a page server answered as it did. Only STATUS_OK carries pages;
+// Status is why a peer server answered as it did. Only STATUS_OK carries pages;
 // STATUS_UNKNOWN_VM is the answer that sends a destination to its volume for
 // good, because it means this host no longer serves that VM at all.
 enum Status {

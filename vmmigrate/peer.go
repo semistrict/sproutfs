@@ -11,15 +11,14 @@ import (
 
 	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/internal/blob"
+	"github.com/semistrict/sproutfs/peer"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/vmmemory"
-	"github.com/semistrict/sproutfs/vmmigrate/internal/peer"
-	"github.com/semistrict/sproutfs/vmmigrate/internal/wire"
 	"github.com/semistrict/sproutfs/volume"
 )
 
-// Dialer opens one connection to a peer's page source. A production dialer is
+// Dialer opens one connection to another host's peer server. A production dialer is
 // the host network's, over whatever transport the deployment runs.
 type Dialer = peer.Dialer
 
@@ -47,7 +46,7 @@ type PeerConfig struct {
 	// Volume is the destination's own handle on the volume, which answers
 	// everything the peer cannot.
 	Volume *volume.Volume
-	// Peer is the source host's page source and VM the migrated VM's identity.
+	// Peer is the source host's peer server and VM the migrated VM's identity.
 	Peer platform.Address
 	VM   string
 	// Unpublished names the pages the source holds that no checkpoint has, from
@@ -216,7 +215,7 @@ func NewPeerBacking(config PeerConfig) (*PeerBacking, error) {
 		config.MaxConnections = 4
 	}
 	if config.MaxPagesPerRequest == 0 {
-		config.MaxPagesPerRequest = max(1, min(defaultMaxPages, requestBytes/config.PageSize))
+		config.MaxPagesPerRequest = max(1, min(peer.DefaultMaxPages, peer.RequestBytes/config.PageSize))
 	}
 	config.Clock = platform.ClockOr(config.Clock)
 	if config.PageSize < 512 || config.PageSize > blob.MaxSize || config.MaxConnections < 1 || config.MaxPagesPerRequest < 1 || config.MaxPagesPerRequest > blob.MaxSize/config.PageSize {
@@ -227,9 +226,9 @@ func NewPeerBacking(config PeerConfig) (*PeerBacking, error) {
 		unpublished: make(map[uint64]bool),
 		unfetched:   make(map[uint64]struct{}),
 		life:        life, endLife: endLife,
-		source: peer.New(peer.Config{Peer: config.Peer, VM: config.VM,
+		source: peer.NewSource(peer.SourceConfig{Peer: config.Peer, VM: config.VM,
 			Volume: config.Volume.Name(), PageSize: config.PageSize,
-			MaxConnections: config.MaxConnections, MaxRuns: defaultMaxRuns, Dial: config.Dial,
+			MaxConnections: config.MaxConnections, MaxRuns: peer.DefaultMaxRuns, Dial: config.Dial,
 			Clock: config.Clock})}
 	for _, run := range config.Unpublished {
 		for page := run.First; page < run.First+uint64(run.Count); page++ {
@@ -568,7 +567,7 @@ func (b *PeerBacking) fill(ctx context.Context, first uint64, dst []byte, presen
 	for index := 0; index < count; {
 		if present[index/8]&(1<<(index%8)) != 0 {
 			if (served+1)*size > len(payload) {
-				return fmt.Errorf("%w: the source served fewer pages than it reported", wire.ErrMalformedFrame)
+				return fmt.Errorf("%w: the source served fewer pages than it reported", peer.ErrMalformed)
 			}
 			if sim.Bug(ctx, "migration-corrupt-peer-page") {
 				clear(dst[index*size : (index+1)*size])
@@ -726,7 +725,7 @@ func (b *PeerBacking) claim(caller context.Context) error {
 // nor another attempt answers it: the fault fails with it and the received VM
 // is torn.
 func unusable(err error) bool {
-	return errors.Is(err, peer.ErrPageSize) || errors.Is(err, wire.ErrMalformedFrame)
+	return errors.Is(err, peer.ErrPageSize) || errors.Is(err, peer.ErrMalformed)
 }
 
 // stopped reports this backing's own end, which is the migration's: the

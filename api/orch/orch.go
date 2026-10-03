@@ -24,7 +24,7 @@ type Host struct {
 	// Name is the pod's name, which is what the CLI names a host by.
 	Name string `json:"name"`
 	// API is the origin of the host's HTTP API and Page the address its
-	// migration page server is reached at.
+	// peer server is reached at.
 	API  string `json:"api"`
 	Page string `json:"page"`
 	// Ready is the pod's own readiness, and Running what the host answered when
@@ -40,7 +40,7 @@ type Host struct {
 	// SharedPages is the demo's sharing measure, which is what forking a running
 	// guest is visible in.
 	Pager host.Pager `json:"pager"`
-	// Pages is what this host's page server has answered: the pages a
+	// Pages is what this host's peer server has answered: the pages a
 	// destination of a migration, or a fork placed on another host, pulled out
 	// of its pages.
 	Pages host.Pages `json:"pages"`

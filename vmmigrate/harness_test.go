@@ -658,7 +658,7 @@ func classify(keys []string) (records, indexes, pages int) {
 	return records, indexes, pages
 }
 
-// dialer dials the page source over the simulated network from one host.
+// dialer dials the peer server over the simulated network from one host.
 func (c *cluster) dialer(from platform.Address) vmmigrate.Dialer {
 	return func(ctx context.Context, peer platform.Address) (platform.Conn, error) {
 		return c.runtime.Network().Dial(ctx, from, peer)

@@ -7,7 +7,7 @@
 // checkpoint the control record already selects, and resumes from the captured
 // VMM state. Everything the guest wrote since the source's last checkpoint
 // exists only in the source's pages, and the destination faults it out of them
-// over the same network the hosts already share. PageSource serves those pages,
+// over the same network the hosts already share. peer.Server serves those pages,
 // PeerBacking fetches them, and both give up as soon as the source says it no
 // longer serves that VM. A page the source served out of its own dirty state is
 // dirty on the destination too, so the destination's next interval checkpoint
@@ -26,6 +26,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/semistrict/sproutfs/peer"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/vmmemory"
@@ -33,14 +34,14 @@ import (
 )
 
 var (
-	// ErrInvalid reports a missing VM, process, page source or memory region.
+	// ErrInvalid reports a missing VM, process, peer server or memory region.
 	ErrInvalid = errors.New("vmmigrate: invalid argument")
 	// ErrStopped reports a migration that stopped the guest and could not hand
 	// the VM over. This process cannot resume it: its memory regions have already given
 	// their volumes up. The VM is reopened, here or anywhere else, from the
 	// checkpoint its control record selects.
 	ErrStopped = errors.New("vmmigrate: the guest was stopped and cannot resume")
-	// ErrClosed reports a page source or a post-copy stream that has stopped.
+	// ErrClosed reports a peer server or a post-copy stream that has stopped.
 	ErrClosed = errors.New("vmmigrate: closed")
 	// ErrOutstanding reports a release refused because the destination has not
 	// fetched every page this host holds that no checkpoint of the VM has.
@@ -48,7 +49,7 @@ var (
 	// writes since this host's last checkpoint. The source knows which of them
 	// it has answered for, so this is the evidence, rather than whatever a
 	// control plane's table believes about the migration.
-	ErrOutstanding = errors.New("vmmigrate: unpublished pages are still outstanding")
+	ErrOutstanding = peer.ErrOutstanding
 	// ErrStale reports a handoff whose VM's control record no longer selects the
 	// checkpoint the source handed over. A migration publishes nothing, so the
 	// record is openable by anybody between the source's release and this open,
@@ -164,8 +165,8 @@ func (h Handoff) IsFork() bool { return h.Parent != "" }
 // Options bounds a migration.
 type Options struct {
 	// Source overrides the address the destination fetches pages from, for a
-	// deployment whose page server is reached through another name than the one
-	// it listens on. It defaults to the page source's own address.
+	// deployment whose peer server is reached through another name than the one
+	// it listens on. It defaults to the peer server's own address.
 	Source platform.Address
 	// Clock is what the handoff's pause and the destination's resume are
 	// stamped with, and what a destination's retry against a busy source waits
@@ -177,7 +178,7 @@ type Options struct {
 	// every page it inherited is present the moment the memory region attaches and
 	// nothing is fetched. It is nil for every other receive — a migration, or a
 	// child whose parent is elsewhere — which rebuilds the point from the
-	// checkpoint the parent pinned and pulls those pages out of its page server.
+	// checkpoint the parent pinned and pulls those pages out of its peer server.
 	Point *volume.ForkPoint
 }
 
@@ -197,7 +198,7 @@ type Options struct {
 // A failure before the handoff leaves the VM running on this host: nothing was
 // released. A failure after the memory regions gave their volumes up cannot resume the
 // guest — it reports ErrStopped.
-func Migrate(ctx context.Context, vm *volume.VM, process Runtime, source *PageSource, opts Options) (Handoff, error) {
+func Migrate(ctx context.Context, vm *volume.VM, process Runtime, source *peer.Server, opts Options) (Handoff, error) {
 	if vm == nil || process == nil || source == nil {
 		return Handoff{}, ErrInvalid
 	}
@@ -282,7 +283,7 @@ func Migrate(ctx context.Context, vm *volume.VM, process Runtime, source *PageSo
 //
 // The parent serves those pages under the child's identity until the child
 // reports every one of them received, exactly as a migration's source does: a
-// PageSource.Release taken before that is refused with ErrOutstanding, because
+// peer.Server.Release taken before that is refused with ErrOutstanding, because
 // the source is the one thing that knows which pages it has actually answered
 // for. Giving the child up rather than handing it over — a hold that outlived
 // its deadline, a fan-out that failed, a parent this host lost — goes through
@@ -291,8 +292,8 @@ func Migrate(ctx context.Context, vm *volume.VM, process Runtime, source *PageSo
 //
 // A child taken in on this same host is served nothing: it attaches over the
 // point itself, so no page of it ever reaches the wire. Such a fork passes no
-// page source, and the handoff it returns names no address to fetch from.
-func Fork(ctx context.Context, child string, point *volume.ForkPoint, source *PageSource, opts Options) (Handoff, error) {
+// peer server, and the handoff it returns names no address to fetch from.
+func Fork(ctx context.Context, child string, point *volume.ForkPoint, source *peer.Server, opts Options) (Handoff, error) {
 	if child == "" || point == nil {
 		return Handoff{}, fmt.Errorf("%w: a fork handoff needs a child and a point", ErrInvalid)
 	}

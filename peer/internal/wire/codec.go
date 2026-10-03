@@ -12,8 +12,8 @@ import (
 	"hash/crc32"
 	"io"
 
+	wirev1 "github.com/semistrict/sproutfs/peer/internal/gen/sproutfs/wire/v1"
 	"github.com/semistrict/sproutfs/platform"
-	wirev1 "github.com/semistrict/sproutfs/vmmigrate/internal/gen/sproutfs/wire/v1"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 )
@@ -185,7 +185,7 @@ func (i Incoming) UnmarshalTo(message proto.Message) error {
 
 // computeChecksum digests a payload a reader streams, which is what a sender
 // that cannot hold the payload in memory would need. Nothing outside this
-// package's own tests calls it: the page source computes its CRC over the
+// package's own tests calls it: the peer server computes its CRC over the
 // buffer it already holds.
 func computeChecksum(ctx context.Context, reader io.ReaderAt, size int64, algorithm ChecksumAlgorithm) ([]byte, error) {
 	if size < 0 || (size > 0 && reader == nil) {

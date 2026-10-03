@@ -4,7 +4,7 @@ package sproutfs.wire.v1;
 
 import "google/protobuf/any.proto";
 
-option go_package = "github.com/semistrict/sproutfs/vmmigrate/internal/gen/sproutfs/wire/v1;wirev1";
+option go_package = "github.com/semistrict/sproutfs/peer/internal/gen/sproutfs/wire/v1;wirev1";
 
 // Envelope is the protobuf portion of an internode frame. Large bulk data is
 // carried in the adjacent raw payload described by payload.

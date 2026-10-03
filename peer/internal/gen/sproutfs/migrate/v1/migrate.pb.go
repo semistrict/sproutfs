@@ -20,7 +20,7 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-// Status is why a page server answered as it did. Only STATUS_OK carries pages;
+// Status is why a peer server answered as it did. Only STATUS_OK carries pages;
 // STATUS_UNKNOWN_VM is the answer that sends a destination to its volume for
 // good, because it means this host no longer serves that VM at all.
 type Status int32
@@ -1177,7 +1177,7 @@ const file_sproutfs_migrate_v1_migrate_proto_rawDesc = "" +
 	"\x15STATUS_UNKNOWN_VOLUME\x10\x03\x12\x1a\n" +
 	"\x16STATUS_INVALID_REQUEST\x10\x04\x12\x0f\n" +
 	"\vSTATUS_BUSY\x10\x05\x12\x13\n" +
-	"\x0fSTATUS_INTERNAL\x10\x06BUZSgithub.com/semistrict/sproutfs/vmmigrate/internal/gen/sproutfs/migrate/v1;migratev1b\beditionsp\xe9\a"
+	"\x0fSTATUS_INTERNAL\x10\x06BPZNgithub.com/semistrict/sproutfs/peer/internal/gen/sproutfs/migrate/v1;migratev1b\beditionsp\xe9\a"
 
 var file_sproutfs_migrate_v1_migrate_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
 var file_sproutfs_migrate_v1_migrate_proto_msgTypes = make([]protoimpl.MessageInfo, 7)

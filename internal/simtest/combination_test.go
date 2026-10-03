@@ -19,7 +19,7 @@ import (
 // The campaign draws its own combinations from the seed, so it reaches this one
 // on the seeds that draw it. This names it instead, because a combination a
 // campaign can only reach by luck is one nothing can say it reached: here the
-// source is partitioned from the destination's page server, the destination
+// source is partitioned from the destination's peer server, the destination
 // cannot reach object storage at all, and the migration happens anyway.
 //
 // What must hold is what always holds. The VM ends up on a host that can run

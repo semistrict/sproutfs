@@ -266,7 +266,7 @@ func (h *hostHarness) stop(t *testing.T, n int) {
 func (h *hostHarness) assertPageServerReleased(t *testing.T, address platform.Address) {
 	t.Helper()
 	if h.network.Listening(address) {
-		t.Fatalf("host retained the page server listener at %s", address)
+		t.Fatalf("host retained the peer server listener at %s", address)
 	}
 }
 

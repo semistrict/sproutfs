@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/semistrict/sproutfs/control"
 	"log/slog"
 	"slices"
+
+	"github.com/semistrict/sproutfs/control"
+	"github.com/semistrict/sproutfs/peer"
 
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/vmmigrate"
@@ -26,20 +28,20 @@ import (
 // from, which its record already selects.
 //
 // It is one table for both destinations. A child on another host is served the
-// point's pages out of this host's page server; a child taken in here maps
+// point's pages out of this host's peer server; a child taken in here maps
 // the pages themselves. What the hold means, when it ends and what ending it
 // costs are the same either way.
 type forkHold struct {
 	parent string
 	point  *volume.ForkPoint
 	// local reports a child this host takes in itself, which receives the
-	// handoff over the fork point rather than over the page server. It is what
+	// handoff over the fork point rather than over the peer server. It is what
 	// says the point is the one that Receive binds the child's memory regions to.
 	local bool
 	// taken reports a local child that Receive has bound to the point. From
 	// then on the child maps every page it inherited and holds the point
 	// through its own handle. Until then it has none of those pages, so a
-	// release of this hold is refused, as the page server refuses one for a
+	// release of this hold is refused, as the peer server refuses one for a
 	// child elsewhere that has not fetched them.
 	taken bool
 	// timer retires the hold when nothing releases it. It is armed on the
@@ -132,7 +134,7 @@ func (hold *forkHold) owed() int {
 //
 // The returned handoffs are what the deployment gives each child's destination,
 // whichever host that is. A child destined for another host is served its
-// inherited pages out of this host's page server until ReleaseMigrated releases
+// inherited pages out of this host's peer server until ReleaseMigrated releases
 // it; a child taken in here — destination empty, or this host's own page
 // address — is served nothing at all, because the fork point it attaches over is
 // the pages themselves. Either way the parent's seal ends when the last hold
@@ -215,10 +217,10 @@ func (h *Host) fork(ctx context.Context, parent string, children []string,
 	return handoffs, nil
 }
 
-// served is the page server a fork's children are handed over through, and
+// served is the peer server a fork's children are handed over through, and
 // nothing for a child this host takes in itself: no page of such a child ever
 // reaches the wire, so nothing is registered and nothing is released.
-func (h *Host) served(local bool) *vmmigrate.PageSource {
+func (h *Host) served(local bool) *peer.Server {
 	if local {
 		return nil
 	}

@@ -4,8 +4,8 @@ import (
 	"sync"
 	"testing"
 
-	migratev1 "github.com/semistrict/sproutfs/vmmigrate/internal/gen/sproutfs/migrate/v1"
-	"github.com/semistrict/sproutfs/vmmigrate/internal/wire"
+	migratev1 "github.com/semistrict/sproutfs/peer/internal/gen/sproutfs/migrate/v1"
+	"github.com/semistrict/sproutfs/peer/internal/wire"
 	"google.golang.org/protobuf/proto"
 )
 

@@ -8,8 +8,8 @@ import (
 	"io"
 	"testing"
 
+	"github.com/semistrict/sproutfs/peer/internal/wire"
 	"github.com/semistrict/sproutfs/platform"
-	"github.com/semistrict/sproutfs/vmmigrate/internal/wire"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 

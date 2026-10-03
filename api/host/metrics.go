@@ -243,7 +243,7 @@ func Metrics(status Status) string {
 		"Guest image bytes this host read, for a digest or an import.", status.Imports.ImageBytes)
 
 	write("sproutfs_pages_requests_total", "counter",
-		"Page requests this host's migration page server has answered.", status.Pages.Requests)
+		"Page requests this host's peer server has answered.", status.Pages.Requests)
 	write("sproutfs_pages_served_total", "counter", "Pages served to a peer.", status.Pages.Served)
 	write("sproutfs_pages_absent_total", "counter", "Page requests for a page this host does not hold.", status.Pages.Absent)
 	write("sproutfs_pages_refused_total", "counter", "Page requests refused, which is a peer at its budget.", status.Pages.Refused)

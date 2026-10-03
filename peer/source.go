@@ -17,9 +17,9 @@ import (
 
 	"github.com/semistrict/sproutfs/internal/blob"
 	"github.com/semistrict/sproutfs/internal/latency"
+	migratev1 "github.com/semistrict/sproutfs/peer/internal/gen/sproutfs/migrate/v1"
+	"github.com/semistrict/sproutfs/peer/internal/wire"
 	"github.com/semistrict/sproutfs/platform"
-	migratev1 "github.com/semistrict/sproutfs/vmmigrate/internal/gen/sproutfs/migrate/v1"
-	"github.com/semistrict/sproutfs/vmmigrate/internal/wire"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -36,7 +36,7 @@ var (
 	ErrPageSize = errors.New("vmmigrate: the source serves pages of another size")
 )
 
-// Dialer opens one connection to a peer's page source. A production dialer is
+// Dialer opens one connection to another host's peer server. A production dialer is
 // the host network's, over whatever transport the deployment runs.
 type Dialer func(ctx context.Context, peer platform.Address) (platform.Conn, error)
 
@@ -56,8 +56,8 @@ type Answer struct {
 
 // Config names the host one memory region asks for its pages, and the budgets every
 // request to it obeys. The caller has already checked them.
-type Config struct {
-	// Peer is the source host's page source, VM the migrated VM's identity and
+type SourceConfig struct {
+	// Peer is the source host's peer server, VM the migrated VM's identity and
 	// Volume the memory region's volume. Both requests name all three.
 	Peer   platform.Address
 	VM     string
@@ -95,7 +95,7 @@ func (l Latency) Merge(other Latency) Latency {
 // connections to it, and what every request over them names. Its methods are
 // safe for concurrent use.
 type Source struct {
-	config Config
+	config SourceConfig
 	// idle holds connections to reuse and slots bounds how many exist at once,
 	// so a destination's concurrent faults pipeline without opening a socket per
 	// page.
@@ -117,7 +117,7 @@ type Source struct {
 }
 
 // New opens nothing: the first request dials the first connection.
-func New(config Config) *Source {
+func NewSource(config SourceConfig) *Source {
 	s := &Source{config: config,
 		idle:   make(chan platform.Conn, config.MaxConnections),
 		slots:  make(chan struct{}, config.MaxConnections),

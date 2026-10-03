@@ -470,7 +470,7 @@ func TestMigrationWaitsForTheIntervalCheckpointItInterrupts(t *testing.T) {
 }
 
 // TestHostMigratesAVMToAnotherHost is the host wiring end to end: two admitted
-// hosts over real TCP, one VM's pages fetched from the source's page server.
+// hosts over real TCP, one VM's pages fetched from the source's peer server.
 func TestHostMigratesAVMToAnotherHost(t *testing.T) {
 	for _, tc := range []struct {
 		name            string
@@ -788,7 +788,7 @@ func TestMigratedPagesAreReleasedAfterTheirDeadline(t *testing.T) {
 
 // awaitReleased waits for a host to be serving nothing and for the processes
 // named to be closed, which together are what a released handover leaves
-// behind: the page server is given up first and the VMM process last, so a
+// behind: the peer server is given up first and the VMM process last, so a
 // wait on the serving set alone can return before the close lands.
 func awaitReleased(t *testing.T, host *host.Host, closed ...*machine) {
 	t.Helper()

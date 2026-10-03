@@ -79,7 +79,7 @@ func TestAFanOutNothingReceivesExpiresEveryHold(t *testing.T) {
 //
 // So it is reported as a served hold is. It is in Serving, it owes the pages
 // the point holds for it until the child is taken in, and its release is
-// refused until then, as the page server refuses one for a child elsewhere that
+// refused until then, as the peer server refuses one for a child elsewhere that
 // has not fetched them. A release that went through first would leave the child
 // nothing to be taken in over.
 func TestAHostReportsTheHoldsOfAFanOutOntoItself(t *testing.T) {

@@ -12,10 +12,10 @@ import (
 	"time"
 
 	"github.com/semistrict/sproutfs/control"
+	"github.com/semistrict/sproutfs/peer"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/vmmemory"
-	"github.com/semistrict/sproutfs/vmmigrate/internal/peer"
 	"github.com/semistrict/sproutfs/volume"
 )
 

@@ -14,7 +14,7 @@ import (
 // The source host may exit only when every page it holds is either on the
 // destination or in object storage. That is what Done reports: the destination
 // fetches every page no checkpoint has, its own next checkpoint publishes them,
-// and the source's page server can then be taken away entirely.
+// and the source's peer server can then be taken away entirely.
 func TestDoneMeansTheSourceMayStopServing(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		m := newMigration(t)
@@ -56,7 +56,7 @@ func TestDoneMeansTheSourceMayStopServing(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		// The source host exits: its page server is gone and its pages with it.
+		// The source host exits: its peer server is gone and its pages with it.
 		if err := m.pages.Release(handoff.VMID); err != nil {
 			t.Fatalf("releasing a VM the destination reported done: %v", err)
 		}

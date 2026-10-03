@@ -696,7 +696,7 @@ func TestFirecrackerDAXCaptureRestoreForkAndFence(t *testing.T) {
 const pressureBytes = 96 << 20
 
 // pagerPageBytes is the PMEM pager's 2 MiB page, which is the larger of the
-// two a host runs and so the unit the suites' arena and page-server budgets are
+// two a host runs and so the unit the suites' arena and peer-server budgets are
 // stated in. A RAM page is 4 KiB; a test that means one asks its memory region.
 func pagerPageBytes(t testing.TB) int {
 	t.Helper()

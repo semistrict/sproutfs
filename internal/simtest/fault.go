@@ -90,7 +90,7 @@ func StoreUnavailable() Fault { return &storeUnavailable{} }
 // every other.
 func HostLosesStore(host int) Fault { return &hostLosesStore{host: host} }
 
-// PartitionedPages separates two hosts from each other's page servers.
+// PartitionedPages separates two hosts from each other's peer servers.
 func PartitionedPages(from, to int) Fault { return &partitionedPages{from: from, to: to} }
 
 // SwizzledLinks blocks and heals every link of the deployment over window.
@@ -137,7 +137,7 @@ func OutlivedReceive(host int, start time.Duration) Fault {
 // claimed its hold.
 func LostReceiveAnswer(host int) Fault { return &lostReceiveAnswer{host: host} }
 
-// DegradedLinks duplicates, delays and slows what the page-server links
+// DegradedLinks duplicates, delays and slows what the peer-server links
 // carry.
 func DegradedLinks() Fault { return &degradedLinks{} }
 
@@ -204,7 +204,7 @@ func storeAnswers(ctx context.Context, store platform.ObjectStore, prefix platfo
 	return nil
 }
 
-// partitionedPages separates one host from another's page server in both
+// partitionedPages separates one host from another's peer server in both
 // directions: a destination that cannot reach the source it is post-copying
 // from, and a source that cannot answer. It is the migration campaign's
 // source-partition, with the difference that it can be on while the store is
@@ -232,7 +232,7 @@ func (f *partitionedPages) Holds(_ context.Context, w *World) error {
 	return nil
 }
 
-// swizzledLinks blocks every link among the hosts, their page servers and the
+// swizzledLinks blocks every link among the hosts, their peer servers and the
 // store at its own seeded moment and heals each of them at another, so the
 // order they come back in is not the order they went away in. It is
 // FoundationDB's champion bug finder, and the one fault here that separates
@@ -350,7 +350,7 @@ func (f *lostHost) Holds(_ context.Context, w *World) error {
 }
 
 // isolatedHost is a partition between one host's pod and the rest of the
-// deployment. The process runs, its pod is still listed and its page server
+// deployment. The process runs, its pod is still listed and its peer server
 // still holds whatever it handed over, but no other host reaches it and the
 // deployment can neither ask it anything nor learn that it is gone, because it
 // is not. It is the case the Kubernetes API's listing cannot settle: a
@@ -548,11 +548,11 @@ func (f *lostReceiveAnswer) Holds(_ context.Context, w *World) error {
 	return nil
 }
 
-// degradedLinks duplicates, delays and slows what the page-server links carry,
+// degradedLinks duplicates, delays and slows what the peer-server links carry,
 // which is the rest of the simulated network's kit that one fault at a time
 // never reached alongside anything else.
 //
-// It does not drop a frame. A page server is reached over a reliable
+// It does not drop a frame. A peer server is reached over a reliable
 // message-framed connection, on which a frame that vanishes while the
 // connection stays open is not something a transport can do — and it has
 // exactly one outcome here, because a guest's demand fault against the peer
@@ -642,7 +642,7 @@ func (f *forgottenReleases) Holds(_ context.Context, w *World) error {
 	return errors.Join(errs...)
 }
 
-// connFaults is what one host's connections to a page server do while a fault
+// connFaults is what one host's connections to a peer server do while a fault
 // is on it: nothing, drop the reply to a request the source has already
 // answered, or hold the first frame until whatever asked for it gives up.
 //
@@ -738,7 +738,7 @@ func (f *connFaults) wrap(conn platform.Conn) platform.Conn {
 	return &faultyConn{Conn: conn, faults: f}
 }
 
-// faultyConn is one connection to a page server under this host's fault.
+// faultyConn is one connection to a peer server under this host's fault.
 type faultyConn struct {
 	platform.Conn
 	faults *connFaults
@@ -784,7 +784,7 @@ func (c *faultyConn) Receive(ctx context.Context) (platform.ReceivedFrame, error
 	return frame, nil
 }
 
-// DroppedPageServerFrames drops the next few frames each page-server link
+// DroppedPeerFrames drops the next few frames each peer-server link
 // carries, on top of duplicating, delaying and slowing them. It is the last of the
 // simulated network's kit, and the one fault here the generated campaign does
 // not draw: a frame dropped on an open connection has exactly one outcome for a
@@ -793,16 +793,16 @@ func (c *faultyConn) Receive(ctx context.Context) (platform.ReceivedFrame, error
 // answer for that page — giving up on it loses the guest's memory — so this is
 // for a campaign whose every fetch is a bounded attempt that is retried, which
 // is what a drain of a host that is going away does.
-func DroppedPageServerFrames(after int) Fault { return &droppedPageServerFrames{after: after} }
+func DroppedPeerFrames(after int) Fault { return &droppedPeerFrames{after: after} }
 
-type droppedPageServerFrames struct {
+type droppedPeerFrames struct {
 	after int
 	links [][2]platform.Address
 }
 
-func (f *droppedPageServerFrames) Name() string { return "dropped-page-server-frames" }
+func (f *droppedPeerFrames) Name() string { return "dropped-peer-frames" }
 
-func (f *droppedPageServerFrames) Begin(_ context.Context, w *World) error {
+func (f *droppedPeerFrames) Begin(_ context.Context, w *World) error {
 	network := w.runtime.Network()
 	r := w.runtime.Random("simtest/dropped")
 	f.links = nil
@@ -823,7 +823,7 @@ func (f *droppedPageServerFrames) Begin(_ context.Context, w *World) error {
 	return nil
 }
 
-func (f *droppedPageServerFrames) End(_ context.Context, w *World) error {
+func (f *droppedPeerFrames) End(_ context.Context, w *World) error {
 	for _, link := range f.links {
 		w.runtime.Network().ClearLink(link[0], link[1])
 		// A drop, a duplicate or a delay still armed when the fault ends would
@@ -833,7 +833,7 @@ func (f *droppedPageServerFrames) End(_ context.Context, w *World) error {
 	return nil
 }
 
-func (f *droppedPageServerFrames) Holds(_ context.Context, w *World) error {
+func (f *droppedPeerFrames) Holds(_ context.Context, w *World) error {
 	for _, link := range f.links {
 		if w.runtime.Network().Clogged(link[0], link[1]) {
 			return fmt.Errorf("%s still cannot reach %s", link[0], link[1])

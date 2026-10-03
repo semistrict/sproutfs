@@ -27,7 +27,7 @@ const swizzleWindow = 20 * time.Second
 const (
 	// swizzleVMID is the VM two writers hold across a takeover, and
 	// swizzleGuestID the one whose guest holds pages no checkpoint has, so that
-	// its handoff has to pull them over the page-server link the swizzle is
+	// its handoff has to pull them over the peer-server link the swizzle is
 	// taking away.
 	swizzleVMID    = "vm-1"
 	swizzleGuestID = "vm-2"
@@ -35,7 +35,7 @@ const (
 
 // TestTwoWritersOfOneVMNeverMixAcrossASwizzle: two hosts hold one VM across a
 // takeover while every link among them and the object store is separated at its
-// own seeded moment and healed in a different order, and the page-server links
+// own seeded moment and healed in a different order, and the peer-server links
 // drop, duplicate, delay and slow what they carry. That is exactly the shape of
 // the failure the whole design exists to refuse: the writer that lost the epoch
 // cannot tell it has, and the one that took it cannot always reach the store.
@@ -115,14 +115,14 @@ func runSwizzleCampaign(t *testing.T, seed uint64) *sim.Runtime {
 	firstEpoch := fenced.Epoch()
 
 	// Everything now goes dark and comes back in a different order: each of the
-	// links among the two hosts, their page servers and the store is blocked at
+	// links among the two hosts, their peer servers and the store is blocked at
 	// its own moment inside the first half of the window and healed at its own
-	// moment inside the second. The page-server links get the rest of the kit
+	// moment inside the second. The peer-server links get the rest of the kit
 	// as well, so a handoff that does run during the window runs over a link
 	// that drops, duplicates, delays and slows what it carries.
 	addrs := []platform.Address{world.Address(0), world.Address(1), simtest.StoreAddress}
 	runtime.Network().Swizzle(addrs, swizzleWindow, runtime.Random("simtest/swizzle"))
-	dropped := simtest.DroppedPageServerFrames(1)
+	dropped := simtest.DroppedPeerFrames(1)
 	if err := dropped.Begin(ctx, world); err != nil {
 		t.Fatal(err)
 	}

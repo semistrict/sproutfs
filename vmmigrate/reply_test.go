@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/semistrict/sproutfs/peer"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/vmmigrate"
 )
@@ -46,7 +47,7 @@ func TestAPageIsFetchedOnlyOnceItsReplyIsSent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	source, err := vmmigrate.NewPageSource(t.Context(), vmmigrate.SourceConfig{
+	source, err := peer.NewServer(t.Context(), peer.ServerConfig{
 		Listener: brokenListener{Listener: listener}, Address: "broken-source",
 		PageSize: pageSize, MaxPagesPerRequest: 8, MaxBytesInFlightPerPeer: 32 << 20})
 	if err != nil {

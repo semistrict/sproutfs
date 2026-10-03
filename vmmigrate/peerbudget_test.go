@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/semistrict/sproutfs/peer"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/vmmigrate"
 )
@@ -48,7 +49,7 @@ func TestPeerBudgetsCountOneDestinationHostOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	source, err := vmmigrate.NewPageSource(t.Context(), vmmigrate.SourceConfig{PageSize: pageSize,
+	source, err := peer.NewServer(t.Context(), peer.ServerConfig{PageSize: pageSize,
 		MaxPagesPerRequest: 8, MaxBytesInFlightPerPeer: 32 << 20, MaxConnectionsPerPeer: 1,
 		Address: address, Listener: &portedListener{Listener: listener}})
 	if err != nil {

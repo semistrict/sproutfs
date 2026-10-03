@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/semistrict/sproutfs/checkpoint"
+	"github.com/semistrict/sproutfs/peer"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/vmmachine"
 	"github.com/semistrict/sproutfs/vmmemory"
@@ -27,7 +28,7 @@ const (
 	// forkFanOutRAM and forkFanOutRoot are the child's shape, and
 	// forkFanOutTouched the working set in MiB the parent leaves in its RAM
 	// before the point is taken: every page of it is one no checkpoint holds,
-	// so every child has to fetch it from the parent's page server before it
+	// so every child has to fetch it from the parent's peer server before it
 	// may be released, and every page of it is one both children read back.
 	forkFanOutRAM     = 256 << 20
 	forkFanOutRoot    = 64 << 20
@@ -88,11 +89,11 @@ const forkFanOutRead = 6 * time.Minute
 // forkPointFixture is everything both fork suites need before a child exists: a
 // parent whose guest has a working set of its own, one published checkpoint its
 // children inherit, half that set stored into again so the point also holds
-// pages no checkpoint has, a page server at a deployment's budgets, and the
+// pages no checkpoint has, a peer server at a deployment's budgets, and the
 // pause itself. The caller owns one hold on the point and closes nothing: every
 // piece registers its own cleanup.
 func forkPointFixture(t *testing.T, ctx context.Context, binaryPath string) (
-	*migrationCluster, *vmmachine.Process, *vmmigrate.PageSource, *volume.ForkPoint) {
+	*migrationCluster, *vmmachine.Process, *peer.Server, *volume.ForkPoint) {
 	t.Helper()
 	c := newMigrationCluster(t, ctx)
 
@@ -145,11 +146,11 @@ func forkPointFixture(t *testing.T, ctx context.Context, binaryPath string) (
 	command(t, ctx, p, "ram 74\n", "SPROUTFS_RAM ram=74")
 	command(t, ctx, p, "dirty 42\n", "SPROUTFS_DIRTY disk=42")
 
-	// The source's page server at the budgets a deployment runs, rather than
+	// The source's peer server at the budgets a deployment runs, rather than
 	// the raised ones a single migration is measured under: one peer is one
 	// destination host, and both children of this fan-out are that one host, so
 	// their memory regions share every budget counted per peer.
-	pages, err := vmmigrate.NewPageSource(ctx, vmmigrate.SourceConfig{Network: c.network,
+	pages, err := peer.NewServer(ctx, peer.ServerConfig{Network: c.network,
 		Address: "source-pages", PageSize: pagerPageBytes(t)})
 	if err != nil {
 		t.Fatal(err)
@@ -173,14 +174,14 @@ func forkPointFixture(t *testing.T, ctx context.Context, binaryPath string) (
 }
 
 // TestFirecrackerForkFanOutServesBothChildrenAtOnce forks one running guest
-// into two children on a second pager and page server, receives them one after
+// into two children on a second pager and peer server, receives them one after
 // the other exactly as the orchestrator does, and then asks both guests to read
 // every page of their memory and their whole root volume at the same time while
 // both are being checkpointed on an interval.
 //
 // It is the shape a fan-out actually takes in a deployment and the one thing no
 // other suite has: two guests forked from one parent, on one pager, reaching every page
-// they inherited at once, over a real vCPU, a real UFFD and a real page server.
+// they inherited at once, over a real vCPU, a real UFFD and a real peer server.
 // Each of them alone is the migration suite. Both children must answer — a
 // child whose read never returns is a guest nothing can tell from a dead one.
 func TestFirecrackerForkFanOutServesBothChildrenAtOnce(t *testing.T) {
@@ -366,10 +367,10 @@ func TestFirecrackerForkFanOutServesBothChildrenAtOnce(t *testing.T) {
 			stats.Requests, stats.Refusals, stats.Stalls)
 	}
 	served := pages.Stats()
-	t.Logf("fan-out page server: requests=%d served=%d absent=%d refused=%d listings=%d",
+	t.Logf("fan-out peer server: requests=%d served=%d absent=%d refused=%d listings=%d",
 		served.Requests, served.Served, served.Absent, served.Refused, served.Listings)
 	if left := pages.Outstanding(); len(left) != 0 {
-		t.Fatalf("the parent's page server still owes %v after both children were released", left)
+		t.Fatalf("the parent's peer server still owes %v after both children were released", left)
 	}
 	// What the two of them inherited and never wrote is one page between them,
 	// which is the reason a fan-out puts children on one host: every page of the
@@ -500,11 +501,11 @@ func checkpointEvery(t *testing.T, ctx context.Context, child *forkedChild, inte
 
 // receiveChild takes one child over exactly as the deployment does: the
 // destination creates it and streams the pages no checkpoint holds out of the
-// parent's page server, publishes the child's root index once it has them all,
+// parent's peer server, publishes the child's root index once it has them all,
 // and only then does the parent's host release the hold that child kept.
 // configure is the child's VMM configuration before the restore is added to it.
 func receiveChild(t *testing.T, ctx context.Context, c *migrationCluster, handoff vmmigrate.Handoff,
-	source *vmmigrate.PageSource, configure func(*volume.VM) vmmachine.Config) *forkedChild {
+	source *peer.Server, configure func(*volume.VM) vmmachine.Config) *forkedChild {
 	t.Helper()
 	var process *vmmachine.Process
 	start := func(ctx context.Context, vm *volume.VM, backings map[string]vmmemory.Backing,
@@ -663,7 +664,7 @@ func watchPoint(t *testing.T, ctx context.Context, point *volume.ForkPoint, trut
 // pages and no others. Anything more is a child that started from a mixture of
 // two images.
 func receiveStill(t *testing.T, ctx context.Context, c *migrationCluster, pager *hostPagers,
-	binaryPath string, handoff vmmigrate.Handoff, source *vmmigrate.PageSource,
+	binaryPath string, handoff vmmigrate.Handoff, source *peer.Server,
 	point *volume.ForkPoint) (*stillChild, func()) {
 	t.Helper()
 	var process *vmmachine.Process

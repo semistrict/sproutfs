@@ -1,4 +1,4 @@
-package vmmigrate
+package peer
 
 import (
 	"bytes"
@@ -15,30 +15,17 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/semistrict/sproutfs/checkpoint"
 	"github.com/semistrict/sproutfs/internal/blob"
+	migratev1 "github.com/semistrict/sproutfs/peer/internal/gen/sproutfs/migrate/v1"
+	"github.com/semistrict/sproutfs/peer/internal/wire"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/sim"
-	"github.com/semistrict/sproutfs/vmmemory"
-	migratev1 "github.com/semistrict/sproutfs/vmmigrate/internal/gen/sproutfs/migrate/v1"
-	"github.com/semistrict/sproutfs/vmmigrate/internal/wire"
-	"github.com/semistrict/sproutfs/volume"
 	"google.golang.org/protobuf/proto"
 )
 
 var pageCRCTable = crc32.MakeTable(crc32.Castagnoli)
 
 const (
-	// requestBytes is what one request of pages is sized against, whatever page
-	// those are: a request of 4 KiB RAM pages carries as many of them as fit in
-	// it, and one of 2 MiB PMEM pages carries a single page.
-	requestBytes = 2 << 20
-	// defaultMaxPages caps scaled-model requests. Production requests default
-	// to one 2 MiB page, within the same bounded byte budget.
-	defaultMaxPages = 256
-	// defaultMaxRuns bounds one resident listing, so a destination walks a large
-	// memory region in several bounded replies rather than one unbounded one.
-	defaultMaxRuns = 1024
 	// defaultConnectionsPerPeer bounds how many requests one peer can have in
 	// flight here, since each connection serves one request at a time.
 	defaultConnectionsPerPeer = 8
@@ -53,11 +40,11 @@ const (
 	requestTimeout = 30 * time.Second
 )
 
-// SourceConfig supplies the network one host serves migration pages on. Every
+// ServerConfig supplies the network one host serves migration pages on. Every
 // peer the listener accepts is served: refusing a peer that is not a host is
 // the transport's job, or over plain TCP the network policy's. One peer is one
 // remote host, which is what the budgets below are counted per.
-type SourceConfig struct {
+type ServerConfig struct {
 	// Network opens the listener at Address. A caller that has already opened
 	// one supplies it as Listener instead.
 	Network  platform.Network
@@ -79,8 +66,8 @@ type SourceConfig struct {
 	MaxBytesInFlightPerPeer int64
 }
 
-// SourceStats reports what this host has served.
-type SourceStats struct {
+// ServerStats reports what this host has served.
+type ServerStats struct {
 	// Requests is every page request answered, Served and Absent the pages they
 	// found and did not find.
 	Requests, Served, Absent int64
@@ -118,69 +105,12 @@ type Pages interface {
 	PageSize() uint64
 }
 
-// MemoryRegionPages presents the memory regions of a migrated VM as what its page source
-// serves, by volume name. The memory regions keep their pages after their volumes
-// were handed off, which is exactly what this serves.
-func MemoryRegionPages(memoryRegions map[string]*vmmemory.MemoryRegion) map[string]Pages {
-	pages := make(map[string]Pages, len(memoryRegions))
-	for name, memoryRegion := range memoryRegions {
-		pages[name] = memoryRegion
-	}
-	return pages
-}
-
-// forkPages presents one volume of a fork point as what its parent's page
-// source serves. Only the pages no checkpoint of the parent holds are served:
-// everything else is in object storage, where the child reads it from, and
-// serving it would only copy what both sides already share by identity.
-type forkPages struct {
-	point  *volume.ForkPoint
-	volume string
-	held   map[uint64]bool
-}
-
-// ForkPages presents a fork point as what the parent's page source serves the
-// child, by volume name.
-func ForkPages(point *volume.ForkPoint) map[string]Pages {
-	names := point.Volumes()
-	pages := make(map[string]Pages, len(names))
-	for _, name := range names {
-		held := make(map[uint64]bool)
-		for _, page := range point.Pages(name) {
-			held[page] = true
-		}
-		pages[name] = forkPages{point: point, volume: name, held: held}
-	}
-	return pages
-}
-
-func (f forkPages) Resident() ([]uint64, error) { return f.point.Pages(f.volume), nil }
-
-func (f forkPages) PageSize() uint64 { return f.point.PageSize(f.volume) }
-
-// Unpublished is everything a fork point serves: the pages it names are exactly
-// the ones no checkpoint of the parent holds, which is why the child has to
-// fetch them and why nothing else is offered.
-func (f forkPages) Unpublished() ([]uint64, error) { return f.point.Pages(f.volume), nil }
-
-func (f forkPages) ReadResident(ctx context.Context, page uint64, dst []byte) (bool, bool, error) {
-	if !f.held[page] {
-		return false, false, nil
-	}
-	if err := f.point.ReadPage(ctx, f.volume, page, dst); err != nil {
-		return false, false, err
-	}
-	// Every page a fork point serves is one no checkpoint holds, so the child's
-	// pager keeps it privately until its own first checkpoint publishes it.
-	return true, true, nil
-}
-
-// PageSource serves the pages of the VMs this host holds memory for on another
+// Server serves the pages of the VMs this host holds memory for on another
 // host's behalf: the ones it has migrated away, and the children it has forked
 // onto another host. A VM registers its pages when it is handed over and gives
 // them up when the destination reports that it has them all.
-type PageSource struct {
-	config   SourceConfig
+type Server struct {
+	config   ServerConfig
 	listener platform.Listener
 	ctx      context.Context
 	cancel   context.CancelCauseFunc
@@ -221,14 +151,14 @@ type peerBudget struct {
 	bytes       int64
 }
 
-// NewPageSource starts serving on address until Close. It serves nothing until a
+// NewServer starts serving on address until Close. It serves nothing until a
 // migration registers a VM's memory regions.
-func NewPageSource(ctx context.Context, config SourceConfig) (*PageSource, error) {
+func NewServer(ctx context.Context, config ServerConfig) (*Server, error) {
 	if (config.Network == nil && config.Listener == nil) || config.Address == "" {
-		return nil, fmt.Errorf("%w: a page source needs a listener or a network, and an address", ErrInvalid)
+		return nil, fmt.Errorf("%w: a peer server needs a listener or a network, and an address", ErrInvalid)
 	}
 	if config.PageSize == 0 {
-		config.PageSize = checkpoint.PageSize2MiB
+		config.PageSize = MaxPageSize
 	}
 	if config.MaxConnectionsPerPeer == 0 {
 		config.MaxConnectionsPerPeer = defaultConnectionsPerPeer
@@ -238,7 +168,7 @@ func NewPageSource(ctx context.Context, config SourceConfig) (*PageSource, error
 	}
 	if config.PageSize < 512 || config.PageSize > blob.MaxSize || config.MaxPagesPerRequest < 0 || config.MaxPagesPerRequest > blob.MaxSize/config.PageSize || config.MaxConnectionsPerPeer < 1 ||
 		config.MaxBytesInFlightPerPeer < int64(config.PageSize) {
-		return nil, fmt.Errorf("%w: invalid page source budgets", ErrInvalid)
+		return nil, fmt.Errorf("%w: invalid peer server budgets", ErrInvalid)
 	}
 	listener := config.Listener
 	if listener == nil {
@@ -249,7 +179,7 @@ func NewPageSource(ctx context.Context, config SourceConfig) (*PageSource, error
 		listener = opened
 	}
 	sourceCtx, cancel := context.WithCancelCause(ctx)
-	s := &PageSource{config: config, listener: listener, ctx: sourceCtx, cancel: cancel,
+	s := &Server{config: config, listener: listener, ctx: sourceCtx, cancel: cancel,
 		served:      make(map[string]map[string]Pages),
 		outstanding: make(map[string]map[string]map[uint64]struct{}),
 		sending:     make(map[string]int),
@@ -261,22 +191,22 @@ func NewPageSource(ctx context.Context, config SourceConfig) (*PageSource, error
 	return s, nil
 }
 
-// Address is where peers reach this page source.
-func (s *PageSource) Address() platform.Address { return s.config.Address }
+// Address is where peers reach this peer server.
+func (s *Server) Address() platform.Address { return s.config.Address }
 
 // PageSize is the largest page this source serves, which is what its budgets
 // are sized against. A reply is counted in the page of the volume it answers
 // for, which both hosts read out of that volume's durable geometry.
-func (s *PageSource) PageSize() int { return s.config.PageSize }
+func (s *Server) PageSize() int { return s.config.PageSize }
 
 // pagesPerRequest caps one reply of a volume whose page is pageSize. The bound
 // is bytes, so a volume of small pages gets more of them in a reply rather than
 // one page per round trip; a source told a cap of its own keeps it.
-func (s *PageSource) pagesPerRequest(pageSize int) int {
+func (s *Server) pagesPerRequest(pageSize int) int {
 	if s.config.MaxPagesPerRequest > 0 {
 		return s.config.MaxPagesPerRequest
 	}
-	return max(1, min(defaultMaxPages, requestBytes/pageSize))
+	return max(1, min(DefaultMaxPages, RequestBytes/pageSize))
 }
 
 // Serve registers what this host holds for one VM, by volume name. The VM is
@@ -284,7 +214,7 @@ func (s *PageSource) pagesPerRequest(pageSize int) int {
 // The guest is stopped by the time this is called, so the pages no checkpoint
 // holds can no longer change: what each volume reports as unpublished here is
 // exactly what the destination must fetch before this host may release them.
-func (s *PageSource) Serve(vmID string, pages map[string]Pages) {
+func (s *Server) Serve(vmID string, pages map[string]Pages) {
 	outstanding := make(map[string]map[uint64]struct{}, len(pages))
 	var unlisted error
 	for name, volume := range pages {
@@ -339,7 +269,7 @@ func (s *PageSource) Serve(vmID string, pages map[string]Pages) {
 // book that answers for it: struck off if it left, still outstanding if it did
 // not. A source that closes while one is still in flight refuses, because a
 // send that never returned is a send this host can say nothing about.
-func (s *PageSource) Release(vmID string) error {
+func (s *Server) Release(vmID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for s.sending[vmID] > 0 {
@@ -356,7 +286,7 @@ func (s *PageSource) Release(vmID string) error {
 		case <-settled:
 		case <-s.ctx.Done():
 			s.mu.Lock()
-			return fmt.Errorf("%w: a reply of %s's pages was still being sent when this page source closed",
+			return fmt.Errorf("%w: a reply of %s's pages was still being sent when this peer server closed",
 				ErrOutstanding, vmID)
 		}
 		s.mu.Lock()
@@ -381,7 +311,7 @@ func (s *PageSource) Release(vmID string) error {
 // parent sealed and the VM half-released. It reports a fork child whose
 // destination had already claimed it: that child runs, whatever the give-up
 // meant.
-func (s *PageSource) Discard(vmID string) (claimed bool) {
+func (s *Server) Discard(vmID string) (claimed bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	// A release waiting on a reply of this VM's pages has nothing left to
@@ -401,7 +331,7 @@ func (s *PageSource) Discard(vmID string) (claimed bool) {
 // Discard says so; one that was given up, released or ran out is not, and the
 // destination discards the child. Claim and Discard take the same lock, so of a
 // claim and a give-up of one child exactly one comes first.
-func (s *PageSource) Claim(vmID string) bool {
+func (s *Server) Claim(vmID string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, served := s.served[vmID]; !served {
@@ -422,7 +352,7 @@ func outstandingPages(volumes map[string]map[uint64]struct{}) int {
 
 // sendingPages counts a reply carrying pages no checkpoint holds in or out of
 // flight for one VM, and wakes whatever is waiting on the count.
-func (s *PageSource) sendingPages(vmID string, delta int) {
+func (s *Server) sendingPages(vmID string, delta int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sending[vmID] += delta
@@ -434,14 +364,14 @@ func (s *PageSource) sendingPages(vmID string, delta int) {
 
 // wake releases everything waiting on this source's bookkeeping. Caller holds
 // the lock.
-func (s *PageSource) wake() {
+func (s *Server) wake() {
 	close(s.settled)
 	s.settled = make(chan struct{})
 }
 
 // fetched records the unpublished pages one reply carried, which is the only
 // evidence this host has that the destination holds them.
-func (s *PageSource) fetched(vmID, name string, pages []uint64) {
+func (s *Server) fetched(vmID, name string, pages []uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	defer s.wake()
@@ -458,7 +388,7 @@ func (s *PageSource) fetched(vmID, name string, pages []uint64) {
 }
 
 // Serving reports the VMs whose pages this host still holds for another.
-func (s *PageSource) Serving() []string {
+func (s *Server) Serving() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return slices.Sorted(maps.Keys(s.served))
@@ -473,7 +403,7 @@ func (s *PageSource) Serving() []string {
 // A VM whose volumes could not be listed reports -1 rather than a count: what it
 // still holds is unknown, which is as good a reason to refuse a release as pages
 // known to be outstanding.
-func (s *PageSource) Outstanding() map[string]int {
+func (s *Server) Outstanding() map[string]int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	left := make(map[string]int, len(s.served))
@@ -487,14 +417,14 @@ func (s *PageSource) Outstanding() map[string]int {
 	return left
 }
 
-func (s *PageSource) Stats() SourceStats {
-	return SourceStats{Requests: s.requests.Load(), Served: s.servedPages.Load(),
+func (s *Server) Stats() ServerStats {
+	return ServerStats{Requests: s.requests.Load(), Served: s.servedPages.Load(),
 		Absent: s.absentPages.Load(), Refused: s.refused.Load(), Listings: s.listings.Load()}
 }
 
 // Close stops accepting and drops every connection. It does not release the
 // memory regions: their pages belong to the VMM process that owns them.
-func (s *PageSource) Close() error {
+func (s *Server) Close() error {
 	s.closeOnce.Do(func() {
 		s.cancel(ErrClosed)
 		s.closeErr = s.listener.Close()
@@ -503,12 +433,12 @@ func (s *PageSource) Close() error {
 	return s.closeErr
 }
 
-func (s *PageSource) accept() {
+func (s *Server) accept() {
 	for {
 		conn, err := s.listener.Accept(s.ctx)
 		if err != nil {
 			if context.Cause(s.ctx) == nil {
-				slog.WarnContext(s.ctx, "vmmigrate: page source stopped accepting", "address", s.config.Address, "error", err)
+				slog.WarnContext(s.ctx, "peer: the server stopped accepting", "address", s.config.Address, "error", err)
 			}
 			return
 		}
@@ -531,12 +461,12 @@ func peerKey(address platform.Address) string {
 	return host
 }
 
-func (s *PageSource) serveConn(conn platform.Conn) {
+func (s *Server) serveConn(conn platform.Conn) {
 	defer conn.Close()
 	peer := peerKey(conn.RemoteAddress())
 	if !s.acquireConnection(peer) {
 		s.refused.Add(1)
-		slog.WarnContext(s.ctx, "vmmigrate: refused a page connection over the per-peer budget", "peer", peer)
+		slog.WarnContext(s.ctx, "peer: refused a connection over the per-peer budget", "peer", peer)
 		return
 	}
 	defer s.releaseConnection(peer)
@@ -558,7 +488,7 @@ func (s *PageSource) serveConn(conn platform.Conn) {
 	}
 }
 
-func (s *PageSource) acquireConnection(peer string) bool {
+func (s *Server) acquireConnection(peer string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	budget := s.peers[peer]
@@ -573,7 +503,7 @@ func (s *PageSource) acquireConnection(peer string) bool {
 	return true
 }
 
-func (s *PageSource) releaseConnection(peer string) {
+func (s *Server) releaseConnection(peer string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	budget := s.peers[peer]
@@ -588,7 +518,7 @@ func (s *PageSource) releaseConnection(peer string) {
 
 // reserve takes one request's worst-case page bytes from a peer's budget, and
 // reports false when that peer already holds all of it.
-func (s *PageSource) reserve(peer string, bytes int64) bool {
+func (s *Server) reserve(peer string, bytes int64) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	budget := s.peers[peer]
@@ -599,7 +529,7 @@ func (s *PageSource) reserve(peer string, bytes int64) bool {
 	return true
 }
 
-func (s *PageSource) release(peer string, bytes int64) {
+func (s *Server) release(peer string, bytes int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if budget := s.peers[peer]; budget != nil {
@@ -608,7 +538,7 @@ func (s *PageSource) release(peer string, bytes int64) {
 }
 
 // pagesOf resolves one request's volume, or reports why it cannot.
-func (s *PageSource) pagesOf(vmID, name string) (Pages, migratev1.Status) {
+func (s *Server) pagesOf(vmID, name string) (Pages, migratev1.Status) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	volumes, found := s.served[vmID]
@@ -622,7 +552,7 @@ func (s *PageSource) pagesOf(vmID, name string) (Pages, migratev1.Status) {
 	return pages, migratev1.Status_STATUS_OK
 }
 
-func (s *PageSource) dispatch(conn platform.Conn, peer string, incoming wire.Incoming) error {
+func (s *Server) dispatch(conn platform.Conn, peer string, incoming wire.Incoming) error {
 	if err := drain(incoming); err != nil {
 		return err
 	}
@@ -691,7 +621,7 @@ func drain(incoming wire.Incoming) error {
 // for that page and nothing more. The pages it reports as served are the ones
 // no checkpoint holds that this reply carries; the caller records them once the
 // reply has left, which is the only evidence this host ever gets.
-func (s *PageSource) pages(peer string, request *migratev1.PageRequest) (*migratev1.PageResponse, []byte, []uint64) {
+func (s *Server) pages(peer string, request *migratev1.PageRequest) (*migratev1.PageResponse, []byte, []uint64) {
 	s.requests.Add(1)
 	// The reply is counted in the page of the volume it answers for, which is
 	// only known once the request has named one; until then the budget's own
@@ -740,12 +670,12 @@ func (s *PageSource) pages(peer string, request *migratev1.PageRequest) (*migrat
 	found := 0
 	for index := range count {
 		held, unpublished, err := pages.ReadResident(ctx, request.GetFirstPage()+uint64(index), page)
-		if errors.Is(err, vmmemory.ErrRange) {
+		if errors.Is(err, ErrPastEnd) {
 			// Every higher page is out of range too.
 			break
 		}
 		if err != nil {
-			slog.WarnContext(s.ctx, "vmmigrate: serving a page failed", "vm", request.GetVm(),
+			slog.WarnContext(s.ctx, "peer: serving a page failed", "vm", request.GetVm(),
 				"volume", request.GetVolume(), "page", request.GetFirstPage()+uint64(index), "error", err)
 			return answer(migratev1.Status_STATUS_INTERNAL), nil, nil
 		}
@@ -774,7 +704,7 @@ func (s *PageSource) pages(peer string, request *migratev1.PageRequest) (*migrat
 }
 
 // resident lists what one memory region holds, from the requested page on, in runs.
-func (s *PageSource) resident(request *migratev1.ResidentRequest) *migratev1.ResidentResponse {
+func (s *Server) resident(request *migratev1.ResidentRequest) *migratev1.ResidentResponse {
 	s.listings.Add(1)
 	pageSize := s.config.PageSize
 	answer := func(status migratev1.Status) *migratev1.ResidentResponse {
@@ -789,15 +719,15 @@ func (s *PageSource) resident(request *migratev1.ResidentRequest) *migratev1.Res
 		pageSize = volumePage
 	}
 	maxRuns := int(request.GetMaxRuns())
-	if maxRuns <= 0 || maxRuns > defaultMaxRuns {
-		maxRuns = defaultMaxRuns
+	if maxRuns <= 0 || maxRuns > DefaultMaxRuns {
+		maxRuns = DefaultMaxRuns
 	}
 	resident, err := pages.Resident()
 	if err != nil {
 		// An empty listing is a host that holds nothing, which sends the
 		// destination to its own volume for every page. A host that cannot
 		// answer says so instead, and the destination asks again.
-		slog.WarnContext(s.ctx, "vmmigrate: listing what this host holds failed",
+		slog.WarnContext(s.ctx, "peer: listing what this host holds failed",
 			"vm", request.GetVm(), "volume", request.GetVolume(), "error", err)
 		return answer(migratev1.Status_STATUS_INTERNAL)
 	}
@@ -826,7 +756,7 @@ func pageRuns(pages []uint64, first uint64, maxRuns int) (runs []*migratev1.Page
 	return runs, false
 }
 
-func (s *PageSource) reply(conn platform.Conn, requestID uint64, message proto.Message, payload []byte) error {
+func (s *Server) reply(conn platform.Conn, requestID uint64, message proto.Message, payload []byte) error {
 	frame, err := wire.Encode(wire.Outgoing{
 		InReplyTo: requestID,
 		RequestID: requestID,

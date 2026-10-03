@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/semistrict/sproutfs/peer"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/vmmemory"
@@ -16,7 +17,7 @@ import (
 const sourceAddress platform.Address = "source-pages"
 
 // migration is one prepared migration: a cluster, both hosts' managers and
-// pagers, a VM running on the source, and the page server the destination
+// pagers, a VM running on the source, and the peer server the destination
 // fetches from.
 type migration struct {
 	cluster     *cluster
@@ -26,7 +27,7 @@ type migration struct {
 	destPager   *pager
 	vm          *volume.VM
 	machine     *machine
-	pages       *vmmigrate.PageSource
+	pages       *peer.Server
 }
 
 // newMigration creates a VM, writes and publishes a checkpoint so some of its
@@ -57,7 +58,7 @@ func newMigration(t *testing.T) *migration {
 		t.Fatal(err)
 	}
 	// Eight pages per request, so a test can watch one request cover a run.
-	m.pages, err = vmmigrate.NewPageSource(t.Context(), vmmigrate.SourceConfig{PageSize: pageSize,
+	m.pages, err = peer.NewServer(t.Context(), peer.ServerConfig{PageSize: pageSize,
 		MaxPagesPerRequest: 8, MaxBytesInFlightPerPeer: 32 << 20, Network: c.runtime.Network(), Address: sourceAddress})
 	if err != nil {
 		t.Fatal(err)

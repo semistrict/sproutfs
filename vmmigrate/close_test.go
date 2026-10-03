@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/semistrict/sproutfs/peer"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/vmmigrate"
 )
@@ -69,7 +70,7 @@ func (c heldConn) Send(ctx context.Context, frame platform.Frame) error {
 	return c.Conn.Send(ctx, frame)
 }
 
-// heldSource is a page source serving this VM whose every reply waits for the
+// heldSource is a peer server serving this VM whose every reply waits for the
 // listener to be released.
 func (s *served) heldSource(t *testing.T, address platform.Address) *heldListener {
 	t.Helper()
@@ -88,7 +89,7 @@ func (s *served) heldSourceHolding(t *testing.T, address platform.Address,
 	}
 	held := newHeldListener(listener)
 	held.deliver, held.err = deliver, sendErr
-	source, err := vmmigrate.NewPageSource(t.Context(), vmmigrate.SourceConfig{PageSize: pageSize,
+	source, err := peer.NewServer(t.Context(), peer.ServerConfig{PageSize: pageSize,
 		MaxPagesPerRequest: 8, MaxBytesInFlightPerPeer: 32 << 20, Address: address, Listener: held})
 	if err != nil {
 		t.Fatal(err)

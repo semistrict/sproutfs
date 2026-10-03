@@ -29,6 +29,9 @@ var checked = []string{
 	"checkpoint",
 	"control",
 	"vmmigrate",
+	// The peer server decides when a page only one host holds counts as
+	// fetched, and how long a destination waits for it.
+	"peer",
 	"host",
 	"vmmemory",
 	// When a handoff is given up decides whether a stopped guest's writes

@@ -411,7 +411,7 @@ const file_sproutfs_wire_v1_frame_proto_rawDesc = "" +
 	"\x11ChecksumAlgorithm\x12\"\n" +
 	"\x1eCHECKSUM_ALGORITHM_UNSPECIFIED\x10\x00\x12\x1d\n" +
 	"\x19CHECKSUM_ALGORITHM_CRC32C\x10\x01\x12\x1d\n" +
-	"\x19CHECKSUM_ALGORITHM_SHA256\x10\x02BOZMgithub.com/semistrict/sproutfs/vmmigrate/internal/gen/sproutfs/wire/v1;wirev1b\beditionsp\xe9\a"
+	"\x19CHECKSUM_ALGORITHM_SHA256\x10\x02BJZHgithub.com/semistrict/sproutfs/peer/internal/gen/sproutfs/wire/v1;wirev1b\beditionsp\xe9\a"
 
 var file_sproutfs_wire_v1_frame_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
 var file_sproutfs_wire_v1_frame_proto_msgTypes = make([]protoimpl.MessageInfo, 2)

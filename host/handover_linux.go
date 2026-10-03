@@ -26,7 +26,7 @@ func (s *supervisor) Migrate(ctx context.Context, id string, destination platfor
 		return hostapi.MigrateResult{}, fmt.Errorf("migrating %s to %s: %w", id, destination, err)
 	}
 	// The VM runs on the destination from here. This host holds only its
-	// pages, which its page server serves until the destination has them all.
+	// pages, which its peer server serves until the destination has them all.
 	s.forget(id)
 	return hostapi.MigrateResult{Handoff: apiHandoff(handoff), Stop: s.since(stopped),
 		Hold: hostapi.Of(s.host.HoldTimeout())}, nil

@@ -253,7 +253,7 @@ func TestForkHoldExpiresWhenNothingReleasesIt(t *testing.T) {
 // TestDeletingAForkParentRetiresItsForkPoints: a child forked onto another host
 // reads the fork point's pages out of this host's memory, and the process that
 // maps them is exactly what deleting the parent closes. Nothing retired the
-// points taken on the parent, so the page server went on offering that child a
+// points taken on the parent, so the peer server went on offering that child a
 // point whose pages were gone: every page it had not fetched came back
 // absent and it read the checkpoint's older bytes instead, silently. Retiring
 // the point first stops this host offering them at all, so the child's next
@@ -367,7 +367,7 @@ func (n *countingNetwork) Dial(ctx context.Context, from, to platform.Address) (
 
 // TestLocalForkReceivesTheForkPointOverThePages: a fork is always a handoff, and
 // a child that lands on its parent's own host receives one over a local backing
-// rather than over the page server: the pager shares the parent's sealed pages
+// rather than over the peer server: the pager shares the parent's sealed pages
 // with the child by identity, so every inherited page is present the moment the
 // memory region attaches. No byte is copied, no page is loaded back out of the store
 // and nothing is dialed. The child's root is published by the host that took it

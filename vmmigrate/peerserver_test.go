@@ -7,6 +7,7 @@ import (
 	"testing"
 	"testing/synctest"
 
+	"github.com/semistrict/sproutfs/peer"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/vmmemory"
 	"github.com/semistrict/sproutfs/vmmigrate"
@@ -20,15 +21,15 @@ type served struct {
 	vm        *volume.VM
 	machine   *machine
 	written   int
-	// source is the page source a test started of its own for this VM, if any.
-	source *vmmigrate.PageSource
+	// source is the peer server a test started of its own for this VM, if any.
+	source *peer.Server
 }
 
 // newServed creates a second VM, stores into the first pages of its RAM without
 // ever flushing them, and registers its memory regions. The volume therefore reads as
 // zeroes exactly where the pager holds the guest's bytes, so a test can tell
 // which of the two answered a load.
-func newServed(t *testing.T, source *vmmigrate.PageSource, written int) *served {
+func newServed(t *testing.T, source *peer.Server, written int) *served {
 	t.Helper()
 	m := newMigration(t)
 	vm, err := m.source.Create(t.Context(), "vm-2", vmSpec)
@@ -49,12 +50,12 @@ func newServed(t *testing.T, source *vmmigrate.PageSource, written int) *served 
 	return &served{migration: m, vm: vm, machine: built, written: written}
 }
 
-func (s *served) backing(t *testing.T, source *vmmigrate.PageSource, name string) *vmmigrate.PeerBacking {
+func (s *served) backing(t *testing.T, source *peer.Server, name string) *vmmigrate.PeerBacking {
 	t.Helper()
 	return s.dialing(t, source, name, s.migration.cluster.dialer("dest"))
 }
 
-func (s *served) dialing(t *testing.T, source *vmmigrate.PageSource, name string, dial vmmigrate.Dialer) *vmmigrate.PeerBacking {
+func (s *served) dialing(t *testing.T, source *peer.Server, name string, dial vmmigrate.Dialer) *vmmigrate.PeerBacking {
 	t.Helper()
 	address := sourceAddress
 	if source != nil {
@@ -69,8 +70,8 @@ func (s *served) dialing(t *testing.T, source *vmmigrate.PageSource, name string
 	return backing
 }
 
-// pageSource starts a second page source with budgets of a test's own.
-func (m *migration) pageSource(t *testing.T, config vmmigrate.SourceConfig) *vmmigrate.PageSource {
+// peerServer starts a second peer server with budgets of a test's own.
+func (m *migration) peerServer(t *testing.T, config peer.ServerConfig) *peer.Server {
 	t.Helper()
 	config.PageSize = pageSize
 	if config.MaxPagesPerRequest == 0 {
@@ -83,7 +84,7 @@ func (m *migration) pageSource(t *testing.T, config vmmigrate.SourceConfig) *vmm
 	if config.Address == "" {
 		config.Address = "source-pages-2"
 	}
-	source, err := vmmigrate.NewPageSource(t.Context(), config)
+	source, err := peer.NewServer(t.Context(), config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,10 +92,10 @@ func (m *migration) pageSource(t *testing.T, config vmmigrate.SourceConfig) *vmm
 	return source
 }
 
-// TestPageServerAnswersHeldAndAbsentPagesInOneRequest is the protocol itself: one
+// TestPeerServerAnswersHeldAndAbsentPagesInOneRequest is the protocol itself: one
 // request covers a run, the bitmap says which pages came back, and every page the
 // source does not hold is read from the destination's own volume instead.
-func TestPageServerAnswersHeldAndAbsentPagesInOneRequest(t *testing.T) {
+func TestPeerServerAnswersHeldAndAbsentPagesInOneRequest(t *testing.T) {
 	s := newServed(t, nil, 4)
 	backing := s.backing(t, nil, "ram0")
 	data := make([]byte, 8*pageSize)
@@ -117,7 +118,7 @@ func TestPageServerAnswersHeldAndAbsentPagesInOneRequest(t *testing.T) {
 		t.Fatalf("peer backing: %+v", stats)
 	}
 	if stats := s.migration.pages.Stats(); stats.Requests != 1 || stats.Served != 4 || stats.Absent != 4 {
-		t.Fatalf("page source: %+v", stats)
+		t.Fatalf("peer server: %+v", stats)
 	}
 }
 
@@ -177,12 +178,12 @@ func TestAnUnreachableSourceStillAnswersForThePagesTheCheckpointHolds(t *testing
 	}
 }
 
-// TestPageSourceBoundsConnectionsPerPeer requires the source to refuse a peer
+// TestPeerServerBoundsConnectionsPerPeer requires the source to refuse a peer
 // that opens more connections than its budget, and the refused destination to
 // carry on from its own volume.
-func TestPageSourceBoundsConnectionsPerPeer(t *testing.T) {
+func TestPeerServerBoundsConnectionsPerPeer(t *testing.T) {
 	s := newServed(t, nil, 4)
-	source := s.migration.pageSource(t, vmmigrate.SourceConfig{MaxConnectionsPerPeer: 1})
+	source := s.migration.peerServer(t, peer.ServerConfig{MaxConnectionsPerPeer: 1})
 	source.Serve("vm-2", vmmigrate.MemoryRegionPages(s.machine.MemoryRegions()))
 	first, second := s.backing(t, source, "ram0"), s.backing(t, source, "ram0")
 	data := make([]byte, 4*pageSize)
@@ -207,14 +208,14 @@ func TestPageSourceBoundsConnectionsPerPeer(t *testing.T) {
 		t.Fatalf("the refused backing: %+v", stats)
 	}
 	if stats := source.Stats(); stats.Refused == 0 {
-		t.Fatal("the page source refused no connection")
+		t.Fatal("the peer server refused no connection")
 	}
 }
 
-func TestPageSourceReusesConnectionBudgetAfterDisconnect(t *testing.T) {
+func TestPeerServerReusesConnectionBudgetAfterDisconnect(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		s := newServed(t, nil, 4)
-		source := s.migration.pageSource(t, vmmigrate.SourceConfig{MaxConnectionsPerPeer: 1})
+		source := s.migration.peerServer(t, peer.ServerConfig{MaxConnectionsPerPeer: 1})
 		source.Serve("vm-2", vmmigrate.MemoryRegionPages(s.machine.MemoryRegions()))
 		want := s.machine.snapshot()["ram0"][:4*pageSize]
 		for attempt := range 4 {
@@ -247,7 +248,7 @@ func TestPageSourceReusesConnectionBudgetAfterDisconnect(t *testing.T) {
 // because being busy is not being gone.
 func TestBusySourceIsNotAFallback(t *testing.T) {
 	s := newServed(t, nil, 4)
-	source := s.migration.pageSource(t, vmmigrate.SourceConfig{MaxBytesInFlightPerPeer: pageSize})
+	source := s.migration.peerServer(t, peer.ServerConfig{MaxBytesInFlightPerPeer: pageSize})
 	source.Serve("vm-2", vmmigrate.MemoryRegionPages(s.machine.MemoryRegions()))
 	backing := s.backing(t, source, "ram0")
 	data := make([]byte, 4*pageSize)
@@ -264,7 +265,7 @@ func TestBusySourceIsNotAFallback(t *testing.T) {
 		t.Fatalf("a busy source was treated as a gone one: %+v", stats)
 	}
 	if refused := source.Stats().Refused; refused != 2 {
-		t.Fatalf("page source refused %d requests", refused)
+		t.Fatalf("peer server refused %d requests", refused)
 	}
 }
 
@@ -281,6 +282,6 @@ func TestResidentListingNamesWhatTheSourceHolds(t *testing.T) {
 		t.Fatalf("resident runs: %+v", runs)
 	}
 	if stats := s.migration.pages.Stats(); stats.Listings != 1 {
-		t.Fatalf("page source answered %d listings", stats.Listings)
+		t.Fatalf("peer server answered %d listings", stats.Listings)
 	}
 }

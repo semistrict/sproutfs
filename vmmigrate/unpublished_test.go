@@ -4,20 +4,17 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"io"
 	"runtime"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
 
+	"github.com/semistrict/sproutfs/peer/peertest"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/vmmemory"
 	"github.com/semistrict/sproutfs/vmmigrate"
-	migratev1 "github.com/semistrict/sproutfs/vmmigrate/internal/gen/sproutfs/migrate/v1"
-	"github.com/semistrict/sproutfs/vmmigrate/internal/wire"
 	"github.com/semistrict/sproutfs/volume"
-	"google.golang.org/protobuf/proto"
 )
 
 // A source at its per-peer budget answers BUSY, which a drain makes its normal
@@ -283,30 +280,15 @@ func (c *busyConn) Receive(ctx context.Context) (platform.ReceivedFrame, error) 
 		return frame, nil
 	default:
 	}
-	incoming, err := wire.Decode(frame)
+	read, err := peertest.Read(frame)
 	if err != nil {
 		return platform.ReceivedFrame{}, err
 	}
-	if !incoming.Message.MessageIs(new(migratev1.PageResponse)) {
-		return platform.ReceivedFrame{Header: frame.Header, Payload: incoming.Payload,
-			PayloadSize: frame.PayloadSize}, nil
-	}
-	_, err = io.Copy(io.Discard, incoming.Payload)
-	closeErr := incoming.Payload.Close()
-	if err != nil {
-		return platform.ReceivedFrame{}, err
-	}
-	if closeErr != nil {
-		return platform.ReceivedFrame{}, closeErr
+	if _, ok := read.PageReply(); !ok {
+		return read.Pass(), nil
 	}
 	c.refusals.Add(1)
-	status := migratev1.Status_STATUS_BUSY
-	busy, err := wire.Encode(wire.Outgoing{RequestID: incoming.InReplyTo, InReplyTo: incoming.InReplyTo,
-		Message: migratev1.PageResponse_builder{Status: &status, PageSize: proto.Uint32(pageSize)}.Build()})
-	if err != nil {
-		return platform.ReceivedFrame{}, err
-	}
-	return platform.ReceivedFrame{Header: busy.Header, Payload: io.NopCloser(bytes.NewReader(nil))}, nil
+	return read.Busy(pageSize)
 }
 
 // holdResidentReplies stalls the listing the bulk pass walks until gate is
@@ -332,19 +314,17 @@ func (c *heldListing) Receive(ctx context.Context) (platform.ReceivedFrame, erro
 	if err != nil {
 		return frame, err
 	}
-	incoming, err := wire.Decode(frame)
+	read, err := peertest.Read(frame)
 	if err != nil {
 		return platform.ReceivedFrame{}, err
 	}
-	passed := platform.ReceivedFrame{Header: frame.Header, Payload: incoming.Payload, PayloadSize: frame.PayloadSize}
-	if !incoming.Message.MessageIs(new(migratev1.ResidentResponse)) {
-		return passed, nil
+	if !read.IsResidentReply() {
+		return read.Pass(), nil
 	}
 	select {
 	case <-c.gate:
-		return passed, nil
+		return read.Pass(), nil
 	case <-ctx.Done():
-		_ = incoming.Payload.Close()
 		return platform.ReceivedFrame{}, context.Cause(ctx)
 	}
 }

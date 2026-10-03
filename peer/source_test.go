@@ -12,16 +12,16 @@ import (
 	"testing/synctest"
 
 	"github.com/semistrict/sproutfs/internal/blob"
+	"github.com/semistrict/sproutfs/peer"
+	migratev1 "github.com/semistrict/sproutfs/peer/internal/gen/sproutfs/migrate/v1"
+	"github.com/semistrict/sproutfs/peer/internal/wire"
 	"github.com/semistrict/sproutfs/platform"
-	migratev1 "github.com/semistrict/sproutfs/vmmigrate/internal/gen/sproutfs/migrate/v1"
-	"github.com/semistrict/sproutfs/vmmigrate/internal/peer"
-	"github.com/semistrict/sproutfs/vmmigrate/internal/wire"
 	"google.golang.org/protobuf/proto"
 )
 
 const pageSize = 4096
 
-// script is a page source that answers every request with what one test wrote
+// script is a peer server that answers every request with what one test wrote
 // for it, and counts the connections it was asked for and lost.
 type script struct {
 	answer func(incoming wire.Incoming) (proto.Message, []byte, error)
@@ -38,7 +38,7 @@ func (s *script) dial(context.Context, platform.Address) (platform.Conn, error) 
 // source is a Source over this script, with the budgets a memory region takes by
 // default.
 func (s *script) source(connections int) *peer.Source {
-	return peer.New(peer.Config{Peer: "source", VM: "vm", Volume: "ram0", PageSize: pageSize,
+	return peer.NewSource(peer.SourceConfig{Peer: "source", VM: "vm", Volume: "ram0", PageSize: pageSize,
 		MaxConnections: connections, MaxRuns: 2, Dial: s.dial})
 }
 

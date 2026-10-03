@@ -5,7 +5,7 @@
 // epoch in its control record.
 //
 // Host is what the deployment runs on this machine: the object namespace, the
-// shared page cache, the volume manager, the migration page server, and the
+// shared page cache, the volume manager, the peer server, and the
 // loops that keep what it runs durable and fenced. Its Machine is one VMM
 // process, whatever runs it. The supervisor around it —
 // Start, which returns the Service a command serves — owns the pager and the
@@ -16,7 +16,7 @@
 // Hosts reach each other over Config.Network. A host holds no admitted
 // identity. Its one view of its peers is the list of caches it reads from the
 // orchestrator, which nothing dials yet: the only address it ever dials is the
-// page-server address a handoff carries, and the page server serves whoever
+// peer-server address a handoff carries, and the peer server serves whoever
 // that network's transport accepts. Over plain TCP that is anyone who reaches
 // the port, so restricting it to hosts is the cluster's network policy; a
 // deployment that authenticates its hosts does so in a transport of its own.
@@ -36,11 +36,11 @@ import (
 	"github.com/semistrict/sproutfs/checkpoint"
 	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/internal/blob"
+	"github.com/semistrict/sproutfs/peer"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/rank"
 	"github.com/semistrict/sproutfs/resource"
 	"github.com/semistrict/sproutfs/vmmemory"
-	"github.com/semistrict/sproutfs/vmmigrate"
 	"github.com/semistrict/sproutfs/volume"
 )
 
@@ -145,7 +145,7 @@ type Config struct {
 	// reaches one: a running VM is up to CheckpointInterval from its next, and a
 	// VM a fork point has sealed is never checkpointed at all. Until the host
 	// knows, its guest goes on writing into pages nothing can ever publish and
-	// its page server goes on serving them. Zero selects DefaultEpochInterval; a
+	// its peer server goes on serving them. Zero selects DefaultEpochInterval; a
 	// negative value disables the timer, which only a test that drives the check
 	// itself wants.
 	EpochInterval time.Duration
@@ -165,7 +165,7 @@ type Config struct {
 
 // Host assembles the deployment's object namespace, the shared page cache, the
 // volume manager that opens VMs from their control records, and the migration
-// page server.
+// peer server.
 type Host struct {
 	resources *resource.Budget
 	ctx       context.Context
@@ -184,7 +184,7 @@ type Host struct {
 	volumes     *volume.Manager
 	// pages serves the memory of every VM this host has handed to another, and
 	// machines is what it runs, which is what a drain moves.
-	pages     *vmmigrate.PageSource
+	pages     *peer.Server
 	migration MigrationConfig
 	// closeMachine tells the supervisor about a VM this host closed on its own,
 	// which is what a fencing checkpoint leads to.
@@ -436,8 +436,8 @@ func StartHost(ctx context.Context, config Config) (*Host, error) {
 		return nil, err
 	}
 	if config.Migration.Address != "" {
-		// The page server serves any peer the network's transport accepts.
-		h.pages, err = vmmigrate.NewPageSource(hostCtx, vmmigrate.SourceConfig{Network: config.Network,
+		// The peer server serves any peer the network's transport accepts.
+		h.pages, err = peer.NewServer(hostCtx, peer.ServerConfig{Network: config.Network,
 			Address: config.Migration.Address, PageSize: config.Migration.PageSize})
 		if err != nil {
 			return nil, fmt.Errorf("migration address %q: %w", config.Migration.Address, err)
@@ -496,7 +496,7 @@ type Status struct {
 	Self    rank.Cache
 	Caches  rank.FollowerStatus
 	Volumes volume.Stats
-	// Pages is what this host's migration page server has answered, and Serving
+	// Pages is what this host's peer server has answered, and Serving
 	// every handover this host still holds pages for: the VMs it migrated away
 	// and the children of every fork point it took, wherever those children
 	// landed. A drain is not finished while Serving is not empty: those pages
@@ -509,9 +509,9 @@ type Status struct {
 	// server knows nothing about it. Its hold is a handover all the same, and
 	// the same shape: it holds the parent sealed, it owes pages until the child
 	// is taken in, and its release is refused until then. A host reporting only
-	// what its page server holds would say a parent nothing can checkpoint is a
+	// what its peer server holds would say a parent nothing can checkpoint is a
 	// parent nothing is waiting on.
-	Pages   vmmigrate.SourceStats
+	Pages   peer.ServerStats
 	Serving []string
 	// Outstanding is, per VM in Serving, how many pages this host holds that no
 	// checkpoint has and that no destination has fetched yet. Zero is a
@@ -618,9 +618,9 @@ func (h *Host) outstanding(serving []string) map[string]int {
 }
 
 // serving is every handover this host still holds pages for, in ascending
-// identity order: what its page server answers for, and the children of every
+// identity order: what its peer server answers for, and the children of every
 // fork point it took — a child on this host's own pages among them, which no
-// page server ever hears of.
+// peer server ever hears of.
 func (h *Host) serving() []string {
 	var held []string
 	if h.pages != nil {
@@ -705,7 +705,7 @@ func (h *Host) AdmitMemoryRegions(memoryRegions []MemoryRegion) error {
 	return nil
 }
 
-// Close closes the managed VM handles and releases the page server. Quiesce
+// Close closes the managed VM handles and releases the peer server. Quiesce
 // caller operations first. A canceled wait can be retried; shutdown keeps
 // running.
 //

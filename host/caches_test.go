@@ -60,7 +60,7 @@ func (h *cachingHost) start(t *testing.T) *host.Host {
 }
 
 // A host with a cache disk reports the cache's identity, the weight of the
-// disk it is given and its page-server address. Until it reads the list of
+// disk it is given and its peer-server address. Until it reads the list of
 // caches it holds its own cache alone, under the code of one host, so it
 // ranks first for every window and each window's one stripe is its envelope
 // whole: what every host does today.

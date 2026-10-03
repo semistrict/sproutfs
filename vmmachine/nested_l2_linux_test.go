@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/semistrict/sproutfs/api/guest"
+	"github.com/semistrict/sproutfs/peer"
 	"github.com/semistrict/sproutfs/vmmachine"
 	"github.com/semistrict/sproutfs/vmmemory"
 	"github.com/semistrict/sproutfs/vmmigrate"
@@ -151,7 +152,7 @@ func TestANestedGuestKeepsItsVMAcrossAFork(t *testing.T) {
 	writeMarker(t, ctx, p, "forked")
 	before := awaitL2Past(t, ctx, p, 0)
 
-	pages, err := vmmigrate.NewPageSource(ctx, vmmigrate.SourceConfig{Network: c.network,
+	pages, err := peer.NewServer(ctx, peer.ServerConfig{Network: c.network,
 		Address: "source-pages", PageSize: pagerPageBytes(t)})
 	if err != nil {
 		t.Fatal(err)
@@ -218,7 +219,7 @@ func TestANestedGuestKeepsItsVMAcrossALiveMigration(t *testing.T) {
 	writeMarker(t, ctx, p, "migrated")
 	before := awaitL2Past(t, ctx, p, 0)
 
-	pages, err := vmmigrate.NewPageSource(ctx, vmmigrate.SourceConfig{Network: c.network,
+	pages, err := peer.NewServer(ctx, peer.ServerConfig{Network: c.network,
 		Address: "source-pages", PageSize: pagerPageBytes(t),
 		MaxConnectionsPerPeer: 32, MaxBytesInFlightPerPeer: 64 << 20})
 	if err != nil {

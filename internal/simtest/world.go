@@ -33,7 +33,7 @@ import (
 // StoreAddress is the object store's endpoint on the simulated network. The
 // store is not carried by that network, so a fault cannot block it by blocking
 // a link; naming it as an endpoint and consulting the link state is what lets
-// one campaign take the store and the page servers away together, which is the
+// one campaign take the store and the peer servers away together, which is the
 // combination that puts two writers in the dark at once.
 const StoreAddress platform.Address = "store"
 
@@ -224,7 +224,7 @@ type hostState struct {
 	// holding the pages no checkpoint of a migrated VM has is a host whose loss
 	// took those pages with it, and the migration waiting for them ends here.
 	gone chan struct{}
-	// faults is what this host's connections to a page server do while a fault
+	// faults is what this host's connections to a peer server do while a fault
 	// is on it.
 	faults connFaults
 	// refuseStart fails this host's half of a receive before the guest is
@@ -2172,7 +2172,7 @@ func (w *World) indexOf(h *hostState) int {
 //
 // The fork is a handoff wherever the child lands, and the destination is what
 // decides how the pages no checkpoint holds reach it: on another host it pulls
-// them out of the parent's page server, and on the parent's own host it maps
+// them out of the parent's peer server, and on the parent's own host it maps
 // the pages the seal froze. The destination publishes the child's root as soon
 // as it has them all, and until that lands the child is an identity nobody can
 // open. A root that cannot be published under a fault is therefore not left
@@ -2822,7 +2822,7 @@ func (w *World) Takeover(ctx context.Context, id string, index int) error {
 }
 
 // LoseHost takes one host away at a moment: its guests stop existing, the
-// pages they held are gone, its page server stops answering and its handles
+// pages they held are gone, its peer server stops answering and its handles
 // publish nothing ever again. Everything it was running is now only what its
 // last checkpoint published.
 func (w *World) LoseHost(ctx context.Context, index int) error {

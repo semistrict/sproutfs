@@ -255,7 +255,7 @@ func Start(ctx context.Context, config SupervisorConfig) (Service, error) {
 		CheckpointInterval: config.CheckpointInterval,
 		LossWindow:         config.LossWindow,
 		FlushBound:         config.FlushBound,
-		// The page server's budgets are sized against the largest page either
+		// The peer server's budgets are sized against the largest page either
 		// pager serves; what a reply is counted in is the page of the volume it
 		// answers for.
 		Migration: MigrationConfig{Address: s.pageAddress(),
@@ -584,7 +584,7 @@ func (s *supervisor) records(ctx context.Context) ([]hostapi.VM, error) {
 // ---------------------------------------------------------------------------
 
 // Close releases this host in the order the hosting contract requires: the VMM
-// processes, then the VM handles and the page server, then the pager, and only
+// processes, then the VM handles and the peer server, then the pager, and only
 // then the arena and the spill file the pager was using.
 func (s *supervisor) Close(ctx context.Context) error {
 	s.mu.Lock()

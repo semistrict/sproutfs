@@ -443,7 +443,7 @@ func (p Pager) Faults() uint64    { return p.RAM.Faults + p.PMEM.Faults + p.Ephe
 func (p Pager) Evictions() uint64 { return p.RAM.Evictions + p.PMEM.Evictions + p.Ephemeral.Evictions }
 func (p Pager) Spills() uint64    { return p.RAM.Spills + p.PMEM.Spills + p.Ephemeral.Spills }
 
-// Pages is what this host's migration page server has answered.
+// Pages is what this host's peer server has answered.
 type Pages struct {
 	Requests int64 `json:"requests"`
 	Served   int64 `json:"served"`
@@ -577,7 +577,7 @@ type Status struct {
 	// Disk is what the disk limiter chose.
 	Disk Disk `json:"disk"`
 	// Cache is this host's disk cache as the list of caches names it: its
-	// identity, its weight and its page-server address. It is absent on a
+	// identity, its weight and its peer-server address. It is absent on a
 	// host that keeps no cache disk.
 	Cache *Cache `json:"cache,omitempty"`
 	// Caches is the list of caches this host holds, and how it read it.
@@ -862,7 +862,7 @@ type OpenResult struct {
 }
 
 // ForkRequest names the children one fork creates and, when they run elsewhere,
-// the page-server address of the host that will run them. A fork is a migration
+// the peer-server address of the host that will run them. A fork is a migration
 // handoff from a parent that keeps running, wherever the children land: with no
 // destination this host takes them in itself, over the pages the seal froze,
 // and with one it serves those pages to that host until it reports it has
@@ -964,7 +964,7 @@ type StopResult struct {
 // MigrateRequest names where the VM's pages will be fetched from once this host
 // has stopped its guest.
 type MigrateRequest struct {
-	// Destination is the page-server address of the host that takes the VM.
+	// Destination is the peer-server address of the host that takes the VM.
 	Destination string `json:"destination"`
 }
 

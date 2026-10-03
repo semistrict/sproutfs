@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/semistrict/sproutfs/host"
+	"github.com/semistrict/sproutfs/peer"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/vmmigrate"
 )
@@ -17,7 +18,7 @@ import (
 // onto the other host twice in a round and then, as soon as each child's agent
 // answers, reads every byte of that child's memory and its disk back. That is a
 // check running while the source is still streaming the rest of what it holds,
-// with several memory regions pulling from one page source at the same time, over a
+// with several memory regions pulling from one peer server at the same time, over a
 // per-peer budget a busy host spends its life at.
 
 // premortemStreamDeadline bounds a post-copy that should finish. It is
@@ -26,12 +27,12 @@ import (
 // much simulated time and then says so instead of hanging.
 const premortemStreamDeadline = 2 * time.Minute
 
-// premortemSource is a page source with a per-peer connection budget of the
+// premortemSource is a peer server with a per-peer connection budget of the
 // caller's choosing, which is what decides whether every memory region of a received
 // VM can be served at once.
-func premortemSource(t *testing.T, m *migration, connections int) *vmmigrate.PageSource {
+func premortemSource(t *testing.T, m *migration, connections int) *peer.Server {
 	t.Helper()
-	source, err := vmmigrate.NewPageSource(t.Context(), vmmigrate.SourceConfig{
+	source, err := peer.NewServer(t.Context(), peer.ServerConfig{
 		PageSize: pageSize, MaxPagesPerRequest: 2, MaxConnectionsPerPeer: connections,
 		Network: m.cluster.runtime.Network(), Address: platform.Address("busy-source")})
 	if err != nil {

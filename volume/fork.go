@@ -22,7 +22,7 @@ import (
 // Making one publishes nothing before it returns. The parent keeps its handle,
 // its volumes and its pages: the sealed pages stay the parent's and the child
 // reads them by page identity — on this host through the point itself, on
-// another host out of the parent's page server.
+// another host out of the parent's peer server.
 //
 // Behind it, the parent publishes the point once, as a checkpoint of its own
 // under the sequence the point took: see publishPoint. A child on this host
@@ -194,7 +194,7 @@ func (f *ForkPoint) UnpublishedAge(volume string) time.Duration {
 }
 
 // ReadPage fills dst, exactly one page of that volume, with the bytes the fork
-// point froze. It is what the parent's page server serves a child on another
+// point froze. It is what the parent's peer server serves a child on another
 // host from, and it neither contacts the network nor touches the parent's live
 // state.
 func (f *ForkPoint) ReadPage(ctx context.Context, volume string, page uint64, dst []byte) error {
@@ -400,7 +400,7 @@ func (vm *VM) publishPoint(ctx context.Context, point *ForkPoint) {
 //
 // A point over a published checkpoint alone — one rebuilt on a host that never
 // held the parent — has no pages to offer, and a child of it reads what it
-// inherited out of object storage and its parent's page server instead.
+// inherited out of object storage and its parent's peer server instead.
 //
 // It is idempotent: every child of one fork point offers the same pages under
 // the same names.
@@ -504,7 +504,7 @@ func (vm *VM) forkPoint(state []byte, sources map[string]DirtySource) (*ForkPoin
 // Inherit rebuilds, on a host that never held the parent, the point a child
 // starts from: the parent's published checkpoint, which the parent pinned
 // before the handoff. The pages the parent holds that no checkpoint has are not
-// in it — the child's pager pulls them out of the parent's page server, and the
+// in it — the child's pager pulls them out of the parent's peer server, and the
 // child's first checkpoint publishes them.
 func (m *Manager) Inherit(ctx context.Context, parent control.Ref) (*ForkPoint, error) {
 	if parent.VM == "" || parent.Sequence == 0 {
