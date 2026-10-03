@@ -842,6 +842,14 @@ again has its old trailer cleared first, so a table a failed punch left behind
 is never read as the new region's. `checkpoint/diskrestart.go` holds the
 rules.
 
+**Where the file is.** The host keeps the file in a directory of the node's
+that outlives the pod (`SPROUTFS_CACHE_DIR`), on the filesystem its scratch is
+on. It takes the first file there, `cache-0`, `cache-1` and so on, that no
+other process holds locked, and holds the lock while it runs. So the hosts on
+one node never share a file, and a host that replaces one that exited reads
+back what that host kept. The spill files stay in the pod's own scratch, which
+goes with the pod ([the cache's file](hosting.md#the-caches-file)).
+
 **Reads.** A read checks the key, the index and the code in each item's
 header against what it asked for, and then the checksum. An item that fails
 any of them is a miss, and the index forgets it. The read rebuilds the envelope from
@@ -867,9 +875,10 @@ each run of its items. The index counts its own memory. Past
 rather than grow.
 
 **The share.** The disk may hold as many whole regions as its share allows.
-The share is `CacheConfig.DiskBytes`, unless the host gives the cache a
-`DiskBudget`. Then the budget says the share, and it admits or refuses each
-write by its kind: repairs first, then second chances, then fills from reads,
+A host gives the cache a `DiskBudget`, its disk limiter, and the budget alone
+says the share: a `CacheConfig.DiskBytes` beside it is refused. Without one,
+as in a test, the share is `CacheConfig.DiskBytes`. The budget admits or
+refuses each write by its kind: repairs first, then second chances, then fills from reads,
 and last fills from publications. Fills may use every region of the share but
 one. The last is kept free for the second chance.
 

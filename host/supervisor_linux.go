@@ -223,16 +223,21 @@ func Start(ctx context.Context, config SupervisorConfig) (Service, error) {
 	// The page cache's disk outlives a restart, unlike the rest of the
 	// scratch: everything on it is a copy of what the store holds, under an
 	// identity that never names other bytes. The cache reads back what a file
-	// of this deployment holds, and empties any other. The disk limiter sets
-	// its share, under CacheDiskBytes where that is set.
-	s.cacheDisk, err = config.Disk.Open(ctx, "cache", platform.OpenOptions{Create: true, Permissions: 0o600})
+	// of this deployment holds, and empties any other. The host takes the
+	// first file of the cache directory no other host holds, and the disk
+	// limiter alone sets its share.
+	var cacheFile string
+	s.cacheDisk, cacheFile, err = openCacheFile(ctx, config)
 	if err != nil {
-		return nil, fmt.Errorf("the page cache's disk: %w", err)
+		return nil, err
 	}
+	slog.InfoContext(ctx, "host: the page cache's disk was claimed", "file", cacheFile,
+		"own_directory", config.CacheDisk != nil)
 	// The disk limiter comes after every file it measures is open, and after
 	// the spill files hold their extents, but before anything is spilled. A
-	// configuration whose promises the disk cannot keep under its goals is
-	// refused here.
+	// configuration whose promises this filesystem could never keep under its
+	// goals is refused here; one other writers leave no room for yet starts
+	// unready.
 	s.disk, err = startDiskLimiter(ctx, config, diskUsers(config,
 		diskFiles{spills: s.spills}, s.runningVMMs, &s.staged), s.cacheDisk)
 	if err != nil {
@@ -248,8 +253,8 @@ func Start(ctx context.Context, config SupervisorConfig) (Service, error) {
 		Clock:      s.clock,
 		Entropy:    config.Entropy,
 		CacheBytes: config.CacheBytes,
-		Cache: checkpoint.CacheConfig{Disk: s.cacheDisk, DiskBytes: config.CacheDiskBytes,
-			Deployment: config.Deployment, ClusterPercent: config.CacheClusterPercent},
+		Cache: checkpoint.CacheConfig{Disk: s.cacheDisk, Deployment: config.Deployment,
+			ClusterPercent: config.CacheClusterPercent},
 		DiskLimiter:        s.disk,
 		CacheList:          CacheListConfig{Read: s.readCaches},
 		CheckpointInterval: config.CheckpointInterval,

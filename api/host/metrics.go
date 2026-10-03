@@ -311,7 +311,10 @@ func diskMetrics(out *strings.Builder, disk Disk) {
 	write("sproutfs_disk_smooth_free_bytes", "gauge", "What the filesystem has free, smoothed, as the limiter acts on it.",
 		disk.SmoothFreeBytes)
 	write("sproutfs_disk_floor_bytes", "gauge", "What the free-space goals keep free.", disk.FloorBytes)
-	write("sproutfs_disk_band_bytes", "gauge", "How far above the floor the cache is kept.", disk.BandBytes)
+	write("sproutfs_disk_reserve_bytes", "gauge", "What the cache leaves free above the floor for promises.",
+		disk.ReserveBytes)
+	write("sproutfs_disk_band_bytes", "gauge", "How far above the floor and the reserve the cache is kept.",
+		disk.BandBytes)
 	fmt.Fprintf(out, "# HELP sproutfs_disk_promised_bytes What each user that cannot give space back is promised.\n"+
 		"# TYPE sproutfs_disk_promised_bytes gauge\n")
 	for _, promise := range disk.Promises {

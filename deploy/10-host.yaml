@@ -106,6 +106,14 @@ spec:
               value: /hugepages-2Mi
             - name: SPROUTFS_SCRATCH_DIR
               value: /var/lib/sproutfs
+            # The page cache's disk, in a node directory that outlives the
+            # pod. The host takes the first file there, cache-0, cache-1 and
+            # so on, that no other host holds, so the two pods on this node
+            # never share one, and a replaced pod takes a file back with what
+            # it holds. It is on the same filesystem as the scratch, which the
+            # host checks: one disk limiter measures one filesystem.
+            - name: SPROUTFS_CACHE_DIR
+              value: /var/cache/sproutfs
             # The pager's page store and the RAM allotment it takes its pages
             # from. The share below gives RAM three quarters of it — 3.75 GiB
             # — and PMEM the rest, 1.25 GiB, both 2 MiB pages out of the pod's
@@ -128,16 +136,29 @@ spec:
                   optional: true
             - name: SPROUTFS_MEMORY_BYTES
               value: "12884901888"
-            # Disk is capped per concern, out of the 24 GiB emptyDir: the
-            # pager's spill file, and the page cache's disk, which holds the
-            # memory of the VMs started with --pull. The page cache's own
-            # allotment is memory.
+            # The page cache's own allotment, which is memory.
             - name: SPROUTFS_CACHE_BYTES
               value: "1073741824"
+            # The pagers' spill files, allocated whole when the host starts.
             - name: SPROUTFS_SPILL_BYTES
               value: "17179869184"
-            - name: SPROUTFS_CACHE_DISK_BYTES
-              value: "4294967296"
+            # One disk limiter bounds everything the host writes: the spill
+            # files, VMM staging and the page cache's disk. The cache takes
+            # what the goals leave. A fifth of the filesystem stays free,
+            # above the kubelet's eviction and image collection marks. Each
+            # host holds at most 56 GiB, so the two pods on this node split
+            # the disk rather than the first cache taking all of it. The
+            # node's 200 GB disk leaves about 45 GiB for everything else.
+            - name: SPROUTFS_DISK_FREE_PERCENT
+              value: "20"
+            - name: SPROUTFS_DISK_USED_BYTES
+              value: "60129542144"
+            # The cache's write budget, counted on the disk's own write
+            # counter. A persistent disk has no rated endurance, so this is
+            # a ceiling the demo should never meet: about five writes of the
+            # whole disk a day, a burst of an hour's worth.
+            - name: SPROUTFS_CACHE_WRITE_BYTES_PER_DAY
+              value: "1099511627776"
             # The cluster cache is off: every window is kept whole on the
             # host that reads it, whatever the list of caches says, until
             # hosts read stripes from each other.
@@ -282,6 +303,11 @@ spec:
               mountPath: /hugepages-2Mi
             - name: scratch
               mountPath: /var/lib/sproutfs
+            # One directory per namespace, so a second deployment on the
+            # node never takes this one's cache files.
+            - name: cache
+              mountPath: /var/cache/sproutfs
+              subPathExpr: $(SPROUTFS_NAMESPACE)
             - name: guest
               mountPath: /usr/share/sproutfs/guest
               readOnly: true
@@ -296,11 +322,25 @@ spec:
         - name: hugepages
           emptyDir:
             medium: HugePages-2Mi
-        # Spill, the page cache's disk and scratch on the node's own disk,
-        # discarded with the pod.
+        # The spill files and the VMM scratch, on the node's own disk and
+        # discarded with the pod: a restart is a host loss for them. No size
+        # limit: the disk limiter bounds what the host writes, and a kubelet
+        # limit would evict the pod, a host loss, where the limiter refuses a
+        # promise.
         - name: scratch
-          emptyDir:
-            sizeLimit: 24Gi
+          emptyDir: {}
+        # The page cache's disk, on the node's own disk like the scratch, but
+        # outliving the pod: it holds only copies of what the bucket holds,
+        # each under a name that never names other bytes, so a replaced pod
+        # reads it back. A hostPath, not a local PersistentVolume: a claim
+        # would pin the pod to this node, and a pod that moves to another
+        # node should start there with whatever cache that node has, not
+        # wait for this one. A file another deployment wrote is emptied when
+        # a host opens it.
+        - name: cache
+          hostPath:
+            path: /opt/sproutfs-demo/cache
+            type: DirectoryOrCreate
         # The guest image is built on the node by scripts/lib/demo-image.sh, not
         # baked into the container image, so the pods read it from the node.
         # DirectoryOrCreate so that a pod still starts before the build has run.

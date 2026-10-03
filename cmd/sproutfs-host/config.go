@@ -32,6 +32,10 @@ type config struct {
 	Firecracker vmmachine.Firecracker
 	// Store is the object store the deployment's VMs live in.
 	Store adapters.ObjectStoreConfig
+	// CacheDir is the directory the page cache's disk is kept in, on the
+	// filesystem the scratch directory is on. Empty keeps it in the scratch
+	// directory.
+	CacheDir string
 	// APIPort serves this process's HTTP API.
 	APIPort int
 }
@@ -80,6 +84,12 @@ const defaultEphemeralArenaBytes = 256 << 20
 // defaultDiskFreePercent is the share of the filesystem a host keeps free when
 // a deployment names no disk goal.
 const defaultDiskFreePercent = 10
+
+// defaultDiskReserveBytes is what the page cache leaves free above the floor
+// for promises not yet made: sixteen VMs' staging, or an image's staging
+// sixteen regions at a time, before any cache on the filesystem has to give
+// space back.
+const defaultDiskReserveBytes = 1 << 30
 
 // defaultTemplates is the one guest image the demo image carries.
 const defaultTemplates = "alpine=/usr/share/sproutfs/guest.ext4"
@@ -211,10 +221,19 @@ func loadConfig(lookup func(string) string) (config, error) {
 	c.MemoryBytes = number("SPROUTFS_MEMORY_BYTES", arenaBytes+c.Ephemeral.ArenaBytes+(1<<30))
 	c.CacheBytes = number("SPROUTFS_CACHE_BYTES", 1<<30)
 	spillBytes := number("SPROUTFS_SPILL_BYTES", 16<<30)
-	// The page cache's disk holds the memory of the VMs marked to pull it. It
-	// is off unless a deployment gives it space, because that space comes out
-	// of the same node disk the spill file does.
-	c.CacheDiskBytes = number("SPROUTFS_CACHE_DISK_BYTES", 0)
+	// The page cache's disk outlives the pod where the scratch does not, so
+	// a deployment keeps it in a directory of the node's own, on the same
+	// filesystem. Its size is the disk limiter's alone: the cap it once had
+	// is refused by name, so a manifest that still sets it is not run on the
+	// limiter's goals while it says otherwise.
+	c.CacheDir = text("SPROUTFS_CACHE_DIR", "")
+	if c.CacheDir != "" && !filepath.IsAbs(c.CacheDir) {
+		fail("SPROUTFS_CACHE_DIR is %q, want an absolute directory", c.CacheDir)
+	}
+	if text("SPROUTFS_CACHE_DISK_BYTES", "") != "" {
+		fail("SPROUTFS_CACHE_DISK_BYTES is no longer read: the disk limiter alone sets the page cache's disk; " +
+			"set SPROUTFS_DISK_FREE_PERCENT, SPROUTFS_DISK_FREE_BYTES or SPROUTFS_DISK_USED_BYTES")
+	}
 	// The cluster cache is rolled out a share of windows at a time. Outside
 	// the share, a window is kept whole on this host, whatever the list of
 	// caches says. Unset, no window is in it.
@@ -238,6 +257,10 @@ func loadConfig(lookup func(string) string) (config, error) {
 		c.DiskGoal.FreePercent = defaultDiskFreePercent
 	}
 	c.DiskBandBytes = number("SPROUTFS_DISK_BAND_BYTES", 0)
+	// The cache leaves a reserve free above the floor, so that a host whose
+	// own cache is empty can still promise a VM's staging or receive one
+	// while another host's cache on the same filesystem has filled it.
+	c.DiskReserveBytes = number("SPROUTFS_DISK_RESERVE_BYTES", defaultDiskReserveBytes)
 	// The disk cache's write budget is an average a day and a burst ahead of
 	// it, a share of the device's rated endurance that the deployment works
 	// out. Unset, the cache's writes are not limited. The burst defaults to an

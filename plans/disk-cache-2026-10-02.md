@@ -542,8 +542,14 @@ computes what the host may hold:
 floor       = max(goal_free_bytes, goal_free_ratio × smoothed total)
 room        = smoothed available + what the host holds now
 promises    = spill promises + ephemeral promises + staging
-cache       = min(room - floor, goal_used) - promises
+cache       = min(room - floor - reserve, goal_used) - promises
 ```
+
+The reserve (1 GiB by default) is free space the cache leaves above the floor
+for promises not yet made. Two hosts on one node see each other only as free
+space the filesystem does not have. Without it, a cache that filled the disk to
+the floor would leave a host beside it, whose own cache is empty, no room to
+promise a VM's staging, and nothing would tell the full cache to give back.
 
 A promise is counted once, whole, whatever its file has allocated so far, and
 "what the host holds" counts each spill file at its promise. Since spill files
@@ -609,10 +615,16 @@ region size, gives the whole file back and makes a new identity, because page
 identities are unique only within one deployment.
 
 The cache must survive a pod's restart too, so it lives on a disk that outlives
-the pod. `deploy/10-host.yaml` uses an `emptyDir` today, which outlives a
-container restart but not the pod. The cache moves to a local persistent volume
-on the node's SSD. The spill files and the VMM staging stay in the `emptyDir`,
-because a restart is a host loss for them.
+the pod: a `hostPath` directory on the node's SSD (`SPROUTFS_CACHE_DIR`), on
+the filesystem the scratch is on, so one limiter measures both. Not a local
+`PersistentVolume`: a claim pins the pod to its node, and a pod that moves
+should start on the new node with the cache there. Each host takes the first
+file in the directory, `cache-0`, `cache-1` and so on, whose lock (`flock`) no
+other process holds, so two hosts on a node never share one and a replaced
+pod takes its predecessor's back. The spill files and the VMM staging stay in
+the `emptyDir`, because a restart is a host loss for them. Hosts that share a
+node each set a used goal, so the first cache to fill does not take the whole
+disk.
 
 ## Correctness
 
@@ -757,9 +769,9 @@ Each step is its own commit, with its tests and its docs.
    `sendfile` in the TCP adapter, and no CRC32C on stripe replies.
 9. **Pull as a prefetch.** The pull asks the ranks and fills what the cluster
    lacks.
-10. **The deployment.** The host manifest puts the cache on a local persistent
-    volume on the node's SSD, and sets a space goal and a write budget instead
-    of a cap. A setting turns the cluster cache on for a share of windows, by
+10. **The deployment.** The host manifest puts the cache in a `hostPath`
+    directory on the node's SSD, and sets space goals and a write budget
+    instead of a cap. A setting turns the cluster cache on for a share of windows, by
     a hash of the window, so it can be rolled out gradually, as mcrouter's
     shadowing does. The setting was built with step 5
     (`SPROUTFS_CACHE_CLUSTER_PERCENT`), off by default, so that no deployment

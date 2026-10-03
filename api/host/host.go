@@ -670,10 +670,12 @@ type Disk struct {
 	AvailableBytes   int64 `json:"available_bytes"`
 	SmoothTotalBytes int64 `json:"smooth_total_bytes"`
 	SmoothFreeBytes  int64 `json:"smooth_free_bytes"`
-	// FloorBytes is what the free-space goals keep free, and BandBytes how
-	// far above it the cache is kept.
-	FloorBytes int64 `json:"floor_bytes"`
-	BandBytes  int64 `json:"band_bytes"`
+	// FloorBytes is what the free-space goals keep free, ReserveBytes what
+	// the cache leaves free above it for promises, and BandBytes how far
+	// above that the cache is kept.
+	FloorBytes   int64 `json:"floor_bytes"`
+	ReserveBytes int64 `json:"reserve_bytes"`
+	BandBytes    int64 `json:"band_bytes"`
 	// Promises are the users that cannot give space back, each counted at
 	// its promise, and PromisedBytes their sum.
 	Promises      []DiskPromise `json:"promises"`

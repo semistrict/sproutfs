@@ -184,6 +184,13 @@ type SupervisorConfig struct {
 	Network     platform.Network
 	Disk        platform.Disk
 	Disks       platform.Disks
+	// CacheDisk is the directory the page cache's disk is kept in, which
+	// outlives the host's pod where Disk does not. It must be on the
+	// filesystem Disk is on, because one disk limiter measures one
+	// filesystem. The host keeps its cache in the first file there, cache-0,
+	// cache-1 and so on, that no other host holds, so hosts on one node never
+	// share one. Nil keeps the cache on Disk.
+	CacheDisk platform.Disk
 	// Deployment names the object store's kind, its bucket and the prefix as
 	// the command was given them. The page cache's disk is kept across
 	// restarts only for the deployment it was made for.
@@ -218,11 +225,12 @@ type SupervisorConfig struct {
 	// it: zero is the default 2 MiB. At 4 KiB their arenas are ordinary memory
 	// charged to the pod, as RAM's is at 4 KiB.
 	PMEMPageSize uint64
-	// ScratchDir is the node-disk directory holding the pager's spill file,
-	// the VMM scratch and the page cache's disk. A starting host wipes the VMM
-	// scratch and empties the spill files: a restart is a host loss, so
-	// nothing under it is authority for anything. The page cache's disk is
-	// read back, because it holds only copies of what the store holds.
+	// ScratchDir is the node-disk directory holding the pager's spill file
+	// and the VMM scratch, and the page cache's disk where CacheDisk is nil. A
+	// starting host wipes the VMM scratch and empties the spill files: a
+	// restart is a host loss, so nothing under it is authority for anything.
+	// The page cache's disk is read back, because it holds only copies of
+	// what the store holds.
 	ScratchDir string
 	// ArenaBytes is the resident page store of each pager. The PMEM share comes
 	// out of the pod's HugeTLB allotment and the RAM share out of the pod's
@@ -242,21 +250,19 @@ type SupervisorConfig struct {
 	// The disk limiter counts each spill file at its promise.
 	CacheBytes int64
 	SpillBytes KindBytes
-	// CacheDiskBytes caps the page cache's disk, a file on Disk that holds the
-	// pages of the VMs marked to pull their whole memory and what they
-	// publish, in regions given back oldest first when it needs room. The disk
-	// limiter sets its share; zero leaves the share to the limiter alone.
-	CacheDiskBytes int64
 	// CacheClusterPercent is the share of windows, 0 to 100, the cluster
 	// cache is turned on for: the page cache's disk keeps those as the
 	// stripes its list of caches ranks it for, and every other window whole.
 	// Zero keeps every window whole.
 	CacheClusterPercent int
 	// DiskGoal is what the host's disk limiter keeps on the filesystem Disk
-	// is on, and DiskBandBytes the cap on its band, zero for the limiter's
-	// default. Disk must report its space.
-	DiskGoal      resource.DiskGoal
-	DiskBandBytes int64
+	// is on, DiskBandBytes the cap on its band, zero for the limiter's
+	// default, and DiskReserveBytes what the cache leaves free above the
+	// floor for promises not yet made, this host's and another host's on the
+	// same filesystem. Disk must report its space.
+	DiskGoal         resource.DiskGoal
+	DiskBandBytes    int64
+	DiskReserveBytes int64
 	// DiskWrites is the disk cache's write budget, zero for none, and
 	// DeviceWrites the device's counter it is measured by. The command builds
 	// the counter only for a budget.

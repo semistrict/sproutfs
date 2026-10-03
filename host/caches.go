@@ -31,23 +31,18 @@ func cacheOf(ctx context.Context, config Config, identity rank.Identity) rank.Ca
 }
 
 // cacheDisk is the size of the disk this host's cache is given: what the disk
-// limiter's goals leave it on this filesystem, under Cache.DiskBytes where that
-// is set. It is read once, when the host starts, and never from the share the
-// limiter moves as the disk fills, because every change of a weight moves
-// windows between hosts.
+// limiter's goals leave it on this filesystem, or Cache.DiskBytes for a host
+// with no limiter. It is read once, when the host starts, and never from the
+// share the limiter moves as the disk fills, because every change of a weight
+// moves windows between hosts.
 func cacheDisk(ctx context.Context, config Config) int64 {
-	disk := config.Cache.DiskBytes
 	if config.DiskLimiter == nil {
-		return disk
+		return config.Cache.DiskBytes
 	}
-	capacity := config.DiskLimiter.Capacity()
 	if sim.Bug(ctx, "host-weight-from-share") {
-		capacity = config.DiskLimiter.CacheShare()
+		return config.DiskLimiter.CacheShare()
 	}
-	if disk > 0 {
-		return min(disk, capacity)
-	}
-	return capacity
+	return config.DiskLimiter.Capacity()
 }
 
 // Cache is this host's cache as the list of caches names it, and whether the

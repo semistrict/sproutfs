@@ -260,6 +260,10 @@ type diskImage struct {
 	// writes is where recent writes started, oldest first, for a misdirected
 	// read to return instead of what it asked for.
 	writes []int64
+	// locked is the handle holding this file's lock, if any. Its lock ends
+	// when it closes, and with the epoch it was opened in, as a lock ends
+	// with the process that held it.
+	locked *file
 }
 
 // Disk models a single queued storage device. PowerLoss invalidates open
@@ -466,6 +470,10 @@ func (d *Disk) Open(ctx context.Context, name string, options platform.OpenOptio
 		image = &diskImage{}
 		d.files[name] = image
 	}
+	if holder := image.locked; options.Lock && holder != nil && !holder.closed && holder.epoch == d.epoch {
+		d.trace(DiskOpen, name, "locked", 0, id)
+		return nil, platform.ErrLocked
+	}
 	image.opens++
 	if d.config.PowerLossFaults {
 		// A file is never opened under NoCorruption, exactly as FoundationDB
@@ -483,6 +491,9 @@ func (d *Disk) Open(ctx context.Context, name string, options platform.OpenOptio
 		d.recordPendingLocked(image, pendingOp{kind: pendingTruncate, id: id})
 	}
 	handle := &file{disk: d, image: image, name: name, epoch: d.epoch}
+	if options.Lock {
+		image.locked = handle
+	}
 	d.trace(DiskOpen, name, "ok", 0, id)
 	return handle, nil
 }

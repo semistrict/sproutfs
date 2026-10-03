@@ -263,8 +263,8 @@ func TestDiskFitCountsARegionWaitingForItsReaderAsGone(t *testing.T) {
 // filesystem blocks, smaller than any envelope needs, or larger than a table's
 // offsets reach, a second-chance threshold past what the read counter holds,
 // and a deployment whose names do not fit its header's length fields or whose
-// header does not fit in a region. A disk without a share keeps nothing, and
-// one with a budget keeps its share.
+// header does not fit in a region, and a fixed share beside a budget. A disk
+// without a share keeps nothing, and one with a budget keeps its share.
 func TestCacheRefusesADiskItCannotLayOut(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		file := diskTableFile(t, nil)
@@ -275,6 +275,8 @@ func TestCacheRefusesADiskItCannotLayOut(t *testing.T) {
 			{Disk: file, DiskBytes: 1 << 30, DiskSecondChanceReads: wordReadsMax + 1},
 			{Disk: file, DiskBytes: 1 << 30, DiskIndexBytes: -1},
 			{Disk: file, DiskBytes: 1 << 30, Deployment: CacheDeployment{Bucket: strings.Repeat("b", 0x10000)}},
+			// A budget sets the share alone: no cap beside it.
+			{Disk: file, DiskBytes: 1 << 30, Budget: fixedShare(1 << 30)},
 			// 48 bytes, three names of 21,830 and a checksum are 65,542 bytes,
 			// six more than a region of 64 KiB.
 			{Disk: file, DiskBytes: 1 << 30, DiskRegionBytes: testRegionBytes, Deployment: CacheDeployment{

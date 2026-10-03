@@ -248,6 +248,136 @@ func TestPromisesThatDoNotFitMakeTheHostUnready(t *testing.T) {
 	})
 }
 
+// Promises are feasible while the goals would keep them on this filesystem
+// with nothing else on it, whatever other writers hold now: a host that is
+// unready because another writer filled the disk can wait for it, and one
+// whose promises the filesystem could never keep cannot.
+func TestPromisesAreFeasibleWhileOnlyOtherWritersLeaveNoRoom(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := defaultDisk(t)
+		l := f.limiter(resource.DiskLimiterConfig{Goal: resource.DiskGoal{FreeBytes: 25 * unit},
+			Users: []resource.DiskUser{spill("spill", 125*unit, f.sparse("spill", 125*unit))}})
+		defer l.Close()
+		f.disk.SetOutsideBytes(150 * unit)
+		f.converge()
+		if err := l.Ready(); !errors.Is(err, resource.ErrDiskPromises) {
+			t.Fatalf("a host with the disk filled from outside is ready with %v, want %v", err, resource.ErrDiskPromises)
+		}
+		// 250 - 25 - 125 = 100.
+		if err := l.Feasible(); err != nil {
+			t.Fatalf("promises the empty filesystem keeps are not feasible: %v", err)
+		}
+		for _, test := range []struct {
+			name string
+			goal resource.DiskGoal
+			want string
+		}{
+			// 250 - 50 - 225 = -25.
+			{"free percent", resource.DiskGoal{FreePercent: 20},
+				"the disk cannot keep the host's promises: the host promises 92160000 bytes, " +
+					"and the goals (free 20%) leave it 81920000 of a filesystem of 102400000"},
+			// 200 - 225 = -25.
+			{"used bytes", resource.DiskGoal{UsedBytes: 200 * unit},
+				"the disk cannot keep the host's promises: the host promises 92160000 bytes, " +
+					"and the goals (use 81920000 bytes) leave it 81920000 of a filesystem of 102400000"},
+		} {
+			other := f.limiter(resource.DiskLimiterConfig{Goal: test.goal,
+				Users: []resource.DiskUser{{Name: "staging", Promised: func() int64 { return 225 * unit }}}})
+			err := other.Feasible()
+			other.Close()
+			if err == nil || err.Error() != test.want || !errors.Is(err, resource.ErrDiskPromises) {
+				t.Fatalf("%s: promises of 225 units were judged %v, want %q", test.name, err, test.want)
+			}
+		}
+	})
+}
+
+// Two hosts share a node's disk, each with the same goals: a floor of 30 units
+// and a reserve of 10 above it. The first host's cache has filled the disk to
+// the reserve when the second restarts. Its spill file fits in the floor and
+// the reserve, so it is allocated whole; the second host is then unready, and
+// the first host's cache gives back what its goals now ask for, a few regions
+// at each reading, until the second host is ready. The reserve is then free
+// again, so the second host, whose cache is empty, can still promise a VM's
+// staging. Neither spill file loses a byte.
+func TestARestartedHostFindsRoomAnotherHostsCacheGivesBack(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := defaultDisk(t)
+		host := func(name string) resource.DiskLimiterConfig {
+			t.Helper()
+			file, err := f.disk.Open(f.ctx, name, platform.OpenOptions{Create: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := file.(platform.AllocatingFile).Allocate(f.ctx, 0, 25*unit); err != nil {
+				t.Fatal(err)
+			}
+			return resource.DiskLimiterConfig{Goal: resource.DiskGoal{FreeBytes: 30 * unit}, ReserveBytes: 10 * unit,
+				Users: []resource.DiskUser{spill(name, 25*unit, file)}}
+		}
+		firstConfig := host("spill-a")
+		first := f.limiter(firstConfig)
+		defer first.Close()
+		// The cache could hold 250 - 30 - 10 - 25 if nothing else wrote to
+		// the disk: the reserve is never the cache's.
+		if got := first.Capacity(); got != 185*unit {
+			t.Fatalf("the first host's capacity is %d units, want 185", got/unit)
+		}
+		cache := f.cache()
+		unregister, err := first.RegisterCache(cache)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer unregister()
+		// 250 - 50 - 25 - 30 - 10 leaves the cache 135; the band takes a
+		// fifth of what is left of it, so the cache stops at 134 with 41 free.
+		cache.fill(t, first)
+		if got, free := cache.Held(), f.disk.Usage().FreeBytes(); got != 134*unit || free != 41*unit {
+			t.Fatalf("the first host's cache filled to %d units with %d free, want 134 and 41", got/unit, free/unit)
+		}
+
+		secondConfig := host("spill-b")
+		second := f.limiter(secondConfig)
+		defer second.Close()
+		if err := second.Feasible(); err != nil {
+			t.Fatalf("the restarted host's promises are not feasible: %v", err)
+		}
+		if err := second.Ready(); !errors.Is(err, resource.ErrDiskPromises) {
+			t.Fatalf("the restarted host is ready with %v while the first host's cache holds its room", err)
+		}
+		readings := 0
+		for second.Ready() != nil && readings < 1000 {
+			f.tick(1)
+			readings++
+		}
+		// The spill file took 25 of the 41 free. The first host's smoothed
+		// room falls towards it over its smoothing time, and its cache gives
+		// back as its share falls: 22 units by the 14th reading, which leaves
+		// the restarted host 38 free, 8 over its floor.
+		if got, free := cache.Held(), f.disk.Usage().FreeBytes(); readings != 14 || got != 112*unit || free != 38*unit {
+			t.Fatalf("the restarted host was ready after %d readings, with the cache at %d units and %d free, "+
+				"want 14, 112 and 38", readings, got/unit, free/unit)
+		}
+		f.converge()
+		// 250 - 50 - 25 - 25 - 30 - 10 leaves the first cache 110, and the
+		// floor and the reserve, 40, free.
+		if got, free := cache.Held(), f.disk.Usage().FreeBytes(); got != 110*unit || free != 40*unit {
+			t.Fatalf("the cache settled at %d units with %d free, want 110 and 40", got/unit, free/unit)
+		}
+		if err := second.Fits(f.ctx, 10*unit); err != nil {
+			t.Fatalf("the restarted host cannot promise the reserve: %v", err)
+		}
+		if err := cache.failures(); err != nil {
+			t.Fatal(err)
+		}
+		for _, config := range []resource.DiskLimiterConfig{firstConfig, secondConfig} {
+			if held, err := config.Users[0].Allocated(f.ctx); err != nil || held != 25*unit {
+				t.Fatalf("%s holds %d units (%v), want its whole 25", config.Users[0].Name, held/unit, err)
+			}
+		}
+	})
+}
+
 // A cache over its share is told to stop one region below it, and a cache
 // within that region of its share is left alone, so a share that hovers at a
 // region's edge does not evict and refill.

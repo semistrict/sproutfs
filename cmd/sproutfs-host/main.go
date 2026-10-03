@@ -117,6 +117,11 @@ func run() error {
 	supervisor := config.SupervisorConfig
 	supervisor.ObjectStore, supervisor.Network = objects, adapters.NewNetwork()
 	supervisor.Disk, supervisor.Disks = disk, adapters.NewDisk
+	if config.CacheDir != "" {
+		if supervisor.CacheDisk, err = adapters.NewDisk(config.CacheDir); err != nil {
+			return fmt.Errorf("cache directory %s: %w", config.CacheDir, err)
+		}
+	}
 	supervisor.Deployment = checkpoint.CacheDeployment{Store: config.Store.Provider, Bucket: config.Store.Bucket,
 		Prefix: config.Store.Prefix}
 	// The write budget is measured by the counter of the device under the

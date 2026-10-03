@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
+	"time"
 
 	"github.com/semistrict/sproutfs/internal/testpager"
 	"github.com/semistrict/sproutfs/internal/testresource"
@@ -99,8 +100,6 @@ func simDisk(t *testing.T, total int64) (context.Context, *sim.Runtime, *sim.Dis
 func TestAHostPromisesItsDiskToWhatCannotGiveItBack(t *testing.T) {
 	config := deploymentConfig()
 	config.Ephemeral = EphemeralBudget{ArenaBytes: 256 * mib, DiskBytes: 2048 * mib}
-	config.CacheDiskBytes = 4096 * mib
-	// The cap bounds the cache. It promises nothing.
 	var staged atomic.Int64
 	staged.Store(5 * mib)
 	running := 3
@@ -181,15 +180,120 @@ func TestAHostWhosePromisesDoNotFitIsRefused(t *testing.T) {
 		}
 
 		// 32 + 16 + 200 fits the filesystem, but leaves 8 MiB free of a floor
-		// of 16.
+		// of 16 with nothing else on it, which no other writer can change.
 		ctx, runtime, disk = simDisk(t, 256*mib)
 		config = diskHost(200 * mib)
 		config.Disk, config.Clock = disk, runtime.NewClock("larger")
 		_, err = startDiskLimiter(ctx, config,
 			diskUsers(config, mustStartPagers(t, ctx, config, disk), none, &staged), nil)
-		if !errors.Is(err, ErrInvalidConfig) || !errors.Is(err, resource.ErrDiskPromises) {
-			t.Fatalf("a host promising 248 MiB of 240 started with %v, want %v and %v", err, ErrInvalidConfig,
-				resource.ErrDiskPromises)
+		want := "host: invalid configuration: the disk cannot keep the host's promises: the host promises " +
+			"260046848 bytes, and the goals (free 16777216 bytes) leave it 251658240 of a filesystem of 268435456"
+		if !errors.Is(err, ErrInvalidConfig) || !errors.Is(err, resource.ErrDiskPromises) || err.Error() != want {
+			t.Fatalf("a host promising 248 MiB of 240 started with %v, want %q", err, want)
+		}
+	})
+}
+
+// A host whose promises fit the filesystem, but not the space another writer
+// leaves it now, starts and reports itself unready: the other writer may be
+// another host's cache on the same node, which gives space back as its own
+// goals push it. Once the space is back the host is ready. A host that refused
+// to start would truncate its spill files on the way out, and the other
+// writer would never see the pressure.
+func TestAHostStartsUnreadyWhileAnotherWriterHoldsItsRoom(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, runtime, disk := simDisk(t, 256*mib)
+		config := diskHost(32 * mib)
+		clock := runtime.NewClock("host")
+		config.Disk, config.Clock = disk, clock
+		var staged atomic.Int64
+		users := diskUsers(config, mustStartPagers(t, ctx, config, disk), func() int { return 0 }, &staged)
+		// The spill files hold 80 MiB. 170 more leave 6 free: under the
+		// floor of 16, though the filesystem holds the promises with 160 over.
+		disk.SetOutsideBytes(170 * mib)
+		limiter, err := startDiskLimiter(ctx, config, users, nil)
+		if err != nil {
+			t.Fatalf("a host whose promises fit the filesystem was refused while another writer held it: %v", err)
+		}
+		defer limiter.Close()
+		want := "the disk cannot keep the host's promises: the host promises 83886080 bytes to spill-ram, " +
+			"spill-pmem, spill-ephemeral, vmm-staging, staged-images, and the free-bytes goal (free 16777216 bytes) " +
+			"leaves it 73400320"
+		if err := limiter.Ready(); err == nil || err.Error() != want {
+			t.Fatalf("the host started ready with %v, want %q", err, want)
+		}
+		disk.SetOutsideBytes(100 * mib)
+		ticks := 0
+		for limiter.Ready() != nil {
+			clock.Advance(resource.DefaultDiskInterval)
+			time.Sleep(time.Second)
+			synctest.Wait()
+			ticks++
+		}
+		// The first reading sees the space back, and the smoothed room moves
+		// towards it only as time passes after it: the second reading finds
+		// the 10 MiB the host needs inside the 70 MiB that came back.
+		if ticks != 2 {
+			t.Fatalf("the host was ready %d readings after the other writer gave space back, want 2", ticks)
+		}
+	})
+}
+
+// A host takes the first page cache file in the cache directory no other host
+// holds, so two hosts on one node never share one, and a host started after
+// one exited takes that host's file back.
+func TestAHostClaimsACacheFileNoOtherHostHolds(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, _, disk := simDisk(t, 256*mib)
+		config := SupervisorConfig{Disk: disk, CacheDisk: disk}
+		claim := func() (platform.File, string) {
+			t.Helper()
+			file, name, err := openCacheFile(ctx, config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return file, name
+		}
+		first, firstName := claim()
+		second, secondName := claim()
+		defer second.Close()
+		if firstName != "cache-0" || secondName != "cache-1" {
+			t.Fatalf("two hosts on one node claimed %s and %s, want cache-0 and cache-1", firstName, secondName)
+		}
+		if err := first.Close(); err != nil {
+			t.Fatal(err)
+		}
+		third, thirdName := claim()
+		defer third.Close()
+		if thirdName != "cache-0" {
+			t.Fatalf("a host started after cache-0's host exited claimed %s, want cache-0", thirdName)
+		}
+		// A host given no cache directory keeps its cache in the scratch.
+		scratch, name, err := openCacheFile(ctx, SupervisorConfig{Disk: disk})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer scratch.Close()
+		if name != "cache-2" {
+			t.Fatalf("a host with no cache directory claimed %s, want cache-2 beside the others", name)
+		}
+	})
+}
+
+// The one disk limiter measures one filesystem, so a cache directory on
+// another filesystem than the scratch is refused.
+func TestACacheDirectoryOnAnotherFilesystemIsRefused(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, runtime, disk := simDisk(t, 256*mib)
+		other := runtime.NewDisk("ssd", sim.DiskConfig{Space: sim.SpaceConfig{TotalBytes: 256 * mib}})
+		_, _, err := openCacheFile(ctx, SupervisorConfig{Disk: disk, CacheDisk: other})
+		want := "host: invalid configuration: the cache directory is on filesystem ssd and the scratch directory " +
+			"on node; the disk limiter measures one filesystem, so both must be on it"
+		if !errors.Is(err, ErrInvalidConfig) || err.Error() != want {
+			t.Fatalf("a cache directory on another filesystem was claimed with %v, want %q", err, want)
+		}
+		if files, err := other.List(ctx, ""); err != nil || len(files) != 0 {
+			t.Fatalf("the refused cache directory holds %v (%v), want nothing", files, err)
 		}
 	})
 }

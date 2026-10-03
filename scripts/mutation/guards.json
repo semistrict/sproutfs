@@ -204,6 +204,18 @@
     "purpose": "Count spill promises at what they hold when the promises do not fit, so the host reports ready."
   },
   {
+    "id": "disklimit-no-reserve",
+    "package": "resource",
+    "run": "^TestARestartedHostFindsRoomAnotherHostsCacheGivesBack$",
+    "purpose": "Let the cache fill the disk to the floor, leaving another host on the filesystem no room to promise a VM's staging."
+  },
+  {
+    "id": "disklimit-capacity-from-free-space",
+    "package": "resource",
+    "run": "^TestPromisesAreFeasibleWhileOnlyOtherWritersLeaveNoRoom$",
+    "purpose": "Judge whether promises fit the filesystem by the space other writers leave now, so a host waiting for them is refused."
+  },
+  {
     "id": "diskcache-skip-key-check",
     "package": "checkpoint",
     "run": "^TestDiskReadChecksKeyAndChecksum$",
@@ -280,6 +292,24 @@
     "package": "host",
     "run": "^TestACachesWeightIsItsDiskNotItsShare$",
     "purpose": "Weigh the host's cache by the disk limiter's moving share instead of the disk it is given."
+  },
+  {
+    "id": "host-refuse-start-while-the-disk-is-held",
+    "package": "host",
+    "run": "^TestAHostStartsUnreadyWhileAnotherWriterHoldsItsRoom$",
+    "purpose": "Refuse to start a host whose promises fit the filesystem but not the space another writer holds now."
+  },
+  {
+    "id": "host-cache-share-a-file",
+    "package": "host",
+    "run": "^TestAHostClaimsACacheFileNoOtherHostHolds$",
+    "purpose": "Open the page cache's file without its lock, so two hosts on one node share one file."
+  },
+  {
+    "id": "host-cache-on-another-filesystem",
+    "package": "host",
+    "run": "^TestACacheDirectoryOnAnotherFilesystemIsRefused$",
+    "purpose": "Accept a cache directory on another filesystem than the scratch, which the one disk limiter does not measure."
   },
   {
     "id": "orchestrator-code-follows-the-list",

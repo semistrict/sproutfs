@@ -9,13 +9,20 @@ type OpenOptions struct {
 	Create    bool
 	Exclusive bool
 	Truncate  bool
+	// Lock takes an exclusive lock on the file for as long as the returned
+	// File is open, across every process on the machine. Open fails with
+	// ErrLocked while another open File holds it. The lock ends with the File
+	// or with the process that holds it, so a process that dies leaves no
+	// lock behind. It does not combine with Truncate, which would change the
+	// file before the lock is known to be free.
+	Lock bool
 	// Permissions controls newly created files. Zero selects the adapter's
 	// secure default. Existing files may be narrowed to this mode by adapters.
 	Permissions fs.FileMode
 }
 
 func (o OpenOptions) Validate() error {
-	if o.Exclusive && !o.Create || o.Permissions&^fs.FileMode(0o777) != 0 {
+	if o.Exclusive && !o.Create || o.Lock && o.Truncate || o.Permissions&^fs.FileMode(0o777) != 0 {
 		return ErrInvalidPath
 	}
 	return nil

@@ -868,9 +868,9 @@ caches ranks this host for ([the code](#the-code)).
   pull takes none of the page cache's load slots, joins no fault's fetch, and
   makes no request while a fault's read of the store is in flight. Every pull
   on the host shares two requests in flight.
-- **It is bounded and falls back whole.** `SPROUTFS_CACHE_DISK_BYTES` is the
-  disk's share, which is off by default. The disk is a log of 64 MiB regions,
-  and every region of the share but one may be filled. A pull is refused
+- **It is bounded and falls back whole.** The disk limiter sets the disk's
+  share ([budgets](#budgets)). The disk is a log of 64 MiB regions, and every
+  region of the share but one may be filled. A pull is refused
   before it fetches anything if the checkpoint, as its root records it, is
   larger than those regions hold. A VM that does not fit is not pulled at all,
   and its faults read the store as any other VM's do. So does a VM on a host
@@ -892,9 +892,10 @@ caches ranks this host for ([the code](#the-code)).
   it gives its oldest regions back before it serves anything. A file with no
   header, a damaged one, or one of another deployment, format or region size
   is emptied and made again under a new identity. So a pulled VM opened again
-  on the same node after a restart reads its pages from the disk. The host
-  manifest keeps the file in the pod's `emptyDir`, which outlives a restart of
-  the container but not of the pod.
+  on the same node after a restart reads its pages from the disk. The file
+  is in `SPROUTFS_CACHE_DIR`, which the host manifest makes a directory of the
+  node's own, so it outlives the pod as well as the container
+  ([the cache's file](#the-caches-file)).
 - **Nothing on the disk is authority.** A copy the disk lost or damaged fails
   its key, checksum or envelope check and is read from the store. A newer
   checkpoint's page has a new identity, so the copy of the page it replaced is
@@ -953,9 +954,8 @@ Nothing reads from a peer or fills one yet.
   the file is made, so a host restarted over the same file keeps it.
 - `weight`: the size of the disk the cache is given, in steps of 16 GiB,
   rounded to the nearest, and at least one. The size is the filesystem less the
-  free-space floor and the promises, under the used goal, and under
-  `SPROUTFS_CACHE_DISK_BYTES` where that is set. The host reads it once, when it
-  starts. It never follows the limiter's share, which moves as the disk fills,
+  free-space floor, the reserve and the promises, under the used goal. The host
+  reads it once, when it starts. It never follows the limiter's share, which moves as the disk fills,
   because every change of a weight moves windows between hosts.
 - `address`: the page-server address, which `page_address` also reports.
 
@@ -1131,15 +1131,24 @@ The limiter keeps every goal it is given, and needs at least one:
 
 A host given none keeps a tenth of the filesystem free. The floor is the larger
 of the two free-space goals. The room is what the filesystem has free plus what
-the host holds. The cache's share is the room less the floor and the promises,
-less a band. The used goal caps the promises and the cache together. The
-smaller share binds, and `/status` and `/metrics` name the goal that binds.
+the host holds. The cache's share is the room less the floor, the promises and
+the reserve, less a band. The used goal caps the promises and the cache
+together. The smaller share binds, and `/status` and `/metrics` name the goal
+that binds. Nothing else caps the cache's disk.
 
-The band keeps the cache back from the floor by a fifth of the headroom it has
-left, at most `SPROUTFS_DISK_BAND_BYTES` (4 GiB by default). As the disk fills,
-the share falls a little at each reading, so the cache gives back a few regions
-at a time rather than all of them at the floor. At or below the floor there is
-no band, and the share is what keeps the floor.
+The reserve, `SPROUTFS_DISK_RESERVE_BYTES` (1 GiB by default), is what the
+cache leaves free above the floor for promises not yet made. A promise may take
+it, and the cache then gives back what restores it. It matters most where two
+hosts share a filesystem. Each sees the other's cache only as space the
+filesystem does not have free. Without the reserve, a cache that filled the
+disk to the floor would leave a host whose own cache is empty no room to start
+or receive a VM, and nothing would tell the full cache to give space back.
+
+The band keeps the cache back from the floor and the reserve by a fifth of the
+headroom it has left, at most `SPROUTFS_DISK_BAND_BYTES` (4 GiB by default). As
+the disk fills, the share falls a little at each reading, so the cache gives
+back a few regions at a time rather than all of them at once. At or below the
+floor there is no band, and the share is what keeps the floor.
 
 The limiter acts on readings smoothed over a minute, as FoundationDB's
 Ratekeeper smooths free space. One odd reading moves them about a seventh of
@@ -1152,10 +1161,15 @@ A cache over its share is told to give regions back until it holds one region,
 alone, so a share at a region's edge does not evict and refill.
 
 When even an empty cache does not fit, the host has promised more than the
-disk can keep. At startup, the host refuses to start and says which promises
-did not fit. Later, when the disk fills from outside, the host reports itself
-unready with the reason, and refuses to start a VMM or stage an image that
-would promise more. It never takes space back from a spill file.
+disk can keep. A host whose promises the filesystem could not keep under its
+goals with nothing else on it refuses to start, and says so. One that does not
+fit only because other writers hold space starts, and reports itself unready
+with the reason. The other writer may be another host's cache on the same
+node, which gives space back as its own goals push it. A host that refused
+instead would truncate its spill files as it exited, and the other writer would
+never see the pressure. While it is unready, as when the disk fills from
+outside later, the host refuses to start a VMM or stage an image that would
+promise more. It never takes space back from a spill file.
 
 The limiter also keeps the disk cache's write budget:
 `SPROUTFS_CACHE_WRITE_BYTES_PER_DAY` on average, at most
@@ -1176,8 +1190,7 @@ publications last. A refused write costs a store read later, never a wrong
 byte.
 
 The page cache's disk is the cache. It is no promise: it holds what the
-limiter leaves, `CacheShare()`, under `SPROUTFS_CACHE_DISK_BYTES` where that is
-set. Each write it makes asks `Admit`, at the priority of its kind. When the
+limiter leaves, `CacheShare()`, and nothing else caps it. Each write it makes asks `Admit`, at the priority of its kind. When the
 share falls below what it holds, the limiter calls its `Shrink`, and the disk
 gives regions back, oldest first and with no second chance, until it holds its
 share less one region. A pull that does not fit in the share is refused before
@@ -1239,14 +1252,46 @@ The host's status reports:
 
 - cache usage and its cap, in memory and on disk;
 - what the disk limiter chose: the goals and the one that binds, the raw and
-  smoothed readings, the floor and band, each promise and what it holds, the
-  cache's share, the write budget, and why the host is unready;
+  smoothed readings, the floor, the reserve and the band, each promise and what
+  it holds, the cache's share, the write budget, and why the host is unready;
 - the volume manager's totals;
 - the pager's counters, including the free space in the logical cap, which is
   what admits a VM;
 - the object traffic;
 - what the page server has served;
 - its cache's identity, weight and address, and the list of caches it holds.
+
+### The cache's file
+
+The page cache's disk is a file in `SPROUTFS_CACHE_DIR`, or in the scratch
+directory where that is unset. The host takes the first file there, `cache-0`,
+`cache-1` and so on up to `cache-63`, whose lock no other process holds, and
+holds the lock (`flock`) while it runs. The lock ends with the process, however
+it ends. So two hosts that share the directory never share a file, and a host
+that starts after another exited takes the lowest file free, with what that
+host kept in it. The cache's identity is in the file's header, so it moves
+with the file. A host that finds a file of another deployment empties it.
+
+The directory must be on the filesystem the scratch directory is on, because
+one limiter measures one filesystem. A host whose cache directory is on
+another refuses to start and names both.
+
+The host manifest makes `SPROUTFS_CACHE_DIR` a `hostPath` directory on the
+node's disk, one per namespace, and leaves the spill files and the VMM scratch
+in the pod's `emptyDir`. A restart is a host loss for those, and the kubelet
+frees their space with the pod. The cache holds only copies of what the bucket
+holds, each under a name that never names other bytes, so a replaced pod reads
+it back. It is a `hostPath` rather than a local `PersistentVolume`, because a
+claim would pin the pod to its node. A pod that moves to another node starts
+there with whatever cache that node holds. A cache file no host holds stays
+on the node until a host takes it again. Until then the hosts running there
+count it as space another writer holds.
+
+Hosts that share a filesystem see each other only as space it does not have
+free, so each sets `SPROUTFS_DISK_USED_BYTES` to its part of the disk. Then the
+first cache to fill does not take all of it, and a host that restarts finds
+room for its spill files at once. Within that, the reserve keeps room for a
+VM's staging however full the other caches are.
 
 ## Shutdown
 

@@ -63,6 +63,12 @@ func (d *Disk) Open(ctx context.Context, name string, options platform.OpenOptio
 	if err != nil {
 		return nil, unchangedSpaceError(err)
 	}
+	if options.Lock {
+		if err := lock(handle); err != nil {
+			_ = handle.Close()
+			return nil, err
+		}
+	}
 	if options.Create {
 		if err := handle.Chmod(permissions); err != nil {
 			_ = handle.Close()

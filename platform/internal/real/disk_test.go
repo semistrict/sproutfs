@@ -104,3 +104,58 @@ func TestDiskRejectsTraversal(t *testing.T) {
 		t.Fatalf("Open traversal error = %v, want ErrInvalidPath", err)
 	}
 }
+
+// A locked file refuses a second lock, here from another disk over the same
+// directory, until the handle holding it closes. flock locks the open file
+// description, so a second handle in one process is refused exactly as a
+// handle in another process is. A
+// handle that asks for no lock is not refused, and a lock does not combine with
+// a truncation.
+func TestALockedFileRefusesASecondLockUntilItCloses(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	first, err := real.NewDisk(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := real.NewDisk(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	locked := platform.OpenOptions{Create: true, Lock: true}
+	held, err := first.Open(t.Context(), "cache-0", locked)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := second.Open(t.Context(), "cache-0", locked); !errors.Is(err, platform.ErrLocked) {
+		t.Fatalf("a second lock of a held file returned %v, want %v", err, platform.ErrLocked)
+	}
+	plain, err := second.Open(t.Context(), "cache-0", platform.OpenOptions{})
+	if err != nil {
+		t.Fatalf("a handle that asks for no lock was refused: %v", err)
+	}
+	if err := plain.Close(); err != nil {
+		t.Fatal(err)
+	}
+	other, err := second.Open(t.Context(), "cache-1", locked)
+	if err != nil {
+		t.Fatalf("another file's lock was refused: %v", err)
+	}
+	if err := other.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := held.Close(); err != nil {
+		t.Fatal(err)
+	}
+	again, err := second.Open(t.Context(), "cache-0", locked)
+	if err != nil {
+		t.Fatalf("the lock of a closed handle was not given up: %v", err)
+	}
+	if err := again.Close(); err != nil {
+		t.Fatal(err)
+	}
+	truncating := platform.OpenOptions{Lock: true, Truncate: true}
+	if _, err := first.Open(t.Context(), "cache-0", truncating); !errors.Is(err, platform.ErrInvalidPath) {
+		t.Fatalf("a lock with a truncation returned %v, want %v", err, platform.ErrInvalidPath)
+	}
+}
