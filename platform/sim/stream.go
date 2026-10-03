@@ -33,7 +33,7 @@ const streamFlipSpan = 64
 type streamListeners map[platform.Address]*streamListener
 
 // Framed is this network as a host's real network is: byte streams over the
-// simulated links, framed by the same code the TCP adapter runs. A write is cut
+// simulated links, framed by the same code the TCP adapter runs. A write is split
 // into pieces of seeded lengths, down to a byte, each crossing the link on its
 // own, and a read returns a seeded part of what has arrived, so every frame
 // crosses in pieces and the framer reassembles it. A refused link resets the
@@ -307,18 +307,18 @@ func (c *streamConn) Write(b []byte) (int, error) {
 	sent := 0
 	for piece := 0; sent < len(b); piece++ {
 		id := fmt.Sprintf("%s/%s/%d/%d", c.id, c.local, c.written, piece)
-		// A write is cut short at random, down to a byte, as FoundationDB's
-		// simulated streams cut theirs: half the time to under a thousand
+		// A write ends short at random, down to a byte, as FoundationDB's
+		// simulated streams end theirs: half the time to under a thousand
 		// bytes, and otherwise to under 64 KiB.
 		limit := min(len(b)-sent, 64<<10)
 		if random.Chance(id+"/short", 0.5) {
 			limit = min(limit, 1000)
 		}
 		size := 1 + random.Intn(id+"/size", limit)
-		chunk := append([]byte(nil), b[sent:sent+size]...)
+		piece := append([]byte(nil), b[sent:sent+size]...)
 		if sent == 0 && c.network.runtime.buggifyHere(SiteStreamBitFlip, 0.01) {
-			bit := random.Intn(id+"/flip", min(len(chunk), streamFlipSpan)*8)
-			chunk[bit/8] ^= 1 << (bit % 8)
+			bit := random.Intn(id+"/flip", min(len(piece), streamFlipSpan)*8)
+			piece[bit/8] ^= 1 << (bit % 8)
 			c.network.traceNetwork(key, "write", "flipped", size, c.written)
 		}
 		plan := c.network.planSend(key, size)
@@ -332,7 +332,7 @@ func (c *streamConn) Write(b []byte) (int, error) {
 		if c.network.config.LinkBytesPerSecond > 0 {
 			bytesPerSecond = 0
 		}
-		if err := c.cross(operationLatency(plan.delay, size, bytesPerSecond), chunk); err != nil {
+		if err := c.cross(operationLatency(plan.delay, size, bytesPerSecond), piece); err != nil {
 			return sent, err
 		}
 		sent += size
@@ -343,7 +343,7 @@ func (c *streamConn) Write(b []byte) (int, error) {
 
 // cross carries one piece over the link: it arrives at the other end after
 // delay, once that end has room for it.
-func (c *streamConn) cross(delay time.Duration, chunk []byte) error {
+func (c *streamConn) cross(delay time.Duration, piece []byte) error {
 	arrive := c.network.runtime.Now().Add(delay)
 	for {
 		now := c.network.runtime.Now()
@@ -381,8 +381,8 @@ func (c *streamConn) cross(delay time.Duration, chunk []byte) error {
 			return net.ErrClosed
 		default:
 		}
-		if peer.buffer <= 0 || len(peer.arrived) == 0 || int64(len(peer.arrived)+len(chunk)) <= peer.buffer {
-			peer.arrived = append(peer.arrived, chunk...)
+		if peer.buffer <= 0 || len(peer.arrived) == 0 || int64(len(peer.arrived)+len(piece)) <= peer.buffer {
+			peer.arrived = append(peer.arrived, piece...)
 			peer.signal()
 			peer.mu.Unlock()
 			return nil

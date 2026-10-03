@@ -37,9 +37,9 @@ const (
 	frameVersion = uint16(1)
 	// PrefixSize is the fixed part in front of every frame's header.
 	PrefixSize = 20
-	// copyChunk is how much of a payload that is neither in memory nor a file
+	// copyPiece is how much of a payload that is neither in memory nor a file
 	// the kernel can send is read at a time.
-	copyChunk = 256 << 10
+	copyPiece = 256 << 10
 	// readBuffer is the stream reader's buffer. A prefix and a small header
 	// arrive in one read; a payload larger than this is read straight into the
 	// buffer its reader gives.
@@ -235,7 +235,7 @@ func (c *conn) Send(ctx context.Context, frame platform.Frame) error {
 
 // write sends one frame. A payload in memory goes in the same vectored write as
 // the prefix and the header. A file range goes to the kernel behind them where
-// the stream is a socket it can send a file to. Anything else is read in chunks,
+// the stream is a socket it can send a file to. Anything else is read in pieces,
 // the first of them sent with the prefix and the header.
 func (c *conn) write(ctx context.Context, prefix []byte, frame platform.Frame) error {
 	size := frame.PayloadSize
@@ -257,31 +257,31 @@ func (c *conn) write(ctx context.Context, prefix []byte, frame platform.Frame) e
 				return err
 			}
 		}
-		return c.copyPayload(net.Buffers{prefix, frame.Header}, size, func(chunk []byte, offset int64) (int, error) {
-			return payload.File.ReadAt(ctx, chunk, payload.Offset+offset)
+		return c.copyPayload(net.Buffers{prefix, frame.Header}, size, func(piece []byte, offset int64) (int, error) {
+			return payload.File.ReadAt(ctx, piece, payload.Offset+offset)
 		})
 	default:
-		return c.copyPayload(net.Buffers{prefix, frame.Header}, size, func(chunk []byte, offset int64) (int, error) {
-			return payload.ReadAt(chunk, offset)
+		return c.copyPayload(net.Buffers{prefix, frame.Header}, size, func(piece []byte, offset int64) (int, error) {
+			return payload.ReadAt(piece, offset)
 		})
 	}
 }
 
-// copyPayload reads a payload a chunk at a time into a pooled buffer and sends
-// each chunk, the first behind the prefix and header in one write.
+// copyPayload reads a payload a piece at a time into a pooled buffer and sends
+// each piece, the first behind the prefix and header in one write.
 func (c *conn) copyPayload(head net.Buffers, size int64, read func([]byte, int64) (int, error)) error {
-	buffer := chunks.Get().(*[]byte)
-	defer chunks.Put(buffer)
+	buffer := pieces.Get().(*[]byte)
+	defer pieces.Put(buffer)
 	for offset := int64(0); offset < size; {
-		chunk := (*buffer)[:min(int64(len(*buffer)), size-offset)]
-		n, err := read(chunk, offset)
-		if n < len(chunk) {
+		piece := (*buffer)[:min(int64(len(*buffer)), size-offset)]
+		n, err := read(piece, offset)
+		if n < len(piece) {
 			if err == nil || errors.Is(err, io.EOF) {
 				err = fmt.Errorf("%w: the payload ended %d bytes into a frame of %d", platform.ErrInvalidRange, offset+int64(n), size)
 			}
 			return err
 		}
-		out := append(head, chunk)
+		out := append(head, piece)
 		head = nil
 		if err := writeBuffers(c.stream, out); err != nil {
 			return err
@@ -291,8 +291,8 @@ func (c *conn) copyPayload(head net.Buffers, size int64, read func([]byte, int64
 	return nil
 }
 
-var chunks = sync.Pool{New: func() any {
-	buffer := make([]byte, copyChunk)
+var pieces = sync.Pool{New: func() any {
+	buffer := make([]byte, copyPiece)
 	return &buffer
 }}
 
@@ -304,9 +304,9 @@ func writeBuffers(stream net.Conn, buffers net.Buffers) error {
 	for _, buffer := range buffers {
 		total += int64(len(buffer))
 	}
-	if _, socket := stream.(*net.TCPConn); !socket && total <= copyChunk {
-		gathered := chunks.Get().(*[]byte)
-		defer chunks.Put(gathered)
+	if _, socket := stream.(*net.TCPConn); !socket && total <= copyPiece {
+		gathered := pieces.Get().(*[]byte)
+		defer pieces.Put(gathered)
 		joined := (*gathered)[:0]
 		for _, buffer := range buffers {
 			joined = append(joined, buffer...)

@@ -1388,7 +1388,7 @@ asks for none runs exactly as it did:
 
 `Network.Framed` is the network as a host's real one is: byte streams over
 the simulated links, framed by the same framer the TCP adapter runs. Each write
-is cut into pieces of seeded lengths, down to a byte, and each read returns a
+is split into pieces of seeded lengths, down to a byte, and each read returns a
 seeded part of what has arrived. So every frame crosses in pieces, and the real
 framer puts it back together. Its site `sim/network/stream-bit-flip` flips a
 bit in the first bytes of a write, where a frame's prefix and header are.
@@ -2026,6 +2026,35 @@ python3 scripts/mutate-gremlins.py --package cmd/sproutfs-orchestrator --suite f
   --file caches.go --run '^(TestTheListOfCaches|TestAConfiguredCode|TestADrainDoesNot|TestAQuietHostStays|TestTheListFollows|TestTheListHolds|TestTheCodeIs)' \
   --gremlins /path/to/gremlins --output /tmp/orchestrator-cache-mutations
 ```
+
+The peer server is mutated the same way. Its page serving moved from
+`vmmigrate`, whose tests still drive most of it, so that part runs with
+`--integration` and those tests:
+
+```sh
+python3 scripts/mutate-gremlins.py --package peer --suite full \
+  --file background.go --file cache.go --file class.go --file conn.go --file handoffs.go \
+  --file liveness.go --file requests.go --file server.go --file session.go --file table.go \
+  --file version.go --file buffers.go --file internal/wire/codec.go \
+  --gremlins /path/to/gremlins --output /tmp/peer-mutations
+python3 scripts/mutate-gremlins.py --package peer --suite full --integration \
+  --file handoffs.go --file session.go \
+  --run '^Test(PeerServer|ResidentListing|BusySource|UnknownVolume|AnUnreachableSource|AVMHandedOverByThePreviousRelease|PeerBudgets|Premortem|PageReplies|ReleaseRefuses|UnreachableSource|DoneReturns|AGuestStoreCounts|ForkAcrossHosts|MigrationMoves|ReleasedSource|APageIsFetched|ARelease|AReplyThatNever|ALoadIsNot|OneBrokenReply|Pages|Resident|AnUnknownVM|Replies|ARequest|AFault|ALateReply|ThisRelease|ThePreviousRelease|AHello|ADestination|AServer)' \
+  --gremlins /path/to/gremlins --output /tmp/peer-handoff-mutations
+```
+
+On 2026-10-03 the first command left 90 of 476 mutants alive: 370 killed, 12
+timed out and 4 did not build. Tests of what the survivors changed left 61 of
+481 alive, with 404 killed. Writing them found a server that crashed when a
+hello settled on version 1. The second command killed 95 of 119. A run without
+`--integration` runs only the tests of the mutated file's own package, so a
+mutant of `internal/wire` that `peer`'s tests kill counts as alive there; the
+one that marks every payload checksummed is such a mutant. The rest cost speed
+or nothing: the size classes of the buffer pool, the length of a buggified
+delay, a bitmap one byte longer than it needs, a map entry left at zero, which
+of two connections with room takes a request, a bound whose zero means the
+default, and the checksum of a reply of version 2 whose every payload is
+checked anyway.
 
 For test-only changes, select the production package whose behavior
 the tests exercise. `--package` includes subdirectories. Review the surviving
