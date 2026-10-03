@@ -1,9 +1,9 @@
 # Defects found by the specs
 
-Every real defect a spec under `spec/` has found in the code, with the
-counterexample that showed it and what became of it. A counterexample that
-turned out to be a gap in a model is not listed here; the spec's task records
-those.
+Every real defect a spec under `spec/` has found in the code, or in a plan
+before the code, with the counterexample that showed it and what became of
+it. A counterexample that turned out to be a gap in a model is not listed
+here; the spec's task records those.
 
 ## B1. A survey released a source under a receive still in flight
 
@@ -82,3 +82,55 @@ with `control.ErrMoved` and fences nothing. Tests:
 `TestAnOpenPastItsEpochIsAConflict` in `cmd/sproutfs-host`, and
 `TestRecoverIsRefusedOnceTheVMWasOpenedBehindTheSurvey` in
 `cmd/sproutfs-orchestrator`. Mutant: `spec/recovery/mutants/b3.cfg`.
+
+## B4. Another writer takes the space a sparse spill file was promised
+
+Found by `spec/disklimit` (TASK-81) on 2026-10-03, in
+`plans/disk-cache-2026-10-02.md`, before any code. Open: the plan must change.
+
+The plan keeps the spill files sparse, and has the limiter count each at its
+promise, so the cache never takes the space a spill file may still need. But
+that space is only free space on the filesystem, and another writer on the
+same filesystem can take it. Nothing the host does gets it back. The cache
+gives every region back, and the spill file is still refused. A store into
+guest memory then has nowhere to put a dirty page. So `PromisesKept` fails,
+whatever the limiter counts.
+
+The counterexample: the cache is empty, another writer fills the
+filesystem, and the spill file grows into no space.
+
+The fix: allocate each spill file's whole extent when its pager starts
+(`fallocate`), as a region's space is allocated when it opens. The dirty
+budget already sets that extent, and the limiter already counts it whole, so
+the cache gets no less. Another writer then finds the filesystem full, not
+the guest. The ephemeral spill file needs the same. The model checks the
+design with the fix (`Spill = "allocated"`). Mutant:
+`spec/disklimit/mutants/b4.cfg`.
+
+## B5. A join or a leave moves every later stripe off its rank
+
+Found by `spec/diskcache` (TASK-81) on 2026-10-03, in
+`plans/disk-cache-2026-10-02.md`, before any code. Open: the plan must change.
+
+The plan puts stripe i on rank i, and says that a join or a leave costs a
+window one stripe. Rendezvous keeps the order of the other caches, but not
+their ranks: a cache that joins at rank r moves every holder below it down
+by one, and a leave moves them up. So after one join at the top of a
+window's ranks, no holder holds the stripe of its own rank. A reader that
+asks rank i for stripe i decodes nothing, though K stripes are there. And
+repair, which sends a rank that lacks the stripe of its own index that
+stripe, writes to every rank from the change down, so each holder below it
+keeps two stripes of the window. A drain or a rolling restart does this to
+every window it touches.
+
+The counterexample: three hosts hold a window with a 2+1 code. A fourth
+joins at rank 1. Its join pushed one holder out, so two stripes are still
+on the window's ranks, but neither is on the rank of its own index, and a
+reader with the new list reads the store.
+
+The fix: a read asks each rank for every stripe of the window it holds, of
+any index, and decodes from any K, as the model does. Repair sends only an
+index that no rank holds, to a rank that holds fewer of the window's
+stripes than the code puts on it. The model checks reads of any index
+(`SurvivesLosses`); it does not count the writes repair makes. Mutant:
+`spec/diskcache/mutants/b5.cfg`.

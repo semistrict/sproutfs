@@ -1619,6 +1619,43 @@ one that ignores `DROP_FILE` does. Its invariant, `Isolated`, is that no VMM
 holds a file with a page of another tenant's VM in it, unless the page is
 public.
 
+Three specs model the cluster's disk cache that
+[the plan](../plans/disk-cache-2026-10-02.md) proposes, before its code. Each
+abstracts the others to the little it needs, so that no run of TLC takes more
+than a minute or two.
+
+`spec/diskcache/DiskCache.tla` is the cluster: publications that fail and are
+retried, a VM deleted and its name created again, windows striped over the
+ranks each host's own list gives, fills, fill rights, repair, reads of every
+rank, hosts marked down, hosts that crash, leave and join, peers that answer
+with a wrong stripe, damaged headers, and eviction of any stripe. Its
+invariants are `NoWrongBytes`, `StripesRanked` and `SurvivesLosses`. Its
+configurations run four hosts with a 2+1 code, two with 1+1, and three with
+2+2 so that stripes go round the hosts. Its mutants put back a read without
+the key check, a stripe used without its checksum, a part filled before its
+PUT succeeded, a keep taken by a cache its own list does not rank, and B5.
+`epoch-collision.cfg` is wired as a mutant too: a name created again that
+draws its old epoch must fail `NoWrongBytes`, which shows the model reaches
+the risk the plan accepts.
+
+`spec/disklog/DiskLog.tla` is one host's disk: its log of regions, eviction
+with its second chance, the region it keeps free, reads in flight, the write
+budget, and restarts with a torn table. Its invariant is `NoWrongBytes`, and
+TLC checks it for deadlock. `EvictionProgresses` is a liveness property,
+which `MCEviction.cfg` checks under fairness. Its mutants put back eviction
+without its free region, which deadlocks, an unbounded second chance, and a
+read without the key check.
+
+`spec/disklimit/DiskLimit.tla` is one host's limiter: the free goal, the
+spill promise and its allocation, another writer on the same filesystem, and
+the write budget. Its invariants are `PromisesKept` and `GoalKept`. Its
+mutants put back a limiter that counts a spill file by its allocation, and
+B4.
+
+A mutant may expect `deadlock`, or a liveness property, which must then be
+its only `PROPERTY`, because TLC does not name the liveness property it finds
+violated.
+
 A spec is written from the code by hand, so the two can drift apart with
 nothing failing. The simulation ties them together. The simulated object store
 reports every change it applies, in its own order (`sim.ObjectStore.Observe`).
