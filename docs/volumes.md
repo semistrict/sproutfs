@@ -769,37 +769,83 @@ reconciled against object storage.
 
 ### The page cache's disk
 
-The page cache has a second tier on the host's own disk
-(`CacheConfig.Disk`, `DiskBytes`). It holds the pages a **pull** copied: every
-page of one checkpoint, and the segments that locate them, fetched for a VM
-[marked to pull its memory](hosting.md#pulling-a-vms-memory), and what that
-VM's later checkpoints published, which each publication writes to the disk as
-it uploads it. A read that
-misses in memory looks on the disk before it asks the store, so a checkpoint
-that is pulled whole is read without a request, however often the pager evicts
-its pages.
+The page cache has a second tier on the host's own disk (`CacheConfig.Disk`).
+It holds the pages a **pull** copied: every page of one checkpoint, and the
+segments that locate them, fetched for a VM
+[marked to pull its memory](hosting.md#pulling-a-vms-memory). It also holds
+what that VM's later checkpoints published, which each publication writes to
+the disk as it uploads it. A read that misses in memory looks on the disk
+before it asks the store. So a pulled checkpoint is read without a request
+while the disk holds it, however often the pager evicts its pages.
 
 The disk holds what the store holds: each member's and each segment's encoded
 envelope, byte for byte, keyed by the same identity as the memory tier. So a
 read from it is the same read as one from the store, checked by the same
-envelope. A copy that fails the check, or that the disk cannot give back, is
-forgotten and read from the store. Nothing is published from the disk, and the
-file starts empty when the host starts. A newer checkpoint's page has a new
-identity, so the copy of the page it replaced is never read for it.
+envelope. Nothing is published from the disk, and the file starts empty when
+the host starts. A newer checkpoint's page has a new identity, so the copy of
+the page it replaced is never read for it.
 
-`Store.Pull` takes the space one pull needs before it fetches anything. What a
-checkpoint holds is in its root: each segment entry records what its pages
-read from each checkpoint, so the sum of those bytes and of the segments'
-lengths is exactly what the pull will copy. The pull takes one region of that
-many bytes, in 4 KiB blocks, or it is refused whole with `ErrDiskFull`. A
-region is filled in the order the pull fetches, and a member may straddle two
-runs of blocks. A page another pull already copied is held rather than copied
-again, and the pull gives back the part of its region it did not fill. A
-publication the pull keeps takes a region of its own for what it uploaded, in
-the same way, once each part is durable. A
-region stays while any pull holds a page in it. When the last lets go, its
-entries go at once, and its blocks return once the reads in flight from it
-have finished.
+**The log.** The disk is a log of fixed-size **disk regions**, 64 MiB each
+(`CacheConfig.DiskRegionBytes`). One region is open at a time. Its space is
+allocated when it opens, where the file supports it, so a write never fails
+half way through a region. Envelopes are appended in the order they arrive.
+Each one is an **item** with a header: its key, its place in the code, its
+length, and a CRC32C of the header and the bytes. Today every item is a whole
+envelope, stripe 0 of the code 1+0. `checkpoint/diskformat.go` describes the
+format.
+
+When the open region is full, it is **closed**. Closing syncs the region's
+items, then writes the region's table at its end, then syncs again. The table
+holds the region's sequence number and each item's key, offset and length,
+under its own checksum. The first sync keeps a table from naming an item that
+is not on the disk. Nothing reads the tables back yet. A restart still starts
+the file empty.
+
+**Reads.** A read checks the key in the item's header against the key it asked
+for, and then the checksum. An item that fails either is a miss. The index
+forgets it, and the page is read from the store. So a damaged item, a torn
+write, or an index that points at the wrong place costs a request, never
+wrong bytes. The envelope's own check still runs after this.
+
+**The index.** The index in memory is kept per **window**: the pages of one
+volume, in one aligned 2 MiB span, that one checkpoint published. A segment is
+a window of its own. A window is keyed by an 8-byte hash of its identity, and
+the key check on every read catches two windows that share a hash. An entry
+holds the region, the window's first offset, and which pages are present with
+each one's length and read counter, in 4 bytes a page. An entry with few pages
+lists them instead. A window written at two different times has an entry for
+each run of its items. The index counts its own memory. Past
+`CacheConfig.DiskIndexBytes`, 64 MiB by default, the disk refuses writes
+rather than grow.
+
+**The share.** The disk may hold as many whole regions as its share allows.
+The share is `CacheConfig.DiskBytes`, unless the host gives the cache a
+`DiskBudget`. Then the budget says the share, and it admits or refuses each
+write by its kind: repairs first, then second chances, then fills from reads,
+and last fills from publications. Fills may use every region of the share but
+one. The last is kept free for the second chance.
+
+**Eviction.** Nothing about a VM evicts anything. When a fill needs a region
+and the share has none left, the oldest closed region is the victim. Before it
+is given back, its items read at least once since they were written
+(`CacheConfig.DiskSecondChanceReads`) are written again into the open region,
+in the order they lie. This **second chance** writes at most half a region. It
+writes nothing when the cache is over its share or the budget refuses it. If
+it would need more than the free region, it stops, and the rest of the victim
+goes. So every eviction gives space back. A region given back is punched out
+of the file. A read in flight holds its region. An evicted region leaves the
+index at once, and its space is given back when its last reader has finished.
+When the share falls, the host calls `Cache.FitDisk`, and the disk gives
+regions back, oldest first and with no second chance, until it holds one
+region less than its share.
+
+`Store.Pull` refuses a checkpoint that is larger than everything the share's
+fill regions can hold, before it fetches anything. What a checkpoint holds is
+in its root: each segment entry records what its pages read from each
+checkpoint, so the sum of those bytes and of the segments' lengths is what the
+pull would copy. A page the disk already holds is not copied again. A pull
+holds nothing: its pages are ordinary items, and closing it frees none of them.
+They leave only when their region is evicted.
 
 A pull runs behind every fault. It fetches the segments one at a time and the
 members of each in the extents described above. It takes none of the cache's

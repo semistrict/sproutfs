@@ -24,6 +24,7 @@ const (
 	DiskWrite         DiskOperation = "write"
 	DiskTruncate      DiskOperation = "truncate"
 	DiskPunchHole     DiskOperation = "punch_hole"
+	DiskAllocate      DiskOperation = "allocate"
 	DiskSync          DiskOperation = "sync"
 	DiskSize          DiskOperation = "size"
 	DiskRemove        DiskOperation = "remove"
@@ -55,7 +56,26 @@ type DiskConfig struct {
 	// file as durable, so no consumer test drives this; it exists so that a
 	// campaign can.
 	SyncDurableProbability float64
+	// ReadChaos puts this disk's reads under three Buggify sites, as
+	// FoundationDB's AsyncFileChaos does: a read that is slow, a read that
+	// returns one bit flipped, and a misdirected read that returns the bytes
+	// at the start of another recent write instead. They fire only while the
+	// runtime's Buggify switch is on, and only on a disk that asks for them,
+	// because most of what a host keeps on its disk carries no checksum of its
+	// own and is not meant to survive a lying device.
+	ReadChaos bool
 }
+
+// The read chaos sites a disk with ReadChaos consults.
+const (
+	BuggifyDiskSlowRead       = "sim/disk-slow-read"
+	BuggifyDiskReadBitFlip    = "sim/disk-read-bit-flip"
+	BuggifyDiskMisdirectsRead = "sim/disk-misdirected-read"
+)
+
+// recentWrites is how many write offsets a file remembers for a misdirected
+// read to land on.
+const recentWrites = 64
 
 func DefaultDiskConfig() DiskConfig {
 	return DiskConfig{
@@ -125,6 +145,7 @@ const (
 	pendingWrite    pendingKind = "write"
 	pendingTruncate pendingKind = "truncate"
 	pendingPunch    pendingKind = "punch_hole"
+	pendingAllocate pendingKind = "allocate"
 )
 
 // pendingOp is one modification made since the file's last successful Sync. The
@@ -151,6 +172,9 @@ type diskImage struct {
 	// opens counts this image's opens, so the kill mode each one draws is
 	// keyed by something that does not repeat.
 	opens uint64
+	// writes is where recent writes started, oldest first, for a misdirected
+	// read to return instead of what it asked for.
+	writes []int64
 }
 
 // Disk models a single queued storage device. PowerLoss invalidates open
@@ -412,9 +436,12 @@ func (d *Disk) resolvePendingLocked(name string, image *diskImage) {
 			// the device or it did not, which is FoundationDB's coin flip for a
 			// non-durable truncate.
 			if r.Chance(key+"/apply", 0.5) {
-				if op.kind == pendingTruncate {
+				switch op.kind {
+				case pendingTruncate:
 					image.volatile.resize(op.length)
-				} else {
+				case pendingAllocate:
+					image.volatile.resize(max(image.volatile.size, op.offset+op.length))
+				default:
 					image.volatile.zero(op.offset, op.offset+op.length)
 				}
 				outcome = PowerLossApplied
@@ -709,6 +736,9 @@ func (f *file) ReadAt(ctx context.Context, destination []byte, offset int64) (in
 		return 0, err
 	}
 	defer release()
+	if err := f.slowRead(ctx, id); err != nil {
+		return 0, err
+	}
 	f.disk.mu.Lock()
 	defer f.disk.mu.Unlock()
 	if err := f.validLocked(); err != nil {
@@ -718,7 +748,8 @@ func (f *file) ReadAt(ctx context.Context, destination []byte, offset int64) (in
 		f.disk.trace(DiskRead, f.name, "eof", 0, id)
 		return 0, io.EOF
 	}
-	n := f.image.volatile.readAt(destination, offset)
+	n := f.image.volatile.readAt(destination, f.chaosOffsetLocked(offset, id))
+	f.chaosFlipLocked(destination[:n], id)
 	f.disk.trace(DiskRead, f.name, "ok", n, id)
 	if n < len(destination) {
 		return n, io.EOF
@@ -750,6 +781,10 @@ func (f *file) WriteAt(ctx context.Context, source []byte, offset int64) (int, e
 		torn = true
 	}
 	if len(write) > 0 {
+		f.image.writes = append(f.image.writes, offset)
+		if len(f.image.writes) > recentWrites {
+			f.image.writes = f.image.writes[1:]
+		}
 		f.image.volatile.writeAt(offset, write)
 		f.disk.recordPendingLocked(f.image, pendingOp{kind: pendingWrite, offset: offset,
 			length: int64(len(write)), data: append([]byte(nil), write...), id: id})
@@ -800,6 +835,83 @@ func (f *file) PunchHole(ctx context.Context, offset, length int64) error {
 	f.disk.recordPendingLocked(f.image, pendingOp{kind: pendingPunch, offset: offset, length: length, id: id})
 	f.disk.trace(DiskPunchHole, f.name, "ok", 0, id)
 	return nil
+}
+
+// Allocate grows the file to cover the range. The simulated disk has no
+// physical blocks to reserve, so what it models is the size and the failures.
+func (f *file) Allocate(ctx context.Context, offset, length int64) error {
+	if offset < 0 || length <= 0 || offset > int64(maxInt())-length {
+		return platform.ErrInvalidRange
+	}
+	id, release, err := f.disk.begin(ctx, DiskAllocate, f.name, 0, f.disk.config.MetadataLatency)
+	if err != nil {
+		return err
+	}
+	defer release()
+	f.disk.mu.Lock()
+	defer f.disk.mu.Unlock()
+	if err := f.validLocked(); err != nil {
+		return err
+	}
+	f.image.volatile.resize(max(f.image.volatile.size, offset+length))
+	f.disk.recordPendingLocked(f.image, pendingOp{kind: pendingAllocate, offset: offset, length: length, id: id})
+	f.disk.trace(DiskAllocate, f.name, "ok", 0, id)
+	return nil
+}
+
+// slowReadBound is the longest a slow read takes beyond its ordinary latency:
+// long against a disk, short against an object store.
+const slowReadBound = 20 * time.Millisecond
+
+// slowRead holds a read that the slow-read site picks for a seeded time, with
+// the device held as a slow device would hold it.
+func (f *file) slowRead(ctx context.Context, id uint64) error {
+	f.disk.mu.Lock()
+	slow := f.chaosLocked(BuggifyDiskSlowRead, 0.05)
+	f.disk.mu.Unlock()
+	if !slow {
+		return nil
+	}
+	key := fmt.Sprintf("%s/%s/slow/%d", f.disk.id, f.name, id)
+	delay := f.disk.runtime.Random("sim/disk-chaos").Duration(key, slowReadBound)
+	return f.disk.runtime.delay(ctx, "disk/"+key, 0, slowReadBound, delay)
+}
+
+// chaosLocked reports whether one read chaos site fires for this read.
+func (f *file) chaosLocked(site string, p float64) bool {
+	return f.disk.config.ReadChaos && f.disk.runtime.buggify.Load() && f.disk.runtime.buggifySite(site, p)
+}
+
+// chaosOffsetLocked is where a read is served from: where it asked, or for a
+// misdirected read the start of another recent write.
+func (f *file) chaosOffsetLocked(offset int64, id uint64) int64 {
+	if !f.chaosLocked(BuggifyDiskMisdirectsRead, 0.05) {
+		return offset
+	}
+	var others []int64
+	for _, at := range f.image.writes {
+		if at != offset && at < f.image.volatile.size {
+			others = append(others, at)
+		}
+	}
+	if len(others) == 0 {
+		return offset
+	}
+	at := others[f.disk.runtime.Random("sim/disk-chaos").Intn(
+		fmt.Sprintf("%s/%s/misdirect/%d", f.disk.id, f.name, id), len(others))]
+	f.disk.trace(DiskRead, f.name, "misdirected", 0, id)
+	return at
+}
+
+// chaosFlipLocked flips one bit of what a read returns when that site fires.
+func (f *file) chaosFlipLocked(data []byte, id uint64) {
+	if len(data) == 0 || !f.chaosLocked(BuggifyDiskReadBitFlip, 0.05) {
+		return
+	}
+	bit := f.disk.runtime.Random("sim/disk-chaos").Intn(
+		fmt.Sprintf("%s/%s/flip/%d", f.disk.id, f.name, id), 8*len(data))
+	data[bit/8] ^= 1 << (bit % 8)
+	f.disk.trace(DiskRead, f.name, "bit_flipped", 0, id)
 }
 
 func (f *file) Sync(ctx context.Context) error {

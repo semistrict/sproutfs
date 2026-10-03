@@ -863,7 +863,8 @@ the volume for its window as always, and the volume reads a run through the
 page cache. A run's pages that the cache holds in memory come from there, the
 ones on its disk come from there, and only the rest are requests of the store
 ([the page cache's disk](volumes.md#the-page-caches-disk)). So once a pull is
-complete, a cold fault costs a local read and a decode instead of a round trip.
+complete, a cold fault costs a local read and a decode instead of a round trip,
+while the disk holds the page.
 
 This is also what an eviction costs such a VM. The pager drops a clean page
 rather than spilling it: its volume holds its bytes. For a pulled VM those bytes

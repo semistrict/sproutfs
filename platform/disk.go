@@ -76,3 +76,13 @@ type SparseFile interface {
 	File
 	PunchHole(context.Context, int64, int64) error
 }
+
+// AllocatingFile can reserve physical space for a range before it is written,
+// so a later write into the range does not fail for want of space. The file
+// grows to cover the range, and what was not written reads as zeroes. Like
+// writes, it is volatile until Sync. An adapter whose filesystem cannot reserve
+// space returns errors.ErrUnsupported, and a full filesystem ErrNoSpace.
+type AllocatingFile interface {
+	File
+	Allocate(context.Context, int64, int64) error
+}

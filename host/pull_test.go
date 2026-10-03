@@ -53,7 +53,7 @@ func pulledRun(t *testing.T, diskBytes int64) (*countedObjects, *hostPagers, *ma
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = file.Close() })
-	h.configs[1].Cache = checkpoint.CacheConfig{Disk: file, DiskBytes: diskBytes}
+	h.configs[1].Cache = checkpoint.CacheConfig{Disk: file, DiskBytes: diskBytes, DiskRegionBytes: 8 << 20}
 	pagers := newPagerWithConfig(t, h.configs[1].Resources, vmmemory.Config{
 		ResidentPages: pullResident, LogicalPages: 2 * pullPages, DirtyPages: pullResident, ReadAheadPages: 1})
 	h.configs[1].Pagers = pagers.pagers

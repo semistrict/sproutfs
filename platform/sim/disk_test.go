@@ -196,6 +196,9 @@ func TestDiskInjectsEveryOperationAndTracesTheFault(t *testing.T) {
 		{sim.DiskSync, func(ctx context.Context, _ *sim.Disk, file platform.File) error {
 			return file.Sync(ctx)
 		}},
+		{sim.DiskAllocate, func(ctx context.Context, _ *sim.Disk, file platform.File) error {
+			return file.(platform.AllocatingFile).Allocate(ctx, 0, 4096)
+		}},
 		{sim.DiskSize, func(ctx context.Context, _ *sim.Disk, file platform.File) error {
 			_, err := file.Size(ctx)
 			return err

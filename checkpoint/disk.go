@@ -3,42 +3,67 @@ package checkpoint
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"slices"
 	"sync"
 
 	"github.com/semistrict/sproutfs/platform"
+	"github.com/semistrict/sproutfs/platform/sim"
 )
 
-// The page cache's disk is its second tier: a copy of the pages a pull fetched,
-// on the host's own disk, keyed by page identity exactly as the memory tier is.
-// It holds what the object store holds — each member's and each segment's
-// encoded envelope, byte for byte — so a read from it is the same read as one
-// from the store, checked by the same envelope, and a copy the disk lost or
-// damaged fails that check and is read from the store instead.
+// The page cache's disk is its second tier: envelopes on the host's own disk,
+// keyed by page identity exactly as the memory tier is. It holds what the
+// object store holds — each member's and each segment's encoded envelope, byte
+// for byte — so a read from it is the same read as one from the store, checked
+// by the same envelope. Nothing on it is evidence that a publication landed,
+// and nothing publishes from it. A newer checkpoint's page has a new identity,
+// so the copy of the page it replaced is never read for it.
 //
-// Nothing on it is durable. It is truncated when the host starts, it is never
-// evidence that a publication landed, and nothing publishes from it: a page
-// reaches the store only through a checkpoint, which reads the pager. A newer
-// checkpoint's page has a new identity, so the copy of the page it replaced is
-// never read for it.
+// The disk is a log of fixed-size disk regions (diskformat.go). One region at a
+// time is open. Its space is allocated when it opens, and items are appended to
+// it in the order they arrive. A full region is closed: its items are synced,
+// its table is written at its end, and it is synced again. The index in memory
+// is kept per window (diskindex.go).
 //
-// Space is handed out a pull at a time. A pull takes one region, sized from
-// what its checkpoint's root records it holds, before it fetches anything: so
-// a VM either fits whole or is refused before it starts, and a refused VM reads
-// the store as it would without a pull. A page another pull already copied is
-// shared rather than copied again, and a region stays while any pull holds a
-// page in it.
+// Nothing about a VM evicts anything. When the cache needs room, the oldest
+// closed region goes. Before it is given back, the items in it read at least
+// the threshold since they were written are written again into the open
+// region, up to half a region, and the rest go. One region of the share is kept
+// free for that second chance alone, so eviction always gives space back. A
+// read in flight holds its region, which is given back only once its last
+// reader has finished.
 
 // ErrNoDisk refuses a pull on a host whose page cache keeps nothing on disk.
 var ErrNoDisk = errors.New("checkpoint: the page cache keeps no disk")
 
-// ErrDiskFull refuses a pull whose checkpoint does not fit in what the page
-// cache's disk has left.
+// ErrDiskFull refuses a pull whose checkpoint does not fit in the page cache's
+// disk however much of it were given back.
 var ErrDiskFull = errors.New("checkpoint: the page cache's disk is full")
 
-// diskBlock is the unit the disk is handed out in. A region is rounded up to it
-// once, not per page, so it costs a pull at most one block; it is the
-// filesystem's own block, so a region given back is punched out whole.
+// ErrDiskRefused reports a write the page cache's disk refused: its share has
+// no room for a region, the write budget refused it, or its index is at its
+// memory bound. Nothing was written.
+var ErrDiskRefused = errors.New("checkpoint: the page cache's disk refused a write")
+
+// errNoRoom stops a second chance that would need more than the free region.
+var errNoRoom = errors.New("checkpoint: no room for a second chance")
+
+// DefaultDiskRegionBytes is the size of one disk region.
+const DefaultDiskRegionBytes = 64 << 20
+
+// DefaultDiskIndexBytes is the memory the disk's index may use.
+const DefaultDiskIndexBytes = 64 << 20
+
+// The bounds a region's size is held within: room for any envelope, and an
+// offset in the region that fits a table's 32 bits.
+const (
+	minimumDiskRegionBytes = 64 << 10
+	maximumDiskRegionBytes = 1 << 30
+)
+
+// diskBlock is the filesystem block a region's size is a multiple of, so a
+// region given back is punched out whole.
 const diskBlock = 4 << 10
 
 // pullConcurrency is how many fetches every pull on a host has in flight
@@ -46,342 +71,653 @@ const diskBlock = 4 << 10
 // and none of the page cache's load slots, so a fault never queues behind it.
 const pullConcurrency = 2
 
-// blockRun is a run of consecutive blocks of the disk.
-type blockRun struct {
-	first, count int64
+// WriteKind says what a write to the disk is for. A budget that must drop
+// writes drops the lowest kind first.
+type WriteKind int
+
+const (
+	// WriteRepair restores a stripe a window's rank lacks.
+	WriteRepair WriteKind = iota
+	// WriteSecondChance writes an item again before its region is given back.
+	WriteSecondChance
+	// WriteFillRead keeps what a read of the store fetched.
+	WriteFillRead
+	// WriteFillPublication keeps what a publication uploaded, and what a pull
+	// copies.
+	WriteFillPublication
+)
+
+// DiskBudget is what the page cache's disk asks of the host's disk limiter:
+// how many bytes it may hold, and whether it may write n bytes of a kind now.
+// Its methods must be safe for concurrent use.
+type DiskBudget interface {
+	Share() int64
+	Admit(n int64, kind WriteKind) bool
 }
 
-// diskRegion is the space one pull took: runs of blocks, filled from the start
-// in the order the pull fetched its members. What the pull has written is a
-// prefix of it; the rest is given back when the pull ends.
-//
-// holders counts the pulls holding a page in it, its own among them, and
-// readers the reads in flight from it. keys are the entries that name it. A
-// region no pull holds loses its entries at once and gives its blocks back
-// once its last reader has finished.
+// fixedShare is the budget of a disk given a fixed number of bytes and no
+// write budget: every write is admitted.
+type fixedShare int64
+
+func (s fixedShare) Share() int64              { return int64(s) }
+func (fixedShare) Admit(int64, WriteKind) bool { return true }
+
+// The probes the disk marks.
+const (
+	// ProbeDiskSecondChance is an item written again before its region went.
+	ProbeDiskSecondChance = "checkpoint/disk-second-chance"
+	// ProbeDiskSecondChanceBounded is a second chance stopped at half a region.
+	ProbeDiskSecondChanceBounded = "checkpoint/disk-second-chance-bounded"
+	// ProbeDiskFreeRegion is a second chance opening the region kept for it.
+	ProbeDiskFreeRegion = "checkpoint/disk-free-region"
+	// ProbeDiskEvictionWaitsForReader is an evicted region kept for a read in
+	// flight.
+	ProbeDiskEvictionWaitsForReader = "checkpoint/disk-eviction-waits-for-reader"
+	// ProbeDiskKeyMismatch is a read that found another key's item.
+	ProbeDiskKeyMismatch = "checkpoint/disk-key-mismatch"
+	// ProbeDiskChecksumMismatch is a read that found a damaged item.
+	ProbeDiskChecksumMismatch = "checkpoint/disk-checksum-mismatch"
+)
+
+// The fault-injection sites of the disk. Each is a fault the disk itself could
+// cause, and the cache survives each with misses alone.
+const (
+	buggifyDiskFailedWrite    = "checkpoint/disk-failed-write"
+	buggifyDiskShortWrite     = "checkpoint/disk-short-write"
+	buggifyDiskFailedSync     = "checkpoint/disk-failed-sync"
+	buggifyDiskTornTable      = "checkpoint/disk-torn-table"
+	buggifyDiskFailedPunch    = "checkpoint/disk-failed-punch"
+	buggifyDiskFailedAllocate = "checkpoint/disk-failed-allocate"
+)
+
+// diskRegion is one region of the log: its place in the file, what has been
+// appended to it, the index entries that name it, and the reads in flight
+// from it.
 type diskRegion struct {
-	runs    []blockRun
-	written int64
-	holders int
-	readers int
-	keys    []cacheKey
-	dropped bool
+	slot, base int64
+	sequence   uint64
+	// written is the bytes appended from base, and tableBytes what the
+	// table naming them will take. items is what the table will name; it is
+	// kept only while the region is open.
+	written, tableBytes int64
+	items               []tableItem
+	entries             []*windowEntry
+	readers             int
+	// evicted is a region the index no longer names, given back once
+	// readers is zero; given is one given back.
+	evicted, given bool
 }
 
-// capacity is how many bytes the region's blocks hold.
-func (r *diskRegion) capacity() int64 {
-	var blocks int64
-	for _, run := range r.runs {
-		blocks += run.count
-	}
-	return blocks * diskBlock
-}
-
-// diskFragment is one contiguous stretch of the file.
-type diskFragment struct {
-	offset, length int64
-}
-
-// fragments maps a range of the region's bytes onto the file.
-func (r *diskRegion) fragments(offset, length int64) []diskFragment {
-	var found []diskFragment
-	for _, run := range r.runs {
-		size := run.count * diskBlock
-		if offset >= size {
-			offset -= size
-			continue
-		}
-		take := min(length, size-offset)
-		found = append(found, diskFragment{offset: run.first*diskBlock + offset, length: take})
-		length -= take
-		offset = 0
-		if length == 0 {
-			break
-		}
-	}
-	return found
-}
-
-// diskEntry is where one object's bytes lie within a region.
-type diskEntry struct {
-	region         *diskRegion
-	offset, length int64
+// fits reports whether an item of size bytes and its table entry fit in the
+// rest of the region.
+func (r *diskRegion) fits(size, table, regionBytes int64) bool {
+	return r.written+size+r.tableBytes+table+diskTrailerSize <= regionBytes
 }
 
 // cacheDisk is the page cache's disk tier. Its methods are safe for concurrent
 // use.
 type cacheDisk struct {
-	file platform.File
-	// blocks is the configured cap, in blocks.
-	blocks int64
-	// slots is the fetches every pull on this host has in flight together.
-	slots chan struct{}
+	file        platform.File
+	budget      DiskBudget
+	regionBytes int64
+	indexLimit  int64
+	// threshold is the reads since it was written that give an item a second
+	// chance.
+	threshold int
+	// slots is the fetches every pull on this host has in flight together,
+	// and writer the one writer the log has at a time. Both are channels, so
+	// a goroutine waiting on either is durably blocked.
+	slots  chan struct{}
+	writer chan struct{}
 
-	mu      sync.Mutex
-	free    []blockRun // ascending and coalesced
-	used    int64      // blocks the regions hold, until they are given back
-	entries map[cacheKey]diskEntry
-	hits    uint64
-	lost    uint64
+	mu sync.Mutex
+	// open is the region items are appended to, and closed the closed
+	// regions the index still names, oldest first.
+	open   *diskRegion
+	closed []*diskRegion
+	// held counts the regions on the disk, open, closed and evicted but not
+	// yet given back, and pending the evicted ones among them. free is the
+	// slots given back, and next the first slot never used.
+	held, pending int
+	free          []int64
+	next          int64
+	sequence      uint64
+	index         diskIndex
+	hits, lost    uint64
+	evicted       uint64
+	rewritten     uint64
+	refused       uint64
 }
 
-func newCacheDisk(file platform.File, bytes int64) *cacheDisk {
-	blocks := bytes / diskBlock
-	return &cacheDisk{file: file, blocks: blocks, slots: make(chan struct{}, pullConcurrency),
-		free: []blockRun{{first: 0, count: blocks}}, entries: make(map[cacheKey]diskEntry)}
+func newCacheDisk(file platform.File, budget DiskBudget, regionBytes, indexLimit int64, threshold int) *cacheDisk {
+	return &cacheDisk{file: file, budget: budget, regionBytes: regionBytes, indexLimit: indexLimit,
+		threshold: threshold, slots: make(chan struct{}, pullConcurrency), writer: make(chan struct{}, 1),
+		index: newDiskIndex()}
 }
 
-// reserve takes a region of at least bytes, or refuses it whole.
-func (d *cacheDisk) reserve(bytes int64) (*diskRegion, error) {
-	blocks := (bytes + diskBlock - 1) / diskBlock
+// share is the bytes the disk may hold now, in whole regions.
+func (d *cacheDisk) share() int64 { return max(d.budget.Share(), 0) }
+
+// capacity is the most a fill can keep on the disk at once: its share less the
+// region kept free, before headers and tables.
+func (d *cacheDisk) capacity() int64 {
+	return max(d.share()/d.regionBytes-1, 0) * (d.regionBytes - diskTrailerSize)
+}
+
+// holds reports whether bytes of fills fit on the disk at once.
+func (d *cacheDisk) holds(bytes int64) bool { return bytes <= d.capacity() }
+
+// has reports whether the disk holds an item under key.
+func (d *cacheDisk) has(key diskKey) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if blocks > d.blocks-d.used {
-		return nil, ErrDiskFull
-	}
-	region := &diskRegion{holders: 1}
-	for need := blocks; need > 0; {
-		run := &d.free[0]
-		take := min(need, run.count)
-		region.runs = append(region.runs, blockRun{first: run.first, count: take})
-		run.first += take
-		run.count -= take
-		need -= take
-		if run.count == 0 {
-			d.free = d.free[1:]
-		}
-	}
-	d.used += blocks
-	return region, nil
-}
-
-// reserveHeld is reserve for a region a pull holds from the start, beside the
-// ones it already does.
-func (d *cacheDisk) reserveHeld(held map[*diskRegion]bool, bytes int64) (*diskRegion, error) {
-	region, err := d.reserve(bytes)
-	if err != nil {
-		return nil, err
-	}
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	held[region] = true
-	return region, nil
-}
-
-// trim gives back the blocks of a region its pull did not write into, which is
-// what it took for pages another pull already held, and everything past where
-// a pull that stopped early got to.
-func (d *cacheDisk) trim(ctx context.Context, region *diskRegion) {
-	d.mu.Lock()
-	keep := (region.written + diskBlock - 1) / diskBlock
-	var kept, spare []blockRun
-	for _, run := range region.runs {
-		switch {
-		case keep >= run.count:
-			kept = append(kept, run)
-			keep -= run.count
-		case keep > 0:
-			kept = append(kept, blockRun{first: run.first, count: keep})
-			spare = append(spare, blockRun{first: run.first + keep, count: run.count - keep})
-			keep = 0
-		default:
-			spare = append(spare, run)
-		}
-	}
-	region.runs = kept
-	d.mu.Unlock()
-	d.giveBack(ctx, spare)
-}
-
-// giveBack returns blocks nothing names any more. Punching them out is a
-// courtesy to the node's filesystem, not accounting: the cap is the cap
-// whether or not the blocks are backed, so a failed or unsupported punch costs
-// nothing.
-func (d *cacheDisk) giveBack(ctx context.Context, runs []blockRun) {
-	if len(runs) == 0 {
-		return
-	}
-	if file, ok := d.file.(platform.SparseFile); ok {
-		for _, run := range runs {
-			if err := file.PunchHole(ctx, run.first*diskBlock, run.count*diskBlock); err != nil {
-				slog.DebugContext(ctx, "checkpoint: punching out the page cache's disk blocks failed",
-					"offset", run.first*diskBlock, "bytes", run.count*diskBlock, "error", err)
-			}
-		}
-	}
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	for _, run := range runs {
-		d.used -= run.count
-		d.free = insertRun(d.free, run)
-	}
-}
-
-// insertRun adds a run to an ascending, coalesced list of free runs.
-func insertRun(free []blockRun, run blockRun) []blockRun {
-	at := 0
-	for at < len(free) && free[at].first < run.first {
-		at++
-	}
-	free = append(free, blockRun{})
-	copy(free[at+1:], free[at:])
-	free[at] = run
-	merged := free[:0]
-	for _, next := range free {
-		if n := len(merged); n > 0 && merged[n-1].first+merged[n-1].count == next.first {
-			merged[n-1].count += next.count
-			continue
-		}
-		merged = append(merged, next)
-	}
-	return merged
-}
-
-// hold makes a pull a holder of the region an entry lies in, and reports
-// whether the disk has the entry at all.
-func (d *cacheDisk) hold(held map[*diskRegion]bool, key cacheKey) bool {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	entry, found := d.entries[key]
-	if found {
-		holdLocked(held, entry.region)
-	}
+	_, found := d.index.lookup(key)
 	return found
 }
 
-// holdLocked makes a pull a holder of one region, once. The caller holds mu.
-func holdLocked(held map[*diskRegion]bool, region *diskRegion) {
-	if !held[region] {
-		held[region] = true
-		region.holders++
+// lockWriter takes the log's one writer.
+func (d *cacheDisk) lockWriter(ctx context.Context) error {
+	select {
+	case d.writer <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return context.Cause(ctx)
 	}
 }
 
-// write lays one object's bytes into a pull's region after what it has already
-// written, and names them by key. A key another pull named first while these
-// bytes were being written keeps that pull's copy, which this pull then holds;
-// the bytes written here are then slack until the region goes.
-func (d *cacheDisk) write(ctx context.Context, region *diskRegion, held map[*diskRegion]bool,
-	key cacheKey, data []byte) error {
+func (d *cacheDisk) unlockWriter() { <-d.writer }
+
+// refuse counts and reports a write the disk will not take.
+func (d *cacheDisk) refuse(format string, args ...any) error {
 	d.mu.Lock()
-	offset := region.written
-	if offset+int64(len(data)) > region.capacity() {
-		d.mu.Unlock()
-		// The region was sized from what the root records its checkpoint
-		// holds, so a member that overruns it is one the root misstated.
-		return ErrCorrupt
-	}
-	fragments := region.fragments(offset, int64(len(data)))
+	d.refused++
 	d.mu.Unlock()
-	rest := data
-	for _, fragment := range fragments {
-		if _, err := d.file.WriteAt(ctx, rest[:fragment.length], fragment.offset); err != nil {
-			return err
-		}
-		rest = rest[fragment.length:]
+	return fmt.Errorf("%w: "+format, append([]any{ErrDiskRefused}, args...)...)
+}
+
+// write keeps data under key, unless the disk already holds it. A write the
+// disk refuses reports ErrDiskRefused. A write the disk fails is logged and
+// forgotten, and reports nothing: the store still holds the bytes.
+func (d *cacheDisk) write(ctx context.Context, key diskKey, data []byte, kind WriteKind) error {
+	size := itemHeaderBytes(key) + int64(len(data))
+	if len(data) > maximumDiskItem || !storable(key) ||
+		size+tableEntryBytes(key)+diskTrailerSize > d.regionBytes {
+		return d.refuse("%d bytes do not fit in a region of %d", len(data), d.regionBytes)
+	}
+	if err := d.lockWriter(ctx); err != nil {
+		return err
+	}
+	defer d.unlockWriter()
+	d.mu.Lock()
+	_, found := d.index.lookup(key)
+	indexed := d.index.used
+	d.mu.Unlock()
+	if found {
+		return nil
+	}
+	if indexed+maximumInsertCharge > d.indexLimit {
+		return d.refuse("the index holds %d bytes of %d", indexed, d.indexLimit)
+	}
+	if !d.budget.Admit(size, kind) {
+		return d.refuse("the write budget refused %d bytes", size)
+	}
+	_, err := d.append(ctx, key, data, kind)
+	return err
+}
+
+// append lays one item at the end of the open region and names it in the
+// index, opening, closing and evicting regions to make room, and reports
+// whether the item is on the disk. The caller holds the writer. A fill is of a
+// key the index does not hold. A second chance names a key a second time, in
+// the open region, until its victim leaves the index a moment later.
+func (d *cacheDisk) append(ctx context.Context, key diskKey, data []byte, kind WriteKind) (bool, error) {
+	size := itemHeaderBytes(key) + int64(len(data))
+	table := tableEntryBytes(key)
+	region, err := d.room(ctx, size, table, kind)
+	if err != nil {
+		return false, err
+	}
+	d.mu.Lock()
+	offset := region.base + region.written
+	region.written += size
+	d.mu.Unlock()
+	item := encodeItem(key, wholeEnvelope, data)
+	if err := d.writeItem(ctx, item, offset); err != nil {
+		// The space stays in the region unused, and no table names it.
+		slog.WarnContext(ctx, "checkpoint: writing to the page cache's disk failed; the store serves the page",
+			"checkpoint", key.Ref.String(), "volume", key.Volume, "page", key.Page, "segment", key.segment,
+			"error", err)
+		return false, nil
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	region.written += int64(len(data))
-	if entry, found := d.entries[key]; found {
-		holdLocked(held, entry.region)
-		return nil
+	region.tableBytes += table
+	region.items = append(region.items, tableItem{key: key, code: wholeEnvelope,
+		offset: uint32(offset - region.base), length: uint32(len(data))})
+	d.index.insert(key, region, offset, int64(len(data)))
+	return true, nil
+}
+
+// writeItem writes one item where it goes.
+func (d *cacheDisk) writeItem(ctx context.Context, item []byte, offset int64) error {
+	if sim.Buggify(ctx, buggifyDiskFailedWrite, 0.05) {
+		return platform.ErrInjectedFault
 	}
-	d.entries[key] = diskEntry{region: region, offset: offset, length: int64(len(data))}
-	region.keys = append(region.keys, key)
+	if sim.Buggify(ctx, buggifyDiskShortWrite, 0.05) {
+		if _, err := d.file.WriteAt(ctx, item[:len(item)/2], offset); err != nil {
+			return err
+		}
+		return platform.ErrInjectedFault
+	}
+	_, err := d.file.WriteAt(ctx, item, offset)
+	return err
+}
+
+// room returns the open region with room for an item of size bytes and a
+// table entry of table, closing a full one, opening one, and evicting to make
+// room. A second chance never evicts: it opens no more than the free region,
+// and stops with errNoRoom where that is not enough.
+func (d *cacheDisk) room(ctx context.Context, size, table int64, kind WriteKind) (*diskRegion, error) {
+	for {
+		d.mu.Lock()
+		open := d.open
+		if open != nil && open.fits(size, table, d.regionBytes) {
+			d.mu.Unlock()
+			return open, nil
+		}
+		d.mu.Unlock()
+		if open != nil {
+			d.close(ctx, open)
+		}
+		if d.mayOpen(ctx, kind) {
+			if err := d.openRegion(ctx, kind); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		if kind == WriteSecondChance {
+			return nil, errNoRoom
+		}
+		share := d.share()
+		d.mu.Lock()
+		var victim *diskRegion
+		if len(d.closed) > 0 {
+			victim = d.closed[0]
+		}
+		over := int64(d.held)*d.regionBytes > share
+		d.mu.Unlock()
+		if victim == nil {
+			return nil, d.refuse("the share of %d bytes holds no region to give back", share)
+		}
+		d.evict(ctx, victim, !over)
+	}
+}
+
+// mayOpen reports whether the share has room for one more region of a kind.
+// Every region but one may be filled; the last is the second chance's.
+func (d *cacheDisk) mayOpen(ctx context.Context, kind WriteKind) bool {
+	limit := d.share() / d.regionBytes
+	if kind != WriteSecondChance && !sim.Bug(ctx, "diskcache-no-free-region") {
+		limit--
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return int64(d.held) < limit
+}
+
+// openRegion opens a region in the lowest slot free and allocates its space.
+func (d *cacheDisk) openRegion(ctx context.Context, kind WriteKind) error {
+	regions := d.share() / d.regionBytes
+	d.mu.Lock()
+	var slot int64
+	if len(d.free) > 0 {
+		slot, d.free = d.free[0], d.free[1:]
+	} else {
+		slot = d.next
+		d.next++
+	}
+	d.held++
+	d.sequence++
+	region := &diskRegion{slot: slot, base: slot * d.regionBytes, sequence: d.sequence}
+	free := int64(d.held) == regions
+	d.mu.Unlock()
+	if err := d.allocate(ctx, region); err != nil {
+		d.mu.Lock()
+		d.held--
+		d.free = insertSlot(d.free, slot)
+		d.mu.Unlock()
+		return d.refuse("allocating a region failed: %v", err)
+	}
+	if kind == WriteSecondChance && free {
+		sim.Probe(ctx, ProbeDiskFreeRegion)
+	}
+	d.mu.Lock()
+	d.open = region
+	d.mu.Unlock()
 	return nil
 }
 
-// read returns the bytes the disk holds under key. A read that fails reports
-// nothing found, and the entry is forgotten: the store still holds what it
-// copied, and a disk that cannot give it back is one to stop asking.
-func (d *cacheDisk) read(ctx context.Context, key cacheKey) ([]byte, bool) {
+// allocate reserves a region's space where the file can, so no write into it
+// fails half way through for want of space.
+func (d *cacheDisk) allocate(ctx context.Context, region *diskRegion) error {
+	file, ok := d.file.(platform.AllocatingFile)
+	if !ok {
+		return nil
+	}
+	if sim.Buggify(ctx, buggifyDiskFailedAllocate, 0.25) {
+		return platform.ErrInjectedFault
+	}
+	err := file.Allocate(ctx, region.base, d.regionBytes)
+	if errors.Is(err, errors.ErrUnsupported) {
+		return nil
+	}
+	return err
+}
+
+// insertSlot adds a slot to an ascending list of free slots.
+func insertSlot(free []int64, slot int64) []int64 {
+	at, _ := slices.BinarySearch(free, slot)
+	return slices.Insert(free, at, slot)
+}
+
+// close ends a region's appends. Its items are synced, then its table is
+// written at its end, then it is synced again: buffered writes reach the disk
+// in any order, and the first sync keeps the table from ever naming an item
+// that is not there. A sync that fails leaves the region without a table,
+// which costs nothing until the cache is read back after a restart.
+func (d *cacheDisk) close(ctx context.Context, region *diskRegion) {
+	ctx = context.WithoutCancel(ctx)
 	d.mu.Lock()
-	entry, found := d.entries[key]
+	if d.open == region {
+		d.open = nil
+	}
+	items := region.items
+	region.items = nil
+	d.closed = append(d.closed, region)
+	d.mu.Unlock()
+	if !sim.Bug(ctx, "diskcache-table-before-sync") {
+		if err := d.sync(ctx); err != nil {
+			slog.WarnContext(ctx, "checkpoint: syncing a disk region failed; it is closed without a table",
+				"region", region.sequence, "error", err)
+			return
+		}
+	}
+	table := encodeTable(region.sequence, items)
+	written := table
+	if sim.Buggify(ctx, buggifyDiskTornTable, 0.25) {
+		written = table[:len(table)/2]
+	}
+	if _, err := d.file.WriteAt(ctx, written, region.base+d.regionBytes-int64(len(table))); err != nil {
+		slog.WarnContext(ctx, "checkpoint: writing a disk region's table failed", "region", region.sequence,
+			"error", err)
+		return
+	}
+	if err := d.sync(ctx); err != nil {
+		slog.WarnContext(ctx, "checkpoint: syncing a disk region's table failed", "region", region.sequence,
+			"error", err)
+	}
+}
+
+func (d *cacheDisk) sync(ctx context.Context) error {
+	if sim.Buggify(ctx, buggifyDiskFailedSync, 0.25) {
+		return platform.ErrInjectedFault
+	}
+	return d.file.Sync(ctx)
+}
+
+// rescue is one item of a victim region a second chance writes again.
+type rescue struct {
+	location diskLocation
+	page     uint16
+}
+
+// evict gives the oldest closed region back. With secondChance, the items in
+// it read at least the threshold since they were written are first written
+// again into the open region, in the order they lie, up to half a region; the
+// rest go. A region's entries are in the order their first items lie, and an
+// entry's items lie next to each other, so visiting them in turn visits the
+// items in order. The caller holds the writer.
+func (d *cacheDisk) evict(ctx context.Context, victim *diskRegion, secondChance bool) {
+	ctx = context.WithoutCancel(ctx)
+	d.mu.Lock()
+	var rescues []rescue
+	if secondChance {
+		for _, entry := range victim.entries {
+			entry.each(func(page uint16, location diskLocation) {
+				if location.word.reads() >= d.threshold {
+					rescues = append(rescues, rescue{location: location, page: page})
+				}
+			})
+		}
+		victim.readers++
+	}
+	d.mu.Unlock()
+	if secondChance {
+		d.secondChance(ctx, victim, rescues)
+		d.finishRead(ctx, victim)
+	}
+	d.mu.Lock()
+	d.closed = slices.DeleteFunc(d.closed, func(region *diskRegion) bool { return region == victim })
+	d.index.dropRegion(victim)
+	victim.evicted = true
+	d.pending++
+	gone := victim.readers == 0
+	if !gone {
+		sim.Probe(ctx, ProbeDiskEvictionWaitsForReader)
+	}
+	d.mu.Unlock()
+	if gone || sim.Bug(ctx, "diskcache-evict-under-reader") {
+		d.giveBack(ctx, victim)
+	}
+}
+
+// secondChance writes rescues again into the open region, stopping at half a
+// region, at the first refusal of the write budget, or where the free region
+// is not enough.
+func (d *cacheDisk) secondChance(ctx context.Context, victim *diskRegion, rescues []rescue) {
+	var written int64
+	for _, item := range rescues {
+		size := item.location.size()
+		if written+size > d.regionBytes/2 && !sim.Bug(ctx, "diskcache-unbounded-second-chance") {
+			sim.Probe(ctx, ProbeDiskSecondChanceBounded)
+			return
+		}
+		if !d.budget.Admit(size, WriteSecondChance) {
+			return
+		}
+		buffer := make([]byte, size)
+		if err := readFull(ctx, d.file, buffer, item.location.offset); err != nil {
+			continue
+		}
+		parsed, err := parseItem(buffer, false)
+		if err != nil {
+			continue
+		}
+		if hash, page := parsed.key.window(); hash != item.location.entry.hash || page != item.page {
+			continue
+		}
+		stored, err := d.append(ctx, parsed.key, parsed.data, WriteSecondChance)
+		if err != nil {
+			return
+		}
+		written += size
+		if !stored {
+			continue
+		}
+		sim.Probe(ctx, ProbeDiskSecondChance)
+		d.mu.Lock()
+		d.rewritten++
+		d.mu.Unlock()
+	}
+}
+
+// giveBack returns an evicted region's space, once. Punching it out returns
+// its blocks to the node's filesystem; a punch that fails costs the
+// filesystem the blocks until the slot is used again, and nothing else.
+func (d *cacheDisk) giveBack(ctx context.Context, region *diskRegion) {
+	d.mu.Lock()
+	if region.given {
+		d.mu.Unlock()
+		return
+	}
+	region.given = true
+	d.mu.Unlock()
+	if err := d.punch(ctx, region); err != nil {
+		slog.WarnContext(ctx, "checkpoint: punching out a disk region failed", "region", region.sequence,
+			"error", err)
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.held--
+	d.pending--
+	d.evicted++
+	d.free = insertSlot(d.free, region.slot)
+}
+
+func (d *cacheDisk) punch(ctx context.Context, region *diskRegion) error {
+	file, ok := d.file.(platform.SparseFile)
+	if !ok {
+		return nil
+	}
+	if sim.Buggify(ctx, buggifyDiskFailedPunch, 0.25) {
+		return platform.ErrInjectedFault
+	}
+	return file.PunchHole(ctx, region.base, d.regionBytes)
+}
+
+// fit gives regions back, oldest first and with no second chance, until the
+// disk holds no more than its share less one region, so a share that wavers
+// does not evict and refill a region at a time. It closes the open region if
+// that is what is left.
+func (d *cacheDisk) fit(ctx context.Context) error {
+	if err := d.lockWriter(ctx); err != nil {
+		return err
+	}
+	defer d.unlockWriter()
+	for {
+		share := d.share()
+		d.mu.Lock()
+		kept := int64(d.held-d.pending) * d.regionBytes
+		var victim *diskRegion
+		if len(d.closed) > 0 {
+			victim = d.closed[0]
+		}
+		open := d.open
+		d.mu.Unlock()
+		if kept <= share-d.regionBytes || victim == nil && open == nil {
+			return nil
+		}
+		if victim == nil {
+			d.close(ctx, open)
+			continue
+		}
+		d.evict(ctx, victim, false)
+	}
+}
+
+// diskReadOutcome is what one read of the disk found.
+type diskReadOutcome int
+
+const (
+	diskHit diskReadOutcome = iota
+	// diskAbsent is a key the index does not hold.
+	diskAbsent
+	// diskFailed is a read the disk did not complete.
+	diskFailed
+	// diskKeyMismatch is an item that names another key.
+	diskKeyMismatch
+	// diskDamaged is an item that fails its checksum.
+	diskDamaged
+)
+
+// read returns the envelope the disk holds under key. Anything but a hit is a
+// miss, and an item the disk could not give back intact is forgotten: the
+// store still holds what was copied, and a copy that failed once is not asked
+// for again.
+func (d *cacheDisk) read(ctx context.Context, key diskKey) ([]byte, diskReadOutcome) {
+	d.mu.Lock()
+	location, found := d.index.lookup(key)
 	if !found {
 		d.mu.Unlock()
-		return nil, false
+		return nil, diskAbsent
 	}
-	entry.region.readers++
-	fragments := entry.region.fragments(entry.offset, entry.length)
+	region := location.entry.region
+	region.readers++
 	d.mu.Unlock()
-	data := make([]byte, entry.length)
-	var err error
-	rest := data
-	for _, fragment := range fragments {
-		if _, err = d.file.ReadAt(ctx, rest[:fragment.length], fragment.offset); err != nil {
-			break
-		}
-		rest = rest[fragment.length:]
-	}
-	d.finishRead(ctx, entry.region)
+	buffer := make([]byte, location.size())
+	err := readFull(ctx, d.file, buffer, location.offset)
+	d.finishRead(ctx, region)
 	if err != nil {
 		// A read the caller gave up on says nothing about the disk.
 		if context.Cause(ctx) == nil {
-			d.lose(ctx, key, err)
+			d.forget(ctx, location, key, err)
 		}
-		return nil, false
+		return nil, diskFailed
 	}
-	return data, true
+	if found, ok := itemKey(buffer); ok && found != key && !sim.Bug(ctx, "diskcache-skip-key-check") {
+		sim.Probe(ctx, ProbeDiskKeyMismatch)
+		d.forget(ctx, location, key, fmt.Errorf("%w: %s/%s/%d", errItemKey, found.Ref, found.Volume, found.Page))
+		return nil, diskKeyMismatch
+	}
+	parsed, err := parseItem(buffer, sim.Bug(ctx, "diskcache-skip-checksum"))
+	if err != nil {
+		sim.Probe(ctx, ProbeDiskChecksumMismatch)
+		d.forget(ctx, location, key, err)
+		return nil, diskDamaged
+	}
+	return parsed.data, diskHit
 }
 
 // served counts one read of a copy that came back intact.
-func (d *cacheDisk) served() {
+func (d *cacheDisk) served(key diskKey) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.hits++
+	if location, found := d.index.lookup(key); found {
+		d.index.read(location)
+	}
 }
 
-// lose forgets an entry whose bytes the disk could not give back intact.
-func (d *cacheDisk) lose(ctx context.Context, key cacheKey, cause error) {
+// lose forgets the item the disk holds under key, which did not give back
+// what was written.
+func (d *cacheDisk) lose(ctx context.Context, key diskKey, cause error) {
+	d.mu.Lock()
+	location, found := d.index.lookup(key)
+	d.mu.Unlock()
+	if found {
+		d.forget(ctx, location, key, cause)
+	}
+}
+
+// forget drops one item from the index.
+func (d *cacheDisk) forget(ctx context.Context, location diskLocation, key diskKey, cause error) {
 	slog.WarnContext(ctx, "checkpoint: the page cache's disk lost a copy; reading the object store instead",
 		"checkpoint", key.Ref.String(), "volume", key.Volume, "page", key.Page, "segment", key.segment,
 		"error", cause)
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.lost++
-	delete(d.entries, key)
+	d.index.forget(location)
 }
 
-// finishRead ends one read of a region, giving the region's blocks back if it
-// was the last thing keeping a region no pull holds.
+// finishRead ends one read of a region, giving the region back if it was
+// evicted and this was its last reader.
 func (d *cacheDisk) finishRead(ctx context.Context, region *diskRegion) {
 	d.mu.Lock()
 	region.readers--
-	gone := region.dropped && region.readers == 0
+	gone := region.evicted && region.readers == 0
 	d.mu.Unlock()
 	if gone {
-		d.giveBack(ctx, region.runs)
+		d.giveBack(context.WithoutCancel(ctx), region)
 	}
 }
 
-// release ends a pull's hold on every region it held. A region no pull holds
-// any more loses its entries at once, so nothing new reads it, and gives its
-// blocks back once the reads already in flight have finished.
-func (d *cacheDisk) release(ctx context.Context, held map[*diskRegion]bool) {
-	var gone [][]blockRun
+// forgetAll drops every entry of the index. It is the in-tree bug that has a
+// pull free what it copied when it closes.
+func (d *cacheDisk) forgetAll() {
 	d.mu.Lock()
-	for region := range held {
-		region.holders--
-		if region.holders > 0 {
-			continue
-		}
-		for _, key := range region.keys {
-			if d.entries[key].region == region {
-				delete(d.entries, key)
-			}
-		}
-		region.keys = nil
-		region.dropped = true
-		if region.readers == 0 {
-			gone = append(gone, region.runs)
-		}
-	}
-	clear(held)
-	d.mu.Unlock()
-	for _, runs := range gone {
-		d.giveBack(ctx, runs)
-	}
+	defer d.mu.Unlock()
+	d.index.clear()
 }
 
 // acquire takes one of the fetch slots every pull on this host shares.
@@ -398,19 +734,28 @@ func (d *cacheDisk) releaseSlot() { <-d.slots }
 
 // DiskStats is what the page cache's disk holds and has served.
 type DiskStats struct {
-	// UsedBytes is the space the pulls on this host hold, and LimitBytes the
-	// cap it is taken from.
+	// UsedBytes is the space its regions hold, open, closed and waiting for a
+	// reader, and LimitBytes its share.
 	UsedBytes, LimitBytes int64
-	// Entries is the pages and segments it holds.
-	Entries int
+	// Regions is how many regions it holds.
+	Regions int
+	// Entries is the pages and segments it holds, and IndexBytes what its
+	// index costs in memory.
+	Entries    int
+	IndexBytes int64
 	// Hits counts reads it served, and Lost the copies it could not give back
 	// intact, which were read from the object store instead.
 	Hits, Lost uint64
+	// Evicted counts regions given back, Rewritten the items a second chance
+	// wrote again, and Refused the writes it refused.
+	Evicted, Rewritten, Refused uint64
 }
 
 func (d *cacheDisk) stats() DiskStats {
+	share := d.share()
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return DiskStats{UsedBytes: d.used * diskBlock, LimitBytes: d.blocks * diskBlock,
-		Entries: len(d.entries), Hits: d.hits, Lost: d.lost}
+	return DiskStats{UsedBytes: int64(d.held) * d.regionBytes, LimitBytes: share, Regions: d.held,
+		Entries: d.index.live, IndexBytes: d.index.used, Hits: d.hits, Lost: d.lost, Evicted: d.evicted,
+		Rewritten: d.rewritten, Refused: d.refused}
 }

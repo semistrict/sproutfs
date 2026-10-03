@@ -276,7 +276,7 @@ func (p *Publication) Commit(ctx context.Context, source Source) (*Index, error)
 	if p.dropState {
 		index.state = location{}
 	}
-	writer := &partWriter{store: p.store, ref: p.ref, cancel: cancel, keep: p.keep}
+	writer := &partWriter{store: p.store, ref: p.ref, cancel: cancel, keep: p.keep, geometry: p.geometry}
 	if err := p.trim(ctx, index); err != nil {
 		return nil, writer.abandon(err)
 	}
@@ -328,7 +328,7 @@ func (p *Publication) keepSegments(ctx context.Context, index *Index, object []b
 			if !written || entry.at.ref != p.ref {
 				continue
 			}
-			envelopes = append(envelopes, envelope{key: segmentCacheKey(name, number, entry.at.ref),
+			envelopes = append(envelopes, envelope{key: segmentDiskKey(name, number, entry.at.ref),
 				data: object[entry.at.offset:][:entry.at.length]})
 		}
 	}
@@ -603,11 +603,13 @@ type partWriter struct {
 	bytes    uint64
 	// keep is the pull that keeps each part's pages once the part is durable,
 	// and members the pages of the part in hand, where they lie in it.
-	keep    *Pull
-	members []keptMember
-	wait    sync.WaitGroup
-	once    sync.Once
-	failure error
+	// geometry is each volume's, which says what window a page is in.
+	keep     *Pull
+	members  []keptMember
+	geometry map[string]Geometry
+	wait     sync.WaitGroup
+	once     sync.Once
+	failure  error
 }
 
 // admit takes this writer's slot of the store's builder budget, once. A
@@ -678,7 +680,7 @@ type keptMember struct {
 func (w *partWriter) kept(data []byte, members []keptMember) []envelope {
 	envelopes := make([]envelope, 0, len(members))
 	for _, m := range members {
-		envelopes = append(envelopes, envelope{key: pageKey(identityOf(m.volume, m.page, m.at)),
+		envelopes = append(envelopes, envelope{key: pageDiskKey(identityOf(m.volume, m.page, m.at), w.geometry[m.volume]),
 			data: data[m.at.offset:][:m.at.length]})
 	}
 	return envelopes

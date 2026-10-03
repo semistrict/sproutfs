@@ -104,7 +104,7 @@ func TestPulledGuestsFaultWithoutTheObjectStore(t *testing.T) {
 		// The memory tier keeps no page, so a page the arena let go of is read
 		// from the disk or from the store and nowhere else.
 		CacheBytes:     4 << 10,
-		CacheDiskBytes: 256 << 20,
+		CacheDiskBytes: 320 << 20,
 		// The fill is dirty until the stop publishes it, and this host runs no
 		// checkpoint loop to relieve the budget sooner.
 		SpillBytes:   host.KindBytes{RAM: pullRAMArena, PMEM: 128 << 20},
