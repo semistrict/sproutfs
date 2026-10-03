@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"testing/synctest"
 
@@ -62,7 +63,7 @@ func (s *served) dialing(t *testing.T, source *peer.Server, name string, dial vm
 		address = source.Address()
 	}
 	backing, err := vmmigrate.NewPeerBacking(vmmigrate.PeerConfig{Volume: s.vm.Volume(name),
-		Peer: address, VM: "vm-2", PageSize: pageSize, MaxPagesPerRequest: 8, Dial: dial})
+		Peer: address, VM: "vm-2", PageSize: pageSize, MaxPagesPerRequest: 8, Peers: s.migration.cluster.peers(t, dial)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,8 +78,8 @@ func (m *migration) peerServer(t *testing.T, config peer.ServerConfig) *peer.Ser
 	if config.MaxPagesPerRequest == 0 {
 		config.MaxPagesPerRequest = 8
 	}
-	if config.MaxBytesInFlightPerPeer == 0 {
-		config.MaxBytesInFlightPerPeer = 32 << 20
+	if config.Budgets == (peer.Budgets{}) {
+		config.Budgets = budgets(32 << 20)
 	}
 	config.Network = m.cluster.runtime.Network()
 	if config.Address == "" {
@@ -178,46 +179,18 @@ func TestAnUnreachableSourceStillAnswersForThePagesTheCheckpointHolds(t *testing
 	}
 }
 
-// TestPeerServerBoundsConnectionsPerPeer requires the source to refuse a peer
-// that opens more connections than its budget, and the refused destination to
-// carry on from its own volume.
-func TestPeerServerBoundsConnectionsPerPeer(t *testing.T) {
-	s := newServed(t, nil, 4)
-	source := s.migration.peerServer(t, peer.ServerConfig{MaxConnectionsPerPeer: 1})
-	source.Serve("vm-2", vmmigrate.MemoryRegionPages(s.machine.MemoryRegions()))
-	first, second := s.backing(t, source, "ram0"), s.backing(t, source, "ram0")
-	data := make([]byte, 4*pageSize)
-	if err := first.Load(t.Context(), 0, data); err != nil {
-		t.Fatal(err)
-	}
-	if stats := first.Stats(); stats.PeerPages != 4 {
-		t.Fatalf("the first connection was not served: %+v", stats)
-	}
-	// The first backing keeps its connection, so the second one's is over the
-	// budget and closed before it is served.
-	if err := second.Load(t.Context(), 0, data); err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(data, make([]byte, len(data))) {
-		t.Fatal("a refused connection did not read the volume")
-	}
-	// A connection the source refused is a source at its budget, not a source
-	// that is gone: the destination retries it, reads its volume for this load
-	// and asks again next time.
-	if stats := second.Stats(); stats.FellBack || stats.VolumePages != 4 || stats.PeerPages != 0 {
-		t.Fatalf("the refused backing: %+v", stats)
-	}
-	if stats := source.Stats(); stats.Refused == 0 {
-		t.Fatal("the peer server refused no connection")
-	}
-}
-
-func TestPeerServerReusesConnectionBudgetAfterDisconnect(t *testing.T) {
+// TestPeerServerServesEveryConnectionOfOnePeer: a peer server refuses no
+// connection. A destination opens as many as its classes may, and dials again
+// whenever one breaks; what bounds what one destination host takes is the bytes
+// its requests hold, never how many sockets it has.
+func TestPeerServerServesEveryConnectionOfOnePeer(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		s := newServed(t, nil, 4)
-		source := s.migration.peerServer(t, peer.ServerConfig{MaxConnectionsPerPeer: 1})
+		source := s.migration.peerServer(t, peer.ServerConfig{Budgets: budgets(4 * pageSize)})
 		source.Serve("vm-2", vmmigrate.MemoryRegionPages(s.machine.MemoryRegions()))
 		want := s.machine.snapshot()["ram0"][:4*pageSize]
+		// Each backing has a table of its own, so each opens connections of its
+		// own to the one source host.
 		for attempt := range 4 {
 			backing := s.backing(t, source, "ram0")
 			data := make([]byte, len(want))
@@ -230,11 +203,34 @@ func TestPeerServerReusesConnectionBudgetAfterDisconnect(t *testing.T) {
 			if stats := backing.Stats(); stats.PeerPages != 4 || stats.VolumePages != 0 || stats.FellBack {
 				t.Fatalf("connection %d: %+v", attempt, stats)
 			}
+		}
+		if refused := source.Stats().Refused; refused != 0 {
+			t.Fatalf("one peer's connections were refused %d times", refused)
+		}
+	})
+}
+
+// TestPeerServerReusesItsBudgetAfterADisconnect: what a peer's requests held
+// comes back as their replies leave, so a peer that closed and dials again is
+// served from the whole budget.
+func TestPeerServerReusesItsBudgetAfterADisconnect(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := newServed(t, nil, 4)
+		source := s.migration.peerServer(t, peer.ServerConfig{Budgets: budgets(4 * pageSize)})
+		source.Serve("vm-2", vmmigrate.MemoryRegionPages(s.machine.MemoryRegions()))
+		want := s.machine.snapshot()["ram0"][:4*pageSize]
+		for attempt := range 4 {
+			backing := s.backing(t, source, "ram0")
+			data := make([]byte, len(want))
+			if err := backing.Load(t.Context(), 0, data); err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(data, want) {
+				t.Fatalf("connection %d did not receive the source's private bytes", attempt)
+			}
 			if err := backing.Close(); err != nil {
 				t.Fatal(err)
 			}
-			// Let the server observe disconnection and release its reservation
-			// before this same peer opens the next connection.
 			synctest.Wait()
 		}
 		if refused := source.Stats().Refused; refused != 0 {
@@ -243,30 +239,87 @@ func TestPeerServerReusesConnectionBudgetAfterDisconnect(t *testing.T) {
 	})
 }
 
+// pageGate holds every read of a page until it is opened, which is a request
+// whose reply the source has not built yet: what it reserved of its peer's
+// budget is held all that time. entered closes when the first read arrives.
+type pageGate struct {
+	open, entered chan struct{}
+	once          sync.Once
+}
+
+func newPageGate() *pageGate {
+	return &pageGate{open: make(chan struct{}), entered: make(chan struct{})}
+}
+
+type gatedPages struct {
+	peer.Pages
+	gate *pageGate
+}
+
+func (g gatedPages) ReadResident(ctx context.Context, page uint64, dst []byte) (bool, bool, error) {
+	g.gate.once.Do(func() { close(g.gate.entered) })
+	select {
+	case <-g.gate.open:
+	case <-ctx.Done():
+		return false, false, context.Cause(ctx)
+	}
+	return g.Pages.ReadResident(ctx, page, dst)
+}
+
+// gated serves every volume of a VM through a gate.
+func gated(pages map[string]peer.Pages, gate *pageGate) map[string]peer.Pages {
+	held := make(map[string]peer.Pages, len(pages))
+	for name, volume := range pages {
+		held[name] = gatedPages{Pages: volume, gate: gate}
+	}
+	return held
+}
+
 // TestBusySourceIsNotAFallback separates the two refusals: a source at its
 // per-peer byte budget serves nothing this time, and is asked again next time,
 // because being busy is not being gone.
 func TestBusySourceIsNotAFallback(t *testing.T) {
-	s := newServed(t, nil, 4)
-	source := s.migration.peerServer(t, peer.ServerConfig{MaxBytesInFlightPerPeer: pageSize})
-	source.Serve("vm-2", vmmigrate.MemoryRegionPages(s.machine.MemoryRegions()))
-	backing := s.backing(t, source, "ram0")
-	data := make([]byte, 4*pageSize)
-	for range 2 {
+	synctest.Test(t, func(t *testing.T) {
+		s := newServed(t, nil, 4)
+		source := s.migration.peerServer(t, peer.ServerConfig{Budgets: budgets(4 * pageSize)})
+		gate := newPageGate()
+		source.Serve("vm-2", gated(vmmigrate.MemoryRegionPages(s.machine.MemoryRegions()), gate))
+		// One request holds the whole budget at the source, from a table of
+		// its own the second backing knows nothing of.
+		holder := s.backing(t, source, "ram0")
+		held := make(chan error, 1)
+		go func() { held <- holder.Load(t.Context(), 0, make([]byte, 4*pageSize)) }()
+		<-gate.entered
+
+		backing := s.backing(t, source, "ram0")
+		data := make([]byte, 4*pageSize)
+		for range 2 {
+			if err := backing.Load(t.Context(), 0, data); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if !bytes.Equal(data, make([]byte, len(data))) {
+			t.Fatal("a busy source did not send the destination to its volume")
+		}
+		stats := backing.Stats()
+		if stats.FellBack || stats.Requests != 2 || stats.PeerPages != 0 || stats.VolumePages != 8 {
+			t.Fatalf("a busy source was treated as a gone one: %+v", stats)
+		}
+		if refused := source.Stats().Refused; refused != 2 {
+			t.Fatalf("peer server refused %d requests", refused)
+		}
+		close(gate.open)
+		if err := <-held; err != nil {
+			t.Fatal(err)
+		}
+		// Asked again with the budget free, the source serves.
 		if err := backing.Load(t.Context(), 0, data); err != nil {
 			t.Fatal(err)
 		}
-	}
-	if !bytes.Equal(data, make([]byte, len(data))) {
-		t.Fatal("a busy source did not send the destination to its volume")
-	}
-	stats := backing.Stats()
-	if stats.FellBack || stats.Requests != 2 || stats.PeerPages != 0 || stats.VolumePages != 8 {
-		t.Fatalf("a busy source was treated as a gone one: %+v", stats)
-	}
-	if refused := source.Stats().Refused; refused != 2 {
-		t.Fatalf("peer server refused %d requests", refused)
-	}
+		if stats := backing.Stats(); stats.PeerPages != 4 {
+			t.Fatalf("a source no longer busy served %d pages", stats.PeerPages)
+		}
+	})
 }
 
 // TestResidentListingNamesWhatTheSourceHolds is what a destination's bulk stream

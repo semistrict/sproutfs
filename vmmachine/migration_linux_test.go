@@ -65,7 +65,7 @@ func TestFirecrackerLiveMigration(t *testing.T) {
 	// comparison's come from the same peer address and share one budget.
 	pages, err := peer.NewServer(ctx, peer.ServerConfig{Network: c.network,
 		Address: "source-pages", PageSize: pagerPageBytes(t),
-		MaxConnectionsPerPeer: 32, MaxBytesInFlightPerPeer: 64 << 20})
+		Budgets: peer.Budgets{Fault: 64 << 20, BulkRead: 64 << 20, BulkWrite: 64 << 20}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -540,14 +540,26 @@ func peerBacking(t *testing.T, c *migrationCluster, handoff vmmigrate.Handoff, v
 	// what a mixed VM shows: its RAM is 4 KiB and its root 2 MiB.
 	backing, err := vmmigrate.NewPeerBacking(vmmigrate.PeerConfig{Volume: v, Peer: handoff.Source,
 		VM: handoff.VMID, Unpublished: unpublishedOf(t, handoff, v.Name()),
-		Dial: func(ctx context.Context, peer platform.Address) (platform.Conn, error) {
+		Peers: destinationPeers(t, t.Context(), func(ctx context.Context, peer platform.Address) (platform.Conn, error) {
 			return c.network.Dial(ctx, "destination-host", peer)
-		}})
+		})})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = backing.Close() })
 	return backing
+}
+
+// destinationPeers is the destination host's table of peers over dial, closed
+// when the test ends.
+func destinationPeers(t *testing.T, ctx context.Context, dial vmmigrate.Dialer) *peer.Table {
+	t.Helper()
+	table, err := peer.NewTable(ctx, peer.TableConfig{Dial: dial})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = table.Close() })
+	return table
 }
 
 // unpublishedOf reports the pages of one memory region that the handoff says exist

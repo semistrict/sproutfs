@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-03 04:52'
-updated_date: '2026-10-03 07:21'
+updated_date: '2026-10-03 07:48'
 labels:
   - performance
   - network
@@ -64,3 +64,11 @@ Commits, each with tests and docs:
 10. Docs: context.md defines the peer server, page server renamed across docs, migration.md and hosting.md describe the transport as built.
 11. GCE: fault latency under a concurrent post-copy stream, before (main) and after, and stripe reads through the peer server against the bench's own protocol; docs/measurements/gce-peer-server-2026-10-03.md.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Commit 1 (5c8abac3): moved PageSource, the wire codec, the page protocol and the destination's client from vmmigrate into a new package peer (peer.Server). vmmigrate keeps Migrate, Fork, Receive, PeerBacking and the Pages adapters. peer/peertest reads and rewrites frames for wire-level tests. Metric names, env vars and JSON fields unchanged.
+Commit 2 (3978f855): platform/internal/framer shared by the TCP adapter (and the simulation later): one vectored write per in-memory frame, file ranges by sendfile on Linux (copied elsewhere), 16 MiB cap on both networks, a failed mid-frame send closes the connection. Header checksum is a CRC32C trailer field (Envelope.header_checksum, field 6) so the frame prefix stays the previous release's; wire version 2 requires it. A header that fails to parse or match is ErrCorrupt (retried on a new connection), never ErrMalformed (which tears a receive). Payload checksum optional, mismatch sticky. Replies read into pooled buffers of known length. The Linux sendfile test has to run on Linux (GCE).
+Commit 3 (91a4426a): hello with version range, INCOMPATIBLE, v1 compatibility both ways (fallback when a hello is closed unanswered), peer/internal/previous frozen from main 6af0d3de; tests at request level and a whole migration from a previous-release source.
+<!-- SECTION:NOTES:END -->

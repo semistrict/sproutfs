@@ -68,6 +68,55 @@ func (x Status) Number() protoreflect.EnumNumber {
 	return protoreflect.EnumNumber(x)
 }
 
+// Class is the kind of traffic a connection carries. A server keeps a budget
+// of bytes per peer and class, so bulk work never takes what a fault needs.
+type Class int32
+
+const (
+	Class_CLASS_UNSPECIFIED Class = 0
+	Class_CLASS_FAULT       Class = 1
+	Class_CLASS_BULK_READ   Class = 2
+	Class_CLASS_BULK_WRITE  Class = 3
+)
+
+// Enum value maps for Class.
+var (
+	Class_name = map[int32]string{
+		0: "CLASS_UNSPECIFIED",
+		1: "CLASS_FAULT",
+		2: "CLASS_BULK_READ",
+		3: "CLASS_BULK_WRITE",
+	}
+	Class_value = map[string]int32{
+		"CLASS_UNSPECIFIED": 0,
+		"CLASS_FAULT":       1,
+		"CLASS_BULK_READ":   2,
+		"CLASS_BULK_WRITE":  3,
+	}
+)
+
+func (x Class) Enum() *Class {
+	p := new(Class)
+	*p = x
+	return p
+}
+
+func (x Class) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (Class) Descriptor() protoreflect.EnumDescriptor {
+	return file_sproutfs_peer_v1_peer_proto_enumTypes[1].Descriptor()
+}
+
+func (Class) Type() protoreflect.EnumType {
+	return &file_sproutfs_peer_v1_peer_proto_enumTypes[1]
+}
+
+func (x Class) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
 // Hello is the first frame a dialer sends on a connection of protocol 2 or
 // later, encoded at wire version 2 whatever range it states, so a server of
 // any later release reads it. A connection whose first frame is not a hello
@@ -76,6 +125,7 @@ type Hello struct {
 	state                  protoimpl.MessageState `protogen:"opaque.v1"`
 	xxx_hidden_MinVersion  uint32                 `protobuf:"varint,1,opt,name=min_version,json=minVersion"`
 	xxx_hidden_MaxVersion  uint32                 `protobuf:"varint,2,opt,name=max_version,json=maxVersion"`
+	xxx_hidden_Class       Class                  `protobuf:"varint,3,opt,name=class,enum=sproutfs.peer.v1.Class"`
 	XXX_raceDetectHookData protoimpl.RaceDetectHookData
 	XXX_presence           [1]uint32
 	unknownFields          protoimpl.UnknownFields
@@ -121,14 +171,28 @@ func (x *Hello) GetMaxVersion() uint32 {
 	return 0
 }
 
+func (x *Hello) GetClass() Class {
+	if x != nil {
+		if protoimpl.X.Present(&(x.XXX_presence[0]), 2) {
+			return x.xxx_hidden_Class
+		}
+	}
+	return Class_CLASS_UNSPECIFIED
+}
+
 func (x *Hello) SetMinVersion(v uint32) {
 	x.xxx_hidden_MinVersion = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 2)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 3)
 }
 
 func (x *Hello) SetMaxVersion(v uint32) {
 	x.xxx_hidden_MaxVersion = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 1, 2)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 1, 3)
+}
+
+func (x *Hello) SetClass(v Class) {
+	x.xxx_hidden_Class = v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 2, 3)
 }
 
 func (x *Hello) HasMinVersion() bool {
@@ -145,6 +209,13 @@ func (x *Hello) HasMaxVersion() bool {
 	return protoimpl.X.Present(&(x.XXX_presence[0]), 1)
 }
 
+func (x *Hello) HasClass() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 2)
+}
+
 func (x *Hello) ClearMinVersion() {
 	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 0)
 	x.xxx_hidden_MinVersion = 0
@@ -155,12 +226,19 @@ func (x *Hello) ClearMaxVersion() {
 	x.xxx_hidden_MaxVersion = 0
 }
 
+func (x *Hello) ClearClass() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 2)
+	x.xxx_hidden_Class = Class_CLASS_UNSPECIFIED
+}
+
 type Hello_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
 	// min_version and max_version are the protocol versions the dialer speaks.
 	MinVersion *uint32
 	MaxVersion *uint32
+	// class is the traffic every request on this connection is counted as.
+	Class *Class
 }
 
 func (b0 Hello_builder) Build() *Hello {
@@ -168,12 +246,16 @@ func (b0 Hello_builder) Build() *Hello {
 	b, x := &b0, m0
 	_, _ = b, x
 	if b.MinVersion != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 2)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 3)
 		x.xxx_hidden_MinVersion = *b.MinVersion
 	}
 	if b.MaxVersion != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 1, 2)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 1, 3)
 		x.xxx_hidden_MaxVersion = *b.MaxVersion
+	}
+	if b.Class != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 2, 3)
+		x.xxx_hidden_Class = *b.Class
 	}
 	return m0
 }
@@ -187,6 +269,8 @@ type HelloReply struct {
 	xxx_hidden_Version     uint32                 `protobuf:"varint,2,opt,name=version"`
 	xxx_hidden_MinVersion  uint32                 `protobuf:"varint,3,opt,name=min_version,json=minVersion"`
 	xxx_hidden_MaxVersion  uint32                 `protobuf:"varint,4,opt,name=max_version,json=maxVersion"`
+	xxx_hidden_BudgetBytes uint64                 `protobuf:"varint,5,opt,name=budget_bytes,json=budgetBytes"`
+	xxx_hidden_MaxInFlight uint32                 `protobuf:"varint,6,opt,name=max_in_flight,json=maxInFlight"`
 	XXX_raceDetectHookData protoimpl.RaceDetectHookData
 	XXX_presence           [1]uint32
 	unknownFields          protoimpl.UnknownFields
@@ -248,24 +332,48 @@ func (x *HelloReply) GetMaxVersion() uint32 {
 	return 0
 }
 
+func (x *HelloReply) GetBudgetBytes() uint64 {
+	if x != nil {
+		return x.xxx_hidden_BudgetBytes
+	}
+	return 0
+}
+
+func (x *HelloReply) GetMaxInFlight() uint32 {
+	if x != nil {
+		return x.xxx_hidden_MaxInFlight
+	}
+	return 0
+}
+
 func (x *HelloReply) SetStatus(v Status) {
 	x.xxx_hidden_Status = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 4)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 6)
 }
 
 func (x *HelloReply) SetVersion(v uint32) {
 	x.xxx_hidden_Version = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 1, 4)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 1, 6)
 }
 
 func (x *HelloReply) SetMinVersion(v uint32) {
 	x.xxx_hidden_MinVersion = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 2, 4)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 2, 6)
 }
 
 func (x *HelloReply) SetMaxVersion(v uint32) {
 	x.xxx_hidden_MaxVersion = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 3, 4)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 3, 6)
+}
+
+func (x *HelloReply) SetBudgetBytes(v uint64) {
+	x.xxx_hidden_BudgetBytes = v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 4, 6)
+}
+
+func (x *HelloReply) SetMaxInFlight(v uint32) {
+	x.xxx_hidden_MaxInFlight = v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 5, 6)
 }
 
 func (x *HelloReply) HasStatus() bool {
@@ -296,6 +404,20 @@ func (x *HelloReply) HasMaxVersion() bool {
 	return protoimpl.X.Present(&(x.XXX_presence[0]), 3)
 }
 
+func (x *HelloReply) HasBudgetBytes() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 4)
+}
+
+func (x *HelloReply) HasMaxInFlight() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 5)
+}
+
 func (x *HelloReply) ClearStatus() {
 	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 0)
 	x.xxx_hidden_Status = Status_STATUS_UNSPECIFIED
@@ -316,6 +438,16 @@ func (x *HelloReply) ClearMaxVersion() {
 	x.xxx_hidden_MaxVersion = 0
 }
 
+func (x *HelloReply) ClearBudgetBytes() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 4)
+	x.xxx_hidden_BudgetBytes = 0
+}
+
+func (x *HelloReply) ClearMaxInFlight() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 5)
+	x.xxx_hidden_MaxInFlight = 0
+}
+
 type HelloReply_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
@@ -323,6 +455,12 @@ type HelloReply_builder struct {
 	Version    *uint32
 	MinVersion *uint32
 	MaxVersion *uint32
+	// budget_bytes is what this connection's class of this peer may hold at the
+	// server at once, over every connection of that class. A peer that asks for
+	// no more is answered BUSY only when the server is short itself.
+	BudgetBytes *uint64
+	// max_in_flight is how many requests this connection may carry at once.
+	MaxInFlight *uint32
 }
 
 func (b0 HelloReply_builder) Build() *HelloReply {
@@ -330,20 +468,201 @@ func (b0 HelloReply_builder) Build() *HelloReply {
 	b, x := &b0, m0
 	_, _ = b, x
 	if b.Status != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 4)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 6)
 		x.xxx_hidden_Status = *b.Status
 	}
 	if b.Version != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 1, 4)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 1, 6)
 		x.xxx_hidden_Version = *b.Version
 	}
 	if b.MinVersion != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 2, 4)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 2, 6)
 		x.xxx_hidden_MinVersion = *b.MinVersion
 	}
 	if b.MaxVersion != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 3, 4)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 3, 6)
 		x.xxx_hidden_MaxVersion = *b.MaxVersion
+	}
+	if b.BudgetBytes != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 4, 6)
+		x.xxx_hidden_BudgetBytes = *b.BudgetBytes
+	}
+	if b.MaxInFlight != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 5, 6)
+		x.xxx_hidden_MaxInFlight = *b.MaxInFlight
+	}
+	return m0
+}
+
+// Busy answers a request the server would have to hold more than its budget
+// for. Nothing is wrong with either end, and nothing was done: the request may
+// be made again. It says how busy the server is for this peer and class, so a
+// peer that has nowhere else to go waits about as long as that takes.
+type Busy struct {
+	state                  protoimpl.MessageState `protogen:"opaque.v1"`
+	xxx_hidden_Class       Class                  `protobuf:"varint,1,opt,name=class,enum=sproutfs.peer.v1.Class"`
+	xxx_hidden_HeldBytes   uint64                 `protobuf:"varint,2,opt,name=held_bytes,json=heldBytes"`
+	xxx_hidden_BudgetBytes uint64                 `protobuf:"varint,3,opt,name=budget_bytes,json=budgetBytes"`
+	xxx_hidden_AskedBytes  uint64                 `protobuf:"varint,4,opt,name=asked_bytes,json=askedBytes"`
+	XXX_raceDetectHookData protoimpl.RaceDetectHookData
+	XXX_presence           [1]uint32
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
+}
+
+func (x *Busy) Reset() {
+	*x = Busy{}
+	mi := &file_sproutfs_peer_v1_peer_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Busy) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Busy) ProtoMessage() {}
+
+func (x *Busy) ProtoReflect() protoreflect.Message {
+	mi := &file_sproutfs_peer_v1_peer_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+func (x *Busy) GetClass() Class {
+	if x != nil {
+		if protoimpl.X.Present(&(x.XXX_presence[0]), 0) {
+			return x.xxx_hidden_Class
+		}
+	}
+	return Class_CLASS_UNSPECIFIED
+}
+
+func (x *Busy) GetHeldBytes() uint64 {
+	if x != nil {
+		return x.xxx_hidden_HeldBytes
+	}
+	return 0
+}
+
+func (x *Busy) GetBudgetBytes() uint64 {
+	if x != nil {
+		return x.xxx_hidden_BudgetBytes
+	}
+	return 0
+}
+
+func (x *Busy) GetAskedBytes() uint64 {
+	if x != nil {
+		return x.xxx_hidden_AskedBytes
+	}
+	return 0
+}
+
+func (x *Busy) SetClass(v Class) {
+	x.xxx_hidden_Class = v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 4)
+}
+
+func (x *Busy) SetHeldBytes(v uint64) {
+	x.xxx_hidden_HeldBytes = v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 1, 4)
+}
+
+func (x *Busy) SetBudgetBytes(v uint64) {
+	x.xxx_hidden_BudgetBytes = v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 2, 4)
+}
+
+func (x *Busy) SetAskedBytes(v uint64) {
+	x.xxx_hidden_AskedBytes = v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 3, 4)
+}
+
+func (x *Busy) HasClass() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 0)
+}
+
+func (x *Busy) HasHeldBytes() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 1)
+}
+
+func (x *Busy) HasBudgetBytes() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 2)
+}
+
+func (x *Busy) HasAskedBytes() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 3)
+}
+
+func (x *Busy) ClearClass() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 0)
+	x.xxx_hidden_Class = Class_CLASS_UNSPECIFIED
+}
+
+func (x *Busy) ClearHeldBytes() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 1)
+	x.xxx_hidden_HeldBytes = 0
+}
+
+func (x *Busy) ClearBudgetBytes() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 2)
+	x.xxx_hidden_BudgetBytes = 0
+}
+
+func (x *Busy) ClearAskedBytes() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 3)
+	x.xxx_hidden_AskedBytes = 0
+}
+
+type Busy_builder struct {
+	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
+
+	Class *Class
+	// held_bytes is what this peer's requests of the class hold now, and
+	// budget_bytes what they may; asked_bytes is what the refused request needed.
+	HeldBytes   *uint64
+	BudgetBytes *uint64
+	AskedBytes  *uint64
+}
+
+func (b0 Busy_builder) Build() *Busy {
+	m0 := &Busy{}
+	b, x := &b0, m0
+	_, _ = b, x
+	if b.Class != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 4)
+		x.xxx_hidden_Class = *b.Class
+	}
+	if b.HeldBytes != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 1, 4)
+		x.xxx_hidden_HeldBytes = *b.HeldBytes
+	}
+	if b.BudgetBytes != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 2, 4)
+		x.xxx_hidden_BudgetBytes = *b.BudgetBytes
+	}
+	if b.AskedBytes != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 3, 4)
+		x.xxx_hidden_AskedBytes = *b.AskedBytes
 	}
 	return m0
 }
@@ -352,12 +671,13 @@ var File_sproutfs_peer_v1_peer_proto protoreflect.FileDescriptor
 
 const file_sproutfs_peer_v1_peer_proto_rawDesc = "" +
 	"\n" +
-	"\x1bsproutfs/peer/v1/peer.proto\x12\x10sproutfs.peer.v1\"I\n" +
+	"\x1bsproutfs/peer/v1/peer.proto\x12\x10sproutfs.peer.v1\"x\n" +
 	"\x05Hello\x12\x1f\n" +
 	"\vmin_version\x18\x01 \x01(\rR\n" +
 	"minVersion\x12\x1f\n" +
 	"\vmax_version\x18\x02 \x01(\rR\n" +
-	"maxVersion\"\x9a\x01\n" +
+	"maxVersion\x12-\n" +
+	"\x05class\x18\x03 \x01(\x0e2\x17.sproutfs.peer.v1.ClassR\x05class\"\xe1\x01\n" +
 	"\n" +
 	"HelloReply\x120\n" +
 	"\x06status\x18\x01 \x01(\x0e2\x18.sproutfs.peer.v1.StatusR\x06status\x12\x18\n" +
@@ -365,26 +685,44 @@ const file_sproutfs_peer_v1_peer_proto_rawDesc = "" +
 	"\vmin_version\x18\x03 \x01(\rR\n" +
 	"minVersion\x12\x1f\n" +
 	"\vmax_version\x18\x04 \x01(\rR\n" +
-	"maxVersion*H\n" +
+	"maxVersion\x12!\n" +
+	"\fbudget_bytes\x18\x05 \x01(\x04R\vbudgetBytes\x12\"\n" +
+	"\rmax_in_flight\x18\x06 \x01(\rR\vmaxInFlight\"\x98\x01\n" +
+	"\x04Busy\x12-\n" +
+	"\x05class\x18\x01 \x01(\x0e2\x17.sproutfs.peer.v1.ClassR\x05class\x12\x1d\n" +
+	"\n" +
+	"held_bytes\x18\x02 \x01(\x04R\theldBytes\x12!\n" +
+	"\fbudget_bytes\x18\x03 \x01(\x04R\vbudgetBytes\x12\x1f\n" +
+	"\vasked_bytes\x18\x04 \x01(\x04R\n" +
+	"askedBytes*H\n" +
 	"\x06Status\x12\x16\n" +
 	"\x12STATUS_UNSPECIFIED\x10\x00\x12\r\n" +
 	"\tSTATUS_OK\x10\x01\x12\x17\n" +
-	"\x13STATUS_INCOMPATIBLE\x10\x02BJZHgithub.com/semistrict/sproutfs/peer/internal/gen/sproutfs/peer/v1;peerv1b\beditionsp\xe9\a"
+	"\x13STATUS_INCOMPATIBLE\x10\x02*Z\n" +
+	"\x05Class\x12\x15\n" +
+	"\x11CLASS_UNSPECIFIED\x10\x00\x12\x0f\n" +
+	"\vCLASS_FAULT\x10\x01\x12\x13\n" +
+	"\x0fCLASS_BULK_READ\x10\x02\x12\x14\n" +
+	"\x10CLASS_BULK_WRITE\x10\x03BJZHgithub.com/semistrict/sproutfs/peer/internal/gen/sproutfs/peer/v1;peerv1b\beditionsp\xe9\a"
 
-var file_sproutfs_peer_v1_peer_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_sproutfs_peer_v1_peer_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+var file_sproutfs_peer_v1_peer_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
+var file_sproutfs_peer_v1_peer_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
 var file_sproutfs_peer_v1_peer_proto_goTypes = []any{
 	(Status)(0),        // 0: sproutfs.peer.v1.Status
-	(*Hello)(nil),      // 1: sproutfs.peer.v1.Hello
-	(*HelloReply)(nil), // 2: sproutfs.peer.v1.HelloReply
+	(Class)(0),         // 1: sproutfs.peer.v1.Class
+	(*Hello)(nil),      // 2: sproutfs.peer.v1.Hello
+	(*HelloReply)(nil), // 3: sproutfs.peer.v1.HelloReply
+	(*Busy)(nil),       // 4: sproutfs.peer.v1.Busy
 }
 var file_sproutfs_peer_v1_peer_proto_depIdxs = []int32{
-	0, // 0: sproutfs.peer.v1.HelloReply.status:type_name -> sproutfs.peer.v1.Status
-	1, // [1:1] is the sub-list for method output_type
-	1, // [1:1] is the sub-list for method input_type
-	1, // [1:1] is the sub-list for extension type_name
-	1, // [1:1] is the sub-list for extension extendee
-	0, // [0:1] is the sub-list for field type_name
+	1, // 0: sproutfs.peer.v1.Hello.class:type_name -> sproutfs.peer.v1.Class
+	0, // 1: sproutfs.peer.v1.HelloReply.status:type_name -> sproutfs.peer.v1.Status
+	1, // 2: sproutfs.peer.v1.Busy.class:type_name -> sproutfs.peer.v1.Class
+	3, // [3:3] is the sub-list for method output_type
+	3, // [3:3] is the sub-list for method input_type
+	3, // [3:3] is the sub-list for extension type_name
+	3, // [3:3] is the sub-list for extension extendee
+	0, // [0:3] is the sub-list for field type_name
 }
 
 func init() { file_sproutfs_peer_v1_peer_proto_init() }
@@ -397,8 +735,8 @@ func file_sproutfs_peer_v1_peer_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_sproutfs_peer_v1_peer_proto_rawDesc), len(file_sproutfs_peer_v1_peer_proto_rawDesc)),
-			NumEnums:      1,
-			NumMessages:   2,
+			NumEnums:      2,
+			NumMessages:   3,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

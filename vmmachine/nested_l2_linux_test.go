@@ -221,7 +221,7 @@ func TestANestedGuestKeepsItsVMAcrossALiveMigration(t *testing.T) {
 
 	pages, err := peer.NewServer(ctx, peer.ServerConfig{Network: c.network,
 		Address: "source-pages", PageSize: pagerPageBytes(t),
-		MaxConnectionsPerPeer: 32, MaxBytesInFlightPerPeer: 64 << 20})
+		Budgets: peer.Budgets{Fault: 64 << 20, BulkRead: 64 << 20, BulkWrite: 64 << 20}})
 	if err != nil {
 		t.Fatal(err)
 	}

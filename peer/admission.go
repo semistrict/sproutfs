@@ -2,11 +2,11 @@ package peer
 
 import "context"
 
-// Admitter orders the decision to make one request to a source against
-// everything else a controlled run is running. It is given the memory region the
-// request is for — the VM and the volume — and returns the reason the request
-// must not be made, which is normally the cancellation the caller has just
-// been given.
+// Admitter orders the decision to make one request to a peer against
+// everything else a controlled run is running. It is given what the request is
+// for — the VM and the volume of a page request — and returns the reason the
+// request must not be made, which is normally the cancellation the caller has
+// just been given.
 //
 // A deployment installs none. It exists because deciding to ask the source for
 // pages is a decision, not an I/O operation: a destination that is cancelled
@@ -14,7 +14,7 @@ import "context"
 // and has it refused on the wire, or abandons it before anything is sent, and
 // both are correct. Without a point a controller can order, which of the two
 // happens is the Go runtime's choice, and a recording of the run cannot be
-// reproduced. Pooling makes it unavoidable rather than incidental: an idle
+// reproduced. Pooling makes it unavoidable rather than incidental: an open
 // connection is taken without dialing, so the request reaches the wire with no
 // adapter operation between the cancellation and the send.
 type Admitter func(ctx context.Context, memoryRegion string) error
@@ -39,20 +39,4 @@ func admit(ctx context.Context, memoryRegion string) error {
 		return nil
 	}
 	return admitter(ctx, memoryRegion)
-}
-
-type streamKey struct{}
-
-// WithStream marks the requests made under ctx as the post-copy stream's. The
-// stream fetches pages behind a running guest, and a guest fault waits on the
-// source while it does. So a Source keeps one connection that stream requests
-// never use, and records the two kinds of request in separate histograms.
-func WithStream(ctx context.Context) context.Context {
-	return context.WithValue(ctx, streamKey{}, true)
-}
-
-// streaming reports a request made by the post-copy stream.
-func streaming(ctx context.Context) bool {
-	stream, _ := ctx.Value(streamKey{}).(bool)
-	return stream
 }

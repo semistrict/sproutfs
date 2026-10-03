@@ -94,7 +94,7 @@ func (s *served) heldSourceHolding(t *testing.T, address platform.Address,
 	held := newHeldListener(listener)
 	held.deliver, held.err = deliver, sendErr
 	source, err := peer.NewServer(t.Context(), peer.ServerConfig{PageSize: pageSize,
-		MaxPagesPerRequest: 8, MaxBytesInFlightPerPeer: 32 << 20, Address: address, Listener: held})
+		MaxPagesPerRequest: 8, Budgets: budgets(32 << 20), Address: address, Listener: held})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +165,7 @@ func TestClosingAPostCopyStillRefusesAPageOnlyTheSourceHad(t *testing.T) {
 	backing, err := vmmigrate.NewPeerBacking(vmmigrate.PeerConfig{Volume: s.vm.Volume("ram0"),
 		Peer: s.source.Address(), VM: "vm-2", PageSize: pageSize, MaxPagesPerRequest: 8,
 		Unpublished: []vmmigrate.PageRun{{First: 0, Count: 4}},
-		Dial:        s.migration.cluster.dialer("dest")})
+		Peers:       s.migration.cluster.peers(t, s.migration.cluster.dialer("dest"))})
 	if err != nil {
 		t.Fatal(err)
 	}

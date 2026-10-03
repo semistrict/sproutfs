@@ -2,47 +2,23 @@ package peer
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"hash/crc32"
-	"io"
 	"log/slog"
-	"maps"
 	"net"
-	"slices"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/semistrict/sproutfs/internal/blob"
-	migratev1 "github.com/semistrict/sproutfs/peer/internal/gen/sproutfs/migrate/v1"
-	peerv1 "github.com/semistrict/sproutfs/peer/internal/gen/sproutfs/peer/v1"
-	"github.com/semistrict/sproutfs/peer/internal/wire"
 	"github.com/semistrict/sproutfs/platform"
-	"github.com/semistrict/sproutfs/platform/sim"
-	"google.golang.org/protobuf/proto"
 )
 
-var pageCRCTable = crc32.MakeTable(crc32.Castagnoli)
+// defaultInFlight is how many requests one connection may carry at once. A
+// peer is told it in the hello, and asks no more.
+const defaultInFlight = 16
 
-const (
-	// defaultConnectionsPerPeer bounds how many requests one peer can have in
-	// flight here, since each connection serves one request at a time.
-	defaultConnectionsPerPeer = 8
-	// defaultBytesInFlight bounds the page bytes one peer's requests may hold at
-	// once, whatever their connections would otherwise allow.
-	defaultBytesInFlight = 8 << 20
-	// requestTimeout bounds one page request. Everything it reads is local, so
-	// this is generous by an order of magnitude and only bounds a source whose
-	// pages have stopped answering: a destination told its request failed
-	// retries or reads its own volume, where one left waiting holds a guest's
-	// fault open behind it.
-	requestTimeout = 30 * time.Second
-)
-
-// ServerConfig supplies the network one host serves migration pages on. Every
-// peer the listener accepts is served: refusing a peer that is not a host is
-// the transport's job, or over plain TCP the network policy's. One peer is one
+// ServerConfig supplies the network one host serves its peers on. Every peer
+// the listener accepts is served: refusing a peer that is not a host is the
+// transport's job, or over plain TCP the network policy's. One peer is one
 // remote host, which is what the budgets below are counted per.
 type ServerConfig struct {
 	// Network opens the listener at Address. A caller that has already opened
@@ -50,20 +26,22 @@ type ServerConfig struct {
 	Network  platform.Network
 	Listener platform.Listener
 	Address  platform.Address
-	// PageSize is the largest page this source serves, which is what its
-	// per-peer byte budgets are sized against. What a reply is actually counted
-	// in is the page of the volume it answers for — a host's two kinds of memory region
-	// need not agree — so this bounds the budgets and names nothing else. Zero
-	// selects the largest page a volume may be published in.
+	// PageSize is the largest page this server serves, which every budget must
+	// hold at least one of. What a reply is counted in is the page of the
+	// volume it answers for — a host's two kinds of memory region need not
+	// agree. Zero selects the largest page a volume may be published in.
 	PageSize int
 	// MaxPagesPerRequest caps one reply whatever volume it answers for. Zero
 	// takes the cap from the volume's own page instead, so that a reply of small
 	// pages carries as many of them as one of a large page carries bytes.
-	// MaxConnectionsPerPeer and MaxBytesInFlightPerPeer take the documented
-	// defaults when zero.
-	MaxPagesPerRequest      int
-	MaxConnectionsPerPeer   int
-	MaxBytesInFlightPerPeer int64
+	MaxPagesPerRequest int
+	// Budgets is what one remote host's requests of each class may hold here
+	// at once, over all of that host's connections. A request over it is
+	// answered BUSY, never by closing a connection. Zero takes DefaultBudgets.
+	Budgets Budgets
+	// MaxInFlight is how many requests one connection may carry at once. Zero
+	// takes 16.
+	MaxInFlight int
 	// Versions is the range of protocol versions this server speaks. Zero is
 	// this release's; a test that stands in for another release narrows it.
 	Versions Versions
@@ -74,9 +52,9 @@ type ServerStats struct {
 	// Requests is every page request answered, Served and Absent the pages they
 	// found and did not find.
 	Requests, Served, Absent int64
-	// Refused counts the requests turned away by the per-peer budget and the
-	// connections closed for exceeding it, which a destination answers by
-	// reading its own volume.
+	// Refused counts the requests answered BUSY because their peer's class was
+	// at its budget, which a destination answers by waiting or by reading its
+	// own volume. No connection is ever refused.
 	Refused int64
 	// Listings is every resident listing answered.
 	Listings int64
@@ -85,36 +63,12 @@ type ServerStats struct {
 	Incompatible int64
 }
 
-// Pages is one volume's worth of pages a host still holds for another: a
-// migrated VM's memory region, whose volume has been given up but whose pages have
-// not, or the sealed fork point a fork was taken at, which the parent goes on
-// running behind. The protocol above does not know which it is answering from.
-type Pages interface {
-	// ReadResident copies one page's current bytes, reports false for a page
-	// whose bytes this host does not hold, and reports separately whether the
-	// page it served is state no checkpoint of the VM has. It never loads.
-	ReadResident(ctx context.Context, page uint64, dst []byte) (held, unpublished bool, err error)
-	// Resident lists the pages this source can serve, in ascending order. A
-	// source that cannot answer reports why: an empty listing is one the
-	// destination acts on by reading every page from its own volume.
-	Resident() ([]uint64, error)
-	// Unpublished lists the pages this source holds that no checkpoint of the
-	// VM has, in ascending order. They exist nowhere else, so the destination
-	// must fetch every one of them and this source may not stop serving until
-	// it has; the rest of Resident it may read from its own volume instead. A
-	// source that cannot answer reports why, because the empty set is one the
-	// destination acts on by fetching nothing.
-	Unpublished() ([]uint64, error)
-	// PageSize is the page this volume's numbers are counted in. It is the
-	// volume's own, which both hosts read out of the same durable geometry, so
-	// the two kinds of memory region a VM maps may answer differently.
-	PageSize() uint64
-}
-
-// Server serves the pages of the VMs this host holds memory for on another
-// host's behalf: the ones it has migrated away, and the children it has forked
-// onto another host. A VM registers its pages when it is handed over and gives
-// them up when the destination reports that it has them all.
+// Server is a host's peer server. It answers every other host: the pages of the
+// VMs this host holds memory for on another host's behalf — the ones it has
+// migrated away, and the children it has forked onto another host — and,
+// through a Cache, the stripes of its disk cache. A VM registers its pages when
+// it is handed over and gives them up when the destination reports that it has
+// them all.
 type Server struct {
 	config   ServerConfig
 	listener platform.Listener
@@ -122,39 +76,12 @@ type Server struct {
 	cancel   context.CancelCauseFunc
 	wg       sync.WaitGroup
 
-	mu     sync.Mutex
-	served map[string]map[string]Pages
-	// outstanding is, per VM and volume, the pages this host holds that no
-	// checkpoint has and that no destination has fetched yet. It is what makes
-	// a release safe or not: those pages exist nowhere else, and this source is
-	// the only thing that knows which of them it has actually answered for.
-	outstanding map[string]map[string]map[uint64]struct{}
-	// sending counts, per VM, the replies carrying pages no checkpoint holds
-	// that this host has begun to send and not yet answered for. A release of
-	// that VM waits for the count to reach zero, because the outcome of a reply
-	// in flight is what decides whether those pages may be given up at all.
-	sending map[string]int
-	// settled is closed and replaced whenever this source's bookkeeping moves,
-	// which is how a release waiting on a reply in flight is woken.
-	settled chan struct{}
-	// unlisted is why a VM's volumes could not report what they still hold,
-	// which is as good a reason to refuse a release as pages known to be
-	// outstanding: an unlistable memory region may hold anything.
-	unlisted map[string]error
-	// claimed are the fork children whose destination has taken them in over
-	// the hold this host keeps for them: see Claim.
-	claimed map[string]bool
-	peers   map[string]*peerBudget
+	handoffs handoffs
+	budgets  serverBudgets
 
 	requests, servedPages, absentPages, refused, listings, incompatible atomic.Int64
 	closeOnce                                                           sync.Once
 	closeErr                                                            error
-}
-
-// peerBudget is what one peer may hold here at once.
-type peerBudget struct {
-	connections int
-	bytes       int64
 }
 
 // NewServer starts serving on address until Close. It serves nothing until a
@@ -166,18 +93,17 @@ func NewServer(ctx context.Context, config ServerConfig) (*Server, error) {
 	if config.PageSize == 0 {
 		config.PageSize = MaxPageSize
 	}
-	if config.MaxConnectionsPerPeer == 0 {
-		config.MaxConnectionsPerPeer = defaultConnectionsPerPeer
+	if config.MaxInFlight == 0 {
+		config.MaxInFlight = defaultInFlight
 	}
-	if config.MaxBytesInFlightPerPeer == 0 {
-		config.MaxBytesInFlightPerPeer = defaultBytesInFlight
-	}
+	config.Budgets = config.Budgets.orDefault()
 	config.Versions = config.Versions.orDefault()
 	if !config.Versions.valid() {
 		return nil, fmt.Errorf("%w: protocol versions %d to %d", ErrInvalid, config.Versions.Min, config.Versions.Max)
 	}
-	if config.PageSize < 512 || config.PageSize > blob.MaxSize || config.MaxPagesPerRequest < 0 || config.MaxPagesPerRequest > blob.MaxSize/config.PageSize || config.MaxConnectionsPerPeer < 1 ||
-		config.MaxBytesInFlightPerPeer < int64(config.PageSize) {
+	if config.PageSize < 512 || config.PageSize > blob.MaxSize || config.MaxPagesPerRequest < 0 ||
+		config.MaxPagesPerRequest > blob.MaxSize/config.PageSize || config.MaxInFlight < 1 ||
+		!config.Budgets.valid(int64(config.PageSize)) {
 		return nil, fmt.Errorf("%w: invalid peer server budgets", ErrInvalid)
 	}
 	listener := config.Listener
@@ -188,15 +114,9 @@ func NewServer(ctx context.Context, config ServerConfig) (*Server, error) {
 		}
 		listener = opened
 	}
-	sourceCtx, cancel := context.WithCancelCause(ctx)
-	s := &Server{config: config, listener: listener, ctx: sourceCtx, cancel: cancel,
-		served:      make(map[string]map[string]Pages),
-		outstanding: make(map[string]map[string]map[uint64]struct{}),
-		sending:     make(map[string]int),
-		settled:     make(chan struct{}),
-		unlisted:    make(map[string]error),
-		claimed:     make(map[string]bool),
-		peers:       make(map[string]*peerBudget)}
+	serverCtx, cancel := context.WithCancelCause(ctx)
+	s := &Server{config: config, listener: listener, ctx: serverCtx, cancel: cancel,
+		handoffs: newHandoffs(), budgets: serverBudgets{held: make(map[budgetKey]int64)}}
 	s.wg.Go(s.accept)
 	return s, nil
 }
@@ -204,228 +124,10 @@ func NewServer(ctx context.Context, config ServerConfig) (*Server, error) {
 // Address is where peers reach this peer server.
 func (s *Server) Address() platform.Address { return s.config.Address }
 
-// PageSize is the largest page this source serves, which is what its budgets
+// PageSize is the largest page this server serves, which is what its budgets
 // are sized against. A reply is counted in the page of the volume it answers
 // for, which both hosts read out of that volume's durable geometry.
 func (s *Server) PageSize() int { return s.config.PageSize }
-
-// pagesPerRequest caps one reply of a volume whose page is pageSize. The bound
-// is bytes, so a volume of small pages gets more of them in a reply rather than
-// one page per round trip; a source told a cap of its own keeps it.
-func (s *Server) pagesPerRequest(pageSize int) int {
-	if s.config.MaxPagesPerRequest > 0 {
-		return s.config.MaxPagesPerRequest
-	}
-	return max(1, min(DefaultMaxPages, RequestBytes/pageSize))
-}
-
-// Serve registers what this host holds for one VM, by volume name. The VM is
-// the one that runs elsewhere: a migrated VM, or a fork's child.
-// The guest is stopped by the time this is called, so the pages no checkpoint
-// holds can no longer change: what each volume reports as unpublished here is
-// exactly what the destination must fetch before this host may release them.
-func (s *Server) Serve(vmID string, pages map[string]Pages) {
-	outstanding := make(map[string]map[uint64]struct{}, len(pages))
-	var unlisted error
-	for name, volume := range pages {
-		unpublished, err := volume.Unpublished()
-		if err != nil {
-			// What this volume still holds cannot be listed, so nothing can
-			// establish that a destination has it: the VM goes on being served
-			// and only Discard gives it up.
-			unlisted = errors.Join(unlisted, fmt.Errorf("%s: %w", name, err))
-			continue
-		}
-		if len(unpublished) == 0 {
-			continue
-		}
-		set := make(map[uint64]struct{}, len(unpublished))
-		for _, page := range unpublished {
-			set[page] = struct{}{}
-		}
-		outstanding[name] = set
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.served[vmID] = maps.Clone(pages)
-	s.outstanding[vmID] = outstanding
-	if unlisted != nil {
-		s.unlisted[vmID] = unlisted
-	} else {
-		delete(s.unlisted, vmID)
-	}
-}
-
-// Release stops serving one VM. Every later request for it is answered with the
-// plain fact that this host does not serve it, which sends the destination to
-// its own volume for good.
-//
-// It refuses while this host still holds pages of that VM no checkpoint has and
-// no destination has fetched: those bytes exist nowhere else, and releasing
-// them would lose the guest's writes since this host's last checkpoint. What a
-// control plane's table says about the migration is not evidence — this source
-// answered the fetches, so it is the one thing that knows. A caller giving the
-// VM up altogether uses Discard.
-//
-// A reply of that VM's pages that is still being sent is waited for rather than
-// read past. This host's record of a reply is written once the reply has left,
-// because a reply that failed to send carried nothing; the destination, though,
-// acts on one the moment it arrives, so the release that its Done permits can
-// arrive here while the send that earned it has not returned. Reading the book
-// then refuses a release for pages the destination is already running on —
-// which is what a drain sees as a VM it can never let go of — and no ordering
-// of the record against the send can fix it, because the two events are
-// concurrent. So the release waits for the reply's outcome and then reads a
-// book that answers for it: struck off if it left, still outstanding if it did
-// not. A source that closes while one is still in flight refuses, because a
-// send that never returned is a send this host can say nothing about.
-func (s *Server) Release(vmID string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for s.sending[vmID] > 0 {
-		if _, serving := s.outstanding[vmID]; !serving {
-			// The VM was given up while the reply was in flight — its hold
-			// deadline passed, or this host lost it — so there is nothing left
-			// for a release to decide about, and the deadline is what bounds
-			// this wait.
-			return nil
-		}
-		settled := s.settled
-		s.mu.Unlock()
-		select {
-		case <-settled:
-		case <-s.ctx.Done():
-			s.mu.Lock()
-			return fmt.Errorf("%w: a reply of %s's pages was still being sent when this peer server closed",
-				ErrOutstanding, vmID)
-		}
-		s.mu.Lock()
-	}
-	if left := outstandingPages(s.outstanding[vmID]); left > 0 {
-		return fmt.Errorf("%w: %s has %d the destination has not fetched", ErrOutstanding, vmID, left)
-	}
-	if err := s.unlisted[vmID]; err != nil {
-		return fmt.Errorf("%w: what %s still holds could not be listed: %w", ErrOutstanding, vmID, err)
-	}
-	delete(s.served, vmID)
-	delete(s.outstanding, vmID)
-	delete(s.unlisted, vmID)
-	delete(s.claimed, vmID)
-	return nil
-}
-
-// Discard stops serving one VM whatever it still holds for it. It is for a VM
-// this host is giving up rather than handing over — one whose fork hold
-// outlived its deadline, one whose fan-out failed, one this host has lost —
-// where the pages are going either way and refusing would only leave the
-// parent sealed and the VM half-released. It reports a fork child whose
-// destination had already claimed it: that child runs, whatever the give-up
-// meant.
-func (s *Server) Discard(vmID string) (claimed bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	// A release waiting on a reply of this VM's pages has nothing left to
-	// decide about, which is what bounds that wait by the hold's own deadline.
-	defer s.wake()
-	claimed = s.claimed[vmID]
-	delete(s.served, vmID)
-	delete(s.outstanding, vmID)
-	delete(s.unlisted, vmID)
-	delete(s.claimed, vmID)
-	return claimed
-}
-
-// Claim is a fork child's destination taking the child in over the hold this
-// host keeps for it, once it has every page the child inherited. It reports
-// whether the hold still stood: one that did is marked claimed, and a later
-// Discard says so; one that was given up, released or ran out is not, and the
-// destination discards the child. Claim and Discard take the same lock, so of a
-// claim and a give-up of one child exactly one comes first.
-func (s *Server) Claim(vmID string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, served := s.served[vmID]; !served {
-		return false
-	}
-	s.claimed[vmID] = true
-	return true
-}
-
-// outstandingPages counts what one VM's volumes still owe a destination.
-func outstandingPages(volumes map[string]map[uint64]struct{}) int {
-	total := 0
-	for _, pages := range volumes {
-		total += len(pages)
-	}
-	return total
-}
-
-// sendingPages counts a reply carrying pages no checkpoint holds in or out of
-// flight for one VM, and wakes whatever is waiting on the count.
-func (s *Server) sendingPages(vmID string, delta int) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.sending[vmID] += delta
-	if s.sending[vmID] <= 0 {
-		delete(s.sending, vmID)
-	}
-	s.wake()
-}
-
-// wake releases everything waiting on this source's bookkeeping. Caller holds
-// the lock.
-func (s *Server) wake() {
-	close(s.settled)
-	s.settled = make(chan struct{})
-}
-
-// fetched records the unpublished pages one reply carried, which is the only
-// evidence this host has that the destination holds them.
-func (s *Server) fetched(vmID, name string, pages []uint64) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	defer s.wake()
-	set := s.outstanding[vmID][name]
-	if set == nil {
-		return
-	}
-	for _, page := range pages {
-		delete(set, page)
-	}
-	if len(set) == 0 {
-		delete(s.outstanding[vmID], name)
-	}
-}
-
-// Serving reports the VMs whose pages this host still holds for another.
-func (s *Server) Serving() []string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return slices.Sorted(maps.Keys(s.served))
-}
-
-// Outstanding reports, per VM this host still serves, how many pages no
-// checkpoint has that no destination has fetched. A VM at zero is one a release
-// would accept; every other number is a destination still fetching, or one that
-// stopped. It is what a host being drained is actually waiting on, which
-// Serving alone does not say: a VM can sit in that list for either reason.
-//
-// A VM whose volumes could not be listed reports -1 rather than a count: what it
-// still holds is unknown, which is as good a reason to refuse a release as pages
-// known to be outstanding.
-func (s *Server) Outstanding() map[string]int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	left := make(map[string]int, len(s.served))
-	for vmID := range s.served {
-		if s.unlisted[vmID] != nil {
-			left[vmID] = -1
-			continue
-		}
-		left[vmID] = outstandingPages(s.outstanding[vmID])
-	}
-	return left
-}
 
 func (s *Server) Stats() ServerStats {
 	return ServerStats{Requests: s.requests.Load(), Served: s.servedPages.Load(),
@@ -458,12 +160,12 @@ func (s *Server) accept() {
 }
 
 // peerKey is the identity a budget is counted against: the host a connection
-// came from, without the ephemeral port it happens to have been given. A
-// destination opens a connection per memory region and dials again whenever one
-// breaks, so counting connections by their full address counts each of them as
-// a peer of its own: neither budget ever binds, and the table of peers grows
-// with every reconnect for as long as this host serves. A simulated address is
-// a logical name with no port and is its own key.
+// came from, without the ephemeral port it happens to have been given. A peer
+// opens several connections and dials again whenever one breaks, so counting
+// connections by their full address counts each of them as a peer of its own:
+// no budget ever binds, and the table of budgets grows with every reconnect for
+// as long as this host serves. A simulated address is a logical name with no
+// port and is its own key.
 func peerKey(address platform.Address) string {
 	host, _, err := net.SplitHostPort(string(address))
 	if err != nil {
@@ -472,389 +174,37 @@ func peerKey(address platform.Address) string {
 	return host
 }
 
-// session is one connection a peer opened, and the protocol version it speaks.
-// Every reply on it is encoded at that version.
-type session struct {
-	conn    platform.Conn
-	peer    string
-	version uint32
+// budgetKey is one remote host's class.
+type budgetKey struct {
+	peer  string
+	class Class
 }
 
-func (s *Server) serveConn(conn platform.Conn) {
-	defer conn.Close()
-	peer := peerKey(conn.RemoteAddress())
-	if !s.acquireConnection(peer) {
-		s.refused.Add(1)
-		slog.WarnContext(s.ctx, "peer: refused a connection over the per-peer budget", "peer", peer)
-		return
-	}
-	defer s.releaseConnection(peer)
-	session, first, err := s.open(conn, peer)
-	if err != nil {
-		return
-	}
-	if first != nil {
-		if err := s.dispatch(session, *first); err != nil {
-			return
-		}
-	}
-	// The connection stays open for as many requests as the destination sends;
-	// each is answered before the next is read, which is what makes one
-	// connection one request in flight.
-	for {
-		incoming, err := s.receive(session)
-		if err != nil {
-			return
-		}
-		if err := s.dispatch(session, incoming); err != nil {
-			return
-		}
-	}
+// serverBudgets is what each remote host's requests of each class hold here.
+type serverBudgets struct {
+	mu   sync.Mutex
+	held map[budgetKey]int64
 }
 
-// open reads a connection's first frame and settles the version it speaks. A
-// hello is answered with the version both ends share, or with INCOMPATIBLE and
-// this server's range, after which the connection closes. Any other first frame
-// is a dialer of the release before this one, which sent no hello: if this
-// server still speaks version 1, that frame is its first request.
-func (s *Server) open(conn platform.Conn, peer string) (*session, *wire.Incoming, error) {
-	received, err := conn.Receive(s.ctx)
-	if err != nil {
-		return nil, nil, err
+// reserve takes bytes from a peer's class, and reports what it holds when it
+// cannot. A request larger than the whole budget is admitted alone, so a budget
+// never refuses a request for ever.
+func (b *serverBudgets) reserve(key budgetKey, bytes, budget int64) (held int64, ok bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	held = b.held[key]
+	if held+bytes > budget && held > 0 {
+		return held, false
 	}
-	incoming, err := wire.Decode(received)
-	if err != nil {
-		return nil, nil, err
-	}
-	hello := new(peerv1.Hello)
-	if !incoming.Message.MessageIs(hello) {
-		if incoming.Version != 1 || s.config.Versions.Min > 1 {
-			_ = incoming.Payload.Close()
-			return nil, nil, fmt.Errorf("%w: a first frame of version %d that is not a hello", wire.ErrMalformedFrame, incoming.Version)
-		}
-		return &session{conn: conn, peer: peer, version: 1}, &incoming, nil
-	}
-	if err := drain(incoming); err != nil {
-		return nil, nil, err
-	}
-	if err := incoming.UnmarshalTo(hello); err != nil {
-		return nil, nil, err
-	}
-	answer, version, ok := answerHello(s.config.Versions, hello)
-	opened := &session{conn: conn, peer: peer, version: helloVersion}
-	if err := s.reply(opened, incoming.RequestID, answer, nil); err != nil {
-		return nil, nil, err
-	}
-	if !ok {
-		s.incompatible.Add(1)
-		slog.WarnContext(s.ctx, "peer: a peer speaks no version this server speaks", "peer", peer,
-			"min_version", hello.GetMinVersion(), "max_version", hello.GetMaxVersion())
-		return nil, nil, &IncompatibleError{Min: hello.GetMinVersion(), Max: hello.GetMaxVersion()}
-	}
-	opened.version = version
-	return opened, nil, nil
+	b.held[key] = held + bytes
+	return held, true
 }
 
-// receive reads the next request of a session. A frame of another version than
-// the one the session settled on is a dialer that does not keep to its own
-// hello, and ends the connection.
-func (s *Server) receive(session *session) (wire.Incoming, error) {
-	received, err := session.conn.Receive(s.ctx)
-	if err != nil {
-		return wire.Incoming{}, err
+func (b *serverBudgets) release(key budgetKey, bytes int64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.held[key] -= bytes
+	if b.held[key] <= 0 {
+		delete(b.held, key)
 	}
-	incoming, err := wire.Decode(received)
-	if err != nil {
-		return wire.Incoming{}, err
-	}
-	if incoming.Version != session.version {
-		_ = incoming.Payload.Close()
-		return wire.Incoming{}, fmt.Errorf("%w: a frame of version %d on a connection of version %d",
-			wire.ErrMalformedFrame, incoming.Version, session.version)
-	}
-	return incoming, nil
-}
-
-func (s *Server) acquireConnection(peer string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	budget := s.peers[peer]
-	if budget == nil {
-		budget = &peerBudget{}
-		s.peers[peer] = budget
-	}
-	if budget.connections >= s.config.MaxConnectionsPerPeer {
-		return false
-	}
-	budget.connections++
-	return true
-}
-
-func (s *Server) releaseConnection(peer string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	budget := s.peers[peer]
-	if budget == nil {
-		return
-	}
-	budget.connections--
-	if budget.connections <= 0 && budget.bytes == 0 {
-		delete(s.peers, peer)
-	}
-}
-
-// reserve takes one request's worst-case page bytes from a peer's budget, and
-// reports false when that peer already holds all of it.
-func (s *Server) reserve(peer string, bytes int64) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	budget := s.peers[peer]
-	if budget == nil || budget.bytes+bytes > s.config.MaxBytesInFlightPerPeer {
-		return false
-	}
-	budget.bytes += bytes
-	return true
-}
-
-func (s *Server) release(peer string, bytes int64) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if budget := s.peers[peer]; budget != nil {
-		budget.bytes -= bytes
-	}
-}
-
-// pagesOf resolves one request's volume, or reports why it cannot.
-func (s *Server) pagesOf(vmID, name string) (Pages, migratev1.Status) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	volumes, found := s.served[vmID]
-	if !found {
-		return nil, migratev1.Status_STATUS_UNKNOWN_VM
-	}
-	pages, found := volumes[name]
-	if !found {
-		return nil, migratev1.Status_STATUS_UNKNOWN_VOLUME
-	}
-	return pages, migratev1.Status_STATUS_OK
-}
-
-func (s *Server) dispatch(session *session, incoming wire.Incoming) error {
-	peer := session.peer
-	if err := drain(incoming); err != nil {
-		return err
-	}
-	pageRequest, residentRequest := new(migratev1.PageRequest), new(migratev1.ResidentRequest)
-	claimRequest := new(migratev1.ClaimRequest)
-	switch {
-	case incoming.Message.MessageIs(pageRequest):
-		if err := incoming.UnmarshalTo(pageRequest); err != nil {
-			return err
-		}
-		response, payload, served := s.pages(peer, pageRequest)
-		// A reply carrying pages no checkpoint holds is in flight from here
-		// until its outcome is recorded, and a release of this VM waits for
-		// that rather than reading a book the reply has not been written into
-		// yet. The destination acts on a reply the moment it arrives — it
-		// installs the pages, its Done returns, and the release of this source
-		// follows from that — and none of that is ordered after this
-		// goroutine's next statement.
-		if len(served) > 0 {
-			s.sendingPages(pageRequest.GetVm(), 1)
-			defer s.sendingPages(pageRequest.GetVm(), -1)
-		}
-		if err := s.reply(session, incoming.RequestID, response, payload); err != nil {
-			return err
-		}
-		// The reply is on the wire. Until it is, this host has no evidence at
-		// all that the destination holds these pages, and a reply that failed
-		// to send carried nothing: recording them before it leaves would let a
-		// release drop the only copy of the guest's writes.
-		if len(served) > 0 {
-			s.fetched(pageRequest.GetVm(), pageRequest.GetVolume(), served)
-		}
-		return nil
-	case incoming.Message.MessageIs(residentRequest):
-		if err := incoming.UnmarshalTo(residentRequest); err != nil {
-			return err
-		}
-		return s.reply(session, incoming.RequestID, s.resident(residentRequest), nil)
-	case incoming.Message.MessageIs(claimRequest):
-		if err := incoming.UnmarshalTo(claimRequest); err != nil {
-			return err
-		}
-		status := migratev1.Status_STATUS_UNKNOWN_VM
-		if s.Claim(claimRequest.GetVm()) {
-			status = migratev1.Status_STATUS_OK
-		}
-		return s.reply(session, incoming.RequestID, migratev1.ClaimResponse_builder{Status: &status}.Build(), nil)
-	default:
-		return wire.ErrMalformedFrame
-	}
-}
-
-// drain consumes a request's payload. A page request carries none, so anything
-// here is a malformed frame and the connection is dropped.
-func drain(incoming wire.Incoming) error {
-	defer incoming.Payload.Close()
-	if incoming.PayloadSize != 0 {
-		return platform.ErrMessageTooLarge
-	}
-	_, err := io.Copy(io.Discard, incoming.Payload)
-	return err
-}
-
-// pages answers one page request with the bytes this host holds. A page it does
-// not hold is reported plainly, which sends the destination to its own volume
-// for that page and nothing more. The pages it reports as served are the ones
-// no checkpoint holds that this reply carries; the caller records them once the
-// reply has left, which is the only evidence this host ever gets.
-func (s *Server) pages(peer string, request *migratev1.PageRequest) (*migratev1.PageResponse, []byte, []uint64) {
-	s.requests.Add(1)
-	// The reply is counted in the page of the volume it answers for, which is
-	// only known once the request has named one; until then the budget's own
-	// page is what an answer can carry.
-	pageSize := s.config.PageSize
-	answer := func(status migratev1.Status) *migratev1.PageResponse {
-		return migratev1.PageResponse_builder{Status: &status,
-			PageSize: proto.Uint32(uint32(pageSize))}.Build()
-	}
-	count := int(request.GetCount())
-	if count <= 0 || request.GetPayloadFormat() != 1 {
-		return answer(migratev1.Status_STATUS_INVALID_REQUEST), nil, nil
-	}
-	pages, status := s.pagesOf(request.GetVm(), request.GetVolume())
-	if status != migratev1.Status_STATUS_OK {
-		return answer(status), nil, nil
-	}
-	if volumePage := int(pages.PageSize()); volumePage > 0 {
-		pageSize = volumePage
-	}
-	count = min(count, s.pagesPerRequest(pageSize))
-	reserved := int64(count) * int64(pageSize)
-	// A source at its per-peer budget answers BUSY, which a host draining many
-	// VMs at once makes the normal state. A destination must queue behind it
-	// for the pages no checkpoint holds and read its own volume for the rest,
-	// and a campaign with one migration at a time never makes a source busy.
-	if sim.Buggify(s.ctx, "vmmigrate/source-busy", 0.5) || !s.reserve(peer, reserved) {
-		s.refused.Add(1)
-		return answer(migratev1.Status_STATUS_BUSY), nil, nil
-	}
-	defer s.release(peer, reserved)
-
-	// One request gets a deadline of its own. Everything it touches is local —
-	// pages this host already holds — so a read that does not finish inside it
-	// is a page this connection is never going to get, and the destination is
-	// better told than left holding a request while its guest waits on the
-	// fault behind it.
-	ctx, cancel := context.WithTimeout(s.ctx, requestTimeout)
-	defer cancel()
-
-	present := make([]byte, (count+7)/8)
-	dirty := make([]byte, (count+7)/8)
-	payload := make([]byte, 0, count*pageSize)
-	page := make([]byte, pageSize)
-	var served []uint64
-	found := 0
-	for index := range count {
-		held, unpublished, err := pages.ReadResident(ctx, request.GetFirstPage()+uint64(index), page)
-		if errors.Is(err, ErrPastEnd) {
-			// Every higher page is out of range too.
-			break
-		}
-		if err != nil {
-			slog.WarnContext(s.ctx, "peer: serving a page failed", "vm", request.GetVm(),
-				"volume", request.GetVolume(), "page", request.GetFirstPage()+uint64(index), "error", err)
-			return answer(migratev1.Status_STATUS_INTERNAL), nil, nil
-		}
-		if !held {
-			continue
-		}
-		present[index/8] |= 1 << (index % 8)
-		if unpublished {
-			// These bytes are this host's own: no checkpoint of the VM holds
-			// them, so the destination has to keep the page dirty.
-			dirty[index/8] |= 1 << (index % 8)
-			served = append(served, request.GetFirstPage()+uint64(index))
-		}
-		payload = append(payload, page...)
-		found++
-	}
-	encoded, err := blob.Encode(ctx, payload)
-	if err != nil {
-		return answer(migratev1.Status_STATUS_INTERNAL), nil, nil
-	}
-	s.servedPages.Add(int64(found))
-	s.absentPages.Add(int64(count - found))
-	status = migratev1.Status_STATUS_OK
-	return migratev1.PageResponse_builder{Status: &status, Present: present, Dirty: dirty,
-		PageSize: proto.Uint32(uint32(pageSize)), Count: proto.Uint32(uint32(count)), PayloadFormat: proto.Uint32(1)}.Build(), encoded, served
-}
-
-// resident lists what one memory region holds, from the requested page on, in runs.
-func (s *Server) resident(request *migratev1.ResidentRequest) *migratev1.ResidentResponse {
-	s.listings.Add(1)
-	pageSize := s.config.PageSize
-	answer := func(status migratev1.Status) *migratev1.ResidentResponse {
-		return migratev1.ResidentResponse_builder{Status: &status,
-			PageSize: proto.Uint32(uint32(pageSize))}.Build()
-	}
-	pages, status := s.pagesOf(request.GetVm(), request.GetVolume())
-	if status != migratev1.Status_STATUS_OK {
-		return answer(status)
-	}
-	if volumePage := int(pages.PageSize()); volumePage > 0 {
-		pageSize = volumePage
-	}
-	maxRuns := int(request.GetMaxRuns())
-	if maxRuns <= 0 || maxRuns > DefaultMaxRuns {
-		maxRuns = DefaultMaxRuns
-	}
-	resident, err := pages.Resident()
-	if err != nil {
-		// An empty listing is a host that holds nothing, which sends the
-		// destination to its own volume for every page. A host that cannot
-		// answer says so instead, and the destination asks again.
-		slog.WarnContext(s.ctx, "peer: listing what this host holds failed",
-			"vm", request.GetVm(), "volume", request.GetVolume(), "error", err)
-		return answer(migratev1.Status_STATUS_INTERNAL)
-	}
-	runs, more := pageRuns(resident, request.GetFirstPage(), maxRuns)
-	status = migratev1.Status_STATUS_OK
-	return migratev1.ResidentResponse_builder{Status: &status, Runs: runs,
-		PageSize: proto.Uint32(uint32(pageSize)), More: proto.Bool(more)}.Build()
-}
-
-// pageRuns groups ascending page numbers at or above first into at most maxRuns
-// runs, reporting whether it stopped early.
-func pageRuns(pages []uint64, first uint64, maxRuns int) (runs []*migratev1.PageRun, more bool) {
-	for _, page := range pages {
-		if page < first {
-			continue
-		}
-		if n := len(runs); n > 0 && runs[n-1].GetFirstPage()+uint64(runs[n-1].GetCount()) == page {
-			runs[n-1].SetCount(runs[n-1].GetCount() + 1)
-			continue
-		}
-		if len(runs) == maxRuns {
-			return runs, true
-		}
-		runs = append(runs, migratev1.PageRun_builder{FirstPage: proto.Uint64(page), Count: proto.Uint32(1)}.Build())
-	}
-	return runs, false
-}
-
-func (s *Server) reply(session *session, requestID uint64, message proto.Message, payload []byte) error {
-	frame, err := wire.Encode(wire.Outgoing{
-		Version:   session.version,
-		InReplyTo: requestID,
-		RequestID: requestID,
-		Message:   message,
-		Payload: wire.Payload{Body: platform.Bytes(payload), Size: int64(len(payload)),
-			Algorithm: wire.ChecksumCRC32C, Checksum: wire.EncodeCRC32C(crc32.Checksum(payload, pageCRCTable))},
-	})
-	if err != nil {
-		return err
-	}
-	return session.conn.Send(s.ctx, frame)
 }

@@ -32,7 +32,7 @@ func TestACallerGivingUpIsNotALostPage(t *testing.T) {
 		}
 		gate := make(chan struct{})
 		received, err := vmmigrate.Receive(t.Context(), m.destination, handoff,
-			holdPageReplies(m.cluster.dialer("dest"), gate),
+			m.cluster.peers(t, holdPageReplies(m.cluster.dialer("dest"), gate)),
 			func(ctx context.Context, vm *volume.VM, backings map[string]vmmemory.Backing, state []byte) (vmmigrate.Runtime, error) {
 				built, err := newMachine(t, m.destPager, vm, backings, state)
 				if err != nil {
@@ -91,7 +91,7 @@ func TestAStoppedStreamIsNotALostPage(t *testing.T) {
 		gate := make(chan struct{})
 		defer close(gate)
 		received, err := vmmigrate.Receive(t.Context(), m.destination, handoff,
-			holdPageReplies(m.cluster.dialer("dest"), gate),
+			m.cluster.peers(t, holdPageReplies(m.cluster.dialer("dest"), gate)),
 			func(ctx context.Context, vm *volume.VM, backings map[string]vmmemory.Backing, state []byte) (vmmigrate.Runtime, error) {
 				built, err := newMachine(t, m.destPager, vm, backings, state)
 				if err != nil {

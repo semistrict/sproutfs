@@ -37,7 +37,7 @@ const crashPages = 4
 // time, and it is wider than any of these operations takes, so some seeds kill
 // before the operation began, some in the middle of it and some after it
 // finished. The requirements do not move between those.
-const crashWindow = 2 * time.Millisecond
+const crashWindow = 4 * time.Millisecond
 
 // handoffIntervals is how many checkpoint intervals a handover is served for
 // before the host gives it up on its own, which is the host package's own

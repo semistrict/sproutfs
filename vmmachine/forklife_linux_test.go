@@ -408,7 +408,7 @@ func takeBriefly(t *testing.T, ctx context.Context, c *migrationCluster, pager *
 	dial := func(ctx context.Context, peer platform.Address) (platform.Conn, error) {
 		return c.network.Dial(ctx, "destination-host", peer)
 	}
-	received, err := vmmigrate.Receive(ctx, c.destination, handoff, dial, start, vmmigrate.Options{})
+	received, err := vmmigrate.Receive(ctx, c.destination, handoff, destinationPeers(t, ctx, dial), start, vmmigrate.Options{})
 	if err != nil {
 		t.Fatalf("receiving %s: %v", handoff.VMID, err)
 	}

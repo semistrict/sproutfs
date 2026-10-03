@@ -97,7 +97,7 @@ func TestDoneWaitsForEveryUnpublishedPage(t *testing.T) {
 		// page is still only there.
 		gate := make(chan struct{})
 		var destination *machine
-		received, err := vmmigrate.Receive(t.Context(), m.destination, handoff, holdPageReplies(m.cluster.dialer("dest"), gate),
+		received, err := vmmigrate.Receive(t.Context(), m.destination, handoff, m.cluster.peers(t, holdPageReplies(m.cluster.dialer("dest"), gate)),
 			func(ctx context.Context, vm *volume.VM, backings map[string]vmmemory.Backing, state []byte) (vmmigrate.Runtime, error) {
 				built, err := newMachine(t, m.destPager, vm, backings, state)
 				if err != nil {

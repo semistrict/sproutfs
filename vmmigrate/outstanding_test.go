@@ -156,7 +156,7 @@ func TestAReplyThatNeverLeavesKeepsItsPagesOutstanding(t *testing.T) {
 		t.Fatal(err)
 	}
 	source, err := peer.NewServer(t.Context(), peer.ServerConfig{PageSize: pageSize,
-		MaxPagesPerRequest: 8, MaxBytesInFlightPerPeer: 32 << 20, Address: address,
+		MaxPagesPerRequest: 8, Budgets: budgets(32 << 20), Address: address,
 		Listener: droppingListener{Listener: listener, err: errors.New("the reply never left the source")}})
 	if err != nil {
 		t.Fatal(err)
@@ -213,7 +213,7 @@ func (s *served) unpublishedAt(t *testing.T, address platform.Address, name stri
 	}
 	backing, err := vmmigrate.NewPeerBacking(vmmigrate.PeerConfig{Volume: s.vm.Volume(name),
 		Peer: address, VM: "vm-2", PageSize: pageSize, MaxPagesPerRequest: 8,
-		Unpublished: runs, Selected: chosen, Dial: dial})
+		Unpublished: runs, Selected: chosen, Peers: s.migration.cluster.peers(t, dial)})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -49,7 +49,7 @@ func TestAPageIsFetchedOnlyOnceItsReplyIsSent(t *testing.T) {
 	}
 	source, err := peer.NewServer(t.Context(), peer.ServerConfig{
 		Listener: brokenListener{Listener: listener}, Address: "broken-source",
-		PageSize: pageSize, MaxPagesPerRequest: 8, MaxBytesInFlightPerPeer: 32 << 20})
+		PageSize: pageSize, MaxPagesPerRequest: 8, Budgets: budgets(32 << 20)})
 	if err != nil {
 		t.Fatal(err)
 	}

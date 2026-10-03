@@ -14,6 +14,15 @@ enum Status {
   STATUS_INCOMPATIBLE = 2;
 }
 
+// Class is the kind of traffic a connection carries. A server keeps a budget
+// of bytes per peer and class, so bulk work never takes what a fault needs.
+enum Class {
+  CLASS_UNSPECIFIED = 0;
+  CLASS_FAULT = 1;
+  CLASS_BULK_READ = 2;
+  CLASS_BULK_WRITE = 3;
+}
+
 // Hello is the first frame a dialer sends on a connection of protocol 2 or
 // later, encoded at wire version 2 whatever range it states, so a server of
 // any later release reads it. A connection whose first frame is not a hello
@@ -22,6 +31,8 @@ message Hello {
   // min_version and max_version are the protocol versions the dialer speaks.
   uint32 min_version = 1;
   uint32 max_version = 2;
+  // class is the traffic every request on this connection is counted as.
+  Class class = 3;
 }
 
 // HelloReply answers a hello with the version both ends use from here on, or
@@ -32,4 +43,23 @@ message HelloReply {
   uint32 version = 2;
   uint32 min_version = 3;
   uint32 max_version = 4;
+  // budget_bytes is what this connection's class of this peer may hold at the
+  // server at once, over every connection of that class. A peer that asks for
+  // no more is answered BUSY only when the server is short itself.
+  uint64 budget_bytes = 5;
+  // max_in_flight is how many requests this connection may carry at once.
+  uint32 max_in_flight = 6;
+}
+
+// Busy answers a request the server would have to hold more than its budget
+// for. Nothing is wrong with either end, and nothing was done: the request may
+// be made again. It says how busy the server is for this peer and class, so a
+// peer that has nowhere else to go waits about as long as that takes.
+message Busy {
+  Class class = 1;
+  // held_bytes is what this peer's requests of the class hold now, and
+  // budget_bytes what they may; asked_bytes is what the refused request needed.
+  uint64 held_bytes = 2;
+  uint64 budget_bytes = 3;
+  uint64 asked_bytes = 4;
 }

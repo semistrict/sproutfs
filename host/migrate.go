@@ -339,7 +339,7 @@ func (h *Host) receive(ctx context.Context, handoff vmmigrate.Handoff) (*vmmigra
 		started = runtime
 		return runtime, nil
 	}
-	received, err := vmmigrate.Receive(ctx, h.volumes, handoff, h.dialPages, start,
+	received, err := vmmigrate.Receive(ctx, h.volumes, handoff, h.peers, start,
 		vmmigrate.Options{Point: point})
 	if err != nil {
 		return nil, err

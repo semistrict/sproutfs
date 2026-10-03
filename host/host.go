@@ -184,7 +184,11 @@ type Host struct {
 	volumes     *volume.Manager
 	// pages serves the memory of every VM this host has handed to another, and
 	// machines is what it runs, which is what a drain moves.
-	pages     *peer.Server
+	pages *peer.Server
+	// peers is this host's table of the hosts it asks anything of: one entry
+	// for each, shared by every receive and, once the disk cache reads from
+	// its peers, by every cache request.
+	peers     *peer.Table
 	migration MigrationConfig
 	// closeMachine tells the supervisor about a VM this host closed on its own,
 	// which is what a fencing checkpoint leads to.
@@ -432,6 +436,10 @@ func StartHost(ctx context.Context, config Config) (*Host, error) {
 	v := config.Volumes
 	h.volumes, err = volume.NewManager(volume.Config{Control: h.control, Store: h.checkpoints,
 		MaxWriteBytes: v.MaxWriteBytes, MaxOpenVMs: v.MaxOpenVMs, PointPublishing: v.PointPublishing})
+	if err != nil {
+		return nil, err
+	}
+	h.peers, err = peer.NewTable(hostCtx, peer.TableConfig{Dial: h.dialPages, Clock: h.clock})
 	if err != nil {
 		return nil, err
 	}
@@ -747,6 +755,10 @@ func (h *Host) shutdown() {
 		// Serving stops before the VM handles do: nothing is left to serve once
 		// the processes that own those pages are gone.
 		errs = append(errs, h.pages.Close())
+	}
+	if h.peers != nil {
+		// Every receive has ended with its VM, so nothing still asks a peer.
+		errs = append(errs, h.peers.Close())
 	}
 	if h.volumes != nil {
 		errs = append(errs, h.volumes.Close(context.Background()))

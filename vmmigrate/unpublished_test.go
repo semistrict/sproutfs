@@ -182,7 +182,7 @@ func TestAGuestStoreCountsThePageTheSourceServedItForIt(t *testing.T) {
 	}
 
 	var destination *machine
-	received, err := vmmigrate.Receive(t.Context(), m.destination, handoff, m.cluster.dialer("dest"),
+	received, err := vmmigrate.Receive(t.Context(), m.destination, handoff, m.cluster.peers(t, m.cluster.dialer("dest")),
 		func(ctx context.Context, vm *volume.VM, backings map[string]vmmemory.Backing, state []byte) (vmmigrate.Runtime, error) {
 			built, err := newMachine(t, m.destPager, vm, backings, state)
 			if err != nil {
@@ -233,7 +233,7 @@ func TestAGuestStoreCountsThePageTheSourceServedItForIt(t *testing.T) {
 func receiveDialing(t *testing.T, m *migration, handoff vmmigrate.Handoff, dial vmmigrate.Dialer) (*machine, *vmmigrate.Received) {
 	t.Helper()
 	var destination *machine
-	received, err := vmmigrate.Receive(t.Context(), m.destination, handoff, dial,
+	received, err := vmmigrate.Receive(t.Context(), m.destination, handoff, m.cluster.peers(t, dial),
 		func(ctx context.Context, vm *volume.VM, backings map[string]vmmemory.Backing, state []byte) (vmmigrate.Runtime, error) {
 			built, err := newMachine(t, m.destPager, vm, backings, state)
 			if err != nil {

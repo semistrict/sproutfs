@@ -56,7 +56,7 @@ func TestSeededTopologyUnderBuggify(t *testing.T) {
 		"checkpoint/one-page-parts",
 		"control/slow-write",
 		"vmmemory/evict-past-a-free-slot",
-		"vmmigrate/source-busy",
+		"peer/busy",
 	} {
 		if !reached[site] {
 			t.Errorf("the campaign never reached the %s site", site)

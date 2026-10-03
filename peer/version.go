@@ -99,48 +99,50 @@ var errNoHello = errors.New("peer: the connection closed unanswered after the he
 
 // sayHello is the dialer's half: send the hello, read the answer, and report the
 // version the connection speaks from here on.
-func sayHello(ctx context.Context, conn platform.Conn, speaks Versions) (uint32, error) {
+func sayHello(ctx context.Context, conn platform.Conn, speaks Versions, class Class) (*peerv1.HelloReply, error) {
 	ctx, cancel := context.WithTimeout(ctx, helloTimeout)
 	defer cancel()
+	wireClass := classToWire(class)
 	frame, err := wire.Encode(wire.Outgoing{Version: helloVersion,
-		Message: peerv1.Hello_builder{MinVersion: proto.Uint32(speaks.Min), MaxVersion: proto.Uint32(speaks.Max)}.Build()})
+		Message: peerv1.Hello_builder{MinVersion: proto.Uint32(speaks.Min), MaxVersion: proto.Uint32(speaks.Max),
+			Class: &wireClass}.Build()})
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	if err := conn.Send(ctx, frame); err != nil {
-		return 0, err
+		return nil, err
 	}
 	received, err := conn.Receive(ctx)
 	if err != nil {
 		if ctx.Err() == nil && (errors.Is(err, platform.ErrDisconnected) || errors.Is(err, platform.ErrClosed)) {
-			return 0, errors.Join(errNoHello, err)
+			return nil, errors.Join(errNoHello, err)
 		}
-		return 0, err
+		return nil, err
 	}
 	incoming, err := wire.Decode(received)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	payload, err := readPayload(incoming, 0)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	payload.release()
 	reply := new(peerv1.HelloReply)
 	if err := incoming.UnmarshalTo(reply); err != nil {
-		return 0, errors.Join(wire.ErrMalformedFrame, err)
+		return nil, errors.Join(wire.ErrMalformedFrame, err)
 	}
 	switch reply.GetStatus() {
 	case peerv1.Status_STATUS_OK:
 		version := reply.GetVersion()
 		if version < speaks.Min || version > speaks.Max {
-			return 0, fmt.Errorf("%w: the server chose version %d of a hello for %d to %d",
+			return nil, fmt.Errorf("%w: the server chose version %d of a hello for %d to %d",
 				wire.ErrMalformedFrame, version, speaks.Min, speaks.Max)
 		}
-		return version, nil
+		return reply, nil
 	case peerv1.Status_STATUS_INCOMPATIBLE:
-		return 0, &IncompatibleError{Min: reply.GetMinVersion(), Max: reply.GetMaxVersion()}
+		return nil, &IncompatibleError{Min: reply.GetMinVersion(), Max: reply.GetMaxVersion()}
 	default:
-		return 0, fmt.Errorf("%w: a hello answered %s", wire.ErrMalformedFrame, reply.GetStatus())
+		return nil, fmt.Errorf("%w: a hello answered %s", wire.ErrMalformedFrame, reply.GetStatus())
 	}
 }

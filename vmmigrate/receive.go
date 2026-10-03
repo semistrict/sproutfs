@@ -250,8 +250,9 @@ func (r *Received) Claim(ctx context.Context) error {
 	return nil
 }
 
-// Close stops the background stream and drops the connections to the source. The
-// VM keeps running: everything it has not fetched is in its own checkpoint.
+// Close stops the background stream and ends every request to the source still
+// in flight. The VM keeps running: everything it has not fetched is in its own
+// checkpoint.
 func (r *Received) Close() {
 	r.closeOnce.Do(func() {
 		r.cancel(ErrClosed)
@@ -272,15 +273,15 @@ func (r *Received) Close() {
 // trip of the source's release. The checkpoint it opens is the one the source
 // published while the guest was stopped, so nothing the guest wrote is behind
 // it.
-func Receive(ctx context.Context, manager *volume.Manager, handoff Handoff, dial Dialer, start StartFunc, opts Options) (*Received, error) {
-	if manager == nil || start == nil || dial == nil || handoff.VMID == "" || len(handoff.MemoryRegions) == 0 {
-		return nil, fmt.Errorf("%w: a receive needs a manager, a handoff, a dialer and a start", ErrInvalid)
+func Receive(ctx context.Context, manager *volume.Manager, handoff Handoff, peers *peer.Table, start StartFunc, opts Options) (*Received, error) {
+	if manager == nil || start == nil || peers == nil || handoff.VMID == "" || len(handoff.MemoryRegions) == 0 {
+		return nil, fmt.Errorf("%w: a receive needs a manager, a handoff, a table of peers and a start", ErrInvalid)
 	}
 	vm, err := open(ctx, manager, handoff, opts.Point)
 	if err != nil {
 		return nil, err
 	}
-	received, err := attach(ctx, vm, handoff, dial, start, opts.Point, platform.ClockOr(opts.Clock))
+	received, err := attach(ctx, vm, handoff, peers, start, opts.Point, platform.ClockOr(opts.Clock))
 	if err != nil {
 		// Nothing ran, so nothing is dirty and the close publishes nothing; the
 		// VM goes back to whoever opens it next.
@@ -334,7 +335,7 @@ func open(ctx context.Context, manager *volume.Manager, handoff Handoff, point *
 	return manager.Fork(ctx, handoff.VMID, point)
 }
 
-func attach(ctx context.Context, vm *volume.VM, handoff Handoff, dial Dialer, start StartFunc,
+func attach(ctx context.Context, vm *volume.VM, handoff Handoff, peers *peer.Table, start StartFunc,
 	point *volume.ForkPoint, clock platform.Clock) (*Received, error) {
 	// The point's pages are offered to this host's pager before any memory region
 	// attaches, which is what makes every page the child inherited present
@@ -367,7 +368,7 @@ func attach(ctx context.Context, vm *volume.VM, handoff Handoff, dial Dialer, st
 			// a fork: a child has published nothing of its own, and the pages it
 			// inherited name its parent. See PeerBacking.Locate.
 			peer, err := NewPeerBacking(PeerConfig{Volume: v, Peer: handoff.Source, VM: handoff.VMID,
-				Unpublished: memoryRegion.Unpublished, Selected: handoff.Checkpoint, Dial: dial, Clock: clock})
+				Unpublished: memoryRegion.Unpublished, Selected: handoff.Checkpoint, Peers: peers, Clock: clock})
 			if err != nil {
 				return nil, err
 			}
@@ -514,9 +515,9 @@ func subtractRuns(runs, remove []PageRun) []PageRun {
 	return result
 }
 
-// fetch faults in one memory region's runs, as many at once as that memory region's backing
-// holds connections for: one page at a time would pay the round trip to the
-// source for every page and leave the other connections idle. The first page
+// fetch faults in one memory region's runs, as many at once as that memory
+// region's backing asks for: one page at a time would pay the round trip to the
+// source for every page and leave the link idle in between. The first page
 // that will not load stops this memory region — the failure is the source's, so the
 // pages behind it would fail the same way — and the fault that took it is what
 // this reports.
@@ -524,8 +525,9 @@ func (r *Received) fetch(ctx context.Context, memoryRegion *vmmemory.MemoryRegio
 	if len(runs) == 0 {
 		return nil
 	}
-	// The stream's requests are marked as the stream's, so the source keeps a
-	// connection for the guest's own faults while they run.
+	// The stream's requests are marked as the stream's, so they go over the
+	// source's bulk connections and count against its bulk budget, and the
+	// guest's own faults never queue behind them.
 	fetchCtx, stop := context.WithCancel(peer.WithStream(ctx))
 	defer stop()
 	pages := make(chan uint64)
