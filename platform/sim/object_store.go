@@ -326,6 +326,14 @@ func (s *ObjectStore) before(ctx context.Context, operation ObjectOperation, key
 	}
 	s.mu.Unlock()
 	if failed {
+		// A store that is down still takes the round trip to say so. An
+		// answer of no time at all would reach its caller at the instant it
+		// asked, racing whatever the caller's other goroutines do at that
+		// instant, and the Go scheduler would decide which went first.
+		if err := s.runtime.ioDelay(ctx, fmt.Sprintf("object/%s/%q/%d", operation, key.String(), id), latency); err != nil {
+			s.trace(operation, key, "canceled", 0, id)
+			return 0, err
+		}
 		s.trace(operation, key, "unavailable", 0, id)
 		return 0, platform.ErrUnavailable
 	}

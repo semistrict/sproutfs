@@ -50,19 +50,19 @@ var unreachedProbes = []string{
 	control.ProbeReplyReconciled,
 }
 
-// unsteadyProbes are the registered probes a campaign reaches on some runs of
-// its seeds and not on others, which is asserted neither way. An eviction
-// during a publication is reached by seed 2 with the cluster cache on in about
-// half its runs, and by no run with no cache disk or of any other seed. The
-// fills are not what varies: a host does them one at a time, and two runs of
-// the seed first differ before the publication, where a destination's memory
-// regions stream their pages from the source on several goroutines and take
-// arena slots in the order the Go scheduler runs them. Under the site that
-// evicts past a free slot, that order decides which page a later store
-// evicts, and so whether it is a page of a memory region a publication has
-// sealed.
-var unsteadyProbes = []string{
-	vmmemory.ProbeEvictionDuringPublication,
+// probeSeeds are the seeds of the generated schedule the probe campaign runs.
+// The first twenty-five reach every registered probe but one: none of them
+// evicts a page of a memory region while a publication reads it. Seed 46 does,
+// with the cluster cache on and with no cache disk alike.
+var probeSeeds = append(seedsThrough(25), 46)
+
+// seedsThrough is the seeds from 1 to last.
+func seedsThrough(last uint64) []uint64 {
+	seeds := make([]uint64, 0, last)
+	for seed := uint64(1); seed <= last; seed++ {
+		seeds = append(seeds, seed)
+	}
+	return seeds
 }
 
 // elsewhere reports a probe another campaign is registered to cover, which
@@ -92,7 +92,7 @@ func TestTheCampaignsReachTheirProbes(t *testing.T) {
 	reached := map[string]uint64{}
 	// Every seed runs with the hosts' disks one cache and with no cache
 	// disk, so the paths each takes are both covered whatever a seed draws.
-	for seed := uint64(1); seed <= 25; seed++ {
+	for _, seed := range probeSeeds {
 		for _, cache := range []campaignCache{cacheOff, cacheOn} {
 			t.Run(fmt.Sprintf("seed-%d/cache-%v", seed, cache == cacheOn), func(t *testing.T) {
 				synctest.Test(t, func(t *testing.T) {
@@ -118,9 +118,7 @@ func TestTheCampaignsReachTheirProbes(t *testing.T) {
 	t.Logf("reached=%v", reached)
 	expected := map[string]bool{}
 	for _, name := range registeredProbes {
-		if !slices.Contains(unsteadyProbes, name) {
-			expected[name] = !slices.Contains(unreachedProbes, name)
-		}
+		expected[name] = !slices.Contains(unreachedProbes, name)
 	}
 	for _, name := range slices.Sorted(maps.Keys(expected)) {
 		switch {

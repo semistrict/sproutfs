@@ -1,8 +1,10 @@
 package checkpoint_test
 
 import (
+	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -214,4 +216,73 @@ func TestAPublicationNeverWaitsForItsFill(t *testing.T) {
 		t.Fatalf("with a queue of one window the fills came to %+v, want some filled and some dropped for the queue",
 			onFills)
 	}
+}
+
+// heldPart is an object store that holds the PUT of the first part of a
+// checkpoint until release is closed, and tells landed of each other part's
+// PUT once it has succeeded.
+type heldPart struct {
+	platform.ObjectStore
+	first   string
+	release chan struct{}
+	landed  chan struct{}
+}
+
+func (s *heldPart) Put(ctx context.Context, request platform.PutRequest) (platform.PutResult, error) {
+	key := request.Key.String()
+	if strings.HasSuffix(key, s.first) {
+		select {
+		case <-s.release:
+		case <-ctx.Done():
+			return platform.PutResult{}, context.Cause(ctx)
+		}
+	}
+	result, err := s.ObjectStore.Put(ctx, request)
+	if err == nil && strings.Contains(key, "/part/") && !strings.HasSuffix(key, s.first) {
+		s.landed <- struct{}{}
+	}
+	return result, err
+}
+
+// A publication hands its parts to the cluster in their own order, whatever
+// order their PUTs end in: a part whose PUT has succeeded waits for the part
+// before it to be handed over. Each page is a part of its own here, and the
+// first part's PUT is held: while it is, the other two parts land and
+// nothing is filled. Once it lands, all three pages and the segment are.
+//
+// A publication's uploads run beside each other and end at one instant when
+// their latencies are equal. Handed over as they ended, a host's one worker of
+// fills took them in the order the Go scheduler ran the uploads, and which of
+// them a full queue or a spent rate dropped was not the seed's choice.
+func TestAPublicationHandsItsPartsOverInTheirOrder(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		c := newFillCluster(t, fillConfig{hosts: 2, code: rank.Code{K: 1, M: 1}, share: 100})
+		publisher := c.hosts[0]
+		held := &heldPart{ObjectStore: publisher.objects, first: "/ckpt/2/part/0",
+			release: make(chan struct{}), landed: make(chan struct{}, len(publishedPages))}
+		store := mustStore(t, checkpoint.Config{ObjectStore: held, Cache: publisher.cache, PartBytes: 1})
+		published := make(chan error, 1)
+		go func() {
+			_, _, err := publishFrom(t, store, "vm", publishedPages)
+			published <- err
+		}()
+		for range len(publishedPages) - 1 {
+			<-held.landed
+		}
+		synctest.Wait()
+		early := c.fills()
+		close(held.release)
+		if err := <-published; err != nil {
+			t.Fatal(err)
+		}
+		c.settle(t)
+		if early.FromPublications != 0 {
+			t.Fatalf("with the first part's PUT held, %d windows of the parts after it were filled, want none",
+				early.FromPublications)
+		}
+		c.requirePlaced(t, control.Ref{VM: "vm", Sequence: 2})
+		if fills := c.fills(); fills.FromPublications != uint64(len(publishedPages)+1) || dropped(fills) != 0 {
+			t.Fatalf("the publication's fills came to %+v, want its three pages and its segment", fills)
+		}
+	})
 }

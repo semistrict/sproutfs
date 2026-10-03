@@ -1411,6 +1411,18 @@ reached across the seeds. The campaign found a fill placed by a changed list
 writing a stripe its own host was not ranked for; a cache's own fills are now
 held to its list as a keep is.
 
+A seed of the campaign does the same work on every run. Two things stood in
+the way. The harness drew each cache's identity from the operating system, so
+the list ranked other hosts for a window on every run; it now draws them from
+the seed. And a load of the store that several reads of a host wait for
+releases them all at once when it ends. They went on to decide what each read
+next, whether from this host's disk or from the store, in the order the Go
+scheduler ran them. Each now passes `sim.Admit` there, so in a controlled run
+the scheduler takes them one at a time. Outside a controlled run it does
+nothing. Seeds 6, 10 and 12 still did other work in about one run in six to
+fifteen under a loaded machine, so another completion still releases several
+goroutines at once somewhere.
+
 The fills' properties are stated exactly beside it, on a cluster of real peer
 servers. `TestAStoreReadFillsExactlyTheRankedCaches`: after one host reads a
 page, the stripes of its window and of its segment's are on exactly the hosts
@@ -1591,6 +1603,45 @@ runs differently by itself. Without the shake, the race that step 6 brought in
 failed this test in about two runs of three on a loaded machine and in none of
 sixty on an idle one.
 
+Shaking the campaign with the fault-injection sites on found four more races of
+this kind. In each, goroutines reached something the run observes at one
+simulated instant, and the Go scheduler chose their order:
+
+- A destination's memory regions stream their pages on several goroutines. Each
+  fault took its arena slot, drew the site that evicts past a free slot, and
+  sent its request whenever it ran, so which page a later store evicted
+  changed from run to run. The faults now take turns in page order until each
+  one's request is on the wire. See [the post-copy stream](migration.md#phases).
+  Under the scheduler each page's fault is a task of its own, and it passes
+  `sim.Admit` as it takes its turn: the turn comes free as the fault before
+  it sends, which frees that connection to a guest's fault waiting for it at
+  the same moment.
+- The driver began and ended faults while the world still had work due at
+  that instant, such as a publication's retry, or traffic a fault had just let
+  go of. It now waits until the world has done everything it can at the
+  instant (`synctest.Wait`) before each fault it begins or ends and before each
+  step.
+- The simulated store refused an operation at the instant it was asked while
+  it was down, and a cut link refused a frame at the instant it was sent. The
+  caller then failed in the same instant as everything else that instant held:
+  a publication's first part failed while it built the second, and a
+  connection closed under a frame that arrived as it did. A refused operation
+  now takes its latency, as a frame does.
+- A publication's uploads handed their parts to the fills as their PUTs
+  ended, and a host's one worker of fills took them in that order. A
+  publication now hands its parts over in their own order.
+
+Over seeds 1 to 50, with no cache disk and with the cluster cache on, the
+sites on and four shakes each, 97 of the 100 pairs then did the same work in
+all four runs (2026-10-03). Before, 7 of the 50 pairs of seeds 1 to 25 did
+not. Seeds 35 without a cache, and 43 and 48 with one, still vary now and
+then. In seed 35 a reply whose header a fault flipped makes the destination
+close the connection at the instant the source starts its next reply, and
+whether that reply is sent into the closed connection or never sent is the
+scheduler's choice. Two requests that one link carries at one instant take
+its sequence numbers, and so its drawn latencies, in the order they arrive.
+None of these seeds is one the probe campaign or the fingerprint test runs.
+
 The campaign under fault injection is `TestSeededTopologyUnderBuggify`. It runs
 the same deployment through the same schedule with the sites on, and it checks
 the same bytes. It requires the campaign to reach every site it is supposed to
@@ -1604,25 +1655,26 @@ SPROUTFS_TEST_SOAK=1 go test ./internal/simtest \
   -run '^TestTheCampaignsReachTheirProbes$' -count=1 -timeout=30m
 ```
 
-The probe campaign runs twenty-five seeds of the generated schedule with the
-sites on, each once with no cache disk and once with the cluster cache on,
-plus four seeds of the two-writer campaign. It requires every probe that the
-campaigns are registered to cover to have fired, a fill right given and a keep
-kept among them, and a page rebuilt from a peer's stripes. The peer server's,
-the list of caches' and the page cache disk's, stripes', fills' and reads'
-probes are reached here too, and each is asserted by its own campaign. No campaign in this
+The probe campaign runs seeds 1 to 25 and seed 46 of the generated schedule
+with the sites on, each once with no cache disk and once with the cluster
+cache on, plus four seeds of the two-writer campaign. It requires every probe
+that the campaigns are registered to cover to have fired, a fill right given
+and a keep kept among them, and a page rebuilt from a peer's stripes. The peer
+server's, the list of caches' and the page cache disk's, stripes', fills' and
+reads' probes are reached here too, and each is asserted by its own campaign.
+No campaign in this
 repository covers one of the registered probes, which `unreachedProbes` in
 `internal/simtest/probe_test.go` names. Here the store either answers or fails
 outright, so no conditional write ever loses its reply and is reconciled by its
-writer's nonce. One more, an eviction during a publication, is reached on some
-runs and not others (`unsteadyProbes`), and is asserted neither way. Seed 2
-with the cluster cache on reaches it in about half its runs. No run without a
-cache disk and no other seed has. The fills are not what varies: a host does
-them one at a time. Two runs of the seed first differ before the publication.
-A destination's memory regions stream their pages from the source on several
-goroutines, and they take arena slots in the order the Go scheduler runs them.
-Under the site that evicts past a free slot, that order decides which page a
-later store evicts, and so whether it is a page of a sealed memory region.
+writer's nonce.
+
+Seed 46 is there for an eviction during a publication, which none of seeds 1
+to 25 reaches. Seed 2 used to reach it in about half its runs. Its stream's
+faults took arena slots in the order the Go scheduler ran them, and under the
+site that evicts past a free slot that order decided which page a later store
+evicted, and so whether it was a page of a sealed memory region. Now that the
+faults take turns, seed 2 never does. Seed 46 does on every run, with the cache
+and without it.
 
 A fenced publication was removed from the list when the two-writer campaign
 moved onto the shared harness. That campaign's takeover happens while the
@@ -1682,6 +1734,8 @@ SPROUTFS_SIM_BUG=migration-strip-published-holes \
   go test ./internal/simtest -run '^TestADestinationPublishesWhatItReceivedWhileItsSourceStillServes$' -count=1
 SPROUTFS_SIM_BUG=migration-ask-for-published-pages \
   go test ./internal/simtest -run '^TestADestinationPublishesWhatItReceivedWhileItsSourceStillServes$' -count=1
+SPROUTFS_SIM_BUG=migration-stream-in-any-order \
+  go test ./vmmigrate -run '^TestAStreamPageWaitsForThePageBeforeItToBeAskedFor$' -count=1
 SPROUTFS_SIM_BUG=pager-zero-new-page \
   go test ./internal/simtest -run '^TestScheduledWorldReproduces$' -count=1
 SPROUTFS_SIM_BUG=pager-forget-spill \
@@ -1792,6 +1846,13 @@ guest zeroed. The generated schedule catches all three as well. Over seeds 1 to
 60 of `TestSeededTopologySoak` and `TestBuggifiedTopologySoak`, 120 runs, the
 first fails 88 runs and the second 49. The third fails 3, all buggified,
 because it needs a pager that evicts a page the destination published.
+
+`migration-stream-in-any-order` has a destination's stream fault its pages
+all at once again, without turns. Its test holds the stream's first request
+before it is sent. With the turns, no other page is asked for meanwhile. With
+the guard, the other three pages of the region are. On the generated schedule
+the guard is what made seed 2 reach an eviction during a publication in about
+half its runs.
 
 The fix to `readIn` that the scenario was also meant to reach is not a guard.
 It refuses to share a page whose load calls it the source's own while the
@@ -1924,7 +1985,7 @@ so every keep was reset; the simulated stream does not read under one, which
 is why only the GCE run of 2026-10-03 found it, and why its test runs over a
 loopback socket.
 
-Seven guards break the cluster's fills:
+Eight guards break the cluster's fills:
 
 ```sh
 SPROUTFS_SIM_BUG=fill-before-durable \
@@ -1941,6 +2002,8 @@ SPROUTFS_SIM_BUG=keep-while-writing \
   go test ./checkpoint -run '^TestACacheDropsAKeepItHoldsOrIsWriting$' -count=1
 SPROUTFS_SIM_BUG=fill-concurrently \
   go test ./checkpoint -run '^TestAHostSendsItsKeepsOneAtATime$' -count=1
+SPROUTFS_SIM_BUG=fill-parts-in-any-order \
+  go test ./checkpoint -run '^TestAPublicationHandsItsPartsOverInTheirOrder$' -count=1
 ```
 
 The first fills the cluster with a part before its PUT has succeeded, which is
@@ -1957,7 +2020,10 @@ and sends keeps on goroutines of their own, as step 6 first did. Three keeps go
 to one holder before the first is answered, and on a link that drops or
 duplicates a frame, which keep it takes is the Go scheduler's choice. That is
 what turned `TestSeededTopologyFingerprintIsStable` red on seed 1 with the
-cluster cache on. The fill campaign
+cluster cache on. The eighth hands each part of a publication to the fills as
+its PUT ends, rather than in part order. Its test holds the first part's PUT
+while the others land: with the order kept nothing is filled, and with the
+guard a later part's window is. The fill campaign
 (`TestFillsSurviveTheirFaultsAndReachTheirProbes`) kills `keep-unranked` and
 `no-fill-right` too.
 

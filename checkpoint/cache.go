@@ -12,6 +12,7 @@ import (
 	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/peer"
 	"github.com/semistrict/sproutfs/platform"
+	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/rank"
 	"github.com/semistrict/sproutfs/resource"
 )
@@ -559,6 +560,13 @@ func (c *Cache) collect(ctx context.Context, keys []cacheKey, next cacheAdmissio
 		}
 		select {
 		case <-flight.done:
+			// Every caller of a load is released at once when it ends, and
+			// each goes on to decide what it reads next, from this host's
+			// disk or from the store. In a controlled run they go on one at a
+			// time, in the order the run chooses.
+			if err := sim.Admit(ctx, "checkpoint/cache/flight"); err != nil {
+				return fail(at, err)
+			}
 			if err := context.Cause(ctx); err != nil {
 				return fail(at, err)
 			}

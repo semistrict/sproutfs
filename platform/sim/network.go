@@ -783,6 +783,15 @@ func (c *conn) Send(ctx context.Context, frame platform.Frame) error {
 	key := linkKey{from: c.local, to: c.remote}
 	plan := c.network.planSend(key, totalBytes)
 	if plan.blocked {
+		// A frame sent into a cut link is still a frame's time on the wire
+		// before its sender learns it went nowhere. Failing at the instant it
+		// was sent would race whatever arrives at the other end at that
+		// instant, and the Go scheduler would decide which came first.
+		if err := c.network.runtime.delay(ctx, fmt.Sprintf("network/send/%q/%q/%d", key.from, key.to, plan.sequence),
+			plan.minimum, plan.maximum, plan.delay); err != nil {
+			c.network.traceNetwork(key, "send", "canceled", totalBytes, plan.sequence)
+			return err
+		}
 		c.network.traceNetwork(key, "send", "blocked", totalBytes, plan.sequence)
 		return platform.ErrUnavailable
 	}

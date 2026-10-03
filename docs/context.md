@@ -309,7 +309,8 @@ may hold several indices of a window. A stripe of another code is a miss.
 **Fill**: Putting the stripes of a window on the caches the list ranks for it.
 Inside the share the cluster cache is on for, three things fill: a read of the
 store, once its callers have their pages; a publication, for each part once
-its PUT has succeeded and for its segments once the index object's has; and a
+its PUT has succeeded, in part order, and for its segments once the index
+object's has; and a
 pull, for what it copies. A host does its fills one at a time, in the order
 they were handed over, from one bounded queue. Its own stripes go to its own
 disk, and every other stripe goes as a keep within a bounded rate and the

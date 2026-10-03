@@ -291,6 +291,27 @@ in through the pager's ordinary load path. Streamed bytes are never written into
 a memory region directly, because the load path is what keeps a page shared by
 identity with the other VMs on that host.
 
+A memory region's stream keeps four faults in flight, so the link never waits
+on one round trip. The faults take turns in page order, each until its read is
+under way: its first request is on the wire, or its read of the volume has
+begun. Everything a fault decides before that is visible to what comes after
+it. That is the arena slot it takes, the page it evicts for the slot, and
+where its request sits on the link, which decides when the page enters the
+pager's recency order. When the faults decided these at once, the Go scheduler
+chose their order. Under the simulation, a seed then could not reproduce which
+page a later store evicted. The turn covers the fault's planning, its slot and
+its request's write to the socket. It does not cover the round trip, the
+reply's decoding or the page's install, which still overlap. On the GCE
+links of 2026-10-03 one page took about 28 ms, most of it the page codec
+([measurement](measurements/gce-peer-server-2026-10-03.md)). The turn holds
+for what a fault does before its request goes: its plan and its slot, which
+are work in memory, and room in the bulk budget and on a connection, which the
+stream's next request would wait for anyway. So four requests stay in flight.
+This has not been measured on GCE. One case costs more. Where the arena is full
+and each slot needs an eviction that spills a private page, the stream's
+evictions run one after another, where four used to overlap. A guest's own
+faults take no turn.
+
 A guest's fault is the fault class, and the stream is bulk reads, so they go
 over different connections and count against different budgets at the source.
 A fault never waits for a connection behind the stream. A request over its

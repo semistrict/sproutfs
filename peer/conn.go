@@ -73,8 +73,10 @@ func newConn(p *pool, c platform.Conn, version uint32, maxInFlight int) *conn {
 // roundTrip sends one request and waits for its reply. The caller has taken a
 // slot on this connection and bytes of its pool's budget; both are given back
 // when the reply arrives or the connection fails, whichever is first, and not
-// when the caller gives up: the server holds them until it has answered.
-func (c *conn) roundTrip(ctx context.Context, request proto.Message, payload []byte, bytes, maxPayload int64) (result, error) {
+// when the caller gives up: the server holds them until it has answered. sent
+// is called once the request is written, before the reply is waited for.
+func (c *conn) roundTrip(ctx context.Context, request proto.Message, payload []byte, bytes, maxPayload int64,
+	sent func()) (result, error) {
 	waiting := &call{bytes: bytes, maxPayload: maxPayload, reply: make(chan result, 1)}
 	select {
 	case <-ctx.Done():
@@ -109,6 +111,7 @@ func (c *conn) roundTrip(ctx context.Context, request proto.Message, payload []b
 		err = c.Send(ctx, frame)
 	}
 	c.send <- struct{}{}
+	sent()
 	if err != nil {
 		if c.forget(id) {
 			c.pool.release(c, bytes)
