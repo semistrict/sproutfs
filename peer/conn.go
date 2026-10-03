@@ -74,7 +74,7 @@ func newConn(p *pool, c platform.Conn, version uint32, maxInFlight int) *conn {
 // slot on this connection and bytes of its pool's budget; both are given back
 // when the reply arrives or the connection fails, whichever is first, and not
 // when the caller gives up: the server holds them until it has answered.
-func (c *conn) roundTrip(ctx context.Context, request proto.Message, bytes, maxPayload int64) (result, error) {
+func (c *conn) roundTrip(ctx context.Context, request proto.Message, payload []byte, bytes, maxPayload int64) (result, error) {
 	waiting := &call{bytes: bytes, maxPayload: maxPayload, reply: make(chan result, 1)}
 	select {
 	case <-ctx.Done():
@@ -97,7 +97,8 @@ func (c *conn) roundTrip(ctx context.Context, request proto.Message, bytes, maxP
 	c.pending[id] = waiting
 	c.lastUsed = c.pool.peer.table.clock.Now()
 	c.mu.Unlock()
-	frame, err := wire.Encode(wire.Outgoing{Version: c.version, RequestID: id, Message: request})
+	frame, err := wire.Encode(wire.Outgoing{Version: c.version, RequestID: id, Message: request,
+		Payload: wire.Payload{Body: platform.Bytes(payload), Size: int64(len(payload))}})
 	if err == nil {
 		err = c.Send(ctx, frame)
 	}

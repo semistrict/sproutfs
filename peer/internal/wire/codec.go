@@ -184,6 +184,8 @@ type Incoming struct {
 	Message     *anypb.Any
 	Payload     io.ReadCloser
 	PayloadSize int64
+	// Checksummed says the payload carried a checksum, which its reader checks.
+	Checksummed bool
 }
 
 func Decode(frame platform.ReceivedFrame) (Incoming, error) {
@@ -248,6 +250,7 @@ func Decode(frame platform.ReceivedFrame) (Incoming, error) {
 		Message:     envelope.GetMessage(),
 		Payload:     body,
 		PayloadSize: frame.PayloadSize,
+		Checksummed: algorithm != ChecksumNone,
 	}, nil
 }
 

@@ -51,6 +51,10 @@ type session struct {
 type answer struct {
 	message proto.Message
 	payload []byte
+	// body, when set, is the payload instead: size bytes of a reader, a file
+	// range among them, sent as it is and never checksummed here.
+	body io.ReaderAt
+	size int64
 	// checked says the payload carries a CRC32C of its own in the header. A
 	// payload whose own format is checked goes without one.
 	checked bool
@@ -109,7 +113,10 @@ func (s *Server) receiveWithin(session *session, silence time.Duration) (wire.In
 func (s *Server) serveOneAtATime(session *session, first *wire.Incoming) {
 	incoming := *first
 	for {
-		answer, err := s.answer(session, incoming)
+		if err := drain(incoming); err != nil {
+			return
+		}
+		answer, err := s.answer(session, incoming, takeBuffer(0))
 		if err != nil {
 			return
 		}
@@ -204,7 +211,10 @@ func (s *Server) decode(session *session, received platform.ReceivedFrame) (wire
 // admit starts answering one request of a version 2 session, and goes back to
 // reading. The answer is sent once every reply before it has been.
 func (s *Server) admit(session *session, incoming wire.Incoming) error {
-	if err := drain(incoming); err != nil {
+	// The request's payload is read here, before the next frame, whose start
+	// is behind it.
+	payload, err := readPayload(incoming, platform.MaxFrameBytes)
+	if err != nil {
 		return err
 	}
 	previous, next := session.turn, make(chan struct{})
@@ -221,11 +231,12 @@ func (s *Server) admit(session *session, incoming wire.Incoming) error {
 		defer close(next)
 		var reply answer
 		if refused {
+			payload.release()
 			reply = answer{message: s.busy(session, 0, 0)}
 		} else {
 			defer func() { <-session.inflight }()
 			var err error
-			if reply, err = s.answer(session, incoming); err != nil {
+			if reply, err = s.answer(session, incoming, payload); err != nil {
 				slog.WarnContext(s.ctx, "peer: a request this server cannot answer", "peer", session.peer, "error", err)
 				_ = session.conn.Close()
 				return
@@ -246,8 +257,27 @@ func (s *Server) admit(session *session, incoming wire.Incoming) error {
 	return nil
 }
 
-// answer dispatches one request to what answers it.
-func (s *Server) answer(session *session, incoming wire.Incoming) (answer, error) {
+// answer dispatches one request to what answers it. Only a keep carries a
+// payload; any other request that does is malformed.
+func (s *Server) answer(session *session, incoming wire.Incoming, payload *payloadBuffer) (answer, error) {
+	keep := new(peerv1.Keep)
+	if incoming.Message.MessageIs(keep) && session.version >= 2 {
+		if err := incoming.UnmarshalTo(keep); err != nil {
+			payload.release()
+			return answer{}, err
+		}
+		return s.answerKeep(session, keep, payload), nil
+	}
+	defer payload.release()
+	if len(payload.bytes) != 0 {
+		return answer{}, fmt.Errorf("%w: a request that carries no payload carried %d bytes",
+			wire.ErrMalformedFrame, len(payload.bytes))
+	}
+	if session.version >= 2 {
+		if reply, ok, err := s.answerCache(session, incoming); ok || err != nil {
+			return reply, err
+		}
+	}
 	pageRequest, residentRequest, claimRequest := new(migratev1.PageRequest), new(migratev1.ResidentRequest),
 		new(migratev1.ClaimRequest)
 	switch {
@@ -272,6 +302,35 @@ func (s *Server) answer(session *session, incoming wire.Incoming) (answer, error
 	}
 }
 
+// answerCache answers the cache's requests other than a keep, and reports
+// whether incoming was one.
+func (s *Server) answerCache(session *session, incoming wire.Incoming) (answer, bool, error) {
+	read, drop, presence, probe := new(peerv1.ReadStripes), new(peerv1.Drop), new(peerv1.Presence), new(peerv1.Probe)
+	switch {
+	case incoming.Message.MessageIs(read):
+		if err := incoming.UnmarshalTo(read); err != nil {
+			return answer{}, true, err
+		}
+		return s.answerReadStripes(session, read), true, nil
+	case incoming.Message.MessageIs(drop):
+		if err := incoming.UnmarshalTo(drop); err != nil {
+			return answer{}, true, err
+		}
+		return s.answerDrop(drop), true, nil
+	case incoming.Message.MessageIs(presence):
+		if err := incoming.UnmarshalTo(presence); err != nil {
+			return answer{}, true, err
+		}
+		return s.answerPresence(presence), true, nil
+	case incoming.Message.MessageIs(probe):
+		if err := incoming.UnmarshalTo(probe); err != nil {
+			return answer{}, true, err
+		}
+		return s.answerProbe(probe), true, nil
+	}
+	return answer{}, false, nil
+}
+
 // reply sends one answer, at the session's version, and reports to the answer
 // whether it left.
 func (s *Server) reply(session *session, requestID uint64, reply answer) error {
@@ -284,7 +343,9 @@ func (s *Server) reply(session *session, requestID uint64, reply answer) error {
 
 func (s *Server) write(session *session, requestID uint64, reply answer) error {
 	payload := wire.Payload{Body: platform.Bytes(reply.payload), Size: int64(len(reply.payload))}
-	if reply.checked || session.version < 2 {
+	if reply.body != nil {
+		payload = wire.Payload{Body: reply.body, Size: reply.size}
+	} else if reply.checked || session.version < 2 {
 		// The release before checks every payload it is sent.
 		payload.Algorithm = wire.ChecksumCRC32C
 		payload.Checksum = wire.EncodeCRC32C(crc32.Checksum(reply.payload, payloadTable))

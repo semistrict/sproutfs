@@ -53,6 +53,10 @@ func IsPageReply(frame platform.Frame) bool {
 	return incoming.Message.MessageIs(new(migratev1.PageResponse))
 }
 
+// Checksummed says the frame's payload carried a checksum of its own in the
+// header.
+func (f *Frame) Checksummed() bool { return f.incoming.Checksummed }
+
 // Pass is the frame as it arrived.
 func (f *Frame) Pass() platform.ReceivedFrame {
 	return platform.ReceivedFrame{Header: f.header, Payload: io.NopCloser(bytes.NewReader(f.payload)),

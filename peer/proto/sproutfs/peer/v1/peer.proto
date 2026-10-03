@@ -71,3 +71,126 @@ message Ping {}
 
 // Pong answers a Ping.
 message Pong {}
+
+// The requests of the cluster's disk cache. Every one names the cache it
+// expects to reach, by the identity in the list of caches: an address can
+// come to belong to another cache — a pod that took the address of one that
+// left — and a cache that is not the one named answers CACHE_STATUS_NOT_ME,
+// which is a stale list rather than a down host.
+
+// CacheStatus is how a cache answered.
+enum CacheStatus {
+  CACHE_STATUS_UNSPECIFIED = 0;
+  CACHE_STATUS_OK = 1;
+  // CACHE_STATUS_NOT_ME answers a request naming another cache than this
+  // host's, or a host that keeps no cache.
+  CACHE_STATUS_NOT_ME = 2;
+  // CACHE_STATUS_DROPPED answers a keep the cache did not write: it holds the
+  // stripe already, or its budget for writes is spent. Nothing waits on a
+  // keep, so it is dropped rather than queued.
+  CACHE_STATUS_DROPPED = 3;
+}
+
+// Window is the unit of placement: the pages of one volume, in one aligned
+// 2 MiB span, that one checkpoint published, or one segment of its page table.
+message Window {
+  string vm = 1;
+  uint64 sequence = 2;
+  string volume = 3;
+  bool segment = 4;
+  uint64 number = 5;
+}
+
+// StripeItem is one stripe a frame's payload carries: the page of the window
+// it belongs to, its index in the code, the length of the envelope it was cut
+// from, and its size in the payload. The items lie in the payload in order.
+// A stripe is stored as it goes on the wire, with a checksum of its own, so a
+// frame that carries stripes carries no checksum of its payload.
+message StripeItem {
+  uint32 page = 1;
+  uint32 index = 2;
+  uint32 length = 3;
+  uint32 size = 4;
+}
+
+// ReadStripes asks a cache for every stripe it holds of the pages of one
+// window, of any index of the code.
+message ReadStripes {
+  bytes cache = 1;
+  Window window = 2;
+  // pages is a bitmap of the pages of the window wanted, least significant
+  // bit of byte 0 first; empty asks for every page.
+  bytes pages = 3;
+  uint32 k = 4;
+  uint32 m = 5;
+  // max_bytes is the most the reply may carry.
+  uint64 max_bytes = 6;
+}
+
+// Stripes answers ReadStripes with the stripes the cache holds, which may be
+// none. fill_right gives the reader the right to fill a window this cache
+// ranks first for and holds nothing of.
+message Stripes {
+  CacheStatus status = 1;
+  repeated StripeItem items = 2;
+  bool fill_right = 3;
+}
+
+// Keep asks a cache to write the stripes its payload carries. A repair is the
+// lowest of every write.
+message Keep {
+  bytes cache = 1;
+  Window window = 2;
+  uint32 k = 3;
+  uint32 m = 4;
+  repeated StripeItem items = 5;
+  bool repair = 6;
+}
+
+// Kept answers a Keep: written, or dropped.
+message Kept {
+  CacheStatus status = 1;
+}
+
+// Drop tells a cache to forget one stripe a reader found wrong.
+message Drop {
+  bytes cache = 1;
+  Window window = 2;
+  uint32 page = 3;
+  uint32 index = 4;
+  uint32 k = 5;
+  uint32 m = 6;
+}
+
+// Dropped answers a Drop.
+message Dropped {
+  CacheStatus status = 1;
+}
+
+// Presence asks which pages of some windows a cache holds a stripe of.
+message Presence {
+  bytes cache = 1;
+  repeated Window windows = 2;
+  uint32 k = 3;
+  uint32 m = 4;
+}
+
+// Present answers Presence with a bitmap of pages per window, in the order the
+// windows were asked.
+message Present {
+  CacheStatus status = 1;
+  repeated bytes pages = 2;
+}
+
+// Probe asks whether this host is there and keeps the cache named. An empty
+// cache asks only whether the host is there.
+message Probe {
+  bytes cache = 1;
+}
+
+// Probed answers a Probe with this host's cache identity, empty for a host
+// that keeps none.
+message Probed {
+  CacheStatus status = 1;
+  bytes cache = 2;
+}

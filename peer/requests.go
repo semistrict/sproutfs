@@ -64,7 +64,7 @@ func (p *Peer) Pages(ctx context.Context, asked PageRequest) (Answer, error) {
 		Volume: proto.String(asked.Volume), FirstPage: proto.Uint64(asked.First),
 		Count: proto.Uint32(uint32(count)), PayloadFormat: proto.Uint32(1)}.Build()
 	pageBytes := int64(count) * int64(asked.PageSize)
-	got, waited, err := p.call(ctx, asked.VM+"/"+asked.Volume, request, response, pageBytes, pageBytes+blob.HeaderSize)
+	got, waited, err := p.call(ctx, asked.VM+"/"+asked.Volume, request, response, pageBytes, pageBytes+blob.HeaderSize, nil)
 	if busy := (*BusyError)(nil); errors.As(err, &busy) {
 		return Answer{Present: make([]byte, (count+7)/8), Dirty: make([]byte, (count+7)/8), Busy: busy,
 			Waited: waited}, nil
@@ -126,7 +126,7 @@ func (p *Peer) Resident(ctx context.Context, vm, volume string, pageSize, maxRun
 		request := migratev1.ResidentRequest_builder{Vm: proto.String(vm),
 			Volume: proto.String(volume), FirstPage: proto.Uint64(first),
 			MaxRuns: proto.Uint32(uint32(maxRuns))}.Build()
-		got, _, err := p.call(ctx, vm+"/"+volume, request, response, 0, 0)
+		got, _, err := p.call(ctx, vm+"/"+volume, request, response, 0, 0, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -156,7 +156,7 @@ func (p *Peer) Resident(ctx context.Context, vm, volume string, pageSize, maxRun
 // out.
 func (p *Peer) Claim(ctx context.Context, vm string) error {
 	response := new(migratev1.ClaimResponse)
-	got, _, err := p.call(ctx, vm, migratev1.ClaimRequest_builder{Vm: proto.String(vm)}.Build(), response, 0, 0)
+	got, _, err := p.call(ctx, vm, migratev1.ClaimRequest_builder{Vm: proto.String(vm)}.Build(), response, 0, 0, nil)
 	if err != nil {
 		return err
 	}
@@ -169,14 +169,18 @@ func (p *Peer) Claim(ctx context.Context, vm string) error {
 
 // call makes one request of the class ctx names: it takes room in that class's
 // budget and a slot on one of its connections, sends, and reads the reply into
-// response. reserve is what the request holds at the peer while it is
-// answered, and maxPayload the largest payload its reply may carry.
+// response. payload is what the request carries beside its header, reserve
+// what it holds at the peer while it is answered, and maxPayload the largest
+// payload its reply may carry.
 //
 // Making the request is admitted before it takes room or a connection: see
 // Admitter.
-func (p *Peer) call(ctx context.Context, admitAs string, request, response proto.Message, reserve, maxPayload int64) (result, time.Duration, error) {
-	if err := admit(ctx, admitAs); err != nil {
-		return result{}, 0, err
+func (p *Peer) call(ctx context.Context, admitAs string, request, response proto.Message, reserve, maxPayload int64,
+	payload []byte) (result, time.Duration, error) {
+	if admitAs != "" {
+		if err := admit(ctx, admitAs); err != nil {
+			return result{}, 0, err
+		}
 	}
 	clock := p.table.clock
 	began := clock.Now()
@@ -186,7 +190,7 @@ func (p *Peer) call(ctx context.Context, admitAs string, request, response proto
 	if err != nil {
 		return result{}, waited, err
 	}
-	got, err := c.roundTrip(ctx, request, reserve, maxPayload)
+	got, err := c.roundTrip(ctx, request, payload, reserve, maxPayload)
 	if err != nil {
 		return result{}, waited, err
 	}

@@ -45,6 +45,9 @@ type ServerConfig struct {
 	// Versions is the range of protocol versions this server speaks. Zero is
 	// this release's; a test that stands in for another release narrows it.
 	Versions Versions
+	// Cache is this host's disk cache, which answers the cache's requests. Nil
+	// is a host that keeps none: every cache request is answered not me.
+	Cache Cache
 }
 
 // ServerStats reports what this host has served.
