@@ -247,6 +247,22 @@ func Metrics(status Status) string {
 	write("sproutfs_pages_served_total", "counter", "Pages served to a peer.", status.Pages.Served)
 	write("sproutfs_pages_absent_total", "counter", "Page requests for a page this host does not hold.", status.Pages.Absent)
 	write("sproutfs_pages_refused_total", "counter", "Page requests refused, which is a peer at its budget.", status.Pages.Refused)
+	up, down, incompatible := 0, 0, 0
+	for _, peer := range status.Peers {
+		switch {
+		case peer.Incompatible != "":
+			incompatible++
+		case peer.Down:
+			down++
+		default:
+			up++
+		}
+	}
+	fmt.Fprintf(&out, "# HELP sproutfs_peers Hosts this host has asked anything of, by what its table of peers knows of them.\n"+
+		"# TYPE sproutfs_peers gauge\n"+
+		"sproutfs_peers{state=\"up\"} %d\n"+
+		"sproutfs_peers{state=\"down\"} %d\n"+
+		"sproutfs_peers{state=\"incompatible\"} %d\n", up, down, incompatible)
 
 	write("sproutfs_memory_limit_bytes", "gauge", "The RAM allotment the pager takes its pages from.",
 		status.Resources.MemoryLimit)

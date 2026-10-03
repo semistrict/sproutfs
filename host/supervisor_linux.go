@@ -22,6 +22,7 @@ import (
 	"github.com/semistrict/sproutfs/api/orch"
 	"github.com/semistrict/sproutfs/checkpoint"
 	"github.com/semistrict/sproutfs/internal/ctxsync"
+	"github.com/semistrict/sproutfs/peer"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/rank"
 	"github.com/semistrict/sproutfs/resource"
@@ -412,6 +413,7 @@ func (s *supervisor) Status(ctx context.Context) (hostapi.Status, error) {
 			CommittedBytes: s.committed()},
 		Pages: hostapi.Pages{Requests: status.Pages.Requests, Served: status.Pages.Served,
 			Absent: status.Pages.Absent, Refused: status.Pages.Refused},
+		Peers: apiPeers(status.Peers),
 		Resources: hostapi.Resources{MemoryLimit: resources.Limit, MemoryUsed: resources.Used,
 			CacheLimit: status.CacheLimit, CacheUsed: status.Cache.ResidentBytes,
 			CacheDiskLimit: status.Cache.Disk.LimitBytes, CacheDiskUsed: status.Cache.Disk.UsedBytes},
@@ -746,3 +748,18 @@ func (s *supervisor) record(m *machine) hostapi.VM {
 // the standard library, so a simulated host's numbers come from the clock it
 // was given.
 func (s *supervisor) since(t time.Time) hostapi.Seconds { return hostapi.Of(s.clock.Since(t)) }
+
+// apiPeers is the table of peers as the host API reports it.
+func apiPeers(peers []peer.PeerStatus) []hostapi.Peer {
+	reported := make([]hostapi.Peer, 0, len(peers))
+	for _, known := range peers {
+		entry := hostapi.Peer{Address: string(known.Address), Version: known.Version,
+			FaultConnections: known.Connections.Fault, BulkReadConnections: known.Connections.BulkRead,
+			BulkWriteConnections: known.Connections.BulkWrite, Down: known.Down, Cause: known.Cause}
+		if known.Incompatible != nil {
+			entry.Incompatible = fmt.Sprintf("%d-%d", known.Incompatible.Min, known.Incompatible.Max)
+		}
+		reported = append(reported, entry)
+	}
+	return reported
+}

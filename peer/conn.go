@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	peerv1 "github.com/semistrict/sproutfs/peer/internal/gen/sproutfs/peer/v1"
 	"github.com/semistrict/sproutfs/peer/internal/wire"
@@ -33,6 +34,10 @@ type conn struct {
 	pending map[uint64]*call
 	failed  error
 	done    chan struct{}
+	// lastHeard is when a byte last arrived, lastUsed when a request was last
+	// sent or answered, and pinging says a ping is in flight.
+	lastHeard, lastUsed time.Time
+	pinging             bool
 }
 
 // call is one request in flight on a connection.
@@ -45,6 +50,8 @@ type call struct {
 	// abandoned marks a call its caller gave up on: its reply, when it comes,
 	// still gives back what the request held.
 	abandoned bool
+	// ping marks the liveness check's own call, which holds nothing.
+	ping bool
 }
 
 // result is what came back for one request.
@@ -55,8 +62,10 @@ type result struct {
 }
 
 func newConn(p *pool, c platform.Conn, version uint32, maxInFlight int) *conn {
+	now := p.peer.table.clock.Now()
 	opened := &conn{pool: p, Conn: c, version: version, maxInFlight: maxInFlight,
-		send: make(chan struct{}, 1), pending: make(map[uint64]*call), done: make(chan struct{})}
+		send: make(chan struct{}, 1), pending: make(map[uint64]*call), done: make(chan struct{}),
+		lastHeard: now, lastUsed: now}
 	opened.send <- struct{}{}
 	return opened
 }
@@ -86,6 +95,7 @@ func (c *conn) roundTrip(ctx context.Context, request proto.Message, bytes, maxP
 		return result{}, c.failed
 	}
 	c.pending[id] = waiting
+	c.lastUsed = c.pool.peer.table.clock.Now()
 	c.mu.Unlock()
 	frame, err := wire.Encode(wire.Outgoing{Version: c.version, RequestID: id, Message: request})
 	if err == nil {
@@ -154,6 +164,7 @@ func (c *conn) read() {
 			c.fail(err)
 			return
 		}
+		c.heard()
 		incoming, err := wire.Decode(received)
 		if err != nil {
 			c.fail(err)
@@ -165,9 +176,13 @@ func (c *conn) read() {
 				wire.ErrMalformedFrame, incoming.Version, c.version))
 			return
 		}
+		incoming.Payload = progressCloser{progress: progress{reader: incoming.Payload, conn: c}, closer: incoming.Payload}
 		c.mu.Lock()
 		waiting := c.pending[incoming.InReplyTo]
 		delete(c.pending, incoming.InReplyTo)
+		if waiting != nil && !waiting.ping {
+			c.lastUsed = c.pool.peer.table.clock.Now()
+		}
 		c.mu.Unlock()
 		if waiting == nil {
 			if err := incoming.Payload.Close(); err != nil {
@@ -177,7 +192,9 @@ func (c *conn) read() {
 			continue
 		}
 		payload, err := readPayload(incoming, waiting.maxPayload)
-		c.pool.release(c, waiting.bytes)
+		if !waiting.ping {
+			c.pool.release(c, waiting.bytes)
+		}
 		if err != nil {
 			// The payload was not read whole, so the next frame's start is
 			// not known: nothing more can be read from here.
@@ -216,7 +233,9 @@ func (c *conn) fail(err error) {
 	_ = c.Close()
 	c.pool.remove(c)
 	for _, waiting := range pending {
-		c.pool.release(c, waiting.bytes)
+		if !waiting.ping {
+			c.pool.release(c, waiting.bytes)
+		}
 		waiting.reply <- result{err: err}
 	}
 }
@@ -226,6 +245,14 @@ func (c *conn) err() error {
 	defer c.mu.Unlock()
 	return c.failed
 }
+
+// progressCloser is a payload whose reads are heard, closed as it was.
+type progressCloser struct {
+	progress
+	closer interface{ Close() error }
+}
+
+func (p progressCloser) Close() error { return p.closer.Close() }
 
 // busyFrom reports the BUSY a reply carries, if it is one.
 func busyFrom(incoming wire.Incoming) (*BusyError, bool) {

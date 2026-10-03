@@ -443,6 +443,24 @@ func (p Pager) Faults() uint64    { return p.RAM.Faults + p.PMEM.Faults + p.Ephe
 func (p Pager) Evictions() uint64 { return p.RAM.Evictions + p.PMEM.Evictions + p.Ephemeral.Evictions }
 func (p Pager) Spills() uint64    { return p.RAM.Spills + p.PMEM.Spills + p.Ephemeral.Spills }
 
+// Peer is one host this host has asked anything of, as its table of peers
+// knows it.
+type Peer struct {
+	Address string `json:"address"`
+	// Version is the protocol version its connections settled on.
+	Version uint32 `json:"version,omitempty"`
+	// The connections each class holds to it.
+	FaultConnections     int `json:"fault_connections"`
+	BulkReadConnections  int `json:"bulk_read_connections"`
+	BulkWriteConnections int `json:"bulk_write_connections"`
+	// Down reports it marked down by a hard failure, and Cause which.
+	Down  bool   `json:"down,omitempty"`
+	Cause string `json:"cause,omitempty"`
+	// Incompatible is the versions it speaks, where they share none with this
+	// host's, written as 3-4.
+	Incompatible string `json:"incompatible,omitempty"`
+}
+
 // Pages is what this host's peer server has answered.
 type Pages struct {
 	Requests int64 `json:"requests"`
@@ -572,8 +590,10 @@ type Status struct {
 	Templates []Template `json:"templates"`
 	Pager     Pager      `json:"pager"`
 	Pages     Pages      `json:"pages"`
-	Resources Resources  `json:"resources"`
-	Store     Store      `json:"store"`
+	// Peers is every host this host has asked anything of.
+	Peers     []Peer    `json:"peers,omitempty"`
+	Resources Resources `json:"resources"`
+	Store     Store     `json:"store"`
 	// Disk is what the disk limiter chose.
 	Disk Disk `json:"disk"`
 	// Cache is this host's disk cache as the list of caches names it: its

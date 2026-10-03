@@ -23,11 +23,20 @@ const (
 	// ProbeFellBackToVersionOne is a hello closed unanswered, after which the
 	// dialer spoke version 1.
 	ProbeFellBackToVersionOne = "peer/fell-back-to-version-one"
+	// ProbeDeadConnection is a connection closed for hearing nothing.
+	ProbeDeadConnection = "peer/dead-connection"
+	// ProbeMarkedDown is a peer marked down by a hard failure.
+	ProbeMarkedDown = "peer/marked-down"
+	// ProbeProbed is a down peer dialed again to see whether it is back.
+	ProbeProbed = "peer/probed"
+	// ProbeSkippedDown is a request that could do without a down peer and
+	// was not sent to it.
+	ProbeSkippedDown = "peer/skipped-down"
 )
 
 // Probes is every probe this package registers.
 var Probes = []string{ProbeBusy, ProbeIncompatible, ProbeWaitedForBudget, ProbeLateReply,
-	ProbeFellBackToVersionOne}
+	ProbeFellBackToVersionOne, ProbeDeadConnection, ProbeMarkedDown, ProbeProbed, ProbeSkippedDown}
 
 func probeWaitedForBudget(ctx context.Context) { sim.Probe(ctx, ProbeWaitedForBudget) }
 func probeLateReply(ctx context.Context)       { sim.Probe(ctx, ProbeLateReply) }

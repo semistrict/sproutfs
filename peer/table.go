@@ -1,12 +1,14 @@
 package peer
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"maps"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/semistrict/sproutfs/platform"
 )
@@ -60,6 +62,10 @@ type TableConfig struct {
 	// hold at that peer before the peer's hello says what it may. Zero takes
 	// DefaultBudgets.
 	Budgets Budgets
+	// PingInterval, DeadAfter, ConnectTimeout, IdleTimeout, ProbeFirst and
+	// ProbeMax are how liveness is kept: see Liveness. Zero takes 1 s, 4 s,
+	// 3 s, 30 s, 1 s and 10 s.
+	PingInterval, DeadAfter, ConnectTimeout, IdleTimeout, ProbeFirst, ProbeMax time.Duration
 }
 
 // Table is a host's peers: one Peer for every remote host, shared by every
@@ -95,8 +101,16 @@ func NewTable(ctx context.Context, config TableConfig) (*Table, error) {
 	if config.InFlight == 0 {
 		config.InFlight = defaultClientInFlight
 	}
+	config.PingInterval = cmp.Or(config.PingInterval, defaultPingInterval)
+	config.DeadAfter = cmp.Or(config.DeadAfter, defaultDeadAfter)
+	config.ConnectTimeout = cmp.Or(config.ConnectTimeout, defaultConnectTimeout)
+	config.IdleTimeout = cmp.Or(config.IdleTimeout, defaultIdleTimeout)
+	config.ProbeFirst = cmp.Or(config.ProbeFirst, defaultProbeFirst)
+	config.ProbeMax = cmp.Or(config.ProbeMax, defaultProbeMax)
 	if !config.Versions.valid() || config.InFlight < 1 || !config.Budgets.valid(1) ||
-		config.Connections.Fault < 1 || config.Connections.BulkRead < 1 || config.Connections.BulkWrite < 1 {
+		config.Connections.Fault < 1 || config.Connections.BulkRead < 1 || config.Connections.BulkWrite < 1 ||
+		config.PingInterval < 0 || config.DeadAfter <= config.PingInterval || config.ConnectTimeout < 0 ||
+		config.ProbeFirst < 0 || config.ProbeMax < config.ProbeFirst {
 		return nil, fmt.Errorf("%w: invalid table of peers", ErrInvalid)
 	}
 	tableCtx, cancel := context.WithCancelCause(ctx)
@@ -111,7 +125,7 @@ func (t *Table) Peer(address platform.Address) *Peer {
 	if peer := t.peers[address]; peer != nil {
 		return peer
 	}
-	peer := &Peer{table: t, address: address}
+	peer := &Peer{table: t, address: address, up: make(chan struct{})}
 	for class := range classes {
 		peer.pools[class] = &pool{peer: peer, class: class, limit: t.config.Connections.Of(class),
 			budget: t.config.Budgets.Of(class), changed: make(chan struct{})}
@@ -145,6 +159,12 @@ type PeerStatus struct {
 	Version uint32
 	// Connections is how many connections each class holds to it now.
 	Connections Connections
+	// Down reports it marked down, and Cause the hard failure that did.
+	Down  bool
+	Cause string
+	// Incompatible is the range of versions it speaks where that range shares
+	// none with this host's, nil otherwise.
+	Incompatible *IncompatibleError
 }
 
 // Status reports every peer this table has asked anything of, in address order.
@@ -177,13 +197,31 @@ type Peer struct {
 	table   *Table
 	address platform.Address
 	pools   [classes]*pool
+
+	mu sync.Mutex
+	// down marks the peer down after a hard failure, for downCause; up is
+	// closed and replaced when it comes back. incompatible is a peer of a
+	// release this host shares no version with.
+	down         bool
+	downCause    error
+	up           chan struct{}
+	incompatible *IncompatibleError
 }
 
 // Address is where the peer's server listens.
 func (p *Peer) Address() platform.Address { return p.address }
 
+// Status is what the table knows of this peer.
+func (p *Peer) Status() PeerStatus { return p.status() }
+
 func (p *Peer) status() PeerStatus {
 	status := PeerStatus{Address: p.address}
+	p.mu.Lock()
+	status.Down, status.Incompatible = p.down, p.incompatible
+	if p.downCause != nil {
+		status.Cause = p.downCause.Error()
+	}
+	p.mu.Unlock()
 	for _, pool := range p.pools {
 		pool.mu.Lock()
 		count := len(pool.conns)
@@ -260,6 +298,9 @@ func (p *pool) acquire(ctx context.Context, bytes int64) (*conn, error) {
 				p.mu.Lock()
 				p.dialing--
 				if err != nil {
+					p.mu.Unlock()
+					p.failedToDial(ctx, err)
+					p.mu.Lock()
 					p.held -= bytes
 					p.signal()
 					p.mu.Unlock()
@@ -321,13 +362,29 @@ func (p *pool) signal() {
 	p.changed = make(chan struct{})
 }
 
+// failedToDial weighs a dial that failed. One the caller gave up on says
+// nothing of the peer. One that met a peer of another release marks it
+// incompatible. Anything else is a hard failure, which marks it down.
+func (p *pool) failedToDial(ctx context.Context, err error) {
+	if ctx.Err() != nil || errors.Is(err, ErrClosed) {
+		return
+	}
+	var incompatible *IncompatibleError
+	if errors.As(err, &incompatible) {
+		p.peer.markIncompatible(incompatible)
+		return
+	}
+	p.peer.markDown(p.peer.table.ctx, err)
+}
+
 // dial opens one connection of this class and settles what it may carry.
 func (p *pool) dial(ctx context.Context) (*conn, error) {
 	table := p.peer.table
-	opened, err := dialPeer(ctx, table.config.Dial, p.peer.address, table.config.Versions, p.class)
+	opened, err := table.connect(ctx, p.peer.address, p.class)
 	if err != nil {
 		return nil, err
 	}
+	p.peer.markUp()
 	maxInFlight := table.config.InFlight
 	if opened.version < 2 {
 		// The release before answers one request at a time on a connection.
@@ -346,6 +403,11 @@ func (p *pool) dial(ctx context.Context) (*conn, error) {
 	closed := table.closed
 	if !closed {
 		table.wg.Go(c.read)
+		if c.version >= 2 {
+			// The release before answers nothing it does not know, a ping
+			// among them: its connections have only TCP's own liveness.
+			table.wg.Go(c.monitor)
+		}
 	}
 	table.mu.Unlock()
 	if closed {

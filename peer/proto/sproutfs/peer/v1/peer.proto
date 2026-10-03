@@ -63,3 +63,11 @@ message Busy {
   uint64 budget_bytes = 3;
   uint64 asked_bytes = 4;
 }
+
+// Ping asks the server to show it is there. It is answered with a Pong as soon
+// as it is read, never queued behind a request, so a connection busy with large
+// replies or slow ones still shows its peer is alive.
+message Ping {}
+
+// Pong answers a Ping.
+message Pong {}

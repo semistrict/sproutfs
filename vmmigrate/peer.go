@@ -676,6 +676,14 @@ func (b *PeerBacking) ask(caller context.Context, first uint64, count int) (peer
 	}()
 	delay := busyDelay
 	for {
+		if _, only := b.onlyOnSource(first, count); !only && b.source.Down() {
+			// The source is marked down, and the volume holds every page of
+			// this run: it is not worth a round trip to a host that has just
+			// failed to answer. A page only the source holds ignores the mark,
+			// because a down mark is a hint and never says the source is gone.
+			sim.Probe(ctx, peer.ProbeSkippedDown)
+			return peer.Answer{}, peer.ErrDown
+		}
 		reply, err := b.pages(ctx, first, count)
 		_, only := b.onlyOnSource(first, count)
 		switch {

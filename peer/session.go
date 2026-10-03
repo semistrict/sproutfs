@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"sync"
+	"time"
 
 	migratev1 "github.com/semistrict/sproutfs/peer/internal/gen/sproutfs/migrate/v1"
 	peerv1 "github.com/semistrict/sproutfs/peer/internal/gen/sproutfs/peer/v1"
@@ -69,14 +70,38 @@ func (s *Server) serveConn(conn platform.Conn) {
 		return
 	}
 	for {
-		incoming, err := s.receive(session)
+		incoming, err := s.receiveWithin(session, serverSilence)
 		if err != nil {
 			return
+		}
+		if incoming.Message.MessageIs(&peerv1.Ping{}) {
+			// A ping is answered as it is read, behind no request: what it
+			// asks is whether this side is there, not how busy it is.
+			if err := drain(incoming); err != nil {
+				return
+			}
+			if err := s.write(session, incoming.RequestID, answer{message: &peerv1.Pong{}}); err != nil {
+				return
+			}
+			continue
 		}
 		if err := s.admit(session, incoming); err != nil {
 			return
 		}
 	}
+}
+
+// receiveWithin is receive, ending the connection when its peer has sent
+// nothing for silence: a dialer of version 2 pings a connection it hears
+// nothing on, so one silent that long has gone.
+func (s *Server) receiveWithin(session *session, silence time.Duration) (wire.Incoming, error) {
+	ctx, cancel := context.WithTimeoutCause(s.ctx, silence, errDead)
+	defer cancel()
+	received, err := session.conn.Receive(ctx)
+	if err != nil {
+		return wire.Incoming{}, err
+	}
+	return s.decode(session, received)
 }
 
 // serveOneAtATime is version 1: each request is answered before the next is
@@ -160,6 +185,10 @@ func (s *Server) receive(session *session) (wire.Incoming, error) {
 	if err != nil {
 		return wire.Incoming{}, err
 	}
+	return s.decode(session, received)
+}
+
+func (s *Server) decode(session *session, received platform.ReceivedFrame) (wire.Incoming, error) {
 	incoming, err := wire.Decode(received)
 	if err != nil {
 		return wire.Incoming{}, err

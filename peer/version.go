@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	peerv1 "github.com/semistrict/sproutfs/peer/internal/gen/sproutfs/peer/v1"
 	"github.com/semistrict/sproutfs/peer/internal/wire"
@@ -30,11 +29,6 @@ const (
 // range the hello states. It never changes, so a server of a later release reads
 // the hello of an earlier one and can answer that the two share no version.
 const helloVersion = 2
-
-// helloTimeout bounds how long a dialer waits for the answer to its hello. A
-// server answers a hello as it reads it, so one that has not answered by then is
-// a server that is not answering.
-const helloTimeout = 10 * time.Second
 
 // ErrIncompatible reports a peer that speaks no version of the protocol this
 // host speaks. It is neither a peer that is down nor one that is gone: it is a
@@ -100,8 +94,6 @@ var errNoHello = errors.New("peer: the connection closed unanswered after the he
 // sayHello is the dialer's half: send the hello, read the answer, and report the
 // version the connection speaks from here on.
 func sayHello(ctx context.Context, conn platform.Conn, speaks Versions, class Class) (*peerv1.HelloReply, error) {
-	ctx, cancel := context.WithTimeout(ctx, helloTimeout)
-	defer cancel()
 	wireClass := classToWire(class)
 	frame, err := wire.Encode(wire.Outgoing{Version: helloVersion,
 		Message: peerv1.Hello_builder{MinVersion: proto.Uint32(speaks.Min), MaxVersion: proto.Uint32(speaks.Max),

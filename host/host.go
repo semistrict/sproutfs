@@ -439,7 +439,9 @@ func StartHost(ctx context.Context, config Config) (*Host, error) {
 	if err != nil {
 		return nil, err
 	}
-	h.peers, err = peer.NewTable(hostCtx, peer.TableConfig{Dial: h.dialPages, Clock: h.clock})
+	// Liveness is kept on the clock a connection's own bytes arrive by, which
+	// is the wall clock: a host's own clock keeps the deadlines of its VMs.
+	h.peers, err = peer.NewTable(hostCtx, peer.TableConfig{Dial: h.dialPages})
 	if err != nil {
 		return nil, err
 	}
@@ -519,7 +521,11 @@ type Status struct {
 	// is taken in, and its release is refused until then. A host reporting only
 	// what its peer server holds would say a parent nothing can checkpoint is a
 	// parent nothing is waiting on.
-	Pages   peer.ServerStats
+	Pages peer.ServerStats
+	// Peers is every host this host has asked anything of, as its table of
+	// peers knows it: up, down and why, or of a release it shares no protocol
+	// version with.
+	Peers   []peer.PeerStatus
 	Serving []string
 	// Outstanding is, per VM in Serving, how many pages this host holds that no
 	// checkpoint has and that no destination has fetched yet. Zero is a
@@ -590,6 +596,9 @@ func (h *Host) Status() Status {
 	}
 	if h.pages != nil {
 		status.Pages = h.pages.Stats()
+	}
+	if h.peers != nil {
+		status.Peers = h.peers.Status()
 	}
 	status.Serving = h.serving()
 	status.Outstanding = h.outstanding(status.Serving)

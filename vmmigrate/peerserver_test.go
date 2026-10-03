@@ -5,8 +5,10 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
+	"time"
 
 	"github.com/semistrict/sproutfs/peer"
 	"github.com/semistrict/sproutfs/platform"
@@ -147,36 +149,48 @@ func TestUnknownVolumeFallsBackForGood(t *testing.T) {
 }
 
 // TestAnUnreachableSourceStillAnswersForThePagesTheCheckpointHolds requires a
-// source that cannot be reached to cost a load the round trip and nothing else.
-// Every page of this memory region is in a checkpoint this host can read, so there is
-// nothing to wait for: the load reads its volume this time and decides nothing
-// for the next one, which asks again, because a host that cannot be dialed now
-// is not a host that is gone. Only the source's own answer ends the asking.
+// source that cannot be reached to cost a load one round trip and nothing more.
+// Every page of this memory region is in a checkpoint this host can read, so
+// there is nothing to wait for: the load reads its volume. The failed dial is a
+// hard failure, so the source is marked down, and the loads after it ask
+// nothing of it until the table's probe, about a second later, finds it back.
+// Nothing here decides the source is gone: only its own answer ends the asking.
 func TestAnUnreachableSourceStillAnswersForThePagesTheCheckpointHolds(t *testing.T) {
-	s := newServed(t, nil, 4)
-	dials := 0
-	backing := s.dialing(t, nil, "ram0", func(context.Context, platform.Address) (platform.Conn, error) {
-		dials++
-		return nil, errors.New("no route to the source")
+	synctest.Test(t, func(t *testing.T) {
+		s := newServed(t, nil, 4)
+		var dials atomic.Int64
+		backing := s.dialing(t, nil, "ram0", func(context.Context, platform.Address) (platform.Conn, error) {
+			dials.Add(1)
+			return nil, errors.New("no route to the source")
+		})
+		data := make([]byte, 4*pageSize)
+		for load := range 6 {
+			if err := backing.Load(t.Context(), 0, data); err != nil {
+				t.Fatal(err)
+			}
+			if got := dials.Load(); got != 1 {
+				t.Fatalf("load %d dialed the source %d times in all, want once: it is marked down after the first", load, got)
+			}
+			if stats := backing.Stats(); stats.FellBack {
+				t.Fatalf("an unreachable source was taken for a gone one: %+v", stats)
+			}
+		}
+		if !bytes.Equal(data, make([]byte, len(data))) {
+			t.Fatal("the volume's own zeroes were not what the load read")
+		}
+		if stats := backing.Stats(); stats.VolumePages != 24 || stats.PeerPages != 0 || stats.Requests != 1 {
+			t.Fatalf("peer backing: %+v", stats)
+		}
+		// The probe comes about a second after the mark, give or take a tenth.
+		time.Sleep(890 * time.Millisecond)
+		if got := dials.Load(); got != 1 {
+			t.Fatalf("the source was probed %d times before 0.89s", got-1)
+		}
+		time.Sleep(220 * time.Millisecond)
+		if got := dials.Load(); got != 2 {
+			t.Fatalf("by 1.11s the source was dialed %d times, want the load's and one probe", got)
+		}
 	})
-	data := make([]byte, 4*pageSize)
-	for load := range 6 {
-		if err := backing.Load(t.Context(), 0, data); err != nil {
-			t.Fatal(err)
-		}
-		if dials != load+1 {
-			t.Fatalf("load %d dialed the source %d times in all, want one each", load, dials)
-		}
-		if stats := backing.Stats(); stats.FellBack {
-			t.Fatalf("an unreachable source was taken for a gone one: %+v", stats)
-		}
-	}
-	if !bytes.Equal(data, make([]byte, len(data))) {
-		t.Fatal("the volume's own zeroes were not what the load read")
-	}
-	if stats := backing.Stats(); stats.VolumePages != 24 || stats.PeerPages != 0 {
-		t.Fatalf("peer backing: %+v", stats)
-	}
 }
 
 // TestPeerServerServesEveryConnectionOfOnePeer: a peer server refuses no

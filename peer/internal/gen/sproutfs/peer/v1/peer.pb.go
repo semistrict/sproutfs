@@ -667,6 +667,96 @@ func (b0 Busy_builder) Build() *Busy {
 	return m0
 }
 
+// Ping asks the server to show it is there. It is answered with a Pong as soon
+// as it is read, never queued behind a request, so a connection busy with large
+// replies or slow ones still shows its peer is alive.
+type Ping struct {
+	state         protoimpl.MessageState `protogen:"opaque.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Ping) Reset() {
+	*x = Ping{}
+	mi := &file_sproutfs_peer_v1_peer_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Ping) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Ping) ProtoMessage() {}
+
+func (x *Ping) ProtoReflect() protoreflect.Message {
+	mi := &file_sproutfs_peer_v1_peer_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+type Ping_builder struct {
+	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
+
+}
+
+func (b0 Ping_builder) Build() *Ping {
+	m0 := &Ping{}
+	b, x := &b0, m0
+	_, _ = b, x
+	return m0
+}
+
+// Pong answers a Ping.
+type Pong struct {
+	state         protoimpl.MessageState `protogen:"opaque.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Pong) Reset() {
+	*x = Pong{}
+	mi := &file_sproutfs_peer_v1_peer_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Pong) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Pong) ProtoMessage() {}
+
+func (x *Pong) ProtoReflect() protoreflect.Message {
+	mi := &file_sproutfs_peer_v1_peer_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+type Pong_builder struct {
+	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
+
+}
+
+func (b0 Pong_builder) Build() *Pong {
+	m0 := &Pong{}
+	b, x := &b0, m0
+	_, _ = b, x
+	return m0
+}
+
 var File_sproutfs_peer_v1_peer_proto protoreflect.FileDescriptor
 
 const file_sproutfs_peer_v1_peer_proto_rawDesc = "" +
@@ -694,7 +784,9 @@ const file_sproutfs_peer_v1_peer_proto_rawDesc = "" +
 	"held_bytes\x18\x02 \x01(\x04R\theldBytes\x12!\n" +
 	"\fbudget_bytes\x18\x03 \x01(\x04R\vbudgetBytes\x12\x1f\n" +
 	"\vasked_bytes\x18\x04 \x01(\x04R\n" +
-	"askedBytes*H\n" +
+	"askedBytes\"\x06\n" +
+	"\x04Ping\"\x06\n" +
+	"\x04Pong*H\n" +
 	"\x06Status\x12\x16\n" +
 	"\x12STATUS_UNSPECIFIED\x10\x00\x12\r\n" +
 	"\tSTATUS_OK\x10\x01\x12\x17\n" +
@@ -706,13 +798,15 @@ const file_sproutfs_peer_v1_peer_proto_rawDesc = "" +
 	"\x10CLASS_BULK_WRITE\x10\x03BJZHgithub.com/semistrict/sproutfs/peer/internal/gen/sproutfs/peer/v1;peerv1b\beditionsp\xe9\a"
 
 var file_sproutfs_peer_v1_peer_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_sproutfs_peer_v1_peer_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
+var file_sproutfs_peer_v1_peer_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
 var file_sproutfs_peer_v1_peer_proto_goTypes = []any{
 	(Status)(0),        // 0: sproutfs.peer.v1.Status
 	(Class)(0),         // 1: sproutfs.peer.v1.Class
 	(*Hello)(nil),      // 2: sproutfs.peer.v1.Hello
 	(*HelloReply)(nil), // 3: sproutfs.peer.v1.HelloReply
 	(*Busy)(nil),       // 4: sproutfs.peer.v1.Busy
+	(*Ping)(nil),       // 5: sproutfs.peer.v1.Ping
+	(*Pong)(nil),       // 6: sproutfs.peer.v1.Pong
 }
 var file_sproutfs_peer_v1_peer_proto_depIdxs = []int32{
 	1, // 0: sproutfs.peer.v1.Hello.class:type_name -> sproutfs.peer.v1.Class
@@ -736,7 +830,7 @@ func file_sproutfs_peer_v1_peer_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_sproutfs_peer_v1_peer_proto_rawDesc), len(file_sproutfs_peer_v1_peer_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   3,
+			NumMessages:   5,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
