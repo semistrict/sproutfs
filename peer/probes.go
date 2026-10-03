@@ -42,7 +42,7 @@ const (
 	// campaign with one migration at a time never makes a server busy on its
 	// own.
 	SiteBusy = "peer/busy"
-	// SiteSlowAnswer delays building one reply by up to two seconds, as a
+	// SiteSlowAnswer delays building one reply by up to a second, as a
 	// disk that stalls does: the replies behind it on its connection wait,
 	// and its caller may give up on it.
 	SiteSlowAnswer = "peer/slow-answer"

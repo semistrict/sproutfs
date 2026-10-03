@@ -79,7 +79,7 @@ var crashScenarios = []struct {
 //   - the recovered VM can be published again and reads the same afterwards;
 //   - the store still holds a deployment, and every kill is in the trace.
 func TestAHostLostAtAnyOfItsHandoversLosesOnlyWhatNoCheckpointHeld(t *testing.T) {
-	seeds := uint64(8)
+	seeds := uint64(12)
 	if value := os.Getenv("SPROUTFS_CRASH_SEEDS"); value != "" {
 		parsed, err := strconv.ParseUint(value, 10, 32)
 		if err != nil || parsed == 0 {

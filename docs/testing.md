@@ -362,9 +362,16 @@ and not only land after it finished. A kill that always arrives late tests
 nothing that an orderly close does not test. The campaign runs with `Buggify` on
 and its runtime on the context. So the kills land around production code that
 is also misbehaving. `checkpoint/one-page-parts`, `control/slow-write` and
-`vmmigrate/source-busy` fire during it. Eight seeds run in the ordinary suite.
+`peer/busy` fire during it. Twelve seeds run in the ordinary suite.
 `SPROUTFS_CRASH_SEEDS` selects any other count, and `TestHostCrashSoak` runs a
 block of the seed range.
+
+The fork destination's scenario is the narrow one. It counts a kill inside only
+when the kill lands after the child's receive returned and before its root
+landed, a span of a fraction of a millisecond at the end of a fork of about
+4 ms. The peer server's hellos made the receive longer, so one seed in about
+twelve lands there. Twelve seeds is the fewest that reach it in both arenas.
+Drawing that kill from the moment the receive returns would make it reliable.
 
 The campaign found three problems:
 
@@ -1231,7 +1238,7 @@ caller:
 | `control/slow-write` | Makes one control-record write take seconds |
 | `vmmemory/evict-past-a-free-slot` | Takes a victim although the arena has a free slot |
 | `peer/busy` | Answers BUSY as a peer server at a peer's budget does |
-| `peer/slow-answer` | Holds one reply for up to two seconds, as a disk that stalls does |
+| `peer/slow-answer` | Holds one reply for up to a second, as a disk that stalls does |
 | `peer/stall` | Stops reading one connection for up to six seconds, as a paused process does |
 | `checkpoint/disk-failed-write` | Fails the write of a page cache disk item |
 | `checkpoint/disk-short-write` | Writes half of a page cache disk item, then fails |
