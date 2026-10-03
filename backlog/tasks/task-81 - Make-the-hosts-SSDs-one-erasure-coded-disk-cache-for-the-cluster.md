@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-03 03:41'
-updated_date: '2026-10-03 03:51'
+updated_date: '2026-10-03 04:32'
 labels:
   - performance
   - storage
@@ -76,4 +76,6 @@ Decisions with the owner, 2026-10-02 and 2026-10-03:
 - Testing: synctest bubbles over platform/sim and sim.Scheduler, Buggify sites with probes, sim.Bug guards in scripts/mutation/guards.json, Gremlins, and the TLA+ model with mutants. From FoundationDB: a drifting simulated free space (sim2 getDiskBytes), read-side bit flips and delays (AsyncFileChaos), and a write checker that tells a lying disk from a cache bug (AsyncFileWriteChecker).
 - GCE VMs may be used without asking; every VM is deleted after.
 Research behind the plan: docs/research/*-2026-10-02.md.
+
+Step 1 done (fc2f6dd3, merged 0c331740): resource.DiskLimiter with combined goals, smoothing, the band, hysteresis, spill promises counted whole, write budget from platform.DeviceWrites; host wiring, /status and /metrics, settings SPROUTFS_DISK_FREE_BYTES/_FREE_PERCENT/_USED_BYTES/_BAND_BYTES and SPROUTFS_CACHE_WRITE_BYTES_PER_DAY/_BURST_BYTES (default keeps 10 % free). sim.Disk gained filesystem size, drifting outside writers and a device write counter. Six disklimit-* guards; Gremlins on resource: 167 to 198 killed, the rest judged equivalent. Not yet connected to the page cache; SPROUTFS_CACHE_DISK_BYTES still counted. deploy/10-host.yaml's per-concern comment is out of date until step 10.
 <!-- SECTION:NOTES:END -->
