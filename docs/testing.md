@@ -1395,7 +1395,10 @@ any host, has many hosts read the same pages at once, each through its own
 cache, and may take a cache off the list. Some hosts read the new list at once
 and the rest a round later, so two hosts may rank a window differently. The
 cluster runs over real peer servers on the simulated network, with a small
-queue, rate and background budget, so a burst spends them. Every read must be
+queue and rate, so a burst spends them. Its background budget of 1.5 MiB has
+no room for a keep of a whole 2 MiB window, which a host sends its peer under
+1+1. A host sends one keep at a time, so its
+own keeps never spend the budget against each other. Every read must be
 what was published. At rest every stripe a host holds must be of a window some
 list the cluster held ranks it for, and the reads must have filled no window
 more than once an interval. Every fill site must fire and every fill probe be
@@ -1510,7 +1513,20 @@ discovers that a source is being removed. How many of them dial before the
 first failure marks the source as fallen is a race between goroutines, not a
 choice the seed made. Every other event of that campaign is identical between
 two runs of a seed: every object-store request, every disk operation, every page
-served, every byte and every outcome.
+served, every byte and every outcome. Each seed runs with no cache disk and
+with the cluster cache on, where the hosts fill each other beside everything
+else they do. A failure prints the work that differs between the two runs.
+
+The second run of each seed is shaken (`sim.Config.Shake`). Before and after
+every wait in a simulated dependency, and before every send, a goroutine
+yields the processor a drawn number of times. So goroutines that are ready at
+one simulated instant reach the dependencies in another order than in the first
+run. The draws are noise, not a choice: they are taken in whatever order the
+goroutines ask. A race that the seed does not decide shows up on an idle
+machine, rather than only on a loaded one where the Go scheduler orders two
+runs differently by itself. Without the shake, the race that step 6 brought in
+failed this test in about two runs of three on a loaded machine and in none of
+sixty on an idle one.
 
 The campaign under fault injection is `TestSeededTopologyUnderBuggify`. It runs
 the same deployment through the same schedule with the sites on, and it checks
@@ -1537,9 +1553,13 @@ repository covers one of the registered probes, which `unreachedProbes` in
 outright, so no conditional write ever loses its reply and is reconciled by its
 writer's nonce. One more, an eviction during a publication, is reached on some
 runs and not others (`unsteadyProbes`), and is asserted neither way. Seed 2
-with the cluster cache on reached it in one run of three, and no run without a
-cache disk has. The fills add disk and network work beside a publication, and
-where it lands is the Go scheduler's choice, not the seed's.
+with the cluster cache on reaches it in about half its runs. No run without a
+cache disk and no other seed has. The fills are not what varies: a host does
+them one at a time. Two runs of the seed first differ before the publication.
+A destination's memory regions stream their pages from the source on several
+goroutines, and they take arena slots in the order the Go scheduler runs them.
+Under the site that evicts past a free slot, that order decides which page a
+later store evicts, and so whether it is a page of a sealed memory region.
 
 A fenced publication was removed from the list when the two-writer campaign
 moved onto the shared harness. That campaign's takeover happens while the
@@ -1782,7 +1802,7 @@ the disk, and a VM opened on the same host again reads the pages it wrote last
 from the store. The GCE run of 2026-10-03 found this
 (docs/measurements/gce-deploy-cache-2026-10-03.md).
 
-Ten guards break the peer server:
+Eleven guards break the peer server:
 
 ```sh
 SPROUTFS_SIM_BUG=peer-mark-down-when-cancelled \
@@ -1805,6 +1825,8 @@ SPROUTFS_SIM_BUG=peer-queue-keeps \
   go test ./peer -run '^TestAKeepOverTheBackgroundBudgetIsDropped$' -count=1
 SPROUTFS_SIM_BUG=peer-unbounded-stripes \
   go test ./peer -run '^TestAReaderBoundsItsStripeBytesInFlight$' -count=1
+SPROUTFS_SIM_BUG=peer-refuse-second-hello \
+  go test ./peer -run '^TestAHelloDeliveredTwiceLeavesTheConnectionServing$' -count=1
 ```
 
 The first five break what each end promises the other. A caller giving up is
@@ -1813,12 +1835,15 @@ hearing that it is busy. One class's requests count against another's budget.
 Replies leave a connection in the order they were built rather than the order
 their requests came. A dialer stops talking to the release before. The sixth
 leaves a connection that hears nothing open, version 1's as well as version
-2's. The last four break the budgets that keep bulk work behind faults: the
+2's. The next four break the budgets that keep bulk work behind faults: the
 background budget a guest fault's reply would otherwise wait behind, a cache
 request that names another cache, a keep queued instead of dropped, and the
-bound on stripe bytes in flight.
+bound on stripe bytes in flight. The last closes a connection over a second
+hello, which a duplicating link delivers. The dialer's first request goes the
+moment the first hello is answered, so whether that request is answered is the
+Go scheduler's choice, and a seed does not reproduce its run.
 
-Six guards break the cluster's fills:
+Seven guards break the cluster's fills:
 
 ```sh
 SPROUTFS_SIM_BUG=fill-before-durable \
@@ -1833,6 +1858,8 @@ SPROUTFS_SIM_BUG=fill-queue-waits \
   go test ./checkpoint -run '^TestAPublicationNeverWaitsForItsFill$' -count=1
 SPROUTFS_SIM_BUG=keep-while-writing \
   go test ./checkpoint -run '^TestACacheDropsAKeepItHoldsOrIsWriting$' -count=1
+SPROUTFS_SIM_BUG=fill-concurrently \
+  go test ./checkpoint -run '^TestAHostSendsItsKeepsOneAtATime$' -count=1
 ```
 
 The first fills the cluster with a part before its PUT has succeeded, which is
@@ -1844,7 +1871,12 @@ fill. The fourth fills from every read of a cold burst, six times where one
 would do. The fifth has a publication wait for room in the queue rather than
 drop the fill, which costs it six seconds behind a slow disk. The sixth
 queues a keep of stripes already being written, and it waits a second for the
-first write rather than being dropped at once. The fill campaign
+first write rather than being dropped at once. The seventh asks fill rights
+and sends keeps on goroutines of their own, as step 6 first did. Three keeps go
+to one holder before the first is answered, and on a link that drops or
+duplicates a frame, which keep it takes is the Go scheduler's choice. That is
+what turned `TestSeededTopologyFingerprintIsStable` red on seed 1 with the
+cluster cache on. The fill campaign
 (`TestFillsSurviveTheirFaultsAndReachTheirProbes`) kills `keep-unranked` and
 `no-fill-right` too.
 

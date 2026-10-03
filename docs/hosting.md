@@ -1119,14 +1119,27 @@ cache that holds some gets one **keep**: a peer-server request with that
 cache's stripes of the window, each as its disk stores it, with its own
 checksum.
 
-**Nothing waits on a fill.** A host has one queue of writes to its own disk,
-`CacheConfig.FillQueueBytes` (64 MiB by default), which one worker drains. Its
-own fills and its peers' keeps both go through it. Keeps go out within a rate
-per host, `CacheConfig.FillBytesPerSecond` (128 MiB/s by default, with a burst
-of one second of it), and within the host's background budget at the fill
-priority. A fill that finds the queue full, the rate spent or the budget
-without room is dropped. Its window is read from the store the next time. A
-fault, a publication and a pull never wait for a fill.
+**Nothing waits on a fill.** A host holds the fills handed to it, and its
+peers' keeps, in one queue, `CacheConfig.FillQueueBytes` (64 MiB by default).
+One worker does the fills one at a time, in the order they were handed over.
+It asks for a read's fill right, writes this host's own stripes and sends each
+keep, and it takes the next fill once the last keep is answered. Every write
+to this host's own disk, its own fills' and its peers' keeps', is done by
+another worker, one at a time. Keeps go out within a rate per host,
+`CacheConfig.FillBytesPerSecond` (128 MiB/s by default, with a burst of one
+second of it), and within the host's background budget at the fill priority. A
+fill that finds the queue full, the rate spent or the budget without room is
+dropped. Its window is read from the store the next time. A fault, a
+publication and a pull never wait for a fill.
+
+**One fill at a time.** Keeps sent beside each other reach a holder's link,
+its connection and the background budget in whatever order the Go scheduler
+runs them. So which keep a dropped frame or a partition takes, and which finds
+the budget full, would not follow from the order the fills were handed over
+in, and a simulated run would not reproduce. A keep is background work within a
+rate, so waiting for its answer costs a fill nothing it needs. The writes have
+a worker of their own because a keep waits for its holder's writes, and a
+holder's writes must never wait for that holder's own keeps.
 
 **Fill rights.** A cold burst would fill one window many times: many hosts miss
 it at once, each reads the store, and each would send its stripes. So a fill

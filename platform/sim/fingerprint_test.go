@@ -53,8 +53,13 @@ func errand(t *testing.T, runtime *sim.Runtime, ctx context.Context, sizes []int
 
 func fingerprints(t *testing.T, sizes []int, readFirst bool) (strict, work uint64) {
 	t.Helper()
+	return shakenFingerprints(t, sizes, readFirst, 0)
+}
+
+func shakenFingerprints(t *testing.T, sizes []int, readFirst bool, shake uint64) (strict, work uint64) {
+	t.Helper()
 	synctest.Test(t, func(t *testing.T) {
-		runtime := sim.New(sim.Config{Seed: 1})
+		runtime := sim.New(sim.Config{Seed: 1, Shake: shake})
 		errand(t, runtime, t.Context(), sizes, readFirst)
 		strict, work = runtime.Fingerprint(), runtime.WorkFingerprint(nil)
 	})
@@ -76,6 +81,20 @@ func TestFingerprintFollowsWhatTheDependenciesDid(t *testing.T) {
 	larger, largerWork := fingerprints(t, []int{64, 128}, false)
 	if larger == strict || largerWork == work {
 		t.Fatal("a write and a put of twice the bytes digested the same")
+	}
+}
+
+// A shake moves no simulated instant and changes no operation: one caller's
+// work digests exactly as it does unshaken, strictly too, whatever the shake.
+// Only the order of goroutines ready at one instant is the shake's to change.
+func TestAShakeChangesNothingOneCallerDoes(t *testing.T) {
+	strict, work := fingerprints(t, []int{64, 128, 64}, false)
+	for _, shake := range []uint64{1, 2, 0x9e3779b97f4a7c15} {
+		if shakenStrict, shakenWork := shakenFingerprints(t, []int{64, 128, 64}, false, shake); shakenStrict != strict ||
+			shakenWork != work {
+			t.Fatalf("under shake %#x one caller's work digested as %#x/%#x, want %#x/%#x", shake, shakenStrict,
+				shakenWork, strict, work)
+		}
 	}
 }
 

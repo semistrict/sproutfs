@@ -92,6 +92,16 @@ func (s *Server) serveConn(conn platform.Conn) {
 			}
 			continue
 		}
+		if incoming.Message.MessageIs(&peerv1.Hello{}) && !s.bug("peer-refuse-second-hello") {
+			// A hello after the first is what a duplicating link sends twice,
+			// as a dialer's reader drops a reply it already had. Closing the
+			// connection over it would race the dialer's first request, which
+			// it sent the moment the first hello was answered.
+			if err := drain(incoming); err != nil {
+				return
+			}
+			continue
+		}
 		if err := s.admit(session, incoming); err != nil {
 			return
 		}

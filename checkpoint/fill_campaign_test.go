@@ -88,12 +88,15 @@ func runFillCampaign(t *testing.T, seed uint64) *sim.Runtime {
 				Network: sim.NetworkConfig{Latency: 200 * time.Microsecond, ConnectLatency: 200 * time.Microsecond},
 				ObjectStore: sim.ObjectStoreConfig{GetLatency: 2 * time.Millisecond, HeadLatency: time.Millisecond,
 					PutLatency: 4 * time.Millisecond, BytesPerSecond: 1 << 40}},
-			// A small queue, rate and background budget, so a burst finds each
-			// of them spent.
+			// A small queue and rate, so a burst finds each of them spent, and
+			// a background budget with no room for a keep of a whole 2 MiB
+			// window, which a host sends its peer under 1+1: a host sends one
+			// keep at a time, so its own keeps never spend the budget against
+			// each other.
 			cache: func(_ int, config *checkpoint.CacheConfig) {
 				config.FillQueueBytes, config.FillBytesPerSecond = 6<<20, 4<<20
 			},
-			table: func(config *peer.TableConfig) { config.BackgroundBytes = 5 << 19 },
+			table: func(config *peer.TableConfig) { config.BackgroundBytes = 3 << 19 },
 		})
 		defer f.c.close()
 		f.lists = append(f.lists, *f.c.list.Load())

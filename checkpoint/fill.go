@@ -30,12 +30,24 @@ import (
 // cache ever holds the bytes of a part the store refused. A pull hands over
 // what it copies.
 //
-// Nothing waits on a fill. The filler takes every write to this host's own
-// disk through one queue, bounded in bytes, drained by one worker, and every
-// keep it sends through a rate of bytes per second and this host's background
-// budget at the fill priority. A fill that finds the queue full, the rate
-// spent or the budget without room is dropped, and its window is read from the
-// store the next time. A fault, a publication and a pull never wait for one.
+// Nothing waits on a fill. The filler holds the fills handed to it in one
+// queue, bounded in bytes, and does them one at a time in the order they were
+// handed over: it asks a read's fill right, writes this host's own stripes and
+// sends each keep, and takes the next fill once the keep before it is
+// answered. Every write to this host's own disk, its own fills' and its peers'
+// keeps', goes through one queue of writes drained by one worker. Every keep
+// goes through a rate of bytes per second and this host's background budget
+// at the fill priority. A fill that finds the queue full, the rate spent or
+// the budget without room is dropped, and its window is read from the store
+// the next time. A fault, a publication and a pull never wait for one.
+//
+// One fill at a time is a decision, not a convenience. Fills on goroutines of
+// their own reach a peer's link, its connection and the background budget in
+// whatever order the Go scheduler runs them: which keep a dropped frame or a
+// partition takes, and which finds the budget full, would be the scheduler's
+// choice rather than the order the fills were handed over in. A keep is
+// background work under a rate, so its round trip costs a fill nothing it
+// needs.
 //
 // A cold burst would fill one window many times: many hosts miss it at once,
 // each reads the store, and each would send its stripes. So a read's fill needs
@@ -201,9 +213,10 @@ type keyedStripe struct {
 	stripe stripe.Stripe
 }
 
-// filler is a cache's fills: its queue of writes to its own disk and the one
-// worker that drains it, the rate of its keeps, and the fill rights it gives
-// out as rank 1.
+// filler is a cache's fills: the fills handed over and the one worker that
+// does them in order, its queue of writes to its own disk and the one worker
+// that drains it, the rate of its keeps, and the fill rights it gives out as
+// rank 1.
 type filler struct {
 	disk  *cacheDisk
 	peers *peer.Table
@@ -218,13 +231,18 @@ type filler struct {
 	rightInterval time.Duration
 	rate          tokenBucket
 
+	// fills is the fills handed over, which one worker does one at a time:
+	// it asks the right, writes this host's stripes and sends the keeps of
+	// each before it takes the next. writes is the writes to this host's own
+	// disk, its fills' and its peers' keeps', which another worker does one at
+	// a time. The two are apart because a keep waits for its holder's writes,
+	// and a holder's writes must never wait for that holder's own keeps.
+	fills, writes *lane
+
 	mu sync.Mutex
-	// queued is the bytes of the queue held: by work waiting for a right, in
-	// the queue, and being done. ready is the work the worker has yet to do,
-	// in order, and wake tells an idle worker of more.
+	// queued is the bytes of the queue held: by fills handed over and not yet
+	// done, and by peers' keeps not yet written.
 	queued int64
-	ready  []func(context.Context)
-	wake   chan struct{}
 	// busy counts the work held and the requests in flight; idle is closed
 	// and replaced each time it falls to zero.
 	busy int
@@ -260,13 +278,14 @@ func newFiller(ctx context.Context, disk *cacheDisk, settings fillSettings) *fil
 	clock := platform.ClockOr(settings.clock)
 	f := &filler{disk: disk, peers: settings.peers, clock: clock, ctx: ctx, cancel: cancel,
 		queueBytes: settings.queueBytes, rightInterval: settings.rightInterval,
-		rate: newTokenBucket(clock, settings.bytesPerSecond), wake: make(chan struct{}, 1),
+		rate: newTokenBucket(clock, settings.bytesPerSecond), fills: newLane(), writes: newLane(),
 		idle: make(chan struct{}), writing: make(map[stripeKey]bool), granted: make(map[rank.Window]time.Time)}
-	f.group.Go(f.work)
+	f.group.Go(func() { f.fills.run(ctx) })
+	f.group.Go(func() { f.writes.run(ctx) })
 	return f
 }
 
-// close stops the fills: the worker, the rights asked for and the keeps in
+// close stops the fills: both workers, the right asked for and the keep in
 // flight. What it had not done is dropped.
 func (f *filler) close() {
 	f.mu.Lock()
@@ -325,7 +344,8 @@ func (f *filler) done() {
 }
 
 // goFill runs request beside the fill that started it, counted until it
-// returns. It reports false once the fills have closed, and runs nothing.
+// returns. It reports false once the fills have closed, and runs nothing. Only
+// the fill-concurrently bug runs a request so.
 func (f *filler) goFill(request func(context.Context)) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -339,7 +359,7 @@ func (f *filler) goFill(request func(context.Context)) bool {
 	return true
 }
 
-// reserve takes bytes of the queue for work the worker will do, and counts
+// reserve takes bytes of the queue for work a worker will do, and counts
 // the work held. It reports false when the queue has no room, and the work is
 // dropped. One piece larger than the whole queue is taken alone.
 func (f *filler) reserve(ctx context.Context, bytes int64) bool {
@@ -380,57 +400,73 @@ func (f *filler) release(bytes int64) {
 	f.done()
 }
 
-// submit hands work reserve took room for to the worker. Once the fills have
-// closed there is no worker, and the work runs here under their ended
-// context, which drops it and gives its room back.
-func (f *filler) submit(work func(context.Context)) {
-	f.mu.Lock()
-	if f.closed {
-		f.mu.Unlock()
-		work(f.ctx)
+// lane is work done one piece at a time, in the order it was handed over, by
+// one worker.
+type lane struct {
+	mu    sync.Mutex
+	ready []func(context.Context)
+	// wake tells an idle worker of more, and stopped says the worker has
+	// returned.
+	wake    chan struct{}
+	stopped bool
+}
+
+func newLane() *lane { return &lane{wake: make(chan struct{}, 1)} }
+
+// push hands work to the lane's worker. Once the worker has returned, the work
+// runs here under ended, the fills' ended context, which drops it and gives
+// its room back.
+func (l *lane) push(ended context.Context, work func(context.Context)) {
+	l.mu.Lock()
+	if l.stopped {
+		l.mu.Unlock()
+		work(ended)
 		return
 	}
-	f.ready = append(f.ready, work)
-	f.mu.Unlock()
+	l.ready = append(l.ready, work)
+	l.mu.Unlock()
 	select {
-	case f.wake <- struct{}{}:
+	case l.wake <- struct{}{}:
 	default:
 	}
 }
 
-// work is the one worker: it does what the queue holds, in order, until the
-// fills close.
-func (f *filler) work() {
+// run is the lane's worker: it does what the lane holds, in order, until ctx
+// ends and the lane is empty. The work left when ctx ends runs under it, and
+// ends at once.
+func (l *lane) run(ctx context.Context) {
 	for {
-		f.mu.Lock()
-		var next func(context.Context)
-		if len(f.ready) > 0 {
-			next, f.ready = f.ready[0], f.ready[1:]
-		}
-		f.mu.Unlock()
-		if next != nil {
-			next(f.ctx)
+		l.mu.Lock()
+		if len(l.ready) == 0 {
+			if ctx.Err() != nil {
+				l.stopped = true
+				l.mu.Unlock()
+				return
+			}
+			l.mu.Unlock()
+			select {
+			case <-l.wake:
+			case <-ctx.Done():
+			}
 			continue
 		}
-		select {
-		case <-f.wake:
-		case <-f.ctx.Done():
-			f.drain()
-			return
-		}
+		next := l.ready[0]
+		l.ready = l.ready[1:]
+		l.mu.Unlock()
+		next(ctx)
 	}
 }
 
-// drain does the work left once the fills close, which ends at once: its
-// context has ended.
-func (f *filler) drain() {
-	f.mu.Lock()
-	left := f.ready
-	f.ready = nil
-	f.mu.Unlock()
-	for _, work := range left {
-		work(f.ctx)
-	}
+// written does work on the queue of writes to this host's own disk, and
+// returns once it has: the worker of fills waits for its own writes there,
+// behind its peers' keeps.
+func (f *filler) written(work func(context.Context)) {
+	done := make(chan struct{})
+	f.writes.push(f.ctx, func(ctx context.Context) {
+		defer close(done)
+		work(ctx)
+	})
+	<-done
 }
 
 // bug reports whether the in-tree bug id is on for this cache's run. It is
@@ -514,22 +550,47 @@ func (f *filler) fill(kind WriteKind, envelopes []envelope) {
 			f.drop(ctx, DropQueue, stripes)
 			continue
 		}
-		if kind != WriteFillRead || f.bug("no-fill-right") {
-			f.submit(func(ctx context.Context) { f.place(ctx, kind, fill) })
+		if kind == WriteFillRead && !f.bug("no-fill-right") && f.bug("fill-concurrently") {
+			f.rightBeside(kind, fill)
 			continue
 		}
-		// The right is asked for beside the read, never in front of it; the
-		// fill holds its room in the queue while it waits.
-		if !f.goFill(func(ctx context.Context) {
-			if !f.right(ctx, fill) {
-				f.count(func(stats *FillStats) { stats.WithoutRight++ })
-				f.release(fill.bytes)
-				return
-			}
-			f.submit(func(ctx context.Context) { f.place(ctx, kind, fill) })
-		}) {
+		// The right is asked for behind the read, never in front of it; the
+		// fill holds its room in the queue until it is done.
+		f.fills.push(ctx, func(ctx context.Context) {
+			defer f.release(fill.bytes)
+			f.do(ctx, kind, fill)
+		})
+	}
+}
+
+// do is one fill, done by the worker of fills: the right a read's fill
+// needs, then the fill placed.
+func (f *filler) do(ctx context.Context, kind WriteKind, fill *windowFill) {
+	// A fill under ended fills asks nothing, and place drops it.
+	if ctx.Err() == nil && kind == WriteFillRead && !f.bug("no-fill-right") && !f.right(ctx, fill) {
+		f.count(func(stats *FillStats) { stats.WithoutRight++ })
+		return
+	}
+	f.place(ctx, kind, fill)
+}
+
+// rightBeside is the bug that asks a read's fill right on a goroutine of its
+// own and hands the fill to the worker of fills once the right is answered:
+// fills reach rank 1, and then the worker, in the order the scheduler runs
+// them rather than the order they were handed over.
+func (f *filler) rightBeside(kind WriteKind, fill *windowFill) {
+	if !f.goFill(func(ctx context.Context) {
+		if !f.right(ctx, fill) {
+			f.count(func(stats *FillStats) { stats.WithoutRight++ })
 			f.release(fill.bytes)
+			return
 		}
+		f.fills.push(f.ctx, func(ctx context.Context) {
+			defer f.release(fill.bytes)
+			f.place(ctx, kind, fill)
+		})
+	}) {
+		f.release(fill.bytes)
 	}
 }
 
@@ -625,11 +686,10 @@ func validWindow(window rank.Window, pages []uint32) bool {
 
 // place splits fill's envelopes under the list held now and puts each stripe
 // on the cache the list holds it on: this host's own on its own disk, the
-// rest as keeps to their holders. It is the worker's, and its room in the
-// queue is given back once it has written its own stripes and handed its keeps
-// to the rate.
+// rest as keeps to their holders, one holder after another in the order the
+// list names them. It is the worker of fills', and returns once its own
+// stripes are written and every keep is answered or dropped.
 func (f *filler) place(ctx context.Context, kind WriteKind, fill *windowFill) {
-	defer f.release(fill.bytes)
 	if ctx.Err() != nil {
 		f.drop(ctx, DropFailed, len(fill.envelopes)*fill.list.Code().Width())
 		return
@@ -674,7 +734,7 @@ func (f *filler) place(ctx context.Context, kind WriteKind, fill *windowFill) {
 	}
 	for _, holder := range order {
 		if holder.Identity == f.disk.identity {
-			f.writeOwn(ctx, kind, fill.window, code, held[holder.Identity])
+			f.written(func(ctx context.Context) { f.writeOwn(ctx, kind, fill.window, code, held[holder.Identity]) })
 			continue
 		}
 		f.send(ctx, kind, fill.window, code, holder, held[holder.Identity])
@@ -682,9 +742,10 @@ func (f *filler) place(ctx context.Context, kind WriteKind, fill *windowFill) {
 }
 
 // writeOwn writes the stripes of a fill of window this host's own cache
-// holds, leaving out those it holds or is writing already. The list it was
-// placed by may not be the one the cache holds now, which is the one a keep
-// is held to, and so is this.
+// holds, leaving out those it holds or is writing already. It is the worker
+// of writes', so nothing writes between what it finds held and what it
+// writes. The list it was placed by may not be the one the cache holds now,
+// which is the one a keep is held to, and so is this.
 func (f *filler) writeOwn(ctx context.Context, kind WriteKind, window rank.Window, code rank.Code,
 	stripes []keyedStripe) {
 	if err := f.ranked(window, code); err != nil && !f.bug("keep-unranked") {
@@ -746,9 +807,9 @@ func (f *filler) write(ctx context.Context, kind WriteKind, stripes []keyedStrip
 	return kept
 }
 
-// send hands one holder's stripes of a window to the rate, and sends them as
-// one keep beside the fill. The keep carries each stripe as the holder's disk
-// stores it, header and checksum included.
+// send hands one holder's stripes of a window to the rate, sends them as one
+// keep and returns once it is answered. The keep carries each stripe as the
+// holder's disk stores it, header and checksum included.
 func (f *filler) send(ctx context.Context, kind WriteKind, window rank.Window, code rank.Code, holder rank.Cache,
 	stripes []keyedStripe) {
 	keep := peer.Keep{Window: window, Code: code, Publication: kind == WriteFillPublication}
@@ -766,7 +827,7 @@ func (f *filler) send(ctx context.Context, kind WriteKind, window rank.Window, c
 		f.drop(ctx, DropFailed, len(stripes))
 		return
 	}
-	if !f.goFill(func(ctx context.Context) {
+	request := func(ctx context.Context) {
 		err := f.peers.Peer(holder.Address).Keep(ctx, holder.Identity, keep)
 		f.sent(ctx, err, len(stripes), len(keep.Payload))
 		if sim.Buggify(ctx, buggifyFillSendTwice, 0.1) {
@@ -775,7 +836,14 @@ func (f *filler) send(ctx context.Context, kind WriteKind, window rank.Window, c
 			// answer counts for nothing.
 			_ = f.peers.Peer(holder.Address).Keep(ctx, holder.Identity, keep)
 		}
-	}) {
+	}
+	if !f.bug("fill-concurrently") {
+		request(ctx)
+		return
+	}
+	// The bug sends the keep beside the fill, so the next fill's keeps race it
+	// to the holder's link.
+	if !f.goFill(request) {
 		f.drop(ctx, DropFailed, len(stripes))
 	}
 }
@@ -846,7 +914,7 @@ func (f *filler) keep(ctx context.Context, keep peer.Keep) error {
 		kind = WriteFillPublication
 	}
 	result := make(chan int, 1)
-	f.submit(func(ctx context.Context) {
+	f.writes.push(f.ctx, func(ctx context.Context) {
 		defer f.release(bytes)
 		defer unmark()
 		result <- f.write(ctx, kind, missing)

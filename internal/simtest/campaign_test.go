@@ -43,7 +43,13 @@ func TestSeededTopologyCampaign(t *testing.T) {
 // latencies are microseconds, so the campaign explores its faults rather than
 // its waits, and the per-site fault injection on or off.
 func newCampaignRuntime(seed uint64, buggify bool) *sim.Runtime {
-	return sim.New(sim.Config{Seed: seed, Buggify: buggify,
+	return newShakenCampaignRuntime(seed, buggify, 0)
+}
+
+// newShakenCampaignRuntime is newCampaignRuntime under a shake: see
+// sim.Config.Shake. Zero shakes nothing.
+func newShakenCampaignRuntime(seed uint64, buggify bool, shake uint64) *sim.Runtime {
+	return sim.New(sim.Config{Seed: seed, Buggify: buggify, Shake: shake,
 		Network: sim.NetworkConfig{Latency: time.Microsecond, Jitter: time.Nanosecond,
 			ConnectLatency: time.Microsecond},
 		ObjectStore: sim.ObjectStoreConfig{HeadLatency: time.Microsecond, GetLatency: time.Microsecond,
@@ -91,7 +97,15 @@ func reportTrace(t *testing.T, runtime *sim.Runtime) {
 // last word.
 func runTopologyCampaign(t *testing.T, seed uint64, buggify bool, cache campaignCache) *sim.Runtime {
 	t.Helper()
-	runtime := newCampaignRuntime(seed, buggify)
+	return runShakenTopologyCampaign(t, seed, buggify, cache, 0)
+}
+
+// runShakenTopologyCampaign is runTopologyCampaign under a shake, which must
+// change nothing the seed decides: see sim.Config.Shake.
+func runShakenTopologyCampaign(t *testing.T, seed uint64, buggify bool, cache campaignCache,
+	shake uint64) *sim.Runtime {
+	t.Helper()
+	runtime := newShakenCampaignRuntime(seed, buggify, shake)
 	prefix := newPrefix(t, "sproutfs/")
 	topology := simtest.NewTopology(runtime.Random("simtest/topology"))
 	clusterCache := cache.on(runtime)
