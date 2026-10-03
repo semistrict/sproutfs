@@ -3,10 +3,11 @@ id: TASK-83
 title: >-
   Make membership one object in the object store, changed only by
   compare-and-set
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-03 17:54'
-updated_date: '2026-10-03 17:54'
+updated_date: '2026-10-03 23:15'
 labels:
   - cluster
   - correctness
