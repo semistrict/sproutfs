@@ -543,6 +543,27 @@ func TestAFillThatCannotReadOrWriteIsDroppedByWhy(t *testing.T) {
 	})
 }
 
+// A hot tier that has closed still answers reads, and drops every fill handed
+// to it: the open's and the part's. The segment was read from the index
+// object, which the hot tier never held, so its fill is dropped too.
+func TestAClosedHotTierDropsItsFills(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newHotFixture(t, hotLatency, checkpoint.HotTierConfig{SkipPublications: true})
+		_, m, err := publishFrom(t, f.store, "vm", publishedPages)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.tier.Close()
+		f.read(t, publishedRef, m)
+		want := checkpoint.HotTierStats{Misses: 3, QueueBytes: checkpoint.DefaultHotTierQueueBytes}
+		want.Dropped[checkpoint.HotDropClosed] = 3
+		if got := f.tier.Stats(); got != want {
+			t.Fatalf("the closed hot tier's stats are %+v, want %+v", got, want)
+		}
+		f.requireCopies(t, false, indexKey(t, "vm", 2), partKey(t, "vm", 2, 0))
+	})
+}
+
 // One hit in HeadCheckEvery has its regional object checked with a HEAD, so a
 // warm hot tier does not hide an object the regional bucket lost.
 func TestASampledHotHitChecksItsRegionalObject(t *testing.T) {
