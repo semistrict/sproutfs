@@ -13,7 +13,7 @@
 # the account the hosts reach both buckets as. The hot tier's bucket is made
 # for the run in SPROUTFS_HOT_TIER_LOCATION (the hosts' region by default),
 # and deleted with every object of the run afterwards.
-# SPROUTFS_WALK_HOSTS is how many hosts run (six by default, at least three),
+# SPROUTFS_WALK_HOSTS is how many hosts run (six by default, at least two),
 # SPROUTFS_WALK_CODE the cluster's code (4+2 by default), SPROUTFS_WALK_READS
 # the reads of one walk, SPROUTFS_WALK_PAGES and SPROUTFS_WALK_PAGES_4K the
 # guests' pages, and SPROUTFS_WALK_ROUNDS the rounds.
@@ -31,7 +31,7 @@ reads=${SPROUTFS_WALK_READS:-500}
 pages=${SPROUTFS_WALK_PAGES:-1024}
 pages4k=${SPROUTFS_WALK_PAGES_4K:-131072}
 rounds=${SPROUTFS_WALK_ROUNDS:-3}
-((count >= 3)) || { echo "SPROUTFS_WALK_HOSTS is at least 3" >&2; exit 2; }
+((count >= 2)) || { echo "SPROUTFS_WALK_HOSTS is at least 2" >&2; exit 2; }
 [[ $code =~ ^[0-9]+\+[0-9]+$ ]] || { echo "SPROUTFS_WALK_CODE is k+m" >&2; exit 2; }
 machine=${SPROUTFS_RESTORE_MACHINE:-n2-standard-4}
 [[ $machine =~ ^n2-standard-[0-9]+$ ]] || { echo "SPROUTFS_RESTORE_MACHINE is an n2-standard machine type" >&2; exit 2; }
@@ -56,8 +56,9 @@ hot_bucket="$prefix-hot"
 
 create() {
     "${cloud[@]}" storage buckets create "gs://$hot_bucket" --location="$location" \
-        --default-storage-class=STANDARD --uniform-bucket-level-access \
-        --labels=purpose=hot-tier-bench,lifecycle=temporary
+        --default-storage-class=STANDARD --uniform-bucket-level-access
+    "${cloud[@]}" storage buckets update "gs://$hot_bucket" \
+        --update-labels=purpose=hot-tier-bench,lifecycle=temporary > /dev/null
     "${cloud[@]}" storage buckets add-iam-policy-binding "gs://$hot_bucket" \
         --member="serviceAccount:$account" --role=roles/storage.objectAdmin > /dev/null
     "${cloud[@]}" compute instances create "${hosts[@]}" --zone="$zone" \
