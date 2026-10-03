@@ -221,7 +221,8 @@ other holders. A probe is sent after 10 s, then at intervals growing by half
 each time up to 60 s, with jitter. Only a probe that succeeds clears the mark.
 A miss or a bad stripe is not a failure of the host.
 
-A reader marks down at most a fifth of the list. Past that, it stops marking
+A reader marks down at most a fifth of the list, and always at least one host,
+so a small cluster can still mark one down. Past that, it stops marking
 hosts down, because so many failing at once more likely means its own network
 has failed. A host's down set is only another list, so it changes no
 correctness argument.
@@ -443,10 +444,13 @@ pages that nobody else wants. A read by a peer counts like a read by this host.
 
 The second chance is bounded so that eviction always gives space back. At most
 half of a victim region is written again. When the cache is over its share, or
-the [write budget](#endurance) is spent, nothing is. Navy has no such bound,
+the [write budget](#endurance) is spent, nothing is. So eviction has two
+causes: making room at the share, where the second chance applies, and
+shrinking to a share that fell, where nothing is written again. Navy has no such bound,
 and an eviction that rewrites the whole victim frees nothing.
 
-One region is always kept free, for the second chance alone. A second chance
+One region is always kept free, for the second chance alone. It counts
+inside the share. A second chance
 that would need more stops, and the rest of the victim goes. The model checks
 that this keeps eviction moving.
 
@@ -520,7 +524,9 @@ promises    = spill promises + ephemeral promises + staging
 cache       = min(room - floor, goal_used) - promises
 ```
 
-A promise is counted once, whole, whatever its file has allocated so far.
+A promise is counted once, whole, whatever its file has allocated so far, and
+"what the host holds" counts each spill file at its promise. Since spill files
+are allocated whole, the two agree.
 
 The cache's share does not drop in one step at a mark. It falls gradually as
 free space nears the floor, across a band above it: by default a fifth of the
