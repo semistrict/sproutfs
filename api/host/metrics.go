@@ -275,6 +275,7 @@ func Metrics(status Status) string {
 	write("sproutfs_cache_disk_used_bytes", "gauge", "How much of the page cache's disk the pulls hold.",
 		status.Resources.CacheDiskUsed)
 	cacheDiskMetrics(&out, status.CacheDisk)
+	cacheFillMetrics(&out, status.CacheFill)
 	diskMetrics(&out, status.Disk)
 
 	// The store counters carry the operation as a label: five operations, one
@@ -402,6 +403,49 @@ func cacheDiskMetrics(out *strings.Builder, disk *CacheDisk) {
 	}{{"tables", held.Opened.FromTables}, {"scanned", held.Opened.Scanned}, {"given-back", held.Opened.GivenBack}} {
 		fmt.Fprintf(out, "sproutfs_cache_disk_opened_regions{how=%q} %d\n", opened.how, opened.regions)
 	}
+}
+
+// FillDropReasons is every reason a fill drops stripes for, in the order
+// /metrics lists them.
+var FillDropReasons = []string{"queue", "rate", "budget", "busy", "down", "stale", "peer", "disk", "failed"}
+
+// cacheFillMetrics writes what this host's fills of the cluster's disk cache
+// did. A host that keeps no cache disk reports zeroes.
+func cacheFillMetrics(out *strings.Builder, fill *CacheFill) {
+	var did CacheFill
+	if fill != nil {
+		did = *fill
+	}
+	write := func(name, kind, help string, value any) {
+		fmt.Fprintf(out, "# HELP %s %s\n# TYPE %s %s\n%s %v\n", name, help, name, kind, name, value)
+	}
+	fmt.Fprintf(out, "# HELP sproutfs_cache_fills_total Windows this host filled the cluster's cache with, by what it read them for.\n"+
+		"# TYPE sproutfs_cache_fills_total counter\n"+
+		"sproutfs_cache_fills_total{from=\"read\"} %d\n"+
+		"sproutfs_cache_fills_total{from=\"publication\"} %d\n", did.FromReads, did.FromPublications)
+	write("sproutfs_cache_fills_without_right_total", "counter",
+		"Windows this host read from the store and filled nothing of, for want of the fill right.", did.WithoutRight)
+	write("sproutfs_cache_fill_rights_granted_total", "counter",
+		"Fill rights this host's cache gave out as a window's rank 1.", did.RightsGranted)
+	write("sproutfs_cache_fill_stripes_sent_total", "counter",
+		"Stripes this host's keeps carried that their holders kept.", did.Sent)
+	write("sproutfs_cache_fill_bytes_sent_total", "counter", "Bytes of the keeps their holders kept.", did.SentBytes)
+	write("sproutfs_cache_fill_stripes_kept_total", "counter",
+		"Stripes fills wrote to this host's disk, its own and its peers' keeps.", did.Kept)
+	fmt.Fprintf(out, "# HELP sproutfs_cache_fill_stripes_dropped_total Stripes fills dropped, by why.\n"+
+		"# TYPE sproutfs_cache_fill_stripes_dropped_total counter\n")
+	for _, reason := range FillDropReasons {
+		fmt.Fprintf(out, "sproutfs_cache_fill_stripes_dropped_total{reason=%q} %d\n", reason, did.Dropped[reason])
+	}
+	write("sproutfs_cache_fill_stripes_duplicate_total", "counter",
+		"Stripes a fill or a keep carried that this host's cache held or was writing already.", did.Duplicates)
+	write("sproutfs_cache_keep_stripes_refused_total", "counter",
+		"Stripes of keeps refused: for a window this host's list does not rank its cache for, or that did not hold together.",
+		did.Refused)
+	write("sproutfs_cache_fill_queued_bytes", "gauge",
+		"What the queue of writes to this host's disk holds now.", did.QueuedBytes)
+	write("sproutfs_cache_fill_queue_limit_bytes", "gauge",
+		"The bound of the queue of writes to this host's disk.", did.QueueBytes)
 }
 
 func lossWindow(vms []VM) (widest time.Duration, waiting int) {

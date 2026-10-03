@@ -39,6 +39,7 @@ type memoryCache struct {
 	mu      sync.Mutex
 	stripes map[stripeKey][]byte
 	dropped []peer.Drop
+	kept    []peer.Keep
 }
 
 func newMemoryCache(identity byte) *memoryCache {
@@ -87,6 +88,8 @@ func (c *memoryCache) Keep(_ context.Context, keep peer.Keep) error {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.kept = append(c.kept, peer.Keep{Window: keep.Window, Code: keep.Code, Items: keep.Items,
+		Repair: keep.Repair, Publication: keep.Publication})
 	offset := 0
 	for _, item := range keep.Items {
 		c.stripes[stripeKey{keep.Window, item.Page, item.Index}] = bytes.Clone(keep.Payload[offset : offset+item.Size])
@@ -290,6 +293,47 @@ func TestAProbeNamingNoCacheReportsTheCacheKept(t *testing.T) {
 	})
 }
 
+// A keep reaches the cache with its window, how many pages the window spans,
+// and whether it is a repair or a fill from a publication, which the cache's
+// write budget orders writes by; a stripe read reaches it with the window's
+// span too.
+func TestAKeepCarriesItsWindowAndItsPriority(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		cache := newMemoryCache(1)
+		holder, _ := cacheServing(t, cache)
+		spanned := rank.Window{Ref: control.Ref{VM: "vm", Sequence: 3}, Volume: "ram0", Number: 7, Pages: 512}
+		for _, keep := range []peer.Keep{
+			{Window: spanned, Code: rank.Code{K: 1, M: 1}, Items: []peer.StripeItem{{Page: 511, Size: 1}},
+				Payload: []byte("a"), Publication: true},
+			{Window: spanned, Code: rank.Code{K: 1, M: 1}, Items: []peer.StripeItem{{Page: 3, Size: 1}},
+				Payload: []byte("b"), Repair: true},
+		} {
+			if err := holder.Keep(t.Context(), cache.identity, keep); err != nil {
+				t.Fatal(err)
+			}
+		}
+		want := []peer.Keep{
+			{Window: spanned, Code: rank.Code{K: 1, M: 1}, Items: []peer.StripeItem{{Page: 511, Size: 1}}, Publication: true},
+			{Window: spanned, Code: rank.Code{K: 1, M: 1}, Items: []peer.StripeItem{{Page: 3, Size: 1}}, Repair: true},
+		}
+		if !slices.EqualFunc(cache.kept, want, func(a, b peer.Keep) bool {
+			return a.Window == b.Window && a.Code == b.Code && slices.Equal(a.Items, b.Items) &&
+				a.Repair == b.Repair && a.Publication == b.Publication
+		}) {
+			t.Fatalf("the cache was sent %+v, want %+v", cache.kept, want)
+		}
+		reply, err := holder.ReadStripes(t.Context(), cache.identity, peer.StripeRead{Window: spanned, Pages: []uint32{511},
+			Code: rank.Code{K: 1, M: 1}, MaxBytes: 1 << 20})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer reply.Release()
+		if string(reply.Payload) != "a" {
+			t.Fatalf("page 511 of a window of 512 read back %q", reply.Payload)
+		}
+	})
+}
+
 // A keep the cache does not write is dropped, not queued, and says so.
 func TestAKeepTheCacheDoesNotWriteIsDropped(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
@@ -315,11 +359,11 @@ func TestAKeepOverTheBackgroundBudgetIsDropped(t *testing.T) {
 			return holder.Keep(t.Context(), cache.identity, peer.Keep{Window: window, Code: rank.Code{K: 1, M: 1},
 				Items: []peer.StripeItem{{Page: 1, Length: 4, Size: len(payload)}}, Payload: []byte(payload), Repair: repair})
 		}
-		if err := keep("abcdefghi", false); !errors.Is(err, peer.ErrDropped) {
-			t.Fatalf("a fill over the budget = %v, want ErrDropped", err)
+		if err := keep("abcdefghi", false); !errors.Is(err, peer.ErrDropped) || !errors.Is(err, peer.ErrNoRoom) {
+			t.Fatalf("a fill over the budget = %v, want ErrDropped for want of room", err)
 		}
-		if err := keep("abcde", true); !errors.Is(err, peer.ErrDropped) {
-			t.Fatalf("a repair over half the budget = %v, want ErrDropped", err)
+		if err := keep("abcde", true); !errors.Is(err, peer.ErrDropped) || !errors.Is(err, peer.ErrNoRoom) {
+			t.Fatalf("a repair over half the budget = %v, want ErrDropped for want of room", err)
 		}
 		if err := keep("abcd", true); err != nil {
 			t.Fatalf("a repair within half the budget: %v", err)

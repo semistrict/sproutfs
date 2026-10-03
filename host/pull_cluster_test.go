@@ -75,14 +75,28 @@ func TestOutsideTheClusterShareAPulledVMIsKeptWhole(t *testing.T) {
 // With the cluster cache on for every window, the host's disk places a
 // pulled VM by the list of caches the host reads: a list that does not rank
 // this host's cache keeps nothing of it here, and its faults read the store.
+// The pull hands every window to the cluster's fills, which send each of the
+// six stripes of the six pages and the segment to the caches the list holds
+// them on; those five caches answer at no address, so all 42 are dropped.
 func TestInsideTheClusterShareAPulledVMIsPlacedByTheHostsList(t *testing.T) {
 	counted, _, guest, _, h := pulledRunWith(t, 64<<20, listedPull(t, rank.Code{K: 4, M: 2}, false, 100))
 	stats, err := h.hosts[1].WaitPulled(t.Context(), "vm-1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !stats.Done || stats.Err != nil || stats.Bytes == 0 || stats.Pulled != 0 {
-		t.Fatalf("the pull ended at %+v, want it done with nothing kept", stats)
+	if !stats.Done || stats.Err != nil || stats.Bytes == 0 || stats.Pulled != stats.Bytes {
+		t.Fatalf("the pull ended at %+v, want it done with everything handed over", stats)
+	}
+	if err := h.hosts[1].SettleFills(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	fill := h.hosts[1].Status().Cache.Fill
+	dropped := uint64(0)
+	for _, stripes := range fill.Dropped {
+		dropped += stripes
+	}
+	if fill.FromPublications != pullPages+1 || fill.Kept != 0 || fill.Sent != 0 || dropped != 6*(pullPages+1) {
+		t.Fatalf("the fills came to %+v, want seven windows and their 42 stripes dropped", fill)
 	}
 	counted.reset()
 	readPulled(t, guest)

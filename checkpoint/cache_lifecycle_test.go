@@ -25,13 +25,13 @@ func TestCacheNewReaderDoesNotJoinAnAbandonedLoad(t *testing.T) {
 		defer cancel()
 		first := make(chan error, 1)
 		go func() {
-			_, _, err := cache.get(ctx, cacheKeyOf("page"), func(ctx context.Context) ([]byte, error) {
+			_, _, err := cache.get(ctx, cacheKeyOf("page"), unfilled(func(ctx context.Context) ([]byte, error) {
 				close(entered)
 				<-ctx.Done()
 				close(canceled)
 				<-release // Transport cleanup can outlive the canceled reader.
 				return nil, context.Cause(ctx)
-			})
+			}))
 			first <- err
 		}()
 		<-entered
@@ -46,9 +46,9 @@ func TestCacheNewReaderDoesNotJoinAnAbandonedLoad(t *testing.T) {
 		}
 		fresh := make(chan result, 1)
 		go func() {
-			data, unpin, err := cache.get(t.Context(), cacheKeyOf("page"), func(context.Context) ([]byte, error) {
+			data, unpin, err := cache.get(t.Context(), cacheKeyOf("page"), unfilled(func(context.Context) ([]byte, error) {
 				return []byte("fresh"), nil
-			})
+			}))
 			if unpin != nil {
 				defer unpin()
 			}
@@ -77,9 +77,9 @@ func TestCacheOwnsOnlyTheLoadedBytes(t *testing.T) {
 		t.Cleanup(cache.Close)
 		buffer := make([]byte, 3, 1<<20)
 		copy(buffer, "abc")
-		data, unpin, err := cache.get(t.Context(), cacheKeyOf("page"), func(context.Context) ([]byte, error) {
+		data, unpin, err := cache.get(t.Context(), cacheKeyOf("page"), unfilled(func(context.Context) ([]byte, error) {
 			return buffer, nil
-		})
+		}))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -104,9 +104,9 @@ func TestCacheCloseIsIdempotent(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		data, release, err := cache.get(t.Context(), cacheKeyOf("page"), func(context.Context) ([]byte, error) {
+		data, release, err := cache.get(t.Context(), cacheKeyOf("page"), unfilled(func(context.Context) ([]byte, error) {
 			return []byte("bytes"), nil
-		})
+		}))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -123,4 +123,13 @@ func TestCacheCloseIsIdempotent(t *testing.T) {
 			t.Fatalf("a closed cache retains %d bytes", used)
 		}
 	})
+}
+
+// unfilled is a load that reads nothing a fill would take: what a test that
+// reads through the cache's flights alone hands it.
+func unfilled(load func(context.Context) ([]byte, error)) func(context.Context) ([]byte, []envelope, error) {
+	return func(ctx context.Context) ([]byte, []envelope, error) {
+		data, err := load(ctx)
+		return data, nil, err
+	}
 }

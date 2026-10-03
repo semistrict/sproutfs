@@ -57,6 +57,11 @@ func (f *pullFixture) pullAndRead(t *testing.T) pulled {
 	if err := pull.Wait(t.Context()); err != nil {
 		t.Fatal(err)
 	}
+	// A window inside the share is the cluster's fill, which the pull hands
+	// over and does not wait for.
+	if err := f.cache.SettleFills(t.Context()); err != nil {
+		t.Fatal(err)
+	}
 	stats := pull.Stats()
 	if !stats.Done || stats.Err != nil || stats.Bytes == 0 {
 		t.Fatalf("the pull ended at %+v", stats)
@@ -145,12 +150,13 @@ func TestOnTwoHostsAPulledCheckpointIsReadFromThisHostsCopy(t *testing.T) {
 }
 
 // A host whose list does not rank its cache for a window keeps nothing of it:
-// the pull completes having copied nothing, and every read goes to the store.
+// the pull hands the whole checkpoint to the cluster's fills, which keep
+// nothing here, and every read goes to the store.
 func TestAPullKeepsNothingAHostIsNotRankedFor(t *testing.T) {
 	f := newClusterPullFixture(t, 100)
 	f.follow(t, rank.Code{K: 1, M: 1}, false, otherHosts[0])
 	got := f.pullAndRead(t)
-	if got.stats.Pulled != 0 || got.gets != 9 || got.entries != 0 || got.hits != 0 {
-		t.Fatalf("the pull came to %+v; want nothing kept and every read of the store", got)
+	if got.stats.Pulled != got.stats.Bytes || got.gets != 9 || got.entries != 0 || got.hits != 0 {
+		t.Fatalf("the pull came to %+v; want it all handed over, nothing kept and every read of the store", got)
 	}
 }

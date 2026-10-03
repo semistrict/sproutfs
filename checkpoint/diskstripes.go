@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/internal/blob"
 	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/rank"
@@ -175,25 +176,26 @@ func (d *cacheDisk) write(ctx context.Context, key diskKey, envelope []byte, kin
 	if len(kept) > 1 {
 		sim.Probe(ctx, ProbeDiskSeveralStripes)
 	}
-	return d.writeStripes(ctx, key, kept, kind)
+	_, err = d.writeStripes(ctx, key, kept, kind)
+	return err
 }
 
 // writeStripes keeps stripes of key's envelope, as items next to each other
-// in one write, leaving out those the disk already holds. A write the disk
-// refuses reports ErrDiskRefused. A write the disk fails is logged and
-// forgotten, and reports nothing.
-func (d *cacheDisk) writeStripes(ctx context.Context, key diskKey, stripes []stripe.Stripe, kind WriteKind) error {
+// in one write, leaving out those the disk already holds, and reports how
+// many it wrote. A write the disk refuses reports ErrDiskRefused. A write the
+// disk fails is logged and forgotten, and reports nothing.
+func (d *cacheDisk) writeStripes(ctx context.Context, key diskKey, stripes []stripe.Stripe, kind WriteKind) (int, error) {
 	for _, s := range stripes {
 		if !storableStripe(s) {
-			return d.refuse("%v cannot be stored", s)
+			return 0, d.refuse("%v cannot be stored", s)
 		}
 	}
 	size, table := itemsBytes(key, stripes)
 	if !storable(key) || size+table+diskTrailerSize > d.regionBytes {
-		return d.refuse("%d bytes do not fit in a region of %d", size, d.regionBytes)
+		return 0, d.refuse("%d bytes do not fit in a region of %d", size, d.regionBytes)
 	}
 	if err := d.lockWriter(ctx); err != nil {
-		return err
+		return 0, err
 	}
 	defer d.unlockWriter()
 	d.mu.Lock()
@@ -206,20 +208,81 @@ func (d *cacheDisk) writeStripes(ctx context.Context, key diskKey, stripes []str
 	indexed, stopped := d.index.used, d.stopped
 	d.mu.Unlock()
 	if len(missing) == 0 {
-		return nil
+		return 0, nil
 	}
 	if stopped {
-		return d.refuse("the cache is closed")
+		return 0, d.refuse("the cache is closed")
 	}
 	if indexed+int64(len(missing))*maximumInsertCharge > d.indexLimit {
-		return d.refuse("the index holds %d bytes of %d", indexed, d.indexLimit)
+		return 0, d.refuse("the index holds %d bytes of %d", indexed, d.indexLimit)
 	}
 	size, _ = itemsBytes(key, missing)
 	if !d.budget.Admit(size, kind) {
-		return d.refuse("the write budget refused %d bytes", size)
+		return 0, d.refuse("the write budget refused %d bytes", size)
 	}
-	_, err := d.append(ctx, key, missing, kind)
-	return err
+	stored, err := d.append(ctx, key, missing, kind)
+	if !stored {
+		return 0, err
+	}
+	return len(missing), err
+}
+
+// holdsStripe reports whether the index holds the stripe code names of key's
+// envelope.
+func (d *cacheDisk) holdsStripe(key diskKey, code diskCode) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	_, found := d.index.lookup(key, code, false, false)
+	return found
+}
+
+// windowKey is the disk's key for page at of window.
+func windowKey(window rank.Window, at uint32) diskKey {
+	return diskKey{cacheKey: cacheKey{Identity: control.Identity{Ref: window.Ref, Volume: window.Volume,
+		Page: window.Page(at)}, segment: window.Segment}, span: uint16(max(window.Pages, 1))}
+}
+
+// heldPages is the pages of window, among pages, the disk holds a stripe of
+// under code, of any index; pages nil asks for every page of the window.
+func (d *cacheDisk) heldPages(window rank.Window, pages []uint32, code rank.Code) []uint32 {
+	if pages == nil {
+		pages = make([]uint32, max(window.Pages, 1))
+		for at := range pages {
+			pages[at] = uint32(at)
+		}
+	}
+	var held []uint32
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for _, page := range pages {
+		key := windowKey(window, page)
+		for index := range code.Width() {
+			if _, found := d.index.lookup(key, indexOf(code, index), false, false); found {
+				held = append(held, page)
+				break
+			}
+		}
+	}
+	return held
+}
+
+// holdsAnyOf reports whether the disk holds a stripe of any of pages of
+// window under code; pages nil asks of every page.
+func (d *cacheDisk) holdsAnyOf(window rank.Window, pages []uint32, code rank.Code) bool {
+	return len(d.heldPages(window, pages, code)) > 0
+}
+
+// forgetStripe drops one stripe from the index, as a reader that found it
+// wrong asks.
+func (d *cacheDisk) forgetStripe(ctx context.Context, key diskKey, code diskCode, cause error) bool {
+	d.mu.Lock()
+	location, found := d.index.lookup(key, code, false, false)
+	d.mu.Unlock()
+	if !found {
+		return false
+	}
+	d.forget(ctx, location, key, cause)
+	return true
 }
 
 // has reports whether the disk holds every stripe of key's envelope this

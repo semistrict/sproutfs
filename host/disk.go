@@ -225,6 +225,22 @@ func cacheDiskReport(file string, disk checkpoint.DiskStats) *hostapi.CacheDisk 
 			GivenBack: disk.GivenBackOnOpen}}
 }
 
+// cacheFillReport is what the host's fills of the cluster's disk cache did,
+// as /status reports it: nothing for a host that keeps no cache disk.
+func cacheFillReport(disk checkpoint.DiskStats, fill checkpoint.FillStats) *hostapi.CacheFill {
+	if disk.Identity.IsZero() {
+		return nil
+	}
+	dropped := make(map[string]uint64, len(fill.Dropped))
+	for _, reason := range checkpoint.DropReasons() {
+		dropped[reason.String()] = fill.Dropped[reason]
+	}
+	return &hostapi.CacheFill{FromReads: fill.FromReads, FromPublications: fill.FromPublications,
+		WithoutRight: fill.WithoutRight, RightsGranted: fill.RightsGranted, Sent: fill.Sent,
+		SentBytes: fill.SentBytes, Kept: fill.Kept, Dropped: dropped, Duplicates: fill.Duplicates,
+		Refused: fill.Refused, QueuedBytes: fill.Queued, QueueBytes: fill.QueueBytes}
+}
+
 // stagedWriter stages an image on the host's disk. It counts what the image
 // holds as a promise, and before each region it asks the limiter whether the
 // disk can keep one more, so an import the disk cannot hold is refused rather

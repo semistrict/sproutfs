@@ -120,10 +120,10 @@ func (s *Store) loadPages(ctx context.Context, geometry Geometry, volume string,
 		for at := range wanted {
 			wanted[at] = at
 		}
-		data, err := s.fetchMembers(ctx, geometry, run, keys, wanted)
+		data, _, err := s.fetchMembers(ctx, geometry, run, keys, wanted)
 		return data, func() {}, err
 	}
-	return s.cache.getAll(ctx, keys, func(ctx context.Context, wanted []int) ([][]byte, error) {
+	return s.cache.getAll(ctx, keys, func(ctx context.Context, wanted []int) ([][]byte, []envelope, error) {
 		return s.fetchMembers(ctx, geometry, run, keys, wanted)
 	})
 }
@@ -145,9 +145,10 @@ func fillPages(run []pageRead, data [][]byte) {
 // The ones the page cache's disk holds are read from it, and the rest from the
 // store, grouped into as few requests as the layout allows. keys names every
 // page of the run. The result holds one decoded page per position, in the order
-// the positions were given.
+// the positions were given, and the envelopes the store served, which the
+// cache fills the cluster with once the run's callers have their pages.
 func (s *Store) fetchMembers(ctx context.Context, geometry Geometry, run []pageRead, keys []cacheKey,
-	wanted []int) ([][]byte, error) {
+	wanted []int) ([][]byte, []envelope, error) {
 	data := make([][]byte, len(wanted))
 	// remote is the positions within wanted the disk did not have, and
 	// positions the pages of the run they are.
@@ -161,13 +162,15 @@ func (s *Store) fetchMembers(ctx context.Context, geometry Geometry, run []pageR
 		remote, positions = append(remote, at), append(positions, position)
 	}
 	if len(remote) == 0 {
-		return data, context.Cause(ctx)
+		return data, nil, context.Cause(ctx)
 	}
+	// What the store served, by position in remote, to fill the cluster with.
+	served := make([]envelope, len(remote))
 	serve := func(ctx context.Context, held readExtent, encoded []byte) error {
 		for _, at := range held.members {
 			member := run[positions[at]].at
-			page, err := s.codecs.Decode(ctx,
-				encoded[member.offset-held.offset:][:member.length], int(geometry.PageSize))
+			sealed := encoded[member.offset-held.offset:][:member.length]
+			page, err := s.codecs.Decode(ctx, sealed, int(geometry.PageSize))
 			if err != nil {
 				return errors.Join(ErrCorrupt, err)
 			}
@@ -175,13 +178,15 @@ func (s *Store) fetchMembers(ctx context.Context, geometry Geometry, run []pageR
 				return ErrCorrupt
 			}
 			data[remote[at]] = page
+			served[at] = envelope{key: diskKey{cacheKey: keys[positions[at]], span: windowSpan(geometry)},
+				data: sealed}
 		}
 		return nil
 	}
 	if err := s.readExtents(ctx, groupMembers(run, positions), serve); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return data, nil
+	return data, served, nil
 }
 
 // validPage reports whether a decoded member is a page a volume can hold: whole

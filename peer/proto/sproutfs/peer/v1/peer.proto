@@ -99,6 +99,10 @@ message Window {
   string volume = 3;
   bool segment = 4;
   uint64 number = 5;
+  // pages is how many pages of its volume the window spans: one for a
+  // segment and at a 2 MiB page, 512 at 4 KiB. A window's pages are counted
+  // from its first.
+  uint32 pages = 6;
 }
 
 // StripeItem is one stripe a frame's payload carries: the page of the window
@@ -137,7 +141,8 @@ message Stripes {
 }
 
 // Keep asks a cache to write the stripes its payload carries. A repair is the
-// lowest of every write.
+// lowest of every write; a fill from a publication is kept longest when the
+// cache's write budget runs low, and one from a read of the store before it.
 message Keep {
   bytes cache = 1;
   Window window = 2;
@@ -145,6 +150,7 @@ message Keep {
   uint32 m = 4;
   repeated StripeItem items = 5;
   bool repair = 6;
+  bool publication = 7;
 }
 
 // Kept answers a Keep: written, or dropped.

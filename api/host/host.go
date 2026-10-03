@@ -606,6 +606,46 @@ type Status struct {
 	// found there when the host started. It is absent on a host that keeps no
 	// cache disk.
 	CacheDisk *CacheDisk `json:"cache_disk,omitempty"`
+	// CacheFill is what this host's fills of the cluster's disk cache did.
+	// It is absent on a host that keeps no cache disk.
+	CacheFill *CacheFill `json:"cache_fill,omitempty"`
+}
+
+// CacheFill is what one host's fills of the cluster's disk cache did, in
+// stripes unless it says otherwise. A fill puts the stripes of a window a
+// read of the store or a publication had in hand on the caches the list of
+// caches holds them on: this host's own through its queue of writes to its
+// disk, the rest as keeps.
+type CacheFill struct {
+	// FromReads and FromPublications count the windows this host filled from
+	// its reads of the store, once rank 1 gave it the fill right, and from
+	// its publications and pulls.
+	FromReads        uint64 `json:"from_reads"`
+	FromPublications uint64 `json:"from_publications"`
+	// WithoutRight counts the windows this host read from the store and sent
+	// nothing of, for want of the fill right, and RightsGranted the fill
+	// rights its cache gave out as the window's rank 1.
+	WithoutRight  uint64 `json:"without_right"`
+	RightsGranted uint64 `json:"rights_granted"`
+	// Sent is the stripes this host's keeps carried that their holders kept,
+	// and SentBytes the bytes of those keeps.
+	Sent      uint64 `json:"sent"`
+	SentBytes uint64 `json:"sent_bytes"`
+	// Kept is the stripes fills wrote to this host's disk: its own fills'
+	// and what its peers' keeps carried.
+	Kept uint64 `json:"kept"`
+	// Dropped is the stripes dropped, by reason: queue, rate, budget, busy,
+	// down, stale, peer, disk or failed.
+	Dropped map[string]uint64 `json:"dropped"`
+	// Duplicates is the stripes this cache already held or was writing, and
+	// Refused the stripes of keeps it refused: for a window its own list
+	// does not rank it for, or that did not hold together.
+	Duplicates uint64 `json:"duplicates"`
+	Refused    uint64 `json:"refused"`
+	// QueuedBytes is what the queue of writes to this host's disk holds now,
+	// and QueueBytes its bound.
+	QueuedBytes int64 `json:"queued_bytes"`
+	QueueBytes  int64 `json:"queue_bytes"`
 }
 
 // CacheDisk is the page cache's disk on one host: the file it claimed, what

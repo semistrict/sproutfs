@@ -316,18 +316,31 @@ func TestHoldersGoRoundAShortList(t *testing.T) {
 
 // A window is one volume's aligned 2 MiB span of one checkpoint's pages: 512
 // pages at 4 KiB, one at 2 MiB. A segment is a window of its own, apart from
-// the span of the same number, and so is every other checkpoint's span.
+// the span of the same number, and so is every other checkpoint's span. A
+// window knows how many pages it spans, which turns a page of it into a page
+// of the volume, and which no rank depends on.
 func TestAWindowIsOneSpanOfOneCheckpointsVolume(t *testing.T) {
 	ref := control.Ref{VM: "vm-w", Sequence: 7}
 	page := func(n uint64) control.Identity { return control.Identity{Ref: ref, Volume: "ram0", Page: n} }
-	if got := PageWindow(page(511), 4096); got != (Window{Ref: ref, Volume: "ram0", Number: 0}) {
+	if got := PageWindow(page(511), 4096); got != (Window{Ref: ref, Volume: "ram0", Number: 0, Pages: 512}) {
 		t.Fatalf("page 511 of a 4 KiB volume is in %+v", got)
 	}
-	if got := PageWindow(page(512), 4096); got != (Window{Ref: ref, Volume: "ram0", Number: 1}) {
-		t.Fatalf("page 512 of a 4 KiB volume is in %+v", got)
+	if got := PageWindow(page(512), 4096); got != (Window{Ref: ref, Volume: "ram0", Number: 1, Pages: 512}) ||
+		got.Page(5) != 517 {
+		t.Fatalf("page 512 of a 4 KiB volume is in %+v, whose page 5 is %d", got, got.Page(5))
 	}
-	if got := PageWindow(page(3), 2<<20); got != (Window{Ref: ref, Volume: "ram0", Number: 3}) {
-		t.Fatalf("page 3 of a 2 MiB volume is in %+v", got)
+	if got := PageWindow(page(3), 2<<20); got != (Window{Ref: ref, Volume: "ram0", Number: 3, Pages: 1}) ||
+		got.Page(0) != 3 {
+		t.Fatalf("page 3 of a 2 MiB volume is in %+v, whose page 0 is %d", got, got.Page(0))
+	}
+	if got := SegmentWindow(ref, "ram0", 9); got != (Window{Ref: ref, Volume: "ram0", Segment: true, Number: 9,
+		Pages: 1}) {
+		t.Fatalf("segment 9 is the window %+v", got)
+	}
+	spanned := PageWindow(page(512), 4096)
+	if unspanned := (Window{Ref: ref, Volume: "ram0", Number: 1}); spanned.digest() != unspanned.digest() ||
+		spanned.InShare(50) != unspanned.InShare(50) {
+		t.Fatal("how many pages a window spans changed what ranks it")
 	}
 	digests := map[uint64]Window{}
 	for _, window := range []Window{
