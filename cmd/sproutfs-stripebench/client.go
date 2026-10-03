@@ -9,6 +9,7 @@ import (
 	"math/rand/v2"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -38,6 +39,11 @@ type readResult struct {
 	requests int  // the stripe requests the read sent
 	second   bool // it asked the rest of the holders after the delay
 	refused  bool // it would have, but the budget held less than a request
+
+	// On a hit, path is where the time went, and critical the server that
+	// sent the stripe that completed the read.
+	path     path
+	critical int
 }
 
 // client reads objects from the servers.
@@ -53,6 +59,8 @@ type client struct {
 	// hedgers holds one hedger per code, since stripes of different sizes
 	// take different times.
 	hedgers []*hedger
+	// log is the running case's log, nil between cases.
+	log atomic.Pointer[caseLog]
 }
 
 func newClient(set objectSet, reader uint64, hedgeMin time.Duration) (*client, error) {
@@ -88,8 +96,10 @@ func (c *client) read(mode readMode, codeIndex int, object uint32, live []int, s
 	type sent struct {
 		peer *peer
 		id   uint64
+		at   time.Time
 	}
 	asked := make([]sent, 0, len(holders))
+	log := c.log.Load()
 	stripes := make([][]byte, l.n())
 	defer func() {
 		for _, a := range asked {
@@ -112,11 +122,13 @@ func (c *client) read(mode readMode, codeIndex int, object uint32, live []int, s
 	// ask asks the next n holders not yet asked.
 	ask := func(n int) error {
 		for _, s := range holders[next : next+n] {
+			at := time.Now()
+			log.ask(s)
 			id, err := c.peers[s].send(request{op: opRead, code: uint8(codeIndex), object: object}, ch)
 			if err != nil {
 				return err
 			}
-			asked = append(asked, sent{c.peers[s], id})
+			asked = append(asked, sent{c.peers[s], id, at})
 		}
 		next += n
 		return nil
@@ -138,9 +150,14 @@ func (c *client) read(mode readMode, codeIndex int, object uint32, live []int, s
 	var res readResult
 	waited := false
 	hits := 0
+	// last is the stripe that completed the read, and taken when the read
+	// took it.
+	var last reply
+	var taken time.Time
 	for answered := 0; hits < l.k && answered < len(asked); {
 		select {
 		case r := <-ch:
+			taken = time.Now()
 			answered++
 			if r.err != nil {
 				return readResult{}, fmt.Errorf("server %d: %w", r.server, r.err)
@@ -160,6 +177,7 @@ func (c *client) read(mode readMode, codeIndex int, object uint32, live []int, s
 				}
 				stripes[r.stripe] = r.data
 				hits++
+				last = r
 			case statusRefused:
 				return readResult{}, fmt.Errorf("server %d refused a read: %s", r.server, r.data)
 			default:
@@ -192,12 +210,28 @@ func (c *client) read(mode readMode, codeIndex int, object uint32, live []int, s
 		h.done(time.Since(began), waited)
 	}
 	out := c.bufs.get(l.objectBytes)
+	joining := time.Now()
 	decoded, err := l.join(stripes, out)
 	if err != nil {
 		c.bufs.put(out)
 		return readResult{}, err
 	}
-	res.outcome, res.latency, res.object, res.decoded = hit, time.Since(scheduled), out, decoded
+	rebuilt := time.Now()
+	res.outcome, res.latency, res.object, res.decoded = hit, rebuilt.Sub(scheduled), out, decoded
+	i := slices.IndexFunc(asked, func(a sent) bool { return a.peer.index == last.server && a.id == last.id })
+	trip := last.arrived.Sub(asked[i].at)
+	server := last.queued + last.read + last.waited
+	res.critical = last.server
+	res.path = path{
+		Issue: began.Sub(scheduled),
+		Hedge: asked[i].at.Sub(began),
+		Queue: last.queued, Read: last.read, Wait: last.waited,
+		// The server's time is on its own clock, so the rest of a round trip
+		// that took no time at all on the client's could come out below zero.
+		Network: max(trip-server, 0),
+		Deliver: taken.Sub(last.arrived),
+		Decode:  rebuilt.Sub(joining),
+	}
 	return res, nil
 }
 
@@ -244,6 +278,8 @@ type schedule struct {
 	slow        int
 	slowDelay   time.Duration
 	seed        uint64
+	// tailFrom is the latency from which a hit counts in the case's tail.
+	tailFrom time.Duration
 }
 
 // setModes tells every server how to answer during a case.
@@ -301,16 +337,17 @@ func newExpected(set objectSet) (*expected, error) {
 
 // runCase reads at the schedule's rate from start for its duration, under
 // one condition, one code and one read mode, and records what it saw.
-func (c *client) runCase(ctx context.Context, s schedule, cond condition, codeIndex int, mode readMode,
-	start time.Time, want *expected) (caseResult, error) {
+func (c *client) runCase(ctx context.Context, s schedule, k caseKey, start time.Time, want *expected) (caseResult, error) {
 	medium := "memory"
 	if s.disk {
 		medium = "disk"
 	}
+	cond, codeIndex, mode := k.cond, k.code, k.mode
 	code := c.layouts[codeIndex].code.String()
 	res := caseResult{
 		Name: fmt.Sprintf("%s/%s/%s/%s/%s", s.load, medium, cond.name, code, mode),
-		Load: s.load, Medium: medium, Condition: cond.name, Code: code, Read: mode.String(),
+		Load: s.load, Medium: medium, Condition: cond.name, Code: code, Read: mode.String(), Repeat: k.repeat,
+		Tail: tailStats{From: s.tailFrom},
 	}
 	if err := c.setModes(s, cond); err != nil {
 		return res, err
@@ -323,12 +360,20 @@ func (c *client) runCase(ctx context.Context, s schedule, cond condition, codeIn
 	if err != nil {
 		return res, err
 	}
+	if wait := time.Until(start); wait > 0 {
+		time.Sleep(wait)
+	}
+	log := newCaseLog(len(c.peers))
+	c.log.Store(log)
+	defer c.log.Store(nil)
 	cpuBefore, err := processCPU()
 	if err != nil {
 		return res, err
 	}
-	if wait := time.Until(start); wait > 0 {
-		time.Sleep(wait)
+	runtimeBefore := sampleRuntime()
+	hostBefore, err := readHost()
+	if err != nil {
+		return res, err
 	}
 	res.Started = time.Now()
 
@@ -358,6 +403,11 @@ func (c *client) runCase(ctx context.Context, s schedule, cond condition, codeIn
 			res.Latency.observe(r.latency)
 			if r.decoded {
 				res.Decoded++
+			}
+			res.Network.observe(r.path.Network)
+			res.Decode.observe(r.path.Decode)
+			if r.latency >= s.tailFrom {
+				res.Tail.observe(r.path, r.critical)
 			}
 		case miss:
 			res.Misses++
@@ -419,15 +469,32 @@ func (c *client) runCase(ctx context.Context, s schedule, cond condition, codeIn
 	if err := context.Cause(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		return res, err
 	}
-	after, err := c.serverStats()
-	if err != nil {
-		return res, err
-	}
 	cpuAfter, err := processCPU()
 	if err != nil {
 		return res, err
 	}
 	res.ClientCPU = cpuAfter - cpuBefore
+	res.Client = sampleRuntime().since(runtimeBefore)
+	hostAfter, err := readHost()
+	if err != nil {
+		return res, err
+	}
+	res.Host = hostAfter.since(hostBefore)
+	// The replies that come after their read had what it needed still say
+	// what the servers did. Wait for them, but not for a stalled server.
+	log.settle(c.timeout)
+	c.log.Store(nil)
+	// A read loop may still add a late reply to the log, so take copies.
+	log.mu.Lock()
+	res.Asked = slices.Clone(log.asked)
+	res.ServerQueued.add(log.queued)
+	res.ServerRead.add(log.read)
+	res.ServerWaited.add(log.waited)
+	log.mu.Unlock()
+	after, err := c.serverStats()
+	if err != nil {
+		return res, err
+	}
 	for i := range after {
 		d := after[i].minus(before[i])
 		res.Servers.CPU += d.CPU

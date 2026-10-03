@@ -39,13 +39,16 @@ func bucketLower(i int) time.Duration {
 	return time.Duration(uint64(i%subBuckets+subBuckets) << shift)
 }
 
-func (h *histogram) observe(d time.Duration) {
+func (h *histogram) observe(d time.Duration) { h.observeN(d, 1) }
+
+// observeN counts n observations of d.
+func (h *histogram) observeN(d time.Duration, n uint64) {
 	if h.counts == nil {
 		h.counts = make(map[int]uint64)
 	}
-	h.counts[bucketOf(d)]++
-	h.total++
-	h.sum += d
+	h.counts[bucketOf(d)] += n
+	h.total += n
+	h.sum += d * time.Duration(n)
 	h.max = max(h.max, d)
 }
 

@@ -13,10 +13,15 @@ import (
 // reply is one server's answer to one request.
 type reply struct {
 	server int
+	id     uint64
 	status byte
 	stripe int
 	data   []byte
 	err    error
+	// serverTimes is the server's time on a read, as the reply says.
+	serverTimes
+	// arrived is when the read loop had read the whole reply.
+	arrived time.Time
 }
 
 // peer is the client's one connection to one server. Requests go out as they
@@ -25,6 +30,9 @@ type peer struct {
 	index int
 	conn  net.Conn
 	bufs  *buffers
+	// log is the running case's log, which every reply to a read is added
+	// to, wanted or not.
+	log *atomic.Pointer[caseLog]
 
 	wmu  sync.Mutex
 	next atomic.Uint64
@@ -35,8 +43,9 @@ type peer struct {
 	done    chan struct{}
 }
 
-func newPeer(index int, conn net.Conn, bufs *buffers) *peer {
-	p := &peer{index: index, conn: conn, bufs: bufs, pending: make(map[uint64]chan<- reply), done: make(chan struct{})}
+func newPeer(index int, conn net.Conn, bufs *buffers, log *atomic.Pointer[caseLog]) *peer {
+	p := &peer{index: index, conn: conn, bufs: bufs, log: log,
+		pending: make(map[uint64]chan<- reply), done: make(chan struct{})}
 	go p.readLoop()
 	return p
 }
@@ -117,6 +126,10 @@ func (p *peer) readLoop() {
 				return
 			}
 		}
+		arrived := time.Now()
+		if h.status == statusHit || h.status == statusMiss {
+			p.log.Load().answer(h.serverTimes)
+		}
 		p.mu.Lock()
 		ch, ok := p.pending[h.id]
 		delete(p.pending, h.id)
@@ -125,7 +138,8 @@ func (p *peer) readLoop() {
 			p.bufs.put(data)
 			continue
 		}
-		ch <- reply{server: p.index, status: h.status, stripe: int(h.stripe), data: data}
+		ch <- reply{server: p.index, id: h.id, status: h.status, stripe: int(h.stripe), data: data,
+			serverTimes: h.serverTimes, arrived: arrived}
 	}
 }
 

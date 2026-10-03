@@ -33,7 +33,7 @@ case ${1:-} in
         [[ $# -ge 3 ]] || { echo "usage: $0 read NAME SERVER-LIST CLIENT-FLAGS..." >&2; exit 2; }
         name=$2 servers=$3
         shift 3
-        timeout --signal=TERM --kill-after=30s 40m \
+        timeout --signal=TERM --kill-after=30s 3h \
             "$bench" client -servers "$servers" -name "$(hostname)" -out "results/$name" "$@" \
             > /dev/null 2> "results/$name.log"
         ;;
