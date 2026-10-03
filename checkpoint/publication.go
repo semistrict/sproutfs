@@ -610,9 +610,13 @@ type partWriter struct {
 	keep     *Pull
 	members  []keptMember
 	geometry map[string]Geometry
-	wait     sync.WaitGroup
-	once     sync.Once
-	failure  error
+	// handed is closed once the part before the next one has been handed to
+	// the pull and the cluster, or never will be: see handOver. It is nil
+	// before the first part.
+	handed  chan struct{}
+	wait    sync.WaitGroup
+	once    sync.Once
+	failure error
 }
 
 // admit takes this writer's slot of the store's builder budget, once. A
@@ -747,18 +751,35 @@ func (w *partWriter) flush(ctx context.Context) error {
 	if err := w.store.acquire(ctx); err != nil {
 		return err
 	}
+	before, handed := w.handed, make(chan struct{})
+	w.handed = handed
 	w.wait.Add(1)
 	go func() {
 		defer w.wait.Done()
-		defer w.store.release()
+		defer close(handed)
 		early := w.fillEarly(ctx, data, members)
-		if err := w.put(ctx, key, data); err != nil {
+		err := w.put(ctx, key, data)
+		w.store.release()
+		if err != nil {
 			w.record(err)
 			return
 		}
-		w.durable(ctx, data, members, early)
+		w.handOver(ctx, before, data, members, early)
 	}()
 	return nil
+}
+
+// handOver hands a durable part over once the part before it has been, so
+// the parts reach the pull and the cluster's one worker of fills in their own
+// order. Uploads that end at one instant would otherwise hand theirs over in
+// the order the Go scheduler runs them, and a fill the queue or the rate
+// drops would be a different one on every run of a seed. before is the part
+// before's, nil for the first part.
+func (w *partWriter) handOver(ctx context.Context, before <-chan struct{}, data []byte, members []keptMember, early bool) {
+	if before != nil && !w.store.cache.bug("fill-parts-in-any-order") {
+		<-before
+	}
+	w.durable(ctx, data, members, early)
 }
 
 // durable hands a part whose PUT has succeeded to the pull that keeps its
@@ -831,7 +852,7 @@ func (w *partWriter) finish(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		w.durable(ctx, sealed, members, early)
+		w.handOver(ctx, w.handed, sealed, members, early)
 	}
 	w.wait.Wait()
 	return w.failure

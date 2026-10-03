@@ -90,6 +90,12 @@
     "purpose": "Ask the source for every page a destination loads, including one it published since the handoff, which answers with the version the guest wrote past. Only a destination whose arena gives back a page it published while its source still serves loads one."
   },
   {
+    "id": "migration-stream-in-any-order",
+    "package": "vmmigrate",
+    "run": "^TestAStreamPageWaitsForThePageBeforeItToBeAskedFor$",
+    "purpose": "Fault a destination's stream pages all at once, so the scheduler orders their slots, evictions and requests."
+  },
+  {
     "id": "pager-forget-spill",
     "package": "internal/simtest",
     "run": "^TestSeededTopologyUnderBuggify$",
@@ -478,5 +484,11 @@
     "package": "checkpoint",
     "run": "^TestAHostSendsItsKeepsOneAtATime$",
     "purpose": "Ask fill rights and send keeps on goroutines of their own, so the scheduler orders them on the link."
+  },
+  {
+    "id": "fill-parts-in-any-order",
+    "package": "checkpoint",
+    "run": "^TestAPublicationHandsItsPartsOverInTheirOrder$",
+    "purpose": "Hand each part of a publication to the fills as its PUT ends, so the scheduler orders a host's fills."
   }
 ]

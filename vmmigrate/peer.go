@@ -472,6 +472,15 @@ func (b *PeerBacking) fromVolume(ctx context.Context, offset uint64, dst []byte)
 		return b.lost(page)
 	}
 	b.fromDisk.Add(int64(count))
+	return b.readVolume(ctx, offset, dst)
+}
+
+// readVolume reads a range of the volume. A stream's fault gives its turn up
+// as the read begins.
+func (b *PeerBacking) readVolume(ctx context.Context, offset uint64, dst []byte) error {
+	if give := turnOf(ctx); give != nil {
+		give()
+	}
 	return b.config.Volume.Load(ctx, offset, dst)
 }
 
@@ -493,6 +502,12 @@ func (b *PeerBacking) Load(ctx context.Context, offset uint64, dst []byte) error
 // Only the pages the source may hold the current bytes of are asked for; every
 // other page is read from the volume. See sourced.
 func (b *PeerBacking) LoadUnpublished(ctx context.Context, offset uint64, dst []byte) ([]bool, error) {
+	// A stream's fault holds its turn until its read is under way, which is
+	// when its first request is on the wire or its first read of the volume
+	// begins. See turns.
+	if give := turnOf(ctx); give != nil {
+		ctx = peer.WithSent(ctx, give)
+	}
 	size := uint64(b.config.PageSize)
 	if b.gone() || offset%size != 0 || uint64(len(dst))%size != 0 || len(dst) == 0 {
 		return nil, b.fromVolume(ctx, offset, dst)
@@ -602,7 +617,7 @@ func (b *PeerBacking) fill(ctx context.Context, first uint64, dst []byte, presen
 		if page, only := b.onlyOnSource(first+uint64(index), run-index); only {
 			return b.lost(page)
 		}
-		if err := b.config.Volume.Load(ctx, (first+uint64(index))*uint64(size), dst[index*size:run*size]); err != nil {
+		if err := b.readVolume(ctx, (first+uint64(index))*uint64(size), dst[index*size:run*size]); err != nil {
 			return err
 		}
 		b.fromDisk.Add(int64(run - index))

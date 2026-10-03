@@ -1109,8 +1109,12 @@ things fill:
   the read's callers have their pages, never before.
 - **A publication.** Each part is filled once its PUT has succeeded, and the
   segments once the index object's has. So no cache holds the bytes of a part
-  the store refused. Every publication fills: an interval checkpoint, a
-  capture, a stop, a fork point and a template import.
+  the store refused. The parts are handed over in their own order: a part
+  whose PUT succeeded first waits for the parts before it. A publication's
+  uploads run beside each other, and handed over as they ended, the fills
+  would reach the queue in the order the Go scheduler ran the uploads. Every
+  publication fills: an interval checkpoint, a capture, a stop, a fork point
+  and a template import.
 - **A pull.** What a pull copies of a window inside the share is a fill.
 
 A fill splits each envelope with `stripe.Split` and puts stripe i on the cache

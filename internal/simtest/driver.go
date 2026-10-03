@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"testing/synctest"
 
 	hostapi "github.com/semistrict/sproutfs/api/host"
 	"github.com/semistrict/sproutfs/platform/sim"
@@ -157,6 +158,7 @@ func (d *Driver) Run(ctx context.Context) error {
 				delete(live, w.fault)
 			}
 		}
+		d.quiesce()
 		if err := d.world.Settle(ctx); err != nil {
 			return fmt.Errorf("step %d: %w", step, err)
 		}
@@ -210,14 +212,24 @@ func (d *Driver) Run(ctx context.Context) error {
 }
 
 func (d *Driver) begin(ctx context.Context, fault Fault) {
+	d.quiesce()
 	err := fault.Begin(ctx, d.world)
 	d.trace(fault, "begin", err)
 }
 
 func (d *Driver) end(ctx context.Context, fault Fault) {
+	d.quiesce()
 	err := fault.End(ctx, d.world)
 	d.trace(fault, "end", err)
 }
+
+// quiesce waits until the world has done everything it can at this instant,
+// which is where the driver changes it: each fault it begins or ends, and each
+// step. Work still running at the instant — a publication whose retry is due,
+// or traffic a fault that just ended let go of — would otherwise race the
+// driver's next change, and the Go scheduler would decide whether a part
+// reached the store before the store came back.
+func (d *Driver) quiesce() { synctest.Wait() }
 
 // trace records every fault start and end beside the adapter operations they
 // perturb, so the trace of a failing seed says what was on when it failed.

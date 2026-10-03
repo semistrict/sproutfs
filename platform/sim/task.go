@@ -31,6 +31,19 @@ func taskName(ctx context.Context) string {
 	return name
 }
 
+// Admit is Runtime.Admit for production code, which finds the runtime in ctx.
+// It is where callers that one completion released together, such as the
+// waiters of a shared load, go on one at a time in an order a controlled run
+// chooses, rather than in the order the Go scheduler runs them. Outside a
+// controlled run, and outside a simulation, it does nothing.
+func Admit(ctx context.Context, resource string) error {
+	r := RuntimeFrom(ctx)
+	if r == nil {
+		return nil
+	}
+	return r.Admit(ctx, resource)
+}
+
 // Admit chooses which logical caller consumes a shared adapter sequence. I/O
 // completion scheduling alone cannot distinguish two concurrent identical RPCs
 // whose callers will do different work when their replies arrive.
