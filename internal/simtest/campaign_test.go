@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/semistrict/sproutfs/checkpoint"
 	"github.com/semistrict/sproutfs/internal/knobs"
 	"github.com/semistrict/sproutfs/internal/simtest"
 	"github.com/semistrict/sproutfs/internal/testsoak"
@@ -31,7 +32,7 @@ func TestSeededTopologyCampaign(t *testing.T) {
 	for _, seed := range []uint64{1, 7, 23} {
 		t.Run(fmt.Sprintf("seed-%d", seed), func(t *testing.T) {
 			testsoak.Measure(t, campaignName, seed, func(t *testing.T) *sim.Runtime {
-				return runTopologyCampaign(t, seed, false)
+				return runTopologyCampaign(t, seed, false, cacheDrawn)
 			})
 		})
 	}
@@ -88,18 +89,19 @@ func reportTrace(t *testing.T, runtime *sim.Runtime) {
 // runTopologyCampaign is one seed: the topology it generates, the world that
 // runs it, the faults it injects over it, and the deployment check that has the
 // last word.
-func runTopologyCampaign(t *testing.T, seed uint64, buggify bool) *sim.Runtime {
+func runTopologyCampaign(t *testing.T, seed uint64, buggify bool, cache campaignCache) *sim.Runtime {
 	t.Helper()
 	runtime := newCampaignRuntime(seed, buggify)
 	prefix := newPrefix(t, "sproutfs/")
 	topology := simtest.NewTopology(runtime.Random("simtest/topology"))
-	t.Logf("seed=%d topology: %s", seed, topology)
+	clusterCache := cache.on(runtime)
+	t.Logf("seed=%d topology: %s, cluster cache %v", seed, topology, clusterCache)
 	// Everything below runs under the simulator's own context, which is what
 	// the probes and the buggified sites inside the real host, volume,
 	// checkpoint, control, pager and migration code consult.
 	ctx := sim.WithRuntime(t.Context(), runtime)
 	world := simtest.MustStart(t, ctx, simtest.Config{Runtime: runtime, Topology: topology,
-		Knobs: campaignKnobs(t, runtime, topology), Prefix: prefix, Log: t.Logf})
+		Knobs: campaignKnobs(t, runtime, topology), Prefix: prefix, Log: t.Logf, ClusterCache: clusterCache})
 	driver := simtest.NewDriver(world, runtime.Random("simtest/schedule"),
 		simtest.Faults(runtime.Random("simtest/faults"), topology), t.Logf)
 	runErr := driver.Run(ctx)
@@ -125,11 +127,39 @@ func runTopologyCampaign(t *testing.T, seed uint64, buggify bool) *sim.Runtime {
 		volume.AllowUnreferencedCheckpoint); err != nil {
 		t.Errorf("seed=%d: %v", seed, err)
 	}
+	// Hosts whose disks are one cache fill each other: a stripe one host
+	// sent was kept by another.
+	if kept := runtime.Probes()[checkpoint.ProbeKeepKept]; clusterCache && kept == 0 {
+		t.Errorf("seed=%d: the hosts' caches kept no stripe a peer sent them", seed)
+	}
 	if t.Failed() {
 		reportTrace(t, runtime)
 	}
 	t.Logf("seed=%d fingerprint=%#016x probes=%v", seed, runtime.Fingerprint(), runtime.Probes())
 	return runtime
+}
+
+// campaignCache is whether a campaign's hosts keep one cluster cache, on for
+// every window, or keep no cache disk, as a deployment that has not turned it
+// on runs. Both are what a deployment may run.
+type campaignCache int
+
+const (
+	// cacheDrawn is the seed's choice: half the seeds run each.
+	cacheDrawn campaignCache = iota
+	cacheOff
+	cacheOn
+)
+
+// on reports whether the hosts of a run keep the cluster cache.
+func (c campaignCache) on(runtime *sim.Runtime) bool {
+	switch c {
+	case cacheOff:
+		return false
+	case cacheOn:
+		return true
+	}
+	return runtime.Random("simtest/cluster-cache").Chance("on", 0.5)
 }
 
 // knobsEnabled reports the opt-in that lets a campaign draw a seed's own

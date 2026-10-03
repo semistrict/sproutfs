@@ -814,11 +814,11 @@ func (f *filler) keep(ctx context.Context, keep peer.Keep) error {
 		f.drop(ctx, DropDisk, len(stripes))
 		return fmt.Errorf("%w: its write budget is spent", peer.ErrDropped)
 	}
-	missing, bytes := f.claim(ctx, stripes)
+	missing, bytes := f.markWriting(ctx, stripes)
 	if len(missing) == 0 {
 		return fmt.Errorf("%w: the cache holds every stripe", peer.ErrDropped)
 	}
-	unclaim := func() {
+	unmark := func() {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		for _, s := range missing {
@@ -826,7 +826,7 @@ func (f *filler) keep(ctx context.Context, keep peer.Keep) error {
 		}
 	}
 	if !f.reserve(ctx, bytes) {
-		unclaim()
+		unmark()
 		f.drop(ctx, DropQueue, len(missing))
 		return fmt.Errorf("%w: the queue is full", peer.ErrDropped)
 	}
@@ -840,7 +840,7 @@ func (f *filler) keep(ctx context.Context, keep peer.Keep) error {
 	result := make(chan int, 1)
 	f.submit(func(ctx context.Context) {
 		defer f.release(bytes)
-		defer unclaim()
+		defer unmark()
 		result <- f.write(ctx, kind, missing)
 	})
 	select {
@@ -855,9 +855,9 @@ func (f *filler) keep(ctx context.Context, keep peer.Keep) error {
 	}
 }
 
-// claim marks the stripes of a keep the cache neither holds nor writes as
+// markWriting marks the stripes of a keep the cache neither holds nor writes as
 // being written, and reports them and their bytes. The rest are duplicates.
-func (f *filler) claim(ctx context.Context, stripes []keyedStripe) ([]keyedStripe, int64) {
+func (f *filler) markWriting(ctx context.Context, stripes []keyedStripe) ([]keyedStripe, int64) {
 	var missing []keyedStripe
 	var bytes int64
 	for _, s := range stripes {

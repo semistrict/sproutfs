@@ -25,6 +25,7 @@ import (
 	"github.com/semistrict/sproutfs/internal/testresource"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/sim"
+	"github.com/semistrict/sproutfs/rank"
 	"github.com/semistrict/sproutfs/vmmemory"
 	"github.com/semistrict/sproutfs/vmmigrate"
 	"github.com/semistrict/sproutfs/volume"
@@ -72,6 +73,11 @@ type Config struct {
 	// must not change, because the order those goroutines are created in is not
 	// an input the simulation is allowed to depend on.
 	ReverseMemoryRegions bool
+	// ClusterCache gives every host a page cache disk on its own disk, with
+	// the cluster cache on for every window, so the hosts fill each other:
+	// each reads a list of every host's cache, under the code of the table
+	// for the world's hosts, whenever a host starts.
+	ClusterCache bool
 }
 
 // World is a running deployment of one topology: every host is a real
@@ -150,6 +156,11 @@ type World struct {
 	guestSeq int
 	// closed reports that Close has run, after which nothing may be driven.
 	closed bool
+	// caches is each host's cache as the list of caches names it, by host,
+	// once the host has started with one: what an orchestrator lists, and
+	// code the code it lists them under.
+	caches map[string]rank.Cache
+	code   rank.Code
 	// mu guards what a kill and the operation it interrupts both touch: which
 	// host runs which VM, the guest running it, and the checkpoints it may have
 	// come back at. Everything else here is single-threaded — the driver runs
@@ -376,7 +387,8 @@ func start(ctx context.Context, config Config) (*World, error) {
 		instances: map[string]*instance{}, published: map[string]map[uint64]bool{},
 		points: map[string]pendingPoint{},
 		kept:   map[string]map[uint64]durableState{}, receivedGuests: map[string]int{},
-		ownership: newOwnership(config.Prefix.String())}
+		ownership: newOwnership(config.Prefix.String()), caches: map[string]rank.Cache{},
+		code: rank.CodeFor(len(config.Topology.Hosts))}
 	w.runtime.ObjectStore().Observe(w.ownership.observe)
 	for index := range config.Topology.Hosts {
 		id := config.Namespace + config.Topology.Hosts[index]
@@ -492,6 +504,10 @@ func (w *World) Exists(id string) bool {
 	return ok
 }
 
+// PartReads is how many reads of parts one host has made of the object store,
+// over every incarnation: what the pages its caches did not hold cost it.
+func (w *World) PartReads(index int) int64 { return w.hosts[index].objects.partReads.Load() }
+
 // Address is one host's own endpoint on the simulated network, which is what a
 // campaign that blocks every link among them names.
 func (w *World) Address(index int) platform.Address { return w.hosts[index].address }
@@ -511,7 +527,7 @@ func (w *World) logf(format string, args ...any) { w.config.Log(format, args...)
 // reaching the same store through the same view and serving the same address.
 func (w *World) hostConfig(h *hostState) host.Config {
 	k := w.config.Knobs
-	return host.Config{
+	config := host.Config{
 		Network:      &hostNetwork{Network: w.runtime.Network(), local: h.address, faults: &h.faults},
 		Resources:    testresource.New(),
 		ObjectStore:  h.objects,
@@ -533,6 +549,56 @@ func (w *World) hostConfig(h *hostState) host.Config {
 		// its retries by, so both come from the one knob. Zero disables it there
 		// and is the default here, which is why it crosses as a negative value.
 		LossWindow: hostLossWindow(k.LossWindow),
+	}
+	if w.config.ClusterCache {
+		// Each incarnation opens the cache's file on the host's own disk, which
+		// it reads back after a restart. The list is read whenever a host
+		// starts, never on a timer the world's clocks would have to reach.
+		config.Cache = checkpoint.CacheConfig{DiskBytes: clusterCacheBytes, DiskRegionBytes: clusterCacheRegion,
+			ClusterPercent: 100}
+		config.CacheList = host.CacheListConfig{Read: w.readCaches, Interval: -1}
+	}
+	return config
+}
+
+// The page cache disk of a world with the cluster cache on: room for every
+// window of a topology's VMs many times over, in regions of a few of its
+// 2 MiB pages.
+const (
+	clusterCacheBytes  = 256 << 20
+	clusterCacheRegion = 8 << 20
+)
+
+// readCaches is the list of caches as an orchestrator serves it: every host's
+// cache the world has started, a host that is down keeping its place, under
+// the world's code.
+func (w *World) readCaches(context.Context) (rank.List, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	caches := make([]rank.Cache, 0, len(w.caches))
+	for _, name := range slices.Sorted(maps.Keys(w.caches)) {
+		caches = append(caches, w.caches[name])
+	}
+	return rank.NewList(w.code, caches)
+}
+
+// listCache puts a host that has started on the list of caches under the
+// cache it keeps now, which a restart over a damaged file draws anew, and has
+// every host that is up read the list again. A read that fails leaves a host
+// with the list it held, as a host's own timer would.
+func (w *World) listCache(ctx context.Context, h *hostState) {
+	cache, ok := h.host.Cache()
+	w.mu.Lock()
+	if ok {
+		w.caches[h.name] = cache
+	}
+	w.mu.Unlock()
+	for index, other := range w.hosts {
+		if running := w.up(index); running != nil {
+			if err := running.RefreshCaches(ctx); err != nil {
+				w.logf("%s: reading the list of caches: %v", other.name, err)
+			}
+		}
 	}
 }
 
@@ -628,6 +694,19 @@ func (w *World) launch(h *hostState) error {
 			ready <- err
 			return
 		}
+		// The cache's file is the one thing on the host's disk that a
+		// restart reads back rather than empties.
+		closeCache := func() {}
+		if w.config.ClusterCache {
+			file, err := h.disk.Open(ctx, "cache", platform.OpenOptions{Create: true})
+			if err != nil {
+				release()
+				ready <- err
+				return
+			}
+			h.config.Cache.Disk = file
+			closeCache = func() { _ = file.Close() }
+		}
 		h.mu.Lock()
 		h.pager, h.started, h.guests = pager, map[string]*guest{}, nil
 		h.mu.Unlock()
@@ -648,6 +727,7 @@ func (w *World) launch(h *hostState) error {
 			// publishes what it still holds.
 			_ = started.Close(context.Background())
 		}
+		closeCache()
 		// A machine that died takes its memory with it: there is nothing to
 		// give back, and nothing left to wait for. Closing the pager anyway
 		// would hold its lock across a disk operation while whatever was still
@@ -663,7 +743,13 @@ func (w *World) launch(h *hostState) error {
 	if err != nil {
 		return err
 	}
-	return <-ready
+	if err := <-ready; err != nil {
+		return err
+	}
+	if w.config.ClusterCache {
+		w.listCache(w.ctx, h)
+	}
+	return nil
 }
 
 // spillBytes is what one incarnation's three pagers allocate for their spill
@@ -782,6 +868,9 @@ type hostStore struct {
 	dead   *atomic.Bool
 	failed bool
 	mu     sync.Mutex
+	// partReads counts the reads of parts this host made: what a page this
+	// host's cache did not hold cost it.
+	partReads atomic.Int64
 }
 
 func (s *hostStore) setFailed(failed bool) {
@@ -810,6 +899,9 @@ func (s *hostStore) Head(ctx context.Context, key platform.ObjectKey) (platform.
 func (s *hostStore) Get(ctx context.Context, request platform.GetRequest) (platform.GetResult, error) {
 	if err := s.blocked(); err != nil {
 		return platform.GetResult{}, err
+	}
+	if strings.Contains(request.Key.String(), "/part/") {
+		s.partReads.Add(1)
 	}
 	return s.ObjectStore.Get(ctx, request)
 }
@@ -2510,6 +2602,23 @@ func (w *World) Settle(ctx context.Context) error {
 		}
 	}
 	w.survey()
+	errs = append(errs, w.settleFills(ctx))
+	return errors.Join(errs...)
+}
+
+// settleFills waits until every host the deployment can reach has written or
+// dropped the fills the step before handed it, so a step's fills do not race
+// the next step's operation.
+func (w *World) settleFills(ctx context.Context) error {
+	if !w.config.ClusterCache {
+		return nil
+	}
+	var errs []error
+	for index := range w.hosts {
+		if running := w.reach(index); running != nil {
+			errs = append(errs, running.SettleFills(ctx))
+		}
+	}
 	return errors.Join(errs...)
 }
 
