@@ -468,10 +468,12 @@ computes what the host may hold:
 
 ```
 floor       = max(goal_free_bytes, goal_free_ratio × smoothed total)
-allowed     = min(held + smoothed available - promised_not_allocated - floor,
-                  goal_used)
-cache       = allowed - (spill promises + ephemeral promises + staging)
+room        = smoothed available + what the host holds now
+promises    = spill promises + ephemeral promises + staging
+cache       = min(room - floor, goal_used) - promises
 ```
+
+A promise is counted once, whole, whatever its file has allocated so far.
 
 The cache's share does not drop in one step at a mark. It falls gradually as
 free space nears the floor, across a band above it: by default a fifth of the

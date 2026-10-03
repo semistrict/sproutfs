@@ -3,7 +3,8 @@
 # read from one host against 4+1 and 4+2 reads of its stripes, at the median
 # and the tail (plans/disk-cache-2026-10-02.md, "How it is proved").
 #
-# Six n2-standard-8 hosts in one zone, each with one local NVMe SSD, each
+# Six hosts in one zone (n2-standard-8 unless SPROUTFS_STRIPES_MACHINE says
+# otherwise), each with one local NVMe SSD, each
 # serving its stripes of the same objects (cmd/sproutfs-stripebench). Four
 # passes, each of every code under every condition (healthy, slow, drained,
 # drained and slow, drained and stalled):
@@ -23,6 +24,9 @@
 # full-disk pass (defaults 500, 1500 and 500). The disk pass reads less: at
 # 500 a second from six hosts, each SSD serves about 260 MB/s of 4+2 stripes,
 # well inside one local SSD's 660 MB/s.
+# SPROUTFS_STRIPES_MACHINE is the hosts' machine type (default n2-standard-8).
+# A project with a small CPU quota runs n2-standard-4, at 10 Gbps rather
+# than 16.
 set -euo pipefail
 [[ ${SPROUTFS_STRIPES_DURATION:-} =~ ^([0-9]+(ms|s|m))?$ ]] || { echo "SPROUTFS_STRIPES_DURATION is a duration such as 20s" >&2; exit 2; }
 for knob in SPROUTFS_STRIPES_IDLE_RATE SPROUTFS_STRIPES_FULL_RATE SPROUTFS_STRIPES_DISK_RATE SPROUTFS_STRIPES_OBJECTS; do
@@ -33,6 +37,8 @@ idle_rate=${SPROUTFS_STRIPES_IDLE_RATE:-500}
 full_rate=${SPROUTFS_STRIPES_FULL_RATE:-1500}
 disk_rate=${SPROUTFS_STRIPES_DISK_RATE:-500}
 objects=${SPROUTFS_STRIPES_OBJECTS:-4096}
+machine=${SPROUTFS_STRIPES_MACHINE:-n2-standard-8}
+[[ $machine =~ ^n2-standard-[0-9]+$ ]] || { echo "SPROUTFS_STRIPES_MACHINE is an n2-standard machine type" >&2; exit 2; }
 conditions=healthy,slow,drained,drained-slow,drained-stall
 
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -84,7 +90,7 @@ create() {
 
 create_in() {
     "${cloud[@]}" compute instances create "${hosts[@]}" --zone="$1" \
-        --machine-type=n2-standard-8 --min-cpu-platform='Intel Cascade Lake' \
+        --machine-type="$machine" --min-cpu-platform='Intel Cascade Lake' \
         --image=ubuntu-2604-resolute-amd64-v20260907 --image-project=ubuntu-os-cloud \
         --boot-disk-size=20GB --boot-disk-type=pd-balanced --boot-disk-auto-delete \
         --local-ssd=interface=NVME \
