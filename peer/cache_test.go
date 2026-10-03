@@ -31,6 +31,9 @@ type stripeKey struct {
 type memoryCache struct {
 	identity  rank.Identity
 	dropKeeps bool
+	// reads, when set, is told of every read, which then waits for hold.
+	reads chan struct{}
+	hold  chan struct{}
 
 	mu      sync.Mutex
 	stripes map[stripeKey][]byte
@@ -43,7 +46,15 @@ func newMemoryCache(identity byte) *memoryCache {
 
 func (c *memoryCache) Identity() rank.Identity { return c.identity }
 
-func (c *memoryCache) ReadStripes(_ context.Context, read peer.StripeRead) (peer.Stripes, error) {
+func (c *memoryCache) ReadStripes(ctx context.Context, read peer.StripeRead) (peer.Stripes, error) {
+	if c.reads != nil {
+		c.reads <- struct{}{}
+		select {
+		case <-c.hold:
+		case <-ctx.Done():
+			return peer.Stripes{}, context.Cause(ctx)
+		}
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	var keys []stripeKey
@@ -114,6 +125,11 @@ var window = rank.Window{Ref: control.Ref{VM: "vm", Sequence: 3}, Volume: "ram0"
 // destination's view of it, with every frame the destination receives read.
 func cacheServing(t *testing.T, cache peer.Cache) (*peer.Peer, *[]*peertest.Frame) {
 	t.Helper()
+	return cacheServingWith(t, cache, peer.TableConfig{})
+}
+
+func cacheServingWith(t *testing.T, cache peer.Cache, config peer.TableConfig) (*peer.Peer, *[]*peertest.Frame) {
+	t.Helper()
 	runtime := sim.New(sim.Config{Seed: 1})
 	server, err := peer.NewServer(t.Context(), peer.ServerConfig{Network: runtime.Network(), Address: "holder",
 		PageSize: pageSize, Cache: cache})
@@ -123,7 +139,7 @@ func cacheServing(t *testing.T, cache peer.Cache) (*peer.Peer, *[]*peertest.Fram
 	t.Cleanup(func() { _ = server.Close() })
 	var mu sync.Mutex
 	frames := new([]*peertest.Frame)
-	table := newTable(t, peer.TableConfig{Dial: func(ctx context.Context, to platform.Address) (platform.Conn, error) {
+	config.Dial = func(ctx context.Context, to platform.Address) (platform.Conn, error) {
 		conn, err := runtime.Network().Dial(ctx, "reader", to)
 		if err != nil {
 			return nil, err
@@ -133,7 +149,8 @@ func cacheServing(t *testing.T, cache peer.Cache) (*peer.Peer, *[]*peertest.Fram
 			defer mu.Unlock()
 			*frames = append(*frames, frame)
 		}}, nil
-	}})
+	}
+	table := newTable(t, config)
 	return table.Peer("holder"), frames
 }
 
@@ -286,5 +303,39 @@ func TestDropAndPresenceReachTheCache(t *testing.T) {
 		if len(held) != 2 || !slices.Equal(held[0], []uint32{4}) || len(held[1]) != 0 {
 			t.Fatalf("presence %v, want page 4 of the first window and nothing of the second", held)
 		}
+	})
+}
+
+// A reader bounds the stripe bytes its reads have in flight at all its peers:
+// a read past the bound waits for one in flight to come back rather than
+// adding to what the reader's memory must hold.
+func TestAReaderBoundsItsStripeBytesInFlight(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		cache := newMemoryCache(1)
+		cache.reads, cache.hold = make(chan struct{}, 4), make(chan struct{})
+		holder, _ := cacheServingWith(t, cache, peer.TableConfig{StripeBytes: 64 << 10})
+		read := peer.StripeRead{Window: window, Code: rank.Code{K: 1, M: 1}, MaxBytes: 48 << 10}
+		done := make(chan error, 2)
+		for range 2 {
+			go func() {
+				reply, err := holder.ReadStripes(t.Context(), cache.identity, read)
+				if err == nil {
+					reply.Release()
+				}
+				done <- err
+			}()
+		}
+		<-cache.reads
+		synctest.Wait()
+		if len(cache.reads) != 0 {
+			t.Fatal("a read past the bound on stripe bytes in flight reached the holder")
+		}
+		close(cache.hold)
+		for range 2 {
+			if err := <-done; err != nil {
+				t.Fatal(err)
+			}
+		}
+		<-cache.reads
 	})
 }

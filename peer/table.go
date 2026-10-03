@@ -66,7 +66,19 @@ type TableConfig struct {
 	// ProbeMax are how liveness is kept: see Liveness. Zero takes 1 s, 4 s,
 	// 3 s, 30 s, 1 s and 10 s.
 	PingInterval, DeadAfter, ConnectTimeout, IdleTimeout, ProbeFirst, ProbeMax time.Duration
+	// BackgroundBytes is this host's background budget: what its bulk work
+	// may hold at all its peers at once. Zero takes 16 MiB.
+	BackgroundBytes int64
+	// StripeBytes bounds the stripe bytes this host's reads have in flight at
+	// all its peers at once, so a restore that faults thousands of windows
+	// cannot grow without bound. Zero takes 64 MiB.
+	StripeBytes int64
 }
+
+const (
+	defaultBackgroundBytes = 16 << 20
+	defaultStripeBytes     = 64 << 20
+)
 
 // Table is a host's peers: one Peer for every remote host, shared by every
 // kind of request this host makes of it — a migration's faults and its stream,
@@ -82,10 +94,17 @@ type Table struct {
 	cancel context.CancelCauseFunc
 	wg     sync.WaitGroup
 
+	// background is the host's one budget for bulk work, and stripes the
+	// bound on stripe bytes its reads have in flight.
+	background, stripes *Background
+
 	mu     sync.Mutex
 	peers  map[platform.Address]*Peer
 	closed bool
 }
+
+// Background is this host's background budget.
+func (t *Table) Background() *Background { return t.background }
 
 // NewTable starts a host's table of peers. It dials nothing until a request is
 // made. ctx is what its connections live under; Close ends them.
@@ -107,6 +126,8 @@ func NewTable(ctx context.Context, config TableConfig) (*Table, error) {
 	config.IdleTimeout = cmp.Or(config.IdleTimeout, defaultIdleTimeout)
 	config.ProbeFirst = cmp.Or(config.ProbeFirst, defaultProbeFirst)
 	config.ProbeMax = cmp.Or(config.ProbeMax, defaultProbeMax)
+	config.BackgroundBytes = cmp.Or(config.BackgroundBytes, defaultBackgroundBytes)
+	config.StripeBytes = cmp.Or(config.StripeBytes, defaultStripeBytes)
 	if !config.Versions.valid() || config.InFlight < 1 || !config.Budgets.valid(1) ||
 		config.Connections.Fault < 1 || config.Connections.BulkRead < 1 || config.Connections.BulkWrite < 1 ||
 		config.PingInterval < 0 || config.DeadAfter <= config.PingInterval || config.ConnectTimeout < 0 ||
@@ -115,7 +136,8 @@ func NewTable(ctx context.Context, config TableConfig) (*Table, error) {
 	}
 	tableCtx, cancel := context.WithCancelCause(ctx)
 	return &Table{config: config, clock: platform.ClockOr(config.Clock), ctx: tableCtx, cancel: cancel,
-		peers: make(map[platform.Address]*Peer)}, nil
+		peers: make(map[platform.Address]*Peer), background: NewBackground(config.BackgroundBytes),
+		stripes: NewBackground(config.StripeBytes)}, nil
 }
 
 // Peer is the host at address, made on first use.

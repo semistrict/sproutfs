@@ -323,7 +323,8 @@ func (r StripesReply) Release() { r.buffer.release() }
 
 // ReadStripes asks the peer's cache, which must be cache, for the stripes it
 // holds of read. It is a Fault unless ctx says otherwise. A peer marked down is
-// not asked: another holder has the stripes, or the store does.
+// not asked: another holder has the stripes, or the store does. Every read of
+// this host's waits for room under its bound on stripe bytes in flight.
 func (p *Peer) ReadStripes(ctx context.Context, cache rank.Identity, read StripeRead) (StripesReply, error) {
 	if p.Down() {
 		return StripesReply{}, ErrDown
@@ -332,6 +333,10 @@ func (p *Peer) ReadStripes(ctx context.Context, cache rank.Identity, read Stripe
 		Pages: pageBitmap(read.Pages), K: proto.Uint32(uint32(read.Code.K)), M: proto.Uint32(uint32(read.Code.M)),
 		MaxBytes: proto.Uint64(uint64(read.MaxBytes))}.Build()
 	response := new(peerv1.Stripes)
+	if err := p.table.stripes.Acquire(ctx, Resident, read.MaxBytes); err != nil {
+		return StripesReply{}, err
+	}
+	defer p.table.stripes.Release(read.MaxBytes)
 	got, _, err := p.call(ctx, "", request, response, read.MaxBytes, read.MaxBytes, nil)
 	if err != nil {
 		return StripesReply{}, err
@@ -350,13 +355,21 @@ func (p *Peer) ReadStripes(ctx context.Context, cache rank.Identity, read Stripe
 }
 
 // Keep asks the peer's cache, which must be cache, to write stripes. A keep is
-// bulk write, and nothing waits on it: one the cache does not write is
-// ErrDropped.
+// bulk write, and nothing waits on it: one over this host's background budget,
+// or one the cache does not write, is ErrDropped, never queued.
 func (p *Peer) Keep(ctx context.Context, cache rank.Identity, keep Keep) error {
 	if p.Down() {
 		return ErrDown
 	}
 	size := int64(len(keep.Payload))
+	priority := Fill
+	if keep.Repair {
+		priority = Repair
+	}
+	if !p.table.background.TryAcquire(priority, size) {
+		return ErrDropped
+	}
+	defer p.table.background.Release(size)
 	request := peerv1.Keep_builder{Cache: cache[:], Window: windowToWire(keep.Window),
 		K: proto.Uint32(uint32(keep.Code.K)), M: proto.Uint32(uint32(keep.Code.M)), Items: itemsToWire(keep.Items),
 		Repair: proto.Bool(keep.Repair)}.Build()

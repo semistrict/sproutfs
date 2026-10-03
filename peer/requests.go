@@ -184,7 +184,20 @@ func (p *Peer) call(ctx context.Context, admitAs string, request, response proto
 	}
 	clock := p.table.clock
 	began := clock.Now()
-	pool := p.pools[ClassOf(ctx)]
+	class := ClassOf(ctx)
+	switch class {
+	case Fault:
+		// A fault waiting anywhere shrinks the background budget, so bulk work
+		// gives the links to it.
+		p.table.background.faultStarted()
+		defer p.table.background.faultEnded()
+	case BulkRead:
+		if err := p.table.background.Acquire(ctx, PriorityOf(ctx), reserve); err != nil {
+			return result{}, clock.Since(began), err
+		}
+		defer p.table.background.Release(reserve)
+	}
+	pool := p.pools[class]
 	c, err := pool.acquire(ctx, reserve)
 	waited := clock.Since(began)
 	if err != nil {

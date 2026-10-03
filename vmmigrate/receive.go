@@ -453,7 +453,8 @@ func (r *Received) streamHeld(ctx context.Context, memoryRegions map[string]*vmm
 	var errs []error
 	for _, info := range r.handoff.MemoryRegions {
 		backing := r.backings[info.Name]
-		if err := r.fetch(ctx, memoryRegions[info.Name], backing, info.Name, backing.Unpublished()); err != nil {
+		if err := r.fetch(peer.WithPriority(ctx, peer.Unpublished), memoryRegions[info.Name], backing, info.Name,
+			backing.Unpublished()); err != nil {
 			errs = append(errs, err)
 			continue
 		}
@@ -479,7 +480,8 @@ func (r *Received) streamResident(ctx context.Context, memoryRegions map[string]
 		}
 		// The published remainder is what this pass streams, so no page is
 		// faulted, or counted, twice.
-		if err := r.fetch(ctx, memoryRegions[info.Name], backing, info.Name, subtractRuns(resident, backing.Unpublished())); err != nil {
+		if err := r.fetch(peer.WithPriority(ctx, peer.Resident), memoryRegions[info.Name], backing, info.Name,
+			subtractRuns(resident, backing.Unpublished())); err != nil {
 			errs = append(errs, err)
 		}
 	}
