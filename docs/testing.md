@@ -1252,6 +1252,12 @@ caller:
 | `checkpoint/disk-wrong-stripe` | Hands a read a stripe whose checksum holds and whose bytes are wrong, as a peer that answers with a wrong stripe does |
 | `checkpoint/disk-code-changed` | Reads under another code of the table than the list's, as after the deployment's code changed |
 | `checkpoint/disk-short-list` | Places a window by the list less every other cache, a list shorter than the code is wide |
+| `checkpoint/fill-queue-full` | Has the queue of writes to the host's disk report itself full, so the fill is dropped |
+| `checkpoint/fill-lose-right` | Loses the answer that carried a fill right, so rank 1 gave it and nobody fills |
+| `checkpoint/fill-ranks-change` | Places a fill by the list less one of the caches it ranks, as a list that changed between the read and the fill |
+| `checkpoint/fill-send-twice` | Sends a keep twice, as a sender that lost the first answer does |
+| `checkpoint/fill-refuse-write` | Has the write budget refuse a fill's write to the host's own disk |
+| `checkpoint/keep-drop` | Has a cache drop a keep, as one whose write budget is spent does |
 
 A simulated disk with `DiskConfig.ReadChaos` adds three sites of its own, as
 FoundationDB's `AsyncFileChaos` does. They are off on every other disk, because
@@ -1340,9 +1346,10 @@ chance, a second chance stopped at half a region, a second chance opening the
 region kept free for it, an eviction waiting for a read in flight, a read
 that finds another key's item or a damaged one, and, as the disk opens, a
 region read back from its table, a region read back by scanning its items, a
-region given back, and a header refused. No topology campaign keeps a cache
-disk, so `TestDiskSurvivesItsFaultsAndReachesItsProbes` in `checkpoint` drives
-them. It runs eight seeds of a writer, two readers and a limiter over a disk
+region given back, and a header refused. A topology campaign keeps a cache
+disk only on the seeds that turn the cluster cache on, and its workload is not
+the disk's, so `TestDiskSurvivesItsFaultsAndReachesItsProbes` in `checkpoint`
+drives them. It runs eight seeds of a writer, two readers and a limiter over a disk
 with read chaos, with every completion released by the scheduler and the sites
 on. Then it opens the disk again twice: after a clean close, and with a region
 open, as after a crash. After each open it reads every page written. It
@@ -1373,6 +1380,51 @@ k+m stripes, in any order, under 1+0, 1+1, 2+1, 2+2 and 4+2; one wrong stripe
 among k+1 is found wherever it falls among the first k; a stripe of another
 code is never used, though a stripe of 2+1 and one of 2+2 of one envelope are
 the same length; and the search for k that pass is bounded at 64 sets.
+
+[Fills](hosting.md#filling-the-cluster) mark thirteen more: a fill right
+given, a read that sent nothing for want of one, a right whose answer was lost,
+a fill dropped for a full queue, for a spent rate, for want of room in the
+background budget, and by its holder, a fill's write the disk refused, a fill
+placed by a changed list, and, at the cache a keep reaches, a keep written, a
+stripe it held or was writing, a keep refused for a window its list does not
+rank it for, and a keep dropped. `TestFillsSurviveTheirFaultsAndReachTheirProbes`
+in `checkpoint` drives them. Each of its sixteen seeds draws a cluster of two
+to seven hosts and a code of the table, sometimes narrower than the hosts, and
+runs six rounds under the scheduler with the sites on. A round publishes from
+any host, has many hosts read the same pages at once, each through its own
+cache, and may take a cache off the list. Some hosts read the new list at once
+and the rest a round later, so two hosts may rank a window differently. The
+cluster runs over real peer servers on the simulated network, with a small
+queue, rate and background budget, so a burst spends them. Every read must be
+what was published. At rest every stripe a host holds must be of a window some
+list the cluster held ranks it for, and the reads must have filled no window
+more than once an interval. Every fill site must fire and every fill probe be
+reached across the seeds. The campaign found a fill placed by a changed list
+writing a stripe its own host was not ranked for; a cache's own fills are now
+held to its list as a keep is.
+
+The fills' properties are stated exactly beside it, on a cluster of real peer
+servers. `TestAStoreReadFillsExactlyTheRankedCaches`: after one host reads a
+page, the stripes of its window and of its segment's are on exactly the hosts
+the list ranks, each index on the host it is put on, for every reader under
+1+1, 2+2 round three hosts and 4+2. `TestAColdBurstFillsAWindowOnce`: every
+host reads one page at once, and the page's window and its segment's are each
+filled once. `TestAFaultIsNotSlowedByItsFill`: a read of the store takes
+exactly as long in simulated time with the cluster cache off, behind fills
+whose links are held for a second, and behind fills dropped for a spent rate.
+`TestAPublicationFillsNothingBeforeItsPartIsDurable`: while a part's PUT is in
+flight no host holds any of it, and once it lands every window is on its
+ranks; `TestAPartTheStoreRefusedReachesNoCache` fails the PUT, and nothing is
+filled until the publication is tried again. `TestAPublicationNeverWaitsForItsFill`:
+a publication behind a queue of one window and a disk that takes a second a
+write takes exactly as long as with the cluster cache off. In `internal/simtest`,
+half the seeds of the topology campaigns give every host a cache disk with the
+cluster cache on for every window (`simtest.Config.ClusterCache`), so the hosts
+fill each other through every fault of the schedule, and such a run must have
+had a host keep a stripe a peer sent it.
+`TestOnTwoHostsAVMOpenedOnTheOtherHostReadsItsPagesFromThatHostsDisk` suspends
+a VM on one of two hosts under 1+1 and opens it on the other, which reads no
+part of the store but the VMM state.
 
 ### The peer server's network
 
@@ -1474,13 +1526,20 @@ SPROUTFS_TEST_SOAK=1 go test ./internal/simtest \
 ```
 
 The probe campaign runs twenty-five seeds of the generated schedule with the
-sites on, plus four seeds of the two-writer campaign. It requires every probe
-that the campaigns are registered to cover to have fired. No campaign in this
-repository covers two of the six registered probes. `unreachedProbes` in
-`internal/simtest/probe_test.go` names them. Here the store either answers or
-fails outright, so no conditional write ever loses its reply and is reconciled
-by its writer's nonce. The pagers evict, but never while the memory region that a page
-is taken from is sealed.
+sites on, each once with no cache disk and once with the cluster cache on,
+plus four seeds of the two-writer campaign. It requires every probe that the
+campaigns are registered to cover to have fired, a fill right given and a keep
+kept among them. The peer server's, the list of caches' and the page cache
+disk's, stripes' and fills' probes are reached here too, and each is asserted
+by its own campaign. No campaign in this
+repository covers one of the registered probes, which `unreachedProbes` in
+`internal/simtest/probe_test.go` names. Here the store either answers or fails
+outright, so no conditional write ever loses its reply and is reconciled by its
+writer's nonce. One more, an eviction during a publication, is reached on some
+runs and not others (`unsteadyProbes`), and is asserted neither way. Seed 2
+with the cluster cache on reached it in one run of three, and no run without a
+cache disk has. The fills add disk and network work beside a publication, and
+where it lands is the Go scheduler's choice, not the seed's.
 
 A fenced publication was removed from the list when the two-writer campaign
 moved onto the shared harness. That campaign's takeover happens while the
@@ -1759,6 +1818,36 @@ background budget a guest fault's reply would otherwise wait behind, a cache
 request that names another cache, a keep queued instead of dropped, and the
 bound on stripe bytes in flight.
 
+Six guards break the cluster's fills:
+
+```sh
+SPROUTFS_SIM_BUG=fill-before-durable \
+  go test ./checkpoint -run '^TestAPublicationFillsNothingBeforeItsPartIsDurable$' -count=1
+SPROUTFS_SIM_BUG=keep-unranked \
+  go test ./checkpoint -run '^TestACacheRefusesAKeepItsListDoesNotRankItFor$' -count=1
+SPROUTFS_SIM_BUG=fill-blocks-read \
+  go test ./checkpoint -run '^TestAFaultIsNotSlowedByItsFill$' -count=1
+SPROUTFS_SIM_BUG=no-fill-right \
+  go test ./checkpoint -run '^TestAColdBurstFillsAWindowOnce$' -count=1
+SPROUTFS_SIM_BUG=fill-queue-waits \
+  go test ./checkpoint -run '^TestAPublicationNeverWaitsForItsFill$' -count=1
+SPROUTFS_SIM_BUG=keep-while-writing \
+  go test ./checkpoint -run '^TestACacheDropsAKeepItHoldsOrIsWriting$' -count=1
+```
+
+The first fills the cluster with a part before its PUT has succeeded, which is
+the model's `fill-before-put` mutant: the stripes are on their hosts while the
+PUT is still in flight. The second takes a keep, and writes a fill of its
+own, for a window the cache's list does not rank it for. The third fills in
+front of the read, so the fault waits a second for links held under its
+fill. The fourth fills from every read of a cold burst, six times where one
+would do. The fifth has a publication wait for room in the queue rather than
+drop the fill, which costs it six seconds behind a slow disk. The sixth
+queues a keep of stripes already being written, and it waits a second for the
+first write rather than being dropped at once. The fill campaign
+(`TestFillsSurviveTheirFaultsAndReachTheirProbes`) kills `keep-unranked` and
+`no-fill-right` too.
+
 Five guards break the list of caches:
 
 ```sh
@@ -1885,7 +1974,10 @@ retried, a VM deleted and its name created again, windows striped over the
 ranks each host's own list gives, fills, fill rights, repair, reads of every
 rank, hosts marked down, hosts that crash, leave and join, peers that answer
 with a wrong stripe, damaged headers, and eviction of any stripe. Its
-invariants are `NoWrongBytes`, `StripesRanked` and `SurvivesLosses`. Its
+invariants are `NoWrongBytes`, `StripesRanked` and `SurvivesLosses`. Rank 1
+gives a fill right once an interval and only while it holds nothing of the
+window, and a filler is held to its own list as a cache taking a keep is, as
+`checkpoint`'s fills do. Its
 configurations run four hosts with a 2+1 code, two with 1+1, and three with
 2+2 so that stripes go round the hosts. Its mutants put back a read without
 the key check, a stripe used without its checksum, a part filled before its

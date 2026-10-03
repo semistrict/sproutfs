@@ -22,10 +22,11 @@
 (* moves the later ranks by one (B5). It checks each stripe's key and      *)
 (* checksum, and decodes from any K stripes of one envelope; a set that    *)
 (* mixes envelopes fails the envelope's SHA-256. On a miss it reads the    *)
-(* store, and fills if rank 1 gave it the fill right. A reader that        *)
+(* store, and fills if rank 1 gave it the fill right, which rank 1 gives   *)
+(* once an interval while it holds nothing of the window. A reader that    *)
 (* decoded may send a rank that lacks its stripe that stripe. A cache      *)
 (* takes a keep only for a window its own list ranks it for, and drops one *)
-(* for a stripe it holds.                                                  *)
+(* for a stripe it holds. The filler is held to its own list as well.      *)
 (*                                                                         *)
 (* Each host's disk is the set of stripes it holds. Eviction may take any  *)
 (* of them, and a header may be damaged. How a disk lays its stripes out,  *)
@@ -296,10 +297,12 @@ Read(h, x) ==
              \/ /\ decodes = {}
                 /\ store[x] # NoBytes
                 \* A miss: the store answers. Rank 1 gives the first reader
-                \* that asks the right to fill, once per window per interval.
+                \* that asks the right to fill, once per window per interval,
+                \* while it holds nothing of the window.
                 /\ LET c == <<x, store[x]>>
                        first == Ranking(list[h], x)[1]
                    IN IF up[first] /\ first \notin marked[h] /\ x \notin rights[first]
+                         /\ ~\E st \in disk[first] : st.key = x
                       THEN /\ rights' = [rights EXCEPT ![first] = @ \cup {x}]
                            /\ Send(list[h], marked[h], c)
                       ELSE UNCHANGED <<rights, disk, misplaced>>

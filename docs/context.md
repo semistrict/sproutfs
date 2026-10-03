@@ -215,7 +215,9 @@ the disk only when it needs their space. Once the copy is complete, a fault on
 a page that is not resident makes no request of the object store while the
 disk holds that page. The copy is never durable. A VM whose checkpoint is
 larger than the disk can hold is not pulled, and reads the store as any VM
-does. See
+does. Inside the share the cluster cache is on for, what a pull copies is a
+fill, which puts each window on its ranks and which the pull does not wait
+for. See
 [hosting](hosting.md#pulling-a-vms-memory).
 
 ## Cluster
@@ -289,7 +291,28 @@ of each envelope, any k of which rebuild it. A code with k = 1 is whole copies.
 A host alone in its list uses 1+0, so it holds each envelope whole. See
 [hosting](hosting.md#the-code).
 
-**Stripe**: One of the k+m pieces an envelope is cut into under the code. It
+**Stripe**: One of the k+m pieces an envelope is split into under the code. It
 names its index, its code and its envelope's length. Stripe i of a window's
 envelopes goes on rank ((i − 1) mod n) + 1 of its n ranked caches, so a cache
 may hold several indices of a window. A stripe of another code is a miss.
+
+**Fill**: Putting the stripes of a window on the caches the list ranks for it.
+Inside the share the cluster cache is on for, three things fill: a read of the
+store, once its callers have their pages; a publication, for each part once
+its PUT has succeeded and for its segments once the index object's has; and a
+pull, for what it copies. A host's own stripes go to its own disk through one
+bounded queue, and every other stripe goes as a keep within a bounded rate and
+the background budget. A fill that finds the queue full, the rate spent or the
+budget without room is dropped, and the window is read from the store next
+time. Nothing waits on a fill. See [hosting](hosting.md#filling-the-cluster).
+
+**Keep**: The peer-server request that fills a cache: the stripes of one window
+the cache holds, each as its disk stores it, with its own checksum. A cache
+takes a keep only for a window its own list ranks it for, under its list's
+code. It drops every stripe it holds or is writing already.
+
+**Fill right**: The right to fill a window from a read of the store. The
+window's rank 1 gives it to the first reader that asks, once per window per
+interval, and only while it holds nothing of the pages asked for. A reader that
+is not given it sends nothing. So a cold burst of readers fills a window once,
+not once per reader.

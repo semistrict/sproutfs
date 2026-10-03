@@ -876,8 +876,10 @@ resident reads the disk and makes no request of the object store, while the
 disk holds that page. That holds for a page the guest never touched and for
 one the pager evicted since. With the cluster cache off, as a deployment
 runs it today, every page is kept whole on this disk. A window inside the
-share the cluster cache is turned on for keeps only the stripes the list of
-caches ranks this host for ([the code](#the-code)).
+share the cluster cache is turned on for is a fill
+([filling the cluster](#filling-the-cluster)): the pull hands it over and
+does not wait, and its stripes go to the caches the list ranks for it, this
+host's own among them.
 
 - **The guest runs while the copy is made.** The pull starts when the machine
   is registered, after its VMM runs. A fault is never queued behind it: the
@@ -946,7 +948,8 @@ publishes, so a pull that closed with the machine would keep nothing of the
 stop's checkpoint; the GCE run of 2026-10-03 found that, and a reopened VM read
 the pages it wrote last from the store. A write the disk
 refuses keeps nothing more of that publication, and its pages are read from
-the store.
+the store. Inside the cluster share every publication fills the cluster
+itself, a pulled VM's or not, so the keeping leaves those windows to it.
 
 A stop or a migration away gives nothing up. The pages stay on the disk until
 it needs their space, so a VM opened on this host again reads them there. The
@@ -965,8 +968,9 @@ The hosts' disks are to become one cache for the cluster
 ([the plan](../plans/disk-cache-2026-10-02.md)). For that, every host must know
 every cache, and which caches hold each window. The list and the ranks below
 are that. For the windows the cluster cache is turned on for, a host keeps on
-its own disk the stripes the list ranks its cache for ([the code](#the-code)).
-Nothing reads from a peer or fills one yet.
+its own disk the stripes the list ranks its cache for ([the code](#the-code)),
+and fills its peers with theirs ([filling the cluster](#filling-the-cluster)).
+Nothing reads from a peer yet.
 
 **A host's cache.** A host with a page cache disk reports its cache in
 `/status`, under `cache`:
@@ -1033,7 +1037,7 @@ and its one stripe is the envelope whole.
 
 ## The code
 
-Each envelope in the cluster cache is cut into the stripes of an erasure code,
+Each envelope in the cluster cache is split into the stripes of an erasure code,
 by Reed-Solomon (package `stripe`, over `github.com/klauspost/reedsolomon`,
 MIT). Under the code k+m, the envelope is split into k data stripes of equal
 length, the last padded with zeros, and m parity stripes are computed from
@@ -1085,13 +1089,81 @@ which one is wrong cannot be told, and all are forgotten. A stripe of another
 code is a miss and never part of an envelope, so a deployment that changes
 its code refills from the store and reads no wrong bytes.
 
-Nothing is read from a peer or sent to one yet. Inside the share, a host whose
-own stripes do not make k reads the page from the store. So under 1+1 every
-host reads its windows from its own disk, and under 2+1 and wider a host reads
-from its disk only the windows it holds k indices of. On a 2 MiB envelope, cutting the
+Nothing is read from a peer yet. Inside the share, a host whose own stripes do
+not make k reads the page from the store. So under 1+1 every host reads its
+windows from its own disk, and under 2+1 and wider a host reads from its disk
+only the windows it holds k indices of. On a 2 MiB envelope, splitting the
 stripes of 4+2 takes 0.17 ms and rebuilding from four stripes 0.07 ms, or
 0.19 ms with two of them parity; on a 4 KiB envelope, 1.0 µs, 0.6 µs and
 1.4 µs (Apple M5 Pro, `go test ./stripe -bench .`).
+
+## Filling the cluster
+
+Inside the share the cluster cache is turned on for, a host puts each window
+it has in hand on the caches the list ranks for it. That is a **fill**. Three
+things fill:
+
+- **A read of the store.** The run the store served is split under the list's
+  code, and each stripe goes to the cache that holds it. The fill starts once
+  the read's callers have their pages, never before.
+- **A publication.** Each part is filled once its PUT has succeeded, and the
+  segments once the index object's has. So no cache holds the bytes of a part
+  the store refused. Every publication fills: an interval checkpoint, a
+  capture, a stop, a fork point and a template import.
+- **A pull.** What a pull copies of a window inside the share is a fill.
+
+A fill splits each envelope with `stripe.Split` and puts stripe i on the cache
+`List.Holders` names. This host's own stripes go to its own disk. Every other
+cache that holds some gets one **keep**: a peer-server request with that
+cache's stripes of the window, each as its disk stores it, with its own
+checksum.
+
+**Nothing waits on a fill.** A host has one queue of writes to its own disk,
+`CacheConfig.FillQueueBytes` (64 MiB by default), which one worker drains. Its
+own fills and its peers' keeps both go through it. Keeps go out within a rate
+per host, `CacheConfig.FillBytesPerSecond` (128 MiB/s by default, with a burst
+of one second of it), and within the host's background budget at the fill
+priority. A fill that finds the queue full, the rate spent or the budget
+without room is dropped. Its window is read from the store the next time. A
+fault, a publication and a pull never wait for a fill.
+
+**Fill rights.** A cold burst would fill one window many times: many hosts miss
+it at once, each reads the store, and each would send its stripes. So a fill
+from a read needs the window's fill right. Behind its own read, the reader asks
+the window's rank 1 with a stripe read that wants no bytes. Rank 1 gives the
+right to the first reader that asks, once per window per interval
+(`CacheConfig.FillRightInterval`, ten seconds by default), and only while it
+holds nothing of the pages asked for. Every other reader sends nothing. A rank
+1 that is down or cannot be asked gives no right. A publication and a pull need
+none. Until hosts read stripes from each other, a cache answers a stripe read
+with no stripes, only the right.
+
+**What a cache takes.** A cache takes a keep only for a window inside the share
+that its own list ranks it for, under its own list's code. Its own fills are
+held to the same rule, because the list a fill was placed by may have changed
+since. It drops every stripe it holds, or is writing for another keep, as a
+duplicate. Each write asks the disk's write budget at the fill's priority: a
+fill from a publication is refused last, and a fill from a read before it (see
+[budgets](#budgets)). A keep says which it is.
+
+**What a host reports.** `/status` reports under `cache_fill` the windows the
+host filled from reads and from publications, the reads it filled nothing of
+for want of the right, the rights its cache gave out, the stripes it sent that
+their holders kept and their bytes, the stripes kept on its disk, the stripes
+dropped by reason, the duplicates, the stripes of keeps it refused, and its
+queue. The reasons are `queue`, `rate`, `budget` (this host's background
+budget), `busy` (the holder's budget for this host), `down`, `stale` (an
+address that answered for another cache), `peer` (the holder dropped it),
+`disk` (this host's disk refused it) and `failed`. `/metrics` carries the same
+as `sproutfs_cache_fills_total`, `sproutfs_cache_fill_*` and
+`sproutfs_cache_keep_stripes_refused_total`.
+
+Under 1+1 every host holds each window whole. So a VM suspended on one host
+and opened on the other reads its pages from that host's own disk, where the
+first host's publication put them. Under a wider code a host holds fewer than
+k stripes of most windows, and reads those from the store until hosts read
+stripes from each other ([the plan](../plans/disk-cache-2026-10-02.md), step
+7).
 
 ## Nested VMs
 
@@ -1206,7 +1278,8 @@ from there. A count that jumps charges at most a burst of debt.
 
 The cache asks before each write, with a priority: 0 for a repair, 1 for a
 second chance, 2 for a fill from a store read, 3 for a fill from a publication.
-Priority p is admitted only while (3 - p) quarters of a burst are left after
+A pull's copy is written at a publication's priority, and a keep at the
+priority its sender says it has. Priority p is admitted only while (3 - p) quarters of a burst are left after
 the write. So as the budget runs down, repairs are refused first and fills from
 publications last. A refused write costs a store read later, never a wrong
 byte.
@@ -1285,6 +1358,8 @@ The host's status reports:
   speaks, its connections of each class, and whether it is down, and why, or of
   a release this host cannot talk to;
 - its cache's identity, weight and address, and the list of caches it holds;
+- what its fills of the cluster did, under `cache_fill`
+  ([filling the cluster](#filling-the-cluster));
 - the page cache's disk under `cache_disk`: the file it claimed, its
   identity, the regions and entries it holds, the reads it served without the
   object store (`hits`), the copies it lost, the regions it gave back, and what
