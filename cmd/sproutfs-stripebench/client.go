@@ -34,6 +34,10 @@ type readResult struct {
 	latency time.Duration
 	object  []byte // from the client's buffers, on a hit
 	decoded bool   // a data stripe was missing and parity rebuilt it
+
+	requests int  // the stripe requests the read sent
+	second   bool // it asked the rest of the holders after the delay
+	refused  bool // it would have, but the budget held less than a request
 }
 
 // client reads objects from the servers.
@@ -43,22 +47,49 @@ type client struct {
 	peers   []*peer
 	bufs    *buffers
 	timeout time.Duration
+	// reader is this reader's identity. It chooses the holders a hedged read
+	// asks first.
+	reader uint64
+	// hedgers holds one hedger per code, since stripes of different sizes
+	// take different times.
+	hedgers []*hedger
+}
+
+func newClient(set objectSet, reader uint64, hedgeMin time.Duration) (*client, error) {
+	layouts, err := set.layouts()
+	if err != nil {
+		return nil, err
+	}
+	c := &client{set: set, layouts: layouts, bufs: &buffers{}, reader: reader, hedgers: make([]*hedger, len(layouts))}
+	for i := range c.hedgers {
+		c.hedgers[i] = newHedger(hedgeMin)
+	}
+	return c, nil
 }
 
 // read reads one object under one code from the servers in live, which are
-// the servers not drained. It asks the object's first k+m ranks among them,
-// all at once, and rebuilds the object from the first k stripes. Its latency
-// runs from scheduled to the rebuilt object.
-func (c *client) read(codeIndex int, object uint32, live []int, scheduled time.Time) (readResult, error) {
+// the servers not drained. The object's holders are its first k+m ranks among
+// them. Under askAll the read asks them all at once. Under hedged it asks
+// k+1 of them, and the rest only if k stripes have not arrived after the
+// hedger's delay and the budget holds a request. Either way, a holder that
+// answers a miss is replaced at once by the next holder not yet asked. The
+// read rebuilds the object from the first k stripes, whatever their indices.
+// Its latency runs from scheduled to the rebuilt object.
+func (c *client) read(mode readMode, codeIndex int, object uint32, live []int, scheduled time.Time) (readResult, error) {
 	l := c.layouts[codeIndex]
-	ranks := rank(live, object)
-	ranks = ranks[:min(l.n(), len(ranks))]
-	ch := make(chan reply, len(ranks))
+	holders := rank(live, object)
+	holders = holders[:min(l.n(), len(holders))]
+	first := len(holders)
+	if mode == hedged {
+		first = min(l.k+1, len(holders))
+		holders = pick(holders, c.reader, object, first)
+	}
+	ch := make(chan reply, len(holders))
 	type sent struct {
 		peer *peer
 		id   uint64
 	}
-	asked := make([]sent, 0, len(ranks))
+	asked := make([]sent, 0, len(holders))
 	stripes := make([][]byte, l.n())
 	defer func() {
 		for _, a := range asked {
@@ -77,24 +108,50 @@ func (c *client) read(codeIndex int, object uint32, live []int, scheduled time.T
 			c.bufs.put(s)
 		}
 	}()
-	for _, s := range ranks {
-		id, err := c.peers[s].send(request{op: opRead, code: uint8(codeIndex), object: object}, ch)
-		if err != nil {
-			return readResult{}, err
+	next := 0
+	// ask asks the next n holders not yet asked.
+	ask := func(n int) error {
+		for _, s := range holders[next : next+n] {
+			id, err := c.peers[s].send(request{op: opRead, code: uint8(codeIndex), object: object}, ch)
+			if err != nil {
+				return err
+			}
+			asked = append(asked, sent{c.peers[s], id})
 		}
-		asked = append(asked, sent{c.peers[s], id})
+		next += n
+		return nil
+	}
+	h := c.hedgers[codeIndex]
+	began := time.Now()
+	if err := ask(first); err != nil {
+		return readResult{}, err
 	}
 	timer := time.NewTimer(c.timeout)
 	defer timer.Stop()
+	// The delay fires once, and only when some holder is left to ask.
+	var delay <-chan time.Time
+	if next < len(holders) {
+		t := time.NewTimer(h.delay())
+		defer t.Stop()
+		delay = t.C
+	}
+	var res readResult
+	waited := false
 	hits := 0
-	for answered := 0; hits < l.k && answered < len(ranks); answered++ {
+	for answered := 0; hits < l.k && answered < len(asked); {
 		select {
 		case r := <-ch:
+			answered++
 			if r.err != nil {
 				return readResult{}, fmt.Errorf("server %d: %w", r.server, r.err)
 			}
 			switch r.status {
 			case statusMiss:
+				if next < len(holders) {
+					if err := ask(1); err != nil {
+						return readResult{}, err
+					}
+				}
 			case statusHit:
 				if r.stripe >= l.n() || len(r.data) != l.stripeBytes || stripes[r.stripe] != nil {
 					c.bufs.put(r.data)
@@ -108,12 +165,31 @@ func (c *client) read(codeIndex int, object uint32, live []int, scheduled time.T
 			default:
 				return readResult{}, fmt.Errorf("server %d answered a read with status %d", r.server, r.status)
 			}
+		case <-delay:
+			delay, waited = nil, true
+			switch {
+			case next == len(holders):
+				// Misses have already asked every holder.
+			case h.take():
+				res.second = true
+				if err := ask(len(holders) - next); err != nil {
+					return readResult{}, err
+				}
+			default:
+				res.refused = true
+			}
 		case <-timer.C:
-			return readResult{outcome: timedOut, latency: time.Since(scheduled)}, nil
+			res.outcome, res.latency, res.requests = timedOut, time.Since(scheduled), len(asked)
+			return res, nil
 		}
 	}
+	res.requests = len(asked)
 	if hits < l.k {
-		return readResult{outcome: miss, latency: time.Since(scheduled)}, nil
+		res.outcome, res.latency = miss, time.Since(scheduled)
+		return res, nil
+	}
+	if mode == hedged {
+		h.done(time.Since(began), waited)
 	}
 	out := c.bufs.get(l.objectBytes)
 	decoded, err := l.join(stripes, out)
@@ -121,7 +197,8 @@ func (c *client) read(codeIndex int, object uint32, live []int, scheduled time.T
 		c.bufs.put(out)
 		return readResult{}, err
 	}
-	return readResult{outcome: hit, latency: time.Since(scheduled), object: out, decoded: decoded}, nil
+	res.outcome, res.latency, res.object, res.decoded = hit, time.Since(scheduled), out, decoded
+	return res, nil
 }
 
 // condition is the state of the servers during a case.
@@ -223,8 +300,8 @@ func newExpected(set objectSet) (*expected, error) {
 }
 
 // runCase reads at the schedule's rate from start for its duration, under
-// one condition and one code, and records what it saw.
-func (c *client) runCase(ctx context.Context, s schedule, cond condition, codeIndex int,
+// one condition, one code and one read mode, and records what it saw.
+func (c *client) runCase(ctx context.Context, s schedule, cond condition, codeIndex int, mode readMode,
 	start time.Time, want *expected) (caseResult, error) {
 	medium := "memory"
 	if s.disk {
@@ -232,8 +309,8 @@ func (c *client) runCase(ctx context.Context, s schedule, cond condition, codeIn
 	}
 	code := c.layouts[codeIndex].code.String()
 	res := caseResult{
-		Name: fmt.Sprintf("%s/%s/%s/%s", s.load, medium, cond.name, code),
-		Load: s.load, Medium: medium, Condition: cond.name, Code: code,
+		Name: fmt.Sprintf("%s/%s/%s/%s/%s", s.load, medium, cond.name, code, mode),
+		Load: s.load, Medium: medium, Condition: cond.name, Code: code, Read: mode.String(),
 	}
 	if err := c.setModes(s, cond); err != nil {
 		return res, err
@@ -268,6 +345,13 @@ func (c *client) runCase(ctx context.Context, s schedule, cond condition, codeIn
 		mu.Lock()
 		defer mu.Unlock()
 		res.Issued++
+		res.Requests += uint64(r.requests)
+		if r.second {
+			res.Second++
+		}
+		if r.refused {
+			res.Refused++
+		}
 		switch r.outcome {
 		case hit:
 			res.Hits++
@@ -292,7 +376,7 @@ func (c *client) runCase(ctx context.Context, s schedule, cond condition, codeIn
 		}
 		wg.Go(func() {
 			defer func() { <-sem }()
-			r, err := c.read(codeIndex, object, live, scheduled)
+			r, err := c.read(mode, codeIndex, object, live, scheduled)
 			if err != nil {
 				cancel(err)
 				return
@@ -319,7 +403,7 @@ func (c *client) runCase(ctx context.Context, s schedule, cond condition, codeIn
 				for ctx.Err() == nil && time.Now().Before(end) {
 					object := uint32(own.IntN(c.set.objects))
 					scheduled := time.Now()
-					got, err := c.read(codeIndex, object, live, scheduled)
+					got, err := c.read(mode, codeIndex, object, live, scheduled)
 					if err != nil {
 						cancel(err)
 						return
@@ -353,6 +437,7 @@ func (c *client) runCase(ctx context.Context, s schedule, cond condition, codeIn
 	}
 	res.summarize()
 	slog.Info("case done", "case", res.Name, "reads", res.Issued, "misses", res.Misses,
-		"timed_out", res.TimedOut, "p50", res.P50, "p99", res.P99, "p999", res.P999)
+		"timed_out", res.TimedOut, "second", res.Second, "refused", res.Refused,
+		"p50", res.P50, "p99", res.P99, "p999", res.P999)
 	return res, nil
 }

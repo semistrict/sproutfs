@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"hash/fnv"
 	"log/slog"
 	"net"
 	"os"
@@ -33,6 +34,9 @@ func runClient(args []string) error {
 	codes := fs.String("codes", "1+0,4+1,4+2", "the codes to read under")
 	conds := fs.String("conditions", "healthy,slow,drained,drained-slow,drained-stall",
 		"the conditions to read under: healthy, slow, stall, drained, drained-slow, drained-stall")
+	reads := fs.String("reads", "ask-all,hedged",
+		"how reads ask: ask-all asks every holder at once; hedged asks k+1 and the rest after a delay, under a budget")
+	hedgeMin := fs.Duration("hedge-min", 500*time.Microsecond, "the shortest delay before a hedged read asks the rest")
 	load := fs.String("load", "idle", "a label for the load this run puts on the servers")
 	disk := fs.Bool("disk", false, "have servers drop each stripe from the page cache once read, so every read reads the disk")
 	rate := fs.Float64("rate", 500, "reads per second, arriving at random; 0 reads in a closed loop")
@@ -64,6 +68,10 @@ func runClient(args []string) error {
 	if err != nil {
 		return err
 	}
+	modes, err := parseReadModes(*reads)
+	if err != nil {
+		return err
+	}
 	if *drained < 0 {
 		*drained = len(addrs) - 1
 	}
@@ -77,6 +85,8 @@ func runClient(args []string) error {
 		return fmt.Errorf("the drained server %d and the slow server %d must be two of the %d servers", *drained, *slow, len(addrs))
 	case *rate < 0 || *concurrency < 1:
 		return errors.New("want a rate of 0 or more and a concurrency of 1 or more")
+	case *hedgeMin <= 0:
+		return errors.New("want a hedge delay floor above zero")
 	}
 	if *name == "" {
 		if *name, err = os.Hostname(); err != nil {
@@ -92,7 +102,11 @@ func runClient(args []string) error {
 		return err
 	}
 	slog.Info("hashed the objects", "objects", set.objects, "took", time.Since(started).Round(time.Millisecond))
-	c, err := connect(ctx, set, addrs, *dialWait)
+	// The reader's identity is its name, so each host picks its own holders.
+	id := fnv.New64a()
+	// A hash's Write never fails.
+	_, _ = id.Write([]byte(*name))
+	c, err := connect(ctx, set, id.Sum64(), *hedgeMin, addrs, *dialWait)
 	if err != nil {
 		return err
 	}
@@ -111,31 +125,35 @@ func runClient(args []string) error {
 		}
 	}
 	if *warmup > 0 {
+		// The last code and mode: hedged 4+2 when both modes run, which also
+		// fills its hedger's window and budget.
 		w := s
 		w.duration = *warmup
-		if _, err := c.runCase(ctx, w, conditions[0], len(c.layouts)-1, base, want); err != nil {
+		if _, err := c.runCase(ctx, w, conditions[0], len(c.layouts)-1, modes[len(modes)-1], base, want); err != nil {
 			return fmt.Errorf("warm up: %w", err)
 		}
 	}
 	rec := record{
 		Clients: []string{*name}, Servers: addrs, Objects: set.objects, ObjectBytes: set.objectBytes,
 		Seed: set.seed, Rate: *rate, Concurrency: *concurrency, Timeout: *timeout, SlowDelay: *slowDelay,
-		Drained: *drained, Slow: *slow,
+		HedgeMin: *hedgeMin, Drained: *drained, Slow: *slow,
 	}
 	i := 0
 	for _, cond := range conditions {
 		for ci := range c.layouts {
-			start := base.Add(*warmup + time.Duration(i)*(*duration+*gap))
-			i++
-			if late := time.Since(start); late > 0 {
-				slog.Warn("a case starts late, out of step with any other client", "late", late)
-				start = time.Now()
+			for _, mode := range modes {
+				start := base.Add(*warmup + time.Duration(i)*(*duration+*gap))
+				i++
+				if late := time.Since(start); late > 0 {
+					slog.Warn("a case starts late, out of step with any other client", "late", late)
+					start = time.Now()
+				}
+				res, err := c.runCase(ctx, s, cond, ci, mode, start, want)
+				if err != nil {
+					return fmt.Errorf("case %s: %w", res.Name, err)
+				}
+				rec.Cases = append(rec.Cases, res)
 			}
-			res, err := c.runCase(ctx, s, cond, ci, start, want)
-			if err != nil {
-				return fmt.Errorf("case %s: %w", res.Name, err)
-			}
-			rec.Cases = append(rec.Cases, res)
 		}
 	}
 	// The servers keep the last case's modes. Every case, and the warm-up,
@@ -146,12 +164,12 @@ func runClient(args []string) error {
 
 // connect dials every server, retrying until wait has passed, and checks each
 // holds the set at the index the client gives it.
-func connect(ctx context.Context, set objectSet, addrs []string, wait time.Duration) (*client, error) {
-	layouts, err := set.layouts()
+func connect(ctx context.Context, set objectSet, reader uint64, hedgeMin time.Duration,
+	addrs []string, wait time.Duration) (*client, error) {
+	c, err := newClient(set, reader, hedgeMin)
 	if err != nil {
 		return nil, err
 	}
-	c := &client{set: set, layouts: layouts, bufs: &buffers{}}
 	deadline := time.Now().Add(wait)
 	var d net.Dialer
 	for i, addr := range addrs {

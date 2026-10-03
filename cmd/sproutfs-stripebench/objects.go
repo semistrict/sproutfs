@@ -192,9 +192,18 @@ func rank(servers []int, object uint32) []int {
 	return out
 }
 
-// score is a 64-bit hash of a server and an object: splitmix64's finalizer.
+// score is a 64-bit hash of a server and an object.
 func score(server int, object uint32) uint64 {
-	z := uint64(server)<<32 | uint64(object)
+	return mix(uint64(server)<<32 | uint64(object))
+}
+
+// readerScore is a 64-bit hash of a reader, a server and an object.
+func readerScore(reader uint64, server int, object uint32) uint64 {
+	return mix(score(server, object) ^ reader)
+}
+
+// mix is splitmix64's step and finalizer.
+func mix(z uint64) uint64 {
 	z += 0x9e3779b97f4a7c15
 	z = (z ^ z>>30) * 0xbf58476d1ce4e5b9
 	z = (z ^ z>>27) * 0x94d049bb133111eb
