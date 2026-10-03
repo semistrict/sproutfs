@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-03 03:41'
-updated_date: '2026-10-03 16:20'
+updated_date: '2026-10-03 16:49'
 labels:
   - performance
   - storage
@@ -136,4 +136,11 @@ The two other nondeterminisms:
 - Also found shaking with the cache on: a publication's parallel part uploads handed their fills over as their PUTs ended, so the one fill worker took them in scheduler order. Parts are now handed over in part order (partWriter.handOver). Guard fill-parts-in-any-order, killed by TestAPublicationHandsItsPartsOverInTheirOrder.
 
 Results: sweep of seeds 1..50, cache off and on, sites on, four shakes each (400 runs): 97 of 100 seed/cache pairs did identical work in all four; before these changes 7 of the 50 pairs of seeds 1..25 varied. Remaining, rare: seeds 35 off, 43 on, 48 on (and 22 off/on in a longer hunt before the stream tasks). Evidence for 35: a reply's header flip makes the destination close the connection at the instant the source starts its next reply, so whether that send is traced as disconnected or never made, and the header-flip draws after it, are the scheduler's choice. Seed 22: two requests on one link at one instant take the link's sequence numbers, and so its tail-latency draws, in arrival order. Fill campaign: seeds 6, 10, 12 still varied in about one run in six to fifteen under parallel load. None of these is in the probe campaign's or fingerprint test's seeds.
+
+Step 7 done on branch worktree-agent-a44ba2df889af0560 (d625a05a, 401596ed, 788f322c, 9941019c, bb55eded, 980cc001, a53432d2 merge of main, a0f1e2d8, f09fd25f).
+Built: peer Stripe class (own connections, default 2, own budget 16 MiB), server serving budget (StripeBytesPerSecond, BUSY past it; host SPROUTFS_CACHE_SERVE_BYTES_PER_SECOND, 500 MiB/s), rank.Pick, checkpoint cluster reader (clusterread.go, clusterdown.go): own stripes first, k+1 of first k+m ranks by hash(reader, window), misses replaced at once, second requests after p95 delay (floor 500us) under an FDB budget (+1/20, -1, cap 5), stripe.Join, drops for wrong stripes, store hedge past max(10ms, 4x delay) within a bucket of 1/20 per read capped at 5, down marks (3 timeouts or 1 refused, at most a fifth, probes 10s x1.5 to 60s), repair only after every rank answered, HEAD 1 in 10,000 hits. /status cache_read, sproutfs_cache_read_* and sproutfs_cache_serve_* metrics.
+Decisions: simtest worlds set hedge floor, bound and stripe timeout to an hour (jitter draws are scheduler-sensitive); both budgets start full; stripe timeout 1 s.
+Tests: exact property tests in checkpoint/clusterread_test.go, read campaign with 5 Buggify sites and 19 probes, simtest TestAVMOpensFromTheClusterAfterAnyOneHostIsLostDrainedOrRestarted; fingerprint -count=20 and probe campaign pass after merging main. Guards: 4 peer, 13 cluster, each killed. Gremlins on clusterread/clusterdown/peercache: 129 killed, 54 lived -> 154 killed, 29 lived, 13 not covered (survivors justified in docs/testing.md).
+Bugs found: Pages aliased its reply's pooled buffer (race); peer server read a payload after ending its receive ctx, so over TCP every keep was reset (found on GCE).
+GCE (docs/measurements/gce-cluster-reads-2026-10-03.md): 8 GiB guest read on another host, 6 n2-standard-4 under 4+2, 3 rounds: cluster 16.4 s, p50 58 / p99 136 ms (p99 spread 3.3 ms); store 28.1 s, p50 106 / p99 218 ms (spread 51 ms); one host lost: same time, no page from the store. Holders served within 2.5 % of each other. Reader CPU-bound (3.9 of 4 CPUs). All VMs, disks and objects deleted.
 <!-- SECTION:NOTES:END -->

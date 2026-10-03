@@ -211,16 +211,27 @@ func shape(latencies []int64) (map[string]float64, []int) {
 
 // readDelta is what the reads of the cluster did between two readings.
 func readDelta(before, after checkpoint.ReadStats) checkpoint.ReadStats {
-	return checkpoint.ReadStats{Hits: after.Hits - before.Hits, OwnHits: after.OwnHits - before.OwnHits,
-		Misses: after.Misses - before.Misses, Requests: after.Requests - before.Requests,
-		Replaced: after.Replaced - before.Replaced, SecondRequests: after.SecondRequests - before.SecondRequests,
-		Refused: after.Refused - before.Refused, StoreHedges: after.StoreHedges - before.StoreHedges,
-		StoreHedgesWon: after.StoreHedgesWon - before.StoreHedgesWon,
-		StoreHedgesRefused: after.StoreHedgesRefused - before.StoreHedgesRefused,
-		WrongStripes: after.WrongStripes - before.WrongStripes, DropsSent: after.DropsSent - before.DropsSent,
-		Repairs: after.Repairs - before.Repairs, Timeouts: after.Timeouts - before.Timeouts,
-		MarkedDown: after.MarkedDown - before.MarkedDown, Capped: after.Capped - before.Capped,
-		Cleared: after.Cleared - before.Cleared, Down: after.Down, Delay: after.Delay, Bound: after.Bound}
+	delta := after
+	delta.Hits -= before.Hits
+	delta.OwnHits -= before.OwnHits
+	delta.Misses -= before.Misses
+	delta.Requests -= before.Requests
+	delta.Replaced -= before.Replaced
+	delta.SecondRequests -= before.SecondRequests
+	delta.Refused -= before.Refused
+	delta.StoreHedges -= before.StoreHedges
+	delta.StoreHedgesWon -= before.StoreHedgesWon
+	delta.StoreHedgesRefused -= before.StoreHedgesRefused
+	delta.WrongStripes -= before.WrongStripes
+	delta.DropsSent -= before.DropsSent
+	delta.Repairs -= before.Repairs
+	delta.Timeouts -= before.Timeouts
+	delta.MarkedDown -= before.MarkedDown
+	delta.Capped -= before.Capped
+	delta.Cleared -= before.Cleared
+	delta.HeadChecks -= before.HeadChecks
+	delta.HeadMissing -= before.HeadMissing
+	return delta
 }
 
 // statsOf reads every node's stats.
