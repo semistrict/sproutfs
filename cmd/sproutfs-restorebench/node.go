@@ -43,8 +43,10 @@ type nodeConfig struct {
 	file       platform.File
 	cacheBytes int64
 	deployment checkpoint.CacheDeployment
-	// memoryBytes is each cache's memory tier.
-	memoryBytes int64
+	// memoryBytes is each cache's memory tier, and fillQueueBytes what the
+	// cache holds of the fills it has not sent yet.
+	memoryBytes    int64
+	fillQueueBytes int64
 	// serveRate is the peer server's serving bandwidth for stripes.
 	serveRate int64
 	// dropPageCache drops the kernel's page cache, so the next read of the
@@ -83,6 +85,7 @@ func runNode(ctx context.Context, args []string) error {
 	dir := flags.String("dir", "/mnt/ssd", "directory of the cache's file")
 	cacheBytes := flags.Int64("cache-bytes", 40<<30, "bytes of disk the cache may hold")
 	memoryBytes := flags.Int64("memory-bytes", 1<<30, "bytes of memory each cache's memory tier may hold")
+	fillQueueBytes := flags.Int64("fill-queue-bytes", 4<<30, "bytes of fills the cache holds before it drops them")
 	bucket := flags.String("bucket", "", "Cloud Storage bucket")
 	prefix := flags.String("prefix", "", "prefix of this run's objects in the bucket")
 	serveRate := flags.Int64("serve-bytes-per-second", 500<<20, "the peer server's serving bandwidth for stripes")
@@ -110,7 +113,8 @@ func runNode(ctx context.Context, args []string) error {
 		network: adapters.NewNetwork(),
 		objects: store, file: file, cacheBytes: *cacheBytes,
 		deployment:  checkpoint.CacheDeployment{Store: "gcs", Bucket: *bucket, Prefix: *prefix},
-		memoryBytes: *memoryBytes, serveRate: *serveRate, dropPageCache: dropPageCache})
+		memoryBytes: *memoryBytes, fillQueueBytes: *fillQueueBytes, serveRate: *serveRate,
+		dropPageCache: dropPageCache})
 	if err != nil {
 		return err
 	}
@@ -161,7 +165,7 @@ func newNode(ctx context.Context, config nodeConfig) (*node, error) {
 	// guest.
 	n.cache, err = checkpoint.NewCache(ctx, memory, checkpoint.CacheConfig{Disk: config.file,
 		DiskBytes: config.cacheBytes, Deployment: config.deployment, ClusterPercent: 100, Peers: n.table,
-		FillQueueBytes: 4 << 30, FillBytesPerSecond: 4 << 30})
+		FillQueueBytes: config.fillQueueBytes, FillBytesPerSecond: 4 << 30})
 	if err != nil {
 		return nil, err
 	}

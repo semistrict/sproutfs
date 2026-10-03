@@ -1311,7 +1311,11 @@ read back on another host in 16.4 s from the cluster and 28.1 s from GCS. A
 page took 58 ms at the median and 136 ms at p99 from the cluster, 106 and
 218 ms from the store. With one host lost during the read, no page was read
 from the store and the time did not change
-([measurement](measurements/gce-cluster-reads-2026-10-03.md)).
+([measurement](measurements/gce-cluster-reads-2026-10-03.md)). Reads that
+wait on each other gain more: a chain of 2 MiB pages took 10.3 ms a hop from
+the cluster and 41.5 ms from GCS, and a chain of 4 KiB pages 0.65 ms and
+24.6 ms. A 2 MiB read from the cluster is mostly the reader's SHA-256 and
+copies ([measurement](measurements/gce-dependent-reads-2026-10-03.md)).
 
 ## Nested VMs
 

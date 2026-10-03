@@ -151,7 +151,9 @@ spread the read within 2.5 % over the five other hosts.
 
 - A guest. There is no Firecracker here: a restore's faults and its post-copy
   stream would read the same path, but this run reads pages in order, 16 at a
-  time, from one process.
+  time, from one process. [Dependent and random reads](gce-dependent-reads-2026-10-03.md)
+  measures faults that wait on each other, at 2 MiB and 4 KiB, and where the
+  reader's CPU goes.
 - The case with the pages in memory, which the plan lists first. The memory
   tier is a local read and is not what step 7 changed.
 - More than one reader. Every host restoring at once would put each holder's

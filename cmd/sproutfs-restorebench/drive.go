@@ -269,6 +269,12 @@ func drive(ctx context.Context, nodes []controller, config driveConfig) (driveRe
 		}
 		slog.InfoContext(ctx, "drive: published", "vm", g.VM, "seconds", published.Seconds,
 			"settled", published.Settled, "fill", fmt.Sprintf("%+v", published.Fill))
+		// A stripe the fills dropped is a window the cluster does not hold,
+		// whose reads would be reads of the store.
+		if published.Fill.Dropped != ([len(published.Fill.Dropped)]uint64{}) {
+			return driveResult{}, nil, fmt.Errorf("publishing %s dropped stripes, by reason %v: the cluster does not "+
+				"hold the whole guest", g.VM, published.Fill.Dropped)
+		}
 		guests[spec.pageSize], sequences[spec.pageSize] = g, published.Sequence
 		result.Guests = append(result.Guests, g)
 		result.Publish[g.VM] = published

@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-03 03:41'
-updated_date: '2026-10-03 16:49'
+updated_date: '2026-10-03 21:42'
 labels:
   - performance
   - storage
@@ -143,4 +143,6 @@ Decisions: simtest worlds set hedge floor, bound and stripe timeout to an hour (
 Tests: exact property tests in checkpoint/clusterread_test.go, read campaign with 5 Buggify sites and 19 probes, simtest TestAVMOpensFromTheClusterAfterAnyOneHostIsLostDrainedOrRestarted; fingerprint -count=20 and probe campaign pass after merging main. Guards: 4 peer, 13 cluster, each killed. Gremlins on clusterread/clusterdown/peercache: 129 killed, 54 lived -> 154 killed, 29 lived, 13 not covered (survivors justified in docs/testing.md).
 Bugs found: Pages aliased its reply's pooled buffer (race); peer server read a payload after ending its receive ctx, so over TCP every keep was reset (found on GCE).
 GCE (docs/measurements/gce-cluster-reads-2026-10-03.md): 8 GiB guest read on another host, 6 n2-standard-4 under 4+2, 3 rounds: cluster 16.4 s, p50 58 / p99 136 ms (p99 spread 3.3 ms); store 28.1 s, p50 106 / p99 218 ms (spread 51 ms); one host lost: same time, no page from the store. Holders served within 2.5 % of each other. Reader CPU-bound (3.9 of 4 CPUs). All VMs, disks and objects deleted.
+
+Dependent and random reads on GCE (docs/measurements/gce-dependent-reads-2026-10-03.md). The restore bench now reads a guest as a chain (each read named by the bytes of the last), at random (1, 4, 16 at a time) and in order, by page or by 8 MiB fault run, at 2 MiB and 4 KiB pages; it checks pages by CRC-32C against precomputed sums, times each step (calibrate), and profiles the reader. Cascade Lake n2-standard-4, 4+2, 3 rounds: chain of 2 MiB pages 10.3 ms a hop from the cluster vs 41.5 ms from GCS (93 vs 23.5 hops/s, 4.0x); 4 KiB pages 0.65 vs 24.6 ms (28x hops/s); chains of fault runs 20 vs 58 ms (2 MiB) and 39 vs 85 ms (4 KiB); in order 15.6 vs 24.8 s (1.6x). A 2 MiB cluster read is ~90 % reader CPU: SHA-256 6.1 ms, copies/zeroing 2.4 ms (seven per page), network+disks ~1 ms. Ice Lake (SHA instructions, n2-highmem-4): SHA 5.67 -> 1.67 ms; 2 MiB chain 6.5 vs 37.3 ms (5.7x), in order 9.2 vs 25.2 s. 4 KiB tail is the 64 page-table segment loads. Findings for the plan: serve the faulting page before its 8 MiB run (60x latency at 4 KiB), require SHA-capable hosts or a cheaper envelope check, cut copies, load 4 KiB page tables at open, hedge delay per read size (one delay mixes sizes: 3-8 store hedges in 12 of 36 cluster cases), fill queue overflowed on Ice Lake publisher (n2-standard-4 OOM; drive now refuses a publication that dropped stripes).
 <!-- SECTION:NOTES:END -->

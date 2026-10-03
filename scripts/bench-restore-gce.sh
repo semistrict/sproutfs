@@ -33,17 +33,24 @@ rounds=${SPROUTFS_RESTORE_ROUNDS:-3}
 pages=${SPROUTFS_RESTORE_PAGES:-4096}
 small_pages=${SPROUTFS_RESTORE_SMALL_PAGES:-1048576}
 machine=${SPROUTFS_RESTORE_MACHINE:-n2-standard-4}
-[[ $machine =~ ^n2-standard-[0-9]+$ ]] || { echo "SPROUTFS_RESTORE_MACHINE is an n2-standard machine type" >&2; exit 2; }
+[[ $machine =~ ^n2-(standard|highmem)-[0-9]+$ ]] ||
+    { echo "SPROUTFS_RESTORE_MACHINE is an n2-standard or n2-highmem machine type" >&2; exit 2; }
 platform=${SPROUTFS_RESTORE_PLATFORM:-Intel Cascade Lake}
 [[ $platform =~ ^Intel\ [A-Za-z\ ]+$ ]] || { echo "SPROUTFS_RESTORE_PLATFORM is an Intel CPU platform" >&2; exit 2; }
 # The drive's cases and sources, as its flags take them.
 drive_flags=""
 for setting in cases:SPROUTFS_RESTORE_CASES sources:SPROUTFS_RESTORE_SOURCES profile:SPROUTFS_RESTORE_PROFILE; do
-    value=${!setting#*:}
-    value=${!value:-}
-    [[ $value =~ ^[A-Za-z0-9/,-]*$ ]] || { echo "${setting#*:} is a comma-separated list of cases or sources" >&2; exit 2; }
-    [[ -n $value ]] && drive_flags+=" -${setting%%:*} $value"
+    name=${setting#*:}
+    value=${!name:-}
+    [[ $value =~ ^[A-Za-z0-9/,-]*$ ]] || { echo "$name is a comma-separated list of cases or sources" >&2; exit 2; }
+    if [[ -n $value ]]; then drive_flags+=" -${setting%%:*} $value"; fi
 done
+# The publisher holds the fills of the whole guest it publishes until they
+# are sent, so a host that publishes faster than its keeps go needs a queue as
+# large as what it is behind by: SPROUTFS_RESTORE_FILL_QUEUE_BYTES, 4 GiB by
+# default.
+fill_queue=${SPROUTFS_RESTORE_FILL_QUEUE_BYTES:-4294967296}
+[[ $fill_queue =~ ^[0-9]+$ ]] || { echo "SPROUTFS_RESTORE_FILL_QUEUE_BYTES is a number" >&2; exit 2; }
 bucket=${SPROUTFS_GCE_BUCKET:-}
 account=${SPROUTFS_GCE_SERVICE_ACCOUNT:-}
 [[ -n $bucket && -n $account ]] || { echo "Set SPROUTFS_GCE_BUCKET and SPROUTFS_GCE_SERVICE_ACCOUNT." >&2; exit 2; }
@@ -171,7 +178,8 @@ run() {
                 ssd=\$(ls /dev/disk/by-id/google-local-nvme-ssd-0); \
                 sudo mkfs.ext4 -q -F \$ssd; sudo mkdir -p /mnt/ssd; sudo mount \$ssd /mnt/ssd; \
                 sudo systemd-run --unit=sproutfs-node --property=LimitNOFILE=65536 \
-                \$HOME/sproutfs-restorebench node -advertise $ip:7500 -bucket $bucket -prefix $run_objects -dir /mnt/ssd"
+                \$HOME/sproutfs-restorebench node -advertise $ip:7500 -bucket $bucket -prefix $run_objects -dir /mnt/ssd \
+                -fill-queue-bytes $fill_queue"
         } >> "$results/remote.log" 2>&1
         nodes+="${nodes:+,}$ip:7600"
     done

@@ -233,7 +233,8 @@ func simNodes(t *testing.T, ctx context.Context, runtime *sim.Runtime) []control
 		n, err := newNode(ctx, nodeConfig{address: address, listen: address, dialFrom: platform.Address(name),
 			network: runtime.Network(), objects: runtime.ObjectStore(), file: file, cacheBytes: 512 << 20,
 			deployment:  checkpoint.CacheDeployment{Store: "sim", Bucket: "bench", Prefix: "run"},
-			memoryBytes: 64 << 20, serveRate: 500 << 20, dropPageCache: func() error { return nil }})
+			memoryBytes: 64 << 20, fillQueueBytes: 1 << 30, serveRate: 500 << 20,
+			dropPageCache: func() error { return nil }})
 		if err != nil {
 			t.Fatal(err)
 		}
