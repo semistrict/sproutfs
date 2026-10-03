@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"runtime"
 	"testing"
 	"time"
 
@@ -72,6 +73,16 @@ func pulledRunWith(t *testing.T, diskBytes int64,
 		configure(h)
 	}
 	h.start(t)
+	if h.configs[1].CacheList.Read != nil {
+		// The host reads the list as it starts, on a goroutine of its own:
+		// the pull must find the list it read, not the host alone.
+		for h.hosts[1].Status().Caches.Reads == 0 {
+			if err := t.Context().Err(); err != nil {
+				t.Fatal(err)
+			}
+			runtime.Gosched()
+		}
+	}
 
 	vm, err := h.hosts[0].Volumes().Create(t.Context(), "vm-1", pullVolumes)
 	if err != nil {

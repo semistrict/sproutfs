@@ -10,15 +10,18 @@ import (
 
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/sim"
+	"github.com/semistrict/sproutfs/rank"
+	"github.com/semistrict/sproutfs/stripe"
 )
 
 // The page cache's disk is its second tier: envelopes on the host's own disk,
 // keyed by page identity exactly as the memory tier is. It holds what the
 // object store holds — each member's and each segment's encoded envelope, byte
-// for byte — so a read from it is the same read as one from the store, checked
-// by the same envelope. Nothing on it is evidence that a publication landed,
-// and nothing publishes from it. A newer checkpoint's page has a new identity,
-// so the copy of the page it replaced is never read for it.
+// for byte, whole or as the stripes of it the list of caches puts on this
+// cache (diskstripes.go) — so a read from it is the same read as one from the
+// store, checked by the same envelope. Nothing on it is evidence that a
+// publication landed, and nothing publishes from it. A newer checkpoint's page
+// has a new identity, so the copy of the page it replaced is never read for it.
 //
 // The disk is a log of fixed-size disk regions (diskformat.go). One region at a
 // time is open. Its space is allocated when it opens, and items are appended to
@@ -172,6 +175,8 @@ type cacheDisk struct {
 	// file's identity and generation are drawn from.
 	deployment CacheDeployment
 	entropy    platform.Entropy
+	// clusterPercent is the share of windows placed by the list of caches.
+	clusterPercent int
 	// identity and generation are the file's, set as the disk opens.
 	identity   CacheIdentity
 	generation uint64
@@ -204,6 +209,10 @@ type cacheDisk struct {
 	// stopped is a disk whose cache has closed: its open region is closed, and
 	// it takes no more writes.
 	stopped bool
+	// caches returns the list of caches the host holds, which says what the
+	// disk keeps of each envelope and under which code it reads; nil is a
+	// host that follows no list, and keeps each envelope whole.
+	caches func() rank.List
 }
 
 // diskSettings is how a cache's disk is laid out and bounded, and what its
@@ -215,6 +224,9 @@ type diskSettings struct {
 	threshold  int
 	deployment CacheDeployment
 	entropy    platform.Entropy
+	// clusterPercent is the share of windows the disk places by the list of
+	// caches; it keeps the rest whole.
+	clusterPercent int
 }
 
 // openCacheDisk opens the page cache's disk over file: what the file holds is
@@ -223,7 +235,8 @@ type diskSettings struct {
 func openCacheDisk(ctx context.Context, file platform.File, budget DiskBudget, settings diskSettings) (*cacheDisk, error) {
 	d := &cacheDisk{file: file, budget: budget, regionBytes: settings.regionBytes, indexLimit: settings.indexLimit,
 		threshold: settings.threshold, deployment: settings.deployment, entropy: platform.EntropyOr(settings.entropy),
-		slots: make(chan struct{}, pullConcurrency), writer: make(chan struct{}, 1), index: newDiskIndex()}
+		clusterPercent: settings.clusterPercent,
+		slots:          make(chan struct{}, pullConcurrency), writer: make(chan struct{}, 1), index: newDiskIndex()}
 	if err := d.readBack(ctx); err != nil {
 		return nil, err
 	}
@@ -246,14 +259,6 @@ func (d *cacheDisk) capacity() int64 {
 // holds reports whether bytes of fills fit on the disk at once.
 func (d *cacheDisk) holds(bytes int64) bool { return bytes <= d.capacity() }
 
-// has reports whether the disk holds an item under key.
-func (d *cacheDisk) has(key diskKey) bool {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	_, found := d.index.lookup(key)
-	return found
-}
-
 // lockWriter takes the log's one writer.
 func (d *cacheDisk) lockWriter(ctx context.Context) error {
 	select {
@@ -274,47 +279,14 @@ func (d *cacheDisk) refuse(format string, args ...any) error {
 	return fmt.Errorf("%w: "+format, append([]any{ErrDiskRefused}, args...)...)
 }
 
-// write keeps data under key, unless the disk already holds it. A write the
-// disk refuses reports ErrDiskRefused. A write the disk fails is logged and
-// forgotten, and reports nothing: the store still holds the bytes.
-func (d *cacheDisk) write(ctx context.Context, key diskKey, data []byte, kind WriteKind) error {
-	size := itemHeaderBytes(key) + int64(len(data))
-	if len(data) > maximumDiskItem || !storable(key) ||
-		size+tableEntryBytes(key)+diskTrailerSize > d.regionBytes {
-		return d.refuse("%d bytes do not fit in a region of %d", len(data), d.regionBytes)
-	}
-	if err := d.lockWriter(ctx); err != nil {
-		return err
-	}
-	defer d.unlockWriter()
-	d.mu.Lock()
-	_, found := d.index.lookup(key)
-	indexed, stopped := d.index.used, d.stopped
-	d.mu.Unlock()
-	if found {
-		return nil
-	}
-	if stopped {
-		return d.refuse("the cache is closed")
-	}
-	if indexed+maximumInsertCharge > d.indexLimit {
-		return d.refuse("the index holds %d bytes of %d", indexed, d.indexLimit)
-	}
-	if !d.budget.Admit(size, kind) {
-		return d.refuse("the write budget refused %d bytes", size)
-	}
-	_, err := d.append(ctx, key, data, kind)
-	return err
-}
-
-// append lays one item at the end of the open region and names it in the
-// index, opening, closing and evicting regions to make room, and reports
-// whether the item is on the disk. The caller holds the writer. A fill is of a
-// key the index does not hold. A second chance names a key a second time, in
+// append lays stripes of key's envelope, as one item each, next to each other
+// at the end of the open region, in one write, and names them in the index,
+// opening, closing and evicting regions to make room. It reports whether the
+// items are on the disk. The caller holds the writer. A fill is of stripes
+// the index does not hold. A second chance names a stripe a second time, in
 // the open region, until its victim leaves the index a moment later.
-func (d *cacheDisk) append(ctx context.Context, key diskKey, data []byte, kind WriteKind) (bool, error) {
-	size := itemHeaderBytes(key) + int64(len(data))
-	table := tableEntryBytes(key)
+func (d *cacheDisk) append(ctx context.Context, key diskKey, stripes []stripe.Stripe, kind WriteKind) (bool, error) {
+	size, table := itemsBytes(key, stripes)
 	region, err := d.room(ctx, size, table, kind)
 	if err != nil {
 		return false, err
@@ -323,8 +295,11 @@ func (d *cacheDisk) append(ctx context.Context, key diskKey, data []byte, kind W
 	offset := region.base + region.written
 	region.written += size
 	d.mu.Unlock()
-	item := encodeItem(key, wholeEnvelope, data)
-	if err := d.writeItem(ctx, item, offset); err != nil {
+	items := make([]byte, 0, size)
+	for _, s := range stripes {
+		items = appendItem(items, key, s)
+	}
+	if err := d.writeItems(ctx, items, offset); err != nil {
 		// The space stays in the region unused, and no table names it.
 		slog.WarnContext(ctx, "checkpoint: writing to the page cache's disk failed; the store serves the page",
 			"checkpoint", key.Ref.String(), "volume", key.Volume, "page", key.Page, "segment", key.segment,
@@ -333,15 +308,28 @@ func (d *cacheDisk) append(ctx context.Context, key diskKey, data []byte, kind W
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	region.tableBytes += table
-	region.items = append(region.items, tableItem{key: key, code: wholeEnvelope,
-		offset: uint32(offset - region.base), length: uint32(len(data))})
-	d.index.insert(key, region, offset, int64(len(data)))
+	for _, s := range stripes {
+		region.tableBytes += tableEntryBytes(key)
+		region.items = append(region.items, tableItem{key: key, code: codeOf(s),
+			offset: uint32(offset - region.base), length: uint32(len(s.Bytes))})
+		d.index.insert(key, codeOf(s), region, offset, int64(len(s.Bytes)))
+		offset += itemHeaderBytes(key) + int64(len(s.Bytes))
+	}
 	return true, nil
 }
 
-// writeItem writes one item where it goes.
-func (d *cacheDisk) writeItem(ctx context.Context, item []byte, offset int64) error {
+// itemsBytes is what stripes of key's envelope take in a region as items, and
+// what they add to its table.
+func itemsBytes(key diskKey, stripes []stripe.Stripe) (size, table int64) {
+	for _, s := range stripes {
+		size += itemHeaderBytes(key) + int64(len(s.Bytes))
+		table += tableEntryBytes(key)
+	}
+	return size, table
+}
+
+// writeItems writes items where they go, in one write.
+func (d *cacheDisk) writeItems(ctx context.Context, item []byte, offset int64) error {
 	if sim.Buggify(ctx, buggifyDiskFailedWrite, 0.05) {
 		return platform.ErrInjectedFault
 	}
@@ -522,6 +510,7 @@ func (d *cacheDisk) sync(ctx context.Context) error {
 type rescue struct {
 	location diskLocation
 	page     uint16
+	code     diskCode
 }
 
 // evict gives the oldest closed region back. With secondChance, the items in
@@ -536,9 +525,10 @@ func (d *cacheDisk) evict(ctx context.Context, victim *diskRegion, secondChance 
 	var rescues []rescue
 	if secondChance {
 		for _, entry := range victim.entries {
-			entry.each(func(page uint16, location diskLocation) {
+			entry.each(func(page uint16, index uint8, location diskLocation) {
 				if location.word.reads() >= d.threshold {
-					rescues = append(rescues, rescue{location: location, page: page})
+					rescues = append(rescues, rescue{location: location, page: page,
+						code: diskCode{stripe: index, k: entry.k, m: entry.m}})
 				}
 			})
 		}
@@ -586,10 +576,11 @@ func (d *cacheDisk) secondChance(ctx context.Context, victim *diskRegion, rescue
 		if err != nil {
 			continue
 		}
-		if hash, page := parsed.key.window(); hash != item.location.entry.hash || page != item.page {
+		if hash, page := parsed.key.window(); hash != item.location.entry.hash || page != item.page ||
+			parsed.code != item.code {
 			continue
 		}
-		stored, err := d.append(ctx, parsed.key, parsed.data, WriteSecondChance)
+		stored, err := d.append(ctx, parsed.key, []stripe.Stripe{parsed.stripe()}, WriteSecondChance)
 		if err != nil {
 			return
 		}
@@ -698,65 +689,50 @@ const (
 	diskKeyMismatch
 	// diskDamaged is an item that fails its checksum.
 	diskDamaged
+	// diskWrongStripe is stripes that pass their checks and rebuild no
+	// envelope that passes its own.
+	diskWrongStripe
 )
 
-// read returns the envelope the disk holds under key. Anything but a hit is a
-// miss, and an item the disk could not give back intact is forgotten: the
-// store still holds what was copied, and a copy that failed once is not asked
-// for again.
-func (d *cacheDisk) read(ctx context.Context, key diskKey) ([]byte, diskReadOutcome) {
-	d.mu.Lock()
-	location, found := d.index.lookup(key)
-	if !found {
-		d.mu.Unlock()
-		return nil, diskAbsent
-	}
-	region := location.entry.region
-	region.readers++
-	d.mu.Unlock()
+// readItem reads back the item location names, which the index holds as the
+// stripe of key's envelope that code says, and with the region it lies in
+// held for the read. Anything but a hit is a miss, and an item the disk could
+// not give back intact is forgotten: the store still holds what was copied,
+// and a copy that failed once is not asked for again.
+func (d *cacheDisk) readItem(ctx context.Context, key diskKey, code diskCode,
+	location diskLocation) (stripe.Stripe, diskReadOutcome) {
 	buffer := make([]byte, location.size())
 	err := readFull(ctx, d.file, buffer, location.offset)
-	d.finishRead(ctx, region)
+	d.finishRead(ctx, location.entry.region)
 	if err != nil {
 		// A read the caller gave up on says nothing about the disk.
 		if context.Cause(ctx) == nil {
 			d.forget(ctx, location, key, err)
 		}
-		return nil, diskFailed
+		return stripe.Stripe{}, diskFailed
 	}
-	if found, ok := itemKey(buffer); ok && found != key && !sim.Bug(ctx, "diskcache-skip-key-check") {
-		sim.Probe(ctx, ProbeDiskKeyMismatch)
-		d.forget(ctx, location, key, fmt.Errorf("%w: %s/%s/%d", errItemKey, found.Ref, found.Volume, found.Page))
-		return nil, diskKeyMismatch
+	found, ok := itemKey(buffer)
+	if ok && !sim.Bug(ctx, "diskcache-skip-key-check") {
+		if named := (diskCode{stripe: buffer[6], k: buffer[7], m: buffer[8]}); found != key || named != code {
+			sim.Probe(ctx, ProbeDiskKeyMismatch)
+			d.forget(ctx, location, key, fmt.Errorf("%w: stripe %d of %d+%d of %s/%s/%d", errItemKey,
+				named.stripe, named.k, named.m, found.Ref, found.Volume, found.Page))
+			return stripe.Stripe{}, diskKeyMismatch
+		}
 	}
 	parsed, err := parseItem(buffer, sim.Bug(ctx, "diskcache-skip-checksum"))
 	if err != nil {
 		sim.Probe(ctx, ProbeDiskChecksumMismatch)
 		d.forget(ctx, location, key, err)
-		return nil, diskDamaged
+		return stripe.Stripe{}, diskDamaged
 	}
-	return parsed.data, diskHit
-}
-
-// served counts one read of a copy that came back intact.
-func (d *cacheDisk) served(key diskKey) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.hits++
-	if location, found := d.index.lookup(key); found {
-		d.index.read(location)
+	read := parsed.stripe()
+	if len(read.Bytes) > 0 && sim.Buggify(ctx, buggifyDiskWrongStripe, 0.05) {
+		// A stripe whose own checksum holds and whose bytes are not the
+		// envelope's, as a peer that answers with a wrong stripe gives one.
+		read.Bytes[len(read.Bytes)/2] ^= 0x40
 	}
-}
-
-// lose forgets the item the disk holds under key, which did not give back
-// what was written.
-func (d *cacheDisk) lose(ctx context.Context, key diskKey, cause error) {
-	d.mu.Lock()
-	location, found := d.index.lookup(key)
-	d.mu.Unlock()
-	if found {
-		d.forget(ctx, location, key, cause)
-	}
+	return read, diskHit
 }
 
 // forget drops one item from the index.
@@ -809,8 +785,8 @@ type DiskStats struct {
 	UsedBytes, LimitBytes int64
 	// Regions is how many regions it holds.
 	Regions int
-	// Entries is the pages and segments it holds, and IndexBytes what its
-	// index costs in memory.
+	// Entries is the stripes of pages and segments it holds, a whole
+	// envelope being one, and IndexBytes what its index costs in memory.
 	Entries    int
 	IndexBytes int64
 	// Hits counts reads it served, and Lost the copies it could not give back

@@ -596,25 +596,17 @@ func (s *Store) readSegment(ctx context.Context, at segmentAddress) ([]byte, err
 }
 
 // fromDisk returns the decoded bytes the page cache's disk holds under key, and
-// nothing where it holds none. A copy that does not decode, or that valid
-// refuses, is one the disk damaged: it is forgotten, and the caller reads the
-// store, which still holds what was copied.
+// nothing where it holds none. The disk rebuilds the envelope from its
+// stripes, and the envelope is checked as one from the store is: a rebuild
+// that does not decode, or that valid refuses, is one the disk damaged. Its
+// stripes are forgotten, and the caller reads the store, which still holds
+// what was copied.
 func (s *Store) fromDisk(ctx context.Context, key diskKey, maximum int, valid func([]byte) bool) ([]byte, bool) {
 	if s.cache == nil || s.cache.disk == nil {
 		return nil, false
 	}
-	encoded, outcome := s.cache.disk.read(ctx, key)
-	if outcome != diskHit {
-		return nil, false
-	}
-	data, err := s.codecs.Decode(ctx, encoded, maximum)
-	if err == nil && !valid(data) {
-		err = ErrCorrupt
-	}
-	if err != nil {
-		if context.Cause(ctx) == nil {
-			s.cache.disk.lose(ctx, key, err)
-		}
+	data, found := s.cache.disk.decoded(ctx, key, s.codecs, maximum, valid)
+	if !found {
 		return nil, false
 	}
 	s.cache.disk.served(key)

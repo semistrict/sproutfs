@@ -10,6 +10,7 @@ import (
 
 	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/platform"
+	"github.com/semistrict/sproutfs/rank"
 	"github.com/semistrict/sproutfs/resource"
 )
 
@@ -43,6 +44,12 @@ type CacheConfig struct {
 	// DiskSecondChanceReads is how many reads since it was written give an
 	// item a second chance before its region is given back. Default 1.
 	DiskSecondChanceReads int
+	// ClusterPercent is the share of windows, 0 to 100, the cluster cache is
+	// turned on for, by a hash of the window. The disk keeps a window inside
+	// the share as the stripes the list of caches puts on this cache, under
+	// the list's code, and every other window whole, under 1+0, whatever the
+	// list says. Zero, the default, keeps every window whole.
+	ClusterPercent int
 }
 
 // Cache shares immutable decoded pages among the stores and
@@ -180,7 +187,8 @@ func NewCache(ctx context.Context, resources *resource.Budget, config CacheConfi
 	if resources == nil || config.MaxConcurrentLoads < 1 || config.MaxConcurrentLoads > 1024 || config.DiskBytes < 0 ||
 		config.DiskRegionBytes < minimumDiskRegionBytes || config.DiskRegionBytes > maximumDiskRegionBytes ||
 		config.DiskRegionBytes%diskBlock != 0 || config.DiskIndexBytes < 0 || config.DiskSecondChanceReads < 0 ||
-		config.DiskSecondChanceReads > wordReadsMax || !config.Deployment.storable() ||
+		config.DiskSecondChanceReads > wordReadsMax || config.ClusterPercent < 0 || config.ClusterPercent > 100 ||
+		!config.Deployment.storable() ||
 		diskHeaderBytes(config.Deployment) > config.DiskRegionBytes {
 		return nil, ErrInvalidConfig
 	}
@@ -193,7 +201,7 @@ func NewCache(ctx context.Context, resources *resource.Budget, config CacheConfi
 	if config.Disk != nil && budget != nil {
 		disk, err := openCacheDisk(ctx, config.Disk, budget, diskSettings{regionBytes: config.DiskRegionBytes,
 			indexLimit: config.DiskIndexBytes, threshold: config.DiskSecondChanceReads,
-			deployment: config.Deployment, entropy: config.Entropy})
+			deployment: config.Deployment, entropy: config.Entropy, clusterPercent: config.ClusterPercent})
 		if err != nil {
 			return nil, fmt.Errorf("the page cache's disk: %w", err)
 		}
@@ -214,6 +222,18 @@ func (c *Cache) Stats() CacheStats {
 	return CacheStats{ResidentBytes: c.used, Entries: len(c.entries), ActiveLoads: c.active,
 		PeakLoads: c.peak, Hits: c.hits, Misses: c.misses, CoalescedLoads: c.coalesced, Evictions: c.evictions,
 		Disk: disk}
+}
+
+// FollowCaches has the cache's disk keep and read stripes by the list of
+// caches the host holds, which caches returns: for each window inside the
+// share CacheConfig.ClusterPercent turns on, the stripes of its envelopes the
+// list ranks this cache for, under the list's code. Every other window, and
+// every window until it is called, the disk keeps whole. It does nothing for
+// a cache that keeps no disk.
+func (c *Cache) FollowCaches(caches func() rank.List) {
+	if c.disk != nil {
+		c.disk.follow(caches)
+	}
 }
 
 // FitDisk is what the host's disk limiter calls when the cache's share has

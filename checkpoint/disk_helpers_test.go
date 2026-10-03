@@ -3,6 +3,8 @@ package checkpoint
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -13,6 +15,8 @@ import (
 	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/sim"
+	"github.com/semistrict/sproutfs/rank"
+	"github.com/semistrict/sproutfs/stripe"
 )
 
 // testRegionBytes is the region the disk tests use: room for 21 of their
@@ -23,9 +27,14 @@ const testRegionBytes = 64 << 10
 const testItemBytes = 3000
 
 // testItemsPerRegion is how many testItemBytes items, each with a header of
-// 46 bytes and a table entry of 40 under keyOf's names, one region holds:
-// (65,536 - 40) / (3,046 + 40).
+// 50 bytes and a table entry of 40 under keyOf's names, one region holds:
+// (65,536 - 40) / (3,050 + 40).
 const testItemsPerRegion = 21
+
+// whole is the one stripe of envelope under 1+0: the envelope whole.
+func whole(envelope []byte) stripe.Stripe {
+	return stripe.Stripe{Code: wholeCode, Index: 0, Length: len(envelope), Bytes: envelope}
+}
 
 // checkedFile wraps the cache's file the way FoundationDB's
 // AsyncFileWriteChecker does: it keeps a copy of every byte written, and on
@@ -378,6 +387,9 @@ type diskFixture struct {
 	settings diskSettings
 	disk     *cacheDisk
 	model    map[diskKey][]byte
+	// caches is the list of caches the disk follows, made from its own
+	// identity; nil follows none.
+	caches func(self CacheIdentity) rank.List
 }
 
 type diskFixtureConfig struct {
@@ -385,6 +397,34 @@ type diskFixtureConfig struct {
 	regions    int64
 	indexLimit int64
 	disk       sim.DiskConfig
+	// caches is the list of caches the disk follows, made from its own
+	// identity once it opens; nil follows none, and keeps envelopes whole.
+	caches func(self CacheIdentity) rank.List
+	// clusterPercent is the share of windows the disk places by that list.
+	clusterPercent int
+}
+
+// follow has the fixture's disk follow its list of caches, if it has one.
+func (f *diskFixture) follow() {
+	if f.caches == nil {
+		return
+	}
+	list := f.caches(f.disk.identity)
+	f.disk.follow(func() rank.List { return list })
+}
+
+// listOf is the list of the cache self and caches others, of weight one each,
+// under code.
+func listOf(code rank.Code, self CacheIdentity, others ...CacheIdentity) rank.List {
+	caches := []rank.Cache{{Identity: self, Weight: 1}}
+	for _, other := range others {
+		caches = append(caches, rank.Cache{Identity: other, Weight: 1})
+	}
+	list, err := rank.NewList(code, caches)
+	if err != nil {
+		panic(err)
+	}
+	return list
 }
 
 // newDiskFixture builds a fixture on a runtime of its own.
@@ -412,11 +452,13 @@ func openDiskFixture(ctx context.Context, runtime *sim.Runtime, config diskFixtu
 	}
 	f := &diskFixture{runtime: runtime, simDisk: simDisk, file: file, budget: budget,
 		settings: diskSettings{regionBytes: testRegionBytes, indexLimit: limit, threshold: 1,
-			deployment: testDeployment, entropy: runtime.NewEntropy("cache-disk")},
-		model: make(map[diskKey][]byte)}
+			deployment: testDeployment, entropy: runtime.NewEntropy("cache-disk"),
+			clusterPercent: config.clusterPercent},
+		model: make(map[diskKey][]byte), caches: config.caches}
 	if f.disk, err = openCacheDisk(ctx, file, budget, f.settings); err != nil {
 		return nil, err
 	}
+	f.follow()
 	return f, nil
 }
 
@@ -432,6 +474,7 @@ func (f *diskFixture) restart(ctx context.Context) error {
 		return err
 	}
 	f.disk = disk
+	f.follow()
 	return nil
 }
 
@@ -447,14 +490,37 @@ func keyOf(vm string, page uint64) diskKey {
 }
 
 // payloadOf is the envelope a test writes under key: length bytes no other key
-// shares.
+// shares. Past 32 bytes, it ends in the SHA-256 of what comes before, so it
+// checks itself as an envelope does (selfChecked), and another key's payload
+// passes that check too, as another page's envelope would.
 func payloadOf(key diskKey, length int) []byte {
 	data := make([]byte, length)
 	seed := fmt.Sprintf("%s/%d/%s/%d", key.Ref.VM, key.Ref.Sequence, key.Volume, key.Page)
 	for at := range data {
 		data[at] = seed[at%len(seed)] ^ byte(at*31)
 	}
+	if length >= sha256.Size {
+		sum := sha256.Sum256(data[:length-sha256.Size])
+		copy(data[length-sha256.Size:], sum[:])
+	}
 	return data
+}
+
+// errNotSelfChecked reports a payload whose last 32 bytes are not the SHA-256
+// of the rest.
+var errNotSelfChecked = errors.New("the payload fails its own SHA-256")
+
+// selfChecked is the check a payload makes of itself, as an envelope's SHA-256
+// does: it knows nothing of the key it was read under.
+func selfChecked(payload []byte) error {
+	if len(payload) < sha256.Size {
+		return errNotSelfChecked
+	}
+	body := payload[:len(payload)-sha256.Size]
+	if sum := sha256.Sum256(body); !bytes.Equal(sum[:], payload[len(body):]) {
+		return errNotSelfChecked
+	}
+	return nil
 }
 
 // write keeps one item of length bytes under key, and remembers it.
@@ -470,7 +536,7 @@ func (f *diskFixture) write(t *testing.T, key diskKey, length int) {
 // read reads key and requires a hit with what was written.
 func (f *diskFixture) read(t *testing.T, key diskKey) {
 	t.Helper()
-	data, outcome := f.disk.read(f.ctx(t), key)
+	data, outcome := f.disk.read(f.ctx(t), key, selfChecked)
 	if outcome != diskHit || !bytes.Equal(data, f.model[key]) {
 		t.Fatalf("reading %v found %d and %d bytes, want a hit of %d", key, outcome, len(data), len(f.model[key]))
 	}
@@ -478,10 +544,10 @@ func (f *diskFixture) read(t *testing.T, key diskKey) {
 }
 
 // held reports which of keys the disk holds.
-func (f *diskFixture) held(keys []diskKey) []bool {
+func (f *diskFixture) held(ctx context.Context, keys []diskKey) []bool {
 	found := make([]bool, len(keys))
 	for at, key := range keys {
-		found[at] = f.disk.has(key)
+		found[at] = f.disk.has(ctx, key)
 	}
 	return found
 }
@@ -503,7 +569,7 @@ func (d *cacheDisk) checkInvariants(t *testing.T) {
 			}
 			used += entry.charge()
 			counted := 0
-			entry.each(func(uint16, diskLocation) { counted++ })
+			entry.each(func(uint16, uint8, diskLocation) { counted++ })
 			if counted != entry.live {
 				t.Errorf("an entry counts %d live items and holds %d", entry.live, counted)
 			}

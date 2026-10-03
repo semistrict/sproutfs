@@ -245,10 +245,11 @@ func Start(ctx context.Context, config SupervisorConfig) (Service, error) {
 		// checkpoint out of the interval's turn, and a deliberate stop where
 		// even that cannot admit the guest's stores.
 		Resources: s.resources, ObjectStore: s.objects, Network: config.Network, Pagers: s.pagers,
-		Clock:              s.clock,
-		Entropy:            config.Entropy,
-		CacheBytes:         config.CacheBytes,
-		Cache:              checkpoint.CacheConfig{Disk: s.cacheDisk, DiskBytes: config.CacheDiskBytes, Deployment: config.Deployment},
+		Clock:      s.clock,
+		Entropy:    config.Entropy,
+		CacheBytes: config.CacheBytes,
+		Cache: checkpoint.CacheConfig{Disk: s.cacheDisk, DiskBytes: config.CacheDiskBytes,
+			Deployment: config.Deployment, ClusterPercent: config.CacheClusterPercent},
 		DiskLimiter:        s.disk,
 		CacheList:          CacheListConfig{Read: s.readCaches},
 		CheckpointInterval: config.CheckpointInterval,

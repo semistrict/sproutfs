@@ -59,6 +59,19 @@ func (w Window) digest() uint64 {
 	return binary.BigEndian.Uint64(sum[:8])
 }
 
+// shareSalt keeps a window's place in the rollout's share apart from its
+// scores, so the windows a share turns on are not the ones some cache ranks
+// highest.
+const shareSalt = 0x5f3c_9e1d_a7b2_4c68
+
+// InShare reports whether the window is among the percent of windows the
+// cluster cache is turned on for: none at 0, every one at 100. The share is a
+// hash of the window, so every host puts a window on the same side, and
+// raising the share only adds windows to it.
+func (w Window) InShare(percent int) bool {
+	return mix(w.digest()^shareSalt)%100 < uint64(max(percent, 0))
+}
+
 // fractionBits is how many bits of a distance follow its binary point.
 const fractionBits = 32
 

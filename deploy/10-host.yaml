@@ -138,6 +138,11 @@ spec:
               value: "17179869184"
             - name: SPROUTFS_CACHE_DISK_BYTES
               value: "4294967296"
+            # The cluster cache is off: every window is kept whole on the
+            # host that reads it, whatever the list of caches says, until
+            # hosts read stripes from each other.
+            - name: SPROUTFS_CACHE_CLUSTER_PERCENT
+              value: "0"
             # The ephemeral disks this host admits, as a spill file of their
             # own out of the same emptyDir: every host sets it, because a VM
             # with one may be opened, received or recovered on either. Its

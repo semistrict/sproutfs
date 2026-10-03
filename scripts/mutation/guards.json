@@ -292,5 +292,47 @@
     "package": "cmd/sproutfs-orchestrator",
     "run": "^TestAQuietHostStaysInTheListOfCaches$",
     "purpose": "Drop the cache of a host pod that did not answer one survey from the list of caches."
+  },
+  {
+    "id": "stripe-mix-codes",
+    "package": "stripe",
+    "run": "^TestAStripeOfAnotherCodeIsNeverMixedIn$",
+    "purpose": "Rebuild an envelope from stripes of another code whose length fits this one."
+  },
+  {
+    "id": "stripe-stop-at-first-failure",
+    "package": "stripe",
+    "run": "^TestOneWrongStripeAmongKPlusOneIsFound$",
+    "purpose": "Give up when the first k stripes fail the envelope's check, instead of rebuilding from other sets of k to find the wrong one."
+  },
+  {
+    "id": "diskcache-mix-codes",
+    "package": "checkpoint",
+    "run": "^TestDiskReadsNoStripeOfAnotherCode$",
+    "purpose": "Look a stripe up in the disk's index under any code, so a page kept under another code is read and refused instead of missed."
+  },
+  {
+    "id": "diskcache-one-stripe-a-page",
+    "package": "checkpoint",
+    "run": "^TestDiskHoldsEveryIndexOfAPageRoundAShortList$",
+    "purpose": "Find a page's first item in the disk's index whatever index was asked for, as an index that holds one stripe a page."
+  },
+  {
+    "id": "diskcache-stripes-not-round",
+    "package": "checkpoint",
+    "run": "^TestDiskHoldsEveryIndexOfAPageRoundAShortList$",
+    "purpose": "Put stripe i on rank i alone, dropping the indices a list shorter than the code is wide has no rank for."
+  },
+  {
+    "id": "diskcache-keep-wrong-stripe",
+    "package": "checkpoint",
+    "run": "^TestDiskFindsAndForgetsAWrongStripe$",
+    "purpose": "Keep a stripe the rebuild of its envelope found wrong, so it is read again until its region goes."
+  },
+  {
+    "id": "diskcache-share-ignored",
+    "package": "checkpoint",
+    "run": "^TestAPulledCheckpointIsKeptWholeOutsideTheClusterShare$",
+    "purpose": "Place every window by the list of caches, ignoring the share the cluster cache is turned on for, so a host with others in its list keeps a pulled VM as stripes it cannot rebuild alone."
   }
 ]

@@ -247,6 +247,11 @@ type SupervisorConfig struct {
 	// publish, in regions given back oldest first when it needs room. The disk
 	// limiter sets its share; zero leaves the share to the limiter alone.
 	CacheDiskBytes int64
+	// CacheClusterPercent is the share of windows, 0 to 100, the cluster
+	// cache is turned on for: the page cache's disk keeps those as the
+	// stripes its list of caches ranks it for, and every other window whole.
+	// Zero keeps every window whole.
+	CacheClusterPercent int
 	// DiskGoal is what the host's disk limiter keeps on the filesystem Disk
 	// is on, and DiskBandBytes the cap on its band, zero for the limiter's
 	// default. Disk must report its space.

@@ -788,10 +788,15 @@ new identity, so the copy of the page it replaced is never read for it.
 (`CacheConfig.DiskRegionBytes`). One region is open at a time. Its space is
 allocated when it opens, where the file supports it, so a write never fails
 half way through a region. Envelopes are appended in the order they arrive.
-Each one is an **item** with a header: its key, its place in the code, its
-length, and a CRC32C of the header and the bytes. Today every item is a whole
-envelope, stripe 0 of the code 1+0. `checkpoint/diskformat.go` describes the
-format.
+Each one is an **item** with a header: its key, its stripe's index and code,
+its length, the length of the envelope it is a stripe of, and a CRC32C of the
+header and the bytes. A host alone keeps every envelope whole, as stripe 0 of
+the code 1+0. A host that follows a list of caches keeps the stripes of each
+envelope the list ranks its cache for, under the list's code, and a read
+rebuilds the envelope from any k of them it holds (see
+[the code](hosting.md#the-code)). `checkpoint/diskformat.go` describes the
+format, which is version 2. Version 1 held whole envelopes with no envelope
+length, and a file of it is emptied.
 
 When the open region is full, it is **closed**. Closing syncs the region's
 items, then writes the region's table at its end, then syncs again. The table
@@ -837,19 +842,26 @@ again has its old trailer cleared first, so a table a failed punch left behind
 is never read as the new region's. `checkpoint/diskrestart.go` holds the
 rules.
 
-**Reads.** A read checks the key in the item's header against the key it asked
-for, and then the checksum. An item that fails either is a miss. The index
-forgets it, and the page is read from the store. So a damaged item, a torn
-write, or an index that points at the wrong place costs a request, never
-wrong bytes. The envelope's own check still runs after this.
+**Reads.** A read checks the key, the index and the code in each item's
+header against what it asked for, and then the checksum. An item that fails
+any of them is a miss, and the index forgets it. The read rebuilds the envelope from
+the items that pass, and checks it by its own SHA-256. If it holds more than k
+stripes and the first k fail that check, it rebuilds from other sets of k, and
+forgets the stripe that does not belong. If none pass, it forgets them all.
+Either way the page is read from the store. So a damaged item, a torn write,
+a wrong stripe, or an index that points at the wrong place costs a request,
+never wrong bytes.
 
 **The index.** The index in memory is kept per **window**: the pages of one
 volume, in one aligned 2 MiB span, that one checkpoint published. A segment is
 a window of its own. A window is keyed by an 8-byte hash of its identity, and
 the key check on every read catches two windows that share a hash. An entry
-holds the region, the window's first offset, and which pages are present with
-each one's length and read counter, in 4 bytes a page. An entry with few pages
-lists them instead. A window written at two different times has an entry for
+holds the region, the window's first offset, the code, which indices each page
+holds, and which pages are present with each item's length and read counter,
+in 4 bytes an item. An entry with few items lists them instead. A host holds
+several indices of a window only where its list is shorter than the code is
+wide; their items lie next to each other in index order, so the window still
+costs one entry. A window written at two different times has an entry for
 each run of its items. The index counts its own memory. Past
 `CacheConfig.DiskIndexBytes`, 64 MiB by default, the disk refuses writes
 rather than grow.

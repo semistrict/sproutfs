@@ -14,6 +14,8 @@ import (
 	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/sim"
+	"github.com/semistrict/sproutfs/rank"
+	"github.com/semistrict/sproutfs/stripe"
 )
 
 // An item reads back as what was written at the edges of its format: no
@@ -30,7 +32,7 @@ func TestDiskItemsHoldTogetherAtTheirLimits(t *testing.T) {
 			t.Fatalf("names of %d and %d bytes are not storable", len(key.Ref.VM), len(key.Volume))
 		}
 		for _, data := range [][]byte{nil, []byte("envelope")} {
-			item := encodeItem(key, wholeEnvelope, data)
+			item := encodeItem(key, whole(data))
 			if int64(len(item)) != itemHeaderBytes(key)+int64(len(data)) {
 				t.Fatalf("an item is %d bytes, want its header and %d", len(item), len(data))
 			}
@@ -51,9 +53,35 @@ func TestDiskItemsHoldTogetherAtTheirLimits(t *testing.T) {
 	if storable(longer) {
 		t.Fatal("a volume name of 65,536 bytes is storable")
 	}
-	item := encodeItem(keyOf("va", 1), wholeEnvelope, []byte("abc"))
+	item := encodeItem(keyOf("va", 1), whole([]byte("abc")))
 	if _, ok := itemKey(item[:itemHeaderBytes(keyOf("va", 1))-1]); ok {
 		t.Fatal("a header whose names run past the item names a key")
+	}
+}
+
+// An item's header names its stripe's index and code, and its envelope's
+// length. One that names an index past its code, or a code that stores
+// nothing, does not hold together, whatever its checksum says.
+func TestDiskItemsNameTheirStripe(t *testing.T) {
+	key := keyOf("va", 1)
+	s := stripe.Stripe{Code: rank.Code{K: 4, M: 2}, Index: 5, Length: 9, Bytes: []byte("abc")}
+	parsed, err := parseItem(encodeItem(key, s), false)
+	if err != nil || parsed.key != key || parsed.code != (diskCode{stripe: 5, k: 4, m: 2}) || parsed.envelope != 9 ||
+		!bytes.Equal(parsed.stripe().Bytes, s.Bytes) || parsed.stripe().Code != s.Code || parsed.stripe().Index != 5 {
+		t.Fatalf("a stripe reads back as %+v, %v", parsed, err)
+	}
+	for _, code := range []diskCode{{stripe: 6, k: 4, m: 2}, {stripe: 0, k: 0, m: 2}, {stripe: 1, k: 1, m: 0}} {
+		item := encodeItem(key, s)
+		item[6], item[7], item[8] = code.stripe, code.k, code.m
+		binary.LittleEndian.PutUint32(item[itemChecksumAt:], 0)
+		binary.LittleEndian.PutUint32(item[itemChecksumAt:], crc32.Checksum(item, diskChecksum))
+		if _, ok := itemKey(item); ok {
+			t.Fatalf("an item naming stripe %d of %d+%d names a key", code.stripe, code.k, code.m)
+		}
+		if _, err := parseItem(item, false); !errors.Is(err, errItemDamaged) {
+			t.Fatalf("an item naming stripe %d of %d+%d reads back %v, want %v", code.stripe, code.k, code.m, err,
+				errItemDamaged)
+		}
 	}
 }
 
@@ -127,6 +155,14 @@ func TestDiskTablesHoldTogetherAtTheirLimits(t *testing.T) {
 			}},
 			{"an item longer than an item can be", func(table []byte) {
 				binary.LittleEndian.PutUint32(table[30:], maximumDiskItem+1)
+				resum(table)
+			}},
+			{"a stripe past its code", func(table []byte) {
+				table[1] = 1
+				resum(table)
+			}},
+			{"a code that stores nothing", func(table []byte) {
+				table[2] = 0
 				resum(table)
 			}},
 			{"another format", func(table []byte) {

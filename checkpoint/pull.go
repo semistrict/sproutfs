@@ -163,7 +163,7 @@ func (p *Pull) keep(ctx context.Context, envelopes []envelope) {
 		return
 	}
 	for _, e := range envelopes {
-		if p.disk.has(e.key) {
+		if p.disk.has(ctx, e.key) {
 			continue
 		}
 		if err := p.disk.write(ctx, e.key, e.data, WriteFillPublication); err != nil {
@@ -171,7 +171,7 @@ func (p *Pull) keep(ctx context.Context, envelopes []envelope) {
 				"checkpoint", p.index.Ref().String(), "error", err)
 			return
 		}
-		if p.disk.has(e.key) {
+		if p.disk.has(ctx, e.key) {
 			p.kept.Add(int64(len(e.data)))
 		}
 	}
@@ -200,13 +200,9 @@ func (p *Pull) run(ctx context.Context) {
 // already hold.
 func (p *Pull) segment(ctx context.Context, volume string, number uint64, entry segmentEntry) error {
 	key := segmentDiskKey(volume, number, entry.at.ref)
-	encoded, err := p.segmentBytes(ctx, key, entry.at)
+	data, err := p.segmentBytes(ctx, key, entry.at)
 	if err != nil {
 		return err
-	}
-	data, err := p.store.codecs.Decode(ctx, encoded, maximumSegmentSize)
-	if err != nil {
-		return errors.Join(ErrCorrupt, err)
 	}
 	located, err := p.index.decodeSegment(volume, data)
 	if err != nil {
@@ -219,7 +215,7 @@ func (p *Pull) segment(ctx context.Context, volume string, number uint64, entry 
 	for _, relative := range slices.Sorted(maps.Keys(located.pages)) {
 		at, number := located.pages[relative], first+uint64(relative)
 		page := pageDiskKey(identityOf(volume, number, at), geometry)
-		if p.disk.has(page) {
+		if p.disk.has(ctx, page) {
 			p.pulled.Add(int64(at.length))
 			continue
 		}
@@ -251,19 +247,26 @@ func (p *Pull) segment(ctx context.Context, volume string, number uint64, entry 
 	return nil
 }
 
-// segmentBytes is one segment's envelope: the disk's copy where it holds one,
-// and the store's otherwise, which this pull then copies.
+// segmentBytes is one segment, decoded: from the disk's copy where it holds
+// one, and from the store's otherwise, which this pull then copies.
 func (p *Pull) segmentBytes(ctx context.Context, key diskKey, at segmentAddress) ([]byte, error) {
-	if encoded, outcome := p.disk.read(ctx, key); outcome == diskHit {
+	if data, found := p.disk.decoded(ctx, key, p.store.codecs, maximumSegmentSize, accept); found {
 		p.pulled.Add(int64(at.length))
-		return encoded, nil
+		return data, nil
 	}
 	encoded, err := p.fetch(ctx, func(ctx context.Context) ([]byte, error) { return p.store.readSegment(ctx, at) })
 	if err != nil {
 		return nil, err
 	}
-	return encoded, p.write(ctx, key, encoded)
+	data, err := p.store.codecs.Decode(ctx, encoded, maximumSegmentSize)
+	if err != nil {
+		return nil, errors.Join(ErrCorrupt, err)
+	}
+	return data, p.write(ctx, key, encoded)
 }
+
+// accept takes any bytes an envelope decodes to.
+func accept([]byte) bool { return true }
 
 // fetch runs one request of the store behind every fault: once no load of the
 // cache is in flight, and within the fetches every pull on the host shares.
@@ -284,7 +287,7 @@ func (p *Pull) write(ctx context.Context, key diskKey, data []byte) error {
 	if err := p.disk.write(ctx, key, data, WriteFillPublication); err != nil {
 		return err
 	}
-	if p.disk.has(key) {
+	if p.disk.has(ctx, key) {
 		p.pulled.Add(int64(len(data)))
 	}
 	return nil

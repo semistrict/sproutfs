@@ -39,6 +39,8 @@ var checked = []string{
 	"resource",
 	// Which hosts hold a window, and when a host takes a new list of caches.
 	"rank",
+	// Which stripes rebuild an envelope, and which are named wrong.
+	"stripe",
 }
 
 // forbiddenImports are the packages that draw from a source no seed reaches.

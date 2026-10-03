@@ -156,6 +156,36 @@ func TestConfigReadsThePageCacheDisk(t *testing.T) {
 	}
 }
 
+// The cluster cache is on for no window unless the deployment names a share,
+// 0 to 100 percent. Anything else is refused.
+func TestConfigReadsTheClusterShare(t *testing.T) {
+	for _, test := range []struct {
+		value string
+		want  int
+	}{{"", 0}, {"0", 0}, {"25", 25}, {"100", 100}} {
+		values := minimal()
+		if test.value != "" {
+			values["SPROUTFS_CACHE_CLUSTER_PERCENT"] = test.value
+		}
+		config, err := loadConfig(environ(values))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if config.CacheClusterPercent != test.want {
+			t.Fatalf("SPROUTFS_CACHE_CLUSTER_PERCENT %q configured %d, want %d", test.value,
+				config.CacheClusterPercent, test.want)
+		}
+	}
+	for _, value := range []string{"-1", "101", "half"} {
+		values := minimal()
+		values["SPROUTFS_CACHE_CLUSTER_PERCENT"] = value
+		want := `SPROUTFS_CACHE_CLUSTER_PERCENT is "` + value + `", want 0 to 100`
+		if _, err := loadConfig(environ(values)); err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("a share of %q configured a host: %v", value, err)
+		}
+	}
+}
+
 // A host given no disk goal keeps a tenth of its filesystem free and has no
 // write budget. Each goal it is given is kept, together.
 func TestConfigReadsTheDiskGoals(t *testing.T) {
