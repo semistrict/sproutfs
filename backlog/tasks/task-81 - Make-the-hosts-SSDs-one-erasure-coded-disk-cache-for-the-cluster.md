@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-03 03:41'
-updated_date: '2026-10-03 16:49'
+updated_date: '2026-10-03 17:53'
 labels:
   - performance
   - storage
@@ -143,4 +143,6 @@ Decisions: simtest worlds set hedge floor, bound and stripe timeout to an hour (
 Tests: exact property tests in checkpoint/clusterread_test.go, read campaign with 5 Buggify sites and 19 probes, simtest TestAVMOpensFromTheClusterAfterAnyOneHostIsLostDrainedOrRestarted; fingerprint -count=20 and probe campaign pass after merging main. Guards: 4 peer, 13 cluster, each killed. Gremlins on clusterread/clusterdown/peercache: 129 killed, 54 lived -> 154 killed, 29 lived, 13 not covered (survivors justified in docs/testing.md).
 Bugs found: Pages aliased its reply's pooled buffer (race); peer server read a payload after ending its receive ctx, so over TCP every keep was reset (found on GCE).
 GCE (docs/measurements/gce-cluster-reads-2026-10-03.md): 8 GiB guest read on another host, 6 n2-standard-4 under 4+2, 3 rounds: cluster 16.4 s, p50 58 / p99 136 ms (p99 spread 3.3 ms); store 28.1 s, p50 106 / p99 218 ms (spread 51 ms); one host lost: same time, no page from the store. Holders served within 2.5 % of each other. Reader CPU-bound (3.9 of 4 CPUs). All VMs, disks and objects deleted.
+
+Decided 2026-10-03 (owner): replace step 4's list of caches with one membership object in the object store, not specific to the cache: generation, code, and per host identity, address, weight, state (joining/active/draining). Changed only by compare-and-set on the generation; correctness rests on CAS alone, any process may change it, usually the orchestrator as a controller stepping one change at a time. Host identity is written in the host's disk. Every routing-dependent request (stripe read, keep, drop, fill right) names the sender's generation: behind reads first; ahead answers stale and the sender re-reads. Property docs/properties/one-membership.md; plan section 'The membership'.
 <!-- SECTION:NOTES:END -->

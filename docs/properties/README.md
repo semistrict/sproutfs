@@ -17,5 +17,6 @@ status and the tests that show it.
 - [A slow host does not slow reads](a-slow-host-does-not-slow-reads.md)
 - [Two hosts are enough](two-hosts-are-enough.md)
 - [Serving a peer copies nothing into memory](serving-a-peer-copies-nothing.md)
+- [One membership](one-membership.md)
 - [One disk limiter](one-disk-limiter.md)
 - [The disk limiter follows its goals](disk-limiter-goals.md)
