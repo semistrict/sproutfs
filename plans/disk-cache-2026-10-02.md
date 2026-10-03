@@ -480,10 +480,17 @@ everything the host writes:
 | VMM staging and imported images | what each start and import writes | no, until the process or import ends |
 | the disk cache | whatever is left | yes, a region at a time |
 
-The spill files are sparse. They are allocated as pages spill, but a store must
-never fail for want of disk. So the limiter counts each spill file at its
-promise, not its allocation. The difference is space the host has promised and
-the filesystem still reports as free.
+A store must never fail for want of disk, so each spill file's whole extent
+is allocated (`fallocate`) when its pager starts, as a disk region's space is
+allocated when it opens. The limiter counts each spill file at that promise.
+A sparse spill file would not be enough, however the limiter counted it: the
+space it had not yet used would be only free space on the filesystem, which
+another writer on the node can take, and nothing the host does gets it back.
+Emptying the cache would not help either, and a guest's dirty page would then
+have nowhere to go. `spec/diskcache` found this (B4 in
+[spec/bugs.md](../spec/bugs.md)). With the extent allocated, another writer
+finds the filesystem full, not the guest. The ephemeral spill file is
+allocated the same way.
 
 ### Goals
 
@@ -643,8 +650,8 @@ go round the hosts:
 - a peer that answers with a wrong stripe;
 - a VM deleted and its name created again, with a small epoch space so that a
   collision is reachable;
-- the limiter's goal, the spill promises and their sparse allocation, the write
-  budget, and another writer on the same filesystem;
+- the limiter's goal, the spill promises allocated whole (and, as a mutant,
+  sparse), the write budget, and another writer on the same filesystem;
 - a host restart with torn writes and regions without a table.
 
 Its invariants:
@@ -685,7 +692,8 @@ Each step is its own commit, with its tests and its docs.
 0. **The model.** `spec/diskcache` and its mutants, and an entry in
    `spec/bugs.md` for anything it finds in the design.
 1. **The limiter.** `platform.DiskSpace` for the simulated disk. Space goals,
-   spill promises and the cache's share. The write budget, with the device's
+   spill promises and the cache's share. Each spill file is allocated whole
+   when its pager starts (B4). The write budget, with the device's
    byte counter behind a port the simulation can drive. The host builds it,
    logs what it chose, reports it in `/status` and `/metrics`, and refuses a
    configuration that cannot keep its promises.
