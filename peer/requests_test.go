@@ -611,3 +611,32 @@ func testABurstThatIsAnswered(t *testing.T) {
 		}
 	})
 }
+
+// An answer's bytes are its own. A page no encoder shrinks goes as a raw
+// envelope, which decodes to a slice of the reply's buffer; that buffer goes
+// back to the pool once the answer is returned, and the next reply is read
+// into it. The first answer still holds its page after a hundred more replies
+// of the same size.
+func TestAnAnswersPagesOutliveItsReplysBuffer(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		pages := noisyPages{memoryPages{count: 4, pageSize: pageSize}}
+		s := newServing(t, peer.ServerConfig{})
+		s.server.Serve("noise", map[string]peer.Pages{"ram0": pages})
+		destination := s.table(t, "destination", peer.TableConfig{})
+		ask := func(page uint64) peer.Answer {
+			answer, err := destination.Pages(t.Context(), peer.PageRequest{VM: "noise", Volume: "ram0", First: page,
+				Count: 1, PageSize: pageSize})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return answer
+		}
+		first := ask(0)
+		for range 100 {
+			ask(1)
+		}
+		if !bytes.Equal(first.Payload, pages.page(0)) {
+			t.Fatal("an answer's page changed under it once its reply's buffer was read into again")
+		}
+	})
+}

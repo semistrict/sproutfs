@@ -450,6 +450,12 @@
     "purpose": "Serve stripes past the host's serving bandwidth instead of answering BUSY."
   },
   {
+    "id": "peer-answer-shares-buffer",
+    "package": "peer",
+    "run": "^TestAnAnswersPagesOutliveItsReplysBuffer$",
+    "purpose": "Hand back a raw page as a slice of its reply's pooled buffer, which the next reply is read into."
+  },
+  {
     "id": "fill-before-durable",
     "package": "checkpoint",
     "run": "^TestAPublicationFillsNothingBeforeItsPartIsDurable$",
