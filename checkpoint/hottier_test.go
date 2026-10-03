@@ -509,6 +509,40 @@ func TestTwoHostsFillingOneObjectWriteItOnce(t *testing.T) {
 	})
 }
 
+// wholeGetsFail is a regional bucket whose GETs of a whole object fail, which
+// only a fill of the hot tier makes.
+type wholeGetsFail struct{ platform.ObjectStore }
+
+func (s wholeGetsFail) Get(ctx context.Context, request platform.GetRequest) (platform.GetResult, error) {
+	if request.Range == nil {
+		return platform.GetResult{}, platform.ErrInjectedFault
+	}
+	return s.ObjectStore.Get(ctx, request)
+}
+
+// A fill that cannot read the regional object, or whose PUT the hot tier
+// refuses, is dropped and counted by why. The read it came from is
+// unchanged, and the next read misses again.
+func TestAFillThatCannotReadOrWriteIsDroppedByWhy(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newHotFixture(t, hotLatency, checkpoint.HotTierConfig{SkipPublications: true})
+		_, m, err := publishFrom(t, f.store, "vm", publishedPages)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The open's fill has the index object's bytes in hand and its PUT is
+		// refused; the segment's fill and the part's cannot GET their objects.
+		f.hot.fail.Store(true)
+		f.store = mustStore(t, checkpoint.Config{ObjectStore: wholeGetsFail{f.regional}, HotTier: f.tier})
+		f.read(t, publishedRef, m)
+		want := checkpoint.HotTierStats{Misses: 3, FromReads: 3, QueueBytes: checkpoint.DefaultHotTierQueueBytes}
+		want.Dropped[checkpoint.HotDropWrite], want.Dropped[checkpoint.HotDropRead] = 1, 2
+		if got := f.tier.Stats(); got != want {
+			t.Fatalf("the hot tier's stats are %+v, want %+v", got, want)
+		}
+	})
+}
+
 // One hit in HeadCheckEvery has its regional object checked with a HEAD, so a
 // warm hot tier does not hide an object the regional bucket lost.
 func TestASampledHotHitChecksItsRegionalObject(t *testing.T) {
