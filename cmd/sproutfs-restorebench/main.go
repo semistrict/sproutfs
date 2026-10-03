@@ -11,6 +11,15 @@
 //	    cluster, and read it all back on the second, round after round: from
 //	    the cluster, from the store, and from the cluster with a third node
 //	    lost part way through.
+//	sproutfs-restorebench walk -nodes 10.0.0.2:7600,... -out walk.json
+//	    publish a guest of 2 MiB pages and one of 4 KiB pages, each once
+//	    filling the cluster and once writing the hot tier, and on the second
+//	    node read one page at a time, each next page chosen from the bytes of
+//	    the one before: from the regional bucket, from the hot tier and from
+//	    the cluster, and from a cold hot tier, which those reads fill.
+//
+// A node started with -hot-bucket also reads through a hot tier in that
+// bucket, under the run's prefix.
 //
 // A node runs the real checkpoint store, page cache, peer server and table of
 // peers a host runs, over TCP and the real bucket. No VMM runs: a restore is
@@ -31,7 +40,7 @@ import (
 func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: sproutfs-restorebench node|drive [flags]")
+		fmt.Fprintln(os.Stderr, "usage: sproutfs-restorebench node|drive|walk [flags]")
 		os.Exit(2)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -42,8 +51,10 @@ func main() {
 		err = runNode(ctx, os.Args[2:])
 	case "drive":
 		err = runDrive(ctx, os.Args[2:])
+	case "walk":
+		err = runWalk(ctx, os.Args[2:])
 	default:
-		fmt.Fprintf(os.Stderr, "unknown mode %q: want node or drive\n", os.Args[1])
+		fmt.Fprintf(os.Stderr, "unknown mode %q: want node, drive or walk\n", os.Args[1])
 		os.Exit(2)
 	}
 	if err != nil {

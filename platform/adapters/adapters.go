@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"strings"
 
 	"github.com/semistrict/sproutfs/platform"
@@ -117,6 +118,35 @@ func ObjectStoreFromEnvironment(lookup func(string) string) (ObjectStoreConfig, 
 		errs = append(errs, errors.New("SPROUTFS_BUCKET is required"))
 	}
 	return config, errors.Join(errs...)
+}
+
+// ObjectStoreFromURL reads the object store a URL names: gs://bucket/prefix
+// for Google Cloud Storage and s3://bucket/prefix for Amazon S3 or an
+// S3-compatible server. The prefix may be empty. An endpoint query parameter
+// points the client at an emulator or an S3-compatible server, as
+// SPROUTFS_GCS_ENDPOINT and SPROUTFS_S3_ENDPOINT do for the deployment's own
+// store. Nothing else in the URL is read, so a URL naming more is refused.
+func ObjectStoreFromURL(raw string) (ObjectStoreConfig, error) {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return ObjectStoreConfig{}, fmt.Errorf("object store URL %q: %w", raw, err)
+	}
+	config := ObjectStoreConfig{Bucket: parsed.Host, Prefix: strings.TrimPrefix(parsed.Path, "/"),
+		Endpoint: parsed.Query().Get("endpoint")}
+	switch parsed.Scheme {
+	case "gs":
+		config.Provider = "gcs"
+	case "s3":
+		config.Provider = "s3"
+	default:
+		return ObjectStoreConfig{}, fmt.Errorf("object store URL %q: want gs://bucket/prefix or s3://bucket/prefix", raw)
+	}
+	query := parsed.Query()
+	query.Del("endpoint")
+	if config.Bucket == "" || parsed.User != nil || parsed.Port() != "" || parsed.Fragment != "" || len(query) > 0 {
+		return ObjectStoreConfig{}, fmt.Errorf("object store URL %q: want a bucket, a prefix and at most an endpoint", raw)
+	}
+	return config, nil
 }
 
 // NewObjectStore opens the object store a configuration names.

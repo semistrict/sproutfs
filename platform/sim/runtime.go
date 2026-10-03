@@ -78,6 +78,9 @@ type Runtime struct {
 	now     func() time.Time
 	network *Network
 	objects *ObjectStore
+	// objectConfig is what the runtime's own store was built with, and every
+	// other bucket NewObjectStore makes.
+	objectConfig ObjectStoreConfig
 	// buggify is the campaign switch every Buggify site consults first, and
 	// bugs is the fixed set of in-tree guards SPROUTFS_SIM_BUG named for this
 	// process. Neither is drawn from the seed.
@@ -121,7 +124,8 @@ func New(config Config) *Runtime {
 	}
 	r.buggify.Store(config.Buggify)
 	r.network = newNetwork(r, config.Network)
-	r.objects = newObjectStore(r, config.ObjectStore)
+	r.objectConfig = config.ObjectStore
+	r.objects = newObjectStore(r, "", config.ObjectStore)
 	return r
 }
 
@@ -155,6 +159,18 @@ func (r *Runtime) Now() time.Time { return r.now() }
 func (r *Runtime) Network() *Network         { return r.network }
 func (r *Runtime) ObjectStore() *ObjectStore { return r.objects }
 func (r *Runtime) Trace() *Trace             { return r.trace }
+
+// NewObjectStore makes another bucket in the simulated world, beside the
+// runtime's own: a hot tier, say. It has the latencies the runtime's store
+// has unless config sets its own, and name, which must not be empty, comes
+// before every key it traces and every operation it asks a scheduler to
+// admit.
+func (r *Runtime) NewObjectStore(name string, config ObjectStoreConfig) *ObjectStore {
+	if name == "" {
+		panic("sim: a second object store needs a name")
+	}
+	return newObjectStore(r, name, config.withDefaults(r.objectConfig))
+}
 
 func (r *Runtime) NewDisk(id string, config DiskConfig) *Disk {
 	r.mu.Lock()

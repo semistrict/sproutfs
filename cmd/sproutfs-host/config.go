@@ -32,6 +32,10 @@ type config struct {
 	Firecracker vmmachine.Firecracker
 	// Store is the object store the deployment's VMs live in.
 	Store adapters.ObjectStoreConfig
+	// HotTier is the bucket reads of checkpoint objects try first, nil for
+	// none: SPROUTFS_HOT_TIER, a URL. It and the cluster cache are
+	// alternatives.
+	HotTier *adapters.ObjectStoreConfig
 	// CacheDir is the directory the page cache's disk is kept in, on the
 	// filesystem the scratch directory is on. Empty keeps it in the scratch
 	// directory.
@@ -247,6 +251,22 @@ func loadConfig(lookup func(string) string) (config, error) {
 			fail("SPROUTFS_CACHE_CLUSTER_PERCENT is %q, want 0 to 100", value)
 		} else {
 			c.CacheClusterPercent = percent
+		}
+	}
+	// A hot tier is a second bucket, named by a URL, that reads try before
+	// the deployment's own and that reads and publications fill. It is an
+	// alternative to the cluster cache, and a host given both refuses to
+	// start.
+	if value := text("SPROUTFS_HOT_TIER", ""); value != "" {
+		hot, err := adapters.ObjectStoreFromURL(value)
+		switch {
+		case err != nil:
+			fail("SPROUTFS_HOT_TIER: %v", err)
+		case c.CacheClusterPercent > 0:
+			fail("SPROUTFS_HOT_TIER and SPROUTFS_CACHE_CLUSTER_PERCENT=%d are both set: the hot tier and the "+
+				"cluster cache are alternatives; unset one of them", c.CacheClusterPercent)
+		default:
+			c.HotTier = &hot
 		}
 	}
 	// A host serves stripes of the cluster's cache within a bandwidth, and

@@ -47,6 +47,10 @@ import (
 var ErrInvalidConfig = errors.New("host: invalid configuration")
 var ErrClosed = errors.New("host: host closed")
 
+// ErrHotTierBesideClusterCache is a host configured with both a hot tier and
+// the cluster cache, which are alternatives.
+var ErrHotTierBesideClusterCache = fmt.Errorf("%w: a hot tier beside the cluster cache", ErrInvalidConfig)
+
 // VolumeConfig configures local volume work without allowing a host to
 // replace its network or shared backing store. Every field is a
 // volume.Config budget and takes that package's default when it is zero.
@@ -97,6 +101,12 @@ type Config struct {
 	// DefaultCacheBytes.
 	CacheBytes int64
 	Cache      checkpoint.CacheConfig
+	// HotTier, where its Store is not nil, is a second bucket every read of a
+	// checkpoint object tries before ObjectStore, filled behind the reads and
+	// the publications. It is an alternative to the cluster cache: a host
+	// given one beside a Cache.ClusterPercent above zero refuses to start.
+	// Its Clock defaults to the host's.
+	HotTier checkpoint.HotTierConfig
 	// DiskLimiter, where there is one, sets the page cache's disk: its share,
 	// which writes it may make, and when it gives regions back. Nothing else
 	// caps the disk then, and a Cache.DiskBytes beside it is refused. Without
@@ -172,6 +182,8 @@ type Host struct {
 	cancel    context.CancelCauseFunc
 	network   platform.Network
 	cache     *checkpoint.Cache
+	// hot is the hot tier reads try before the object store, nil for none.
+	hot *checkpoint.HotTier
 	// cacheFit shrinks the page cache's disk when the disk limiter asks, nil
 	// where the host has no limiter or the cache keeps no disk.
 	cacheFit *cacheFitter
@@ -346,6 +358,10 @@ func StartHost(ctx context.Context, config Config) (*Host, error) {
 	if config.Resources.Stats().Limit <= 0 {
 		return nil, ErrInvalidConfig
 	}
+	if config.HotTier.Store != nil && config.Cache.ClusterPercent > 0 {
+		return nil, fmt.Errorf("%w: a hot tier (HotTier) and the cluster cache (Cache.ClusterPercent %d) are "+
+			"alternatives; configure one of them", ErrHotTierBesideClusterCache, config.Cache.ClusterPercent)
+	}
 	if config.CacheBytes == 0 {
 		config.CacheBytes = DefaultCacheBytes
 	}
@@ -436,8 +452,17 @@ func StartHost(ctx context.Context, config Config) (*Host, error) {
 	if err != nil {
 		return nil, err
 	}
+	if config.HotTier.Store != nil {
+		hot := config.HotTier
+		if hot.Clock == nil {
+			hot.Clock = h.clock
+		}
+		if h.hot, err = checkpoint.NewHotTier(hostCtx, hot); err != nil {
+			return nil, err
+		}
+	}
 	h.checkpoints, err = checkpoint.NewStore(checkpoint.Config{ObjectStore: config.ObjectStore,
-		ObjectPrefix: config.ObjectPrefix, Cache: h.cache, Codecs: codecs,
+		ObjectPrefix: config.ObjectPrefix, Cache: h.cache, HotTier: h.hot, Codecs: codecs,
 		Concurrency: uploadSlots(), MaxBuilders: partBuilders()})
 	if err != nil {
 		return nil, err
@@ -511,6 +536,9 @@ type Status struct {
 	// it fills, which is separate from Resources.
 	Cache      checkpoint.CacheStats
 	CacheLimit int64
+	// HotTier is what the reads through the hot tier and its fills did, nil
+	// on a host that has none.
+	HotTier *checkpoint.HotTierStats
 	// Self is this host's cache as the list of caches names it, zero where
 	// the host keeps none, and Caches the list it holds and how it read it.
 	Self    rank.Cache
@@ -596,6 +624,10 @@ func (h *Host) Status() Status {
 	}
 	if h.cache != nil {
 		status.Cache = h.cache.Stats()
+	}
+	if h.hot != nil {
+		stats := h.hot.Stats()
+		status.HotTier = &stats
 	}
 	status.Self = h.self
 	if h.caches != nil {
@@ -790,6 +822,9 @@ func (h *Host) shutdown() {
 	}
 	if h.cache != nil {
 		h.cache.Close()
+	}
+	if h.hot != nil {
+		h.hot.Close()
 	}
 	h.closeErr = errors.Join(errs...)
 	// This process is about to exit, so nothing it counts from here is ever

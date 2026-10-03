@@ -59,9 +59,18 @@ func (h *Host) RefreshCaches(ctx context.Context) error { return h.caches.Refres
 
 // SettleFills returns once every fill of the cluster's cache this host's
 // cache was handed has been written or dropped, and every keep and fill right
-// it asked a peer for has been answered. Nothing waits on a fill; a test that
-// says what the cluster's disks hold waits on this.
-func (h *Host) SettleFills(ctx context.Context) error { return h.cache.SettleFills(ctx) }
+// it asked a peer for has been answered, and every fill of its hot tier has
+// been done or dropped. Nothing waits on a fill; a test that says what the
+// cluster's disks or the hot tier hold waits on this.
+func (h *Host) SettleFills(ctx context.Context) error {
+	if err := h.cache.SettleFills(ctx); err != nil {
+		return err
+	}
+	if h.hot != nil {
+		return h.hot.Settle(ctx)
+	}
+	return nil
+}
 
 // cacheReport is this host's cache and the list of caches it holds, as
 // /status reports them.
