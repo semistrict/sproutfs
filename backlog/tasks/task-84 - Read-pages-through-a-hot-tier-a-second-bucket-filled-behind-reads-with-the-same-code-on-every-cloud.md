@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-03 18:46'
-updated_date: '2026-10-03 20:12'
+updated_date: '2026-10-03 22:23'
 labels:
   - storage
   - performance
@@ -62,4 +62,6 @@ Design: every read of a checkpoint object is one operation over one object run a
 Evidence: checkpoint hot tier tests (exact counts), TestHotTierSurvivesItsFaultsAndReachesItsProbes (12 seeds, all 5 sites fire, all 16 probes reached), TestAHotTierReadsAndFillsThroughEveryProvidersAdapter (GCS and S3 emulators), host tests, config tests, metrics tests; guards hot-tier-fill-before-durable, hot-tier-read-fails, hot-tier-beside-cluster, hot-tier-fill-waits, hot-tier-unbounded-queue each fail their named test; fingerprint test has a hot tier arm, seeds 1-25 of it stable under shake; Gremlins hottier.go 49->51 killed of 77 (7 alive justified), tier.go 22/24; just check exit 0 (TestHostForksEveryChildFromOnePause flakes ~3/400 on main too).
 
 AC8 not met as written: no zonal bucket on GCS takes standard-API writes (Rapid Bucket writes only via gRPC BidiWriteObject; creating one also failed on rapid_zonal_bytes quota). Measured a second regional bucket in us-east4 as the hot tier on two n2-standard-4 hosts (1+1, cluster read from own SSD), quota allowed no more: warm hot 54.7/28.6 ms p50 (2 MiB/4 KiB) vs regional 46.1/27.3 vs cluster 9.4/0.20; docs/measurements/gce-hot-tier-2026-10-03.md. A six-host 4+2 run was not possible while another agent held 24 of 32 vCPUs.
+
+Clarified 2026-10-03 by the owner: 'not cloud specific' means not depending on a cloud's managed features (Rapid Cache, Mountpoint, lifecycle rules); differences between cloud APIs are trivial and fine. So the hot tier writes a GCS Rapid zonal bucket through GCS's gRPC append API (BidiWriteObject, appendable objects) in the GCS adapter, and the same hot tier would use S3 Express One Zone directory buckets through the S3 adapter. The GCP measurement against a real Rapid bucket needs the project's rapid_zonal_bytes quota raised (Cloud Quotas API), which the owner does.
 <!-- SECTION:NOTES:END -->
