@@ -614,8 +614,8 @@
   {
     "id": "hot-tier-fill-waits",
     "package": "checkpoint",
-    "run": "^TestAReadIsNotSlowedByItsHotTierFill$",
-    "purpose": "Copy a missed object to the hot tier in front of the read that missed it."
+    "run": "^(TestAReadIsNotSlowedByItsHotTierFill|TestAPublicationIsNotSlowedByItsHotTierFill)$",
+    "purpose": "Copy a missed object, or write a published one, to the hot tier in front of the read or the publication."
   },
   {
     "id": "hot-tier-unbounded-queue",

@@ -525,6 +525,11 @@ func (h *HotTier) published(ctx context.Context, key platform.ObjectKey, data []
 	if h == nil || !h.publications {
 		return
 	}
+	if h.bug("hot-tier-fill-waits") {
+		// The bug writes the object in front of the publication.
+		h.copy(ctx, nil, key, data)
+		return
+	}
 	size := int64(len(data))
 	if h.hold(ctx, key, size, true) {
 		h.fills.push(h.ctx, func(ctx context.Context) {

@@ -387,6 +387,40 @@ func TestAReadIsNotSlowedByItsHotTierFill(t *testing.T) {
 	}
 }
 
+// Nothing waits on a fill, a publication's no more than a read's. A
+// publication that writes the hot tier takes exactly as long behind a hot
+// tier whose PUTs take ten seconds as behind one whose PUTs take a
+// millisecond, and as long as a publication that writes no hot tier.
+func TestAPublicationIsNotSlowedByItsHotTierFill(t *testing.T) {
+	took := func(put time.Duration, skip bool, sent uint64) time.Duration {
+		var took time.Duration
+		synctest.Test(t, func(t *testing.T) {
+			latency := hotLatency
+			latency.PutLatency = put
+			f := newHotFixture(t, latency, checkpoint.HotTierConfig{SkipPublications: skip})
+			_, m, p := beginPublication(t, f.store, "vm", publishedPages)
+			f.settle(t)
+			start := time.Now()
+			if _, err := p.Commit(t.Context(), m); err != nil {
+				t.Fatal(err)
+			}
+			took = time.Since(start)
+			f.settle(t)
+			if got := f.tier.Stats(); got.Sent != sent {
+				t.Fatalf("the publications' fills came to %+v, want %d objects sent", got, sent)
+			}
+		})
+		return took
+	}
+	// The root's index object, the part and the index object, or nothing.
+	fast, slow := took(time.Millisecond, false, 3), took(10*time.Second, false, 3)
+	none := took(time.Millisecond, true, 0)
+	if fast != slow || fast != none {
+		t.Fatalf("a publication took %v behind PUTs of ten seconds, %v behind PUTs of a millisecond and %v "+
+			"writing no hot tier", slow, fast, none)
+	}
+}
+
 // The queue holds what its bytes allow, and the rate what it has taken in
 // the last second: a fill past either is dropped, never waited for, and the
 // read it came from is unchanged. Two VMs of three incompressible 2 MiB pages

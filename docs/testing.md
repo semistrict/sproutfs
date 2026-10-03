@@ -1504,6 +1504,8 @@ holding half a part, costs only reads of the regional bucket, each failure
 counted by why. `TestAHotTierMarkedDownIsSkippedAndTriedAgain`,
 `TestAReadIsNotSlowedByItsHotTierFill` (a read behind a PUT of ten seconds
 takes exactly as long as behind one of a millisecond),
+`TestAPublicationIsNotSlowedByItsHotTierFill` (so does a publication, and as
+long as one that writes no hot tier),
 `TestTheHotTierDropsFillsPastItsQueueOrItsRate`,
 `TestAFillThatCannotReadOrWriteIsDroppedByWhy`,
 `TestTwoHostsFillingOneObjectWriteItOnce`, `TestASampledHotHitChecksItsRegionalObject`
@@ -2136,7 +2138,7 @@ SPROUTFS_SIM_BUG=hot-tier-read-fails \
 SPROUTFS_SIM_BUG=hot-tier-beside-cluster \
   go test ./checkpoint -run '^TestAStoreRefusesAHotTierBesideTheClusterCache$' -count=1
 SPROUTFS_SIM_BUG=hot-tier-fill-waits \
-  go test ./checkpoint -run '^TestAReadIsNotSlowedByItsHotTierFill$' -count=1
+  go test ./checkpoint -run '^(TestAReadIsNotSlowedByItsHotTierFill|TestAPublicationIsNotSlowedByItsHotTierFill)$' -count=1
 SPROUTFS_SIM_BUG=hot-tier-unbounded-queue \
   go test ./checkpoint -run '^TestTheHotTierDropsFillsPastItsQueueOrItsRate$' -count=1
 ```
@@ -2146,8 +2148,9 @@ succeeded: the hot tier holds the part while that PUT is still in flight. The
 second fails a read whose hot tier failed, rather than read the regional
 bucket: a hot tier that is down, slow or holds other bytes fails the read.
 The third gives a store a hot tier beside a cache that fills the cluster. The
-fourth copies a missed object in front of the read, which then waits ten
-seconds for a slow PUT. The fifth holds every fill whatever the queue's
+fourth copies a missed object in front of the read, and writes a published
+one in front of the publication, which then wait ten seconds for a slow
+PUT. The fifth holds every fill whatever the queue's
 bound. The hot tier campaign (`TestHotTierSurvivesItsFaultsAndReachesItsProbes`)
 kills `hot-tier-read-fails` too.
 
@@ -2545,7 +2548,7 @@ with the whole package:
 
 ```sh
 python3 scripts/mutate-gremlins.py --package checkpoint --suite full --file hottier.go \
-  --run '^(TestAMissIsFilled|TestAPublicationWritesTheHot|TestAHotTier|TestAReadIsNotSlowedByItsHotTierFill|TestTheHotTierDrops|TestTwoHostsFilling|TestASampledHotHit|TestAStoreRefusesAHotTier|TestHotTierSurvives|TestAFillThatCannot|TestAClosedHotTier)' \
+  --run '^(TestAMissIsFilled|TestAPublicationWritesTheHot|TestAHotTier|TestAReadIsNotSlowedByItsHotTierFill|TestTheHotTierDrops|TestTwoHostsFilling|TestASampledHotHit|TestAStoreRefusesAHotTier|TestHotTierSurvives|TestAFillThatCannot|TestAClosedHotTier|TestAPublicationIsNotSlowed)' \
   --gremlins /path/to/gremlins --output /tmp/hot-tier-mutations
 python3 scripts/mutate-gremlins.py --package checkpoint --suite full --file tier.go \
   --gremlins /path/to/gremlins --output /tmp/tier-mutations
