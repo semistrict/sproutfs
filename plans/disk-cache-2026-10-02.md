@@ -205,33 +205,18 @@ the same persistent volume, keeps its identity and its windows.
 
 ### The list of caches
 
-The list of caches has one source of truth: an object in the object store,
-`caches`, beside the control records. It holds the list's **generation**, the
-deployment's code, and each cache's identity, weight and peer-server address.
-It changes only by conditional writes, as a control record does: a write names
-the generation it read and raises it by one, and a write from an older
-generation is refused. A host adds its cache when the cache opens. The
-orchestrator removes a cache only on evidence that its host is gone, as it
-ends a migration. A host that did not answer one survey keeps its place. The
-orchestrator's copy, like its SQLite table, is a cache of the object.
+Today a host dials only the page-server address a handoff carries, and has no
+identity of its own. The cluster cache needs every host to know every cache.
+Each host reports its cache identity, its weight and its page-server address
+in `/status`. The orchestrator already surveys every host, and it serves the
+list it found (`GET /caches`), with the deployment's code. A host that did not
+answer one survey keeps its place in the list, as a crashed host keeps its
+place in the model; only a host the cluster no longer has leaves it. Each host
+reads that list on a timer and keeps the last one it got. An orchestrator that
+is down leaves the list as it was.
 
-Each host reads the object when it starts, and holds the list and its
-generation. Every stripe read, keep, drop and fill right names the generation
-its sender holds. A holder behind the sender reads the object before it
-answers. A holder ahead of the sender answers that the sender's list is stale,
-with its own generation, and the sender reads the object and asks again. So no
-stripe is placed, served or repaired under a list the two sides do not both
-hold, and a change reaches a host at its next request, not at a timer. A host
-also reads the object on a slow timer, to learn of a change while it is idle.
-
-An object store that is down leaves every host with the list it holds. The
-list is small and changes only when a cache joins or leaves, so reading it at
-each change costs little.
-
-Decided on 2026-10-03: before this, the orchestrator built the list from its
-survey and each host read it every 10 s, so two hosts could hold different
-lists for that long. That cost only misses, but it left the list without one
-source of truth.
+Two hosts that hold different lists disagree only about whom to ask. The worst
+a stale list costs is a miss, and a miss is a read of the object store.
 
 ### Hosts marked down
 
