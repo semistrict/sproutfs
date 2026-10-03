@@ -209,17 +209,11 @@ func (p *Pull) run(ctx context.Context) {
 
 // segment copies one segment and every member it locates that the disk does not
 // already hold.
+//
+// A pending segment is in no object, and the index holds it: only its members
+// are copied.
 func (p *Pull) segment(ctx context.Context, volume string, number uint64, entry segmentEntry) error {
-	key := segmentCacheKey(volume, number, entry.at.ref)
-	encoded, err := p.segmentBytes(ctx, key, entry.at)
-	if err != nil {
-		return err
-	}
-	data, err := p.store.codecs.Decode(ctx, encoded, maximumSegmentSize)
-	if err != nil {
-		return errors.Join(ErrCorrupt, err)
-	}
-	located, err := p.index.decodeSegment(volume, data)
+	located, err := p.locate(ctx, volume, number, entry)
 	if err != nil {
 		return err
 	}
@@ -260,6 +254,24 @@ func (p *Pull) segment(ctx context.Context, volume string, number uint64, entry 
 		}
 	}
 	return nil
+}
+
+// locate is one segment's page table: the index's own for a pending segment,
+// and otherwise the segment's envelope decoded, which this pull copies.
+func (p *Pull) locate(ctx context.Context, volume string, number uint64, entry segmentEntry) (*segment, error) {
+	if entry.pending() {
+		return p.index.segmentAt(ctx, volume, number)
+	}
+	key := segmentCacheKey(volume, number, entry.at.ref)
+	encoded, err := p.segmentBytes(ctx, key, entry.at)
+	if err != nil {
+		return nil, err
+	}
+	data, err := p.store.codecs.Decode(ctx, encoded, maximumSegmentSize)
+	if err != nil {
+		return nil, errors.Join(ErrCorrupt, err)
+	}
+	return p.index.decodeSegment(volume, data)
 }
 
 // segmentBytes is one segment's envelope: the disk's copy where another pull

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 
+	checkpointv1 "github.com/semistrict/sproutfs/checkpoint/internal/gen/sproutfs/checkpoint/v1"
 	"github.com/semistrict/sproutfs/checkpoint/internal/part"
 	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/internal/blob"
@@ -62,6 +63,12 @@ type Config struct {
 	// the refusal above it is a path nothing reached while the only value was
 	// one no volume this design targets could produce.
 	MaxIndexBytes int
+	// IndexEvery is how many checkpoints of a VM may pass between the ones
+	// that write an index object. The checkpoints between defer theirs: what
+	// they changed rides in their last part, and an open rebuilds their page
+	// table from the index object before them. Zero and one write an index
+	// object at every checkpoint. See deferred.go.
+	IndexEvery int
 }
 
 const (
@@ -70,6 +77,9 @@ const (
 	// urgent, and everything it misses is merely unreferenced.
 	defaultDeleteConcurrency = 2
 	maximumConcurrency       = 1024
+	// maximumIndexEvery bounds Config.IndexEvery, which bounds what an open of
+	// a checkpoint that deferred its index object reads.
+	maximumIndexEvery = 1024
 )
 
 // Store reads and publishes checkpoints in one deployment's object namespace.
@@ -107,6 +117,8 @@ type Store struct {
 	// which MaximumPins bounds per VM.
 	protectedMu sync.Mutex
 	protected   map[control.Ref][]control.Ref
+	// indexEvery is Config.IndexEvery, at least one.
+	indexEvery int
 }
 
 // NewStore validates the configuration and returns a store over it.
@@ -115,7 +127,8 @@ func NewStore(config Config) (*Store, error) {
 		config.MaxBuilders < 0 || config.MaxBuilders > maximumConcurrency ||
 		config.MaxDeletes < 0 || config.MaxDeletes > maximumConcurrency ||
 		config.PartBytes < 0 || config.PartBytes > partTargetBytes ||
-		config.MaxIndexBytes < 0 || config.MaxIndexBytes > maximumRootSize {
+		config.MaxIndexBytes < 0 || config.MaxIndexBytes > maximumRootSize ||
+		config.IndexEvery < 0 || config.IndexEvery > maximumIndexEvery {
 		return nil, ErrInvalidConfig
 	}
 	if config.PartBytes == 0 {
@@ -142,12 +155,13 @@ func NewStore(config Config) (*Store, error) {
 	}
 	store := &Store{objects: config.ObjectStore, prefix: prefix, cache: config.Cache,
 		partBytes: config.PartBytes, maxRootBytes: config.MaxIndexBytes,
-		indexTail: defaultIndexTail,
-		slots:     make(chan struct{}, config.Concurrency),
-		builders:  make(chan struct{}, config.MaxBuilders),
-		deletes:   make(chan struct{}, config.MaxDeletes),
-		codecs:    config.Codecs,
-		protected: make(map[control.Ref][]control.Ref)}
+		indexTail:  defaultIndexTail,
+		slots:      make(chan struct{}, config.Concurrency),
+		builders:   make(chan struct{}, config.MaxBuilders),
+		deletes:    make(chan struct{}, config.MaxDeletes),
+		codecs:     config.Codecs,
+		protected:  make(map[control.Ref][]control.Ref),
+		indexEvery: max(1, config.IndexEvery)}
 	if _, err := store.indexKey(control.Ref{VM: "vm", Sequence: 1}); err != nil {
 		return nil, ErrInvalidConfig
 	}
@@ -204,9 +218,10 @@ func (s *Store) supersededPartKey(ref control.Ref) (platform.ObjectKey, error) {
 // segments ahead of the root are fetched as they are needed. So what an open
 // costs does not grow with what the checkpoint changed.
 //
-// A checkpoint with no index object never committed, and is absent. A
-// deployment written when the root was a member of a part is refused with the
-// version it was written under named rather than reported absent.
+// A checkpoint with no index object either deferred it, and is rebuilt from
+// its parts (openDeferred), or never committed, and is absent. A deployment
+// written when the root was a member of a part is refused with the version it
+// was written under named rather than reported absent.
 func (s *Store) Open(ctx context.Context, ref control.Ref) (*Index, error) {
 	key, err := s.indexKey(ref)
 	if err != nil {
@@ -215,6 +230,13 @@ func (s *Store) Open(ctx context.Context, ref control.Ref) (*Index, error) {
 	tail, size, err := s.readSuffix(ctx, key, s.indexTail)
 	if err != nil {
 		if errors.Is(err, platform.ErrNotFound) {
+			index, deferred := s.openDeferred(ctx, ref)
+			if deferred == nil {
+				return index, nil
+			}
+			if !errors.Is(deferred, platform.ErrNotFound) {
+				return nil, deferred
+			}
 			return nil, s.refuseSupersededParts(ctx, ref, err)
 		}
 		return nil, err
@@ -700,6 +722,9 @@ type partTable struct {
 	members []part.Member
 	body    uint64
 	parts   uint32
+	// deferred is what the last part of a checkpoint that deferred its index
+	// object says of it, nil for every other part.
+	deferred *checkpointv1.DeferredIndex
 }
 
 // partTailSize is the tail of a part one read fetches: every table a writer
@@ -716,7 +741,13 @@ func (s *Store) readPartTable(ctx context.Context, ref control.Ref, number uint3
 	if err != nil {
 		return partTable{}, err
 	}
-	tail, size, err := s.readSuffix(ctx, key, partTailSize)
+	return s.readTable(ctx, key, partTailSize)
+}
+
+// readTable reads one part's table out of a tail of the part, and the rest of
+// the table in a second read when the tail is shorter than the table.
+func (s *Store) readTable(ctx context.Context, key platform.ObjectKey, suffix int64) (partTable, error) {
+	tail, size, err := s.readSuffix(ctx, key, suffix)
 	if err != nil {
 		return partTable{}, err
 	}
@@ -727,15 +758,23 @@ func (s *Store) readPartTable(ctx context.Context, ref control.Ref, number uint3
 	if err != nil {
 		return partTable{}, errors.Join(ErrCorrupt, err)
 	}
-	// The trailer has located the table within the part; what this read holds
-	// is the part's last len(tail) bytes, so a table starting before them is
-	// one the bound a writer respects says cannot exist.
-	base := size - uint64(len(tail))
-	if trailer.TableOffset < base {
+	// The trailer has located the table within the part. A table longer than
+	// the bound a writer respects is one no writer produced.
+	if trailer.TableLength > maximumTableSize {
 		return partTable{}, ErrCorrupt
 	}
-	table := tail[trailer.TableOffset-base:][:trailer.TableLength]
-	members, err := part.DecodeTable(table, trailer.TableOffset)
+	base := size - uint64(len(tail))
+	var table []byte
+	if trailer.TableOffset >= base {
+		table = tail[trailer.TableOffset-base:][:trailer.TableLength]
+	} else {
+		head, err := s.readRange(ctx, key, trailer.TableOffset, base-trailer.TableOffset, maximumTableSize)
+		if err != nil {
+			return partTable{}, err
+		}
+		table = append(head, tail[:trailer.TableLength-(base-trailer.TableOffset)]...)
+	}
+	members, deferred, err := part.DecodeDeferredTable(table, trailer.TableOffset)
 	if err != nil {
 		return partTable{}, errors.Join(ErrCorrupt, err)
 	}
@@ -744,7 +783,11 @@ func (s *Store) readPartTable(ctx context.Context, ref control.Ref, number uint3
 			return partTable{}, ErrCorrupt
 		}
 	}
-	return partTable{members: members, body: trailer.TableOffset, parts: trailer.Parts}, nil
+	// Only a checkpoint's last part says it deferred its index object.
+	if deferred != nil && trailer.Parts == 0 {
+		return partTable{}, ErrCorrupt
+	}
+	return partTable{members: members, body: trailer.TableOffset, parts: trailer.Parts, deferred: deferred}, nil
 }
 
 // putIndexObject writes one checkpoint's index object create-if-absent, which

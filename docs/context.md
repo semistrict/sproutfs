@@ -119,6 +119,14 @@ segments its own checkpoint changed. So the root is complete on its own and
 does not name a parent. The index object's create-if-absent PUT commits the
 publication.
 
+**Deferred index**: What a checkpoint that wrote no index object says of
+itself, in the table of its last part: its root without segments, its **base**
+(the newest index object before it), the checkpoints between, and the pages it
+zeroed. That part's PUT commits the publication. An open rebuilds the page
+table by replaying the parts from the base. A segment such a checkpoint changed
+is **pending** until the next index object writes it. See
+[deferred index objects](volumes.md#deferred-index-objects).
+
 **Part**: One object of a checkpoint's data, at
 `vm/<id>/ckpt/<seq>/part/<n>`. A part is filled to 64 MiB and uploaded as it
 fills. It holds a sequence of encoded members: the VMM state, then each

@@ -92,6 +92,9 @@ type Builder struct {
 	// the part is full: a reader fetches a part's table as one bounded suffix,
 	// so the table is a size the writer must respect.
 	entries int
+	// deferred is what the last part of a checkpoint that deferred its index
+	// object carries, nil in every other part.
+	deferred *checkpointv1.DeferredIndex
 }
 
 // NewBuilder returns a builder that encodes its members through codecs, which
@@ -141,6 +144,19 @@ func (b *Builder) hold(member Member) {
 
 // TableBytes is what this part's table would encode to if it were sealed now.
 func (b *Builder) TableBytes() int { return emptyTableBytes + b.entries }
+
+// SetDeferred has this part carry what a checkpoint that deferred its index
+// object says of itself, which makes it that checkpoint's last part.
+func (b *Builder) SetDeferred(record *checkpointv1.DeferredIndex) { b.deferred = record }
+
+// DeferredBytes is what record adds to a table that carries it.
+func DeferredBytes(record *checkpointv1.DeferredIndex) int {
+	size := proto.Size(record)
+	return protowire.SizeTag(deferredField) + protowire.SizeBytes(size)
+}
+
+// deferredField is the field number a table carries a deferred index under.
+const deferredField = 3
 
 // Members reports how many members this part holds, which is what says whether
 // there is anything to seal at all.
@@ -201,7 +217,7 @@ func (b *Builder) Seal(parts uint32) ([]byte, error) {
 		entries = append(entries, tableEntry(item))
 	}
 	table, err := proto.MarshalOptions{Deterministic: true}.Marshal(checkpointv1.PartTable_builder{
-		Members: entries, FormatVersion: proto.Uint32(FormatVersion)}.Build())
+		Members: entries, FormatVersion: proto.Uint32(FormatVersion), Deferred: b.deferred}.Build())
 	if err != nil {
 		return nil, err
 	}
@@ -263,16 +279,24 @@ func TrailerVersion(trailer []byte) (uint32, bool) {
 // is where the table starts, which is one past the last member byte. Whether a
 // volume named here is one the checkpoint has is the store's to say.
 func DecodeTable(data []byte, body uint64) ([]Member, error) {
+	members, _, err := DecodeDeferredTable(data, body)
+	return members, err
+}
+
+// DecodeDeferredTable is DecodeTable that also returns the deferred index the
+// table carries, which is nil for every part but the last one of a checkpoint
+// that deferred its index object.
+func DecodeDeferredTable(data []byte, body uint64) ([]Member, *checkpointv1.DeferredIndex, error) {
 	message := new(checkpointv1.PartTable)
 	if err := proto.Unmarshal(data, message); err != nil {
-		return nil, errors.Join(ErrCorrupt, err)
+		return nil, nil, errors.Join(ErrCorrupt, err)
 	}
 	if message.GetFormatVersion() != FormatVersion {
-		return nil, fmt.Errorf("%w: part table format version %d, want %d",
+		return nil, nil, fmt.Errorf("%w: part table format version %d, want %d",
 			ErrCorrupt, message.GetFormatVersion(), FormatVersion)
 	}
 	if len(message.ProtoReflect().GetUnknown()) != 0 {
-		return nil, ErrCorrupt
+		return nil, nil, ErrCorrupt
 	}
 	members := make([]Member, 0, len(message.GetMembers()))
 	for _, entry := range message.GetMembers() {
@@ -280,20 +304,20 @@ func DecodeTable(data []byte, body uint64) ([]Member, error) {
 			Offset: entry.GetOffset(), Length: entry.GetLength(), State: entry.GetState(),
 			OriginVM: entry.GetOriginVm(), OriginSequence: entry.GetOriginSequence()}
 		if item.Length == 0 || item.Offset > body || item.Length > body-item.Offset {
-			return nil, ErrCorrupt
+			return nil, nil, ErrCorrupt
 		}
 		// The VMM state is the one member that names no volume, and a page is
 		// one that does.
 		if item.State != (item.Volume == "") {
-			return nil, ErrCorrupt
+			return nil, nil, ErrCorrupt
 		}
 		if item.State && item.Page != 0 {
-			return nil, ErrCorrupt
+			return nil, nil, ErrCorrupt
 		}
 		if (item.OriginVM == "") != (item.OriginSequence == 0) {
-			return nil, ErrCorrupt
+			return nil, nil, ErrCorrupt
 		}
 		members = append(members, item)
 	}
-	return members, nil
+	return members, message.GetDeferred(), nil
 }

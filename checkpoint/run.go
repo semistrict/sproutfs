@@ -232,7 +232,8 @@ func groupMembers(run []pageRead, wanted []int) []readExtent {
 // caller is told is that failure rather than the cancellation it caused.
 func (s *Store) readExtents(ctx context.Context, extents []readExtent,
 	serve func(context.Context, readExtent, []byte) error) error {
-	read := func(ctx context.Context, held readExtent) error {
+	return concurrently(ctx, len(extents), readExtentConcurrency, func(ctx context.Context, at int) error {
+		held := extents[at]
 		key, err := s.partKey(held.ref, held.part)
 		if err != nil {
 			return err
@@ -245,9 +246,15 @@ func (s *Store) readExtents(ctx context.Context, extents []readExtent,
 			return err
 		}
 		return serve(ctx, held, encoded)
-	}
-	if len(extents) == 1 {
-		return read(ctx, extents[0])
+	})
+}
+
+// concurrently runs do for every position below count, at most limit at a
+// time. The first failure cancels the rest, and what the caller is told is that
+// failure rather than the cancellation it caused.
+func concurrently(ctx context.Context, count, limit int, do func(ctx context.Context, at int) error) error {
+	if count == 1 {
+		return do(ctx, 0)
 	}
 	running, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -255,16 +262,16 @@ func (s *Store) readExtents(ctx context.Context, extents []readExtent,
 	var wait sync.WaitGroup
 	var once sync.Once
 	var failure error
-	for range min(len(extents), readExtentConcurrency) {
+	for range min(count, limit) {
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
 			for running.Err() == nil {
 				at := int(next.Add(1)) - 1
-				if at >= len(extents) {
+				if at >= count {
 					return
 				}
-				if err := read(running, extents[at]); err != nil {
+				if err := do(running, at); err != nil {
 					once.Do(func() { failure = err; cancel() })
 					return
 				}
