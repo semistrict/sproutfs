@@ -24,7 +24,7 @@ const testItemBytes = 3000
 
 // testItemsPerRegion is how many testItemBytes items, each with a header of
 // 46 bytes and a table entry of 40 under keyOf's names, one region holds:
-// (65,536 - 32) / (3,046 + 40).
+// (65,536 - 40) / (3,046 + 40).
 const testItemsPerRegion = 21
 
 // checkedFile wraps the cache's file the way FoundationDB's
@@ -35,7 +35,7 @@ const testItemsPerRegion = 21
 // disk damaged, and never one the cache misread.
 //
 // It also logs the operations it forwards, holds reads at a gate, and can lose
-// power around a region's table write.
+// power around a region's table write or after a number of operations.
 type checkedFile struct {
 	disk        *sim.Disk
 	name        string
@@ -55,6 +55,10 @@ type checkedFile struct {
 	// powerLoss names the moment around the next table write to lose power
 	// at: "before-table" or "after-table".
 	powerLoss string
+	// armed loses the power once remaining more writes, syncs, allocations,
+	// punches and truncations have been forwarded, and lost says it was.
+	armed, lost bool
+	remaining   int
 }
 
 // readGate is one read held until a test releases it.
@@ -72,6 +76,41 @@ func newCheckedFile(ctx context.Context, disk *sim.Disk, regionBytes int64) (*ch
 	return &checkedFile{disk: disk, name: "cache", regionBytes: regionBytes, inner: inner,
 		shadow: make(map[int64][]byte)}, nil
 }
+
+// reopen opens the file again over what the disk holds, as a host that
+// restarts does. What was written is still known, unless the power was lost.
+func (f *checkedFile) reopen(ctx context.Context) error {
+	inner, err := f.disk.Open(ctx, f.name, platform.OpenOptions{Create: true})
+	if err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.inner = inner
+	f.ops = append(f.ops, "reopen")
+	return nil
+}
+
+// losePower loses the disk's power now. The file's handle is gone with it,
+// so every operation the cache tries after it fails, as it would in a host
+// that died, until the file is opened again.
+func (f *checkedFile) losePower(ctx context.Context) error {
+	if err := f.disk.PowerLoss(ctx); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.blind = true
+	f.ops = append(f.ops, "power-loss")
+	return nil
+}
+
+// regionBase is where the region in slot begins in a file of testRegionBytes
+// regions, past the header's span.
+func regionBase(slot int64) int64 { return (slot + 1) * testRegionBytes }
+
+// testDeployment is the deployment the disk tests' files belong to.
+var testDeployment = CacheDeployment{Store: "sim", Bucket: "test-bucket", Prefix: "cluster/"}
 
 func (f *checkedFile) file() platform.File {
 	f.mu.Lock()
@@ -161,7 +200,41 @@ func (f *checkedFile) recordLocked(offset int64, data []byte) {
 	}
 }
 
+// loseAfter arms the file to lose the power once n more operations that
+// change it have been forwarded, before the next one.
+func (f *checkedFile) loseAfter(n int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.armed, f.remaining = true, n
+}
+
+// powerLost reports whether the file armed by loseAfter has lost the power.
+func (f *checkedFile) powerLost() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lost
+}
+
+// change counts one operation that changes the file, and loses the power
+// before it where the file was armed to.
+func (f *checkedFile) change(ctx context.Context) {
+	f.mu.Lock()
+	lose := f.armed && f.remaining == 0
+	if lose {
+		f.armed, f.lost = false, true
+	} else if f.armed {
+		f.remaining--
+	}
+	f.mu.Unlock()
+	if lose {
+		if err := f.losePower(ctx); err != nil {
+			panic(err)
+		}
+	}
+}
+
 func (f *checkedFile) WriteAt(ctx context.Context, source []byte, offset int64) (int, error) {
+	f.change(ctx)
 	table := (offset+int64(len(source)))%f.regionBytes == 0
 	if table {
 		f.maybeLosePower(ctx, "before-table")
@@ -203,11 +276,26 @@ func (f *checkedFile) maybeLosePower(ctx context.Context, moment string) {
 }
 
 func (f *checkedFile) Truncate(ctx context.Context, size int64) error {
-	f.log("truncate")
-	return f.file().Truncate(ctx, size)
+	f.change(ctx)
+	err := f.file().Truncate(ctx, size)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ops = append(f.ops, "truncate")
+	if err == nil {
+		for page := range f.shadow {
+			if page*shadowPage >= size {
+				delete(f.shadow, page)
+			}
+		}
+		if size%shadowPage != 0 {
+			f.recordLocked(size, make([]byte, shadowPage-size%shadowPage))
+		}
+	}
+	return err
 }
 
 func (f *checkedFile) Sync(ctx context.Context) error {
+	f.change(ctx)
 	f.log("sync")
 	return f.file().Sync(ctx)
 }
@@ -216,6 +304,7 @@ func (f *checkedFile) Size(ctx context.Context) (int64, error) { return f.file()
 func (f *checkedFile) Close() error                            { return f.file().Close() }
 
 func (f *checkedFile) PunchHole(ctx context.Context, offset, length int64) error {
+	f.change(ctx)
 	err := f.file().(platform.SparseFile).PunchHole(ctx, offset, length)
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -227,6 +316,7 @@ func (f *checkedFile) PunchHole(ctx context.Context, offset, length int64) error
 }
 
 func (f *checkedFile) Allocate(ctx context.Context, offset, length int64) error {
+	f.change(ctx)
 	f.log(fmt.Sprintf("allocate %d+%d", offset, length))
 	return f.file().(platform.AllocatingFile).Allocate(ctx, offset, length)
 }
@@ -281,12 +371,13 @@ func (b *testBudget) refusing(kind WriteKind) {
 
 // diskFixture is a cache disk over a checked file on a simulated disk.
 type diskFixture struct {
-	runtime *sim.Runtime
-	simDisk *sim.Disk
-	file    *checkedFile
-	budget  *testBudget
-	disk    *cacheDisk
-	model   map[diskKey][]byte
+	runtime  *sim.Runtime
+	simDisk  *sim.Disk
+	file     *checkedFile
+	budget   *testBudget
+	settings diskSettings
+	disk     *cacheDisk
+	model    map[diskKey][]byte
 }
 
 type diskFixtureConfig struct {
@@ -319,8 +410,29 @@ func openDiskFixture(ctx context.Context, runtime *sim.Runtime, config diskFixtu
 	if limit == 0 {
 		limit = DefaultDiskIndexBytes
 	}
-	return &diskFixture{runtime: runtime, simDisk: simDisk, file: file, budget: budget,
-		disk: newCacheDisk(file, budget, testRegionBytes, limit, 1), model: make(map[diskKey][]byte)}, nil
+	f := &diskFixture{runtime: runtime, simDisk: simDisk, file: file, budget: budget,
+		settings: diskSettings{regionBytes: testRegionBytes, indexLimit: limit, threshold: 1,
+			deployment: testDeployment, entropy: runtime.NewEntropy("cache-disk")},
+		model: make(map[diskKey][]byte)}
+	if f.disk, err = openCacheDisk(ctx, file, budget, f.settings); err != nil {
+		return nil, err
+	}
+	return f, nil
+}
+
+// restart opens a new cache disk over the fixture's file, as a host that
+// restarts does, and leaves the old one behind without closing it. What it
+// wrote stays the model.
+func (f *diskFixture) restart(ctx context.Context) error {
+	if err := f.file.reopen(ctx); err != nil {
+		return err
+	}
+	disk, err := openCacheDisk(ctx, f.file, f.budget, f.settings)
+	if err != nil {
+		return err
+	}
+	f.disk = disk
+	return nil
 }
 
 // ctx is the test's context carrying the fixture's runtime.

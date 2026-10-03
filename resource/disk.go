@@ -184,6 +184,11 @@ type DiskLimiterConfig struct {
 	Space platform.DiskSpace
 	Goal  DiskGoal
 	Users []DiskUser
+	// CacheFile reads what the cache's file holds on the disk, and counts it as
+	// the cache's while no cache is registered. A cache read back after a
+	// restart holds its regions before the cache is made, and its share must
+	// count them as its own, not as another writer's. Nil counts nothing.
+	CacheFile func(context.Context) (int64, error)
 	// Region is the hysteresis: a cache over its share is told to stop one
 	// region below it. Zero is DefaultDiskRegion.
 	Region int64
@@ -455,8 +460,17 @@ func (l *DiskLimiter) Refresh(ctx context.Context) error {
 	cache := l.cache
 	l.mu.Unlock()
 	var held int64
-	if cache != nil {
+	switch {
+	case cache != nil:
 		held = max(cache.Held(), 0)
+	case l.config.CacheFile != nil:
+		file, err := l.config.CacheFile(ctx)
+		if err != nil {
+			// Counting nothing only makes the cache's share smaller.
+			errs = append(errs, fmt.Errorf("the cache's file: %w", err))
+			break
+		}
+		held = max(file, 0)
 	}
 
 	now := l.clock.Now()

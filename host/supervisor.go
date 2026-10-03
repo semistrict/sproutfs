@@ -184,6 +184,10 @@ type SupervisorConfig struct {
 	Network     platform.Network
 	Disk        platform.Disk
 	Disks       platform.Disks
+	// Deployment names the object store's kind, its bucket and the prefix as
+	// the command was given them. The page cache's disk is kept across
+	// restarts only for the deployment it was made for.
+	Deployment checkpoint.CacheDeployment
 	// Clock is the passage of time every deadline this host keeps is measured
 	// against, and Entropy the source the checkpoint interval's jitter is drawn
 	// from. Nil is the operating system's, which is what a deployment runs on.
@@ -214,9 +218,11 @@ type SupervisorConfig struct {
 	// it: zero is the default 2 MiB. At 4 KiB their arenas are ordinary memory
 	// charged to the pod, as RAM's is at 4 KiB.
 	PMEMPageSize uint64
-	// ScratchDir is the node-disk directory holding the pager's spill file and
-	// the VMM scratch. A starting host wipes it: a restart is a host loss, so
-	// nothing under it is authority for anything.
+	// ScratchDir is the node-disk directory holding the pager's spill file,
+	// the VMM scratch and the page cache's disk. A starting host wipes the VMM
+	// scratch and empties the spill files: a restart is a host loss, so
+	// nothing under it is authority for anything. The page cache's disk is
+	// read back, because it holds only copies of what the store holds.
 	ScratchDir string
 	// ArenaBytes is the resident page store of each pager. The PMEM share comes
 	// out of the pod's HugeTLB allotment and the RAM share out of the pod's

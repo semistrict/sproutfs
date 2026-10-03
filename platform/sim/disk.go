@@ -125,6 +125,11 @@ type DiskConfig struct {
 	// default: a device that restores exactly its last sync is the weaker
 	// assumption every existing test is written against.
 	PowerLossFaults bool
+	// PowerLossKillMode is the kill mode every file is opened under, DropOnly
+	// or FullCorruption. Zero draws one of the two at each open, as
+	// FoundationDB does. A test that must see torn and garbled sectors asks for
+	// FullCorruption.
+	PowerLossKillMode KillMode
 	// SyncDurableProbability is the chance that a file Sync actually persists
 	// the modifications before it. Zero means one: a sync that reports success
 	// has always persisted. A value below one models a device that acknowledges
@@ -467,8 +472,11 @@ func (d *Disk) Open(ctx context.Context, name string, options platform.OpenOptio
 		// draws randomInt(1, 3): the mode a page draws is bounded by this one,
 		// and a file that could never corrupt anything would make that draw
 		// meaningless.
-		image.killMode = DropOnly + KillMode(d.powerLossRandom().Intn(
-			fmt.Sprintf("%s/%s/open/%d/kill-mode", d.id, name, image.opens), 2))
+		image.killMode = d.config.PowerLossKillMode
+		if image.killMode == NoCorruption {
+			image.killMode = DropOnly + KillMode(d.powerLossRandom().Intn(
+				fmt.Sprintf("%s/%s/open/%d/kill-mode", d.id, name, image.opens), 2))
+		}
 	}
 	if options.Truncate {
 		image.volatile = fileBytes{}

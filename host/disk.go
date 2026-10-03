@@ -71,14 +71,17 @@ func allocation(file platform.File) func(context.Context) (int64, error) {
 }
 
 // startDiskLimiter builds the host's disk limiter over Disk, and refuses a
-// configuration whose promises the disk cannot keep under its goals.
-func startDiskLimiter(ctx context.Context, config SupervisorConfig, users []resource.DiskUser) (*resource.DiskLimiter, error) {
+// configuration whose promises the disk cannot keep under its goals. cache is
+// the page cache's file: what a restart left in it is the cache's, before the
+// cache is made.
+func startDiskLimiter(ctx context.Context, config SupervisorConfig, users []resource.DiskUser,
+	cache platform.File) (*resource.DiskLimiter, error) {
 	space, ok := config.Disk.(platform.DiskSpace)
 	if !ok {
 		return nil, fmt.Errorf("%w: the host's disk does not report its space", ErrInvalidConfig)
 	}
 	limiter, err := resource.NewDiskLimiter(ctx, resource.DiskLimiterConfig{Space: space, Goal: config.DiskGoal,
-		Users: users, Region: checkpoint.DefaultDiskRegionBytes, MaxBandBytes: config.DiskBandBytes, Writes: config.DiskWrites, Device: config.DeviceWrites,
+		Users: users, CacheFile: allocation(cache), Region: checkpoint.DefaultDiskRegionBytes, MaxBandBytes: config.DiskBandBytes, Writes: config.DiskWrites, Device: config.DeviceWrites,
 		Clock: config.Clock})
 	if err != nil {
 		return nil, fmt.Errorf("%w: the disk limiter: %w", ErrInvalidConfig, err)

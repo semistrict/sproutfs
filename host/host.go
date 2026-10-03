@@ -375,7 +375,13 @@ func StartHost(ctx context.Context, config Config) (*Host, error) {
 	if config.DiskLimiter != nil {
 		sizing.Budget = cacheShare{limiter: config.DiskLimiter, cap: sizing.DiskBytes}
 	}
-	h.cache, err = checkpoint.NewCache(cacheBudget, sizing)
+	// A cache disk made new draws its identity from the host's entropy. One
+	// this deployment made before is read back, and fitted to the limiter's
+	// share, before the cache serves anything.
+	if sizing.Entropy == nil {
+		sizing.Entropy = h.entropy
+	}
+	h.cache, err = checkpoint.NewCache(hostCtx, cacheBudget, sizing)
 	if err != nil {
 		return nil, err
 	}

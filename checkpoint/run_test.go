@@ -419,7 +419,7 @@ func TestAReadLongerThanOneRunIsServedAsSeveralRuns(t *testing.T) {
 // it, so a second reader of any of them finds it there.
 func TestASecondReadOfARunThroughTheCacheCostsNoRequests(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		cache, err := NewCache(testresource.New(), CacheConfig{})
+		cache, err := NewCache(t.Context(), testresource.New(), CacheConfig{})
 		if err != nil {
 			t.Fatal(err)
 		}

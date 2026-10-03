@@ -33,6 +33,10 @@ import (
 // free for that second chance alone, so eviction always gives space back. A
 // read in flight holds its region, which is given back only once its last
 // reader has finished.
+//
+// The disk survives a restart of the host. Its file's header names the cache
+// and its deployment, and its closed regions are read back from their tables
+// when it opens (diskrestart.go).
 
 // ErrNoDisk refuses a pull on a host whose page cache keeps nothing on disk.
 var ErrNoDisk = errors.New("checkpoint: the page cache keeps no disk")
@@ -164,6 +168,13 @@ type cacheDisk struct {
 	// threshold is the reads since it was written that give an item a second
 	// chance.
 	threshold int
+	// deployment is the one the file must belong to, and entropy what a new
+	// file's identity and generation are drawn from.
+	deployment CacheDeployment
+	entropy    platform.Entropy
+	// identity and generation are the file's, set as the disk opens.
+	identity   CacheIdentity
+	generation uint64
 	// slots is the fetches every pull on this host has in flight together,
 	// and writer the one writer the log has at a time. Both are channels, so
 	// a goroutine waiting on either is durably blocked.
@@ -187,13 +198,41 @@ type cacheDisk struct {
 	evicted       uint64
 	rewritten     uint64
 	refused       uint64
+	// fromTables, scanned and givenBackOnOpen count what the open did with
+	// the regions it found.
+	fromTables, scanned, givenBackOnOpen uint64
+	// stopped is a disk whose cache has closed: its open region is closed, and
+	// it takes no more writes.
+	stopped bool
 }
 
-func newCacheDisk(file platform.File, budget DiskBudget, regionBytes, indexLimit int64, threshold int) *cacheDisk {
-	return &cacheDisk{file: file, budget: budget, regionBytes: regionBytes, indexLimit: indexLimit,
-		threshold: threshold, slots: make(chan struct{}, pullConcurrency), writer: make(chan struct{}, 1),
-		index: newDiskIndex()}
+// diskSettings is how a cache's disk is laid out and bounded, and what its
+// file must say of itself.
+type diskSettings struct {
+	regionBytes, indexLimit int64
+	// threshold is the reads since it was written that give an item a second
+	// chance.
+	threshold  int
+	deployment CacheDeployment
+	entropy    platform.Entropy
 }
+
+// openCacheDisk opens the page cache's disk over file: what the file holds is
+// read back, or the file is made anew, and the disk is fitted to its share
+// before it serves anything.
+func openCacheDisk(ctx context.Context, file platform.File, budget DiskBudget, settings diskSettings) (*cacheDisk, error) {
+	d := &cacheDisk{file: file, budget: budget, regionBytes: settings.regionBytes, indexLimit: settings.indexLimit,
+		threshold: settings.threshold, deployment: settings.deployment, entropy: platform.EntropyOr(settings.entropy),
+		slots: make(chan struct{}, pullConcurrency), writer: make(chan struct{}, 1), index: newDiskIndex()}
+	if err := d.readBack(ctx); err != nil {
+		return nil, err
+	}
+	return d, nil
+}
+
+// base is where the region in slot begins. The file's first region-sized span
+// is its header's.
+func (d *cacheDisk) base(slot int64) int64 { return (slot + 1) * d.regionBytes }
 
 // share is the bytes the disk may hold now, in whole regions.
 func (d *cacheDisk) share() int64 { return max(d.budget.Share(), 0) }
@@ -250,10 +289,13 @@ func (d *cacheDisk) write(ctx context.Context, key diskKey, data []byte, kind Wr
 	defer d.unlockWriter()
 	d.mu.Lock()
 	_, found := d.index.lookup(key)
-	indexed := d.index.used
+	indexed, stopped := d.index.used, d.stopped
 	d.mu.Unlock()
 	if found {
 		return nil
+	}
+	if stopped {
+		return d.refuse("the cache is closed")
 	}
 	if indexed+maximumInsertCharge > d.indexLimit {
 		return d.refuse("the index holds %d bytes of %d", indexed, d.indexLimit)
@@ -366,11 +408,14 @@ func (d *cacheDisk) mayOpen(ctx context.Context, kind WriteKind) bool {
 }
 
 // openRegion opens a region in the lowest slot free and allocates its space.
+// A slot used before has its trailer cleared, so a table a punch that failed
+// left there is never read back as the new region's.
 func (d *cacheDisk) openRegion(ctx context.Context, kind WriteKind) error {
 	regions := d.share() / d.regionBytes
 	d.mu.Lock()
 	var slot int64
-	if len(d.free) > 0 {
+	reused := len(d.free) > 0
+	if reused {
 		slot, d.free = d.free[0], d.free[1:]
 	} else {
 		slot = d.next
@@ -378,15 +423,19 @@ func (d *cacheDisk) openRegion(ctx context.Context, kind WriteKind) error {
 	}
 	d.held++
 	d.sequence++
-	region := &diskRegion{slot: slot, base: slot * d.regionBytes, sequence: d.sequence}
+	region := &diskRegion{slot: slot, base: d.base(slot), sequence: d.sequence}
 	free := int64(d.held) == regions
 	d.mu.Unlock()
-	if err := d.allocate(ctx, region); err != nil {
+	err := d.allocate(ctx, region)
+	if err == nil && reused {
+		_, err = d.file.WriteAt(ctx, make([]byte, diskTrailerSize), region.base+d.regionBytes-diskTrailerSize)
+	}
+	if err != nil {
 		d.mu.Lock()
 		d.held--
 		d.free = insertSlot(d.free, slot)
 		d.mu.Unlock()
-		return d.refuse("allocating a region failed: %v", err)
+		return d.refuse("opening a region failed: %v", err)
 	}
 	if kind == WriteSecondChance && free {
 		sim.Probe(ctx, ProbeDiskFreeRegion)
@@ -442,12 +491,16 @@ func (d *cacheDisk) close(ctx context.Context, region *diskRegion) {
 			return
 		}
 	}
-	table := encodeTable(region.sequence, items)
+	table := encodeTable(region.sequence, d.generation, items)
+	at := region.base + d.regionBytes - int64(len(table))
 	written := table
 	if sim.Buggify(ctx, buggifyDiskTornTable, 0.25) {
-		written = table[:len(table)/2]
+		// The table's second half, with its trailer, reaches the disk and
+		// its first does not: a restart finds the table torn.
+		written = table[len(table)/2:]
+		at += int64(len(table) / 2)
 	}
-	if _, err := d.file.WriteAt(ctx, written, region.base+d.regionBytes-int64(len(table))); err != nil {
+	if _, err := d.file.WriteAt(ctx, written, at); err != nil {
 		slog.WarnContext(ctx, "checkpoint: writing a disk region's table failed", "region", region.sequence,
 			"error", err)
 		return
@@ -615,6 +668,23 @@ func (d *cacheDisk) fit(ctx context.Context) error {
 	}
 }
 
+// shutdown closes the open region, so that a restart reads its items back from
+// its table rather than giving it back, and refuses every write after it.
+func (d *cacheDisk) shutdown(ctx context.Context) {
+	if err := d.lockWriter(ctx); err != nil {
+		slog.WarnContext(ctx, "checkpoint: the page cache's disk was left with its region open", "error", err)
+		return
+	}
+	defer d.unlockWriter()
+	d.mu.Lock()
+	open := d.open
+	d.stopped = true
+	d.mu.Unlock()
+	if open != nil {
+		d.close(ctx, open)
+	}
+}
+
 // diskReadOutcome is what one read of the disk found.
 type diskReadOutcome int
 
@@ -749,6 +819,12 @@ type DiskStats struct {
 	// Evicted counts regions given back, Rewritten the items a second chance
 	// wrote again, and Refused the writes it refused.
 	Evicted, Rewritten, Refused uint64
+	// Identity names the disk's file, which keeps it across restarts.
+	Identity CacheIdentity
+	// FromTables, Scanned and GivenBackOnOpen are what the disk did with the
+	// regions it found when it opened: read back from their tables, read back
+	// by scanning their items, and given back.
+	FromTables, Scanned, GivenBackOnOpen uint64
 }
 
 func (d *cacheDisk) stats() DiskStats {
@@ -757,5 +833,6 @@ func (d *cacheDisk) stats() DiskStats {
 	defer d.mu.Unlock()
 	return DiskStats{UsedBytes: int64(d.held) * d.regionBytes, LimitBytes: share, Regions: d.held,
 		Entries: d.index.live, IndexBytes: d.index.used, Hits: d.hits, Lost: d.lost, Evicted: d.evicted,
-		Rewritten: d.rewritten, Refused: d.refused}
+		Rewritten: d.rewritten, Refused: d.refused, Identity: d.identity, FromTables: d.fromTables,
+		Scanned: d.scanned, GivenBackOnOpen: d.givenBackOnOpen}
 }

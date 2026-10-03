@@ -7,6 +7,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/resource"
 )
 
@@ -566,6 +567,39 @@ func TestACacheAtItsShareOrItsStopMarkIsLeftAlone(t *testing.T) {
 		}
 		if shrinks, held := probes(); shrinks != 1 || held != 2 {
 			t.Fatalf("the cache at its stop mark was told to shrink %d times and held %d, want 1 and 2", shrinks, held)
+		}
+	})
+}
+
+// A cache's file read back after a restart holds its regions before any cache
+// registers. The limiter counts what the file holds as the cache's, so the
+// hard share is the 150 units of an empty disk, not 40 fewer, as it would be
+// were the file another writer's.
+func TestACacheFileHeldBeforeItsCacheCountsAsTheCaches(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := defaultDisk(t)
+		file, err := f.disk.Open(f.ctx, "cache", platform.OpenOptions{Create: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := file.(platform.AllocatingFile).Allocate(f.ctx, 0, 40*unit); err != nil {
+			t.Fatal(err)
+		}
+		config := resource.DiskLimiterConfig{Goal: resource.DiskGoal{FreeBytes: 25 * unit},
+			Users: []resource.DiskUser{spill("spill", 25*unit, f.sparse("spill", 25*unit))}}
+		other := f.limiter(config)
+		other.Close()
+		config.CacheFile = file.(platform.FileAllocation).Allocated
+		l := f.limiter(config)
+		defer l.Close()
+		// Counting the file: 200 - 25 - 25 = 150, less a band of a fifth of
+		// the 110 the cache has left of it. Without: 200 - 40 - 25 - 25 =
+		// 110, less a band of 22.
+		if got, without := l.CacheShare(), other.CacheShare(); got != 128*unit || without != 88*unit {
+			t.Fatalf("the share is %d units counting the file and %d without, want 128 and 88", got/unit, without/unit)
+		}
+		if held := l.Status().CacheHeldBytes; held != 40*unit {
+			t.Fatalf("the limiter counts %d units as the cache's, want the file's 40", held/unit)
 		}
 	})
 }

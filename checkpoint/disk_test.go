@@ -54,26 +54,27 @@ func TestDiskRegionsFillInOrderAndCloseWithATable(t *testing.T) {
 		// One window: 21 items listed densely in the first region, one in the
 		// second.
 		want := DiskStats{UsedBytes: 2 * testRegionBytes, LimitBytes: 8 * testRegionBytes, Regions: 2, Entries: 22,
-			IndexBytes: (windowEntryCharge + bitmapCharge + denseItemCharge*21) + (windowEntryCharge + listedItemCharge)}
+			IndexBytes: (windowEntryCharge + bitmapCharge + denseItemCharge*21) + (windowEntryCharge + listedItemCharge),
+			Identity:   f.disk.identity}
 		if stats != want {
 			t.Fatalf("the disk reports %+v, want %+v", stats, want)
 		}
-		sequence, items, err := readRegionTable(t.Context(), f.file, 0, testRegionBytes)
+		table, err := readRegionTable(t.Context(), f.file, regionBase(0), testRegionBytes)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if sequence != 1 || len(items) != testItemsPerRegion {
-			t.Fatalf("the first region's table is region %d of %d items, want region 1 of %d", sequence, len(items),
-				testItemsPerRegion)
+		if table.sequence != 1 || table.generation != f.disk.generation || len(table.items) != testItemsPerRegion {
+			t.Fatalf("the first region's table is region %d of generation %d with %d items, want region 1 of %d with %d",
+				table.sequence, table.generation, len(table.items), f.disk.generation, testItemsPerRegion)
 		}
-		for at, item := range items {
+		for at, item := range table.items {
 			wantItem := tableItem{key: keys[at], code: wholeEnvelope, offset: uint32(at * 3046),
 				length: testItemBytes}
 			if item != wantItem {
 				t.Fatalf("the table's item %d is %+v, want %+v", at, item, wantItem)
 			}
 			buffer := make([]byte, 3046)
-			if err := readFull(t.Context(), f.file, buffer, int64(item.offset)); err != nil {
+			if err := readFull(t.Context(), f.file, buffer, regionBase(0)+int64(item.offset)); err != nil {
 				t.Fatal(err)
 			}
 			parsed, err := parseItem(buffer, false)
@@ -82,15 +83,18 @@ func TestDiskRegionsFillInOrderAndCloseWithATable(t *testing.T) {
 				t.Fatalf("item %d reads back as %+v, %v", at, parsed.key, err)
 			}
 		}
-		if _, _, err := readRegionTable(t.Context(), f.file, testRegionBytes, testRegionBytes); !errors.Is(err, errNoTable) {
+		if _, err := readRegionTable(t.Context(), f.file, regionBase(1), testRegionBytes); !errors.Is(err, errNoTable) {
 			t.Fatalf("the open region's table reads back %v, want %v", err, errNoTable)
 		}
-		wantOps := []string{"allocate 0+65536"}
+		// The file's header is written and synced first, alone in the file's
+		// first 64 KiB.
+		wantOps := []string{fmt.Sprintf("write 0+%d", diskHeaderBytes(testDeployment)), "sync",
+			"allocate 65536+65536"}
 		for at := range testItemsPerRegion {
-			wantOps = append(wantOps, fmt.Sprintf("write %d+3046", at*3046))
+			wantOps = append(wantOps, fmt.Sprintf("write %d+3046", 65536+at*3046))
 		}
-		// The table is 21 entries of 40 bytes and the trailer.
-		wantOps = append(wantOps, "sync", "write 64664+872", "sync", "allocate 65536+65536", "write 65536+3046")
+		// The table is 21 entries of 40 bytes and the trailer of 40.
+		wantOps = append(wantOps, "sync", "write 130192+880", "sync", "allocate 131072+65536", "write 131072+3046")
 		if ops := f.file.operations(); !slices.Equal(ops[:len(wantOps)], wantOps) {
 			t.Fatalf("the disk saw %q, want %q", ops, wantOps)
 		}
@@ -106,7 +110,7 @@ func TestDiskReadChecksKeyAndChecksum(t *testing.T) {
 			f := newDiskFixture(t, diskFixtureConfig{regions: 8})
 			f.fill(t, pages("va", 0, 2))
 			// One byte of the second item's envelope, past its 46-byte header.
-			if _, err := f.file.file().WriteAt(t.Context(), []byte{0xff}, 3046+46+10); err != nil {
+			if _, err := f.file.file().WriteAt(t.Context(), []byte{0xff}, regionBase(0)+3046+46+10); err != nil {
 				t.Fatal(err)
 			}
 			if data, outcome := f.disk.read(f.ctx(t), keyOf("va", 1)); outcome != diskDamaged || data != nil {
@@ -371,7 +375,7 @@ func TestDiskReadInFlightKeepsItsRegion(t *testing.T) {
 		f := newDiskFixture(t, diskFixtureConfig{regions: 4})
 		keys := pages("va", 0, 64)
 		f.fill(t, keys[:63])
-		gate := f.file.hold(0, testRegionBytes)
+		gate := f.file.hold(regionBase(0), regionBase(1))
 		type result struct {
 			data    []byte
 			outcome diskReadOutcome

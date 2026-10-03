@@ -59,7 +59,7 @@ func pulledRunWith(t *testing.T, diskBytes int64,
 	counted := &countedObjects{ObjectStore: h.configs[1].ObjectStore}
 	h.configs[1].ObjectStore = counted
 	h.configs[1].CacheBytes = 4 << 10
-	file, err := h.disks[1].Open(t.Context(), "cache", platform.OpenOptions{Create: true, Truncate: true})
+	file, err := h.disks[1].Open(t.Context(), "cache", platform.OpenOptions{Create: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -334,5 +334,86 @@ func TestTheDiskLimiterTakesThePageCachesDiskBack(t *testing.T) {
 			t.Fatalf("faulting the pages in after the disk was taken back made %d requests of the object store, "+
 				"want one a page and one for the segment, %d", gets, pullPages+1)
 		}
+	}
+}
+
+// The page cache's disk outlives its host process. A pulled VM's pages, two
+// regions of 8 MiB, are on its host's disk when the host stops. A new host
+// process starts over the same disk with a new disk limiter, as a restarted
+// supervisor does, and reads the disk back. Its free-space goal leaves 20 MiB
+// above the floor with the file counted as the cache's, a share of 32 MiB,
+// which keeps both regions. Were the file counted as another writer's, the
+// share would be 16 MiB and the cache would give a region back. The VM opened
+// on the new host faults every page in from the disk, and makes no request of
+// the object store for any of them.
+func TestAPulledVMsPagesOutliveItsHostsRestart(t *testing.T) {
+	deployment := checkpoint.CacheDeployment{Store: "sim", Bucket: "host-cluster", Prefix: "host-cluster/"}
+	startLimiter := func(h *hostHarness, file platform.File, goal resource.DiskGoal, clock string) *resource.DiskLimiter {
+		limiter, err := resource.NewDiskLimiter(t.Context(), resource.DiskLimiterConfig{Space: h.disks[1],
+			Goal: goal, Region: 8 << 20, Clock: h.runtime.NewClock(clock),
+			CacheFile: file.(platform.FileAllocation).Allocated})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(limiter.Close)
+		h.configs[1].DiskLimiter = limiter
+		return limiter
+	}
+	counted, _, _, _, h := pulledRunWith(t, 0, func(h *hostHarness) {
+		startLimiter(h, h.configs[1].Cache.Disk, resource.DiskGoal{FreeBytes: 64 << 20}, "limiter")
+		h.configs[1].Cache.Deployment = deployment
+	})
+	if stats, err := h.hosts[1].WaitPulled(t.Context(), "vm-1"); err != nil || !stats.Done || stats.Err != nil {
+		t.Fatalf("the pull ended at %+v, %v, want the whole checkpoint on the disk", stats, err)
+	}
+	before := h.hosts[1].Status().Cache.Disk
+	if before.UsedBytes != 16<<20 {
+		t.Fatalf("the pull left %d bytes on the disk, want two regions of 8 MiB", before.UsedBytes)
+	}
+
+	h.stop(t, 1)
+	h.configs[1].DiskLimiter.Close()
+	file, err := h.disks[1].Open(t.Context(), "cache", platform.OpenOptions{Create: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = file.Close() })
+	h.configs[1].Cache.Disk = file
+	space, err := h.disks[1].Space(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	limiter := startLimiter(h, file, resource.DiskGoal{FreeBytes: int64(space.Available) - 20<<20},
+		"limiter-after-restart")
+	pagers := newPagerWithConfig(t, h.configs[1].Resources, vmmemory.Config{
+		ResidentPages: pullResident, LogicalPages: 2 * pullPages, DirtyPages: pullResident, ReadAheadPages: 1})
+	h.configs[1].Pagers = pagers.pagers
+	h.launch(t, 1)
+
+	after := h.hosts[1].Status().Cache.Disk
+	if after.Identity != before.Identity || after.UsedBytes != before.UsedBytes || after.Entries != before.Entries ||
+		after.FromTables != 2 || after.GivenBackOnOpen != 0 || after.Evicted != 0 {
+		t.Fatalf("the restarted host's disk reports %+v, want what it held before, %+v, read back from its tables",
+			after, before)
+	}
+	// 36 MiB of room above the floor, less a band of a fifth of the 20 the
+	// cache has left of it. The file also holds its header's block, 4 KiB,
+	// which the limiter counted as the cache's too.
+	if share := limiter.CacheShare(); share != 32<<20+4<<10 {
+		t.Fatalf("the new limiter gives the cache a share of %d bytes, want 32 MiB and 4 KiB", share)
+	}
+	opened, err := h.hosts[1].Volumes().Open(t.Context(), "vm-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	guest, err := newMachine(t, pagers, opened, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	counted.reset()
+	readPulled(t, guest)
+	if gets := counted.count(); gets != 0 {
+		t.Fatalf("faulting a pulled VM's pages in after its host restarted made %d requests of the object store, "+
+			"want none", gets)
 	}
 }

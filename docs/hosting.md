@@ -199,11 +199,14 @@ Starter's process offers. A `vmmachine.ConsoleVMM` keeps a console, and a
 as a child with its console kept in memory. That command may be a jailer.
 `Starter.Boots` says whether the Starter can boot a kernel.
 
-A process restart is a host loss. Nothing in the scratch directory or in the
-spill file survives a restart. Opening the scratch deletes its VM directories
-and recreates them empty, and the spill file is truncated. There is no
-reconciliation, no scan of what a previous process left, and no lock held
-across processes. A host that restarts has lost every VM it was running. The
+A process restart is a host loss. Nothing in the VMM scratch or in the spill
+files survives a restart. Opening the scratch deletes its VM directories and
+recreates them empty, and the spill files are truncated. There is no
+reconciliation of VMs, no scan of what a previous process left for them, and
+no lock held across processes. A host that restarts has lost every VM it was
+running. The one file that survives is the page cache's disk, because it holds
+only copies of what the store holds: the host reads it back rather than
+emptying it (see below). The
 deployment reopens each of them, on whatever host they land, from the
 checkpoint its control record selects. The deployment must give each host
 process its own scratch directory.
@@ -875,10 +878,23 @@ one the pager evicted since.
   pulled page goes the same way as any other. So the pages of a VM that runs
   long, and of the VMs pulled after it, can push its first pages out, and those
   are read from the store again.
-- **Nothing on the disk is durable.** The file starts empty when the host
-  starts. A copy the disk lost or damaged fails its envelope check and is read
-  from the store. A newer checkpoint's page has a new identity, so the copy of
-  the page it replaced is never read for it.
+- **The disk survives a restart.** A host that starts opens the existing
+  file instead of truncating it. The file's header names the cache's identity
+  and the deployment: the object store's kind, its bucket and its prefix. A
+  file of this deployment, format and region size is read back: each closed
+  region from its table, in the order of the log; a region whose table is torn
+  by scanning its items; and the region that was open when the host stopped
+  is given back. If the cache then holds more than the disk limiter's share,
+  it gives its oldest regions back before it serves anything. A file with no
+  header, a damaged one, or one of another deployment, format or region size
+  is emptied and made again under a new identity. So a pulled VM opened again
+  on the same node after a restart reads its pages from the disk. The host
+  manifest keeps the file in the pod's `emptyDir`, which outlives a restart of
+  the container but not of the pod.
+- **Nothing on the disk is authority.** A copy the disk lost or damaged fails
+  its key, checksum or envelope check and is read from the store. A newer
+  checkpoint's page has a new identity, so the copy of the page it replaced is
+  never read for it.
 - **Forks share one copy.** A page the disk already holds, from another pull or
   a publication, is not copied again.
 
@@ -1027,7 +1043,10 @@ set. Each write it makes asks `Admit`, at the priority of its kind. When the
 share falls below what it holds, the limiter calls its `Shrink`, and the disk
 gives regions back, oldest first and with no second chance, until it holds its
 share less one region. A pull that does not fit in the share is refused before
-it fetches anything.
+it fetches anything. A host that restarts finds the cache's file holding what
+it kept before the cache is made, so until the cache registers, the limiter
+counts what the file holds as the cache's, not as another writer's. The cache
+read back is then fitted to that share before it serves anything.
 
 - **VMM staging files** live in each process's own directory under the scratch,
   and are removed with the process. Configuration and restore files are removed

@@ -61,7 +61,7 @@ func newPullFixtureOf(t *testing.T, diskBytes int64, volumePages uint64, pages [
 	if err != nil {
 		t.Fatal(err)
 	}
-	cache, err := checkpoint.NewCache(budget, checkpoint.CacheConfig{Disk: file, DiskBytes: diskBytes,
+	cache, err := checkpoint.NewCache(t.Context(), budget, checkpoint.CacheConfig{Disk: file, DiskBytes: diskBytes,
 		DiskRegionBytes: pullRegionBytes})
 	if err != nil {
 		t.Fatal(err)
@@ -145,6 +145,55 @@ func TestAPulledCheckpointIsReadWithoutTheStore(t *testing.T) {
 	// them as one extent.
 	if fetched != 2 {
 		t.Fatalf("the pull made %d requests, want the segment and the one extent", fetched)
+	}
+}
+
+// The page cache's disk outlives its cache. Once a pull is complete, the cache
+// is closed and a new one, with a new store, is made over the same file, as a
+// host that restarts makes them: reading the checkpoint then makes no request
+// of the store, and the disk keeps the identity it was made with.
+func TestAPulledCheckpointIsReadWithoutTheStoreAfterARestart(t *testing.T) {
+	f := newPullFixture(t, 64<<20)
+	pull := f.pull(t)
+	if err := pull.Wait(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	before := f.cache.Stats().Disk
+	f.cache.Close()
+	file, err := f.disk.Open(t.Context(), "cache", platform.OpenOptions{Create: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	budget, err := resource.New(4 << 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache, err := checkpoint.NewCache(t.Context(), budget, checkpoint.CacheConfig{Disk: file, DiskBytes: 64 << 20,
+		DiskRegionBytes: pullRegionBytes})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(cache.Close)
+	disk := cache.Stats().Disk
+	if disk.Identity != before.Identity || disk.FromTables != 1 || disk.Entries != before.Entries ||
+		disk.GivenBackOnOpen != 0 {
+		t.Fatalf("the restarted disk reports %+v, want the %d entries and identity %v it held", disk,
+			before.Entries, before.Identity)
+	}
+	store := mustStore(t, checkpoint.Config{ObjectStore: f.objects, Cache: cache})
+	index, err := store.Open(t.Context(), f.index.Ref())
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.objects.gets.Store(0)
+	for _, page := range f.pages {
+		readCachedPage(t, store, index, f.model, page)
+	}
+	if gets := f.objects.gets.Load(); gets != 0 {
+		t.Fatalf("reading the pulled checkpoint after a restart made %d requests of the store, want none", gets)
+	}
+	if hits := cache.Stats().Disk.Hits; hits != 1+cachedPages {
+		t.Fatalf("the restarted disk served %d reads, want the segment and every page", hits)
 	}
 }
 
@@ -243,7 +292,7 @@ func TestALostOrDamagedDiskFallsBackToTheStore(t *testing.T) {
 	}{
 		{"damaged", func(t *testing.T, f *pullFixture) {
 			garbage := bytes.Repeat([]byte{0xa5}, int(f.cache.Stats().Disk.UsedBytes))
-			if _, err := f.file.WriteAt(t.Context(), garbage, 0); err != nil {
+			if _, err := f.file.WriteAt(t.Context(), garbage, pullRegionBytes); err != nil {
 				t.Fatal(err)
 			}
 		}},

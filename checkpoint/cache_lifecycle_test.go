@@ -12,7 +12,7 @@ import (
 
 func TestCacheNewReaderDoesNotJoinAnAbandonedLoad(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		cache, err := NewCache(testresource.New(), CacheConfig{MaxConcurrentLoads: 2})
+		cache, err := NewCache(t.Context(), testresource.New(), CacheConfig{MaxConcurrentLoads: 2})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -70,7 +70,7 @@ func TestCacheNewReaderDoesNotJoinAnAbandonedLoad(t *testing.T) {
 }
 func TestCacheOwnsOnlyTheLoadedBytes(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		cache, err := NewCache(testresource.New(), CacheConfig{})
+		cache, err := NewCache(t.Context(), testresource.New(), CacheConfig{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -100,7 +100,7 @@ func TestCacheOwnsOnlyTheLoadedBytes(t *testing.T) {
 func TestCacheCloseIsIdempotent(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		budget := testresource.New()
-		cache, err := NewCache(budget, CacheConfig{})
+		cache, err := NewCache(t.Context(), budget, CacheConfig{})
 		if err != nil {
 			t.Fatal(err)
 		}

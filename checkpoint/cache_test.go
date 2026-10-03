@@ -66,7 +66,7 @@ func cachedFixture(t *testing.T, capacity int64, concurrency int) (*checkpoint.S
 	if err != nil {
 		t.Fatal(err)
 	}
-	cache, err := checkpoint.NewCache(budget, checkpoint.CacheConfig{MaxConcurrentLoads: concurrency})
+	cache, err := checkpoint.NewCache(t.Context(), budget, checkpoint.CacheConfig{MaxConcurrentLoads: concurrency})
 	if err != nil {
 		t.Fatal(err)
 	}

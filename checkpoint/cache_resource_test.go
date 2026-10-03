@@ -17,7 +17,7 @@ func sharedCache(t *testing.T, limit int64) (*Cache, *resource.Budget) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cache, err := NewCache(b, CacheConfig{})
+	cache, err := NewCache(t.Context(), b, CacheConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +124,7 @@ func TestCacheUsesMemoryReturnedByOtherHostConsumers(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cache, err := NewCache(budget, CacheConfig{})
+		cache, err := NewCache(t.Context(), budget, CacheConfig{})
 		if err != nil {
 			t.Fatal(err)
 		}
