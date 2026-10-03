@@ -22,6 +22,7 @@ import (
 	"time"
 
 	hostapi "github.com/semistrict/sproutfs/api/host"
+	"github.com/semistrict/sproutfs/checkpoint"
 	"github.com/semistrict/sproutfs/host"
 	"github.com/semistrict/sproutfs/internal/jsonhttp"
 	"github.com/semistrict/sproutfs/platform/adapters"
@@ -116,6 +117,8 @@ func run() error {
 	supervisor := config.SupervisorConfig
 	supervisor.ObjectStore, supervisor.Network = objects, adapters.NewNetwork()
 	supervisor.Disk, supervisor.Disks = disk, adapters.NewDisk
+	supervisor.Deployment = checkpoint.CacheDeployment{Store: config.Store.Provider, Bucket: config.Store.Bucket,
+		Prefix: config.Store.Prefix}
 	// The write budget is measured by the counter of the device under the
 	// scratch directory, so a budget on a host that cannot read one is
 	// refused rather than kept blind.

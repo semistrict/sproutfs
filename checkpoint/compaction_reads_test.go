@@ -34,7 +34,7 @@ func TestCompactionReadsTheRescuedPagesAsExtents(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					cache, err := checkpoint.NewCache(budget, checkpoint.CacheConfig{})
+					cache, err := checkpoint.NewCache(t.Context(), budget, checkpoint.CacheConfig{})
 					if err != nil {
 						t.Fatal(err)
 					}

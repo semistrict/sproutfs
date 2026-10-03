@@ -781,9 +781,8 @@ while the disk holds it, however often the pager evicts its pages.
 The disk holds what the store holds: each member's and each segment's encoded
 envelope, byte for byte, keyed by the same identity as the memory tier. So a
 read from it is the same read as one from the store, checked by the same
-envelope. Nothing is published from the disk, and the file starts empty when
-the host starts. A newer checkpoint's page has a new identity, so the copy of
-the page it replaced is never read for it.
+envelope. Nothing is published from the disk. A newer checkpoint's page has a
+new identity, so the copy of the page it replaced is never read for it.
 
 **The log.** The disk is a log of fixed-size **disk regions**, 64 MiB each
 (`CacheConfig.DiskRegionBytes`). One region is open at a time. Its space is
@@ -797,9 +796,46 @@ format.
 When the open region is full, it is **closed**. Closing syncs the region's
 items, then writes the region's table at its end, then syncs again. The table
 holds the region's sequence number and each item's key, offset and length,
-under its own checksum. The first sync keeps a table from naming an item that
-is not on the disk. Nothing reads the tables back yet. A restart still starts
-the file empty.
+under its own checksum, and the file's generation. The first sync keeps a table
+from naming an item that is not on the disk. The file's first region-sized span
+holds only its header, so every region starts on a region boundary.
+
+**Restarts.** The disk outlives the host process. A page's bytes never change
+under its identity, so nothing a restart finds on the disk can be stale. It
+can only be absent or damaged, and every read checks for both. The file's
+header holds its format version, the region size, the cache's identity, the
+deployment it belongs to (the object store's kind, its bucket and its prefix)
+and a generation. The identity is drawn when the file is made, and the cache
+reports it in `DiskStats.Identity`. When the cache is made
+(`CacheConfig.Deployment`), the header is checked:
+
+- A file with no header, a damaged one, or one of another format, region size
+  or deployment is emptied, given back whole, and made again under a new
+  identity and a new generation. Page identities are unique only within one
+  deployment, so a file of another deployment is never read.
+- Otherwise each region is read back from its end. A region with a table of
+  this file's generation is indexed from its table. The tables are read newest
+  first, by their sequence numbers, so the closed regions take back their
+  order in the log, and the newest copy of an item a second chance wrote twice
+  is the one kept.
+- A region with no table was open when the host stopped. It is given back.
+- A region whose table fails its checksum is scanned by its items' headers.
+  Each item read back intact is indexed, and a damaged one is stepped over.
+  The region has lost its place in the order, so it is the oldest. A scan that
+  finds nothing intact gives the region back.
+- A table of another generation was left by an older file. Its region is
+  given back.
+
+The rebuilt index keeps to its memory bound: the newest regions are indexed
+first, and the region that would pass the bound is given back with every one
+older. Then the disk gives regions back, oldest first, until it holds its
+share less one region, before it serves a read. A region damaged after its
+table was written costs a store read and nothing else, because every read
+still checks the key and the checksum. A clean close of the cache closes the
+open region with its table, so nothing is given back after it. A slot opened
+again has its old trailer cleared first, so a table a failed punch left behind
+is never read as the new region's. `checkpoint/diskrestart.go` holds the
+rules.
 
 **Reads.** A read checks the key in the item's header against the key it asked
 for, and then the checksum. An item that fails either is a miss. The index

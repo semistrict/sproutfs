@@ -244,5 +244,23 @@
     "package": "checkpoint",
     "run": "^TestPullsShareOneCopyAndClosingFreesNothing$",
     "purpose": "Have a closed pull free what it copied, as pulls held regions before."
+  },
+  {
+    "id": "diskcache-restart-trusts-open-region",
+    "package": "checkpoint",
+    "run": "^TestDiskGivesBackTheRegionOpenAtTheRestart$",
+    "purpose": "Index the region that was open when the host stopped, which has no table, instead of giving it back."
+  },
+  {
+    "id": "diskcache-restart-ignores-deployment",
+    "package": "checkpoint",
+    "run": "^TestDiskEmptiesAFileThatIsNotItsOwn$",
+    "purpose": "Keep a page cache disk file that names another deployment, whose page identities may name other bytes."
+  },
+  {
+    "id": "diskcache-restart-skips-scan",
+    "package": "checkpoint",
+    "run": "^TestDiskScansARegionWhoseTableIsTorn$",
+    "purpose": "Give back a disk region whose table is torn without scanning its items."
   }
 ]

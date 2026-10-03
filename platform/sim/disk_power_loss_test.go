@@ -260,3 +260,32 @@ func TestSyncDurableProbabilityLeavesWritesAtRisk(t *testing.T) {
 		t.Fatal("every acknowledged sync persisted; the probability is not applied")
 	}
 }
+
+// A disk configured with a kill mode opens every file under it, rather than
+// drawing one at each open. Over the same sixteen seeds of a 64 KiB unsynced
+// write, a DropOnly disk only ever keeps or drops a sector, and never garbles
+// one, and a FullCorruption disk garbles in fifteen of them.
+func TestPowerLossKillModeCanBeFixed(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		for _, mode := range []sim.KillMode{sim.DropOnly, sim.FullCorruption} {
+			outcomes := map[sim.PowerLossOutcome]int{}
+			for seed := uint64(1); seed <= 16; seed++ {
+				runtime := sim.New(sim.Config{Seed: seed})
+				disk := runtime.NewDisk("node", sim.DiskConfig{PowerLossFaults: true, PowerLossKillMode: mode})
+				writeRecord(t, disk, "record", 64<<10)
+				if err := disk.PowerLoss(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				for _, event := range runtime.Trace().Events() {
+					if event.Operation == "power_loss_write" {
+						outcomes[sim.PowerLossOutcome(event.Outcome)]++
+					}
+				}
+			}
+			want := map[sim.KillMode]int{sim.DropOnly: 0, sim.FullCorruption: 15}[mode]
+			if outcomes[sim.PowerLossGarbled] != want {
+				t.Fatalf("kill mode %d resolved the sixteen writes as %v, want %d garbled", mode, outcomes, want)
+			}
+		}
+	})
+}

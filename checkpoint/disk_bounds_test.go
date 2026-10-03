@@ -3,6 +3,7 @@ package checkpoint
 import (
 	"bytes"
 	"errors"
+	"strings"
 	"testing"
 	"testing/synctest"
 
@@ -10,33 +11,37 @@ import (
 	"github.com/semistrict/sproutfs/platform/sim"
 )
 
-// A region fills to its last byte. Sixteen items of 4,054 bytes, each with a
-// table entry of 40, and the trailer are exactly 64 KiB, so the sixteenth
-// shares the first region and the seventeenth opens the next. The second
-// region's table names its items from its own start.
+// A region fills to its last byte. Fifteen items of 4,054 bytes and one of
+// 4,046, each with a table entry of 40, and the trailer of 40 are exactly
+// 64 KiB, so the sixteenth shares the first region and the seventeenth opens
+// the next. The second region's table names its items from its own start.
 func TestDiskRegionFillsToItsLastByte(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newDiskFixture(t, diskFixtureConfig{regions: 8})
 		keys := pages("va", 0, 33)
-		for _, key := range keys[:16] {
-			f.write(t, key, 4008)
+		// Every sixteenth item is eight bytes shorter.
+		length := func(at int) int { return 4008 - 8*(at%16/15) }
+		for at, key := range keys[:16] {
+			f.write(t, key, length(at))
 		}
 		if regions := f.disk.stats().Regions; regions != 1 {
 			t.Fatalf("sixteen items that fill a region took %d regions", regions)
 		}
-		for _, key := range keys[16:] {
-			f.write(t, key, 4008)
+		for at, key := range keys[16:] {
+			f.write(t, key, length(16+at))
 		}
 		if regions := f.disk.stats().Regions; regions != 3 {
 			t.Fatalf("33 items took %d regions, want 3", regions)
 		}
-		sequence, items, err := readRegionTable(t.Context(), f.file, testRegionBytes, testRegionBytes)
-		if err != nil || sequence != 2 || len(items) != 16 {
-			t.Fatalf("the second region's table is region %d of %d items, %v", sequence, len(items), err)
+		table, err := readRegionTable(t.Context(), f.file, regionBase(1), testRegionBytes)
+		if err != nil || table.sequence != 2 || len(table.items) != 16 {
+			t.Fatalf("the second region's table is region %d of %d items, %v", table.sequence, len(table.items), err)
 		}
-		for at, item := range items {
-			if item != (tableItem{key: keys[16+at], code: wholeEnvelope, offset: uint32(at * 4054), length: 4008}) {
-				t.Fatalf("the second region's item %d is %+v", at, item)
+		for at, item := range table.items {
+			want := tableItem{key: keys[16+at], code: wholeEnvelope, offset: uint32(at * 4054),
+				length: uint32(length(at))}
+			if item != want {
+				t.Fatalf("the second region's item %d is %+v, want %+v", at, item, want)
 			}
 		}
 		for _, key := range keys {
@@ -97,7 +102,12 @@ func TestDiskRefusesAnItemLargerThanARegion(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		disk := newCacheDisk(file, newTestBudget(3*regionBytes/testRegionBytes), regionBytes, DefaultDiskIndexBytes, 1)
+		disk, err := openCacheDisk(t.Context(), file, newTestBudget(3*regionBytes/testRegionBytes),
+			diskSettings{regionBytes: regionBytes, indexLimit: DefaultDiskIndexBytes, threshold: 1,
+				deployment: testDeployment, entropy: runtime.NewEntropy("cache-disk")})
+		if err != nil {
+			t.Fatal(err)
+		}
 		largest := payloadOf(keyOf("va", 0), maximumDiskItem)
 		if err := disk.write(t.Context(), keyOf("va", 0), largest, WriteFillPublication); err != nil {
 			t.Fatal(err)
@@ -206,8 +216,8 @@ func TestDiskFitGivesBackTheOpenRegion(t *testing.T) {
 		if stats := f.disk.stats(); stats.Regions != 0 || stats.Evicted != 1 || stats.Entries != 0 {
 			t.Fatalf("fitting a share of one region left %+v, want nothing", stats)
 		}
-		if _, items, err := readRegionTable(t.Context(), f.file, 0, testRegionBytes); err == nil || items != nil {
-			t.Fatalf("the region given back still reads a table of %d items", len(items))
+		if table, err := readRegionTable(t.Context(), f.file, regionBase(0), testRegionBytes); !errors.Is(err, errNoTable) {
+			t.Fatalf("the region given back still reads a table of %d items, %v", len(table.items), err)
 		}
 		f.disk.checkInvariants(t)
 	})
@@ -221,7 +231,7 @@ func TestDiskFitCountsARegionWaitingForItsReaderAsGone(t *testing.T) {
 		f := newDiskFixture(t, diskFixtureConfig{regions: 6})
 		keys := pages("va", 0, 5*testItemsPerRegion)
 		f.fill(t, keys)
-		gate := f.file.hold(0, testRegionBytes)
+		gate := f.file.hold(regionBase(0), regionBase(1))
 		done := make(chan diskReadOutcome, 1)
 		go func() {
 			_, outcome := f.disk.read(f.ctx(t), keys[0])
@@ -251,9 +261,10 @@ func TestDiskFitCountsARegionWaitingForItsReaderAsGone(t *testing.T) {
 
 // A cache refuses a disk it cannot lay out: a region that is not whole
 // filesystem blocks, smaller than any envelope needs, or larger than a table's
-// offsets reach, and a second-chance threshold past what the read counter
-// holds. A disk without a share keeps nothing, and one with a budget keeps
-// its share.
+// offsets reach, a second-chance threshold past what the read counter holds,
+// and a deployment whose names do not fit its header's length fields or whose
+// header does not fit in a region. A disk without a share keeps nothing, and
+// one with a budget keeps its share.
 func TestCacheRefusesADiskItCannotLayOut(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		file := diskTableFile(t, nil)
@@ -263,8 +274,13 @@ func TestCacheRefusesADiskItCannotLayOut(t *testing.T) {
 			{Disk: file, DiskBytes: 1 << 30, DiskRegionBytes: maximumDiskRegionBytes + diskBlock},
 			{Disk: file, DiskBytes: 1 << 30, DiskSecondChanceReads: wordReadsMax + 1},
 			{Disk: file, DiskBytes: 1 << 30, DiskIndexBytes: -1},
+			{Disk: file, DiskBytes: 1 << 30, Deployment: CacheDeployment{Bucket: strings.Repeat("b", 0x10000)}},
+			// 48 bytes, three names of 21,830 and a checksum are 65,542 bytes,
+			// six more than a region of 64 KiB.
+			{Disk: file, DiskBytes: 1 << 30, DiskRegionBytes: testRegionBytes, Deployment: CacheDeployment{
+				Store: strings.Repeat("s", 21830), Bucket: strings.Repeat("b", 21830), Prefix: strings.Repeat("p", 21830)}},
 		} {
-			if _, err := NewCache(testresource.New(), config); !errors.Is(err, ErrInvalidConfig) {
+			if _, err := NewCache(t.Context(), testresource.New(), config); !errors.Is(err, ErrInvalidConfig) {
 				t.Fatalf("a cache of %+v returned %v, want %v", config, err, ErrInvalidConfig)
 			}
 		}
@@ -275,8 +291,16 @@ func TestCacheRefusesADiskItCannotLayOut(t *testing.T) {
 			{CacheConfig{Disk: file}, -1},
 			{CacheConfig{Disk: file, DiskBytes: 1 << 30}, 1 << 30},
 			{CacheConfig{Disk: file, Budget: newTestBudget(5)}, 5 * testRegionBytes},
+			// Names as long as their length fields carry are storable.
+			{CacheConfig{Disk: file, DiskBytes: 1 << 30, DiskRegionBytes: 4 * testRegionBytes, Deployment: CacheDeployment{
+				Store: strings.Repeat("s", 0xffff), Bucket: strings.Repeat("b", 0xffff), Prefix: strings.Repeat("p", 0xffff)}},
+				1 << 30},
+			// A header of exactly a region fits.
+			{CacheConfig{Disk: file, DiskBytes: 1 << 30, DiskRegionBytes: testRegionBytes, Deployment: CacheDeployment{
+				Store: strings.Repeat("s", 21828), Bucket: strings.Repeat("b", 21828), Prefix: strings.Repeat("p", 21828)}},
+				1 << 30},
 		} {
-			cache, err := NewCache(testresource.New(), test.config)
+			cache, err := NewCache(t.Context(), testresource.New(), test.config)
 			if err != nil {
 				t.Fatal(err)
 			}

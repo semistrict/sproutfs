@@ -23,7 +23,7 @@ func cachedStore(t *testing.T, h *harness) *checkpoint.Store {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cache, err := checkpoint.NewCache(budget, checkpoint.CacheConfig{MaxConcurrentLoads: 4})
+	cache, err := checkpoint.NewCache(t.Context(), budget, checkpoint.CacheConfig{MaxConcurrentLoads: 4})
 	if err != nil {
 		t.Fatal(err)
 	}

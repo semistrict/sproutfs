@@ -122,9 +122,11 @@ operating system's random pool. So production code never has to name a clock or
 an entropy source that it does not need.
 
 Both are passed through `host.Config`, `SupervisorConfig`, `control.Config`,
-`vmmemory.Config` and vmmigrate's `Options` and `PeerConfig`. `volume` and
-`checkpoint` take neither, because neither reads a clock or draws a random
-value. Their tunable values are in `internal/knobs` instead.
+`vmmemory.Config` and vmmigrate's `Options` and `PeerConfig`. `volume` takes
+neither, because it reads no clock and draws no random value. `checkpoint`
+takes only an entropy source, in `CacheConfig`, from which a new page cache
+disk draws its identity; the host passes its own. Their tunable values are in
+`internal/knobs` instead.
 
 `sim.Clock` is a virtual clock. No time passes on it unless a test advances it.
 `Advance` releases the deadlines it passes in deadline order. Deadlines at the
@@ -1232,9 +1234,11 @@ caller:
 | `checkpoint/disk-failed-write` | Fails the write of a page cache disk item |
 | `checkpoint/disk-short-write` | Writes half of a page cache disk item, then fails |
 | `checkpoint/disk-failed-sync` | Fails a sync while a disk region closes |
-| `checkpoint/disk-torn-table` | Writes half of a closed disk region's table |
+| `checkpoint/disk-torn-table` | Writes the second half of a closed disk region's table, with its trailer |
 | `checkpoint/disk-failed-punch` | Fails the punch that gives a disk region back |
 | `checkpoint/disk-failed-allocate` | Fails the allocation of a disk region as it opens |
+| `checkpoint/disk-torn-header` | Tears the page cache disk's header as the disk opens |
+| `checkpoint/disk-torn-table-on-open` | Tears a disk region's table as the disk opens and reads it back |
 
 A simulated disk with `DiskConfig.ReadChaos` adds three sites of its own, as
 FoundationDB's `AsyncFileChaos` does. They are off on every other disk, because
@@ -1293,15 +1297,19 @@ what it did not reach. The registered probes are:
 - a cache write refused for its priority that a publication's fill would have
   been admitted for.
 
-The page cache's disk marks six more: an item written again by a second
+The page cache's disk marks ten more: an item written again by a second
 chance, a second chance stopped at half a region, a second chance opening the
-region kept free for it, an eviction waiting for a read in flight, and a read
-that finds another key's item or a damaged one. No topology campaign keeps a
-cache disk, so `TestDiskSurvivesItsFaultsAndReachesItsProbes` in `checkpoint`
-drives them. It runs eight seeds of a writer, two readers and a limiter over a
-disk with read chaos, with every completion released by the scheduler and the
-sites on. It requires every disk site to fire and every disk probe to be
-reached across the seeds. A test-only file under the cache, like FoundationDB's
+region kept free for it, an eviction waiting for a read in flight, a read
+that finds another key's item or a damaged one, and, as the disk opens, a
+region read back from its table, a region read back by scanning its items, a
+region given back, and a header refused. No topology campaign keeps a cache
+disk, so `TestDiskSurvivesItsFaultsAndReachesItsProbes` in `checkpoint` drives
+them. It runs eight seeds of a writer, two readers and a limiter over a disk
+with read chaos, with every completion released by the scheduler and the sites
+on. Then it opens the disk again twice: after a clean close, and with a region
+open, as after a crash. After each open it reads every page written. It
+requires every disk site to fire and every disk probe to be reached across
+the seeds. A test-only file under the cache, like FoundationDB's
 `AsyncFileWriteChecker`, keeps a copy of every byte written. So the test tells a
 disk that lied from a cache that misread: an item the cache refuses must be one
 the disk lied about to that read.
@@ -1428,6 +1436,12 @@ SPROUTFS_SIM_BUG=diskcache-table-before-sync \
   go test ./checkpoint -run '^(TestDiskRegionsFillInOrderAndCloseWithATable|TestDiskPowerLossAroundClosingARegion)$' -count=1
 SPROUTFS_SIM_BUG=diskcache-pull-frees-on-close \
   go test ./checkpoint -run '^TestPullsShareOneCopyAndClosingFreesNothing$' -count=1
+SPROUTFS_SIM_BUG=diskcache-restart-trusts-open-region \
+  go test ./checkpoint -run '^TestDiskGivesBackTheRegionOpenAtTheRestart$' -count=1
+SPROUTFS_SIM_BUG=diskcache-restart-ignores-deployment \
+  go test ./checkpoint -run '^TestDiskEmptiesAFileThatIsNotItsOwn$' -count=1
+SPROUTFS_SIM_BUG=diskcache-restart-skips-scan \
+  go test ./checkpoint -run '^TestDiskScansARegionWhoseTableIsTorn$' -count=1
 ```
 
 Each invocation must fail. Three of them belong to the generated schedule and
@@ -1447,10 +1461,14 @@ their cost.
 simulated filesystem from outside once the pager has started, and the guest's
 next spill then fails for want of space.
 
-The seven `diskcache-` guards break the page cache's disk. Each is killed by a
+The ten `diskcache-` guards break the page cache's disk. Each is killed by a
 test of the one property it breaks. `diskcache-table-before-sync` is killed
 twice. The close's operations are checked in order, and a power loss around
-the table write leaves a table naming items the device did not keep. `pager-give-back-changed-copy` belongs to the generated schedule
+the table write leaves a table naming items the device did not keep. The three
+`diskcache-restart-` guards break the disk's open after a restart: one indexes
+the region that was open, which has no table; one keeps a file of another
+deployment; and one gives back a region whose table is torn without scanning
+it. `pager-give-back-changed-copy` belongs to the generated schedule
 too. The recorded scenario runs no give-back. A campaign runs one at the end of
 one turn of its stores in four, as a host's interval would, and checks at once
 that every page its guest maps reads what the guest wrote. The guard gives back
@@ -1790,7 +1808,7 @@ suite. The page cache's disk is mutated this way:
 
 ```sh
 python3 scripts/mutate-gremlins.py --package checkpoint --suite full \
-  --file disk.go --file diskformat.go --file diskindex.go --file pull.go \
+  --file disk.go --file diskformat.go --file diskindex.go --file diskrestart.go --file pull.go \
   --run '^(TestDisk|TestPull|TestAPull|TestAReadIsNot|TestALost|TestANewer)' \
   --gremlins /path/to/gremlins --output /tmp/disk-mutations
 ``` For test-only changes, select the production package whose behavior

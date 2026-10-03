@@ -5,6 +5,7 @@ import (
 	"container/list"
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 
 	"github.com/semistrict/sproutfs/control"
@@ -18,10 +19,16 @@ type CacheConfig struct {
 	// MaxConcurrentLoads bounds the fetches in flight. Default 16.
 	MaxConcurrentLoads int
 	// Disk is the file on the host's own disk the cache keeps envelopes in:
-	// what a pull copies and what that VM's publications upload. The file
-	// starts empty and is the caller's to close after the cache. A nil Disk
-	// keeps nothing on disk, and every pull is refused.
+	// what a pull copies and what that VM's publications upload. What a file
+	// of this deployment holds is read back when the cache is made; any other
+	// file is emptied. The file is the caller's to close after the cache. A
+	// nil Disk keeps nothing on disk, and every pull is refused.
 	Disk platform.File
+	// Deployment is the deployment the Disk belongs to, which its header
+	// names, and Entropy what a new file's identity is drawn from: nil is the
+	// operating system's.
+	Deployment CacheDeployment
+	Entropy    platform.Entropy
 	// Budget is the host's disk limiter: the cache's share of the disk, and
 	// which writes it may make. Without one, the share is DiskBytes and
 	// every write is admitted; a zero DiskBytes then keeps nothing on disk.
@@ -42,7 +49,8 @@ type CacheConfig struct {
 // checkpoints of one host. Supply one cache per host rather than one per fork:
 // a fork inherits its parent's object keys, so its reads hit the entries the
 // parent already loaded. The cache owns no persistent workers and no durable
-// state, and a cached object is never evidence that a publication landed.
+// state: what its disk keeps across a restart is only a copy of what the store
+// holds. A cached object is never evidence that a publication landed.
 // Construct it with NewCache; it must not be copied after first use.
 type Cache struct {
 	mu        sync.Mutex
@@ -159,8 +167,10 @@ type CacheStats struct {
 }
 
 // NewCache registers the cache with the host resource owner. Close it when
-// the host shuts down to release retention and unregister its evictor.
-func NewCache(resources *resource.Budget, config CacheConfig) (*Cache, error) {
+// the host shuts down to release retention and unregister its evictor. A
+// cache with a disk reads back what the disk holds, and fits it to its share,
+// before it returns.
+func NewCache(ctx context.Context, resources *resource.Budget, config CacheConfig) (*Cache, error) {
 	if config.MaxConcurrentLoads == 0 {
 		config.MaxConcurrentLoads = 16
 	}
@@ -170,7 +180,8 @@ func NewCache(resources *resource.Budget, config CacheConfig) (*Cache, error) {
 	if resources == nil || config.MaxConcurrentLoads < 1 || config.MaxConcurrentLoads > 1024 || config.DiskBytes < 0 ||
 		config.DiskRegionBytes < minimumDiskRegionBytes || config.DiskRegionBytes > maximumDiskRegionBytes ||
 		config.DiskRegionBytes%diskBlock != 0 || config.DiskIndexBytes < 0 || config.DiskSecondChanceReads < 0 ||
-		config.DiskSecondChanceReads > wordReadsMax {
+		config.DiskSecondChanceReads > wordReadsMax || !config.Deployment.storable() ||
+		diskHeaderBytes(config.Deployment) > config.DiskRegionBytes {
 		return nil, ErrInvalidConfig
 	}
 	cache := &Cache{resources: resources, limit: config.MaxConcurrentLoads,
@@ -180,8 +191,13 @@ func NewCache(resources *resource.Budget, config CacheConfig) (*Cache, error) {
 		budget = fixedShare(config.DiskBytes)
 	}
 	if config.Disk != nil && budget != nil {
-		cache.disk = newCacheDisk(config.Disk, budget, config.DiskRegionBytes, config.DiskIndexBytes,
-			config.DiskSecondChanceReads)
+		disk, err := openCacheDisk(ctx, config.Disk, budget, diskSettings{regionBytes: config.DiskRegionBytes,
+			indexLimit: config.DiskIndexBytes, threshold: config.DiskSecondChanceReads,
+			deployment: config.Deployment, entropy: config.Entropy})
+		if err != nil {
+			return nil, fmt.Errorf("the page cache's disk: %w", err)
+		}
+		cache.disk = disk
 	}
 	cache.unregister = resources.RegisterCache(cache.reclaim)
 	return cache, nil
@@ -242,9 +258,11 @@ func (c *Cache) Clear() {
 }
 
 // Close stops retention and releases unused bytes. Active readers keep their
-// charges until they release their pins. Calling it again does nothing: a host
-// unwinds from wherever it failed, and the second call must not close a channel
-// twice or unregister the evictor twice.
+// charges until they release their pins. A disk's open region is closed with
+// its table, so the next cache over the file reads it back, and the disk
+// takes no more writes. Calling it again does nothing: a host unwinds from
+// wherever it failed, and the second call must not close a channel twice or
+// unregister the evictor twice.
 func (c *Cache) Close() {
 	c.mu.Lock()
 	if c.closed {
@@ -260,6 +278,9 @@ func (c *Cache) Close() {
 	c.mu.Unlock()
 	c.Clear()
 	c.unregister()
+	if c.disk != nil {
+		c.disk.shutdown(context.Background())
+	}
 }
 
 // cacheAdmission is what one attempt at a batch of keys found: the retained

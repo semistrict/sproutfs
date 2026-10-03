@@ -163,7 +163,7 @@ func TestAHostWhosePromisesDoNotFitIsRefused(t *testing.T) {
 		var staged atomic.Int64
 		none := func() int { return 0 }
 		limiter, err := startDiskLimiter(ctx, config,
-			diskUsers(config, mustStartPagers(t, ctx, config, disk), none, &staged))
+			diskUsers(config, mustStartPagers(t, ctx, config, disk), none, &staged), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -186,7 +186,7 @@ func TestAHostWhosePromisesDoNotFitIsRefused(t *testing.T) {
 		config = diskHost(200 * mib)
 		config.Disk, config.Clock = disk, runtime.NewClock("larger")
 		_, err = startDiskLimiter(ctx, config,
-			diskUsers(config, mustStartPagers(t, ctx, config, disk), none, &staged))
+			diskUsers(config, mustStartPagers(t, ctx, config, disk), none, &staged), nil)
 		if !errors.Is(err, ErrInvalidConfig) || !errors.Is(err, resource.ErrDiskPromises) {
 			t.Fatalf("a host promising 248 MiB of 240 started with %v, want %v and %v", err, ErrInvalidConfig,
 				resource.ErrDiskPromises)
@@ -240,7 +240,7 @@ func TestAnImageTheDiskCannotKeepIsNotStaged(t *testing.T) {
 		config.Disk, config.Clock = disk, runtime.NewClock("host")
 		var staged atomic.Int64
 		limiter, err := startDiskLimiter(ctx, config,
-			diskUsers(config, mustStartPagers(t, ctx, config, disk), func() int { return 0 }, &staged))
+			diskUsers(config, mustStartPagers(t, ctx, config, disk), func() int { return 0 }, &staged), nil)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -3,12 +3,15 @@ package checkpoint
 import (
 	"context"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"hash/crc32"
 	"io"
 
 	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/platform"
+	"github.com/semistrict/sproutfs/platform/sim"
 )
 
 // The page cache's disk is a log of fixed-size disk regions. Each item in a
@@ -40,25 +43,48 @@ import (
 //	each), sequence and page (8 each), the item's offset in the region and
 //	its length (4 each), then the VM identity and the volume's name.
 //
-//	trailer, the region's last 32 bytes:
+//	trailer, the region's last 40 bytes:
 //	0  4 magic "SFCT"
 //	4  1 format version, 1
 //	5  3 zero
 //	8  8 the region's sequence number
-//	16 4 the number of table entries
-//	20 4 the table's length
-//	24 4 CRC32C of the table and the trailer's first 24 bytes
-//	28 4 zero
+//	16 8 the file's generation
+//	24 4 the number of table entries
+//	28 4 the table's length
+//	32 4 CRC32C of the table and the trailer's first 32 bytes
+//	36 4 zero
 //
 // A region is written whole in the order its items arrive, and its table only
 // once those items are synced, so a table never names an item that is not on
 // the disk. A region whose table is lost can still be read back by scanning
 // its headers from its start.
+//
+// The file begins with its header, alone in the file's first region-sized
+// span, so every region starts on a region boundary:
+//
+//	0  4  magic "SFCH"
+//	4  1  format version, 1
+//	5  3  zero
+//	8  8  the region size
+//	16 16 the cache's identity
+//	32 8  the file's generation
+//	40 2  the length of the object store's kind
+//	42 2  the length of the bucket's name
+//	44 2  the length of the prefix
+//	46 2  zero
+//	48    the kind, the bucket's name and the prefix, then a CRC32C of all
+//	      that comes before it (4)
+//
+// The identity is drawn when the file is made, and kept while the file is.
+// Every table carries the file's generation. A file made again over an old one
+// takes a new generation, so a table the old file left behind is never read
+// as one of the new file's, even where the device kept it.
 const (
 	diskFormatVersion = 1
 	diskItemFixed     = 40
 	diskTableFixed    = 34
-	diskTrailerSize   = 32
+	diskTrailerSize   = 40
+	diskHeaderFixed   = 48
 	// maximumDiskItem is the longest envelope an item holds: what its length
 	// field and the index's 24 bits of length both carry. A segment's or a
 	// 2 MiB page's envelope is far shorter.
@@ -66,9 +92,10 @@ const (
 )
 
 var (
-	diskItemMagic  = [4]byte{'S', 'F', 'C', 'I'}
-	diskTableMagic = [4]byte{'S', 'F', 'C', 'T'}
-	diskChecksum   = crc32.MakeTable(crc32.Castagnoli)
+	diskItemMagic   = [4]byte{'S', 'F', 'C', 'I'}
+	diskTableMagic  = [4]byte{'S', 'F', 'C', 'T'}
+	diskHeaderMagic = [4]byte{'S', 'F', 'C', 'H'}
+	diskChecksum    = crc32.MakeTable(crc32.Castagnoli)
 )
 
 // diskCode is where an item sits in its envelope's erasure code: stripe of k
@@ -137,11 +164,22 @@ type parsedItem struct {
 	data []byte
 }
 
+// itemLength is the whole length of the item whose header begins with fixed,
+// by what the header says. It reports false for a header that does not hold
+// together.
+func itemLength(fixed []byte) (int64, bool) {
+	if len(fixed) < diskItemFixed || [4]byte(fixed[0:4]) != diskItemMagic || fixed[4] != diskFormatVersion ||
+		fixed[5] > 1 || fixed[9] != 0 {
+		return 0, false
+	}
+	return diskItemFixed + int64(binary.LittleEndian.Uint16(fixed[12:])) +
+		int64(binary.LittleEndian.Uint16(fixed[14:])) + int64(binary.LittleEndian.Uint32(fixed[32:])), true
+}
+
 // itemKey is the key an item's header names, read without trusting the rest
 // of the item. It reports false for a header that does not hold together.
 func itemKey(item []byte) (diskKey, bool) {
-	if len(item) < diskItemFixed || [4]byte(item[0:4]) != diskItemMagic || item[4] != diskFormatVersion ||
-		item[5] > 1 || item[9] != 0 {
+	if _, ok := itemLength(item); !ok {
 		return diskKey{}, false
 	}
 	vm := int(binary.LittleEndian.Uint16(item[12:]))
@@ -190,8 +228,8 @@ type tableItem struct {
 }
 
 // encodeTable is a region's table and trailer, which close the region at its
-// end.
-func encodeTable(sequence uint64, items []tableItem) []byte {
+// end, under the file's generation.
+func encodeTable(sequence, generation uint64, items []tableItem) []byte {
 	var size int64
 	for _, item := range items {
 		size += tableEntryBytes(item.key)
@@ -217,59 +255,220 @@ func encodeTable(sequence uint64, items []tableItem) []byte {
 	copy(trailer[0:4], diskTableMagic[:])
 	trailer[4] = diskFormatVersion
 	binary.LittleEndian.PutUint64(trailer[8:], sequence)
-	binary.LittleEndian.PutUint32(trailer[16:], uint32(len(items)))
-	binary.LittleEndian.PutUint32(trailer[20:], uint32(size))
-	binary.LittleEndian.PutUint32(trailer[24:], crc32.Checksum(table[:size+24], diskChecksum))
+	binary.LittleEndian.PutUint64(trailer[16:], generation)
+	binary.LittleEndian.PutUint32(trailer[24:], uint32(len(items)))
+	binary.LittleEndian.PutUint32(trailer[28:], uint32(size))
+	binary.LittleEndian.PutUint32(trailer[32:], crc32.Checksum(table[:size+32], diskChecksum))
 	return table
 }
 
-// errNoTable reports a region whose end holds no table that checks out.
-var errNoTable = errors.New("checkpoint: the disk region has no intact table")
+// errNoTable reports a region whose end holds no table at all: a region that
+// was open, or one whose table never reached the disk. errTornTable reports a
+// region whose end holds a table's trailer, and a table that fails its
+// checksum or does not hold together.
+var (
+	errNoTable   = errors.New("checkpoint: the disk region has no table")
+	errTornTable = errors.New("checkpoint: the disk region's table is torn")
+)
+
+// regionTable is what a region's table says: the region's place in the order
+// of the log, the generation of the file it was written in, and every item it
+// names, in the order they lie.
+type regionTable struct {
+	sequence, generation uint64
+	items                []tableItem
+}
 
 // readRegionTable reads back the table that closes the region of regionBytes
-// at base: its sequence number and every item it names. A region with no
-// table, or one that fails its checksum, reports errNoTable.
-func readRegionTable(ctx context.Context, file platform.File, base, regionBytes int64) (uint64, []tableItem, error) {
+// at base. A region with no trailer reports errNoTable, and one whose table
+// fails its checksum or does not hold together reports errTornTable. A failed
+// read reports its own error.
+func readRegionTable(ctx context.Context, file platform.File, base, regionBytes int64) (regionTable, error) {
 	trailer := make([]byte, diskTrailerSize)
 	if err := readFull(ctx, file, trailer, base+regionBytes-diskTrailerSize); err != nil {
-		return 0, nil, err
+		return regionTable{}, err
 	}
-	size := int64(binary.LittleEndian.Uint32(trailer[20:]))
-	if [4]byte(trailer[0:4]) != diskTableMagic || trailer[4] != diskFormatVersion ||
-		size > regionBytes-diskTrailerSize {
-		return 0, nil, errNoTable
+	if [4]byte(trailer[0:4]) != diskTableMagic {
+		return regionTable{}, errNoTable
+	}
+	size := int64(binary.LittleEndian.Uint32(trailer[28:]))
+	if trailer[4] != diskFormatVersion || size > regionBytes-diskTrailerSize {
+		return regionTable{}, errTornTable
 	}
 	table := make([]byte, size+diskTrailerSize)
 	if err := readFull(ctx, file, table, base+regionBytes-int64(len(table))); err != nil {
-		return 0, nil, err
+		return regionTable{}, err
 	}
-	if crc32.Checksum(table[:size+24], diskChecksum) != binary.LittleEndian.Uint32(table[size+24:]) {
-		return 0, nil, errNoTable
+	if sim.Buggify(ctx, buggifyDiskTornTableOnOpen, 0.25) {
+		clear(table[:len(table)/2])
 	}
-	count := int(binary.LittleEndian.Uint32(table[size+16:]))
-	items := make([]tableItem, 0, count)
+	if crc32.Checksum(table[:size+32], diskChecksum) != binary.LittleEndian.Uint32(table[size+32:]) {
+		return regionTable{}, errTornTable
+	}
+	count := int(binary.LittleEndian.Uint32(table[size+24:]))
+	items := make([]tableItem, 0, min(count, int(size/diskTableFixed)))
 	for at := int64(0); len(items) < count; {
 		if at+diskTableFixed > size {
-			return 0, nil, errNoTable
+			return regionTable{}, errTornTable
 		}
 		entry := table[at:size]
 		vm := int64(binary.LittleEndian.Uint16(entry[6:]))
 		volume := int64(binary.LittleEndian.Uint16(entry[8:]))
 		if diskTableFixed+vm+volume > int64(len(entry)) {
-			return 0, nil, errNoTable
+			return regionTable{}, errTornTable
 		}
 		names := entry[diskTableFixed:]
-		items = append(items, tableItem{
+		item := tableItem{
 			key: diskKey{cacheKey: cacheKey{Identity: control.Identity{
 				Ref:    control.Ref{VM: string(names[:vm]), Sequence: binary.LittleEndian.Uint64(entry[10:])},
 				Volume: string(names[vm : vm+volume]), Page: binary.LittleEndian.Uint64(entry[18:])},
 				segment: entry[0] == 1},
 				span: binary.LittleEndian.Uint16(entry[4:])},
 			code:   diskCode{stripe: entry[1], k: entry[2], m: entry[3]},
-			offset: binary.LittleEndian.Uint32(entry[26:]), length: binary.LittleEndian.Uint32(entry[30:])})
+			offset: binary.LittleEndian.Uint32(entry[26:]), length: binary.LittleEndian.Uint32(entry[30:])}
+		if item.length > maximumDiskItem {
+			return regionTable{}, errTornTable
+		}
+		items = append(items, item)
 		at += diskTableFixed + vm + volume
 	}
-	return binary.LittleEndian.Uint64(table[size+8:]), items, nil
+	return regionTable{sequence: binary.LittleEndian.Uint64(table[size+8:]),
+		generation: binary.LittleEndian.Uint64(table[size+16:]), items: items}, nil
+}
+
+// scanRegion reads the items of the region of regionBytes at base back from
+// their headers, from its start, without its table. It reports every item
+// that reads back intact, in the order they lie. An item that fails its
+// checksum is stepped over by the length its header gives; the scan stops at
+// the first header that does not hold together or would run into the
+// trailer. A failed read stops it, and is reported with what was found.
+func scanRegion(ctx context.Context, file platform.File, base, regionBytes int64) ([]tableItem, error) {
+	var items []tableItem
+	limit := regionBytes - diskTrailerSize
+	fixed := make([]byte, diskItemFixed)
+	for at := int64(0); at+diskItemFixed <= limit; {
+		if err := readFull(ctx, file, fixed, base+at); err != nil {
+			return items, err
+		}
+		size, ok := itemLength(fixed)
+		if !ok || at+size > limit {
+			break
+		}
+		item := make([]byte, size)
+		if err := readFull(ctx, file, item, base+at); err != nil {
+			return items, err
+		}
+		if parsed, err := parseItem(item, false); err == nil {
+			items = append(items, tableItem{key: parsed.key, code: parsed.code, offset: uint32(at),
+				length: uint32(len(parsed.data))})
+		}
+		at += size
+	}
+	return items, nil
+}
+
+// CacheIdentity names one page cache's disk. It is drawn when the cache's
+// file is made, and kept for as long as the file is, across every restart of
+// the host over it.
+type CacheIdentity [16]byte
+
+func (i CacheIdentity) String() string { return hex.EncodeToString(i[:]) }
+
+// CacheDeployment is the deployment a page cache's disk belongs to: the kind
+// of object store, its bucket and the prefix of the deployment's objects, as
+// the host knows them. A page's identity is unique only within one
+// deployment, so a file of another deployment is emptied.
+type CacheDeployment struct {
+	Store, Bucket, Prefix string
+}
+
+// storable reports whether the deployment's names fit the header's length
+// fields.
+func (d CacheDeployment) storable() bool {
+	return len(d.Store) <= 0xffff && len(d.Bucket) <= 0xffff && len(d.Prefix) <= 0xffff
+}
+
+// diskHeader is what a cache file's header says.
+type diskHeader struct {
+	regionBytes int64
+	identity    CacheIdentity
+	generation  uint64
+	deployment  CacheDeployment
+}
+
+// diskHeaderBytes is the length of the header naming deployment.
+func diskHeaderBytes(deployment CacheDeployment) int64 {
+	return diskHeaderFixed + int64(len(deployment.Store)+len(deployment.Bucket)+len(deployment.Prefix)) + 4
+}
+
+// encodeDiskHeader is the header as it lies at the start of the file.
+func encodeDiskHeader(header diskHeader) []byte {
+	deployment := header.deployment
+	encoded := make([]byte, diskHeaderBytes(deployment))
+	copy(encoded[0:4], diskHeaderMagic[:])
+	encoded[4] = diskFormatVersion
+	binary.LittleEndian.PutUint64(encoded[8:], uint64(header.regionBytes))
+	copy(encoded[16:32], header.identity[:])
+	binary.LittleEndian.PutUint64(encoded[32:], header.generation)
+	binary.LittleEndian.PutUint16(encoded[40:], uint16(len(deployment.Store)))
+	binary.LittleEndian.PutUint16(encoded[42:], uint16(len(deployment.Bucket)))
+	binary.LittleEndian.PutUint16(encoded[44:], uint16(len(deployment.Prefix)))
+	at := diskHeaderFixed + copy(encoded[diskHeaderFixed:], deployment.Store)
+	at += copy(encoded[at:], deployment.Bucket)
+	at += copy(encoded[at:], deployment.Prefix)
+	binary.LittleEndian.PutUint32(encoded[at:], crc32.Checksum(encoded[:at], diskChecksum))
+	return encoded
+}
+
+// The ways a file's header is refused before what it says is compared: there
+// is none, it is damaged, or it is of another format.
+var (
+	errNoHeader      = errors.New("checkpoint: the page cache's disk has no header")
+	errHeaderDamaged = errors.New("checkpoint: the page cache's disk's header is damaged")
+	errHeaderFormat  = errors.New("checkpoint: the page cache's disk is of another format")
+)
+
+// readDiskHeader reads back the header at the start of file, which is never
+// longer than limit.
+func readDiskHeader(ctx context.Context, file platform.File, limit int64) (diskHeader, error) {
+	fixed := make([]byte, diskHeaderFixed)
+	if err := readFull(ctx, file, fixed, 0); errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return diskHeader{}, errNoHeader
+	} else if err != nil {
+		return diskHeader{}, err
+	}
+	if [4]byte(fixed[0:4]) != diskHeaderMagic {
+		return diskHeader{}, errNoHeader
+	}
+	if fixed[4] != diskFormatVersion {
+		return diskHeader{}, fmt.Errorf("%w: version %d", errHeaderFormat, fixed[4])
+	}
+	store := int64(binary.LittleEndian.Uint16(fixed[40:]))
+	bucket := int64(binary.LittleEndian.Uint16(fixed[42:]))
+	prefix := int64(binary.LittleEndian.Uint16(fixed[44:]))
+	size := diskHeaderFixed + store + bucket + prefix + 4
+	if size > limit {
+		return diskHeader{}, errHeaderDamaged
+	}
+	encoded := make([]byte, size)
+	if err := readFull(ctx, file, encoded, 0); errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return diskHeader{}, errHeaderDamaged
+	} else if err != nil {
+		return diskHeader{}, err
+	}
+	if sim.Buggify(ctx, buggifyDiskTornHeader, 0.5) {
+		clear(encoded[len(encoded)/2:])
+	}
+	if crc32.Checksum(encoded[:size-4], diskChecksum) != binary.LittleEndian.Uint32(encoded[size-4:]) {
+		return diskHeader{}, errHeaderDamaged
+	}
+	names := encoded[diskHeaderFixed : size-4]
+	header := diskHeader{regionBytes: int64(binary.LittleEndian.Uint64(encoded[8:])),
+		generation: binary.LittleEndian.Uint64(encoded[32:]),
+		deployment: CacheDeployment{Store: string(names[:store]), Bucket: string(names[store : store+bucket]),
+			Prefix: string(names[store+bucket:])}}
+	copy(header.identity[:], encoded[16:32])
+	return header, nil
 }
 
 // readFull reads exactly len(buffer) bytes at offset.

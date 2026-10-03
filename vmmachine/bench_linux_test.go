@@ -578,7 +578,7 @@ func newBenchmark(ctx context.Context, t *testing.T) *benchmark {
 		t.Fatal(err)
 	}
 	b.resources = resources
-	b.cache, err = checkpoint.NewCache(resources, checkpoint.CacheConfig{MaxConcurrentLoads: 32})
+	b.cache, err = checkpoint.NewCache(t.Context(), resources, checkpoint.CacheConfig{MaxConcurrentLoads: 32})
 	if err != nil {
 		t.Fatal(err)
 	}

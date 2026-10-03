@@ -23,11 +23,14 @@ import (
 // would otherwise race for the log's one writer by the Go scheduler's choice
 // rather than the seed's; the readers race both. Every read is checked: a hit
 // returns what was written, and an item the disk refuses is one the disk lied
-// about to that read.
+// about to that read. With restarts, the disk is then opened again twice, as
+// a host that restarts opens it: once after a clean close, and once with a
+// region open, as after a crash.
 type diskWorkload struct {
 	writes, reads, fits int
 	// lengths gives each page's envelope length.
-	length func(page uint64) int
+	length   func(page uint64) int
+	restarts bool
 }
 
 // readsAhead is how many reads the readers may make ahead of the writes.
@@ -142,7 +145,51 @@ func (w diskWorkload) run(t *testing.T, ctx context.Context, f *diskFixture) dis
 		}
 	})
 	group.Wait()
+	if w.restarts {
+		w.restart(t, ctx, f, model, &result)
+	}
 	return result
+}
+
+// restart opens the disk again after a clean close, then fills a region of a
+// third VM's pages and opens it again with that region open. After each open,
+// every page written is read and checked as the readers check theirs.
+func (w diskWorkload) restart(t *testing.T, ctx context.Context, f *diskFixture, model map[diskKey][]byte,
+	result *diskWorkloadResult) {
+	ctx = sim.WithTask(ctx, "restart")
+	f.disk.shutdown(ctx)
+	for _, crash := range []bool{false, true} {
+		if crash {
+			for _, key := range pages("wc", 0, 8) {
+				model[key] = payloadOf(key, w.length(key.Page))
+				if err := f.disk.write(ctx, key, model[key], WriteFillPublication); err != nil &&
+					!errors.Is(err, ErrDiskRefused) {
+					t.Errorf("writing page %d of wc: %v", key.Page, err)
+				}
+			}
+		}
+		if err := f.restart(ctx); err != nil {
+			t.Errorf("opening the disk again: %v", err)
+			return
+		}
+		for _, key := range keysOf(model) {
+			witnessCtx, witness := witnessed(ctx)
+			data, outcome := f.disk.read(witnessCtx, key)
+			result.outcomes[outcome]++
+			switch outcome {
+			case diskHit:
+				if !bytes.Equal(data, model[key]) {
+					t.Errorf("after a restart page %d of %s read back %d other bytes", key.Page, key.Ref.VM, len(data))
+				}
+			case diskKeyMismatch, diskDamaged:
+				if !witness.lied.Load() {
+					t.Errorf("after a restart the disk returned page %d of %s as written, and the cache refused it as %d",
+						key.Page, key.Ref.VM, outcome)
+				}
+			}
+		}
+		f.disk.checkInvariants(t)
+	}
 }
 
 // scheduledDisk runs a workload over a disk whose every operation a seeded
@@ -210,7 +257,7 @@ func TestDiskRacesUnderTheScheduler(t *testing.T) {
 // cache's own and the simulated disk's read chaos.
 var diskSites = []string{
 	buggifyDiskFailedWrite, buggifyDiskShortWrite, buggifyDiskFailedSync, buggifyDiskTornTable,
-	buggifyDiskFailedPunch, buggifyDiskFailedAllocate,
+	buggifyDiskFailedPunch, buggifyDiskFailedAllocate, buggifyDiskTornHeader, buggifyDiskTornTableOnOpen,
 	sim.BuggifyDiskSlowRead, sim.BuggifyDiskReadBitFlip, sim.BuggifyDiskMisdirectsRead,
 }
 
@@ -218,6 +265,7 @@ var diskSites = []string{
 var diskProbes = []string{
 	ProbeDiskSecondChance, ProbeDiskSecondChanceBounded, ProbeDiskFreeRegion,
 	ProbeDiskEvictionWaitsForReader, ProbeDiskKeyMismatch, ProbeDiskChecksumMismatch,
+	ProbeDiskRegionFromTable, ProbeDiskRegionScanned, ProbeDiskRegionGivenBackOnOpen, ProbeDiskHeaderRefused,
 }
 
 // diskCampaignSeeds are the seeds the campaign runs, which between them
@@ -233,7 +281,7 @@ var diskCampaignSeeds = []uint64{1, 2, 3, 4, 5, 6, 7, 8}
 // probe is reached, because a fault nothing drives proves nothing.
 func TestDiskSurvivesItsFaultsAndReachesItsProbes(t *testing.T) {
 	workload := diskWorkload{writes: 200, reads: 200, fits: 4,
-		length: func(page uint64) int { return 1500 + int(page*97%1500) }}
+		length: func(page uint64) int { return 1500 + int(page*97%1500) }, restarts: true}
 	probes := make(map[string]uint64)
 	fired := make(map[string]uint64)
 	for _, seed := range diskCampaignSeeds {
@@ -296,16 +344,16 @@ func TestDiskPowerLossAroundClosingARegion(t *testing.T) {
 							t.Fatalf("page %d read back other bytes after the power loss", key.Page)
 						}
 					}
-					_, items, err := readRegionTable(t.Context(), f.file, 0, testRegionBytes)
-					if errors.Is(err, errNoTable) {
+					table, err := readRegionTable(t.Context(), f.file, regionBase(0), testRegionBytes)
+					if errors.Is(err, errNoTable) || errors.Is(err, errTornTable) {
 						return
 					}
 					if err != nil {
 						t.Fatal(err)
 					}
-					for _, item := range items {
+					for _, item := range table.items {
 						buffer := make([]byte, itemHeaderBytes(item.key)+int64(item.length))
-						if err := readFull(t.Context(), f.file, buffer, int64(item.offset)); err != nil {
+						if err := readFull(t.Context(), f.file, buffer, regionBase(0)+int64(item.offset)); err != nil {
 							t.Fatal(err)
 						}
 						parsed, err := parseItem(buffer, false)

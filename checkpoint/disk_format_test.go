@@ -6,6 +6,7 @@ import (
 	"errors"
 	"hash/crc32"
 	"io"
+	"slices"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -75,31 +76,34 @@ func diskTableFile(t *testing.T, table []byte) platform.File {
 // resum puts back a table's checksum after a test changed it.
 func resum(table []byte) {
 	size := len(table) - diskTrailerSize
-	binary.LittleEndian.PutUint32(table[size+24:], crc32.Checksum(table[:size+24], diskChecksum))
+	binary.LittleEndian.PutUint32(table[size+32:], crc32.Checksum(table[:size+32], diskChecksum))
 }
 
 // A table reads back whole when it fills its region up to the trailer, and
-// when its last entry has no names. One that says it is longer than its
-// region, counts more entries than it holds, or names past its end, under a
-// checksum that holds, has no table.
+// when its last entry has no names, and an item as long as an item can be.
+// One that says it is longer than its region, counts more entries than it
+// holds, names past its end, names an item longer than an item can be, or is
+// of another format, under a checksum that holds, is torn, and so is one that
+// fails its checksum. A region whose end holds no trailer has no table.
 func TestDiskTablesHoldTogetherAtTheirLimits(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		// 736 entries of 89 bytes are the 65,504 bytes before the trailer.
-		vm := strings.Repeat("v", 51)
+		// 24 entries of 2,729 bytes are the 65,496 bytes before the trailer.
+		vm := strings.Repeat("v", 2691)
 		var full []tableItem
-		for page := range uint64(736) {
+		for page := range uint64(24) {
 			full = append(full, tableItem{key: diskKey{cacheKey: cacheKey{Identity: control.Identity{
 				Ref: control.Ref{VM: vm, Sequence: 1}, Volume: "ram0", Page: page}}, span: 512},
 				code: wholeEnvelope, offset: uint32(page), length: 7})
 		}
 		bare := []tableItem{{key: keyOf("va", 3), code: wholeEnvelope, offset: 0, length: 9},
 			{key: diskKey{}, code: wholeEnvelope, offset: 55, length: 0}}
-		for _, items := range [][]tableItem{full, bare} {
-			table := encodeTable(4, items)
-			sequence, got, err := readRegionTable(t.Context(), diskTableFile(t, table), 0, testRegionBytes)
-			if err != nil || sequence != 4 || len(got) != len(items) || got[len(got)-1] != items[len(items)-1] {
-				t.Fatalf("a table of %d entries reads back as region %d with %d entries, %v", len(items), sequence,
-					len(got), err)
+		longest := []tableItem{{key: keyOf("va", 3), code: wholeEnvelope, offset: 0, length: maximumDiskItem}}
+		for _, items := range [][]tableItem{full, bare, longest} {
+			table := encodeTable(4, 9, items)
+			got, err := readRegionTable(t.Context(), diskTableFile(t, table), 0, testRegionBytes)
+			if err != nil || got.sequence != 4 || got.generation != 9 || !slices.Equal(got.items, items) {
+				t.Fatalf("a table of %d entries reads back as region %d of generation %d with %d entries, %v",
+					len(items), got.sequence, got.generation, len(got.items), err)
 			}
 		}
 		for _, broken := range []struct {
@@ -107,10 +111,10 @@ func TestDiskTablesHoldTogetherAtTheirLimits(t *testing.T) {
 			damage func(table []byte)
 		}{
 			{"longer than its region", func(table []byte) {
-				binary.LittleEndian.PutUint32(table[len(table)-diskTrailerSize+20:], testRegionBytes-diskTrailerSize+8)
+				binary.LittleEndian.PutUint32(table[len(table)-diskTrailerSize+28:], testRegionBytes-diskTrailerSize+8)
 			}},
 			{"more entries than it holds", func(table []byte) {
-				binary.LittleEndian.PutUint32(table[len(table)-diskTrailerSize+16:], 3)
+				binary.LittleEndian.PutUint32(table[len(table)-diskTrailerSize+24:], 3)
 				resum(table)
 			}},
 			{"a VM identity past its end", func(table []byte) {
@@ -121,14 +125,101 @@ func TestDiskTablesHoldTogetherAtTheirLimits(t *testing.T) {
 				binary.LittleEndian.PutUint16(table[40+8:], 200)
 				resum(table)
 			}},
+			{"an item longer than an item can be", func(table []byte) {
+				binary.LittleEndian.PutUint32(table[30:], maximumDiskItem+1)
+				resum(table)
+			}},
+			{"another format", func(table []byte) {
+				table[len(table)-diskTrailerSize+4] = diskFormatVersion + 1
+				resum(table)
+			}},
+			{"a checksum that fails", func(table []byte) {
+				table[0] ^= 1
+			}},
 		} {
-			table := encodeTable(4, bare)
+			table := encodeTable(4, 9, bare)
 			broken.damage(table)
-			if _, _, err := readRegionTable(t.Context(), diskTableFile(t, table), 0, testRegionBytes); !errors.Is(err, errNoTable) {
-				t.Fatalf("a table %s reads back %v, want %v", broken.name, err, errNoTable)
+			if _, err := readRegionTable(t.Context(), diskTableFile(t, table), 0, testRegionBytes); !errors.Is(err, errTornTable) {
+				t.Fatalf("a table %s reads back %v, want %v", broken.name, err, errTornTable)
+			}
+		}
+		if _, err := readRegionTable(t.Context(), diskTableFile(t, make([]byte, 100)), 0, testRegionBytes); !errors.Is(err, errNoTable) {
+			t.Fatalf("a region that ends in zeros reads back %v, want %v", err, errNoTable)
+		}
+	})
+}
+
+// diskHeaderFile is a simulated file that begins with data.
+func diskHeaderFile(t *testing.T, data []byte) platform.File {
+	t.Helper()
+	file, err := sim.New(sim.Config{}).NewDisk("host", sim.DiskConfig{}).Open(t.Context(), "cache",
+		platform.OpenOptions{Create: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteAt(t.Context(), data, 0); err != nil {
+		t.Fatal(err)
+	}
+	return file
+}
+
+// A header reads back as what was written, with names as long as a region
+// holds and with none. One whose magic is absent, or whose file is shorter
+// than its fixed part, is no header. One of another version is of another
+// format. One that fails its checksum, says it is longer than its limit, or
+// is a byte short is damaged.
+func TestDiskHeadersHoldTogether(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		identity := CacheIdentity{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
+		for _, header := range []diskHeader{
+			{regionBytes: testRegionBytes, identity: identity, generation: 7, deployment: testDeployment},
+			{regionBytes: 1 << 30, generation: 1<<64 - 1},
+			{regionBytes: testRegionBytes, identity: identity, deployment: CacheDeployment{
+				Store: strings.Repeat("s", 21828), Bucket: strings.Repeat("b", 21828), Prefix: strings.Repeat("p", 21828)}},
+		} {
+			encoded := encodeDiskHeader(header)
+			if int64(len(encoded)) != diskHeaderBytes(header.deployment) {
+				t.Fatalf("a header is %d bytes, want %d", len(encoded), diskHeaderBytes(header.deployment))
+			}
+			got, err := readDiskHeader(t.Context(), diskHeaderFile(t, encoded), testRegionBytes)
+			if err != nil || got != header {
+				t.Fatalf("a header reads back as %+v, %v, want %+v", got, err, header)
+			}
+		}
+		header := diskHeader{regionBytes: testRegionBytes, identity: identity, generation: 7, deployment: testDeployment}
+		for _, broken := range []struct {
+			name   string
+			damage func(encoded []byte) []byte
+			want   error
+		}{
+			{"with no magic", func(encoded []byte) []byte { encoded[0] = 0; return encoded }, errNoHeader},
+			{"shorter than its fixed part", func(encoded []byte) []byte { return encoded[:diskHeaderFixed-1] },
+				errNoHeader},
+			{"of another version", func(encoded []byte) []byte { encoded[4] = diskFormatVersion + 1; return encoded },
+				errHeaderFormat},
+			{"with a byte changed", func(encoded []byte) []byte { encoded[len(encoded)-5] ^= 1; return encoded },
+				errHeaderDamaged},
+			{"a byte short", func(encoded []byte) []byte { return encoded[:len(encoded)-1] }, errHeaderDamaged},
+			{"longer than its limit", func(encoded []byte) []byte {
+				binary.LittleEndian.PutUint16(encoded[44:], 0xffff)
+				return encoded
+			}, errHeaderDamaged},
+		} {
+			_, err := readDiskHeader(t.Context(), diskHeaderFile(t, broken.damage(encodeDiskHeader(header))),
+				testRegionBytes)
+			if !errors.Is(err, broken.want) {
+				t.Fatalf("a header %s reads back %v, want %v", broken.name, err, broken.want)
 			}
 		}
 	})
+}
+
+// An identity reads as its sixteen bytes in hexadecimal.
+func TestCacheIdentityReadsAsHex(t *testing.T) {
+	identity := CacheIdentity{0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54, 0x32, 0x10}
+	if got := identity.String(); got != "0123456789abcdeffedcba9876543210" {
+		t.Fatalf("an identity reads as %q", got)
+	}
 }
 
 // A read past the end of the file is the file's end, not bytes.
