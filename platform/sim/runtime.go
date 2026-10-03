@@ -28,6 +28,16 @@ type Config struct {
 	// off by default so recording and replay comparisons keep their bytes; a
 	// campaign that wants the sites sets it here or calls Runtime.SetBuggify.
 	Buggify bool
+	// Shake, when not zero, perturbs the order in which goroutines that are
+	// ready at one simulated instant reach the adapters: before and after
+	// every adapter's wait, and before every send, a goroutine yields the
+	// processor a number of times drawn from a stream this value seeds. The
+	// stream is consumed in whatever order the goroutines ask, so it is noise,
+	// not a choice: two runs of one seed under different shakes must do the
+	// same work, and a difference is a race the seed did not decide. It is
+	// how a determinism check finds such a race on an idle machine rather
+	// than only on a loaded one.
+	Shake uint64
 	// Now reads the simulated instant. Faults with a deadline, such as a
 	// clogged link, compare against it. Nil takes the standard library, which
 	// inside a testing/synctest bubble is that bubble's virtual clock; a
@@ -73,6 +83,8 @@ type Runtime struct {
 	// process. Neither is drawn from the seed.
 	buggify atomic.Bool
 	bugs    map[string]bool
+	// shake is the perturbation Config.Shake asked for, nil for none.
+	shake *shaker
 
 	mu            sync.Mutex
 	disks         map[string]*Disk
@@ -104,6 +116,9 @@ func New(config Config) *Runtime {
 		disks: make(map[string]*Disk),
 		bugs:  enabledBugs(),
 	}
+	if config.Shake != 0 {
+		r.shake = &shaker{state: config.Shake}
+	}
 	r.buggify.Store(config.Buggify)
 	r.network = newNetwork(r, config.Network)
 	r.objects = newObjectStore(r, config.ObjectStore)
@@ -114,7 +129,17 @@ func (r *Runtime) delay(ctx context.Context, id string, minimum, maximum, ordina
 	if r.wait != nil {
 		return r.wait(ctx, id, minimum, maximum)
 	}
-	return sleep(ctx, ordinary)
+	return r.sleep(ctx, ordinary)
+}
+
+// sleep waits out duration on the simulated clock, shaken before and after
+// when the run asked for a shake: the goroutines that wake at one instant are
+// the ones whose order the seed does not decide.
+func (r *Runtime) sleep(ctx context.Context, duration time.Duration) error {
+	r.shake.yield()
+	err := sleep(ctx, duration)
+	r.shake.yield()
+	return err
 }
 
 // Fixed-latency adapters expose a +/-25% experimental timing window only when

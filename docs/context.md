@@ -300,9 +300,10 @@ may hold several indices of a window. A stripe of another code is a miss.
 Inside the share the cluster cache is on for, three things fill: a read of the
 store, once its callers have their pages; a publication, for each part once
 its PUT has succeeded and for its segments once the index object's has; and a
-pull, for what it copies. A host's own stripes go to its own disk through one
-bounded queue, and every other stripe goes as a keep within a bounded rate and
-the background budget. A fill that finds the queue full, the rate spent or the
+pull, for what it copies. A host does its fills one at a time, in the order
+they were handed over, from one bounded queue. Its own stripes go to its own
+disk, and every other stripe goes as a keep within a bounded rate and the
+background budget. A fill that finds the queue full, the rate spent or the
 budget without room is dropped, and the window is read from the store next
 time. Nothing waits on a fill. See [hosting](hosting.md#filling-the-cluster).
 

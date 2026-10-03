@@ -432,6 +432,12 @@
     "purpose": "Send stripe reads without the bound on stripe bytes in flight."
   },
   {
+    "id": "peer-refuse-second-hello",
+    "package": "peer",
+    "run": "^TestAHelloDeliveredTwiceLeavesTheConnectionServing$",
+    "purpose": "Close a connection over a hello a duplicating link delivered twice, racing the dialer's first request."
+  },
+  {
     "id": "fill-before-durable",
     "package": "checkpoint",
     "run": "^TestAPublicationFillsNothingBeforeItsPartIsDurable$",
@@ -466,5 +472,11 @@
     "package": "checkpoint",
     "run": "^TestACacheDropsAKeepItHoldsOrIsWriting$",
     "purpose": "Queue a keep for stripes the cache is already writing rather than drop it."
+  },
+  {
+    "id": "fill-concurrently",
+    "package": "checkpoint",
+    "run": "^TestAHostSendsItsKeepsOneAtATime$",
+    "purpose": "Ask fill rights and send keeps on goroutines of their own, so the scheduler orders them on the link."
   }
 ]

@@ -173,7 +173,7 @@ func (n *Network) dialStream(ctx context.Context, from, to platform.Address) (*s
 		n.traceNetwork(key, "dial_stream", "blocked", 0, dialID)
 		return nil, platform.ErrUnavailable
 	}
-	if err := sleep(ctx, n.config.ConnectLatency); err != nil {
+	if err := n.runtime.sleep(ctx, n.config.ConnectLatency); err != nil {
 		return nil, err
 	}
 	pipe := &connectionPipe{done: make(chan struct{})}

@@ -259,6 +259,41 @@ func TestAHelloIsAnsweredWithTheNewestSharedVersionOrIncompatible(t *testing.T) 
 	}
 }
 
+// A hello that a duplicating link delivers twice is answered once. The server
+// drops the second, as a dialer drops a reply it already had, and the
+// connection serves the requests behind it. Closing the connection over the
+// second would race the dialer's first request, which goes the moment the
+// first hello is answered, and whether that request was answered would be the
+// Go scheduler's choice.
+func TestAHelloDeliveredTwiceLeavesTheConnectionServing(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		runtime := sim.New(sim.Config{Seed: 1})
+		server, err := peer.NewServer(sim.WithRuntime(t.Context(), runtime), peer.ServerConfig{
+			Network: runtime.Network(), Address: "current", PageSize: pageSize})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer server.Close()
+		pages := memoryPages{count: 2, pageSize: pageSize}
+		server.Serve("vm", map[string]peer.Pages{"ram0": pages})
+		runtime.Network().DuplicateNext("destination", "current", 1)
+		dialer := &countingDialer{network: runtime.Network()}
+		source := newTable(t, runtime, peer.TableConfig{Dial: dialer.dial}).Peer("current")
+		for page := range uint64(2) {
+			answer, err := askPages(t.Context(), source, page, 1)
+			if err != nil {
+				t.Fatalf("page %d behind a hello delivered twice = %v", page, err)
+			}
+			if !bytes.Equal(answer.Payload, pages.page(page)) {
+				t.Fatalf("page %d came back as %d bytes", page, len(answer.Payload))
+			}
+		}
+		if dials := dialer.dials.Load(); dials != 1 {
+			t.Fatalf("the destination dialed %d times, want the one connection its hello opened", dials)
+		}
+	})
+}
+
 // A destination of a release two ahead is told INCOMPATIBLE and the range this
 // host speaks, and asks nothing further.
 func TestADestinationTwoReleasesAheadIsToldItIsIncompatible(t *testing.T) {

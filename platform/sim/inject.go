@@ -74,7 +74,7 @@ func BuggifyDelay(ctx context.Context, id string, p float64, maximum time.Durati
 	r := RuntimeFrom(ctx)
 	delay := r.Random("buggify-delay").Duration(id+"/"+r.occurrenceOf("delay/"+id), maximum)
 	r.trace.record(Event{Kind: "buggify", Resource: id, Operation: "delay", Outcome: delay.String()})
-	return sleep(ctx, delay)
+	return r.sleep(ctx, delay)
 }
 
 // Probe marks a place execution reached that a campaign cares about reaching,

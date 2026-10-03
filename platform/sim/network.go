@@ -339,7 +339,7 @@ func (n *Network) waitOutHold(ctx context.Context, key linkKey) error {
 	if until.IsZero() {
 		return nil
 	}
-	return sleep(ctx, until.Sub(n.runtime.Now()))
+	return n.runtime.sleep(ctx, until.Sub(n.runtime.Now()))
 }
 
 // hostOf names the host an address belongs to.
@@ -757,6 +757,7 @@ func (c *conn) Send(ctx context.Context, frame platform.Frame) error {
 	if err := c.connectionError(ctx); err != nil {
 		return err
 	}
+	c.network.runtime.shake.yield()
 	select {
 	case <-ctx.Done():
 		return context.Cause(ctx)
