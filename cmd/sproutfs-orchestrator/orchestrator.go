@@ -168,14 +168,13 @@ type orchestrator struct {
 	resuming map[string]bool
 	resumes  sync.WaitGroup
 
-	// code is the deployment's code, as configured. The zero code is the
-	// table's for the most caches this orchestrator has listed.
-	code rank.Code
-	// caches is the cache each listed host pod last reported, by pod name,
-	// and mostCaches the most it has held at once since this process started.
-	cacheMu    sync.Mutex
-	caches     map[string]host.Cache
-	mostCaches int
+	// code is the deployment's code, as configured, and earlier the codes it
+	// replaced, newest first.
+	code    rank.Code
+	earlier []rank.Code
+	// caches is the cache each listed host pod last reported, by pod name.
+	cacheMu sync.Mutex
+	caches  map[string]host.Cache
 }
 
 const (

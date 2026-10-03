@@ -382,6 +382,79 @@ func TestTheCodeForEachSizeOfCluster(t *testing.T) {
 	}
 }
 
+// The code of a deployment that sets none is 4+2, whatever its hosts.
+func TestTheDefaultCodeIsFixed(t *testing.T) {
+	if DefaultCode != (Code{K: 4, M: 2}) {
+		t.Fatalf("the default code is %s, want 4+2", DefaultCode)
+	}
+}
+
+// A list names the codes the deployment used before its own, newest first,
+// and a read tries its own code first. Under an earlier code the caches rank
+// a window in the same order, so its ranks under a narrower code are the
+// first of its ranks under a wider one. A list less a cache keeps its codes,
+// and two lists that differ only in their earlier codes differ.
+func TestAListNamesTheCodesItUsedBefore(t *testing.T) {
+	caches := []Cache{cacheOf(1, 1), cacheOf(2, 1), cacheOf(3, 2), cacheOf(4, 1), cacheOf(5, 1), cacheOf(6, 3),
+		cacheOf(7, 1)}
+	now, before, first := Code{K: 2, M: 1}, Code{K: 4, M: 2}, Code{K: 1, M: 1}
+	list, err := NewList(now, caches, before, first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := list.Codes(); !slices.Equal(got, []Code{now, before, first}) {
+		t.Fatalf("the list's codes are %v, want 2+1, 4+2, 1+1", got)
+	}
+	if got := list.Earlier(); !slices.Equal(got, []Code{before, first}) {
+		t.Fatalf("the earlier codes are %v, want 4+2, 1+1", got)
+	}
+	for at := range uint64(64) {
+		window := windowOf("vm-codes", 3, at)
+		wide := list.Under(before)
+		if wide.Code() != before || len(wide.Earlier()) != 0 || len(wide.Ranks(window)) != 6 {
+			t.Fatalf("under 4+2 the list is %s with %v and %d ranks", wide.Code(), wide.Earlier(), len(wide.Ranks(window)))
+		}
+		if !slices.Equal(list.Ranks(window), wide.Ranks(window)[:3]) {
+			t.Fatalf("window %d ranks %v under 2+1 and %v under 4+2", at, list.Ranks(window), wide.Ranks(window))
+		}
+		alone := listOf(t, before, caches...)
+		if !slices.Equal(wide.Holders(window), alone.Holders(window)) {
+			t.Fatalf("window %d is held by %v under the earlier code and %v by a list of that code",
+				at, wide.Holders(window), alone.Holders(window))
+		}
+	}
+	without := list.Without(caches[0].Identity)
+	if !slices.Equal(without.Codes(), list.Codes()) || without.Len() != len(caches)-1 {
+		t.Fatalf("less a cache the list holds %d caches under %v", without.Len(), without.Codes())
+	}
+	if plain := listOf(t, now, caches...); plain.Equal(list) || !plain.Equal(listOf(t, now, caches...)) {
+		t.Fatal("a list without earlier codes equals one with them")
+	}
+	if other, err := NewList(now, caches, first, before); err != nil || other.Equal(list) {
+		t.Fatalf("earlier codes in another order make %v, %v, want a list unequal to this one", other.Codes(), err)
+	}
+}
+
+// A list refuses earlier codes it cannot read under: one it could not store
+// under, its own code again, one named twice, and more than MaxEarlierCodes.
+func TestAListRefusesEarlierCodesItCannotRead(t *testing.T) {
+	caches := []Cache{cacheOf(1, 1)}
+	for name, earlier := range map[string][]Code{
+		"no data stripe": {{K: 0, M: 1}},
+		"its own code":   {{K: 2, M: 1}},
+		"named twice":    {{K: 4, M: 2}, {K: 4, M: 2}},
+		"too many":       {{K: 1, M: 0}, {K: 1, M: 1}, {K: 2, M: 2}, {K: 4, M: 2}},
+	} {
+		if _, err := NewList(Code{K: 2, M: 1}, caches, earlier...); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("a list with %s is refused with %v, want ErrInvalid", name, err)
+		}
+	}
+	if list, err := NewList(Code{K: 2, M: 1}, caches, Code{K: 1, M: 0}, Code{K: 1, M: 1}, Code{K: 4, M: 2}); err != nil ||
+		len(list.Earlier()) != MaxEarlierCodes {
+		t.Fatalf("three earlier codes make %v, %v", list.Earlier(), err)
+	}
+}
+
 // A list refuses a cache it could not rank: one with no identity, one of no
 // weight, and one listed twice, and a code it could not store under.
 func TestAListRefusesWhatItCannotRank(t *testing.T) {

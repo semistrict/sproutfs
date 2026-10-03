@@ -1,11 +1,14 @@
 // Package rank says which hosts' disk caches hold a window's stripes.
 //
 // Every host holds the list of caches in the cluster and the deployment's
-// code. For each window, weighted rendezvous hashing ranks every cache: each
-// scores the window by w / -ln(u), where u is a 64-bit hash of the cache's
-// identity and the window mapped into (0, 1) and w is the cache's weight. Ties
-// go to the lower identity. The caches ranked 1 to k+m hold the window's
-// stripes, and a list shorter than k+m takes them round its caches.
+// code, with the codes the deployment used before it. For each window,
+// weighted rendezvous hashing ranks every cache: each scores the window by
+// w / -ln(u), where u is a 64-bit hash of the cache's identity and the window
+// mapped into (0, 1) and w is the cache's weight. Ties go to the lower
+// identity. The caches ranked 1 to k+m hold the window's stripes, and a list
+// shorter than k+m takes them round its caches. The order does not depend on
+// the code, so a window stored under an earlier code lies on the first ranks
+// of that code's width.
 //
 // Placement is computed, not recorded, so two hosts with the same list rank
 // every window alike. The ranking uses integer arithmetic only, so hosts of
@@ -83,6 +86,17 @@ type Code struct {
 	K, M int
 }
 
+// DefaultCode is the code of a deployment that sets none. It is fixed: it
+// never follows the number of hosts, because a code that changed with the
+// cluster would leave every stripe stored under the old one to the store.
+// 4+2 survives two hosts lost or slow for half again the disk. A deployment
+// that usually runs fewer than six hosts sets the code CodeFor gives it.
+var DefaultCode = Code{K: 4, M: 2}
+
+// MaxEarlierCodes bounds the codes a list names besides its own. A read that
+// misses under every code has asked each one's ranks in turn.
+const MaxEarlierCodes = 3
+
 // maxWidth bounds k+m. A wider code would cut a 4 KiB page into stripes of a
 // few dozen bytes.
 const maxWidth = 32
@@ -113,9 +127,11 @@ func ParseCode(text string) (Code, error) {
 	return code, code.Validate()
 }
 
-// CodeFor is the code for a cluster that usually runs hosts hosts: none to
-// spare for one host, whole copies for two, and two parity stripes from four
-// hosts on, so that one host can be drained while another is slow.
+// CodeFor is the code an operator sets for a cluster that usually runs hosts
+// hosts: none to spare for one host, whole copies for two, and two parity
+// stripes from four hosts on, so that one host can be drained while another
+// is slow. It is the table in docs/hosting.md. Nothing picks a code by it
+// while the cluster runs.
 func CodeFor(hosts int) Code {
 	switch {
 	case hosts <= 1:
@@ -131,21 +147,39 @@ func CodeFor(hosts int) Code {
 	}
 }
 
-// List is the list of caches in the cluster and the deployment's code. It is
-// a value: a host replaces its list, it never changes one.
+// List is the list of caches in the cluster, the deployment's code and the
+// codes it used before. It is a value: a host replaces its list, it never
+// changes one.
 type List struct {
-	code   Code
-	caches []Cache
+	code Code
+	// earlier is the codes the deployment used before code, newest first. A
+	// window stored under one of them is read and repaired under it until it
+	// ages out. Nothing is filled under one.
+	earlier []Code
+	caches  []Cache
 	// seeds is each cache's hash of its identity, which every window's score
 	// for that cache starts from.
 	seeds []uint64
 }
 
-// NewList is the list of caches under code. Every cache needs an identity
-// and a weight, and no two may share an identity.
-func NewList(code Code, caches []Cache) (List, error) {
+// NewList is the list of caches under code, which the deployment used the
+// earlier codes before, newest first. Every cache needs an identity and a
+// weight, and no two may share an identity. Each earlier code is named once,
+// never the code itself, and there are at most MaxEarlierCodes of them.
+func NewList(code Code, caches []Cache, earlier ...Code) (List, error) {
 	if err := code.Validate(); err != nil {
 		return List{}, err
+	}
+	if len(earlier) > MaxEarlierCodes {
+		return List{}, fmt.Errorf("%w: %d earlier codes, want at most %d", ErrInvalid, len(earlier), MaxEarlierCodes)
+	}
+	for at, other := range earlier {
+		if err := other.Validate(); err != nil {
+			return List{}, err
+		}
+		if other == code || slices.Contains(earlier[:at], other) {
+			return List{}, fmt.Errorf("%w: the code %s is named twice", ErrInvalid, other)
+		}
 	}
 	sorted := slices.Clone(caches)
 	slices.SortFunc(sorted, func(a, b Cache) int { return bytes.Compare(a.Identity[:], b.Identity[:]) })
@@ -160,7 +194,7 @@ func NewList(code Code, caches []Cache) (List, error) {
 		}
 		seeds[at] = seedOf(cache.Identity)
 	}
-	return List{code: code, caches: sorted, seeds: seeds}, nil
+	return List{code: code, earlier: slices.Clone(earlier), caches: sorted, seeds: seeds}, nil
 }
 
 // Alone is the list of a host that knows no other cache: its own, under the
@@ -174,8 +208,22 @@ func Alone(self Cache) List {
 	return list
 }
 
-// Code is the deployment's code.
+// Code is the deployment's code. Every fill is stored under it.
 func (l List) Code() Code { return l.code }
+
+// Earlier is the codes the deployment used before its code, newest first.
+func (l List) Earlier() []Code { return slices.Clone(l.earlier) }
+
+// Codes is the codes a window may be stored under, in the order a read tries
+// them: the deployment's code, then each earlier one, newest first.
+func (l List) Codes() []Code { return append([]Code{l.code}, l.earlier...) }
+
+// Under is the list's caches under code alone: where a window stored under
+// code lies. The caches rank a window in one order whatever the code, so its
+// ranks under a narrower code are the first of its ranks under a wider one.
+func (l List) Under(code Code) List {
+	return List{code: code, caches: l.caches, seeds: l.seeds}
+}
 
 // Caches is every cache of the list, in identity order.
 func (l List) Caches() []Cache { return slices.Clone(l.caches) }
@@ -183,16 +231,16 @@ func (l List) Caches() []Cache { return slices.Clone(l.caches) }
 // Len is how many caches the list holds.
 func (l List) Len() int { return len(l.caches) }
 
-// Equal reports two lists with the same code and the same caches.
+// Equal reports two lists with the same codes and the same caches.
 func (l List) Equal(other List) bool {
-	return l.code == other.code && slices.Equal(l.caches, other.caches)
+	return l.code == other.code && slices.Equal(l.earlier, other.earlier) && slices.Equal(l.caches, other.caches)
 }
 
 // Without is the list less the cache of identity, as a host that has not yet
 // heard of that cache holds it.
 func (l List) Without(identity Identity) List {
 	kept := slices.DeleteFunc(l.Caches(), func(cache Cache) bool { return cache.Identity == identity })
-	without, _ := NewList(l.code, kept)
+	without, _ := NewList(l.code, kept, l.earlier...)
 	return without
 }
 

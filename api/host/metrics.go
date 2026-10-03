@@ -589,6 +589,8 @@ func cacheReadMetrics(out *strings.Builder, read *CacheRead) {
 		"sproutfs_cache_reads_total{outcome=\"miss\"} %d\n", did.Hits, did.Misses)
 	write("sproutfs_cache_read_own_hits_total", "counter",
 		"Envelopes this host's own stripes rebuilt alone, with no request.", did.OwnHits)
+	write("sproutfs_cache_read_earlier_hits_total", "counter",
+		"Envelopes rebuilt from stripes of a code the deployment used before its own.", did.EarlierHits)
 	write("sproutfs_cache_read_requests_total", "counter", "Stripe requests this host sent its peers.", did.Requests)
 	write("sproutfs_cache_read_replaced_total", "counter",
 		"Holders replaced at once for answering with nothing, BUSY or an error.", did.Replaced)

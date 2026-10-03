@@ -294,7 +294,7 @@ page it is one envelope, and at a 4 KiB page up to 512. A segment of a page
 table is a window of its own.
 
 **List of caches**: Every host's page cache disk that the orchestrator found,
-and the deployment's code. A cache is named by its identity, a random value in
+the deployment's code, and the earlier codes. A cache is named by its identity, a random value in
 its file's header that a restart over the same file keeps. It has a weight,
 from the size of the disk it is given, and its host's peer-server address. The
 orchestrator serves the list at `GET /caches`. Each host reads it on a timer
@@ -309,17 +309,26 @@ the same list rank every window alike.
 
 **Code**: The deployment's erasure code: k data stripes and m parity stripes
 of each envelope, any k of which rebuild it. A code with k = 1 is whole copies.
-A host alone in its list uses 1+0, so it holds each envelope whole. See
+It is a deployment setting, 4+2 when unset, and never follows the number of
+hosts. A host alone in its list uses 1+0, so it holds each envelope whole. See
 [hosting](hosting.md#the-code).
 
-**Stripe**: One of the k+m pieces an envelope is split into under the code. It
+**Earlier code**: A code the deployment used before its code, which the list
+names after it, newest first. A window stored under an earlier code is read
+and rebuilt under it until it ages out, and a read of it fills it under the
+deployment's code. Nothing else is stored under an earlier code. See
+[hosting](hosting.md#the-code).
+
+**Stripe**: One of the k+m pieces an envelope is split into under a code. It
 names its index, its code and its envelope's length. Stripe i of a window's
 envelopes goes on rank ((i − 1) mod n) + 1 of its n ranked caches, so a cache
-may hold several indices of a window. A stripe of another code is a miss.
+may hold several indices of a window. An envelope is rebuilt from stripes of
+one code. A stripe of a code the list does not name is a miss.
 
-**Fill**: Putting the stripes of a window on the caches the list ranks for it.
-Inside the share the cluster cache is on for, three things fill: a read of the
-store, once its callers have their pages; a publication, for each part once
+**Fill**: Putting the stripes of a window on the caches the list ranks for it,
+under the list's code. Inside the share the cluster cache is on for, three
+things fill: a read of the store, or of the cluster under an earlier code,
+once its callers have their pages; a publication, for each part once
 its PUT has succeeded, in part order, and for its segments once the index
 object's has; and a
 pull, for what it copies. A host does its fills one at a time, in the order
@@ -338,9 +347,10 @@ code. It drops every stripe it holds or is writing already.
 memory. It takes this host's own stripes of the window, then asks k+1 of the
 window's ranks, chosen by a hash of the reader and the window, for every
 stripe they hold of it, and rebuilds the page from any k distinct indices. A
-rank that answers with nothing is replaced at once. The store is read only for
-a page fewer than k stripes of which exist, or past the read's bound within a
-token bucket.
+rank that answers with nothing is replaced at once. What the list's code does
+not rebuild is read the same way under each earlier code. The store is read
+only for a page fewer than k stripes of which exist under every code, or past
+the read's bound within a token bucket.
 
 **Second request**: Asking the rest of a window's ranks once k stripes have
 not arrived after a delay, about the 95th percentile of the reader's recent
@@ -349,8 +359,8 @@ so when every holder is slow the reader waits rather than doubling their load.
 
 **Repair**: A stripe a reader sends a rank that holds fewer of a window's
 stripes than the code puts on it: an index no rank holds, of a page it
-rebuilt having heard from every rank. It is a keep of the lowest priority,
-dropped rather than queued.
+rebuilt under the list's code having heard from every rank. It is a keep of
+the lowest priority, dropped rather than queued.
 
 **Fill right**: The right to fill a window from a read of the store. The
 window's rank 1 gives it to the first reader that asks, once per window per

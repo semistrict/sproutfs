@@ -166,11 +166,12 @@ func TestMetricsExposeTheCachesReads(t *testing.T) {
 		Replaced: 5, SecondRequests: 6, RefusedByBudget: 7, StoreHedges: 9, StoreHedgesWon: 8, StoreHedgesRefused: 10,
 		WrongStripes: 11, DropsSent: 12, Repairs: 13, Timeouts: 14, MarkedDown: 15, MarkCapped: 16, MarkCleared: 17,
 		Down: 18, HeadChecks: 19, HeadMissing: 20, Delay: 1500 * time.Microsecond, Bound: 10 * time.Millisecond,
-		Served: 21, ServedStripes: 22, ServedBytes: 23, ServeBusy: 24}})
+		Served: 21, ServedStripes: 22, ServedBytes: 23, ServeBusy: 24, EarlierHits: 25}})
 	for _, want := range []string{
 		`sproutfs_cache_reads_total{outcome="hit"} 1`,
 		`sproutfs_cache_reads_total{outcome="miss"} 3`,
 		"sproutfs_cache_read_own_hits_total 2",
+		"sproutfs_cache_read_earlier_hits_total 25",
 		"sproutfs_cache_read_requests_total 4",
 		"sproutfs_cache_read_replaced_total 5",
 		"sproutfs_cache_read_second_requests_total 6",

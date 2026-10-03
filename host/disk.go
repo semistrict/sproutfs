@@ -270,7 +270,8 @@ func cacheReadReport(disk checkpoint.DiskStats, read checkpoint.ReadStats, serve
 	if disk.Identity.IsZero() {
 		return nil
 	}
-	return &hostapi.CacheRead{Hits: read.Hits, OwnHits: read.OwnHits, Misses: read.Misses, Requests: read.Requests,
+	return &hostapi.CacheRead{Hits: read.Hits, OwnHits: read.OwnHits, EarlierHits: read.EarlierHits,
+		Misses: read.Misses, Requests: read.Requests,
 		Replaced: read.Replaced, SecondRequests: read.SecondRequests, RefusedByBudget: read.Refused,
 		StoreHedges: read.StoreHedges, StoreHedgesWon: read.StoreHedgesWon, StoreHedgesRefused: read.StoreHedgesRefused,
 		WrongStripes: read.WrongStripes, DropsSent: read.DropsSent, Repairs: read.Repairs, Timeouts: read.Timeouts,

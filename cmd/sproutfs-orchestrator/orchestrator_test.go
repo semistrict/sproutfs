@@ -19,6 +19,7 @@ import (
 	"github.com/semistrict/sproutfs/api/host"
 	"github.com/semistrict/sproutfs/api/orch"
 	"github.com/semistrict/sproutfs/internal/handover"
+	"github.com/semistrict/sproutfs/rank"
 )
 
 // fakePods is the Kubernetes API: the host pods the orchestrator finds, and the
@@ -704,6 +705,8 @@ func newDeployment(t *testing.T, running map[string][]string) *deployment {
 			return "vm-new-" + strconv.Itoa(d.next)
 		},
 		apiPort: 8080, pagePort: 8081, table: testTable(t),
+		// The code a deployment that sets none runs under, as loadConfig gives.
+		code: rank.DefaultCode,
 		// A migration watches the host that holds its pages, and retries a
 		// receive after a wait; a test waits seconds for neither.
 		sourceWatch: 10 * time.Millisecond,
