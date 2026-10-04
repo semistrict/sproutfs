@@ -312,9 +312,18 @@ and each slot needs an eviction that spills a private page, the stream's
 evictions run one after another, where four used to overlap. A guest's own
 faults take no turn.
 
-A guest's fault is the fault class, and the stream is bulk reads, so they go
-over different connections and count against different budgets at the source.
-A fault never waits for a connection behind the stream. A request over its
+A guest's fault reads its own page first and prefetches the rest of its run
+behind it ([faults and read-ahead](vm-memory.md#faults-and-read-ahead)). A
+stream's fault reads its whole run at once (`vmmemory.WithStream`), because no
+guest waits on it. A prefetch never takes a page the extents name as the
+source's alone, and drops a page the source's answer says it still holds: only
+a fault may take such a page, as the destination's dirty state, and tell the
+backing it took it.
+
+A guest's fault is the fault class, and the stream and the prefetches are bulk
+reads, so they go over different connections and count against different
+budgets at the source. A fault never waits for a connection behind the stream
+or a prefetch. A request over its
 class's budget is answered `BUSY`. For a run that every checkpoint holds, the
 destination then reads the volume this time. For a run with a page no
 checkpoint has, it asks again with backoff until the source serves it. The
