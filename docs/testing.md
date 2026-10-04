@@ -486,6 +486,35 @@ request returns and refuses a reply that came after it. Both tests run three
 times on one processor and once on all of them. The guard
 `migration-take-a-reply-after-close` takes the reply again and fails them.
 
+A fork child's claim of its hold had the same shape, and no test reached it.
+`TestClosingAForkChildEndsTheClaimInFlight` closes a received child while its
+claim is on the wire, then lets the parent's host answer that it marked the
+hold claimed. Before the fix the claim took that answer and reported the hold
+claimed for a child its host had just given up: 66 runs of 75 failed on one
+processor and 6 of 25 on fifteen. The listing of what the source holds was
+not made under the backing's life at all, so a close never ended it, and
+`TestClosingAPostCopyEndsTheListingInFlight` failed in every run on any
+number of processors. The stream is stopped before the backings close, so a
+receive never reached that case, but the backing said every request it makes
+ends with it. Every request a peer backing makes, a page request, a claim or
+a listing, now comes back through one function, `request`, which refuses a
+reply once the backing has ended. Each kind has a guard of its own that takes
+the reply anyway: `migration-take-a-reply-after-close`,
+`migration-take-a-claim-after-close` and
+`migration-take-a-listing-after-close`. Each fails its own test. Both tests
+run three times on one processor and once on all of them.
+
+The same sweep of `vmmigrate` and `peer` found no other request that can take
+a reply sent after its owner closed. A receive's stream is cancelled at once,
+and `Received.Close` waits for it to stop before it returns. A table of peers
+fails every connection and then waits for each connection's reader, and a
+reader takes a request out of its connection's table under the same lock that
+the failure empties it under. So a request gets either the close or a reply
+read before it. A request whose caller cancels can still take a reply that is
+ready when it next looks, because a `select` with both ready picks either.
+That is the caller's own cancellation, not an owner's close, and the callers
+in `vmmigrate` look at their own end once the request returns.
+
 Both the writer and the reader bound a part's table at 1 MiB. One test takes a
 checkpoint of 4,000 pages of a volume with the longest allowed name. Its entries
 are the widest that a table holds, and together they need more table space than

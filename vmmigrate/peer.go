@@ -648,11 +648,19 @@ func (b *PeerBacking) Unpublished() []PageRun { return b.config.Unpublished }
 // send the memory region to a volume that does not hold the pages no checkpoint has,
 // and every later fault on one of them would fail with the source still there.
 // Only the source's own answer that it does not serve this VM does that.
-func (b *PeerBacking) Resident(ctx context.Context) ([]PageRun, error) {
+//
+// A listing is made under this backing's life like every other request, so
+// a close ends one in flight, and refuses its answer, with that close.
+func (b *PeerBacking) Resident(caller context.Context) ([]PageRun, error) {
 	if b.gone() {
 		return nil, nil
 	}
-	runs, err := b.source.Resident(ctx, b.config.VM, b.config.Volume.Name(), b.config.PageSize, peer.DefaultMaxRuns)
+	ctx, release := b.bounded(caller)
+	defer release()
+	runs, err := request(b, caller, ctx, "migration-take-a-listing-after-close",
+		func(ctx context.Context) ([]PageRun, error) {
+			return b.source.Resident(ctx, b.config.VM, b.config.Volume.Name(), b.config.PageSize, peer.DefaultMaxRuns)
+		})
 	if err != nil {
 		if errors.Is(err, peer.ErrNotServed) {
 			b.fallBack(ctx, err)
@@ -679,7 +687,7 @@ type PageRun = peer.Run
 // longer serves this VM is the one that says the source is gone; a source
 // serving pages of another size and a reply this host cannot read say the
 // destination cannot use this source at all; and the caller's own cancellation
-// is not this source's business at all.
+// and this backing's end are not this source's business at all.
 func (b *PeerBacking) ask(caller context.Context, first uint64, count int) (peer.Answer, error) {
 	ctx, release := b.bounded(caller)
 	defer release()
@@ -705,14 +713,8 @@ func (b *PeerBacking) ask(caller context.Context, first uint64, count int) (peer
 			sim.Probe(ctx, peer.ProbeSkippedDown)
 			return peer.Answer{}, peer.ErrDown
 		}
-		reply, err := b.pages(ctx, first, count)
-		if b.life.Err() != nil && !sim.Bug(ctx, "migration-take-a-reply-after-close") {
-			// A close ends every request in flight with its own end, but
-			// the request hears of it from a goroutine context.AfterFunc
-			// starts, so a reply can arrive first. One that did is not taken,
-			// whichever ran first.
-			return peer.Answer{}, b.ended(caller, context.Cause(b.life))
-		}
+		reply, err := request(b, caller, ctx, "migration-take-a-reply-after-close",
+			func(ctx context.Context) (peer.Answer, error) { return b.pages(ctx, first, count) })
 		_, only := b.onlyOnSource(first, count)
 		switch {
 		case err == nil && reply.Busy == nil:
@@ -726,7 +728,7 @@ func (b *PeerBacking) ask(caller context.Context, first uint64, count int) (peer
 			// It said how busy: a wait of about the requests ahead of this
 			// one, rather than a doubling from the shortest.
 			delay = max(delay, busyHint(reply.Busy))
-		case cancelled(ctx, err) || unusable(err) || errors.Is(err, peer.ErrNotServed):
+		case cancelled(ctx, err) || unusable(err) || errors.Is(err, peer.ErrNotServed) || errors.Is(err, ErrClosed):
 			return peer.Answer{}, b.ended(caller, err)
 		case !only:
 			// The volume holds every page of this run, so the round trip this
@@ -753,14 +755,18 @@ func (b *PeerBacking) ask(caller context.Context, first uint64, count int) (peer
 // claim asks the source to mark this fork child's hold claimed, until it
 // answers. Only its answer that it no longer holds the child ends the asking
 // with ErrGivenUp; a busy or broken connection is asked again, and the
-// caller's cancellation or this backing's close ends it with that.
+// caller's cancellation or this backing's close ends it with that. A close
+// wins over an answer that comes after it, as for every request (see
+// request): the receive that closed has given the child up, whatever the
+// parent's host decided.
 func (b *PeerBacking) claim(caller context.Context) error {
 	ctx, release := b.bounded(caller)
 	defer release()
 	delay := busyDelay
 	for {
 		b.requests.Add(1)
-		err := b.source.Claim(ctx, b.config.VM)
+		_, err := request(b, caller, ctx, "migration-take-a-claim-after-close",
+			func(ctx context.Context) (struct{}, error) { return struct{}{}, b.source.Claim(ctx, b.config.VM) })
 		switch {
 		case err == nil:
 			return nil
@@ -853,6 +859,26 @@ func (b *PeerBacking) bounded(caller context.Context) (context.Context, func()) 
 	ctx, cancel := context.WithCancelCause(caller)
 	stop := context.AfterFunc(b.life, func() { cancel(context.Cause(b.life)) })
 	return ctx, func() { stop(); cancel(nil) }
+}
+
+// request makes one request of the source with send, under ctx, which bounded
+// made of caller, and refuses its reply once this backing has ended. It is the
+// one way every request this backing makes comes back. A close ends every
+// request in flight, but the request hears of it from the goroutine
+// context.AfterFunc starts, so a reply the source sent after the close can
+// arrive first. Taken, it would answer for a backing that has said it asks
+// nothing more: a page the close sent to the volume, a hold the closed receive
+// gave up, a listing for a stream that has stopped. It is refused with this
+// backing's end, whichever ran first. bug names the in-tree bug that takes it
+// anyway, one for each kind of request, so a test of each proves its own.
+func request[T any](b *PeerBacking, caller, ctx context.Context, bug string,
+	send func(context.Context) (T, error)) (T, error) {
+	reply, err := send(ctx)
+	if b.life.Err() != nil && !sim.Bug(ctx, bug) {
+		var refused T
+		return refused, b.ended(caller, context.Cause(b.life))
+	}
+	return reply, err
 }
 
 // ended names this backing's own end as the cause of an ask that stopped for it,
