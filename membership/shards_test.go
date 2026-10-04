@@ -483,6 +483,10 @@ func TestAShardControlPassStepsAndCarriesTheStepOut(t *testing.T) {
 		if got := cloud.Attached("shard-0"); got != "machine-1" {
 			t.Fatalf("the pass left the shard attached to %q, want machine-1", got)
 		}
+		// Nothing more is called for until the host reports the shard open.
+		if _, changed, err := control.Pass(ctx, want); err != nil || changed {
+			t.Fatalf("a pass with nothing to do changed something (%v): %v", changed, err)
+		}
 		described := control.Describe(ctx, m)
 		if len(described) != 1 || !described[0].Known || described[0].Weight != 4 ||
 			!slices.Equal(described[0].Machines, []string{"machine-1"}) {

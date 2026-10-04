@@ -204,11 +204,13 @@ func (c *cluster) disks() []rank.Identity {
 	return identities
 }
 
-// add has the cache keep a shard's disk.
+// add has the cache keep a shard's disk, which AddShard has checked the cache
+// does not keep: this refuses only a second add of one shard racing the
+// first.
 func (c *cluster) add(disk *cacheDisk) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if _, taken := c.shards[disk.identity]; taken || c.own != nil && c.own.identity == disk.identity {
+	if _, taken := c.shards[disk.identity]; taken {
 		return fmt.Errorf("%w: the cache keeps disk %s already", ErrInvalidConfig, disk.identity)
 	}
 	c.shards[disk.identity] = &heldShard{disk: disk, left: make(chan struct{})}
