@@ -297,10 +297,11 @@ func drive(ctx context.Context, nodes []controller, config driveConfig) (driveRe
 	profiles := make(map[string][]byte)
 	one := func(round int, p planned, profile bool) error {
 		g := guests[p.spec.pageSize]
-		// A hop of a chain read run first reads a fault run as one of runs
-		// does, so it reads as many.
+		// A read through a pager may read a fault run, as one of runs does,
+		// so it reads as many; both ways of faulting read the same number of
+		// hops, so the hops that land in runs already read are alike.
 		reads := config.reads
-		if p.spec.unit == unitRun || p.spec.unit == unitRunFirst {
+		if p.spec.unit == unitRun || pagerUnit(p.spec.unit) {
 			reads = config.runReads
 		}
 		units := g.Pages / (faultRunBytes / g.PageSize)
