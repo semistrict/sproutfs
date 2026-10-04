@@ -2453,6 +2453,9 @@ ahead of it on its connection. The next serves stripes past a host's serving
 bandwidth. The last hands back a page that no encoder shrank as a slice of
 its reply's pooled buffer, which the next reply is read into: the race
 detector found it in `TestAGuestFaultIsAnsweredWhileTheStreamSaturatesTheLink`.
+Whether the next reply gets that buffer is the pool's choice, so its test once
+passed with the guard on. The package's tests now fill a buffer with a poison
+byte as it is released, and the test fails on every run.
 The last ends a request's receive context before its payload is read. Over
 TCP a payload is read under the socket's deadline, which that context sets,
 so every keep was reset; the simulated stream does not read under one, which

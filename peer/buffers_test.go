@@ -6,6 +6,11 @@ import (
 	"github.com/semistrict/sproutfs/platform"
 )
 
+// Every test of this package, its external tests too, runs with released
+// buffers poisoned, so a test that holds bytes past their release fails every
+// run rather than when the pool happens to reuse the buffer.
+func init() { poisonReleased = true }
+
 // A payload buffer is exactly the length asked for, in the size class above it,
 // and a released one is what the next request of its class gets.
 func TestAPayloadBufferIsItsLengthInItsClass(t *testing.T) {
