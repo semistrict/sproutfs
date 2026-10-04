@@ -215,10 +215,13 @@ func (p *windowPlan) splitPrefetch(ctx context.Context, index uint64) *prefetch 
 	for _, page := range kept {
 		h.inflight[page.key] = pf
 	}
-	h.prefetchNumber++
 	// The context is made before the prefetch is registered: an allocation
-	// or a detach may cancel it from the moment it is.
-	pf.ctx = sim.WithTask(context.WithoutCancel(ctx), fmt.Sprintf("prefetch-%d", h.prefetchNumber))
+	// or a detach may cancel it from the moment it is. Its task is named by
+	// its window, under the task of the fault that split it off: a number
+	// counted across the host would follow the order the Go scheduler ran
+	// the faults of other tasks in, and so would the order a controlled run
+	// gives its operations, which it draws from their names.
+	pf.ctx = sim.WithTask(context.WithoutCancel(ctx), fmt.Sprintf("prefetch-%d", p.start))
 	pf.ctx, pf.cancel = context.WithCancelCause(checkpoint.WithPrefetch(pf.ctx))
 	h.prefetches[pf] = struct{}{}
 	h.prefetching++

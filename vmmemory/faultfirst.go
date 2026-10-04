@@ -280,11 +280,10 @@ func (p *windowPlan) beginFaulting(ctx context.Context, index uint64) *faultRead
 	}
 	r := p.memoryRegion
 	h := r.host
-	h.mu.Lock()
-	h.readNumber++
-	number := h.readNumber
-	h.mu.Unlock()
-	readCtx, cancel := context.WithCancelCause(sim.WithTask(ctx, fmt.Sprintf("fault-read-%d", number)))
+	// The read's task is named by its page, under the task of the fault:
+	// nothing another task does changes its name, so a controlled run
+	// orders it the same way whatever order its faults began in.
+	readCtx, cancel := context.WithCancelCause(sim.WithTask(ctx, fmt.Sprintf("fault-read-%d", index)))
 	read := &faultRead{host: h, page: index, buffer: h.takeWindow(1), done: make(chan struct{}), cancel: cancel}
 	go func() {
 		defer close(read.done)

@@ -443,6 +443,12 @@ func (h *Host) allocate(ctx context.Context, r *MemoryRegion, f *arenaFile, plac
 				return fileSlot{}, context.Cause(ctx)
 			case <-changed:
 			}
+			// The prefetch that gave the slots back goes on beside this
+			// allocation; in a controlled run they go on one at a time, in
+			// the order it chooses.
+			if err := sim.Admit(ctx, "vmmemory/prefetch-slots"); err != nil {
+				return fileSlot{}, err
+			}
 			continue
 		}
 		var candidates []*resident
@@ -530,6 +536,12 @@ func (h *Host) allocate(ctx context.Context, r *MemoryRegion, f *arenaFile, plac
 			return fileSlot{}, context.Cause(ctx)
 		case <-changed:
 		case <-resourceChanged:
+		}
+		// Whatever freed something goes on beside this allocation, and so may
+		// another allocation it woke; in a controlled run they go on one at a
+		// time, in the order it chooses.
+		if err := sim.Admit(ctx, "vmmemory/allocate"); err != nil {
+			return fileSlot{}, err
 		}
 	}
 }
