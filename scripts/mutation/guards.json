@@ -670,5 +670,23 @@
     "package": "volume",
     "run": "^TestAForkIsRootedOnlyOnceItsHoldOnThePointIsGone$",
     "purpose": "Report a fork's root as soon as its root publication installs, before it gives back its hold on the point it was forked at."
+  },
+  {
+    "id": "shard-ignore-lease",
+    "package": "checkpoint",
+    "run": "^(TestAShardMovesWithItsStripes|TestAStaleMemberThatStillHoldsTheDeviceIsFenced)$",
+    "purpose": "Ignore a shard's lease: open a shard under an assignment older than the one its header names, and keep writing one whose lease another member took."
+  },
+  {
+    "id": "membership-let-attached-shard",
+    "package": "membership",
+    "run": "^TestAShardIsLetGoOnlyOnceTheCloudHasItOnNoMachine$",
+    "purpose": "Let a releasing shard go while the cloud still has it attached to a machine, or cannot say where it is."
+  },
+  {
+    "id": "membership-detach-held-shard",
+    "package": "membership",
+    "run": "^TestCarryDetachesAReleasingShardOnlyOnceItsHostClosedIt$",
+    "purpose": "Detach a releasing shard from its machine while its host still holds it open."
   }
 ]

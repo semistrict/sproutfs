@@ -22,7 +22,7 @@ func toward(t *testing.T, m Membership, want Want) (Membership, []Membership) {
 	t.Helper()
 	var steps []Membership
 	for {
-		change, ok := Next(m, want)
+		change, ok := Next(t.Context(), m, want)
 		if !ok {
 			return m, steps
 		}
@@ -59,7 +59,7 @@ func TestNextJoinsAHostInOneGenerationAndServesItInTheNext(t *testing.T) {
 			t.Fatalf("host %d ends %s", n, describe(end))
 		}
 	}
-	if _, ok := Next(end, want); ok {
+	if _, ok := Next(t.Context(), end, want); ok {
 		t.Fatal("Next has a step left once the membership is what is wanted")
 	}
 }
@@ -105,7 +105,7 @@ func TestNextFollowsAnAddressAndAWeight(t *testing.T) {
 	}
 	quiet := moved
 	quiet.Disks = nil
-	if _, ok := Next(end, Want{Code: rank.Code{K: 1, M: 0}, Hosts: []Host{quiet}}); ok {
+	if _, ok := Next(t.Context(), end, Want{Code: rank.Code{K: 1, M: 0}, Hosts: []Host{quiet}}); ok {
 		t.Fatal("Next took a step for a wanted host that reports no disk")
 	}
 }
@@ -161,7 +161,7 @@ func TestNextJoinsAHostWithItsReleasedDisk(t *testing.T) {
 	gone := stepped(t, let, func(m Membership) (Membership, error) { return m.Leave(idOf(1)) })
 	back := hostOf(1)
 	back.Disks = append(back.Disks, diskOf(2))
-	change, ok := Next(gone, Want{Code: rank.Code{K: 1, M: 0}, Hosts: []Host{back, hostOf(2)}})
+	change, ok := Next(t.Context(), gone, Want{Code: rank.Code{K: 1, M: 0}, Hosts: []Host{back, hostOf(2)}})
 	if !ok {
 		t.Fatal("Next has no step for a host that came back")
 	}
