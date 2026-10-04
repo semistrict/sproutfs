@@ -70,7 +70,9 @@ func parseGCEVolume(volume, project, zone string) (gceVolume, error) {
 // suffix of its path under /dev/disk/by-id/google-: the disk's own name.
 func GCEDeviceName(volume string) string { return path.Base(volume) }
 
-func (d *GCEDisks) volume(volume string) (gceVolume, error) { return parseGCEVolume(volume, d.project, d.zone) }
+func (d *GCEDisks) volume(volume string) (gceVolume, error) {
+	return parseGCEVolume(volume, d.project, d.zone)
+}
 
 // Describe reads a disk's size and the instances it is attached to.
 func (d *GCEDisks) Describe(ctx context.Context, volume string) (platform.NetworkDisk, error) {

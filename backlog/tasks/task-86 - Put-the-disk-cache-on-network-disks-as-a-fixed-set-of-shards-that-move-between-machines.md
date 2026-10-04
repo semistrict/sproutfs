@@ -3,10 +3,11 @@ id: TASK-86
 title: >-
   Put the disk cache on network disks as a fixed set of shards that move between
   machines
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-03 23:10'
-updated_date: '2026-10-03 23:15'
+updated_date: '2026-10-04 00:55'
 labels:
   - cluster
   - storage
@@ -38,6 +39,27 @@ Decided 2026-10-03 by the owner. Today the cluster's disk cache (TASK-81) lives 
 - [ ] #8 Tests follow repo practice: synctest over platform/sim, Buggify sites with probes a campaign asserts (shard moving, disk reattach slow, shard restarting), sim.Bug guards in scripts/mutation/guards.json, Gremlins on the new code, the fingerprint test stable under shake; spec/diskcache models shards that move with their stripes, every TLC run within a couple of minutes
 - [ ] #9 Disk attachment follows the membership's assignments: a release detaches, an assignment attaches to the named member, and no disk is ever attached to or served by two members; the move of a disk off a member being removed is timed on GCE
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+Mechanism: the membership is the authority; the controller (the orchestrator) carries its assignments out through the cloud's attach API, and the host opens the attached block device and serves it.
+- Shards are network disks provisioned once (GKE: one PVC per shard from a Hyperdisk Balanced StorageClass, Immediate binding, Retain; k3s: the same or disks made by the demo script). The orchestrator finds them from labelled PVCs and their PVs' volume handles. A shard's identity is derived from its volume name, its weight from its size; windows are ranked over shard identities only.
+- Members are host processes. In shard mode a host keeps no cache disk of its own; its member identity is drawn per process, so a restarted process never inherits an assignment.
+- Steps, one per controller pass, each a compare-and-set: add a shard (released); assign a released shard to the least-loaded active member (attaching, at generation g); the controller attaches the volume to that member's machine (GCE instances.attachDisk; single-writer, so one machine at a time); the host reads the membership again, opens the device exclusively (O_EXCL), checks the header's lease (an assignment at least as new as its own refuses it), writes its own lease (generation g, member) and syncs, reads its regions back from their tables, and reports the disk held; the controller marks it serving; the host serves it only while its copy says serving at g. Removing a host (pod terminating or gone) drains the member: releasing; the host stops serving, closes the disk and the device, stops reporting it; the controller detaches the volume from every machine the cloud lists, and only once the cloud reports it attached nowhere lets it go (released); then it is assigned again. A rebalance releases one disk at a time from the most loaded member when the spread is above one and nothing moves.
+- Crash points: every controller action is derived from the membership and from the cloud's own list of attachments each pass, never from memory, so attached-but-not-recorded and recorded-but-not-attached converge (detach stale attachments; attach again). A host dying mid-serve is a pod gone: drain, detach, let go, assign, attach, read back. A stale member that still has the device: the cloud attaches it to one machine; on one machine O_EXCL admits one opener; the lease in the header refuses a member whose assignment is older than the last one written, and a host re-reads it before every region it opens and every pass; and peers refuse answers naming another assignment.
+- Disk limiter: each shard has its own budget, its device's size less its header region; the host's limiter counts only its own disk (spill, staging).
+Steps:
+1. platform: network disk ports (Volumes: describe, attach, detach; Devices: open exclusive); platform/sim attachable disks with Buggify sites (attach slow, attach fails, detach slow); real GCE compute adapter and Linux block device opener; tests.
+2. checkpoint: a cache with an optional own disk and a changing set of shard disks (AddShard/RemoveShard), fills and reads per disk, peer.Cache per disk; disk header lease (fence generation, member, slots in use) so a device is read back without scanning every slot; tests including a stale member refused by the lease.
+3. membership: Want with shards and machines; Next steps for shards; Carry: the attach/detach actions the membership calls for; tests; spec/membership extended with attachments, leases and crash points, OneServer and OneOpener invariants, mutants.
+4. host: shard agent (open on assignment after a fresh read, close on release, header check each pass), /status reporting, config; tests.
+5. orchestrator: shards from PVCs, machines from pods' nodes, terminating pods drain, attachments carried out each pass; tests over sim volumes.
+6. internal/simtest: worlds whose hosts serve shards; a simulation that scales hosts up and down with no store reads for cached windows; a campaign with sites and probes (shard moving, attach slow or failing, member dying mid-move, stale member with device present); fingerprint arm stable under shake.
+7. sim.Bug guards in scripts/mutation/guards.json and docs/testing.md, each shown failing its test; Gremlins on new code before/after.
+8. deploy: GKE and k3s manifests, Hyperdisk Balanced StorageClass, RBAC for PVCs/PVs; docs/hosting.md, deploy/README.md sizing; architecture, context, plan, property updated.
+9. GCE: dependent single reads (2 MiB and 4 KiB) from shards on Hyperdisk Balanced, pd-balanced, pd-ssd vs local NVMe; each disk's throughput against the 500 MiB/s serving budget; time to move a shard when its host is removed; docs/measurements/gce-shards-2026-10-04.md. Every VM, disk and object deleted and verified.
+<!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
 
