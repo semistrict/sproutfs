@@ -269,11 +269,14 @@ type clusterReader struct {
 
 // newClusterReader starts a cache's reads of the cluster under ctx. Its waits
 // are on the clock of the table of peers, which is the network's; with no
-// table, the wall clock's.
+// table, they are on clock, the cache's own.
 func newClusterReader(ctx context.Context, shared *cluster, filler *filler, peers *peer.Table,
-	settings clusterSettings) *clusterReader {
+	clock platform.Clock, settings clusterSettings) *clusterReader {
 	ctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
-	clock := platform.ClockOr(nil)
+	clock = platform.ClockOr(clock)
+	if sim.Bug(ctx, "checkpoint-cluster-read-on-wall-clock") {
+		clock = platform.WallClock()
+	}
 	if peers != nil {
 		clock = peers.Clock()
 	}

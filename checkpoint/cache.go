@@ -67,7 +67,9 @@ type CacheConfig struct {
 	// peer: a window inside the share is kept only where this cache holds it.
 	Peers *peer.Table
 	// Clock is what the rate of keeps and the interval of fill rights are
-	// measured by. Nil is the wall clock.
+	// measured by, and, with no Peers, the waits of reads of the cluster:
+	// with a table of peers those are on the table's clock, which its
+	// requests are timed by. Nil is the wall clock.
 	Clock platform.Clock
 	// FillQueueBytes bounds the host's queue of writes to its own disk, which
 	// every fill and every keep a peer sends goes through; a fill that finds
@@ -285,7 +287,7 @@ func NewCache(ctx context.Context, resources *resource.Budget, config CacheConfi
 		cache.filler = newFiller(ctx, shared, fillSettings{peers: config.Peers, clock: config.Clock,
 			queueBytes: config.FillQueueBytes, bytesPerSecond: config.FillBytesPerSecond,
 			rightInterval: config.FillRightInterval})
-		cache.reader = newClusterReader(ctx, shared, cache.filler, config.Peers, clusterSettings{
+		cache.reader = newClusterReader(ctx, shared, cache.filler, config.Peers, config.Clock, clusterSettings{
 			hedgeFloor: config.ClusterHedgeFloor, bound: config.ClusterBound, stripeTimeout: config.ClusterStripeTimeout,
 			probeFirst: DefaultProbeFirst, probeMax: DefaultProbeMax, headEvery: config.HeadCheckEvery})
 	}

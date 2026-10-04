@@ -734,5 +734,17 @@
     "package": "checkpoint",
     "run": "^TestAPublicationAdmitsItsBatchesToTheEncodersInOrder$",
     "purpose": "Have each batch's goroutine take its own encoder, so the Go scheduler, not the order the batches were filled, decides which batch is encoded first."
+  },
+  {
+    "id": "checkpoint-cluster-read-on-wall-clock",
+    "package": "checkpoint",
+    "run": "^TestAReadOfTheClusterWaitsOnTheCachesOwnClock$",
+    "purpose": "Time a cache's reads of the cluster by the wall clock when it has no table of peers, ignoring the clock it was given."
+  },
+  {
+    "id": "migration-take-a-reply-after-close",
+    "package": "vmmigrate",
+    "run": "^TestClosingAPostCopy(ReadsTheVolumeForTheRequestInFlight|StillRefusesAPageOnlyTheSourceHad)$",
+    "purpose": "Take a reply that arrived after the backing was closed, before the goroutine that ends the request in flight ran."
   }
 ]

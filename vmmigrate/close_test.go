@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	goruntime "runtime"
 	"sync"
 	"testing"
 
 	"github.com/semistrict/sproutfs/peer"
 	"github.com/semistrict/sproutfs/peer/peertest"
 	"github.com/semistrict/sproutfs/platform"
+	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/vmmigrate"
 )
 
@@ -124,32 +127,34 @@ func (l *heldListener) let() {
 // end as a failure, because a fault that fails ends the memory session, and
 // ending that session kills a guest whose pages are all here.
 func TestClosingAPostCopyReadsTheVolumeForTheRequestInFlight(t *testing.T) {
-	s := newServed(t, nil, 4)
-	held := s.heldSource(t, "source-pages-held")
-	backing := s.backing(t, s.source, "ram0")
+	onOneProcessorAndAll(t, func(t *testing.T) {
+		s := newServed(t, nil, 4)
+		held := s.heldSource(t, "source-pages-held")
+		backing := s.backing(t, s.source, "ram0")
 
-	data := make([]byte, 4*pageSize)
-	loaded := make(chan error, 1)
-	go func() { loaded <- backing.Load(t.Context(), 0, data) }()
-	<-held.sending
-	// The request is on the wire and the source is about to answer it. This is
-	// the moment a receive that has finished streaming closes its backings.
-	if err := backing.Close(); err != nil {
-		t.Fatal(err)
-	}
-	held.let()
-	if err := <-loaded; err != nil {
-		t.Fatalf("closing a finished post-copy failed the read it interrupted: %v", err)
-	}
-	// Every page of this run is one the volume holds, so the volume is what
-	// answered: the pages the source had were never published, which is exactly
-	// why they read as zeroes here.
-	if want := make([]byte, len(data)); !bytes.Equal(data, want) {
-		t.Fatal("the interrupted read did not come from this host's own volume")
-	}
-	if stats := backing.Stats(); stats.VolumePages == 0 || !stats.FellBack {
-		t.Fatalf("peer backing: %+v", stats)
-	}
+		data := make([]byte, 4*pageSize)
+		loaded := make(chan error, 1)
+		go func() { loaded <- backing.Load(s.ctx(t), 0, data) }()
+		<-held.sending
+		// The request is on the wire and the source is about to answer it. This is
+		// the moment a receive that has finished streaming closes its backings.
+		if err := backing.Close(); err != nil {
+			t.Fatal(err)
+		}
+		held.let()
+		if err := <-loaded; err != nil {
+			t.Fatalf("closing a finished post-copy failed the read it interrupted: %v", err)
+		}
+		// Every page of this run is one the volume holds, so the volume is what
+		// answered: the pages the source had were never published, which is exactly
+		// why they read as zeroes here.
+		if want := make([]byte, len(data)); !bytes.Equal(data, want) {
+			t.Fatal("the interrupted read did not come from this host's own volume")
+		}
+		if stats := backing.Stats(); stats.VolumePages == 0 || !stats.FellBack {
+			t.Fatalf("peer backing: %+v", stats)
+		}
+	})
 }
 
 // TestClosingAPostCopyStillRefusesAPageOnlyTheSourceHad is the other half of
@@ -160,33 +165,59 @@ func TestClosingAPostCopyReadsTheVolumeForTheRequestInFlight(t *testing.T) {
 // fills nothing, which is what asking_test.go's discard pins from the other
 // side; what this adds is that the volume is not read in its place.
 func TestClosingAPostCopyStillRefusesAPageOnlyTheSourceHad(t *testing.T) {
-	s := newServed(t, nil, 4)
-	held := s.heldSource(t, "source-pages-held-unpublished")
-	backing, err := vmmigrate.NewPeerBacking(vmmigrate.PeerConfig{Volume: s.vm.Volume("ram0"),
-		Peer: s.source.Address(), VM: "vm-2", PageSize: pageSize, MaxPagesPerRequest: 8,
-		Unpublished: []vmmigrate.PageRun{{First: 0, Count: 4}},
-		Peers:       s.migration.cluster.peers(t, s.migration.cluster.dialer("dest"))})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = backing.Close() })
+	onOneProcessorAndAll(t, func(t *testing.T) {
+		s := newServed(t, nil, 4)
+		held := s.heldSource(t, "source-pages-held-unpublished")
+		backing, err := vmmigrate.NewPeerBacking(vmmigrate.PeerConfig{Volume: s.vm.Volume("ram0"),
+			Peer: s.source.Address(), VM: "vm-2", PageSize: pageSize, MaxPagesPerRequest: 8,
+			Unpublished: []vmmigrate.PageRun{{First: 0, Count: 4}},
+			Peers:       s.migration.cluster.peers(t, s.migration.cluster.dialer("dest"))})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = backing.Close() })
 
-	data := make([]byte, 4*pageSize)
-	loaded := make(chan error, 1)
-	go func() { loaded <- backing.Load(t.Context(), 0, data) }()
-	<-held.sending
-	if err := backing.Close(); err != nil {
-		t.Fatal(err)
+		data := make([]byte, 4*pageSize)
+		loaded := make(chan error, 1)
+		go func() { loaded <- backing.Load(s.ctx(t), 0, data) }()
+		<-held.sending
+		if err := backing.Close(); err != nil {
+			t.Fatal(err)
+		}
+		held.let()
+		err = <-loaded
+		if !errors.Is(err, vmmigrate.ErrClosed) {
+			t.Fatalf("a read of a page only the source ever had reported %v, want ErrClosed", err)
+		}
+		if !bytes.Equal(data, make([]byte, len(data))) {
+			t.Fatal("the read was answered out of a volume that never held those pages")
+		}
+		if stats := backing.Stats(); stats.VolumePages != 0 {
+			t.Fatalf("the volume answered for a page only the source ever had: %+v", stats)
+		}
+	})
+}
+
+// onOneProcessorAndAll runs test three times on one processor and then on as
+// many as the test binary has. A close ends a request in flight from a
+// goroutine of its own, and on one processor the Go scheduler runs the
+// delivery of a reply the source sends right after the close before that
+// goroutine in about nine runs of ten: the reply is there to be taken, and
+// only the backing's own check of its end refuses it.
+func onOneProcessorAndAll(t *testing.T, test func(t *testing.T)) {
+	t.Helper()
+	all := goruntime.GOMAXPROCS(0)
+	for run, processors := range []int{1, 1, 1, all} {
+		t.Run(fmt.Sprintf("%d-processors-%d", processors, run), func(t *testing.T) {
+			goruntime.GOMAXPROCS(processors)
+			t.Cleanup(func() { goruntime.GOMAXPROCS(all) })
+			test(t)
+		})
 	}
-	held.let()
-	err = <-loaded
-	if !errors.Is(err, vmmigrate.ErrClosed) {
-		t.Fatalf("a read of a page only the source ever had reported %v, want ErrClosed", err)
-	}
-	if !bytes.Equal(data, make([]byte, len(data))) {
-		t.Fatal("the read was answered out of a volume that never held those pages")
-	}
-	if stats := backing.Stats(); stats.VolumePages != 0 {
-		t.Fatalf("the volume answered for a page only the source ever had: %+v", stats)
-	}
+}
+
+// ctx is the test's context carrying the served VM's runtime, so the in-tree
+// bug guards a negative test enables reach the backing's reads.
+func (s *served) ctx(t *testing.T) context.Context {
+	return sim.WithRuntime(t.Context(), s.migration.cluster.runtime)
 }

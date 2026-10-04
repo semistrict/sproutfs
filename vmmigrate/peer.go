@@ -700,6 +700,13 @@ func (b *PeerBacking) ask(caller context.Context, first uint64, count int) (peer
 			return peer.Answer{}, peer.ErrDown
 		}
 		reply, err := b.pages(ctx, first, count)
+		if b.life.Err() != nil && !sim.Bug(ctx, "migration-take-a-reply-after-close") {
+			// A close ends every request in flight with its own end, but
+			// the request hears of it from a goroutine context.AfterFunc
+			// starts, so a reply can arrive first. One that did is not taken,
+			// whichever ran first.
+			return peer.Answer{}, b.ended(caller, context.Cause(b.life))
+		}
 		_, only := b.onlyOnSource(first, count)
 		switch {
 		case err == nil && reply.Busy == nil:
