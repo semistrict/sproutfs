@@ -1705,6 +1705,75 @@ a read of the store or a timeout happened. The world's reads still ask k+1
 ranks, replace misses, rebuild from any k and repair, which the answers alone
 decide. The read campaign above drives the timed paths under a scheduler.
 
+[The bounds on the object store](hosting.md#bounds-on-the-object-store) are
+tested over a simulated store that holds requests. `sim.ObjectStore` can hold
+the next requests of an operation before their reply (`HangNext`), apply the
+next writes and then hold their replies (`HangNextAfterApply`), and hold a
+GET's or a PUT's body halfway (`StallNextBody`). A hold lasts the store's
+`Hold`, an hour by default, unless its caller gives up first. A store with
+`ObjectStoreConfig.RequestChaos` adds three sites of its own. They are off on
+every other store, because a caller with no bounds waits out every hold:
+
+| Site | What it does |
+| --- | --- |
+| `sim/object-store/hang` | Holds a request before its reply, applying nothing |
+| `sim/object-store/hang-after-apply` | Applies a PUT or a DELETE, then holds its reply |
+| `sim/object-store/stall-body` | Holds a GET's or a PUT's body halfway |
+
+`platform/bounded` marks seven probes: a first-byte timeout, a stall timeout,
+a request made again, a conditional PUT made again, a body resumed, a body
+whose object had changed, and a write that timed out and was not made again.
+`TestTheBoundsSurviveTheirFaultsAndReachTheirProbes` runs twelve seeds of
+four workers over a store with request chaos, every completion released by
+the scheduler and the sites on. The workers create immutable objects, read
+them whole, by range and by suffix, head and list them, add to counters by
+compare-and-set, and write and delete objects of their own without a
+condition. Every read must be what was written. A create refused by its own
+landed write must find its own bytes, and an addition refused the same way
+must find its own name in the counter. Each counter must hold every
+addition exactly once. An unconditional write that timed out may or may not
+have landed, and the next read must find one of the two. The store's counts
+must equal the probes. Every site must fire and every probe be reached
+across the seeds (about 0.2 s).
+
+The bounds' properties are stated exactly beside it, in virtual time.
+`TestAHungGetIsAbandonedAtItsFirstByteBoundAndTheRetrySucceeds`: a GET held
+before its headers answers at exactly its bound plus one round trip, with the
+bytes asked for. `TestAStalledBodyIsAbandonedAtItsStallBoundAndReadOnFromWhereItStopped`:
+a body held halfway is read on at exactly the stall bound, by a ranged GET of
+the rest, for a whole object, a range and a suffix.
+`TestAStalledBodyWhoseObjectChangedIsRefused`,
+`TestAHungCreateWhoseWriteLandedIsMadeAgainAndRefusedByItsOwnObject`,
+`TestAControlRecordWrittenAcrossHungRepliesIsReconciled` (by the writer's
+nonce, as a lost reply always was),
+`TestAPublicationWhosePartsReplyHungIsSettledByItsDigest`,
+`TestAHungUnconditionalWriteIsNotMadeAgain`,
+`TestAStalledUploadIsAbandonedAtItsStallBound`, `TestAHungHeadOrListIsMadeAgain`,
+`TestACallerThatGivesUpIsNotRetried` and `TestABodyHeldUnreadIsNotAStall`
+hold the rest. The world bounds every host's view of the store and the
+orchestrator's, on the bubble's clock, which is the clock the store's latency
+passes on. A host's own clock passes only when the world advances it, so a
+bound on it would never fire. With buggify on, the topology campaigns turn
+request chaos on, so the real hosts meet hung and stalled requests:
+`TestSeededTopologyUnderBuggify` must reach all three sites, and it has seen a
+control record's PUT, a part's, an index object's and a reclamation's DELETE
+time out and the guests' bytes stay right. The fingerprint test runs without
+buggify, and its seeds did the same work under the shake with the bounds in
+place (2026-10-04).
+
+`TestEveryProvidersAdapterGivesUpAHungRequestAndResumesAStalledBody` in
+`platform/internal/real` runs the bounds over the Cloud Storage and S3
+emulators, through each provider's own client, behind a handler that holds
+the next request. A create whose write landed and whose reply never came is
+made again and refused by its own object; a GET whose headers never come is
+made again; a body cut off halfway is read on from where it stopped; and an
+unconditional PUT that hangs comes back as `bounded.ErrTimedOut`. So each
+client gives a request up when its context is cancelled, mid-body included,
+and the next request on the same client succeeds. Only GCE shows whether a
+stuck request there is a stream on a live HTTP/2 connection, which a cancel
+resets and a retry can share, or a connection that is gone; and the tail of
+times to first byte that the defaults should be checked against.
+
 ### The peer server's network
 
 The simulated network models what FoundationDB's simulator does to a link and
@@ -1985,6 +2054,10 @@ SPROUTFS_SIM_BUG=stripe-mix-codes \
   go test ./stripe -run '^TestAStripeOfAnotherCodeIsNeverMixedIn$' -count=1
 SPROUTFS_SIM_BUG=stripe-stop-at-first-failure \
   go test ./stripe -run '^TestOneWrongStripeAmongKPlusOneIsFound$' -count=1
+SPROUTFS_SIM_BUG=store-request-unbounded \
+  go test ./platform/bounded -run '^TestAHungGetIsAbandonedAtItsFirstByteBoundAndTheRetrySucceeds$' -count=1
+SPROUTFS_SIM_BUG=store-resume-any-object \
+  go test ./platform/bounded -run '^TestAStalledBodyWhoseObjectChangedIsRefused$' -count=1
 ```
 
 Each invocation must fail. `just check-guards` runs every entry and fails if

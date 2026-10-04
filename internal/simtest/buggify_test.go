@@ -21,7 +21,9 @@ const buggifiedCampaignName = "seeded-topology-buggify"
 // source that answers BUSY because it is at its budget for this peer, or that
 // stalls a reply or a whole connection for seconds, a pager
 // that evicts while an arena slot is free, a control-record write that takes
-// seconds. The guests' bytes are checked exactly as they are without it, so a
+// seconds, a request to the store that hangs before its reply or after its
+// write landed, or a body that stalls halfway, each until a host's bounds
+// give up on it. The guests' bytes are checked exactly as they are without it, so a
 // site that breaks a VM fails here.
 //
 // Each seed activates about a quarter of the sites it reaches, which is what
@@ -61,6 +63,9 @@ func TestSeededTopologyUnderBuggify(t *testing.T) {
 		peer.SiteBusy,
 		peer.SiteSlowAnswer,
 		peer.SiteStall,
+		sim.SiteObjectHang,
+		sim.SiteObjectHangAfterApply,
+		sim.SiteObjectStallBody,
 	} {
 		if !reached[site] {
 			t.Errorf("the campaign never reached the %s site", site)

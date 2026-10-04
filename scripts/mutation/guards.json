@@ -734,5 +734,17 @@
     "package": "checkpoint",
     "run": "^TestAPublicationAdmitsItsBatchesToTheEncodersInOrder$",
     "purpose": "Have each batch's goroutine take its own encoder, so the Go scheduler, not the order the batches were filled, decides which batch is encoded first."
+  },
+  {
+    "id": "store-request-unbounded",
+    "package": "platform/bounded",
+    "run": "^TestAHungGetIsAbandonedAtItsFirstByteBoundAndTheRetrySucceeds$",
+    "purpose": "Arm no bound on an object store request, so a GET whose headers never come waits as long as the store holds it, as one GET of Cloud Storage waited 52 minutes."
+  },
+  {
+    "id": "store-resume-any-object",
+    "package": "platform/bounded",
+    "run": "^TestAStalledBodyWhoseObjectChangedIsRefused$",
+    "purpose": "Read a stalled body on from another object than the one it began as, so its caller holds bytes of two objects."
   }
 ]
