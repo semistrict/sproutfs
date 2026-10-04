@@ -2570,18 +2570,39 @@ takes off the list, a slice's capacity, a zero-sized item that fails its
 header anyway, an error message's arithmetic, and a refill of no time. Two
 `case` lines Gremlins reports uncovered are run by the refusal tests.
 
-The list of caches is mutated the same way. The orchestrator is a package
-below `cmd`, which Gremlins names wrongly on its own, so its run adds
-`--integration`:
+The membership is mutated the same way, with the peer server's side of its
+protocol. The orchestrator is a package below `cmd`, which Gremlins names
+wrongly on its own, so its run adds `--integration`:
 
 ```sh
-python3 scripts/mutate-gremlins.py --package rank --suite full \
-  --file rank.go --file window.go --file follower.go \
-  --gremlins /path/to/gremlins --output /tmp/rank-mutations
+python3 scripts/mutate-gremlins.py --package membership --suite full \
+  --file membership.go --file change.go --file controller.go --file store.go --file view.go --file format.go \
+  --gremlins /path/to/gremlins --output /tmp/membership-mutations
+python3 scripts/mutate-gremlins.py --package peer --suite full --file cache.go \
+  --gremlins /path/to/gremlins --output /tmp/peer-cache-mutations
 python3 scripts/mutate-gremlins.py --package cmd/sproutfs-orchestrator --suite full --integration \
-  --file caches.go --run '^(TestTheListOfCaches|TestAConfiguredCode|TestADrainDoesNot|TestAQuietHostStays|TestTheListFollows|TestTheListHolds|TestTheCodeIs)' \
-  --gremlins /path/to/gremlins --output /tmp/orchestrator-cache-mutations
+  --file membership.go --run '^(TestTheMembership|TestAHostDrains|TestEachStep|TestAConfiguredCode|TestTheCodeNever|TestAQuietHostKeeps|TestTwoOrchestrators|TestTheCodeIs)' \
+  --gremlins /path/to/gremlins --output /tmp/orchestrator-membership-mutations
 ```
+
+On 2026-10-03 the first killed 109 of 165 mutants, with 9 alive and 47 not
+covered. Tests of what four survivors changed brought it to 113 killed and 5
+alive: draining the member listed first, draining a member that holds no
+disk, a view that reads the generation it holds and must not say it changed,
+and a host that comes back while its disk is released but still listed. The
+5 left change nothing a run can see: a size bound at exactly 1 MiB, an
+interval whose zero the default has already replaced, a log line's
+condition, the condition of the lost-reply site, and the first of a view's
+two checks of the generation it holds, which the second repeats under the
+lock. The 47 not covered are `case` lines of `switch` statements the tests
+run, the error branches of `New`'s checks, and the constants. The second
+killed 55 of 62 in `cache.go`; every mutant of the admission and of
+`replied` died but one `case` line Gremlins reports not covered, and the 5
+alive are in code this change did not touch: the page bitmap's growth, the
+sign of a busy answer's shortfall, a read that names no pages, and the
+condition of a guard. The third killed all 5 it covered; the 5 not covered are
+the interval constant, a `case` line, and the loop that steps on a timer,
+which the tests drive by calling `StepMembership`.
 
 The peer server is mutated the same way. Its page serving moved from
 `vmmigrate`, whose tests still drive most of it, so that part runs with
@@ -2651,8 +2672,8 @@ python3 scripts/mutate-gremlins.py --package checkpoint --suite full \
 python3 scripts/mutate-gremlins.py --package rank --suite full --file rank.go \
   --gremlins /path/to/gremlins --output /tmp/rank-mutations
 python3 scripts/mutate-gremlins.py --package cmd/sproutfs-orchestrator --suite full --integration \
-  --file caches.go --file main.go \
-  --run '^(TestTheListOfCaches|TestAConfiguredCode|TestTheCodeNever|TestAQuietHostStays|TestTheListFollows|TestTheListHolds|TestTheCodeIs)' \
+  --file membership.go --file main.go \
+  --run '^(TestTheMembership|TestAConfiguredCode|TestTheCodeNever|TestAQuietHostKeeps|TestTheCodeIs)' \
   --gremlins /path/to/gremlins --output /tmp/orchestrator-code-mutations
 ```
 

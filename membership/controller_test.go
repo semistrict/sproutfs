@@ -1,9 +1,12 @@
 package membership
 
 import (
+	"errors"
 	"slices"
 	"testing"
+	"testing/synctest"
 
+	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/rank"
 )
 
@@ -146,6 +149,70 @@ func TestNextTakesTheCodesInOneGeneration(t *testing.T) {
 	if _, err := end.Recode(rank.Code{K: 2, M: 1}, rank.Code{K: 2, M: 1}); err == nil {
 		t.Fatal("a membership naming its own code as earlier was built")
 	}
+}
+
+// A host that comes back while its disk is released but still listed joins
+// with that disk, which is assigned to it again; a disk listed and assigned
+// to another member is not taken.
+func TestNextJoinsAHostWithItsReleasedDisk(t *testing.T) {
+	start, _ := toward(t, Empty(), Want{Code: rank.Code{K: 1, M: 0}, Hosts: []Host{hostOf(1), hostOf(2)}})
+	drained := stepped(t, start, func(m Membership) (Membership, error) { return m.Drain(idOf(1)) })
+	let := stepped(t, drained, func(m Membership) (Membership, error) { return m.Let(diskOf(1).ID, idOf(1)) })
+	gone := stepped(t, let, func(m Membership) (Membership, error) { return m.Leave(idOf(1)) })
+	back := hostOf(1)
+	back.Disks = append(back.Disks, diskOf(2))
+	change, ok := Next(gone, Want{Code: rank.Code{K: 1, M: 0}, Hosts: []Host{back, hostOf(2)}})
+	if !ok {
+		t.Fatal("Next has no step for a host that came back")
+	}
+	joined := stepped(t, gone, change)
+	disk, _ := joined.Disk(diskOf(1).ID)
+	other, _ := joined.Disk(diskOf(2).ID)
+	if disk.Member != idOf(1) || disk.State != Attaching || other.Member != idOf(2) || other.State != Serving {
+		t.Fatalf("the host came back as %s", describe(joined))
+	}
+}
+
+// Draining a member is a change even when it holds no disk, and draining it
+// again is not; the member listed first drains as any other does.
+func TestDrainingAMemberIsAChangeOnce(t *testing.T) {
+	m := joined(t, rank.Code{K: 1, M: 1}, 2)
+	m = stepped(t, m, func(m Membership) (Membership, error) { return m.Join(memberOf(3)) })
+	m = stepped(t, m, func(m Membership) (Membership, error) { return m.Drain(idOf(3)) })
+	if _, err := m.Drain(idOf(3)); !errors.Is(err, ErrUnchanged) {
+		t.Fatalf("draining a draining member again said %v, want ErrUnchanged", err)
+	}
+	m = stepped(t, m, func(m Membership) (Membership, error) { return m.Drain(idOf(1)) })
+	if member, _ := m.Member(idOf(1)); member.State != Draining {
+		t.Fatalf("the first member drained to %s", describe(m))
+	}
+}
+
+// A view that reads the generation it holds again holds the same membership
+// and says nothing changed.
+func TestAViewReadingItsOwnGenerationChangesNothing(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		runtime := sim.New(sim.Config{})
+		ctx := sim.WithRuntime(t.Context(), runtime)
+		store := storeOver(t, runtime, runtime.ObjectStore(), "writer")
+		if _, err := store.Update(ctx, join(1)); err != nil {
+			t.Fatal(err)
+		}
+		view := NewView(ctx, ViewConfig{Store: store, Initial: Empty(), Interval: -1})
+		defer view.Close()
+		if _, err := view.Refresh(ctx); err != nil {
+			t.Fatal(err)
+		}
+		changed := view.Changed()
+		if _, err := view.Refresh(ctx); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-changed:
+			t.Fatal("a view that read the generation it held says it changed")
+		default:
+		}
+	})
 }
 
 // A membership of disks a list ranks is the list's: every cache a member of

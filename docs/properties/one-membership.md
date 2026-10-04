@@ -19,7 +19,31 @@ different memberships without finding out.
 
 A host keeps a copy of the membership, never an authority of its own.
 
-**Status, 2026-10-03.** Does not hold. The orchestrator builds a list of
-caches from its survey and serves it at `GET /caches`; each host reads it every
-10 s, and two hosts may hold different lists until then. Decided on 2026-10-03
-to replace it with one membership object in the object store.
+**Status, 2026-10-03.** Holds in the simulation, and in its model. The
+membership is the object `membership` (package `membership`); the list of
+caches, `GET /caches` and the host's follower of it are gone (TASK-83).
+
+- `Store.Update` writes only by a write conditional on the object read, and
+  `membership.Step` refuses any next generation that skips one or moves a
+  disk without releasing it. `TestConcurrentWritersNeverLoseAnUpdateOrGoBack`
+  runs four writers with lost replies, failed writes and outages over sixteen
+  seeds, and requires one line of generations, every acknowledged write in
+  it, and no lost change.
+- Every stripe read, keep, drop, presence check and fill right names the
+  sender's generation. The peer server catches up when behind and answers
+  stale otherwise (`TestAHolderBehindReadsTheMembershipBeforeItAnswers`,
+  `TestAHolderOnAnotherGenerationAnswersStaleWithItsOwn`), and a sender told
+  it is stale reads the object and asks again
+  (`TestAReaderBehindItsHoldersReadsTheMembershipAndAsksAgain`,
+  `TestAFillToHoldersAheadIsSentAgainUnderTheirGeneration`). A host that lost
+  a disk never serves it again (`TestAMemberThatLostADiskNeverServesItAgain`).
+- `spec/membership` checks that no stripe is served or placed under a
+  membership the two sides do not both hold, that generations form one line,
+  and that no two live hosts serve one disk; its mutants without the
+  generation check, the assignment check, the conditional write and the
+  release each fail.
+- The orchestrator is the usual writer, one step a pass; two at once leave
+  one line of generations (`TestTwoOrchestratorsMoveOneMembership`).
+
+Not yet shown on a real cluster. Hosts do not yet write the membership
+themselves: attaching and releasing a network disk is TASK-86.

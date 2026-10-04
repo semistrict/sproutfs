@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-03 17:54'
-updated_date: '2026-10-03 23:23'
+updated_date: '2026-10-04 00:26'
 labels:
   - cluster
   - correctness
@@ -58,4 +58,6 @@ Which hosts are in the cluster, with their identity, peer-server address, weight
 
 <!-- SECTION:NOTES:BEGIN -->
 Owner, 2026-10-03: membership must include the assignment of remote disks to members, evolved linearizably by the same compare-and-set. Ranking stays over disk identities. The attach and detach themselves are TASK-86.
+
+Built (2026-10-03, worktree branch): package membership holds the object (protobuf at <prefix>membership: generation, code and earlier codes, writer nonce, members {id, address, joining/active/draining}, disks {id, volume, weight, member, attaching/serving/releasing/released, assigned generation}); Store.Update is the only writer (read, build, write IfMatch/IfNoneMatch, lost reply reconciled by nonce, Step refuses illegal next generations); View is each process's copy (catch up when a request names a newer generation, 30 s timer, never goes back). Ranks are over disks; a disk is routed only while served. peer: every cache request names generation and disk, replies name generation and assignment generation; holder behind catches up, holder on another generation answers STALE, holder not serving answers NOT_ME. checkpoint: reads retry a window under a newer generation; keeps, drops and fill rights resend under it. Host identity = cache file identity; /status reports member and membership. Orchestrator steps the membership with membership.Next every 5 s; GET /caches, rank.Follower and the host's list reader removed. Merged TASK-85: the code and earlier codes are membership fields written in one step before any join. spec/membership with 4 mutants. Guards: membership-write-unconditional, membership-assign-without-release, membership-serve-stale-generation, membership-serve-stale-assignment, membership-ignore-stale-answer, orchestrator-drop-quiet-member.
 <!-- SECTION:NOTES:END -->
