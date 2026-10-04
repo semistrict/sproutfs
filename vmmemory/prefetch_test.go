@@ -408,8 +408,11 @@ func TestAStreamsFaultReadsItsWholeRun(t *testing.T) {
 		for page := range uint64(8) {
 			requirePage(t, m, page)
 		}
-		if s := hostStats(t, f); s.Prefetches != 0 || s.Loads != 1 {
-			t.Fatalf("prefetches %d, loads %d; want none and one", s.Prefetches, s.Loads)
+		// The run is reserved around the faulting page as one run of slots,
+		// so one mapping command installs it whole.
+		if s := hostStats(t, f); s.Prefetches != 0 || s.Loads != 1 || s.Mappings != 1 || s.MappingRuns != 1 {
+			t.Fatalf("prefetches %d, loads %d, mapping commands %d of %d runs; want none, one, and one of one",
+				s.Prefetches, s.Loads, s.Mappings, s.MappingRuns)
 		}
 	})
 }

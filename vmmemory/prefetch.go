@@ -154,11 +154,11 @@ func streaming(ctx context.Context) bool {
 
 // splitPrefetch takes every reservation of the window but the faulting page's
 // out of the plan, which is left to read the faulting page alone. The pages
-// that can land as clean shared pages become a prefetch, which the caller
-// starts; every other reservation goes back, and its page is left to its own
-// fault. It returns nil where nothing is prefetched. A fault that does not
-// prefetch reserved nothing for the rest of its window (planRest).
-func (p *windowPlan) splitPrefetch(ctx context.Context, index uint64) *prefetch {
+// that can land as clean shared pages, which into names the file of
+// (planRest), become a prefetch, which the caller starts; every other
+// reservation goes back, and its page is left to its own fault. It returns nil
+// where nothing is prefetched.
+func (p *windowPlan) splitPrefetch(ctx context.Context, index uint64, into []*arenaFile) *prefetch {
 	r := p.memoryRegion
 	h := r.host
 	var pages []prefetchPage
@@ -170,8 +170,7 @@ func (p *windowPlan) splitPrefetch(ctx context.Context, index uint64) *prefetch 
 			continue
 		}
 		p.reserved[i], p.fresh[i] = fileSlot{slot: -1}, false
-		key, named := p.identity(page)
-		if named && !key.zero() && at.file == p.fileOf(page) && !p.unpublished(page) {
+		if key, _ := p.identity(page); into[i] == at.file {
 			pages = append(pages, prefetchPage{page: page, key: key, at: at})
 		} else {
 			back = append(back, at)
@@ -638,7 +637,8 @@ type faultHistory struct {
 // or in the window before, and records the window. A memory region's first
 // fault counts as following: a boot and a restore begin by reading forwards.
 //
-// Only such a fault prefetches the rest of its run. On GCE on 2026-10-04 a
+// Only such a fault plans the rest of its window and prefetches it; every
+// other plans its page alone (planFault). On GCE on 2026-10-04 a
 // chain of dependent 4 KiB faults read from the cluster took 24 ms a hop when
 // every fault prefetched its run, against 0.67 ms for a page alone: each
 // 2,047-page prefetch is about 100 ms of processor, and the prefetches of the

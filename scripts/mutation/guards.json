@@ -146,8 +146,14 @@
   {
     "id": "pager-plan-the-window-first",
     "package": "vmmemory",
-    "run": "^TestADependentChainOf4KiBFaultsPaysOnePageReadAHop$",
-    "purpose": "Plan a fault's whole window before its own page's read starts, as every fault did. Each hop of a chain of 4 KiB faults then pays the window's planning on top of its read."
+    "run": "^TestAForwardChainOf4KiBFaultsPlansItsWindowInOneLookup$",
+    "purpose": "Plan the window of a fault that prefetches before its own page's read starts, as every fault did. Each hop of a chain of 4 KiB faults reading forwards then pays the window's planning on top of its read."
+  },
+  {
+    "id": "pager-plan-the-window-at-random",
+    "package": "vmmemory",
+    "run": "^(TestADependentChainOf4KiBFaultsPaysOnePageReadAHop|TestAFaultAtRandomMapsItsPageAloneAndTheNextInItsWindowTheRest)$",
+    "purpose": "Plan the whole window of a fault at random, every page of it located and looked up among the resident pages, as every fault did, rather than its page alone. Each hop of a chain of 4 KiB faults at random then pays the window's planning on top of its read, and maps the window's resident pages it will not read."
   },
   {
     "id": "checkpoint-decode-every-lookup",

@@ -79,6 +79,70 @@ func (t *pageTable) at(relative uint64) (location, bool) {
 		length: uint64(entry.length)}, true
 }
 
+// locate appends to extents where the bytes span covers of the pages
+// [first, stop) live, pages of the segment that begins at page base: one extent
+// for each page the table locates, under its identity (identityOf), and one for
+// each run of pages it does not, which read as zeroes and merge with a run
+// of them extents already ends with. It reads the pages' entries off the table
+// in order, which is what makes locating a fault's window one lookup of its
+// table and a scan of it, not one lookup a page.
+func (t *pageTable) locate(extents []control.Extent, volume string, base, first, stop uint64,
+	span byteSpan) []control.Extent {
+	from, to := first-base, stop-base
+	located := t.entries[min(from, uint64(len(t.entries))):min(to, uint64(len(t.entries)))]
+	extents = slices.Grow(extents, t.extentsIn(located, to-from))
+	hole := func(first, stop uint64) {
+		offset, _ := span.of(first)
+		last, length := span.of(stop - 1)
+		length += last - offset
+		if n := len(extents); n > 0 && extents[n-1].Identity.Zero && extents[n-1].Offset+extents[n-1].Length == offset {
+			extents[n-1].Length += length
+			return
+		}
+		extents = append(extents, control.Extent{Offset: offset, Length: length, Identity: control.ZeroIdentity})
+	}
+	for at := 0; at < len(located); at++ {
+		entry := located[at]
+		page := first + uint64(at)
+		if entry.ref == 0 {
+			run := at + 1
+			for run < len(located) && located[run].ref == 0 {
+				run++
+			}
+			hole(page, first+uint64(run))
+			at = run - 1
+			continue
+		}
+		origin := t.refs[entry.ref-1]
+		if entry.origin != 0 {
+			origin = t.origins[entry.origin-1]
+		}
+		offset, length := span.of(page)
+		extents = append(extents, control.Extent{Offset: offset, Length: length,
+			Identity: control.Identity{Ref: origin, Volume: volume, Page: page}})
+	}
+	if beyond := first + uint64(len(located)); beyond < stop {
+		// The table locates no page past its last entry.
+		hole(beyond, stop)
+	}
+	return extents
+}
+
+// extentsIn is how many extents at most the pages entries and the pages after
+// them, pages in all, locate to: one a located page and one a run of others.
+func (t *pageTable) extentsIn(entries []tableEntry, pages uint64) int {
+	count := 0
+	for at, entry := range entries {
+		if entry.ref != 0 || at == 0 || entries[at-1].ref != 0 {
+			count++
+		}
+	}
+	if uint64(len(entries)) < pages {
+		count++
+	}
+	return count
+}
+
 // all yields every page the table locates, in ascending order.
 func (t *pageTable) all(yield func(uint32, location) bool) {
 	for relative := range t.entries {

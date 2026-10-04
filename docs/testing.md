@@ -2109,7 +2109,9 @@ SPROUTFS_SIM_BUG=pager-prefetch-ignores-pressure \
 SPROUTFS_SIM_BUG=pager-prefetch-every-fault \
   go test ./vmmemory -run '^TestADependentChainOfFaultsWaitsForOnePageAHop$' -count=1
 SPROUTFS_SIM_BUG=pager-plan-the-window-first \
-  go test ./vmmemory -run '^TestADependentChainOf4KiBFaultsPaysOnePageReadAHop$' -count=1
+  go test ./vmmemory -run '^TestAForwardChainOf4KiBFaultsPlansItsWindowInOneLookup$' -count=1
+SPROUTFS_SIM_BUG=pager-plan-the-window-at-random \
+  go test ./vmmemory -run '^(TestADependentChainOf4KiBFaultsPaysOnePageReadAHop|TestAFaultAtRandomMapsItsPageAloneAndTheNextInItsWindowTheRest)$' -count=1
 SPROUTFS_SIM_BUG=checkpoint-decode-every-lookup \
   go test ./checkpoint -run '^TestASegmentIsDecodedOncePerCheckpointWhileCached$' -count=1
 SPROUTFS_SIM_BUG=spill-sparse \
@@ -2239,12 +2241,20 @@ evicts a page the guest maps while a prefetch holds free slots, and its test
 counts the eviction. `pager-prefetch-every-fault` prefetches the run of a
 fault that follows none of its memory region's recent faults, and a chain at
 random then prefetches on every hop instead of on its first.
-`pager-plan-the-window-first` plans a fault's whole window before its own
-page's read starts. Its test,
-`TestADependentChainOf4KiBFaultsPaysOnePageReadAHop`, runs a 4 KiB pager over
-a real checkpoint store whose reads take a millisecond, with planning priced
-at a microsecond a page (`vmmemory.WorkPlan`): a hop then takes the read and
-512 µs of window instead of the read and 1 µs of page.
+The fault planning tests run a 4 KiB pager over a real checkpoint store whose
+reads take a millisecond, with planning priced at a microsecond a page
+located (`vmmemory.WorkPlan`). Each also counts the pages every lookup of a
+fault located (`sim.WorkPiece.Bytes`).
+`pager-plan-the-window-first` plans the window of a fault that prefetches
+before its own page's read starts. In
+`TestAForwardChainOf4KiBFaultsPlansItsWindowInOneLookup`, a chain of faults
+reading forwards, a hop then takes the read and 512 µs of window instead of
+the read and 1 µs of page. `pager-plan-the-window-at-random` plans the whole
+window of a fault at random, as every fault did, rather than its page alone.
+In `TestADependentChainOf4KiBFaultsPaysOnePageReadAHop` a hop at random then
+locates 512 pages instead of one and takes the read and 512 µs, and in
+`TestAFaultAtRandomMapsItsPageAloneAndTheNextInItsWindowTheRest` the fault at
+random maps a sibling's resident pages it will not read.
 `checkpoint-decode-every-lookup` fetches and decodes a segment's page table
 for every lookup instead of taking the one the page cache keeps, and
 `TestASegmentIsDecodedOncePerCheckpointWhileCached`, which prices a decode by
