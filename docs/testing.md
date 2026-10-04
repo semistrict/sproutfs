@@ -2742,6 +2742,45 @@ condition of a guard. The third killed all 5 it covered; the 5 not covered are
 the interval constant, a `case` line, and the loop that steps on a timer,
 which the tests drive by calling `StepMembership`.
 
+The shards are mutated the same way, a package at a time:
+
+```sh
+python3 scripts/mutate-gremlins.py --package checkpoint --suite full --file shards.go --file peercache.go \
+  --run '^(TestAShard|TestAStaleMember|TestRemovingAShard|TestACacheKeeps|TestACacheRefuses|TestACacheDrops|TestACacheReports|TestRankOneGives)' \
+  --gremlins /path/to/gremlins --output /tmp/shard-cache-mutations
+python3 scripts/mutate-gremlins.py --package membership --suite full --file attach.go --file shardcontrol.go \
+  --file controller.go --gremlins /path/to/gremlins --output /tmp/shard-membership-mutations
+python3 scripts/mutate-gremlins.py --package host --suite full --file shards.go \
+  --run '^(TestHostsServe|TestAHostStartedAgain|TestAHostOpensAShard|TestAHostReopensAShard)' \
+  --gremlins /path/to/gremlins --output /tmp/shard-host-mutations
+python3 scripts/mutate-gremlins.py --package platform/sim --suite full --file networkdisk.go \
+  --run '^(TestANetworkDisk|TestTheClouds|TestAMachineThatCrashes)' \
+  --gremlins /path/to/gremlins --output /tmp/network-disk-mutations
+python3 scripts/mutate-gremlins.py --package cmd/sproutfs-orchestrator --suite full --integration \
+  --file membership.go --run '^(TestTheOrchestratorMovesShards|TestTheMembership|TestAHostDrains|TestEachStep|TestAQuietHostKeeps)' \
+  --gremlins /path/to/gremlins --output /tmp/orchestrator-shard-mutations
+```
+
+On 2026-10-04 the first pass killed, of the cache's shards, 17 with 3 alive
+and 8 not covered; of the membership's steps and its carrying out, 39 with 2
+alive and 6 not covered; of the host's shards, 12 with 8 alive; of the
+simulated cloud, 28 with 6 alive; and of the orchestrator's, all 7 it
+covered. Tests of what the survivors changed brought them to 24, 42, 15, 32
+and 7 killed: a removal waits for a read in flight, a shard the cache keeps
+already is refused, a pass of the controller over a cloud that cannot
+describe a disk keeps its listed weight, and one with nothing to do reports
+no change, a shard assigned to its host again is reopened, a shard's share
+is its device less its header region, a host that left keeps no shard, a
+write that ends at a device's last byte is taken, and a crash leaves another
+machine's disk alone. The cache's add lost a check AddShard already makes.
+What is left alive changes nothing a run can see: a read of no bytes, which
+an earlier branch takes, the membership's nil check, which the reads of the
+cluster drive outside this selection, which of two members equally loaded
+takes a shard or gives one up, how long the slow-close site holds a shard,
+log lines' conditions, the size of a simulated disk's filesystem, and errors
+of the simulated disk that only a cancelled context makes. The orchestrator's
+5 not covered are its interval constant and the loop that steps on a timer.
+
 The peer server is mutated the same way. Its page serving moved from
 `vmmigrate`, whose tests still drive most of it, so that part runs with
 `--integration` and those tests:
