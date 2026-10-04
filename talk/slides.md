@@ -723,6 +723,73 @@ Under 4+2 every host holds a stripe of every window, so a drained host's share m
 
 ---
 
+# Autoscaling and a cache on the hosts' SSDs
+
+<div class="text-base opacity-70 mb-3">an autoscaler adds and removes hosts through the day · 4+2 on ten hosts</div>
+
+<v-clicks>
+
+<div class="text-xl space-y-6 mt-4">
+
+<div><b>a join hides stripes</b> — the new host enters the first six ranks of 6/11 of windows, <b>about 55 %</b>; each loses a stripe its readers no longer ask for, until a read repairs it</div>
+
+<div><b>a leave loses stripes</b> — the host's disk goes with it; three removals before repair lose <b>about 17 %</b> of windows</div>
+
+<div><b>the code followed the host count</b> — crossing a threshold turned <b>every</b> window into a miss <span class="opacity-70">(fixed: the code is a setting, and a stripe is read by its own code)</span></div>
+
+</div>
+
+</v-clicks>
+
+<!--
+The cache was designed for hosts that stay. An autoscaler changes the host count through the day, and a cache whose disks are the hosts' own pays for each change.
+
+A join: rendezvous puts the new host among a window's first k+m ranks for about k+m over N+1 of the windows, six in eleven when a tenth host joins under 4+2. Each of those windows now has one stripe on a host its readers no longer ask, and only a read of that window repairs it. Several joins with no reads in between push cold windows below four reachable stripes.
+
+A leave: the host's local SSD goes with the host. Under 4+2 a window survives two lost stripes, so three removals before repair catches up lose the windows with a stripe on all three: C(6,3) over C(10,3), about 17 % of them.
+
+The code: with none configured, the orchestrator picked the code from the most hosts it had seen, and a stripe of another code was a miss, so crossing a threshold emptied the cache. That is fixed: the code is a deployment setting, and every stripe is read by the code it was stored under.
+-->
+
+---
+
+# Shards on network disks
+
+<div class="text-base opacity-70 mb-3">decided 2026-10-03 · not built yet</div>
+
+<div class="grid grid-cols-2 gap-10 mt-2 text-xl">
+<div class="space-y-5">
+
+**a fixed set of shards** — each one network disk with the disk log on it
+
+**ranked over shards**, never hosts — scaling compute moves no window
+
+**every cloud has it** — Hyperdisk Balanced on GCP, gp3 on AWS
+
+</div>
+<div class="space-y-5">
+
+<div v-click><b>a shard moves</b> — detached and attached to another host in seconds, which autoscaling can afford</div>
+
+<div v-click><b>the membership assigns shards</b> — one object in the store, changed by compare-and-set; a shard is released before it is assigned again</div>
+
+<div v-click><b>fenced</b> — a host serves a shard only under the generation that assigns it there</div>
+
+</div>
+</div>
+
+<!--
+The fix is to stop tying the cache's disks to the hosts. The cache becomes a fixed number of shards, each a network disk with the same disk log on it. Windows are ranked over the shards, so the ranking changes only when the cache is resized on purpose, and adding or removing compute moves nothing.
+
+Network disks are the oldest storage every cloud offers: Persistent Disk and Hyperdisk on GCP, EBS on AWS. Nothing needs allowlisting. A network disk outlives the machine it is attached to, and can be detached and attached to another machine in seconds.
+
+Which host serves which shard is in the membership: one object in the object store, changed only by compare-and-set on its generation. Correctness rests on that alone; usually the orchestrator makes the changes, one step at a time. A shard is released from one host before it is assigned to another, and a host serves a shard only under the generation that assigns it, so a host that lost a shard can never serve it again. While a shard moves, reads hedge around it, as they do around a slow host.
+
+The cost is latency: a network disk is below a millisecond by Google's figures, where local NVMe is faster but dies with the machine.
+-->
+
+---
+
 # Filling the cluster
 
 <div class="grid grid-cols-2 gap-10 mt-4 text-xl">
@@ -758,7 +825,7 @@ A fault, a publication and a pull never wait for a fill. Fills go through one 64
 
 ---
 
-# On one host's disk
+# On one cache disk
 
 <div class="grid grid-cols-2 gap-10 mt-4 text-xl">
 <div class="space-y-5">
@@ -776,17 +843,17 @@ A fault, a publication and a pull never wait for a fill. Fills go through one 64
 
 <div v-click><b>one disk limiter</b> — goals: % free, bytes free, bytes used; the strictest wins</div>
 
-<div v-click><b>outlives the pod</b> — a <code>hostPath</code> file per host, held by <code>flock</code></div>
+<div v-click><b>outlives the machine</b> — today a <code>hostPath</code> file per host; next, a network disk per shard</div>
 
 </div>
 </div>
 
 <!--
-Each host's cache is one file, written as a log of 64 MiB regions, allocated whole when they open. Each item has a header with its key, stripe index, code and CRC32C. When a region fills, its items are synced, a table is written at its end, and that is synced too. Eviction takes the oldest region; the stripes in it that were read most get a second chance in the open region, at most half a region, and none when the cache is over its share. One region is always kept free for that.
+Each cache disk is one file, today on a host's local SSD and next on a shard's network disk, written as a log of 64 MiB regions, allocated whole when they open. Each item has a header with its key, stripe index, code and CRC32C. When a region fills, its items are synced, a table is written at its end, and that is synced too. Eviction takes the oldest region; the stripes in it that were read most get a second chance in the open region, at most half a region, and none when the cache is over its share. One region is always kept free for that.
 
 On restart, the host reads every region's table back in sequence order. The region that was open at a crash is given back. A region whose table is torn is scanned by item headers. A file of another deployment is emptied.
 
-One limiter bounds everything the host writes: spill files, ephemeral disks, staging and the cache. It follows any combination of goals, the strictest winning, and gives space back gradually as the disk nears them. The cache lives in a hostPath directory that outlives the pod, one locked file per host.
+One limiter bounds everything the host writes: spill files, ephemeral disks, staging and the cache. It follows any combination of goals, the strictest winning, and gives space back gradually as the disk nears them. Today the cache lives in a hostPath directory that outlives the pod, one locked file per host. With shards it lives on a network disk that outlives the machine.
 -->
 
 ---
@@ -1076,6 +1143,7 @@ This is a bulk sequential read, and both paths were limited by the reader's CPU 
 - **recovery after a real host loss** — tested in simulation, not yet on a cluster
 - **disk checkpoints and the flush bound** — not yet tested on GCE
 - **the cluster cache is off in the deployment** — its share of windows is 0 until the rollout raises it
+- **shards on network disks** — designed for autoscaling, not built yet
 - **serving copies through memory** — not yet `sendfile`
 
 </div>
@@ -1096,6 +1164,8 @@ Recovery after a real host loss is tested in simulation and with fakes, not yet 
 Disk-only checkpoints, cold boot from a checkpoint without VMM state, and blocking flushes are tested in the simulation, the host test suite and Lima. They have not yet been tested together on GCE.
 
 The cluster cache is built and measured, but the deployment turns it on for none of its windows yet. A setting raises the share of windows gradually, as mcrouter's shadowing does, once the pull asks the cluster first.
+
+The cache's disks are still the hosts' own SSDs. Shards on network disks, which keep the cache whole through autoscaling, are designed and tracked as TASK-86, and not built yet.
 
 A host serving stripes still reads them into memory and writes them out. Sending them from the disk with sendfile is the next step, if a plain copy turns out to cost enough to matter.
 -->

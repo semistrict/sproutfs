@@ -3,11 +3,11 @@ id: TASK-85
 title: >-
   Fix the cache's erasure code per deployment and read each stripe by the code
   it was stored under
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-03 22:22'
-updated_date: '2026-10-04 00:14'
+updated_date: '2026-10-04 00:20'
 labels:
   - cluster
   - performance
@@ -65,4 +65,12 @@ Validation (2026-10-03):
 - Gremlins: checkpoint clusterread.go+diskstripes.go 164 killed/35 lived/15 not covered/3 timed out before, 165/34/15/3 after (new-code survivors left: the guard condition only). rank.go 41/2/8, no survivor in new code. Orchestrator caches.go+main.go 17 killed, 0 lived, 21 not covered (port parsing, run).
 - spec/diskcache: MCChange 4s, MCWiden 4s, mutant current-code-only caught by SurvivesLosses; deep/Change 91s; single-code configs unchanged in state count (MCCluster 91345).
 - TestSeededTopologyFingerprintIsStable passes; just check exit 0.
+
+Merged into main as d34a09c8; just check on main passed, exit 0.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Fixed the cache's erasure code per deployment (default 4+2, never following the host count) and made every stripe readable under the code it was stored under: earlier codes are a setting (at most 3), reads try the current code then each earlier one, and a window read under an earlier code is refilled under the current one. Verified by TestAChangedCodeReadsEveryEarlierWindowWithNoStoreRead (6 hosts 4+2 to 2+1 and 3 hosts 2+1 to 4+2, no store reads), TestTheCodeNeverFollowsTheHosts, fill/repair/miss tests, four guards, Gremlins, and spec/diskcache MCChange/MCWiden with the current-code-only mutant caught.
+<!-- SECTION:FINAL_SUMMARY:END -->
