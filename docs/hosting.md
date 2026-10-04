@@ -1824,7 +1824,17 @@ create-if-absent PUT, and a check is a HEAD. The intended hot tier is a bucket
 close to the hosts, such as a zonal bucket in their zone. On Google Cloud the
 zonal bucket is Rapid Bucket, which takes writes only through a gRPC API of
 its own, so it cannot be a hot tier
-([measurement](measurements/gce-hot-tier-2026-10-03.md)).
+([measurement](measurements/gce-hot-tier-2026-10-03.md)). On AWS it is an S3
+Express One Zone directory bucket, named by its zone's ID:
+`s3://bucket--use1-az4--x-s3/prefix`. The S3 adapter needs nothing for it but
+the name: the AWS SDK makes a session at the bucket's zone and signs each
+request with it. Create-if-absent PUTs, ranged GETs and HEADs work there as in
+a general purpose bucket. A directory bucket lists its keys in no order, so
+the adapter refuses to list one; a hot tier never lists. On six hosts in one
+zone a warm hot tier on S3 Express read a chain of 2 MiB pages at 17 ms a hop
+and 4 KiB pages at 4.2 ms, against 102 and 26 ms from regional S3 Standard and
+6.2 and 1.2 ms from the cluster cache on gp3 volumes
+([measurement](measurements/aws-hot-tier-2026-10-04.md)).
 
 **The read order.** A read of a checkpoint object goes:
 

@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-03 23:10'
-updated_date: '2026-10-04 05:57'
+updated_date: '2026-10-04 13:51'
 labels:
   - cluster
   - storage
@@ -73,4 +73,6 @@ Merged main (d3377d88, guards.json kept both sides); just check exit 0 with chec
 Criteria checked on evidence: #2 internal/simtest TestHostsScaleUpAndDownWithNoStoreReadForACachedWindow; #4 membership Next/ShardControl compare-and-set (membership/shards_test.go); #5 checkpoint per-disk fills/reads and per-shard budget (checkpoint/shards_test.go, host/shards_test.go); #7 docs/measurements/gce-shards-2026-10-04.md; #8 campaign TestShardsSurviveTheirFaultsAndReachTheirProbes, five guards killed by check-guards.py, Gremlins in docs/testing.md, fingerprint shards arm stable, spec/shards and spec/diskcache MCShards within 70 s, deep Nine 1m58s; #9 Carry/ShardControl tests, spec/shards OneServer, GCE move timed. Left unchecked for the owner: #1 and #3 name a StatefulSet that Kubernetes reschedules, which the owner's later note replaced with membership-driven attachment (no StatefulSet; the orchestrator attaches through Compute Engine's API; read back, hedging and no store read are shown by TestReadsDuringAShardsMoveHedgeAroundIt); #6 manifests and sizing are written and pass the manifest tests, but were not applied to a real GKE or k3s cluster.
 
 Merged into main as 536a385b with just check passing. Open for the owner: criteria #1 and #3 still describe a StatefulSet that Kubernetes reschedules, which the membership-assignment decision replaced (left unchecked); #6 manifests never applied to a real GKE or k3s cluster; no AWS adapter yet; StorageClass pinned to us-east4-a; Hyperdisk Balanced needs C3/C4/N4 hosts (8 vCPU to serve 500 MiB/s).
+
+AWS (2026-10-04, docs/measurements/aws-hot-tier-2026-10-04.md): cluster cache on gp3 (64 GiB, 16000 IOPS, 500 MiB/s, raw device opened exclusively) on six m7i.xlarge under 4+2: 2 MiB hop 6.23 ms, 4 KiB hop 1.24 ms; fio 4 KiB QD1 586 us, volumes gave their provisioned 16000 IOPS and 500 MiB/s. adapters.NewEBSDevices opens an EBS volume by ID at /dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_vol<id> (verified on AL2023). The AWS NetworkDisks adapter (attach/detach through EC2) is still not written; the bench attached volumes at launch. Note: an m7i.xlarge sustains only 156 MB/s of EBS, so shards serving 500 MiB/s need larger hosts (m7i.4xlarge sustains 625 MB/s).
 <!-- SECTION:NOTES:END -->
