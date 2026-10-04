@@ -54,26 +54,28 @@ func newPullFixtureOf(t *testing.T, diskBytes int64, volumePages uint64, pages [
 	return newPullFixtureWith(t, diskBytes, volumePages, pages, nil)
 }
 
-// newPullFixtureWith is newPullFixtureOf with a last say over its cache's
-// configuration.
+// newPullFixtureWith is newPullFixtureOf with a last say over its disk's and
+// its cache's configuration, under the fixture's runtime.
 func newPullFixtureWith(t *testing.T, diskBytes int64, volumePages uint64, pages []uint64,
-	configure func(config *checkpoint.CacheConfig)) *pullFixture {
+	configure func(runtime *sim.Runtime, disk *sim.DiskConfig, config *checkpoint.CacheConfig)) *pullFixture {
 	t.Helper()
 	runtime := sim.New(sim.Config{})
-	disk := runtime.NewDisk("host", sim.DiskConfig{})
+	diskConfig := sim.DiskConfig{}
+	config := checkpoint.CacheConfig{DiskBytes: diskBytes, DiskRegionBytes: pullRegionBytes}
+	if configure != nil {
+		configure(runtime, &diskConfig, &config)
+	}
+	disk := runtime.NewDisk("host", diskConfig)
 	file, err := disk.Open(t.Context(), "cache", platform.OpenOptions{Create: true, Truncate: true})
 	if err != nil {
 		t.Fatal(err)
 	}
+	config.Disk = file
 	budget, err := resource.New(4 << 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	config := checkpoint.CacheConfig{Disk: file, DiskBytes: diskBytes, DiskRegionBytes: pullRegionBytes}
-	if configure != nil {
-		configure(&config)
-	}
-	cache, err := checkpoint.NewCache(t.Context(), budget, config)
+	cache, err := checkpoint.NewCache(sim.WithRuntime(t.Context(), runtime), budget, config)
 	if err != nil {
 		t.Fatal(err)
 	}

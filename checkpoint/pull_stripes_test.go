@@ -3,9 +3,11 @@ package checkpoint_test
 import (
 	"testing"
 	"testing/synctest"
+	"time"
 
 	"github.com/semistrict/sproutfs/checkpoint"
 	"github.com/semistrict/sproutfs/control"
+	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/rank"
 )
 
@@ -19,9 +21,18 @@ var otherHosts = []rank.Identity{{0xee, 0x02}, {0xee, 0x03}, {0xee, 0x04}, {0xee
 // takes is up to the machine running it.
 func clusterPull(t *testing.T, percent int, test func(t *testing.T, f *pullFixture)) {
 	t.Helper()
+	clusterPullWith(t, func(_ *sim.Runtime, _ *sim.DiskConfig, config *checkpoint.CacheConfig) {
+		config.ClusterPercent = percent
+	}, test)
+}
+
+// clusterPullWith is clusterPull with the say over the fixture's disk and
+// cache that newPullFixtureWith gives.
+func clusterPullWith(t *testing.T, configure func(runtime *sim.Runtime, disk *sim.DiskConfig,
+	config *checkpoint.CacheConfig), test func(t *testing.T, f *pullFixture)) {
+	t.Helper()
 	synctest.Test(t, func(t *testing.T) {
-		test(t, newPullFixtureWith(t, 64<<20, cachedPages, []uint64{0, 1, 2, 3},
-			func(config *checkpoint.CacheConfig) { config.ClusterPercent = percent }))
+		test(t, newPullFixtureWith(t, 64<<20, cachedPages, []uint64{0, 1, 2, 3}, configure))
 	})
 }
 
@@ -174,6 +185,26 @@ func TestAPullKeepsNothingAHostIsNotRankedFor(t *testing.T) {
 		got := f.pullAndRead(t)
 		if got.stats.Pulled != got.stats.Bytes || got.gets != 9 || got.entries != 0 || got.hits != 0 {
 			t.Fatalf("the pull came to %+v; want it all handed over, nothing kept and every read of the store", got)
+		}
+	})
+}
+
+// A cache with no table of peers times its reads of the cluster by its own
+// clock, as it times its fills. Its disk takes a simulated second to read, far
+// past the 10 ms bound after which a read of the cluster reads the store as
+// well, but the cache's clock has not moved, so no read has waited past its
+// bound: every page is rebuilt from the disk's 30 stripes with no request of
+// the store. Timed by the wall clock, every one of those reads would also
+// have asked the store.
+func TestAReadOfTheClusterWaitsOnTheCachesOwnClock(t *testing.T) {
+	clusterPullWith(t, func(runtime *sim.Runtime, disk *sim.DiskConfig, config *checkpoint.CacheConfig) {
+		disk.ReadLatency = time.Second
+		config.ClusterPercent, config.Clock = 100, runtime.NewClock("host")
+	}, func(t *testing.T, f *pullFixture) {
+		f.follow(t, rank.Code{K: 4, M: 2}, true)
+		got := f.pullAndRead(t)
+		if got.stats.Pulled != got.stats.Bytes || got.gets != 0 || got.entries != 6*(cachedPages+1) || got.hits != 9 {
+			t.Fatalf("the pull came to %+v; want every page rebuilt from 30 stripes with no request", got)
 		}
 	})
 }

@@ -776,5 +776,17 @@
     "package": "platform/bounded",
     "run": "^TestAStalledBodyWhoseObjectChangedIsRefused$",
     "purpose": "Read a stalled body on from another object than the one it began as, so its caller holds bytes of two objects."
+  },
+  {
+    "id": "checkpoint-cluster-read-on-wall-clock",
+    "package": "checkpoint",
+    "run": "^TestAReadOfTheClusterWaitsOnTheCachesOwnClock$",
+    "purpose": "Time a cache's reads of the cluster by the wall clock when it has no table of peers, ignoring the clock it was given."
+  },
+  {
+    "id": "migration-take-a-reply-after-close",
+    "package": "vmmigrate",
+    "run": "^TestClosingAPostCopy(ReadsTheVolumeForTheRequestInFlight|StillRefusesAPageOnlyTheSourceHad)$",
+    "purpose": "Take a reply that arrived after the backing was closed, before the goroutine that ends the request in flight ran."
   }
 ]

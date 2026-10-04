@@ -124,9 +124,12 @@ an entropy source that it does not need.
 Both are passed through `host.Config`, `SupervisorConfig`, `control.Config`,
 `vmmemory.Config` and vmmigrate's `Options` and `PeerConfig`. `volume` takes
 neither, because it reads no clock and draws no random value. `checkpoint`
-takes only an entropy source, in `CacheConfig`, from which a new page cache
-disk draws its identity; the host passes its own. Their tunable values are in
-`internal/knobs` instead.
+takes both in `CacheConfig`: a new page cache disk draws its identity from the
+entropy source, and the clock times the rate of keeps, the interval of fill
+rights and, in a cache with no table of peers, the waits of reads of the
+cluster. A cache with a table times those reads by the table's clock, which
+its requests are timed by. `HotTierConfig` takes a clock too. The host passes
+its own. Their tunable values are in `internal/knobs` instead.
 
 `sim.Clock` is a virtual clock. No time passes on it unless a test advances it.
 `Advance` releases the deadlines it passes in deadline order. Deadlines at the
@@ -456,6 +459,32 @@ default, and on the wall clock a loaded machine sometimes took longer than
 that to read the fixture's own disk: the read then also asked the store, and
 the test counted a request it wanted none of. `pullAndRead` now also requires
 no read to have asked the store that way.
+
+The same cause was looked for everywhere else: every test outside a bubble
+that reads through the cluster, fills peers, or reaches a timer of the page
+cache, the peer server, the table of peers or the membership view. Outside
+the pull tests none was exposed. The host tests that pull with the cluster
+cache on or off read peers that refuse at once, and assert counts that a
+store read past the bound does not change. The other tests outside a bubble
+in `checkpoint`, `peer` and `membership` arm no timer whose firing they
+count. One wall-clock read in the code was a cause waiting for a test: a
+cache with no table of peers timed its reads of the cluster by the wall
+clock and ignored `CacheConfig.Clock`. It now times them by that clock.
+`TestAReadOfTheClusterWaitsOnTheCachesOwnClock` gives a pull fixture a disk
+that takes a simulated second to read and a clock that never moves, and
+requires no read to reach its bound. The guard
+`checkpoint-cluster-read-on-wall-clock` puts the wall clock back and fails it.
+
+The same sweep, run at one, two, four and eight processors, found a cause of
+another kind in vmmigrate. A peer backing's close ends every request it has
+in flight, but the request hears of it from a goroutine that
+`context.AfterFunc` starts. On one processor the Go scheduler delivered the
+source's reply, sent just after the close, before that goroutine ran, and the
+read took it: both `TestClosingAPostCopy` tests failed in nearly every run on
+one processor and in none on more. The backing now checks its own end once a
+request returns and refuses a reply that came after it. Both tests run three
+times on one processor and once on all of them. The guard
+`migration-take-a-reply-after-close` takes the reply again and fails them.
 
 Both the writer and the reader bound a part's table at 1 MiB. One test takes a
 checkpoint of 4,000 pages of a volume with the longest allowed name. Its entries
