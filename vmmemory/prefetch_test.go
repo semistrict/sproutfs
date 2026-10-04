@@ -178,6 +178,10 @@ func TestADependentChainOfFaultsWaitsForOnePageAHop(t *testing.T) {
 						s.Faults, s.Loads, s.LoadedPages, s.Prefetches, s.PrefetchedPages, s.PrefetchWaits,
 						hopCount, 2*hopCount, 8*hopCount, hopCount, 7*hopCount)
 				}
+				if s.PrefetchMapped != 7*hopCount || s.PrefetchDropped != 0 || s.PrefetchRefused != 0 {
+					t.Fatalf("the prefetches mapped %d pages, dropped %d and were refused %d times; want %d, 0, 0",
+						s.PrefetchMapped, s.PrefetchDropped, s.PrefetchRefused, 7*hopCount)
+				}
 				for _, read := range b.readsOf(false) {
 					if read.pages != 1 {
 						t.Fatalf("a fault read %d pages from page %d, want its own alone", read.pages, read.first)
@@ -410,6 +414,42 @@ func TestAStreamsFaultReadsItsWholeRun(t *testing.T) {
 		}
 		if s := hostStats(t, f); s.Prefetches != 0 || s.Loads != 1 {
 			t.Fatalf("prefetches %d, loads %d; want none and one", s.Prefetches, s.Loads)
+		}
+	})
+}
+
+// A detach cancels its memory region's prefetches and waits for them to end
+// before it takes anything away, because they read the region's backing,
+// which is the caller's to close once the detach returns. It does not wait
+// for a held read to finish: the prefetch is cancelled, its slots go back and
+// nothing it read is left behind.
+func TestADetachCancelsItsPrefetches(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newConfiguredFixture(t, prefetchConfig())
+		b := f.slowBacking(16)
+		b.held = make(chan struct{})
+		time.AfterFunc(time.Hour, func() { close(b.held) })
+		r, m := f.attach(b)
+		for _, page := range []uint64{0, 8} {
+			if err := r.Fault(f.ctx, page, false); err != nil {
+				t.Fatal(err)
+			}
+		}
+		m.arena.mu.Lock()
+		clear(m.pages)
+		m.arena.mu.Unlock()
+		began := time.Now()
+		if err := r.Detach(f.ctx); err != nil {
+			t.Fatal(err)
+		}
+		if took := time.Since(began); took != 0 {
+			t.Fatalf("the detach took %v, want no wait for the held prefetches", took)
+		}
+		s := hostStats(t, f)
+		if s.Prefetches != 2 || s.PrefetchDropped != 14 || s.PrefetchedPages != 0 || s.ResidentPages != 2 ||
+			s.IdlePages != 2 {
+			t.Fatalf("prefetches %d, dropped %d, landed %d, resident %d, idle %d; want 2, 14, 0, 2, 2",
+				s.Prefetches, s.PrefetchDropped, s.PrefetchedPages, s.ResidentPages, s.IdlePages)
 		}
 	})
 }
