@@ -608,7 +608,13 @@ window again from the top. These rules keep a prefetch from costing a fault:
   so they are the first memory an allocation gives up.
 - An allocation that finds no free slot and no idle page cancels every
   prefetch still reading and takes their slots as the reads end, before it
-  evicts a page a guest maps.
+  evicts a page a guest maps. It waits for a prefetch's slots until each is
+  back or holds a page that landed, not only while the read runs: a slot
+  between the two is neither free nor a page, and until 2026-10-04 an
+  allocation in that moment evicted a page the guest mapped.
+  `TestAnAllocationCancelsAPrefetchRatherThanEvict` holds the cancelled
+  prefetch's slots back a millisecond after its read ends
+  (`SetPrefetchSettleSeam`) and requires the fault to wait for them.
 - Its reads are marked with `checkpoint.WithPrefetch`. Their peer requests go
   over the bulk class, on connections of their own and within the host's
   background budget, so no fault's reply waits behind a prefetch's. The page
