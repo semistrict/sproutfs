@@ -24,6 +24,10 @@
 #   SPROUTFS_FAKE_REFUSE     "fork:2 migrate:1" — that numbered call of that
 #                            command is refused with a 503, as a placement no
 #                            host admits is.
+#   SPROUTFS_FAKE_BREAK      "stop:1", in the same form — that numbered call
+#                            fails for a reason that is not the deployment's
+#                            answer at all, as a call fails on a disk that is
+#                            full.
 #   SPROUTFS_FAKE_CORRUPT    the numbered witness check whose guest answers with
 #                            a mismatch.
 #   SPROUTFS_FAKE_TIMEOUT    the numbered witness check whose guest runs past
@@ -53,25 +57,46 @@ counter() {
 
 note() { printf '%s\n' "$*" >> "$state/log"; }
 
-# refused reports whether this numbered call of one command is one the model was
-# told to refuse.
-refused() {
-    local command=$1 nth=$2 entry
-    for entry in ${SPROUTFS_FAKE_REFUSE:-}; do
-        [[ $entry == "$command:$nth" ]] && return 0
+# listed reports whether one numbered call, as command:nth, is in a list of them
+# such as SPROUTFS_FAKE_REFUSE.
+listed() {
+    local call=$1 entry
+    for entry in $2; do
+        [[ $entry == "$call" ]] && return 0
     done
     return 1
 }
 
-# refuse answers as the CLI answers a request the deployment turned down: the
-# orchestrator's own message on stderr and a non-zero exit.
+# as_told answers this numbered call of one command the way the model was told
+# to, if it was told anything about it: refused, or broken.
+as_told() {
+    local command=$1 nth=$2
+    if listed "$command:$nth" "${SPROUTFS_FAKE_REFUSE:-}"; then refuse "$command"; fi
+    if listed "$command:$nth" "${SPROUTFS_FAKE_BREAK:-}"; then break_down "$command"; fi
+    return 0
+}
+
+# refuse answers as the CLI answers a placement the deployment turned down for
+# want of room: the orchestrator's own message on stderr, which is its operation
+# and errNoHost's text, and a non-zero exit. The CLI prints a refusal's message
+# and not its status line, so the text is all a flow has to go on. The second
+# argument is why no host was available, when it is not the memory.
 refuse() {
+    local why=${2:-no host has 536870912 bytes of memory free}
     if [[ -n ${SPROUTFS_FAKE_MULTILINE:-} ]]; then
-        printf '%s: no host admits it\n\tsproutfs-host-0: 5 GiB committed\n\tsproutfs-host-1: 5 GiB committed\n' \
-            "$1" >&2
+        printf '%s: no host is available: %s\n\tsproutfs-host-0: 5 GiB committed\n\tsproutfs-host-1: 5 GiB committed\n' \
+            "$1" "$why" >&2
     else
-        printf '%s: no host admits it: 503 Service Unavailable\n' "$1" >&2
+        printf '%s: no host is available: %s\n' "$1" "$why" >&2
     fi
+    exit 1
+}
+
+# break_down answers as a call answers that failed on the machine it ran on
+# rather than being refused by the deployment: here, as the model does when the
+# disk its state is kept on is full.
+break_down() {
+    printf '%s: writing %s: No space left on device\n' "$1" "$state/store" >&2
     exit 1
 }
 
@@ -403,7 +428,7 @@ create)
         esac
     done
     nth=$(counter create)
-    refused create "$nth" && refuse create
+    as_told create "$nth"
     host=$(a_ready_host)
     vm=vm-$nth
     vm_host=$host vm_state=running vm_checkpoint=1 vm_wseed=0 vm_wstep=0 vm_cseed=0 vm_cstep=0
@@ -458,11 +483,11 @@ fork)
         esac
     done
     nth=$(counter fork)
-    refused fork "$nth" && refuse fork
+    as_told fork "$nth"
     load_vm "$target"
     parent_seed=$vm_wseed parent_step=$vm_wstep
     [[ -n $to ]] || to=$vm_host
-    host_ready "$to" || refuse fork
+    host_ready "$to" || refuse fork "$to is not answering"
     # The children are made first and printed afterwards: what is written down
     # has to happen in this shell, and the table goes through a pipeline.
     children=''
@@ -495,11 +520,11 @@ migrate)
         esac
     done
     nth=$(counter migrate)
-    refused migrate "$nth" && refuse migrate
+    as_told migrate "$nth"
     load_vm "$target"
     from=$vm_host
     [[ -n $from ]] || { printf 'migrate: no host runs %s\n' "$target" >&2; exit 1; }
-    host_ready "$to" || refuse migrate
+    host_ready "$to" || refuse migrate "$to is not answering"
     vm_host=$to; save_vm "$target"
     charge "$from" put 6 8388608
     charge "$to" get 6 8388608
@@ -508,7 +533,7 @@ migrate)
     ;;
 capture)
     nth=$(counter capture)
-    refused capture "$nth" && refuse capture
+    as_told capture "$nth"
     load_vm "$target"
     [[ -n $vm_host ]] || { printf 'capture: no host runs %s\n' "$target" >&2; exit 1; }
     vm_checkpoint=$((vm_checkpoint + 1))
@@ -556,7 +581,7 @@ stop)
     suspend=0
     [[ ${1:-} == --suspend ]] && suspend=1
     nth=$(counter stop)
-    refused stop "$nth" && refuse stop
+    as_told stop "$nth"
     load_vm "$target"
     [[ -n $vm_host ]] || { printf 'stop: no host runs %s\n' "$target" >&2; exit 1; }
     was=$vm_host
@@ -592,14 +617,14 @@ start)
         exit 2
     fi
     nth=$(counter start)
-    refused start "$nth" && refuse start
+    as_told start "$nth"
     load_vm "$target"
     # A start is not a takeover: a VM a host runs is refused, and the host's own
     # 409 is what reaches here rather than a failure of the orchestrator's.
     [[ -z $vm_host ]] ||
         { printf 'start: a live host still runs that VM: %s runs %s\n' "$vm_host" "$target" >&2; exit 1; }
     [[ -n $to ]] || to=$(a_ready_host)
-    host_ready "$to" || refuse start
+    host_ready "$to" || refuse start "$to is not answering"
     vm_host=$to vm_state=running
     # A VM a plain stop left has no memory to resume, so it boots whether or not
     # the start asked for that.

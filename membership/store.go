@@ -175,7 +175,7 @@ func (s *Store) Update(ctx context.Context, change func(Membership) (Membership,
 // left.
 func (s *Store) Reconcile(ctx context.Context, want Want) (Membership, bool, error) {
 	m, err := s.Update(ctx, func(m Membership) (Membership, error) {
-		change, ok := Next(m, want)
+		change, ok := Next(ctx, m, want)
 		if !ok {
 			return Membership{}, ErrUnchanged
 		}

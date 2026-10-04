@@ -616,6 +616,10 @@ type Status struct {
 	// found there when the host started. It is absent on a host that keeps no
 	// cache disk.
 	CacheDisk *CacheDisk `json:"cache_disk,omitempty"`
+	// CacheShards is each shard the host serves now, a network disk the
+	// membership assigns it, with what it keeps and what it found there when
+	// the host opened it. It is absent on a host that serves none.
+	CacheShards []CacheDisk `json:"cache_shards,omitempty"`
 	// CacheFill is what this host's fills of the cluster's disk cache did.
 	// It is absent on a host that keeps no cache disk.
 	CacheFill *CacheFill `json:"cache_fill,omitempty"`
@@ -825,8 +829,12 @@ type Member struct {
 	Identity string `json:"identity"`
 	// Address is where the host's peer server answers.
 	Address string `json:"address"`
-	// Disks is the disk the host keeps.
+	// Disks is the disk the host keeps, or the shards it holds open.
 	Disks []MemberDisk `json:"disks"`
+	// Machine is the machine a host that serves shards runs on, which the
+	// controller attaches its shards to; empty for a host with a disk of its
+	// own.
+	Machine string `json:"machine,omitempty"`
 }
 
 // MemberDisk is one cache disk a host keeps.
@@ -869,7 +877,8 @@ type Membership struct {
 // MemberOf is a host as the wire carries it, each disk in the state held
 // says it is in.
 func MemberOf(self membership.Host, held membership.Membership) Member {
-	member := Member{Identity: self.ID.String(), Address: string(self.Address), Disks: []MemberDisk{}}
+	member := Member{Identity: self.ID.String(), Address: string(self.Address), Disks: []MemberDisk{},
+		Machine: self.Machine}
 	for _, disk := range self.Disks {
 		reported := MemberDisk{Identity: disk.ID.String(), Volume: disk.Volume, Weight: disk.Weight}
 		if listed, ok := held.Disk(disk.ID); ok {
@@ -887,7 +896,7 @@ func (m Member) Host() (membership.Host, error) {
 	if err != nil {
 		return membership.Host{}, err
 	}
-	host := membership.Host{ID: id, Address: platform.Address(m.Address)}
+	host := membership.Host{ID: id, Address: platform.Address(m.Address), Machine: m.Machine}
 	for _, disk := range m.Disks {
 		identity, err := rank.ParseIdentity(disk.Identity)
 		if err != nil {

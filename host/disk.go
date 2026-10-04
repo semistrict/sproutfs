@@ -226,10 +226,21 @@ func cacheDiskReport(file string, disk checkpoint.DiskStats) *hostapi.CacheDisk 
 			GivenBack: disk.GivenBackOnOpen}}
 }
 
+// cacheShardsReport is each shard the host serves, as /status reports it:
+// what its disk keeps, and what it found there when the host opened it.
+func cacheShardsReport(shards []checkpoint.DiskStats) []hostapi.CacheDisk {
+	var reported []hostapi.CacheDisk
+	for _, shard := range shards {
+		reported = append(reported, *cacheDiskReport("", shard))
+	}
+	return reported
+}
+
 // cacheFillReport is what the host's fills of the cluster's disk cache did,
-// as /status reports it: nothing for a host that keeps no cache disk.
-func cacheFillReport(disk checkpoint.DiskStats, fill checkpoint.FillStats) *hostapi.CacheFill {
-	if disk.Identity.IsZero() {
+// as /status reports it: nothing for a host that keeps no cache disk and
+// serves no shard, which member says.
+func cacheFillReport(member bool, fill checkpoint.FillStats) *hostapi.CacheFill {
+	if !member {
 		return nil
 	}
 	dropped := make(map[string]uint64, len(fill.Dropped))
@@ -265,9 +276,10 @@ func hotTierReport(stats *checkpoint.HotTierStats) *hostapi.HotTier {
 
 // cacheReadReport is what the host's reads of the cluster's disk cache did,
 // and what its peer server served of its cache, as /status reports them:
-// nothing for a host that keeps no cache disk.
-func cacheReadReport(disk checkpoint.DiskStats, read checkpoint.ReadStats, served peer.ServerStats) *hostapi.CacheRead {
-	if disk.Identity.IsZero() {
+// nothing for a host that keeps no cache disk and serves no shard, which
+// member says.
+func cacheReadReport(member bool, read checkpoint.ReadStats, served peer.ServerStats) *hostapi.CacheRead {
+	if !member {
 		return nil
 	}
 	return &hostapi.CacheRead{Hits: read.Hits, OwnHits: read.OwnHits, EarlierHits: read.EarlierHits,

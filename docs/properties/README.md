@@ -19,5 +19,6 @@ status and the tests that show it.
 - [A change of the code keeps the cache](a-code-change-keeps-the-cache.md)
 - [Serving a peer copies nothing into memory](serving-a-peer-copies-nothing.md)
 - [One membership](one-membership.md)
+- [Scaling compute moves no window](scaling-moves-no-window.md)
 - [One disk limiter](one-disk-limiter.md)
 - [The disk limiter follows its goals](disk-limiter-goals.md)

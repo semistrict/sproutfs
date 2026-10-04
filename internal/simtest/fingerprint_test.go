@@ -32,9 +32,10 @@ const fingerprintShake = 0x9e3779b97f4a7c15
 
 // The campaign's promise is that a seed reproduces a run, and this is what
 // checks it: FoundationDB's unseed comparison, run in-process for every seed
-// rather than on a sample of them. Each seed runs with no cache disk and with
+// rather than on a sample of them. Each seed runs with no cache disk, with
 // the cluster cache on, where hosts fill each other beside everything else
-// they do.
+// they do, through a hot tier, and with the cache on shards, which move
+// between the hosts as they are lost and started again.
 //
 // The second run of each is shaken: goroutines ready at one simulated instant
 // reach the simulated dependencies in another order than the first run's. A
@@ -43,7 +44,7 @@ const fingerprintShake = 0x9e3779b97f4a7c15
 // differently by itself.
 func TestSeededTopologyFingerprintIsStable(t *testing.T) {
 	for _, seed := range []uint64{1, 23} {
-		for _, cache := range []campaignCache{cacheOff, cacheOn, cacheHot} {
+		for _, cache := range []campaignCache{cacheOff, cacheOn, cacheHot, cacheShards} {
 			t.Run(fmt.Sprintf("seed-%d/cache-%s", seed, cache), func(t *testing.T) {
 				var work, strict [2]uint64
 				var dials [2]int

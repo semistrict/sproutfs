@@ -227,13 +227,14 @@ type countingCache struct {
 	reads map[rank.Window]int
 }
 
-func (c *countingCache) ReadStripes(ctx context.Context, m membership.Membership, read peer.StripeRead) (peer.Stripes, error) {
+func (c *countingCache) ReadStripes(ctx context.Context, m membership.Membership, disk rank.Identity,
+	read peer.StripeRead) (peer.Stripes, error) {
 	if read.MaxBytes > 0 {
 		c.mu.Lock()
 		c.reads[read.Window]++
 		c.mu.Unlock()
 	}
-	return c.Cache.ReadStripes(ctx, m, read)
+	return c.Cache.ReadStripes(ctx, m, disk, read)
 }
 
 func (c *countingCache) asked(window rank.Window) int {
@@ -401,7 +402,7 @@ func TestTheStoreIsReadOnlyWhenFewerThanKStripesExist(t *testing.T) {
 						if dropped == code.Width()-remaining {
 							break
 						}
-						if err := h.cache.Drop(c.ctx(t), peer.Drop{Window: window, Page: 0, Index: index, Code: code}); err != nil {
+						if err := h.cache.Drop(c.ctx(t), h.cache.Identity(), peer.Drop{Window: window, Page: 0, Index: index, Code: code}); err != nil {
 							t.Fatal(err)
 						}
 						dropped++
@@ -696,7 +697,7 @@ func TestAMissIsNotAFailureOfTheHost(t *testing.T) {
 		}
 		for _, window := range windows {
 			for _, index := range empty.cache.HeldIndices(window, 0, code) {
-				if err := empty.cache.Drop(c.ctx(t), peer.Drop{Window: window, Index: index, Code: code}); err != nil {
+				if err := empty.cache.Drop(c.ctx(t), empty.cache.Identity(), peer.Drop{Window: window, Index: index, Code: code}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -752,7 +753,7 @@ func TestRepairSendsOnlyAnIndexNoRankHolds(t *testing.T) {
 			return slices.Index(ranks, a) - slices.Index(ranks, b)
 		}))
 		index := lost.cache.HeldIndices(window, 0, code)[0]
-		if err := lost.cache.Drop(c.ctx(t), peer.Drop{Window: window, Index: index, Code: code}); err != nil {
+		if err := lost.cache.Drop(c.ctx(t), lost.cache.Identity(), peer.Drop{Window: window, Index: index, Code: code}); err != nil {
 			t.Fatal(err)
 		}
 		c.read(t, reader, ref, m, 0)

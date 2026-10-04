@@ -1,0 +1,35 @@
+# The class the cache's shards are provisioned from: Hyperdisk Balanced, a
+# single-writer network disk, through GKE's Compute Engine persistent disk
+# CSI driver. Kubernetes provisions the disks and keeps them, and never
+# attaches them: no pod mounts a shard's claim. The orchestrator attaches each
+# to the node of the host the membership assigns it to, through Compute
+# Engine's API. deploy/README.md, "Shards", gives the sizing.
+#
+# The binding is immediate, so a claim is bound, and its disk made, before
+# anything consumes it, in the zone the hosts' node pool runs in. The volume
+# is retained, so deleting a claim by mistake keeps the disk and its windows.
+#
+# On k3s, the same class serves where the cluster runs the Compute Engine
+# persistent disk CSI driver; without it, k3s-volumes.yaml binds the claims
+# to disks made by hand, and this class is only the name the two share.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: sproutfs-shard
+  labels:
+    app.kubernetes.io/part-of: sproutfs
+provisioner: pd.csi.storage.gke.io
+parameters:
+  type: hyperdisk-balanced
+  # Each shard serves at most its host's serving budget, 500 MiB/s by
+  # default, and a dependent read is one 512 KiB stripe at a time. Provisioned
+  # above the disk's free baseline so a shard is not the slowest hop.
+  provisioned-iops-on-create: "6000"
+  provisioned-throughput-on-create: "500Mi"
+reclaimPolicy: Retain
+volumeBindingMode: Immediate
+allowVolumeExpansion: false
+allowedTopologies:
+  - matchLabelExpressions:
+      - key: topology.gke.io/zone
+        values: ["us-east4-a"]

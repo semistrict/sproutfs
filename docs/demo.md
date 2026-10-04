@@ -302,8 +302,10 @@ the following:
    other host, and check them.
 5. Delete a seeded share, so the population stays within what two hosts admit.
 
-If the deployment refuses a placement with 503, the run records the refusal and
-does not fail.
+If the deployment refuses a placement for want of room, the run records the
+refusal and does not fail. The orchestrator says "no host is available" (503),
+or a host says its capacity is exhausted. A placement that fails for any other
+reason fails the run: the seed did not decide it.
 
 A seeded share of the restarts are cold. The VM comes back without its memory,
 so only its disk is checked, with `witness check --disk-only`. That command

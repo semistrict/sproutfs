@@ -171,9 +171,11 @@ func openCache(ctx context.Context, dir string) (*benchCache, error) {
 	return &benchCache{file: file}, nil
 }
 
-func (c *benchCache) Identity() rank.Identity { return cacheIdentity }
+func (c *benchCache) Disks() []rank.Identity { return []rank.Identity{cacheIdentity} }
 
-func (c *benchCache) ReadStripes(_ context.Context, _ membership.Membership, read peer.StripeRead) (peer.Stripes, error) {
+func (c *benchCache) Keeps(disk rank.Identity) bool { return disk == cacheIdentity }
+
+func (c *benchCache) ReadStripes(_ context.Context, _ membership.Membership, _ rank.Identity, read peer.StripeRead) (peer.Stripes, error) {
 	if read.MaxBytes < stripeBytes || len(read.Pages) != 1 {
 		return peer.Stripes{}, fmt.Errorf("a read of %d bytes of %d pages", read.MaxBytes, len(read.Pages))
 	}
@@ -183,13 +185,13 @@ func (c *benchCache) ReadStripes(_ context.Context, _ membership.Membership, rea
 		Size: stripeBytes}, nil
 }
 
-func (c *benchCache) Keep(context.Context, membership.Membership, peer.Keep) error {
+func (c *benchCache) Keep(context.Context, membership.Membership, rank.Identity, peer.Keep) error {
 	return peer.ErrDropped
 }
 
-func (c *benchCache) Drop(context.Context, peer.Drop) error { return nil }
+func (c *benchCache) Drop(context.Context, rank.Identity, peer.Drop) error { return nil }
 
-func (c *benchCache) Presence(_ context.Context, presence peer.Presence) ([][]uint32, error) {
+func (c *benchCache) Presence(_ context.Context, _ rank.Identity, presence peer.Presence) ([][]uint32, error) {
 	return make([][]uint32, len(presence.Windows)), nil
 }
 

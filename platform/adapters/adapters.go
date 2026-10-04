@@ -81,6 +81,26 @@ func NewS3(ctx context.Context, endpoint, bucket, prefix string) (platform.Objec
 	return store, noClose{}, nil
 }
 
+// NewGCENetworkDisks reaches Compute Engine's persistent disks and Hyperdisks
+// with the ambient Google credentials. A volume is named by its CSI volume
+// handle, projects/<project>/zones/<zone>/disks/<name>, or by its name alone in
+// project and zone; a machine is an instance's name. A non-empty endpoint
+// points the client at a server that answers for the API.
+func NewGCENetworkDisks(ctx context.Context, project, zone, endpoint string) (platform.NetworkDisks, error) {
+	return real.NewGCEDisks(ctx, project, zone, endpoint)
+}
+
+// NewGCEDevices opens the Compute Engine disks attached to this instance, at
+// google-<name> in dir, the kernel's /dev/disk/by-id where dir is empty, each
+// for this process alone. A container that sees the node's /dev mounted
+// elsewhere names that mount's disk/by-id. Only Linux has them.
+func NewGCEDevices(dir string) platform.Devices {
+	if dir == "" {
+		dir = "/dev/disk/by-id"
+	}
+	return real.NewDevices(dir, "google-", real.GCEDeviceName)
+}
+
 // noClose is a closer with nothing to release.
 type noClose struct{}
 
