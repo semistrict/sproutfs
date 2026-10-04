@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-03 17:54'
-updated_date: '2026-10-04 00:26'
+updated_date: '2026-10-04 00:34'
 labels:
   - cluster
   - correctness
@@ -28,15 +28,15 @@ Which hosts are in the cluster, with their identity, peer-server address, weight
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The membership is one object in the object store holding a generation, the code, and each host's identity, address, weight and state; nothing else is an authority for it, and the orchestrator's and hosts' copies are caches of it
-- [ ] #2 It changes only by compare-and-set on the generation; concurrent changers (for example two orchestrators, or a host and the orchestrator) never lose an update and never write an older generation, shown by a simulation test with several writers and lost replies
-- [ ] #3 The orchestrator reconciles the membership from the pods and host reports one step at a time: a host drains before it leaves, and a join, leave or weight change is one generation
-- [ ] #4 A host's identity is written in its disk; a pod replaced on the same node keeps it, and a pod on another node takes that node's
-- [ ] #5 Every stripe read, keep, drop and fill right names the sender's generation; a holder behind reads the object before answering, a holder ahead answers stale and the sender re-reads and retries; no stripe is placed, served or repaired under a membership the two sides do not both hold
-- [ ] #6 The step-4 list of caches, the separate cache identity in /status and GET /caches are removed or folded into the membership; docs/context.md defines membership and generation, and docs/hosting.md, docs/volumes.md and the talk use the new terms
-- [ ] #7 spec/diskcache models the membership as one CAS-updated object with generations and checks that no stripe is placed or served under different memberships, with a mutant that drops the generation check; every TLC run ends within a couple of minutes
-- [ ] #8 Tests follow repo practice: synctest over platform/sim, Buggify sites with probes a campaign asserts (lost CAS replies, stale holders, store outages), sim.Bug guards in scripts/mutation/guards.json, Gremlins on the new code, and the fingerprint test stays stable under shake
-- [ ] #9 The membership also holds which network disk (cache shard) each member serves, with a state per disk (attaching, serving, releasing), changed only by compare-and-set on the generation: a disk is released before it is assigned again, a member serves a disk only under the generation that assigns it to that member, and replies name that generation so a member that lost a disk can never serve it again; tests cover two members both believing they hold a disk, lost replies and a stale server
+- [x] #1 The membership is one object in the object store holding a generation, the code, and each host's identity, address, weight and state; nothing else is an authority for it, and the orchestrator's and hosts' copies are caches of it
+- [x] #2 It changes only by compare-and-set on the generation; concurrent changers (for example two orchestrators, or a host and the orchestrator) never lose an update and never write an older generation, shown by a simulation test with several writers and lost replies
+- [x] #3 The orchestrator reconciles the membership from the pods and host reports one step at a time: a host drains before it leaves, and a join, leave or weight change is one generation
+- [x] #4 A host's identity is written in its disk; a pod replaced on the same node keeps it, and a pod on another node takes that node's
+- [x] #5 Every stripe read, keep, drop and fill right names the sender's generation; a holder behind reads the object before answering, a holder ahead answers stale and the sender re-reads and retries; no stripe is placed, served or repaired under a membership the two sides do not both hold
+- [x] #6 The step-4 list of caches, the separate cache identity in /status and GET /caches are removed or folded into the membership; docs/context.md defines membership and generation, and docs/hosting.md, docs/volumes.md and the talk use the new terms
+- [x] #7 spec/diskcache models the membership as one CAS-updated object with generations and checks that no stripe is placed or served under different memberships, with a mutant that drops the generation check; every TLC run ends within a couple of minutes
+- [x] #8 Tests follow repo practice: synctest over platform/sim, Buggify sites with probes a campaign asserts (lost CAS replies, stale holders, store outages), sim.Bug guards in scripts/mutation/guards.json, Gremlins on the new code, and the fingerprint test stays stable under shake
+- [x] #9 The membership also holds which network disk (cache shard) each member serves, with a state per disk (attaching, serving, releasing), changed only by compare-and-set on the generation: a disk is released before it is assigned again, a member serves a disk only under the generation that assigns it to that member, and replies name that generation so a member that lost a disk can never serve it again; tests cover two members both believing they hold a disk, lost replies and a stale server
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -52,6 +52,8 @@ Which hosts are in the cluster, with their identity, peer-server address, weight
 8. spec/membership/Membership.tla: CAS object with generations, hosts' copies, requests naming generations, disk moves; invariants no stripe placed/served under different memberships and one server per disk; mutants without the generation check, without release, and an unconditional write; runs in under two minutes.
 9. Tests: multi-writer CAS campaign with lost replies and outages (synctest over platform/sim), protocol tests (holder behind/ahead, store outage, two members believing they hold a disk), campaign probes, guards in scripts/mutation/guards.json and docs/testing.md each shown to fail, Gremlins before/after on membership and the orchestrator controller.
 10. Docs: context.md (membership, generation, disk assignment), hosting.md, volumes.md, deploy/README.md, talk, one-membership.md status, testing.md. just check; merge main; commit in steps.
+
+11. Merged TASK-85 (2026-10-03): the code and earlier codes are fields of the membership, written by membership.Next as its first step.
 <!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
@@ -60,4 +62,6 @@ Which hosts are in the cluster, with their identity, peer-server address, weight
 Owner, 2026-10-03: membership must include the assignment of remote disks to members, evolved linearizably by the same compare-and-set. Ranking stays over disk identities. The attach and detach themselves are TASK-86.
 
 Built (2026-10-03, worktree branch): package membership holds the object (protobuf at <prefix>membership: generation, code and earlier codes, writer nonce, members {id, address, joining/active/draining}, disks {id, volume, weight, member, attaching/serving/releasing/released, assigned generation}); Store.Update is the only writer (read, build, write IfMatch/IfNoneMatch, lost reply reconciled by nonce, Step refuses illegal next generations); View is each process's copy (catch up when a request names a newer generation, 30 s timer, never goes back). Ranks are over disks; a disk is routed only while served. peer: every cache request names generation and disk, replies name generation and assignment generation; holder behind catches up, holder on another generation answers STALE, holder not serving answers NOT_ME. checkpoint: reads retry a window under a newer generation; keeps, drops and fill rights resend under it. Host identity = cache file identity; /status reports member and membership. Orchestrator steps the membership with membership.Next every 5 s; GET /caches, rank.Follower and the host's list reader removed. Merged TASK-85: the code and earlier codes are membership fields written in one step before any join. spec/membership with 4 mutants. Guards: membership-write-unconditional, membership-assign-without-release, membership-serve-stale-generation, membership-serve-stale-assignment, membership-ignore-stale-answer, orchestrator-drop-quiet-member.
+
+Validation 2026-10-03: just check exit 0 (go test ./..., specs incl. spec/membership MCMembership 1.2M states 4 s, deep/Seven 6.8M states 24 s, 4 mutants caught). Guard sweep of scripts/mutation/guards.json (107 non-Linux guards): 102 killed; migration-corrupt-fallback, migration-skip-resume, migration-give-up-first-receive, pager-forget-spill and pager-give-back-changed-copy also survive their plain invocation on main, so not this change. Gremlins: membership 113 killed / 5 lived (justified in docs/testing.md); peer cache.go 55/5 (survivors in untouched code); orchestrator membership.go 5/0. Fingerprint tests stable over three runs each. Decisions: the spec is spec/membership (one module per directory), not inside spec/diskcache; weight sits on the disk, not the member; member identity = its local disk's identity; hosts do not write the membership yet (the orchestrator serves an attached disk); exact generation equality between sender and holder.
 <!-- SECTION:NOTES:END -->
