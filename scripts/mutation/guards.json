@@ -550,6 +550,48 @@
     "purpose": "Send stripe reads over the fault class, where a stripe waits behind every 2 MiB page reply ahead of it on its connection."
   },
   {
+    "id": "pull-takes-a-fault-slot",
+    "package": "checkpoint",
+    "run": "^TestAFaultDuringAPullIsNeverSlowedByIt$",
+    "purpose": "Run a pull's reads in a slot of the loads faults wait on, so a fault waits behind a pull's read of the store."
+  },
+  {
+    "id": "pull-reads-the-store-first",
+    "package": "checkpoint",
+    "run": "^TestAPullOfACheckpointTheClusterHoldsReadsNothingFromTheStore$",
+    "purpose": "Read every page a pull reaches from the store, as before a pull asked the cluster what it holds."
+  },
+  {
+    "id": "pull-count-any-stripe",
+    "package": "checkpoint",
+    "run": "^TestAPullOfACheckpointTheClusterPartlyHoldsReadsOnlyWhatItLacks$",
+    "purpose": "Count a page held when any rank holds any stripe of it, so a page with fewer than k stripes is never pulled."
+  },
+  {
+    "id": "pull-hedges-to-the-store",
+    "package": "checkpoint",
+    "run": "^TestAPullsReadsOfTheClusterAreBulkWorkThatNeverHedges$",
+    "purpose": "Have a pull's read of a segment through the cluster read the store as well past its bound, as a fault's does."
+  },
+  {
+    "id": "pull-reads-as-a-fault",
+    "package": "checkpoint",
+    "run": "^TestAPullsReadsOfTheClusterAreBulkWorkThatNeverHedges$",
+    "purpose": "Leave a pull's reads unmarked, so they ask second requests, teach the delay and go over the fault and stripe classes."
+  },
+  {
+    "id": "cluster-prefetch-in-stripe-class",
+    "package": "checkpoint",
+    "run": "^TestAPullsReadsOfTheClusterAreBulkWorkThatNeverHedges$",
+    "purpose": "Send a prefetch's stripe requests over the stripe class faults use, since they run under the reads' life rather than the read's context."
+  },
+  {
+    "id": "pull-ignores-pressure",
+    "package": "checkpoint",
+    "run": "^TestPressureCancelsAPullsReads$",
+    "purpose": "Leave a pull reading while the host is short of memory or disk."
+  },
+  {
     "id": "peer-presence-in-fault-class",
     "package": "peer",
     "run": "^TestAPresenceCheckGoesOverTheClassItsContextNames$",

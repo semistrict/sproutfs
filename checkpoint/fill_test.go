@@ -34,6 +34,9 @@ type fillHost struct {
 	table   *peer.Table
 	server  *peer.Server
 	file    platform.File
+	// budget is the host's memory, which its cache's memory tier is taken
+	// from.
+	budget *resource.Budget
 	// view is this host's copy of the membership, which it reads when it
 	// opens, when the cluster tells it to, and when a peer names a newer
 	// generation.
@@ -76,6 +79,9 @@ type fillConfig struct {
 	runtime sim.Config
 	disk    sim.DiskConfig
 	diskOf  func(host int) sim.DiskConfig
+	// memory is each host's memory budget, none by default: then the memory
+	// tier keeps nothing, not even a segment's page table.
+	memory int64
 }
 
 // newFillCluster starts the hosts of config and the list they follow, and
@@ -136,9 +142,9 @@ func (c *fillCluster) open(t *testing.T, index int, h *fillHost) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The memory tier keeps nothing, not even a segment's page table, so
-	// every read is of the disks or the store.
-	budget, err := resource.New(0)
+	// By default the memory tier keeps nothing, not even a segment's page
+	// table, so every read is of the disks or the store.
+	h.budget, err = resource.New(c.config.memory)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +156,7 @@ func (c *fillCluster) open(t *testing.T, index int, h *fillHost) {
 	if c.config.cache != nil {
 		c.config.cache(index, &cacheConfig)
 	}
-	h.cache, err = checkpoint.NewCache(ctx, budget, cacheConfig)
+	h.cache, err = checkpoint.NewCache(ctx, h.budget, cacheConfig)
 	if err != nil {
 		t.Fatal(err)
 	}

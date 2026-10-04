@@ -156,6 +156,9 @@ type ReadStats struct {
 	// second request, never read the store as a hedge, and leave the delay
 	// alone.
 	Prefetches uint64
+	// Presences counts the presence checks sent to ranks, each asking one
+	// rank which stripes it holds of the windows a pull reached (presence.go).
+	Presences uint64
 }
 
 // The probes reads of the cluster mark.
@@ -1002,6 +1005,7 @@ func (w *windowRead) maxBytes(cache rank.Cache) int64 {
 // ask sends one rank a request for its stripes of the window's wants. The
 // request runs under the reads' life, not the read's: it goes on until it is
 // answered or times out, and how it ended is what the rank's mark is kept by.
+// A prefetch's request keeps the prefetch's class, bulk, on the reads' life.
 func (w *windowRead) ask(ctx context.Context, cache rank.Cache) {
 	r := w.r
 	w.pending++
@@ -1009,8 +1013,12 @@ func (w *windowRead) ask(ctx context.Context, cache rank.Cache) {
 	r.count(func(stats *ReadStats) { stats.Requests++ })
 	read := peer.StripeRead{Window: w.window, Pages: w.pages, Code: w.code, MaxBytes: w.maxBytes(cache)}
 	route, routed := w.m.Route(cache.Identity)
+	prefetch := Prefetching(ctx) && !r.bug("cluster-prefetch-in-stripe-class")
 	if !r.spawn(func(life context.Context) {
 		answer := stripeAnswer{cache: cache}
+		if prefetch {
+			life = WithPrefetch(life)
+		}
 		switch {
 		case r.peers == nil:
 			answer.err = errNoPeers

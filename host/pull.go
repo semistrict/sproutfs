@@ -14,17 +14,21 @@ import (
 // that pulls its whole memory.
 var ErrNotPulling = errors.New("host: the VM is not pulling its memory here")
 
-// pulling copies every page of the checkpoint a VM marked to pull started from
-// onto this host's disk. It runs beside the checkpoint loop and ends with it: a
-// stop, a migration away, a fence or the VMM's death ends the copying. What
-// the VM publishes is kept on the disk until its handle closes, so the last
-// checkpoint of a stop or of the host's shutdown is kept too. The copy stays
-// on the disk, which gives it back only when it needs the space.
+// pulling fetches every page of the checkpoint a VM marked to pull started
+// from: into the cluster's disk cache for the windows the cluster cache is on
+// for, reading from the store only what the cluster lacks, and onto this
+// host's disk for the rest (checkpoint.Pull). It runs beside the checkpoint
+// loop and ends with it: a stop, a migration away, a fence or the VMM's death
+// ends the fetching, and so does the host running short of memory or disk.
+// What the VM publishes is kept until its handle closes, so the last
+// checkpoint of a stop or of the host's shutdown is kept too. What the pull
+// fetched stays on the disks, which give it back only when they need the
+// space.
 //
-// The guest runs while the copy is made, and a fault never waits for it. Once
+// The guest runs while the pull fetches, and a fault never waits for it. Once
 // it is complete, a fault on a page of that checkpoint which is not resident —
-// never loaded, or evicted since — reads this host's disk and makes no request
-// of the object store, while the disk holds the page. What the guest wrote
+// never loaded, or evicted since — reads the hosts' disks and makes no request
+// of the object store, while they hold the page. What the guest wrote
 // since that checkpoint is not in it and needs no copy: it is this host's
 // already, in the pager, and a later checkpoint keeps its pages on the same
 // disk as it uploads them, so they are read from there too once evicted
@@ -75,8 +79,9 @@ func (h *Host) pulling(ctx context.Context, vmID string, entry *registration) {
 	err = pull.Wait(ctx)
 	close(fetched)
 	if err == nil {
-		slog.InfoContext(ctx, "host: pulled a VM's memory onto this host's disk",
-			"vm", vmID, "bytes", pull.Stats().Bytes)
+		stats := pull.Stats()
+		slog.InfoContext(ctx, "host: pulled a VM's memory", "vm", vmID, "bytes", stats.Bytes,
+			"held", stats.Held, "fetched", stats.Fetched)
 	}
 	<-ctx.Done()
 }

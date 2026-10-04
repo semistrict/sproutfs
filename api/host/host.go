@@ -188,22 +188,29 @@ type VM struct {
 }
 
 // Pull is how far a VM marked to pull its whole memory has come. Such a VM has
-// every page of the checkpoint it started from copied onto its host's disk, in
-// the background while the guest runs, and held there for as long as it runs
-// on that host. Once the copy is complete, a fault on a page of that checkpoint
-// that is not resident reads the disk and makes no request of the object store.
-// The copy is not durable: losing the disk loses nothing a checkpoint holds.
+// every page of the checkpoint it started from fetched in the background while
+// the guest runs: into the cluster's disk cache for the windows the cluster
+// cache is on for, and onto its host's own disk for the rest. Once the pull is
+// complete, a fault on a page of that checkpoint that is not resident reads
+// the hosts' disks and makes no request of the object store, while they hold
+// the page. The copy is not durable: losing a disk loses nothing a checkpoint
+// holds, and the disks give pulled pages back like any others.
 //
-// Bytes is what the checkpoint holds and Pulled how much of it is on the disk.
-// Done reports a pull that has stopped, complete unless Error says why not. A
-// pull the host refused — its disk keeps nothing, or the checkpoint does not
-// fit in what the disk has left — is Done with the refusal as its Error, and
-// the VM reads its memory from the object store like any other.
+// Bytes is what the checkpoint holds and Pulled how much of it the pull has
+// dealt with: Held is what it found the disks already held, Fetched what it
+// read from the object store. Done reports a pull that has stopped, complete
+// unless Error says why not; a pull the host stopped because it was short of
+// memory or disk says so. A pull the host refused — its disk keeps nothing, or
+// the checkpoint does not fit in what the disk has left — is Done with the
+// refusal as its Error, and the VM reads its memory from the object store like
+// any other.
 type Pull struct {
-	Bytes  int64  `json:"bytes"`
-	Pulled int64  `json:"pulled"`
-	Done   bool   `json:"done,omitempty"`
-	Error  string `json:"error,omitempty"`
+	Bytes   int64  `json:"bytes"`
+	Pulled  int64  `json:"pulled"`
+	Held    int64  `json:"held,omitempty"`
+	Fetched int64  `json:"fetched,omitempty"`
+	Done    bool   `json:"done,omitempty"`
+	Error   string `json:"error,omitempty"`
 }
 
 // Sharing is how much memory sharing a host's pager is retaining for one kind
