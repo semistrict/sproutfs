@@ -13,6 +13,7 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	"sigs.k8s.io/yaml"
 
 	"github.com/semistrict/sproutfs/resource"
@@ -30,8 +31,12 @@ func manifests(t *testing.T) map[string][][]byte {
 	if err != nil {
 		t.Fatal(err)
 	}
+	shards, err := filepath.Glob("../../deploy/shards/*.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
 	documents := map[string][][]byte{}
-	for _, file := range append(files, probes...) {
+	for _, file := range slices.Concat(files, probes, shards) {
 		text, err := os.ReadFile(file)
 		if err != nil {
 			t.Fatal(err)
@@ -53,15 +58,20 @@ func decodeStrictly(document []byte) (any, error) {
 		return nil, err
 	}
 	objects := map[string]any{
-		"v1/Namespace":                             &corev1.Namespace{},
-		"v1/Service":                               &corev1.Service{},
-		"v1/ServiceAccount":                        &corev1.ServiceAccount{},
-		"v1/Pod":                                   &corev1.Pod{},
-		"apps/v1/Deployment":                       &appsv1.Deployment{},
-		"policy/v1/PodDisruptionBudget":            &policyv1.PodDisruptionBudget{},
-		"rbac.authorization.k8s.io/v1/Role":        &rbacv1.Role{},
-		"rbac.authorization.k8s.io/v1/RoleBinding": &rbacv1.RoleBinding{},
-		"networking.k8s.io/v1/NetworkPolicy":       &networkingv1.NetworkPolicy{},
+		"v1/Namespace":                                    &corev1.Namespace{},
+		"v1/Service":                                      &corev1.Service{},
+		"v1/ServiceAccount":                               &corev1.ServiceAccount{},
+		"v1/Pod":                                          &corev1.Pod{},
+		"apps/v1/Deployment":                              &appsv1.Deployment{},
+		"policy/v1/PodDisruptionBudget":                   &policyv1.PodDisruptionBudget{},
+		"rbac.authorization.k8s.io/v1/Role":               &rbacv1.Role{},
+		"rbac.authorization.k8s.io/v1/RoleBinding":        &rbacv1.RoleBinding{},
+		"networking.k8s.io/v1/NetworkPolicy":              &networkingv1.NetworkPolicy{},
+		"rbac.authorization.k8s.io/v1/ClusterRole":        &rbacv1.ClusterRole{},
+		"rbac.authorization.k8s.io/v1/ClusterRoleBinding": &rbacv1.ClusterRoleBinding{},
+		"storage.k8s.io/v1/StorageClass":                  &storagev1.StorageClass{},
+		"v1/PersistentVolumeClaim":                        &corev1.PersistentVolumeClaim{},
+		"v1/PersistentVolume":                             &corev1.PersistentVolume{},
 	}
 	object, known := objects[header.APIVersion+"/"+header.Kind]
 	if !known {
@@ -87,9 +97,13 @@ func TestEveryManifestDecodesStrictly(t *testing.T) {
 		}
 	}
 	want := map[string][]string{
-		"00-namespace.yaml":        {"*v1.Namespace"},
-		"10-host.yaml":             {"*v1.Service", "*v1.Deployment", "*v1.PodDisruptionBudget"},
-		"20-orchestrator.yaml":     {"*v1.ServiceAccount", "*v1.Role", "*v1.RoleBinding", "*v1.Service", "*v1.Deployment"},
+		"00-namespace.yaml": {"*v1.Namespace"},
+		"10-host.yaml":      {"*v1.Service", "*v1.Deployment", "*v1.PodDisruptionBudget"},
+		"20-orchestrator.yaml": {"*v1.ServiceAccount", "*v1.Role", "*v1.ClusterRole", "*v1.ClusterRoleBinding",
+			"*v1.RoleBinding", "*v1.Service", "*v1.Deployment"},
+		"00-storageclass.yaml":     {"*v1.StorageClass"},
+		"10-claims.yaml":           slices.Repeat([]string{"*v1.PersistentVolumeClaim"}, 6),
+		"k3s-volumes.yaml":         slices.Repeat([]string{"*v1.PersistentVolume"}, 6),
 		"30-networkpolicy.yaml":    {"*v1.NetworkPolicy", "*v1.NetworkPolicy"},
 		"kvm-hugepages-probe.yaml": {"*v1.Pod"},
 	}
@@ -177,6 +191,61 @@ func TestTheHostManifestConfiguresAHost(t *testing.T) {
 	if room := config.DiskGoal.UsedBytes - config.SpillBytes.Total() - config.Ephemeral.DiskBytes; room != 38<<30 {
 		t.Fatalf("the manifest leaves the cache %d bytes under its used goal, want 38 GiB", room)
 	}
+}
+
+// hostEnvironment is the host manifest's environment as a pod reads it, with
+// what the ConfigMap, the Secret and the downward API supply stood in for by
+// supplied.
+func hostEnvironment(t *testing.T, supplied map[string]string) map[string]string {
+	t.Helper()
+	_, container := hostContainer(t)
+	values := map[string]string{}
+	for _, variable := range container.Env {
+		value := variable.Value
+		if from := variable.ValueFrom; from != nil {
+			switch {
+			case from.ConfigMapKeyRef != nil:
+				value = supplied[from.ConfigMapKeyRef.Key]
+			case from.SecretKeyRef != nil:
+				value = supplied[from.SecretKeyRef.Key]
+			case from.FieldRef != nil:
+				value = supplied[from.FieldRef.FieldPath]
+			}
+		}
+		values[variable.Name] = value
+	}
+	return values
+}
+
+// The same host manifest keeps the cache on shards when the ConfigMap's
+// shards key says gce: the host serves the shards attached to its node, which
+// it names by the downward API, through the node's /dev mounted at /host/dev.
+func TestTheHostManifestServesShardsWhenTheConfigMapSaysSo(t *testing.T) {
+	values := hostEnvironment(t, map[string]string{"bucket": "sproutfs-demo-project", "prefix": "demo",
+		"token": "token", "status.podIP": "10.0.0.7", "metadata.name": "sproutfs-host-7f9c4-qk2wd",
+		"metadata.namespace": "sproutfs", "spec.nodeName": "gke-pool-1-abcd", "shards": "gce"})
+	config, err := loadConfig(environ(values))
+	if err != nil {
+		t.Fatalf("the host manifest's environment with shards is refused: %v", err)
+	}
+	if config.Shards != "gce" || config.Machine != "gke-pool-1-abcd" || config.ShardDevices != "/host/dev/disk/by-id" {
+		t.Fatalf("the manifest serves shards %q on %q from %q", config.Shards, config.Machine, config.ShardDevices)
+	}
+	pod, container := hostContainer(t)
+	var mount corev1.VolumeMount
+	for _, candidate := range container.VolumeMounts {
+		if candidate.MountPath == "/host/dev" {
+			mount = candidate
+		}
+	}
+	directory := corev1.HostPathDirectory
+	for _, volume := range pod.Volumes {
+		if volume.Name == mount.Name && volume.HostPath != nil && volume.HostPath.Path == "/dev" &&
+			*volume.HostPath.Type == directory {
+			return
+		}
+	}
+	t.Fatalf("the host does not mount the node's /dev at /host/dev: %+v", mount)
 }
 
 // The host's scratch is an emptyDir the pod takes with it, with no size limit

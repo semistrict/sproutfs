@@ -8,7 +8,6 @@ import (
 	hostapi "github.com/semistrict/sproutfs/api/host"
 	"github.com/semistrict/sproutfs/checkpoint"
 	"github.com/semistrict/sproutfs/host"
-	"github.com/semistrict/sproutfs/rank"
 )
 
 // /status reports what a host's fills did under every reason a fill drops
@@ -20,7 +19,7 @@ func TestTheFillsAreReportedByEveryReasonTheyDropFor(t *testing.T) {
 		fill.Dropped[reason] = uint64(reason) + 1
 	}
 	fill.FromReads, fill.Sent, fill.Kept, fill.Refused, fill.QueueBytes = 1, 2, 3, 4, 5
-	report := host.CacheFillReport(checkpoint.DiskStats{Identity: rank.Identity{1}}, fill)
+	report := host.CacheFillReport(true, fill)
 	if report == nil {
 		t.Fatal("a host that keeps a cache disk reports no fills")
 	}
@@ -36,7 +35,7 @@ func TestTheFillsAreReportedByEveryReasonTheyDropFor(t *testing.T) {
 		t.Fatalf("the fills are reported as %+v, want 1 from reads, 2 sent, 3 kept, 4 refused and a queue of 5",
 			*report)
 	}
-	if report := host.CacheFillReport(checkpoint.DiskStats{}, fill); report != nil {
+	if report := host.CacheFillReport(false, fill); report != nil {
 		t.Fatalf("a host that keeps no cache disk reports fills %+v", *report)
 	}
 }

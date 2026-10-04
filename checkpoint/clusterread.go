@@ -31,9 +31,9 @@ import (
 // hold. A disk no member serves has no route, and is passed over as a holder
 // marked down is.
 //
-// A read takes the stripes of the window this host's own disk holds, which
-// cost no request. If they do not make k distinct indices of each page, it
-// asks k+1 of the window's first k+m ranks, less its own, for every stripe of
+// A read takes the stripes of the window the disks this host serves hold,
+// which cost no request. If they do not make k distinct indices of each page,
+// it asks k+1 of the window's first k+m ranks, less its own, for every stripe of
 // the pages they hold, of any index: a join or a leave near the top of a
 // window's ranks moves every holder below it, so a holder seldom holds the
 // index its rank puts on it. Which ranks it asks first is chosen by a hash of
@@ -239,7 +239,7 @@ type clusterSettings struct {
 // second requests, its bucket of reads of the store, the hosts it has marked
 // down, and the requests it has in flight.
 type clusterReader struct {
-	disk     *cacheDisk
+	cluster  *cluster
 	filler   *filler
 	peers    *peer.Table
 	clock    platform.Clock
@@ -270,14 +270,14 @@ type clusterReader struct {
 // newClusterReader starts a cache's reads of the cluster under ctx. Its waits
 // are on the clock of the table of peers, which is the network's; with no
 // table, the wall clock's.
-func newClusterReader(ctx context.Context, disk *cacheDisk, filler *filler, peers *peer.Table,
+func newClusterReader(ctx context.Context, shared *cluster, filler *filler, peers *peer.Table,
 	settings clusterSettings) *clusterReader {
 	ctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	clock := platform.ClockOr(nil)
 	if peers != nil {
 		clock = peers.Clock()
 	}
-	r := &clusterReader{disk: disk, filler: filler, peers: peers, clock: clock, settings: settings, ctx: ctx,
+	r := &clusterReader{cluster: shared, filler: filler, peers: peers, clock: clock, settings: settings, ctx: ctx,
 		cancel: cancel, tokens: storeHedgeMax * storeHedgeEarn,
 		// Both budgets start full, as a bucket does: a reader with no history
 		// may still hedge its first reads.
@@ -365,9 +365,9 @@ func (r *clusterReader) probe(name string)                 { sim.Probe(r.ctx, na
 func (r *clusterReader) buggify(id string, p float64) bool { return sim.Buggify(r.ctx, id, p) }
 
 // on reports whether key is read from the cluster: its window is inside the
-// share, on a disk that follows a membership.
+// share, on a cache that follows a membership.
 func (r *clusterReader) on(key diskKey) bool {
-	_, ok := r.disk.placedBy(key, false)
+	_, ok := r.cluster.placedBy(key, false)
 	return ok
 }
 
@@ -533,7 +533,7 @@ func (r *clusterReader) byWindow(wants []clusterWant) []windowGroup {
 		window := want.key.rankWindow()
 		index, seen := at[window]
 		if !seen {
-			m, _ := r.disk.placedBy(want.key, false)
+			m, _ := r.cluster.placedBy(want.key, false)
 			index = len(groups)
 			at[window] = index
 			groups = append(groups, windowGroup{window: window, m: m})
@@ -548,8 +548,10 @@ func (r *clusterReader) byWindow(wants []clusterWant) []windowGroup {
 type heldStripe struct {
 	stripe stripe.Stripe
 	from   rank.Cache
-	// own is where this host's disk holds it, for a stripe of its own.
-	own *diskLocation
+	// own is where a disk this host serves holds it, and disk that disk, for
+	// a stripe of its own.
+	own  *diskLocation
+	disk *cacheDisk
 }
 
 // stripeAnswer is one holder's answer to a stripe request.
@@ -574,9 +576,11 @@ type windowRead struct {
 	// and cut that the read's caller gave up on it before it ended.
 	own, cut bool
 	wants    []clusterWant
-	// owned says this host serves its disk under m, so its own stripes are
-	// part of the read.
-	owned bool
+	// locals is the disks this host serves under m, each held until the
+	// read finishes, whose stripes are part of the read with no request, and
+	// release gives them back.
+	locals  []*cacheDisk
+	release []func()
 	// newer is the newest generation a holder answered that the read is stale
 	// with, zero for none.
 	newer uint64
@@ -585,7 +589,12 @@ type windowRead struct {
 	// ranks is the window's first k+m ranks, and holders the cache each index
 	// of the code goes on.
 	ranks, holders []rank.Cache
-	self           rank.Cache
+	// self is this host's identity in the membership, by which the ranks it
+	// asks first are picked.
+	self rank.Identity
+	// contributed is the disks of this host's own that held a stripe the
+	// read took.
+	contributed map[*cacheDisk]bool
 
 	// held is the stripes in hand of each want, tried how many were in hand
 	// at its last rebuild that failed, out what each rebuilt to and envelopes
@@ -634,7 +643,7 @@ func (r *clusterReader) readWindow(ctx context.Context, codecs *blob.Codecs, g w
 			r.counted(out, own)
 			return out
 		}
-		next, err := r.disk.catch(ctx, newer)
+		next, err := r.cluster.catch(ctx, newer)
 		if err != nil || next.Generation() <= g.m.Generation() {
 			slog.DebugContext(ctx, "checkpoint: a read told it is stale could not read the membership",
 				"generation", g.m.Generation(), "holder", newer, "error", err)
@@ -702,7 +711,7 @@ func (r *clusterReader) windowRead(codecs *blob.Codecs, window rank.Window, m me
 	list := m.List().Under(code)
 	ranks := list.Ranks(window)
 	w := &windowRead{r: r, codecs: codecs, window: window, m: m, code: code, earlier: earlier, wants: wants,
-		owned: r.disk.owns(m), ranks: ranks, holders: list.Holders(window), self: rank.Cache{Identity: r.disk.identity},
+		ranks: ranks, holders: list.Holders(window), self: r.cluster.self(), contributed: make(map[*cacheDisk]bool),
 		held: make([][]heldStripe, len(wants)), tried: make([]int, len(wants)), out: make([][]byte, len(wants)),
 		envelopes: make([][]byte, len(wants)), answered: make(map[rank.Identity][][]int),
 		askedOf: make(map[rank.Identity]bool),
@@ -710,7 +719,21 @@ func (r *clusterReader) windowRead(codecs *blob.Codecs, window rank.Window, m me
 	for _, want := range wants {
 		w.pages = append(w.pages, uint32(want.key.Page-window.Page(0)))
 	}
+	for _, identity := range r.cluster.disks() {
+		if !r.cluster.serves(m, identity) {
+			continue
+		}
+		if disk, release, kept := r.cluster.hold(identity); kept {
+			w.locals, w.release = append(w.locals, disk), append(w.release, release)
+		}
+	}
 	return w
+}
+
+// local reports whether identity is a disk this host serves under the read's
+// membership, whose stripes the read takes with no request.
+func (w *windowRead) local(identity rank.Identity) bool {
+	return slices.ContainsFunc(w.locals, func(disk *cacheDisk) bool { return disk.identity == identity })
 }
 
 // stale reports a read a holder ahead of it answered stale.
@@ -734,12 +757,17 @@ func (w *windowRead) run(ctx context.Context) {
 	}()
 	r := w.r
 	began := r.clock.Now()
-	own := w.owned && w.readOwn(ctx)
+	own := w.readOwn(ctx)
 	w.join(ctx)
 	if w.complete() {
 		w.own = true
-		for _, want := range w.wants {
-			r.disk.served(want.key, w.code)
+		for _, disk := range w.locals {
+			if !w.contributed[disk] {
+				continue
+			}
+			for _, want := range w.wants {
+				disk.served(want.key, w.code)
+			}
 		}
 		w.repair(ctx)
 		return
@@ -750,17 +778,23 @@ func (w *windowRead) run(ctx context.Context) {
 	}
 	var others []rank.Cache
 	for _, cache := range w.ranks {
-		if cache.Identity != w.self.Identity && w.routed(cache) && !r.marks.isDown(cache.Identity) &&
+		if !w.local(cache.Identity) && w.routed(cache) && !r.marks.isDown(cache.Identity) &&
 			!w.tableDown(cache) {
 			others = append(others, cache)
 		}
 	}
 	want := w.code.K + 1
-	if own && w.ranked(w.self.Identity) {
-		// This host is one of the k+1, and its stripes are in hand.
-		want--
+	if own {
+		// Each ranked disk this host serves that held stripes is one of the
+		// k+1, and its stripes are in hand.
+		for _, disk := range w.locals {
+			if w.contributed[disk] && w.ranked(disk.identity) {
+				want--
+			}
+		}
+		want = max(want, 0)
 	}
-	order := rank.Pick(others, w.self.Identity, w.window, want)
+	order := rank.Pick(others, w.self, w.window, want)
 	switch {
 	case r.bug("cluster-ask-every-holder"):
 		want = len(others)
@@ -887,22 +921,26 @@ func (w *windowRead) complete() bool {
 	return !slices.ContainsFunc(w.out, func(data []byte) bool { return data == nil })
 }
 
-// readOwn takes the stripes of the window this host's own disk holds, of any
-// index, and reports whether there were any. Where this cache is ranked for
-// the window, they are its answer.
+// readOwn takes the stripes of the window the disks this host serves hold, of
+// any index, and reports whether there were any. Where such a disk is ranked
+// for the window, they are its answer.
 func (w *windowRead) readOwn(ctx context.Context) bool {
-	indices := make([][]int, len(w.wants))
 	found := false
-	for at, want := range w.wants {
-		stripes, locations, _ := w.r.disk.ownStripes(ctx, want.key, w.code)
-		for index, s := range stripes {
-			w.held[at] = append(w.held[at], heldStripe{stripe: s, from: w.self, own: &locations[index]})
-			indices[at] = append(indices[at], s.Index)
-			found = true
+	for _, disk := range w.locals {
+		indices := make([][]int, len(w.wants))
+		from := rank.Cache{Identity: disk.identity}
+		for at, want := range w.wants {
+			stripes, locations, _ := disk.ownStripes(ctx, want.key, w.code)
+			for index, s := range stripes {
+				w.held[at] = append(w.held[at], heldStripe{stripe: s, from: from, own: &locations[index], disk: disk})
+				indices[at] = append(indices[at], s.Index)
+				w.contributed[disk] = true
+				found = true
+			}
 		}
-	}
-	if w.ranked(w.self.Identity) {
-		w.answered[w.self.Identity] = indices
+		if w.ranked(disk.identity) {
+			w.answered[disk.identity] = indices
+		}
 	}
 	return found
 }
@@ -998,11 +1036,16 @@ func (w *windowRead) deliver(answer stripeAnswer) {
 	w.events <- answer
 }
 
-// finish ends the read: what is still to arrive is given back as it comes.
+// finish ends the read: the disks of its own it held are given back, and
+// what is still to arrive is given back as it comes.
 func (w *windowRead) finish() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.finished = true
+	for _, release := range w.release {
+		release()
+	}
+	w.release = nil
 	for {
 		select {
 		case answer := <-w.events:
@@ -1162,7 +1205,7 @@ func (w *windowRead) wrongStripe(ctx context.Context, at int, held heldStripe) {
 	if held.own != nil {
 		w.r.count(func(stats *ReadStats) { stats.WrongStripes++ })
 		w.r.probe(ProbeClusterWrongStripe)
-		w.r.disk.forget(ctx, *held.own, w.wants[at].key, fmt.Errorf("stripe %d of %s rebuilt no envelope that passes its check",
+		held.disk.forget(ctx, *held.own, w.wants[at].key, fmt.Errorf("stripe %d of %s rebuilt no envelope that passes its check",
 			held.stripe.Index, w.code))
 		return
 	}
@@ -1174,7 +1217,7 @@ func (w *windowRead) wrongStripe(ctx context.Context, at int, held heldStripe) {
 func (w *windowRead) dropAt(ctx context.Context, cache rank.Cache, page uint32, index int) {
 	w.r.count(func(stats *ReadStats) { stats.WrongStripes++ })
 	w.r.probe(ProbeClusterWrongStripe)
-	if cache.Identity == w.self.Identity {
+	if w.local(cache.Identity) {
 		return
 	}
 	if w.r.filler.tell(w.m, cache, peer.Drop{Window: w.window, Page: page, Index: index, Code: w.code}) {

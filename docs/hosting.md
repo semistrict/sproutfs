@@ -1039,7 +1039,11 @@ file and takes its identity. A host reports itself in `/status`, under
   moves windows.
 
 A host that keeps no cache disk, or gives it no space, reports no `member`,
-is no member, and never reads the membership.
+is no member, and never reads the membership. A host that serves shards is
+the exception: it keeps no disk of its own and is a member under an identity
+drawn when its process starts, and reports under `disks` the shards it holds
+open, with the machine it runs on ([shards on network
+disks](#shards-on-network-disks)).
 
 **The orchestrator moves it one step at a time.** Every five seconds the
 orchestrator surveys the host pods and takes one step towards them
@@ -1053,20 +1057,32 @@ reported it. The steps, in order:
 
 0. The membership takes the deployment's codes, so a new deployment's disks
    are filled under its code from the start.
-1. A member whose pod is gone drains: it is draining, and its disks are
-   releasing.
-2. A releasing disk whose member's pod is gone is let go: nobody serves it.
-3. A released disk no pod reports is removed. This is the leave, and it moves
-   that disk's windows.
-4. A draining member with no disk leaves.
-5. A pod that is not listed joins, with its disk attaching: the join, one
-   generation.
-6. A member follows its pod's address.
-7. An attaching disk its member reports is served.
-8. A disk follows the weight its member reports.
+1. A member whose pod is gone, or is terminating, drains: it is draining,
+   and its disks are releasing.
+2. A releasing disk is let go once nobody serves it: a host's own disk once
+   its member's pod is gone; a shard once its member's host is gone or no
+   longer reports it open, and the cloud has it attached to no machine.
+3. A released disk no pod reports, and that is not a shard, is removed. This
+   is the leave, and it moves that disk's windows.
+4. A shard not listed is added, released. It takes its place in every
+   window's ranks at once.
+5. A draining member with no disk leaves.
+6. A pod that is not listed, and not terminating, joins, with its own disk
+   attaching: the join, one generation.
+7. A member follows its pod's address.
+8. An attaching disk its member reports is served.
+9. A disk follows the weight its member reports, and a shard the weight of
+   its network disk.
+10. A released shard is assigned to the member that serves the fewest disks,
+    among the members whose pods run, are not terminating and report a
+    machine.
+11. While no shard is attaching or releasing, a member that serves two more
+    shards than another releases one, so the shards spread over the hosts
+    as they join.
 
-So a host drains before it leaves, and a join, a leave or a change of weight
-is one generation. The code is the orchestrator's `SPROUTFS_CACHE_CODE`,
+So a host drains before it leaves, a join, a leave or a change of weight is
+one generation, and a shard is released, closed, detached and let go before
+it is assigned again. The code is the orchestrator's `SPROUTFS_CACHE_CODE`,
 written as `4+2`, and 4+2 when it is unset. The earlier codes are its
 `SPROUTFS_CACHE_EARLIER_CODES`, newest first, a comma-separated list of at
 most three. The orchestrator writes both in the membership, in one
@@ -1119,12 +1135,130 @@ scores are compared in integer arithmetic, with a fixed-point logarithm, so
 hosts of different architectures rank alike. A host alone ranks first for
 every window, and its one stripe is the envelope whole.
 
-**Network disks.** The membership already holds a disk's move between
-members: released, let go once its member has stopped serving it, assigned to
-another, and served once that member has it attached. The hosts' side of it,
-attaching and detaching a network disk and letting go of one they released,
-is TASK-86. Today each host's disk is a file on its node, and a disk moves
-only with its node.
+**Network disks.** A deployment may keep the cluster's cache on shards
+instead of the hosts' own disks: see the next section. Then the disks move
+between members as compute scales, and the windows ranked over them do not.
+
+## Shards on network disks
+
+An autoscaler adds and removes hosts through the day. A cache on the hosts'
+own disks pays for every change: a join hides a stripe of about
+(k+m)/(N+1) of the windows, and a host removed takes its stripes with it
+([the plan](../plans/disk-cache-2026-10-02.md#shards-on-network-disks)). So a
+deployment may keep its cache on a fixed set of **shards** instead: each one
+network disk, a single-writer Hyperdisk Balanced on GCP or gp3 on AWS, with
+the disk log on it. Windows are ranked over the shards, never the hosts, so
+the ranking changes only when the shard set is changed on purpose. A shard
+outlives the machine it is attached to, and moves to another in seconds.
+
+**The membership is the authority.** Which member serves which shard is in
+the membership, changed by compare-and-set like the rest of it. The
+controller, the orchestrator, carries it out through the cloud's attach API:
+Compute Engine's `instances.attachDisk` and `instances.detachDisk`
+(`platform.NetworkDisks`). Kubernetes provisions the disks and never attaches
+them: each shard is a PersistentVolumeClaim from a StorageClass, labelled
+`app.kubernetes.io/component=sproutfs-shard`, and no pod mounts it. The
+orchestrator reads the claims, and each bound claim's PersistentVolume names
+the disk by its CSI volume handle, `projects/<project>/zones/<zone>/disks/<name>`.
+A shard's identity is derived from that handle (`membership.ShardIdentity`),
+so every controller lists one shard under one identity before any host has
+opened it, and its weight comes from the disk's size.
+
+Kubernetes alone could not do this. A running pod cannot gain a volume, so a
+host that took a shard through a claim would have to restart, and every VM on
+it with it. A pod per shard scheduled by Kubernetes would be placed by the
+scheduler, not the membership, and a node being drained would evict it under
+the host still serving from it.
+
+**Members are hosts.** A host given `SPROUTFS_SHARDS=gce` keeps no cache disk
+of its own. It is a member under an identity drawn when its process starts,
+so a host started again is a new member and never takes an assignment its
+predecessor held. It reports in `/status`, under `member`, the shards it
+holds open and `machine`, its node's name (`SPROUTFS_NODE_NAME`), which is the
+Compute Engine instance a shard is attached to. A host may serve several
+shards, and a membership of fewer hosts than shards puts several on each.
+
+**A move.** Each orchestrator pass takes one step of the membership and then
+asks the cloud for what the membership calls for, from the cloud's own list
+of where each disk is attached (`membership.ShardControl`, `membership.Carry`):
+
+1. Released: the membership assigns a released shard to the member serving
+   the fewest, attaching, at the next generation.
+2. The orchestrator detaches the disk from any machine but the member's, and
+   attaches it to the member's machine.
+3. The host, once the membership it holds assigns it the shard, reads the
+   object again, and opens the shard only if it still assigns it there under
+   the same generation. It opens the device, `/dev/disk/by-id/google-<name>`,
+   with `O_EXCL`, so one process of the machine holds it at a time. The cache
+   takes the shard's lease for that generation and reads its regions back
+   from their tables. The host reports the shard open.
+4. The membership marks it serving, and the host serves it while the
+   membership it holds has it serving there, under that generation.
+5. A host the autoscaler removes is drained as soon as its pod is
+   terminating, while it still answers: its shards are releasing.
+6. The host closes a shard as soon as the membership it holds does not
+   assign it there: its open region is closed with its table, and the device
+   is closed. It stops reporting the shard.
+7. The orchestrator detaches the disk from every machine the cloud lists.
+8. Once the host reports it closed, or is gone, and the cloud has it on no
+   machine, the membership lets it go: released, and back to step 1.
+
+A move costs a shard its server for a few seconds: a detach and an attach,
+the read back of its tables, and a few passes of the controller. On GCE a
+Hyperdisk Balanced shard holding 32 GiB moved in 13 to 15 s with passes of
+one second, whether its host drained or died: about 10 s of Compute Engine's
+calls, 0.3 s of read back, and the rest passes
+([measured](measurements/gce-shards-2026-10-04.md#moving-a-shard)). Reads hedge
+around it as around any holder that does not answer: under 4+2 two shards may
+move at once with no read of the store.
+
+**Crash points.** Every pass derives what it asks the cloud for from the
+membership as the store holds it and the disks as the cloud reports them,
+never from what it asked before. So a shard attached and not recorded, or
+recorded and not attached, converges whichever process crashed between the
+two, and two orchestrators at once converge too. An attach the cloud did and
+whose reply was lost is found attached on the next pass. A host that dies
+with a shard open leaves it attached to its machine: its member drains, the
+orchestrator detaches the disk, the membership lets it go, and another member
+opens it and reads it back; the open region the crash left without a table is
+given back. A shard that cannot be described is left as it is.
+
+**Fencing.** No shard is served by two members, by four guards:
+
+- The cloud attaches a single-writer disk to one machine at a time, and a
+  detach takes the device from every process of that machine.
+- A shard is let go only once its host has closed it and the cloud has it on
+  no machine, so a member that lost a shard has lost its device too.
+- On one machine, `O_EXCL` admits one process to the device.
+- The shard's header region ends with a lease: the generation of the
+  assignment it was opened under and the member's identity. A member whose
+  assignment is older than the lease is refused the shard, and a member reads
+  the lease again before every region it opens, every region it closes and
+  every pass, and stops writing a shard whose lease another member took.
+
+And every answer for a disk names the generation that assigned it, which a
+sender that knows of the move refuses ([the membership](#the-membership)).
+`spec/shards` checks the first three keep `OneServer` with a controller and
+hosts that act on stale copies, and that the lease keeps `NoStaleWrite` under
+a cloud that attaches a disk to two machines. The lease also records the
+regions the file has ever opened, so a device of hundreds of gigabytes that
+holds a few regions is read back in a few reads rather than one per slot.
+
+**The disk limiter.** A shard's disk is its own: its share is the device less
+its header region, every write is admitted, and nothing else writes it. The
+host's limiter counts only the host's own disk, its spill files and its VMM
+staging, and no cache.
+
+**Configuration.** The host's `SPROUTFS_SHARDS=gce` and `SPROUTFS_NODE_NAME`
+(the node's name, from the downward API), with no `SPROUTFS_CACHE_DIR`. The
+orchestrator's `SPROUTFS_SHARDS=gce`, and `SPROUTFS_SHARD_CLAIMS`, the label
+selector of the shards' claims in its namespace. The orchestrator needs to
+list claims and get PersistentVolumes, and its service account needs
+`compute.disks.get` and `compute.disks.use` on the shards,
+`compute.instances.get`, `compute.instances.attachDisk` and
+`compute.instances.detachDisk` on the nodes, and `compute.zoneOperations.get`.
+`deploy/README.md` gives the manifests and the sizing. AWS is the same design
+over EC2's `AttachVolume` and `DetachVolume`, and its adapter is not written.
 
 ## The code
 
@@ -1796,6 +1930,10 @@ free, so each sets `SPROUTFS_DISK_USED_BYTES` to its part of the disk. Then the
 first cache to fill does not take all of it, and a host that restarts finds
 room for its spill files at once. Within that, the reserve keeps room for a
 VM's staging however full the other caches are.
+
+A host that serves shards counts none of them: each shard's share is its own
+device less its header region ([shards on network
+disks](#shards-on-network-disks)).
 
 ## Shutdown
 

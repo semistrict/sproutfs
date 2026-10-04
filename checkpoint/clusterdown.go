@@ -131,7 +131,7 @@ func failedHere(err error) bool {
 // least one, is marked down already, and starts probing it back.
 func (m *downMarks) mark(ctx context.Context, cache rank.Cache, cause error) {
 	r := m.reader
-	held, _ := r.disk.following()
+	held, _ := r.cluster.following()
 	list := held.List()
 	limit := max(1, list.Len()/5)
 	m.mu.Lock()

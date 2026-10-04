@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"slices"
 
 	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/membership"
@@ -127,19 +128,23 @@ type Presence struct {
 	Code    rank.Code
 }
 
-// Cache is what a host's disk cache answers its peers with. Every method is
-// asked only for the disk the cache keeps, and only under a membership that
-// has this host serve it at the generation the request named, which the
-// methods that place a window by its ranks are given.
+// Cache is what a host's disk cache answers its peers with. A host may keep
+// several disks: its own, or the shards the membership assigns it. Every
+// method is asked only for a disk the cache keeps, named by its identity, and
+// only under a membership that has this host serve it at the generation the
+// request named, which the methods that place a window by its ranks are
+// given.
 type Cache interface {
-	// Identity is the identity of the disk the cache keeps.
-	Identity() rank.Identity
-	ReadStripes(ctx context.Context, m membership.Membership, read StripeRead) (Stripes, error)
+	// Disks is the identity of every disk the cache keeps now, in order,
+	// and Keeps whether it keeps one.
+	Disks() []rank.Identity
+	Keeps(disk rank.Identity) bool
+	ReadStripes(ctx context.Context, m membership.Membership, disk rank.Identity, read StripeRead) (Stripes, error)
 	// Keep writes stripes, or reports ErrDropped when it does not.
-	Keep(ctx context.Context, m membership.Membership, keep Keep) error
-	Drop(ctx context.Context, drop Drop) error
+	Keep(ctx context.Context, m membership.Membership, disk rank.Identity, keep Keep) error
+	Drop(ctx context.Context, disk rank.Identity, drop Drop) error
 	// Presence reports, per window asked, the pages it holds a stripe of.
-	Presence(ctx context.Context, presence Presence) ([][]uint32, error)
+	Presence(ctx context.Context, disk rank.Identity, presence Presence) ([][]uint32, error)
 }
 
 func windowToWire(window rank.Window) *peerv1.Window {
@@ -207,10 +212,11 @@ func codeFromWire(k, m uint32) rank.Code { return rank.Code{K: int(k), M: int(m)
 func cacheStatus(status peerv1.CacheStatus) *peerv1.CacheStatus { return &status }
 
 // admission is how a host answers one cache request: under which generation,
-// naming which assignment of its disk, and with what status when it does not
-// answer it.
+// for which of its disks, naming which assignment of it, and with what status
+// when it does not answer it.
 type admission struct {
 	m          membership.Membership
+	disk       rank.Identity
 	generation uint64
 	assigned   uint64
 	// refused is the status of a request the host does not answer, nil for
@@ -220,7 +226,7 @@ type admission struct {
 
 // admitCache decides how this host answers a request naming disk at generation. A
 // host behind the request reads the membership first. It answers only under
-// the request's generation, and only for the disk it keeps while that
+// the request's generation, and only for a disk it keeps while that
 // generation has it serve it. Every answer names the generation that
 // assigned it the disk, as the last membership that had it serve the disk
 // said.
@@ -249,21 +255,49 @@ func (s *Server) admitCache(disk []byte, generation uint64) admission {
 		answered.refused = cacheStatus(peerv1.CacheStatus_CACHE_STATUS_STALE)
 		return answered
 	}
-	identity := cache.Identity()
-	if m.Serves(s.config.Member, identity) {
-		found, _ := m.Disk(identity)
-		s.assigned.Store(found.Assigned)
+	identity, named := identityOf(disk)
+	if !named || !cache.Keeps(identity) {
+		if !s.bug("peer-answer-for-another-cache") {
+			s.probe(membership.ProbeNotServed)
+			answered.refused = notMe
+			return answered
+		}
+		// The guard answers for whichever disk the host keeps.
+		if kept := cache.Disks(); len(kept) > 0 {
+			identity = kept[0]
+		}
 	}
-	answered.assigned = s.assigned.Load()
-	switch {
-	case string(disk) != string(identity[:]) && !s.bug("peer-answer-for-another-cache"):
-		s.probe(membership.ProbeNotServed)
-		answered.refused = notMe
-	case !m.Serves(s.config.Member, identity) && !s.bug("membership-serve-stale-assignment"):
+	answered.disk = identity
+	answered.assigned = s.assignedOf(m, identity)
+	if !m.Serves(s.config.Member, identity) && !s.bug("membership-serve-stale-assignment") {
 		s.probe(membership.ProbeNotServed)
 		answered.refused = notMe
 	}
 	return answered
+}
+
+// identityOf reads a disk's identity off the wire, and whether it names one.
+func identityOf(disk []byte) (rank.Identity, bool) {
+	var identity rank.Identity
+	if len(disk) != len(identity) {
+		return identity, false
+	}
+	copy(identity[:], disk)
+	return identity, !identity.IsZero()
+}
+
+// assignedOf is the generation that assigned this host disk, as the last
+// membership that had it serve the disk said, which m updates when it does:
+// what every answer for the disk names. A host that lost the disk names it
+// still, which no sender that knows of the loss accepts.
+func (s *Server) assignedOf(m membership.Membership, disk rank.Identity) uint64 {
+	s.assignedMu.Lock()
+	defer s.assignedMu.Unlock()
+	if m.Serves(s.config.Member, disk) {
+		found, _ := m.Disk(disk)
+		s.assigned[disk] = found.Assigned
+	}
+	return s.assigned[disk]
 }
 
 var notMe = cacheStatus(peerv1.CacheStatus_CACHE_STATUS_NOT_ME)
@@ -297,7 +331,7 @@ func (s *Server) answerReadStripes(session *session, request *peerv1.ReadStripes
 	if len(request.GetPages()) > 0 {
 		read.Pages = bitmapPages(request.GetPages())
 	}
-	stripes, err := s.config.Cache.ReadStripes(s.ctx, admitted.m, read)
+	stripes, err := s.config.Cache.ReadStripes(s.ctx, admitted.m, admitted.disk, read)
 	if err == nil && stripes.Size > maximum {
 		err = fmt.Errorf("the cache answered %d bytes of a read of at most %d", stripes.Size, maximum)
 	}
@@ -351,7 +385,7 @@ func (s *Server) answerKeep(session *session, request *peerv1.Keep, payload *pay
 		return answer{message: busy}
 	}
 	defer release()
-	err = s.config.Cache.Keep(s.ctx, admitted.m, Keep{Window: windowFromWire(request.GetWindow()),
+	err = s.config.Cache.Keep(s.ctx, admitted.m, admitted.disk, Keep{Window: windowFromWire(request.GetWindow()),
 		Code: codeFromWire(request.GetK(), request.GetM()), Items: items, Payload: payload.bytes,
 		Repair: request.GetRepair(), Publication: request.GetPublication()})
 	if err != nil {
@@ -365,7 +399,7 @@ func (s *Server) answerDrop(request *peerv1.Drop) answer {
 	status := admitted.refused
 	if status == nil {
 		status = cacheStatus(peerv1.CacheStatus_CACHE_STATUS_OK)
-		if err := s.config.Cache.Drop(s.ctx, Drop{Window: windowFromWire(request.GetWindow()), Page: request.GetPage(),
+		if err := s.config.Cache.Drop(s.ctx, admitted.disk, Drop{Window: windowFromWire(request.GetWindow()), Page: request.GetPage(),
 			Index: int(request.GetIndex()), Code: codeFromWire(request.GetK(), request.GetM())}); err != nil {
 			status = cacheStatus(peerv1.CacheStatus_CACHE_STATUS_UNSPECIFIED)
 		}
@@ -387,7 +421,7 @@ func (s *Server) answerPresence(request *peerv1.Presence) answer {
 	for _, window := range request.GetWindows() {
 		windows = append(windows, windowFromWire(window))
 	}
-	held, err := s.config.Cache.Presence(s.ctx, Presence{Windows: windows, Code: codeFromWire(request.GetK(), request.GetM())})
+	held, err := s.config.Cache.Presence(s.ctx, admitted.disk, Presence{Windows: windows, Code: codeFromWire(request.GetK(), request.GetM())})
 	if err != nil || len(held) != len(windows) {
 		return present(cacheStatus(peerv1.CacheStatus_CACHE_STATUS_UNSPECIFIED), nil)
 	}
@@ -398,19 +432,29 @@ func (s *Server) answerPresence(request *peerv1.Presence) answer {
 	return present(cacheStatus(peerv1.CacheStatus_CACHE_STATUS_OK), bitmaps)
 }
 
-// answerProbe says whether this host keeps the disk named; an empty name asks
-// only whether the host is there. A probe asks whether a host is there to be
-// asked at all, under no generation, so it is answered by the disk alone.
+// answerProbe says whether this host keeps the disk named, and names it; an
+// empty name asks only whether the host is there, and is answered with the
+// first disk the host keeps. A probe asks whether a host is there to be asked
+// at all, under no generation, so it is answered by the disks alone.
 func (s *Server) answerProbe(request *peerv1.Probe) answer {
-	var identity []byte
+	var kept []rank.Identity
 	if s.config.Cache != nil {
-		own := s.config.Cache.Identity()
-		identity = own[:]
+		kept = s.config.Cache.Disks()
+	}
+	var identity []byte
+	if len(kept) > 0 {
+		identity = kept[0][:]
 	}
 	status := peerv1.CacheStatus_CACHE_STATUS_OK
-	if named := request.GetCache(); len(named) > 0 && (identity == nil ||
-		string(named) != string(identity) && !s.bug("peer-answer-for-another-cache")) {
-		status = peerv1.CacheStatus_CACHE_STATUS_NOT_ME
+	if named := request.GetCache(); len(named) > 0 {
+		disk, ok := identityOf(named)
+		switch {
+		case ok && slices.Contains(kept, disk):
+			identity = disk[:]
+		case len(kept) > 0 && s.bug("peer-answer-for-another-cache"):
+		default:
+			status = peerv1.CacheStatus_CACHE_STATUS_NOT_ME
+		}
 	}
 	return answer{message: peerv1.Probed_builder{Status: &status, Cache: identity}.Build()}
 }

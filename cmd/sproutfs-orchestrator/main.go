@@ -63,6 +63,11 @@ type config struct {
 	// until they age out.
 	CacheCode         rank.Code
 	CacheEarlierCodes []rank.Code
+	// Shards is the cloud whose network disks are the deployment's shards,
+	// SPROUTFS_SHARDS: gce, or empty for a deployment whose hosts keep disks
+	// of their own. ShardClaims selects the shards' claims in the namespace,
+	// SPROUTFS_SHARD_CLAIMS.
+	Shards, ShardClaims string
 }
 
 func loadConfig(lookup func(string) string) (config, error) {
@@ -103,6 +108,11 @@ func loadConfig(lookup func(string) string) (config, error) {
 		if c.CacheCode, err = rank.ParseCode(code); err != nil {
 			errs = append(errs, fmt.Errorf("SPROUTFS_CACHE_CODE: %w", err))
 		}
+	}
+	c.Shards = text("SPROUTFS_SHARDS", "")
+	c.ShardClaims = text("SPROUTFS_SHARD_CLAIMS", "app.kubernetes.io/component=sproutfs-shard")
+	if c.Shards != "" && c.Shards != "gce" {
+		errs = append(errs, fmt.Errorf("SPROUTFS_SHARDS is %q, want gce or nothing", c.Shards))
 	}
 	if codes := text("SPROUTFS_CACHE_EARLIER_CODES", ""); codes != "" {
 		for _, written := range strings.Split(codes, ",") {
@@ -181,6 +191,18 @@ func run() error {
 		dial: dialHost(hosts, config.HostAPIPort, token), identify: newIdentity,
 		apiPort: config.HostAPIPort, pagePort: config.HostPagePort, table: catalog,
 		audit: auditing(objects), code: config.CacheCode, earlier: config.CacheEarlierCodes, members: members,
+	}
+	// The shards are network disks the cloud attaches where the membership
+	// says, through its attach API, with the pod's own credentials.
+	if config.Shards == "gce" {
+		disks, err := adapters.NewGCENetworkDisks(ctx, "", "", "")
+		if err != nil {
+			return fmt.Errorf("compute engine: %w", err)
+		}
+		o.shards = &membership.ShardControl{Store: members, Disks: disks}
+		o.shardVolumes = func(ctx context.Context) ([]string, error) {
+			return pods.ShardVolumes(ctx, config.ShardClaims)
+		}
 	}
 	// The table is rebuilt from the deployment itself before anything is
 	// served — a file left by a previous process describes a cluster that has

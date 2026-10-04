@@ -136,6 +136,10 @@ func run() error {
 			return fmt.Errorf("cache directory %s: %w", config.CacheDir, err)
 		}
 	}
+	if config.Shards == "gce" {
+		supervisor.Shards = host.ShardsConfig{Devices: adapters.NewGCEDevices(config.ShardDevices),
+			Machine: config.Machine}
+	}
 	supervisor.Deployment = checkpoint.CacheDeployment{Store: config.Store.Provider, Bucket: config.Store.Bucket,
 		Prefix: config.Store.Prefix}
 	// The write budget is measured by the counter of the device under the

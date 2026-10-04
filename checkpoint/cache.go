@@ -29,6 +29,12 @@ type CacheConfig struct {
 	// file is emptied. The file is the caller's to close after the cache. A
 	// nil Disk keeps nothing on disk, and every pull is refused.
 	Disk platform.File
+	// Shards has the cache serve the shards the membership assigns this host,
+	// each added as its network disk is attached (AddShard) and removed as
+	// it is released (RemoveShard), beside its own Disk or without one. A
+	// cache with shards fills and reads the cluster whatever disks it keeps
+	// at the moment, none among them.
+	Shards bool
 	// Deployment is the deployment the Disk belongs to, which its header
 	// names, and Entropy what a new file's identity is drawn from: nil is the
 	// operating system's.
@@ -101,10 +107,15 @@ type CacheConfig struct {
 type Cache struct {
 	mu        sync.Mutex
 	resources *resource.Budget
-	// disk is the second tier, nil where the host keeps nothing on disk;
-	// filler what fills the cluster from it, and reader what reads the
-	// cluster through it, nil with it.
+	// disk is the host's own disk, the second tier, nil where the host keeps
+	// nothing on its own disk. cluster is every disk the cache keeps for the
+	// cluster, its own and the shards it serves, and how it places them;
+	// filler what fills the cluster, and reader what reads it, nil for a
+	// cache that keeps no disk and serves no shard. shard is how a shard's
+	// disk is laid out.
 	disk       *cacheDisk
+	cluster    *cluster
+	shard      diskSettings
 	filler     *filler
 	reader     *clusterReader
 	unregister func()
@@ -212,12 +223,13 @@ type CacheStats struct {
 	CoalescedLoads uint64
 	// Evictions counts entries dropped by local or shared pressure and clearing.
 	Evictions uint64
-	// Disk is the disk tier's, zero where the host keeps nothing on disk,
-	// Fill what its fills of the cluster did, and Read what its reads of the
-	// cluster did.
-	Disk DiskStats
-	Fill FillStats
-	Read ReadStats
+	// Disk is the disk tier's, zero where the host keeps nothing on its own
+	// disk, Shards each shard's it serves now, Fill what its fills of the
+	// cluster did, and Read what its reads of the cluster did.
+	Disk   DiskStats
+	Shards []DiskStats
+	Fill   FillStats
+	Read   ReadStats
 }
 
 // NewCache registers the cache with the host resource owner. Close it when
@@ -251,24 +263,29 @@ func NewCache(ctx context.Context, resources *resource.Budget, config CacheConfi
 		diskHeaderBytes(config.Deployment) > config.DiskRegionBytes {
 		return nil, ErrInvalidConfig
 	}
-	cache := &Cache{resources: resources, limit: config.MaxConcurrentLoads,
+	shared := newCluster(config.ClusterPercent)
+	settings := diskSettings{regionBytes: config.DiskRegionBytes, indexLimit: config.DiskIndexBytes,
+		threshold: config.DiskSecondChanceReads, deployment: config.Deployment, entropy: config.Entropy,
+		cluster: shared}
+	cache := &Cache{resources: resources, limit: config.MaxConcurrentLoads, cluster: shared, shard: settings,
 		entries: make(map[cacheKey]*list.Element), flights: make(map[cacheKey]*cacheFlight), changed: make(chan struct{})}
 	budget := config.Budget
 	if budget == nil && config.DiskBytes > 0 {
 		budget = fixedShare(config.DiskBytes)
 	}
 	if config.Disk != nil && budget != nil {
-		disk, err := openCacheDisk(ctx, config.Disk, budget, diskSettings{regionBytes: config.DiskRegionBytes,
-			indexLimit: config.DiskIndexBytes, threshold: config.DiskSecondChanceReads,
-			deployment: config.Deployment, entropy: config.Entropy, clusterPercent: config.ClusterPercent})
+		disk, err := openCacheDisk(ctx, config.Disk, budget, settings)
 		if err != nil {
 			return nil, fmt.Errorf("the page cache's disk: %w", err)
 		}
 		cache.disk = disk
-		cache.filler = newFiller(ctx, disk, fillSettings{peers: config.Peers, clock: config.Clock,
+		shared.own = disk
+	}
+	if cache.disk != nil || config.Shards {
+		cache.filler = newFiller(ctx, shared, fillSettings{peers: config.Peers, clock: config.Clock,
 			queueBytes: config.FillQueueBytes, bytesPerSecond: config.FillBytesPerSecond,
 			rightInterval: config.FillRightInterval})
-		cache.reader = newClusterReader(ctx, disk, cache.filler, config.Peers, clusterSettings{
+		cache.reader = newClusterReader(ctx, shared, cache.filler, config.Peers, clusterSettings{
 			hedgeFloor: config.ClusterHedgeFloor, bound: config.ClusterBound, stripeTimeout: config.ClusterStripeTimeout,
 			probeFirst: DefaultProbeFirst, probeMax: DefaultProbeMax, headEvery: config.HeadCheckEvery})
 	}
@@ -279,38 +296,118 @@ func NewCache(ctx context.Context, resources *resource.Budget, config CacheConfi
 // Stats reports the cache's current occupancy and cumulative counters.
 func (c *Cache) Stats() CacheStats {
 	var disk DiskStats
+	var shards []DiskStats
 	var fill FillStats
 	var read ReadStats
 	if c.disk != nil {
-		disk, fill, read = c.disk.stats(), c.filler.statistics(), c.reader.statistics()
+		disk = c.disk.stats()
+	}
+	for _, held := range c.cluster.all() {
+		if held != c.disk {
+			shards = append(shards, held.stats())
+		}
+	}
+	if c.filler != nil {
+		fill, read = c.filler.statistics(), c.reader.statistics()
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return CacheStats{ResidentBytes: c.used, Entries: len(c.entries), ActiveLoads: c.active,
 		PeakLoads: c.peak, Hits: c.hits, Misses: c.misses, CoalescedLoads: c.coalesced, Evictions: c.evictions,
-		Disk: disk, Fill: fill, Read: read}
+		Disk: disk, Shards: shards, Fill: fill, Read: read}
 }
 
-// FollowMembership has the cache's disk keep and read stripes by the
+// FollowMembership has the cache's disks keep and read stripes by the
 // membership source holds, as the host of member: for each window inside the
 // share CacheConfig.ClusterPercent turns on, the stripes of its envelopes the
-// membership ranks this disk for, under the membership's code, while the
+// membership ranks each disk for, under the membership's code, while the
 // membership has member serve the disk. Every other window, and every window
-// until it is called, the disk keeps whole. It does nothing for a cache that
-// keeps no disk.
+// until it is called, the host's own disk keeps whole.
 func (c *Cache) FollowMembership(source membership.Source, member rank.Identity) {
-	if c.disk != nil {
-		c.disk.follow(source, member)
+	c.cluster.follow(source, member)
+}
+
+// AddShard has the cache serve a shard, a network disk the membership
+// assigned this host under shard.Lease: its header is checked, its lease
+// taken, and what it holds read back before it returns, and the cache keeps
+// and serves it from then on, while the membership has this host serve it.
+// A shard leased under a newer assignment is refused with ErrFenced, and
+// nothing on it is changed.
+func (c *Cache) AddShard(ctx context.Context, shard ShardConfig) error {
+	if c.filler == nil {
+		return fmt.Errorf("%w: the cache was not made to serve shards", ErrInvalidConfig)
 	}
+	if shard.Device == nil || shard.Identity.IsZero() || shard.Budget == nil || shard.Lease.Assigned == 0 ||
+		shard.Lease.Member.IsZero() {
+		return fmt.Errorf("%w: a shard needs a device, an identity, a budget and a lease", ErrInvalidConfig)
+	}
+	if c.cluster.keeps(shard.Identity) {
+		return fmt.Errorf("%w: the cache keeps disk %s already", ErrInvalidConfig, shard.Identity)
+	}
+	settings := c.shard
+	lease := shard.Lease
+	settings.identity, settings.lease = shard.Identity, &lease
+	disk, err := openCacheDisk(ctx, shard.Device, shard.Budget, settings)
+	if err != nil {
+		return fmt.Errorf("shard %s: %w", shard.Identity, err)
+	}
+	if err := c.cluster.add(disk); err != nil {
+		disk.shutdown(ctx)
+		return err
+	}
+	return nil
+}
+
+// RemoveShard stops the cache serving a shard: no request takes it from here
+// on, and once the last that did has finished its open region is closed with
+// its table, so the next member to open it reads it back. The device is the
+// caller's to close after.
+func (c *Cache) RemoveShard(ctx context.Context, identity rank.Identity) error {
+	disk, err := c.cluster.remove(ctx, identity)
+	if err != nil {
+		return err
+	}
+	disk.shutdown(ctx)
+	return nil
+}
+
+// Keeps reports whether the cache keeps the disk of identity now: its own, or
+// a shard it serves.
+func (c *Cache) Keeps(identity rank.Identity) bool { return c.cluster.keeps(identity) }
+
+// CheckShard reads a shard's lease back, and reports ErrFenced where another
+// member took it, or the error of a device that no longer reads: either way
+// the shard is to be removed.
+func (c *Cache) CheckShard(ctx context.Context, identity rank.Identity) error {
+	disk, release, kept := c.cluster.hold(identity)
+	if !kept {
+		return fmt.Errorf("%w: %s", ErrNotKept, identity)
+	}
+	defer release()
+	return disk.checkLease(ctx)
+}
+
+// Fenced reports whether a shard the cache serves found its lease taken by
+// another member's: the shard writes nothing more, and its member should
+// remove it.
+func (c *Cache) Fenced(identity rank.Identity) bool {
+	disk, release, kept := c.cluster.hold(identity)
+	if !kept {
+		return false
+	}
+	defer release()
+	disk.mu.Lock()
+	defer disk.mu.Unlock()
+	return disk.fenced
 }
 
 // SettleFills returns once every fill the cache was handed has been written
 // or dropped, and every keep and fill right it asked for has been answered,
 // the repairs and drops of its reads among them. Nothing waits on a fill;
 // this is what a test, or a host about to say what its disk holds, waits on.
-// It returns at once for a cache that keeps no disk.
+// It returns at once for a cache that fills nothing.
 func (c *Cache) SettleFills(ctx context.Context) error {
-	if c.disk == nil {
+	if c.filler == nil {
 		return nil
 	}
 	if err := c.reader.settle(ctx); err != nil {
@@ -321,9 +418,9 @@ func (c *Cache) SettleFills(ctx context.Context) error {
 
 // fill hands envelopes of kind to the cluster, each window inside the
 // cluster share to its ranks, and returns at once. It does nothing for a
-// cache that keeps no disk, and leaves every window outside the share alone.
+// cache that fills nothing, and leaves every window outside the share alone.
 func (c *Cache) fill(kind WriteKind, envelopes []envelope) {
-	if c == nil || c.disk == nil || len(envelopes) == 0 {
+	if c == nil || c.filler == nil || len(envelopes) == 0 {
 		return
 	}
 	c.filler.fill(kind, envelopes)
@@ -331,11 +428,12 @@ func (c *Cache) fill(kind WriteKind, envelopes []envelope) {
 
 // bug reports whether the in-tree bug id is on for the cache's run, as its
 // fills see it.
-func (c *Cache) bug(id string) bool { return c != nil && c.disk != nil && c.filler.bug(id) }
+func (c *Cache) bug(id string) bool { return c != nil && c.filler != nil && c.filler.bug(id) }
 
 // fills reports whether the cache fills the cluster with any window: it keeps
-// a disk, and the cluster cache is on for some share of windows.
-func (c *Cache) fills() bool { return c != nil && c.disk != nil && c.disk.clusterPercent > 0 }
+// a disk or serves shards, and the cluster cache is on for some share of
+// windows.
+func (c *Cache) fills() bool { return c != nil && c.filler != nil && c.cluster.percent > 0 }
 
 // FitDisk is what the host's disk limiter calls when the cache's share has
 // fallen: the disk gives regions back, oldest first and with no second chance,
@@ -399,13 +497,15 @@ func (c *Cache) Close() {
 	c.mu.Unlock()
 	c.Clear()
 	c.unregister()
-	if c.disk != nil {
+	if c.filler != nil {
 		// The reads' requests and probes end first, since a read hands its
 		// drops and repairs to the fills. What the fills had not done is
 		// dropped: nothing waits on a fill.
 		c.reader.close()
 		c.filler.close()
-		c.disk.shutdown(context.Background())
+	}
+	for _, disk := range c.cluster.all() {
+		disk.shutdown(context.Background())
 	}
 }
 

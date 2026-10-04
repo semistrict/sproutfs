@@ -124,7 +124,7 @@ func TestACacheKeepsWhatItsListRanksItFor(t *testing.T) {
 				mine = append(mine, index)
 			}
 		}
-		if err := f.cache.Keep(t.Context(), f.m, keepOf(t, key, code, mine)); err != nil {
+		if err := f.cache.Keep(t.Context(), f.m, f.cache.Identity(), keepOf(t, key, code, mine)); err != nil {
 			t.Fatal(err)
 		}
 		if got := f.held(key, code); !slices.Equal(got, mine) || len(mine) != 2 {
@@ -166,7 +166,7 @@ func TestACacheRefusesAKeepItsListDoesNotRankItFor(t *testing.T) {
 			{"a misnamed item", misnamed},
 		} {
 			before := f.cache.Stats().Fill.Refused
-			if err := f.cache.Keep(t.Context(), f.m, refused.keep); !errors.Is(err, peer.ErrDropped) {
+			if err := f.cache.Keep(t.Context(), f.m, f.cache.Identity(), refused.keep); !errors.Is(err, peer.ErrDropped) {
 				t.Fatalf("a keep of %s = %v, want it dropped", refused.name, err)
 			}
 			if got := f.cache.Stats().Fill.Refused - before; got != uint64(len(refused.keep.Items)) {

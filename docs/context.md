@@ -311,9 +311,10 @@ of it answers that the sender is stale, so two hosts never exchange a stripe
 under different memberships.
 
 **Member**: A host in the membership: its identity, which is the identity in
-its cache file's header, so a pod replaced on the same node keeps it; the
-address its peer server answers at; and its state, joining, active or
-draining. A host drains before it leaves.
+its cache file's header, so a pod replaced on the same node keeps it, or, for
+a host that serves shards, one drawn when its process starts; the address its
+peer server answers at; and its state, joining, active or draining. A host
+drains before it leaves.
 
 **Disk**: A cache disk in the membership: the identity in its file's header,
 its volume, its weight from the size of the disk it is given, the member it is
@@ -323,6 +324,21 @@ moves to another member keeps its windows. A disk is released before it is
 assigned again, and every answer its member sends names the generation that
 assigned it, so a member that lost a disk is never taken for its server
 again.
+
+**Shard**: One network disk of a fixed set a deployment may keep its cluster
+cache on instead of the hosts' own disks: a single-writer Hyperdisk Balanced
+on GCP, with the disk log on it. It is a disk of the membership whose identity
+is derived from its volume's name. The membership assigns it to a member, the
+controller attaches it to that member's machine through the cloud's attach
+API, and the member opens its device and serves it. A shard moves to another
+member as compute scales, and keeps its windows and its stripes. See
+[hosting](hosting.md#shards-on-network-disks).
+
+**Lease**: What a shard's header region ends with: the generation of the
+assignment it was last opened under, the member's identity, and the regions
+it has ever opened. A member of an older assignment is refused the shard, and
+a member reads it again before every region it writes, so one that lost the
+shard stops writing it.
 
 **Rank**: A disk's place in one window's order. Each disk scores the window
 by its weight over -ln(u), where u is a hash of the disk's identity and the

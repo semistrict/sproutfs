@@ -45,5 +45,13 @@ caches, `GET /caches` and the host's follower of it are gone (TASK-83).
 - The orchestrator is the usual writer, one step a pass; two at once leave
   one line of generations (`TestTwoOrchestratorsMoveOneMembership`).
 
-Not yet shown on a real cluster. Hosts do not yet write the membership
-themselves: attaching and releasing a network disk is TASK-86.
+Not yet shown on a real cluster. Hosts do not write the membership
+themselves: they report what they hold, and the controller writes it.
+
+**Shards, 2026-10-04.** The membership moves shards, network disks, between
+members, and the controller carries each step out through the cloud's attach
+API (TASK-86, [hosting](../hosting.md#shards-on-network-disks)). A shard is let
+go only once its host has closed it and the cloud has it on no machine, and a
+host opens one only once the object, read again, still assigns it there; the
+shard's lease refuses a member of an older assignment. `spec/shards` checks
+`OneServer` with stale controllers and hosts.

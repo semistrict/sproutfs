@@ -40,6 +40,13 @@ type config struct {
 	// filesystem the scratch directory is on. Empty keeps it in the scratch
 	// directory.
 	CacheDir string
+	// Shards is the cloud whose network disks this host serves as shards
+	// instead of keeping a cache disk of its own: SPROUTFS_SHARDS, gce, or
+	// empty for none. Machine is the node the host runs on,
+	// SPROUTFS_NODE_NAME, which the controller attaches its shards to, and
+	// ShardDevices the directory the node's disks are named in,
+	// SPROUTFS_SHARD_DEVICE_DIR, /dev/disk/by-id when unset.
+	Shards, Machine, ShardDevices string
 	// APIPort serves this process's HTTP API.
 	APIPort int
 }
@@ -237,6 +244,20 @@ func loadConfig(lookup func(string) string) (config, error) {
 	c.CacheDir = text("SPROUTFS_CACHE_DIR", "")
 	if c.CacheDir != "" && !filepath.IsAbs(c.CacheDir) {
 		fail("SPROUTFS_CACHE_DIR is %q, want an absolute directory", c.CacheDir)
+	}
+	// A host may serve shards, network disks the membership assigns it,
+	// instead of keeping a cache disk on its node.
+	// SPROUTFS_CACHE_DIR is then unused, so one manifest serves either way.
+	c.Shards, c.Machine = text("SPROUTFS_SHARDS", ""), text("SPROUTFS_NODE_NAME", "")
+	c.ShardDevices = text("SPROUTFS_SHARD_DEVICE_DIR", "")
+	switch {
+	case c.Shards == "":
+	case c.Shards != "gce":
+		fail("SPROUTFS_SHARDS is %q, want gce or nothing", c.Shards)
+	case c.Machine == "":
+		fail("SPROUTFS_SHARDS needs SPROUTFS_NODE_NAME, the node the host runs on, which its shards are attached to")
+	case c.ShardDevices != "" && !filepath.IsAbs(c.ShardDevices):
+		fail("SPROUTFS_SHARD_DEVICE_DIR is %q, want an absolute directory", c.ShardDevices)
 	}
 	if text("SPROUTFS_CACHE_DISK_BYTES", "") != "" {
 		fail("SPROUTFS_CACHE_DISK_BYTES is no longer read: the disk limiter alone sets the page cache's disk; " +

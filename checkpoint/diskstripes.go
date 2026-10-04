@@ -84,57 +84,32 @@ const (
 // wholeCode is the code of a host alone: each envelope whole.
 var wholeCode = rank.CodeFor(1)
 
-// follow has the disk place what it keeps by the membership source holds,
-// as the host of member, and read under its code. It is called once, as the
-// host starts following the membership, before any read or fill.
+// follow has the disk, and the cache it belongs to, place what it keeps by
+// the membership source holds, as the host of member, and read under its
+// code. It is called once, as the host starts following the membership,
+// before any read or fill.
 func (d *cacheDisk) follow(source membership.Source, member rank.Identity) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.source, d.member = source, member
+	d.cluster.follow(source, member)
 }
 
 // following is the membership the disk places by, and whether it follows one.
-func (d *cacheDisk) following() (membership.Membership, bool) {
-	d.mu.Lock()
-	source := d.source
-	d.mu.Unlock()
-	if source == nil {
-		return membership.Membership{}, false
-	}
-	return source.Current(), true
-}
+func (d *cacheDisk) following() (membership.Membership, bool) { return d.cluster.following() }
 
-// catch is the membership the disk places by, read again first when it is
-// older than generation.
-func (d *cacheDisk) catch(ctx context.Context, generation uint64) (membership.Membership, error) {
-	d.mu.Lock()
-	source := d.source
-	d.mu.Unlock()
-	if source == nil {
-		return membership.Membership{}, errNotFollowing
-	}
-	return source.Catch(ctx, generation)
-}
-
-// errNotFollowing is what a disk that follows no membership says when asked
+// errNotFollowing is what a cache that follows no membership says when asked
 // to read one.
 var errNotFollowing = errors.New("checkpoint: the cache follows no membership")
 
-// owns reports whether this host serves its disk under m: the disk is
+// owns reports whether this host serves the disk under m: the disk is
 // assigned to it and serving. A disk the host does not serve keeps nothing of
 // the cluster's windows, and is read for none of them.
-func (d *cacheDisk) owns(m membership.Membership) bool { return m.Serves(d.member, d.identity) }
+func (d *cacheDisk) owns(m membership.Membership) bool { return d.cluster.serves(m, d.identity) }
 
 // placedBy is the membership key's window is placed by, and whether it is
 // placed by one: a disk that follows a membership places by it the windows
 // inside the share the cluster cache is turned on for, and keeps every other
 // window whole. ignoreShare is the guard that places every window by it.
 func (d *cacheDisk) placedBy(key diskKey, ignoreShare bool) (membership.Membership, bool) {
-	m, ok := d.following()
-	if !ok || !ignoreShare && !key.rankWindow().InShare(d.clusterPercent) {
-		return membership.Membership{}, false
-	}
-	return m, true
+	return d.cluster.placedBy(key, ignoreShare)
 }
 
 // codes is the codes the disk reads key under, in the order it tries them:

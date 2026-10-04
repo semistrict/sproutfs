@@ -72,9 +72,11 @@ func servedBy(member, disk rank.Identity, generation uint64) membership.Membersh
 	return m
 }
 
-func (c *memoryCache) Identity() rank.Identity { return c.identity }
+func (c *memoryCache) Disks() []rank.Identity { return []rank.Identity{c.identity} }
 
-func (c *memoryCache) ReadStripes(ctx context.Context, _ membership.Membership, read peer.StripeRead) (peer.Stripes, error) {
+func (c *memoryCache) Keeps(disk rank.Identity) bool { return disk == c.identity }
+
+func (c *memoryCache) ReadStripes(ctx context.Context, _ membership.Membership, _ rank.Identity, read peer.StripeRead) (peer.Stripes, error) {
 	c.mu.Lock()
 	c.asked++
 	c.mu.Unlock()
@@ -115,7 +117,7 @@ func (c *memoryCache) ReadStripes(ctx context.Context, _ membership.Membership, 
 		FillRight: len(items) == 0}, nil
 }
 
-func (c *memoryCache) Keep(_ context.Context, _ membership.Membership, keep peer.Keep) error {
+func (c *memoryCache) Keep(_ context.Context, _ membership.Membership, _ rank.Identity, keep peer.Keep) error {
 	if c.dropKeeps {
 		return peer.ErrDropped
 	}
@@ -131,7 +133,7 @@ func (c *memoryCache) Keep(_ context.Context, _ membership.Membership, keep peer
 	return nil
 }
 
-func (c *memoryCache) Drop(_ context.Context, drop peer.Drop) error {
+func (c *memoryCache) Drop(_ context.Context, _ rank.Identity, drop peer.Drop) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.stripes, stripeKey{drop.Window, drop.Page, drop.Index})
@@ -139,7 +141,7 @@ func (c *memoryCache) Drop(_ context.Context, drop peer.Drop) error {
 	return nil
 }
 
-func (c *memoryCache) Presence(_ context.Context, presence peer.Presence) ([][]uint32, error) {
+func (c *memoryCache) Presence(_ context.Context, _ rank.Identity, presence peer.Presence) ([][]uint32, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	held := make([][]uint32, len(presence.Windows))
