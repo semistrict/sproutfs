@@ -710,5 +710,17 @@
     "package": "cmd/sproutfs-orchestrator",
     "run": "^TestTheOrchestratorMovesShardsOffATerminatingHost$",
     "purpose": "Take a terminating host pod for one that stays, so its shards stay on it until its node is gone."
+  },
+  {
+    "id": "checkpoint-encode-one-batch-at-a-time",
+    "package": "checkpoint",
+    "run": "^TestAPublicationEncodesAsManyPagesAtOnceAsItHasEncoders$",
+    "purpose": "Encode a publication's pages one batch at a time, so it runs at one encoder's pace however many the store has."
+  },
+  {
+    "id": "checkpoint-upload-one-part-at-a-time",
+    "package": "checkpoint",
+    "run": "^TestAPublicationKeepsEveryUploadSlotBusy$",
+    "purpose": "Wait for each part's PUT before filling the next, so a publication has one part in flight however many upload slots the store has."
   }
 ]

@@ -419,7 +419,22 @@ root go into the checkpoint's index object. The checkpoint suite requires:
 
 The suite also covers a multi-part checkpoint, a republication under one
 reference that produces byte-identical objects, and a publication whose heap
-stays bounded by the part size instead of by the dirty set.
+stays bounded by the part size and the encoders instead of by the dirty set.
+
+A publication's pace is stated in simulated time. `sim.Config.Compute` prices
+an encode (`blob.WorkEncode`) in bytes a second, spent while it holds its
+encoder, and `sim.Work` counts the encodes and the most at once.
+`TestAPublicationEncodesAsManyPagesAtOnceAsItHasEncoders` publishes 64 pages of
+10 ms each through four encoders: four encode at once, and the last part lands
+exactly 160 ms and one part's PUT after the commit began, not 640 ms.
+`TestAPublicationKeepsEveryUploadSlotBusy` publishes 16 free parts through
+four upload slots: four PUTs at once, and the last part lands after exactly
+four rounds of one part's PUT. Both check that the index object's PUT began
+only after the last part landed. `TestAPublicationDoesTheSameWorkUnderAShake`
+requires the same fingerprint and the same time under three shakes. The
+guards `checkpoint-encode-one-batch-at-a-time` and
+`checkpoint-upload-one-part-at-a-time` serialize the encodes and the uploads,
+and each fails its test.
 
 Both the writer and the reader bound a part's table at 1 MiB. One test takes a
 checkpoint of 4,000 pages of a volume with the longest allowed name. Its entries

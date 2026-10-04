@@ -1,26 +1,25 @@
 package checkpoint
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"maps"
 	"slices"
 	"sort"
-	"sync"
 
-	"github.com/semistrict/sproutfs/checkpoint/internal/part"
 	"github.com/semistrict/sproutfs/control"
-	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/sim"
 )
 
 // Source supplies the whole contents of a page a publication is republishing.
 // ReadPage must fill dst with the page's contents as of the checkpoint; dst is
 // the page's length, which is the volume's own page size except for a tail page
-// shorter than one. It must fill all of it: the publication writes one page at
-// a time into one buffer it reuses, so bytes a source leaves untouched are the
-// previous page's.
+// shorter than one. It must fill all of it: the publication reads its pages
+// into buffers it reuses, so bytes a source leaves untouched are an earlier
+// page's. A publication reads one page at a time, in page order, from one
+// goroutine.
 type Source interface {
 	ReadPage(ctx context.Context, volume string, page uint64, dst []byte) error
 }
@@ -339,14 +338,11 @@ func (p *Publication) keepSegments(ctx context.Context, index *Index, object []b
 }
 
 // writeState writes the VMM state as this checkpoint's first member, so its
-// extent is the same for a retry of the same publication.
+// extent is the same for a retry of the same publication. The index names it
+// once it is in a part, which is before writeEdits returns.
 func (p *Publication) writeState(ctx context.Context, writer *partWriter, index *Index) error {
-	at, err := writer.add(ctx, "", 0, memberState, p.ref, p.state)
-	if err != nil {
-		return err
-	}
-	index.state = at
-	return nil
+	writer.plan(1, uint64(len(p.state)))
+	return writer.submit(ctx, "", 0, memberState, p.ref, p.state, func(at location) { index.state = at })
 }
 
 // segmentFor reports the working copy of one segment of the index being built,
@@ -452,16 +448,17 @@ func (p *Publication) writeSegments(ctx context.Context, object *indexObject, in
 // identical parts. A page that reads as all zeroes leaves the index instead: a
 // hole costs no member and reads back as the zeroes it holds.
 //
-// One page is read at a time, into one buffer a volume's pages share: a page is
-// encoded into the part it belongs to before the next is read, so the dirty
-// set's size costs nothing here. The buffer is one page of the volume being
-// written, because two volumes of one VM may have different page sizes.
+// The pages are read one at a time, in that order, on this goroutine, and
+// encoded side by side by the writer, which holds a bounded number of them at
+// once whatever the size of the dirty set. Each page's segment entry is
+// written as the page lands in its part; when this returns, every page has.
 func (p *Publication) writeEdits(ctx context.Context, writer *partWriter, index *Index, source Source) error {
 	for _, name := range index.names {
 		table := index.volumes[name]
 		geometry := table.geometry
-		var buffer []byte
-		for _, number := range slices.Sorted(maps.Keys(p.edits[name])) {
+		numbers := slices.Sorted(maps.Keys(p.edits[name]))
+		writer.plan(len(numbers), geometry.PageSize)
+		for _, number := range numbers {
 			_, span := geometry.PageSpan(table.size, number)
 			if span == 0 {
 				return ErrInvalidRange
@@ -469,14 +466,15 @@ func (p *Publication) writeEdits(ctx context.Context, writer *partWriter, index 
 			if source == nil {
 				return ErrInvalidConfig
 			}
-			if buffer == nil {
-				buffer = make([]byte, geometry.PageSize)
+			data, err := writer.room(ctx, int(span))
+			if err != nil {
+				return err
 			}
-			data := buffer[:span]
 			if err := source.ReadPage(ctx, name, number, data); err != nil {
 				return err
 			}
-			held, err := p.segmentFor(ctx, index, name, geometry.SegmentOf(number))
+			segment := geometry.SegmentOf(number)
+			held, err := p.segmentFor(ctx, index, name, segment)
 			if err != nil {
 				return err
 			}
@@ -489,18 +487,18 @@ func (p *Publication) writeEdits(ctx context.Context, writer *partWriter, index 
 				// which is the whole record that it is gone: an absent page reads
 				// as the zeroes the guest wrote.
 				delete(held.pages, relative)
-				p.markDirty(name, geometry.SegmentOf(number), held)
+				p.markDirty(name, segment, held)
 				continue
 			}
-			at, err := writer.add(ctx, name, number, memberPage, p.ref, data)
-			if err != nil {
+			if err := writer.submitRead(ctx, name, number, data, func(at location) {
+				held.pages[relative] = at
+				p.markDirty(name, segment, held)
+			}); err != nil {
 				return err
 			}
-			held.pages[relative] = at
-			p.markDirty(name, geometry.SegmentOf(number), held)
 		}
 	}
-	return nil
+	return writer.drain(ctx)
 }
 
 // inherit copies the parent's segment entries for a volume, dropping the
@@ -524,14 +522,12 @@ func (p *Publication) inherit(volume string, size uint64) map[uint64]segmentEntr
 	return segments
 }
 
-// isZero reports whether every byte of data is zero.
+// isZero reports whether every byte of data is zero: the first is, and each
+// is the one before it. Comparing the page with itself shifted by a byte runs
+// at the speed of a memory compare rather than of a loop over the bytes, which
+// matters on the goroutine that reads every page a publication writes.
 func isZero(data []byte) bool {
-	for _, b := range data {
-		if b != 0 {
-			return false
-		}
-	}
-	return true
+	return len(data) == 0 || data[0] == 0 && bytes.Equal(data[1:], data[:len(data)-1])
 }
 
 // indexObject accumulates one checkpoint's index object: a fixed record, the
@@ -592,309 +588,6 @@ func (o *indexObject) seal(ctx context.Context, index *Index) ([]byte, error) {
 	return o.data, nil
 }
 
-// partWriter fills parts and uploads each one as it is sealed, so a large
-// checkpoint costs a few PUTs and holds a bounded number of parts in memory.
-type partWriter struct {
-	store  *Store
-	ref    control.Ref
-	cancel context.CancelFunc
-	part   *part.Builder
-	// admitted is whether this writer holds a slot of the store's host-wide
-	// builder budget, which it takes before it writes anything.
-	admitted bool
-	next     uint32
-	bytes    uint64
-	// keep is the pull that keeps each part's pages once the part is durable,
-	// and members the pages of the part in hand, where they lie in it.
-	// geometry is each volume's, which says what window a page is in.
-	keep     *Pull
-	members  []keptMember
-	geometry map[string]Geometry
-	// handed is closed once the part before the next one has been handed to
-	// the pull and the cluster, or never will be: see handOver. It is nil
-	// before the first part.
-	handed  chan struct{}
-	wait    sync.WaitGroup
-	once    sync.Once
-	failure error
-}
-
-// admit takes this writer's slot of the store's builder budget, once. A
-// publication that writes nothing never takes one.
-func (w *partWriter) admit(ctx context.Context) error {
-	if w.admitted {
-		return nil
-	}
-	if err := w.store.acquireBuilder(ctx); err != nil {
-		return err
-	}
-	w.admitted = true
-	return nil
-}
-
-// discharge gives the builder slot back, once, when the writer is done with it.
-func (w *partWriter) discharge() {
-	if w.admitted {
-		w.admitted = false
-		w.store.releaseBuilder()
-	}
-}
-
-// memberKind says what one member holds: a page of a volume's contents or the
-// VMM state. Those are the two kinds a part holds.
-type memberKind int
-
-const (
-	memberPage memberKind = iota
-	memberState
-)
-
-// add encodes one member into the current part, sealing and uploading that part
-// when it fills. The caller's bytes are read here and not kept, so it may reuse
-// the buffer it read them into for the next page. origin is the checkpoint the
-// page was first published under: this one for a page the publication wrote,
-// and the page's existing origin for one compaction moved.
-func (w *partWriter) add(ctx context.Context, volume string, page uint64, kind memberKind, origin control.Ref, data []byte) (location, error) {
-	member := part.Member{Volume: volume, Page: page, State: kind == memberState}
-	if origin != w.ref {
-		member.OriginVM, member.OriginSequence = origin.VM, origin.Sequence
-	}
-	builder, err := w.builderFor(ctx, member)
-	if err != nil {
-		return location{}, err
-	}
-	offset, length, err := builder.Add(ctx, member, data)
-	if err != nil {
-		return location{}, err
-	}
-	at := location{ref: w.ref, origin: origin, part: w.next, offset: offset, length: length}
-	w.bytes += at.length
-	if (w.keep != nil || w.store.cache.fills()) && kind == memberPage {
-		w.members = append(w.members, keptMember{volume: volume, page: page, at: at})
-	}
-	return at, nil
-}
-
-// keptMember is one page of a part in hand and where it lies in the part.
-type keptMember struct {
-	volume string
-	page   uint64
-	at     location
-}
-
-// kept is what a durable part's pages are for the pull that keeps them and
-// the cluster they fill: each member's envelope, named by the page's identity.
-func (w *partWriter) kept(data []byte, members []keptMember) []envelope {
-	envelopes := make([]envelope, 0, len(members))
-	for _, m := range members {
-		envelopes = append(envelopes, envelope{key: pageDiskKey(identityOf(m.volume, m.page, m.at), w.geometry[m.volume]),
-			data: data[m.at.offset:][:m.at.length]})
-	}
-	return envelopes
-}
-
-// partBytes is the encoded member size a part fills to before it is sealed and
-// uploaded. It is the store's configured size, except where a campaign has
-// buggified it down to a single page: a deployment whose pages are large
-// relative to the part size writes a part per page, and a multi-part checkpoint
-// is the shape a one-part checkpoint never reaches — a member table per part, a
-// part count carried by the last one, and a root that must name which part each
-// page is in.
-func (w *partWriter) partBytes(ctx context.Context) int {
-	if sim.Buggify(ctx, "checkpoint/one-page-parts", 1) {
-		return 1
-	}
-	return w.store.partBytes
-}
-
-// builderFor returns the part builder member goes into, sealing the part in
-// hand first when member no longer fits it — in body bytes or in table. A full
-// part is sealed when the next member arrives rather than as soon as it fills,
-// so the part this publication holds last is always the one finish closes: that
-// is the part carrying the checkpoint's part count.
-func (w *partWriter) builderFor(ctx context.Context, member part.Member) (*part.Builder, error) {
-	if err := w.admit(ctx); err != nil {
-		return nil, err
-	}
-	if w.part != nil && w.part.Full(member, w.partBytes(ctx), maximumTableSize) {
-		if err := w.flush(ctx); err != nil {
-			return nil, err
-		}
-	}
-	if w.part == nil {
-		w.part = part.NewBuilder(w.store.codecs)
-	}
-	return w.part, nil
-}
-
-// flush seals the part in hand as one the checkpoint goes on past and starts its
-// upload, which runs under one slot of the store's shared budget so parts in
-// flight are bounded. Only the last part carries the part count, and finish
-// writes that one.
-func (w *partWriter) flush(ctx context.Context) error {
-	if w.part == nil {
-		return nil
-	}
-	data, err := w.part.Seal(0)
-	if err != nil {
-		return err
-	}
-	if len(data) > maximumPartSize {
-		return ErrInvalidRange
-	}
-	key, err := w.store.partKey(w.ref, w.next)
-	if err != nil {
-		return err
-	}
-	members := w.members
-	w.part, w.next, w.members = nil, w.next+1, nil
-	if err := w.store.acquire(ctx); err != nil {
-		return err
-	}
-	before, handed := w.handed, make(chan struct{})
-	w.handed = handed
-	w.wait.Add(1)
-	go func() {
-		defer w.wait.Done()
-		defer close(handed)
-		sealed := sealedPart{key: key, data: data, members: members}
-		w.fillEarly(ctx, &sealed)
-		err := w.put(ctx, key, data)
-		w.store.release()
-		if err != nil {
-			w.record(err)
-			return
-		}
-		w.handOver(ctx, before, sealed)
-	}()
-	return nil
-}
-
-// sealedPart is one part a publication uploads: its key and bytes, the
-// members it holds, and whether a bug handed it to the cluster or to the hot
-// tier before its PUT.
-type sealedPart struct {
-	key                    platform.ObjectKey
-	data                   []byte
-	members                []keptMember
-	earlyCluster, earlyHot bool
-}
-
-// handOver hands a durable part over once the part before it has been, so
-// the parts reach the pull and the cluster's one worker of fills in their own
-// order. Uploads that end at one instant would otherwise hand theirs over in
-// the order the Go scheduler runs them, and a fill the queue or the rate
-// drops would be a different one on every run of a seed. before is the part
-// before's, nil for the first part.
-func (w *partWriter) handOver(ctx context.Context, before <-chan struct{}, sealed sealedPart) {
-	if before != nil && !w.store.cache.bug("fill-parts-in-any-order") {
-		<-before
-	}
-	w.durable(ctx, sealed)
-}
-
-// durable hands a part whose PUT has succeeded to the hot tier, to the pull
-// that keeps its pages and to the cluster, which takes only the windows
-// inside its share. Nothing is filled before then: a part the store refused
-// must reach no cache.
-func (w *partWriter) durable(ctx context.Context, sealed sealedPart) {
-	if !sealed.earlyHot {
-		w.store.hot.published(ctx, sealed.key, sealed.data)
-	}
-	if len(sealed.members) == 0 {
-		return
-	}
-	envelopes := w.kept(sealed.data, sealed.members)
-	if w.keep != nil {
-		w.keep.keep(ctx, envelopes)
-	}
-	if !sealed.earlyCluster {
-		w.store.cache.fill(WriteFillPublication, envelopes)
-	}
-}
-
-// fillEarly is the bugs that fill the cluster, or the hot tier, with a part
-// before its PUT has succeeded. It notes which did.
-func (w *partWriter) fillEarly(ctx context.Context, sealed *sealedPart) {
-	if len(sealed.members) > 0 && w.store.cache.bug("fill-before-durable") {
-		w.store.cache.fill(WriteFillPublication, w.kept(sealed.data, sealed.members))
-		sealed.earlyCluster = true
-	}
-	if w.store.hot.bug("hot-tier-fill-before-durable") {
-		w.store.hot.published(ctx, sealed.key, sealed.data)
-		sealed.earlyHot = true
-	}
-}
-
-// put writes one part create-if-absent. A part a retry of this publication
-// finds already there is its own, byte for byte, because a publication writes
-// its members in one order and encodes them one way; a part holding anything
-// else is another publication under this reference, which is a conflict.
-func (w *partWriter) put(ctx context.Context, key platform.ObjectKey, data []byte) error {
-	return w.store.putObject(ctx, key, data, digestOf(data), func(existing []byte) error {
-		if !equalParts(existing, data) {
-			return ErrConflict
-		}
-		return nil
-	})
-}
-
-// finish seals and uploads the part in hand, which is the one carrying the
-// checkpoint's part count, and waits for every earlier upload. When it returns
-// every part is durable, which is what the index object may then
-// name. An upload that failed is what the caller is told about, not the
-// cancellation it caused in whatever was still running.
-func (w *partWriter) finish(ctx context.Context) error {
-	defer w.discharge()
-	if w.part != nil {
-		sealed, err := w.part.Seal(w.next + 1)
-		if err != nil {
-			return err
-		}
-		if len(sealed) > maximumPartSize {
-			return ErrInvalidRange
-		}
-		key, err := w.store.partKey(w.ref, w.next)
-		if err != nil {
-			return err
-		}
-		members := w.members
-		w.part, w.next, w.members = nil, w.next+1, nil
-		if err := w.store.acquire(ctx); err != nil {
-			return err
-		}
-		part := sealedPart{key: key, data: sealed, members: members}
-		w.fillEarly(ctx, &part)
-		err = w.put(ctx, key, sealed)
-		w.store.release()
-		if err != nil {
-			return err
-		}
-		w.handOver(ctx, w.handed, part)
-	}
-	w.wait.Wait()
-	return w.failure
-}
-
-// abandon stops the uploads a failed publication started and reports why it
-// failed: an upload's own error where there was one, and otherwise what the
-// caller ran into. Everything the uploads wrote is unreferenced.
-func (w *partWriter) abandon(cause error) error {
-	w.cancel()
-	w.wait.Wait()
-	w.discharge()
-	if w.failure != nil {
-		return w.failure
-	}
-	return cause
-}
-
-func (w *partWriter) record(err error) { w.once.Do(func() { w.failure = err; w.cancel() }) }
-
-// equalParts compares a part already in the store with the one this publication
-// built. Parts are raw bytes rather than an envelope, so equality is exact.
-func equalParts(existing, data []byte) bool { return string(existing) == string(data) }
-
 // protectedCheckpoints expands the sequences Protect named into the
 // checkpoints compaction must leave alone: each protected checkpoint and every
 // one its index names. The store memoises the expansion, because an index is
@@ -920,6 +613,9 @@ func (p *Publication) protectedCheckpoints(ctx context.Context) (map[control.Ref
 // through the page cache, and in ranged extents of the parts they lie in for
 // the ones it does not hold, so a rescue of adjacent pages costs a request per
 // extent rather than one per page.
+//
+// The pages are lent to the writer, which encodes them side by side, and are
+// in parts, or no longer read, before they are given back.
 func (p *Publication) move(ctx context.Context, writer *partWriter, volume string, geometry Geometry,
 	number uint64, held *segment, relatives []uint32) error {
 	run := make([]pageRead, len(relatives))
@@ -931,15 +627,21 @@ func (p *Publication) move(ctx context.Context, writer *partWriter, volume strin
 		return err
 	}
 	defer release()
+	writer.plan(len(run), geometry.PageSize)
 	for at, page := range run {
 		// The bytes move; the page does not. Carrying the origin forward is
 		// what keeps a fork of the older view and this index reporting one
 		// identity for one page.
-		moved, err := writer.add(ctx, volume, page.number, memberPage, page.at.origin, data[at])
-		if err != nil {
+		relative := relatives[at]
+		if err := writer.submit(ctx, volume, page.number, memberPage, page.at.origin, data[at],
+			func(moved location) { held.pages[relative] = moved }); err != nil {
+			writer.halt()
 			return err
 		}
-		held.pages[relatives[at]] = moved
+	}
+	if err := writer.drain(ctx); err != nil {
+		writer.halt()
+		return err
 	}
 	p.markDirty(volume, number, held)
 	return nil
@@ -1111,11 +813,12 @@ func (p *Publication) compact(ctx context.Context, writer *partWriter, index *In
 		}
 		// The state member carries its origin the way a page does, so the part
 		// says the member was moved rather than written here.
-		moved, err := writer.add(ctx, "", 0, memberState, index.state.origin, data)
-		if err != nil {
+		writer.plan(1, uint64(len(data)))
+		if err := writer.submit(ctx, "", 0, memberState, index.state.origin, data,
+			func(moved location) { index.state = moved }); err != nil {
 			return err
 		}
-		index.state = moved
+		return writer.drain(ctx)
 	}
 	return nil
 }
