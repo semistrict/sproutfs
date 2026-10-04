@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-03 03:41'
-updated_date: '2026-10-04 03:53'
+updated_date: '2026-10-04 07:13'
 labels:
   - performance
   - storage
@@ -163,4 +163,6 @@ Fault first, built (009edc81, cf13374a, 28fef410, 88ce4eba, 2efcd6e7, 168311b0; 
 2026-10-04, fault first on GCE (docs/measurements/gce-fault-first-2026-10-04.md; bench reads through a real pager, 'before' = every fault marked WithStream so it reads its run first, same binary, same hosts; six n2-highmem-4 Ice Lake, 4+2, 3 rounds). First build prefetched behind every fault: a 4 KiB chain from the cluster took 24 ms a faulted hop against 0.67 ms for the page, because each 2,047-page prefetch is ~100 ms of decoding and the prefetches of earlier hops held the 4 processors. Decision: prefetch only behind a fault that follows one of its memory region's last eight faulting windows (same window or the one before) or is its first (38d55682, guard pager-prefetch-every-fault, Stats.PrefetchRandom). As built, chain hop p50 before -> after: 4 KiB cluster 40.9 -> 3.2 ms (page alone 0.67), 4 KiB store 80.2 -> 29.2 (page 24.9), 2 MiB cluster 13.5 -> 7.1 (page 6.1), 2 MiB store 57.1 -> 37.8 (page 38.1); hops/s 1.4-5.9x; a 400-hop 4 KiB chain loaded 29,226 pages instead of 567,296. In order: 2 MiB 16 s from the cluster either way; 4 KiB 26.7 s vs 24.3 s from the cluster (+10 %, the second fault replans the window), same from the store; no page read twice. Remaining 4 KiB gap: a fault plans its whole 2,048-page window (Locate decodes the page-table segment each time, 0.62 s of 1.42 s of fault CPU in the profile); follow-up: plan the faulting page first or keep decoded segments. Infrastructure: one GCS GET waited 52 minutes for response headers on its HTTP/2 stream and hung the first attempt; the bench now fails a read past 2 minutes. The GCS adapter puts no deadline on a read (follow-up). All hosts, disks and objects of all three attempts deleted and verified.
 
 Gremlins on vmmemory/prefetch.go after the sequential gate: 80 killed, 8 timed out (killed), 13 lived of 101; every mutant of followsRecent killed; the one new survivor (196, len(pages) >= 0) only counts PrefetchRandom for a fault with nothing to prefetch. just check exit 0, 114 of 114 guards killed.
+
+Fault first, last fixes after merging main (b66064fc): a dropped prefetch now finishes (leaves the bound, clears in-flight) before its slots go back, all at once (d4bf6180; TestAnAllocationCancelsAPrefetchRatherThanEvict failed 1 in 100 before); TestReceiveRefusesAMachineMissingAMemoryRegion closes the Received a guarded receive leaks, whose stream otherwise held the destination's detach under check-guards load (a43e5919). just check exit 0 at a43e5919, 121 of 121 guards killed.
 <!-- SECTION:NOTES:END -->
