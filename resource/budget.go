@@ -82,6 +82,12 @@ type Lease struct {
 // TryAcquire reserves without waiting. It does not bypass existing waiters.
 // Failure consumes no capacity.
 func (b *Budget) TryAcquire(ctx context.Context, amount int64) (*Lease, error) {
+	if amount > b.limit {
+		// More than the whole allotment never fits, so no cache gives anything
+		// back for it: a cache whose entry is larger than the allotment would
+		// otherwise empty itself on every read of it and keep nothing.
+		return nil, ErrCapacity
+	}
 	var lease *Lease
 	err := b.withCacheReclaim(ctx, amount, func() error {
 		var err error
