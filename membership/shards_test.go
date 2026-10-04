@@ -6,6 +6,7 @@ import (
 	"maps"
 	"slices"
 	"testing"
+	"testing/synctest"
 
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/sim"
@@ -442,4 +443,68 @@ func TestCarryConvergesWhateverACrashLeftAttached(t *testing.T) {
 	if actions := Carry(ctx, m, want); len(actions) != 0 {
 		t.Fatalf("a shard whose attachments the cloud did not report is asked %v", actions)
 	}
+}
+
+// A pass of the controller reads where the cloud has each shard and its size,
+// takes one step, and asks the cloud for what the membership it leaves calls
+// for: a shard listed, assigned and attached in three passes. A shard the
+// cloud could not describe keeps the weight the membership lists it with,
+// and one not listed yet is left out until it can be described.
+func TestAShardControlPassStepsAndCarriesTheStepOut(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		runtime := sim.New(sim.Config{})
+		ctx := sim.WithRuntime(t.Context(), runtime)
+		cloud := runtime.NewNetworkDisks(sim.NetworkDisksConfig{})
+		if err := cloud.Create(ctx, "shard-0", 64<<30); err != nil {
+			t.Fatal(err)
+		}
+		store, err := NewStore(Config{ObjectStore: runtime.ObjectStore()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		control := &ShardControl{Store: store, Disks: cloud, Volumes: []string{"shard-0", "gone"}}
+		host := Host{ID: idOf(1), Address: memberOf(1).Address, Machine: "machine-1"}
+		want := Want{Code: rank.CodeFor(1), Hosts: []Host{host}}
+		id := ShardIdentity("shard-0")
+		var m Membership
+		for range 4 {
+			if m, _, err = control.Pass(ctx, want); err != nil {
+				t.Fatal(err)
+			}
+		}
+		disk, listed := m.Disk(id)
+		if !listed || disk.State != Attaching || disk.Member != idOf(1) || disk.Weight != 4 {
+			t.Fatalf("after four passes the shard is %+v (listed %v), want attaching to member 1 at weight 4", disk,
+				listed)
+		}
+		if _, listed := m.Disk(ShardIdentity("gone")); listed {
+			t.Fatal("a shard the cloud does not have was listed")
+		}
+		if got := cloud.Attached("shard-0"); got != "machine-1" {
+			t.Fatalf("the pass left the shard attached to %q, want machine-1", got)
+		}
+		described := control.Describe(ctx, m)
+		if len(described) != 1 || !described[0].Known || described[0].Weight != 4 ||
+			!slices.Equal(described[0].Machines, []string{"machine-1"}) {
+			t.Fatalf("the shards are described as %+v", described)
+		}
+		flaky := &ShardControl{Store: store, Disks: describeFails{NetworkDisks: cloud}, Volumes: []string{"shard-0"}}
+		described = flaky.Describe(ctx, m)
+		if len(described) != 1 || described[0].Known || described[0].Weight != 4 || described[0].Machines != nil {
+			t.Fatalf("a listed shard the cloud did not describe is %+v, want unknown at its listed weight 4",
+				described)
+		}
+		if described = flaky.Describe(ctx, Empty()); len(described) != 0 {
+			t.Fatalf("an unlisted shard the cloud did not describe is %+v, want it left out", described)
+		}
+	})
+}
+
+// describeFails is a cloud that describes no disk.
+type describeFails struct {
+	platform.NetworkDisks
+}
+
+func (describeFails) Describe(context.Context, string) (platform.NetworkDisk, error) {
+	return platform.NetworkDisk{}, platform.ErrUnavailable
 }

@@ -284,3 +284,74 @@ func TestAShardReadsBackOnlyTheRegionsItsLeaseNames(t *testing.T) {
 		}
 	})
 }
+
+// Removing a shard waits for every request using it: a read in flight holds
+// it, and the shard is removed, its open region closed, only once that read
+// has finished. A shard the cache keeps already, its own disk among them, is
+// refused a second time.
+func TestRemovingAShardWaitsForTheRequestsUsingIt(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		runtime := sim.New(sim.Config{})
+		ctx := sim.WithRuntime(t.Context(), runtime)
+		cloud := runtime.NewNetworkDisks(sim.NetworkDisksConfig{})
+		if err := cloud.Create(ctx, "shard-one", shardBytes); err != nil {
+			t.Fatal(err)
+		}
+		device, err := cloud.Disk("shard-one").Open(ctx, "device", platform.OpenOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer device.Close()
+		cache := shardCache(t, ctx, memberA, shardServedBy(2, memberA, 1, membership.Serving))
+		if err := cache.AddShard(ctx, shardOf(device, memberA, 1)); err != nil {
+			t.Fatal(err)
+		}
+		if err := cache.AddShard(ctx, shardOf(device, memberA, 1)); !errors.Is(err, ErrInvalidConfig) {
+			t.Fatalf("adding a shard the cache keeps already: %v, want ErrInvalidConfig", err)
+		}
+		_, release, kept := cache.cluster.hold(shardOne)
+		if !kept {
+			t.Fatal("the cache does not hold the shard it keeps")
+		}
+		removed := make(chan error, 1)
+		go func() { removed <- cache.RemoveShard(ctx, shardOne) }()
+		synctest.Wait()
+		select {
+		case err := <-removed:
+			t.Fatalf("the shard was removed under a request using it: %v", err)
+		default:
+		}
+		if cache.Keeps(shardOne) {
+			t.Fatal("a shard being removed is still taken by new requests")
+		}
+		release()
+		if err := <-removed; err != nil {
+			t.Fatal(err)
+		}
+		if err := cache.RemoveShard(ctx, shardOne); !errors.Is(err, ErrNotKept) {
+			t.Fatalf("removing a shard twice: %v, want ErrNotKept", err)
+		}
+
+		own := runtime.NewDisk("own", sim.DiskConfig{})
+		file, err := own.Open(ctx, "cache", platform.OpenOptions{Create: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer file.Close()
+		budget, err := resource.New(4 << 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		both, err := NewCache(ctx, budget, CacheConfig{Disk: file, DiskBytes: shardBytes, Shards: true,
+			DiskRegionBytes: shardRegionBytes, ClusterPercent: 100})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer both.Close()
+		clash := shardOf(device, memberA, 1)
+		clash.Identity = both.Identity()
+		if err := both.AddShard(ctx, clash); !errors.Is(err, ErrInvalidConfig) {
+			t.Fatalf("adding a shard under the identity of the cache's own disk: %v, want ErrInvalidConfig", err)
+		}
+	})
+}

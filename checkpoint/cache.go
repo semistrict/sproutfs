@@ -341,6 +341,9 @@ func (c *Cache) AddShard(ctx context.Context, shard ShardConfig) error {
 		shard.Lease.Member.IsZero() {
 		return fmt.Errorf("%w: a shard needs a device, an identity, a budget and a lease", ErrInvalidConfig)
 	}
+	if c.cluster.keeps(shard.Identity) {
+		return fmt.Errorf("%w: the cache keeps disk %s already", ErrInvalidConfig, shard.Identity)
+	}
 	settings := c.shard
 	lease := shard.Lease
 	settings.identity, settings.lease = shard.Identity, &lease

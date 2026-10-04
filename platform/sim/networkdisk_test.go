@@ -76,6 +76,12 @@ func TestANetworkDiskIsAttachedToOneMachineAndOpenedByOneProcess(t *testing.T) {
 		if _, err := first.WriteAt(ctx, []byte("past"), networkDiskBytes-2); !errors.Is(err, platform.ErrInvalidRange) {
 			t.Fatalf("writing past the device's end: %v, want ErrInvalidRange", err)
 		}
+		if _, err := first.WriteAt(ctx, []byte("last"), networkDiskBytes-4); err != nil {
+			t.Fatalf("writing the device's last bytes: %v", err)
+		}
+		if err := cloud.Create(ctx, "empty", 0); !errors.Is(err, platform.ErrInvalidPath) {
+			t.Fatalf("making a disk of no bytes: %v, want ErrInvalidPath", err)
+		}
 		synced, unsynced := []byte("synced"), []byte("unsynced")
 		if _, err := first.WriteAt(ctx, synced, 0); err != nil {
 			t.Fatal(err)
@@ -114,6 +120,52 @@ func TestANetworkDiskIsAttachedToOneMachineAndOpenedByOneProcess(t *testing.T) {
 		if err := first.Close(); err != nil {
 			t.Fatal(err)
 		}
+	})
+}
+
+// A machine that crashes takes every handle its processes held of the disks
+// attached to it, and what they had not synced, and the disks stay attached
+// there; a disk attached to another machine is untouched.
+func TestAMachineThatCrashesKeepsItsDisksAndLosesTheirHandles(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx := t.Context()
+		cloud := newCloud(t, sim.New(sim.Config{}))
+		if err := cloud.Create(ctx, "shard-1", networkDiskBytes); err != nil {
+			t.Fatal(err)
+		}
+		if err := cloud.Attach(ctx, "shard-0", "machine-a"); err != nil {
+			t.Fatal(err)
+		}
+		if err := cloud.Attach(ctx, "shard-1", "machine-b"); err != nil {
+			t.Fatal(err)
+		}
+		crashed, err := cloud.Devices("machine-a").Open(ctx, "shard-0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer crashed.Close()
+		other, err := cloud.Devices("machine-b").Open(ctx, "shard-1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer other.Close()
+		if err := cloud.Crash(ctx, "machine-a"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := crashed.ReadAt(ctx, make([]byte, 8), 0); err == nil {
+			t.Fatal("a handle of a crashed machine still reads")
+		}
+		if _, err := other.ReadAt(ctx, make([]byte, 8), 0); err != nil {
+			t.Fatalf("a disk of another machine failed with the crash: %v", err)
+		}
+		if got := cloud.Attached("shard-0"); got != "machine-a" {
+			t.Fatalf("after its machine crashed the disk is attached to %q, want machine-a still", got)
+		}
+		again, err := cloud.Devices("machine-a").Open(ctx, "shard-0")
+		if err != nil {
+			t.Fatalf("the machine opening its disk again after the crash: %v", err)
+		}
+		_ = again.Close()
 	})
 }
 

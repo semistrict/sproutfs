@@ -224,6 +224,13 @@ func TestHostsServeTheShardsAssignedThemAndMoveThemWhenOneLeaves(t *testing.T) {
 			t.Fatalf("machine-a's cache reports shards %+v and a disk of its own %s", status.Cache.Shards,
 				status.Cache.Disk.Identity)
 		}
+		// A shard's share is its own device less its header region.
+		for _, shard := range status.Cache.Shards {
+			if shard.LimitBytes != testShardBytes-8<<20 {
+				t.Fatalf("a shard's share is %d bytes, want its device's %d less a region", shard.LimitBytes,
+					int64(testShardBytes))
+			}
+		}
 		moving := c.held()["machine-b"]
 		c.hosts["machine-b"].leaving = true
 		c.settle()
@@ -234,6 +241,9 @@ func TestHostsServeTheShardsAssignedThemAndMoveThemWhenOneLeaves(t *testing.T) {
 			if got := c.cloud.Attached(volume); got == "machine-b" || got == "" {
 				t.Fatalf("shard %s moved off machine-b is attached to %q", volume, got)
 			}
+		}
+		if shards := c.hosts["machine-b"].host.Status().Cache.Shards; len(shards) != 0 {
+			t.Fatalf("the host that left still keeps %d shards in its cache", len(shards))
 		}
 		c.stop("machine-b")
 		c.settle()
@@ -340,6 +350,57 @@ func TestAHostOpensAShardOnlyWhileTheObjectStillAssignsItThere(t *testing.T) {
 		}
 		if c.runtime.Probes()[host.ProbeShardAssignmentMoved] == 0 {
 			t.Fatal("a never found the assignment had moved")
+		}
+	})
+}
+
+// A host that holds a shard open under one assignment, and next reads a
+// membership that assigns it the shard again under a newer one, having missed
+// the release between, closes it and opens it again under the newer one.
+func TestAHostReopensAShardAssignedToItAgain(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		c := newShardCluster(t, 1)
+		a := c.startOn("host-a", "machine-m")
+		self, _ := a.host.Member()
+		shard := membership.Disk{ID: membership.ShardIdentity("shard-0"), Volume: "shard-0", Weight: 2}
+		c.update(func(m membership.Membership) (membership.Membership, error) {
+			return m.Join(membership.Member{ID: self.ID, Address: self.Address})
+		})
+		c.update(func(m membership.Membership) (membership.Membership, error) { return m.Add(shard) })
+		first := c.update(func(m membership.Membership) (membership.Membership, error) {
+			return m.Assign(shard.ID, self.ID)
+		})
+		if err := c.cloud.Attach(c.ctx, "shard-0", "machine-m"); err != nil {
+			t.Fatal(err)
+		}
+		if err := a.host.RefreshMembership(c.ctx); err != nil {
+			t.Fatal(err)
+		}
+		a.host.SettleShards(c.ctx)
+		held, _ := a.host.Member()
+		if len(held.Disks) != 1 {
+			t.Fatalf("the host holds %v, want the shard", held.Disks)
+		}
+		c.update(func(m membership.Membership) (membership.Membership, error) { return m.Release(shard.ID) })
+		c.update(func(m membership.Membership) (membership.Membership, error) { return m.Let(shard.ID, self.ID) })
+		again := c.update(func(m membership.Membership) (membership.Membership, error) {
+			return m.Assign(shard.ID, self.ID)
+		})
+		if err := a.host.RefreshMembership(c.ctx); err != nil {
+			t.Fatal(err)
+		}
+		a.host.SettleShards(c.ctx)
+		a.host.SettleShards(c.ctx)
+		before, _ := first.Disk(shard.ID)
+		after, _ := again.Disk(shard.ID)
+		held, _ = a.host.Member()
+		if len(held.Disks) != 1 || held.Disks[0].Assigned != after.Assigned || after.Assigned == before.Assigned {
+			t.Fatalf("the host holds %+v, want the shard under the assignment at %d, not %d", held.Disks,
+				after.Assigned, before.Assigned)
+		}
+		if c.runtime.Probes()[host.ProbeShardClosed] != 1 || c.runtime.Probes()[host.ProbeShardOpened] != 2 {
+			t.Fatalf("the host closed the shard %d times and opened it %d, want once and twice",
+				c.runtime.Probes()[host.ProbeShardClosed], c.runtime.Probes()[host.ProbeShardOpened])
 		}
 	})
 }
