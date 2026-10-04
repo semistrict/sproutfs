@@ -437,7 +437,9 @@ func (c *tableCursor) close() {
 //
 // It may fetch the segments the range falls in, which is why it takes a
 // context; a segment already decoded costs nothing, and a range inside a
-// segment the root does not address costs no I/O at all.
+// segment the root does not address costs no I/O at all. Each segment the
+// range crosses is one lookup of its table, whose entries the range's pages
+// are then read off in order (pageTable.locate).
 func (i *Index) Locate(ctx context.Context, volume string, offset, length uint64) ([]control.Extent, error) {
 	table := i.volumes[volume]
 	if table == nil {
@@ -446,34 +448,35 @@ func (i *Index) Locate(ctx context.Context, volume string, offset, length uint64
 	if offset > table.size || length > table.size-offset {
 		return nil, ErrInvalidRange
 	}
-	var extents []control.Extent
-	add := func(offset, length uint64, identity control.Identity) {
-		if n := len(extents); n > 0 && identity.Zero && extents[n-1].Identity == identity && extents[n-1].Offset+extents[n-1].Length == offset {
-			extents[n-1].Length += length
-			return
-		}
-		extents = append(extents, control.Extent{Offset: offset, Length: length, Identity: identity})
+	if length == 0 {
+		return nil, nil
 	}
-	end := offset + length
 	geometry := table.geometry
-	tables := tableCursor{index: i, volume: volume}
-	defer tables.close()
-	for cursor := offset; cursor < end; {
-		number := geometry.PageOf(cursor)
-		start, span := geometry.PageSpan(table.size, number)
-		limit := min(end, start+span)
-		at, found, err := tables.at(ctx, geometry, number)
+	span := byteSpan{from: offset, to: offset + length, pageSize: geometry.PageSize}
+	var extents []control.Extent
+	for page, last := geometry.PageOf(offset), geometry.PageOf(span.to-1); page <= last; {
+		number := geometry.SegmentOf(page)
+		base := geometry.SegmentBase(number)
+		stop := min(last+1, base+geometry.SegmentPages)
+		held, release, err := i.table(ctx, volume, number)
 		if err != nil {
 			return nil, err
 		}
-		if found {
-			add(cursor, limit-cursor, identityOf(volume, number, at))
-		} else {
-			add(cursor, limit-cursor, control.ZeroIdentity)
-		}
-		cursor = limit
+		extents = held.locate(extents, volume, base, page, stop, span)
+		release()
+		page = stop
 	}
 	return extents, nil
+}
+
+// byteSpan is the bytes [from, to) of a volume of pages of pageSize, which a
+// lookup clips the first and last page it locates to.
+type byteSpan struct{ from, to, pageSize uint64 }
+
+// of is the part of one page the span covers.
+func (s byteSpan) of(page uint64) (offset, length uint64) {
+	start, stop := max(s.from, page*s.pageSize), min(s.to, (page+1)*s.pageSize)
+	return start, stop - start
 }
 
 // encode marshals the root deterministically. Volumes, segments and checkpoints

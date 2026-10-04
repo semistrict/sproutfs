@@ -306,16 +306,23 @@ func (r *MemoryRegion) reclaimOwn(ctx context.Context, index uint64, clean bool)
 // file rather than the shared one: one whose bytes are no identity another
 // memory region may inherit, one a fork point lends to its children, and one
 // another host still holds.
-func (p *windowPlan) own(page uint64) bool {
-	h := p.memoryRegion.host
-	if !h.isolated() {
+func (p *windowPlan) own(page uint64) bool { return p.ownAsked(page, p.memoryRegion.host.lends) }
+
+// ownLocked is own with h.mu held.
+func (p *windowPlan) ownLocked(page uint64) bool {
+	return p.ownAsked(page, p.memoryRegion.host.lendsLocked)
+}
+
+// ownAsked is own, asking lends whether a fork point lends an identity.
+func (p *windowPlan) ownAsked(page uint64, lends func(pageKey) bool) bool {
+	if !p.memoryRegion.host.isolated() {
 		return false
 	}
 	id, named := p.identity(page)
 	if named && id.zero() {
 		return false
 	}
-	return !named || p.unpublished(page) || h.lends(id)
+	return !named || p.unpublished(page) || lends(id)
 }
 
 // reserveOwn takes places in this memory region's own file for the pages of
@@ -369,6 +376,11 @@ type lentKey struct {
 func (h *Host) lends(key pageKey) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	return h.lendsLocked(key)
+}
+
+// lendsLocked is lends with h.mu held.
+func (h *Host) lendsLocked(key pageKey) bool {
 	return h.lent[lentKey{key.id.Ref, key.id.Volume}] != nil
 }
 

@@ -3,8 +3,6 @@ package vmmemory
 import (
 	"context"
 	"errors"
-
-	"github.com/semistrict/sproutfs/platform/sim"
 )
 
 // Fault orders operations only within this memory region's read-ahead window. Shared
@@ -313,7 +311,9 @@ func (r *MemoryRegion) fault(ctx context.Context, index uint64, write bool, spil
 // shared residents under their identities, mapped read-only in runs, taking
 // only free slots — but for the faulting page itself, which is left unmapped
 // because the copy is about to replace it and mapping it read-only first would
-// cost every store a revocation and a fence for nothing.
+// cost every store a revocation and a fence for nothing. A store at random
+// reads its page alone, as a read fault at random does (planFault), and the
+// next fault in its window brings the window in.
 //
 // A page whose bytes no checkpoint published has none: a hole, a page whose
 // backing names another page, and a page only another host still holds, whose
@@ -342,10 +342,11 @@ func (r *MemoryRegion) readIn(ctx context.Context, index uint64) (*resident, err
 	return r.readInPage(ctx, index)
 }
 
-// readInWindow is readIn over the faulting page's whole window, for a backing
-// every page of which the volume itself holds. It reports the origin the store
-// copies from, still locked, with every other page of the window resident,
-// shared and mapped; or that the faulting page lost a publication race and the
+// readInWindow is readIn over the faulting page's window, for a backing every
+// page of which the volume itself holds. It reports the origin the store
+// copies from, still locked, with as much of the rest of the window resident,
+// shared and mapped as the store's fault reads (planFault); or that the
+// faulting page lost a publication race and the
 // store must try again, holding nothing.
 func (r *MemoryRegion) readInWindow(ctx context.Context, index uint64) (pg *resident, retry bool, err error) {
 	// The plan names no faulting page: nothing here resolves the guest's access
@@ -525,7 +526,11 @@ func (r *MemoryRegion) takePrivate(ctx context.Context, b *binding, old, pg *res
 	}
 	from := -1
 	if origin != nil {
+		// The store gave the origin's lock up before it reclaimed the copy's
+		// slot, so a reclaim may be releasing the origin as this reads it.
+		h.mu.Lock()
 		from = origin.slot
+		h.mu.Unlock()
 	}
 	note(r, b.index, "copy-on-write", pg.slot, from)
 	return nil
@@ -868,66 +873,4 @@ func (r *MemoryRegion) loadOnce(ctx context.Context, index uint64, spill *int) (
 func (r *MemoryRegion) end(index uint64) uint64 {
 	_, end := r.window(index)
 	return end
-}
-
-// planFault plans the window of the page index for the faulting page fault, or
-// the window's end for none. A post-copy stream's fault, which reads its whole
-// run with its page, locates the whole window at once; every other locates its
-// page alone and the rest of the window once that page's read is under way
-// (readFirst).
-func (r *MemoryRegion) planFault(ctx context.Context, index, fault uint64) (*windowPlan, error) {
-	start, end := r.window(index)
-	if runFirst(ctx) {
-		return r.plan(ctx, start, end, fault)
-	}
-	return r.planPage(ctx, start, end, fault, index)
-}
-
-// runFirst reports a fault that reads its whole run before its page is
-// installed: a post-copy stream's, and every fault under the in-tree bug that
-// puts the run back in front of the faulting page.
-func runFirst(ctx context.Context) bool {
-	return streaming(ctx) || sim.Bug(ctx, "pager-read-the-run-first")
-}
-
-// read brings the faulting page of a plan planFault made in: its whole run in
-// one read for a fault that reads its run first, and its page first, the rest
-// of its window planned behind the read, for every other. own says whether a
-// run read first reads the pages whose bytes go in this memory region's own
-// file too.
-func (p *windowPlan) read(ctx context.Context, index uint64, own bool) error {
-	if !p.located {
-		return p.readFirst(ctx, index)
-	}
-	if err := p.takeFaulting(ctx, index, restPrefetched); err != nil {
-		return err
-	}
-	if err := p.takeRun(ctx, index, own); err != nil {
-		return err
-	}
-	return p.loadReserved(ctx)
-}
-
-// takeRun takes the rest of a run read first into the plan once the faulting
-// page is in it: every page whose identity is resident, bound to that page,
-// and free slots, never an eviction, for the pages that need reading, the
-// pages after the faulting one first. own says whether the pages whose bytes
-// go in this memory region's own file are reserved there too.
-func (p *windowPlan) takeRun(ctx context.Context, index uint64, own bool) error {
-	for page := p.start; page < p.end; page++ {
-		i := page - p.start
-		if p.pages[i] != nil || p.zeros[i] || p.reserved[i].slot >= 0 || !p.eligible(page) {
-			continue
-		}
-		if err := p.bindShared(ctx, page, false); err != nil {
-			return err
-		}
-	}
-	if err := p.reserveRuns(ctx, index, p.needsLoad); err != nil {
-		return err
-	}
-	if own {
-		p.reserveOwn()
-	}
-	return nil
 }

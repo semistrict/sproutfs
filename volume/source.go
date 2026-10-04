@@ -90,6 +90,11 @@ func locateOverlay(ctx context.Context, parent source, overlay *extentIndex, own
 			}
 		}
 	}
+	if len(written) == 0 {
+		// The overlay touched none of the range, which the source locates
+		// whole: a pager's window is one lookup of its index, not a copy of it.
+		return parent.locate(ctx, volume, offset, length)
+	}
 	var result []control.Extent
 	add := func(next control.Extent) {
 		if n := len(result); n > 0 && result[n-1].Identity == next.Identity && result[n-1].Offset+result[n-1].Length == next.Offset {

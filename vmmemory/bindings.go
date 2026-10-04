@@ -214,6 +214,26 @@ func (r *MemoryRegion) lookupBinding(index uint64) *binding {
 	return nil
 }
 
+// lookupBindings is lookupBinding of every page of [first, last), under one
+// hold of the binding lock: a block's lookup for each of its pages the range
+// holds, and nil for a page of a block nothing has touched.
+func (r *MemoryRegion) lookupBindings(first, last uint64) []*binding {
+	bindings := make([]*binding, last-first)
+	r.bindingsMu.Lock()
+	defer r.bindingsMu.Unlock()
+	for page := first; page < last; {
+		key := page / bindingBlockPages
+		stop := min(last, (key+1)*bindingBlockPages)
+		if block := r.blocks[key]; block != nil {
+			for at := page; at < stop; at++ {
+				bindings[at-first] = &block[at%bindingBlockPages]
+			}
+		}
+		page = stop
+	}
+	return bindings
+}
+
 // touchedBlock reports whether any page of the binding block holding index has
 // ever been given per-page state. A range operation checks this once per 256
 // pages instead of looking each page up.

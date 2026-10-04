@@ -25,7 +25,7 @@ func Work(ctx context.Context, kind string, n int) error {
 	if rate <= 0 {
 		return nil
 	}
-	r.beginWork(kind, taskName(ctx))
+	r.beginWork(kind, taskName(ctx), n)
 	defer r.endWork(kind)
 	return r.sleep(ctx, workTime(n, rate))
 }
@@ -54,10 +54,12 @@ func (r *Runtime) Work(kind string) WorkStats {
 }
 
 // WorkPiece is one piece of priced work: the task (WithTask) it ran under,
-// empty where its caller named none, and the simulated instant it began.
+// empty where its caller named none, the simulated instant it began, and the
+// bytes it was priced by.
 type WorkPiece struct {
 	Task  string
 	Began time.Time
+	Bytes int
 }
 
 // WorkPieces reports each piece of one kind of priced work, in the order the
@@ -81,7 +83,7 @@ type workCount struct {
 	pieces  []WorkPiece
 }
 
-func (r *Runtime) beginWork(kind, task string) {
+func (r *Runtime) beginWork(kind, task string, bytes int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.work == nil {
@@ -93,7 +95,7 @@ func (r *Runtime) beginWork(kind, task string) {
 		r.work[kind] = count
 	}
 	count.Pieces++
-	count.pieces = append(count.pieces, WorkPiece{Task: task, Began: r.now()})
+	count.pieces = append(count.pieces, WorkPiece{Task: task, Began: r.now(), Bytes: bytes})
 	count.running++
 	count.Peak = max(count.Peak, count.running)
 }

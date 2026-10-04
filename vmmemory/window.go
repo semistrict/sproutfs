@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
 
 	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/platform/sim"
@@ -23,14 +22,18 @@ type windowPlan struct {
 	// shared page first would be a second owner of that page's memory for as
 	// long as the copy takes and would cost the store a revocation to undo.
 	store uint64
-	// extents locate the window's pages once located says the window is
-	// located. Until then only page is, by pageExtents: a fault locates its
-	// own page first, so that its read starts before the rest of its window
-	// is planned (faultfirst.go). page is end in a plan located whole.
-	extents     []control.Extent
-	located     bool
-	page        uint64
-	pageExtents []control.Extent
+	// window locates the plan's pages once located says it is located. Until
+	// then only the faulting page is, by alone: a fault that reads its page
+	// first locates that page alone, so that its read starts before the rest
+	// of its window is planned (faultfirst.go). The faulting page keeps the
+	// identity it was planned under once the window is located too. alone
+	// locates nothing in a plan located whole.
+	window  locations
+	located bool
+	alone   locations
+	// reading is how the fault this plan is for reads its window
+	// (planFault).
+	reading reading
 	// provisional is the run of free slots a fault that prefetches took
 	// around its own page before the window was located.
 	provisional provisionalRun
@@ -74,30 +77,30 @@ func (i *installedRuns) add(other installedRuns) {
 // plan is a plan of the window [start, end) located whole, for the faulting
 // page fault, or end for none.
 func (r *MemoryRegion) plan(ctx context.Context, start, end, fault uint64) (*windowPlan, error) {
-	extents, err := r.locate(ctx, start, end)
+	window, err := r.locate(ctx, start, end)
 	if err != nil {
 		return nil, err
 	}
 	p := r.newPlan(start, end, fault)
-	p.extents, p.located = extents, true
+	p.window, p.located = window, true
 	return p, nil
 }
 
 // planPage is a plan of the window [start, end) that has located page alone,
 // for the faulting page fault, or end for none. locateWindow locates the rest.
 func (r *MemoryRegion) planPage(ctx context.Context, start, end, fault, page uint64) (*windowPlan, error) {
-	extents, err := r.locate(ctx, page, page+1)
+	alone, err := r.locate(ctx, page, page+1)
 	if err != nil {
 		return nil, err
 	}
 	p := r.newPlan(start, end, fault)
-	p.page, p.pageExtents = page, extents
+	p.alone = alone
 	return p, nil
 }
 
 func (r *MemoryRegion) newPlan(start, end, fault uint64) *windowPlan {
 	none := -1
-	p := &windowPlan{memoryRegion: r, start: start, end: end, fault: fault, store: end, page: end,
+	p := &windowPlan{memoryRegion: r, start: start, end: end, fault: fault, store: end,
 		pages: make([]*resident, end-start), file: r.sharedFile(), reserved: make([]fileSlot, end-start),
 		fresh: make([]bool, end-start), zeros: make([]bool, end-start), private: make([]bool, end-start),
 		locked: make(map[*resident]bool), spill: &none}
@@ -108,50 +111,93 @@ func (r *MemoryRegion) newPlan(start, end, fault uint64) *windowPlan {
 }
 
 // locate reports the identities of the pages [first, last), each of which
-// this memory region may read. It is the planning a simulation prices
-// (WorkPlan): a page at a time.
-func (r *MemoryRegion) locate(ctx context.Context, first, last uint64) ([]control.Extent, error) {
+// this memory region may read: one lookup of the backing for the run. It is
+// the planning a simulation prices (WorkPlan), by the pages it locates.
+func (r *MemoryRegion) locate(ctx context.Context, first, last uint64) (locations, error) {
 	if err := sim.Work(ctx, WorkPlan, int(last-first)); err != nil {
-		return nil, err
+		return locations{}, err
 	}
 	ps := r.host.pageSize
 	extents, err := r.backing.Locate(ctx, first*ps, (last-first)*ps)
 	if err != nil {
-		return nil, err
+		return locations{}, err
 	}
+	// The pages of a run are mostly of a few checkpoints, one after another,
+	// so each is checked once where its pages begin.
+	var checked control.Ref
 	for _, e := range extents {
-		if err := r.mayRead(e.Identity.Ref); err != nil {
-			return nil, err
+		if e.Identity.Ref == checked {
+			continue
 		}
+		if err := r.mayRead(e.Identity.Ref); err != nil {
+			return locations{}, err
+		}
+		checked = e.Identity.Ref
 	}
-	return extents, nil
+	return locations{first: first, pages: last - first, pageSize: ps, extents: extents}, nil
 }
 
 // locateWindow locates the whole window of a plan that has located only its
-// faulting page. The page keeps the identity it was planned under.
+// faulting page, in one lookup. The page keeps the identity it was planned
+// under.
 func (p *windowPlan) locateWindow(ctx context.Context) error {
 	if p.located {
 		return nil
 	}
-	extents, err := p.memoryRegion.locate(ctx, p.start, p.end)
+	window, err := p.memoryRegion.locate(ctx, p.start, p.end)
 	if err != nil {
 		return err
 	}
-	p.extents, p.located = extents, true
+	p.window, p.located = window, true
 	return nil
 }
 
-// extentsOf is the extents a page's identity is read from: its own where the
-// plan located it alone, and the window's otherwise, which must be located.
-func (p *windowPlan) extentsOf(page uint64) []control.Extent {
-	if page == p.page {
-		return p.pageExtents
+// extentOf is the extent a page's identity is read from, and false where none
+// holds the page: the faulting page's own where the plan located it alone,
+// and the window's otherwise, which must be located.
+func (p *windowPlan) extentOf(page uint64) (control.Extent, bool) {
+	if p.alone.holds(page) {
+		return p.alone.extent(page)
 	}
 	if !p.located {
 		panic(fmt.Sprintf("vmmemory: a plan asked about page %d of a window it has located only page %d of",
-			page, p.page))
+			page, p.alone.first))
 	}
-	return p.extents
+	return p.window.extent(page)
+}
+
+// locations are the identities of the pages [first, first+pages), pages of
+// pageSize, as a backing located them: its extents, sorted, adjacent and each
+// within one page or a hole of any length, and, from the first time a page is
+// asked about, which extent holds each page. What names a page is then an
+// index rather than a search of the extents, however often planning asks.
+type locations struct {
+	first, pages, pageSize uint64
+	extents                []control.Extent
+	held                   []uint32
+}
+
+// holds reports whether page is one these locations locate.
+func (l *locations) holds(page uint64) bool { return page >= l.first && page-l.first < l.pages }
+
+// extent is the extent that holds page, which these locations locate.
+func (l *locations) extent(page uint64) (control.Extent, bool) {
+	if l.held == nil {
+		l.held = make([]uint32, l.pages)
+		at := 0
+		for k := range l.held {
+			offset := (l.first + uint64(k)) * l.pageSize
+			for at < len(l.extents) && l.extents[at].Offset+l.extents[at].Length <= offset {
+				at++
+			}
+			l.held[k] = uint32(at)
+		}
+	}
+	at := l.held[page-l.first]
+	if int(at) >= len(l.extents) {
+		return control.Extent{}, false
+	}
+	return l.extents[at], true
 }
 
 func (p *windowPlan) unlock() {
@@ -190,29 +236,25 @@ func (p *windowPlan) unlock() {
 // plan: it must have no private state and must not already be resident.
 func (p *windowPlan) eligible(page uint64) bool {
 	b := p.memoryRegion.lookupBinding(page)
-	if b == nil {
-		return true
-	}
-	if b.dirty {
-		return false
-	}
 	h := p.memoryRegion.host
 	h.mu.Lock()
-	resident := b.resident != nil
-	h.mu.Unlock()
-	return !resident
+	defer h.mu.Unlock()
+	return eligibleLocked(b)
+}
+
+// eligibleLocked is eligible of a page's binding, nil for a page that has
+// none. Caller holds h.mu.
+func eligibleLocked(b *binding) bool {
+	return b == nil || !b.dirty && b.resident == nil
 }
 
 // identity reports the store page whose bytes this page reads, which is the
 // whole of what names it: a page is published whole or not at all.
 func (p *windowPlan) identity(page uint64) (pageKey, bool) {
-	offset := page * p.memoryRegion.host.pageSize
-	extents := p.extentsOf(page)
-	first := sort.Search(len(extents), func(i int) bool { return extents[i].Offset+extents[i].Length > offset })
-	if first >= len(extents) {
+	e, found := p.extentOf(page)
+	if !found {
 		return pageKey{}, false
 	}
-	e := extents[first]
 	if e.Identity.Zero {
 		return pageKey{id: control.Identity{Zero: true}}, true
 	}
@@ -234,14 +276,8 @@ func (p *windowPlan) unpublished(page uint64) bool {
 	if !p.memoryRegion.peer {
 		return false
 	}
-	offset := page * p.memoryRegion.host.pageSize
-	extents := p.extentsOf(page)
-	first := sort.Search(len(extents), func(i int) bool { return extents[i].Offset+extents[i].Length > offset })
-	if first >= len(extents) {
-		return false
-	}
-	e := extents[first]
-	return !e.Identity.Zero && e.Identity.Ref.IsZero()
+	e, found := p.extentOf(page)
+	return found && !e.Identity.Zero && e.Identity.Ref.IsZero()
 }
 
 // observeZeros records that this memory region knows about explicit zeros, which is
@@ -303,75 +339,153 @@ func (p *windowPlan) bindShared(ctx context.Context, page uint64, wait bool) err
 		return nil
 	}
 	h := p.memoryRegion.host
-	key := id
 	for {
 		h.mu.Lock()
-		pg := h.clean[key]
+		pg := h.clean[id]
 		h.mu.Unlock()
 		if pg == nil {
 			return nil
 		}
-		if p.locked[pg] {
-			// An imported identity may appear more than once in this plan.
-		} else if wait {
-			if err := pg.mu.Lock(ctx); err != nil {
-				return err
-			}
-		} else if !pg.mu.TryLock() {
-			return nil
-		}
-		h.mu.Lock()
-		valid := h.clean[key] == pg
-		h.mu.Unlock()
-		if !valid {
-			h.unlock(pg)
-			continue
-		}
-		if found := h.probe.stable(ctx, h, pg, "bindShared"); found != "" {
-			panic(found)
-		}
-		reached, err := p.memoryRegion.reach(ctx, pg, key)
-		if err != nil || reached == nil {
+		if again, err := p.bindResident(ctx, page, id, pg, wait); err != nil || !again {
 			return err
 		}
-		pg = reached
-		if page != p.store {
-			h.bind(p.memoryRegion.binding(page), pg)
-		}
-		h.mu.Lock()
-		h.stats.IdentityHits++
-		h.mu.Unlock()
-		p.pages[page-p.start] = pg
-		p.locked[pg] = true
-		p.fresh[page-p.start] = true
-		return nil
 	}
+}
+
+// bindResident binds a page to pg, the resident page its identity key named
+// when the caller looked, as bindShared does. It reports again, having taken
+// nothing, where pg is no longer that identity's resident page once its lock is
+// held, so the caller looks again. A busy pg is left alone unless wait says to
+// wait for it, and so is one this memory region cannot reach.
+func (p *windowPlan) bindResident(ctx context.Context, page uint64, key pageKey, pg *resident,
+	wait bool) (again bool, err error) {
+	h := p.memoryRegion.host
+	if p.locked[pg] {
+		// An imported identity may appear more than once in this plan.
+	} else if wait {
+		if err := pg.mu.Lock(ctx); err != nil {
+			return false, err
+		}
+	} else if !pg.mu.TryLock() {
+		return false, nil
+	}
+	h.mu.Lock()
+	valid := h.clean[key] == pg
+	h.mu.Unlock()
+	if !valid {
+		h.unlock(pg)
+		return true, nil
+	}
+	if found := h.probe.stable(ctx, h, pg, "bindShared"); found != "" {
+		panic(found)
+	}
+	reached, err := p.memoryRegion.reach(ctx, pg, key)
+	if err != nil || reached == nil {
+		return false, err
+	}
+	pg = reached
+	if page != p.store {
+		h.bind(p.memoryRegion.binding(page), pg)
+	}
+	h.mu.Lock()
+	h.stats.IdentityHits++
+	h.mu.Unlock()
+	p.pages[page-p.start] = pg
+	p.locked[pg] = true
+	p.fresh[page-p.start] = true
+	return false, nil
+}
+
+// survey is what one look at the rest of a located plan finds: the pages
+// whose identity is resident, which bindNeighbours binds to it, and for every
+// page the file a read must bring it into, nil where no read must.
+type survey struct {
+	resident []neighbour
+	into     []*arenaFile
+}
+
+// neighbour is one page of a plan, its identity and the resident page it
+// named when the plan looked.
+type neighbour struct {
+	page uint64
+	key  pageKey
+	pg   *resident
+}
+
+// survey looks at every page of the located plan but except that the plan
+// holds nothing for yet and that can join it, all at once: its bindings under
+// the memory region's binding lock once, and the resident and in-flight
+// identities under the host's lock once. A hole it marks as one. A page whose
+// identity is resident is one to bind to that page. Every other must be read
+// into the file of its identity, unless its bytes go in this memory region's
+// own file or a prefetch is already reading it; where prefetched says the
+// read is a prefetch's, unless too it could not land as a clean shared page,
+// having no identity or being one another host still holds.
+func (p *windowPlan) survey(except uint64, prefetched bool) survey {
+	r := p.memoryRegion
+	h := r.host
+	found := survey{into: make([]*arenaFile, p.end-p.start)}
+	holes := false
+	bindings := r.lookupBindings(p.start, p.end)
+	files := p.fileFinder()
+	h.mu.Lock()
+	for at, b := range bindings {
+		page := p.start + uint64(at)
+		if page == except || p.pages[at] != nil || p.zeros[at] || p.reserved[at].slot >= 0 || !eligibleLocked(b) {
+			continue
+		}
+		id, named := p.identity(page)
+		if named && id.zero() {
+			p.zeros[at], p.fresh[at] = true, true
+			holes = true
+			continue
+		}
+		if named {
+			if pg := h.clean[id]; pg != nil {
+				found.resident = append(found.resident, neighbour{page: page, key: id, pg: pg})
+				continue
+			}
+		}
+		switch {
+		case p.ownLocked(page):
+		case !named:
+			if !prefetched {
+				found.into[at] = p.file
+			}
+		case h.inflight[id] != nil:
+			// A page a prefetch is reading is that prefetch's to bring in.
+		case !prefetched || !p.unpublished(page):
+			found.into[at] = files.of(id)
+		}
+	}
+	h.mu.Unlock()
+	if holes {
+		p.observeZeros()
+	}
+	return found
+}
+
+// bindNeighbours is bindShared, without waiting, of the pages a survey found
+// resident. A page whose identity another resident page took since is looked
+// up again; one whose resident page is busy is left for a later fault.
+func (p *windowPlan) bindNeighbours(ctx context.Context, found survey) error {
+	for _, n := range found.resident {
+		again, err := p.bindResident(ctx, n.page, n.key, n.pg, false)
+		if err != nil {
+			return err
+		}
+		if again {
+			if err := p.bindShared(ctx, n.page, false); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (p *windowPlan) reserve(page uint64, at fileSlot) {
 	p.reserved[page-p.start] = at
 	p.fresh[page-p.start] = true
-}
-
-// needsLoad reports whether a page has neither a resident nor a reservation
-// yet and is not expected to bind to a resident identity.
-func (p *windowPlan) needsLoad(page uint64) bool {
-	i := page - p.start
-	if p.pages[i] != nil || p.reserved[i].slot >= 0 || !p.eligible(page) || p.own(page) {
-		return false
-	}
-	id, ok := p.identity(page)
-	if id.zero() {
-		return false
-	}
-	if !ok {
-		return true
-	}
-	h := p.memoryRegion.host
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	// A page a prefetch is reading is that prefetch's to bring in.
-	return h.clean[id] == nil && h.inflight[id] == nil
 }
 
 // fileOf is the file a load of this page by its identity goes in: the public
@@ -385,6 +499,33 @@ func (p *windowPlan) fileOf(page uint64) *arenaFile {
 		}
 	}
 	return p.file
+}
+
+// fileFinder is fileOf for many pages, which are mostly of a few checkpoints
+// one after another: whether a checkpoint is a public template's is asked once
+// where its pages begin.
+type fileFinder struct {
+	p        *windowPlan
+	vm       string
+	public   bool
+	answered bool
+}
+
+func (p *windowPlan) fileFinder() *fileFinder { return &fileFinder{p: p} }
+
+// of is the file a load of a page named id goes in.
+func (f *fileFinder) of(id pageKey) *arenaFile {
+	public := f.p.memoryRegion.public
+	if public == nil {
+		return f.p.file
+	}
+	if !f.answered || id.id.Ref.VM != f.vm {
+		f.vm, f.public, f.answered = id.id.Ref.VM, control.Public(id.id.Ref.VM), true
+	}
+	if f.public {
+		return public
+	}
+	return f.p.file
 }
 
 // files is every file this window's loads by identity may go in.
@@ -402,7 +543,8 @@ func (p *windowPlan) files() []*arenaFile {
 // of pages whose loads go in the faulting page's file.
 func (p *windowPlan) reserveAround(index uint64) {
 	file := p.fileOf(index)
-	needs := func(page uint64) bool { return p.needsLoad(page) && p.fileOf(page) == file }
+	into := p.survey(index, false).into
+	needs := func(page uint64) bool { return into[page-p.start] == file }
 	first, last := index, index+1
 	for first > p.start && needs(first-1) {
 		first--
@@ -420,15 +562,16 @@ func (p *windowPlan) reserveAround(index uint64) {
 	}
 }
 
-// reserveRuns takes free slots, without evicting, for the pages wanted says
-// to read. Runs of consecutive pages prefer consecutive slots so a later
-// mapping installs them as one range. Idle pages are given up first to make
-// those slots free, which is not an eviction: nothing maps them. When free
-// slots cannot cover the window even so, the pages after the faulting one come
-// first: access tends to continue forward.
-func (p *windowPlan) reserveRuns(ctx context.Context, from uint64, wanted func(uint64) bool) error {
+// reserveRuns takes free slots, without evicting, for the pages into says to
+// read into a file (survey) that hold no reservation yet. Runs of consecutive
+// pages prefer consecutive slots so a later mapping installs them as one range.
+// Idle pages are given up first to make those slots free, which is not an
+// eviction: nothing maps them. When free slots cannot cover the window even
+// so, the pages after the faulting one come first: access tends to continue
+// forward.
+func (p *windowPlan) reserveRuns(ctx context.Context, from uint64, into []*arenaFile) error {
 	for _, file := range p.files() {
-		if err := p.reserveRunsIn(ctx, from, file, wanted); err != nil {
+		if err := p.reserveRunsIn(ctx, from, file, into); err != nil {
 			return err
 		}
 	}
@@ -436,9 +579,9 @@ func (p *windowPlan) reserveRuns(ctx context.Context, from uint64, wanted func(u
 }
 
 // reserveRunsIn is reserveRuns for the pages whose loads go in one file.
-func (p *windowPlan) reserveRunsIn(ctx context.Context, from uint64, file *arenaFile, wanted func(uint64) bool) error {
+func (p *windowPlan) reserveRunsIn(ctx context.Context, from uint64, file *arenaFile, into []*arenaFile) error {
 	h := p.memoryRegion.host
-	needs := func(page uint64) bool { return wanted(page) && p.fileOf(page) == file }
+	needs := func(page uint64) bool { return into[page-p.start] == file && p.reserved[page-p.start].slot < 0 }
 	needed := 0
 	for page := p.start; page < p.end; page++ {
 		if needs(page) {

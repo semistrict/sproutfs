@@ -322,7 +322,7 @@ func (p *windowPlan) bindResidents(ctx context.Context, index *residentIndex, bu
 	var candidates []candidate
 	var runs []populateRun
 	ps := p.memoryRegion.host.pageSize
-	for _, extent := range p.extents {
+	for _, extent := range p.window.extents {
 		if err := context.Cause(ctx); err != nil {
 			return err
 		}

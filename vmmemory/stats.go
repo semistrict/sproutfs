@@ -70,8 +70,9 @@ type Stats struct {
 	// evict a page a guest maps, and PrefetchDropped the pages a prefetch
 	// reserved a slot for that never landed: cancelled, failed, held by a
 	// migration's source, or made resident first by another load.
-	// PrefetchRandom counts the runs left unread because their fault
-	// followed none of its memory region's recent faults.
+	// PrefetchRandom counts the faults that read their page alone, and
+	// planned nothing else of their window, because they followed none of
+	// their memory region's recent faults.
 	Prefetches, PrefetchedPages, PrefetchMapped, PrefetchWaits uint64
 	PrefetchRefused, PrefetchCancelled, PrefetchDropped        uint64
 	PrefetchRandom                                             uint64

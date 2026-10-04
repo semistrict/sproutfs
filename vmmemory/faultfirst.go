@@ -8,77 +8,174 @@ import (
 	"github.com/semistrict/sproutfs/platform/sim"
 )
 
-// A fault plans its own page first. It locates that page alone, takes it —
-// bound to a resident page under its identity, or a slot to read it into —
-// and starts its read on a task of its own. Only then does it locate the rest
-// of its window and plan it: the resident pages it maps beside its own, and,
-// when it prefetches, the slots of the pages the prefetch reads. The read is
-// under way while it plans, so planning the window costs the fault nothing
-// while it takes less than the read.
+// A fault reads its window one of three ways, decided before it plans
+// anything (planFault), and plans only what that way reads:
 //
-// A fault used to plan its whole window before it read anything. At 4 KiB a
-// window is 2,048 pages, and on GCE on 2026-10-04 that planning was 0.62 s of
-// the 1.42 s a chain of 400 faults spent: a dependent 4 KiB fault from the
-// cluster took 3.2 ms against 0.67 ms for the page's read alone
-// (docs/measurements/gce-fault-first-2026-10-04.md). A fault that does not
-// prefetch now takes no slot for its neighbours, where it took one for each
-// and gave them back.
+//   - A fault at random, one that follows none of its memory region's recent
+//     faults (followsRecent), reads its page alone (readAlone). Its plan is
+//     its page: it locates that page, takes it — bound to a resident page
+//     under its identity, or a slot to read it into — and reads it. It plans
+//     nothing of the rest of its window, which it neither reads nor maps.
+//   - A fault that follows a recent one reads its page first and prefetches
+//     the rest of its window behind it (readFirst). It locates its page
+//     alone, takes it, and starts its read on a task of its own. Only then
+//     does it locate the rest of its window, in one lookup, and plan it: the
+//     resident pages it maps beside its own, and the slots of the pages the
+//     prefetch reads, both found for the whole window at once. The read is
+//     under way while it plans, so planning the window costs the fault
+//     nothing while it takes less than the read.
+//   - A post-copy stream's fault reads its whole window at once with its page
+//     (readRun), so it locates the whole window first. Nothing waits on it.
 //
-// A post-copy stream's fault still plans its whole window first: it reads
-// the window in one read with its page, and nothing waits on it.
+// A fault used to plan its whole window, whichever it was, and at 4 KiB a
+// window is 2,048 pages. Before it read anything, on GCE on 2026-10-04 that
+// planning took a dependent 4 KiB fault from the cluster to 3.2 ms against
+// 0.67 ms for the page's read alone
+// (docs/measurements/gce-fault-first-2026-10-04.md). Planned behind the read,
+// it still took 1.05 ms: locating 2,048 pages and looking each up among the
+// resident pages took about 0.75 ms of processor a fault, as long as the read,
+// and a fault at random used none of it but the resident pages it mapped
+// (docs/measurements/gce-fault-planning-2026-10-04.md). Planning its page
+// alone took the median hop to 0.83 ms, and the faults' processor time from
+// 0.41 s to 0.05 s of a chain of 400
+// (docs/measurements/gce-random-fault-planning-2026-10-04.md). Such a fault
+// costs its guest at most one more fault in its window: the next fault there
+// follows this one, and plans the window.
 
 // WorkPlan is the work of planning a window, one unit a page located, which a
 // simulation prices (sim.Config.Compute) so that a test sees a fault's
 // planning take time.
 const WorkPlan = "vmmemory/plan"
 
-// rest is what a fault does with the rest of its window once its own page is
-// planned.
-type rest int
+// reading is how a fault reads its window.
+type reading int
 
 const (
-	// restMapped maps the window's resident pages beside the faulting page
-	// and reads nothing else: a fault that follows none of its memory
-	// region's recent faults.
-	restMapped rest = iota
-	// restPrefetched maps them too, and prefetches the pages that need
-	// reading: a fault that does follow one.
-	restPrefetched
+	// readAlone reads the faulting page alone and plans nothing else: a
+	// fault that follows none of its memory region's recent faults.
+	readAlone reading = iota
+	// readFirst reads the faulting page first and prefetches the rest of
+	// the window behind it: a fault that follows one.
+	readFirst
+	// readRun reads the whole window at once with the faulting page: a
+	// post-copy stream's fault.
+	readRun
 )
 
-// readFirst serves the faulting page of a plan that has located that page
-// alone: it takes the page, starts its read, plans the rest of the window
-// while the read is under way, starts the prefetch of the rest where the fault
-// prefetches, and then waits for its own read and publishes the page. What the
-// plan holds when it returns is installed by the caller, the faulting page
-// with the resident pages of its window.
+// planFault plans the window of the page index for the faulting page fault, or
+// the window's end for none, as far as the fault will read it: the whole
+// window, located at once, for a fault that reads its run first; the window,
+// with the faulting page located alone, for one that reads its page first; and
+// the faulting page alone for one at random.
+func (r *MemoryRegion) planFault(ctx context.Context, index, fault uint64) (*windowPlan, error) {
+	start, end := r.window(index)
+	var p *windowPlan
+	var err error
+	how := readAlone
+	switch {
+	case runFirst(ctx):
+		how = readRun
+		p, err = r.plan(ctx, start, end, fault)
+	case r.followsRecent(start) || sim.Bug(ctx, "pager-prefetch-every-fault"):
+		how = readFirst
+		p, err = r.planPage(ctx, start, end, fault, index)
+	case sim.Bug(ctx, "pager-plan-the-window-at-random"):
+		// The bug plans the whole window of a fault at random, every page of
+		// it located and looked up among the resident pages, as every fault
+		// did.
+		p, err = r.plan(ctx, start, end, fault)
+	default:
+		p, err = r.plan(ctx, index, index+1, fault)
+	}
+	if err != nil {
+		return nil, err
+	}
+	p.reading = how
+	return p, nil
+}
+
+// runFirst reports a fault that reads its whole run before its page is
+// installed: a post-copy stream's, and every fault under the in-tree bug that
+// puts the run back in front of the faulting page.
+func runFirst(ctx context.Context) bool {
+	return streaming(ctx) || sim.Bug(ctx, "pager-read-the-run-first")
+}
+
+// read brings the faulting page of a plan planFault made in, as the plan says
+// the fault reads it. own says whether a run read first reads the pages whose
+// bytes go in this memory region's own file too.
+func (p *windowPlan) read(ctx context.Context, index uint64, own bool) error {
+	switch p.reading {
+	case readFirst:
+		return p.readFirst(ctx, index)
+	case readRun:
+		if err := p.takeFaulting(ctx, index); err != nil {
+			return err
+		}
+		if err := p.takeRun(ctx, index, own); err != nil {
+			return err
+		}
+		return p.loadReserved(ctx)
+	default:
+		return p.readAlone(ctx, index)
+	}
+}
+
+// readAlone reads the faulting page of a fault at random: it takes the page,
+// binds whatever else its plan located that is resident — nothing, its plan
+// being its page — and reads the page where it needs reading. The read is
+// the fault's own, as a run read first is: nothing is planned beside it.
+func (p *windowPlan) readAlone(ctx context.Context, index uint64) error {
+	if err := p.takeFaulting(ctx, index); err != nil {
+		return err
+	}
+	if err := p.bindNeighbours(ctx, p.survey(index, false)); err != nil {
+		return err
+	}
+	if p.reserved[index-p.start].slot >= 0 {
+		// Its neighbours are worth reading only to a guest that reads
+		// forwards, and a prefetch nothing uses takes processors from the
+		// faults that follow.
+		h := p.memoryRegion.host
+		h.mu.Lock()
+		h.stats.PrefetchRandom++
+		h.mu.Unlock()
+		sim.Probe(ctx, ProbePrefetchRandom)
+	}
+	return p.loadReserved(ctx)
+}
+
+// readFirst serves the faulting page of a fault that reads its page first:
+// it takes the page, starts its read, plans the rest of the window while the
+// read is under way, starts the prefetch of the rest, and then waits for its
+// own read and publishes the page. What the plan holds when it returns is
+// installed by the caller, the faulting page with the resident pages of its
+// window.
 func (p *windowPlan) readFirst(ctx context.Context, index uint64) error {
 	r := p.memoryRegion
-	then := restMapped
-	if r.followsRecent(p.start) || sim.Bug(ctx, "pager-prefetch-every-fault") {
-		then = restPrefetched
-	}
-	if err := p.takeFaulting(ctx, index, then); err != nil {
+	if err := p.takeFaulting(ctx, index); err != nil {
 		return err
 	}
 	if sim.Bug(ctx, "pager-plan-the-window-first") {
 		// The bug plans the whole window before the faulting page's read
 		// starts, as every fault did.
-		if err := p.planRest(ctx, index, then); err != nil {
+		into, err := p.planRest(ctx, index)
+		if err != nil {
 			return err
 		}
 		read := p.beginFaulting(ctx, index)
-		if pf := p.splitPrefetch(ctx, index); pf != nil {
+		if pf := p.splitPrefetch(ctx, index, into); pf != nil {
 			pf.begin()
 		}
 		return read.land(ctx, p)
 	}
 	read := p.beginFaulting(ctx, index)
-	if err := p.planRest(ctx, index, then); err != nil {
+	into, err := p.planRest(ctx, index)
+	if err != nil {
 		read.abandon()
 		return err
 	}
-	if pf := p.splitPrefetch(ctx, index); pf != nil {
+	if pf := p.splitPrefetch(ctx, index, into); pf != nil {
 		pf.begin()
 		if sim.Bug(ctx, "pager-fault-waits-for-its-prefetch") {
 			// The bug installs the page only once the rest of its run is in.
@@ -104,13 +201,14 @@ func (p *windowPlan) readFirst(ctx context.Context, index uint64) error {
 // other resident lock yet. A page whose bytes go in this memory region's own
 // file has a place of its own there, and only it may evict for it.
 //
-// Where the fault will prefetch, the slot is one of a run of free slots taken
-// for the whole window, at the page's place in it, so the pages the prefetch
-// reads land beside it and the window is one run of slots: which of them need
-// reading is not known until the window is located, and the slots of the ones
-// that do not go back then (keepProvisional). A fault that reads its page
-// alone takes one slot.
-func (p *windowPlan) takeFaulting(ctx context.Context, index uint64, then rest) error {
+// A fault that reads its run first takes free slots for the run of pages
+// around this one that need reading. One that reads its page first takes its
+// slot out of a run of free slots for the whole window, at the page's place
+// in it, so the pages the prefetch reads land beside it and the window is one
+// run of slots: which of them need reading is not known until the window is
+// located, and the slots of the ones that do not go back then
+// (keepProvisional). A fault that reads its page alone takes one slot.
+func (p *windowPlan) takeFaulting(ctx context.Context, index uint64) error {
 	r := p.memoryRegion
 	if err := p.bindShared(ctx, index, true); err != nil {
 		return err
@@ -127,12 +225,10 @@ func (p *windowPlan) takeFaulting(ctx context.Context, index uint64, then rest) 
 		p.reserve(index, at)
 		return nil
 	}
-	if p.located {
-		// A stream's plan has located the window: the run is the pages
-		// around this one that need reading.
+	if p.reading == readRun {
 		p.reserveAround(index)
 	} else {
-		p.reserveProvisional(index, then)
+		p.reserveProvisional(index)
 	}
 	if p.reserved[i].slot >= 0 {
 		return nil
@@ -165,13 +261,13 @@ func (run provisionalRun) slots(yield func(uint64, fileSlot) bool) {
 }
 
 // reserveProvisional takes the faulting page's slot, from a run of free slots
-// for its whole window where the fault prefetches. When fewer are free than
-// the window, the run holds the faulting page and the pages after it first.
-// Nothing is evicted; the page may remain unreserved.
-func (p *windowPlan) reserveProvisional(index uint64, then rest) {
+// for its whole window where the fault reads its page first. When fewer are
+// free than the window, the run holds the faulting page and the pages after it
+// first. Nothing is evicted; the page may remain unreserved.
+func (p *windowPlan) reserveProvisional(index uint64) {
 	file := p.fileOf(index)
 	first, last := index, index+1
-	if then == restPrefetched {
+	if p.reading == readFirst {
 		first, last = p.start, p.end
 	}
 	at, count := p.memoryRegion.host.allocateFree(file, int(last-first))
@@ -187,13 +283,13 @@ func (p *windowPlan) reserveProvisional(index uint64, then rest) {
 
 // keepProvisional settles the provisional run once the window is located:
 // each slot stays reserved for its page where the prefetch will read that page
-// into that file, and goes back otherwise.
-func (p *windowPlan) keepProvisional() {
+// into that file (survey), and goes back otherwise.
+func (p *windowPlan) keepProvisional(into []*arenaFile) {
 	run := p.provisional
 	p.provisional = provisionalRun{}
 	var back []fileSlot
 	for page, at := range run.slots {
-		if p.needsLoad(page) && p.prefetchable(page) && p.fileOf(page) == at.file {
+		if into[page-p.start] == at.file {
 			p.reserve(page, at)
 			continue
 		}
@@ -211,50 +307,39 @@ func (p *windowPlan) keepProvisional() {
 	h.mu.Unlock()
 }
 
-// prefetchable reports a page a prefetch may read: one that lands as a clean
-// shared page, under an identity of the volume's that no other host holds and
-// in a file other memory regions may read.
-func (p *windowPlan) prefetchable(page uint64) bool {
-	key, named := p.identity(page)
-	return named && !key.zero() && !p.unpublished(page) && !p.own(page)
+// planRest locates the whole window of a fault that reads its page first, in
+// one lookup, once the faulting page is in the plan, and takes the rest of it
+// into the plan: every page whose identity is resident, bound to that page,
+// and free slots, never an eviction, for the pages the prefetch reads. Which
+// pages are which is asked for the whole window at once. It reports the file
+// each page the prefetch reads goes in (survey).
+func (p *windowPlan) planRest(ctx context.Context, index uint64) ([]*arenaFile, error) {
+	if err := p.locateWindow(ctx); err != nil {
+		return nil, err
+	}
+	found := p.survey(index, true)
+	if err := p.bindNeighbours(ctx, found); err != nil {
+		return nil, err
+	}
+	p.keepProvisional(found.into)
+	return found.into, p.reserveRuns(ctx, index, found.into)
 }
 
-// planRest locates the whole window and takes the rest of it into the plan
-// once the faulting page is in it: every page whose identity is resident,
-// bound to that page, and, where the fault prefetches, free slots for the
-// pages the prefetch reads, never an eviction. A fault that does not
-// prefetch counts the run it leaves unread.
-func (p *windowPlan) planRest(ctx context.Context, index uint64, then rest) error {
-	if err := p.locateWindow(ctx); err != nil {
+// takeRun takes the rest of a run read first into the plan once the faulting
+// page is in it: every page whose identity is resident, bound to that page,
+// and free slots, never an eviction, for the pages that need reading, the
+// pages after the faulting one first. own says whether the pages whose bytes
+// go in this memory region's own file are reserved there too.
+func (p *windowPlan) takeRun(ctx context.Context, index uint64, own bool) error {
+	found := p.survey(index, false)
+	if err := p.bindNeighbours(ctx, found); err != nil {
 		return err
 	}
-	for page := p.start; page < p.end; page++ {
-		i := page - p.start
-		if page == index || p.pages[i] != nil || p.zeros[i] || p.reserved[i].slot >= 0 || !p.eligible(page) {
-			continue
-		}
-		if err := p.bindShared(ctx, page, false); err != nil {
-			return err
-		}
+	if err := p.reserveRuns(ctx, index, found.into); err != nil {
+		return err
 	}
-	p.keepProvisional()
-	wanted := func(page uint64) bool { return page != index && p.needsLoad(page) && p.prefetchable(page) }
-	if then == restPrefetched {
-		return p.reserveRuns(ctx, index, wanted)
-	}
-	for page := p.start; page < p.end; page++ {
-		if wanted(page) {
-			// A fault that follows none of its memory region's recent faults
-			// is read alone: its neighbours are worth reading only to a guest
-			// that reads forwards, and a prefetch nothing uses takes
-			// processors from the faults that follow.
-			h := p.memoryRegion.host
-			h.mu.Lock()
-			h.stats.PrefetchRandom++
-			h.mu.Unlock()
-			sim.Probe(ctx, ProbePrefetchRandom)
-			return nil
-		}
+	if own {
+		p.reserveOwn()
 	}
 	return nil
 }

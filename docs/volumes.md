@@ -124,6 +124,14 @@ this handle or any other that addresses the segment, is answered from it while
 the cache keeps it. A range inside a segment that no checkpoint has written
 costs nothing, because an absent segment reads as zeroes, like an absent page.
 
+A range is one lookup of each segment it crosses. `Locate` takes the segment's
+page table once and reads the range's entries off it in order
+(`pageTable.locate`), so a fault's window of 2,048 pages is one lookup and a
+scan of the table, not 2,048 lookups. A range the overlay touched nowhere is
+the checkpoint's answer as it stands, not a copy of it. A fault that reads
+forwards locates its window this way
+([planning a fault](vm-memory.md#planning-a-fault)).
+
 ## Ephemeral disks
 
 An ephemeral disk is a volume that no checkpoint holds
@@ -803,12 +811,12 @@ is 320 KiB of table. Every index that addresses the segment looks its pages
 up in that one table, and each checks it against its own root, because the
 table is shared and the root is what says which checkpoints and parts a page
 may name. Tables are charged to the cache's budget and evicted with the pages,
-least recently used. A fault looks its window up in one, so a table in use is
-never the one evicted. A publication leaves the tables of the segments it
-wrote in the cache, as a reader of the index it published would decode them,
-so the VM that published goes on faulting without fetching them. Only a store
-made with no cache, which tools and tests make, keeps the tables in each
-index instead, for the index's life.
+least recently used. A fault looks its page or its window up in one, so a
+table in use is never the one evicted. A publication leaves the tables of the
+segments it wrote in the cache, as a reader of the index it published would
+decode them, so the VM that published goes on faulting without fetching them.
+Only a store made with no cache, which tools and tests make, keeps the tables
+in each index instead, for the index's life.
 
 Until 2026-10-04 each index decoded the segments it read into a map of its
 own, through one protobuf message per page, and kept them for its life outside

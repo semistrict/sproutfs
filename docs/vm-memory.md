@@ -560,15 +560,16 @@ Ordinary volume reads on the fault path add no extra round trip. Migration
 backings may request pages from the source peer, and cold volume loads may read
 object storage. The supervisor's periodic verification confirms ownership.
 
-A read fault serves its whole aligned read-ahead run, but **its own page
-first**. The run is one pager page by default. Pages already resident under the
-same page identity are mapped without a read. The faulting page is read alone,
-installed with those resident pages in one mapping command, and its access is
-resolved: the guest runs again as soon as that one page is in. The rest of the
-run is a **prefetch**: one backing read on a goroutine of its own, started
-beside the fault's read, that the fault never waits for
-(`vmmemory/prefetch.go`). Read-ahead uses only free slots and never evicts.
-Only the faulting page may cause an eviction. Eviction can later revoke a
+A read fault that follows a recent one serves its whole aligned read-ahead
+run, but **its own page first**. The run is one pager page by default. Pages
+already resident under the same page identity are mapped without a read. The
+faulting page is read alone, installed with those resident pages in one
+mapping command, and its access is resolved: the guest runs again as soon as
+that one page is in. The rest of the run is a **prefetch**: one backing read
+on a goroutine of its own, started beside the fault's read, that the fault
+never waits for (`vmmemory/prefetch.go`). A fault at random serves its page
+alone ([reading at random](#reading-at-random)). Read-ahead uses only free
+slots and never evicts. Only the faulting page may cause an eviction. Eviction can later revoke a
 mapping and require a refault. The read-ahead run is set per host, and every
 memory region of a host uses it.
 
@@ -667,6 +668,14 @@ and a restore begin by reading forwards. Any other fault reads its page and
 nothing else, and `Stats.PrefetchRandom` counts it. Eight windows let that
 many threads of one guest each read forwards at once.
 
+A fault at random also plans nothing but its page
+([planning a fault](#planning-a-fault)). It does not map the window's pages
+that are resident under their identities either, such as a sibling's. That
+costs its guest at most one more fault in the window: the next fault there
+follows this one, plans the window, and maps them all without a read.
+`TestAFaultAtRandomMapsItsPageAloneAndTheNextInItsWindowTheRest` holds the
+pager to that.
+
 The reason is processors. A prefetch's pages are checked and decoded as a
 fault's are: at 4 KiB, a run of 2,047 pages from the cluster is about 100 ms
 of processor time. On GCE on 2026-10-04 a chain of dependent 4 KiB faults
@@ -685,34 +694,63 @@ fails it.
 
 ### Planning a fault
 
-A fault plans its own page first (`vmmemory/faultfirst.go`). It locates its
-page alone and takes it: bound to a resident page under its identity, or a
-slot to read it into. It starts the page's read on a task of its own. Only
-then does it locate the rest of its window, bind the window's resident pages
-to map beside its own, and, where it prefetches, reserve the slots of the
-pages the prefetch reads. The read is under way while it plans, so the
-window's planning costs the fault nothing while it takes less than the read.
-A fault at random reserves nothing for its neighbours. A fault that
-prefetches takes its own slot out of a run of free slots for the whole window,
-at its page's place in the run, so the prefetched pages land beside it and the
-window is one run of slots. The slots of the pages the window turns out not to
-need go back once it is located, and a fault that fails before then gives the
-whole run back. A store into a page the guest never touched asks whether that
-page is a hole before it locates the window for its write-ahead run. A
-post-copy stream's fault plans its whole window first, because it reads the
-window with its page.
+A fault plans only what it reads (`vmmemory/faultfirst.go`). Which way it
+reads is decided before it plans anything:
+
+- A fault at random reads its page alone. Its plan is its page: it locates
+  that page in one lookup of one page, takes it, bound to a resident page
+  under its identity or a slot to read it into, and reads it.
+- A fault that follows a recent one reads its page first and prefetches the
+  rest of its window. It locates its page alone and takes it, and starts the
+  page's read on a task of its own. Only then does it locate the rest of its
+  window, in one lookup of the volume, and plan it. The read is under way
+  while it plans, so the window's planning costs the fault nothing while it
+  takes less than the read.
+- A post-copy stream's fault plans its whole window first, because it reads
+  the window with its page.
+
+A fault that plans its window looks at the whole window at once. It takes the
+window's bindings under the memory region's binding lock once, and looks up
+every page's identity among the resident and in-flight pages under the host's
+lock once. From that one look it binds the resident pages to map beside its
+own, and finds the file each page the prefetch reads goes in, which the
+reservations and the prefetch then use. A page's identity is an index into
+the window's extents rather than a search of them. The volume locates the
+window with one lookup of each page-table segment it crosses
+([reads](volumes.md#reads)).
+
+A fault that prefetches takes its own slot out of a run of free slots for the
+whole window, at its page's place in the run, so the prefetched pages land
+beside it and the window is one run of slots. The slots of the pages the window
+turns out not to need go back once it is located, and a fault that fails
+before then gives the whole run back. A store into a page the guest never
+touched asks whether that page is a hole before it locates the window for its
+write-ahead run.
 
 Until 2026-10-04 a fault located and planned its whole window before it read
 anything. At 4 KiB that is 2,048 pages, and the lookup decoded the window's
 page-table segment for each index that read it. On GCE a dependent 4 KiB fault
 from the cluster took 3.07 ms against 0.67 ms for its page's read, and 1.05 ms
 after; from the store, 29.1 ms against 25.7 ms after
-([measurement](measurements/gce-fault-planning-2026-10-04.md)). What is left
-is the window's planning beside the read, about 0.75 ms a fault at 4 KiB.
+([measurement](measurements/gce-fault-planning-2026-10-04.md)). What was left
+was the window's planning beside the read, about 0.75 ms of processor a fault
+at 4 KiB, which a fault at random did not need. Planning a fault at random's
+page alone took the median hop from the cluster from 0.98 to 0.83 ms, against
+0.66 ms for the page alone, and the faults' processor time in the chain from
+0.41 s to 0.05 s
+([measurement](measurements/gce-random-fault-planning-2026-10-04.md)). On
+one Ice Lake processor a fault at random over a real index costs 10 µs of
+planning and the pager's own work against 575 µs, and a fault reading
+forwards 1.03 ms against 2.21 ms (`BenchmarkARandom4KiBFault`,
+`BenchmarkAForward4KiBFault`).
+
 `TestADependentChainOf4KiBFaultsPaysOnePageReadAHop` runs a 4 KiB pager over a
-real checkpoint store and holds every hop to one read and its own page's
-planning, with the segment decoded once; the in-tree bugs
-`pager-plan-the-window-first` and `checkpoint-decode-every-lookup` fail it.
+real checkpoint store and holds every hop at random to one read and one
+lookup of its own page, with the segment decoded once; the in-tree bugs
+`pager-plan-the-window-at-random` and `checkpoint-decode-every-lookup` fail it.
+`TestAForwardChainOf4KiBFaultsPlansItsWindowInOneLookup` holds every hop
+reading forwards to one read and its page's planning, its window located in
+one lookup beside the read; `pager-plan-the-window-first` fails it.
 
 Before the memory region is exposed, attach populates the pages whose identity is
 already resident in the same pager. It loads nothing. The Rust session serves
