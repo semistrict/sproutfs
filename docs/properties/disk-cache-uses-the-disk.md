@@ -14,3 +14,9 @@ share. Reads of the store and publications fill the cluster
 `TestAPublicationFillsNothingBeforeItsPartIsDurable`), and later reads come
 from the disks (`TestAPageInTheClusterIsReadWithNoStoreRead`). Outside the
 share a host keeps only what pulls copy.
+
+**A pull, 2026-10-04.** Inside the share a pull fills the cluster with the
+pages it lacks and copies nothing whole
+(`TestAPullOfACheckpointTheClusterPartlyHoldsReadsOnlyWhatItLacks`). It stops
+when the disk limiter shrinks the cache, so it never fills a disk that is
+giving space back (`TestPressureCancelsAPullsReads`).

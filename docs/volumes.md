@@ -834,13 +834,15 @@ reconciled against object storage.
 ### The page cache's disk
 
 The page cache has a second tier on the host's own disk (`CacheConfig.Disk`).
-It holds the pages a **pull** copied: every page of one checkpoint, and the
-segments that locate them, fetched for a VM
-[marked to pull its memory](hosting.md#pulling-a-vms-memory). It also holds
-what that VM's later checkpoints published, which each publication writes to
-the disk as it uploads it. A read that misses in memory looks on the disk
-before it asks the store. So a pulled checkpoint is read without a request
-while the disk holds it, however often the pager evicts its pages.
+Outside the share the cluster cache is on for, it holds the pages a **pull**
+copied: every page of one checkpoint, and the segments that locate them,
+fetched for a VM [marked to pull its memory](hosting.md#pulling-a-vms-memory).
+It also holds what that VM's later checkpoints published, which each
+publication writes to the disk as it uploads it. A read that misses in memory
+looks on the disk before it asks the store. So a pulled checkpoint is read
+without a request while the disk holds it, however often the pager evicts its
+pages. Inside the share a pull copies nothing whole here: it fills the cluster
+with what the cluster lacks, as described below.
 
 Inside the share the cluster cache is turned on for, the disk is one part of
 the cluster's cache, and **fills** put windows on it
@@ -991,19 +993,27 @@ regions back, oldest first and with no second chance, until it holds one
 region less than its share.
 
 `Store.Pull` refuses a checkpoint that is larger than everything the share's
-fill regions can hold, before it fetches anything. What a checkpoint holds is
-in its root: each segment entry records what its pages read from each
-checkpoint, so the sum of those bytes and of the segments' lengths is what the
-pull would copy. A page the disk already holds is not copied again. A pull
-holds nothing: its pages are ordinary items, and closing it frees none of them.
-They leave only when their region is evicted.
+fill regions can hold, before it fetches anything, while some of its windows
+would be kept whole: with the cluster cache on for every window, none are. What
+a checkpoint holds is in its root: each segment entry records what its pages
+read from each checkpoint, so the sum of those bytes and of the segments'
+lengths is what the pull would copy. A page the disk already holds is not
+copied again. A pull holds nothing: its pages are ordinary items, and closing
+it frees none of them. They leave only when their region is evicted.
 
 A pull runs behind every fault. It fetches the segments one at a time and the
-members of each in the extents described above. It takes none of the cache's
-load slots and joins none of its flights, so a fault for a page the pull has
-not reached fetches it at once, as it would without a pull. Before each
-request the pull waits until no load of the cache is in flight, and all the
-pulls on a host share two requests.
+members of each in the extents described above. Inside the share it reads
+each segment through the cluster, asks the ranks of the pages' windows which
+stripes they hold (`peer.Presence`, which answers a bitmap of pages for each
+index of the code), and leaves out of its extents every page of which the
+ranks hold k distinct indices. It hands what it read to the fills. Its reads
+are marked as a prefetch (`checkpoint.WithPrefetch`). It takes none of the
+cache's load slots and joins none of its flights, so a fault for a page the
+pull has not reached fetches it at once, as it would without a pull. Before
+each request the pull waits until no load of the cache is in flight, and all
+the pulls on a host share two requests. Memory pressure
+(`resource.Budget.Pressure`) and `Cache.FitDisk` cancel every pull's requests
+in flight, and the pull ends with `ErrPressure`.
 
 ### The hot tier
 

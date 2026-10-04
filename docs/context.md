@@ -206,18 +206,22 @@ everything a host reports across both pagers is in bytes. An arena's memory
 matches its page size: the HugeTLB pool for 2 MiB, and an ordinary shared memfd
 for 4 KiB.
 
-**Pull**: Copying every page of the checkpoint a VM started from onto the disk
-of the host that runs it, in the background while the guest runs. A start
-marks a VM to pull, and the VM keeps the mark: the orchestrator records it, and
-every start, recovery and migration of the VM carries it. The copy lives in the page
-cache's disk, keyed by page identity. A pull holds none of it: the pages leave
-the disk only when it needs their space. Once the copy is complete, a fault on
-a page that is not resident makes no request of the object store while the
-disk holds that page. The copy is never durable. A VM whose checkpoint is
-larger than the disk can hold is not pulled, and reads the store as any VM
-does. Inside the share the cluster cache is on for, what a pull copies is a
-fill, which puts each window on its ranks and which the pull does not wait
-for. See
+**Pull**: Fetching every page of the checkpoint a VM started from, in the
+background while the guest runs, so its faults read the hosts' disks and not
+the object store. It is a prefetch with no guarantee. A start marks a VM to
+pull, and the VM keeps the mark: the orchestrator records it, and every start,
+recovery and migration of the VM carries it. Inside the share the cluster
+cache is on for, a pull asks each window's ranks what they hold (a **presence
+check**), reads from the store only the pages the cluster lacks, and fills
+the cluster with them; it copies nothing onto its own host's disk. Outside the
+share it copies the pages whole onto the page cache's disk of the host that
+runs it, keyed by page identity. A pull holds none of what it fetched: the
+pages leave the disks only when they need their space. Once the pull is
+complete, a fault on a page that is not resident makes no request of the
+object store while the disks hold that page. Its reads are a prefetch's, and
+it stops short when the host is short of memory or disk. A VM whose checkpoint
+is larger than the disk can hold, where some of it would be kept whole, is not
+pulled, and reads the store as any VM does. See
 [hosting](hosting.md#pulling-a-vms-memory).
 
 **Hot tier**: A second bucket that holds copies of checkpoint objects under
@@ -372,7 +376,7 @@ for, three things fill: a read of the store, or of the cluster under an
 earlier code, once its callers have their pages; a publication, for each part once
 its PUT has succeeded, in part order, and for its segments once the index
 object's has; and a
-pull, for what it copies. A host decides its fills one at a time from one
+pull, for each window it read from the store because the cluster lacked it. A host decides its fills one at a time from one
 bounded queue, a read's before a publication's. Its own stripes go to its own
 disk, and every other stripe goes as a keep within a bounded rate and the
 background budget. The keeps of a window go to its holders side by side, and

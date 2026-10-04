@@ -939,31 +939,66 @@ its whole memory. The mark is `Pull` on the host API's create, open and fork,
 and `--pull` on `sproutfsctl create`, `start` and `fork`.
 
 While this host runs a marked VM, every page of the checkpoint it started from
-is copied onto this host's disk. The pages need not become resident in memory.
-The copy lives in the [page cache's disk](volumes.md#the-page-caches-disk),
-keyed by page identity. Once it is complete, a fault on a page that is not
-resident reads the disk and makes no request of the object store, while the
-disk holds that page. That holds for a page the guest never touched and for
-one the pager evicted since. With the cluster cache off, as a deployment
-runs it today, every page is kept whole on this disk. A window inside the
-share the cluster cache is turned on for is a fill
-([filling the cluster](#filling-the-cluster)): the pull hands it over and
-does not wait, and its stripes go to the disks the membership ranks for it,
-this host's own among them.
+is fetched in the background. The pages need not become resident in memory.
+Once the pull is complete, a fault on a page that is not resident reads the
+hosts' disks and makes no request of the object store, while they hold that
+page. That holds for a page the guest never touched and for one the pager
+evicted since. A pull is a prefetch with no guarantee: what it fetched is
+evicted like anything else.
 
-- **The guest runs while the copy is made.** The pull starts when the machine
+Where a page goes depends on the share the cluster cache is turned on for.
+
+- **Inside the share, the pull fills the cluster and copies nothing onto
+  this host's disk.** It reads each segment through the cluster
+  ([reading from the cluster](#reading-from-the-cluster)), since it needs the
+  segment to list the pages. For the pages, it asks the first k+m ranks of
+  each window which stripes they hold. That is a presence check, one request
+  to each rank for every window it ranks, and the disks this host serves
+  answer with no request. A page counts as held when the ranks hold k distinct
+  indices of it. The pull reads from the store only the pages the cluster
+  lacks, and hands them to the fills ([filling the
+  cluster](#filling-the-cluster)). Their stripes go to the window's ranks,
+  this host's own disk among them only where the membership ranks it. A pull
+  of a checkpoint the cluster holds reads nothing from the store.
+- **Outside the share, the pull copies the page whole onto this host's
+  disk,** as before the cluster cache. The copy lives in the [page cache's
+  disk](volumes.md#the-page-caches-disk), keyed by page identity. With the
+  cluster cache off, as a deployment runs it today, every page goes this way.
+
+Why no whole copy inside the share: the plan's goal is that a restarted VM
+reads from the hosts' disks before the store, on this host or another. The
+cluster serves a window to any host, and survives losing m hosts. A whole copy
+here would save about half a millisecond a page, and only for a restart on
+this host. It would cost the cluster a second copy and a second write
+(decided with the owner on 2026-10-02: no tier of whole local copies).
+
+- **The guest runs while the pull fetches.** The pull starts when the machine
   is registered, after its VMM runs. A fault is never queued behind it: the
   pull takes none of the page cache's load slots, joins no fault's fetch, and
-  makes no request while a fault's read of the store is in flight. Every pull
-  on the host shares two requests in flight.
+  makes no request while a fault's load is in flight. Every pull on the host
+  shares two requests in flight, presence checks included. Its reads are
+  marked as a prefetch, as fault first's are
+  ([prefetch](vm-memory.md#faults-and-read-ahead)): its peer requests go over the bulk
+  class under the background budget, and its reads of the cluster ask no
+  second request, never read the store as a hedge, and teach the delay
+  nothing.
+- **Pressure stops it.** When the host's memory budget refuses a reservation
+  that no cache can make room for, or the disk limiter shrinks the cache,
+  every pull's reads in flight are cancelled. Each pull stops short with
+  `checkpoint.ErrPressure`, which its status reports. What it did stays, and
+  the cluster and the store serve the rest. A pull does not start again by
+  itself: it would bring back the load the pressure asked to shed.
 - **It is bounded and falls back whole.** The disk limiter sets the disk's
   share ([budgets](#budgets)). The disk is a log of 64 MiB regions, and every
-  region of the share but one may be filled. A pull is refused
-  before it fetches anything if the checkpoint, as its root records it, is
-  larger than those regions hold. A VM that does not fit is not pulled at all,
-  and its faults read the store as any other VM's do. So does a VM on a host
-  that keeps no disk. A pull that fails part way keeps what it copied, and the
-  store serves the rest.
+  region of the share but one may be filled. While some windows are kept
+  whole, a pull is refused before it fetches anything if the checkpoint, as
+  its root records it, is larger than those regions hold. Which windows are
+  whole is known only once the segments are read, so with the share between 0
+  and 100 the whole checkpoint is counted. With the share at 100 nothing is
+  kept whole and nothing is refused. A VM that does not fit is not pulled at
+  all, and its faults read the store as any other VM's do. So does a VM on a
+  host that keeps no disk and fills no cluster. A pull that fails part way
+  keeps what it did, and the store serves the rest.
 - **It holds nothing.** The pages a pull copies are ordinary entries of the
   disk. When the disk needs room, it gives back its oldest region, and the
   pages in it that were read since they were written get a second chance. A
@@ -1444,7 +1479,12 @@ things fill:
   would reach the queue in the order the Go scheduler ran the uploads. Every
   publication fills: an interval checkpoint, a capture, a stop, a fork point
   and a template import.
-- **A pull.** What a pull copies of a window inside the share is a fill.
+- **A pull.** A pull reads from the store only the windows the cluster lacks,
+  which it learns by asking the windows' ranks, and each window it reads is a
+  fill ([pulling a VM's memory](#pulling-a-vms-memory)). Like a publication's,
+  a pull's fill needs no fill right. Like a read's, it never waits: one that
+  finds the queue full is dropped, and a fault reads that window from the
+  store later.
 
 A fill splits each envelope with `stripe.Split` and puts stripe i on the disk
 `List.Holders` names. This host's own stripes go to its own disk. The member
@@ -1984,8 +2024,10 @@ The page cache's disk is the cache. It is no promise: it holds what the
 limiter leaves, `CacheShare()`, and nothing else caps it. Each write it makes asks `Admit`, at the priority of its kind. When the
 share falls below what it holds, the limiter calls its `Shrink`, and the disk
 gives regions back, oldest first and with no second chance, until it holds its
-share less one region. A pull that does not fit in the share is refused before
-it fetches anything. A host that restarts finds the cache's file holding what
+share less one region. A `Shrink` first stops every pull on the host, with
+its reads in flight cancelled, since a pull would fill the disk again as it
+gives regions back. A pull that would keep more whole than fits in the share
+is refused before it fetches anything. A host that restarts finds the cache's file holding what
 it kept before the cache is made, so until the cache registers, the limiter
 counts what the file holds as the cache's, not as another writer's. The cache
 read back is then fitted to that share before it serves anything.

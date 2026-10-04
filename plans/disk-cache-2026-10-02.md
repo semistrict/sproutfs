@@ -583,6 +583,12 @@ is not resident makes no request of the store while the VM runs. After this
 plan, it makes no request of the store while the cluster cache holds the page.
 The mark stays with the VM as today, and so does the progress a host reports.
 
+Built on 2026-10-04 ([hosting](../docs/hosting.md#pulling-a-vms-memory)).
+Inside the share a pull copies nothing whole onto its own host's disk. The
+presence check answers which indices a rank holds, not only which pages, so
+a page counts as held only with k distinct indices. A pull's reads are a
+prefetch's, and memory or disk pressure stops it short.
+
 ## The disk limiter
 
 One limiter decides how much of the node's disk the host may use, for

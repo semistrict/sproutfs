@@ -69,11 +69,11 @@ func seedsThrough(last uint64) []uint64 {
 // these campaigns reach too: the peer server's (TestThePeerServerCampaignNeverAnswersWrong),
 // the membership's (TestConcurrentWritersNeverLoseAnUpdateOrGoBack, and the
 // read campaign in checkpoint for the protocol), and the page cache disk's,
-// its stripes', its fills' and its reads of the cluster (the disk, stripe,
-// fill and read campaigns in checkpoint).
+// its stripes', its fills', its reads of the cluster and its pulls (the disk,
+// stripe, fill, read and pull campaigns in checkpoint).
 func elsewhere(name string) bool {
 	for _, prefix := range []string{"peer/", "membership/", "checkpoint/disk-", "checkpoint/fill-",
-		"checkpoint/keep-", "checkpoint/cluster-"} {
+		"checkpoint/keep-", "checkpoint/cluster-", "checkpoint/presence-", "checkpoint/pull-"} {
 		if strings.HasPrefix(name, prefix) && !slices.Contains(registeredProbes, name) {
 			return true
 		}
