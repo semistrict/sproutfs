@@ -160,7 +160,12 @@ func runPeerCampaign(t *testing.T, seed uint64) *sim.Runtime {
 	c.future = c.table(ctx, peer.TableConfig{Dial: dial, Versions: peer.Versions{Min: 3, Max: 4}})
 
 	c.chaos(ctx)
+	// The faults stop, the heavy tail with them. A frame crosses in pieces,
+	// and each piece can take two seconds longer, so a tail left on goes on
+	// finding sound connections dead and hellos late: four seconds of silence
+	// is dead, and three without a hello is a failed dial.
 	runtime.SetBuggify(false)
+	runtime.Network().EndTail()
 	time.Sleep(campaignQuiet)
 	c.quiet(ctx)
 	t.Logf("seed=%d served=%d failed=%d probes=%v fired=%v", seed, c.served.Load(), c.failed.Load(),

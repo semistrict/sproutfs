@@ -1893,7 +1893,7 @@ this one once did not. Each fault is off at its zero value, so a world that
 asks for none runs exactly as it did:
 
 - a heavy latency tail, in which about one hop in `TailEvery` takes up to
-  `TailLatency` longer;
+  `TailLatency` longer, until `Network.EndTail` ends it;
 - pairs of hosts that stay slow for the whole run once they first connect;
 - one link's bandwidth, `LinkBytesPerSecond`, shared by every connection
   between two hosts, so a frame is sent behind the bytes sent before it;
@@ -1920,9 +1920,12 @@ for thirty simulated seconds, while the link to the source is held for up to
 six seconds at a time. Half the seeds run over framed links and half over byte
 streams. No answer may be wrong, and no damage on the way may make a sound peer
 look broken. The release before checks no header, so its answers are checked
-only once the faults stop. Then, after a minute, every peer must answer at
-once and right, none may still be marked down but the one that is gone, and
-the release two ahead must still be incompatible. Three seeds run normally,
+only once the faults stop. The heavy tail stops with them. On a byte stream
+each piece of a frame can draw it, so one frame can take several seconds
+longer, and a tail left on goes on finding sound connections dead. Then, after
+a minute, every peer must answer at once and right, none may still be marked
+down but the one that is gone, and the release two ahead must still be
+incompatible. Three seeds run normally,
 the cheapest set that between them activates every site of the peer server and
 the network and reaches every probe of `peer.Probes`. The soak runs
 sixty-four.
@@ -1938,6 +1941,10 @@ spun until its pieces would have arrived. A connection of version 1 that owed
 a reply it would never get was never found dead, because the release before
 answers no ping. And a down peer whose probe was answered INCOMPATIBLE stayed
 down and was probed for ever.
+
+It also found a bug of its own. Its quiet phase left the heavy tail on, so
+about one run in three hundred found a sound connection dead, or a hello late,
+after the faults were over.
 
 `TestAGuestFaultIsAnsweredWhileTheStreamSaturatesTheLink` is the
 small-behind-large problem. Sixteen streams fill a link of 256 MiB/s, and a

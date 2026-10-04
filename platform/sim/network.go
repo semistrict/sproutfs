@@ -121,6 +121,8 @@ type Network struct {
 	dials     map[linkKey]uint64
 	pairs     map[pairKey]*pairState
 	streams   streamListeners
+	// tailEnded says EndTail ended the heavy tail.
+	tailEnded bool
 }
 
 func newNetwork(runtime *Runtime, config NetworkConfig) *Network {
@@ -310,6 +312,18 @@ func (n *Network) Hold(from, to platform.Address, until time.Time) {
 func (n *Network) HoldBoth(a, b platform.Address, until time.Time) {
 	n.Hold(a, b, until)
 	n.Hold(b, a, until)
+}
+
+// EndTail ends the heavy latency tail for the rest of the run: no hop after it
+// takes longer for the tail. A campaign calls it when its faults stop, because
+// the tail is one of them. A frame crosses a byte stream in pieces, and each
+// piece can draw the tail, so one frame can take several TailLatency longer.
+// That is a silence a liveness check is right to act on.
+func (n *Network) EndTail() {
+	n.mu.Lock()
+	n.tailEnded = true
+	n.mu.Unlock()
+	n.runtime.trace.record(Event{Kind: "network", Operation: "end_tail", Outcome: "ok"})
 }
 
 func (n *Network) holdBetween(from, to platform.Address, start, until time.Time) {
@@ -569,7 +583,7 @@ func (n *Network) extraLocked(key linkKey, state *linkState, sequence uint64, by
 	if until := state.heldUntil(now); !until.IsZero() {
 		extra += until.Sub(now)
 	}
-	if n.config.TailEvery > 0 && n.config.TailLatency > 0 {
+	if n.config.TailEvery > 0 && n.config.TailLatency > 0 && !n.tailEnded {
 		r := n.runtime.Random("network/tail")
 		id := fmt.Sprintf("%s/%s/%d", key.from, key.to, sequence)
 		if r.Intn(id, n.config.TailEvery) == 0 {
