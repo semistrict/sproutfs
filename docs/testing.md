@@ -2958,6 +2958,26 @@ takes off the list, a slice's capacity, a zero-sized item that fails its
 header anyway, an error message's arithmetic, and a refill of no time. Two
 `case` lines Gremlins reports uncovered are run by the refusal tests.
 
+The reads of the cluster are mutated the same way, with the tests of their
+copies and their hedge:
+
+```sh
+python3 scripts/mutate-gremlins.py --package checkpoint --suite full \
+  --file clusterread.go --file cache.go --file run.go \
+  --run '^(TestTheHedger|TestAReadIsOfTheClass|TestEachSizeClass|TestALargeRead|TestAReadOfThePage|TestAPageReadFromAPeer|TestTheCacheKeeps|TestAPageFills|TestStoreReadsPast|TestAPrefetchs|TestSecondRequests|TestAStalledOrSlow|TestAWrongStripe|TestAPageInTheCluster|TestCache)' \
+  --gremlins /path/to/gremlins --output /tmp/cluster-read-mutations
+```
+
+On 2026-10-04, of the mutants on the lines that cut a read's copies and gave
+the hedge a delay per size of read, 39 died and 3 lived. Two were the length
+checks before `sharesReply` compares a stripe's first byte with the
+envelope's; `TestAnEmptyStripeBesideAWholeOneIsWrong` now kills both, as a
+read under 1+1 would panic on an empty stripe without them. The third
+negates `err == nil` before a load's count of pages is checked, which none of
+these tests makes fail. The run as a whole killed 237 with 86 alive and 62
+not covered, nearly all in code these tests do not aim at. The same run of
+`stripe.go` killed 69 with 4 alive, none of them in the rebuild.
+
 The membership is mutated the same way, with the peer server's side of its
 protocol. The orchestrator is a package below `cmd`, which Gremlins names
 wrongly on its own, so its run adds `--integration`:

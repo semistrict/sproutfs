@@ -83,7 +83,8 @@ func readerCache(t testing.TB) *Cache {
 // The caller finishes it, which gives the replies back.
 func (s stripeReplies) rebuilt(ctx context.Context, t testing.TB, codecs *blob.Codecs) *windowRead {
 	window := s.key.rankWindow()
-	w := &windowRead{r: &clusterReader{ctx: ctx}, codecs: codecs, window: window, code: s.code,
+	// A reader with no peers: a drop it would send is counted and goes nowhere.
+	w := &windowRead{r: &clusterReader{ctx: ctx, filler: &filler{}}, codecs: codecs, window: window, code: s.code,
 		wants: []clusterWant{{key: s.key, maximum: PageSize2MiB, valid: validPage}},
 		pages: []uint32{uint32(s.key.Page - window.Page(0))},
 		held:  make([][]heldStripe, 1), tried: make([]int, 1), out: make([][]byte, 1),
@@ -186,6 +187,25 @@ func TestAPageReadFromAPeerOutlivesItsReplysBuffer(t *testing.T) {
 				t.Fatalf("the envelope kept for a repair changed once its replies' buffers were written over: %v", err)
 			}
 		})
+	}
+}
+
+// Under 1+1 a peer that sends a stripe of an envelope of no bytes beside a
+// whole one costs the read nothing: the empty one is tried first, fails its
+// check, and is found wrong, and the whole one is the page.
+func TestAnEmptyStripeBesideAWholeOneIsWrong(t *testing.T) {
+	code := rank.Code{K: 1, M: 1}
+	s := newStripeReplies(t, code, []int{1})
+	window := s.key.rankWindow()
+	empty := encodeItem(s.key, stripe.Stripe{Code: code, Index: 0})
+	s.replies = append([]peer.StripesReply{{Payload: empty, Items: []peer.StripeItem{{
+		Page: uint32(s.key.Page - window.Page(0)), Index: 0, Size: len(empty)}}}}, s.replies...)
+	w := s.rebuilt(t.Context(), t, blob.Default())
+	defer w.finish()
+	if !bytes.Equal(w.out[0], s.page) || len(w.held[0]) != 1 || w.held[0][0].stripe.Index != 1 ||
+		w.r.stats.WrongStripes != 1 {
+		t.Fatalf("rebuilt %d bytes, holding %d stripes, %d found wrong; want the page from stripe 1 alone, "+
+			"and the empty one wrong", len(w.out[0]), len(w.held[0]), w.r.stats.WrongStripes)
 	}
 }
 
