@@ -621,8 +621,8 @@ type faultHistory struct {
 // fault counts as following: a boot and a restore begin by reading forwards.
 //
 // Only such a fault prefetches the rest of its run. On GCE on 2026-10-04 a
-// chain of dependent 4 KiB faults read from the cluster took 17 ms a hop when
-// every fault prefetched its run, against 0.65 ms for a page alone: each
+// chain of dependent 4 KiB faults read from the cluster took 24 ms a hop when
+// every fault prefetched its run, against 0.67 ms for a page alone: each
 // 2,047-page prefetch is about 100 ms of processor, and the prefetches of the
 // hops before took the processors the next hop's own read needed.
 func (r *MemoryRegion) followsRecent(start uint64) bool {

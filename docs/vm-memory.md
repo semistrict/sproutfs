@@ -670,11 +670,14 @@ many threads of one guest each read forwards at once.
 The reason is processors. A prefetch's pages are checked and decoded as a
 fault's are: at 4 KiB, a run of 2,047 pages from the cluster is about 100 ms
 of processor time. On GCE on 2026-10-04 a chain of dependent 4 KiB faults
-from the cluster, every fault prefetching its run, took 17 ms a hop against
-0.65 ms for a page alone: the prefetches of the hops before held the
-processors the next hop's read needed. A chain at random gains nothing from
-those prefetches. From the store, whose reads wait on the network rather than
-on processors, the same chain took 26 ms a hop either way
+from the cluster, every fault prefetching its run, took 24 ms a hop that
+faulted against 0.67 ms for a page read alone: the prefetches of the hops
+before held the processors the next hop's read needed. A chain at random gains
+nothing from those prefetches. Prefetching only behind a fault that follows a
+recent one, the chain took 3.2 ms a hop, and 41 ms with the run read first.
+From the store, whose reads wait on the network rather than on processors, the
+chain took 31 ms a hop prefetching behind every fault and 29 ms after, against
+25 ms for the page alone and 80 ms with the run first
 ([measurement](measurements/gce-fault-first-2026-10-04.md)).
 `TestADependentChainOfFaultsWaitsForOnePageAHop` holds a chain at random to
 one prefetch, its first hop's; the in-tree bug `pager-prefetch-every-fault`
