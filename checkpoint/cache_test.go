@@ -54,9 +54,9 @@ func (s *cacheStore) Get(ctx context.Context, request platform.GetRequest) (plat
 const cachedPages = 4
 
 // fixtureSegments is how many page-table segments the fixture's volume has: one
-// segment covers far more than four pages. A handle that publishes a checkpoint
-// has its segments in hand; one that opens a published checkpoint fetches them,
-// which is one range get however many pages they name.
+// segment covers far more than four pages. The publication leaves the table
+// of each segment it wrote in the cache, so no handle on the checkpoint, its
+// own or one that opens it, fetches a segment while the cache keeps it.
 const fixtureSegments = 1
 
 // opensOne is what opening a published checkpoint costs: one get of its index
@@ -116,14 +116,16 @@ func TestCacheSharesInheritedPagesAndAccountsHits(t *testing.T) {
 		for page := range uint64(cachedPages) {
 			readCachedPage(t, store, index, m, page)
 		}
-		if stats := cache.Stats(); stats.Misses != cachedPages || stats.Hits != 0 || objects.gets.Load() != cachedPages {
+		if stats := cache.Stats(); stats.Misses != cachedPages || stats.Hits != 0 || objects.gets.Load() != cachedPages ||
+			stats.Tables != (checkpoint.TableStats{Entries: fixtureSegments, Bytes: stats.Tables.Bytes,
+				Hits: cachedPages, Kept: fixtureSegments}) {
 			t.Fatalf("cold reads: %+v, gets=%d", stats, objects.gets.Load())
 		}
 		// A second handle on the same checkpoint reads no page bytes from
 		// storage: it opens the checkpoint, which is one get of its index
-		// object, fetches the segment that locates the pages, and every page of
-		// it is already cached. The open is not a cache fetch, so it counts as a
-		// get and not as a miss.
+		// object, finds the table of the segment that locates the pages where
+		// the publication left it, and every page of it is already cached. The
+		// open is not a cache fetch, so it counts as a get and not as a miss.
 		reopened, err := store.Open(t.Context(), index.Ref())
 		if err != nil {
 			t.Fatal(err)
@@ -131,8 +133,9 @@ func TestCacheSharesInheritedPagesAndAccountsHits(t *testing.T) {
 		for page := range uint64(cachedPages) {
 			readCachedPage(t, store, reopened, m, page)
 		}
-		if stats := cache.Stats(); stats.Hits != cachedPages || stats.Misses != cachedPages+fixtureSegments ||
-			objects.gets.Load() != cachedPages+fixtureSegments+opensOne {
+		if stats := cache.Stats(); stats.Hits != cachedPages || stats.Misses != cachedPages ||
+			stats.Tables.Hits != 2*cachedPages || stats.Tables.Loads != 0 ||
+			objects.gets.Load() != cachedPages+opensOne {
 			t.Fatalf("reopened reads: %+v, gets=%d", stats, objects.gets.Load())
 		}
 
@@ -148,18 +151,18 @@ func TestCacheSharesInheritedPagesAndAccountsHits(t *testing.T) {
 		for page := uint64(1); page < cachedPages; page++ {
 			readCachedPage(t, store, fork, forkModel, page)
 		}
-		// The fork's own publication edits the segment its parent's handle had
-		// already decoded, so it fetches nothing, not even from the cache.
-		if stats := cache.Stats(); stats.Hits != 2*cachedPages-1 ||
-			objects.gets.Load() != cachedPages+fixtureSegments+opensOne {
+		// The fork's own publication edits a copy of the segment's table the
+		// cache held, so it fetches nothing, and leaves the table it wrote.
+		if stats := cache.Stats(); stats.Hits != 2*cachedPages-1 || stats.Tables.Kept != 2*fixtureSegments ||
+			stats.Tables.Loads != 0 || objects.gets.Load() != cachedPages+opensOne {
 			t.Fatalf("untouched fork pages: %+v, gets=%d", stats, objects.gets.Load())
 		}
 		// The page the fork wrote is a new object of its own, one fetch and no
 		// inherited object to read beside it.
 		readCachedPage(t, store, fork, forkModel, 0)
 		if stats := cache.Stats(); stats.Hits != 2*cachedPages-1 ||
-			stats.Misses != cachedPages+fixtureSegments+1 ||
-			objects.gets.Load() != cachedPages+fixtureSegments+opensOne+1 {
+			stats.Misses != cachedPages+1 ||
+			objects.gets.Load() != cachedPages+opensOne+1 {
 			t.Fatalf("forked page: %+v, gets=%d", stats, objects.gets.Load())
 		}
 	})
@@ -167,15 +170,18 @@ func TestCacheSharesInheritedPagesAndAccountsHits(t *testing.T) {
 
 func TestCacheLRUEvictionUnderSharedPressureAndClear(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		// Three pages of budget hold exactly two entries once the per-entry
-		// bookkeeping charge is counted.
+		// Three pages of budget hold exactly two pages once the per-entry
+		// bookkeeping charge is counted, beside the segment's table, which
+		// every read looks up and so is never the least recently used.
 		store, index, m, cache, objects := cachedFixture(t, 3*checkpoint.PageSize2MiB, 2)
+		pages := func() int { stats := cache.Stats(); return stats.Entries - stats.Tables.Entries }
 		readCachedPage(t, store, index, m, 0)
 		readCachedPage(t, store, index, m, 1)
 		readCachedPage(t, store, index, m, 0)
 		readCachedPage(t, store, index, m, 2)
-		if cache.Stats().Entries != 2 {
-			t.Fatalf("resident entries %d, want 2", cache.Stats().Entries)
+		if pages() != 2 || cache.Stats().Tables.Entries != fixtureSegments {
+			t.Fatalf("resident pages %d and tables %d, want 2 and %d", pages(), cache.Stats().Tables.Entries,
+				fixtureSegments)
 		}
 		readCachedPage(t, store, index, m, 0)
 		readCachedPage(t, store, index, m, 2)
@@ -187,12 +193,15 @@ func TestCacheLRUEvictionUnderSharedPressureAndClear(t *testing.T) {
 			t.Fatalf("cold page was not refetched after eviction: gets=%d", objects.gets.Load())
 		}
 		cache.Clear()
-		if stats := cache.Stats(); stats.ResidentBytes != 0 || stats.Entries != 0 || stats.Evictions != 4 {
+		if stats := cache.Stats(); stats.ResidentBytes != 0 || stats.Entries != 0 || stats.Evictions != 4+fixtureSegments ||
+			stats.Tables.Bytes != 0 {
 			t.Fatalf("clear did not release cache ownership: %+v", stats)
 		}
+		// The table went with the pages, so the first read fetches the
+		// segment again as well as its page.
 		readCachedPage(t, store, index, m, 1)
 		readCachedPage(t, store, index, m, 1)
-		if objects.gets.Load() != 5 || cache.Stats().Entries != 1 {
+		if objects.gets.Load() != 5+fixtureSegments || pages() != 1 {
 			t.Fatalf("new reads did not repopulate the cleared cache: gets=%d", objects.gets.Load())
 		}
 	})
@@ -307,8 +316,9 @@ func TestCacheClearDoesNotRepopulateFromOldLoads(t *testing.T) {
 		if stats := cache.Stats(); stats.Entries != 0 || stats.ResidentBytes != 0 {
 			t.Fatalf("an old fill repopulated the cleared cache: %+v", stats)
 		}
+		// The page again, and the segment, whose table the clear dropped too.
 		readCachedPage(t, store, index, m, 1)
-		if objects.gets.Load() != 3 {
+		if objects.gets.Load() != 3+fixtureSegments {
 			t.Fatalf("clear retained the old load: gets=%d", objects.gets.Load())
 		}
 	})

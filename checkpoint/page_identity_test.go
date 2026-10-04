@@ -102,7 +102,7 @@ func TestCompactionKeepsOnePageCacheEntry(t *testing.T) {
 		before := cache.Stats()
 		readCachedPageOf(t, store, fourth, m, 3)
 		after := cache.Stats()
-		if after.Misses != before.Misses || after.Hits != before.Hits+1 {
+		if after.Misses != before.Misses || after.Hits != before.Hits+1 || after.Entries != before.Entries {
 			t.Fatalf("the moved page cost a second entry: %+v then %+v", before, after)
 		}
 	})

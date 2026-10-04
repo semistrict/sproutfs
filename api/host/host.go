@@ -616,7 +616,7 @@ type Status struct {
 	// how it read it.
 	Membership Membership `json:"membership"`
 	// CacheMemory is the page cache's memory tier: the decoded pages and
-	// segments it keeps, and what it served of them. It is the first place a
+	// page tables it keeps, and what it served of them. It is the first place a
 	// read of a page that no arena holds looks, before this host's disk, the
 	// cluster and the store.
 	CacheMemory CacheMemory `json:"cache_memory"`
@@ -680,19 +680,30 @@ type HotTier struct {
 	QueueBytes  int64 `json:"queue_bytes"`
 }
 
-// CacheMemory is the page cache's memory tier, counted in pages and segments.
+// CacheMemory is the page cache's memory tier, counted in pages and in the
+// page tables of segments, each decoded once for every index that reads it.
 // Resources reports the bytes it holds and its cap.
 type CacheMemory struct {
-	// Entries is the pages and segments it holds now.
+	// Entries is the pages and page tables it holds now.
 	Entries int `json:"entries"`
-	// Hits counts the reads it served from what it holds; Misses the reads
-	// that started a fetch from the tiers below it, the disk, the cluster or
-	// the store; and Coalesced the reads that joined a fetch another read had
-	// started. Evictions counts the entries it gave up.
+	// Hits counts the reads of pages it served from what it holds; Misses
+	// the reads that started a fetch from the tiers below it, the disk, the
+	// cluster or the store; and Coalesced the reads that joined a fetch
+	// another read had started. Evictions counts the entries it gave up,
+	// page tables among them.
 	Hits      uint64 `json:"hits"`
 	Misses    uint64 `json:"misses"`
 	Coalesced uint64 `json:"coalesced"`
 	Evictions uint64 `json:"evictions"`
+	// Tables and TableBytes are the page tables it holds now and what they
+	// are charged. TableHits counts the lookups a held table answered,
+	// TableLoads the lookups that fetched a segment and decoded it, and
+	// TableKept the tables a publication left as it wrote them.
+	Tables     int    `json:"tables"`
+	TableBytes int64  `json:"table_bytes"`
+	TableHits  uint64 `json:"table_hits"`
+	TableLoads uint64 `json:"table_loads"`
+	TableKept  uint64 `json:"table_kept"`
 }
 
 // CacheRead is what one host's reads of the cluster's disk cache did, in

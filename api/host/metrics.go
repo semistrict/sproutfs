@@ -387,11 +387,24 @@ func diskMetrics(out *strings.Builder, disk Disk) {
 }
 
 // cacheMemoryMetrics writes what the page cache's memory tier holds and what
-// it served, in pages and segments.
+// it served, in pages and page tables.
 func cacheMemoryMetrics(out *strings.Builder, memory CacheMemory) {
-	fmt.Fprintf(out, "# HELP sproutfs_cache_memory_entries The pages and segments the page cache holds in memory.\n"+
+	fmt.Fprintf(out, "# HELP sproutfs_cache_memory_entries The pages and page tables the page cache holds in memory.\n"+
 		"# TYPE sproutfs_cache_memory_entries gauge\nsproutfs_cache_memory_entries %d\n", memory.Entries)
-	fmt.Fprintf(out, "# HELP sproutfs_cache_memory_reads_total Reads of the page cache's memory, by outcome: "+
+	fmt.Fprintf(out, "# HELP sproutfs_cache_memory_page_tables The segments' page tables the page cache holds "+
+		"decoded in memory.\n# TYPE sproutfs_cache_memory_page_tables gauge\nsproutfs_cache_memory_page_tables %d\n",
+		memory.Tables)
+	fmt.Fprintf(out, "# HELP sproutfs_cache_memory_page_table_bytes What the page tables the page cache holds "+
+		"are charged.\n# TYPE sproutfs_cache_memory_page_table_bytes gauge\nsproutfs_cache_memory_page_table_bytes %d\n",
+		memory.TableBytes)
+	fmt.Fprintf(out, "# HELP sproutfs_cache_memory_page_table_lookups_total Lookups of segments' page tables, by "+
+		"outcome: answered by a held table, a fetch and decode of the segment, or a table a publication kept.\n"+
+		"# TYPE sproutfs_cache_memory_page_table_lookups_total counter\n"+
+		"sproutfs_cache_memory_page_table_lookups_total{outcome=\"hit\"} %d\n"+
+		"sproutfs_cache_memory_page_table_lookups_total{outcome=\"load\"} %d\n"+
+		"sproutfs_cache_memory_page_table_lookups_total{outcome=\"kept\"} %d\n",
+		memory.TableHits, memory.TableLoads, memory.TableKept)
+	fmt.Fprintf(out, "# HELP sproutfs_cache_memory_reads_total Reads of pages from the page cache's memory, by outcome: "+
 		"served from it, fetched from the disk, the cluster or the store, or joined to a fetch in flight.\n"+
 		"# TYPE sproutfs_cache_memory_reads_total counter\n"+
 		"sproutfs_cache_memory_reads_total{outcome=\"hit\"} %d\n"+

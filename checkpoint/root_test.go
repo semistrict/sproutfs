@@ -94,11 +94,7 @@ func TestAZeroedPageLeavesItsSegmentAndNothingElse(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		held, err := erased.segmentAt(t.Context(), "disk", 0)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, found := held.pages[1]; found {
+		if _, found := tableOf(t, erased, "disk", 0).at(1); found {
 			t.Fatal("the segment the erasing checkpoint wrote still locates the page it zeroed")
 		}
 		if got := memberCount(t, store, erased, erasedRef); got != 0 {

@@ -74,10 +74,21 @@ type Publication struct {
 	// keep is the pull of the VM publishing, which keeps what this
 	// publication uploads; nil for a VM not pulling its memory.
 	keep *Pull
-	// owned is the segments this publication has copied from the ones its
-	// index shares with its parent, before changing them.
-	owned map[segmentKey]bool
-	err   error
+	// working is the segments this publication has taken out of its parent's
+	// tables to change, each a copy of its own.
+	working map[segmentKey]*segment
+	// written is the tables of the segments it wrote into its index object,
+	// as a reader decodes them, which the index it publishes keeps for its
+	// readers once the object is durable.
+	written []writtenTable
+	err     error
+}
+
+// writtenTable is one segment a publication wrote, decoded.
+type writtenTable struct {
+	volume string
+	number uint64
+	table  *pageTable
 }
 
 // Begin starts a checkpoint that inherits parent, which may be nil for a VM
@@ -88,7 +99,7 @@ func (s *Store) Begin(parent *Index, ref control.Ref) *Publication {
 		sizes: make(map[string]uint64), geometry: make(map[string]Geometry),
 		ephemeral: make(map[string]bool), edits: make(map[string]map[uint64]bool),
 		protected: make(map[control.Ref]bool), dirty: make(map[string]map[uint64]*segment),
-		owned: make(map[segmentKey]bool)}
+		working: make(map[segmentKey]*segment)}
 	if parent != nil {
 		for _, name := range parent.names {
 			p.sizes[name] = parent.volumes[name].size
@@ -244,7 +255,7 @@ func (p *Publication) Commit(ctx context.Context, source Source) (*Index, error)
 		index.names = append(index.names, name)
 	}
 	slices.Sort(index.names)
-	index.inheritLoaded(p.parent)
+	index.inheritMemo(p.parent)
 	for name := range p.edits {
 		table := index.volumes[name]
 		if table == nil {
@@ -310,6 +321,9 @@ func (p *Publication) Commit(ctx context.Context, source Source) (*Index, error)
 		return nil, writer.abandon(err)
 	}
 	p.keepSegments(ctx, index, data)
+	for _, written := range p.written {
+		index.keep(ctx, written.volume, written.number, written.table)
+	}
 	return index, nil
 }
 
@@ -346,27 +360,21 @@ func (p *Publication) writeState(ctx context.Context, writer *partWriter, index 
 }
 
 // segmentFor reports the working copy of one segment of the index being built,
-// decoding the one the root addresses the first time it is touched. The copy
-// belongs to that index, so a reader of the published one finds the table this
-// publication left rather than fetching it again.
-//
-// The index shares the segments its parent had decoded (inheritLoaded), so the
-// working copy is a copy, taken the first time the segment is touched, and a
-// segment the parent already held costs no fetch.
+// taken out of the table the root addresses the first time it is touched. The
+// table is the parent's, shared through the store's cache, so the copy is the
+// publication's own, and a segment the cache holds costs no fetch.
 func (p *Publication) segmentFor(ctx context.Context, index *Index, volume string, number uint64) (*segment, error) {
-	held, err := index.segmentAt(ctx, volume, number)
-	if err != nil {
-		return held, err
-	}
 	key := segmentKey{volume: volume, number: number}
-	if p.owned[key] {
+	if held := p.working[key]; held != nil {
 		return held, nil
 	}
-	held = held.clone()
-	index.mu.Lock()
-	index.loaded[key] = held
-	index.mu.Unlock()
-	p.owned[key] = true
+	table, release, err := index.table(ctx, volume, number)
+	if err != nil {
+		return nil, err
+	}
+	held := table.mutable()
+	release()
+	p.working[key] = held
 	return held, nil
 }
 
@@ -433,10 +441,21 @@ func (p *Publication) writeSegments(ctx context.Context, object *indexObject, in
 				delete(table.segments, number)
 				continue
 			}
-			at, err := object.add(ctx, p.ref, held)
+			data, err := encodeSegment(held)
 			if err != nil {
 				return err
 			}
+			at, err := object.add(ctx, p.ref, data)
+			if err != nil {
+				return err
+			}
+			// What the index keeps for its readers is what they would decode
+			// from the object, decoded from the same bytes.
+			written, err := parsePageTable(data)
+			if err != nil {
+				return err
+			}
+			p.written = append(p.written, writtenTable{volume: name, number: number, table: written})
 			table.segments[number] = segmentEntry{at: at, reads: held.reads()}
 		}
 	}
@@ -543,13 +562,10 @@ func newIndexObject(store *Store) *indexObject {
 	return &indexObject{store: store, data: make([]byte, indexRecordSize)}
 }
 
-// add encodes one segment into the object and reports where it landed, which is
-// the address the root carries beside the checkpoint that is writing it.
-func (o *indexObject) add(ctx context.Context, ref control.Ref, held *segment) (segmentAddress, error) {
-	data, err := encodeSegment(held)
-	if err != nil {
-		return segmentAddress{}, err
-	}
+// add puts one encoded segment into the object and reports where it landed,
+// which is the address the root carries beside the checkpoint that is writing
+// it.
+func (o *indexObject) add(ctx context.Context, ref control.Ref, data []byte) (segmentAddress, error) {
 	if len(data) > maximumSegmentSize {
 		return segmentAddress{}, ErrInvalidRange
 	}

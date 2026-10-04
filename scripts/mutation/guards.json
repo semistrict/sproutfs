@@ -144,6 +144,12 @@
     "purpose": "Prefetch the rest of every fault's run, whether or not the fault follows a recent fault of its memory region. A chain of faults at random then prefetches on every hop."
   },
   {
+    "id": "checkpoint-decode-every-lookup",
+    "package": "checkpoint",
+    "run": "^TestASegmentIsDecodedOncePerCheckpointWhileCached$",
+    "purpose": "Fetch and decode a segment's page table for every lookup instead of taking the table the page cache keeps. Every index then decodes the segment again for every page it locates."
+  },
+  {
     "id": "pager-zero-new-page",
     "package": "internal/simtest",
     "run": "^TestScheduledWorldReproduces$",
