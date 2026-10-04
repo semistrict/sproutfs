@@ -732,12 +732,25 @@ anything. At 4 KiB that is 2,048 pages, and the lookup decoded the window's
 page-table segment for each index that read it. On GCE a dependent 4 KiB fault
 from the cluster took 3.07 ms against 0.67 ms for its page's read, and 1.05 ms
 after; from the store, 29.1 ms against 25.7 ms after
-([measurement](measurements/gce-fault-planning-2026-10-04.md)). What is left
-is the window's planning beside the read, about 0.75 ms a fault at 4 KiB.
+([measurement](measurements/gce-fault-planning-2026-10-04.md)). What was left
+was the window's planning beside the read, about 0.75 ms of processor a fault
+at 4 KiB, which a fault at random did not need. Planning a fault at random's
+page alone took the median hop from the cluster from 0.98 to 0.83 ms, against
+0.66 ms for the page alone, and the faults' processor time in the chain from
+0.41 s to 0.05 s
+([measurement](measurements/gce-random-fault-planning-2026-10-04.md)). On
+one Ice Lake processor a fault at random over a real index costs 10 µs of
+planning and the pager's own work against 575 µs, and a fault reading
+forwards 1.03 ms against 2.21 ms (`BenchmarkARandom4KiBFault`,
+`BenchmarkAForward4KiBFault`).
+
 `TestADependentChainOf4KiBFaultsPaysOnePageReadAHop` runs a 4 KiB pager over a
-real checkpoint store and holds every hop to one read and its own page's
-planning, with the segment decoded once; the in-tree bugs
-`pager-plan-the-window-first` and `checkpoint-decode-every-lookup` fail it.
+real checkpoint store and holds every hop at random to one read and one
+lookup of its own page, with the segment decoded once; the in-tree bugs
+`pager-plan-the-window-at-random` and `checkpoint-decode-every-lookup` fail it.
+`TestAForwardChainOf4KiBFaultsPlansItsWindowInOneLookup` holds every hop
+reading forwards to one read and its page's planning, its window located in
+one lookup beside the read; `pager-plan-the-window-first` fails it.
 
 Before the memory region is exposed, attach populates the pages whose identity is
 already resident in the same pager. It loads nothing. The Rust session serves

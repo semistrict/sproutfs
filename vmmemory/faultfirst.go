@@ -35,9 +35,12 @@ import (
 // it still took 1.05 ms: locating 2,048 pages and looking each up among the
 // resident pages took about 0.75 ms of processor a fault, as long as the read,
 // and a fault at random used none of it but the resident pages it mapped
-// (docs/measurements/gce-fault-planning-2026-10-04.md). Such a fault costs its
-// guest at most one more fault in its window: the next fault there follows
-// this one, and plans the window.
+// (docs/measurements/gce-fault-planning-2026-10-04.md). Planning its page
+// alone took the median hop to 0.83 ms, and the faults' processor time from
+// 0.41 s to 0.05 s of a chain of 400
+// (docs/measurements/gce-random-fault-planning-2026-10-04.md). Such a fault
+// costs its guest at most one more fault in its window: the next fault there
+// follows this one, and plans the window.
 
 // WorkPlan is the work of planning a window, one unit a page located, which a
 // simulation prices (sim.Config.Compute) so that a test sees a fault's
