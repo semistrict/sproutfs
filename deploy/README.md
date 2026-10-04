@@ -374,6 +374,9 @@ durations.
 | `SPROUTFS_POD_IP` | downward API `status.podIP` | | the address the host advertises for its API and peer server |
 | `SPROUTFS_POD_NAME` | downward API `metadata.name` | | the host's name to the orchestrator and to an operator. Nothing durable is named after it, which is why the hosts are a Deployment |
 | `SPROUTFS_NAMESPACE` | downward API `metadata.namespace` | `sproutfs` | |
+| `SPROUTFS_SHARDS` | ConfigMap `sproutfs-demo` key `shards`, optional | unset | `gce` keeps the cache on shards, network disks the orchestrator attaches to this node, instead of a file in `SPROUTFS_CACHE_DIR`, which is then unused. Unset, the host keeps its own cache disk. See [Shards](#shards) |
+| `SPROUTFS_NODE_NAME` | downward API `spec.nodeName` | | the node the host runs on, which is the Compute Engine instance a shard is attached to; read only with `SPROUTFS_SHARDS` |
+| `SPROUTFS_SHARD_DEVICE_DIR` | literal | `/host/dev/disk/by-id` | where the node names its disks, the node's `/dev` mounted at `/host/dev`: a shard attached after the pod started does not appear in the container's own `/dev`. Unset, `/dev/disk/by-id` |
 
 #### Two pagers, and how the budgets are divided
 
@@ -472,14 +475,73 @@ read-only at `/usr/share/sproutfs/guest`.
 | `SPROUTFS_TABLE_PATH` | literal | `/var/lib/sproutfs/orchestrator.db` | the SQLite file holding the VM table, on a `hostPath` under `/opt/sproutfs-demo/orchestrator` so that a restarted pod does not forget a migration that was in flight. It is rebuilt from a survey at startup. Losing it costs only what it alone keeps: a VM's RAM after a cold start resized it, and the pull mark of a VM nothing runs. The orchestrator Deployment uses `strategy: Recreate` and one replica: one process writes this file |
 | `SPROUTFS_CACHE_CODE` | unset | `4+2` | the code of the hosts' disk caches, `k+m` such as `4+2`, set for the size the cluster usually runs at. It never follows the number of hosts. The orchestrator writes it in [the membership](../docs/hosting.md#the-membership) |
 | `SPROUTFS_CACHE_EARLIER_CODES` | unset | | the codes the deployment used before `SPROUTFS_CACHE_CODE`, newest first and comma-separated, at most three. The orchestrator writes them in the membership with the code. Hosts still read a window stored under one until it ages out. See [the code](../docs/hosting.md#the-code) |
+| `SPROUTFS_SHARDS` | ConfigMap `sproutfs-demo` key `shards`, optional | unset | `gce` has the orchestrator carry the shards out: list them from their claims, assign them over the hosts in the membership, and attach and detach them through Compute Engine's API. See [Shards](#shards) |
+| `SPROUTFS_SHARD_CLAIMS` | literal | `app.kubernetes.io/component=sproutfs-shard` | the label selector of the shards' claims in the namespace |
 | `SPROUTFS_GCS_ENDPOINT` | unset | | a GCS emulator to use instead of the ambient Google credentials |
 | `SPROUTFS_OBJECT_STORE` | unset | `gcs` | the object store provider, `gcs` or `s3` |
 | `SPROUTFS_S3_ENDPOINT` | unset | | an S3-compatible server to use instead of S3 |
 
 It authenticates to the Kubernetes API with its ServiceAccount token, mounted
 as usual. Its Role allows `get`, `list`, `watch` and `delete` on pods in
-`sproutfs` and nothing else — enough to place VMs and to run the kill-host
-flow, and not enough to touch anything outside the namespace.
+`sproutfs`, and `get` and `list` on its claims — enough to place VMs, to run
+the kill-host flow and to find the shards — and a ClusterRole allows `get` on
+PersistentVolumes, which name a claim's disk and belong to no namespace.
+
+## Shards
+
+A deployment may keep the cluster's cache on shards: a fixed set of network
+disks the membership moves between the hosts as compute scales, so an
+autoscaler adding and removing machines moves no window
+([hosting](../docs/hosting.md#shards-on-network-disks)). Kubernetes provisions
+the disks and never attaches them; the orchestrator attaches each to the node
+of the host the membership assigns it to, through Compute Engine's API, and
+the host opens the device through the node's `/dev`.
+
+On GKE, with the Compute Engine persistent disk CSI driver it runs by default:
+
+```
+kubectl apply -f deploy/
+kubectl apply -f deploy/shards/00-storageclass.yaml -f deploy/shards/10-claims.yaml
+kubectl -n sproutfs patch configmap sproutfs-demo --type merge -p '{"data":{"shards":"gce"}}'
+kubectl -n sproutfs rollout restart deployment/sproutfs-orchestrator deployment/sproutfs-host
+```
+
+The StorageClass names one zone, the one the hosts' node pool runs in, since
+a zonal disk attaches only to an instance of its zone; edit
+`allowedTopologies` for another. The orchestrator needs Compute Engine
+permissions: `compute.disks.get` and `compute.disks.use` on the shards, and
+`compute.instances.get`, `compute.instances.attachDisk` and
+`compute.instances.detachDisk` on the nodes, with `compute.zoneOperations.get`.
+On GKE, bind its ServiceAccount to a Google service account that holds them,
+through Workload Identity. The hosts need nothing new: they are privileged
+already, and their manifest mounts the node's `/dev` at `/host/dev`.
+
+On k3s on a Compute Engine instance, either run the CSI driver and apply the
+same two files, or make the disks by hand and bind the claims to them with
+`deploy/shards/k3s-volumes.yaml`, whose comments give the commands; the
+StorageClass is then only the name the two share, and no driver is asked for
+anything. The orchestrator uses the instance's own service account, which
+needs the permissions above and the `cloud-platform` or `compute-rw` scope.
+
+Hosts and shards are independent: the shard count is fixed when the cache is
+sized, and the hosts scale as the guests do. A membership of fewer hosts than
+shards puts several shards on each, and each host serves all its shards
+within one serving budget, `SPROUTFS_CACHE_SERVE_BYTES_PER_SECOND`.
+
+### Sizing
+
+| Setting | Rule | The manifests |
+| --- | --- | --- |
+| Shard count | Fixed, at least k+m of the code, so every window's stripes are on as many disks as the code is wide; about the number of hosts the cluster runs at its smallest, so every host serves at most one or two. Changing it moves windows, so it is resized on purpose, as the code is | 6, under 4+2 |
+| Disk size | The cache holds the shard count times the size times k/(k+m) of windows, less a 64 MiB header region and a free region a shard. Every shard the same size: a shard's weight is its size in 16 GiB steps | 256 GiB each: 1 TiB of windows under 4+2 |
+| Provisioned throughput | What one shard may be asked for: its host's serving budget, 500 MiB/s, shared by the shards that host serves, plus its fills. A disk slower than the budget is the slowest hop of a read, and a dependent read pays it whole | 500 MiB/s, Hyperdisk Balanced |
+| Provisioned IOPS | A 2 MiB page under 4+2 is a 512 KiB stripe a disk; a 4 KiB page is about 1 KiB, read with its window's other pages; a fault reads an 8 MiB run. So throughput binds before IOPS for 2 MiB pages, and IOPS for 4 KiB pages read one at a time | 6000 |
+| Machine | The disk's limits are per disk and per instance: an instance's network disk throughput depends on its machine type and vCPUs, and caps what every shard it serves may read together | n2 or c3, 4 vCPUs or more |
+
+`docs/measurements/gce-shards-2026-10-04.md` measures dependent reads from
+shards on Hyperdisk Balanced, pd-balanced and pd-ssd against local NVMe, each
+disk's throughput against the 500 MiB/s budget, and the time to move a shard
+when its host is removed.
 
 ## Resources
 

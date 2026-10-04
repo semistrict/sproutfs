@@ -22,6 +22,7 @@ var adapterChoosers = []string{
 	"github.com/semistrict/sproutfs/cmd/sproutfs-orchestrator",
 	"github.com/semistrict/sproutfs/cmd/sproutfs-peerbench",
 	"github.com/semistrict/sproutfs/cmd/sproutfs-restorebench",
+	"github.com/semistrict/sproutfs/cmd/sproutfs-shardbench",
 	"github.com/semistrict/sproutfs/internal/testnet",
 }
 
