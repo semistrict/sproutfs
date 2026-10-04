@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/semistrict/sproutfs/checkpoint"
@@ -20,6 +21,11 @@ import (
 // before the page cost every hop of such a chain the whole run: on GCE on
 // 2026-10-03 a 4 KiB page from the cluster took 0.65 ms and its 8 MiB run
 // 39 ms (docs/measurements/gce-dependent-reads-2026-10-03.md).
+//
+// Only a fault that follows one of its memory region's recent faults, in its
+// own run or the one before, prefetches; one at random reads its page alone
+// (followsRecent). A prefetch costs processors as a fault's read does, and a
+// guest reading at random gains nothing from it.
 //
 // A prefetch's pages land as clean pages under their identities, idle and in
 // the sharing index, as a page every memory region has stopped mapping is. The
@@ -59,7 +65,9 @@ import (
 // at their bound, ProbePrefetchCancelled a prefetch an allocation cancelled
 // for its slots, ProbePrefetchDuplicate a landed page whose identity another
 // load had made resident first, and ProbePrefetchHeld a page a migration's
-// source turned out still to hold, which a prefetch drops.
+// source turned out still to hold, which a prefetch drops, and
+// ProbePrefetchRandom a run left unread because its fault followed none of
+// its memory region's recent faults.
 const (
 	ProbePrefetchLanded    = "vmmemory/prefetch-landed"
 	ProbePrefetchMapped    = "vmmemory/prefetch-mapped"
@@ -68,12 +76,13 @@ const (
 	ProbePrefetchCancelled = "vmmemory/prefetch-cancelled-for-pressure"
 	ProbePrefetchDuplicate = "vmmemory/prefetch-duplicate"
 	ProbePrefetchHeld      = "vmmemory/prefetch-held-by-source"
+	ProbePrefetchRandom    = "vmmemory/prefetch-random"
 )
 
 // PrefetchProbes is every probe a prefetch marks.
 func PrefetchProbes() []string {
 	return []string{ProbePrefetchLanded, ProbePrefetchMapped, ProbePrefetchWaited, ProbePrefetchRefused,
-		ProbePrefetchCancelled, ProbePrefetchDuplicate, ProbePrefetchHeld}
+		ProbePrefetchCancelled, ProbePrefetchDuplicate, ProbePrefetchHeld, ProbePrefetchRandom}
 }
 
 // The fault-injection sites of a prefetch. buggifyPrefetchSlow holds its read
@@ -155,6 +164,7 @@ func (p *windowPlan) splitPrefetch(ctx context.Context, index uint64) *prefetch 
 	}
 	r := p.memoryRegion
 	h := r.host
+	sequential := r.followsRecent(p.start)
 	var pages []prefetchPage
 	var back []fileSlot
 	for page := p.start; page < p.end; page++ {
@@ -183,6 +193,18 @@ func (p *windowPlan) splitPrefetch(ctx context.Context, index uint64) *prefetch 
 		h.signal()
 		h.mu.Unlock()
 	}()
+	if len(pages) > 0 && !sequential && !sim.Bug(ctx, "pager-prefetch-every-fault") {
+		// A fault that follows none of its memory region's recent faults is
+		// read alone: its neighbours are worth reading only to a guest that
+		// reads forwards, and a prefetch nothing uses takes processors from
+		// the faults that follow.
+		h.stats.PrefetchRandom++
+		sim.Probe(ctx, ProbePrefetchRandom)
+		for _, page := range pages {
+			back = append(back, page.at)
+		}
+		return nil
+	}
 	if len(pages) > 0 && (refused || h.prefetching >= h.cfg.PrefetchRuns) {
 		h.stats.PrefetchRefused++
 		sim.Probe(ctx, ProbePrefetchRefused)
@@ -577,4 +599,45 @@ func (h *Host) SettlePrefetches(ctx context.Context) error {
 			return context.Cause(ctx)
 		}
 	}
+}
+
+// recentFaults is how many of a memory region's latest faulting windows a
+// fault is compared with to tell a guest reading forwards from one reading at
+// random. Eight lets that many threads of a guest each read forwards at once.
+const recentFaults = 8
+
+// faultHistory is the windows of a memory region's latest faults that read
+// its backing.
+type faultHistory struct {
+	mu      sync.Mutex
+	windows [recentFaults]uint64
+	next    int
+	count   int
+}
+
+// followsRecent reports whether a fault in the window that begins at start
+// follows one of this memory region's recent faults, one in the same window
+// or in the window before, and records the window. A memory region's first
+// fault counts as following: a boot and a restore begin by reading forwards.
+//
+// Only such a fault prefetches the rest of its run. On GCE on 2026-10-04 a
+// chain of dependent 4 KiB faults read from the cluster took 17 ms a hop when
+// every fault prefetched its run, against 0.65 ms for a page alone: each
+// 2,047-page prefetch is about 100 ms of processor, and the prefetches of the
+// hops before took the processors the next hop's own read needed.
+func (r *MemoryRegion) followsRecent(start uint64) bool {
+	window := start / uint64(r.readAheadPages)
+	history := &r.history
+	history.mu.Lock()
+	defer history.mu.Unlock()
+	follows := history.count == 0
+	for _, recent := range history.windows[:history.count] {
+		if recent == window || recent+1 == window {
+			follows = true
+		}
+	}
+	history.windows[history.next] = window
+	history.next = (history.next + 1) % recentFaults
+	history.count = min(history.count+1, recentFaults)
+	return follows
 }

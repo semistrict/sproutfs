@@ -49,18 +49,18 @@ func TestAReadThroughAPagerFaultsItsPagesIn(t *testing.T) {
 		}
 		slices.Sort(got)
 		want := []string{
-			"2MiB/chain/fault/1 cluster: 4 reads, wrong 0, failed 0, {Faults:0 Loads:6 LoadedPages:12 Prefetches:3 PrefetchedPages:9 PrefetchWaits:0 PrefetchRefused:0 Evictions:0}",
-			"2MiB/chain/fault/1 store: 4 reads, wrong 0, failed 0, {Faults:0 Loads:6 LoadedPages:12 Prefetches:3 PrefetchedPages:9 PrefetchWaits:0 PrefetchRefused:0 Evictions:0}",
-			"2MiB/chain/runfirst/1 cluster: 4 reads, wrong 0, failed 0, {Faults:4 Loads:4 LoadedPages:16 Prefetches:0 PrefetchedPages:0 PrefetchWaits:0 PrefetchRefused:0 Evictions:0}",
-			"2MiB/chain/runfirst/1 store: 4 reads, wrong 0, failed 0, {Faults:3 Loads:3 LoadedPages:12 Prefetches:0 PrefetchedPages:0 PrefetchWaits:0 PrefetchRefused:0 Evictions:0}",
-			"4KiB/chain/fault/1 cluster: 4 reads, wrong 0, failed 0, {Faults:0 Loads:4 LoadedPages:4096 Prefetches:2 PrefetchedPages:4094 PrefetchWaits:0 PrefetchRefused:0 Evictions:0}",
-			"4KiB/chain/fault/1 store: 4 reads, wrong 0, failed 0, {Faults:0 Loads:4 LoadedPages:4096 Prefetches:2 PrefetchedPages:4094 PrefetchWaits:0 PrefetchRefused:0 Evictions:0}",
-			"4KiB/chain/runfirst/1 cluster: 4 reads, wrong 0, failed 0, {Faults:1 Loads:1 LoadedPages:2048 Prefetches:0 PrefetchedPages:0 PrefetchWaits:0 PrefetchRefused:0 Evictions:0}",
-			"4KiB/chain/runfirst/1 store: 4 reads, wrong 0, failed 0, {Faults:2 Loads:2 LoadedPages:4096 Prefetches:0 PrefetchedPages:0 PrefetchWaits:0 PrefetchRefused:0 Evictions:0}",
-			"4KiB/sequential/fault/1 cluster: 4096 reads, wrong 0, failed 0, {Faults:4 Loads:4 LoadedPages:4096 Prefetches:2 PrefetchedPages:4094 PrefetchWaits:2 PrefetchRefused:0 Evictions:0}",
-			"4KiB/sequential/fault/1 store: 4096 reads, wrong 0, failed 0, {Faults:4 Loads:4 LoadedPages:4096 Prefetches:2 PrefetchedPages:4094 PrefetchWaits:2 PrefetchRefused:0 Evictions:0}",
-			"4KiB/sequential/runfirst/1 cluster: 4096 reads, wrong 0, failed 0, {Faults:2 Loads:2 LoadedPages:4096 Prefetches:0 PrefetchedPages:0 PrefetchWaits:0 PrefetchRefused:0 Evictions:0}",
-			"4KiB/sequential/runfirst/1 store: 4096 reads, wrong 0, failed 0, {Faults:2 Loads:2 LoadedPages:4096 Prefetches:0 PrefetchedPages:0 PrefetchWaits:0 PrefetchRefused:0 Evictions:0}",
+			"2MiB/chain/fault/1 cluster: 4 reads, wrong 0, failed 0, {Faults:0 Loads:7 LoadedPages:12 Prefetches:3 PrefetchedPages:8 PrefetchWaits:0 PrefetchRefused:0 PrefetchRandom:1 Evictions:0}",
+			"2MiB/chain/fault/1 store: 4 reads, wrong 0, failed 0, {Faults:0 Loads:5 LoadedPages:9 Prefetches:2 PrefetchedPages:6 PrefetchWaits:0 PrefetchRefused:0 PrefetchRandom:1 Evictions:0}",
+			"2MiB/chain/runfirst/1 cluster: 4 reads, wrong 0, failed 0, {Faults:4 Loads:4 LoadedPages:16 Prefetches:0 PrefetchedPages:0 PrefetchWaits:0 PrefetchRefused:0 PrefetchRandom:0 Evictions:0}",
+			"2MiB/chain/runfirst/1 store: 4 reads, wrong 0, failed 0, {Faults:3 Loads:3 LoadedPages:12 Prefetches:0 PrefetchedPages:0 PrefetchWaits:0 PrefetchRefused:0 PrefetchRandom:0 Evictions:0}",
+			"4KiB/chain/fault/1 cluster: 4 reads, wrong 0, failed 0, {Faults:0 Loads:4 LoadedPages:4096 Prefetches:2 PrefetchedPages:4094 PrefetchWaits:0 PrefetchRefused:0 PrefetchRandom:0 Evictions:0}",
+			"4KiB/chain/fault/1 store: 4 reads, wrong 0, failed 0, {Faults:0 Loads:4 LoadedPages:4096 Prefetches:2 PrefetchedPages:4094 PrefetchWaits:0 PrefetchRefused:0 PrefetchRandom:0 Evictions:0}",
+			"4KiB/chain/runfirst/1 cluster: 4 reads, wrong 0, failed 0, {Faults:1 Loads:1 LoadedPages:2048 Prefetches:0 PrefetchedPages:0 PrefetchWaits:0 PrefetchRefused:0 PrefetchRandom:0 Evictions:0}",
+			"4KiB/chain/runfirst/1 store: 4 reads, wrong 0, failed 0, {Faults:2 Loads:2 LoadedPages:4096 Prefetches:0 PrefetchedPages:0 PrefetchWaits:0 PrefetchRefused:0 PrefetchRandom:0 Evictions:0}",
+			"4KiB/sequential/fault/1 cluster: 4096 reads, wrong 0, failed 0, {Faults:4 Loads:4 LoadedPages:4096 Prefetches:2 PrefetchedPages:4094 PrefetchWaits:2 PrefetchRefused:0 PrefetchRandom:0 Evictions:0}",
+			"4KiB/sequential/fault/1 store: 4096 reads, wrong 0, failed 0, {Faults:4 Loads:4 LoadedPages:4096 Prefetches:2 PrefetchedPages:4094 PrefetchWaits:2 PrefetchRefused:0 PrefetchRandom:0 Evictions:0}",
+			"4KiB/sequential/runfirst/1 cluster: 4096 reads, wrong 0, failed 0, {Faults:2 Loads:2 LoadedPages:4096 Prefetches:0 PrefetchedPages:0 PrefetchWaits:0 PrefetchRefused:0 PrefetchRandom:0 Evictions:0}",
+			"4KiB/sequential/runfirst/1 store: 4096 reads, wrong 0, failed 0, {Faults:2 Loads:2 LoadedPages:4096 Prefetches:0 PrefetchedPages:0 PrefetchWaits:0 PrefetchRefused:0 PrefetchRandom:0 Evictions:0}",
 		}
 		if !slices.Equal(got, want) {
 			t.Fatalf("the reads through a pager were\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))

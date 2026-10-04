@@ -37,8 +37,11 @@ type MemoryRegion struct {
 	// have not ended. It is guarded by Host.mu; a detach waits for it to reach
 	// zero. See prefetch.go.
 	prefetchRunning int
-	host            *Host
-	backing         Backing
+	// history is the windows of this memory region's latest faults, which
+	// tell a guest reading forwards from one reading at random.
+	history faultHistory
+	host    *Host
+	backing Backing
 	// kind is what this memory region is to its guest, RAM or PMEM. Nothing about a
 	// fault, a seal or a page depends on it: it is what the host's sharing
 	// gauges are split by, and it is immutable for the memory region's life.

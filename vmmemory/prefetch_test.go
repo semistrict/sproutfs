@@ -139,20 +139,23 @@ func requirePage(t *testing.T, m *mapping, page uint64) {
 
 // A guest that follows pointers knows its next address only once the page it
 // is reading is in. So a chain of faults pays each fault's whole wait, one
-// after another. Each hop here is in a window of its own, and each costs
-// exactly one page's read: the rest of its run is read behind it, and no hop
-// waits for any run, its own or another's. Read the run first, as the pager
-// did, and each hop costs the whole run, 9 ms. A store into a page the memory
-// region holds nothing for, which is how every cold fault reaches the pager on
-// x86-64, is the same.
+// after another. Each hop here is in a window of its own, none in the window
+// after an earlier hop's, and each costs exactly one page's read. The first
+// hop of a memory region prefetches the rest of its run behind it, as a boot
+// does; the rest follow none of the faults before them and read their page
+// alone, so no prefetch takes the processors their reads need. Read the run
+// first, as the pager did, and each hop costs the whole run, 9 ms. A store
+// into a page the memory region holds nothing for, which is how every cold
+// fault reaches the pager on x86-64, is the same.
 func TestADependentChainOfFaultsWaitsForOnePageAHop(t *testing.T) {
 	for _, write := range []bool{false, true} {
 		t.Run(fmt.Sprintf("write=%t", write), func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				f := newConfiguredFixture(t, prefetchConfig())
-				b := f.slowBacking(64)
+				b := f.slowBacking(128)
 				r, m := f.attach(b)
-				hops := []uint64{3, 13, 22, 37, 41, 54, 60, 29}
+				// Windows 6, 0, 10, 2, 14, 4, 12 and 8.
+				hops := []uint64{51, 3, 83, 19, 115, 35, 99, 67}
 				began := time.Now()
 				for _, page := range hops {
 					started := time.Now()
@@ -172,29 +175,22 @@ func TestADependentChainOfFaultsWaitsForOnePageAHop(t *testing.T) {
 				}
 				s := hostStats(t, f)
 				hopCount := uint64(len(hops))
-				if s.Faults != hopCount || s.Loads != 2*hopCount || s.LoadedPages != 8*hopCount ||
-					s.Prefetches != hopCount || s.PrefetchedPages != 7*hopCount || s.PrefetchWaits != 0 {
-					t.Fatalf("faults %d, loads %d of %d pages, prefetches %d of %d pages, waits %d; want %d, %d of %d, %d of %d, 0",
-						s.Faults, s.Loads, s.LoadedPages, s.Prefetches, s.PrefetchedPages, s.PrefetchWaits,
-						hopCount, 2*hopCount, 8*hopCount, hopCount, 7*hopCount)
-				}
-				if s.PrefetchMapped != 7*hopCount || s.PrefetchDropped != 0 || s.PrefetchRefused != 0 {
-					t.Fatalf("the prefetches mapped %d pages, dropped %d and were refused %d times; want %d, 0, 0",
-						s.PrefetchMapped, s.PrefetchDropped, s.PrefetchRefused, 7*hopCount)
+				if s.Faults != hopCount || s.Loads != hopCount+1 || s.LoadedPages != hopCount+7 ||
+					s.Prefetches != 1 || s.PrefetchedPages != 7 || s.PrefetchMapped != 7 ||
+					s.PrefetchRandom != hopCount-1 || s.PrefetchWaits != 0 {
+					t.Fatalf("faults %d, loads %d of %d pages, prefetches %d of %d pages mapping %d, runs left unread %d, "+
+						"waits %d; want %d, %d of %d, 1 of 7 mapping 7, %d, 0",
+						s.Faults, s.Loads, s.LoadedPages, s.Prefetches, s.PrefetchedPages, s.PrefetchMapped,
+						s.PrefetchRandom, s.PrefetchWaits, hopCount, hopCount+1, hopCount+7, hopCount-1)
 				}
 				for _, read := range b.readsOf(false) {
 					if read.pages != 1 {
 						t.Fatalf("a fault read %d pages from page %d, want its own alone", read.pages, read.first)
 					}
 				}
-				// Every page of every hop's run is in, and mapped by its prefetch.
-				for _, page := range hops {
-					start := page - page%8
-					for neighbour := start; neighbour < start+8; neighbour++ {
-						if neighbour != page {
-							requirePage(t, m, neighbour)
-						}
-					}
+				// The first hop's run is in, mapped by its prefetch.
+				for page := uint64(48); page < 56; page++ {
+					requirePage(t, m, page)
 				}
 			})
 		})

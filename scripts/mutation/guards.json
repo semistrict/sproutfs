@@ -138,6 +138,12 @@
     "purpose": "Evict a page a guest maps for a fault's slot while a prefetch holds free slots for pages nobody has asked for yet, rather than cancel that prefetch."
   },
   {
+    "id": "pager-prefetch-every-fault",
+    "package": "vmmemory",
+    "run": "^TestADependentChainOfFaultsWaitsForOnePageAHop$",
+    "purpose": "Prefetch the rest of every fault's run, whether or not the fault follows a recent fault of its memory region. A chain of faults at random then prefetches on every hop."
+  },
+  {
     "id": "pager-zero-new-page",
     "package": "internal/simtest",
     "run": "^TestScheduledWorldReproduces$",

@@ -657,6 +657,29 @@ run's read alone. `TestAGuestReadingForwardsStillReadsItsMemoryInRuns` holds
 the pager to exactly that; the in-tree bug `pager-read-in-flight-again`, which
 reads a page a prefetch is reading again, fails it.
 
+### Reading at random
+
+Only a fault that looks like reading forwards prefetches. A memory region
+remembers the windows of its last eight faults that read its backing. A fault
+prefetches the rest of its run when one of them is its own window or the
+window before, and when the memory region has had no fault yet, because a boot
+and a restore begin by reading forwards. Any other fault reads its page and
+nothing else, and `Stats.PrefetchRandom` counts it. Eight windows let that
+many threads of one guest each read forwards at once.
+
+The reason is processors. A prefetch's pages are checked and decoded as a
+fault's are: at 4 KiB, a run of 2,047 pages from the cluster is about 100 ms
+of processor time. On GCE on 2026-10-04 a chain of dependent 4 KiB faults
+from the cluster, every fault prefetching its run, took 17 ms a hop against
+0.65 ms for a page alone: the prefetches of the hops before held the
+processors the next hop's read needed. A chain at random gains nothing from
+those prefetches. From the store, whose reads wait on the network rather than
+on processors, the same chain took 26 ms a hop either way
+([measurement](measurements/gce-fault-first-2026-10-04.md)).
+`TestADependentChainOfFaultsWaitsForOnePageAHop` holds a chain at random to
+one prefetch, its first hop's; the in-tree bug `pager-prefetch-every-fault`
+fails it.
+
 Before the memory region is exposed, attach populates the pages whose identity is
 already resident in the same pager. It loads nothing. The Rust session serves
 mapping commands after the descriptor exchange, and only then reports the memory region

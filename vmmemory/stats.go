@@ -70,8 +70,11 @@ type Stats struct {
 	// evict a page a guest maps, and PrefetchDropped the pages a prefetch
 	// reserved a slot for that never landed: cancelled, failed, held by a
 	// migration's source, or made resident first by another load.
+	// PrefetchRandom counts the runs left unread because their fault
+	// followed none of its memory region's recent faults.
 	Prefetches, PrefetchedPages, PrefetchMapped, PrefetchWaits uint64
 	PrefetchRefused, PrefetchCancelled, PrefetchDropped        uint64
+	PrefetchRandom                                             uint64
 	// CheckpointPages counts pages as a capture checkpoint takes them, including
 	// those of a seal that failed partway and gave them back. UnchangedPages
 	// counts the pages a settle found to hold exactly the bytes of the page they

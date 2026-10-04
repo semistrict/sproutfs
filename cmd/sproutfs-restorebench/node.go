@@ -500,7 +500,8 @@ type readReply struct {
 
 // pagerStats is what a read's pager did: its faults, its backing reads and
 // the pages they brought in, its prefetches and the pages they landed, the
-// faults that waited for a prefetch, and the evictions it made.
+// faults that waited for a prefetch, the runs left unread at the bound and
+// for following no recent fault, and the evictions it made.
 type pagerStats struct {
 	Faults          uint64 `json:"faults"`
 	Loads           uint64 `json:"loads"`
@@ -509,6 +510,7 @@ type pagerStats struct {
 	PrefetchedPages uint64 `json:"prefetched_pages"`
 	PrefetchWaits   uint64 `json:"prefetch_waits"`
 	PrefetchRefused uint64 `json:"prefetch_refused"`
+	PrefetchRandom  uint64 `json:"prefetch_random"`
 	Evictions       uint64 `json:"evictions"`
 }
 
@@ -551,7 +553,7 @@ func (n *node) read(ctx context.Context, request readRequest) (readReply, error)
 		err = errors.Join(err, closeErr)
 		out.Pager = &pagerStats{Faults: stats.Faults, Loads: stats.Loads, LoadedPages: stats.LoadedPages,
 			Prefetches: stats.Prefetches, PrefetchedPages: stats.PrefetchedPages, PrefetchWaits: stats.PrefetchWaits,
-			PrefetchRefused: stats.PrefetchRefused, Evictions: stats.Evictions}
+			PrefetchRefused: stats.PrefetchRefused, PrefetchRandom: stats.PrefetchRandom, Evictions: stats.Evictions}
 	}
 	if err != nil {
 		return readReply{}, err

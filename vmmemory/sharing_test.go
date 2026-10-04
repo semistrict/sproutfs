@@ -182,14 +182,15 @@ func TestAStoreReadsAheadOnlyIntoFreeSlots(t *testing.T) {
 // faults that would cost the same command and only for the pages the guest
 // reads. A run is the pages consecutive in both the memory region and the arena, which
 // is neither the window nor the order they were read in: pages 0 to 7 are two
-// such runs and are installed, while pages 8 and 9 are a run of two and the
-// sibling's own page 10 leaves page 11 a run of one, and neither is.
+// such runs and are installed, while page 9 is a run of one and is not.
 func TestPopulateMapsEveryResidentRunWorthItsCommandBeforeTheMachineRuns(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newConfiguredFixture(t, vmmemory.Config{ResidentPages: 16, LogicalPages: 64, DirtyPages: 16, ReadAheadPages: 4})
 		a, am, _ := f.memoryRegion(12)
 		access(t, a, am, 0, false) // window 0-3
-		access(t, a, am, 9, false) // window 8-11
+		// Window 8-11 follows none of the writer's faults, so this one reads
+		// page 9 alone (prefetch.go).
+		access(t, a, am, 9, false)
 		// The store takes a private page of its own, which nothing may share;
 		// the page it copied away from stays in the sharing index under the
 		// identity the volume gives it, and that is what the sibling maps. The
@@ -222,10 +223,10 @@ func TestPopulateMapsEveryResidentRunWorthItsCommandBeforeTheMachineRuns(t *test
 				t.Fatalf("page %d holds %d", page, got)
 			}
 		}
-		// Eight hits at the populate, and three more from the fault that mapped
-		// the short runs it left behind when the guest reached them.
+		// Eight hits at the populate, and one more from the fault that mapped
+		// page 9, the short run it left behind, when the guest reached it.
 		stats, err := f.h.Stats(t.Context())
-		if err != nil || stats.IdentityHits != 11 {
+		if err != nil || stats.IdentityHits != 9 {
 			t.Fatalf("stats: %+v %v", stats, err)
 		}
 	})
