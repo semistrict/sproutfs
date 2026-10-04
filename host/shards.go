@@ -234,6 +234,7 @@ func (s *shardServer) openShard(ctx context.Context, disk membership.Disk) error
 		_ = device.Close()
 		return err
 	}
+	began := s.clock.Now()
 	err = s.cache.AddShard(ctx, checkpoint.ShardConfig{Device: device, Identity: disk.ID,
 		Budget: shardBudget(size - s.region), Lease: checkpoint.Lease{Assigned: disk.Assigned, Member: s.self}})
 	if err != nil {
@@ -248,7 +249,7 @@ func (s *shardServer) openShard(ctx context.Context, disk membership.Disk) error
 	s.mu.Unlock()
 	sim.Probe(ctx, ProbeShardOpened)
 	slog.InfoContext(ctx, "host: a shard is open", "shard", disk.ID.String(), "volume", disk.Volume,
-		"assigned", disk.Assigned, "bytes", size)
+		"assigned", disk.Assigned, "bytes", size, "read_back", s.clock.Since(began))
 	return nil
 }
 
