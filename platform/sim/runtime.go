@@ -70,6 +70,7 @@ func DefaultConfig() Config {
 			ListLatency:    10 * time.Millisecond,
 			BytesPerSecond: 500 << 20,
 			MaxObjectSize:  5 << 30,
+			Hold:           time.Hour,
 		},
 	}
 }

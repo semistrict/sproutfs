@@ -54,7 +54,7 @@ func newShakenCampaignRuntime(seed uint64, buggify bool, shake uint64) *sim.Runt
 			ConnectLatency: time.Microsecond},
 		ObjectStore: sim.ObjectStoreConfig{HeadLatency: time.Microsecond, GetLatency: time.Microsecond,
 			PutLatency: time.Microsecond, DeleteLatency: time.Microsecond, ListLatency: time.Microsecond,
-			BytesPerSecond: 1 << 40}})
+			BytesPerSecond: 1 << 40, RequestChaos: buggify}})
 }
 
 // newCrashRuntime is the simulated world a campaign that kills a host at a

@@ -2,8 +2,10 @@ package adapters_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/semistrict/sproutfs/platform/adapters"
+	"github.com/semistrict/sproutfs/platform/bounded"
 )
 
 func environment(values map[string]string) func(string) string {
@@ -26,6 +28,11 @@ func TestObjectStoreFromEnvironment(t *testing.T) {
 			values: map[string]string{"SPROUTFS_OBJECT_STORE": "s3", "SPROUTFS_BUCKET": "b",
 				"SPROUTFS_GCS_ENDPOINT": "localhost:4443", "SPROUTFS_S3_ENDPOINT": "http://localhost:9000"},
 			want: adapters.ObjectStoreConfig{Provider: "s3", Bucket: "b", Endpoint: "http://localhost:9000"}},
+		{name: "bounds",
+			values: map[string]string{"SPROUTFS_BUCKET": "b", "SPROUTFS_STORE_FIRST_BYTE_TIMEOUT": "4s",
+				"SPROUTFS_STORE_STALL_TIMEOUT": " 250ms "},
+			want: adapters.ObjectStoreConfig{Provider: "gcs", Bucket: "b",
+				Bounds: bounded.Bounds{FirstByte: 4 * time.Second, Stall: 250 * time.Millisecond}}},
 	} {
 		got, err := adapters.ObjectStoreFromEnvironment(environment(test.values))
 		if err != nil {

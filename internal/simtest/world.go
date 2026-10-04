@@ -25,6 +25,7 @@ import (
 	"github.com/semistrict/sproutfs/internal/testresource"
 	"github.com/semistrict/sproutfs/membership"
 	"github.com/semistrict/sproutfs/platform"
+	"github.com/semistrict/sproutfs/platform/bounded"
 	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/rank"
 	"github.com/semistrict/sproutfs/vmmemory"
@@ -93,6 +94,12 @@ type Config struct {
 	// whenever the world settles, starts a host or takes one out of the
 	// membership.
 	Shards int
+	// StoreBounds is what every host's requests to the store and to the hot
+	// tier wait within, as a deployment's commands open them; zero is the
+	// defaults. The bounds run on the wall clock, which inside the bubble is
+	// the clock the store's own latencies pass on, not on a host's clock,
+	// which passes only when the world advances it.
+	StoreBounds bounded.Bounds
 }
 
 // World is a running deployment of one topology: every host is a real
@@ -268,6 +275,9 @@ type hostState struct {
 	// hot is this host's own view of the hot tier's bucket, nil in a world
 	// without one. A kill takes it away with the store.
 	hot *hostStore
+	// bound and boundHot are the two views under the world's bounds, which
+	// is what the host is given.
+	bound, boundHot *bounded.Store
 	// dead is this host's own end: a process that is gone reaches the store no
 	// more, so its shutdown publishes nothing.
 	dead *atomic.Bool
@@ -430,8 +440,13 @@ func start(ctx context.Context, config Config) (*World, error) {
 	if config.Shards > 0 {
 		w.code = rank.CodeFor(config.Shards)
 	}
-	var err error
-	w.membership, err = membership.NewStore(membership.Config{ObjectStore: w.runtime.ObjectStore(),
+	// The orchestrator's view of the store is bounded as a host's is, as the
+	// orchestrator's command opens it.
+	orchestrator, err := bounded.New(w.runtime.ObjectStore(), config.StoreBounds, nil)
+	if err != nil {
+		return nil, err
+	}
+	w.membership, err = membership.NewStore(membership.Config{ObjectStore: orchestrator,
 		ObjectPrefix: config.Prefix, Entropy: w.runtime.NewEntropy(config.Namespace + "orchestrator")})
 	if err != nil {
 		return nil, err
@@ -463,8 +478,14 @@ func start(ctx context.Context, config Config) (*World, error) {
 		h.process = w.runtime.NewProcess(sim.ProcessConfig{ID: id, Disk: h.disk})
 		h.objects = &hostStore{ObjectStore: w.runtime.ObjectStore(), network: w.runtime.Network(),
 			from: h.address, dead: h.dead}
+		if h.bound, err = bounded.New(h.objects, config.StoreBounds, nil); err != nil {
+			return nil, err
+		}
 		if w.hot != nil {
 			h.hot = &hostStore{ObjectStore: w.hot, network: w.runtime.Network(), from: h.address, dead: h.dead}
+			if h.boundHot, err = bounded.New(h.hot, config.StoreBounds, nil); err != nil {
+				return nil, err
+			}
 		}
 		w.hosts = append(w.hosts, h)
 		h.config = w.hostConfig(h)
@@ -588,7 +609,7 @@ func (w *World) hostConfig(h *hostState) host.Config {
 	config := host.Config{
 		Network:      &hostNetwork{Network: w.runtime.Network(), local: h.address, faults: &h.faults},
 		Resources:    testresource.New(),
-		ObjectStore:  h.objects,
+		ObjectStore:  h.bound,
 		ObjectPrefix: w.config.Prefix,
 		Clock:        h.clock,
 		Entropy:      w.runtime.NewEntropy(h.name),
@@ -643,7 +664,7 @@ func (w *World) hostConfig(h *hostState) host.Config {
 		// cluster's, and leaves a hit, a miss and a fill to the answers alone.
 		// It checks no hit's regional object: which hit is sampled is the
 		// order the hits arrived in.
-		config.HotTier = checkpoint.HotTierConfig{Store: h.hot, Bound: time.Hour, QueueBytes: 1 << 40,
+		config.HotTier = checkpoint.HotTierConfig{Store: h.boundHot, Bound: time.Hour, QueueBytes: 1 << 40,
 			BytesPerSecond: 1 << 40, HeadCheckEvery: -1}
 	}
 	return config

@@ -116,6 +116,75 @@ caller of the port means by one. The host names no adapter. Neither
 does `vmmachine`, which receives a `platform.Disks` for the staging directory
 each VMM gets.
 
+### Bounds on the object store
+
+On GCE, one GET of Cloud Storage waited 52 minutes for its response headers.
+Nothing put a deadline on it, so the guest fault behind it waited too. Now
+every request to an object store waits within two bounds:
+
+- **First byte.** A request waits this long for the store to start answering:
+  the whole reply of a HEAD, a LIST or a DELETE, the headers of a GET, and the
+  reply of a PUT once the store has taken its whole body.
+  `SPROUTFS_STORE_FIRST_BYTE_TIMEOUT`, 10 s by default.
+- **Stall.** A body may go this long between two bytes: a GET's body while
+  its reader waits, and a PUT's body while the store takes it.
+  `SPROUTFS_STORE_STALL_TIMEOUT`, 10 s by default.
+
+There is no bound on the whole request. Objects range from a control record
+of a few hundred bytes to a part of 64 MiB, so no one total fits them all. A
+store that has sent nothing for ten seconds is not going to. The defaults are
+many times what either provider takes at the 99th percentile, and longer than
+a few lost packets cost a TCP connection. Time a caller spends holding a body
+without reading it does not count.
+
+An attempt past a bound is cancelled. What happens next depends on the
+request:
+
+- **A HEAD, a GET or a LIST** is made again, for as long as the caller's
+  context lives. A guest fault has no deadline of its own, and failing it
+  would kill the VM, so it waits as long as the store is stuck. Each timeout
+  is logged and counted.
+- **A PUT with a condition** is made again too. If the first attempt landed,
+  the second is refused by the object the first wrote. Every caller of a
+  conditional write already settles a refusal against what the store holds,
+  as it settles a lost reply: a control record by its writer's nonce, a part
+  or an index object by its digest, a hot tier fill as found there, and a
+  change of the membership by reading it again and finding the change made.
+- **A PUT without a condition, or a DELETE,** is not made again. A second
+  attempt could undo another writer's change made after the first. The
+  caller gets `bounded.ErrTimedOut`, which is unavailability with an unknown
+  outcome.
+- **A GET whose body stalls** is asked for the rest of its bytes, from where
+  it stopped. The new reply must name the same object: the same ETag and
+  size. Otherwise the read fails with `bounded.ErrChanged`, so a caller never
+  holds bytes of two objects. Only a mutable object, a control record or the
+  membership, can change. Its reader meets this as unavailability.
+
+`adapters.NewObjectStore` is the only way a process opens a store, and it
+returns a `*bounded.Store`. So the host, the orchestrator and every bench are
+bounded, over GCS and S3 alike. `host.SupervisorConfig` takes only a bounded
+store and hot tier. A hot tier's bucket uses the deployment's bounds.
+
+`/status` reports, per operation, the attempts cancelled at the first-byte
+bound and at the stall bound, and the attempts made again:
+`first_byte_timeouts`, `stall_timeouts` and `retries` beside `calls` in
+`store`, and in `hot_tier_store` for a hot tier's bucket. `/metrics` carries
+them as `sproutfs_store_timeouts_total{operation,bound}` and
+`sproutfs_store_retries_total{operation}`, and as
+`sproutfs_hot_tier_store_*` for the hot tier.
+
+**No hedge yet.** A second GET sent after a delay at the 99th percentile, as
+reads of the cluster send one, would cut the tail below the bound. It is not
+done here, for three reasons. The bounds fix the hang; a hedge only makes
+slow reads faster. The reads where the tail matters most already hedge above
+the store: a read of the cluster reads the store past its bound, and a read
+of the hot tier falls back to the regional bucket. A hedge underneath them
+would double requests exactly when the whole store is slow, which their
+budgets exist to prevent. And the right delay needs the tail of times to
+first byte measured on GCE, which nobody has measured yet. A hedge of the
+first byte of a ranged GET, within a budget, is the form worth adding once it
+has been.
+
 Every VM the host starts has one RAM volume, `ram0`, plus one volume per PMEM
 device. The supervisor gives each VM a PMEM device, `root`, which the guest
 boots from. A VM created with an ephemeral disk has a second PMEM device,

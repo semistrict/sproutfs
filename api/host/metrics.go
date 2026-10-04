@@ -290,32 +290,9 @@ func Metrics(status Status) string {
 	hotTierMetrics(&out, status.HotTier)
 	diskMetrics(&out, status.Disk)
 
-	// The store counters carry the operation as a label: five operations, one
-	// series each, which is what makes a rate by operation a query rather than
-	// five metrics.
-	operations := []struct {
-		name  string
-		count StoreCount
-	}{
-		{"head", status.Store.Head}, {"get", status.Store.Get}, {"put", status.Store.Put},
-		{"delete", status.Store.Delete}, {"list", status.Store.List},
-	}
-	labelled := func(name, help string, value func(StoreCount) int64) {
-		fmt.Fprintf(&out, "# HELP %s %s\n# TYPE %s counter\n", name, help, name)
-		for _, operation := range operations {
-			fmt.Fprintf(&out, "%s{operation=%q} %d\n", name, operation.name, value(operation.count))
-		}
-	}
-	labelled("sproutfs_store_calls_total", "Object store calls this host has made.",
-		func(c StoreCount) int64 { return c.Calls })
-	labelled("sproutfs_store_failures_total", "Object store calls that reported an error.",
-		func(c StoreCount) int64 { return c.Failures })
-	labelled("sproutfs_store_bytes_total", "Object bytes moved, which only get and put move.",
-		func(c StoreCount) int64 { return c.Bytes })
-	fmt.Fprintf(&out, "# HELP sproutfs_store_seconds How long each object store call took, failed ones included.\n"+
-		"# TYPE sproutfs_store_seconds histogram\n")
-	for _, operation := range operations {
-		histogram(&out, "sproutfs_store_seconds", fmt.Sprintf("operation=%q", operation.name), operation.count.Latency)
+	storeMetrics(&out, "sproutfs_store", "Object store", status.Store)
+	if status.HotTierStore != nil {
+		storeMetrics(&out, "sproutfs_hot_tier_store", "Hot tier bucket", *status.HotTierStore)
 	}
 	return out.String()
 }
@@ -638,4 +615,46 @@ func cacheReadMetrics(out *strings.Builder, read *CacheRead) {
 	write("sproutfs_cache_serve_bytes_total", "counter", "Bytes of stripes this host served its peers.", did.ServedBytes)
 	write("sproutfs_cache_serve_busy_total", "counter",
 		"Reads this host answered BUSY because its serving bandwidth was spent.", did.ServeBusy)
+}
+
+// storeMetrics writes what one bucket served, under prefix. The counters carry
+// the operation as a label: five operations, one series each, which is what
+// makes a rate by operation a query rather than five metrics. The timeouts
+// carry the bound that cancelled the attempt as a second.
+func storeMetrics(out *strings.Builder, prefix, what string, store Store) {
+	operations := []struct {
+		name  string
+		count StoreCount
+	}{
+		{"head", store.Head}, {"get", store.Get}, {"put", store.Put}, {"delete", store.Delete}, {"list", store.List},
+	}
+	labelled := func(name, help string, value func(StoreCount) int64) {
+		name = prefix + name
+		fmt.Fprintf(out, "# HELP %s %s\n# TYPE %s counter\n", name, help, name)
+		for _, operation := range operations {
+			fmt.Fprintf(out, "%s{operation=%q} %d\n", name, operation.name, value(operation.count))
+		}
+	}
+	labelled("_calls_total", what+" calls this host has made.",
+		func(c StoreCount) int64 { return c.Calls })
+	labelled("_failures_total", what+" calls that reported an error.",
+		func(c StoreCount) int64 { return c.Failures })
+	labelled("_bytes_total", "Object bytes moved, which only get and put move.",
+		func(c StoreCount) int64 { return c.Bytes })
+	labelled("_retries_total", what+" attempts made again after one outlived its bound.",
+		func(c StoreCount) int64 { return c.Retries })
+	name := prefix + "_timeouts_total"
+	fmt.Fprintf(out, "# HELP %s %s attempts cancelled at a bound: waiting for the first byte, or stalled between two.\n"+
+		"# TYPE %s counter\n", name, what, name)
+	for _, operation := range operations {
+		fmt.Fprintf(out, "%s{operation=%q,bound=\"first_byte\"} %d\n", name, operation.name,
+			operation.count.FirstByteTimeouts)
+		fmt.Fprintf(out, "%s{operation=%q,bound=\"stall\"} %d\n", name, operation.name, operation.count.StallTimeouts)
+	}
+	name = prefix + "_seconds"
+	fmt.Fprintf(out, "# HELP %s How long each %s call took, failed ones and every attempt included.\n"+
+		"# TYPE %s histogram\n", name, strings.ToLower(what), name)
+	for _, operation := range operations {
+		histogram(out, name, fmt.Sprintf("operation=%q", operation.name), operation.count.Latency)
+	}
 }

@@ -338,6 +338,35 @@ func TestMetricsExposeStoreLatency(t *testing.T) {
 	}
 }
 
+// The attempts each bucket's bounds cancelled, by operation and by bound, and
+// the attempts made again after them. The hot tier's bucket is reported under
+// a name of its own only where the host has one.
+func TestMetricsExposeStoreTimeoutsAndRetries(t *testing.T) {
+	body := hostapi.Metrics(hostapi.Status{
+		Store: hostapi.Store{Get: hostapi.StoreCount{FirstByteTimeouts: 3, StallTimeouts: 2, Retries: 5},
+			Delete: hostapi.StoreCount{FirstByteTimeouts: 1}},
+		HotTierStore: &hostapi.Store{Put: hostapi.StoreCount{Calls: 9, StallTimeouts: 4, Retries: 4}},
+	})
+	for _, want := range []string{
+		"# TYPE sproutfs_store_timeouts_total counter",
+		`sproutfs_store_timeouts_total{operation="get",bound="first_byte"} 3`,
+		`sproutfs_store_timeouts_total{operation="get",bound="stall"} 2`,
+		`sproutfs_store_timeouts_total{operation="delete",bound="first_byte"} 1`,
+		`sproutfs_store_retries_total{operation="get"} 5`,
+		`sproutfs_store_retries_total{operation="delete"} 0`,
+		`sproutfs_hot_tier_store_calls_total{operation="put"} 9`,
+		`sproutfs_hot_tier_store_timeouts_total{operation="put",bound="stall"} 4`,
+		`sproutfs_hot_tier_store_retries_total{operation="put"} 4`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("the exposition has no %q in it:\n%s", want, body)
+		}
+	}
+	if without := hostapi.Metrics(hostapi.Status{}); strings.Contains(without, "sproutfs_hot_tier_store") {
+		t.Fatal("a host with no hot tier exposes its bucket's series")
+	}
+}
+
 // What a host start costs: the templates a host imported, what each took, and
 // every byte of guest image it read.
 func TestMetricsExposeTemplateImports(t *testing.T) {

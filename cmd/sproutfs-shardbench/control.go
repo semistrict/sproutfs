@@ -61,7 +61,7 @@ func runControl(ctx context.Context, args []string) error {
 	if *membersFlag == "" || *volume == "" || *bucket == "" || *prefix == "" {
 		return errors.New("control needs -members, -volume, -bucket and -prefix")
 	}
-	store, closer, err := adapters.NewGCS(ctx, "", *bucket, *prefix)
+	store, closer, err := adapters.NewObjectStore(ctx, adapters.ObjectStoreConfig{Bucket: *bucket, Prefix: *prefix})
 	if err != nil {
 		return err
 	}

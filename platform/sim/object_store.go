@@ -32,7 +32,33 @@ type ObjectStoreConfig struct {
 	ListLatency    time.Duration
 	BytesPerSecond int64
 	MaxObjectSize  int64
+	// Hold is how long a hung request, or a body stalled halfway, waits
+	// before it goes on, unless its caller gives up on it first. One GET of
+	// Cloud Storage once waited 52 minutes for its headers; the default is an
+	// hour.
+	Hold time.Duration
+	// RequestChaos puts this store's requests under three Buggify sites: a
+	// request held before its reply, a write applied and its reply then held,
+	// and a body held halfway, each for Hold. They fire only while the
+	// runtime's Buggify switch is on, and only on a store that asks for them,
+	// because a caller that bounds none of its requests waits out every hold.
+	RequestChaos bool
 }
+
+// The request chaos sites a store with RequestChaos consults.
+const (
+	SiteObjectHang           = "sim/object-store/hang"
+	SiteObjectHangAfterApply = "sim/object-store/hang-after-apply"
+	SiteObjectStallBody      = "sim/object-store/stall-body"
+)
+
+// The chance that each request chaos site fires on one request, once a seed
+// has activated it.
+const (
+	hangProbability      = 0.02
+	hangAfterProbability = 0.05
+	stallProbability     = 0.05
+)
 
 func (c ObjectStoreConfig) withDefaults(defaults ObjectStoreConfig) ObjectStoreConfig {
 	c.HeadLatency = cmp.Or(c.HeadLatency, defaults.HeadLatency)
@@ -42,6 +68,8 @@ func (c ObjectStoreConfig) withDefaults(defaults ObjectStoreConfig) ObjectStoreC
 	c.ListLatency = cmp.Or(c.ListLatency, defaults.ListLatency)
 	c.BytesPerSecond = cmp.Or(c.BytesPerSecond, defaults.BytesPerSecond)
 	c.MaxObjectSize = cmp.Or(c.MaxObjectSize, defaults.MaxObjectSize)
+	c.Hold = cmp.Or(c.Hold, defaults.Hold)
+	c.RequestChaos = c.RequestChaos || defaults.RequestChaos
 	return c
 }
 
@@ -65,6 +93,12 @@ type ObjectStore struct {
 	sequence       map[string]uint64
 	failNext       map[ObjectOperation]int
 	failAfterApply map[ObjectOperation]int
+	// hangNext, hangAfterApply and stallNext count the requests still to be
+	// held before their reply, after their write is applied, and halfway
+	// through their body; see HangNext, HangNextAfterApply and StallNextBody.
+	hangNext       map[ObjectOperation]int
+	hangAfterApply map[ObjectOperation]int
+	stallNext      map[ObjectOperation]int
 	failed         bool
 	// observers see every change the store applies, in the order it applies
 	// them; see Observe.
@@ -105,6 +139,9 @@ func newObjectStore(runtime *Runtime, name string, config ObjectStoreConfig) *Ob
 		sequence:       make(map[string]uint64),
 		failNext:       make(map[ObjectOperation]int),
 		failAfterApply: make(map[ObjectOperation]int),
+		hangNext:       make(map[ObjectOperation]int),
+		hangAfterApply: make(map[ObjectOperation]int),
+		stallNext:      make(map[ObjectOperation]int),
 	}
 }
 
@@ -163,16 +200,21 @@ func (s *ObjectStore) Get(ctx context.Context, request platform.GetRequest) (pla
 		value = value[request.Range.Offset:end]
 	}
 	s.trace(ObjectGet, request.Key, "ok", len(value), id)
+	body := &objectReader{
+		runtime:        s.runtime,
+		id:             fmt.Sprintf("object/body/%q/%d", s.label(request.Key), id),
+		ctx:            ctx,
+		reader:         bytes.NewReader(value),
+		bytesPerSecond: s.config.BytesPerSecond,
+	}
+	if len(value) >= 2 && s.stalls(ObjectGet) {
+		body.stallAt = int64(len(value) / 2)
+		body.stall = func(ctx context.Context) error { return s.hold(ctx, ObjectGet, request.Key, id, "body") }
+	}
 	return platform.GetResult{
 		Metadata:      metadataFor(request.Key, object),
 		ContentLength: int64(len(value)),
-		Body: &objectReader{
-			runtime:        s.runtime,
-			id:             fmt.Sprintf("object/body/%q/%d", s.label(request.Key), id),
-			ctx:            ctx,
-			reader:         bytes.NewReader(value),
-			bytesPerSecond: s.config.BytesPerSecond,
-		},
+		Body:          body,
 	}, nil
 }
 
@@ -188,8 +230,21 @@ func (s *ObjectStore) Put(ctx context.Context, request platform.PutRequest) (pla
 		return platform.PutResult{}, err
 	}
 	value := make([]byte, int(request.Size))
-	reader := io.NewSectionReader(request.Body, 0, request.Size)
-	if _, err := io.ReadFull(reader, value); err != nil {
+	// A stalled upload takes the first half of its body and then nothing
+	// more for a while, as a store that stops reading its connection does.
+	half := int64(0)
+	if request.Size >= 2 && s.stalls(ObjectPut) {
+		half = request.Size / 2
+		if _, err := io.ReadFull(io.NewSectionReader(request.Body, 0, half), value[:half]); err != nil {
+			s.trace(ObjectPut, request.Key, "read_error", 0, id)
+			return platform.PutResult{}, fmt.Errorf("read upload body: %w", err)
+		}
+		if err := s.hold(ctx, ObjectPut, request.Key, id, "body"); err != nil {
+			return platform.PutResult{}, err
+		}
+	}
+	reader := io.NewSectionReader(request.Body, half, request.Size-half)
+	if _, err := io.ReadFull(reader, value[half:]); err != nil {
 		s.trace(ObjectPut, request.Key, "read_error", 0, id)
 		return platform.PutResult{}, fmt.Errorf("read upload body: %w", err)
 	}
@@ -210,6 +265,9 @@ func (s *ObjectStore) Put(ctx context.Context, request platform.PutRequest) (pla
 	s.objects[request.Key.String()] = object
 	s.applied(ObjectChange{Key: request.Key.String(), Value: value})
 	s.mu.Unlock()
+	if err := s.holdAfterApply(ctx, ObjectPut, request.Key, id); err != nil {
+		return platform.PutResult{}, err
+	}
 	if s.takeFailAfterApply(ObjectPut) {
 		s.trace(ObjectPut, request.Key, "applied_injected_fault", len(value), id)
 		return platform.PutResult{}, platform.ErrInjectedFault
@@ -238,6 +296,9 @@ func (s *ObjectStore) Delete(ctx context.Context, request platform.DeleteRequest
 		s.applied(ObjectChange{Key: request.Key.String(), Deleted: true})
 	}
 	s.mu.Unlock()
+	if err := s.holdAfterApply(ctx, ObjectDelete, request.Key, id); err != nil {
+		return err
+	}
 	if s.takeFailAfterApply(ObjectDelete) {
 		s.trace(ObjectDelete, request.Key, "applied_injected_fault", 0, id)
 		return platform.ErrInjectedFault
@@ -302,6 +363,37 @@ func (s *ObjectStore) FailNextAfterApply(operation ObjectOperation, count int) {
 	s.mu.Unlock()
 }
 
+// HangNext holds the next count requests of operation before their reply,
+// for the store's Hold, as a request whose reply does not come: a write held
+// this way has not been applied when its caller gives up on it. A request
+// that waits out the hold goes on as if nothing had happened.
+func (s *ObjectStore) HangNext(operation ObjectOperation, count int) {
+	s.mu.Lock()
+	s.hangNext[operation] += max(count, 0)
+	s.mu.Unlock()
+}
+
+// HangNextAfterApply applies the next count writes of operation, a put or a
+// delete, and then holds their replies for the store's Hold: a caller that
+// gives up on one has made its change all the same, as a reply lost on its
+// way back leaves it.
+func (s *ObjectStore) HangNextAfterApply(operation ObjectOperation, count int) {
+	s.mu.Lock()
+	s.hangAfterApply[operation] += max(count, 0)
+	s.mu.Unlock()
+}
+
+// StallNextBody holds the next count bodies of operation, a get or a put,
+// halfway through, for the store's Hold: a get's reader has had the first
+// half of the bytes it asked for, and a put has taken the first half of
+// what it writes. A body of fewer than two bytes has no halfway, and does
+// not spend a count.
+func (s *ObjectStore) StallNextBody(operation ObjectOperation, count int) {
+	s.mu.Lock()
+	s.stallNext[operation] += max(count, 0)
+	s.mu.Unlock()
+}
+
 func (s *ObjectStore) Fail() {
 	s.mu.Lock()
 	s.failed = true
@@ -350,7 +442,56 @@ func (s *ObjectStore) before(ctx context.Context, operation ObjectOperation, key
 		s.trace(operation, key, "canceled", 0, id)
 		return 0, err
 	}
+	if s.take(s.hangNext, operation) || s.chaos(SiteObjectHang, hangProbability) {
+		if err := s.hold(ctx, operation, key, id, "reply"); err != nil {
+			return 0, err
+		}
+	}
 	return id, nil
+}
+
+// holdAfterApply holds the reply to a write the store has applied, when a
+// test or the seed says so.
+func (s *ObjectStore) holdAfterApply(ctx context.Context, operation ObjectOperation, key platform.ObjectKey, id uint64) error {
+	if !s.take(s.hangAfterApply, operation) && !s.chaos(SiteObjectHangAfterApply, hangAfterProbability) {
+		return nil
+	}
+	return s.hold(ctx, operation, key, id, "applied")
+}
+
+// stalls reports whether this body of operation stalls halfway.
+func (s *ObjectStore) stalls(operation ObjectOperation) bool {
+	return s.take(s.stallNext, operation) || s.chaos(SiteObjectStallBody, stallProbability)
+}
+
+// hold waits out the store's Hold for one request. what names where it is
+// held: before its reply, after its write was applied, or halfway through
+// its body. A caller that gives up first gets its context's cause.
+func (s *ObjectStore) hold(ctx context.Context, operation ObjectOperation, key platform.ObjectKey, id uint64, what string) error {
+	s.trace(operation, key, "held_"+what, 0, id)
+	hold := s.config.Hold
+	if err := s.runtime.delay(ctx, fmt.Sprintf("object/%s/%q/%d/hold-%s", operation, s.label(key), id, what),
+		hold, hold, hold); err != nil {
+		s.trace(operation, key, "canceled_"+what, 0, id)
+		return err
+	}
+	return nil
+}
+
+// take spends one of the requests a test asked to be held, if any is left.
+func (s *ObjectStore) take(counts map[ObjectOperation]int, operation ObjectOperation) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if counts[operation] == 0 {
+		return false
+	}
+	counts[operation]--
+	return true
+}
+
+// chaos reports whether one request chaos site fires for this request.
+func (s *ObjectStore) chaos(site string, p float64) bool {
+	return s.config.RequestChaos && s.runtime.buggifyHere(site, p)
 }
 
 func (s *ObjectStore) takeFailAfterApply(operation ObjectOperation) bool {
@@ -416,13 +557,30 @@ type objectReader struct {
 	reader         *bytes.Reader
 	bytesPerSecond int64
 	closed         bool
+	// stallAt is how many bytes the body hands over before stall holds it,
+	// once, and zero for a body that does not stall; delivered is how many
+	// it has handed over.
+	stallAt   int64
+	stall     func(context.Context) error
+	delivered int64
 }
 
 func (r *objectReader) Read(destination []byte) (int, error) {
 	if r.closed {
 		return 0, platform.ErrClosed
 	}
+	if r.stallAt > 0 {
+		if r.delivered == r.stallAt {
+			r.stallAt = 0
+			if err := r.stall(r.ctx); err != nil {
+				return 0, err
+			}
+		} else if left := r.stallAt - r.delivered; int64(len(destination)) > left {
+			destination = destination[:left]
+		}
+	}
 	n, err := r.reader.Read(destination)
+	r.delivered += int64(n)
 	if n > 0 {
 		r.read++
 		if sleepErr := r.runtime.ioDelay(r.ctx, fmt.Sprintf("%s/%d", r.id, r.read), operationLatency(0, n, r.bytesPerSecond)); sleepErr != nil {

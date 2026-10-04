@@ -112,7 +112,7 @@ func runNode(ctx context.Context, args []string) error {
 	if *advertise == "" || *bucket == "" || *prefix == "" {
 		return errors.New("node needs -advertise, -bucket and -prefix")
 	}
-	store, closer, err := adapters.NewGCS(ctx, "", *bucket, *prefix)
+	store, closer, err := adapters.NewObjectStore(ctx, adapters.ObjectStoreConfig{Bucket: *bucket, Prefix: *prefix})
 	if err != nil {
 		return err
 	}
@@ -120,7 +120,7 @@ func runNode(ctx context.Context, args []string) error {
 	var hotObjects platform.ObjectStore
 	if *hotBucket != "" {
 		// The hot tier keeps its copies under the run's prefix too.
-		hot, closer, err := adapters.NewGCS(ctx, "", *hotBucket, *prefix)
+		hot, closer, err := adapters.NewObjectStore(ctx, adapters.ObjectStoreConfig{Bucket: *hotBucket, Prefix: *prefix})
 		if err != nil {
 			return err
 		}

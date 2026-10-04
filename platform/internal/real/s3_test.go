@@ -90,13 +90,21 @@ func (c *asS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // newFakeS3 serves an empty bucket from an emulator and returns a store over
 // it, opened the way a deployment opens one: through the ambient AWS
 // configuration, here the environment alone, with the emulator's endpoint.
-func newFakeS3(t *testing.T) platform.ObjectStore {
+func newFakeS3(t *testing.T) platform.ObjectStore { return newFakeS3Behind(t, nil) }
+
+// newFakeS3Behind is newFakeS3 with front, where it is not nil, in front of
+// the emulator.
+func newFakeS3Behind(t *testing.T, front func(http.Handler) http.Handler) platform.ObjectStore {
 	t.Helper()
 	backend := s3mem.New()
 	if err := backend.CreateBucket(s3TestBucket); err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(&asS3{next: gofakes3.New(backend).Server()})
+	var handler http.Handler = &asS3{next: gofakes3.New(backend).Server()}
+	if front != nil {
+		handler = front(handler)
+	}
+	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 	isolated := t.TempDir()
 	t.Setenv("AWS_CONFIG_FILE", filepath.Join(isolated, "config"))
