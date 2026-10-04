@@ -124,6 +124,8 @@ type prefetch struct {
 	// are reserved and not yet pages. cancelled marks one an allocation has
 	// cancelled already. Both are guarded by Host.mu.
 	reading, cancelled bool
+	// finished is set once the read has ended (finish). Guarded by Host.mu.
+	finished bool
 	// ctx is what the prefetch runs under: the values of the context of the
 	// fault that split it off, a task of its own in a controlled run, and
 	// the prefetch mark; cancel ends it.
@@ -296,7 +298,25 @@ func (pf *prefetch) run(ctx context.Context) {
 		pf.cancel(nil)
 	}()
 	landed := pf.land(ctx)
+	pf.finish()
+	if len(landed) > 0 {
+		r.mapPrefetched(ctx, pf, landed)
+	}
+}
+
+// finish ends the prefetch's read: its identities are no longer in flight, it
+// no longer counts against the bound, and the faults waiting on it go on. A
+// prefetch that lands nothing finishes before its slots go back, so the
+// allocation that takes one of them finds the bound already free. Calling it
+// again does nothing.
+func (pf *prefetch) finish() {
+	h := pf.memoryRegion.host
 	h.mu.Lock()
+	if pf.finished {
+		h.mu.Unlock()
+		return
+	}
+	pf.finished = true
 	for _, page := range pf.pages {
 		if h.inflight[page.key] == pf {
 			delete(h.inflight, page.key)
@@ -307,9 +327,6 @@ func (pf *prefetch) run(ctx context.Context) {
 	h.signal()
 	h.mu.Unlock()
 	close(pf.done)
-	if len(landed) > 0 {
-		r.mapPrefetched(ctx, pf, landed)
-	}
 }
 
 // land reads the prefetch's pages with one backing read and publishes each
@@ -355,6 +372,7 @@ func (pf *prefetch) land(ctx context.Context) []prefetchPage {
 			slog.DebugContext(ctx, "vmmemory: a prefetch's read failed; its pages are left to their faults",
 				"pages", len(pf.pages), "error", err)
 		}
+		pf.finish()
 		pf.drop(ctx, pf.pages)
 		return nil
 	}
@@ -414,16 +432,34 @@ func (pf *prefetch) land(ctx context.Context) []prefetchPage {
 }
 
 // drop gives the slots of pages that did not land back.
+// They go back together, under one hold of the host lock, so an allocation
+// waiting for them finds them all free at once rather than one at a time.
+// Each is punched first, as abandonSlots punches one; a punch that fails makes
+// the host terminal and keeps that slot.
 func (pf *prefetch) drop(ctx context.Context, pages []prefetchPage) {
 	h := pf.memoryRegion.host
-	for _, page := range pages {
-		if err := h.abandonSlots(ctx, page.at, 1, nil); err != nil {
-			slog.WarnContext(ctx, "vmmemory: giving back a prefetch's slot failed", "error", err)
-		}
+	punched := make([]bool, len(pages))
+	var failed error
+	for at, page := range pages {
+		err := page.at.file.Release(context.WithoutCancel(ctx), page.at.slot)
+		punched[at] = err == nil
+		failed = errors.Join(failed, err)
 	}
 	h.mu.Lock()
+	for at, page := range pages {
+		if punched[at] {
+			h.putFree(page.at)
+		}
+	}
+	if failed != nil {
+		h.err = errors.Join(h.err, failed)
+	}
 	h.stats.PrefetchDropped += uint64(len(pages))
+	h.signal()
 	h.mu.Unlock()
+	if failed != nil {
+		slog.WarnContext(ctx, "vmmemory: giving back a prefetch's slots failed", "error", failed)
+	}
 }
 
 // mapPrefetched maps the pages a prefetch landed into the memory region whose
