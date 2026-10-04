@@ -19,6 +19,7 @@ import (
 	"github.com/semistrict/sproutfs/internal/testnet"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/adapters"
+	"github.com/semistrict/sproutfs/platform/bounded"
 	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/resource"
 	"github.com/semistrict/sproutfs/vmmachine"
@@ -90,12 +91,16 @@ func TestPulledGuestsFaultWithoutTheObjectStore(t *testing.T) {
 		GetLatency: time.Nanosecond, PutLatency: time.Nanosecond, ListLatency: time.Nanosecond,
 		DeleteLatency: time.Nanosecond, BytesPerSecond: 1 << 50}})
 	objects := &checkpointGets{ObjectStore: runtime.ObjectStore()}
+	bound, err := bounded.New(objects, bounded.Bounds{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	disk, err := adapters.NewDisk(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	service, err := host.Start(ctx, host.SupervisorConfig{
-		ObjectStore: objects, Network: testnet.New(), Disk: disk, Disks: adapters.NewDisk,
+		ObjectStore: bound, Network: testnet.New(), Disk: disk, Disks: adapters.NewDisk,
 		PodIP: "127.0.0.1", PagePort: 1, PodName: "pull-host", Orchestrator: "http://127.0.0.1:1",
 		HugepageDir: t.TempDir(), ScratchDir: t.TempDir(), RAMPageSize: ramPageBytes(t),
 		PMEMPageSize: pmemPageBytes(t),

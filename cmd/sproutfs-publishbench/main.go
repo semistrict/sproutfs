@@ -84,7 +84,7 @@ func run(ctx context.Context, args []string) error {
 	config.uploads = cmpOr(config.uploads, sizing.uploads)
 	config.builders = cmpOr(config.builders, sizing.builders)
 
-	objects, closer, err := adapters.NewGCS(ctx, "", config.bucket, config.prefix)
+	objects, closer, err := adapters.NewObjectStore(ctx, adapters.ObjectStoreConfig{Bucket: config.bucket, Prefix: config.prefix})
 	if err != nil {
 		return err
 	}

@@ -287,6 +287,9 @@ func loadConfig(lookup func(string) string) (config, error) {
 			fail("SPROUTFS_HOT_TIER and SPROUTFS_CACHE_CLUSTER_PERCENT=%d are both set: the hot tier and the "+
 				"cluster cache are alternatives; unset one of them", c.CacheClusterPercent)
 		default:
+			// Its requests wait within the deployment's bounds, which the
+			// URL does not name.
+			hot.Bounds = c.Store.Bounds
 			c.HotTier = &hot
 		}
 	}

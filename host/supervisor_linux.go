@@ -87,7 +87,9 @@ type supervisor struct {
 	orchestrator *orch.Client
 
 	resources *resource.Budget
-	objects   *platform.MeteredObjectStore
+	// objects meters the deployment's bucket, and hot the hot tier's, nil
+	// for none. Both are bounded by the command that opened them.
+	objects, hot *platform.MeteredObjectStore
 	// arenas and spills are one per pager: a pager's arena and spill file are
 	// its own, and the pagers of a host share neither.
 	arenas map[pagerSlot]*vmmemory.LinuxArena
@@ -187,9 +189,17 @@ func Start(ctx context.Context, config SupervisorConfig) (Service, error) {
 	// it here is the whole of the deployment's object traffic. One checkpoint's
 	// share of it is attributed separately, through the context its publication
 	// carries.
+	if config.ObjectStore == nil {
+		return nil, fmt.Errorf("%w: a host needs an object store", ErrInvalidConfig)
+	}
 	s.objects, err = platform.NewMeteredObjectStore(config.ObjectStore, s.clock)
 	if err != nil {
 		return nil, fmt.Errorf("metered object store: %w", err)
+	}
+	if config.HotTier != nil {
+		if s.hot, err = platform.NewMeteredObjectStore(config.HotTier, s.clock); err != nil {
+			return nil, fmt.Errorf("metered hot tier: %w", err)
+		}
 	}
 	// One pager per kind of memory region, each over an arena and a spill file of its
 	// own. The two capacities sum to what the deployment gave this host, so
@@ -253,7 +263,7 @@ func Start(ctx context.Context, config SupervisorConfig) (Service, error) {
 		CacheBytes: config.CacheBytes,
 		Cache: checkpoint.CacheConfig{Disk: s.cacheDisk, Deployment: config.Deployment,
 			ClusterPercent: config.CacheClusterPercent},
-		HotTier:            checkpoint.HotTierConfig{Store: config.HotTier},
+		HotTier:            checkpoint.HotTierConfig{Store: s.hotTier()},
 		DiskLimiter:        s.disk,
 		CacheVolume:        s.cacheFile,
 		Shards:             config.Shards,
@@ -413,7 +423,7 @@ func (s *supervisor) Status(ctx context.Context) (hostapi.Status, error) {
 		Resources: hostapi.Resources{MemoryLimit: resources.Limit, MemoryUsed: resources.Used,
 			CacheLimit: status.CacheLimit, CacheUsed: status.Cache.ResidentBytes,
 			CacheDiskLimit: status.Cache.Disk.LimitBytes, CacheDiskUsed: status.Cache.Disk.UsedBytes},
-		Store: apiStore(s.objects.Traffic(), s.objects.Latency()),
+		Store: apiStore(s.objects, s.config.ObjectStore.Recoveries()),
 		Disk:  diskReport(s.disk.Status()),
 	}
 	report.Member, report.Membership = memberReport(status.Member, status.Membership)
@@ -425,6 +435,10 @@ func (s *supervisor) Status(ctx context.Context) (hostapi.Status, error) {
 	report.CacheFill = cacheFillReport(member, status.Cache.Fill)
 	report.CacheRead = cacheReadReport(member, status.Cache.Read, status.Pages)
 	report.HotTier = hotTierReport(status.HotTier)
+	if s.hot != nil {
+		hot := apiStore(s.hot, s.config.HotTier.Recoveries())
+		report.HotTierStore = &hot
+	}
 	if report.Running == nil {
 		report.Running = []string{}
 	}
@@ -767,4 +781,13 @@ func apiPeers(peers []peer.PeerStatus) []hostapi.Peer {
 		reported = append(reported, entry)
 	}
 	return reported
+}
+
+// hotTier is the hot tier's metered bucket, or no store at all: a nil
+// pointer in an interface would be a hot tier that is not there.
+func (s *supervisor) hotTier() platform.ObjectStore {
+	if s.hot == nil {
+		return nil
+	}
+	return s.hot
 }

@@ -31,6 +31,14 @@ type StoreCount struct {
 	Bytes    int64 `json:"bytes"`
 	// Latency is how long the calls took, failed ones included.
 	Latency Latency `json:"latency"`
+	// FirstByteTimeouts and StallTimeouts count the attempts the store's
+	// bounds cancelled: one that waited too long for the store's first byte,
+	// and one whose body stalled too long between two. Retries counts the
+	// attempts made again after one, a stalled body read on among them. A
+	// call counts once in Calls however many attempts it took.
+	FirstByteTimeouts int64 `json:"first_byte_timeouts"`
+	StallTimeouts     int64 `json:"stall_timeouts"`
+	Retries           int64 `json:"retries"`
 }
 
 // Store is what this host's object store has served since the process started,
@@ -630,6 +638,10 @@ type Status struct {
 	// HotTier is what this host's reads through the hot tier, and its fills
 	// of it, did. It is absent on a host that has no hot tier.
 	HotTier *HotTier `json:"hot_tier,omitempty"`
+	// HotTierStore is what the hot tier's bucket served this host, as Store
+	// is the deployment's bucket's. It is absent on a host that has no hot
+	// tier.
+	HotTierStore *Store `json:"hot_tier_store,omitempty"`
 }
 
 // HotTier is what one host's reads of checkpoint objects through the hot

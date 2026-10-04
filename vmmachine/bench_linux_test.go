@@ -693,7 +693,7 @@ func newBenchObjectStore(t *testing.T, work string) (platform.ObjectStore, strin
 		// deployment of its own, so each takes a prefix of its own under it:
 		// two of them naming a VM "template" must not be one VM.
 		prefix := path.Join(os.Getenv("SPROUTFS_GCS_PREFIX"), fmt.Sprintf("benchmark-%d", time.Now().UnixNano()))
-		store, closer, err := adapters.NewGCS(t.Context(), endpoint, bucket, prefix)
+		store, closer, err := adapters.NewObjectStore(t.Context(), adapters.ObjectStoreConfig{Endpoint: endpoint, Bucket: bucket, Prefix: prefix})
 		if err != nil {
 			t.Fatal(err)
 		}

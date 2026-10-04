@@ -48,7 +48,7 @@ func runMember(ctx context.Context, args []string) error {
 	if *advertise == "" || *machine == "" || *bucket == "" || *prefix == "" {
 		return errors.New("member needs -advertise, -machine, -bucket and -prefix")
 	}
-	store, closer, err := adapters.NewGCS(ctx, "", *bucket, *prefix)
+	store, closer, err := adapters.NewObjectStore(ctx, adapters.ObjectStoreConfig{Bucket: *bucket, Prefix: *prefix})
 	if err != nil {
 		return err
 	}

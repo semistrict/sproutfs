@@ -6,6 +6,7 @@ import (
 	hostapi "github.com/semistrict/sproutfs/api/host"
 	"github.com/semistrict/sproutfs/internal/latency"
 	"github.com/semistrict/sproutfs/platform"
+	"github.com/semistrict/sproutfs/platform/bounded"
 	"github.com/semistrict/sproutfs/vmmigrate"
 )
 
@@ -71,12 +72,17 @@ func apiLifecycle(a Activity) hostapi.Lifecycle {
 		ForkPause: hostapi.LatencyOf(a.ForkPause), Deaths: a.Deaths, Fenced: a.Fenced, Stopped: a.Stopped}
 }
 
-// apiStore is the wire form of what this host's object store has served.
-func apiStore(traffic platform.ObjectTraffic, took platform.ObjectLatency) hostapi.Store {
-	count := func(c platform.ObjectCount, l latency.Snapshot) hostapi.StoreCount {
-		return hostapi.StoreCount{Calls: c.Calls, Failures: c.Failures, Bytes: c.Bytes, Latency: hostapi.LatencyOf(l)}
+// apiStore is the wire form of what one bucket has served this host: what its
+// meter counted of the calls, and what its bounds did to their attempts.
+func apiStore(metered *platform.MeteredObjectStore, recoveries bounded.Recoveries) hostapi.Store {
+	traffic, took := metered.Traffic(), metered.Latency()
+	count := func(c platform.ObjectCount, l latency.Snapshot, r bounded.Recovery) hostapi.StoreCount {
+		return hostapi.StoreCount{Calls: c.Calls, Failures: c.Failures, Bytes: c.Bytes, Latency: hostapi.LatencyOf(l),
+			FirstByteTimeouts: r.FirstByteTimeouts, StallTimeouts: r.StallTimeouts, Retries: r.Retries}
 	}
-	return hostapi.Store{Head: count(traffic.Head, took.Head), Get: count(traffic.Get, took.Get),
-		Put: count(traffic.Put, took.Put), Delete: count(traffic.Delete, took.Delete),
-		List: count(traffic.List, took.List)}
+	return hostapi.Store{Head: count(traffic.Head, took.Head, recoveries.Head),
+		Get:    count(traffic.Get, took.Get, recoveries.Get),
+		Put:    count(traffic.Put, took.Put, recoveries.Put),
+		Delete: count(traffic.Delete, took.Delete, recoveries.Delete),
+		List:   count(traffic.List, took.List, recoveries.List)}
 }

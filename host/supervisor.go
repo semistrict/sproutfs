@@ -10,6 +10,7 @@ import (
 	hostapi "github.com/semistrict/sproutfs/api/host"
 	"github.com/semistrict/sproutfs/checkpoint"
 	"github.com/semistrict/sproutfs/platform"
+	"github.com/semistrict/sproutfs/platform/bounded"
 	"github.com/semistrict/sproutfs/resource"
 	"github.com/semistrict/sproutfs/vmmachine"
 	"github.com/semistrict/sproutfs/vmmemory"
@@ -179,8 +180,10 @@ type SupervisorConfig struct {
 	// and all of its data. Network carries migration pages between hosts, Disk
 	// is the node disk the pager spills to, and Disks opens the local storage
 	// of each VMM's private staging under the scratch directory. Which adapter
-	// each of them is, is the command's choice and nothing else's.
-	ObjectStore platform.ObjectStore
+	// each of them is, is the command's choice and nothing else's. The store
+	// is a bounded one, so no request of this host waits on it for ever, and
+	// Status reports what its bounds did.
+	ObjectStore *bounded.Store
 	Network     platform.Network
 	Disk        platform.Disk
 	Disks       platform.Disks
@@ -264,8 +267,9 @@ type SupervisorConfig struct {
 	// HotTier is a second bucket under the deployment's names that reads of
 	// checkpoint objects try first and that reads and publications fill. Nil
 	// is none. It is an alternative to the cluster cache: a host given both
-	// it and a CacheClusterPercent above zero refuses to start.
-	HotTier platform.ObjectStore
+	// it and a CacheClusterPercent above zero refuses to start. It is bounded
+	// as ObjectStore is.
+	HotTier *bounded.Store
 	// CacheServeBytesPerSecond is this host's serving bandwidth for stripes
 	// of the cluster's disk cache, past which its peer server answers a read
 	// BUSY. Zero leaves it unbounded.
