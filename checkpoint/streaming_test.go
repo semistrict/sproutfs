@@ -10,6 +10,7 @@ import (
 
 	"github.com/semistrict/sproutfs/checkpoint"
 	"github.com/semistrict/sproutfs/control"
+	"github.com/semistrict/sproutfs/internal/blob"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/sim"
 )
@@ -193,18 +194,27 @@ func (sinkStore) List(context.Context, platform.ListRequest) (platform.ListResul
 	return platform.ListResult{}, nil
 }
 
-// A publication's heap is the parts it has in flight, whatever the size of the
-// dirty set it is publishing.
+// A publication's heap is the parts it has in flight and the pages it is
+// encoding, whatever the size of the dirty set it is publishing.
 func TestPublicationHeapIsBoundedByPartSizeNotDirtySet(t *testing.T) {
 	const (
 		partBytes   = 4 << 20
 		concurrency = 4
-		// A publication holds the parts it has in flight, the one it is filling
-		// and the page it is reading. The rest of the bound is the codec
-		// workspaces the first page allocates once for the process.
-		bound = 6 * partBytes
+		encoders    = 4
+		// A publication holds the parts it has in flight and the one it is
+		// filling, each at most a part and the page that filled it, and a
+		// page and its envelope for one more than its encoders. The rest of
+		// the bound is the codec workspaces the first pages allocate once for
+		// the process.
+		bound = (concurrency+1)*(partBytes+checkpoint.PageSize2MiB) + (encoders+1)*2*checkpoint.PageSize2MiB +
+			partBytes
 	)
-	store := mustStore(t, checkpoint.Config{ObjectStore: sinkStore{}, Concurrency: concurrency, PartBytes: partBytes})
+	codecs, err := blob.NewCodecs(encoders, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := mustStore(t, checkpoint.Config{ObjectStore: sinkStore{}, Codecs: codecs, Concurrency: concurrency,
+		PartBytes: partBytes})
 	for _, pages := range []uint64{32, 128} {
 		sizes := map[string]uint64{"root": pages * checkpoint.PageSize2MiB}
 		root, err := store.Root(t.Context(), control.Ref{VM: "bounded", Sequence: pages}, volumes2MiB(sizes))

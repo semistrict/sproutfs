@@ -112,25 +112,45 @@ func (b *Builder) codec() *blob.Codecs {
 // rather than growing it a block at a time.
 const memberSlack = blob.HeaderSize + 64<<10
 
+// Reserve makes room in the body for n more bytes at once, so a part whose
+// size its writer knows is not copied each time its body outgrows itself.
+func (b *Builder) Reserve(n int) { b.body = slices.Grow(b.body, n) }
+
 // Add encodes one member into the part's body and reports the extent it landed
 // at. The caller describes what the member holds; its extent is this package's
 // to fill in. The envelope is written straight into the body, so a member costs
 // no allocation of its own and no copy out of one.
 func (b *Builder) Add(ctx context.Context, member Member, data []byte) (offset, length uint64, err error) {
-	start := uint64(len(b.body))
+	start := len(b.body)
 	body, err := b.codec().AppendEncode(ctx, slices.Grow(b.body, len(data)+memberSlack), data)
 	if err != nil {
 		return 0, 0, err
 	}
 	b.body = body
+	offset, length = b.land(ctx, member, start)
+	return offset, length, nil
+}
+
+// Append adds one member whose envelope its caller has already encoded, which
+// is how a writer that encodes several members at once fills a part in the
+// order it chose. It reports the extent the envelope landed at.
+func (b *Builder) Append(ctx context.Context, member Member, envelope []byte) (offset, length uint64) {
+	start := len(b.body)
+	b.body = append(b.body, envelope...)
+	return b.land(ctx, member, start)
+}
+
+// land takes the member whose envelope the body holds from start to its end
+// into the part's table, and reports its extent.
+func (b *Builder) land(ctx context.Context, member Member, start int) (offset, length uint64) {
 	if sim.Bug(ctx, "checkpoint-part-member-offset") {
 		// Every member is located at the start of its part, so a read of one
 		// returns whichever page the part begins with.
 		start = 0
 	}
-	member.Offset, member.Length = start, uint64(len(b.body))-start
+	member.Offset, member.Length = uint64(start), uint64(len(b.body)-start)
 	b.hold(member)
-	return member.Offset, member.Length, nil
+	return member.Offset, member.Length
 }
 
 // hold takes one member into the part and charges its entry against the table.

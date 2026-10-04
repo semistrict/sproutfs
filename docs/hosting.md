@@ -1718,8 +1718,10 @@ read back is then fitted to that share before it serves anything.
 - **Checkpoint uploads** are bounded by the checkpoint store, not per
   publication: half this machine's cores, between 8 and 64, shared by every
   checkpoint the host publishes. The part builders behind them have a separate
-  bound: a quarter of the cores, between 2 and 8. Together with the parts in
-  flight, this determines how much memory publication uses on this host.
+  bound: a quarter of the cores, between 2 and 8. Each publication encodes its
+  pages on the host's encoders side by side, and holds one more batch of pages
+  than there are encoders. Together with the parts in flight, this determines
+  how much memory publication uses on this host.
 - **Open VMs**: one manager owns at most 4,096 live handles by default, with the
   per-write bound described in [volumes](volumes.md#writes). There is no bound
   on unpublished bytes. A write waits for nothing, and the bytes it leaves

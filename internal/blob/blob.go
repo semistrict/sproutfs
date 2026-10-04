@@ -12,6 +12,7 @@ import (
 	"slices"
 
 	"github.com/klauspost/compress/zstd"
+	"github.com/semistrict/sproutfs/platform/sim"
 )
 
 const (
@@ -24,6 +25,10 @@ const (
 	// MaximumWorkers bounds one pool: a codec's workspace is memory a caller
 	// asked for without saying so.
 	MaximumWorkers = 256
+	// WorkEncode is the work an encode costs a processor, as a simulation
+	// prices it (sim.Work): the bytes it encodes, spent while it holds its
+	// encoder, so a pool of n encoders does n of them side by side.
+	WorkEncode = "blob/encode"
 )
 
 var (
@@ -72,6 +77,9 @@ func NewCodecs(encode, decode int) (*Codecs, error) {
 	}
 	return c, nil
 }
+
+// Encoders is how many encodes this pool runs at once.
+func (c *Codecs) Encoders() int { return cap(c.encoders) }
 
 // Default is the package-wide pool, which a caller that has not sized one of
 // its own encodes and decodes through.
@@ -144,6 +152,9 @@ func (c *Codecs) AppendEncode(ctx context.Context, dst, data []byte) ([]byte, er
 		return nil, err
 	}
 	defer func() { c.encoders <- w }()
+	if err := sim.Work(ctx, WorkEncode, len(data)); err != nil {
+		return nil, err
+	}
 	base := len(dst)
 	out := slices.Grow(dst, HeaderSize+len(data))[:base+HeaderSize]
 	header := out[base:]
