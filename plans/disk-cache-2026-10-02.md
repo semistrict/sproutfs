@@ -344,8 +344,8 @@ that answers that it holds nothing of the window is replaced at once by the
 next rank not yet asked; that is a miss, not a hedge.
 
 The delay before the rest are asked follows the reader's own recent stripe
-latencies: about their 95th percentile, so about one read in twenty sends a
-second request. The second requests draw on a budget, as FoundationDB's do.
+latencies in reads of the same size: about their 95th percentile, so about
+one read in twenty sends a second request. The second requests draw on a budget, as FoundationDB's do.
 Each read that completes within the delay adds a twentieth of a request to it,
 and each second request takes one away. So when every holder is slow at once,
 the budget runs out and the reader waits, rather than doubling the load on

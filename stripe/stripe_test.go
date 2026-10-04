@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"runtime"
 	"slices"
 	"testing"
 
@@ -146,6 +147,72 @@ func TestEveryEnvelopeRebuildsFromEveryKOfItsStripes(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// allocated is the bytes the heap gave out, on average, over runs calls of f.
+func allocated(runs int, f func()) uint64 {
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	for range runs {
+		f()
+	}
+	runtime.ReadMemStats(&after)
+	return (after.TotalAlloc - before.TotalAlloc) / uint64(runs)
+}
+
+// A rebuilt envelope is one buffer of its own, the length of k stripes, into
+// which each data stripe in hand is copied once and a missing one is rebuilt
+// in its place: from the data stripes and from two of them and two parity
+// stripes, a 2 MiB envelope takes one buffer of 2 MiB and a few KiB beside
+// it, the heap's rounding and the decoder's own, far less than a stripe. Changing
+// the stripes after leaves it alone. Under k = 1 it is the stripe given, and
+// nothing is allocated for it.
+func TestARebuiltEnvelopeIsABufferOfItsOwn(t *testing.T) {
+	ctx := t.Context()
+	const length = 2<<20 + 48
+	for _, c := range []struct {
+		code    rank.Code
+		indices []int
+	}{
+		{rank.Code{K: 4, M: 2}, []int{0, 1, 2, 3}},
+		{rank.Code{K: 4, M: 2}, []int{0, 4, 2, 5}},
+		{rank.Code{K: 2, M: 2}, []int{3, 1}},
+		{rank.Code{K: 1, M: 1}, []int{1}},
+	} {
+		t.Run(fmt.Sprintf("%s/%v", c.code, c.indices), func(t *testing.T) {
+			envelope := envelopeOf(length)
+			given := pick(mustSplit(t, c.code, envelope), c.indices)
+			for at := range given {
+				given[at].Bytes = slices.Clone(given[at].Bytes)
+			}
+			var joined stripe.Joined
+			var err error
+			took := allocated(8, func() { joined, err = stripe.Join(ctx, c.code, given, nil) })
+			if err != nil || !bytes.Equal(joined.Envelope, envelope) {
+				t.Fatalf("rebuilt %d bytes: %v", len(joined.Envelope), err)
+			}
+			buffer := uint64(0)
+			if c.code.K > 1 {
+				buffer = uint64(c.code.K * stripe.Size(c.code, length))
+			}
+			if took < buffer || took > buffer+32<<10 {
+				t.Fatalf("a rebuild allocated %d bytes, want one buffer of %d and at most 32 KiB beside it", took, buffer)
+			}
+			shares := &joined.Envelope[0] == &given[0].Bytes[0]
+			if shares != (c.code.K == 1) {
+				t.Fatalf("the envelope shares the first stripe's bytes: %v, want %v", shares, c.code.K == 1)
+			}
+			if c.code.K == 1 {
+				return
+			}
+			for _, s := range given {
+				clear(s.Bytes)
+			}
+			if !bytes.Equal(joined.Envelope, envelope) {
+				t.Fatal("the envelope changed with the stripes it was rebuilt from")
+			}
+		})
 	}
 }
 

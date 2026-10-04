@@ -2461,7 +2461,7 @@ guard a later part's window is. The fill campaign
 (`TestFillsSurviveTheirFaultsAndReachTheirProbes`) kills `keep-unranked` and
 `no-fill-right` too.
 
-Fifteen guards break the reads of the cluster:
+Seventeen guards break the reads of the cluster:
 
 ```sh
 SPROUTFS_SIM_BUG=cluster-read-by-index \
@@ -2494,6 +2494,10 @@ SPROUTFS_SIM_BUG=cluster-current-code-only \
   go test ./checkpoint -run '^TestAChangedCodeReadsEveryEarlierWindowWithNoStoreRead$' -count=1
 SPROUTFS_SIM_BUG=cluster-no-refill \
   go test ./checkpoint -run '^TestFillsAfterACodeChangeAreUnderTheNewCode$' -count=1
+SPROUTFS_SIM_BUG=cluster-one-delay-for-every-size \
+  go test ./checkpoint -run '^TestALargeReadAfterManySmallFastReadsIsNotHedgedToTheStore$' -count=1
+SPROUTFS_SIM_BUG=cluster-envelope-shares-reply \
+  go test ./checkpoint -run '^TestAPageReadFromAPeerOutlivesItsReplysBuffer$' -count=1
 ```
 
 The first takes from each rank only the index the list puts on it, which a
@@ -2508,10 +2512,14 @@ list, a probe every second rather than from ten seconds on, and fills sent to
 a host marked down. The next offers a rank the index the list puts on it
 whether or not another rank holds it: after a join, the new cache is sent an
 index a holder below it still holds. The next never checks a sampled hit's
-part. The last two break a change of the code: a read that tries only the
+part. The next two break a change of the code: a read that tries only the
 list's code, so after a change every earlier window is read from the store,
 and a window read under the earlier code that is never filled under the new
-one.
+one. The next keeps one delay and one bound for reads of every size, as the
+reader once did: after 512 reads of 4 KiB, four reads of 2 MiB each pass the
+bound the small reads set and read the store too. The last keeps a page
+rebuilt under 1+1 as a view of its peer's reply buffer, which the pool hands
+the next reply: once the replies are written over, the page has changed.
 
 Five guards break the hot tier:
 
@@ -2949,6 +2957,26 @@ rather than repeat, the bug's own wait, which cache the ranks-change site
 takes off the list, a slice's capacity, a zero-sized item that fails its
 header anyway, an error message's arithmetic, and a refill of no time. Two
 `case` lines Gremlins reports uncovered are run by the refusal tests.
+
+The reads of the cluster are mutated the same way, with the tests of their
+copies and their hedge:
+
+```sh
+python3 scripts/mutate-gremlins.py --package checkpoint --suite full \
+  --file clusterread.go --file cache.go --file run.go \
+  --run '^(TestTheHedger|TestAReadIsOfTheClass|TestEachSizeClass|TestALargeRead|TestAReadOfThePage|TestAPageReadFromAPeer|TestTheCacheKeeps|TestAPageFills|TestStoreReadsPast|TestAPrefetchs|TestSecondRequests|TestAStalledOrSlow|TestAWrongStripe|TestAPageInTheCluster|TestCache)' \
+  --gremlins /path/to/gremlins --output /tmp/cluster-read-mutations
+```
+
+On 2026-10-04, of the mutants on the lines that cut a read's copies and gave
+the hedge a delay per size of read, 39 died and 3 lived. Two were the length
+checks before `sharesReply` compares a stripe's first byte with the
+envelope's; `TestAnEmptyStripeBesideAWholeOneIsWrong` now kills both, as a
+read under 1+1 would panic on an empty stripe without them. The third
+negates `err == nil` before a load's count of pages is checked, which none of
+these tests makes fail. The run as a whole killed 237 with 86 alive and 62
+not covered, nearly all in code these tests do not aim at. The same run of
+`stripe.go` killed 69 with 4 alive, none of them in the rebuild.
 
 The membership is mutated the same way, with the peer server's side of its
 protocol. The orchestrator is a package below `cmd`, which Gremlins names
