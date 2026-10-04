@@ -20,6 +20,7 @@ import (
 // how the store is sized, what an encode costs, and what a PUT costs.
 type throughput struct {
 	pages    uint64
+	pageSize uint64
 	encoders int
 	uploads  int
 	// encodeRate prices an encode in bytes a second; zero makes it free.
@@ -58,6 +59,14 @@ type put struct {
 	began, end time.Duration
 }
 
+// page is the volume's page size: 2 MiB unless the case says.
+func (c throughput) page() uint64 {
+	if c.pageSize == 0 {
+		return checkpoint.PageSize2MiB
+	}
+	return c.pageSize
+}
+
 // putTime is what the simulated store takes to PUT an object of size bytes.
 func (c throughput) putTime(size int64) time.Duration {
 	return c.putLatency + time.Duration(size*int64(time.Second)/putBytesPerSecond)
@@ -81,8 +90,8 @@ func (c throughput) run(t *testing.T) throughputResult {
 		objects := &timedStore{concurrencyStore: concurrencyStore{ObjectStore: runtime.ObjectStore()}}
 		store := mustStore(t, checkpoint.Config{ObjectStore: objects, Codecs: codecs, Concurrency: c.uploads,
 			PartBytes: throughputPartBytes})
-		sizes := map[string]uint64{"ram0": c.pages * checkpoint.PageSize2MiB}
-		root, err := store.Root(ctx, control.Ref{VM: "wide", Sequence: 1}, volumes2MiB(sizes))
+		sizes := map[string]uint64{"ram0": c.pages * c.page()}
+		root, err := store.Root(ctx, control.Ref{VM: "wide", Sequence: 1}, volumesAt(c.page(), sizes))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -102,9 +111,9 @@ func (c throughput) run(t *testing.T) throughputResult {
 		result.encodes, result.fingerprint = runtime.Work(blob.WorkEncode), runtime.Fingerprint()
 		// Every page reads back as it was published, whatever order the
 		// encodes ended in.
-		got, want := make([]byte, checkpoint.PageSize2MiB), make([]byte, checkpoint.PageSize2MiB)
+		got, want := make([]byte, c.page()), make([]byte, c.page())
 		for page := range c.pages {
-			if err := store.Read(ctx, index, "ram0", page*checkpoint.PageSize2MiB, got); err != nil {
+			if err := store.Read(ctx, index, "ram0", page*c.page(), got); err != nil {
 				t.Fatal(err)
 			}
 			if err := (noiseSource{}).ReadPage(ctx, "ram0", page, want); err != nil {
@@ -196,6 +205,26 @@ func TestAPublicationEncodesAsManyPagesAtOnceAsItHasEncoders(t *testing.T) {
 	if landed, want := got.partsLanded(t, parts), encoding+last; landed != want {
 		t.Fatalf("the parts of %d pages landed at %v, want %v: %v encoding on %d encoders and %v for the last part",
 			c.pages, landed, want, encoding, c.encoders, last)
+	}
+}
+
+// Small pages are encoded together, a megabyte of them on one encoder, so a
+// publication of 4 KiB pages does not pay a goroutine and a wait for each:
+// 1,024 pages of 1 ms each are four batches of 256, which eight encoders
+// encode four at a time, so the one part lands 256 ms and its PUT after the
+// commit began.
+func TestAPublicationEncodesSmallPagesInBatches(t *testing.T) {
+	c := throughput{pages: 1024, pageSize: checkpoint.PageSize4KiB, encoders: 8, uploads: 8,
+		putLatency: 20 * time.Millisecond, encodeRate: checkpoint.PageSize4KiB * 1000}
+	got := c.run(t)
+	// The pages, and the three small envelopes of the two roots and the
+	// segment, none of which is encoded beside the pages.
+	if want := (sim.WorkStats{Pieces: 1024 + 3, Peak: 4}); got.encodes != want {
+		t.Fatalf("the encodes did %+v, want %+v", got.encodes, want)
+	}
+	want := 256*time.Millisecond + c.putTime(got.object(t, "/part/0").size)
+	if landed := got.partsLanded(t, 1); landed != want {
+		t.Fatalf("the part of 1,024 small pages landed at %v, want %v", landed, want)
 	}
 }
 
