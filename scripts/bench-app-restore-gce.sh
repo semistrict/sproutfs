@@ -302,6 +302,9 @@ run() {
     while [[ -z $status ]]; do
         sleep 60
         status=$(remote "$server" 'cat /tmp/app-restore.done 2>/dev/null' 2>/dev/null || true)
+        # A node deleted under the run never answers again.
+        [[ -n $status ]] || existing | grep -qx "$server" ||
+            { echo "$server is gone; the rounds cannot end." >&2; return 1; }
         remote "$server" 'tail -3 /tmp/app-restore.log' 2>/dev/null | sed 's/^/  /' || true
     done
     remote "$server" 'cat /tmp/app-restore.log' > "$results/run.log" 2>&1 || true
