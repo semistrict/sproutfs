@@ -58,6 +58,21 @@ jobs:
       - uses: extractions/setup-just@v4
       - run: just check-go
 
+  # Every in-tree bug guard still fails the tests that name it. The guards were
+  # swept on macOS, where the simulation suites are developed.
+  guards:
+    name: guards (darwin)
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: extractions/setup-just@v4
+      - run: just check-guards
+
   proto:
     name: buf lint
     runs-on: ubuntu-latest

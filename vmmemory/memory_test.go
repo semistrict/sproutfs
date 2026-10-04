@@ -649,7 +649,12 @@ func (b *backing) Verify(context.Context) error {
 }
 
 type fixture struct {
-	t        *testing.T
+	t *testing.T
+	// ctx is the context the pager was built under. It carries the fixture's
+	// simulated runtime, so a call made under it consults the in-tree bug
+	// guards SPROUTFS_SIM_BUG names, which a call under a bare test context
+	// never does.
+	ctx      context.Context
 	h        *vmmemory.Host
 	a        *arena
 	disk     *sim.Disk
@@ -774,11 +779,13 @@ func newPinnedFixture(t *testing.T, cfg vmmemory.Config, shared ...*resource.Bud
 // is what a test of a configuration the pager refuses needs.
 func newBrokenFixture(t *testing.T, cfg vmmemory.Config, shared ...*resource.Budget) (*fixture, error) {
 	t.Helper()
-	return newFixtureOn(t, t.Context(), sim.New(sim.Config{}).NewDisk("pager", sim.DiskConfig{}), cfg, shared...)
+	runtime := sim.New(sim.Config{})
+	return newFixtureOn(t, sim.WithRuntime(t.Context(), runtime), runtime.NewDisk("pager", sim.DiskConfig{}),
+		cfg, shared...)
 }
 
 // newFixtureOn is newBrokenFixture with its spill file on disk, and its pager
-// built under ctx, which may carry the runtime whose guards the pager consults.
+// built under ctx, which carries the runtime whose guards the pager consults.
 func newFixtureOn(t *testing.T, ctx context.Context, disk *sim.Disk, cfg vmmemory.Config,
 	shared ...*resource.Budget) (*fixture, error) {
 	t.Helper()
@@ -802,7 +809,7 @@ func newFixtureOn(t *testing.T, ctx context.Context, disk *sim.Disk, cfg vmmemor
 			t.Error(err)
 		}
 	})
-	return &fixture{t: t, h: h, a: a, disk: disk, spill: spill, pageSize: int(cfg.PageSize),
+	return &fixture{t: t, ctx: ctx, h: h, a: a, disk: disk, spill: spill, pageSize: int(cfg.PageSize),
 		source: control.Ref{VM: vmName(t), Sequence: 1}}, nil
 }
 
@@ -864,7 +871,7 @@ func (f *fixture) attachBacking(backing vmmemory.MemoryRegionBacking) (*vmmemory
 	m := newMapping(f.a)
 	m.tenant = backing.Tenant
 	f.a.mappings = append(f.a.mappings, m)
-	r, err := f.h.Attach(f.t.Context(), backing, m)
+	r, err := f.h.Attach(f.ctx, backing, m)
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -876,11 +883,22 @@ func (f *fixture) attachBacking(backing vmmemory.MemoryRegionBacking) (*vmmemory
 	})
 	return r, m
 }
+
+// access is what the guest sees of one page: the page it maps, faulted in
+// first where it maps none, or maps it read-only and stores.
 func access(t *testing.T, r *vmmemory.MemoryRegion, m *mapping, page uint64, write bool) []byte {
+	t.Helper()
+	return accessUnder(t.Context(), t, r, m, page, write)
+}
+
+// accessUnder is access with its fault made under ctx, which may carry the
+// runtime whose guards the fault's path consults.
+func accessUnder(ctx context.Context, t *testing.T, r *vmmemory.MemoryRegion, m *mapping, page uint64,
+	write bool) []byte {
 	t.Helper()
 	p, ok := m.pages[page]
 	if !ok || (write && !p.writable) {
-		if err := r.Fault(t.Context(), page, write); err != nil {
+		if err := r.Fault(ctx, page, write); err != nil {
 			t.Fatal(err)
 		}
 		p = m.pages[page]
@@ -924,6 +942,37 @@ func TestSharingCOWReclaimAndDurability(t *testing.T) {
 		}
 		if access(t, a, am, 0, false)[0] != 100 {
 			t.Fatal("refault used previous spill epoch")
+		}
+	})
+}
+
+// A private page an eviction takes is spilled, and the fault that brings it
+// back reads the guest's own store out of the spill file rather than whatever
+// its slot held before. The second round spills to a slot the first one gave
+// back. The faults run under the fixture's runtime, so a spill guard
+// SPROUTFS_SIM_BUG names is on in them.
+func TestASpilledPageFaultsBackWhatTheGuestStored(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newFixture(t, 2, 8, 4)
+		r, m, b := f.memoryRegion(4)
+		for round, value := range []byte{99, 100} {
+			accessUnder(f.ctx, t, r, m, 0, true)[0] = value
+			// Two more pages than the arena holds besides page zero, so the
+			// least recently used of them, page zero, is evicted.
+			accessUnder(f.ctx, t, r, m, 1, false)
+			accessUnder(f.ctx, t, r, m, 2, false)
+			if s := hostStats(t, f); s.Spills != uint64(round+1) {
+				t.Fatalf("round %d spilled %d pages in all, want %d", round, s.Spills, round+1)
+			}
+			if _, mapped := m.pages[0]; mapped {
+				t.Fatalf("round %d: the guest still maps the page the eviction took", round)
+			}
+			if got := accessUnder(f.ctx, t, r, m, 0, false)[0]; got != value {
+				t.Fatalf("round %d read back %d, want the guest's own store of %d", round, got, value)
+			}
+			if b.data[0] != 1 {
+				t.Fatalf("round %d: the spill reached the volume, which holds %d", round, b.data[0])
+			}
 		}
 	})
 }
