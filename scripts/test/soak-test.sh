@@ -236,6 +236,19 @@ want_equal "$(awk -F'\t' 'NF != 4' "$record/refusals.tsv" | wc -l | tr -d ' ')" 
 want_file_has "$record/summary.txt" 'placements the deployment refused' \
     'the summary names a refusal whose reason had several lines'
 
+# --- a placement that broke rather than being refused ends the run ------------
+# A refusal for want of room is the deployment's answer, and the seed decides
+# which placements meet one. A call that failed for any other reason is not:
+# a disk that filled under the model once turned a stop into a recorded
+# refusal, and the run passed with a shape no other run of its seed had.
+
+soak_run "$work/broken" SOAK_SEED=3 "${small[@]}" SPROUTFS_FAKE_BREAK=stop:1
+want_status "$status" 1 'a soak in which a stop failed for a reason that was not a refusal'
+want_equal "$(wc -l < "$record/refusals.tsv" | tr -d ' ')" 0 \
+    'a placement that broke is not recorded as a refusal'
+want_file_has "$output" 'stop vm-[0-9]+ failed, and not for want of room: .*No space left on device' \
+    'the run says which placement failed and what it said'
+
 # --- a guest that does not hold what it wrote ends the run --------------------
 
 soak_run "$work/corrupt" SOAK_SEED=3 "${small[@]}" SPROUTFS_FAKE_CORRUPT=9
