@@ -184,8 +184,8 @@ hosts for all its pages, in one request each. A segment is its own window.
 
 ### Ranks
 
-Placement is computed, not recorded. Every host holds the list of caches in
-the cluster. For each window, weighted rendezvous hashing ranks every cache:
+Placement is computed, not recorded. Every host holds the caches of the
+cluster, which the membership below lists. For each window, weighted rendezvous hashing ranks every cache:
 each cache scores the window by `w / -ln(u)`, where `u` is a 64-bit hash of the
 cache's identity and the window, mapped into (0, 1), and `w` is the cache's
 weight. Ties go to the lower cache identity. The caches ranked 1 to k+m hold

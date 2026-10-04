@@ -684,7 +684,7 @@ GCE, one host drained and one stalled: **4+2** p99.9 1.95 ms · **4+1** 67 % of 
 </v-click>
 
 <!--
-The code is a deployment setting, not derived from the live list. A drain takes six hosts to five for a while, and a code that followed the list would turn every stripe into a miss. While the list is shorter than k+m, stripes go round the hosts it has.
+The code is a deployment setting, written in the membership, not derived from the hosts that are up. A drain takes six hosts to five for a while, and a code that followed them would turn every stripe into a miss. While the membership holds fewer disks than k+m, stripes go round the disks it has.
 
 k = 1 is whole copies: 1+1 keeps each envelope whole on two hosts, so two hosts are enough. Replication is not a second mechanism; it is the code at k = 1.
 
