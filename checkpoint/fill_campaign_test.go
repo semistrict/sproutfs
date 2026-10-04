@@ -22,6 +22,7 @@ var fillProbes = []string{
 	checkpoint.ProbeFillQueueFull, checkpoint.ProbeFillRateSpent, checkpoint.ProbeFillNoRoom,
 	checkpoint.ProbeFillPeerDropped, checkpoint.ProbeFillWriteRefused, checkpoint.ProbeFillRanksChanged,
 	checkpoint.ProbeKeepKept, checkpoint.ProbeKeepDuplicate, checkpoint.ProbeKeepRefused, checkpoint.ProbeKeepDropped,
+	checkpoint.ProbeFillPublicationWaited, checkpoint.ProbeFillPublicationGaveUp,
 }
 
 // fillCampaignSeeds are the seeds the fill campaign runs, which between them

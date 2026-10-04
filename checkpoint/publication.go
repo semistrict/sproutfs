@@ -309,13 +309,13 @@ func (p *Publication) Commit(ctx context.Context, source Source) (*Index, error)
 	if err := p.store.putIndexObject(ctx, p.ref, data); err != nil {
 		return nil, writer.abandon(err)
 	}
-	p.keepSegments(ctx, index, data)
+	p.keepSegments(ctx, index, data, &writer.pace)
 	return index, nil
 }
 
 // keepSegments hands the segments this publication wrote into its index object
 // to the pull that keeps them, and to the cluster, once the object is durable.
-func (p *Publication) keepSegments(ctx context.Context, index *Index, object []byte) {
+func (p *Publication) keepSegments(ctx context.Context, index *Index, object []byte, pace *fillPace) {
 	if p.keep == nil && !p.store.cache.fills() {
 		return
 	}
@@ -334,7 +334,7 @@ func (p *Publication) keepSegments(ctx context.Context, index *Index, object []b
 	if p.keep != nil {
 		p.keep.keep(ctx, envelopes)
 	}
-	p.store.cache.fill(WriteFillPublication, envelopes)
+	p.store.cache.publish(ctx, pace, envelopes)
 }
 
 // writeState writes the VMM state as this checkpoint's first member, so its

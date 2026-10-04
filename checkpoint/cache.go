@@ -77,13 +77,22 @@ type CacheConfig struct {
 	// requests are timed by. Nil is the wall clock.
 	Clock platform.Clock
 	// FillQueueBytes bounds the host's queue of writes to its own disk, which
-	// every fill and every keep a peer sends goes through; a fill that finds
-	// it full is dropped. Default DefaultFillQueueBytes.
+	// every fill and every keep a peer sends goes through. A read's fill that
+	// finds it full is dropped. A publication's waits while it holds three
+	// quarters of the bound or more, so the publication goes at the pace its
+	// fills do. Default DefaultFillQueueBytes.
 	FillQueueBytes int64
 	// FillBytesPerSecond is the rate of keeps this host sends its peers, with
-	// a burst of one second of it; a keep past it is dropped. Default
-	// DefaultFillBytesPerSecond.
+	// a burst of one second of it. A read's keep past it is dropped, and a
+	// publication's waits for it, leaving a quarter of the burst to reads.
+	// Default DefaultFillBytesPerSecond.
 	FillBytesPerSecond int64
+	// FillWaitBound is the longest one wait of a publication's fills lasts:
+	// for room in the queue, or a keep's for the rate, the background budget
+	// or a busy holder. A publication that waited it out once waits no more,
+	// and each of its fills that finds no room after is dropped. Default
+	// DefaultFillWaitBound.
+	FillWaitBound time.Duration
 	// FillRightInterval is how long a window's fill right, once this cache
 	// gave it out, is not given again. Default DefaultFillRightInterval.
 	FillRightInterval time.Duration
@@ -266,12 +275,14 @@ func NewCache(ctx context.Context, resources *resource.Budget, config CacheConfi
 	config.FillQueueBytes = cmp.Or(config.FillQueueBytes, DefaultFillQueueBytes)
 	config.FillBytesPerSecond = cmp.Or(config.FillBytesPerSecond, DefaultFillBytesPerSecond)
 	config.FillRightInterval = cmp.Or(config.FillRightInterval, DefaultFillRightInterval)
+	config.FillWaitBound = cmp.Or(config.FillWaitBound, DefaultFillWaitBound)
 	config.ClusterHedgeFloor = cmp.Or(config.ClusterHedgeFloor, DefaultClusterHedgeFloor)
 	config.ClusterBound = cmp.Or(config.ClusterBound, DefaultClusterBound)
 	config.ClusterStripeTimeout = cmp.Or(config.ClusterStripeTimeout, DefaultClusterStripeTimeout)
 	config.HeadCheckEvery = cmp.Or(config.HeadCheckEvery, DefaultHeadCheckEvery)
 	if config.FillQueueBytes < 0 || config.FillBytesPerSecond < 0 || config.FillRightInterval < 0 ||
-		config.ClusterHedgeFloor < 0 || config.ClusterBound < 0 || config.ClusterStripeTimeout <= 0 {
+		config.FillWaitBound < 0 || config.ClusterHedgeFloor < 0 || config.ClusterBound < 0 ||
+		config.ClusterStripeTimeout <= 0 {
 		return nil, ErrInvalidConfig
 	}
 	if resources == nil || config.MaxConcurrentLoads < 1 || config.MaxConcurrentLoads > 1024 ||
@@ -306,7 +317,7 @@ func NewCache(ctx context.Context, resources *resource.Budget, config CacheConfi
 	if cache.disk != nil || config.Shards {
 		cache.filler = newFiller(ctx, shared, fillSettings{peers: config.Peers, clock: config.Clock,
 			queueBytes: config.FillQueueBytes, bytesPerSecond: config.FillBytesPerSecond,
-			rightInterval: config.FillRightInterval})
+			rightInterval: config.FillRightInterval, waitBound: config.FillWaitBound})
 		cache.reader = newClusterReader(ctx, shared, cache.filler, config.Peers, config.Clock, clusterSettings{
 			hedgeFloor: config.ClusterHedgeFloor, bound: config.ClusterBound, stripeTimeout: config.ClusterStripeTimeout,
 			probeFirst: DefaultProbeFirst, probeMax: DefaultProbeMax, headEvery: config.HeadCheckEvery})
@@ -447,6 +458,18 @@ func (c *Cache) fill(kind WriteKind, envelopes []envelope) {
 		return
 	}
 	c.filler.fill(kind, envelopes)
+}
+
+// publish hands what a publication made durable to the cluster, each window
+// inside the cluster share to its ranks, and returns once each window is
+// handed over or dropped: a window waits under ctx for room in the queue, as
+// the publication's pace allows. It does nothing for a cache that fills
+// nothing.
+func (c *Cache) publish(ctx context.Context, pace *fillPace, envelopes []envelope) {
+	if c == nil || c.filler == nil || len(envelopes) == 0 {
+		return
+	}
+	c.filler.publish(ctx, pace, envelopes)
 }
 
 // bug reports whether the in-tree bug id is on for the cache's run, as its

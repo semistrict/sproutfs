@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"slices"
 	"sync"
 	"time"
@@ -38,16 +39,32 @@ import (
 // cache ever holds the bytes of a part the store refused. A pull hands over
 // what it copies.
 //
-// Nothing waits on a fill. The filler holds the fills handed to it in one
-// queue, bounded in bytes, and does them one at a time in the order they were
-// handed over: it asks a read's fill right, writes this host's own stripes and
-// sends each keep, and takes the next fill once the keep before it is
-// answered. Every write to this host's own disk, its own fills' and its peers'
-// keeps', goes through one queue of writes drained by one worker. Every keep
-// goes through a rate of bytes per second and this host's background budget
-// at the fill priority. A fill that finds the queue full, the rate spent or
-// the budget without room is dropped, and its window is read from the store
-// the next time. A fault, a publication and a pull never wait for one.
+// A fault and a pull never wait on a fill. The filler holds the fills handed
+// to it in one queue, bounded in bytes, and does them one at a time: it asks
+// a read's fill right, writes this host's own stripes and sends each keep, and
+// takes the next once the keep before it is answered. Every write to this
+// host's own disk, its own fills' and its peers' keeps', goes through one
+// queue of writes drained by one worker. Every keep goes through a rate of
+// bytes per second and this host's background budget at the fill priority. A
+// read's fill that finds the queue full, the rate spent or the budget without
+// room is dropped, and its window is read from the store the next time.
+//
+// A publication's fills are paced rather than dropped. A suspend or a stop is
+// followed by a restore elsewhere, and a window it did not fill is read from
+// the store there, which costs the restore more than a slower publication
+// costs. So a publication hands a window over only once the queue holds less
+// than its high-water mark, three quarters of its bound, and waits for room
+// until then; and a keep of a publication's that finds the rate spent, the
+// background budget full or its holder BUSY is tried again later. The
+// publication's parts are held under their upload slots until they are handed
+// over, so the publication slows to the pace its keeps go at. A read's fill
+// never waits behind a publication's: the last quarter of the queue is left to
+// reads, repairs and peers' keeps, a quarter of the rate's burst is left to
+// reads, and the worker takes a read's fill before any publication's still to
+// do, between one holder of a publication's fill and the next. No wait is
+// longer than a bound: a publication that has waited it out once waits no
+// more, and each of its fills that finds no room after is dropped as a read's
+// is.
 //
 // One fill at a time is a decision, not a convenience. Fills on goroutines of
 // their own reach a peer's link, its connection and the background budget in
@@ -79,6 +96,18 @@ const (
 	// DefaultFillRightInterval is how long a window's fill right, once given,
 	// is not given again.
 	DefaultFillRightInterval = 10 * time.Second
+	// DefaultFillWaitBound is the longest one wait of a publication's fills
+	// lasts. It is longer than a dead peer takes to be marked down, after
+	// which the keeps to it are dropped at once.
+	DefaultFillWaitBound = 10 * time.Second
+)
+
+// A keep of a publication's that a busy holder or a full background budget
+// refused is tried again after fillRetryFirst, and twice as long after each
+// refusal after, up to fillRetryMost.
+const (
+	fillRetryFirst = 10 * time.Millisecond
+	fillRetryMost  = 500 * time.Millisecond
 )
 
 // DropReason is why a fill dropped stripes.
@@ -148,8 +177,16 @@ type FillStats struct {
 	// this cache refused: for a window the membership does not rank it for, under
 	// another code, or that do not hold together.
 	Duplicates, Refused uint64
-	// Queued is the bytes of the queue held now, and QueueBytes its bound.
-	Queued, QueueBytes int64
+	// Queued is the bytes of the queue held now, QueueBytes its bound, and
+	// QueuedPeak the most it has held.
+	Queued, QueueBytes, QueuedPeak int64
+	// Waits counts the waits of publications' fills: for room in the queue,
+	// and a keep's for the rate, the background budget or a busy holder.
+	// Waited is how long they waited in all, and GaveUp counts the
+	// publications that waited out the bound and waited no more.
+	Waits  uint64
+	Waited time.Duration
+	GaveUp uint64
 }
 
 // The probes fills mark.
@@ -186,6 +223,12 @@ const (
 	// ProbeKeepDropped is a keep a cache dropped as one whose write budget is
 	// spent does.
 	ProbeKeepDropped = "checkpoint/keep-dropped"
+	// ProbeFillPublicationWaited is a publication's fill that waited: for room
+	// in the queue, or its keep for the rate, the budget or a busy holder.
+	ProbeFillPublicationWaited = "checkpoint/fill-publication-waited"
+	// ProbeFillPublicationGaveUp is a publication that waited out the bound
+	// and waits no more.
+	ProbeFillPublicationGaveUp = "checkpoint/fill-publication-gave-up"
 )
 
 // The fault-injection sites of fills.
@@ -230,6 +273,9 @@ type filler struct {
 	cluster *cluster
 	peers   *peer.Table
 	clock   platform.Clock
+	// waits is what a publication's fills wait on: the table of peers' clock,
+	// which its requests are timed by, or clock where there is no table.
+	waits platform.Clock
 	// ctx is the fills' life, which carries what the cache was made under;
 	// Close ends it.
 	ctx    context.Context
@@ -238,6 +284,7 @@ type filler struct {
 
 	queueBytes    int64
 	rightInterval time.Duration
+	waitBound     time.Duration
 	rate          tokenBucket
 
 	// down reports a holder the cache's reads have marked down, which is sent
@@ -250,12 +297,17 @@ type filler struct {
 	// disk, its fills' and its peers' keeps', which another worker does one at
 	// a time. The two are apart because a keep waits for its holder's writes,
 	// and a holder's writes must never wait for that holder's own keeps.
-	fills, writes *lane
+	fills  *fillLanes
+	writes *lane
 
 	mu sync.Mutex
 	// queued is the bytes of the queue held: by fills handed over and not yet
 	// done, and by peers' keeps not yet written.
 	queued int64
+	// waiting is the publications' windows waiting for room below the
+	// high-water mark, in the order they began to wait, which is the order
+	// room is given in.
+	waiting []*roomWaiter
 	// busy counts the work held and the requests in flight; idle is closed
 	// and replaced each time it falls to zero.
 	busy int
@@ -283,32 +335,51 @@ type grant struct {
 	at     time.Time
 }
 
+// roomWaiter is one window of a publication's waiting for room in the queue.
+// granted says the room was taken for it, under the filler's lock, before
+// ready was closed; ready closed without it is a filler that closed.
+type roomWaiter struct {
+	bytes   int64
+	ready   chan struct{}
+	granted bool
+}
+
 // fillSettings is how a cache fills the cluster.
 type fillSettings struct {
 	peers                      *peer.Table
 	clock                      platform.Clock
 	queueBytes, bytesPerSecond int64
-	rightInterval              time.Duration
+	rightInterval, waitBound   time.Duration
 }
 
 // newFiller starts a cache's fills under ctx.
 func newFiller(ctx context.Context, shared *cluster, settings fillSettings) *filler {
 	ctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	clock := platform.ClockOr(settings.clock)
-	f := &filler{cluster: shared, peers: settings.peers, clock: clock, ctx: ctx, cancel: cancel,
-		queueBytes: settings.queueBytes, rightInterval: settings.rightInterval,
-		rate: newTokenBucket(clock, settings.bytesPerSecond), fills: newLane(), writes: newLane(),
-		idle: make(chan struct{}), writing: make(map[writingKey]bool), granted: make(map[rank.Window]time.Time)}
-	f.group.Go(func() { f.fills.run(ctx) })
+	waits := clock
+	if settings.peers != nil {
+		waits = settings.peers.Clock()
+	}
+	f := &filler{cluster: shared, peers: settings.peers, clock: clock, waits: waits, ctx: ctx, cancel: cancel,
+		queueBytes: settings.queueBytes, rightInterval: settings.rightInterval, waitBound: settings.waitBound,
+		rate: newTokenBucket(clock, settings.bytesPerSecond), fills: &fillLanes{wake: make(chan struct{}, 1)},
+		writes: newLane(), idle: make(chan struct{}), writing: make(map[writingKey]bool),
+		granted: make(map[rank.Window]time.Time)}
+	f.group.Go(func() { f.runFills(ctx) })
 	f.group.Go(func() { f.writes.run(ctx) })
 	return f
 }
 
 // close stops the fills: both workers, the right asked for and the keep in
-// flight. What it had not done is dropped.
+// flight, and the publications waiting for room. What it had not done is
+// dropped.
 func (f *filler) close() {
 	f.mu.Lock()
 	f.closed = true
+	for _, w := range f.waiting {
+		close(w.ready)
+	}
+	f.waiting = nil
 	f.mu.Unlock()
 	f.cancel()
 	f.group.Wait()
@@ -380,43 +451,173 @@ func (f *filler) goFill(request func(context.Context)) bool {
 
 // reserve takes bytes of the queue for work a worker will do, and counts
 // the work held. It reports false when the queue has no room, and the work is
-// dropped. One piece larger than the whole queue is taken alone.
+// dropped: a read's fill, a pull's, a repair and a peer's keep never wait for
+// room. One piece larger than the whole queue is taken alone.
 func (f *filler) reserve(ctx context.Context, bytes int64) bool {
 	if sim.Buggify(ctx, buggifyFillQueueFull, 0.05) {
 		return false
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	for f.queued > 0 && f.queued+bytes > f.queueBytes {
-		if !f.bug("fill-queue-waits") || f.closed {
-			return false
-		}
-		// The bug waits for room rather than dropping, which puts whoever
-		// handed the fill over behind the queue.
-		idle := f.idle
-		f.mu.Unlock()
-		select {
-		case <-idle:
-		case <-ctx.Done():
-		}
-		f.mu.Lock()
-		if ctx.Err() != nil {
-			return false
-		}
+	if f.queued > 0 && f.queued+bytes > f.queueBytes {
+		return false
 	}
+	return f.take(bytes)
+}
+
+// take takes bytes of the queue and counts the work held, and reports false
+// once the fills have closed. Caller holds f.mu.
+func (f *filler) take(bytes int64) bool {
 	if !f.hold() {
 		return false
 	}
 	f.queued += bytes
+	f.stats.QueuedPeak = max(f.stats.QueuedPeak, f.queued)
 	return true
 }
 
-// release gives back what reserve took, once the work is done or dropped.
+// highWater is what the queue may hold, of a publication's fills and the
+// rest together, before a publication's next window waits for room: three
+// quarters of its bound. The last quarter is left to the work that never
+// waits.
+func (f *filler) highWater() int64 { return f.queueBytes - f.queueBytes/4 }
+
+// fitsPaced reports room below the high-water mark for a window of bytes of a
+// publication's. One larger than the mark is taken alone. Caller holds f.mu.
+func (f *filler) fitsPaced(bytes int64) bool {
+	return f.queued == 0 || f.queued+bytes <= f.highWater()
+}
+
+// room takes room in the queue for a window of bytes of a publication's,
+// waiting under ctx, at most the bound, for the queue to fall below its
+// high-water mark. Windows that wait are given room in the order they began
+// to, and none is given room ahead of one already waiting. A publication that
+// waited out the bound once waits no more. It reports why the window is
+// dropped when it takes no room.
+func (f *filler) room(ctx context.Context, pace *fillPace, bytes int64) (DropReason, bool) {
+	if f.bug("fill-publication-dropped-when-full") {
+		// The bug drops a publication's window as a read's is dropped.
+		if f.reserve(f.ctx, bytes) {
+			return 0, true
+		}
+		return DropQueue, false
+	}
+	f.mu.Lock()
+	if f.closed {
+		f.mu.Unlock()
+		return DropFailed, false
+	}
+	if len(f.waiting) == 0 && f.fitsPaced(bytes) {
+		f.take(bytes)
+		f.mu.Unlock()
+		return 0, true
+	}
+	if !pace.waits() {
+		f.mu.Unlock()
+		return DropQueue, false
+	}
+	w := &roomWaiter{bytes: bytes, ready: make(chan struct{})}
+	f.waiting = append(f.waiting, w)
+	f.stats.Waits++
+	f.mu.Unlock()
+	sim.Probe(f.ctx, ProbeFillPublicationWaited)
+	began := f.waits.Now()
+	var bound <-chan time.Time
+	if !f.bug("fill-publication-waits-forever") {
+		timer := f.waits.NewTimer(f.waitBound)
+		defer timer.Stop()
+		bound = timer.C()
+	}
+	timedOut := false
+	select {
+	case <-w.ready:
+	case <-bound:
+		timedOut = true
+	case <-ctx.Done():
+	}
+	f.mu.Lock()
+	f.stats.Waited += f.waits.Since(began)
+	if w.granted {
+		f.mu.Unlock()
+		return 0, true
+	}
+	closed := f.closed
+	if !closed {
+		f.waiting = slices.DeleteFunc(f.waiting, func(other *roomWaiter) bool { return other == w })
+		// The window gone may have been all that held back the next one.
+		f.giveRoom()
+	}
+	f.mu.Unlock()
+	if !timedOut || closed {
+		return DropFailed, false
+	}
+	f.giveUp(pace)
+	return DropQueue, false
+}
+
+// giveRoom gives room to the windows waiting for it, from the first, while each
+// fits below the high-water mark. Caller holds f.mu.
+func (f *filler) giveRoom() {
+	for len(f.waiting) > 0 && f.fitsPaced(f.waiting[0].bytes) {
+		w := f.waiting[0]
+		if !f.take(w.bytes) {
+			return
+		}
+		f.waiting = f.waiting[1:]
+		w.granted = true
+		close(w.ready)
+	}
+}
+
+// giveUp is a publication that waited out the bound: it waits no more, and
+// says so once.
+func (f *filler) giveUp(pace *fillPace) {
+	if !pace.giveUp() {
+		return
+	}
+	f.count(func(stats *FillStats) { stats.GaveUp++ })
+	sim.Probe(f.ctx, ProbeFillPublicationGaveUp)
+	slog.WarnContext(f.ctx, "checkpoint: a publication waited out its bound for its fills; what of it finds no "+
+		"room now is dropped", "bound", f.waitBound)
+}
+
+// release gives back what reserve, room or giveRoom took, once the work is done
+// or dropped, and gives the room to the publications waiting for it.
 func (f *filler) release(bytes int64) {
 	f.mu.Lock()
 	f.queued -= bytes
+	if !f.closed {
+		f.giveRoom()
+	}
 	f.mu.Unlock()
 	f.done()
+}
+
+// fillPace is one publication's waits for its fills. A wait that reaches the
+// bound gives up the publication's waits: from then on each of its fills
+// that finds no room in the queue, the rate spent, the background budget full
+// or its holder busy is dropped, as a read's is. The publication's uploads,
+// which hand its parts over one after another, share it.
+type fillPace struct {
+	mu     sync.Mutex
+	gaveUp bool
+}
+
+// waits reports whether the publication still waits for its fills.
+func (p *fillPace) waits() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return !p.gaveUp
+}
+
+// giveUp has the publication wait no more, and reports whether this call
+// gave up.
+func (p *fillPace) giveUp() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	gave := !p.gaveUp
+	p.gaveUp = true
+	return gave
 }
 
 // lane is work done one piece at a time, in the order it was handed over, by
@@ -474,6 +675,176 @@ func (l *lane) run(ctx context.Context) {
 		l.mu.Unlock()
 		next(ctx)
 	}
+}
+
+// fillLanes is the work the worker of fills does, one piece at a time. The
+// prompt work goes first, in the order it was handed over: the fills of reads
+// and pulls, repairs and drops. The publications' fills go behind it, in the
+// order they were handed over, one holder at a time. A publication's fill
+// whose keep must wait for the rate, the background budget or a busy holder
+// leaves the worker to the prompt work until it is tried again.
+type fillLanes struct {
+	mu     sync.Mutex
+	prompt []func(context.Context)
+	paced  []*pacedFill
+	// wake tells an idle worker of more, and stopped says the worker has
+	// returned.
+	wake    chan struct{}
+	stopped bool
+}
+
+// pacedFill is one window of a publication's on its way: its fill, the
+// publication's pace, and how far its placement has got.
+type pacedFill struct {
+	fill *windowFill
+	pace *fillPace
+	// placed is the fill split and placed, nil before its first step.
+	placed *placement
+	// resume is when it is tried again after a keep that must wait; zero
+	// goes on at once.
+	resume time.Time
+	// since is when the keep of its next holder began to wait, zero while it
+	// has not, and tried when it was last tried; backoff is how long it waits
+	// next for a busy holder or the budget; rated says that keep has taken its
+	// bytes of the rate; and keep is that keep, once built.
+	since   time.Time
+	tried   time.Time
+	backoff time.Duration
+	rated   bool
+	keep    *peer.Keep
+}
+
+// pushPrompt hands prompt work to the worker of fills. Once the worker has
+// returned, the work runs here under ended, the fills' ended context, which
+// drops it and gives its room back.
+func (l *fillLanes) pushPrompt(ended context.Context, work func(context.Context)) {
+	l.mu.Lock()
+	if l.stopped {
+		l.mu.Unlock()
+		work(ended)
+		return
+	}
+	l.prompt = append(l.prompt, work)
+	l.mu.Unlock()
+	l.tell()
+}
+
+// tell wakes the worker if it is idle.
+func (l *fillLanes) tell() {
+	select {
+	case l.wake <- struct{}{}:
+	default:
+	}
+}
+
+// promptWaiting reports prompt work handed over and not yet taken.
+func (l *fillLanes) promptWaiting() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.prompt) > 0
+}
+
+// pushPaced hands a publication's window, whose room in the queue it holds, to
+// the worker of fills. Once the worker has returned, it is dropped here.
+func (f *filler) pushPaced(paced *pacedFill) {
+	l := f.fills
+	l.mu.Lock()
+	if l.stopped {
+		l.mu.Unlock()
+		for !f.stepPaced(f.ctx, paced) {
+		}
+		f.release(paced.fill.bytes)
+		return
+	}
+	l.paced = append(l.paced, paced)
+	l.mu.Unlock()
+	l.tell()
+}
+
+// runFills is the worker of fills: it does the prompt work first, and a
+// publication's fill whenever none is waiting and the fill is not waiting
+// itself, until ctx ends and both are empty. What is left when ctx ends runs
+// under it, and ends at once.
+func (f *filler) runFills(ctx context.Context) {
+	l := f.fills
+	// The bug takes the publications' fills first, so a read's fill waits
+	// behind every one of them still to do.
+	behind := f.bug("fill-reads-behind-publications")
+	for {
+		l.mu.Lock()
+		var head *pacedFill
+		var wait time.Duration
+		ready := false
+		if len(l.paced) > 0 {
+			head = l.paced[0]
+			wait = head.resume.Sub(f.waits.Now())
+			ready = wait <= 0 || ctx.Err() != nil
+		}
+		var next func(context.Context)
+		switch {
+		case len(l.prompt) > 0 && !(behind && ready):
+			next = l.prompt[0]
+			l.prompt = l.prompt[1:]
+		case ready:
+		case head == nil && ctx.Err() != nil:
+			l.stopped = true
+			l.mu.Unlock()
+			return
+		}
+		l.mu.Unlock()
+		switch {
+		case next != nil:
+			next(ctx)
+		case ready:
+			if f.stepPaced(ctx, head) {
+				l.mu.Lock()
+				l.paced = l.paced[1:]
+				l.mu.Unlock()
+				f.release(head.fill.bytes)
+			}
+		default:
+			f.idleFills(ctx, head != nil, wait)
+		}
+	}
+}
+
+// idleFills waits for more work, for the first publication's fill to be
+// tried again when one is waiting, or for ctx to end.
+func (f *filler) idleFills(ctx context.Context, waiting bool, wait time.Duration) {
+	var resume <-chan time.Time
+	if waiting {
+		timer := f.waits.NewTimer(wait)
+		defer timer.Stop()
+		resume = timer.C()
+	}
+	select {
+	case <-f.fills.wake:
+	case <-resume:
+	case <-ctx.Done():
+	}
+}
+
+// stepPaced does what it can of a publication's fill: it splits it on its
+// first step, then does one holder after another, letting prompt work go
+// first between them. It reports whether the fill is done; one that is not
+// waits for its resume, or for the prompt work.
+func (f *filler) stepPaced(ctx context.Context, paced *pacedFill) bool {
+	if paced.placed == nil {
+		if paced.placed = f.split(ctx, WriteFillPublication, paced.fill); paced.placed == nil {
+			return true
+		}
+	}
+	for !paced.placed.done() {
+		if wait := f.put(ctx, paced.placed, paced); wait > 0 {
+			paced.resume = f.waits.Now().Add(wait)
+			return false
+		}
+		paced.resume = time.Time{}
+		if !paced.placed.done() && ctx.Err() == nil && f.fills.promptWaiting() {
+			return false
+		}
+	}
+	return true
 }
 
 // written does work on the queue of writes to this host's own disk, and
@@ -577,10 +948,25 @@ func (f *filler) fill(kind WriteKind, envelopes []envelope) {
 		}
 		// The right is asked for behind the read, never in front of it; the
 		// fill holds its room in the queue until it is done.
-		f.fills.push(ctx, func(ctx context.Context) {
+		f.fills.pushPrompt(ctx, func(ctx context.Context) {
 			defer f.release(fill.bytes)
 			f.do(ctx, kind, fill)
 		})
+	}
+}
+
+// publish hands what a publication made durable to the cluster, each window
+// inside the share to its ranks, in the order the envelopes come. It returns
+// once every window is handed over or dropped: each waits under ctx for room
+// below the queue's high-water mark, as pace allows. A publication's fill
+// needs no right.
+func (f *filler) publish(ctx context.Context, pace *fillPace, envelopes []envelope) {
+	for _, fill := range f.windows(envelopes) {
+		if reason, ok := f.room(ctx, pace, fill.bytes); !ok {
+			f.drop(f.ctx, reason, len(fill.envelopes)*fill.m.Code().Width())
+			continue
+		}
+		f.pushPaced(&pacedFill{fill: fill, pace: pace})
 	}
 }
 
@@ -606,7 +992,7 @@ func (f *filler) rightBeside(kind WriteKind, fill *windowFill) {
 			f.release(fill.bytes)
 			return
 		}
-		f.fills.push(f.ctx, func(ctx context.Context) {
+		f.fills.pushPrompt(f.ctx, func(ctx context.Context) {
 			defer f.release(fill.bytes)
 			f.place(ctx, kind, fill)
 		})
@@ -723,19 +1109,45 @@ func validWindow(window rank.Window, pages []uint32) bool {
 	return true
 }
 
+// placement is one fill split under the membership it is placed by: each
+// holder's stripes, the holders in rank order, and the next of them to do.
+type placement struct {
+	kind   WriteKind
+	m      membership.Membership
+	window rank.Window
+	code   rank.Code
+	order  []rank.Cache
+	held   map[rank.Identity][]keyedStripe
+	next   int
+}
+
+// done reports whether every holder of the placement is done.
+func (p *placement) done() bool { return p.next == len(p.order) }
+
 // place splits fill's envelopes under the membership held now and puts each
 // stripe on the disk its ranks hold it on: those of a disk this host keeps on
 // that disk, the rest as keeps to the members that serve theirs, one holder
 // after another in rank order. It is the worker of fills', and returns once its own
 // stripes are written and every keep is answered or dropped.
 func (f *filler) place(ctx context.Context, kind WriteKind, fill *windowFill) {
+	p := f.split(ctx, kind, fill)
+	for p != nil && !p.done() {
+		f.put(ctx, p, nil)
+	}
+}
+
+// split splits fill's envelopes under the membership held now, by the holder
+// each stripe goes to, and counts the window filled. It reports nil for a
+// fill with nothing to place: one under ended fills, which it drops, or of a
+// window the cache no longer places by its membership.
+func (f *filler) split(ctx context.Context, kind WriteKind, fill *windowFill) *placement {
 	if ctx.Err() != nil {
 		f.drop(ctx, DropFailed, len(fill.envelopes)*fill.m.Code().Width())
-		return
+		return nil
 	}
 	m, ok := f.cluster.placedBy(fill.envelopes[0].key, false)
 	if !ok {
-		return
+		return nil
 	}
 	list := m.List()
 	if sim.Buggify(ctx, buggifyFillRanksChange, 0.1) {
@@ -755,8 +1167,7 @@ func (f *filler) place(ctx context.Context, kind WriteKind, fill *windowFill) {
 		}
 	})
 	code, holders := list.Code(), list.Holders(fill.window)
-	held := make(map[rank.Identity][]keyedStripe)
-	var order []rank.Cache
+	p := &placement{kind: kind, m: m, window: fill.window, code: code, held: make(map[rank.Identity][]keyedStripe)}
 	for _, e := range fill.envelopes {
 		stripes, err := stripe.Split(code, e.data)
 		if err != nil {
@@ -766,21 +1177,39 @@ func (f *filler) place(ctx context.Context, kind WriteKind, fill *windowFill) {
 			continue
 		}
 		for index, holder := range holders {
-			if _, seen := held[holder.Identity]; !seen {
-				order = append(order, holder)
+			if _, seen := p.held[holder.Identity]; !seen {
+				p.order = append(p.order, holder)
 			}
-			held[holder.Identity] = append(held[holder.Identity], keyedStripe{key: e.key, stripe: stripes[index]})
+			p.held[holder.Identity] = append(p.held[holder.Identity], keyedStripe{key: e.key, stripe: stripes[index]})
 		}
 	}
-	for _, holder := range order {
-		if f.cluster.keeps(holder.Identity) {
-			f.written(func(ctx context.Context) {
-				f.writeOwn(ctx, holder.Identity, kind, fill.window, code, held[holder.Identity])
-			})
-			continue
+	return p
+}
+
+// put does the next holder of p: writes its stripes to a disk this host keeps
+// or sends them as one keep, and goes on to the holder after it. For a
+// publication's fill, paced, a keep that must wait leaves p at its holder and
+// reports how long until it is tried again.
+func (f *filler) put(ctx context.Context, p *placement, paced *pacedFill) time.Duration {
+	holder := p.order[p.next]
+	stripes := p.held[holder.Identity]
+	switch {
+	case ctx.Err() != nil:
+		f.drop(ctx, DropFailed, len(stripes))
+	case f.cluster.keeps(holder.Identity):
+		f.written(func(ctx context.Context) {
+			f.writeOwn(ctx, holder.Identity, p.kind, p.window, p.code, stripes)
+		})
+	default:
+		if wait := f.send(ctx, p, holder, stripes, paced); wait > 0 {
+			return wait
 		}
-		f.send(ctx, kind, m, fill.window, code, holder, held[holder.Identity])
 	}
+	p.next++
+	if paced != nil {
+		f.waited(paced)
+	}
+	return 0
 }
 
 // writeOwn writes the stripes of a fill of window that a disk this host keeps
@@ -858,55 +1287,155 @@ func (f *filler) write(ctx context.Context, disk *cacheDisk, kind WriteKind, str
 }
 
 // send hands one holder's stripes of a window to the rate, sends them as one
-// keep under m and returns once it is answered. The keep carries each stripe
-// as the holder's disk stores it, header and checksum included. A holder
-// ahead of m answers stale, and the keep is sent again under the newer
-// generation, which the holder then checks its ranks under.
-func (f *filler) send(ctx context.Context, kind WriteKind, m membership.Membership, window rank.Window,
-	code rank.Code, holder rank.Cache, stripes []keyedStripe) {
-	keep := peer.Keep{Window: window, Code: code, Publication: kind == WriteFillPublication, Repair: kind == WriteRepair}
-	for _, s := range stripes {
-		item := encodeItem(s.key, s.stripe)
-		keep.Items = append(keep.Items, peer.StripeItem{Page: uint32(s.key.Page - window.Page(0)), Index: s.stripe.Index,
-			Length: s.stripe.Length, Size: len(item)})
-		keep.Payload = append(keep.Payload, item...)
+// keep under the placement's membership and returns once it is answered. The
+// keep carries each stripe as the holder's disk stores it, header and
+// checksum included. A holder ahead of the membership answers stale, and the
+// keep is sent again under the newer generation, which the holder then checks
+// its ranks under.
+//
+// A keep of a publication's, paced, that finds the rate spent, this host's
+// background budget full or its holder BUSY is not dropped while the
+// publication waits: send reports how long until it is tried again, and the
+// worker does other work meanwhile. Each of them comes free in time: the rate
+// refills, the budget's bulk work ends and a holder's requests are answered.
+// A keep larger than the whole background budget never fits it, and is
+// dropped at once. A keep that waits is built once, and kept with paced.
+func (f *filler) send(ctx context.Context, p *placement, holder rank.Cache, stripes []keyedStripe,
+	paced *pacedFill) time.Duration {
+	var keep peer.Keep
+	if paced != nil && paced.keep != nil {
+		keep = *paced.keep
+	} else {
+		keep = keepFor(p, stripes)
 	}
-	if !f.rate.take(int64(len(keep.Payload))) {
-		f.drop(ctx, DropRate, len(stripes))
-		return
+	size := int64(len(keep.Payload))
+	waits := paced != nil && paced.pace.waits()
+	if paced != nil {
+		paced.tried = f.waits.Now()
+	}
+	if paced == nil || !paced.rated {
+		if waits {
+			if wait := f.rate.after(size); wait > 0 {
+				// The rate is on the cache's clock, and a wait on the clock
+				// of the table of peers: it is tried again no sooner than a
+				// refusal would be, which costs it nothing, since the rate
+				// fills to a second of itself meanwhile.
+				paced.keep = &keep
+				return f.later(ctx, paced, DropRate, len(stripes), max(wait, fillRetryFirst))
+			}
+			paced.rated = true
+		} else if !f.rate.take(size) {
+			f.drop(ctx, DropRate, len(stripes))
+			return 0
+		}
 	}
 	if f.peers == nil {
 		f.drop(ctx, DropFailed, len(stripes))
-		return
+		return 0
 	}
 	if f.down != nil && f.down(holder.Identity) && !f.bug("cluster-fill-marked-down") {
 		// A host this cache's reads have marked down is sent no fill.
 		f.drop(ctx, DropDown, len(stripes))
-		return
+		return 0
 	}
-	request := func(ctx context.Context) {
-		var last membership.Route
-		err := f.routed(ctx, m, holder.Identity, func(route membership.Route) error {
-			last = route
-			return f.peers.Peer(route.Address).Keep(ctx, route, keep)
-		})
-		f.sent(ctx, err, len(stripes), len(keep.Payload))
-		if err == nil && sim.Buggify(ctx, buggifyFillSendTwice, 0.1) {
-			// The second is what a sender that lost the first's answer
-			// sends: its holder drops what it already holds, and the second
-			// answer counts for nothing.
-			_ = f.peers.Peer(last.Address).Keep(ctx, last, keep)
+	if f.bug("fill-concurrently") {
+		// The bug sends the keep beside the fill, so the next fill's keeps
+		// race it to the holder's link.
+		if !f.goFill(func(ctx context.Context) { f.keepOnce(ctx, p.m, holder, keep, len(stripes), nil) }) {
+			f.drop(ctx, DropFailed, len(stripes))
+		}
+		return 0
+	}
+	if !waits {
+		paced = nil
+	} else {
+		paced.keep = &keep
+	}
+	return f.keepOnce(ctx, p.m, holder, keep, len(stripes), paced)
+}
+
+// keepFor is a keep of one holder's stripes of p's window, each as the
+// holder's disk stores it.
+func keepFor(p *placement, stripes []keyedStripe) peer.Keep {
+	keep := peer.Keep{Window: p.window, Code: p.code, Publication: p.kind == WriteFillPublication,
+		Repair: p.kind == WriteRepair}
+	for _, s := range stripes {
+		item := encodeItem(s.key, s.stripe)
+		keep.Items = append(keep.Items, peer.StripeItem{Page: uint32(s.key.Page - p.window.Page(0)),
+			Index: s.stripe.Index, Length: s.stripe.Length, Size: len(item)})
+		keep.Payload = append(keep.Payload, item...)
+	}
+	return keep
+}
+
+// keepOnce sends a keep of stripes to holder under m, and counts what became
+// of it. A keep of a publication that waits, paced, which a busy holder or a
+// full background budget refused is not counted: keepOnce reports how long
+// until it is tried again.
+func (f *filler) keepOnce(ctx context.Context, m membership.Membership, holder rank.Cache, keep peer.Keep,
+	stripes int, paced *pacedFill) time.Duration {
+	var last membership.Route
+	err := f.routed(ctx, m, holder.Identity, func(route membership.Route) error {
+		last = route
+		return f.peers.Peer(route.Address).Keep(ctx, route, keep)
+	})
+	if paced != nil {
+		switch {
+		case errors.Is(err, peer.ErrNoRoom) && int64(len(keep.Payload)) <= f.peers.Background().Status().Limit:
+			return f.later(ctx, paced, DropBudget, stripes, paced.retry())
+		case errors.Is(err, peer.ErrBusy):
+			return f.later(ctx, paced, DropBusy, stripes, paced.retry())
 		}
 	}
-	if !f.bug("fill-concurrently") {
-		request(ctx)
-		return
+	f.sent(ctx, err, stripes, len(keep.Payload))
+	if err == nil && sim.Buggify(ctx, buggifyFillSendTwice, 0.1) {
+		// The second is what a sender that lost the first's answer sends:
+		// its holder drops what it already holds, and the second answer
+		// counts for nothing.
+		_ = f.peers.Peer(last.Address).Keep(ctx, last, keep)
 	}
-	// The bug sends the keep beside the fill, so the next fill's keeps race it
-	// to the holder's link.
-	if !f.goFill(request) {
-		f.drop(ctx, DropFailed, len(stripes))
+	return 0
+}
+
+// later is a keep of a publication's that must wait, wait at most, before it
+// is tried again, and reports how long that is: no further than the bound
+// from when the keep began to wait. A keep that has waited the bound gives up
+// the publication's waits and is dropped for reason, and later reports zero.
+func (f *filler) later(ctx context.Context, paced *pacedFill, reason DropReason, stripes int,
+	wait time.Duration) time.Duration {
+	now := f.waits.Now()
+	if paced.since.IsZero() {
+		paced.since = now
+		f.count(func(stats *FillStats) { stats.Waits++ })
+		sim.Probe(ctx, ProbeFillPublicationWaited)
 	}
+	if f.bug("fill-publication-waits-forever") {
+		return wait
+	}
+	if left := f.waitBound - now.Sub(paced.since); left > 0 {
+		return min(wait, left)
+	}
+	f.giveUp(paced.pace)
+	f.drop(ctx, reason, stripes)
+	return 0
+}
+
+// waited ends the wait of the keep of paced's holder that is done, counting
+// how long it waited.
+func (f *filler) waited(paced *pacedFill) {
+	if !paced.since.IsZero() {
+		waited := paced.tried.Sub(paced.since)
+		f.count(func(stats *FillStats) { stats.Waited += waited })
+	}
+	paced.since, paced.tried, paced.backoff, paced.rated, paced.keep = time.Time{}, time.Time{}, 0, false, nil
+}
+
+// retry is how long a keep a busy holder or a full budget refused waits
+// before it is tried again: fillRetryFirst, and twice as long each time
+// after, up to fillRetryMost.
+func (paced *pacedFill) retry() time.Duration {
+	paced.backoff = min(max(2*paced.backoff, fillRetryFirst), fillRetryMost)
+	return paced.backoff
 }
 
 // sent counts what became of a keep: kept, or dropped for why.
@@ -1142,16 +1671,39 @@ func newTokenBucket(clock platform.Clock, bytesPerSecond int64) tokenBucket {
 func (b *tokenBucket) take(bytes int64) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	now := b.clock.Now()
-	if elapsed := now.Sub(b.last); elapsed > 0 {
-		b.tokens = min(b.rate, b.tokens+b.rate*elapsed.Seconds())
-		b.last = now
-	}
+	b.refill()
 	if float64(bytes) > b.tokens {
 		return false
 	}
 	b.tokens -= float64(bytes)
 	return true
+}
+
+// after takes bytes for a keep of a publication's once the bucket holds them
+// and a quarter of a second of the rate beside, which is left to the keeps of
+// reads, and reports how long until it does when it does not now. A keep
+// larger than three quarters of the burst is taken once the bucket is full,
+// and leaves it in debt for the rest.
+func (b *tokenBucket) after(bytes int64) time.Duration {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.refill()
+	need := min(float64(bytes)+b.rate/4, b.rate)
+	if b.tokens >= need {
+		b.tokens -= float64(bytes)
+		return 0
+	}
+	return max(time.Duration(math.Ceil((need-b.tokens)/b.rate*float64(time.Second))), 1)
+}
+
+// refill adds what the bucket's clock says has passed since the last refill,
+// up to a second of the rate. Caller holds b.mu.
+func (b *tokenBucket) refill() {
+	now := b.clock.Now()
+	if elapsed := now.Sub(b.last); elapsed > 0 {
+		b.tokens = min(b.rate, b.tokens+b.rate*elapsed.Seconds())
+		b.last = now
+	}
 }
 
 // repair hands over the stripes of a window a read rebuilt that holder lacks:
@@ -1172,7 +1724,7 @@ func (f *filler) repair(m membership.Membership, window rank.Window, code rank.C
 		f.drop(ctx, DropQueue, len(stripes))
 		return
 	}
-	f.fills.push(ctx, func(ctx context.Context) {
+	f.fills.pushPrompt(ctx, func(ctx context.Context) {
 		defer f.release(bytes)
 		if ctx.Err() != nil {
 			f.drop(ctx, DropFailed, len(stripes))
@@ -1182,7 +1734,7 @@ func (f *filler) repair(m membership.Membership, window rank.Window, code rank.C
 			f.written(func(ctx context.Context) { f.writeOwn(ctx, holder.Identity, WriteRepair, window, code, stripes) })
 			return
 		}
-		f.send(ctx, WriteRepair, m, window, code, holder, stripes)
+		f.send(ctx, &placement{kind: WriteRepair, m: m, window: window, code: code}, holder, stripes, nil)
 	})
 }
 
@@ -1214,7 +1766,7 @@ func (f *filler) behind(work func(context.Context)) bool {
 	if !held {
 		return false
 	}
-	f.fills.push(f.ctx, func(ctx context.Context) {
+	f.fills.pushPrompt(f.ctx, func(ctx context.Context) {
 		defer f.done()
 		if ctx.Err() != nil {
 			return

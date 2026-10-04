@@ -72,9 +72,10 @@ type fillConfig struct {
 	table  func(config *peer.TableConfig)
 	server func(host int, config *peer.ServerConfig)
 	// runtime is the simulation the cluster runs in, and disk each host's
-	// disk.
+	// disk, or diskOf's where it is set.
 	runtime sim.Config
 	disk    sim.DiskConfig
+	diskOf  func(host int) sim.DiskConfig
 }
 
 // newFillCluster starts the hosts of config and the list they follow, and
@@ -98,7 +99,11 @@ func newFillCluster(t *testing.T, config fillConfig) *fillCluster {
 		name := fmt.Sprintf("host-%d", index)
 		h := &fillHost{name: name, address: platform.Address(name + "/pages"), clock: c.runtime.NewClock(name),
 			objects: &cacheStore{ObjectStore: c.puts}}
-		file, err := c.runtime.NewDisk(name, config.disk).Open(ctx, "cache", platform.OpenOptions{Create: true})
+		disk := config.disk
+		if config.diskOf != nil {
+			disk = config.diskOf(index)
+		}
+		file, err := c.runtime.NewDisk(name, disk).Open(ctx, "cache", platform.OpenOptions{Create: true})
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -79,6 +79,34 @@ func TestTheQueueTakesWhatFitsAndDropsTheRest(t *testing.T) {
 	})
 }
 
+// A window larger than the whole queue is taken alone, into an empty queue: a
+// read's, and a publication's, which is larger than the high-water mark too
+// and waits for nothing.
+func TestAWindowLargerThanTheQueueIsTakenAlone(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := aloneFixture(t, 2000)
+		f.cache.fill(WriteFillRead, envelopesOf("read", 1, 3000))
+		if fill := f.cache.Stats().Fill; fill.Queued != 3000 || dropped(fill) != 0 {
+			t.Fatalf("a read's window of 3000 bytes into an empty queue of 2000 came to %+v, want it taken", fill)
+		}
+		if err := f.cache.SettleFills(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		var pace fillPace
+		f.cache.publish(t.Context(), &pace, envelopesOf("published", 1, 3000))
+		if fill := f.cache.Stats().Fill; fill.Queued != 3000 || dropped(fill) != 0 || fill.Waits != 0 {
+			t.Fatalf("a publication's window of 3000 bytes into an empty queue of 2000 came to %+v, want it taken "+
+				"at once", fill)
+		}
+		if err := f.cache.SettleFills(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if fill := f.cache.Stats().Fill; fill.Kept != 2 || fill.QueuedPeak != 3000 {
+			t.Fatalf("the two windows came to %+v, want both kept", fill)
+		}
+	})
+}
+
 // A fill of a window of 4 KiB pages carries an envelope for each page it
 // read, and the cache keeps each page's stripes under that page's own key.
 func TestAFillKeepsEachPageOfAWindowUnderItsOwnKey(t *testing.T) {
@@ -135,6 +163,33 @@ func TestClosingTheCacheDropsWhatItsFillsHadNotDone(t *testing.T) {
 	})
 }
 
+// A cache that closes drops what a publication's fills had not done, as it
+// drops a read's: the write in flight and the two windows behind it.
+func TestClosingTheCacheDropsWhatAPublicationsFillsHadNotDone(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		// Under 1+1 alone, the cache holds both stripes of every window.
+		f := aloneUnder(t, rank.Code{K: 1, M: 1}, 1<<20)
+		var pace fillPace
+		f.cache.publish(t.Context(), &pace, envelopesOf("opening", 1, 1000))
+		if err := f.cache.SettleFills(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		f.cache.publish(t.Context(), &pace, envelopesOf("closing", 3, 1000))
+		synctest.Wait()
+		f.cache.Close()
+		if fill := f.cache.Stats().Fill; fill.Queued != 0 || fill.Kept != 2 || fill.Dropped[DropFailed] != 6 ||
+			dropped(fill) != 6 {
+			t.Fatalf("a cache closed under a publication's three windows came to %+v, want the queue empty and "+
+				"their six stripes dropped", fill)
+		}
+		var after fillPace
+		f.cache.publish(t.Context(), &after, envelopesOf("after", 1, 1000))
+		if fill := f.cache.Stats().Fill; fill.Dropped[DropFailed] != 8 || fill.Queued != 0 {
+			t.Fatalf("a publication after the cache closed came to %+v, want its window dropped", fill)
+		}
+	})
+}
+
 // A host's rate of keeps holds a second of its bytes at most, refills as its
 // clock moves, and takes a keep only while it holds all of its bytes.
 func TestTheRateOfKeepsRefillsWithItsClock(t *testing.T) {
@@ -151,6 +206,45 @@ func TestTheRateOfKeepsRefillsWithItsClock(t *testing.T) {
 		clock.Advance(time.Hour)
 		if !bucket.take(1000) || bucket.take(1) {
 			t.Fatal("an hour refilled more or less than one second of the rate")
+		}
+	})
+}
+
+// A publication's keep takes the rate only while a quarter of a second of it
+// is left beside, for the keeps of reads, and is told how long until it is;
+// a read's keep takes what is there. A publication's keep larger than the
+// burst is taken once the rate is full, and leaves it in debt for the rest.
+func TestTheRateLeavesAQuarterOfASecondToReads(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		clock := sim.New(sim.Config{Seed: 1}).NewClock("host")
+		bucket := newTokenBucket(clock, 1000)
+		if wait := bucket.after(500); wait != 0 {
+			t.Fatalf("a full bucket of 1000 bytes kept a publication's 500 waiting %v", wait)
+		}
+		if wait := bucket.after(500); wait != 250*time.Millisecond {
+			t.Fatalf("a publication's 500 bytes beside 500 left wait %v, want 250 ms, for 250 bytes", wait)
+		}
+		if !bucket.take(500) || bucket.take(1) {
+			t.Fatal("a read's keep did not take exactly the 500 bytes a publication's left")
+		}
+		clock.Advance(750 * time.Millisecond)
+		if wait := bucket.after(500); wait != 0 {
+			t.Fatalf("750 bytes kept a publication's 500 waiting %v", wait)
+		}
+		if wait := bucket.after(2000); wait != 750*time.Millisecond {
+			t.Fatalf("a publication's 2000 bytes, more than the burst, wait %v with 250 held, want 750 ms", wait)
+		}
+		clock.Advance(750 * time.Millisecond)
+		if wait := bucket.after(2000); wait != 0 {
+			t.Fatalf("a full bucket kept a publication's 2000 bytes waiting %v", wait)
+		}
+		clock.Advance(time.Second)
+		if bucket.take(1) {
+			t.Fatal("a second after a debt of 1000 bytes, a read's keep took a byte")
+		}
+		clock.Advance(time.Millisecond)
+		if !bucket.take(1) {
+			t.Fatal("a second and a millisecond after a debt of 1000 bytes, a read's keep took no byte")
 		}
 	})
 }

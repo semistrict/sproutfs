@@ -574,10 +574,22 @@
     "purpose": "Fill from every read of the store, with no fill right asked of rank 1."
   },
   {
-    "id": "fill-queue-waits",
+    "id": "fill-publication-dropped-when-full",
     "package": "checkpoint",
-    "run": "^TestAPublicationNeverWaitsForItsFill$",
-    "purpose": "Wait for room in the queue of writes to the host's disk rather than drop the fill."
+    "run": "^(TestAPublicationGoesAtThePaceOfItsSlowestHolder|TestAPublicationHoldsNoMorePartsThanItsSlotsAndItsQueue)$",
+    "purpose": "Drop a publication's fill when the queue is full, as a read's is, rather than wait for room."
+  },
+  {
+    "id": "fill-publication-waits-forever",
+    "package": "checkpoint",
+    "run": "^TestADeadHolderCostsAPublicationTheBoundAtMost$",
+    "purpose": "Let a publication's fills wait for room, the rate, the budget or a busy holder without a bound."
+  },
+  {
+    "id": "fill-reads-behind-publications",
+    "package": "checkpoint",
+    "run": "^TestAReadsFillGoesAheadOfAPublications$",
+    "purpose": "Take a publication's fills before a read's, so a read's fill waits behind them."
   },
   {
     "id": "keep-while-writing",

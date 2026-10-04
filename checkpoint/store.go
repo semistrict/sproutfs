@@ -50,8 +50,8 @@ type Config struct {
 	PartBytes int
 	// MaxBuilders is how many publications may hold a part builder at a time,
 	// host-wide. A builder holds up to PartBytes of encoded members, and a part
-	// it has sealed is held until its upload finishes, under one of the
-	// Concurrency slots — so what publication costs a host, however many of its
+	// it has sealed is held until its upload finishes and the cluster has
+	// taken its windows, under one of the Concurrency slots — so what publication costs a host, however many of its
 	// VMs become dirty at once, is MaxBuilders plus Concurrency times PartBytes:
 	// the builders, and the sealed parts in flight. Zero takes Concurrency.
 	MaxBuilders int

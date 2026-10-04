@@ -434,6 +434,9 @@ func fillDelta(before, after checkpoint.FillStats) checkpoint.FillStats {
 	}
 	delta.Duplicates -= before.Duplicates
 	delta.Refused -= before.Refused
+	delta.Waits -= before.Waits
+	delta.Waited -= before.Waited
+	delta.GaveUp -= before.GaveUp
 	return delta
 }
 
