@@ -25,7 +25,10 @@
 # default) and SPROUTFS_RESTORE_SMALL_PAGES the 4 KiB guest's (1048576, 4 GiB).
 # SPROUTFS_RESTORE_CASES and SPROUTFS_RESTORE_SOURCES choose the cases and
 # sources (the drive's defaults when unset); SPROUTFS_RESTORE_PLATFORM is the
-# hosts' least processor (Intel Cascade Lake by default).
+# hosts' least processor (Intel Cascade Lake by default). SPROUTFS_RESTORE_TABLES
+# is when a read loads its volume's page tables: lazy (the default), as the
+# first lookup of each segment needs it, or eager, all of them once the
+# checkpoint is open and before the reads.
 #
 # `all` always deletes the hosts. `create`, `run` and `delete` expose the same
 # steps. Each host also deletes itself after three hours.
@@ -43,7 +46,8 @@ platform=${SPROUTFS_RESTORE_PLATFORM:-Intel Cascade Lake}
 [[ $platform =~ ^Intel\ [A-Za-z\ ]+$ ]] || { echo "SPROUTFS_RESTORE_PLATFORM is an Intel CPU platform" >&2; exit 2; }
 # The drive's cases and sources, as its flags take them.
 drive_flags=""
-for setting in cases:SPROUTFS_RESTORE_CASES sources:SPROUTFS_RESTORE_SOURCES profile:SPROUTFS_RESTORE_PROFILE; do
+for setting in cases:SPROUTFS_RESTORE_CASES sources:SPROUTFS_RESTORE_SOURCES profile:SPROUTFS_RESTORE_PROFILE \
+    tables:SPROUTFS_RESTORE_TABLES; do
     name=${setting#*:}
     value=${!name:-}
     [[ $value =~ ^[A-Za-z0-9/,-]*$ ]] || { echo "$name is a comma-separated list of cases or sources" >&2; exit 2; }

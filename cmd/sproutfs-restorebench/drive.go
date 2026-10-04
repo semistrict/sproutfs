@@ -121,6 +121,8 @@ type driveConfig struct {
 	seed uint64
 	// calibrate is how long the reader times each step of a read.
 	calibrate time.Duration
+	// tables is when every read loads its page tables.
+	tables string
 }
 
 // caseResult is one read of a guest.
@@ -137,6 +139,10 @@ type caseResult struct {
 	Reads       int     `json:"reads"`
 	Seconds     float64 `json:"seconds"`
 	OpenSeconds float64 `json:"open_seconds"`
+	// Tables is when the read loaded its page tables, and TablesSeconds how
+	// long loading them all took where it loaded them before the reads.
+	Tables        string  `json:"tables"`
+	TablesSeconds float64 `json:"tables_seconds,omitempty"`
 	// Latency is the percentiles of the reads, in milliseconds, Histogram
 	// how many took each power of two of milliseconds from a sixty-fourth of
 	// one, and Latencies each read's, in nanoseconds.
@@ -190,6 +196,8 @@ func runDrive(ctx context.Context, args []string) error {
 	loseAfter := flags.Duration("lose-after", 2*time.Second, "how far into the read the node is lost")
 	seed := flags.Uint64("seed", 1, "orders each round's cases and seeds each case's walk")
 	calibrateFor := flags.Duration("calibrate", 500*time.Millisecond, "how long the reader times each step of a read")
+	tables := flags.String("tables", tablesLazy, "when a read loads the page tables of its volume: "+tablesLazy+
+		", as the first lookup of each segment needs it, or "+tablesEager+", all of them before the reads")
 	out := flags.String("out", "results.json", "where the results go")
 	profiles := flags.String("profiles", "profiles", "the directory the CPU profiles go in")
 	if err := flags.Parse(args); err != nil {
@@ -197,7 +205,10 @@ func runDrive(ctx context.Context, args []string) error {
 	}
 	config := driveConfig{pages: map[uint64]uint64{checkpoint.PageSize2MiB: *pages, checkpoint.PageSize4KiB: *smallPages},
 		code: *code, rounds: *rounds, reads: *reads, runReads: *runReads, lost: *lost, loseAfter: *loseAfter,
-		cleared: 20 * time.Second, seed: *seed, calibrate: *calibrateFor}
+		cleared: 20 * time.Second, seed: *seed, calibrate: *calibrateFor, tables: *tables}
+	if config.tables != tablesLazy && config.tables != tablesEager {
+		return fmt.Errorf("-tables %q: want %s or %s", config.tables, tablesLazy, tablesEager)
+	}
 	var err error
 	if config.cases, err = parseCases(*cases); err != nil {
 		return err
@@ -314,7 +325,8 @@ func drive(ctx context.Context, nodes []controller, config driveConfig) (driveRe
 			a.Reads = int(units)
 		}
 		got, err := readCase(ctx, nodes, config, readRequest{Guest: g, Sequence: sequences[p.spec.pageSize],
-			Source: nodeSource(p.source), Access: a, Profile: profile}, p.source == sourceClusterLost)
+			Source: nodeSource(p.source), Access: a, Profile: profile, Tables: config.tables},
+			p.source == sourceClusterLost)
 		if err != nil {
 			return fmt.Errorf("round %d, %s from %s: %w", round, p.spec, p.source, err)
 		}
@@ -429,7 +441,8 @@ func readCase(ctx context.Context, nodes []controller, config driveConfig, reque
 	}
 	one := readResult{caseResult: caseResult{PageSize: pageSizeName(request.Guest.PageSize),
 		Pattern: request.Access.Pattern, Unit: request.Access.Unit, Concurrency: request.Access.Concurrency,
-		Reads: len(got.Latencies), Seconds: got.Seconds, OpenSeconds: got.OpenSeconds, Latencies: got.Latencies,
+		Reads: len(got.Latencies), Seconds: got.Seconds, OpenSeconds: got.OpenSeconds, Tables: request.Tables,
+		TablesSeconds: got.TablesSeconds, Latencies: got.Latencies,
 		Wrong: got.Wrong, Failed: got.Failed, MemoryHits: got.MemoryHits, Pager: got.Pager}, profile: got.Profile}
 	one.Latency, one.Histogram = shape(got.Latencies)
 	for at := range nodes {

@@ -67,3 +67,38 @@ func TestAReadThroughAPagerFaultsItsPagesIn(t *testing.T) {
 		}
 	})
 }
+
+// A read that loads its page tables first loads every segment of the guest's
+// volume once its checkpoint is open, which takes the time of reading them,
+// and then reads the guest's bytes as a read that loads them lazily does. The
+// lazy read states no time for them.
+func TestAnEagerReadLoadsItsPageTablesBeforeItsReads(t *testing.T) {
+	for _, tables := range []string{tablesLazy, tablesEager} {
+		t.Run(tables, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				runtime := sim.New(sim.Config{})
+				ctx := sim.WithRuntime(t.Context(), runtime)
+				nodes := simNodes(t, ctx, runtime, nil)
+				specs, err := parseCases("4KiB/chain/fault/1")
+				if err != nil {
+					t.Fatal(err)
+				}
+				result, _, err := drive(ctx, nodes, driveConfig{
+					pages: map[uint64]uint64{checkpoint.PageSize4KiB: 2 * 16384},
+					code:  "4+2", rounds: 1, cases: specs, sources: []string{sourceCluster, sourceStore}, reads: 8,
+					runReads: 4, lost: 3, loseAfter: time.Second, cleared: 20 * time.Second, seed: 1, calibrate: 0,
+					tables: tables})
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, c := range result.Cases {
+					if c.Tables != tables || (c.TablesSeconds > 0) != (tables == tablesEager) || c.Reads != 4 ||
+						c.Wrong != 0 || c.Failed != 0 {
+						t.Fatalf("a %s read from %s: tables %s in %v s, %d reads, wrong %d, failed %d", tables,
+							c.Source, c.Tables, c.TablesSeconds, c.Reads, c.Wrong, c.Failed)
+					}
+				}
+			})
+		})
+	}
+}
