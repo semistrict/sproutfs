@@ -164,6 +164,15 @@ func Metrics(status Status) string {
 	byKind("sproutfs_pager_paced_faults_total", "counter",
 		"Repeated faults that waited for their VMM's budget of them.",
 		func(p PagerKind) any { return p.PacedFaults })
+	byKind("sproutfs_pager_prefetched_pages_total", "counter",
+		"Pages the prefetches behind faults landed: the rest of each fault's run, read behind its own page.",
+		func(p PagerKind) any { return p.PrefetchedPages })
+	byKind("sproutfs_pager_prefetch_waits_total", "counter",
+		"Faults that waited for a prefetch already reading their page.",
+		func(p PagerKind) any { return p.PrefetchWaits })
+	byKind("sproutfs_pager_prefetch_cancelled_total", "counter",
+		"Prefetches an allocation cancelled to take their slots rather than evict a page a guest maps.",
+		func(p PagerKind) any { return p.PrefetchCancelled })
 	histogramByKind := func(name, help string, value func(PagerKind) Latency) {
 		fmt.Fprintf(&out, "# HELP %s %s\n# TYPE %s histogram\n", name, help, name)
 		for _, kind := range kinds {
