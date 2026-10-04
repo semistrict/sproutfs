@@ -26,8 +26,8 @@ const (
 	// asked for without saying so.
 	MaximumWorkers = 256
 	// WorkEncode is the work an encode costs a processor, as a simulation
-	// prices it (sim.Work): the bytes it encodes, spent while it holds its
-	// encoder, so a pool of n encoders does n of them side by side.
+	// prices it (sim.Work): the bytes it encodes, spent while its encoder is
+	// held, so a pool of n encoders does n of them side by side.
 	WorkEncode = "blob/encode"
 )
 
@@ -147,14 +147,46 @@ func (c *Codecs) AppendEncode(ctx context.Context, dst, data []byte) ([]byte, er
 	if len(data) > MaxSize {
 		return nil, ErrInvalid
 	}
+	e, err := c.Encoder(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer e.Release()
+	return e.AppendEncode(ctx, dst, data)
+}
+
+// Encoder is one encoder of a pool, held from Codecs.Encoder until Release. A
+// caller that encodes several things side by side takes each encoder itself,
+// in the order it wants them encoded, rather than leaving the order to
+// whichever of its goroutines reaches the pool first. It is not safe for
+// concurrent use.
+type Encoder struct {
+	codecs *Codecs
+	zstd   *zstd.Encoder
+}
+
+// Encoder takes one encoder of the pool, waiting under ctx while every one is
+// held.
+func (c *Codecs) Encoder(ctx context.Context) (*Encoder, error) {
 	w, err := acquireEncoder(ctx, c)
 	if err != nil {
 		return nil, err
 	}
-	defer func() { c.encoders <- w }()
+	return &Encoder{codecs: c, zstd: w}, nil
+}
+
+// Release gives the encoder back to its pool. It must be called once.
+func (e *Encoder) Release() { e.codecs.encoders <- e.zstd }
+
+// AppendEncode is Codecs.AppendEncode on an encoder already held.
+func (e *Encoder) AppendEncode(ctx context.Context, dst, data []byte) ([]byte, error) {
+	if len(data) > MaxSize {
+		return nil, ErrInvalid
+	}
 	if err := sim.Work(ctx, WorkEncode, len(data)); err != nil {
 		return nil, err
 	}
+	w := e.zstd
 	base := len(dst)
 	out := slices.Grow(dst, HeaderSize+len(data))[:base+HeaderSize]
 	header := out[base:]

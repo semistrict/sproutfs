@@ -698,5 +698,11 @@
     "package": "checkpoint",
     "run": "^TestAPublicationKeepsEveryUploadSlotBusy$",
     "purpose": "Wait for each part's PUT before filling the next, so a publication has one part in flight however many upload slots the store has."
+  },
+  {
+    "id": "checkpoint-encode-admitted-in-any-order",
+    "package": "checkpoint",
+    "run": "^TestAPublicationAdmitsItsBatchesToTheEncodersInOrder$",
+    "purpose": "Have each batch's goroutine take its own encoder, so the Go scheduler, not the order the batches were filled, decides which batch is encoded first."
   }
 ]

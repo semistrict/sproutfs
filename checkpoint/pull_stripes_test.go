@@ -2,6 +2,7 @@ package checkpoint_test
 
 import (
 	"testing"
+	"testing/synctest"
 
 	"github.com/semistrict/sproutfs/checkpoint"
 	"github.com/semistrict/sproutfs/control"
@@ -11,12 +12,16 @@ import (
 // otherHosts are caches the pull tests list beside the fixture's own.
 var otherHosts = []rank.Identity{{0xee, 0x02}, {0xee, 0x03}, {0xee, 0x04}, {0xee, 0x05}, {0xee, 0x06}}
 
-// newClusterPullFixture is a pull fixture whose cache turns the cluster cache
-// on for percent of windows.
-func newClusterPullFixture(t *testing.T, percent int) *pullFixture {
+// clusterPull runs test inside a synctest bubble over a pull fixture whose
+// cache turns the cluster cache on for percent of windows. A read of the
+// cluster reads the store as well once its bound has passed, so its clock
+// must be the simulation's: on the wall clock, how long the fixture's disk
+// takes is up to the machine running it.
+func clusterPull(t *testing.T, percent int, test func(t *testing.T, f *pullFixture)) {
 	t.Helper()
-	return newPullFixtureWith(t, 64<<20, cachedPages, []uint64{0, 1, 2, 3}, func(config *checkpoint.CacheConfig) {
-		config.ClusterPercent = percent
+	synctest.Test(t, func(t *testing.T) {
+		test(t, newPullFixtureWith(t, 64<<20, cachedPages, []uint64{0, 1, 2, 3},
+			func(config *checkpoint.CacheConfig) { config.ClusterPercent = percent }))
 	})
 }
 
@@ -73,6 +78,13 @@ func (f *pullFixture) pullAndRead(t *testing.T) pulled {
 	if disk.Lost != 0 {
 		t.Fatalf("the disk lost %d stripes", disk.Lost)
 	}
+	// A read of this host's own disk takes its simulated time, which is far
+	// inside the bound past which a read of the cluster reads the store as
+	// well. On the wall clock a loaded machine could take longer than the
+	// bound, and the read then also asked the store.
+	if hedges := f.cache.Stats().Read.StoreHedges; hedges != 0 {
+		t.Fatalf("%d reads of the cluster read the store as well, want none", hedges)
+	}
 	return pulled{stats: stats, gets: f.objects.gets.Load(), entries: disk.Entries, hits: disk.Hits}
 }
 
@@ -103,12 +115,13 @@ func (f *pullFixture) heldBy(list rank.List) int {
 // keeps every page and the segment whole, and reads them back twice with no
 // request of the store.
 func TestAPulledCheckpointIsKeptWholeOutsideTheClusterShare(t *testing.T) {
-	f := newClusterPullFixture(t, 0)
-	f.follow(t, rank.Code{K: 4, M: 2}, true, otherHosts...)
-	got := f.pullAndRead(t)
-	if got.stats.Pulled != got.stats.Bytes || got.gets != 0 || got.entries != cachedPages+1 || got.hits != 9 {
-		t.Fatalf("the pull came to %+v; want every envelope kept whole and read with no request", got)
-	}
+	clusterPull(t, 0, func(t *testing.T, f *pullFixture) {
+		f.follow(t, rank.Code{K: 4, M: 2}, true, otherHosts...)
+		got := f.pullAndRead(t)
+		if got.stats.Pulled != got.stats.Bytes || got.gets != 0 || got.entries != cachedPages+1 || got.hits != 9 {
+			t.Fatalf("the pull came to %+v; want every envelope kept whole and read with no request", got)
+		}
+	})
 }
 
 // With the cluster cache on for every window, a host in a list of six caches
@@ -116,13 +129,14 @@ func TestAPulledCheckpointIsKeptWholeOutsideTheClusterShare(t *testing.T) {
 // more. One stripe of four rebuilds nothing, so every read goes to the store
 // until hosts read from each other.
 func TestAPulledCheckpointIsPlacedByTheListInsideTheClusterShare(t *testing.T) {
-	f := newClusterPullFixture(t, 100)
-	list := f.follow(t, rank.Code{K: 4, M: 2}, true, otherHosts...)
-	got := f.pullAndRead(t)
-	if held := f.heldBy(list); got.gets != 9 || got.entries != held || got.hits != 0 || held == 0 {
-		t.Fatalf("the pull came to %+v; want the %d stripes the list puts here and every read of the store",
-			got, held)
-	}
+	clusterPull(t, 100, func(t *testing.T, f *pullFixture) {
+		list := f.follow(t, rank.Code{K: 4, M: 2}, true, otherHosts...)
+		got := f.pullAndRead(t)
+		if held := f.heldBy(list); got.gets != 9 || got.entries != held || got.hits != 0 || held == 0 {
+			t.Fatalf("the pull came to %+v; want the %d stripes the list puts here and every read of the store",
+				got, held)
+		}
+	})
 }
 
 // A cache alone in a list of 4+2 keeps all six stripes of each envelope a
@@ -130,33 +144,36 @@ func TestAPulledCheckpointIsPlacedByTheListInsideTheClusterShare(t *testing.T) {
 // them with no request of the store: the four pages and the segment are 30
 // stripes, and the reads are the nine hits a whole copy serves.
 func TestAPulledCheckpointIsRebuiltFromItsStripes(t *testing.T) {
-	f := newClusterPullFixture(t, 100)
-	f.follow(t, rank.Code{K: 4, M: 2}, true)
-	got := f.pullAndRead(t)
-	if got.stats.Pulled != got.stats.Bytes || got.gets != 0 || got.entries != 6*(cachedPages+1) || got.hits != 9 {
-		t.Fatalf("the pull came to %+v; want every page rebuilt from 30 stripes with no request", got)
-	}
+	clusterPull(t, 100, func(t *testing.T, f *pullFixture) {
+		f.follow(t, rank.Code{K: 4, M: 2}, true)
+		got := f.pullAndRead(t)
+		if got.stats.Pulled != got.stats.Bytes || got.gets != 0 || got.entries != 6*(cachedPages+1) || got.hits != 9 {
+			t.Fatalf("the pull came to %+v; want every page rebuilt from 30 stripes with no request", got)
+		}
+	})
 }
 
 // Two hosts under 1+1 each keep one whole copy of every window, so a pulled
 // checkpoint is read from this host's own disk alone.
 func TestOnTwoHostsAPulledCheckpointIsReadFromThisHostsCopy(t *testing.T) {
-	f := newClusterPullFixture(t, 100)
-	f.follow(t, rank.Code{K: 1, M: 1}, true, otherHosts[0])
-	got := f.pullAndRead(t)
-	if got.stats.Pulled != got.stats.Bytes || got.gets != 0 || got.entries != cachedPages+1 || got.hits != 9 {
-		t.Fatalf("the pull came to %+v; want one copy of each window and no request", got)
-	}
+	clusterPull(t, 100, func(t *testing.T, f *pullFixture) {
+		f.follow(t, rank.Code{K: 1, M: 1}, true, otherHosts[0])
+		got := f.pullAndRead(t)
+		if got.stats.Pulled != got.stats.Bytes || got.gets != 0 || got.entries != cachedPages+1 || got.hits != 9 {
+			t.Fatalf("the pull came to %+v; want one copy of each window and no request", got)
+		}
+	})
 }
 
 // A host whose list does not rank its cache for a window keeps nothing of it:
 // the pull hands the whole checkpoint to the cluster's fills, which keep
 // nothing here, and every read goes to the store.
 func TestAPullKeepsNothingAHostIsNotRankedFor(t *testing.T) {
-	f := newClusterPullFixture(t, 100)
-	f.follow(t, rank.Code{K: 1, M: 1}, false, otherHosts[0])
-	got := f.pullAndRead(t)
-	if got.stats.Pulled != got.stats.Bytes || got.gets != 9 || got.entries != 0 || got.hits != 0 {
-		t.Fatalf("the pull came to %+v; want it all handed over, nothing kept and every read of the store", got)
-	}
+	clusterPull(t, 100, func(t *testing.T, f *pullFixture) {
+		f.follow(t, rank.Code{K: 1, M: 1}, false, otherHosts[0])
+		got := f.pullAndRead(t)
+		if got.stats.Pulled != got.stats.Bytes || got.gets != 9 || got.entries != 0 || got.hits != 0 {
+			t.Fatalf("the pull came to %+v; want it all handed over, nothing kept and every read of the store", got)
+		}
+	})
 }

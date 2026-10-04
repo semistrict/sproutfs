@@ -436,6 +436,27 @@ guards `checkpoint-encode-one-batch-at-a-time` and
 `checkpoint-upload-one-part-at-a-time` serialize the encodes and the uploads,
 and each fails its test.
 
+A publication takes each batch's encoder itself, in the order it filled the
+batches. When each batch's goroutine took its own, the Go scheduler chose
+which batch got a free encoder: on one processor it runs the goroutine started
+last first, so a later batch took the encoder an earlier one needed, and the
+publication waited a whole encode for the earlier one. The parts then landed
+10 to 30 ms late, in 22 runs of 200 on the default processors and in most
+runs on one. `sim.Runtime.WorkPieces` reports
+the task and the instant each piece of priced work began, and the publication
+names each batch's encode as a task in a simulation.
+`TestAPublicationAdmitsItsBatchesToTheEncodersInOrder` publishes on one
+processor and on two and requires no batch to begin encoding before one
+filled earlier. The guard `checkpoint-encode-admitted-in-any-order` restores
+the old admission and fails it.
+
+The pull tests that read through the cluster run in a synctest bubble. A read
+of the cluster reads the store as well once its bound has passed, 10 ms by
+default, and on the wall clock a loaded machine sometimes took longer than
+that to read the fixture's own disk: the read then also asked the store, and
+the test counted a request it wanted none of. `pullAndRead` now also requires
+no read to have asked the store that way.
+
 Both the writer and the reader bound a part's table at 1 MiB. One test takes a
 checkpoint of 4,000 pages of a volume with the longest allowed name. Its entries
 are the widest that a table holds, and together they need more table space than
