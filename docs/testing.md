@@ -1137,6 +1137,19 @@ because every page the stream did not fetch is in the destination's own
 checkpoint. The admission point lets the scheduler order the two outcomes. It
 does not change either outcome.
 
+A request that waits for room is admitted again each time it is woken. It may
+wait for its class's budget at the peer, for a slot on a connection, for a dial
+that another request began, or for the host's background budget. One room
+given back wakes every request that waits for it, beside the request whose dial
+or reply gave it back. Without a second admission, the Go scheduler chose which
+of them took which connection and which went first on it. In one run of the
+scheduled scenario in a few hundred, a guest's fault and its post-copy stream's
+list of resident pages went to the source in either order, so seed 3 failed
+`TestScheduledWorldReproduces` now and then.
+`TestARequestWokenFromAWaitForRoomIsAdmittedAgain` holds the woken request at
+its second admission and requires the other to go on alone. The guard
+`peer-woken-requests-go-on-together` skips the second admission.
+
 
 The dynamic experiment runs four concurrent clients through three rounds each
 of requests, synced disk writes, object publication, replies and object
