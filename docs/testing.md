@@ -1634,8 +1634,9 @@ and the rest a round later, so two hosts may rank a window differently. The
 cluster runs over real peer servers on the simulated network, with a small
 queue and rate, so a burst spends them. Its background budget of 1.5 MiB has
 no room for a keep of a whole 2 MiB window, which a host sends its peer under
-1+1. A host sends one keep at a time, so its
-own keeps never spend the budget against each other. Every read must be
+1+1. A host's keeps to different holders go side by side, and a publication's
+keep that finds the budget held by the publications' own keeps waits for one
+of them to be answered, so they never drop each other. Every read must be
 what was published. At rest every stripe a host holds must be of a window some
 list the cluster held ranks it for, and the reads must have filled no window
 more than once an interval. Every fill site must fire and every fill probe be
@@ -2419,7 +2420,7 @@ so every keep was reset; the simulated stream does not read under one, which
 is why only the GCE run of 2026-10-03 found it, and why its test runs over a
 loopback socket.
 
-Ten guards break the cluster's fills:
+Thirteen guards break the cluster's fills:
 
 ```sh
 SPROUTFS_SIM_BUG=fill-before-durable \
@@ -2442,6 +2443,12 @@ SPROUTFS_SIM_BUG=fill-publication-waits-forever \
   go test ./checkpoint -run '^TestADeadHolderCostsAPublicationTheBoundAtMost$' -count=1
 SPROUTFS_SIM_BUG=fill-reads-behind-publications \
   go test ./checkpoint -run '^TestAReadsFillGoesAheadOfAPublications$' -count=1
+SPROUTFS_SIM_BUG=fill-keeps-one-at-a-time \
+  go test ./checkpoint -run '^TestAPublicationsKeepsGoToItsHoldersSideBySide$' -count=1
+SPROUTFS_SIM_BUG=fill-keeps-past-a-blocked-fill \
+  go test ./checkpoint -run '^TestEachHolderKeepsAPublicationsWindowsInTheirOrder$' -count=1
+SPROUTFS_SIM_BUG=fill-windows-hold-their-parts \
+  go test ./checkpoint -run '^TestAPublicationsQueuedWindowsHoldWhatTheQueueCounts$' -count=1
 ```
 
 The first fills the cluster with a part before its PUT has succeeded, which is
@@ -2452,23 +2459,24 @@ front of the read, so the fault waits a second for links held under its
 fill. The fourth fills from every read of a cold burst, six times where one
 would do. The fifth queues a keep of stripes already being written, and it
 waits a second for the first write rather than being dropped at once. The
-sixth asks fill rights
-and sends keeps on goroutines of their own, as step 6 first did. Three keeps go
+sixth asks fill rights on goroutines of their own, as step 6 first did, and
+sends each keep a holder's lane holds beside the one before it. Two keeps go
 to one holder before the first is answered, and on a link that drops or
 duplicates a frame, which keep it takes is the Go scheduler's choice. That is
 what turned `TestSeededTopologyFingerprintIsStable` red on seed 1 with the
 cluster cache on. The seventh hands each part of a publication to the fills as
 its PUT ends, rather than in part order. Its test holds the first part's PUT
 while the others land: with the order kept nothing is filled, and with the
-guard a later part's window is. The last three break the pace of a
-publication's fills, below. The fill campaign
+guard a later part's window is. The next three break the pace of a
+publication's fills, and the last three its keeps side by side, below. The fill campaign
 (`TestFillsSurviveTheirFaultsAndReachTheirProbes`) kills `keep-unranked` and
 `no-fill-right` too.
 
 A publication's fills wait for room rather than drop
 ([filling the cluster](hosting.md#filling-the-cluster)), and the tests of that
 pace state it in simulated time. Each runs two hosts under 1+1, but for the
-read's, which runs three under 1+2. The other hosts are holders, and a
+read's, which runs three under 1+2, and those of keeps side by side, which run
+two or four under 1+1 or 1+3. The other hosts are holders, and a
 holder's disk takes a millisecond over each write, or a second and a
 millisecond for a slow one. The first host publishes pages of noise, a part
 each:
@@ -2482,15 +2490,16 @@ each:
 - `TestAPublicationHoldsNoMorePartsThanItsSlotsAndItsQueue` publishes twelve
   parts through two upload slots. When each part's PUT begins, the
   publication holds at most four parts its fills have not finished with: two
-  in the queue and two under the slots. With the guard it holds all twelve.
+  windows in the queue and two parts under the slots. With the guard it holds
+  all twelve.
 - `TestAReadsFillGoesAheadOfAPublications` reads a page from the store two
   and a half seconds into a publication of twelve parts, each window of which
-  is two keeps to slow holders. The page's window is on its ranks less than
-  one keep later than when nothing else is filled, while the publication has
-  begun two of its thirteen windows: the read's fills go ahead even of the
-  second keep of the window under way. `fill-reads-behind-publications` takes
-  the publication's fills first, and the read's window lands more than twenty
-  seconds later.
+  is two keeps to slow holders, side by side. The page's window is on its
+  ranks half a second later than when nothing else is filled, less than one
+  keep: each holder's lane carries the read's keeps before the publication's
+  keep behind the one on the wire. `fill-reads-behind-publications` takes the
+  publication's fills first, on the worker and on the lanes, and the read's
+  window lands more than ten seconds later.
 - `TestADeadHolderCostsAPublicationTheBoundAtMost` cuts the link to the
   holder, under a bound of a second. The first keep waits out the dial's
   three seconds, and the commit takes exactly the bound longer than with the
@@ -2504,6 +2513,29 @@ each:
 - `TestAPacedPublicationDoesTheSameWorkUnderAShake` requires the same
   fingerprint and the same moments under three shakes: windows wait for room,
   and get it, in the order the parts were handed over.
+- `TestAPublicationsKeepsGoToItsHoldersSideBySide` publishes eight parts
+  through a queue with room for two windows to one slow holder and to three.
+  The commit takes exactly six seconds longer than behind quick holders in
+  both: each holder keeps one window a second, and the three go side by side.
+  `fill-keeps-one-at-a-time` decides each holder only once the last keep is
+  answered, as a host did before, and behind three holders the commit takes
+  eighteen seconds longer.
+- `TestAPublicationsKeepsInFlightAreBounded` sets the host's keeps in flight
+  to one, and behind three slow holders the commit takes eighteen seconds
+  longer.
+- `TestEachHolderKeepsAPublicationsWindowsInTheirOrder` publishes twelve
+  parts to three slow holders through a queue with room for five windows, so
+  each holder's lane is full and the worker waits for room on it. Each holder
+  is asked for the windows page by page, the segment last, and the run does
+  the same work at the same moments under three shakes, the keeps in the same
+  order. `fill-keeps-past-a-blocked-fill` has the worker go on to the next
+  fill while one waits for a lane, and a holder is asked for page 11 before
+  page 10.
+- `TestAPublicationsQueuedWindowsHoldWhatTheQueueCounts` samples, every tenth
+  of a second of the same publication, the windows queued behind the one the
+  worker is on: they hold exactly the bytes the queue counts of them.
+  `fill-windows-hold-their-parts` queues each window as a view of its part,
+  which runs to the part's end.
 
 The fixture pings no connection while a keep is answered. A ping takes the
 sequence number, and so the drawn latency, that a later frame on its link
@@ -2989,8 +3021,8 @@ python3 scripts/mutate-gremlins.py --package stripe --suite full --file stripe.g
 The fills are mutated the same way:
 
 ```sh
-python3 scripts/mutate-gremlins.py --package checkpoint --suite full --file fill.go --file peercache.go --file partwriter.go \
-  --run '^(TestAStoreReadFills|TestAColdBurst|TestAFaultIsNot|TestAPublication|TestAPartTheStore|TestACacheKeeps|TestACacheRefuses|TestACacheDrops|TestRankOneGives|TestACacheReports|TestFillsSurvive|TestAPull|TestOnTwoHosts|TestAPulled|TestTheQueue|TestClosingTheCache|TestTheRateOfKeeps|TestTheRateLeaves|TestAKeepIsWritten|TestAFillKeeps|TestAReadsFill|TestADeadHolder|TestAPacedPublication|TestAHostSends|TestAWindowLarger)' \
+python3 scripts/mutate-gremlins.py --package checkpoint --suite full --file fill.go --file fillsend.go --file peercache.go --file partwriter.go \
+  --run '^(TestAStoreReadFills|TestAColdBurst|TestAFaultIsNot|TestAPublication|TestAPartTheStore|TestACacheKeeps|TestACacheRefuses|TestACacheDrops|TestRankOneGives|TestACacheReports|TestFillsSurvive|TestAPull|TestOnTwoHosts|TestAPulled|TestTheQueue|TestClosingTheCache|TestTheRateOfKeeps|TestTheRateLeaves|TestAKeepIsWritten|TestAFillKeeps|TestAReadsFill|TestADeadHolder|TestAPacedPublication|TestAHostSends|TestAWindowLarger|TestEachHolderKeeps)' \
   --gremlins /path/to/gremlins --output /tmp/fill-mutations
 ```
 

@@ -64,6 +64,7 @@ const noisyWindow = checkpoint.PageSize2MiB + 144
 // of its pages' windows and then its segment's were and where the list ranks
 // them, and the simulation's fingerprint.
 type pacedRun struct {
+	ref            control.Ref
 	took, settled  time.Duration
 	fills          checkpoint.FillStats
 	held           int
@@ -141,6 +142,7 @@ func (p pacedPublication) run(t *testing.T) pacedRun {
 		run.fills, run.held = publisher.cache.Stats().Fill, counted.most
 		run.fingerprint = c.runtime.Fingerprint()
 		ref := index.Ref()
+		run.ref = ref
 		for _, window := range append(windowsOf(ref, numbers), segmentWindow(ref)) {
 			run.placed, run.ranked = append(run.placed, c.placed(window)), append(run.ranked, c.ranked(window))
 		}
@@ -230,17 +232,20 @@ func TestAPublicationHoldsNoMorePartsThanItsSlotsAndItsQueue(t *testing.T) {
 
 // A read's fill goes ahead of a publication's. Three hosts under 1+2 put a
 // copy of each window on each host, so each window is two keeps, both to
-// slow holders. Two and a half seconds into a publication of twelve pages,
-// the publisher reads a page from the store, which fills two windows: the
-// page's and its segment's. The worker of fills finishes the keep it has on
-// the wire and takes the read's fills before the second keep of the window
-// it was on, and before the publication's windows in its queue and those
-// waiting for room: the page's window is on its ranks less than one keep of
-// a slow holder later than when nothing else is filled, and the publication
-// has begun two of its thirteen windows by then. The queue's last quarter is
-// left to reads, so neither of the read's fills is dropped. Taken after the
-// window under way, or after every publication's still to do, the read's
-// fills would wait a keep more, or many.
+// slow holders, which go side by side. Two and a half seconds into a
+// publication of twelve pages, the publisher reads a page from the store,
+// which fills two windows: the page's and its segment's. Each holder's lane
+// finishes the keep it has on the wire, the publication's third, and carries
+// the read's keeps before the publication's fourth, which waits behind it,
+// and before the publication's windows in the queue and those waiting for
+// room: the page's window is on its ranks half a second, less than one keep
+// of a slow holder, later than when nothing else is filled. By then the
+// publication has begun six of its thirteen windows: three kept, two decided
+// behind the read's keeps, and the sixth waiting for room on the lanes. The
+// queue's last quarter is left to reads, so neither of the read's fills is
+// dropped. Carried after the publication's keeps queued on the lanes, or
+// after every publication's still to do, the read's fills would wait a keep
+// more, or many.
 func TestAReadsFillGoesAheadOfAPublications(t *testing.T) {
 	alone, aloneStarted := readBeside(t, 1, 10*time.Second)
 	behind, behindStarted := readBeside(t, 12, 2500*time.Millisecond)
@@ -248,9 +253,9 @@ func TestAReadsFillGoesAheadOfAPublications(t *testing.T) {
 		t.Fatalf("a read's window was filled %v after the read with nothing else to fill, and %v after it beside "+
 			"a publication; want it later by less than one keep of a slow holder", alone.delay, behind.delay)
 	}
-	if aloneStarted != 2 || behindStarted != 2 {
+	if aloneStarted != 2 || behindStarted != 6 {
 		t.Fatalf("the publisher had begun %d and %d windows of its publications when the read's window was "+
-			"filled, want 2 and 2", aloneStarted, behindStarted)
+			"filled, want 2 and 6", aloneStarted, behindStarted)
 	}
 	if fills := behind.fills; fills.FromReads != 2 || dropped(fills) != 0 || fills.Sent != 30 {
 		t.Fatalf("the publisher's fills came to %+v, want the read's two windows and the publication's thirteen "+

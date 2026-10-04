@@ -7,17 +7,17 @@ import (
 	"github.com/semistrict/sproutfs/rank"
 )
 
-// A host does its fills one at a time, in the order they were handed over,
+// A host decides its fills one at a time, in the order they were handed over,
 // and sends a holder its next keep only once the keep before it is answered.
 // Two hosts under 1+1, the first publishing three pages and the segment that
 // locates them: it owes the second host a keep of each of the four windows,
-// and on the link to the second host's peer server every request is answered
-// before the next one goes.
+// two of which its lane holds at once, and on the link to the second host's
+// peer server every request is answered before the next one goes.
 //
-// Keeps sent beside each other reach the link, its connection and the
-// background budget in whatever order the Go scheduler runs them, so which
-// of them a dropped frame or a partition takes is not the seed's choice, and
-// a seed does not reproduce its run.
+// Keeps to one holder sent beside each other reach its link and its
+// connection, and its queue of writes, in whatever order the Go scheduler
+// runs them, so which of them a dropped frame or a partition takes is not the
+// seed's choice, and a seed does not reproduce its run.
 func TestAHostSendsItsKeepsOneAtATime(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		c := newFillCluster(t, fillConfig{hosts: 2, code: rank.Code{K: 1, M: 1}, share: 100})

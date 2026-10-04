@@ -77,3 +77,27 @@ func ServingOf(list rank.List) membership.Membership { return servingOf(list) }
 func (c *Cache) FollowList(list rank.List) {
 	c.FollowMembership(membership.NewFixed(servingOf(list)), c.Identity())
 }
+
+// QueuedWindows is, of the publications' windows in the cache's queue behind
+// the one the worker of fills is on, the bytes the queue counts of them and
+// the bytes their buffers run to from each window's first envelope: what a
+// test of what the queue's windows hold asks. A window that holds bytes of
+// its own runs to exactly what is counted of it, and one that holds a view of
+// its part runs to the part's end. The worker touches no window behind the
+// one it is on.
+func (c *Cache) QueuedWindows() (counted, held int64) {
+	if c.filler == nil {
+		return 0, 0
+	}
+	lanes := c.filler.fills
+	lanes.mu.Lock()
+	defer lanes.mu.Unlock()
+	for at, paced := range lanes.paced {
+		if at == 0 {
+			continue
+		}
+		counted += paced.fill.bytes
+		held += int64(cap(paced.fill.envelopes[0].data))
+	}
+	return counted, held
+}

@@ -372,10 +372,11 @@ for, three things fill: a read of the store, or of the cluster under an
 earlier code, once its callers have their pages; a publication, for each part once
 its PUT has succeeded, in part order, and for its segments once the index
 object's has; and a
-pull, for what it copies. A host does its fills one at a time from one
+pull, for what it copies. A host decides its fills one at a time from one
 bounded queue, a read's before a publication's. Its own stripes go to its own
 disk, and every other stripe goes as a keep within a bounded rate and the
-background budget. A fill of a read or a pull that finds the queue full, the
+background budget. The keeps of a window go to its holders side by side, and
+each holder gets this host's keeps one at a time, in the order decided. A fill of a read or a pull that finds the queue full, the
 rate spent or the budget without room is dropped, and the window is read from
 the store next time; a fault and a pull never wait on a fill. A publication's
 fill waits for room instead, up to a bound, so the publication goes at the
