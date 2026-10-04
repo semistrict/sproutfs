@@ -28,7 +28,9 @@
 # hosts' least processor (Intel Cascade Lake by default). SPROUTFS_RESTORE_TABLES
 # is when a read loads its volume's page tables: lazy (the default), as the
 # first lookup of each segment needs it, or eager, all of them once the
-# checkpoint is open and before the reads.
+# checkpoint is open and before the reads. SPROUTFS_RESTORE_BINARY runs a
+# bench built elsewhere, for linux/amd64, instead of building this tree's:
+# an earlier build, to read before and after a change on the same hosts.
 #
 # `all` always deletes the hosts. `create`, `run` and `delete` expose the same
 # steps. Each host also deletes itself after three hours.
@@ -160,8 +162,13 @@ run() {
         "$ready" || { echo "$host did not finish starting." >&2; return 1; }
     done
     staging=$(mktemp -d "${TMPDIR:-/tmp}/sproutfs-restore.XXXXXX")
-    (cd "$repo" && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o "$staging/sproutfs-restorebench" ./cmd/sproutfs-restorebench)
+    if [[ -n ${SPROUTFS_RESTORE_BINARY:-} ]]; then
+        cp -- "$SPROUTFS_RESTORE_BINARY" "$staging/sproutfs-restorebench"
+    else
+        (cd "$repo" && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o "$staging/sproutfs-restorebench" ./cmd/sproutfs-restorebench)
+    fi
     {
+        if [[ -n ${SPROUTFS_RESTORE_BINARY:-} ]]; then echo "binary $SPROUTFS_RESTORE_BINARY, built elsewhere"; fi
         echo "revision $(git -C "$repo" rev-parse HEAD)"
         git -C "$repo" status --porcelain=v1 -- cmd/sproutfs-restorebench checkpoint peer rank stripe vmmemory | sed 's/^/changed /'
         (cd "$staging" && shasum -a 256 sproutfs-restorebench)
