@@ -358,11 +358,30 @@ For a caller that does, it is a quarter of the host's core count, between 2 and
 8. A publication that writes nothing takes no slot.
 
 A sealed part is held in memory until its upload finishes. The upload runs
-under an upload slot, so a publication can have one part in flight while it
-fills the next builder. The memory that publication costs a host is therefore
-`MaxBuilders` plus `Concurrency` times `PartBytes`: the builders, plus the
-sealed parts in flight. This bound holds however many of the host's VMs became
-dirty at once. It is not one part builder per VM.
+under an upload slot, so a publication can have parts in flight while it fills
+the next builder.
+
+A publication encodes its pages side by side. Encoding a page is its SHA-256
+and its Zstandard, and that is nearly all the processor a publication spends.
+The publication reads its pages one at a time, in page order, on its own
+goroutine, and hands them to the store's encoders in batches: a 2 MiB page
+alone, or small pages up to 1 MiB together. It has one more batch encoding
+than the store has encoders, so an encoder that finishes finds the next batch
+ready. The parts take the envelopes in the order the pages were read, so a
+part holds the same bytes whichever encode ends first, and a retry writes the
+same parts. Each page's segment entry is written as the page lands in its
+part. Until 2026-10-04 a publication encoded one page at a time, and ran at one
+processor's pace however many encoders the host had: about 62 MB/s on a
+4-vCPU Cascade Lake host
+([measurement](measurements/gce-publication-throughput-2026-10-04.md)).
+
+The memory that publication costs a host is therefore `MaxBuilders` plus
+`Concurrency` times `PartBytes`, the builders and the sealed parts in flight,
+plus, for each builder, one more batch than the store has encoders, each with
+its envelopes. This bound holds however many of the host's VMs became dirty at
+once. It is not one part builder per VM. A publication takes its builder slot
+before it hands anything to the encoders, so a publication waiting for a slot
+holds no batch.
 
 ### Reclamation
 

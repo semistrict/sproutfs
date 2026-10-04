@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/binary"
 	"hash/fnv"
+	"maps"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -38,6 +39,10 @@ type Config struct {
 	// how a determinism check finds such a race on an idle machine rather
 	// than only on a loaded one.
 	Shake uint64
+	// Compute prices work that costs a processor in a deployment, in bytes a
+	// second by the kind of work (see Work). A kind it does not name costs no
+	// simulated time, which is what every run that sets nothing gets.
+	Compute map[string]int64
 	// Now reads the simulated instant. Faults with a deadline, such as a
 	// clogged link, compare against it. Nil takes the standard library, which
 	// inside a testing/synctest bubble is that bubble's virtual clock; a
@@ -88,6 +93,8 @@ type Runtime struct {
 	bugs    map[string]bool
 	// shake is the perturbation Config.Shake asked for, nil for none.
 	shake *shaker
+	// compute is Config.Compute, fixed at New.
+	compute map[string]int64
 
 	mu            sync.Mutex
 	disks         map[string]*Disk
@@ -100,6 +107,8 @@ type Runtime struct {
 	occurrences map[string]uint64
 	probes      map[string]uint64
 	notedBugs   map[string]bool
+	// work counts the priced work of each kind (Work).
+	work map[string]*workCount
 }
 
 func New(config Config) *Runtime {
@@ -112,12 +121,13 @@ func New(config Config) *Runtime {
 		config.Now = time.Now
 	}
 	r := &Runtime{
-		seed:  config.Seed,
-		trace: newTrace(),
-		wait:  config.Wait,
-		now:   config.Now,
-		disks: make(map[string]*Disk),
-		bugs:  enabledBugs(),
+		seed:    config.Seed,
+		trace:   newTrace(),
+		wait:    config.Wait,
+		now:     config.Now,
+		disks:   make(map[string]*Disk),
+		bugs:    enabledBugs(),
+		compute: maps.Clone(config.Compute),
 	}
 	if config.Shake != 0 {
 		r.shake = &shaker{state: config.Shake}
