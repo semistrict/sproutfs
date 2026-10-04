@@ -10,12 +10,14 @@ package host
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"time"
 
 	"github.com/semistrict/sproutfs/api/guest"
 	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/internal/jsonhttp"
 	"github.com/semistrict/sproutfs/internal/latency"
+	"github.com/semistrict/sproutfs/membership"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/rank"
 )
@@ -597,12 +599,14 @@ type Status struct {
 	Store     Store     `json:"store"`
 	// Disk is what the disk limiter chose.
 	Disk Disk `json:"disk"`
-	// Cache is this host's disk cache as the list of caches names it: its
-	// identity, its weight and its peer-server address. It is absent on a
-	// host that keeps no cache disk.
-	Cache *Cache `json:"cache,omitempty"`
-	// Caches is the list of caches this host holds, and how it read it.
-	Caches CacheList `json:"caches"`
+	// Member is this host as the membership names it: its identity, its
+	// peer-server address and the disk it keeps, which is what a controller
+	// moves the membership towards. It is absent on a host that keeps no
+	// cache disk.
+	Member *Member `json:"member,omitempty"`
+	// Membership is the generation of the membership this host holds, and
+	// how it read it.
+	Membership Membership `json:"membership"`
 	// CacheMemory is the page cache's memory tier: the decoded pages and
 	// segments it keeps, and what it served of them. It is the first place a
 	// read of a page that no arena holds looks, before this host's disk, the
@@ -780,8 +784,8 @@ type CacheDisk struct {
 	// File is the file of the cache directory the host claimed: cache-0,
 	// cache-1 and so on.
 	File string `json:"file"`
-	// Identity is the identity in the file's header, in hex, which the list
-	// of caches names it by.
+	// Identity is the identity in the file's header, in hex, which the
+	// membership names the disk by.
 	Identity string `json:"identity"`
 	// Regions is the regions it holds, Entries the stripes of pages and
 	// segments in them, and IndexBytes what its index costs in memory.
@@ -811,32 +815,43 @@ type CacheDiskOpened struct {
 	GivenBack  uint64 `json:"given_back"`
 }
 
-// Cache is one host's disk cache in the list of caches.
-type Cache struct {
-	// Identity is the cache's identity, in hex: a random value in its file's
-	// header, which a restart over the same file keeps.
+// Member is one host as the membership names it.
+type Member struct {
+	// Identity is the host's identity, in hex: the identity in its cache
+	// file's header, which a restart over the same file keeps.
 	Identity string `json:"identity"`
-	// Weight is the cache's share of windows against the others, from the
+	// Address is where the host's peer server answers.
+	Address string `json:"address"`
+	// Disks is the disk the host keeps.
+	Disks []MemberDisk `json:"disks"`
+}
+
+// MemberDisk is one cache disk a host keeps.
+type MemberDisk struct {
+	// Identity is the identity in the disk's file's header, in hex, which
+	// windows are ranked by.
+	Identity string `json:"identity"`
+	// Volume is the name the deployment knows the disk's volume by.
+	Volume string `json:"volume"`
+	// Weight is the disk's share of windows against the others, from the
 	// size of the disk it is given in steps of 16 GiB.
 	Weight uint32 `json:"weight"`
-	// Address is where the cache's host serves pages.
-	Address string `json:"address"`
+	// State is the disk's state in the membership the host holds: attaching,
+	// serving, releasing or released, and empty where it is not listed.
+	State string `json:"state,omitempty"`
 }
 
-// Caches is the list of caches: the deployment's code, k data stripes and m
-// parity stripes, and every cache in identity order. The orchestrator serves
-// it at GET /caches.
-type Caches struct {
-	K      int     `json:"k"`
-	M      int     `json:"m"`
-	Caches []Cache `json:"caches"`
-}
-
-// CacheList is the list of caches a host holds and ranks windows by, and how
-// it read it. A host that has read none holds itself alone. A read that fails
-// keeps the list held.
-type CacheList struct {
-	Caches
+// Membership is the generation of the membership a host holds and how it
+// read it. A host that has read none holds itself alone, at generation zero.
+// A read that fails keeps the membership held.
+type Membership struct {
+	Generation uint64 `json:"generation"`
+	// K and M are its code.
+	K int `json:"k"`
+	M int `json:"m"`
+	// Members and Disks count what it lists.
+	Members int `json:"members"`
+	Disks   int `json:"disks"`
 	// Read is when the last read that succeeded finished, absent before any.
 	Read *time.Time `json:"read,omitempty"`
 	// Reads counts the reads that succeeded and Failures those that did not.
@@ -846,41 +861,52 @@ type CacheList struct {
 	Error    string `json:"error,omitempty"`
 }
 
-// CacheOf is a cache as the wire carries it.
-func CacheOf(cache rank.Cache) Cache {
-	return Cache{Identity: cache.Identity.String(), Weight: cache.Weight, Address: string(cache.Address)}
-}
-
-// Rank reads a cache off the wire.
-func (c Cache) Rank() (rank.Cache, error) {
-	identity, err := rank.ParseIdentity(c.Identity)
-	if err != nil {
-		return rank.Cache{}, err
-	}
-	return rank.Cache{Identity: identity, Weight: c.Weight, Address: platform.Address(c.Address)}, nil
-}
-
-// CachesOf is a list of caches as the wire carries it.
-func CachesOf(list rank.List) Caches {
-	caches := make([]Cache, 0, list.Len())
-	for _, cache := range list.Caches() {
-		caches = append(caches, CacheOf(cache))
-	}
-	return Caches{K: list.Code().K, M: list.Code().M, Caches: caches}
-}
-
-// List reads a list of caches off the wire, refusing one no host could rank
-// windows by.
-func (c Caches) List() (rank.List, error) {
-	caches := make([]rank.Cache, 0, len(c.Caches))
-	for _, cache := range c.Caches {
-		read, err := cache.Rank()
-		if err != nil {
-			return rank.List{}, err
+// MemberOf is a host as the wire carries it, each disk in the state held
+// says it is in.
+func MemberOf(self membership.Host, held membership.Membership) Member {
+	member := Member{Identity: self.ID.String(), Address: string(self.Address), Disks: []MemberDisk{}}
+	for _, disk := range self.Disks {
+		reported := MemberDisk{Identity: disk.ID.String(), Volume: disk.Volume, Weight: disk.Weight}
+		if listed, ok := held.Disk(disk.ID); ok {
+			reported.State = listed.State.String()
 		}
-		caches = append(caches, read)
+		member.Disks = append(member.Disks, reported)
 	}
-	return rank.NewList(rank.Code{K: c.K, M: c.M}, caches)
+	return member
+}
+
+// Host reads a member off the wire, as a controller wants it in the
+// membership.
+func (m Member) Host() (membership.Host, error) {
+	id, err := rank.ParseIdentity(m.Identity)
+	if err != nil {
+		return membership.Host{}, err
+	}
+	host := membership.Host{ID: id, Address: platform.Address(m.Address)}
+	for _, disk := range m.Disks {
+		identity, err := rank.ParseIdentity(disk.Identity)
+		if err != nil {
+			return membership.Host{}, err
+		}
+		if disk.Weight == 0 {
+			return membership.Host{}, fmt.Errorf("%w: disk %s has no weight", rank.ErrInvalid, disk.Identity)
+		}
+		host.Disks = append(host.Disks, membership.Disk{ID: identity, Volume: disk.Volume, Weight: disk.Weight})
+	}
+	return host, nil
+}
+
+// MembershipOf is the membership a host holds as the wire carries it.
+func MembershipOf(status membership.ViewStatus) Membership {
+	held := status.Membership
+	report := Membership{Generation: held.Generation(), K: held.Code().K, M: held.Code().M,
+		Members: len(held.Members()), Disks: len(held.Disks()), Reads: status.Reads, Failures: status.Failures,
+		Error: status.Error}
+	if !status.Read.IsZero() {
+		read := status.Read
+		report.Read = &read
+	}
+	return report
 }
 
 // Disk is what the host's disk limiter chose at its last reading of the disk,

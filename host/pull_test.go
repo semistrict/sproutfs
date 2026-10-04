@@ -73,12 +73,10 @@ func pulledRunWith(t *testing.T, diskBytes int64,
 		configure(h)
 	}
 	h.start(t)
-	if h.configs[1].CacheList.Read != nil {
-		// The host reads the list as it starts, on a goroutine of its own:
-		// the pull must find the list it read, not the host alone.
-		if err := h.hosts[1].RefreshCaches(t.Context()); err != nil {
-			t.Fatal(err)
-		}
+	// The host reads the membership as it starts, on a goroutine of its own:
+	// the pull must find the membership it read, not the host alone.
+	if err := h.hosts[1].RefreshMembership(t.Context()); err != nil {
+		t.Fatal(err)
 	}
 
 	vm, err := h.hosts[0].Volumes().Create(t.Context(), "vm-1", pullVolumes)

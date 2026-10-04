@@ -24,10 +24,10 @@ func TestACacheDropsAKeepItHoldsOrIsWriting(t *testing.T) {
 			return listOf(code, self, otherCache)
 		})
 		held := keyOf("held", 0)
-		if err := f.cache.Keep(t.Context(), keepOf(t, held, code, []int{0, 1})); err != nil {
+		if err := f.cache.Keep(t.Context(), f.m, keepOf(t, held, code, []int{0, 1})); err != nil {
 			t.Fatal(err)
 		}
-		if err := f.cache.Keep(t.Context(), keepOf(t, held, code, []int{0, 1})); !errors.Is(err, peer.ErrDropped) {
+		if err := f.cache.Keep(t.Context(), f.m, keepOf(t, held, code, []int{0, 1})); !errors.Is(err, peer.ErrDropped) {
 			t.Fatalf("a keep of stripes the cache holds = %v, want it dropped", err)
 		}
 		if fill := f.cache.Stats().Fill; fill.Kept != 2 || fill.Duplicates != 2 {
@@ -35,10 +35,10 @@ func TestACacheDropsAKeepItHoldsOrIsWriting(t *testing.T) {
 		}
 		writing := keyOf("writing", 0)
 		first := make(chan error, 1)
-		go func() { first <- f.cache.Keep(t.Context(), keepOf(t, writing, code, []int{0, 1})) }()
+		go func() { first <- f.cache.Keep(t.Context(), f.m, keepOf(t, writing, code, []int{0, 1})) }()
 		synctest.Wait()
 		start := time.Now()
-		if err := f.cache.Keep(t.Context(), keepOf(t, writing, code, []int{0, 1})); !errors.Is(err, peer.ErrDropped) {
+		if err := f.cache.Keep(t.Context(), f.m, keepOf(t, writing, code, []int{0, 1})); !errors.Is(err, peer.ErrDropped) {
 			t.Fatalf("a keep of stripes the cache is writing = %v, want it dropped", err)
 		}
 		if took := time.Since(start); took != 0 {
@@ -86,7 +86,7 @@ func TestRankOneGivesOneFillRightPerWindowPerInterval(t *testing.T) {
 		}
 		right := func(key diskKey, pages []uint32, code rank.Code) bool {
 			t.Helper()
-			stripes, err := f.cache.ReadStripes(t.Context(), peer.StripeRead{Window: key.rankWindow(), Pages: pages,
+			stripes, err := f.cache.ReadStripes(t.Context(), f.m, peer.StripeRead{Window: key.rankWindow(), Pages: pages,
 				Code: code})
 			if err != nil {
 				t.Fatal(err)
@@ -118,7 +118,7 @@ func TestRankOneGivesOneFillRightPerWindowPerInterval(t *testing.T) {
 			t.Fatal("rank 1 gave no right for the last page of a window")
 		}
 		// Once it holds a stripe of the page asked for, it gives none.
-		if err := f.cache.Keep(t.Context(), keepOf(t, mine, code, []int{0})); err != nil {
+		if err := f.cache.Keep(t.Context(), f.m, keepOf(t, mine, code, []int{0})); err != nil {
 			t.Fatal(err)
 		}
 		f.clock.Advance(DefaultFillRightInterval)
@@ -140,7 +140,7 @@ func TestACacheReportsItsPagesAndDropsAWrongStripe(t *testing.T) {
 			return listOf(code, self, otherCache)
 		})
 		third := keyOf("vm", 3)
-		if err := f.cache.Keep(t.Context(), keepOf(t, third, code, []int{0, 1})); err != nil {
+		if err := f.cache.Keep(t.Context(), f.m, keepOf(t, third, code, []int{0, 1})); err != nil {
 			t.Fatal(err)
 		}
 		window := third.rankWindow()

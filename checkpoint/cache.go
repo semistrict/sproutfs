@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/semistrict/sproutfs/control"
+	"github.com/semistrict/sproutfs/membership"
 	"github.com/semistrict/sproutfs/peer"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/sim"
@@ -51,9 +52,9 @@ type CacheConfig struct {
 	DiskSecondChanceReads int
 	// ClusterPercent is the share of windows, 0 to 100, the cluster cache is
 	// turned on for, by a hash of the window. The disk keeps a window inside
-	// the share as the stripes the list of caches puts on this cache, under
-	// the list's code, and every other window whole, under 1+0, whatever the
-	// list says. Zero, the default, keeps every window whole.
+	// the share as the stripes the membership puts on this disk, under the
+	// membership's code, and every other window whole, under 1+0, whatever
+	// the membership says. Zero, the default, keeps every window whole.
 	ClusterPercent int
 	// Peers is the host's table of peers, which the cache sends the keeps
 	// that fill the cluster through and asks for fill rights. Nil reaches no
@@ -290,15 +291,16 @@ func (c *Cache) Stats() CacheStats {
 		Disk: disk, Fill: fill, Read: read}
 }
 
-// FollowCaches has the cache's disk keep and read stripes by the list of
-// caches the host holds, which caches returns: for each window inside the
+// FollowMembership has the cache's disk keep and read stripes by the
+// membership source holds, as the host of member: for each window inside the
 // share CacheConfig.ClusterPercent turns on, the stripes of its envelopes the
-// list ranks this cache for, under the list's code. Every other window, and
-// every window until it is called, the disk keeps whole. It does nothing for
-// a cache that keeps no disk.
-func (c *Cache) FollowCaches(caches func() rank.List) {
+// membership ranks this disk for, under the membership's code, while the
+// membership has member serve the disk. Every other window, and every window
+// until it is called, the disk keeps whole. It does nothing for a cache that
+// keeps no disk.
+func (c *Cache) FollowMembership(source membership.Source, member rank.Identity) {
 	if c.disk != nil {
-		c.disk.follow(caches)
+		c.disk.follow(source, member)
 	}
 }
 

@@ -2,6 +2,7 @@ package checkpoint_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/semistrict/sproutfs/checkpoint"
 	"github.com/semistrict/sproutfs/control"
+	"github.com/semistrict/sproutfs/membership"
 	"github.com/semistrict/sproutfs/peer"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/sim"
@@ -32,21 +34,27 @@ type fillHost struct {
 	table   *peer.Table
 	server  *peer.Server
 	file    platform.File
-	// list is the list of caches this host holds.
-	list atomic.Pointer[rank.List]
+	// view is this host's copy of the membership, which it reads when it
+	// opens, when the cluster tells it to, and when a peer names a newer
+	// generation.
+	view *membership.View
 	// up says the host's server, table and cache are open.
 	up bool
 }
 
-// fillCluster is hosts that follow one list of caches over one simulated
-// network and object store, and a publisher that keeps no cache.
+// fillCluster is hosts that follow one membership over one simulated network
+// and object store, and a publisher that keeps no cache.
 type fillCluster struct {
 	runtime *sim.Runtime
 	config  fillConfig
 	hosts   []*fillHost
-	// list is the list the orchestrator serves, which each host holds once
-	// it has read it.
-	list      atomic.Pointer[rank.List]
+	// list is the caches the cluster wants in the membership, under its
+	// code: each host a member of its own with one disk, which the
+	// controller moves the membership to one step at a time.
+	list atomic.Pointer[rank.List]
+	// members is the membership's object, in a bucket of its own so the
+	// tests count only what the cache costs the checkpoints' store.
+	members   *membership.Store
 	publisher *checkpoint.Store
 	puts      *heldPuts
 	closed    sync.Once
@@ -78,6 +86,13 @@ func newFillCluster(t *testing.T, config fillConfig) *fillCluster {
 	ctx := c.ctx(t)
 	c.puts = &heldPuts{ObjectStore: c.runtime.ObjectStore()}
 	c.publisher = mustStore(t, checkpoint.Config{ObjectStore: c.puts})
+	var err error
+	c.members, err = membership.NewStore(membership.Config{
+		ObjectStore: c.runtime.NewObjectStore("membership", sim.ObjectStoreConfig{}),
+		Entropy:     c.runtime.NewEntropy("controller")})
+	if err != nil {
+		t.Fatal(err)
+	}
 	var caches []rank.Cache
 	for index := range config.hosts {
 		name := fmt.Sprintf("host-%d", index)
@@ -96,7 +111,7 @@ func newFillCluster(t *testing.T, config fillConfig) *fillCluster {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c.hold(list)
+	c.hold(t, list)
 	return c
 }
 
@@ -132,8 +147,14 @@ func (c *fillCluster) open(t *testing.T, index int, h *fillHost) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A host reads the membership as it opens, and holds it until it is told
+	// to read it again or a peer names a newer generation. A read that fails
+	// leaves it with none until then.
+	h.view = membership.NewView(ctx, membership.ViewConfig{Store: c.members, Initial: membership.Empty(),
+		Interval: -1})
+	_, _ = h.view.Refresh(ctx)
 	serverConfig := peer.ServerConfig{Network: c.runtime.Network(), Address: h.address,
-		PageSize: checkpoint.PageSize2MiB, Cache: h.cache}
+		PageSize: checkpoint.PageSize2MiB, Cache: h.cache, Membership: h.view, Member: h.cache.Identity()}
 	if c.config.server != nil {
 		c.config.server(index, &serverConfig)
 	}
@@ -142,7 +163,7 @@ func (c *fillCluster) open(t *testing.T, index int, h *fillHost) {
 		t.Fatal(err)
 	}
 	h.store = mustStore(t, checkpoint.Config{ObjectStore: h.objects, Cache: h.cache})
-	h.cache.FollowCaches(func() rank.List { return *h.list.Load() })
+	h.cache.FollowMembership(h.view, h.cache.Identity())
 	h.up = true
 }
 
@@ -156,10 +177,12 @@ func (h *fillHost) shut() {
 	_ = h.server.Close()
 	_ = h.table.Close()
 	h.cache.Close()
+	h.view.Close()
 }
 
 // restart shuts a host and opens it again over the same file, at the same
-// address, under the list it held: a host process that restarted.
+// address, under the membership it reads as it opens: a host process that
+// restarted.
 func (c *fillCluster) restart(t *testing.T, index int) {
 	t.Helper()
 	h := c.hosts[index]
@@ -167,16 +190,45 @@ func (c *fillCluster) restart(t *testing.T, index int) {
 	c.open(t, index, h)
 }
 
-// hold has the orchestrator serve list, and the hosts named, or every host
-// when none is, read it. The rest hold the list they held, as hosts that have
-// not read it yet do.
-func (c *fillCluster) hold(list rank.List, hosts ...*fillHost) {
+// hold has a controller move the membership to list, one step a
+// generation, and the hosts named, or every host when none is, read it. The
+// rest hold the generation they held, as hosts that have not read it yet do,
+// until a peer names a newer one.
+func (c *fillCluster) hold(t *testing.T, list rank.List, hosts ...*fillHost) {
+	t.Helper()
 	c.list.Store(&list)
+	settleMembership(t, c.ctx(t), c.members, list)
 	if len(hosts) == 0 {
 		hosts = c.hosts
 	}
 	for _, h := range hosts {
-		h.list.Store(&list)
+		// A read that fails leaves the host on the generation it held, as a
+		// host whose store is down is.
+		_, _ = h.view.Refresh(c.ctx(t))
+	}
+}
+
+// settleMembership has a controller move the membership in store to list,
+// one step a generation, until it is there: each cache of the list a member
+// of its own at its address, serving its own disk, under the list's code.
+func settleMembership(t *testing.T, ctx context.Context, store *membership.Store, list rank.List) {
+	t.Helper()
+	want := membership.Want{Code: list.Code()}
+	for _, cache := range list.Caches() {
+		want.Hosts = append(want.Hosts, membership.Host{ID: cache.Identity, Address: cache.Address,
+			Disks: []membership.Disk{{ID: cache.Identity, Volume: cache.Identity.String(), Weight: cache.Weight}}})
+	}
+	for {
+		_, changed, err := store.Reconcile(ctx, want)
+		switch {
+		case errors.Is(err, platform.ErrUnavailable):
+			// The store failed the read or the write: the controller takes
+			// the step again on its next pass.
+		case err != nil:
+			t.Fatal(err)
+		case !changed:
+			return
+		}
 	}
 }
 

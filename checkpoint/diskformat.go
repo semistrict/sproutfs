@@ -418,7 +418,8 @@ func scanRegion(ctx context.Context, file platform.File, base, regionBytes int64
 
 // CacheIdentity names one page cache's disk. It is drawn when the cache's
 // file is made, and kept for as long as the file is, across every restart of
-// the host over it. It is the identity the list of caches ranks the cache by.
+// the host over it. It is the identity the membership ranks the disk by, and
+// the identity of the host that keeps it.
 type CacheIdentity = rank.Identity
 
 // CacheDeployment is the deployment a page cache's disk belongs to: the kind

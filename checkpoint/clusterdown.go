@@ -21,10 +21,11 @@ import (
 // holders. A probe goes after DefaultProbeFirst, then at intervals growing by
 // half up to DefaultProbeMax, spread by a hash of the host and the attempt so
 // that every reader does not probe at once. Only a probe that succeeds clears
-// the mark. A miss, BUSY, an answer for another cache or a stripe that fails
-// its checks is not a failure of the host.
+// the mark. A miss, BUSY, an answer for another disk, a stale answer or a
+// stripe that fails its checks is not a failure of the host.
 //
-// A reader marks down at most a fifth of its list, and always at least one
+// A reader marks down at most a fifth of the disks of its membership, and
+// always at least one
 // host, so a small cluster can still mark one. Past that it marks no more:
 // that many failing at once more likely means its own network has failed.
 
@@ -118,18 +119,20 @@ func (m *downMarks) observe(ctx context.Context, cache rank.Cache, err error, mi
 func refused(err error) bool { return errors.Is(err, peer.ErrDown) }
 
 // failedHere reports a request that ended for a reason of this host's or of
-// the answer's, not of the peer's: closed, given up on, BUSY, or answered for
-// another cache.
+// the answer's, not of the peer's: closed, given up on, BUSY, answered for
+// another disk or under another generation, or with nowhere to go.
 func failedHere(err error) bool {
 	return errors.Is(err, peer.ErrClosed) || errors.Is(err, context.Canceled) || errors.Is(err, peer.ErrBusy) ||
-		errors.Is(err, peer.ErrNotMe) || errors.Is(err, errAnswerLost) || errors.Is(err, errNoPeers)
+		errors.Is(err, peer.ErrNotMe) || errors.Is(err, peer.ErrStale) || errors.Is(err, errAnswerLost) ||
+		errors.Is(err, errNoPeers) || errors.Is(err, errNoRoute)
 }
 
-// mark marks cache down, unless a fifth of the list, and at least one host, is
-// marked down already, and starts probing it back.
+// mark marks cache down, unless a fifth of the membership's disks, and at
+// least one, is marked down already, and starts probing it back.
 func (m *downMarks) mark(ctx context.Context, cache rank.Cache, cause error) {
 	r := m.reader
-	list, _ := r.disk.list()
+	held, _ := r.disk.following()
+	list := held.List()
 	limit := max(1, list.Len()/5)
 	m.mu.Lock()
 	mark := m.marks[cache.Identity]

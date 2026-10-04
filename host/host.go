@@ -15,8 +15,8 @@
 //
 // Hosts reach each other over Config.Network. A host holds no admitted
 // identity. It dials two kinds of address: the peer-server address a handoff
-// carries, and the addresses of the caches in the list of caches it reads
-// from the orchestrator, which its cache fills. The peer server serves whoever
+// carries, and the addresses of the members of the membership it reads from
+// the object store, which its cache reads from and fills. The peer server serves whoever
 // that network's transport accepts. Over plain TCP that is anyone who reaches
 // the port, so restricting it to hosts is the cluster's network policy; a
 // deployment that authenticates its hosts does so in a transport of its own.
@@ -36,9 +36,9 @@ import (
 	"github.com/semistrict/sproutfs/checkpoint"
 	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/internal/blob"
+	"github.com/semistrict/sproutfs/membership"
 	"github.com/semistrict/sproutfs/peer"
 	"github.com/semistrict/sproutfs/platform"
-	"github.com/semistrict/sproutfs/rank"
 	"github.com/semistrict/sproutfs/resource"
 	"github.com/semistrict/sproutfs/vmmemory"
 	"github.com/semistrict/sproutfs/volume"
@@ -112,10 +112,18 @@ type Config struct {
 	// caps the disk then, and a Cache.DiskBytes beside it is refused. Without
 	// one, the disk's share is Cache.DiskBytes.
 	DiskLimiter *resource.DiskLimiter
-	// CacheList is where this host reads the list of caches in the cluster,
-	// and how often. Without a reader the host holds its own cache alone.
-	CacheList CacheListConfig
-	Volumes   VolumeConfig
+	// CacheVolume is the name the deployment knows the cache disk's volume
+	// by, which this host reports to the membership with the disk. Empty
+	// names it by its identity.
+	CacheVolume string
+	// MembershipInterval is how often this host reads the membership when
+	// nothing else has made it read: a request from a peer that names a newer
+	// generation does at once. Zero is membership.DefaultInterval, and a
+	// negative interval reads it only when RefreshMembership asks or a peer
+	// names a newer generation. Until a read succeeds the host holds its own
+	// disk alone.
+	MembershipInterval time.Duration
+	Volumes            VolumeConfig
 	// CheckpointInterval is how often every VM this host runs is checkpointed: the
 	// vCPUs pause for the VMM state capture and the seal, the guest resumes, and
 	// the sealed pages upload behind it. It is the only thing that makes a
@@ -187,10 +195,10 @@ type Host struct {
 	// cacheFit shrinks the page cache's disk when the disk limiter asks, nil
 	// where the host has no limiter or the cache keeps no disk.
 	cacheFit *cacheFitter
-	// self is this host's cache as the list of caches names it, zero where
-	// the host keeps none, and caches the list of caches it holds.
-	self        rank.Cache
-	caches      *rank.Follower
+	// self is this host as the membership names it, zero where it keeps no
+	// cache disk, and view the membership it holds.
+	self        membership.Host
+	view        *membership.View
 	control     *control.Client
 	checkpoints *checkpoint.Store
 	volumes     *volume.Manager
@@ -428,15 +436,27 @@ func StartHost(ctx context.Context, config Config) (*Host, error) {
 			return nil, err
 		}
 	}
-	// The host holds its own cache alone until it reads the list of caches,
-	// and keeps the last list it read whenever a read fails.
-	h.self = cacheOf(hostCtx, config, h.cache.Stats().Disk.Identity)
-	h.caches = rank.NewFollower(hostCtx, rank.FollowerConfig{Initial: rank.Alone(h.self),
-		Read: config.CacheList.Read, Interval: config.CacheList.Interval, Clock: h.clock})
+	// The host holds its own disk alone until it reads the membership, and
+	// keeps the newest generation it read whenever a read fails. Its identity
+	// is its disk's, so a pod replaced over the same file keeps its place.
+	h.self = memberOf(hostCtx, config, h.cache.Stats().Disk.Identity)
+	members, err := membership.NewStore(membership.Config{ObjectStore: config.ObjectStore,
+		ObjectPrefix: config.ObjectPrefix, Entropy: h.entropy})
+	if err != nil {
+		return nil, err
+	}
+	// A host that keeps no cache disk is no member, and routes nothing by the
+	// membership, so it never reads it.
+	if h.self.ID.IsZero() {
+		members = nil
+	}
+	h.view = membership.NewView(hostCtx, membership.ViewConfig{Store: members, Initial: alone(h.self),
+		Interval: config.MembershipInterval, Clock: h.clock})
 	// For the windows inside the cluster share, the disk keeps the stripes the
-	// list ranks this cache for, under the list's code; alone, that is every
-	// envelope whole. Every other window it keeps whole.
-	h.cache.FollowCaches(h.caches.List)
+	// membership ranks it for, under the membership's code, while the
+	// membership has this host serve it; alone, that is every envelope whole.
+	// Every other window it keeps whole.
+	h.cache.FollowMembership(h.view, h.self.ID)
 	// Publication encodes and the fault path decodes through pools of their
 	// own, so a guest's page fault never waits behind a checkpoint's encoding.
 	codecs, err := blob.NewCodecs(encodeWorkers(), decodeWorkers())
@@ -476,13 +496,14 @@ func StartHost(ctx context.Context, config Config) (*Host, error) {
 	if config.Migration.Address != "" {
 		// The peer server serves any peer the network's transport accepts,
 		// and answers the cache's requests from this host's cache, where it
-		// keeps one.
+		// keeps one, under the membership this host holds.
 		var cache peer.Cache
-		if !h.self.Identity.IsZero() {
+		if !h.self.ID.IsZero() {
 			cache = h.cache
 		}
 		h.pages, err = peer.NewServer(hostCtx, peer.ServerConfig{Network: config.Network,
 			Address: config.Migration.Address, PageSize: config.Migration.PageSize, Cache: cache,
+			Membership: h.view, Member: h.self.ID,
 			StripeBytesPerSecond: config.Migration.ServeStripeBytesPerSecond})
 		if err != nil {
 			return nil, fmt.Errorf("migration address %q: %w", config.Migration.Address, err)
@@ -539,11 +560,11 @@ type Status struct {
 	// HotTier is what the reads through the hot tier and its fills did, nil
 	// on a host that has none.
 	HotTier *checkpoint.HotTierStats
-	// Self is this host's cache as the list of caches names it, zero where
-	// the host keeps none, and Caches the list it holds and how it read it.
-	Self    rank.Cache
-	Caches  rank.FollowerStatus
-	Volumes volume.Stats
+	// Member is this host as the membership names it, zero where it keeps no
+	// cache disk, and Membership the membership it holds and how it read it.
+	Member     membership.Host
+	Membership membership.ViewStatus
+	Volumes    volume.Stats
 	// Pages is what this host's peer server has answered, and Serving
 	// every handover this host still holds pages for: the VMs it migrated away
 	// and the children of every fork point it took, wherever those children
@@ -629,9 +650,9 @@ func (h *Host) Status() Status {
 		stats := h.hot.Stats()
 		status.HotTier = &stats
 	}
-	status.Self = h.self
-	if h.caches != nil {
-		status.Caches = h.caches.Status()
+	status.Member = h.self
+	if h.view != nil {
+		status.Membership = h.view.Status()
 	}
 	if h.volumes != nil {
 		status.Volumes = h.volumes.Stats()
@@ -817,8 +838,8 @@ func (h *Host) shutdown() {
 	if h.cacheFit != nil {
 		h.cacheFit.stop()
 	}
-	if h.caches != nil {
-		h.caches.Close()
+	if h.view != nil {
+		h.view.Close()
 	}
 	if h.cache != nil {
 		h.cache.Close()

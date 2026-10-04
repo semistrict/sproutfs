@@ -252,7 +252,7 @@ type SupervisorConfig struct {
 	SpillBytes KindBytes
 	// CacheClusterPercent is the share of windows, 0 to 100, the cluster
 	// cache is turned on for: the page cache's disk keeps those as the
-	// stripes its list of caches ranks it for, and every other window whole.
+	// stripes the membership ranks it for, and every other window whole.
 	// Zero keeps every window whole.
 	CacheClusterPercent int
 	// HotTier is a second bucket under the deployment's names that reads of

@@ -24,7 +24,7 @@ func clusterTopology(hosts int) simtest.Topology {
 }
 
 // befall does one thing to one host of a world: loses it, drains it out of
-// the list of caches, or restarts it over its own disk.
+// the membership, or restarts it over its own disk.
 func befall(ctx context.Context, world *simtest.World, event string, host int) error {
 	switch event {
 	case "lost":

@@ -230,13 +230,11 @@ func Alone(self Member, disk Disk) Membership {
 	if self.ID.IsZero() || self.Address == "" || disk.ID.IsZero() || disk.Weight == 0 {
 		members, disks = nil, nil
 	}
-	m := Membership{code: rank.CodeFor(1), members: members, disks: disks}
-	caches := make([]rank.Cache, 0, len(disks))
-	for _, disk := range disks {
-		caches = append(caches, rank.Cache{Identity: disk.ID, Weight: disk.Weight, Address: self.Address})
+	list := rank.Alone(rank.Cache{Identity: disk.ID, Weight: disk.Weight, Address: self.Address})
+	if members == nil {
+		list = rank.Alone(rank.Cache{})
 	}
-	m.list, _ = rank.NewList(m.code, caches)
-	return m
+	return Membership{code: list.Code(), members: members, disks: disks, list: list}
 }
 
 // Generation is the membership's generation: zero for one never read.

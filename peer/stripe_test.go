@@ -18,7 +18,7 @@ func TestAStripeReadNeverWaitsBehindAPage(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		cache := newMemoryCache(1)
 		cache.stripes[stripeKey{window, 0, 0}] = []byte("a stripe")
-		s := newServing(t, peer.ServerConfig{Cache: cache})
+		s := newServing(t, peer.ServerConfig{Cache: cache, Membership: cache.source, Member: cache.member})
 		destination := s.table(t, "destination", peer.TableConfig{Connections: peer.Connections{Fault: 1, BulkRead: 1,
 			BulkWrite: 1, Stripe: 1}})
 		slow := make(chan error, 1)
@@ -29,7 +29,7 @@ func TestAStripeReadNeverWaitsBehindAPage(t *testing.T) {
 		<-s.gate.entered
 		read := make(chan error, 1)
 		go func() {
-			reply, err := destination.ReadStripes(t.Context(), cache.identity,
+			reply, err := destination.ReadStripes(t.Context(), cache.route,
 				peer.StripeRead{Window: window, Code: rank.Code{K: 1, M: 1}, MaxBytes: 1 << 10})
 			if err == nil {
 				if len(reply.Items) != 1 || string(reply.Payload) != "a stripe" {
@@ -71,10 +71,10 @@ func TestAServerAnswersBusyPastItsServingBandwidth(t *testing.T) {
 		cache.stripes[stripeKey{window, 0, 0}] = stripe
 		// A megabyte a second bursts a tenth of a second, about 102 KiB: the
 		// first read leaves 38 KiB, the second leaves a debt of 26 KiB.
-		s := newServing(t, peer.ServerConfig{Cache: cache, StripeBytesPerSecond: 1 << 20})
+		s := newServing(t, peer.ServerConfig{Cache: cache, Membership: cache.source, Member: cache.member, StripeBytesPerSecond: 1 << 20})
 		destination := s.table(t, "destination", peer.TableConfig{})
 		read := func(maxBytes int64) error {
-			reply, err := destination.ReadStripes(t.Context(), cache.identity,
+			reply, err := destination.ReadStripes(t.Context(), cache.route,
 				peer.StripeRead{Window: window, Code: rank.Code{K: 1, M: 1}, MaxBytes: maxBytes})
 			if err == nil {
 				reply.Release()

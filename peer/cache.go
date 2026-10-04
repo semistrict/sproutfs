@@ -8,6 +8,7 @@ import (
 	"log/slog"
 
 	"github.com/semistrict/sproutfs/control"
+	"github.com/semistrict/sproutfs/membership"
 	peerv1 "github.com/semistrict/sproutfs/peer/internal/gen/sproutfs/peer/v1"
 	"github.com/semistrict/sproutfs/peer/internal/wire"
 	"github.com/semistrict/sproutfs/platform"
@@ -16,19 +17,29 @@ import (
 )
 
 // The requests of the cluster's disk cache (plans/disk-cache-2026-10-02.md):
-// read the stripes a cache holds of a window, keep stripes, drop a stripe found
-// wrong, ask which pages a cache holds, and probe it. This package carries them
+// read the stripes a disk holds of a window, keep stripes, drop a stripe found
+// wrong, ask which pages a disk holds, and probe it. This package carries them
 // and answers them through a Cache; the checkpoint cache is what implements it.
 //
-// Every request names the cache it expects, by its identity in the list of
-// caches. An address can come to belong to another cache — a pod that took
-// the address of one that left — so a cache that is not the one named answers
-// ErrNotMe, as does a host that keeps no cache. That is a stale list, never a
-// down host.
+// Every request is routed by the membership (package membership). It names
+// the disk it expects to reach and the generation its sender holds. A host
+// answers only under that generation: one behind reads the membership first,
+// and one ahead, or one that cannot read it, answers stale with its own, which
+// the sender reads the membership for and asks again. A host the membership
+// at that generation does not have serve the disk named answers ErrNotMe: an
+// address can come to belong to another host, and a disk to another member.
+// That is a stale route, never a down host. Every answer names the generation
+// that assigned the disk to the host answering, so a host that lost the disk
+// can never be taken for its server again.
 
 var (
-	// ErrNotMe reports a host that is not the cache a request named.
-	ErrNotMe = errors.New("peer: the host is not the cache the request named")
+	// ErrNotMe reports a host that does not serve the disk a request named
+	// under the request's generation, or that names another assignment of it
+	// than the sender's.
+	ErrNotMe = errors.New("peer: the host does not serve the disk the request named")
+	// ErrStale reports a request answered under another generation of the
+	// membership than the one it was made under. Its error is a StaleError.
+	ErrStale = errors.New("peer: the request was made under another generation of the membership")
 	// ErrDropped reports a keep the cache did not write: it holds the stripe
 	// already, or its budget for writes is spent, or this host's background
 	// budget was. Nothing waits on a keep, so it is dropped, not queued.
@@ -37,6 +48,22 @@ var (
 	// host's background budget had no room for it. It is an ErrDropped too.
 	ErrNoRoom = errors.New("peer: the background budget has no room")
 )
+
+// StaleError is a holder's answer that it holds another generation of the
+// membership than the request named. A sender behind it reads the membership
+// and asks again; a holder behind it could not read the membership, and is
+// asked nothing more under this request's.
+type StaleError struct {
+	// Generation is the holder's.
+	Generation uint64
+}
+
+func (e *StaleError) Error() string {
+	return fmt.Sprintf("%v: the holder holds generation %d", ErrStale, e.Generation)
+}
+
+// Is makes a StaleError an ErrStale.
+func (e *StaleError) Is(target error) bool { return target == ErrStale }
 
 // StripeItem is one stripe a payload carries: the page of the window it belongs
 // to, counted from the window's first, its index in the code, the length of
@@ -51,7 +78,7 @@ type StripeItem struct {
 	Size   int
 }
 
-// StripeRead asks for every stripe a cache holds of some pages of one window,
+// StripeRead asks for every stripe a disk holds of some pages of one window,
 // of any index of the code. Pages nil asks for every page.
 type StripeRead struct {
 	Window   rank.Window
@@ -101,13 +128,15 @@ type Presence struct {
 }
 
 // Cache is what a host's disk cache answers its peers with. Every method is
-// asked for the cache the request named, and only then.
+// asked only for the disk the cache keeps, and only under a membership that
+// has this host serve it at the generation the request named, which the
+// methods that place a window by its ranks are given.
 type Cache interface {
-	// Identity is the cache's identity in the list of caches.
+	// Identity is the identity of the disk the cache keeps.
 	Identity() rank.Identity
-	ReadStripes(ctx context.Context, read StripeRead) (Stripes, error)
+	ReadStripes(ctx context.Context, m membership.Membership, read StripeRead) (Stripes, error)
 	// Keep writes stripes, or reports ErrDropped when it does not.
-	Keep(ctx context.Context, keep Keep) error
+	Keep(ctx context.Context, m membership.Membership, keep Keep) error
 	Drop(ctx context.Context, drop Drop) error
 	// Presence reports, per window asked, the pages it holds a stripe of.
 	Presence(ctx context.Context, presence Presence) ([][]uint32, error)
@@ -177,13 +206,64 @@ func codeFromWire(k, m uint32) rank.Code { return rank.Code{K: int(k), M: int(m)
 
 func cacheStatus(status peerv1.CacheStatus) *peerv1.CacheStatus { return &status }
 
-// named reports whether the request named this host's cache.
-func (s *Server) named(cache []byte) bool {
-	if s.config.Cache == nil {
-		return false
+// admission is how a host answers one cache request: under which generation,
+// naming which assignment of its disk, and with what status when it does not
+// answer it.
+type admission struct {
+	m          membership.Membership
+	generation uint64
+	assigned   uint64
+	// refused is the status of a request the host does not answer, nil for
+	// one it does.
+	refused *peerv1.CacheStatus
+}
+
+// admitCache decides how this host answers a request naming disk at generation. A
+// host behind the request reads the membership first. It answers only under
+// the request's generation, and only for the disk it keeps while that
+// generation has it serve it. Every answer names the generation that
+// assigned it the disk, as the last membership that had it serve the disk
+// said.
+func (s *Server) admitCache(disk []byte, generation uint64) admission {
+	cache, source := s.config.Cache, s.config.Membership
+	if cache == nil || source == nil {
+		return admission{refused: notMe}
 	}
-	identity := s.config.Cache.Identity()
-	return string(cache) == string(identity[:]) || s.bug("peer-answer-for-another-cache")
+	// The guard serves under whatever generation the host holds: it neither
+	// reads a newer one nor tells the sender it is stale.
+	stale := s.bug("membership-serve-stale-generation")
+	m := source.Current()
+	if m.Generation() < generation && !stale {
+		caught, err := source.Catch(s.ctx, generation)
+		m = caught
+		if err != nil {
+			slog.DebugContext(s.ctx, "peer: the membership could not be read for a request ahead of it",
+				"generation", m.Generation(), "request", generation, "error", err)
+		} else if m.Generation() >= generation {
+			s.probe(membership.ProbeHolderCaughtUp)
+		}
+	}
+	answered := admission{m: m, generation: m.Generation()}
+	if m.Generation() != generation && !stale {
+		s.probe(membership.ProbeStaleAnswered)
+		answered.refused = cacheStatus(peerv1.CacheStatus_CACHE_STATUS_STALE)
+		return answered
+	}
+	identity := cache.Identity()
+	if m.Serves(s.config.Member, identity) {
+		found, _ := m.Disk(identity)
+		s.assigned.Store(found.Assigned)
+	}
+	answered.assigned = s.assigned.Load()
+	switch {
+	case string(disk) != string(identity[:]) && !s.bug("peer-answer-for-another-cache"):
+		s.probe(membership.ProbeNotServed)
+		answered.refused = notMe
+	case !m.Serves(s.config.Member, identity) && !s.bug("membership-serve-stale-assignment"):
+		s.probe(membership.ProbeNotServed)
+		answered.refused = notMe
+	}
+	return answered
 }
 
 var notMe = cacheStatus(peerv1.CacheStatus_CACHE_STATUS_NOT_ME)
@@ -191,8 +271,13 @@ var notMe = cacheStatus(peerv1.CacheStatus_CACHE_STATUS_NOT_ME)
 // answerReadStripes answers a read with the stripes the cache holds. The reply
 // holds what it carries of its peer's budget until it has been sent.
 func (s *Server) answerReadStripes(session *session, request *peerv1.ReadStripes) answer {
-	if !s.named(request.GetCache()) {
-		return answer{message: peerv1.Stripes_builder{Status: notMe}.Build()}
+	admitted := s.admitCache(request.GetCache(), request.GetGeneration())
+	refuse := func(status *peerv1.CacheStatus) answer {
+		return answer{message: peerv1.Stripes_builder{Status: status, Generation: proto.Uint64(admitted.generation),
+			Assigned: proto.Uint64(admitted.assigned)}.Build()}
+	}
+	if admitted.refused != nil {
+		return refuse(admitted.refused)
 	}
 	maximum := int64(min(request.GetMaxBytes(), uint64(platform.MaxFrameBytes)))
 	if maximum > 0 {
@@ -212,7 +297,7 @@ func (s *Server) answerReadStripes(session *session, request *peerv1.ReadStripes
 	if len(request.GetPages()) > 0 {
 		read.Pages = bitmapPages(request.GetPages())
 	}
-	stripes, err := s.config.Cache.ReadStripes(s.ctx, read)
+	stripes, err := s.config.Cache.ReadStripes(s.ctx, admitted.m, read)
 	if err == nil && stripes.Size > maximum {
 		err = fmt.Errorf("the cache answered %d bytes of a read of at most %d", stripes.Size, maximum)
 	}
@@ -222,7 +307,7 @@ func (s *Server) answerReadStripes(session *session, request *peerv1.ReadStripes
 			stripes.Release()
 		}
 		slog.WarnContext(s.ctx, "peer: the cache could not answer a read", "peer", session.peer, "error", err)
-		return answer{message: peerv1.Stripes_builder{Status: cacheStatus(peerv1.CacheStatus_CACHE_STATUS_UNSPECIFIED)}.Build()}
+		return refuse(cacheStatus(peerv1.CacheStatus_CACHE_STATUS_UNSPECIFIED))
 	}
 	if len(stripes.Items) > 0 {
 		s.serving.spend(stripes.Size)
@@ -232,7 +317,8 @@ func (s *Server) answerReadStripes(session *session, request *peerv1.ReadStripes
 	}
 	return answer{
 		message: peerv1.Stripes_builder{Status: cacheStatus(peerv1.CacheStatus_CACHE_STATUS_OK),
-			Items: itemsToWire(stripes.Items), FillRight: proto.Bool(stripes.FillRight)}.Build(),
+			Items: itemsToWire(stripes.Items), FillRight: proto.Bool(stripes.FillRight),
+			Generation: proto.Uint64(admitted.generation), Assigned: proto.Uint64(admitted.assigned)}.Build(),
 		body: stripes.Payload, size: stripes.Size,
 		sent: func(bool) {
 			release()
@@ -246,12 +332,17 @@ func (s *Server) answerReadStripes(session *session, request *peerv1.ReadStripes
 // answerKeep writes the stripes a keep carries, or says it dropped them.
 func (s *Server) answerKeep(session *session, request *peerv1.Keep, payload *payloadBuffer) answer {
 	defer payload.release()
-	if !s.named(request.GetCache()) {
-		return answer{message: peerv1.Kept_builder{Status: notMe}.Build()}
+	admitted := s.admitCache(request.GetCache(), request.GetGeneration())
+	kept := func(status *peerv1.CacheStatus) answer {
+		return answer{message: peerv1.Kept_builder{Status: status, Generation: proto.Uint64(admitted.generation),
+			Assigned: proto.Uint64(admitted.assigned)}.Build()}
+	}
+	if admitted.refused != nil {
+		return kept(admitted.refused)
 	}
 	items, err := itemsFromWire(request.GetItems(), int64(len(payload.bytes)))
 	if err != nil {
-		return answer{message: peerv1.Kept_builder{Status: cacheStatus(peerv1.CacheStatus_CACHE_STATUS_UNSPECIFIED)}.Build()}
+		return kept(cacheStatus(peerv1.CacheStatus_CACHE_STATUS_UNSPECIFIED))
 	}
 	// A keep holds its bytes of the peer's write budget while the cache
 	// writes them; one over it is told so, and its sender drops it.
@@ -260,31 +351,37 @@ func (s *Server) answerKeep(session *session, request *peerv1.Keep, payload *pay
 		return answer{message: busy}
 	}
 	defer release()
-	err = s.config.Cache.Keep(s.ctx, Keep{Window: windowFromWire(request.GetWindow()),
+	err = s.config.Cache.Keep(s.ctx, admitted.m, Keep{Window: windowFromWire(request.GetWindow()),
 		Code: codeFromWire(request.GetK(), request.GetM()), Items: items, Payload: payload.bytes,
 		Repair: request.GetRepair(), Publication: request.GetPublication()})
-	status := peerv1.CacheStatus_CACHE_STATUS_OK
 	if err != nil {
-		status = peerv1.CacheStatus_CACHE_STATUS_DROPPED
+		return kept(cacheStatus(peerv1.CacheStatus_CACHE_STATUS_DROPPED))
 	}
-	return answer{message: peerv1.Kept_builder{Status: &status}.Build()}
+	return kept(cacheStatus(peerv1.CacheStatus_CACHE_STATUS_OK))
 }
 
 func (s *Server) answerDrop(request *peerv1.Drop) answer {
-	if !s.named(request.GetCache()) {
-		return answer{message: peerv1.Dropped_builder{Status: notMe}.Build()}
+	admitted := s.admitCache(request.GetCache(), request.GetGeneration())
+	status := admitted.refused
+	if status == nil {
+		status = cacheStatus(peerv1.CacheStatus_CACHE_STATUS_OK)
+		if err := s.config.Cache.Drop(s.ctx, Drop{Window: windowFromWire(request.GetWindow()), Page: request.GetPage(),
+			Index: int(request.GetIndex()), Code: codeFromWire(request.GetK(), request.GetM())}); err != nil {
+			status = cacheStatus(peerv1.CacheStatus_CACHE_STATUS_UNSPECIFIED)
+		}
 	}
-	status := peerv1.CacheStatus_CACHE_STATUS_OK
-	if err := s.config.Cache.Drop(s.ctx, Drop{Window: windowFromWire(request.GetWindow()), Page: request.GetPage(),
-		Index: int(request.GetIndex()), Code: codeFromWire(request.GetK(), request.GetM())}); err != nil {
-		status = peerv1.CacheStatus_CACHE_STATUS_UNSPECIFIED
-	}
-	return answer{message: peerv1.Dropped_builder{Status: &status}.Build()}
+	return answer{message: peerv1.Dropped_builder{Status: status, Generation: proto.Uint64(admitted.generation),
+		Assigned: proto.Uint64(admitted.assigned)}.Build()}
 }
 
 func (s *Server) answerPresence(request *peerv1.Presence) answer {
-	if !s.named(request.GetCache()) {
-		return answer{message: peerv1.Present_builder{Status: notMe}.Build()}
+	admitted := s.admitCache(request.GetCache(), request.GetGeneration())
+	present := func(status *peerv1.CacheStatus, bitmaps [][]byte) answer {
+		return answer{message: peerv1.Present_builder{Status: status, Pages: bitmaps,
+			Generation: proto.Uint64(admitted.generation), Assigned: proto.Uint64(admitted.assigned)}.Build()}
+	}
+	if admitted.refused != nil {
+		return present(admitted.refused, nil)
 	}
 	windows := make([]rank.Window, 0, len(request.GetWindows()))
 	for _, window := range request.GetWindows() {
@@ -292,18 +389,18 @@ func (s *Server) answerPresence(request *peerv1.Presence) answer {
 	}
 	held, err := s.config.Cache.Presence(s.ctx, Presence{Windows: windows, Code: codeFromWire(request.GetK(), request.GetM())})
 	if err != nil || len(held) != len(windows) {
-		return answer{message: peerv1.Present_builder{Status: cacheStatus(peerv1.CacheStatus_CACHE_STATUS_UNSPECIFIED)}.Build()}
+		return present(cacheStatus(peerv1.CacheStatus_CACHE_STATUS_UNSPECIFIED), nil)
 	}
 	bitmaps := make([][]byte, 0, len(held))
 	for _, pages := range held {
 		bitmaps = append(bitmaps, pageBitmap(pages))
 	}
-	return answer{message: peerv1.Present_builder{Status: cacheStatus(peerv1.CacheStatus_CACHE_STATUS_OK),
-		Pages: bitmaps}.Build()}
+	return present(cacheStatus(peerv1.CacheStatus_CACHE_STATUS_OK), bitmaps)
 }
 
-// answerProbe says whether this host keeps the cache named; an empty name
-// asks only whether the host is there.
+// answerProbe says whether this host keeps the disk named; an empty name asks
+// only whether the host is there. A probe asks whether a host is there to be
+// asked at all, under no generation, so it is answered by the disk alone.
 func (s *Server) answerProbe(request *peerv1.Probe) answer {
 	var identity []byte
 	if s.config.Cache != nil {
@@ -311,19 +408,34 @@ func (s *Server) answerProbe(request *peerv1.Probe) answer {
 		identity = own[:]
 	}
 	status := peerv1.CacheStatus_CACHE_STATUS_OK
-	if len(request.GetCache()) > 0 && !s.named(request.GetCache()) {
+	if named := request.GetCache(); len(named) > 0 && (identity == nil ||
+		string(named) != string(identity) && !s.bug("peer-answer-for-another-cache")) {
 		status = peerv1.CacheStatus_CACHE_STATUS_NOT_ME
 	}
 	return answer{message: peerv1.Probed_builder{Status: &status, Cache: identity}.Build()}
 }
 
-// cacheError is the error a cache's status means.
-func cacheError(status peerv1.CacheStatus) error {
+// replied is the error a cache's answer to a request routed by route means.
+// An answer under another generation is stale whatever its status says, and
+// one that names another assignment of the disk than the route's comes from a
+// host that does not serve it under the route's membership.
+func replied(route membership.Route, status peerv1.CacheStatus, generation, assigned uint64) error {
+	switch status {
+	case peerv1.CacheStatus_CACHE_STATUS_STALE:
+		return &StaleError{Generation: generation}
+	case peerv1.CacheStatus_CACHE_STATUS_NOT_ME:
+		return ErrNotMe
+	}
+	if generation != route.Generation {
+		return &StaleError{Generation: generation}
+	}
+	if assigned != route.Assigned {
+		return fmt.Errorf("%w: it names the assignment of disk %s at generation %d, not %d", ErrNotMe, route.Disk,
+			assigned, route.Assigned)
+	}
 	switch status {
 	case peerv1.CacheStatus_CACHE_STATUS_OK:
 		return nil
-	case peerv1.CacheStatus_CACHE_STATUS_NOT_ME:
-		return ErrNotMe
 	case peerv1.CacheStatus_CACHE_STATUS_DROPPED:
 		return ErrDropped
 	default:
@@ -343,14 +455,14 @@ type StripesReply struct {
 // Release gives the reply's buffer back. Its payload must not be used after.
 func (r StripesReply) Release() { r.buffer.release() }
 
-// ReadStripes asks the peer's cache, which must be cache, for the stripes it
-// holds of read. It is of the Stripe class unless ctx says otherwise, so it
-// goes over connections no page reply holds up, and within that class's
-// budget at the peer, which bounds the stripe bytes this host has in flight
-// there. A peer marked down is not asked: another holder has the stripes, or
-// the store does. Every read of this host's also waits for room under its
-// bound on stripe bytes in flight at all its peers.
-func (p *Peer) ReadStripes(ctx context.Context, cache rank.Identity, read StripeRead) (StripesReply, error) {
+// ReadStripes asks the peer for the stripes the disk route names holds of
+// read, under the route's generation. It is of the Stripe class unless ctx
+// says otherwise, so it goes over connections no page reply holds up, and
+// within that class's budget at the peer, which bounds the stripe bytes this
+// host has in flight there. A peer marked down is not asked: another holder
+// has the stripes, or the store does. Every read of this host's also waits
+// for room under its bound on stripe bytes in flight at all its peers.
+func (p *Peer) ReadStripes(ctx context.Context, route membership.Route, read StripeRead) (StripesReply, error) {
 	if p.Down() {
 		p.table.probe(ProbeSkippedDown)
 		return StripesReply{}, ErrDown
@@ -360,9 +472,9 @@ func (p *Peer) ReadStripes(ctx context.Context, cache rank.Identity, read Stripe
 		class = Fault
 	}
 	ctx = WithClass(ctx, classOr(ctx, class))
-	request := peerv1.ReadStripes_builder{Cache: cache[:], Window: windowToWire(read.Window),
+	request := peerv1.ReadStripes_builder{Cache: route.Disk[:], Window: windowToWire(read.Window),
 		Pages: pageBitmap(read.Pages), K: proto.Uint32(uint32(read.Code.K)), M: proto.Uint32(uint32(read.Code.M)),
-		MaxBytes: proto.Uint64(uint64(read.MaxBytes))}.Build()
+		MaxBytes: proto.Uint64(uint64(read.MaxBytes)), Generation: proto.Uint64(route.Generation)}.Build()
 	response := new(peerv1.Stripes)
 	if !p.table.bug("peer-unbounded-stripes") {
 		if err := p.table.stripes.Acquire(ctx, Resident, read.MaxBytes); err != nil {
@@ -374,7 +486,7 @@ func (p *Peer) ReadStripes(ctx context.Context, cache rank.Identity, read Stripe
 	if err != nil {
 		return StripesReply{}, err
 	}
-	if err := cacheError(response.GetStatus()); err != nil {
+	if err := replied(route, response.GetStatus(), response.GetGeneration(), response.GetAssigned()); err != nil {
 		got.payload.release()
 		return StripesReply{}, err
 	}
@@ -387,10 +499,11 @@ func (p *Peer) ReadStripes(ctx context.Context, cache rank.Identity, read Stripe
 		buffer: got.payload}, nil
 }
 
-// Keep asks the peer's cache, which must be cache, to write stripes. A keep is
-// bulk write, and nothing waits on it: one over this host's background budget,
-// or one the cache does not write, is ErrDropped, never queued.
-func (p *Peer) Keep(ctx context.Context, cache rank.Identity, keep Keep) error {
+// Keep asks the peer to write stripes to the disk route names, under the
+// route's generation. A keep is bulk write, and nothing waits on it: one over
+// this host's background budget, or one the cache does not write, is
+// ErrDropped, never queued.
+func (p *Peer) Keep(ctx context.Context, route membership.Route, keep Keep) error {
 	if p.Down() {
 		p.table.probe(ProbeSkippedDown)
 		return ErrDown
@@ -408,9 +521,10 @@ func (p *Peer) Keep(ctx context.Context, cache rank.Identity, keep Keep) error {
 		return fmt.Errorf("%w: %w", ErrDropped, ErrNoRoom)
 	}
 	defer p.table.background.Release(size)
-	request := peerv1.Keep_builder{Cache: cache[:], Window: windowToWire(keep.Window),
+	request := peerv1.Keep_builder{Cache: route.Disk[:], Window: windowToWire(keep.Window),
 		K: proto.Uint32(uint32(keep.Code.K)), M: proto.Uint32(uint32(keep.Code.M)), Items: itemsToWire(keep.Items),
-		Repair: proto.Bool(keep.Repair), Publication: proto.Bool(keep.Publication)}.Build()
+		Repair: proto.Bool(keep.Repair), Publication: proto.Bool(keep.Publication),
+		Generation: proto.Uint64(route.Generation)}.Build()
 	response := new(peerv1.Kept)
 	got, _, err := p.call(WithClass(ctx, BulkWrite), "", request, response, size, 0, keep.Payload)
 	if errors.Is(err, ErrBusy) {
@@ -422,39 +536,40 @@ func (p *Peer) Keep(ctx context.Context, cache rank.Identity, keep Keep) error {
 		return err
 	}
 	got.payload.release()
-	return cacheError(response.GetStatus())
+	return replied(route, response.GetStatus(), response.GetGeneration(), response.GetAssigned())
 }
 
-// Drop tells the peer's cache, which must be cache, to forget a stripe.
-func (p *Peer) Drop(ctx context.Context, cache rank.Identity, drop Drop) error {
-	request := peerv1.Drop_builder{Cache: cache[:], Window: windowToWire(drop.Window), Page: proto.Uint32(drop.Page),
+// Drop tells the peer to forget a stripe of the disk route names, under the
+// route's generation.
+func (p *Peer) Drop(ctx context.Context, route membership.Route, drop Drop) error {
+	request := peerv1.Drop_builder{Cache: route.Disk[:], Window: windowToWire(drop.Window), Page: proto.Uint32(drop.Page),
 		Index: proto.Uint32(uint32(drop.Index)), K: proto.Uint32(uint32(drop.Code.K)),
-		M: proto.Uint32(uint32(drop.Code.M))}.Build()
+		M: proto.Uint32(uint32(drop.Code.M)), Generation: proto.Uint64(route.Generation)}.Build()
 	response := new(peerv1.Dropped)
 	got, _, err := p.call(WithClass(ctx, Fault), "", request, response, 0, 0, nil)
 	if err != nil {
 		return err
 	}
 	got.payload.release()
-	return cacheError(response.GetStatus())
+	return replied(route, response.GetStatus(), response.GetGeneration(), response.GetAssigned())
 }
 
-// Presence asks the peer's cache, which must be cache, which pages of some
-// windows it holds a stripe of.
-func (p *Peer) Presence(ctx context.Context, cache rank.Identity, presence Presence) ([][]uint32, error) {
+// Presence asks the peer which pages of some windows the disk route names
+// holds a stripe of, under the route's generation.
+func (p *Peer) Presence(ctx context.Context, route membership.Route, presence Presence) ([][]uint32, error) {
 	windows := make([]*peerv1.Window, 0, len(presence.Windows))
 	for _, window := range presence.Windows {
 		windows = append(windows, windowToWire(window))
 	}
-	request := peerv1.Presence_builder{Cache: cache[:], Windows: windows, K: proto.Uint32(uint32(presence.Code.K)),
-		M: proto.Uint32(uint32(presence.Code.M))}.Build()
+	request := peerv1.Presence_builder{Cache: route.Disk[:], Windows: windows, K: proto.Uint32(uint32(presence.Code.K)),
+		M: proto.Uint32(uint32(presence.Code.M)), Generation: proto.Uint64(route.Generation)}.Build()
 	response := new(peerv1.Present)
 	got, _, err := p.call(WithClass(ctx, Fault), "", request, response, 0, 0, nil)
 	if err != nil {
 		return nil, err
 	}
 	got.payload.release()
-	if err := cacheError(response.GetStatus()); err != nil {
+	if err := replied(route, response.GetStatus(), response.GetGeneration(), response.GetAssigned()); err != nil {
 		return nil, err
 	}
 	if len(response.GetPages()) != len(presence.Windows) {
@@ -468,13 +583,13 @@ func (p *Peer) Presence(ctx context.Context, cache rank.Identity, presence Prese
 	return held, nil
 }
 
-// Probe asks whether the peer is there and keeps cache: ErrNotMe when another
-// cache answers at its address. The zero identity asks only whether the host
-// is there. It reports the identity the peer keeps.
-func (p *Peer) Probe(ctx context.Context, cache rank.Identity) (rank.Identity, error) {
+// Probe asks whether the peer is there and keeps disk: ErrNotMe when it keeps
+// another at its address. The zero identity asks only whether the host is
+// there. It reports the identity of the disk the peer keeps.
+func (p *Peer) Probe(ctx context.Context, disk rank.Identity) (rank.Identity, error) {
 	request := peerv1.Probe_builder{}.Build()
-	if !cache.IsZero() {
-		request.SetCache(cache[:])
+	if !disk.IsZero() {
+		request.SetCache(disk[:])
 	}
 	response := new(peerv1.Probed)
 	got, _, err := p.call(WithClass(ctx, Fault), "", request, response, 0, 0, nil)
@@ -484,5 +599,12 @@ func (p *Peer) Probe(ctx context.Context, cache rank.Identity) (rank.Identity, e
 	got.payload.release()
 	var held rank.Identity
 	copy(held[:], response.GetCache())
-	return held, cacheError(response.GetStatus())
+	switch response.GetStatus() {
+	case peerv1.CacheStatus_CACHE_STATUS_OK:
+		return held, nil
+	case peerv1.CacheStatus_CACHE_STATUS_NOT_ME:
+		return held, ErrNotMe
+	default:
+		return held, fmt.Errorf("peer: the cache could not answer: %s", response.GetStatus())
+	}
 }

@@ -129,7 +129,7 @@ func runPeerCampaign(t *testing.T, seed uint64) *sim.Runtime {
 	c := &campaign{t: t, runtime: runtime, random: runtime.Random("peer-campaign"),
 		pages: memoryPages{count: campaignPages, pageSize: pageSize}, cache: newMemoryCache(7)}
 	source, err := peer.NewServer(ctx, peer.ServerConfig{Network: network, Address: "source", PageSize: pageSize,
-		MaxPagesPerRequest: 64, Cache: c.cache,
+		MaxPagesPerRequest: 64, Cache: c.cache, Membership: c.cache.source, Member: c.cache.member,
 		Budgets: peer.Budgets{Fault: 8 * pageSize, BulkRead: 128 * pageSize, BulkWrite: 64 << 10}})
 	if err != nil {
 		t.Fatal(err)
@@ -312,7 +312,7 @@ func (c *campaign) gone(ctx context.Context) {
 	gone := c.destination.Peer("gone")
 	read := peer.StripeRead{Window: window, Code: rank.Code{K: 1, M: 1}, MaxBytes: 64 << 10}
 	for ctx.Err() == nil {
-		if reply, err := gone.ReadStripes(ctx, c.cache.identity, read); err == nil {
+		if reply, err := gone.ReadStripes(ctx, c.cache.route, read); err == nil {
 			reply.Release()
 			c.t.Error("a machine that is gone answered a read")
 		}
@@ -340,12 +340,12 @@ func (c *campaign) stripes(ctx context.Context) {
 			items = append(items, peer.StripeItem{Page: page, Index: index, Length: 2 * len(stripe), Size: len(stripe)})
 			payload = append(payload, stripe...)
 		}
-		err := source.Keep(ctx, c.cache.identity, peer.Keep{Window: window, Code: code, Items: items, Payload: payload,
+		err := source.Keep(ctx, c.cache.route, peer.Keep{Window: window, Code: code, Items: items, Payload: payload,
 			Repair: attempt%5 == 0})
 		if err != nil && !errors.Is(err, peer.ErrDropped) && ctx.Err() == nil {
 			c.check("keep", err)
 		}
-		reply, err := source.ReadStripes(ctx, c.cache.identity, peer.StripeRead{Window: window, Pages: []uint32{page},
+		reply, err := source.ReadStripes(ctx, c.cache.route, peer.StripeRead{Window: window, Pages: []uint32{page},
 			Code: code, MaxBytes: 64 << 10})
 		switch {
 		case ctx.Err() != nil:
@@ -414,7 +414,7 @@ func (c *campaign) quiet(ctx context.Context) {
 	if !errors.As(err, &incompatible) || *incompatible != (peer.IncompatibleError{Min: 1, Max: 2}) {
 		c.t.Errorf("a destination two releases ahead = %v, want incompatible with versions 1 to 2", err)
 	}
-	_, err = c.destination.Peer("gone").ReadStripes(ctx, c.cache.identity,
+	_, err = c.destination.Peer("gone").ReadStripes(ctx, c.cache.route,
 		peer.StripeRead{Window: window, Code: rank.Code{K: 1, M: 1}, MaxBytes: 1 << 10})
 	if !errors.Is(err, peer.ErrDown) {
 		c.t.Errorf("a read from a machine that is gone = %v, want ErrDown", err)

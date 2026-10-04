@@ -8,29 +8,30 @@ import (
 
 	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/internal/blob"
+	"github.com/semistrict/sproutfs/membership"
 	"github.com/semistrict/sproutfs/peer"
 	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/rank"
 	"github.com/semistrict/sproutfs/stripe"
 )
 
-// What the disk keeps of an envelope is the stripes of it that its cache is
-// ranked for. The list of caches the host holds carries the deployment's
-// code, and ranks every window's caches: stripe i of the window's envelopes
-// goes on rank ((i - 1) mod n) + 1 of the n caches ranked for it, counting
-// from one, so a list shorter than the code is wide takes the stripes round
-// its caches, and a cache may hold several indices of one window. A host
-// alone in its list holds every stripe, under the code of one host, 1+0: its
-// one stripe is the envelope whole. A host whose list does not rank its cache
-// for a window keeps nothing of it.
+// What the disk keeps of an envelope is the stripes of it that the disk is
+// ranked for. The membership the host holds carries the deployment's code,
+// and ranks every window's disks: stripe i of the window's envelopes goes on
+// rank ((i - 1) mod n) + 1 of the n disks ranked for it, counting from one,
+// so a membership of fewer disks than the code is wide takes the stripes
+// round its disks, and a disk may hold several indices of one window. A host
+// alone holds every stripe, under the code of one host, 1+0: its one stripe
+// is the envelope whole. A host whose membership does not rank its disk for a
+// window, or does not have it serve the disk, keeps nothing of it.
 //
 // That holds only for the windows inside the share the cluster cache is
 // turned on for (CacheConfig.ClusterPercent), chosen by a hash of the window.
-// Every other window is kept whole under 1+0, whatever the list says, as a
+// Every other window is kept whole under 1+0, whatever the membership says, as a
 // host kept it before there were stripes, so a deployment rolls the cluster
 // cache out a share of windows at a time and loses nothing before then.
 //
-// A read rebuilds the envelope from the stripes of the list's code the disk
+// A read rebuilds the envelope from the stripes of the membership's code the disk
 // holds, any k distinct indices of them. A stripe of another code is a miss,
 // so a deployment that changes its code refills from the store and reads no
 // wrong bytes. Each stripe's key and checksum are checked as it is read, and
@@ -64,57 +65,77 @@ const (
 	// buggifyDiskWrongStripe hands a read a stripe whose checksum holds and
 	// whose bytes are wrong.
 	buggifyDiskWrongStripe = "checkpoint/disk-wrong-stripe"
-	// buggifyDiskCodeChanged reads under another code than the list's, as a
-	// host does after its deployment's code changed.
+	// buggifyDiskCodeChanged reads under another code than the membership's,
+	// as a host does after its deployment's code changed.
 	buggifyDiskCodeChanged = "checkpoint/disk-code-changed"
-	// buggifyDiskShortList places a window by the list less every other
-	// cache, as a host that has heard of no other cache yet does: a list
-	// shorter than the code is wide.
+	// buggifyDiskShortList places a window by the ranks less every other
+	// disk, as a host that has heard of no other disk yet does: ranks fewer
+	// than the code is wide.
 	buggifyDiskShortList = "checkpoint/disk-short-list"
 )
 
 // wholeCode is the code of a host alone: each envelope whole.
 var wholeCode = rank.CodeFor(1)
 
-// follow has the disk place what it keeps by the list caches returns, and
-// read under its code. It is called once, as the host starts following the
-// list of caches, before any read or fill.
-func (d *cacheDisk) follow(caches func() rank.List) {
+// follow has the disk place what it keeps by the membership source holds,
+// as the host of member, and read under its code. It is called once, as the
+// host starts following the membership, before any read or fill.
+func (d *cacheDisk) follow(source membership.Source, member rank.Identity) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.caches = caches
+	d.source, d.member = source, member
 }
 
-// list is the list of caches the disk places by, and whether it follows one.
-func (d *cacheDisk) list() (rank.List, bool) {
+// following is the membership the disk places by, and whether it follows one.
+func (d *cacheDisk) following() (membership.Membership, bool) {
 	d.mu.Lock()
-	caches := d.caches
+	source := d.source
 	d.mu.Unlock()
-	if caches == nil {
-		return rank.List{}, false
+	if source == nil {
+		return membership.Membership{}, false
 	}
-	list := caches()
-	return list, list.Code().Validate() == nil
+	return source.Current(), true
 }
 
-// listFor is the list of caches key's window is placed by, and whether it is
-// placed by one: a disk that follows a list places by it the windows inside
-// the share the cluster cache is turned on for, and keeps every other window
-// whole. ignoreShare is the guard that places every window by the list.
-func (d *cacheDisk) listFor(key diskKey, ignoreShare bool) (rank.List, bool) {
-	list, ok := d.list()
+// catch is the membership the disk places by, read again first when it is
+// older than generation.
+func (d *cacheDisk) catch(ctx context.Context, generation uint64) (membership.Membership, error) {
+	d.mu.Lock()
+	source := d.source
+	d.mu.Unlock()
+	if source == nil {
+		return membership.Membership{}, errNotFollowing
+	}
+	return source.Catch(ctx, generation)
+}
+
+// errNotFollowing is what a disk that follows no membership says when asked
+// to read one.
+var errNotFollowing = errors.New("checkpoint: the cache follows no membership")
+
+// owns reports whether this host serves its disk under m: the disk is
+// assigned to it and serving. A disk the host does not serve keeps nothing of
+// the cluster's windows, and is read for none of them.
+func (d *cacheDisk) owns(m membership.Membership) bool { return m.Serves(d.member, d.identity) }
+
+// placedBy is the membership key's window is placed by, and whether it is
+// placed by one: a disk that follows a membership places by it the windows
+// inside the share the cluster cache is turned on for, and keeps every other
+// window whole. ignoreShare is the guard that places every window by it.
+func (d *cacheDisk) placedBy(key diskKey, ignoreShare bool) (membership.Membership, bool) {
+	m, ok := d.following()
 	if !ok || !ignoreShare && !key.rankWindow().InShare(d.clusterPercent) {
-		return rank.List{}, false
+		return membership.Membership{}, false
 	}
-	return list, true
+	return m, true
 }
 
-// code is the code the disk reads key under: the list's for a window it
-// places by the list, and 1+0 for every other.
+// code is the code the disk reads key under: the membership's for a window
+// it places by the membership, and 1+0 for every other.
 func (d *cacheDisk) code(ctx context.Context, key diskKey) rank.Code {
 	code := wholeCode
-	if list, ok := d.listFor(key, sim.Bug(ctx, "diskcache-share-ignored")); ok {
-		code = list.Code()
+	if m, ok := d.placedBy(key, sim.Bug(ctx, "diskcache-share-ignored")); ok {
+		code = m.Code()
 	}
 	if sim.Buggify(ctx, buggifyDiskCodeChanged, 0.05) {
 		code = anotherCode(code)
@@ -132,14 +153,18 @@ func anotherCode(code rank.Code) rank.Code {
 }
 
 // placement is the code the disk keeps key's envelope under, and the indices
-// of it this cache holds: for a window it places by the list, those the list
-// puts on this cache, none where the list does not rank it; for every other
-// window, the envelope whole.
+// of it this disk holds: for a window it places by the membership, those the
+// ranks put on this disk, none where they do not rank it or the host does not
+// serve it; for every other window, the envelope whole.
 func (d *cacheDisk) placement(ctx context.Context, key diskKey) (rank.Code, []int) {
-	list, ok := d.listFor(key, sim.Bug(ctx, "diskcache-share-ignored"))
+	m, ok := d.placedBy(key, sim.Bug(ctx, "diskcache-share-ignored"))
 	if !ok {
 		return wholeCode, []int{0}
 	}
+	if !d.owns(m) {
+		return m.Code(), nil
+	}
+	list := m.List()
 	if sim.Buggify(ctx, buggifyDiskShortList, 0.25) {
 		for _, cache := range list.Caches() {
 			if cache.Identity != d.identity {
@@ -447,11 +472,11 @@ func (d *cacheDisk) decoded(ctx context.Context, key diskKey, codecs *blob.Codec
 }
 
 // served counts one read of an envelope that came back intact, and one read
-// of each stripe of it the disk holds under the list's code.
+// of each stripe of it the disk holds under the membership's code.
 func (d *cacheDisk) served(key diskKey) {
 	code := wholeCode
-	if list, ok := d.listFor(key, false); ok {
-		code = list.Code()
+	if m, ok := d.placedBy(key, false); ok {
+		code = m.Code()
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()

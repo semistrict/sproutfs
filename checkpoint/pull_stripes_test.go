@@ -36,7 +36,7 @@ func (f *pullFixture) follow(t *testing.T, code rank.Code, withSelf bool, others
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.cache.FollowCaches(func() rank.List { return list })
+	f.cache.FollowList(list)
 	return list
 }
 

@@ -1,0 +1,147 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"maps"
+	"slices"
+	"time"
+
+	"github.com/semistrict/sproutfs/api/host"
+	"github.com/semistrict/sproutfs/membership"
+	"github.com/semistrict/sproutfs/platform/sim"
+	"github.com/semistrict/sproutfs/rank"
+)
+
+// The orchestrator is the membership's usual controller (package
+// membership). It surveys the host pods, and moves the membership towards
+// them one step a pass: a join, a leave, or a change of weight is one
+// generation, and a host drains before it leaves. Nothing depends on there
+// being one controller. Each step is a compare-and-set of the object, so two
+// orchestrators at once each take a step from what the other left.
+
+// MembershipInterval is how often the orchestrator takes a step of the
+// membership. A join, then, is a pass to list the host and one to serve its
+// disk, and a leave four passes.
+const MembershipInterval = 5 * time.Second
+
+// noteMembers keeps the member each host pod reported in one survey. A pod
+// that answered without one keeps no disk. A pod that did not answer keeps
+// what it reported before: a quiet host may be serving its windows perfectly
+// well, and a membership that dropped it would drain it and move every window
+// it holds, and move them back when it answered. Readers mark a host that
+// does not answer down on their own. A pod the Kubernetes API no longer lists
+// is gone, and its member with it. The report of a quiet pod shows the member
+// it keeps.
+func (o *orchestrator) noteMembers(ctx context.Context, hosts []liveHost) {
+	o.memberMu.Lock()
+	defer o.memberMu.Unlock()
+	if o.reported == nil {
+		o.reported = make(map[string]host.Member)
+	}
+	listed := make(map[string]bool, len(hosts))
+	for index := range hosts {
+		report := &hosts[index].report
+		listed[report.Name] = true
+		answered := report.Error == ""
+		switch {
+		case answered && report.Member != nil:
+			o.reported[report.Name] = *report.Member
+		case answered, sim.Bug(ctx, "orchestrator-drop-quiet-member"):
+			delete(o.reported, report.Name)
+		}
+		if kept, found := o.reported[report.Name]; found && !answered {
+			report.Member = &kept
+		}
+	}
+	for name := range o.reported {
+		if !listed[name] {
+			delete(o.reported, name)
+		}
+	}
+}
+
+// want is what the membership is moved towards: every host pod the
+// Kubernetes API lists that reported a disk, as it last did, and the
+// deployment's code. A code that is not configured is the table's for the
+// most disks the membership has wanted: it only widens, so a drain, which
+// wants fewer for a while, does not change it, because every stripe in the
+// cluster would become a miss.
+func (o *orchestrator) want(ctx context.Context, current membership.Membership) membership.Want {
+	o.memberMu.Lock()
+	reported := maps.Clone(o.reported)
+	o.memberMu.Unlock()
+	var want membership.Want
+	owners := make(map[rank.Identity]string, len(reported))
+	disks := 0
+	for _, name := range slices.Sorted(maps.Keys(reported)) {
+		wanted, err := reported[name].Host()
+		if err != nil {
+			slog.WarnContext(ctx, "sproutfs-orchestrator: a host reports a member no membership can hold",
+				"host", name, "member", reported[name], "error", err)
+			continue
+		}
+		// Two pods over one cache file is a copied disk. The membership
+		// keeps the first by name, so every host routes to the same one.
+		if owner, taken := owners[wanted.ID]; taken {
+			slog.WarnContext(ctx, "sproutfs-orchestrator: two hosts report one member",
+				"member", wanted.ID.String(), "listed", owner, "left_out", name)
+			continue
+		}
+		owners[wanted.ID] = name
+		want.Hosts = append(want.Hosts, wanted)
+		disks += len(wanted.Disks)
+	}
+	want.Code = o.code
+	if want.Code == (rank.Code{}) {
+		want.Code = current.Code()
+		if wider := rank.CodeFor(disks); wider.Width() > want.Code.Width() ||
+			sim.Bug(ctx, "orchestrator-code-follows-the-membership") {
+			want.Code = wider
+		}
+	}
+	return want
+}
+
+// StepMembership surveys the host pods, unless a survey is less than a second
+// old, and takes one step of the membership towards them. It reports the
+// membership it leaves and whether it changed it.
+func (o *orchestrator) StepMembership(ctx context.Context) (membership.Membership, bool, error) {
+	if o.members == nil {
+		return membership.Membership{}, false, nil
+	}
+	if _, err := o.recent(ctx); err != nil {
+		return membership.Membership{}, false, err
+	}
+	current, err := o.members.Read(ctx)
+	if err != nil {
+		return membership.Membership{}, false, err
+	}
+	next, changed, err := o.members.Reconcile(ctx, o.want(ctx, current))
+	if changed {
+		slog.InfoContext(ctx, "sproutfs-orchestrator: the membership took a step", "generation", next.Generation(),
+			"members", len(next.Members()), "disks", len(next.Disks()), "code", next.Code().String())
+	}
+	return next, changed, err
+}
+
+// SteppingMembership takes a step of the membership every interval for as
+// long as ctx lives.
+func (o *orchestrator) SteppingMembership(ctx context.Context, every time.Duration) {
+	if every <= 0 {
+		every = MembershipInterval
+	}
+	ticker := time.NewTicker(every)
+	defer ticker.Stop()
+	for {
+		if _, _, err := o.StepMembership(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			slog.WarnContext(ctx, "sproutfs-orchestrator: a step of the membership failed", "error", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}

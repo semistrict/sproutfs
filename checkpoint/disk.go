@@ -8,6 +8,7 @@ import (
 	"slices"
 	"sync"
 
+	"github.com/semistrict/sproutfs/membership"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/rank"
@@ -17,8 +18,8 @@ import (
 // The page cache's disk is its second tier: envelopes on the host's own disk,
 // keyed by page identity exactly as the memory tier is. It holds what the
 // object store holds — each member's and each segment's encoded envelope, byte
-// for byte, whole or as the stripes of it the list of caches puts on this
-// cache (diskstripes.go) — so a read from it is the same read as one from the
+// for byte, whole or as the stripes of it the membership puts on this
+// disk (diskstripes.go) — so a read from it is the same read as one from the
 // store, checked by the same envelope. Nothing on it is evidence that a
 // publication landed, and nothing publishes from it. A newer checkpoint's page
 // has a new identity, so the copy of the page it replaced is never read for it.
@@ -175,7 +176,7 @@ type cacheDisk struct {
 	// file's identity and generation are drawn from.
 	deployment CacheDeployment
 	entropy    platform.Entropy
-	// clusterPercent is the share of windows placed by the list of caches.
+	// clusterPercent is the share of windows placed by the membership.
 	clusterPercent int
 	// identity and generation are the file's, set as the disk opens.
 	identity   CacheIdentity
@@ -209,10 +210,12 @@ type cacheDisk struct {
 	// stopped is a disk whose cache has closed: its open region is closed, and
 	// it takes no more writes.
 	stopped bool
-	// caches returns the list of caches the host holds, which says what the
-	// disk keeps of each envelope and under which code it reads; nil is a
-	// host that follows no list, and keeps each envelope whole.
-	caches func() rank.List
+	// source is the host's copy of the membership, which says what the disk
+	// keeps of each envelope and under which code it reads, and member the
+	// host's identity in it; nil is a host that follows no membership, and
+	// keeps each envelope whole.
+	source membership.Source
+	member rank.Identity
 }
 
 // diskSettings is how a cache's disk is laid out and bounded, and what its
@@ -224,8 +227,8 @@ type diskSettings struct {
 	threshold  int
 	deployment CacheDeployment
 	entropy    platform.Entropy
-	// clusterPercent is the share of windows the disk places by the list of
-	// caches; it keeps the rest whole.
+	// clusterPercent is the share of windows the disk places by the
+	// membership; it keeps the rest whole.
 	clusterPercent int
 }
 

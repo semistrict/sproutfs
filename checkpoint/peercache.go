@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/semistrict/sproutfs/membership"
 	"github.com/semistrict/sproutfs/peer"
 	"github.com/semistrict/sproutfs/rank"
 )
@@ -18,8 +19,9 @@ var _ peer.Cache = (*Cache)(nil)
 // errNoDisk is what a peer's request of a cache that keeps no disk is told.
 var errNoDisk = errors.New("checkpoint: the cache keeps no disk")
 
-// Identity is the cache's identity in the list of caches: its disk's, zero
-// for a cache that keeps none.
+// Identity is the identity of the disk the cache keeps, which the membership
+// ranks windows by: the one in its file's header, zero for a cache that keeps
+// none.
 func (c *Cache) Identity() rank.Identity {
 	if c.disk == nil {
 		return rank.Identity{}
@@ -33,14 +35,15 @@ func (c *Cache) Identity() rank.Identity {
 // reader checks. A holder never forwards a read and never reads the store for
 // a reader: what it does not hold, it says nothing of. A read that wants no
 // bytes asks only for the fill right, which this cache gives the first reader
-// that asks while it ranks first for the window, holds nothing of the pages
-// asked for, and has not given the window's right out this interval.
-func (c *Cache) ReadStripes(ctx context.Context, read peer.StripeRead) (peer.Stripes, error) {
+// that asks while m, the membership at the read's generation, ranks its disk
+// first for the window, while it holds nothing of the pages asked for, and
+// once a window an interval.
+func (c *Cache) ReadStripes(ctx context.Context, m membership.Membership, read peer.StripeRead) (peer.Stripes, error) {
 	if c.disk == nil {
 		return peer.Stripes{}, errNoDisk
 	}
 	if read.MaxBytes == 0 {
-		return peer.Stripes{FillRight: c.filler.grant(ctx, read.Window, read.Pages, read.Code)}, nil
+		return peer.Stripes{FillRight: c.filler.grant(ctx, m, read.Window, read.Pages, read.Code)}, nil
 	}
 	if !validWindow(read.Window, read.Pages) || read.Code.Validate() != nil || read.MaxBytes < 0 {
 		return peer.Stripes{}, fmt.Errorf("%w: a read of %+v under %s", errKeepRefused, read.Window, read.Code)
@@ -49,15 +52,16 @@ func (c *Cache) ReadStripes(ctx context.Context, read peer.StripeRead) (peer.Str
 	return peer.Stripes{Items: items, Payload: bytes.NewReader(payload), Size: int64(len(payload))}, nil
 }
 
-// Keep writes the stripes a peer's keep carries, where this cache's own list
-// ranks it for the window under the keep's code: every one it does not hold
-// or write already, through the host's queue of writes to its disk, at the
-// keep's priority. It reports peer.ErrDropped when it writes none.
-func (c *Cache) Keep(ctx context.Context, keep peer.Keep) error {
+// Keep writes the stripes a peer's keep carries, where m, the membership at
+// the keep's generation, ranks this cache's disk for the window under the
+// keep's code: every one it does not hold or write already, through the
+// host's queue of writes to its disk, at the keep's priority. It reports
+// peer.ErrDropped when it writes none.
+func (c *Cache) Keep(ctx context.Context, m membership.Membership, keep peer.Keep) error {
 	if c.disk == nil {
 		return fmt.Errorf("%w: %w", peer.ErrDropped, errNoDisk)
 	}
-	return c.filler.keep(ctx, keep)
+	return c.filler.keep(ctx, m, keep)
 }
 
 // Drop forgets one stripe a reader found wrong. A stripe the cache does not

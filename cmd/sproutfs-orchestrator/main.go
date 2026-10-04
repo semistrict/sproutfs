@@ -22,6 +22,7 @@ import (
 
 	"github.com/semistrict/sproutfs/control"
 	"github.com/semistrict/sproutfs/internal/jsonhttp"
+	"github.com/semistrict/sproutfs/membership"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/adapters"
 	"github.com/semistrict/sproutfs/rank"
@@ -57,7 +58,7 @@ type config struct {
 	TablePath string
 	// CacheCode is the deployment's code for the hosts' disk caches, set for
 	// the size the cluster usually runs at. Zero takes the table's code for the
-	// most caches this orchestrator has listed since it started.
+	// most disks the membership has wanted, which only widens.
 	CacheCode rank.Code
 }
 
@@ -132,6 +133,10 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("control records: %w", err)
 	}
+	members, err := membership.NewStore(membership.Config{ObjectStore: objects})
+	if err != nil {
+		return fmt.Errorf("membership: %w", err)
+	}
 	// A migration's receive returns only once the destination holds every page
 	// the source's checkpoints do not, so the host client waits as long as a
 	// guest's memory takes to cross the network. Nothing else waits that long:
@@ -158,7 +163,7 @@ func run() error {
 		pods: pods, records: &bucketRecords{objects: objects, control: records},
 		dial: dialHost(hosts, config.HostAPIPort, token), identify: newIdentity,
 		apiPort: config.HostAPIPort, pagePort: config.HostPagePort, table: catalog,
-		audit: auditing(objects), code: config.CacheCode,
+		audit: auditing(objects), code: config.CacheCode, members: members,
 	}
 	// The table is rebuilt from the deployment itself before anything is
 	// served — a file left by a previous process describes a cluster that has
@@ -172,6 +177,9 @@ func run() error {
 		slog.Warn("sproutfs-orchestrator: rebuilding the VM table at startup failed", "error", err)
 	}
 	go o.Reconciling(ctx, 0)
+	// The orchestrator moves the membership towards the host pods one step a
+	// pass. It is the usual controller, not the only one that may be.
+	go o.SteppingMembership(ctx, 0)
 	server := &http.Server{
 		Addr:              net.JoinHostPort("", strconv.Itoa(config.APIPort)),
 		Handler:           newServer(o, token),

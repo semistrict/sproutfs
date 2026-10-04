@@ -260,7 +260,7 @@ func (s *Store) fromStore(ctx context.Context, geometry Geometry, run []pageRead
 }
 
 // readsCluster reports whether key is read from the cluster: the cache keeps
-// a disk that follows a list of caches, and the cluster cache is on for key's
+// a disk that follows a membership, and the cluster cache is on for key's
 // window.
 func (s *Store) readsCluster(key diskKey) bool {
 	return s.cache != nil && s.cache.reader != nil && s.cache.reader.on(key)

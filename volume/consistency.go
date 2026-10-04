@@ -10,6 +10,7 @@ import (
 
 	"github.com/semistrict/sproutfs/checkpoint"
 	"github.com/semistrict/sproutfs/control"
+	"github.com/semistrict/sproutfs/membership"
 	"github.com/semistrict/sproutfs/platform"
 )
 
@@ -188,7 +189,7 @@ func (a *audit) run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	identities, checkpoints, stored := a.classify(listed)
+	identities, checkpoints, stored := a.classify(ctx, listed)
 	held := make(map[string]control.Record, len(identities))
 	for _, id := range identities {
 		record, err := a.records.Read(ctx, id)
@@ -231,17 +232,22 @@ func (a *audit) list(ctx context.Context) ([]platform.ObjectMetadata, error) {
 }
 
 // classify takes every key apart into the control records and the checkpoint
-// objects of the deployment, and reports a key that is neither. A key nothing
-// in this deployment writes is a violation on its own: the check's whole
-// premise is that it knows every object there is. stored is the bytes the
-// listing holds under each VM.
-func (a *audit) classify(listed []platform.ObjectMetadata) (identities []string, checkpoints []object, stored map[string]uint64) {
+// objects of the deployment, and reports a key that is neither, or the
+// membership. A key nothing in this deployment writes is a violation on its
+// own: the check's whole premise is that it knows every object there is.
+// stored is the bytes the listing holds under each VM.
+func (a *audit) classify(ctx context.Context, listed []platform.ObjectMetadata) (identities []string,
+	checkpoints []object, stored map[string]uint64) {
 	stored = make(map[string]uint64)
 	for _, entry := range listed {
 		key := entry.Key.String()
 		rest, inside := strings.CutPrefix(key, a.base)
 		if !inside {
 			a.report(key, 0, errors.New("the object lies outside the deployment's prefix"))
+			continue
+		}
+		if rest == membership.ObjectName {
+			a.checkMembership(ctx, key)
 			continue
 		}
 		found, err := ownerOf(rest)
@@ -262,6 +268,18 @@ func (a *audit) classify(listed []platform.ObjectMetadata) (identities []string,
 		checkpoints = append(checkpoints, object{key: key, vm: found.vm, sequence: sequence, index: index})
 	}
 	return identities, checkpoints, stored
+}
+
+// checkMembership requires the membership object to be one every host can
+// route by. It belongs to no VM, and is billed to none.
+func (a *audit) checkMembership(ctx context.Context, key string) {
+	members, err := membership.NewStore(membership.Config{ObjectStore: a.store, ObjectPrefix: a.prefix})
+	if err == nil {
+		_, err = members.Read(ctx)
+	}
+	if err != nil {
+		a.report(key, 0, fmt.Errorf("the membership does not parse: %w", err))
+	}
 }
 
 // checkBill requires the bill to be the store: what StoredBytes reports for

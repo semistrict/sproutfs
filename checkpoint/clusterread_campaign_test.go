@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/semistrict/sproutfs/checkpoint"
+	"github.com/semistrict/sproutfs/membership"
 	"github.com/semistrict/sproutfs/platform"
 	"github.com/semistrict/sproutfs/platform/sim"
 	"github.com/semistrict/sproutfs/rank"
@@ -27,6 +28,9 @@ var readProbes = []string{
 	checkpoint.ProbeClusterRepair, checkpoint.ProbeClusterTimeout, checkpoint.ProbeClusterMarkedDown,
 	checkpoint.ProbeClusterCapped, checkpoint.ProbeClusterCleared, checkpoint.ProbeClusterHeadCheck,
 	checkpoint.ProbeClusterHeadMissing,
+	// The membership changes under the reads, and some hosts read it only
+	// when a peer names a newer generation.
+	membership.ProbeHolderCaughtUp, membership.ProbeStaleAnswered, membership.ProbeSenderCaughtUp,
 }
 
 // readCampaignSeeds are the seeds the read campaign runs, which between them
@@ -52,10 +56,12 @@ type readCampaign struct {
 // the seed's scheduler and the sites on. Each round publishes from any host
 // and has many hosts read the same pages at once, while the seed stalls a
 // host's links, refuses them, slows them, loses a host and starts it again,
-// shifts the ranks with a list that lacks a cache, or deletes a checkpoint's
-// parts behind the caches. Every read returns what was published, or fails
-// only for a part that is gone. At rest, every stripe a host holds is of a
-// window some list ranked it for.
+// shifts the ranks with a membership that lacks a disk, or deletes a
+// checkpoint's parts behind the caches. Only some hosts read each new
+// membership at once; the rest learn of it when a peer names its generation.
+// Every read returns what was published, or fails only for a part that is
+// gone. At rest, every stripe a host holds is of a window some membership
+// ranked it for.
 func runReadCampaign(t *testing.T, seed uint64) *sim.Runtime {
 	draw := sim.New(sim.Config{Seed: seed}).Random("read-campaign")
 	hosts := 2 + draw.Intn("hosts", 6)
@@ -110,13 +116,24 @@ func (r *readCampaign) run(t *testing.T, draw sim.Random) {
 				c.settle(t)
 			}
 		}
-		// A list without a cache shifts the ranks of the windows it held.
+		// A membership without a disk shifts the ranks of the windows it held.
+		// Some hosts read it at once; the rest hold the generation they held
+		// until a peer names a newer one.
 		served := full
 		if draw.Chance(id+"/leave", 0.3) && full.Len() > 1 {
 			served = full.Without(full.Caches()[draw.Intn(id+"/gone", full.Len())].Identity)
 			r.lists = append(r.lists, served)
 		}
-		c.hold(served)
+		var told []*fillHost
+		for _, h := range c.hosts {
+			if h.up && draw.Chance(id+"/told/"+h.name, 0.5) {
+				told = append(told, h)
+			}
+		}
+		if len(told) == 0 {
+			told = c.hosts[:1]
+		}
+		c.hold(t, served, told...)
 		reader := c.hosts[draw.Intn(id+"/victim-reader", len(c.hosts))]
 		victim := c.hosts[draw.Intn(id+"/victim", len(c.hosts))]
 		if victim != reader {

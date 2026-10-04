@@ -401,8 +401,8 @@ func (l *DiskLimiter) CacheShare() int64 {
 // wrote to it: the filesystem's size less the free-space floor, the reserve
 // and the promises, under the used-space goal. It reads the goals, the size
 // and the promises at the last reading, and never the space other writers take
-// or the band, so it does not move as the disk fills. A host weighs its cache
-// in the list of caches by it.
+// or the band, so it does not move as the disk fills. A host weighs its disk
+// in the membership by it.
 func (l *DiskLimiter) Capacity() int64 {
 	l.mu.Lock()
 	defer l.mu.Unlock()

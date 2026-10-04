@@ -168,6 +168,25 @@ func (s *Store) Update(ctx context.Context, change func(Membership) (Membership,
 	}
 }
 
+// Reconcile makes the one change Next takes towards want from the membership
+// as it is read, and reports the membership it leaves and whether it changed
+// it. A controller calls it once a pass, so it moves the membership one step
+// at a time, and two controllers at once each take a step from what the other
+// left.
+func (s *Store) Reconcile(ctx context.Context, want Want) (Membership, bool, error) {
+	m, err := s.Update(ctx, func(m Membership) (Membership, error) {
+		change, ok := Next(m, want)
+		if !ok {
+			return Membership{}, ErrUnchanged
+		}
+		return change(m)
+	})
+	if errors.Is(err, ErrUnchanged) {
+		return m, false, nil
+	}
+	return m, err == nil, err
+}
+
 // write puts next conditional on the object read: the validator it had, or
 // its absence.
 func (s *Store) write(ctx context.Context, next Membership, etag *platform.ETag) error {
