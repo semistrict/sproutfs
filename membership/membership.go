@@ -98,6 +98,20 @@ func (s DiskState) String() string {
 	return fmt.Sprintf("disk-state-%d", uint8(s))
 }
 
+// ParseDiskState reads a disk's state as String writes it, and the empty
+// string as zero: a disk a copy of the membership does not list.
+func ParseDiskState(text string) (DiskState, error) {
+	if text == "" {
+		return 0, nil
+	}
+	for state := Attaching; state <= Released; state++ {
+		if state.String() == text {
+			return state, nil
+		}
+	}
+	return 0, fmt.Errorf("%w: no disk state %q", ErrInvalid, text)
+}
+
 // Member is one host in the cluster.
 type Member struct {
 	// ID is the member's identity. A host's is written in its disk: the

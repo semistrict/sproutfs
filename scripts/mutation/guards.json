@@ -790,6 +790,18 @@
     "purpose": "Let a releasing shard go while the cloud still has it attached to a machine, or cannot say where it is."
   },
   {
+    "id": "membership-let-only-a-gone-hosts-disk",
+    "package": "membership",
+    "run": "^TestNextBringsBackAHostThatReturnsOverItsDisk$",
+    "purpose": "Let a host's own releasing disk go only once its host is gone, so a pod replaced over the disk while its member drained never serves it again."
+  },
+  {
+    "id": "membership-let-on-an-earlier-release",
+    "package": "membership",
+    "run": "^TestNextBringsBackAHostThatReturnsOverItsDisk$",
+    "purpose": "Let a host's own releasing disk go on a copy that read the release of an earlier assignment of the disk, after which the host may have served it again."
+  },
+  {
     "id": "membership-detach-held-shard",
     "package": "membership",
     "run": "^TestCarryDetachesAReleasingShardOnlyOnceItsHostClosedIt$",

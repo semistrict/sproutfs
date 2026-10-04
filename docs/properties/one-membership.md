@@ -55,3 +55,14 @@ go only once its host has closed it and the cloud has it on no machine, and a
 host opens one only once the object, read again, still assigns it there; the
 shard's lease refuses a member of an older assignment. `spec/shards` checks
 `OneServer` with stale controllers and hosts.
+
+**Restarts, 2026-10-04.** The first real cluster to restart its hosts with the
+membership found a hole: a pod replaced over its disk while its member drained
+was wanted, so never gone, and listed, so never joined, and its disk stayed
+releasing for good. A host's own releasing disk is now let go also once the
+host reports it releasing in a copy at or after the generation that assigned
+it, which is the member letting it go, as `spec/membership` has it
+(`TestNextBringsBackAHostThatReturnsOverItsDisk`,
+`TestAPodReplacedOverItsDiskServesItAgain`; guards
+`membership-let-only-a-gone-hosts-disk` and
+`membership-let-on-an-earlier-release`).

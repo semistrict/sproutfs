@@ -887,6 +887,9 @@ type Member struct {
 	// controller attaches its shards to; empty for a host with a disk of its
 	// own.
 	Machine string `json:"machine,omitempty"`
+	// Generation is the generation of the membership the host holds, which
+	// its disks' states are from.
+	Generation uint64 `json:"generation"`
 }
 
 // MemberDisk is one cache disk a host keeps.
@@ -930,7 +933,7 @@ type Membership struct {
 // says it is in.
 func MemberOf(self membership.Host, held membership.Membership) Member {
 	member := Member{Identity: self.ID.String(), Address: string(self.Address), Disks: []MemberDisk{},
-		Machine: self.Machine}
+		Machine: self.Machine, Generation: held.Generation()}
 	for _, disk := range self.Disks {
 		reported := MemberDisk{Identity: disk.ID.String(), Volume: disk.Volume, Weight: disk.Weight}
 		if listed, ok := held.Disk(disk.ID); ok {
@@ -948,7 +951,7 @@ func (m Member) Host() (membership.Host, error) {
 	if err != nil {
 		return membership.Host{}, err
 	}
-	host := membership.Host{ID: id, Address: platform.Address(m.Address), Machine: m.Machine}
+	host := membership.Host{ID: id, Address: platform.Address(m.Address), Machine: m.Machine, Held: m.Generation}
 	for _, disk := range m.Disks {
 		identity, err := rank.ParseIdentity(disk.Identity)
 		if err != nil {
@@ -957,7 +960,12 @@ func (m Member) Host() (membership.Host, error) {
 		if disk.Weight == 0 {
 			return membership.Host{}, fmt.Errorf("%w: disk %s has no weight", rank.ErrInvalid, disk.Identity)
 		}
-		host.Disks = append(host.Disks, membership.Disk{ID: identity, Volume: disk.Volume, Weight: disk.Weight})
+		state, err := membership.ParseDiskState(disk.State)
+		if err != nil {
+			return membership.Host{}, err
+		}
+		host.Disks = append(host.Disks, membership.Disk{ID: identity, Volume: disk.Volume, Weight: disk.Weight,
+			State: state})
 	}
 	return host, nil
 }

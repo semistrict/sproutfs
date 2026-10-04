@@ -173,6 +173,71 @@ func TestNextJoinsAHostWithItsReleasedDisk(t *testing.T) {
 	}
 }
 
+// returning is host n as a pod that came back over its disk reports itself:
+// its copy of the membership at generation held, which has its disk in
+// state.
+func returning(n byte, held uint64, state DiskState) Host {
+	host := hostOf(n)
+	host.Held = held
+	host.Disks[0].State = state
+	return host
+}
+
+// A host that comes back over its disk while its member drains, as a pod
+// replaced on its node does, serves the disk again. Its disk is let go once
+// the host's copy shows that release, so the host has stopped serving it;
+// then the member leaves and joins again with the disk, and the disk serves.
+// A copy that has not read the release yet, or read the release of an earlier
+// assignment of the disk, lets nothing go.
+func TestNextBringsBackAHostThatReturnsOverItsDisk(t *testing.T) {
+	ctx := sim.WithRuntime(t.Context(), sim.New(sim.Config{}))
+	code := rank.Code{K: 1, M: 1}
+	start, _ := toward(t, Empty(), Want{Code: code, Hosts: []Host{hostOf(1), hostOf(2)}})
+	leaving := hostOf(2)
+	leaving.Leaving = true
+	change, ok := Next(ctx, start, Want{Code: code, Hosts: []Host{hostOf(1), leaving}})
+	if !ok {
+		t.Fatal("Next has no step for a host that is leaving")
+	}
+	drained := stepped(t, start, change)
+	if disk, _ := drained.Disk(diskOf(2).ID); disk.State != Releasing {
+		t.Fatalf("the leaving host drained to %s", describe(drained))
+	}
+	behind := Want{Code: code, Hosts: []Host{hostOf(1), returning(2, start.Generation(), Serving)}}
+	if change, ok := Next(ctx, drained, behind); ok {
+		t.Fatalf("Next took a step to %s for a host whose copy has not read the release",
+			describe(built(t)(change(drained))))
+	}
+	back := Want{Code: code, Hosts: []Host{hostOf(1), returning(2, drained.Generation(), Releasing)}}
+	var path []string
+	end := drained
+	for {
+		change, ok := Next(ctx, end, back)
+		if !ok {
+			break
+		}
+		end = stepped(t, end, change)
+		member, _ := end.Member(idOf(2))
+		disk, _ := end.Disk(diskOf(2).ID)
+		path = append(path, member.State.String()+"/"+disk.State.String())
+		if len(path) > 8 {
+			t.Fatalf("Next took more than 8 steps: %v", path)
+		}
+	}
+	if want := []string{"draining/released", "member-state-0/released", "joining/attaching", "active/serving"}; !slices.Equal(path, want) {
+		t.Fatalf("host 2 came back through %v, want %v", path, want)
+	}
+	if end.List().Len() != 2 || !end.Serves(idOf(2), diskOf(2).ID) {
+		t.Fatalf("after host 2 came back: %s", describe(end))
+	}
+	again := stepped(t, end, func(m Membership) (Membership, error) { return m.Drain(idOf(2)) })
+	earlier := Want{Code: code, Hosts: []Host{hostOf(1), returning(2, drained.Generation(), Releasing)}}
+	if change, ok := Next(ctx, again, earlier); ok {
+		t.Fatalf("Next took a step to %s on the release of an earlier assignment",
+			describe(built(t)(change(again))))
+	}
+}
+
 // Draining a member is a change even when it holds no disk, and draining it
 // again is not; the member listed first drains as any other does.
 func TestDrainingAMemberIsAChangeOnce(t *testing.T) {
