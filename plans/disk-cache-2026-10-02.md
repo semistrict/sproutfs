@@ -246,6 +246,41 @@ orchestrator assembled from its survey and served at `GET /caches`, which each
 host read every 10 s. It had no source of truth, and two hosts could hold
 different lists for that long. The membership replaces it.
 
+### Shards on network disks
+
+Decided on 2026-10-03, and not built yet (TASK-86). The cache's disks are not
+the hosts' own SSDs. They are a fixed set of **shards**, each one network disk
+(Hyperdisk Balanced on GCP, gp3 on AWS) with the disk log on it, and windows
+are ranked over the shards, never over hosts.
+
+The reason is autoscaling. An autoscaler adds and removes hosts through the
+day, and a cache on the hosts' own disks pays for every change:
+
+- **A join hides stripes.** Rendezvous puts a new host among a window's first
+  k+m ranks for about (k+m)/(N+1) of the windows: six in eleven, about 55 %,
+  when a tenth host joins under 4+2. Each of those windows has one stripe on a
+  host its readers no longer ask, and only a read of it repairs that.
+- **A leave loses stripes.** A host the autoscaler removes takes its disk with
+  it. Under 4+2 on ten hosts, three removals before repair catches up lose
+  every window that had a stripe on all three, C(6,3)/C(10,3), about 17 %.
+- **The code followed the host count.** A threshold crossed turned every
+  window into a miss at once. TASK-85 fixed that: the code is a deployment
+  setting, and each stripe is read by the code it was stored under.
+
+A network disk outlives the machine it is attached to, and every cloud can
+detach it and attach it to another machine in seconds, which an autoscaler can
+afford. So the shard count changes only when the cache is resized on purpose,
+and no window moves when compute scales. Which member serves which shard is in
+the membership, changed by compare-and-set like the rest of it: a shard is
+released from one member before it is assigned to another, and a member serves
+a shard only under the generation that assigns it there, so a member that lost
+a shard can never serve it again. While a shard moves, reads hedge around it,
+as they do around a slow host.
+
+A shard read pays the network disk's latency, which Google gives as below a
+millisecond, on top of the hop to the member that serves it. Local NVMe is
+faster, but it does not outlive the machine.
+
 ### Hosts marked down
 
 A host that does not answer is marked down by each reader on its own, as
