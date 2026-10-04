@@ -1594,9 +1594,22 @@ behind a migration's source that serves two pages the volume names as its own.
 Each guest reads and stores, half the time the page after the last. Every read
 of a backing, and every point at which a prefetch begins, lands, maps or
 releases a fault waiting on it, completes when the seed's `sim.Scheduler`
-chooses, with the prefetch sites on. Every read must return what the guest
+chooses, with the prefetch sites on. So does each guest access, and each
+allocation woken by slots coming back. Every read must return what the guest
 last stored or what its volume holds, and across the seeds every prefetch site
 must fire and every prefetch probe be reached.
+
+A seed replays: `TestPrefetchCampaignReplaysItsSeeds` runs three seeds twice
+and requires the same release order and the same probes. Until 2026-10-04 one
+seed in ten missed the duplicate probe on some runs. A fault's read and a
+prefetch were tasks named by numbers counted across the host, so their names,
+and the order the scheduler gave them, followed the order the Go scheduler ran
+other tasks' faults in. An allocation woken by returning slots went on beside
+whatever returned them, and guests whose pauses ended at one instant took free
+slots in whatever order they ran. The tasks are now named by their page and
+window, and the woken allocation and each guest access pass `sim.Admit`.
+`TestAPrefetchedPageAnotherLoadMadeResidentFirstIsDropped` reaches the
+duplicate probe on its own.
 
 The disk's stripes mark five more: a write that kept several indices of one
 envelope, a read that rebuilt an envelope from a parity stripe, a read that

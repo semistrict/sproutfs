@@ -1,6 +1,7 @@
 package vmmemory_test
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"maps"
@@ -70,7 +71,7 @@ func TestPrefetchSurvivesItsFaultsAndReachesItsProbes(t *testing.T) {
 	for _, seed := range prefetchCampaignSeeds {
 		t.Run(fmt.Sprintf("seed-%d", seed), func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				reached, sites := prefetchCampaign(t, seed)
+				reached, sites, _ := prefetchCampaign(t, seed)
 				maps.Copy(probes, addCounts(probes, reached))
 				maps.Copy(fired, addCounts(fired, sites))
 			})
@@ -95,9 +96,9 @@ func addCounts(into, from map[string]uint64) map[string]uint64 {
 	return sum
 }
 
-// prefetchCampaign runs one seed and reports the probes it reached and the
-// sites it fired.
-func prefetchCampaign(t *testing.T, seed uint64) (map[string]uint64, map[string]uint64) {
+// prefetchCampaign runs one seed and reports the probes it reached, the sites
+// it fired, and the order its scheduler released every operation in.
+func prefetchCampaign(t *testing.T, seed uint64) (map[string]uint64, map[string]uint64, []byte) {
 	scheduler := sim.NewScheduler(seed)
 	runtime := sim.New(sim.Config{Seed: seed, Wait: scheduler.Wait, Buggify: true})
 	done := make(chan struct{})
@@ -148,7 +149,40 @@ func prefetchCampaign(t *testing.T, seed uint64) (map[string]uint64, map[string]
 	if err := scheduler.Run(done); err != nil {
 		t.Fatal(err)
 	}
-	return runtime.Probes(), runtime.FiredSites()
+	recording, err := scheduler.Recording(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return runtime.Probes(), runtime.FiredSites(), recording.Execution
+}
+
+// A seed of the campaign replays: run twice, it releases every operation in
+// the same order and reaches the same probes the same number of times. What a
+// seed reaches is then the seed's, not the Go scheduler's. Before 2026-10-04 it
+// was not: a fault's read and a prefetch were tasks named by numbers counted
+// across the host, in the order the Go scheduler ran the faults of other
+// tasks; an allocation woken by slots coming back went on beside whatever gave
+// them back; and the guests whose pauses ended at one instant took free slots
+// in whatever order they ran. A seed reached the duplicate probe in some runs
+// and not in others.
+func TestPrefetchCampaignReplaysItsSeeds(t *testing.T) {
+	for _, seed := range []uint64{1, 5, 7} {
+		t.Run(fmt.Sprintf("seed-%d", seed), func(t *testing.T) {
+			var probes [2]map[string]uint64
+			var orders [2][]byte
+			for run := range 2 {
+				synctest.Test(t, func(t *testing.T) {
+					probes[run], _, orders[run] = prefetchCampaign(t, seed)
+				})
+			}
+			if !maps.Equal(probes[0], probes[1]) {
+				t.Fatalf("seed %d reached %v, then %v", seed, probes[0], probes[1])
+			}
+			if !bytes.Equal(orders[0], orders[1]) {
+				t.Fatalf("seed %d released its operations in another order on its second run", seed)
+			}
+		})
+	}
 }
 
 // campaignGuests attaches the campaign's three guests: two forks of one
@@ -187,6 +221,14 @@ func initialBytes(pages int) []byte {
 func runCampaignGuest(ctx context.Context, t *testing.T, g *campaignGuest, random *rand.Rand) {
 	page := uint64(0)
 	for op := range 60 {
+		// Guests whose pauses end at one instant go on one at a time, in the
+		// order the run chooses, as a simulated VMM's accesses are admitted:
+		// otherwise which of them takes a free slot first is the Go
+		// scheduler's choice, and a seed would not replay.
+		if err := sim.Admit(ctx, "campaign/access"); err != nil {
+			t.Errorf("%s: %v", g.name, err)
+			return
+		}
 		if random.IntN(2) == 0 {
 			page = (page + 1) % campaignPages
 		} else {
