@@ -20,8 +20,9 @@
 # default, or pd-balanced or pd-ssd), SPROUTFS_SHARD_DISK_GB its size (256 by
 # default), and SPROUTFS_SHARD_HDB_IOPS and SPROUTFS_SHARD_HDB_THROUGHPUT what
 # a Hyperdisk Balanced disk is provisioned with (6000 and 500 MiB/s by
-# default). SPROUTFS_SHARD_MACHINE is the hosts' machine type (n2-highmem-4,
-# Intel Ice Lake, by default). SPROUTFS_SHARD_BINARY is a built linux/amd64
+# default). SPROUTFS_SHARD_MACHINE is the hosts' machine type: c3-standard-4
+# by default for Hyperdisk Balanced, which no N2 machine attaches, and
+# n2-highmem-4, Intel Ice Lake, for the others. SPROUTFS_SHARD_BINARY is a built linux/amd64
 # sproutfs-shardbench to run; without it the script builds one from the tree.
 # SPROUTFS_GCE_BUCKET names the bucket. The hosts run as the project's
 # default compute account, which may attach and detach disks.
@@ -44,7 +45,12 @@ disk_type=${SPROUTFS_SHARD_DISK_TYPE:-hyperdisk-balanced}
 disk_gb=${SPROUTFS_SHARD_DISK_GB:-256}
 hdb_iops=${SPROUTFS_SHARD_HDB_IOPS:-6000}
 hdb_throughput=${SPROUTFS_SHARD_HDB_THROUGHPUT:-500}
-machine=${SPROUTFS_SHARD_MACHINE:-n2-highmem-4}
+if [[ $disk_type == hyperdisk-balanced ]]; then
+    machine=${SPROUTFS_SHARD_MACHINE:-c3-standard-4}
+    [[ $machine != n2-* ]] || { echo "No N2 machine attaches a Hyperdisk Balanced disk." >&2; exit 2; }
+else
+    machine=${SPROUTFS_SHARD_MACHINE:-n2-highmem-4}
+fi
 [[ $machine =~ ^(n2|c3)-(standard|highmem)-[0-9]+$ ]] ||
     { echo "SPROUTFS_SHARD_MACHINE is an n2 or c3 standard or highmem machine type" >&2; exit 2; }
 machine_flags=(--boot-disk-type=pd-balanced)
