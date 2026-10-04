@@ -509,17 +509,30 @@ type readRequest struct {
 	Access   access       `json:"access"`
 	// Profile asks for the CPU profile of the reads.
 	Profile bool `json:"profile"`
+	// Tables is when the reader loads the volume's page tables: tablesLazy,
+	// the default, as the first lookup of each segment needs it, or
+	// tablesEager, every segment once the checkpoint is open and before the
+	// reads, which is what a host that loaded them at open would do.
+	Tables string `json:"tables,omitempty"`
 }
 
+// When a read loads the page tables of its volume.
+const (
+	tablesLazy  = "lazy"
+	tablesEager = "eager"
+)
+
 // readReply is what the reads did, how long opening the checkpoint took
-// before them, the reads its memory tier served, and the CPU profile of the
-// reads when one was asked for.
+// before them, and loading its page tables where the read loaded them first,
+// the reads its memory tier served, and the CPU profile of the reads when one
+// was asked for.
 type readReply struct {
 	walked
-	OpenSeconds float64     `json:"open_seconds"`
-	MemoryHits  uint64      `json:"memory_hits"`
-	Profile     []byte      `json:"profile,omitempty"`
-	Pager       *pagerStats `json:"pager,omitempty"`
+	OpenSeconds   float64     `json:"open_seconds"`
+	TablesSeconds float64     `json:"tables_seconds,omitempty"`
+	MemoryHits    uint64      `json:"memory_hits"`
+	Profile       []byte      `json:"profile,omitempty"`
+	Pager         *pagerStats `json:"pager,omitempty"`
 }
 
 // pagerStats is what a read's pager did: its faults, its backing reads and
@@ -555,6 +568,13 @@ func (n *node) read(ctx context.Context, request readRequest) (readReply, error)
 		return readReply{}, err
 	}
 	out := readReply{OpenSeconds: time.Since(began).Seconds()}
+	if request.Tables == tablesEager {
+		began = time.Now()
+		if err := loadTables(ctx, index); err != nil {
+			return readReply{}, err
+		}
+		out.TablesSeconds = time.Since(began).Seconds()
+	}
 	hits := cache.Stats().Hits
 	read := func(ctx context.Context, offset uint64, dst []byte) error {
 		return store.Read(ctx, index, volume, offset, dst)
@@ -584,6 +604,39 @@ func (n *node) read(ctx context.Context, request readRequest) (readReply, error)
 	}
 	out.MemoryHits = cache.Stats().Hits - hits
 	return out, nil
+}
+
+// tablesAtOnce is how many segments loadTables looks up at a time.
+const tablesAtOnce = 16
+
+// loadTables has the page cache load every segment of the volume's page
+// table, decoded, tablesAtOnce at a time: one lookup of a page of each.
+func loadTables(ctx context.Context, index *checkpoint.Index) error {
+	geometry := index.Geometry(volume)
+	span := geometry.SegmentPages * geometry.PageSize
+	size := index.Size(volume)
+	slots := make(chan struct{}, tablesAtOnce)
+	var group sync.WaitGroup
+	var mu sync.Mutex
+	var failed error
+	for offset := uint64(0); offset < size; offset += span {
+		select {
+		case slots <- struct{}{}:
+		case <-ctx.Done():
+			group.Wait()
+			return context.Cause(ctx)
+		}
+		group.Go(func() {
+			defer func() { <-slots }()
+			if _, err := index.Locate(ctx, volume, offset, min(geometry.PageSize, size-offset)); err != nil {
+				mu.Lock()
+				failed = errors.Join(failed, err)
+				mu.Unlock()
+			}
+		})
+	}
+	group.Wait()
+	return failed
 }
 
 // profiled runs work, and when enabled is the process's CPU profile while it

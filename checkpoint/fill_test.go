@@ -131,7 +131,9 @@ func (c *fillCluster) open(t *testing.T, index int, h *fillHost) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	budget, err := resource.New(4 << 10)
+	// The memory tier keeps nothing, not even a segment's page table, so
+	// every read is of the disks or the store.
+	budget, err := resource.New(0)
 	if err != nil {
 		t.Fatal(err)
 	}

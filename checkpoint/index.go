@@ -11,6 +11,7 @@ import (
 
 	checkpointv1 "github.com/semistrict/sproutfs/checkpoint/internal/gen/sproutfs/checkpoint/v1"
 	"github.com/semistrict/sproutfs/control"
+	"github.com/semistrict/sproutfs/platform/sim"
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 )
@@ -106,8 +107,9 @@ type segmentEntry struct {
 	reads []checkpointUse
 }
 
-// segmentKey names one segment of one volume, which is what an index memoises
-// its decoded segments by.
+// segmentKey names one segment of one volume, which is what a publication
+// keeps the segments it changes by, and an index over a store with no cache
+// memoises their tables by.
 type segmentKey struct {
 	volume string
 	number uint64
@@ -132,8 +134,11 @@ type volumeTable struct {
 // every page of an absent segment. The root is complete on its own — it names no
 // parent — and the segments it addresses are fetched on demand.
 //
-// An Index is immutable once published and safe for concurrent use; the
-// segments it has decoded are a memo in front of the store's page cache.
+// An Index is immutable once published and safe for concurrent use. It keeps
+// no segment of its own: every lookup takes the segment's page table from the
+// store's page cache, which decodes a segment once for every index that
+// addresses it (pageTable). Only an index over a store with no cache, which
+// tools and tests make, memoises the tables it decodes.
 type Index struct {
 	ref     control.Ref
 	names   []string
@@ -150,15 +155,16 @@ type Index struct {
 	// store is what segments are read through. A root built without one — which
 	// nothing but a test does — can locate nothing it did not write itself.
 	store *Store
-	// mu guards loaded, the decoded segments this index has already fetched.
-	mu     sync.Mutex
-	loaded map[segmentKey]*segment
+	// mu guards memo, the tables an index over a store with no cache has
+	// decoded, for the index's life.
+	mu   sync.Mutex
+	memo map[segmentKey]*pageTable
 }
 
 // newIndex is an empty root under ref, read through store.
 func newIndex(store *Store, ref control.Ref) *Index {
 	return &Index{ref: ref, store: store, volumes: make(map[string]*volumeTable),
-		checkpoints: make(map[control.Ref]checkpointCost), loaded: make(map[segmentKey]*segment)}
+		checkpoints: make(map[control.Ref]checkpointCost), memo: make(map[segmentKey]*pageTable)}
 }
 
 // Ref reports the checkpoint this index publishes.
@@ -286,82 +292,141 @@ func identityOf(volume string, number uint64, at location) control.Identity {
 	return control.Identity{Ref: at.origin, Volume: volume, Page: number}
 }
 
-// segmentAt reports one segment of a volume's page table, fetching it through
-// the store's cache the first time this index is asked for it. A segment the
-// root does not address is an empty one and costs no I/O.
-//
-// The fetch runs outside the lock, so one slow segment does not hold up the
-// others; two callers that raced share whichever copy landed first.
-func (i *Index) segmentAt(ctx context.Context, volume string, number uint64) (*segment, error) {
-	key := segmentKey{volume: volume, number: number}
-	i.mu.Lock()
-	held, found := i.loaded[key]
-	i.mu.Unlock()
-	if found {
-		return held, nil
-	}
+// table reports one segment of a volume's page table, checked against this
+// root, and the release that ends this reader's hold on it. A segment the root
+// does not address is an empty one and costs no I/O. Every other is the
+// store's: its page cache keeps it decoded under the segment's identity, so
+// every index addressing it shares the one table, and only the first lookup
+// after it was evicted fetches and decodes it again.
+func (i *Index) table(ctx context.Context, volume string, number uint64) (*pageTable, func(), error) {
 	table := i.volumes[volume]
 	if table == nil {
-		return nil, ErrUnknownVolume
+		return nil, nil, ErrUnknownVolume
 	}
-	loaded := newSegment()
-	if entry, addressed := table.segments[number]; addressed {
-		if i.store == nil {
-			return nil, ErrCorrupt
+	entry, addressed := table.segments[number]
+	if !addressed {
+		return emptyTable, func() {}, nil
+	}
+	if i.store == nil {
+		return nil, nil, ErrCorrupt
+	}
+	if sim.Bug(ctx, "checkpoint-decode-every-lookup") {
+		// The bug decodes the segment again for every lookup, as every fault's
+		// planning did for each index it read through.
+		held, err := i.store.readTable(ctx, volume, number, entry.at)
+		if err == nil {
+			err = i.checkTable(volume, held)
 		}
-		data, release, err := i.store.loadSegment(ctx, volume, number, entry.at)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		loaded, err = i.decodeSegment(volume, data)
+		return held, func() {}, nil
+	}
+	if i.store.cache == nil {
+		return i.memoised(ctx, volume, number, entry.at)
+	}
+	held, release, err := i.store.table(ctx, volume, number, entry.at)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := i.checkTable(volume, held); err != nil {
 		release()
-		if err != nil {
-			return nil, err
-		}
+		return nil, nil, err
+	}
+	return held, release, nil
+}
+
+// memoised is table for an index over a store with no cache, which has
+// nothing to share tables through: the index keeps every table it decodes. The
+// fetch runs outside the lock, so one slow segment does not hold up the others;
+// two callers that raced share whichever table landed first.
+func (i *Index) memoised(ctx context.Context, volume string, number uint64, at segmentAddress) (*pageTable, func(), error) {
+	key := segmentKey{volume: volume, number: number}
+	i.mu.Lock()
+	held, found := i.memo[key]
+	i.mu.Unlock()
+	if found {
+		return held, func() {}, nil
+	}
+	held, err := i.store.readTable(ctx, volume, number, at)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := i.checkTable(volume, held); err != nil {
+		return nil, nil, err
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	if i.loaded == nil {
-		i.loaded = make(map[segmentKey]*segment)
+	if earlier, found := i.memo[key]; found {
+		return earlier, func() {}, nil
 	}
-	if held, found := i.loaded[key]; found {
-		return held, nil
-	}
-	i.loaded[key] = loaded
-	return loaded, nil
+	i.memo[key] = held
+	return held, func() {}, nil
 }
 
-// inheritLoaded shares the parent's decoded segments that this index still
-// addresses. They remain the parent's: a publication changes a copy
-// (segmentFor).
-func (i *Index) inheritLoaded(parent *Index) {
-	if parent == nil {
+// inheritMemo shares the tables the parent of an index over a store with no
+// cache had decoded, for the segments this index still addresses. An index
+// over a store with a cache finds them in the cache instead, by identity.
+func (i *Index) inheritMemo(parent *Index) {
+	if parent == nil || i.store == nil || i.store.cache != nil {
 		return
 	}
 	parent.mu.Lock()
 	defer parent.mu.Unlock()
-	for key, held := range parent.loaded {
+	for key, held := range parent.memo {
 		if table := i.volumes[key.volume]; table != nil {
 			if _, addressed := table.segments[key.number]; addressed {
-				i.loaded[key] = held
+				i.memo[key] = held
 			}
 		}
 	}
 }
 
-// pageAt reports where one page's current bytes live, fetching the segment that
-// locates it if this index has not already.
-func (i *Index) pageAt(ctx context.Context, volume string, number uint64) (location, bool, error) {
-	table := i.volumes[volume]
-	if table == nil {
-		return location{}, false, ErrUnknownVolume
+// keep leaves a table this index's publication wrote for the readers of the
+// index: in the store's cache under the segment's identity, or in the index
+// itself where the store has none.
+func (i *Index) keep(ctx context.Context, volume string, number uint64, held *pageTable) {
+	if i.store != nil && i.store.cache != nil {
+		i.store.cache.keepTable(ctx, segmentCacheKey(volume, number, i.ref), held)
+		return
 	}
-	held, err := i.segmentAt(ctx, volume, table.geometry.SegmentOf(number))
-	if err != nil {
-		return location{}, false, err
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.memo[segmentKey{volume: volume, number: number}] = held
+}
+
+// tableCursor looks the pages of a range up in order, holding the table of
+// one segment at a time: a range costs one lookup of each segment it crosses
+// rather than one per page.
+type tableCursor struct {
+	index   *Index
+	volume  string
+	number  uint64
+	held    *pageTable
+	release func()
+}
+
+// at reports where one page lives, taking its segment's table where the
+// cursor holds another.
+func (c *tableCursor) at(ctx context.Context, geometry Geometry, page uint64) (location, bool, error) {
+	if number := geometry.SegmentOf(page); c.held == nil || c.number != number {
+		c.close()
+		held, release, err := c.index.table(ctx, c.volume, number)
+		if err != nil {
+			return location{}, false, err
+		}
+		c.held, c.release, c.number = held, release, number
 	}
-	at, found := held.pages[table.geometry.OffsetIn(number)]
+	at, found := c.held.at(uint64(geometry.OffsetIn(page)))
 	return at, found, nil
+}
+
+// close gives up the table the cursor holds.
+func (c *tableCursor) close() {
+	if c.release != nil {
+		c.release()
+	}
+	c.held, c.release = nil, nil
 }
 
 // Locate reports where the current bytes of a range live. The extents are
@@ -391,20 +456,17 @@ func (i *Index) Locate(ctx context.Context, volume string, offset, length uint64
 	}
 	end := offset + length
 	geometry := table.geometry
-	var held *segment
-	var current uint64
+	tables := tableCursor{index: i, volume: volume}
+	defer tables.close()
 	for cursor := offset; cursor < end; {
 		number := geometry.PageOf(cursor)
 		start, span := geometry.PageSpan(table.size, number)
 		limit := min(end, start+span)
-		if held == nil || current != geometry.SegmentOf(number) {
-			loaded, err := i.segmentAt(ctx, volume, geometry.SegmentOf(number))
-			if err != nil {
-				return nil, err
-			}
-			held, current = loaded, geometry.SegmentOf(number)
+		at, found, err := tables.at(ctx, geometry, number)
+		if err != nil {
+			return nil, err
 		}
-		if at, found := held.pages[geometry.OffsetIn(number)]; found {
+		if found {
 			add(cursor, limit-cursor, identityOf(volume, number, at))
 		} else {
 			add(cursor, limit-cursor, control.ZeroIdentity)
@@ -558,64 +620,6 @@ func encodeSegment(held *segment) ([]byte, error) {
 	return proto.MarshalOptions{Deterministic: true}.Marshal(message)
 }
 
-// decodeSegment parses one segment against the root that addressed it: every
-// page must lie within the segment's own range and locate a member of a
-// checkpoint this root names.
-//
-// Whether a page lies inside the volume is not settled here. A publication that
-// shrinks a volume reads the segment straddling the new end before it drops the
-// pages the cut took, so a segment is briefly wider than the volume it belongs
-// to; what a published root owes is checked by CheckIndex, and nothing reads
-// past a volume's size in between.
-func (i *Index) decodeSegment(volume string, data []byte) (*segment, error) {
-	table := i.volumes[volume]
-	if table == nil {
-		return nil, ErrUnknownVolume
-	}
-	message := new(checkpointv1.Segment)
-	if err := proto.Unmarshal(data, message); err != nil {
-		return nil, errors.Join(ErrCorrupt, err)
-	}
-	if len(message.ProtoReflect().GetUnknown()) != 0 {
-		return nil, ErrCorrupt
-	}
-	refs, err := decodeRefs(message.GetCheckpoints())
-	if err != nil {
-		return nil, err
-	}
-	origins, err := decodeRefs(message.GetOrigins())
-	if err != nil {
-		return nil, err
-	}
-	held := newSegment()
-	for _, entry := range message.GetPages() {
-		relative := entry.GetNumber()
-		if uint64(relative) >= table.geometry.SegmentPages {
-			return nil, ErrCorrupt
-		}
-		if _, held := held.pages[relative]; held {
-			return nil, ErrCorrupt
-		}
-		if int(entry.GetCheckpoint()) >= len(refs) {
-			return nil, ErrCorrupt
-		}
-		ref := refs[entry.GetCheckpoint()]
-		at := location{ref: ref, origin: ref, part: entry.GetPart(),
-			offset: entry.GetOffset(), length: entry.GetLength()}
-		if slot := entry.GetOrigin(); slot != 0 {
-			if int(slot-1) >= len(origins) {
-				return nil, ErrCorrupt
-			}
-			at.origin = origins[slot-1]
-		}
-		if err := i.checkLocation(at); err != nil {
-			return nil, err
-		}
-		held.pages[relative] = at
-	}
-	return held, nil
-}
-
 func decodeRefs(entries []*checkpointv1.Ref) ([]control.Ref, error) {
 	refs := make([]control.Ref, 0, len(entries))
 	for _, entry := range entries {
@@ -739,7 +743,7 @@ func decodeRoot(store *Store, ref control.Ref, data []byte) (*Index, error) {
 	index := &Index{ref: ref, store: store,
 		volumes:     make(map[string]*volumeTable, len(message.GetVolumes())),
 		checkpoints: make(map[control.Ref]checkpointCost, len(message.GetCheckpoints())),
-		loaded:      make(map[segmentKey]*segment)}
+		memo:        make(map[segmentKey]*pageTable)}
 	refs := make([]control.Ref, 0, len(message.GetCheckpoints()))
 	for _, entry := range message.GetCheckpoints() {
 		at := control.Ref{VM: entry.GetVm(), Sequence: entry.GetSequence()}

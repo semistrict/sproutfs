@@ -1641,9 +1641,11 @@ missing, the delay and the bound now, and what the peer server served of the
 cache: reads, stripes, bytes, and reads answered `BUSY` for the bandwidth.
 `/metrics` carries the same as `sproutfs_cache_reads_total`,
 `sproutfs_cache_read_*` and `sproutfs_cache_serve_*`. The tier above them is
-reported too: `cache_memory` counts the pages and segments the memory tier
-holds, the reads it served, the reads it sent on to the disk, the cluster or
-the store, and the reads that joined a fetch in flight
+reported too: `cache_memory` counts the pages and page tables the memory tier
+holds, the reads of pages it served, the reads it sent on to the disk, the
+cluster or the store, and the reads that joined a fetch in flight, and the
+page tables it holds, their bytes, and the lookups of them a held table
+answered, that loaded a segment, and that a publication kept
 (`sproutfs_cache_memory_*`). With the pager's own fault and load counters,
 these say where each page a guest faulted on came from.
 

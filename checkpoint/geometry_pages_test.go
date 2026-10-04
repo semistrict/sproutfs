@@ -296,12 +296,9 @@ func TestCompactionOfASmallPageVolumeKeepsIdentitiesAndGeometry(t *testing.T) {
 		}
 		// The rescued pages are in the third checkpoint's parts under the
 		// identity the first gave them, and read back as the first's bytes.
-		held, err := reopened.segmentAt(t.Context(), "ram", 0)
-		if err != nil {
-			t.Fatal(err)
-		}
+		held := tableOf(t, reopened, "ram", 0)
 		for _, page := range []uint64{10, 11} {
-			at := held.pages[at4KiB.OffsetIn(page)]
+			at, _ := held.at(uint64(at4KiB.OffsetIn(page)))
 			if at.ref != secondRef || at.origin != firstRef {
 				t.Fatalf("rescued page %d sits in %v under the identity %v, want %v and %v",
 					page, at.ref, at.origin, secondRef, firstRef)
@@ -331,12 +328,9 @@ func checkLiveBytes(t *testing.T, index *Index) {
 	t.Helper()
 	for name, table := range index.volumes {
 		for number, entry := range table.segments {
-			held, err := index.segmentAt(t.Context(), name, number)
-			if err != nil {
-				t.Fatal(err)
-			}
-			want := make(map[control.Ref]uint64, len(held.pages))
-			for _, at := range held.pages {
+			held := tableOf(t, index, name, number)
+			want := make(map[control.Ref]uint64, held.pages)
+			for _, at := range held.all {
 				want[at.ref] += at.length
 			}
 			if len(entry.reads) != len(want) {
@@ -348,7 +342,7 @@ func checkLiveBytes(t *testing.T, index *Index) {
 					t.Fatalf("segment %d of %s records %d bytes read from %v, want %d",
 						number, name, use.bytes, use.ref, want[use.ref])
 				}
-				if use.bytes == 0 || use.bytes > uint64(len(held.pages))*table.geometry.PageSize+uint64(len(held.pages))*64 {
+				if use.bytes == 0 || use.bytes > uint64(held.pages)*table.geometry.PageSize+uint64(held.pages)*64 {
 					t.Fatalf("segment %d of %s records %d bytes from %v, which is not member bytes",
 						number, name, use.bytes, use.ref)
 				}
