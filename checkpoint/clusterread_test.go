@@ -267,6 +267,16 @@ var steadyRuntime = sim.Config{Seed: 1,
 	ObjectStore: sim.ObjectStoreConfig{GetLatency: 5 * time.Millisecond, HeadLatency: time.Millisecond,
 		PutLatency: 5 * time.Millisecond, BytesPerSecond: 1 << 40}}
 
+// classOf is the reader's size class of the reads that ask for bytes.
+func classOf(stats checkpoint.ReadStats, bytes int64) checkpoint.ReadClass {
+	for _, class := range stats.Classes {
+		if bytes <= class.Bytes {
+			return class
+		}
+	}
+	return stats.Classes[len(stats.Classes)-1]
+}
+
 // within reports two durations a few nanoseconds of jitter apart.
 func within(a, b time.Duration) bool { return max(a-b, b-a) <= time.Microsecond }
 
@@ -553,7 +563,7 @@ func TestStoreReadsPastTheBoundStayWithinTheirBucket(t *testing.T) {
 		}
 		stats := reader.cache.Stats().Read
 		if stats.StoreHedges != hedges || stats.StoreHedgesRefused != refused || stats.StoreHedgesWon != hedges ||
-			gets.Load() != int64(hedges) || stats.Bound != 200*time.Millisecond {
+			gets.Load() != int64(hedges) || classOf(stats, checkpoint.PageSize2MiB).Bound != 200*time.Millisecond {
 			t.Fatalf("past the bound the reader read the store %d times (%+v), want %d with %d refused and a bound of four delays",
 				gets.Load(), stats, hedges, refused)
 		}
@@ -601,11 +611,15 @@ func TestAPrefetchsReadOfTheClusterNeverHedges(t *testing.T) {
 		}
 		stats := reader.cache.Stats()
 		read := stats.Read
+		moved := func(class checkpoint.ReadClass) bool {
+			return class.Reads != 0 || class.Delay != 50*time.Millisecond || class.Bound != 200*time.Millisecond
+		}
 		if read.StoreHedges != 0 || read.StoreHedgesRefused != 0 || read.SecondRequests != 0 || read.Refused != 0 ||
-			gets.Load() != 0 || read.Prefetches != 12 || read.Delay != 50*time.Millisecond ||
-			read.Bound != 200*time.Millisecond || stats.PrefetchLoads != 12 {
+			gets.Load() != 0 || read.Prefetches != 12 || len(read.Classes) != 7 ||
+			slices.ContainsFunc(read.Classes, moved) || stats.PrefetchLoads != 12 {
 			t.Fatalf("a prefetch read the store %d times, its cache %+v; want no hedge, no second request, "+
-				"12 window reads and loads of prefetches, and the delay at its floor", gets.Load(), stats)
+				"12 window reads and loads of prefetches, and every class's delay at its floor, drawn from no read",
+				gets.Load(), stats)
 		}
 	})
 }

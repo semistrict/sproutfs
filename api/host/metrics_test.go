@@ -159,13 +159,16 @@ func TestMetricsExposeTheCachesFills(t *testing.T) {
 // requests, the holders replaced, the second requests and those the budget
 // refused, the reads of the store past the bound by outcome, the wrong
 // stripes and the drops sent for them, the repairs, the timeouts and the marks
-// of hosts down, the sampled HEAD checks, the delay and the bound, and what
-// the host served its peers. A host that keeps no cache disk reports zeroes.
+// of hosts down, the sampled HEAD checks, the delay and the bound of each size
+// class of read, and what the host served its peers. A host that keeps no
+// cache disk reports zeroes.
 func TestMetricsExposeTheCachesReads(t *testing.T) {
 	body := hostapi.Metrics(hostapi.Status{CacheRead: &hostapi.CacheRead{Hits: 1, OwnHits: 2, Misses: 3, Requests: 4,
 		Replaced: 5, SecondRequests: 6, RefusedByBudget: 7, StoreHedges: 9, StoreHedgesWon: 8, StoreHedgesRefused: 10,
 		WrongStripes: 11, DropsSent: 12, Repairs: 13, Timeouts: 14, MarkedDown: 15, MarkCapped: 16, MarkCleared: 17,
-		Down: 18, HeadChecks: 19, HeadMissing: 20, Delay: 1500 * time.Microsecond, Bound: 10 * time.Millisecond,
+		Down: 18, HeadChecks: 19, HeadMissing: 20, Classes: []hostapi.CacheReadClass{
+			{UpToBytes: 4096, Reads: 26, Delay: 1500 * time.Microsecond, Bound: 10 * time.Millisecond},
+			{UpToBytes: 16384, Reads: 27, Delay: 4 * time.Millisecond, Bound: 16 * time.Millisecond}},
 		Served: 21, ServedStripes: 22, ServedBytes: 23, ServeBusy: 24, EarlierHits: 25}})
 	for _, want := range []string{
 		`sproutfs_cache_reads_total{outcome="hit"} 1`,
@@ -189,8 +192,12 @@ func TestMetricsExposeTheCachesReads(t *testing.T) {
 		"sproutfs_cache_read_down_hosts 18",
 		"sproutfs_cache_read_head_checks_total 19",
 		"sproutfs_cache_read_head_missing_total 20",
-		"sproutfs_cache_read_delay_seconds 0.0015",
-		"sproutfs_cache_read_bound_seconds 0.01",
+		`sproutfs_cache_read_delay_seconds{up_to_bytes="4096"} 0.0015`,
+		`sproutfs_cache_read_delay_seconds{up_to_bytes="16384"} 0.004`,
+		`sproutfs_cache_read_bound_seconds{up_to_bytes="4096"} 0.01`,
+		`sproutfs_cache_read_bound_seconds{up_to_bytes="16384"} 0.016`,
+		`sproutfs_cache_read_class_reads_total{up_to_bytes="4096"} 26`,
+		`sproutfs_cache_read_class_reads_total{up_to_bytes="16384"} 27`,
 		"sproutfs_cache_serve_reads_total 21",
 		"sproutfs_cache_serve_stripes_total 22",
 		"sproutfs_cache_serve_bytes_total 23",

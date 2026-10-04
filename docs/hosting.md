@@ -1548,10 +1548,16 @@ rebuilds from any k distinct indices it is sent.
 miss, not a hedge.
 
 **The rest after a delay.** If k stripes of every page have not arrived after
-a delay, the read asks every rank it has not asked. The delay is the 95th
-percentile of this host's recent times to k stripes, over its last 256 reads
-and updated every 32, and never less than `CacheConfig.ClusterHedgeFloor`
-(0.5 ms by default). These second requests come from a budget, as
+a delay, the read asks every rank it has not asked. The delay is kept for each
+size class of read: the bytes a read asks for, up to 4 KiB, then each class
+four times the last, up to 16 MiB. So a 4 KiB page, a segment, a 2 MiB page
+and a run of pages each have a delay of their own, and a burst of small fast
+reads does not set the delay of a larger one. A class's delay is the 95th
+percentile of this host's recent times to k stripes in reads of the class,
+over its last 256 and updated every 32, and never less than
+`CacheConfig.ClusterHedgeFloor` (0.5 ms by default). A class with fewer than 32
+reads of its own takes the delay of the nearest class that has them, the
+larger first, since a larger read is the slower; with none, the floor. These second requests come from a budget, as
 FoundationDB's do. A read that had its stripes within the delay adds a
 twentieth of a request, and a second request takes one; the budget holds five
 at most, and starts full. So when every holder is slow at once, the budget
@@ -1565,10 +1571,29 @@ is not the envelope's, is not used, and its holder is sent a drop
 (`Peer.Drop`) behind the fills. With exactly k stripes that rebuild nothing,
 which is wrong cannot be told, so the read asks one more rank at once.
 
+**Two copies of a page.** A stripe is read where its reply's buffer holds it,
+not copied out. The read holds each reply whose stripes it took until it
+finishes, and gives the buffers back to the pool then. The data stripes are
+copied once into one buffer, which is the envelope; with all of them in hand
+it is not zeroed first, since every byte of it is copied over, and nothing is
+decoded. A missing data stripe is rebuilt by the parity stripes in its place
+in that buffer. A raw page is a view of its envelope, and the memory tier
+keeps that buffer as it is. The page is copied once more, into the caller's
+buffer, and only what it does not cover there is zeroed. Under k = 1 the
+envelope is a stripe's own bytes, so a stripe a peer sent is copied before
+the read finishes. Nothing the read returns is a view of a reply. Every check
+stays: each stripe's key and checksum, and the envelope's SHA-256. Before, a
+2 MiB page was copied six times and zeroed three times on the way. On an
+Apple M5 Pro, a reader's own work for a 2 MiB page from its data stripes went
+from 1.63 to 1.05 ms, and with two parity stripes from 1.81 to 1.17 ms; it
+allocates one buffer of the page's size, not five
+(`BenchmarkAReaderRebuildsA2MiBPage`).
+
 **The store past the bound.** A read that has not rebuilt its pages within a
 bound reads the store for them as well, and takes whichever answers first.
-The bound is four delays, and never less than `CacheConfig.ClusterBound`
-(10 ms by default). These reads of the store come from a token bucket: every
+The bound is four delays of the read's size class, and never less than
+`CacheConfig.ClusterBound` (10 ms by default). So a 2 MiB read after many
+4 KiB reads is not past its bound for taking as long as 2 MiB reads take. These reads of the store come from a token bucket: every
 read of a window that asked the cluster adds a twentieth of one, the bucket
 holds five at most, and starts full. Past the bucket, the read waits for its
 stripes. So a slowdown of every host at once does not double the store's load.
@@ -1637,10 +1662,12 @@ those rebuilt under an earlier code (`earlier_hits`), the requests, the
 holders replaced, the second requests and those the budget refused, the reads of the store past the bound by outcome, the wrong stripes
 and the drops sent, the repairs, the timeouts, the marks made, refused for the
 fifth and cleared, the hosts down now, the HEAD checks and what they found
-missing, the delay and the bound now, and what the peer server served of the
-cache: reads, stripes, bytes, and reads answered `BUSY` for the bandwidth.
-`/metrics` carries the same as `sproutfs_cache_reads_total`,
-`sproutfs_cache_read_*` and `sproutfs_cache_serve_*`. The tier above them is
+missing, the delay and the bound of each size class now, with the reads each
+class's delay is drawn from (`classes`, by `up_to_bytes`), and what the peer
+server served of the cache: reads, stripes, bytes, and reads answered `BUSY`
+for the bandwidth. `/metrics` carries the same as `sproutfs_cache_reads_total`,
+`sproutfs_cache_read_*` (the classes as series labelled `up_to_bytes`) and
+`sproutfs_cache_serve_*`. The tier above them is
 reported too: `cache_memory` counts the pages and segments the memory tier
 holds, the reads it served, the reads it sent on to the disk, the cluster or
 the store, and the reads that joined a fetch in flight

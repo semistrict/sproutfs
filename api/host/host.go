@@ -754,10 +754,10 @@ type CacheRead struct {
 	// HeadMissing those whose part the store no longer had.
 	HeadChecks  uint64 `json:"head_checks"`
 	HeadMissing uint64 `json:"head_missing"`
-	// Delay and Bound are the reader's delay before a second request and its
-	// bound before a read of the store, now.
-	Delay time.Duration `json:"delay"`
-	Bound time.Duration `json:"bound"`
+	// Classes is the reader's delay before a second request and its bound
+	// before a read of the store, now, for each size class of read, smallest
+	// first.
+	Classes []CacheReadClass `json:"classes"`
 	// Served is the reads of this host's stripes its peer server answered,
 	// ServedStripes and ServedBytes what they carried, and ServeBusy the reads
 	// it answered BUSY because its serving bandwidth was spent.
@@ -765,6 +765,18 @@ type CacheRead struct {
 	ServedStripes int64 `json:"served_stripes"`
 	ServedBytes   int64 `json:"served_bytes"`
 	ServeBusy     int64 `json:"serve_busy"`
+}
+
+// CacheReadClass is a host's delay and bound for one size class of read of
+// the cluster: reads that ask for at most UpToBytes, or, in the last class,
+// for more too.
+type CacheReadClass struct {
+	UpToBytes int64 `json:"up_to_bytes"`
+	// Reads counts the reads of the class that had their stripes, which its
+	// delay is drawn from.
+	Reads uint64        `json:"reads"`
+	Delay time.Duration `json:"delay"`
+	Bound time.Duration `json:"bound"`
 }
 
 // CacheFill is what one host's fills of the cluster's disk cache did, in

@@ -605,10 +605,23 @@ func cacheReadMetrics(out *strings.Builder, read *CacheRead) {
 		"Sampled hits whose part was checked with a HEAD.", did.HeadChecks)
 	write("sproutfs_cache_read_head_missing_total", "counter",
 		"Sampled hits whose part the store no longer had.", did.HeadMissing)
-	write("sproutfs_cache_read_delay_seconds", "gauge",
-		"The delay before a read asks the rest of a window's ranks.", did.Delay.Seconds())
-	write("sproutfs_cache_read_bound_seconds", "gauge",
-		"The bound before a read of the cluster reads the store too.", did.Bound.Seconds())
+	// Each size class of read is a series of its own, labelled by the most
+	// bytes a read of it asks for.
+	classes := func(name, kind, help string, value func(CacheReadClass) any) {
+		fmt.Fprintf(out, "# HELP %s %s\n# TYPE %s %s\n", name, help, name, kind)
+		for _, class := range did.Classes {
+			fmt.Fprintf(out, "%s{up_to_bytes=\"%d\"} %v\n", name, class.UpToBytes, value(class))
+		}
+	}
+	classes("sproutfs_cache_read_delay_seconds", "gauge",
+		"The delay before a read of a size class asks the rest of a window's ranks.",
+		func(class CacheReadClass) any { return class.Delay.Seconds() })
+	classes("sproutfs_cache_read_bound_seconds", "gauge",
+		"The bound before a read of a size class reads the store too.",
+		func(class CacheReadClass) any { return class.Bound.Seconds() })
+	classes("sproutfs_cache_read_class_reads_total", "counter",
+		"Reads of a size class that had their stripes, which its delay is drawn from.",
+		func(class CacheReadClass) any { return class.Reads })
 	write("sproutfs_cache_serve_reads_total", "counter",
 		"Reads of this host's stripes its peer server answered with them.", did.Served)
 	write("sproutfs_cache_serve_stripes_total", "counter", "Stripes this host served its peers.", did.ServedStripes)

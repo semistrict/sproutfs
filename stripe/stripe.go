@@ -117,8 +117,9 @@ func Split(code rank.Code, envelope []byte) ([]Stripe, error) {
 
 // Joined is what Join rebuilt and what it found.
 type Joined struct {
-	// Envelope is the envelope rebuilt. It may share the bytes of a stripe
-	// given.
+	// Envelope is the envelope rebuilt. Under a code with k = 1 it is the
+	// bytes of the stripe given that passed; under any other it is a buffer
+	// of its own, which shares no stripe's bytes.
 	Envelope []byte
 	// Used is the positions, among the stripes given, of the k that rebuilt
 	// it, and Wrong the positions of the stripes of the code found not to be
@@ -244,22 +245,40 @@ func subsets(code rank.Code, stripes []Stripe, candidates []int) func(yield func
 var errPadding = errors.New("stripe: the rebuilt envelope's padding is not zeros")
 
 // rebuild is the envelope the stripes at subset make: k stripes of distinct
-// indices and one envelope length.
+// indices and one envelope length. Under k = 1 it is the stripe's own bytes.
+// Under any other code it is a buffer of its own, which each data stripe in
+// hand is copied into once. With every data stripe in hand nothing is decoded
+// and the buffer is not zeroed first, since every byte of it is copied over.
+// With one missing, the parity stripes rebuild it in its place in the buffer.
 func rebuild(code rank.Code, stripes []Stripe, subset []int) ([]byte, error) {
 	length := stripes[subset[0]].Length
 	if code.K == 1 {
 		return stripes[subset[0]].Bytes, nil
 	}
 	size := Size(code, length)
-	envelope := make([]byte, 0, code.K*size)
 	if size == 0 {
-		return envelope, nil
+		return []byte{}, nil
 	}
 	shards := make([][]byte, code.Width())
 	for _, position := range subset {
 		shards[stripes[position].Index] = stripes[position].Bytes
 	}
-	if slices.ContainsFunc(shards[:code.K], func(shard []byte) bool { return shard == nil }) {
+	data := shards[:code.K]
+	var envelope []byte
+	if !slices.ContainsFunc(data, func(shard []byte) bool { return shard == nil }) {
+		envelope = bytes.Join(data, nil)
+	} else {
+		// A missing data stripe is rebuilt into its place in the buffer: the
+		// encoder writes into a stripe of no length that has room for it.
+		envelope = make([]byte, code.K*size)
+		for index, shard := range data {
+			place := envelope[index*size : (index+1)*size : (index+1)*size]
+			if shard == nil {
+				data[index] = place[:0]
+				continue
+			}
+			copy(place, shard)
+		}
 		encoder, err := encoderFor(code)
 		if err != nil {
 			return nil, err
@@ -267,9 +286,6 @@ func rebuild(code rank.Code, stripes []Stripe, subset []int) ([]byte, error) {
 		if err := encoder.ReconstructData(shards); err != nil {
 			return nil, fmt.Errorf("stripe: decoding under %s: %w", code, err)
 		}
-	}
-	for _, shard := range shards[:code.K] {
-		envelope = append(envelope, shard...)
 	}
 	if slices.ContainsFunc(envelope[length:], func(b byte) bool { return b != 0 }) {
 		return nil, errPadding

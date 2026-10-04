@@ -398,8 +398,10 @@ asks again.
 
 **Second request**: Asking the rest of a window's ranks once k stripes have
 not arrived after a delay, about the 95th percentile of the reader's recent
-reads. A reader earns a twentieth of one with each read that did not need one,
-so when every holder is slow the reader waits rather than doubling their load.
+reads of the same size class: the bytes a read asks for, so a 4 KiB page, a
+2 MiB page and a run each have a delay of their own. A reader earns a
+twentieth of one with each read that did not need one, so when every holder
+is slow the reader waits rather than doubling their load.
 
 **Repair**: A stripe a reader sends a rank that holds fewer of a window's
 stripes than the code puts on it: an index no rank holds, of a page it

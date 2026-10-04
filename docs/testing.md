@@ -2442,7 +2442,7 @@ guard a later part's window is. The fill campaign
 (`TestFillsSurviveTheirFaultsAndReachTheirProbes`) kills `keep-unranked` and
 `no-fill-right` too.
 
-Fifteen guards break the reads of the cluster:
+Seventeen guards break the reads of the cluster:
 
 ```sh
 SPROUTFS_SIM_BUG=cluster-read-by-index \
@@ -2475,6 +2475,10 @@ SPROUTFS_SIM_BUG=cluster-current-code-only \
   go test ./checkpoint -run '^TestAChangedCodeReadsEveryEarlierWindowWithNoStoreRead$' -count=1
 SPROUTFS_SIM_BUG=cluster-no-refill \
   go test ./checkpoint -run '^TestFillsAfterACodeChangeAreUnderTheNewCode$' -count=1
+SPROUTFS_SIM_BUG=cluster-one-delay-for-every-size \
+  go test ./checkpoint -run '^TestALargeReadAfterManySmallFastReadsIsNotHedgedToTheStore$' -count=1
+SPROUTFS_SIM_BUG=cluster-envelope-shares-reply \
+  go test ./checkpoint -run '^TestAPageReadFromAPeerOutlivesItsReplysBuffer$' -count=1
 ```
 
 The first takes from each rank only the index the list puts on it, which a
@@ -2489,10 +2493,14 @@ list, a probe every second rather than from ten seconds on, and fills sent to
 a host marked down. The next offers a rank the index the list puts on it
 whether or not another rank holds it: after a join, the new cache is sent an
 index a holder below it still holds. The next never checks a sampled hit's
-part. The last two break a change of the code: a read that tries only the
+part. The next two break a change of the code: a read that tries only the
 list's code, so after a change every earlier window is read from the store,
 and a window read under the earlier code that is never filled under the new
-one.
+one. The next keeps one delay and one bound for reads of every size, as the
+reader once did: after 512 reads of 4 KiB, four reads of 2 MiB each pass the
+bound the small reads set and read the store too. The last keeps a page
+rebuilt under 1+1 as a view of its peer's reply buffer, which the pool hands
+the next reply: once the replies are written over, the page has changed.
 
 Five guards break the hot tier:
 
