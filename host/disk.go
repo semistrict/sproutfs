@@ -250,7 +250,9 @@ func cacheFillReport(member bool, fill checkpoint.FillStats) *hostapi.CacheFill 
 	return &hostapi.CacheFill{FromReads: fill.FromReads, FromPublications: fill.FromPublications,
 		WithoutRight: fill.WithoutRight, RightsGranted: fill.RightsGranted, Sent: fill.Sent,
 		SentBytes: fill.SentBytes, Kept: fill.Kept, Dropped: dropped, Duplicates: fill.Duplicates,
-		Refused: fill.Refused, QueuedBytes: fill.Queued, QueueBytes: fill.QueueBytes}
+		Refused: fill.Refused, QueuedBytes: fill.Queued, QueueBytes: fill.QueueBytes,
+		QueuedPeakBytes: fill.QueuedPeak, PublicationWaits: fill.Waits,
+		PublicationWaitedSeconds: fill.Waited.Seconds(), PublicationsGaveUp: fill.GaveUp}
 }
 
 // hotTierReport is what the host's reads through its hot tier and its fills

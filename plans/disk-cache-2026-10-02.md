@@ -442,6 +442,12 @@ and keeps through a bounded rate per host. A fill that finds either full is
 dropped, and the window is read from the store next time. A fault, a
 publication and a pull never wait for one.
 
+A publication was taken out of that rule on 2026-10-04. Its fills outran the
+keeps on GCE and the queue dropped windows a restore then read from the
+store. A publication's fills now wait for room, up to a bound, and a read's
+go first ([hosting](../docs/hosting.md#filling-the-cluster),
+[the measurement](../docs/measurements/gce-fill-backpressure-2026-10-04.md)).
+
 ## Serving stripes
 
 A host serves stripes without reading them into its own memory. Stripes are

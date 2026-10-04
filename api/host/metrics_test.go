@@ -123,13 +123,15 @@ func TestMetricsExposeThePageCachesMemory(t *testing.T) {
 
 // What a host's fills of the cluster's disk cache did: the windows it filled
 // by what it read them for, the fill rights it was refused and gave out, the
-// stripes sent, kept, dropped by every reason, duplicated and refused, and its
-// queue. A host that keeps no cache disk reports zeroes for every reason.
+// stripes sent, kept, dropped by every reason, duplicated and refused, its
+// queue, and its publications' waits. A host that keeps no cache disk reports
+// zeroes for every reason.
 func TestMetricsExposeTheCachesFills(t *testing.T) {
 	body := hostapi.Metrics(hostapi.Status{CacheFill: &hostapi.CacheFill{FromReads: 11, FromPublications: 12,
 		WithoutRight: 13, RightsGranted: 14, Sent: 15, SentBytes: 16, Kept: 17,
 		Dropped: map[string]uint64{"queue": 1, "rate": 2, "budget": 3, "peer": 4}, Duplicates: 18, Refused: 19,
-		QueuedBytes: 20, QueueBytes: 21}})
+		QueuedBytes: 20, QueueBytes: 21, QueuedPeakBytes: 22, PublicationWaits: 23, PublicationWaitedSeconds: 2.5,
+		PublicationsGaveUp: 24}})
 	for _, want := range []string{
 		`sproutfs_cache_fills_total{from="read"} 11`,
 		`sproutfs_cache_fills_total{from="publication"} 12`,
@@ -147,6 +149,10 @@ func TestMetricsExposeTheCachesFills(t *testing.T) {
 		"sproutfs_cache_keep_stripes_refused_total 19",
 		"sproutfs_cache_fill_queued_bytes 20",
 		"sproutfs_cache_fill_queue_limit_bytes 21",
+		"sproutfs_cache_fill_queued_peak_bytes 22",
+		"sproutfs_cache_fill_publication_waits_total 23",
+		"sproutfs_cache_fill_publication_waited_seconds_total 2.5",
+		"sproutfs_cache_fill_publications_gave_up_total 24",
 	} {
 		if !strings.Contains(body, want+"\n") {
 			t.Fatalf("the exposition has no %q in it:\n%s", want, body)

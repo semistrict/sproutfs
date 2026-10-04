@@ -822,9 +822,18 @@ type CacheFill struct {
 	Duplicates uint64 `json:"duplicates"`
 	Refused    uint64 `json:"refused"`
 	// QueuedBytes is what the queue of writes to this host's disk holds now,
-	// and QueueBytes its bound.
-	QueuedBytes int64 `json:"queued_bytes"`
-	QueueBytes  int64 `json:"queue_bytes"`
+	// QueueBytes its bound, and QueuedPeakBytes the most it has held.
+	QueuedBytes     int64 `json:"queued_bytes"`
+	QueueBytes      int64 `json:"queue_bytes"`
+	QueuedPeakBytes int64 `json:"queued_peak_bytes"`
+	// PublicationWaits counts the waits of publications' fills: for room in
+	// the queue, and a keep's for the rate, the background budget or a busy
+	// holder. PublicationWaitedSeconds is how long they waited in all, and
+	// PublicationsGaveUp counts the publications that waited out the bound
+	// and waited no more.
+	PublicationWaits         uint64  `json:"publication_waits"`
+	PublicationWaitedSeconds float64 `json:"publication_waited_seconds"`
+	PublicationsGaveUp       uint64  `json:"publications_gave_up"`
 }
 
 // CacheDisk is the page cache's disk on one host: the file it claimed, what

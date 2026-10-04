@@ -1453,18 +1453,53 @@ request with that disk's stripes of the window, each as the disk stores it,
 with its own checksum, under the generation the fill was placed by. A disk no
 member serves gets nothing, and its stripes are dropped as `stale`.
 
-**Nothing waits on a fill.** A host holds the fills handed to it, and its
-peers' keeps, in one queue, `CacheConfig.FillQueueBytes` (64 MiB by default).
-One worker does the fills one at a time, in the order they were handed over.
-It asks for a read's fill right, writes this host's own stripes and sends each
-keep, and it takes the next fill once the last keep is answered. Every write
-to this host's own disk, its own fills' and its peers' keeps', is done by
-another worker, one at a time. Keeps go out within a rate per host,
-`CacheConfig.FillBytesPerSecond` (128 MiB/s by default, with a burst of one
-second of it), and within the host's background budget at the fill priority. A
-fill that finds the queue full, the rate spent or the budget without room is
-dropped. Its window is read from the store the next time. A fault, a
-publication and a pull never wait for a fill.
+**A fault and a pull never wait on a fill.** A host holds the fills handed to
+it, and its peers' keeps, in one queue, `CacheConfig.FillQueueBytes` (64 MiB
+by default). One worker does the fills one at a time. It asks for a read's
+fill right, writes this host's own stripes and sends each keep, and it takes
+the next fill once the last keep is answered. Every write to this host's own
+disk, its own fills' and its peers' keeps', is done by another worker, one at
+a time. Keeps go out within a rate per host, `CacheConfig.FillBytesPerSecond`
+(128 MiB/s by default, with a burst of one second of it), and within the
+host's background budget at the fill priority. A fill of a read or a pull that
+finds the queue full, the rate spent or the budget without room is dropped.
+Its window is read from the store the next time.
+
+**A publication goes at the pace of its fills.** A suspend or a stop is
+followed by a restore on another host. A window the publication did not fill
+is read from the store there, and those windows are the restore's tail
+([the real application's restore](measurements/gce-real-app-restore-2026-10-03.md)).
+A slower publication costs less than that. So a publication's fills wait
+rather than drop:
+
+- A publication hands a window over only while the queue holds less than
+  three quarters of its bound, its high-water mark. Until then it waits for
+  room. Windows that wait get room in the order they began to wait.
+- A part keeps its upload slot until its windows are handed over. So a
+  publication whose fills wait also waits for a slot for its next part. It
+  holds no more parts than the store has slots, besides what the queue holds.
+- A keep of a publication's that finds the rate spent waits for it, and
+  leaves a quarter of a second of the rate to reads. One that finds the
+  background budget full, or whose holder answers BUSY, is tried again after
+  10 ms, then twice as long each time, up to half a second. A keep larger
+  than the whole budget never fits it, and is dropped at once.
+- No wait lasts longer than `CacheConfig.FillWaitBound` (10 s by default). A
+  publication that waited it out once waits no more. Each of its fills that
+  finds no room after is dropped, as a read's is. A holder that is gone is
+  marked down within a few seconds, and keeps to it are then dropped at once.
+  So it costs a publication the bound at most.
+
+On GCE an 8 GiB guest published from an Ice Lake host under 4+2 used to drop
+two thirds of its stripes at the default queue. Paced, it drops none, and
+takes 69 s instead of 33 s, the pace of the host's keeps
+([the measurement](measurements/gce-fill-backpressure-2026-10-04.md)).
+
+**A read's fill never waits behind a publication's.** The last quarter of the
+queue is left to the fills of reads, repairs and peers' keeps, which never
+wait. The worker takes them before any of a publication's fills still to do,
+and also between one holder of a publication's fill and the next. So a read's
+fill waits for the keep on the wire at most. A publication's keep waiting to
+be tried again leaves the worker to them meanwhile.
 
 **One fill at a time.** Keeps sent beside each other reach a holder's link,
 its connection and the background budget in whatever order the Go scheduler
@@ -1499,8 +1534,9 @@ fill from a publication is refused last, and a fill from a read before it (see
 host filled from reads and from publications, the reads it filled nothing of
 for want of the right, the rights its cache gave out, the stripes it sent that
 their holders kept and their bytes, the stripes kept on its disk, the stripes
-dropped by reason, the duplicates, the stripes of keeps it refused, and its
-queue. The reasons are `queue`, `rate`, `budget` (this host's background
+dropped by reason, the duplicates, the stripes of keeps it refused, its
+queue and the most it has held, and its publications' waits: how many, how
+long in all, and how many publications waited out the bound. The reasons are `queue`, `rate`, `budget` (this host's background
 budget), `busy` (the holder's budget for this host), `down`, `stale` (a
 host that does not serve the disk at its address, a disk no member serves,
 or a holder on another generation that a newer one did not settle), `peer`
@@ -1952,8 +1988,11 @@ read back is then fitted to that share before it serves anything.
   checkpoint the host publishes. The part builders behind them have a separate
   bound: a quarter of the cores, between 2 and 8. Each publication encodes its
   pages on the host's encoders side by side, and holds one more batch of pages
-  than there are encoders. Together with the parts in flight, this determines
-  how much memory publication uses on this host.
+  than there are encoders. A part keeps its upload slot until the cluster has
+  taken its windows ([filling the cluster](#filling-the-cluster)), so a
+  publication behind its fills holds no more parts than there are slots.
+  Together with the parts in flight and the fill queue, this determines how
+  much memory publication uses on this host.
 - **Open VMs**: one manager owns at most 4,096 live handles by default, with the
   per-write bound described in [volumes](volumes.md#writes). There is no bound
   on unpublished bytes. A write waits for nothing, and the bytes it leaves

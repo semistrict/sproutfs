@@ -464,6 +464,15 @@ func cacheFillMetrics(out *strings.Builder, fill *CacheFill) {
 		"What the queue of writes to this host's disk holds now.", did.QueuedBytes)
 	write("sproutfs_cache_fill_queue_limit_bytes", "gauge",
 		"The bound of the queue of writes to this host's disk.", did.QueueBytes)
+	write("sproutfs_cache_fill_queued_peak_bytes", "gauge",
+		"The most the queue of writes to this host's disk has held.", did.QueuedPeakBytes)
+	write("sproutfs_cache_fill_publication_waits_total", "counter",
+		"Waits of publications' fills: for room in the queue, the rate, the background budget or a busy holder.",
+		did.PublicationWaits)
+	write("sproutfs_cache_fill_publication_waited_seconds_total", "counter",
+		"How long publications' fills waited in all.", did.PublicationWaitedSeconds)
+	write("sproutfs_cache_fill_publications_gave_up_total", "counter",
+		"Publications that waited out the bound for their fills and waited no more.", did.PublicationsGaveUp)
 }
 
 // HotTierFailures is every reason a read of the hot tier fails for, and

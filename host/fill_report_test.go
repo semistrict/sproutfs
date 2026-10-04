@@ -4,6 +4,7 @@ import (
 	"maps"
 	"slices"
 	"testing"
+	"time"
 
 	hostapi "github.com/semistrict/sproutfs/api/host"
 	"github.com/semistrict/sproutfs/checkpoint"
@@ -19,6 +20,7 @@ func TestTheFillsAreReportedByEveryReasonTheyDropFor(t *testing.T) {
 		fill.Dropped[reason] = uint64(reason) + 1
 	}
 	fill.FromReads, fill.Sent, fill.Kept, fill.Refused, fill.QueueBytes = 1, 2, 3, 4, 5
+	fill.QueuedPeak, fill.Waits, fill.Waited, fill.GaveUp = 6, 7, 1500*time.Millisecond, 8
 	report := host.CacheFillReport(true, fill)
 	if report == nil {
 		t.Fatal("a host that keeps a cache disk reports no fills")
@@ -33,6 +35,11 @@ func TestTheFillsAreReportedByEveryReasonTheyDropFor(t *testing.T) {
 	}
 	if report.FromReads != 1 || report.Sent != 2 || report.Kept != 3 || report.Refused != 4 || report.QueueBytes != 5 {
 		t.Fatalf("the fills are reported as %+v, want 1 from reads, 2 sent, 3 kept, 4 refused and a queue of 5",
+			*report)
+	}
+	if report.QueuedPeakBytes != 6 || report.PublicationWaits != 7 || report.PublicationWaitedSeconds != 1.5 ||
+		report.PublicationsGaveUp != 8 {
+		t.Fatalf("the publications' waits are reported as %+v, want a peak of 6, 7 waits of 1.5 s and 8 given up",
 			*report)
 	}
 	if report := host.CacheFillReport(false, fill); report != nil {

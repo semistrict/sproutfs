@@ -45,7 +45,10 @@ type partWriter struct {
 	// handed is closed once the part before the next one has been handed to
 	// the pull and the cluster, or never will be: see handOver. It is nil
 	// before the first part.
-	handed  chan struct{}
+	handed chan struct{}
+	// pace is the publication's waits for its fills of the cluster, which
+	// its parts and its segments share.
+	pace    fillPace
 	wait    sync.WaitGroup
 	once    sync.Once
 	failure error
@@ -384,8 +387,10 @@ func (w *partWriter) builderFor(ctx context.Context, member part.Member) (*part.
 
 // flush seals the part in hand as one the checkpoint goes on past and starts its
 // upload, which runs under one slot of the store's shared budget so parts in
-// flight are bounded. Only the last part carries the part count, and finish
-// writes that one.
+// flight are bounded. The part keeps its slot until it has been handed to the
+// cluster, so a publication whose fills wait for room waits for a slot for its
+// next part, and holds no more parts than the store has slots. Only the last
+// part carries the part count, and finish writes that one.
 func (w *partWriter) flush(ctx context.Context) error {
 	if w.part == nil {
 		return nil
@@ -412,11 +417,10 @@ func (w *partWriter) flush(ctx context.Context) error {
 	upload := func() {
 		defer w.wait.Done()
 		defer close(handed)
+		defer w.store.release()
 		sealed := sealedPart{key: key, data: data, members: members}
 		w.fillEarly(ctx, &sealed)
-		err := w.put(ctx, key, data)
-		w.store.release()
-		if err != nil {
+		if err := w.put(ctx, key, data); err != nil {
 			w.record(err)
 			return
 		}
@@ -444,9 +448,11 @@ type sealedPart struct {
 // handOver hands a durable part over once the part before it has been, so
 // the parts reach the pull and the cluster's one worker of fills in their own
 // order. Uploads that end at one instant would otherwise hand theirs over in
-// the order the Go scheduler runs them, and a fill the queue or the rate
-// drops would be a different one on every run of a seed. before is the part
-// before's, nil for the first part.
+// the order the Go scheduler runs them, and the window a fill waits for room
+// for, or the one it drops, would be a different one on every run of a seed.
+// before is the part before's, nil for the first part. The caller holds the
+// part's upload slot until handOver returns: a part waiting for room for its
+// fills, or for the part before it, is a part the publication holds.
 func (w *partWriter) handOver(ctx context.Context, before <-chan struct{}, sealed sealedPart) {
 	if before != nil && !w.store.cache.bug("fill-parts-in-any-order") {
 		<-before
@@ -457,7 +463,8 @@ func (w *partWriter) handOver(ctx context.Context, before <-chan struct{}, seale
 // durable hands a part whose PUT has succeeded to the hot tier, to the pull
 // that keeps its pages and to the cluster, which takes only the windows
 // inside its share. Nothing is filled before then: a part the store refused
-// must reach no cache.
+// must reach no cache. It returns once the cluster has taken every window of
+// the part or dropped it, which is when the queue had room for it.
 func (w *partWriter) durable(ctx context.Context, sealed sealedPart) {
 	if !sealed.earlyHot {
 		w.store.hot.published(ctx, sealed.key, sealed.data)
@@ -470,7 +477,7 @@ func (w *partWriter) durable(ctx context.Context, sealed sealedPart) {
 		w.keep.keep(ctx, envelopes)
 	}
 	if !sealed.earlyCluster {
-		w.store.cache.fill(WriteFillPublication, envelopes)
+		w.store.cache.publish(ctx, &w.pace, envelopes)
 	}
 }
 
@@ -531,11 +538,13 @@ func (w *partWriter) finish(ctx context.Context) error {
 		part := sealedPart{key: key, data: sealed, members: members}
 		w.fillEarly(ctx, &part)
 		err = w.put(ctx, key, sealed)
+		if err == nil {
+			w.handOver(ctx, w.handed, part)
+		}
 		w.store.release()
 		if err != nil {
 			return err
 		}
-		w.handOver(ctx, w.handed, part)
 	}
 	w.wait.Wait()
 	return w.failure
