@@ -175,6 +175,12 @@ func Start(ctx context.Context, config SupervisorConfig) (Service, error) {
 	if err := vmmachine.CheckAPI(ctx, config.Starter); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrInvalidConfig, err)
 	}
+	// A guest that would not act on a new generation ID draws the same random
+	// bytes in every child of a fork point and every restore of a checkpoint,
+	// and nothing it runs would say so.
+	if err := vmmachine.CheckGuest(ctx, config.Starter); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInvalidConfig, err)
+	}
 	if _, err := os.Stat(config.HugepageDir); err != nil {
 		return nil, fmt.Errorf("hugepage mount %s: %w", config.HugepageDir, err)
 	}

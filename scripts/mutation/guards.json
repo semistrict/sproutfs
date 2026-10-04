@@ -238,6 +238,18 @@
     "purpose": "Admit a memory session from a process other than the VMM its Starter reported. Linux only, as root."
   },
   {
+    "id": "vmmachine-restore-stopped-clock",
+    "package": "vmmachine",
+    "run": "^TestARestoreMovesTheGuestsClockOnWhereTheVMMCan$",
+    "purpose": "Restore an x86_64 guest without asking the VMM to move its clock on by the time its state spent stopped."
+  },
+  {
+    "id": "vmmachine-accept-guest-without-vmgenid",
+    "package": "vmmachine",
+    "run": "^TestAGuestNeedsTheGenerationDriverAndToSeeTheDevice$",
+    "purpose": "Accept a guest kernel without the VMGenID driver, or boot arguments that hide the device from it."
+  },
+  {
     "id": "disklimit-count-spill-by-allocation",
     "package": "resource",
     "run": "^TestASpillFileCountsAtItsPromiseWhileSparse$",

@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -664,29 +665,22 @@ func (p *Process) awaitAPI(ctx context.Context) error {
 // file, its guest memory from the RAM memory region's session, and each PMEM
 // device from the socket this process opened for it. What the Starter added to
 // the request goes with it — the new host end of a network interface or a
-// vsock — and none of it may name what this package loads.
+// vsock — and none of it may name what this package loads. The load gives the
+// guest a new generation ID and, on x86_64, the right clock; see loadRequest.
 func (p *Process) restore(ctx context.Context, c Config, memory *Memory) error {
-	load := make(map[string]any, len(memory.Load)+4)
-	for key, value := range memory.Load {
-		switch key {
-		case "snapshot_path", "mem_file_path", "mem_backend", "pmem_overrides", "resume_vm":
-			if !sim.Bug(ctx, "vmmachine-accept-reserved-load") {
-				return fmt.Errorf("vmmachine: the Starter's load request names %q, which this package loads", key)
-			}
-		}
-		load[key] = value
+	load, err := loadRequest(ctx, memory.Load, p.view(filepath.Join(p.dir, stateDirectory, "restore.state")),
+		memory.RAM, memory.Pmem, runtime.GOARCH)
+	if err != nil {
+		return err
+	}
+	if !MovesClock(runtime.GOARCH) {
+		slog.WarnContext(ctx, "vmmachine: this architecture's VMM restores a guest's clock where its state stopped it, "+
+			"so the guest's wall clock is behind by the time the state was stopped until the guest sets it",
+			"vm", p.id, "arch", runtime.GOARCH)
 	}
 	if err := p.files.write(ctx, "restore.state", c.RestoreState); err != nil {
 		return err
 	}
-	overrides := make([]map[string]any, 0, len(memory.Pmem))
-	for _, device := range memory.Pmem {
-		overrides = append(overrides, map[string]any{"id": device.ID, "socket_path": device.Socket})
-	}
-	load["snapshot_path"] = p.view(filepath.Join(p.dir, stateDirectory, "restore.state"))
-	load["mem_backend"] = map[string]any{"backend_type": "Sproutfs", "backend_path": memory.RAM}
-	load["pmem_overrides"] = overrides
-	load["resume_vm"] = false
 	return p.request(ctx, http.MethodPut, "/snapshot/load", load)
 }
 

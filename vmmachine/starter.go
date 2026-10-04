@@ -43,7 +43,7 @@ type Starter interface {
 // prints the revision it speaks when run with --sproutfs-api-revision. The two
 // are raised together whenever this package starts sending a field, or relying
 // on a behaviour, that the previous revision lacks.
-const APIRevision = 1
+const APIRevision = 2
 
 // ErrAPIRevision refuses a VMM that speaks another revision of the API than
 // APIRevision.
