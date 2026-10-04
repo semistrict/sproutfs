@@ -688,5 +688,11 @@
     "package": "membership",
     "run": "^TestCarryDetachesAReleasingShardOnlyOnceItsHostClosedIt$",
     "purpose": "Detach a releasing shard from its machine while its host still holds it open."
+  },
+  {
+    "id": "host-open-shard-without-reading-again",
+    "package": "host",
+    "run": "^TestAHostOpensAShardOnlyWhileTheObjectStillAssignsItThere$",
+    "purpose": "Open a shard by the membership the host holds, without reading the object again first, so a host behind takes a shard that moved to another host on its machine."
   }
 ]

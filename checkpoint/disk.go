@@ -480,6 +480,9 @@ func (d *cacheDisk) renewLease(ctx context.Context, slot int64) error {
 // names another assignment than the one the shard was opened under, or none:
 // ErrFenced. A disk already fenced stays fenced.
 func (d *cacheDisk) checkLease(ctx context.Context) error {
+	if d.lease == nil {
+		return nil
+	}
 	d.mu.Lock()
 	fenced := d.fenced
 	d.mu.Unlock()

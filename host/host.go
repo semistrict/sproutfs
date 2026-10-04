@@ -23,6 +23,7 @@
 package host
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -116,6 +117,12 @@ type Config struct {
 	// by, which this host reports to the membership with the disk. Empty
 	// names it by its identity.
 	CacheVolume string
+	// Shards, where its Devices is not nil, has this host serve the shards
+	// the membership assigns it, network disks the controller attaches to
+	// its machine, instead of a cache disk of its own: a host given both
+	// refuses to start. It needs a Migration.Address, which its peers reach
+	// the shards at.
+	Shards ShardsConfig
 	// MembershipInterval is how often this host reads the membership when
 	// nothing else has made it read: a request from a peer that names a newer
 	// generation does at once. Zero is membership.DefaultInterval, and a
@@ -196,9 +203,12 @@ type Host struct {
 	// where the host has no limiter or the cache keeps no disk.
 	cacheFit *cacheFitter
 	// self is this host as the membership names it, zero where it keeps no
-	// cache disk, and view the membership it holds.
+	// cache disk and serves no shard, and view the membership it holds.
+	// shards opens and closes the shards the membership assigns it, nil for
+	// a host that serves none.
 	self        membership.Host
 	view        *membership.View
+	shards      *shardServer
 	control     *control.Client
 	checkpoints *checkpoint.Store
 	volumes     *volume.Manager
@@ -415,6 +425,14 @@ func StartHost(ctx context.Context, config Config) (*Host, error) {
 		return nil, err
 	}
 	sizing := cacheSizing(config)
+	serving := config.Shards.Devices != nil
+	if serving {
+		if config.Cache.Disk != nil || config.Migration.Address == "" || config.Shards.Machine == "" {
+			return nil, fmt.Errorf("%w: a host that serves shards keeps no cache disk of its own, and needs a "+
+				"peer address and the machine it runs on", ErrInvalidConfig)
+		}
+		sizing.Shards = true
+	}
 	// The cache fills the cluster through this host's peers, at a rate and
 	// with fill rights kept on its clock.
 	sizing.Peers, sizing.Clock = h.peers, h.clock
@@ -440,6 +458,12 @@ func StartHost(ctx context.Context, config Config) (*Host, error) {
 	// keeps the newest generation it read whenever a read fails. Its identity
 	// is its disk's, so a pod replaced over the same file keeps its place.
 	h.self = memberOf(hostCtx, config, h.cache.Stats().Disk.Identity)
+	if serving {
+		// A host that serves shards is a member of its own, whatever disk
+		// it holds, under an identity this process alone has.
+		h.self = membership.Host{Address: config.Migration.Address, Machine: config.Shards.Machine}
+		h.entropy.Fill(h.self.ID[:])
+	}
 	members, err := membership.NewStore(membership.Config{ObjectStore: config.ObjectStore,
 		ObjectPrefix: config.ObjectPrefix, Entropy: h.entropy})
 	if err != nil {
@@ -457,6 +481,10 @@ func StartHost(ctx context.Context, config Config) (*Host, error) {
 	// membership has this host serve it; alone, that is every envelope whole.
 	// Every other window it keeps whole.
 	h.cache.FollowMembership(h.view, h.self.ID)
+	if serving {
+		region := cmp.Or(sizing.DiskRegionBytes, checkpoint.DefaultDiskRegionBytes)
+		h.shards = newShardServer(hostCtx, config.Shards, h.self.ID, h.view, h.cache, h.clock, region)
+	}
 	// Publication encodes and the fault path decodes through pools of their
 	// own, so a guest's page fault never waits behind a checkpoint's encoding.
 	codecs, err := blob.NewCodecs(encodeWorkers(), decodeWorkers())
@@ -650,7 +678,7 @@ func (h *Host) Status() Status {
 		stats := h.hot.Stats()
 		status.HotTier = &stats
 	}
-	status.Member = h.self
+	status.Member, _ = h.Member()
 	if h.view != nil {
 		status.Membership = h.view.Status()
 	}
@@ -831,6 +859,10 @@ func (h *Host) shutdown() {
 	if h.peers != nil {
 		// Every receive has ended with its VM, so nothing still asks a peer.
 		errs = append(errs, h.peers.Close())
+	}
+	if h.shards != nil {
+		// Nothing serves the shards any more, so each closes with its table.
+		h.shards.stop()
 	}
 	if h.volumes != nil {
 		errs = append(errs, h.volumes.Close(context.Background()))

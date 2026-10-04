@@ -171,6 +171,39 @@ func TestConfigReadsThePageCacheDirectory(t *testing.T) {
 	}
 }
 
+// A host serves shards on gce, given the node it runs on, and never beside a
+// cache directory of its own.
+func TestConfigReadsTheShards(t *testing.T) {
+	values := minimal()
+	values["SPROUTFS_SHARDS"], values["SPROUTFS_NODE_NAME"] = "gce", "gke-pool-1-abcd"
+	config, err := loadConfig(environ(values))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Shards != "gce" || config.Machine != "gke-pool-1-abcd" {
+		t.Fatalf("the shards are %q on %q", config.Shards, config.Machine)
+	}
+	for _, tc := range []struct {
+		set  map[string]string
+		want string
+	}{
+		{map[string]string{"SPROUTFS_SHARDS": "aws", "SPROUTFS_NODE_NAME": "n"}, `SPROUTFS_SHARDS is "aws", want gce or nothing`},
+		{map[string]string{"SPROUTFS_SHARDS": "gce"},
+			"SPROUTFS_SHARDS needs SPROUTFS_NODE_NAME, the node the host runs on, which its shards are attached to"},
+		{map[string]string{"SPROUTFS_SHARDS": "gce", "SPROUTFS_NODE_NAME": "n", "SPROUTFS_CACHE_DIR": "/var/cache"},
+			"SPROUTFS_SHARDS and SPROUTFS_CACHE_DIR are both set: a host serves shards or keeps a cache disk of its " +
+				"own, not both"},
+	} {
+		values := minimal()
+		for name, value := range tc.set {
+			values[name] = value
+		}
+		if _, err := loadConfig(environ(values)); err == nil || err.Error() != tc.want {
+			t.Errorf("%v was configured with %v, want %q", tc.set, err, tc.want)
+		}
+	}
+}
+
 // The cluster cache is on for no window unless the deployment names a share,
 // 0 to 100 percent. Anything else is refused.
 func TestConfigReadsTheClusterShare(t *testing.T) {

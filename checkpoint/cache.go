@@ -372,6 +372,18 @@ func (c *Cache) RemoveShard(ctx context.Context, identity rank.Identity) error {
 // a shard it serves.
 func (c *Cache) Keeps(identity rank.Identity) bool { return c.cluster.keeps(identity) }
 
+// CheckShard reads a shard's lease back, and reports ErrFenced where another
+// member took it, or the error of a device that no longer reads: either way
+// the shard is to be removed.
+func (c *Cache) CheckShard(ctx context.Context, identity rank.Identity) error {
+	disk, release, kept := c.cluster.hold(identity)
+	if !kept {
+		return fmt.Errorf("%w: %s", ErrNotKept, identity)
+	}
+	defer release()
+	return disk.checkLease(ctx)
+}
+
 // Fenced reports whether a shard the cache serves found its lease taken by
 // another member's: the shard writes nothing more, and its member should
 // remove it.

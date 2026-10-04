@@ -223,12 +223,14 @@ func Start(ctx context.Context, config SupervisorConfig) (Service, error) {
 	// of this deployment holds, and empties any other. The host takes the
 	// first file of the cache directory no other host holds, and the disk
 	// limiter alone sets its share.
-	s.cacheDisk, s.cacheFile, err = openCacheFile(ctx, config)
-	if err != nil {
-		return nil, err
+	if config.Shards.Devices == nil {
+		s.cacheDisk, s.cacheFile, err = openCacheFile(ctx, config)
+		if err != nil {
+			return nil, err
+		}
+		slog.InfoContext(ctx, "host: the page cache's disk was claimed", "file", s.cacheFile,
+			"own_directory", config.CacheDisk != nil)
 	}
-	slog.InfoContext(ctx, "host: the page cache's disk was claimed", "file", s.cacheFile,
-		"own_directory", config.CacheDisk != nil)
 	// The disk limiter comes after every file it measures is open, and after
 	// the spill files hold their extents, but before anything is spilled. A
 	// configuration whose promises this filesystem could never keep under its
@@ -254,6 +256,7 @@ func Start(ctx context.Context, config SupervisorConfig) (Service, error) {
 		HotTier:            checkpoint.HotTierConfig{Store: config.HotTier},
 		DiskLimiter:        s.disk,
 		CacheVolume:        s.cacheFile,
+		Shards:             config.Shards,
 		CheckpointInterval: config.CheckpointInterval,
 		LossWindow:         config.LossWindow,
 		FlushBound:         config.FlushBound,
@@ -417,8 +420,10 @@ func (s *supervisor) Status(ctx context.Context) (hostapi.Status, error) {
 	report.CacheMemory = hostapi.CacheMemory{Entries: status.Cache.Entries, Hits: status.Cache.Hits,
 		Misses: status.Cache.Misses, Coalesced: status.Cache.CoalescedLoads, Evictions: status.Cache.Evictions}
 	report.CacheDisk = cacheDiskReport(s.cacheFile, status.Cache.Disk)
-	report.CacheFill = cacheFillReport(status.Cache.Disk, status.Cache.Fill)
-	report.CacheRead = cacheReadReport(status.Cache.Disk, status.Cache.Read, status.Pages)
+	report.CacheShards = cacheShardsReport(status.Cache.Shards)
+	member := !status.Member.ID.IsZero()
+	report.CacheFill = cacheFillReport(member, status.Cache.Fill)
+	report.CacheRead = cacheReadReport(member, status.Cache.Read, status.Pages)
 	report.HotTier = hotTierReport(status.HotTier)
 	if report.Running == nil {
 		report.Running = []string{}

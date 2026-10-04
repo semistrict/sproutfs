@@ -255,6 +255,12 @@ type SupervisorConfig struct {
 	// stripes the membership ranks it for, and every other window whole.
 	// Zero keeps every window whole.
 	CacheClusterPercent int
+	// Shards, where its Devices is not nil, has the host serve the shards the
+	// membership assigns it, network disks attached to its machine, and keep
+	// no cache disk of its own: CacheDisk is not opened, and the disk limiter
+	// counts nothing of the cache, whose shards each count on their own
+	// device.
+	Shards ShardsConfig
 	// HotTier is a second bucket under the deployment's names that reads of
 	// checkpoint objects try first and that reads and publications fill. Nil
 	// is none. It is an alternative to the cluster cache: a host given both

@@ -53,8 +53,15 @@ func cacheDisk(ctx context.Context, config Config) int64 {
 }
 
 // Member is this host as the membership names it, and whether it is one: a
-// host that keeps no cache disk is not.
-func (h *Host) Member() (membership.Host, bool) { return h.self, !h.self.ID.IsZero() }
+// host that keeps no cache disk and serves no shard is not. A host that serves
+// shards reports the shards it holds open.
+func (h *Host) Member() (membership.Host, bool) {
+	self := h.self
+	if h.shards != nil {
+		self.Disks = h.shards.held()
+	}
+	return self, !self.ID.IsZero()
+}
 
 // Membership is the membership this host holds now, which it ranks windows
 // and routes its cache's requests by.
