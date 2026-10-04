@@ -1,5 +1,11 @@
 [
   {
+    "id": "timeline-count-calls-after-running",
+    "package": "host",
+    "run": "^TestAStartsLineSplitsItsTimeAndItsStoreCalls$",
+    "purpose": "Count a start's store calls made after its guest ran as part of the time to running."
+  },
+  {
     "id": "volume-ignore-discard",
     "package": "internal/simtest",
     "run": "^TestScheduledWorldReproduces$",

@@ -330,7 +330,11 @@ func (h *Host) receive(ctx context.Context, handoff vmmigrate.Handoff) (*vmmigra
 		return nil, fmt.Errorf("receiving %s: %w", handoff.VMID, err)
 	}
 	var started Machine
+	// The open is everything vmmigrate.Receive does before it starts the VMM:
+	// the control record, the checkpoint the child inherits, and the backings.
+	opened := step(ctx, "open")
 	start := func(ctx context.Context, vm *volume.VM, backings map[string]vmmemory.Backing, state []byte) (vmmigrate.Runtime, error) {
+		opened()
 		runtime, err := h.migration.StartVM(ctx, vm, backings, state)
 		if err != nil {
 			return nil, err
@@ -362,8 +366,11 @@ func (h *Host) receive(ctx context.Context, handoff vmmigrate.Handoff) (*vmmigra
 	// store holds. The pages no checkpoint holds are not the pull's: they
 	// arrive from the source, on a fault or in the stream behind the guest, and
 	// stay in this host's pager until its next checkpoint publishes them.
-	if err := h.AddMachineWith(handoff.VMID, started, MachineTerms{Pull: handoff.Pull,
-		CheckpointInterval: handoff.CheckpointInterval}); err != nil {
+	registered := step(ctx, "register")
+	err = h.AddMachineWith(handoff.VMID, started, MachineTerms{Pull: handoff.Pull,
+		CheckpointInterval: handoff.CheckpointInterval})
+	registered()
+	if err != nil {
 		// The same VM in the same state as one whose stream never completed: a
 		// guest this host started from the source's captured state and cannot
 		// account for. It is given up the same way, rather than closed — which
@@ -372,7 +379,10 @@ func (h *Host) receive(ctx context.Context, handoff vmmigrate.Handoff) (*vmmigra
 		h.discardReceived(ctx, handoff.VMID, started, received.VM(), err)
 		return nil, fmt.Errorf("registering %s: %w", handoff.VMID, err)
 	}
-	if err := received.Done(ctx); err != nil {
+	fetched := step(ctx, "post-copy")
+	err = received.Done(ctx)
+	fetched()
+	if err != nil {
 		received.Close()
 		h.discardReceived(ctx, handoff.VMID, started, received.VM(), err)
 		return nil, fmt.Errorf("streaming %s from %s: %w", handoff.VMID, handoff.Source, err)
@@ -382,7 +392,10 @@ func (h *Host) receive(ctx context.Context, handoff vmmigrate.Handoff) (*vmmigra
 		// parent's host still holds it: a fan-out that gave it up meanwhile is
 		// one nothing wants it from. Past the hold's own deadline, counted on
 		// that host from before this receive began, the answer can only be no.
-		if err := h.claim(ctx, received); err != nil {
+		claimed := step(ctx, "claim")
+		err := h.claim(ctx, received)
+		claimed()
+		if err != nil {
 			received.Close()
 			h.discardReceived(ctx, handoff.VMID, started, received.VM(), err)
 			return nil, fmt.Errorf("claiming %s from %s: %w", handoff.VMID, handoff.Source, err)

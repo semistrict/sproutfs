@@ -927,6 +927,7 @@ func (c *Connection) serveFaults() {
 				c.fail(fmt.Errorf("page %d fault (write=%t): %w", page, entry.write, err))
 				return
 			}
+			c.memoryRegion.Memory.guestFaults.observe(entry.at, c.host.clock.Since(entry.at))
 		}
 	}
 }

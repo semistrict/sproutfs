@@ -37,6 +37,7 @@ func (s *supervisor) Receive(ctx context.Context, wire hostapi.Handoff) (hostapi
 	if err := guestless(handoff.VMID); err != nil {
 		return hostapi.ReceiveResult{}, err
 	}
+	ctx, line := startTimeline(ctx, s.clock, handoff.VMID, "receive")
 	// Receive returns only once every page no checkpoint has is here: those
 	// pages exist nowhere else. A receive that could not get them has already
 	// given the VM up, and one refused before it started never recorded a
@@ -52,6 +53,8 @@ func (s *supervisor) Receive(ctx context.Context, wire hostapi.Handoff) (hostapi
 		return hostapi.ReceiveResult{}, fmt.Errorf("receiving %s from %s: %w", handoff.VMID, handoff.Source, err)
 	}
 	stats := received.Stats()
+	line.log(ctx, "host: a VM runs", "fork", handoff.IsFork(), "local", handoff.Source == "",
+		"unpublished_pages", stats.Unpublished, "fetched_pages", stats.Fetched)
 	// The source may release its pages now. The rest of its resident set keeps
 	// arriving behind the running guest as long as it is still serving; closing
 	// here would send every page of it to object storage instead.
@@ -86,13 +89,17 @@ func (s *supervisor) startReceived(ctx context.Context, vm *volume.VM,
 	if err := s.disk.Fits(ctx, vmmachine.MaxStateBytes); err != nil {
 		return nil, fmt.Errorf("starting the VMM of %s: %w", vm.ID(), err)
 	}
-	process, err := vmmachine.Start(ctx, s.machineConfig(vm, state, backings))
+	process, err := startVMM(ctx, s.machineConfig(vm, state, backings))
 	if err != nil {
 		return nil, err
 	}
-	if err := process.Release(ctx); err != nil {
+	ended := step(ctx, "release")
+	err = process.Release(ctx)
+	ended()
+	if err != nil {
 		return nil, errors.Join(err, process.Close())
 	}
+	ran(ctx, process.MemoryRegions())
 	if err := s.remember(&machine{vm: vm, process: process}); err != nil {
 		return nil, errors.Join(err, process.Close())
 	}

@@ -169,6 +169,7 @@ func Seal(ctx context.Context, vm *volume.VM, machine Machine) (*volume.ForkPoin
 	paused := false
 	point, err := vm.ForkPoint(ctx, func(ctx context.Context) ([]byte, map[string]volume.DirtySource, error) {
 		paused = true
+		defer step(ctx, "pause")()
 		state, sources, err := machine.Prepare(ctx)
 		if err != nil {
 			return nil, nil, err

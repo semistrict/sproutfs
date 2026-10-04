@@ -10,7 +10,7 @@ scripts/bench-app-restore-gce.sh's nodes:
   overlay's tunnel;
 - a RAM arena that holds the whole guest, out of the node's HugeTLB pool;
 - the page cache's file beside the scratch on the node's local SSD;
-- the valkey template alone, at the guest's size;
+- one template alone, at the guest's size: valkey, or what --template names;
 - the cluster cache's share, and the code the orchestrator writes in the
   membership;
 - the orchestrator reachable from the nodes' network, where the hosts are.
@@ -60,7 +60,7 @@ def host(deployment, args):
         'SPROUTFS_EPHEMERAL_BYTES': None,
         'SPROUTFS_RAM_DIRTY_PAGES': None,
         'SPROUTFS_PMEM_DIRTY_PAGES': None,
-        'SPROUTFS_TEMPLATES': f'valkey=/usr/share/sproutfs/guest/valkey.ext4:{args.guest_bytes}',
+        'SPROUTFS_TEMPLATES': f'{args.template}:{args.guest_bytes}',
         'SPROUTFS_VM_VCPUS': 2,
         'SPROUTFS_CACHE_CLUSTER_PERCENT': args.share,
         # The local SSD is 375 GB; the cache may hold most of it.
@@ -117,6 +117,8 @@ def main():
     parser.add_argument('--hosts', type=int, required=True)
     parser.add_argument('--share', type=int, required=True)
     parser.add_argument('--guest-bytes', type=int, required=True)
+    parser.add_argument('--template', default='valkey=/usr/share/sproutfs/guest/valkey.ext4',
+                        help='the template, as name=path of its image in the pod')
     parser.add_argument('--arena-gib', type=int, default=10)
     parser.add_argument('--code', required=True)
     parser.add_argument('--node-cidr', required=True)

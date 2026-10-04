@@ -187,9 +187,13 @@ func (h *Host) fork(ctx context.Context, parent string, children []string,
 		// with. It is the one pin the point took, shared by every child of it,
 		// and nothing ever gives it back.
 		var handoff vmmigrate.Handoff
+		pinned := step(ctx, "pin")
 		err := point.Pin(ctx)
+		pinned()
 		if err == nil {
+			handed := step(ctx, "handoff")
 			handoff, err = vmmigrate.Fork(ctx, child, point, h.served(local), vmmigrate.Options{})
+			handed()
 		}
 		if err != nil {
 			// The whole fan-out is given up: a child this host cannot hand over
@@ -255,8 +259,12 @@ func (h *Host) seal(ctx context.Context, vmID string) (*volume.ForkPoint, error)
 	if vm == nil {
 		return nil, fmt.Errorf("%w: %s is not open here", ErrNotMigratable, vmID)
 	}
-	if err := confirmHandoff(ctx, vm); err != nil {
+	confirmed := step(ctx, "confirm")
+	err := confirmHandoff(ctx, vm)
+	confirmed()
+	if err != nil {
 		return nil, err
 	}
+	defer step(ctx, "seal")()
 	return Seal(ctx, vm, entry.runtime)
 }

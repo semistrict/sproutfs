@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"sync/atomic"
-	"time"
 
 	"github.com/semistrict/sproutfs/internal/latency"
 )
@@ -198,44 +197,48 @@ func (s *MeteredObjectStore) Latency() ObjectLatency {
 // Traffic reports everything this store has served since it was built.
 func (s *MeteredObjectStore) Traffic() ObjectTraffic { return s.totals.Traffic() }
 
-// record tallies one call against the totals and against the context's meter.
-func (s *MeteredObjectStore) record(ctx context.Context, operation ObjectOperation, began time.Time, bytes int64, err error) {
-	s.totals.record(operation, bytes, err)
-	objectMeterOf(ctx).record(operation, bytes, err)
-	s.latencies[operation].Observe(s.clock.Since(began))
+// record tallies one call against the totals and against the context's meter,
+// and lists it in the context's trace.
+func (s *MeteredObjectStore) record(ctx context.Context, call ObjectCall, bytes int64, err error) {
+	s.totals.record(call.Operation, bytes, err)
+	objectMeterOf(ctx).record(call.Operation, bytes, err)
+	call.Took, call.Failed = s.clock.Since(call.Began), err != nil
+	s.latencies[call.Operation].Observe(call.Took)
+	objectTraceOf(ctx).add(call)
 }
 
 func (s *MeteredObjectStore) Head(ctx context.Context, key ObjectKey) (ObjectMetadata, error) {
-	began := s.clock.Now()
+	call := ObjectCall{Operation: HeadOperation, Key: key, Began: s.clock.Now()}
 	metadata, err := s.store.Head(ctx, key)
-	s.record(ctx, HeadOperation, began, 0, err)
+	s.record(ctx, call, 0, err)
 	return metadata, err
 }
 
 func (s *MeteredObjectStore) Get(ctx context.Context, request GetRequest) (GetResult, error) {
-	began := s.clock.Now()
+	call := ObjectCall{Operation: GetOperation, Key: request.Key, Began: s.clock.Now()}
 	result, err := s.store.Get(ctx, request)
-	s.record(ctx, GetOperation, began, result.ContentLength, err)
+	s.record(ctx, call, result.ContentLength, err)
 	return result, err
 }
 
 func (s *MeteredObjectStore) Put(ctx context.Context, request PutRequest) (PutResult, error) {
-	began := s.clock.Now()
+	call := ObjectCall{Operation: PutOperation, Key: request.Key, Began: s.clock.Now(),
+		Conditional: request.Conditions.IfMatch != nil || request.Conditions.IfNoneMatch}
 	result, err := s.store.Put(ctx, request)
-	s.record(ctx, PutOperation, began, request.Size, err)
+	s.record(ctx, call, request.Size, err)
 	return result, err
 }
 
 func (s *MeteredObjectStore) Delete(ctx context.Context, request DeleteRequest) error {
-	began := s.clock.Now()
+	call := ObjectCall{Operation: DeleteOperation, Key: request.Key, Began: s.clock.Now()}
 	err := s.store.Delete(ctx, request)
-	s.record(ctx, DeleteOperation, began, 0, err)
+	s.record(ctx, call, 0, err)
 	return err
 }
 
 func (s *MeteredObjectStore) List(ctx context.Context, request ListRequest) (ListResult, error) {
-	began := s.clock.Now()
+	call := ObjectCall{Operation: ListOperation, Began: s.clock.Now()}
 	result, err := s.store.List(ctx, request)
-	s.record(ctx, ListOperation, began, 0, err)
+	s.record(ctx, call, 0, err)
 	return result, err
 }
